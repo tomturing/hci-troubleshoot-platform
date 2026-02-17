@@ -1,0 +1,772 @@
+# HCI 智能排障平台 - 数据库设计文档
+
+## 文档信息
+- **版本**: 1.0
+- **作者**: Claude
+- **日期**: 2026-02-15
+- **数据库**: PostgreSQL 15
+
+---
+
+## 1. 数据库概述
+
+### 1.1 设计原则
+
+1. **可追踪性**: 所有表包含 `trace_id` 字段用于全链路追踪
+2. **时间戳**: 所有表包含创建和更新时间
+3. **软删除**: 关键数据使用软删除 (deleted_at)
+4. **索引优化**: 为常用查询字段建立索引
+5. **JSONB存储**: 灵活的元数据使用JSONB类型
+
+### 1.2 表关系概览
+
+```
+user (用户表)
+  │
+  ├─► case (工单表)
+  │     │
+  │     ├─► conversation (对话会话表)
+  │     │     │
+  │     │     └─► message (消息表)
+  │     │
+  │     └─► environment (环境信息表)
+  │
+  └─► session (会话表)
+```
+
+---
+
+## 2. 表结构设计
+
+### 2.1 user (用户表)
+
+**用途**: 存储用户基本信息
+
+```sql
+CREATE TABLE IF NOT EXISTS "user" (
+    user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id VARCHAR(255) UNIQUE NOT NULL,           -- 客户端唯一标识
+    username VARCHAR(100),                             -- 用户名 (可选)
+    email VARCHAR(255),                                -- 邮箱 (可选)
+    user_type VARCHAR(20) NOT NULL DEFAULT 'temporary', -- 用户类型: temporary/authenticated
+    metadata JSONB DEFAULT '{}'::jsonb,                -- 额外元数据
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_login_at TIMESTAMP WITH TIME ZONE,
+    trace_id VARCHAR(50)                               -- 创建时的TraceID
+);
+
+-- 索引
+CREATE INDEX idx_user_client_id ON "user"(client_id);
+CREATE INDEX idx_user_trace_id ON "user"(trace_id);
+CREATE INDEX idx_user_type ON "user"(user_type);
+
+-- 触发器：自动更新 updated_at
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_user_updated_at BEFORE UPDATE ON "user"
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- 注释
+COMMENT ON TABLE "user" IS '用户表，存储临时用户和认证用户信息';
+COMMENT ON COLUMN "user".client_id IS '客户端生成的唯一标识，用于关联所有操作';
+COMMENT ON COLUMN "user".user_type IS '用户类型: temporary(临时用户), authenticated(认证用户)';
+```
+
+**示例数据**:
+```sql
+INSERT INTO "user" (client_id, user_type, trace_id)
+VALUES ('client-abc123', 'temporary', 'hci-1708012345-a1b2c3');
+```
+
+### 2.2 case (工单表)
+
+**用途**: 存储排障工单信息
+
+```sql
+CREATE TYPE case_status AS ENUM (
+    'created',      -- 已创建
+    'confirmed',    -- 已确认
+    'in_progress',  -- 进行中
+    'resolved',     -- 已解决
+    'closed',       -- 已关闭
+    'cancelled'     -- 已取消
+);
+
+CREATE TABLE IF NOT EXISTS "case" (
+    case_id VARCHAR(20) PRIMARY KEY,                   -- Q + YYYYMMDD + 5位序号
+    user_id UUID NOT NULL REFERENCES "user"(user_id) ON DELETE CASCADE,
+    client_id VARCHAR(255) NOT NULL,                   -- 冗余字段，加速查询
+    title VARCHAR(500) NOT NULL,                       -- 工单标题
+    description TEXT,                                   -- 问题描述
+    status case_status NOT NULL DEFAULT 'created',     -- 工单状态
+    priority VARCHAR(20) DEFAULT 'medium',             -- 优先级: low/medium/high/urgent
+    category VARCHAR(100),                             -- 分类: vm/storage/network/cluster/backup
+    metadata JSONB DEFAULT '{}'::jsonb,                -- 扩展元数据
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    confirmed_at TIMESTAMP WITH TIME ZONE,             -- 确认时间
+    resolved_at TIMESTAMP WITH TIME ZONE,              -- 解决时间
+    closed_at TIMESTAMP WITH TIME ZONE,                -- 关闭时间
+    trace_id VARCHAR(50) NOT NULL                      -- TraceID
+);
+
+-- 索引
+CREATE INDEX idx_case_user_id ON "case"(user_id);
+CREATE INDEX idx_case_client_id ON "case"(client_id);
+CREATE INDEX idx_case_status ON "case"(status);
+CREATE INDEX idx_case_created_at ON "case"(created_at DESC);
+CREATE INDEX idx_case_trace_id ON "case"(trace_id);
+CREATE INDEX idx_case_category ON "case"(category);
+
+-- 触发器
+CREATE TRIGGER update_case_updated_at BEFORE UPDATE ON "case"
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- 函数：生成工单号
+CREATE OR REPLACE FUNCTION generate_case_id()
+RETURNS VARCHAR AS $$
+DECLARE
+    date_part VARCHAR(8);
+    seq_part VARCHAR(5);
+    next_seq INT;
+BEGIN
+    date_part := TO_CHAR(CURRENT_DATE, 'YYYYMMDD');
+    
+    -- 获取当天的最大序号
+    SELECT COALESCE(MAX(SUBSTRING(case_id FROM 10 FOR 5)::INT), 0) + 1
+    INTO next_seq
+    FROM "case"
+    WHERE case_id LIKE 'Q' || date_part || '%';
+    
+    seq_part := LPAD(next_seq::TEXT, 5, '0');
+    
+    RETURN 'Q' || date_part || seq_part;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 注释
+COMMENT ON TABLE "case" IS '工单表，记录排障请求';
+COMMENT ON COLUMN "case".case_id IS '工单号格式: Q + YYYYMMDD + 00001';
+COMMENT ON COLUMN "case".status IS '工单生命周期状态';
+```
+
+**示例数据**:
+```sql
+INSERT INTO "case" (case_id, user_id, client_id, title, description, status, category, trace_id)
+VALUES (
+    'Q2026021500001',
+    (SELECT user_id FROM "user" WHERE client_id = 'client-abc123'),
+    'client-abc123',
+    '虚拟机启动失败',
+    '虚拟机 vm-web-01 无法启动，报错 libvirt error',
+    'created',
+    'vm',
+    'hci-1708012345-a1b2c3'
+);
+```
+
+### 2.3 conversation (对话会话表)
+
+**用途**: 存储每个工单的对话会话
+
+```sql
+CREATE TABLE IF NOT EXISTS conversation (
+    conversation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    case_id VARCHAR(20) NOT NULL REFERENCES "case"(case_id) ON DELETE CASCADE,
+    openclaw_pod_id VARCHAR(100),                      -- 分配的 OpenClaw Pod ID
+    started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    ended_at TIMESTAMP WITH TIME ZONE,                 -- 会话结束时间
+    message_count INT DEFAULT 0,                       -- 消息数量
+    metadata JSONB DEFAULT '{}'::jsonb,                -- 上下文摘要等
+    trace_id VARCHAR(50) NOT NULL
+);
+
+-- 索引
+CREATE INDEX idx_conversation_case_id ON conversation(case_id);
+CREATE INDEX idx_conversation_pod_id ON conversation(openclaw_pod_id);
+CREATE INDEX idx_conversation_started_at ON conversation(started_at DESC);
+CREATE INDEX idx_conversation_trace_id ON conversation(trace_id);
+
+-- 注释
+COMMENT ON TABLE conversation IS '对话会话表，一个Case可以有多个会话';
+COMMENT ON COLUMN conversation.openclaw_pod_id IS '分配的OpenClaw Pod标识';
+COMMENT ON COLUMN conversation.message_count IS '该会话的消息数量，用于优化查询';
+```
+
+**示例数据**:
+```sql
+INSERT INTO conversation (case_id, openclaw_pod_id, trace_id)
+VALUES (
+    'Q2026021500001',
+    'openclaw-pod-abc123',
+    'hci-1708012345-a1b2c3'
+);
+```
+
+### 2.4 message (消息表)
+
+**用途**: 存储对话消息详情
+
+```sql
+CREATE TYPE message_role AS ENUM (
+    'user',        -- 用户消息
+    'assistant',   -- AI助手消息
+    'system',      -- 系统消息
+    'command'      -- 命令建议
+);
+
+CREATE TABLE IF NOT EXISTS message (
+    message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+    case_id VARCHAR(20) NOT NULL,                      -- 冗余字段，加速查询
+    role message_role NOT NULL,                        -- 消息角色
+    content TEXT NOT NULL,                             -- 消息内容
+    command TEXT,                                      -- 命令内容 (仅role=command时)
+    command_warning TEXT,                              -- 命令警告 (仅role=command时)
+    metadata JSONB DEFAULT '{}'::jsonb,                -- 扩展信息: token数、模型版本等
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    trace_id VARCHAR(50) NOT NULL,
+    
+    -- 约束：command类型必须有command字段
+    CONSTRAINT check_command_content CHECK (
+        (role = 'command' AND command IS NOT NULL) OR
+        (role != 'command')
+    )
+);
+
+-- 索引
+CREATE INDEX idx_message_conversation_id ON message(conversation_id);
+CREATE INDEX idx_message_case_id ON message(case_id);
+CREATE INDEX idx_message_role ON message(role);
+CREATE INDEX idx_message_created_at ON message(created_at DESC);
+CREATE INDEX idx_message_trace_id ON message(trace_id);
+
+-- 全文搜索索引 (未来功能)
+CREATE INDEX idx_message_content_search ON message USING gin(to_tsvector('english', content));
+
+-- 触发器：更新 conversation 的 message_count
+CREATE OR REPLACE FUNCTION update_conversation_message_count()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        UPDATE conversation 
+        SET message_count = message_count + 1
+        WHERE conversation_id = NEW.conversation_id;
+    ELSIF TG_OP = 'DELETE' THEN
+        UPDATE conversation 
+        SET message_count = message_count - 1
+        WHERE conversation_id = OLD.conversation_id;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_message_count_on_insert
+    AFTER INSERT ON message
+    FOR EACH ROW EXECUTE FUNCTION update_conversation_message_count();
+
+CREATE TRIGGER update_message_count_on_delete
+    AFTER DELETE ON message
+    FOR EACH ROW EXECUTE FUNCTION update_conversation_message_count();
+
+-- 注释
+COMMENT ON TABLE message IS '消息表，存储所有对话消息';
+COMMENT ON COLUMN message.role IS '消息角色: user(用户), assistant(AI), system(系统), command(命令)';
+COMMENT ON COLUMN message.command IS '命令内容，仅当role=command时使用';
+```
+
+**示例数据**:
+```sql
+-- 用户消息
+INSERT INTO message (conversation_id, case_id, role, content, trace_id)
+VALUES (
+    (SELECT conversation_id FROM conversation WHERE case_id = 'Q2026021500001' LIMIT 1),
+    'Q2026021500001',
+    'user',
+    '虚拟机 vm-web-01 无法启动，报错 libvirt error',
+    'hci-1708012345-a1b2c3'
+);
+
+-- AI响应
+INSERT INTO message (conversation_id, case_id, role, content, trace_id)
+VALUES (
+    (SELECT conversation_id FROM conversation WHERE case_id = 'Q2026021500001' LIMIT 1),
+    'Q2026021500001',
+    'assistant',
+    '我来帮您诊断这个问题。首先，让我们检查虚拟机的状态...',
+    'hci-1708012345-a1b2c3'
+);
+
+-- 命令建议
+INSERT INTO message (conversation_id, case_id, role, content, command, command_warning, trace_id)
+VALUES (
+    (SELECT conversation_id FROM conversation WHERE case_id = 'Q2026021500001' LIMIT 1),
+    'Q2026021500001',
+    'command',
+    '请执行以下命令检查虚拟机状态：',
+    'virsh list --all',
+    '请确认您有足够的权限执行此命令',
+    'hci-1708012345-a1b2c3'
+);
+```
+
+### 2.5 environment (环境信息表)
+
+**用途**: 存储客户现场环境信息
+
+```sql
+CREATE TABLE IF NOT EXISTS environment (
+    environment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    case_id VARCHAR(20) NOT NULL REFERENCES "case"(case_id) ON DELETE CASCADE,
+    env_type VARCHAR(50) NOT NULL,                     -- 环境类型: system/network/storage/cluster
+    env_data JSONB NOT NULL,                           -- 环境详细数据
+    collected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    trace_id VARCHAR(50) NOT NULL
+);
+
+-- 索引
+CREATE INDEX idx_environment_case_id ON environment(case_id);
+CREATE INDEX idx_environment_type ON environment(env_type);
+CREATE INDEX idx_environment_collected_at ON environment(collected_at DESC);
+CREATE INDEX idx_environment_trace_id ON environment(trace_id);
+
+-- JSONB索引 (用于查询特定字段)
+CREATE INDEX idx_environment_data_gin ON environment USING gin(env_data);
+
+-- 注释
+COMMENT ON TABLE environment IS '环境信息表，存储客户现场环境数据';
+COMMENT ON COLUMN environment.env_type IS '环境类型: system(系统), network(网络), storage(存储), cluster(集群)';
+COMMENT ON COLUMN environment.env_data IS 'JSONB格式的环境详细数据';
+```
+
+**示例数据**:
+```sql
+-- 系统信息
+INSERT INTO environment (case_id, env_type, env_data, trace_id)
+VALUES (
+    'Q2026021500001',
+    'system',
+    '{
+        "os": "CentOS 7.9",
+        "kernel": "3.10.0-1160.el7.x86_64",
+        "cpu_cores": 16,
+        "memory_gb": 64,
+        "hostname": "hci-node-01"
+    }'::jsonb,
+    'hci-1708012345-a1b2c3'
+);
+
+-- 集群信息
+INSERT INTO environment (case_id, env_type, env_data, trace_id)
+VALUES (
+    'Q2026021500001',
+    'cluster',
+    '{
+        "cluster_name": "prod-hci-01",
+        "node_count": 3,
+        "version": "6.5.0",
+        "nodes": [
+            {"hostname": "node-01", "status": "online"},
+            {"hostname": "node-02", "status": "online"},
+            {"hostname": "node-03", "status": "offline"}
+        ]
+    }'::jsonb,
+    'hci-1708012345-a1b2c3'
+);
+```
+
+### 2.6 session (会话表)
+
+**用途**: 存储WebSocket会话信息 (实际运行时主要使用Redis)
+
+```sql
+CREATE TABLE IF NOT EXISTS session (
+    session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id VARCHAR(255) NOT NULL,
+    user_id UUID REFERENCES "user"(user_id) ON DELETE SET NULL,
+    case_id VARCHAR(20) REFERENCES "case"(case_id) ON DELETE SET NULL,
+    websocket_id VARCHAR(100),                         -- WebSocket连接ID
+    status VARCHAR(20) NOT NULL DEFAULT 'active',      -- active/inactive/expired
+    ip_address INET,                                   -- 客户端IP
+    user_agent TEXT,                                   -- 客户端UA
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_activity_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP WITH TIME ZONE,               -- 过期时间
+    trace_id VARCHAR(50) NOT NULL
+);
+
+-- 索引
+CREATE INDEX idx_session_client_id ON session(client_id);
+CREATE INDEX idx_session_user_id ON session(user_id);
+CREATE INDEX idx_session_case_id ON session(case_id);
+CREATE INDEX idx_session_status ON session(status);
+CREATE INDEX idx_session_expires_at ON session(expires_at);
+CREATE INDEX idx_session_trace_id ON session(trace_id);
+
+-- 注释
+COMMENT ON TABLE session IS '会话表，记录WebSocket连接信息 (主要用于持久化，运行时用Redis)';
+COMMENT ON COLUMN session.websocket_id IS 'WebSocket连接的唯一标识';
+COMMENT ON COLUMN session.expires_at IS '会话过期时间，默认24小时';
+```
+
+**示例数据**:
+```sql
+INSERT INTO session (
+    client_id, 
+    user_id, 
+    websocket_id, 
+    ip_address, 
+    expires_at, 
+    trace_id
+)
+VALUES (
+    'client-abc123',
+    (SELECT user_id FROM "user" WHERE client_id = 'client-abc123'),
+    'ws-conn-xyz789',
+    '192.168.1.100',
+    CURRENT_TIMESTAMP + INTERVAL '24 hours',
+    'hci-1708012345-a1b2c3'
+);
+```
+
+---
+
+## 3. 视图定义
+
+### 3.1 活跃工单视图
+
+```sql
+CREATE OR REPLACE VIEW active_cases AS
+SELECT 
+    c.case_id,
+    c.client_id,
+    c.title,
+    c.status,
+    c.priority,
+    c.category,
+    c.created_at,
+    u.username,
+    u.email,
+    COUNT(DISTINCT conv.conversation_id) as conversation_count,
+    COUNT(m.message_id) as total_messages,
+    MAX(m.created_at) as last_message_at
+FROM "case" c
+LEFT JOIN "user" u ON c.user_id = u.user_id
+LEFT JOIN conversation conv ON c.case_id = conv.case_id
+LEFT JOIN message m ON conv.conversation_id = m.conversation_id
+WHERE c.status IN ('created', 'confirmed', 'in_progress')
+GROUP BY c.case_id, c.client_id, c.title, c.status, c.priority, c.category, c.created_at, u.username, u.email
+ORDER BY c.created_at DESC;
+
+COMMENT ON VIEW active_cases IS '活跃工单视图，用于快速查询进行中的工单';
+```
+
+### 3.2 工单统计视图
+
+```sql
+CREATE OR REPLACE VIEW case_statistics AS
+SELECT 
+    c.case_id,
+    c.title,
+    c.status,
+    c.created_at,
+    c.closed_at,
+    EXTRACT(EPOCH FROM (COALESCE(c.closed_at, CURRENT_TIMESTAMP) - c.created_at)) / 3600 as duration_hours,
+    COUNT(DISTINCT conv.conversation_id) as conversation_count,
+    COUNT(m.message_id) as message_count,
+    COUNT(CASE WHEN m.role = 'command' THEN 1 END) as command_count,
+    JSONB_BUILD_OBJECT(
+        'user_messages', COUNT(CASE WHEN m.role = 'user' THEN 1 END),
+        'assistant_messages', COUNT(CASE WHEN m.role = 'assistant' THEN 1 END),
+        'system_messages', COUNT(CASE WHEN m.role = 'system' THEN 1 END)
+    ) as message_breakdown
+FROM "case" c
+LEFT JOIN conversation conv ON c.case_id = conv.case_id
+LEFT JOIN message m ON conv.conversation_id = m.conversation_id
+GROUP BY c.case_id, c.title, c.status, c.created_at, c.closed_at;
+
+COMMENT ON VIEW case_statistics IS '工单统计视图，提供工单处理时长和消息分布';
+```
+
+---
+
+## 4. 常用查询
+
+### 4.1 根据ClientID查询工单
+
+```sql
+-- 查询某个客户端的所有工单
+SELECT 
+    c.case_id,
+    c.title,
+    c.status,
+    c.created_at,
+    COUNT(m.message_id) as message_count
+FROM "case" c
+LEFT JOIN conversation conv ON c.case_id = conv.case_id
+LEFT JOIN message m ON conv.conversation_id = m.conversation_id
+WHERE c.client_id = 'client-abc123'
+GROUP BY c.case_id, c.title, c.status, c.created_at
+ORDER BY c.created_at DESC;
+```
+
+### 4.2 获取工单的完整对话历史
+
+```sql
+-- 获取某个工单的所有消息
+SELECT 
+    m.message_id,
+    m.role,
+    m.content,
+    m.command,
+    m.command_warning,
+    m.created_at,
+    m.trace_id
+FROM message m
+WHERE m.case_id = 'Q2026021500001'
+ORDER BY m.created_at ASC;
+```
+
+### 4.3 根据TraceID追踪请求
+
+```sql
+-- 通过TraceID追踪完整的请求链路
+SELECT 
+    'user' as table_name,
+    user_id::text as record_id,
+    created_at,
+    trace_id
+FROM "user"
+WHERE trace_id = 'hci-1708012345-a1b2c3'
+
+UNION ALL
+
+SELECT 
+    'case',
+    case_id,
+    created_at,
+    trace_id
+FROM "case"
+WHERE trace_id = 'hci-1708012345-a1b2c3'
+
+UNION ALL
+
+SELECT 
+    'message',
+    message_id::text,
+    created_at,
+    trace_id
+FROM message
+WHERE trace_id = 'hci-1708012345-a1b2c3'
+
+ORDER BY created_at;
+```
+
+### 4.4 查询活跃会话
+
+```sql
+-- 查询当前活跃的WebSocket会话
+SELECT 
+    s.session_id,
+    s.client_id,
+    s.case_id,
+    s.websocket_id,
+    s.last_activity_at,
+    s.expires_at,
+    c.title as case_title,
+    c.status as case_status
+FROM session s
+LEFT JOIN "case" c ON s.case_id = c.case_id
+WHERE s.status = 'active' 
+  AND s.expires_at > CURRENT_TIMESTAMP
+ORDER BY s.last_activity_at DESC;
+```
+
+---
+
+## 5. 数据迁移脚本
+
+### 5.1 初始化脚本
+
+```sql
+-- init_database.sql
+-- 创建数据库和用户
+
+CREATE DATABASE hci_troubleshoot;
+CREATE USER hci_admin WITH ENCRYPTED PASSWORD 'your_secure_password';
+GRANT ALL PRIVILEGES ON DATABASE hci_troubleshoot TO hci_admin;
+
+\c hci_troubleshoot
+
+-- 启用必要的扩展
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";  -- 用于文本相似度搜索
+
+-- 设置时区
+SET timezone = 'UTC';
+```
+
+### 5.2 清理脚本
+
+```sql
+-- cleanup.sql
+-- 清理过期数据
+
+-- 删除过期的会话记录
+DELETE FROM session 
+WHERE status = 'expired' 
+  AND expires_at < CURRENT_TIMESTAMP - INTERVAL '7 days';
+
+-- 删除超过90天的已关闭工单（可选）
+-- DELETE FROM "case" 
+-- WHERE status = 'closed' 
+--   AND closed_at < CURRENT_TIMESTAMP - INTERVAL '90 days';
+```
+
+---
+
+## 6. 性能优化
+
+### 6.1 索引策略
+
+```sql
+-- 复合索引示例
+CREATE INDEX idx_case_client_status ON "case"(client_id, status);
+CREATE INDEX idx_message_case_created ON message(case_id, created_at DESC);
+CREATE INDEX idx_conversation_case_started ON conversation(case_id, started_at DESC);
+```
+
+### 6.2 分区策略 (未来优化)
+
+```sql
+-- 按月份对message表进行分区（当数据量大时）
+-- CREATE TABLE message_202602 PARTITION OF message
+-- FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
+```
+
+### 6.3 定期维护
+
+```sql
+-- 定期更新统计信息
+ANALYZE "user";
+ANALYZE "case";
+ANALYZE conversation;
+ANALYZE message;
+ANALYZE environment;
+ANALYZE session;
+
+-- 定期清理碎片
+VACUUM ANALYZE;
+```
+
+---
+
+## 7. 备份策略
+
+### 7.1 全量备份
+
+```bash
+# 每日全量备份
+pg_dump -h localhost -U hci_admin -d hci_troubleshoot \
+    -F c -f /backup/hci_troubleshoot_$(date +%Y%m%d).dump
+```
+
+### 7.2 增量备份
+
+```bash
+# WAL归档 (postgresql.conf)
+wal_level = replica
+archive_mode = on
+archive_command = 'cp %p /backup/wal/%f'
+```
+
+---
+
+## 8. 监控SQL
+
+### 8.1 慢查询监控
+
+```sql
+-- 查看慢查询
+SELECT 
+    query,
+    calls,
+    total_exec_time,
+    mean_exec_time,
+    max_exec_time
+FROM pg_stat_statements
+WHERE mean_exec_time > 100  -- 超过100ms
+ORDER BY mean_exec_time DESC
+LIMIT 20;
+```
+
+### 8.2 表大小监控
+
+```sql
+-- 查看各表大小
+SELECT 
+    schemaname,
+    tablename,
+    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+FROM pg_tables
+WHERE schemaname = 'public'
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+```
+
+---
+
+## 附录
+
+### A. ER图
+
+```
+┌──────────────┐         ┌──────────────┐         ┌──────────────────┐
+│    user      │────────►│    case      │────────►│  conversation    │
+│              │ 1     n │              │ 1     n │                  │
+│ • user_id    │         │ • case_id    │         │ • conversation_id│
+│ • client_id  │         │ • user_id    │         │ • case_id        │
+│ • user_type  │         │ • title      │         │ • pod_id         │
+│ • trace_id   │         │ • status     │         │ • trace_id       │
+└──────────────┘         │ • trace_id   │         └──────────────────┘
+                         └──────────────┘                  │
+                                │                          │ 1
+                                │ 1                        │
+                                │                          │ n
+                                ▼ n                        ▼
+                         ┌──────────────┐         ┌──────────────┐
+                         │ environment  │         │   message    │
+                         │              │         │              │
+                         │ • env_id     │         │ • message_id │
+                         │ • case_id    │         │ • conv_id    │
+                         │ • env_type   │         │ • role       │
+                         │ • env_data   │         │ • content    │
+                         │ • trace_id   │         │ • trace_id   │
+                         └──────────────┘         └──────────────┘
+
+┌──────────────┐
+│   session    │
+│              │
+│ • session_id │
+│ • client_id  │
+│ • user_id    │
+│ • case_id    │
+│ • ws_id      │
+│ • trace_id   │
+└──────────────┘
+```
+
+### B. 数据字典
+
+完整的数据字典请参考各表的 COMMENT 注释。
+
+---
+
+*文档版本: 1.0 | 日期: 2026-02-15*

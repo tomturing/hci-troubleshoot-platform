@@ -1,0 +1,892 @@
+# HCI 智能排障平台 - 开发指南
+
+## 文档信息
+- **版本**: 1.0
+- **作者**: Claude
+- **日期**: 2026-02-15
+
+---
+
+## 1. 开发环境搭建
+
+### 1.1 系统要求
+
+- **操作系统**: Linux, macOS, Windows (with WSL2)
+- **Python**: 3.12+
+- **Node.js**: 18+
+- **Docker**: 24+
+- **Docker Compose**: 2.20+
+- **PostgreSQL**: 15
+- **Redis**: 7
+
+### 1.2 工具安装
+
+#### UV (Python 包管理器)
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+#### PNPM (Node 包管理器)
+```bash
+curl -fsSL https://get.pnpm.io/install.sh | sh
+```
+
+#### Docker & Docker Compose
+```bash
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install docker.io docker-compose-plugin
+
+# macOS
+brew install docker docker-compose
+```
+
+### 1.3 克隆项目
+
+```bash
+git clone <repository-url>
+cd hci-troubleshoot-platform
+```
+
+### 1.4 环境变量配置
+
+```bash
+# 创建环境变量文件
+cp .env.example .env
+
+# 编辑环境变量
+vim .env
+```
+
+**.env 文件示例**:
+```env
+# Database
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=hci_troubleshoot
+POSTGRES_USER=hci_admin
+POSTGRES_PASSWORD=your_secure_password
+
+# Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+
+# Services
+API_GATEWAY_PORT=8000
+CASE_SERVICE_PORT=8001
+CONVERSATION_SERVICE_PORT=8002
+SCHEDULER_SERVICE_PORT=8003
+
+# OpenClaw
+OPENCLAW_POD_IMAGE=openclaw:latest
+OPENCLAW_POD_PORT=8080
+
+# Zhipu AI
+ZHIPU_API_KEY=your_zhipu_api_key
+ZHIPU_MODEL=glm-4
+
+# Kubernetes (生产环境)
+K8S_NAMESPACE=hci-troubleshoot
+K8S_CONTEXT=your-k8s-context
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+
+# CORS
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+```
+
+---
+
+## 2. 数据库设置
+
+### 2.1 使用 Docker 启动数据库
+
+```bash
+# PostgreSQL
+docker run -d --name hci-postgres \
+  -e POSTGRES_DB=hci_troubleshoot \
+  -e POSTGRES_USER=hci_admin \
+  -e POSTGRES_PASSWORD=your_password \
+  -p 5432:5432 \
+  -v hci_postgres_data:/var/lib/postgresql/data \
+  postgres:15
+
+# Redis
+docker run -d --name hci-redis \
+  -p 6379:6379 \
+  -v hci_redis_data:/data \
+  redis:7 redis-server --appendonly yes
+```
+
+### 2.2 初始化数据库
+
+```bash
+# 连接到 PostgreSQL
+psql -h localhost -U hci_admin -d postgres
+
+# 创建数据库 (如果不存在)
+CREATE DATABASE hci_troubleshoot;
+
+# 退出并运行初始化脚本
+\q
+
+# 执行初始化脚本
+psql -h localhost -U hci_admin -d hci_troubleshoot -f database/init_schema.sql
+```
+
+### 2.3 验证数据库
+
+```bash
+# 连接数据库
+psql -h localhost -U hci_admin -d hci_troubleshoot
+
+# 查看表
+\dt
+
+# 查看用户
+SELECT * FROM "user";
+
+# 退出
+\q
+```
+
+---
+
+## 3. 后端开发
+
+### 3.1 项目结构
+
+```
+backend/
+├── api-gateway/           # API 网关
+│   ├── app/
+│   │   ├── main.py       # 主入口
+│   │   ├── config.py     # 配置
+│   │   ├── routers/      # 路由
+│   │   ├── websocket/    # WebSocket 处理
+│   │   └── middleware/   # 中间件
+│   ├── tests/
+│   ├── requirements.txt
+│   └── README.md
+├── case-service/          # 工单服务
+├── conversation-service/  # 对话服务
+├── scheduler-service/     # 调度服务
+└── shared/                # 共享代码
+    ├── models/           # 数据模型
+    ├── utils/            # 工具函数
+    └── database/         # 数据库连接
+```
+
+### 3.2 启动单个服务
+
+#### API Gateway
+
+```bash
+cd backend/api-gateway
+
+# 创建虚拟环境
+uv venv
+
+# 激活虚拟环境
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+# 安装依赖
+uv pip install -r requirements.txt
+
+# 启动服务 (开发模式)
+uvicorn app.main:app --reload --port 8000 --host 0.0.0.0
+
+# 或使用脚本
+python -m app.main
+```
+
+#### Case Service
+
+```bash
+cd backend/case-service
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8001
+```
+
+#### Conversation Service
+
+```bash
+cd backend/conversation-service
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8002
+```
+
+#### Scheduler Service
+
+```bash
+cd backend/scheduler-service
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8003
+```
+
+### 3.3 代码规范
+
+#### Python 代码风格
+
+使用 **Black** 进行格式化:
+```bash
+pip install black
+black backend/
+```
+
+使用 **isort** 整理导入:
+```bash
+pip install isort
+isort backend/
+```
+
+使用 **flake8** 进行代码检查:
+```bash
+pip install flake8
+flake8 backend/ --max-line-length=100
+```
+
+#### 类型注解
+
+所有函数都应使用类型注解:
+```python
+from typing import List, Optional
+from pydantic import BaseModel
+
+async def get_case(
+    case_id: str,
+    client_id: str,
+    db: Session
+) -> Optional[Case]:
+    """获取工单详情"""
+    pass
+```
+
+### 3.4 日志规范
+
+使用结构化日志:
+```python
+import logging
+import json
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+# 结构化日志
+log_data = {
+    "timestamp": datetime.utcnow().isoformat(),
+    "level": "INFO",
+    "trace_id": "hci-1708012345-a1b2c3",
+    "service": "case-service",
+    "event": "case_created",
+    "case_id": "Q20260215001",
+    "client_id": "client-abc123",
+    "duration_ms": 125
+}
+
+logger.info(json.dumps(log_data))
+```
+
+### 3.5 测试
+
+#### 单元测试
+
+```bash
+cd backend/api-gateway
+
+# 运行所有测试
+pytest
+
+# 运行特定测试
+pytest tests/test_case_api.py
+
+# 生成覆盖率报告
+pytest --cov=app --cov-report=html
+```
+
+#### 集成测试
+
+```bash
+cd tests/integration
+pytest test_case_workflow.py
+```
+
+---
+
+## 4. 前端开发
+
+### 4.1 项目结构
+
+```
+frontend/
+├── src/
+│   ├── components/        # 组件
+│   │   ├── CaseList.vue
+│   │   ├── ChatWindow.vue
+│   │   └── CommandDisplay.vue
+│   ├── views/             # 页面
+│   │   ├── Home.vue
+│   │   ├── CaseDetail.vue
+│   │   └── Chat.vue
+│   ├── stores/            # 状态管理 (Pinia)
+│   │   ├── case.ts
+│   │   ├── chat.ts
+│   │   └── websocket.ts
+│   ├── api/               # API 调用
+│   │   ├── case.ts
+│   │   ├── message.ts
+│   │   └── websocket.ts
+│   ├── types/             # 类型定义
+│   │   ├── case.ts
+│   │   ├── message.ts
+│   │   └── api.ts
+│   ├── router/            # 路由
+│   │   └── index.ts
+│   ├── App.vue
+│   └── main.ts
+├── public/
+├── package.json
+├── tsconfig.json
+├── vite.config.ts
+└── README.md
+```
+
+### 4.2 启动开发服务器
+
+```bash
+cd frontend
+
+# 安装依赖
+pnpm install
+
+# 启动开发服务器
+pnpm dev
+
+# 构建生产版本
+pnpm build
+
+# 预览生产构建
+pnpm preview
+```
+
+### 4.3 代码规范
+
+#### 使用 ESLint 和 Prettier
+
+```bash
+# 格式化代码
+pnpm format
+
+# 检查代码
+pnpm lint
+
+# 自动修复
+pnpm lint:fix
+```
+
+#### 组件规范
+
+```vue
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import type { Case } from '@/types/case'
+
+// Props
+interface Props {
+  caseId: string
+  clientId: string
+}
+
+const props = defineProps<Props>()
+
+// State
+const caseData = ref<Case | null>(null)
+const loading = ref(false)
+
+// Methods
+const loadCase = async () => {
+  loading.value = true
+  try {
+    // API call
+  } catch (error) {
+    console.error('Failed to load case:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  loadCase()
+})
+</script>
+
+<template>
+  <div class="case-detail">
+    <div v-if="loading">Loading...</div>
+    <div v-else-if="caseData">
+      <!-- Content -->
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.case-detail {
+  /* Styles */
+}
+</style>
+```
+
+### 4.4 WebSocket 集成
+
+```typescript
+// src/api/websocket.ts
+export class WebSocketClient {
+  private ws: WebSocket | null = null
+  private clientId: string
+  private caseId: string
+
+  constructor(clientId: string, caseId: string) {
+    this.clientId = clientId
+    this.caseId = caseId
+  }
+
+  connect() {
+    const wsUrl = `ws://localhost:8000/ws/${this.clientId}?case_id=${this.caseId}`
+    this.ws = new WebSocket(wsUrl)
+
+    this.ws.onopen = () => {
+      console.log('WebSocket connected')
+    }
+
+    this.ws.onmessage = (event) => {
+      const data = JSON.parse(event.data)
+      this.handleMessage(data)
+    }
+
+    this.ws.onerror = (error) => {
+      console.error('WebSocket error:', error)
+    }
+
+    this.ws.onclose = () => {
+      console.log('WebSocket closed')
+    }
+  }
+
+  sendMessage(content: string) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'user_message',
+        case_id: this.caseId,
+        content
+      }))
+    }
+  }
+
+  private handleMessage(data: any) {
+    // Handle different message types
+    switch (data.type) {
+      case 'system':
+        console.log('System message:', data)
+        break
+      case 'assistant_message':
+        console.log('AI response:', data.content)
+        break
+      case 'command':
+        console.log('Command:', data.command)
+        break
+    }
+  }
+
+  disconnect() {
+    if (this.ws) {
+      this.ws.close()
+      this.ws = null
+    }
+  }
+}
+```
+
+---
+
+## 5. Docker Compose 开发
+
+### 5.1 启动完整环境
+
+```bash
+# 启动所有服务
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 查看特定服务日志
+docker-compose logs -f api-gateway
+
+# 停止服务
+docker-compose down
+
+# 停止并删除数据卷
+docker-compose down -v
+```
+
+### 5.2 重新构建服务
+
+```bash
+# 重新构建所有服务
+docker-compose build
+
+# 重新构建特定服务
+docker-compose build api-gateway
+
+# 重新构建并启动
+docker-compose up -d --build
+```
+
+### 5.3 进入容器
+
+```bash
+# 进入 API Gateway 容器
+docker-compose exec api-gateway bash
+
+# 进入数据库容器
+docker-compose exec postgres psql -U hci_admin -d hci_troubleshoot
+```
+
+---
+
+## 6. Kubernetes 开发
+
+### 6.1 本地 K8s 环境 (Minikube)
+
+```bash
+# 安装 Minikube
+curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+sudo install minikube-linux-amd64 /usr/local/bin/minikube
+
+# 启动 Minikube
+minikube start --cpus=4 --memory=8192
+
+# 启用插件
+minikube addons enable ingress
+minikube addons enable metrics-server
+```
+
+### 6.2 部署到 K8s
+
+```bash
+# 创建命名空间
+kubectl create namespace hci-troubleshoot
+
+# 应用配置
+kubectl apply -f deploy/k8s/configmap.yaml
+kubectl apply -f deploy/k8s/secret.yaml
+
+# 部署数据库
+kubectl apply -f deploy/k8s/postgres.yaml
+kubectl apply -f deploy/k8s/redis.yaml
+
+# 等待数据库就绪
+kubectl wait --for=condition=ready pod -l app=postgres -n hci-troubleshoot --timeout=300s
+
+# 部署微服务
+kubectl apply -f deploy/k8s/api-gateway.yaml
+kubectl apply -f deploy/k8s/case-service.yaml
+kubectl apply -f deploy/k8s/conversation-service.yaml
+kubectl apply -f deploy/k8s/scheduler-service.yaml
+
+# 查看部署状态
+kubectl get pods -n hci-troubleshoot
+
+# 查看服务
+kubectl get svc -n hci-troubleshoot
+```
+
+### 6.3 访问服务
+
+```bash
+# Port Forward 到本地
+kubectl port-forward -n hci-troubleshoot svc/api-gateway 8000:8000
+
+# 或使用 Minikube
+minikube service api-gateway -n hci-troubleshoot
+```
+
+### 6.4 查看日志
+
+```bash
+# 查看 Pod 日志
+kubectl logs -f deployment/api-gateway -n hci-troubleshoot
+
+# 查看多个副本的日志
+kubectl logs -f -l app=api-gateway -n hci-troubleshoot
+```
+
+---
+
+## 7. 调试技巧
+
+### 7.1 后端调试
+
+#### 使用 VS Code
+
+**.vscode/launch.json**:
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: FastAPI",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "app.main:app",
+        "--reload",
+        "--port",
+        "8000"
+      ],
+      "jinja": true,
+      "cwd": "${workspaceFolder}/backend/api-gateway"
+    }
+  ]
+}
+```
+
+#### 使用 PyCharm
+
+1. 右键点击 `app/main.py`
+2. 选择 "Run 'main'" 或 "Debug 'main'"
+
+### 7.2 前端调试
+
+#### 使用 Vue DevTools
+
+安装 [Vue DevTools](https://devtools.vuejs.org/) 浏览器扩展
+
+#### 使用 VS Code
+
+**.vscode/launch.json**:
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "Launch Chrome",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/frontend/src"
+    }
+  ]
+}
+```
+
+### 7.3 数据库调试
+
+```bash
+# 查看慢查询
+psql -h localhost -U hci_admin -d hci_troubleshoot -c "
+SELECT query, calls, total_exec_time, mean_exec_time
+FROM pg_stat_statements
+WHERE mean_exec_time > 100
+ORDER BY mean_exec_time DESC
+LIMIT 10;"
+
+# 查看表大小
+psql -h localhost -U hci_admin -d hci_troubleshoot -c "
+SELECT
+    tablename,
+    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+FROM pg_tables
+WHERE schemaname = 'public'
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;"
+```
+
+---
+
+## 8. 性能优化
+
+### 8.1 数据库优化
+
+```sql
+-- 分析表统计信息
+ANALYZE "user";
+ANALYZE "case";
+ANALYZE message;
+
+-- 清理碎片
+VACUUM ANALYZE;
+
+-- 查看索引使用情况
+SELECT
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan,
+    idx_tup_read,
+    idx_tup_fetch
+FROM pg_stat_user_indexes
+ORDER BY idx_scan DESC;
+```
+
+### 8.2 Redis 优化
+
+```bash
+# 查看内存使用
+redis-cli INFO memory
+
+# 查看连接数
+redis-cli INFO clients
+
+# 清理过期键
+redis-cli --scan --pattern "session:*" | xargs redis-cli DEL
+```
+
+### 8.3 应用优化
+
+#### 使用连接池
+
+```python
+# database.py
+from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool
+
+engine = create_engine(
+    DATABASE_URL,
+    poolclass=QueuePool,
+    pool_size=20,
+    max_overflow=0,
+    pool_pre_ping=True
+)
+```
+
+#### 使用缓存
+
+```python
+import redis
+from functools import wraps
+
+redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+
+def cache(ttl=300):
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            cache_key = f"{func.__name__}:{args}:{kwargs}"
+            cached = redis_client.get(cache_key)
+            if cached:
+                return json.loads(cached)
+            
+            result = await func(*args, **kwargs)
+            redis_client.setex(cache_key, ttl, json.dumps(result))
+            return result
+        return wrapper
+    return decorator
+```
+
+---
+
+## 9. 常见问题
+
+### 9.1 数据库连接失败
+
+**问题**: `connection refused`
+
+**解决**:
+```bash
+# 检查 PostgreSQL 是否运行
+docker ps | grep postgres
+
+# 检查端口
+netstat -an | grep 5432
+
+# 重启 PostgreSQL
+docker restart hci-postgres
+```
+
+### 9.2 WebSocket 连接失败
+
+**问题**: WebSocket 无法建立连接
+
+**解决**:
+1. 检查 API Gateway 是否运行
+2. 检查 CORS 配置
+3. 检查防火墙设置
+4. 使用浏览器开发者工具查看 Network 选项卡
+
+### 9.3 前端无法访问后端
+
+**问题**: `CORS policy` 错误
+
+**解决**:
+```python
+# api-gateway/app/main.py
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+---
+
+## 10. 发布流程
+
+### 10.1 版本管理
+
+使用语义化版本:
+- MAJOR.MINOR.PATCH
+- 例如: 1.0.0, 1.1.0, 1.1.1
+
+### 10.2 发布检查清单
+
+- [ ] 所有测试通过
+- [ ] 代码已格式化
+- [ ] 文档已更新
+- [ ] 版本号已更新
+- [ ] CHANGELOG 已更新
+- [ ] 数据库迁移脚本已测试
+
+### 10.3 构建 Docker 镜像
+
+```bash
+# API Gateway
+docker build -t hci-troubleshoot/api-gateway:1.0.0 backend/api-gateway/
+docker push hci-troubleshoot/api-gateway:1.0.0
+
+# Case Service
+docker build -t hci-troubleshoot/case-service:1.0.0 backend/case-service/
+docker push hci-troubleshoot/case-service:1.0.0
+```
+
+### 10.4 部署到生产环境
+
+```bash
+# 更新 K8s 部署
+kubectl set image deployment/api-gateway \
+  api-gateway=hci-troubleshoot/api-gateway:1.0.0 \
+  -n hci-troubleshoot
+
+# 检查部署状态
+kubectl rollout status deployment/api-gateway -n hci-troubleshoot
+
+# 如果有问题，回滚
+kubectl rollout undo deployment/api-gateway -n hci-troubleshoot
+```
+
+---
+
+*文档版本: 1.0 | 日期: 2026-02-15*

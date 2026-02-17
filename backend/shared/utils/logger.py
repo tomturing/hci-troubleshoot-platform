@@ -1,0 +1,225 @@
+"""
+Structured Logging Utilities
+结构化日志工具
+"""
+import json
+import logging
+import sys
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from .trace_id import trace_context
+
+
+class StructuredLogger:
+    """结构化日志记录器"""
+    
+    def __init__(self, service_name: str, log_level: str = "INFO"):
+        self.service_name = service_name
+        self.logger = logging.getLogger(service_name)
+        self.logger.setLevel(getattr(logging, log_level.upper()))
+        
+        # 配置输出到 stdout
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        self.logger.addHandler(handler)
+    
+    def _format_log(
+        self,
+        level: str,
+        event: str,
+        message: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """
+        格式化日志为 JSON
+        
+        Args:
+            level: 日志级别
+            event: 事件名称
+            message: 日志消息
+            trace_id: TraceID
+            **kwargs: 额外的日志字段
+            
+        Returns:
+            str: JSON 格式的日志
+        """
+        log_data = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "level": level,
+            "service": self.service_name,
+            "event": event,
+        }
+        
+        if message:
+            log_data["message"] = message
+        
+        # 添加 trace_id
+        if trace_id:
+            log_data["trace_id"] = trace_id
+        elif trace_context.get_trace_id():
+            log_data["trace_id"] = trace_context.get_trace_id()
+        
+        # 添加额外字段
+        log_data.update(kwargs)
+        
+        return json.dumps(log_data, ensure_ascii=False)
+    
+    def info(
+        self,
+        event: str,
+        message: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        **kwargs
+    ):
+        """记录 INFO 级别日志"""
+        log_str = self._format_log("INFO", event, message, trace_id, **kwargs)
+        self.logger.info(log_str)
+    
+    def warning(
+        self,
+        event: str,
+        message: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        **kwargs
+    ):
+        """记录 WARNING 级别日志"""
+        log_str = self._format_log("WARNING", event, message, trace_id, **kwargs)
+        self.logger.warning(log_str)
+    
+    def error(
+        self,
+        event: str,
+        message: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        error: Optional[Exception] = None,
+        **kwargs
+    ):
+        """记录 ERROR 级别日志"""
+        if error:
+            kwargs["error_type"] = type(error).__name__
+            kwargs["error_message"] = str(error)
+        
+        log_str = self._format_log("ERROR", event, message, trace_id, **kwargs)
+        self.logger.error(log_str)
+    
+    def debug(
+        self,
+        event: str,
+        message: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        **kwargs
+    ):
+        """记录 DEBUG 级别日志"""
+        log_str = self._format_log("DEBUG", event, message, trace_id, **kwargs)
+        self.logger.debug(log_str)
+
+
+def get_logger(service_name: str, log_level: str = "INFO") -> StructuredLogger:
+    """
+    获取结构化日志记录器
+    
+    Args:
+        service_name: 服务名称
+        log_level: 日志级别
+        
+    Returns:
+        StructuredLogger: 日志记录器实例
+    """
+    return StructuredLogger(service_name, log_level)
+
+
+# 日志装饰器
+def log_function_call(logger: StructuredLogger):
+    """
+    函数调用日志装饰器
+    
+    Usage:
+        @log_function_call(logger)
+        async def my_function(arg1, arg2):
+            pass
+    """
+    def decorator(func):
+        async def async_wrapper(*args, **kwargs):
+            func_name = func.__name__
+            start_time = datetime.utcnow()
+            
+            logger.debug(
+                event="function_start",
+                message=f"Starting {func_name}",
+                function=func_name,
+                args_count=len(args),
+                kwargs_count=len(kwargs)
+            )
+            
+            try:
+                result = await func(*args, **kwargs)
+                duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                
+                logger.debug(
+                    event="function_complete",
+                    message=f"Completed {func_name}",
+                    function=func_name,
+                    duration_ms=duration_ms,
+                    status="success"
+                )
+                
+                return result
+            except Exception as e:
+                duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                
+                logger.error(
+                    event="function_error",
+                    message=f"Error in {func_name}",
+                    function=func_name,
+                    duration_ms=duration_ms,
+                    error=e,
+                    status="error"
+                )
+                raise
+        
+        def sync_wrapper(*args, **kwargs):
+            func_name = func.__name__
+            start_time = datetime.utcnow()
+            
+            logger.debug(
+                event="function_start",
+                message=f"Starting {func_name}",
+                function=func_name
+            )
+            
+            try:
+                result = func(*args, **kwargs)
+                duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                
+                logger.debug(
+                    event="function_complete",
+                    message=f"Completed {func_name}",
+                    function=func_name,
+                    duration_ms=duration_ms,
+                    status="success"
+                )
+                
+                return result
+            except Exception as e:
+                duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                
+                logger.error(
+                    event="function_error",
+                    message=f"Error in {func_name}",
+                    function=func_name,
+                    duration_ms=duration_ms,
+                    error=e,
+                    status="error"
+                )
+                raise
+        
+        # 检查是否是异步函数
+        import inspect
+        if inspect.iscoroutinefunction(func):
+            return async_wrapper
+        else:
+            return sync_wrapper
+    
+    return decorator

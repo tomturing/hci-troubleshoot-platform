@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: hci-postgres
+    environment:
+      POSTGRES_USER: hci_user
+      POSTGRES_PASSWORD: hci_password
+      POSTGRES_DB: hci_troubleshoot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../database/init_schema.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - hci-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: hci-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - hci-network
+
+  api-gateway:
+    build:
+      context: ../../backend
+      dockerfile: api-gateway/Dockerfile
+    volumes:
+      - ../../backend/api-gateway:/app
+      - ../../backend/shared:/app/shared
+    container_name: hci-api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CASE_SERVICE_URL=http://case-service:8001
+      - CONVERSATION_SERVICE_URL=http://conversation-service:8002
+    depends_on:
+      - redis
+    networks:
+      - hci-network
+
+  case-service:
+    build:
+      context: ../../backend
+      dockerfile: case-service/Dockerfile
+    volumes:
+      - ../../backend/case-service:/app
+      - ../../backend/shared:/app/shared
+    container_name: hci-case-service
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://hci_user:hci_password@postgres:5432/hci_troubleshoot
+    depends_on:
+      - postgres
+    networks:
+      - hci-network
+
+  conversation-service:
+    build:
+      context: ../../backend
+      dockerfile: conversation-service/Dockerfile
+    volumes:
+      - ../../backend/conversation-service:/app
+      - ../../backend/shared:/app/shared
+    container_name: hci-conversation-service
+    ports:
+      - "8002:8002"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://hci_user:hci_password@postgres:5432/hci_troubleshoot
+      - OPENCLAW_BASE_URL=http://openclaw:8080
+    depends_on:
+      - postgres
+    networks:
+      - hci-network
+
+  scheduler-service:
+    build:
+      context: ../../backend
+      dockerfile: scheduler-service/Dockerfile
+    volumes:
+      - ../../backend/scheduler-service:/app
+      - ../../backend/shared:/app/shared
+      - /var/run/docker.sock:/var/run/docker.sock
+    container_name: hci-scheduler-service
+    ports:
+      - "8003:8003"
+    networks:
+      - hci-network
+
+volumes:
+  postgres_data:
+
+networks:
+  hci-network:
+    driver: bridge

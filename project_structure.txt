@@ -1,0 +1,160 @@
+hci-troubleshoot-platform/
+├── backend/
+│   ├── api-gateway/
+│   │   ├── app/
+│   │   │   ├── __init__.py
+│   │   │   ├── main.py              # FastAPI应用入口
+│   │   │   ├── config.py            # 配置管理
+│   │   │   ├── dependencies.py      # 依赖注入
+│   │   │   ├── middleware/
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── trace_id.py     # TraceID中间件
+│   │   │   │   └── auth.py         # 认证中间件
+│   │   │   ├── routes/
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── websocket.py    # WebSocket路由
+│   │   │   │   ├── cases.py        # 工单REST API
+│   │   │   │   └── health.py       # 健康检查
+│   │   │   └── services/
+│   │   │       ├── __init__.py
+│   │   │       ├── session.py      # Session管理
+│   │   │       └── router.py       # 请求路由
+│   │   ├── requirements.txt
+│   │   └── Dockerfile
+│   ├── case-service/
+│   │   ├── app/
+│   │   │   ├── __init__.py
+│   │   │   ├── main.py
+│   │   │   ├── config.py
+│   │   │   ├── models/
+│   │   │   │   ├── __init__.py
+│   │   │   │   └── case.py         # Case模型
+│   │   │   ├── routes/
+│   │   │   │   ├── __init__.py
+│   │   │   │   └── cases.py
+│   │   │   ├── services/
+│   │   │   │   ├── __init__.py
+│   │   │   │   └── case_service.py
+│   │   │   └── repositories/
+│   │   │       ├── __init__.py
+│   │   │       └── case_repo.py
+│   │   ├── requirements.txt
+│   │   └── Dockerfile
+│   ├── conversation-service/
+│   │   ├── app/
+│   │   │   ├── __init__.py
+│   │   │   ├── main.py
+│   │   │   ├── config.py
+│   │   │   ├── models/
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── conversation.py
+│   │   │   │   └── message.py
+│   │   │   ├── routes/
+│   │   │   │   ├── __init__.py
+│   │   │   │   └── conversations.py
+│   │   │   ├── services/
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── conversation_service.py
+│   │   │   │   └── openclaw_client.py  # OpenClaw API客户端
+│   │   │   └── repositories/
+│   │   │       ├── __init__.py
+│   │   │       ├── conversation_repo.py
+│   │   │       └── message_repo.py
+│   │   ├── requirements.txt
+│   │   └── Dockerfile
+│   ├── scheduler-service/
+│   │   ├── app/
+│   │   │   ├── __init__.py
+│   │   │   ├── main.py
+│   │   │   ├── config.py
+│   │   │   ├── models/
+│   │   │   │   ├── __init__.py
+│   │   │   │   └── pod.py
+│   │   │   ├── routes/
+│   │   │   │   ├── __init__.py
+│   │   │   │   └── pods.py
+│   │   │   ├── services/
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── scheduler.py
+│   │   │   │   └── k8s_client.py    # K8s API客户端
+│   │   │   └── repositories/
+│   │   │       ├── __init__.py
+│   │   │       └── pod_repo.py
+│   │   ├── requirements.txt
+│   │   └── Dockerfile
+│   └── shared/
+│       ├── __init__.py
+│       ├── models/
+│       │   ├── __init__.py
+│       │   ├── base.py             # 基础模型
+│       │   └── schemas.py          # Pydantic schemas
+│       ├── database/
+│       │   ├── __init__.py
+│       │   ├── postgres.py         # PostgreSQL连接
+│       │   └── redis.py            # Redis连接
+│       └── utils/
+│           ├── __init__.py
+│           ├── logger.py           # 结构化日志
+│           └── trace_id.py         # TraceID工具
+├── frontend/
+│   ├── src/
+│   │   ├── main.ts
+│   │   ├── App.vue
+│   │   ├── router/
+│   │   │   └── index.ts
+│   │   ├── stores/
+│   │   │   ├── case.ts
+│   │   │   └── websocket.ts
+│   │   ├── views/
+│   │   │   ├── Home.vue
+│   │   │   ├── CaseList.vue
+│   │   │   └── Chat.vue
+│   │   ├── components/
+│   │   │   ├── CaseCard.vue
+│   │   │   ├── MessageList.vue
+│   │   │   └── CommandDisplay.vue
+│   │   ├── services/
+│   │   │   ├── api.ts
+│   │   │   └── websocket.ts
+│   │   └── types/
+│   │       └── index.ts
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── vite.config.ts
+│   └── Dockerfile
+├── database/
+│   ├── init_schema.sql             # 数据库初始化
+│   ├── migrations/
+│   │   └── 001_initial.sql
+│   └── seeds/
+│       └── test_data.sql
+├── deploy/
+│   ├── docker/
+│   │   └── docker-compose.yml      # 本地开发环境
+│   ├── k8s/
+│   │   ├── namespace.yaml
+│   │   ├── api-gateway.yaml
+│   │   ├── case-service.yaml
+│   │   ├── conversation-service.yaml
+│   │   ├── scheduler-service.yaml
+│   │   ├── openclaw.yaml
+│   │   ├── postgres.yaml
+│   │   ├── redis.yaml
+│   │   └── ingress.yaml
+│   └── scripts/
+│       ├── build.sh
+│       ├── deploy-dev.sh
+│       └── deploy-prod.sh
+├── docs/
+│   ├── 01_architecture_design.md
+│   ├── 02_database_design.md
+│   ├── 03_api_design.md
+│   ├── 04_development_guide.md
+│   └── 05_deployment_guide.md
+├── tests/
+│   ├── integration/
+│   └── e2e/
+├── .env.example
+├── .gitignore
+├── README.md
+└── Makefile

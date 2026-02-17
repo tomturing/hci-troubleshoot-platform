@@ -1,0 +1,610 @@
+# HCI智能排障平台 - 测试指南
+
+## 📋 目录
+
+1. [测试环境准备](#测试环境准备)
+2. [单元测试](#单元测试)
+3. [集成测试](#集成测试)
+4. [API测试](#api测试)
+5. [WebSocket测试](#websocket测试)
+6. [性能测试](#性能测试)
+
+---
+
+## 测试环境准备
+
+### 1. 安装测试依赖
+
+```bash
+# 安装pytest和相关插件
+pip install pytest pytest-asyncio pytest-cov httpx
+
+# 或者安装完整的测试依赖
+pip install -r tests/requirements.txt
+```
+
+### 2. 启动测试环境
+
+```bash
+# 启动Docker Compose（包含PostgreSQL和Redis）
+cd deploy/docker
+docker-compose up -d postgres redis
+
+# 等待服务就绪
+sleep 5
+```
+
+### 3. 配置测试环境变量
+
+```bash
+# 创建测试配置
+cat > .env.test << EOF
+DATABASE_URL=postgresql+asyncpg://hci_user:hci_password@localhost:5432/hci_troubleshoot_test
+REDIS_URL=redis://localhost:6379/1
+LOG_LEVEL=DEBUG
+EOF
+```
+
+---
+
+## 单元测试
+
+### 运行所有单元测试
+
+```bash
+# 运行所有测试
+pytest tests/unit/ -v
+
+# 运行测试并生成覆盖率报告
+pytest tests/unit/ --cov=backend --cov-report=html
+
+# 运行特定测试文件
+pytest tests/unit/test_trace_id.py -v
+```
+
+### 测试覆盖率目标
+
+- **Shared模块**: > 90%
+- **Case Service**: > 85%
+- **API Gateway**: > 80%
+- **整体覆盖率**: > 80%
+
+---
+
+## 集成测试
+
+### 1. Case Service 完整测试
+
+```bash
+# 启动Case Service
+cd backend/case-service
+uvicorn app.main:app --reload --port 8001 &
+CASE_PID=$!
+
+# 等待服务启动
+sleep 3
+
+# 运行集成测试
+cd ../../
+pytest tests/integration/test_case_service_integration.py -v
+
+# 停止服务
+kill $CASE_PID
+```
+
+### 2. API Gateway 测试
+
+```bash
+# 启动必要服务
+docker-compose up -d redis
+
+# 启动API Gateway
+cd backend/api-gateway
+uvicorn app.main:app --reload --port 8000 &
+GATEWAY_PID=$!
+
+sleep 3
+
+# 运行测试
+cd ../../
+pytest tests/integration/test_api_gateway_integration.py -v
+
+kill $GATEWAY_PID
+```
+
+---
+
+## API测试
+
+### 1. 使用curl测试
+
+#### Case Service API测试
+
+```bash
+# 1. 创建工单
+curl -X POST http://localhost:8001/api/cases   -H "Content-Type: application/json"   -H "X-Trace-ID: hci-test-001"   -d '{
+    "client_id": "test-client-001",
+    "title": "测试工单",
+    "description": "这是一个测试工单"
+  }' | jq
+
+# 预期响应示例:
+# {
+#   "case_id": "Q20260215001",
+#   "client_id": "test-client-001",
+#   "status": "created",
+#   "title": "测试工单",
+#   "description": "这是一个测试工单",
+#   "created_at": "2026-02-15T10:30:00Z",
+#   "updated_at": "2026-02-15T10:30:00Z",
+#   "closed_at": null,
+#   "trace_id": "hci-test-001"
+# }
+
+# 2. 查询工单详情
+CASE_ID="Q20260215001"  # 使用上面返回的case_id
+curl -X GET http://localhost:8001/api/cases/$CASE_ID | jq
+
+# 3. 查询客户端的所有工单
+curl -X GET "http://localhost:8001/api/cases?client_id=test-client-001" | jq
+
+# 4. 确认工单
+curl -X PUT http://localhost:8001/api/cases/$CASE_ID/confirm   -H "X-Trace-ID: hci-test-002" | jq
+
+# 预期: status变为"confirmed"
+
+# 5. 关闭工单
+curl -X PUT http://localhost:8001/api/cases/$CASE_ID/close   -H "X-Trace-ID: hci-test-003" | jq
+
+# 预期: status变为"closed", closed_at有时间戳
+```
+
+#### 健康检查
+
+```bash
+# Case Service健康检查
+curl http://localhost:8001/health | jq
+
+# 预期响应:
+# {
+#   "status": "healthy",
+#   "service": "case-service"
+# }
+
+# API Gateway健康检查
+curl http://localhost:8000/health | jq
+```
+
+### 2. 使用HTTPie测试
+
+```bash
+# 安装HTTPie
+pip install httpie
+
+# 创建工单
+http POST http://localhost:8001/api/cases   client_id=test-client-001   title="测试工单"   description="HTTPie测试"   X-Trace-ID:hci-httpie-001
+
+# 查询工单
+http GET http://localhost:8001/api/cases/Q20260215001
+```
+
+### 3. 使用Postman测试
+
+导入以下Postman Collection:
+
+```json
+{
+  "info": {
+    "name": "HCI Troubleshoot Platform API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Case Service",
+      "item": [
+        {
+          "name": "Create Case",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Trace-ID",
+                "value": "{{$randomUUID}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{
+  "client_id": "{{client_id}}",
+  "title": "Test Case",
+  "description": "This is a test case"
+}"
+            },
+            "url": {
+              "raw": "http://localhost:8001/api/cases",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8001",
+              "path": ["api", "cases"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## WebSocket测试
+
+### 1. 使用wscat测试
+
+```bash
+# 安装wscat
+npm install -g wscat
+
+# 连接WebSocket
+wscat -c ws://localhost:8000/ws/test-client-001
+
+# 发送消息（连接成功后）
+> {"type": "user_message", "case_id": "Q20260215001", "content": "你好"}
+
+# 预期收到AI响应（流式）
+< {"type": "assistant_message", "case_id": "Q20260215001", "content": "您好！", "is_complete": false}
+< {"type": "assistant_message", "case_id": "Q20260215001", "content": "有什么可以帮您？", "is_complete": true}
+```
+
+### 2. 使用Python测试WebSocket
+
+创建测试脚本 `tests/manual/test_websocket.py`:
+
+```python
+import asyncio
+import websockets
+import json
+
+async def test_websocket():
+    uri = "ws://localhost:8000/ws/test-client-001"
+    
+    async with websockets.connect(uri) as websocket:
+        print("✓ WebSocket连接成功")
+        
+        # 发送消息
+        message = {
+            "type": "user_message",
+            "case_id": "Q20260215001",
+            "content": "虚拟机启动失败"
+        }
+        await websocket.send(json.dumps(message))
+        print(f"→ 发送: {message}")
+        
+        # 接收响应
+        while True:
+            response = await websocket.recv()
+            data = json.loads(response)
+            print(f"← 接收: {data}")
+            
+            if data.get("is_complete"):
+                break
+
+if __name__ == "__main__":
+    asyncio.run(test_websocket())
+```
+
+运行:
+```bash
+python tests/manual/test_websocket.py
+```
+
+### 3. 使用浏览器测试
+
+创建测试页面 `tests/manual/websocket_test.html`:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test</title>
+</head>
+<body>
+    <h1>HCI Platform WebSocket Test</h1>
+    <input id="clientId" placeholder="Client ID" value="test-client-001" />
+    <button onclick="connect()">Connect</button>
+    <button onclick="disconnect()">Disconnect</button>
+    <br><br>
+    <input id="message" placeholder="Message" />
+    <button onclick="sendMessage()">Send</button>
+    <div id="messages"></div>
+
+    <script>
+        let ws = null;
+
+        function connect() {
+            const clientId = document.getElementById('clientId').value;
+            ws = new WebSocket(`ws://localhost:8000/ws/${clientId}`);
+            
+            ws.onopen = () => {
+                addMessage('✓ Connected');
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                addMessage('← ' + JSON.stringify(data, null, 2));
+            };
+            
+            ws.onerror = (error) => {
+                addMessage('✗ Error: ' + error);
+            };
+            
+            ws.onclose = () => {
+                addMessage('✗ Disconnected');
+            };
+        }
+
+        function disconnect() {
+            if (ws) ws.close();
+        }
+
+        function sendMessage() {
+            const message = {
+                type: 'user_message',
+                case_id: 'Q20260215001',
+                content: document.getElementById('message').value
+            };
+            ws.send(JSON.stringify(message));
+            addMessage('→ ' + JSON.stringify(message, null, 2));
+        }
+
+        function addMessage(msg) {
+            const div = document.createElement('pre');
+            div.textContent = msg;
+            document.getElementById('messages').appendChild(div);
+        }
+    </script>
+</body>
+</html>
+```
+
+---
+
+## 性能测试
+
+### 1. API性能测试（使用Apache Bench）
+
+```bash
+# 安装Apache Bench
+sudo apt-get install apache2-utils
+
+# 测试Case Service创建工单性能
+ab -n 1000 -c 10 -T 'application/json' -p test_case.json    http://localhost:8001/api/cases
+
+# test_case.json内容:
+# {
+#   "client_id": "perf-test",
+#   "title": "Performance Test",
+#   "description": "Load testing"
+# }
+```
+
+### 2. 负载测试（使用Locust）
+
+创建测试脚本 `tests/performance/locustfile.py`:
+
+```python
+from locust import HttpUser, task, between
+
+class CaseServiceUser(HttpUser):
+    wait_time = between(1, 3)
+    
+    @task
+    def create_case(self):
+        self.client.post("/api/cases", json={
+            "client_id": "load-test-user",
+            "title": "Load Test Case",
+            "description": "This is a load test"
+        })
+    
+    @task(3)
+    def get_cases(self):
+        self.client.get("/api/cases?client_id=load-test-user")
+```
+
+运行:
+```bash
+pip install locust
+locust -f tests/performance/locustfile.py --host=http://localhost:8001
+# 访问 http://localhost:8089 查看性能测试界面
+```
+
+---
+
+## 测试结果验证
+
+### 1. 数据库验证
+
+```bash
+# 连接数据库
+psql -h localhost -U hci_user -d hci_troubleshoot
+
+# 查询测试数据
+SELECT case_id, client_id, status, title, trace_id 
+FROM cases 
+WHERE client_id LIKE 'test-%' 
+ORDER BY created_at DESC 
+LIMIT 10;
+
+# 验证trace_id
+SELECT trace_id, COUNT(*) 
+FROM cases 
+WHERE trace_id IS NOT NULL 
+GROUP BY trace_id;
+```
+
+### 2. Redis验证
+
+```bash
+# 连接Redis
+redis-cli
+
+# 查看所有session
+KEYS session:*
+
+# 查看特定session
+GET session:test-client-001
+
+# 查看所有keys
+KEYS *
+```
+
+### 3. 日志验证
+
+```bash
+# 查看Case Service日志（JSON格式）
+docker logs hci-case-service | tail -20
+
+# 解析日志并美化
+docker logs hci-case-service | tail -1 | jq
+
+# 过滤特定trace_id的日志
+docker logs hci-case-service | grep "hci-test-001" | jq
+```
+
+---
+
+## 常见测试问题
+
+### 1. 数据库连接失败
+
+**问题**: `connection refused`
+
+**解决**:
+```bash
+# 检查PostgreSQL是否运行
+docker ps | grep postgres
+
+# 重启PostgreSQL
+docker-compose restart postgres
+
+# 检查连接
+psql -h localhost -U hci_user -d hci_troubleshoot -c "SELECT 1"
+```
+
+### 2. 端口已被占用
+
+**问题**: `Address already in use`
+
+**解决**:
+```bash
+# 查看端口占用
+lsof -i :8001
+
+# 杀死占用进程
+kill -9 <PID>
+```
+
+### 3. 测试数据清理
+
+```bash
+# 清空测试数据
+psql -h localhost -U hci_user -d hci_troubleshoot << EOF
+DELETE FROM cases WHERE client_id LIKE 'test-%';
+DELETE FROM cases WHERE client_id LIKE 'load-test-%';
+EOF
+
+# 清空Redis
+redis-cli FLUSHDB
+```
+
+---
+
+## 自动化测试脚本
+
+创建 `tests/run_all_tests.sh`:
+
+```bash
+#!/bin/bash
+
+echo "=== HCI Platform 完整测试套件 ==="
+echo ""
+
+# 1. 启动依赖服务
+echo "1. 启动测试环境..."
+cd deploy/docker
+docker-compose up -d postgres redis
+sleep 5
+
+# 2. 运行单元测试
+echo ""
+echo "2. 运行单元测试..."
+cd ../../
+pytest tests/unit/ -v --cov=backend --cov-report=term-missing
+
+# 3. 启动Case Service
+echo ""
+echo "3. 启动Case Service..."
+cd backend/case-service
+uvicorn app.main:app --port 8001 &
+CASE_PID=$!
+sleep 3
+
+# 4. 运行集成测试
+echo ""
+echo "4. 运行集成测试..."
+cd ../../
+pytest tests/integration/ -v
+
+# 5. API健康检查
+echo ""
+echo "5. API健康检查..."
+curl -s http://localhost:8001/health | jq
+
+# 6. 清理
+echo ""
+echo "6. 清理测试环境..."
+kill $CASE_PID
+docker-compose down
+
+echo ""
+echo "=== 测试完成 ==="
+```
+
+运行:
+```bash
+chmod +x tests/run_all_tests.sh
+./tests/run_all_tests.sh
+```
+
+---
+
+## 测试报告
+
+测试完成后，查看覆盖率报告:
+
+```bash
+# 生成HTML报告
+pytest tests/ --cov=backend --cov-report=html
+
+# 打开报告
+open htmlcov/index.html  # macOS
+xdg-open htmlcov/index.html  # Linux
+```
+
+---
+
+**测试清单**:
+
+- [ ] 所有单元测试通过
+- [ ] 代码覆盖率 > 80%
+- [ ] 所有API端点正常响应
+- [ ] WebSocket连接和通信正常
+- [ ] TraceID正确生成和传播
+- [ ] 数据库数据正确存储
+- [ ] Redis Session正常工作
+- [ ] 日志格式正确（JSON）
+- [ ] 性能测试达标（P95 < 100ms）

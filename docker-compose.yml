@@ -1,0 +1,145 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: hci-postgres
+    environment:
+      POSTGRES_DB: hci_troubleshoot
+      POSTGRES_USER: hci_admin
+      POSTGRES_PASSWORD: dev_password_123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init_schema.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hci_admin -d hci_troubleshoot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: hci-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api-gateway:
+    build:
+      context: ./backend
+      dockerfile: api-gateway/Dockerfile
+    container_name: hci-api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: hci_troubleshoot
+      POSTGRES_USER: hci_admin
+      POSTGRES_PASSWORD: dev_password_123
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CASE_SERVICE_URL: http://case-service:8001
+      CONVERSATION_SERVICE_URL: http://conversation-service:8002
+      SCHEDULER_SERVICE_URL: http://scheduler-service:8003
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/api-gateway:/app
+      - ./backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  case-service:
+    build:
+      context: ./backend
+      dockerfile: case-service/Dockerfile
+    container_name: hci-case-service
+    ports:
+      - "8001:8001"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: hci_troubleshoot
+      POSTGRES_USER: hci_admin
+      POSTGRES_PASSWORD: dev_password_123
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/case-service:/app
+      - ./backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+
+  conversation-service:
+    build:
+      context: ./backend
+      dockerfile: conversation-service/Dockerfile
+    container_name: hci-conversation-service
+    ports:
+      - "8002:8002"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: hci_troubleshoot
+      POSTGRES_USER: hci_admin
+      POSTGRES_PASSWORD: dev_password_123
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/conversation-service:/app
+      - ./backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+
+  scheduler-service:
+    build:
+      context: ./backend
+      dockerfile: scheduler-service/Dockerfile
+    container_name: hci-scheduler-service
+    ports:
+      - "8003:8003"
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      K8S_NAMESPACE: hci-troubleshoot
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/scheduler-service:/app
+      - ./backend/shared:/app/shared
+      - /var/run/docker.sock:/var/run/docker.sock  # For local dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: hci-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: pnpm dev --host
+
+volumes:
+  postgres_data:
+  redis_data:
