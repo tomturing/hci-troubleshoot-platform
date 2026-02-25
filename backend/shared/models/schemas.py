@@ -51,18 +51,21 @@ class MessageCreate(BaseModel):
     content: str
     metadata: Optional[dict] = None
 
+from uuid import UUID
+
 class MessageResponse(BaseModel):
     """消息响应"""
-    message_id: str
-    conversation_id: str
+    message_id: UUID
+    conversation_id: UUID
     role: MessageRole
     content: str
-    metadata: Optional[dict]
+    metadata: Optional[dict] = Field(default=None, validation_alias="metadata_")
     created_at: datetime
     trace_id: Optional[str]
     
     class Config:
         from_attributes = True
+        populate_by_name = True
 
 class WebSocketMessage(BaseModel):
     """WebSocket消息格式"""

@@ -49,8 +49,11 @@ def validate_trace_id(trace_id: str) -> bool:
     except ValueError:
         return False
     
-    # 验证 random 部分长度
+    # 验证 random 部分长度和内容
     if len(parts[2]) != 6:
+        return False
+    
+    if not parts[2].isalnum():
         return False
     
     return True
@@ -103,3 +106,20 @@ class TraceContext:
 
 # 全局 TraceContext 实例
 trace_context = TraceContext()
+
+async def trace_id_middleware(request, call_next):
+    """通用的将 X-Trace-ID 注入协程上下文的中间件"""
+    trace_id = request.headers.get("X-Trace-ID") or request.headers.get("x-trace-id")
+    if not trace_id:
+        trace_id = generate_trace_id()
+    
+    # 将此请求贯穿的 TraceID 保存至本线程全局对象中，供下游被调用的 logger 消费提取
+    trace_context.set_trace_id(trace_id)
+    request.state.trace_id = trace_id
+    
+    try:
+        response = await call_next(request)
+        response.headers["X-Trace-ID"] = trace_id
+        return response
+    finally:
+        trace_context.clear()

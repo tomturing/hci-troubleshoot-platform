@@ -16,9 +16,11 @@ class Settings(BaseSettings):
     
     # OpenClaw配置
     OPENCLAW_BASE_URL: str = "http://openclaw:8080"
+    OPENCLAW_GATEWAY_TOKEN: str = "default_token"
     
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 settings = Settings()

@@ -9,10 +9,14 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
+from shared.utils.otel import init_telemetry
 from shared.database.postgres import DatabaseManager
 from shared.utils.logger import get_logger
 from app.config import settings
 from app.routes import cases
+
+# 在应用创建前初始化 OpenTelemetry
+init_telemetry(settings.SERVICE_NAME)
 
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 

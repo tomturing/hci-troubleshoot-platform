@@ -8,7 +8,7 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from .trace_id import trace_context
+from .otel import get_current_trace_id, get_current_span_id
 
 
 class StructuredLogger:
@@ -55,11 +55,15 @@ class StructuredLogger:
         if message:
             log_data["message"] = message
         
-        # 添加 trace_id
+        # 添加 trace_id 和 span_id（优先使用 OTel 上下文）
+        otel_trace_id = get_current_trace_id()
+        otel_span_id = get_current_span_id()
         if trace_id:
             log_data["trace_id"] = trace_id
-        elif trace_context.get_trace_id():
-            log_data["trace_id"] = trace_context.get_trace_id()
+        elif otel_trace_id:
+            log_data["trace_id"] = otel_trace_id
+        if otel_span_id:
+            log_data["span_id"] = otel_span_id
         
         # 添加额外字段
         log_data.update(kwargs)

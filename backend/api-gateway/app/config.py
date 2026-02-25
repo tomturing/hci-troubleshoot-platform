@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     # 数据库配置
     REDIS_URL: str = "redis://redis:6379/0"
     
+    # 后端服务配置
+    CASE_SERVICE_PORT: int = 8001
+    CONVERSATION_SERVICE_PORT: int = 8002
+    
     # 下游服务地址
     CASE_SERVICE_URL: str = "http://case-service:8001"
     CONVERSATION_SERVICE_URL: str = "http://conversation-service:8002"
@@ -23,5 +27,6 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 settings = Settings()

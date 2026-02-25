@@ -5,7 +5,7 @@
 
 set -e
 
-PROJECT_ROOT="/home/claude/hci-troubleshoot-platform"
+PROJECT_ROOT="/home/bot/aihci/hci-troubleshoot-platform"
 cd "$PROJECT_ROOT"
 
 echo "=========================================="

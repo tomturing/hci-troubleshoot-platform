@@ -5,7 +5,7 @@ WORKDIR /app
 # 安装依赖
 # 安装依赖
 COPY case-service/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir setuptools && pip install --no-cache-dir -r requirements.txt
 
 # 复制代码
 COPY shared /app/shared

@@ -14,7 +14,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init_schema.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hci_admin -d hci_troubleshoot"]
+      test: [ "CMD-SHELL", "pg_isready -U hci_admin -d hci_troubleshoot" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -28,7 +28,7 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -41,11 +41,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: hci_troubleshoot
-      POSTGRES_USER: hci_admin
-      POSTGRES_PASSWORD: dev_password_123
+      DATABASE_URL: postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot
       REDIS_HOST: redis
       REDIS_PORT: 6379
       CASE_SERVICE_URL: http://case-service:8001
@@ -69,11 +65,7 @@ services:
     ports:
       - "8001:8001"
     environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: hci_troubleshoot
-      POSTGRES_USER: hci_admin
-      POSTGRES_PASSWORD: dev_password_123
+      DATABASE_URL: postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,11 +82,7 @@ services:
     ports:
       - "8002:8002"
     environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: hci_troubleshoot
-      POSTGRES_USER: hci_admin
-      POSTGRES_PASSWORD: dev_password_123
+      DATABASE_URL: postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot
       REDIS_HOST: redis
       REDIS_PORT: 6379
       ZHIPU_API_KEY: ${ZHIPU_API_KEY}
@@ -125,20 +113,8 @@ services:
     volumes:
       - ./backend/scheduler-service:/app
       - ./backend/shared:/app/shared
-      - /var/run/docker.sock:/var/run/docker.sock  # For local dev
+      - /var/run/docker.sock:/var/run/docker.sock # For local dev
     command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.dev
-    container_name: hci-frontend
-    ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    command: pnpm dev --host
 
 volumes:
   postgres_data:

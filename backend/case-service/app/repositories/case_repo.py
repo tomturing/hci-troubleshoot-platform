@@ -8,12 +8,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 
 from ..models.case import Case, CaseStatus
+from shared.models.user import User
 
 class CaseRepository:
     """工单数据访问层"""
     
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def get_user_by_client_id(self, client_id: str) -> Optional[User]:
+        """根据client_id查询用户"""
+        result = await self.session.execute(
+            select(User).where(User.client_id == client_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def create_user(self, user: User) -> User:
+        """创建用户"""
+        self.session.add(user)
+        await self.session.flush()
+        await self.session.refresh(user)
+        return user
     
     async def create(self, case: Case) -> Case:
         """创建工单"""
@@ -50,7 +65,7 @@ class CaseRepository:
             return None
         
         case.status = status
-        if status == CaseStatus.CLOSED:
+        if status == CaseStatus.closed:
             case.closed_at = datetime.utcnow()
         if trace_id:
             case.trace_id = trace_id

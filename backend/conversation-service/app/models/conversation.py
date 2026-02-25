@@ -1,29 +1,28 @@
 """
-Conversation Model
+Conversation Model - 对话会话表
 """
 
-from sqlalchemy import Column, String, DateTime, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, Integer, DateTime, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 import uuid
-from datetime import datetime
-
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+from datetime import datetime, timezone
 
 from shared.database.postgres import Base
-from shared.models.base import TimestampMixin, TraceableMixin
+from shared.models.base import TraceableMixin
 
-class Conversation(Base, TimestampMixin, TraceableMixin):
-    """对话表"""
+
+class Conversation(Base, TraceableMixin):
+    """对话会话表"""
     
-    __tablename__ = "conversations"
+    __tablename__ = "conversation"
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    conversation_id = Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4, index=True)
-    case_id = Column(String(50), nullable=False, index=True)
-    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    ended_at = Column(DateTime, nullable=True)
+    conversation_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    case_id = Column(String(20), nullable=False, index=True)
+    openclaw_pod_id = Column(String(100), nullable=True)
+    started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    message_count = Column(Integer, default=0)
+    metadata_ = Column("metadata", JSONB, default=dict)
     
     def __repr__(self):
         return f"<Conversation(conversation_id={self.conversation_id}, case_id={self.case_id})>"

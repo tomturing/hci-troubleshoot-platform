@@ -7,7 +7,7 @@ import time
 from backend.shared.utils.trace_id import (
     generate_trace_id,
     validate_trace_id,
-    extract_timestamp
+    extract_timestamp_from_trace_id as extract_timestamp
 )
 
 

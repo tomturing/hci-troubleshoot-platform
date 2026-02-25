@@ -39,12 +39,25 @@ class CaseService:
         """创建新工单"""
         case_id = self._generate_case_id()
         
+        # 获取或创建用户
+        from shared.models.user import User
+        user = await self.repository.get_user_by_client_id(case_create.client_id)
+        if not user:
+            user = User(
+                client_id=case_create.client_id,
+                user_type="temporary",
+                trace_id=trace_id or self._generate_case_id() # fallback trace_id
+            )
+            user = await self.repository.create_user(user)
+            logger.info(f"Created new user for client_id: {case_create.client_id}")
+
         case = Case(
             case_id=case_id,
+            user_id=user.user_id,
             client_id=case_create.client_id,
             title=case_create.title,
             description=case_create.description,
-            status=CaseStatus.CREATED,
+            status=CaseStatus.created,
             trace_id=trace_id
         )
         
@@ -80,7 +93,7 @@ class CaseService:
         """确认工单"""
         case = await self.repository.update_status(
             case_id, 
-            CaseStatus.CONFIRMED,
+            CaseStatus.confirmed,
             trace_id
         )
         if not case:
@@ -103,7 +116,7 @@ class CaseService:
         """关闭工单"""
         case = await self.repository.update_status(
             case_id, 
-            CaseStatus.CLOSED,
+            CaseStatus.closed,
             trace_id
         )
         if not case:

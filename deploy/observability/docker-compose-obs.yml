@@ -1,0 +1,53 @@
+services:
+  loki:
+    image: grafana/loki:latest
+    container_name: hci-loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - hci-troubleshoot-platform_default
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: hci-promtail
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./config/promtail-config.yaml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - hci-troubleshoot-platform_default
+    depends_on:
+      - loki
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: hci-tempo
+    command: [ "-config.file=/etc/tempo.yaml" ]
+    volumes:
+      - ./config/tempo-config.yaml:/etc/tempo.yaml
+    ports:
+      - "3200:3200"   # Tempo query frontend
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+    networks:
+      - hci-troubleshoot-platform_default
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: hci-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+    networks:
+      - hci-troubleshoot-platform_default
+    depends_on:
+      - loki
+      - tempo
+
+networks:
+  hci-troubleshoot-platform_default:
+    external: true

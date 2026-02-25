@@ -10,12 +10,15 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
+from shared.utils.otel import init_telemetry
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from app.config import settings
-from app.middleware.trace_id import TraceIDMiddleware
 from app.services.session import SessionManager
-from app.routes import websocket, health
+from app.routes import websocket, health, cases, conversations
+
+# 在应用创建前初始化 OpenTelemetry
+init_telemetry(settings.SERVICE_NAME)
 
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 
@@ -58,7 +61,6 @@ app = FastAPI(
 )
 
 # 中间件
-app.add_middleware(TraceIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -69,6 +71,8 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(websocket.router)
+app.include_router(cases.router)
+app.include_router(conversations.router)
 app.include_router(health.router)
 
 if __name__ == "__main__":

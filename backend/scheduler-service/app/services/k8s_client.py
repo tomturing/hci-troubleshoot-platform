@@ -1,0 +1,157 @@
+"""
+Kubernetes Client - K8s API Client
+"""
+
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
+from typing import Optional, List, Dict, Any
+import os
+
+from shared.utils.logger import get_logger
+from app.config import settings
+
+logger = get_logger("k8s-client")
+
+class K8sClient:
+    """Kubernetes API客户端"""
+    
+    def __init__(self):
+        try:
+            # 尝试加载集群内配置
+            config.load_incluster_config()
+            logger.info("Loaded in-cluster Kubernetes config")
+        except config.ConfigException:
+            try:
+                # 尝试加载本地配置 (kubeconfig)
+                config.load_kube_config()
+                logger.info("Loaded local kubeconfig")
+            except Exception as e:
+                logger.error(f"Failed to load Kubernetes config: {e}")
+                # 在某些环境下（如CI/CD或纯Docker Compose），可能没有K8s环境
+                # 这里不抛出异常，允许应用启动，但在调用时可能会失败
+                
+        self.core_v1 = client.CoreV1Api()
+        self.namespace = settings.K8S_NAMESPACE
+
+    def create_pod(
+        self,
+        pod_name: str,
+        case_id: Optional[str] = None,
+        trace_id: Optional[str] = None
+    ) -> bool:
+        """
+        创建OpenClaw Pod
+        
+        Args:
+            pod_name: Pod名称
+            case_id: 工单ID (用于标签)
+            trace_id: 追踪ID
+            
+        Returns:
+            bool: 是否成功触发创建
+        """
+        labels = {
+            "app": "openclaw",
+            "managed-by": "hci-scheduler",
+            "pod-name": pod_name
+        }
+        if case_id:
+            labels["case-id"] = case_id
+            
+        # Pod Spec
+        pod_manifest = {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": pod_name,
+                "labels": labels
+            },
+            "spec": {
+                "containers": [{
+                    "name": "openclaw",
+                    "image": settings.OPENCLAW_IMAGE,
+                    "ports": [{"containerPort": 8080}],
+                    "env": [
+                        # 注入必要的环境变量，例如 Gateway Token (如果有Secret)
+                        # {"name": "GATEWAY_TOKEN", "valueFrom": {"secretKeyRef": ...}}
+                    ],
+                    # 挂载ConfigMap以启用chatCompletions (需要在部署时创建ConfigMap)
+                    # "volumeMounts": [...]
+                }],
+                "restartPolicy": "Never" # 这里的Pod是一次性的或由调度器管理生命周期
+            }
+        }
+        
+        try:
+            self.core_v1.create_namespaced_pod(
+                body=pod_manifest,
+                namespace=self.namespace
+            )
+            logger.info(
+                event="pod_create_initiated",
+                message=f"Created pod {pod_name}",
+                pod_name=pod_name,
+                case_id=case_id,
+                trace_id=trace_id
+            )
+            return True
+        except ApiException as e:
+            logger.error(
+                event="pod_create_failed",
+                message=f"Failed to create pod {pod_name}: {e.reason}",
+                error=str(e),
+                trace_id=trace_id
+            )
+            return False
+
+    def delete_pod(self, pod_name: str) -> bool:
+        """删除Pod"""
+        try:
+            self.core_v1.delete_namespaced_pod(
+                name=pod_name,
+                namespace=self.namespace
+            )
+            logger.info(f"Deleted pod {pod_name}")
+            return True
+        except ApiException as e:
+            if e.status == 404:
+                return True # 已经不存在了
+            logger.error(f"Failed to delete pod {pod_name}: {e}")
+            return False
+
+    def get_pod_status(self, pod_name: str) -> Optional[str]:
+        """获取Pod状态 (Pending, Running, Succeeded, Failed, Unknown)"""
+        try:
+            pod = self.core_v1.read_namespaced_pod(
+                name=pod_name,
+                namespace=self.namespace
+            )
+            return pod.status.phase
+        except ApiException as e:
+            if e.status == 404:
+                return None
+            logger.error(f"Failed to get status for pod {pod_name}: {e}")
+            return None
+
+    def get_pod_ip(self, pod_name: str) -> Optional[str]:
+        """获取Pod IP"""
+        try:
+            pod = self.core_v1.read_namespaced_pod(
+                name=pod_name,
+                namespace=self.namespace
+            )
+            return pod.status.pod_ip
+        except ApiException as e:
+            return None
+
+    def list_pods(self, label_selector: str = "app=openclaw") -> List[Any]:
+        """列出Pod"""
+        try:
+            pods = self.core_v1.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector=label_selector
+            )
+            return pods.items
+        except ApiException as e:
+            logger.error(f"Failed to list pods: {e}")
+            return []
