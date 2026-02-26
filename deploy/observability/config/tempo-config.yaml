@@ -15,10 +15,6 @@ distributor:
 ingester:
   max_block_duration: 1m
 
-compactor:
-  compaction:
-    block_retention: 48h
-
 metrics_generator:
   registry:
     external_labels:

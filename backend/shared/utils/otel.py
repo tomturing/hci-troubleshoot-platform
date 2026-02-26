@@ -12,16 +12,20 @@ from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 
 def init_telemetry(service_name: str):
     """
-    初始化 OpenTelemetry 链路追踪
+    初始化 OpenTelemetry 链路追踪（TracerProvider + 非 FastAPI 仪表化）
+    
+    注意: FastAPI 的仪表化必须在 app 实例创建后通过 instrument_app() 完成，
+    因为 FastAPIInstrumentor().instrument() 依赖 monkey-patch fastapi.FastAPI 类，
+    而 `from fastapi import FastAPI` 会保留对原始类的引用，导致 patch 无效。
     
     Args:
         service_name: 微服务名称（如 'api-gateway', 'case-service'）
     
     调用后效果:
-        1. FastAPI 的所有入站请求自动生成 Span
-        2. HTTPX 的所有出站请求自动传播 traceparent
-        3. SQLAlchemy 的所有 DB 查询自动记录 Span
-        4. 所有 Span 通过 OTLP gRPC 上报到 Tempo
+        1. HTTPX 的所有出站请求自动传播 traceparent
+        2. SQLAlchemy 的所有 DB 查询自动记录 Span
+        3. 所有 Span 通过 OTLP gRPC 上报到 Tempo
+        4. Logging 自动注入 trace_id / span_id
     """
     # Tempo 的 OTLP gRPC 端点，默认为 Docker 内网
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4317")
@@ -35,10 +39,7 @@ def init_telemetry(service_name: str):
     provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
 
-    # --- 自动仪表化 ---
-    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-    FastAPIInstrumentor().instrument()
-    
+    # --- 自动仪表化（不含 FastAPI，需通过 instrument_app 单独注入） ---
     try:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         HTTPXClientInstrumentor().instrument()
@@ -56,6 +57,19 @@ def init_telemetry(service_name: str):
         LoggingInstrumentor().instrument(set_logging_format=True)
     except ImportError:
         pass
+
+
+def instrument_app(app):
+    """
+    对 FastAPI / Starlette 应用实例注入 OpenTelemetry 中间件
+    
+    必须在 FastAPI() 实例创建之后调用，否则 Span 不会注入到请求上下文中。
+    
+    Args:
+        app: FastAPI 应用实例
+    """
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    FastAPIInstrumentor().instrument_app(app)
 
 
 def get_current_trace_id() -> str:

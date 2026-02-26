@@ -22,7 +22,7 @@ services:
       - loki
 
   tempo:
-    image: grafana/tempo:latest
+    image: grafana/tempo:2.6.1
     container_name: hci-tempo
     command: [ "-config.file=/etc/tempo.yaml" ]
     volumes:

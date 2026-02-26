@@ -19,10 +19,15 @@ class StructuredLogger:
         self.logger = logging.getLogger(service_name)
         self.logger.setLevel(getattr(logging, log_level.upper()))
         
-        # 配置输出到 stdout
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter('%(message)s'))
-        self.logger.addHandler(handler)
+        # 防止重复添加 handler（多次调用 get_logger 时）
+        if not self.logger.handlers:
+            # 配置输出到 stdout
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setFormatter(logging.Formatter('%(message)s'))
+            self.logger.addHandler(handler)
+        
+        # 阻止向 root logger 传播，避免日志被 LoggingInstrumentor 的 handler 重复输出
+        self.logger.propagate = False
     
     def _format_log(
         self,
@@ -58,10 +63,13 @@ class StructuredLogger:
         # 添加 trace_id 和 span_id（优先使用 OTel 上下文）
         otel_trace_id = get_current_trace_id()
         otel_span_id = get_current_span_id()
-        if trace_id:
-            log_data["trace_id"] = trace_id
-        elif otel_trace_id:
+        if otel_trace_id:
             log_data["trace_id"] = otel_trace_id
+            # 若同时传入了自定义 trace_id（如 X-Trace-ID），保留为额外字段
+            if trace_id and trace_id != otel_trace_id:
+                log_data["custom_trace_id"] = trace_id
+        elif trace_id:
+            log_data["trace_id"] = trace_id
         if otel_span_id:
             log_data["span_id"] = otel_span_id
         

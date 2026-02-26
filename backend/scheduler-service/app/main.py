@@ -11,7 +11,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from shared.utils.logger import get_logger
-from shared.utils.otel import init_telemetry
+from shared.utils.otel import init_telemetry, instrument_app
 from app.config import settings
 from app.services.k8s_client import K8sClient
 from app.services.scheduler_service import SchedulerService
@@ -64,6 +64,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# 注入 OpenTelemetry 中间件到 app 实例
+instrument_app(app)
 
 # 注册路由
 app.include_router(scheduler_routes.router)

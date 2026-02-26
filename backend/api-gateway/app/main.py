@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from shared.utils.otel import init_telemetry
+from shared.utils.otel import init_telemetry, instrument_app
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from app.config import settings
@@ -59,6 +59,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# 注入 OpenTelemetry 中间件到 app 实例（必须在 app 创建后调用）
+instrument_app(app)
 
 # 中间件
 app.add_middleware(

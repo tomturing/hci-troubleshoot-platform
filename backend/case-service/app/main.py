@@ -9,7 +9,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from shared.utils.otel import init_telemetry
+from shared.utils.otel import init_telemetry, instrument_app
 from shared.database.postgres import DatabaseManager
 from shared.utils.logger import get_logger
 from app.config import settings
@@ -53,6 +53,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# 注入 OpenTelemetry 中间件到 app 实例
+instrument_app(app)
 
 # 注册路由
 app.include_router(cases.router)
