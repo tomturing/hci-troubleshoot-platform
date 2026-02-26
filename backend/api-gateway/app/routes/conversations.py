@@ -17,7 +17,9 @@ CONVERSATION_SERVICE_URL = f"http://conversation-service:{settings.CONVERSATION_
 
 async def proxy_request_stream(method: str, path: str, payload: dict, headers: dict):
     """Proxy request with response streaming (SSE)"""
-    client = httpx.AsyncClient()
+    # SSE 场景下，默认 httpx timeout(约 5s) 很容易触发 ReadTimeout，且 str(e) 可能为空。
+    # 这里禁用超时，让上游按实际流式节奏输出。
+    client = httpx.AsyncClient(timeout=None)
     url = f"{CONVERSATION_SERVICE_URL}{path}"
     
     async def stream_generator():
@@ -26,14 +28,28 @@ async def proxy_request_stream(method: str, path: str, payload: dict, headers: d
                 if response.status_code != 200:
                     # 如果不是200，尝试读取错误信息并yield
                     content = await response.read()
-                    yield content
+                    yield (
+                        b"event: error\n"
+                        + b"data: {\"error\": \"upstream error\", \"status\": "
+                        + str(response.status_code).encode("utf-8")
+                        + b"}\n\n"
+                        + content
+                    )
                     return
                     
                 async for chunk in response.aiter_bytes():
                     yield chunk
         except Exception as e:
-            logger.error(f"Streaming error: {e}")
-            yield f"data: {{\"error\": \"Streaming failed: {str(e)}\"}}\n\n".encode('utf-8')
+            logger.error(
+                event="gateway_streaming_error",
+                message="Streaming error while proxying SSE",
+                error_type=type(e).__name__,
+                error_message=str(e),
+                error_repr=repr(e),
+                url=url,
+            )
+            # 以 SSE 形式通知客户端出错
+            yield f"event: error\ndata: {{\"error\": \"Streaming failed\", \"type\": \"{type(e).__name__}\", \"message\": \"{str(e)}\"}}\n\n".encode('utf-8')
         finally:
             await client.aclose()
             
