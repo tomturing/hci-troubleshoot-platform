@@ -12,7 +12,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
-from shared.models.schemas import CaseCreate, CaseResponse
+from shared.models.schemas import CaseCreate, CaseResponse, CaseListResponse, CaseStatsResponse, ClientListResponse, ClientInfo
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
 
@@ -124,3 +124,39 @@ class CaseService:
         )
         
         return CaseResponse.model_validate(case)
+
+    # ============ Admin API ============
+
+    async def list_all_cases(
+        self,
+        skip: int = 0,
+        limit: int = 20,
+        status: Optional[str] = None,
+        client_id: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> CaseListResponse:
+        """获取所有工单（Admin: 分页 + 筛选）"""
+        items, total = await self.repository.get_all(
+            skip=skip, limit=limit,
+            status=status, client_id=client_id,
+            start_time=start_time, end_time=end_time,
+        )
+        return CaseListResponse(
+            items=[CaseResponse.model_validate(c) for c in items],
+            total=total,
+            skip=skip,
+            limit=limit,
+        )
+
+    async def get_case_stats(self) -> CaseStatsResponse:
+        """获取工单统计（Admin）"""
+        by_status = await self.repository.count_by_status()
+        total = sum(by_status.values())
+        return CaseStatsResponse(total=total, by_status=by_status)
+
+    async def get_client_list(self) -> ClientListResponse:
+        """获取客户端列表（Admin）"""
+        rows = await self.repository.get_client_stats()
+        items = [ClientInfo(**r) for r in rows]
+        return ClientListResponse(items=items, total=len(items))

@@ -67,6 +67,29 @@ class MessageResponse(BaseModel):
         from_attributes = True
         populate_by_name = True
 
+class CaseListResponse(BaseModel):
+    """工单分页列表响应（Admin）"""
+    items: list[CaseResponse] = []
+    total: int = 0
+    skip: int = 0
+    limit: int = 20
+
+class CaseStatsResponse(BaseModel):
+    """工单统计响应（Admin）"""
+    total: int = 0
+    by_status: dict[str, int] = {}
+
+class ClientInfo(BaseModel):
+    """客户端信息"""
+    client_id: str
+    case_count: int
+    last_case_at: Optional[datetime] = None
+
+class ClientListResponse(BaseModel):
+    """客户端列表响应（Admin）"""
+    items: list[ClientInfo] = []
+    total: int = 0
+
 class WebSocketMessage(BaseModel):
     """WebSocket消息格式"""
     type: str

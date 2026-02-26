@@ -2,15 +2,19 @@
 Case Routes - API路由
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
+from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
-from shared.models.schemas import CaseCreate, CaseResponse
+from shared.models.schemas import (
+    CaseCreate, CaseResponse,
+    CaseListResponse, CaseStatsResponse, ClientListResponse,
+)
 from shared.database.postgres import DatabaseManager
 from ..services.case_service import CaseService
 from ..repositories.case_repo import CaseRepository
@@ -32,6 +36,41 @@ async def get_case_service() -> CaseService:
     async for session in database_manager.get_session():
         repo = CaseRepository(session)
         yield CaseService(repo)
+
+# ============ Admin 路由（静态路径，优先于 {case_id}）============
+
+@router.get("/all", response_model=CaseListResponse)
+async def list_all_cases(
+    skip: int = Query(0, ge=0, description="偏移量"),
+    limit: int = Query(20, ge=1, le=100, description="每页数量"),
+    status: Optional[str] = Query(None, description="按状态筛选"),
+    client_id: Optional[str] = Query(None, description="按客户端筛选"),
+    start_time: Optional[datetime] = Query(None, description="开始时间"),
+    end_time: Optional[datetime] = Query(None, description="结束时间"),
+    service: CaseService = Depends(get_case_service),
+):
+    """[Admin] 获取所有工单列表（分页 + 筛选）"""
+    return await service.list_all_cases(
+        skip=skip, limit=limit,
+        status=status, client_id=client_id,
+        start_time=start_time, end_time=end_time,
+    )
+
+@router.get("/stats", response_model=CaseStatsResponse)
+async def get_case_stats(
+    service: CaseService = Depends(get_case_service),
+):
+    """[Admin] 获取工单统计"""
+    return await service.get_case_stats()
+
+@router.get("/clients", response_model=ClientListResponse)
+async def get_client_list(
+    service: CaseService = Depends(get_case_service),
+):
+    """[Admin] 获取客户端列表"""
+    return await service.get_client_list()
+
+# ============ 客户端路由 ============
 
 @router.post("/", response_model=CaseResponse, status_code=201)
 async def create_case(
