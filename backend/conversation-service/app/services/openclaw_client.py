@@ -108,16 +108,28 @@ class OpenClawClient:
             raise
 
     async def check_health(self) -> bool:
-        """检查OpenClaw服务健康状态"""
+        """检查OpenClaw服务健康状态。
+
+        说明：真实 OpenClaw Gateway 并不一定提供 GET /v1/models 或 /health。
+        为了在不依赖上游模型 Key 的情况下验证“网关可达 + 鉴权可用”，这里对
+        /v1/chat/completions 发送一个必定不合法的 payload，预期返回 400/422。
+        """
+
+        url = f"{self.base_url}/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
         try:
-            # 尝试调用models列表接口作为健康检查
-            if "v1" not in self.base_url:
-                url = f"{self.base_url}/v1/models"
-            else:
-                url = f"{self.base_url}/models"
-                
-            response = await self.client.get(url)
-            return response.status_code == 200
+            response = await self.client.post(url, json={}, headers=headers)
+            if response.status_code in (200, 400, 422):
+                return True
+            if response.status_code in (401, 403, 404, 405):
+                return False
+            # 其他状态码（如 500）表示服务可达但内部异常，按不健康处理
+            return False
         except Exception:
             return False
 
