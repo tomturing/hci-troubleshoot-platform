@@ -128,9 +128,13 @@ class StructuredLogger:
         self.logger.debug(log_str)
 
 
-def get_logger(service_name: str, log_level: str = "INFO") -> StructuredLogger:
+# 日志实例缓存，避免重复创建
+_logger_cache: Dict[str, "StructuredLogger"] = {}
+
+
+def get_logger(service_name: str, log_level: str = "INFO") -> "StructuredLogger":
     """
-    获取结构化日志记录器
+    获取结构化日志记录器（带缓存）
     
     Args:
         service_name: 服务名称
@@ -139,11 +143,14 @@ def get_logger(service_name: str, log_level: str = "INFO") -> StructuredLogger:
     Returns:
         StructuredLogger: 日志记录器实例
     """
-    return StructuredLogger(service_name, log_level)
+    cache_key = f"{service_name}:{log_level}"
+    if cache_key not in _logger_cache:
+        _logger_cache[cache_key] = StructuredLogger(service_name, log_level)
+    return _logger_cache[cache_key]
 
 
 # 日志装饰器
-def log_function_call(logger: StructuredLogger):
+def log_function_call(logger: "StructuredLogger"):
     """
     函数调用日志装饰器
     
@@ -152,7 +159,10 @@ def log_function_call(logger: StructuredLogger):
         async def my_function(arg1, arg2):
             pass
     """
+    from functools import wraps
+    
     def decorator(func):
+        @wraps(func)
         async def async_wrapper(*args, **kwargs):
             func_name = func.__name__
             start_time = datetime.utcnow()
@@ -191,6 +201,7 @@ def log_function_call(logger: StructuredLogger):
                 )
                 raise
         
+        @wraps(func)
         def sync_wrapper(*args, **kwargs):
             func_name = func.__name__
             start_time = datetime.utcnow()

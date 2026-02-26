@@ -12,12 +12,8 @@ class Settings(BaseSettings):
     SERVICE_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
     
-    # 数据库配置
+    # Redis配置
     REDIS_URL: str = "redis://redis:6379/0"
-    
-    # 后端服务配置
-    CASE_SERVICE_PORT: int = 8001
-    CONVERSATION_SERVICE_PORT: int = 8002
     
     # 下游服务地址
     CASE_SERVICE_URL: str = "http://case-service:8001"

@@ -13,7 +13,7 @@ from shared.utils.logger import get_logger
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 logger = get_logger("gateway-cases")
 
-CASE_SERVICE_URL = f"http://case-service:{settings.CASE_SERVICE_PORT}/api/cases"
+CASE_SERVICE_URL = f"{settings.CASE_SERVICE_URL}/api/cases"
 
 async def proxy_request(
     method: str,

@@ -13,7 +13,7 @@ from shared.utils.logger import get_logger
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 logger = get_logger("gateway-conversations")
 
-CONVERSATION_SERVICE_URL = f"http://conversation-service:{settings.CONVERSATION_SERVICE_PORT}/api/conversations"
+CONVERSATION_SERVICE_URL = f"{settings.CONVERSATION_SERVICE_URL}/api/conversations"
 
 async def proxy_request_stream(method: str, path: str, payload: dict, headers: dict):
     """Proxy request with response streaming (SSE)"""
