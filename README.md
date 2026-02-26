@@ -101,6 +101,9 @@ bash test_manual.sh
 - **OpenClaw 容器化接入** — 以 Docker 容器运行 OpenClaw Gateway（端口 18789），通过 ZAI_API_KEY 对接真实 z.ai 模型
 - **网关 SSE 代理修复** — 禁用 httpx 默认超时，确保流式输出稳定透传至客户端
 - **OpenClaw 健康检查适配** — 以 POST /v1/chat/completions 空 payload 作为可达性探测
+- **trace_id 统一为 OTel 标准** — 移除自定义 X-Trace-ID，全链路使用 W3C traceparent 自动传播，DB 存储 OTel 32位 hex trace_id
+- **崩溃与数据完整性修复** — WebSocket endpoint URL 修正、datetime import 修复、DB nullable 对齐
+- **配置与代码质量清理** — 移除冗余配置字段、logger 实例缓存、装饰器 @wraps 补全
 
 ### ⏳ 待补充
 - 前端 Vue 3 控制台对接
