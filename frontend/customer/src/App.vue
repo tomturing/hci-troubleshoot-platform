@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { useChatStore } from '@/stores/chat'
+import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
 
 const chatStore = useChatStore()
+const clientId = getClientId()
 
 onMounted(() => {
   chatStore.initialize()
@@ -15,9 +17,14 @@ onMounted(() => {
     <header class="app-header">
       <div class="header-content">
         <h1>HCI 故障排查助手</h1>
-        <span v-if="chatStore.currentCase" class="case-badge">
-          工单: {{ chatStore.currentCase.case_id }}
-        </span>
+        <div class="header-badges">
+          <span class="client-badge" :title="clientId">
+            ID: {{ clientId.substring(0, 15) }}...
+          </span>
+          <span v-if="chatStore.currentCase" class="case-badge">
+            工单: {{ chatStore.currentCase.case_id }}
+          </span>
+        </div>
       </div>
     </header>
     <main class="app-main">
@@ -72,6 +79,22 @@ body {
   padding: 4px 12px;
   border-radius: 12px;
   font-size: 13px;
+}
+
+.header-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.client-badge {
+  background: rgba(255, 255, 255, 0.15);
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: all;
+  opacity: 0.85;
 }
 
 .app-main {

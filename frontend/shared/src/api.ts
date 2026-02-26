@@ -92,9 +92,11 @@ export function createCaseApi(client: AxiosInstance) {
 /** Conversation API 方法集合 */
 export function createConversationApi(client: AxiosInstance) {
   return {
-    /** 创建会话 */
+    /** 创建会话（case_id 通过 query parameter 传递） */
     create(caseId: string) {
-      return client.post<ConversationResponse>('/api/conversations/', { case_id: caseId })
+      return client.post<ConversationResponse>('/api/conversations/', null, {
+        params: { case_id: caseId },
+      })
     },
 
     /** 获取会话消息历史 */

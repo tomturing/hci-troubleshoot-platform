@@ -17,6 +17,12 @@ export interface ChatMessage {
   isStreaming?: boolean
 }
 
+/** 工单创建模板 */
+export interface CaseTemplate {
+  title: string
+  description: string
+}
+
 export const useChatStore = defineStore('chat', () => {
   const clientId = getClientId()
   const apiClient = createApiClient('/api', clientId)
@@ -31,6 +37,15 @@ export const useChatStore = defineStore('chat', () => {
   const isStreaming = ref(false)
   const existingCases = ref<CaseResponse[]>([])
   const initialized = ref(false)
+
+  // 未关闭工单确认流程
+  const pendingCase = ref<CaseResponse | null>(null)
+  const showPendingDialog = ref(false)
+
+  // 工单创建模板流程
+  const showCaseTemplate = ref(false)
+  const caseTemplate = ref<CaseTemplate>({ title: '', description: '' })
+  const pendingUserMessage = ref('')
 
   // 计算属性
   const hasActiveCase = computed(() => {
@@ -48,11 +63,11 @@ export const useChatStore = defineStore('chat', () => {
         (c) => !['closed', 'cancelled'].includes(c.status),
       )
       if (activeCase) {
-        currentCase.value = activeCase
-        // 加载对话历史
-        await loadConversationHistory(activeCase.case_id)
+        // 发现未关闭工单，弹出确认对话框让用户选择
+        pendingCase.value = activeCase
+        showPendingDialog.value = true
       } else {
-        // 添加欢迎消息
+        // 无未关闭工单，显示欢迎消息
         addSystemMessage('您好！我是 HCI 故障排查助手。请描述您遇到的问题，我会帮您创建工单并提供解决方案。')
       }
     } catch (e) {
@@ -60,6 +75,28 @@ export const useChatStore = defineStore('chat', () => {
       addSystemMessage('您好！我是 HCI 故障排查助手。请描述您遇到的问题。')
     }
     initialized.value = true
+  }
+
+  /** 用户选择继续处理未关闭工单 */
+  async function resumePendingCase() {
+    if (!pendingCase.value) return
+    currentCase.value = pendingCase.value
+    showPendingDialog.value = false
+    await loadConversationHistory(pendingCase.value.case_id)
+    pendingCase.value = null
+  }
+
+  /** 用户选择关闭旧工单 */
+  async function closePendingCase() {
+    if (!pendingCase.value) return
+    try {
+      await caseApi.close(pendingCase.value.case_id)
+      addSystemMessage(`旧工单 ${pendingCase.value.case_id} 已关闭。请描述您遇到的新问题。`)
+    } catch (e: any) {
+      addSystemMessage(`关闭旧工单失败: ${e.response?.data?.detail || e.message}，但您仍可以创建新工单。`)
+    }
+    showPendingDialog.value = false
+    pendingCase.value = null
   }
 
   /** 加载已有对话历史 */
@@ -102,14 +139,18 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    // 添加用户消息
-    addUserMessage(content)
-
-    // 如果没有活跃工单，先创建
+    // 如果没有活跃工单，显示工单创建模板让用户编辑
     if (!currentCase.value) {
-      await createNewCase(content)
+      pendingUserMessage.value = content
+      // 生成模板默认值
+      const title = content.length > 50 ? content.substring(0, 50) + '...' : content
+      caseTemplate.value = { title, description: content }
+      showCaseTemplate.value = true
       return
     }
+
+    // 添加用户消息
+    addUserMessage(content)
 
     // 如果没有会话，先创建
     if (!conversationId.value) {
@@ -120,16 +161,16 @@ export const useChatStore = defineStore('chat', () => {
     await streamAIResponse(content)
   }
 
-  /** 创建新工单（从用户第一条消息自动创建） */
-  async function createNewCase(description: string) {
+  /** 用户确认模板后创建工单 */
+  async function confirmCreateCase(template: CaseTemplate) {
+    showCaseTemplate.value = false
+    addUserMessage(pendingUserMessage.value)
     isLoading.value = true
     try {
-      // 生成标题（取前 50 字）
-      const title = description.length > 50 ? description.substring(0, 50) + '...' : description
       const res = await caseApi.create({
         client_id: clientId,
-        title,
-        description,
+        title: template.title,
+        description: template.description,
       })
       currentCase.value = res.data
       addSystemMessage(`工单 ${res.data.case_id} 已创建，正在自动确认...`)
@@ -143,12 +184,19 @@ export const useChatStore = defineStore('chat', () => {
       await createConversation()
 
       // 开始 AI 对话
-      await streamAIResponse(description)
+      await streamAIResponse(pendingUserMessage.value)
     } catch (e: any) {
       addSystemMessage(`创建工单失败: ${e.response?.data?.detail || e.message}`)
     } finally {
       isLoading.value = false
+      pendingUserMessage.value = ''
     }
+  }
+
+  /** 用户取消创建工单 */
+  function cancelCreateCase() {
+    showCaseTemplate.value = false
+    pendingUserMessage.value = ''
   }
 
   /** 创建对话 */
@@ -285,6 +333,17 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming,
     existingCases,
     hasActiveCase,
+    // 未关闭工单确认
+    pendingCase,
+    showPendingDialog,
+    resumePendingCase,
+    closePendingCase,
+    // 工单创建模板
+    showCaseTemplate,
+    caseTemplate,
+    confirmCreateCase,
+    cancelCreateCase,
+    // 核心方法
     initialize,
     sendMessage,
     startNewConversation,
