@@ -3,6 +3,7 @@ Session Management Service - WebSocket会话管理
 """
 
 from typing import Dict, Optional
+from datetime import datetime
 import json
 import sys
 import os
@@ -79,5 +80,3 @@ class SessionManager:
     def get_connection(self, client_id: str):
         """获取WebSocket连接"""
         return self.active_connections.get(client_id)
-
-from datetime import datetime

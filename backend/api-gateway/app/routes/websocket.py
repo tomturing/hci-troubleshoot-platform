@@ -58,10 +58,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 
                 # 转发到Conversation Service
                 try:
+                    conversation_id = message.get("conversation_id")
+                    if not conversation_id:
+                        await websocket.send_text(json.dumps({"error": "Missing conversation_id"}))
+                        continue
+                    
                     # 使用流式请求
                     async with http_client.stream(
                         "POST",
-                        "http://conversation-service:8002/api/conversations/message",
+                        f"http://conversation-service:8002/api/conversations/{conversation_id}/message",
                         json=message,
                         headers={"X-Client-ID": client_id}
                     ) as response:
