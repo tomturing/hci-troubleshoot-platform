@@ -83,7 +83,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      ZHIPU_API_KEY: ${ZHIPU_API_KEY}
+      OPENCLAW_BASE_URL: http://host.docker.internal:18790
+      OPENCLAW_GATEWAY_TOKEN: hci-dev-openclaw-token
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
