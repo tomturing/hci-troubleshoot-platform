@@ -52,6 +52,11 @@ export const useChatStore = defineStore('chat', () => {
     return currentCase.value && !['closed', 'cancelled'].includes(currentCase.value.status)
   })
 
+  /** 工单已关闭（有工单但非活跃状态）*/
+  const isCaseClosed = computed(() => {
+    return currentCase.value !== null && !hasActiveCase.value
+  })
+
   /** 初始化：检查现有工单 */
   async function initialize() {
     if (initialized.value) return
@@ -136,6 +141,12 @@ export const useChatStore = defineStore('chat', () => {
     // 处理命令
     if (content.startsWith('/close')) {
       await handleCloseCase()
+      return
+    }
+
+    // 工单已关闭时，阻止继续发送消息
+    if (isCaseClosed.value) {
+      addSystemMessage('当前工单已关闭，请点击「新建工单」开始新的对话。')
       return
     }
 
@@ -333,6 +344,7 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming,
     existingCases,
     hasActiveCase,
+    isCaseClosed,
     // 未关闭工单确认
     pendingCase,
     showPendingDialog,

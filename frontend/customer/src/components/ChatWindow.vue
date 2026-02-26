@@ -158,8 +158,8 @@ onMounted(scrollToBottom)
           v-model="inputText"
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 4 }"
-          placeholder="描述您遇到的问题..."
-          :disabled="chatStore.isStreaming"
+          :placeholder="chatStore.isCaseClosed ? '工单已关闭，请点击「新建工单」' : '描述您遇到的问题...'"
+          :disabled="chatStore.isStreaming || chatStore.isCaseClosed"
           @keydown="handleKeydown"
         />
         <el-button
