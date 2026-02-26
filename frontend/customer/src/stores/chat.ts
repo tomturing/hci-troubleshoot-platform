@@ -47,6 +47,12 @@ export const useChatStore = defineStore('chat', () => {
   const caseTemplate = ref<CaseTemplate>({ title: '', description: '' })
   const pendingUserMessage = ref('')
 
+  // 历史工单查看
+  const showHistoryDrawer = ref(false)
+  const historyMessages = ref<ChatMessage[]>([])
+  const historyCase = ref<CaseResponse | null>(null)
+  const historyLoading = ref(false)
+
   // 计算属性
   const hasActiveCase = computed(() => {
     return currentCase.value && !['closed', 'cancelled'].includes(currentCase.value.status)
@@ -312,13 +318,81 @@ export const useChatStore = defineStore('chat', () => {
 
   /** 开始新对话（关闭当前工单后） */
   function startNewConversation() {
-    // 保留历史消息，添加分割线（让用户可以回看历史）
-    if (currentCase.value) {
-      addSystemMessage(`──── 工单 ${currentCase.value.case_id} 已结束 ────`)
-    }
     currentCase.value = null
     conversationId.value = null
+    messages.value = []
     addSystemMessage('请描述您遇到的新问题，我会帮您创建工单。')
+  }
+
+  /** 打开历史工单抽屉 */
+  async function openHistoryDrawer() {
+    showHistoryDrawer.value = true
+    // 刷新工单列表
+    try {
+      const res = await caseApi.listByClient(clientId)
+      existingCases.value = res.data
+    } catch (e) {
+      console.error('加载历史工单列表失败', e)
+    }
+  }
+
+  /** 关闭历史工单抽屉 */
+  function closeHistoryDrawer() {
+    showHistoryDrawer.value = false
+    historyMessages.value = []
+    historyCase.value = null
+  }
+
+  /** 加载某个历史工单的对话消息 */
+  async function loadHistoryMessages(caseItem: CaseResponse) {
+    historyCase.value = caseItem
+    historyLoading.value = true
+    historyMessages.value = []
+    try {
+      const convRes = await apiClient.get(`/conversations/case/${caseItem.case_id}`)
+      const conversations = convRes.data as any[]
+      if (conversations.length > 0) {
+        const conv = conversations[0]
+        const msgRes = await conversationApi.getMessages(conv.conversation_id)
+        const history: MessageResponse[] = msgRes.data
+        historyMessages.value = history.map((m) => ({
+          id: m.message_id,
+          role: m.role as ChatMessage['role'],
+          content: m.content,
+          timestamp: new Date(m.created_at),
+        }))
+      }
+      if (historyMessages.value.length === 0) {
+        historyMessages.value = [{
+          id: 'sys-empty',
+          role: 'system',
+          content: '该工单没有对话记录。',
+          timestamp: new Date(),
+        }]
+      }
+    } catch (e) {
+      console.error('加载历史消息失败', e)
+      historyMessages.value = [{
+        id: 'sys-error',
+        role: 'system',
+        content: '加载对话记录失败，请稍后重试。',
+        timestamp: new Date(),
+      }]
+    } finally {
+      historyLoading.value = false
+    }
+  }
+
+  /** 从历史工单列表选择一个工单恢复进入（仅限未关闭的） */
+  async function switchToCase(caseItem: CaseResponse) {
+    closeHistoryDrawer()
+    if (!['closed', 'cancelled'].includes(caseItem.status)) {
+      // 未关闭工单，恢复到当前对话
+      currentCase.value = caseItem
+      conversationId.value = null
+      messages.value = []
+      await loadConversationHistory(caseItem.case_id)
+    }
   }
 
   function addUserMessage(content: string) {
@@ -358,6 +432,15 @@ export const useChatStore = defineStore('chat', () => {
     caseTemplate,
     confirmCreateCase,
     cancelCreateCase,
+    // 历史工单
+    showHistoryDrawer,
+    historyMessages,
+    historyCase,
+    historyLoading,
+    openHistoryDrawer,
+    closeHistoryDrawer,
+    loadHistoryMessages,
+    switchToCase,
     // 核心方法
     initialize,
     sendMessage,

@@ -18,6 +18,14 @@ onMounted(() => {
       <div class="header-content">
         <h1>HCI 故障排查助手</h1>
         <div class="header-badges">
+          <el-button
+            size="small"
+            round
+            class="history-btn"
+            @click="chatStore.openHistoryDrawer()"
+          >
+            📋 历史工单
+          </el-button>
           <span class="client-badge" :title="clientId">
             ID: {{ clientId.substring(0, 15) }}...
           </span>
@@ -95,6 +103,17 @@ body {
   cursor: pointer;
   user-select: all;
   opacity: 0.85;
+}
+
+.history-btn {
+  background: rgba(255, 255, 255, 0.2) !important;
+  border: 1px solid rgba(255, 255, 255, 0.3) !important;
+  color: #fff !important;
+  font-size: 12px !important;
+}
+
+.history-btn:hover {
+  background: rgba(255, 255, 255, 0.35) !important;
 }
 
 .app-main {

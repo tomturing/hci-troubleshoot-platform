@@ -63,6 +63,31 @@ watch(
 )
 
 onMounted(scrollToBottom)
+
+/** 状态中文映射 */
+function statusLabel(status: string): string {
+  const map: Record<string, string> = {
+    created: '待确认', confirmed: '已确认', in_progress: '处理中',
+    resolved: '已解决', closed: '已关闭', cancelled: '已取消',
+  }
+  return map[status] || status
+}
+
+/** 状态颜色映射 */
+function statusType(status: string): '' | 'success' | 'warning' | 'danger' | 'info' {
+  const map: Record<string, '' | 'success' | 'warning' | 'danger' | 'info'> = {
+    created: 'warning', confirmed: '', in_progress: '',
+    resolved: 'success', closed: 'info', cancelled: 'danger',
+  }
+  return map[status] || 'info'
+}
+
+/** 格式化时间 */
+function formatDate(d: string): string {
+  return new Date(d).toLocaleString('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  })
+}
 </script>
 
 <template>
@@ -141,6 +166,71 @@ onMounted(scrollToBottom)
         <span>处理中...</span>
       </div>
     </div>
+
+    <!-- 历史工单抽屉 -->
+    <el-drawer
+      v-model="chatStore.showHistoryDrawer"
+      title="历史工单"
+      direction="ltr"
+      size="380px"
+      :append-to-body="true"
+      @close="chatStore.closeHistoryDrawer()"
+    >
+      <!-- 左右分栏：列表 + 消息预览 -->
+      <div class="history-container">
+        <!-- 工单列表 -->
+        <div class="history-list" v-if="!chatStore.historyCase">
+          <div
+            v-for="c in chatStore.existingCases"
+            :key="c.case_id"
+            class="history-item"
+            @click="chatStore.loadHistoryMessages(c)"
+          >
+            <div class="history-item-header">
+              <span class="history-case-id">{{ c.case_id }}</span>
+              <el-tag :type="statusType(c.status)" size="small">{{ statusLabel(c.status) }}</el-tag>
+            </div>
+            <div class="history-item-title">{{ c.title }}</div>
+            <div class="history-item-time">{{ formatDate(c.created_at) }}</div>
+          </div>
+          <div v-if="chatStore.existingCases.length === 0" class="history-empty">
+            暂无历史工单
+          </div>
+        </div>
+
+        <!-- 消息预览 -->
+        <div class="history-detail" v-else>
+          <div class="history-detail-header">
+            <el-button text size="small" @click="chatStore.historyCase = null; chatStore.historyMessages = []">
+              ← 返回列表
+            </el-button>
+            <div class="history-detail-info">
+              <strong>{{ chatStore.historyCase.case_id }}</strong>
+              <span>{{ chatStore.historyCase.title }}</span>
+              <el-tag :type="statusType(chatStore.historyCase.status)" size="small">
+                {{ statusLabel(chatStore.historyCase.status) }}
+              </el-tag>
+            </div>
+          </div>
+          <div class="history-messages" v-loading="chatStore.historyLoading">
+            <MessageBubble
+              v-for="msg in chatStore.historyMessages"
+              :key="msg.id"
+              :message="msg"
+            />
+          </div>
+          <!-- 如果是活跃工单，允许切换 -->
+          <div
+            v-if="chatStore.historyCase && !['closed', 'cancelled'].includes(chatStore.historyCase.status)"
+            class="history-action"
+          >
+            <el-button type="primary" size="small" @click="chatStore.switchToCase(chatStore.historyCase!)">
+              切换到此工单
+            </el-button>
+          </div>
+        </div>
+      </div>
+    </el-drawer>
 
     <!-- 输入区域 -->
     <div class="input-area">
@@ -273,5 +363,107 @@ onMounted(scrollToBottom)
   color: #909399;
   font-size: 13px;
   margin-bottom: 12px;
+}
+
+/* 历史工单抽屉 */
+.history-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.history-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f2f5;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.history-item:hover {
+  background: #f5f7fa;
+}
+
+.history-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.history-case-id {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  font-family: 'Consolas', monospace;
+}
+
+.history-item-title {
+  font-size: 14px;
+  color: #606266;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.history-item-time {
+  font-size: 12px;
+  color: #c0c4cc;
+}
+
+.history-empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: #c0c4cc;
+  font-size: 14px;
+}
+
+.history-detail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.history-detail-header {
+  padding: 0 0 12px 0;
+  border-bottom: 1px solid #f0f2f5;
+}
+
+.history-detail-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.history-detail-info strong {
+  font-size: 14px;
+  color: #303133;
+  font-family: 'Consolas', monospace;
+}
+
+.history-detail-info span {
+  font-size: 13px;
+  color: #606266;
+}
+
+.history-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.history-action {
+  padding: 12px 0 0;
+  border-top: 1px solid #f0f2f5;
+  text-align: center;
 }
 </style>
