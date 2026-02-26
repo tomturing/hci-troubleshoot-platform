@@ -47,44 +47,44 @@ export function createCaseApi(client: AxiosInstance) {
   return {
     /** 创建工单 */
     create(data: CaseCreate) {
-      return client.post<CaseResponse>('/api/cases/', data)
+      return client.post<CaseResponse>('/cases/', data)
     },
 
     /** 获取工单详情 */
     getById(caseId: string) {
-      return client.get<CaseResponse>(`/api/cases/${caseId}`)
+      return client.get<CaseResponse>(`/cases/${caseId}`)
     },
 
     /** 查询客户端的工单列表 */
     listByClient(clientId: string) {
-      return client.get<CaseResponse[]>('/api/cases/', { params: { client_id: clientId } })
+      return client.get<CaseResponse[]>('/cases/', { params: { client_id: clientId } })
     },
 
     /** 确认工单 */
     confirm(caseId: string) {
-      return client.put<CaseResponse>(`/api/cases/${caseId}/confirm`)
+      return client.put<CaseResponse>(`/cases/${caseId}/confirm`)
     },
 
     /** 关闭工单 */
     close(caseId: string) {
-      return client.put<CaseResponse>(`/api/cases/${caseId}/close`)
+      return client.put<CaseResponse>(`/cases/${caseId}/close`)
     },
 
     // ---- Admin ----
 
     /** [Admin] 所有工单列表 */
     listAll(params?: { skip?: number; limit?: number; status?: string; client_id?: string }) {
-      return client.get<CaseListResponse>('/api/cases/all', { params })
+      return client.get<CaseListResponse>('/cases/all', { params })
     },
 
     /** [Admin] 工单统计 */
     stats() {
-      return client.get<CaseStatsResponse>('/api/cases/stats')
+      return client.get<CaseStatsResponse>('/cases/stats')
     },
 
     /** [Admin] 客户端列表 */
     clients() {
-      return client.get<ClientListResponse>('/api/cases/clients')
+      return client.get<ClientListResponse>('/cases/clients')
     },
   }
 }
@@ -94,14 +94,14 @@ export function createConversationApi(client: AxiosInstance) {
   return {
     /** 创建会话（case_id 通过 query parameter 传递） */
     create(caseId: string) {
-      return client.post<ConversationResponse>('/api/conversations/', null, {
+      return client.post<ConversationResponse>('/conversations/', null, {
         params: { case_id: caseId },
       })
     },
 
     /** 获取会话消息历史 */
     getMessages(conversationId: string) {
-      return client.get<MessageResponse[]>(`/api/conversations/${conversationId}/messages`)
+      return client.get<MessageResponse[]>(`/conversations/${conversationId}/messages`)
     },
 
     /** 发送消息并接收 SSE 流 */

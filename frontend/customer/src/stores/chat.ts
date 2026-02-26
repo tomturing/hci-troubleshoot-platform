@@ -103,7 +103,7 @@ export const useChatStore = defineStore('chat', () => {
   async function loadConversationHistory(caseId: string) {
     try {
       // 获取工单下的对话
-      const convRes = await apiClient.get(`/api/conversations/case/${caseId}`)
+      const convRes = await apiClient.get(`/conversations/case/${caseId}`)
       const conversations = convRes.data as any[]
       if (conversations.length > 0) {
         const conv = conversations[0]
