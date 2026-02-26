@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS "user" (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     last_login_at TIMESTAMP WITH TIME ZONE,
-    trace_id VARCHAR(50)
+    trace_id VARCHAR(64)
 );
 
 CREATE INDEX idx_user_client_id ON "user"(client_id);
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS "case" (
     confirmed_at TIMESTAMP WITH TIME ZONE,
     resolved_at TIMESTAMP WITH TIME ZONE,
     closed_at TIMESTAMP WITH TIME ZONE,
-    trace_id VARCHAR(50) NOT NULL
+    trace_id VARCHAR(64) NOT NULL
 );
 
 CREATE INDEX idx_case_user_id ON "case"(user_id);
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS conversation (
     ended_at TIMESTAMP WITH TIME ZONE,
     message_count INT DEFAULT 0,
     metadata JSONB DEFAULT '{}'::jsonb,
-    trace_id VARCHAR(50) NOT NULL
+    trace_id VARCHAR(64) NOT NULL
 );
 
 CREATE INDEX idx_conversation_case_id ON conversation(case_id);
@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS message (
     command_warning TEXT,
     metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    trace_id VARCHAR(50) NOT NULL,
+    trace_id VARCHAR(64) NOT NULL,
     
     CONSTRAINT check_command_content CHECK (
         (role = 'command' AND command IS NOT NULL) OR
@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS environment (
     env_type VARCHAR(50) NOT NULL,
     env_data JSONB NOT NULL,
     collected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    trace_id VARCHAR(50) NOT NULL
+    trace_id VARCHAR(64) NOT NULL
 );
 
 CREATE INDEX idx_environment_case_id ON environment(case_id);
@@ -230,7 +230,7 @@ CREATE TABLE IF NOT EXISTS session (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     last_activity_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP WITH TIME ZONE,
-    trace_id VARCHAR(50) NOT NULL
+    trace_id VARCHAR(64) NOT NULL
 );
 
 CREATE INDEX idx_session_client_id ON session(client_id);

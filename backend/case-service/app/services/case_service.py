@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from shared.models.schemas import CaseCreate, CaseResponse
 from shared.utils.logger import get_logger
+from shared.utils.otel import get_current_trace_id
 
 logger = get_logger("case-service")
 
@@ -33,11 +34,11 @@ class CaseService:
     
     async def create_case(
         self, 
-        case_create: CaseCreate,
-        trace_id: Optional[str] = None
+        case_create: CaseCreate
     ) -> CaseResponse:
         """创建新工单"""
         case_id = self._generate_case_id()
+        trace_id = get_current_trace_id()
         
         # 获取或创建用户
         from shared.models.user import User
@@ -46,7 +47,7 @@ class CaseService:
             user = User(
                 client_id=case_create.client_id,
                 user_type="temporary",
-                trace_id=trace_id or self._generate_case_id() # fallback trace_id
+                trace_id=trace_id
             )
             user = await self.repository.create_user(user)
             logger.info(f"Created new user for client_id: {case_create.client_id}")
@@ -67,8 +68,7 @@ class CaseService:
             event="case_created",
             message=f"Created case {case_id}",
             case_id=case_id,
-            client_id=case_create.client_id,
-            trace_id=trace_id
+            client_id=case_create.client_id
         )
         
         return CaseResponse.model_validate(created_case)
@@ -87,14 +87,12 @@ class CaseService:
     
     async def confirm_case(
         self, 
-        case_id: str,
-        trace_id: Optional[str] = None
+        case_id: str
     ) -> Optional[CaseResponse]:
         """确认工单"""
         case = await self.repository.update_status(
             case_id, 
-            CaseStatus.confirmed,
-            trace_id
+            CaseStatus.confirmed
         )
         if not case:
             return None
@@ -102,22 +100,19 @@ class CaseService:
         logger.info(
             event="case_confirmed",
             message=f"Confirmed case {case_id}",
-            case_id=case_id,
-            trace_id=trace_id
+            case_id=case_id
         )
         
         return CaseResponse.model_validate(case)
     
     async def close_case(
         self, 
-        case_id: str,
-        trace_id: Optional[str] = None
+        case_id: str
     ) -> Optional[CaseResponse]:
         """关闭工单"""
         case = await self.repository.update_status(
             case_id, 
-            CaseStatus.closed,
-            trace_id
+            CaseStatus.closed
         )
         if not case:
             return None
@@ -125,8 +120,7 @@ class CaseService:
         logger.info(
             event="case_closed",
             message=f"Closed case {case_id}",
-            case_id=case_id,
-            trace_id=trace_id
+            case_id=case_id
         )
         
         return CaseResponse.model_validate(case)

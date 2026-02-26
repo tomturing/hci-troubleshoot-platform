@@ -41,22 +41,13 @@ async def proxy_request(
 async def create_case(request: Request):
     """创建工单"""
     payload = await request.json()
-    response = await proxy_request(
-        "POST", 
-        "/", 
-        payload, 
-        headers={"x-trace-id": request.headers.get("x-trace-id", "")}
-    )
+    response = await proxy_request("POST", "/", payload)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 @router.get("/{case_id}")
 async def get_case(case_id: str, request: Request):
     """获取工单详情"""
-    response = await proxy_request(
-        "GET", 
-        f"/{case_id}",
-        headers={"x-trace-id": request.headers.get("x-trace-id", "")}
-    )
+    response = await proxy_request("GET", f"/{case_id}")
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Case not found")
     return JSONResponse(content=response.json(), status_code=response.status_code)
@@ -64,22 +55,13 @@ async def get_case(case_id: str, request: Request):
 @router.get("/")
 async def list_cases(client_id: str, request: Request):
     """查询工单列表"""
-    response = await proxy_request(
-        "GET", 
-        "/", 
-        params={"client_id": client_id},
-        headers={"x-trace-id": request.headers.get("x-trace-id", "")}
-    )
+    response = await proxy_request("GET", "/", params={"client_id": client_id})
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 @router.put("/{case_id}/confirm")
 async def confirm_case(case_id: str, request: Request):
     """确认工单"""
-    response = await proxy_request(
-        "PUT", 
-        f"/{case_id}/confirm",
-        headers={"x-trace-id": request.headers.get("x-trace-id", "")}
-    )
+    response = await proxy_request("PUT", f"/{case_id}/confirm")
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Case not found")
     return JSONResponse(content=response.json(), status_code=response.status_code)
@@ -87,11 +69,7 @@ async def confirm_case(case_id: str, request: Request):
 @router.put("/{case_id}/close")
 async def close_case(case_id: str, request: Request):
     """关闭工单"""
-    response = await proxy_request(
-        "PUT", 
-        f"/{case_id}/close",
-        headers={"x-trace-id": request.headers.get("x-trace-id", "")}
-    )
+    response = await proxy_request("PUT", f"/{case_id}/close")
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Case not found")
     return JSONResponse(content=response.json(), status_code=response.status_code)

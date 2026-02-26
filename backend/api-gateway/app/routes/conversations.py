@@ -81,24 +81,14 @@ async def proxy_request(
 @router.post("/")
 async def create_conversation(request: Request):
     """创建对话"""
-    # Conversation service expects case_id in query params. If client sends JSON we might need to extract, but let's pass it along.
     query_params = dict(request.query_params)
-    response = await proxy_request(
-        "POST", 
-        "/", 
-        params=query_params,
-        headers={"x-trace-id": request.headers.get("x-trace-id", "")}
-    )
+    response = await proxy_request("POST", "/", params=query_params)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 @router.get("/{conversation_id}")
 async def get_conversation(conversation_id: str, request: Request):
     """获取对话详情"""
-    response = await proxy_request(
-        "GET", 
-        f"/{conversation_id}",
-        headers={"x-trace-id": request.headers.get("x-trace-id", "")}
-    )
+    response = await proxy_request("GET", f"/{conversation_id}")
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return JSONResponse(content=response.json(), status_code=response.status_code)
@@ -106,21 +96,13 @@ async def get_conversation(conversation_id: str, request: Request):
 @router.get("/case/{case_id}")
 async def get_conversations_by_case(case_id: str, request: Request):
     """获取工单的所有对话"""
-    response = await proxy_request(
-        "GET", 
-        f"/case/{case_id}", 
-        headers={"x-trace-id": request.headers.get("x-trace-id", "")}
-    )
+    response = await proxy_request("GET", f"/case/{case_id}")
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 @router.get("/{conversation_id}/messages")
 async def get_messages(conversation_id: str, request: Request):
     """获取对话的消息历史"""
-    response = await proxy_request(
-        "GET", 
-        f"/{conversation_id}/messages", 
-        headers={"x-trace-id": request.headers.get("x-trace-id", "")}
-    )
+    response = await proxy_request("GET", f"/{conversation_id}/messages")
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 @router.post("/{conversation_id}/message")
@@ -131,5 +113,5 @@ async def send_message(conversation_id: str, request: Request):
         "POST",
         f"/{conversation_id}/message",
         payload,
-        headers={"x-trace-id": request.headers.get("x-trace-id", "")}
+        headers={}
     )

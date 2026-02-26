@@ -2,7 +2,6 @@
 echo "=== 1. 创建工单 ==="
 CASE_RESP=$(curl -s -X POST "http://localhost:8000/api/cases/" \
   -H "Content-Type: application/json" \
-  -H "x-trace-id: trace-manual-001" \
   -d '{"client_id": "manual-test-user", "title": "节点 NotReady", "description": "我的 K8s 工作节点突然变成 NotReady 状态", "source": "terminal"}')
 
 echo $CASE_RESP | jq . || echo $CASE_RESP

@@ -11,6 +11,7 @@ from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
 from .openclaw_client import OpenClawClient
 from shared.utils.logger import get_logger
+from shared.utils.otel import get_current_trace_id
 
 logger = get_logger("conversation-service")
 
@@ -28,11 +29,11 @@ class ConversationService:
     async def create_conversation(
         self,
         case_id: str,
-        trace_id: str,
         initial_message: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> Conversation:
         """创建新对话"""
+        trace_id = get_current_trace_id()
         conversation = await self.repository.create_conversation(
             case_id=case_id,
             trace_id=trace_id,
@@ -43,8 +44,7 @@ class ConversationService:
             event="conversation_created",
             message=f"Created conversation {conversation.conversation_id}",
             case_id=case_id,
-            conversation_id=str(conversation.conversation_id),
-            trace_id=trace_id
+            conversation_id=str(conversation.conversation_id)
         )
         
         # 如果有初始消息，立即发送该消息（但不等待回复，因为这是创建接口）
@@ -65,8 +65,7 @@ class ConversationService:
         self,
         conversation_id: uuid.UUID,
         case_id: str,
-        content: str,
-        trace_id: str
+        content: str
     ) -> AsyncGenerator[str, None]:
         """
         发送消息并获取流式回复(仅负责调用流并yield)
@@ -76,6 +75,8 @@ class ConversationService:
         3. 调用OpenClaw
         4. 流式返回响应
         """
+        trace_id = get_current_trace_id()
+        
         # 1. 保存用户消息
         await self.repository.add_message(
             conversation_id=conversation_id,
@@ -100,8 +101,7 @@ class ConversationService:
         try:
             async for chunk in self.openclaw.chat_completion_stream(
                 messages=history_messages,
-                user_id=f"case-{case_id}",  # 映射 Session Key
-                trace_id=trace_id
+                user_id=f"case-{case_id}"  # 映射 Session Key
             ):
                 if chunk:
                     yield chunk
@@ -115,8 +115,7 @@ class ConversationService:
                     event="conversation_error",
                     message="Error during AI generation",
                     conversation_id=str(conversation_id),
-                    error=str(e),
-                    trace_id=trace_id
+                    error=str(e)
                 )
                 yield f"\n[System Error: {str(e)}]"
                 raise
@@ -125,12 +124,13 @@ class ConversationService:
         self,
         conversation_id: uuid.UUID,
         case_id: str,
-        content: str,
-        trace_id: str
+        content: str
     ) -> None:
         """保存AI返回的完整消息(后台执行)"""
         if not content:
             return
+        
+        trace_id = get_current_trace_id()
             
         try:
             await self.repository.add_message(
@@ -144,14 +144,12 @@ class ConversationService:
                 event="conversation_reply",
                 message="AI response saved in background",
                 conversation_id=str(conversation_id),
-                response_length=len(content),
-                trace_id=trace_id
+                response_length=len(content)
             )
         except Exception as e:
             logger.error(
                 event="conversation_save_error",
                 message="Error saving AI response in background",
                 conversation_id=str(conversation_id),
-                error=str(e),
-                trace_id=trace_id
+                error=str(e)
             )

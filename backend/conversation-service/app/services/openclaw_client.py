@@ -26,8 +26,7 @@ class OpenClawClient:
         self,
         messages: List[Dict[str, str]],
         user_id: str,
-        model: str = "openclaw",
-        trace_id: Optional[str] = None
+        model: str = "openclaw"
     ) -> AsyncGenerator[str, None]:
         """
         调用OpenClaw Chat Completions API (流式)
@@ -59,8 +58,7 @@ class OpenClawClient:
             event="openclaw_request",
             message="Sending request to OpenClaw",
             url=url,
-            user_id=user_id,
-            trace_id=trace_id
+            user_id=user_id
         )
         
         try:
@@ -76,8 +74,7 @@ class OpenClawClient:
                         event="openclaw_error",
                         message=f"OpenClaw returned status {response.status_code}",
                         status=response.status_code,
-                        body=error_body.decode('utf-8', errors='ignore'),
-                        trace_id=trace_id
+                        body=error_body.decode('utf-8', errors='ignore')
                     )
                     response.raise_for_status()
                 
@@ -102,8 +99,7 @@ class OpenClawClient:
             logger.error(
                 event="openclaw_exception",
                 message="Error calling OpenClaw API",
-                error=str(e),
-                trace_id=trace_id
+                error=str(e)
             )
             raise
 

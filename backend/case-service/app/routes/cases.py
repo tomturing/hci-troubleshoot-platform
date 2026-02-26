@@ -2,7 +2,7 @@
 Case Routes - API路由
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,9 +24,7 @@ def set_database_manager(db_manager: DatabaseManager):
     global database_manager
     database_manager = db_manager
 
-async def get_case_service(
-    x_trace_id: Optional[str] = Header(None)
-) -> CaseService:
+async def get_case_service() -> CaseService:
     """依赖注入: 获取Case Service"""
     if not database_manager:
         raise HTTPException(status_code=500, detail="Database not initialized")
@@ -38,11 +36,10 @@ async def get_case_service(
 @router.post("/", response_model=CaseResponse, status_code=201)
 async def create_case(
     case_create: CaseCreate,
-    x_trace_id: Optional[str] = Header(None),
     service: CaseService = Depends(get_case_service)
 ):
     """创建新工单"""
-    return await service.create_case(case_create, trace_id=x_trace_id)
+    return await service.create_case(case_create)
 
 @router.get("/{case_id}", response_model=CaseResponse)
 async def get_case(
@@ -66,11 +63,10 @@ async def list_cases(
 @router.put("/{case_id}/confirm", response_model=CaseResponse)
 async def confirm_case(
     case_id: str,
-    x_trace_id: Optional[str] = Header(None),
     service: CaseService = Depends(get_case_service)
 ):
     """确认工单"""
-    case = await service.confirm_case(case_id, trace_id=x_trace_id)
+    case = await service.confirm_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     return case
@@ -78,11 +74,10 @@ async def confirm_case(
 @router.put("/{case_id}/close", response_model=CaseResponse)
 async def close_case(
     case_id: str,
-    x_trace_id: Optional[str] = Header(None),
     service: CaseService = Depends(get_case_service)
 ):
     """关闭工单"""
-    case = await service.close_case(case_id, trace_id=x_trace_id)
+    case = await service.close_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     return case

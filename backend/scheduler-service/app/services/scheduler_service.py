@@ -28,7 +28,7 @@ class SchedulerService:
         # 初始填充池子
         await self.pool.ensure_warm_pool()
         
-    async def allocate_pod(self, case_id: str, trace_id: str) -> Optional[str]:
+    async def allocate_pod(self, case_id: str) -> Optional[str]:
         """为工单分配Pod"""
         # 检查是否已有分配
         if case_id in self.allocations:
@@ -50,14 +50,13 @@ class SchedulerService:
                 event="pod_allocated",
                 message=f"Allocated pod {pod_name} for case {case_id}",
                 case_id=case_id,
-                pod_name=pod_name,
-                trace_id=trace_id
+                pod_name=pod_name
             )
             return pod_name
             
         return None
 
-    async def release_pod(self, case_id: str, trace_id: str) -> bool:
+    async def release_pod(self, case_id: str) -> bool:
         """释放工单占用的Pod"""
         if case_id in self.allocations:
             pod_name = self.allocations[case_id]
@@ -67,8 +66,7 @@ class SchedulerService:
                 event="pod_released",
                 message=f"Releasing pod {pod_name} for case {case_id}",
                 case_id=case_id,
-                pod_name=pod_name,
-                trace_id=trace_id
+                pod_name=pod_name
             )
             
             await self.pool.release_pod(pod_name)

@@ -2,7 +2,7 @@
 Conversation Routes - 对话API路由
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
 import uuid
@@ -28,9 +28,7 @@ def set_dependencies(db: DatabaseManager, osc: OpenClawClient):
     database_manager = db
     openclaw_client = osc
 
-async def get_conversation_service(
-    x_trace_id: Optional[str] = Header(None)
-) -> ConversationService:
+async def get_conversation_service() -> ConversationService:
     """依赖注入: 获取Conversation Service"""
     if not database_manager or not openclaw_client:
         raise HTTPException(status_code=500, detail="Service dependencies not initialized")
@@ -43,13 +41,11 @@ async def get_conversation_service(
 async def create_conversation(
     case_id: str,
     initial_message: Optional[str] = None,
-    x_trace_id: Optional[str] = Header(None),
     service: ConversationService = Depends(get_conversation_service)
 ):
     """创建新对话"""
     conversation = await service.create_conversation(
         case_id=case_id,
-        trace_id=x_trace_id,
         initial_message=initial_message
     )
     return {"conversation_id": conversation.conversation_id, "case_id": conversation.case_id}
@@ -87,7 +83,6 @@ async def send_message(
     conversation_id: uuid.UUID,
     message: MessageCreate,
     background_tasks: BackgroundTasks,
-    x_trace_id: Optional[str] = Header(None),
     service: ConversationService = Depends(get_conversation_service)
 ):
     """
@@ -103,8 +98,7 @@ async def send_message(
             async for chunk in service.send_message_stream_only(
                 conversation_id=conversation_id,
                 case_id=message.case_id,
-                content=message.content,
-                trace_id=x_trace_id
+                content=message.content
             ):
                 if chunk:
                     ai_content.append(chunk)
@@ -115,8 +109,7 @@ async def send_message(
                 service.save_assistant_message,
                 conversation_id=conversation_id,
                 case_id=message.case_id,
-                content="".join(ai_content),
-                trace_id=x_trace_id
+                content="".join(ai_content)
             )
             
             yield "data: [DONE]\n\n"
@@ -128,8 +121,7 @@ async def send_message(
                     service.save_assistant_message,
                     conversation_id=conversation_id,
                     case_id=message.case_id,
-                    content="".join(ai_content),
-                    trace_id=x_trace_id
+                    content="".join(ai_content)
                 )
             yield f"event: error\ndata: {str(e)}\n\n"
             

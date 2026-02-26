@@ -25,4 +25,4 @@ class TimestampMixin:
 class TraceableMixin:
     """可追踪混入类"""
     
-    trace_id = Column(String(50), index=True, nullable=True)
+    trace_id = Column(String(64), index=True, nullable=True)

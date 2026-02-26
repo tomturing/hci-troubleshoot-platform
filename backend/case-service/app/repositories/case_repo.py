@@ -56,8 +56,7 @@ class CaseRepository:
     async def update_status(
         self, 
         case_id: str, 
-        status: CaseStatus,
-        trace_id: Optional[str] = None
+        status: CaseStatus
     ) -> Optional[Case]:
         """更新工单状态"""
         case = await self.get_by_id(case_id)
@@ -67,8 +66,6 @@ class CaseRepository:
         case.status = status
         if status == CaseStatus.closed:
             case.closed_at = datetime.utcnow()
-        if trace_id:
-            case.trace_id = trace_id
         
         await self.session.flush()
         await self.session.refresh(case)

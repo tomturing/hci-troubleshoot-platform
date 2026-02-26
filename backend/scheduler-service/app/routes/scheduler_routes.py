@@ -2,7 +2,7 @@
 Scheduler Routes - 调度API路由
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional, Dict
 
 import sys
@@ -41,11 +41,10 @@ class PodResponse(BaseModel):
 @router.post("/pods/allocate", response_model=PodResponse)
 async def allocate_pod(
     request: PodAllocationRequest,
-    x_trace_id: Optional[str] = Header(None),
     service: SchedulerService = Depends(get_service)
 ):
     """分配Pod"""
-    pod_name = await service.allocate_pod(request.case_id, x_trace_id)
+    pod_name = await service.allocate_pod(request.case_id)
     if not pod_name:
         raise HTTPException(status_code=503, detail="No available pods or allocation failed")
     return {"pod_name": pod_name}
@@ -53,11 +52,10 @@ async def allocate_pod(
 @router.post("/pods/release")
 async def release_pod(
     request: PodReleaseRequest,
-    x_trace_id: Optional[str] = Header(None),
     service: SchedulerService = Depends(get_service)
 ):
     """释放Pod"""
-    success = await service.release_pod(request.case_id, x_trace_id)
+    success = await service.release_pod(request.case_id)
     if not success:
         raise HTTPException(status_code=404, detail="Pod or Case not found")
     return {"status": "released"}
