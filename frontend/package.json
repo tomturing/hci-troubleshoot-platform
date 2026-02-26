@@ -1,0 +1,17 @@
+{
+  "name": "hci-troubleshoot-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "customer",
+    "admin"
+  ],
+  "scripts": {
+    "dev:customer": "npm -w customer run dev",
+    "dev:admin": "npm -w admin run dev",
+    "build:customer": "npm -w customer run build",
+    "build:admin": "npm -w admin run build",
+    "build": "npm -w customer run build && npm -w admin run build"
+  }
+}
