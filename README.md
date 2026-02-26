@@ -71,6 +71,8 @@ docker compose -f deploy/observability/docker-compose-obs.yml up -d
 # 5. 访问
 #  - API Gateway: http://localhost:8000
 #  - API文档: http://localhost:8000/docs
+#  - Customer UI: http://localhost:3001 (客户端对话界面)
+#  - Admin UI: http://localhost:3002 (管理控制台)
 #  - Grafana 监控面板: http://localhost:3000 (admin/admin)
 
 # 6. 运行端到端验证
@@ -89,7 +91,7 @@ bash test_manual.sh
 - [07.文件清单](docs/07_文件清单.md)
 - [08.项目进展](docs/08_项目进展.md)
 
-## 📊 MVP状态 (后端全量可用)
+## 📊 MVP状态 (全栈可用)
 
 ### ✅ 已完成
 - 完整架构设计文档
@@ -99,15 +101,12 @@ bash test_manual.sh
 - **OpenTelemetry 全链路分布式追踪** — Trace 瀑布图 + Loki 日志关联
 - **Grafana 可观测性中台** — Loki + Promtail + Tempo + Grafana 一键部署 + 数据源自动 Provisioning
 - **OpenClaw 容器化接入** — 以 Docker 容器运行 OpenClaw Gateway（端口 18789），通过 ZAI_API_KEY 对接真实 z.ai 模型
-- **网关 SSE 代理修复** — 禁用 httpx 默认超时，确保流式输出稳定透传至客户端
-- **OpenClaw 健康检查适配** — 以 POST /v1/chat/completions 空 payload 作为可达性探测
-- **trace_id 统一为 OTel 标准** — 移除自定义 X-Trace-ID，全链路使用 W3C traceparent 自动传播，DB 存储 OTel 32位 hex trace_id
-- **崩溃与数据完整性修复** — WebSocket endpoint URL 修正、datetime import 修复、DB nullable 对齐
-- **配置与代码质量清理** — 移除冗余配置字段、logger 实例缓存、装饰器 @wraps 补全
+- **trace_id 统一为 OTel 标准** — 全链路使用 W3C traceparent 自动传播
+- **前端双应用** — Customer 对话式UI（:3001） + Admin 管理控制台（:3002），Docker 集成部署
 
 ### ⏳ 待补充
-- 前端 Vue 3 控制台对接
 - 生产级 K8s 部署配置清单和集群发布
+- 知识库融合与 Prompt 调优
 
 详见最新的进展报告: [最新进展状态记录](docs/08_项目进展.md)
 
