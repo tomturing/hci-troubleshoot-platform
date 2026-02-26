@@ -7,6 +7,7 @@ const props = defineProps<{ message: ChatMessage }>()
 const isUser = computed(() => props.message.role === 'user')
 const isSystem = computed(() => props.message.role === 'system')
 const isAssistant = computed(() => props.message.role === 'assistant')
+const isDivider = computed(() => isSystem.value && props.message.content.includes('────'))
 
 /** 复制代码块 */
 const copied = ref(false)
@@ -31,6 +32,7 @@ function formatTime(d: Date) {
       'is-system': isSystem,
       'is-assistant': isAssistant,
       'is-streaming': message.isStreaming,
+      'is-divider': isDivider,
     }"
   >
     <!-- 系统消息：居中小字 -->
@@ -112,6 +114,33 @@ function escapeHtml(text: string): string {
   padding: 6px 16px;
   border-radius: 12px;
   text-align: center;
+}
+
+/* 工单分割线样式 */
+.message-bubble.is-divider {
+  max-width: 100%;
+  width: 100%;
+}
+
+.message-bubble.is-divider .system-msg {
+  background: transparent;
+  border-radius: 0;
+  padding: 12px 0;
+  margin: 4px 0;
+  color: #c0c4cc;
+  font-size: 12px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.message-bubble.is-divider .system-msg::before,
+.message-bubble.is-divider .system-msg::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #dcdfe6;
 }
 
 .avatar {

@@ -312,9 +312,12 @@ export const useChatStore = defineStore('chat', () => {
 
   /** 开始新对话（关闭当前工单后） */
   function startNewConversation() {
+    // 保留历史消息，添加分割线（让用户可以回看历史）
+    if (currentCase.value) {
+      addSystemMessage(`──── 工单 ${currentCase.value.case_id} 已结束 ────`)
+    }
     currentCase.value = null
     conversationId.value = null
-    messages.value = []
     addSystemMessage('请描述您遇到的新问题，我会帮您创建工单。')
   }
 
