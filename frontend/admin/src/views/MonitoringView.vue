@@ -4,6 +4,11 @@
  * Grafana 默认部署在 localhost:3000
  */
 const grafanaUrl = 'http://localhost:3000'
+
+/** 在新窗口打开 Grafana（Vue template 中不能直接访问 window） */
+function openGrafana() {
+  window.open(grafanaUrl, '_blank')
+}
 </script>
 
 <template>
@@ -12,7 +17,7 @@ const grafanaUrl = 'http://localhost:3000'
       <template #header>
         <div class="monitor-header">
           <span>系统监控</span>
-          <el-button type="primary" link @click="window.open(grafanaUrl, '_blank')">
+          <el-button type="primary" link @click="openGrafana">
             <el-icon><Monitor /></el-icon>
             在新窗口打开 Grafana
           </el-button>
