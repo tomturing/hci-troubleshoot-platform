@@ -139,6 +139,27 @@ function formatDate(d: string): string {
               placeholder="详细描述您遇到的问题..."
             />
           </el-form-item>
+          <!-- AI 助手选择器 (生产环境通过环境变量隐藏) -->
+          <el-form-item v-if="chatStore.showAssistantSelector" label="AI 助手">
+            <el-select
+              v-model="chatStore.selectedAssistant"
+              placeholder="选择 AI 助手"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="assistant in chatStore.assistants"
+                :key="assistant.type"
+                :label="assistant.display_name"
+                :value="assistant.type"
+                :disabled="!assistant.available"
+              >
+                <div class="assistant-option">
+                  <span>{{ assistant.display_name }}</span>
+                  <span class="assistant-desc">{{ assistant.description }}</span>
+                </div>
+              </el-option>
+            </el-select>
+          </el-form-item>
         </el-form>
       </div>
       <template #footer>
@@ -465,5 +486,17 @@ function formatDate(d: string): string {
   padding: 12px 0 0;
   border-top: 1px solid #f0f2f5;
   text-align: center;
+}
+
+/* AI 助手选择器下拉选项 */
+.assistant-option {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.4;
+}
+
+.assistant-desc {
+  font-size: 12px;
+  color: #909399;
 }
 </style>

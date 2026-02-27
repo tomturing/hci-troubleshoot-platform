@@ -12,6 +12,7 @@ import type {
   ClientListResponse,
   ConversationResponse,
   MessageResponse,
+  AssistantInfo,
 } from './types'
 
 /** 创建带通用拦截器的 Axios 实例 */
@@ -85,6 +86,16 @@ export function createCaseApi(client: AxiosInstance) {
     /** [Admin] 客户端列表 */
     clients() {
       return client.get<ClientListResponse>('/cases/clients')
+    },
+  }
+}
+
+/** Assistant API 方法集合 */
+export function createAssistantApi(client: AxiosInstance) {
+  return {
+    /** 获取可用 AI 助手列表 */
+    list() {
+      return client.get<AssistantInfo[]>('/assistants/')
     },
   }
 }

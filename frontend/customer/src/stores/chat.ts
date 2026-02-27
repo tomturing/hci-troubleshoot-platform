@@ -4,8 +4,8 @@
 
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { createApiClient, createCaseApi, createConversationApi } from '@hci/shared'
-import type { CaseResponse, MessageResponse } from '@hci/shared'
+import { createApiClient, createCaseApi, createConversationApi, createAssistantApi } from '@hci/shared'
+import type { CaseResponse, MessageResponse, AssistantInfo } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 
 /** 前端聊天消息 */
@@ -28,6 +28,10 @@ export const useChatStore = defineStore('chat', () => {
   const apiClient = createApiClient('/api', clientId)
   const caseApi = createCaseApi(apiClient)
   const conversationApi = createConversationApi(apiClient)
+  const assistantApi = createAssistantApi(apiClient)
+
+  // 是否显示助手选择器 (生产环境隐藏)
+  const showAssistantSelector = import.meta.env.VITE_SHOW_ASSISTANT_SELECTOR !== 'false'
 
   // 状态
   const messages = ref<ChatMessage[]>([])
@@ -37,6 +41,10 @@ export const useChatStore = defineStore('chat', () => {
   const isStreaming = ref(false)
   const existingCases = ref<CaseResponse[]>([])
   const initialized = ref(false)
+
+  // AI 助手列表
+  const assistants = ref<AssistantInfo[]>([])
+  const selectedAssistant = ref<string>('')  // 当前选中的助手类型
 
   // 未关闭工单确认流程
   const pendingCase = ref<CaseResponse | null>(null)
@@ -63,9 +71,34 @@ export const useChatStore = defineStore('chat', () => {
     return currentCase.value !== null && !hasActiveCase.value
   })
 
+  /** 获取可用 AI 助手列表 */
+  async function fetchAssistants() {
+    try {
+      const res = await assistantApi.list()
+      assistants.value = res.data
+      // 默认选中第一个可用的助手
+      const firstAvailable = assistants.value.find(a => a.available)
+      if (firstAvailable) {
+        selectedAssistant.value = firstAvailable.type
+      }
+    } catch (e) {
+      console.warn('获取助手列表失败，使用默认值', e)
+      // fallback: 提供默认的 OpenClaw 选项
+      assistants.value = [{
+        type: 'openclaw',
+        display_name: 'OpenClaw (GLM)',
+        description: '基于智谱 GLM 模型的 AI 排障助手',
+        available: true,
+      }]
+      selectedAssistant.value = 'openclaw'
+    }
+  }
+
   /** 初始化：检查现有工单 */
   async function initialize() {
     if (initialized.value) return
+    // 加载可用助手列表
+    await fetchAssistants()
     try {
       const res = await caseApi.listByClient(clientId)
       existingCases.value = res.data
@@ -188,6 +221,7 @@ export const useChatStore = defineStore('chat', () => {
         client_id: clientId,
         title: template.title,
         description: template.description,
+        assistant_type: selectedAssistant.value || undefined,
       })
       currentCase.value = res.data
       addSystemMessage(`工单 ${res.data.case_id} 已创建，正在自动确认...`)
@@ -422,6 +456,10 @@ export const useChatStore = defineStore('chat', () => {
     existingCases,
     hasActiveCase,
     isCaseClosed,
+    // AI 助手选择
+    showAssistantSelector,
+    assistants,
+    selectedAssistant,
     // 未关闭工单确认
     pendingCase,
     showPendingDialog,

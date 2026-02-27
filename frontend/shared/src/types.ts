@@ -26,6 +26,15 @@ export interface CaseCreate {
   client_id: string
   title: string
   description?: string
+  assistant_type?: string  // v2.0: 可选，不传则系统自动分配
+}
+
+/** AI 助手信息 */
+export interface AssistantInfo {
+  type: string
+  display_name: string
+  description: string
+  available: boolean
 }
 
 /** 工单分页列表响应 */
