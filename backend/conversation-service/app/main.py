@@ -1,5 +1,5 @@
 """
-Conversation Service - 主应用
+Conversation Service - 主应用 (v2.0 多类型AI助手)
 """
 
 from fastapi import FastAPI
@@ -14,7 +14,7 @@ from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 from app.config import settings
 from app.routes import conversations
-from app.services.openclaw_client import OpenClawClient
+from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -22,30 +22,42 @@ init_telemetry(settings.SERVICE_NAME)
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 
 database_manager: DatabaseManager = None
-openclaw_client: OpenClawClient = None
+ai_registry: AIAssistantRegistry = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global database_manager, openclaw_client
+    global database_manager, ai_registry
     
     logger.info(
         event="service_starting",
-        message=f"Starting {settings.SERVICE_NAME}",
+        message=f"Starting {settings.SERVICE_NAME} (v2.0)",
         port=settings.SERVICE_PORT
     )
     
     # 初始化数据库
     database_manager = DatabaseManager(settings.DATABASE_URL)
     
-    # 初始化OpenClaw客户端
-    openclaw_client = OpenClawClient(
+    # 初始化 AI 助手注册表 (v2.0)
+    ai_registry = AIAssistantRegistry()
+    
+    # 注册 OpenClaw 客户端 (默认助手)
+    openclaw_client = create_openclaw_client(
         base_url=settings.OPENCLAW_BASE_URL,
         api_key=settings.OPENCLAW_GATEWAY_TOKEN
     )
+    ai_registry.register("openclaw", openclaw_client)
+    
+    # TODO: 未来可在此注册更多AI助手类型
+    # 例如: ai_registry.register("chatgpt", create_chatgpt_client(...))
+    
+    logger.info(
+        event="ai_registry_initialized",
+        message=f"Registered AI assistants: {ai_registry.list_types()}"
+    )
     
     # 注入依赖到路由
-    conversations.set_dependencies(database_manager, openclaw_client)
+    conversations.set_dependencies(database_manager, ai_registry)
     
     yield
     
@@ -53,15 +65,15 @@ async def lifespan(app: FastAPI):
         event="service_stopping",
         message=f"Stopping {settings.SERVICE_NAME}"
     )
-    if openclaw_client:
-        await openclaw_client.close()
+    if ai_registry:
+        await ai_registry.close_all()
     if database_manager:
         await database_manager.close()
 
 app = FastAPI(
     title="HCI Troubleshoot - Conversation Service",
-    description="对话管理服务",
-    version="1.0.0",
+    description="对话管理服务 (v2.0 多类型AI助手)",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -75,18 +87,17 @@ app.include_router(conversations.router)
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    # 简单的依赖检查
-    db_status = "unknown"
-    claw_status = "unknown"
+    ai_status = {}
     
-    if openclaw_client:
-        claw_status = "connected" if await openclaw_client.check_health() else "unhealthy"
+    if ai_registry:
+        ai_status = await ai_registry.health_check_all()
         
     return {
         "status": "healthy", 
         "service": settings.SERVICE_NAME,
+        "version": "2.0.0",
         "dependencies": {
-            "openclaw": claw_status
+            "ai_assistants": ai_status
         }
     }
 

@@ -1,28 +1,34 @@
 """
-Pod Pool - Warm Standby Pool Management
+Pod Pool - 多类型AI助手热备池管理 (v2.0)
 """
 
 import asyncio
 import uuid
-from typing import List, Optional, Set, Dict
+from typing import Optional, Set, Dict, Any
 from collections import deque
 
 from .k8s_client import K8sClient
 from shared.utils.logger import get_logger
-from app.config import settings
 
 logger = get_logger("pod-pool")
 
+
 class PodPool:
-    """OpenClaw Pod池管理器"""
+    """单类型Pod池管理器"""
     
-    def __init__(self, k8s_client: K8sClient):
+    def __init__(
+        self,
+        k8s_client: K8sClient,
+        assistant_type: str,
+        assistant_config: Dict[str, Any]
+    ):
         self.k8s = k8s_client
-        self.warm_pool_size = settings.WARM_POOL_SIZE
-        self.max_pool_size = settings.MAX_POOL_SIZE
+        self.assistant_type = assistant_type
+        self.config = assistant_config
+        self.warm_pool_size = assistant_config.get("warm_pool_size", 2)
+        self.max_pool_size = assistant_config.get("max_pool_size", 10)
         
-        # 内存中维护的空闲Pod名称列表 (实际上应该结合K8s状态，这里简化处理)
-        # 在真实生产中，应该通过Label Selector查询 "status=idle" 的Pod
+        # 内存中维护的空闲Pod名称列表
         self.idle_pods: deque = deque()
         self.active_pods: Set[str] = set()
         
@@ -32,7 +38,6 @@ class PodPool:
     async def initialize(self):
         """初始化: 同步当前集群状态"""
         # TODO: 查询现有Pod并分类为 active/idle
-        # 目前简单假设重启后为空
         pass
 
     async def ensure_warm_pool(self):
@@ -46,17 +51,22 @@ class PodPool:
                     needed = self.max_pool_size - current_count
                 
                 if needed > 0:
-                    logger.info(f"Warming up pool: creating {needed} new pods")
+                    logger.info(
+                        f"Warming up {self.assistant_type} pool: creating {needed} new pods"
+                    )
                     for _ in range(needed):
                         await self._create_warm_pod()
 
     async def _create_warm_pod(self):
         """创建一个新的热备Pod"""
-        pod_name = f"openclaw-pool-{uuid.uuid4().hex[:8]}"
-        # 创建时不带 case_id，表示为空闲
-        if self.k8s.create_pod(pod_name):
+        pod_name = f"{self.assistant_type}-pool-{uuid.uuid4().hex[:8]}"
+        if self.k8s.create_pod(
+            pod_name=pod_name,
+            assistant_type=self.assistant_type,
+            assistant_config=self.config
+        ):
             self.idle_pods.append(pod_name)
-            logger.info(f"Added warm pod {pod_name} to pool")
+            logger.info(f"Added warm pod {pod_name} to {self.assistant_type} pool")
 
     async def acquire_pod(self, case_id: str) -> Optional[str]:
         """从池中获取一个Pod"""
@@ -64,20 +74,22 @@ class PodPool:
             if not self.idle_pods:
                 # 池空了，尝试立即创建 (如果没达到上限)
                 if len(self.active_pods) < self.max_pool_size:
-                     pod_name = f"openclaw-ondemand-{uuid.uuid4().hex[:8]}"
-                     if self.k8s.create_pod(pod_name, case_id=case_id):
-                         self.active_pods.add(pod_name)
-                         return pod_name
+                    pod_name = f"{self.assistant_type}-ondemand-{uuid.uuid4().hex[:8]}"
+                    if self.k8s.create_pod(
+                        pod_name=pod_name,
+                        case_id=case_id,
+                        assistant_type=self.assistant_type,
+                        assistant_config=self.config
+                    ):
+                        self.active_pods.add(pod_name)
+                        return pod_name
                 return None
             
             # 从池中取一个
             pod_name = self.idle_pods.popleft()
             self.active_pods.add(pod_name)
             
-            # TODO: 更新Pod标签，绑定case_id (K8s API patch)
-            # self.k8s.patch_pod_label(pod_name, "case-id", case_id)
-            
-            logger.info(f"Acquired pod {pod_name} for case {case_id}")
+            logger.info(f"Acquired pod {pod_name} for case {case_id} (type={self.assistant_type})")
             
             # 触发异步补充池子
             asyncio.create_task(self.ensure_warm_pool())
@@ -85,27 +97,64 @@ class PodPool:
             return pod_name
 
     async def release_pod(self, pod_name: str):
-        """释放Pod回池 (或销毁)"""
+        """释放Pod回池 (销毁后由 ensure_warm_pool 创建新的)"""
         async with self._lock:
             if pod_name in self.active_pods:
                 self.active_pods.remove(pod_name)
                 
-            # 策略: 如果池子满了，由cleanup任务销毁; 或者直接销毁
-            # 简单策略: 总是销毁，保持纯净环境? 
-            # 优化策略: 清除Context后复用? OpenClaw不支持清除Context API?
-            # 假设OpenClaw是带状态的，复用需要清除Session。
-            # 如果使用 create_namespaced_pod，通常是短生命周期。
-            # 为了MVP稳定性，我们可以选择销毁旧Pod，并让ensure_warm_pool创建新的洁净Pod。
-            
-            logger.info(f"Releasing (terminating) pod {pod_name}")
+            logger.info(f"Releasing (terminating) pod {pod_name} (type={self.assistant_type})")
             self.k8s.delete_pod(pod_name)
             
             # 触发补充 (创建新的洁净Pod)
             asyncio.create_task(self.ensure_warm_pool())
 
-    def get_stats(self) -> Dict[str, int]:
+    def get_stats(self) -> Dict[str, Any]:
         return {
+            "assistant_type": self.assistant_type,
             "idle": len(self.idle_pods),
             "active": len(self.active_pods),
-            "total": len(self.idle_pods) + len(self.active_pods)
+            "total": len(self.idle_pods) + len(self.active_pods),
+            "warm_pool_size": self.warm_pool_size,
+            "max_pool_size": self.max_pool_size
         }
+
+
+class PodPoolManager:
+    """多类型Pod池管理器 (v2.0)
+    
+    管理多个 PodPool 实例，每种 assistant_type 对应一个独立的池。
+    """
+    
+    def __init__(self, k8s_client: K8sClient, assistant_registry: Dict[str, Any]):
+        self.k8s = k8s_client
+        self.pools: Dict[str, PodPool] = {}
+        
+        # 根据注册表初始化各类型的Pod池
+        for assistant_type, config in assistant_registry.items():
+            if config.get("enabled", True):
+                self.pools[assistant_type] = PodPool(
+                    k8s_client=k8s_client,
+                    assistant_type=assistant_type,
+                    assistant_config=config
+                )
+                logger.info(f"Initialized pod pool for assistant type: {assistant_type}")
+    
+    def get_pool(self, assistant_type: str) -> Optional[PodPool]:
+        """获取指定类型的Pod池"""
+        return self.pools.get(assistant_type)
+    
+    async def ensure_all_warm_pools(self):
+        """维护所有池的热备大小"""
+        for pool in self.pools.values():
+            await pool.ensure_warm_pool()
+    
+    def get_all_stats(self) -> Dict[str, Any]:
+        """获取所有池的统计信息"""
+        return {
+            atype: pool.get_stats()
+            for atype, pool in self.pools.items()
+        }
+    
+    def list_assistant_types(self) -> list:
+        """列出所有已注册的助手类型"""
+        return list(self.pools.keys())

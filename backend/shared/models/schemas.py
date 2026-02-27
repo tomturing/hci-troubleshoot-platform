@@ -28,6 +28,7 @@ class CaseCreate(BaseModel):
     client_id: str = Field(..., description="客户端ID")
     title: str = Field(..., max_length=200, description="工单标题")
     description: Optional[str] = Field(None, description="工单描述")
+    assistant_type: Optional[str] = Field(None, description="AI助手类型，默认openclaw")
 
 class CaseResponse(BaseModel):
     """工单响应"""
@@ -36,6 +37,7 @@ class CaseResponse(BaseModel):
     status: CaseStatus
     title: str
     description: Optional[str]
+    assistant_type: Optional[str] = "openclaw"
     created_at: datetime
     updated_at: datetime
     closed_at: Optional[datetime]

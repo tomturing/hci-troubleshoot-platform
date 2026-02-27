@@ -1,5 +1,5 @@
 """
-Conversation Routes - 对话API路由
+Conversation Routes - 对话API路由 (v2.0 多类型AI助手)
 """
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -15,27 +15,27 @@ from shared.models.schemas import MessageCreate, MessageResponse
 from shared.database.postgres import DatabaseManager
 from ..services.conversation_service import ConversationService
 from ..repositories.conversation_repo import ConversationRepository
-from ..services.openclaw_client import OpenClawClient
+from ..services.ai_client import AIAssistantRegistry
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 # 全局依赖，需要在main.py中注入
 database_manager: Optional[DatabaseManager] = None
-openclaw_client: Optional[OpenClawClient] = None
+ai_registry: Optional[AIAssistantRegistry] = None
 
-def set_dependencies(db: DatabaseManager, osc: OpenClawClient):
-    global database_manager, openclaw_client
+def set_dependencies(db: DatabaseManager, registry: AIAssistantRegistry):
+    global database_manager, ai_registry
     database_manager = db
-    openclaw_client = osc
+    ai_registry = registry
 
 async def get_conversation_service() -> ConversationService:
     """依赖注入: 获取Conversation Service"""
-    if not database_manager or not openclaw_client:
+    if not database_manager or not ai_registry:
         raise HTTPException(status_code=500, detail="Service dependencies not initialized")
     
     async for session in database_manager.get_session():
         repo = ConversationRepository(session)
-        yield ConversationService(repo, openclaw_client)
+        yield ConversationService(repo, ai_registry)
 
 @router.post("/", status_code=201)
 async def create_conversation(

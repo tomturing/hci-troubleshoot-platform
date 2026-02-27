@@ -1,5 +1,5 @@
 """
-Kubernetes Client - K8s API Client
+Kubernetes Client - K8s API Client (v2.0 多类型AI助手)
 """
 
 from kubernetes import client, config
@@ -37,26 +37,45 @@ class K8sClient:
         self,
         pod_name: str,
         case_id: Optional[str] = None,
-        trace_id: Optional[str] = None
+        trace_id: Optional[str] = None,
+        assistant_type: str = "openclaw",
+        assistant_config: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
-        创建OpenClaw Pod
+        创建AI助手Pod (v2.0: 根据助手配置动态生成Pod Spec)
         
         Args:
             pod_name: Pod名称
             case_id: 工单ID (用于标签)
             trace_id: 追踪ID
+            assistant_type: AI助手类型
+            assistant_config: 助手配置 (image, port, labels, env等)
             
         Returns:
             bool: 是否成功触发创建
         """
+        # 从 assistant_config 或默认值获取配置
+        cfg = assistant_config or {}
+        image = cfg.get("image", settings.OPENCLAW_IMAGE)
+        port = cfg.get("port", 8080)
+        custom_labels = cfg.get("labels", {})
+        custom_env = cfg.get("env", [])
+        
         labels = {
-            "app": "openclaw",
+            "app": assistant_type,
+            "assistant-type": assistant_type,
             "managed-by": "hci-scheduler",
             "pod-name": pod_name
         }
+        labels.update(custom_labels)
         if case_id:
             labels["case-id"] = case_id
+            
+        # 构建环境变量列表
+        env_vars = []
+        for ev in custom_env:
+            if isinstance(ev, dict):
+                env_vars.append({"name": ev.get("name", ""), "value": ev.get("value", "")})
             
         # Pod Spec
         pod_manifest = {
@@ -68,17 +87,12 @@ class K8sClient:
             },
             "spec": {
                 "containers": [{
-                    "name": "openclaw",
-                    "image": settings.OPENCLAW_IMAGE,
-                    "ports": [{"containerPort": 8080}],
-                    "env": [
-                        # 注入必要的环境变量，例如 Gateway Token (如果有Secret)
-                        # {"name": "GATEWAY_TOKEN", "valueFrom": {"secretKeyRef": ...}}
-                    ],
-                    # 挂载ConfigMap以启用chatCompletions (需要在部署时创建ConfigMap)
-                    # "volumeMounts": [...]
+                    "name": assistant_type,
+                    "image": image,
+                    "ports": [{"containerPort": port}],
+                    "env": env_vars,
                 }],
-                "restartPolicy": "Never" # 这里的Pod是一次性的或由调度器管理生命周期
+                "restartPolicy": "Never"
             }
         }
         
@@ -89,8 +103,9 @@ class K8sClient:
             )
             logger.info(
                 event="pod_create_initiated",
-                message=f"Created pod {pod_name}",
+                message=f"Created {assistant_type} pod {pod_name}",
                 pod_name=pod_name,
+                assistant_type=assistant_type,
                 case_id=case_id,
                 trace_id=trace_id
             )
@@ -98,7 +113,7 @@ class K8sClient:
         except ApiException as e:
             logger.error(
                 event="pod_create_failed",
-                message=f"Failed to create pod {pod_name}: {e.reason}",
+                message=f"Failed to create {assistant_type} pod {pod_name}: {e.reason}",
                 error=str(e),
                 trace_id=trace_id
             )

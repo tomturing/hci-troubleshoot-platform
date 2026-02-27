@@ -1,5 +1,5 @@
 """
-Conversation Service - 对话业务逻辑层
+Conversation Service - 对话业务逻辑层 (v2.0 多类型AI助手)
 """
 
 from typing import List, Optional, AsyncGenerator, Dict, Any
@@ -9,26 +9,27 @@ import json
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
-from .openclaw_client import OpenClawClient
+from .ai_client import AIAssistantRegistry
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
 
 logger = get_logger("conversation-service")
 
 class ConversationService:
-    """对话业务服务"""
+    """对话业务服务 (v2.0: 通过 AIAssistantRegistry 支持多类型AI助手)"""
     
     def __init__(
         self, 
         repository: ConversationRepository,
-        openclaw_client: OpenClawClient
+        ai_registry: AIAssistantRegistry
     ):
         self.repository = repository
-        self.openclaw = openclaw_client
+        self.ai_registry = ai_registry
         
     async def create_conversation(
         self,
         case_id: str,
+        assistant_type: str = "openclaw",
         initial_message: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> Conversation:
@@ -40,16 +41,16 @@ class ConversationService:
             metadata=metadata
         )
         
+        # 设置对话的助手类型
+        conversation.assistant_type = assistant_type
+        
         logger.info(
             event="conversation_created",
             message=f"Created conversation {conversation.conversation_id}",
             case_id=case_id,
+            assistant_type=assistant_type,
             conversation_id=str(conversation.conversation_id)
         )
-        
-        # 如果有初始消息，立即发送该消息（但不等待回复，因为这是创建接口）
-        # 注意：通常创建对话时如果有初始消息，应该调用 send_message 接口
-        # 这里仅作记录，实际业务中前端通常会先调创建，再调发送
         
         return conversation
 
@@ -65,14 +66,15 @@ class ConversationService:
         self,
         conversation_id: uuid.UUID,
         case_id: str,
-        content: str
+        content: str,
+        assistant_type: str = "openclaw"
     ) -> AsyncGenerator[str, None]:
         """
-        发送消息并获取流式回复(仅负责调用流并yield)
+        发送消息并获取流式回复 (v2.0: 根据 assistant_type 选择AI后端)
         
         1. 保存用户消息
         2. 获取历史上下文
-        3. 调用OpenClaw
+        3. 从注册表获取对应 AI 客户端
         4. 流式返回响应
         """
         trace_id = get_current_trace_id()
@@ -96,12 +98,20 @@ class ConversationService:
                 "role": msg.role.value,
                 "content": msg.content
             })
+        
+        # 3. 从注册表获取AI助手客户端
+        ai_client = self.ai_registry.get_client(assistant_type)
+        if not ai_client:
+            error_msg = f"未找到类型为 '{assistant_type}' 的AI助手"
+            logger.error(event="ai_client_not_found", message=error_msg, assistant_type=assistant_type)
+            yield f"\n[System Error: {error_msg}]"
+            return
             
-        # 3. 调用OpenClaw并流式返回
+        # 4. 调用AI并流式返回
         try:
-            async for chunk in self.openclaw.chat_completion_stream(
+            async for chunk in ai_client.chat_completion_stream(
                 messages=history_messages,
-                user_id=f"case-{case_id}"  # 映射 Session Key
+                user_id=f"case-{case_id}"
             ):
                 if chunk:
                     yield chunk
@@ -115,6 +125,7 @@ class ConversationService:
                     event="conversation_error",
                     message="Error during AI generation",
                     conversation_id=str(conversation_id),
+                    assistant_type=assistant_type,
                     error=str(e)
                 )
                 yield f"\n[System Error: {str(e)}]"

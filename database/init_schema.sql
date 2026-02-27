@@ -1,5 +1,5 @@
 -- HCI Troubleshoot Platform - Database Initialization Script
--- Version: 1.0
+-- Version: 2.0 (AI Assistant Pod Pool)
 -- Date: 2026-02-15
 -- Database: PostgreSQL 15
 
@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS "case" (
     status case_status NOT NULL DEFAULT 'created',
     priority VARCHAR(20) DEFAULT 'medium',
     category VARCHAR(100),
+    assistant_type VARCHAR(50) NOT NULL DEFAULT 'openclaw',
     metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -118,6 +119,7 @@ CREATE INDEX idx_case_created_at ON "case"(created_at DESC);
 CREATE INDEX idx_case_trace_id ON "case"(trace_id);
 CREATE INDEX idx_case_category ON "case"(category);
 CREATE INDEX idx_case_client_status ON "case"(client_id, status);
+CREATE INDEX idx_case_assistant_type ON "case"(assistant_type);
 
 CREATE TRIGGER update_case_updated_at BEFORE UPDATE ON "case"
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
@@ -128,7 +130,8 @@ COMMENT ON TABLE "case" IS '工单表，记录排障请求';
 CREATE TABLE IF NOT EXISTS conversation (
     conversation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     case_id VARCHAR(20) NOT NULL REFERENCES "case"(case_id) ON DELETE CASCADE,
-    openclaw_pod_id VARCHAR(100),
+    pod_id VARCHAR(100),
+    assistant_type VARCHAR(50) NOT NULL DEFAULT 'openclaw',
     started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     ended_at TIMESTAMP WITH TIME ZONE,
     message_count INT DEFAULT 0,
@@ -137,7 +140,8 @@ CREATE TABLE IF NOT EXISTS conversation (
 );
 
 CREATE INDEX idx_conversation_case_id ON conversation(case_id);
-CREATE INDEX idx_conversation_pod_id ON conversation(openclaw_pod_id);
+CREATE INDEX idx_conversation_pod_id ON conversation(pod_id);
+CREATE INDEX idx_conversation_assistant_type ON conversation(assistant_type);
 CREATE INDEX idx_conversation_started_at ON conversation(started_at DESC);
 CREATE INDEX idx_conversation_trace_id ON conversation(trace_id);
 CREATE INDEX idx_conversation_case_started ON conversation(case_id, started_at DESC);
@@ -241,6 +245,29 @@ CREATE INDEX idx_session_expires_at ON session(expires_at);
 CREATE INDEX idx_session_trace_id ON session(trace_id);
 
 COMMENT ON TABLE session IS '会话表，记录WebSocket连接信息';
+
+-- AI助手评估表 (v2.0)
+CREATE TABLE IF NOT EXISTS assistant_evaluation (
+    evaluation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    case_id VARCHAR(20) NOT NULL REFERENCES "case"(case_id) ON DELETE CASCADE,
+    conversation_id UUID REFERENCES conversation(conversation_id) ON DELETE SET NULL,
+    assistant_type VARCHAR(50) NOT NULL,
+    score SMALLINT CHECK (score >= 1 AND score <= 5),
+    feedback TEXT,
+    resolution_time_seconds INT,
+    message_count INT,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    trace_id VARCHAR(64)
+);
+
+CREATE INDEX idx_eval_case_id ON assistant_evaluation(case_id);
+CREATE INDEX idx_eval_assistant_type ON assistant_evaluation(assistant_type);
+CREATE INDEX idx_eval_score ON assistant_evaluation(score);
+CREATE INDEX idx_eval_created_at ON assistant_evaluation(created_at DESC);
+CREATE INDEX idx_eval_trace_id ON assistant_evaluation(trace_id);
+
+COMMENT ON TABLE assistant_evaluation IS 'AI助手评估表，记录助手表现评分';
 
 -- ============================================================================
 -- 5. 创建视图

@@ -2,7 +2,25 @@
 Scheduler Service Configuration
 """
 
+import json
+from typing import Dict, Any
 from pydantic_settings import BaseSettings
+from pydantic import Field
+
+# 默认AI助手注册表配置
+DEFAULT_ASSISTANT_REGISTRY = {
+    "openclaw": {
+        "name": "OpenClaw",
+        "description": "通用AI排障助手，基于GLM大模型",
+        "image": "openclaw:latest",
+        "port": 8080,
+        "warm_pool_size": 2,
+        "max_pool_size": 10,
+        "enabled": True,
+        "labels": {"app": "openclaw", "assistant-type": "openclaw"}
+    }
+}
+
 
 class Settings(BaseSettings):
     """配置类"""
@@ -13,12 +31,28 @@ class Settings(BaseSettings):
     
     # K8s配置
     K8S_NAMESPACE: str = "hci-troubleshoot"
-    OPENCLAW_IMAGE: str = "openclaw:latest"
     
-    # Pod池配置
+    # Pod池全局配置
+    POD_IDLE_TIMEOUT: int = 300  # 5分钟
+    
+    # AI助手注册表 (JSON字符串，支持环境变量注入)
+    ASSISTANT_REGISTRY_JSON: str = Field(
+        default=json.dumps(DEFAULT_ASSISTANT_REGISTRY),
+        description="AI助手注册表，JSON格式"
+    )
+    
+    @property
+    def assistant_registry(self) -> Dict[str, Any]:
+        """解析AI助手注册表"""
+        try:
+            return json.loads(self.ASSISTANT_REGISTRY_JSON)
+        except json.JSONDecodeError:
+            return DEFAULT_ASSISTANT_REGISTRY
+
+    # 向后兼容：保留旧配置项（已弃用）
+    OPENCLAW_IMAGE: str = "openclaw:latest"
     WARM_POOL_SIZE: int = 2
     MAX_POOL_SIZE: int = 10
-    POD_IDLE_TIMEOUT: int = 300  # 5分钟
     
     class Config:
         env_file = ".env"

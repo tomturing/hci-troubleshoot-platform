@@ -59,6 +59,7 @@ class CaseService:
             title=case_create.title,
             description=case_create.description,
             status=CaseStatus.created,
+            assistant_type=case_create.assistant_type or "openclaw",
             trace_id=trace_id
         )
         

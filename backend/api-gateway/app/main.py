@@ -15,7 +15,7 @@ from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from app.config import settings
 from app.services.session import SessionManager
-from app.routes import websocket, health, cases, conversations
+from app.routes import websocket, health, cases, conversations, assistants
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -76,6 +76,7 @@ app.add_middleware(
 app.include_router(websocket.router)
 app.include_router(cases.router)
 app.include_router(conversations.router)
+app.include_router(assistants.router)
 app.include_router(health.router)
 
 if __name__ == "__main__":
