@@ -1,0 +1,20 @@
+{{- if .Values.redis.enabled }}
+# Headless Service for StatefulSet DNS resolution
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "redis" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
+      name: redis
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "redis" "Release" .Release) | nindent 4 }}
+{{- end }}

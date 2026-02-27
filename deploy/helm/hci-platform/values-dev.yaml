@@ -1,0 +1,18 @@
+# values-dev.yaml — 开发环境 overlay
+# 用法: helm install ... -f values.yaml -f values-dev.yaml
+
+global:
+  imagePullPolicy: Never    # 使用本地导入的镜像
+
+# 开发环境副本数保持最小
+apiGateway:
+  replicaCount: 1
+caseService:
+  replicaCount: 1
+conversationService:
+  replicaCount: 1
+schedulerService:
+  replicaCount: 1
+
+config:
+  logLevel: DEBUG

@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     
     # 数据库配置
-    DATABASE_URL: str = "postgresql+asyncpg://hci_user:hci_password@postgres:5432/hci_troubleshoot"
+    DATABASE_URL: str = "postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot"
     
     # Redis配置 (可选，用于缓存)
     REDIS_URL: str = "redis://redis:6379/0"

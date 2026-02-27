@@ -11,11 +11,11 @@ class Settings(BaseSettings):
     SERVICE_PORT: int = 8002
     LOG_LEVEL: str = "INFO"
     
-    DATABASE_URL: str = "postgresql+asyncpg://hci_user:hci_password@postgres:5432/hci_troubleshoot"
+    DATABASE_URL: str = "postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot"
     REDIS_URL: str = "redis://redis:6379/0"
     
     # OpenClaw配置
-    OPENCLAW_BASE_URL: str = "http://openclaw:8080"
+    OPENCLAW_BASE_URL: str = "http://host.docker.internal:18790"
     OPENCLAW_GATEWAY_TOKEN: str = "default_token"
     
     class Config:

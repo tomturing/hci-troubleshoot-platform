@@ -1,0 +1,19 @@
+{{- if .Values.postgres.enabled }}
+# 数据库初始化脚本（从 database/init_schema.sql 导入）
+# 注意：实际部署前需要将 init_schema.sql 的内容填充到此处
+# 或者通过 helm install --set-file 注入
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-sql
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+data:
+  init.sql: |
+    -- 此处内容将由 CI/CD 流程或手动从 database/init_schema.sql 注入
+    -- 示例：
+    -- CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    -- CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    -- （完整内容参见 database/init_schema.sql）
+{{- end }}

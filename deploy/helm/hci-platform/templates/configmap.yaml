@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hci-common-config
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+data:
+  # 数据库（非敏感）
+  POSTGRES_DB: {{ .Values.config.postgresDb | quote }}
+  POSTGRES_USER: {{ .Values.config.postgresUser | quote }}
+  # Redis
+  REDIS_URL: {{ .Values.config.redisUrl | quote }}
+  # 服务间通信（K8s 内部 DNS）
+  CASE_SERVICE_URL: "http://case-service:{{ .Values.caseService.port }}"
+  CONVERSATION_SERVICE_URL: "http://conversation-service:{{ .Values.conversationService.port }}"
+  SCHEDULER_SERVICE_URL: "http://scheduler-service:{{ .Values.schedulerService.port }}"
+  # OpenClaw
+  OPENCLAW_BASE_URL: "http://openclaw:{{ .Values.openclaw.port }}"
+  # 可观测性
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  # Scheduler
+  K8S_NAMESPACE: {{ .Values.config.k8sNamespace | quote }}
+  WARM_POOL_SIZE: {{ .Values.config.warmPoolSize | quote }}
+  MAX_POOL_SIZE: {{ .Values.config.maxPoolSize | quote }}
+  POD_IDLE_TIMEOUT: {{ .Values.config.podIdleTimeout | quote }}
+  OPENCLAW_IMAGE: {{ .Values.config.openclawImage | quote }}

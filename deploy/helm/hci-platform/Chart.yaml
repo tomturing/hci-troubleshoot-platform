@@ -1,0 +1,13 @@
+apiVersion: v2
+name: hci-platform
+description: HCI 智能排障平台 - Kubernetes 部署 Helm Chart
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - hci
+  - troubleshoot
+  - fastapi
+  - vue
+maintainers:
+  - name: HCI Team

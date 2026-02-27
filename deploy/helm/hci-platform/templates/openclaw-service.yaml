@@ -1,0 +1,14 @@
+# OpenClaw 外部服务 — 让集群内 Pod 通过 DNS 访问宿主机上的 OpenClaw
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  type: ExternalName
+  externalName: {{ .Values.openclaw.host }}
+  ports:
+    - port: {{ .Values.openclaw.port }}
+      protocol: TCP

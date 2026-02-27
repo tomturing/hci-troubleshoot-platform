@@ -1,0 +1,160 @@
+# =============================================================================
+# HCI 智能排障平台 - Helm Chart 默认配置
+# =============================================================================
+
+# ======================== 全局配置 ==========================================
+global:
+  namespace: hci-troubleshoot
+  imageRegistry: ""                 # 私有镜像仓库前缀，如 "registry.example.com/"
+  imagePullPolicy: IfNotPresent
+
+# ======================== PostgreSQL ========================================
+postgres:
+  enabled: true
+  image: postgres:15
+  storage: 5Gi
+  storageClass: local-path
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "64Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+
+# ======================== Redis =============================================
+redis:
+  enabled: true
+  image: redis:7
+  storage: 1Gi
+  storageClass: local-path
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "16Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+
+# ======================== API Gateway =======================================
+apiGateway:
+  replicaCount: 1
+  image:
+    repository: hci-api-gateway
+    tag: latest
+  port: 8000
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "96Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+# ======================== Case Service ======================================
+caseService:
+  replicaCount: 1
+  image:
+    repository: hci-case-service
+    tag: latest
+  port: 8001
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "96Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+# ======================== Conversation Service ==============================
+conversationService:
+  replicaCount: 1
+  image:
+    repository: hci-conversation-service
+    tag: latest
+  port: 8002
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "96Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+# ======================== Scheduler Service =================================
+schedulerService:
+  replicaCount: 1
+  image:
+    repository: hci-scheduler-service
+    tag: latest
+  port: 8003
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "96Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+# ======================== Customer UI =======================================
+customerUI:
+  replicaCount: 1
+  image:
+    repository: hci-customer-ui
+    tag: latest
+  port: 80
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "16Mi"
+    limits:
+      cpu: "100m"
+      memory: "64Mi"
+
+# ======================== Admin UI ==========================================
+adminUI:
+  replicaCount: 1
+  image:
+    repository: hci-admin-ui
+    tag: latest
+  port: 80
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "16Mi"
+    limits:
+      cpu: "100m"
+      memory: "64Mi"
+
+# ======================== OpenClaw 外部服务 =================================
+openclaw:
+  host: host.k3s.internal
+  port: 18790
+
+# ======================== Ingress (Traefik) =================================
+ingress:
+  enabled: true
+  className: traefik
+  annotations: {}
+  # tls: []
+
+# ======================== 应用配置（非敏感 → ConfigMap）=====================
+config:
+  postgresDb: hci_troubleshoot
+  postgresUser: hci_admin
+  redisUrl: "redis://redis:6379/0"
+  logLevel: INFO
+  otelEndpoint: "http://tempo.hci-observability.svc.cluster.local:4317"
+  k8sNamespace: hci-troubleshoot
+  warmPoolSize: "2"
+  maxPoolSize: "10"
+  podIdleTimeout: "300"
+  openclawImage: "openclaw:latest"
+
+# ======================== 敏感配置（→ Secret）===============================
+# 生产环境通过 helm install --set secrets.postgresPassword=xxx 覆盖
+secrets:
+  postgresPassword: "dev_password_123"
+  openclawToken: "hci-dev-openclaw-token"
+  zaiApiKey: ""
+  grafanaAdminPassword: "admin"

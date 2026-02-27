@@ -3,9 +3,9 @@ services:
     image: postgres:15-alpine
     container_name: hci-postgres
     environment:
-      POSTGRES_USER: hci_user
-      POSTGRES_PASSWORD: hci_password
-      POSTGRES_DB: hci_troubleshoot
+      POSTGRES_USER: ${POSTGRES_USER:-hci_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password_123}
+      POSTGRES_DB: ${POSTGRES_DB:-hci_troubleshoot}
     ports:
       - "5432:5432"
     volumes:
@@ -56,7 +56,7 @@ services:
     env_file:
       - ../../.env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://hci_user:hci_password@postgres:5432/hci_troubleshoot
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
     depends_on:
       - postgres
     networks:
@@ -75,7 +75,7 @@ services:
     env_file:
       - ../../.env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://hci_user:hci_password@postgres:5432/hci_troubleshoot
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       - OPENCLAW_BASE_URL=http://openclaw:18789
     depends_on:
       - postgres

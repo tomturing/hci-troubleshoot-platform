@@ -1,0 +1,27 @@
+# values-prod.yaml — 生产环境 overlay
+# 用法: helm install ... -f values.yaml -f values-prod.yaml --set secrets.postgresPassword=xxx
+
+global:
+  imagePullPolicy: Always
+
+apiGateway:
+  replicaCount: 2
+caseService:
+  replicaCount: 2
+conversationService:
+  replicaCount: 2
+schedulerService:
+  replicaCount: 1
+
+postgres:
+  storage: 20Gi
+  resources:
+    limits:
+      cpu: "2000m"
+      memory: "1Gi"
+
+redis:
+  storage: 2Gi
+
+config:
+  logLevel: WARNING

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: case-service
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "case-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.caseService.port }}
+      targetPort: {{ .Values.caseService.port }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "case-service" "Release" .Release) | nindent 4 }}
