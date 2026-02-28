@@ -2,7 +2,7 @@
 # 用法: helm install ... -f values.yaml -f values-dev.yaml
 
 global:
-  imagePullPolicy: Never    # 使用本地导入的镜像
+  imagePullPolicy: Never # K3s 使用 Docker 运行时，本地镜像直接可用
 
 # 开发环境副本数保持最小
 apiGateway:
@@ -16,3 +16,20 @@ schedulerService:
 
 config:
   logLevel: DEBUG
+
+# OpenClaw 需要挂载宿主机的 .openclaw 配置目录
+openclaw:
+  volumeMounts:
+    - name: openclaw-config
+      mountPath: /home/node/.openclaw
+    - name: openclaw-workspace
+      mountPath: /home/node/.openclaw/workspace
+  volumes:
+    - name: openclaw-config
+      hostPath:
+        path: /home/bot/.openclaw
+        type: DirectoryOrCreate
+    - name: openclaw-workspace
+      hostPath:
+        path: /home/bot/.openclaw/workspace
+        type: DirectoryOrCreate

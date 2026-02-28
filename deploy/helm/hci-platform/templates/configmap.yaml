@@ -26,3 +26,5 @@ data:
   MAX_POOL_SIZE: {{ .Values.config.maxPoolSize | quote }}
   POD_IDLE_TIMEOUT: {{ .Values.config.podIdleTimeout | quote }}
   OPENCLAW_IMAGE: {{ .Values.config.openclawImage | quote }}
+  # v2.0 多助手注册表
+  ASSISTANT_REGISTRY_JSON: {{ .Values.config.assistantRegistryJson | quote }}

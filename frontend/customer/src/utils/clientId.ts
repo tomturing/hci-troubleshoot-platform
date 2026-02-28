@@ -7,7 +7,7 @@ const STORAGE_KEY = 'hci-client-id'
 export function getClientId(): string {
   let id = localStorage.getItem(STORAGE_KEY)
   if (!id) {
-    id = `client-${crypto.randomUUID()}`
+    id = `client-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 9)}`
     localStorage.setItem(STORAGE_KEY, id)
   }
   return id

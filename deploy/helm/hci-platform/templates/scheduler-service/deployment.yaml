@@ -35,6 +35,8 @@ spec:
               value: "scheduler-service"
             - name: SERVICE_PORT
               value: {{ .Values.schedulerService.port | quote }}
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)"
           livenessProbe:
             httpGet:
               path: /health

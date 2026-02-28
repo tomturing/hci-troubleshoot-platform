@@ -1,14 +1,90 @@
-# OpenClaw 外部服务 — 让集群内 Pod 通过 DNS 访问宿主机上的 OpenClaw
+{{- if .Values.openclaw.enabled }}
+# OpenClaw AI助手 — Deployment + Service (容器化部署)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "openclaw" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "openclaw" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "openclaw" "Release" .Release "Chart" .Chart) | nindent 8 }}
+    spec:
+      containers:
+        - name: openclaw
+          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.openclaw.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: {{ .Values.openclaw.port }}
+              protocol: TCP
+          env:
+            - name: HOME
+              value: "/home/node"
+            - name: TERM
+              value: "xterm-256color"
+            - name: OPENCLAW_SKIP_CANVAS_HOST
+              value: "1"
+            - name: ZAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: ZAI_API_KEY
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: OPENCLAW_GATEWAY_TOKEN
+          {{- if .Values.openclaw.volumeMounts }}
+          volumeMounts:
+            {{- toYaml .Values.openclaw.volumeMounts | nindent 12 }}
+          {{- end }}
+          command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "{{ .Values.openclaw.port }}"]
+          livenessProbe:
+            httpGet:
+              path: /v1/chat/completions
+              port: {{ .Values.openclaw.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+            # OpenClaw 无 /health，POST 空 payload 返回 400/422 视为可达
+          readinessProbe:
+            httpGet:
+              path: /v1/chat/completions
+              port: {{ .Values.openclaw.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.openclaw.resources | nindent 12 }}
+      {{- if .Values.openclaw.volumes }}
+      volumes:
+        {{- toYaml .Values.openclaw.volumes | nindent 8 }}
+      {{- end }}
+---
 apiVersion: v1
 kind: Service
 metadata:
   name: openclaw
   namespace: {{ include "hci.namespace" . }}
   labels:
-    {{- include "hci.labels" . | nindent 4 }}
+    {{- include "hci.podLabels" (dict "name" "openclaw" "Release" .Release "Chart" .Chart) | nindent 4 }}
 spec:
-  type: ExternalName
-  externalName: {{ .Values.openclaw.host }}
+  type: ClusterIP
   ports:
     - port: {{ .Values.openclaw.port }}
+      targetPort: {{ .Values.openclaw.port }}
       protocol: TCP
+      name: http
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "openclaw" "Release" .Release) | nindent 4 }}
+{{- end }}

@@ -5,7 +5,7 @@
 # ======================== 全局配置 ==========================================
 global:
   namespace: hci-troubleshoot
-  imageRegistry: ""                 # 私有镜像仓库前缀，如 "registry.example.com/"
+  imageRegistry: "" # 私有镜像仓库前缀，如 "registry.example.com/"
   imagePullPolicy: IfNotPresent
 
 # ======================== PostgreSQL ========================================
@@ -126,10 +126,29 @@ adminUI:
       cpu: "100m"
       memory: "64Mi"
 
-# ======================== OpenClaw 外部服务 =================================
+# ======================== OpenClaw (容器化部署) ==============================
 openclaw:
-  host: host.k3s.internal
-  port: 18790
+  enabled: true
+  image:
+    repository: hci-openclaw
+    tag: latest
+  port: 18789
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+  # 可选: 持久化 OpenClaw 工作目录
+  # volumeMounts:
+  #   - name: openclaw-data
+  #     mountPath: /home/node/.openclaw
+  # volumes:
+  #   - name: openclaw-data
+  #     hostPath:
+  #       path: /home/bot/.openclaw
+  #       type: DirectoryOrCreate
 
 # ======================== Ingress (Traefik) =================================
 ingress:
@@ -150,6 +169,8 @@ config:
   maxPoolSize: "10"
   podIdleTimeout: "300"
   openclawImage: "openclaw:latest"
+  # v2.0 多助手注册表 (JSON)
+  assistantRegistryJson: '{"openclaw":{"image":"hci-openclaw:latest","port":18789,"warm_pool_size":2,"max_pool_size":5,"idle_timeout":300,"display_name":"OpenClaw (GLM)","description":"基于智谱 GLM 模型的 AI 排障助手"}}'
 
 # ======================== 敏感配置（→ Secret）===============================
 # 生产环境通过 helm install --set secrets.postgresPassword=xxx 覆盖
@@ -158,3 +179,48 @@ secrets:
   openclawToken: "hci-dev-openclaw-token"
   zaiApiKey: ""
   grafanaAdminPassword: "admin"
+
+# ======================== 可观测性栈 ========================================
+observability:
+  enabled: true
+  namespace: hci-observability
+  loki:
+    image: grafana/loki:latest
+    storage: 2Gi
+    storageClass: local-path
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
+  tempo:
+    image: grafana/tempo:2.6.1
+    storage: 2Gi
+    storageClass: local-path
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
+  promtail:
+    image: grafana/promtail:latest
+    resources:
+      requests:
+        cpu: "25m"
+        memory: "32Mi"
+      limits:
+        cpu: "200m"
+        memory: "128Mi"
+  grafana:
+    image: grafana/grafana:latest
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
