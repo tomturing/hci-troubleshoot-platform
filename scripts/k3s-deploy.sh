@@ -154,7 +154,8 @@ wait_for_pods() {
   
   while [[ $elapsed -lt $timeout ]]; do
     local not_ready
-    not_ready=$(${KUBECTL} get pods -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -v "Running\|Completed" | wc -l || echo "0")
+    not_ready=$(${KUBECTL} get pods -n "${NAMESPACE}" --no-headers 2>/dev/null | awk '$3 != "Running" && $3 != "Completed" { c++ } END { print c+0 }' || true)
+    [[ -z "${not_ready}" ]] && not_ready=0
     
     if [[ "$not_ready" -eq 0 ]]; then
       ok "所有业务 Pod 已就绪! ✅"

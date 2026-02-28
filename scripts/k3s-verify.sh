@@ -30,10 +30,10 @@ check() {
   shift
   if "$@" >/dev/null 2>&1; then
     ok "$desc"
-    ((PASS++))
+    PASS=$((PASS + 1))
   else
     fail "$desc"
-    ((FAIL++))
+    FAIL=$((FAIL + 1))
   fi
 }
 
@@ -103,7 +103,7 @@ if kill -0 $PF_PID 2>/dev/null; then
   if [[ -n "$CASE_RESP" ]] && echo "$CASE_RESP" | grep -q "case_id"; then
     CASE_ID=$(echo "$CASE_RESP" | grep -o '"case_id":"[^"]*' | cut -d'"' -f4)
     ok "创建工单成功: ${CASE_ID}"
-    ((PASS++))
+    PASS=$((PASS + 1))
     
     # 查询工单
     check "查询工单 ${CASE_ID}" curl -sf "${API_BASE}/api/cases/${CASE_ID}"
@@ -113,7 +113,7 @@ if kill -0 $PF_PID 2>/dev/null; then
       info "  测试工单 ${CASE_ID} 已关闭" || true
   else
     fail "创建工单失败"
-    ((FAIL++))
+    FAIL=$((FAIL + 1))
     [[ -n "$CASE_RESP" ]] && echo "  Response: $CASE_RESP"
   fi
   
@@ -122,7 +122,7 @@ if kill -0 $PF_PID 2>/dev/null; then
   wait $PF_PID 2>/dev/null || true
 else
   fail "port-forward 建立失败"
-  ((FAIL++))
+  FAIL=$((FAIL + 1))
 fi
 
 # ============================================================================

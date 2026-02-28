@@ -52,10 +52,10 @@ for entry in "${IMAGES[@]}"; do
   
   if docker build -t "${name}:latest" -f "${context}/${dockerfile}" "${context}" --quiet; then
     ok "  → ${name}:latest 构建成功"
-    ((BUILT++))
+    BUILT=$((BUILT + 1))
   else
     error "  → ${name}:latest 构建失败!"
-    ((FAILED++))
+    FAILED=$((FAILED + 1))
   fi
 done
 
@@ -86,7 +86,7 @@ if [[ "$IMPORT_K3S" == true ]]; then
     info "  导入 ${name}:latest ..."
     if docker save "${name}:latest" | sudo k3s ctr images import -; then
       ok "  → ${name}:latest 已导入"
-      ((IMPORTED++))
+      IMPORTED=$((IMPORTED + 1))
     else
       error "  → ${name}:latest 导入失败"
     fi
