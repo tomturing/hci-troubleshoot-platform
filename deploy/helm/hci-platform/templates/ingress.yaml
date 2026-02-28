@@ -16,6 +16,38 @@ spec:
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
   rules:
+    {{- if .Values.global.domain }}
+    - host: "api.{{ .Values.global.domain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: {{ .Values.apiGateway.port }}
+    - host: "admin.{{ .Values.global.domain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-ui
+                port:
+                  number: {{ .Values.adminUI.port }}
+    - host: "{{ .Values.global.domain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: customer-ui
+                port:
+                  number: {{ .Values.customerUI.port }}
+    {{- else }}
     - http:
         paths:
           # 后端 API
@@ -34,7 +66,7 @@ spec:
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
-          # 管理端
+          # 客户端与管理端（因无 host 路由，fallback 方案只能同时发配至其中一个或用 path 区分。为了后兼容，保留旧版）
           - path: /admin
             pathType: Prefix
             backend:
@@ -42,7 +74,6 @@ spec:
                 name: admin-ui
                 port:
                   number: {{ .Values.adminUI.port }}
-          # 客户端（默认路由）
           - path: /
             pathType: Prefix
             backend:
@@ -50,4 +81,5 @@ spec:
                 name: customer-ui
                 port:
                   number: {{ .Values.customerUI.port }}
+    {{- end }}
 {{- end }}

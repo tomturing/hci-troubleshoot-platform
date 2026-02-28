@@ -21,9 +21,9 @@ config:
 openclaw:
   volumeMounts:
     - name: openclaw-config
-      mountPath: /home/node/.openclaw
+      mountPath: /home/bot/.openclaw
     - name: openclaw-workspace
-      mountPath: /home/node/.openclaw/workspace
+      mountPath: /home/bot/.openclaw/workspace
   volumes:
     - name: openclaw-config
       hostPath:

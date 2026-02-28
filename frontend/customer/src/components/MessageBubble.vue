@@ -9,13 +9,32 @@ const isSystem = computed(() => props.message.role === 'system')
 const isAssistant = computed(() => props.message.role === 'assistant')
 const isDivider = computed(() => isSystem.value && props.message.content.includes('────'))
 
-/** 复制代码块 */
+/** 复制代码块（兼容非安全上下文） */
 const copied = ref(false)
 function copyContent() {
-  navigator.clipboard.writeText(props.message.content).then(() => {
-    copied.value = true
-    setTimeout(() => (copied.value = false), 2000)
-  })
+  const text = props.message.content
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => {
+      copied.value = true
+      setTimeout(() => (copied.value = false), 2000)
+    })
+  } else {
+    // 非安全上下文降级：使用 textarea + execCommand
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+      copied.value = true
+      setTimeout(() => (copied.value = false), 2000)
+    } catch (e) {
+      console.warn('Copy failed:', e)
+    }
+    document.body.removeChild(textarea)
+  }
 }
 
 /** 格式化时间 */

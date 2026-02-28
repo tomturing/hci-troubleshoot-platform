@@ -27,7 +27,7 @@ spec:
               protocol: TCP
           env:
             - name: HOME
-              value: "/home/node"
+              value: "/home/bot"
             - name: TERM
               value: "xterm-256color"
             - name: OPENCLAW_SKIP_CANVAS_HOST
@@ -42,23 +42,24 @@ spec:
                 secretKeyRef:
                   name: hci-secrets
                   key: OPENCLAW_GATEWAY_TOKEN
-          {{- if .Values.openclaw.volumeMounts }}
           volumeMounts:
+            - name: openclaw-home
+              mountPath: /home/bot
+            - name: openclaw-tmp
+              mountPath: /tmp/openclaw
+          {{- if .Values.openclaw.volumeMounts }}
             {{- toYaml .Values.openclaw.volumeMounts | nindent 12 }}
           {{- end }}
           command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "{{ .Values.openclaw.port }}"]
           livenessProbe:
-            httpGet:
-              path: /v1/chat/completions
+            tcpSocket:
               port: {{ .Values.openclaw.port }}
             initialDelaySeconds: 30
             periodSeconds: 60
             timeoutSeconds: 10
             failureThreshold: 3
-            # OpenClaw 无 /health，POST 空 payload 返回 400/422 视为可达
           readinessProbe:
-            httpGet:
-              path: /v1/chat/completions
+            tcpSocket:
               port: {{ .Values.openclaw.port }}
             initialDelaySeconds: 15
             periodSeconds: 30
@@ -66,8 +67,12 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.openclaw.resources | nindent 12 }}
-      {{- if .Values.openclaw.volumes }}
       volumes:
+        - name: openclaw-home
+          emptyDir: {}
+        - name: openclaw-tmp
+          emptyDir: {}
+      {{- if .Values.openclaw.volumes }}
         {{- toYaml .Values.openclaw.volumes | nindent 8 }}
       {{- end }}
 ---

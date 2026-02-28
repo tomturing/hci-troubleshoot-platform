@@ -1,0 +1,80 @@
+{{- if .Values.observability.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: {{ .Values.observability.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "loki" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "loki" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "loki" "Release" .Release "Chart" .Chart) | nindent 8 }}
+    spec:
+      containers:
+        - name: loki
+          image: {{ .Values.observability.loki.image }}
+          args: ["-config.file=/etc/loki/local-config.yaml"]
+          ports:
+            - containerPort: 3100
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 3100
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3100
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.observability.loki.resources | nindent 12 }}
+          volumeMounts:
+            - name: loki-data
+              mountPath: /loki
+      volumes:
+        - name: loki-data
+          persistentVolumeClaim:
+            claimName: loki-data
+---
+# Loki 需要 StatefulSet 以持久化数据，但简化起见用 Deployment + PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-data
+  namespace: {{ .Values.observability.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.observability.loki.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.observability.loki.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: {{ .Values.observability.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "loki" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3100
+      targetPort: 3100
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "loki" "Release" .Release) | nindent 4 }}
+{{- end }}

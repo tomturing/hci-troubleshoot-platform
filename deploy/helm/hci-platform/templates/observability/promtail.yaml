@@ -1,0 +1,83 @@
+{{- if .Values.observability.enabled }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: {{ .Values.observability.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "promtail" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "promtail" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "promtail" "Release" .Release "Chart" .Chart) | nindent 8 }}
+    spec:
+      serviceAccountName: promtail
+      containers:
+        - name: promtail
+          image: {{ .Values.observability.promtail.image }}
+          args: ["-config.file=/etc/promtail/config.yml"]
+          resources:
+            {{- toYaml .Values.observability.promtail.resources | nindent 12 }}
+          volumeMounts:
+            - name: promtail-config
+              mountPath: /etc/promtail/config.yml
+              subPath: config.yml
+            - name: pods-log
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: run-promtail
+              mountPath: /run/promtail
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+      volumes:
+        - name: promtail-config
+          configMap:
+            name: promtail-config
+        - name: pods-log
+          hostPath:
+            path: /var/log/pods
+        - name: run-promtail
+          hostPath:
+            path: /run/promtail
+---
+# Promtail ServiceAccount + ClusterRole (读取 Pod 元数据)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+  namespace: {{ .Values.observability.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: promtail
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "services", "endpoints", "pods"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: promtail
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: {{ .Values.observability.namespace }}
+roleRef:
+  kind: ClusterRole
+  name: promtail
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

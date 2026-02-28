@@ -1,0 +1,8 @@
+{{- if .Values.observability.enabled }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.observability.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+{{- end }}

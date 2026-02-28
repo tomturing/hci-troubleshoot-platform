@@ -1,14 +1,38 @@
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
+
 /**
  * 系统监控 - 嵌入 Grafana 仪表盘
- * Grafana 默认部署在 localhost:3000
+ * Docker Compose: http://localhost:3000
+ * K3s: kubectl port-forward svc/grafana 3002:3000 -n hci-observability
  */
-const grafanaUrl = 'http://localhost:3000'
+const grafanaUrl = ref('')
+const grafanaReady = ref(false)
+const loading = ref(true)
 
-/** 在新窗口打开 Grafana（Vue template 中不能直接访问 window） */
-function openGrafana() {
-  window.open(grafanaUrl, '_blank')
+/** 获取 Grafana 地址 */
+async function detectGrafana() {
+  const hostname = window.location.hostname
+  const protocol = window.location.protocol
+
+  // Cloud/K3s nip.io 下的动态计算: admin.<ip>.nip.io -> grafana.<ip>.nip.io
+  if (hostname.includes('nip.io')) {
+    const grafanaHost = hostname.replace('admin.', 'grafana.')
+    grafanaUrl.value = `${protocol}//${grafanaHost}`
+  } else {
+    // Docker Compose / fallback
+    grafanaUrl.value = 'http://localhost:3000'
+  }
+  
+  grafanaReady.value = true
+  loading.value = false
 }
+
+function openGrafana() {
+  window.open(grafanaUrl.value, '_blank')
+}
+
+onMounted(detectGrafana)
 </script>
 
 <template>
