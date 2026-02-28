@@ -39,6 +39,7 @@ class PodResponse(BaseModel):
     assistant_type: Optional[str] = None
     status: Optional[str] = None
     ip: Optional[str] = None
+    endpoint: Optional[str] = None
 
 class AssistantInfo(BaseModel):
     type: str
@@ -71,7 +72,17 @@ async def allocate_pod(
             status_code=503,
             detail=f"No available pods for assistant type '{request.assistant_type}'"
         )
-    return {"pod_name": pod_name, "assistant_type": request.assistant_type}
+    info = service.get_allocation_info(request.case_id) or {}
+    status = service.k8s.get_pod_status(pod_name)
+    ip = service.k8s.get_pod_ip(pod_name)
+    endpoint = service.get_endpoint_for_case(request.case_id)
+    return {
+        "pod_name": pod_name,
+        "assistant_type": info.get("assistant_type", request.assistant_type),
+        "status": status,
+        "ip": ip,
+        "endpoint": endpoint,
+    }
 
 @router.post("/pods/release")
 async def release_pod(
@@ -97,12 +108,14 @@ async def get_pod_for_case(
     pod_name = info["pod_name"]
     status = service.k8s.get_pod_status(pod_name)
     ip = service.k8s.get_pod_ip(pod_name)
+    endpoint = service.get_endpoint_for_case(case_id)
     
     return {
         "pod_name": pod_name,
         "assistant_type": info["assistant_type"],
         "status": status,
-        "ip": ip
+        "ip": ip,
+        "endpoint": endpoint,
     }
 
 @router.get("/status")

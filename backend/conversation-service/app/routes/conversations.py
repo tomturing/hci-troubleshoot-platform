@@ -16,17 +16,24 @@ from shared.database.postgres import DatabaseManager
 from ..services.conversation_service import ConversationService
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
+from ..services.scheduler_client import SchedulerClient
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 # 全局依赖，需要在main.py中注入
 database_manager: Optional[DatabaseManager] = None
 ai_registry: Optional[AIAssistantRegistry] = None
+scheduler_client: Optional[SchedulerClient] = None
 
-def set_dependencies(db: DatabaseManager, registry: AIAssistantRegistry):
-    global database_manager, ai_registry
+def set_dependencies(
+    db: DatabaseManager,
+    registry: AIAssistantRegistry,
+    scheduler: Optional[SchedulerClient] = None
+):
+    global database_manager, ai_registry, scheduler_client
     database_manager = db
     ai_registry = registry
+    scheduler_client = scheduler
 
 async def get_conversation_service() -> ConversationService:
     """依赖注入: 获取Conversation Service"""
@@ -35,17 +42,19 @@ async def get_conversation_service() -> ConversationService:
     
     async for session in database_manager.get_session():
         repo = ConversationRepository(session)
-        yield ConversationService(repo, ai_registry)
+        yield ConversationService(repo, ai_registry, scheduler_client)
 
 @router.post("/", status_code=201)
 async def create_conversation(
     case_id: str,
+    assistant_type: str = "openclaw",
     initial_message: Optional[str] = None,
     service: ConversationService = Depends(get_conversation_service)
 ):
     """创建新对话"""
     conversation = await service.create_conversation(
         case_id=case_id,
+        assistant_type=assistant_type,
         initial_message=initial_message
     )
     return {"conversation_id": conversation.conversation_id, "case_id": conversation.case_id}

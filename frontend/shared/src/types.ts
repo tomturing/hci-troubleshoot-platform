@@ -15,6 +15,7 @@ export interface CaseResponse {
   status: CaseStatus
   title: string
   description: string | null
+  assistant_type?: string
   created_at: string
   updated_at: string
   closed_at: string | null

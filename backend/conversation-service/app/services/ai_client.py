@@ -22,6 +22,7 @@ class AIAssistantClient(Protocol):
         self,
         messages: List[Dict[str, str]],
         user_id: str,
+        pod_endpoint: Optional[str] = None,
         model: str = ""
     ) -> AsyncGenerator[str, None]:
         """流式对话补全"""
@@ -42,15 +43,24 @@ class OpenClawAssistant:
     使用 /v1/chat/completions 端点
     """
     
-    def __init__(self, base_url: str, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: Optional[str] = None,
+        default_model: str = "openclaw",
+        assistant_type: str = "openclaw",
+    ):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
+        self.default_model = default_model
+        self.assistant_type = assistant_type
         self.client = httpx.AsyncClient(timeout=60.0)
     
     async def chat_completion_stream(
         self,
         messages: List[Dict[str, str]],
         user_id: str,
+        pod_endpoint: Optional[str] = None,
         model: str = "openclaw"
     ) -> AsyncGenerator[str, None]:
         """
@@ -70,20 +80,21 @@ class OpenClawAssistant:
         }
         
         payload = {
-            "model": model,
+            "model": model or self.default_model,
             "messages": messages,
             "stream": True,
             "user": user_id
         }
-        
-        url = f"{self.base_url}/v1/chat/completions"
+
+        target_base_url = (pod_endpoint or self.base_url).rstrip("/")
+        url = f"{target_base_url}/v1/chat/completions"
         
         logger.info(
             event="ai_request",
             message=f"Sending request to OpenClaw",
             url=url,
             user_id=user_id,
-            assistant_type="openclaw"
+            assistant_type=self.assistant_type
         )
         
         try:
@@ -200,6 +211,16 @@ class AIAssistantRegistry:
         return results
 
 
-def create_openclaw_client(base_url: str, api_key: Optional[str] = None) -> OpenClawAssistant:
+def create_openclaw_client(
+    base_url: str,
+    api_key: Optional[str] = None,
+    default_model: str = "openclaw",
+    assistant_type: str = "openclaw",
+) -> OpenClawAssistant:
     """工厂函数: 创建OpenClaw助手客户端"""
-    return OpenClawAssistant(base_url=base_url, api_key=api_key)
+    return OpenClawAssistant(
+        base_url=base_url,
+        api_key=api_key,
+        default_model=default_model,
+        assistant_type=assistant_type,
+    )

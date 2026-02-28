@@ -33,7 +33,21 @@ async def list_assistants():
             response = await client.get(url)
             
         if response.status_code == 200:
-            return response.json()
+            items = response.json()
+            if isinstance(items, list):
+                normalized = []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    normalized.append({
+                        "type": item.get("type", "openclaw"),
+                        "display_name": item.get("display_name") or item.get("name") or item.get("type", "openclaw"),
+                        "description": item.get("description", ""),
+                        "available": item.get("available", item.get("enabled", True)),
+                        "pool_stats": item.get("pool_stats", {}),
+                    })
+                return normalized
+            return []
         else:
             logger.error(
                 event="assistants_proxy_error",
@@ -53,9 +67,9 @@ async def list_assistants():
         return [
             {
                 "type": "openclaw",
-                "name": "OpenClaw",
+                "display_name": "OpenClaw",
                 "description": "通用AI排障助手，基于GLM大模型",
-                "enabled": True,
+                "available": True,
                 "pool_stats": {}
             }
         ]

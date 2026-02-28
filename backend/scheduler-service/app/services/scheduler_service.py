@@ -107,6 +107,20 @@ class SchedulerService:
             return {"pod_name": allocation[0], "assistant_type": allocation[1]}
         return None
 
+    def get_endpoint_for_case(self, case_id: str) -> Optional[str]:
+        """根据 case_id 解析 Pod endpoint (http://<pod_ip>:<port>)。"""
+        info = self.get_allocation_info(case_id)
+        if not info:
+            return None
+        pod_name = info["pod_name"]
+        assistant_type = info["assistant_type"]
+        pod_ip = self.k8s.get_pod_ip(pod_name)
+        if not pod_ip:
+            return None
+        cfg = settings.assistant_registry.get(assistant_type, {})
+        port = cfg.get("port", 18789)
+        return f"http://{pod_ip}:{port}"
+
     def get_status(self) -> Dict:
         """获取服务状态"""
         return {

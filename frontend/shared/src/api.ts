@@ -104,9 +104,12 @@ export function createAssistantApi(client: AxiosInstance) {
 export function createConversationApi(client: AxiosInstance) {
   return {
     /** 创建会话（case_id 通过 query parameter 传递） */
-    create(caseId: string) {
+    create(caseId: string, assistantType?: string) {
       return client.post<ConversationResponse>('/conversations/', null, {
-        params: { case_id: caseId },
+        params: {
+          case_id: caseId,
+          ...(assistantType ? { assistant_type: assistantType } : {}),
+        },
       })
     },
 

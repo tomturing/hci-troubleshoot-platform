@@ -75,7 +75,12 @@ export const useChatStore = defineStore('chat', () => {
   async function fetchAssistants() {
     try {
       const res = await assistantApi.list()
-      assistants.value = res.data
+      assistants.value = (res.data as any[]).map((item) => ({
+        type: item.type,
+        display_name: item.display_name ?? item.name ?? item.type,
+        description: item.description ?? '',
+        available: item.available ?? item.enabled ?? true,
+      }))
       // 默认选中第一个可用的助手
       const firstAvailable = assistants.value.find(a => a.available)
       if (firstAvailable) {
@@ -254,7 +259,8 @@ export const useChatStore = defineStore('chat', () => {
   async function createConversation() {
     if (!currentCase.value) return
     try {
-      const res = await conversationApi.create(currentCase.value.case_id)
+      const assistantType = currentCase.value.assistant_type || selectedAssistant.value || undefined
+      const res = await conversationApi.create(currentCase.value.case_id, assistantType)
       conversationId.value = res.data.conversation_id
     } catch (e: any) {
       addSystemMessage(`创建对话失败: ${e.response?.data?.detail || e.message}`)

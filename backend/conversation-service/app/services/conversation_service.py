@@ -4,12 +4,13 @@ Conversation Service - 对话业务逻辑层 (v2.0 多类型AI助手)
 
 from typing import List, Optional, AsyncGenerator, Dict, Any
 import uuid
-import json
 
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
 from .ai_client import AIAssistantRegistry
+from .scheduler_client import SchedulerClient
+from app.config import settings
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
 
@@ -21,10 +22,12 @@ class ConversationService:
     def __init__(
         self, 
         repository: ConversationRepository,
-        ai_registry: AIAssistantRegistry
+        ai_registry: AIAssistantRegistry,
+        scheduler_client: Optional[SchedulerClient] = None
     ):
         self.repository = repository
         self.ai_registry = ai_registry
+        self.scheduler_client = scheduler_client
         
     async def create_conversation(
         self,
@@ -38,12 +41,10 @@ class ConversationService:
         conversation = await self.repository.create_conversation(
             case_id=case_id,
             trace_id=trace_id,
+            assistant_type=assistant_type,
             metadata=metadata
         )
-        
-        # 设置对话的助手类型
-        conversation.assistant_type = assistant_type
-        
+
         logger.info(
             event="conversation_created",
             message=f"Created conversation {conversation.conversation_id}",
@@ -67,7 +68,7 @@ class ConversationService:
         conversation_id: uuid.UUID,
         case_id: str,
         content: str,
-        assistant_type: str = "openclaw"
+        assistant_type: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
         """
         发送消息并获取流式回复 (v2.0: 根据 assistant_type 选择AI后端)
@@ -100,18 +101,26 @@ class ConversationService:
             })
         
         # 3. 从注册表获取AI助手客户端
-        ai_client = self.ai_registry.get_client(assistant_type)
+        resolved_assistant_type = await self._resolve_assistant_type(conversation_id, assistant_type)
+        ai_client = self.ai_registry.get_client(resolved_assistant_type)
         if not ai_client:
-            error_msg = f"未找到类型为 '{assistant_type}' 的AI助手"
-            logger.error(event="ai_client_not_found", message=error_msg, assistant_type=assistant_type)
+            error_msg = f"未找到类型为 '{resolved_assistant_type}' 的AI助手"
+            logger.error(
+                event="ai_client_not_found",
+                message=error_msg,
+                assistant_type=resolved_assistant_type
+            )
             yield f"\n[System Error: {error_msg}]"
             return
-            
+
+        pod_endpoint = await self._resolve_pod_endpoint(case_id, resolved_assistant_type)
+
         # 4. 调用AI并流式返回
         try:
             async for chunk in ai_client.chat_completion_stream(
                 messages=history_messages,
-                user_id=f"case-{case_id}"
+                user_id=f"case-{case_id}",
+                pod_endpoint=pod_endpoint,
             ):
                 if chunk:
                     yield chunk
@@ -125,7 +134,7 @@ class ConversationService:
                     event="conversation_error",
                     message="Error during AI generation",
                     conversation_id=str(conversation_id),
-                    assistant_type=assistant_type,
+                    assistant_type=resolved_assistant_type,
                     error=str(e)
                 )
                 yield f"\n[System Error: {str(e)}]"
@@ -164,3 +173,57 @@ class ConversationService:
                 conversation_id=str(conversation_id),
                 error=str(e)
             )
+
+    async def _resolve_assistant_type(
+        self,
+        conversation_id: uuid.UUID,
+        assistant_type: Optional[str],
+    ) -> str:
+        """优先使用显式参数，否则回退到 conversation.assistant_type。"""
+        if assistant_type:
+            return assistant_type
+        conversation = await self.repository.get_conversation(conversation_id)
+        if conversation and getattr(conversation, "assistant_type", None):
+            return conversation.assistant_type
+        return "openclaw"
+
+    def _get_fallback_endpoint(self, assistant_type: str) -> Optional[str]:
+        cfg = settings.assistant_registry.get(assistant_type, {})
+        endpoint = cfg.get("base_url")
+        if endpoint:
+            return str(endpoint).rstrip("/")
+        return settings.OPENCLAW_BASE_URL.rstrip("/")
+
+    async def _resolve_pod_endpoint(self, case_id: str, assistant_type: str) -> Optional[str]:
+        """优先走 scheduler 实时分配，失败则回退到静态 base_url。"""
+        if not self.scheduler_client:
+            return self._get_fallback_endpoint(assistant_type)
+
+        allocated = await self.scheduler_client.allocate_pod(case_id, assistant_type)
+        if not allocated:
+            logger.warning(
+                event="scheduler_allocate_unavailable",
+                message="Scheduler allocation failed, fallback to static endpoint",
+                case_id=case_id,
+                assistant_type=assistant_type,
+            )
+            return self._get_fallback_endpoint(assistant_type)
+
+        endpoint = await self.scheduler_client.wait_for_endpoint(case_id)
+        if endpoint:
+            logger.info(
+                event="scheduler_endpoint_resolved",
+                message=f"Resolved pod endpoint for case {case_id}",
+                case_id=case_id,
+                assistant_type=assistant_type,
+                endpoint=endpoint,
+            )
+            return endpoint.rstrip("/")
+
+        logger.warning(
+            event="scheduler_endpoint_timeout",
+            message="Pod endpoint not ready in time, fallback to static endpoint",
+            case_id=case_id,
+            assistant_type=assistant_type,
+        )
+        return self._get_fallback_endpoint(assistant_type)

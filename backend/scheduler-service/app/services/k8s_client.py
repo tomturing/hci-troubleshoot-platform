@@ -57,7 +57,7 @@ class K8sClient:
         # 从 assistant_config 或默认值获取配置
         cfg = assistant_config or {}
         image = cfg.get("image", settings.OPENCLAW_IMAGE)
-        port = cfg.get("port", 8080)
+        port = cfg.get("port", 18789)
         custom_labels = cfg.get("labels", {})
         custom_env = cfg.get("env", [])
         

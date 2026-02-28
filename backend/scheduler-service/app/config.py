@@ -13,7 +13,7 @@ DEFAULT_ASSISTANT_REGISTRY = {
         "name": "OpenClaw",
         "description": "通用AI排障助手，基于GLM大模型",
         "image": "openclaw:latest",
-        "port": 8080,
+        "port": 18789,
         "warm_pool_size": 2,
         "max_pool_size": 10,
         "enabled": True,

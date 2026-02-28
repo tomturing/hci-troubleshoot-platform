@@ -22,6 +22,7 @@ class ConversationRepository:
         self, 
         case_id: str, 
         trace_id: str,
+        assistant_type: str = "openclaw",
         metadata: Optional[Dict[str, Any]] = None
     ) -> Conversation:
         """创建新对话"""
@@ -31,6 +32,7 @@ class ConversationRepository:
         conversation = Conversation(
             conversation_id=uuid.uuid4(),
             case_id=case_id,
+            assistant_type=assistant_type,
             trace_id=trace_id,
             started_at=datetime.now(timezone.utc),
             message_count=0,
