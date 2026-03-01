@@ -103,6 +103,77 @@ services:
       - hci-troubleshoot-platform_default
     command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"]
 
+  picoclaw-adapter:
+    build:
+      context: /mnt/d/AIBot
+      dockerfile: hci-troubleshoot-platform/adapters/cli_openai_adapter/Dockerfile.picoclaw
+    container_name: hci-picoclaw-adapter
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      - ADAPTER_HOST=0.0.0.0
+      - ADAPTER_PORT=43101
+      - ADAPTER_MODEL=picoclaw
+      - ADAPTER_BEARER_TOKEN=pc_dev_token
+      - ADAPTER_RESPONSE_PREFIX=🦞
+      - PICOCLAW_UPSTREAM_BASE_URL=http://openclaw:18789/v1
+      - PICOCLAW_UPSTREAM_MODEL=openclaw
+    ports:
+      - "43101:43101"
+    volumes:
+      - picoclaw_data:/root/.picoclaw
+    networks:
+      - hci-troubleshoot-platform_default
+
+  nanobot-adapter:
+    build:
+      context: /mnt/d/AIBot
+      dockerfile: hci-troubleshoot-platform/adapters/cli_openai_adapter/Dockerfile.nanobot
+    container_name: hci-nanobot-adapter
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      - ADAPTER_HOST=0.0.0.0
+      - ADAPTER_PORT=43102
+      - ADAPTER_MODEL=nanobot
+      - ADAPTER_BEARER_TOKEN=nb_dev_token
+      - NANOBOT_UPSTREAM_BASE_URL=http://openclaw:18789/v1
+      - NANOBOT_UPSTREAM_MODEL=openclaw
+    ports:
+      - "43102:43102"
+    volumes:
+      - nanobot_data:/root/.nanobot
+    depends_on:
+      - openclaw
+    networks:
+      - hci-troubleshoot-platform_default
+
+  nanoclaw-adapter:
+    build:
+      context: /mnt/d/AIBot
+      dockerfile: hci-troubleshoot-platform/adapters/cli_openai_adapter/Dockerfile.nanoclaw
+    container_name: hci-nanoclaw-adapter
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      - ADAPTER_HOST=0.0.0.0
+      - ADAPTER_PORT=43103
+      - ADAPTER_MODEL=nanoclaw
+      - ADAPTER_BEARER_TOKEN=nc_dev_token
+      - NANOCLAW_NATIVE_TIMEOUT_SEC=300
+    ports:
+      - "43103:43103"
+    volumes:
+      - nanoclaw_native_data:/home/node/.nanoclaw-native
+      - nanoclaw_workspace:/workspace
+      - /home/bot/.claude:/home/node/.claude
+      - /home/bot/.claude.json:/home/node/.claude.json:ro
+    networks:
+      - hci-troubleshoot-platform_default
+
   scheduler-service:
     build:
       context: ../../backend
@@ -121,6 +192,10 @@ services:
 
 volumes:
   postgres_data:
+  picoclaw_data:
+  nanobot_data:
+  nanoclaw_native_data:
+  nanoclaw_workspace:
 
 networks:
   hci-troubleshoot-platform_default:

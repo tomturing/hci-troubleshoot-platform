@@ -1,0 +1,33 @@
+FROM node:22-bookworm-slim
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 python3-pip ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY hci-troubleshoot-platform/adapters/cli_openai_adapter/server.py /app/server.py
+COPY hci-troubleshoot-platform/adapters/cli_openai_adapter/bootstrap_nanoclaw.sh /app/bootstrap_nanoclaw.sh
+COPY hci-troubleshoot-platform/adapters/cli_openai_adapter/nanoclaw_native_runner.py /app/nanoclaw_native_runner.py
+COPY hci-troubleshoot-platform/adapters/cli_openai_adapter/nanoclaw_native_query.mjs /app/nanoclaw_native_query.mjs
+COPY nanoclaw/container/agent-runner/ /app/nanoclaw-agent-runner/
+
+RUN npm install -g @anthropic-ai/claude-code && \
+    cd /app/nanoclaw-agent-runner && npm ci && npm run build && \
+    chmod +x /app/bootstrap_nanoclaw.sh /app/nanoclaw_native_runner.py /app/nanoclaw_native_query.mjs && \
+    mkdir -p /workspace/group /workspace/global /workspace/ipc/input /workspace/ipc/messages /workspace/ipc/tasks /home/node/.nanoclaw-native && \
+    chown -R node:node /workspace /home/node/.nanoclaw-native /app/nanoclaw-agent-runner
+
+ENV PYTHONUNBUFFERED=1 \
+    ADAPTER_HOST=0.0.0.0 \
+    ADAPTER_PORT=43103 \
+    ADAPTER_MODEL=nanoclaw \
+    ADAPTER_BEARER_TOKEN=nc_dev_token \
+    NANOCLAW_NATIVE_TIMEOUT_SEC=300 \
+    NANOCLAW_RUNNER_USER=node \
+    NANOCLAW_RUNNER_HOME=/home/node \
+    NANOCLAW_STATE_DIR=/home/node/.nanoclaw-native \
+    ADAPTER_CMD_JSON='["python3","/app/nanoclaw_native_runner.py","--prompt","{prompt}","--session","{session}","--model","{model}"]'
+
+EXPOSE 43103
+ENTRYPOINT ["/app/bootstrap_nanoclaw.sh"]

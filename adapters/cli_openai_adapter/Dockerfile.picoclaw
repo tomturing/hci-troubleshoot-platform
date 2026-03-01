@@ -1,0 +1,31 @@
+FROM golang:1.25-alpine AS picoclaw-builder
+
+RUN apk add --no-cache git make
+WORKDIR /src/picoclaw
+
+COPY picoclaw/go.mod picoclaw/go.sum ./
+RUN go mod download
+
+COPY picoclaw/ ./
+RUN make build
+
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY hci-troubleshoot-platform/adapters/cli_openai_adapter/server.py /app/server.py
+COPY hci-troubleshoot-platform/adapters/cli_openai_adapter/bootstrap_picoclaw.sh /app/bootstrap_picoclaw.sh
+COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw /usr/local/bin/picoclaw
+
+RUN chmod +x /app/bootstrap_picoclaw.sh /usr/local/bin/picoclaw && \
+    mkdir -p /root/.picoclaw/workspace
+
+ENV PYTHONUNBUFFERED=1 \
+    ADAPTER_HOST=0.0.0.0 \
+    ADAPTER_PORT=43101 \
+    ADAPTER_MODEL=picoclaw \
+    ADAPTER_BEARER_TOKEN=pc_dev_token \
+    ADAPTER_RESPONSE_PREFIX="🦞 " \
+    ADAPTER_CMD_JSON='["/usr/local/bin/picoclaw","agent","--message","{prompt}","--session","{session}"]'
+
+EXPOSE 43101
+ENTRYPOINT ["/app/bootstrap_picoclaw.sh"]
