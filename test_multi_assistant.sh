@@ -368,10 +368,16 @@ run_assistant_flow() {
   local turn_idx user_msg assistant_reply
 
   now_ts="$(date +%s)"
-  case_payload="$(cat <<EOF
-{"client_id":"${CLIENT_PREFIX}-${assistant}-${now_ts}","title":"[${assistant}] E2E 联调","description":"验证 ${assistant} 助手链路","assistant_type":"${assistant}"}
-EOF
-)"
+  case_payload="$("$PYBIN" -c '
+import json
+import sys
+print(json.dumps({
+    "client_id": sys.argv[1],
+    "title": sys.argv[2],
+    "description": sys.argv[3],
+    "assistant_type": sys.argv[4],
+}, ensure_ascii=False))
+' "${CLIENT_PREFIX}-${assistant}-${now_ts}" "[${assistant}] E2E 联调" "验证 ${assistant} 助手链路" "$assistant")"
 
   request_json POST "${GATEWAY}/api/cases/" "$case_payload"
   if [[ "$REQ_STATUS" != "201" ]]; then
@@ -406,10 +412,15 @@ EOF
   turn_idx=0
   for user_msg in "${USER_MESSAGES[@]}"; do
     turn_idx=$((turn_idx + 1))
-    msg_payload="$(cat <<EOF
-{"case_id":"${case_id}","role":"user","content":"${user_msg}"}
-EOF
-)"
+    msg_payload="$("$PYBIN" -c '
+import json
+import sys
+print(json.dumps({
+    "case_id": sys.argv[1],
+    "role": "user",
+    "content": sys.argv[2],
+}, ensure_ascii=False))
+' "$case_id" "$user_msg")"
     sse_file="$(mktemp)"
     sse_status="$(curl -sS -N --max-time "$SSE_TIMEOUT_SEC" -o "$sse_file" -w "%{http_code}" -X POST "${GATEWAY}/api/conversations/${conv_id}/message" -H "Content-Type: application/json" -d "$msg_payload")"
     if [[ "$sse_status" != "200" ]]; then

@@ -1,0 +1,45 @@
+# values-prod.override.example.yaml
+# 说明:
+# 1) 这是生产环境私有配置模板，不要直接用于生产。
+# 2) 复制到 /srv/hci/config/values-prod.override.yaml 后替换所有占位符。
+# 3) 该文件不要提交到代码仓库。
+
+global:
+  # 生产域名（Ingress 会使用 api.<domain> / admin.<domain> / grafana.<domain>）
+  domain: "example.com"
+  # 私有仓库前缀，需以斜杠结尾
+  imageRegistry: "registry.example.com/"
+  imagePullPolicy: IfNotPresent
+
+apiGateway:
+  image:
+    tag: "2026.03.02-1"
+caseService:
+  image:
+    tag: "2026.03.02-1"
+conversationService:
+  image:
+    tag: "2026.03.02-1"
+schedulerService:
+  image:
+    tag: "2026.03.02-1"
+customerUI:
+  image:
+    tag: "2026.03.02-1"
+adminUI:
+  image:
+    tag: "2026.03.02-1"
+openclaw:
+  image:
+    tag: "2026.03.02-1"
+
+secrets:
+  postgresPassword: "<replace-strong-password>"
+  openclawToken: "<replace-openclaw-token>"
+  zaiApiKey: "<replace-if-used>"
+  grafanaAdminPassword: "<replace-grafana-password>"
+
+config:
+  logLevel: "INFO"
+  assistantRegistryJson: '{"openclaw":{"name":"OpenClaw","description":"通用AI排障助手","image":"hci-openclaw:2026.03.02-1","port":18789,"warm_pool_size":2,"max_pool_size":10,"enabled":true,"base_url":"http://openclaw:18789","gateway_token":"<replace-openclaw-token>","model":"openclaw","labels":{"app":"openclaw","assistant-type":"openclaw"}}}'
+

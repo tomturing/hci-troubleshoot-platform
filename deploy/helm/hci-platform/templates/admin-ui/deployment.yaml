@@ -15,10 +15,12 @@ spec:
       labels:
         {{- include "hci.podLabels" (dict "name" "admin-ui" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "admin-ui") | nindent 6 }}
       containers:
         - name: admin-ui
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.adminUI.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
           ports:
             - containerPort: {{ .Values.adminUI.port }}
               protocol: TCP

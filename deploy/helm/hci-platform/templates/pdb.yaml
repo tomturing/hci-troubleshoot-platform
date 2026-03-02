@@ -1,0 +1,91 @@
+{{- if .Values.workloadDefaults.pdb.enabled }}
+{{- if gt (int .Values.apiGateway.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-gateway-pdb
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "api-gateway" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "api-gateway" "Release" .Release) | nindent 6 }}
+---
+{{- end }}
+{{- if gt (int .Values.caseService.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: case-service-pdb
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "case-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "case-service" "Release" .Release) | nindent 6 }}
+---
+{{- end }}
+{{- if gt (int .Values.conversationService.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: conversation-service-pdb
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "conversation-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "conversation-service" "Release" .Release) | nindent 6 }}
+---
+{{- end }}
+{{- if gt (int .Values.schedulerService.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: scheduler-service-pdb
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "scheduler-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "scheduler-service" "Release" .Release) | nindent 6 }}
+---
+{{- end }}
+{{- if gt (int .Values.customerUI.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: customer-ui-pdb
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "customer-ui" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "customer-ui" "Release" .Release) | nindent 6 }}
+---
+{{- end }}
+{{- if gt (int .Values.adminUI.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: admin-ui-pdb
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "admin-ui" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "admin-ui" "Release" .Release) | nindent 6 }}
+{{- end }}
+{{- end }}

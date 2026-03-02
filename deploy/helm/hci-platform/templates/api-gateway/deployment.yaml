@@ -18,10 +18,12 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "api-gateway") | nindent 6 }}
       containers:
         - name: api-gateway
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.apiGateway.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
           ports:
             - containerPort: {{ .Values.apiGateway.port }}
               protocol: TCP

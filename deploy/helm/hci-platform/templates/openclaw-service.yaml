@@ -18,10 +18,12 @@ spec:
       labels:
         {{- include "hci.podLabels" (dict "name" "openclaw" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "openclaw") | nindent 6 }}
       containers:
         - name: openclaw
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.openclaw.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
           ports:
             - containerPort: {{ .Values.openclaw.port }}
               protocol: TCP

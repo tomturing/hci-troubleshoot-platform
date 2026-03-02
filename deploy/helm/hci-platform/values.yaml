@@ -8,6 +8,33 @@ global:
   imageRegistry: "" # 私有镜像仓库前缀，如 "registry.example.com/"
   imagePullPolicy: IfNotPresent
 
+# ======================== 生产稳态增强（多节点友好）==========================
+workloadDefaults:
+  securityContext:
+    enabled: true
+    # 为 Pod 启用默认 seccomp，提升基础隔离能力
+    pod:
+      seccompProfile:
+        type: RuntimeDefault
+    # 保守配置：不强制 runAsNonRoot，避免与现有镜像默认用户冲突
+    container:
+      allowPrivilegeEscalation: false
+  scheduling:
+    antiAffinity:
+      # 软反亲和：单节点不阻塞调度，多节点优先分散副本
+      enabled: true
+      topologyKey: kubernetes.io/hostname
+      weight: 100
+    topologySpread:
+      enabled: true
+      topologyKey: kubernetes.io/hostname
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+  pdb:
+    # 仅对副本数 > 1 的服务生成 PDB
+    enabled: true
+    minAvailable: 1
+
 # ======================== PostgreSQL ========================================
 postgres:
   enabled: true

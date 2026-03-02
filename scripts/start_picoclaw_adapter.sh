@@ -2,15 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PICOCLAW_BIN="${PICOCLAW_BIN:-/mnt/d/AIBot/picoclaw/picoclaw}"
+AIBOT_ROOT="${AIBOT_ROOT:-$(cd "$ROOT_DIR/.." && pwd)}"
+PICOCLAW_BIN="${PICOCLAW_BIN:-$AIBOT_ROOT/picoclaw/picoclaw}"
 
 if [[ ! -x "$PICOCLAW_BIN" ]]; then
   cat >&2 <<MSG
 [ERROR] 未找到可执行 picoclaw: $PICOCLAW_BIN
 请先构建：
-  cd /mnt/d/AIBot/picoclaw && make build
+  cd $AIBOT_ROOT/picoclaw && make build
 然后设置：
-  export PICOCLAW_BIN=/mnt/d/AIBot/picoclaw/picoclaw
+  export PICOCLAW_BIN=$AIBOT_ROOT/picoclaw/picoclaw
 MSG
   exit 1
 fi

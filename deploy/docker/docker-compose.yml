@@ -85,7 +85,7 @@ services:
 
   openclaw:
     build:
-      context: /mnt/d/openclaw
+      context: ${OPENCLAW_REPO_DIR:-../../../../openclaw}
       dockerfile: Dockerfile
     container_name: hci-openclaw
     env_file:
@@ -95,8 +95,8 @@ services:
       - TERM=xterm-256color
       - OPENCLAW_SKIP_CANVAS_HOST=1
     volumes:
-      - /home/bot/.openclaw:/home/node/.openclaw
-      - /home/bot/.openclaw/workspace:/home/node/.openclaw/workspace
+      - ${OPENCLAW_HOST_HOME:-/home/ubuntu}/.openclaw:/home/node/.openclaw
+      - ${OPENCLAW_HOST_HOME:-/home/ubuntu}/.openclaw/workspace:/home/node/.openclaw/workspace
     expose:
       - "18789"
     networks:
@@ -105,7 +105,7 @@ services:
 
   picoclaw-adapter:
     build:
-      context: /mnt/d/AIBot
+      context: ${AIBOT_ROOT_DIR:-../../..}
       dockerfile: hci-troubleshoot-platform/adapters/cli_openai_adapter/Dockerfile.picoclaw
     container_name: hci-picoclaw-adapter
     restart: unless-stopped
@@ -128,7 +128,7 @@ services:
 
   nanobot-adapter:
     build:
-      context: /mnt/d/AIBot
+      context: ${AIBOT_ROOT_DIR:-../../..}
       dockerfile: hci-troubleshoot-platform/adapters/cli_openai_adapter/Dockerfile.nanobot
     container_name: hci-nanobot-adapter
     restart: unless-stopped
@@ -152,7 +152,7 @@ services:
 
   nanoclaw-adapter:
     build:
-      context: /mnt/d/AIBot
+      context: ${AIBOT_ROOT_DIR:-../../..}
       dockerfile: hci-troubleshoot-platform/adapters/cli_openai_adapter/Dockerfile.nanoclaw
     container_name: hci-nanoclaw-adapter
     restart: unless-stopped
@@ -169,8 +169,8 @@ services:
     volumes:
       - nanoclaw_native_data:/home/node/.nanoclaw-native
       - nanoclaw_workspace:/workspace
-      - /home/bot/.claude:/home/node/.claude
-      - /home/bot/.claude.json:/home/node/.claude.json:ro
+      - ${CLAUDE_HOST_HOME:-/home/ubuntu}/.claude:/home/node/.claude
+      - ${CLAUDE_HOST_HOME:-/home/ubuntu}/.claude.json:/home/node/.claude.json:ro
     networks:
       - hci-troubleshoot-platform_default
 

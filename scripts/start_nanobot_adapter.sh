@@ -2,13 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AIBOT_ROOT="${AIBOT_ROOT:-$(cd "$ROOT_DIR/.." && pwd)}"
 NANOBOT_BIN="${NANOBOT_BIN:-nanobot}"
 
 if ! command -v "$NANOBOT_BIN" >/dev/null 2>&1; then
   cat >&2 <<MSG
 [ERROR] 未找到 nanobot 命令: $NANOBOT_BIN
 请先安装/加入 PATH，例如：
-  cd /mnt/d/AIBot/nanobot && pip install -e .
+  cd $AIBOT_ROOT/nanobot && pip install -e .
 或设置：
   export NANOBOT_BIN=/path/to/nanobot
 MSG
