@@ -159,14 +159,25 @@ class K8sClient:
         except ApiException as e:
             return None
 
-    def list_pods(self, label_selector: str = "app=openclaw") -> List[Any]:
-        """列出Pod"""
+    def list_pods(self, label_selector: str = "app=openclaw") -> List[Dict[str, Any]]:
+        """列出Pod，返回标准化的字典列表"""
         try:
             pods = self.core_v1.list_namespaced_pod(
                 namespace=self.namespace,
                 label_selector=label_selector
             )
-            return pods.items
+            result = []
+            for pod in pods.items:
+                annotations = {}
+                if pod.metadata and pod.metadata.annotations:
+                    annotations = dict(pod.metadata.annotations)
+                result.append({
+                    "name": pod.metadata.name if pod.metadata else "",
+                    "status": pod.status.phase if pod.status else "Unknown",
+                    "labels": dict(pod.metadata.labels or {}) if pod.metadata else {},
+                    "annotations": annotations,
+                })
+            return result
         except ApiException as e:
             logger.error(f"Failed to list pods: {e}")
             return []

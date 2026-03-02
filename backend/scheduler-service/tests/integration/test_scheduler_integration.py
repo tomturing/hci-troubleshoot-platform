@@ -6,12 +6,7 @@ import pytest
 import httpx
 from httpx import ASGITransport
 import uuid
-import sys
-import os
 from unittest.mock import patch, MagicMock
-
-# 确保能正确导入并加载 .env
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
 from app.main import app
 

@@ -7,10 +7,6 @@ from typing import List, Optional
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-
 from shared.models.schemas import (
     CaseCreate, CaseResponse,
     CaseListResponse, CaseStatsResponse, ClientListResponse,

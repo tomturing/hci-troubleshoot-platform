@@ -7,10 +7,6 @@ from fastapi.responses import StreamingResponse
 from typing import List, Optional
 import uuid
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-
 from shared.models.schemas import MessageCreate, MessageResponse
 from shared.database.postgres import DatabaseManager
 from ..services.conversation_service import ConversationService

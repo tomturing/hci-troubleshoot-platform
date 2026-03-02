@@ -164,7 +164,7 @@ class TestConversationServiceIntegration:
 
             # 2. 发送消息
             with patch(
-                'app.services.openclaw_client.OpenClawClient.chat_completion_stream',
+                'app.services.ai_client.OpenClawAssistant.chat_completion_stream',
                 side_effect=mock_stream
             ):
                 async with httpx.AsyncClient(
@@ -212,7 +212,7 @@ class TestConversationServiceIntegration:
 
             # 2. 发送消息
             with patch(
-                'app.services.openclaw_client.OpenClawClient.chat_completion_stream',
+                'app.services.ai_client.OpenClawAssistant.chat_completion_stream',
                 side_effect=mock_stream
             ):
                 async with httpx.AsyncClient(

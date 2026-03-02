@@ -1,14 +1,14 @@
 """
 API Gateway - 主应用
+
+变更记录:
+- 使用 app.state 替代全局变量进行依赖注入
+- CORS 使用显式来源列表
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from shared.utils.otel import init_telemetry, instrument_app
 from shared.database.redis import RedisManager
@@ -22,15 +22,9 @@ init_telemetry(settings.SERVICE_NAME)
 
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 
-# 全局管理器
-redis_manager: RedisManager = None
-session_manager: SessionManager = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global redis_manager, session_manager
-    
     # 启动
     logger.info(
         event="service_starting",
@@ -42,6 +36,12 @@ async def lifespan(app: FastAPI):
     await redis_manager.connect()
     
     session_manager = SessionManager(redis_manager)
+    
+    # 存入 app.state
+    app.state.redis_manager = redis_manager
+    app.state.session_manager = session_manager
+    
+    # 兼容现有路由注入方式
     websocket.set_session_manager(session_manager)
     
     yield
@@ -63,10 +63,10 @@ app = FastAPI(
 # 注入 OpenTelemetry 中间件到 app 实例（必须在 app 创建后调用）
 instrument_app(app)
 
-# 中间件
+# 中间件 — CORS 使用显式来源列表，避免 allow_origins=["*"] + allow_credentials=True 的 RFC 6454 违规
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
