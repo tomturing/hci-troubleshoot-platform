@@ -51,49 +51,32 @@ AI层:
 ### 运行环境
 - Python 3.12+ / Docker & Docker Compose
 - PostgreSQL 15 / Redis 7
-- K3s v1.34+（生产/集成部署）
 
-### 方式一：Docker Compose 本地开发
+### 启动服务
 
 ```bash
 # 1. 配置环境变量
 cp .env.example .env
-# 编辑 .env，填写 ZAI_API_KEY 以及 OPENCLAW_GATEWAY_TOKEN
+# 编辑 .env，填写 ZAI_API_KEY（或 Z_AI_API_KEY）以及 OPENCLAW_GATEWAY_TOKEN
 
-# 2. 启动业务栈（含 OpenClaw）
+# 2. 创建共享网络（首次）
+docker network create hci-troubleshoot-platform_default 2>/dev/null || true
+
+# 3. 启动业务栈（含 OpenClaw）
 docker compose -f deploy/docker/docker-compose.yml up -d --build
 
-# 3. 启动可观测性栈
+# 4. 启动可观测性栈（Loki + Tempo + Promtail + Grafana）
 docker compose -f deploy/observability/docker-compose-obs.yml up -d
 
-# 4. 访问
-#  - Customer UI: http://localhost:3001
-#  - Admin UI:    http://localhost:3002
-#  - Grafana:     http://localhost:3000 (admin/admin)
+# 5. 访问
+#  - API Gateway: http://localhost:8000
+#  - API文档: http://localhost:8000/docs
+#  - Customer UI: http://localhost:3001 (客户端对话界面)
+#  - Admin UI: http://localhost:3002 (管理控制台)
+#  - Grafana 监控面板: http://localhost:3000 (admin/admin)
 
-# 5. 运行端到端验证
-bash scripts/docker-e2e-test.sh
-```
-
-### 方式二：K3s Helm 部署（推荐集成环境）
-
-```bash
-# 1. 构建所有 Docker 镜像
-bash scripts/k3s-build.sh
-
-# 2. Helm 部署到 K3s
-bash scripts/k3s-deploy.sh install
-
-# 3. 验证部署
-bash scripts/k3s-verify.sh
-
-# 4. 访问（通过 Traefik Ingress）
-#  - Customer UI: http://<WSL2_IP>/
-#  - Admin UI:    http://<WSL2_IP>/admin/
-#  - Grafana:     kubectl port-forward svc/grafana 3002:3000 -n hci-observability
-
-# 5. 卸载
-bash scripts/k3s-deploy.sh uninstall
+# 6. 运行端到端验证
+bash test_manual.sh
 ```
 
 ## 📚 文档
@@ -112,7 +95,7 @@ bash scripts/k3s-deploy.sh uninstall
 ## 📊 MVP状态 (全栈可用)
 
 ### ✅ 已完成
-- 完整架构设计文档（v2.0 多助手架构）
+- 完整架构设计文档
 - **所有微服务（API网关、工单、会话、调度）基础框架与业务功能实盘走通**
 - 数据库Schema与Pydantic实体校验
 - 基于 `docker-compose.yml` 的本地环境全链路协同互通（已完成 SSE 问答打字机 E2E 验证）
@@ -120,12 +103,11 @@ bash scripts/k3s-deploy.sh uninstall
 - **Grafana 可观测性中台** — Loki + Promtail + Tempo + Grafana 一键部署 + 数据源自动 Provisioning
 - **OpenClaw 容器化接入** — 以 Docker 容器运行 OpenClaw Gateway（端口 18789），通过 ZAI_API_KEY 对接真实 z.ai 模型
 - **trace_id 统一为 OTel 标准** — 全链路使用 W3C traceparent 自动传播
-- **前端双应用** — Customer 对话式UI + Admin 管理控制台，Docker / K3s 集成部署
-- **v2.0 多助手架构** — AIAssistantRegistry + PodPoolManager + 前端助手选择器
-- **K3s Helm 部署落地** — 13 Pods（9 业务 + 4 可观测性），Traefik Ingress 统一入口
+- **前端双应用** — Customer 对话式UI（:3001） + Admin 管理控制台（:3002），Docker 集成部署
 
 ### ⏳ 待补充
-- 知识库融合与 Prompt 调优（KB Service + RAG Pipeline）
+- 生产级 K8s 部署配置清单和集群发布
+- 知识库融合与 Prompt 调优
 
 详见最新的进展报告: [最新进展状态记录](docs/09_项目进展.md)
 
