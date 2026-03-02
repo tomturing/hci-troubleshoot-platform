@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     SERVICE_PORT: int = 8003
     LOG_LEVEL: str = "INFO"
     
+    # Redis配置（Pod分配状态持久化）
+    REDIS_URL: str = "redis://redis:6379/0"
+    
     # K8s配置
     K8S_NAMESPACE: str = "hci-troubleshoot"
     

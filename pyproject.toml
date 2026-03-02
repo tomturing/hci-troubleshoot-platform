@@ -1,0 +1,77 @@
+[project]
+name = "hci-troubleshoot-platform"
+version = "2.1.0"
+description = "HCI 智能排障平台 — 多助手 AI 排障微服务系统"
+requires-python = ">=3.12"
+
+# 所有后端服务 + 测试的统一依赖
+dependencies = [
+    # === Web 框架 ===
+    "fastapi>=0.109.0,<1.0",
+    "uvicorn[standard]>=0.27.0,<1.0",
+    "websockets>=12.0,<13.0",
+    "pydantic>=2.5.3,<3.0",
+    "pydantic-settings>=2.1.0,<3.0",
+
+    # === 数据库 ===
+    "sqlalchemy>=2.0.25,<3.0",
+    "asyncpg>=0.29.0,<1.0",
+    "redis>=5.0.1,<6.0",
+
+    # === HTTP 客户端 ===
+    "httpx>=0.26.0,<1.0",
+
+    # === K8s ===
+    "kubernetes>=29.0.0,<31.0",
+
+    # === 可观测性 (OpenTelemetry) ===
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
+    "opentelemetry-instrumentation-fastapi",
+    "opentelemetry-instrumentation-httpx",
+    "opentelemetry-instrumentation-sqlalchemy",
+    "opentelemetry-instrumentation-logging",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.4.3,<9.0",
+    "pytest-asyncio>=0.21.1,<1.0",
+    "pytest-cov>=4.1.0,<6.0",
+    "pytest-mock>=3.12.0,<4.0",
+    "locust>=2.20.0,<3.0",
+    "faker>=21.0.0,<30.0",
+    "ruff>=0.11.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests",
+    "backend/api-gateway/tests",
+    "backend/case-service/tests",
+    "backend/conversation-service/tests",
+    "backend/scheduler-service/tests",
+]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+asyncio_mode = "auto"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow running tests",
+]
+addopts = "-v --strict-markers --tb=short"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
+ignore = ["E501"]
+
+[tool.uv]
+# backend 各服务和 shared 目录均作为源码目录
+package = false

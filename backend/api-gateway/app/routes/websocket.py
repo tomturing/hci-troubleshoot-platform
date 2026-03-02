@@ -6,10 +6,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 import json
 import httpx
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-
 from shared.utils.logger import get_logger
 from ..services.session import SessionManager
 

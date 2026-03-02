@@ -14,6 +14,7 @@ router = APIRouter(prefix="/api/cases", tags=["cases"])
 logger = get_logger("gateway-cases")
 
 CASE_SERVICE_URL = f"{settings.CASE_SERVICE_URL}/api/cases"
+SCHEDULER_SERVICE_URL = settings.SCHEDULER_SERVICE_URL
 
 async def proxy_request(
     method: str,
@@ -90,8 +91,25 @@ async def confirm_case(case_id: str, request: Request):
 
 @router.put("/{case_id}/close")
 async def close_case(case_id: str, request: Request):
-    """关闭工单"""
+    """关闭工单，并释放关联的 Pod 资源"""
     response = await proxy_request("PUT", f"/{case_id}/close")
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Case not found")
+    
+    # 工单关闭成功后，通知 Scheduler 释放关联的 Pod，避免资源泄漏
+    if response.status_code == 200:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                release_resp = await client.post(
+                    f"{settings.SCHEDULER_SERVICE_URL}/api/scheduler/pods/release",
+                    json={"case_id": case_id}
+                )
+                if release_resp.status_code == 200:
+                    logger.info(f"Released pod for closed case {case_id}")
+                else:
+                    logger.warning(f"Pod release returned {release_resp.status_code} for case {case_id}")
+        except Exception as e:
+            # Pod 释放失败不影响工单关闭结果
+            logger.warning(f"Failed to release pod for case {case_id}: {e}")
+    
     return JSONResponse(content=response.json(), status_code=response.status_code)

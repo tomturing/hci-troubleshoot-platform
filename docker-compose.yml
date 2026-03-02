@@ -39,11 +39,13 @@ services:
     ports:
       - "8000:8000"
     environment:
+      PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
       CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002}
     depends_on:
       postgres:
         condition: service_healthy
@@ -62,6 +64,7 @@ services:
     ports:
       - "8001:8001"
     environment:
+      PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
@@ -80,6 +83,7 @@ services:
     ports:
       - "8002:8002"
     environment:
+      PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       OPENCLAW_BASE_URL: ${OPENCLAW_BASE_URL:-http://host.docker.internal:18790}
@@ -104,6 +108,7 @@ services:
     ports:
       - "8003:8003"
     environment:
+      PYTHONPATH: /app
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       K8S_NAMESPACE: ${K8S_NAMESPACE:-hci-troubleshoot}
     depends_on:

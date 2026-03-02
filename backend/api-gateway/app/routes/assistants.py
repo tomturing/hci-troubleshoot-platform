@@ -7,10 +7,6 @@ Assistants Routes - AI助手API路由 (v2.0)
 from fastapi import APIRouter, HTTPException
 import httpx
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-
 from app.config import settings
 from shared.utils.logger import get_logger
 
@@ -73,6 +69,9 @@ async def list_assistants():
                 "pool_stats": {}
             }
         ]
+    except HTTPException:
+        # 直接重新抛出 HTTPException，避免被下方的通用 except 吞掉
+        raise
     except Exception as e:
         logger.error(
             event="assistants_proxy_exception",

@@ -2,19 +2,28 @@
 Case Service业务逻辑单元测试
 """
 
-import pytest
-from datetime import datetime
-from unittest.mock import Mock, AsyncMock
 import sys
 import os
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../backend/case-service')))
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../backend')))
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+# 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
+_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "case-service"))
+_expect = os.path.normpath(os.path.join(_svc, "app"))
+_actual = os.path.normpath(getattr(sys.modules.get("app"), "__path__", [""])[0]) if "app" in sys.modules else ""
+if _expect != _actual:
+    for _k in list(sys.modules):
+        if _k == "app" or _k.startswith("app."):
+            del sys.modules[_k]
+    if _svc in sys.path:
+        sys.path.remove(_svc)
+    sys.path.insert(0, _svc)
+
+import pytest
+from datetime import datetime
+from unittest.mock import Mock, AsyncMock
 
 from app.services.case_service import CaseService
 from app.models.case import Case, CaseStatus
-from backend.shared.models.schemas import CaseCreate
+from shared.models.schemas import CaseCreate
 
 
 class TestCaseIDGeneration:
@@ -81,7 +90,7 @@ class TestCaseCreation:
             description="Test Description"
         )
         
-        result = await service.create_case(case_create, trace_id="test-trace-001")
+        result = await service.create_case(case_create)
         
         # Assertions
         assert result.case_id == "Q20260215001"
@@ -118,7 +127,7 @@ class TestCaseCreation:
             title="Test"
         )
         
-        result = await service.create_case(case_create, trace_id="test-trace-001")
+        result = await service.create_case(case_create)
         
         assert result.trace_id == "test-trace-001"
 
@@ -193,13 +202,12 @@ class TestCaseStatusTransitions:
         mock_repo.update_status = AsyncMock(return_value=mock_case)
         
         service = CaseService(mock_repo)
-        result = await service.confirm_case("Q20260215001", trace_id="test-trace")
+        result = await service.confirm_case("Q20260215001")
         
         assert result.status == CaseStatus.confirmed
         mock_repo.update_status.assert_called_once_with(
             "Q20260215001",
-            CaseStatus.confirmed,
-            "test-trace"
+            CaseStatus.confirmed
         )
     
     async def test_close_case_success(self):
@@ -217,7 +225,7 @@ class TestCaseStatusTransitions:
         mock_repo.update_status = AsyncMock(return_value=mock_case)
         
         service = CaseService(mock_repo)
-        result = await service.close_case("Q20260215001", trace_id="test-trace")
+        result = await service.close_case("Q20260215001")
         
         assert result.status == CaseStatus.closed
         mock_repo.update_status.assert_called_once()

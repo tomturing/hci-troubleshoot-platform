@@ -97,12 +97,9 @@ class ConversationRepository:
         )
         self.session.add(message)
         
-        # 更新对话的消息计数
-        conversation = await self.get_conversation(conversation_id)
-        if conversation:
-            conversation.message_count += 1
-            
-        await self.session.commit()
+        # 注意: 不手动更新 message_count，数据库触发器 update_conversation_message_count 会自动处理
+        # 注意: 不手动调用 commit()，DatabaseManager.get_session() 上下文管理器在退出时会自动提交
+        await self.session.flush()
         await self.session.refresh(message)
         return message
     

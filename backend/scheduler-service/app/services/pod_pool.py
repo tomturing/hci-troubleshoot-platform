@@ -1,5 +1,9 @@
 """
 Pod Pool - 多类型AI助手热备池管理 (v2.0)
+
+变更记录:
+- 实现 initialize() 方法，启动时扫描 K8s 集群同步已有 Pod
+- 补全异步任务错误处理，避免 fire-and-forget 静默丢失异常
 """
 
 import asyncio
@@ -11,6 +15,26 @@ from .k8s_client import K8sClient
 from shared.utils.logger import get_logger
 
 logger = get_logger("pod-pool")
+
+
+def _safe_create_task(coro, *, name: str = "pool-task"):
+    """创建带错误处理的异步任务，避免 fire-and-forget 静默丢失异常"""
+    task = asyncio.create_task(coro, name=name)
+    task.add_done_callback(_task_done_callback)
+    return task
+
+
+def _task_done_callback(task: asyncio.Task):
+    """任务完成回调：记录未被捕获的异常"""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error(
+            event="background_task_error",
+            message=f"Background task '{task.get_name()}' failed: {exc}",
+            error=str(exc)
+        )
 
 
 class PodPool:
@@ -36,9 +60,41 @@ class PodPool:
         self._lock = asyncio.Lock()
 
     async def initialize(self):
-        """初始化: 同步当前集群状态"""
-        # TODO: 查询现有Pod并分类为 active/idle
-        pass
+        """初始化: 扫描 K8s 集群中该类型的已有 Pod，按状态分类到 idle/active 集合"""
+        labels = self.config.get("labels", {})
+        label_selector = ",".join(f"{k}={v}" for k, v in labels.items())
+        if not label_selector:
+            label_selector = f"assistant-type={self.assistant_type}"
+        
+        try:
+            existing_pods = self.k8s.list_pods(label_selector=label_selector)
+            for pod in existing_pods:
+                pod_name = pod.get("name", "")
+                status = pod.get("status", "Unknown")
+                assigned_case = pod.get("annotations", {}).get("case-id", "")
+                
+                if status in ("Running", "Pending"):
+                    if assigned_case:
+                        self.active_pods.add(pod_name)
+                    else:
+                        self.idle_pods.append(pod_name)
+                elif status in ("Failed", "Unknown"):
+                    # 清理异常 Pod
+                    logger.warning(f"Cleaning up unhealthy pod {pod_name} (status={status})")
+                    self.k8s.delete_pod(pod_name)
+                    
+            logger.info(
+                event="pool_initialized",
+                message=f"Pool '{self.assistant_type}' synced from cluster",
+                idle=len(self.idle_pods),
+                active=len(self.active_pods),
+            )
+        except Exception as e:
+            logger.warning(
+                event="pool_init_skipped",
+                message=f"Could not scan existing pods for '{self.assistant_type}': {e}",
+                error=str(e)
+            )
 
     async def ensure_warm_pool(self):
         """维护热备池大小"""
@@ -91,8 +147,8 @@ class PodPool:
             
             logger.info(f"Acquired pod {pod_name} for case {case_id} (type={self.assistant_type})")
             
-            # 触发异步补充池子
-            asyncio.create_task(self.ensure_warm_pool())
+            # 异步补充池子（带错误处理）
+            _safe_create_task(self.ensure_warm_pool(), name=f"warm-{self.assistant_type}")
             
             return pod_name
 
@@ -105,8 +161,8 @@ class PodPool:
             logger.info(f"Releasing (terminating) pod {pod_name} (type={self.assistant_type})")
             self.k8s.delete_pod(pod_name)
             
-            # 触发补充 (创建新的洁净Pod)
-            asyncio.create_task(self.ensure_warm_pool())
+            # 异步补充（带错误处理）
+            _safe_create_task(self.ensure_warm_pool(), name=f"warm-{self.assistant_type}")
 
     def get_stats(self) -> Dict[str, Any]:
         return {
@@ -142,6 +198,11 @@ class PodPoolManager:
     def get_pool(self, assistant_type: str) -> Optional[PodPool]:
         """获取指定类型的Pod池"""
         return self.pools.get(assistant_type)
+    
+    async def initialize_all(self):
+        """所有池扫描集群同步已有 Pod"""
+        for pool in self.pools.values():
+            await pool.initialize()
     
     async def ensure_all_warm_pools(self):
         """维护所有池的热备大小"""

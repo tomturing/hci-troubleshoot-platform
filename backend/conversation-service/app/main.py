@@ -1,13 +1,12 @@
 """
 Conversation Service - 主应用 (v2.0 多类型AI助手)
+
+变更记录:
+- 使用 app.state 替代全局变量进行依赖注入
 """
 
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
-
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from shared.database.postgres import DatabaseManager
 from shared.utils.logger import get_logger
@@ -22,15 +21,9 @@ init_telemetry(settings.SERVICE_NAME)
 
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 
-database_manager: DatabaseManager = None
-ai_registry: AIAssistantRegistry = None
-scheduler_client: SchedulerClient = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global database_manager, ai_registry, scheduler_client
-    
     logger.info(
         event="service_starting",
         message=f"Starting {settings.SERVICE_NAME} (v2.0)",
@@ -66,7 +59,12 @@ async def lifespan(app: FastAPI):
         message=f"Registered AI assistants: {ai_registry.list_types()}"
     )
     
-    # 注入依赖到路由
+    # 存入 app.state
+    app.state.database_manager = database_manager
+    app.state.ai_registry = ai_registry
+    app.state.scheduler_client = scheduler_client
+    
+    # 兼容现有路由注入方式
     conversations.set_dependencies(database_manager, ai_registry, scheduler_client)
     
     yield
@@ -99,8 +97,9 @@ async def health_check():
     """健康检查"""
     ai_status = {}
     
-    if ai_registry:
-        ai_status = await ai_registry.health_check_all()
+    registry = getattr(app.state, "ai_registry", None)
+    if registry:
+        ai_status = await registry.health_check_all()
         
     return {
         "status": "healthy", 

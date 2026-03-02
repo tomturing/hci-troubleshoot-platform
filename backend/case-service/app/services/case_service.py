@@ -8,10 +8,6 @@ from datetime import datetime
 from ..models.case import Case, CaseStatus
 from ..repositories.case_repo import CaseRepository
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-
 from shared.models.schemas import CaseCreate, CaseResponse, CaseListResponse, CaseStatsResponse, ClientListResponse, ClientInfo
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id

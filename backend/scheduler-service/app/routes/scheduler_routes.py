@@ -5,10 +5,6 @@ Scheduler Routes - 调度API路由 (v2.0 多类型AI助手)
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional, Dict, List
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-
 from ..services.scheduler_service import SchedulerService
 from ..services.k8s_client import K8sClient
 from pydantic import BaseModel, Field
@@ -72,10 +68,10 @@ async def allocate_pod(
             status_code=503,
             detail=f"No available pods for assistant type '{request.assistant_type}'"
         )
-    info = service.get_allocation_info(request.case_id) or {}
+    info = await service.get_allocation_info(request.case_id) or {}
     status = service.k8s.get_pod_status(pod_name)
     ip = service.k8s.get_pod_ip(pod_name)
-    endpoint = service.get_endpoint_for_case(request.case_id)
+    endpoint = service.get_endpoint_for_case_sync(pod_name, request.assistant_type)
     return {
         "pod_name": pod_name,
         "assistant_type": info.get("assistant_type", request.assistant_type),
@@ -101,18 +97,19 @@ async def get_pod_for_case(
     service: SchedulerService = Depends(get_service)
 ):
     """查询工单关联的Pod"""
-    info = service.get_allocation_info(case_id)
+    info = await service.get_allocation_info(case_id)
     if not info:
         raise HTTPException(status_code=404, detail="No pod allocated for this case")
     
     pod_name = info["pod_name"]
+    assistant_type = info["assistant_type"]
     status = service.k8s.get_pod_status(pod_name)
     ip = service.k8s.get_pod_ip(pod_name)
-    endpoint = service.get_endpoint_for_case(case_id)
+    endpoint = service.get_endpoint_for_case_sync(pod_name, assistant_type)
     
     return {
         "pod_name": pod_name,
-        "assistant_type": info["assistant_type"],
+        "assistant_type": assistant_type,
         "status": status,
         "ip": ip,
         "endpoint": endpoint,
@@ -123,7 +120,7 @@ async def get_status(
     service: SchedulerService = Depends(get_service)
 ):
     """获取调度器状态"""
-    return service.get_status()
+    return await service.get_status()
 
 @router.get("/health")
 async def health_check():

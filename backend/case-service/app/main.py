@@ -1,13 +1,12 @@
 """
 Case Service - 主应用
+
+变更记录:
+- 使用 app.state 替代全局变量进行依赖注入
 """
 
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
-
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from shared.utils.otel import init_telemetry, instrument_app
 from shared.database.postgres import DatabaseManager
@@ -20,14 +19,9 @@ init_telemetry(settings.SERVICE_NAME)
 
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 
-# 全局数据库管理器
-database_manager: DatabaseManager = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global database_manager
-    
     # 启动
     logger.info(
         event="service_starting",
@@ -36,6 +30,11 @@ async def lifespan(app: FastAPI):
     )
     
     database_manager = DatabaseManager(settings.DATABASE_URL)
+    
+    # 存入 app.state
+    app.state.database_manager = database_manager
+    
+    # 兼容现有路由注入方式
     cases.set_database_manager(database_manager)
     
     yield

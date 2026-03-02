@@ -5,9 +5,6 @@ Session Management Service - WebSocket会话管理
 from typing import Dict, Optional
 from datetime import datetime
 import json
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
