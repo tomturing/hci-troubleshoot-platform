@@ -1,16 +1,19 @@
 """
 User Database Model
 """
-from sqlalchemy import Column, String, JSON, DateTime
-from sqlalchemy.dialects.postgresql import UUID
+
 import uuid
+
+from sqlalchemy import JSON, Column, DateTime, String
+from sqlalchemy.dialects.postgresql import UUID
 
 from ..database.postgres import Base
 from .base import TimestampMixin, TraceableMixin
-from datetime import datetime
+
 
 class User(Base, TimestampMixin, TraceableMixin):
     """User Model"""
+
     __tablename__ = "user"
 
     user_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

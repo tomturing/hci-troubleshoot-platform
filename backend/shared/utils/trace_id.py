@@ -5,7 +5,8 @@ TraceID 工具函数
 本模块为 otel.py 中 get_current_trace_id() 的薄封装，
 供业务代码在需要显式获取当前 trace_id 时使用。
 """
-from .otel import get_current_trace_id, get_current_span_id
+
+from .otel import get_current_span_id, get_current_trace_id
 
 
 def get_trace_id() -> str:

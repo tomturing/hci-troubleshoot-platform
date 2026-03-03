@@ -37,17 +37,17 @@ log_header() {
 
 log_pass() {
     echo -e "  ${GREEN}✓ PASS${NC}: $1"
-    ((PASS++))
+    PASS=$((PASS + 1))
 }
 
 log_fail() {
     echo -e "  ${RED}✗ FAIL${NC}: $1"
-    ((FAIL++))
+    FAIL=$((FAIL + 1))
 }
 
 log_skip() {
     echo -e "  ${YELLOW}⊘ SKIP${NC}: $1"
-    ((SKIP++))
+    SKIP=$((SKIP + 1))
 }
 
 # ---- 检测变更文件类型 ----
@@ -117,22 +117,25 @@ check_python_test() {
 
     local test_pass=true
 
-    # 根级测试
+    # 根级测试（默认排除集成测试，集成测试需要数据库等外部依赖）
+    local pytest_ignore_integration="--ignore=tests/integration"
     if [ -d "tests/" ]; then
-        if uv run pytest tests/ -q --tb=short 2>/dev/null; then
-            log_pass "tests/ — 全部通过"
+        if uv run pytest tests/ $pytest_ignore_integration -q --tb=short 2>/dev/null; then
+            log_pass "tests/ — 单元测试通过"
         else
             log_fail "tests/ — 部分失败"
             test_pass=false
         fi
     fi
 
-    # 按服务隔离运行（避免 app/ 命名空间冲突）
+    # 按服务隔离运行（避免 app/ 命名空间冲突，跳过集成测试）
     for service_dir in backend/*/; do
         local test_dir="${service_dir}tests/"
         if [ -d "$test_dir" ]; then
-            if uv run pytest "$test_dir" -q --tb=short 2>/dev/null; then
-                log_pass "${test_dir} — 全部通过"
+            local ignore_flag=""
+            [ -d "${test_dir}integration" ] && ignore_flag="--ignore=${test_dir}integration"
+            if uv run pytest "$test_dir" $ignore_flag -q --tb=short 2>/dev/null; then
+                log_pass "${test_dir} — 单元测试通过"
             else
                 log_fail "${test_dir} — 部分失败"
                 test_pass=false

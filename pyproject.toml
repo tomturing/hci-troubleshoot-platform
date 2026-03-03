@@ -70,7 +70,14 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
-ignore = ["E501"]
+ignore = ["E501", "B008", "SIM117"]
+
+[tool.ruff.lint.per-file-ignores]
+"conftest.py" = ["E402"]
+"**/conftest.py" = ["E402"]
+"**/tests/**" = ["E402"]
+"backend/*/app/main.py" = ["E402"]
+"backend/shared/models/schemas.py" = ["E402"]
 
 [tool.uv]
 # backend 各服务和 shared 目录均作为源码目录

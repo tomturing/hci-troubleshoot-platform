@@ -3,7 +3,7 @@ Conversation Service Configuration
 """
 
 import json
-from typing import Any, Dict
+from typing import Any
 
 from pydantic_settings import BaseSettings
 
@@ -42,9 +42,9 @@ class Settings(BaseSettings):
     ASSISTANT_REGISTRY_JSON: str = "{}"
 
     @property
-    def assistant_registry(self) -> Dict[str, Dict[str, Any]]:
+    def assistant_registry(self) -> dict[str, dict[str, Any]]:
         """解析助手注册表并与默认 openclaw 配置合并。"""
-        default_registry: Dict[str, Dict[str, Any]] = {
+        default_registry: dict[str, dict[str, Any]] = {
             "openclaw": {
                 "base_url": self.OPENCLAW_BASE_URL,
                 "gateway_token": self.OPENCLAW_GATEWAY_TOKEN,

@@ -6,8 +6,8 @@ Conversation Service 单元测试 (v2.0 — 多类型AI助手架构)
 - send_message_stream_only(conversation_id, case_id, content, assistant_type)
 """
 
-import sys
 import os
+import sys
 
 # 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
 _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -21,13 +21,13 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-import pytest
 import uuid
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from app.services.conversation_service import ConversationService
+import pytest
 from app.models.conversation import Conversation
-from app.models.message import Message, MessageRole
+from app.models.message import MessageRole
+from app.services.conversation_service import ConversationService
 
 
 @pytest.fixture
@@ -57,6 +57,7 @@ def service(mock_repo, mock_registry, mock_scheduler):
 
 # ---------- create_conversation ----------
 
+
 @pytest.mark.asyncio
 class TestCreateConversation:
     """create_conversation 测试"""
@@ -83,15 +84,14 @@ class TestCreateConversation:
 
     async def test_create_conversation_default_type(self, service, mock_repo):
         """测试默认 assistant_type 为 openclaw"""
-        mock_repo.create_conversation = AsyncMock(
-            return_value=MagicMock(spec=Conversation)
-        )
+        mock_repo.create_conversation = AsyncMock(return_value=MagicMock(spec=Conversation))
         await service.create_conversation(case_id="Q2024010100001")
         call_kwargs = mock_repo.create_conversation.call_args.kwargs
         assert call_kwargs["assistant_type"] == "openclaw"
 
 
 # ---------- send_message_stream_only ----------
+
 
 @pytest.mark.asyncio
 class TestSendMessageStreamOnly:
@@ -144,14 +144,17 @@ class TestSendMessageStreamOnly:
 
         async def empty_stream(*a, **kw):
             return
-            yield  # noqa: make it an async generator
+            yield  # make it an async generator
 
         mock_client = MagicMock()
         mock_client.chat_completion_stream = empty_stream
         mock_registry.get_client.return_value = mock_client
 
-        chunks = [c async for c in service.send_message_stream_only(
-            conv_id, "Q2024010100001", "hello", assistant_type="openclaw"
-        )]
+        _ = [
+            c
+            async for c in service.send_message_stream_only(
+                conv_id, "Q2024010100001", "hello", assistant_type="openclaw"
+            )
+        ]
 
         mock_repo.get_messages.assert_called_once_with(conv_id)

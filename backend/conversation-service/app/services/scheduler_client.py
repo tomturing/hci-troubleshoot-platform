@@ -2,12 +2,11 @@
 Scheduler Client - 与 scheduler-service 交互的 HTTP 客户端
 """
 
-from typing import Optional
 import asyncio
 
 import httpx
-
 from shared.utils.logger import get_logger
+
 from app.config import settings
 
 logger = get_logger("scheduler-client")
@@ -46,7 +45,7 @@ class SchedulerClient:
             )
             return False
 
-    async def wait_for_endpoint(self, case_id: str) -> Optional[str]:
+    async def wait_for_endpoint(self, case_id: str) -> str | None:
         """轮询 Pod 分配信息，等待 endpoint 就绪。"""
         url = f"{self.base_url}/api/scheduler/pods/{case_id}"
         timeout = max(settings.SCHEDULER_POD_READY_TIMEOUT_SEC, 1)
