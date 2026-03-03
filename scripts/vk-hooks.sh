@@ -113,7 +113,9 @@ _vk_update_issue_status() {
 
 # ---- 公开钩子函数 ----
 
-# 质量门禁通过后调用 — 将 Issue 状态更新为 "In review"
+# 质量门禁通过后调用：
+#   1. 更新 Issue 状态 → "In review"
+#   2. 如果 .vk/auto_review.json 存在，自动创建交叉审查 Session
 vk_on_cleanup_success() {
     local issue_id
     if ! issue_id=$(_vk_get_issue_id); then
@@ -123,6 +125,84 @@ vk_on_cleanup_success() {
 
     echo -e "\n  \033[0;34m▸ VK 工作流钩子: cleanup 成功\033[0m"
     _vk_update_issue_status "$issue_id" "In review" || true
+
+    # 自动创建审查 Session（如果配置存在）
+    _vk_auto_start_review "$issue_id" || true
+}
+
+# 自动创建交叉审查 Session
+# 读取 .vk/auto_review.json 获取 repo_id、executor、prompt 等配置
+# 配置格式:
+#   {
+#     "repo_id": "ca4e...",
+#     "reviewer_executor": "CODEX",       // 交叉审查: Claude→Codex, Codex→Claude
+#     "review_prompt_file": ".vk/prompts/reviewer.md"  // 可选
+#   }
+_vk_auto_start_review() {
+    local issue_id="$1"
+    local config_file="${_VK_PROJECT_ROOT}/.vk/auto_review.json"
+
+    if [ ! -f "$config_file" ]; then
+        echo -e "  \033[1;33m⚠\033[0m .vk/auto_review.json 不存在，跳过自动审查"
+        return 0
+    fi
+
+    # 解析配置
+    local repo_id reviewer_executor prompt_file
+    repo_id=$(python3 -c "import json; c=json.load(open('${config_file}')); print(c['repo_id'])" 2>/dev/null)
+    reviewer_executor=$(python3 -c "import json; c=json.load(open('${config_file}')); print(c['reviewer_executor'])" 2>/dev/null)
+    prompt_file=$(python3 -c "import json; c=json.load(open('${config_file}')); print(c.get('review_prompt_file',''))" 2>/dev/null)
+
+    if [ -z "$repo_id" ] || [ -z "$reviewer_executor" ]; then
+        echo -e "  \033[1;33m⚠\033[0m auto_review.json 缺少 repo_id 或 reviewer_executor"
+        return 1
+    fi
+
+    # 获取当前分支名（用作审查的 base_branch）
+    local current_branch
+    current_branch=$(git -C "${_VK_PROJECT_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [ -z "$current_branch" ]; then
+        echo -e "  \033[1;33m⚠\033[0m 无法获取当前分支"
+        return 1
+    fi
+
+    # 构建审查提示词
+    local prompt_arg=""
+    if [ -n "$prompt_file" ] && [ -f "${_VK_PROJECT_ROOT}/${prompt_file}" ]; then
+        prompt_arg="--prompt"
+        local prompt_content
+        prompt_content=$(cat "${_VK_PROJECT_ROOT}/${prompt_file}")
+    fi
+
+    echo -e "  \033[0;34m▸ 自动创建交叉审查 Session (${reviewer_executor})\033[0m"
+
+    # 通过 MCP 客户端创建审查 Session
+    local mcp_client="${_VK_PROJECT_ROOT}/scripts/vk-mcp-client.py"
+    if [ ! -f "$mcp_client" ]; then
+        echo -e "  \033[1;33m⚠\033[0m vk-mcp-client.py 不存在，跳过"
+        return 1
+    fi
+
+    local ws_id
+    local cmd="python3 ${mcp_client} --port ${PORT:-9527} start_review_session"
+    cmd="${cmd} --repo-id ${repo_id}"
+    cmd="${cmd} --base-branch ${current_branch}"
+    cmd="${cmd} --issue-id ${issue_id}"
+    cmd="${cmd} --title 'Review: ${current_branch} (${reviewer_executor})'"
+    cmd="${cmd} --executor ${reviewer_executor}"
+
+    if [ -n "$prompt_file" ] && [ -f "${_VK_PROJECT_ROOT}/${prompt_file}" ]; then
+        # 读取 prompt 文件作为审查指令
+        cmd="${cmd} --prompt '$(cat "${_VK_PROJECT_ROOT}/${prompt_file}" | head -100)'"
+    fi
+
+    ws_id=$(eval "$cmd" 2>/dev/null)
+    if [ -n "$ws_id" ] && [ "$ws_id" != "ERROR"* ]; then
+        echo -e "  \033[0;32m✓\033[0m 审查 Session 已创建: workspace=${ws_id}"
+        echo -e "    分支: ${current_branch} → ${reviewer_executor} 审查"
+    else
+        echo -e "  \033[1;33m⚠\033[0m 审查 Session 创建失败，需手动创建"
+    fi
 }
 
 # 质量门禁失败后调用（可选：保持 In progress 或标记为 blocked）
