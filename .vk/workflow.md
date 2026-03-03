@@ -160,6 +160,9 @@ Step D: tom 指示 Copilot "将此计划创建为 VK 任务"
         ↓
 Step E: tom 在 VK 看板确认 Issue，手动或通过 MCP 调用
         start_workspace_session 启动 Agent 并行执行
+        ↓
+Step F: Copilot 将 issue_id 写入各 worktree 的 .vk/issue_id
+        （用于 cleanup 成功后自动流转 Issue 状态）
 ```
 
 ### Copilot Plan Mode 提示词模板
@@ -317,7 +320,25 @@ main (或 develop)
 | 单元测试 | 项目测试框架 | 全部通过 |
 
 > 具体的 lint/test 工具在 `scripts/agent-quality-gate.sh` 中配置，可按项目定制。
+### 8.1.1 自动状态流转（VK Hook）
 
+质量门禁通过后，`agent-quality-gate.sh` 自动调用 `scripts/vk-hooks.sh` 将 Issue 状态流转到 "In review"：
+
+```
+质量门禁 PASSED → vk_on_cleanup_success() → PATCH /api/remote/issues/{id} → Issue: "In review"
+质量门禁 FAILED → vk_on_cleanup_failure() → Issue 保持 "In progress"
+```
+
+**前置条件**：Workspace 中必须存在 `.vk/issue_id` 文件，内容为关联的 VK Issue ID。
+
+编排者（Copilot Plan Mode）在调用 `start_workspace_session` 后应立即写入此文件：
+```bash
+# 在 worktree 中写入关联的 issue_id
+echo "19e8c043-4f30-40d8-b87b-baf009919c27" > .vk/issue_id
+git add .vk/issue_id && git commit -m "chore: 写入 VK issue_id 用于自动状态流转"
+```
+
+> 如果 `.vk/issue_id` 不存在，Hook 静默跳过（不影响 cleanup 退出码），回退为手动流转。
 ### 8.2 AI Code Review 流程
 
 ```

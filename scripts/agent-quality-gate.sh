@@ -23,6 +23,12 @@ PASS=0
 FAIL=0
 SKIP=0
 
+# 加载 VK 工作流钩子（如果存在）
+VK_HOOKS="${PROJECT_ROOT}/scripts/vk-hooks.sh"
+if [ -f "$VK_HOOKS" ]; then
+    source "$VK_HOOKS"
+fi
+
 # 报告文件
 REPORT_FILE="${PROJECT_ROOT}/.vk/reports/quality-gate-$(date +%Y%m%d-%H%M%S).txt"
 mkdir -p "$(dirname "$REPORT_FILE")"
@@ -232,9 +238,17 @@ main() {
 
     if [ $FAIL -gt 0 ]; then
         echo -e "\n  ${RED}质量门禁未通过！请修复上述问题后重试。${NC}"
+        # 触发 VK 失败钩子
+        if type vk_on_cleanup_failure &>/dev/null; then
+            vk_on_cleanup_failure
+        fi
         exit 1
     else
         echo -e "\n  ${GREEN}质量门禁全部通过 ✓${NC}"
+        # 触发 VK 成功钩子 — 自动将 Issue 状态流转到 "In review"
+        if type vk_on_cleanup_success &>/dev/null; then
+            vk_on_cleanup_success
+        fi
         exit 0
     fi
 }
