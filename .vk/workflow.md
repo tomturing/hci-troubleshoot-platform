@@ -63,11 +63,23 @@ Human (tom)                    VS Code Copilot (Plan Mode)
 | **编码 Agent** | Claude Code / Codex CLI / Gemini CLI | 在独立 Worktree 中编码实现 |
 | **审查 Agent** | Claude Code / Codex CLI / Gemini CLI | 基于 diff 做 Code Review |
 
-### Agent 交叉审查规则
+### Agent 交叉审查规则（强制）
 
-- 推荐**不同类型** Agent 交叉审查（如 Claude 写的代码让 Codex 审查）
-- 同一 Workspace 内创建新 Session 选择另一种 Agent 做 Review
-- Reviewer 不修改代码，只输出结构化审查意见
+**核心原则：编码 Agent 和审查 Agent 必须是不同类型。**
+
+| 编码 Agent | 审查 Agent | 说明 |
+|-----------|-----------|------|
+| Claude Code | Codex CLI | Claude 写 → Codex 审 |
+| Codex CLI | Claude Code | Codex 写 → Claude 审 |
+| Gemini CLI | Claude Code | Gemini 写 → Claude 审（优先）或 Codex 审 |
+| Claude Code | Gemini CLI | 当 Codex 不可用时的备选 |
+
+**执行方式**:
+1. 编码 Agent 完成后，在同一 VK Workspace 创建 **新 Session**
+2. 选择上表对应的 Reviewer Agent
+3. 使用 `.vk/prompts/reviewer.md` 中的提示词
+4. Reviewer **不修改代码**，只输出结构化审查意见
+5. 如有 `CHANGES_REQUESTED`，切回 Coder Session 修复后再审
 
 ---
 

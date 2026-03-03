@@ -68,11 +68,21 @@
 
 ---
 
+## 交叉审查矩阵（强制）
+
+| 编码 Agent | 必须选择的 Reviewer |
+|-----------|--------------------|
+| Claude Code | **Codex CLI** |
+| Codex CLI | **Claude Code** |
+| Gemini CLI | **Claude Code**（优先）或 Codex CLI |
+
+> **规则：写代码和审代码的不能是同一类 Agent。** 不遵守此规则的 Review 视为无效。
+
 ## 使用方式
 
 1. Agent 编码完成后，在同一 VK Workspace 中点击 Session 下拉
 2. 选择 "New Session"
-3. 选择与 Coder 不同的 Agent（推荐交叉审查：Claude 写 → Codex 审，Gemini 写 → Claude 审）
+3. **必须**选择与 Coder 不同类型的 Agent（见上表）
 4. 粘贴上面的 Reviewer 提示词
 5. Reviewer 查看 Changes Panel diff 并输出结构化意见
 6. 如果 `CHANGES_REQUESTED`，切回 Coder Session 修复后再次 Review

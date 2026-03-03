@@ -61,9 +61,12 @@ clean:
 # 多Agent工作流命令
 # ============================================================================
 
+# VK 固定端口（避免每次重启端口变化导致 MCP 需要 Reload Window）
+VK_PORT ?= 9527
+
 vk:
-	@echo "启动 Vibe Kanban..."
-	npx vibe-kanban
+	@echo "启动 Vibe Kanban（端口 $(VK_PORT)）..."
+	PORT=$(VK_PORT) npx vibe-kanban
 
 quality-gate:
 	@echo "运行质量门禁..."
