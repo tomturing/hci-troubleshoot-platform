@@ -2,12 +2,15 @@
 Conversation Routes - 对话API路由 (v2.0 多类型AI助手)
 """
 
+import asyncio
+import json
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import MessageCreate, MessageResponse
+from shared.utils.exceptions import AIStreamError, ErrorCode
 
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
@@ -111,8 +114,11 @@ async def send_message(
 
             yield "data: [DONE]\n\n"
 
-        except Exception as e:
-            # 取消请求或发生错误时，依然保存生成到一半的内容
+        except asyncio.CancelledError:
+            # 客户端断开连接，正常取消流式响应，直接向上抛出
+            raise
+        except AIStreamError as e:
+            # 结构化 AI 流错误，使用 json.dumps 安全序列化
             if ai_content:
                 background_tasks.add_task(
                     service.save_assistant_message,
@@ -120,6 +126,24 @@ async def send_message(
                     case_id=message.case_id,
                     content="".join(ai_content),
                 )
-            yield f"event: error\ndata: {str(e)}\n\n"
+            yield f"event: error\ndata: {e.to_sse_data()}\n\n"
+        except Exception as e:
+            # 其他未知错误，构造通用错误响应
+            if ai_content:
+                background_tasks.add_task(
+                    service.save_assistant_message,
+                    conversation_id=conversation_id,
+                    case_id=message.case_id,
+                    content="".join(ai_content),
+                )
+            error_data = json.dumps(
+                {
+                    "code": ErrorCode.INTERNAL_ERROR.value,
+                    "message": "服务内部错误，请稍后重试",
+                    "detail": type(e).__name__,
+                },
+                ensure_ascii=False,
+            )
+            yield f"event: error\ndata: {error_data}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream", background=background_tasks)

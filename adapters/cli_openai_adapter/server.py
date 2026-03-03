@@ -176,11 +176,7 @@ def extract_response(stdout: str, stderr: str) -> str:
 
 
 def render_cmd(template: str, prompt: str, session: str, model: str) -> str:
-    return (
-        template.replace("{prompt}", prompt)
-        .replace("{session}", session)
-        .replace("{model}", model)
-    )
+    return template.replace("{prompt}", prompt).replace("{session}", session).replace("{model}", model)
 
 
 def run_cli(prompt: str, session: str, model: str) -> str:
@@ -380,7 +376,9 @@ class AdapterHandler(BaseHTTPRequestHandler):
         if not isinstance(messages, list) or not messages:
             self._send_json(
                 HTTPStatus.BAD_REQUEST,
-                json_error("'messages' must be a non-empty array", error_type="invalid_request_error", code="invalid_messages"),
+                json_error(
+                    "'messages' must be a non-empty array", error_type="invalid_request_error", code="invalid_messages"
+                ),
             )
             return
 
@@ -392,7 +390,9 @@ class AdapterHandler(BaseHTTPRequestHandler):
         if not prompt:
             self._send_json(
                 HTTPStatus.BAD_REQUEST,
-                json_error("No prompt extracted from messages", error_type="invalid_request_error", code="empty_prompt"),
+                json_error(
+                    "No prompt extracted from messages", error_type="invalid_request_error", code="empty_prompt"
+                ),
             )
             return
 

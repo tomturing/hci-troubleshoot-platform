@@ -1,10 +1,15 @@
 """
-Conversation Routes - API Gateway Proxy
+对话路由 — API 网关代理层
+
+负责将对话相关请求代理到 conversation-service，处理 SSE 流式响应的透传。
 """
+
+import json
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from shared.utils.exceptions import ErrorCode
 from shared.utils.logger import get_logger
 
 from app.config import settings
@@ -26,19 +31,31 @@ async def proxy_request_stream(method: str, path: str, payload: dict, headers: d
         try:
             async with client.stream(method, url, json=payload, headers=headers) as response:
                 if response.status_code != 200:
-                    # 如果不是200，尝试读取错误信息并yield
-                    content = await response.read()
-                    yield (
-                        b"event: error\n"
-                        + b'data: {"error": "upstream error", "status": '
-                        + str(response.status_code).encode("utf-8")
-                        + b"}\n\n"
-                        + content
+                    # 使用 json.dumps 安全序列化错误信息
+                    error_data = json.dumps(
+                        {
+                            "code": ErrorCode.GATEWAY_ERROR.value,
+                            "message": "上游服务暂时不可用",
+                            "detail": f"status {response.status_code}",
+                        },
+                        ensure_ascii=False,
                     )
+                    yield f"event: error\ndata: {error_data}\n\n".encode()
                     return
 
                 async for chunk in response.aiter_bytes():
                     yield chunk
+        except httpx.TimeoutException as e:
+            logger.error(
+                event="gateway_timeout",
+                message="Upstream timeout while proxying SSE",
+                error_type=type(e).__name__,
+            )
+            error_data = json.dumps(
+                {"code": ErrorCode.AI_TIMEOUT.value, "message": "上游服务响应超时", "detail": "gateway timeout"},
+                ensure_ascii=False,
+            )
+            yield f"event: error\ndata: {error_data}\n\n".encode()
         except Exception as e:
             logger.error(
                 event="gateway_streaming_error",
@@ -48,8 +65,12 @@ async def proxy_request_stream(method: str, path: str, payload: dict, headers: d
                 error_repr=repr(e),
                 url=url,
             )
-            # 以 SSE 形式通知客户端出错
-            yield f'event: error\ndata: {{"error": "Streaming failed", "type": "{type(e).__name__}", "message": "{str(e)}"}}\n\n'.encode()
+            # 使用 json.dumps 安全序列化，避免 str(e) 中特殊字符破坏 SSE 帧结构
+            error_data = json.dumps(
+                {"code": ErrorCode.STREAMING_ERROR.value, "message": "流传输错误", "detail": type(e).__name__},
+                ensure_ascii=False,
+            )
+            yield f"event: error\ndata: {error_data}\n\n".encode()
         finally:
             await client.aclose()
 
@@ -67,7 +88,7 @@ async def proxy_request(
             return response
         except httpx.RequestError as exc:
             logger.error(f"Error requesting {exc.request.url!r}.")
-            raise HTTPException(status_code=503, detail="Service unavailable") from exc
+            raise HTTPException(status_code=503, detail="Service unavailable")
 
 
 @router.post("/")
