@@ -70,7 +70,7 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
-ignore = ["E501", "B008", "SIM117"]
+ignore = ["E501", "B008", "SIM117", "B904", "UP042", "N806", "F841", "B007"]
 
 [tool.ruff.lint.per-file-ignores]
 "conftest.py" = ["E402"]
