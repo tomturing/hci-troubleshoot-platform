@@ -329,16 +329,35 @@ main (或 develop)
 质量门禁 FAILED → vk_on_cleanup_failure() → Issue 保持 "In progress"
 ```
 
-**前置条件**：Workspace 中必须存在 `.vk/issue_id` 文件，内容为关联的 VK Issue ID。
+**前置条件（2 个文件）**：
 
-编排者（Copilot Plan Mode）在调用 `start_workspace_session` 后应立即写入此文件：
+1. **`.vk/issue_id`** — 当前 Workspace 关联的 VK Issue UUID
+2. **`.vk/status_map.json`** — 项目的状态名→status_id 映射（VK REST API 要求 `status_id`，不接受状态名称）
+
+**初始化 status_map.json（项目初始化时执行一次）**：
+
+编排者使用 MCP `update_issue` 收集所有状态 ID，生成映射文件：
+```json
+{
+  "Backlog": "fd5fb766-...",
+  "To do": "4c5525d8-...",
+  "In progress": "b5191eba-...",
+  "In review": "605a0aa3-...",
+  "Done": "fe59132f-...",
+  "Cancelled": "43a96cb4-..."
+}
+```
+> status_id 是**项目级别**的，不同 VK 实例/项目的 ID 不同。
+
+**写入 issue_id（每次 start_workspace_session 后）**：
+
+编排者在调用 `start_workspace_session` 后立即写入：
 ```bash
-# 在 worktree 中写入关联的 issue_id
-echo "19e8c043-4f30-40d8-b87b-baf009919c27" > .vk/issue_id
+echo "<issue-uuid>" > .vk/issue_id
 git add .vk/issue_id && git commit -m "chore: 写入 VK issue_id 用于自动状态流转"
 ```
 
-> 如果 `.vk/issue_id` 不存在，Hook 静默跳过（不影响 cleanup 退出码），回退为手动流转。
+> 如果 `.vk/issue_id` 或 `.vk/status_map.json` 不存在，Hook 静默跳过（不影响 cleanup 退出码），回退为手动流转。
 ### 8.2 AI Code Review 流程
 
 ```
