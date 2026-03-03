@@ -153,7 +153,8 @@ check_python_test() {
 check_frontend_lint() {
     log_header "前端 Lint 检查"
 
-    if [ ! -d "frontend/node_modules" ]; then
+    # 检查是否真正安装了前端依赖（仅有 .pnpm-workspace-state 不算）
+    if [ ! -d "frontend/node_modules/.pnpm" ]; then
         log_skip "前端依赖未安装（运行 'cd frontend && pnpm install'）"
         return
     fi
@@ -162,6 +163,11 @@ check_frontend_lint() {
 
     for app_dir in frontend/customer frontend/admin; do
         if [ -f "${app_dir}/package.json" ]; then
+            # 检查 package.json 是否定义了 lint 脚本
+            if ! grep -q '"lint"' "${app_dir}/package.json" 2>/dev/null; then
+                log_skip "${app_dir} lint — 未定义 lint 脚本"
+                continue
+            fi
             if (cd "$app_dir" && pnpm lint 2>/dev/null); then
                 log_pass "${app_dir} lint — 通过"
             else
