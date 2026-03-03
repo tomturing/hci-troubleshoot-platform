@@ -17,7 +17,7 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -50,7 +50,7 @@ class TestCaseIDGeneration:
         case_id = service._generate_case_id()
         date_part = case_id[1:9]
 
-        today = datetime.utcnow().strftime("%Y%m%d")
+        today = datetime.now(UTC).strftime("%Y%m%d")
         assert date_part == today
 
 
@@ -75,8 +75,8 @@ class TestCaseCreation:
             title="Test Case",
             description="Test Description",
             status=CaseStatus.created,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         mock_repo.create = AsyncMock(return_value=mock_case)
 
@@ -112,8 +112,8 @@ class TestCaseCreation:
             title="Test",
             trace_id="test-trace-001",
             status=CaseStatus.created,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         mock_repo.create = AsyncMock(return_value=mock_case)
 
@@ -138,8 +138,8 @@ class TestCaseRetrieval:
             client_id="test-client",
             title="Test Case",
             status=CaseStatus.created,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         mock_repo.get_by_id = AsyncMock(return_value=mock_case)
 
@@ -170,8 +170,8 @@ class TestCaseRetrieval:
                 client_id="test-client",
                 title="Case 1",
                 status=CaseStatus.created,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
             ),
             Case(
                 case_id="Q20260215002",
@@ -179,8 +179,8 @@ class TestCaseRetrieval:
                 client_id="test-client",
                 title="Case 2",
                 status=CaseStatus.created,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
             ),
         ]
         mock_repo.get_by_client_id = AsyncMock(return_value=mock_cases)
@@ -205,8 +205,8 @@ class TestCaseStatusTransitions:
             client_id="test-client",
             title="Test",
             status=CaseStatus.confirmed,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         mock_repo.update_status = AsyncMock(return_value=mock_case)
 
@@ -225,8 +225,8 @@ class TestCaseStatusTransitions:
             client_id="test-client",
             title="Test",
             status=CaseStatus.closed,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         mock_repo.update_status = AsyncMock(return_value=mock_case)
 
