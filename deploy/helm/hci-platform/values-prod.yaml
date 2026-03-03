@@ -5,7 +5,9 @@ global:
   imagePullPolicy: Always
 
 apiGateway:
-  replicaCount: 2
+  # WebSocket 粘性会话已在 values.yaml ingress.annotations 配置
+  # 确认压测通过后可调至 2，当前保持单副本避免 WS 会话断裂
+  replicaCount: 1
 caseService:
   replicaCount: 2
 conversationService:
@@ -25,3 +27,8 @@ redis:
 
 config:
   logLevel: WARNING
+
+ingress:
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+  # TLS 证书在 values-prod.override.yaml 中配置

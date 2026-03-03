@@ -41,5 +41,22 @@ secrets:
 
 config:
   logLevel: "INFO"
-  assistantRegistryJson: '{"openclaw":{"name":"OpenClaw","description":"通用AI排障助手","image":"hci-openclaw:2026.03.02-1","port":18789,"warm_pool_size":2,"max_pool_size":10,"enabled":true,"base_url":"http://openclaw:18789","gateway_token":"<replace-openclaw-token>","model":"openclaw","labels":{"app":"openclaw","assistant-type":"openclaw"}}}'
+  # gateway_token 已从 JSON 中移除，改由 secrets.openclawToken → OPENCLAW_GATEWAY_TOKEN env 注入（Secret 统一管理）
+  assistantRegistryJson: '{"openclaw":{"name":"OpenClaw","description":"通用AI排障助手","image":"hci-openclaw:2026.03.02-1","port":18789,"warm_pool_size":2,"max_pool_size":10,"enabled":true,"base_url":"http://openclaw:18789","model":"openclaw","labels":{"app":"openclaw","assistant-type":"openclaw"}}}'
 
+ingress:
+  annotations:
+    # cert-manager 自动签发（需提前安装 cert-manager + ClusterIssuer）
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  tls:
+    - hosts:
+        - "api.example.com"    # 替换为 global.domain 对应的实际域名
+        - "admin.example.com"
+        - "example.com"
+      secretName: hci-platform-tls
+
+postgres:
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"
+    hostPath: "/srv/hci/backups/postgres"

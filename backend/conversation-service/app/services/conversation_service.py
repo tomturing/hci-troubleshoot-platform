@@ -115,7 +115,10 @@ class ConversationService:
 
         pod_endpoint = await self._resolve_pod_endpoint(case_id, resolved_assistant_type)
 
-        # 4. 调用AI并流式返回
+        # 4. 调用AI并流式返回，同时记录 TTFT (Time To First Token)
+        import time
+        _stream_start = time.monotonic()
+        _ttft_logged = False
         try:
             async for chunk in ai_client.chat_completion_stream(
                 messages=history_messages,
@@ -123,22 +126,34 @@ class ConversationService:
                 pod_endpoint=pod_endpoint,
             ):
                 if chunk:
+                    if not _ttft_logged:
+                        _ttft_ms = int((time.monotonic() - _stream_start) * 1000)
+                        logger.info(
+                            event="ai_ttft",
+                            message="First token received",
+                            ttft_ms=_ttft_ms,
+                            assistant_type=resolved_assistant_type,
+                            case_id=case_id,
+                            conversation_id=str(conversation_id),
+                        )
+                        _ttft_logged = True
                     yield chunk
                     
         except Exception as e:
             import asyncio
             if isinstance(e, asyncio.CancelledError):
                 logger.info(event="stream_cancelled", message="Stream was cancelled by client")
-            else:
-                logger.error(
-                    event="conversation_error",
-                    message="Error during AI generation",
-                    conversation_id=str(conversation_id),
-                    assistant_type=resolved_assistant_type,
-                    error=str(e)
-                )
-                yield f"\n[System Error: {str(e)}]"
-                raise
+                return
+            logger.error(
+                event="conversation_error",
+                message="Error during AI generation",
+                conversation_id=str(conversation_id),
+                assistant_type=resolved_assistant_type,
+                error=str(e)
+            )
+            # 不在此处 yield 内联错误文本，由上层路由 event_generator() 捕获此异常
+            # 下层将统一以 "event: error\ndata: ..." 形式回传 SSE 结构化错误事件
+            raise
 
     async def save_assistant_message(
         self,

@@ -315,16 +315,33 @@ export const useChatStore = defineStore('chat', () => {
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
+        let pendingEventType = 'message'
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
+          if (line.startsWith('event: ')) {
+            // 记录 SSE 事件类型，用于解析后续 data: 行
+            pendingEventType = line.slice(7).trim()
+          } else if (line.startsWith('data: ')) {
             const data = line.slice(6)
-            if (data === '[DONE]') continue
-            if (data.startsWith('{') && data.includes('"error"')) continue
-            // 追加到 AI 消息
-            const aiMsg = messages.value.find((m) => m.id === aiMsgId)
-            if (aiMsg) {
-              aiMsg.content += data
+            if (data === '[DONE]') {
+              pendingEventType = 'message'
+              continue
             }
+            const aiMsg = messages.value.find((m) => m.id === aiMsgId)
+            if (pendingEventType === 'error') {
+              // AI 服务端错误：在消息气泡中展示友好提示
+              if (aiMsg && !aiMsg.content) {
+                aiMsg.content = 'AI 响应出现错误，请稍后重试。'
+              }
+            } else {
+              // 正常内容 chunk：追加到 AI 消息
+              if (aiMsg) {
+                aiMsg.content += data
+              }
+            }
+            pendingEventType = 'message'
+          } else if (line === '') {
+            // 空行是 SSE 事件分隔符，重置事件类型
+            pendingEventType = 'message'
           }
         }
       }

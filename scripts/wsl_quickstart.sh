@@ -86,7 +86,7 @@ Next commands:
   docker compose -f deploy/docker/docker-compose.yml up -d --build
 
 For multi-assistant verification:
-  bash test_multi_assistant.sh
+  bash scripts/test_multi_assistant.sh
 
 Then continue coding in WSL:
   codex

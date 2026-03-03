@@ -82,4 +82,8 @@ spec:
                 port:
                   number: {{ .Values.customerUI.port }}
     {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
 {{- end }}

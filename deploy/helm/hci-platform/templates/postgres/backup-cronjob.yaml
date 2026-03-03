@@ -1,0 +1,69 @@
+{{- $backup := .Values.postgres.backup | default dict -}}
+{{- if $backup.enabled -}}
+# PostgreSQL 定时全量备份 CronJob
+# 使用 pg_dump 将数据库导出到宿主机 hostPath 目录
+# 执行计划默认为每天 02:00 UTC，可通过 values.yaml postgres.backup.schedule 调整
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ $backup.schedule | default "0 2 * * *" | quote }}
+  successfulJobsHistoryLimit: 7   # 保留最近 7 次成功记录
+  failedJobsHistoryLimit: 3       # 保留最近 3 次失败记录
+  concurrencyPolicy: Forbid       # 禁止并发执行
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "hci.podLabels" (dict "name" "postgres-backup" "Release" .Release "Chart" .Chart) | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pg-dump
+              image: postgres:15
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  BACKUP_FILE="/backup/$(date +%Y%m%d_%H%M%S).sql.gz"
+                  echo "Starting backup to ${BACKUP_FILE}"
+                  PGPASSWORD="${POSTGRES_PASSWORD}" pg_dump \
+                    -h postgres \
+                    -U "${POSTGRES_USER}" \
+                    "${POSTGRES_DB}" | gzip > "${BACKUP_FILE}"
+                  echo "Backup completed: ${BACKUP_FILE}"
+                  # 清理 30 天前的旧备份
+                  find /backup -name "*.sql.gz" -mtime +30 -delete
+                  echo "Old backups cleaned up"
+              env:
+                - name: POSTGRES_USER
+                  valueFrom:
+                    configMapKeyRef:
+                      name: hci-common-config
+                      key: POSTGRES_USER
+                - name: POSTGRES_DB
+                  valueFrom:
+                    configMapKeyRef:
+                      name: hci-common-config
+                      key: POSTGRES_DB
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: hci-secrets
+                      key: POSTGRES_PASSWORD
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backup
+          volumes:
+            - name: backup-storage
+              hostPath:
+                path: {{ $backup.hostPath | default "/srv/hci/backups/postgres" }}
+                type: DirectoryOrCreate
+{{- end }}

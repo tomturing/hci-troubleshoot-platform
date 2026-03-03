@@ -126,3 +126,33 @@ async def get_status(
 async def health_check():
     """服务健康检查"""
     return {"status": "healthy"}
+
+
+@router.get("/pool-metrics")
+async def get_pool_metrics(
+    service: SchedulerService = Depends(get_service)
+):
+    """
+    获取 Pod 池指标（供 Grafana JSON 数据源或运维巡检使用）
+
+    返回各助手类型的池大小、空闲数、活跃数及当前分配总数。
+    可通过 Loki 日志结合 ai_ttft 事件查询首 Token 延迟趋势。
+    """
+    status = await service.get_status()
+    metrics: dict = {"pools": {}, "allocations_total": 0}
+
+    if isinstance(status, dict):
+        pools_data = status.get("pools", {})
+        for assistant_type, pool_info in pools_data.items():
+            if isinstance(pool_info, dict):
+                idle = pool_info.get("idle_count", 0)
+                active = pool_info.get("active_count", 0)
+                metrics["pools"][assistant_type] = {
+                    "idle_count": idle,
+                    "active_count": active,
+                    "pool_size": idle + active,
+                }
+        allocations = status.get("active_allocations", {})
+        metrics["allocations_total"] = len(allocations) if isinstance(allocations, dict) else 0
+
+    return metrics

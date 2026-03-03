@@ -6,6 +6,7 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from typing import Optional, List, Dict, Any
 import os
+import time
 
 from shared.utils.logger import get_logger
 from app.config import settings
@@ -96,28 +97,51 @@ class K8sClient:
             }
         }
         
-        try:
-            self.core_v1.create_namespaced_pod(
-                body=pod_manifest,
-                namespace=self.namespace
-            )
-            logger.info(
-                event="pod_create_initiated",
-                message=f"Created {assistant_type} pod {pod_name}",
-                pod_name=pod_name,
-                assistant_type=assistant_type,
-                case_id=case_id,
-                trace_id=trace_id
-            )
-            return True
-        except ApiException as e:
-            logger.error(
-                event="pod_create_failed",
-                message=f"Failed to create {assistant_type} pod {pod_name}: {e.reason}",
-                error=str(e),
-                trace_id=trace_id
-            )
-            return False
+        # 指数退避重试，应对 K8s API 瞬时抖动（最多 3 次，间隔 0.5s / 1.0s）
+        max_retries, base_delay = 3, 0.5
+        for attempt in range(max_retries):
+            try:
+                self.core_v1.create_namespaced_pod(
+                    body=pod_manifest,
+                    namespace=self.namespace
+                )
+                logger.info(
+                    event="pod_create_initiated",
+                    message=f"Created {assistant_type} pod {pod_name}",
+                    pod_name=pod_name,
+                    assistant_type=assistant_type,
+                    case_id=case_id,
+                    trace_id=trace_id
+                )
+                return True
+            except ApiException as e:
+                # 参数错误/已存在/资源不合法，无需重试
+                if e.status in (400, 409, 422):
+                    logger.error(
+                        event="pod_create_failed",
+                        message=f"Failed to create {assistant_type} pod {pod_name}: {e.reason}",
+                        error=str(e),
+                        trace_id=trace_id
+                    )
+                    return False
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        event="pod_create_retry",
+                        message=f"K8s API error (attempt {attempt + 1}/{max_retries}), retrying in {delay:.1f}s",
+                        pod_name=pod_name,
+                        error=str(e),
+                        trace_id=trace_id
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(
+                        event="pod_create_failed",
+                        message=f"Failed to create {assistant_type} pod {pod_name} after {max_retries} attempts: {e.reason}",
+                        error=str(e),
+                        trace_id=trace_id
+                    )
+        return False
 
     def delete_pod(self, pod_name: str) -> bool:
         """删除Pod"""
