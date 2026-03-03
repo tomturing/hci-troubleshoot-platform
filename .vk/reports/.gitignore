@@ -1,0 +1,4 @@
+# 质量门禁报告会自动写入此目录
+# 报告文件名格式: quality-gate-YYYYMMDD-HHMMSS.txt
+*.txt
+!.gitkeep

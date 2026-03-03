@@ -54,6 +54,12 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Claude Code 本地配置（不提交）
+CLAUDE.local.md
+
+# Vibe Kanban 本地数据
+.vk-data/
+
 # Coverage
 .coverage
 htmlcov/
