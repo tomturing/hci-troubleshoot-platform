@@ -29,7 +29,7 @@ spec:
               protocol: TCP
           env:
             - name: HOME
-              value: "/home/bot"
+              value: "/home/node"
             - name: TERM
               value: "xterm-256color"
             - name: OPENCLAW_SKIP_CANVAS_HOST
@@ -46,13 +46,10 @@ spec:
                   key: OPENCLAW_GATEWAY_TOKEN
           volumeMounts:
             - name: openclaw-home
-              mountPath: /home/bot
+              mountPath: /home/node
             - name: openclaw-tmp
               mountPath: /tmp/openclaw
-          {{- if .Values.openclaw.volumeMounts }}
-            {{- toYaml .Values.openclaw.volumeMounts | nindent 12 }}
-          {{- end }}
-          command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "{{ .Values.openclaw.port }}"]
+          command: ["node", "dist/index.js", "gateway", "--allow-unconfigured", "--bind", "lan", "--port", "{{ .Values.openclaw.port }}"]
           livenessProbe:
             tcpSocket:
               port: {{ .Values.openclaw.port }}
@@ -71,12 +68,13 @@ spec:
             {{- toYaml .Values.openclaw.resources | nindent 12 }}
       volumes:
         - name: openclaw-home
-          emptyDir: {}
+          hostPath:
+            # 宿主机 /home/bot 包含 .openclaw/ 配置目录，挂入容器 /home/node
+            # 容器内 HOME=/home/node，openclaw 自动读取 /home/node/.openclaw/openclaw.json
+            path: /home/bot
+            type: DirectoryOrCreate
         - name: openclaw-tmp
           emptyDir: {}
-      {{- if .Values.openclaw.volumes }}
-        {{- toYaml .Values.openclaw.volumes | nindent 8 }}
-      {{- end }}
 ---
 apiVersion: v1
 kind: Service

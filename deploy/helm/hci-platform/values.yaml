@@ -43,6 +43,10 @@ postgres:
   enabled: true
   image: postgres:15
   storage: 5Gi
+  # ⚠️ StorageClass 说明：
+  #   - 存量安装：保持 local-path（StatefulSet storageClass 为不可变字段，无法 upgrade 修改）
+  #     现有 PV 已通过 kubectl patch pv 直接改为 Retain policy
+  #   - 全新安装：可改为 local-path-retain（自动 Retain policy，更安全）
   storageClass: local-path
   resources:
     requests:
@@ -51,6 +55,11 @@ postgres:
     limits:
       cpu: "1000m"
       memory: "512Mi"
+  # pg_dump 定时全量备份（每天 UTC 02:00，保留 30 天）
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"
+    hostPath: "/srv/hci/backups/postgres"
 
 # ======================== Redis =============================================
 redis:
@@ -170,15 +179,7 @@ openclaw:
     limits:
       cpu: "1000m"
       memory: "512Mi"
-  # 可选: 持久化 OpenClaw 工作目录
-  # volumeMounts:
-  #   - name: openclaw-data
-  #     mountPath: /home/node/.openclaw
-  # volumes:
-  #   - name: openclaw-data
-  #     hostPath:
-  #       path: /home/bot/.openclaw
-  #       type: DirectoryOrCreate
+  # home 目录通过 hostPath 挂载到宿主机 /home/node（见 openclaw-service.yaml 模板）
 
 # ======================== Ingress (Traefik) =================================
 ingress:
