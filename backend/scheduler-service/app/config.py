@@ -3,9 +3,10 @@ Scheduler Service Configuration
 """
 
 import json
-from typing import Dict, Any
-from pydantic_settings import BaseSettings
+from typing import Any
+
 from pydantic import Field
+from pydantic_settings import BaseSettings
 
 # 默认AI助手注册表配置
 DEFAULT_ASSISTANT_REGISTRY = {
@@ -17,35 +18,34 @@ DEFAULT_ASSISTANT_REGISTRY = {
         "warm_pool_size": 2,
         "max_pool_size": 10,
         "enabled": True,
-        "labels": {"app": "openclaw", "assistant-type": "openclaw"}
+        "labels": {"app": "openclaw", "assistant-type": "openclaw"},
     }
 }
 
 
 class Settings(BaseSettings):
     """配置类"""
-    
+
     SERVICE_NAME: str = "scheduler-service"
     SERVICE_PORT: int = 8003
     LOG_LEVEL: str = "INFO"
-    
+
     # Redis配置（Pod分配状态持久化）
     REDIS_URL: str = "redis://redis:6379/0"
-    
+
     # K8s配置
     K8S_NAMESPACE: str = "hci-troubleshoot"
-    
+
     # Pod池全局配置
     POD_IDLE_TIMEOUT: int = 300  # 5分钟
-    
+
     # AI助手注册表 (JSON字符串，支持环境变量注入)
     ASSISTANT_REGISTRY_JSON: str = Field(
-        default=json.dumps(DEFAULT_ASSISTANT_REGISTRY),
-        description="AI助手注册表，JSON格式"
+        default=json.dumps(DEFAULT_ASSISTANT_REGISTRY), description="AI助手注册表，JSON格式"
     )
-    
+
     @property
-    def assistant_registry(self) -> Dict[str, Any]:
+    def assistant_registry(self) -> dict[str, Any]:
         """解析AI助手注册表"""
         try:
             return json.loads(self.ASSISTANT_REGISTRY_JSON)
@@ -56,10 +56,11 @@ class Settings(BaseSettings):
     OPENCLAW_IMAGE: str = "openclaw:latest"
     WARM_POOL_SIZE: int = 2
     MAX_POOL_SIZE: int = 10
-    
+
     class Config:
         env_file = ".env"
         case_sensitive = True
         extra = "ignore"
+
 
 settings = Settings()

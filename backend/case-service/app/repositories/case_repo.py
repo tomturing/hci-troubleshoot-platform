@@ -2,25 +2,24 @@
 Case Repository
 """
 
-from typing import List, Optional
-from sqlalchemy import select, func
+from datetime import UTC, datetime
+
+from shared.models.user import User
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime
 
 from ..models.case import Case, CaseStatus
-from shared.models.user import User
+
 
 class CaseRepository:
     """工单数据访问层"""
-    
+
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_user_by_client_id(self, client_id: str) -> Optional[User]:
+    async def get_user_by_client_id(self, client_id: str) -> User | None:
         """根据client_id查询用户"""
-        result = await self.session.execute(
-            select(User).where(User.client_id == client_id)
-        )
+        result = await self.session.execute(select(User).where(User.client_id == client_id))
         return result.scalar_one_or_none()
 
     async def create_user(self, user: User) -> User:
@@ -29,54 +28,46 @@ class CaseRepository:
         await self.session.flush()
         await self.session.refresh(user)
         return user
-    
+
     async def create(self, case: Case) -> Case:
         """创建工单"""
         self.session.add(case)
         await self.session.flush()
         await self.session.refresh(case)
         return case
-    
-    async def get_by_id(self, case_id: str) -> Optional[Case]:
+
+    async def get_by_id(self, case_id: str) -> Case | None:
         """根据case_id查询工单"""
-        result = await self.session.execute(
-            select(Case).where(Case.case_id == case_id)
-        )
+        result = await self.session.execute(select(Case).where(Case.case_id == case_id))
         return result.scalar_one_or_none()
-    
-    async def get_by_client_id(self, client_id: str) -> List[Case]:
+
+    async def get_by_client_id(self, client_id: str) -> list[Case]:
         """根据client_id查询工单列表"""
         result = await self.session.execute(
-            select(Case)
-            .where(Case.client_id == client_id)
-            .order_by(Case.created_at.desc())
+            select(Case).where(Case.client_id == client_id).order_by(Case.created_at.desc())
         )
         return list(result.scalars().all())
-    
-    async def update_status(
-        self, 
-        case_id: str, 
-        status: CaseStatus
-    ) -> Optional[Case]:
+
+    async def update_status(self, case_id: str, status: CaseStatus) -> Case | None:
         """更新工单状态"""
         case = await self.get_by_id(case_id)
         if not case:
             return None
-        
+
         case.status = status
         if status == CaseStatus.closed:
-            case.closed_at = datetime.utcnow()
-        
+            case.closed_at = datetime.now(UTC)
+
         await self.session.flush()
         await self.session.refresh(case)
         return case
-    
+
     async def delete(self, case_id: str) -> bool:
         """删除工单"""
         case = await self.get_by_id(case_id)
         if not case:
             return False
-        
+
         await self.session.delete(case)
         await self.session.flush()
         return True
@@ -85,11 +76,11 @@ class CaseRepository:
         self,
         skip: int = 0,
         limit: int = 20,
-        status: Optional[str] = None,
-        client_id: Optional[str] = None,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-    ) -> tuple[List[Case], int]:
+        status: str | None = None,
+        client_id: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+    ) -> tuple[list[Case], int]:
         """获取所有工单（分页 + 筛选），返回 (items, total)"""
         query = select(Case)
         count_query = select(func.count()).select_from(Case)

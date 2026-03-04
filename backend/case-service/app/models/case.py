@@ -2,18 +2,18 @@
 Case数据模型
 """
 
-from sqlalchemy import Column, String, Text, Enum as SQLEnum, DateTime
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-import uuid
 import enum
-from datetime import datetime, timezone
 
 from shared.database.postgres import Base
 from shared.models.base import TimestampMixin, TraceableMixin
+from sqlalchemy import Column, DateTime, String, Text
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 
-class CaseStatus(str, enum.Enum):
+class CaseStatus(enum.StrEnum):
     """工单状态枚举"""
+
     created = "created"
     confirmed = "confirmed"
     in_progress = "in_progress"
@@ -24,9 +24,9 @@ class CaseStatus(str, enum.Enum):
 
 class Case(Base, TimestampMixin, TraceableMixin):
     """工单表"""
-    
+
     __tablename__ = "case"
-    
+
     case_id = Column(String(20), primary_key=True)
     user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     client_id = Column(String(255), nullable=False, index=True)
@@ -40,6 +40,6 @@ class Case(Base, TimestampMixin, TraceableMixin):
     confirmed_at = Column(DateTime(timezone=True), nullable=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
-    
+
     def __repr__(self):
         return f"<Case(case_id={self.case_id}, status={self.status})>"

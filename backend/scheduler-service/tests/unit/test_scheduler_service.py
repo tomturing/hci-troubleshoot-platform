@@ -9,8 +9,8 @@ Scheduler Service 单元测试
 - Redis Hash 持久化分配状态
 """
 
-import sys
 import os
+import sys
 
 # 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
 _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -24,8 +24,8 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-import sys
 import os
+import sys
 
 # 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
 _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -38,12 +38,12 @@ if _expect != _actual:
     if _svc in sys.path:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
+
+import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import json
-from unittest.mock import MagicMock, AsyncMock, patch
-
-from app.services.scheduler_service import SchedulerService, REDIS_ALLOCATIONS_KEY
+from app.services.scheduler_service import REDIS_ALLOCATIONS_KEY, SchedulerService
 
 
 @pytest.fixture
@@ -103,10 +103,7 @@ class TestSchedulerAllocatePod:
 
     async def test_allocate_pod_reuse_existing(self, service, mock_k8s, mock_redis):
         """测试复用已有的 Pod（同类型且存活）"""
-        mock_redis.hget.return_value = json.dumps({
-            "pod_name": "openclaw-pool-existing",
-            "assistant_type": "openclaw"
-        })
+        mock_redis.hget.return_value = json.dumps({"pod_name": "openclaw-pool-existing", "assistant_type": "openclaw"})
         mock_k8s.get_pod_status.return_value = "Running"
 
         result = await service.allocate_pod("case-001", "openclaw")
@@ -117,10 +114,7 @@ class TestSchedulerAllocatePod:
 
     async def test_allocate_pod_type_mismatch(self, service, mock_k8s, mock_redis):
         """测试助手类型不匹配时清理旧分配"""
-        mock_redis.hget.return_value = json.dumps({
-            "pod_name": "openclaw-pool-old",
-            "assistant_type": "openclaw"
-        })
+        mock_redis.hget.return_value = json.dumps({"pod_name": "openclaw-pool-old", "assistant_type": "openclaw"})
         pool = MagicMock()
         pool.acquire_pod = AsyncMock(return_value="nabobot-pool-new123")
         service.pool_manager.get_pool = MagicMock(return_value=pool)
@@ -147,10 +141,7 @@ class TestSchedulerReleasePod:
 
     async def test_release_pod_success(self, service, mock_redis):
         """测试成功释放 Pod"""
-        mock_redis.hget.return_value = json.dumps({
-            "pod_name": "openclaw-pool-abc",
-            "assistant_type": "openclaw"
-        })
+        mock_redis.hget.return_value = json.dumps({"pod_name": "openclaw-pool-abc", "assistant_type": "openclaw"})
         pool = MagicMock()
         pool.release_pod = AsyncMock()
         service.pool_manager.get_pool = MagicMock(return_value=pool)
@@ -188,10 +179,7 @@ class TestSchedulerStatus:
 
     async def test_get_allocation_info(self, service, mock_redis):
         """测试查询分配详情"""
-        mock_redis.hget.return_value = json.dumps({
-            "pod_name": "openclaw-pool-xyz",
-            "assistant_type": "openclaw"
-        })
+        mock_redis.hget.return_value = json.dumps({"pod_name": "openclaw-pool-xyz", "assistant_type": "openclaw"})
 
         info = await service.get_allocation_info("case-001")
 

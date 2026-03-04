@@ -9,6 +9,7 @@
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";  -- 用于文本相似度搜索
+CREATE EXTENSION IF NOT EXISTS "vector";   -- pgvector 向量存储扩展
 
 SET timezone = 'UTC';
 
@@ -332,6 +333,60 @@ ON CONFLICT (client_id) DO NOTHING;
 -- 如果有特定的应用用户，在这里授权
 -- GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO hci_app_user;
 -- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO hci_app_user;
+
+-- ============================================================================
+-- 8. 知识库表 (v2.0 RAG)
+-- ============================================================================
+
+-- 知识库文档表
+CREATE TABLE IF NOT EXISTS kb_document (
+    doc_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title VARCHAR(500) NOT NULL,
+    category VARCHAR(100),
+    doc_type VARCHAR(50) NOT NULL DEFAULT 'markdown',  -- markdown / sop / web_case
+    source_path TEXT,                                   -- 原始文件路径或 URL
+    content TEXT NOT NULL,                              -- 原始全文
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    trace_id VARCHAR(64)
+);
+
+CREATE INDEX idx_kb_document_category ON kb_document(category);
+CREATE INDEX idx_kb_document_doc_type ON kb_document(doc_type);
+CREATE INDEX idx_kb_document_trace_id ON kb_document(trace_id);
+CREATE INDEX idx_kb_document_created_at ON kb_document(created_at DESC);
+
+CREATE TRIGGER update_kb_document_updated_at BEFORE UPDATE ON kb_document
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE kb_document IS '知识库文档表，存储原始排障文档';
+COMMENT ON COLUMN kb_document.doc_type IS '文档类型: markdown / sop / web_case';
+COMMENT ON COLUMN kb_document.source_path IS '原始文件路径或 URL';
+
+-- 知识库分块 + 向量表
+CREATE TABLE IF NOT EXISTS kb_chunk (
+    chunk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    doc_id UUID NOT NULL REFERENCES kb_document(doc_id) ON DELETE CASCADE,
+    chunk_index INT NOT NULL,                           -- 在文档中的位置
+    content TEXT NOT NULL,                              -- 分块文本 (~512 tokens)
+    embedding vector(384),                              -- bge-small-zh-v1.5 输出维度 384
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    trace_id VARCHAR(64)                                -- 调用链追踪ID
+);
+
+CREATE INDEX idx_kb_chunk_doc_id ON kb_chunk(doc_id);
+CREATE INDEX idx_kb_chunk_chunk_index ON kb_chunk(doc_id, chunk_index);
+CREATE INDEX idx_kb_chunk_trace_id ON kb_chunk(trace_id);
+
+-- IVFFlat 索引：需要在有一定数据量后手动创建
+-- 空表无法创建 IVFFlat 索引，建议在有 1000+ 向量后执行：
+-- CREATE INDEX idx_kb_chunk_embedding ON kb_chunk USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+COMMENT ON TABLE kb_chunk IS '知识库分块+向量表，用于 RAG 语义检索';
+COMMENT ON COLUMN kb_chunk.chunk_index IS '分块在原文档中的顺序位置';
+COMMENT ON COLUMN kb_chunk.embedding IS '384 维向量 (bge-small-zh-v1.5)';
 
 -- ============================================================================
 -- 完成
