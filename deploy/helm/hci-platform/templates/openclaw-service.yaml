@@ -69,9 +69,9 @@ spec:
       volumes:
         - name: openclaw-home
           hostPath:
-            # 宿主机 /home/bot 包含 .openclaw/ 配置目录，挂入容器 /home/node
-            # 容器内 HOME=/home/node，openclaw 自动读取 /home/node/.openclaw/openclaw.json
-            path: /home/bot
+            # 宿主机 /home/node 与容器内路径完全一致
+            # openclaw 自动读取 /home/node/.openclaw/openclaw.json
+            path: /home/node
             type: DirectoryOrCreate
         - name: openclaw-tmp
           emptyDir: {}
