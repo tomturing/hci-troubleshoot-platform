@@ -15,12 +15,12 @@ async function detectGrafana() {
   const hostname = window.location.hostname
   const protocol = window.location.protocol
 
-  // Cloud/K3s nip.io 下的动态计算: admin.<ip>.nip.io -> grafana.<ip>.nip.io
-  if (hostname.includes('nip.io')) {
+  // 通用处理：admin.<domain> -> grafana.<domain>（支持 hci.local、nip.io 等任意域名）
+  if (hostname.startsWith('admin.')) {
     const grafanaHost = hostname.replace('admin.', 'grafana.')
     grafanaUrl.value = `${protocol}//${grafanaHost}`
   } else {
-    // Docker Compose / fallback
+    // Docker Compose / localhost fallback
     grafanaUrl.value = 'http://localhost:3000'
   }
   
