@@ -66,8 +66,21 @@ data:
         kubernetes_sd_configs:
           - role: pod
         pipeline_stages:
-          - cri: {}
+          # Docker runtime 使用 JSON 格式（containerd/CRI 才用 cri: {}）
+          - docker: {}
         relabel_configs:
+          # 先过滤：只采集有 app.kubernetes.io/name 标签的 Pod（排除无标签的系统 Pod）
+          - action: drop
+            regex: ""
+            source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+          # 设置日志文件路径（关键！缺少此规则 Promtail 不会读取任何文件）
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
+            separator: /
+            regex: (.+)/(.+)
+            replacement: /var/log/pods/*$1/$2/*.log
+            target_label: __path__
+          # 设置 Label
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
           - source_labels: [__meta_kubernetes_pod_container_name]
@@ -76,9 +89,9 @@ data:
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             target_label: app
-          - action: drop
-            regex: ""
-            source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+          # service_name 与 OTel 保持一致，方便 Grafana 统一查询
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: service_name
 ---
 apiVersion: v1
 kind: ConfigMap
