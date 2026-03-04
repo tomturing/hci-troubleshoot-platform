@@ -5,6 +5,9 @@
 # ======================== 全局配置 ==========================================
 global:
   namespace: hci-troubleshoot
+  # 平台根域名，所有子域 (api/app/admin/grafana) 会基于此自动推导
+  # 生产环境通过 --set global.domain=your-domain.com 覆盖
+  domain: "hci.local"
   imageRegistry: "" # 私有镜像仓库前缀，如 "registry.example.com/"
   imagePullPolicy: IfNotPresent
 
@@ -195,9 +198,12 @@ config:
   warmPoolSize: "2"
   maxPoolSize: "10"
   podIdleTimeout: "300"
-  openclawImage: "openclaw:latest"
-  # v2.0 多助手注册表 (JSON)
+  # 镜像名必须与 docker build -t 的 tag 完全一致（hci- 前缀）
+  openclawImage: "hci-openclaw:latest"
+  # v2.0 多助手注册表 (JSON)：image 字段须与上面 openclawImage 保持一致
   assistantRegistryJson: '{"openclaw":{"image":"hci-openclaw:latest","port":18789,"warm_pool_size":2,"max_pool_size":5,"idle_timeout":300,"display_name":"OpenClaw (GLM)","description":"基于智谱 GLM 模型的 AI 排障助手"}}'
+  # 注意：assistantRegistryJson 中的 base_url 使用 K8s Service 内部地址
+  # 格式：http://<service-name>:<port>
 
 # ======================== 敏感配置（→ Secret）===============================
 # 生产环境通过 helm install --set secrets.postgresPassword=xxx 覆盖
