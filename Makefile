@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down test lint clean vk quality-gate conflict-check post-merge
+.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -66,6 +66,16 @@ VK_PORT ?= 9527
 
 vk:
 	@echo "启动 Vibe Kanban（端口 $(VK_PORT)）..."
+	PORT=$(VK_PORT) npx vibe-kanban
+
+vk-stop:
+	@echo "停止 Vibe Kanban..."
+	@pkill -f "vibe-kanban" 2>/dev/null && echo "✓ VK 已停止" || echo "VK 未在运行"
+
+vk-restart:
+	@echo "重启 Vibe Kanban..."
+	@pkill -f "vibe-kanban" 2>/dev/null || true
+	@sleep 1
 	PORT=$(VK_PORT) npx vibe-kanban
 
 quality-gate:

@@ -1,10 +1,21 @@
 # HCI 智能排障平台 — 项目规范
 
 > **本文件是所有 AI Agent 的项目专属规范。**
-> 通用多 Agent 工作流规范见 `.vk/workflow.md`。
 > `./AGENTS.md` 是本文件的符号链接，确保所有 Agent 读到相同内容。
 > `./CLAUDE.local.md` 存放个人本地配置（不提交 git）。
 > `~/.claude/CLAUDE.md` 存放全局编码风格（不在本文件重复）。
+
+---
+
+## 启动时必读文件
+
+**在开始任何工作前，请依次读取以下文件（内容已加载到上下文）：**
+
+1. `.vk/workflow.md` — 通用多 Agent 并行开发工作流规范（角色、交叉审查、分支命名）
+2. `/mnt/d/Workflow/multi-agent-workflow/CLAUDE.md` — 调度器开发规范（含踩坑历史）
+3. `/mnt/d/Workflow/multi-agent-workflow/docs/04_VK_MCP手册.md` — VK MCP Server API 完整参考（含与官方文档差异）
+
+> 如以上路径不可访问（在容器/CI 环境中），请查阅 `.vk/workflow.md`（已复制到本仓库）。
 
 ---
 

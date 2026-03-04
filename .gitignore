@@ -64,3 +64,4 @@ CLAUDE.local.md
 .coverage
 htmlcov/
 .pytest_cache/
+.vk/
