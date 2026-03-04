@@ -2,7 +2,7 @@
 Case Service - 业务逻辑层
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from shared.models.schemas import (
     CaseCreate,
@@ -32,7 +32,7 @@ class CaseService:
         import random
         from datetime import datetime
 
-        date_str = datetime.utcnow().strftime("%Y%m%d")
+        date_str = datetime.now(UTC).strftime("%Y%m%d")
         seq = str(random.randint(0, 99999)).zfill(5)
         return f"Q{date_str}{seq}"
 

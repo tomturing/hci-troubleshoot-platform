@@ -2,7 +2,7 @@
 Case Repository
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from shared.models.user import User
 from sqlalchemy import func, select
@@ -56,7 +56,7 @@ class CaseRepository:
 
         case.status = status
         if status == CaseStatus.closed:
-            case.closed_at = datetime.utcnow()
+            case.closed_at = datetime.now(UTC)
 
         await self.session.flush()
         await self.session.refresh(case)

@@ -3,7 +3,7 @@ Session Management Service - WebSocket会话管理
 """
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
@@ -22,7 +22,7 @@ class SessionManager:
         """创建会话"""
         session_key = f"session:{client_id}"
 
-        session_data = {"client_id": client_id, "case_id": case_id or "", "connected_at": str(datetime.utcnow())}
+        session_data = {"client_id": client_id, "case_id": case_id or "", "connected_at": str(datetime.now(UTC))}
 
         await self.redis.set(
             session_key,

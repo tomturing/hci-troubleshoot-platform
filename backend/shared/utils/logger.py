@@ -6,7 +6,7 @@ Structured Logging Utilities
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 
 from .otel import get_current_span_id, get_current_trace_id
 
@@ -46,7 +46,7 @@ class StructuredLogger:
             str: JSON 格式的日志
         """
         log_data = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "level": level,
             "service": self.service_name,
             "event": event,
@@ -142,7 +142,7 @@ def log_function_call(logger: "StructuredLogger"):
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             func_name = func.__name__
-            start_time = datetime.utcnow()
+            start_time = datetime.now(UTC)
 
             logger.debug(
                 event="function_start",
@@ -154,7 +154,7 @@ def log_function_call(logger: "StructuredLogger"):
 
             try:
                 result = await func(*args, **kwargs)
-                duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                duration_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
 
                 logger.debug(
                     event="function_complete",
@@ -166,7 +166,7 @@ def log_function_call(logger: "StructuredLogger"):
 
                 return result
             except Exception as e:
-                duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                duration_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
 
                 logger.error(
                     event="function_error",
@@ -181,13 +181,13 @@ def log_function_call(logger: "StructuredLogger"):
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
             func_name = func.__name__
-            start_time = datetime.utcnow()
+            start_time = datetime.now(UTC)
 
             logger.debug(event="function_start", message=f"Starting {func_name}", function=func_name)
 
             try:
                 result = func(*args, **kwargs)
-                duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                duration_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
 
                 logger.debug(
                     event="function_complete",
@@ -199,7 +199,7 @@ def log_function_call(logger: "StructuredLogger"):
 
                 return result
             except Exception as e:
-                duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                duration_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
 
                 logger.error(
                     event="function_error",
