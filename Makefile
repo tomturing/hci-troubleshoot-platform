@@ -89,3 +89,22 @@ conflict-check:
 post-merge:
 	@echo "运行合并后集成验证..."
 	bash scripts/post-merge-verify.sh
+
+# ── MAW 工作流命令（multi-agent-workflow 注入，与项目 dev-up 命名隔离）───────
+maw-up:
+	@bash .vk/dev.sh
+
+maw-down:
+	@echo "⏹  停止 Dispatcher..."
+	@pkill -f "python.*dispatcher" 2>/dev/null && echo "✓ Dispatcher 已停止" || echo "Dispatcher 未在运行"
+	@echo "⏹  停止 VK..."
+	@pkill -f "vibe-kanban" 2>/dev/null && echo "✓ VK 已停止" || echo "VK 未在运行"
+
+maw-logs:
+	@tail -f .vk/logs/vk.log .vk/logs/dispatcher.log 2>/dev/null || echo "日志尚未生成，请先运行 make maw-up"
+
+maw-status:
+	@VK_PORT=$(VK_PORT) python3 -m dispatcher --project-dir . status --cached
+
+maw-once:
+	@VK_PORT=$(VK_PORT) python3 -m dispatcher --project-dir . run --once
