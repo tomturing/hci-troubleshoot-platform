@@ -19,6 +19,12 @@ spec:
         {{- include "hci.podLabels" (dict "name" "openclaw" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "openclaw") | nindent 6 }}
+      securityContext:
+        # 宿主机 node 用户 uid=1001 gid=1001，容器以相同 UID 运行
+        # 确保 hostPath /home/node（owner=1001）可读写
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
       containers:
         - name: openclaw
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.openclaw.image) }}
