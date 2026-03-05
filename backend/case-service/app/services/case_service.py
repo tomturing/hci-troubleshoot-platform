@@ -15,6 +15,8 @@ from shared.models.schemas import (
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
 
+from app.config import settings
+
 from ..models.case import Case, CaseStatus
 from ..repositories.case_repo import CaseRepository
 
@@ -92,12 +94,24 @@ class CaseService:
         return CaseResponse.model_validate(case)
 
     async def close_case(self, case_id: str) -> CaseResponse | None:
-        """关闭工单"""
+        """关闭工单，并异步推送摘要至 KB Service 进行知识沉淀"""
         case = await self.repository.update_status(case_id, CaseStatus.closed)
         if not case:
             return None
 
         logger.info(event="case_closed", message=f"Closed case {case_id}", case_id=case_id)
+
+        # 异步 fire-and-forget 推送至 KB Service（不阻塞主流程）
+        if settings.KB_PUSH_ENABLED:
+            from .kb_pusher import fire_and_forget_push
+
+            fire_and_forget_push(
+                kb_service_url=settings.KB_SERVICE_URL,
+                internal_token=settings.INTERNAL_API_TOKEN,
+                case_id=case_id,
+                title=case.title or case_id,
+                description=case.description or "",
+            )
 
         return CaseResponse.model_validate(case)
 

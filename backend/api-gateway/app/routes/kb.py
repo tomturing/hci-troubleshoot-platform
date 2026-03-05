@@ -1,0 +1,118 @@
+"""
+KB Routes - API Gateway Proxy
+将 /api/v1/kb/* 代理到 kb-service:8004/api/kb/*
+"""
+
+import httpx
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
+from shared.utils.logger import get_logger
+
+from app.config import settings
+
+router = APIRouter(prefix="/api/v1/kb", tags=["kb"])
+logger = get_logger("gateway-kb")
+
+KB_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/kb"
+
+
+async def proxy_request(
+    method: str,
+    path: str,
+    payload: dict | None = None,
+    params: dict | None = None,
+    headers: dict | None = None,
+):
+    """通用代理请求，透传至 kb-service"""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            url = f"{KB_SERVICE_URL}{path}"
+            response = await client.request(method, url, json=payload, params=params, headers=headers)
+            return response
+        except httpx.RequestError as exc:
+            logger.error(f"KB Service 请求失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+
+
+def _forward_headers(request: Request) -> dict:
+    """透传 Authorization 头（内部 Token）"""
+    headers = {}
+    if auth := request.headers.get("Authorization"):
+        headers["Authorization"] = auth
+    return headers
+
+
+# ============ 搜索接口（公开）============
+
+
+@router.post("/search")
+async def search(request: Request):
+    """混合检索（BM25 + 向量 RRF 融合）"""
+    body = await request.json()
+    response = await proxy_request("POST", "/search", payload=body)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.post("/sop/match")
+async def sop_match(request: Request):
+    """SOP 关键词精确匹配"""
+    body = await request.json()
+    response = await proxy_request("POST", "/sop/match", payload=body)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+# ============ 写入接口（需 Internal Token）============
+
+
+@router.post("/ingest")
+async def ingest(request: Request):
+    """文档摄入（SHA256 幂等）"""
+    body = await request.json()
+    headers = _forward_headers(request)
+    response = await proxy_request("POST", "/ingest", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.post("/sop/import")
+async def sop_import(request: Request):
+    """SOP 节点批量导入"""
+    body = await request.json()
+    headers = _forward_headers(request)
+    response = await proxy_request("POST", "/sop/import", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+# ============ 管理接口（需 Internal Token）============
+
+
+@router.get("/documents")
+async def list_documents(request: Request):
+    """文档列表"""
+    headers = _forward_headers(request)
+    response = await proxy_request("GET", "/documents", params=dict(request.query_params), headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.get("/documents/{doc_id}")
+async def get_document(doc_id: int, request: Request):
+    """获取文档详情"""
+    headers = _forward_headers(request)
+    response = await proxy_request("GET", f"/documents/{doc_id}", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.patch("/documents/{doc_id}")
+async def update_document_status(doc_id: int, request: Request):
+    """更新文档状态"""
+    body = await request.json()
+    headers = _forward_headers(request)
+    response = await proxy_request("PATCH", f"/documents/{doc_id}", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.delete("/documents/{doc_id}")
+async def delete_document(doc_id: int, request: Request):
+    """删除文档"""
+    headers = _forward_headers(request)
+    response = await proxy_request("DELETE", f"/documents/{doc_id}", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)

@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # Redis配置 (可选，用于缓存)
     REDIS_URL: str = "redis://redis:6379/0"
 
+    # KB Service 配置（Case 关闭时推送摘要，异步 fire-and-forget）
+    KB_SERVICE_URL: str = "http://kb-service:8004"
+    INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
+    KB_PUSH_ENABLED: bool = True  # 环境变量 KB_PUSH_ENABLED=false 可禁用
+
     class Config:
         env_file = ".env"
         case_sensitive = True

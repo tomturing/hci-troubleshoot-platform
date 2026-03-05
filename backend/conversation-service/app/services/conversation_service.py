@@ -64,16 +64,92 @@ class ConversationService:
         """获取对话历史"""
         return await self.repository.get_messages(conversation_id)
 
+    async def _build_system_prompt(self, query: str, case_id: str) -> str:
+        """
+        构建 4-Tier System Prompt：
+          Tier1: 系统身份（固定）
+          Tier2: SOP 精确命中（若有）
+          Tier3: KB 语义检索 Chunks
+          Tier4: 当前工单上下文
+        """
+        if not self.kb_client or not settings.KB_ENABLED:
+            # KB 未启用时退回到基础 Prompt
+            return _SYSTEM_BASE + f"\n\n---\n当前工单 ID：{case_id}"
+
+        import asyncio
+
+        # 并发执行 SOP 匹配 + 语义检索，降低延迟
+        sop_task = asyncio.create_task(self.kb_client.sop_match(query))
+        search_task = asyncio.create_task(self.kb_client.search(query, top_n=settings.KB_SEARCH_TOP_N))
+        sop_node, kb_chunks = await asyncio.gather(sop_task, search_task, return_exceptions=True)
+
+        # 容错：任一任务异常均不影响主流程
+        if isinstance(sop_node, Exception):
+            logger.warning(event="kb_sop_error", message=str(sop_node), case_id=case_id)
+            sop_node = None
+        if isinstance(kb_chunks, Exception):
+            logger.warning(event="kb_search_error", message=str(kb_chunks), case_id=case_id)
+            kb_chunks = []
+
+        sections: list[str] = [_SYSTEM_BASE]
+
+        # --- Tier 2: SOP 精确命中 ---
+        if sop_node:
+            sop_content = sop_node.get("content", "")
+            sop_title = sop_node.get("title", "SOP")
+            sections.append(
+                f"## 📋 精确匹配 SOP：{sop_title}\n\n"
+                "以下是与用户问题精确匹配的标准操作规程，请优先参考：\n\n"
+                f"{sop_content[:settings.KB_CONTEXT_MAX_CHARS]}"
+            )
+            logger.info(
+                event="kb_sop_hit",
+                message=f"SOP 命中：{sop_title}",
+                case_id=case_id,
+                sop_title=sop_title,
+            )
+
+        # --- Tier 3: KB 语义检索 Chunks ---
+        if kb_chunks:
+            chunks_text_parts: list[str] = []
+            total_chars = 0
+            for i, chunk in enumerate(kb_chunks, 1):
+                chunk_content = chunk.get("content", "")
+                source = chunk.get("source_title", "未知文档")
+                if total_chars + len(chunk_content) > settings.KB_CONTEXT_MAX_CHARS:
+                    break
+                chunks_text_parts.append(f"[{i}] 来源：{source}\n{chunk_content}")
+                total_chars += len(chunk_content)
+
+            if chunks_text_parts:
+                sections.append(
+                    "## 📚 知识库参考\n\n"
+                    "以下是从知识库中检索到的相关内容，供参考：\n\n"
+                    + "\n\n---\n\n".join(chunks_text_parts)
+                )
+            logger.info(
+                event="kb_search_hit",
+                message=f"KB 检索命中 {len(kb_chunks)} 条",
+                case_id=case_id,
+                hit_count=len(kb_chunks),
+            )
+
+        # --- Tier 4: 工单上下文 ---
+        sections.append(f"---\n当前工单 ID：{case_id}")
+
+        return "\n\n".join(sections)
+
     async def send_message_stream_only(
         self, conversation_id: uuid.UUID, case_id: str, content: str, assistant_type: str | None = None
     ) -> AsyncGenerator[str, None]:
         """
-        发送消息并获取流式回复 (v2.0: 根据 assistant_type 选择AI后端)
+        发送消息并获取流式回复 (v2.1: 4-Tier Prompt + KB 上下文注入)
 
         1. 保存用户消息
-        2. 获取历史上下文
-        3. 从注册表获取对应 AI 客户端
-        4. 流式返回响应
+        2. 并发构建 4-Tier System Prompt（SOP + KB 检索）
+        3. 获取历史上下文
+        4. 从注册表获取对应 AI 客户端
+        5. 流式返回响应
         """
         trace_id = get_current_trace_id()
 
@@ -82,15 +158,18 @@ class ConversationService:
             conversation_id=conversation_id, case_id=case_id, role=MessageRole.user, content=content, trace_id=trace_id
         )
 
-        # 2. 获取历史上下文 (最近20条)
+        # 2. 构建 4-Tier System Prompt（并发 SOP + 向量检索）
+        system_prompt = await self._build_system_prompt(content, case_id)
+
+        # 3. 获取历史上下文 (最近20条)
         all_messages = await self.repository.get_messages(conversation_id)
-        history_messages = []
+        history_messages: list[dict] = [{"role": "system", "content": system_prompt}]
         selected_messages = all_messages[-20:] if len(all_messages) > 20 else all_messages
 
         for msg in selected_messages:
             history_messages.append({"role": msg.role.value, "content": msg.content})
 
-        # 3. 从注册表获取AI助手客户端
+        # 4. 从注册表获取AI助手客户端
         resolved_assistant_type = await self._resolve_assistant_type(conversation_id, assistant_type)
         ai_client = self.ai_registry.get_client(resolved_assistant_type)
         if not ai_client:
@@ -101,7 +180,7 @@ class ConversationService:
 
         pod_endpoint = await self._resolve_pod_endpoint(case_id, resolved_assistant_type)
 
-        # 4. 调用AI并流式返回，同时记录 TTFT (Time To First Token)
+        # 5. 调用AI并流式返回，同时记录 TTFT (Time To First Token)
         import time
 
         _stream_start = time.monotonic()

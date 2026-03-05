@@ -15,6 +15,7 @@ from shared.utils.exceptions import AIStreamError, ErrorCode
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService
+from ..services.kb_client import KBClient
 from ..services.scheduler_client import SchedulerClient
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -23,13 +24,20 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 database_manager: DatabaseManager | None = None
 ai_registry: AIAssistantRegistry | None = None
 scheduler_client: SchedulerClient | None = None
+kb_client: KBClient | None = None
 
 
-def set_dependencies(db: DatabaseManager, registry: AIAssistantRegistry, scheduler: SchedulerClient | None = None):
-    global database_manager, ai_registry, scheduler_client
+def set_dependencies(
+    db: DatabaseManager,
+    registry: AIAssistantRegistry,
+    scheduler: SchedulerClient | None = None,
+    kb: KBClient | None = None,
+):
+    global database_manager, ai_registry, scheduler_client, kb_client
     database_manager = db
     ai_registry = registry
     scheduler_client = scheduler
+    kb_client = kb
 
 
 async def get_conversation_service() -> ConversationService:
@@ -39,7 +47,7 @@ async def get_conversation_service() -> ConversationService:
 
     async for session in database_manager.get_session():
         repo = ConversationRepository(session)
-        yield ConversationService(repo, ai_registry, scheduler_client)
+        yield ConversationService(repo, ai_registry, scheduler_client, kb_client)
 
 
 @router.post("/", status_code=201)

@@ -135,6 +135,23 @@ schedulerService:
       cpu: "500m"
       memory: "256Mi"
 
+# ======================== KB Service ========================================
+kbService:
+  replicaCount: 1
+  image:
+    repository: hci-kb-service
+    tag: latest
+  port: 8004
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+  # SOP 技能目录挂载（从宿主机或 PVC 挂载）
+  sopSkillsDir: /data/sop_skills
+
 # ======================== Customer UI =======================================
 customerUI:
   replicaCount: 1

@@ -15,6 +15,7 @@ from shared.utils.otel import init_telemetry, instrument_app
 from app.config import settings
 from app.routes import conversations
 from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
+from app.services.kb_client import KBClient
 from app.services.scheduler_client import SchedulerClient
 
 # 在应用创建前初始化 OpenTelemetry
@@ -61,8 +62,18 @@ async def lifespan(app: FastAPI):
     app.state.ai_registry = ai_registry
     app.state.scheduler_client = scheduler_client
 
+    # 初始化 KB 客户端（可选：KB_ENABLED=false 时跳过）
+    kb_client: KBClient | None = None
+    if settings.KB_ENABLED:
+        kb_client = KBClient(
+            kb_service_url=settings.KB_SERVICE_URL,
+            internal_token=settings.INTERNAL_API_TOKEN,
+        )
+        logger.info(event="kb_client_initialized", message=f"KB client 已初始化，目标: {settings.KB_SERVICE_URL}")
+    app.state.kb_client = kb_client
+
     # 兼容现有路由注入方式
-    conversations.set_dependencies(database_manager, ai_registry, scheduler_client)
+    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client)
 
     yield
 

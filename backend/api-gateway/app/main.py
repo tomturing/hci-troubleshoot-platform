@@ -15,7 +15,7 @@ from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
-from app.routes import assistants, cases, conversations, health, websocket
+from app.routes import assistants, cases, conversations, health, kb, websocket
 from app.services.session import SessionManager
 
 # 在应用创建前初始化 OpenTelemetry
@@ -68,6 +68,7 @@ app.include_router(websocket.router)
 app.include_router(cases.router)
 app.include_router(conversations.router)
 app.include_router(assistants.router)
+app.include_router(kb.router)
 app.include_router(health.router)
 
 if __name__ == "__main__":

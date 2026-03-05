@@ -1,6 +1,6 @@
 -- HCI Troubleshoot Platform - Database Initialization Script
--- Version: 2.0 (AI Assistant Pod Pool)
--- Date: 2026-02-15
+-- Version: 3.0 (KB RAG + LearningClaw/ProductionClaw)
+-- Date: 2026-03-05
 -- Database: PostgreSQL 15
 
 -- ============================================================================
@@ -335,61 +335,139 @@ ON CONFLICT (client_id) DO NOTHING;
 -- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO hci_app_user;
 
 -- ============================================================================
--- 8. 知识库表 (v2.0 RAG)
+-- 8. 知识库表 (v3.0 RAG — LearningClaw/ProductionClaw)
 -- ============================================================================
+-- 注意：v2.0 → v3.0 Breaking Change
+--   旧 kb_document 主键为 doc_id UUID，新版改为 id SERIAL（整型，性能更优）
+--   旧 kb_chunk 主键为 chunk_id UUID，新版改为 id SERIAL
+--   如已存在旧表，执行 database/migrate_kb_v3.sql 进行迁移
 
--- 知识库文档表
+-- 知识库文档表（v3.0）
 CREATE TABLE IF NOT EXISTS kb_document (
-    doc_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    title VARCHAR(500) NOT NULL,
-    category VARCHAR(100),
-    doc_type VARCHAR(50) NOT NULL DEFAULT 'markdown',  -- markdown / sop / web_case
-    source_path TEXT,                                   -- 原始文件路径或 URL
-    content TEXT NOT NULL,                              -- 原始全文
-    metadata JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    trace_id VARCHAR(64)
+    id              SERIAL PRIMARY KEY,
+    source_id       VARCHAR(50) UNIQUE,                -- 原始案例ID（采集自 support system）
+    title           VARCHAR(500) NOT NULL,
+    product         VARCHAR(100) DEFAULT '超融合HCI',
+    content_md      TEXT NOT NULL,                     -- MD 全文（Source of Truth）
+    content_hash    VARCHAR(64),                       -- SHA256，用于变更检测，避免重复入库
+    yaml_meta       JSONB,                             -- 结构化元数据（LLM 增强后的字段集合）
+    category_l1     VARCHAR(100),                      -- 一级分类（如：虚拟机 / 存储 / 网络）
+    category_l2     VARCHAR(100),                      -- 二级分类（如：开关机 / 迁移 / 快照）
+    tags            TEXT[],                            -- 标签数组（如：['CPU', 'KVM', 'BIOS']）
+    judgment_logic  TEXT,                              -- 排查逻辑（中文，LLM 生成）
+    summary         TEXT,                              -- 摘要（中文，LLM 生成）
+    difficulty      SMALLINT DEFAULT 3,                -- 难度 1-5，3 为默认
+    status          VARCHAR(20) DEFAULT 'draft',       -- 状态机：draft/under_review/approved/published/rejected/archived
+    review_note     TEXT,                              -- 审核批注
+    reviewer        VARCHAR(100),                      -- 审核人
+    reviewed_at     TIMESTAMP WITH TIME ZONE,
+    source_type     VARCHAR(20) DEFAULT 'kb',          -- 来源：kb（历史案例）/ sop / realtime（在网工单）
+    has_images      BOOLEAN DEFAULT FALSE,             -- 是否含图片（需 OCR 处理）
+    verified_version VARCHAR(50),                     -- 已验证的产品版本
+    trace_id        VARCHAR(64),                       -- W3C traceparent 调用链 ID
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_kb_document_category ON kb_document(category);
-CREATE INDEX idx_kb_document_doc_type ON kb_document(doc_type);
-CREATE INDEX idx_kb_document_trace_id ON kb_document(trace_id);
-CREATE INDEX idx_kb_document_created_at ON kb_document(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kb_document_status     ON kb_document(status);
+CREATE INDEX IF NOT EXISTS idx_kb_document_category   ON kb_document(category_l1, category_l2);
+CREATE INDEX IF NOT EXISTS idx_kb_document_source_id  ON kb_document(source_id);
+CREATE INDEX IF NOT EXISTS idx_kb_document_source_type ON kb_document(source_type);
+CREATE INDEX IF NOT EXISTS idx_kb_document_trace_id   ON kb_document(trace_id);
+CREATE INDEX IF NOT EXISTS idx_kb_document_created_at ON kb_document(created_at DESC);
 
 CREATE TRIGGER update_kb_document_updated_at BEFORE UPDATE ON kb_document
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-COMMENT ON TABLE kb_document IS '知识库文档表，存储原始排障文档';
-COMMENT ON COLUMN kb_document.doc_type IS '文档类型: markdown / sop / web_case';
-COMMENT ON COLUMN kb_document.source_path IS '原始文件路径或 URL';
+COMMENT ON TABLE kb_document IS '知识库文档表 v3.0 — 状态机驱动的文档生命周期管理';
+COMMENT ON COLUMN kb_document.status IS '状态机: draft→under_review→approved→published，也可→rejected/archived';
+COMMENT ON COLUMN kb_document.source_type IS 'kb=历史案例批量导入, sop=SOP手册, realtime=在网工单实时生成';
+COMMENT ON COLUMN kb_document.content_hash IS 'SHA256(content_md)，增量更新时用于跳过未变更文档';
 
--- 知识库分块 + 向量表
+-- 知识库分块 + 向量表（v3.0）
+-- 注意：IVFFlat 索引需在数据量 ≥ 1000 条后手动创建（空表无法创建 IVFFlat）
 CREATE TABLE IF NOT EXISTS kb_chunk (
-    chunk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    doc_id UUID NOT NULL REFERENCES kb_document(doc_id) ON DELETE CASCADE,
-    chunk_index INT NOT NULL,                           -- 在文档中的位置
-    content TEXT NOT NULL,                              -- 分块文本 (~512 tokens)
-    embedding vector(384),                              -- bge-small-zh-v1.5 输出维度 384
-    metadata JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    trace_id VARCHAR(64)                                -- 调用链追踪ID
+    id              SERIAL PRIMARY KEY,
+    document_id     INTEGER NOT NULL REFERENCES kb_document(id) ON DELETE CASCADE,
+    chunk_index     SMALLINT NOT NULL,                 -- 块在文档中的顺序位置（0-based）
+    content         TEXT NOT NULL,                     -- 块文本（~512 tokens）
+    embedding       vector(384),                       -- 向量（主力 z.ai API / 降级 bge-small-zh，384维）
+    token_count     SMALLINT,                          -- 块的 token 数量
+    metadata        JSONB,                             -- 块级元数据（标题层级、页码等）
+    tsv             tsvector,                          -- BM25 全文索引（jieba 分词后的 tsvector）
+    trace_id        VARCHAR(64),                       -- 入库时的调用链 ID
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_kb_chunk_doc_id ON kb_chunk(doc_id);
-CREATE INDEX idx_kb_chunk_chunk_index ON kb_chunk(doc_id, chunk_index);
-CREATE INDEX idx_kb_chunk_trace_id ON kb_chunk(trace_id);
+CREATE INDEX IF NOT EXISTS idx_kb_chunk_document    ON kb_chunk(document_id);
+CREATE INDEX IF NOT EXISTS idx_kb_chunk_position    ON kb_chunk(document_id, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_kb_chunk_tsv         ON kb_chunk USING GIN (tsv);
+CREATE INDEX IF NOT EXISTS idx_kb_chunk_trace_id    ON kb_chunk(trace_id);
 
--- IVFFlat 索引：需要在有一定数据量后手动创建
--- 空表无法创建 IVFFlat 索引，建议在有 1000+ 向量后执行：
+-- 向量检索索引（在有一定数据量后手动执行，空表无法创建 IVFFlat）：
 -- CREATE INDEX idx_kb_chunk_embedding ON kb_chunk USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
-COMMENT ON TABLE kb_chunk IS '知识库分块+向量表，用于 RAG 语义检索';
-COMMENT ON COLUMN kb_chunk.chunk_index IS '分块在原文档中的顺序位置';
-COMMENT ON COLUMN kb_chunk.embedding IS '384 维向量 (bge-small-zh-v1.5)';
+COMMENT ON TABLE kb_chunk IS '知识库分块 + 向量表 v3.0 — 双路检索（BM25 tsvector + pgvector IVFFlat）';
+COMMENT ON COLUMN kb_chunk.tsv IS 'BM25 全文检索索引，由 jieba 分词后写入（用 simple 配置，避免中文 parser 依赖）';
+COMMENT ON COLUMN kb_chunk.embedding IS '384 维向量，主力使用 z.ai embedding API，降级使用本地 bge-small-zh-v1.5';
+
+-- SOP 决策树节点表（v3.0）
+-- 将 SOP 排障手册拆分为"技能"（Skill）节点，支持关键字精确路由
+CREATE TABLE IF NOT EXISTS kb_sop_node (
+    id              SERIAL PRIMARY KEY,
+    skill_id        VARCHAR(100) NOT NULL,             -- 技能 ID（如 vm_boot_failure, storage_iops_low）
+    node_name       VARCHAR(200) NOT NULL,             -- 节点名称（如 CPU不足、KVM驱动缺失）
+    parent_id       INTEGER REFERENCES kb_sop_node(id),  -- 父节点 ID（NULL 表示根节点）
+    keywords        TEXT[] NOT NULL,                   -- 触发关键字列表（如 ['CPU不足','剩余CPU不足']）
+    file_path       VARCHAR(500),                      -- 对应的 MD 文件路径（相对 sop_skills/）
+    content         TEXT,                              -- 章节全文（检索命中后直接注入上下文）
+    level           SMALLINT DEFAULT 1,                -- 层级（1=主章节, 2=子章节）
+    sort_order      SMALLINT DEFAULT 0,                -- 同级排序
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_sop_node_skill    ON kb_sop_node(skill_id);
+CREATE INDEX IF NOT EXISTS idx_kb_sop_node_keywords ON kb_sop_node USING GIN (keywords);
+CREATE INDEX IF NOT EXISTS idx_kb_sop_node_parent   ON kb_sop_node(parent_id);
+
+COMMENT ON TABLE kb_sop_node IS 'SOP 决策树节点表 — 关键字精确路由（优先于向量语义检索）';
+COMMENT ON COLUMN kb_sop_node.skill_id IS '对应 sop_skills/ 目录下的子目录名';
+COMMENT ON COLUMN kb_sop_node.keywords IS '触发该节点的关键字数组，来自 keywords_map.json';
+
+-- 知识分类树（v3.0）
+-- 4 层树形结构（L1-L4），L1 有 6 个主类别
+CREATE TABLE IF NOT EXISTS kb_category (
+    id              SERIAL PRIMARY KEY,
+    parent_id       INTEGER REFERENCES kb_category(id),  -- NULL 表示 L1 根节点
+    name            VARCHAR(100) NOT NULL,
+    level           SMALLINT NOT NULL,                 -- 1=L1, 2=L2, 3=L3, 4=L4
+    keywords        TEXT[],                            -- 该类别的触发关键字
+    source          VARCHAR(20) DEFAULT 'manual',      -- manual（人工）/ auto_generated / auto_suggested
+    version         VARCHAR(20) DEFAULT '1.0',
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_category_parent   ON kb_category(parent_id);
+CREATE INDEX IF NOT EXISTS idx_kb_category_level    ON kb_category(level);
+CREATE INDEX IF NOT EXISTS idx_kb_category_keywords ON kb_category USING GIN (keywords);
+
+COMMENT ON TABLE kb_category IS '知识分类树 v3.0 — 4 层树形结构（L1:平台/网络/存储/硬件/客户机硬件/虚拟机）';
+COMMENT ON COLUMN kb_category.source IS 'manual=人工维护, auto_generated=系统生成, auto_suggested=LLM建议待审核';
+
+-- 同义词映射表（v3.0）
+-- 将缩写/别名统一化，提升全文检索召回率
+CREATE TABLE IF NOT EXISTS kb_synonym (
+    id              SERIAL PRIMARY KEY,
+    term            VARCHAR(100) NOT NULL,             -- 缩写或别名（如 HCI, VM, vDisk）
+    canonical       VARCHAR(100) NOT NULL,             -- 标准名称（如 超融合, 虚拟机, 虚拟磁盘）
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(term, canonical)
+);
+
+COMMENT ON TABLE kb_synonym IS '同义词映射表 v3.0 — 统一 HCI 专业术语缩写，提升 BM25 召回率';
 
 -- ============================================================================
 -- 完成
 -- ============================================================================
 
-SELECT 'Database initialization completed successfully!' as status;
+SELECT 'Database initialization completed successfully! (v3.0)' as status;

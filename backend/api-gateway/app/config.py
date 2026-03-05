@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     CASE_SERVICE_URL: str = "http://case-service:8001"
     CONVERSATION_SERVICE_URL: str = "http://conversation-service:8002"
     SCHEDULER_SERVICE_URL: str = "http://scheduler-service:8003"
+    KB_SERVICE_URL: str = "http://kb-service:8004"
+
+    # 内部服务间 API 鉴权 Token
+    INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
 
     @property
     def cors_origins(self) -> list:

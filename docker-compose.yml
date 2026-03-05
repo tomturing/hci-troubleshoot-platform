@@ -120,6 +120,32 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock # For local dev
     command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
 
+  kb-service:
+    build:
+      context: ./backend
+      dockerfile: kb-service/Dockerfile
+    container_name: hci-kb-service
+    ports:
+      - "8004:8004"
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      ZAI_BASE_URL: ${ZAI_BASE_URL:-http://host.docker.internal:18790}
+      ZAI_API_KEY: ${ZAI_API_KEY:-hci-dev-openclaw-token}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
+      SOP_SKILLS_DIR: /data/sop_skills
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/kb-service:/app
+      - ./backend/shared:/app/shared
+      - ./data-pipeline/sop_skills:/data/sop_skills:ro   # SOP 技能目录（只读）
+      - ./data-pipeline/config:/data/config:ro            # jieba 词典等配置（只读）
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload
+
   # ============ 前端服务 ============
 
   customer-ui:

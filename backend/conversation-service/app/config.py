@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     OPENCLAW_GATEWAY_TOKEN: str = "default_token"
     OPENCLAW_DEFAULT_MODEL: str = "openclaw"
 
+    # KB 服务配置
+    KB_SERVICE_URL: str = "http://kb-service:8004"
+    INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
+    # KB 检索参数
+    KB_SEARCH_TOP_N: int = 5           # RRF 融合后取 top-N
+    KB_CONTEXT_MAX_CHARS: int = 2000   # 注入 Prompt 的最大字符数
+    KB_ENABLED: bool = True             # 是否启用 KB 注入（可通过环境变量动态关闭）
+
     # Scheduler 配置（用于真实 Pod 分配链路）
     SCHEDULER_SERVICE_URL: str = "http://scheduler-service:8003"
     SCHEDULER_ALLOCATE_TIMEOUT_SEC: int = 8
