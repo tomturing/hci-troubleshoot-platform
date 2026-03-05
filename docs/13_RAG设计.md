@@ -7,7 +7,7 @@
 > **文档边界说明**
 > - **本文档范围**：知识库基础设施——数据源采集、文档生命周期、存储 Schema、检索引擎、ETL 数据管道、SOP 机制。
 > - **不在本文档**：AI Agent 的行为规范、LearningClaw/ProductionClaw 架构、对话上下文组装逻辑。
-> - **相关文档**：`13_AI层设计.md` — AI 层如何消费知识库；`03_接口设计.md` — KB Service REST API 规范。
+> - **相关文档**：`12_AI层设计.md` — AI 层如何消费知识库；`03_接口设计.md` — KB Service REST API 规范。
 
 ---
 
@@ -144,7 +144,7 @@
 │ 返回 ranked results (chunks + SOP节点 + 分类路径)                         │
 │                                                                         │
 │ ⚑ KB Service 职责止于「返回」。上下文组装（4-Tier Prompt 拼装）            │
-│   与 LLM 调用属于 AI 层职责，详见《13_AI层设计.md》。                      │
+│   与 LLM 调用属于 AI 层职责，详见《12_AI层设计.md》。                      │
 └─────────────────────────────────────────────────────────────────────────┘
                                  │
                             用户对话结束
@@ -306,8 +306,8 @@ backend/kb-service/
 **集成边界说明:**
 
 - KB Service 只负责知识的存储与检索，返回 ranked chunks/SOP 节点给调用者
-- **Conversation Service** 调用 `/api/kb/search` 后，在 AI 层进行 4-Tier Prompt 组装，详见《13_AI层设计.md》
-- **LearningClaw** 调用 `/api/kb/ingest` 将学习成果写入知识库，详见《13_AI层设计.md §第二部分》
+- **Conversation Service** 调用 `/api/kb/search` 后，在 AI 层进行 4-Tier Prompt 组装，详见《12_AI层设计.md》
+- **LearningClaw** 调用 `/api/kb/ingest` 将学习成果写入知识库，详见《12_AI层设计.md §第二部分》
 - API Gateway 注册 `/api/v1/kb/` 路由转发到 KB Service
 - `docker-compose.yml` / Helm values 新增 `kb-service` 服务
 
