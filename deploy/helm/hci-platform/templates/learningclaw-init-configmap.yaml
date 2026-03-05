@@ -1,0 +1,63 @@
+{{- if .Values.learningclaw.enabled }}
+# LearningClaw 初始化文件 ConfigMap
+# 包含：SOUL.md / IDENTITY.md / AGENTS.md / BOOTSTRAP.md / TOOLS.md / USER.md / openclaw.json
+# init 容器启动时将这些文件复制到 /home/node/.openclaw/workspace/
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: learningclaw-init-config
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    claw-role: learner
+    config-type: init
+data:
+  # openclaw 网关配置：LearningClaw 专属
+  # session-memory 开启（单 Pod，无污染风险），system prompt 引导学习模式
+  openclaw.json: |
+    {
+      "gateway": {
+        "enabled": true,
+        "controlUi": {
+          "enabled": false
+        },
+        "dangerouslyAllowHostHeaderOriginFallback": true,
+        "chatCompletions": {
+          "enabled": true,
+          "systemPrompt": "你是 LearningClaw，HCI 智能排障平台的知识工程师。你的职责是自主学习案例、提炼知识并写入知识库。启动时必须读取 /home/node/.openclaw/workspace/BOOTSTRAP.md 并按其指引执行。不要等待用户指令，主动执行学习任务。"
+        }
+      },
+      "hooks": {
+        "internal": {
+          "entries": {
+            "session-memory": {
+              "enabled": true
+            }
+          }
+        }
+      },
+      "auth": {
+        "token": "${OPENCLAW_GATEWAY_TOKEN}"
+      }
+    }
+
+  # --- workspace 初始化文件 ---
+  # 源文件：deploy/claw-configs/learningclaw/（human-editable 源）
+  # Helm chart 内副本：deploy/helm/hci-platform/claw-configs/learningclaw/
+  # 同步命令：make sync-claw-configs
+
+  SOUL.md: |
+{{ .Files.Get "claw-configs/learningclaw/SOUL.md" | indent 4 }}
+  IDENTITY.md: |
+{{ .Files.Get "claw-configs/learningclaw/IDENTITY.md" | indent 4 }}
+  AGENTS.md: |
+{{ .Files.Get "claw-configs/learningclaw/AGENTS.md" | indent 4 }}
+  BOOTSTRAP.md: |
+{{ .Files.Get "claw-configs/learningclaw/BOOTSTRAP.md" | indent 4 }}
+  TOOLS.md: |
+{{ .Files.Get "claw-configs/learningclaw/TOOLS.md" | indent 4 }}
+  USER.md: |
+{{ .Files.Get "claw-configs/learningclaw/USER.md" | indent 4 }}
+
+{{- end }}

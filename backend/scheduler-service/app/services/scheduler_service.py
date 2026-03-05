@@ -76,8 +76,8 @@ class SchedulerService:
 
     # ────────── 核心调度方法 ──────────
 
-    async def allocate_pod(self, case_id: str, assistant_type: str = "openclaw") -> str | None:
-        """为工单分配指定类型的Pod"""
+    async def allocate_pod(self, case_id: str, assistant_type: str = "productionclaw", case_info: dict | None = None) -> str | None:
+        """为工单分配指定类型的Pod（v3.0：传入工单信息供 Pod 初始化使用）"""
         # 检查是否已有分配
         existing = await self._get_allocation(case_id)
         if existing:
@@ -97,8 +97,8 @@ class SchedulerService:
             logger.error(f"No pool found for assistant type: {assistant_type}")
             return None
 
-        # 从池中获取
-        pod_name = await pool.acquire_pod(case_id)
+        # 从池中获取（传入 case_info 供 Pod 初始化使用）
+        pod_name = await pool.acquire_pod(case_id, case_info=case_info)
         if pod_name:
             await self._set_allocation(case_id, pod_name, assistant_type)
             logger.info(

@@ -40,28 +40,30 @@ class K8sClient:
         pod_name: str,
         case_id: str | None = None,
         trace_id: str | None = None,
-        assistant_type: str = "openclaw",
+        assistant_type: str = "productionclaw",
         assistant_config: dict[str, Any] | None = None,
+        case_info: dict[str, Any] | None = None,
     ) -> bool:
         """
-        创建AI助手Pod (v2.0: 根据助手配置动态生成Pod Spec)
+        创建AI助手Pod (v3.0: 支持 ProductionClaw 一 Pod 一 Case 模式)
 
         Args:
             pod_name: Pod名称
-            case_id: 工单ID (用于标签)
+            case_id: 工单ID
             trace_id: 追踪ID
-            assistant_type: AI助手类型
-            assistant_config: 助手配置 (image, port, labels, env等)
+            assistant_type: AI助手类型（productionclaw 等）
+            assistant_config: 助手配置（image, port, init_configmap 等）
+            case_info: 工单附加信息（title, description, created_at），注入为环境变量
 
         Returns:
             bool: 是否成功触发创建
         """
-        # 从 assistant_config 或默认值获取配置
         cfg = assistant_config or {}
         image = cfg.get("image", settings.OPENCLAW_IMAGE)
         port = cfg.get("port", 18789)
         custom_labels = cfg.get("labels", {})
         custom_env = cfg.get("env", [])
+        init_configmap = cfg.get("init_configmap", "productionclaw-init-config")
 
         labels = {
             "app": assistant_type,
@@ -73,26 +75,135 @@ class K8sClient:
         if case_id:
             labels["case-id"] = case_id
 
-        # 构建环境变量列表
-        env_vars = []
+        # ── 基础环境变量 ─────────────────────────────────────────
+        env_vars = [
+            {"name": "HOME", "value": "/home/node"},
+            {"name": "TERM", "value": "xterm-256color"},
+            {"name": "OPENCLAW_SKIP_CANVAS_HOST", "value": "1"},
+            # Pod 身份（Downward API）
+            {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
+            # AI 模型密钥
+            {"name": "ZAI_API_KEY", "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "ZAI_API_KEY"}}},
+            {
+                "name": "OPENCLAW_GATEWAY_TOKEN",
+                "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_GATEWAY_TOKEN"}},
+            },
+            {
+                "name": "INTERNAL_API_TOKEN",
+                "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "INTERNAL_API_TOKEN"}},
+            },
+            # 服务地址
+            {
+                "name": "KB_SERVICE_URL",
+                "valueFrom": {"configMapKeyRef": {"name": "hci-common-config", "key": "KB_SERVICE_URL"}},
+            },
+            {
+                "name": "CASE_SERVICE_URL",
+                "valueFrom": {"configMapKeyRef": {"name": "hci-common-config", "key": "CASE_SERVICE_URL"}},
+            },
+            {
+                "name": "CONVERSATION_SERVICE_URL",
+                "valueFrom": {"configMapKeyRef": {"name": "hci-common-config", "key": "CONVERSATION_SERVICE_URL"}},
+            },
+        ]
+
+        # ── 工单信息注入（ProductionClaw 专属）────────────────────
+        if case_id:
+            env_vars.append({"name": "CASE_ID", "value": case_id})
+        if case_info:
+            env_vars.extend([
+                {"name": "CASE_TITLE", "value": case_info.get("title", "")},
+                {"name": "CASE_DESCRIPTION", "value": case_info.get("description", "")},
+                {"name": "CASE_CREATED_AT", "value": case_info.get("created_at", "")},
+            ])
+
+        # 其他自定义环境变量（来自 AssistantRegistry）
         for ev in custom_env:
             if isinstance(ev, dict):
                 env_vars.append({"name": ev.get("name", ""), "value": ev.get("value", "")})
 
-        # Pod Spec
+        # ── volumes：emptyDir for /home/node + ConfigMap init ────
+        volumes = [
+            {"name": "claw-home", "emptyDir": {}},
+            {"name": "init-config", "configMap": {"name": init_configmap}},
+        ]
+
+        # ── init 容器：复制 ConfigMap 配置到 /home/node/.openclaw/ ─
+        init_containers = [
+            {
+                "name": "init-workspace",
+                "image": image,
+                "securityContext": {"runAsUser": 1001, "runAsGroup": 1001},
+                "command": ["/bin/sh", "-c"],
+                "args": [
+                    """set -e
+mkdir -p /home/node/.openclaw/workspace/memory
+mkdir -p /home/node/.openclaw/agents/main/sessions
+echo "--- ProductionClaw 初始化 ---"
+echo "工单 ID: ${CASE_ID:-未设置}"
+for f in SOUL.md IDENTITY.md AGENTS.md BOOTSTRAP.md TOOLS.md USER.md; do
+  cp "/init-config/${f}" "/home/node/.openclaw/workspace/${f}"
+  echo "  已加载 ${f}"
+done
+cp /init-config/openclaw.json /home/node/.openclaw/openclaw.json
+echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}"
+"""
+                ],
+                "env": [{"name": "CASE_ID", "value": case_id or ""}],
+                "volumeMounts": [
+                    {"name": "claw-home", "mountPath": "/home/node"},
+                    {"name": "init-config", "mountPath": "/init-config", "readOnly": True},
+                ],
+            }
+        ]
+
+        volume_mounts = [
+            {"name": "claw-home", "mountPath": "/home/node"},
+        ]
+
+        # ── Pod Manifest ────────────────────────────────────────
         pod_manifest = {
             "apiVersion": "v1",
             "kind": "Pod",
-            "metadata": {"name": pod_name, "labels": labels},
+            "metadata": {
+                "name": pod_name,
+                "labels": labels,
+                "annotations": {
+                    "case-id": case_id or "",
+                    "trace-id": trace_id or "",
+                    "assistant-type": assistant_type,
+                },
+            },
             "spec": {
+                "securityContext": {"runAsUser": 1001, "runAsGroup": 1001, "fsGroup": 1001},
+                "initContainers": init_containers,
                 "containers": [
                     {
                         "name": assistant_type,
                         "image": image,
                         "ports": [{"containerPort": port}],
                         "env": env_vars,
+                        "volumeMounts": volume_mounts,
+                        "command": [
+                            "node", "dist/index.js", "gateway",
+                            "--allow-unconfigured", "--bind", "lan",
+                            "--port", str(port),
+                        ],
+                        "livenessProbe": {
+                            "tcpSocket": {"port": port},
+                            "initialDelaySeconds": 30,
+                            "periodSeconds": 60,
+                            "failureThreshold": 3,
+                        },
+                        "readinessProbe": {
+                            "tcpSocket": {"port": port},
+                            "initialDelaySeconds": 15,
+                            "periodSeconds": 30,
+                            "failureThreshold": 3,
+                        },
                     }
                 ],
+                "volumes": volumes,
                 "restartPolicy": "Never",
             },
         }

@@ -26,7 +26,11 @@ def get_service() -> SchedulerService:
 
 class PodAllocationRequest(BaseModel):
     case_id: str
-    assistant_type: str = Field(default="openclaw", description="AI助手类型")
+    assistant_type: str = Field(default="productionclaw", description="AI助手类型")
+    # v3.0: 工单信息，注入到 ProductionClaw Pod 环境变量
+    case_title: str | None = Field(default=None, description="工单标题（注入 Pod env CASE_TITLE）")
+    case_description: str | None = Field(default=None, description="工单描述（注入 Pod env CASE_DESCRIPTION）")
+    case_created_at: str | None = Field(default=None, description="工单创建时间（注入 Pod env CASE_CREATED_AT）")
 
 
 class PodReleaseRequest(BaseModel):
@@ -57,8 +61,17 @@ async def list_assistants(service: SchedulerService = Depends(get_service)):
 
 @router.post("/pods/allocate", response_model=PodResponse)
 async def allocate_pod(request: PodAllocationRequest, service: SchedulerService = Depends(get_service)):
-    """分配指定类型的Pod"""
-    pod_name = await service.allocate_pod(case_id=request.case_id, assistant_type=request.assistant_type)
+    """分配指定类型的Pod（v3.0：注入工单信息到 ProductionClaw Pod）"""
+    case_info = {
+        "title": request.case_title or "",
+        "description": request.case_description or "",
+        "created_at": request.case_created_at or "",
+    }
+    pod_name = await service.allocate_pod(
+        case_id=request.case_id,
+        assistant_type=request.assistant_type,
+        case_info=case_info,
+    )
     if not pod_name:
         raise HTTPException(status_code=503, detail=f"No available pods for assistant type '{request.assistant_type}'")
     info = await service.get_allocation_info(request.case_id) or {}

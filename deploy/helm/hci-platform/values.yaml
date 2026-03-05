@@ -181,6 +181,41 @@ openclaw:
       memory: "512Mi"
   # home 目录通过 hostPath 挂载到宿主机 /home/node（见 openclaw-service.yaml 模板）
 
+# ======================== LearningClaw（常驻知识学习 Pod）==================
+learningclaw:
+  enabled: true
+  image:
+    repository: hci-openclaw
+    tag: latest
+  port: 18789
+  storageClassName: local-path-retain   # 持久化 PVC，使用 retain 策略
+  storageSize: 5Gi
+  defaultMode: batch                      # 默认运行模式：batch / event / manual
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+
+# ======================== ProductionClaw（Per-Case 排障 Pod）================
+productionclaw:
+  enabled: true
+  # ProductionClaw 的 image 与 openclaw 相同，通过 init ConfigMap 差异化配置
+  image:
+    repository: hci-openclaw
+    tag: latest
+  port: 18789
+  # 每个 Pod 仅服务单个 Case，资源配额略低于 LearningClaw
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+
 # ======================== Ingress (Traefik) =================================
 ingress:
   enabled: true
@@ -201,8 +236,13 @@ config:
   podIdleTimeout: "300"
   # 镜像名必须与 docker build -t 的 tag 完全一致（hci- 前缀）
   openclawImage: "hci-openclaw:latest"
-  # v2.0 多助手注册表 (JSON)：image 字段须与上面 openclawImage 保持一致
-  assistantRegistryJson: '{"openclaw":{"image":"hci-openclaw:latest","port":18789,"warm_pool_size":2,"max_pool_size":5,"idle_timeout":300,"display_name":"OpenClaw (GLM)","description":"基于智谱 GLM 模型的 AI 排障助手"}}'
+  # 服务地址（供 LearningClaw / ProductionClaw 调用内部 API）
+  kbServiceUrl: "http://kb-service:8004"
+  caseServiceUrl: "http://case-service:8001"
+  conversationServiceUrl: "http://conversation-service:8002"
+  learningclawServiceUrl: "http://learningclaw:18789"
+  # v3.0 多助手注册表：productionclaw = 一 Pod 一 Case 模式
+  assistantRegistryJson: '{"productionclaw":{"image":"hci-openclaw:latest","port":18789,"warm_pool_size":2,"max_pool_size":10,"idle_timeout":0,"display_name":"ProductionClaw (GLM)","description":"一 Case 一 Pod AI 排障助手","init_configmap":"productionclaw-init-config","labels":{"claw-role":"production"}}}'
   # 注意：assistantRegistryJson 中的 base_url 使用 K8s Service 内部地址
   # 格式：http://<service-name>:<port>
 
@@ -213,6 +253,8 @@ secrets:
   openclawToken: "hci-dev-openclaw-token"
   zaiApiKey: ""
   grafanaAdminPassword: "admin"
+  # 内部服务间 API 鉴权 Token（LearningClaw / ProductionClaw 调用 KB/Case/Conversation Service）
+  internalApiToken: "hci-dev-internal-token"
 
 # ======================== 可观测性栈 ========================================
 observability:

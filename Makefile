@@ -89,3 +89,30 @@ conflict-check:
 post-merge:
 	@echo "运行合并后集成验证..."
 	bash scripts/post-merge-verify.sh
+
+# ======================== Claw 配置管理 =====================================
+
+## 将 deploy/claw-configs/ 同步到 Helm chart 内副本
+## 规则：deploy/claw-configs/ 是人工编辑的源，Helm chart 副本用于 .Files.Get
+## 每次修改 deploy/claw-configs/ 后运行此命令，然后 helm upgrade
+sync-claw-configs:
+	@echo "同步 claw-configs 到 Helm chart..."
+	@cp -r deploy/claw-configs/learningclaw \
+		deploy/helm/hci-platform/claw-configs/learningclaw && \
+		echo "  ✓ learningclaw 已同步"
+	@cp -r deploy/claw-configs/productionclaw \
+		deploy/helm/hci-platform/claw-configs/productionclaw && \
+		echo "  ✓ productionclaw 已同步"
+	@echo "✅ 同步完成（请运行 helm upgrade 让更改生效）"
+
+## 检查 deploy/claw-configs/ 与 Helm chart 副本是否一致
+check-claw-configs:
+	@echo "检查 claw-configs 一致性..."
+	@diff -r deploy/claw-configs/learningclaw \
+		deploy/helm/hci-platform/claw-configs/learningclaw && \
+		echo "  ✓ learningclaw 一致" || \
+		echo "  ⚠️  learningclaw 不一致，请运行 make sync-claw-configs"
+	@diff -r deploy/claw-configs/productionclaw \
+		deploy/helm/hci-platform/claw-configs/productionclaw && \
+		echo "  ✓ productionclaw 一致" || \
+		echo "  ⚠️  productionclaw 不一致，请运行 make sync-claw-configs"

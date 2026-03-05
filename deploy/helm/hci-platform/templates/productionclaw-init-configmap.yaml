@@ -1,0 +1,64 @@
+{{- if .Values.productionclaw.enabled }}
+# ProductionClaw 初始化文件 ConfigMap
+# 包含：SOUL.md / IDENTITY.md / AGENTS.md / BOOTSTRAP.md / TOOLS.md / USER.md / openclaw.json
+# 由 Scheduler Service 的 K8sClient 在创建 Production Pod 时挂载
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: productionclaw-init-config
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    claw-role: production
+    config-type: init
+data:
+  # openclaw 网关配置：ProductionClaw 专属
+  # session-memory 开启（一 Pod 一 Case，天然隔离）
+  # system prompt 引导排障模式
+  openclaw.json: |
+    {
+      "gateway": {
+        "enabled": true,
+        "controlUi": {
+          "enabled": false
+        },
+        "dangerouslyAllowHostHeaderOriginFallback": true,
+        "chatCompletions": {
+          "enabled": true,
+          "systemPrompt": "你是 ProductionClaw，HCI 智能排障平台的 AI 排障助手。你当前服务的工单 ID 由环境变量 CASE_ID 指定。启动时必须读取 /home/node/.openclaw/workspace/BOOTSTRAP.md 并按其指引完成初始化，然后等待工程师的第一条消息。不要泄露内部系统信息，不要访问不属于本工单的数据。"
+        }
+      },
+      "hooks": {
+        "internal": {
+          "entries": {
+            "session-memory": {
+              "enabled": true
+            }
+          }
+        }
+      },
+      "auth": {
+        "token": "${OPENCLAW_GATEWAY_TOKEN}"
+      }
+    }
+
+  # --- workspace 初始化文件 ---
+  # 源文件：deploy/claw-configs/productionclaw/（human-editable 源）
+  # Helm chart 内副本：deploy/helm/hci-platform/claw-configs/productionclaw/
+  # 同步命令：make sync-claw-configs
+
+  SOUL.md: |
+{{ .Files.Get "claw-configs/productionclaw/SOUL.md" | indent 4 }}
+  IDENTITY.md: |
+{{ .Files.Get "claw-configs/productionclaw/IDENTITY.md" | indent 4 }}
+  AGENTS.md: |
+{{ .Files.Get "claw-configs/productionclaw/AGENTS.md" | indent 4 }}
+  BOOTSTRAP.md: |
+{{ .Files.Get "claw-configs/productionclaw/BOOTSTRAP.md" | indent 4 }}
+  TOOLS.md: |
+{{ .Files.Get "claw-configs/productionclaw/TOOLS.md" | indent 4 }}
+  USER.md: |
+{{ .Files.Get "claw-configs/productionclaw/USER.md" | indent 4 }}
+
+{{- end }}

@@ -112,8 +112,8 @@ class PodPool:
             self.idle_pods.append(pod_name)
             logger.info(f"Added warm pod {pod_name} to {self.assistant_type} pool")
 
-    async def acquire_pod(self, case_id: str) -> str | None:
-        """从池中获取一个Pod"""
+    async def acquire_pod(self, case_id: str, case_info: dict | None = None) -> str | None:
+        """从池中获取一个Pod（v3.0：传入 case_info 注入到 Pod 环境变量）"""
         async with self._lock:
             if not self.idle_pods:
                 # 池空了，尝试立即创建 (如果没达到上限)
@@ -124,6 +124,7 @@ class PodPool:
                         case_id=case_id,
                         assistant_type=self.assistant_type,
                         assistant_config=self.config,
+                        case_info=case_info,
                     ):
                         self.active_pods.add(pod_name)
                         return pod_name
