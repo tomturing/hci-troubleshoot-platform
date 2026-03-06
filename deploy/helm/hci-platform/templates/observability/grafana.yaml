@@ -34,10 +34,12 @@ spec:
               value: "true"
             - name: GF_AUTH_ANONYMOUS_ORG_ROLE
               value: "Viewer"
+            {{- if .Values.global.domain }}
             - name: GF_SERVER_DOMAIN
               value: {{ printf "grafana.%s" .Values.global.domain | quote }}
             - name: GF_SERVER_ROOT_URL
               value: {{ printf "http://grafana.%s/" .Values.global.domain | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /api/health
