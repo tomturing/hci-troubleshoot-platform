@@ -7,6 +7,9 @@ metadata:
   labels:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
+    # entrypoints 名称为 "web"，对应 Traefik 内部监听端口
+    # 宿主机对外端口由 HelmChartConfig (traefik-custom.yaml) 控制（当前: 4888）
+    # 修改对外端口只需改 HelmChartConfig，此处注解无需变更
     traefik.ingress.kubernetes.io/router.entrypoints: web
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
