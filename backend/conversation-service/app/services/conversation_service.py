@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from shared.utils.logger import get_logger
+from shared.utils.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
 from shared.utils.otel import get_current_trace_id
 
 from app.config import settings
@@ -202,12 +203,17 @@ class ConversationService:
                             case_id=case_id,
                             conversation_id=str(conversation_id),
                         )
+                        # 记录首 Token 延迟到 Prometheus histogram
+                        AI_TTFT_SECONDS.labels(assistant_type=resolved_assistant_type).observe(_ttft_ms / 1000.0)
                         _ttft_logged = True
                     yield chunk
+
+            AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
 
         except Exception as e:
             import asyncio
 
+            AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="error").inc()
             if isinstance(e, asyncio.CancelledError):
                 logger.info(event="stream_cancelled", message="Stream was cancelled by client")
                 return
@@ -272,11 +278,26 @@ class ConversationService:
         return settings.OPENCLAW_BASE_URL.rstrip("/")
 
     async def _resolve_pod_endpoint(self, case_id: str, assistant_type: str) -> str | None:
-        """优先走 scheduler 实时分配，失败则回退到静态 base_url。"""
+        """优先走 scheduler 实时分配，失败则回退到静态 base_url。
+        自动从 conversation metadata 取 case_title/case_description 并传给 scheduler。
+        """
         if not self.scheduler_client:
             return self._get_fallback_endpoint(assistant_type)
 
-        allocated = await self.scheduler_client.allocate_pod(case_id, assistant_type)
+        # 从当前 case 的 conversation metadata 获取工单信息（如果已存储）
+        case_title: str | None = None
+        case_description: str | None = None
+        conversations = await self.repository.get_conversations_by_case(case_id)
+        if conversations:
+            meta = getattr(conversations[0], "metadata_", None) or {}
+            case_title = meta.get("case_title")
+            case_description = meta.get("case_description")
+
+        allocated = await self.scheduler_client.allocate_pod(
+            case_id, assistant_type,
+            case_title=case_title,
+            case_description=case_description,
+        )
         if not allocated:
             logger.warning(
                 event="scheduler_allocate_unavailable",

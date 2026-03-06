@@ -125,9 +125,17 @@ async def get_status(service: SchedulerService = Depends(get_service)):
 
 
 @router.get("/health")
-async def health_check():
-    """服务健康检查"""
-    return {"status": "healthy"}
+async def health_check(service: SchedulerService = Depends(get_service)):
+    """服务健康检查，验证 Redis 可达性 + Pod 池概况"""
+    redis_ok = await service.redis.health_check()
+    all_stats = service.pool_manager.get_all_stats() if service.pool_manager else {}
+    total_idle = sum(p.get("idle", 0) for p in all_stats.values())
+    total_active = sum(p.get("active", 0) for p in all_stats.values())
+    return {
+        "status": "healthy" if redis_ok else "degraded",
+        "dependencies": {"redis": "ok" if redis_ok else "unavailable"},
+        "pool_summary": {"idle": total_idle, "active": total_active, "pools": all_stats},
+    }
 
 
 @router.get("/pool-metrics")

@@ -4,6 +4,7 @@ PostgreSQL数据库连接管理
 
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
 
@@ -28,6 +29,15 @@ class DatabaseManager:
                 raise
             finally:
                 await session.close()
+
+    async def health_check(self) -> bool:
+        """执行 SELECT 1 验证数据库可达性"""
+        try:
+            async with self.async_session_factory() as session:
+                await session.execute(text("SELECT 1"))
+            return True
+        except Exception:
+            return False
 
     async def close(self):
         """关闭数据库连接"""

@@ -1,0 +1,35 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: 'hci-troubleshoot-platform'
+
+scrape_configs:
+  # Conversation Service - AI TTFT 指标、请求计数
+  - job_name: 'conversation-service'
+    static_configs:
+      - targets: ['conversation-service:8002']
+    metrics_path: '/metrics'
+
+  # Scheduler Service - Pod 池空闲/活跃数
+  - job_name: 'scheduler-service'
+    static_configs:
+      - targets: ['scheduler-service:8003']
+    metrics_path: '/metrics'
+
+  # API Gateway
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8000']
+    metrics_path: '/metrics'
+
+  # Case Service
+  - job_name: 'case-service'
+    static_configs:
+      - targets: ['case-service:8001']
+    metrics_path: '/metrics'
+
+  # Prometheus 自身
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

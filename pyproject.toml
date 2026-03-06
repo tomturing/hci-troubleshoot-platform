@@ -32,6 +32,9 @@ dependencies = [
     "opentelemetry-instrumentation-httpx",
     "opentelemetry-instrumentation-sqlalchemy",
     "opentelemetry-instrumentation-logging",
+
+    # === Prometheus 指标 ===
+    "prometheus-client>=0.19.0",
 ]
 
 [dependency-groups]
@@ -43,6 +46,7 @@ dev = [
     "locust>=2.20.0,<3.0",
     "faker>=21.0.0,<30.0",
     "ruff>=0.11.0",
+    "fakeredis>=2.21.0",
 ]
 
 [tool.pytest.ini_options]

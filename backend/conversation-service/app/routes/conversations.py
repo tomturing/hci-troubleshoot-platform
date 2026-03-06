@@ -55,11 +55,16 @@ async def create_conversation(
     case_id: str,
     assistant_type: str = "openclaw",
     initial_message: str | None = None,
+    case_title: str | None = None,
+    case_description: str | None = None,
     service: ConversationService = Depends(get_conversation_service),
 ):
-    """创建新对话"""
+    """创建新对话，case_title/case_description 存入 metadata 供 Pod 分配时使用"""
+    metadata: dict | None = None
+    if case_title or case_description:
+        metadata = {"case_title": case_title or "", "case_description": case_description or ""}
     conversation = await service.create_conversation(
-        case_id=case_id, assistant_type=assistant_type, initial_message=initial_message
+        case_id=case_id, assistant_type=assistant_type, initial_message=initial_message, metadata=metadata
     )
     return {"conversation_id": conversation.conversation_id, "case_id": conversation.case_id}
 

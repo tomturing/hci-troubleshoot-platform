@@ -53,8 +53,18 @@ app.include_router(cases.router)
 
 @app.get("/health")
 async def health_check():
-    """健康检查"""
-    return {"status": "healthy", "service": settings.SERVICE_NAME}
+    """健康检查，验证数据库连接"""
+    db_ok = False
+    db_manager = getattr(app.state, "database_manager", None)
+    if db_manager:
+        db_ok = await db_manager.health_check()
+
+    status = "healthy" if db_ok else "degraded"
+    return {
+        "status": status,
+        "service": settings.SERVICE_NAME,
+        "dependencies": {"database": "ok" if db_ok else "unavailable"},
+    }
 
 
 if __name__ == "__main__":

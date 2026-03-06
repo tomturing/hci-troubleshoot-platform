@@ -11,8 +11,11 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
+from shared.utils.metrics import POD_POOL_ACTIVE, POD_POOL_IDLE
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
@@ -57,14 +60,28 @@ async def lifespan(app: FastAPI):
                 event="scheduler_start_failed", message=f"Scheduler background initialization failed: {e}", error=str(e)
             )
 
+    async def _update_pool_metrics():
+        """定期将 Pod 池空闲/活跃数更新到 Prometheus Gauge（每 15s 一次）"""
+        while True:
+            try:
+                all_stats = scheduler_service.pool_manager.get_all_stats() if scheduler_service.pool_manager else {}
+                for assistant_type, stats in all_stats.items():
+                    POD_POOL_IDLE.labels(assistant_type=assistant_type).set(stats.get("idle", 0))
+                    POD_POOL_ACTIVE.labels(assistant_type=assistant_type).set(stats.get("active", 0))
+            except Exception as exc:
+                logger.warning(event="metrics_update_failed", message=f"Pool metrics update error: {exc}")
+            await asyncio.sleep(15)
+
     init_task = asyncio.create_task(_safe_start(), name="scheduler-init")
+    metrics_task = asyncio.create_task(_update_pool_metrics(), name="pool-metrics-updater")
 
     yield
 
     logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
-    # 取消未完成的初始化任务
-    if not init_task.done():
-        init_task.cancel()
+    # 取消后台任务
+    for task in (init_task, metrics_task):
+        if not task.done():
+            task.cancel()
     # 关闭 Redis
     await redis_manager.close()
 
@@ -87,6 +104,12 @@ app.include_router(scheduler_routes.router)
 async def health_check():
     """健康检查"""
     return {"status": "healthy", "service": settings.SERVICE_NAME}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 指标抓取端点"""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 if __name__ == "__main__":

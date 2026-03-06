@@ -74,3 +74,12 @@ class RedisManager:
         if not self.client:
             raise RuntimeError("Redis client not connected")
         await self.client.hdel(name, *keys)
+
+    async def health_check(self) -> bool:
+        """PING Redis 验证可达性"""
+        if not self.client:
+            return False
+        try:
+            return await self.client.ping()
+        except Exception:
+            return False

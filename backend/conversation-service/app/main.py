@@ -8,6 +8,8 @@ Conversation Service - 主应用 (v2.0 多类型AI助手)
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.postgres import DatabaseManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
@@ -100,19 +102,47 @@ app.include_router(conversations.router)
 
 @app.get("/health")
 async def health_check():
-    """健康检查"""
-    ai_status = {}
+    """健康检查，验证 DB + AI 助手 + KB 服务"""
+    ai_status: dict = {}
+    db_ok = False
+    kb_ok: str = "disabled"
+
+    db_manager = getattr(app.state, "database_manager", None)
+    if db_manager:
+        db_ok = await db_manager.health_check()
 
     registry = getattr(app.state, "ai_registry", None)
     if registry:
         ai_status = await registry.health_check_all()
 
+    kb_client = getattr(app.state, "kb_client", None)
+    if kb_client:
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{settings.KB_SERVICE_URL}/health")
+            kb_ok = "ok" if resp.status_code == 200 else "degraded"
+        except Exception:
+            kb_ok = "unavailable"
+
+    all_ok = db_ok and (not ai_status or any(v == "ok" for v in ai_status.values()))
     return {
-        "status": "healthy",
+        "status": "healthy" if all_ok else "degraded",
         "service": settings.SERVICE_NAME,
-        "version": "2.0.0",
-        "dependencies": {"ai_assistants": ai_status},
+        "version": "2.1.0",
+        "dependencies": {
+            "database": "ok" if db_ok else "unavailable",
+            "ai_assistants": ai_status,
+            "kb_service": kb_ok,
+        },
     }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 指标抓取端点"""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 if __name__ == "__main__":
