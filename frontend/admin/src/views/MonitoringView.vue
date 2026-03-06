@@ -14,16 +14,20 @@ const loading = ref(true)
 async function detectGrafana() {
   const hostname = window.location.hostname
   const protocol = window.location.protocol
+  const port = window.location.port ? `:${window.location.port}` : ''
 
-  // 通用处理：admin.<domain> -> grafana.<domain>（支持 hci.local、nip.io 等任意域名）
   if (hostname.startsWith('admin.')) {
+    // 有域名部署：admin.<domain> -> grafana.<domain>
     const grafanaHost = hostname.replace('admin.', 'grafana.')
     grafanaUrl.value = `${protocol}//${grafanaHost}`
-  } else {
-    // Docker Compose / localhost fallback
+  } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    // Docker Compose 本地开发
     grafanaUrl.value = 'http://localhost:3000'
+  } else {
+    // IP 直接访问（K3s 生产环境）：通过 /grafana subpath 路由
+    grafanaUrl.value = `${protocol}//${hostname}${port}/grafana`
   }
-  
+
   grafanaReady.value = true
   loading.value = false
 }
