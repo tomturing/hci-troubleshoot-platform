@@ -1,8 +1,10 @@
-{{- if and .Values.observability.enabled .Values.ingress.enabled .Values.global.domain }}
+{{- if and .Values.observability.enabled .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: grafana-ingress
+  # 注意：此 Ingress 必须和 grafana Service 在同一命名空间（hci-observability）
+  # Traefik 扫描全命名空间 Ingress，因此跨命名空间路由通过此方式实现
   namespace: {{ .Values.observability.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
@@ -16,6 +18,7 @@ spec:
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
   rules:
+    {{- if .Values.global.domain }}
     - host: "grafana.{{ .Values.global.domain }}"
       http:
         paths:
@@ -26,4 +29,16 @@ spec:
                 name: grafana
                 port:
                   number: 3000
+    {{- else }}
+    # IP 直接访问模式：通过 /grafana 子路径访问（与主 Ingress 共用端口）
+    - http:
+        paths:
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+    {{- end }}
 {{- end }}

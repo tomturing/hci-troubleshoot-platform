@@ -89,16 +89,6 @@ spec:
                 name: admin-ui
                 port:
                   number: {{ .Values.adminUI.port }}
-          # Grafana 监控（subpath /grafana）
-          {{- if .Values.observability.enabled }}
-          - path: /grafana
-            pathType: Prefix
-            backend:
-              service:
-                name: grafana
-                port:
-                  number: 3000
-          {{- end }}
           - path: /
             pathType: Prefix
             backend:
