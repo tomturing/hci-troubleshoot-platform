@@ -15,6 +15,7 @@ from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
+from app.middleware import RequestLoggingMiddleware
 from app.routes import assistants, cases, conversations, health, websocket
 from app.services.session import SessionManager
 
@@ -53,6 +54,9 @@ app = FastAPI(title="HCI Troubleshoot - API Gateway", description="API网关服�
 
 # 注入 OpenTelemetry 中间件到 app 实例（必须在 app 创建后调用）
 instrument_app(app)
+
+# 请求日志中间件 — 记录 method, path, status_code, duration_ms
+app.add_middleware(RequestLoggingMiddleware)
 
 # 中间件 — CORS 使用显式来源列表，避免 allow_origins=["*"] + allow_credentials=True 的 RFC 6454 违规
 app.add_middleware(
