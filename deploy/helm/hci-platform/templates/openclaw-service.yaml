@@ -53,6 +53,12 @@ spec:
           volumeMounts:
             - name: openclaw-home
               mountPath: /home/node
+            {{- if .Values.openclaw.configMap.enabled }}
+            - name: openclaw-config
+              mountPath: /home/node/.openclaw/openclaw.json
+              subPath: openclaw.json
+              readOnly: true
+            {{- end }}
             - name: openclaw-tmp
               mountPath: /tmp/openclaw
           command: ["node", "dist/index.js", "gateway", "--allow-unconfigured", "--bind", "lan", "--port", "{{ .Values.openclaw.port }}"]
@@ -74,11 +80,21 @@ spec:
             {{- toYaml .Values.openclaw.resources | nindent 12 }}
       volumes:
         - name: openclaw-home
+          {{- if .Values.openclaw.configMap.enabled }}
+          # ConfigMap 模式：使用 emptyDir 作为 workspace，openclaw.json 单独挂载
+          emptyDir: {}
+          {{- else }}
           hostPath:
-            # 宿主机 /home/node 与容器内路径完全一致
+            # HostPath 模式（兼容）：宿主机 /home/node 与容器内路径完全一致
             # openclaw 自动读取 /home/node/.openclaw/openclaw.json
             path: /home/node
             type: DirectoryOrCreate
+          {{- end }}
+        {{- if .Values.openclaw.configMap.enabled }}
+        - name: openclaw-config
+          configMap:
+            name: openclaw-config
+        {{- end }}
         - name: openclaw-tmp
           emptyDir: {}
 ---

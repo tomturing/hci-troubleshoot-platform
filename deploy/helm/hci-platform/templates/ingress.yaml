@@ -63,7 +63,14 @@ spec:
                   number: 3000
     {{- end }}
     {{- else }}
-    - http:
+    {{- /* 路径路由模式：如果设置了 publicUrl，提取 host 部分作为绑定；否则通配匹配 */}}
+    {{- $host := "" }}
+    {{- if .Values.global.publicUrl }}
+      {{- $host = .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/]+" }}
+    {{- end }}
+    - {{- if $host }} host: {{ $host | quote }}
+      {{- end }}
+      http:
         paths:
           # 后端 API
           - path: /api

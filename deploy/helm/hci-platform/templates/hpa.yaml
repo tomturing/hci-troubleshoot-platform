@@ -1,0 +1,75 @@
+{{- if .Values.hpa.enabled }}
+# =============================================================================
+# HPA — 水平弹性伸缩（基于 CPU 利用率）
+# 依赖：metrics-server（K3s 默认内置）
+# =============================================================================
+
+# ── API Gateway ───────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: {{ .Values.apiGateway.replicaCount }}
+  maxReplicas: {{ .Values.hpa.apiGateway.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.hpa.targetCPUUtilizationPercentage }}
+---
+# ── Case Service ─────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: case-service
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: case-service
+  minReplicas: {{ .Values.caseService.replicaCount }}
+  maxReplicas: {{ .Values.hpa.caseService.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.hpa.targetCPUUtilizationPercentage }}
+---
+# ── Conversation Service ──────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: conversation-service
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: conversation-service
+  minReplicas: {{ .Values.conversationService.replicaCount }}
+  maxReplicas: {{ .Values.hpa.conversationService.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.hpa.targetCPUUtilizationPercentage }}
+{{- end }}
