@@ -1,0 +1,17 @@
+{{- if and .Values.openclaw.enabled .Values.openclaw.configMap.enabled .Values.openclaw.configMap.openclawJson }}
+# =============================================================================
+# openclaw-config ConfigMap
+# 将 openclaw.json 纳入 Helm 管理，替代 HostPath 挂载
+# 配置来源：values-prod.override.yaml 中的 openclaw.configMap.openclawJson
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-config
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+data:
+  openclaw.json: |
+    {{ .Values.openclaw.configMap.openclawJson | fromJson | toJson | indent 4 }}
+{{- end }}

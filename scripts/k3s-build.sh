@@ -9,6 +9,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+OPENCLAW_REPO_DIR="${OPENCLAW_REPO_DIR:-${PROJECT_ROOT}/../openclaw}"
+IMAGE_TAG="${IMAGE_TAG:-latest}"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -37,10 +39,17 @@ declare -a IMAGES=(
   "hci-admin-ui               ${PROJECT_ROOT}/frontend      admin/Dockerfile"
 )
 
+if [[ -f "${OPENCLAW_REPO_DIR}/Dockerfile" ]]; then
+  IMAGES+=("hci-openclaw               ${OPENCLAW_REPO_DIR}       Dockerfile")
+else
+  warn "未找到 OpenClaw 仓库 Dockerfile: ${OPENCLAW_REPO_DIR}/Dockerfile"
+  warn "将跳过 hci-openclaw 镜像构建；若 Helm 启用 openclaw，部署会因缺镜像失败"
+fi
+
 # ============================================================================
 # 构建所有镜像
 # ============================================================================
-info "开始构建 ${#IMAGES[@]} 个 Docker 镜像..."
+info "开始构建 ${#IMAGES[@]} 个 Docker 镜像 (tag=${IMAGE_TAG})..."
 echo ""
 
 BUILT=0
@@ -48,13 +57,13 @@ FAILED=0
 
 for entry in "${IMAGES[@]}"; do
   read -r name context dockerfile <<< "$entry"
-  info "[$((BUILT+FAILED+1))/${#IMAGES[@]}] 构建 ${name}:latest ..."
+  info "[$((BUILT+FAILED+1))/${#IMAGES[@]}] 构建 ${name}:${IMAGE_TAG} ..."
   
-  if docker build -t "${name}:latest" -f "${context}/${dockerfile}" "${context}" --quiet; then
-    ok "  → ${name}:latest 构建成功"
+  if docker build -t "${name}:${IMAGE_TAG}" -f "${context}/${dockerfile}" "${context}" --quiet; then
+    ok "  → ${name}:${IMAGE_TAG} 构建成功"
     BUILT=$((BUILT + 1))
   else
-    error "  → ${name}:latest 构建失败!"
+    error "  → ${name}:${IMAGE_TAG} 构建失败!"
     FAILED=$((FAILED + 1))
   fi
 done
@@ -83,12 +92,12 @@ if [[ "$IMPORT_K3S" == true ]]; then
   IMPORTED=0
   for entry in "${IMAGES[@]}"; do
     read -r name _ _ <<< "$entry"
-    info "  导入 ${name}:latest ..."
-    if docker save "${name}:latest" | sudo k3s ctr images import -; then
-      ok "  → ${name}:latest 已导入"
+    info "  导入 ${name}:${IMAGE_TAG} ..."
+    if docker save "${name}:${IMAGE_TAG}" | sudo k3s ctr images import -; then
+      ok "  → ${name}:${IMAGE_TAG} 已导入"
       IMPORTED=$((IMPORTED + 1))
     else
-      error "  → ${name}:latest 导入失败"
+      error "  → ${name}:${IMAGE_TAG} 导入失败"
     fi
   done
   

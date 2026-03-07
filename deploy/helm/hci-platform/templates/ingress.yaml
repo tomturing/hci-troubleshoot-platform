@@ -7,6 +7,9 @@ metadata:
   labels:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
+    # entrypoints 名称为 "web"，对应 Traefik 内部监听端口
+    # 宿主机对外端口由 HelmChartConfig (traefik-custom.yaml) 控制（当前: 4888）
+    # 修改对外端口只需改 HelmChartConfig，此处注解无需变更
     traefik.ingress.kubernetes.io/router.entrypoints: web
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
@@ -47,8 +50,27 @@ spec:
                 name: customer-ui
                 port:
                   number: {{ .Values.customerUI.port }}
+    {{- if .Values.observability.enabled }}
+    - host: "grafana.{{ .Values.global.domain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+    {{- end }}
     {{- else }}
-    - http:
+    {{- /* 路径路由模式：如果设置了 publicUrl，提取 host 部分作为绑定；否则通配匹配 */}}
+    {{- $host := "" }}
+    {{- if .Values.global.publicUrl }}
+      {{- $host = .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/]+" }}
+    {{- end }}
+    - {{- if $host }} host: {{ $host | quote }}
+      {{- end }}
+      http:
         paths:
           # 后端 API
           - path: /api
@@ -74,6 +96,14 @@ spec:
                 name: admin-ui
                 port:
                   number: {{ .Values.adminUI.port }}
+          # OpenClaw WebUI（子路径直接转发，资源使用相对路径无需 StripPrefix）
+          - path: /openclaw
+            pathType: Prefix
+            backend:
+              service:
+                name: openclaw
+                port:
+                  number: {{ .Values.openclaw.port }}
           - path: /
             pathType: Prefix
             backend:

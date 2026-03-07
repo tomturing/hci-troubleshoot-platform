@@ -3,15 +3,19 @@ FROM node:22-alpine AS build
 
 WORKDIR /app
 
-# 复制 monorepo 根文件
+# 【关键】先只 COPY package.json + lock 文件，安装依赖
+# 源码变动不会使此缓存层失效，依赖不变时直接复用
 COPY package.json .npmrc ./
+COPY shared/package.json shared/
+COPY admin/package.json admin/
+
+RUN npm install
+
+# 再 COPY 源码并构建
 COPY shared/ shared/
 COPY admin/ admin/
 
-# 安装依赖并构建
-RUN npm install && \
-    cd admin && \
-    node ../node_modules/vite/bin/vite.js build
+RUN cd admin && node ../node_modules/vite/bin/vite.js build
 
 # 生产镜像 - Nginx 静态服务
 FROM nginx:alpine

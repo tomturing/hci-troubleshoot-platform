@@ -38,7 +38,8 @@ spec:
             - name: SERVICE_PORT
               value: {{ .Values.conversationService.port | quote }}
             - name: DATABASE_URL
-              value: "postgresql+asyncpg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)"
+              # 使用 Helm 渲染时 urlquery 对密码做 URL 编码，防止密码含 @ / : # 等特殊字符导致解析错误（PIT-022）
+              value: {{ printf "postgresql+asyncpg://%s:%s@postgres:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresDb | quote }}
           livenessProbe:
             httpGet:
               path: /health
