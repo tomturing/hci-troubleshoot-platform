@@ -8,6 +8,10 @@ global:
   # 平台根域名，所有子域 (api/app/admin/grafana) 会基于此自动推导
   # 生产环境通过 --set global.domain=your-domain.com 覆盖
   domain: "hci.local"
+  # 公开访问地址（协议+域名+端口），用于路径路由模式下 Grafana Root URL 等配置
+  # 示例：http://acli.sangfor.com.cn:4888  或 https://example.com
+  # 留空则 Grafana 使用默认 placeholder，仅影响管理员登录 redirect
+  publicUrl: ""
   imageRegistry: "" # 私有镜像仓库前缀，如 "registry.example.com/"
   imagePullPolicy: IfNotPresent
 
