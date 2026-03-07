@@ -1,4 +1,4 @@
 packages:
-  - 'shared'
-  - 'customer'
-  - 'admin'
+  - "shared"
+  - "customer"
+  - "admin"
