@@ -84,8 +84,8 @@ spec:
                 name: admin-ui
                 port:
                   number: {{ .Values.adminUI.port }}
-          # OpenClaw WebUI（子路径直接转发，资源使用相对路径无需 StripPrefix）
-          - path: /openclaw
+          # OpenClaw WebUI（/openclaw 无斜杠时由 IngressRoute+Middleware 做 301，此处处理 /openclaw/ 正常流量）
+          - path: /openclaw/
             pathType: Prefix
             backend:
               service:
