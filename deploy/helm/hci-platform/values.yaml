@@ -141,7 +141,7 @@ schedulerService:
 
 # ======================== KB Service ========================================
 kbService:
-  enabled: false  # 默认关闭，镜像就绪后在 values-prod.yaml 中覆盖为 true
+  enabled: false  # 镜像 hci-kb-service 尚未构建，生产环境保持禁用；启用前须先完成镜像构建与导入
   replicaCount: 1
   image:
     repository: hci-kb-service
