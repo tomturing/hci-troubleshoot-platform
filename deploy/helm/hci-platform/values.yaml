@@ -45,7 +45,7 @@ workloadDefaults:
 # ======================== PostgreSQL ========================================
 postgres:
   enabled: true
-  image: pgvector/pgvector:pg15  # 含 pgvector 扩展，支持向量检索（2026-03-09 从 postgres:15 升级）
+  image: pgvector/pgvector:pg15 # 含 pgvector 扩展，支持向量检索（2026-03-09 从 postgres:15 升级）
   storage: 5Gi
   # ⚠️ StorageClass 说明：
   #   - 存量安装：保持 local-path（StatefulSet storageClass 为不可变字段，无法 upgrade 修改）
@@ -154,6 +154,11 @@ kbService:
     limits:
       cpu: "1000m"
       memory: "512Mi"
+  # Embedding 服务 URL（宿主机轻量 embedding 微服务，由 Docker hci-embedding 容器提供）
+  zaiBaseUrl: "http://192.168.0.4:18100"
+  zaiEmbeddingModel: "bge-small-zh-v1.5"
+  embeddingDim: 512 # bge-small-zh-v1.5 实际输出 512 维，非 384
+  bgeModelHostPath: /home/node/models/bge-small-zh-v1.5
   # SOP 技能目录挂载（从宿主机或 PVC 挂载）
   sopSkillsDir: /data/sop_skills
 

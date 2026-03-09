@@ -43,7 +43,11 @@ spec:
             - name: SOP_SKILLS_DIR
               value: {{ .Values.kbService.sopSkillsDir | quote }}
             - name: ZAI_BASE_URL
-              value: "http://openclaw:{{ .Values.openclaw.port }}"
+              value: {{ .Values.kbService.zaiBaseUrl | default (printf "http://openclaw:%d" (.Values.openclaw.port | int)) | quote }}
+            - name: ZAI_EMBEDDING_MODEL
+              value: {{ .Values.kbService.zaiEmbeddingModel | default "bge-small-zh-v1.5" | quote }}
+            - name: EMBEDDING_DIM
+              value: {{ .Values.kbService.embeddingDim | default 512 | toString | quote }}
             - name: BGE_MODEL_PATH
               value: "/models/bge-small-zh-v1.5"
           volumeMounts:

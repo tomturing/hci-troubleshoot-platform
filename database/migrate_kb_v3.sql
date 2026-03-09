@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS kb_chunk (
     document_id     INTEGER NOT NULL REFERENCES kb_document(id) ON DELETE CASCADE,
     chunk_index     SMALLINT NOT NULL,
     content         TEXT NOT NULL,
-    embedding       vector(384),
+    embedding       vector(512),
     token_count     SMALLINT,
     metadata        JSONB,
     tsv             tsvector,
