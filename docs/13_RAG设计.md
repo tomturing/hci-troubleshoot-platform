@@ -7,7 +7,7 @@
 > **文档边界说明**
 > - **本文档范围**：知识库基础设施——数据源采集、文档生命周期、存储 Schema、检索引擎、ETL 数据管道、SOP 机制。
 > - **不在本文档**：AI Agent 的行为规范、LearningClaw/ProductionClaw 架构、对话上下文组装逻辑。
-> - **相关文档**：`12_AI层设计.md` — AI 层如何消费知识库；`03_接口设计.md` — KB Service REST API 规范。
+> - **相关文档**：`12_AI层设计.md` — AI 层如何消费知识库；`03_接口设计.md` — KB Service REST API 规范；`15_AI层RAG对接架构决策.md` — AI 层与 RAG 层对接方式的完整架构决策（三阶段演进 + LLM 对照组）。
 
 ---
 
