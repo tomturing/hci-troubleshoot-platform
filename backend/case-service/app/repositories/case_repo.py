@@ -5,7 +5,7 @@ Case Repository
 from datetime import UTC, datetime
 
 from shared.models.user import User
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.case import Case, CaseStatus
@@ -35,6 +35,14 @@ class CaseRepository:
         await self.session.flush()
         await self.session.refresh(case)
         return case
+
+    async def generate_case_id(self) -> str:
+        """通过数据库函数生成工单号，保证同日递增与并发安全"""
+        result = await self.session.execute(text("SELECT generate_case_id()"))
+        case_id = result.scalar_one_or_none()
+        if not case_id:
+            raise RuntimeError("数据库未返回有效工单号")
+        return str(case_id)
 
     async def get_by_id(self, case_id: str) -> Case | None:
         """根据case_id查询工单"""

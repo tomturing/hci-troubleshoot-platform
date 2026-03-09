@@ -50,18 +50,6 @@ spec:
                 name: customer-ui
                 port:
                   number: {{ .Values.customerUI.port }}
-    {{- if .Values.observability.enabled }}
-    - host: "grafana.{{ .Values.global.domain }}"
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: grafana
-                port:
-                  number: 3000
-    {{- end }}
     {{- else }}
     {{- /* 路径路由模式：如果设置了 publicUrl，提取 host 部分作为绑定；否则通配匹配 */}}
     {{- $host := "" }}

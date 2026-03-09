@@ -16,9 +16,16 @@ from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
 from .ai_client import AIAssistantRegistry
+from .kb_client import KBClient
 from .scheduler_client import SchedulerClient
 
 logger = get_logger("conversation-service")
+
+_SYSTEM_BASE = """你是 HCI 智能排障助手。
+- 先定位根因，再给出可执行步骤
+- 涉及命令时明确风险与前置条件
+- 若信息不足，先提出最小必要澄清问题
+"""
 
 
 class ConversationService:
@@ -29,10 +36,12 @@ class ConversationService:
         repository: ConversationRepository,
         ai_registry: AIAssistantRegistry,
         scheduler_client: SchedulerClient | None = None,
+        kb_client: KBClient | None = None,
     ):
         self.repository = repository
         self.ai_registry = ai_registry
         self.scheduler_client = scheduler_client
+        self.kb_client = kb_client
 
     async def create_conversation(
         self,
@@ -97,7 +106,7 @@ class ConversationService:
         # --- Tier 2: SOP 精确命中 ---
         if sop_node:
             sop_content = sop_node.get("content", "")
-            sop_title = sop_node.get("title", "SOP")
+            sop_title = sop_node.get("title") or sop_node.get("node_name") or "SOP"
             sections.append(
                 f"## 📋 精确匹配 SOP：{sop_title}\n\n"
                 "以下是与用户问题精确匹配的标准操作规程，请优先参考：\n\n"
@@ -116,7 +125,7 @@ class ConversationService:
             total_chars = 0
             for i, chunk in enumerate(kb_chunks, 1):
                 chunk_content = chunk.get("content", "")
-                source = chunk.get("source_title", "未知文档")
+                source = chunk.get("source_title") or chunk.get("document_title") or "未知文档"
                 if total_chars + len(chunk_content) > settings.KB_CONTEXT_MAX_CHARS:
                     break
                 chunks_text_parts.append(f"[{i}] 来源：{source}\n{chunk_content}")

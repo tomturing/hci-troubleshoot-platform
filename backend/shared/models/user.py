@@ -21,7 +21,7 @@ class User(Base, TimestampMixin, TraceableMixin):
     username = Column(String(100))
     email = Column(String(255))
     user_type = Column(String(20), default="temporary", nullable=False)
-    metadata_ = Column("metadata", JSON, default={})  # metadata is reserved word in SQLAlchemy sometimes, safe to map
+    metadata_ = Column("metadata", JSON, default=dict)  # metadata is reserved word in SQLAlchemy sometimes, safe to map
     last_login_at = Column(DateTime(timezone=True))
 
     def __repr__(self):

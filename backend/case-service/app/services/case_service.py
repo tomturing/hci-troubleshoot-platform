@@ -29,18 +29,9 @@ class CaseService:
     def __init__(self, repository: CaseRepository):
         self.repository = repository
 
-    def _generate_case_id(self) -> str:
-        """生成工单ID: Q + YYYYMMDD + 5位序号"""
-        import random
-        from datetime import datetime
-
-        date_str = datetime.now(UTC).strftime("%Y%m%d")
-        seq = str(random.randint(0, 99999)).zfill(5)
-        return f"Q{date_str}{seq}"
-
     async def create_case(self, case_create: CaseCreate) -> CaseResponse:
         """创建新工单"""
-        case_id = self._generate_case_id()
+        case_id = await self.repository.generate_case_id()
         trace_id = get_current_trace_id()
 
         # 获取或创建用户

@@ -24,13 +24,13 @@ async def push_case_summary_to_kb(
 ) -> None:
     """
     将关闭工单的摘要推送至 KB Service 进行知识沉淀。
-    文档 source_type = 'case_summary'，以 case_id 作为幂等键。
+    文档 source_type = 'realtime'，以 case_id 作为幂等键。
 
     字段设计：
       - title:   "工单摘要: <title>"
-      - content: 故障描述 + 解决摘要合并
-      - source_type: 'case_summary'（便于 KB 管理员分类）
-      - metadata: {"case_id": case_id}
+      - content_md: 故障描述 + 解决摘要合并
+      - source_type: 'realtime'
+      - yaml_meta: {"case_id": case_id}
     """
     content_parts = [f"## 故障描述\n\n{description}"]
     if resolution_summary:
@@ -38,10 +38,10 @@ async def push_case_summary_to_kb(
 
     payload = {
         "title": f"工单摘要: {title}",
-        "content": "\n\n".join(content_parts),
-        "source_type": "case_summary",
-        "source_path": f"cases/{case_id}",
-        "metadata": {"case_id": case_id},
+        "content_md": "\n\n".join(content_parts),
+        "source_id": case_id,
+        "source_type": "realtime",
+        "yaml_meta": {"case_id": case_id},
     }
 
     headers = {"Authorization": f"Bearer {internal_token}"}

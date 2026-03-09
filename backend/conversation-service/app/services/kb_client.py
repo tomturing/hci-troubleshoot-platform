@@ -31,10 +31,11 @@ class KBClient:
                 resp = await client.post(
                     f"{self._base_url}/search",
                     json={"query": query, "top_n": top_n},
+                    headers=self._headers,
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                return data.get("results", [])
+                return data.get("chunks", [])
             except httpx.HTTPStatusError as exc:
                 logger.warning(
                     event="kb_search_http_error",
@@ -63,13 +64,14 @@ class KBClient:
                 resp = await client.post(
                     f"{self._base_url}/sop/match",
                     json={"query": query},
+                    headers=self._headers,
                 )
                 resp.raise_for_status()
                 data = resp.json()
                 # 未命中时 matched=false
                 if not data.get("matched"):
                     return None
-                return data.get("node")
+                return data
             except httpx.HTTPStatusError as exc:
                 logger.warning(
                     event="kb_sop_http_error",

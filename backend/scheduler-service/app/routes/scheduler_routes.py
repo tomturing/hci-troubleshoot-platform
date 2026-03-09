@@ -153,14 +153,13 @@ async def get_pool_metrics(service: SchedulerService = Depends(get_service)):
         pools_data = status.get("pools", {})
         for assistant_type, pool_info in pools_data.items():
             if isinstance(pool_info, dict):
-                idle = pool_info.get("idle_count", 0)
-                active = pool_info.get("active_count", 0)
+                idle = pool_info.get("idle", 0)
+                active = pool_info.get("active", 0)
                 metrics["pools"][assistant_type] = {
                     "idle_count": idle,
                     "active_count": active,
                     "pool_size": idle + active,
                 }
-        allocations = status.get("active_allocations", {})
-        metrics["allocations_total"] = len(allocations) if isinstance(allocations, dict) else 0
+        metrics["allocations_total"] = int(status.get("allocated_cases", 0))
 
     return metrics

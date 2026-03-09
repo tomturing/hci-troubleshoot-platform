@@ -1,0 +1,72 @@
+{{- if .Values.kbService.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kb-service
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "kb-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: {{ .Values.kbService.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "kb-service" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "kb-service" "Release" .Release "Chart" .Chart) | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "kb-service") | nindent 6 }}
+      containers:
+        - name: kb-service
+          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.kbService.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
+          ports:
+            - containerPort: {{ .Values.kbService.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: hci-common-config
+            - secretRef:
+                name: hci-secrets
+          env:
+            - name: SERVICE_NAME
+              value: "kb-service"
+            - name: SERVICE_PORT
+              value: {{ .Values.kbService.port | quote }}
+            - name: DATABASE_URL
+              value: {{ printf "postgresql+asyncpg://%s:%s@postgres:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresDb | quote }}
+            - name: SOP_SKILLS_DIR
+              value: {{ .Values.kbService.sopSkillsDir | quote }}
+            - name: ZAI_BASE_URL
+              value: "http://openclaw:{{ .Values.openclaw.port }}"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.kbService.port }}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.kbService.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.kbService.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.kbService.resources | nindent 12 }}
+{{- end }}
