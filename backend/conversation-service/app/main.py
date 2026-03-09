@@ -120,7 +120,7 @@ async def health_check():
         import httpx
 
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(timeout=0.5) as client:
                 resp = await client.get(f"{settings.KB_SERVICE_URL}/health")
             kb_ok = "ok" if resp.status_code == 200 else "degraded"
         except Exception:
