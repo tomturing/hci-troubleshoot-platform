@@ -135,38 +135,4 @@ spec:
       name: http
   selector:
     {{- include "hci.selectorLabels" (dict "name" "openclaw" "Release" .Release) | nindent 4 }}
----
-# Traefik Middleware：将 /openclaw（精确，无斜杠）301 重定向到 /openclaw/
-# 避免浏览器相对路径解析错误导致页面空白（PIT-030）
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: openclaw-slash-redirect
-  namespace: {{ include "hci.namespace" . }}
-spec:
-  redirectRegex:
-    # 匹配 /openclaw 和 /openclaw?xxx（带或不带 query string），将 token 附加到目标 URL
-    # 这样用户直接访问 /openclaw 也能自动携带 token，避免 WebSocket 1008 认证失败
-    regex: "^(https?://[^/]+)/openclaw(\\?.*)?$"
-    replacement: "${1}/openclaw/?token={{ .Values.secrets.openclawToken }}"
-    permanent: false
----
-# IngressRoute：仅对 /openclaw 精确路径应用重定向 middleware
-# 标准 Ingress 注解无法按路由粒度绑 middleware，需用 IngressRoute CRD
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: openclaw-slash-redirect
-  namespace: {{ include "hci.namespace" . }}
-spec:
-  entryPoints:
-    - web
-  routes:
-    - match: PathPrefix(`/openclaw`) && !PathPrefix(`/openclaw/`)
-      kind: Rule
-      middlewares:
-        - name: openclaw-slash-redirect
-      services:
-        - name: openclaw
-          port: {{ .Values.openclaw.port }}
 {{- end }}
