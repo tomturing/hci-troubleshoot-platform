@@ -82,6 +82,9 @@ spec:
               mountPath: /etc/openclaw-config
               readOnly: true
             {{- end }}
+            - name: openclaw-shared
+              mountPath: /shared
+              readOnly: true
           command: ["node", "dist/index.js", "gateway", "--allow-unconfigured", "--bind", "lan", "--port", "{{ .Values.openclaw.port }}"]
           livenessProbe:
             tcpSocket:
@@ -118,6 +121,12 @@ spec:
         {{- end }}
         - name: openclaw-tmp
           emptyDir: {}
+        # 共享知识库目录：宿主机 /srv/openclaw/shared/ 挂载到容器 /shared（只读）
+        # 直接在宿主机该目录放置文件即可，无需重启 Pod
+        - name: openclaw-shared
+          hostPath:
+            path: /srv/openclaw/shared
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
