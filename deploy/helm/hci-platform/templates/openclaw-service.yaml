@@ -25,6 +25,28 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+      {{- if .Values.openclaw.configMap.enabled }}
+      initContainers:
+        - name: openclaw-config-init
+          image: rancher/mirrored-library-busybox:1.37.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          # 将只读 ConfigMap 文件复制到可写 emptyDir，确保 openclaw 进程可在 .openclaw/ 下创建子目录
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /home/node/.openclaw && \
+              cp /etc/openclaw-config/openclaw.json /home/node/.openclaw/openclaw.json && \
+              chmod 755 /home/node/.openclaw
+          volumeMounts:
+            - name: openclaw-home
+              mountPath: /home/node
+            - name: openclaw-config
+              mountPath: /etc/openclaw-config
+      {{- end }}
       containers:
         - name: openclaw
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.openclaw.image) }}
@@ -53,14 +75,13 @@ spec:
           volumeMounts:
             - name: openclaw-home
               mountPath: /home/node
-            {{- if .Values.openclaw.configMap.enabled }}
-            - name: openclaw-config
-              mountPath: /home/node/.openclaw/openclaw.json
-              subPath: openclaw.json
-              readOnly: true
-            {{- end }}
             - name: openclaw-tmp
               mountPath: /tmp/openclaw
+            {{- if .Values.openclaw.configMap.enabled }}
+            - name: openclaw-config
+              mountPath: /etc/openclaw-config
+              readOnly: true
+            {{- end }}
           command: ["node", "dist/index.js", "gateway", "--allow-unconfigured", "--bind", "lan", "--port", "{{ .Values.openclaw.port }}"]
           livenessProbe:
             tcpSocket:
