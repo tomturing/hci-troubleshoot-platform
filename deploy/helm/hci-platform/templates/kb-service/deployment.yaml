@@ -54,6 +54,9 @@ spec:
             - name: bge-model
               mountPath: /models/bge-small-zh-v1.5
               readOnly: true
+            - name: sop-skills
+              mountPath: {{ .Values.kbService.sopSkillsDir }}
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
@@ -83,5 +86,9 @@ spec:
         - name: bge-model
           hostPath:
             path: {{ .Values.kbService.bgeModelHostPath | default "/home/node/models/bge-small-zh-v1.5" | quote }}
+            type: Directory
+        - name: sop-skills
+          hostPath:
+            path: {{ .Values.kbService.sopSkillsHostPath | default "/aihci/hci-troubleshoot-platform/data-pipeline/sop_skills" | quote }}
             type: Directory
 {{- end }}
