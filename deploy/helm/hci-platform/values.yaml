@@ -45,7 +45,7 @@ workloadDefaults:
 # ======================== PostgreSQL ========================================
 postgres:
   enabled: true
-  image: postgres:15
+  image: pgvector/pgvector:pg15  # 含 pgvector 扩展，支持向量检索（2026-03-09 从 postgres:15 升级）
   storage: 5Gi
   # ⚠️ StorageClass 说明：
   #   - 存量安装：保持 local-path（StatefulSet storageClass 为不可变字段，无法 upgrade 修改）
@@ -141,7 +141,7 @@ schedulerService:
 
 # ======================== KB Service ========================================
 kbService:
-  enabled: false # 镜像 hci-kb-service 尚未构建，生产环境保持禁用；启用前须先完成镜像构建与导入
+  enabled: true # 镜像 hci-kb-service 已构建并导入 k3s（2026-03-09）
   replicaCount: 1
   image:
     repository: hci-kb-service

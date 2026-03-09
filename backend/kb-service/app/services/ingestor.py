@@ -175,7 +175,7 @@ class IngestorService:
                     content=chunk_text,
                     embedding=embedding,
                     token_count=len(chunk_text) // 2,   # 粗略估算
-                    metadata={"chunk_index": idx, "total_chunks": len(chunks_text)},
+                    chunk_meta={"chunk_index": idx, "total_chunks": len(chunks_text)},
                     trace_id=trace_id,
                 )
                 session.add(chunk)

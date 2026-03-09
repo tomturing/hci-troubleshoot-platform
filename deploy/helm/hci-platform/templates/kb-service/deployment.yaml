@@ -44,6 +44,12 @@ spec:
               value: {{ .Values.kbService.sopSkillsDir | quote }}
             - name: ZAI_BASE_URL
               value: "http://openclaw:{{ .Values.openclaw.port }}"
+            - name: BGE_MODEL_PATH
+              value: "/models/bge-small-zh-v1.5"
+          volumeMounts:
+            - name: bge-model
+              mountPath: /models/bge-small-zh-v1.5
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
@@ -69,4 +75,9 @@ spec:
             failureThreshold: 30
           resources:
             {{- toYaml .Values.kbService.resources | nindent 12 }}
+      volumes:
+        - name: bge-model
+          hostPath:
+            path: {{ .Values.kbService.bgeModelHostPath | default "/home/node/models/bge-small-zh-v1.5" | quote }}
+            type: Directory
 {{- end }}
