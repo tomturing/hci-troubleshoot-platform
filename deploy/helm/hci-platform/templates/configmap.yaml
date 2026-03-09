@@ -28,6 +28,7 @@ data:
   OPENCLAW_IMAGE: {{ .Values.config.openclawImage | quote }}
   # v3.0 LearningClaw / ProductionClaw 服务地址
   KB_SERVICE_URL: {{ .Values.config.kbServiceUrl | default "http://kb-service:8004" | quote }}
+  KB_ENABLED: {{ .Values.kbService.enabled | toString | quote }}
   LEARNINGCLAW_SERVICE_URL: {{ .Values.config.learningclawServiceUrl | default "http://learningclaw:18789" | quote }}
   # v3.0 多助手注册表（productionclaw 一 Pod 一 Case 模式）
   ASSISTANT_REGISTRY_JSON: {{ .Values.config.assistantRegistryJson | quote }}
