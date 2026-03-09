@@ -141,6 +141,7 @@ schedulerService:
 
 # ======================== KB Service ========================================
 kbService:
+  enabled: false   # 镜像 hci-kb-service 尚未构建，生产环境保持禁用；启用前须先完成镜像构建与导入
   replicaCount: 1
   image:
     repository: hci-kb-service
@@ -231,9 +232,9 @@ learningclaw:
     repository: hci-openclaw
     tag: latest
   port: 18789
-  storageClassName: local-path-retain   # 持久化 PVC，使用 retain 策略
+  storageClassName: local-path-retain # 持久化 PVC，使用 retain 策略
   storageSize: 5Gi
-  defaultMode: batch                      # 默认运行模式：batch / event / manual
+  defaultMode: batch # 默认运行模式：batch / event / manual
   resources:
     requests:
       cpu: "200m"
