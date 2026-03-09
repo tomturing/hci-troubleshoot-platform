@@ -145,8 +145,10 @@ metadata:
   namespace: {{ include "hci.namespace" . }}
 spec:
   redirectRegex:
-    regex: "^(https?://[^/]+)/openclaw$"
-    replacement: "${1}/openclaw/"
+    # 匹配 /openclaw 和 /openclaw?xxx（带或不带 query string），将 token 附加到目标 URL
+    # 这样用户直接访问 /openclaw 也能自动携带 token，避免 WebSocket 1008 认证失败
+    regex: "^(https?://[^/]+)/openclaw(\\?.*)?$"
+    replacement: "${1}/openclaw/?token={{ .Values.secrets.openclawToken }}"
     permanent: false
 ---
 # IngressRoute：仅对 /openclaw 精确路径应用重定向 middleware
