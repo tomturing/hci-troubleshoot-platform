@@ -31,6 +31,21 @@
       "file": "snapshot_failed.md",
       "keywords": ["快照失败", "快照创建失败", "快照错误", "备份失败"],
       "category": "存储"
+    },
+    {
+      "id": "sop-vm-power-failure",
+      "file": "vm_power_failure.md",
+      "skill_dir": "vm_power_failure",
+      "keywords": [
+        "虚拟机开机失败", "VM开机失败", "虚拟机无法开机", "虚拟机启动失败",
+        "虚拟机关机失败", "VM关机失败", "开机报错", "关机报错",
+        "CPU不足", "内存不足", "序列号过期", "虚拟机镜像忙",
+        "存储ID不可访问", "内部异常", "kvm_intel", "嵌套虚拟化",
+        "Cgroup组不完整", "UEFI文件", "显卡异常"
+      ],
+      "category": "虚拟机",
+      "source": "官方排障手册",
+      "version": "HCI 5.x/6.x"
     }
   ]
 }

@@ -1,0 +1,1898 @@
+# 虚拟机开关机失败排障手册
+
+**分类**: 虚拟机
+**适用版本**: HCI 5.x / 6.x
+**关键词**: 虚拟机开机失败, 虚拟机关机失败, VM开机失败, VM关机失败, 开机报错, 关机报错, 虚拟机无法开机, 虚拟机无法关机
+
+> **本文档来源**: 官方排障手册，仅包含已验证的操作步骤，请严格按步骤执行。
+
+---
+
+# 虚拟机开机失败排查流程
+
+## 前置检查
+集群检测虚拟机KVM进程：若有进程且进程状态不为“D”或“Z”异常状态；则直接检测【3.2.任务完成】章节；若没有进程则继续如下检测
+```bash
+acli --cluster system ps axuf | grep 'kvm -id $vmid'
+```
+2、获取指定虚拟机，在指定时间存在启动虚拟机失败任务，则检测【有启动虚拟机失败任务】；
+```bash
+acli task get -v ${vmid} -t ${YYYY-mm-dd} -k '启动虚拟机' -s 'failed'
+```
+3、【无启动虚拟机失败任务】无前置检查，默认都需要检测
+
+## 有启动虚拟机失败任务
+
+### 前置检查
+获取【启动虚拟机】失败任务的【描述】信息，并根据匹配的关键字到对应章节进行检查
+```bash
+acli task get -v ${vmid} -t ${YYYY-mm-dd} -k '启动虚拟机' -s 'failed'
+```
+- 关键字
+- 章节
+- CPU不足
+- 内存不足
+- 内部异常
+- 序列号过期
+- 虚拟机镜像忙
+- 存储ID不可访问
+- 虚拟磁盘镜像文件不可访问
+- 服务不可用，可能由于系统繁忙导致
+- 虚拟机正在进行其他操作
+- 虚拟机正在开机
+- 虚拟机未运行
+- 获取集群锁失败
+- 获取版本号失败
+- 获取CBT信息失败
+- 获取快照类型失败
+- 不支持的虚拟机兼容性版本号
+- 虚拟存储不支持在该主机启动虚拟机
+- ARM平台虚拟机需要设置Host CPU
+- AMD和海光CPU不支持使用嵌套虚拟化
+- 更新网卡设备信息失败：数据处理失败
+- 更新网卡设备信息失败：服务不可用
+- 更新网卡设备信息失败：存在IP冲突
+- 3D虚拟机：显卡切分方式不匹配或显卡资源不足
+- 3D虚拟机：当前主机显卡资源不足以开启虚拟机
+
+
+### CPU不足
+
+#### 现象描述
+执行开机任务失败，报错描述：此主机剩余可配置CPU不足
+```bash
+acli task get -k 'CPU不足' -t ${YYYY-MM-DD} -s -1
+```
+
+
+#### CPU不足
+
+##### 判断方法
+如何检查CPU
+命令一：使用  acli system top  检查是否有占CPU核数较多的资源
+- acli system topacli system top
+```bash
+acli system top
+```
+#PID对应的值为进程IP，如图，进程id为23557的一个kvm进程占用了201%的CPU资源（2核）
+
+命令二：使用  acli system ps auxf | grep ${PID}  找出详细进程（PID为实际进程ID、通过top命令确认）
+- acli system ps axuf | grep ${PID}acli system ps axuf | grep ${PID}
+acli system ps axuf | grep ${PID}
+acli system ps axuf | grep ${PID}
+a.通过ps可以发现，占用2核的进程，是虚拟机为“应用交付1”的设备
+b.若占用CPU高的进程是不重要的虚拟机，则关闭、迁移、或重启该虚拟机
+c.若占用CPU高的进程为平台服务，则重启异常服务（无法评估是什么服务占用，可以跟专家确认后拉通研发确认）
+
+
+##### 解决方案
+- 关闭部分业务虚拟机
+- 同客户侧确认，看是否有不重要的业务虚拟机，关闭，释放CPU/内存资源。
+- 迁移虚拟机运行位置
+- a）确认集群内是否有其他主机的CPU负载低，将部分虚拟机迁移运行位置到其他资源较为空闲的主机上
+b）检查集群资源调度DRS，是否启用并正常配置，如果服务器的CPU不足，需要考虑扩容CPU资源
+- 增加集群资源
+- a）扩容主机：增加CPU、内存
+- b）扩容CPU
+- 重启平台异常服务
+- //如检查为CPU耗尽导致，无法评估是什么服务占用，可以跟专家确认后拉通研发确认
+
+### 内存不足
+
+#### 现象描述
+执行开机任务失败，报错描述：剩余可配置内存不足 或 计算内存不足
+```bash
+acli task get -k '剩余配置内存不足' -t ${YYYY-MM-DD} -s -1
+acli task get -k '计算内存不足' -t ${YYYY-MM-DD} -s -1
+```
+
+
+#### 内存泄露
+
+##### 判断方法
+查看主机内存使用情况的详细统计信息
+```bash
+acli system memory info | grep Percpu
+acli system memory dump | grep Undefined
+acli system memory info | grep Percpu
+acli system memory dump | grep Undefined
+acli system memory info | grep Percpu
+acli system memory dump | grep Undefined
+acli system memory info | grep Percpu
+acli system memory dump | grep Undefined
+```
+Percpu值大于5G疑似异常
+Undefined项值大于5G疑似异常，该值过高常见为ipmi驱动导致内存异常泄露（参考KB：超融合HCI-深信服技术支持）
+2、查看主机内存的SReclaimable值和slab的proc_inode_cache值
+```bash
+acli system memory dump | grep SReclaimable
+cat /proc/slabinfo | grep proc_inode_cache | awk '{print$2}'
+acli system memory dump | grep SReclaimable
+cat /proc/slabinfo | grep proc_inode_cache | awk '{print$2}'
+acli system memory dump | grep SReclaimable
+cat /proc/slabinfo | grep proc_inode_cache | awk '{print$2}'
+acli system memory dump | grep SReclaimable
+cat /proc/slabinfo | grep proc_inode_cache | awk '{print$2}'
+```
+SReclaimable（可回收缓存）大于5G疑似异常，请拨打400或上升云BG中台技术支持
+proc_inode_cache值大于1kw疑似mongodb泄露，请拨打400或上升云BG中台技术支持（参考KB：超融合HCI-深信服技术支持）
+查看主机内存的VmallocUsed值
+```bash
+acli system memory dump | grep VmallocUsed
+```
+VmallocUsed大于10G疑似异常请拨打400或上升云BG中台技术支持（参考KB：超融合HCI-深信服技术支持）
+
+4、查看主机所有进程的内存使用情况（上升研发）
+```bash
+acli system memory usage get
+```
+回显安装内存占用从小到大排序
+观察占用内存较大的进程是否在正常范围内：
+若占用内存高的进程是不重要的虚拟机，则关闭、迁移、或重启该虚拟机；
+若占用内存高的进程为平台服务，则重启异常服务
+
+页面内存分布说明：
+
+硬件预留内存占用过多：内存硬件内存识别异常
+预分配内存过多（大页虚拟机和内核服务占用内存）
+
+##### 解决方案（上升研发）
+临时恢复方案：
+常见已知案例：
+1、percpu占用过高是由于主板ipmi功能异常导致，ipmi的msghandler驱动周期性发包和主板ipmi模块通信（参考KB：超融合HCI-深信服技术支持）
+- 2、slab服务占用较多内存（参考KB：超融合HCI-深信服技术支持）
+- 3、外置存储异常导致内核vmalloc分配内存不断增加（参考KB：超融合HCI-深信服技术支持）
+- 需要收到确认回包后才能将发包内存释放，如果长时间没有回包，而驱动内部没有超时回收包内存的机制导致内存无法回收。
+- 解决方案：(上升研发)
+
+- 找时间重启内存泄漏的主机才能回收泄漏的内存
+- 4、重启平台异常服务
+彻底解决方案：
+升级至6.11.1及以后版本
+
+#### 内存耗尽
+
+##### 判断方法
+在主机详细页面【主机信息】确认【计算内存】【未使用】数值小于需要开的虚拟机配置内存
+
+
+##### 解决方案
+- 1、关闭部分业务虚拟机
+- 同客户侧确认，看是否有不重要的业务虚拟机，关闭，释放CPU/内存资源
+- 2、迁移虚拟机运行位置
+- a.确认集群内是否有其他主机的CPU/内存负载低，将部分虚拟机迁移运行位置到其他资源较为空闲的主机上
+- b.检查集群资源调度DRS，是否启用并正常配置，如果服务器的CPU或者内存不足，需要考虑扩容CPU/内存资源
+- 3、调整虚拟机配置：虚拟机【编辑】
+- a.后台过滤启用虚拟机磁盘“读缓存、虚拟机内存回收、虚拟机大页内存“的虚拟机名称
+- acli vm list | grep -E "vmid|pagecache=|balloon_memory: 1|hugepage: 1"acli vm list | grep -E "vmid|pagecache=|balloon_memory: 1|hugepage: 1"
+```bash
+acli vm list | grep -E "vmid|pagecache=|balloon_memory: 1|hugepage: 1"
+```
+- b.虚拟机关闭硬盘“写缓存”
+
+- c.虚拟机启用内存回收
+
+- 4、增加集群资源
+- a.扩容主机：增加CPU、内存
+- b.扩容内存
+
+### 内部异常
+
+#### 现象描述
+执行开机任务失败，报错描述：内部异常，请稍后重试
+- acli task get -k "内部异常" -t ${YYYY-MM-DD} -s -1 acli task get -k "内部异常" -t ${YYYY-MM-DD} -s -1
+acli task get -k "内部异常" -t ${YYYY-MM-DD} -s -1
+acli task get -k "内部异常" -t ${YYYY-MM-DD} -s -1
+
+
+#### 参数异常
+
+##### 判断方法
+#todo
+
+##### 解决方案
+#todo
+
+#### 主机缺少kvm_intel驱动
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+- 方式1：查看问题虚拟机qemu日志，提示failed to initialize KVM: No such file or directory或failed to initialize kvm: No such file or directory
+- acli log get -k 'failed to initialize KVM: No such file or directory' -t ${YYYY-MM-DD} -f /sf/log/${date}/sfvt_qemu_${vmid}.logacli log get -k 'failed to initialize KVM: No such file or directory' -t ${YYYY-MM-DD} -f /sf/log/${date}/sfvt_qemu_${vmid}.log
+```bash
+acli log get -k 'failed to initialize KVM: No such file or directory' -t ${YYYY-MM-DD} -f /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+
+方式2：查看kvm_intel驱动： lsmod | grep kvm_intel 无输出
+```bash
+acli system lsmod | grep kvm_intel
+```
+方式3：查看内核日志： kvm: disable by bios
+- acli log get -k 'kvm: disable by bios' -t ${YYYY-MM-DD} -f /sf/log/${date}/kernel.logacli log get -k 'kvm: disable by bios' -t ${YYYY-MM-DD} -f /sf/log/${date}/kernel.log
+```bash
+acli log get -k 'kvm: disable by bios' -t ${YYYY-MM-DD} -f /sf/log/${date}/kernel.log
+```
+
+##### 解决方案
+1、关机进BIOS，启动CPU虚拟化VT-D
+
+#### 嵌套虚拟化未开启
+6.7.0之前的版本升级到680及以后版本，升级后主机嵌套虚拟化未开启导致虚拟机开机qemu出core（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+判定标准：
+只检测680及以上
+集群升级了大版本，但只有部分主机重启过，部分主机未重启
+- #(680之前不管)acli --cluster platform nested status get acli --cluster system uname -a#(680之前不管)acli --cluster platform nested status get acli --cluster system uname -a
+```bash
+#(680之前不管)
+acli --cluster platform nested status get
+acli --cluster system uname -a
+#(680之前不管)
+acli --cluster platform nested status get
+acli --cluster system uname -a
+```
+
+##### 解决方案
+
+##### 快速恢复方案：
+滚动重启内核还没有生效的物理主机
+
+##### 彻底解决方案：
+TD2024122310207。需提供补丁期数
+- 打补丁，自动检测虚拟机是否存在这种问题，有则迁移限制不能往670内核的主机上迁移以防止HA ；
+- 打补丁，如果要迁移则可以通过重启单个虚拟机解决迁移限制；
+- 打补丁，页面对老的虚拟机做升级虚拟机兼容性配置操作，然后重启虚拟机 ；
+
+#### Cgroup组不完整
+
+##### 判断方法
+判断方法：同时命中则为异常
+查看虚拟机的容器启动日志，runc_start_${vmid}.log, 报错：Cgroup does not exist
+- acli log get -k 'Cgroup does not exist' -p /sf/log/${date} -f runc_start_${vmid}.logacli log get -k 'Cgroup does not exist' -p /sf/log/${date} -f runc_start_${vmid}.log
+```bash
+acli log get -k 'Cgroup does not exist' -p /sf/log/${date} -f runc_start_${vmid}.log
+```
+
+检查在/mnt/cgroup/cpu下没有service和compute的目录：（service给后台服务使用，compute给虚拟机使用）
+```bash
+acli system cgroup cpu list | grep service
+acli system cgroup cpu list | grep compute
+acli system cgroup cpu list | grep service
+acli system cgroup cpu list | grep compute
+acli system cgroup cpu list | grep service
+acli system cgroup cpu list | grep compute
+acli system cgroup cpu list | grep service
+acli system cgroup cpu list | grep compute
+```
+
+##### 解决方案
+快速恢复方案：
+# 切到mgmt容器：container_exec -n mgmt-node-agent
+- acli system create_base_cpu_groupsacli system cgroup cpu initacli system create_base_cpu_groupsacli system cgroup cpu init
+```bash
+acli system create_base_cpu_groups
+acli system cgroup cpu init
+acli system create_base_cpu_groups
+acli system cgroup cpu init
+```
+# 执行/sf/bin/create_base_cpu_groups
+彻底解决方案：
+TD2024030600210：升级至HCI6.10.0R1及以上版本
+
+#### SANGFOR_LINUX_UEFI文件访问异常
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、检查qemu日志，报错：Failed to stat /sf/data/${存储id}/images/cluster/${vmid}.vm，err：No such file or directoryexclude flock pflash：/sf/data/${存储id}/images/cluster/${vmid}.vm/SANGFOR_LINUX_UEFI
+- acli log get -k 'No such file or directoryexclude flock pflash' -p /sf/log/${date}/sfvt_qemu_[vmid].logacli log get -k 'No such file or directoryexclude flock pflash' -p /sf/log/${date}/sfvt_qemu_[vmid].log
+```bash
+acli log get -k 'No such file or directoryexclude flock pflash' -p /sf/log/${date}/sfvt_qemu_[vmid].log
+```
+
+
+##### 解决方案
+- 快速恢复方案：
+- 在页面编辑配置，使用SeaBIOS方式启动虚拟机
+
+- 或者使用acli编辑虚拟机配置
+- acli vm config set -v ${vmid} --field uefi_bios:1acli vm config set -v ${vmid} --field uefi_bios:1
+```bash
+acli vm config set -v ${vmid} --field uefi_bios:1
+```
+- 彻底解决方案：
+- 1、重置虚拟机的SANGFOR_LINUX_UEFI文件
+- acli vm uefi resetacli vm uefi reset
+```bash
+acli vm uefi reset
+```
+执行命令  mv  xxxx/SANGFOR_LINUX_UEFI   xxxx/SANGFOR_LINUX_UEFI.bak
+
+#### UEFI文件双点
+（参考KB：超融合HCI-深信服技术支持)
+
+##### 判断方法
+1、检查qemu日志，报错： SANGFOR_LINUX_UEFI': Input/output error
+- acli log get -k "SANGFOR_LINUX_UEFI': Input/output error" -p /sf/log/${date}/sfvt_qemu_${vmid}.logacli log get -k "SANGFOR_LINUX_UEFI': Input/output error" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```bash
+acli log get -k "SANGFOR_LINUX_UEFI': Input/output error" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+
+
+##### 解决方案（上升研发）
+方案一：切换为legacy启动
+方案二：请拨打400或上升云BG中台技术支持
+
+#### 低版本升级到6.11.1，vdi模板派生虚拟机pci地址冲突
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、检查qemu日志，报错：slot 31 function 0 not available for pci-bridge
+- acli log get -k "slot 31 function 0 not available for pci-bridge" -p /sf/log/${date}/sfvt_qemu_${vmid}.logacli log get -k "slot 31 function 0 not available for pci-bridge" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```bash
+acli log get -k "slot 31 function 0 not available for pci-bridge" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+
+
+##### 解决方案
+快速恢复方案：
+获取虚拟机配置文件路径
+- find /cfs/ -name ${vmid}.conf(无法开机的虚拟机的vmid)find /cfs/ -name ${vmid}.conf(无法开机的虚拟机的vmid)
+```bash
+find /cfs/ -name ${vmid}.conf(无法开机的虚拟机的vmid)
+```
+编辑${vmid}.conf文件
+```bash
+vim ${path to vimd}.conf(步骤1返回的路径)vim ${path to vimd}.conf(步骤1返回的路径)
+vim ${path to vimd}.conf(步骤1返回的路径)
+```
+3、将compatibility_version:vmx_version=vmx-3.16,src_hci_version=6.11.1中的vmx-3.16修改为vmx-3.14后重新开机
+彻底解决方案：
+预警：YJ20250603001
+实施最新的最新集合补丁
+
+#### 出core
+qemu出core
+
+##### 判断方法
+查看/sf/data/local/dump/目录下，存在对应时间的core-kvm-xxx文件
+判断core-kvm-xxx文件产生时间与虚拟机开机失败时间相近（当天）
+- acli system ls -l /sf/data/local/dump acli system stat /sf/data/local/dump/core-kvm-xxxxacli system ls -l /sf/data/local/dump acli system stat /sf/data/local/dump/core-kvm-xxxx
+```bash
+acli system ls -l /sf/data/local/dump
+acli system stat /sf/data/local/dump/core-kvm-xxxx
+acli system ls -l /sf/data/local/dump
+acli system stat /sf/data/local/dump/core-kvm-xxxx
+```
+
+##### 解决方案（上升研发）
+请拨打400或上升云BG中台技术支持
+
+#### 显卡异常导致创建vgpu失败
+qemu创建vgpu设备失败
+
+##### 判断方法
+1、检查qemu日志，报错：qemu failed to create a virtual vfio device, there is a problem with the vfio-pci driver
+- acli log get -k "qemu failed to create a virtual vfio device" -p /sf/log/${date}/sfvt_qemu_${vmid}.logacli log get -k "qemu failed to create a virtual vfio device" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```bash
+acli log get -k "qemu failed to create a virtual vfio device" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+
+
+##### 解决方案（上升研发）
+方案1：显卡问题异常，nvidia-smi 无法显示显卡温度等信息 显示为： ERR。（参考KB：超融合HCI-深信服技术支持）
+- 方案2：重启问题主机检查BIO设置，能找到的要全部开启，4G Abord、ACS 、SR-IOV、IOMMU、PCIe ARI Support
+- 方案3：驱动兼容性问题，更新高版本驱动。
+- 上诉问题都不是，上升云中台技术支持研发。
+
+#### 显卡初始化失败导致虚拟机启动异常
+显卡主机开机时，因为BAR空间不足导致显卡初始化失败（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、检查qemu日志，报错：hardware reports invalid configuration, MSIX PBA outside of specified BAR
+- acli log get -k "MSIX PBA outside of specified BAR" -p /sf/log/${date}/sfvt_qemu_${vmid}.logacli log get -k "MSIX PBA outside of specified BAR" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```bash
+acli log get -k "MSIX PBA outside of specified BAR" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+
+2、检查kernel日志，开机初始化时显卡对应的pci地址设备初始化时报错：no space for
+
+
+##### 解决方案（上升研发）
+- 1、备份grub.cfg配置：
+- cp /boot/boot/grub/grub.cfg /sf/data/local/
+- acli system cp /boot/boot/grub/grub.cfg /sf/data/local/acli system cp /boot/boot/grub/grub.cfg /sf/data/local/
+```bash
+acli system cp /boot/boot/grub/grub.cfg /sf/data/local/
+```
+2、vim编辑grub.cfg配置文件，将pci=realloc删除；重启物理主机
+
+
+#### 显卡主机BIOS设置没有开启IOMMU，导致显卡无法识别到显卡vfio设备
+
+##### 判断方法
+1、检查qemu日志，报错：failed to get group, please check /dev/vfio/0
+- acli log get -k "failed to get group, please check /dev/vfio" -p /sf/log/${date}/sfvt_qemu_${vmid}.logacli log get -k "failed to get group, please check /dev/vfio" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```bash
+acli log get -k "failed to get group, please check /dev/vfio" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+
+2、ls -l /dev/vfio/  不存在 /dev/vfio/0设备
+- acli system ls -l  /dev/vfio/0 acli system ls -l  /dev/vfio/0
+```bash
+acli system ls -l  /dev/vfio/0
+```
+
+##### 解决方案
+1、重启问题主机，检查BIO设置，能找到的要全部开启，4G Abord、ACS 、SR-IOV、IOMMU、PCIe ARI Support
+如若上述方法无法解决，请拨打400或上升云BG中台技术支持
+
+#### 主机多张显卡其中某张显卡异常导致虚拟机开机失败
+
+##### 判断方法
+1、检查qemu日志，报错：vfio .* error getting device from group
+- acli log get -E -k "vfio .* error getting device from group" -p /sf/log/${date}/sfvt_qemu_${vmid}.logacli log get -E -k "vfio .* error getting device from group" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```bash
+acli log get -E -k "vfio .* error getting device from group" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+
+2、检查kernel日志，内核出现显卡start failed的问题。后续显卡实例销毁有内核报错
+- acli log get -E -k "nvidia-vgpu-vfio.*start failed" -p /sf/log/${date}/kernel.logacli log get -E -k "nvidia-vgpu-vfio.*start failed" -p /sf/log/${date}/kernel.log
+```bash
+acli log get -E -k "nvidia-vgpu-vfio.*start failed" -p /sf/log/${date}/kernel.log
+```
+
+
+##### 解决方案（上升研发）
+1、建议可以更换下槽位观察，如果再复现观察是跟卡走还是跟槽位走，进而判断问题出在卡上还是槽位/主板上 ;
+如若上述方法无法解决，请拨打400或上升云BG中台技术支持
+
+#### 3D虚拟机开机失败：添加多张显卡且未安装系统
+
+##### 判断方法
+检查qemu日志，报错：关键报错：Bus 'pci.1' not found。
+- acli log get -k "Bus 'pci.1' not found" -p /sf/log/${date}/sfvt_qemu_${vmid}.logacli log get -k "Bus 'pci.1' not found" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```bash
+acli log get -k "Bus 'pci.1' not found" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+
+2、检查虚拟机配置文件os_installed为0，代表未安装系统
+- acli vm config get  -v $vmid|grep os_installedacli vm config get  -v $vmid|grep os_installed
+```bash
+acli vm config get  -v $vmid|
+grep os_installed
+acli vm config get  -v $vmid|
+grep os_installed
+```
+
+##### 解决方案
+1、创建基本虚拟机，不要先配置显卡。要先安装操作系统，然后安装vmtools重启虚拟机，最后再配置显卡
+- 推升级版本611.1以后版本
+
+#### 快速派生虚拟机创建外部快照冷迁移存储位置后无法开机
+
+##### 判断方法
+1、检查qemu日志，报错：关键报错：Could not open backing file。
+- acli log get -k "Could not open backing file" -p /sf/log/${date}/sfvt_qemu_${vmid}.logacli log get -k "Could not open backing file" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```bash
+acli log get -k "Could not open backing file" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+
+2、检查虚拟机配置文件系统盘存在外置磁盘快照且存在backing_file
+- acli vm config get -v ${vmid} | grep external_*_vm-disk-1 | grep backing_file acli vm config get -v ${vmid} | grep external_*_vm-disk-1 | grep backing_file
+```bash
+acli vm config get -v ${vmid} | grep external_*_vm-disk-1 | grep backing_file
+```
+
+
+##### 解决方案
+快速恢复方案：
+参考KB：临时解决超融合HCI-深信服技术支持
+彻底解决方案：
+- 推升级版本611.1R1及以后版本
+
+
+### 序列号过期
+
+#### 现象描述
+启动虚拟机失败，报错：序列号过期
+
+- 存在序列号过期告警
+
+
+#### asv授权到期
+
+##### 判断方法
+1、获取启动虚拟机失败描述信息，报错：序列号过期
+- acli task get -k '序列号过期' -t ${YYYY-MM-DD} -s -1acli task get -k '序列号过期' -t ${YYYY-MM-DD} -s -1
+```bash
+acli task get -k '序列号过期' -t ${YYYY-MM-DD} -s -1
+```
+2、获取序列号告警
+- acli alert get -k '序列号过期'acli alert get -k '序列号过期'
+```bash
+acli alert get -k '序列号过期'
+```
+
+##### 解决方案（上升研发）
+- 涉及授权，请拨打400或上升云BG-LMT技术支持
+
+### 虚拟机镜像忙
+
+#### 现象描述
+执行开机任务失败，报错描述：虚拟机镜像忙，正在执行其他操作！
+```bash
+acli task get -v ${vmid} -t ${YYYY-MM-DD} -k '虚拟机镜像忙' -s 'failed'
+```
+
+
+#### 进程残留
+
+##### 判断方法
+查看异常虚拟机的KVM进程，有输出则为异常（vmid为异常虚拟机的id）
+```bash
+acli --cluster system ps axuf | grep ${vmid} | grep '.qcow2'
+```
+获取异常虚拟机的镜像所在目录
+
+查看异常虚拟机的镜像是否被打开，${path}参考上个命令输出
+
+
+##### 解决方案
+若存在进程占用虚拟机存储，联系专家或研发评估后，kill掉对应进程（如有备份进程等可以直接kill掉）
+```bash
+acli system kill ${pid}
+```
+
+#### 加锁失败
+
+##### 判断方法
+1、日志路径：虚拟机运行主机：/sf/log/today/sfvt_qemu_vmid.log  (vmid替换为对应虚拟机的vmid)
+```bash
+acli log get -E -k "Unknown error 208|ret = -11" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+说明：虚拟机运行在外置存储上报错"Unknown error 208"，则为外置存储异常。解决方案参考情况一
+说明：虚拟机运行在虚拟存储上报错 "Failed to lock file xxxx, ret = -11"，则为虚拟存储异常。解决方案参考情况二
+
+
+##### 解决方案（上升研发）
+情况一：若存在外置存储208错误，则参考KB外置存储208错误处理锁（参考KB：超融合HCI-深信服技术支持）
+- 情况二：若存在虚拟存储加锁失败 -11错误，则重启NFS服务【！！！重启NFS服务会中断对应主机的虚拟机IO，影响时间30s左右，请在业务允许的情况下执行】
+- 高危操作，请拨打400或上升VS技术支持-服务号
+- acli storage asan vs_update_nfs restart recoveracli storage asan vs_update_nfs restart recover
+```bash
+acli storage asan vs_update_nfs restart recover
+```
+- 6.8.0及以下版本：/sf/vs/bin/vs_update_nfs.sh
+
+
+#### 镜像目录同名
+
+##### 判断方法
+从587升级上来的虚拟机历史上多个虚拟机名称一样，导致虚拟机的镜像目录也是同名的，但是再不同分组下不会出问题，编辑移动到同一分组出异常（参考KB：超融合HCI-深信服技术支持）
+虚拟机conf里的name的值，存在2个及以上虚拟机配置文件相同，提示出来相同的虚拟机名称
+```bash
+acli vm config get -v ${vmid}
+```
+用第一步查询出来的多个vmid，查看这些虚拟机镜像目录的都相同
+```bash
+acli vm disk path get -v ${vmid} acli vm disk path get -v ${vmid}
+acli vm disk path get -v ${vmid}
+```
+
+##### 解决方案（上升研发）
+- 高危操作，请拨打400或上升云BG-LMT技术支持
+- 修改虚拟机配置文件
+- acli vm config set -v ${vmid} --field name:xxxacli vm config set -v ${vmid} --field name:xxx
+```bash
+acli vm config set -v ${vmid} --field name:xxx
+```
+- 将name字段xxx修改为具体的虚拟机vmid
+- 修改虚拟机镜像目录名称，改为vmid
+- acli vm disk path get -v ${vmid} # 获得地址acli vm disk path get -v ${vmid} # 获得地址
+```bash
+acli vm disk path get -v ${vmid} # 获得地址
+```
+- mv /sf/data/xxx/imgages/cluster/xxx.vm  /sf/data/xxx/imgages/cluster/$vmid.vm
+- 界面开机验证
+
+#### 系统盘backing file指向旧的存储路径
+
+##### 判断方法
+检查qemu日志，报错：关键报错：Could not open backing file: Failed to mount nfs share: mount/mnt call。
+- acli log get -k "Could not open backing file: Failed to mount nfs share: mount/mnt call" -p /sf/log/${date}/sfvt_qemu_${vmid}.logacli log get -k "Could not open backing file: Failed to mount nfs share: mount/mnt call" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```bash
+acli log get -k "Could not open backing file: Failed to mount nfs share: mount/mnt call" -p /sf/log/${date}/sfvt_qemu_${vmid}.log
+```
+
+
+##### 解决方案
+参考KB：超融合HCI-深信服技术支持
+KB案例无法解决请上升研发技术支持
+
+### 存储ID不可访问
+
+#### 现象描述
+执行开机任务失败，控制台页面右下角弹框报错：未指定存储ID
+
+
+#### 存储离线
+
+##### 判断方法
+1、检查控制台告警：存储掉线告警
+```bash
+acli alert get -e '存储掉线告警'
+```
+2、查看虚拟机存储镜像目录，获取镜像目录挂载点
+- acli vm disk path get -v ${vmid}acli vm disk path get -v ${vmid}
+```bash
+acli vm disk path get -v ${vmid}
+```
+3、确认挂载点不在
+- acli system df | grep ${storageid}acli system df | grep ${storageid}
+acli system df | grep ${storageid}
+acli system df | grep ${storageid}
+
+##### 解决方案（上升研发）
+涉及存储高危操作，请拨打400或上升云BG-LMT技术支持
+
+#### 虚拟机配置异常
+
+##### 判断方法
+- 获取所有虚拟机的配置信息，正常一个vmid对应一个cfgstorage，返回无cfgstorage字段或者返回为空
+- acli vm list | grep -E  'vmid|cfgstorage' | grep -v cfgstoragesharedacli vm list | grep -E  'vmid|cfgstorage' | grep -v cfgstorageshared
+```bash
+acli vm list | grep -E  'vmid|cfgstorage' | grep -v cfgstorageshared
+```
+
+- 获取虚拟机配置信息，返回无cfgstorage字段或者返回为空
+- acli vm config get -v ${vmid}acli vm config get -v ${vmid}
+```bash
+acli vm config get -v ${vmid}
+```
+
+
+##### 解决方案（上升研发）
+涉及存储高危操作，请拨打400或上升云BG-LMT技术支持
+将虚拟机镜像目录下将配置文件重新拷贝一份正常的配置覆盖为空的配置
+
+### 虚拟磁盘镜像文件不可访问
+
+#### 现象描述
+执行开机任务失败，报错描述：镜像文件不可访问，请检查存储网络和磁盘状态！
+- acli task get -k '镜像文件不可访问' -t ${YYYY-MM-DD} -s -1acli task get -k '镜像文件不可访问' -t ${YYYY-MM-DD} -s -1
+```bash
+acli task get -k '镜像文件不可访问' -t ${YYYY-MM-DD} -s -1
+```
+
+
+#### 存储离线
+
+##### 判断方法
+1、查看虚拟机存储镜像目录，获取镜像目录挂载点
+```bash
+acli vm disk path get -v ${vmid}
+```
+2、确认挂载点不在
+```bash
+acli system df | grep ${storageid}
+```
+
+##### 解决方案（上升研发）
+涉及存储高危操作，请拨打400或上升云BG-LMT技术支持
+
+#### vs数据双点
+
+##### 判断方法
+- 双点分片检查命令：
+- acli storage asan vs_rpc_tool -c lookupacli storage asan vs_rpc_tool -c lookup
+```bash
+acli storage asan vs_rpc_tool -c lookup
+```
+
+
+##### 解决方案（上升研发）
+- 双点分片恢复方案：请拨打400或上升VS技术支持-服务号
+- 1、备份恢复：如对应虚拟机有备份，优先从备份拉起一个新虚拟机，验证业务正常后删除原虚拟机；
+- 2、修复坏道盘：将坏道磁盘拔出，找第三方修复公司完成修复后，再将磁盘插回集群；（优点：无损修复概率较高；缺点：磁盘修复期间相关虚拟机可能无法开机使用导致业务中断，且会产生费用）
+3、坏道有损修复：（研发后台操作，修复之前需要对重要虚拟机数据做备份）：将A副本（bad被指控副本）对应的偏移位置数据读出写到到坏道B副本上（ 修复量小一个坏道通常为HDD=512B,SSD=4K），读出的A副本偏移位置数据有低概率是被指控的异常数据，异常数据写到B副本分片上可能导致这个分片损坏不可用（比如：如果坏道位置数据是qemu元数据、操作系统数据、或者LUN所对应的文件系统元数据等等，可能导致虚拟机无法启动、文件系统无法挂载等等），因此手动修复的方法存在小概率数据损坏的风险；
+
+#### 本地存储盘符变化
+主机重启后本地存储的磁盘盘符发生变化（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、获取虚拟机磁盘镜像目录，回显报错输出存在：No such file or directory
+```bash
+acli vm disk path get -v ${vmid}
+```
+
+- 2、/sf/log/today/sfvt_vtpstatd.log过滤到doesn't mount
+- acli log get -k "doesn't mount" -p '/sf/log/today/' -f 'sfvt_vtpstatd.log'acli log get -k "doesn't mount" -p '/sf/log/today/' -f 'sfvt_vtpstatd.log'
+```bash
+acli log get -k "doesn't mount" -p '/sf/log/today/' -f 'sfvt_vtpstatd.log'
+```
+
+
+##### 解决方案
+在控制台【存储】-【其他存储】点击：重新发现磁盘
+
+#### qcow2镜像损坏
+
+##### 判断方法
+1、检查存在：虚拟机镜像文件损坏告警
+```bash
+acli alert get -e '虚拟机镜像文件损坏告警'
+```
+
+2、获取虚拟机磁盘文件列表
+```bash
+acli vm disk list -v ${vmid}
+```
+
+3、检查虚拟机磁盘文件
+```bash
+acli vm disk check -v ${vmid} -d ${vm-disk-X}.qcow2
+```
+查看是否磁盘损坏，此案例损坏的是磁盘1，所以对应vm-disk-1.qcow2，如下图看确实是有磁盘损坏
+(qcow2 image is good ，说明：磁盘镜像正常，其他状态均为异常，并且内核日志也无异常告警。)
+
+
+##### 解决方案（上升研发）
+涉及高危操作，请拨打400或上升云BG中台技术支持
+（参考KB：超融合HCI-深信服技术支持）
+
+### 服务不可用，可能由于系统繁忙导致
+
+#### 现象描述
+启动虚拟机，状态：失败。描述：服务不可用，可能由于系统繁忙导致，请刷新页面重试。如果问题一直持续，请联系系统管理员或技术支持处理。错误码：0x0CFFFFFF。
+- acli task get -k "可能由于系统繁忙导致" -t ${YYYY-MM-DD} -s -1acli task get -k "可能由于系统繁忙导致" -t ${YYYY-MM-DD} -s -1
+acli task get -k "可能由于系统繁忙导致" -t ${YYYY-MM-DD} -s -1
+acli task get -k "可能由于系统繁忙导致" -t ${YYYY-MM-DD} -s -1
+
+
+#### redis oom
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、检查sfvt_vtpdaemon.log日志，存在redis oom报错：OOM command not allowed when used memory > 'maxmemory'
+- acli log get -k 'OOM command not allowed when used memory' -p /sf/log/${date}/ -f sfvt_vtpdaemon.logacli log get -k 'OOM command not allowed when used memory' -p /sf/log/${date}/ -f sfvt_vtpdaemon.log
+```bash
+acli log get -k 'OOM command not allowed when used memory' -p /sf/log/${date}/ -f sfvt_vtpdaemon.log
+```
+
+
+##### 解决方案
+1、重启redis-server服务恢复：
+680以前版本：
+- /sf/etc/init.d/redis-server restart/sf/etc/init.d/redis-server restart
+```bash
+/sf/etc/init.d/redis-server restart
+```
+680及以上版本：
+```bash
+acli service asv redis-server restart
+```
+
+#### vn-node-agent-api内存占用过多
+
+##### 判断方法
+1、检查vn-node-agent-api.log日志，报错：Too man
+```bash
+acli log get -k 'Too man' -p /sf/log/${date} -f vn-node-agent-api.log
+```
+
+##### 解决方案
+快速恢复方案：
+1、重启vn-node-agent-api服务
+- acli service anet vn-node-agent-api restartacli service anet vn-node-agent-api restart
+```bash
+acli service anet vn-node-agent-api restart
+```
+彻底解决方案：
+6.8.0打最新的集和补丁
+升级690及以后版本
+
+#### 获取主机内存大小为0
+(参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、执行dmidecode -t memory无法获取内存信息，提示：Invalid entry length
+- acli system dmidecode -t memoryacli system dmidecode -t memory
+```bash
+acli system dmidecode -t memory
+```
+
+
+##### 解决方案
+联系硬件技术支持处理
+
+#### go-zero框架问题
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+- 异常当天日志中包含如下日志：
+- load/apaptivesshedder.go:197 dropreq，cpu：9xxxxxxxxxxxx, maxPass: xx
+- handler/sheddinghandle.go:38 [http] dropped
+- 说明：x86架构，部分go服务日志报错；有http dropped请求，drop原因是cpu计算异常（数值无限大）。
+- acli log get -E -k 'dropreq|[http] dropped'  -p /sf/log/${date}/statuscenterd.logacli log get -E -k 'dropreq|[http] dropped'  -p /sf/log/${date}/statuscenterd.log
+```bash
+acli log get -E -k 'dropreq|[http] dropped'  -p /sf/log/${date}/statuscenterd.log
+```
+
+
+##### 解决方案
+6.8.0打最新的集和补丁
+升级至6.8.0R1以后LTS版本
+
+#### 集群主机间redis 服务端口访问不通
+
+##### 判断方法
+1、检查vtpdaemon日志，报错：Cloud not connect to Redis server at .*:6379: Connection timed out
+- acli log get -E -k "Cloud not connect to Redis server at .*:6379: Connection timed out" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'acli log get -E -k "Cloud not connect to Redis server at .*:6379: Connection timed out" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'
+```bash
+acli log get -E -k "Cloud not connect to Redis server at .*:6379: Connection timed out" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'
+```
+
+判断主机间6379端口不通
+- acli system telnet $hostip 6379acli system telnet $hostip 6379
+```bash
+acli system telnet $hostip 6379
+```
+
+判断集群主机是否正常运行，未运行直接提示出来
+- acli  service asv redis statusacli  service asv redis status
+```bash
+acli  service asv redis status
+```
+
+##### 解决方案
+1、检查主机间是否存在安全设备拦截端口策略；
+检查管理交换机的acl策略是否拦截；
+
+### 虚拟机正在进行其他操作
+
+#### 现象描述
+
+- acli task get -k '虚拟机正在进行其他操作' -t ${YYYY-MM-DD} -s -1acli task get -k '虚拟机正在进行其他操作' -t ${YYYY-MM-DD} -s -1
+```bash
+acli task get -k '虚拟机正在进行其他操作' -t ${YYYY-MM-DD} -s -1
+```
+
+#### 虚拟机存在正在运行的任务
+
+##### 判断方法
+判断虚拟机是否有其他运行的操作日志，查询出虚拟机的对应操作日志，判断process不为-1或者100时，提示出来
+
+- acli task get -v vmid -t ${YYYY-MM-DD} -s -1acli task get -v vmid -t ${YYYY-MM-DD} -s -1
+```bash
+acli task get -v vmid -t ${YYYY-MM-DD} -s -1
+```
+
+##### 解决方案
+请拨打400或上升云BG-LMT技术支持
+
+#### 后台残留锁文件
+
+##### 判断方法
+界面不存在运行的操作日志时，判断锁文件存在
+- acli vm lock list  -v $vmidacli vm lock list  -v $vmid
+```bash
+acli vm lock list  -v $vmid
+```
+
+##### 解决方案
+删除虚拟机临时状态目录（starting,reseting等）(如有对应vmid)
+临时状态残留场景可以清理，再重新开机虚拟机
+- # 目前不支持 -r 。考虑使用脚本？# acli system rm -rf /var/lock/flag_dir/$vmid_xxx# acli system rm -rf /cfs/vm_tmp_status/flag_dir/$vmid_xxx# acli system rm -rf /cfs/priv/lock/$vmid_vmacli vm lock list  -v $vmidacli vm lock clean -v $vmid -n $name# 目前不支持 -r 。考虑使用脚本？# acli system rm -rf /var/lock/flag_dir/$vmid_xxx# acli system rm -rf /cfs/vm_tmp_status/flag_dir/$vmid_xxx# acli system rm -rf /cfs/priv/lock/$vmid_vmacli vm lock list  -v $vmidacli vm lock clean -v $vmid -n $name
+```bash
+# 目前不支持 -r 。考虑使用脚本？
+# acli system rm -rf /var/lock/flag_dir/$vmid_xxx
+# acli system rm -rf /cfs/vm_tmp_status/flag_dir/$vmid_xxx
+# acli system rm -rf /cfs/priv/lock/$vmid_vm
+acli vm lock list  -v $vmid
+acli vm lock clean -v $vmid -n $name
+# 目前不支持 -r 。考虑使用脚本？
+# acli system rm -rf /var/lock/flag_dir/$vmid_xxx
+# acli system rm -rf /cfs/vm_tmp_status/flag_dir/$vmid_xxx
+# acli system rm -rf /cfs/priv/lock/$vmid_vm
+acli vm lock list  -v $vmid
+acli vm lock clean -v $vmid -n $name
+```
+2、后台取消正在运行任务，执行kill虚拟机镜像正在执行的进程（可提供kb）
+（备份、克隆、加密转换等进程可以直接kill，其他进程需评估后才可以kill）
+过滤虚拟机当前进程：
+- acli --cluster system ps | grep $vmidacli --cluster system ps | grep $vmid
+```bash
+acli --cluster system ps | grep $vmid
+```
+说明：虚拟机的vmid，可以在虚拟机详情页面的uri中获取，如下图
+如下图图所示，经过过滤，发现有虚拟机的备份任务在执行，第二列为对应进程的ID，pid，说明该虚拟机正在执行备份，导致虚拟机无法开机
+kill进程需要找到任务的父进程，进程的子进程和父进程全部都需要kill掉，一个任务链会用折线连接，如上（可以修改-A后面的参数，-A的作用是显示对应进程的上下N行，可以适当增加-A后面的数值，多打印几行找到父进程）
+下图所示虽然有虚拟机vmid的进程，但这个是我们刚刚过滤的进程，不是影响虚拟机无法开机的任务
+
+杀掉占用进程:
+如图，当前任务相关的进程ID为 14572 14570 14565 48825 48806 12742 46012
+- acli system kill $pidacli system kill $pid
+```bash
+acli system kill $pid
+```
+如上图：kill 14572 14570 14565 48825 48806 12742 46012
+验证：操作日志的任务已经结束，虚拟机可以正常开机
+
+
+### 虚拟机正在开机
+
+#### 现象描述
+启动虚拟机失败；报错：虚拟机正在开机，请稍后重试！
+
+
+#### 大量任务并发导致获取锁失败
+
+##### 判断方法
+登录任务失败对应的物理主机（如上截图是10.100.62.11）；cd到/sf/log/today/目录下，查看sfvt_vtpperlproxy.log和sfvt_vtpdaemon.log日志中存在大量vtp_process_op_workingX.lock failed!日志
+```bash
+# 查看对应日志
+acli log get -E-k 'vtp_process_op_working.*failed!' -t ${YYYY-MM-DD} -f /sf/log/${date}/sfvt_vtpdaemon.log# 查看对应日志
+acli log get -E-k 'vtp_process_op_working.*failed!' -t ${YYYY-MM-DD} -f /sf/log/${date}/sfvt_vtpdaemon.log
+# 查看对应日志
+acli log get -E-k 'vtp_process_op_working.*failed!' -t ${YYYY-MM-DD} -f /sf/log/${date}/sfvt_vtpdaemon.log
+# 查看对应日志
+acli log get -E-k 'vtp_process_op_working.*failed!' -t ${YYYY-MM-DD} -f /sf/log/${date}/sfvt_vtpdaemon.log
+```
+
+
+##### 解决方案（上升研发）
+在该主机上kill掉虚拟机启动排队中UPID，释放OP锁；后由HA拉起虚拟机或者手动拉起虚拟机；
+请拨打400或上升云BG-LMT技术支持
+
+### 虚拟机未运行
+
+#### 现象描述
+虚拟机（虚拟机名）未运行
+
+
+#### exporter服务未运行
+
+##### 判断方法
+判断exporter服务未运行
+- acli service asv exporter statusacli service asv exporter status
+```bash
+acli service asv exporter status
+```
+- 判断exporter服务文件不存在,再asv-con容器里边查看
+- acli system ls /sf/bin/exporteracli system ls /sf/bin/exporter
+```bash
+acli system ls /sf/bin/exporter
+```
+
+##### 解决方案
+1、手动拉起服务（参考KB：超融合HCI-深信服技术支持）
+- acli service asv exporter startacli service asv exporter start
+```bash
+acli service asv exporter start
+```
+- 2、界面重试开机
+
+#### prometheus服务未运行
+
+##### 判断方法
+判断主控 prometheus 服务未运行
+- acli service asv prometheus statusacli service asv prometheus status
+```bash
+acli service asv prometheus status
+```
+- 2、判断主控/sf/data/local/ 分区使用率满
+- acli system df -h /sf/data/localacli system df -h /sf/data/local
+```bash
+acli system df -h /sf/data/local
+```
+
+##### 解决方案
+清理/sf/data/local分区（参考KB：超融合HCI-深信服技术支持）
+界面重试开机
+
+### 获取集群锁失败
+
+#### 现象描述
+控制台告警
+cfs读写异常
+```bash
+acli platform cfs status
+```
+正常情况touch文件用时只有0.0x秒
+
+
+#### 管理口网络丢包
+集群主机管理口网络丢包（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+netdoctor检查管理口
+- acli netdoctoracli netdoctor
+```bash
+acli netdoctor
+```
+
+##### 解决方案
+1、检检查管理口IP冲突
+2、检查管理口网口状态、接线、聚合配置等
+
+### 获取版本号失败
+
+#### 现象描述
+1、启动虚拟失败；描述：获取版本号失败，错误码：0x010032F5
+- acli task get -k "获取版本号失败" -t ${YYYY-MM-DD} -s -l 1acli task get -k "获取版本号失败" -t ${YYYY-MM-DD} -s -l 1
+acli task get -k "获取版本号失败" -t ${YYYY-MM-DD} -s -l 1
+acli task get -k "获取版本号失败" -t ${YYYY-MM-DD} -s -l 1
+
+
+#### boot分区未正常挂载
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、检查vtpdaemon日志，报错：get asv controller version failed
+- acli log get -k "get asv controller version failed" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'acli log get -k "get asv controller version failed" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'
+```bash
+acli log get -k "get asv controller version failed" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'
+```
+
+2、文件不存在则为异常
+- acli system ls /boot/firmware/current/package/meta-inf/versionacli system ls /boot/firmware/current/package/meta-inf/version
+```bash
+acli system ls /boot/firmware/current/package/meta-inf/version
+```
+
+3、无输出则为异常
+- acli system df /boot/acli system df /boot/
+```bash
+acli system df /boot/
+```
+
+##### 解决方案
+在重启一次主机，让主机自动挂载上boot分区
+
+### 获取CBT信息失败
+
+#### 现象描述
+1、执行开机任务失败，报错描述：启动时获取CBT信息失败！
+- acli task get -k "启动时获取CBT信息失败" -t ${YYYY-MM-DD} -s -1acli task get -k "启动时获取CBT信息失败" -t ${YYYY-MM-DD} -s -1
+```bash
+acli task get -k "启动时获取CBT信息失败" -t ${YYYY-MM-DD} -s -1
+```
+
+
+#### 主机证书不一致
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、与主控主机md5不一致则为异常
+- acli platform node cert list # 获得所有的证书的绝对路径acli --cluster system md5sum -p ${绝对路径} # 获得md5值acli platform node cert list # 获得所有的证书的绝对路径acli --cluster system md5sum -p ${绝对路径} # 获得md5值
+```bash
+acli platform node cert list # 获得所有的证书的绝对路径
+acli --cluster system md5sum -p ${绝对路径} # 获得md5值
+acli platform node cert list # 获得所有的证书的绝对路径
+acli --cluster system md5sum -p ${绝对路径} # 获得md5值
+```
+判断存在添加或替换主机失败任务，文件内容存在添加任务记录
+- acli platform node task getacli platform node task get
+```bash
+acli platform node task get
+```
+
+
+##### 解决方案(上升研发)
+- 1、如果界面存在添加主机失败的任务，则根据提示进行失败重试，确保主机能正常添加成功；重试添加失败主机任务完成后，启动虚拟机正常
+- 2、同步其他正常集群证书到当前主机上：//异常主机判定方式
+- scp -f IP:/sf/cfg/certs/cluster-intra/root-ca.*  /sf/cfg/certs/cluster-intra/scp -f IP:/sf/cfg/certs/cluster-intra/root-ca.*  /sf/cfg/certs/cluster-intra/
+```bash
+scp -f IP:/sf/cfg/certs/cluster-intra/root-ca.*  /sf/cfg/certs/cluster-intra/
+```
+- acli system file sync /sf/cfg/certs/cluster-intra/root-ca.keyacli system file sync /sf/cfg/certs/cluster-intra/root-ca.key
+```bash
+acli system file sync /sf/cfg/certs/cluster-intra/root-ca.key
+```
+- acli system file sync /sf/cfg/certs/cluster-intra/root-ca.pemacli system file sync /sf/cfg/certs/cluster-intra/root-ca.pem
+```bash
+acli system file sync /sf/cfg/certs/cluster-intra/root-ca.pem
+```
+- 3、重新在检查证书一致后；重新启动虚拟机正常
+- acli --cluster system md5sum -p ${绝对路径} # 获得md5值acli --cluster system md5sum -p ${绝对路径} # 获得md5值
+```bash
+acli --cluster system md5sum -p ${绝对路径} # 获得md5值
+```
+
+
+#### 数据库证书不一致
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+确认数据库主库节点，mysql-master
+- acli system host getacli system host get
+```bash
+acli system host get
+```
+2、 与主库主机md5不一致则为异常
+- acli platform node cert list # 获得所有的证书的绝对路径acli --cluster system md5sum -p ${绝对路径} # 获得md5值acli platform node cert list # 获得所有的证书的绝对路径acli --cluster system md5sum -p ${绝对路径} # 获得md5值
+```bash
+acli platform node cert list # 获得所有的证书的绝对路径
+acli --cluster system md5sum -p ${绝对路径} # 获得md5值
+acli platform node cert list # 获得所有的证书的绝对路径
+acli --cluster system md5sum -p ${绝对路径} # 获得md5值
+```
+
+##### 解决方案(上升研发)
+1、从正常主机拷贝到异常主机上：//异常主机判定方式
+```bash
+scp -f IP:/sf/cfg/mysql/ssl/vtp-*   /sf/cfg/mysql/ssl/scp -f IP:/sf/cfg/mysql/ssl/vtp-*   /sf/cfg/mysql/ssl/
+scp -f IP:/sf/cfg/mysql/ssl/vtp-*   /sf/cfg/mysql/ssl/
+```
+- acli system file sync /sf/cfg/mysql/ssl/vtp-mysql-ssl.keyacli system file sync /sf/cfg/mysql/ssl/vtp-mysql-ssl.key
+```bash
+acli system file sync /sf/cfg/mysql/ssl/vtp-mysql-ssl.key
+acli system file sync /sf/cfg/mysql/ssl/vtp-mysql-ssl.pem
+```
+- acli system file sync /sf/cfg/mysql/ssl/vtp-root-ca.pemacli system file sync /sf/cfg/mysql/ssl/vtp-root-ca.pem
+```bash
+acli system file sync /sf/cfg/mysql/ssl/vtp-root-ca.pem
+```
+
+
+### 获取快照类型失败
+
+#### 现象描述
+1、启动虚拟失败；描述：获取快照类型失败！错误码：0x0000000000FF1D84
+- acli task get -k "获取快照类型失败" -t ${YYYY-MM-DD} -s -l 1acli task get -k "获取快照类型失败" -t ${YYYY-MM-DD} -s -l 1
+acli task get -k "获取快照类型失败" -t ${YYYY-MM-DD} -s -l 1
+acli task get -k "获取快照类型失败" -t ${YYYY-MM-DD} -s -l 1
+
+
+#### MySQL连接过多
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、查看vtpdaemon.log日志，里面有获取虚拟机快照列表失败，请稍后重试！0x010003E6 ，上面有 mysql 连接失败的报错  Too many connections at
+- acli log get -k "failed: Too many connections at" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'acli log get -k "failed: Too many connections at" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'
+```bash
+acli log get -k "failed: Too many connections at" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'
+```
+
+2、去数据库主节点查看mysqld.log日志（在数据库主节点的/sf/log/today/mysqld.log）有连接数过多的日志：Too many connections
+- ssh mysql-masteracli log get -k "Too many connections" -p '/sf/log/${date}/' -f 'mysqld.log'ssh mysql-masteracli log get -k "Too many connections" -p '/sf/log/${date}/' -f 'mysqld.log'
+```bash
+ssh mysql-master
+acli log get -k "Too many connections" -p '/sf/log/${date}/' -f 'mysqld.log'
+ssh mysql-master
+acli log get -k "Too many connections" -p '/sf/log/${date}/' -f 'mysqld.log'
+```
+
+3、cat /etc/hosts 发现数据库不在控制节点上（也就是有zk的节点上）
+- acli system cat /etc/hosts |grep mysql-master|grep 'acloud.zk'acli system cat /etc/hosts |grep mysql-master|grep 'acloud.zk'
+```bash
+acli system cat /etc/hosts |
+grep mysql-master|
+grep 'acloud.zk'
+acli system cat /etc/hosts |
+grep mysql-master|
+grep 'acloud.zk'
+```
+
+
+##### 解决方案
+快速恢复方案：
+界面切换控制节点，将数据库所在节点切换成控制节点
+
+### 不支持的虚拟机兼容性版本号
+
+#### 现象描述
+启动虚拟机失败；报错：不支持的虚拟机兼容性版本号！错误码：0x01002E59
+
+
+#### 未升级兼容性
+
+##### 判断方法
+1、获取启动虚拟机失败任务描述
+- acli task get -k "不支持的虚拟机兼容性版本号" -t ${YYYY-MM-DD} -s -1acli task get -k "不支持的虚拟机兼容性版本号" -t ${YYYY-MM-DD} -s -1
+acli task get -k "不支持的虚拟机兼容性版本号" -t ${YYYY-MM-DD} -s -1
+acli task get -k "不支持的虚拟机兼容性版本号" -t ${YYYY-MM-DD} -s -1
+
+##### 解决方案
+虚拟机详情界面，更多操作里升级虚拟机兼容性处理
+
+
+### 虚拟存储不支持在该主机上启动虚拟机
+
+#### 现象描述
+
+操作日志会提示：虚拟存储不支持在该主机启动虚拟机！ 可能原因：1、主机已离线：2、主机不存在虑拟机副本；3、虚拟机使用的存 储策略不支持在该主机启动：4、虚以机启用Turbo模式，主机Turbo服务异常。
+- acli task get -k "虚拟存储不支持在该主机启动虚拟机" -t ${YYYY-MM-DD} -s -1acli task get -k "虚拟存储不支持在该主机启动虚拟机" -t ${YYYY-MM-DD} -s -1
+acli task get -k "虚拟存储不支持在该主机启动虚拟机" -t ${YYYY-MM-DD} -s -1
+acli task get -k "虚拟存储不支持在该主机启动虚拟机" -t ${YYYY-MM-DD} -s -1
+
+#### 镜像文件不存在
+
+##### 判断方法
+判断镜像文件虚拟机系统盘对应的镜像文件不存在
+
+```bash
+vm_disk=$(
+acli vm config get -v vmid|
+grep ^ide0 |awk -F':' '{print $3}' |awk -F',' '{print $1}')vm_path=$(
+acli vm disk path get -v vmid)
+acli system ls  $vm_path/$vm_diskvm_disk=$(
+acli vm config get -v vmid|
+grep ^ide0 |awk -F':' '{print $3}' |awk -F',' '{print $1}')vm_path=$(
+acli vm disk path get -v vmid)
+acli system ls  $vm_path/$vm_disk
+vm_disk=$(
+acli vm config get -v vmid|
+grep ^ide0 |awk -F':' '{print $3}' |awk -F',' '{print $1}')
+vm_path=$(
+acli vm disk path get -v vmid)
+```
+
+```bash
+acli system ls  $vm_path/$vm_disk
+vm_disk=$(
+acli vm config get -v vmid|
+grep ^ide0 |awk -F':' '{print $3}' |awk -F',' '{print $1}')
+vm_path=$(
+acli vm disk path get -v vmid)
+```
+
+```bash
+acli system ls  $vm_path/$vm_disk
+```
+判断虚拟机为还原模式虚拟机,虚拟机配置文件中存在revert_mode：1，为还原虚拟机
+- acli vm config get -v vmid|grep revert_modeacli vm config get -v vmid|grep revert_mode
+```bash
+acli vm config get -v vmid|
+grep revert_mode
+acli vm config get -v vmid|
+grep revert_mode
+```
+
+##### 解决方案
+满足判断条件1和2：（参考KB：超融合HCI-深信服技术支持）只满足条件1：
+提示镜像文件xxx/xxx.qcow2不存在,请上升研发技术支持
+
+### ARM平台虚拟机需要设置Host CPU
+
+#### 现象描述
+启动虚拟机失败，报错：启动失败。ARM平台虚拟机需要设置HostCPU！
+
+
+#### arm平台未设置HOST CPU
+- (参考KB：超融合HCI-深信服技术支持)
+
+##### 判断方法
+1、获取启动虚拟机失败任务描述
+- acli task get -k "ARM平台虚拟机需要设置Host CPU" -t ${YYYY-MM-DD} -s -1acli task get -k "ARM平台虚拟机需要设置Host CPU" -t ${YYYY-MM-DD} -s -1
+acli task get -k "ARM平台虚拟机需要设置Host CPU" -t ${YYYY-MM-DD} -s -1
+acli task get -k "ARM平台虚拟机需要设置Host CPU" -t ${YYYY-MM-DD} -s -1
+
+##### 解决方案
+1、手动编辑虚拟机配置文件cpu；cpu： core2duo -> cpu： host
+
+### AMD和海光CPU不支持使用嵌套虚拟化
+
+#### 现象描述
+启动虚拟机失败，报错：AMD和海光CPU不支持使用嵌套虚拟化！错误码：0x010028D4
+
+
+#### 嵌套虚拟机化
+- (参考KB：超融合HCI-深信服技术支持)
+
+##### 判断方法
+1、获取启动虚拟机失败任务描述
+- acli task get -k "AMD和海光CPU不支持使用嵌套虚拟化" -t ${YYYY-MM-DD} -s -1acli task get -k "AMD和海光CPU不支持使用嵌套虚拟化" -t ${YYYY-MM-DD} -s -1
+acli task get -k "AMD和海光CPU不支持使用嵌套虚拟化" -t ${YYYY-MM-DD} -s -1
+acli task get -k "AMD和海光CPU不支持使用嵌套虚拟化" -t ${YYYY-MM-DD} -s -1
+
+##### 解决方案
+在vdc关闭该虚拟机的嵌套虚拟化功能，
+或编辑虚拟机配置文件删除nested_virtualization字段
+
+### 更新网卡设备信息失败：数据处理失败
+
+#### 现象描述
+启动虚拟机失败，报错：更新网卡设备信息失败：数据处理失败；错误码：0x0100186D
+
+
+#### 数据库只读
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、ssh 数据库主库执行
+- ssh mysql-masterssh mysql-master
+```bash
+ssh mysql-master
+```
+2、数据库状态确认：
+- acli service asv mysql statusacli service asv mysql status
+```bash
+acli service asv mysql status
+```
+3、数据库只读状态检查
+```bash
+acli platform mysql-manager-cli status writable --get
+```
+返回R表示只读，W表示可写（异常状态为只读）
+
+
+##### 解决方案（上升研发）
+检查/sf/data/platform_database/分区容量满
+- acli system df -h  /sf/data/platform_database/acli system df -h  /sf/data/platform_database/
+```bash
+acli system df -h  /sf/data/platform_database/
+```
+2、若是方案1不符合，请拨打400或上升云BG-LMT技术支持
+
+#### 数据库配置异常无法运行
+(参考KB：超融合HCI-深信服技术支持)
+
+##### 判断方法
+1、查看mysqld日志；有报错日志则为异常
+- acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+```bash
+acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+```
+
+
+##### 解决方案（上升研发）
+若无法解决请拨打400或上升云BG-LMT技术支持
+
+### 更新网卡设备信息失败：服务不可用
+
+#### 现象描述
+1、执行开机任务失败，报错描述：创建虚拟机网卡连接失败
+- acli task get -k '创建虚拟机网卡连接失败' -t ${YYYY-MM-DD} -s -1acli task get -k '创建虚拟机网卡连接失败' -t ${YYYY-MM-DD} -s -1
+acli task get -k '创建虚拟机网卡连接失败' -t ${YYYY-MM-DD} -s -1
+acli task get -k '创建虚拟机网卡连接失败' -t ${YYYY-MM-DD} -s -1
+
+
+#### 版本问题
+业务方代码逻辑导致的死锁(参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+- 1、查看/sf/log/${date}/vn/vn-manager-service-api.log，搜索：DB Deadlock sql exception。
+- acli log get -k 'DB Deadlock sql exception' -t ${YYYY-MM-DD} -p /sf/log/${date}/vn/vn-manager-service-api.logacli log get -k 'DB Deadlock sql exception' -t ${YYYY-MM-DD} -p /sf/log/${date}/vn/vn-manager-service-api.log
+```bash
+acli log get -k 'DB Deadlock sql exception' -t ${YYYY-MM-DD} -p /sf/log/${date}/vn/vn-manager-service-api.log
+```
+
+
+##### 解决方案
+- 1、重启数据库服务可以恢复
+- acli service asv mysql-managerd restartacli service asv mysql restartacli service asv mysql-managerd restartacli service asv mysql restart
+```bash
+acli service asv mysql-managerd restart
+acli service asv mysql restart
+acli service asv mysql-managerd restart
+acli service asv mysql restart
+```
+
+#### 网卡异常
+- 在对应时间网卡出现短暂的异常，导致数据库服务Mysql的IO超时，造成虚拟网络服务连接数据库异常，进而导致虚拟机开机更新网卡异常导致虚拟机无法正常启动（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、kernel.log中堆栈显示pfifo_fast_reset 或 p_eth0(igb):transmit queue 0 timed out
+```bash
+acli log get -E -k 'pfifo_fast_reset|p_eth0(igb):transmit queue 0 timed out' -t ${YYYY-MM-DD} -f /sf/log/${date}/kernel.log
+```
+
+
+##### 解决方案
+- 快速恢复方案
+- 待数据库服务恢复后，在主控上执行重启虚拟网络管理面服务，重启该服务不影响业务
+- acli service anet vn-manager-service-api restartacli service anet vn-manager-service-api restart
+```bash
+acli service anet vn-manager-service-api restart
+```
+
+### 更新网卡设备信息失败：存在IP冲突
+
+#### 现象描述
+启动虚拟机失败，报错：所连接的设备存在IP冲突，请您重新配置IP，或者修改已有配置！错误码：B1040037。错误码：0x0100186D
+
+
+#### IP冲突
+(参考KB：超融合HCI-深信服技术支持)
+
+##### 判断方法
+1、获取启动虚拟机失败任务描述
+- acli task get -k '设备存在IP冲突' -t ${YYYY-MM-DD} -s -1acli task get -k '设备存在IP冲突' -t ${YYYY-MM-DD} -s -1
+```bash
+acli task get -k '设备存在IP冲突' -t ${YYYY-MM-DD} -s -1
+```
+
+##### 解决方案（上升研发）
+请拨打400或上升VN技术支持
+
+### 3D虚拟机：显卡切分方式不匹配或显卡资源不足
+
+#### 现象描述
+- 启动虚拟失败；描述：显卡切分方式不匹配或显卡资源不足！错误码：0x01002C73
+- acli task get -k "显卡切分方式不匹配或显卡资源不足" -t ${YYYY-MM-DD} -s -l 1acli task get -k "显卡切分方式不匹配或显卡资源不足" -t ${YYYY-MM-DD} -s -l 1
+acli task get -k "显卡切分方式不匹配或显卡资源不足" -t ${YYYY-MM-DD} -s -l 1
+acli task get -k "显卡切分方式不匹配或显卡资源不足" -t ${YYYY-MM-DD} -s -l 1
+
+
+#### 显卡配置文件gpu_info.ini缺少gpu_type导致初始化配置失败
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、GPU主机没有运行任何GPU虚拟机，启动GPU虚拟机报错"显卡切分方式不匹配或显卡资源不足"
+
+2、判断文件/sf/cfg/gpu_info.ini显卡核心缺少gpu_type字段
+
+
+##### 解决方案（上升研发）
+重新初始化显卡配置
+若无法解决请拨打400或上升云中台技术支持
+- #acli system mv /sf/cfg/gpu_info.ini /sf/data/local#acli hardware gpu ini_host_gpuacli hardware gpu config reset --file xxacli hardware gpu ini_host_gpu#acli system mv /sf/cfg/gpu_info.ini /sf/data/local#acli hardware gpu ini_host_gpuacli hardware gpu config reset --file xxacli hardware gpu ini_host_gpu
+```bash
+#
+acli system mv /sf/cfg/gpu_info.ini /sf/data/local
+#
+acli hardware gpu ini_host_gpu
+acli hardware gpu config reset --file xx
+acli hardware gpu ini_host_gpu
+#
+acli system mv /sf/cfg/gpu_info.ini /sf/data/local
+#
+acli hardware gpu ini_host_gpu
+acli hardware gpu config reset --file xx
+acli hardware gpu ini_host_gpu
+```
+
+
+#### 显卡显示模式未关闭导致无法使用切分功能
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、显卡驱动已安装 lsmode |grep vfio
+- acli system lsmod |grep vfioacli system lsmod |grep vfio
+```bash
+acli system lsmod |
+grep vfio
+acli system lsmod |
+grep vfio
+```
+nvidia_vgpu_vfio表示有英伟达驱动
+
+2、显卡已经绑定nvidia驱动 lspci -nnk -d 10de:  对应的设备绑定的是nvidia驱动
+- acli system lspci  -nnk -d 10de: |grep 'Kernel driver in use: nvidia'acli system lspci  -nnk -d 10de: |grep 'Kernel driver in use: nvidia'
+```bash
+acli system lspci  -nnk -d 10de: |
+grep 'Kernel driver in use: nvidia'
+acli system lspci  -nnk -d 10de: |
+grep 'Kernel driver in use: nvidia'
+```
+
+3、显卡缺少切分目录：
+```bash
+acli log get -E -k 'ls -l /sys/bus/pci/devices/0000:xx:00.0/' -p /sf/log/{day}/sfvt_vtpdaemon.log
+```
+
+4、ls -l /sys/bus/pci/devices/0000\:xx\:00.0/ |grep virtfn  返回空
+- acli system ls -l /sys/bus/pci/devices/0000\:xx\:00.0/ |grep virtfn acli system ls -l /sys/bus/pci/devices/0000\:xx\:00.0/ |grep virtfn
+```bash
+acli system ls -l /sys/bus/pci/devices/0000\:xx\:00.0/ |
+grep virtfn
+acli system ls -l /sys/bus/pci/devices/0000\:xx\:00.0/ |
+grep virtfn
+```
+
+##### 解决方案（上升研发）
+若无法解决请拨打400或上升云中台技术支持
+
+#### 显卡驱动版本较低或者不兼容，显卡无法切分，日志报错GPU可提供实例数量不足
+
+##### 判断方法
+1、vtpdaemon日志，有报错"GPU可提供实例数量不足"
+- acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k 'GPU可提供实例数量不足'acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k 'GPU可提供实例数量不足'
+```bash
+acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k 'GPU可提供实例数量不足'
+```
+
+
+##### 解决方案（上升研发）
+更新高版本驱动或对应版本兼容的驱动
+若无法解决请拨打400或上升云中台技术支持
+
+#### 显卡驱动setpci版本较低，不兼容此类pci设备，无法获取到正确的pci地址，导致出现异常
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、判断日志sfvt_vtpdaemon.log中的报错"ERR: setpci: Cannot open"
+- acli log get -k "ERR: setpci: Cannot open" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'acli log get -k "ERR: setpci: Cannot open" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'
+```bash
+acli log get -k "ERR: setpci: Cannot open" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'
+```
+
+- 再asv-con容器中执行 /sf/data/local/sgax/sgax-chroot.sh
+- setpci -s "0000:9d:00.0" b.b
+- acli hardware gpu setpci -s "0000:9d:00.0" b.b  #  b.b是否固定acli hardware gpu setpci -s "0000:9d:00.0" b.b  #  b.b是否固定
+```bash
+acli hardware gpu setpci -s "0000:9d:00.0" b.b  #  b.b是否固定
+```
+
+
+##### 解决方案（上升研发）
+若无法解决请拨打400或上升云中台技术支持
+
+### 3D虚拟机：当前主机显卡资源不足以开启虚拟机
+
+#### 现象描述
+- 启动虚拟失败；描述：当前主机显卡资源不足以开启虚拟机！
+- acli task get -k "当前主机显卡资源不足以开启虚拟机" -t ${YYYY-MM-DD} -s -l 1acli task get -k "当前主机显卡资源不足以开启虚拟机" -t ${YYYY-MM-DD} -s -l 1
+acli task get -k "当前主机显卡资源不足以开启虚拟机" -t ${YYYY-MM-DD} -s -l 1
+acli task get -k "当前主机显卡资源不足以开启虚拟机" -t ${YYYY-MM-DD} -s -l 1
+
+
+#### BIOS设置异常
+
+##### 判断方法
+场景1、查看vtpdaemon日志，报错获取主机vGPU信息失败
+- acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k '获取主机vGPU信息失败'acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k '获取主机vGPU信息失败'
+```bash
+acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k '获取主机vGPU信息失败'
+```
+
+场景2、查看vtpdaemon日志，报错"get vf core failed"或者"get_vfs_cmd failed"
+6.11.1及以上版本
+- acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k 'get vf core failed'acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k 'get vf core failed'
+```bash
+acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k 'get vf core failed'
+```
+- 6.11.1以下版本
+- acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k 'get_vfs_cmd failed'acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k 'get_vfs_cmd failed'
+```bash
+acli log get -p '/sf/log/today/vt/sfvt_vtpdaemon.log' -E -k 'get_vfs_cmd failed'
+```
+
+
+##### 解决方案
+第三方服务器，BIOS的AMD IOMMU 或 AMD-Vi 设置没有打开。
+上诉方法若没有解决，若无法解决请拨打400或上升云中台技术支持
+
+## 无启动虚拟机失败任务
+
+### 前置检查
+1、获取虚拟机开机相关任务（以下三者是任意一个的关系，任意一个progress、任意一个failed，完全没有相关任务，剩下的都算正常启动）
+- acli task get -v $vmid -t $date -k "重启"acli task get -v $vmid -t $date -k "重启"
+```bash
+acli task get -v $vmid -t $date -k "重启"
+```
+- acli task get -v $vmid -t $date -k "启动"acli task get -v $vmid -t $date -k "启动"
+```bash
+acli task get -v $vmid -t $date -k "启动"
+acli task get -v $vmid -t $date -k "HA"
+```
+若有任务，且任务状态是完成的，则检测【任务完成】；
+3、若有任务，且任务状态是进行中的，则检测【任务卡住】；
+4、若无任务，则检测【服务异常】
+
+### 任务完成
+获取虚拟机运行主机
+```bash
+sfd_get_runhost_of_vm.sh  $vmidsfd_get_runhost_of_vm.sh  $vmid
+sfd_get_runhost_of_vm.sh  $vmid
+```
+2、获取虚拟机运行主机的CPU型号，判断条件一
+```bash
+acli system dmidecode -t processor | grep Manufacturer
+```
+获取虚拟机GuetOS系统类型，判断条件二
+```bash
+acli mv config get -v $vmid | grep 'ostype: '
+```
+获取虚拟机是否开启Host CPU，判断条件三
+```bash
+acli mv config get -v $vmid | grep 'cpu: host'
+```
+判断说明：
+若判断条件一包含字段：Hygon
+且判断条件二是：win1064、win1164、ws1664、ws1964和ws2264中的一个
+且判断条件三是：开启Host CPU
+则提示：该虚拟机内部系统不支持海光CPU，请关闭Host CPU后重启虚拟机电源
+其他情况均定界为虚拟机内部问题，提示：虚拟机内部问题；请拨打400或Windows虚拟机上升VDI-Windows研发技术支持Linux虚拟机上升云BG中台技术支持
+
+### 任务卡住
+
+#### 现象描述
+执行开机相关任务，任务卡住20%、30%
+
+
+#### 虚拟机存在未生效配置，关机后开机卡住或者重启虚拟机卡住20%无法操作
+
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+虚拟机运行主机后台
+```bash
+[对应主机执行]
+acli system ps auxf | grep -i upid|
+grep {$vmid}|awk  '{print $3}'[对应主机执行]
+acli system ps auxf | grep -i upid|
+grep {$vmid}|awk  '{print $3}'
+[对应主机执行]
+acli system ps auxf | grep -i upid|
+grep {$vmid}|awk  '{print $3}'
+[对应主机执行]
+acli system ps auxf | grep -i upid|
+grep {$vmid}|awk  '{print $3}'
+```
+可以看到，虚拟机重启的任务还在运行状态进程的CPU使用率超过90%
+
+
+##### 解决方案（上升研发）
+操作kill 掉上述CPU占用为100%的进程，上例为 79451  kill -9 卡住的upid进程
+```bash
+acli system kill -9 $pid
+```
+
+#### 虚拟机磁盘太大，有30T，在qcow2-dump读取磁盘数据时耗时太长导致开机任务卡在30%
+
+（参考案例：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、根据开机进程相关信息查看存在对磁盘进行qcow2-dump的操作，且进程卡住了，如下图所示
+```bash
+acli system ps auxf | grep $vmid
+```
+
+
+##### 解决方案（上升研发）
+请拨打400或上升云BG-LMT技术支持
+
+#### 集群主机到主控的 10000 端口未放开，导致主机无法查询到虚拟机启动任务的结果，导致启动任务一直卡住
+虚拟机再次进行内部重启后，启动虚拟机失败，自动HA恢复虚拟机也失败，提示“虚拟机正在进行其他操作，请稍后重试”
+
+- （参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+- 1、查看UPID 进程的pid，grep -n " 12568 " /sf/log/today/sfvt_vtpdaemon.log # 12568 两侧有空格，存在报错日志  Can't connect to xxx.xxx.xxx.xxx(主控IP):10000 （timeout）
+
+- 2、某一主机telnet 10000端口不通，主控正常
+
+
+##### 解决方案（上升研发）
+- 1、进入重启虚拟机卡住任务的主机后台
+- acli system ps auxf | grep $vmid | grep -i upidacli system ps auxf | grep $vmid | grep -i upid
+```bash
+acli system ps auxf | grep $vmid | grep -i upid
+```
+- 2、kill -9 杀掉两个任务进程
+- acli system kill -9 $pidacli system kill -9 $pid
+```bash
+acli system kill -9 $pid
+```
+
+- 3、 前台开启该虚拟机，此2主机开机或重启时可以开启
+
+- 4、主控后台（上升研发）
+- 上升研发#acli platform cluster master switch restartacli system iptables上升研发#acli platform cluster master switch restartacli system iptables
+```bash
+上升研发
+#
+acli platform cluster master switch restart
+acli system iptables
+上升研发
+#
+acli platform cluster master switch restart
+acli system iptables
+```
+
+- 执行完之后可以看到恢复正常
+
+#### 存在USB的虚拟机开关机会卡住，一直处于开机中或关机中状态
+（参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+1、查看虚拟机关联USB 所在的主机，存在spicec --run-type cmd --cmd-type check 进程
+```bash
+acli system ps auxf |
+grep "spicec --run-type cmd --cmd-type check"
+acli system ps auxf |
+grep "spicec --run-type cmd --cmd-type check"
+acli system ps auxf |
+grep "spicec --run-type cmd --cmd-type check"
+acli system ps auxf |
+grep "spicec --run-type cmd --cmd-type check"
+```
+
+2、内核日志存在报错 “usb-storage: Error in queuecommand_lck”
+```bash
+acli log get -k 'usb-storage: Error in queuecommand_lck' -t ${YYYY-MM-DD} -f /sf/log/${date}/kernel.log
+```
+
+
+##### 解决方案（上升研发）
+请拨打400或上升云BG-LMT技术支持
+
+#### 虚拟机开机卡住，持续显示启动中，后台看到任务的子进程sync状态为D
+- （参考KB：超融合HCI-深信服技术支持）
+
+##### 判断方法
+- 1、后台到任务所在节点执行
+- acli system ps auxf | grep -v grep |grep UPID -A5 | grep syncacli system ps auxf | grep -v grep |grep UPID -A5 | grep sync
+```bash
+acli system ps auxf | grep -v grep |
+grep UPID -A5 | grep sync
+acli system ps auxf | grep -v grep |
+grep UPID -A5 | grep sync
+```
+2、看到启动虚拟机任务下面有个sync进程，状态为D,提示出来
+
+
+##### 解决方案（上升研发）
+- 1、依次kill -9杀掉sync上层的进程，先杀sh -c sync （sync因为D住了无法kill，所以从这个子进程的上一级进程依次往上杀进程），界面重试开机
+- acli system kill -9 $pidacli system kill -9 $pid
+```bash
+acli system kill -9 $pid
+```
+- 方案1无法解决，请拨打400或上升云BG-LMT技术支持
+
+### 服务异常
+
+#### mysql运行异常
+
+##### 判断方法
+检查数据库状态（工具只检查该项），有[fail]则为异常
+- acli platform check -p mysqlacli platform check -p mysql
+acli platform check -p mysql
+acli platform check -p mysql
+
+
+##### 解决方案（上升研发）
+1、查看数据库主备节点信息
+- acli platform mysql node listacli platform mysql node list
+```bash
+acli platform mysql node list
+```
+container_exec -n platform-module -c "/sf/cluster/bin/mysql-manager-cli cluster nodelist"
+
+情况一：要有主备节点，没有主备节点则为异常
+
+2、检查zk里边的mysql主备库节点和mysql主库节点命令
+- acli platform zookeeper zkcli --get /vtroot/cfg/mysql-mgrd/masteracli platform zookeeper zkcli --get /vtroot/cfg/mysql-mgrd/master
+```bash
+acli platform zookeeper zkcli --get /vtroot/cfg/mysql-mgrd/master
+```
+zkcli-c --get /vtroot/cfg/mysql-mgrd/master
+zkcli-c --list /vtroot/cfg/mysql-mgrd/members
+情况二：两主机以上，正常是有两个节点，无法与步骤2对应上，则为异常
+
+3、查看mysqld日志；情况三：有报错日志则为异常
+- [主库节点执行]acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"[主库节点执行]acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+```bash
+[主库节点执行]
+acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+[主库节点执行]
+acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+```
+
+4、检查控制节点的mysql服务配置，情况四：异常主机缺少server-id配置
+- acli platform mysql config getacli platform mysql config get
+```bash
+acli platform mysql config get
+```
+sfd_cluster_cmd.sh e "cat /sf/cfg/mysql/my.cnf.d/mysql.cnf"
+
+临时解决方案：
+找到出异常前一天的日志，恢复当天的mysql配置，以下为17日为例：
+```bash
+cd /sf/log/17/;tar zxf sfcfg.tar.gz；cp mnt/shared/sf/cfg/mysql/my.cnf.d/mysql.cnf /sf/cfg/mysql/my.cnf.d/mysql.cnf;  cd /sf/log/17/;tar zxf sfcfg.tar.gz；cp mnt/shared/sf/cfg/mysql/my.cnf.d/mysql.cnf /sf/cfg/mysql/my.cnf.d/mysql.cnf;
+cd /sf/log/17/;tar zxf sfcfg.tar.gz；
+cp mnt/shared/sf/cfg/mysql/my.cnf.d/mysql.cnf /sf/cfg/mysql/my.cnf.d/mysql.cnf;
+cd /sf/log/17/;tar zxf sfcfg.tar.gz；
+cp mnt/shared/sf/cfg/mysql/my.cnf.d/mysql.cnf /sf/cfg/mysql/my.cnf.d/mysql.cnf;
+```
+彻底解决方案：
+升级6100R2并打上最新合集补丁包
+
+#### apache2,vtpdaemon服务存在大量进程
+
+##### 判断方法
+- acli system psacli system ps
+```bash
+acli system ps
+```
+说明：
+acli system ps auxf | grep vtpdaemon | wc -l 检查vtpdaemon进程数量超过60个
+acli system ps auxf | grep apache2 | wc -l  检查apache2进程数据量异常超过100个
+apache和vtpdaemon进程都很多，
+- acli --cluster system dateacli --cluster system date
+```bash
+acli --cluster system date
+```
+sfd_cluster_cmd.sh e 'date '  集群主机检查所有主机系统时间同步情况，时间先后不能相差30s；
+若是时间不一致优先修改时间，具体修改为实际的时间
+例如：sfd_cluster_cmd.sh e "date -s '2025-04-02 18:14:00'"
+
+##### 解决方案
+快速恢复方案：
+- 1、后台修改集群主机时间
+- acli --cluster system date -s '2025-04-02 18:14:00'acli --cluster system date -s '2025-04-02 18:14:00'
+```bash
+acli --cluster system date -s '2025-04-02 18:14:00'
+```
+2、重启服务恢复
+```bash
+acli service asv vtpdaemon restart
+acli service asv apache2 restart
+acli service asv vtpdaemon restart
+acli service asv apache2 restart
+acli service asv vtpdaemon restart
+acli service asv apache2 restart
+acli service asv vtpdaemon restart
+acli service asv apache2 restart
+```
+已知案例： 超融合HCI-深信服技术支持
+彻底解决方案：
+升级6100R2并打上最新合集补丁包
+
+#### apache2进程多但vtpdaemon进程却很少
+
+##### 判断方法
+- acli system psacli system ps
+```bash
+acli system ps
+```
+vtpdaemon 存在一个CPU占用为100%的进程，说明一个子进程陷入死循环，导致进程池无法正常扩大，则为异常
+
+
+##### 解决方案
+快速恢复方案：
+kill 掉CPU占用异常的vtpdaemon-api进程
+已知案例：超融合HCI-深信服技术支持
+
+#### vtpdaemon服务大量进程D住
+
+##### 判断方法
+1、查看vtpdaemon服务进程，出现大量D进程则为异常（超过3个）
+- acli system ps -auxf | grep vtpdaemon acli system ps -auxf | grep vtpdaemon
+```bash
+acli system ps -auxf | grep vtpdaemon
+```
+
+2、查看对应的vtpdaemon-pai进程堆栈，卡在nfs_file_write堆栈
+- acli system proc stack get --pid {12345}acli system proc stack get --pid {12345}
+```bash
+acli system proc stack get --pid {12345}
+```
+
+3、常见ls /sf/data/ 会异常卡住
+- acli system ls -l /sf/dataacli system ls -l /sf/data
+```bash
+acli system ls -l /sf/data
+```
+
+
+##### 解决方案（上升研发）
+请拨打400或上升VS技术支持-服务号（虚拟存储）或云BG中台技术支持（其他存储）
+
+
+### 存储异常（引用挂起场景）
+
+### 主机异常（引用挂起场景）

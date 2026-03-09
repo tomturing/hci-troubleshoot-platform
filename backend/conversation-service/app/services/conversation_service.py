@@ -21,10 +21,20 @@ from .scheduler_client import SchedulerClient
 
 logger = get_logger("conversation-service")
 
-_SYSTEM_BASE = """你是 HCI 智能排障助手。
+_SYSTEM_BASE = """你是 HCI 智能排障助手，专门解答 HCI（超融合基础架构）产品的故障排查问题。
+
+## 严格答复规则（不可违反）
+
+1. **只能根据下方"参考资料"部分的内容回答问题**，不得使用训练数据中的其他知识。
+2. **如果参考资料中没有相关内容**，必须直接回复：「当前知识库暂未收录该问题的解决方案，建议联系技术支持工程师。」
+3. 严禁自由发挥、推测或补充参考资料未包含的内容。
+4. 引用具体命令或步骤时，必须原文引用参考资料，不得修改或衍生。
+
+## 答复格式要求
+
 - 先定位根因，再给出可执行步骤
-- 涉及命令时明确风险与前置条件
-- 若信息不足，先提出最小必要澄清问题
+- 涉及命令时明确标注风险与前置条件
+- 若参考资料信息不足以判断，先提最小必要澄清问题，不要猜测答案
 """
 
 
@@ -102,16 +112,17 @@ class ConversationService:
             kb_chunks = []
 
         sections: list[str] = [_SYSTEM_BASE]
+        has_context = False
 
         # --- Tier 2: SOP 精确命中 ---
         if sop_node:
             sop_content = sop_node.get("content", "")
             sop_title = sop_node.get("title") or sop_node.get("node_name") or "SOP"
             sections.append(
-                f"## 📋 精确匹配 SOP：{sop_title}\n\n"
-                "以下是与用户问题精确匹配的标准操作规程，请优先参考：\n\n"
+                f"## 📋 参考资料（精确匹配 SOP）：{sop_title}\n\n"
                 f"{sop_content[:settings.KB_CONTEXT_MAX_CHARS]}"
             )
+            has_context = True
             logger.info(
                 event="kb_sop_hit",
                 message=f"SOP 命中：{sop_title}",
@@ -133,15 +144,28 @@ class ConversationService:
 
             if chunks_text_parts:
                 sections.append(
-                    "## 📚 知识库参考\n\n"
-                    "以下是从知识库中检索到的相关内容，供参考：\n\n"
+                    "## 📚 参考资料（知识库语义检索）\n\n"
                     + "\n\n---\n\n".join(chunks_text_parts)
                 )
+                has_context = True
             logger.info(
                 event="kb_search_hit",
                 message=f"KB 检索命中 {len(kb_chunks)} 条",
                 case_id=case_id,
                 hit_count=len(kb_chunks),
+            )
+
+        # 无任何参考资料时，明确告知 LLM 不得擅自回答
+        if not has_context:
+            sections.append(
+                "## ⚠️ 注意\n\n"
+                "知识库中未检索到与本问题相关的参考资料。"
+                "请按照严格答复规则第2条处理，直接告知用户知识库暂无相关内容，不得自行推测。"
+            )
+            logger.info(
+                event="kb_no_hit",
+                message="KB 无命中，将返回兜底提示",
+                case_id=case_id,
             )
 
         # --- Tier 4: 工单上下文 ---
