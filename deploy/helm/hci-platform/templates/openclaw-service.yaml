@@ -19,6 +19,16 @@ spec:
         {{- include "hci.podLabels" (dict "name" "openclaw" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "openclaw") | nindent 6 }}
+      # 绕过 Clash TUN fake-ip DNS 劫持：直接使用真实 DNS（114.114.114.114）
+      # Pod 源 IP 走 ip rule 100（from 10.42.0.0/16 lookup main）可直达真实公网 DNS
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+          - 114.114.114.114
+          - 1.2.4.8
+        options:
+          - name: ndots
+            value: "1"
       securityContext:
         # 宿主机 node 用户 uid=1000 gid=1000，容器以相同 UID 运行
         # 确保 hostPath /home/node（owner=1000）可读写
