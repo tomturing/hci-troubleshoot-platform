@@ -76,10 +76,16 @@ cmd_install() {
     info "加载本地覆盖配置: ${VALUES_OVERRIDE_FILE}"
   fi
 
+  # 仅在无本地覆盖文件时才自动设置 nip.io 域名；覆盖文件应自行声明 global.domain
+  local DOMAIN_ARG=()
+  if [[ ! -f "${VALUES_OVERRIDE_FILE}" ]]; then
+    DOMAIN_ARG=("--set" "global.domain=${WSL_IP}.nip.io")
+  fi
+
   # Helm install
   helm install "${RELEASE_NAME}" "${CHART_PATH}" \
     "${VALUES_ARGS[@]}" \
-    --set "global.domain=${WSL_IP}.nip.io" \
+    "${DOMAIN_ARG[@]}" \
     --namespace "${NAMESPACE}" \
     --create-namespace \
     --wait \
@@ -104,9 +110,15 @@ cmd_upgrade() {
     info "加载本地覆盖配置: ${VALUES_OVERRIDE_FILE}"
   fi
   
+  # 仅在无本地覆盖文件时才自动设置 nip.io 域名；覆盖文件应自行声明 global.domain
+  local DOMAIN_ARG=()
+  if [[ ! -f "${VALUES_OVERRIDE_FILE}" ]]; then
+    DOMAIN_ARG=("--set" "global.domain=${WSL_IP}.nip.io")
+  fi
+
   helm upgrade "${RELEASE_NAME}" "${CHART_PATH}" \
     "${VALUES_ARGS[@]}" \
-    --set "global.domain=${WSL_IP}.nip.io" \
+    "${DOMAIN_ARG[@]}" \
     --namespace "${NAMESPACE}" \
     --wait \
     --timeout 5m
