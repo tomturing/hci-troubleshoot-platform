@@ -43,21 +43,12 @@ spec:
             - name: SOP_SKILLS_DIR
               value: {{ .Values.kbService.sopSkillsDir | quote }}
             - name: ZAI_BASE_URL
-              value: {{ .Values.kbService.zaiBaseUrl | default (printf "http://openclaw:%d" (.Values.openclaw.port | int)) | quote }}
-            - name: ZAI_EMBEDDING_MODEL
-              value: {{ .Values.kbService.zaiEmbeddingModel | default "bge-small-zh-v1.5" | quote }}
-            - name: EMBEDDING_DIM
-              value: {{ .Values.kbService.embeddingDim | default 512 | toString | quote }}
-            - name: EMBEDDING_TIMEOUT_SEC
-              value: {{ .Values.kbService.embeddingTimeoutSec | default "60.0" | quote }}
+              value: "http://openclaw:{{ .Values.openclaw.port }}"
             - name: BGE_MODEL_PATH
               value: "/models/bge-small-zh-v1.5"
           volumeMounts:
             - name: bge-model
               mountPath: /models/bge-small-zh-v1.5
-              readOnly: true
-            - name: sop-skills
-              mountPath: {{ .Values.kbService.sopSkillsDir }}
               readOnly: true
           livenessProbe:
             httpGet:
@@ -88,9 +79,5 @@ spec:
         - name: bge-model
           hostPath:
             path: {{ .Values.kbService.bgeModelHostPath | default "/home/node/models/bge-small-zh-v1.5" | quote }}
-            type: Directory
-        - name: sop-skills
-          hostPath:
-            path: {{ .Values.kbService.sopSkillsHostPath | default "/aihci/hci-troubleshoot-platform/data-pipeline/sop_skills" | quote }}
             type: Directory
 {{- end }}
