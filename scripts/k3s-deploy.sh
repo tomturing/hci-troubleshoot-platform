@@ -22,6 +22,8 @@ NAMESPACE="hci-troubleshoot"
 OBS_NAMESPACE="hci-observability"
 VALUES_FILE="${CHART_PATH}/values.yaml"
 VALUES_DEV_FILE="${CHART_PATH}/values-dev.yaml"
+# 本地覆盖文件（含实际密钥，不入 git），放在 .local/values-prod.override.yaml
+VALUES_OVERRIDE_FILE="${PROJECT_ROOT}/.local/values-prod.override.yaml"
 KUBECTL="sudo k3s kubectl"
 
 # 颜色
@@ -67,10 +69,16 @@ cmd_install() {
   
   local WSL_IP=$(hostname -I | awk '{print $1}')
   
+  # 构建 values 参数（如果存在 override 文件则额外加载）
+  local VALUES_ARGS=("-f" "${VALUES_FILE}" "-f" "${VALUES_DEV_FILE}")
+  if [[ -f "${VALUES_OVERRIDE_FILE}" ]]; then
+    VALUES_ARGS+=("-f" "${VALUES_OVERRIDE_FILE}")
+    info "加载本地覆盖配置: ${VALUES_OVERRIDE_FILE}"
+  fi
+
   # Helm install
   helm install "${RELEASE_NAME}" "${CHART_PATH}" \
-    -f "${VALUES_FILE}" \
-    -f "${VALUES_DEV_FILE}" \
+    "${VALUES_ARGS[@]}" \
     --set "global.domain=${WSL_IP}.nip.io" \
     --namespace "${NAMESPACE}" \
     --create-namespace \
@@ -88,10 +96,16 @@ cmd_upgrade() {
   info "升级 HCI 平台..."
   
   local WSL_IP=$(hostname -I | awk '{print $1}')
+
+  # 构建 values 参数（如果存在 override 文件则额外加载）
+  local VALUES_ARGS=("-f" "${VALUES_FILE}" "-f" "${VALUES_DEV_FILE}")
+  if [[ -f "${VALUES_OVERRIDE_FILE}" ]]; then
+    VALUES_ARGS+=("-f" "${VALUES_OVERRIDE_FILE}")
+    info "加载本地覆盖配置: ${VALUES_OVERRIDE_FILE}"
+  fi
   
   helm upgrade "${RELEASE_NAME}" "${CHART_PATH}" \
-    -f "${VALUES_FILE}" \
-    -f "${VALUES_DEV_FILE}" \
+    "${VALUES_ARGS[@]}" \
     --set "global.domain=${WSL_IP}.nip.io" \
     --namespace "${NAMESPACE}" \
     --wait \

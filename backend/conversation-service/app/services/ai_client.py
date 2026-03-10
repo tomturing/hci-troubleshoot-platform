@@ -51,7 +51,8 @@ class OpenClawAssistant:
         self.api_key = api_key
         self.default_model = default_model
         self.assistant_type = assistant_type
-        self.client = httpx.AsyncClient(timeout=60.0)
+        # 流式 LLM 响应可能较慢，设置宽松超时：连接 10s，读取 120s
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0))
 
     async def chat_completion_stream(
         self, messages: list[dict[str, str]], user_id: str, pod_endpoint: str | None = None, model: str = "openclaw"
