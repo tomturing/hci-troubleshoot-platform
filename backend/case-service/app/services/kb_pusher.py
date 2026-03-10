@@ -4,13 +4,54 @@ KB Pusher - Case 关闭后异步推送摘要到知识库
 """
 
 import asyncio
+import json as _json
+import urllib.error
+import urllib.request
 
-import httpx
 from shared.utils.logger import get_logger
 
 logger = get_logger("case-service-kb-pusher")
 
 _REQUEST_TIMEOUT = 15.0
+
+
+def _sync_push(
+    url: str,
+    payload: dict,
+    headers: dict,
+    case_id: str,
+) -> None:
+    """同步推送（在线程池中运行，避免阻塞事件循环）"""
+    data = _json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers={**headers, "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
+            status = resp.status
+        logger.info(
+            event="kb_push_success",
+            message=f"Case {case_id} 摘要已推送至 KB",
+            case_id=case_id,
+            http_status=status,
+        )
+    except urllib.error.HTTPError as exc:
+        logger.warning(
+            event="kb_push_http_error",
+            message=f"KB 推送返回 HTTP {exc.code}",
+            case_id=case_id,
+            status_code=exc.code,
+        )
+    except urllib.error.URLError as exc:
+        logger.warning(
+            event="kb_push_unavailable",
+            message=f"KB Service 不可达，跳过推送: {exc}",
+            case_id=case_id,
+        )
+    except Exception as exc:
+        logger.error(
+            event="kb_push_unexpected_error",
+            message=f"KB 推送意外错误: {exc}",
+            case_id=case_id,
+        )
 
 
 async def push_case_summary_to_kb(
@@ -47,35 +88,8 @@ async def push_case_summary_to_kb(
     headers = {"Authorization": f"Bearer {internal_token}"}
     url = f"{kb_service_url.rstrip('/')}/api/kb/ingest"
 
-    try:
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            logger.info(
-                event="kb_push_success",
-                message=f"Case {case_id} 摘要已推送至 KB",
-                case_id=case_id,
-                http_status=resp.status_code,
-            )
-    except httpx.HTTPStatusError as exc:
-        logger.warning(
-            event="kb_push_http_error",
-            message=f"KB 推送返回 HTTP {exc.response.status_code}",
-            case_id=case_id,
-            status_code=exc.response.status_code,
-        )
-    except httpx.RequestError as exc:
-        logger.warning(
-            event="kb_push_unavailable",
-            message=f"KB Service 不可达，跳过推送: {exc}",
-            case_id=case_id,
-        )
-    except Exception as exc:
-        logger.error(
-            event="kb_push_unexpected_error",
-            message=f"KB 推送意外错误: {exc}",
-            case_id=case_id,
-        )
+    # 在线程池中执行同步 urllib 调用，避免阻塞事件循环
+    await asyncio.to_thread(_sync_push, url, payload, headers, case_id)
 
 
 def fire_and_forget_push(

@@ -21,6 +21,7 @@ spec:
         prometheus.io/port: {{ .Values.schedulerService.port | quote }}
         prometheus.io/path: "/metrics"
     spec:
+      serviceAccountName: scheduler-service
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "scheduler-service") | nindent 6 }}
       containers:
         - name: scheduler-service
