@@ -19,7 +19,8 @@ spec:
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
   rules:
-    {{- if .Values.global.domain }}
+    {{- if eq .Values.global.routingMode "subdomain" }}
+    {{- /* 子域名路由模式：每个服务独占一个子域名，要求 DNS 有通配符记录 *.domain */}}
     - host: "api.{{ .Values.global.domain }}"
       http:
         paths:
@@ -51,10 +52,11 @@ spec:
                 port:
                   number: {{ .Values.customerUI.port }}
     {{- else }}
-    {{- /* 路径路由模式：如果设置了 publicUrl，提取 host 部分作为绑定；否则通配匹配 */}}
+    {{- /* 路径路由模式（默认）：单域名，路径区分服务，只需一条 A 记录 */}}
     {{- $host := "" }}
     {{- if .Values.global.publicUrl }}
-      {{- $host = .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/]+" }}
+      {{- /* 提取 hostname，去掉协议前缀和端口（Ingress host 字段不能含端口） */}}
+      {{- $host = .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/:]+" }}
     {{- end }}
     - {{- if $host }} host: {{ $host | quote }}
       {{- end }}

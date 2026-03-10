@@ -5,12 +5,32 @@
 # ======================== 全局配置 ==========================================
 global:
   namespace: hci-troubleshoot
-  # 平台根域名，所有子域 (api/app/admin/grafana) 会基于此自动推导
-  # 生产环境通过 --set global.domain=your-domain.com 覆盖
+
+  # ⚠️  路由模式 — 必须与 DNS 环境匹配，改错会导致所有服务 404
+  # --------------------------------------------------------------------
+  # "path"      路径路由（推荐，单 IP / 单域名场景）
+  #             acli.sangfor.com.cn/         → customer-ui
+  #             acli.sangfor.com.cn/admin/   → admin-ui
+  #             acli.sangfor.com.cn/api      → api-gateway
+  #             acli.sangfor.com.cn/grafana  → grafana
+  #             ✅ 只需一条 A 记录指向服务器 IP
+  #
+  # "subdomain" 子域名路由（需要 DNS 通配符 *.your-domain.com）
+  #             api.your-domain.com          → api-gateway
+  #             admin.your-domain.com        → admin-ui
+  #             your-domain.com              → customer-ui
+  #             grafana.your-domain.com      → grafana
+  #             ❌ 如果没有通配符 DNS 记录，此模式下子域名全部无法访问
+  # --------------------------------------------------------------------
+  routingMode: "path"
+
+  # 平台根域名，routingMode=subdomain 时用于拼接子域名
+  # routingMode=path 时此字段不影响路由，仅用于 Grafana Root URL 等辅助配置
   domain: "hci.local"
-  # 公开访问地址（协议+域名+端口），用于路径路由模式下 Grafana Root URL 等配置
-  # 示例：http://acli.sangfor.com.cn:4888  或 https://example.com
-  # 留空则 Grafana 使用默认 placeholder，仅影响管理员登录 redirect
+
+  # 公开访问完整 URL（协议+域名+端口），routingMode=path 时必填
+  # 用途：Grafana GF_SERVER_ROOT_URL、前端 publicPath 等
+  # 示例：http://acli.sangfor.com.cn:4888
   publicUrl: ""
   imageRegistry: "" # 私有镜像仓库前缀，如 "registry.example.com/"
   imagePullPolicy: IfNotPresent

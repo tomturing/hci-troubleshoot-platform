@@ -18,7 +18,8 @@ spec:
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
   rules:
-    {{- if .Values.global.domain }}
+    {{- if eq .Values.global.routingMode "subdomain" }}
+    {{- /* 子域名路由模式：grafana 独占 grafana.<domain> */}}
     - host: "grafana.{{ .Values.global.domain }}"
       http:
         paths:
@@ -30,7 +31,7 @@ spec:
                 port:
                   number: 3000
     {{- else }}
-    # IP 直接访问模式：通过 /grafana 子路径访问（与主 Ingress 共用端口）
+    {{- /* 路径路由模式（默认）：通配 host，/grafana 子路径 */}}
     - http:
         paths:
           - path: /grafana
