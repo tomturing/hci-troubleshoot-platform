@@ -25,7 +25,10 @@ data:
   WARM_POOL_SIZE: {{ .Values.config.warmPoolSize | quote }}
   MAX_POOL_SIZE: {{ .Values.config.maxPoolSize | quote }}
   POD_IDLE_TIMEOUT: {{ .Values.config.podIdleTimeout | quote }}
-  OPENCLAW_IMAGE: {{ .Values.config.openclawImage | quote }}
+  # Pool Pod 镜像与 openclaw 部署镜像保持同步（含 imageRegistry 前缀）
+  OPENCLAW_IMAGE: {{ include "hci.image" (dict "global" .Values.global "image" .Values.openclaw.image) | quote }}
+  # AI 客户端超时（秒）
+  AI_CLIENT_READ_TIMEOUT_SEC: {{ .Values.config.aiClientReadTimeoutSec | default "120.0" | quote }}
   # v3.0 LearningClaw / ProductionClaw 服务地址
   KB_SERVICE_URL: {{ .Values.config.kbServiceUrl | default "http://kb-service:8004" | quote }}
   KB_ENABLED: {{ .Values.kbService.enabled | toString | quote }}

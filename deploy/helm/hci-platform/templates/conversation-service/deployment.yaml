@@ -68,3 +68,15 @@ spec:
             failureThreshold: 30
           resources:
             {{- toYaml .Values.conversationService.resources | nindent 12 }}
+          {{- if .Values.conversationService.aiClientPatch.enabled }}
+          volumeMounts:
+            - name: ai-client-override
+              mountPath: /app/app/services/ai_client.py
+              subPath: ai_client.py
+          {{- end }}
+      {{- if .Values.conversationService.aiClientPatch.enabled }}
+      volumes:
+        - name: ai-client-override
+          configMap:
+            name: conversation-service-ai-client
+      {{- end }}

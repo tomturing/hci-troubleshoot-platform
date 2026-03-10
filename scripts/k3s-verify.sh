@@ -140,6 +140,32 @@ info "Ingress 详情:"
 ${KUBECTL} get ingress -n "${NAMESPACE}" -o wide 2>/dev/null || true
 
 # ============================================================================
+# 4.1 外部可达性验证（通过 IP + Host header 模拟浏览器请求）
+# ============================================================================
+echo ""
+info "--- 外部路由可达性（路径路由模式）---"
+NODE_IP=$(${KUBECTL} get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || hostname -I | awk '{print $1}')
+TRAEFIK_PORT="4888"
+INGRESS_BASE="http://${NODE_IP}:${TRAEFIK_PORT}"
+INGRESS_HOST="${INGRESS_HOST:-acli.sangfor.com.cn}"
+
+check "Traefik 可达 (${NODE_IP}:${TRAEFIK_PORT})" \
+  curl -sf -o /dev/null "${INGRESS_BASE}/"
+
+check "customer-ui: ${INGRESS_HOST}/" \
+  curl -sf -o /dev/null -H "Host: ${INGRESS_HOST}" "${INGRESS_BASE}/"
+
+check "admin-ui: ${INGRESS_HOST}/admin/" \
+  curl -sf -o /dev/null -H "Host: ${INGRESS_HOST}" "${INGRESS_BASE}/admin/"
+
+check "api-gateway: ${INGRESS_HOST}/api/health" \
+  curl -sf -o /dev/null -H "Host: ${INGRESS_HOST}" "${INGRESS_BASE}/api/health"
+
+# grafana 返回 302 重定向，-L 跟随跳转后需 200
+check "grafana: ${INGRESS_HOST}/grafana (→302→200)" \
+  curl -sfL -o /dev/null -H "Host: ${INGRESS_HOST}" "${INGRESS_BASE}/grafana"
+
+# ============================================================================
 # 5. PVC 检查
 # ============================================================================
 echo ""

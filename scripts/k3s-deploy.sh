@@ -179,7 +179,7 @@ cmd_upgrade() {
     "${VALUES_ARGS[@]}" \
     "${DOMAIN_ARG[@]+"${DOMAIN_ARG[@]}"}" \
     --namespace "${NAMESPACE}" \
-    --wait \
+    --atomic \
     --timeout 5m
   
   ok "Helm upgrade 完成!"
@@ -192,13 +192,18 @@ cmd_uninstall() {
   
   helm uninstall "${RELEASE_NAME}" --namespace "${NAMESPACE}" 2>/dev/null || true
   
-  # 清理 PVC（可选）
-  read -p "是否删除持久化数据 (PVC)? [y/N] " -n 1 -r
+  # 清理 PVC（需两次确认，误删不可恢复）
+  read -p "是否删除持久化数据 (PVC)? 此操作不可恢复！[y/N] " -n 1 -r
   echo
   if [[ $REPLY =~ ^[Yy]$ ]]; then
-    ${KUBECTL} delete pvc --all -n "${NAMESPACE}" 2>/dev/null || true
-    ${KUBECTL} delete pvc --all -n "${OBS_NAMESPACE}" 2>/dev/null || true
-    warn "PVC 已清理"
+    read -p "⚠️  二次确认：确定要永久删除所有 PVC 数据吗？[yes/N] " -r
+    if [[ $REPLY == "yes" ]]; then
+      ${KUBECTL} delete pvc --all -n "${NAMESPACE}" 2>/dev/null || true
+      ${KUBECTL} delete pvc --all -n "${OBS_NAMESPACE}" 2>/dev/null || true
+      warn "PVC 已清理"
+    else
+      info "已取消 PVC 清理"
+    fi
   fi
   
   ok "卸载完成"
@@ -243,6 +248,15 @@ wait_for_pods() {
     [[ -z "${not_ready}" ]] && not_ready=0
     
     if [[ "$not_ready" -eq 0 ]]; then
+      # 同时检查可观测性 namespace
+      local obs_not_ready
+      obs_not_ready=$(${KUBECTL} get pods -n "${OBS_NAMESPACE}" --no-headers 2>/dev/null | awk '$3 != "Running" && $3 != "Completed" { c++ } END { print c+0 }' || echo 0)
+      if [[ "$obs_not_ready" -gt 0 ]]; then
+        echo -ne "\r  等待中... ${elapsed}s / ${timeout}s (obs: ${obs_not_ready} 个 Pod 未就绪)"
+        sleep 5
+        ((elapsed+=5))
+        continue
+      fi
       ok "所有业务 Pod 已就绪! ✅"
       echo ""
       ${KUBECTL} get pods -n "${NAMESPACE}" -o wide
