@@ -3,12 +3,21 @@
 # HCI 平台 — Helm 部署管理脚本
 # =============================================================================
 # 使用方法:
-#   bash scripts/k3s-deploy.sh install    # 首次安装
-#   bash scripts/k3s-deploy.sh upgrade    # 升级
-#   bash scripts/k3s-deploy.sh uninstall  # 卸载
-#   bash scripts/k3s-deploy.sh status     # 查看状态
-#   bash scripts/k3s-deploy.sh lint       # Helm lint 检查
-#   bash scripts/k3s-deploy.sh template   # 渲染模板到 stdout
+#   bash scripts/k3s-deploy.sh [--env dev|prod] install    # 首次安装
+#   bash scripts/k3s-deploy.sh [--env dev|prod] upgrade    # 升级
+#   bash scripts/k3s-deploy.sh uninstall                   # 卸载
+#   bash scripts/k3s-deploy.sh status                      # 查看状态
+#   bash scripts/k3s-deploy.sh lint                        # Helm lint 检查
+#   bash scripts/k3s-deploy.sh template                    # 渲染模板到 stdout
+#
+# --env 参数说明:
+#   dev  (默认) values.yaml + values-dev.yaml
+#              imagePullPolicy: Never, 单副本, DEBUG 日志
+#              Ingress 域名: <本机IP>.nip.io
+#   prod        values.yaml + values-prod.yaml + .local/values-prod.override.yaml
+#              imagePullPolicy: IfNotPresent, 多副本, HPA, WARNING 日志
+#              Ingress 域名: 取自 override 文件中的 global.domain
+#              注意: .local/values-prod.override.yaml 必须存在
 #
 set -euo pipefail
 
@@ -22,9 +31,68 @@ NAMESPACE="hci-troubleshoot"
 OBS_NAMESPACE="hci-observability"
 VALUES_FILE="${CHART_PATH}/values.yaml"
 VALUES_DEV_FILE="${CHART_PATH}/values-dev.yaml"
+VALUES_PROD_FILE="${CHART_PATH}/values-prod.yaml"
 # 本地覆盖文件（含实际密钥，不入 git），放在 .local/values-prod.override.yaml
 VALUES_OVERRIDE_FILE="${PROJECT_ROOT}/.local/values-prod.override.yaml"
 KUBECTL="sudo k3s kubectl"
+
+# ============================================================================
+# 解析 --env 参数（必须在其他参数之前）
+# ============================================================================
+ENV="dev"
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      ENV="${2:?--env 需要参数: dev 或 prod}"
+      if [[ "$ENV" != "dev" && "$ENV" != "prod" ]]; then
+        echo "错误: --env 只接受 dev 或 prod" >&2; exit 1
+      fi
+      shift 2
+      ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+
+# 根据环境构建 values 参数链
+_build_values_args() {
+  local -n _out=$1
+  if [[ "$ENV" == "prod" ]]; then
+    if [[ ! -f "${VALUES_OVERRIDE_FILE}" ]]; then
+      error "生产环境部署需要 ${VALUES_OVERRIDE_FILE}，文件不存在！"
+      error "请参考 ${CHART_PATH}/values-prod.override.example.yaml 创建该文件。"
+      exit 1
+    fi
+    _out=("-f" "${VALUES_FILE}" "-f" "${VALUES_PROD_FILE}" "-f" "${VALUES_OVERRIDE_FILE}")
+    info "环境: prod — values.yaml + values-prod.yaml + values-prod.override.yaml"
+  else
+    _out=("-f" "${VALUES_FILE}" "-f" "${VALUES_DEV_FILE}")
+    # dev 模式也允许加载 override 文件（可选）
+    if [[ -f "${VALUES_OVERRIDE_FILE}" ]]; then
+      _out+=("-f" "${VALUES_OVERRIDE_FILE}")
+      warn "dev 模式检测到 override 文件，已加载（override 中的 global.domain 将生效）"
+    fi
+    info "环境: dev  — values.yaml + values-dev.yaml"
+  fi
+}
+
+# 获取 domain 参数：prod 模式从 override 文件读取，dev 模式自动设置 nip.io
+_build_domain_arg() {
+  local -n _dout=$1
+  if [[ "$ENV" == "prod" ]]; then
+    # prod 模式：domain 必须在 override 文件中显式声明，不自动注入
+    _dout=()
+  else
+    # dev 模式且无 override 文件时自动设置开发域名
+    if [[ ! -f "${VALUES_OVERRIDE_FILE}" ]]; then
+      local WSL_IP; WSL_IP=$(hostname -I | awk '{print $1}')
+      _dout=("--set" "global.domain=${WSL_IP}.nip.io")
+    else
+      _dout=()
+    fi
+  fi
+}
 
 # 颜色
 RED='\033[0;31m'
@@ -44,15 +112,21 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 cmd_lint() {
   info "运行 Helm lint..."
-  helm lint "${CHART_PATH}" -f "${VALUES_FILE}" -f "${VALUES_DEV_FILE}"
+  local VALUES_ARGS=()
+  _build_values_args VALUES_ARGS
+  helm lint "${CHART_PATH}" "${VALUES_ARGS[@]}"
   ok "Lint 通过! ✅"
 }
 
 cmd_template() {
   info "渲染 Helm 模板..."
+  local VALUES_ARGS=()
+  _build_values_args VALUES_ARGS
+  local DOMAIN_ARG=()
+  _build_domain_arg DOMAIN_ARG
   helm template "${RELEASE_NAME}" "${CHART_PATH}" \
-    -f "${VALUES_FILE}" \
-    -f "${VALUES_DEV_FILE}"
+    "${VALUES_ARGS[@]}" \
+    "${DOMAIN_ARG[@]+"${DOMAIN_ARG[@]}"}"
 }
 
 cmd_install() {
@@ -66,26 +140,16 @@ cmd_install() {
     warn "检测到 Docker Compose 服务正在运行，正在停止..."
     docker compose -f "${PROJECT_ROOT}/deploy/docker/docker-compose.yml" down 2>/dev/null || true
   fi
-  
-  local WSL_IP=$(hostname -I | awk '{print $1}')
-  
-  # 构建 values 参数（如果存在 override 文件则额外加载）
-  local VALUES_ARGS=("-f" "${VALUES_FILE}" "-f" "${VALUES_DEV_FILE}")
-  if [[ -f "${VALUES_OVERRIDE_FILE}" ]]; then
-    VALUES_ARGS+=("-f" "${VALUES_OVERRIDE_FILE}")
-    info "加载本地覆盖配置: ${VALUES_OVERRIDE_FILE}"
-  fi
 
-  # 仅在无本地覆盖文件时才自动设置 nip.io 域名；覆盖文件应自行声明 global.domain
+  local VALUES_ARGS=()
+  _build_values_args VALUES_ARGS
   local DOMAIN_ARG=()
-  if [[ ! -f "${VALUES_OVERRIDE_FILE}" ]]; then
-    DOMAIN_ARG=("--set" "global.domain=${WSL_IP}.nip.io")
-  fi
+  _build_domain_arg DOMAIN_ARG
 
   # Helm install
   helm install "${RELEASE_NAME}" "${CHART_PATH}" \
     "${VALUES_ARGS[@]}" \
-    "${DOMAIN_ARG[@]}" \
+    "${DOMAIN_ARG[@]+"${DOMAIN_ARG[@]}"}" \
     --namespace "${NAMESPACE}" \
     --create-namespace \
     --wait \
@@ -100,25 +164,15 @@ cmd_install() {
 
 cmd_upgrade() {
   info "升级 HCI 平台..."
-  
-  local WSL_IP=$(hostname -I | awk '{print $1}')
 
-  # 构建 values 参数（如果存在 override 文件则额外加载）
-  local VALUES_ARGS=("-f" "${VALUES_FILE}" "-f" "${VALUES_DEV_FILE}")
-  if [[ -f "${VALUES_OVERRIDE_FILE}" ]]; then
-    VALUES_ARGS+=("-f" "${VALUES_OVERRIDE_FILE}")
-    info "加载本地覆盖配置: ${VALUES_OVERRIDE_FILE}"
-  fi
-  
-  # 仅在无本地覆盖文件时才自动设置 nip.io 域名；覆盖文件应自行声明 global.domain
+  local VALUES_ARGS=()
+  _build_values_args VALUES_ARGS
   local DOMAIN_ARG=()
-  if [[ ! -f "${VALUES_OVERRIDE_FILE}" ]]; then
-    DOMAIN_ARG=("--set" "global.domain=${WSL_IP}.nip.io")
-  fi
+  _build_domain_arg DOMAIN_ARG
 
   helm upgrade "${RELEASE_NAME}" "${CHART_PATH}" \
     "${VALUES_ARGS[@]}" \
-    "${DOMAIN_ARG[@]}" \
+    "${DOMAIN_ARG[@]+"${DOMAIN_ARG[@]}"}" \
     --namespace "${NAMESPACE}" \
     --wait \
     --timeout 5m
@@ -214,7 +268,10 @@ case "$ACTION" in
   lint)       cmd_lint ;;
   template)   cmd_template ;;
   *)
-    echo "用法: $0 {install|upgrade|uninstall|status|lint|template}"
+    echo "用法: $0 [--env dev|prod] {install|upgrade|uninstall|status|lint|template}"
+    echo ""
+    echo "  --env dev   (默认) 开发环境: values-dev.yaml + 可选 override，自动注入 nip.io 域名"
+    echo "  --env prod  生产环境: values-prod.yaml + .local/values-prod.override.yaml（必须存在）"
     echo ""
     echo "  install    首次安装 (helm install)"
     echo "  upgrade    升级部署 (helm upgrade)"
