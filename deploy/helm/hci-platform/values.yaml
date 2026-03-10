@@ -158,6 +158,8 @@ kbService:
   zaiBaseUrl: "http://192.168.0.4:18100"
   zaiEmbeddingModel: "bge-small-zh-v1.5"
   embeddingDim: 512 # bge-small-zh-v1.5 实际输出 512 维，非 384
+  # 大文件（>50KB Markdown）会生成 50+ chunks 批量 Embedding，5s 原始超时不够，改为 60s
+  embeddingTimeoutSec: "60.0"
   bgeModelHostPath: /home/node/models/bge-small-zh-v1.5
   # SOP 技能目录挂载（从宿主机或 PVC 挂载）
   sopSkillsDir: /data/sop_skills

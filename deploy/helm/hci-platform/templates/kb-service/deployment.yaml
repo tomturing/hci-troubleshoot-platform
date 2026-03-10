@@ -48,6 +48,8 @@ spec:
               value: {{ .Values.kbService.zaiEmbeddingModel | default "bge-small-zh-v1.5" | quote }}
             - name: EMBEDDING_DIM
               value: {{ .Values.kbService.embeddingDim | default 512 | toString | quote }}
+            - name: EMBEDDING_TIMEOUT_SEC
+              value: {{ .Values.kbService.embeddingTimeoutSec | default "60.0" | quote }}
             - name: BGE_MODEL_PATH
               value: "/models/bge-small-zh-v1.5"
           volumeMounts:
