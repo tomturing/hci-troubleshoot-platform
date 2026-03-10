@@ -39,7 +39,7 @@ KUBECTL="sudo k3s kubectl"
 # ============================================================================
 # 解析 --env 参数（必须在其他参数之前）
 # ============================================================================
-ENV="dev"
+ENV="auto"   # 未显式指定时根据 override 文件是否存在自动决定
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,6 +55,16 @@ while [[ $# -gt 0 ]]; do
 done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 
+# 自动推断：生产机有 override 文件 → prod；开发机没有 → dev
+if [[ "$ENV" == "auto" ]]; then
+  if [[ -f "${VALUES_OVERRIDE_FILE}" ]]; then
+    ENV="prod"
+    echo -e "\033[1;33m[WARN]\033[0m 检测到 ${VALUES_OVERRIDE_FILE}，自动切换为 prod 环境。如需强制 dev 请传 --env dev"
+  else
+    ENV="dev"
+  fi
+fi
+
 # 根据环境构建 values 参数链
 _build_values_args() {
   local -n _out=$1
@@ -68,11 +78,6 @@ _build_values_args() {
     info "环境: prod — values.yaml + values-prod.yaml + values-prod.override.yaml"
   else
     _out=("-f" "${VALUES_FILE}" "-f" "${VALUES_DEV_FILE}")
-    # dev 模式也允许加载 override 文件（可选）
-    if [[ -f "${VALUES_OVERRIDE_FILE}" ]]; then
-      _out+=("-f" "${VALUES_OVERRIDE_FILE}")
-      warn "dev 模式检测到 override 文件，已加载（override 中的 global.domain 将生效）"
-    fi
     info "环境: dev  — values.yaml + values-dev.yaml"
   fi
 }
