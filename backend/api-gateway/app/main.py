@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
@@ -70,6 +72,13 @@ app.include_router(conversations.router)
 app.include_router(assistants.router)
 app.include_router(kb.router)
 app.include_router(health.router)
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 指标抓取端点"""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 if __name__ == "__main__":
     import uvicorn

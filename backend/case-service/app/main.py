@@ -8,6 +8,8 @@ Case Service - 主应用
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.postgres import DatabaseManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
@@ -49,6 +51,12 @@ instrument_app(app)
 
 # 注册路由
 app.include_router(cases.router)
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 指标抓取端点"""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/health")
