@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: 安装依赖
+        run: uv sync --group dev
+
+      - name: Ruff 代码检查
+        run: uv run ruff check backend/ tests/ data-pipeline/
+
+  unit-tests:
+    name: 单元测试
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: 安装依赖
+        run: uv sync --group dev
+
+      - name: 运行单元测试（含覆盖率）
+        run: |
+          uv run pytest tests/unit/ \
+            backend/api-gateway/tests/ \
+            backend/case-service/tests/unit/ \
+            backend/scheduler-service/tests/unit/ \
+            -x -q \
+            --cov=backend \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            -m "not integration and not slow"
+
+      - name: 上传覆盖率报告
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  integration-tests:
+    name: 集成测试（含 Redis）
+    runs-on: ubuntu-latest
+    needs: lint
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: 安装依赖
+        run: uv sync --group dev
+
+      - name: 运行集成测试
+        env:
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          uv run pytest tests/integration/ \
+            backend/scheduler-service/tests/integration/ \
+            backend/conversation-service/tests/ \
+            -x -q \
+            -m "integration"
+
+  security-tests:
+    name: 安全测试（CORS）
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: 安装依赖
+        run: uv sync --group dev
+
+      - name: 运行 CORS 安全测试
+        run: |
+          uv run pytest tests/security/ -x -q -v
