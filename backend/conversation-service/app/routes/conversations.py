@@ -47,7 +47,7 @@ async def get_conversation_service() -> ConversationService:
 
     async for session in database_manager.get_session():
         repo = ConversationRepository(session)
-        yield ConversationService(repo, ai_registry, scheduler_client, kb_client)
+        yield ConversationService(repo, ai_registry, scheduler_client, kb_client, database_manager.async_session_factory)
 
 
 @router.post("/", status_code=201)
@@ -128,7 +128,14 @@ async def send_message(
             yield "data: [DONE]\n\n"
 
         except asyncio.CancelledError:
-            # 客户端断开连接，正常取消流式响应，直接向上抛出
+            # 客户端断开连接，若已收到部分 AI 回复则在后台保存，避免丢失
+            if ai_content:
+                background_tasks.add_task(
+                    service.save_assistant_message,
+                    conversation_id=conversation_id,
+                    case_id=message.case_id,
+                    content="".join(ai_content),
+                )
             raise
         except AIStreamError as e:
             # 结构化 AI 流错误，使用 json.dumps 安全序列化

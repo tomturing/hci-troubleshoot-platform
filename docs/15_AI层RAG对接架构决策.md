@@ -200,12 +200,12 @@ conversation-service（消息路由器 + session 管理）
 │    ├── storage_offline/                                │
 │    └── node_degraded/                                  │
 │                         ↑                              │
-│              LearningClaw 定期更新 ConfigMap           │
+│              LearningClaw 定期更新 ConfigMap            │
 │                                                        │
 │  Pi agent runtime                                      │
-│    ├── 启动时：读本地 skills（SOP，零延迟，无 HTTP）    │
-│    ├── 对话中：工具调用 KB Service（案例库，新鲜检索）  │
-│    └── 结案时：sessions_send → LearningClaw 提炼经验   │
+│    ├── 启动时：读本地 skills（SOP，零延迟，无 HTTP）      │
+│    ├── 对话中：工具调用 KB Service（案例库，新鲜检索）    │
+│    └── 结案时：sessions_send → LearningClaw 提炼经验    │
 │                                                        │
 └──────────────┬─────────────────────┬───────────────────┘
                │ HTTP 工具调用        │ sessions API

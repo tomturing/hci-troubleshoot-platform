@@ -3,7 +3,7 @@
 > **本文件是所有 AI Agent（Claude Code / Codex CLI / Gemini CLI）的项目层规范文件。**
 > `./CLAUDE.md` 是本文件的符号链接，确保 Claude Code 读到相同内容。
 > `./CLAUDE.local.md` 存放个人本地配置（不提交 git）。
-> 全局编码顾迃见 `~/.claude/CLAUDE.md`，全局避坑指南见 `~/.claude/pitfalls/`。
+> 全局编码规范见 `~/.claude/CLAUDE.md`，全局避坑指南见 `~/.claude/pitfalls/`。
 
 ---
 

@@ -145,11 +145,17 @@ for f in SOUL.md IDENTITY.md AGENTS.md BOOTSTRAP.md TOOLS.md USER.md; do
   cp "/init-config/${f}" "/home/node/.openclaw/workspace/${f}"
   echo "  已加载 ${f}"
 done
-cp /init-config/openclaw.json /home/node/.openclaw/openclaw.json
+sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g" /init-config/openclaw.json > /home/node/.openclaw/openclaw.json
 echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}"
 """
                 ],
-                "env": [{"name": "CASE_ID", "value": case_id or ""}],
+                "env": [
+                    {"name": "CASE_ID", "value": case_id or ""},
+                    {
+                        "name": "OPENCLAW_GATEWAY_TOKEN",
+                        "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_GATEWAY_TOKEN"}},
+                    },
+                ],
                 "volumeMounts": [
                     {"name": "claw-home", "mountPath": "/home/node"},
                     {"name": "init-config", "mountPath": "/init-config", "readOnly": True},

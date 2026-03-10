@@ -47,11 +47,14 @@ class ConversationService:
         ai_registry: AIAssistantRegistry,
         scheduler_client: SchedulerClient | None = None,
         kb_client: KBClient | None = None,
+        session_factory=None,
     ):
         self.repository = repository
         self.ai_registry = ai_registry
         self.scheduler_client = scheduler_client
         self.kb_client = kb_client
+        # 独立事务 session 工厂，用于用户消息先行提交（与 AI 调用解耦）
+        self.session_factory = session_factory
 
     async def create_conversation(
         self,
@@ -187,10 +190,17 @@ class ConversationService:
         """
         trace_id = get_current_trace_id()
 
-        # 1. 保存用户消息
-        await self.repository.add_message(
-            conversation_id=conversation_id, case_id=case_id, role=MessageRole.user, content=content, trace_id=trace_id
-        )
+        # 1. 保存用户消息（独立事务，确保 AI 报错不会导致用户消息回滚）
+        if self.session_factory:
+            async with self.session_factory() as independent_session:
+                await ConversationRepository(independent_session).add_message(
+                    conversation_id=conversation_id, case_id=case_id, role=MessageRole.user, content=content, trace_id=trace_id
+                )
+                await independent_session.commit()
+        else:
+            await self.repository.add_message(
+                conversation_id=conversation_id, case_id=case_id, role=MessageRole.user, content=content, trace_id=trace_id
+            )
 
         # 2. 构建 4-Tier System Prompt（并发 SOP + 向量检索）
         system_prompt = await self._build_system_prompt(content, case_id)
