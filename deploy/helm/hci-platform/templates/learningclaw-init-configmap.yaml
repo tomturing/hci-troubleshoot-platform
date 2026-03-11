@@ -17,22 +17,39 @@ data:
   # system prompt 通过 agents.defaults 写入，session-memory 通过内置钩子保持
   openclaw.json: |
     {
-      "auth": {
-        "profiles": {
-          "zai:default": {
-            "provider": "zai",
-            "mode": "api_key"
-          }
-        }
-      },
       "agents": {
         "defaults": {
+          "model": {
+            "primary": "{{ .Values.config.glmProvider }}/{{ .Values.config.glmModelId }}"
+          },
+          "models": {
+            "{{ .Values.config.glmProvider }}/{{ .Values.config.glmModelId }}": {
+              "alias": "GLM"
+            }
+          },
           "workspace": "/home/node/.openclaw/workspace",
           "compaction": {
             "mode": "safeguard"
           },
           "maxConcurrent": 1,
           "systemPrompt": "你是 LearningClaw，HCI 智能排障平台的知识工程师。你的职责是自主学习案例、提炼知识并写入知识库。启动时必须读取 /home/node/.openclaw/workspace/BOOTSTRAP.md 并按其指引执行。不要等待用户指令，主动执行学习任务。"
+        }
+      },
+      "models": {
+        "mode": "merge",
+        "providers": {
+          "{{ .Values.config.glmProvider }}": {
+            "api": "openai-completions",
+            "apiKey": "${ZAI_API_KEY}",
+            "baseUrl": "{{ .Values.config.glmBaseUrl }}",
+            "models": [
+              {
+                "contextWindow": {{ .Values.config.glmContextWindow }},
+                "id": "{{ .Values.config.glmModelId }}",
+                "name": "GLM"
+              }
+            ]
+          }
         }
       },
       "gateway": {

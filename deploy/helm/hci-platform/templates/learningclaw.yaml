@@ -54,9 +54,16 @@ spec:
                 fi
               done
 
-              # openclaw.json 始终覆盖（配置变更需要生效）
-              cp /init-config/openclaw.json /home/node/.openclaw/openclaw.json
-              echo "  已更新 openclaw.json"
+              # openclaw.json 始终覆盖（配置变更需要生效），同时替换运行时变量
+              sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g; s/\${ZAI_API_KEY}/${ZAI_API_KEY}/g" \
+                /init-config/openclaw.json > /home/node/.openclaw/openclaw.json
+              # 快速失败：验证 agents.defaults.model.primary 必须配置，防止静默 fallback 到 anthropic
+              PRIMARY=$(node -e "const c=JSON.parse(require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8')); console.log(c?.agents?.defaults?.model?.primary||'')" 2>/dev/null)
+              if [ -z "$PRIMARY" ]; then
+                echo "❌ FATAL: agents.defaults.model.primary 未配置！openclaw 将 fallback 到 anthropic/claude-opus-4-6"
+                exit 1
+              fi
+              echo "  已更新 openclaw.json，model=${PRIMARY}"
 
               # 初始化学习进度文件（仅首次）
               if [ ! -f "/home/node/.openclaw/workspace/memory/learning_progress.md" ]; then
@@ -158,6 +165,7 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.learningclaw.resources | nindent 12 }}
+      {{ include "hci.clawDnsConfig" . | nindent 6 }}
       volumes:
         - name: init-config
           configMap:

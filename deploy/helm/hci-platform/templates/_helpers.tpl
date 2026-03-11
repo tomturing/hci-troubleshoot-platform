@@ -100,3 +100,21 @@ securityContext:
 {{ toYaml .Values.workloadDefaults.securityContext.container | nindent 2 }}
 {{- end }}
 {{- end }}
+
+{{/*
+claw pod 专用 DNS 配置（绕过宿主机 Clash TUN fake-ip DNS 劫持，参考 PIT-034）
+所有需要出网访问 AI provider 的 claw pod（openclaw/learningclaw/productionclaw）
+均应在 pod spec 中 include 此 helper。
+用法:
+  {{ include "hci.clawDnsConfig" . }}
+*/}}
+{{- define "hci.clawDnsConfig" -}}
+dnsPolicy: None
+dnsConfig:
+  nameservers:
+    - 114.114.114.114
+    - 1.2.4.8
+  options:
+    - name: ndots
+      value: "1"
+{{- end }}

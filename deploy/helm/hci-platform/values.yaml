@@ -320,6 +320,14 @@ config:
   caseServiceUrl: "http://case-service:8001"
   conversationServiceUrl: "http://conversation-service:8002"
   learningclawServiceUrl: "http://learningclaw:18789"
+  # ======================== 全局 AI 模型配置（所有 claw pod 共用）==========================
+  # !! 修改此处即可切换平台所有 claw pod 使用的 AI 模型，无需逐个修改 ConfigMap !!
+  # API key 在 secrets.zaiApiKey，运行时通过 ${ZAI_API_KEY} 注入
+  glmProvider: "tly"
+  glmModelId: "glm-5"
+  glmBaseUrl: "https://open.bigmodel.cn/api/paas/v4"
+  glmContextWindow: 128000
+
   # v3.0 多助手注册表：productionclaw = 一 Pod 一 Case 模式
   assistantRegistryJson: '{"productionclaw":{"image":"hci-openclaw:latest","port":18789,"warm_pool_size":2,"max_pool_size":10,"idle_timeout":0,"display_name":"ProductionClaw (GLM)","description":"一 Case 一 Pod AI 排障助手","init_configmap":"productionclaw-init-config","labels":{"claw-role":"production"}},"openclaw":{"image":"hci-openclaw:latest","port":18789,"warm_pool_size":1,"max_pool_size":5,"idle_timeout":300,"display_name":"OpenClaw (GLM)","description":"通用 AI 排障助手","labels":{"app.kubernetes.io/name":"openclaw"}}}'
   # 注意：assistantRegistryJson 中的 base_url 使用 K8s Service 内部地址

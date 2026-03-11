@@ -21,11 +21,11 @@ data:
       "agents": {
         "defaults": {
           "model": {
-            "primary": "tly/glm-5"
+            "primary": "{{ .Values.config.glmProvider }}/{{ .Values.config.glmModelId }}"
           },
           "models": {
-            "tly/glm-5": {
-              "alias": "GLM-5"
+            "{{ .Values.config.glmProvider }}/{{ .Values.config.glmModelId }}": {
+              "alias": "GLM"
             }
           }
         }
@@ -33,15 +33,15 @@ data:
       "models": {
         "mode": "merge",
         "providers": {
-          "tly": {
+          "{{ .Values.config.glmProvider }}": {
             "api": "openai-completions",
             "apiKey": "${ZAI_API_KEY}",
-            "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+            "baseUrl": "{{ .Values.config.glmBaseUrl }}",
             "models": [
               {
-                "contextWindow": 128000,
-                "id": "glm-5",
-                "name": "GLM-5"
+                "contextWindow": {{ .Values.config.glmContextWindow }},
+                "id": "{{ .Values.config.glmModelId }}",
+                "name": "GLM"
               }
             ]
           }
