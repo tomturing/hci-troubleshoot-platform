@@ -15,7 +15,7 @@ from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
-from app.routes import conversations
+from app.routes import conversations, evaluate
 from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
 from app.services.kb_client import KBClient
 from app.services.scheduler_client import SchedulerClient
@@ -76,6 +76,7 @@ async def lifespan(app: FastAPI):
 
     # 兼容现有路由注入方式
     conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client)
+    evaluate.set_database_manager(database_manager)
 
     yield
 
@@ -98,6 +99,7 @@ instrument_app(app)
 
 # 注册路由
 app.include_router(conversations.router)
+app.include_router(evaluate.router)
 
 
 @app.get("/health")
