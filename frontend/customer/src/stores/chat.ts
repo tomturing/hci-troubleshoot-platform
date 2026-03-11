@@ -7,6 +7,7 @@ import { ref, computed } from 'vue'
 import { createApiClient, createCaseApi, createConversationApi, createAssistantApi } from '@hci/shared'
 import type { CaseResponse, MessageResponse, AssistantInfo } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
+import { createEvaluateApi } from '@/api/evaluate'
 
 /** 前端聊天消息 */
 export interface ChatMessage {
@@ -29,6 +30,7 @@ export const useChatStore = defineStore('chat', () => {
   const caseApi = createCaseApi(apiClient)
   const conversationApi = createConversationApi(apiClient)
   const assistantApi = createAssistantApi(apiClient)
+  const evaluateApi = createEvaluateApi(apiClient)
 
   // 是否显示助手选择器 (生产环境隐藏)
   const showAssistantSelector = import.meta.env.VITE_SHOW_ASSISTANT_SELECTOR !== 'false'
@@ -60,6 +62,10 @@ export const useChatStore = defineStore('chat', () => {
   const historyMessages = ref<ChatMessage[]>([])
   const historyCase = ref<CaseResponse | null>(null)
   const historyLoading = ref(false)
+
+  // 评分卡状态
+  const showRatingCard = ref(false)
+  const ratingConversationId = ref<string | null>(null)
 
   // 计算属性
   const hasActiveCase = computed(() => {
@@ -367,7 +373,17 @@ export const useChatStore = defineStore('chat', () => {
       const res = await caseApi.close(currentCase.value.case_id)
       currentCase.value = res.data
       addSystemMessage(`工单 ${res.data.case_id} 已关闭。发送新消息开启新工单。`)
+
+      // 保存当前会话 ID，用于评分
+      const convId = conversationId.value
+      // 清空会话 ID
       conversationId.value = null
+
+      // 触发评分卡显示
+      if (convId) {
+        ratingConversationId.value = convId
+        showRatingCard.value = true
+      }
     } catch (e: any) {
       addSystemMessage(`关闭工单失败: ${e.response?.data?.detail || e.message}`)
     }
@@ -470,6 +486,40 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
+  /** 关闭评分卡 */
+  function closeRatingCard() {
+    showRatingCard.value = false
+    ratingConversationId.value = null
+  }
+
+  /**
+   * 提交评分
+   * @param score 评分值 1-5
+   */
+  async function submitRating(score: number) {
+    if (!ratingConversationId.value) {
+      closeRatingCard()
+      return
+    }
+
+    try {
+      await evaluateApi.submit(ratingConversationId.value, { score })
+      // 评分成功，关闭卡片（静默处理，不提示用户）
+      console.log('评分提交成功:', score)
+    } catch (e) {
+      // 网络错误静默失败，不影响用户操作
+      console.warn('评分提交失败:', e)
+    } finally {
+      closeRatingCard()
+    }
+  }
+
+  /** 跳过评分 */
+  function skipRating() {
+    // 直接关闭卡片，不发请求
+    closeRatingCard()
+  }
+
   return {
     messages,
     currentCase,
@@ -502,6 +552,12 @@ export const useChatStore = defineStore('chat', () => {
     closeHistoryDrawer,
     loadHistoryMessages,
     switchToCase,
+    // 评分卡
+    showRatingCard,
+    ratingConversationId,
+    submitRating,
+    skipRating,
+    closeRatingCard,
     // 核心方法
     initialize,
     sendMessage,

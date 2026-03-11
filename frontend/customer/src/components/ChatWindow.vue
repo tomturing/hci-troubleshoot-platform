@@ -2,6 +2,7 @@
 import { ref, reactive, nextTick, watch, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import MessageBubble from './MessageBubble.vue'
+import RatingCard from './RatingCard.vue'
 
 const chatStore = useChatStore()
 const inputText = ref('')
@@ -186,6 +187,15 @@ function formatDate(d: string): string {
         <el-icon class="is-loading"><i class="el-icon-loading" /></el-icon>
         <span>处理中...</span>
       </div>
+
+      <!-- 评分卡 -->
+      <RatingCard
+        :visible="chatStore.showRatingCard"
+        :conversation-id="chatStore.ratingConversationId"
+        @submit="chatStore.submitRating"
+        @skip="chatStore.skipRating"
+        @close="chatStore.closeRatingCard"
+      />
     </div>
 
     <!-- 历史工单抽屉 -->
