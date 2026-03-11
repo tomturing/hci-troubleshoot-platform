@@ -145,7 +145,7 @@ for f in SOUL.md IDENTITY.md AGENTS.md BOOTSTRAP.md TOOLS.md USER.md; do
   cp "/init-config/${f}" "/home/node/.openclaw/workspace/${f}"
   echo "  已加载 ${f}"
 done
-sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g" /init-config/openclaw.json > /home/node/.openclaw/openclaw.json
+sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g; s/\${ZAI_API_KEY}/${ZAI_API_KEY}/g" /init-config/openclaw.json > /home/node/.openclaw/openclaw.json
 echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}"
 """
                 ],
@@ -154,6 +154,10 @@ echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}"
                     {
                         "name": "OPENCLAW_GATEWAY_TOKEN",
                         "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_GATEWAY_TOKEN"}},
+                    },
+                    {
+                        "name": "ZAI_API_KEY",
+                        "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "ZAI_API_KEY"}},
                     },
                 ],
                 "volumeMounts": [
@@ -211,6 +215,12 @@ echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}"
                 ],
                 "volumes": volumes,
                 "restartPolicy": "Never",
+                # 绕过宿主机 Clash TUN fake-ip DNS 劫持（参考 PIT-034）
+                "dnsPolicy": "None",
+                "dnsConfig": {
+                    "nameservers": ["114.114.114.114", "1.2.4.8"],
+                    "options": [{"name": "ndots", "value": "1"}],
+                },
             },
         }
 

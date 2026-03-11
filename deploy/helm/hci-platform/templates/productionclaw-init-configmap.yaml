@@ -18,6 +18,35 @@ data:
   # system prompt 引导排障模式
   openclaw.json: |
     {
+      "agents": {
+        "defaults": {
+          "model": {
+            "primary": "tly/glm-5"
+          },
+          "models": {
+            "tly/glm-5": {
+              "alias": "GLM-5"
+            }
+          }
+        }
+      },
+      "models": {
+        "mode": "merge",
+        "providers": {
+          "tly": {
+            "api": "openai-completions",
+            "apiKey": "${ZAI_API_KEY}",
+            "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+            "models": [
+              {
+                "contextWindow": 128000,
+                "id": "glm-5",
+                "name": "GLM-5"
+              }
+            ]
+          }
+        }
+      },
       "gateway": {
         "controlUi": {
           "enabled": false,
