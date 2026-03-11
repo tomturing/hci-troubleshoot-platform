@@ -23,6 +23,7 @@ class Conversation(Base, TraceableMixin):
     started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     ended_at = Column(DateTime(timezone=True), nullable=True)
     message_count = Column(Integer, default=0)
+    repeat_question_count = Column(Integer, default=0, nullable=False)
     metadata_ = Column("metadata", JSONB, default=dict)
 
     def __repr__(self):

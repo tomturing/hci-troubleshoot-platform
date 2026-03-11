@@ -21,6 +21,30 @@ from .scheduler_client import SchedulerClient
 
 logger = get_logger("conversation-service")
 
+# Jaccard 相似度阈值
+JACCARD_THRESHOLD = 0.6
+# 历史消息采样数量
+HISTORY_LIMIT = 10
+
+
+def jaccard_similarity(a: str, b: str) -> float:
+    """
+    计算两个字符串的 Jaccard 相似度（token 级）
+
+    中英文分词使用简单的 split()，不需要 jieba
+
+    Args:
+        a: 字符串 a
+        b: 字符串 b
+
+    Returns:
+        相似度分数 (0.0-1.0)，若任一字符串为空则返回 0.0
+    """
+    sa, sb = set(a.lower().split()), set(b.lower().split())
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
 _SYSTEM_BASE = """你是 HCI 智能排障助手，专门解答 HCI（超融合基础架构）产品的故障排查问题。
 
 ## 严格答复规则（不可违反）
@@ -201,6 +225,9 @@ class ConversationService:
             await self.repository.add_message(
                 conversation_id=conversation_id, case_id=case_id, role=MessageRole.user, content=content, trace_id=trace_id
             )
+
+        # 1.5 重复提问检测（异步执行，不阻塞主流程）
+        await self._check_repeat_question(conversation_id=conversation_id, case_id=case_id, content=content)
 
         # 2. 构建 4-Tier System Prompt（并发 SOP + 向量检索）
         system_prompt = await self._build_system_prompt(content, case_id)
@@ -390,3 +417,62 @@ class ConversationService:
             assistant_type=assistant_type,
         )
         return self._get_fallback_endpoint(assistant_type)
+
+    async def _check_repeat_question(self, conversation_id: uuid.UUID, case_id: str, content: str) -> None:
+        """
+        检测用户是否重复提问，使用 Jaccard 相似度算法
+
+        检测逻辑：
+        1. 获取当前 case 下最近 N 条用户消息
+        2. 计算新消息与历史消息的 Jaccard 相似度（token 级）
+        3. 若任意一条历史消息 Jaccard >= 0.6，判定为重复提问
+        4. 重复时：UPDATE conversation SET repeat_question_count = repeat_question_count + 1
+
+        注意：此方法在消息保存后调用，不阻塞主流程
+        """
+        try:
+            # 1. 获取当前 case 下最近 N 条用户消息（排除当前对话）
+            recent_messages = await self.repository.get_recent_user_messages(
+                case_id=case_id,
+                conversation_id=conversation_id,
+                limit=HISTORY_LIMIT,
+            )
+
+            if not recent_messages:
+                return
+
+            # 2. 计算与每条历史消息的 Jaccard 相似度
+            is_repeat = False
+            for historical_msg in recent_messages:
+                similarity = jaccard_similarity(content, historical_msg.content)
+                if similarity >= JACCARD_THRESHOLD:
+                    is_repeat = True
+                    logger.info(
+                        event="repeat_question_detected",
+                        message="检测到重复提问",
+                        conversation_id=str(conversation_id),
+                        case_id=case_id,
+                        similarity=similarity,
+                        historical_message_id=str(historical_msg.message_id),
+                    )
+                    break
+
+            # 3. 如果是重复提问，增加计数
+            if is_repeat:
+                await self.repository.increment_repeat_question_count(conversation_id)
+                logger.info(
+                    event="repeat_question_count_increased",
+                    message="重复提问计数已增加",
+                    conversation_id=str(conversation_id),
+                    case_id=case_id,
+                )
+
+        except Exception as e:
+            # 检测失败不影响主流程，仅记录日志
+            logger.error(
+                event="repeat_question_check_error",
+                message="重复提问检测失败",
+                conversation_id=str(conversation_id),
+                case_id=case_id,
+                error=str(e),
+            )

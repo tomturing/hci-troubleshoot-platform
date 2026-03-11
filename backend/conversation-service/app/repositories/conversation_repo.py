@@ -102,3 +102,36 @@ class ConversationRepository:
             select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
         )
         return list(result.scalars().all())
+
+    async def get_recent_user_messages(
+        self, case_id: str, conversation_id: uuid.UUID, limit: int = 10
+    ) -> list[Message]:
+        """
+        获取当前 case 下最近 N 条用户消息（排除当前消息）
+
+        用于重复提问检测，仅获取用户消息，按时间倒序排列
+        """
+        result = await self.session.execute(
+            select(Message)
+            .where(Message.case_id == case_id)
+            .where(Message.conversation_id != conversation_id)  # 排除当前对话的消息，避免刚保存的消息被检测到
+            .where(Message.role == MessageRole.user)
+            .order_by(desc(Message.created_at))
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def increment_repeat_question_count(self, conversation_id: uuid.UUID) -> None:
+        """
+        增加重复提问计数
+
+        UPDATE conversation SET repeat_question_count = repeat_question_count + 1 WHERE id = {conversation_id}
+        """
+        from sqlalchemy import update
+
+        await self.session.execute(
+            update(Conversation)
+            .where(Conversation.conversation_id == conversation_id)
+            .values(repeat_question_count=Conversation.repeat_question_count + 1)
+        )
+        await self.session.commit()
