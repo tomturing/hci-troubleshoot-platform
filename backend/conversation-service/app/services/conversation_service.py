@@ -272,20 +272,36 @@ class ConversationService:
             raise
 
     async def save_assistant_message(self, conversation_id: uuid.UUID, case_id: str, content: str) -> None:
-        """保存AI返回的完整消息(后台执行)"""
+        """保存AI返回的完整消息(后台执行)
+
+        注意：此方法由 BackgroundTasks 在响应完成后调用，届时请求作用域的
+        self.repository.session 已被关闭（get_session finally close），
+        必须使用 session_factory 创建独立 session 并显式 commit。
+        """
         if not content:
             return
 
         trace_id = get_current_trace_id()
 
         try:
-            await self.repository.add_message(
-                conversation_id=conversation_id,
-                case_id=case_id,
-                role=MessageRole.assistant,
-                content=content,
-                trace_id=trace_id,
-            )
+            if self.session_factory:
+                async with self.session_factory() as independent_session:
+                    await ConversationRepository(independent_session).add_message(
+                        conversation_id=conversation_id,
+                        case_id=case_id,
+                        role=MessageRole.assistant,
+                        content=content,
+                        trace_id=trace_id,
+                    )
+                    await independent_session.commit()
+            else:
+                await self.repository.add_message(
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    role=MessageRole.assistant,
+                    content=content,
+                    trace_id=trace_id,
+                )
             logger.info(
                 event="conversation_reply",
                 message="AI response saved in background",
