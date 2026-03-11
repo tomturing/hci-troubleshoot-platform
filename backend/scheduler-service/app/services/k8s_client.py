@@ -146,7 +146,13 @@ for f in SOUL.md IDENTITY.md AGENTS.md BOOTSTRAP.md TOOLS.md USER.md; do
   echo "  已加载 ${f}"
 done
 sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g; s/\${ZAI_API_KEY}/${ZAI_API_KEY}/g" /init-config/openclaw.json > /home/node/.openclaw/openclaw.json
-echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}"
+# 快速失败：验证 agents.defaults.model.primary 必须配置，防止静默 fallback 到 anthropic/claude-opus-4-6
+PRIMARY=$(node -e "const c=JSON.parse(require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8')); console.log(c?.agents?.defaults?.model?.primary||'')" 2>/dev/null)
+if [ -z "$PRIMARY" ]; then
+  echo "❌ FATAL: agents.defaults.model.primary 未配置！openclaw 将 fallback 到 anthropic/claude-opus-4-6（无 API key）"
+  exit 1
+fi
+echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}，model=${PRIMARY}"
 """
                 ],
                 "env": [
