@@ -206,7 +206,13 @@ class ConversationService:
         system_prompt = await self._build_system_prompt(content, case_id)
 
         # 3. 获取历史上下文 (最近20条)
-        all_messages = await self.repository.get_messages(conversation_id)
+        # 注意：必须使用独立 session，避免请求作用域 session 在流式传输期间长期持有事务锁
+        # 导致后续 INSERT（包括 save_assistant_message 背景任务）等待锁而无法落库
+        if self.session_factory:
+            async with self.session_factory() as msg_session:
+                all_messages = await ConversationRepository(msg_session).get_messages(conversation_id)
+        else:
+            all_messages = await self.repository.get_messages(conversation_id)
         history_messages: list[dict] = [{"role": "system", "content": system_prompt}]
         selected_messages = all_messages[-20:] if len(all_messages) > 20 else all_messages
 
