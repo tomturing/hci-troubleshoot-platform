@@ -47,6 +47,20 @@ else
 fi
 
 # ============================================================================
+# 构建前：同步前端 pnpm lockfile（防止 frozen-lockfile 在容器内报错）
+# PIT-028: docker build 必须加 --network host（Clash TUN 环境容器内网络不通）
+# ============================================================================
+info "同步前端 pnpm lockfile..."
+if command -v pnpm &>/dev/null; then
+  (cd "${PROJECT_ROOT}/frontend" && pnpm install --ignore-scripts 2>&1 | tail -3) \
+    && ok "  → pnpm lockfile 已同步" \
+    || warn "  → pnpm lockfile 同步失败（将使用 --no-frozen-lockfile 构建）"
+else
+  warn "  → pnpm 未安装，跳过 lockfile 同步"
+fi
+echo ""
+
+# ============================================================================
 # 构建所有镜像
 # ============================================================================
 info "开始构建 ${#IMAGES[@]} 个 Docker 镜像 (tag=${IMAGE_TAG})..."
@@ -59,7 +73,8 @@ for entry in "${IMAGES[@]}"; do
   read -r name context dockerfile <<< "$entry"
   info "[$((BUILT+FAILED+1))/${#IMAGES[@]}] 构建 ${name}:${IMAGE_TAG} ..."
   
-  if docker build -t "${name}:${IMAGE_TAG}" -f "${context}/${dockerfile}" "${context}" --quiet; then
+  # --network host：让构建容器走宿主机网络（Clash TUN 场景必须，PIT-028）
+  if docker build --network host -t "${name}:${IMAGE_TAG}" -f "${context}/${dockerfile}" "${context}" --quiet; then
     ok "  → ${name}:${IMAGE_TAG} 构建成功"
     BUILT=$((BUILT + 1))
   else

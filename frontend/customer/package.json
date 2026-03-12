@@ -13,7 +13,7 @@
     "pinia": "^2.3.0",
     "axios": "^1.7.9",
     "element-plus": "^2.9.1",
-    "@hci/shared": "1.0.0"
+    "@hci/shared": "workspace:*"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
