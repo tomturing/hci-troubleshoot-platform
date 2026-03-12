@@ -9,7 +9,17 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import Response
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+try:
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:
+    _PROMETHEUS_AVAILABLE = False
+    CONTENT_TYPE_LATEST = "text/plain"
+
+    def generate_latest():
+        return b""
+
 from shared.database.postgres import DatabaseManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app

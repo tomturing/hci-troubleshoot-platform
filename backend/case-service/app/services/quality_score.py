@@ -13,7 +13,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from prometheus_client import Counter, Gauge, Histogram
+try:
+    from prometheus_client import Counter, Gauge, Histogram
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:
+    # 基础镜像未安装 prometheus_client 时跳过指标上报
+    _PROMETHEUS_AVAILABLE = False
+    Counter = Gauge = Histogram = None  # type: ignore[assignment,misc]
+
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
 from sqlalchemy import select
@@ -24,36 +31,41 @@ from ..models import AssistantEvaluation, Case, Conversation, PromptAudit
 logger = get_logger("quality-score-service")
 
 # ─────────────────────────────────────────────────────────────
-# Prometheus 指标定义
+# Prometheus 指标定义（依赖可选，未安装时跳过）
 # ─────────────────────────────────────────────────────────────
+if _PROMETHEUS_AVAILABLE:
+    # 综合质量分 Histogram（分布统计）
+    QUALITY_SCORE_HISTOGRAM = Histogram(
+        "hci_case_quality_score",
+        "Case quality composite score distribution",
+        buckets=[0, 20, 40, 60, 70, 80, 90, 100],
+    )
 
-# 综合质量分 Histogram（分布统计）
-QUALITY_SCORE_HISTOGRAM = Histogram(
-    "hci_case_quality_score",
-    "Case quality composite score distribution",
-    buckets=[0, 20, 40, 60, 70, 80, 90, 100],
-)
+    # 综合质量分 Gauge（按 close_reason 分类，用于实时监控）
+    QUALITY_SCORE_GAUGE = Gauge(
+        "hci_case_quality_score_current",
+        "工单综合质量分当前值（0-100）",
+        labelnames=["close_reason"],
+    )
 
-# 综合质量分 Gauge（按 close_reason 分类，用于实时监控）
-QUALITY_SCORE_GAUGE = Gauge(
-    "hci_case_quality_score_current",
-    "工单综合质量分当前值（0-100）",
-    labelnames=["close_reason"],
-)
+    # 关闭原因计数器
+    CLOSE_REASON_COUNTER = Counter(
+        "hci_case_close_reason_total",
+        "Case close reason distribution",
+        labelnames=["reason"],
+    )
 
-# 关闭原因计数器
-CLOSE_REASON_COUNTER = Counter(
-    "hci_case_close_reason_total",
-    "Case close reason distribution",
-    labelnames=["reason"],
-)
-
-# 用户评分分布计数器
-USER_RATING_COUNTER = Counter(
-    "hci_user_rating_total",
-    "用户显式评分分布",
-    labelnames=["score"],
-)
+    # 用户评分分布计数器
+    USER_RATING_COUNTER = Counter(
+        "hci_user_rating_total",
+        "用户显式评分分布",
+        labelnames=["score"],
+    )
+else:
+    QUALITY_SCORE_HISTOGRAM = None
+    QUALITY_SCORE_GAUGE = None
+    CLOSE_REASON_COUNTER = None
+    USER_RATING_COUNTER = None
 
 # 关闭原因评分映射
 CLOSE_REASON_SCORE = {
@@ -346,14 +358,14 @@ class QualityScoreService:
                 trace_id=trace_id,
             )
 
-            # 8. Prometheus 指标上报
-            reason_label = close_reason or "unknown"
-            QUALITY_SCORE_GAUGE.labels(close_reason=reason_label).set(quality.composite_score)
-            QUALITY_SCORE_HISTOGRAM.observe(quality.composite_score)
-            CLOSE_REASON_COUNTER.labels(reason=reason_label).inc()
-
-            if user_rating is not None:
-                USER_RATING_COUNTER.labels(score=str(user_rating)).inc()
+            # 8. Prometheus 指标上报（依赖可选）
+            if _PROMETHEUS_AVAILABLE:
+                reason_label = close_reason or "unknown"
+                QUALITY_SCORE_GAUGE.labels(close_reason=reason_label).set(quality.composite_score)
+                QUALITY_SCORE_HISTOGRAM.observe(quality.composite_score)
+                CLOSE_REASON_COUNTER.labels(reason=reason_label).inc()
+                if user_rating is not None:
+                    USER_RATING_COUNTER.labels(score=str(user_rating)).inc()
 
             logger.info(
                 event="quality_score_computed",
