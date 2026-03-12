@@ -11,6 +11,7 @@ from shared.models.schemas import (
     CaseStatsResponse,
     ClientInfo,
     ClientListResponse,
+    CloseReason,
 )
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
@@ -19,6 +20,7 @@ from app.config import settings
 
 from ..models.case import Case, CaseStatus
 from ..repositories.case_repo import CaseRepository
+from .quality_score import QualityScoreService
 
 logger = get_logger("case-service")
 
@@ -84,15 +86,76 @@ class CaseService:
 
         return CaseResponse.model_validate(case)
 
-    async def close_case(self, case_id: str) -> CaseResponse | None:
-        """关闭工单，并异步推送摘要至 KB Service 进行知识沉淀"""
+    async def close_case(
+        self,
+        case_id: str,
+        close_reason: CloseReason | None = None,
+    ) -> CaseResponse | None:
+        """关闭工单，并异步推送摘要至 KB Service 进行知识沉淀
+
+        Args:
+            case_id: 工单ID
+            close_reason: 关闭原因（user_command/timeout/abandon/admin_close）
+
+        Returns:
+            CaseResponse: 关闭后的工单信息，工单不存在返回 None
+        """
+        trace_id = get_current_trace_id()
+
+        # 1. 更新工单状态为关闭
         case = await self.repository.update_status(case_id, CaseStatus.closed)
         if not case:
             return None
 
-        logger.info(event="case_closed", message=f"Closed case {case_id}", case_id=case_id)
+        # 2. 如果提供了关闭原因，写入 case 表
+        if close_reason:
+            case = await self.repository.update_close_reason(case_id, close_reason.value)
+            logger.info(
+                event="case_close_reason_recorded",
+                message=f"工单 {case_id} 关闭原因已记录: {close_reason.value}",
+                case_id=case_id,
+                close_reason=close_reason.value,
+                trace_id=trace_id,
+            )
 
-        # 异步 fire-and-forget 推送至 KB Service（不阻塞主流程）
+        logger.info(
+            event="case_closed",
+            message=f"工单 {case_id} 已关闭",
+            case_id=case_id,
+            close_reason=close_reason.value if close_reason else None,
+            trace_id=trace_id,
+        )
+
+        # 3. 调用 QualityScoreService 计算并保存质量评分
+        if close_reason:
+            try:
+                # 使用当前 session 的 session_factory 创建 QualityScoreService
+                from shared.database.postgres import database_manager
+
+                quality_service = QualityScoreService(database_manager.get_session)
+                composite_score = await quality_service.calculate_and_save(
+                    case_id=case_id,
+                    close_reason=close_reason.value,
+                    trace_id=trace_id,
+                )
+                logger.info(
+                    event="quality_score_triggered",
+                    message=f"工单 {case_id} 质量评分已触发计算",
+                    case_id=case_id,
+                    composite_score=composite_score,
+                    trace_id=trace_id,
+                )
+            except Exception as e:
+                # 质量评分失败不应影响关闭流程
+                logger.error(
+                    event="quality_score_trigger_failed",
+                    message=f"工单 {case_id} 质量评分触发失败: {e}",
+                    case_id=case_id,
+                    error=str(e),
+                    trace_id=trace_id,
+                )
+
+        # 4. 异步 fire-and-forget 推送至 KB Service（不阻塞主流程）
         if settings.KB_PUSH_ENABLED:
             from .kb_pusher import fire_and_forget_push
 

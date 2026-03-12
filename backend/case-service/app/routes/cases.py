@@ -7,6 +7,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import (
+    CaseCloseRequest,
     CaseCreate,
     CaseListResponse,
     CaseResponse,
@@ -112,9 +113,20 @@ async def confirm_case(case_id: str, service: CaseService = Depends(get_case_ser
 
 
 @router.put("/{case_id}/close", response_model=CaseResponse)
-async def close_case(case_id: str, service: CaseService = Depends(get_case_service)):
-    """关闭工单"""
-    case = await service.close_case(case_id)
+async def close_case(
+    case_id: str,
+    close_request: CaseCloseRequest | None = None,
+    service: CaseService = Depends(get_case_service),
+):
+    """关闭工单
+
+    接收关闭原因参数，记录到 case 表，并触发质量评分计算。
+    关闭原因：user_command（用户主动关闭）/ timeout（超时）/ abandon（用户放弃）/ admin_close（管理员强制关闭）
+    """
+    from shared.models.schemas import CloseReason
+
+    close_reason = close_request.close_reason if close_request else None
+    case = await service.close_case(case_id, close_reason=close_reason)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     return case

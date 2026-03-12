@@ -70,6 +70,17 @@ class CaseRepository:
         await self.session.refresh(case)
         return case
 
+    async def update_close_reason(self, case_id: str, close_reason: str) -> Case | None:
+        """更新工单关闭原因"""
+        case = await self.get_by_id(case_id)
+        if not case:
+            return None
+
+        case.close_reason = close_reason
+        await self.session.flush()
+        await self.session.refresh(case)
+        return case
+
     async def delete(self, case_id: str) -> bool:
         """删除工单"""
         case = await self.get_by_id(case_id)

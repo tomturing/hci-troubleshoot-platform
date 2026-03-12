@@ -19,6 +19,15 @@ class CaseStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class CloseReason(StrEnum):
+    """工单关闭原因"""
+
+    USER_COMMAND = "user_command"   # 用户主动输入命令关闭
+    TIMEOUT = "timeout"             # 超时自动关闭
+    ABANDON = "abandon"             # 用户放弃/断开连接
+    ADMIN_CLOSE = "admin_close"     # 管理员强制关闭
+
+
 class MessageRole(StrEnum):
     """消息角色"""
 
@@ -35,6 +44,12 @@ class CaseCreate(BaseModel):
     title: str = Field(..., max_length=200, description="工单标题")
     description: str | None = Field(None, description="工单描述")
     assistant_type: str | None = Field(None, description="AI助手类型，默认openclaw")
+
+
+class CaseCloseRequest(BaseModel):
+    """关闭工单请求"""
+
+    close_reason: CloseReason = Field(..., description="关闭原因：user_command/timeout/abandon/admin_close")
 
 
 class CaseResponse(BaseModel):
