@@ -3,6 +3,7 @@ Case Service - 主应用
 
 变更记录:
 - 使用 app.state 替代全局变量进行依赖注入
+- 新增 admin quality 路由（/api/admin/quality/stats, /api/admin/quality/cases）
 """
 
 from contextlib import asynccontextmanager
@@ -25,7 +26,7 @@ from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
-from app.routes import cases
+from app.routes import admin_routes, cases
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
 
     # 兼容现有路由注入方式
     cases.set_database_manager(database_manager)
+    admin_routes.set_database_manager(database_manager)
 
     yield
 
@@ -61,6 +63,7 @@ instrument_app(app)
 
 # 注册路由
 app.include_router(cases.router)
+app.include_router(admin_routes.router)
 
 
 @app.get("/metrics")

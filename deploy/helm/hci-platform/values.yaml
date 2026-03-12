@@ -323,7 +323,7 @@ config:
   # ======================== 全局 AI 模型配置（所有 claw pod 共用）==========================
   # !! 修改此处即可切换平台所有 claw pod 使用的 AI 模型，无需逐个修改 ConfigMap !!
   # API key 在 secrets.zaiApiKey，运行时通过 ${ZAI_API_KEY} 注入
-  glmProvider: "tly"
+  glmProvider: "zhipu"
   glmModelId: "glm-5"
   glmBaseUrl: "https://open.bigmodel.cn/api/paas/v4"
   glmContextWindow: 128000

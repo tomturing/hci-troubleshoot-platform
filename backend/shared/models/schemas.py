@@ -65,6 +65,7 @@ class CaseResponse(BaseModel):
     updated_at: datetime
     closed_at: datetime | None
     trace_id: str | None
+    close_reason: str | None = None
 
     class Config:
         from_attributes = True

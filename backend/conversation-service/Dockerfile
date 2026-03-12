@@ -5,7 +5,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-# 安装依赖（使用 uv pip，无需虚拟环境）
+# 安装依赖（使用 uv pip，无需虚拟环境；国内镜像加速）
+ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
 COPY conversation-service/requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
 

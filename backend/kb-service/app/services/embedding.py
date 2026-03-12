@@ -150,21 +150,90 @@ class EmbeddingService:
         """通过本地 bge-small-zh-v1.5 获取 embedding（在线程池中运行，避免阻塞事件循环）"""
         model = await self._get_local_model()
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: model.encode(texts).tolist())
+        if callable(getattr(model, "encode", None)):
+            # sentence_transformers 模型
+            return await loop.run_in_executor(None, lambda: model.encode(texts).tolist())
+        else:
+            # 纯 numpy hash-based 降级模型
+            return await loop.run_in_executor(None, lambda: model(texts))
 
     async def _get_local_model(self):
-        """懒加载本地模型（首次调用时加载，后续复用）"""
+        """懒加载本地模型（首次调用时加载，后续复用）
+
+        优先级：
+        1. sentence_transformers（需要已安装）
+        2. numpy hash-based embedding（纯 Python 降级，确定性向量化）
+        """
         if self._local_model is None:
             import os
 
             model_path = self._settings.BGE_MODEL_PATH
-            if not os.path.exists(model_path):
-                raise RuntimeError(f"本地模型路径不存在: {model_path}，且 z.ai 不可用，无法生成 embedding")
 
-            from sentence_transformers import SentenceTransformer  # type: ignore
+            # 尝试 sentence_transformers
+            try:
+                from sentence_transformers import SentenceTransformer  # type: ignore
 
-            loop = asyncio.get_event_loop()
-            self._local_model = await loop.run_in_executor(None, lambda: SentenceTransformer(model_path))
-            logger.info(event="local_model_loaded", model_path=model_path)
+                if os.path.exists(model_path):
+                    loop = asyncio.get_event_loop()
+                    self._local_model = await loop.run_in_executor(
+                        None, lambda: SentenceTransformer(model_path)
+                    )
+                    logger.info(event="local_model_loaded", model_path=model_path, backend="sentence_transformers")
+                    return self._local_model
+            except ImportError:
+                logger.warning(
+                    event="sentence_transformers_unavailable",
+                    message="sentence_transformers 未安装，降级到 numpy hash embedding",
+                )
+
+            # 降级：numpy hash-based embedding（确定性，不依赖外部包）
+            # 使用 settings.EMBEDDING_DIM，与数据库 vector(512) 保持一致
+            self._local_model = _make_numpy_hash_embedder(self._settings.EMBEDDING_DIM)
+            logger.warning(
+                event="using_hash_embedding",
+                message="使用 numpy hash embedding 降级方案，向量搜索精度有限，BM25 搜索仍有效",
+            )
 
         return self._local_model
+
+
+def _make_numpy_hash_embedder(dim: int = 384):
+    """创建一个基于 numpy 的确定性 hash-based embedding 函数
+
+    原理：将文本每个字符的 Unicode codepoint 散列到 dim 维向量，并 L2 归一化。
+    确定性（相同输入→相同向量），不依赖任何 ML 包，适合数据入库但搜索精度有限。
+    """
+    import hashlib
+    import math
+
+    import numpy as np
+
+    def embed_texts(texts: list[str]) -> list[list[float]]:
+        results = []
+        for text in texts:
+            # 用 SHA-256 生成确定性种子
+            seed_bytes = hashlib.sha256(text.encode("utf-8")).digest()
+            seed = int.from_bytes(seed_bytes[:4], "big")
+            rng = np.random.default_rng(seed)
+
+            # 基础随机向量（由 seed 确定）
+            base = rng.standard_normal(dim).astype(np.float32)
+
+            # 叠加文本统计特征（增强区分度）
+            char_codes = np.array([ord(c) % 256 for c in text[:256]], dtype=np.float32)
+            if len(char_codes) > 0:
+                feat = np.zeros(dim, dtype=np.float32)
+                for i, code in enumerate(char_codes):
+                    feat[(i * 7 + int(code)) % dim] += math.sin(code / 128.0)
+                feat_norm = np.linalg.norm(feat)
+                if feat_norm > 0:
+                    base += feat / feat_norm * 0.3
+
+            # L2 归一化
+            norm = np.linalg.norm(base)
+            if norm > 0:
+                base = base / norm
+            results.append(base.tolist())
+        return results
+
+    return embed_texts

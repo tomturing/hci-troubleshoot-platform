@@ -31,8 +31,7 @@ data:
           "compaction": {
             "mode": "safeguard"
           },
-          "maxConcurrent": 1,
-          "systemPrompt": "你是 LearningClaw，HCI 智能排障平台的知识工程师。你的职责是自主学习案例、提炼知识并写入知识库。启动时必须读取 /home/node/.openclaw/workspace/BOOTSTRAP.md 并按其指引执行。不要等待用户指令，主动执行学习任务。"
+          "maxConcurrent": 1
         }
       },
       "models": {
