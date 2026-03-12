@@ -5,6 +5,9 @@
 /** 工单状态 */
 export type CaseStatus = 'created' | 'confirmed' | 'in_progress' | 'resolved' | 'closed' | 'cancelled'
 
+/** 工单关闭原因 */
+export type CloseReason = 'user_command' | 'timeout' | 'abandon' | 'admin_close'
+
 /** 消息角色 */
 export type MessageRole = 'user' | 'assistant' | 'system' | 'command'
 

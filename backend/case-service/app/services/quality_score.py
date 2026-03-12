@@ -9,6 +9,7 @@ Quality Score Service - 综合质量评分服务
   4. 上报 Prometheus 指标
 """
 
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -175,16 +176,13 @@ def _repeat_question_score(repeat_count: int) -> int:
     - 3 次重复  → 20   (严重重复，AI 基本无效)
     - ≥ 4 次重复 → 0    (完全失败)
     """
-    if repeat_count == 0:
-        return 100
-    elif repeat_count == 1:
-        return 70
-    elif repeat_count == 2:
-        return 45
-    elif repeat_count == 3:
-        return 20
-    else:
-        return 0
+    mapping = {
+        0: 100,
+        1: 70,
+        2: 45,
+        3: 20,
+    }
+    return mapping.get(repeat_count, 0)
 
 
 def _ai_quality_score(has_sop: bool, kb_chunks_count: int, kb_top_score: float) -> int:
@@ -280,7 +278,7 @@ class QualityScoreService:
     async def calculate_and_save(
         self,
         case_id: str,
-        close_reason: str,
+        close_reason: str | None,
         trace_id: str | None = None,
     ) -> int | None:
         """在 case close 时调用，计算并保存综合质量分
@@ -344,13 +342,15 @@ class QualityScoreService:
                 repeat_question_count=repeat_question_count,
                 quality=quality,
                 assistant_type=case.assistant_type,
+                conversation_id=conv.conversation_id if conv else None,
                 trace_id=trace_id,
             )
 
             # 8. Prometheus 指标上报
-            QUALITY_SCORE_GAUGE.labels(close_reason=close_reason).set(quality.composite_score)
+            reason_label = close_reason or "unknown"
+            QUALITY_SCORE_GAUGE.labels(close_reason=reason_label).set(quality.composite_score)
             QUALITY_SCORE_HISTOGRAM.observe(quality.composite_score)
-            CLOSE_REASON_COUNTER.labels(reason=close_reason).inc()
+            CLOSE_REASON_COUNTER.labels(reason=reason_label).inc()
 
             if user_rating is not None:
                 USER_RATING_COUNTER.labels(score=str(user_rating)).inc()
@@ -405,18 +405,24 @@ class QualityScoreService:
 
     async def _get_evaluation(self, case_id: str) -> AssistantEvaluation | None:
         """获取工单关联的评价记录"""
-        result = await self.session.execute(select(AssistantEvaluation).where(AssistantEvaluation.case_id == case_id))
-        return result.scalar_one_or_none()
+        result = await self.session.execute(
+            select(AssistantEvaluation)
+            .where(AssistantEvaluation.case_id == case_id)
+            .order_by(AssistantEvaluation.created_at.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
 
     async def _upsert_evaluation(
         self,
         case_id: str,
-        close_reason: str,
+        close_reason: str | None,
         session_duration_sec: int,
         message_count: int,
         repeat_question_count: int,
         quality: QualityScore,
         assistant_type: str,
+        conversation_id: uuid.UUID | None,
         trace_id: str,
     ) -> AssistantEvaluation:
         """UPSERT assistant_evaluation 记录"""
@@ -428,10 +434,12 @@ class QualityScoreService:
             # 更新已有记录
             existing.close_reason = close_reason
             existing.session_duration_sec = session_duration_sec
+            existing.message_count = message_count
             existing.repeat_question_count = repeat_question_count
             existing.composite_score = quality.composite_score
             existing.score_breakdown = quality.breakdown
             existing.calculated_at = now
+            existing.conversation_id = conversation_id
             existing.trace_id = trace_id
 
             await self.session.flush()
@@ -441,6 +449,7 @@ class QualityScoreService:
             # 创建新记录
             new_eval = AssistantEvaluation(
                 case_id=case_id,
+                conversation_id=conversation_id,
                 assistant_type=assistant_type,
                 close_reason=close_reason,
                 session_duration_sec=session_duration_sec,

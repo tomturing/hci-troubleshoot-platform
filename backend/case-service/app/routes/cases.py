@@ -123,8 +123,6 @@ async def close_case(
     接收关闭原因参数，记录到 case 表，并触发质量评分计算。
     关闭原因：user_command（用户主动关闭）/ timeout（超时）/ abandon（用户放弃）/ admin_close（管理员强制关闭）
     """
-    from shared.models.schemas import CloseReason
-
     close_reason = close_request.close_reason if close_request else None
     case = await service.close_case(case_id, close_reason=close_reason)
     if not case:

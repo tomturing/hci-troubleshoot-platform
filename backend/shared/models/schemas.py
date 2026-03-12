@@ -49,7 +49,7 @@ class CaseCreate(BaseModel):
 class CaseCloseRequest(BaseModel):
     """关闭工单请求"""
 
-    close_reason: CloseReason = Field(..., description="关闭原因：user_command/timeout/abandon/admin_close")
+    close_reason: CloseReason | None = Field(None, description="关闭原因：user_command/timeout/abandon/admin_close")
 
 
 class CaseResponse(BaseModel):

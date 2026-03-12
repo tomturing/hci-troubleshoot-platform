@@ -3,7 +3,7 @@ AssistantEvaluation Model - AI 助手评估表
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from shared.database.postgres import Base
 from shared.models.base import TraceableMixin
@@ -25,7 +25,7 @@ class AssistantEvaluation(Base, TraceableMixin):
     resolution_time_seconds = Column(Integer, nullable=True)
     message_count = Column(Integer, nullable=True)
     metadata_ = Column("metadata", JSONB, default=dict)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 
     # 评分评价体系新增字段
     close_reason = Column(String(20), nullable=True)  # 冗余存储关闭原因

@@ -145,7 +145,7 @@ export const useChatStore = defineStore('chat', () => {
   async function closePendingCase() {
     if (!pendingCase.value) return
     try {
-      await caseApi.close(pendingCase.value.case_id)
+      await caseApi.close(pendingCase.value.case_id, { close_reason: 'user_command' })
       addSystemMessage(`旧工单 ${pendingCase.value.case_id} 已关闭。请描述您遇到的新问题。`)
     } catch (e: any) {
       addSystemMessage(`关闭旧工单失败: ${e.response?.data?.detail || e.message}，但您仍可以创建新工单。`)
@@ -370,7 +370,7 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
     try {
-      const res = await caseApi.close(currentCase.value.case_id)
+      const res = await caseApi.close(currentCase.value.case_id, { close_reason: 'user_command' })
       currentCase.value = res.data
       addSystemMessage(`工单 ${res.data.case_id} 已关闭。发送新消息开启新工单。`)
 

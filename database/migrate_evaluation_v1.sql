@@ -24,12 +24,12 @@ COMMENT ON COLUMN "case".close_reason IS '工单关闭原因：user_command/time
 -- ============================================================================
 
 -- 用户重复提问次数统计：conversation-service 在 save_user_message() 时，
--- 取当前消息与前 5 条用户消息做关键词 Jaccard 相似度，若最高相似度 > 0.5 则计数 +1
+-- 取当前消息与前 10 条用户消息做关键词 Jaccard 相似度，若最高相似度 >= 0.6 则计数 +1
 -- 用于综合质量评分中权重 15% 的用户重复提问维度（负向信号：重复提问 = AI 回答无效）
 ALTER TABLE conversation
     ADD COLUMN IF NOT EXISTS repeat_question_count INTEGER NOT NULL DEFAULT 0;
 
-COMMENT ON COLUMN conversation.repeat_question_count IS '会话中用户重复提问次数，由 conversation-service 实时统计（Jaccard 相似度 > 0.5 判定为重复）';
+COMMENT ON COLUMN conversation.repeat_question_count IS '会话中用户重复提问次数，由 conversation-service 实时统计（Jaccard 相似度 >= 0.6 判定为重复）';
 
 -- ============================================================================
 -- 3. assistant_evaluation 表增强

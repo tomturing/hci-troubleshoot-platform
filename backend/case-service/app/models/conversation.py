@@ -3,7 +3,7 @@ Conversation Model - 对话会话表（只读视图，用于 QualityScoreService
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from shared.database.postgres import Base
 from sqlalchemy import Column, DateTime, Integer, String
@@ -19,7 +19,7 @@ class Conversation(Base):
     case_id = Column(String(20), nullable=False, index=True)
     pod_id = Column(String(100), nullable=True)
     assistant_type = Column(String(50), nullable=False, default="openclaw")
-    started_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     ended_at = Column(DateTime(timezone=True), nullable=True)
     message_count = Column(Integer, default=0)
     metadata_ = Column("metadata", JSONB, default=dict)

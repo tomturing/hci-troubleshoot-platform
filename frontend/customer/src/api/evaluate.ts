@@ -16,7 +16,7 @@ export interface EvaluateRequest {
 /** 评分提交响应 */
 export interface EvaluateResponse {
   /** 评价记录 ID */
-  evaluation_id: string
+  evaluation_id?: string | null
   /** 用户评分 */
   score: number
   /** 综合质量分 */

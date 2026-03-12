@@ -7,16 +7,18 @@ Evaluation Routes - 用户评分API路由
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from shared.database.postgres import DatabaseManager
 from shared.utils.logger import get_logger
 from sqlalchemy import select
 
+from app.config import settings
+
 from ..models.conversation import Conversation
 from ..services.quality_score import QualityScoreService
 
-router = APIRouter(tags=["evaluation"])
+router = APIRouter(prefix="/api", tags=["evaluation"])
 
 # 全局依赖，需要在main.py中注入
 database_manager: DatabaseManager | None = None
@@ -36,6 +38,16 @@ async def get_db_session():
         raise HTTPException(status_code=500, detail="数据库服务未初始化")
     async for session in database_manager.get_session():
         yield session
+
+
+def require_admin_token(authorization: str | None = Header(default=None)):
+    """校验管理员 token（Bearer INTERNAL_API_TOKEN）"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少 Bearer Token")
+
+    token = authorization[7:].strip()
+    if token != settings.INTERNAL_API_TOKEN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权限访问管理员接口")
 
 
 # ============ Pydantic 模型 ============
@@ -133,7 +145,15 @@ async def submit_evaluation(
     from sqlalchemy import text
 
     existing_result = await session.execute(
-        text("SELECT score, composite_score FROM assistant_evaluation WHERE case_id = :case_id"),
+        text(
+            """
+            SELECT score, composite_score
+            FROM assistant_evaluation
+            WHERE case_id = :case_id
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
         {"case_id": case_id},
     )
     existing = existing_result.fetchone()
@@ -256,6 +276,7 @@ async def get_evaluation(
 @router.get("/admin/quality/stats", response_model=QualityStatsResponse)
 async def get_quality_stats(
     days: int = Query(7, ge=1, le=90, description="统计天数（1-90天）"),
+    _=Depends(require_admin_token),
     session=Depends(get_db_session),
 ):
     """
@@ -267,7 +288,6 @@ async def get_quality_stats(
     - 用户评分分布
     - 低分工件数量
     """
-    stats_service = QualityScoreService(session)
     # 使用 QualityStatsService 来获取统计
     from ..services.quality_score import QualityStatsService
 
@@ -291,6 +311,7 @@ async def get_low_score_cases(
     max_score: int = Query(39, ge=0, le=100, description="最高分数"),
     limit: int = Query(20, ge=1, le=100, description="每页数量"),
     offset: int = Query(0, ge=0, description="偏移量"),
+    _=Depends(require_admin_token),
     session=Depends(get_db_session),
 ):
     """

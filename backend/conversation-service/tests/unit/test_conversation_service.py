@@ -232,6 +232,7 @@ class TestRepeatQuestionDetection:
             conversation_id=conv_id,
             case_id=case_id,
             content="虚拟机 磁盘 IO 异常",  # 与历史消息相似度 >= 0.6
+            current_message_id=uuid.uuid4(),
         )
 
         mock_repo.increment_repeat_question_count.assert_called_once_with(conv_id)
@@ -255,6 +256,7 @@ class TestRepeatQuestionDetection:
             conversation_id=conv_id,
             case_id=case_id,
             content="再见地球",  # 与历史消息相似度 = 0.0
+            current_message_id=uuid.uuid4(),
         )
 
         mock_repo.increment_repeat_question_count.assert_not_called()
@@ -271,6 +273,7 @@ class TestRepeatQuestionDetection:
             conversation_id=conv_id,
             case_id=case_id,
             content="第一条消息",
+            current_message_id=uuid.uuid4(),
         )
 
         mock_repo.increment_repeat_question_count.assert_not_called()
@@ -288,6 +291,7 @@ class TestRepeatQuestionDetection:
             conversation_id=conv_id,
             case_id=case_id,
             content="测试消息",
+            current_message_id=uuid.uuid4(),
         )
 
         mock_repo.increment_repeat_question_count.assert_not_called()

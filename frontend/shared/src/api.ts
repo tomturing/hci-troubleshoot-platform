@@ -6,6 +6,7 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig } from 'axios'
 import type {
   CaseCreate,
+  CloseReason,
   CaseResponse,
   CaseListResponse,
   CaseStatsResponse,
@@ -67,8 +68,8 @@ export function createCaseApi(client: AxiosInstance) {
     },
 
     /** 关闭工单 */
-    close(caseId: string) {
-      return client.put<CaseResponse>(`/cases/${caseId}/close`)
+    close(caseId: string, data?: { close_reason?: CloseReason }) {
+      return client.put<CaseResponse>(`/cases/${caseId}/close`, data)
     },
 
     // ---- Admin ----

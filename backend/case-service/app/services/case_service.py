@@ -2,7 +2,7 @@
 Case Service - 业务逻辑层
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from shared.models.schemas import (
     CaseCreate,
@@ -127,33 +127,29 @@ class CaseService:
         )
 
         # 3. 调用 QualityScoreService 计算并保存质量评分
-        if close_reason:
-            try:
-                # 使用当前 session 的 session_factory 创建 QualityScoreService
-                from shared.database.postgres import database_manager
-
-                quality_service = QualityScoreService(database_manager.get_session)
-                composite_score = await quality_service.calculate_and_save(
-                    case_id=case_id,
-                    close_reason=close_reason.value,
-                    trace_id=trace_id,
-                )
-                logger.info(
-                    event="quality_score_triggered",
-                    message=f"工单 {case_id} 质量评分已触发计算",
-                    case_id=case_id,
-                    composite_score=composite_score,
-                    trace_id=trace_id,
-                )
-            except Exception as e:
-                # 质量评分失败不应影响关闭流程
-                logger.error(
-                    event="quality_score_trigger_failed",
-                    message=f"工单 {case_id} 质量评分触发失败: {e}",
-                    case_id=case_id,
-                    error=str(e),
-                    trace_id=trace_id,
-                )
+        try:
+            quality_service = QualityScoreService(self.repository.session)
+            composite_score = await quality_service.calculate_and_save(
+                case_id=case_id,
+                close_reason=close_reason.value if close_reason else None,
+                trace_id=trace_id,
+            )
+            logger.info(
+                event="quality_score_triggered",
+                message=f"工单 {case_id} 质量评分已触发计算",
+                case_id=case_id,
+                composite_score=composite_score,
+                trace_id=trace_id,
+            )
+        except Exception as e:
+            # 质量评分失败不应影响关闭流程
+            logger.error(
+                event="quality_score_trigger_failed",
+                message=f"工单 {case_id} 质量评分触发失败: {e}",
+                case_id=case_id,
+                error=str(e),
+                trace_id=trace_id,
+            )
 
         # 4. 异步 fire-and-forget 推送至 KB Service（不阻塞主流程）
         if settings.KB_PUSH_ENABLED:

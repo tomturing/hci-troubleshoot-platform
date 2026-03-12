@@ -2,6 +2,7 @@
 Conversation Service - 对话业务逻辑层 (v2.0 多类型AI助手)
 """
 
+import asyncio
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -215,19 +216,36 @@ class ConversationService:
         trace_id = get_current_trace_id()
 
         # 1. 保存用户消息（独立事务，确保 AI 报错不会导致用户消息回滚）
+        user_message: Message | None = None
         if self.session_factory:
             async with self.session_factory() as independent_session:
-                await ConversationRepository(independent_session).add_message(
+                user_message = await ConversationRepository(independent_session).add_message(
                     conversation_id=conversation_id, case_id=case_id, role=MessageRole.user, content=content, trace_id=trace_id
                 )
                 await independent_session.commit()
         else:
-            await self.repository.add_message(
+            user_message = await self.repository.add_message(
                 conversation_id=conversation_id, case_id=case_id, role=MessageRole.user, content=content, trace_id=trace_id
             )
 
-        # 1.5 重复提问检测（异步执行，不阻塞主流程）
-        await self._check_repeat_question(conversation_id=conversation_id, case_id=case_id, content=content)
+        # 1.5 重复提问检测（使用后台任务，避免阻塞主流程）
+        if user_message:
+            if self.session_factory:
+                asyncio.create_task(
+                    self._check_repeat_question_with_independent_session(
+                        conversation_id=conversation_id,
+                        case_id=case_id,
+                        content=content,
+                        current_message_id=user_message.message_id,
+                    )
+                )
+            else:
+                await self._check_repeat_question(
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    content=content,
+                    current_message_id=user_message.message_id,
+                )
 
         # 2. 构建 4-Tier System Prompt（并发 SOP + 向量检索）
         system_prompt = await self._build_system_prompt(content, case_id)
@@ -287,8 +305,6 @@ class ConversationService:
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
 
         except Exception as e:
-            import asyncio
-
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="error").inc()
             if isinstance(e, asyncio.CancelledError):
                 logger.info(event="stream_cancelled", message="Stream was cancelled by client")
@@ -418,7 +434,36 @@ class ConversationService:
         )
         return self._get_fallback_endpoint(assistant_type)
 
-    async def _check_repeat_question(self, conversation_id: uuid.UUID, case_id: str, content: str) -> None:
+    async def _check_repeat_question_with_independent_session(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        content: str,
+        current_message_id: uuid.UUID,
+    ) -> None:
+        """使用独立 session 执行重复提问检测，避免影响主请求事务。"""
+        if not self.session_factory:
+            return
+
+        async with self.session_factory() as independent_session:
+            repo = ConversationRepository(independent_session)
+            await self._check_repeat_question(
+                conversation_id=conversation_id,
+                case_id=case_id,
+                content=content,
+                current_message_id=current_message_id,
+                repository=repo,
+            )
+            await independent_session.commit()
+
+    async def _check_repeat_question(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        content: str,
+        current_message_id: uuid.UUID,
+        repository: ConversationRepository | None = None,
+    ) -> None:
         """
         检测用户是否重复提问，使用 Jaccard 相似度算法
 
@@ -432,9 +477,10 @@ class ConversationService:
         """
         try:
             # 1. 获取当前 case 下最近 N 条用户消息（排除当前对话）
-            recent_messages = await self.repository.get_recent_user_messages(
+            repo = repository or self.repository
+            recent_messages = await repo.get_recent_user_messages(
                 case_id=case_id,
-                conversation_id=conversation_id,
+                current_message_id=current_message_id,
                 limit=HISTORY_LIMIT,
             )
 
@@ -459,7 +505,7 @@ class ConversationService:
 
             # 3. 如果是重复提问，增加计数
             if is_repeat:
-                await self.repository.increment_repeat_question_count(conversation_id)
+                await repo.increment_repeat_question_count(conversation_id)
                 logger.info(
                     event="repeat_question_count_increased",
                     message="重复提问计数已增加",

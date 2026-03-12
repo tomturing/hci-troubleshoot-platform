@@ -4,13 +4,13 @@ Quality Score Service - 综合质量评分服务
 实现双轨制质量评价体系：被动隐式信号（100% 覆盖）+ 主动显式评分
 """
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from shared.utils.logger import get_logger
-from sqlalchemy import select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger("quality_score")
@@ -312,13 +312,18 @@ class QualityScoreService:
 
     async def _get_existing_rating(self, case_id: str) -> int | None:
         """获取已存在的用户评分"""
-        from shared.database.postgres import Base
-
-        # 使用 text() 构建原始 SQL 查询
         from sqlalchemy import text
 
         result = await self.session.execute(
-            text("SELECT score FROM assistant_evaluation WHERE case_id = :case_id"),
+            text(
+                """
+                SELECT score
+                FROM assistant_evaluation
+                WHERE case_id = :case_id
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
             {"case_id": case_id},
         )
         row = result.fetchone()
@@ -331,16 +336,23 @@ class QualityScoreService:
         result = await self.session.execute(
             text(
                 """
-                SELECT score, close_reason, composite_score
+                SELECT evaluation_id, score, close_reason, composite_score
                 FROM assistant_evaluation
                 WHERE case_id = :case_id
+                ORDER BY created_at DESC
+                LIMIT 1
                 """
             ),
             {"case_id": case_id},
         )
         row = result.fetchone()
         if row:
-            return {"score": row[0], "close_reason": row[1], "composite_score": row[2]}
+            return {
+                "evaluation_id": row[0],
+                "score": row[1],
+                "close_reason": row[2],
+                "composite_score": row[3],
+            }
         return None
 
     async def _upsert_evaluation(
@@ -358,45 +370,61 @@ class QualityScoreService:
         """UPSERT assistant_evaluation 记录"""
         from sqlalchemy import text
 
-        # 使用 INSERT ... ON CONFLICT 实现 UPSERT
-        await self.session.execute(
-            text(
-                """
-                INSERT INTO assistant_evaluation (
-                    case_id, conversation_id, assistant_type, score,
-                    close_reason, session_duration_sec, message_count,
-                    repeat_question_count, composite_score, score_breakdown,
-                    trace_id, created_at
-                ) VALUES (
-                    :case_id, :conversation_id, 'openclaw', :score,
-                    :close_reason, :session_duration, :message_count,
-                    :repeat_question_count, :composite_score, :score_breakdown,
-                    :trace_id, NOW()
-                )
-                ON CONFLICT (case_id) DO UPDATE SET
-                    score = EXCLUDED.score,
-                    close_reason = EXCLUDED.close_reason,
-                    session_duration_sec = EXCLUDED.session_duration_sec,
-                    message_count = EXCLUDED.message_count,
-                    repeat_question_count = EXCLUDED.repeat_question_count,
-                    composite_score = EXCLUDED.composite_score,
-                    score_breakdown = EXCLUDED.score_breakdown,
-                    trace_id = EXCLUDED.trace_id
-                """
-            ),
-            {
-                "case_id": case_id,
-                "conversation_id": conversation_id,
-                "score": user_rating,
-                "close_reason": close_reason,
-                "session_duration": session_duration,
-                "message_count": message_count,
-                "repeat_question_count": repeat_question_count,
-                "composite_score": quality.composite_score,
-                "score_breakdown": str(quality.breakdown).replace("'", '"'),  # 简单 JSON 序列化
-                "trace_id": trace_id,
-            },
-        )
+        # 先查询最新一条评价记录，避免依赖 case_id 的唯一约束
+        existing = await self._get_evaluation(case_id)
+        params = {
+            "case_id": case_id,
+            "conversation_id": conversation_id,
+            "score": user_rating,
+            "close_reason": close_reason,
+            "session_duration": session_duration,
+            "message_count": message_count,
+            "repeat_question_count": repeat_question_count,
+            "composite_score": quality.composite_score,
+            "score_breakdown": json.dumps(quality.breakdown, ensure_ascii=False),
+            "trace_id": trace_id,
+        }
+
+        if existing:
+            await self.session.execute(
+                text(
+                    """
+                    UPDATE assistant_evaluation
+                    SET score = :score,
+                        close_reason = :close_reason,
+                        session_duration_sec = :session_duration,
+                        message_count = :message_count,
+                        repeat_question_count = :repeat_question_count,
+                        composite_score = :composite_score,
+                        score_breakdown = CAST(:score_breakdown AS JSONB),
+                        trace_id = :trace_id
+                    WHERE evaluation_id = :evaluation_id
+                    """
+                ),
+                {
+                    **params,
+                    "evaluation_id": existing["evaluation_id"],
+                },
+            )
+        else:
+            await self.session.execute(
+                text(
+                    """
+                    INSERT INTO assistant_evaluation (
+                        case_id, conversation_id, assistant_type, score,
+                        close_reason, session_duration_sec, message_count,
+                        repeat_question_count, composite_score, score_breakdown,
+                        trace_id, created_at
+                    ) VALUES (
+                        :case_id, :conversation_id, 'openclaw', :score,
+                        :close_reason, :session_duration, :message_count,
+                        :repeat_question_count, :composite_score, CAST(:score_breakdown AS JSONB),
+                        :trace_id, NOW()
+                    )
+                    """
+                ),
+                params,
+            )
         await self.session.commit()
 
 
@@ -416,7 +444,7 @@ class QualityStatsService:
         Returns:
             dict: 包含平均综合分、关闭原因分布等
         """
-        from sqlalchemy import func, text
+        from sqlalchemy import text
 
         # 近 N 天平均 composite_score
         result = await self.session.execute(
@@ -427,11 +455,11 @@ class QualityStatsService:
                     COUNT(*) as total_count,
                     COUNT(CASE WHEN composite_score <= 40 THEN 1 END) as low_score_count
                 FROM assistant_evaluation
-                WHERE created_at >= NOW() - INTERVAL '%s days'
+                WHERE created_at >= NOW() - (:days * INTERVAL '1 day')
                 AND composite_score IS NOT NULL
                 """
-                % days
-            )
+            ),
+            {"days": days},
         )
         row = result.fetchone()
         avg_score = round(row[0], 2) if row[0] else 0.0
@@ -446,12 +474,12 @@ class QualityStatsService:
                     COALESCE(close_reason, 'unknown') as reason,
                     COUNT(*) as count
                 FROM assistant_evaluation
-                WHERE created_at >= NOW() - INTERVAL '%s days'
+                WHERE created_at >= NOW() - (:days * INTERVAL '1 day')
                 GROUP BY close_reason
                 ORDER BY count DESC
                 """
-                % days
-            )
+            ),
+            {"days": days},
         )
         close_reason_dist = {row[0]: row[1] for row in reason_result.fetchall()}
 
@@ -463,12 +491,12 @@ class QualityStatsService:
                     COALESCE(score::text, 'unrated') as rating,
                     COUNT(*) as count
                 FROM assistant_evaluation
-                WHERE created_at >= NOW() - INTERVAL '%s days'
+                WHERE created_at >= NOW() - (:days * INTERVAL '1 day')
                 GROUP BY score
                 ORDER BY count DESC
                 """
-                % days
-            )
+            ),
+            {"days": days},
         )
         rating_dist = {row[0]: row[1] for row in rating_result.fetchall()}
 

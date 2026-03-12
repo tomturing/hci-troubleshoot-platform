@@ -3,7 +3,7 @@ PromptAudit Model - AI 层入口 Prompt 审计镜像表
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from shared.database.postgres import Base
 from shared.models.base import TraceableMixin
@@ -41,7 +41,7 @@ class PromptAudit(Base, TraceableMixin):
     user_rating = Column(SmallInteger, nullable=True)
 
     # 审计字段
-    captured_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=True)
+    captured_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=True)
 
     def __repr__(self):
         return f"<PromptAudit(audit_id={self.audit_id}, case_id={self.case_id})>"
