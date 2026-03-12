@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import desc, select, update
+from sqlalchemy import desc, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.conversation import Conversation
@@ -134,4 +134,44 @@ class ConversationRepository:
             update(Conversation)
             .where(Conversation.conversation_id == conversation_id)
             .values(repeat_question_count=Conversation.repeat_question_count + 1)
+        )
+
+    async def insert_prompt_audit(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        assistant_type: str,
+        trace_id: str,
+        message_count: int,
+        has_sop: bool,
+        kb_chunks_count: int,
+        kb_top_score: float | None,
+        messages: list | None,
+    ) -> None:
+        """向 prompt_audit 表插入一条审计记录"""
+        import json as _json
+
+        await self.session.execute(
+            text("""
+                INSERT INTO prompt_audit (
+                    conversation_id, case_id, assistant_type, trace_id,
+                    message_count, has_sop, kb_chunks_count, kb_top_score,
+                    messages
+                ) VALUES (
+                    :conversation_id, :case_id, :assistant_type, :trace_id,
+                    :message_count, :has_sop, :kb_chunks_count, :kb_top_score,
+                    :messages
+                )
+            """),
+            {
+                "conversation_id": str(conversation_id),
+                "case_id": case_id,
+                "assistant_type": assistant_type,
+                "trace_id": trace_id,
+                "message_count": message_count,
+                "has_sop": has_sop,
+                "kb_chunks_count": kb_chunks_count,
+                "kb_top_score": kb_top_score,
+                "messages": _json.dumps(messages, ensure_ascii=False) if messages else None,
+            },
         )
