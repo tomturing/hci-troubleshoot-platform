@@ -19,6 +19,15 @@ onMounted(() => {
         <h1>HCI 故障排查助手</h1>
         <div class="header-badges">
           <el-button
+            v-if="chatStore.hasActiveCase"
+            size="small"
+            round
+            class="close-btn"
+            @click="chatStore.handleCloseCase()"
+          >
+            ✅ 关闭工单
+          </el-button>
+          <el-button
             size="small"
             round
             class="history-btn"
@@ -114,6 +123,19 @@ body {
 
 .history-btn:hover {
   background: rgba(255, 255, 255, 0.35) !important;
+}
+
+.close-btn {
+  background: rgba(255, 255, 255, 0.9) !important;
+  border: 1px solid rgba(255, 255, 255, 0.8) !important;
+  color: #337ecc !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+.close-btn:hover {
+  background: #fff !important;
+  color: #409eff !important;
 }
 
 .app-main {

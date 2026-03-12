@@ -538,6 +538,7 @@ export const useChatStore = defineStore('chat', () => {
     showPendingDialog,
     resumePendingCase,
     closePendingCase,
+    handleCloseCase,
     // 工单创建模板
     showCaseTemplate,
     caseTemplate,
