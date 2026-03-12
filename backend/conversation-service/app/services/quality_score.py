@@ -15,13 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger("quality_score")
 
-# 关闭原因评分映射
+# 关闭原因评分映射（与 case-service/quality_score.py 保持严格一致，避免重算时分值漂移）
 CLOSE_REASON_SCORE = {
-    "user_command": 90,  # 主动解决：很高分
-    "timeout": 50,  # 超时：中性基础分
-    "admin_close": 60,  # 人工干预：略高于中性
-    "abandon": 10,  # 放弃：较低分
-    None: 50,  # 未知：中性
+    "user_command": 100,  # 用户主动解决：最高分
+    "timeout": 50,        # 超时：中性基础分
+    "admin_close": 50,    # 人工干预：略高于中性
+    "abandon": 10,        # 放弃：最低分
+    None: 50,             # 未知：中性
 }
 
 # 基础权重配置（归一化前）
@@ -237,7 +237,28 @@ class QualityScoreService:
         if user_rating is None and existing_rating is not None:
             user_rating = existing_rating
 
-        # 3. 组装信号（简化版：不读取 prompt_audit，假设默认值）
+        # 3. 读取 prompt_audit 元数据（确保 ai_quality 维度始终参与评分）
+        # 使用原始 SQL 查询，无需在 conversation-service 中定义 PromptAudit ORM 模型
+        from sqlalchemy import text
+
+        audit_result = await self.session.execute(
+            text(
+                """
+                SELECT has_sop, kb_chunks_count, kb_top_score
+                FROM prompt_audit
+                WHERE case_id = :case_id
+                ORDER BY captured_at DESC
+                LIMIT 1
+                """
+            ),
+            {"case_id": case_id},
+        )
+        audit_row = audit_result.fetchone()
+        has_sop = audit_row[0] if audit_row else None
+        kb_chunks_count = audit_row[1] if audit_row else None
+        kb_top_score = audit_row[2] if audit_row else None
+
+        # 4. 组装信号
         signals = QualitySignals(
             case_id=case_id,
             close_reason=close_reason,
@@ -245,9 +266,9 @@ class QualityScoreService:
             message_count=message_count if message_count > 0 else None,
             repeat_question_count=repeat_question_count,
             user_rating=user_rating,
-            has_sop=None,  # 简化：默认 None，表示不参与计算
-            kb_chunks_count=None,
-            kb_top_score=None,
+            has_sop=has_sop,
+            kb_chunks_count=kb_chunks_count,
+            kb_top_score=kb_top_score,
         )
 
         # 4. 计算综合评分
