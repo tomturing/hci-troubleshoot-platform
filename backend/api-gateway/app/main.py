@@ -17,8 +17,9 @@ from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
-from app.routes import assistants, cases, conversations, health, kb, websocket
+from app.routes import assistants, cases, conversations, health, kb, terminal, websocket
 from app.services.session import SessionManager
+from app.services.terminal import TerminalService
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -37,12 +38,17 @@ async def lifespan(app: FastAPI):
 
     session_manager = SessionManager(redis_manager)
 
+    # 终端服务
+    terminal_service = TerminalService(redis_manager)
+
     # 存入 app.state
     app.state.redis_manager = redis_manager
     app.state.session_manager = session_manager
+    app.state.terminal_service = terminal_service
 
     # 兼容现有路由注入方式
     websocket.set_session_manager(session_manager)
+    websocket.set_terminal_service(terminal_service)
 
     yield
 
@@ -71,6 +77,7 @@ app.include_router(cases.router)
 app.include_router(conversations.router)
 app.include_router(assistants.router)
 app.include_router(kb.router)
+app.include_router(terminal.router)
 app.include_router(health.router)
 
 

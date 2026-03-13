@@ -21,6 +21,9 @@ dependencies = [
     # === HTTP 客户端 ===
     "httpx>=0.26.0,<1.0",
 
+    # === SSH 客户端 ===
+    "asyncssh>=2.17.0,<3.0",
+
     # === K8s ===
     "kubernetes>=29.0.0,<31.0",
 
