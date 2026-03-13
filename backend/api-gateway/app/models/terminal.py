@@ -3,6 +3,7 @@ SSH 终端会话相关模型
 Task 37: SSH 代理与终端交互后端能力
 """
 
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -77,7 +78,8 @@ class TerminalSessionInfo(BaseModel):
     client_id: str | None = None
     case_id: str | None = None
     status: TerminalSessionStatus = TerminalSessionStatus.CONNECTED
-    created_at: str = Field(default_factory=lambda: "")
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    last_activity_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     trace_id: str | None = None
 
 

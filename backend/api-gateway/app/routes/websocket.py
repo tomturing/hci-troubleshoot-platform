@@ -9,7 +9,7 @@ WebSocket Routes - 实时双向通信
 import json
 
 import httpx
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from shared.utils.logger import get_logger
 
 from ..models.terminal import TerminalWSMessage
@@ -103,7 +103,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
 
 @router.websocket("/ws/terminal/{session_id}")
-async def terminal_websocket_endpoint(websocket: WebSocket, session_id: str):
+async def terminal_websocket_endpoint(
+    websocket: WebSocket,
+    session_id: str,
+    client_id: str | None = Query(default=None),
+):
     """
     终端交互 WebSocket 端点 (Task 37)
 
@@ -115,14 +119,19 @@ async def terminal_websocket_endpoint(websocket: WebSocket, session_id: str):
     """
     await websocket.accept()
 
-    # 验证会话存在
-    session_info = await terminal_service.get_session(session_id)
-    if not session_info:
-        await websocket.send_text(
-            json.dumps({"type": "error", "data": "会话不存在或已过期，请重新连接 SSH"})
-        )
-        await websocket.close()
+    if not client_id:
+        await websocket.send_text(json.dumps({"type": "error", "data": "缺少 client_id，无法建立终端连接"}))
+        await websocket.close(code=1008)
         return
+
+    # 验证会话存在
+    session_info = await terminal_service.validate_session_owner(session_id, client_id)
+    if not session_info:
+        await websocket.send_text(json.dumps({"type": "error", "data": "会话不存在、已过期或无访问权限"}))
+        await websocket.close(code=1008)
+        return
+
+    await terminal_service.ssh_manager.add_websocket(session_id, websocket)
 
     logger.info(
         event="terminal_websocket_connected",

@@ -8,6 +8,7 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
+import { createTerminalApi, type TerminalSessionCreateRequest } from '@/api/terminal'
 
 /** 前端聊天消息 */
 export interface ChatMessage {
@@ -31,6 +32,7 @@ export const useChatStore = defineStore('chat', () => {
   const conversationApi = createConversationApi(apiClient)
   const assistantApi = createAssistantApi(apiClient)
   const evaluateApi = createEvaluateApi(apiClient)
+  const terminalApi = createTerminalApi(apiClient)
 
   // 是否显示助手选择器 (生产环境隐藏)
   const showAssistantSelector = import.meta.env.VITE_SHOW_ASSISTANT_SELECTOR !== 'false'
@@ -68,7 +70,6 @@ export const useChatStore = defineStore('chat', () => {
   const ratingConversationId = ref<string | null>(null)
 
   // 终端面板状态 (Task 35/36)
-  const showTerminalPanel = ref(false) // 是否显示底部终端面板
   const showTerminalSidebar = ref(false) // 是否显示侧边栏终端 (Task 36)
   const terminalInputCommand = ref('') // 待发送到终端输入框的命令
 
@@ -544,13 +545,6 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * 关闭终端面板
-   */
-  function closeTerminalPanel() {
-    showTerminalPanel.value = false
-  }
-
-  /**
    * 清空终端输入命令
    */
   function clearTerminalInput() {
@@ -599,6 +593,24 @@ export const useChatStore = defineStore('chat', () => {
     sshErrorMessage.value = ''
   }
 
+  /**
+   * 创建终端会话
+   */
+  async function createTerminalSession(data: Omit<TerminalSessionCreateRequest, 'client_id' | 'case_id'>) {
+    return terminalApi.createSession({
+      ...data,
+      client_id: clientId,
+      case_id: currentCase.value?.case_id || undefined,
+    })
+  }
+
+  /**
+   * 关闭终端会话
+   */
+  async function closeTerminalSession(sessionId: string) {
+    return terminalApi.closeSession(sessionId)
+  }
+
   return {
     messages,
     currentCase,
@@ -639,11 +651,9 @@ export const useChatStore = defineStore('chat', () => {
     skipRating,
     closeRatingCard,
     // 终端面板 (Task 35/36)
-    showTerminalPanel,
     showTerminalSidebar,
     terminalInputCommand,
     sendCommandToTerminal,
-    closeTerminalPanel,
     clearTerminalInput,
     openTerminalSidebar,
     closeTerminalSidebar,
@@ -655,6 +665,8 @@ export const useChatStore = defineStore('chat', () => {
     setSshSessionId,
     setSshErrorMessage,
     clearSshErrorMessage,
+    createTerminalSession,
+    closeTerminalSession,
     // 核心方法
     initialize,
     sendMessage,

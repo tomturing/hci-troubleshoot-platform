@@ -199,11 +199,6 @@ function formatDate(d: string): string {
       />
     </div>
 
-    <!-- 终端面板（底部模式） -->
-    <div v-if="chatStore.showTerminalPanel" class="terminal-panel-wrapper">
-      <TerminalPanel />
-    </div>
-
     <!-- 侧边栏终端抽屉（Task 36） -->
     <el-drawer
       v-model="chatStore.showTerminalSidebar"
@@ -528,15 +523,4 @@ function formatDate(d: string): string {
   color: #909399;
 }
 
-/* ========================================
-   终端面板样式
-   ======================================== */
-
-.terminal-panel-wrapper {
-  border-top: 1px solid #e4e7ed;
-  background: #1e1e1e;
-  padding: 0;
-  max-height: 300px;
-  overflow: hidden;
-}
 </style>

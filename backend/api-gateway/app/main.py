@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
 
     # 终端服务
     terminal_service = TerminalService(redis_manager)
+    await terminal_service.start()
 
     # 存入 app.state
     app.state.redis_manager = redis_manager
@@ -54,6 +55,7 @@ async def lifespan(app: FastAPI):
 
     # 关闭
     logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
+    await terminal_service.shutdown()
     await redis_manager.close()
 
 

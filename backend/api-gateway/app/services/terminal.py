@@ -6,12 +6,13 @@ Task 37: SSH 代理与终端交互后端能力
 - 创建/关闭 SSH 会话
 - 管理 SSH 连接池
 - 执行命令并流式返回输出
-- 会话超时自动回收
+- 会话空闲自动回收
 """
 
 import asyncio
 import contextlib
 import hashlib
+import os
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -21,6 +22,8 @@ from fastapi import WebSocket
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
+
+from app.config import settings
 
 from ..models.terminal import (
     AuthType,
@@ -35,6 +38,7 @@ logger = get_logger("terminal-service")
 
 # 会话配置
 SESSION_PREFIX = "terminal:session:"
+SESSION_INDEX_KEY = "terminal:sessions"
 SESSION_EXPIRE_SECONDS = 3600  # 1 小时过期
 SESSION_IDLE_TIMEOUT = 1800  # 30 分钟无操作超时
 
@@ -47,15 +51,25 @@ def mask_host(host: str) -> str:
     parts = host.split(".")
     if len(parts) == 4:
         return f"{parts[0]}.{parts[1]}.*.*"
+
     # 处理域名或 IPv6
     if len(host) > 8:
         return host[:4] + "*" * 4 + host[-4:]
+
     return "***"
 
 
 def hash_host(host: str) -> str:
     """计算主机地址哈希（用于审计日志）"""
     return hashlib.sha256(host.encode()).hexdigest()[:16]
+
+
+def parse_iso_datetime(value: str) -> datetime:
+    """将 ISO 字符串解析为 UTC 时间"""
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 class SSHConnectionManager:
@@ -65,7 +79,7 @@ class SSHConnectionManager:
         # session_id -> asyncssh.SSHClientConnection
         self._connections: dict[str, asyncssh.SSHClientConnection] = {}
         # session_id -> asyncio.Task（命令执行任务）
-        self._tasks: dict[str, asyncio.Task] = {}
+        self._tasks: dict[str, asyncio.Task[Any]] = {}
         # session_id -> WebSocket
         self._websockets: dict[str, WebSocket] = {}
 
@@ -79,22 +93,14 @@ class SSHConnectionManager:
         return self._connections.get(session_id)
 
     async def remove_connection(self, session_id: str):
-        """移除 SSH 连接"""
+        """移除 SSH 连接并清理关联资源"""
         if session_id in self._connections:
             conn = self._connections.pop(session_id)
             conn.close()
             logger.info(event="ssh_connection_removed", message="SSH 连接已移除", session_id=session_id)
 
-        # 清理相关任务
-        if session_id in self._tasks:
-            task = self._tasks.pop(session_id)
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-
-        # 清理 WebSocket
-        if session_id in self._websockets:
-            del self._websockets[session_id]
+        await self.cancel_task(session_id)
+        await self.remove_websocket(session_id)
 
     async def add_websocket(self, session_id: str, ws: WebSocket):
         """绑定 WebSocket"""
@@ -109,17 +115,28 @@ class SSHConnectionManager:
         """获取 WebSocket"""
         return self._websockets.get(session_id)
 
-    async def add_task(self, session_id: str, task: asyncio.Task):
+    async def add_task(self, session_id: str, task: asyncio.Task[Any]):
         """添加命令执行任务"""
+        existing_task = self._tasks.get(session_id)
+        if existing_task and not existing_task.done():
+            raise RuntimeError("已有命令正在执行，请稍后重试")
         self._tasks[session_id] = task
+
+    async def clear_task(self, session_id: str):
+        """清理任务引用"""
+        task = self._tasks.get(session_id)
+        if task and task.done():
+            self._tasks.pop(session_id, None)
 
     async def cancel_task(self, session_id: str):
         """取消命令执行任务"""
-        if session_id in self._tasks:
-            task = self._tasks.pop(session_id)
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        task = self._tasks.pop(session_id, None)
+        if not task:
+            return
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 class TerminalService:
@@ -128,6 +145,30 @@ class TerminalService:
     def __init__(self, redis_manager: RedisManager):
         self.redis = redis_manager
         self.ssh_manager = SSHConnectionManager()
+        self._cleanup_task: asyncio.Task[Any] | None = None
+        self._cleanup_stop_event = asyncio.Event()
+
+    async def start(self):
+        """启动后台清理任务"""
+        if self._cleanup_task and not self._cleanup_task.done():
+            return
+
+        self._cleanup_stop_event.clear()
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+
+    async def shutdown(self):
+        """停止后台任务并清理活动连接"""
+        self._cleanup_stop_event.set()
+
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cleanup_task
+            self._cleanup_task = None
+
+        session_ids = await self._list_indexed_sessions()
+        for session_id in session_ids:
+            await self.close_session(session_id, reason="service_shutdown")
 
     async def create_session(
         self,
@@ -183,6 +224,7 @@ class TerminalService:
             await self.ssh_manager.add_connection(session_id, conn)
 
             # 创建会话信息
+            now_iso = datetime.now(UTC).isoformat()
             session_info = TerminalSessionInfo(
                 session_id=session_id,
                 host=masked_host,
@@ -191,7 +233,8 @@ class TerminalService:
                 client_id=client_id,
                 case_id=case_id,
                 status=TerminalSessionStatus.CONNECTED,
-                created_at=datetime.now(UTC).isoformat(),
+                created_at=now_iso,
+                last_activity_at=now_iso,
                 trace_id=trace_id,
             )
 
@@ -230,6 +273,8 @@ class TerminalService:
                 trace_id=trace_id,
             )
             raise ConnectionError(f"SSH 连接被拒绝: {e}") from e
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(
                 event="terminal_session_error",
@@ -252,19 +297,34 @@ class TerminalService:
         passphrase: str | None = None,
     ) -> asyncssh.SSHClientConnection:
         """建立 SSH 连接"""
+        if settings.TERMINAL_ALLOW_INSECURE_HOSTS:
+            known_hosts: str | None = None
+            logger.warning(
+                event="terminal_insecure_known_hosts",
+                message="已禁用 SSH 主机指纹校验，请仅用于开发环境",
+            )
+        else:
+            known_hosts = os.path.expanduser(settings.TERMINAL_KNOWN_HOSTS_FILE)
+
         connect_kwargs: dict[str, Any] = {
             "host": host,
             "port": port,
             "username": username,
-            "known_hosts": None,  # 生产环境应配置 known_hosts
+            "known_hosts": known_hosts,
         }
 
         if auth_type == AuthType.PASSWORD:
+            if not password:
+                raise ValueError("密码认证方式需要提供 password 字段")
             connect_kwargs["password"] = password
         else:
-            connect_kwargs["client_keys"] = [private_key]
-            if passphrase:
-                connect_kwargs["passphrase"] = passphrase
+            if not private_key:
+                raise ValueError("密钥认证方式需要提供 private_key 字段")
+            try:
+                key_obj = asyncssh.import_private_key(private_key, passphrase=passphrase or None)
+            except Exception as e:  # pragma: no cover - 异常分支依赖密钥格式
+                raise ValueError("私钥解析失败") from e
+            connect_kwargs["client_keys"] = [key_obj]
 
         return await asyncssh.connect(**connect_kwargs)
 
@@ -277,15 +337,55 @@ class TerminalService:
             ex=SESSION_EXPIRE_SECONDS,
         )
 
+        if self.redis.client:
+            await self.redis.client.sadd(SESSION_INDEX_KEY, session_id)
+
+    async def _remove_session_record(self, session_id: str):
+        """删除 Redis 中的会话记录和索引"""
+        key = f"{SESSION_PREFIX}{session_id}"
+        await self.redis.delete(key)
+
+        if self.redis.client:
+            await self.redis.client.srem(SESSION_INDEX_KEY, session_id)
+
+    async def _list_indexed_sessions(self) -> list[str]:
+        """获取索引中的全部会话 ID"""
+        if not self.redis.client:
+            return []
+
+        session_ids = await self.redis.client.smembers(SESSION_INDEX_KEY)
+        return list(session_ids or [])
+
     async def get_session(self, session_id: str) -> TerminalSessionInfo | None:
         """获取会话信息"""
         key = f"{SESSION_PREFIX}{session_id}"
         data = await self.redis.get(key)
         if not data:
             return None
+
         return TerminalSessionInfo.model_validate_json(data)
 
-    async def close_session(self, session_id: str) -> bool:
+    async def validate_session_owner(self, session_id: str, client_id: str) -> TerminalSessionInfo | None:
+        """校验会话归属"""
+        session_info = await self.get_session(session_id)
+        if not session_info:
+            return None
+
+        if not session_info.client_id or session_info.client_id != client_id:
+            return None
+
+        return session_info
+
+    async def touch_session(self, session_id: str):
+        """刷新会话活动时间"""
+        session_info = await self.get_session(session_id)
+        if not session_info:
+            return
+
+        session_info.last_activity_at = datetime.now(UTC).isoformat()
+        await self._save_session(session_id, session_info)
+
+    async def close_session(self, session_id: str, reason: str = "manual") -> bool:
         """
         关闭终端会话
 
@@ -304,22 +404,20 @@ class TerminalService:
             )
             return False
 
-        # 关闭 SSH 连接
+        ws = self.ssh_manager.get_websocket(session_id)
+        if ws:
+            with contextlib.suppress(Exception):
+                await ws.close(code=1000, reason="session_closed")
+
         await self.ssh_manager.remove_connection(session_id)
-
-        # 更新状态
-        session_info.status = TerminalSessionStatus.DISCONNECTED
-        await self._save_session(session_id, session_info)
-
-        # 从 Redis 删除
-        key = f"{SESSION_PREFIX}{session_id}"
-        await self.redis.delete(key)
+        await self._remove_session_record(session_id)
 
         logger.info(
             event="terminal_session_closed",
             message="终端会话已关闭",
             session_id=session_id,
             host=session_info.host,
+            reason=reason,
             trace_id=trace_id,
         )
 
@@ -347,14 +445,13 @@ class TerminalService:
             await self._send_error(websocket, "会话不存在或已断开", trace_id)
             return
 
-        # 绑定 WebSocket
-        await self.ssh_manager.add_websocket(session_id, websocket)
+        await self.touch_session(session_id)
 
         logger.info(
             event="terminal_command_start",
             message="开始执行命令",
             session_id=session_id,
-            command=command[:100],  # 只记录前 100 字符
+            command=command[:100],
             trace_id=trace_id,
         )
 
@@ -366,20 +463,15 @@ class TerminalService:
                 stderr=asyncssh.PIPE,
             )
 
-            # 发送状态消息
             await self._send_status(websocket, TerminalSessionStatus.CONNECTED, "命令执行中", trace_id)
 
-            # 创建读取任务
+            # 并行读取 stdout / stderr
             stdout_task = asyncio.create_task(self._read_stream(proc.stdout, websocket, WSMessageType.STDOUT, trace_id))
             stderr_task = asyncio.create_task(self._read_stream(proc.stderr, websocket, WSMessageType.STDERR, trace_id))
 
-            # 等待进程完成
             await proc.wait()
-
-            # 等待输出任务完成
             await asyncio.gather(stdout_task, stderr_task)
 
-            # 发送完成状态
             exit_status = proc.exit_status or 0
             await self._send_status(
                 websocket,
@@ -423,7 +515,7 @@ class TerminalService:
             )
             await self._send_error(websocket, f"命令执行错误: {e}", trace_id)
         finally:
-            await self.ssh_manager.remove_websocket(session_id)
+            await self.touch_session(session_id)
 
     async def _read_stream(
         self,
@@ -499,17 +591,28 @@ class TerminalService:
         trace_id = get_current_trace_id()
 
         if message.type == WSMessageType.STDIN:
-            # 执行命令
-            if message.data:
-                await self.execute_command(session_id, message.data, websocket)
+            if not message.data:
+                return
+
+            command_task = asyncio.create_task(self.execute_command(session_id, message.data, websocket))
+            try:
+                await self.ssh_manager.add_task(session_id, command_task)
+            except RuntimeError as e:
+                command_task.cancel()
+                await self._send_error(websocket, str(e), trace_id)
+                return
+
+            try:
+                await command_task
+            finally:
+                await self.ssh_manager.clear_task(session_id)
 
         elif message.type == WSMessageType.PING:
-            # 心跳响应
             pong = TerminalWSMessage(type=WSMessageType.PONG)
             await websocket.send_text(pong.model_dump_json())
+            await self.touch_session(session_id)
 
         elif message.type == WSMessageType.RESIZE:
-            # 终端大小调整（暂时忽略，后续支持 PTY）
             logger.debug(
                 event="terminal_resize",
                 message="终端大小调整",
@@ -518,3 +621,57 @@ class TerminalService:
                 rows=message.rows,
                 trace_id=trace_id,
             )
+            await self.touch_session(session_id)
+
+    async def _cleanup_loop(self):
+        """空闲会话清理循环"""
+        logger.info(event="terminal_cleanup_start", message="终端空闲会话清理任务已启动")
+
+        while not self._cleanup_stop_event.is_set():
+            try:
+                await self._cleanup_idle_sessions()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(
+                    event="terminal_cleanup_error",
+                    message=f"会话清理异常: {e}",
+                    error=str(e),
+                )
+
+            try:
+                await asyncio.wait_for(
+                    self._cleanup_stop_event.wait(),
+                    timeout=settings.TERMINAL_CLEANUP_INTERVAL_SECONDS,
+                )
+            except TimeoutError:
+                continue
+
+        logger.info(event="terminal_cleanup_stop", message="终端空闲会话清理任务已停止")
+
+    async def _cleanup_idle_sessions(self):
+        """清理空闲会话"""
+        now = datetime.now(UTC)
+
+        for session_id in await self._list_indexed_sessions():
+            session_info = await self.get_session(session_id)
+            if not session_info:
+                await self._remove_session_record(session_id)
+                continue
+
+            try:
+                last_activity = parse_iso_datetime(session_info.last_activity_at or session_info.created_at)
+            except ValueError:
+                last_activity = now
+
+            idle_seconds = (now - last_activity).total_seconds()
+            if idle_seconds <= SESSION_IDLE_TIMEOUT:
+                continue
+
+            logger.info(
+                event="terminal_idle_session_cleanup",
+                message="会话超过空闲阈值，自动关闭",
+                session_id=session_id,
+                idle_seconds=int(idle_seconds),
+            )
+            await self.close_session(session_id, reason="idle_timeout")

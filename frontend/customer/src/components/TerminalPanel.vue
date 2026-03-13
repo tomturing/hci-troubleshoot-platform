@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useChatStore } from '@/stores/chat'
+import { buildTerminalWsUrl, type TerminalSessionCreateRequest, type TerminalWsMessage } from '@/api/terminal'
+import { getClientId } from '@/utils/clientId'
 
 /**
  * 终端面板组件
- * 显示终端输入区，接收来自 CommandBlock 的命令
- * Task 36: 新增 SSH 登录表单、连接状态、终端输出区域
+ * 提供 SSH 登录、WebSocket 交互终端、命令输入与输出展示
  */
 
 const chatStore = useChatStore()
-const terminalInput = ref<HTMLTextAreaElement | null>(null)
+const clientId = getClientId()
 
-// 本地输入状态
+const terminalInput = ref<{ focus: () => void } | null>(null)
 const localInput = ref('')
+const terminalSocket = ref<WebSocket | null>(null)
+const manualDisconnect = ref(false)
 
 // SSH 登录表单状态
 const sshForm = ref({
@@ -22,6 +25,7 @@ const sshForm = ref({
   password: '',
   authType: 'password' as 'password' | 'key',
   privateKey: '',
+  passphrase: '',
 })
 
 // 终端输出内容
@@ -36,6 +40,7 @@ const isSshDisconnected = computed(() => chatStore.sshConnectionState === 'disco
 const isSshConnecting = computed(() => chatStore.sshConnectionState === 'connecting')
 const isSshConnected = computed(() => chatStore.sshConnectionState === 'connected')
 const isSshError = computed(() => chatStore.sshConnectionState === 'error')
+const isSocketReady = computed(() => terminalSocket.value?.readyState === WebSocket.OPEN)
 
 // 监听 store 中的待发送命令
 watch(
@@ -43,18 +48,13 @@ watch(
   (newCommand) => {
     if (newCommand) {
       localInput.value = newCommand
-      // 清空 store 中的命令
       nextTick(() => {
         chatStore.clearTerminalInput()
-        // 聚焦到输入框
         terminalInput.value?.focus()
-        // 光标移到末尾
-        const len = localInput.value.length
-        terminalInput.value?.setSelectionRange(len, len)
       })
     }
   },
-  { immediate: true }
+  { immediate: true },
 )
 
 // 监听连接状态变化，记录日志
@@ -68,7 +68,7 @@ watch(
       error: '连接错误',
     }
     addTerminalMessage('info', `SSH 连接状态：${stateMap[newState]}`)
-  }
+  },
 )
 
 /**
@@ -80,7 +80,7 @@ function addTerminalMessage(type: 'command' | 'output' | 'error' | 'info', conte
     content,
     timestamp: new Date(),
   })
-  // 自动滚动到底部
+
   nextTick(() => {
     if (autoScroll.value && outputContainer.value) {
       outputContainer.value.scrollTop = outputContainer.value.scrollHeight
@@ -89,39 +89,209 @@ function addTerminalMessage(type: 'command' | 'output' | 'error' | 'info', conte
 }
 
 /**
+ * 提取错误消息
+ */
+function extractErrorMessage(error: unknown): string {
+  const maybeError = error as {
+    response?: { data?: { detail?: string } }
+    message?: string
+  }
+  return maybeError?.response?.data?.detail || maybeError?.message || '请求失败'
+}
+
+/**
+ * 构建会话创建请求
+ */
+function buildCreateRequest(): Omit<TerminalSessionCreateRequest, 'client_id' | 'case_id'> {
+  const payload: Omit<TerminalSessionCreateRequest, 'client_id' | 'case_id'> = {
+    host: sshForm.value.host.trim(),
+    port: Number(sshForm.value.port) || 22,
+    username: sshForm.value.username.trim(),
+    auth_type: sshForm.value.authType,
+  }
+
+  if (sshForm.value.authType === 'password') {
+    payload.password = sshForm.value.password
+  } else {
+    payload.private_key = sshForm.value.privateKey
+    if (sshForm.value.passphrase.trim()) {
+      payload.passphrase = sshForm.value.passphrase.trim()
+    }
+  }
+
+  return payload
+}
+
+/**
+ * 校验登录参数
+ */
+function validateForm(): string | null {
+  if (!sshForm.value.host.trim()) return '请填写主机地址'
+  if (!sshForm.value.username.trim()) return '请填写用户名'
+
+  const port = Number(sshForm.value.port)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return '端口范围应为 1-65535'
+  }
+
+  if (sshForm.value.authType === 'password' && !sshForm.value.password) {
+    return '密码认证方式必须填写密码'
+  }
+
+  if (sshForm.value.authType === 'key' && !sshForm.value.privateKey.trim()) {
+    return '密钥认证方式必须填写私钥'
+  }
+
+  return null
+}
+
+/**
+ * 关闭当前 WebSocket 连接
+ */
+function closeSocket() {
+  if (!terminalSocket.value) return
+  terminalSocket.value.onopen = null
+  terminalSocket.value.onclose = null
+  terminalSocket.value.onmessage = null
+  terminalSocket.value.onerror = null
+  terminalSocket.value.close()
+  terminalSocket.value = null
+}
+
+/**
+ * 处理 WebSocket 消息
+ */
+function handleSocketMessage(rawMessage: string) {
+  let message: TerminalWsMessage
+  try {
+    message = JSON.parse(rawMessage) as TerminalWsMessage
+  } catch {
+    addTerminalMessage('error', `无法解析服务端消息: ${rawMessage}`)
+    return
+  }
+
+  if (message.type === 'stdout' && message.data) {
+    addTerminalMessage('output', message.data)
+    return
+  }
+
+  if (message.type === 'stderr' && message.data) {
+    addTerminalMessage('error', message.data)
+    return
+  }
+
+  if (message.type === 'error') {
+    addTerminalMessage('error', message.data || message.message || '终端执行失败')
+    return
+  }
+
+  if (message.type === 'status') {
+    if (message.message) {
+      addTerminalMessage('info', message.message)
+    }
+
+    if (message.state === 'connected') {
+      chatStore.setSshConnectionState('connected')
+    }
+
+    if (message.state === 'disconnected') {
+      chatStore.setSshConnectionState('disconnected')
+      chatStore.setSshSessionId(null)
+    }
+
+    if (message.state === 'error') {
+      chatStore.setSshConnectionState('error')
+      chatStore.setSshErrorMessage(message.message || '终端状态异常')
+    }
+  }
+}
+
+/**
+ * 连接终端 WebSocket
+ */
+function connectWebSocket(sessionId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    closeSocket()
+
+    const socket = new WebSocket(buildTerminalWsUrl(sessionId, clientId))
+    terminalSocket.value = socket
+
+    socket.onopen = () => {
+      addTerminalMessage('info', '终端 WebSocket 已连接')
+      resolve()
+    }
+
+    socket.onmessage = (event) => {
+      handleSocketMessage(String(event.data || ''))
+    }
+
+    socket.onerror = () => {
+      reject(new Error('终端 WebSocket 连接失败'))
+    }
+
+    socket.onclose = () => {
+      terminalSocket.value = null
+      if (!manualDisconnect.value && chatStore.sshConnectionState !== 'disconnected') {
+        chatStore.setSshConnectionState('error')
+        chatStore.setSshErrorMessage('终端连接已断开，请重新连接')
+        addTerminalMessage('error', '终端连接已断开')
+      }
+    }
+  })
+}
+
+/**
  * 连接 SSH
  */
 async function connectSsh() {
-  const { host, port, username } = sshForm.value
-  if (!host || !username) {
-    chatStore.setSshErrorMessage('请填写主机和用户名')
+  const validationError = validateForm()
+  if (validationError) {
+    chatStore.setSshErrorMessage(validationError)
     return
   }
 
   chatStore.setSshConnectionState('connecting')
   chatStore.clearSshErrorMessage()
-  addTerminalMessage('info', `正在连接到 ${username}@${host}:${port}...`)
 
-  // TODO: Task 37 实现实际的 SSH 连接 API
-  // 模拟连接延迟
-  setTimeout(() => {
-    // Mock: 假设连接成功
-    chatStore.setSshSessionId('mock-session-' + Date.now())
+  const payload = buildCreateRequest()
+  addTerminalMessage('info', `正在连接到 ${payload.username}@${payload.host}:${payload.port}...`)
+
+  try {
+    manualDisconnect.value = false
+    const { data } = await chatStore.createTerminalSession(payload)
+    chatStore.setSshSessionId(data.session_id)
+    await connectWebSocket(data.session_id)
     chatStore.setSshConnectionState('connected')
-    addTerminalMessage('info', 'SSH 连接成功 (模拟模式)')
-    addTerminalMessage('info', '警告：后端 SSH 代理尚未实现 (依赖 Task 37)')
-  }, 1000)
+    addTerminalMessage('info', data.message || `SSH 连接成功：${data.username}@${data.host}:${data.port}`)
+  } catch (error) {
+    chatStore.setSshConnectionState('error')
+    const errorMessage = extractErrorMessage(error)
+    chatStore.setSshErrorMessage(errorMessage)
+    addTerminalMessage('error', `SSH 连接失败: ${errorMessage}`)
+    closeSocket()
+  }
 }
 
 /**
  * 断开 SSH 连接
  */
-function disconnectSsh() {
-  if (chatStore.sshSessionId) {
-    // TODO: 调用后端 API 关闭会话
-    chatStore.setSshSessionId(null)
+async function disconnectSsh() {
+  manualDisconnect.value = true
+
+  const sessionId = chatStore.sshSessionId
+  closeSocket()
+
+  if (sessionId) {
+    try {
+      await chatStore.closeTerminalSession(sessionId)
+    } catch (error) {
+      addTerminalMessage('error', `关闭会话失败: ${extractErrorMessage(error)}`)
+    }
   }
+
+  chatStore.setSshSessionId(null)
   chatStore.setSshConnectionState('disconnected')
+  chatStore.clearSshErrorMessage()
   addTerminalMessage('info', 'SSH 连接已断开')
 }
 
@@ -132,20 +302,20 @@ function executeCommand() {
   const command = localInput.value.trim()
   if (!command) return
 
-  // 添加命令到输出区
+  if (!isSshConnected.value || !isSocketReady.value || !terminalSocket.value) {
+    addTerminalMessage('error', 'SSH 未连接，请先登录')
+    return
+  }
+
   addTerminalMessage('command', command)
 
-  // TODO: Task 37 实现实际的 SSH 命令执行
-  // Mock 响应
-  setTimeout(() => {
-    if (isSshConnected.value) {
-      addTerminalMessage('output', `Mock output for command: ${command}`)
-    } else {
-      addTerminalMessage('error', '错误：SSH 未连接，请先登录')
-    }
-  }, 200)
+  terminalSocket.value.send(
+    JSON.stringify({
+      type: 'stdin',
+      data: command.endsWith('\n') ? command : `${command}\n`,
+    }),
+  )
 
-  // 清空输入
   localInput.value = ''
 }
 
@@ -177,20 +347,37 @@ function clearOutput() {
  * 复制输出内容
  */
 async function copyOutput() {
-  const text = terminalOutput.value.map(item => item.content).join('\n')
-  if (text && navigator.clipboard) {
+  const text = terminalOutput.value.map((item) => item.content).join('\n')
+  if (!text) return
+
+  if (navigator.clipboard && window.isSecureContext) {
     await navigator.clipboard.writeText(text)
-    // 显示复制成功提示
-    addTerminalMessage('info', '输出内容已复制到剪贴板')
+  } else {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
   }
+
+  addTerminalMessage('info', '输出内容已复制到剪贴板')
 }
 
 /**
  * 关闭面板
  */
-function closePanel() {
+async function closePanel() {
+  await disconnectSsh()
   chatStore.closeTerminalSidebar()
 }
+
+onBeforeUnmount(() => {
+  // 避免组件销毁后遗留 socket 连接
+  closeSocket()
+})
 </script>
 
 <template>
@@ -215,6 +402,14 @@ function closePanel() {
           effect="plain"
         >
           连接中...
+        </el-tag>
+        <el-tag
+          v-else-if="isSshError"
+          size="small"
+          type="danger"
+          effect="plain"
+        >
+          连接错误
         </el-tag>
         <el-tag
           v-else
@@ -254,7 +449,7 @@ function closePanel() {
     </div>
 
     <!-- SSH 登录表单（未连接时显示） -->
-    <div v-if="isSshDisconnected" class="ssh-login-form">
+    <div v-if="!isSshConnected" class="ssh-login-form">
       <el-form :model="sshForm" label-width="70px" size="small">
         <el-form-item label="主机">
           <el-input v-model="sshForm.host" placeholder="192.168.1.100" />
@@ -287,6 +482,14 @@ function closePanel() {
             placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;..."
           />
         </el-form-item>
+        <el-form-item v-if="sshForm.authType === 'key'" label="密钥密码">
+          <el-input
+            v-model="sshForm.passphrase"
+            type="password"
+            placeholder="可选"
+            show-password
+          />
+        </el-form-item>
         <el-form-item>
           <el-button
             type="primary"
@@ -296,7 +499,17 @@ function closePanel() {
           >
             连接
           </el-button>
-          <el-button size="small" @click="() => { sshForm.host = ''; sshForm.username = ''; }">
+          <el-button
+            size="small"
+            @click="() => {
+              sshForm.host = ''
+              sshForm.port = '22'
+              sshForm.username = ''
+              sshForm.password = ''
+              sshForm.privateKey = ''
+              sshForm.passphrase = ''
+            }"
+          >
             重置
           </el-button>
         </el-form-item>
@@ -349,11 +562,19 @@ function closePanel() {
         type="primary"
         size="small"
         class="execute-btn"
-        :disabled="!localInput.trim() || !isSshConnected"
+        :disabled="!localInput.trim() || !isSshConnected || !isSocketReady"
         @click="executeCommand"
       >
         <el-icon><i class="el-icon-right" /></el-icon>
         执行
+      </el-button>
+      <el-button
+        size="small"
+        class="clear-btn"
+        :disabled="!localInput"
+        @click="clearInput"
+      >
+        清空输入
       </el-button>
     </div>
 
@@ -572,7 +793,8 @@ function closePanel() {
   color: #666;
 }
 
-.execute-btn {
+.execute-btn,
+.clear-btn {
   height: 32px;
   padding: 0 12px;
 }

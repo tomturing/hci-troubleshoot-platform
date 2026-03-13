@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # 内部服务间 API 鉴权 Token
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
 
+    # === 终端 SSH 配置 ===
+    TERMINAL_ALLOW_INSECURE_HOSTS: bool = False
+    TERMINAL_KNOWN_HOSTS_FILE: str = "~/.ssh/known_hosts"
+    TERMINAL_CLEANUP_INTERVAL_SECONDS: int = 60
+
     @property
     def cors_origins(self) -> list:
         """解析 CORS 允许的来源列表"""

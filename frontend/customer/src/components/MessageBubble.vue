@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, nextTick, onMounted, watch, h, render, renderList } from 'vue'
+import { computed, ref } from 'vue'
 import type { ChatMessage } from '@/stores/chat'
-import { renderMarkdown, isCommandLanguage, extractCodeBlocks } from '@/utils/markdown'
+import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
 import CommandBlock from './CommandBlock.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
@@ -13,17 +13,26 @@ const isDivider = computed(() => isSystem.value && props.message.content.include
 
 /** 已复制状态 */
 const copiedMessage = ref(false)
-function copyContent() {
+async function copyContent() {
   const text = props.message.content
-  copyToClipboard(text)
+  const copied = await copyToClipboard(text)
+  if (!copied) {
+    return
+  }
   copiedMessage.value = true
   setTimeout(() => (copiedMessage.value = false), 2000)
 }
 
 /** 复制到剪贴板（兼容非安全上下文） */
-function copyToClipboard(text: string) {
+async function copyToClipboard(text: string): Promise<boolean> {
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text)
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch (e) {
+      console.warn('复制失败:', e)
+      return false
+    }
   } else {
     // 非安全上下文降级：使用 textarea + execCommand
     const textarea = document.createElement('textarea')
@@ -34,10 +43,14 @@ function copyToClipboard(text: string) {
     textarea.select()
     try {
       document.execCommand('copy')
+      return true
     } catch (e) {
       console.warn('复制失败:', e)
+      return false
     }
-    document.body.removeChild(textarea)
+    finally {
+      document.body.removeChild(textarea)
+    }
   }
 }
 
@@ -51,10 +64,11 @@ function formatTime(d: Date) {
  * 返回片段数组，每个片段可以是普通文本或命令块
  */
 interface ContentSegment {
+  id: string
   type: 'text' | 'command'
   content: string
   language?: string
-  index: number
+  commandIndex?: number
 }
 
 const contentSegments = computed<ContentSegment[]>(() => {
@@ -80,9 +94,9 @@ const contentSegments = computed<ContentSegment[]>(() => {
       const textBefore = props.message.content.substring(lastIndex, matchStart)
       if (textBefore.trim()) {
         segments.push({
+          id: `text-${matchStart}-${segments.length}`,
           type: 'text',
           content: textBefore,
-          index: segments.length,
         })
       }
     }
@@ -93,18 +107,20 @@ const contentSegments = computed<ContentSegment[]>(() => {
       const commands = splitCommands(code)
       for (const cmd of commands) {
         segments.push({
+          id: `command-${matchStart}-${commandIndex}`,
           type: 'command',
           content: cmd,
           language,
-          index: commandIndex++,
+          commandIndex,
         })
+        commandIndex += 1
       }
     } else {
       // 非命令代码块，作为普通文本渲染（但保留代码块标记）
       segments.push({
+        id: `text-code-${matchStart}-${segments.length}`,
         type: 'text',
         content: fullMatch,
-        index: segments.length,
       })
     }
 
@@ -116,9 +132,9 @@ const contentSegments = computed<ContentSegment[]>(() => {
     const textAfter = props.message.content.substring(lastIndex)
     if (textAfter.trim()) {
       segments.push({
+        id: `text-tail-${lastIndex}-${segments.length}`,
         type: 'text',
         content: textAfter,
-        index: segments.length,
       })
     }
   }
@@ -127,42 +143,14 @@ const contentSegments = computed<ContentSegment[]>(() => {
 })
 
 /**
- * 拆分多命令
- * 按行分割，但处理续行符 \
+ * 拆分命令块
+ * 为避免误拆分多行脚本，默认保持整块发送
  * @param code 原始代码内容
  * @returns 命令数组
  */
 function splitCommands(code: string): string[] {
-  const lines = code.split('\n')
-  const commands: string[] = []
-  let currentCommand = ''
-
-  for (const line of lines) {
-    const trimmedLine = line.trimEnd()
-    if (trimmedLine.endsWith('\\')) {
-      // 续行
-      currentCommand += trimmedLine.substring(0, trimmedLine.length - 1) + '\n'
-    } else {
-      // 命令结束
-      currentCommand += trimmedLine
-      if (currentCommand.trim()) {
-        commands.push(currentCommand.trimEnd())
-      }
-      currentCommand = ''
-    }
-  }
-
-  // 处理最后可能未完成的命令
-  if (currentCommand.trim()) {
-    commands.push(currentCommand.trimEnd())
-  }
-
-  // 如果没有拆分成功（没有续行符），返回整个代码
-  if (commands.length === 0 && code.trim()) {
-    return [code.trimEnd()]
-  }
-
-  return commands
+  const normalized = code.trimEnd()
+  return normalized ? [normalized] : []
 }
 
 /**
@@ -277,12 +265,6 @@ function generateDescription(command: string): string {
 function renderTextSegment(content: string): string {
   return renderMarkdown(content)
 }
-
-// 监听内容变化，流式输出时重新渲染
-watch(
-  () => props.message.content,
-  () => nextTick(),
-)
 </script>
 
 <template>
@@ -313,7 +295,7 @@ watch(
           class="bubble-body"
           :class="{ 'is-command-available': contentSegments.some(s => s.type === 'command') }"
         >
-          <template v-for="segment in contentSegments" :key="segment.index">
+          <template v-for="segment in contentSegments" :key="segment.id">
             <!-- 命令块使用 CommandBlock 组件 -->
             <CommandBlock
               v-if="segment.type === 'command'"
@@ -321,7 +303,7 @@ watch(
               :language="segment.language || 'bash'"
               :description="generateDescription(segment.content)"
               :risk-level="detectRiskLevel(segment.content)"
-              :index="segment.index"
+              :index="segment.commandIndex || 0"
             />
             <!-- 普通文本使用 Markdown 渲染 -->
             <div
