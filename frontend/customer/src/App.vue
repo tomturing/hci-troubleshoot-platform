@@ -18,6 +18,16 @@ onMounted(() => {
       <div class="header-content">
         <h1>HCI 故障排查助手</h1>
         <div class="header-badges">
+          <!-- 终端侧边栏入口 (Task 36) -->
+          <el-button
+            size="small"
+            round
+            class="terminal-btn"
+            @click="chatStore.openTerminalSidebar()"
+          >
+            <el-icon><i class="el-icon-monitor" /></el-icon>
+            终端
+          </el-button>
           <el-button
             v-if="chatStore.hasActiveCase"
             size="small"
@@ -123,6 +133,21 @@ body {
 
 .history-btn:hover {
   background: rgba(255, 255, 255, 0.35) !important;
+}
+
+.terminal-btn {
+  background: rgba(103, 194, 58, 0.3) !important;
+  border: 1px solid rgba(103, 194, 58, 0.5) !important;
+  color: #fff !important;
+  font-size: 12px !important;
+}
+
+.terminal-btn:hover {
+  background: rgba(103, 194, 58, 0.5) !important;
+}
+
+.terminal-btn :deep(.el-icon) {
+  margin-right: 4px;
 }
 
 .close-btn {

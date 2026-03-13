@@ -68,8 +68,14 @@ export const useChatStore = defineStore('chat', () => {
   const ratingConversationId = ref<string | null>(null)
 
   // 终端面板状态 (Task 35/36)
-  const showTerminalPanel = ref(false) // 是否显示终端面板
+  const showTerminalPanel = ref(false) // 是否显示底部终端面板
+  const showTerminalSidebar = ref(false) // 是否显示侧边栏终端 (Task 36)
   const terminalInputCommand = ref('') // 待发送到终端输入框的命令
+
+  // SSH 连接状态 (Task 36)
+  const sshConnectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
+  const sshSessionId = ref<string | null>(null) // SSH 会话 ID
+  const sshErrorMessage = ref('') // SSH 错误信息
 
   // 计算属性
   const hasActiveCase = computed(() => {
@@ -526,14 +532,14 @@ export const useChatStore = defineStore('chat', () => {
 
   /**
    * 发送命令到终端
-   * 打开终端面板并将命令填充到输入区
+   * 打开侧边栏并将命令填充到输入区
    * @param command 要发送的命令
    */
   function sendCommandToTerminal(command: string) {
-    // 确保命令末尾有换行符提示
+    // 将命令填充到输入框
     terminalInputCommand.value = command
-    // 自动打开终端面板
-    showTerminalPanel.value = true
+    // 自动打开侧边栏
+    showTerminalSidebar.value = true
     console.log('[CommandBlock] 命令已发送到终端:', command.substring(0, 50) + (command.length > 50 ? '...' : ''))
   }
 
@@ -549,6 +555,48 @@ export const useChatStore = defineStore('chat', () => {
    */
   function clearTerminalInput() {
     terminalInputCommand.value = ''
+  }
+
+  /**
+   * 打开侧边栏终端 (Task 36)
+   */
+  function openTerminalSidebar() {
+    showTerminalSidebar.value = true
+  }
+
+  /**
+   * 关闭侧边栏终端
+   */
+  function closeTerminalSidebar() {
+    showTerminalSidebar.value = false
+  }
+
+  /**
+   * 设置 SSH 连接状态
+   */
+  function setSshConnectionState(state: 'disconnected' | 'connecting' | 'connected' | 'error') {
+    sshConnectionState.value = state
+  }
+
+  /**
+   * 设置 SSH 会话 ID
+   */
+  function setSshSessionId(sessionId: string | null) {
+    sshSessionId.value = sessionId
+  }
+
+  /**
+   * 设置 SSH 错误信息
+   */
+  function setSshErrorMessage(message: string) {
+    sshErrorMessage.value = message
+  }
+
+  /**
+   * 清除 SSH 错误信息
+   */
+  function clearSshErrorMessage() {
+    sshErrorMessage.value = ''
   }
 
   return {
@@ -592,10 +640,21 @@ export const useChatStore = defineStore('chat', () => {
     closeRatingCard,
     // 终端面板 (Task 35/36)
     showTerminalPanel,
+    showTerminalSidebar,
     terminalInputCommand,
     sendCommandToTerminal,
     closeTerminalPanel,
     clearTerminalInput,
+    openTerminalSidebar,
+    closeTerminalSidebar,
+    // SSH 连接状态 (Task 36)
+    sshConnectionState,
+    sshSessionId,
+    sshErrorMessage,
+    setSshConnectionState,
+    setSshSessionId,
+    setSshErrorMessage,
+    clearSshErrorMessage,
     // 核心方法
     initialize,
     sendMessage,

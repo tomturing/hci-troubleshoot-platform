@@ -199,10 +199,22 @@ function formatDate(d: string): string {
       />
     </div>
 
-    <!-- 终端面板 -->
+    <!-- 终端面板（底部模式） -->
     <div v-if="chatStore.showTerminalPanel" class="terminal-panel-wrapper">
       <TerminalPanel />
     </div>
+
+    <!-- 侧边栏终端抽屉（Task 36） -->
+    <el-drawer
+      v-model="chatStore.showTerminalSidebar"
+      title="SSH 终端"
+      direction="rtl"
+      size="600px"
+      :append-to-body="true"
+      @close="chatStore.closeTerminalSidebar()"
+    >
+      <TerminalPanel />
+    </el-drawer>
 
     <!-- 历史工单抽屉 -->
     <el-drawer
