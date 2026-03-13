@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, nextTick, onMounted, watch } from 'vue'
+import { computed, ref, nextTick, onMounted, watch, h, render, renderList } from 'vue'
 import type { ChatMessage } from '@/stores/chat'
-import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
+import { renderMarkdown, isCommandLanguage, extractCodeBlocks } from '@/utils/markdown'
+import CommandBlock from './CommandBlock.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
 
@@ -10,23 +11,13 @@ const isSystem = computed(() => props.message.role === 'system')
 const isAssistant = computed(() => props.message.role === 'assistant')
 const isDivider = computed(() => isSystem.value && props.message.content.includes('────'))
 
-/** 已复制状态的代码块索引 */
-const copiedBlocks = ref<Set<number>>(new Set())
-
-/** 复制整条消息内容 */
+/** 已复制状态 */
 const copiedMessage = ref(false)
 function copyContent() {
   const text = props.message.content
   copyToClipboard(text)
   copiedMessage.value = true
   setTimeout(() => (copiedMessage.value = false), 2000)
-}
-
-/** 复制代码块 */
-function copyCodeBlock(index: number, code: string) {
-  copyToClipboard(code)
-  copiedBlocks.value.add(index)
-  setTimeout(() => copiedBlocks.value.delete(index), 2000)
 }
 
 /** 复制到剪贴板（兼容非安全上下文） */
@@ -55,83 +46,242 @@ function formatTime(d: Date) {
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
-/** 渲染后的 HTML 内容 */
-const renderedContent = computed(() => {
-  if (!props.message.content) return ''
-  return renderMarkdown(props.message.content)
-})
-
-/** 代码块数据，用于挂载复制按钮 */
-const codeBlocks = computed(() => {
-  const regex = /```(\w*)\n([\s\S]*?)```/g
-  const blocks: Array<{ language: string; code: string; isCommand: boolean }> = []
-  let match
-  while ((match = regex.exec(props.message.content)) !== null) {
-    const lang = match[1] || 'plaintext'
-    blocks.push({
-      language: lang,
-      code: match[2].trim(),
-      isCommand: isCommandLanguage(lang),
-    })
-  }
-  return blocks
-})
-
-/** 为代码块添加复制按钮 */
-function setupCodeBlockButtons() {
-  if (!isAssistant.value) return
-
-  nextTick(() => {
-    const container = document.querySelector('.bubble-body-rendered')
-    if (!container) return
-
-    const preBlocks = container.querySelectorAll('pre')
-    preBlocks.forEach((pre, index) => {
-      // 避免重复添加
-      if (pre.querySelector('.code-block-header')) return
-
-      const code = pre.querySelector('code')
-      const language = code?.className.replace('language-', '') || 'plaintext'
-      const codeText = code?.textContent || ''
-
-      // 创建代码块头部（语言标识 + 复制按钮）
-      const header = document.createElement('div')
-      header.className = 'code-block-header'
-
-      const langLabel = document.createElement('span')
-      langLabel.className = 'code-block-lang'
-      langLabel.textContent = language
-
-      const copyBtn = document.createElement('button')
-      copyBtn.className = 'code-block-copy-btn'
-      copyBtn.textContent = '复制'
-      copyBtn.onclick = () => {
-        copyCodeBlock(index, codeText)
-        copyBtn.textContent = '已复制'
-        setTimeout(() => (copyBtn.textContent = '复制'), 2000)
-      }
-
-      // 为命令块添加特殊样式
-      if (isCommandLanguage(language)) {
-        pre.classList.add('is-command-block')
-      }
-
-      header.appendChild(langLabel)
-      header.appendChild(copyBtn)
-
-      // 将 header 插入到 pre 前面
-      pre.parentNode?.insertBefore(header, pre)
-    })
-  })
+/**
+ * 提取消息中的命令块并拆分内容
+ * 返回片段数组，每个片段可以是普通文本或命令块
+ */
+interface ContentSegment {
+  type: 'text' | 'command'
+  content: string
+  language?: string
+  index: number
 }
 
-// 监听内容变化，重新设置代码块按钮（流式输出场景）
-onMounted(setupCodeBlockButtons)
+const contentSegments = computed<ContentSegment[]>(() => {
+  if (!props.message.content) return []
 
-// 流式输出时内容会持续变化，需要重新设置按钮
+  const segments: ContentSegment[] = []
+  let lastIndex = 0
+  let commandIndex = 0
+
+  // 正则匹配代码块：```language\ncode\n```
+  const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g
+  let match
+
+  while ((match = codeBlockRegex.exec(props.message.content)) !== null) {
+    const fullMatch = match[0]
+    const language = match[1] || 'plaintext'
+    const code = match[2]
+    const matchStart = match.index
+    const matchEnd = matchStart + fullMatch.length
+
+    // 添加代码块前的普通文本
+    if (matchStart > lastIndex) {
+      const textBefore = props.message.content.substring(lastIndex, matchStart)
+      if (textBefore.trim()) {
+        segments.push({
+          type: 'text',
+          content: textBefore,
+          index: segments.length,
+        })
+      }
+    }
+
+    // 判断是否为命令块
+    if (isCommandLanguage(language)) {
+      // 是命令块，需要进一步拆分多命令
+      const commands = splitCommands(code)
+      for (const cmd of commands) {
+        segments.push({
+          type: 'command',
+          content: cmd,
+          language,
+          index: commandIndex++,
+        })
+      }
+    } else {
+      // 非命令代码块，作为普通文本渲染（但保留代码块标记）
+      segments.push({
+        type: 'text',
+        content: fullMatch,
+        index: segments.length,
+      })
+    }
+
+    lastIndex = matchEnd
+  }
+
+  // 添加剩余的普通文本
+  if (lastIndex < props.message.content.length) {
+    const textAfter = props.message.content.substring(lastIndex)
+    if (textAfter.trim()) {
+      segments.push({
+        type: 'text',
+        content: textAfter,
+        index: segments.length,
+      })
+    }
+  }
+
+  return segments
+})
+
+/**
+ * 拆分多命令
+ * 按行分割，但处理续行符 \
+ * @param code 原始代码内容
+ * @returns 命令数组
+ */
+function splitCommands(code: string): string[] {
+  const lines = code.split('\n')
+  const commands: string[] = []
+  let currentCommand = ''
+
+  for (const line of lines) {
+    const trimmedLine = line.trimEnd()
+    if (trimmedLine.endsWith('\\')) {
+      // 续行
+      currentCommand += trimmedLine.substring(0, trimmedLine.length - 1) + '\n'
+    } else {
+      // 命令结束
+      currentCommand += trimmedLine
+      if (currentCommand.trim()) {
+        commands.push(currentCommand.trimEnd())
+      }
+      currentCommand = ''
+    }
+  }
+
+  // 处理最后可能未完成的命令
+  if (currentCommand.trim()) {
+    commands.push(currentCommand.trimEnd())
+  }
+
+  // 如果没有拆分成功（没有续行符），返回整个代码
+  if (commands.length === 0 && code.trim()) {
+    return [code.trimEnd()]
+  }
+
+  return commands
+}
+
+/**
+ * 检测风险提示级别
+ * 根据命令内容和上下文判断风险等级
+ * @param command 命令内容
+ * @returns 风险等级
+ */
+function detectRiskLevel(command: string): 'none' | 'readonly' | 'caution' | 'danger' {
+  const lowerCmd = command.toLowerCase()
+
+  // 高危命令检测
+  const dangerPatterns = [
+    'rm -rf', 'rm -r /', 'dd if=/dev/zero', 'mkfs.', 'fdisk',
+    '> /dev/sda', 'shutdown', 'reboot', 'poweroff', 'init 0',
+    'systemctl stop', 'kill -9', ':(){ :|:& };:' // fork bomb
+  ]
+  if (dangerPatterns.some(p => lowerCmd.includes(p))) {
+    return 'danger'
+  }
+
+  // 谨慎命令检测
+  const cautionPatterns = [
+    'apt remove', 'yum remove', 'pip uninstall', 'npm uninstall',
+    'docker rm', 'docker rmi', 'kubectl delete',
+    'chmod 777', 'chown -R'
+  ]
+  if (cautionPatterns.some(p => lowerCmd.includes(p))) {
+    return 'caution'
+  }
+
+  // 只读命令检测
+  const readonlyPatterns = [
+    'cat ', 'ls ', 'ps ', 'top', 'htop', 'df ', 'du ', 'free',
+    'uptime', 'who', 'w', 'last', 'dmesg', 'journalctl',
+    'cat\t', 'ls\t', 'ps\t', 'df\t', 'du\t'
+  ]
+  if (readonlyPatterns.some(p => lowerCmd.startsWith(p) || lowerCmd.includes(' ' + p))) {
+    return 'readonly'
+  }
+
+  // 默认安全
+  return 'none'
+}
+
+/**
+ * 生成命令描述
+ * 基于命令内容生成简单说明
+ * @param command 命令内容
+ * @returns 命令描述
+ */
+function generateDescription(command: string): string {
+  const lowerCmd = command.toLowerCase().trim()
+  const firstWord = lowerCmd.split(/\s+/)[0]
+
+  // 常见命令描述映射
+  const descriptions: Record<string, string> = {
+    'ls': '列出目录内容',
+    'cat': '查看文件内容',
+    'ps': '查看进程状态',
+    'top': '实时查看系统进程',
+    'df': '查看磁盘空间使用情况',
+    'du': '查看目录/文件大小',
+    'free': '查看内存使用情况',
+    'uptime': '查看系统运行时间',
+    'dmesg': '查看内核消息',
+    'journalctl': '查看系统日志',
+    'systemctl': '管理系统服务',
+    'service': '管理系统服务',
+    'docker': '管理 Docker 容器/镜像',
+    'kubectl': '管理 Kubernetes 资源',
+    'ping': '测试网络连通性',
+    'curl': '发送 HTTP 请求',
+    'wget': '下载文件',
+    'ssh': '远程登录',
+    'scp': '安全复制文件',
+    'tar': '打包/解包文件',
+    'grep': '文本搜索',
+    'awk': '文本处理',
+    'sed': '流编辑器',
+    'find': '查找文件',
+    'chmod': '修改文件权限',
+    'chown': '修改文件所有者',
+    'rm': '删除文件/目录',
+    'cp': '复制文件/目录',
+    'mv': '移动/重命名文件',
+    'mkdir': '创建目录',
+    'rmdir': '删除空目录',
+    'touch': '创建空文件/更新时间戳',
+    'head': '查看文件开头',
+    'tail': '查看文件末尾',
+    'less': '分页查看文件',
+    'more': '分页查看文件',
+    'netstat': '查看网络连接',
+    'ss': '查看 socket 统计',
+    'lsof': '列出打开的文件',
+    'iostat': '查看 IO 统计',
+    'vmstat': '查看虚拟内存统计',
+    'mpstat': '查看 CPU 统计',
+    'sar': '系统活动报告',
+  }
+
+  return descriptions[firstWord] || ''
+}
+
+/**
+ * 渲染普通文本片段
+ * 将 Markdown 转换为 HTML
+ * @param content 文本内容
+ * @returns 渲染后的 HTML
+ */
+function renderTextSegment(content: string): string {
+  return renderMarkdown(content)
+}
+
+// 监听内容变化，流式输出时重新渲染
 watch(
   () => props.message.content,
-  () => nextTick(setupCodeBlockButtons),
+  () => nextTick(),
 )
 </script>
 
@@ -158,17 +308,33 @@ watch(
         <span v-else>AI</span>
       </div>
       <div class="bubble-content">
-        <!-- 使用新的 Markdown 渲染 -->
+        <!-- 使用分段渲染：普通文本用 v-html，命令块用 CommandBlock 组件 -->
         <div
-          class="bubble-body bubble-body-rendered"
-          :class="{ 'is-command-available': codeBlocks.some(b => b.isCommand) }"
-          v-html="renderedContent"
-        />
+          class="bubble-body"
+          :class="{ 'is-command-available': contentSegments.some(s => s.type === 'command') }"
+        >
+          <template v-for="segment in contentSegments" :key="segment.index">
+            <!-- 命令块使用 CommandBlock 组件 -->
+            <CommandBlock
+              v-if="segment.type === 'command'"
+              :command="segment.content"
+              :language="segment.language || 'bash'"
+              :description="generateDescription(segment.content)"
+              :risk-level="detectRiskLevel(segment.content)"
+              :index="segment.index"
+            />
+            <!-- 普通文本使用 Markdown 渲染 -->
+            <div
+              v-else
+              class="text-segment"
+              v-html="renderTextSegment(segment.content)"
+            />
+          </template>
+        </div>
         <div class="bubble-meta">
           <span class="bubble-time">{{ formatTime(message.timestamp) }}</span>
           <el-button
             v-if="isAssistant && message.content"
-            :icon="copiedMessage ? '' : ''"
             size="small"
             text
             @click="copyContent"
@@ -267,6 +433,7 @@ watch(
   line-height: 1.7;
   font-size: 14px;
   overflow: hidden;
+  max-width: 100%;
 }
 
 .is-user .bubble-content {
@@ -307,15 +474,19 @@ watch(
 }
 
 /* ========================================
-   Markdown 渲染样式
+   文本片段样式（Markdown 渲染）
    ======================================== */
 
-.bubble-body-rendered {
+.bubble-body {
+  word-break: break-word;
+}
+
+.text-segment {
   word-break: break-word;
 }
 
 /* 标题样式 */
-.bubble-content :deep(h1) {
+.text-segment :deep(h1) {
   font-size: 1.5em;
   font-weight: 600;
   margin: 16px 0 8px 0;
@@ -324,23 +495,23 @@ watch(
   line-height: 1.4;
 }
 
-.bubble-content :deep(h2) {
+.text-segment :deep(h2) {
   font-size: 1.3em;
   font-weight: 600;
   margin: 14px 0 6px 0;
   line-height: 1.4;
 }
 
-.bubble-content :deep(h3) {
+.text-segment :deep(h3) {
   font-size: 1.15em;
   font-weight: 600;
   margin: 12px 0 4px 0;
   line-height: 1.4;
 }
 
-.bubble-content :deep(h4),
-.bubble-content :deep(h5),
-.bubble-content :deep(h6) {
+.text-segment :deep(h4),
+.text-segment :deep(h5),
+.text-segment :deep(h6) {
   font-size: 1em;
   font-weight: 600;
   margin: 10px 0 4px 0;
@@ -348,41 +519,41 @@ watch(
 }
 
 /* 段落样式 */
-.bubble-content :deep(p) {
+.text-segment :deep(p) {
   margin: 8px 0;
   line-height: 1.7;
 }
 
-.bubble-content :deep(p:first-child) {
+.text-segment :deep(p:first-child) {
   margin-top: 0;
 }
 
-.bubble-content :deep(p:last-child) {
+.text-segment :deep(p:last-child) {
   margin-bottom: 0;
 }
 
 /* 列表样式 */
-.bubble-content :deep(ul),
-.bubble-content :deep(ol) {
+.text-segment :deep(ul),
+.text-segment :deep(ol) {
   margin: 8px 0;
   padding-left: 24px;
 }
 
-.bubble-content :deep(li) {
+.text-segment :deep(li) {
   margin: 4px 0;
   line-height: 1.6;
 }
 
-.bubble-content :deep(ul) {
+.text-segment :deep(ul) {
   list-style-type: disc;
 }
 
-.bubble-content :deep(ol) {
+.text-segment :deep(ol) {
   list-style-type: decimal;
 }
 
 /* 引用样式 */
-.bubble-content :deep(blockquote) {
+.text-segment :deep(blockquote) {
   margin: 10px 0;
   padding: 8px 16px;
   border-left: 4px solid #409eff;
@@ -391,182 +562,116 @@ watch(
   border-radius: 0 4px 4px 0;
 }
 
-.bubble-content :deep(blockquote p) {
+.text-segment :deep(blockquote p) {
   margin: 4px 0;
 }
 
-.is-user .bubble-content :deep(blockquote) {
+.is-user .text-segment :deep(blockquote) {
   border-left-color: rgba(255, 255, 255, 0.6);
   background: rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.9);
 }
 
 /* 粗体和斜体 */
-.bubble-content :deep(strong),
-.bubble-content :deep(b) {
+.text-segment :deep(strong),
+.text-segment :deep(b) {
   font-weight: 600;
 }
 
-.bubble-content :deep(em),
-.bubble-content :deep(i) {
+.text-segment :deep(em),
+.text-segment :deep(i) {
   font-style: italic;
 }
 
 /* 链接样式 */
-.bubble-content :deep(a) {
+.text-segment :deep(a) {
   color: #409eff;
   text-decoration: none;
   border-bottom: 1px solid transparent;
   transition: border-color 0.2s;
 }
 
-.bubble-content :deep(a:hover) {
+.text-segment :deep(a:hover) {
   border-bottom-color: #409eff;
 }
 
-.is-user .bubble-content :deep(a) {
+.is-user .text-segment :deep(a) {
   color: rgba(255, 255, 255, 0.9);
   border-bottom-color: rgba(255, 255, 255, 0.3);
 }
 
-.is-user .bubble-content :deep(a:hover) {
+.is-user .text-segment :deep(a:hover) {
   border-bottom-color: rgba(255, 255, 255, 0.9);
 }
 
 /* 分隔线 */
-.bubble-content :deep(hr) {
+.text-segment :deep(hr) {
   border: none;
   border-top: 1px solid #ebeef5;
   margin: 16px 0;
 }
 
 /* 表格样式 */
-.bubble-content :deep(table) {
+.text-segment :deep(table) {
   width: 100%;
   border-collapse: collapse;
   margin: 10px 0;
   font-size: 13px;
 }
 
-.bubble-content :deep(th),
-.bubble-content :deep(td) {
+.text-segment :deep(th),
+.text-segment :deep(td) {
   border: 1px solid #ebeef5;
   padding: 8px 12px;
   text-align: left;
 }
 
-.bubble-content :deep(th) {
+.text-segment :deep(th) {
   background: #f5f7fa;
   font-weight: 600;
 }
 
 /* ========================================
-   代码块样式
+   非命令代码块样式
    ======================================== */
 
-/* 代码块头部（语言标识 + 复制按钮） */
-.bubble-content :deep(.code-block-header) {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: #2d2d2d;
-  padding: 6px 12px;
-  border-radius: 6px 6px 0 0;
-  margin-top: 10px;
-}
-
-.bubble-content :deep(.code-block-lang) {
-  font-size: 12px;
-  color: #9cdcfe;
-  font-family: 'Consolas', 'Monaco', monospace;
-  text-transform: lowercase;
-}
-
-.bubble-content :deep(.code-block-copy-btn) {
-  background: transparent;
-  border: 1px solid #4a4a4a;
-  color: #9cdcfe;
-  font-size: 12px;
-  padding: 2px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.bubble-content :deep(.code-block-copy-btn:hover) {
-  background: #3a3a3a;
-  border-color: #5a5a5a;
-}
-
-/* 代码块主体 */
-.bubble-content :deep(pre) {
+.text-segment :deep(pre) {
   background: #1e1e1e;
   color: #d4d4d4;
   padding: 12px 16px;
-  border-radius: 0 0 6px 6px;
+  border-radius: 6px;
   overflow-x: auto;
-  margin: 0;
+  margin: 10px 0;
   font-size: 13px;
   line-height: 1.5;
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
 }
 
-/* 有 header 的代码块去掉顶部圆角 */
-.bubble-content :deep(.code-block-header + pre) {
-  border-radius: 0 0 6px 6px;
-}
-
-/* 单独的代码块（无 header）保持完整圆角 */
-.bubble-content :deep(pre:not(.code-block-header + pre)) {
-  border-radius: 6px;
-  margin: 10px 0;
-}
-
-/* 命令块特殊样式 */
-.bubble-content :deep(.is-command-block) {
-  border-left: 3px solid #67c23a;
+.text-segment :deep(code) {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
 }
 
 /* 行内代码 */
-.bubble-content :deep(code:not(pre code)) {
+.text-segment :deep(code:not(pre code)) {
   background: rgba(0, 0, 0, 0.06);
   color: #e6a23c;
   padding: 2px 6px;
   border-radius: 3px;
-  font-family: 'Consolas', 'Monaco', monospace;
   font-size: 13px;
 }
 
-.is-user .bubble-content :deep(code:not(pre code)) {
+.is-user .text-segment :deep(code:not(pre code)) {
   background: rgba(255, 255, 255, 0.2);
   color: rgba(255, 255, 255, 0.9);
 }
 
-/* 用户消息中的代码块样式调整 */
-.is-user .bubble-content :deep(pre) {
+.is-user .text-segment :deep(pre) {
   background: rgba(0, 0, 0, 0.15);
   color: rgba(255, 255, 255, 0.95);
 }
 
-.is-user .bubble-content :deep(.code-block-header) {
-  background: rgba(0, 0, 0, 0.2);
-}
-
-.is-user .bubble-content :deep(.code-block-lang) {
-  color: rgba(255, 255, 255, 0.7);
-}
-
-.is-user .bubble-content :deep(.code-block-copy-btn) {
-  color: rgba(255, 255, 255, 0.7);
-  border-color: rgba(255, 255, 255, 0.3);
-}
-
-.is-user .bubble-content :deep(.code-block-copy-btn:hover) {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-/* 命令块可用标记（用于 Task 35 命令卡片扩展） */
-.bubble-body-rendered.is-command-available {
+/* 命令块可用标记 */
+.bubble-body.is-command-available {
   /* 预留扩展点 */
 }
 </style>

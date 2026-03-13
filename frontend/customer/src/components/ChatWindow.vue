@@ -3,6 +3,7 @@ import { ref, reactive, nextTick, watch, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import MessageBubble from './MessageBubble.vue'
 import RatingCard from './RatingCard.vue'
+import TerminalPanel from './TerminalPanel.vue'
 
 const chatStore = useChatStore()
 const inputText = ref('')
@@ -196,6 +197,11 @@ function formatDate(d: string): string {
         @skip="chatStore.skipRating"
         @close="chatStore.closeRatingCard"
       />
+    </div>
+
+    <!-- 终端面板 -->
+    <div v-if="chatStore.showTerminalPanel" class="terminal-panel-wrapper">
+      <TerminalPanel />
     </div>
 
     <!-- 历史工单抽屉 -->
@@ -508,5 +514,17 @@ function formatDate(d: string): string {
 .assistant-desc {
   font-size: 12px;
   color: #909399;
+}
+
+/* ========================================
+   终端面板样式
+   ======================================== */
+
+.terminal-panel-wrapper {
+  border-top: 1px solid #e4e7ed;
+  background: #1e1e1e;
+  padding: 0;
+  max-height: 300px;
+  overflow: hidden;
 }
 </style>

@@ -67,6 +67,10 @@ export const useChatStore = defineStore('chat', () => {
   const showRatingCard = ref(false)
   const ratingConversationId = ref<string | null>(null)
 
+  // 终端面板状态 (Task 35/36)
+  const showTerminalPanel = ref(false) // 是否显示终端面板
+  const terminalInputCommand = ref('') // 待发送到终端输入框的命令
+
   // 计算属性
   const hasActiveCase = computed(() => {
     return currentCase.value && !['closed', 'cancelled'].includes(currentCase.value.status)
@@ -520,6 +524,33 @@ export const useChatStore = defineStore('chat', () => {
     closeRatingCard()
   }
 
+  /**
+   * 发送命令到终端
+   * 打开终端面板并将命令填充到输入区
+   * @param command 要发送的命令
+   */
+  function sendCommandToTerminal(command: string) {
+    // 确保命令末尾有换行符提示
+    terminalInputCommand.value = command
+    // 自动打开终端面板
+    showTerminalPanel.value = true
+    console.log('[CommandBlock] 命令已发送到终端:', command.substring(0, 50) + (command.length > 50 ? '...' : ''))
+  }
+
+  /**
+   * 关闭终端面板
+   */
+  function closeTerminalPanel() {
+    showTerminalPanel.value = false
+  }
+
+  /**
+   * 清空终端输入命令
+   */
+  function clearTerminalInput() {
+    terminalInputCommand.value = ''
+  }
+
   return {
     messages,
     currentCase,
@@ -559,6 +590,12 @@ export const useChatStore = defineStore('chat', () => {
     submitRating,
     skipRating,
     closeRatingCard,
+    // 终端面板 (Task 35/36)
+    showTerminalPanel,
+    terminalInputCommand,
+    sendCommandToTerminal,
+    closeTerminalPanel,
+    clearTerminalInput,
     // 核心方法
     initialize,
     sendMessage,
