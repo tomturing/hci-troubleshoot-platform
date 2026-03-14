@@ -37,6 +37,21 @@ check() {
   fi
 }
 
+check_value() {
+  local desc="$1"
+  local expected="$2"
+  local actual="$3"
+  if [[ "$actual" == "$expected" ]]; then
+    ok "$desc"
+    PASS=$((PASS + 1))
+  else
+    fail "$desc"
+    FAIL=$((FAIL + 1))
+    warn "  期望: ${expected}"
+    warn "  实际: ${actual}"
+  fi
+}
+
 # ============================================================================
 # 1. Pod 状态检查
 # ============================================================================
@@ -163,9 +178,49 @@ check "admin-ui: ${INGRESS_HOST}/admin/" \
 check "api-gateway: ${INGRESS_HOST}/api/cases/ (路由可达)" \
   bash -c 'code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: '"${INGRESS_HOST}"'" '"${INGRESS_BASE}"'/api/cases/); [[ "$code" -lt 500 ]]'
 
-# grafana 返回 302 重定向，-L 跟随跳转后需 200
-check "grafana: ${INGRESS_HOST}/grafana (→302→200)" \
-  curl -sfL -o /dev/null -H "Host: ${INGRESS_HOST}" "${INGRESS_BASE}/grafana"
+# grafana 校验：不仅要可达，还要确保内容确实来自 Grafana（而非被 / 回退路由到 customer-ui）
+check "grafana: ${INGRESS_HOST}/grafana (命中 Grafana 页面)" \
+  bash -c 'body=$(curl -sfL -H "Host: '"${INGRESS_HOST}"'" "'"${INGRESS_BASE}"'/grafana"); \
+    echo "$body" | grep -qi "grafana" && \
+    ! echo "$body" | grep -q "HCI 故障排查助手"'
+
+# ============================================================================
+# 4.2 AI 容器配置防回归检查（避免通过修改 Clash 规避问题）
+# ============================================================================
+echo ""
+info "--- AI 容器配置检查（容器内直配模型，不改 Clash）---"
+
+EXPECTED_MODEL_CFG="tly/glm-5|https://open.bigmodel.cn/api/paas/v4"
+
+OPENCLAW_POD=$(${KUBECTL} get pods -n "${NAMESPACE}" \
+  -l "app.kubernetes.io/name=openclaw" \
+  --field-selector=status.phase=Running \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+if [[ -n "${OPENCLAW_POD}" ]]; then
+  OPENCLAW_CFG=$(${KUBECTL} exec -n "${NAMESPACE}" "${OPENCLAW_POD}" -- sh -lc \
+    "node -e 'const fs=require(\"fs\");const c=JSON.parse(fs.readFileSync(\"/home/node/.openclaw/openclaw.json\",\"utf8\"));const p=c?.agents?.defaults?.model?.primary||\"\";const pv=p.split(\"/\")[0]||\"\";const b=((c.models?.providers||{})[pv]||{}).baseUrl||\"\";process.stdout.write(p+\"|\"+b);'" 2>/dev/null || echo "")
+  check_value "openclaw 容器模型配置正确" "${EXPECTED_MODEL_CFG}" "${OPENCLAW_CFG}"
+else
+  fail "openclaw 容器模型配置正确"
+  FAIL=$((FAIL + 1))
+  warn "  未找到 Running 的 openclaw Pod"
+fi
+
+PRODCLAW_POD=$(${KUBECTL} get pods -n "${NAMESPACE}" \
+  -l "assistant-type=productionclaw" \
+  --field-selector=status.phase=Running \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+if [[ -n "${PRODCLAW_POD}" ]]; then
+  PRODCLAW_CFG=$(${KUBECTL} exec -n "${NAMESPACE}" "${PRODCLAW_POD}" -- sh -lc \
+    "node -e 'const fs=require(\"fs\");const c=JSON.parse(fs.readFileSync(\"/home/node/.openclaw/openclaw.json\",\"utf8\"));const p=c?.agents?.defaults?.model?.primary||\"\";const pv=p.split(\"/\")[0]||\"\";const b=((c.models?.providers||{})[pv]||{}).baseUrl||\"\";process.stdout.write(p+\"|\"+b);'" 2>/dev/null || echo "")
+  check_value "productionclaw 容器模型配置正确" "${EXPECTED_MODEL_CFG}" "${PRODCLAW_CFG}"
+else
+  fail "productionclaw 容器模型配置正确"
+  FAIL=$((FAIL + 1))
+  warn "  未找到 Running 的 productionclaw Pod"
+fi
 
 # ============================================================================
 # 5. PVC 检查

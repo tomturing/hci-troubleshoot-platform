@@ -10,6 +10,8 @@ metadata:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: web
+    # /grafana 路由必须高于主 ingress 的 / 回退路由，否则会被 customer-ui 吞掉（PIT-020 回归）
+    traefik.ingress.kubernetes.io/router.priority: {{ .Values.ingress.grafanaRouterPriority | quote }}
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -31,8 +33,15 @@ spec:
                 port:
                   number: 3000
     {{- else }}
-    {{- /* 路径路由模式（默认）：通配 host，/grafana 子路径 */}}
-    - http:
+    {{- /* 路径路由模式（默认）：优先绑定主 Host，避免与 / 回退路由冲突 */}}
+    {{- $host := "" }}
+    {{- if .Values.global.publicUrl }}
+      {{- /* 提取 hostname，去掉协议前缀和端口（Ingress host 字段不能含端口） */}}
+      {{- $host = .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/:]+" }}
+    {{- end }}
+    - {{- if $host }} host: {{ $host | quote }}
+      {{- end }}
+      http:
         paths:
           - path: /grafana
             pathType: Prefix

@@ -298,6 +298,9 @@ ingress:
   enabled: true
   className: traefik
   annotations: {}
+  # Grafana 独立 ingress 的 Traefik 路由优先级。
+  # 必须高于主站 hci-ingress 的 / 回退路由，避免 /grafana 被 customer-ui 吞掉。
+  grafanaRouterPriority: "2000"
   # tls: []
 
 # ======================== 应用配置（非敏感 → ConfigMap）=====================
