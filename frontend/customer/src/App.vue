@@ -7,16 +7,30 @@ import ChatWindow from '@/components/ChatWindow.vue'
 const chatStore = useChatStore()
 const clientId = getClientId()
 
-// Bridge 下载地址，替换为实际托管地址
-const BRIDGE_DOWNLOAD_URL = '/downloads/terminal_bridge.exe'
+// Bridge 下载地址：优先读环境变量，回退到相对路径
+// 部署时在 .env 中配置 VITE_BRIDGE_DOWNLOAD_URL 指向实际文件
+const BRIDGE_DOWNLOAD_URL =
+  import.meta.env.VITE_BRIDGE_DOWNLOAD_URL || '/downloads/terminal_bridge.exe'
 
 onMounted(() => {
   chatStore.initialize()
 })
 
+/**
+ * 触发 terminal_bridge.exe 下载
+ * 用隐藏 <a download> 替代 window.open，避免浏览器弹窗拦截策略
+ */
 function handleDownloadBridge() {
-  window.open(BRIDGE_DOWNLOAD_URL, '_blank')
   chatStore.closeBridgeDownload()
+
+  const a = document.createElement('a')
+  a.href = BRIDGE_DOWNLOAD_URL
+  a.download = 'terminal_bridge.exe'
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  // 延迟移除，确保点击事件已触发
+  setTimeout(() => document.body.removeChild(a), 200)
 }
 </script>
 
