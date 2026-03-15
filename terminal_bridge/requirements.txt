@@ -1,3 +1,2 @@
-websockets>=12.0
-pystray>=0.19.5
-pillow>=10.0.0
+# 此文件已废弃，Python 版本已迁移为 Go 实现
+# 依赖管理改为 go.mod，参考 build_windows.bat
