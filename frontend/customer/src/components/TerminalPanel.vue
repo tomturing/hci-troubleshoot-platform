@@ -1,23 +1,31 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useChatStore } from '@/stores/chat'
-import { buildTerminalWsUrl, type TerminalSessionCreateRequest, type TerminalWsMessage } from '@/api/terminal'
-import { getClientId } from '@/utils/clientId'
+import {
+  createBridgeSocket,
+  buildConnectMessage,
+  buildInputMessage,
+  buildDisconnectMessage,
+  type TerminalWsMessage,
+} from '@/api/terminal'
 
 /**
- * 终端面板组件
- * 提供 SSH 登录、WebSocket 交互终端、命令输入与输出展示
+ * TerminalPanel.vue  —  Bridge 模式
+ *
+ * SSH 连接完全在 Windows 本地发起：
+ *   浏览器 → ws://localhost:9999 (terminal_bridge.exe) → HCI Linux
+ *
+ * 公网 Gateway 不参与任何 SSH 流量。
  */
 
 const chatStore = useChatStore()
-const clientId = getClientId()
 
-const terminalInput = ref<{ focus: () => void } | null>(null)
+const terminalInputRef = ref<{ focus: () => void } | null>(null)
 const localInput = ref('')
-const terminalSocket = ref<WebSocket | null>(null)
+const bridgeSocket = ref<WebSocket | null>(null)
 const manualDisconnect = ref(false)
 
-// SSH 登录表单状态
+// SSH 登录表单
 const sshForm = ref({
   host: '',
   port: '22',
@@ -28,300 +36,190 @@ const sshForm = ref({
   passphrase: '',
 })
 
-// 终端输出内容
-const terminalOutput = ref<Array<{ type: 'command' | 'output' | 'error' | 'info'; content: string; timestamp: Date }>>([])
-
-// 自动滚动控制
+// 终端输出
+const terminalOutput = ref<
+  Array<{ type: 'command' | 'output' | 'error' | 'info'; content: string }>
+>([])
 const outputContainer = ref<HTMLElement | null>(null)
-const autoScroll = ref(true)
 
-// 计算属性：SSH 连接状态（用于模板）
-const isSshDisconnected = computed(() => chatStore.sshConnectionState === 'disconnected')
-const isSshConnecting = computed(() => chatStore.sshConnectionState === 'connecting')
-const isSshConnected = computed(() => chatStore.sshConnectionState === 'connected')
-const isSshError = computed(() => chatStore.sshConnectionState === 'error')
-const isSocketReady = computed(() => terminalSocket.value?.readyState === WebSocket.OPEN)
+// 连接状态（本地维护，不依赖 Gateway session）
+const connectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
+const errorMessage = ref('')
 
-// 监听 store 中的待发送命令
+const isConnected = computed(() => connectionState.value === 'connected')
+const isConnecting = computed(() => connectionState.value === 'connecting')
+const isError = computed(() => connectionState.value === 'error')
+const caseId = computed(() => chatStore.currentCase?.case_id || 'default')
+
+// 同步状态到 store，供 header 等其他地方读取
+watch(connectionState, (s) => chatStore.setSshConnectionState(s))
+watch(errorMessage, (m) => {
+  if (m) chatStore.setSshErrorMessage(m)
+  else chatStore.clearSshErrorMessage()
+})
+
+// 监听 store 中的待发送命令（CommandBlock 触发）
 watch(
   () => chatStore.terminalInputCommand,
-  (newCommand) => {
-    if (newCommand) {
-      localInput.value = newCommand
+  (cmd) => {
+    if (cmd) {
+      localInput.value = cmd
       nextTick(() => {
         chatStore.clearTerminalInput()
-        terminalInput.value?.focus()
+        terminalInputRef.value?.focus()
       })
     }
   },
   { immediate: true },
 )
 
-// 监听连接状态变化，记录日志
-watch(
-  () => chatStore.sshConnectionState,
-  (newState) => {
-    const stateMap = {
-      disconnected: '已断开',
-      connecting: '连接中...',
-      connected: '已连接',
-      error: '连接错误',
-    }
-    addTerminalMessage('info', `SSH 连接状态：${stateMap[newState]}`)
-  },
-)
+// ── 工具函数 ─────────────────────────────────────────
 
-/**
- * 添加终端消息
- */
-function addTerminalMessage(type: 'command' | 'output' | 'error' | 'info', content: string) {
-  terminalOutput.value.push({
-    type,
-    content,
-    timestamp: new Date(),
-  })
-
+function addLog(type: 'command' | 'output' | 'error' | 'info', content: string) {
+  terminalOutput.value.push({ type, content })
   nextTick(() => {
-    if (autoScroll.value && outputContainer.value) {
+    if (outputContainer.value) {
       outputContainer.value.scrollTop = outputContainer.value.scrollHeight
     }
   })
 }
 
-/**
- * 提取错误消息
- */
-function extractErrorMessage(error: unknown): string {
-  const maybeError = error as {
-    response?: { data?: { detail?: string } }
-    message?: string
-  }
-  return maybeError?.response?.data?.detail || maybeError?.message || '请求失败'
-}
-
-/**
- * 构建会话创建请求
- */
-function buildCreateRequest(): Omit<TerminalSessionCreateRequest, 'client_id' | 'case_id'> {
-  const payload: Omit<TerminalSessionCreateRequest, 'client_id' | 'case_id'> = {
-    host: sshForm.value.host.trim(),
-    port: Number(sshForm.value.port) || 22,
-    username: sshForm.value.username.trim(),
-    auth_type: sshForm.value.authType,
-  }
-
-  if (sshForm.value.authType === 'password') {
-    payload.password = sshForm.value.password
-  } else {
-    payload.private_key = sshForm.value.privateKey
-    if (sshForm.value.passphrase.trim()) {
-      payload.passphrase = sshForm.value.passphrase.trim()
-    }
-  }
-
-  return payload
-}
-
-/**
- * 校验登录参数
- */
 function validateForm(): string | null {
   if (!sshForm.value.host.trim()) return '请填写主机地址'
   if (!sshForm.value.username.trim()) return '请填写用户名'
-
   const port = Number(sshForm.value.port)
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return '端口范围应为 1-65535'
-  }
-
-  if (sshForm.value.authType === 'password' && !sshForm.value.password) {
-    return '密码认证方式必须填写密码'
-  }
-
-  if (sshForm.value.authType === 'key' && !sshForm.value.privateKey.trim()) {
-    return '密钥认证方式必须填写私钥'
-  }
-
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return '端口范围应为 1-65535'
+  if (sshForm.value.authType === 'password' && !sshForm.value.password) return '请填写密码'
+  if (sshForm.value.authType === 'key' && !sshForm.value.privateKey.trim()) return '请填写私钥'
   return null
 }
 
-/**
- * 关闭当前 WebSocket 连接
- */
 function closeSocket() {
-  if (!terminalSocket.value) return
-  terminalSocket.value.onopen = null
-  terminalSocket.value.onclose = null
-  terminalSocket.value.onmessage = null
-  terminalSocket.value.onerror = null
-  terminalSocket.value.close()
-  terminalSocket.value = null
+  if (!bridgeSocket.value) return
+  bridgeSocket.value.onopen = null
+  bridgeSocket.value.onclose = null
+  bridgeSocket.value.onmessage = null
+  bridgeSocket.value.onerror = null
+  bridgeSocket.value.close()
+  bridgeSocket.value = null
 }
 
-/**
- * 处理 WebSocket 消息
- */
-function handleSocketMessage(rawMessage: string) {
-  let message: TerminalWsMessage
+// ── Bridge WebSocket 处理 ────────────────────────────
+
+function handleBridgeMessage(raw: string) {
+  let msg: TerminalWsMessage
   try {
-    message = JSON.parse(rawMessage) as TerminalWsMessage
+    msg = JSON.parse(raw)
   } catch {
-    addTerminalMessage('error', `无法解析服务端消息: ${rawMessage}`)
+    addLog('error', `无法解析消息: ${raw}`)
     return
   }
 
-  if (message.type === 'stdout' && message.data) {
-    addTerminalMessage('output', message.data)
+  if (msg.type === 'ssh_connected') {
+    connectionState.value = 'connected'
+    errorMessage.value = ''
+    addLog('info', `SSH 已连接`)
     return
   }
 
-  if (message.type === 'stderr' && message.data) {
-    addTerminalMessage('error', message.data)
+  if (msg.type === 'ssh_disconnected') {
+    connectionState.value = 'disconnected'
+    addLog('info', 'SSH 连接已断开')
     return
   }
 
-  if (message.type === 'error') {
-    addTerminalMessage('error', message.data || message.message || '终端执行失败')
+  if (msg.type === 'ssh_output' && msg.output) {
+    addLog('output', msg.output)
     return
   }
 
-  if (message.type === 'status') {
-    if (message.message) {
-      addTerminalMessage('info', message.message)
-    }
-
-    if (message.state === 'connected') {
-      chatStore.setSshConnectionState('connected')
-    }
-
-    if (message.state === 'disconnected') {
-      chatStore.setSshConnectionState('disconnected')
-      chatStore.setSshSessionId(null)
-    }
-
-    if (message.state === 'error') {
-      chatStore.setSshConnectionState('error')
-      chatStore.setSshErrorMessage(message.message || '终端状态异常')
-    }
+  if (msg.type === 'ssh_error') {
+    connectionState.value = 'error'
+    errorMessage.value = msg.message || 'SSH 连接出错'
+    addLog('error', errorMessage.value)
+    return
   }
 }
 
-/**
- * 连接终端 WebSocket
- */
-function connectWebSocket(sessionId: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    closeSocket()
+// ── SSH 操作 ─────────────────────────────────────────
 
-    const socket = new WebSocket(buildTerminalWsUrl(sessionId, clientId))
-    terminalSocket.value = socket
-
-    socket.onopen = () => {
-      addTerminalMessage('info', '终端 WebSocket 已连接')
-      resolve()
-    }
-
-    socket.onmessage = (event) => {
-      handleSocketMessage(String(event.data || ''))
-    }
-
-    socket.onerror = () => {
-      reject(new Error('终端 WebSocket 连接失败'))
-    }
-
-    socket.onclose = () => {
-      terminalSocket.value = null
-      if (!manualDisconnect.value && chatStore.sshConnectionState !== 'disconnected') {
-        chatStore.setSshConnectionState('error')
-        chatStore.setSshErrorMessage('终端连接已断开，请重新连接')
-        addTerminalMessage('error', '终端连接已断开')
-      }
-    }
-  })
-}
-
-/**
- * 连接 SSH
- */
 async function connectSsh() {
-  const validationError = validateForm()
-  if (validationError) {
-    chatStore.setSshErrorMessage(validationError)
+  const err = validateForm()
+  if (err) {
+    errorMessage.value = err
     return
   }
 
-  chatStore.setSshConnectionState('connecting')
-  chatStore.clearSshErrorMessage()
+  connectionState.value = 'connecting'
+  errorMessage.value = ''
+  manualDisconnect.value = false
 
-  const payload = buildCreateRequest()
-  addTerminalMessage('info', `正在连接到 ${payload.username}@${payload.host}:${payload.port}...`)
+  addLog('info', `正在连接 ${sshForm.value.username}@${sshForm.value.host}:${sshForm.value.port}...`)
 
-  try {
-    manualDisconnect.value = false
-    const { data } = await chatStore.createTerminalSession(payload)
-    chatStore.setSshSessionId(data.session_id)
-    await connectWebSocket(data.session_id)
-    chatStore.setSshConnectionState('connected')
-    addTerminalMessage('info', data.message || `SSH 连接成功：${data.username}@${data.host}:${data.port}`)
-  } catch (error) {
-    chatStore.setSshConnectionState('error')
-    const errorMessage = extractErrorMessage(error)
-    chatStore.setSshErrorMessage(errorMessage)
-    addTerminalMessage('error', `SSH 连接失败: ${errorMessage}`)
+  closeSocket()
+  const socket = createBridgeSocket()
+  bridgeSocket.value = socket
+
+  socket.onopen = () => {
+    // 发送 SSH 连接请求到 Bridge
+    socket.send(
+      buildConnectMessage({
+        host: sshForm.value.host.trim(),
+        port: Number(sshForm.value.port) || 22,
+        username: sshForm.value.username.trim(),
+        auth_type: sshForm.value.authType,
+        password: sshForm.value.authType === 'password' ? sshForm.value.password : undefined,
+        private_key: sshForm.value.authType === 'key' ? sshForm.value.privateKey : undefined,
+        passphrase:
+          sshForm.value.authType === 'key' && sshForm.value.passphrase.trim()
+            ? sshForm.value.passphrase.trim()
+            : undefined,
+        case_id: caseId.value,
+      }),
+    )
+  }
+
+  socket.onmessage = (e) => handleBridgeMessage(String(e.data || ''))
+
+  socket.onerror = () => {
+    connectionState.value = 'error'
+    errorMessage.value = '无法连接到本地 Bridge，请确认 terminal_bridge.exe 已运行'
+    addLog('error', errorMessage.value)
     closeSocket()
   }
-}
 
-/**
- * 断开 SSH 连接
- */
-async function disconnectSsh() {
-  manualDisconnect.value = true
-
-  const sessionId = chatStore.sshSessionId
-  closeSocket()
-
-  if (sessionId) {
-    try {
-      await chatStore.closeTerminalSession(sessionId)
-    } catch (error) {
-      addTerminalMessage('error', `关闭会话失败: ${extractErrorMessage(error)}`)
+  socket.onclose = () => {
+    bridgeSocket.value = null
+    if (!manualDisconnect.value && connectionState.value !== 'disconnected') {
+      connectionState.value = 'error'
+      errorMessage.value = 'Bridge 连接中断，请重新连接'
+      addLog('error', errorMessage.value)
     }
   }
-
-  chatStore.setSshSessionId(null)
-  chatStore.setSshConnectionState('disconnected')
-  chatStore.clearSshErrorMessage()
-  addTerminalMessage('info', 'SSH 连接已断开')
 }
 
-/**
- * 执行命令
- */
+function disconnectSsh() {
+  manualDisconnect.value = true
+  if (bridgeSocket.value?.readyState === WebSocket.OPEN) {
+    bridgeSocket.value.send(buildDisconnectMessage(caseId.value))
+  }
+  closeSocket()
+  connectionState.value = 'disconnected'
+  errorMessage.value = ''
+  addLog('info', 'SSH 连接已断开')
+}
+
 function executeCommand() {
   const command = localInput.value.trim()
-  if (!command) return
+  if (!command || !isConnected.value || bridgeSocket.value?.readyState !== WebSocket.OPEN) return
 
-  if (!isSshConnected.value || !isSocketReady.value || !terminalSocket.value) {
-    addTerminalMessage('error', 'SSH 未连接，请先登录')
-    return
-  }
-
-  addTerminalMessage('command', command)
-
-  terminalSocket.value.send(
-    JSON.stringify({
-      type: 'stdin',
-      data: command.endsWith('\n') ? command : `${command}\n`,
-    }),
+  addLog('command', command)
+  bridgeSocket.value!.send(
+    buildInputMessage(caseId.value, command.endsWith('\n') ? command : `${command}\n`),
   )
-
   localInput.value = ''
 }
 
-/**
- * 键盘事件处理
- */
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -329,127 +227,54 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
-/**
- * 清空输入
- */
-function clearInput() {
-  localInput.value = ''
-}
+function clearInput() { localInput.value = '' }
+function clearOutput() { terminalOutput.value = [] }
 
-/**
- * 清空输出
- */
-function clearOutput() {
-  terminalOutput.value = []
-}
-
-/**
- * 复制输出内容
- */
 async function copyOutput() {
-  const text = terminalOutput.value.map((item) => item.content).join('\n')
+  const text = terminalOutput.value.map((i) => i.content).join('\n')
   if (!text) return
-
   if (navigator.clipboard && window.isSecureContext) {
     await navigator.clipboard.writeText(text)
   } else {
-    const textarea = document.createElement('textarea')
-    textarea.value = text
-    textarea.style.position = 'fixed'
-    textarea.style.opacity = '0'
-    document.body.appendChild(textarea)
-    textarea.select()
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;opacity:0'
+    document.body.appendChild(ta)
+    ta.select()
     document.execCommand('copy')
-    document.body.removeChild(textarea)
+    document.body.removeChild(ta)
   }
-
-  addTerminalMessage('info', '输出内容已复制到剪贴板')
+  addLog('info', '输出已复制到剪贴板')
 }
 
-/**
- * 关闭面板
- */
-async function closePanel() {
-  await disconnectSsh()
+function closePanel() {
+  disconnectSsh()
   chatStore.closeTerminalSidebar()
 }
 
-onBeforeUnmount(() => {
-  // 避免组件销毁后遗留 socket 连接
-  closeSocket()
-})
+onBeforeUnmount(() => closeSocket())
 </script>
 
 <template>
   <div class="terminal-panel">
-    <!-- 面板头部 -->
+    <!-- 头部 -->
     <div class="terminal-header">
       <div class="header-left">
-        <el-icon class="header-icon"><i class="el-icon-monitor" /></el-icon>
         <span class="header-title">SSH 终端</span>
-        <el-tag
-          v-if="isSshConnected"
-          size="small"
-          type="success"
-          effect="plain"
-        >
-          已连接
-        </el-tag>
-        <el-tag
-          v-else-if="isSshConnecting"
-          size="small"
-          type="warning"
-          effect="plain"
-        >
-          连接中...
-        </el-tag>
-        <el-tag
-          v-else-if="isSshError"
-          size="small"
-          type="danger"
-          effect="plain"
-        >
-          连接错误
-        </el-tag>
-        <el-tag
-          v-else
-          size="small"
-          type="info"
-          effect="plain"
-        >
-          未连接
-        </el-tag>
+        <el-tag v-if="isConnected" size="small" type="success" effect="plain">已连接</el-tag>
+        <el-tag v-else-if="isConnecting" size="small" type="warning" effect="plain">连接中...</el-tag>
+        <el-tag v-else-if="isError" size="small" type="danger" effect="plain">连接错误</el-tag>
+        <el-tag v-else size="small" type="info" effect="plain">未连接</el-tag>
       </div>
       <div class="header-actions">
-        <el-button
-          text
-          size="small"
-          @click="copyOutput"
-          :disabled="terminalOutput.length === 0"
-        >
-          <el-icon><i class="el-icon-document-copy" /></el-icon>
-          复制
-        </el-button>
-        <el-button
-          text
-          size="small"
-          @click="clearOutput"
-        >
-          <el-icon><i class="el-icon-delete" /></el-icon>
-          清空
-        </el-button>
-        <el-button
-          text
-          size="small"
-          @click="closePanel"
-        >
-          <el-icon><i class="el-icon-close" /></el-icon>
-        </el-button>
+        <el-button text size="small" @click="copyOutput" :disabled="terminalOutput.length === 0">复制</el-button>
+        <el-button text size="small" @click="clearOutput">清空</el-button>
+        <el-button text size="small" @click="closePanel">✕</el-button>
       </div>
     </div>
 
-    <!-- SSH 登录表单（未连接时显示） -->
-    <div v-if="!isSshConnected" class="ssh-login-form">
+    <!-- 登录表单（未连接时） -->
+    <div v-if="!isConnected" class="ssh-login-form">
       <el-form :model="sshForm" label-width="70px" size="small">
         <el-form-item label="主机">
           <el-input v-model="sshForm.host" placeholder="192.168.1.100" />
@@ -467,125 +292,82 @@ onBeforeUnmount(() => {
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="sshForm.authType === 'password'" label="密码">
-          <el-input
-            v-model="sshForm.password"
-            type="password"
-            placeholder="请输入密码"
-            show-password
-          />
+          <el-input v-model="sshForm.password" type="password" placeholder="请输入密码" show-password />
         </el-form-item>
-        <el-form-item v-else label="私钥">
-          <el-input
-            v-model="sshForm.privateKey"
-            type="textarea"
-            :rows="4"
-            placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;..."
-          />
-        </el-form-item>
-        <el-form-item v-if="sshForm.authType === 'key'" label="密钥密码">
-          <el-input
-            v-model="sshForm.passphrase"
-            type="password"
-            placeholder="可选"
-            show-password
-          />
-        </el-form-item>
+        <template v-else>
+          <el-form-item label="私钥">
+            <el-input
+              v-model="sshForm.privateKey"
+              type="textarea"
+              :rows="4"
+              placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;..."
+            />
+          </el-form-item>
+          <el-form-item label="密钥密码">
+            <el-input v-model="sshForm.passphrase" type="password" placeholder="可选" show-password />
+          </el-form-item>
+        </template>
         <el-form-item>
-          <el-button
-            type="primary"
-            size="small"
-            @click="connectSsh"
-            :loading="isSshConnecting"
-          >
-            连接
-          </el-button>
-          <el-button
-            size="small"
-            @click="() => {
-              sshForm.host = ''
-              sshForm.port = '22'
-              sshForm.username = ''
-              sshForm.password = ''
-              sshForm.privateKey = ''
-              sshForm.passphrase = ''
-            }"
-          >
-            重置
-          </el-button>
+          <el-button type="primary" size="small" @click="connectSsh" :loading="isConnecting">连接</el-button>
+          <el-button size="small" @click="() => Object.assign(sshForm, { host: '', port: '22', username: '', password: '', privateKey: '', passphrase: '' })">重置</el-button>
         </el-form-item>
-        <!-- 错误提示 -->
         <el-alert
-          v-if="chatStore.sshErrorMessage"
+          v-if="errorMessage"
           type="error"
-          :title="chatStore.sshErrorMessage"
+          :title="errorMessage"
           :closable="true"
-          @close="chatStore.clearSshErrorMessage()"
+          @close="errorMessage = ''"
         />
       </el-form>
     </div>
 
-    <!-- 终端输出区域（已连接时显示） -->
+    <!-- 终端输出区（已连接时） -->
     <div v-else ref="outputContainer" class="terminal-output">
       <div
-        v-for="(item, index) in terminalOutput"
-        :key="index"
+        v-for="(item, idx) in terminalOutput"
+        :key="idx"
         class="output-line"
         :class="`output-${item.type}`"
       >
-        <span class="output-prompt" v-if="item.type === 'command'">$</span>
+        <span v-if="item.type === 'command'" class="output-prompt">$</span>
         <span class="output-content">{{ item.content }}</span>
       </div>
-      <!-- 空状态提示 -->
       <div v-if="terminalOutput.length === 0" class="output-empty">
-        <el-icon class="empty-icon"><i class="el-icon-monitor" /></el-icon>
-        <p>暂无输出</p>
+        <p>SSH 已连接，等待命令...</p>
         <p class="empty-sub">输入命令并按 Enter 执行</p>
       </div>
     </div>
 
-    <!-- 终端输入区域 -->
+    <!-- 输入区 -->
     <div class="terminal-input-area">
-      <div class="input-prompt">
-        <span class="prompt-symbol">$</span>
-      </div>
+      <span class="prompt-symbol">$</span>
       <el-input
-        ref="terminalInput"
+        ref="terminalInputRef"
         v-model="localInput"
         type="textarea"
         :autosize="{ minRows: 1, maxRows: 4 }"
         placeholder="输入命令或从命令卡片发送..."
         class="terminal-input"
         @keydown="handleKeydown"
-        :disabled="!isSshConnected"
+        :disabled="!isConnected"
       />
       <el-button
         type="primary"
         size="small"
         class="execute-btn"
-        :disabled="!localInput.trim() || !isSshConnected || !isSocketReady"
+        :disabled="!localInput.trim() || !isConnected"
         @click="executeCommand"
       >
-        <el-icon><i class="el-icon-right" /></el-icon>
         执行
       </el-button>
-      <el-button
-        size="small"
-        class="clear-btn"
-        :disabled="!localInput"
-        @click="clearInput"
-      >
-        清空输入
-      </el-button>
+      <el-button size="small" :disabled="!localInput" @click="clearInput">清空</el-button>
     </div>
 
     <!-- 底部提示 -->
     <div class="terminal-footer">
-      <el-icon class="footer-icon"><i class="el-icon-info-filled" /></el-icon>
-      <span v-if="!isSshConnected">
-        请先填写 SSH 信息并连接
-      </span>
+      <span v-if="!isConnected">请先填写 SSH 信息并连接</span>
       <span v-else>
-        按 Enter 执行命令，Shift+Enter 换行 ·
+        Enter 执行 · Shift+Enter 换行 ·
         <el-link type="primary" :underline="false" @click="disconnectSsh">断开连接</el-link>
       </span>
     </div>
@@ -604,7 +386,6 @@ onBeforeUnmount(() => {
   min-height: 400px;
 }
 
-/* 头部 */
 .terminal-header {
   display: flex;
   align-items: center;
@@ -614,72 +395,26 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid #333;
 }
 
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+.header-left { display: flex; align-items: center; gap: 8px; }
+.header-title { font-size: 14px; font-weight: 600; color: #e0e0e0; }
+.header-actions { display: flex; align-items: center; gap: 4px; }
+.header-actions :deep(.el-button) { color: #9cdcfe; }
 
-.header-icon {
-  font-size: 16px;
-  color: #67c23a;
-}
-
-.header-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #e0e0e0;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.header-actions :deep(.el-button) {
-  color: #9cdcfe;
-}
-
-/* SSH 登录表单 */
 .ssh-login-form {
   padding: 16px;
   background: #252526;
   border-bottom: 1px solid #333;
 }
 
-.ssh-login-form :deep(.el-form-item) {
-  margin-bottom: 12px;
-}
-
-.ssh-login-form :deep(.el-form-item__label) {
-  color: #9cdcfe;
-  font-size: 13px;
-}
-
-.ssh-login-form :deep(.el-input__inner) {
-  background: #1e1e1e;
-  border-color: #444;
-  color: #d4d4d4;
-}
-
-.ssh-login-form :deep(.el-input__inner:focus) {
-  border-color: #409eff;
-}
-
+.ssh-login-form :deep(.el-form-item) { margin-bottom: 12px; }
+.ssh-login-form :deep(.el-form-item__label) { color: #9cdcfe; font-size: 13px; }
+.ssh-login-form :deep(.el-input__inner) { background: #1e1e1e; border-color: #444; color: #d4d4d4; }
+.ssh-login-form :deep(.el-input__inner:focus) { border-color: #409eff; }
 .ssh-login-form :deep(.el-textarea__inner) {
-  background: #1e1e1e;
-  border-color: #444;
-  color: #d4d4d4;
+  background: #1e1e1e; border-color: #444; color: #d4d4d4;
   font-family: 'Consolas', 'Monaco', monospace;
 }
 
-.ssh-login-form :deep(.el-radio-group) {
-  display: flex;
-  gap: 8px;
-}
-
-/* 终端输出区域 */
 .terminal-output {
   flex: 1;
   padding: 12px;
@@ -691,59 +426,19 @@ onBeforeUnmount(() => {
   min-height: 200px;
 }
 
-.output-line {
-  display: flex;
-  align-items: flex-start;
-  margin-bottom: 4px;
-}
-
-.output-prompt {
-  color: #67c23a;
-  font-weight: 600;
-  margin-right: 8px;
-  min-width: 16px;
-}
-
-.output-command .output-content {
-  color: #d4d4d4;
-}
-
-.output-output .output-content {
-  color: #9cdcfe;
-}
-
-.output-error .output-content {
-  color: #f56c6c;
-}
-
-.output-info .output-content {
-  color: #909399;
-  font-style: italic;
-}
+.output-line { display: flex; align-items: flex-start; margin-bottom: 4px; }
+.output-prompt { color: #67c23a; font-weight: 600; margin-right: 8px; min-width: 16px; }
+.output-command .output-content { color: #d4d4d4; }
+.output-output .output-content { color: #9cdcfe; }
+.output-error .output-content { color: #f56c6c; }
+.output-info .output-content { color: #909399; font-style: italic; }
 
 .output-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #666;
-  text-align: center;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; height: 100%; color: #666; text-align: center;
 }
+.empty-sub { font-size: 12px; color: #555; margin-top: 4px; }
 
-.empty-icon {
-  font-size: 32px;
-  margin-bottom: 12px;
-  color: #555;
-}
-
-.empty-sub {
-  font-size: 12px;
-  color: #555;
-  margin-top: 4px;
-}
-
-/* 输入区域 */
 .terminal-input-area {
   display: flex;
   align-items: flex-start;
@@ -753,75 +448,28 @@ onBeforeUnmount(() => {
   border-top: 1px solid #333;
 }
 
-.input-prompt {
-  display: flex;
-  align-items: center;
-  height: 32px;
-  color: #67c23a;
-  font-weight: 600;
-  font-family: 'Consolas', 'Monaco', monospace;
-}
-
 .prompt-symbol {
-  font-size: 14px;
+  display: flex; align-items: center; height: 32px;
+  color: #67c23a; font-weight: 600;
+  font-family: 'Consolas', 'Monaco', monospace; font-size: 14px;
 }
 
-.terminal-input {
-  flex: 1;
-}
-
+.terminal-input { flex: 1; }
 .terminal-input :deep(.el-textarea__inner) {
-  background: #1e1e1e;
-  border-color: #444;
-  color: #d4d4d4;
+  background: #1e1e1e; border-color: #444; color: #d4d4d4;
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  padding: 6px 10px;
+  font-size: 13px; line-height: 1.5; padding: 6px 10px;
 }
+.terminal-input :deep(.el-textarea__inner:focus) { border-color: #409eff; }
+.terminal-input :deep(.el-textarea__inner:disabled) { opacity: 0.6; cursor: not-allowed; }
+.terminal-input :deep(.el-textarea__inner::placeholder) { color: #666; }
 
-.terminal-input :deep(.el-textarea__inner:focus) {
-  border-color: #409eff;
-}
+.execute-btn { height: 32px; padding: 0 12px; }
 
-.terminal-input :deep(.el-textarea__inner:disabled) {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.terminal-input :deep(.el-textarea__inner::placeholder) {
-  color: #666;
-}
-
-.execute-btn,
-.clear-btn {
-  height: 32px;
-  padding: 0 12px;
-}
-
-.execute-btn :deep(.el-icon) {
-  margin-right: 4px;
-}
-
-/* 底部提示 */
 .terminal-footer {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  background: #2d2d2d;
-  border-top: 1px solid #333;
-  font-size: 12px;
-  color: #666;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; background: #2d2d2d;
+  border-top: 1px solid #333; font-size: 12px; color: #666;
 }
-
-.footer-icon {
-  font-size: 14px;
-  color: #909399;
-}
-
-.terminal-footer :deep(.el-link) {
-  font-size: 12px;
-  margin-left: 4px;
-}
+.terminal-footer :deep(.el-link) { font-size: 12px; margin-left: 4px; }
 </style>

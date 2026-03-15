@@ -8,7 +8,7 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
-import { createTerminalApi, type TerminalSessionCreateRequest } from '@/api/terminal'
+import { checkBridgeRunning, type BridgeStatus } from '@/api/terminal'
 
 /** 前端聊天消息 */
 export interface ChatMessage {
@@ -32,7 +32,6 @@ export const useChatStore = defineStore('chat', () => {
   const conversationApi = createConversationApi(apiClient)
   const assistantApi = createAssistantApi(apiClient)
   const evaluateApi = createEvaluateApi(apiClient)
-  const terminalApi = createTerminalApi(apiClient)
 
   // 是否显示助手选择器 (生产环境隐藏)
   const showAssistantSelector = import.meta.env.VITE_SHOW_ASSISTANT_SELECTOR !== 'false'
@@ -48,7 +47,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // AI 助手列表
   const assistants = ref<AssistantInfo[]>([])
-  const selectedAssistant = ref<string>('')  // 当前选中的助手类型
+  const selectedAssistant = ref<string>('')
 
   // 未关闭工单确认流程
   const pendingCase = ref<CaseResponse | null>(null)
@@ -69,21 +68,22 @@ export const useChatStore = defineStore('chat', () => {
   const showRatingCard = ref(false)
   const ratingConversationId = ref<string | null>(null)
 
-  // 终端面板状态 (Task 35/36)
-  const showTerminalSidebar = ref(false) // 是否显示侧边栏终端 (Task 36)
-  const terminalInputCommand = ref('') // 待发送到终端输入框的命令
+  // 终端面板状态
+  const showTerminalSidebar = ref(false)
+  const terminalInputCommand = ref('')
 
-  // SSH 连接状态 (Task 36)
+  // SSH 连接状态（由 TerminalPanel 内部管理，store 只保留显示用状态）
   const sshConnectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
-  const sshSessionId = ref<string | null>(null) // SSH 会话 ID
-  const sshErrorMessage = ref('') // SSH 错误信息
+  const sshErrorMessage = ref('')
+
+  // Bridge 运行状态
+  const bridgeStatus = ref<BridgeStatus>('not_running')
 
   // 计算属性
   const hasActiveCase = computed(() => {
     return currentCase.value && !['closed', 'cancelled'].includes(currentCase.value.status)
   })
 
-  /** 工单已关闭（有工单但非活跃状态）*/
   const isCaseClosed = computed(() => {
     return currentCase.value !== null && !hasActiveCase.value
   })
@@ -98,14 +98,12 @@ export const useChatStore = defineStore('chat', () => {
         description: item.description ?? '',
         available: item.available ?? item.enabled ?? true,
       }))
-      // 默认选中第一个可用的助手
       const firstAvailable = assistants.value.find(a => a.available)
       if (firstAvailable) {
         selectedAssistant.value = firstAvailable.type
       }
     } catch (e) {
       console.warn('获取助手列表失败，使用默认值', e)
-      // fallback: 提供默认的 OpenClaw 选项
       assistants.value = [{
         type: 'openclaw',
         display_name: 'OpenClaw (GLM)',
@@ -116,24 +114,20 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 初始化：检查现有工单 */
+  /** 初始化 */
   async function initialize() {
     if (initialized.value) return
-    // 加载可用助手列表
     await fetchAssistants()
     try {
       const res = await caseApi.listByClient(clientId)
       existingCases.value = res.data
-      // 找到最近的未关闭工单
       const activeCase = existingCases.value.find(
         (c) => !['closed', 'cancelled'].includes(c.status),
       )
       if (activeCase) {
-        // 发现未关闭工单，弹出确认对话框让用户选择
         pendingCase.value = activeCase
         showPendingDialog.value = true
       } else {
-        // 无未关闭工单，显示欢迎消息
         addSystemMessage('您好！我是 HCI 故障排查助手。请描述您遇到的问题，我会帮您创建工单并提供解决方案。')
       }
     } catch (e) {
@@ -143,7 +137,6 @@ export const useChatStore = defineStore('chat', () => {
     initialized.value = true
   }
 
-  /** 用户选择继续处理未关闭工单 */
   async function resumePendingCase() {
     if (!pendingCase.value) return
     currentCase.value = pendingCase.value
@@ -152,7 +145,6 @@ export const useChatStore = defineStore('chat', () => {
     pendingCase.value = null
   }
 
-  /** 用户选择关闭旧工单 */
   async function closePendingCase() {
     if (!pendingCase.value) return
     try {
@@ -165,16 +157,13 @@ export const useChatStore = defineStore('chat', () => {
     pendingCase.value = null
   }
 
-  /** 加载已有对话历史 */
   async function loadConversationHistory(caseId: string) {
     try {
-      // 获取工单下的对话
       const convRes = await apiClient.get(`/conversations/case/${caseId}`)
       const conversations = convRes.data as any[]
       if (conversations.length > 0) {
         const conv = conversations[0]
         conversationId.value = conv.conversation_id
-        // 加载消息
         const msgRes = await conversationApi.getMessages(conv.conversation_id)
         const history: MessageResponse[] = msgRes.data
         messages.value = history.map((m) => ({
@@ -185,9 +174,7 @@ export const useChatStore = defineStore('chat', () => {
         }))
       }
       if (messages.value.length === 0) {
-        addSystemMessage(
-          `工单 ${caseId} 已恢复。您可以继续描述问题，或输入 /close 关闭工单。`,
-        )
+        addSystemMessage(`工单 ${caseId} 已恢复。您可以继续描述问题，或输入 /close 关闭工单。`)
       }
     } catch (e) {
       console.error('加载对话历史失败', e)
@@ -195,45 +182,36 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 发送消息 - 核心流程 */
   async function sendMessage(content: string) {
     if (!content.trim() || isStreaming.value) return
 
-    // 处理命令
     if (content.startsWith('/close')) {
       await handleCloseCase()
       return
     }
 
-    // 工单已关闭时，阻止继续发送消息
     if (isCaseClosed.value) {
       addSystemMessage('当前工单已关闭，请点击「新建工单」开始新的对话。')
       return
     }
 
-    // 如果没有活跃工单，显示工单创建模板让用户编辑
     if (!currentCase.value) {
       pendingUserMessage.value = content
-      // 生成模板默认值
       const title = content.length > 50 ? content.substring(0, 50) + '...' : content
       caseTemplate.value = { title, description: content }
       showCaseTemplate.value = true
       return
     }
 
-    // 添加用户消息
     addUserMessage(content)
 
-    // 如果没有会话，先创建
     if (!conversationId.value) {
       await createConversation()
     }
 
-    // 发送 AI 消息并流式接收
     await streamAIResponse(content)
   }
 
-  /** 用户确认模板后创建工单 */
   async function confirmCreateCase(template: CaseTemplate) {
     showCaseTemplate.value = false
     addUserMessage(pendingUserMessage.value)
@@ -248,15 +226,11 @@ export const useChatStore = defineStore('chat', () => {
       currentCase.value = res.data
       addSystemMessage(`工单 ${res.data.case_id} 已创建，正在自动确认...`)
 
-      // 自动确认
       const confirmed = await caseApi.confirm(res.data.case_id)
       currentCase.value = confirmed.data
       addSystemMessage('工单已确认，正在连接 AI 助手...')
 
-      // 创建对话
       await createConversation()
-
-      // 开始 AI 对话
       await streamAIResponse(pendingUserMessage.value)
     } catch (e: any) {
       addSystemMessage(`创建工单失败: ${e.response?.data?.detail || e.message}`)
@@ -266,13 +240,11 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 用户取消创建工单 */
   function cancelCreateCase() {
     showCaseTemplate.value = false
     pendingUserMessage.value = ''
   }
 
-  /** 创建对话 */
   async function createConversation() {
     if (!currentCase.value) return
     try {
@@ -284,13 +256,10 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 流式接收 AI 响应 */
   async function streamAIResponse(content: string) {
     if (!conversationId.value || !currentCase.value) return
 
     isStreaming.value = true
-
-    // 先添加一个空的 AI 消息占位
     const aiMsgId = `ai-${Date.now()}`
     messages.value.push({
       id: aiMsgId,
@@ -301,7 +270,6 @@ export const useChatStore = defineStore('chat', () => {
     })
 
     try {
-      // 后端 SSE 是 POST 方式，使用 fetch + ReadableStream
       const response = await fetch(`/api/conversations/${conversationId.value}/message`, {
         method: 'POST',
         headers: {
@@ -328,14 +296,12 @@ export const useChatStore = defineStore('chat', () => {
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
-        // 按行解析 SSE
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
         let pendingEventType = 'message'
         for (const line of lines) {
           if (line.startsWith('event: ')) {
-            // 记录 SSE 事件类型，用于解析后续 data: 行
             pendingEventType = line.slice(7).trim()
           } else if (line.startsWith('data: ')) {
             const data = line.slice(6)
@@ -345,19 +311,16 @@ export const useChatStore = defineStore('chat', () => {
             }
             const aiMsg = messages.value.find((m) => m.id === aiMsgId)
             if (pendingEventType === 'error') {
-              // AI 服务端错误：在消息气泡中展示友好提示
               if (aiMsg && !aiMsg.content) {
                 aiMsg.content = 'AI 响应出现错误，请稍后重试。'
               }
             } else {
-              // 正常内容 chunk：追加到 AI 消息
               if (aiMsg) {
                 aiMsg.content += data
               }
             }
             pendingEventType = 'message'
           } else if (line === '') {
-            // 空行是 SSE 事件分隔符，重置事件类型
             pendingEventType = 'message'
           }
         }
@@ -374,7 +337,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 关闭当前工单 */
   async function handleCloseCase() {
     if (!currentCase.value) {
       addSystemMessage('当前没有活跃的工单。')
@@ -384,13 +346,8 @@ export const useChatStore = defineStore('chat', () => {
       const res = await caseApi.close(currentCase.value.case_id, { close_reason: 'user_command' })
       currentCase.value = res.data
       addSystemMessage(`工单 ${res.data.case_id} 已关闭。发送新消息开启新工单。`)
-
-      // 保存当前会话 ID，用于评分
       const convId = conversationId.value
-      // 清空会话 ID
       conversationId.value = null
-
-      // 触发评分卡显示
       if (convId) {
         ratingConversationId.value = convId
         showRatingCard.value = true
@@ -400,7 +357,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 开始新对话（关闭当前工单后） */
   function startNewConversation() {
     currentCase.value = null
     conversationId.value = null
@@ -408,10 +364,8 @@ export const useChatStore = defineStore('chat', () => {
     addSystemMessage('请描述您遇到的新问题，我会帮您创建工单。')
   }
 
-  /** 打开历史工单抽屉 */
   async function openHistoryDrawer() {
     showHistoryDrawer.value = true
-    // 刷新工单列表
     try {
       const res = await caseApi.listByClient(clientId)
       existingCases.value = res.data
@@ -420,14 +374,12 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 关闭历史工单抽屉 */
   function closeHistoryDrawer() {
     showHistoryDrawer.value = false
     historyMessages.value = []
     historyCase.value = null
   }
 
-  /** 加载某个历史工单的对话消息 */
   async function loadHistoryMessages(caseItem: CaseResponse) {
     historyCase.value = caseItem
     historyLoading.value = true
@@ -467,11 +419,9 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 从历史工单列表选择一个工单恢复进入（仅限未关闭的） */
   async function switchToCase(caseItem: CaseResponse) {
     closeHistoryDrawer()
     if (!['closed', 'cancelled'].includes(caseItem.status)) {
-      // 未关闭工单，恢复到当前对话
       currentCase.value = caseItem
       conversationId.value = null
       messages.value = []
@@ -497,118 +447,80 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  /** 关闭评分卡 */
   function closeRatingCard() {
     showRatingCard.value = false
     ratingConversationId.value = null
   }
 
-  /**
-   * 提交评分
-   * @param score 评分值 1-5
-   */
   async function submitRating(score: number) {
     if (!ratingConversationId.value) {
       closeRatingCard()
       return
     }
-
     try {
       await evaluateApi.submit(ratingConversationId.value, { score })
-      // 评分成功，关闭卡片（静默处理，不提示用户）
-      console.log('评分提交成功:', score)
     } catch (e) {
-      // 网络错误静默失败，不影响用户操作
       console.warn('评分提交失败:', e)
     } finally {
       closeRatingCard()
     }
   }
 
-  /** 跳过评分 */
   function skipRating() {
-    // 直接关闭卡片，不发请求
     closeRatingCard()
   }
 
-  /**
-   * 发送命令到终端
-   * 打开侧边栏并将命令填充到输入区
-   * @param command 要发送的命令
-   */
+  /** 发送命令到终端（CommandBlock 调用） */
   function sendCommandToTerminal(command: string) {
-    // 将命令填充到输入框
     terminalInputCommand.value = command
-    // 自动打开侧边栏
     showTerminalSidebar.value = true
-    console.log('[CommandBlock] 命令已发送到终端:', command.substring(0, 50) + (command.length > 50 ? '...' : ''))
   }
 
-  /**
-   * 清空终端输入命令
-   */
   function clearTerminalInput() {
     terminalInputCommand.value = ''
   }
 
   /**
-   * 打开侧边栏终端 (Task 36)
+   * 点击「终端」按钮的入口
+   * 先检测 Bridge，根据结果决定：直接打开侧边栏 或 提示下载
    */
+  async function checkAndOpenTerminal() {
+    bridgeStatus.value = 'checking'
+    const running = await checkBridgeRunning()
+    if (running) {
+      bridgeStatus.value = 'running'
+      showTerminalSidebar.value = true
+    } else {
+      bridgeStatus.value = 'not_running'
+      // 让 App.vue 展示下载提示弹窗（通过 showBridgeDownload 状态驱动）
+      showBridgeDownload.value = true
+    }
+  }
+
   function openTerminalSidebar() {
     showTerminalSidebar.value = true
   }
 
-  /**
-   * 关闭侧边栏终端
-   */
   function closeTerminalSidebar() {
     showTerminalSidebar.value = false
   }
 
-  /**
-   * 设置 SSH 连接状态
-   */
+  // Bridge 下载提示弹窗状态
+  const showBridgeDownload = ref(false)
+  function closeBridgeDownload() {
+    showBridgeDownload.value = false
+  }
+
   function setSshConnectionState(state: 'disconnected' | 'connecting' | 'connected' | 'error') {
     sshConnectionState.value = state
   }
 
-  /**
-   * 设置 SSH 会话 ID
-   */
-  function setSshSessionId(sessionId: string | null) {
-    sshSessionId.value = sessionId
-  }
-
-  /**
-   * 设置 SSH 错误信息
-   */
   function setSshErrorMessage(message: string) {
     sshErrorMessage.value = message
   }
 
-  /**
-   * 清除 SSH 错误信息
-   */
   function clearSshErrorMessage() {
     sshErrorMessage.value = ''
-  }
-
-  /**
-   * 创建终端会话
-   */
-  async function createTerminalSession(data: Omit<TerminalSessionCreateRequest, 'client_id' | 'case_id'>) {
-    return terminalApi.createSession({
-      ...data,
-      client_id: clientId,
-      case_id: currentCase.value?.case_id || undefined,
-    })
-  }
-
-  /**
-   * 关闭终端会话
-   */
-  async function closeTerminalSession(sessionId: string) {
-    return terminalApi.closeSession(sessionId)
   }
 
   return {
@@ -620,22 +532,18 @@ export const useChatStore = defineStore('chat', () => {
     existingCases,
     hasActiveCase,
     isCaseClosed,
-    // AI 助手选择
     showAssistantSelector,
     assistants,
     selectedAssistant,
-    // 未关闭工单确认
     pendingCase,
     showPendingDialog,
     resumePendingCase,
     closePendingCase,
     handleCloseCase,
-    // 工单创建模板
     showCaseTemplate,
     caseTemplate,
     confirmCreateCase,
     cancelCreateCase,
-    // 历史工单
     showHistoryDrawer,
     historyMessages,
     historyCase,
@@ -644,30 +552,29 @@ export const useChatStore = defineStore('chat', () => {
     closeHistoryDrawer,
     loadHistoryMessages,
     switchToCase,
-    // 评分卡
     showRatingCard,
     ratingConversationId,
     submitRating,
     skipRating,
     closeRatingCard,
-    // 终端面板 (Task 35/36)
+    // 终端
     showTerminalSidebar,
     terminalInputCommand,
     sendCommandToTerminal,
     clearTerminalInput,
     openTerminalSidebar,
     closeTerminalSidebar,
-    // SSH 连接状态 (Task 36)
+    checkAndOpenTerminal,
+    // Bridge 状态
+    bridgeStatus,
+    showBridgeDownload,
+    closeBridgeDownload,
+    // SSH 状态（TerminalPanel 同步过来，仅供展示）
     sshConnectionState,
-    sshSessionId,
     sshErrorMessage,
     setSshConnectionState,
-    setSshSessionId,
     setSshErrorMessage,
     clearSshErrorMessage,
-    createTerminalSession,
-    closeTerminalSession,
-    // 核心方法
     initialize,
     sendMessage,
     startNewConversation,

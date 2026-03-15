@@ -7,9 +7,17 @@ import ChatWindow from '@/components/ChatWindow.vue'
 const chatStore = useChatStore()
 const clientId = getClientId()
 
+// Bridge 下载地址，替换为实际托管地址
+const BRIDGE_DOWNLOAD_URL = '/downloads/terminal_bridge.exe'
+
 onMounted(() => {
   chatStore.initialize()
 })
+
+function handleDownloadBridge() {
+  window.open(BRIDGE_DOWNLOAD_URL, '_blank')
+  chatStore.closeBridgeDownload()
+}
 </script>
 
 <template>
@@ -18,14 +26,15 @@ onMounted(() => {
       <div class="header-content">
         <h1>HCI 故障排查助手</h1>
         <div class="header-badges">
-          <!-- 终端侧边栏入口 (Task 36) -->
+          <!-- 终端按钮：点击先检测 Bridge -->
           <el-button
             size="small"
             round
             class="terminal-btn"
-            @click="chatStore.openTerminalSidebar()"
+            :loading="chatStore.bridgeStatus === 'checking'"
+            @click="chatStore.checkAndOpenTerminal()"
           >
-            <el-icon><i class="el-icon-monitor" /></el-icon>
+            <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><i class="el-icon-monitor" /></el-icon>
             终端
           </el-button>
           <el-button
@@ -57,6 +66,31 @@ onMounted(() => {
     <main class="app-main">
       <ChatWindow />
     </main>
+
+    <!-- Bridge 未运行时的下载提示弹窗 -->
+    <el-dialog
+      v-model="chatStore.showBridgeDownload"
+      title="SSH 终端插件"
+      width="420px"
+      :close-on-click-modal="true"
+      class="bridge-dialog"
+    >
+      <div class="bridge-prompt">
+        <div class="bridge-icon">🖥️</div>
+        <p class="bridge-title">生效 SSH 终端插件</p>
+        <p class="bridge-desc">
+          SSH 终端需要本地 Bridge 组件支持，检测到当前未运行。<br />
+          请点击下载并打开，启动后再次点击「终端」按钮即可使用。
+        </p>
+      </div>
+      <template #footer>
+        <el-button @click="chatStore.closeBridgeDownload()">取消</el-button>
+        <el-button type="primary" @click="handleDownloadBridge">
+          <el-icon style="margin-right: 4px"><i class="el-icon-download" /></el-icon>
+          下载并打开
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -168,5 +202,29 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* Bridge 下载提示弹窗 */
+.bridge-prompt {
+  text-align: center;
+  padding: 8px 0 16px;
+}
+
+.bridge-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.bridge-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 10px;
+}
+
+.bridge-desc {
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.8;
 }
 </style>
