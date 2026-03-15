@@ -248,6 +248,41 @@ apply_tag_updates() {
   done
 }
 
+# =============================================================================
+# 构建前检查：确认 terminal_bridge.exe 已就位
+# customerUI 镜像构建时 Vite 会将 public/ 原样打包进 dist/，
+# 若 exe 文件缺失，构建可以成功但下载按钮会 404。
+# =============================================================================
+check_terminal_bridge_asset() {
+  local exe_path="${PROJECT_ROOT}/frontend/customer/public/downloads/terminal_bridge.exe"
+
+  # 仅当本次构建包含 customerUI 时才检查
+  local need_check=false
+  for svc in "${SELECTED_SERVICES[@]}"; do
+    [[ "$svc" == "customerUI" ]] && need_check=true && break
+  done
+
+  [[ "$need_check" == false ]] && return 0
+
+  if [[ ! -f "$exe_path" ]]; then
+    warn "==========================================================="
+    warn " terminal_bridge.exe 未找到，下载按钮发布后将返回 404！"
+    warn ""
+    warn " 请在继续前将编译好的 exe 放入："
+    warn "   ${exe_path}"
+    warn ""
+    warn " 如果暂时没有 exe，可忽略此警告继续发布，"
+    warn " 但用户点击"下载并打开"时会看到 404 错误。"
+    warn "==========================================================="
+    echo ""
+    # 非阻塞警告，不退出，由发布者决定是否继续
+  else
+    local size
+    size=$(du -h "$exe_path" | cut -f1)
+    ok "terminal_bridge.exe 已就位（${size}），将随镜像构建打包"
+  fi
+}
+
 build_and_import_images() {
   local tag="$1"
   local repos=()
@@ -348,16 +383,18 @@ run_post_verify() {
 
 print_release_summary() {
   echo ""
-  ok "发布流程完成"
-  echo "  - 环境: ${ENVIRONMENT}"
-  echo "  - 镜像 tag: ${IMAGE_TAG}"
-  echo "  - 服务: ${SERVICES_CSV}"
-  echo "  - override: ${OVERRIDE_FILE}"
+  ok "发布流程完成 ✅"
+  echo "  - 环境:      ${ENVIRONMENT}"
+  echo "  - 镜像 tag:  ${IMAGE_TAG}"
+  echo "  - 服务:      ${SERVICES_CSV}"
+  echo "  - override:  ${OVERRIDE_FILE}"
   echo ""
-  info "建议继续执行："
+  info "验证建议："
   echo "  1) $KUBECTL -n hci-troubleshoot get deploy customer-ui -o wide"
-  echo "  2) 访问 custom-ui 页面后强刷缓存（Ctrl+Shift+R）"
-  echo "  3) 检查右上角是否出现“终端”按钮并验证侧边栏"
+  echo "  2) 访问 Custom UI 页面后强刷缓存（Ctrl+Shift+R）"
+  echo "  3) 点击右上角"终端"按钮："
+  echo "       - Bridge 未运行 → 应弹出下载提示，点击可下载 terminal_bridge.exe"
+  echo "       - Bridge 运行中 → 应直接打开 SSH 侧边栏"
 }
 
 main() {
@@ -377,6 +414,10 @@ main() {
   echo "  - IMAGE_TAG   = ${IMAGE_TAG}"
   echo "  - SERVICES    = ${SERVICES_CSV}"
   echo "  - OVERRIDE    = ${OVERRIDE_FILE}"
+  echo ""
+
+  # 构建前检查 terminal_bridge.exe 是否就位
+  check_terminal_bridge_asset
 
   # 先更新 override，确保发布配置和目标一致
   apply_tag_updates "$OVERRIDE_FILE" "$IMAGE_TAG"
