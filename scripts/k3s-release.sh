@@ -249,38 +249,40 @@ apply_tag_updates() {
 }
 
 # =============================================================================
-# 构建前检查：确认 terminal_bridge.exe 已就位
-# customerUI 镜像构建时 Vite 会将 public/ 原样打包进 dist/，
-# 若 exe 文件缺失，构建可以成功但下载按钮会 404。
+# terminal_bridge.exe 检查
+# 构建 customerUI 前确认 exe 已放入 public/downloads/，否则下载按钮会 404
 # =============================================================================
-check_terminal_bridge_asset() {
+check_terminal_bridge_exe() {
   local exe_path="${PROJECT_ROOT}/frontend/customer/public/downloads/terminal_bridge.exe"
+  local need_customer_ui=false
 
-  # 仅当本次构建包含 customerUI 时才检查
-  local need_check=false
   for svc in "${SELECTED_SERVICES[@]}"; do
-    [[ "$svc" == "customerUI" ]] && need_check=true && break
+    [[ "$svc" == "customerUI" ]] && need_customer_ui=true && break
   done
 
-  [[ "$need_check" == false ]] && return 0
-
-  if [[ ! -f "$exe_path" ]]; then
-    warn "==========================================================="
-    warn " terminal_bridge.exe 未找到，下载按钮发布后将返回 404！"
-    warn ""
-    warn " 请在继续前将编译好的 exe 放入："
-    warn "   ${exe_path}"
-    warn ""
-    warn " 如果暂时没有 exe，可忽略此警告继续发布，"
-    warn " 但用户点击"下载并打开"时会看到 404 错误。"
-    warn "==========================================================="
-    echo ""
-    # 非阻塞警告，不退出，由发布者决定是否继续
-  else
-    local size
-    size=$(du -h "$exe_path" | cut -f1)
-    ok "terminal_bridge.exe 已就位（${size}），将随镜像构建打包"
+  if [[ "$need_customer_ui" == false ]]; then
+    return 0
   fi
+
+  if [[ -f "$exe_path" ]]; then
+    ok "terminal_bridge.exe 已就绪: ${exe_path}"
+    return 0
+  fi
+
+  warn "─────────────────────────────────────────────────────────"
+  warn " terminal_bridge.exe 未找到，下载按钮在部署后将返回 404"
+  warn " 期望路径: ${exe_path}"
+  warn ""
+  warn " 请在构建前将 exe 文件复制到该目录，例如："
+  warn "   cp /path/to/terminal_bridge.exe ${exe_path}"
+  warn ""
+  warn " 如果你尚未构建 exe，可以先跳过："
+  warn "   bash scripts/k3s-release.sh --services apiGateway,...  # 不包含 customerUI"
+  warn "─────────────────────────────────────────────────────────"
+
+  # 非阻塞：给出警告但不中断发布流程，避免其他服务因此卡住
+  # 如需强制阻断，将下一行取消注释：
+  # exit 1
 }
 
 build_and_import_images() {
@@ -384,17 +386,15 @@ run_post_verify() {
 print_release_summary() {
   echo ""
   ok "发布流程完成 ✅"
-  echo "  - 环境:      ${ENVIRONMENT}"
-  echo "  - 镜像 tag:  ${IMAGE_TAG}"
-  echo "  - 服务:      ${SERVICES_CSV}"
-  echo "  - override:  ${OVERRIDE_FILE}"
+  echo "  - 环境:     ${ENVIRONMENT}"
+  echo "  - 镜像 tag: ${IMAGE_TAG}"
+  echo "  - 服务:     ${SERVICES_CSV}"
+  echo "  - override: ${OVERRIDE_FILE}"
   echo ""
-  info "验证建议："
+  info "下一步验证建议："
   echo "  1) $KUBECTL -n hci-troubleshoot get deploy customer-ui -o wide"
   echo "  2) 访问 Custom UI 页面后强刷缓存（Ctrl+Shift+R）"
-  echo "  3) 点击右上角"终端"按钮："
-  echo "       - Bridge 未运行 → 应弹出下载提示，点击可下载 terminal_bridge.exe"
-  echo "       - Bridge 运行中 → 应直接打开 SSH 侧边栏"
+  echo "  3) 点击右上角「终端」按钮，验证 Bridge 检测和下载流程"
 }
 
 main() {
@@ -416,13 +416,12 @@ main() {
   echo "  - OVERRIDE    = ${OVERRIDE_FILE}"
   echo ""
 
-  # 构建前检查 terminal_bridge.exe 是否就位
-  check_terminal_bridge_asset
-
   # 先更新 override，确保发布配置和目标一致
   apply_tag_updates "$OVERRIDE_FILE" "$IMAGE_TAG"
 
+  # 构建前检查 terminal_bridge.exe（仅当发布 customerUI 时）
   if [[ "$SKIP_BUILD" == false ]]; then
+    check_terminal_bridge_exe
     build_and_import_images "$IMAGE_TAG"
   else
     warn "已跳过构建导入（--skip-build）"
