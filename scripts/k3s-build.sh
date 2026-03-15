@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OPENCLAW_REPO_DIR="${OPENCLAW_REPO_DIR:-${PROJECT_ROOT}/../openclaw}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
+K3S_CTR="${K3S_CTR:-sudo -n k3s ctr}"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -23,6 +24,18 @@ info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
+
+ensure_k3s_ctr_access() {
+  if ${K3S_CTR} images ls >/dev/null 2>&1; then
+    return 0
+  fi
+
+  error "无法以非交互方式访问 K3s containerd"
+  error "当前命令: ${K3S_CTR}"
+  error "请先执行: sudo -v"
+  error "或显式指定无需 sudo 的命令，例如: K3S_CTR='k3s ctr' bash scripts/k3s-build.sh"
+  exit 1
+}
 
 IMPORT_K3S=true
 [[ "${1:-}" == "--no-import" ]] && IMPORT_K3S=false
@@ -129,18 +142,14 @@ fi
 if [[ "$IMPORT_K3S" == true ]]; then
   echo ""
   info "开始导入镜像到 K3s containerd..."
-  
-  # 检查 k3s 是否可用
-  if ! command -v k3s &>/dev/null && ! sudo k3s --version &>/dev/null 2>&1; then
-    error "k3s 未安装或无法访问"
-    exit 1
-  fi
+
+  ensure_k3s_ctr_access
 
   IMPORTED=0
   for entry in "${WORK_IMAGES[@]}"; do
     read -r name _ _ <<< "$entry"
     info "  导入 ${name}:${IMAGE_TAG} ..."
-    if docker save "${name}:${IMAGE_TAG}" | sudo k3s ctr images import -; then
+    if docker save "${name}:${IMAGE_TAG}" | ${K3S_CTR} images import -; then
       ok "  → ${name}:${IMAGE_TAG} 已导入"
       IMPORTED=$((IMPORTED + 1))
     else
@@ -153,7 +162,7 @@ if [[ "$IMPORT_K3S" == true ]]; then
   
   echo ""
   info "验证 K3s 中的 HCI 镜像:"
-  sudo k3s ctr images ls | grep "hci-" | awk '{print "  " $1}' || true
+  ${K3S_CTR} images ls | grep "hci-" | awk '{print "  " $1}' || true
 fi
 
 echo ""

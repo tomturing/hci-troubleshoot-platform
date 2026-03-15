@@ -34,7 +34,7 @@ VALUES_DEV_FILE="${CHART_PATH}/values-dev.yaml"
 VALUES_PROD_FILE="${CHART_PATH}/values-prod.yaml"
 # 本地覆盖文件（含实际密钥，不入 git），放在 .local/values-prod.override.yaml
 VALUES_OVERRIDE_FILE="${PROJECT_ROOT}/.local/values-prod.override.yaml"
-KUBECTL="sudo k3s kubectl"
+KUBECTL="${KUBECTL:-sudo -n k3s kubectl}"
 
 # ============================================================================
 # 解析 --env 参数（必须在其他参数之前）
@@ -111,6 +111,18 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
+ensure_kubectl_access() {
+  if ${KUBECTL} version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  error "无法以非交互方式访问 K3s kubectl"
+  error "当前命令: ${KUBECTL}"
+  error "请先执行: sudo -v"
+  error "或显式指定无需 sudo 的命令，例如: KUBECTL='k3s kubectl' bash scripts/k3s-deploy.sh ..."
+  exit 1
+}
+
 # ============================================================================
 # 子命令实现
 # ============================================================================
@@ -136,6 +148,7 @@ cmd_template() {
 
 cmd_install() {
   info "首次安装 HCI 平台到 K3s..."
+  ensure_kubectl_access
   
   # 创建主 namespace（如果不存在）
   ${KUBECTL} create namespace "${NAMESPACE}" --dry-run=client -o yaml | ${KUBECTL} apply -f -
@@ -210,6 +223,7 @@ cmd_uninstall() {
 }
 
 cmd_status() {
+  ensure_kubectl_access
   info "=== Helm Release 状态 ==="
   helm status "${RELEASE_NAME}" --namespace "${NAMESPACE}" 2>/dev/null || warn "Release 未安装"
   

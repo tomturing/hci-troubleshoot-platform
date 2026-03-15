@@ -130,6 +130,8 @@ make k3s-release
 ```
 
 > 说明：生产环境默认读取 `/srv/hci/config/values-prod.override.yaml`，若不存在则回退到 `./.local/values-prod.override.yaml`。
+>
+> 若默认 K3s 命令依赖 sudo，请先执行 `sudo -v` 预热凭据；脚本默认使用非交互 sudo，避免发布过程中卡在密码提示上。
 
 ## 📚 文档
 

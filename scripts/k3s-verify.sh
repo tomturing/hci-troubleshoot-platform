@@ -8,7 +8,7 @@ set -euo pipefail
 
 NAMESPACE="hci-troubleshoot"
 OBS_NAMESPACE="hci-observability"
-KUBECTL="sudo k3s kubectl"
+KUBECTL="${KUBECTL:-sudo -n k3s kubectl}"
 
 # 颜色
 RED='\033[0;31m'
@@ -22,8 +22,22 @@ ok()    { echo -e "${GREEN}[✅]${NC}   $*"; }
 fail()  { echo -e "${RED}[❌]${NC}   $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 
+ensure_kubectl_access() {
+  if ${KUBECTL} version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  fail "无法以非交互方式访问 K3s kubectl"
+  warn "  当前命令: ${KUBECTL}"
+  warn "  请先执行: sudo -v"
+  warn "  或显式指定无需 sudo 的命令，例如: KUBECTL='k3s kubectl' bash scripts/k3s-verify.sh"
+  exit 1
+}
+
 PASS=0
 FAIL=0
+
+ensure_kubectl_access
 
 check() {
   local desc="$1"

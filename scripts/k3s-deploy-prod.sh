@@ -11,7 +11,7 @@ VALUES_FILE="${CHART_PATH}/values.yaml"
 VALUES_PROD_FILE="${CHART_PATH}/values-prod.yaml"
 OVERRIDE_FILE="${OVERRIDE_FILE:-/srv/hci/config/values-prod.override.yaml}"
 TIMEOUT="${TIMEOUT:-10m}"
-KUBECTL="${KUBECTL:-sudo k3s kubectl}"
+KUBECTL="${KUBECTL:-sudo -n k3s kubectl}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -23,6 +23,18 @@ info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
+
+ensure_kubectl_access() {
+  if ${KUBECTL} version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  error "无法以非交互方式访问 K3s kubectl"
+  error "当前命令: ${KUBECTL}"
+  error "请先执行: sudo -v"
+  error "或显式指定无需 sudo 的命令，例如: KUBECTL='k3s kubectl' bash scripts/k3s-deploy-prod.sh ..."
+  exit 1
+}
 
 usage() {
   cat <<EOF
@@ -84,6 +96,7 @@ cmd_deploy() {
 }
 
 cmd_status() {
+  ensure_kubectl_access
   info "Helm release 状态"
   helm status "$RELEASE_NAME" -n "$NAMESPACE" || true
   echo

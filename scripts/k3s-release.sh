@@ -23,7 +23,7 @@ SKIP_VERIFY=false
 SKIP_BUILD=false
 SKIP_DEPLOY=false
 
-KUBECTL="${KUBECTL:-sudo k3s kubectl}"
+KUBECTL="${KUBECTL:-sudo -n k3s kubectl}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -66,6 +66,21 @@ EOF
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+ensure_non_interactive_sudo() {
+  if [[ "$KUBECTL" != sudo* ]]; then
+    return 0
+  fi
+
+  if sudo -n true >/dev/null 2>&1; then
+    return 0
+  fi
+
+  error "当前发布链路默认使用 sudo 执行 K3s 命令，但未获得非交互 sudo 权限"
+  error "请先执行: sudo -v"
+  error "或显式指定无需 sudo 的命令，例如: KUBECTL='k3s kubectl' bash scripts/k3s-release.sh ..."
+  exit 1
+}
+
 require_cmds() {
   local missing=0
   for cmd in git bash helm; do
@@ -75,7 +90,11 @@ require_cmds() {
   if [[ "$SKIP_BUILD" == false ]]; then
     command_exists docker || { error "缺少命令: docker（构建镜像需要）"; missing=1; }
   fi
-  [[ "$missing" -ne 0 ]] && exit 1
+  if [[ "$missing" -ne 0 ]]; then
+    exit 1
+  fi
+
+  return 0
 }
 
 parse_args() {
@@ -114,18 +133,39 @@ resolve_override_file() {
   local prod_local="$PROJECT_ROOT/.local/values-prod.override.yaml"
 
   if [[ "$ENVIRONMENT" == "prod" ]]; then
-    [[ -f "$prod_srv"   ]] && echo "$prod_srv"   && return
-    [[ -f "$prod_local" ]] && echo "$prod_local" && return
+    if [[ -f "$prod_srv" ]]; then
+      echo "$prod_srv"
+      return 0
+    fi
+
+    if [[ -f "$prod_local" ]]; then
+      echo "$prod_local"
+      return 0
+    fi
+
     error "prod 环境未找到 override 文件（/srv 或 .local）"; exit 1
   fi
-  [[ -f "$prod_local" ]] && echo "$prod_local" && return
-  [[ -f "$prod_srv"   ]] && echo "$prod_srv"   && return
+
+  if [[ -f "$prod_local" ]]; then
+    echo "$prod_local"
+    return 0
+  fi
+
+  if [[ -f "$prod_srv" ]]; then
+    echo "$prod_srv"
+    return 0
+  fi
+
   error "dev 环境未找到 override 文件（/srv 或 .local）"; exit 1
 }
 
 validate_services() {
   IFS=',' read -r -a SELECTED_SERVICES <<< "$1"
-  [[ "${#SELECTED_SERVICES[@]}" -eq 0 ]] && { error "--services 不能为空"; exit 1; }
+  if [[ "${#SELECTED_SERVICES[@]}" -eq 0 ]]; then
+    error "--services 不能为空"
+    exit 1
+  fi
+
   for svc in "${SELECTED_SERVICES[@]}"; do
     case "$svc" in
       apiGateway|caseService|conversationService|schedulerService|\
@@ -133,6 +173,8 @@ validate_services() {
       *) error "未知服务键: $svc，可选值请查看 --help"; exit 1 ;;
     esac
   done
+
+  return 0
 }
 
 update_service_tag_in_override() {
@@ -181,9 +223,15 @@ check_terminal_bridge_exe() {
   local need_customer_ui=false
 
   for svc in "${SELECTED_SERVICES[@]}"; do
-    [[ "$svc" == "customerUI" ]] && need_customer_ui=true && break
+    if [[ "$svc" == "customerUI" ]]; then
+      need_customer_ui=true
+      break
+    fi
   done
-  [[ "$need_customer_ui" == false ]] && return 0
+
+  if [[ "$need_customer_ui" == false ]]; then
+    return 0
+  fi
 
   if [[ -f "$exe_path" ]]; then
     ok "terminal_bridge.exe 已就绪: $(du -sh "$exe_path" | cut -f1) — ${exe_path}"
@@ -301,9 +349,13 @@ print_release_summary() {
 main() {
   parse_args "$@"
   require_cmds
+  ensure_non_interactive_sudo
   validate_services "$SERVICES_CSV"
 
-  [[ -z "$IMAGE_TAG" ]] && IMAGE_TAG="$(gen_default_tag)"
+  if [[ -z "$IMAGE_TAG" ]]; then
+    IMAGE_TAG="$(gen_default_tag)"
+  fi
+
   OVERRIDE_FILE="$(resolve_override_file)"
 
   info "发布参数确认"
