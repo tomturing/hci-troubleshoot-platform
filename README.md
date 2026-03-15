@@ -103,6 +103,34 @@ bash scripts/k3s-verify.sh
 bash scripts/k3s-deploy-prod.sh uninstall
 ```
 
+### 方式三：K3s 一键发布（推荐日常迭代）
+
+为避免“代码已改但集群未生效”，项目提供单命令发布脚本，按顺序自动执行：
+- 更新 override 镜像 tag
+- 构建并导入 K3s 镜像
+- Helm 升级部署
+- 校验 Deployment 实际镜像是否匹配目标 tag
+- 执行集群验证脚本
+
+```bash
+# 默认发布核心服务到 prod（自动生成 tag: YYYY.MM.DD-HHMM-<git短sha>）
+bash scripts/k3s-release.sh
+
+# 仅发布部分服务（示例：前端 + 网关）
+bash scripts/k3s-release.sh --services customerUI,apiGateway
+
+# 指定镜像 tag
+bash scripts/k3s-release.sh --tag 2026.03.15-ssh-sidebar
+```
+
+也可以通过 Makefile 触发：
+
+```bash
+make k3s-release
+```
+
+> 说明：生产环境默认读取 `/srv/hci/config/values-prod.override.yaml`，若不存在则回退到 `./.local/values-prod.override.yaml`。
+
 ## 📚 文档
 
 - [00. 需求说明](docs/00_需求说明.md)

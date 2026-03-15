@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge
+.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -19,6 +19,7 @@ help:
 	@echo "  make quality-gate   - 运行质量门禁（lint + test）"
 	@echo "  make conflict-check - Worktree 冲突预检"
 	@echo "  make post-merge     - 合并后集成验证"
+	@echo "  make k3s-release    - 一键发布到 K3s（构建+导入+升级+校验）"
 
 install:
 	@echo "安装Python依赖 (uv sync)..."
@@ -89,6 +90,10 @@ conflict-check:
 post-merge:
 	@echo "运行合并后集成验证..."
 	bash scripts/post-merge-verify.sh
+
+k3s-release:
+	@echo "执行一键 K3s 发布流程..."
+	bash scripts/k3s-release.sh
 
 # ======================== Claw 配置管理 =====================================
 

@@ -26,6 +26,25 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 IMPORT_K3S=true
 [[ "${1:-}" == "--no-import" ]] && IMPORT_K3S=false
+BUILD_ONLY_IMAGES="${BUILD_ONLY_IMAGES:-}"
+
+declare -A BUILD_ONLY_MAP
+
+if [[ -n "$BUILD_ONLY_IMAGES" ]]; then
+  IFS=',' read -r -a _raw_images <<< "$BUILD_ONLY_IMAGES"
+  for _img in "${_raw_images[@]}"; do
+    _cleaned="$(echo "$_img" | xargs)"
+    [[ -n "$_cleaned" ]] && BUILD_ONLY_MAP["$_cleaned"]=1
+  done
+fi
+
+should_build_image() {
+  local image_name="$1"
+  if [[ -z "$BUILD_ONLY_IMAGES" ]]; then
+    return 0
+  fi
+  [[ -n "${BUILD_ONLY_MAP[$image_name]:-}" ]]
+}
 
 # ============================================================================
 # 镜像列表: name  context  dockerfile
@@ -46,6 +65,19 @@ else
   warn "将跳过 hci-openclaw 镜像构建；若 Helm 启用 openclaw，部署会因缺镜像失败"
 fi
 
+WORK_IMAGES=()
+for entry in "${IMAGES[@]}"; do
+  read -r name _ _ <<< "$entry"
+  if should_build_image "$name"; then
+    WORK_IMAGES+=("$entry")
+  fi
+done
+
+if [[ "${#WORK_IMAGES[@]}" -eq 0 ]]; then
+  error "没有匹配到可构建镜像，请检查 BUILD_ONLY_IMAGES=${BUILD_ONLY_IMAGES}"
+  exit 1
+fi
+
 # ============================================================================
 # 构建前：同步前端 pnpm lockfile（防止 frozen-lockfile 在容器内报错）
 # PIT-028: docker build 必须加 --network host（Clash TUN 环境容器内网络不通）
@@ -63,15 +95,15 @@ echo ""
 # ============================================================================
 # 构建所有镜像
 # ============================================================================
-info "开始构建 ${#IMAGES[@]} 个 Docker 镜像 (tag=${IMAGE_TAG})..."
+info "开始构建 ${#WORK_IMAGES[@]} 个 Docker 镜像 (tag=${IMAGE_TAG})..."
 echo ""
 
 BUILT=0
 FAILED=0
 
-for entry in "${IMAGES[@]}"; do
+for entry in "${WORK_IMAGES[@]}"; do
   read -r name context dockerfile <<< "$entry"
-  info "[$((BUILT+FAILED+1))/${#IMAGES[@]}] 构建 ${name}:${IMAGE_TAG} ..."
+  info "[$((BUILT+FAILED+1))/${#WORK_IMAGES[@]}] 构建 ${name}:${IMAGE_TAG} ..."
   
   # --network host：让构建容器走宿主机网络（Clash TUN 场景必须，PIT-028）
   if docker build --network host -t "${name}:${IMAGE_TAG}" -f "${context}/${dockerfile}" "${context}" --quiet; then
@@ -105,7 +137,7 @@ if [[ "$IMPORT_K3S" == true ]]; then
   fi
 
   IMPORTED=0
-  for entry in "${IMAGES[@]}"; do
+  for entry in "${WORK_IMAGES[@]}"; do
     read -r name _ _ <<< "$entry"
     info "  导入 ${name}:${IMAGE_TAG} ..."
     if docker save "${name}:${IMAGE_TAG}" | sudo k3s ctr images import -; then
@@ -117,7 +149,7 @@ if [[ "$IMPORT_K3S" == true ]]; then
   done
   
   echo ""
-  info "导入完成: ${IMPORTED}/${#IMAGES[@]}"
+  info "导入完成: ${IMPORTED}/${#WORK_IMAGES[@]}"
   
   echo ""
   info "验证 K3s 中的 HCI 镜像:"
