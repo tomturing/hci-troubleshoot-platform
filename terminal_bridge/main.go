@@ -12,7 +12,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,13 +22,6 @@ import (
 
 const (
 	wsPort = 9999
-)
-
-var (
-	// ANSI 控制序列清洗：CSI、OSC、以及单字符 ESC 序列。
-	ansiCSI = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
-	ansiOSC = regexp.MustCompile(`\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
-	ansiESC = regexp.MustCompile(`\x1b[@-Z\\-_]`)
 )
 
 // ── 消息结构 ─────────────────────────────────────────────────────────────────
@@ -234,26 +226,6 @@ func summarizeSSHDetail(output string) string {
 	}
 
 	return compact
-}
-
-func sanitizeTerminalOutput(output string) string {
-	if output == "" {
-		return ""
-	}
-
-	cleaned := ansiOSC.ReplaceAllString(output, "")
-	cleaned = ansiCSI.ReplaceAllString(cleaned, "")
-	cleaned = ansiESC.ReplaceAllString(cleaned, "")
-
-	var b strings.Builder
-	b.Grow(len(cleaned))
-	for _, r := range cleaned {
-		// 保留常见可见字符和换行/回车/制表，过滤其余控制字符。
-		if r == '\n' || r == '\r' || r == '\t' || r >= 0x20 {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 func classifySSHFailure(output string) (string, string, bool) {
@@ -514,8 +486,6 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 // ── 主入口 ────────────────────────────────────────────────────────────────────
 
 func main() {
-	go runTray() // Windows 后台静默运行（tray_windows.go）
-
 	bridge := newBridge()
 	http.Handle("/", websocket.Handler(bridge.handle))
 

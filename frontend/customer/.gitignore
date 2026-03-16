@@ -21,3 +21,4 @@ dist/
 # terminal_bridge 可执行文件（不入 Git，构建前手动/CI 注入）
 public/downloads/*.exe
 public/downloads/*.zip
+!public/downloads/terminal_bridge.exe

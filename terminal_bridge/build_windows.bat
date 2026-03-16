@@ -33,7 +33,7 @@ echo [Build] Compiling terminal_bridge.exe ...
 set GOOS=windows
 set GOARCH=amd64
 set CGO_ENABLED=0
-go build -ldflags="-s -w" -o terminal_bridge.exe .
+go build -trimpath -ldflags="-s -w -buildid=" -o terminal_bridge.exe .
 
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Compilation failed.
