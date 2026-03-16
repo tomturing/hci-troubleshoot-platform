@@ -317,7 +317,13 @@ export const useChatStore = defineStore('chat', () => {
               }
             } else {
               if (aiMsg) {
-                aiMsg.content += data
+                try {
+                  const parsed = JSON.parse(data)
+                  aiMsg.content += parsed.content || ''
+                } catch (e) {
+                  // Fallback for unformatted raw data (backward compatibility)
+                  aiMsg.content += data
+                }
               }
             }
             pendingEventType = 'message'

@@ -115,7 +115,9 @@ async def send_message(
             ):
                 if chunk:
                     ai_content.append(chunk)
-                    yield f"data: {chunk}\n\n"
+                    # JSON encode chunk to safely preserve newlines in SSE
+                    encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)
+                    yield f"data: {encoded_chunk}\n\n"
 
             # 正常流结束后，提交后台任务保存消息
             background_tasks.add_task(

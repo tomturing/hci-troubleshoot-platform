@@ -290,12 +290,16 @@ function renderTextSegment(content: string): string {
         <span v-else>AI</span>
       </div>
       <div class="bubble-content">
-        <!-- 使用分段渲染：普通文本用 v-html，命令块用 CommandBlock 组件 -->
         <div
           class="bubble-body"
           :class="{ 'is-command-available': contentSegments.some(s => s.type === 'command') }"
         >
-          <template v-for="segment in contentSegments" :key="segment.id">
+          <!-- 流式未完整输出前，为避免出现未闭合的代码块断层，使用纯净的普通Markdown渲染 -->
+          <template v-if="message.isStreaming">
+             <div class="text-segment" v-html="renderTextSegment(message.content)" />
+          </template>
+          <!-- 完整输出后，将匹配的命令行动态升级为交互式组件 -->
+          <template v-else v-for="segment in contentSegments" :key="segment.id">
             <!-- 命令块使用 CommandBlock 组件 -->
             <CommandBlock
               v-if="segment.type === 'command'"
