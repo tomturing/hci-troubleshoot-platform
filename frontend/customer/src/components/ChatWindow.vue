@@ -97,11 +97,14 @@ onBeforeUnmount(() => {
 })
 
 function getDefaultPanelWidth(): number {
-  if (typeof window === 'undefined') return 760
+  if (typeof window === 'undefined') return 510
   const appMaxWidth = 900
-  const blankSpace = Math.max(window.innerWidth - appMaxWidth, 0)
-  const target = blankSpace > 0 ? blankSpace : window.innerWidth * 0.9
-  return Math.max(620, Math.min(Math.round(window.innerWidth * 0.9), Math.round(target)))
+  // Each side gets half of the remaining blank space
+  const sideBlankSpace = Math.max((window.innerWidth - appMaxWidth) / 2, 0)
+  // If the screen is too narrow, just take 85% of screen
+  const target = sideBlankSpace >= 300 ? sideBlankSpace : window.innerWidth * 0.85
+  // We constrain it to a min of 400 and max of 50% to not dominate small screens
+  return Math.max(400, Math.round(target))
 }
 
 /** 状态中文映射 */
@@ -237,19 +240,18 @@ function formatDate(d: string): string {
       />
     </div>
 
-    <!-- SSH 终端弹框 -->
-    <el-dialog
+    <!-- SSH 终端抽屉 -->
+    <el-drawer
       v-model="chatStore.showTerminalSidebar"
-      title="SSH 终端"
-      :width="`${panelWidth}px`"
-      :draggable="true"
+      direction="rtl"
+      :size="`${panelWidth}px`"
       :append-to-body="true"
       :modal="!terminalPinned"
       :lock-scroll="!terminalPinned"
       :close-on-click-modal="!terminalPinned"
       :close-on-press-escape="!terminalPinned"
-      class="workspace-dialog resizable-dialog"
-      top="6vh"
+      :with-header="true"
+      class="workspace-drawer"
       @close="chatStore.closeTerminalSidebar()"
     >
       <template #header>
@@ -262,24 +264,23 @@ function formatDate(d: string): string {
           </div>
         </div>
       </template>
-      <div class="dialog-content terminal-content">
+      <div class="drawer-body-content terminal-content">
         <TerminalPanel />
       </div>
-    </el-dialog>
+    </el-drawer>
 
-    <!-- 历史工单弹框 -->
-    <el-dialog
+    <!-- 历史工单抽屉 -->
+    <el-drawer
       v-model="chatStore.showHistoryDrawer"
-      title="历史工单"
-      :width="`${panelWidth}px`"
-      :draggable="true"
+      direction="ltr"
+      :size="`${panelWidth}px`"
       :append-to-body="true"
       :modal="!historyPinned"
       :lock-scroll="!historyPinned"
       :close-on-click-modal="!historyPinned"
       :close-on-press-escape="!historyPinned"
-      class="workspace-dialog resizable-dialog"
-      top="6vh"
+      :with-header="true"
+      class="workspace-drawer"
       @close="chatStore.closeHistoryDrawer()"
     >
       <template #header>
@@ -292,7 +293,7 @@ function formatDate(d: string): string {
           </div>
         </div>
       </template>
-      <div class="dialog-content">
+      <div class="drawer-body-content">
         <!-- 左右分栏：列表 + 消息预览 -->
         <div class="history-container">
         <!-- 工单列表 -->
@@ -348,7 +349,7 @@ function formatDate(d: string): string {
         </div>
         </div>
       </div>
-    </el-dialog>
+    </el-drawer>
 
     <!-- 输入区域 -->
     <div class="input-area">
@@ -598,26 +599,24 @@ function formatDate(d: string): string {
   color: #909399;
 }
 
-.workspace-dialog :deep(.el-dialog) {
-  max-width: 90vw;
-  height: 82vh;
+.workspace-drawer :deep(.el-drawer) {
   display: flex;
   flex-direction: column;
 }
 
-.workspace-dialog :deep(.el-dialog__body) {
+.workspace-drawer :deep(.el-drawer__body) {
   flex: 1;
   overflow: hidden;
   padding: 12px 16px;
 }
 
-.resizable-dialog :deep(.el-dialog) {
-  resize: horizontal;
-  overflow: hidden;
-  min-width: 620px;
+.workspace-drawer :deep(.el-drawer__header) {
+  margin-bottom: 0;
+  padding: 16px;
+  border-bottom: 1px solid #f0f2f5;
 }
 
-.dialog-content {
+.drawer-body-content {
   height: 100%;
 }
 
