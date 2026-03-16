@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,7 @@ type OutMessage struct {
 	CaseID  string `json:"case_id"`
 	Output  string `json:"output,omitempty"`
 	Message string `json:"message,omitempty"`
+	Detail  string `json:"detail,omitempty"`
 }
 
 // ── SSH 会话 ──────────────────────────────────────────────────────────────────
@@ -131,23 +133,139 @@ func (s *SSHSession) injectCommand(command string) {
 	s.send(command)
 }
 
-func (s *SSHSession) on_output_start(ws *websocket.Conn, stdout io.ReadCloser, caseID string) {
+func summarizeSSHDetail(output string) string {
+	cleaned := strings.ReplaceAll(output, "\r", "")
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return ""
+	}
+
+	lines := strings.Split(cleaned, "\n")
+	if len(lines) > 8 {
+		lines = lines[len(lines)-8:]
+	}
+
+	compact := strings.TrimSpace(strings.Join(lines, "\n"))
+	if len(compact) > 600 {
+		compact = compact[len(compact)-600:]
+	}
+
+	return compact
+}
+
+func classifySSHFailure(output string) (string, string, bool) {
+	text := strings.ToLower(output)
+	detail := summarizeSSHDetail(output)
+	failures := []struct {
+		patterns []string
+		message  string
+	}{
+		{[]string{"could not resolve hostname", "name or service not known", "temporary failure in name resolution"}, "主机地址无法解析"},
+		{[]string{"no route to host", "network is unreachable"}, "无法到达目标主机"},
+		{[]string{"connection refused"}, "目标主机拒绝连接"},
+		{[]string{"connection timed out", "operation timed out"}, "连接远程主机超时"},
+		{[]string{"connection reset by peer"}, "连接被远端重置"},
+		{[]string{"kex_exchange_identification", "banner exchange", "handshake failed"}, "SSH 握手失败"},
+		{[]string{"connection closed by remote host"}, "远端主机主动关闭了连接"},
+		{[]string{"host key verification failed"}, "主机指纹校验失败"},
+		{[]string{"permission denied (publickey)", "sign_and_send_pubkey", "load key", "invalid format", "error in libcrypto"}, "私钥认证失败"},
+		{[]string{"enter passphrase for key", "bad passphrase", "incorrect passphrase"}, "当前不支持带口令的私钥或口令错误"},
+		{[]string{"no supported authentication methods available"}, "目标主机不接受当前认证方式"},
+		{[]string{"verification code", "one-time password", "keyboard-interactive", "mfa", "duo two-factor", "otp"}, "当前不支持多因素认证"},
+		{[]string{"account is locked", "account locked", "account is disabled", "user not allowed", "not allowed because"}, "账号不可用"},
+		{[]string{"password expired", "must change your password", "change of password required"}, "账号密码已过期，当前不支持改密流程"},
+		{[]string{"this account is currently not available"}, "登录成功但账号无可用 Shell"},
+		{[]string{"too many authentication failures"}, "认证失败次数过多"},
+		{[]string{"permission denied", "authentication failed", "access denied"}, "用户名或密码错误"},
+	}
+
+	for _, failure := range failures {
+		for _, pattern := range failure.patterns {
+			if strings.Contains(text, pattern) {
+				return failure.message, detail, true
+			}
+		}
+	}
+
+	return "", detail, false
+}
+
+func detectAuthSuccess(output string) bool {
+	text := strings.ToLower(output)
+	if strings.Contains(text, "last login") {
+		return true
+	}
+
+	tail := output
+	if len(tail) > 256 {
+		tail = tail[len(tail)-256:]
+	}
+	trimmed := strings.TrimSpace(strings.ReplaceAll(tail, "\r", "\n"))
+	if trimmed == "" {
+		return false
+	}
+
+	// 常见 shell 提示符：$ / # / >
+	return strings.HasSuffix(trimmed, "$") || strings.HasSuffix(trimmed, "#") || strings.HasSuffix(trimmed, ">")
+}
+
+func (s *SSHSession) on_output_start(
+	ws *websocket.Conn,
+	stdout io.ReadCloser,
+	caseID string,
+	onConnected func(),
+	onAuthFailed func(message string, detail string),
+	onExit func(),
+) {
 	go func() {
 		buf := make([]byte, 4096)
+		authBuffer := ""
+		connectedSignaled := false
+		failedSignaled := false
+
 		for {
 			n, err := stdout.Read(buf)
 			if n > 0 {
+				chunk := string(buf[:n])
 				sendMsg(ws, OutMessage{
 					Type:   "ssh_output",
 					CaseID: caseID,
-					Output: string(buf[:n]),
+					Output: chunk,
 				})
+
+				if !connectedSignaled && !failedSignaled {
+					authBuffer += chunk
+					if len(authBuffer) > 8192 {
+						authBuffer = authBuffer[len(authBuffer)-8192:]
+					}
+
+					if message, detail, matched := classifySSHFailure(authBuffer); matched {
+						failedSignaled = true
+						onAuthFailed(message, detail)
+						s.close()
+						break
+					}
+
+					if detectAuthSuccess(authBuffer) {
+						connectedSignaled = true
+						onConnected()
+					}
+				}
 			}
 			if err != nil {
 				break
 			}
 		}
+
+		if !connectedSignaled && !failedSignaled {
+			message, detail, matched := classifySSHFailure(authBuffer)
+			if !matched {
+				message = "SSH 会话提前结束，认证未成功"
+			}
+			onAuthFailed(message, detail)
+		}
 		sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
+		onExit()
 		log.Printf("[Bridge] SSH 进程已退出: case=%s\n", caseID)
 	}()
 }
@@ -255,13 +373,27 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 				}()
 			}
 
-			sendMsg(ws, OutMessage{Type: "ssh_connected", CaseID: msg.CaseID})
-			log.Printf("[Bridge] SSH 已连接: %s@%s:%d (case=%s)\n",
-				msg.Username, msg.Host, msg.Port, msg.CaseID)
-
 			// 异步读取 SSH 输出
 			caseID := msg.CaseID
-			session.on_output_start(ws, stdout, caseID)
+			host := msg.Host
+			port := msg.Port
+			username := msg.Username
+			session.on_output_start(
+				ws,
+				stdout,
+				caseID,
+				func() {
+					sendMsg(ws, OutMessage{Type: "ssh_connected", CaseID: caseID})
+					log.Printf("[Bridge] SSH 认证成功: %s@%s:%d (case=%s)\n", username, host, port, caseID)
+				},
+				func(message string, detail string) {
+					sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: caseID, Message: message, Detail: detail})
+					log.Printf("[Bridge] SSH 认证失败: %s@%s:%d (case=%s) message=%s detail=%s\n", username, host, port, caseID, message, detail)
+				},
+				func() {
+					b.remove(caseID)
+				},
+			)
 
 		case "ssh_input":
 			if s := b.get(msg.CaseID); s != nil {

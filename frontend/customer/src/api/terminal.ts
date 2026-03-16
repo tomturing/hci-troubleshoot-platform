@@ -25,15 +25,16 @@ export interface SshConnectOptions {
 
 export interface TerminalWsMessage {
   type:
-    | 'ssh_connected'
-    | 'ssh_disconnected'
-    | 'ssh_output'
-    | 'ssh_error'
-    | 'pong'
-    | 'bridge_ready'
+  | 'ssh_connected'
+  | 'ssh_disconnected'
+  | 'ssh_output'
+  | 'ssh_error'
+  | 'pong'
+  | 'bridge_ready'
   case_id?: string
   output?: string
   message?: string
+  detail?: string
 }
 
 /**

@@ -24,6 +24,8 @@ const terminalInputRef = ref<{ focus: () => void } | null>(null)
 const localInput = ref('')
 const bridgeSocket = ref<WebSocket | null>(null)
 const manualDisconnect = ref(false)
+const connectStage = ref<'idle' | 'bridge' | 'remote_session'>('idle')
+const authTimeoutTimer = ref<number | null>(null)
 
 // SSH 登录表单
 const sshForm = ref({
@@ -45,10 +47,16 @@ const outputContainer = ref<HTMLElement | null>(null)
 // 连接状态（本地维护，不依赖 Gateway session）
 const connectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
 const errorMessage = ref('')
+const errorDetail = ref('')
 
 const isConnected = computed(() => connectionState.value === 'connected')
 const isConnecting = computed(() => connectionState.value === 'connecting')
 const isError = computed(() => connectionState.value === 'error')
+const connectingLabel = computed(() => {
+  if (connectStage.value === 'bridge') return '连接本地 Bridge...'
+  if (connectStage.value === 'remote_session') return '建立远程 SSH 会话中...'
+  return '连接中...'
+})
 const caseId = computed(() => chatStore.currentCase?.case_id || 'default')
 
 // 同步状态到 store，供 header 等其他地方读取
@@ -104,6 +112,43 @@ function closeSocket() {
   bridgeSocket.value = null
 }
 
+function setErrorState(message: string, detail = '') {
+  connectionState.value = 'error'
+  connectStage.value = 'idle'
+  errorMessage.value = message
+  errorDetail.value = detail
+}
+
+function clearErrorState() {
+  errorMessage.value = ''
+  errorDetail.value = ''
+}
+
+function appendErrorLog(message: string, detail = '') {
+  addLog('error', message)
+  if (detail) {
+    addLog('error', `原始 SSH 输出: ${detail}`)
+  }
+}
+
+function clearAuthTimer() {
+  if (authTimeoutTimer.value !== null) {
+    window.clearTimeout(authTimeoutTimer.value)
+    authTimeoutTimer.value = null
+  }
+}
+
+function startAuthTimer() {
+  clearAuthTimer()
+  authTimeoutTimer.value = window.setTimeout(() => {
+    if (connectionState.value !== 'connecting') return
+    setErrorState('连接远程主机超时', '认证阶段在限定时间内未收到成功或失败信号')
+    appendErrorLog(errorMessage.value, errorDetail.value)
+    manualDisconnect.value = true
+    closeSocket()
+  }, 15000)
+}
+
 // ── Bridge WebSocket 处理 ────────────────────────────
 
 function handleBridgeMessage(raw: string) {
@@ -115,16 +160,26 @@ function handleBridgeMessage(raw: string) {
     return
   }
 
+  if (msg.case_id && msg.case_id !== caseId.value) {
+    return
+  }
+
   if (msg.type === 'ssh_connected') {
+    clearAuthTimer()
     connectionState.value = 'connected'
-    errorMessage.value = ''
-    addLog('info', `SSH 已连接`)
+    connectStage.value = 'idle'
+    clearErrorState()
+    addLog('info', `SSH 已登录到 ${sshForm.value.host}`)
     return
   }
 
   if (msg.type === 'ssh_disconnected') {
-    connectionState.value = 'disconnected'
-    addLog('info', 'SSH 连接已断开')
+    clearAuthTimer()
+    connectStage.value = 'idle'
+    if (connectionState.value !== 'error') {
+      connectionState.value = 'disconnected'
+      addLog('info', 'SSH 会话已断开')
+    }
     return
   }
 
@@ -134,9 +189,9 @@ function handleBridgeMessage(raw: string) {
   }
 
   if (msg.type === 'ssh_error') {
-    connectionState.value = 'error'
-    errorMessage.value = msg.message || 'SSH 连接出错'
-    addLog('error', errorMessage.value)
+    clearAuthTimer()
+    setErrorState(msg.message || 'SSH 连接出错', msg.detail || '')
+    appendErrorLog(errorMessage.value, errorDetail.value)
     return
   }
 }
@@ -151,7 +206,8 @@ async function connectSsh() {
   }
 
   connectionState.value = 'connecting'
-  errorMessage.value = ''
+  connectStage.value = 'bridge'
+  clearErrorState()
   manualDisconnect.value = false
 
   addLog('info', `正在连接 ${sshForm.value.username}@${sshForm.value.host}:${sshForm.value.port}...`)
@@ -161,6 +217,9 @@ async function connectSsh() {
   bridgeSocket.value = socket
 
   socket.onopen = () => {
+    connectStage.value = 'remote_session'
+    addLog('info', '本地 SSH Bridge 已连接，正在建立远程 SSH 会话...')
+    startAuthTimer()
     // 发送 SSH 连接请求到 Bridge
     socket.send(
       buildConnectMessage({
@@ -182,31 +241,34 @@ async function connectSsh() {
   socket.onmessage = (e) => handleBridgeMessage(String(e.data || ''))
 
   socket.onerror = () => {
-    connectionState.value = 'error'
-    errorMessage.value = '无法连接到本地 Bridge，请确认 terminal_bridge.exe 已运行'
-    addLog('error', errorMessage.value)
+    clearAuthTimer()
+    setErrorState('本地 SSH Bridge 未运行', '浏览器无法连接 ws://localhost:9999，请确认 terminal_bridge.exe 已启动')
+    appendErrorLog(errorMessage.value, errorDetail.value)
     closeSocket()
   }
 
   socket.onclose = () => {
+    clearAuthTimer()
+    connectStage.value = 'idle'
     bridgeSocket.value = null
-    if (!manualDisconnect.value && connectionState.value !== 'disconnected') {
-      connectionState.value = 'error'
-      errorMessage.value = 'Bridge 连接中断，请重新连接'
-      addLog('error', errorMessage.value)
+    if (!manualDisconnect.value && connectionState.value !== 'disconnected' && connectionState.value !== 'error') {
+      setErrorState('本地 SSH Bridge 连接中断', 'Bridge 与浏览器之间的 WebSocket 已关闭')
+      appendErrorLog(errorMessage.value, errorDetail.value)
     }
   }
 }
 
 function disconnectSsh() {
   manualDisconnect.value = true
+  clearAuthTimer()
   if (bridgeSocket.value?.readyState === WebSocket.OPEN) {
     bridgeSocket.value.send(buildDisconnectMessage(caseId.value))
   }
   closeSocket()
+  connectStage.value = 'idle'
   connectionState.value = 'disconnected'
-  errorMessage.value = ''
-  addLog('info', 'SSH 连接已断开')
+  clearErrorState()
+  addLog('info', '已断开 SSH 会话')
 }
 
 function executeCommand() {
@@ -252,7 +314,10 @@ function closePanel() {
   chatStore.closeTerminalSidebar()
 }
 
-onBeforeUnmount(() => closeSocket())
+onBeforeUnmount(() => {
+  clearAuthTimer()
+  closeSocket()
+})
 </script>
 
 <template>
@@ -261,8 +326,8 @@ onBeforeUnmount(() => closeSocket())
     <div class="terminal-header">
       <div class="header-left">
         <span class="header-title">SSH 终端</span>
-        <el-tag v-if="isConnected" size="small" type="success" effect="plain">已连接</el-tag>
-        <el-tag v-else-if="isConnecting" size="small" type="warning" effect="plain">连接中...</el-tag>
+        <el-tag v-if="isConnected" size="small" type="success" effect="plain">已登录</el-tag>
+        <el-tag v-else-if="isConnecting" size="small" type="warning" effect="plain">{{ connectingLabel }}</el-tag>
         <el-tag v-else-if="isError" size="small" type="danger" effect="plain">连接错误</el-tag>
         <el-tag v-else size="small" type="info" effect="plain">未连接</el-tag>
       </div>
@@ -315,8 +380,9 @@ onBeforeUnmount(() => closeSocket())
           v-if="errorMessage"
           type="error"
           :title="errorMessage"
+          :description="errorDetail || undefined"
           :closable="true"
-          @close="errorMessage = ''"
+          @close="clearErrorState"
         />
       </el-form>
     </div>
@@ -333,7 +399,7 @@ onBeforeUnmount(() => closeSocket())
         <span class="output-content">{{ item.content }}</span>
       </div>
       <div v-if="terminalOutput.length === 0" class="output-empty">
-        <p>SSH 已连接，等待命令...</p>
+        <p>SSH 已登录，等待命令...</p>
         <p class="empty-sub">输入命令并按 Enter 执行</p>
       </div>
     </div>
