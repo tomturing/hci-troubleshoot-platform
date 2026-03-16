@@ -15,7 +15,9 @@
     "element-plus": "^2.9.1",
     "marked": "^17.0.4",
     "pinia": "^2.3.0",
-    "vue": "^3.5.13"
+    "vue": "^3.5.13",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0"
   },
   "devDependencies": {
     "@types/dompurify": "^3.2.0",

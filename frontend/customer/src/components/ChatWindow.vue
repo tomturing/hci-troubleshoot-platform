@@ -8,6 +8,7 @@ import TerminalPanel from './TerminalPanel.vue'
 const chatStore = useChatStore()
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
+const assistantInputRef = ref<{ focus: () => void } | null>(null)
 
 // 工单创建模板本地编辑副本
 const templateForm = reactive({ title: '', description: '' })
@@ -53,6 +54,16 @@ function scrollToBottom() {
 watch(
   () => chatStore.messages.length,
   () => scrollToBottom(),
+)
+
+watch(
+  () => chatStore.assistantDraftText,
+  (text) => {
+    if (!text) return
+    inputText.value = text
+    chatStore.clearAssistantDraftText()
+    nextTick(() => assistantInputRef.value?.focus())
+  },
 )
 
 // 流式内容也要滚动
@@ -289,6 +300,7 @@ function formatDate(d: string): string {
       </div>
       <div class="input-row">
         <el-input
+          ref="assistantInputRef"
           v-model="inputText"
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 4 }"

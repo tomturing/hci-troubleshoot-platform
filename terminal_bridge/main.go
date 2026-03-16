@@ -7,22 +7,29 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
-	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
 )
 
 const (
 	wsPort = 9999
-	sshBin = "ssh" // 使用 Windows 系统自带 ssh.exe
+)
+
+var (
+	// ANSI 控制序列清洗：CSI、OSC、以及单字符 ESC 序列。
+	ansiCSI = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	ansiOSC = regexp.MustCompile(`\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
+	ansiESC = regexp.MustCompile(`\x1b[@-Z\\-_]`)
 )
 
 // ── 消息结构 ─────────────────────────────────────────────────────────────────
@@ -36,6 +43,7 @@ type InMessage struct {
 	AuthType   string `json:"auth_type"`
 	Password   string `json:"password"`
 	PrivateKey string `json:"private_key"`
+	Passphrase string `json:"passphrase"`
 	Data       string `json:"data"`
 	Command    string `json:"command"`
 }
@@ -52,79 +60,154 @@ type OutMessage struct {
 
 type SSHSession struct {
 	caseID  string
-	cmd     *exec.Cmd
+	client  *ssh.Client
+	session *ssh.Session
 	stdin   io.WriteCloser
 	mu      sync.Mutex
-	keyFile string
+	closed  bool
 }
 
 func newSSHSession(msg InMessage) (*SSHSession, error) {
+	if strings.TrimSpace(msg.Host) == "" {
+		return nil, fmt.Errorf("主机地址不能为空")
+	}
+	if strings.TrimSpace(msg.Username) == "" {
+		return nil, fmt.Errorf("用户名不能为空")
+	}
+
 	port := msg.Port
 	if port == 0 {
 		port = 22
 	}
 
-	args := []string{
-		"-tt",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "BatchMode=no",
-		"-p", fmt.Sprintf("%d", port),
-	}
-
-	var keyFile string
-	if msg.AuthType == "key" && msg.PrivateKey != "" {
-		f, err := os.CreateTemp("", "hci_bridge_*.pem")
-		if err != nil {
-			return nil, fmt.Errorf("创建临时私钥文件失败: %w", err)
-		}
-		if _, err := f.WriteString(msg.PrivateKey); err != nil {
-			f.Close()
-			os.Remove(f.Name())
-			return nil, fmt.Errorf("写入私钥失败: %w", err)
-		}
-		f.Close()
-		keyFile = f.Name()
-		args = append(args, "-i", keyFile, "-o", "PasswordAuthentication=no")
-	}
-
-	args = append(args, fmt.Sprintf("%s@%s", msg.Username, msg.Host))
-
-	cmd := exec.Command(sshBin, args...)
-	setSysProcAttr(cmd) // 平台特定：Windows 隐藏窗口
-
-	stdin, err := cmd.StdinPipe()
+	authMethods, err := buildAuthMethods(msg)
 	if err != nil {
-		if keyFile != "" {
-			os.Remove(keyFile)
-		}
-		return nil, fmt.Errorf("获取 stdin 失败: %w", err)
+		return nil, err
+	}
+
+	clientConfig := &ssh.ClientConfig{
+		User:            strings.TrimSpace(msg.Username),
+		Auth:            authMethods,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         12 * time.Second,
+	}
+	addr := fmt.Sprintf("%s:%d", strings.TrimSpace(msg.Host), port)
+
+	client, err := ssh.Dial("tcp", addr, clientConfig)
+	if err != nil {
+		return nil, fmt.Errorf("建立 SSH 连接失败: %w", err)
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("创建 SSH 会话失败: %w", err)
 	}
 
 	return &SSHSession{
 		caseID:  msg.CaseID,
-		cmd:     cmd,
-		stdin:   stdin,
-		keyFile: keyFile,
+		client:  client,
+		session: session,
 	}, nil
 }
 
+func buildAuthMethods(msg InMessage) ([]ssh.AuthMethod, error) {
+	authType := strings.TrimSpace(strings.ToLower(msg.AuthType))
+	methods := make([]ssh.AuthMethod, 0, 2)
+
+	if authType == "password" || authType == "" {
+		if strings.TrimSpace(msg.Password) == "" {
+			return nil, fmt.Errorf("密码不能为空")
+		}
+		password := msg.Password
+		methods = append(methods, ssh.Password(password))
+		methods = append(methods, ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+			answers := make([]string, len(questions))
+			for i := range questions {
+				answers[i] = password
+			}
+			return answers, nil
+		}))
+		return methods, nil
+	}
+
+	if authType == "key" {
+		if strings.TrimSpace(msg.PrivateKey) == "" {
+			return nil, fmt.Errorf("私钥不能为空")
+		}
+		var signer ssh.Signer
+		var err error
+		if msg.Passphrase != "" {
+			signer, err = ssh.ParsePrivateKeyWithPassphrase([]byte(msg.PrivateKey), []byte(msg.Passphrase))
+		} else {
+			signer, err = ssh.ParsePrivateKey([]byte(msg.PrivateKey))
+		}
+		if err != nil {
+			return nil, fmt.Errorf("私钥解析失败: %w", err)
+		}
+		methods = append(methods, ssh.PublicKeys(signer))
+		return methods, nil
+	}
+
+	return nil, fmt.Errorf("不支持的认证方式: %s", msg.AuthType)
+}
+
 func (s *SSHSession) start() (io.ReadCloser, error) {
-	stdout, err := s.cmd.StdoutPipe()
+	stdin, err := s.session.StdinPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("获取 SSH stdin 失败: %w", err)
 	}
-	s.cmd.Stderr = s.cmd.Stdout
-	if err := s.cmd.Start(); err != nil {
-		return nil, err
+	stdout, err := s.session.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("获取 SSH stdout 失败: %w", err)
 	}
-	return stdout, nil
+	stderr, err := s.session.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("获取 SSH stderr 失败: %w", err)
+	}
+
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}
+	if err := s.session.RequestPty("xterm-256color", 40, 160, modes); err != nil {
+		return nil, fmt.Errorf("申请远端 PTY 失败: %w", err)
+	}
+	if err := s.session.Shell(); err != nil {
+		return nil, fmt.Errorf("启动远端 shell 失败: %w", err)
+	}
+
+	s.mu.Lock()
+	s.stdin = stdin
+	s.mu.Unlock()
+
+	pipeReader, pipeWriter := io.Pipe()
+	var wg sync.WaitGroup
+	forward := func(name string, r io.Reader) {
+		defer wg.Done()
+		if _, copyErr := io.Copy(pipeWriter, r); copyErr != nil && !errors.Is(copyErr, io.ErrClosedPipe) {
+			log.Printf("[Bridge] SSH 输出转发异常: case=%s stream=%s err=%v", s.caseID, name, copyErr)
+		}
+	}
+
+	wg.Add(2)
+	go forward("stdout", stdout)
+	go forward("stderr", stderr)
+	go func() {
+		wg.Wait()
+		_ = pipeWriter.Close()
+	}()
+
+	return pipeReader, nil
 }
 
 func (s *SSHSession) send(data string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stdin != nil {
-		_, _ = io.WriteString(s.stdin, data)
+		if _, err := io.WriteString(s.stdin, data); err != nil {
+			log.Printf("[Bridge] SSH 输入写入失败: case=%s err=%v", s.caseID, err)
+		}
 	}
 }
 
@@ -151,6 +234,26 @@ func summarizeSSHDetail(output string) string {
 	}
 
 	return compact
+}
+
+func sanitizeTerminalOutput(output string) string {
+	if output == "" {
+		return ""
+	}
+
+	cleaned := ansiOSC.ReplaceAllString(output, "")
+	cleaned = ansiCSI.ReplaceAllString(cleaned, "")
+	cleaned = ansiESC.ReplaceAllString(cleaned, "")
+
+	var b strings.Builder
+	b.Grow(len(cleaned))
+	for _, r := range cleaned {
+		// 保留常见可见字符和换行/回车/制表，过滤其余控制字符。
+		if r == '\n' || r == '\r' || r == '\t' || r >= 0x20 {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func classifySSHFailure(output string) (string, string, bool) {
@@ -190,100 +293,91 @@ func classifySSHFailure(output string) (string, string, bool) {
 	return "", detail, false
 }
 
-func detectAuthSuccess(output string) bool {
-	text := strings.ToLower(output)
-	if strings.Contains(text, "last login") {
-		return true
-	}
-
-	tail := output
-	if len(tail) > 256 {
-		tail = tail[len(tail)-256:]
-	}
-	trimmed := strings.TrimSpace(strings.ReplaceAll(tail, "\r", "\n"))
-	if trimmed == "" {
-		return false
-	}
-
-	// 常见 shell 提示符：$ / # / >
-	return strings.HasSuffix(trimmed, "$") || strings.HasSuffix(trimmed, "#") || strings.HasSuffix(trimmed, ">")
-}
-
 func (s *SSHSession) on_output_start(
 	ws *websocket.Conn,
 	stdout io.ReadCloser,
 	caseID string,
-	onConnected func(),
-	onAuthFailed func(message string, detail string),
 	onExit func(),
 ) {
 	go func() {
 		buf := make([]byte, 4096)
-		authBuffer := ""
-		connectedSignaled := false
-		failedSignaled := false
 
 		for {
 			n, err := stdout.Read(buf)
 			if n > 0 {
+				// xterm.js 需要原始 ANSI/VT100 序列进行终端渲染，这里不再做清洗。
 				chunk := string(buf[:n])
 				sendMsg(ws, OutMessage{
 					Type:   "ssh_output",
 					CaseID: caseID,
 					Output: chunk,
 				})
-
-				if !connectedSignaled && !failedSignaled {
-					authBuffer += chunk
-					if len(authBuffer) > 8192 {
-						authBuffer = authBuffer[len(authBuffer)-8192:]
-					}
-
-					if message, detail, matched := classifySSHFailure(authBuffer); matched {
-						failedSignaled = true
-						onAuthFailed(message, detail)
-						s.close()
-						break
-					}
-
-					if detectAuthSuccess(authBuffer) {
-						connectedSignaled = true
-						onConnected()
-					}
-				}
 			}
 			if err != nil {
+				if err != io.EOF {
+					log.Printf("[Bridge] SSH 输出读取异常: case=%s err=%v", caseID, err)
+				}
 				break
 			}
 		}
 
-		if !connectedSignaled && !failedSignaled {
-			message, detail, matched := classifySSHFailure(authBuffer)
-			if !matched {
-				message = "SSH 会话提前结束，认证未成功"
-			}
-			onAuthFailed(message, detail)
+		if err := s.wait(); err != nil && !s.isClosed() {
+			log.Printf("[Bridge] SSH 会话退出(异常): case=%s err=%v", caseID, err)
 		}
 		sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
 		onExit()
-		log.Printf("[Bridge] SSH 进程已退出: case=%s\n", caseID)
+		log.Printf("[Bridge] SSH 会话已结束: case=%s", caseID)
 	}()
+}
+
+func (s *SSHSession) wait() error {
+	s.mu.Lock()
+	session := s.session
+	s.mu.Unlock()
+	if session == nil {
+		return nil
+	}
+	return session.Wait()
+}
+
+func (s *SSHSession) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 func (s *SSHSession) close() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.stdin != nil {
-		_ = s.stdin.Close()
-		s.stdin = nil
+	if s.closed {
+		s.mu.Unlock()
+		return
 	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
+	s.closed = true
+	stdin := s.stdin
+	s.stdin = nil
+	session := s.session
+	s.session = nil
+	client := s.client
+	s.client = nil
+	s.mu.Unlock()
+
+	if stdin != nil {
+		_ = stdin.Close()
 	}
-	if s.keyFile != "" {
-		os.Remove(s.keyFile)
-		s.keyFile = ""
+	if session != nil {
+		_ = session.Close()
 	}
+	if client != nil {
+		_ = client.Close()
+	}
+}
+
+func buildSSHError(err error) (string, string) {
+	detail := summarizeSSHDetail(err.Error())
+	if msg, _, matched := classifySSHFailure(err.Error()); matched {
+		return msg, detail
+	}
+	return "SSH 连接失败", detail
 }
 
 // ── WebSocket Handler ─────────────────────────────────────────────────────────
@@ -317,32 +411,40 @@ func (b *Bridge) remove(id string) {
 
 func sendMsg(ws *websocket.Conn, msg OutMessage) {
 	data, _ := json.Marshal(msg)
-	_ = websocket.Message.Send(ws, string(data))
+	if err := websocket.Message.Send(ws, string(data)); err != nil {
+		log.Printf("[Bridge] WebSocket 发送失败: type=%s case=%s err=%v", msg.Type, msg.CaseID, err)
+	}
 }
 
 func (b *Bridge) handle(ws *websocket.Conn) {
 	log.Println("[Bridge] 浏览器已连接:", ws.RemoteAddr())
+	ownedSessions := make(map[string]*SSHSession)
 	defer func() {
 		log.Println("[Bridge] 浏览器已断开:", ws.RemoteAddr())
-		// 清理所有该连接的会话
-		b.mu.Lock()
-		for _, s := range b.sessions {
-			s.close()
+		// 仅清理当前 WebSocket 连接创建的会话，避免误杀其他连接的 SSH 会话
+		for caseID, owned := range ownedSessions {
+			current := b.get(caseID)
+			if current == owned {
+				current.close()
+				b.remove(caseID)
+				log.Printf("[Bridge] 连接断开后清理会话: case=%s\\n", caseID)
+			}
 		}
-		b.sessions = make(map[string]*SSHSession)
-		b.mu.Unlock()
 	}()
 
 	for {
 		var raw string
 		if err := websocket.Message.Receive(ws, &raw); err != nil {
+			log.Printf("[Bridge] WebSocket 接收结束: remote=%v err=%v", ws.RemoteAddr(), err)
 			break
 		}
 
 		var msg InMessage
 		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			log.Printf("[Bridge] 消息解析失败: remote=%v err=%v raw=%q", ws.RemoteAddr(), err, raw)
 			continue
 		}
+		log.Printf("[Bridge] 收到消息: type=%s case=%s remote=%v", msg.Type, msg.CaseID, ws.RemoteAddr())
 
 		switch msg.Type {
 
@@ -350,59 +452,50 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 			if old := b.get(msg.CaseID); old != nil {
 				old.close()
 				b.remove(msg.CaseID)
+				delete(ownedSessions, msg.CaseID)
 			}
 			session, err := newSSHSession(msg)
 			if err != nil {
-				sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: err.Error()})
+				message, detail := buildSSHError(err)
+				sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
+				log.Printf("[Bridge] SSH 认证失败: case=%s message=%s detail=%s", msg.CaseID, message, detail)
 				continue
 			}
 			stdout, err := session.start()
 			if err != nil {
 				session.close()
-				sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: err.Error()})
+				message, detail := buildSSHError(err)
+				sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
+				log.Printf("[Bridge] SSH 认证失败: case=%s message=%s detail=%s", msg.CaseID, message, detail)
 				continue
 			}
 			b.set(msg.CaseID, session)
-
-			// 密码认证延迟发送
-			if msg.AuthType == "password" && msg.Password != "" {
-				pw := msg.Password
-				go func() {
-					time.Sleep(1500 * time.Millisecond)
-					session.send(pw + "\n")
-				}()
-			}
+			ownedSessions[msg.CaseID] = session
+			sendMsg(ws, OutMessage{Type: "ssh_connected", CaseID: msg.CaseID})
+			log.Printf("[Bridge] SSH 认证成功: %s@%s:%d (case=%s)", msg.Username, msg.Host, msg.Port, msg.CaseID)
 
 			// 异步读取 SSH 输出
 			caseID := msg.CaseID
-			host := msg.Host
-			port := msg.Port
-			username := msg.Username
 			session.on_output_start(
 				ws,
 				stdout,
 				caseID,
 				func() {
-					sendMsg(ws, OutMessage{Type: "ssh_connected", CaseID: caseID})
-					log.Printf("[Bridge] SSH 认证成功: %s@%s:%d (case=%s)\n", username, host, port, caseID)
-				},
-				func(message string, detail string) {
-					sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: caseID, Message: message, Detail: detail})
-					log.Printf("[Bridge] SSH 认证失败: %s@%s:%d (case=%s) message=%s detail=%s\n", username, host, port, caseID, message, detail)
-				},
-				func() {
 					b.remove(caseID)
+					delete(ownedSessions, caseID)
 				},
 			)
 
 		case "ssh_input":
 			if s := b.get(msg.CaseID); s != nil {
+				log.Printf("[Bridge] SSH 输入: case=%s bytes=%d", msg.CaseID, len(msg.Data))
 				s.send(msg.Data)
 			}
 
 		case "ssh_inject_command":
 			// AI 助手注入命令，不带 \n，等客户回车确认
 			if s := b.get(msg.CaseID); s != nil {
+				log.Printf("[Bridge] SSH 注入命令: case=%s bytes=%d", msg.CaseID, len(msg.Command))
 				s.injectCommand(msg.Command)
 			}
 
@@ -410,9 +503,10 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 			if s := b.get(msg.CaseID); s != nil {
 				s.close()
 				b.remove(msg.CaseID)
+				delete(ownedSessions, msg.CaseID)
 			}
 			sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: msg.CaseID})
-			log.Printf("[Bridge] SSH 已断开: case=%s\n", msg.CaseID)
+			log.Printf("[Bridge] SSH 已断开: case=%s", msg.CaseID)
 		}
 	}
 }

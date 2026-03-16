@@ -71,6 +71,7 @@ export const useChatStore = defineStore('chat', () => {
   // 终端面板状态
   const showTerminalSidebar = ref(false)
   const terminalInputCommand = ref('')
+  const assistantDraftText = ref('')
 
   // SSH 连接状态（由 TerminalPanel 内部管理，store 只保留显示用状态）
   const sshConnectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
@@ -480,6 +481,15 @@ export const useChatStore = defineStore('chat', () => {
     terminalInputCommand.value = ''
   }
 
+  // 终端输出回填到助手输入框
+  function setAssistantDraftText(text: string) {
+    assistantDraftText.value = text
+  }
+
+  function clearAssistantDraftText() {
+    assistantDraftText.value = ''
+  }
+
   /**
    * 点击「终端」按钮的入口
    * 先检测 Bridge，根据结果决定：直接打开侧边栏 或 提示下载
@@ -560,8 +570,11 @@ export const useChatStore = defineStore('chat', () => {
     // 终端
     showTerminalSidebar,
     terminalInputCommand,
+    assistantDraftText,
     sendCommandToTerminal,
     clearTerminalInput,
+    setAssistantDraftText,
+    clearAssistantDraftText,
     openTerminalSidebar,
     closeTerminalSidebar,
     checkAndOpenTerminal,
