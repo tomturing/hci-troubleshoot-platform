@@ -527,13 +527,13 @@ onBeforeUnmount(() => {
       <el-button
         type="primary"
         size="small"
-        class="execute-btn"
+        class="execute-btn terminal-action-btn"
         :disabled="!localInput.trim() || !isConnected"
         @click="executeCommand"
       >
         执行
       </el-button>
-      <el-button size="small" :disabled="!localInput" @click="clearInput">清空</el-button>
+      <el-button size="small" class="terminal-action-btn" :disabled="!localInput" @click="clearInput">清空</el-button>
     </div>
 
     <div class="terminal-footer">
@@ -642,6 +642,11 @@ onBeforeUnmount(() => {
   padding: 8px;
 }
 
+.terminal-canvas :deep(.xterm-cursor),
+.terminal-canvas :deep(.xterm-cursor-layer) {
+  display: none !important;
+}
+
 .terminal-input-area {
   display: flex;
   align-items: flex-start;
@@ -674,6 +679,12 @@ onBeforeUnmount(() => {
 
 .execute-btn {
   height: 32px;
+}
+
+.terminal-action-btn {
+  width: 64px;
+  height: 32px;
+  padding: 0;
 }
 
 .terminal-footer {

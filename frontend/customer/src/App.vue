@@ -44,12 +44,12 @@ function handleDownloadBridge() {
           <el-button
             size="small"
             round
-            class="terminal-btn"
+            class="terminal-btn header-action-btn"
             :loading="chatStore.bridgeStatus === 'checking'"
             @click="chatStore.checkAndOpenTerminal()"
           >
-            <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><i class="el-icon-monitor" /></el-icon>
-            终端
+            <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><i class="el-icon-connection" /></el-icon>
+            SSH终端
           </el-button>
           <el-button
             v-if="chatStore.hasActiveCase"
@@ -93,14 +93,14 @@ function handleDownloadBridge() {
         <div class="bridge-icon">🖥️</div>
         <p class="bridge-title">生效 SSH 终端插件</p>
         <p class="bridge-desc">
-          SSH 终端需要本地 Bridge 组件支持，检测到当前未运行。<br />
+          SSH 终端需要本地 Bridge 组件（2.5M）支持，检测到当前未运行。<br />
           请点击下载并打开，启动后再次点击「终端」按钮即可使用。
         </p>
       </div>
       <template #footer>
         <el-button @click="chatStore.closeBridgeDownload()">取消</el-button>
-        <el-button type="primary" @click="handleDownloadBridge">
-          <el-icon style="margin-right: 4px"><i class="el-icon-download" /></el-icon>
+        <el-button type="primary" class="bridge-download-btn" @click="handleDownloadBridge">
+          <el-icon><i class="el-icon-folder-opened" /></el-icon>
           下载并打开
         </el-button>
       </template>
@@ -198,6 +198,12 @@ body {
   margin-right: 4px;
 }
 
+.header-action-btn :deep(span) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .close-btn {
   background: rgba(255, 255, 255, 0.9) !important;
   border: 1px solid rgba(255, 255, 255, 0.8) !important;
@@ -240,5 +246,12 @@ body {
   font-size: 13px;
   color: #606266;
   line-height: 1.8;
+}
+
+.bridge-download-btn :deep(span) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 </style>

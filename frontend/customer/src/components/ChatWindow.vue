@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, nextTick, watch, onMounted } from 'vue'
+import { ref, reactive, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import MessageBubble from './MessageBubble.vue'
 import RatingCard from './RatingCard.vue'
@@ -9,6 +9,9 @@ const chatStore = useChatStore()
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const assistantInputRef = ref<{ focus: () => void } | null>(null)
+const terminalPinned = ref(false)
+const historyPinned = ref(false)
+const panelWidth = ref(getDefaultPanelWidth())
 
 // 工单创建模板本地编辑副本
 const templateForm = reactive({ title: '', description: '' })
@@ -76,6 +79,30 @@ watch(
 )
 
 onMounted(scrollToBottom)
+
+onMounted(() => {
+  const onResize = () => {
+    if (!chatStore.showTerminalSidebar && !chatStore.showHistoryDrawer) {
+      panelWidth.value = getDefaultPanelWidth()
+    }
+  }
+  onResize()
+  window.addEventListener('resize', onResize)
+  ;(window as Window & { __hciPanelResizeHandler?: () => void }).__hciPanelResizeHandler = onResize
+})
+
+onBeforeUnmount(() => {
+  const handler = (window as Window & { __hciPanelResizeHandler?: () => void }).__hciPanelResizeHandler
+  if (handler) window.removeEventListener('resize', handler)
+})
+
+function getDefaultPanelWidth(): number {
+  if (typeof window === 'undefined') return 760
+  const appMaxWidth = 900
+  const blankSpace = Math.max(window.innerWidth - appMaxWidth, 0)
+  const target = blankSpace > 0 ? blankSpace : window.innerWidth * 0.9
+  return Math.max(620, Math.min(Math.round(window.innerWidth * 0.9), Math.round(target)))
+}
 
 /** 状态中文映射 */
 function statusLabel(status: string): string {
@@ -210,29 +237,64 @@ function formatDate(d: string): string {
       />
     </div>
 
-    <!-- 侧边栏终端抽屉（Task 36） -->
-    <el-drawer
+    <!-- SSH 终端弹框 -->
+    <el-dialog
       v-model="chatStore.showTerminalSidebar"
       title="SSH 终端"
-      direction="rtl"
-      size="600px"
+      :width="`${panelWidth}px`"
+      :draggable="true"
       :append-to-body="true"
+      :modal="!terminalPinned"
+      :lock-scroll="!terminalPinned"
+      :close-on-click-modal="!terminalPinned"
+      :close-on-press-escape="!terminalPinned"
+      class="workspace-dialog resizable-dialog"
+      top="6vh"
       @close="chatStore.closeTerminalSidebar()"
     >
-      <TerminalPanel />
-    </el-drawer>
+      <template #header>
+        <div class="drawer-header">
+          <span class="drawer-title">SSH 终端</span>
+          <div class="drawer-actions">
+            <el-button text size="small" @click="terminalPinned = !terminalPinned">
+              {{ terminalPinned ? '取消钉住' : '钉住' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+      <div class="dialog-content terminal-content">
+        <TerminalPanel />
+      </div>
+    </el-dialog>
 
-    <!-- 历史工单抽屉 -->
-    <el-drawer
+    <!-- 历史工单弹框 -->
+    <el-dialog
       v-model="chatStore.showHistoryDrawer"
       title="历史工单"
-      direction="ltr"
-      size="380px"
+      :width="`${panelWidth}px`"
+      :draggable="true"
       :append-to-body="true"
+      :modal="!historyPinned"
+      :lock-scroll="!historyPinned"
+      :close-on-click-modal="!historyPinned"
+      :close-on-press-escape="!historyPinned"
+      class="workspace-dialog resizable-dialog"
+      top="6vh"
       @close="chatStore.closeHistoryDrawer()"
     >
-      <!-- 左右分栏：列表 + 消息预览 -->
-      <div class="history-container">
+      <template #header>
+        <div class="drawer-header">
+          <span class="drawer-title">历史工单</span>
+          <div class="drawer-actions">
+            <el-button text size="small" @click="historyPinned = !historyPinned">
+              {{ historyPinned ? '取消钉住' : '钉住' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+      <div class="dialog-content">
+        <!-- 左右分栏：列表 + 消息预览 -->
+        <div class="history-container">
         <!-- 工单列表 -->
         <div class="history-list" v-if="!chatStore.historyCase">
           <div
@@ -284,8 +346,9 @@ function formatDate(d: string): string {
             </el-button>
           </div>
         </div>
+        </div>
       </div>
-    </el-drawer>
+    </el-dialog>
 
     <!-- 输入区域 -->
     <div class="input-area">
@@ -533,6 +596,53 @@ function formatDate(d: string): string {
 .assistant-desc {
   font-size: 12px;
   color: #909399;
+}
+
+.workspace-dialog :deep(.el-dialog) {
+  max-width: 90vw;
+  height: 82vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-dialog :deep(.el-dialog__body) {
+  flex: 1;
+  overflow: hidden;
+  padding: 12px 16px;
+}
+
+.resizable-dialog :deep(.el-dialog) {
+  resize: horizontal;
+  overflow: hidden;
+  min-width: 620px;
+}
+
+.dialog-content {
+  height: 100%;
+}
+
+.terminal-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.drawer-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.drawer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 
 </style>

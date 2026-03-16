@@ -47,6 +47,18 @@ const riskLabelMap = {
 
 const riskLabel = computed(() => riskLabelMap[props.riskLevel])
 
+const impactText = computed(() => {
+  if (props.riskLevel === 'danger') return '高风险操作，可能影响业务稳定性'
+  if (props.riskLevel === 'caution') return '存在潜在影响，建议先确认执行环境'
+  return '只读查询，无风险'
+})
+
+const impactClass = computed(() => {
+  if (props.riskLevel === 'danger') return 'impact-danger'
+  if (props.riskLevel === 'caution') return 'impact-caution'
+  return 'impact-safe'
+})
+
 /**
  * 处理后的命令内容
  * 保持原始格式，不做任何修改
@@ -153,7 +165,7 @@ function toggleDescription() {
           class="send-btn"
           @click="sendToTerminal"
         >
-          <el-icon><i class="el-icon-right" /></el-icon>
+          <el-icon><i class="el-icon-upload2" /></el-icon>
           <span>发送到终端</span>
         </el-button>
       </div>
@@ -173,8 +185,8 @@ function toggleDescription() {
 
     <!-- 底部提示信息 -->
     <div class="command-footer">
-      <el-icon class="footer-icon"><i class="el-icon-info-filled" /></el-icon>
-      <span class="footer-text">点击「发送到终端」后，请在终端中按回车执行</span>
+      <span class="footer-title">影响说明：</span>
+      <span class="footer-text" :class="impactClass">{{ impactText }}</span>
     </div>
   </div>
 </template>
@@ -253,6 +265,13 @@ function toggleDescription() {
   padding: 4px 12px;
 }
 
+.send-btn :deep(span) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
 .send-btn :deep(.el-icon) {
   margin-right: 4px;
 }
@@ -304,13 +323,24 @@ function toggleDescription() {
   color: #909399;
 }
 
-.footer-icon {
-  font-size: 14px;
-  color: #e6a23c;
+.footer-title {
+  color: #909399;
 }
 
 .footer-text {
   flex: 1;
+}
+
+.footer-text.impact-safe {
+  color: #67c23a;
+}
+
+.footer-text.impact-caution {
+  color: #e6a23c;
+}
+
+.footer-text.impact-danger {
+  color: #f56c6c;
 }
 
 /* 多行命令特殊样式 */
