@@ -78,8 +78,8 @@ const contentSegments = computed<ContentSegment[]>(() => {
   let lastIndex = 0
   let commandIndex = 0
 
-  // 正则匹配代码块：```language\ncode\n```
-  const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g
+  // 正则匹配代码块（兼容流式输出时未闭合的情况）：```language\ncode(```|EOF)
+  const codeBlockRegex = /```(?:[ \t]*)([\w-]*)(?:\r?\n)([\s\S]*?)(?:```|$)/g
   let match
 
   while ((match = codeBlockRegex.exec(props.message.content)) !== null) {
