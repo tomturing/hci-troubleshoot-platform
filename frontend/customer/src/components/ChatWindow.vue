@@ -13,6 +13,37 @@ const terminalPinned = ref(false)
 const historyPinned = ref(false)
 const panelWidth = ref(getDefaultPanelWidth())
 
+// 拖拽调整抽屉宽度
+const startResizeTerminal = (e: MouseEvent) => {
+  e.preventDefault()
+  const startX = e.clientX
+  const startWidth = panelWidth.value
+  const onMouseMove = (moveE: MouseEvent) => {
+    panelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth - (moveE.clientX - startX)))
+  }
+  const onMouseUp = () => {
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+  }
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
+
+const startResizeHistory = (e: MouseEvent) => {
+  e.preventDefault()
+  const startX = e.clientX
+  const startWidth = panelWidth.value
+  const onMouseMove = (moveE: MouseEvent) => {
+    panelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth + (moveE.clientX - startX)))
+  }
+  const onMouseUp = () => {
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+  }
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
+
 // 工单创建模板本地编辑副本
 const templateForm = reactive({ title: '', description: '' })
 
@@ -246,14 +277,16 @@ function formatDate(d: string): string {
       direction="rtl"
       :size="`${panelWidth}px`"
       :append-to-body="true"
-      :modal="!terminalPinned"
+      :modal="true"
       :lock-scroll="!terminalPinned"
       :close-on-click-modal="!terminalPinned"
       :close-on-press-escape="!terminalPinned"
       :with-header="true"
+      :modal-class="terminalPinned ? 'drawer-unblocked-overlay' : ''"
       class="workspace-drawer"
       @close="chatStore.closeTerminalSidebar()"
     >
+      <div class="drawer-resize-handle drawer-resize-left" @mousedown="startResizeTerminal"></div>
       <template #header>
         <div class="drawer-header">
           <span class="drawer-title">SSH 终端</span>
@@ -275,14 +308,16 @@ function formatDate(d: string): string {
       direction="ltr"
       :size="`${panelWidth}px`"
       :append-to-body="true"
-      :modal="!historyPinned"
+      :modal="true"
       :lock-scroll="!historyPinned"
       :close-on-click-modal="!historyPinned"
       :close-on-press-escape="!historyPinned"
       :with-header="true"
+      :modal-class="historyPinned ? 'drawer-unblocked-overlay' : ''"
       class="workspace-drawer"
       @close="chatStore.closeHistoryDrawer()"
     >
+      <div class="drawer-resize-handle drawer-resize-right" @mousedown="startResizeHistory"></div>
       <template #header>
         <div class="drawer-header">
           <span class="drawer-title">历史工单</span>
@@ -620,6 +655,27 @@ function formatDate(d: string): string {
   height: 100%;
 }
 
+/* 拖拽调整手柄 */
+.drawer-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 100;
+  transition: background-color 0.2s;
+}
+.drawer-resize-handle:hover,
+.drawer-resize-handle:active {
+  background-color: rgba(64, 158, 255, 0.2);
+}
+.drawer-resize-left {
+  left: 0;
+}
+.drawer-resize-right {
+  right: 0;
+}
+
 .terminal-content {
   display: flex;
   flex-direction: column;
@@ -644,4 +700,16 @@ function formatDate(d: string): string {
   gap: 2px;
 }
 
+</style>
+
+<style>
+/* 全局透传点击事件：当钉住时，取消全屏遮罩及背景色 */
+.drawer-unblocked-overlay {
+  pointer-events: none !important;
+  background-color: transparent !important;
+}
+.drawer-unblocked-overlay .el-drawer {
+  pointer-events: auto !important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
+}
 </style>
