@@ -11,15 +11,16 @@ const messagesContainer = ref<HTMLElement | null>(null)
 const assistantInputRef = ref<{ focus: () => void } | null>(null)
 const terminalPinned = ref(false)
 const historyPinned = ref(false)
-const panelWidth = ref(getDefaultPanelWidth())
+const terminalPanelWidth = ref(getDefaultPanelWidth())
+const historyPanelWidth = ref(getDefaultPanelWidth())
 
 // 拖拽调整抽屉宽度
 const startResizeTerminal = (e: MouseEvent) => {
   e.preventDefault()
   const startX = e.clientX
-  const startWidth = panelWidth.value
+  const startWidth = terminalPanelWidth.value
   const onMouseMove = (moveE: MouseEvent) => {
-    panelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth - (moveE.clientX - startX)))
+    terminalPanelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth - (moveE.clientX - startX)))
   }
   const onMouseUp = () => {
     document.removeEventListener('mousemove', onMouseMove)
@@ -32,9 +33,9 @@ const startResizeTerminal = (e: MouseEvent) => {
 const startResizeHistory = (e: MouseEvent) => {
   e.preventDefault()
   const startX = e.clientX
-  const startWidth = panelWidth.value
+  const startWidth = historyPanelWidth.value
   const onMouseMove = (moveE: MouseEvent) => {
-    panelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth + (moveE.clientX - startX)))
+    historyPanelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth + (moveE.clientX - startX)))
   }
   const onMouseUp = () => {
     document.removeEventListener('mousemove', onMouseMove)
@@ -113,8 +114,11 @@ onMounted(scrollToBottom)
 
 onMounted(() => {
   const onResize = () => {
-    if (!chatStore.showTerminalSidebar && !chatStore.showHistoryDrawer) {
-      panelWidth.value = getDefaultPanelWidth()
+    if (!chatStore.showTerminalSidebar) {
+      terminalPanelWidth.value = getDefaultPanelWidth()
+    }
+    if (!chatStore.showHistoryDrawer) {
+      historyPanelWidth.value = getDefaultPanelWidth()
     }
   }
   onResize()
@@ -275,7 +279,7 @@ function formatDate(d: string): string {
     <el-drawer
       v-model="chatStore.showTerminalSidebar"
       direction="rtl"
-      :size="`${panelWidth}px`"
+      :size="`${terminalPanelWidth}px`"
       :append-to-body="true"
       :modal="true"
       :lock-scroll="!terminalPinned"
@@ -306,7 +310,7 @@ function formatDate(d: string): string {
     <el-drawer
       v-model="chatStore.showHistoryDrawer"
       direction="ltr"
-      :size="`${panelWidth}px`"
+      :size="`${historyPanelWidth}px`"
       :append-to-body="true"
       :modal="true"
       :lock-scroll="!historyPinned"
