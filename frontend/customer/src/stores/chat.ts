@@ -270,6 +270,9 @@ export const useChatStore = defineStore('chat', () => {
       isStreaming: true,
     })
 
+    // 用索引而非 find()，确保 Vue 响应式能正确追踪数组元素属性变更
+    const getAiMsgIndex = () => messages.value.findIndex((m) => m.id === aiMsgId)
+
     try {
       const response = await fetch(`/api/conversations/${conversationId.value}/message`, {
         method: 'POST',
@@ -310,20 +313,19 @@ export const useChatStore = defineStore('chat', () => {
               pendingEventType = 'message'
               continue
             }
-            const aiMsg = messages.value.find((m) => m.id === aiMsgId)
+            const idx = getAiMsgIndex()
+            if (idx === -1) break
             if (pendingEventType === 'error') {
-              if (aiMsg && !aiMsg.content) {
-                aiMsg.content = 'AI 响应出现错误，请稍后重试。'
+              if (!messages.value[idx].content) {
+                messages.value[idx].content = 'AI 响应出现错误，请稍后重试。'
               }
             } else {
-              if (aiMsg) {
-                try {
-                  const parsed = JSON.parse(data)
-                  aiMsg.content += parsed.content || ''
-                } catch (e) {
-                  // Fallback for unformatted raw data (backward compatibility)
-                  aiMsg.content += data
-                }
+              try {
+                const parsed = JSON.parse(data)
+                messages.value[idx].content += parsed.content || ''
+              } catch (e) {
+                // Fallback for unformatted raw data (backward compatibility)
+                messages.value[idx].content += data
               }
             }
             pendingEventType = 'message'
@@ -333,13 +335,16 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
     } catch (e: any) {
-      const aiMsg = messages.value.find((m) => m.id === aiMsgId)
-      if (aiMsg && !aiMsg.content) {
-        aiMsg.content = `[AI 响应失败: ${e.message}]`
+      const idx = getAiMsgIndex()
+      if (idx !== -1 && !messages.value[idx].content) {
+        messages.value[idx].content = `[AI 响应失败: ${e.message}]`
       }
     } finally {
-      const aiMsg = messages.value.find((m) => m.id === aiMsgId)
-      if (aiMsg) aiMsg.isStreaming = false
+      const idx = getAiMsgIndex()
+      if (idx !== -1) {
+        // 通过数组索引赋値，确保 Vue 响应式系统能正确检测到属性变更并触发重渲染
+        messages.value[idx] = { ...messages.value[idx], isStreaming: false }
+      }
       isStreaming.value = false
     }
   }
