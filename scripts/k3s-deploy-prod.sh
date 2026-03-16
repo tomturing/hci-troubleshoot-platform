@@ -12,6 +12,7 @@ VALUES_PROD_FILE="${CHART_PATH}/values-prod.yaml"
 OVERRIDE_FILE="${OVERRIDE_FILE:-/srv/hci/config/values-prod.override.yaml}"
 TIMEOUT="${TIMEOUT:-10m}"
 KUBECTL="${KUBECTL:-sudo -n k3s kubectl}"
+HELM_KUBECONFIG="${HELM_KUBECONFIG:-${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -36,6 +37,38 @@ ensure_kubectl_access() {
   exit 1
 }
 
+ensure_helm_kubeconfig_access() {
+  if [[ -z "${HELM_KUBECONFIG}" ]]; then
+    error "HELM_KUBECONFIG 为空，无法确定 Helm 连接的集群"
+    error "请设置 HELM_KUBECONFIG 或 KUBECONFIG"
+    exit 1
+  fi
+
+  if [[ ! -r "${HELM_KUBECONFIG}" ]]; then
+    error "Helm kubeconfig 不可读: ${HELM_KUBECONFIG}"
+    error "请确认文件存在并可读，或先执行: sudo -v"
+    exit 1
+  fi
+}
+
+ensure_release_not_pending() {
+  local status_output="" release_status=""
+
+  # Release 首次部署前可能不存在，直接跳过保护
+  if ! status_output="$(helm status "$RELEASE_NAME" -n "$NAMESPACE" --kubeconfig "$HELM_KUBECONFIG" 2>/dev/null)"; then
+    return 0
+  fi
+
+  release_status="$(echo "$status_output" | awk -F': ' '/^STATUS:/{print $2}' | tr -d '\r')"
+  if [[ "$release_status" == pending-* ]]; then
+    error "检测到 Helm release 当前状态为 ${release_status}，存在发布锁，已阻断本次升级"
+    error "请先执行回滚解锁，再重试发布："
+    error "  helm --kubeconfig ${HELM_KUBECONFIG} -n ${NAMESPACE} history ${RELEASE_NAME}"
+    error "  helm --kubeconfig ${HELM_KUBECONFIG} -n ${NAMESPACE} rollback ${RELEASE_NAME} <revision> --wait --timeout ${TIMEOUT}"
+    exit 1
+  fi
+}
+
 usage() {
   cat <<EOF
 用法:
@@ -55,6 +88,7 @@ Actions:
   OVERRIDE_FILE  (默认: /srv/hci/config/values-prod.override.yaml)
   TIMEOUT        (默认: 10m)
   KUBECTL        (默认: sudo k3s kubectl)
+  HELM_KUBECONFIG(默认: /etc/rancher/k3s/k3s.yaml 或继承 KUBECONFIG)
 EOF
 }
 
@@ -85,8 +119,11 @@ cmd_template() {
 
 cmd_deploy() {
   require_override
+  ensure_helm_kubeconfig_access
+  ensure_release_not_pending
   info "部署/升级生产 release: $RELEASE_NAME (ns=$NAMESPACE)"
   helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
+    --kubeconfig "$HELM_KUBECONFIG" \
     --namespace "$NAMESPACE" \
     --create-namespace \
     $(helm_common_args) \
@@ -97,8 +134,9 @@ cmd_deploy() {
 
 cmd_status() {
   ensure_kubectl_access
+  ensure_helm_kubeconfig_access
   info "Helm release 状态"
-  helm status "$RELEASE_NAME" -n "$NAMESPACE" || true
+  helm status "$RELEASE_NAME" -n "$NAMESPACE" --kubeconfig "$HELM_KUBECONFIG" || true
   echo
   info "Pod 状态"
   $KUBECTL get pods -n "$NAMESPACE" -o wide || true
@@ -111,7 +149,8 @@ cmd_status() {
 }
 
 cmd_history() {
-  helm history "$RELEASE_NAME" -n "$NAMESPACE"
+  ensure_helm_kubeconfig_access
+  helm history "$RELEASE_NAME" -n "$NAMESPACE" --kubeconfig "$HELM_KUBECONFIG"
 }
 
 cmd_rollback() {
@@ -121,8 +160,11 @@ cmd_rollback() {
     usage
     exit 1
   fi
+  ensure_helm_kubeconfig_access
   info "回滚 $RELEASE_NAME 到 revision=$revision"
-  helm rollback "$RELEASE_NAME" "$revision" -n "$NAMESPACE" --wait --timeout "$TIMEOUT"
+  helm rollback "$RELEASE_NAME" "$revision" -n "$NAMESPACE" \
+    --kubeconfig "$HELM_KUBECONFIG" \
+    --wait --timeout "$TIMEOUT"
   ok "回滚完成"
 }
 

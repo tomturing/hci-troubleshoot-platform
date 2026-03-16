@@ -24,6 +24,7 @@ SKIP_BUILD=false
 SKIP_DEPLOY=false
 
 KUBECTL="${KUBECTL:-sudo -n k3s kubectl}"
+HELM_KUBECONFIG="${HELM_KUBECONFIG:-${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -274,7 +275,7 @@ deploy_to_k3s() {
   local override_file="$1"
   if [[ "$ENVIRONMENT" == "prod" ]]; then
     info "执行生产部署 (Helm upgrade --install)"
-    ( cd "$PROJECT_ROOT"; OVERRIDE_FILE="$override_file" bash scripts/k3s-deploy-prod.sh deploy )
+    ( cd "$PROJECT_ROOT"; OVERRIDE_FILE="$override_file" HELM_KUBECONFIG="$HELM_KUBECONFIG" bash scripts/k3s-deploy-prod.sh deploy )
   else
     info "执行开发部署 (Helm upgrade)"
     ( cd "$PROJECT_ROOT"; bash scripts/k3s-deploy.sh --env dev upgrade )
