@@ -292,29 +292,44 @@ function renderTextSegment(content: string): string {
       <div class="bubble-content">
         <div
           class="bubble-body"
-          :class="{ 'is-command-available': contentSegments.some(s => s.type === 'command') }"
+          :class="{ 'is-command-available': !message.isStreaming && contentSegments.some(s => s.type === 'command') }"
         >
-          <!-- 流式未完整输出前，为避免出现未闭合的代码块断层，使用纯净的普通Markdown渲染 -->
-          <template v-if="message.isStreaming">
-             <div class="text-segment" v-html="renderTextSegment(message.content)" />
+          <!-- 阶段1：Thinking 状态（流式中且内容为空） -->
+          <template v-if="message.isStreaming && !message.content">
+            <div class="thinking-indicator">
+              <span class="thinking-dot" />
+              <span class="thinking-dot" />
+              <span class="thinking-dot" />
+              <span class="thinking-label">思考中</span>
+            </div>
           </template>
-          <!-- 完整输出后，将匹配的命令行动态升级为交互式组件 -->
-          <template v-else v-for="segment in contentSegments" :key="segment.id">
-            <!-- 命令块使用 CommandBlock 组件 -->
-            <CommandBlock
-              v-if="segment.type === 'command'"
-              :command="segment.content"
-              :language="segment.language || 'bash'"
-              :description="generateDescription(segment.content)"
-              :risk-level="detectRiskLevel(segment.content)"
-              :index="segment.commandIndex || 0"
-            />
-            <!-- 普通文本使用 Markdown 渲染 -->
-            <div
-              v-else
-              class="text-segment"
-              v-html="renderTextSegment(segment.content)"
-            />
+
+          <!-- 阶段2：流式输出中（内容非空），使用纯Markdown避免未闭合代码块 -->
+          <template v-else-if="message.isStreaming && message.content">
+            <div class="text-segment" v-html="renderTextSegment(message.content)" />
+          </template>
+
+          <!-- 阶段3：完整输出后，将命令块升级为交互式 CommandBlock -->
+          <template v-else>
+            <transition-group name="segment-fade" tag="div" class="segments-wrapper">
+              <template v-for="segment in contentSegments" :key="segment.id">
+                <!-- 命令块使用 CommandBlock 组件 -->
+                <CommandBlock
+                  v-if="segment.type === 'command'"
+                  :command="segment.content"
+                  :language="segment.language || 'bash'"
+                  :description="generateDescription(segment.content)"
+                  :risk-level="detectRiskLevel(segment.content)"
+                  :index="segment.commandIndex || 0"
+                />
+                <!-- 普通文本使用 Markdown 渲染 -->
+                <div
+                  v-else
+                  class="text-segment"
+                  v-html="renderTextSegment(segment.content)"
+                />
+              </template>
+            </transition-group>
           </template>
         </div>
         <div class="bubble-meta">
@@ -328,8 +343,8 @@ function renderTextSegment(content: string): string {
             {{ copiedMessage ? '已复制' : '复制' }}
           </el-button>
         </div>
-        <!-- 流式动画 -->
-        <span v-if="message.isStreaming" class="streaming-cursor">▊</span>
+        <!-- 流式输出光标 -->
+        <span v-if="message.isStreaming && message.content" class="streaming-cursor">▊</span>
       </div>
     </template>
   </div>
@@ -457,6 +472,68 @@ function renderTextSegment(content: string): string {
   50% {
     opacity: 0;
   }
+}
+
+/* ========================================
+   Thinking 动画
+   ======================================== */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 2px;
+}
+
+.thinking-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #409eff;
+  opacity: 0.3;
+  animation: thinking-pulse 1.4s ease-in-out infinite;
+}
+
+.thinking-dot:nth-child(1) { animation-delay: 0s; }
+.thinking-dot:nth-child(2) { animation-delay: 0.22s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.44s; }
+
+@keyframes thinking-pulse {
+  0%, 80%, 100% {
+    opacity: 0.2;
+    transform: scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+.thinking-label {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 4px;
+  letter-spacing: 0.5px;
+}
+
+/* ========================================
+   阶段3 升级渲染 fade-in 过渡
+   ======================================== */
+.segments-wrapper {
+  display: contents;
+}
+
+.segment-fade-enter-active {
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.segment-fade-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.segment-fade-enter-to {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 /* ========================================
