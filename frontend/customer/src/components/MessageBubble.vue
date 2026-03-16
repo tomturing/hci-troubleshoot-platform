@@ -310,26 +310,31 @@ function renderTextSegment(content: string): string {
           </template>
 
           <!-- 阶段3：完整输出后，将命令块升级为交互式 CommandBlock -->
+          <!-- 注意：每个 segment 必须是单根真实 DOM 元素，不能用 <template> 包裹 -->
+          <!-- Vue 3 的 <transition-group> 不支持 fragment(template) 作为子节点 -->
           <template v-else>
-            <transition-group name="segment-fade" tag="div" class="segments-wrapper">
-              <template v-for="segment in contentSegments" :key="segment.id">
-                <!-- 命令块使用 CommandBlock 组件 -->
-                <CommandBlock
-                  v-if="segment.type === 'command'"
-                  :command="segment.content"
-                  :language="segment.language || 'bash'"
-                  :description="generateDescription(segment.content)"
-                  :risk-level="detectRiskLevel(segment.content)"
-                  :index="segment.commandIndex || 0"
-                />
-                <!-- 普通文本使用 Markdown 渲染 -->
-                <div
-                  v-else
-                  class="text-segment"
-                  v-html="renderTextSegment(segment.content)"
-                />
-              </template>
-            </transition-group>
+            <div
+              v-for="segment in contentSegments"
+              :key="segment.id"
+              class="segment-item"
+            >
+              <!-- 命令块使用 CommandBlock 组件 -->
+              <CommandBlock
+                v-if="segment.type === 'command'"
+                class="stage3-item"
+                :command="segment.content"
+                :language="segment.language || 'bash'"
+                :description="generateDescription(segment.content)"
+                :risk-level="detectRiskLevel(segment.content)"
+                :index="segment.commandIndex || 0"
+              />
+              <!-- 普通文本使用 Markdown 渲染 -->
+              <div
+                v-else
+                class="text-segment stage3-item"
+                v-html="renderTextSegment(segment.content)"
+              />
+            </div>
           </template>
         </div>
         <div class="bubble-meta">
@@ -516,24 +521,28 @@ function renderTextSegment(content: string): string {
 }
 
 /* ========================================
-   阶段3 升级渲染 fade-in 过渡
+   阶段3 升级渲染：每个 segment 用单根 div.segment-item 包裹
+   display: contents 让包裹层对布局透明不影响内部元素排列
+   动画加在内部实际元素上（避免 display:contents 动画兼容性问题）
    ======================================== */
-.segments-wrapper {
+.segment-item {
   display: contents;
 }
 
-.segment-fade-enter-active {
-  transition: opacity 0.35s ease, transform 0.35s ease;
+/* 动画施加在阶段3的实际内容元素上 */
+.stage3-item {
+  animation: segment-enter 0.35s ease both;
 }
 
-.segment-fade-enter-from {
-  opacity: 0;
-  transform: translateY(4px);
-}
-
-.segment-fade-enter-to {
-  opacity: 1;
-  transform: translateY(0);
+@keyframes segment-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ========================================
