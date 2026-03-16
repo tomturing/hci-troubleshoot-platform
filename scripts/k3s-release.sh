@@ -178,6 +178,55 @@ validate_services() {
   return 0
 }
 
+service_selected() {
+  local target="$1" svc
+  for svc in "${SELECTED_SERVICES[@]}"; do
+    if [[ "$svc" == "$target" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+has_scheduler_related_changes() {
+  local dirty_changes recent_changes
+
+  dirty_changes="$(git -C "$PROJECT_ROOT" status --porcelain -- \
+    backend/scheduler-service \
+    scripts/k3s-verify.sh 2>/dev/null || true)"
+  if [[ -n "$dirty_changes" ]]; then
+    return 0
+  fi
+
+  if git -C "$PROJECT_ROOT" rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+    recent_changes="$(git -C "$PROJECT_ROOT" diff --name-only HEAD~1 HEAD -- \
+      backend/scheduler-service \
+      scripts/k3s-verify.sh 2>/dev/null || true)"
+    if [[ -n "$recent_changes" ]]; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+warn_scheduler_release_dependency() {
+  # 仅在发布 customerUI / conversationService 且未发布 schedulerService 时提示
+  if service_selected "schedulerService"; then
+    return 0
+  fi
+
+  if ! service_selected "customerUI" && ! service_selected "conversationService"; then
+    return 0
+  fi
+
+  if has_scheduler_related_changes; then
+    warn "检测到 scheduler 相关变更，但本次未包含 schedulerService 发布"
+    warn "可能导致线上继续运行旧的 Pod 创建逻辑（例如 productionclaw 配置注入缺失）"
+    warn "建议命令: bash scripts/k3s-release.sh --services ${SERVICES_CSV},schedulerService"
+  fi
+}
+
 update_service_tag_in_override() {
   local file="$1" key="$2" tag="$3" tmp
   tmp="$(mktemp)"
@@ -352,6 +401,7 @@ main() {
   require_cmds
   ensure_non_interactive_sudo
   validate_services "$SERVICES_CSV"
+  warn_scheduler_release_dependency
 
   if [[ -z "$IMAGE_TAG" ]]; then
     IMAGE_TAG="$(gen_default_tag)"

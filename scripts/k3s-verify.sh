@@ -66,6 +66,25 @@ check_value() {
   fi
 }
 
+check_model_cfg() {
+  local desc="$1"
+  local actual="$2"
+  local model base
+
+  model="${actual%%|*}"
+  base="${actual#*|}"
+
+  if [[ -n "${model}" ]] && [[ "${model}" == */${EXPECTED_MODEL_ID} ]] && [[ "${base}" == "${EXPECTED_MODEL_BASEURL}" ]]; then
+    ok "$desc"
+    PASS=$((PASS + 1))
+  else
+    fail "$desc"
+    FAIL=$((FAIL + 1))
+    warn "  期望: <provider>/${EXPECTED_MODEL_ID}|${EXPECTED_MODEL_BASEURL}"
+    warn "  实际: ${actual}"
+  fi
+}
+
 # ============================================================================
 # 1. Pod 状态检查
 # ============================================================================
@@ -204,7 +223,8 @@ check "grafana: ${INGRESS_HOST}/grafana (命中 Grafana 页面)" \
 echo ""
 info "--- AI 容器配置检查（容器内直配模型，不改 Clash）---"
 
-EXPECTED_MODEL_CFG="tly/glm-5|https://open.bigmodel.cn/api/paas/v4"
+EXPECTED_MODEL_ID="glm-5"
+EXPECTED_MODEL_BASEURL="https://open.bigmodel.cn/api/paas/v4"
 
 OPENCLAW_POD=$(${KUBECTL} get pods -n "${NAMESPACE}" \
   -l "app.kubernetes.io/name=openclaw" \
@@ -214,7 +234,7 @@ OPENCLAW_POD=$(${KUBECTL} get pods -n "${NAMESPACE}" \
 if [[ -n "${OPENCLAW_POD}" ]]; then
   OPENCLAW_CFG=$(${KUBECTL} exec -n "${NAMESPACE}" "${OPENCLAW_POD}" -- sh -lc \
     "node -e 'const fs=require(\"fs\");const c=JSON.parse(fs.readFileSync(\"/home/node/.openclaw/openclaw.json\",\"utf8\"));const p=c?.agents?.defaults?.model?.primary||\"\";const pv=p.split(\"/\")[0]||\"\";const b=((c.models?.providers||{})[pv]||{}).baseUrl||\"\";process.stdout.write(p+\"|\"+b);'" 2>/dev/null || echo "")
-  check_value "openclaw 容器模型配置正确" "${EXPECTED_MODEL_CFG}" "${OPENCLAW_CFG}"
+  check_model_cfg "openclaw 容器模型配置正确" "${OPENCLAW_CFG}"
 else
   fail "openclaw 容器模型配置正确"
   FAIL=$((FAIL + 1))
@@ -227,9 +247,22 @@ PRODCLAW_POD=$(${KUBECTL} get pods -n "${NAMESPACE}" \
   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
 if [[ -n "${PRODCLAW_POD}" ]]; then
+  PRODCLAW_INIT_NAME=$(${KUBECTL} get pod -n "${NAMESPACE}" "${PRODCLAW_POD}" -o jsonpath='{.spec.initContainers[0].name}' 2>/dev/null || echo "")
+  PRODCLAW_VOLUMES=$(${KUBECTL} get pod -n "${NAMESPACE}" "${PRODCLAW_POD}" -o jsonpath='{range .spec.volumes[*]}{.name}{" "}{end}' 2>/dev/null || echo "")
+
+  if [[ "${PRODCLAW_INIT_NAME}" == "init-workspace" ]] && [[ "${PRODCLAW_VOLUMES}" == *"claw-home"* ]] && [[ "${PRODCLAW_VOLUMES}" == *"init-config"* ]]; then
+    ok "productionclaw Pod 模板结构正确（init-workspace + claw-home + init-config）"
+    PASS=$((PASS + 1))
+  else
+    fail "productionclaw Pod 模板结构正确（init-workspace + claw-home + init-config）"
+    FAIL=$((FAIL + 1))
+    warn "  期望: initContainers 含 init-workspace，volumes 含 claw-home 与 init-config"
+    warn "  实际: init=${PRODCLAW_INIT_NAME}, volumes=${PRODCLAW_VOLUMES}"
+  fi
+
   PRODCLAW_CFG=$(${KUBECTL} exec -n "${NAMESPACE}" "${PRODCLAW_POD}" -- sh -lc \
     "node -e 'const fs=require(\"fs\");const c=JSON.parse(fs.readFileSync(\"/home/node/.openclaw/openclaw.json\",\"utf8\"));const p=c?.agents?.defaults?.model?.primary||\"\";const pv=p.split(\"/\")[0]||\"\";const b=((c.models?.providers||{})[pv]||{}).baseUrl||\"\";process.stdout.write(p+\"|\"+b);'" 2>/dev/null || echo "")
-  check_value "productionclaw 容器模型配置正确" "${EXPECTED_MODEL_CFG}" "${PRODCLAW_CFG}"
+  check_model_cfg "productionclaw 容器模型配置正确" "${PRODCLAW_CFG}"
 else
   fail "productionclaw 容器模型配置正确"
   FAIL=$((FAIL + 1))
