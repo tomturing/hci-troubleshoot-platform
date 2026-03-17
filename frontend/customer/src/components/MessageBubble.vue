@@ -304,30 +304,31 @@ function renderTextSegment(content: string): string {
             </div>
           </template>
 
-          <!-- 阶段2：流式输出中（内容非空），使用纯Markdown避免未闭合代码块 -->
-          <template v-else-if="message.isStreaming && message.content">
-            <div class="text-segment" v-html="renderTextSegment(message.content)" />
-          </template>
-
-          <!-- 阶段3：完整输出后，将命令块升级为交互式 CommandBlock -->
-          <!-- 注意：每个 segment 必须是单根真实 DOM 元素，不能用 <template> 包裹 -->
-          <!-- Vue 3 的 <transition-group> 不支持 fragment(template) 作为子节点 -->
-          <template v-else>
+          <!-- 阶段2+3：统一渲染管道。流式与完成态完全共享相同的 DOM 结构与拆分策略 -->
+          <template v-else-if="message.content">
             <div
               v-for="segment in contentSegments"
               :key="segment.id"
               class="segment-item"
             >
-              <!-- 命令块使用 CommandBlock 组件 -->
-              <CommandBlock
-                v-if="segment.type === 'command'"
-                class="stage3-item"
-                :command="segment.content"
-                :language="segment.language || 'bash'"
-                :description="generateDescription(segment.content)"
-                :risk-level="detectRiskLevel(segment.content)"
-                :index="segment.commandIndex || 0"
-              />
+              <!-- 命令块 -->
+              <template v-if="segment.type === 'command'">
+                <!-- 流式输出期间，展示带有代码格式的普通语法高亮框（无交互功能占位） -->
+                <div v-if="message.isStreaming" class="streaming-command-placeholder stage3-item">
+                  <pre><code :class="['language-' + (segment.language || 'bash')]">{{ segment.content }}</code></pre>
+                </div>
+                <!-- 输出完成后，平滑升级为带有交互能力的 CommandBlock -->
+                <CommandBlock
+                  v-else
+                  class="stage3-item"
+                  :command="segment.content"
+                  :language="segment.language || 'bash'"
+                  :description="generateDescription(segment.content)"
+                  :risk-level="detectRiskLevel(segment.content)"
+                  :index="segment.commandIndex || 0"
+                />
+              </template>
+
               <!-- 普通文本使用 Markdown 渲染 -->
               <div
                 v-else
@@ -745,5 +746,21 @@ function renderTextSegment(content: string): string {
 /* 命令块可用标记 */
 .bubble-body.is-command-available {
   /* 预留扩展点 */
+}
+
+/* 流式展示阶段临时命令块占位样式 */
+.streaming-command-placeholder pre {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 12px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 10px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+.streaming-command-placeholder code {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
 }
 </style>
