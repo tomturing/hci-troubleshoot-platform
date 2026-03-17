@@ -71,73 +71,55 @@ interface ContentSegment {
   commandIndex?: number
 }
 
+import { marked } from 'marked'
+
 const contentSegments = computed<ContentSegment[]>(() => {
   if (!props.message.content) return []
 
+  // 使用成熟的 Markdown Lexer 提取 AST（完美处理未闭合标签或代码块等情况）
+  const tokens = marked.lexer(props.message.content)
   const segments: ContentSegment[] = []
-  let lastIndex = 0
+  
+  let textBuffer = ''
   let commandIndex = 0
 
-  // 正则匹配代码块（兼容流式输出时未闭合的情况）：```language\ncode(```|EOF)
-  const codeBlockRegex = /```(?:[ \t]*)([\w-]*)(?:\r?\n)([\s\S]*?)(?:```|$)/g
-  let match
-
-  while ((match = codeBlockRegex.exec(props.message.content)) !== null) {
-    const fullMatch = match[0]
-    const language = match[1] || 'plaintext'
-    const code = match[2]
-    const matchStart = match.index
-    const matchEnd = matchStart + fullMatch.length
-
-    // 添加代码块前的普通文本
-    if (matchStart > lastIndex) {
-      const textBefore = props.message.content.substring(lastIndex, matchStart)
-      if (textBefore.trim()) {
-        segments.push({
-          id: `text-${matchStart}-${segments.length}`,
-          type: 'text',
-          content: textBefore,
-        })
-      }
+  function flushText() {
+    if (textBuffer) {
+      segments.push({
+        id: `text-${segments.length}`,
+        type: 'text',
+        content: textBuffer,
+      })
+      textBuffer = ''
     }
+  }
 
-    // 判断是否为命令块
-    if (isCommandLanguage(language)) {
-      // 是命令块，需要进一步拆分多命令
-      const commands = splitCommands(code)
+  for (const token of Object.values(tokens)) {
+    // 判断是否为支持的命令块（需处理 parser 解析出的未定义语言以及各种边界）
+    if (token.type === 'code' && isCommandLanguage(token.lang || '')) {
+      // 遇到命令块，先把之前累积的普通文本作为一个 segment 冲刷掉
+      flushText()
+      
+      const commands = splitCommands(token.text)
       for (const cmd of commands) {
         segments.push({
-          id: `command-${matchStart}-${commandIndex}`,
+          id: `command-${segments.length}`,
           type: 'command',
           content: cmd,
-          language,
+          language: token.lang,
           commandIndex,
         })
         commandIndex += 1
       }
     } else {
-      // 非命令代码块，作为普通文本渲染（但保留代码块标记）
-      segments.push({
-        id: `text-code-${matchStart}-${segments.length}`,
-        type: 'text',
-        content: fullMatch,
-      })
-    }
-
-    lastIndex = matchEnd
-  }
-
-  // 添加剩余的普通文本
-  if (lastIndex < props.message.content.length) {
-    const textAfter = props.message.content.substring(lastIndex)
-    if (textAfter.trim()) {
-      segments.push({
-        id: `text-tail-${lastIndex}-${segments.length}`,
-        type: 'text',
-        content: textAfter,
-      })
+      // 不是命令块，把 raw 内容累积起来，后面统一交给 renderMarkdown 渲染
+      // raw 是最原始未更改的 markdown 源码，从而 100% 保持 markdown 上下文不断裂
+      textBuffer += ('raw' in token) ? (token.raw as string) : ''
     }
   }
+  
+  // 补上剩余未冲刷的文本
+  flushText()
 
   return segments
 })
