@@ -3,7 +3,7 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { createApiClient, createCaseApi, createConversationApi, createAssistantApi } from '@hci/shared'
 import type { CaseResponse, MessageResponse, AssistantInfo } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
@@ -342,7 +342,10 @@ export const useChatStore = defineStore('chat', () => {
     } finally {
       const idx = getAiMsgIndex()
       if (idx !== -1) {
-        // 通过数组索引赋値，确保 Vue 响应式系统能正确检测到属性变更并触发重渲染
+        // 【方案A修复】先等 Vue 刷完流式阶段最后一帧 DOM（含 content 更新），
+        // 再设 isStreaming: false，保证阶段3的 contentSegments 能在稳定 content 上求值。
+        // 消除"实时输出停留在阶段2、刷新后才呈现阶段3"的竞态窗口。
+        await nextTick()
         messages.value[idx] = { ...messages.value[idx], isStreaming: false }
       }
       isStreaming.value = false
