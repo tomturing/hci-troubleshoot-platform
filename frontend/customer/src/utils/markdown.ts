@@ -2,14 +2,30 @@
  * Markdown 渲染工具
  * 使用 marked 解析 + DOMPurify 做 XSS 防护
  */
-import { marked } from 'marked'
+import { marked, Renderer } from 'marked'
 import DOMPurify from 'dompurify'
+
+/**
+ * 自定义渲染器：保护围栏代码块内换行不被 breaks:true 转为 <br>
+ * breaks:true 会将普通文本中的单个 \n 转为 <br>，但代码块内不应该处理。
+ * 通过自定义 code renderer 直接输出转义后的代码内容，跳过 marked 的换行处理。
+ */
+const renderer = new Renderer()
+renderer.code = function ({ text, lang }: { text: string; lang?: string }) {
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  const langAttr = lang ? ` class="language-${lang}"` : ''
+  return `<pre><code${langAttr}>${escaped}</code></pre>\n`
+}
 
 // 配置 marked 选项
 marked.setOptions({
-  breaks: true, // 支持 GFM 换行（单个 \n 转换为 <br>）
-  gfm: true, // 启用 GitHub Flavored Markdown
+  breaks: true, // 支持 GFM 换行（普通文本单个 \n → <br>）
+  gfm: true,    // 启用 GitHub Flavored Markdown
 })
+marked.use({ renderer })
 
 /**
  * 渲染 Markdown 为安全的 HTML
