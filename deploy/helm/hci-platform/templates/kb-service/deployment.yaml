@@ -82,5 +82,5 @@ spec:
         - name: bge-model
           hostPath:
             path: {{ .Values.kbService.bgeModelHostPath | default "/home/node/models/bge-small-zh-v1.5" | quote }}
-            type: Directory
+            type: DirectoryOrCreate
 {{- end }}

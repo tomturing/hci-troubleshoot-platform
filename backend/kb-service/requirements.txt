@@ -14,3 +14,4 @@ opentelemetry-instrumentation-fastapi
 opentelemetry-instrumentation-httpx
 opentelemetry-instrumentation-sqlalchemy
 opentelemetry-instrumentation-logging
+prometheus-client==0.20.0
