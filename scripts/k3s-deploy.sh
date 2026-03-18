@@ -99,6 +99,31 @@ _build_domain_arg() {
   fi
 }
 
+# 在 dev 发布场景下，支持通过环境变量 IMAGE_TAG 覆盖所有本地构建镜像 tag。
+# 这样可避免 values.yaml 默认 latest 与本次构建 tag 不一致导致 ErrImageNeverPull。
+_build_image_tag_args() {
+  local -n _tout=$1
+  local image_tag="${IMAGE_TAG:-}"
+
+  if [[ -z "$image_tag" ]]; then
+    _tout=()
+    return 0
+  fi
+
+  _tout=(
+    "--set" "apiGateway.image.tag=${image_tag}"
+    "--set" "caseService.image.tag=${image_tag}"
+    "--set" "conversationService.image.tag=${image_tag}"
+    "--set" "schedulerService.image.tag=${image_tag}"
+    "--set" "kbService.image.tag=${image_tag}"
+    "--set" "customerUI.image.tag=${image_tag}"
+    "--set" "adminUI.image.tag=${image_tag}"
+    "--set" "openclaw.image.tag=${image_tag}"
+    "--set" "learningclaw.image.tag=${image_tag}"
+    "--set" "productionclaw.image.tag=${image_tag}"
+  )
+}
+
 # 颜色
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -141,9 +166,12 @@ cmd_template() {
   _build_values_args VALUES_ARGS
   local DOMAIN_ARG=()
   _build_domain_arg DOMAIN_ARG
+  local IMAGE_TAG_ARGS=()
+  _build_image_tag_args IMAGE_TAG_ARGS
   helm template "${RELEASE_NAME}" "${CHART_PATH}" \
     "${VALUES_ARGS[@]}" \
-    "${DOMAIN_ARG[@]+"${DOMAIN_ARG[@]}"}"
+    "${DOMAIN_ARG[@]+"${DOMAIN_ARG[@]}"}" \
+    "${IMAGE_TAG_ARGS[@]+"${IMAGE_TAG_ARGS[@]}"}"
 }
 
 cmd_install() {
@@ -163,15 +191,18 @@ cmd_install() {
   _build_values_args VALUES_ARGS
   local DOMAIN_ARG=()
   _build_domain_arg DOMAIN_ARG
+  local IMAGE_TAG_ARGS=()
+  _build_image_tag_args IMAGE_TAG_ARGS
 
   # Helm install
   helm install "${RELEASE_NAME}" "${CHART_PATH}" \
     "${VALUES_ARGS[@]}" \
     "${DOMAIN_ARG[@]+"${DOMAIN_ARG[@]}"}" \
+    "${IMAGE_TAG_ARGS[@]+"${IMAGE_TAG_ARGS[@]}"}" \
     --namespace "${NAMESPACE}" \
     --create-namespace \
     --wait \
-    --timeout 5m
+    --timeout 15m
   
   ok "Helm install 完成!"
   echo ""
@@ -187,13 +218,18 @@ cmd_upgrade() {
   _build_values_args VALUES_ARGS
   local DOMAIN_ARG=()
   _build_domain_arg DOMAIN_ARG
+  local IMAGE_TAG_ARGS=()
+  _build_image_tag_args IMAGE_TAG_ARGS
 
   helm upgrade "${RELEASE_NAME}" "${CHART_PATH}" \
+    --install \
     "${VALUES_ARGS[@]}" \
     "${DOMAIN_ARG[@]+"${DOMAIN_ARG[@]}"}" \
+    "${IMAGE_TAG_ARGS[@]+"${IMAGE_TAG_ARGS[@]}"}" \
     --namespace "${NAMESPACE}" \
+    --create-namespace \
     --atomic \
-    --timeout 5m
+    --timeout 15m
   
   ok "Helm upgrade 完成!"
   echo ""

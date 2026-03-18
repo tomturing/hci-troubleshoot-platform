@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # 所有服务键（默认全部）
-ALL_SERVICES="apiGateway,caseService,conversationService,schedulerService,customerUI,adminUI,openclaw"
+ALL_SERVICES="apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI,openclaw"
 
 ENVIRONMENT="prod"
 SERVICES_CSV="$ALL_SERVICES"   # 默认值 = 全部服务
@@ -23,7 +23,15 @@ SKIP_VERIFY=false
 SKIP_BUILD=false
 SKIP_DEPLOY=false
 
-KUBECTL="${KUBECTL:-sudo -n k3s kubectl}"
+default_kubectl_cmd() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    echo "k3s kubectl"
+  else
+    echo "sudo -n k3s kubectl"
+  fi
+}
+
+KUBECTL="${KUBECTL:-$(default_kubectl_cmd)}"
 HELM_KUBECONFIG="${HELM_KUBECONFIG:-${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}}"
 
 RED='\033[0;31m'
@@ -55,7 +63,7 @@ options:
 
 服务键可选值:
   all
-  apiGateway, caseService, conversationService, schedulerService,
+  apiGateway, caseService, conversationService, schedulerService, kbService,
   customerUI, adminUI, openclaw
 
 示例:
@@ -78,7 +86,7 @@ ensure_non_interactive_sudo() {
 
   error "当前发布链路默认使用 sudo 执行 K3s 命令，但未获得非交互 sudo 权限"
   error "请先执行: sudo -v"
-  error "或显式指定无需 sudo 的命令，例如: KUBECTL='k3s kubectl' bash scripts/k3s-release.sh ..."
+  error "或在 root 会话执行，或显式指定无需 sudo 的命令，例如: KUBECTL='k3s kubectl' bash scripts/k3s-release.sh ..."
   exit 1
 }
 
@@ -170,7 +178,7 @@ validate_services() {
   for svc in "${SELECTED_SERVICES[@]}"; do
     case "$svc" in
       apiGateway|caseService|conversationService|schedulerService|\
-      customerUI|adminUI|openclaw) ;;
+      kbService|customerUI|adminUI|openclaw) ;;
       *) error "未知服务键: $svc，可选值请查看 --help"; exit 1 ;;
     esac
   done
@@ -324,10 +332,10 @@ deploy_to_k3s() {
   local override_file="$1"
   if [[ "$ENVIRONMENT" == "prod" ]]; then
     info "执行生产部署 (Helm upgrade --install)"
-    ( cd "$PROJECT_ROOT"; OVERRIDE_FILE="$override_file" HELM_KUBECONFIG="$HELM_KUBECONFIG" bash scripts/k3s-deploy-prod.sh deploy )
+    ( cd "$PROJECT_ROOT"; IMAGE_TAG="$IMAGE_TAG" OVERRIDE_FILE="$override_file" HELM_KUBECONFIG="$HELM_KUBECONFIG" bash scripts/k3s-deploy-prod.sh deploy )
   else
     info "执行开发部署 (Helm upgrade)"
-    ( cd "$PROJECT_ROOT"; bash scripts/k3s-deploy.sh --env dev upgrade )
+    ( cd "$PROJECT_ROOT"; IMAGE_TAG="$IMAGE_TAG" HELM_KUBECONFIG="$HELM_KUBECONFIG" KUBECONFIG="$HELM_KUBECONFIG" bash scripts/k3s-deploy.sh --env dev upgrade )
   fi
   ok "Helm 部署完成"
 }
@@ -338,6 +346,7 @@ service_key_to_deploy_name() {
     caseService)         echo "case-service" ;;
     conversationService) echo "conversation-service" ;;
     schedulerService)    echo "scheduler-service" ;;
+    kbService)           echo "kb-service" ;;
     customerUI)          echo "customer-ui" ;;
     adminUI)             echo "admin-ui" ;;
     openclaw)            echo "openclaw" ;;
@@ -351,6 +360,7 @@ service_key_to_repository() {
     caseService)         echo "hci-case-service" ;;
     conversationService) echo "hci-conversation-service" ;;
     schedulerService)    echo "hci-scheduler-service" ;;
+    kbService)           echo "hci-kb-service" ;;
     customerUI)          echo "hci-customer-ui" ;;
     adminUI)             echo "hci-admin-ui" ;;
     openclaw)            echo "hci-openclaw" ;;
@@ -380,6 +390,186 @@ verify_image_consistency() {
 run_post_verify() {
   info "执行集群部署验证脚本"
   ( cd "$PROJECT_ROOT"; bash scripts/k3s-verify.sh )
+}
+
+postgres_ready() {
+  $KUBECTL -n hci-troubleshoot get pod postgres-0 >/dev/null 2>&1
+}
+
+run_db_migrations() {
+  local migration_file="$PROJECT_ROOT/database/migrate_evaluation_v1.sql"
+
+  if [[ ! -f "$migration_file" ]]; then
+    warn "未找到迁移脚本，跳过数据库迁移: ${migration_file}"
+    return 0
+  fi
+
+  if ! postgres_ready; then
+    warn "未检测到 postgres-0，暂跳过数据库迁移（首次安装场景可忽略）"
+    return 0
+  fi
+
+  info "执行数据库迁移: migrate_evaluation_v1.sql"
+  $KUBECTL exec -i -n hci-troubleshoot postgres-0 -- \
+    psql -U hci_admin -d hci_troubleshoot < "$migration_file"
+  ok "数据库迁移执行完成"
+}
+
+validate_db_schema_contract() {
+  local close_reason_col_count
+
+  if ! postgres_ready; then
+    warn "未检测到 postgres-0，跳过数据库契约校验"
+    return 0
+  fi
+
+  close_reason_col_count="$($KUBECTL exec -n hci-troubleshoot postgres-0 -- \
+    psql -U hci_admin -d hci_troubleshoot -tAc \
+    "SELECT COUNT(1) FROM information_schema.columns WHERE table_schema='public' AND table_name='case' AND column_name='close_reason';" \
+    | tr -d '[:space:]')"
+
+  if [[ "$close_reason_col_count" != "1" ]]; then
+    error "数据库契约校验失败: case.close_reason 字段缺失"
+    return 1
+  fi
+
+  ok "数据库契约校验通过: case.close_reason 存在"
+}
+
+verify_no_latest_business_images() {
+  local images latest_images
+
+  images="$($KUBECTL -n hci-troubleshoot get deploy,statefulset -o jsonpath='{range .items[*].spec.template.spec.initContainers[*]}{.image}{"\n"}{end}{range .items[*].spec.template.spec.containers[*]}{.image}{"\n"}{end}' 2>/dev/null || true)"
+
+  latest_images="$(echo "$images" | grep -E '(^|/)hci-[^:]+:latest$' || true)"
+  if [[ -n "$latest_images" ]]; then
+    error "检测到业务镜像仍使用 latest，发布中止"
+    echo "$latest_images" | sed 's/^/  - /'
+    return 1
+  fi
+
+  ok "业务镜像 latest 校验通过"
+}
+
+smoke_verify_case_api() {
+  local status_code
+
+  if ! service_selected "apiGateway" && ! service_selected "caseService"; then
+    info "本次未发布 apiGateway/caseService，跳过工单接口冒烟"
+    return 0
+  fi
+
+  info "执行工单接口冒烟验证"
+  status_code="$($KUBECTL exec -n hci-troubleshoot deploy/api-gateway -- \
+    python -c "import httpx; r=httpx.get('http://case-service:8001/api/cases/?client_id=release-smoke', timeout=10); print(r.status_code)" \
+    2>/dev/null | tr -d '[:space:]')"
+
+  if [[ "$status_code" != "200" ]]; then
+    error "工单接口冒烟失败: GET /api/cases 返回 ${status_code:-UNKNOWN}"
+    return 1
+  fi
+
+  ok "工单接口冒烟通过: GET /api/cases -> 200"
+}
+
+smoke_verify_ai_reply() {
+  local smoke_output
+
+  if ! service_selected "apiGateway" \
+    && ! service_selected "caseService" \
+    && ! service_selected "conversationService" \
+    && ! service_selected "schedulerService" \
+    && ! service_selected "openclaw"; then
+    info "本次未发布 AI 相关服务，跳过 AI 回复冒烟"
+    return 0
+  fi
+
+  info "执行 AI 回复冒烟验证（创建工单→创建会话→发送消息）"
+  if ! smoke_output="$($KUBECTL exec -i -n hci-troubleshoot deploy/api-gateway -- python - <<'PY'
+import json
+import uuid
+
+import httpx
+
+base = "http://127.0.0.1:8000/api"
+client_id = f"release-ai-smoke-{uuid.uuid4().hex[:8]}"
+timeout = httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=10.0)
+
+
+def ensure_status(resp: httpx.Response, expected: set[int], step: str) -> None:
+    if resp.status_code not in expected:
+        raise RuntimeError(f"{step} 失败: status={resp.status_code}, body={resp.text[:300]}")
+
+
+with httpx.Client(base_url=base, headers={"X-Client-ID": client_id}, timeout=timeout) as client:
+    create_resp = client.post(
+        "/cases/",
+        json={
+            "client_id": client_id,
+            "title": "发布 AI 冒烟",
+            "description": "自动校验 AI 回复非空",
+            "assistant_type": "openclaw",
+        },
+    )
+    ensure_status(create_resp, {200, 201}, "创建工单")
+    case_id = create_resp.json()["case_id"]
+
+    confirm_resp = client.put(f"/cases/{case_id}/confirm")
+    ensure_status(confirm_resp, {200}, "确认工单")
+
+    conv_resp = client.post(f"/conversations/?case_id={case_id}&assistant_type=openclaw")
+    ensure_status(conv_resp, {200, 201}, "创建会话")
+    conversation_id = conv_resp.json()["conversation_id"]
+
+    first_token = ""
+    with client.stream(
+        "POST",
+        f"/conversations/{conversation_id}/message",
+        headers={"Content-Type": "application/json"},
+        json={
+            "case_id": case_id,
+            "role": "user",
+            "content": "请仅回复：链路检查通过",
+        },
+    ) as stream_resp:
+        ensure_status(stream_resp, {200}, "发送消息")
+
+        for raw_line in stream_resp.iter_lines():
+            if not raw_line:
+                continue
+
+            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            if not line.startswith("data: "):
+                continue
+
+            data = line[6:].strip()
+            if data == "[DONE]":
+                break
+
+            try:
+                payload = json.loads(data)
+                token = payload.get("content") or ""
+            except json.JSONDecodeError:
+                token = data
+
+            if token:
+                first_token = token
+                break
+
+    if not first_token:
+        raise RuntimeError("AI 返回为空（未读取到 token）")
+
+    print(f"AI_SMOKE_OK case_id={case_id} conversation_id={conversation_id} token={first_token[:40]}")
+PY
+)"; then
+    error "AI 回复冒烟失败"
+    if [[ -n "${smoke_output:-}" ]]; then
+      echo "$smoke_output"
+    fi
+    return 1
+  fi
+
+  ok "AI 回复冒烟通过: ${smoke_output}"
 }
 
 print_release_summary() {
@@ -426,12 +616,17 @@ main() {
   fi
 
   if [[ "$SKIP_DEPLOY" == false ]]; then
+    run_db_migrations
+    validate_db_schema_contract
     deploy_to_k3s "$OVERRIDE_FILE"
+    verify_image_consistency
+    verify_no_latest_business_images
+    smoke_verify_case_api
+    smoke_verify_ai_reply
   else
     warn "已跳过部署 (--skip-deploy)"
+    warn "已跳过镜像一致性校验（未部署无法校验 Deployment 镜像）"
   fi
-
-  verify_image_consistency
 
   if [[ "$SKIP_VERIFY" == false ]]; then
     run_post_verify

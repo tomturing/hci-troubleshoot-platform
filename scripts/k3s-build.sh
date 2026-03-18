@@ -11,7 +11,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OPENCLAW_REPO_DIR="${OPENCLAW_REPO_DIR:-${PROJECT_ROOT}/../openclaw}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
-K3S_CTR="${K3S_CTR:-sudo -n k3s ctr}"
+
+default_k3s_ctr_cmd() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    echo "k3s ctr"
+  else
+    echo "sudo -n k3s ctr"
+  fi
+}
+
+K3S_CTR="${K3S_CTR:-$(default_k3s_ctr_cmd)}"
+
+default_k3s_kubectl_cmd() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    echo "k3s kubectl"
+  else
+    echo "sudo -n k3s kubectl"
+  fi
+}
+
+K3S_KUBECTL="${K3S_KUBECTL:-$(default_k3s_kubectl_cmd)}"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -26,15 +45,39 @@ warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 ensure_k3s_ctr_access() {
-  if ${K3S_CTR} images ls >/dev/null 2>&1; then
+  local tmp_err runtime
+  tmp_err="$(mktemp)"
+
+  if ${K3S_CTR} images ls > /dev/null 2>"$tmp_err"; then
+    rm -f "$tmp_err"
     return 0
   fi
 
-  error "无法以非交互方式访问 K3s containerd"
+  runtime="$(${K3S_KUBECTL} get nodes -o jsonpath='{.items[0].status.nodeInfo.containerRuntimeVersion}' 2>/dev/null || true)"
+  if [[ "$runtime" == docker://* ]] && grep -q 'cannot access socket /run/k3s/containerd/containerd.sock' "$tmp_err"; then
+    warn "检测到节点运行时为 ${runtime}，且未启用内置 containerd socket"
+    warn "当前环境无需执行 k3s ctr 导入，将跳过导入步骤"
+    rm -f "$tmp_err"
+    return 2
+  fi
+
+  error "无法访问 K3s containerd"
   error "当前命令: ${K3S_CTR}"
-  error "请先执行: sudo -v"
-  error "或显式指定无需 sudo 的命令，例如: K3S_CTR='k3s ctr' bash scripts/k3s-build.sh"
-  exit 1
+  if [[ -s "$tmp_err" ]]; then
+    error "原始错误输出:"
+    sed -n '1,8p' "$tmp_err" | while IFS= read -r line; do
+      error "  ${line}"
+    done
+  fi
+  rm -f "$tmp_err"
+
+  if [[ "$K3S_CTR" == sudo* ]]; then
+    error "请先执行: sudo -v"
+    error "或显式指定无需 sudo 的命令，例如: K3S_CTR='k3s ctr' bash scripts/k3s-build.sh"
+  else
+    error "请检查 k3s 服务和 containerd 是否正常（例如: sudo k3s ctr version）"
+  fi
+  return 1
 }
 
 IMPORT_K3S=true
@@ -67,6 +110,7 @@ declare -a IMAGES=(
   "hci-case-service           ${PROJECT_ROOT}/backend       case-service/Dockerfile"
   "hci-conversation-service   ${PROJECT_ROOT}/backend       conversation-service/Dockerfile"
   "hci-scheduler-service      ${PROJECT_ROOT}/backend       scheduler-service/Dockerfile"
+  "hci-kb-service             ${PROJECT_ROOT}/backend       kb-service/Dockerfile"
   "hci-customer-ui            ${PROJECT_ROOT}/frontend      customer/Dockerfile"
   "hci-admin-ui               ${PROJECT_ROOT}/frontend      admin/Dockerfile"
 )
@@ -97,7 +141,8 @@ fi
 # ============================================================================
 info "同步前端 pnpm lockfile..."
 if command -v pnpm &>/dev/null; then
-  (cd "${PROJECT_ROOT}/frontend" && pnpm install --ignore-scripts 2>&1 | tail -3) \
+  # 仅同步 lockfile，避免 pnpm 因重建 node_modules 弹出交互确认导致脚本看似卡住。
+  (cd "${PROJECT_ROOT}/frontend" && pnpm install --lockfile-only --ignore-scripts 2>&1 | tail -3) \
     && ok "  → pnpm lockfile 已同步" \
     || warn "  → pnpm lockfile 同步失败（将使用 --no-frozen-lockfile 构建）"
 else
@@ -140,10 +185,21 @@ fi
 # 导入 K3s containerd
 # ============================================================================
 if [[ "$IMPORT_K3S" == true ]]; then
+  local_ctr_access_status=0
   echo ""
   info "开始导入镜像到 K3s containerd..."
 
-  ensure_k3s_ctr_access
+  ensure_k3s_ctr_access || local_ctr_access_status=$?
+  if [[ "$local_ctr_access_status" -eq 2 ]]; then
+    warn "已跳过镜像导入（Docker runtime 环境）"
+    echo ""
+    ok "全部完成! ✅"
+    exit 0
+  fi
+
+  if [[ "$local_ctr_access_status" -ne 0 ]]; then
+    exit 1
+  fi
 
   IMPORTED=0
   for entry in "${WORK_IMAGES[@]}"; do
