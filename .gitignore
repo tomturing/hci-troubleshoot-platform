@@ -74,3 +74,8 @@ deploy/env/secrets.env
 htmlcov/
 .pytest_cache/
 .vk/
+
+# Frontend admin 构建产物（无需提交）
+frontend/admin/*.tsbuildinfo
+frontend/admin/vite.config.js
+frontend/admin/vite.config.d.ts
