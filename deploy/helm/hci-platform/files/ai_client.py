@@ -57,7 +57,7 @@ class OpenClawAssistant:
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=_read_timeout, write=10.0, pool=10.0))
 
     async def chat_completion_stream(
-        self, messages: list[dict[str, str]], user_id: str, pod_endpoint: str | None = None, model: str = "openclaw"
+        self, messages: list[dict[str, str]], user_id: str, pod_endpoint: str | None = None, model: str = ""
     ) -> AsyncGenerator[str, None]:
         """
         调用OpenClaw Chat Completions API (流式)
@@ -77,49 +77,94 @@ class OpenClawAssistant:
 
         payload = {"model": model or self.default_model, "messages": messages, "stream": True, "user": user_id}
 
-        target_base_url = (pod_endpoint or self.base_url).rstrip("/")
-        url = f"{target_base_url}/v1/chat/completions"
+        # 先尝试 scheduler 分配的实例端点，若在首 token 前发生可恢复断流，再回退到稳定 base_url 重试一次。
+        endpoints_to_try: list[str] = []
+        first_endpoint = (pod_endpoint or self.base_url).rstrip("/")
+        endpoints_to_try.append(first_endpoint)
+        fallback_endpoint = self.base_url.rstrip("/")
+        if fallback_endpoint not in endpoints_to_try:
+            endpoints_to_try.append(fallback_endpoint)
 
-        logger.info(
-            event="ai_request",
-            message="Sending request to OpenClaw",
-            url=url,
-            user_id=user_id,
-            assistant_type=self.assistant_type,
+        last_error: Exception | None = None
+        for idx, endpoint in enumerate(endpoints_to_try, start=1):
+            url = f"{endpoint}/v1/chat/completions"
+            got_first_token = False
+
+            logger.info(
+                event="ai_request",
+                message="Sending request to OpenClaw",
+                url=url,
+                user_id=user_id,
+                assistant_type=self.assistant_type,
+                attempt=idx,
+            )
+
+            try:
+                async with self.client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code != 200:
+                        error_body = await response.aread()
+                        logger.error(
+                            event="ai_error",
+                            message=f"OpenClaw returned status {response.status_code}",
+                            status=response.status_code,
+                            body=error_body.decode("utf-8", errors="ignore"),
+                            attempt=idx,
+                        )
+                        response.raise_for_status()
+
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+
+                        data_str = line[6:]  # 跳过 "data: "
+                        if data_str.strip() == "[DONE]":
+                            return
+
+                        try:
+                            data = json.loads(data_str)
+                            delta = data.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                got_first_token = True
+                                yield content
+                        except json.JSONDecodeError:
+                            continue
+
+                return
+            except Exception as e:
+                last_error = e
+                retriable = self._is_retriable_stream_error(e)
+                can_retry = (not got_first_token) and retriable and idx < len(endpoints_to_try)
+
+                logger.error(
+                    event="ai_exception",
+                    message="Error calling OpenClaw API",
+                    error=str(e),
+                    attempt=idx,
+                    retriable=retriable,
+                    got_first_token=got_first_token,
+                    will_retry=can_retry,
+                )
+
+                if can_retry:
+                    continue
+                raise
+
+        if last_error:
+            raise last_error
+
+    @staticmethod
+    def _is_retriable_stream_error(exc: Exception) -> bool:
+        """判定是否属于可通过切换端点重试的流式瞬态错误。"""
+        message = str(exc).lower()
+        retriable_signatures = (
+            "incomplete chunked read",
+            "peer closed connection",
+            "read timeout",
+            "remoteprotocolerror",
+            "connection reset",
         )
-
-        try:
-            async with self.client.stream("POST", url, json=payload, headers=headers) as response:
-                if response.status_code != 200:
-                    error_body = await response.aread()
-                    logger.error(
-                        event="ai_error",
-                        message=f"OpenClaw returned status {response.status_code}",
-                        status=response.status_code,
-                        body=error_body.decode("utf-8", errors="ignore"),
-                    )
-                    response.raise_for_status()
-
-                async for line in response.aiter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-
-                    data_str = line[6:]  # 跳过 "data: "
-                    if data_str.strip() == "[DONE]":
-                        break
-
-                    try:
-                        data = json.loads(data_str)
-                        delta = data.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield content
-                    except json.JSONDecodeError:
-                        continue
-
-        except Exception as e:
-            logger.error(event="ai_exception", message="Error calling OpenClaw API", error=str(e))
-            raise
+        return any(sig in message for sig in retriable_signatures)
 
     async def check_health(self) -> bool:
         """检查OpenClaw服务健康状态"""

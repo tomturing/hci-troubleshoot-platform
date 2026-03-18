@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # OpenClaw配置
     OPENCLAW_BASE_URL: str = "http://host.docker.internal:18790"
     OPENCLAW_GATEWAY_TOKEN: str = "default_token"
-    OPENCLAW_DEFAULT_MODEL: str = "openclaw"
+    OPENCLAW_DEFAULT_MODEL: str = "zhipu/glm-5"
 
     # KB 服务配置
     KB_SERVICE_URL: str = "http://kb-service:8004"

@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
             continue
         base_url = cfg.get("base_url", settings.OPENCLAW_BASE_URL)
         gateway_token = cfg.get("gateway_token", settings.OPENCLAW_GATEWAY_TOKEN)
-        model = cfg.get("model", assistant_type)
+        model = cfg.get("model") or settings.OPENCLAW_DEFAULT_MODEL
         client = create_openclaw_client(
             base_url=base_url,
             api_key=gateway_token,

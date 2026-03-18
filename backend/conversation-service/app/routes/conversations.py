@@ -119,6 +119,19 @@ async def send_message(
                     encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)
                     yield f"data: {encoded_chunk}\n\n"
 
+            if not ai_content:
+                # 上游返回 200 但未产出任何 token 时，向前端返回结构化错误，避免出现空白气泡
+                empty_error = json.dumps(
+                    {
+                        "code": ErrorCode.AI_STREAM_FAILED.value,
+                        "message": "AI 未返回有效内容，请稍后重试",
+                        "detail": "empty_stream",
+                    },
+                    ensure_ascii=False,
+                )
+                yield f"event: error\ndata: {empty_error}\n\n"
+                return
+
             # 正常流结束后，提交后台任务保存消息
             background_tasks.add_task(
                 service.save_assistant_message,
