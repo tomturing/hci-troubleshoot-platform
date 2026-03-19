@@ -14,6 +14,7 @@ spec:
       targetRevision: main
       path: deploy/helm/hci-platform
       helm:
+        releaseName: hci-platform
         valueFiles:
           - $values/environments/dev/values.yaml
     # 环境仓库：提供环境差异配置

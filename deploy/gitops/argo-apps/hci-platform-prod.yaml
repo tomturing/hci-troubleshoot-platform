@@ -13,6 +13,7 @@ spec:
       targetRevision: main
       path: deploy/helm/hci-platform
       helm:
+        releaseName: hci-platform
         valueFiles:
           - $values/environments/prod/values.yaml
     - repoURL: https://github.com/tomturing/hci-platform-env.git
