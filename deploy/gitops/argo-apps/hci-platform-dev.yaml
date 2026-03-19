@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-dev
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci-dev
+  sources:
+    # 应用仓库：提供 Helm Chart
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform
+      helm:
+        valueFiles:
+          - $values/environments/dev/values.yaml
+    # 环境仓库：提供环境差异配置
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

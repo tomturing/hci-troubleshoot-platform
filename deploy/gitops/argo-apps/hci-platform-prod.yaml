@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-prod
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform
+      helm:
+        valueFiles:
+          - $values/environments/prod/values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  # 生产环境默认手动同步，防止未审批变更自动生效
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

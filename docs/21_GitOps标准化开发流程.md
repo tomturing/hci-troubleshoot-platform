@@ -279,3 +279,10 @@ argo-apps/
 1. PR 模板：.github/PULL_REQUEST_TEMPLATE.md
 2. 发布检查与回滚：docs/24_发布检查清单与回滚SOP.md
 3. 执行台账：docs/25_方案21执行台账模板.md
+4. 环境仓库与 Argo 接入：docs/28_环境仓库与ArgoCD接入指南.md
+5. GitOps 模板目录：deploy/gitops/
+6. 环境仓库同步工作流：.github/workflows/env-repo-sync.yml
+7. 环境仓库 tag 同步脚本：scripts/sync-env-repo-tags.sh
+8. 发布后观察与回滚演练手册：docs/30_发布后观察与回滚演练手册.md
+9. 发布后观察脚本：scripts/release-observe.sh
+10. 回滚演练脚本：scripts/rollback-drill.sh
