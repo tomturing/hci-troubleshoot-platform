@@ -16,7 +16,6 @@ import pytest
 from app.services.scheduler_service import REDIS_ALLOCATIONS_KEY, SchedulerService
 from shared.database.redis import RedisManager
 
-
 # ─────────────────────────────────────────────────────────────────
 #  Fixtures
 # ─────────────────────────────────────────────────────────────────

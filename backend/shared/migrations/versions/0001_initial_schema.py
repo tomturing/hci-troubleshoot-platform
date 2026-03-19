@@ -7,7 +7,7 @@
   1. psql -U hci_admin -d hci_troubleshoot -f database/init_schema.sql
   2. export DATABASE_URL=postgresql+asyncpg://hci_admin:...@host:5432/hci_troubleshoot
   3. uv run alembic stamp head   # 标记 Schema 为当前版本，跳过此迁移
-  
+
 已有数据库升级流程：
   uv run alembic upgrade head   # 应用此版本之后的所有增量迁移
 

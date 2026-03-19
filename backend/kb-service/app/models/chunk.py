@@ -5,12 +5,12 @@ KB Service SQLAlchemy 模型 — kb_chunk
 from datetime import UTC, datetime
 
 from pgvector.sqlalchemy import Vector
+from shared.database.postgres import Base
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, SmallInteger, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import relationship
 
 from app.config import settings
-from shared.database.postgres import Base
 
 
 class KBChunk(Base):

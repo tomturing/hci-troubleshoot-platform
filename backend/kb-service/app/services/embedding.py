@@ -43,7 +43,7 @@ class EmbeddingService:
         vector = await service.embed_single("文本")
     """
 
-    def __init__(self, settings: "Settings"):
+    def __init__(self, settings: Settings):
         self._settings = settings
         self._consecutive_failures = 0
         self._local_mode_until: float = 0.0           # Unix timestamp：本地模式截止时间

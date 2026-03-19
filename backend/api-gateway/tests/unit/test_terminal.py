@@ -3,18 +3,16 @@
 Task 37: SSH 代理与终端交互后端能力
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from app.models.terminal import (
     AuthType,
     TerminalSessionCreate,
-    TerminalSessionInfo,
-    TerminalSessionStatus,
     TerminalWSMessage,
     WSMessageType,
 )
-from app.services.terminal import mask_host, hash_host, TerminalService
+from app.services.terminal import TerminalService, hash_host, mask_host
 
 
 class TestHostMasking:

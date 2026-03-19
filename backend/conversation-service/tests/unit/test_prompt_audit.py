@@ -19,7 +19,6 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 

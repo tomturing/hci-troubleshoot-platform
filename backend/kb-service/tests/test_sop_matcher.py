@@ -5,11 +5,9 @@ SOP Matcher 单元测试
 """
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
-
 from app.services.sop_matcher import SopMatcher
 
 

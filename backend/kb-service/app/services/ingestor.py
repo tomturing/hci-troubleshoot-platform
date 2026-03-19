@@ -22,11 +22,10 @@ import hashlib
 import time
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import KBChunk
 from app.models.document import KBDocument
@@ -60,7 +59,7 @@ class IngestResult:
 class IngestorService:
     """文档入库服务"""
 
-    def __init__(self, db_manager: "DatabaseManager", embedding_service: "EmbeddingService"):
+    def __init__(self, db_manager: DatabaseManager, embedding_service: EmbeddingService):
         self._db = db_manager
         self._embedding = embedding_service
         self._splitter = TextSplitter(chunk_size=512, chunk_overlap=128)
@@ -166,7 +165,7 @@ class IngestorService:
             )
 
             # 6. 批量写入 kb_chunk
-            for idx, (chunk_text, embedding) in enumerate(zip(chunks_text, embeddings)):
+            for idx, (chunk_text, embedding) in enumerate(zip(chunks_text, embeddings, strict=False)):
                 # jieba 分词后生成 tsvector（在 DB 端执行 to_tsvector）
                 jieba_tokens = segment(chunk_text)
                 chunk = KBChunk(

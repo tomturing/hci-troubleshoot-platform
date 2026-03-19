@@ -16,6 +16,7 @@ reviewer_cli.py — 交互式人工抽查工具
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import random
 import textwrap
@@ -40,10 +41,8 @@ def _load_reviewed_ids() -> set[str]:
         if path.exists():
             with path.open(encoding="utf-8") as f:
                 for line in f:
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError, KeyError):
                         ids.add(json.loads(line.strip())["id"])
-                    except (json.JSONDecodeError, KeyError):
-                        pass
     return ids
 
 

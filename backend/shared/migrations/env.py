@@ -13,11 +13,12 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
-# 导入所有 ORM 模型，确保 autogenerate 可发现所有表结构
-from backend.shared.database.postgres import Base  # noqa: F401
 import backend.shared.models.kb  # noqa: F401
 import backend.shared.models.schemas  # noqa: F401
 import backend.shared.models.user  # noqa: F401
+
+# 导入所有 ORM 模型，确保 autogenerate 可发现所有表结构
+from backend.shared.database.postgres import Base  # noqa: F401
 
 config = context.config
 

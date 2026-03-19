@@ -2,19 +2,18 @@
 测试 QualityScoreService - 综合质量评分服务
 """
 
-import pytest
 
 from app.services.quality_score import (
+    BASE_WEIGHTS,
+    CLOSE_REASON_SCORE,
     QualityScore,
     QualitySignals,
-    compute_quality_score,
+    _ai_quality_score,
     _duration_score,
     _message_count_score,
     _repeat_question_score,
-    _ai_quality_score,
     _timeout_score,
-    CLOSE_REASON_SCORE,
-    BASE_WEIGHTS,
+    compute_quality_score,
 )
 
 

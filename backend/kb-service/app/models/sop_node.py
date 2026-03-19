@@ -4,9 +4,8 @@ KB Service SQLAlchemy 模型 — kb_sop_node
 
 from datetime import UTC, datetime
 
-from sqlalchemy import ARRAY, Column, DateTime, ForeignKey, Integer, SmallInteger, String, Text
-
 from shared.database.postgres import Base
+from sqlalchemy import ARRAY, Column, DateTime, ForeignKey, Integer, SmallInteger, String, Text
 
 
 class KBSopNode(Base):

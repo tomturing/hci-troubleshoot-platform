@@ -2,12 +2,11 @@
 QualityScoreService 单元测试
 """
 
-import pytest
 
 # 激活 case-service 的 app 命名空间
-from tests.conftest import *  # noqa: F401, F403
-
 from app.services.quality_score import QualitySignals, compute_quality_score
+
+from tests.conftest import *  # noqa: F401, F403
 
 
 class TestComputeQualityScore:
