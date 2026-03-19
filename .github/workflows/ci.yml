@@ -175,11 +175,9 @@ jobs:
         env:
           REDIS_URL: redis://localhost:6379/0
         run: |
-          uv run pytest tests/integration/ \
-            backend/scheduler-service/tests/integration/ \
-            backend/conversation-service/tests/ \
-            -x -q \
-            -m "integration"
+          # 各服务分开进程运行，避免 app/ 命名空间跨服务污染
+          uv run pytest tests/integration/ -x -q -m "integration"
+          uv run pytest backend/scheduler-service/tests/integration/ -x -q -m "integration"
 
   security-tests:
     name: 安全测试（CORS）
