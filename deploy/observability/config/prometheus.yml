@@ -4,6 +4,16 @@ global:
   external_labels:
     project: 'hci-troubleshoot-platform'
 
+# 加载告警规则文件
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
 scrape_configs:
   # Conversation Service - AI TTFT 指标、请求计数
   - job_name: 'conversation-service'

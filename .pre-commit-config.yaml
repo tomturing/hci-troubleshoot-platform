@@ -1,0 +1,59 @@
+# =============================================================================
+# pre-commit hooks 配置
+# =============================================================================
+# 安装方式（一次性）：
+#   pip install pre-commit     # 或 uv tool install pre-commit
+#   pre-commit install         # 安装到本地 .git/hooks/pre-commit
+#
+# 手动执行所有 hook（不提交）：
+#   pre-commit run --all-files
+#
+# 跳过 hook 提交（不推荐，紧急修复时）：
+#   git commit --no-verify
+# =============================================================================
+
+repos:
+  # Python: ruff lint（统一 ESLint + PyFlakes + blacken）
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(backend|tests|data-pipeline)/
+      - id: ruff-format
+        files: ^(backend|tests|data-pipeline)/
+
+  # 通用：尾部空格、文件末尾换行、大文件阻断
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^(docs/archive/|\.pnpm-store/)
+      - id: end-of-file-fixer
+        exclude: ^(docs/archive/|\.pnpm-store/)
+      - id: check-yaml
+        args: [--unsafe]           # 允许 YAML 合并键（Helm values 使用）
+        exclude: ^deploy/helm/
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]        # >500KB 文件阻断（防止误提交二进制）
+
+  # TypeScript/Vue/CSS: Prettier 格式检查（只 check，不 fix—保留 pnpm prettier 控制权）
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        types_or: [ts, tsx, vue, css, json]
+        files: ^frontend/
+        additional_dependencies:
+          - prettier@3.2.5
+          - "@vue/compiler-sfc@3.4.21"
+
+  # 安全：禁止提交密钥（private key、AWS key 等）
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: ^(\.secrets\.baseline|docs/archive/)

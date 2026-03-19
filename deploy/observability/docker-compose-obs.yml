@@ -45,9 +45,28 @@ services:
       - '--web.enable-lifecycle'
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
       - prometheus_data:/prometheus
     networks:
       - hci-troubleshoot-platform_default
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: hci-alertmanager
+    ports:
+      - "9093:9093"
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    environment:
+      - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL:-}
+      - WECOM_WEBHOOK_URL=${WECOM_WEBHOOK_URL:-}
+    volumes:
+      - ./config/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - hci-troubleshoot-platform_default
+    depends_on:
+      - prometheus
 
   grafana:
     image: grafana/grafana:latest

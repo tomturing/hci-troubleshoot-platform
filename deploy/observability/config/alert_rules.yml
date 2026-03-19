@@ -1,0 +1,166 @@
+# =============================================================================
+# Prometheus 告警规则 — HCI 智能排障平台
+# =============================================================================
+# 规则分组：
+#   hci_availability  — 可用性（Pod 崩溃、服务不响应）
+#   hci_performance   — 性能（API 延迟、TTFT 超标）
+#   hci_pool          — 调度器热备池
+#   hci_infrastructure — 基础设施（磁盘、PostgreSQL 连接池）
+# =============================================================================
+
+groups:
+  # ────────────────────────── 可用性告警 ──────────────────────────
+  - name: hci_availability
+    rules:
+      # Pod 非预期重启（OOMKill、CrashLoop）
+      - alert: PodRestartingFrequently
+        expr: |
+          increase(kube_pod_container_status_restarts_total{
+            namespace=~"hci-.*"
+          }[15m]) > 3
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.pod }} 15分钟内重启超过3次"
+          description: "命名空间 {{ $labels.namespace }} 中的 Pod {{ $labels.pod }} 容器 {{ $labels.container }} 频繁重启，请检查日志。"
+
+      # 服务实例全部不可用
+      - alert: ServiceDown
+        expr: |
+          sum by (job) (
+            up{job=~"api-gateway|case-service|conversation-service|scheduler-service|kb-service"}
+          ) == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "服务 {{ $labels.job }} 全部实例不可用"
+          description: "服务 {{ $labels.job }} 的所有 Prometheus 抓取目标均不可达，请立即检查。"
+
+      # 单实例不可用超过5分钟
+      - alert: InstanceDown
+        expr: up{job=~"api-gateway|case-service|conversation-service|scheduler-service|kb-service"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "实例 {{ $labels.instance }} ({{ $labels.job }}) 不可达"
+          description: "Prometheus 无法抓取 {{ $labels.instance }} 的指标，已持续超过5分钟。"
+
+  # ────────────────────────── 性能告警 ──────────────────────────
+  - name: hci_performance
+    rules:
+      # API P95 延迟超过 2秒
+      - alert: HighApiLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, job, method, route) (
+              rate(http_request_duration_seconds_bucket{
+                job=~"api-gateway|case-service|conversation-service"
+              }[5m])
+            )
+          ) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.job }} P95 延迟超过 2s"
+          description: "{{ $labels.job }} 的 {{ $labels.method }} {{ $labels.route }} P95 延迟为 {{ $value | humanizeDuration }}，超过阈值 2s。"
+
+      # AI TTFT（首 token 时间）P95 超过 10秒
+      - alert: HighAIFirstTokenLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (
+              rate(hci_ai_ttft_seconds_bucket[5m])
+            )
+          ) > 10.0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "AI 首 Token 时间 P95 超过10秒"
+          description: "conversation-service 的 AI TTFT P95 = {{ $value | humanizeDuration }}，已超过SLA(10s)。检查上游 AI 服务响应。"
+
+      # HTTP 错误率超过 5%
+      - alert: HighErrorRate
+        expr: |
+          sum by (job) (
+            rate(http_requests_total{status=~"5.."}[5m])
+          ) /
+          sum by (job) (
+            rate(http_requests_total[5m])
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.job }} 5xx 错误率超过 5%"
+          description: "{{ $labels.job }} 的 HTTP 5xx 错误率为 {{ $value | humanizePercentage }}，超过告警阈值 5%。"
+
+  # ────────────────────────── 调度器热备池 ──────────────────────────
+  - name: hci_pool
+    rules:
+      # 热备 Pod 池耗尽（空闲数为0）
+      - alert: WarmPoolExhausted
+        expr: hci_warm_pool_size{state="idle"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "scheduler-service 热备 Pod 池耗尽"
+          description: "热备池中无空闲 Pod，新工单将无法即时分配 AI 助手，用户体验受损。"
+
+      # 热备池空闲数低于最小阈值
+      - alert: WarmPoolLow
+        expr: hci_warm_pool_size{state="idle"} < 2
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "热备 Pod 池空闲数不足（< 2）"
+          description: "当前空闲 Pod 数为 {{ $value }}，低于建议最小值 2。可能是创建延迟或僵尸 Pod 占用。"
+
+  # ────────────────────────── 基础设施 ──────────────────────────
+  - name: hci_infrastructure
+    rules:
+      # 磁盘使用率超过 80%
+      - alert: DiskUsageHigh
+        expr: |
+          (
+            node_filesystem_size_bytes{fstype!~"tmpfs|squashfs|overlay"}
+            - node_filesystem_avail_bytes{fstype!~"tmpfs|squashfs|overlay"}
+          )
+          / node_filesystem_size_bytes{fstype!~"tmpfs|squashfs|overlay"}
+          > 0.80
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "节点 {{ $labels.instance }} 磁盘使用率超过 80%"
+          description: "挂载点 {{ $labels.mountpoint }} 使用率 {{ $value | humanizePercentage }}。数据库和日志存储可能受影响。"
+
+      # 内存使用率超过 85%
+      - alert: MemoryUsageHigh
+        expr: |
+          (1 - (
+            node_memory_MemAvailable_bytes /
+            node_memory_MemTotal_bytes
+          )) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "节点 {{ $labels.instance }} 内存使用率超过 85%"
+          description: "节点内存使用率 {{ $value | humanizePercentage }}，AI claw Pod 可能面临 OOM 风险。"
