@@ -7,9 +7,47 @@ on:
     branches: [master, main]
 
 jobs:
+  docs-governance:
+    name: 文档治理门禁
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 检查关键改动是否同步文档
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+
+          echo "本次 PR 改动文件:"
+          echo "$CHANGED_FILES"
+
+          if [[ -z "$CHANGED_FILES" ]]; then
+            echo "无变更，跳过文档门禁"
+            exit 0
+          fi
+
+          if echo "$CHANGED_FILES" | grep -Eq '^(backend/|frontend/|deploy/|scripts/|database/|\.github/workflows/)'; then
+            if echo "$CHANGED_FILES" | grep -Eq '^(docs/|README\.md$|AGENTS\.md$|CLAUDE\.md$)'; then
+              echo "检测到关键改动且已同步文档，门禁通过"
+              exit 0
+            fi
+
+            echo "检测到关键改动但未同步文档。"
+            echo "请至少更新 docs/ 下相关文档，或更新 README.md/AGENTS.md/CLAUDE.md 中的说明。"
+            exit 1
+          fi
+
+          echo "未检测到关键目录改动，门禁通过"
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    needs: docs-governance
     steps:
       - uses: actions/checkout@v4
 
@@ -24,10 +62,57 @@ jobs:
       - name: Ruff 代码检查
         run: uv run ruff check backend/ tests/ data-pipeline/
 
+  frontend-build:
+    name: 前端构建检查
+    runs-on: ubuntu-latest
+    needs: docs-governance
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: 安装前端依赖
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: 构建前端工作区
+        run: pnpm --dir frontend -r build
+
+  helm-validate:
+    name: Helm 模板校验
+    runs-on: ubuntu-latest
+    needs: docs-governance
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Helm
+        uses: azure/setup-helm@v4
+
+      - name: Helm lint
+        run: helm lint deploy/helm/hci-platform
+
+      - name: Helm template 渲染检查
+        run: |
+          helm template hci-platform deploy/helm/hci-platform \
+            -f deploy/helm/hci-platform/values.yaml \
+            >/tmp/hci-platform-rendered.yaml
+
+          if [ ! -s /tmp/hci-platform-rendered.yaml ]; then
+            echo "Helm 渲染结果为空"
+            exit 1
+          fi
+
   unit-tests:
     name: 单元测试
     runs-on: ubuntu-latest
-    needs: lint
+    needs: [lint, frontend-build, helm-validate]
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +146,7 @@ jobs:
   integration-tests:
     name: 集成测试（含 Redis）
     runs-on: ubuntu-latest
-    needs: lint
+    needs: [lint, frontend-build, helm-validate]
 
     services:
       redis:
@@ -98,7 +183,7 @@ jobs:
   security-tests:
     name: 安全测试（CORS）
     runs-on: ubuntu-latest
-    needs: lint
+    needs: [lint, frontend-build, helm-validate]
     steps:
       - uses: actions/checkout@v4
 
@@ -113,3 +198,35 @@ jobs:
       - name: 运行 CORS 安全测试
         run: |
           uv run pytest tests/security/ -x -q -v
+
+  release-metadata:
+    name: 发布元数据产物
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, security-tests]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 生成发布元数据
+        run: |
+          SHORT_SHA="${GITHUB_SHA::8}"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          cat > release-metadata.json <<EOF
+          {
+            "repository": "${GITHUB_REPOSITORY}",
+            "branch": "${GITHUB_REF_NAME}",
+            "commit_sha": "${GITHUB_SHA}",
+            "short_sha": "${SHORT_SHA}",
+            "build_time_utc": "${BUILD_TIME}",
+            "workflow": "CI",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}"
+          }
+          EOF
+
+      - name: 上传发布元数据
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: release-metadata.json
