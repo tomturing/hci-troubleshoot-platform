@@ -126,14 +126,23 @@ jobs:
 
       - name: 运行单元测试（含覆盖率）
         run: |
+          # 各服务 app/ 包名相同，pytest 单进程 sys.modules 会跨服务污染
+          # 分进程运行保证各自 sys.modules 隔离，--cov-append 合并覆盖率
           uv run pytest tests/unit/ \
-            backend/api-gateway/tests/ \
-            backend/case-service/tests/unit/ \
-            backend/scheduler-service/tests/unit/ \
             -x -q \
-            --cov=backend \
-            --cov-report=xml \
-            --cov-report=term-missing \
+            --cov=backend --cov-report=xml --cov-report=term-missing \
+            -m "not integration and not slow"
+          uv run pytest backend/api-gateway/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -m "not integration and not slow"
+          uv run pytest backend/case-service/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -m "not integration and not slow"
+          uv run pytest backend/scheduler-service/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
             --cov-fail-under=60 \
             -m "not integration and not slow"
 
@@ -178,6 +187,7 @@ jobs:
           # 各服务分开进程运行，避免 app/ 命名空间跨服务污染
           uv run pytest tests/integration/ -x -q -m "integration"
           uv run pytest backend/scheduler-service/tests/integration/ -x -q -m "integration"
+          uv run pytest backend/api-gateway/tests/integration/ -x -q -m "integration"
 
   security-tests:
     name: 安全测试（CORS）

@@ -26,34 +26,6 @@ from app.services.case_service import CaseService
 from shared.models.schemas import CaseCreate
 
 
-class TestCaseIDGeneration:
-    """工单ID生成测试"""
-
-    def test_generate_case_id_format(self):
-        """测试工单ID格式: Q + YYYYMMDD + 5位序号"""
-        mock_repo = Mock()
-        service = CaseService(mock_repo)
-
-        case_id = service._generate_case_id()
-
-        # 检查格式
-        assert case_id.startswith("Q")
-        assert len(case_id) == 14  # Q + 8位日期 + 5位序号
-        assert case_id[1:9].isdigit()  # 日期部分
-        assert case_id[9:].isdigit()  # 序号部分
-
-    def test_generate_case_id_date(self):
-        """测试工单ID包含当前日期"""
-        mock_repo = Mock()
-        service = CaseService(mock_repo)
-
-        case_id = service._generate_case_id()
-        date_part = case_id[1:9]
-
-        today = datetime.now(UTC).strftime("%Y%m%d")
-        assert date_part == today
-
-
 @pytest.mark.asyncio
 class TestCaseCreation:
     """工单创建测试"""
@@ -67,6 +39,7 @@ class TestCaseCreation:
         mock_user = Mock()
         mock_user.user_id = "test-user-id"
         mock_repo.get_user_by_client_id = AsyncMock(return_value=mock_user)
+        mock_repo.generate_case_id = AsyncMock(return_value="Q20260215001")
 
         mock_case = Case(
             case_id="Q20260215001",
@@ -104,6 +77,7 @@ class TestCaseCreation:
         mock_user = Mock()
         mock_user.user_id = "test-user-id"
         mock_repo.get_user_by_client_id = AsyncMock(return_value=mock_user)
+        mock_repo.generate_case_id = AsyncMock(return_value="Q20260215001")
 
         mock_case = Case(
             case_id="Q20260215001",
