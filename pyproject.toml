@@ -15,6 +15,7 @@ dependencies = [
 
     # === 数据库 ===
     "sqlalchemy>=2.0.25,<3.0",
+    "alembic>=1.13.0,<2.0",
     "asyncpg>=0.29.0,<1.0",
     "redis>=5.0.1,<6.0",
 

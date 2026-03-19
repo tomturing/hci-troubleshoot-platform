@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
+# =============================================================================
+# 🔴 高危脚本 — 直接操作【生产集群】
+# =============================================================================
+# 职责：Helm 升级部署到生产 K3s 集群
+# 使用场景：GitOps 路径异常时的应急发布（正常发布走 ArgoCD + 环境仓库 PR）
+# 使用方法：
+#   bash scripts/ops/k3s-deploy-prod.sh
+#   EXECUTE=true bash scripts/ops/k3s-deploy-prod.sh   # 真实执行
+# 影响范围：🔴 生产集群 namespace hci-troubleshoot
+# 依赖：kubectl / helm（已有生产集群访问权限）
+# 回滚方法：helm -n hci-troubleshoot rollback hci-platform <REVISION>
+# =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 RELEASE_NAME="${RELEASE_NAME:-hci-platform}"
 NAMESPACE="${NAMESPACE:-hci-troubleshoot}"

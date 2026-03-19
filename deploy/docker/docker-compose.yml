@@ -1,202 +1,173 @@
 services:
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15
     container_name: hci-postgres
     environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hci_troubleshoot}
       POSTGRES_USER: ${POSTGRES_USER:-hci_admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password_123}
-      POSTGRES_DB: ${POSTGRES_DB:-hci_troubleshoot}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../../database/init_schema.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - hci-troubleshoot-platform_default
+      - ./database/init_schema.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hci_admin} -d ${POSTGRES_DB:-hci_troubleshoot}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7
     container_name: hci-redis
+    command: redis-server --appendonly yes
     ports:
       - "6379:6379"
-    networks:
-      - hci-troubleshoot-platform_default
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api-gateway:
     build:
-      context: ../../backend
+      context: ./backend
       dockerfile: api-gateway/Dockerfile
-    volumes:
-      - ../../backend/api-gateway:/app
-      - ../../backend/shared:/app/shared
     container_name: hci-api-gateway
     ports:
       - "8000:8000"
-    env_file:
-      - ../../.env
     environment:
-      - REDIS_URL=redis://redis:6379/0
-      - CASE_SERVICE_URL=http://case-service:8001
-      - CONVERSATION_SERVICE_URL=http://conversation-service:8002
+      PYTHONPATH: /app
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
+      CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
+      SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002}
     depends_on:
-      - redis
-    networks:
-      - hci-troubleshoot-platform_default
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/api-gateway:/app
+      - ./backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   case-service:
     build:
-      context: ../../backend
+      context: ./backend
       dockerfile: case-service/Dockerfile
-    volumes:
-      - ../../backend/case-service:/app
-      - ../../backend/shared:/app/shared
     container_name: hci-case-service
     ports:
       - "8001:8001"
-    env_file:
-      - ../../.env
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      PYTHONPATH: /app
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
-      - postgres
-    networks:
-      - hci-troubleshoot-platform_default
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/case-service:/app
+      - ./backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
   conversation-service:
     build:
-      context: ../../backend
+      context: ./backend
       dockerfile: conversation-service/Dockerfile
-    volumes:
-      - ../../backend/conversation-service:/app
-      - ../../backend/shared:/app/shared
     container_name: hci-conversation-service
     ports:
       - "8002:8002"
-    env_file:
-      - ../../.env
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
-      - OPENCLAW_BASE_URL=http://openclaw:18789
+      PYTHONPATH: /app
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      OPENCLAW_BASE_URL: ${OPENCLAW_BASE_URL:-http://host.docker.internal:18790}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-hci-dev-openclaw-token}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      - postgres
-      - openclaw
-    networks:
-      - hci-troubleshoot-platform_default
-
-  openclaw:
-    build:
-      context: ${OPENCLAW_REPO_DIR:-../../../../openclaw}
-      dockerfile: Dockerfile
-    container_name: hci-openclaw
-    env_file:
-      - ../../.env
-    environment:
-      - HOME=/home/node
-      - TERM=xterm-256color
-      - OPENCLAW_SKIP_CANVAS_HOST=1
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
-      - ${OPENCLAW_HOST_HOME:-/home/ubuntu}/.openclaw:/home/node/.openclaw
-      - ${OPENCLAW_HOST_HOME:-/home/ubuntu}/.openclaw/workspace:/home/node/.openclaw/workspace
-    expose:
-      - "18789"
-    networks:
-      - hci-troubleshoot-platform_default
-    command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"]
-
-  picoclaw-adapter:
-    build:
-      context: ${AIBOT_ROOT_DIR:-../../..}
-      dockerfile: hci-troubleshoot-platform/adapters/cli_openai_adapter/Dockerfile.picoclaw
-    container_name: hci-picoclaw-adapter
-    restart: unless-stopped
-    env_file:
-      - ../../.env
-    environment:
-      - ADAPTER_HOST=0.0.0.0
-      - ADAPTER_PORT=43101
-      - ADAPTER_MODEL=picoclaw
-      - ADAPTER_BEARER_TOKEN=pc_dev_token
-      - ADAPTER_RESPONSE_PREFIX=🦞
-      - PICOCLAW_UPSTREAM_BASE_URL=http://openclaw:18789/v1
-      - PICOCLAW_UPSTREAM_MODEL=openclaw
-    ports:
-      - "43101:43101"
-    volumes:
-      - picoclaw_data:/root/.picoclaw
-    networks:
-      - hci-troubleshoot-platform_default
-
-  nanobot-adapter:
-    build:
-      context: ${AIBOT_ROOT_DIR:-../../..}
-      dockerfile: hci-troubleshoot-platform/adapters/cli_openai_adapter/Dockerfile.nanobot
-    container_name: hci-nanobot-adapter
-    restart: unless-stopped
-    env_file:
-      - ../../.env
-    environment:
-      - ADAPTER_HOST=0.0.0.0
-      - ADAPTER_PORT=43102
-      - ADAPTER_MODEL=nanobot
-      - ADAPTER_BEARER_TOKEN=nb_dev_token
-      - NANOBOT_UPSTREAM_BASE_URL=http://openclaw:18789/v1
-      - NANOBOT_UPSTREAM_MODEL=openclaw
-    ports:
-      - "43102:43102"
-    volumes:
-      - nanobot_data:/root/.nanobot
-    depends_on:
-      - openclaw
-    networks:
-      - hci-troubleshoot-platform_default
-
-  nanoclaw-adapter:
-    build:
-      context: ${AIBOT_ROOT_DIR:-../../..}
-      dockerfile: hci-troubleshoot-platform/adapters/cli_openai_adapter/Dockerfile.nanoclaw
-    container_name: hci-nanoclaw-adapter
-    restart: unless-stopped
-    env_file:
-      - ../../.env
-    environment:
-      - ADAPTER_HOST=0.0.0.0
-      - ADAPTER_PORT=43103
-      - ADAPTER_MODEL=nanoclaw
-      - ADAPTER_BEARER_TOKEN=nc_dev_token
-      - NANOCLAW_NATIVE_TIMEOUT_SEC=300
-    ports:
-      - "43103:43103"
-    volumes:
-      - nanoclaw_native_data:/home/node/.nanoclaw-native
-      - nanoclaw_workspace:/workspace
-      - ${CLAUDE_HOST_HOME:-/home/ubuntu}/.claude:/home/node/.claude
-      - ${CLAUDE_HOST_HOME:-/home/ubuntu}/.claude.json:/home/node/.claude.json:ro
-    networks:
-      - hci-troubleshoot-platform_default
+      - ./backend/conversation-service:/app
+      - ./backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
 
   scheduler-service:
     build:
-      context: ../../backend
+      context: ./backend
       dockerfile: scheduler-service/Dockerfile
-    volumes:
-      - ../../backend/scheduler-service:/app
-      - ../../backend/shared:/app/shared
-      - /var/run/docker.sock:/var/run/docker.sock
     container_name: hci-scheduler-service
     ports:
       - "8003:8003"
-    env_file:
-      - ../../.env
-    networks:
-      - hci-troubleshoot-platform_default
+    environment:
+      PYTHONPATH: /app
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      K8S_NAMESPACE: ${K8S_NAMESPACE:-hci-troubleshoot}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/scheduler-service:/app
+      - ./backend/shared:/app/shared
+      - /var/run/docker.sock:/var/run/docker.sock # For local dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
+
+  kb-service:
+    build:
+      context: ./backend
+      dockerfile: kb-service/Dockerfile
+    container_name: hci-kb-service
+    ports:
+      - "8004:8004"
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      ZAI_BASE_URL: ${ZAI_BASE_URL:-http://host.docker.internal:18790}
+      ZAI_API_KEY: ${ZAI_API_KEY:-hci-dev-openclaw-token}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
+      SOP_SKILLS_DIR: /data/sop_skills
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/kb-service:/app
+      - ./backend/shared:/app/shared
+      - ./data-pipeline/sop_skills:/data/sop_skills:ro   # SOP 技能目录（只读）
+      - ./data-pipeline/config:/data/config:ro            # jieba 词典等配置（只读）
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload
+
+  # ============ 前端服务 ============
+
+  customer-ui:
+    build:
+      context: ./frontend
+      dockerfile: customer/Dockerfile
+    container_name: hci-customer-ui
+    ports:
+      - "3001:80"
+    depends_on:
+      - api-gateway
+
+  admin-ui:
+    build:
+      context: ./frontend
+      dockerfile: admin/Dockerfile
+    container_name: hci-admin-ui
+    ports:
+      - "3002:80"
+    depends_on:
+      - api-gateway
 
 volumes:
   postgres_data:
-  picoclaw_data:
-  nanobot_data:
-  nanoclaw_native_data:
-  nanoclaw_workspace:
-
-networks:
-  hci-troubleshoot-platform_default:
-    external: true
+  redis_data:

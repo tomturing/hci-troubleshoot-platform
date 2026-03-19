@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release release-observe rollback-drill
+.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill sync-claw-configs check-claw-configs
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -19,7 +19,8 @@ help:
 	@echo "  make quality-gate   - 运行质量门禁（lint + test）"
 	@echo "  make conflict-check - Worktree 冲突预检"
 	@echo "  make post-merge     - 合并后集成验证"
-	@echo "  make k3s-release    - 一键发布到 K3s（构建+导入+升级+校验）"
+	@echo "  make k3s-release    - 应急发布到 K3s（本地构建+导入+升级+校验）"
+	@echo "  make k3s-deploy-prod- 🔴 生产 Helm 升级（会弹出 5 秒确认，需集群权限）"
 	@echo "  make release-observe- 发布后观察（默认30分钟采样）"
 	@echo "  make rollback-drill - 回滚演练（默认演练模式，不执行真实回滚）"
 
@@ -83,27 +84,38 @@ vk-restart:
 
 quality-gate:
 	@echo "运行质量门禁..."
-	bash scripts/agent-quality-gate.sh
+	bash scripts/ci/agent-quality-gate.sh
 
 conflict-check:
 	@echo "运行 Worktree 冲突预检..."
-	bash scripts/check-worktree-conflicts.sh
+	bash scripts/ci/check-worktree-conflicts.sh
 
 post-merge:
 	@echo "运行合并后集成验证..."
-	bash scripts/post-merge-verify.sh
+	bash scripts/ci/post-merge-verify.sh
 
 k3s-release:
-	@echo "执行一键 K3s 发布流程..."
-	bash scripts/k3s-release.sh
+	@echo "⚠️  应急发布路径（正常发布请走 GitOps：环境仓库 PR → ArgoCD 同步）"
+	@echo "执行 K3s 一键发布流程..."
+	bash scripts/ops/k3s-release.sh
+
+k3s-deploy-prod:
+	@echo ""
+	@echo "🔴🔴🔴  即将直接升级【生产集群】Helm Release  🔴🔴🔴"
+	@echo "    正常发布路径：GitOps 环境仓库 PR → ArgoCD 同步"
+	@echo "    此命令仅用于 ArgoCD 不可用的极端应急情况"
+	@echo ""
+	@echo "按 Ctrl+C 取消，或等待 5 秒后继续..."
+	@sleep 5
+	bash scripts/ops/k3s-deploy-prod.sh
 
 release-observe:
 	@echo "执行发布后观察..."
-	bash scripts/release-observe.sh
+	bash scripts/ops/release-observe.sh
 
 rollback-drill:
 	@echo "执行回滚演练（默认不执行真实回滚）..."
-	bash scripts/rollback-drill.sh
+	bash scripts/ops/rollback-drill.sh
 
 # ======================== Claw 配置管理 =====================================
 

@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # =============================================================================
-# HCI 平台 — K3s 一键发布脚本（构建→导入→更新 tag→部署→验证）
+# 🔴 高危脚本 — 直接操作集群（本地构建 → 导入 K3s → Helm 升级）
 # =============================================================================
+# 职责：K3s 一键发布（本地 Docker 构建 → ctr 导入 → Helm upgrade → 验证）
+# 使用场景：⚠️ 应急兜底路径，正常发布请走 GitOps（环境仓库 PR → ArgoCD 同步）
+#           使用此脚本后必须将 image tag 补录到环境仓库，避免配置漂移
 # 使用示例:
-#   bash scripts/k3s-release.sh
-#   bash scripts/k3s-release.sh --services all
-#   bash scripts/k3s-release.sh --services customerUI,apiGateway
-#   bash scripts/k3s-release.sh --tag 2026.03.15-ssh-bridge --skip-verify
-#
+#   bash scripts/ops/k3s-release.sh
+#   bash scripts/ops/k3s-release.sh --services all
+#   bash scripts/ops/k3s-release.sh --services customerUI,apiGateway
+#   bash scripts/ops/k3s-release.sh --tag 2026.03.15-ssh-bridge --skip-verify
+# 影响范围：🔴 生产集群（构建并部署新镜像）
+# 依赖：docker / k3s / helm
+# 回滚方法：helm -n hci-troubleshoot rollback hci-platform <REVISION>
+# =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -46,7 +46,7 @@ jobs:
           TARGET_ENV: ${{ inputs.target_env }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           SERVICES_CSV: ${{ inputs.services_csv }}
-        run: bash scripts/sync-env-repo-tags.sh
+        run: bash scripts/ops/sync-env-repo-tags.sh
 
       - name: 创建环境仓库 PR
         uses: peter-evans/create-pull-request@v6

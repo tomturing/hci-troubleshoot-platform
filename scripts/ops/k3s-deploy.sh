@@ -1,11 +1,13 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # =============================================================================
-# HCI 平台 — Helm 部署管理脚本
+# 🟡 运维脚本 — Helm 部署管理
 # =============================================================================
-# 使用方法:
-#   bash scripts/k3s-deploy.sh [--env dev|prod] install    # 首次安装
-#   bash scripts/k3s-deploy.sh [--env dev|prod] upgrade    # 升级
-#   bash scripts/k3s-deploy.sh uninstall                   # 卸载
+# 职责：对 K3s 集群执行 Helm install / upgrade / uninstall
+# 使用场景：首次安装或手动升级；正常日常发布请走 GitOps（环境仓库 PR → ArgoCD）
+# 使用方法：
+#   bash scripts/ops/k3s-deploy.sh [--env dev|prod] install   # 首次安装
+#   bash scripts/ops/k3s-deploy.sh [--env dev|prod] upgrade   # 升级
+#   bash scripts/ops/k3s-deploy.sh uninstall                  # 卸载
 #   bash scripts/k3s-deploy.sh status                      # 查看状态
 #   bash scripts/k3s-deploy.sh lint                        # Helm lint 检查
 #   bash scripts/k3s-deploy.sh template                    # 渲染模板到 stdout

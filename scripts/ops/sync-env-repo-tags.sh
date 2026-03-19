@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
-# 将镜像 tag 同步到环境仓库 values.yaml（按环境/服务维度）
-
-set -euo pipefail
+# =============================================================================
+# 🟢 运维脚本 — 期展镜像 Tag 到环境仓库
+# =============================================================================
+# 职责：将镜像 Tag 同步写入环境仓库的 values.yaml（按环境/服务维度）
+# 使用场景：CI 流水线中自动调用（人工一般不直接运行）
+# 使用方法：
+#   ENV_REPO_PATH=/path/to/env-repo TARGET_ENV=dev IMAGE_TAG=20260319-1430-abc1234 \
+#     SERVICES_CSV=apiGateway,caseService bash scripts/ops/sync-env-repo-tags.sh
+# 影响范围：🟡 第三方环境仓库（hci-platform-env）的 values.yaml
+# =============================================================================
 
 ENV_REPO_PATH="${ENV_REPO_PATH:-}"
 TARGET_ENV="${TARGET_ENV:-dev}"

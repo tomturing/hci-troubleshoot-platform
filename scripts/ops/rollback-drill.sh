@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# 回滚演练脚本
-# 默认仅演练，不执行真实回滚。
-# 用法：
-#   NAMESPACE=hci RELEASE_NAME=hci-platform bash scripts/rollback-drill.sh
-#   NAMESPACE=hci RELEASE_NAME=hci-platform EXECUTE=true TARGET_REVISION=12 bash scripts/rollback-drill.sh
+# =============================================================================
+# 🟡 运维脚本 — 回滚演练
+# =============================================================================
+# 职责：回滚演练（默认仅演练，不执行真实回滚）
+# 使用场景：周期回滚演练，或异常时执行真实回滚
+# 使用方法：
+#   NAMESPACE=hci RELEASE_NAME=hci-platform bash scripts/ops/rollback-drill.sh
+#   NAMESPACE=hci RELEASE_NAME=hci-platform EXECUTE=true TARGET_REVISION=12 bash scripts/ops/rollback-drill.sh
+# 影响范围：🟢 默认仅演练；🔴 EXECUTE=true 时执行真实回滚
+# =============================================================================
 
 set -euo pipefail
 
