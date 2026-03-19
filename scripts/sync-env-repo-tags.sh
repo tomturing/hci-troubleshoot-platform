@@ -10,6 +10,10 @@ SERVICES_CSV="${SERVICES_CSV:-apiGateway,caseService,conversationService,schedul
 
 if [[ -z "$ENV_REPO_PATH" ]]; then
   echo "ENV_REPO_PATH 未设置"
+  echo "推荐固定路径: /mnt/d/aihci/hci-platform-env"
+  echo "示例:"
+  echo "  git clone git@github.com:<your-org>/hci-platform-env.git /mnt/d/aihci/hci-platform-env"
+  echo "  ENV_REPO_PATH=/mnt/d/aihci/hci-platform-env TARGET_ENV=dev IMAGE_TAG=2026.03.19-smoke bash scripts/sync-env-repo-tags.sh"
   exit 1
 fi
 

@@ -250,7 +250,7 @@ HAS_RUST_CHANGES=false
 
 detect_changes() {
     local base_branch="${VK_BASE_BRANCH:-main}"
-    git rev-parse --verify "$base_branch" &>/dev/null || base_branch="master"
+    git rev-parse --verify "$base_branch" &>/dev/null || base_branch="main"
 
     local changed
     if git merge-base --is-ancestor "$base_branch" HEAD 2>/dev/null; then

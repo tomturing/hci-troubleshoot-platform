@@ -29,6 +29,12 @@ require_cmd() {
 require_cmd kubectl
 require_cmd helm
 
+if ! helm -n "$NAMESPACE" status "$RELEASE_NAME" >/dev/null 2>&1; then
+  log "未找到 release: ${RELEASE_NAME}（namespace=${NAMESPACE}）"
+  log "请先确认命名空间和 release 名称，或先完成部署后再执行发布观察。"
+  exit 1
+fi
+
 TOTAL_SECONDS=$((WINDOW_MINUTES * 60))
 if [[ "$SAMPLE_INTERVAL_SECONDS" -le 0 ]]; then
   log "SAMPLE_INTERVAL_SECONDS 必须大于 0"

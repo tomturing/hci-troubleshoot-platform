@@ -9,9 +9,16 @@
 1. 集群可访问：`kubectl cluster-info` 正常。
 2. Argo CD 命名空间存在：`kubectl get ns argocd`。
 3. 代码仓库可访问：`tomturing/hci-troubleshoot-platform`。
-4. 环境仓库可访问：`tomturing/hci-platform-env`。
+4. 环境仓库可访问：`<your-org>/hci-platform-env`（或你实际命名）。
+5. 建议本机固定目录已准备：`/mnt/d/aihci/hci-platform-env`。
+6. 若目录不存在，先执行克隆：
+	`git clone git@github.com:<your-org>/hci-platform-env.git /mnt/d/aihci/hci-platform-env`
 5. GitHub Secret 已配置：`ENV_REPO_PAT`。
-6. 可选仓库变量：`ENV_REPO_NAME`（如不配置，默认使用 `tomturing/hci-platform-env`）。
+6. 已明确环境仓库名（用于 Actions 的 `env_repo_name` 输入参数）。
+7. 若仓库为私有，已在 argocd 命名空间配置 repo-creds Secret。
+8. 已核对 PAT scope：
+	- Argo PAT：`Contents(Read)` + `Metadata(Read)`
+	- ENV_REPO_PAT：`Contents(Read/Write)` + `Pull requests(Read/Write)` + `Metadata(Read)`
 
 ---
 
@@ -34,6 +41,14 @@ kubectl -n argocd get applications
 3. 期望结果：
 - dev/staging：`Synced` 且 `Healthy`（允许短时进度状态）
 - prod：存在应用对象，但默认不自动同步
+
+若出现 `authentication required`：
+
+1. 复制模板到本地正式文件：
+	`cp deploy/gitops/argocd-repo-creds.example.yaml deploy/gitops/local/argocd-repo-creds.yaml`
+2. 填写真实 PAT 后执行：
+	`kubectl apply -f deploy/gitops/local/argocd-repo-creds.yaml`
+3. 等待 10-30 秒后重新检查 Application 条件。
 
 ---
 

@@ -3,6 +3,9 @@ name: Env Repo Sync
 on:
   workflow_dispatch:
     inputs:
+      env_repo_name:
+        description: "环境仓库名（格式：owner/repo）"
+        required: true
       target_env:
         description: "目标环境（dev/staging/prod）"
         required: true
@@ -20,14 +23,20 @@ jobs:
     name: 同步环境仓库镜像标签
     runs-on: ubuntu-latest
     steps:
+      - name: 校验输入参数
+        run: |
+          if [[ -z "${{ inputs.env_repo_name }}" ]]; then
+            echo "env_repo_name 不能为空，格式应为 owner/repo"
+            exit 1
+          fi
+
       - name: Checkout 应用仓库
         uses: actions/checkout@v4
 
       - name: Checkout 环境仓库
         uses: actions/checkout@v4
         with:
-          # 默认仓库可直接使用；也可通过仓库变量 ENV_REPO_NAME 覆盖
-          repository: ${{ vars.ENV_REPO_NAME || 'tomturing/hci-platform-env' }}
+          repository: ${{ inputs.env_repo_name }}
           token: ${{ secrets.ENV_REPO_PAT }}
           path: env-repo
 

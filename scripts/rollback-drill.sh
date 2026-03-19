@@ -34,6 +34,12 @@ require_cmd helm
 log "开始回滚演练"
 log "namespace=${NAMESPACE}, release=${RELEASE_NAME}, execute=${EXECUTE}"
 
+if ! helm -n "$NAMESPACE" status "$RELEASE_NAME" >/dev/null 2>&1; then
+  log "未找到 release: ${RELEASE_NAME}（namespace=${NAMESPACE}）"
+  log "请先确认命名空间和 release 名称，或先执行一次部署后再进行回滚演练。"
+  exit 1
+fi
+
 log "=== 发布历史 ==="
 helm -n "$NAMESPACE" history "$RELEASE_NAME" | tee -a "$REPORT_FILE"
 

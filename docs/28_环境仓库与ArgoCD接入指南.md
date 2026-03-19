@@ -21,6 +21,26 @@
 2. 集群可访问且具备安装 Argo CD 权限。
 3. 已准备环境仓库（建议名称：hci-platform-env）。
 
+PAT 权限建议（必须区分用途）：
+
+1. Argo 仓库读取 PAT（用于 `argocd-repo-creds`）：
+- Fine-grained PAT（推荐）：
+	- Repository access：仅勾选 `hci-troubleshoot-platform`、`hci-platform-env`
+	- Permissions：`Contents: Read-only`、`Metadata: Read-only`
+- Classic PAT（备选）：`repo`（仅当无法使用 Fine-grained）
+
+2. Actions 环境仓库写入 PAT（用于 `ENV_REPO_PAT`）：
+- Fine-grained PAT（推荐）：
+	- Repository access：仅勾选 `hci-platform-env`
+	- Permissions：`Contents: Read and write`、`Pull requests: Read and write`、`Metadata: Read-only`
+- Classic PAT（备选）：`repo`
+
+若环境仓库尚不存在，可选以下路径：
+
+1. 标准路径（推荐）：新建私有仓库 `hci-platform-env`，按双仓模式接入。
+2. 过渡路径：先在当前应用仓库中维护环境文件（`deploy/gitops/env-repo-template`），验证链路后再迁出独立仓库。
+3. 本地演练路径：仅在本地目录执行 `sync-env-repo-tags.sh`，先验证脚本逻辑，再接入远程仓库。
+
 ---
 
 ## 3. 目录与模板来源
@@ -44,6 +64,7 @@
 1. 新建私有仓库 `hci-platform-env`。
 2. 将 `deploy/gitops/env-repo-template/environments/*` 复制到环境仓库根目录。
 3. 按环境填写镜像 tag 与必要差异配置。
+4. 建议本机固定路径：`/mnt/d/aihci/hci-platform-env`（便于脚本和人工操作统一）。
 
 ## Step 2：安装或确认 Argo CD
 
@@ -68,6 +89,42 @@ kubectl apply -f deploy/gitops/argo-apps/hci-platform-staging.yaml
 kubectl apply -f deploy/gitops/argo-apps/hci-platform-prod.yaml
 ```
 
+## Step 4.5：配置私有仓库认证（若仓库为 private）
+
+当 Application 条件出现 `authentication required` 时，需为 Argo CD 配置 GitHub 凭据：
+
+1. 复制模板并填写账号与 PAT：
+- [../deploy/gitops/argocd-repo-creds.example.yaml](../deploy/gitops/argocd-repo-creds.example.yaml)
+
+推荐采用“本地正式文件（不提交）”方式：
+
+1. 复制模板到本地目录：
+
+```bash
+cp deploy/gitops/argocd-repo-creds.example.yaml deploy/gitops/local/argocd-repo-creds.yaml
+```
+
+2. 编辑 `deploy/gitops/local/argocd-repo-creds.yaml` 填写真实 PAT。
+
+3. 应用到集群：
+
+```bash
+kubectl apply -f deploy/gitops/local/argocd-repo-creds.yaml
+```
+
+4. 若你使用的是 Fine-grained PAT，请确认 PAT 覆盖了两个仓库且未过期。
+
+5. 重新检查应用条件：
+
+```bash
+kubectl -n argocd get applications
+kubectl -n argocd get application hci-platform-dev -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\\n"}{end}'
+```
+
+本地目录规范见：
+
+- [../deploy/gitops/local/README.md](../deploy/gitops/local/README.md)
+
 ## Step 5：同步策略校验
 
 1. dev/staging：应为自动同步。
@@ -88,8 +145,13 @@ kubectl apply -f deploy/gitops/argo-apps/hci-platform-prod.yaml
 使用方式：
 
 1. 进入 Actions -> `Env Repo Sync`。
-2. 填写 `target_env`、`image_tag`、`services_csv`。
+2. 填写 `env_repo_name`（owner/repo）、`target_env`、`image_tag`、`services_csv`。
 3. 工作流会自动修改环境仓库 values 并创建 PR。
+
+本地手动执行时：
+
+1. 将环境仓库克隆到 `/mnt/d/aihci/hci-platform-env`。
+2. 通过 `ENV_REPO_PATH=/mnt/d/aihci/hci-platform-env` 调用同步脚本。
 
 ---
 
