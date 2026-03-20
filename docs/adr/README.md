@@ -20,3 +20,4 @@
 | [ADR-002](002-GitOps双仓模型.md) | GitOps 双仓模型设计 | accepted | 2026-03 |
 | [ADR-003](003-RAG对接架构决策.md) | AI 层与 RAG 层对接方式三阶段演进 | accepted | 2026-03 |
 | [ADR-004](004-工作流方案选型.md) | 发布工作流方案选型（方案21 vs 方案22） | accepted | 2026-03 |
+| [ADR-005](005-Helm-Chart资源归属拆分.md) | Helm Chart 资源归属拆分（ArgoCD 资源竞争消除） | accepted | 2026-03 |
