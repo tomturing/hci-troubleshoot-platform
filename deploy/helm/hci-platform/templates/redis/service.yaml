@@ -1,4 +1,4 @@
-{{- if .Values.redis.enabled }}
+{{- if and .Values.dataLayer.manage .Values.redis.enabled }}
 # Headless Service for StatefulSet DNS resolution
 apiVersion: v1
 kind: Service

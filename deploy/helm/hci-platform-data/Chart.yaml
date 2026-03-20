@@ -1,0 +1,6 @@
+apiVersion: v2
+name: hci-platform-data
+description: HCI 平台数据层 — PostgreSQL（含 pgvector）+ Redis，各环境独立 Application 管理
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

@@ -1,12 +1,12 @@
-{{- if and .Values.dataLayer.manage .Values.postgres.enabled }}
+{{- if .Values.postgres.enabled }}
 # PostgreSQL 初始化脚本 — 首次启动时自动执行
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: postgres-init-sql
-  namespace: {{ include "hci.namespace" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "hci.labels" . | nindent 4 }}
+    {{- include "hci-data.labels" . | nindent 4 }}
 data:
   init.sql: |
     -- HCI Troubleshoot Platform - Database Initialization Script

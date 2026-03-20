@@ -1,0 +1,33 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-data-staging
+#
+# 管理 staging 环境数据层（namespace: hci-staging）：
+#   - PostgreSQL StatefulSet + Headless Service + init ConfigMap + 备份 CronJob
+#   - Redis StatefulSet + Headless Service
+#
+# ⚠️  安全策略：prune: false — 禁止自动删除数据层资源
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-data-staging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "staging 数据层 — PostgreSQL + Redis（namespace: hci-staging）"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci-staging
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-data
+      helm:
+        releaseName: hci-platform-data
+  syncPolicy:
+    automated:
+      prune: false      # 禁止自动删除数据层资源，PVC 安全第一
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

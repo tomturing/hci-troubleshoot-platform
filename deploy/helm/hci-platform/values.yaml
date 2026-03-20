@@ -43,6 +43,15 @@ global:
 # manage: true         → 本 Chart 自行渲染（仅用于本地 helm install 调试）
 clusterResources:
   manage: false
+
+# ======================== 数据层资源管理开关 ==================================
+# 数据层（PostgreSQL / Redis / 备份 CronJob）已迁移到
+# 独立 Chart hci-platform-data，由各环境专属 ArgoCD Application 管理。
+#
+# manage: false（默认）→ 本 Chart 不渲染数据层资源，由 hci-platform-data 负责
+# manage: true         → 本 Chart 自行渲染（仅用于本地 helm install 调试）
+dataLayer:
+  manage: false
 workloadDefaults:
   securityContext:
     enabled: true

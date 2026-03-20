@@ -1,5 +1,5 @@
 {{- $backup := .Values.postgres.backup | default dict -}}
-{{- if and .Values.dataLayer.manage $backup.enabled -}}
+{{- if $backup.enabled -}}
 # PostgreSQL 定时全量备份 CronJob
 # 使用 pg_dump 将数据库导出到宿主机 hostPath 目录
 # 执行计划默认为每天 02:00 UTC，可通过 values.yaml postgres.backup.schedule 调整
@@ -7,9 +7,9 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: postgres-backup
-  namespace: {{ include "hci.namespace" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "hci.labels" . | nindent 4 }}
+    {{- include "hci-data.labels" . | nindent 4 }}
     app.kubernetes.io/component: backup
 spec:
   schedule: {{ $backup.schedule | default "0 2 * * *" | quote }}
@@ -21,7 +21,7 @@ spec:
       template:
         metadata:
           labels:
-            {{- include "hci.podLabels" (dict "name" "postgres-backup" "Release" .Release "Chart" .Chart) | nindent 12 }}
+            {{- include "hci-data.podLabels" (dict "name" "postgres-backup" "Release" .Release "Chart" .Chart) | nindent 12 }}
         spec:
           restartPolicy: OnFailure
           containers:

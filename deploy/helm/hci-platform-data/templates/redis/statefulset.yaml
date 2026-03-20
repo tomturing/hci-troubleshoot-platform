@@ -1,21 +1,24 @@
-{{- if and .Values.dataLayer.manage .Values.redis.enabled }}
+{{- if .Values.redis.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: redis
-  namespace: {{ include "hci.namespace" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "hci.podLabels" (dict "name" "redis" "Release" .Release "Chart" .Chart) | nindent 4 }}
+    {{- include "hci-data.podLabels" (dict "name" "redis" "Release" .Release "Chart" .Chart) | nindent 4 }}
+  annotations:
+    # PVC 保护：helm uninstall 时保留数据卷，防止误删
+    helm.sh/resource-policy: keep
 spec:
   serviceName: redis
   replicas: 1
   selector:
     matchLabels:
-      {{- include "hci.selectorLabels" (dict "name" "redis" "Release" .Release) | nindent 6 }}
+      {{- include "hci-data.selectorLabels" (dict "name" "redis" "Release" .Release) | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "hci.podLabels" (dict "name" "redis" "Release" .Release "Chart" .Chart) | nindent 8 }}
+        {{- include "hci-data.podLabels" (dict "name" "redis" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
       containers:
         - name: redis
@@ -46,6 +49,9 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: redis-data
+        annotations:
+          # PVC 保护：prevent Helm / ArgoCD prune 操作删除数据卷
+          helm.sh/resource-policy: keep
       spec:
         accessModes: ["ReadWriteOnce"]
         storageClassName: {{ .Values.redis.storageClass }}
