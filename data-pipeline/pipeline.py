@@ -31,7 +31,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
-from typing import Callable
+from collections.abc import Callable
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,9 +83,9 @@ def run(
         各阶段执行结果列表
     """
     # 延迟导入，避免在只运行部分阶段时加载不必要的模块
-    import fetcher
     import converter
     import enricher
+    import fetcher
     import ingestor
 
     stage_map = {

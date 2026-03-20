@@ -1,0 +1,342 @@
+{{- if .Values.postgres.enabled }}
+# PostgreSQL 初始化脚本 — 首次启动时自动执行
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-sql
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hci-data.labels" . | nindent 4 }}
+data:
+  init.sql: |
+    -- HCI Troubleshoot Platform - Database Initialization Script
+    -- Version: 2.0 (AI Assistant Pod Pool)
+    -- Database: PostgreSQL 15
+
+    -- ============================================================================
+    -- 1. 创建扩展
+    -- ============================================================================
+
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+
+    SET timezone = 'UTC';
+
+    -- ============================================================================
+    -- 2. 创建枚举类型
+    -- ============================================================================
+
+    CREATE TYPE case_status AS ENUM (
+        'created',
+        'confirmed',
+        'in_progress',
+        'resolved',
+        'closed',
+        'cancelled'
+    );
+
+    CREATE TYPE message_role AS ENUM (
+        'user',
+        'assistant',
+        'system',
+        'command'
+    );
+
+    -- ============================================================================
+    -- 3. 创建触发器函数
+    -- ============================================================================
+
+    CREATE OR REPLACE FUNCTION update_updated_at_column()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = CURRENT_TIMESTAMP;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    CREATE OR REPLACE FUNCTION generate_case_id()
+    RETURNS VARCHAR AS $$
+    DECLARE
+        date_part VARCHAR(8);
+        seq_part VARCHAR(5);
+        next_seq INT;
+    BEGIN
+        date_part := TO_CHAR(CURRENT_DATE, 'YYYYMMDD');
+
+        SELECT COALESCE(MAX(SUBSTRING(case_id FROM 10 FOR 5)::INT), 0) + 1
+        INTO next_seq
+        FROM "case"
+        WHERE case_id LIKE 'Q' || date_part || '%';
+
+        seq_part := LPAD(next_seq::TEXT, 5, '0');
+
+        RETURN 'Q' || date_part || seq_part;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    -- ============================================================================
+    -- 4. 创建表
+    -- ============================================================================
+
+    -- 用户表
+    CREATE TABLE IF NOT EXISTS "user" (
+        user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        client_id VARCHAR(255) UNIQUE NOT NULL,
+        username VARCHAR(100),
+        email VARCHAR(255),
+        user_type VARCHAR(20) NOT NULL DEFAULT 'temporary',
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        last_login_at TIMESTAMP WITH TIME ZONE,
+        trace_id VARCHAR(64)
+    );
+
+    CREATE INDEX idx_user_client_id ON "user"(client_id);
+    CREATE INDEX idx_user_trace_id ON "user"(trace_id);
+    CREATE INDEX idx_user_type ON "user"(user_type);
+
+    CREATE TRIGGER update_user_updated_at BEFORE UPDATE ON "user"
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+    COMMENT ON TABLE "user" IS '用户表，存储临时用户和认证用户信息';
+    COMMENT ON COLUMN "user".client_id IS '客户端生成的唯一标识';
+
+    -- 工单表
+    CREATE TABLE IF NOT EXISTS "case" (
+        case_id VARCHAR(20) PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES "user"(user_id) ON DELETE CASCADE,
+        client_id VARCHAR(255) NOT NULL,
+        title VARCHAR(500) NOT NULL,
+        description TEXT,
+        status case_status NOT NULL DEFAULT 'created',
+        priority VARCHAR(20) DEFAULT 'medium',
+        category VARCHAR(100),
+        assistant_type VARCHAR(50) NOT NULL DEFAULT 'openclaw',
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        confirmed_at TIMESTAMP WITH TIME ZONE,
+        resolved_at TIMESTAMP WITH TIME ZONE,
+        closed_at TIMESTAMP WITH TIME ZONE,
+        trace_id VARCHAR(64)
+    );
+
+    CREATE INDEX idx_case_user_id ON "case"(user_id);
+    CREATE INDEX idx_case_client_id ON "case"(client_id);
+    CREATE INDEX idx_case_status ON "case"(status);
+    CREATE INDEX idx_case_created_at ON "case"(created_at DESC);
+    CREATE INDEX idx_case_trace_id ON "case"(trace_id);
+    CREATE INDEX idx_case_category ON "case"(category);
+    CREATE INDEX idx_case_client_status ON "case"(client_id, status);
+    CREATE INDEX idx_case_assistant_type ON "case"(assistant_type);
+
+    CREATE TRIGGER update_case_updated_at BEFORE UPDATE ON "case"
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+    COMMENT ON TABLE "case" IS '工单表，记录排障请求';
+
+    -- 对话会话表
+    CREATE TABLE IF NOT EXISTS conversation (
+        conversation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        case_id VARCHAR(20) NOT NULL REFERENCES "case"(case_id) ON DELETE CASCADE,
+        pod_id VARCHAR(100),
+        assistant_type VARCHAR(50) NOT NULL DEFAULT 'openclaw',
+        started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        ended_at TIMESTAMP WITH TIME ZONE,
+        message_count INT DEFAULT 0,
+        metadata JSONB DEFAULT '{}'::jsonb,
+        trace_id VARCHAR(64)
+    );
+
+    CREATE INDEX idx_conversation_case_id ON conversation(case_id);
+    CREATE INDEX idx_conversation_pod_id ON conversation(pod_id);
+    CREATE INDEX idx_conversation_assistant_type ON conversation(assistant_type);
+    CREATE INDEX idx_conversation_started_at ON conversation(started_at DESC);
+    CREATE INDEX idx_conversation_trace_id ON conversation(trace_id);
+    CREATE INDEX idx_conversation_case_started ON conversation(case_id, started_at DESC);
+
+    COMMENT ON TABLE conversation IS '对话会话表，一个Case可以有多个会话';
+
+    -- 消息表
+    CREATE TABLE IF NOT EXISTS message (
+        message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id UUID NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        case_id VARCHAR(20) NOT NULL,
+        role message_role NOT NULL,
+        content TEXT NOT NULL,
+        command TEXT,
+        command_warning TEXT,
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        trace_id VARCHAR(64),
+
+        CONSTRAINT check_command_content CHECK (
+            (role = 'command' AND command IS NOT NULL) OR
+            (role != 'command')
+        )
+    );
+
+    CREATE INDEX idx_message_conversation_id ON message(conversation_id);
+    CREATE INDEX idx_message_case_id ON message(case_id);
+    CREATE INDEX idx_message_role ON message(role);
+    CREATE INDEX idx_message_created_at ON message(created_at DESC);
+    CREATE INDEX idx_message_trace_id ON message(trace_id);
+    CREATE INDEX idx_message_case_created ON message(case_id, created_at DESC);
+    CREATE INDEX idx_message_content_search ON message USING gin(to_tsvector('english', content));
+
+    -- 消息计数触发器
+    CREATE OR REPLACE FUNCTION update_conversation_message_count()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        IF TG_OP = 'INSERT' THEN
+            UPDATE conversation
+            SET message_count = message_count + 1
+            WHERE conversation_id = NEW.conversation_id;
+        ELSIF TG_OP = 'DELETE' THEN
+            UPDATE conversation
+            SET message_count = message_count - 1
+            WHERE conversation_id = OLD.conversation_id;
+        END IF;
+        RETURN NULL;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    CREATE TRIGGER update_message_count_on_insert
+        AFTER INSERT ON message
+        FOR EACH ROW EXECUTE FUNCTION update_conversation_message_count();
+
+    CREATE TRIGGER update_message_count_on_delete
+        AFTER DELETE ON message
+        FOR EACH ROW EXECUTE FUNCTION update_conversation_message_count();
+
+    COMMENT ON TABLE message IS '消息表，存储所有对话消息';
+
+    -- 环境信息表
+    CREATE TABLE IF NOT EXISTS environment (
+        environment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        case_id VARCHAR(20) NOT NULL REFERENCES "case"(case_id) ON DELETE CASCADE,
+        env_type VARCHAR(50) NOT NULL,
+        env_data JSONB NOT NULL,
+        collected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        trace_id VARCHAR(64)
+    );
+
+    CREATE INDEX idx_environment_case_id ON environment(case_id);
+    CREATE INDEX idx_environment_type ON environment(env_type);
+    CREATE INDEX idx_environment_collected_at ON environment(collected_at DESC);
+    CREATE INDEX idx_environment_trace_id ON environment(trace_id);
+    CREATE INDEX idx_environment_data_gin ON environment USING gin(env_data);
+
+    COMMENT ON TABLE environment IS '环境信息表，存储客户现场环境数据';
+
+    -- 会话表
+    CREATE TABLE IF NOT EXISTS session (
+        session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        client_id VARCHAR(255) NOT NULL,
+        user_id UUID REFERENCES "user"(user_id) ON DELETE SET NULL,
+        case_id VARCHAR(20) REFERENCES "case"(case_id) ON DELETE SET NULL,
+        websocket_id VARCHAR(100),
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        ip_address INET,
+        user_agent TEXT,
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        last_activity_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP WITH TIME ZONE,
+        trace_id VARCHAR(64)
+    );
+
+    CREATE INDEX idx_session_client_id ON session(client_id);
+    CREATE INDEX idx_session_user_id ON session(user_id);
+    CREATE INDEX idx_session_case_id ON session(case_id);
+    CREATE INDEX idx_session_status ON session(status);
+    CREATE INDEX idx_session_expires_at ON session(expires_at);
+    CREATE INDEX idx_session_trace_id ON session(trace_id);
+
+    COMMENT ON TABLE session IS '会话表，记录WebSocket连接信息';
+
+    -- AI助手评估表 (v2.0)
+    CREATE TABLE IF NOT EXISTS assistant_evaluation (
+        evaluation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        case_id VARCHAR(20) NOT NULL REFERENCES "case"(case_id) ON DELETE CASCADE,
+        conversation_id UUID REFERENCES conversation(conversation_id) ON DELETE SET NULL,
+        assistant_type VARCHAR(50) NOT NULL,
+        score SMALLINT CHECK (score >= 1 AND score <= 5),
+        feedback TEXT,
+        resolution_time_seconds INT,
+        message_count INT,
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        trace_id VARCHAR(64)
+    );
+
+    CREATE INDEX idx_eval_case_id ON assistant_evaluation(case_id);
+    CREATE INDEX idx_eval_assistant_type ON assistant_evaluation(assistant_type);
+    CREATE INDEX idx_eval_score ON assistant_evaluation(score);
+    CREATE INDEX idx_eval_created_at ON assistant_evaluation(created_at DESC);
+    CREATE INDEX idx_eval_trace_id ON assistant_evaluation(trace_id);
+
+    COMMENT ON TABLE assistant_evaluation IS 'AI助手评估表，记录助手表现评分';
+
+    -- ============================================================================
+    -- 5. 创建视图
+    -- ============================================================================
+
+    CREATE OR REPLACE VIEW active_cases AS
+    SELECT
+        c.case_id,
+        c.client_id,
+        c.title,
+        c.status,
+        c.priority,
+        c.category,
+        c.created_at,
+        u.username,
+        u.email,
+        COUNT(DISTINCT conv.conversation_id) as conversation_count,
+        COUNT(m.message_id) as total_messages,
+        MAX(m.created_at) as last_message_at
+    FROM "case" c
+    LEFT JOIN "user" u ON c.user_id = u.user_id
+    LEFT JOIN conversation conv ON c.case_id = conv.case_id
+    LEFT JOIN message m ON conv.conversation_id = m.conversation_id
+    WHERE c.status IN ('created', 'confirmed', 'in_progress')
+    GROUP BY c.case_id, c.client_id, c.title, c.status, c.priority, c.category, c.created_at, u.username, u.email
+    ORDER BY c.created_at DESC;
+
+    CREATE OR REPLACE VIEW case_statistics AS
+    SELECT
+        c.case_id,
+        c.title,
+        c.status,
+        c.created_at,
+        c.closed_at,
+        EXTRACT(EPOCH FROM (COALESCE(c.closed_at, CURRENT_TIMESTAMP) - c.created_at)) / 3600 as duration_hours,
+        COUNT(DISTINCT conv.conversation_id) as conversation_count,
+        COUNT(m.message_id) as message_count,
+        COUNT(CASE WHEN m.role = 'command' THEN 1 END) as command_count,
+        JSONB_BUILD_OBJECT(
+            'user_messages', COUNT(CASE WHEN m.role = 'user' THEN 1 END),
+            'assistant_messages', COUNT(CASE WHEN m.role = 'assistant' THEN 1 END),
+            'system_messages', COUNT(CASE WHEN m.role = 'system' THEN 1 END)
+        ) as message_breakdown
+    FROM "case" c
+    LEFT JOIN conversation conv ON c.case_id = conv.case_id
+    LEFT JOIN message m ON conv.conversation_id = m.conversation_id
+    GROUP BY c.case_id, c.title, c.status, c.created_at, c.closed_at;
+
+    -- ============================================================================
+    -- 6. 插入种子数据
+    -- ============================================================================
+
+    INSERT INTO "user" (client_id, username, user_type, trace_id)
+    VALUES ('client-test-001', 'test_user', 'temporary', 'hci-init-seed-001')
+    ON CONFLICT (client_id) DO NOTHING;
+
+    -- ============================================================================
+    -- 完成
+    -- ============================================================================
+
+    SELECT 'Database initialization completed successfully!' as status;
+{{- end }}

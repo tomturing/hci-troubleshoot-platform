@@ -1,4 +1,4 @@
-{{- if .Values.postgres.enabled }}
+{{- if and .Values.dataLayer.manage .Values.postgres.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

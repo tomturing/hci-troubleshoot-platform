@@ -4,11 +4,10 @@ KB Service SQLAlchemy 模型 — kb_document
 
 from datetime import UTC, datetime
 
+from shared.database.postgres import Base
 from sqlalchemy import ARRAY, Boolean, Column, DateTime, Integer, SmallInteger, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-
-from shared.database.postgres import Base
 
 
 class KBDocument(Base):

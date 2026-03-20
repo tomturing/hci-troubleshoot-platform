@@ -1,4 +1,4 @@
-{{- if .Values.postgres.enabled }}
+{{- if and .Values.dataLayer.manage .Values.postgres.enabled }}
 # PostgreSQL 初始化脚本 — 首次启动时自动执行
 apiVersion: v1
 kind: ConfigMap

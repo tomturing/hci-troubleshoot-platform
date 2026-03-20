@@ -27,10 +27,10 @@ if TYPE_CHECKING:
 logger = get_logger("kb-service-admin")
 router = APIRouter(prefix="/api/kb", tags=["admin"])
 
-_db_manager: "DatabaseManager | None" = None
+_db_manager: DatabaseManager | None = None
 
 
-def set_dependencies(db: "DatabaseManager") -> None:
+def set_dependencies(db: DatabaseManager) -> None:
     global _db_manager
     _db_manager = db
 

@@ -31,15 +31,15 @@ logger = get_logger("kb-service-search")
 router = APIRouter(prefix="/api/kb", tags=["search"])
 
 # 由 main.py 的 set_dependencies 注入
-_db_manager: "DatabaseManager | None" = None
-_embedding_service: "EmbeddingService | None" = None
-_sop_matcher: "SopMatcher | None" = None
+_db_manager: DatabaseManager | None = None
+_embedding_service: EmbeddingService | None = None
+_sop_matcher: SopMatcher | None = None
 
 
 def set_dependencies(
-    db: "DatabaseManager",
-    embedding: "EmbeddingService",
-    sop: "SopMatcher",
+    db: DatabaseManager,
+    embedding: EmbeddingService,
+    sop: SopMatcher,
 ) -> None:
     global _db_manager, _embedding_service, _sop_matcher
     _db_manager = db

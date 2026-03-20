@@ -1,0 +1,9 @@
+# =============================================================================
+# hci-platform-infra — 集群级资源配置
+# 这些资源无法限定在某个 namespace 内，三个环境（dev/staging/prod）共用同一份。
+# 由独立 ArgoCD Application（hci-platform-infra）管理，避免多个业务 Application
+# 对同名集群资源产生竞争覆盖。
+# =============================================================================
+
+# Observability 栈部署的 namespace（ClusterRoleBinding 需要引用）
+observabilityNamespace: hci-observability

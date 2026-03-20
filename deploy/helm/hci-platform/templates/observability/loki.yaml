@@ -1,4 +1,4 @@
-{{- if .Values.observability.enabled }}
+{{- if and .Values.observability.enabled .Values.observabilityLayer.manage }}
 ---
 apiVersion: apps/v1
 kind: Deployment

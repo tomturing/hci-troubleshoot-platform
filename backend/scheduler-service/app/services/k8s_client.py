@@ -136,7 +136,7 @@ class K8sClient:
                 "securityContext": {"runAsUser": 1001, "runAsGroup": 1001},
                 "command": ["/bin/sh", "-c"],
                 "args": [
-                    """set -e
+                    r"""set -e
 mkdir -p /home/node/.openclaw/workspace/memory
 mkdir -p /home/node/.openclaw/agents/main/sessions
 echo "--- ProductionClaw 初始化 ---"

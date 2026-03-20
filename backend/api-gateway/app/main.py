@@ -6,15 +6,17 @@ API Gateway - 主应用
 - CORS 使用显式来源列表
 """
 
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.routes import assistants, cases, conversations, health, kb, terminal, websocket
@@ -59,12 +61,23 @@ async def lifespan(app: FastAPI):
     await redis_manager.close()
 
 
+class TraceIDMiddleware(BaseHTTPMiddleware):
+    """为每个请求注入 X-Trace-ID 响应头（取请求头中的值或新生成 UUID）"""
+
+    async def dispatch(self, request: Request, call_next):
+        trace_id = request.headers.get("X-Trace-ID") or str(uuid.uuid4())
+        response = await call_next(request)
+        response.headers["X-Trace-ID"] = trace_id
+        return response
+
+
 app = FastAPI(title="HCI Troubleshoot - API Gateway", description="API网关服务", version="1.0.0", lifespan=lifespan)
 
 # 注入 OpenTelemetry 中间件到 app 实例（必须在 app 创建后调用）
 instrument_app(app)
 
 # 中间件 — CORS 使用显式来源列表，避免 allow_origins=["*"] + allow_credentials=True 的 RFC 6454 违规
+app.add_middleware(TraceIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

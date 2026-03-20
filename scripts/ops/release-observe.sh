@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
-# 发布后观察脚本（建议观察窗口 30 分钟）
-# 用法：
-#   NAMESPACE=hci RELEASE_NAME=hci-platform bash scripts/release-observe.sh
+# =============================================================================
+# 🟢 运维脚本 — 发布后观察
+# =============================================================================
+# 职责：发布后对集群状态进行周期内采样观察（默认 30 分钟）
+# 使用场景：每次发布完成后样点观察、证明发布稳定
+# 使用方法：
+#   NAMESPACE=hci RELEASE_NAME=hci-platform bash scripts/ops/release-observe.sh
+#   NAMESPACE=hci RELEASE_NAME=hci-platform WINDOW_MINUTES=15 bash scripts/ops/release-observe.sh
+# 影响范围：🟢 只读，不变更集群状态
+# =============================================================================
 
 set -euo pipefail
 

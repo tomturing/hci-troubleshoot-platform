@@ -30,6 +30,7 @@ def test_app():
     return app
 
 
+@pytest.mark.integration
 class TestGatewayIntegration:
     BASE_URL = "http://testserver"
 

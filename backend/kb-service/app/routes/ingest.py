@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
 
@@ -30,11 +30,11 @@ logger = get_logger("kb-service-ingest")
 router = APIRouter(prefix="/api/kb", tags=["ingest"])
 
 # 由 main.py 的 set_dependencies 注入
-_db_manager: "DatabaseManager | None" = None
-_embedding_service: "EmbeddingService | None" = None
+_db_manager: DatabaseManager | None = None
+_embedding_service: EmbeddingService | None = None
 
 
-def set_dependencies(db: "DatabaseManager", embedding: "EmbeddingService") -> None:
+def set_dependencies(db: DatabaseManager, embedding: EmbeddingService) -> None:
     global _db_manager, _embedding_service
     _db_manager = db
     _embedding_service = embedding
@@ -147,7 +147,6 @@ async def import_sop_nodes(request: Request, body: SopImportRequest):
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     from app.models.sop_node import KBSopNode
 

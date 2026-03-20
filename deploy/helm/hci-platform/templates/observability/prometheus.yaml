@@ -1,4 +1,4 @@
-{{- if .Values.observability.enabled }}
+{{- if and .Values.observability.enabled .Values.observabilityLayer.manage }}
 {{- if .Values.observability.prometheus.enabled }}
 ---
 # Prometheus 配置
@@ -137,6 +137,11 @@ metadata:
   namespace: {{ .Values.observability.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
+{{- /*
+  ClusterRole/ClusterRoleBinding 已迁移到 hci-platform-infra Chart 统一管理。
+  保留条件开关，仅在 clusterResources.manage=true 时渲染（用于本地调试）。
+*/ -}}
+{{- if .Values.clusterResources.manage }}
 ---
 # ClusterRole：允许 Prometheus 发现 K8s Pod
 apiVersion: rbac.authorization.k8s.io/v1
@@ -173,5 +178,6 @@ subjects:
   - kind: ServiceAccount
     name: prometheus
     namespace: {{ .Values.observability.namespace }}
+{{- end }}
 {{- end }}
 {{- end }}

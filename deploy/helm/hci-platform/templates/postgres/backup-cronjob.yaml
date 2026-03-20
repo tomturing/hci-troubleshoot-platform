@@ -1,5 +1,5 @@
 {{- $backup := .Values.postgres.backup | default dict -}}
-{{- if $backup.enabled -}}
+{{- if and .Values.dataLayer.manage $backup.enabled -}}
 # PostgreSQL 定时全量备份 CronJob
 # 使用 pg_dump 将数据库导出到宿主机 hostPath 目录
 # 执行计划默认为每天 02:00 UTC，可通过 values.yaml postgres.backup.schedule 调整

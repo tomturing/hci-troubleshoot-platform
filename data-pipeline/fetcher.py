@@ -16,6 +16,7 @@ fetcher.py — 产品案例页面抓取器
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import time
@@ -86,10 +87,8 @@ def _load_fetched_ids() -> set[str]:
         for line in f:
             line = line.strip()
             if line:
-                try:
+                with contextlib.suppress(json.JSONDecodeError, KeyError):
                     ids.add(json.loads(line)["id"])
-                except (json.JSONDecodeError, KeyError):
-                    pass
     return ids
 
 

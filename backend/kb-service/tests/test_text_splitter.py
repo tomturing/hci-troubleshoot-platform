@@ -4,7 +4,6 @@ TextSplitter 单元测试
 测试文本分块逻辑，不依赖外部服务。
 """
 
-import pytest
 
 from app.utils.text_splitter import TextSplitter, _estimate_tokens
 

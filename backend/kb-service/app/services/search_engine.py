@@ -22,11 +22,9 @@ import time
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select, text
-from sqlalchemy.dialects.postgresql import ARRAY
-
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
+from sqlalchemy import func, select
 
 from app.models.chunk import KBChunk
 from app.models.document import KBDocument
@@ -81,8 +79,8 @@ class SearchEngine:
 
     def __init__(
         self,
-        db_manager: "DatabaseManager",
-        embedding_service: "EmbeddingService",
+        db_manager: DatabaseManager,
+        embedding_service: EmbeddingService,
         bm25_top_k: int = 20,
         vector_top_k: int = 20,
         rrf_k: int = 60,

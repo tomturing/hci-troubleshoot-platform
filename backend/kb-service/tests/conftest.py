@@ -6,7 +6,6 @@ KB Service 测试配置
 """
 
 import pytest
-import pytest_asyncio
 
 
 @pytest.fixture(scope="session")

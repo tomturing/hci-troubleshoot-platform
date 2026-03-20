@@ -1,4 +1,4 @@
-{{- if .Values.observability.enabled }}
+{{- if and .Values.observability.enabled .Values.observabilityLayer.manage }}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -72,6 +72,11 @@ metadata:
   namespace: {{ .Values.observability.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
+{{- /*
+  ClusterRole/ClusterRoleBinding 已迁移到 hci-platform-infra Chart 统一管理。
+  保留条件开关，仅在 clusterResources.manage=true 时渲染（用于本地调试）。
+*/ -}}
+{{- if .Values.clusterResources.manage }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -98,4 +103,5 @@ roleRef:
   kind: ClusterRole
   name: promtail
   apiGroup: rbac.authorization.k8s.io
+{{- end }}
 {{- end }}

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import re
 
-
 # Markdown 分隔符优先级（从粗到细）
 _SEPARATORS = [
     "\n## ",     # H2 标题（最粗粒度）

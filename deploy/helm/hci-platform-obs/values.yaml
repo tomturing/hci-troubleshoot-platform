@@ -1,0 +1,99 @@
+# =============================================================================
+# hci-platform-obs — 可观测性栈配置
+# 部署目标：namespace hci-observability（由本 Chart 自行创建）
+# 三个业务环境（dev/staging/prod）共用同一个可观测性栈。
+# ClusterRole/ClusterRoleBinding 已迁移至 hci-platform-infra Chart 统一管理。
+# =============================================================================
+
+# 可观测性栈部署的命名空间（本 Chart 自行创建）
+namespace: hci-observability
+
+# Prometheus 抓取的业务命名空间（prod: hci / staging: hci-staging / dev: hci-dev）
+# 生产部署时通过 ArgoCD Application values 覆盖此字段
+scrapeNamespace: hci
+
+# ======================== 集群级资源管理开关 ==================================
+# ClusterRole/ClusterRoleBinding 已迁移到 hci-platform-infra，此处默认 false。
+# 仅在本地 helm install 调试时置 true。
+clusterResources:
+  manage: false
+
+# ======================== 全局路由配置 ========================================
+global:
+  # path（默认）：通过路径前缀 /grafana/ 访问 Grafana
+  # subdomain：通过 grafana.<domain> 访问（需 DNS 通配符记录）
+  routingMode: "path"
+  # 平台根域名，subdomain 模式必填
+  domain: "hci.local"
+  # 公开访问完整 URL（协议+域名+端口），path 模式时用于 Grafana ROOT_URL
+  publicUrl: ""
+
+# ======================== Ingress (Traefik) ==================================
+ingress:
+  enabled: false
+  className: traefik
+  annotations: {}
+  # Grafana 路由优先级，需高于主站 / 回退路由，避免 /grafana 被 customer-ui 吞掉
+  grafanaRouterPriority: "2000"
+
+# ======================== 敏感配置（生产环境通过 --set 或 ArgoCD secretRef 覆盖）
+secrets:
+  grafanaAdminPassword: "admin"
+
+# ======================== 组件配置 ===========================================
+loki:
+  image: grafana/loki:latest
+  storage: 2Gi
+  # 使用 local-path-retain StorageClass 保护日志数据，防止意外删除
+  storageClass: local-path-retain
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+tempo:
+  image: grafana/tempo:2.6.1
+  storage: 2Gi
+  # 使用 local-path-retain StorageClass 保护追踪数据
+  storageClass: local-path-retain
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+
+prometheus:
+  enabled: true
+  image: prom/prometheus:v2.52.0
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+promtail:
+  image: grafana/promtail:latest
+  resources:
+    requests:
+      cpu: "25m"
+      memory: "32Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+
+grafana:
+  image: grafana/grafana:latest
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"

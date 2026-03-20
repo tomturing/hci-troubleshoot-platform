@@ -1,10 +1,14 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # =============================================================================
-# HCI 平台 — Docker 镜像构建 & 导入 K3s
+# 🟡 运维脚本 — Docker 镜像构建并导入 K3s
 # =============================================================================
-# 使用方法: bash scripts/k3s-build.sh [--no-import]
-#   --no-import  仅构建不导入 K3s（用于 CI 环境仅构建镜像）
-#
+# 职责：构建 Project 下各服务 Docker 镜像，并导入到 K3s containerd
+# 使用场景：应急发布（本地构建）；正常发布不应执行此脚本（走 CI 构建）
+# 使用方法：
+#   bash scripts/ops/k3s-build.sh              # 构建并导入
+#   bash scripts/ops/k3s-build.sh --no-import  # 仅构建，不导入 K3s
+# 影响范围：🟡 本地镜像和 K3s containerd（不变更集群运行状态）
+# =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
