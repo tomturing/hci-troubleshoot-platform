@@ -1,0 +1,13 @@
+apiVersion: v2
+name: hci-platform-infra
+description: HCI 智能排障平台 - 集群级基础设施资源（单份部署，三环境共用）
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - hci
+  - infra
+  - clusterrole
+  - storageclass
+maintainers:
+  - name: HCI Team

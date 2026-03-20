@@ -35,7 +35,14 @@ global:
   imageRegistry: "" # 私有镜像仓库前缀，如 "registry.example.com/"
   imagePullPolicy: IfNotPresent
 
-# ======================== 生产稳态增强（多节点友好）==========================
+# ======================== 集群级资源管理开关 ==================================
+# 集群级资源（StorageClass / ClusterRole / ClusterRoleBinding）已迁移到
+# 独立 Chart hci-platform-infra，由 ArgoCD Application hci-platform-infra 管理。
+#
+# manage: false（默认）→ 本 Chart 不渲染集群级资源，由 hci-platform-infra 负责
+# manage: true         → 本 Chart 自行渲染（仅用于本地 helm install 调试）
+clusterResources:
+  manage: false
 workloadDefaults:
   securityContext:
     enabled: true
