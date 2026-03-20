@@ -1,3 +1,10 @@
+<!-- 💡 按变更类型选择更简洁的模板（在 URL 末尾追加参数）：
+     功能/修复：?template=feature_fix.md
+     文档更新：?template=docs.md
+     杂项/测试：?template=chore.md
+     不加参数则使用本完整模板（适用于涉及发布的变更）
+-->
+
 ## 变更摘要
 
 - 关联任务/工单：
