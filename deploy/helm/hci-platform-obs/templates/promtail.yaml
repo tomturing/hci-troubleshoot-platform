@@ -1,10 +1,9 @@
-{{- if and .Values.observability.enabled .Values.observabilityLayer.manage }}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: promtail
-  namespace: {{ .Values.observability.namespace }}
+  namespace: {{ .Values.namespace }}
   labels:
     {{- include "hci.podLabels" (dict "name" "promtail" "Release" .Release "Chart" .Chart) | nindent 4 }}
 spec:
@@ -19,7 +18,7 @@ spec:
       serviceAccountName: promtail
       containers:
         - name: promtail
-          image: {{ .Values.observability.promtail.image }}
+          image: {{ .Values.promtail.image }}
           args: ["-config.file=/etc/promtail/config.yml"]
           env:
             # 注入真实节点名，避免 Promtail 错误地使用 Pod 名（HOSTNAME）作为节点过滤条件
@@ -32,7 +31,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
           resources:
-            {{- toYaml .Values.observability.promtail.resources | nindent 12 }}
+            {{- toYaml .Values.promtail.resources | nindent 12 }}
           volumeMounts:
             - name: promtail-config
               mountPath: /etc/promtail/config.yml
@@ -64,12 +63,12 @@ spec:
           hostPath:
             path: /run/promtail
 ---
-# Promtail ServiceAccount + ClusterRole (读取 Pod 元数据)
+# Promtail ServiceAccount（ClusterRole/ClusterRoleBinding 已迁移到 hci-platform-infra）
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: promtail
-  namespace: {{ .Values.observability.namespace }}
+  namespace: {{ .Values.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
 {{- /*
@@ -98,10 +97,9 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: promtail
-    namespace: {{ .Values.observability.namespace }}
+    namespace: {{ .Values.namespace }}
 roleRef:
   kind: ClusterRole
   name: promtail
   apiGroup: rbac.authorization.k8s.io
-{{- end }}
 {{- end }}

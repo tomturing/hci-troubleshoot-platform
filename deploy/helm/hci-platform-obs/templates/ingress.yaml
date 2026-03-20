@@ -1,11 +1,11 @@
-{{- if and .Values.observability.enabled .Values.observabilityLayer.manage .Values.ingress.enabled }}
+{{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: grafana-ingress
   # 注意：此 Ingress 必须和 grafana Service 在同一命名空间（hci-observability）
   # Traefik 扫描全命名空间 Ingress，因此跨命名空间路由通过此方式实现
-  namespace: {{ .Values.observability.namespace }}
+  namespace: {{ .Values.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:

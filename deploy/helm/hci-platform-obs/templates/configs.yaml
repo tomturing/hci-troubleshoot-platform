@@ -1,9 +1,8 @@
-{{- if and .Values.observability.enabled .Values.observabilityLayer.manage }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: tempo-config
-  namespace: {{ .Values.observability.namespace }}
+  namespace: {{ .Values.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
 data:
@@ -46,7 +45,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: promtail-config
-  namespace: {{ .Values.observability.namespace }}
+  namespace: {{ .Values.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
 data:
@@ -97,7 +96,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: grafana-datasources
-  namespace: {{ .Values.observability.namespace }}
+  namespace: {{ .Values.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
 data:
@@ -139,4 +138,3 @@ data:
         editable: true
         jsonData:
           timeInterval: 15s
-{{- end }}

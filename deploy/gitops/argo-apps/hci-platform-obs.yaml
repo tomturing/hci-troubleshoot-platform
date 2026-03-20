@@ -1,0 +1,41 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-obs
+#
+# 管理可观测性栈（namespace: hci-observability）：
+#   - Prometheus Deployment + ServiceAccount + ConfigMap + Service
+#   - Loki Deployment + PVC + Service
+#   - Tempo Deployment + PVC + Service
+#   - Grafana Deployment + Service + Secret + ConfigMap
+#   - Promtail DaemonSet + ServiceAccount
+#   - Grafana Ingress（ingress.enabled=true 时生效）
+#
+# 设计原则：
+#   - 三个业务环境（dev/staging/prod）共用同一可观测性命名空间 hci-observability
+#   - 单一 Application 独享资源所有权，消除多环境 Application 竞争覆写问题
+#   - prune: false — Loki + Tempo PVC 受保护，防止日志/追踪数据意外丢失
+#   - ClusterRole/ClusterRoleBinding 已迁移至 hci-platform-infra，本 Chart 不渲染
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-obs
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "可观测性栈 — Prometheus + Loki + Tempo + Grafana + Promtail（namespace: hci-observability）"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci-observability
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-obs
+      helm:
+        releaseName: hci-platform-obs
+  syncPolicy:
+    automated:
+      prune: false      # 禁止自动删除资源，保护 Loki + Tempo PVC 中的观测数据
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true   # 如 namespace 尚未被本 Chart 创建，ArgoCD 兜底创建

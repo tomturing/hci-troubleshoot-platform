@@ -1,0 +1,9 @@
+apiVersion: v2
+name: hci-platform-obs
+description: |
+  HCI 智能排障平台 — 可观测性栈（Prometheus / Loki / Tempo / Grafana / Promtail）。
+  由独立 ArgoCD Application hci-platform-obs 管理，三个业务环境共用同一可观测性命名空间 hci-observability。
+  ClusterRole / ClusterRoleBinding 已分离至 hci-platform-infra Chart。
+type: application
+version: 1.0.0
+appVersion: "2.1.0"

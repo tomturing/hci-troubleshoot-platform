@@ -52,6 +52,16 @@ clusterResources:
 # manage: true         → 本 Chart 自行渲染（仅用于本地 helm install 调试）
 dataLayer:
   manage: false
+
+# ======================== 可观测性层资源管理开关 ================================
+# 可观测性栈（Prometheus/Loki/Tempo/Grafana/Promtail）已迁移到
+# 独立 Chart hci-platform-obs，由 ArgoCD Application hci-platform-obs 管理。
+#
+# manage: false（默认）→ 本 Chart 不渲染可观测性资源，由 hci-platform-obs 负责
+# manage: true         → 本 Chart 自行渲染（仅用于本地 helm install 调试）
+observabilityLayer:
+  manage: false
+
 workloadDefaults:
   securityContext:
     enabled: true
