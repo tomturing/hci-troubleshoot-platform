@@ -59,6 +59,7 @@ docs/
 | [ADR-002](adr/002-GitOps双仓模型.md) | GitOps 双仓模型设计 |
 | [ADR-003](adr/003-RAG对接架构决策.md) | AI 层与 RAG 层对接方式三阶段演进 |
 | [ADR-004](adr/004-发布工作流方案选型.md) | 发布工作流方案选型（方案21 vs 方案22） |
+| [ADR-005](adr/005-Helm-Chart资源归属拆分.md) | Helm Chart 资源归属拆分（infra/data/obs 三层，消除 ArgoCD 资源竞争） |
 
 ---
 
@@ -78,7 +79,7 @@ docs/
 
 | 文档 | 说明 |
 |------|------|
-| [K8s部署规格.md](reference/K8s部署规格.md) | Helm Chart 参数、K3s 部署说明、资源规格 |
+| [K8s部署规格.md](reference/K8s部署规格.md) | 四层 Helm Chart 参数、K3s+ArgoCD GitOps 部署说明、资源规格 |
 | [评分机制.md](reference/评分机制.md) | AI 回复质量评分体系与评价系统设计 |
 | [SSH终端交互.md](reference/SSH终端交互.md) | 侧边栏 SSH 登录与终端交互功能规格 |
 | [脚本与配置管理规范.md](reference/脚本与配置管理规范.md) | scripts/ 分类体系、脚本头部规范、deploy/ 配置分层说明、密钥管理规则 |
