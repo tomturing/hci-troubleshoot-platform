@@ -140,6 +140,7 @@ jobs:
             -x -q \
             --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
             -m "not integration and not slow"
+          # 最后一批：合并所有覆盖率后统一检查基线（≥60%），避免分批检查造成误报
           uv run pytest backend/scheduler-service/tests/unit/ \
             -x -q \
             --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
@@ -327,8 +328,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ENV_REPO_PAT }}
         run: |
+          # 注意：必须触发环境仓库（hci-platform-env）的 workflow，而非应用仓库自身
           gh workflow run env-repo-sync.yml \
-            -R "${{ github.repository }}" \
+            -R tomturing/hci-platform-env \
             -f env_repo_name=tomturing/hci-platform-env \
             -f target_env=dev \
             -f image_tag="${{ needs.prepare.outputs.image_tag }}"
