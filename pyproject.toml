@@ -57,6 +57,7 @@ dev = [
     "faker>=21.0.0,<30.0",
     "ruff>=0.11.0",
     "fakeredis>=2.21.0",
+    "python-docx>=1.2.0",
 ]
 
 [tool.pytest.ini_options]
