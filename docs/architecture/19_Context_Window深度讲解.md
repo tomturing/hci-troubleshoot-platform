@@ -581,120 +581,335 @@ Agent 工程 = 把对的食材（信息），
 
 ---
 
-## 十、本项目上下文可视化的现状评估
+## 十、本项目上下文可观测性设计
 
-> **背景**：截图中 GitHub Copilot 提供了完整的 context window 占比分析（System Instructions / Tool Definitions / Reserved Output / Messages / Files / Tool Results）。本项目自身的上下文可视化做到了什么程度？
+> 上下文管理是本项目工程的全部核心。因此，对上下文的持续观测与优化，是整个项目能够迭代进化的基础条件。本章给出完整的分类体系和落地方案。
 
-### 10.1 现有设计：`prompt_audit` 表（仅元数据）
+### 10.1 为什么「入库」不是最好的单一答案
 
-现有的上下文追踪设计集中在 `prompt_audit` 表，它的定位是**质量评分的数据来源**（而非可视化）：
+「入库（PostgreSQL）」可以解决**持久化和统计分析**，但有两个内在问题：
+
+```
+问题1：实时性差
+  fire-and-forget 写入，不能实时 tail
+  开发调试时需要比较及时地看到每轮组装结果
+
+问题2：全文内容膨胀 DB
+  一次对话的完整 context 约 5,000~30,000 tokens
+  折合文本 4,000~24,000 字符
+  按 1,000 次/天，一张表每天增加 ~24MB 文本 payload
+  需要专门的归档和清理策略
+```
+
+**本项目已有 Loki + Tempo + Grafana**，这是关键：这套工具天然适合解决「内容可视」和「过程追踪」，且 `StructuredLogger` 已自动附加 `trace_id`/`span_id`。
+
+**三工具各司其职，通过 `trace_id` 关联**：
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  目的                 │  工具             │  解决的问题               │
+├─────────────────────────────────────────────────────────────────────┤
+│  每个分段的完整内容    │  Loki（结构化日志）│ 实时可见、全文可搜索       │
+│  Prompt 组装过程/时序  │  Tempo（OTel 链路）│ 每步时间线、耗时分布       │
+│  统计分析 + 质量评分   │  PostgreSQL        │ 跨工单聚合、SOP命中率等    │
+│  超大 payload 归档     │  MinIO（可选）     │ 不撑大 DB，trace_id 索引   │
+└─────────────────────────────────────────────────────────────────────┘
+          │                    │                    │
+          └────────────────────┴────────────────────┘
+                          通过 trace_id 关联
+```
+
+---
+
+### 10.2 分类体系：本项目 Context Window 的完整分类
+
+这是第一个核心问题的答案。按来源和生命周期分为 5 层：
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│               Context Window 完整分类体系                     │
+├──────────┬───────┬──────────────────────────────────────────┤
+│ 层       │ 编码  │ 内容                    │ 生命周期         │
+├──────────┼───────┼──────────────────────────────────────────┤
+│ A. 静态  │ A1    │ 身份/角色/行为规则        │ 所有会话固定     │
+│ 核心     │ A2    │ 诊断方法论（S0-S6 步骤）  │ 所有会话固定     │
+│ (Core)   │ A3    │ HCI 机制知识（Skill 层） │ 所有会话固定     │
+├──────────┼───────┼──────────────────────────────────────────┤
+│ B. 动态  │ B1    │ SOP 精确命中（0 或 1 条）│ 每条消息按 query │
+│ 注入     │ B2    │ KB 语义检索（0~N chunks）│ 每条消息按 query │
+│(Inject.) │ B3    │ 当前工单诊断状态          │ 每轮更新         │
+├──────────┼───────┼──────────────────────────────────────────┤
+│ C. 工具  │ C1    │ 工具 Schema 定义          │ 按诊断阶段注册   │
+│ 层       │ C2    │ 工具执行结果（Observation）│ ReAct 每步追加  │
+│(Tool)    │       │                           │ (Phase 3+)      │
+├──────────┼───────┼──────────────────────────────────────────┤
+│ D. 对话  │ D1    │ 历史消息（最近 N 轮）     │ 每轮截取追加     │
+│ 层       │ D2    │ 本轮用户消息              │ 每条消息         │
+│(Conv.)   │       │                           │                 │
+├──────────┼───────┼──────────────────────────────────────────┤
+│ E. 自生  │ E1    │ LLM 推理步骤（CoT/Thought）│ ReAct 每步自生 │
+│ 成推理   │       │                           │ (Phase 3+)      │
+│(Reason.) │       │                           │                 │
+└──────────┴───────┴──────────────────────────────────────────┘
+
+当前 Phase（Phase 0-2 前）存在的分类：A1, A2, A3, B1, B2, B3, D1, D2
+Phase 3+ 后新增：C1, C2, E1
+```
+
+---
+
+### 10.3 方案一：结构化日志 → Loki（解决「每个分类完整内容可视」）
+
+**这是解决「内容可见」最直接的方案，且零额外基础设施成本。**
+
+利用现有 `StructuredLogger`，在 `_build_system_prompt` 组装每个 segment 时立即记录：
+
+```python
+# 在 _build_system_prompt 中，每个 tier 组装完后插入日志
+
+# A1~A3: 静态核心（首次启动时记录一次即可，或每次 DEBUG 级）
+logger.debug(
+    event="context_segment",
+    segment="A_STATIC_CORE",
+    tier_breakdown={"A1_role": len(seg_identity), "A2_method": len(seg_method), "A3_hci": len(seg_hci)},
+    total_chars=len(static_core),
+    case_id=case_id,
+)
+
+# B1: SOP 命中
+logger.debug(
+    event="context_segment",
+    segment="B1_SOP_MATCH",
+    hit=sop_node is not None,
+    sop_title=sop_node.get("title") if sop_node else None,
+    content=sop_content[:2000] if sop_node else None,   # 截取防止单行过大
+    chars=len(sop_content) if sop_node else 0,
+    case_id=case_id,
+)
+
+# B2: KB Chunks
+for i, chunk in enumerate(kb_chunks):
+    logger.debug(
+        event="context_segment",
+        segment="B2_KB_CHUNK",
+        chunk_index=i,
+        source=chunk.get("source_title"),
+        score=chunk.get("score"),
+        content=chunk.get("content", "")[:1000],        # 截取防止单行过大
+        chars=len(chunk.get("content", "")),
+        case_id=case_id,
+    )
+
+# B3: 工单状态
+logger.debug(
+    event="context_segment",
+    segment="B3_CASE_STATE",
+    content=case_state_block,
+    chars=len(case_state_block),
+    case_id=case_id,
+)
+
+# D1: 历史消息摘要
+logger.debug(
+    event="context_segment",
+    segment="D1_HISTORY",
+    message_count=len(selected_messages),
+    total_chars=sum(len(m.content) for m in selected_messages),
+    case_id=case_id,
+)
+```
+
+**在 Grafana / Loki 中查看**：
+
+```logql
+# 查看某次对话完整的 context 组装过程（通过 trace_id 关联）
+{service="conversation-service"} | json | event="context_segment" | trace_id="<trace_id>"
+
+# 查看某工单所有对话的 KB 命中情况
+{service="conversation-service"} | json | event="context_segment" | segment="B1_SOP_MATCH" | case_id="<case_id>"
+
+# 找出所有 SOP 未命中的对话
+{service="conversation-service"} | json | event="context_segment" | segment="B1_SOP_MATCH" | hit="false"
+```
+
+**与 Tempo 的关联**：因为 `StructuredLogger._format_log` 已自动从 OTel 上下文读取并注入 `trace_id`，所以在 Grafana Tempo 中点击任意一条 trace，可以直接跳转到 Loki 过滤出同一个 `trace_id` 的所有 context segment 日志。这是**零额外工作**实现的关联。
+
+---
+
+### 10.4 方案二：OTel Span → Tempo（解决「组装过程可追踪」）
+
+用 OpenTelemetry span 追踪 Prompt 组装的整个过程，尤其是 Phase 3+ 的 ReAct 循环：
+
+```python
+from opentelemetry import trace
+
+tracer = trace.get_tracer("conversation-service")
+
+async def _build_context_window(self, query: str, case_id: str, step: int = 0):
+    """带链路追踪的 context 组装"""
+
+    with tracer.start_as_current_span("context_assembly") as span:
+        span.set_attribute("case_id", case_id)
+        span.set_attribute("react_step", step)
+
+        # A: 静态核心（计量 token）
+        with tracer.start_as_current_span("segment.static_core"):
+            static_tokens = count_tokens(static_core)
+            span.set_attribute("tokens.static_core", static_tokens)
+
+        # B1: SOP 匹配
+        with tracer.start_as_current_span("segment.sop_match") as sop_span:
+            sop_node = await self.kb_client.sop_match(query)
+            sop_span.set_attribute("hit", sop_node is not None)
+            sop_span.set_attribute("tokens", count_tokens(sop_content) if sop_node else 0)
+
+        # B2: KB 检索
+        with tracer.start_as_current_span("segment.kb_chunks") as kb_span:
+            kb_chunks = await self.kb_client.search(query)
+            kb_span.set_attribute("chunk_count", len(kb_chunks))
+            kb_span.set_attribute("tokens", sum(count_tokens(c["content"]) for c in kb_chunks))
+
+        # 汇总：context window 填充率
+        total_tokens = sum([static_tokens, sop_tokens, kb_tokens, history_tokens])
+        fill_ratio = total_tokens / MAX_CONTEXT_TOKENS
+        span.set_attribute("context.total_tokens", total_tokens)
+        span.set_attribute("context.fill_ratio", round(fill_ratio, 3))
+        span.set_attribute("context.max_tokens", MAX_CONTEXT_TOKENS)
+```
+
+**在 Grafana Tempo 中看到的效果**：
+
+```
+context_assembly（总耗时 120ms）
+  ├── segment.static_core        tokens=2,100   耗时 0ms（无 IO）
+  ├── segment.sop_match          tokens=850     耗时 45ms   hit=true
+  ├── segment.kb_chunks          tokens=3,200   耗时 60ms   chunk_count=3
+  ├── segment.case_state         tokens=420     耗时 0ms
+  └── segment.history            tokens=5,800   耗时 15ms
+                                 ─────────────
+                                 total=12,370   fill_ratio=0.39
+```
+
+Phase 3+ 的 ReAct 循环每一步都是一条独立 trace，可以在 Tempo 中看到完整的「Thought → Action → Observation」时序图，以及每步 context window 的增长情况。
+
+---
+
+### 10.5 方案三：PostgreSQL（解决「持久化统计分析」）
+
+`prompt_audit` 表的定位保持不变（质量评分数据来源），但需要**增加分类统计字段**，让它从「字符数统计」升级为「token 分类统计」：
 
 ```sql
--- 现有 prompt_audit 表能追踪的内容
-CREATE TABLE prompt_audit (
-    has_sop             BOOLEAN,       -- SOP 是否命中（用于质量评分）
-    kb_chunks_count     INT,            -- KB chunks 注入条数（用于质量评分）
-    kb_top_score        FLOAT,          -- KB 检索最高相似度
-    system_prompt_chars INT,            -- System Prompt 字符数（字符，非 token）
-    message_count       INT,            -- 历史消息条数
-    messages            JSONB,          -- 完整 payload（仅 10% 采样）
-    ...
-);
+-- 增强版 prompt_audit 表（在原表基础上增加字段）
+ALTER TABLE prompt_audit ADD COLUMN IF NOT EXISTS
+    context_breakdown JSONB;   -- 分层 token 统计
+
+-- context_breakdown 的结构示例：
+-- {
+--   "total_tokens": 12370,
+--   "fill_ratio": 0.39,
+--   "max_tokens": 32000,
+--   "segments": {
+--     "A_static_core": {"tokens": 2100, "ratio": 0.17},
+--     "B1_sop_match":  {"tokens": 850,  "ratio": 0.07, "hit": true},
+--     "B2_kb_chunks":  {"tokens": 3200, "ratio": 0.26, "count": 3},
+--     "B3_case_state": {"tokens": 420,  "ratio": 0.03},
+--     "D1_history":    {"tokens": 5800, "ratio": 0.47, "turns": 8}
+--   },
+--   "loki_trace_ref": "<trace_id>"   ← 指向 Loki 中的完整内容日志
+-- }
 ```
 
-代码位置：[backend/conversation-service/app/services/conversation_service.py](../../../backend/conversation-service/app/services/conversation_service.py#L115)
+**关键设计**：`context_breakdown` 只存**统计摘要**（每条约 500 bytes），不存全文内容。完整内容通过 `loki_trace_ref`（即 `trace_id`）到 Loki 中查询。
 
-### 10.2 与截图所示能力的差距（诚实的评估）
+**这样 PostgreSQL 负责回答**：
 
-```
-截图中 Copilot 提供的 6 维分类：   本项目现有能力：
-─────────────────────────────────────────────────────────────
-Context Window 总量/上限            ❌ 无
-System Instructions %               ❌ 只有字符数，无 token 数，无占比
-Tool Definitions %                  ❌ 当前无工具调用，完全没有此项
-Reserved Output %                   ❌ 无
-Messages %                          ❌ 只知道条数，无 token 数/占比
-Files（RAG chunks）%                 ❌ 只知道条数（kb_chunks_count），无 token 数
-Tool Results %                      ❌ 无
+```sql
+-- "哪些工单从未命中 SOP？"
+SELECT case_id FROM prompt_audit
+WHERE (context_breakdown->'segments'->'B1_sop_match'->>'hit')::boolean = false;
 
-实时 Prompt 组装过程追踪             ❌ 完全没有
-ReAct 每步 context 快照              ❌ 完全没有（也没有 ReAct 循环）
-分层可视化（System Prompt Tier 1-4） ❌ 没有分层统计
-```
+-- "平均 context 填充率的趋势"
+SELECT date_trunc('day', created_at),
+       avg((context_breakdown->>'fill_ratio')::float)
+FROM prompt_audit GROUP BY 1 ORDER BY 1;
 
-**根本原因**：`prompt_audit` 的设计目标是**质量评分**，不是**上下文可视化**。这两个是不同的功能目标，现有设计只覆盖了前者。
-
-### 10.3 缺失的能力分类
-
-**Level 1 — 基础统计**（当前部分有，但不完整）：
-
-```
-需要但缺失：
-  - token 数统计（当前仅有字符数，token ≠ 字符）
-  - 各分区 token 占比（System / Messages / Tool Defs / Tool Results）
-  - Context Window 填充率（已用 / 总量）
+-- "KB chunks 为空时，用户评分是否显著更低？"
+SELECT
+    (context_breakdown->'segments'->'B2_kb_chunks'->>'count')::int = 0 AS no_kb,
+    avg(user_rating)
+FROM prompt_audit WHERE user_rating IS NOT NULL GROUP BY 1;
 ```
 
-**Level 2 — 分段可视化**（完全没有）：
+---
+
+### 10.6 三方案协作：以「一次诊断对话」为例
 
 ```
-需要：
-  - System Prompt 各层（Tier1 身份 / Tier2 SOP / Tier3 KB chunks / Tier4 工单状态）
-    各自的 token 数和占比
-  - 每轮对话中 context window 的增量（新增了哪些 token，从哪里来）
+时序：用户发送「VM 启动失败，存储刚扩容过」
+                │
+                ▼
+        _build_context_window()
+                │
+    ┌───────────┴───────────────────────────────────┐
+    │                 同时发生                        │
+    │  OTel Span: context_assembly 开始              │
+    └───────────────────────────────────────────────┘
+                │
+    B1: SOP 匹配 → hit=true（VM启动失败-存储类）
+        └─ logger.debug(event="context_segment", segment="B1_SOP_MATCH", content="...", trace_id="abc123")
+        └─ span.set_attribute("B1_sop.hit", True); span.set_attribute("B1_sop.tokens", 850)
+                │
+    B2: KB 检索 → 3 chunks 命中
+        └─ logger.debug(event="context_segment", segment="B2_KB_CHUNK", chunk_index=0, ..., trace_id="abc123")  × 3
+        └─ span.set_attribute("B2_kb.count", 3); span.set_attribute("B2_kb.tokens", 3200)
+                │
+    context 组装完成
+        └─ span.set_attribute("context.fill_ratio", 0.39)
+        └─ OTel Span 结束 → 写入 Tempo
+        └─ asyncio.create_task(_write_prompt_audit(..., context_breakdown={...}, loki_trace_ref="abc123"))
+                │
+                ▼
+        LLM 调用（GLM-4）
+                │
+                ▼
+        流式输出返回用户
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+事后查询举例：
+
+  问题：「这次对话 B2_KB_CHUNK 注入了什么内容？」
+  →  到 Grafana Loki 搜索：event="context_segment" AND trace_id="abc123"
+  →  看到所有 segment 的完整内容文本
+
+  问题：「SOP 命中后 KB 检索耗时多少？」
+  →  到 Grafana Tempo 找 trace_id="abc123"
+  →  看到 segment.sop_match 45ms, segment.kb_chunks 60ms
+
+  问题：「上周 SOP 命中率是多少？」
+  →  SELECT avg((context_breakdown->'segments'->'B1_sop_match'->>'hit')::boolean::int)
+       FROM prompt_audit WHERE created_at > now() - interval '7 days'
 ```
 
-**Level 3 — 过程追踪**（完全没有，也需要等 ReAct 实现后才有意义）：
+---
+
+### 10.7 现状评估与实施优先级
 
 ```
-需要（Phase 3+ 之后）：
-  - ReAct 每步的 Thought / Action / Observation 各占多少 token
-  - context window 的增长曲线（随推理步骤的变化）
-  - 哪一步工具结果贡献了最多 token
-  - context 接近上限时的压缩触发记录
+现有 prompt_audit 设计定位：质量评分数据源
+现有缺口：                  上下文内容可视化 + 分类统计
+
+分类体系（10.2节）         → Phase 2 立即定义，不依赖 ReAct
+Loki 内容记录（10.3节）    → Phase 2 实现，改动极小（在 _build_system_prompt 加 logger.debug）
+PostgreSQL 增强（10.5节）  → Phase 2 实现，ALTER TABLE 增加 context_breakdown 字段
+Tempo 过程追踪（10.4节）   → Phase 3 实现，配合 ReAct 循环一起加
 ```
 
-### 10.4 建议：分阶段填补缺口
+**一句话总结**：
 
-**Phase 2（现在可做，改动最小）**：
-
-```python
-# 在 _build_system_prompt 的 audit_meta 中增加 token 维度
-audit_meta = {
-    "has_sop": ...,
-    "kb_chunks_count": ...,
-    "kb_top_score": ...,
-    # 新增 ↓
-    "system_prompt_tokens": count_tokens(system_prompt),  # 替换字符数
-    "kb_chunks_tokens": sum(count_tokens(c) for c in kb_chunks),
-    "tier_breakdown": {          # System Prompt 分层 token 统计
-        "tier1_tokens": ...,     # 身份/规则段落
-        "tier2_tokens": ...,     # SOP 命中段落（如有）
-        "tier3_tokens": ...,     # KB chunks
-        "tier4_tokens": ...,     # 工单上下文
-    }
-}
-```
-
-**Phase 3（配合 ReAct 实现一起做）**：
-
-```python
-# 每次 LLM 调用前记录完整 context 快照（OpenTelemetry span）
-with tracer.start_as_current_span("context_assembly") as span:
-    span.set_attribute("context.system_tokens", ...)
-    span.set_attribute("context.history_tokens", ...)
-    span.set_attribute("context.tool_defs_tokens", ...)
-    span.set_attribute("context.fill_ratio", current_tokens / MAX_TOKENS)
-    span.set_attribute("context.react_step", step_number)
-```
-
-**长期目标**：在 Grafana 中实现类似截图的实时 context window breakdown 面板，但数据来自 OpenTelemetry traces，而非 Copilot 内置 UI。
-
-### 10.5 一句话总结
-
-> 现有的 `prompt_audit` 设计是**质量评分**工具，不是**上下文可视化**工具。  
-> 我们有"会计账本"（事后统计），但缺少"实时仪表盘"（过程可视化）。  
-> 这是一个**明确的设计缺口**，需要在 Phase 2-3 阶段填补。
+> 「入库」解决持久化，但不解决实时可见和内容全文检索。  
+> 项目已有 Loki + Tempo，三者组合才是完整答案：  
+> **Loki = 内容台账（全文可搜索）；Tempo = 过程仪表盘（时序可追踪）；PostgreSQL = 统计账本（聚合可分析）**，  
+> 三者通过 `trace_id` 天然打通。
 
 ---
 
