@@ -13,6 +13,7 @@ from shared.models.schemas import MessageCreate, MessageResponse
 from shared.utils.exceptions import AIStreamError, ErrorCode
 
 from ..repositories.conversation_repo import ConversationRepository
+from ..schemas import ConversationSessionResponse
 from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService
 from ..services.kb_client import KBClient
@@ -50,7 +51,7 @@ async def get_conversation_service() -> ConversationService:
         yield ConversationService(repo, ai_registry, scheduler_client, kb_client, database_manager.async_session_factory)
 
 
-@router.post("/", status_code=201)
+@router.post("/", status_code=201, response_model=ConversationSessionResponse)
 async def create_conversation(
     case_id: str,
     assistant_type: str = "openclaw",
@@ -66,7 +67,12 @@ async def create_conversation(
     conversation = await service.create_conversation(
         case_id=case_id, assistant_type=assistant_type, initial_message=initial_message, metadata=metadata
     )
-    return {"conversation_id": conversation.conversation_id, "case_id": conversation.case_id}
+    return ConversationSessionResponse(
+        conversation_id=conversation.conversation_id,
+        case_id=conversation.case_id,
+        assistant_type=conversation.assistant_type or "openclaw",
+        diagnostic_stage="S0",
+    )
 
 
 @router.get("/{conversation_id}")

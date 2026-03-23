@@ -84,3 +84,8 @@ htmlcov/
 frontend/admin/*.tsbuildinfo
 frontend/admin/vite.config.js
 frontend/admin/vite.config.d.ts
+
+# 数据管道原始抓取文件（大文件/敏感数据，不入 git）
+data-pipeline/cases_raw/*.jsonl
+data-pipeline/cases_raw/.fetch_progress.json
+

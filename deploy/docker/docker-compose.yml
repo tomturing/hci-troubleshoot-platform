@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:15
+    image: pgvector/pgvector:pg15
     container_name: hci-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-hci_troubleshoot}
@@ -88,12 +88,16 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       OPENCLAW_BASE_URL: ${OPENCLAW_BASE_URL:-http://host.docker.internal:18790}
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-hci-dev-openclaw-token}
+      KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
+      KB_ENABLED: ${KB_ENABLED:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      kb-service:
         condition: service_healthy
     volumes:
       - ./backend/conversation-service:/app
@@ -144,6 +148,12 @@ services:
       - ./backend/shared:/app/shared
       - ./data-pipeline/sop_skills:/data/sop_skills:ro   # SOP 技能目录（只读）
       - ./data-pipeline/config:/data/config:ro            # jieba 词典等配置（只读）
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     command: uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload
 
   # ============ 前端服务 ============
