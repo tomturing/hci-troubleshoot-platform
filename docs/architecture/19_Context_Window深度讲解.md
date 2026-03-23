@@ -579,6 +579,125 @@ Agent 工程 = 把对的食材（信息），
 
 ---
 
+---
+
+## 十、本项目上下文可视化的现状评估
+
+> **背景**：截图中 GitHub Copilot 提供了完整的 context window 占比分析（System Instructions / Tool Definitions / Reserved Output / Messages / Files / Tool Results）。本项目自身的上下文可视化做到了什么程度？
+
+### 10.1 现有设计：`prompt_audit` 表（仅元数据）
+
+现有的上下文追踪设计集中在 `prompt_audit` 表，它的定位是**质量评分的数据来源**（而非可视化）：
+
+```sql
+-- 现有 prompt_audit 表能追踪的内容
+CREATE TABLE prompt_audit (
+    has_sop             BOOLEAN,       -- SOP 是否命中（用于质量评分）
+    kb_chunks_count     INT,            -- KB chunks 注入条数（用于质量评分）
+    kb_top_score        FLOAT,          -- KB 检索最高相似度
+    system_prompt_chars INT,            -- System Prompt 字符数（字符，非 token）
+    message_count       INT,            -- 历史消息条数
+    messages            JSONB,          -- 完整 payload（仅 10% 采样）
+    ...
+);
+```
+
+代码位置：[backend/conversation-service/app/services/conversation_service.py](../../../backend/conversation-service/app/services/conversation_service.py#L115)
+
+### 10.2 与截图所示能力的差距（诚实的评估）
+
+```
+截图中 Copilot 提供的 6 维分类：   本项目现有能力：
+─────────────────────────────────────────────────────────────
+Context Window 总量/上限            ❌ 无
+System Instructions %               ❌ 只有字符数，无 token 数，无占比
+Tool Definitions %                  ❌ 当前无工具调用，完全没有此项
+Reserved Output %                   ❌ 无
+Messages %                          ❌ 只知道条数，无 token 数/占比
+Files（RAG chunks）%                 ❌ 只知道条数（kb_chunks_count），无 token 数
+Tool Results %                      ❌ 无
+
+实时 Prompt 组装过程追踪             ❌ 完全没有
+ReAct 每步 context 快照              ❌ 完全没有（也没有 ReAct 循环）
+分层可视化（System Prompt Tier 1-4） ❌ 没有分层统计
+```
+
+**根本原因**：`prompt_audit` 的设计目标是**质量评分**，不是**上下文可视化**。这两个是不同的功能目标，现有设计只覆盖了前者。
+
+### 10.3 缺失的能力分类
+
+**Level 1 — 基础统计**（当前部分有，但不完整）：
+
+```
+需要但缺失：
+  - token 数统计（当前仅有字符数，token ≠ 字符）
+  - 各分区 token 占比（System / Messages / Tool Defs / Tool Results）
+  - Context Window 填充率（已用 / 总量）
+```
+
+**Level 2 — 分段可视化**（完全没有）：
+
+```
+需要：
+  - System Prompt 各层（Tier1 身份 / Tier2 SOP / Tier3 KB chunks / Tier4 工单状态）
+    各自的 token 数和占比
+  - 每轮对话中 context window 的增量（新增了哪些 token，从哪里来）
+```
+
+**Level 3 — 过程追踪**（完全没有，也需要等 ReAct 实现后才有意义）：
+
+```
+需要（Phase 3+ 之后）：
+  - ReAct 每步的 Thought / Action / Observation 各占多少 token
+  - context window 的增长曲线（随推理步骤的变化）
+  - 哪一步工具结果贡献了最多 token
+  - context 接近上限时的压缩触发记录
+```
+
+### 10.4 建议：分阶段填补缺口
+
+**Phase 2（现在可做，改动最小）**：
+
+```python
+# 在 _build_system_prompt 的 audit_meta 中增加 token 维度
+audit_meta = {
+    "has_sop": ...,
+    "kb_chunks_count": ...,
+    "kb_top_score": ...,
+    # 新增 ↓
+    "system_prompt_tokens": count_tokens(system_prompt),  # 替换字符数
+    "kb_chunks_tokens": sum(count_tokens(c) for c in kb_chunks),
+    "tier_breakdown": {          # System Prompt 分层 token 统计
+        "tier1_tokens": ...,     # 身份/规则段落
+        "tier2_tokens": ...,     # SOP 命中段落（如有）
+        "tier3_tokens": ...,     # KB chunks
+        "tier4_tokens": ...,     # 工单上下文
+    }
+}
+```
+
+**Phase 3（配合 ReAct 实现一起做）**：
+
+```python
+# 每次 LLM 调用前记录完整 context 快照（OpenTelemetry span）
+with tracer.start_as_current_span("context_assembly") as span:
+    span.set_attribute("context.system_tokens", ...)
+    span.set_attribute("context.history_tokens", ...)
+    span.set_attribute("context.tool_defs_tokens", ...)
+    span.set_attribute("context.fill_ratio", current_tokens / MAX_TOKENS)
+    span.set_attribute("context.react_step", step_number)
+```
+
+**长期目标**：在 Grafana 中实现类似截图的实时 context window breakdown 面板，但数据来自 OpenTelemetry traces，而非 Copilot 内置 UI。
+
+### 10.5 一句话总结
+
+> 现有的 `prompt_audit` 设计是**质量评分**工具，不是**上下文可视化**工具。  
+> 我们有"会计账本"（事后统计），但缺少"实时仪表盘"（过程可视化）。  
+> 这是一个**明确的设计缺口**，需要在 Phase 2-3 阶段填补。
+
+---
+
 ## 参考资料
 
 - **"Lost in the Middle"**: Liu et al., Stanford (2023)
