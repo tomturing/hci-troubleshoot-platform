@@ -141,6 +141,59 @@ _STAGE_DESC_MAP = {
     "S6": "S6 - 验证闭环",
 }
 
+# Context Window 分段编码（对应文档 19 五层分类体系）
+_SEGMENT_CODES = {
+    # A 层：静态核心（每次请求恒定注入）
+    0: ("A1", "专家身份定义"),
+    1: ("A2", "诊断方法论"),
+    2: ("A3", "推理规范"),
+    # B 层：动态注入（三级 Fallback，互斥占位）
+    3: {
+        "sop": ("B1", "SOP参考资料"),
+        "kb_case": ("B2", "案例参考资料"),
+        "mechanism": ("B3", "机制推理兜底"),
+    },
+    # D 层：对话层（工单上下文，每次请求追加）
+    4: ("D1", "工单上下文"),
+}
+
+
+def _build_context_breakdown(
+    sections: list[str],
+    fallback_level: str,
+) -> list[dict]:
+    """构建 Context Window 分段明细（用于可观测性日志与审计落库）
+
+    按 4 chars/token 估算 token 数（中文约 2 chars/token，英文约 4 chars/token，
+    中英混合取均值 4，偏保守估计，实际会略高于此值）。
+
+    返回格式（每项）::
+
+        {"code": "A1", "name": "专家身份定义", "chars": 300, "token_est": 75}
+    """
+    breakdown: list[dict] = []
+    for i, section in enumerate(sections):
+        if i <= 2:
+            code, name = _SEGMENT_CODES[i]  # type: ignore[misc]
+        elif i == 3 and len(sections) > 4:
+            # 有动态 B 层
+            code, name = _SEGMENT_CODES[3].get(  # type: ignore[union-attr]
+                fallback_level, ("B3", "机制推理兜底")
+            )
+        elif i == 3 and len(sections) == 4:
+            # KB 未启用时仅 4 段（A1/A2/A3/D1），无 B 层
+            code, name = _SEGMENT_CODES[4]  # type: ignore[misc]
+        else:
+            code, name = _SEGMENT_CODES[4]  # type: ignore[misc]
+        chars = len(section)
+        breakdown.append({
+            "code": code,
+            "name": name,
+            "chars": chars,
+            "token_est": chars // 4,
+        })
+    return breakdown
+
 
 class ConversationService:
     """对话业务服务 (v2.0: 通过 AIAssistantRegistry 支持多类型 AI 助手)"""
@@ -239,11 +292,23 @@ class ConversationService:
             # KB 未启用时，直接进入机制推理模式
             base_sections.append(_SEGMENT_NO_REFERENCE)
             base_sections.append(_SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id))
+            _ctx_bd = _build_context_breakdown(base_sections, "mechanism")
+            logger.debug(
+                event="context_window_breakdown",
+                case_id=case_id,
+                stage=diagnostic_stage,
+                segments=_ctx_bd,
+                total_chars=sum(s["chars"] for s in _ctx_bd),
+                total_token_est=sum(s["token_est"] for s in _ctx_bd),
+            )
             return "\n\n".join(base_sections), {
                 "has_sop": False,
                 "kb_chunks_count": 0,
                 "kb_top_score": None,
                 "fallback_level": "mechanism",
+                "context_breakdown": _ctx_bd,
+                "total_chars": sum(s["chars"] for s in _ctx_bd),
+                "total_token_est": sum(s["token_est"] for s in _ctx_bd),
             }
 
         import asyncio
@@ -327,6 +392,19 @@ class ConversationService:
         # --- Segment 5: 工单上下文 ---
         base_sections.append(_SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id))
 
+        # 构建 context_breakdown（各 Segment 字符数 + token 估算）
+        _ctx_bd = _build_context_breakdown(base_sections, fallback_level)
+        _total_chars = sum(s["chars"] for s in _ctx_bd)
+        _total_token_est = sum(s["token_est"] for s in _ctx_bd)
+        logger.debug(
+            event="context_window_breakdown",
+            case_id=case_id,
+            stage=diagnostic_stage,
+            segments=_ctx_bd,
+            total_chars=_total_chars,
+            total_token_est=_total_token_est,
+        )
+
         # 构建审计元数据
         audit_meta = {
             "has_sop": sop_node is not None and not isinstance(sop_node, Exception),
@@ -336,6 +414,9 @@ class ConversationService:
                 if isinstance(kb_chunks, list) and kb_chunks else None
             ),
             "fallback_level": fallback_level,
+            "context_breakdown": _ctx_bd,
+            "total_chars": _total_chars,
+            "total_token_est": _total_token_est,
         }
 
         return "\n\n".join(base_sections), audit_meta
@@ -898,6 +979,9 @@ class ConversationService:
                     kb_chunks_count=audit_meta["kb_chunks_count"],
                     kb_top_score=audit_meta["kb_top_score"],
                     messages=sample_payload,
+                    context_breakdown=audit_meta.get("context_breakdown"),
+                    total_chars=audit_meta.get("total_chars"),
+                    total_token_est=audit_meta.get("total_token_est"),
                 )
                 await session.commit()
             logger.info(

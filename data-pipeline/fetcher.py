@@ -248,12 +248,10 @@ if __name__ == "__main__":
 # HCI 历史工单获取器（T16：内部支持系统工单数据管道，仅限授权内网访问）
 # =============================================================================
 
-import os
-import asyncio
-import re as _re
-from typing import AsyncIterator
+import os  # noqa: E402
+import re as _re  # noqa: E402
 
-import httpx as _httpx
+import httpx as _httpx  # noqa: E402
 
 
 class HCICaseFetcher:
@@ -287,7 +285,7 @@ class HCICaseFetcher:
         }
 
     @classmethod
-    def from_env(cls) -> "HCICaseFetcher":
+    def from_env(cls) -> HCICaseFetcher:
         """从环境变量创建实例（DATA_SOURCE_URL + DATA_SOURCE_TOKEN）"""
         url = os.environ.get("DATA_SOURCE_URL", "")
         token = os.environ.get("DATA_SOURCE_TOKEN", "")

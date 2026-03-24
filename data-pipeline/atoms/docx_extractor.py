@@ -34,7 +34,6 @@ from pathlib import Path
 from uuid import uuid4
 
 from docx import Document
-from docx.oxml.ns import qn
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 常量
@@ -204,7 +203,7 @@ class DocxExtractor:
         error_codes = self._extract_error_codes(full_text)
 
         # 构造 description：取第一行非空行，不超过 120 字符
-        description_candidates = [l for l in ctx.lines if l.strip()]
+        description_candidates = [ln for ln in ctx.lines if ln.strip()]
         description = description_candidates[0][:120] if description_candidates else ctx.h3
 
         # 生成触发关键字：h3 是主要关键字，h4 是补充（若非"现象描述"）

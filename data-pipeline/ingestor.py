@@ -235,9 +235,8 @@ if __name__ == "__main__":
 # raw_cases 表写入（T16：HCI 历史工单数据管道）
 # =============================================================================
 
-import asyncio as _asyncio
-import datetime as _datetime
-import json as _json
+import asyncio as _asyncio  # noqa: E402
+import json as _json  # noqa: E402
 
 DB_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot")
 
@@ -257,7 +256,7 @@ async def _ingest_raw_cases_async(cases: list[dict]) -> dict:
         logger.error("asyncpg 未安装，无法写入数据库")
         return {"inserted": 0, "skipped": 0, "total": len(cases)}
 
-    from fetcher import DataAnonymizer, CaseQualityScorer
+    from fetcher import CaseQualityScorer, DataAnonymizer
 
     anonymizer = DataAnonymizer()
     scorer = CaseQualityScorer()

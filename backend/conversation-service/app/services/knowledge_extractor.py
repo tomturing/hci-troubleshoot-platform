@@ -58,13 +58,13 @@ _KB_WRITE_TIMEOUT = 5.0
 class KnowledgeExtractor:
     """从成功排障会话中自动提炼知识原子候选"""
 
-    def __init__(self, glm_client: "GLMClient", kb_service_url: str) -> None:
+    def __init__(self, glm_client: GLMClient, kb_service_url: str) -> None:
         self.glm = glm_client
         # 去除末尾斜线，确保 URL 拼接正确
         self._kb_url = kb_service_url.rstrip("/")
 
     @classmethod
-    def from_env(cls, glm_client: "GLMClient") -> "KnowledgeExtractor":
+    def from_env(cls, glm_client: GLMClient) -> KnowledgeExtractor:
         """从环境变量创建实例。
 
         必需：KB_SERVICE_URL — kb-service 内部地址，如 http://kb-service:8004
