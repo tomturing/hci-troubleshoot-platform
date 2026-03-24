@@ -21,7 +21,9 @@ jobs:
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
 
-          CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          # core.quotepath=false: 禁止 git 对非 ASCII 路径（中文文件名）做八进制转义加引号
+          # 不加此参数时，中文路径输出为 "docs/\xxx\xxx.md"，行首是 " 而非 d，导致 grep ^docs/ 永远匹配不到
+          CHANGED_FILES="$(git -c core.quotepath=false diff --name-only "$BASE_SHA" "$HEAD_SHA")"
 
           echo "本次 PR 改动文件:"
           echo "$CHANGED_FILES"
