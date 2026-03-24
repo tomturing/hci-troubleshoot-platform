@@ -36,9 +36,9 @@ ingress:
   # Grafana 路由优先级，需高于主站 / 回退路由，避免 /grafana 被 customer-ui 吞掉
   grafanaRouterPriority: "2000"
 
-# ======================== 敏感配置（生产环境通过 --set 或 ArgoCD secretRef 覆盖）
+# ======================== 敏感配置（由 env 仓库 environments/dev/values.yaml 提供）
 secrets:
-  grafanaAdminPassword: "admin"
+  grafanaAdminPassword: ""  # 由 hci-platform-env 环境仓库覆盖，此处留空避免弱密码默认值
 
 # ======================== 组件配置 ===========================================
 loki:
