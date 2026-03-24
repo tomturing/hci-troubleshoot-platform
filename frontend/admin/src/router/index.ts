@@ -38,6 +38,12 @@ const router = createRouter({
       component: () => import('@/views/MonitoringView.vue'),
       meta: { title: '系统监控', icon: 'Monitor' },
     },
+    {
+      path: '/knowledge/review',
+      name: 'KnowledgeReview',
+      component: () => import('@/views/KnowledgeReviewView.vue'),
+      meta: { title: '知识审核', icon: 'Reading' },
+    },
   ],
 })
 
