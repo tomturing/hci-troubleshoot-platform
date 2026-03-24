@@ -919,3 +919,20 @@ curl http://localhost/api/health
 | POSTGRES_PASSWORD | docker-compose.yml env | Secret | `dev_password_123` |
 | OTEL_EXPORTER_OTLP_ENDPOINT | config.py default | ConfigMap | `http://tempo.hci-obs...:4317` |
 | LOG_LEVEL | config.py default | ConfigMap | `INFO` |
+
+## 附录 C: CI/CD 触发方式
+
+### 自动触发
+
+| 事件 | 触发 job |
+|------|---------|
+| `push` to `main` | 全量 CI（lint / tests / build-and-push / auto-deploy-dev） |
+| `pull_request` to `main` | docs-governance / lint / tests |
+
+### 手动触发（workflow_dispatch）
+
+进入 GitHub → `hci-troubleshoot-platform` → Actions → CI → **Run workflow**，可在任意时刻手动触发完整镜像构建和 dev 环境晋级，通常用于：
+
+- 修复 `ImagePullBackOff`（镜像不存在于 ghcr.io 时）
+- PAT token 更新后重新推送镜像
+- 验证 Dockerfile 修改
