@@ -10,23 +10,43 @@ GLMClient 单元测试
 
 import os
 import sys
-
-# 确保 app 指向 conversation-service
-_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
-                                     "backend", "conversation-service"))
-if _svc not in sys.path:
-    sys.path.insert(0, _svc)
-
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from openai import APIConnectionError, RateLimitError
+
+# conversation-service 路径常量，供 fixture 内部使用
+# 注意：不在模块级做 sys.modules 清理——pytest 会先收集所有模块再跑测试，
+# 模块级清理会在 test_case_service 的测试执行前破坏 app 命名空间
+_CONV_SVC = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "backend", "conversation-service")
+)
+
+
+def _use_conversation_app() -> None:
+    """确保 sys.modules 中的 app 指向 conversation-service（在 fixture 内调用）"""
+    _expect = os.path.normpath(os.path.join(_CONV_SVC, "app"))
+    _actual = (
+        os.path.normpath(getattr(sys.modules.get("app"), "__path__", [""])[0])
+        if "app" in sys.modules
+        else ""
+    )
+    if _expect != _actual:
+        for _k in list(sys.modules):
+            if _k == "app" or _k.startswith("app."):
+                del sys.modules[_k]
+        if _CONV_SVC in sys.path:
+            sys.path.remove(_CONV_SVC)
+        sys.path.insert(0, _CONV_SVC)
+
 
 # ─── 工具函数 _safe_parse_json 测试 ──────────────────────────────────────────
 
 @pytest.fixture
 def glm_client():
     """创建 GLMClient 实例（mock OpenAI client，不发网络请求）"""
+    # 在测试执行阶段切换 app 指向，避免收集阶段污染其他服务的命名空间
+    _use_conversation_app()
     from app.core.glm_client import GLMClient
     with patch("app.core.glm_client.AsyncOpenAI"):
         client = GLMClient(
