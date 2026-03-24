@@ -19,6 +19,7 @@ from app.services.atom_search_service import AtomSearchService
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
+
     from app.services.embedding import EmbeddingService
 
 logger = get_logger("kb-service-atoms")

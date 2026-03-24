@@ -16,10 +16,10 @@ if _svc not in sys.path:
     sys.path.insert(0, _svc)
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
-from app.services.confirm_service import ConfirmService, CONFIRM_TIMEOUT, REDIS_KEY_PREFIX
+from app.services.confirm_service import CONFIRM_TIMEOUT, REDIS_KEY_PREFIX, ConfirmService
 
 
 @pytest.fixture

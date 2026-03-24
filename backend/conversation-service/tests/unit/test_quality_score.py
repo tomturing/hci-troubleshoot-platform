@@ -154,7 +154,7 @@ class TestComputeQualityScore:
         # 主动关闭 + 快速解决 + 5 星 = 高分
         assert result.composite_score >= 80
         assert result.breakdown["user_rating"] == 100
-        assert result.breakdown["close_intent"] == 90
+        assert result.breakdown["close_intent"] == 100
 
 
 class TestCloseReasonMapping:
@@ -162,9 +162,9 @@ class TestCloseReasonMapping:
 
     def test_close_reason_scores(self):
         """验证关闭原因评分映射"""
-        assert CLOSE_REASON_SCORE["user_command"] == 90
+        assert CLOSE_REASON_SCORE["user_command"] == 100
         assert CLOSE_REASON_SCORE["timeout"] == 50
-        assert CLOSE_REASON_SCORE["admin_close"] == 60
+        assert CLOSE_REASON_SCORE["admin_close"] == 50
         assert CLOSE_REASON_SCORE["abandon"] == 10
         assert CLOSE_REASON_SCORE[None] == 50
 

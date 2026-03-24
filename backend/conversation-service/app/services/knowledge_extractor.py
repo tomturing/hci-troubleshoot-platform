@@ -113,8 +113,24 @@ class KnowledgeExtractor:
             )
             return []
 
-        # 3. 解析 JSON（使用 GLMClient 内置的容错解析）
-        candidates = self.glm._safe_parse_json(raw, f"extract-{session_id}")
+        # 3. 解析 JSON（GLM 被要求返回 JSON 数组，先尝试标准解析，再容错）
+        import contextlib
+        import json as _json
+        import re as _re
+        candidates = None
+        try:
+            candidates = _json.loads(raw)
+        except _json.JSONDecodeError:
+            # 尝试去掉尾随逗号后重解析
+            fixed = _re.sub(r",\s*([}\]])", r"\1", raw)
+            try:
+                candidates = _json.loads(fixed)
+            except _json.JSONDecodeError:
+                # 尝试提取第一个 JSON 数组
+                m = _re.search(r"(\[.*\])", fixed, _re.DOTALL)
+                if m:
+                    with contextlib.suppress(_json.JSONDecodeError):
+                        candidates = _json.loads(m.group(1))
         if not isinstance(candidates, list):
             logger.warning(
                 event="knowledge_extraction_parse_error",

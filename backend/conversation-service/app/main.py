@@ -15,7 +15,8 @@ from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
-from app.routes import conversations, evaluate, audit as audit_route
+from app.routes import audit as audit_route
+from app.routes import conversations, evaluate
 from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
 from app.services.kb_client import KBClient
 from app.services.scheduler_client import SchedulerClient
@@ -94,8 +95,8 @@ async def lifespan(app: FastAPI):
     knowledge_extractor = None
     if settings.REACT_ENABLED and settings.SCP_BASE_URL and settings.SCP_API_KEY:
         try:
-            from app.adapters.scp_adapter import SCPAdapter
             from app.adapters.acli_adapter import AcliAdapter
+            from app.adapters.scp_adapter import SCPAdapter
             from app.adapters.tool_router import ToolRouter
             from app.core.glm_client import GLMClient
 

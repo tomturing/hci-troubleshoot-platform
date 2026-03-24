@@ -19,9 +19,9 @@ from ..repositories.conversation_repo import ConversationRepository
 from .ai_client import AIAssistantRegistry
 from .conversation_manager import ConversationManager
 from .kb_client import KBClient
+from .knowledge_extractor import KnowledgeExtractor
 from .scheduler_client import SchedulerClient
 from .sse_queue import LogAuditService, QueueSSEEmitter
-from .knowledge_extractor import KnowledgeExtractor
 
 logger = get_logger("conversation-service")
 

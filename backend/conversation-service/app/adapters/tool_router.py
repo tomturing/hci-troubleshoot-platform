@@ -12,8 +12,8 @@ import logging
 from typing import Any
 
 from ..core.tool_registry import TOOL_REGISTRY
-from .scp_adapter import SCPAdapter
 from .acli_adapter import AcliAdapter
+from .scp_adapter import SCPAdapter
 
 logger = logging.getLogger(__name__)
 

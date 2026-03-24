@@ -21,7 +21,7 @@ import pytest
 ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT / "data-pipeline"))
 
-from atoms.docx_extractor import DocxExtractor, KnowledgeAtomDraft
+from atoms.docx_extractor import DocxExtractor
 
 DOCX_PATH = ROOT / "data-pipeline/sop_skills/虚拟机开关机失败排障手册.docx"
 

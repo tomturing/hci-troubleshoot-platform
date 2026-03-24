@@ -73,7 +73,7 @@ class AcliAdapter:
         self.password = password
 
     @classmethod
-    def from_env(cls) -> "AcliAdapter":
+    def from_env(cls) -> AcliAdapter:
         """从环境变量创建实例"""
         return cls(
             username=os.environ.get("HCI_SSH_USER", "admin"),
@@ -176,7 +176,7 @@ class AcliAdapter:
                     "command": command,
                     "node": host,
                 }
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"acli SSH 超时 [{host}] 命令: {command}")
             return {"error": f"SSH 连接 {host} 超时（{self.TIMEOUT}s）", "command": command}
         except Exception as exc:

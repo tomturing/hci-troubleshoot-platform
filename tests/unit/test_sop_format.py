@@ -12,13 +12,11 @@ tests/unit/test_sop_format.py — SOP 格式修复脚本单元测试
 
 from __future__ import annotations
 
+# 确保能导入 scripts/dev 模块
+import sys
 import textwrap
 from pathlib import Path
 
-import pytest
-
-# 确保能导入 scripts/dev 模块
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scripts" / "dev"))
 
 from fix_sop_format import (
@@ -27,7 +25,6 @@ from fix_sop_format import (
     _remove_standalone_duplicates,
     fix_file,
 )
-
 
 # --------------------------------------------------------------------------- #
 # _fix_doubled_bullet 测试

@@ -44,23 +44,28 @@ class LogAuditService:
 
     async def write(
         self,
-        id: str,
+        audit_id: str,
         session_id: str,
         tool_name: str,
         tool_args: dict,
+        risk_level: int,
+        policy: str,
         result: Any,
         error: str | None,
         started_at: Any,
         completed_at: Any,
         duration_ms: int,
         authorized_by: str | None = None,
+        trace_id: str | None = None,
     ) -> None:
         """记录工具调用审计日志"""
         logger.info(
             event="tool_audit",
-            audit_id=id,
+            audit_id=audit_id,
             session_id=session_id,
             tool_name=tool_name,
+            risk_level=risk_level,
+            policy=policy,
             duration_ms=duration_ms,
             has_error=error is not None,
             authorized_by=authorized_by,
