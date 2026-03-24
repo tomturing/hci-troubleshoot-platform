@@ -34,6 +34,10 @@ global:
   publicUrl: ""
   imageRegistry: "" # 私有镜像仓库前缀，如 "registry.example.com/"
   imagePullPolicy: IfNotPresent
+  # ghcr.io 镜像拉取 Secret 名称；非空时自动挂载到所有工作负载
+  imagePullSecretName: ""
+  # ghcr.io 认证用户名（与 secrets.ghcrToken 配合使用）
+  imagePullUser: ""
 
 # ======================== 集群级资源管理开关 ==================================
 # 集群级资源（StorageClass / ClusterRole / ClusterRoleBinding）已迁移到
@@ -267,7 +271,9 @@ openclaw:
     enabled: true
     # openclaw.json 内容（JSON 字符串）。
     # 默认提供可在非 loopback 场景启动的 controlUi 配置，避免 gateway 启动时因 origin 校验失败退出。
-    openclawJson: '{"gateway":{"mode":"local","bind":"lan","controlUi":{"enabled":true,"dangerouslyAllowHostHeaderOriginFallback":true},"auth":{"mode":"token","token":"${OPENCLAW_GATEWAY_TOKEN}"},"http":{"endpoints":{"chatCompletions":{"enabled":true}}}}}'
+    # 包含  agents.defaults（GLM 模型）+ models.providers（zhipu）配置
+    # 与 learningclaw-init-configmap 中的模型配置保持一致，避免使用默认 anthropic 模型
+    openclawJson: '{"agents":{"defaults":{"model":{"primary":"zhipu/glm-5"},"models":{"zhipu/glm-5":{"alias":"GLM"}},"workspace":"/home/node/.openclaw/workspace","compaction":{"mode":"safeguard"}}},"models":{"mode":"merge","providers":{"zhipu":{"api":"openai-completions","apiKey":"${ZAI_API_KEY}","baseUrl":"https://open.bigmodel.cn/api/paas/v4","models":[{"contextWindow":128000,"id":"glm-5","name":"GLM"}]}}},"gateway":{"mode":"local","bind":"lan","controlUi":{"enabled":true,"dangerouslyAllowHostHeaderOriginFallback":true},"auth":{"mode":"token","token":"${OPENCLAW_GATEWAY_TOKEN}"},"http":{"endpoints":{"chatCompletions":{"enabled":true}}}}}'
 
 # ======================== NetworkPolicy =====================================
 networkPolicy:

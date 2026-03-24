@@ -87,6 +87,10 @@ topologySpreadConstraints:
       matchLabels:
 {{ include "hci.selectorLabels" (dict "name" $name "Release" $root.Release) | nindent 8 }}
 {{- end }}
+{{- if $root.Values.global.imagePullSecretName }}
+imagePullSecrets:
+  - name: {{ $root.Values.global.imagePullSecretName }}
+{{- end }}
 {{- end }}
 
 {{/*
