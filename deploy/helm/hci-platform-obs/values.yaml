@@ -44,8 +44,10 @@ secrets:
 loki:
   image: grafana/loki:latest
   storage: 2Gi
-  # 使用 local-path-retain StorageClass 保护日志数据，防止意外删除
-  storageClass: local-path-retain
+  # StorageClass 说明：
+  #   - 存量安装：保持 local-path（PVC storageClassName 创建后不可变，upgrade 无法修改）
+  #   - 全新安装：可改为 local-path-retain（Retain 策略，卸载后 PV 保留，更安全）
+  storageClass: local-path
   resources:
     requests:
       cpu: "50m"
@@ -57,8 +59,8 @@ loki:
 tempo:
   image: grafana/tempo:2.6.1
   storage: 2Gi
-  # 使用 local-path-retain StorageClass 保护追踪数据
-  storageClass: local-path-retain
+  # StorageClass 说明：同 loki，存量安装保持 local-path
+  storageClass: local-path
   resources:
     requests:
       cpu: "100m"

@@ -568,7 +568,27 @@ K8s 模式:      Pod → /var/log/pods/ → Promtail DaemonSet → Loki
 
 Promtail 在 K8s 中以 DaemonSet 运行，挂载 `/var/log/pods` 采集日志。
 
-### 9.3 Trace 链路
+### 9.3 ArgoCD Application 架构（hci-platform-obs）
+
+可观测性栈由独立 ArgoCD Application `hci-platform-obs` 管理（`deploy/gitops/argo-apps/hci-platform-obs.yaml`），与业务服务 Application 解耦。
+
+**多源模式**：同时读取应用仓库（Chart）和环境仓库（values），Grafana 密码统一由 `hci-platform-env` 提供：
+
+```yaml
+sources:
+  - repoURL: hci-troubleshoot-platform  # Helm Chart
+    helm:
+      valueFiles: [$values/environments/dev/values.yaml]
+  - repoURL: hci-platform-env           # 环境配置（含 grafanaAdminPassword）
+    ref: values
+```
+
+**PVC storageClass 注意事项**：
+
+Loki 和 Tempo 的 PVC `storageClassName` 一旦绑定**不可变**。存量安装保持 `local-path`，全新安装可改为 `local-path-retain`（Retain 策略，卸载后 PV 保留）。
+升级时若 Chart 与已有 PVC 的 `storageClass` 不一致，ArgoCD sync 会报 `spec is immutable` 错误，已通过 `ignoreDifferences` + `RespectIgnoreDifferences=true` 兜底处理。
+
+### 9.4 Trace 链路
 
 ```
 Pod (FastAPI) → OTLP gRPC → Tempo Service (hci-observability namespace)
