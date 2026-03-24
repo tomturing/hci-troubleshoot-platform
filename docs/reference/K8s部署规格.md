@@ -1,11 +1,11 @@
 # HCI 智能排障平台 - K8s 部署设计文档
 
 ## 文档信息
-- **版本**: 2.0
+- **版本**: 1.0
 - **作者**: Claude
-- **日期**: 2026-03-20
-- **状态**: ✅ 已落地（K3s + Helm 四层 Chart，GitOps 双仓模型，dev 自动晋级）
-- **前置文档**: [01_系统架构.md](../architecture/01_系统架构.md)
+- **日期**: 2026-02-15
+- **状态**: 设计完成，待实施
+- **前置文档**: [01_架构设计.md](01_架构设计.md), [04_可观测性设计.md](04_可观测性设计.md)
 
 ---
 
@@ -251,15 +251,9 @@ stringData:
 
 **设计原因：**
 - ConfigMap 与 Secret 分离是 K8s 安全最佳实践
-- Secret 值通过 **env 仓库**（`hci-platform-env`）的 `environments/<env>/values.yaml` 管理，commit 后由 ArgoCD 自动 sync 更新，不需手动 `kubectl` 操作
+- Secret 支持 `kubectl create secret` 动态注入，不需提交到 Git
 - 所有服务通过 `envFrom` 引用同一个 ConfigMap + Secret，变量名与 `.env.example` 保持一致
 - 修改配置后，Deployment 通过 annotation checksum 自动触发滚动更新
-
-**注意：Grafana 密码双 Secret 问题**
-
-`hci-secrets`（`hci-troubleshoot` 命名空间）与 `grafana-secrets`（`hci-observability` 命名空间）是两个独立 Secret，K8s Secret 不能跨命名空间引用。
-
-`hci-platform-obs` ArgoCD Application 已配置为多源模式，同时读取 `hci-platform-env` 环境仓库的 `values.yaml`，因此修改环境仓库的 `secrets.grafanaAdminPassword` 后 commit + ArgoCD sync 即可同步更新 `grafana-secrets`。
 
 ### 4.4 配置注入方式
 
@@ -584,6 +578,30 @@ Pod (FastAPI) → OTLP gRPC → Tempo Service (hci-observability namespace)
 
 后端微服务的 `OTEL_EXPORTER_OTLP_ENDPOINT` 从 `http://tempo:4317` 改为 `http://tempo.hci-observability.svc.cluster.local:4317`（跨 namespace 通信）。
 
+### 9.4 ghcr.io 镜像拉取认证（imagePullSecret）
+
+CI 构建的镜像推送到私有 ghcr.io，K8s 拉取需要认证。方案设计：
+
+| 组件 | 说明 |
+|------|------|
+| Secret 名称 | `ghcr-pull-secret`（`kubernetes.io/dockerconfigjson` 类型） |
+| 渲染位置 | `deploy/helm/hci-platform/templates/secret.yaml`，当 `secrets.ghcrToken` 非空时自动生成 |
+| 挂载方式 | `_helpers.tpl` 的 `hci.workloadPodSpecExtras` 统一注入 `imagePullSecrets`，由 `global.imagePullSecretName` 控制 |
+| 配置来源 | `hci-platform-env/environments/<env>/values.yaml` 的 `secrets.ghcrToken` + `global.imagePullUser` |
+
+**env 仓库配置示例（dev）：**
+```yaml
+global:
+  imageRegistry: ghcr.io/tomturing/hci-troubleshoot-platform/
+  imagePullSecretName: ghcr-pull-secret
+  imagePullUser: tomturing
+
+secrets:
+  ghcrToken: "<GitHub PAT with read:packages scope>"
+```
+
+> ⚠️ `ghcrToken` 存储在私有 env 仓库中，禁止提交到公开仓库。
+
 ---
 
 ## 10. Helm Chart 结构
@@ -724,13 +742,12 @@ config:
   logLevel: INFO
   otelEndpoint: "http://tempo.hci-observability.svc.cluster.local:4317"
 
-# 敏感配置 — 由 hci-platform-env 环境仓库覆盖，不要在此填写真实值
-# 修改路径：hci-platform-env/environments/<env>/values.yaml -> secrets.*
+# 敏感配置（生产环境通过 --set 或 sealed-secrets 覆盖）
 secrets:
-  postgresPassword: ""        # 由 env 仓库提供
-  openclawToken: ""           # 由 env 仓库提供
-  zaiApiKey: ""               # 由 env 仓库提供
-  grafanaAdminPassword: ""    # 由 env 仓库提供，同步至 grafana-secrets（hci-observability）
+  postgresPassword: "dev_password_123"
+  openclawToken: "hci-dev-openclaw-token"
+  zaiApiKey: ""
+  grafanaAdminPassword: "admin"
 ```
 
 ---
