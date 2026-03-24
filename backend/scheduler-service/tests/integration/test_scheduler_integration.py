@@ -62,10 +62,10 @@ class TestSchedulerIntegration:
             test_app.router.lifespan_context(test_app),
             httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
         ):
-            # 1. 验证分配 (Allocate)
+            # 1. 验证分配 (Allocate)，开发环境使用 openclaw 类型
             response = await client.post(
                 f"{self.BASE_URL}/api/scheduler/pods/allocate",
-                json={"case_id": case_id},
+                json={"case_id": case_id, "assistant_type": "openclaw"},
                 headers={"X-Trace-ID": trace_id},
             )
             assert response.status_code == 200
@@ -77,7 +77,7 @@ class TestSchedulerIntegration:
             # 2. 验证再次分配返回同一个 (Idempotency / Reuse)
             response2 = await client.post(
                 f"{self.BASE_URL}/api/scheduler/pods/allocate",
-                json={"case_id": case_id},
+                json={"case_id": case_id, "assistant_type": "openclaw"},
                 headers={"X-Trace-ID": trace_id},
             )
             assert response2.status_code == 200
