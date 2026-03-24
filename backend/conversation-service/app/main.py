@@ -15,7 +15,7 @@ from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
-from app.routes import conversations, evaluate
+from app.routes import conversations, evaluate, audit as audit_route
 from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
 from app.services.kb_client import KBClient
 from app.services.scheduler_client import SchedulerClient
@@ -74,9 +74,76 @@ async def lifespan(app: FastAPI):
         logger.info(event="kb_client_initialized", message=f"KB client 已初始化，目标: {settings.KB_SERVICE_URL}")
     app.state.kb_client = kb_client
 
+    # 初始化 Redis（人工确认服务依赖）
+    redis_client = None
+    try:
+        from redis.asyncio import from_url as redis_from_url
+        redis_client = redis_from_url(settings.REDIS_URL, decode_responses=False)
+        await redis_client.ping()
+        logger.info(event="redis_connected", message=f"Redis 已连接: {settings.REDIS_URL}")
+    except Exception as e:
+        logger.warning(event="redis_unavailable", message=f"Redis 连接失败，人工确认功能不可用: {e}")
+        redis_client = None
+    app.state.redis_client = redis_client
+
+    # 初始化 Phase 3/4 ReAct 相关服务（可选，需配置 SCP_BASE_URL + SCP_API_KEY）
+    scp_adapter = None
+    glm_client = None
+    tool_router = None
+    confirm_service = None
+    knowledge_extractor = None
+    if settings.REACT_ENABLED and settings.SCP_BASE_URL and settings.SCP_API_KEY:
+        try:
+            from app.adapters.scp_adapter import SCPAdapter
+            from app.adapters.acli_adapter import AcliAdapter
+            from app.adapters.tool_router import ToolRouter
+            from app.core.glm_client import GLMClient
+
+            api_key = settings.OPENCLAW_API_KEY or settings.OPENCLAW_GATEWAY_TOKEN
+            glm_client = GLMClient(
+                base_url=settings.OPENCLAW_BASE_URL,
+                api_key=api_key,
+                model=settings.GLM_MODEL,
+            )
+            scp_adapter = SCPAdapter(
+                base_url=settings.SCP_BASE_URL,
+                api_key=settings.SCP_API_KEY,
+            )
+            acli_adapter = AcliAdapter.from_env()
+            tool_router = ToolRouter(scp=scp_adapter, acli=acli_adapter)
+            # 初始化知识提炼服务（依赖 GLMClient + KB_SERVICE_URL）
+            from app.services.knowledge_extractor import KnowledgeExtractor
+            knowledge_extractor = KnowledgeExtractor.from_env(glm_client)
+            logger.info(
+                event="react_initialized",
+                message="ReAct 引擎已初始化（GLMClient + ToolRouter + KnowledgeExtractor）",
+            )
+        except Exception as e:
+            logger.warning(event="react_init_failed", message=f"ReAct 引擎初始化失败: {e}")
+
+    # 初始化确认服务（依赖 Redis）
+    if redis_client is not None:
+        from app.services.confirm_service import ConfirmService
+        confirm_service = ConfirmService(redis=redis_client)
+        logger.info(event="confirm_service_ready", message="人工确认服务已就绪")
+
+    app.state.scp_adapter = scp_adapter
+    app.state.glm_client = glm_client
+
     # 兼容现有路由注入方式
-    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client)
+    conversations.set_dependencies(
+        database_manager,
+        ai_registry,
+        scheduler_client,
+        kb_client,
+        redis=redis_client,
+        tool_router=tool_router,
+        confirm_service=confirm_service,
+        glm_client=glm_client,
+        knowledge_extractor=knowledge_extractor,
+    )
     evaluate.set_database_manager(database_manager)
+    audit_route.set_audit_database_manager(database_manager)
 
     yield
 
@@ -85,6 +152,8 @@ async def lifespan(app: FastAPI):
         await ai_registry.close_all()
     if database_manager:
         await database_manager.close()
+    if redis_client:
+        await redis_client.aclose()
 
 
 app = FastAPI(
@@ -100,6 +169,7 @@ instrument_app(app)
 # 注册路由
 app.include_router(conversations.router)
 app.include_router(evaluate.router)
+app.include_router(audit_route.router)
 
 
 @app.get("/health")
