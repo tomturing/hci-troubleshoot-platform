@@ -229,3 +229,118 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# =============================================================================
+# raw_cases 表写入（T16：HCI 历史工单数据管道）
+# =============================================================================
+
+import asyncio as _asyncio  # noqa: E402
+import json as _json  # noqa: E402
+
+DB_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot")
+
+MIN_QUALITY_SCORE = 20    # 低于此分的工单不入库（噪音过大）
+
+
+async def _ingest_raw_cases_async(cases: list[dict]) -> dict:
+    """
+    异步批量写入工单数据到 raw_cases 表。
+
+    幂等：使用 ON CONFLICT (case_id) DO NOTHING。
+    质量评分低于 MIN_QUALITY_SCORE 的工单直接跳过。
+    """
+    try:
+        import asyncpg  # type: ignore[import-untyped]
+    except ImportError:
+        logger.error("asyncpg 未安装，无法写入数据库")
+        return {"inserted": 0, "skipped": 0, "total": len(cases)}
+
+    from fetcher import CaseQualityScorer, DataAnonymizer
+
+    anonymizer = DataAnonymizer()
+    scorer = CaseQualityScorer()
+    inserted = 0
+    skipped = 0
+
+    # 从 DB_URL 解析连接参数（asyncpg 不支持 SQLAlchemy 格式前缀）
+    pg_url = DB_URL.replace("postgresql+asyncpg://", "postgresql://")
+
+    conn = await asyncpg.connect(pg_url)
+    try:
+        for case in cases:
+            case_id = str(case.get("id") or case.get("case_id", ""))
+            if not case_id:
+                skipped += 1
+                continue
+
+            content_raw = str(case.get("content_text") or case.get("content") or "")
+
+            # 脱敏处理
+            content_anonymized = anonymizer.anonymize(content_raw)
+
+            # 质量评分
+            case_with_content = {**case, "content_text": content_anonymized}
+            quality_score = scorer.score(case_with_content)
+            if quality_score < MIN_QUALITY_SCORE:
+                logger.debug("工单 %s 质量评分 %d < %d，跳过", case_id, quality_score, MIN_QUALITY_SCORE)
+                skipped += 1
+                continue
+
+            source_url = str(case.get("source_url") or case.get("url") or "")
+            images_raw = case.get("images") or case.get("attachments") or []
+            category = str(case.get("category") or case.get("fault_category") or "")
+
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO raw_cases
+                      (case_id, source_url, content_text, images, classification,
+                       quality_score, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                    ON CONFLICT (case_id) DO NOTHING
+                    """,
+                    case_id,
+                    source_url,
+                    content_anonymized,
+                    _json.dumps(images_raw, ensure_ascii=False),
+                    category,
+                    quality_score,
+                )
+                inserted += 1
+            except Exception as exc:
+                logger.warning("工单 %s 写入失败: %s", case_id, exc)
+                skipped += 1
+    finally:
+        await conn.close()
+
+    logger.info(
+        "raw_cases 入库完成：inserted=%d skipped=%d total=%d",
+        inserted,
+        skipped,
+        len(cases),
+    )
+    return {"inserted": inserted, "skipped": skipped, "total": len(cases)}
+
+
+def ingest_raw_cases(cases: list[dict]) -> dict:
+    """同步包装器，供 pipeline.py 调用"""
+    return _asyncio.run(_ingest_raw_cases_async(cases))
+
+
+async def fetch_and_ingest_cases(limit: int = 500) -> dict:
+    """
+    完整工单数据管道：获取 → 脱敏 → 质量评分 → 入库
+
+    需要环境变量：
+      DATA_SOURCE_URL   内部支持系统 API 地址
+      DATA_SOURCE_TOKEN 认证 Token
+    """
+    from fetcher import HCICaseFetcher
+
+    fetcher = HCICaseFetcher.from_env()
+    logger.info("开始获取最近 %d 条 HCI 工单...", limit)
+    cases = await fetcher.fetch_500_cases()
+    logger.info("获取到 %d 条工单，开始入库", len(cases))
+    return await _ingest_raw_cases_async(cases)
+

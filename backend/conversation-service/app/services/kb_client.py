@@ -16,7 +16,8 @@ class KBClient:
     """知识库服务 HTTP 客户端"""
 
     def __init__(self, kb_service_url: str, internal_token: str):
-        self._base_url = kb_service_url.rstrip("/") + "/api/kb"
+        self._service_url = kb_service_url.rstrip("/")  # 原始服务地址（无路径）
+        self._base_url = self._service_url + "/api/kb"
         self._headers = {"Authorization": f"Bearer {internal_token}"}
 
     async def search(self, query: str, top_n: int = 5) -> list[dict]:
@@ -87,3 +88,50 @@ class KBClient:
                     query=query[:80],
                 )
                 return None
+
+    async def search_atoms(
+        self,
+        query: str,
+        category_id: str | None = None,
+        task_error_keywords: list[str] | None = None,
+        hci_version: str | None = None,
+        top_k: int = 5,
+    ) -> list[dict]:
+        """
+        知识原子双路检索（精确 + 语义）
+
+        返回 AtomResult 列表，每项包含：
+          - id, type, category_id, trigger, content
+          - confidence, verified, score, matched_by
+        """
+        payload: dict = {"query": query, "top_k": top_k, "task_error_keywords": task_error_keywords or []}
+        if category_id:
+            payload["category_id"] = category_id
+        if hci_version:
+            payload["hci_version"] = hci_version
+
+        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
+            try:
+                resp = await client.post(
+                    f"{self._service_url}/api/v1/atoms/search",
+                    json=payload,
+                    headers=self._headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("atoms", [])
+            except httpx.HTTPStatusError as exc:
+                logger.warning(
+                    event="kb_atoms_http_error",
+                    message=f"KB atoms search returned HTTP {exc.response.status_code}",
+                    query=query[:80],
+                    status_code=exc.response.status_code,
+                )
+                return []
+            except httpx.RequestError as exc:
+                logger.warning(
+                    event="kb_atoms_unavailable",
+                    message=f"KB atoms service unreachable: {exc}",
+                    query=query[:80],
+                )
+                return []

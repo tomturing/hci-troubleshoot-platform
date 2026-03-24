@@ -139,15 +139,55 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="ETL 串联调度器")
     parser.add_argument(
         "--stage",
-        choices=["all", "fetch", "convert", "enrich", "ingest"],
+        choices=["all", "fetch", "convert", "enrich", "ingest", "cases"],
         default="all",
-        help="执行阶段（默认 all）",
+        help="执行阶段（默认 all；cases=历史工单数据管道）",
     )
     parser.add_argument("--limit", type=int, default=None, help="各阶段最多处理 N 条")
     parser.add_argument("--llm", dest="use_llm", action="store_true", help="enricher 启用 LLM 打标")
     args = parser.parse_args()
 
-    run(stage=args.stage, limit=args.limit, use_llm=args.use_llm)
+    if args.stage == "cases":
+        # 历史工单数据管道模式（T16）
+        _run_cases_pipeline(limit=args.limit or 500)
+    else:
+        run(stage=args.stage, limit=args.limit, use_llm=args.use_llm)
+
+
+def _run_cases_pipeline(limit: int = 500) -> None:
+    """
+    运行历史工单数据管道（T16）：
+      1. 从内部支持系统获取 HCI 工单
+      2. 脱敏处理
+      3. 质量评分
+      4. 写入 raw_cases 表
+
+    需要环境变量：
+      DATA_SOURCE_URL   内部支持系统 API 地址（需申请访问权限）
+      DATA_SOURCE_TOKEN 认证 Token
+      DATABASE_URL      目标数据库地址
+    """
+    import asyncio
+
+    logger.info("═" * 50)
+    logger.info("历史工单数据管道（T16）启动，limit=%d", limit)
+    logger.info("═" * 50)
+
+    from ingestor import fetch_and_ingest_cases  # type: ignore[import-untyped]
+
+    t0 = time.time()
+    try:
+        result = asyncio.run(fetch_and_ingest_cases(limit=limit))
+        elapsed = time.time() - t0
+        logger.info(
+            "工单数据管道完成：inserted=%d skipped=%d total=%d 耗时=%.1fs",
+            result.get("inserted", 0),
+            result.get("skipped", 0),
+            result.get("total", 0),
+            elapsed,
+        )
+    except Exception as exc:
+        logger.exception("工单数据管道异常: %s", exc)
 
 
 if __name__ == "__main__":

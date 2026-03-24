@@ -98,7 +98,7 @@ class KBChunk(Base):
     content = Column(Text, nullable=False)                                # 块文本（~512 tokens）
     embedding = Column(Vector(384), nullable=True)                        # 384 维向量
     token_count = Column(SmallInteger, nullable=True)                     # token 数
-    metadata = Column(JSONB, nullable=True)                               # 块级元数据（标题层级等）
+    chunk_metadata = Column("metadata", JSONB, nullable=True)            # 块级元数据（标题层级等）
     tsv = Column(TSVECTOR, nullable=True)                                 # BM25 全文索引
     trace_id = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)

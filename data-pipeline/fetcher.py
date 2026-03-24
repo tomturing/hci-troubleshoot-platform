@@ -242,3 +242,194 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# =============================================================================
+# HCI 历史工单获取器（T16：内部支持系统工单数据管道，仅限授权内网访问）
+# =============================================================================
+
+import os  # noqa: E402
+import re as _re  # noqa: E402
+
+import httpx as _httpx  # noqa: E402
+
+
+class HCICaseFetcher:
+    """
+    HCI 历史工单获取器。
+
+    数据来源：公司内部支持系统 API（需提前申请访问权限）。
+    接口地址从环境变量 DATA_SOURCE_URL 读取，不在代码中硬编码。
+    认证 Token 从环境变量 DATA_SOURCE_TOKEN 读取。
+
+    只处理已解决（resolved）状态的工单，过滤其他状态。
+    """
+
+    # HCI 产品在内部系统中的产品 ID
+    HCI_PRODUCT_ID: str = "33"
+    # 默认每页获取条目数
+    DEFAULT_PAGE_SIZE: int = 50
+    # HTTP 超时（秒）
+    TIMEOUT: float = 30.0
+
+    def __init__(self, base_url: str, auth_token: str) -> None:
+        # 不硬编码任何 URL 或认证信息，必须从环境变量传入
+        self.base_url = base_url.rstrip("/")
+        self._headers = {
+            "Authorization": f"Bearer {auth_token}",
+            "Accept": "application/json",
+            "User-Agent": (
+                "HCI-DataPipeline/1.0 "
+                "(Internal; authorized data collection)"
+            ),
+        }
+
+    @classmethod
+    def from_env(cls) -> HCICaseFetcher:
+        """从环境变量创建实例（DATA_SOURCE_URL + DATA_SOURCE_TOKEN）"""
+        url = os.environ.get("DATA_SOURCE_URL", "")
+        token = os.environ.get("DATA_SOURCE_TOKEN", "")
+        if not url or not token:
+            raise ValueError(
+                "必须设置 DATA_SOURCE_URL 和 DATA_SOURCE_TOKEN 环境变量"
+            )
+        return cls(base_url=url, auth_token=token)
+
+    async def fetch_batch(
+        self,
+        page: int = 1,
+        page_size: int = DEFAULT_PAGE_SIZE,
+    ) -> list[dict]:
+        """
+        获取一批工单（分页）。
+
+        API 响应格式（内部系统标准）：
+          {"code": 0, "data": {"list": [...], "total": N}}
+        """
+        params = {
+            "productId": self.HCI_PRODUCT_ID,
+            "status": "resolved",        # 只取已解决工单
+            "page": page,
+            "pageSize": page_size,
+            "orderBy": "updatedAt",
+            "orderDir": "desc",
+        }
+        async with _httpx.AsyncClient(
+            headers=self._headers,
+            timeout=self.TIMEOUT,
+            follow_redirects=False,       # 不跟随重定向（防止 SSRF 风险）
+        ) as client:
+            try:
+                resp = await client.get(
+                    f"{self.base_url}/api/v1/cases",
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("data", {}).get("list", [])
+            except _httpx.HTTPStatusError as exc:
+                logger.warning(
+                    "工单列表请求失败 page=%d status=%d",
+                    page,
+                    exc.response.status_code,
+                )
+                return []
+            except Exception as exc:
+                logger.error("工单列表请求异常 page=%d error=%s", page, exc)
+                return []
+
+    async def fetch_500_cases(self) -> list[dict]:
+        """
+        试运行：获取最近 500 个 HCI 工单。
+
+        分 10 页 × 50 条分批拉取，遇到数量不足时提前结束。
+        """
+        results: list[dict] = []
+        for page in range(1, 11):           # 10 页 × 50 = 500
+            batch = await self.fetch_batch(page=page, page_size=self.DEFAULT_PAGE_SIZE)
+            results.extend(batch)
+            logger.info("已获取 %d 条工单（第 %d 页）", len(results), page)
+            if len(batch) < self.DEFAULT_PAGE_SIZE:
+                break                        # 数据不足说明已到末页
+        return results[:500]
+
+
+# ─── 工单数据脱敏处理 ──────────────────────────────────────────────────────────
+
+class DataAnonymizer:
+    """工单数据脱敏：移除或替换可能包含客户隐私的信息"""
+
+    # IPv4 地址替换（保留前两段网段信息，用于故障定位分析）
+    _IP_RE = _re.compile(r"\b(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}\b")
+    # UUID 替换
+    _UUID_RE = _re.compile(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        _re.IGNORECASE,
+    )
+    # 密码上下文（简单规则）
+    _PASSWD_RE = _re.compile(
+        r"(password|passwd|密码)\s*[:=]\s*\S+",
+        _re.IGNORECASE,
+    )
+    # 常见内网主机名格式（如 DESKTOP-XXXXX、SERVER01）
+    _HOSTNAME_RE = _re.compile(
+        r"\b(DESKTOP|LAPTOP|SERVER|NODE|HOST)-[A-Z0-9]{4,12}\b",
+        _re.IGNORECASE,
+    )
+
+    def anonymize(self, text: str) -> str:
+        """对文本进行脱敏处理，返回脱敏后的文本"""
+        text = self._IP_RE.sub(r"\1.\2.x.x", text)
+        text = self._UUID_RE.sub("[UUID]", text)
+        text = self._PASSWD_RE.sub(r"\1: [REDACTED]", text)
+        text = self._HOSTNAME_RE.sub(r"\1-[HOSTNAME]", text)
+        return text
+
+
+# ─── 工单质量评分器 ────────────────────────────────────────────────────────────
+
+class CaseQualityScorer:
+    """
+    工单质量评分（0-100），评估工单是否值得入库作为诊断参考。
+
+    高质量工单特征：有错误码、有根因分析、有可执行解决方案、有命令输出证据。
+    """
+
+    WEIGHTS: dict[str, int] = {
+        "has_error_code": 15,        # 有明确错误码（如 0x001、E1001）
+        "has_root_cause": 25,        # 有根因分析（"原因"等关键词）
+        "has_resolution": 20,        # 有解决方案（"解决"、"修复"等）
+        "has_command_output": 15,    # 有命令输出证据（代码块或 acli 命令）
+        "category_identified": 10,   # 有明确故障分类
+        "sufficient_detail": 10,     # 正文长度超过 500 字（内容充足）
+        "resolved_status": 5,        # 工单状态为已解决
+    }
+
+    # 错误码识别模式
+    _ERROR_CODE_RE = _re.compile(
+        r"(0x[0-9a-f]{2,8}|E\d{3,6}|错误码\s*[:：]\s*[\w\-]+)",
+        _re.IGNORECASE,
+    )
+
+    def score(self, case: dict) -> int:
+        """计算工单质量分，返回 0-100 整数"""
+        content = str(case.get("content_text", "") or case.get("content", ""))
+        total = 0
+
+        if self._ERROR_CODE_RE.search(content):
+            total += self.WEIGHTS["has_error_code"]
+        if len(content) > 200 and ("原因" in content or "根因" in content or "cause" in content.lower()):
+            total += self.WEIGHTS["has_root_cause"]
+        if "解决" in content or "修复" in content or "resolved" in content.lower():
+            total += self.WEIGHTS["has_resolution"]
+        if "acli" in content or "```" in content or "命令" in content:
+            total += self.WEIGHTS["has_command_output"]
+        if case.get("category") or case.get("fault_category"):
+            total += self.WEIGHTS["category_identified"]
+        if len(content) > 500:
+            total += self.WEIGHTS["sufficient_detail"]
+        if str(case.get("status", "")).lower() in ("resolved", "closed", "已解决"):
+            total += self.WEIGHTS["resolved_status"]
+
+        return min(100, total)
+

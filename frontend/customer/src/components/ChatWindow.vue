@@ -4,6 +4,7 @@ import { useChatStore } from '@/stores/chat'
 import MessageBubble from './MessageBubble.vue'
 import RatingCard from './RatingCard.vue'
 import TerminalPanel from './TerminalPanel.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const chatStore = useChatStore()
 const inputText = ref('')
@@ -170,6 +171,14 @@ function formatDate(d: string): string {
 
 <template>
   <div class="chat-window">
+    <!-- Agent 模式：高风险操作确认弹窗 -->
+    <ConfirmDialog
+      v-if="chatStore.pendingConfirm"
+      :event="{ type: 'confirm_request', ...chatStore.pendingConfirm }"
+      :session-id="chatStore.conversationId ?? ''"
+      @confirmed="chatStore.handleConfirmResult"
+    />
+
     <!-- 未关闭工单确认对话框 -->
     <el-dialog
       v-model="chatStore.showPendingDialog"

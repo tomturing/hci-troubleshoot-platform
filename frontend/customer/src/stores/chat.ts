@@ -77,6 +77,15 @@ export const useChatStore = defineStore('chat', () => {
   const sshConnectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
   const sshErrorMessage = ref('')
 
+  // Agent 模式：待确认的高风险操作（confirm_request SSE 事件）
+  const pendingConfirm = ref<{
+    tool_name: string
+    tool_args: Record<string, unknown>
+    risk_level: 2 | 3
+    risk_description: string
+    timeout_seconds: number
+  } | null>(null)
+
   // Bridge 运行状态
   const bridgeStatus = ref<BridgeStatus>('not_running')
 
@@ -319,6 +328,36 @@ export const useChatStore = defineStore('chat', () => {
               if (!messages.value[idx].content) {
                 messages.value[idx].content = 'AI 响应出现错误，请稍后重试。'
               }
+            } else if (pendingEventType === 'confirm_request') {
+              // 高风险操作需要用户确认：弹窗展示
+              try {
+                const event = JSON.parse(data)
+                pendingConfirm.value = {
+                  tool_name: event.tool_name,
+                  tool_args: event.tool_args,
+                  risk_level: event.risk_level,
+                  risk_description: event.risk_description,
+                  timeout_seconds: event.timeout_seconds ?? 120,
+                }
+              } catch {}
+            } else if (pendingEventType === 'tool_executing') {
+              // 工具执行通知：在 AI 消息流后追加提示行
+              try {
+                const event = JSON.parse(data)
+                const idx2 = getAiMsgIndex()
+                if (idx2 !== -1) {
+                  messages.value[idx2].content += `\n\n> 🔍 正在查询：\`${event.tool}\`…`
+                }
+              } catch {}
+            } else if (pendingEventType === 'thinking') {
+              // 推理步骤：追加到 AI 消息（可见调试信息）
+              try {
+                const event = JSON.parse(data)
+                const idx2 = getAiMsgIndex()
+                if (idx2 !== -1 && event.message) {
+                  messages.value[idx2].content += `\n\n> 🤔 步骤 ${event.step}：${event.message}`
+                }
+              } catch {}
             } else {
               try {
                 const parsed = JSON.parse(data)
@@ -500,6 +539,31 @@ export const useChatStore = defineStore('chat', () => {
     assistantDraftText.value = text
   }
 
+  /** 提交高风险操作确认结果（由 ConfirmDialog 调用） */
+  async function handleConfirmResult(authorized: boolean) {
+    if (!pendingConfirm.value || !conversationId.value) {
+      pendingConfirm.value = null
+      return
+    }
+    try {
+      await fetch(`/api/conversations/${conversationId.value}/confirm`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-ID': clientId,
+        },
+        body: JSON.stringify({
+          confirmed: authorized,
+          authorized_by: clientId,
+        }),
+      })
+    } catch (e) {
+      console.warn('提交确认结果失败:', e)
+    } finally {
+      pendingConfirm.value = null
+    }
+  }
+
   function clearAssistantDraftText() {
     assistantDraftText.value = ''
   }
@@ -602,6 +666,9 @@ export const useChatStore = defineStore('chat', () => {
     setSshConnectionState,
     setSshErrorMessage,
     clearSshErrorMessage,
+    // Agent 模式：高风险操作确认
+    pendingConfirm,
+    handleConfirmResult,
     initialize,
     sendMessage,
     startNewConversation,
