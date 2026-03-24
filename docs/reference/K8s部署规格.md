@@ -936,3 +936,5 @@ curl http://localhost/api/health
 - 修复 `ImagePullBackOff`（镜像不存在于 ghcr.io 时）
 - PAT token 更新后重新推送镜像
 - 验证 Dockerfile 修改
+
+<!-- CI 依赖链修复：lint/frontend-build/helm-validate 不再依赖 docs-governance -->
