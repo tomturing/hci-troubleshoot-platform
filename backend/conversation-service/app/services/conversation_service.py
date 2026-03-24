@@ -17,8 +17,11 @@ from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
 from .ai_client import AIAssistantRegistry
+from .conversation_manager import ConversationManager
 from .kb_client import KBClient
 from .scheduler_client import SchedulerClient
+from .sse_queue import LogAuditService, QueueSSEEmitter
+from .knowledge_extractor import KnowledgeExtractor
 
 logger = get_logger("conversation-service")
 
@@ -149,6 +152,9 @@ class ConversationService:
         scheduler_client: SchedulerClient | None = None,
         kb_client: KBClient | None = None,
         session_factory=None,
+        tool_router=None,       # ToolRouter | None（Phase 4 agent 模式）
+        confirm_service=None,   # ConfirmService | None
+        glm_client=None,        # GLMClient | None（ReactExecutor 专用）
     ):
         self.repository = repository
         self.ai_registry = ai_registry
@@ -156,6 +162,15 @@ class ConversationService:
         self.kb_client = kb_client
         # 独立事务 session 工厂，用于用户消息先行提交（与 AI 调用解耦）
         self.session_factory = session_factory
+        # Phase 4: agent 模式组件（可选，未配置时回退到普通流式模式）
+        self.tool_router = tool_router
+        self.confirm_service = confirm_service
+        self.glm_client = glm_client
+        # Phase 4: 知识反馈闭环（可选，未配置时跳过）
+        self.knowledge_extractor: KnowledgeExtractor | None = None
+        self._audit_service = LogAuditService()
+        # 诊断状态机（Phase 2）
+        self._conversation_manager = ConversationManager()
 
     async def create_conversation(
         self,
@@ -371,8 +386,19 @@ class ConversationService:
                     current_message_id=user_message.message_id,
                 )
 
-        # 2. 构建 4-Tier System Prompt（并发 SOP + 向量检索）
-        system_prompt, _audit_meta = await self._build_system_prompt(content, case_id)
+        # 2. 读取当前诊断阶段并构建 System Prompt（并发 SOP + 向量检索）
+        current_stage = "S0"
+        if self.session_factory:
+            async with self.session_factory() as stage_session:
+                _conv = await ConversationRepository(stage_session).get_conversation(conversation_id)
+                if _conv and _conv.diagnostic_stage:
+                    current_stage = _conv.diagnostic_stage
+        else:
+            _conv = await self.repository.get_conversation(conversation_id)
+            if _conv and _conv.diagnostic_stage:
+                current_stage = _conv.diagnostic_stage
+
+        system_prompt, _audit_meta = await self._build_system_prompt(content, case_id, diagnostic_stage=current_stage)
 
         # 3. 获取历史上下文 (最近 20 条)
         # 注意：必须使用独立 session，避免请求作用域 session 在流式传输期间长期持有事务锁
@@ -422,6 +448,7 @@ class ConversationService:
 
         _stream_start = time.monotonic()
         _ttft_logged = False
+        _full_reply_buffer: list[str] = []  # 收集完整回复用于阶段检测
         try:
             async for chunk in ai_client.chat_completion_stream(
                 messages=history_messages,
@@ -442,9 +469,37 @@ class ConversationService:
                         # 记录首 Token 延迟到 Prometheus histogram
                         AI_TTFT_SECONDS.labels(assistant_type=resolved_assistant_type).observe(_ttft_ms / 1000.0)
                         _ttft_logged = True
+                    _full_reply_buffer.append(chunk)
                     yield chunk
 
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
+
+            # 6. 流式完成后，检测诊断阶段转换并持久化（fire-and-forget）
+            full_reply = "".join(_full_reply_buffer)
+            if full_reply:
+                new_stage = self._conversation_manager.detect_stage_transition(
+                    current_stage=current_stage,
+                    assistant_reply=full_reply,
+                    user_message=content,
+                )
+                if new_stage:
+                    asyncio.create_task(
+                        self._update_diagnostic_stage(
+                            conversation_id=conversation_id,
+                            new_stage=new_stage,
+                            old_stage=current_stage,
+                        )
+                    )
+                    # S6 阶段：触发知识反馈闭环（fire-and-forget，不阻塞对话响应）
+                    if new_stage == "S6" and self.knowledge_extractor is not None:
+                        asyncio.create_task(
+                            self._trigger_knowledge_extraction(
+                                conversation_id=conversation_id,
+                                case_id=case_id,
+                                messages=full_reply,
+                                all_messages=_full_reply_buffer,
+                            )
+                        )
 
         except Exception as e:
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="error").inc()
@@ -665,6 +720,161 @@ class ConversationService:
                 error=str(e),
             )
 
+    # ─── Phase 4 Agent 模式（ReAct 推理 + 工具调用）────────────────────────────
+
+    @property
+    def agent_mode_available(self) -> bool:
+        """检查 agent 模式所需组件是否已完整初始化"""
+        return (
+            self.tool_router is not None
+            and self.confirm_service is not None
+            and self.glm_client is not None
+        )
+
+    async def send_message_react_stream(
+        self,
+        session_id: str,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        content: str,
+    ) -> AsyncGenerator[dict, None]:
+        """
+        Agent 模式流式响应（ReAct 推理 + 工具调用 + 人工确认）。
+
+        产出序列：
+          {"type": "thinking", "step": N, "message": "..."}      # 推理步骤 SSE 事件
+          {"type": "confirm_request", "tool_name": ..., ...}      # 高风险操作确认请求
+          {"type": "tool_executing", "tool": ..., "args": {...}}  # 工具执行通知
+          {"content": "文本片段"}                                  # AI 文字回复块
+
+        注意：需要先调用方确保 agent_mode_available=True。
+        """
+        from ..core.react_executor import AgentState, ReactExecutor
+
+        trace_id = get_current_trace_id()
+
+        # 1. 保存用户消息（独立事务）
+        if self.session_factory:
+            async with self.session_factory() as s:
+                await ConversationRepository(s).add_message(
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    role=MessageRole.user,
+                    content=content,
+                    trace_id=trace_id,
+                )
+                await s.commit()
+        else:
+            await self.repository.add_message(
+                conversation_id=conversation_id,
+                case_id=case_id,
+                role=MessageRole.user,
+                content=content,
+                trace_id=trace_id,
+            )
+
+        # 2. 构建 System Prompt
+        system_prompt, _audit_meta = await self._build_system_prompt(content, case_id)
+
+        # 3. 获取历史消息（独立 session 避免长事务）
+        if self.session_factory:
+            async with self.session_factory() as s:
+                all_messages = await ConversationRepository(s).get_messages(conversation_id)
+        else:
+            all_messages = await self.repository.get_messages(conversation_id)
+
+        history = [
+            {"role": msg.role.value, "content": msg.content}
+            for msg in (all_messages[-20:] if len(all_messages) > 20 else all_messages)
+        ]
+
+        # 4. 创建 per-request asyncio.Queue 桥接 SSE 事件与文本流
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
+        sse_emitter = QueueSSEEmitter(queue)
+
+        # 5. 构建 AgentState 和 ReactExecutor
+        state = AgentState(session_id=session_id, messages=history)
+        executor = ReactExecutor(
+            glm_client=self.glm_client,
+            tool_executor=self.tool_router,
+            confirm_service=self.confirm_service,
+            audit_service=self._audit_service,
+            sse_emitter=sse_emitter,
+        )
+
+        # 6. 在后台任务中运行 ReactExecutor，将结果放入队列
+        async def _run_agent() -> None:
+            try:
+                async for chunk in executor.run(state, system_prompt):
+                    if chunk:
+                        await queue.put({"content": chunk})
+            except Exception as exc:
+                logger.error(
+                    event="react_executor_error",
+                    message=str(exc),
+                    session_id=session_id,
+                )
+                await queue.put({"_error": str(exc)})
+            finally:
+                # 放入哨兵，通知消费者流结束
+                await queue.put(None)
+
+        asyncio.create_task(_run_agent())
+
+        # 7. 从队列消费并 yield 事件
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if "_error" in item:
+                raise RuntimeError(item["_error"])
+            yield item
+
+    async def _trigger_knowledge_extraction(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        messages: str,          # 本轮 full_reply（类型占位，实际读取历史消息）
+        all_messages: list[str], # _full_reply_buffer（类型占位）
+    ) -> None:
+        """S6 阶段触发知识提炼（fire-and-forget，失败不影响主流程）"""
+        if self.knowledge_extractor is None:
+            return
+        try:
+            # 读取完整对话历史
+            if self.session_factory:
+                async with self.session_factory() as s:
+                    conversation_messages = await ConversationRepository(s).get_messages(conversation_id)
+            else:
+                conversation_messages = await self.repository.get_messages(conversation_id)
+
+            msgs_dicts = [
+                {"role": m.role.value, "content": m.content}
+                for m in conversation_messages[-20:]
+            ]
+
+            # 获取工单分类（来自 case）
+            category_id = ""
+            if self.session_factory:
+                async with self.session_factory() as s:
+                    convs = await ConversationRepository(s).get_conversations_by_case(case_id)
+                    if convs:
+                        meta = getattr(convs[0], "metadata_", None) or {}
+                        category_id = meta.get("category_id", "") or meta.get("classification", "")
+
+            await self.knowledge_extractor.extract_from_session(
+                session_id=str(conversation_id),
+                conversation_messages=msgs_dicts,
+                tool_audit_logs=[],  # MVP：工具调用日志暂不传递
+                category_id=category_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                event="knowledge_extraction_trigger_error",
+                message=str(exc),
+                conversation_id=str(conversation_id),
+            )
+
     async def _write_prompt_audit(
         self,
         conversation_id: uuid.UUID,
@@ -704,4 +914,49 @@ class ConversationService:
                 event="prompt_audit_write_error",
                 message=str(e),
                 conversation_id=str(conversation_id),
+            )
+
+    async def _update_diagnostic_stage(
+        self,
+        conversation_id: uuid.UUID,
+        new_stage: str,
+        old_stage: str,
+    ) -> None:
+        """持久化诊断阶段转换（fire-and-forget 后台任务）
+
+        使用独立事务 session 确保与主请求解耦。
+        """
+        from sqlalchemy import update as sa_update
+
+        from ..models.conversation import Conversation as ConversationModel
+
+        try:
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    await session.execute(
+                        sa_update(ConversationModel)
+                        .where(ConversationModel.conversation_id == conversation_id)
+                        .values(diagnostic_stage=new_stage)
+                    )
+                    await session.commit()
+            else:
+                conv = await self.repository.get_conversation(conversation_id)
+                if conv:
+                    conv.diagnostic_stage = new_stage
+                    await self.repository.session.flush()
+
+            label = self._conversation_manager.get_stage_label
+            logger.info(
+                event="diagnostic_stage_transition",
+                message=f"诊断阶段推进：{label(old_stage)} → {label(new_stage)}",
+                conversation_id=str(conversation_id),
+                old_stage=old_stage,
+                new_stage=new_stage,
+            )
+        except Exception as e:
+            logger.warning(
+                event="diagnostic_stage_update_error",
+                message=f"诊断阶段持久化失败：{e}",
+                conversation_id=str(conversation_id),
+                new_stage=new_stage,
             )

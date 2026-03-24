@@ -8,6 +8,7 @@ import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import MessageCreate, MessageResponse
 from shared.utils.exceptions import AIStreamError, ErrorCode
@@ -26,6 +27,11 @@ database_manager: DatabaseManager | None = None
 ai_registry: AIAssistantRegistry | None = None
 scheduler_client: SchedulerClient | None = None
 kb_client: KBClient | None = None
+redis_client = None        # Redis client，供 ConfirmService 使用
+_tool_router = None        # ToolRouter（Phase 4 agent 模式）
+_confirm_service = None    # ConfirmService
+_glm_client = None         # GLMClient（ReactExecutor 专用）
+_knowledge_extractor = None  # KnowledgeExtractor（Phase 4 S6 知识闭环）
 
 
 def set_dependencies(
@@ -33,12 +39,23 @@ def set_dependencies(
     registry: AIAssistantRegistry,
     scheduler: SchedulerClient | None = None,
     kb: KBClient | None = None,
+    redis=None,
+    tool_router=None,
+    confirm_service=None,
+    glm_client=None,
+    knowledge_extractor=None,
 ):
     global database_manager, ai_registry, scheduler_client, kb_client
+    global redis_client, _tool_router, _confirm_service, _glm_client, _knowledge_extractor
     database_manager = db
     ai_registry = registry
     scheduler_client = scheduler
     kb_client = kb
+    redis_client = redis
+    _tool_router = tool_router
+    _confirm_service = confirm_service
+    _glm_client = glm_client
+    _knowledge_extractor = knowledge_extractor
 
 
 async def get_conversation_service() -> ConversationService:
@@ -48,7 +65,18 @@ async def get_conversation_service() -> ConversationService:
 
     async for session in database_manager.get_session():
         repo = ConversationRepository(session)
-        yield ConversationService(repo, ai_registry, scheduler_client, kb_client, database_manager.async_session_factory)
+        service = ConversationService(
+            repo,
+            ai_registry,
+            scheduler_client,
+            kb_client,
+            database_manager.async_session_factory,
+            tool_router=_tool_router,
+            confirm_service=_confirm_service,
+            glm_client=_glm_client,
+        )
+        service.knowledge_extractor = _knowledge_extractor
+        yield service
 
 
 @router.post("/", status_code=201, response_model=ConversationSessionResponse)
@@ -71,7 +99,10 @@ async def create_conversation(
         conversation_id=conversation.conversation_id,
         case_id=conversation.case_id,
         assistant_type=conversation.assistant_type or "openclaw",
-        diagnostic_stage="S0",
+        diagnostic_stage=getattr(conversation, "diagnostic_stage", "S0") or "S0",
+        category_l1=getattr(conversation, "category_l1", None),
+        category_l2=getattr(conversation, "category_l2", None),
+        category_id=getattr(conversation, "category_id", None),
     )
 
 
@@ -83,6 +114,15 @@ async def get_conversation(
     conversation = await service.get_conversation(conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    return ConversationSessionResponse(
+        conversation_id=conversation.conversation_id,
+        case_id=conversation.case_id,
+        assistant_type=conversation.assistant_type or "openclaw",
+        diagnostic_stage=getattr(conversation, "diagnostic_stage", "S0") or "S0",
+        category_l1=getattr(conversation, "category_l1", None),
+        category_l2=getattr(conversation, "category_l2", None),
+        category_id=getattr(conversation, "category_id", None),
+    )
     return conversation
 
 
@@ -116,14 +156,30 @@ async def send_message(
 
     async def event_generator():
         try:
-            async for chunk in service.send_message_stream_only(
-                conversation_id=conversation_id, case_id=message.case_id, content=message.content
-            ):
-                if chunk:
-                    ai_content.append(chunk)
-                    # JSON encode chunk to safely preserve newlines in SSE
-                    encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)
-                    yield f"data: {encoded_chunk}\n\n"
+            # agent 模式（ToolRouter + ReactExecutor）优先，未配置则回退普通流式
+            if service.agent_mode_available:
+                async for item in service.send_message_react_stream(
+                    session_id=str(conversation_id),
+                    conversation_id=conversation_id,
+                    case_id=message.case_id,
+                    content=message.content,
+                ):
+                    if "content" in item:
+                        ai_content.append(item["content"])
+                        yield f"data: {json.dumps({'content': item['content']}, ensure_ascii=False)}\n\n"
+                    elif "type" in item:
+                        # SSE 事件（thinking / confirm_request / tool_executing）
+                        event_type = item["type"]
+                        yield f"event: {event_type}\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
+            else:
+                async for chunk in service.send_message_stream_only(
+                    conversation_id=conversation_id, case_id=message.case_id, content=message.content
+                ):
+                    if chunk:
+                        ai_content.append(chunk)
+                        # JSON encode chunk to safely preserve newlines in SSE
+                        encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)
+                        yield f"data: {encoded_chunk}\n\n"
 
             if not ai_content:
                 # 上游返回 200 但未产出任何 token 时，向前端返回结构化错误，避免出现空白气泡
@@ -188,3 +244,36 @@ async def send_message(
             yield f"event: error\ndata: {error_data}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream", background=background_tasks)
+
+
+# ── Phase 3：人工确认接口 ──────────────────────────────────────────────────────
+
+class ConfirmRequest(BaseModel):
+    """用户工具调用确认请求体"""
+
+    confirmed: bool
+    authorized_by: str    # 当前操作用户 ID
+
+
+@router.post("/{session_id}/confirm", status_code=200, summary="提交工具调用人工确认结果")
+async def submit_confirm(
+    session_id: str,
+    req: ConfirmRequest,
+):
+    """
+    接收用户对高风险工具调用的确认结果（确认/取消），
+    通过 Redis LPUSH 通知 ReAct 执行器继续执行。
+
+    Redis 不可用时返回 503，避免静默失败。
+    """
+    if redis_client is None:
+        raise HTTPException(status_code=503, detail="确认服务暂不可用（Redis 未连接）")
+
+    from ..services.confirm_service import ConfirmService
+    confirm_svc = ConfirmService(redis=redis_client)
+    await confirm_svc.submit_confirm(
+        session_id=session_id,
+        confirmed=req.confirmed,
+        authorized_by=req.authorized_by,
+    )
+    return {"status": "ok", "session_id": session_id, "confirmed": req.confirmed}

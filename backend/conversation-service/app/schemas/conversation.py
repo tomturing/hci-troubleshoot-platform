@@ -8,13 +8,18 @@ from pydantic import BaseModel
 
 
 class ConversationSessionResponse(BaseModel):
-    """创建/获取对话的响应体，包含诊断阶段占位符。
+    """创建/获取对话的响应体，包含诊断阶段信息。
 
-    diagnostic_stage 当前固定为 "S0"（意图识别阶段），
-    待 Task 07 完成阶段状态机迁移后由数据库真实值填充。
+    diagnostic_stage 从数据库实际值填充（迁移 0003 完成后）。
     """
 
     conversation_id: uuid.UUID
     case_id: str
     assistant_type: str = "openclaw"
     diagnostic_stage: str = "S0"
+    category_l1: str | None = None
+    category_l2: str | None = None
+    category_id: str | None = None
+
+    class Config:
+        from_attributes = True
