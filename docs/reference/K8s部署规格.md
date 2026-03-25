@@ -942,3 +942,5 @@ curl http://localhost/api/health
 <!-- Docker build context 修复说明：backend 服务使用 backend/ 作为 context，frontend 服务使用 frontend/ 作为 context -->
 
 <!-- kb-service 204 response_class 修复说明 -->
+
+<!-- ci: sarif upload continue-on-error 修复 -->
