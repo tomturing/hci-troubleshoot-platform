@@ -85,9 +85,13 @@ class OpenClawAssistant:
         if fallback_endpoint not in endpoints_to_try:
             endpoints_to_try.append(fallback_endpoint)
 
+        # ZhipuAI v4 API 路径为 /chat/completions（无 /v1/），OpenAI 兼容接口为 /v1/chat/completions
+        # 通过环境变量 AI_COMPLETIONS_PATH 可覆盖（默认兼容 OpenAI）
+        _completions_path = os.environ.get("AI_COMPLETIONS_PATH", "/v1/chat/completions")
+
         last_error: Exception | None = None
         for idx, endpoint in enumerate(endpoints_to_try, start=1):
-            url = f"{endpoint}/v1/chat/completions"
+            url = f"{endpoint}{_completions_path}"
             got_first_token = False
 
             logger.info(
@@ -168,7 +172,8 @@ class OpenClawAssistant:
 
     async def check_health(self) -> bool:
         """检查OpenClaw服务健康状态"""
-        url = f"{self.base_url}/v1/chat/completions"
+        _completions_path = os.environ.get("AI_COMPLETIONS_PATH", "/v1/chat/completions")
+        url = f"{self.base_url}{_completions_path}"
         headers = {
             "Content-Type": "application/json",
         }
