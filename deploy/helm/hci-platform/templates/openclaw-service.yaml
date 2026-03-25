@@ -146,12 +146,13 @@ metadata:
   labels:
     {{- include "hci.podLabels" (dict "name" "openclaw" "Release" .Release "Chart" .Chart) | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: NodePort
   ports:
     - port: {{ .Values.openclaw.port }}
       targetPort: {{ .Values.openclaw.port }}
       protocol: TCP
       name: http
+      nodePort: {{ .Values.openclaw.nodePort | default 30789 }}
   selector:
     {{- include "hci.selectorLabels" (dict "name" "openclaw" "Release" .Release) | nindent 4 }}
 {{- end }}

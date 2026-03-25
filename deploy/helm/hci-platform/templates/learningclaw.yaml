@@ -192,12 +192,13 @@ metadata:
   labels:
     {{- include "hci.podLabels" (dict "name" "learningclaw" "Release" .Release "Chart" .Chart) | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: NodePort
   ports:
     - port: {{ .Values.learningclaw.port }}
       targetPort: {{ .Values.learningclaw.port }}
       protocol: TCP
       name: gateway
+      nodePort: {{ .Values.learningclaw.nodePort | default 30790 }}
   selector:
     {{- include "hci.selectorLabels" (dict "name" "learningclaw" "Release" .Release) | nindent 4 }}
 ---
