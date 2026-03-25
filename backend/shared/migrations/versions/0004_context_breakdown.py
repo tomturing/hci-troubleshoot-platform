@@ -25,6 +25,7 @@ Create Date: 2026-03-24
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
 # revision identifiers
 revision = "0004"
