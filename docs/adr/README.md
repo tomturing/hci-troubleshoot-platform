@@ -19,5 +19,5 @@
 | [ADR-001](001-选择K3s作为生产编排.md) | 选择 K3s 而非标准 K8s | accepted | 2025-10 |
 | [ADR-002](002-GitOps双仓模型.md) | GitOps 双仓模型设计 | accepted | 2026-03 |
 | [ADR-003](003-RAG对接架构决策.md) | AI 层与 RAG 层对接方式三阶段演进 | accepted | 2026-03 |
-| [ADR-004](004-工作流方案选型.md) | 发布工作流方案选型（方案21 vs 方案22） | accepted | 2026-03 |
+| [ADR-004](004-发布工作流方案选型.md) | 发布工作流方案选型（方案21 vs 方案22） | accepted | 2026-03 |
 | [ADR-005](005-Helm-Chart资源归属拆分.md) | Helm Chart 资源归属拆分（ArgoCD 资源竞争消除） | accepted | 2026-03 |
