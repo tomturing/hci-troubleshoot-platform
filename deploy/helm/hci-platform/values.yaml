@@ -54,6 +54,12 @@ clusterResources:
 #
 # manage: false（默认）→ 本 Chart 不渲染数据层资源，由 hci-platform-data 负责
 # manage: true         → 本 Chart 自行渲染（仅用于本地 helm install 调试）
+#
+# ⚠️  DUAL-009 危险操作警告：
+# 若当前 postgres/redis 已由 hci-platform 管理（manage=true 历史部署），
+# 手动执行 helm upgrade 时若不显式传 --set dataLayer.manage=true，
+# Helm 会将已有 StatefulSet 视为孤立资源并删除，导致数据库消失！
+# 正确操作：始终使用 scripts/ops/k3s-deploy-dualrepo.sh（自动检测当前状态）
 dataLayer:
   manage: false
 
@@ -166,6 +172,9 @@ conversationService:
     repository: hci-conversation-service
     tag: latest
   port: 8002
+  # 设为 true 后 Pod 使用 dnsPolicy:None + 真实公网 DNS（114.114.114.114），
+  # 用于 openclawBaseUrl 指向外部 API（如 open.bigmodel.cn）需绕过 Clash fake-IP 场景
+  externalDns: false
   # ⚠️  临时补丁：通过 ConfigMap 覆盖容器内 ai_client.py，解决旧镜像 60s 超时问题
   # TODO: 重建镜像后将 enabled 改为 false（新镜像通过 AI_CLIENT_READ_TIMEOUT_SEC 环境变量控制超时）
   aiClientPatch:

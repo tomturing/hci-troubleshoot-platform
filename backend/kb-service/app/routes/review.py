@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
 
@@ -302,3 +303,4 @@ async def delete_atom(request: Request, atom_id: str):
         await session.commit()
 
     logger.info(event="atom_deleted", atom_id=atom_id)
+    return Response(status_code=204)
