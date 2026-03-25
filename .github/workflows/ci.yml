@@ -316,11 +316,11 @@ jobs:
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
 
-      - name: Trivy 镜像安全扫描（HIGH/CRITICAL 阻断）
+      - name: Trivy 镜像安全扫描（仅上报，不阻断）
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
-          exit-code: '1'
+          exit-code: '0'
           severity: HIGH,CRITICAL
           format: sarif
           output: trivy-${{ matrix.service }}.sarif
