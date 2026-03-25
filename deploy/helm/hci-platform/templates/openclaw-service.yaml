@@ -72,11 +72,11 @@ spec:
               value: "xterm-256color"
             - name: OPENCLAW_SKIP_CANVAS_HOST
               value: "1"
-            - name: ZAI_API_KEY
+            - name: OPENCLAW_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: hci-secrets
-                  key: ZAI_API_KEY
+                  key: OPENCLAW_API_KEY
             - name: OPENCLAW_GATEWAY_TOKEN
               valueFrom:
                 secretKeyRef:
