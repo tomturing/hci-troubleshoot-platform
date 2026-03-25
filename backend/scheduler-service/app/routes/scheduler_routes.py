@@ -26,7 +26,7 @@ def get_service() -> SchedulerService:
 
 class PodAllocationRequest(BaseModel):
     case_id: str
-    assistant_type: str = Field(default="productionclaw", description="AI助手类型")
+    assistant_type: str = Field(default="openclaw", description="AI助手类型")
     # v3.0: 工单信息，注入到 ProductionClaw Pod 环境变量
     case_title: str | None = Field(default=None, description="工单标题（注入 Pod env CASE_TITLE）")
     case_description: str | None = Field(default=None, description="工单描述（注入 Pod env CASE_DESCRIPTION）")
