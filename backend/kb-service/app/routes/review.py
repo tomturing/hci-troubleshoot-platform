@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
 
@@ -282,7 +283,7 @@ async def update_atom(request: Request, atom_id: str, body: AtomUpdateRequest) -
     return {"id": atom_id, "status": "updated"}
 
 
-@router.delete("/{atom_id}", status_code=204)
+@router.delete("/{atom_id}", status_code=204, response_class=Response)
 async def delete_atom(request: Request, atom_id: str) -> None:
     """拒绝并删除知识原子"""
     _check_auth(request)
