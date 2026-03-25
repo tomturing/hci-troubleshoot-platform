@@ -28,10 +28,10 @@ logger = get_logger("kb-service-review")
 router = APIRouter(prefix="/api/v1/atoms", tags=["review"])
 
 # 由 main.py 的 set_dependencies 注入
-_db_manager: DatabaseManager | None = None
+_db_manager: "DatabaseManager | None" = None
 
 
-def set_dependencies(db: DatabaseManager) -> None:
+def set_dependencies(db: "DatabaseManager") -> None:
     global _db_manager
     _db_manager = db
 
