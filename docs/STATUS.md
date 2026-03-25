@@ -99,3 +99,16 @@
 
 **P1 启动前需注意**：32 号文档 Task 05 步骤中提到处理 `vm_power_failure` 目录，
 实际目录已改名为 `vm_start_failure`，执行时请使用新名称。
+
+## 2026-03-25 kb-service FastAPI 0.109.0 status_code=204 断言修复
+
+**问题**：`review.py` 的 `DELETE /{atom_id}` 路由使用 `status_code=204, response_class=Response`，但 FastAPI 0.109.0 的断言逻辑为：
+
+```python
+if self.response_model:
+    assert is_body_allowed_for_status_code(status_code)
+```
+
+`-> None` 返回注解推断出 `NoneType`（truthy class），导致断言触发。
+
+**修复**：改为 `response_model=None`（显式 `None` 为 falsy，跳过断言），移除 `-> None` 注解和孤立 `Response` import。
