@@ -1,10 +1,11 @@
-# HCI 智能排障平台 — AI 助手层设计（架构决策 WHY）
+<!--
+  分片标识：新 05_AI助手层设计.md（架构决策 WHY）— 第 1/2 部分
+  内容来源：原 05_AI助手层设计.md 第一部分（第 1–472 行）
+  合并目标：新 05 全文的前半段
+  说明：本文档仅保留"为什么这样设计"的讨论记录，删除了实现规范（迁到新11）
+-->
 
-> **文档目的**：记录 AI 助手层的架构决策背景和选型理由，回答"为什么这样设计"。
-> **最后更新**：2026-03-25
-> **关联文档**：[08_HCI平台效果差距分析与重构方案.md](./08_HCI平台效果差距分析与重构方案.md) | [11_完整技术方案.md](./11_完整技术方案.md)
-
----
+# HCI 智能排障平台 — AI 层架构设计决策
 
 > **文档定位**：WHY — 记录 AI 层核心架构的选型讨论与设计决策，供新成员理解设计动机。
 > **版本**：4.0 | **更新日期**：2026-03-25
@@ -213,117 +214,7 @@
 
 ---
 
-## 五、三阶段上下文管理全景
-
-三个阶段对"进入 AI 层之前如何组装上下文"的处理方式**不同**，需分开说明。
-
-### 概览表
-
-| 维度 | Stage 1（外挂 RAG） | Stage 2（Agentic RAG）| Stage 3（混合架构）|
-|------|--------------------|-----------------------|--------------------|
-| **谁组装 messages[]** | conversation-service | conversation-service（简化）| conversation-service（最简）|
-| **System Prompt 内容** | Tier1 身份 + Tier2 SOP + Tier3 KB chunks + Tier4 工单 | AGENTS.md 身份 + 工单上下文 | AGENTS.md 身份 + 工单上下文 |
-| **SOP 知识来源** | HTTP 查 KB Service → 注入文本 | OpenClaw 自主工具调用 | Pod 本地 ConfigMap（零延迟）|
-| **案例知识来源** | HTTP 查 KB Service → 注入文本 | OpenClaw 自主工具调用 | OpenClaw 自主工具调用 |
-| **DB 历史消息** | 最近 20 条，全量传入 | 最近 20 条，全量传入 | 可适当缩短（session.memory 补充）|
-| **session.memory** | 禁用（多 Session 共享 Pod，有污染风险）| 禁用（同上，或重新启用视 Pod 架构）| **启用，跨轮持久**（一 Pod 一 Case，天然隔离）|
-| **LLM 对照组处理方式** | 与 OpenClaw 完全相同 | **分叉**：仍需外挂 RAG，无自主工具调用 | **分叉加剧**：LLM 无本地 skills，无自主多跳 |
-
-### Stage 1 — conversation-service 是 RAG 编排者
-
-```
-每轮 POST /conversations/{id}/message 时：
-
-conversation-service 并发：
-    ├── POST /api/kb/sop/match(query)      → SOP节点文本
-    └── POST /api/kb/search(query, top_k)  → KB chunks
-
-组装 messages[] = [
-  { role:"system", content: "[Tier1 HCI 排障助手角色]
-                              [Tier2 SOP 精确命中内容]
-                              [Tier3 KB语义检索chunks]
-                              [Tier4 工单 ID 上下文]" },
-  { role:"user",      content: "历史消息 1" },   ← 来自 DB（最近20条）
-  { role:"assistant", content: "历史消息 2" },
-  ...
-  { role:"user",      content: "本轮用户问题" }, ← 刚 INSERT 的
-]
-
-→ POST /v1/chat/completions (stream=true)
-  → OpenClaw 或 GLM API（两者路径完全一致）
-```
-
-**关键约束**：conversation-service 是"盲目的"——它不理解对话语义，每轮都固定检索一次，不会根据上下文判断"此轮需不需要检索"。
-
-### Stage 2 — conversation-service 降级为消息路由器
-
-```
-每轮 POST /conversations/{id}/message 时：
-
-conversation-service 只做：
-  ① INSERT user message（独立 session）
-  ② SELECT DB history（最近20条）
-  ③ 组装简化 messages[]
-  ④ 路由到 ProductionClaw Pod
-
-messages[] = [
-  { role:"system", content: "[AGENTS.md 排障规范]
-                              [工单 ID + 当前 Case 上下文]" },
-  { role:"user",      content: "历史消息 1" },   ← DB
-  { role:"assistant", content: "历史消息 2" },
-  ...
-  { role:"user",      content: "本轮用户问题" },
-]
-
-→ POST /v1/chat/completions (stream=true)
-  → ProductionClaw（Pi agent runtime）
-      ↓ 进入 AI 层内部，自主 tool-calling
-      自主 POST /api/kb/search(...)
-      自主 POST /api/kb/sop/match(...)
-```
-
-**LLM 对照组在 Stage 2 分叉**：GLM 直接调用没有工具，只能继续用 Stage 1 的外挂方式，无法参与公平的 Stage 2 对比。
-
-### Stage 3 — session.memory 成为工单级持久工作记忆
-
-一 Pod 一 Case 架构下，session.memory 可以安全启用，并且**跨轮持续积累**：
-
-```
-Case 开始（Pod 启动）
-    → BOOTSTRAP.md 执行，KB 预加载，初始化 session-memory 档案
-
-第 1 轮对话：
-  messages[] = [AGENTS.md] + [DB history 0条] + [本轮用户消息]
-     → OpenClaw 推理
-     → 自主查 KB（本地 SOP skills + 工具调用案例库）
-     → 回复
-  对话结束后，OpenClaw 更新 session.memory：
-  "当前假设：VM 内存不足 [高置信度]；已排除：网络问题"
-
-第 2 轮对话：
-  messages[] = [AGENTS.md] + [DB history 2条] + [本轮用户消息]
-     → OpenClaw 看到 DB 历史 + session.memory 里的推理摘要
-     → 已有假设框架，无需重复检索基础 SOP
-     → 回复
-
-...（session.memory 随每轮对话持续丰富）...
-
-Case 关闭（Pod 销毁）
-    → session.memory 随 emptyDir 消失（But 精华已通过 LearningClaw 提炼进 KB）
-```
-
-**session.memory 与 DB messages[] 的互补关系**：
-
-| 数据层 | 存储什么 | 谁写 | 谁读 | 生命周期 |
-|--------|---------|------|------|---------|
-| DB messages[] | 逐字对话记录（verbatim） | conversation-service | conversation-service 每轮 SELECT | 永久，随工单存档 |
-| session.memory | AI 的推理笔记（假设、已排除方向、命令结果摘要） | OpenClaw 自主更新 | OpenClaw（context 的一部分）| 随 Pod 生命周期，Case 关闭后消失 |
-
-Stage 3 可以适度**缩短 DB history 传入窗口**（如从 20 条缩至 10 条），因为 session.memory 已经把核心推理进展压缩记录。这有助于节省 token。
-
----
-
-## 六、已完成的隔离措施
+## 五、已完成的隔离措施
 
 | 措施 | 状态 | 说明 |
 |---|---|---|
@@ -333,7 +224,7 @@ Stage 3 可以适度**缩短 DB history 传入窗口**（如从 20 条缩至 10 
 
 ---
 
-## 七、openclaw 自主学习能力的利用
+## 六、openclaw 自主学习能力的利用
 
 ### 分析：直接使用 openclaw 自主学习的约束
 
@@ -393,59 +284,3 @@ Stage 3 可以适度**缩短 DB history 传入窗口**（如从 20 条缩至 10 
 ```
 
 > **一句话总结**：openclaw 的自主学习能力非常有价值，应该利用——但让它把学到的东西写进我们的 pgvector 知识库（通过 MCP），而不是写进共享的 session-memory 文件。Learning Pod 负责生产知识，Production Pod 负责使用知识，职责分离才是两全其美。
-
-## 八、AI 层实现选型：GLM 直接调用 vs OpenClaw（agent runtime）
-
-> 本节记录两种实现路径的最终选型决策。两者详细对比分析见 [11_完整技术方案.md §附录-AI层选型](../architecture/11_完整技术方案.md)。
-
-### 接入方式对比（简要）
-
-| 模式 | 接入层 | 基础设施 | 适用场景 |
-|------|--------|---------|---------|
-| **直接调用 GLM API** | `OpenClawAssistant` 类（复用同一接口）| API Key，零 K8s 资源 | 快速启动、成本优先 |
-| **通过 OpenClaw**（agent runtime）| 相同接口规范 `/v1/chat/completions` | Pod 部署 + 热备池 | 长期 Agentic 路径 |
-
-> 两者在 `ai_client.py` 中使用完全相同的 `OpenClawAssistant` 类——因为 `/v1/chat/completions` 接口规范相同，可随时切换。
-
-### 选型结论
-
-| 使用场景 | 推荐 |
-|---------|------|
-| 快速启动、成本优先、确定性排障 | 直接调用智谱 GLM API |
-| 阶段一 RAG 注入排障（当前阶段）| 两者等效，OpenClaw 略复杂但可积累 agent 能力 |
-| 阶段二 Agentic RAG（KB 自主检索）| **必须选 OpenClaw**，GLM API 无法实现自主工具调用闭环 |
-| A/B 评估对照 | 启用两者，通过 `assistant_type` 字段分组采集数据 |
-| 长期生产路径 | OpenClaw（能力演进路径更完整）|
-
-> **核心结论**：当前阶段（Stage 1）两者能力接近，OpenClaw 作为 agent runtime 的真正优势要到 Stage 2 才能发挥。建议保留 OpenClaw 作为主路径，接入智谱作为对照组，通过 `assistant_evaluation` 表采集数据做质量对比。
-
----
-
-## 九、长期架构方向：MCP Server 统一工具接口
-
-> 本节是对第二节方案 C 的远期展望，不涉及当前实施。
-
-```
-长期目标状态（Phase 4+）：
-
-AI Agent (ProductionClaw/LearningClaw)
-    │
-    │ 工具调用（统一 MCP 协议）
-    ▼
-┌────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-│  KB MCP Server  │ │  SCP MCP Server  │ │  Context MCP     │
-│  知识检索/入库   │ │  HCI 诊断工具     │ │  Case 上下文管理  │
-└────────────────┘ └──────────────────┘ └──────────────────┘
-```
-
-**迁移条件（当满足以下条件时可启动 MCP 迁移）**：
-1. Phase 3 ReAct 架构稳定运行（工具调用体系成熟）
-2. 有第二类 AI 助手接入需求（需要统一接口）
-3. 评估 openclaw 的原生 MCP 支持成熟度
-
-在此之前，通过 `SCPAdapter` + `KnowledgeTools` 的 REST 方式满足工具调用需求。
-
----
-
-*文档定位：WHY（架构决策背景） | 版本：4.0 | 最后更新：2026-03-25*
-*实施细节见：[11_完整技术方案.md](../architecture/11_完整技术方案.md)*
