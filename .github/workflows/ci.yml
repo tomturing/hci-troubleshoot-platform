@@ -276,19 +276,26 @@ jobs:
       matrix:
         include:
           - service: api-gateway
-            context: backend/api-gateway
+            context: backend
+            dockerfile: backend/api-gateway/Dockerfile
           - service: case-service
-            context: backend/case-service
+            context: backend
+            dockerfile: backend/case-service/Dockerfile
           - service: conversation-service
-            context: backend/conversation-service
+            context: backend
+            dockerfile: backend/conversation-service/Dockerfile
           - service: scheduler-service
-            context: backend/scheduler-service
+            context: backend
+            dockerfile: backend/scheduler-service/Dockerfile
           - service: kb-service
-            context: backend/kb-service
+            context: backend
+            dockerfile: backend/kb-service/Dockerfile
           - service: customer-ui
-            context: frontend/customer
+            context: frontend
+            dockerfile: frontend/customer/Dockerfile
           - service: admin-ui
-            context: frontend/admin
+            context: frontend
+            dockerfile: frontend/admin/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
@@ -303,6 +310,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: |
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
