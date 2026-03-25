@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
 
