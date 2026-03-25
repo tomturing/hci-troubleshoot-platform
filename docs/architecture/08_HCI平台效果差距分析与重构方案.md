@@ -1,7 +1,7 @@
 # HCI 智能排障平台 — 效果差距分析与重构方案
 
 > **文档性质**：诊断性分析 + 架构重构建议
-> **创建日期**：2026-03-20
+> **创建日期**：2026-03-20 | **最后更新**：2026-03-25（§4.4 断层地图刷新、§4.4.2 Phase 3 状态更新、§5.11 补充、新增§六进度快照）
 > **来源**：基于现有架构文档（系统架构.md、AI助手层设计.md、知识库RAG设计.md）的深度分析
 > **持续更新**：本文档将随后续讨论内容实时追加
 
@@ -886,16 +886,21 @@ async def should_trigger_rag(conversation_stage: str, message: str) -> bool:
 #### 4.4.1 当前"设计-实现"断层地图
 
 ```
-文档设计（100%完整）          代码实现（50%）          实际运行（20%）
+文档设计（100%完整）          代码实现              实际运行（2026-03-25）
          │                          │                        │
-         │  KB Service ──────────── ✗ ──────────────────── ✗ │
-         │  LearningClaw ─────────── ✗ ──────────────────── ✗ │
-         │  ProductionClaw ────────── ✗ ──────────────────── ✗ │
-         │  4-Tier Prompt ─────────── ✅ ─────────────── ⚠️ 空  │
-         │  KB Client ───────────── ✅ ─────────────── ✗ 空响应 │
-         │  Session隔离 ──────────── ✅ ─────────────────── ✅ │
-         │  Scheduler ────────────── ✅ ─────────────────── ✅ │
+         │  KB Service ──────────── ✅ ───────────────── ✅ Running    │
+         │  LearningClaw ─────────── ✅ ───────────────── ✅ StatefulSet│
+         │  ProductionClaw ────────── ✅ ────────── ✅ per-case pool×3  │
+         │  4-Tier Prompt ─────────── ✅ ─────────────── ✅ 生产中      │
+         │  KB 双轨检索 ──────────── ✅ ─────────────── ✅ SOP+向量    │
+         │  Session隔离 ──────────── ✅ ─────────────────── ✅          │
+         │  Scheduler ────────────── ✅ ─────────────────── ✅          │
+         │  ReactExecutor ─────────── ✅ ────── ❌ 未激活（配置缺失）  │
+         │  SCP/acli 工具 ─────────── ✅ ────── ❌ 未激活（同上）     │
+         │  前端诊断进度条 ────────── ❌ ───────────────── ❌          │
 ```
+
+> **当前进度：M0-M2 全部完成，Phase 3 代码就绪，唯一障碍是部署配置层（见 §六）**
 
 #### 4.4.2 执行路线图（Phase 0 → Phase 3）
 
@@ -937,15 +942,27 @@ Phase 2: 诊断推理链（4-8周）
   - AI 第一轮不再给答案，而是问关键问题
   - 经过 2-3 轮对话后能给出针对具体环境的方案
 
-Phase 3: 全量知识 + 架构对齐（持续，目标Q3）
+Phase 3: ReAct 引擎激活（当前阶段，2026-03-25）
 ─────────────────────────────────────────────────────
-目标：达到"HCI 领域专家 Claude"水准，得分 85 → 95
-行动：
-  1. 7000案例全量入库（配合 ETL pipeline 修复）
-  2. 切换到 ProductionClaw per-case pod 架构
-  3. LearningClaw 部署：自动从已关闭工单提炼经验入库
-  4. SOP 扩展：存储故障 / 网络故障 / 硬件故障
-  5. 评估是否引入 MCP Server（Agentic 长期方向）
+目标：从"被动问答"到"主动诊断 Agent"，得分 80 → 92
+状态：代码已完成，部署配置待解锁
+  ✅ ReactExecutor + GLMClient + ToolRouter 代码完成
+  ✅ SCP 4工具 + acli 11命令 + 15工具注册表
+  ✅ ConfirmService（Redis BRPOP）+ AuditService + /confirm 端点
+  ✅ DB schema: diagnostic_stage / hypothesis / react_state / tool_audit_log
+  ❌ Helm deployment.yaml 缺 REACT_ENABLED / SCP_BASE_URL / HCI_SSH_* 配置
+  ❌ 前端缺 stage_change 事件处理 + DiagnosticProgress 组件
+
+剩余行动（P0 最高优先级）：
+  1. Helm deployment.yaml 注入 REACT_ENABLED / SCP_BASE_URL / HCI_SSH_*
+  2. env 仓库 values.yaml 配置真实 SCP 地址和 SSH 凭据
+  3. 前端 chat.ts 添加 stage_change 分支 + DiagnosticProgress 组件
+  4. 追加 ReAct 端到端集成测试
+
+Phase 3 后续（全量知识 + 高级工具）：
+  - 7000案例全量入库（配合 ETL pipeline 修复）
+  - vm_power_on / vm_migrate（Level-2 高危工具，授权机制稳定后接入）
+  - 评估是否引入 MCP Server（Agentic 长期方向）
 ```
 
 ---
@@ -1538,11 +1555,51 @@ async def run_react_loop(session, user_input):
 | # | 信息项 | 影响 | 优先级 |
 |---|--------|------|--------|
 | 1 | **人工排障思维模型**（专家第一个问题是什么？常见误判是什么？） | 假设树、方法论 Prompt | P1 |
-| 2 | **SCP REST API 具体接口文档**（字段/返回格式） | SCP Adapter 开发 | P1 |
-| 3 | **acli 安全命令子集清单**（哪些命令可用） | Tool Catalog 完整化 | P1 |
+| 2 | ~~SCP REST API 具体接口文档~~ | ✅ SCPAdapter 已实现 4 工具 | 已完结 |
+| 3 | ~~acli 安全命令子集清单~~ | ✅ 11 个 acli 命令已实现并注册 | 已完结 |
 | 4 | **现有 SOP 内容质量**（抽查 1-2 章节） | 数据修复优先级 | P2 |
+| 5 | **SCP 真实 IP / 凭据**（dev 环境接入） | REACT_ENABLED 部署解锁的前提 | P0 |
+| 6 | **acli SSH 密钥**（节点连接凭据） | AcliAdapter 真实执行的前提 | P0 |
 
 ---
 
-*文档持续更新中，最后更新：2026-03-20*
+## 六、Phase 3 实施进度快照（2026-03-25）
+
+> 本节是对 §4.4.1 断层地图的直接补丁，记录截至 2026-03-25 的真实状态。
+> 执行路线、部署步骤、差距优先级表详见 [11_完整技术方案.md §十一](./11_完整技术方案.md)。
+
+### 6.1 整体进度
+
+| Phase | 里程碑 | 状态 |
+|-------|--------|------|
+| Phase 0 | Prompt 手术（解除"知识库代言人"枷锁） | ✅ 完成 |
+| Phase 1 | KB Service 复活 + SOP 入库 | ✅ 完成 |
+| Phase 2 | 诊断状态机（diagnostic_stage S0-S6） | ✅ 完成 |
+| Phase 3-core | ReactExecutor + 工具层 + 确认机制代码 | ✅ 代码完成 |
+| **Phase 3-deploy** | **Helm 注入 REACT_ENABLED + SCP 配置** | **❌ 待做（P0）** |
+| Phase 3-fe | stage_change 事件 + 诊断进度条 | ❌ 待做（P1） |
+| Phase 3-test | ReAct 端到端集成测试 | ❌ 待做（P2） |
+| Phase 4 | vm_power_on/migrate + 监控看板 | ⏳ 计划中 |
+
+### 6.2 当前 Pod 状态（参考）
+
+```
+# 截至 2026-03-25（kb-service CrashLoopBackOff 已修复，commit 43caaec）
+kb-service            1/1 Running    ← review.py response_model=None 修复后重建
+conversation-service  1/1 Running    ← ReactExecutor 代码就绪，REACT_ENABLED=False
+productionclaw-pool   3×1/1 Running  ← per-case pod pool 正常
+learningclaw-0        1/1 Running    ← 知识反馈闭环待完整接入
+openclaw (守护进程)    1/1 Running    ← 作为 fallback，phase 3 稳定后评估废弃
+```
+
+### 6.3 最关键的一步（解锁 ReAct）
+
+激活 Phase 3 无需写新代码，只需两步（详见 11_完整技术方案.md §11.3）：
+
+1. **Helm deployment.yaml** 注入 `REACT_ENABLED` / `SCP_BASE_URL` / `SCP_API_KEY` / `HCI_SSH_*`
+2. **env 仓库** `values.yaml` 填入真实 SCP 地址和 SSH 凭据，然后 `helm upgrade`
+
+---
+
+*文档持续更新中，最后更新：2026-03-25*
 
