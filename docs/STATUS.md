@@ -119,6 +119,14 @@ if self.response_model:
 
 本次修复基于对 `docs/phase0-4-task-orchestration` 分支代码审查报告结论，逐项修复所有问题。
 
+## 2026-03-26 ArgoCD GitOps prod 集群 namespace 修正
+
+**问题**：`hci-platform-prod` 和 `hci-platform-data-prod` ArgoCD Application 的 `destination.namespace` 错误配置为 `hci`，与 prod 集群实际使用的 namespace `hci-prod` 不一致。
+
+**修复**：
+- `deploy/gitops/argo-apps/hci-platform-prod.yaml`: namespace `hci` → `hci-prod`
+- `deploy/gitops/argo-apps/hci-platform-data-prod.yaml`: namespace `hci` → `hci-prod`
+
 ### 🔴 高优先级修复
 
 **`knowledge_retriever.py`：KB chunks 全部超限时 fallback_level 与 prompt 不一致**
