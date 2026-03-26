@@ -1,29 +1,29 @@
 # =============================================================================
-# ArgoCD Application: hci-platform-infra
+# ArgoCD Application: hci-platform-infra-staging
 #
+# 目标集群：云端 staging VM（kubernetes.default.svc = ArgoCD 所在集群）
 # 管理集群级基础设施资源（无 namespace）：
 #   - StorageClass: local-path-retain
 #   - ClusterRole/ClusterRoleBinding: prometheus-hci
 #   - ClusterRole/ClusterRoleBinding: promtail
 #
 # 设计原则：
-#   - 仅部署一次，三个环境（dev/staging/prod）共用同一份集群级资源
-#   - 独立 Application 独占所有权，消除多 Application 竞争覆写同名对象的风险
-#   - destination.namespace 留空，让各资源自身决定作用域
+#   - staging 集群独立一份，与 prod 集群隔离
+#   - destination.namespace 留空，让各资源模板自身决定作用域
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: hci-platform-infra
+  name: hci-platform-infra-staging
   namespace: argocd
   annotations:
-    # 说明：此 Application 管理的是集群级资源，不属于任何业务环境
-    argocd.argoproj.io/description: "集群级基础设施资源 - StorageClass + RBAC（三环境共用）"
+    argocd.argoproj.io/description: "staging 集群级基础设施 - StorageClass + RBAC"
 spec:
   project: default
   destination:
+    # staging 集群：云端 ArgoCD 所在 VM（kubernetes.default.svc = 本机集群）
     server: https://kubernetes.default.svc
-    namespace: ""   # 集群级资源不绑定 namespace，由各资源模板自身决定
+    namespace: ""   # 集群级资源不绑定 namespace
   sources:
     - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
       targetRevision: main
