@@ -1,24 +1,24 @@
 # =============================================================================
-# ArgoCD Application: hci-platform-infra
+# ArgoCD Application: hci-platform-infra-staging
 #
-# 管理集群级基础设施资源（无 namespace）：
+# 管理 staging 集群级基础设施资源（无 namespace）：
 #   - StorageClass: local-path-retain
 #   - ClusterRole/ClusterRoleBinding: prometheus-hci
 #   - ClusterRole/ClusterRoleBinding: promtail
 #
 # 设计原则：
-#   - 仅部署一次，三个环境（dev/staging/prod）共用同一份集群级资源
+#   - staging 集群专用，与 hci-platform-infra-prod 对称命名
 #   - 独立 Application 独占所有权，消除多 Application 竞争覆写同名对象的风险
 #   - destination.namespace 留空，让各资源自身决定作用域
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: hci-platform-infra
+  name: hci-platform-infra-staging
   namespace: argocd
   annotations:
     # 说明：此 Application 管理的是集群级资源，不属于任何业务环境
-    argocd.argoproj.io/description: "集群级基础设施资源 - StorageClass + RBAC（三环境共用）"
+    argocd.argoproj.io/description: "staging 集群级基础设施资源 - StorageClass + RBAC"
 spec:
   project: default
   destination:
@@ -29,7 +29,7 @@ spec:
       targetRevision: main
       path: deploy/helm/hci-platform-infra
       helm:
-        releaseName: hci-platform-infra
+        releaseName: hci-platform-infra-staging
   syncPolicy:
     automated:
       prune: true
