@@ -154,3 +154,18 @@ if self.response_model:
 - `_build_context_breakdown` 改用显式 `has_b_layer = len(sections) > 4` 替代脆弱的 `len(sections) == 4 / > 4` 多分支判断，逻辑更清晰且对未来段数变化有弹性；补充 docstring 说明 5 段/4 段两种结构。
 - KB chunks 截断累计变量从 `total_chars` 重命名为 `chunks_total_chars`，与 audit_meta 中语义不同的 `total_chars`（全 context breakdown 总字符数）区分开。
 - `has_sop` 检查中 `and not isinstance(sop_node, Exception)` 冗余判断已删除（该路径在并发容错处理后 `sop_node` 必为 `None` 或 `dict`），改为 `sop_node is not None`，并附注释说明原因。
+
+## 2026-03-26：GitOps argo-apps 目录重构（PR #refactor/gitops-argo-apps-by-instance）
+
+**变更内容：** `deploy/gitops/argo-apps/` 按 ArgoCD 实例分目录
+
+- `local/`：本地 WSL dev 集群（infra-dev、data-dev、obs-dev、dev）
+- `cloud/`：云端 ArgoCD（staging + prod，各 4 个 Application）
+- 新增 `local/hci-platform-infra-dev.yaml`（原 `hci-platform-infra.yaml` 重命名）
+- 新增 `local/hci-platform-obs-dev.yaml`（原 `hci-platform-obs.yaml` 重命名，Application name 同步更新）
+- 新增 `cloud/hci-platform-infra-{staging,prod}.yaml`
+- 新增 `cloud/hci-platform-obs-{staging,prod}.yaml`
+- 新增 `deploy/gitops/argo-apps/README.md`：记录两目录用途和 Bootstrap 命令
+
+**同步变更（hci-platform-env commit `5f037f8`）：**
+- `environments/dev/values.yaml`：数据层迁移至 hci-dev，`postgresHost`/`redisUrl` 改为同 ns 短名
