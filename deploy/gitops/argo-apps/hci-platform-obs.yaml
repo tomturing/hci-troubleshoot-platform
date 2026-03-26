@@ -35,8 +35,9 @@ spec:
       helm:
         releaseName: hci-platform-obs
         valueFiles:
-          - $values/environments/dev/values.yaml
+          - $values/environments/staging/values.yaml
     # 环境仓库：提供 grafanaAdminPassword 等敏感配置
+    # staging ArgoCD 管理 staging in-cluster，obs 使用 staging 环境配置
     - repoURL: https://github.com/tomturing/hci-platform-env.git
       targetRevision: main
       ref: values

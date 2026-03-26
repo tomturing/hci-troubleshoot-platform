@@ -1,0 +1,57 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-obs-prod
+#
+# 管理 prod 集群可观测性栈（namespace: hci-observability）：
+#   - Prometheus Deployment + ServiceAccount + ConfigMap + Service
+#   - Loki Deployment + PVC + Service
+#   - Tempo Deployment + PVC + Service
+#   - Grafana Deployment + Service + Secret + ConfigMap
+#   - Promtail DaemonSet + ServiceAccount
+#   - Grafana Ingress（ingress.enabled=true 时生效）
+#
+# 设计原则：
+#   - prod 集群独立 VM（192.168.0.3），需独立部署可观测性栈
+#   - 与 hci-platform-obs.yaml（staging）使用同一 Chart，仅 destination + values 不同
+#   - prune: false — Loki + Tempo PVC 受保护，防止生产观测数据意外丢失
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-obs-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "prod 可观测性栈 — Prometheus + Loki + Tempo + Grafana + Promtail（192.168.0.3）"
+spec:
+  project: default
+  destination:
+    # prod 集群独立 VM，ArgoCD 通过内网 API Server 管理
+    server: https://192.168.0.3:6443
+    namespace: hci-observability
+  sources:
+    # 应用仓库：提供 Helm Chart
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-obs
+      helm:
+        releaseName: hci-platform-obs
+        valueFiles:
+          - $values/environments/prod/values.yaml
+    # 环境仓库：提供 grafanaAdminPassword 等敏感配置（prod values）
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  # PVC spec 字段一旦创建不可变，忽略差异防止 SyncFailed
+  ignoreDifferences:
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
+        - /spec/volumeMode
+        - /spec/accessModes
+  syncPolicy:
+    automated:
+      prune: false      # 绝对禁止自动删除生产观测数据
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
