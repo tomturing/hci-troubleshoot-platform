@@ -349,6 +349,7 @@ ingress:
 
 # ======================== 应用配置（非敏感 → ConfigMap）=====================
 config:
+  postgresHost: postgres  # 跨 namespace 部署时可覆盖为完整 DNS，如 postgres.hci-troubleshoot.svc.cluster.local
   postgresDb: hci_troubleshoot
   postgresUser: hci_admin
   redisUrl: "redis://redis:6379/0"
