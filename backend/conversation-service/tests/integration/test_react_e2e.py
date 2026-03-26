@@ -120,6 +120,7 @@ async def collect_sse_events(response) -> list[dict]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestReactE2E:
     """ReAct 端到端集成测试"""
 

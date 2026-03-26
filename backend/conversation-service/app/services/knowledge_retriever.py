@@ -10,11 +10,13 @@
 import asyncio
 from dataclasses import dataclass
 
+from opentelemetry import trace
 from shared.utils.logger import get_logger
 
 from app.config import settings
 
 logger = get_logger("knowledge-retriever")
+tracer = trace.get_tracer(__name__)
 
 
 @dataclass
@@ -172,145 +174,149 @@ class KnowledgeRetriever:
             [0] system_prompt 字符串
             [1] audit_meta 字典
         """
-        # 获取当前诊断阶段描述
-        stage_desc = STAGE_DESC_MAP.get(diagnostic_stage, f"{diagnostic_stage} - 进行中")
+        with tracer.start_as_current_span("knowledge.retrieve") as span:
+            span.set_attribute("case_id", case_id)
+            span.set_attribute("diagnostic_stage", diagnostic_stage)
+            span.set_attribute("query_len", len(query))
+            # 获取当前诊断阶段描述
+            stage_desc = STAGE_DESC_MAP.get(diagnostic_stage, f"{diagnostic_stage} - 进行中")
 
-        # Segment 1 + 2 + 3 固定段
-        base_sections: list[str] = [
-            SEGMENT_IDENTITY,
-            SEGMENT_METHODOLOGY.format(stage_desc=stage_desc),
-            SEGMENT_REASONING_MODE,
-        ]
+            # Segment 1 + 2 + 3 固定段
+            base_sections: list[str] = [
+                SEGMENT_IDENTITY,
+                SEGMENT_METHODOLOGY.format(stage_desc=stage_desc),
+                SEGMENT_REASONING_MODE,
+            ]
 
-        # KB 未启用或无客户端时，直接进入机制推理模式
-        if not self._kb_client or not settings.KB_ENABLED:
-            base_sections.append(SEGMENT_NO_REFERENCE)
+            # KB 未启用或无客户端时，直接进入机制推理模式
+            if not self._kb_client or not settings.KB_ENABLED:
+                base_sections.append(SEGMENT_NO_REFERENCE)
+                base_sections.append(SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id))
+                _ctx_bd = _build_context_breakdown(base_sections, "mechanism")
+                logger.debug(
+                    event="context_window_breakdown",
+                    case_id=case_id,
+                    stage=diagnostic_stage,
+                    segments=_ctx_bd,
+                    total_chars=sum(s["chars"] for s in _ctx_bd),
+                    total_token_est=sum(s["token_est"] for s in _ctx_bd),
+                )
+                return "\n\n".join(base_sections), {
+                    "has_sop": False,
+                    "kb_chunks_count": 0,
+                    "kb_top_score": None,
+                    "fallback_level": "mechanism",
+                    "context_breakdown": _ctx_bd,
+                    "total_chars": sum(s["chars"] for s in _ctx_bd),
+                    "total_token_est": sum(s["token_est"] for s in _ctx_bd),
+                }
+
+            # 并发执行 SOP 匹配 + 语义检索
+            sop_task = asyncio.create_task(self._kb_client.sop_match(query))
+            search_task = asyncio.create_task(
+                self._kb_client.search(query, top_n=settings.KB_SEARCH_TOP_N)
+            )
+            sop_node, kb_chunks = await asyncio.gather(sop_task, search_task, return_exceptions=True)
+
+            # 容错：任一任务异常均不影响主流程
+            if isinstance(sop_node, Exception):
+                logger.warning(event="kb_sop_error", message=str(sop_node), case_id=case_id)
+                sop_node = None
+            if isinstance(kb_chunks, Exception):
+                logger.warning(event="kb_search_error", message=str(kb_chunks), case_id=case_id)
+                kb_chunks = []
+
+            fallback_level: str
+
+            # --- Segment 4: 三级 Fallback ---
+            if sop_node:
+                # 优先级1: SOP 命中 → 程序性执行路径
+                sop_content = sop_node.get("content", "")
+                sop_title = sop_node.get("title") or sop_node.get("node_name") or "SOP 排障手册"
+                base_sections.append(
+                    SEGMENT_SOP_REFERENCE.format(
+                        sop_source=sop_title,
+                        sop_content=sop_content[:settings.KB_CONTEXT_MAX_CHARS],
+                    )
+                )
+                fallback_level = "sop"
+                logger.info(
+                    event="kb_sop_hit",
+                    message=f"SOP 命中：{sop_title}",
+                    case_id=case_id,
+                    sop_title=sop_title,
+                )
+
+            elif kb_chunks:
+                # 优先级2: KB 案例命中 → 假设生成路径
+                chunks_text_parts: list[str] = []
+                total_chars = 0
+                for i, chunk in enumerate(kb_chunks, 1):
+                    chunk_content = chunk.get("content", "")
+                    source = chunk.get("source_title") or chunk.get("document_title") or "未知文档"
+                    case_id_ref = chunk.get("case_id", "")
+                    version = chunk.get("applicable_version", "")
+                    meta = f"案例 #{case_id_ref}" if case_id_ref else f"来源：{source}"
+                    if version:
+                        meta += f" | 版本: {version}"
+                    if total_chars + len(chunk_content) > settings.KB_CONTEXT_MAX_CHARS:
+                        break
+                    chunks_text_parts.append(f"[{i}] {meta}\n{chunk_content}")
+                    total_chars += len(chunk_content)
+
+                if chunks_text_parts:
+                    base_sections.append(
+                        SEGMENT_CASE_REFERENCE.format(
+                            case_count=len(chunks_text_parts),
+                            case_content="\n\n---\n".join(chunks_text_parts),
+                        )
+                    )
+                fallback_level = "kb_case"
+                logger.info(
+                    event="kb_search_hit",
+                    message=f"KB 检索命中 {len(kb_chunks)} 条",
+                    case_id=case_id,
+                    hit_count=len(kb_chunks),
+                )
+
+            else:
+                # 优先级3: 双轨均未命中 → 机制推理兜底
+                base_sections.append(SEGMENT_NO_REFERENCE)
+                fallback_level = "mechanism"
+                logger.info(
+                    event="kb_no_hit",
+                    message="KB 双轨均未命中，进入机制推理模式",
+                    case_id=case_id,
+                )
+
+            # --- Segment 5: 工单上下文 ---
             base_sections.append(SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id))
-            _ctx_bd = _build_context_breakdown(base_sections, "mechanism")
+
+            # 构建 context_breakdown
+            _ctx_bd = _build_context_breakdown(base_sections, fallback_level)
+            _total_chars = sum(s["chars"] for s in _ctx_bd)
+            _total_token_est = sum(s["token_est"] for s in _ctx_bd)
             logger.debug(
                 event="context_window_breakdown",
                 case_id=case_id,
                 stage=diagnostic_stage,
                 segments=_ctx_bd,
-                total_chars=sum(s["chars"] for s in _ctx_bd),
-                total_token_est=sum(s["token_est"] for s in _ctx_bd),
+                total_chars=_total_chars,
+                total_token_est=_total_token_est,
             )
-            return "\n\n".join(base_sections), {
-                "has_sop": False,
-                "kb_chunks_count": 0,
-                "kb_top_score": None,
-                "fallback_level": "mechanism",
+
+            # 构建审计元数据
+            audit_meta = {
+                "has_sop": sop_node is not None and not isinstance(sop_node, Exception),
+                "kb_chunks_count": len(kb_chunks) if isinstance(kb_chunks, list) else 0,
+                "kb_top_score": (
+                    max((c.get("score", 0.0) for c in kb_chunks), default=None)
+                    if isinstance(kb_chunks, list) and kb_chunks else None
+                ),
+                "fallback_level": fallback_level,
                 "context_breakdown": _ctx_bd,
-                "total_chars": sum(s["chars"] for s in _ctx_bd),
-                "total_token_est": sum(s["token_est"] for s in _ctx_bd),
+                "total_chars": _total_chars,
+                "total_token_est": _total_token_est,
             }
 
-        # 并发执行 SOP 匹配 + 语义检索
-        sop_task = asyncio.create_task(self._kb_client.sop_match(query))
-        search_task = asyncio.create_task(
-            self._kb_client.search(query, top_n=settings.KB_SEARCH_TOP_N)
-        )
-        sop_node, kb_chunks = await asyncio.gather(sop_task, search_task, return_exceptions=True)
-
-        # 容错：任一任务异常均不影响主流程
-        if isinstance(sop_node, Exception):
-            logger.warning(event="kb_sop_error", message=str(sop_node), case_id=case_id)
-            sop_node = None
-        if isinstance(kb_chunks, Exception):
-            logger.warning(event="kb_search_error", message=str(kb_chunks), case_id=case_id)
-            kb_chunks = []
-
-        fallback_level: str
-
-        # --- Segment 4: 三级 Fallback ---
-        if sop_node:
-            # 优先级1: SOP 命中 → 程序性执行路径
-            sop_content = sop_node.get("content", "")
-            sop_title = sop_node.get("title") or sop_node.get("node_name") or "SOP 排障手册"
-            base_sections.append(
-                SEGMENT_SOP_REFERENCE.format(
-                    sop_source=sop_title,
-                    sop_content=sop_content[:settings.KB_CONTEXT_MAX_CHARS],
-                )
-            )
-            fallback_level = "sop"
-            logger.info(
-                event="kb_sop_hit",
-                message=f"SOP 命中：{sop_title}",
-                case_id=case_id,
-                sop_title=sop_title,
-            )
-
-        elif kb_chunks:
-            # 优先级2: KB 案例命中 → 假设生成路径
-            chunks_text_parts: list[str] = []
-            total_chars = 0
-            for i, chunk in enumerate(kb_chunks, 1):
-                chunk_content = chunk.get("content", "")
-                source = chunk.get("source_title") or chunk.get("document_title") or "未知文档"
-                case_id_ref = chunk.get("case_id", "")
-                version = chunk.get("applicable_version", "")
-                meta = f"案例 #{case_id_ref}" if case_id_ref else f"来源：{source}"
-                if version:
-                    meta += f" | 版本: {version}"
-                if total_chars + len(chunk_content) > settings.KB_CONTEXT_MAX_CHARS:
-                    break
-                chunks_text_parts.append(f"[{i}] {meta}\n{chunk_content}")
-                total_chars += len(chunk_content)
-
-            if chunks_text_parts:
-                base_sections.append(
-                    SEGMENT_CASE_REFERENCE.format(
-                        case_count=len(chunks_text_parts),
-                        case_content="\n\n---\n".join(chunks_text_parts),
-                    )
-                )
-            fallback_level = "kb_case"
-            logger.info(
-                event="kb_search_hit",
-                message=f"KB 检索命中 {len(kb_chunks)} 条",
-                case_id=case_id,
-                hit_count=len(kb_chunks),
-            )
-
-        else:
-            # 优先级3: 双轨均未命中 → 机制推理兜底
-            base_sections.append(SEGMENT_NO_REFERENCE)
-            fallback_level = "mechanism"
-            logger.info(
-                event="kb_no_hit",
-                message="KB 双轨均未命中，进入机制推理模式",
-                case_id=case_id,
-            )
-
-        # --- Segment 5: 工单上下文 ---
-        base_sections.append(SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id))
-
-        # 构建 context_breakdown
-        _ctx_bd = _build_context_breakdown(base_sections, fallback_level)
-        _total_chars = sum(s["chars"] for s in _ctx_bd)
-        _total_token_est = sum(s["token_est"] for s in _ctx_bd)
-        logger.debug(
-            event="context_window_breakdown",
-            case_id=case_id,
-            stage=diagnostic_stage,
-            segments=_ctx_bd,
-            total_chars=_total_chars,
-            total_token_est=_total_token_est,
-        )
-
-        # 构建审计元数据
-        audit_meta = {
-            "has_sop": sop_node is not None and not isinstance(sop_node, Exception),
-            "kb_chunks_count": len(kb_chunks) if isinstance(kb_chunks, list) else 0,
-            "kb_top_score": (
-                max((c.get("score", 0.0) for c in kb_chunks), default=None)
-                if isinstance(kb_chunks, list) and kb_chunks else None
-            ),
-            "fallback_level": fallback_level,
-            "context_breakdown": _ctx_bd,
-            "total_chars": _total_chars,
-            "total_token_est": _total_token_est,
-        }
-
-        return "\n\n".join(base_sections), audit_meta
+            return "\n\n".join(base_sections), audit_meta
