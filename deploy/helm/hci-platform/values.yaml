@@ -282,7 +282,7 @@ openclaw:
     # 默认提供可在非 loopback 场景启动的 controlUi 配置，避免 gateway 启动时因 origin 校验失败退出。
     # 包含  agents.defaults（GLM 模型）+ models.providers（zhipu）配置
     # 与 learningclaw-init-configmap 中的模型配置保持一致，避免使用默认 anthropic 模型
-    openclawJson: '{"agents":{"defaults":{"model":{"primary":"zhipu/glm-5"},"models":{"zhipu/glm-5":{"alias":"GLM"}},"workspace":"/home/node/.openclaw/workspace","compaction":{"mode":"safeguard"}}},"models":{"mode":"merge","providers":{"zhipu":{"api":"openai-completions","apiKey":"${OPENCLAW_API_KEY}","baseUrl":"https://open.bigmodel.cn/api/paas/v4","models":[{"contextWindow":128000,"id":"glm-5","name":"GLM"}]}}},"gateway":{"mode":"local","bind":"lan","controlUi":{"enabled":true,"dangerouslyAllowHostHeaderOriginFallback":true},"auth":{"mode":"token","token":"${OPENCLAW_GATEWAY_TOKEN}"},"http":{"endpoints":{"chatCompletions":{"enabled":true}}}}}'
+    openclawJson: '{"agents":{"defaults":{"model":{"primary":"zhipu/glm-5"},"models":{"zhipu/glm-5":{"alias":"GLM"}},"workspace":"/home/node/.openclaw/workspace","compaction":{"mode":"safeguard"}}},"models":{"mode":"merge","providers":{"zhipu":{"api":"openai-completions","apiKey":"${OPENCLAW_API_KEY}","baseUrl":"https://open.bigmodel.cn/api/paas/v4","models":[{"contextWindow":128000,"id":"glm-5","name":"GLM"}]}}},"gateway":{"mode":"local","bind":"lan","controlUi":{"enabled":true,"dangerouslyAllowHostHeaderOriginFallback":true,"dangerouslyDisableDeviceAuth":true},"auth":{"mode":"token","token":"${OPENCLAW_GATEWAY_TOKEN}"},"http":{"endpoints":{"chatCompletions":{"enabled":true}}}}}'
 
 # ======================== NetworkPolicy =====================================
 networkPolicy:
