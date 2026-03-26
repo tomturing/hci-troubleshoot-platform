@@ -5,11 +5,11 @@
 """
 
 import json
-import logging
 
 from redis.asyncio import Redis
+from shared.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("dialog-tools")
 
 # 等待用户回复的超时秒数
 ASK_USER_TIMEOUT = 300  # 5 分钟

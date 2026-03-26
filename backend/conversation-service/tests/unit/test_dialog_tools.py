@@ -171,7 +171,7 @@ class TestDialogTools:
         confirm_service = MockConfirmService(confirm_result=True)
 
         # 设置回复
-        reply_key = "ask_user_reply:session-001"
+        reply_key = "ask_user:reply:session-001"
         redis._data[reply_key] = json.dumps({"reply": "VM1"})
 
         tools = DialogTools(
