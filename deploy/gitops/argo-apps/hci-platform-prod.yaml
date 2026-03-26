@@ -6,8 +6,9 @@ metadata:
 spec:
   project: default
   destination:
-    server: https://kubernetes.default.svc
-    namespace: hci
+    # prod 集群独立 VM（192.168.0.3），ArgoCD 通过内网 API Server 管理
+    server: https://192.168.0.3:6443
+    namespace: hci-prod
   sources:
     - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
       targetRevision: main
