@@ -42,7 +42,7 @@ spec:
             - name: SERVICE_PORT
               value: {{ .Values.kbService.port | quote }}
             - name: DATABASE_URL
-              value: {{ printf "postgresql+asyncpg://%s:%s@postgres:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresDb | quote }}
+              value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
             - name: SOP_SKILLS_DIR
               value: {{ .Values.kbService.sopSkillsDir | quote }}
             - name: ZAI_BASE_URL
