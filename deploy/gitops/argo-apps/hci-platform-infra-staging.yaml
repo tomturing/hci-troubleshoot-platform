@@ -29,7 +29,7 @@ spec:
       targetRevision: main
       path: deploy/helm/hci-platform-infra
       helm:
-        releaseName: hci-platform-infra-staging
+        releaseName: hci-platform-infra  # 保持旧 releaseName，与已有集群资源标签保持一致
   syncPolicy:
     automated:
       prune: true

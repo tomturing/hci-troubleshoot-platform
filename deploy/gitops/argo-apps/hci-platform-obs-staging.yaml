@@ -33,7 +33,7 @@ spec:
       targetRevision: main
       path: deploy/helm/hci-platform-obs
       helm:
-        releaseName: hci-platform-obs-staging
+        releaseName: hci-platform-obs   # 保持旧 releaseName，避免 spec.selector 不可变冲突
         valueFiles:
           - $values/environments/staging/values.yaml
     # 环境仓库：提供 grafanaAdminPassword 等敏感配置
