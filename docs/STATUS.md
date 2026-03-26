@@ -114,3 +114,35 @@ if self.response_model:
 `-> None` 返回注解推断出 `NoneType`（truthy class），导致断言触发。
 
 **修复**：改为 `response_model=None`（显式 `None` 为 falsy，跳过断言），移除 `-> None` 注解和孤立 `Response` import。
+
+## 2026-03-26 代码审查 Bug 修复（docs/phase0-4-task-orchestration 分支）
+
+本次修复基于对 `docs/phase0-4-task-orchestration` 分支代码审查报告结论，逐项修复所有问题。
+
+### 🔴 高优先级修复
+
+**`knowledge_retriever.py`：KB chunks 全部超限时 fallback_level 与 prompt 不一致**
+
+- **问题**：当所有 KB chunks 均超出 `KB_CONTEXT_MAX_CHARS` 时，`chunks_text_parts` 为空，`SEGMENT_CASE_REFERENCE` 不会被注入，但 `fallback_level` 仍被设为 `"kb_case"`，导致 audit_meta 与实际 LLM 收到的 Prompt 不一致。
+- **修复**：将 `fallback_level = "kb_case"` 移入 `if chunks_text_parts:` 分支内；新增 `else` 分支，将超限时的降级改为 `fallback_level = "mechanism"`，并注入 `SEGMENT_NO_REFERENCE`，同时 `logger.warning` 记录 `kb_chunks_all_oversized` 事件。
+
+### 🟡 中优先级修复
+
+**三处 OTel span 未记录异常（`tool.execute`、`conversation.react_stream`、`knowledge.retrieve`）**
+
+- **`react_executor.py`（`tool.execute`）**：将 `execute()` 调用移入 inner `try/except`，异常时调用 `span.record_exception(e)` + `span.set_status(trace.StatusCode.ERROR, ...)` 后 `raise`，由外层 `except` 捕获并赋值 `error`/`result`。
+- **`conversation_service.py`（`conversation.react_stream`）**：在 `_error` 路径的 `raise RuntimeError` 前插入 `span.record_exception(_err)` + `span.set_status(trace.StatusCode.ERROR, ...)`。
+- **`knowledge_retriever.py`（`knowledge.retrieve`）**：将 `retrieve()` 方法体提取为私有方法 `_retrieve_impl()`，外层 `retrieve()` 在 span 内调用 `_retrieve_impl`，并用 `try/except` 拦截任何异常以 record + set_status 后 re-raise。
+
+**`test_react_e2e.py`：`test_tool_audit_log_written_after_execution` 修改全局状态未还原**
+
+- 在赋值 `async_client.app.state._audit_service = real_audit` 前保存原始值 `original_audit_service`，在 `finally:` 块中恢复。
+
+### 🟢 低优先级修复
+
+**`knowledge_retriever.py` 多项设计改善**：
+
+- `SEGMENT_CODES` 字典类型混用（int→tuple 与 int→dict）拆分为三个独立常量：`_SEGMENT_CODE_A`（dict[int,tuple]）、`_SEGMENT_CODE_B`（dict[str,tuple]）、`_SEGMENT_CODE_D1`（tuple），消除所有 `# type: ignore` 注释。
+- `_build_context_breakdown` 改用显式 `has_b_layer = len(sections) > 4` 替代脆弱的 `len(sections) == 4 / > 4` 多分支判断，逻辑更清晰且对未来段数变化有弹性；补充 docstring 说明 5 段/4 段两种结构。
+- KB chunks 截断累计变量从 `total_chars` 重命名为 `chunks_total_chars`，与 audit_meta 中语义不同的 `total_chars`（全 context breakdown 总字符数）区分开。
+- `has_sop` 检查中 `and not isinstance(sop_node, Exception)` 冗余判断已删除（该路径在并发容错处理后 `sop_node` 必为 `None` 或 `dict`），改为 `sop_node is not None`，并附注释说明原因。

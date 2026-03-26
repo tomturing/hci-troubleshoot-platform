@@ -81,7 +81,7 @@ markers = [
     "integration: Integration tests",
     "slow: Slow running tests",
 ]
-addopts = "-v --strict-markers --tb=short"
+addopts = "-v --strict-markers --tb=short -p no:locust"
 
 [tool.ruff]
 target-version = "py312"

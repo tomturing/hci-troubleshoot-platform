@@ -261,6 +261,9 @@ class TestWritePromptAudit:
                 kb_chunks_count=3,
                 kb_top_score=0.85,
                 messages=sample_payload,
+                context_breakdown=None,
+                total_chars=None,
+                total_token_est=None,
             )
 
             # 验证 session.commit 被调用
@@ -304,6 +307,9 @@ class TestWritePromptAudit:
                 kb_chunks_count=0,
                 kb_top_score=None,
                 messages=None,
+                context_breakdown=None,
+                total_chars=None,
+                total_token_est=None,
             )
 
     async def test_write_prompt_audit_error_handling(

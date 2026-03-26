@@ -19,10 +19,13 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
+from opentelemetry import trace
+
 from .glm_client import GLMClient, LLMResponse, ToolCall
 from .tool_registry import TOOL_REGISTRY, get_tools_for_llm
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 # 硬限制：最大推理步骤数，防止无限循环
 MAX_STEPS = 15
@@ -233,7 +236,16 @@ class ReactExecutor:
         error: str | None = None
 
         try:
-            result = await self.tool_executor.execute(tool_call.name, tool_call.args)
+            with tracer.start_as_current_span("tool.execute") as span:
+                span.set_attribute("tool.name", tool_call.name)
+                span.set_attribute("tool.risk_level", tool_def.risk_level)
+                span.set_attribute("session_id", state.session_id)
+                try:
+                    result = await self.tool_executor.execute(tool_call.name, tool_call.args)
+                except Exception as e:
+                    span.record_exception(e)
+                    span.set_status(trace.StatusCode.ERROR, str(e))
+                    raise
         except Exception as e:
             error = str(e)
             result = f"工具执行失败: {error}"

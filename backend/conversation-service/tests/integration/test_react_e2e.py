@@ -120,6 +120,7 @@ async def collect_sse_events(response) -> list[dict]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestReactE2E:
     """ReAct 端到端集成测试"""
 
@@ -359,13 +360,15 @@ class TestReactE2E:
             await db_session.execute(insert(ToolAuditLog).values(**kwargs))
             await db_session.commit()
 
-        with patch.object(async_client.app.state.glm_client, 'chat', new=AsyncMock(side_effect=mock_glm_chat)):
-            with patch.object(async_client.app.state.tool_router, 'execute', new=AsyncMock(return_value=mock_tool_result)):
-                # 使用真实审计服务写入 DB
-                real_audit = AuditService(db=db_session)
-                # 但我们需要 capture 调用，所以 patch write 方法
-                with patch.object(real_audit, 'write', new=AsyncMock(side_effect=capture_and_write_audit)):
-                    async_client.app.state._audit_service = real_audit
+        original_audit_service = async_client.app.state._audit_service
+        try:
+            with patch.object(async_client.app.state.glm_client, 'chat', new=AsyncMock(side_effect=mock_glm_chat)):
+                with patch.object(async_client.app.state.tool_router, 'execute', new=AsyncMock(return_value=mock_tool_result)):
+                    # 使用真实审计服务写入 DB
+                    real_audit = AuditService(db=db_session)
+                    # 但我们需要 capture 调用，所以 patch write 方法
+                    with patch.object(real_audit, 'write', new=AsyncMock(side_effect=capture_and_write_audit)):
+                        async_client.app.state._audit_service = real_audit
 
                     # 发送消息
                     response = await async_client.post(
@@ -407,6 +410,8 @@ class TestReactE2E:
                     assert log.duration_ms is not None
                     assert log.started_at is not None
                     assert log.completed_at is not None
+        finally:
+            async_client.app.state._audit_service = original_audit_service
 
     async def test_react_full_cycle_with_confirm(self, async_client, db_session):
         """

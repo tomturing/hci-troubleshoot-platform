@@ -169,6 +169,10 @@ jobs:
             -x -q \
             --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
             -m "not integration and not slow"
+          uv run pytest backend/conversation-service/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -m "not integration and not slow"
           # 最后一批：合并所有覆盖率后统一检查基线（≥60%），避免分批检查造成误报
           uv run pytest backend/scheduler-service/tests/unit/ \
             -x -q \
@@ -216,6 +220,7 @@ jobs:
         run: |
           # 各服务分开进程运行，避免 app/ 命名空间跨服务污染
           uv run pytest tests/integration/ -x -q -m "integration"
+          uv run pytest backend/conversation-service/tests/integration/ -x -q -m "integration"
           uv run pytest backend/scheduler-service/tests/integration/ -x -q -m "integration"
           uv run pytest backend/api-gateway/tests/integration/ -x -q -m "integration"
 

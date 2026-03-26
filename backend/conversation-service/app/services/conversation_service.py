@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from opentelemetry import trace
 from shared.utils.logger import get_logger
 from shared.utils.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
 from shared.utils.otel import get_current_trace_id
@@ -25,6 +26,7 @@ from .scheduler_client import SchedulerClient
 from .sse_queue import LogAuditService, QueueSSEEmitter
 
 logger = get_logger("conversation-service")
+tracer = trace.get_tracer(__name__)
 
 # Jaccard 相似度阈值
 JACCARD_THRESHOLD = 0.6
@@ -556,82 +558,90 @@ class ConversationService:
 
         trace_id = get_current_trace_id()
 
-        # 1. 保存用户消息（独立事务）
-        if self.session_factory:
-            async with self.session_factory() as s:
-                await ConversationRepository(s).add_message(
+        with tracer.start_as_current_span("conversation.react_stream") as span:
+            span.set_attribute("session_id", session_id)
+            span.set_attribute("case_id", case_id)
+            span.set_attribute("trace_id", trace_id or "")
+
+            # 1. 保存用户消息（独立事务）
+            if self.session_factory:
+                async with self.session_factory() as s:
+                    await ConversationRepository(s).add_message(
+                        conversation_id=conversation_id,
+                        case_id=case_id,
+                        role=MessageRole.user,
+                        content=content,
+                        trace_id=trace_id,
+                    )
+                    await s.commit()
+            else:
+                await self.repository.add_message(
                     conversation_id=conversation_id,
                     case_id=case_id,
                     role=MessageRole.user,
                     content=content,
                     trace_id=trace_id,
                 )
-                await s.commit()
-        else:
-            await self.repository.add_message(
-                conversation_id=conversation_id,
-                case_id=case_id,
-                role=MessageRole.user,
-                content=content,
-                trace_id=trace_id,
+
+            # 2. 构建 System Prompt
+            system_prompt, _audit_meta = await self._build_system_prompt(content, case_id)
+
+            # 3. 获取历史消息（独立 session 避免长事务）
+            if self.session_factory:
+                async with self.session_factory() as s:
+                    all_messages = await ConversationRepository(s).get_messages(conversation_id)
+            else:
+                all_messages = await self.repository.get_messages(conversation_id)
+
+            history = [
+                {"role": msg.role.value, "content": msg.content}
+                for msg in (all_messages[-20:] if len(all_messages) > 20 else all_messages)
+            ]
+
+            # 4. 创建 per-request asyncio.Queue 桥接 SSE 事件与文本流
+            queue: asyncio.Queue[dict | None] = asyncio.Queue()
+            sse_emitter = QueueSSEEmitter(queue)
+
+            # 5. 构建 AgentState 和 ReactExecutor
+            state = AgentState(session_id=session_id, messages=history)
+            executor = ReactExecutor(
+                glm_client=self.glm_client,
+                tool_executor=self.tool_router,
+                confirm_service=self.confirm_service,
+                audit_service=self._audit_service,
+                sse_emitter=sse_emitter,
             )
 
-        # 2. 构建 System Prompt
-        system_prompt, _audit_meta = await self._build_system_prompt(content, case_id)
+            # 6. 在后台任务中运行 ReactExecutor，将结果放入队列
+            async def _run_agent() -> None:
+                try:
+                    async for chunk in executor.run(state, system_prompt):
+                        if chunk:
+                            await queue.put({"content": chunk})
+                except Exception as exc:
+                    logger.error(
+                        event="react_executor_error",
+                        message=str(exc),
+                        session_id=session_id,
+                    )
+                    await queue.put({"_error": str(exc)})
+                finally:
+                    # 放入哨兵，通知消费者流结束
+                    await queue.put(None)
 
-        # 3. 获取历史消息（独立 session 避免长事务）
-        if self.session_factory:
-            async with self.session_factory() as s:
-                all_messages = await ConversationRepository(s).get_messages(conversation_id)
-        else:
-            all_messages = await self.repository.get_messages(conversation_id)
+            asyncio.create_task(_run_agent())
 
-        history = [
-            {"role": msg.role.value, "content": msg.content}
-            for msg in (all_messages[-20:] if len(all_messages) > 20 else all_messages)
-        ]
-
-        # 4. 创建 per-request asyncio.Queue 桥接 SSE 事件与文本流
-        queue: asyncio.Queue[dict | None] = asyncio.Queue()
-        sse_emitter = QueueSSEEmitter(queue)
-
-        # 5. 构建 AgentState 和 ReactExecutor
-        state = AgentState(session_id=session_id, messages=history)
-        executor = ReactExecutor(
-            glm_client=self.glm_client,
-            tool_executor=self.tool_router,
-            confirm_service=self.confirm_service,
-            audit_service=self._audit_service,
-            sse_emitter=sse_emitter,
-        )
-
-        # 6. 在后台任务中运行 ReactExecutor，将结果放入队列
-        async def _run_agent() -> None:
-            try:
-                async for chunk in executor.run(state, system_prompt):
-                    if chunk:
-                        await queue.put({"content": chunk})
-            except Exception as exc:
-                logger.error(
-                    event="react_executor_error",
-                    message=str(exc),
-                    session_id=session_id,
-                )
-                await queue.put({"_error": str(exc)})
-            finally:
-                # 放入哨兵，通知消费者流结束
-                await queue.put(None)
-
-        asyncio.create_task(_run_agent())
-
-        # 7. 从队列消费并 yield 事件
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            if "_error" in item:
-                raise RuntimeError(item["_error"])
-            yield item
+            # 7. 从队列消费并 yield 事件
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if "_error" in item:
+                    _err = RuntimeError(item["_error"])
+                    span.record_exception(_err)
+                    span.set_status(trace.StatusCode.ERROR, item["_error"])
+                    raise _err
+                yield item
 
     async def _trigger_knowledge_extraction(
         self,

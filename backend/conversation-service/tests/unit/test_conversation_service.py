@@ -106,6 +106,7 @@ class TestSendMessageStreamOnly:
         # Mock 依赖
         mock_repo.add_message = AsyncMock()
         mock_repo.get_messages = AsyncMock(return_value=[])
+        mock_repo.get_conversation = AsyncMock(return_value=None)
 
         # Mock AI 客户端流
         async def fake_stream(*args, **kwargs):
@@ -141,6 +142,7 @@ class TestSendMessageStreamOnly:
         conv_id = uuid.uuid4()
         mock_repo.add_message = AsyncMock()
         mock_repo.get_messages = AsyncMock(return_value=[])
+        mock_repo.get_conversation = AsyncMock(return_value=None)
 
         async def empty_stream(*a, **kw):
             return
