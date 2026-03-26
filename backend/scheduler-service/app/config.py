@@ -35,6 +35,7 @@ class Settings(BaseSettings):
 
     # K8s配置
     K8S_NAMESPACE: str = "hci-troubleshoot"
+    K8S_IMAGE_PULL_SECRET: str = ""  # GHCR 镜像拉取 Secret 名称，空字符串表示不配置
 
     # Pod池全局配置
     POD_IDLE_TIMEOUT: int = 300  # 5分钟

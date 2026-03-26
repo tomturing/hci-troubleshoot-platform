@@ -227,7 +227,8 @@ data:
   LOG_LEVEL: "INFO"
   
   # Scheduler
-  K8S_NAMESPACE: "hci-troubleshoot"
+  K8S_NAMESPACE: "hci-dev"
+  K8S_IMAGE_PULL_SECRET: "ghcr-pull-secret"
   WARM_POOL_SIZE: "2"
   MAX_POOL_SIZE: "10"
   POD_IDLE_TIMEOUT: "300"
