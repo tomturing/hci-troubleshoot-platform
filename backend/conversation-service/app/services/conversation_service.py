@@ -637,7 +637,10 @@ class ConversationService:
                 if item is None:
                     break
                 if "_error" in item:
-                    raise RuntimeError(item["_error"])
+                    _err = RuntimeError(item["_error"])
+                    span.record_exception(_err)
+                    span.set_status(trace.StatusCode.ERROR, item["_error"])
+                    raise _err
                 yield item
 
     async def _trigger_knowledge_extraction(

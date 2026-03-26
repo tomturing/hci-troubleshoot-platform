@@ -240,7 +240,12 @@ class ReactExecutor:
                 span.set_attribute("tool.name", tool_call.name)
                 span.set_attribute("tool.risk_level", tool_def.risk_level)
                 span.set_attribute("session_id", state.session_id)
-                result = await self.tool_executor.execute(tool_call.name, tool_call.args)
+                try:
+                    result = await self.tool_executor.execute(tool_call.name, tool_call.args)
+                except Exception as e:
+                    span.record_exception(e)
+                    span.set_status(trace.StatusCode.ERROR, str(e))
+                    raise
         except Exception as e:
             error = str(e)
             result = f"工具执行失败: {error}"
