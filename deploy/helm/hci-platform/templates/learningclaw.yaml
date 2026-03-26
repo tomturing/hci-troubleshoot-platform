@@ -39,6 +39,17 @@ spec:
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001
+          env:
+            - name: OPENCLAW_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: OPENCLAW_API_KEY
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: OPENCLAW_GATEWAY_TOKEN
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -59,7 +70,7 @@ spec:
               done
 
               # openclaw.json 始终覆盖（配置变更需要生效），同时替换运行时变量
-              sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g; s/\${ZAI_API_KEY}/${ZAI_API_KEY}/g" \
+              sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g; s/\${ZAI_API_KEY}/${OPENCLAW_API_KEY}/g" \
                 /init-config/openclaw.json > /home/node/.openclaw/openclaw.json
               # 快速失败：验证 agents.defaults.model.primary 必须配置，防止静默 fallback 到 anthropic
               PRIMARY=$(node -e "const c=JSON.parse(require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8')); console.log(c?.agents?.defaults?.model?.primary||'')" 2>/dev/null)
@@ -107,12 +118,12 @@ spec:
               value: "xterm-256color"
             - name: OPENCLAW_SKIP_CANVAS_HOST
               value: "1"
-            # AI 模型密钥
-            - name: ZAI_API_KEY
+            # AI 模型密钥（从 hci-secrets[OPENCLAW_API_KEY] 注入，对应 secrets.zaiApiKey）
+            - name: OPENCLAW_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: hci-secrets
-                  key: ZAI_API_KEY
+                  key: OPENCLAW_API_KEY
             # openclaw 网关 Token
             - name: OPENCLAW_GATEWAY_TOKEN
               valueFrom:
@@ -196,12 +207,13 @@ metadata:
   labels:
     {{- include "hci.podLabels" (dict "name" "learningclaw" "Release" .Release "Chart" .Chart) | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: NodePort
   ports:
     - port: {{ .Values.learningclaw.port }}
       targetPort: {{ .Values.learningclaw.port }}
       protocol: TCP
       name: gateway
+      nodePort: {{ .Values.learningclaw.nodePort | default 30790 }}
   selector:
     {{- include "hci.selectorLabels" (dict "name" "learningclaw" "Release" .Release) | nindent 4 }}
 ---
