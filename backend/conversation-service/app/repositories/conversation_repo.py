@@ -159,11 +159,11 @@ class ConversationRepository:
                 INSERT INTO prompt_audit (
                     conversation_id, case_id, assistant_type, trace_id,
                     message_count, has_sop, kb_chunks_count, kb_top_score,
-                    messages, context_breakdown, system_prompt_chars
+                    messages, context_breakdown, system_prompt_chars, total_token_est
                 ) VALUES (
                     :conversation_id, :case_id, :assistant_type, :trace_id,
                     :message_count, :has_sop, :kb_chunks_count, :kb_top_score,
-                    :messages, :context_breakdown, :system_prompt_chars
+                    :messages, :context_breakdown, :system_prompt_chars, :total_token_est
                 )
             """),
             {
@@ -178,5 +178,6 @@ class ConversationRepository:
                 "messages": _json.dumps(messages, ensure_ascii=False) if messages else None,
                 "context_breakdown": _json.dumps(context_breakdown, ensure_ascii=False) if context_breakdown else None,
                 "system_prompt_chars": total_chars,
+                "total_token_est": total_token_est,
             },
         )

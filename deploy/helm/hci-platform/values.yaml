@@ -179,6 +179,8 @@ conversationService:
   # TODO: 重建镜像后将 enabled 改为 false（新镜像通过 AI_CLIENT_READ_TIMEOUT_SEC 环境变量控制超时）
   aiClientPatch:
     enabled: true
+  # Phase 3: ReAct 引擎开关（默认关闭，环境仓库覆盖启用）
+  reactEnabled: "false"
   resources:
     requests:
       cpu: "50m"
@@ -379,6 +381,14 @@ config:
   # 注意：assistantRegistryJson 中的 base_url 使用 K8s Service 内部地址
   # 格式：http://<service-name>:<port>
 
+# ======================== Phase 3: ReAct 引擎外部依赖配置 ===================
+# SCP 平台 API base URL，格式：http://host:port（通过环境变量注入 conversation-service）
+scpBaseUrl: ""
+# HCI SSH 连接配置（acli 命令执行）
+hciSsh:
+  user: "admin"
+  keyPath: ""             # SSH 私钥路径，与 hci-ssh-password 二选一
+
 # ======================== 敏感配置（→ Secret）===============================
 # 生产环境通过 helm install --set secrets.postgresPassword=xxx 覆盖
 secrets:
@@ -388,6 +398,10 @@ secrets:
   grafanaAdminPassword: "admin"
   # 内部服务间 API 鉴权 Token（LearningClaw / ProductionClaw 调用 KB/Case/Conversation Service）
   internalApiToken: "hci-dev-internal-token"
+  # Phase 3: SCP 平台 API Key（x-auth-token 头部认证）
+  scpApiKey: ""
+  # Phase 3: HCI SSH 连接密码（与 hciSsh.keyPath 二选一）
+  hciSshPassword: ""
 
 # ======================== 可观测性栈 ========================================
 observability:

@@ -23,6 +23,10 @@ spec:
         {{- include "hci.podLabels" (dict "name" "learningclaw" "Release" .Release "Chart" .Chart) | nindent 8 }}
         claw-role: learner
     spec:
+      {{- if .Values.global.imagePullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.global.imagePullSecretName }}
+      {{- end }}
       securityContext:
         runAsUser: 1001
         runAsGroup: 1001

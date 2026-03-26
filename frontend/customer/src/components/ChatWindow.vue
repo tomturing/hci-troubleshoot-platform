@@ -5,6 +5,7 @@ import MessageBubble from './MessageBubble.vue'
 import RatingCard from './RatingCard.vue'
 import TerminalPanel from './TerminalPanel.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
+import DiagnosticProgress from './DiagnosticProgress.vue'
 
 const chatStore = useChatStore()
 const inputText = ref('')
@@ -262,6 +263,11 @@ function formatDate(d: string): string {
     </el-dialog>
 
     <!-- 消息区域 -->
+    <!-- 诊断阶段进度条 (仅在非 S0 时显示) -->
+    <DiagnosticProgress
+      v-if="chatStore.diagnosticStage !== 'S0'"
+      :stage="chatStore.diagnosticStage"
+    />
     <div ref="messagesContainer" class="messages-area">
       <MessageBubble
         v-for="msg in chatStore.messages"

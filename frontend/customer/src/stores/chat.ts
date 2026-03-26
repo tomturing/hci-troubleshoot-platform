@@ -68,6 +68,9 @@ export const useChatStore = defineStore('chat', () => {
   const showRatingCard = ref(false)
   const ratingConversationId = ref<string | null>(null)
 
+  // 诊断阶段（S0~S6）
+  const diagnosticStage = ref<string>('S0')
+
   // 终端面板状态
   const showTerminalSidebar = ref(false)
   const terminalInputCommand = ref('')
@@ -358,6 +361,15 @@ export const useChatStore = defineStore('chat', () => {
                   messages.value[idx2].content += `\n\n> 🤔 步骤 ${event.step}：${event.message}`
                 }
               } catch {}
+            } else if (pendingEventType === 'stage_change') {
+              // 诊断阶段切换：更新前端进度条状态
+              try {
+                const event = JSON.parse(data)
+                diagnosticStage.value = event.to ?? 'S0'
+                console.log('[stage_change] 诊断阶段切换:', event.from, '→', event.to, event.label)
+              } catch (e) {
+                console.warn('[stage_change] 解析失败:', e)
+              }
             } else {
               try {
                 const parsed = JSON.parse(data)
@@ -402,6 +414,8 @@ export const useChatStore = defineStore('chat', () => {
       addSystemMessage(`工单 ${res.data.case_id} 已关闭。发送新消息开启新工单。`)
       const convId = conversationId.value
       conversationId.value = null
+      // 重置诊断阶段
+      diagnosticStage.value = 'S0'
       if (convId) {
         ratingConversationId.value = convId
         showRatingCard.value = true
@@ -415,6 +429,7 @@ export const useChatStore = defineStore('chat', () => {
     currentCase.value = null
     conversationId.value = null
     messages.value = []
+    diagnosticStage.value = 'S0'
     addSystemMessage('请描述您遇到的新问题，我会帮您创建工单。')
   }
 
@@ -620,6 +635,8 @@ export const useChatStore = defineStore('chat', () => {
     existingCases,
     hasActiveCase,
     isCaseClosed,
+    // 诊断阶段
+    diagnosticStage,
     showAssistantSelector,
     assistants,
     selectedAssistant,

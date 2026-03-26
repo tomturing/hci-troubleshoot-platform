@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 # 所有服务键（默认全部）
 ALL_SERVICES="apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI,openclaw"
@@ -329,7 +329,7 @@ build_and_import_images() {
   info "仅构建: ${repos_csv}"
   (
     cd "$PROJECT_ROOT"
-    IMAGE_TAG="$tag" BUILD_ONLY_IMAGES="$repos_csv" bash scripts/k3s-build.sh
+    IMAGE_TAG="$tag" BUILD_ONLY_IMAGES="$repos_csv" bash scripts/ops/k3s-build.sh
   )
   ok "镜像构建与导入完成"
 }
@@ -338,10 +338,10 @@ deploy_to_k3s() {
   local override_file="$1"
   if [[ "$ENVIRONMENT" == "prod" ]]; then
     info "执行生产部署 (Helm upgrade --install)"
-    ( cd "$PROJECT_ROOT"; IMAGE_TAG="$IMAGE_TAG" OVERRIDE_FILE="$override_file" HELM_KUBECONFIG="$HELM_KUBECONFIG" bash scripts/k3s-deploy-prod.sh deploy )
+    ( cd "$PROJECT_ROOT"; IMAGE_TAG="$IMAGE_TAG" OVERRIDE_FILE="$override_file" HELM_KUBECONFIG="$HELM_KUBECONFIG" bash scripts/ops/k3s-deploy-prod.sh deploy )
   else
     info "执行开发部署 (Helm upgrade)"
-    ( cd "$PROJECT_ROOT"; IMAGE_TAG="$IMAGE_TAG" HELM_KUBECONFIG="$HELM_KUBECONFIG" KUBECONFIG="$HELM_KUBECONFIG" bash scripts/k3s-deploy.sh --env dev upgrade )
+    ( cd "$PROJECT_ROOT"; IMAGE_TAG="$IMAGE_TAG" HELM_KUBECONFIG="$HELM_KUBECONFIG" KUBECONFIG="$HELM_KUBECONFIG" bash scripts/ops/k3s-deploy.sh --env dev upgrade )
   fi
   ok "Helm 部署完成"
 }
@@ -395,7 +395,7 @@ verify_image_consistency() {
 
 run_post_verify() {
   info "执行集群部署验证脚本"
-  ( cd "$PROJECT_ROOT"; bash scripts/k3s-verify.sh )
+  ( cd "$PROJECT_ROOT"; bash scripts/ops/k3s-verify.sh )
 }
 
 postgres_ready() {

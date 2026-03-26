@@ -60,6 +60,27 @@ spec:
             - name: DATABASE_URL
               # 使用 Helm 渲染时 urlquery 对密码做 URL 编码，防止密码含 @ / : # 等特殊字符导致解析错误（PIT-022）
               value: {{ printf "postgresql+asyncpg://%s:%s@postgres:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresDb | quote }}
+            # ── Phase 3: ReAct 引擎环境变量 ──────────────────────────────────────────
+            - name: REACT_ENABLED
+              value: {{ .Values.conversationService.reactEnabled | default "false" | quote }}
+            - name: SCP_BASE_URL
+              value: {{ .Values.scpBaseUrl | default "" | quote }}
+            - name: SCP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: SCP_API_KEY
+                  optional: true          # dev 环境无 SCP 时允许 Pod 正常启动
+            - name: HCI_SSH_USER
+              value: {{ .Values.hciSsh.user | default "admin" | quote }}
+            - name: HCI_SSH_KEY_PATH
+              value: {{ .Values.hciSsh.keyPath | default "" | quote }}
+            - name: HCI_SSH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: HCI_SSH_PASSWORD
+                  optional: true          # 使用密钥时此字段可为空
           livenessProbe:
             httpGet:
               path: /health
