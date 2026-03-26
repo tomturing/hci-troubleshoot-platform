@@ -39,6 +39,17 @@ spec:
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001
+          env:
+            - name: OPENCLAW_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: OPENCLAW_API_KEY
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: OPENCLAW_GATEWAY_TOKEN
           command: ["/bin/sh", "-c"]
           args:
             - |
