@@ -108,6 +108,8 @@ postgres:
   #     现有 PV 已通过 kubectl patch pv 直接改为 Retain policy
   #   - 全新安装：可改为 local-path-retain（自动 Retain policy，更安全）
   storageClass: local-path
+  # NodePort 对外暴露端口（仅 dev 环境，生产环境留空）
+  nodePort: ""
   resources:
     requests:
       cpu: "100m"
