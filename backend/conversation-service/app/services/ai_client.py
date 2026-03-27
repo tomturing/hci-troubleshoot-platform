@@ -7,8 +7,8 @@ AI Assistant Client - 多类型AI助手客户端抽象层 (v2.0)
 
 import json
 import os
-from ipaddress import ip_address
 from collections.abc import AsyncGenerator
+from ipaddress import ip_address
 from typing import Protocol, runtime_checkable
 from urllib.parse import urlparse
 
