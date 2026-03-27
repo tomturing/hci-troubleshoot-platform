@@ -169,3 +169,42 @@ if self.response_model:
 
 **同步变更（hci-platform-env commit `5f037f8`）：**
 - `environments/dev/values.yaml`：数据层迁移至 hci-dev，`postgresHost`/`redisUrl` 改为同 ns 短名
+
+## 2026-03-27 staging 对话链路事故修复复盘
+
+**现象：**
+- 创建工单最初返回 500
+- 创建对话返回 500
+- conversation-service `/health` 降级，依赖显示 `database` / `kb_service` / `ai_assistants` 不可用
+- 发送消息链路出现上游 401，最终影响真实 AI 回复
+
+**根因拆分：**
+1. **数据库 schema 漂移**：staging 数据库缺少 `case.close_reason` 与 `conversation.diagnostic_stage` 等补充字段，导致 ORM 写入失败。
+2. **AI 认证选择错误**：conversation-service 直连 `open.bigmodel.cn` 时错误复用了内部 gateway token，而不是 `OPENCLAW_API_KEY`。
+3. **DNS 搜索域硬编码**：`conversation-service` 在 `externalDns=true` 场景下，将 search domain 固定为 `hci-troubleshoot.svc.cluster.local`，在 `hci-staging` 中重启后无法解析 `postgres` / `kb-service` / `redis`。
+
+**修复动作：**
+- staging 库执行补充迁移脚本：
+   - `database/migrate_evaluation_v1.sql`
+   - `database/migrate_conversation_p4_v1.sql`
+- 调整 AI 客户端认证逻辑：
+   - 内部 claw gateway / Pod IP 使用 gateway token
+   - 外部模型提供商使用 `OPENCLAW_API_KEY`
+- 调整 Helm 模板：conversation-service 的 DNS search 由当前 namespace 动态渲染，不再写死 `hci-troubleshoot`
+- 增加单测覆盖上述认证分流逻辑
+- 更新发布手册，要求发布前校验补充迁移与 conversation-service 依赖健康
+
+**验证结果：**
+- `conversation-service /health` 恢复 `healthy`
+- `database=ok`、`kb_service=ok`、`ai_assistants={openclaw:true, productionclaw:true}`
+- 端到端回归通过：
+   - 创建工单 `201`
+   - 创建对话 `201`
+   - 发送消息 `200`
+   - SSE 正常返回 token 流
+
+**防回归项：**
+1. 所有 schema 增量必须同步提供补充迁移，并在 staging/prod 发布前执行列存在性校验。
+2. 任何“内部 gateway + 外部 provider”双路调用场景，必须显式区分 token 来源，禁止复用同一凭据。
+3. Helm 模板中凡涉及 namespace 相关 DNS，不允许硬编码环境名，统一从模板上下文渲染。
+4. 发布后必须检查 `conversation-service /health`，并覆盖一次真实“创建工单 → 创建对话 → 发送消息”链路。
