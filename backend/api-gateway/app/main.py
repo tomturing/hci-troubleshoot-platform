@@ -6,65 +6,81 @@ API Gateway - 主应用
 - CORS 使用显式来源列表
 """
 
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.routes import assistants, cases, conversations, health, websocket
+from app.routes import assistants, cases, conversations, health, kb, terminal, websocket
+from app.routes import atoms as atoms_route
 from app.services.session import SessionManager
+from app.services.terminal import TerminalService
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
 
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动
-    logger.info(
-        event="service_starting",
-        message=f"Starting {settings.SERVICE_NAME}",
-        port=settings.SERVICE_PORT
-    )
+    logger.info(event="service_starting", message=f"Starting {settings.SERVICE_NAME}", port=settings.SERVICE_PORT)
 
     redis_manager = RedisManager(settings.REDIS_URL)
     await redis_manager.connect()
 
     session_manager = SessionManager(redis_manager)
 
+    # 终端服务
+    terminal_service = TerminalService(redis_manager)
+    await terminal_service.start()
+
     # 存入 app.state
     app.state.redis_manager = redis_manager
     app.state.session_manager = session_manager
+    app.state.terminal_service = terminal_service
 
     # 兼容现有路由注入方式
     websocket.set_session_manager(session_manager)
+    # 部分分支的 websocket 路由未实现 terminal service 注入函数，做兼容判断
+    if hasattr(websocket, "set_terminal_service"):
+        websocket.set_terminal_service(terminal_service)
 
     yield
 
     # 关闭
-    logger.info(
-        event="service_stopping",
-        message=f"Stopping {settings.SERVICE_NAME}"
-    )
+    logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
+    await terminal_service.shutdown()
     await redis_manager.close()
 
-app = FastAPI(
-    title="HCI Troubleshoot - API Gateway",
-    description="API网关服务",
-    version="1.0.0",
-    lifespan=lifespan
-)
+
+class TraceIDMiddleware(BaseHTTPMiddleware):
+    """为每个请求注入 X-Trace-ID 响应头（取请求头中的值或新生成 UUID）"""
+
+    async def dispatch(self, request: Request, call_next):
+        trace_id = request.headers.get("X-Trace-ID") or str(uuid.uuid4())
+        response = await call_next(request)
+        response.headers["X-Trace-ID"] = trace_id
+        return response
+
+
+app = FastAPI(title="HCI Troubleshoot - API Gateway", description="API网关服务", version="1.0.0", lifespan=lifespan)
 
 # 注入 OpenTelemetry 中间件到 app 实例（必须在 app 创建后调用）
 instrument_app(app)
 
 # 中间件 — CORS 使用显式来源列表，避免 allow_origins=["*"] + allow_credentials=True 的 RFC 6454 违规
+app.add_middleware(TraceIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -78,13 +94,19 @@ app.include_router(websocket.router)
 app.include_router(cases.router)
 app.include_router(conversations.router)
 app.include_router(assistants.router)
+app.include_router(kb.router)
+app.include_router(atoms_route.router)
+app.include_router(terminal.router)
 app.include_router(health.router)
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 指标抓取端点"""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=settings.SERVICE_PORT,
-        reload=True
-    )
+
+    uvicorn.run("main:app", host="0.0.0.0", port=settings.SERVICE_PORT, reload=True)

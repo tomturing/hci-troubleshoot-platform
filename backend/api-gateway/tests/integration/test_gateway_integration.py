@@ -10,6 +10,8 @@ import httpx
 import pytest
 from httpx import ASGITransport
 
+pytestmark = pytest.mark.integration
+
 # 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
 _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _expect = os.path.normpath(os.path.join(_svc, "app"))

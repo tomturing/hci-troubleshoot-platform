@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     CASE_SERVICE_URL: str = "http://case-service:8001"
     CONVERSATION_SERVICE_URL: str = "http://conversation-service:8002"
     SCHEDULER_SERVICE_URL: str = "http://scheduler-service:8003"
+    KB_SERVICE_URL: str = "http://kb-service:8004"
+
+    # 内部服务间 API 鉴权 Token
+    INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
+
+    # === 终端 SSH 配置 ===
+    TERMINAL_ALLOW_INSECURE_HOSTS: bool = False
+    TERMINAL_KNOWN_HOSTS_FILE: str = "~/.ssh/known_hosts"
+    TERMINAL_CLEANUP_INTERVAL_SECONDS: int = 60
 
     @property
     def cors_origins(self) -> list:
