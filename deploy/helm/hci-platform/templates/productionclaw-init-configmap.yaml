@@ -35,7 +35,7 @@ data:
         "providers": {
           "{{ .Values.config.glmProvider }}": {
             "api": "openai-completions",
-            "apiKey": "${ZAI_API_KEY}",
+            "apiKey": "${OPENCLAW_API_KEY}",
             "baseUrl": "{{ .Values.config.glmBaseUrl }}",
             "models": [
               {
