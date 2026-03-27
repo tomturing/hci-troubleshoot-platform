@@ -22,6 +22,23 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "conversation-service") | nindent 6 }}
+      {{- if .Values.conversationService.externalDns }}
+      # 同时保留 K8s 内部 DNS（kube-dns）和公网 DNS，确保内部服务名可解析
+      # 且 open.bigmodel.cn 等外部域名能绕过 Clash fake-IP 正常连通
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+          - 10.43.0.10
+          - 114.114.114.114
+          - 1.2.4.8
+        searches:
+          - {{ printf "%s.svc.cluster.local" (include "hci.namespace" .) | quote }}
+          - svc.cluster.local
+          - cluster.local
+        options:
+          - name: ndots
+            value: "5"
+      {{- end }}
       containers:
         - name: conversation-service
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.conversationService.image) }}
@@ -42,7 +59,28 @@ spec:
               value: {{ .Values.conversationService.port | quote }}
             - name: DATABASE_URL
               # 使用 Helm 渲染时 urlquery 对密码做 URL 编码，防止密码含 @ / : # 等特殊字符导致解析错误（PIT-022）
-              value: {{ printf "postgresql+asyncpg://%s:%s@postgres:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresDb | quote }}
+              value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            # ── Phase 3: ReAct 引擎环境变量 ──────────────────────────────────────────
+            - name: REACT_ENABLED
+              value: {{ .Values.conversationService.reactEnabled | default "false" | quote }}
+            - name: SCP_BASE_URL
+              value: {{ .Values.scpBaseUrl | default "" | quote }}
+            - name: SCP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: SCP_API_KEY
+                  optional: true          # dev 环境无 SCP 时允许 Pod 正常启动
+            - name: HCI_SSH_USER
+              value: {{ .Values.hciSsh.user | default "admin" | quote }}
+            - name: HCI_SSH_KEY_PATH
+              value: {{ .Values.hciSsh.keyPath | default "" | quote }}
+            - name: HCI_SSH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: HCI_SSH_PASSWORD
+                  optional: true          # 使用密钥时此字段可为空
           livenessProbe:
             httpGet:
               path: /health

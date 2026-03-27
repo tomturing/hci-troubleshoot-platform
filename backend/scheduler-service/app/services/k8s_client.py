@@ -34,6 +34,7 @@ class K8sClient:
 
         self.core_v1 = client.CoreV1Api()
         self.namespace = settings.K8S_NAMESPACE
+        self.image_pull_secret = settings.K8S_IMAGE_PULL_SECRET
 
     def create_pod(
         self,
@@ -220,6 +221,7 @@ echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}�
                     }
                 ],
                 "volumes": volumes,
+                "imagePullSecrets": ([{"name": self.image_pull_secret}] if self.image_pull_secret else []),
                 "restartPolicy": "Never",
                 # 绕过宿主机 Clash TUN fake-ip DNS 劫持（参考 PIT-034）
                 "dnsPolicy": "None",

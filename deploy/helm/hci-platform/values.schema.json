@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "HCI Platform Helm Values Schema",
+  "description": "Helm values 类型校验，防止常见配置错误（参见 docs/21_本地K3s部署日志.md）",
+  "type": "object",
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "domain":      { "type": "string" },
+        "publicUrl":   { "type": "string" },
+        "imageRegistry": { "type": "string" },
+        "imagePullUser": { "type": "string" },
+        "imagePullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "dataLayer": {
+      "type": "object",
+      "description": "⚠️ 危险：dataLayer.manage 影响 postgres/redis StatefulSet 生命周期。修改前请阅读 DUAL-009 事故记录",
+      "properties": {
+        "manage": {
+          "type": "boolean",
+          "description": "true=postgres/redis 由本 chart 管理；false=由独立 hci-platform-data chart 管理。手动 helm upgrade 时始终显式指定，避免意外删除数据库"
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "assistantRegistryJson": {
+          "type": "string",
+          "description": "JSON 字符串格式的 AI 助手池配置（注意：必须是字符串，不能写成 YAML 对象，否则 Helm 会将 {} 解析为空列表 []）。示例: '{\"pool\":[{...}]}'。见 DUAL-002 事故记录"
+        },
+        "openclawBaseUrl": {
+          "type": "string",
+          "description": "AI 后端 base URL。不启用 openclaw Pod 时可设为 ZhipuAI 直连地址: https://open.bigmodel.cn/api/paas/v4"
+        },
+        "openclawDefaultModel": {
+          "type": "string",
+          "description": "默认 AI 模型名。智谱 AI 使用 glm-4-flash，本地 openclaw 使用 zhipu/glm-5"
+        },
+        "aiCompletionsPath": {
+          "type": "string",
+          "description": "AI 补全接口路径。ZhipuAI v4 为 /chat/completions（无 /v1/），OpenAI 兼容为 /v1/chat/completions。见 DUAL-008 事故记录"
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "postgresPassword":      { "type": "string" },
+        "openclawToken":         { "type": "string" },
+        "zaiApiKey":             { "type": "string" },
+        "grafanaAdminPassword":  { "type": "string" },
+        "internalApiToken":      { "type": "string" },
+        "ghcrToken":             { "type": "string" }
+      }
+    },
+    "conversationService": {
+      "type": "object",
+      "properties": {
+        "externalDns": {
+          "type": "boolean",
+          "description": "true=为 conversation-service Pod 配置 dnsPolicy:None + 双 nameserver（kube-dns + 公共 DNS），用于直连外部 AI API（如 ZhipuAI）时解决域名解析问题"
+        }
+      }
+    },
+    "openclaw": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "不启用时三个 claw 工作负载均不创建，见 DEPLOY-003" }
+      }
+    },
+    "learningclaw": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "productionclaw": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    }
+  }
+}

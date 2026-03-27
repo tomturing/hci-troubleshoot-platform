@@ -1,0 +1,53 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-obs-staging
+#
+# 目标集群：云端 staging VM（kubernetes.default.svc = ArgoCD 所在集群）
+# 管理可观测性栈（namespace: hci-observability）：
+#   - Prometheus Deployment + ServiceAccount + ConfigMap + Service
+#   - Loki Deployment + PVC + Service
+#   - Tempo Deployment + PVC + Service
+#   - Grafana Deployment + Service + Secret + ConfigMap
+#   - Promtail DaemonSet + ServiceAccount
+#
+# 设计原则：
+#   - staging 可观测性独立命名空间，与 prod 隔离
+#   - prune: false — Loki + Tempo PVC 受保护，防止日志/追踪数据意外丢失
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-obs-staging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "staging 可观测性栈 — Prometheus + Loki + Tempo + Grafana + Promtail"
+spec:
+  project: default
+  destination:
+    # staging 集群：云端 ArgoCD 所在 VM
+    server: https://kubernetes.default.svc
+    namespace: hci-observability
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-obs
+      helm:
+        releaseName: hci-platform-obs
+        valueFiles:
+          - $values/environments/staging/values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  ignoreDifferences:
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
+        - /spec/volumeMode
+        - /spec/accessModes
+  syncPolicy:
+    automated:
+      prune: false      # 禁止自动删除，保护 Loki + Tempo PVC 观测数据
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true

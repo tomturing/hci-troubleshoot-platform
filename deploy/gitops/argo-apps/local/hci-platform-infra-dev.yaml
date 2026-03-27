@@ -1,0 +1,37 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-infra-dev
+#
+# 目标集群：本地 WSL k3s（local-only ArgoCD，https://kubernetes.default.svc）
+# 管理集群级基础设施资源（无 namespace）：
+#   - StorageClass: local-path-retain
+#   - ClusterRole/ClusterRoleBinding: prometheus-hci
+#   - ClusterRole/ClusterRoleBinding: promtail
+#
+# 设计原则：
+#   - 一个集群对应一个 infra Application，本文件仅用于本地 dev 集群
+#   - destination.namespace 留空，让各资源模板自身决定作用域
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-infra-dev
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "dev 集群级基础设施 - StorageClass + RBAC（本地 WSL k3s）"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ""   # 集群级资源不绑定 namespace，由各资源模板自身决定
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-infra
+      helm:
+        releaseName: hci-platform-infra
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true   # 避免 ClusterRole rules 字段被 last-apply 注解截断

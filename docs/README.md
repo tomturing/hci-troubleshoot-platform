@@ -40,13 +40,13 @@ docs/
 
 | 文档 | 说明 |
 |------|------|
-| [系统架构.md](architecture/系统架构.md) | 整体架构分层、微服务拓扑、交互关系 |
-| [数据库设计.md](architecture/数据库设计.md) | 数据模型、ER 图、表结构、迁移策略 |
-| [接口设计.md](architecture/接口设计.md) | REST API 规范、WebSocket 协议、错误码表 |
-| [可观测性设计.md](architecture/可观测性设计.md) | OTel 链路追踪、Loki 日志、Grafana 看板设计 |
-| [AI助手层设计.md](architecture/AI助手层设计.md) | OpenClaw 架构、Session隔离、知识共享方案 |
-| [知识库RAG设计.md](architecture/知识库RAG设计.md) | RAG 数据管道、检索引擎、知识生命周期 |
-| [客户端设计.md](architecture/客户端设计.md) | 前端对话 UI 与管理控制台设计 |
+| [系统架构.md](architecture/01_系统架构.md) | 整体架构分层、微服务拓扑、交互关系 |
+| [数据库设计.md](architecture/02_数据库设计.md) | 数据模型、ER 图、表结构、迁移策略 |
+| [接口设计.md](architecture/03_接口设计.md) | REST API 规范、WebSocket 协议、错误码表 |
+| [可观测性设计.md](architecture/07_可观测性设计.md) | OTel 链路追踪、Loki 日志、Grafana 看板设计 |
+| [AI助手层设计.md](architecture/05_AI助手层设计.md) | OpenClaw 架构、Session隔离、知识共享方案 |
+| [知识库RAG设计.md](architecture/06_知识库RAG设计.md) | RAG 数据管道、检索引擎、知识生命周期 |
+| [客户端设计.md](architecture/04_客户端设计.md) | 前端对话 UI 与管理控制台设计 |
 
 ---
 

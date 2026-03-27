@@ -55,7 +55,9 @@ data:
         "mode": "local",
         "bind": "lan",
         "controlUi": {
-          "enabled": false
+          "enabled": true,
+          "dangerouslyAllowHostHeaderOriginFallback": true,
+          "dangerouslyDisableDeviceAuth": true
         },
         "auth": {
           "mode": "token",

@@ -47,8 +47,10 @@ test:
 	@echo "运行测试 (按服务隔离，避免 app/ 命名空间冲突)..."
 	uv run pytest tests/ -q
 	uv run pytest backend/api-gateway/tests/ -q
+	uv run pytest backend/case-service/tests/ -q
 	uv run pytest backend/conversation-service/tests/ -q
 	uv run pytest backend/scheduler-service/tests/ -q
+	uv run pytest backend/kb-service/tests/ -q
 	@echo "全部测试完成 ✓"
 
 lint:

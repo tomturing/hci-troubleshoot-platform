@@ -1,6 +1,7 @@
 # =============================================================================
-# ArgoCD Application: hci-platform-obs
+# ArgoCD Application: hci-platform-obs-dev
 #
+# 目标集群：本地 WSL（local-only ArgoCD，https://kubernetes.default.svc）
 # 管理可观测性栈（namespace: hci-observability）：
 #   - Prometheus Deployment + ServiceAccount + ConfigMap + Service
 #   - Loki Deployment + PVC + Service
@@ -10,18 +11,17 @@
 #   - Grafana Ingress（ingress.enabled=true 时生效）
 #
 # 设计原则：
-#   - 三个业务环境（dev/staging/prod）共用同一可观测性命名空间 hci-observability
-#   - 单一 Application 独享资源所有权，消除多环境 Application 竞争覆写问题
+#   - dev 环境独享 hci-observability namespace，与云端隔离
 #   - prune: false — Loki + Tempo PVC 受保护，防止日志/追踪数据意外丢失
-#   - ClusterRole/ClusterRoleBinding 已迁移至 hci-platform-infra，本 Chart 不渲染
+#   - ClusterRole/ClusterRoleBinding 由 hci-platform-infra 管理
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: hci-platform-obs
+  name: hci-platform-obs-dev
   namespace: argocd
   annotations:
-    argocd.argoproj.io/description: "可观测性栈 — Prometheus + Loki + Tempo + Grafana + Promtail（namespace: hci-observability）"
+    argocd.argoproj.io/description: "dev 可观测性栈 — Prometheus + Loki + Tempo + Grafana + Promtail（namespace: hci-observability）"
 spec:
   project: default
   destination:
@@ -40,9 +40,19 @@ spec:
     - repoURL: https://github.com/tomturing/hci-platform-env.git
       targetRevision: main
       ref: values
+  # PVC spec（storageClassName 等）字段一旦创建不可变，忽略 Chart 与集群的差异
+  # 避免 ArgoCD 反复尝试 patch 已绑定的 PVC 导致 SyncFailed
+  ignoreDifferences:
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
+        - /spec/volumeMode
+        - /spec/accessModes
   syncPolicy:
     automated:
       prune: false      # 禁止自动删除资源，保护 Loki + Tempo PVC 中的观测数据
       selfHeal: true
     syncOptions:
-      - CreateNamespace=true   # 如 namespace 尚未被本 Chart 创建，ArgoCD 兜底创建
+      - CreateNamespace=true         # 如 namespace 尚未被本 Chart 创建，ArgoCD 兜底创建
+      - RespectIgnoreDifferences=true  # sync 阶段同样跳过 ignoreDifferences 中声明的字段，防止 patch PVC 不可变字段报错

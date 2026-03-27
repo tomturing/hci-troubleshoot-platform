@@ -12,7 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 OPENCLAW_REPO_DIR="${OPENCLAW_REPO_DIR:-${PROJECT_ROOT}/../openclaw}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 

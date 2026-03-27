@@ -70,6 +70,7 @@ testpaths = [
     "backend/case-service/tests",
     "backend/conversation-service/tests",
     "backend/scheduler-service/tests",
+    "backend/kb-service/tests",
 ]
 python_files = "test_*.py"
 python_classes = "Test*"
@@ -80,7 +81,7 @@ markers = [
     "integration: Integration tests",
     "slow: Slow running tests",
 ]
-addopts = "-v --strict-markers --tb=short"
+addopts = "-v --strict-markers --tb=short -p no:locust"
 
 [tool.ruff]
 target-version = "py312"
