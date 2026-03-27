@@ -14,6 +14,8 @@ postgres:
   #   - 存量安装：保持 local-path（StatefulSet storageClass 不可变字段）
   #   - 全新安装：可改为 local-path-retain 获得自动 Retain 策略
   storageClass: local-path
+  # NodePort 对外暴露端口（仅 dev 环境需要，生产环境留空）
+  nodePort: 30054
   resources:
     requests:
       cpu: "100m"
