@@ -133,6 +133,28 @@ curl -s http://172.26.101.255.nip.io/api/cases/health | python3 -m json.tool
 > sudo -n k3s kubectl port-forward svc/api-gateway 8000:8000 -n hci-dev &
 > ```
 
+### 3.2 数据库连接
+
+通过 NodePort 直连 PostgreSQL（端口 30054）：
+
+| 字段 | 值 |
+|------|---|
+| 主机 | `<节点IP>` 或 `localhost`（WSL 内） |
+| 端口 | `30054` |
+| 数据库 | `hci_troubleshoot` |
+| 用户名 | `hci_admin` |
+| 密码 | 见 `hci-platform-env/environments/dev/values.yaml` → `secrets.postgresPassword` |
+
+```bash
+# psql 命令行连接
+psql -h localhost -p 30054 -U hci_admin -d hci_troubleshoot
+
+# JDBC URL（DBeaver / DataGrip）
+jdbc:postgresql://localhost:30054/hci_troubleshoot
+```
+
+> **注意**：NodePort 需在环境配置中启用，详见 `hci-platform-env/environments/dev/values.yaml` → `postgres.nodePort: 30054`。
+
 ---
 
 ## 四、已知部署问题索引
