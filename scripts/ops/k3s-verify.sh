@@ -10,8 +10,8 @@
 # =============================================================================
 set -euo pipefail
 
-NAMESPACE="hci-troubleshoot"
-OBS_NAMESPACE="hci-observability"
+NAMESPACE="${NAMESPACE:-hci-dev}"
+OBS_NAMESPACE="${OBS_NAMESPACE:-hci-observability}"
 KUBECTL="${KUBECTL:-sudo -n k3s kubectl}"
 
 # 颜色
@@ -197,7 +197,7 @@ ${KUBECTL} get ingress -n "${NAMESPACE}" -o wide 2>/dev/null || true
 echo ""
 info "--- 外部路由可达性（路径路由模式）---"
 NODE_IP=$(${KUBECTL} get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || hostname -I | awk '{print $1}')
-TRAEFIK_PORT="4888"
+TRAEFIK_PORT="${TRAEFIK_PORT:-$(${KUBECTL} get svc traefik -n kube-system -o jsonpath='{.spec.ports[?(@.name=="web")].nodePort}' 2>/dev/null || echo "80")}"
 INGRESS_BASE="http://${NODE_IP}:${TRAEFIK_PORT}"
 INGRESS_HOST="${INGRESS_HOST:-acli.sangfor.com.cn}"
 
@@ -274,11 +274,141 @@ else
 fi
 
 # ============================================================================
-# 5. PVC 检查
+# 5. 业务功能链路验证（对话、消息、KB）
 # ============================================================================
 echo ""
 echo "=========================================="
-info "5. PVC 检查"
+info "5. 业务功能链路验证"
+echo "=========================================="
+
+# 重建 port-forward（上一节已关闭）
+${KUBECTL} port-forward svc/api-gateway 18001:8000 -n "${NAMESPACE}" &
+PF2_PID=$!
+sleep 3
+
+if kill -0 $PF2_PID 2>/dev/null; then
+  API2="http://localhost:18001"
+
+  # ---- 5.1 创建测试工单（为对话测试准备）----
+  SMOKE_CASE_RESP=$(curl -sf -X POST "${API2}/api/cases/" \
+    -H "Content-Type: application/json" \
+    -d '{"client_id":"smoke-test","title":"功能验证测试工单","description":"自动化烟测"}' 2>/dev/null || echo "")
+  SMOKE_CASE_ID=""
+  if echo "${SMOKE_CASE_RESP}" | grep -q '"case_id"'; then
+    SMOKE_CASE_ID=$(echo "${SMOKE_CASE_RESP}" | grep -o '"case_id":"[^"]*' | cut -d'"' -f4)
+    ok "烟测工单已创建: ${SMOKE_CASE_ID}"
+    PASS=$((PASS + 1))
+  else
+    fail "烟测工单创建失败（对话测试将跳过）"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # ---- 5.2 对话历史加载（GET /api/conversations/case/{case_id}）----
+  if [[ -n "${SMOKE_CASE_ID}" ]]; then
+    check "对话历史加载 GET /conversations/case/${SMOKE_CASE_ID}" \
+      curl -sf "${API2}/api/conversations/case/${SMOKE_CASE_ID}"
+  else
+    warn "  跳过对话历史测试（无工单 ID）"
+  fi
+
+  # ---- 5.3 创建对话（POST /api/conversations/?case_id=xxx）----
+  CONV_ID=""
+  if [[ -n "${SMOKE_CASE_ID}" ]]; then
+    CONV_RESP=$(curl -sf -X POST \
+      "${API2}/api/conversations/?case_id=${SMOKE_CASE_ID}&assistant_type=openclaw" \
+      -H "Content-Type: application/json" 2>/dev/null || echo "")
+    if echo "${CONV_RESP}" | grep -q '"conversation_id"'; then
+      CONV_ID=$(echo "${CONV_RESP}" | grep -o '"conversation_id":"[^"]*' | cut -d'"' -f4)
+      ok "创建对话成功: ${CONV_ID}"
+      PASS=$((PASS + 1))
+    else
+      fail "创建对话失败"
+      FAIL=$((FAIL + 1))
+      [[ -n "${CONV_RESP}" ]] && warn "  Response: ${CONV_RESP}"
+    fi
+  else
+    warn "  跳过创建对话测试（无工单 ID）"
+  fi
+
+  # ---- 5.4 获取消息历史（GET /api/conversations/{id}/messages）----
+  if [[ -n "${CONV_ID}" ]]; then
+    check "消息历史 GET /conversations/${CONV_ID}/messages" \
+      curl -sf "${API2}/api/conversations/${CONV_ID}/messages"
+  else
+    warn "  跳过消息历史测试（无对话 ID）"
+  fi
+
+  # ---- 5.5 发送消息（POST /api/conversations/{id}/message）----
+  if [[ -n "${CONV_ID}" ]]; then
+    MSG_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+      "${API2}/api/conversations/${CONV_ID}/message" \
+      -H "Content-Type: application/json" \
+      -d '{"content":"你好，这是自动化验证消息","role":"user"}' 2>/dev/null || echo "000")
+    # SSE 流式接口返回 200 或 202；503 表示 AI 后端未就绪（可接受）；其他 5xx 为失败
+    if [[ "${MSG_CODE}" == "200" || "${MSG_CODE}" == "202" || "${MSG_CODE}" == "503" ]]; then
+      ok "发送消息接口可达: HTTP ${MSG_CODE}"
+      PASS=$((PASS + 1))
+    else
+      fail "发送消息失败: HTTP ${MSG_CODE}"
+      FAIL=$((FAIL + 1))
+    fi
+  else
+    warn "  跳过发送消息测试（无对话 ID）"
+  fi
+
+  # ---- 5.6 用户鉴权（admin API 需要 X-Admin-Token）----
+  # api-gateway 本身不做 admin JWT，通过 /api/cases/all 验证管理员路由可达（不含 token 应返回 401/403/422，不是 500）
+  ADMIN_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${API2}/api/cases/all" 2>/dev/null || echo "000")
+  if [[ "${ADMIN_CODE}" != "5"* && "${ADMIN_CODE}" != "000" ]]; then
+    ok "管理员路由可达 /api/cases/all: HTTP ${ADMIN_CODE}"
+    PASS=$((PASS + 1))
+  else
+    fail "管理员路由异常 /api/cases/all: HTTP ${ADMIN_CODE}"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # ---- 5.7 KB 文档列表（GET /api/v1/kb/documents）----
+  KB_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${API2}/api/v1/kb/documents" 2>/dev/null || echo "000")
+  if [[ "${KB_CODE}" == "200" || "${KB_CODE}" == "422" ]]; then
+    ok "KB 文档列表接口可达: HTTP ${KB_CODE}"
+    PASS=$((PASS + 1))
+  else
+    fail "KB 文档列表失败: HTTP ${KB_CODE}"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # ---- 5.8 KB 搜索（POST /api/v1/kb/search）----
+  KB_SEARCH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "${API2}/api/v1/kb/search" \
+    -H "Content-Type: application/json" \
+    -d '{"query":"测试查询","top_k":3}' 2>/dev/null || echo "000")
+  if [[ "${KB_SEARCH_CODE}" == "200" || "${KB_SEARCH_CODE}" == "422" ]]; then
+    ok "KB 搜索接口可达: HTTP ${KB_SEARCH_CODE}"
+    PASS=$((PASS + 1))
+  else
+    fail "KB 搜索失败: HTTP ${KB_SEARCH_CODE}"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # ---- 清理测试工单 ----
+  if [[ -n "${SMOKE_CASE_ID}" ]]; then
+    curl -sf -X PUT "${API2}/api/cases/${SMOKE_CASE_ID}/close" >/dev/null 2>&1 && \
+      info "  烟测工单 ${SMOKE_CASE_ID} 已关闭" || true
+  fi
+
+  kill $PF2_PID 2>/dev/null || true
+  wait $PF2_PID 2>/dev/null || true
+else
+  fail "port-forward 重建失败，跳过业务功能验证"
+  FAIL=$((FAIL + 1))
+fi
+
+# ============================================================================
+# 6. PVC 检查
+# ============================================================================
+echo ""
+echo "=========================================="
+info "6. PVC 检查"
 echo "=========================================="
 
 ${KUBECTL} get pvc -n "${NAMESPACE}" 2>/dev/null || true
