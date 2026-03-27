@@ -84,7 +84,7 @@ class K8sClient:
             # Pod 身份（Downward API）
             {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
             # AI 模型密钥
-            {"name": "ZAI_API_KEY", "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "ZAI_API_KEY"}}},
+            {"name": "OPENCLAW_API_KEY", "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_API_KEY"}}},
             {
                 "name": "OPENCLAW_GATEWAY_TOKEN",
                 "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_GATEWAY_TOKEN"}},
@@ -146,7 +146,7 @@ for f in SOUL.md IDENTITY.md AGENTS.md BOOTSTRAP.md TOOLS.md USER.md; do
   cp "/init-config/${f}" "/home/node/.openclaw/workspace/${f}"
   echo "  已加载 ${f}"
 done
-sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g; s/\${ZAI_API_KEY}/${ZAI_API_KEY}/g" /init-config/openclaw.json > /home/node/.openclaw/openclaw.json
+sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g; s/\${OPENCLAW_API_KEY}/${OPENCLAW_API_KEY}/g" /init-config/openclaw.json > /home/node/.openclaw/openclaw.json
 # 快速失败：验证 agents.defaults.model.primary 必须配置，防止静默 fallback 到 anthropic/claude-opus-4-6
 PRIMARY=$(node -e "const c=JSON.parse(require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8')); console.log(c?.agents?.defaults?.model?.primary||'')" 2>/dev/null)
 if [ -z "$PRIMARY" ]; then
@@ -163,8 +163,8 @@ echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}�
                         "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_GATEWAY_TOKEN"}},
                     },
                     {
-                        "name": "ZAI_API_KEY",
-                        "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "ZAI_API_KEY"}},
+                        "name": "OPENCLAW_API_KEY",
+                        "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_API_KEY"}},
                     },
                 ],
                 "volumeMounts": [

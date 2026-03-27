@@ -70,7 +70,7 @@ spec:
               done
 
               # openclaw.json 始终覆盖（配置变更需要生效），同时替换运行时变量
-              sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g; s/\${ZAI_API_KEY}/${OPENCLAW_API_KEY}/g" \
+              sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g; s/\${OPENCLAW_API_KEY}/${OPENCLAW_API_KEY}/g" \
                 /init-config/openclaw.json > /home/node/.openclaw/openclaw.json
               # 快速失败：验证 agents.defaults.model.primary 必须配置，防止静默 fallback 到 anthropic
               PRIMARY=$(node -e "const c=JSON.parse(require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8')); console.log(c?.agents?.defaults?.model?.primary||'')" 2>/dev/null)
