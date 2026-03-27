@@ -8,13 +8,20 @@ metadata:
   labels:
     {{- include "hci-data.podLabels" (dict "name" "postgres" "Release" .Release "Chart" .Chart) | nindent 4 }}
 spec:
+  {{- if .Values.postgres.nodePort }}
+  type: NodePort
+  {{- else }}
   type: ClusterIP
   clusterIP: None
+  {{- end }}
   ports:
     - port: 5432
       targetPort: 5432
       protocol: TCP
       name: postgres
+      {{- if .Values.postgres.nodePort }}
+      nodePort: {{ .Values.postgres.nodePort }}
+      {{- end }}
   selector:
     {{- include "hci-data.selectorLabels" (dict "name" "postgres" "Release" .Release) | nindent 4 }}
 {{- end }}

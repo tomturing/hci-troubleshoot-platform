@@ -153,7 +153,7 @@ psql -h localhost -p 30054 -U hci_admin -d hci_troubleshoot
 jdbc:postgresql://localhost:30054/hci_troubleshoot
 ```
 
-> **注意**：NodePort 需在环境配置中启用，详见 `hci-platform-env/environments/dev/values.yaml` → `postgres.nodePort: 30054`。
+> **注意**：NodePort 需在环境配置中启用，详见 `hci-platform-data/values.yaml` → `postgres.nodePort: 30054`。
 
 ---
 
