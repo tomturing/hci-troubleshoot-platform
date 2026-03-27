@@ -253,7 +253,7 @@ jobs:
     name: 发布元数据产物
     runs-on: ubuntu-latest
     needs: [unit-tests, integration-tests, security-tests]
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: always() && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && (needs.unit-tests.result == 'success') && (needs.integration-tests.result == 'success') && (needs.security-tests.result == 'success')
     steps:
       - uses: actions/checkout@v4
 
@@ -289,7 +289,7 @@ jobs:
     name: 准备构建元数据
     runs-on: ubuntu-latest
     needs: [unit-tests, integration-tests, security-tests]
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: always() && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && (needs.unit-tests.result == 'success') && (needs.integration-tests.result == 'success') && (needs.security-tests.result == 'success')
     outputs:
       image_tag: ${{ steps.tag.outputs.tag }}
     steps:
