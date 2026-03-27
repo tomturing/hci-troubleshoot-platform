@@ -169,3 +169,15 @@ if self.response_model:
 
 **同步变更（hci-platform-env commit `5f037f8`）：**
 - `environments/dev/values.yaml`：数据层迁移至 hci-dev，`postgresHost`/`redisUrl` 改为同 ns 短名
+
+## 2026-03-27 ArgoCD Application 应用入口增加角色防护
+
+**问题**：`deploy/gitops/argo-apps/local/` 与 `deploy/gitops/argo-apps/cloud/` 已按实例拆分，但人工仍可能在错误设备上直接执行 `kubectl apply -f`，导致本地 dev 与云端 staging/prod 发生交叉污染。
+
+**修复**：
+- 新增 `scripts/ops/argocd-apply-apps.sh` 统一入口脚本
+- 通过 `--role`、`HCI_DEVICE_ROLE`、`argocd` namespace 标签 `hci.env.role` 三层来源识别当前设备角色
+- 限制 `local` 目录仅允许 `dev`，`cloud` 目录仅允许 `staging`
+- 更新 `deploy/gitops/argo-apps/README.md`，将 bootstrap 步骤切换为“先打角色标签，再走统一入口脚本”
+
+**价值**：把“目录约定”升级为“脚本级防误操作”，降低错误集群 apply 的概率，并保留统一调用链日志用于排查。
