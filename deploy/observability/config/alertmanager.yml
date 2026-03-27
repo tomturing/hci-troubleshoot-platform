@@ -1,0 +1,76 @@
+# =============================================================================
+# AlertManager 配置 — HCI 智能排障平台
+# =============================================================================
+# 通知渠道：飞书 / 企业微信 Webhook（任选其一，另一个保持 webhook_url 为空）
+#
+# 使用方式：
+#   1. 将真实 Webhook URL 写入 deploy/env/local.env（不提交 git）：
+#      FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+#      WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+#   2. docker-compose-obs.yml 中通过环境变量注入
+#   3. 本文件的 webhook_url 使用占位符，在启动时替换
+#
+# 注意：webhook URL 属于敏感配置，不得硬编码在此文件中
+# =============================================================================
+
+global:
+  resolve_timeout: 5m
+  # 未配置 SMTP，告警通过 Webhook 通知
+
+# 告警路由规则
+route:
+  # 默认接收器
+  receiver: "feishu-webhook"
+  # 分组规则：相同 alertname + job 合并为一条通知
+  group_by: ["alertname", "job", "namespace"]
+  # 分组等待时间（组内第一条告警后等待 30s 收集更多）
+  group_wait: 30s
+  # 同一组的告警重复通知间隔
+  group_interval: 5m
+  # 已解决告警重复通知间隔
+  repeat_interval: 4h
+
+  routes:
+    # Critical 告警：立即通知，不等待分组
+    - match:
+        severity: critical
+      receiver: "feishu-webhook"
+      group_wait: 5s
+      repeat_interval: 30m
+
+    # Warning 告警：使用默认路由
+
+# 接收器定义
+receivers:
+  - name: "feishu-webhook"
+    webhook_configs:
+      - url: "${FEISHU_WEBHOOK_URL}"
+        send_resolved: true
+        # 飞书卡片消息格式（JSON body 将触发 Webhook）
+        # AlertManager 发送 POST JSON 到此 URL；飞书 bot 解析 .alerts 字段
+        http_config:
+          follow_redirects: true
+
+  - name: "wecom-webhook"
+    webhook_configs:
+      - url: "${WECOM_WEBHOOK_URL}"
+        send_resolved: true
+
+  # 静音（用于测试或维护窗口临时止声）
+  - name: "null"
+
+# 告警抑制规则（防止告警风暴）
+inhibit_rules:
+  # ServiceDown 触发后，抑制同一服务的 HighApiLatency/HighErrorRate 告警
+  - source_match:
+      alertname: ServiceDown
+    target_match_re:
+      alertname: "HighApiLatency|HighErrorRate"
+    equal: ["job"]
+
+  # Critical 告警触发后，抑制同一告警名的 Warning 级别
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ["alertname", "job"]

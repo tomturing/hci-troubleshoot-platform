@@ -1,7 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 const router = createRouter({
-  history: createWebHistory(),
+  // base 与 vite.config.ts 的 base 保持一致（挂载在 /admin/ 子路径）
+  history: createWebHistory('/admin/'),
   routes: [
     {
       path: '/',
@@ -36,6 +37,12 @@ const router = createRouter({
       name: 'Monitoring',
       component: () => import('@/views/MonitoringView.vue'),
       meta: { title: '系统监控', icon: 'Monitor' },
+    },
+    {
+      path: '/knowledge/review',
+      name: 'KnowledgeReview',
+      component: () => import('@/views/KnowledgeReviewView.vue'),
+      meta: { title: '知识审核', icon: 'Reading' },
     },
   ],
 })

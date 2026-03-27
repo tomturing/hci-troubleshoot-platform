@@ -1,0 +1,39 @@
+{{- /* scheduler-service 需要 list/create/delete pods 权限来管理 AI Pod 池 */ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scheduler-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: scheduler-pod-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create", "delete", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: scheduler-pod-manager-binding
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: scheduler-pod-manager
+subjects:
+  - kind: ServiceAccount
+    name: scheduler-service
+    namespace: {{ .Release.Namespace }}

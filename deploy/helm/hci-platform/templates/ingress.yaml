@@ -7,6 +7,9 @@ metadata:
   labels:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
+    # entrypoints 名称为 "web"，对应 Traefik 内部监听端口
+    # 宿主机对外端口由 HelmChartConfig (traefik-custom.yaml) 控制（当前: 4888）
+    # 修改对外端口只需改 HelmChartConfig，此处注解无需变更
     traefik.ingress.kubernetes.io/router.entrypoints: web
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
@@ -16,7 +19,8 @@ spec:
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
   rules:
-    {{- if .Values.global.domain }}
+    {{- if eq .Values.global.routingMode "subdomain" }}
+    {{- /* 子域名路由模式：每个服务独占一个子域名，要求 DNS 有通配符记录 *.domain */}}
     - host: "api.{{ .Values.global.domain }}"
       http:
         paths:
@@ -48,7 +52,15 @@ spec:
                 port:
                   number: {{ .Values.customerUI.port }}
     {{- else }}
-    - http:
+    {{- /* 路径路由模式（默认）：单域名，路径区分服务，只需一条 A 记录 */}}
+    {{- $host := "" }}
+    {{- if .Values.global.publicUrl }}
+      {{- /* 提取 hostname，去掉协议前缀和端口（Ingress host 字段不能含端口） */}}
+      {{- $host = .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/:]+" }}
+    {{- end }}
+    - {{- if $host }} host: {{ $host | quote }}
+      {{- end }}
+      http:
         paths:
           # 后端 API
           - path: /api
@@ -74,6 +86,13 @@ spec:
                 name: admin-ui
                 port:
                   number: {{ .Values.adminUI.port }}
+          - path: /openclaw
+            pathType: Prefix
+            backend:
+              service:
+                name: openclaw
+                port:
+                  number: {{ .Values.openclaw.port }}
           - path: /
             pathType: Prefix
             backend:
@@ -82,4 +101,8 @@ spec:
                 port:
                   number: {{ .Values.customerUI.port }}
     {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
 {{- end }}

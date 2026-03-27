@@ -5,14 +5,108 @@
 # ======================== 全局配置 ==========================================
 global:
   namespace: hci-troubleshoot
+
+  # ⚠️  路由模式 — 必须与 DNS 环境匹配，改错会导致所有服务 404
+  # --------------------------------------------------------------------
+  # "path"      路径路由（推荐，单 IP / 单域名场景）
+  #             acli.sangfor.com.cn/         → customer-ui
+  #             acli.sangfor.com.cn/admin/   → admin-ui
+  #             acli.sangfor.com.cn/api      → api-gateway
+  #             acli.sangfor.com.cn/grafana  → grafana
+  #             ✅ 只需一条 A 记录指向服务器 IP
+  #
+  # "subdomain" 子域名路由（需要 DNS 通配符 *.your-domain.com）
+  #             api.your-domain.com          → api-gateway
+  #             admin.your-domain.com        → admin-ui
+  #             your-domain.com              → customer-ui
+  #             grafana.your-domain.com      → grafana
+  #             ❌ 如果没有通配符 DNS 记录，此模式下子域名全部无法访问
+  # --------------------------------------------------------------------
+  routingMode: "path"
+
+  # 平台根域名，routingMode=subdomain 时用于拼接子域名
+  # routingMode=path 时此字段不影响路由，仅用于 Grafana Root URL 等辅助配置
+  domain: "hci.local"
+
+  # 公开访问完整 URL（协议+域名+端口），routingMode=path 时必填
+  # 用途：Grafana GF_SERVER_ROOT_URL、前端 publicPath 等
+  # 示例：http://acli.sangfor.com.cn:4888
+  publicUrl: ""
   imageRegistry: "" # 私有镜像仓库前缀，如 "registry.example.com/"
   imagePullPolicy: IfNotPresent
+  # ghcr.io 镜像拉取 Secret 名称；非空时自动挂载到所有工作负载
+  imagePullSecretName: ""
+  # ghcr.io 认证用户名（与 secrets.ghcrToken 配合使用）
+  imagePullUser: ""
+
+# ======================== 集群级资源管理开关 ==================================
+# 集群级资源（StorageClass / ClusterRole / ClusterRoleBinding）已迁移到
+# 独立 Chart hci-platform-infra，由 ArgoCD Application hci-platform-infra 管理。
+#
+# manage: false（默认）→ 本 Chart 不渲染集群级资源，由 hci-platform-infra 负责
+# manage: true         → 本 Chart 自行渲染（仅用于本地 helm install 调试）
+clusterResources:
+  manage: false
+
+# ======================== 数据层资源管理开关 ==================================
+# 数据层（PostgreSQL / Redis / 备份 CronJob）已迁移到
+# 独立 Chart hci-platform-data，由各环境专属 ArgoCD Application 管理。
+#
+# manage: false（默认）→ 本 Chart 不渲染数据层资源，由 hci-platform-data 负责
+# manage: true         → 本 Chart 自行渲染（仅用于本地 helm install 调试）
+#
+# ⚠️  DUAL-009 危险操作警告：
+# 若当前 postgres/redis 已由 hci-platform 管理（manage=true 历史部署），
+# 手动执行 helm upgrade 时若不显式传 --set dataLayer.manage=true，
+# Helm 会将已有 StatefulSet 视为孤立资源并删除，导致数据库消失！
+# 正确操作：始终使用 scripts/ops/k3s-deploy-dualrepo.sh（自动检测当前状态）
+dataLayer:
+  manage: false
+
+# ======================== 可观测性层资源管理开关 ================================
+# 可观测性栈（Prometheus/Loki/Tempo/Grafana/Promtail）已迁移到
+# 独立 Chart hci-platform-obs，由 ArgoCD Application hci-platform-obs 管理。
+#
+# manage: false（默认）→ 本 Chart 不渲染可观测性资源，由 hci-platform-obs 负责
+# manage: true         → 本 Chart 自行渲染（仅用于本地 helm install 调试）
+observabilityLayer:
+  manage: false
+
+workloadDefaults:
+  securityContext:
+    enabled: true
+    # 为 Pod 启用默认 seccomp，提升基础隔离能力
+    pod:
+      seccompProfile:
+        type: RuntimeDefault
+    # 保守配置：不强制 runAsNonRoot，避免与现有镜像默认用户冲突
+    container:
+      allowPrivilegeEscalation: false
+  scheduling:
+    antiAffinity:
+      # 软反亲和：单节点不阻塞调度，多节点优先分散副本
+      enabled: true
+      topologyKey: kubernetes.io/hostname
+      weight: 100
+    topologySpread:
+      enabled: true
+      topologyKey: kubernetes.io/hostname
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+  pdb:
+    # 仅对副本数 > 1 的服务生成 PDB
+    enabled: true
+    minAvailable: 1
 
 # ======================== PostgreSQL ========================================
 postgres:
   enabled: true
-  image: postgres:15
+  image: pgvector/pgvector:pg15 # 含 pgvector 扩展，支持向量检索（2026-03-09 从 postgres:15 升级）
   storage: 5Gi
+  # ⚠️ StorageClass 说明：
+  #   - 存量安装：保持 local-path（StatefulSet storageClass 为不可变字段，无法 upgrade 修改）
+  #     现有 PV 已通过 kubectl patch pv 直接改为 Retain policy
+  #   - 全新安装：可改为 local-path-retain（自动 Retain policy，更安全）
   storageClass: local-path
   resources:
     requests:
@@ -21,6 +115,11 @@ postgres:
     limits:
       cpu: "1000m"
       memory: "512Mi"
+  # pg_dump 定时全量备份（每天 UTC 02:00，保留 30 天）
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"
+    hostPath: "/srv/hci/backups/postgres"
 
 # ======================== Redis =============================================
 redis:
@@ -73,6 +172,15 @@ conversationService:
     repository: hci-conversation-service
     tag: latest
   port: 8002
+  # 设为 true 后 Pod 使用 dnsPolicy:None + 真实公网 DNS（114.114.114.114），
+  # 用于 openclawBaseUrl 指向外部 API（如 open.bigmodel.cn）需绕过 Clash fake-IP 场景
+  externalDns: false
+  # ⚠️  临时补丁：通过 ConfigMap 覆盖容器内 ai_client.py，解决旧镜像 60s 超时问题
+  # TODO: 重建镜像后将 enabled 改为 false（新镜像通过 AI_CLIENT_READ_TIMEOUT_SEC 环境变量控制超时）
+  aiClientPatch:
+    enabled: true
+  # Phase 3: ReAct 引擎开关（默认关闭，环境仓库覆盖启用）
+  reactEnabled: "false"
   resources:
     requests:
       cpu: "50m"
@@ -95,6 +203,33 @@ schedulerService:
     limits:
       cpu: "500m"
       memory: "256Mi"
+
+# ======================== KB Service ========================================
+kbService:
+  enabled: true # 镜像 hci-kb-service 已构建并导入 k3s（2026-03-09）
+  replicaCount: 1
+  image:
+    repository: hci-kb-service
+    tag: latest
+  port: 8004
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+  # Embedding 服务 URL（宿主机轻量 embedding 微服务，由 Docker hci-embedding 容器提供）
+  zaiBaseUrl: "http://192.168.0.4:18100"
+  zaiEmbeddingModel: "bge-small-zh-v1.5"
+  embeddingDim: 512 # bge-small-zh-v1.5 实际输出 512 维，非 384
+  # 大文件（>50KB Markdown）会生成 50+ chunks 批量 Embedding，5s 原始超时不够，改为 60s
+  embeddingTimeoutSec: "60.0"
+  bgeModelHostPath: /home/node/models/bge-small-zh-v1.5
+  # SOP 技能目录挂载（从宿主机或 PVC 挂载）
+  sopSkillsDir: /data/sop_skills
+  # SOP 技能目录宿主机路径（hostPath 挂载源）
+  sopSkillsHostPath: /aihci/hci-troubleshoot-platform/data-pipeline/sop_skills
 
 # ======================== Customer UI =======================================
 customerUI:
@@ -140,25 +275,81 @@ openclaw:
     limits:
       cpu: "1000m"
       memory: "512Mi"
-  # 可选: 持久化 OpenClaw 工作目录
-  # volumeMounts:
-  #   - name: openclaw-data
-  #     mountPath: /home/node/.openclaw
-  # volumes:
-  #   - name: openclaw-data
-  #     hostPath:
-  #       path: /home/bot/.openclaw
-  #       type: DirectoryOrCreate
+  # home 目录挂载策略：
+  #   configMap.enabled=true  → 使用 ConfigMap 管理 openclaw.json（推荐生产环境）
+  #   configMap.enabled=false → 保持 hostPath 挂载（兼容旧部署，保留 /home/node 所有文件）
+  configMap:
+    enabled: true
+    # openclaw.json 内容（JSON 字符串）。
+    # 默认提供可在非 loopback 场景启动的 controlUi 配置，避免 gateway 启动时因 origin 校验失败退出。
+    # 包含  agents.defaults（GLM 模型）+ models.providers（zhipu）配置
+    # 与 learningclaw-init-configmap 中的模型配置保持一致，避免使用默认 anthropic 模型
+    openclawJson: '{"agents":{"defaults":{"model":{"primary":"zhipu/glm-5"},"models":{"zhipu/glm-5":{"alias":"GLM"}},"workspace":"/home/node/.openclaw/workspace","compaction":{"mode":"safeguard"}}},"models":{"mode":"merge","providers":{"zhipu":{"api":"openai-completions","apiKey":"${OPENCLAW_API_KEY}","baseUrl":"https://open.bigmodel.cn/api/paas/v4","models":[{"contextWindow":128000,"id":"glm-5","name":"GLM"}]}}},"gateway":{"mode":"local","bind":"lan","controlUi":{"enabled":true,"dangerouslyAllowHostHeaderOriginFallback":true,"dangerouslyDisableDeviceAuth":true},"auth":{"mode":"token","token":"${OPENCLAW_GATEWAY_TOKEN}"},"http":{"endpoints":{"chatCompletions":{"enabled":true}}}}}'
+
+# ======================== NetworkPolicy =====================================
+networkPolicy:
+  # 设为 true 后对 Postgres / Redis 启用最小权限入站规则
+  enabled: false
+
+# ======================== HPA（水平弹性伸缩）=================================
+hpa:
+  enabled: false
+  targetCPUUtilizationPercentage: 70
+  apiGateway:
+    maxReplicas: 3
+  caseService:
+    maxReplicas: 6
+  conversationService:
+    maxReplicas: 6
+
+# ======================== LearningClaw（常驻知识学习 Pod）==================
+learningclaw:
+  enabled: true
+  image:
+    repository: hci-openclaw
+    tag: latest
+  port: 18789
+  storageClassName: local-path-retain # 持久化 PVC，使用 retain 策略
+  storageSize: 5Gi
+  defaultMode: batch # 默认运行模式：batch / event / manual
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+
+# ======================== ProductionClaw（Per-Case 排障 Pod）================
+productionclaw:
+  enabled: true
+  # ProductionClaw 的 image 与 openclaw 相同，通过 init ConfigMap 差异化配置
+  image:
+    repository: hci-openclaw
+    tag: latest
+  port: 18789
+  # 每个 Pod 仅服务单个 Case，资源配额略低于 LearningClaw
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
 
 # ======================== Ingress (Traefik) =================================
 ingress:
   enabled: true
   className: traefik
   annotations: {}
+  # Grafana 独立 ingress 的 Traefik 路由优先级。
+  # 必须高于主站 hci-ingress 的 / 回退路由，避免 /grafana 被 customer-ui 吞掉。
+  grafanaRouterPriority: "2000"
   # tls: []
 
 # ======================== 应用配置（非敏感 → ConfigMap）=====================
 config:
+  postgresHost: postgres  # 跨 namespace 部署时可覆盖为完整 DNS，如 postgres.hci-troubleshoot.svc.cluster.local
   postgresDb: hci_troubleshoot
   postgresUser: hci_admin
   redisUrl: "redis://redis:6379/0"
@@ -168,9 +359,36 @@ config:
   warmPoolSize: "2"
   maxPoolSize: "10"
   podIdleTimeout: "300"
-  openclawImage: "openclaw:latest"
-  # v2.0 多助手注册表 (JSON)
-  assistantRegistryJson: '{"openclaw":{"image":"hci-openclaw:latest","port":18789,"warm_pool_size":2,"max_pool_size":5,"idle_timeout":300,"display_name":"OpenClaw (GLM)","description":"基于智谱 GLM 模型的 AI 排障助手"}}'
+  # AI 客户端读超时（秒），注入到 conversation-service 容器；与补丁文件中的 os.environ.get 对应
+  aiClientReadTimeoutSec: "120.0"
+  # openclawImage 已废弃：OPENCLAW_IMAGE 现由 Helm 从 openclaw.image 自动派生，保留此字段仅供参考
+  # openclawImage: "hci-openclaw:latest"
+  # 服务地址（供 LearningClaw / ProductionClaw 调用内部 API）
+  kbServiceUrl: "http://kb-service:8004"
+  caseServiceUrl: "http://case-service:8001"
+  conversationServiceUrl: "http://conversation-service:8002"
+  learningclawServiceUrl: "http://learningclaw:18789"
+  # ======================== 全局 AI 模型配置（所有 claw pod 共用）==========================
+  # !! 修改此处即可切换平台所有 claw pod 使用的 AI 模型，无需逐个修改 ConfigMap !!
+  # API key 在 secrets.zaiApiKey，运行时通过 ${ZAI_API_KEY} 注入
+  glmProvider: "zhipu"
+  glmModelId: "glm-5"
+  glmBaseUrl: "https://open.bigmodel.cn/api/paas/v4"
+  glmContextWindow: 128000
+
+  # v3.0 多助手注册表：留空时由模板按 openclaw.image 自动生成
+  # 如需完全自定义，可在环境覆盖文件中提供完整 JSON 字符串
+  assistantRegistryJson: ""
+  # 注意：assistantRegistryJson 中的 base_url 使用 K8s Service 内部地址
+  # 格式：http://<service-name>:<port>
+
+# ======================== Phase 3: ReAct 引擎外部依赖配置 ===================
+# SCP 平台 API base URL，格式：http://host:port（通过环境变量注入 conversation-service）
+scpBaseUrl: ""
+# HCI SSH 连接配置（acli 命令执行）
+hciSsh:
+  user: "admin"
+  keyPath: ""             # SSH 私钥路径，与 hci-ssh-password 二选一
 
 # ======================== 敏感配置（→ Secret）===============================
 # 生产环境通过 helm install --set secrets.postgresPassword=xxx 覆盖
@@ -179,6 +397,12 @@ secrets:
   openclawToken: "hci-dev-openclaw-token"
   zaiApiKey: ""
   grafanaAdminPassword: "admin"
+  # 内部服务间 API 鉴权 Token（LearningClaw / ProductionClaw 调用 KB/Case/Conversation Service）
+  internalApiToken: "hci-dev-internal-token"
+  # Phase 3: SCP 平台 API Key（x-auth-token 头部认证）
+  scpApiKey: ""
+  # Phase 3: HCI SSH 连接密码（与 hciSsh.keyPath 二选一）
+  hciSshPassword: ""
 
 # ======================== 可观测性栈 ========================================
 observability:
@@ -201,11 +425,11 @@ observability:
     storageClass: local-path
     resources:
       requests:
-        cpu: "50m"
-        memory: "64Mi"
+        cpu: "100m"
+        memory: "512Mi"
       limits:
-        cpu: "500m"
-        memory: "256Mi"
+        cpu: "1000m"
+        memory: "2Gi"
   promtail:
     image: grafana/promtail:latest
     resources:
@@ -224,3 +448,13 @@ observability:
       limits:
         cpu: "500m"
         memory: "256Mi"
+  prometheus:
+    enabled: true
+    image: prom/prometheus:v2.52.0
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"

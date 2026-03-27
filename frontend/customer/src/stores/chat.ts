@@ -3,10 +3,12 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { createApiClient, createCaseApi, createConversationApi, createAssistantApi } from '@hci/shared'
 import type { CaseResponse, MessageResponse, AssistantInfo } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
+import { createEvaluateApi } from '@/api/evaluate'
+import { checkBridgeRunning, type BridgeStatus } from '@/api/terminal'
 
 /** 前端聊天消息 */
 export interface ChatMessage {
@@ -29,6 +31,7 @@ export const useChatStore = defineStore('chat', () => {
   const caseApi = createCaseApi(apiClient)
   const conversationApi = createConversationApi(apiClient)
   const assistantApi = createAssistantApi(apiClient)
+  const evaluateApi = createEvaluateApi(apiClient)
 
   // 是否显示助手选择器 (生产环境隐藏)
   const showAssistantSelector = import.meta.env.VITE_SHOW_ASSISTANT_SELECTOR !== 'false'
@@ -44,7 +47,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // AI 助手列表
   const assistants = ref<AssistantInfo[]>([])
-  const selectedAssistant = ref<string>('')  // 当前选中的助手类型
+  const selectedAssistant = ref<string>('')
 
   // 未关闭工单确认流程
   const pendingCase = ref<CaseResponse | null>(null)
@@ -61,12 +64,39 @@ export const useChatStore = defineStore('chat', () => {
   const historyCase = ref<CaseResponse | null>(null)
   const historyLoading = ref(false)
 
+  // 评分卡状态
+  const showRatingCard = ref(false)
+  const ratingConversationId = ref<string | null>(null)
+
+  // 诊断阶段（S0~S6）
+  const diagnosticStage = ref<string>('S0')
+
+  // 终端面板状态
+  const showTerminalSidebar = ref(false)
+  const terminalInputCommand = ref('')
+  const assistantDraftText = ref('')
+
+  // SSH 连接状态（由 TerminalPanel 内部管理，store 只保留显示用状态）
+  const sshConnectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
+  const sshErrorMessage = ref('')
+
+  // Agent 模式：待确认的高风险操作（confirm_request SSE 事件）
+  const pendingConfirm = ref<{
+    tool_name: string
+    tool_args: Record<string, unknown>
+    risk_level: 2 | 3
+    risk_description: string
+    timeout_seconds: number
+  } | null>(null)
+
+  // Bridge 运行状态
+  const bridgeStatus = ref<BridgeStatus>('not_running')
+
   // 计算属性
   const hasActiveCase = computed(() => {
     return currentCase.value && !['closed', 'cancelled'].includes(currentCase.value.status)
   })
 
-  /** 工单已关闭（有工单但非活跃状态）*/
   const isCaseClosed = computed(() => {
     return currentCase.value !== null && !hasActiveCase.value
   })
@@ -81,14 +111,12 @@ export const useChatStore = defineStore('chat', () => {
         description: item.description ?? '',
         available: item.available ?? item.enabled ?? true,
       }))
-      // 默认选中第一个可用的助手
       const firstAvailable = assistants.value.find(a => a.available)
       if (firstAvailable) {
         selectedAssistant.value = firstAvailable.type
       }
     } catch (e) {
       console.warn('获取助手列表失败，使用默认值', e)
-      // fallback: 提供默认的 OpenClaw 选项
       assistants.value = [{
         type: 'openclaw',
         display_name: 'OpenClaw (GLM)',
@@ -99,24 +127,20 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 初始化：检查现有工单 */
+  /** 初始化 */
   async function initialize() {
     if (initialized.value) return
-    // 加载可用助手列表
     await fetchAssistants()
     try {
       const res = await caseApi.listByClient(clientId)
       existingCases.value = res.data
-      // 找到最近的未关闭工单
       const activeCase = existingCases.value.find(
         (c) => !['closed', 'cancelled'].includes(c.status),
       )
       if (activeCase) {
-        // 发现未关闭工单，弹出确认对话框让用户选择
         pendingCase.value = activeCase
         showPendingDialog.value = true
       } else {
-        // 无未关闭工单，显示欢迎消息
         addSystemMessage('您好！我是 HCI 故障排查助手。请描述您遇到的问题，我会帮您创建工单并提供解决方案。')
       }
     } catch (e) {
@@ -126,7 +150,6 @@ export const useChatStore = defineStore('chat', () => {
     initialized.value = true
   }
 
-  /** 用户选择继续处理未关闭工单 */
   async function resumePendingCase() {
     if (!pendingCase.value) return
     currentCase.value = pendingCase.value
@@ -135,11 +158,10 @@ export const useChatStore = defineStore('chat', () => {
     pendingCase.value = null
   }
 
-  /** 用户选择关闭旧工单 */
   async function closePendingCase() {
     if (!pendingCase.value) return
     try {
-      await caseApi.close(pendingCase.value.case_id)
+      await caseApi.close(pendingCase.value.case_id, { close_reason: 'user_command' })
       addSystemMessage(`旧工单 ${pendingCase.value.case_id} 已关闭。请描述您遇到的新问题。`)
     } catch (e: any) {
       addSystemMessage(`关闭旧工单失败: ${e.response?.data?.detail || e.message}，但您仍可以创建新工单。`)
@@ -148,16 +170,13 @@ export const useChatStore = defineStore('chat', () => {
     pendingCase.value = null
   }
 
-  /** 加载已有对话历史 */
   async function loadConversationHistory(caseId: string) {
     try {
-      // 获取工单下的对话
       const convRes = await apiClient.get(`/conversations/case/${caseId}`)
       const conversations = convRes.data as any[]
       if (conversations.length > 0) {
         const conv = conversations[0]
         conversationId.value = conv.conversation_id
-        // 加载消息
         const msgRes = await conversationApi.getMessages(conv.conversation_id)
         const history: MessageResponse[] = msgRes.data
         messages.value = history.map((m) => ({
@@ -168,9 +187,7 @@ export const useChatStore = defineStore('chat', () => {
         }))
       }
       if (messages.value.length === 0) {
-        addSystemMessage(
-          `工单 ${caseId} 已恢复。您可以继续描述问题，或输入 /close 关闭工单。`,
-        )
+        addSystemMessage(`工单 ${caseId} 已恢复。您可以继续描述问题，或输入 /close 关闭工单。`)
       }
     } catch (e) {
       console.error('加载对话历史失败', e)
@@ -178,45 +195,36 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 发送消息 - 核心流程 */
   async function sendMessage(content: string) {
     if (!content.trim() || isStreaming.value) return
 
-    // 处理命令
     if (content.startsWith('/close')) {
       await handleCloseCase()
       return
     }
 
-    // 工单已关闭时，阻止继续发送消息
     if (isCaseClosed.value) {
       addSystemMessage('当前工单已关闭，请点击「新建工单」开始新的对话。')
       return
     }
 
-    // 如果没有活跃工单，显示工单创建模板让用户编辑
     if (!currentCase.value) {
       pendingUserMessage.value = content
-      // 生成模板默认值
       const title = content.length > 50 ? content.substring(0, 50) + '...' : content
       caseTemplate.value = { title, description: content }
       showCaseTemplate.value = true
       return
     }
 
-    // 添加用户消息
     addUserMessage(content)
 
-    // 如果没有会话，先创建
     if (!conversationId.value) {
       await createConversation()
     }
 
-    // 发送 AI 消息并流式接收
     await streamAIResponse(content)
   }
 
-  /** 用户确认模板后创建工单 */
   async function confirmCreateCase(template: CaseTemplate) {
     showCaseTemplate.value = false
     addUserMessage(pendingUserMessage.value)
@@ -231,15 +239,11 @@ export const useChatStore = defineStore('chat', () => {
       currentCase.value = res.data
       addSystemMessage(`工单 ${res.data.case_id} 已创建，正在自动确认...`)
 
-      // 自动确认
       const confirmed = await caseApi.confirm(res.data.case_id)
       currentCase.value = confirmed.data
       addSystemMessage('工单已确认，正在连接 AI 助手...')
 
-      // 创建对话
       await createConversation()
-
-      // 开始 AI 对话
       await streamAIResponse(pendingUserMessage.value)
     } catch (e: any) {
       addSystemMessage(`创建工单失败: ${e.response?.data?.detail || e.message}`)
@@ -249,13 +253,11 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 用户取消创建工单 */
   function cancelCreateCase() {
     showCaseTemplate.value = false
     pendingUserMessage.value = ''
   }
 
-  /** 创建对话 */
   async function createConversation() {
     if (!currentCase.value) return
     try {
@@ -267,13 +269,10 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 流式接收 AI 响应 */
   async function streamAIResponse(content: string) {
     if (!conversationId.value || !currentCase.value) return
 
     isStreaming.value = true
-
-    // 先添加一个空的 AI 消息占位
     const aiMsgId = `ai-${Date.now()}`
     messages.value.push({
       id: aiMsgId,
@@ -283,8 +282,10 @@ export const useChatStore = defineStore('chat', () => {
       isStreaming: true,
     })
 
+    // 用索引而非 find()，确保 Vue 响应式能正确追踪数组元素属性变更
+    const getAiMsgIndex = () => messages.value.findIndex((m) => m.id === aiMsgId)
+
     try {
-      // 后端 SSE 是 POST 方式，使用 fetch + ReadableStream
       const response = await fetch(`/api/conversations/${conversationId.value}/message`, {
         method: 'POST',
         headers: {
@@ -311,63 +312,129 @@ export const useChatStore = defineStore('chat', () => {
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
-        // 按行解析 SSE
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
+        let pendingEventType = 'message'
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
+          if (line.startsWith('event: ')) {
+            pendingEventType = line.slice(7).trim()
+          } else if (line.startsWith('data: ')) {
             const data = line.slice(6)
-            if (data === '[DONE]') continue
-            if (data.startsWith('{') && data.includes('"error"')) continue
-            // 追加到 AI 消息
-            const aiMsg = messages.value.find((m) => m.id === aiMsgId)
-            if (aiMsg) {
-              aiMsg.content += data
+            if (data === '[DONE]') {
+              pendingEventType = 'message'
+              continue
             }
+            const idx = getAiMsgIndex()
+            if (idx === -1) break
+            if (pendingEventType === 'error') {
+              if (!messages.value[idx].content) {
+                messages.value[idx].content = 'AI 响应出现错误，请稍后重试。'
+              }
+            } else if (pendingEventType === 'confirm_request') {
+              // 高风险操作需要用户确认：弹窗展示
+              try {
+                const event = JSON.parse(data)
+                pendingConfirm.value = {
+                  tool_name: event.tool_name,
+                  tool_args: event.tool_args,
+                  risk_level: event.risk_level,
+                  risk_description: event.risk_description,
+                  timeout_seconds: event.timeout_seconds ?? 120,
+                }
+              } catch {}
+            } else if (pendingEventType === 'tool_executing') {
+              // 工具执行通知：在 AI 消息流后追加提示行
+              try {
+                const event = JSON.parse(data)
+                const idx2 = getAiMsgIndex()
+                if (idx2 !== -1) {
+                  messages.value[idx2].content += `\n\n> 🔍 正在查询：\`${event.tool}\`…`
+                }
+              } catch {}
+            } else if (pendingEventType === 'thinking') {
+              // 推理步骤：追加到 AI 消息（可见调试信息）
+              try {
+                const event = JSON.parse(data)
+                const idx2 = getAiMsgIndex()
+                if (idx2 !== -1 && event.message) {
+                  messages.value[idx2].content += `\n\n> 🤔 步骤 ${event.step}：${event.message}`
+                }
+              } catch {}
+            } else if (pendingEventType === 'stage_change') {
+              // 诊断阶段切换：更新前端进度条状态
+              try {
+                const event = JSON.parse(data)
+                diagnosticStage.value = event.to ?? 'S0'
+                console.log('[stage_change] 诊断阶段切换:', event.from, '→', event.to, event.label)
+              } catch (e) {
+                console.warn('[stage_change] 解析失败:', e)
+              }
+            } else {
+              try {
+                const parsed = JSON.parse(data)
+                messages.value[idx].content += parsed.content || ''
+              } catch (e) {
+                // Fallback for unformatted raw data (backward compatibility)
+                messages.value[idx].content += data
+              }
+            }
+            pendingEventType = 'message'
+          } else if (line === '') {
+            pendingEventType = 'message'
           }
         }
       }
     } catch (e: any) {
-      const aiMsg = messages.value.find((m) => m.id === aiMsgId)
-      if (aiMsg && !aiMsg.content) {
-        aiMsg.content = `[AI 响应失败: ${e.message}]`
+      const idx = getAiMsgIndex()
+      if (idx !== -1 && !messages.value[idx].content) {
+        messages.value[idx].content = `[AI 响应失败: ${e.message}]`
       }
     } finally {
-      const aiMsg = messages.value.find((m) => m.id === aiMsgId)
-      if (aiMsg) aiMsg.isStreaming = false
+      const idx = getAiMsgIndex()
+      if (idx !== -1) {
+        // 【方案A修复】先等 Vue 刷完流式阶段最后一帧 DOM（含 content 更新），
+        // 再设 isStreaming: false，保证阶段3的 contentSegments 能在稳定 content 上求值。
+        // 消除"实时输出停留在阶段2、刷新后才呈现阶段3"的竞态窗口。
+        await nextTick()
+        messages.value[idx] = { ...messages.value[idx], isStreaming: false }
+      }
       isStreaming.value = false
     }
   }
 
-  /** 关闭当前工单 */
   async function handleCloseCase() {
     if (!currentCase.value) {
       addSystemMessage('当前没有活跃的工单。')
       return
     }
     try {
-      const res = await caseApi.close(currentCase.value.case_id)
+      const res = await caseApi.close(currentCase.value.case_id, { close_reason: 'user_command' })
       currentCase.value = res.data
       addSystemMessage(`工单 ${res.data.case_id} 已关闭。发送新消息开启新工单。`)
+      const convId = conversationId.value
       conversationId.value = null
+      // 重置诊断阶段
+      diagnosticStage.value = 'S0'
+      if (convId) {
+        ratingConversationId.value = convId
+        showRatingCard.value = true
+      }
     } catch (e: any) {
       addSystemMessage(`关闭工单失败: ${e.response?.data?.detail || e.message}`)
     }
   }
 
-  /** 开始新对话（关闭当前工单后） */
   function startNewConversation() {
     currentCase.value = null
     conversationId.value = null
     messages.value = []
+    diagnosticStage.value = 'S0'
     addSystemMessage('请描述您遇到的新问题，我会帮您创建工单。')
   }
 
-  /** 打开历史工单抽屉 */
   async function openHistoryDrawer() {
     showHistoryDrawer.value = true
-    // 刷新工单列表
     try {
       const res = await caseApi.listByClient(clientId)
       existingCases.value = res.data
@@ -376,14 +443,12 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 关闭历史工单抽屉 */
   function closeHistoryDrawer() {
     showHistoryDrawer.value = false
     historyMessages.value = []
     historyCase.value = null
   }
 
-  /** 加载某个历史工单的对话消息 */
   async function loadHistoryMessages(caseItem: CaseResponse) {
     historyCase.value = caseItem
     historyLoading.value = true
@@ -423,11 +488,9 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 从历史工单列表选择一个工单恢复进入（仅限未关闭的） */
   async function switchToCase(caseItem: CaseResponse) {
     closeHistoryDrawer()
     if (!['closed', 'cancelled'].includes(caseItem.status)) {
-      // 未关闭工单，恢复到当前对话
       currentCase.value = caseItem
       conversationId.value = null
       messages.value = []
@@ -453,6 +516,116 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
+  function closeRatingCard() {
+    showRatingCard.value = false
+    ratingConversationId.value = null
+  }
+
+  async function submitRating(score: number) {
+    if (!ratingConversationId.value) {
+      closeRatingCard()
+      return
+    }
+    try {
+      await evaluateApi.submit(ratingConversationId.value, { score })
+    } catch (e) {
+      console.warn('评分提交失败:', e)
+    } finally {
+      closeRatingCard()
+    }
+  }
+
+  function skipRating() {
+    closeRatingCard()
+  }
+
+  /** 发送命令到终端（CommandBlock 调用） */
+  function sendCommandToTerminal(command: string) {
+    terminalInputCommand.value = command
+    showTerminalSidebar.value = true
+  }
+
+  function clearTerminalInput() {
+    terminalInputCommand.value = ''
+  }
+
+  // 终端输出回填到助手输入框
+  function setAssistantDraftText(text: string) {
+    assistantDraftText.value = text
+  }
+
+  /** 提交高风险操作确认结果（由 ConfirmDialog 调用） */
+  async function handleConfirmResult(authorized: boolean) {
+    if (!pendingConfirm.value || !conversationId.value) {
+      pendingConfirm.value = null
+      return
+    }
+    try {
+      await fetch(`/api/conversations/${conversationId.value}/confirm`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-ID': clientId,
+        },
+        body: JSON.stringify({
+          confirmed: authorized,
+          authorized_by: clientId,
+        }),
+      })
+    } catch (e) {
+      console.warn('提交确认结果失败:', e)
+    } finally {
+      pendingConfirm.value = null
+    }
+  }
+
+  function clearAssistantDraftText() {
+    assistantDraftText.value = ''
+  }
+
+  /**
+   * 点击「终端」按钮的入口
+   * 先检测 Bridge，根据结果决定：直接打开侧边栏 或 提示下载
+   */
+  async function checkAndOpenTerminal() {
+    bridgeStatus.value = 'checking'
+    const running = await checkBridgeRunning()
+    if (running) {
+      bridgeStatus.value = 'running'
+      showTerminalSidebar.value = true
+    } else {
+      bridgeStatus.value = 'not_running'
+      // 让 App.vue 展示下载提示弹窗（通过 showBridgeDownload 状态驱动）
+      showBridgeDownload.value = true
+    }
+  }
+
+  function openTerminalSidebar() {
+    showTerminalSidebar.value = true
+  }
+
+  function closeTerminalSidebar() {
+    showTerminalSidebar.value = false
+  }
+
+  // Bridge 下载提示弹窗状态
+  const showBridgeDownload = ref(false)
+  function closeBridgeDownload() {
+    showBridgeDownload.value = false
+  }
+
+  function setSshConnectionState(state: 'disconnected' | 'connecting' | 'connected' | 'error') {
+    sshConnectionState.value = state
+  }
+
+  function setSshErrorMessage(message: string) {
+    sshErrorMessage.value = message
+  }
+
+  function clearSshErrorMessage() {
+    sshErrorMessage.value = ''
+  }
+
   return {
     messages,
     currentCase,
@@ -462,21 +635,20 @@ export const useChatStore = defineStore('chat', () => {
     existingCases,
     hasActiveCase,
     isCaseClosed,
-    // AI 助手选择
+    // 诊断阶段
+    diagnosticStage,
     showAssistantSelector,
     assistants,
     selectedAssistant,
-    // 未关闭工单确认
     pendingCase,
     showPendingDialog,
     resumePendingCase,
     closePendingCase,
-    // 工单创建模板
+    handleCloseCase,
     showCaseTemplate,
     caseTemplate,
     confirmCreateCase,
     cancelCreateCase,
-    // 历史工单
     showHistoryDrawer,
     historyMessages,
     historyCase,
@@ -485,7 +657,35 @@ export const useChatStore = defineStore('chat', () => {
     closeHistoryDrawer,
     loadHistoryMessages,
     switchToCase,
-    // 核心方法
+    showRatingCard,
+    ratingConversationId,
+    submitRating,
+    skipRating,
+    closeRatingCard,
+    // 终端
+    showTerminalSidebar,
+    terminalInputCommand,
+    assistantDraftText,
+    sendCommandToTerminal,
+    clearTerminalInput,
+    setAssistantDraftText,
+    clearAssistantDraftText,
+    openTerminalSidebar,
+    closeTerminalSidebar,
+    checkAndOpenTerminal,
+    // Bridge 状态
+    bridgeStatus,
+    showBridgeDownload,
+    closeBridgeDownload,
+    // SSH 状态（TerminalPanel 同步过来，仅供展示）
+    sshConnectionState,
+    sshErrorMessage,
+    setSshConnectionState,
+    setSshErrorMessage,
+    clearSshErrorMessage,
+    // Agent 模式：高风险操作确认
+    pendingConfirm,
+    handleConfirmResult,
     initialize,
     sendMessage,
     startNewConversation,

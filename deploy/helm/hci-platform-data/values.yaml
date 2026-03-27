@@ -1,0 +1,48 @@
+# =============================================================================
+# hci-platform-data — 数据层默认配置
+# 此 Chart 独立管理 PostgreSQL 和 Redis，不随业务版本迭代变更。
+# PVC 保护策略：StatefulSet 带 helm.sh/resource-policy: keep；ArgoCD Application
+# 中 prune: false，两重保障防止数据卷被意外删除。
+# =============================================================================
+
+# ======================== PostgreSQL ========================================
+postgres:
+  enabled: true
+  image: pgvector/pgvector:pg15   # 含 pgvector 扩展，支持向量检索
+  storage: 5Gi
+  # ⚠️  StorageClass 说明：
+  #   - 存量安装：保持 local-path（StatefulSet storageClass 不可变字段）
+  #   - 全新安装：可改为 local-path-retain 获得自动 Retain 策略
+  storageClass: local-path
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "64Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+  # pg_dump 定时全量备份（每天 UTC 02:00，保留 30 天）
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"
+    hostPath: "/srv/hci/backups/postgres"
+
+# ======================== Redis =============================================
+redis:
+  enabled: true
+  image: redis:7
+  storage: 1Gi
+  storageClass: local-path
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "16Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+
+# ======================== 共用配置（与 hci-platform chart 保持一致）===========
+# postgres 健康探针需要 DB 名称和用户名；这两项与 hci-common-config ConfigMap 匹配
+config:
+  postgresDb: hci_troubleshoot
+  postgresUser: hci_admin

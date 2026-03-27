@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>SSH 终端插件</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+    .card {
+      background: #252526;
+      border: 1px solid #333;
+      border-radius: 12px;
+      padding: 40px 48px;
+      max-width: 520px;
+      text-align: center;
+    }
+    .icon { font-size: 56px; margin-bottom: 16px; }
+    h1 { font-size: 20px; color: #e0e0e0; margin: 0 0 12px; }
+    p { font-size: 14px; color: #9cdcfe; line-height: 1.8; margin: 0 0 24px; }
+    code {
+      display: block;
+      background: #1e1e1e;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 12px 16px;
+      font-family: 'Consolas', monospace;
+      font-size: 13px;
+      color: #67c23a;
+      text-align: left;
+      margin: 8px 0;
+    }
+    .tip { font-size: 12px; color: #666; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🖥️</div>
+    <h1>SSH 终端插件尚未发布</h1>
+    <p>管理员还未将 <strong>terminal_bridge.exe</strong> 打包并发布到此目录。</p>
+    <p style="text-align:left; font-size:13px; color:#d4d4d4;">构建步骤：</p>
+    <code>cd terminal_bridge<br>build_windows.bat</code>
+    <code>cp dist\terminal_bridge.exe<br>&nbsp;&nbsp;frontend\customer\public\downloads\</code>
+    <code>bash scripts/k3s-release.sh --services customerUI</code>
+    <p class="tip">参考 <code style="display:inline;background:none;border:none;padding:0;color:#9cdcfe;">terminal_bridge/README.md</code></p>
+  </div>
+</body>
+</html>

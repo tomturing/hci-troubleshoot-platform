@@ -11,7 +11,7 @@
 ### 本地直接运行
 
 ```bash
-cd /mnt/d/AIBot/hci-troubleshoot-platform
+cd /path/to/AIBot/hci-troubleshoot-platform
 ADAPTER_PORT=43101 \
 ADAPTER_MODEL=picoclaw \
 ADAPTER_BEARER_TOKEN=pc_dev_token \
@@ -22,9 +22,9 @@ python3 adapters/cli_openai_adapter/server.py
 ### Docker 运行
 
 ```bash
-cd /mnt/d/AIBot/hci-troubleshoot-platform
+cd /path/to/AIBot/hci-troubleshoot-platform
 
-docker build -t cli-openai-adapter:local -f adapters/cli_openai_adapter/Dockerfile /mnt/d/AIBot/hci-troubleshoot-platform
+docker build -t cli-openai-adapter:local -f adapters/cli_openai_adapter/Dockerfile /path/to/AIBot/hci-troubleshoot-platform
 
 docker run --rm -p 43101:43101 \
   -e ADAPTER_MODEL=picoclaw \
@@ -68,4 +68,3 @@ curl -sS http://localhost:43101/v1/chat/completions \
 - `{prompt}`: 从 `messages` 提取出的输入
 - `{session}`: 使用 OpenAI `user` 字段
 - `{model}`: 请求里的 `model`
-

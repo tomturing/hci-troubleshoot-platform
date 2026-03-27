@@ -1,0 +1,40 @@
+# 环境仓库模板：staging
+# 建议与生产接近，用于发布前冒烟与回归
+
+global:
+  environment: staging
+
+apiGateway:
+  image:
+    repository: hci-api-gateway
+    tag: "latest"
+
+caseService:
+  image:
+    repository: hci-case-service
+    tag: "latest"
+
+conversationService:
+  image:
+    repository: hci-conversation-service
+    tag: "latest"
+
+schedulerService:
+  image:
+    repository: hci-scheduler-service
+    tag: "latest"
+
+kbService:
+  image:
+    repository: hci-kb-service
+    tag: "latest"
+
+customerUI:
+  image:
+    repository: hci-customer-ui
+    tag: "latest"
+
+adminUI:
+  image:
+    repository: hci-admin-ui
+    tag: "latest"

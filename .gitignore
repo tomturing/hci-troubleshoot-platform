@@ -23,6 +23,9 @@ wheels/
 venv/
 ENV/
 env/
+# 例外：deploy/env/ 是配置目录，需提交（secrets.env 本身已单独排除）
+!deploy/env/
+!deploy/env/**
 
 # Node
 node_modules/
@@ -54,7 +57,35 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Claude Code 本地配置（不提交）
+CLAUDE.local.md
+
+# Vibe Kanban 本地数据
+.vk-data/
+
+# 本地私有配置（不提交）
+.local/
+
+# 环境敏感配置（敏感：密码/Token/API Key，不提交 git）
+deploy/env/secrets.env
+
+# GitOps 本地密钥文件（仅本机使用，不提交）
+deploy/gitops/local/*.yaml
+deploy/gitops/local/*.yml
+!deploy/gitops/local/README.md
+
 # Coverage
 .coverage
 htmlcov/
 .pytest_cache/
+.vk/
+
+# Frontend admin 构建产物（无需提交）
+frontend/admin/*.tsbuildinfo
+frontend/admin/vite.config.js
+frontend/admin/vite.config.d.ts
+
+# 数据管道原始抓取文件（大文件/敏感数据，不入 git）
+data-pipeline/cases_raw/*.jsonl
+data-pipeline/cases_raw/.fetch_progress.json
+

@@ -1,13 +1,17 @@
-{{- if and .Values.observability.enabled .Values.ingress.enabled }}
+{{- if and .Values.observability.enabled .Values.observabilityLayer.manage .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: grafana-ingress
+  # 注意：此 Ingress 必须和 grafana Service 在同一命名空间（hci-observability）
+  # Traefik 扫描全命名空间 Ingress，因此跨命名空间路由通过此方式实现
   namespace: {{ .Values.observability.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: web
+    # /grafana 路由必须高于主 ingress 的 / 回退路由，否则会被 customer-ui 吞掉（PIT-020 回归）
+    traefik.ingress.kubernetes.io/router.priority: {{ .Values.ingress.grafanaRouterPriority | quote }}
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -16,11 +20,30 @@ spec:
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
   rules:
-    {{- if .Values.global.domain }}
+    {{- if eq .Values.global.routingMode "subdomain" }}
+    {{- /* 子域名路由模式：grafana 独占 grafana.<domain> */}}
     - host: "grafana.{{ .Values.global.domain }}"
       http:
         paths:
           - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+    {{- else }}
+    {{- /* 路径路由模式（默认）：优先绑定主 Host，避免与 / 回退路由冲突 */}}
+    {{- $host := "" }}
+    {{- if .Values.global.publicUrl }}
+      {{- /* 提取 hostname，去掉协议前缀和端口（Ingress host 字段不能含端口） */}}
+      {{- $host = .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/:]+" }}
+    {{- end }}
+    - {{- if $host }} host: {{ $host | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: /grafana
             pathType: Prefix
             backend:
               service:

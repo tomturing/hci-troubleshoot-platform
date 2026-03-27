@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "python",
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "package-name": "hci-troubleshoot-platform",
+      "version-file": "pyproject.toml",
+      "changelog-path": "CHANGELOG.md",
+      "changelog-sections": [
+        { "type": "feat",     "section": "✨ 新功能",     "hidden": false },
+        { "type": "fix",      "section": "🐛 Bug 修复",   "hidden": false },
+        { "type": "perf",     "section": "⚡ 性能优化",   "hidden": false },
+        { "type": "refactor", "section": "♻️ 代码重构",   "hidden": false },
+        { "type": "docs",     "section": "📝 文档",       "hidden": false },
+        { "type": "chore",    "section": "🔧 其他",       "hidden": true  },
+        { "type": "ci",       "section": "👷 CI",         "hidden": true  },
+        { "type": "test",     "section": "✅ 测试",       "hidden": true  }
+      ],
+      "bump-minor-pre-major": false,
+      "include-component-in-tag": false
+    }
+  },
+  "pull-request-title-pattern": "chore: release ${version}",
+  "pull-request-header": "## 🚀 自动版本发布 PR\n\n由 release-please 根据 Conventional Commits 自动生成。合并后将：\n- 更新 `pyproject.toml` 版本号\n- 生成 `CHANGELOG.md` 条目\n- 创建 GitHub Release 和 git tag"
+}

@@ -1,0 +1,24 @@
+# 依赖
+node_modules/
+dist/
+
+# 环境变量（本地覆盖）
+.env.local
+.env.*.local
+
+# 编辑器
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 构建产物
+*.tsbuildinfo
+
+# terminal_bridge 可执行文件（不入 Git，构建前手动/CI 注入）
+public/downloads/*.exe
+public/downloads/*.zip
+!public/downloads/terminal_bridge.exe

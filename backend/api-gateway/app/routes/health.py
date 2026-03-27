@@ -6,10 +6,12 @@ from fastapi import APIRouter
 
 router = APIRouter()
 
+
 @router.get("/health")
 async def health_check():
     """健康检查"""
     return {"status": "healthy", "service": "api-gateway"}
+
 
 @router.get("/ready")
 async def readiness_check():

@@ -6,6 +6,7 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig } from 'axios'
 import type {
   CaseCreate,
+  CloseReason,
   CaseResponse,
   CaseListResponse,
   CaseStatsResponse,
@@ -67,8 +68,8 @@ export function createCaseApi(client: AxiosInstance) {
     },
 
     /** 关闭工单 */
-    close(caseId: string) {
-      return client.put<CaseResponse>(`/cases/${caseId}/close`)
+    close(caseId: string, data?: { close_reason?: CloseReason }) {
+      return client.put<CaseResponse>(`/cases/${caseId}/close`, data)
     },
 
     // ---- Admin ----
@@ -126,6 +127,70 @@ export function createConversationApi(client: AxiosInstance) {
       // 所以后端 SSE 端点需用 POST，这里改用 fetch + ReadableStream
       // 为与现有后端一致，直接返回 URL，让调用方自行处理
       return new EventSource(url)
+    },
+  }
+}
+
+/** PromptAudit API 方法集合（Admin 专用） */
+export function createPromptAuditApi(client: AxiosInstance) {
+  return {
+    /** [Admin] 获取工单的 PromptAudit 记录列表 */
+    listByCaseId(caseId: string, params?: { limit?: number; offset?: number; include_messages?: boolean }) {
+      return client.get<{
+        case_id: string
+        total: number
+        offset: number
+        limit: number
+        records: Array<{
+          audit_id: string
+          conversation_id: string | null
+          assistant_type: string | null
+          model: string | null
+          has_sop: boolean | null
+          kb_chunks_count: number | null
+          kb_top_score: number | null
+          system_prompt_chars: number | null
+          message_count: number | null
+          user_rating: number | null
+          captured_at: string | null
+          messages?: any
+        }>
+      }>(`/cases/${caseId}/prompt-audit`, { params })
+    },
+  }
+}
+
+/** AuditLog API 方法集合（Admin 专用） */
+export function createAuditLogApi(client: AxiosInstance) {
+  return {
+    /** [Admin] 查询工具调用审计日志 */
+    list(params?: {
+      session_id?: string
+      tool_name?: string
+      risk_level?: number
+      limit?: number
+      offset?: number
+    }) {
+      return client.get<{
+        total: number
+        limit: number
+        offset: number
+        items: Array<{
+          id: string
+          session_id: string
+          tool_name: string
+          tool_args: any
+          risk_level: number
+          policy: string | null
+          authorized_by: string | null
+          result: any
+          error: string | null
+          started_at: string | null
+          completed_at: string | null
+          duration_ms: number | null
+          trace_id: string | null
+        }>
+      }>('/api/v1/audit-logs', { params })
     },
   }
 }

@@ -1,0 +1,72 @@
+# values-prod.override.example.yaml
+# 说明:
+# 1) 这是生产环境私有配置模板，不要直接用于生产。
+# 2) 复制到 /srv/hci/config/values-prod.override.yaml 后替换所有占位符。
+# 3) 该文件不要提交到代码仓库。
+
+global:
+  # ⚠️  路由模式 — 必须与你的 DNS 环境匹配
+  #   "path"      单 IP / 单域名：只需一条 A 记录（绝大多数生产场景）
+  #   "subdomain" 多子域名：需要 DNS 通配符 *.example.com（否则子域名全部无法访问）
+  routingMode: "path"
+
+  # routingMode=subdomain 时：Ingress 使用 api.<domain> / admin.<domain> / grafana.<domain>
+  # routingMode=path 时：此字段仅用于 Grafana Root URL 辅助配置，不影响路由
+  domain: "example.com"
+
+  # routingMode=path 时必填：公开访问的完整 URL（含协议和端口）
+  # 用于 Grafana GF_SERVER_ROOT_URL 等配置
+  publicUrl: "http://example.com:4888"
+  # 私有仓库前缀，需以斜杠结尾
+  imageRegistry: "registry.example.com/"
+  imagePullPolicy: IfNotPresent
+
+apiGateway:
+  image:
+    tag: "2026.03.02-1"
+caseService:
+  image:
+    tag: "2026.03.02-1"
+conversationService:
+  image:
+    tag: "2026.03.02-1"
+schedulerService:
+  image:
+    tag: "2026.03.02-1"
+customerUI:
+  image:
+    tag: "2026.03.02-1"
+adminUI:
+  image:
+    tag: "2026.03.02-1"
+openclaw:
+  image:
+    tag: "2026.03.02-1"
+
+secrets:
+  postgresPassword: "<replace-strong-password>"
+  openclawToken: "<replace-openclaw-token>"
+  zaiApiKey: "<replace-if-used>"
+  grafanaAdminPassword: "<replace-grafana-password>"
+
+config:
+  logLevel: "INFO"
+  # gateway_token 已从 JSON 中移除，改由 secrets.openclawToken → OPENCLAW_GATEWAY_TOKEN env 注入（Secret 统一管理）
+  assistantRegistryJson: '{"openclaw":{"name":"OpenClaw","description":"通用AI排障助手","image":"hci-openclaw:2026.03.02-1","port":18789,"warm_pool_size":2,"max_pool_size":10,"enabled":true,"base_url":"http://openclaw:18789","model":"openclaw","labels":{"app":"openclaw","assistant-type":"openclaw"}}}'
+
+ingress:
+  annotations:
+    # cert-manager 自动签发（需提前安装 cert-manager + ClusterIssuer）
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  tls:
+    - hosts:
+        - "api.example.com"    # 替换为 global.domain 对应的实际域名
+        - "admin.example.com"
+        - "example.com"
+      secretName: hci-platform-tls
+
+postgres:
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"
+    hostPath: "/srv/hci/backups/postgres"

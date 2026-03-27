@@ -4,23 +4,30 @@ Case Service Configuration
 
 from pydantic_settings import BaseSettings
 
+
 class Settings(BaseSettings):
     """配置类"""
-    
+
     # 服务配置
     SERVICE_NAME: str = "case-service"
     SERVICE_PORT: int = 8001
     LOG_LEVEL: str = "INFO"
-    
+
     # 数据库配置
     DATABASE_URL: str = "postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot"
-    
+
     # Redis配置 (可选，用于缓存)
     REDIS_URL: str = "redis://redis:6379/0"
-    
+
+    # KB Service 配置（Case 关闭时推送摘要，异步 fire-and-forget）
+    KB_SERVICE_URL: str = "http://kb-service:8004"
+    INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
+    KB_PUSH_ENABLED: bool = True  # 环境变量 KB_PUSH_ENABLED=false 可禁用
+
     class Config:
         env_file = ".env"
         case_sensitive = True
         extra = "ignore"
+
 
 settings = Settings()

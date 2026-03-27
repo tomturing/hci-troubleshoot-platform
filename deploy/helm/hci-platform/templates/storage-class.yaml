@@ -1,0 +1,21 @@
+{{- /*
+  StorageClass 已迁移到 hci-platform-infra Chart 统一管理（集群级资源，三环境共用）。
+  如需在此 chart 内单独部署（如本地调试），将 clusterResources.manage 设为 true。
+  生产/正式环境请保持 false，由 hci-platform-infra ArgoCD Application 负责。
+*/ -}}
+{{- if .Values.clusterResources.manage }}
+# local-path-retain StorageClass
+# 与 k3s 默认 local-path 相同，但 reclaimPolicy=Retain，防止 PVC 删除时数据丢失
+# 用途：postgres / redis 等有状态服务
+# 注意：已有 PVC 绑定的 PV，需手动执行：
+#   kubectl patch pv <pv-name> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path-retain
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: rancher.io/local-path
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+{{- end }}

@@ -2,12 +2,11 @@
 Scheduler Client - 与 scheduler-service 交互的 HTTP 客户端
 """
 
-from typing import Optional
 import asyncio
 
 import httpx
-
 from shared.utils.logger import get_logger
+
 from app.config import settings
 
 logger = get_logger("scheduler-client")
@@ -19,10 +18,24 @@ class SchedulerClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
 
-    async def allocate_pod(self, case_id: str, assistant_type: str) -> bool:
-        """请求调度器为 case 分配指定类型 Pod。"""
+    async def allocate_pod(
+        self,
+        case_id: str,
+        assistant_type: str,
+        case_title: str | None = None,
+        case_description: str | None = None,
+    ) -> bool:
+        """请求调度器为 case 分配指定类型 Pod。
+
+        case_title / case_description 会被注入到 ProductionClaw Pod 的环境变量，
+        使得 LearningClaw 擁有工单上下文。
+        """
         url = f"{self.base_url}/api/scheduler/pods/allocate"
-        payload = {"case_id": case_id, "assistant_type": assistant_type}
+        payload: dict = {"case_id": case_id, "assistant_type": assistant_type}
+        if case_title:
+            payload["case_title"] = case_title
+        if case_description:
+            payload["case_description"] = case_description
         try:
             async with httpx.AsyncClient(timeout=settings.SCHEDULER_ALLOCATE_TIMEOUT_SEC) as client:
                 resp = await client.post(url, json=payload)
@@ -46,7 +59,7 @@ class SchedulerClient:
             )
             return False
 
-    async def wait_for_endpoint(self, case_id: str) -> Optional[str]:
+    async def wait_for_endpoint(self, case_id: str) -> str | None:
         """轮询 Pod 分配信息，等待 endpoint 就绪。"""
         url = f"{self.base_url}/api/scheduler/pods/{case_id}"
         timeout = max(settings.SCHEDULER_POD_READY_TIMEOUT_SEC, 1)

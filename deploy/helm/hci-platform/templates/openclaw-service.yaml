@@ -18,25 +18,65 @@ spec:
       labels:
         {{- include "hci.podLabels" (dict "name" "openclaw" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "openclaw") | nindent 6 }}
+      # 绕过 Clash TUN fake-ip DNS 劫持：直接使用真实 DNS（114.114.114.114）
+      # Pod 源 IP 走 ip rule 100（from 10.42.0.0/16 lookup main）可直达真实公网 DNS
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+          - 114.114.114.114
+          - 1.2.4.8
+        options:
+          - name: ndots
+            value: "1"
+      securityContext:
+        # 宿主机 node 用户 uid=1000 gid=1000，容器以相同 UID 运行
+        # 确保 hostPath /home/node（owner=1000）可读写
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      {{- if .Values.openclaw.configMap.enabled }}
+      initContainers:
+        - name: openclaw-config-init
+          image: rancher/mirrored-library-busybox:1.37.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          # 将只读 ConfigMap 文件复制到可写 emptyDir，确保 openclaw 进程可在 .openclaw/ 下创建子目录
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /home/node/.openclaw && \
+              cp /etc/openclaw-config/openclaw.json /home/node/.openclaw/openclaw.json && \
+              chmod 755 /home/node/.openclaw
+          volumeMounts:
+            - name: openclaw-home
+              mountPath: /home/node
+            - name: openclaw-config
+              mountPath: /etc/openclaw-config
+      {{- end }}
       containers:
         - name: openclaw
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.openclaw.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
           ports:
             - containerPort: {{ .Values.openclaw.port }}
               protocol: TCP
           env:
             - name: HOME
-              value: "/home/bot"
+              value: "/home/node"
             - name: TERM
               value: "xterm-256color"
             - name: OPENCLAW_SKIP_CANVAS_HOST
               value: "1"
-            - name: ZAI_API_KEY
+            - name: OPENCLAW_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: hci-secrets
-                  key: ZAI_API_KEY
+                  key: OPENCLAW_API_KEY
             - name: OPENCLAW_GATEWAY_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -44,13 +84,18 @@ spec:
                   key: OPENCLAW_GATEWAY_TOKEN
           volumeMounts:
             - name: openclaw-home
-              mountPath: /home/bot
+              mountPath: /home/node
             - name: openclaw-tmp
               mountPath: /tmp/openclaw
-          {{- if .Values.openclaw.volumeMounts }}
-            {{- toYaml .Values.openclaw.volumeMounts | nindent 12 }}
-          {{- end }}
-          command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "{{ .Values.openclaw.port }}"]
+            {{- if .Values.openclaw.configMap.enabled }}
+            - name: openclaw-config
+              mountPath: /etc/openclaw-config
+              readOnly: true
+            {{- end }}
+            - name: openclaw-shared
+              mountPath: /shared
+              readOnly: true
+          command: ["node", "dist/index.js", "gateway", "--allow-unconfigured", "--bind", "lan", "--port", "{{ .Values.openclaw.port }}"]
           livenessProbe:
             tcpSocket:
               port: {{ .Values.openclaw.port }}
@@ -69,12 +114,29 @@ spec:
             {{- toYaml .Values.openclaw.resources | nindent 12 }}
       volumes:
         - name: openclaw-home
+          {{- if .Values.openclaw.configMap.enabled }}
+          # ConfigMap 模式：使用 emptyDir 作为 workspace，openclaw.json 单独挂载
           emptyDir: {}
+          {{- else }}
+          hostPath:
+            # HostPath 模式（兼容）：宿主机 /home/node 与容器内路径完全一致
+            # openclaw 自动读取 /home/node/.openclaw/openclaw.json
+            path: /home/node
+            type: DirectoryOrCreate
+          {{- end }}
+        {{- if .Values.openclaw.configMap.enabled }}
+        - name: openclaw-config
+          configMap:
+            name: openclaw-config
+        {{- end }}
         - name: openclaw-tmp
           emptyDir: {}
-      {{- if .Values.openclaw.volumes }}
-        {{- toYaml .Values.openclaw.volumes | nindent 8 }}
-      {{- end }}
+        # 共享知识库目录：宿主机 /srv/openclaw/shared/ 挂载到容器 /shared（只读）
+        # 直接在宿主机该目录放置文件即可，无需重启 Pod
+        - name: openclaw-shared
+          hostPath:
+            path: /srv/openclaw/shared
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
@@ -84,12 +146,13 @@ metadata:
   labels:
     {{- include "hci.podLabels" (dict "name" "openclaw" "Release" .Release "Chart" .Chart) | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: NodePort
   ports:
     - port: {{ .Values.openclaw.port }}
       targetPort: {{ .Values.openclaw.port }}
       protocol: TCP
       name: http
+      nodePort: {{ .Values.openclaw.nodePort | default 30789 }}
   selector:
     {{- include "hci.selectorLabels" (dict "name" "openclaw" "Release" .Release) | nindent 4 }}
 {{- end }}

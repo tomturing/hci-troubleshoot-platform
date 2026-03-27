@@ -1,0 +1,20 @@
+{{- if .Values.postgres.enabled }}
+# Headless Service — StatefulSet DNS 解析
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hci-data.podLabels" (dict "name" "postgres" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+  selector:
+    {{- include "hci-data.selectorLabels" (dict "name" "postgres" "Release" .Release) | nindent 4 }}
+{{- end }}

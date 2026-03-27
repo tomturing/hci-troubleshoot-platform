@@ -17,11 +17,16 @@ spec:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.apiGateway.port | quote }}
+        prometheus.io/path: "/metrics"
     spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "api-gateway") | nindent 6 }}
       containers:
         - name: api-gateway
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.apiGateway.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
           ports:
             - containerPort: {{ .Values.apiGateway.port }}
               protocol: TCP

@@ -1,19 +1,24 @@
 """
-Conversation Routes - API Gateway Proxy
+对话路由 — API 网关代理层
+
+负责将对话相关请求代理到 conversation-service，处理 SSE 流式响应的透传。
 """
 
+import json
+
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-import httpx
-from typing import Optional
+from shared.utils.exceptions import ErrorCode
+from shared.utils.logger import get_logger
 
 from app.config import settings
-from shared.utils.logger import get_logger
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 logger = get_logger("gateway-conversations")
 
 CONVERSATION_SERVICE_URL = f"{settings.CONVERSATION_SERVICE_URL}/api/conversations"
+
 
 async def proxy_request_stream(method: str, path: str, payload: dict, headers: dict):
     """Proxy request with response streaming (SSE)"""
@@ -21,24 +26,36 @@ async def proxy_request_stream(method: str, path: str, payload: dict, headers: d
     # 这里禁用超时，让上游按实际流式节奏输出。
     client = httpx.AsyncClient(timeout=None)
     url = f"{CONVERSATION_SERVICE_URL}{path}"
-    
+
     async def stream_generator():
         try:
             async with client.stream(method, url, json=payload, headers=headers) as response:
                 if response.status_code != 200:
-                    # 如果不是200，尝试读取错误信息并yield
-                    content = await response.read()
-                    yield (
-                        b"event: error\n"
-                        + b"data: {\"error\": \"upstream error\", \"status\": "
-                        + str(response.status_code).encode("utf-8")
-                        + b"}\n\n"
-                        + content
+                    # 使用 json.dumps 安全序列化错误信息
+                    error_data = json.dumps(
+                        {
+                            "code": ErrorCode.GATEWAY_ERROR.value,
+                            "message": "上游服务暂时不可用",
+                            "detail": f"status {response.status_code}",
+                        },
+                        ensure_ascii=False,
                     )
+                    yield f"event: error\ndata: {error_data}\n\n".encode()
                     return
-                    
+
                 async for chunk in response.aiter_bytes():
                     yield chunk
+        except httpx.TimeoutException as e:
+            logger.error(
+                event="gateway_timeout",
+                message="Upstream timeout while proxying SSE",
+                error_type=type(e).__name__,
+            )
+            error_data = json.dumps(
+                {"code": ErrorCode.AI_TIMEOUT.value, "message": "上游服务响应超时", "detail": "gateway timeout"},
+                ensure_ascii=False,
+            )
+            yield f"event: error\ndata: {error_data}\n\n".encode()
         except Exception as e:
             logger.error(
                 event="gateway_streaming_error",
@@ -48,35 +65,31 @@ async def proxy_request_stream(method: str, path: str, payload: dict, headers: d
                 error_repr=repr(e),
                 url=url,
             )
-            # 以 SSE 形式通知客户端出错
-            yield f"event: error\ndata: {{\"error\": \"Streaming failed\", \"type\": \"{type(e).__name__}\", \"message\": \"{str(e)}\"}}\n\n".encode('utf-8')
+            # 使用 json.dumps 安全序列化，避免 str(e) 中特殊字符破坏 SSE 帧结构
+            error_data = json.dumps(
+                {"code": ErrorCode.STREAMING_ERROR.value, "message": "流传输错误", "detail": type(e).__name__},
+                ensure_ascii=False,
+            )
+            yield f"event: error\ndata: {error_data}\n\n".encode()
         finally:
             await client.aclose()
-            
+
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
+
 async def proxy_request(
-    method: str,
-    path: str,
-    payload: Optional[dict] = None,
-    params: Optional[dict] = None,
-    headers: Optional[dict] = None
+    method: str, path: str, payload: dict | None = None, params: dict | None = None, headers: dict | None = None
 ):
     """Standard proxy request"""
     async with httpx.AsyncClient() as client:
         try:
             url = f"{CONVERSATION_SERVICE_URL}{path}"
-            response = await client.request(
-                method,
-                url,
-                json=payload,
-                params=params,
-                headers=headers
-            )
+            response = await client.request(method, url, json=payload, params=params, headers=headers)
             return response
         except httpx.RequestError as exc:
             logger.error(f"Error requesting {exc.request.url!r}.")
             raise HTTPException(status_code=503, detail="Service unavailable")
+
 
 @router.post("/")
 async def create_conversation(request: Request):
@@ -84,6 +97,7 @@ async def create_conversation(request: Request):
     query_params = dict(request.query_params)
     response = await proxy_request("POST", "/", params=query_params)
     return JSONResponse(content=response.json(), status_code=response.status_code)
+
 
 @router.get("/{conversation_id}")
 async def get_conversation(conversation_id: str, request: Request):
@@ -93,11 +107,13 @@ async def get_conversation(conversation_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Conversation not found")
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
+
 @router.get("/case/{case_id}")
 async def get_conversations_by_case(case_id: str, request: Request):
     """获取工单的所有对话"""
     response = await proxy_request("GET", f"/case/{case_id}")
     return JSONResponse(content=response.json(), status_code=response.status_code)
+
 
 @router.get("/{conversation_id}/messages")
 async def get_messages(conversation_id: str, request: Request):
@@ -105,13 +121,9 @@ async def get_messages(conversation_id: str, request: Request):
     response = await proxy_request("GET", f"/{conversation_id}/messages")
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
+
 @router.post("/{conversation_id}/message")
 async def send_message(conversation_id: str, request: Request):
     """发送消息 (SSE流式返回)"""
     payload = await request.json()
-    return await proxy_request_stream(
-        "POST",
-        f"/{conversation_id}/message",
-        payload,
-        headers={}
-    )
+    return await proxy_request_stream("POST", f"/{conversation_id}/message", payload, headers={})

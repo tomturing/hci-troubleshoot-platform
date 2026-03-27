@@ -14,16 +14,20 @@ const loading = ref(true)
 async function detectGrafana() {
   const hostname = window.location.hostname
   const protocol = window.location.protocol
+  const port = window.location.port ? `:${window.location.port}` : ''
 
-  // Cloud/K3s nip.io 下的动态计算: admin.<ip>.nip.io -> grafana.<ip>.nip.io
-  if (hostname.includes('nip.io')) {
+  if (hostname.startsWith('admin.')) {
+    // 有域名部署：admin.<domain> -> grafana.<domain>
     const grafanaHost = hostname.replace('admin.', 'grafana.')
     grafanaUrl.value = `${protocol}//${grafanaHost}`
-  } else {
-    // Docker Compose / fallback
+  } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    // Docker Compose 本地开发
     grafanaUrl.value = 'http://localhost:3000'
+  } else {
+    // IP 直接访问（K3s 生产环境）：通过 /grafana subpath 路由
+    grafanaUrl.value = `${protocol}//${hostname}${port}/grafana`
   }
-  
+
   grafanaReady.value = true
   loading.value = false
 }

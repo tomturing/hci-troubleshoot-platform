@@ -1,4 +1,4 @@
-{{- if .Values.observability.enabled }}
+{{- if and .Values.observability.enabled .Values.observabilityLayer.manage }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -27,13 +27,39 @@ spec:
             - name: GF_SECURITY_ADMIN_USER
               value: "admin"
             - name: GF_SECURITY_ADMIN_PASSWORD
-              value: {{ .Values.secrets.grafanaAdminPassword | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-secrets
+                  key: GF_SECURITY_ADMIN_PASSWORD
             - name: GF_SECURITY_ALLOW_EMBEDDING
               value: "true"
             - name: GF_AUTH_ANONYMOUS_ENABLED
               value: "true"
             - name: GF_AUTH_ANONYMOUS_ORG_ROLE
               value: "Viewer"
+            {{- if eq .Values.global.routingMode "subdomain" }}
+            {{- /* 子域名路由模式：grafana.<domain>，需 DNS 通配符 */}}
+            - name: GF_SERVER_DOMAIN
+              value: {{ printf "grafana.%s" .Values.global.domain | quote }}
+            - name: GF_SERVER_ROOT_URL
+              value: {{ printf "http://grafana.%s/" .Values.global.domain | quote }}
+            {{- else }}
+            {{- /* 路径路由模式（默认）：通过 publicUrl/grafana/ 访问 */}}
+            {{- if .Values.global.publicUrl }}
+            - name: GF_SERVER_DOMAIN
+              {{- /* 提取纯 hostname，去掉协议前缀和端口（GF_SERVER_DOMAIN 不能含端口）*/}}
+              value: {{ .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/:]+" | quote }}
+            - name: GF_SERVER_ROOT_URL
+              value: {{ printf "%s/grafana/" .Values.global.publicUrl | quote }}
+            - name: GF_SERVER_SERVE_FROM_SUB_PATH
+              value: "true"
+            {{- else }}
+            - name: GF_SERVER_ROOT_URL
+              value: "%(protocol)s://%(domain)s/grafana/"
+            - name: GF_SERVER_SERVE_FROM_SUB_PATH
+              value: "true"
+            {{- end }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /api/health

@@ -17,11 +17,16 @@ spec:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.caseService.port | quote }}
+        prometheus.io/path: "/metrics"
     spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "case-service") | nindent 6 }}
       containers:
         - name: case-service
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.caseService.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
           ports:
             - containerPort: {{ .Values.caseService.port }}
               protocol: TCP
@@ -36,7 +41,8 @@ spec:
             - name: SERVICE_PORT
               value: {{ .Values.caseService.port | quote }}
             - name: DATABASE_URL
-              value: "postgresql+asyncpg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)"
+              # 使用 Helm 渲染时 urlquery 对密码做 URL 编码，防止密码含 @ / : # 等特殊字符导致解析错误（PIT-022）
+              value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
           livenessProbe:
             httpGet:
               path: /health

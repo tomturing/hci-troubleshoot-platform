@@ -1,0 +1,98 @@
+{{- if .Values.learningclaw.enabled }}
+# LearningClaw 初始化文件 ConfigMap
+# 包含：SOUL.md / IDENTITY.md / AGENTS.md / BOOTSTRAP.md / TOOLS.md / USER.md / openclaw.json
+# init 容器启动时将这些文件复制到 /home/node/.openclaw/workspace/
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: learningclaw-init-config
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    claw-role: learner
+    config-type: init
+data:
+  # openclaw 网关配置：LearningClaw 专属（使用 openclaw 2026.3.x 新格式）
+  # system prompt 通过 agents.defaults 写入，session-memory 通过内置钩子保持
+  openclaw.json: |
+    {
+      "agents": {
+        "defaults": {
+          "model": {
+            "primary": "{{ .Values.config.glmProvider }}/{{ .Values.config.glmModelId }}"
+          },
+          "models": {
+            "{{ .Values.config.glmProvider }}/{{ .Values.config.glmModelId }}": {
+              "alias": "GLM"
+            }
+          },
+          "workspace": "/home/node/.openclaw/workspace",
+          "compaction": {
+            "mode": "safeguard"
+          },
+          "maxConcurrent": 1
+        }
+      },
+      "models": {
+        "mode": "merge",
+        "providers": {
+          "{{ .Values.config.glmProvider }}": {
+            "api": "openai-completions",
+            "apiKey": "${ZAI_API_KEY}",
+            "baseUrl": "{{ .Values.config.glmBaseUrl }}",
+            "models": [
+              {
+                "contextWindow": {{ .Values.config.glmContextWindow }},
+                "id": "{{ .Values.config.glmModelId }}",
+                "name": "GLM"
+              }
+            ]
+          }
+        }
+      },
+      "gateway": {
+        "mode": "local",
+        "bind": "lan",
+        "controlUi": {
+          "enabled": true,
+          "dangerouslyAllowHostHeaderOriginFallback": true,
+          "dangerouslyDisableDeviceAuth": true
+        },
+        "auth": {
+          "mode": "token",
+          "token": "${OPENCLAW_GATEWAY_TOKEN}"
+        },
+        "tailscale": {
+          "mode": "off",
+          "resetOnExit": false
+        },
+        "http": {
+          "endpoints": {
+            "chatCompletions": {
+              "enabled": true
+            }
+          }
+        }
+      }
+    }
+
+  # --- workspace 初始化文件 ---
+  # 源文件：deploy/claw-configs/learningclaw/（human-editable 源）
+  # Helm chart 内副本：deploy/helm/hci-platform/claw-configs/learningclaw/
+  # 同步命令：make sync-claw-configs
+
+  SOUL.md: |
+{{ .Files.Get "claw-configs/learningclaw/SOUL.md" | indent 4 }}
+  IDENTITY.md: |
+{{ .Files.Get "claw-configs/learningclaw/IDENTITY.md" | indent 4 }}
+  AGENTS.md: |
+{{ .Files.Get "claw-configs/learningclaw/AGENTS.md" | indent 4 }}
+  BOOTSTRAP.md: |
+{{ .Files.Get "claw-configs/learningclaw/BOOTSTRAP.md" | indent 4 }}
+  TOOLS.md: |
+{{ .Files.Get "claw-configs/learningclaw/TOOLS.md" | indent 4 }}
+  USER.md: |
+{{ .Files.Get "claw-configs/learningclaw/USER.md" | indent 4 }}
+
+{{- end }}

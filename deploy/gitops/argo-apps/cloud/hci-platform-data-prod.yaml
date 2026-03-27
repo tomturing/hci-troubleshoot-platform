@@ -1,0 +1,34 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-data-prod
+#
+# 管理 prod 环境数据层（namespace: hci）：
+#   - PostgreSQL StatefulSet + Headless Service + init ConfigMap + 备份 CronJob
+#   - Redis StatefulSet + Headless Service
+#
+# ⚠️  安全策略：
+#   - prune: false — 绝对禁止自动删除生产数据，PVC 受双重保护
+#   - 生产环境关闭 automated，所有同步须人工审批后手动触发
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-data-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "prod 数据层 — PostgreSQL + Redis（namespace: hci）"
+spec:
+  project: default
+  destination:
+    # prod 集群独立 VM（192.168.0.3），ArgoCD 通过内网 API Server 管理
+    server: https://192.168.0.3:6443
+    namespace: hci-prod
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-data
+      helm:
+        releaseName: hci-platform-data
+  # 生产环境手动同步，数据层变更须审批后执行
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

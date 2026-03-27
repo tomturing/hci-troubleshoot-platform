@@ -1,0 +1,34 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-infra-prod
+#
+# 目标集群：prod 独立 VM（192.168.0.3:6443），由云端 ArgoCD hub 统一管理
+# 管理集群级基础设施资源（无 namespace）：
+#   - StorageClass: local-path-retain
+#   - ClusterRole/ClusterRoleBinding: prometheus-hci
+#   - ClusterRole/ClusterRoleBinding: promtail
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-infra-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "prod 集群级基础设施 - StorageClass + RBAC"
+spec:
+  project: default
+  destination:
+    # prod 集群独立 VM（192.168.0.3），ArgoCD 通过内网 API Server 管理
+    server: https://192.168.0.3:6443
+    namespace: ""   # 集群级资源不绑定 namespace
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-infra
+      helm:
+        releaseName: hci-platform-infra
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

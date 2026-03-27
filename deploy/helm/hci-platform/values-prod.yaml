@@ -5,7 +5,9 @@ global:
   imagePullPolicy: Always
 
 apiGateway:
-  replicaCount: 2
+  # WebSocket 粘性会话已在 values.yaml ingress.annotations 配置
+  # 确认压测通过后可调至 2，当前保持单副本避免 WS 会话断裂
+  replicaCount: 1
 caseService:
   replicaCount: 2
 conversationService:
@@ -25,3 +27,10 @@ redis:
 
 config:
   logLevel: WARNING
+
+hpa:
+  # 生产环境启用 HPA 自动弹性伸缩（依赖 metrics-server，K3s 默认内置）
+  enabled: true
+
+# ingress.annotations 不再覆盖 entrypoints，保持 values.yaml 中的 web（HTTP）
+# ⚠️  如需 HTTPS：先安装 cert-manager + ClusterIssuer，再在 override 文件中启用 websecure + TLS

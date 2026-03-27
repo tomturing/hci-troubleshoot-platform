@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-staging
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    # staging 集群：云端 ArgoCD 所在 VM（kubernetes.default.svc = 本机集群）
+    server: https://kubernetes.default.svc
+    namespace: hci-staging
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform
+      helm:
+        releaseName: hci-platform
+        valueFiles:
+          - $values/environments/staging/values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

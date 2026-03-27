@@ -1,0 +1,8 @@
+# 此目录用于托管可供客户下载的静态文件
+# terminal_bridge.exe 需在构建前手动放入此目录
+# Vite build 会将 public/ 原样复制到 dist/
+# 访问路径: /downloads/terminal_bridge.exe
+#
+# 注意：.exe 文件本身不纳入版本控制（见 .gitignore）
+# 每次发布前执行:
+#   cp /path/to/terminal_bridge.exe frontend/customer/public/downloads/

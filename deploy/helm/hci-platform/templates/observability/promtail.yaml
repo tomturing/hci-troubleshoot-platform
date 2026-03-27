@@ -1,4 +1,4 @@
-{{- if .Values.observability.enabled }}
+{{- if and .Values.observability.enabled .Values.observabilityLayer.manage }}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -21,6 +21,16 @@ spec:
         - name: promtail
           image: {{ .Values.observability.promtail.image }}
           args: ["-config.file=/etc/promtail/config.yml"]
+          env:
+            # 注入真实节点名，避免 Promtail 错误地使用 Pod 名（HOSTNAME）作为节点过滤条件
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           resources:
             {{- toYaml .Values.observability.promtail.resources | nindent 12 }}
           volumeMounts:
@@ -29,6 +39,10 @@ spec:
               subPath: config.yml
             - name: pods-log
               mountPath: /var/log/pods
+              readOnly: true
+            # Docker runtime 下日志文件是软链接，实际内容在 /var/lib/docker/containers
+            - name: docker-containers
+              mountPath: /var/lib/docker/containers
               readOnly: true
             - name: run-promtail
               mountPath: /run/promtail
@@ -42,6 +56,10 @@ spec:
         - name: pods-log
           hostPath:
             path: /var/log/pods
+        # Docker runtime：挂载 Docker 容器日志目录以解析软链接
+        - name: docker-containers
+          hostPath:
+            path: /var/lib/docker/containers
         - name: run-promtail
           hostPath:
             path: /run/promtail
@@ -54,6 +72,11 @@ metadata:
   namespace: {{ .Values.observability.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
+{{- /*
+  ClusterRole/ClusterRoleBinding 已迁移到 hci-platform-infra Chart 统一管理。
+  保留条件开关，仅在 clusterResources.manage=true 时渲染（用于本地调试）。
+*/ -}}
+{{- if .Values.clusterResources.manage }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -80,4 +103,5 @@ roleRef:
   kind: ClusterRole
   name: promtail
   apiGroup: rbac.authorization.k8s.io
+{{- end }}
 {{- end }}

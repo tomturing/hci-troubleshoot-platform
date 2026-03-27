@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { ChatMessage } from '@/stores/chat'
+import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
+import CommandBlock from './CommandBlock.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
 
@@ -9,15 +11,28 @@ const isSystem = computed(() => props.message.role === 'system')
 const isAssistant = computed(() => props.message.role === 'assistant')
 const isDivider = computed(() => isSystem.value && props.message.content.includes('────'))
 
-/** 复制代码块（兼容非安全上下文） */
-const copied = ref(false)
-function copyContent() {
+/** 已复制状态 */
+const copiedMessage = ref(false)
+async function copyContent() {
   const text = props.message.content
+  const copied = await copyToClipboard(text)
+  if (!copied) {
+    return
+  }
+  copiedMessage.value = true
+  setTimeout(() => (copiedMessage.value = false), 2000)
+}
+
+/** 复制到剪贴板（兼容非安全上下文） */
+async function copyToClipboard(text: string): Promise<boolean> {
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(() => {
-      copied.value = true
-      setTimeout(() => (copied.value = false), 2000)
-    })
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch (e) {
+      console.warn('复制失败:', e)
+      return false
+    }
   } else {
     // 非安全上下文降级：使用 textarea + execCommand
     const textarea = document.createElement('textarea')
@@ -28,18 +43,209 @@ function copyContent() {
     textarea.select()
     try {
       document.execCommand('copy')
-      copied.value = true
-      setTimeout(() => (copied.value = false), 2000)
+      return true
     } catch (e) {
-      console.warn('Copy failed:', e)
+      console.warn('复制失败:', e)
+      return false
     }
-    document.body.removeChild(textarea)
+    finally {
+      document.body.removeChild(textarea)
+    }
   }
 }
 
 /** 格式化时间 */
 function formatTime(d: Date) {
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+/**
+ * 提取消息中的命令块并拆分内容
+ * 返回片段数组，每个片段可以是普通文本或命令块
+ */
+interface ContentSegment {
+  id: string
+  type: 'text' | 'command'
+  content: string
+  language?: string
+  commandIndex?: number
+}
+
+import { marked } from 'marked'
+
+const contentSegments = computed<ContentSegment[]>(() => {
+  if (!props.message.content) return []
+
+  // 使用成熟的 Markdown Lexer 提取 AST（完美处理未闭合标签或代码块等情况）
+  const tokens = marked.lexer(props.message.content)
+  const segments: ContentSegment[] = []
+  
+  let textBuffer = ''
+  let commandIndex = 0
+
+  function flushText() {
+    if (textBuffer) {
+      segments.push({
+        id: `text-${segments.length}`,
+        type: 'text',
+        content: textBuffer,
+      })
+      textBuffer = ''
+    }
+  }
+
+  for (const token of Object.values(tokens)) {
+    // 判断是否为支持的命令块（需处理 parser 解析出的未定义语言以及各种边界）
+    if (token.type === 'code' && isCommandLanguage(token.lang || '')) {
+      // 遇到命令块，先把之前累积的普通文本作为一个 segment 冲刷掉
+      flushText()
+      
+      const commands = splitCommands(token.text)
+      for (const cmd of commands) {
+        segments.push({
+          id: `command-${segments.length}`,
+          type: 'command',
+          content: cmd,
+          language: token.lang,
+          commandIndex,
+        })
+        commandIndex += 1
+      }
+    } else {
+      // 不是命令块，把 raw 内容累积起来，后面统一交给 renderMarkdown 渲染
+      // raw 是最原始未更改的 markdown 源码，从而 100% 保持 markdown 上下文不断裂
+      textBuffer += ('raw' in token) ? (token.raw as string) : ''
+    }
+  }
+  
+  // 补上剩余未冲刷的文本
+  flushText()
+
+  return segments
+})
+
+/**
+ * 拆分命令块
+ * 为避免误拆分多行脚本，默认保持整块发送
+ * @param code 原始代码内容
+ * @returns 命令数组
+ */
+function splitCommands(code: string): string[] {
+  const normalized = code.trimEnd()
+  return normalized ? [normalized] : []
+}
+
+/**
+ * 检测风险提示级别
+ * 根据命令内容和上下文判断风险等级
+ * @param command 命令内容
+ * @returns 风险等级
+ */
+function detectRiskLevel(command: string): 'none' | 'readonly' | 'caution' | 'danger' {
+  const lowerCmd = command.toLowerCase()
+
+  // 高危命令检测
+  const dangerPatterns = [
+    'rm -rf', 'rm -r /', 'dd if=/dev/zero', 'mkfs.', 'fdisk',
+    '> /dev/sda', 'shutdown', 'reboot', 'poweroff', 'init 0',
+    'systemctl stop', 'kill -9', ':(){ :|:& };:' // fork bomb
+  ]
+  if (dangerPatterns.some(p => lowerCmd.includes(p))) {
+    return 'danger'
+  }
+
+  // 谨慎命令检测
+  const cautionPatterns = [
+    'apt remove', 'yum remove', 'pip uninstall', 'npm uninstall',
+    'docker rm', 'docker rmi', 'kubectl delete',
+    'chmod 777', 'chown -R'
+  ]
+  if (cautionPatterns.some(p => lowerCmd.includes(p))) {
+    return 'caution'
+  }
+
+  // 只读命令检测
+  const readonlyPatterns = [
+    'cat ', 'ls ', 'ps ', 'top', 'htop', 'df ', 'du ', 'free',
+    'uptime', 'who', 'w', 'last', 'dmesg', 'journalctl',
+    'cat\t', 'ls\t', 'ps\t', 'df\t', 'du\t'
+  ]
+  if (readonlyPatterns.some(p => lowerCmd.startsWith(p) || lowerCmd.includes(' ' + p))) {
+    return 'readonly'
+  }
+
+  // 默认安全
+  return 'none'
+}
+
+/**
+ * 生成命令描述
+ * 基于命令内容生成简单说明
+ * @param command 命令内容
+ * @returns 命令描述
+ */
+function generateDescription(command: string): string {
+  const lowerCmd = command.toLowerCase().trim()
+  const firstWord = lowerCmd.split(/\s+/)[0]
+
+  // 常见命令描述映射
+  const descriptions: Record<string, string> = {
+    'ls': '列出目录内容',
+    'cat': '查看文件内容',
+    'ps': '查看进程状态',
+    'top': '实时查看系统进程',
+    'df': '查看磁盘空间使用情况',
+    'du': '查看目录/文件大小',
+    'free': '查看内存使用情况',
+    'uptime': '查看系统运行时间',
+    'dmesg': '查看内核消息',
+    'journalctl': '查看系统日志',
+    'systemctl': '管理系统服务',
+    'service': '管理系统服务',
+    'docker': '管理 Docker 容器/镜像',
+    'kubectl': '管理 Kubernetes 资源',
+    'ping': '测试网络连通性',
+    'curl': '发送 HTTP 请求',
+    'wget': '下载文件',
+    'ssh': '远程登录',
+    'scp': '安全复制文件',
+    'tar': '打包/解包文件',
+    'grep': '文本搜索',
+    'awk': '文本处理',
+    'sed': '流编辑器',
+    'find': '查找文件',
+    'chmod': '修改文件权限',
+    'chown': '修改文件所有者',
+    'rm': '删除文件/目录',
+    'cp': '复制文件/目录',
+    'mv': '移动/重命名文件',
+    'mkdir': '创建目录',
+    'rmdir': '删除空目录',
+    'touch': '创建空文件/更新时间戳',
+    'head': '查看文件开头',
+    'tail': '查看文件末尾',
+    'less': '分页查看文件',
+    'more': '分页查看文件',
+    'netstat': '查看网络连接',
+    'ss': '查看 socket 统计',
+    'lsof': '列出打开的文件',
+    'iostat': '查看 IO 统计',
+    'vmstat': '查看虚拟内存统计',
+    'mpstat': '查看 CPU 统计',
+    'sar': '系统活动报告',
+  }
+
+  return descriptions[firstWord] || ''
+}
+
+/**
+ * 渲染普通文本片段
+ * 将 Markdown 转换为 HTML
+ * @param content 文本内容
+ * @returns 渲染后的 HTML
+ */
+function renderTextSegment(content: string): string {
+  return renderMarkdown(content)
 }
 </script>
 
@@ -66,54 +272,77 @@ function formatTime(d: Date) {
         <span v-else>AI</span>
       </div>
       <div class="bubble-content">
-        <div class="bubble-body" v-html="renderContent(message.content)" />
+        <div
+          class="bubble-body"
+          :class="{ 'is-command-available': !message.isStreaming && contentSegments.some(s => s.type === 'command') }"
+        >
+          <!-- 阶段1：Thinking 状态（流式中且内容为空） -->
+          <template v-if="message.isStreaming && !message.content">
+            <div class="thinking-indicator">
+              <span class="thinking-dot" />
+              <span class="thinking-dot" />
+              <span class="thinking-dot" />
+              <span class="thinking-label">思考中</span>
+            </div>
+          </template>
+
+          <!-- 阶段2+3：统一渲染管道。流式与完成态完全共享相同的 DOM 结构与拆分策略 -->
+          <template v-else-if="message.content">
+            <div
+              v-for="segment in contentSegments"
+              :key="segment.id"
+              class="segment-item"
+            >
+              <!-- 命令块 -->
+              <template v-if="segment.type === 'command'">
+                <!-- 流式输出期间，展示带有代码格式的普通语法高亮框（无交互功能占位） -->
+                <div v-if="message.isStreaming" class="streaming-command-placeholder stage3-item">
+                  <pre><code :class="['language-' + (segment.language || 'bash')]">{{ segment.content }}</code></pre>
+                </div>
+                <!-- 输出完成后，平滑升级为带有交互能力的 CommandBlock -->
+                <CommandBlock
+                  v-else
+                  class="stage3-item"
+                  :command="segment.content"
+                  :language="segment.language || 'bash'"
+                  :description="generateDescription(segment.content)"
+                  :risk-level="detectRiskLevel(segment.content)"
+                  :index="segment.commandIndex || 0"
+                />
+              </template>
+
+              <!-- 普通文本使用 Markdown 渲染 -->
+              <div
+                v-else
+                class="text-segment stage3-item"
+                v-html="renderTextSegment(segment.content)"
+              />
+            </div>
+          </template>
+        </div>
         <div class="bubble-meta">
           <span class="bubble-time">{{ formatTime(message.timestamp) }}</span>
           <el-button
             v-if="isAssistant && message.content"
-            :icon="copied ? '' : ''"
             size="small"
             text
             @click="copyContent"
           >
-            {{ copied ? '已复制' : '复制' }}
+            {{ copiedMessage ? '已复制' : '复制' }}
           </el-button>
         </div>
-        <!-- 流式动画 -->
-        <span v-if="message.isStreaming" class="streaming-cursor">▊</span>
+        <!-- 流式输出光标 -->
+        <span v-if="message.isStreaming && message.content" class="streaming-cursor">▊</span>
       </div>
     </template>
   </div>
 </template>
 
-<script lang="ts">
-/** 简单的内容渲染：处理代码块和换行 */
-function renderContent(text: string): string {
-  if (!text) return ''
-  // 代码块
-  let html = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    return `<pre class="code-block"><code class="language-${lang}">${escapeHtml(code.trim())}</code></pre>`
-  })
-  // 行内代码
-  html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
-  // 换行
-  html = html.replace(/\n/g, '<br />')
-  return html
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
-</script>
-
 <style scoped>
 .message-bubble {
   display: flex;
   gap: 10px;
-  max-width: 80%;
+  max-width: 85%;
 }
 
 .message-bubble.is-user {
@@ -187,11 +416,13 @@ function escapeHtml(text: string): string {
 .bubble-content {
   background: #fff;
   border-radius: 12px;
-  padding: 10px 14px;
+  padding: 12px 16px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   position: relative;
-  line-height: 1.6;
+  line-height: 1.7;
   font-size: 14px;
+  overflow: hidden;
+  max-width: 100%;
 }
 
 .is-user .bubble-content {
@@ -204,7 +435,7 @@ function escapeHtml(text: string): string {
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .bubble-time {
@@ -231,27 +462,287 @@ function escapeHtml(text: string): string {
   }
 }
 
-/* 代码块样式 */
-.bubble-content :deep(.code-block) {
-  background: #1e1e1e;
-  color: #d4d4d4;
-  padding: 12px;
-  border-radius: 6px;
-  overflow-x: auto;
-  margin: 8px 0;
-  font-size: 13px;
+/* ========================================
+   Thinking 动画
+   ======================================== */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 2px;
+}
+
+.thinking-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #409eff;
+  opacity: 0.3;
+  animation: thinking-pulse 1.4s ease-in-out infinite;
+}
+
+.thinking-dot:nth-child(1) { animation-delay: 0s; }
+.thinking-dot:nth-child(2) { animation-delay: 0.22s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.44s; }
+
+@keyframes thinking-pulse {
+  0%, 80%, 100% {
+    opacity: 0.2;
+    transform: scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+.thinking-label {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 4px;
+  letter-spacing: 0.5px;
+}
+
+/* ========================================
+   阶段3 升级渲染：每个 segment 用单根 div.segment-item 包裹
+   display: contents 让包裹层对布局透明不影响内部元素排列
+   动画加在内部实际元素上（避免 display:contents 动画兼容性问题）
+   ======================================== */
+.segment-item {
+  display: contents;
+}
+
+/* 动画施加在阶段3的实际内容元素上 */
+.stage3-item {
+  animation: segment-enter 0.35s ease both;
+}
+
+@keyframes segment-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ========================================
+   文本片段样式（Markdown 渲染）
+   ======================================== */
+
+.bubble-body {
+  word-break: break-word;
+}
+
+.text-segment {
+  word-break: break-word;
+}
+
+/* 标题样式 */
+.text-segment :deep(h1) {
+  font-size: 1.5em;
+  font-weight: 600;
+  margin: 16px 0 8px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #ebeef5;
   line-height: 1.4;
 }
 
-.bubble-content :deep(.inline-code) {
-  background: rgba(0, 0, 0, 0.06);
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-family: 'Consolas', 'Monaco', monospace;
+.text-segment :deep(h2) {
+  font-size: 1.3em;
+  font-weight: 600;
+  margin: 14px 0 6px 0;
+  line-height: 1.4;
+}
+
+.text-segment :deep(h3) {
+  font-size: 1.15em;
+  font-weight: 600;
+  margin: 12px 0 4px 0;
+  line-height: 1.4;
+}
+
+.text-segment :deep(h4),
+.text-segment :deep(h5),
+.text-segment :deep(h6) {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 10px 0 4px 0;
+  line-height: 1.4;
+}
+
+/* 段落样式 */
+.text-segment :deep(p) {
+  margin: 8px 0;
+  line-height: 1.7;
+}
+
+.text-segment :deep(p:first-child) {
+  margin-top: 0;
+}
+
+.text-segment :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+/* 列表样式 */
+.text-segment :deep(ul),
+.text-segment :deep(ol) {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.text-segment :deep(li) {
+  margin: 4px 0;
+  line-height: 1.6;
+}
+
+.text-segment :deep(ul) {
+  list-style-type: disc;
+}
+
+.text-segment :deep(ol) {
+  list-style-type: decimal;
+}
+
+/* 引用样式 */
+.text-segment :deep(blockquote) {
+  margin: 10px 0;
+  padding: 8px 16px;
+  border-left: 4px solid #409eff;
+  background: #f5f7fa;
+  color: #606266;
+  border-radius: 0 4px 4px 0;
+}
+
+.text-segment :deep(blockquote p) {
+  margin: 4px 0;
+}
+
+.is-user .text-segment :deep(blockquote) {
+  border-left-color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* 粗体和斜体 */
+.text-segment :deep(strong),
+.text-segment :deep(b) {
+  font-weight: 600;
+}
+
+.text-segment :deep(em),
+.text-segment :deep(i) {
+  font-style: italic;
+}
+
+/* 链接样式 */
+.text-segment :deep(a) {
+  color: #409eff;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s;
+}
+
+.text-segment :deep(a:hover) {
+  border-bottom-color: #409eff;
+}
+
+.is-user .text-segment :deep(a) {
+  color: rgba(255, 255, 255, 0.9);
+  border-bottom-color: rgba(255, 255, 255, 0.3);
+}
+
+.is-user .text-segment :deep(a:hover) {
+  border-bottom-color: rgba(255, 255, 255, 0.9);
+}
+
+/* 分隔线 */
+.text-segment :deep(hr) {
+  border: none;
+  border-top: 1px solid #ebeef5;
+  margin: 16px 0;
+}
+
+/* 表格样式 */
+.text-segment :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
   font-size: 13px;
 }
 
-.is-user .bubble-content :deep(.inline-code) {
+.text-segment :deep(th),
+.text-segment :deep(td) {
+  border: 1px solid #ebeef5;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.text-segment :deep(th) {
+  background: #f5f7fa;
+  font-weight: 600;
+}
+
+/* ========================================
+   非命令代码块样式
+   ======================================== */
+
+.text-segment :deep(pre) {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 12px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 10px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+.text-segment :deep(code) {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+/* 行内代码 */
+.text-segment :deep(code:not(pre code)) {
+  background: rgba(0, 0, 0, 0.06);
+  color: #e6a23c;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.is-user .text-segment :deep(code:not(pre code)) {
   background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.is-user .text-segment :deep(pre) {
+  background: rgba(0, 0, 0, 0.15);
+  color: rgba(255, 255, 255, 0.95);
+}
+
+/* 命令块可用标记 */
+.bubble-body.is-command-available {
+  /* 预留扩展点 */
+}
+
+/* 流式展示阶段临时命令块占位样式 */
+.streaming-command-placeholder pre {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 12px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 10px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+.streaming-command-placeholder code {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
 }
 </style>

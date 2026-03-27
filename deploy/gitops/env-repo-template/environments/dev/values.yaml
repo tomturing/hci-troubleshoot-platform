@@ -1,0 +1,40 @@
+# 环境仓库模板：dev
+# 仅维护环境差异项，基础项由 deploy/helm/hci-platform/values.yaml 提供
+
+global:
+  environment: dev
+
+apiGateway:
+  image:
+    repository: hci-api-gateway
+    tag: "latest"
+
+caseService:
+  image:
+    repository: hci-case-service
+    tag: "latest"
+
+conversationService:
+  image:
+    repository: hci-conversation-service
+    tag: "latest"
+
+schedulerService:
+  image:
+    repository: hci-scheduler-service
+    tag: "latest"
+
+kbService:
+  image:
+    repository: hci-kb-service
+    tag: "latest"
+
+customerUI:
+  image:
+    repository: hci-customer-ui
+    tag: "latest"
+
+adminUI:
+  image:
+    repository: hci-admin-ui
+    tag: "latest"

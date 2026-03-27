@@ -1,0 +1,76 @@
+# =============================================================================
+# 集群级 RBAC — Prometheus + Promtail
+#
+# ClusterRole / ClusterRoleBinding 是集群级资源（无 namespace），
+# 必须由单一 Application 管理，否则多个 ArgoCD Application（dev/staging/prod）
+# 会互相竞争覆写同名对象。
+#
+# 依赖：ClusterRoleBinding 中的 ServiceAccount 所在 namespace
+#   由 values.observabilityNamespace 指定（默认 hci-observability）。
+# =============================================================================
+
+# ── Prometheus：允许发现 K8s Pod / Service / Endpoint ──────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-hci
+  labels:
+    app.kubernetes.io/managed-by: hci-platform-infra
+    app.kubernetes.io/component: observability
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - endpoints
+      - services
+      - nodes
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - configmaps
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-hci
+  labels:
+    app.kubernetes.io/managed-by: hci-platform-infra
+    app.kubernetes.io/component: observability
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-hci
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: {{ .Values.observabilityNamespace }}
+---
+# ── Promtail：允许读取 Pod 元数据以丰富日志标签 ──────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: promtail
+  labels:
+    app.kubernetes.io/managed-by: hci-platform-infra
+    app.kubernetes.io/component: observability
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "services", "endpoints", "pods"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: promtail
+  labels:
+    app.kubernetes.io/managed-by: hci-platform-infra
+    app.kubernetes.io/component: observability
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: {{ .Values.observabilityNamespace }}
+roleRef:
+  kind: ClusterRole
+  name: promtail
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,391 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: '手动触发原因'
+        required: false
+        default: '手动构建镜像'
+
+jobs:
+  docs-governance:
+    name: docs-governance
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 检查关键改动是否同步文档
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          # core.quotepath=false: 禁止 git 对非 ASCII 路径（中文文件名）做八进制转义加引号
+          # 不加此参数时，中文路径输出为 "docs/\xxx\xxx.md"，行首是 " 而非 d，导致 grep ^docs/ 永远匹配不到
+          CHANGED_FILES="$(git -c core.quotepath=false diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+
+          echo "本次 PR 改动文件:"
+          echo "$CHANGED_FILES"
+
+          if [[ -z "$CHANGED_FILES" ]]; then
+            echo "无变更，跳过文档门禁"
+            exit 0
+          fi
+
+          if echo "$CHANGED_FILES" | grep -Eq '^(backend/|frontend/|deploy/|scripts/|database/|\.github/workflows/)'; then
+            if echo "$CHANGED_FILES" | grep -Eq '^(docs/|README\.md$|AGENTS\.md$|CLAUDE\.md$)'; then
+              echo "检测到关键改动且已同步文档，门禁通过"
+              exit 0
+            fi
+
+            echo "检测到关键改动但未同步文档。"
+            echo "请至少更新 docs/ 下相关文档，或更新 README.md/AGENTS.md/CLAUDE.md 中的说明。"
+            exit 1
+          fi
+
+          echo "未检测到关键目录改动，门禁通过"
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: 安装依赖
+        run: uv sync --group dev
+
+      - name: Ruff 代码检查
+        run: uv run ruff check backend/ tests/ data-pipeline/
+
+  frontend-build:
+    name: 前端构建检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: 安装前端依赖
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: 构建前端工作区
+        run: pnpm --dir frontend -r build
+
+  helm-validate:
+    name: Helm 模板校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Helm
+        uses: azure/setup-helm@v4
+
+      - name: Helm lint
+        run: helm lint deploy/helm/hci-platform
+
+      - name: Helm template 渲染检查
+        run: |
+          helm template hci-platform deploy/helm/hci-platform \
+            -f deploy/helm/hci-platform/values.yaml \
+            >/tmp/hci-platform-rendered.yaml
+
+          if [ ! -s /tmp/hci-platform-rendered.yaml ]; then
+            echo "Helm 渲染结果为空"
+            exit 1
+          fi
+
+  check-claw-configs:
+    name: 校验 claw-configs 一致性
+    runs-on: ubuntu-latest
+    needs: docs-governance
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查 deploy/claw-configs 与 Helm chart 副本是否同步
+        run: |
+          # 源文件：deploy/claw-configs/（人工编辑）
+          # Helm 副本：deploy/helm/hci-platform/claw-configs/（由 make sync-claw-configs 更新）
+          # 两者必须完全一致，否则 ConfigMap 渲染的 Personality 文件与源文件脱节
+          if ! diff -rq deploy/claw-configs/learningclaw \
+              deploy/helm/hci-platform/claw-configs/learningclaw; then
+            echo "❌ learningclaw 配置不一致，请运行 make sync-claw-configs 后提交"
+            exit 1
+          fi
+          if ! diff -rq deploy/claw-configs/productionclaw \
+              deploy/helm/hci-platform/claw-configs/productionclaw; then
+            echo "❌ productionclaw 配置不一致，请运行 make sync-claw-configs 后提交"
+            exit 1
+          fi
+          echo "✅ claw-configs 与 Helm chart 副本一致"
+
+  unit-tests:
+    name: unit-tests
+    runs-on: ubuntu-latest
+    needs: [lint, frontend-build, helm-validate, check-claw-configs]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: 安装依赖
+        run: uv sync --group dev
+
+      - name: 运行单元测试（含覆盖率）
+        run: |
+          # 各服务 app/ 包名相同，pytest 单进程 sys.modules 会跨服务污染
+          # 分进程运行保证各自 sys.modules 隔离，--cov-append 合并覆盖率
+          uv run pytest tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing \
+            -m "not integration and not slow"
+          uv run pytest backend/api-gateway/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -m "not integration and not slow"
+          uv run pytest backend/case-service/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -m "not integration and not slow"
+          uv run pytest backend/conversation-service/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -m "not integration and not slow"
+          # 最后一批：合并所有覆盖率后统一检查基线（≥60%），避免分批检查造成误报
+          uv run pytest backend/scheduler-service/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            --cov-fail-under=60 \
+            -m "not integration and not slow"
+
+      - name: 上传覆盖率报告
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  integration-tests:
+    name: integration-tests
+    runs-on: ubuntu-latest
+    needs: [lint, frontend-build, helm-validate, check-claw-configs]
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: 安装依赖
+        run: uv sync --group dev
+
+      - name: 运行集成测试
+        env:
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          # 各服务分开进程运行，避免 app/ 命名空间跨服务污染
+          uv run pytest tests/integration/ -x -q -m "integration"
+          uv run pytest backend/conversation-service/tests/integration/ -x -q -m "integration"
+          uv run pytest backend/scheduler-service/tests/integration/ -x -q -m "integration"
+          uv run pytest backend/api-gateway/tests/integration/ -x -q -m "integration"
+
+  security-tests:
+    name: security-tests
+    runs-on: ubuntu-latest
+    needs: [lint, frontend-build, helm-validate, check-claw-configs]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: 安装依赖
+        run: uv sync --group dev
+
+      - name: 运行 CORS 安全测试
+        run: |
+          uv run pytest tests/security/ -x -q -v
+
+  release-metadata:
+    name: 发布元数据产物
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, security-tests]
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 生成发布元数据
+        run: |
+          SHORT_SHA="${GITHUB_SHA::8}"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          cat > release-metadata.json <<EOF
+          {
+            "repository": "${GITHUB_REPOSITORY}",
+            "branch": "${GITHUB_REF_NAME}",
+            "commit_sha": "${GITHUB_SHA}",
+            "short_sha": "${SHORT_SHA}",
+            "build_time_utc": "${BUILD_TIME}",
+            "workflow": "CI",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}"
+          }
+          EOF
+
+      - name: 上传发布元数据
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: release-metadata.json
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Sprint 1 新增：镜像构建 + 安全扫描 + 自动晋级 dev（仅 main push 触发）
+  # ─────────────────────────────────────────────────────────────────────────
+
+  prepare:
+    name: 准备构建元数据
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, security-tests]
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    outputs:
+      image_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: 生成唯一镜像标签（日期-时间-sha7）
+        id: tag
+        run: echo "tag=$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+  build-and-push:
+    name: 构建并推送镜像（${{ matrix.service }}）
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api-gateway
+            context: backend
+            dockerfile: backend/api-gateway/Dockerfile
+          - service: case-service
+            context: backend
+            dockerfile: backend/case-service/Dockerfile
+          - service: conversation-service
+            context: backend
+            dockerfile: backend/conversation-service/Dockerfile
+          - service: scheduler-service
+            context: backend
+            dockerfile: backend/scheduler-service/Dockerfile
+          - service: kb-service
+            context: backend
+            dockerfile: backend/kb-service/Dockerfile
+          - service: customer-ui
+            context: frontend
+            dockerfile: frontend/customer/Dockerfile
+          - service: admin-ui
+            context: frontend
+            dockerfile: frontend/admin/Dockerfile
+          # hci-openclaw：从上游 openclaw/openclaw 构建，固定版本，镜像仅打 latest
+          # 不跟随业务服务的 timestamp tag，避免每次 push 都重新构建这个耗时的外部依赖
+          - service: hci-openclaw
+            context: _ext_openclaw
+            openclaw_ref: "v2026.3.14"
+            is_external: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone openclaw 上游源码（外部依赖，固定版本）
+        if: matrix.is_external == true
+        run: |
+          git clone --depth=1 --branch ${{ matrix.openclaw_ref }} \
+            https://github.com/openclaw/openclaw.git ${{ matrix.context }}
+
+      - name: 登录 GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
+            ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
+
+      - name: Trivy 镜像安全扫描（仅上报，不阻断）
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
+          exit-code: '0'
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+
+      - name: 上传安全扫描结果（GitHub Security 标签页可见）
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+
+  auto-deploy-dev:
+    name: 自动晋级 dev 环境
+    runs-on: ubuntu-latest
+    needs: [prepare, build-and-push]
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: 触发环境仓库同步（dev 环境）
+        env:
+          GH_TOKEN: ${{ secrets.ENV_REPO_PAT }}
+        run: |
+          # 注意：必须触发环境仓库（hci-platform-env）的 workflow，而非应用仓库自身
+          gh workflow run env-repo-sync.yml \
+            -R tomturing/hci-platform-env \
+            -f env_repo_name=tomturing/hci-platform-env \
+            -f target_env=dev \
+            -f image_tag="${{ needs.prepare.outputs.image_tag }}"

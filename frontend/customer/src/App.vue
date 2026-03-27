@@ -7,9 +7,31 @@ import ChatWindow from '@/components/ChatWindow.vue'
 const chatStore = useChatStore()
 const clientId = getClientId()
 
+// Bridge 下载地址：优先读环境变量，回退到相对路径
+// 部署时在 .env 中配置 VITE_BRIDGE_DOWNLOAD_URL 指向实际文件
+const BRIDGE_DOWNLOAD_URL =
+  import.meta.env.VITE_BRIDGE_DOWNLOAD_URL || '/downloads/terminal_bridge.exe'
+
 onMounted(() => {
   chatStore.initialize()
 })
+
+/**
+ * 触发 terminal_bridge.exe 下载
+ * 用隐藏 <a download> 替代 window.open，避免浏览器弹窗拦截策略
+ */
+function handleDownloadBridge() {
+  chatStore.closeBridgeDownload()
+
+  const a = document.createElement('a')
+  a.href = BRIDGE_DOWNLOAD_URL
+  a.download = 'terminal_bridge.exe'
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  // 延迟移除，确保点击事件已触发
+  setTimeout(() => document.body.removeChild(a), 200)
+}
 </script>
 
 <template>
@@ -18,6 +40,26 @@ onMounted(() => {
       <div class="header-content">
         <h1>HCI 故障排查助手</h1>
         <div class="header-badges">
+          <!-- 终端按钮：点击先检测 Bridge -->
+          <el-button
+            size="small"
+            round
+            class="terminal-btn header-action-btn"
+            :loading="chatStore.bridgeStatus === 'checking'"
+            @click="chatStore.checkAndOpenTerminal()"
+          >
+            <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><i class="el-icon-connection" /></el-icon>
+            SSH终端
+          </el-button>
+          <el-button
+            v-if="chatStore.hasActiveCase"
+            size="small"
+            round
+            class="close-btn"
+            @click="chatStore.handleCloseCase()"
+          >
+            ✅ 关闭工单
+          </el-button>
           <el-button
             size="small"
             round
@@ -38,6 +80,31 @@ onMounted(() => {
     <main class="app-main">
       <ChatWindow />
     </main>
+
+    <!-- Bridge 未运行时的下载提示弹窗 -->
+    <el-dialog
+      v-model="chatStore.showBridgeDownload"
+      title="SSH 终端插件"
+      width="420px"
+      :close-on-click-modal="true"
+      class="bridge-dialog"
+    >
+      <div class="bridge-prompt">
+        <div class="bridge-icon">🖥️</div>
+        <p class="bridge-title">生效 SSH 终端插件</p>
+        <p class="bridge-desc">
+          SSH 终端需要本地 Bridge 组件（2.5M）支持，检测到当前未运行。<br />
+          请点击下载并打开，启动后再次点击「终端」按钮即可使用。
+        </p>
+      </div>
+      <template #footer>
+        <el-button @click="chatStore.closeBridgeDownload()">取消</el-button>
+        <el-button type="primary" class="bridge-download-btn" @click="handleDownloadBridge">
+          <el-icon><i class="el-icon-folder-opened" /></el-icon>
+          下载并打开
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -116,10 +183,75 @@ body {
   background: rgba(255, 255, 255, 0.35) !important;
 }
 
+.terminal-btn {
+  background: rgba(103, 194, 58, 0.3) !important;
+  border: 1px solid rgba(103, 194, 58, 0.5) !important;
+  color: #fff !important;
+  font-size: 12px !important;
+}
+
+.terminal-btn:hover {
+  background: rgba(103, 194, 58, 0.5) !important;
+}
+
+.terminal-btn :deep(.el-icon) {
+  margin-right: 4px;
+}
+
+.header-action-btn :deep(span) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.close-btn {
+  background: rgba(255, 255, 255, 0.9) !important;
+  border: 1px solid rgba(255, 255, 255, 0.8) !important;
+  color: #337ecc !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+.close-btn:hover {
+  background: #fff !important;
+  color: #409eff !important;
+}
+
 .app-main {
   flex: 1;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* Bridge 下载提示弹窗 */
+.bridge-prompt {
+  text-align: center;
+  padding: 8px 0 16px;
+}
+
+.bridge-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.bridge-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 10px;
+}
+
+.bridge-desc {
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.8;
+}
+
+.bridge-download-btn :deep(span) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 </style>

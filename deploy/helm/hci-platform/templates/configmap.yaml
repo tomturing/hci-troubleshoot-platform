@@ -5,6 +5,8 @@ metadata:
   namespace: {{ include "hci.namespace" . }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
+{{- $openclawImage := include "hci.image" (dict "global" .Values.global "image" .Values.openclaw.image) }}
+{{- $defaultAssistantRegistry := printf "{\"productionclaw\":{\"image\":\"%s\",\"port\":18789,\"warm_pool_size\":2,\"max_pool_size\":10,\"idle_timeout\":0,\"display_name\":\"ProductionClaw (GLM)\",\"description\":\"Production assistant\",\"model\":\"zhipu/glm-5\",\"init_configmap\":\"productionclaw-init-config\",\"labels\":{\"claw-role\":\"production\"}},\"openclaw\":{\"image\":\"%s\",\"port\":18789,\"warm_pool_size\":1,\"max_pool_size\":5,\"idle_timeout\":300,\"display_name\":\"OpenClaw (GLM)\",\"description\":\"General assistant\",\"model\":\"zhipu/glm-5\",\"labels\":{\"app.kubernetes.io/name\":\"openclaw\"}}}" $openclawImage $openclawImage }}
 data:
   # 数据库（非敏感）
   POSTGRES_DB: {{ .Values.config.postgresDb | quote }}
@@ -15,16 +17,27 @@ data:
   CASE_SERVICE_URL: "http://case-service:{{ .Values.caseService.port }}"
   CONVERSATION_SERVICE_URL: "http://conversation-service:{{ .Values.conversationService.port }}"
   SCHEDULER_SERVICE_URL: "http://scheduler-service:{{ .Values.schedulerService.port }}"
-  # OpenClaw
-  OPENCLAW_BASE_URL: "http://openclaw:{{ .Values.openclaw.port }}"
+  # OpenClaw（可通过 config.openclawBaseUrl 覆盖，用于直连外部 LLM API，如智谱 open.bigmodel.cn）
+  OPENCLAW_BASE_URL: {{ (.Values.config.openclawBaseUrl | default (printf "http://openclaw:%v" .Values.openclaw.port)) | quote }}
+  OPENCLAW_DEFAULT_MODEL: {{ (.Values.config.openclawDefaultModel | default "zhipu/glm-5") | quote }}
+  # Chat completions 路径：OpenAI=/v1/chat/completions，智谱 v4 API=/chat/completions
+  AI_COMPLETIONS_PATH: {{ (.Values.config.aiCompletionsPath | default "/v1/chat/completions") | quote }}
   # 可观测性
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
   # Scheduler
   K8S_NAMESPACE: {{ .Values.config.k8sNamespace | quote }}
+  K8S_IMAGE_PULL_SECRET: {{ .Values.global.imagePullSecretName | quote }}
   WARM_POOL_SIZE: {{ .Values.config.warmPoolSize | quote }}
   MAX_POOL_SIZE: {{ .Values.config.maxPoolSize | quote }}
   POD_IDLE_TIMEOUT: {{ .Values.config.podIdleTimeout | quote }}
-  OPENCLAW_IMAGE: {{ .Values.config.openclawImage | quote }}
-  # v2.0 多助手注册表
-  ASSISTANT_REGISTRY_JSON: {{ .Values.config.assistantRegistryJson | quote }}
+  # Pool Pod 镜像与 openclaw 部署镜像保持同步（含 imageRegistry 前缀）
+  OPENCLAW_IMAGE: {{ $openclawImage | quote }}
+  # AI 客户端超时（秒）
+  AI_CLIENT_READ_TIMEOUT_SEC: {{ .Values.config.aiClientReadTimeoutSec | default "120.0" | quote }}
+  # v3.0 LearningClaw / ProductionClaw 服务地址
+  KB_SERVICE_URL: {{ .Values.config.kbServiceUrl | default "http://kb-service:8004" | quote }}
+  KB_ENABLED: {{ .Values.kbService.enabled | toString | quote }}
+  LEARNINGCLAW_SERVICE_URL: {{ .Values.config.learningclawServiceUrl | default "http://learningclaw:18789" | quote }}
+  # v3.0 多助手注册表（productionclaw 一 Pod 一 Case 模式）
+  ASSISTANT_REGISTRY_JSON: {{ (.Values.config.assistantRegistryJson | default $defaultAssistantRegistry) | quote }}

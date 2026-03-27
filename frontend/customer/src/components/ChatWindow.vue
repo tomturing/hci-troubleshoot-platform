@@ -1,11 +1,51 @@
 <script setup lang="ts">
-import { ref, reactive, nextTick, watch, onMounted } from 'vue'
+import { ref, reactive, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import MessageBubble from './MessageBubble.vue'
+import RatingCard from './RatingCard.vue'
+import TerminalPanel from './TerminalPanel.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
+import DiagnosticProgress from './DiagnosticProgress.vue'
 
 const chatStore = useChatStore()
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
+const assistantInputRef = ref<{ focus: () => void } | null>(null)
+const terminalPinned = ref(false)
+const historyPinned = ref(false)
+const terminalPanelWidth = ref(getDefaultPanelWidth())
+const historyPanelWidth = ref(getDefaultPanelWidth())
+
+// 拖拽调整抽屉宽度
+const startResizeTerminal = (e: MouseEvent) => {
+  e.preventDefault()
+  const startX = e.clientX
+  const startWidth = terminalPanelWidth.value
+  const onMouseMove = (moveE: MouseEvent) => {
+    terminalPanelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth - (moveE.clientX - startX)))
+  }
+  const onMouseUp = () => {
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+  }
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
+
+const startResizeHistory = (e: MouseEvent) => {
+  e.preventDefault()
+  const startX = e.clientX
+  const startWidth = historyPanelWidth.value
+  const onMouseMove = (moveE: MouseEvent) => {
+    historyPanelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth + (moveE.clientX - startX)))
+  }
+  const onMouseUp = () => {
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+  }
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
 
 // 工单创建模板本地编辑副本
 const templateForm = reactive({ title: '', description: '' })
@@ -53,6 +93,16 @@ watch(
   () => scrollToBottom(),
 )
 
+watch(
+  () => chatStore.assistantDraftText,
+  (text) => {
+    if (!text) return
+    inputText.value = text
+    chatStore.clearAssistantDraftText()
+    nextTick(() => assistantInputRef.value?.focus())
+  },
+)
+
 // 流式内容也要滚动
 watch(
   () => {
@@ -63,6 +113,36 @@ watch(
 )
 
 onMounted(scrollToBottom)
+
+onMounted(() => {
+  const onResize = () => {
+    if (!chatStore.showTerminalSidebar) {
+      terminalPanelWidth.value = getDefaultPanelWidth()
+    }
+    if (!chatStore.showHistoryDrawer) {
+      historyPanelWidth.value = getDefaultPanelWidth()
+    }
+  }
+  onResize()
+  window.addEventListener('resize', onResize)
+  ;(window as Window & { __hciPanelResizeHandler?: () => void }).__hciPanelResizeHandler = onResize
+})
+
+onBeforeUnmount(() => {
+  const handler = (window as Window & { __hciPanelResizeHandler?: () => void }).__hciPanelResizeHandler
+  if (handler) window.removeEventListener('resize', handler)
+})
+
+function getDefaultPanelWidth(): number {
+  if (typeof window === 'undefined') return 510
+  const appMaxWidth = 900
+  // Each side gets half of the remaining blank space
+  const sideBlankSpace = Math.max((window.innerWidth - appMaxWidth) / 2, 0)
+  // If the screen is too narrow, just take 85% of screen
+  const target = sideBlankSpace >= 300 ? sideBlankSpace : window.innerWidth * 0.85
+  // We constrain it to a min of 400 and max of 50% to not dominate small screens
+  return Math.max(400, Math.round(target))
+}
 
 /** 状态中文映射 */
 function statusLabel(status: string): string {
@@ -92,6 +172,14 @@ function formatDate(d: string): string {
 
 <template>
   <div class="chat-window">
+    <!-- Agent 模式：高风险操作确认弹窗 -->
+    <ConfirmDialog
+      v-if="chatStore.pendingConfirm"
+      :event="{ type: 'confirm_request', ...chatStore.pendingConfirm }"
+      :session-id="chatStore.conversationId ?? ''"
+      @confirmed="chatStore.handleConfirmResult"
+    />
+
     <!-- 未关闭工单确认对话框 -->
     <el-dialog
       v-model="chatStore.showPendingDialog"
@@ -175,6 +263,11 @@ function formatDate(d: string): string {
     </el-dialog>
 
     <!-- 消息区域 -->
+    <!-- 诊断阶段进度条 (仅在非 S0 时显示) -->
+    <DiagnosticProgress
+      v-if="chatStore.diagnosticStage !== 'S0'"
+      :stage="chatStore.diagnosticStage"
+    />
     <div ref="messagesContainer" class="messages-area">
       <MessageBubble
         v-for="msg in chatStore.messages"
@@ -186,19 +279,77 @@ function formatDate(d: string): string {
         <el-icon class="is-loading"><i class="el-icon-loading" /></el-icon>
         <span>处理中...</span>
       </div>
+
+      <!-- 评分卡 -->
+      <RatingCard
+        :visible="chatStore.showRatingCard"
+        :conversation-id="chatStore.ratingConversationId"
+        @submit="chatStore.submitRating"
+        @skip="chatStore.skipRating"
+        @close="chatStore.closeRatingCard"
+      />
     </div>
+
+    <!-- SSH 终端抽屉 -->
+    <el-drawer
+      v-model="chatStore.showTerminalSidebar"
+      direction="rtl"
+      :size="`${terminalPanelWidth}px`"
+      :append-to-body="true"
+      :modal="true"
+      :lock-scroll="!terminalPinned"
+      :close-on-click-modal="!terminalPinned"
+      :close-on-press-escape="!terminalPinned"
+      :with-header="true"
+      :modal-class="terminalPinned ? 'drawer-unblocked-overlay' : ''"
+      class="workspace-drawer"
+      @close="chatStore.closeTerminalSidebar()"
+    >
+      <div class="drawer-resize-handle drawer-resize-left" @mousedown="startResizeTerminal"></div>
+      <template #header>
+        <div class="drawer-header">
+          <span class="drawer-title">SSH 终端</span>
+          <div class="drawer-actions">
+            <el-button text size="small" @click="terminalPinned = !terminalPinned">
+              {{ terminalPinned ? '取消钉住' : '钉住' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+      <div class="drawer-body-content terminal-content">
+        <TerminalPanel />
+      </div>
+    </el-drawer>
 
     <!-- 历史工单抽屉 -->
     <el-drawer
       v-model="chatStore.showHistoryDrawer"
-      title="历史工单"
       direction="ltr"
-      size="380px"
+      :size="`${historyPanelWidth}px`"
       :append-to-body="true"
+      :modal="true"
+      :lock-scroll="!historyPinned"
+      :close-on-click-modal="!historyPinned"
+      :close-on-press-escape="!historyPinned"
+      :with-header="true"
+      :modal-class="historyPinned ? 'drawer-unblocked-overlay' : ''"
+      class="workspace-drawer"
       @close="chatStore.closeHistoryDrawer()"
     >
-      <!-- 左右分栏：列表 + 消息预览 -->
-      <div class="history-container">
+      <div class="drawer-resize-handle drawer-resize-right" @mousedown="startResizeHistory"></div>
+      <template #header>
+        <div class="drawer-header">
+          <span class="drawer-title">历史工单</span>
+          <div class="drawer-actions">
+            <el-button text size="small" @click="historyPinned = !historyPinned">
+              {{ historyPinned ? '取消钉住' : '钉住' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+      <div class="drawer-body-content">
+        <!-- 左右分栏：列表 + 消息预览 -->
+        <div class="history-container">
         <!-- 工单列表 -->
         <div class="history-list" v-if="!chatStore.historyCase">
           <div
@@ -250,6 +401,7 @@ function formatDate(d: string): string {
             </el-button>
           </div>
         </div>
+        </div>
       </div>
     </el-drawer>
 
@@ -266,6 +418,7 @@ function formatDate(d: string): string {
       </div>
       <div class="input-row">
         <el-input
+          ref="assistantInputRef"
           v-model="inputText"
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 4 }"
@@ -498,5 +651,84 @@ function formatDate(d: string): string {
 .assistant-desc {
   font-size: 12px;
   color: #909399;
+}
+
+.workspace-drawer :deep(.el-drawer) {
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-drawer :deep(.el-drawer__body) {
+  flex: 1;
+  overflow: hidden;
+  padding: 12px 16px;
+}
+
+.workspace-drawer :deep(.el-drawer__header) {
+  margin-bottom: 0;
+  padding: 16px;
+  border-bottom: 1px solid #f0f2f5;
+}
+
+.drawer-body-content {
+  height: 100%;
+}
+
+/* 拖拽调整手柄 */
+.drawer-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 100;
+  transition: background-color 0.2s;
+}
+.drawer-resize-handle:hover,
+.drawer-resize-handle:active {
+  background-color: rgba(64, 158, 255, 0.2);
+}
+.drawer-resize-left {
+  left: 0;
+}
+.drawer-resize-right {
+  right: 0;
+}
+
+.terminal-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.drawer-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.drawer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+</style>
+
+<style>
+/* 全局透传点击事件：当钉住时，取消全屏遮罩及背景色 */
+.drawer-unblocked-overlay {
+  pointer-events: none !important;
+  background-color: transparent !important;
+}
+.drawer-unblocked-overlay .el-drawer {
+  pointer-events: auto !important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
 }
 </style>
