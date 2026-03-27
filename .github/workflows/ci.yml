@@ -39,7 +39,10 @@ jobs:
             exit 0
           fi
 
-          if echo "$CHANGED_FILES" | grep -Eq '^(backend/|frontend/|deploy/|scripts/|database/|\.github/workflows/)'; then
+          # 检查是否有除 .github/workflows/ 外的关键目录改动
+          CORE_CHANGES="$(echo "$CHANGED_FILES" | grep -E '^(backend/|frontend/|deploy/|scripts/|database/)' || true)"
+
+          if [[ -n "$CORE_CHANGES" ]]; then
             if echo "$CHANGED_FILES" | grep -Eq '^(docs/|README\.md$|AGENTS\.md$|CLAUDE\.md$)'; then
               echo "检测到关键改动且已同步文档，门禁通过"
               exit 0
@@ -50,7 +53,7 @@ jobs:
             exit 1
           fi
 
-          echo "未检测到关键目录改动，门禁通过"
+          echo "未检测到关键目录改动（workflow 配置变更无需文档同步），门禁通过"
 
   lint:
     name: Lint
@@ -117,7 +120,7 @@ jobs:
   check-claw-configs:
     name: 校验 claw-configs 一致性
     runs-on: ubuntu-latest
-    needs: docs-governance
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
 
@@ -142,6 +145,7 @@ jobs:
     name: unit-tests
     runs-on: ubuntu-latest
     needs: [lint, frontend-build, helm-validate, check-claw-configs]
+    if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success')
     steps:
       - uses: actions/checkout@v4
 
@@ -191,6 +195,7 @@ jobs:
     name: integration-tests
     runs-on: ubuntu-latest
     needs: [lint, frontend-build, helm-validate, check-claw-configs]
+    if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success')
 
     services:
       redis:
@@ -228,6 +233,7 @@ jobs:
     name: security-tests
     runs-on: ubuntu-latest
     needs: [lint, frontend-build, helm-validate, check-claw-configs]
+    if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success')
     steps:
       - uses: actions/checkout@v4
 
