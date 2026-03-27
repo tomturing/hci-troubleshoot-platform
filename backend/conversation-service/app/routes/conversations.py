@@ -2,16 +2,20 @@
 Conversation Routes - 对话API路由 (v2.0 多类型AI助手)
 """
 
+import asyncio
+import json
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import MessageCreate, MessageResponse
+from shared.utils.exceptions import AIStreamError, ErrorCode
 
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService
+from ..services.kb_client import KBClient
 from ..services.scheduler_client import SchedulerClient
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -20,16 +24,21 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 database_manager: DatabaseManager | None = None
 ai_registry: AIAssistantRegistry | None = None
 scheduler_client: SchedulerClient | None = None
+kb_client: KBClient | None = None
+
 
 def set_dependencies(
     db: DatabaseManager,
     registry: AIAssistantRegistry,
-    scheduler: SchedulerClient | None = None
+    scheduler: SchedulerClient | None = None,
+    kb: KBClient | None = None,
 ):
-    global database_manager, ai_registry, scheduler_client
+    global database_manager, ai_registry, scheduler_client, kb_client
     database_manager = db
     ai_registry = registry
     scheduler_client = scheduler
+    kb_client = kb
+
 
 async def get_conversation_service() -> ConversationService:
     """依赖注入: 获取Conversation Service"""
@@ -38,20 +47,26 @@ async def get_conversation_service() -> ConversationService:
 
     async for session in database_manager.get_session():
         repo = ConversationRepository(session)
-        yield ConversationService(repo, ai_registry, scheduler_client)
+        yield ConversationService(
+            repo, ai_registry, scheduler_client, kb_client,
+            database_manager.async_session_factory,
+        )
 
 @router.post("/", status_code=201)
 async def create_conversation(
     case_id: str,
     assistant_type: str = "openclaw",
     initial_message: str | None = None,
-    service: ConversationService = Depends(get_conversation_service)
+    case_title: str | None = None,
+    case_description: str | None = None,
+    service: ConversationService = Depends(get_conversation_service),
 ):
-    """创建新对话"""
+    """创建新对话，case_title/case_description 存入 metadata 供 Pod 分配时使用"""
+    metadata: dict | None = None
+    if case_title or case_description:
+        metadata = {"case_title": case_title or "", "case_description": case_description or ""}
     conversation = await service.create_conversation(
-        case_id=case_id,
-        assistant_type=assistant_type,
-        initial_message=initial_message
+        case_id=case_id, assistant_type=assistant_type, initial_message=initial_message, metadata=metadata
     )
     return {"conversation_id": conversation.conversation_id, "case_id": conversation.case_id}
 
@@ -107,27 +122,57 @@ async def send_message(
             ):
                 if chunk:
                     ai_content.append(chunk)
-                    yield f"data: {chunk}\n\n"
+                    # JSON encode chunk 以安全保留换行符，避免 SSE 多行截断
+                    encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)
+                    yield f"data: {encoded_chunk}\n\n"
 
             # 正常流结束后，提交后台任务保存消息
             background_tasks.add_task(
                 service.save_assistant_message,
                 conversation_id=conversation_id,
                 case_id=message.case_id,
-                content="".join(ai_content)
+                content="".join(ai_content),
             )
 
             yield "data: [DONE]\n\n"
 
-        except Exception as e:
-            # 取消请求或发生错误时，依然保存生成到一半的内容
+        except asyncio.CancelledError:
+            # 客户端断开连接，若已收到部分 AI 回复则在后台保存，避免丢失
             if ai_content:
                 background_tasks.add_task(
                     service.save_assistant_message,
                     conversation_id=conversation_id,
                     case_id=message.case_id,
-                    content="".join(ai_content)
+                    content="".join(ai_content),
                 )
-            yield f"event: error\ndata: {str(e)}\n\n"
+            raise
+        except AIStreamError as e:
+            # 结构化 AI 流错误，使用 json.dumps 安全序列化
+            if ai_content:
+                background_tasks.add_task(
+                    service.save_assistant_message,
+                    conversation_id=conversation_id,
+                    case_id=message.case_id,
+                    content="".join(ai_content),
+                )
+            yield f"event: error\ndata: {e.to_sse_data()}\n\n"
+        except Exception as e:
+            # 其他未知错误，构造通用错误响应
+            if ai_content:
+                background_tasks.add_task(
+                    service.save_assistant_message,
+                    conversation_id=conversation_id,
+                    case_id=message.case_id,
+                    content="".join(ai_content),
+                )
+            error_data = json.dumps(
+                {
+                    "code": ErrorCode.INTERNAL_ERROR.value,
+                    "message": "服务内部错误，请稍后重试",
+                    "detail": type(e).__name__,
+                },
+                ensure_ascii=False,
+            )
+            yield f"event: error\ndata: {error_data}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream", background=background_tasks)

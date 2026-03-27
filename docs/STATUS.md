@@ -125,6 +125,25 @@ if self.response_model:
 
 本次修复基于对 `docs/phase0-4-task-orchestration` 分支代码审查报告结论，逐项修复所有问题。
 
+## 2026-03-27 Bug Fix：SSE 换行截断 + AI 回复落库失败
+
+**问题 1：custom-ui Markdown 实时渲染失效（SSE 换行截断）**
+
+- **根因**：提交 `9d56852`（Feature/knowledge rag）在重构路由时，将原本 `dcab8c8` 修复的 JSON 编码写法回退为裸文本 `yield f"data: {chunk}\n\n"`。  
+  当 AI 返回包含换行符的文本（Markdown 标题、列表、代码块），SSE 协议会将其拆分为多行，前端逐行解析时只取 `data:` 开头的行，其余内容丢失，导致渲染片段不完整。
+- **修复**：恢复 JSON 编码：`encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)`；`yield f"data: {encoded_chunk}\n\n"`。  
+  前端代码原本已支持 JSON 格式（`JSON.parse(data).content`），此改动向前兼容。
+
+**问题 2：刷新页面 AI 回复内容丢失（落库失败）**
+
+- **根因**：`get_conversation_service()` 依赖注入时未将 `session_factory` 传入 `ConversationService`，导致 `self.session_factory` 为 `None`。  
+  后台任务 `save_assistant_message` 执行时，请求作用域 DB session 已由 `get_session()` 的 `finally` 块关闭，回退到 `self.repository.add_message()` 调用失败（操作已关闭的 session），异常被 `except` 静默捕获，INSERT 不入库。
+- **修复**：`get_conversation_service()` 中添加 `session_factory=database_manager.async_session_factory`，后台任务改用独立 session 写入。
+
+**变更文件**：`backend/conversation-service/app/routes/conversations.py`
+
+---
+
 ## 2026-03-26 ArgoCD GitOps prod 集群 namespace 修正
 
 **问题**：`hci-platform-prod` 和 `hci-platform-data-prod` ArgoCD Application 的 `destination.namespace` 错误配置为 `hci`，与 prod 集群实际使用的 namespace `hci-prod` 不一致。

@@ -8,13 +8,17 @@ Conversation Service - 主应用 (v2.0 多类型AI助手)
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.postgres import DatabaseManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
-from app.routes import conversations
+from app.routes import audit as audit_route
+from app.routes import conversations, evaluate
 from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
+from app.services.kb_client import KBClient
 from app.services.scheduler_client import SchedulerClient
 
 # 在应用创建前初始化 OpenTelemetry
@@ -60,13 +64,25 @@ async def lifespan(app: FastAPI):
         message=f"Registered AI assistants: {ai_registry.list_types()}"
     )
 
+    # 初始化 KB 客户端（可选：KB_ENABLED=false 时跳过）
+    kb_client: KBClient | None = None
+    if settings.KB_ENABLED:
+        kb_client = KBClient(
+            kb_service_url=settings.KB_SERVICE_URL,
+            internal_token=settings.INTERNAL_API_TOKEN,
+        )
+        logger.info(event="kb_client_initialized", message=f"KB client 已初始化，目标: {settings.KB_SERVICE_URL}")
+
     # 存入 app.state
     app.state.database_manager = database_manager
     app.state.ai_registry = ai_registry
     app.state.scheduler_client = scheduler_client
+    app.state.kb_client = kb_client
 
     # 兼容现有路由注入方式
-    conversations.set_dependencies(database_manager, ai_registry, scheduler_client)
+    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client)
+    evaluate.set_database_manager(database_manager)
+    audit_route.set_audit_database_manager(database_manager)
 
     yield
 
@@ -91,25 +107,52 @@ instrument_app(app)
 
 # 注册路由
 app.include_router(conversations.router)
+app.include_router(evaluate.router)
+app.include_router(audit_route.router)
 
 
 @app.get("/health")
 async def health_check():
-    """健康检查"""
-    ai_status = {}
+    """健康检查，验证 DB + AI 助手 + KB 服务"""
+    ai_status: dict = {}
+    db_ok = False
+    kb_ok: str = "disabled"
+
+    db_manager = getattr(app.state, "database_manager", None)
+    if db_manager:
+        db_ok = await db_manager.health_check()
 
     registry = getattr(app.state, "ai_registry", None)
     if registry:
         ai_status = await registry.health_check_all()
 
+    kb_client = getattr(app.state, "kb_client", None)
+    if kb_client:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=0.5) as client:
+                resp = await client.get(f"{settings.KB_SERVICE_URL}/health")
+            kb_ok = "ok" if resp.status_code == 200 else "degraded"
+        except Exception:
+            kb_ok = "unavailable"
+
+    all_ok = db_ok and (not ai_status or any(v == "ok" for v in ai_status.values()))
     return {
-        "status": "healthy",
+        "status": "healthy" if all_ok else "degraded",
         "service": settings.SERVICE_NAME,
-        "version": "2.0.0",
+        "version": "2.1.0",
         "dependencies": {
-            "ai_assistants": ai_status
-        }
+            "database": "ok" if db_ok else "unavailable",
+            "ai_assistants": ai_status,
+            "kb_service": kb_ok,
+        },
     }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 指标抓取端点"""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 if __name__ == "__main__":
     import uvicorn
