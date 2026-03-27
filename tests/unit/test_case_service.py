@@ -17,13 +17,41 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-from datetime import UTC, datetime
+from datetime import datetime
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from app.models.case import Case, CaseStatus
 from app.services.case_service import CaseService
 from shared.models.schemas import CaseCreate
+
+
+class TestCaseIDGeneration:
+    """工单ID生成测试"""
+
+    def test_generate_case_id_format(self):
+        """测试工单ID格式: Q + YYYYMMDD + 5位序号"""
+        mock_repo = Mock()
+        service = CaseService(mock_repo)
+
+        case_id = service._generate_case_id()
+
+        # 检查格式
+        assert case_id.startswith("Q")
+        assert len(case_id) == 14  # Q + 8位日期 + 5位序号
+        assert case_id[1:9].isdigit()  # 日期部分
+        assert case_id[9:].isdigit()   # 序号部分
+
+    def test_generate_case_id_date(self):
+        """测试工单ID包含当前日期"""
+        mock_repo = Mock()
+        service = CaseService(mock_repo)
+
+        case_id = service._generate_case_id()
+        date_part = case_id[1:9]
+
+        today = datetime.utcnow().strftime("%Y%m%d")
+        assert date_part == today
 
 
 @pytest.mark.asyncio
@@ -39,7 +67,6 @@ class TestCaseCreation:
         mock_user = Mock()
         mock_user.user_id = "test-user-id"
         mock_repo.get_user_by_client_id = AsyncMock(return_value=mock_user)
-        mock_repo.generate_case_id = AsyncMock(return_value="Q20260215001")
 
         mock_case = Case(
             case_id="Q20260215001",
@@ -48,8 +75,8 @@ class TestCaseCreation:
             title="Test Case",
             description="Test Description",
             status=CaseStatus.created,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
         mock_repo.create = AsyncMock(return_value=mock_case)
 
@@ -57,7 +84,11 @@ class TestCaseCreation:
         service = CaseService(mock_repo)
 
         # Create case
-        case_create = CaseCreate(client_id="test-client", title="Test Case", description="Test Description")
+        case_create = CaseCreate(
+            client_id="test-client",
+            title="Test Case",
+            description="Test Description"
+        )
 
         result = await service.create_case(case_create)
 
@@ -77,7 +108,6 @@ class TestCaseCreation:
         mock_user = Mock()
         mock_user.user_id = "test-user-id"
         mock_repo.get_user_by_client_id = AsyncMock(return_value=mock_user)
-        mock_repo.generate_case_id = AsyncMock(return_value="Q20260215001")
 
         mock_case = Case(
             case_id="Q20260215001",
@@ -86,13 +116,16 @@ class TestCaseCreation:
             title="Test",
             trace_id="test-trace-001",
             status=CaseStatus.created,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
         mock_repo.create = AsyncMock(return_value=mock_case)
 
         service = CaseService(mock_repo)
-        case_create = CaseCreate(client_id="test-client", title="Test")
+        case_create = CaseCreate(
+            client_id="test-client",
+            title="Test"
+        )
 
         result = await service.create_case(case_create)
 
@@ -112,8 +145,8 @@ class TestCaseRetrieval:
             client_id="test-client",
             title="Test Case",
             status=CaseStatus.created,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
         mock_repo.get_by_id = AsyncMock(return_value=mock_case)
 
@@ -138,24 +171,8 @@ class TestCaseRetrieval:
         """测试查询客户端的所有工单"""
         mock_repo = Mock()
         mock_cases = [
-            Case(
-                case_id="Q20260215001",
-                user_id="test-user-id",
-                client_id="test-client",
-                title="Case 1",
-                status=CaseStatus.created,
-                created_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-            ),
-            Case(
-                case_id="Q20260215002",
-                user_id="test-user-id",
-                client_id="test-client",
-                title="Case 2",
-                status=CaseStatus.created,
-                created_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-            ),
+            Case(case_id="Q20260215001", user_id="test-user-id", client_id="test-client", title="Case 1", status=CaseStatus.created, created_at=datetime.utcnow(), updated_at=datetime.utcnow()),
+            Case(case_id="Q20260215002", user_id="test-user-id", client_id="test-client", title="Case 2", status=CaseStatus.created, created_at=datetime.utcnow(), updated_at=datetime.utcnow()),
         ]
         mock_repo.get_by_client_id = AsyncMock(return_value=mock_cases)
 
@@ -179,8 +196,8 @@ class TestCaseStatusTransitions:
             client_id="test-client",
             title="Test",
             status=CaseStatus.confirmed,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
         mock_repo.update_status = AsyncMock(return_value=mock_case)
 
@@ -188,7 +205,10 @@ class TestCaseStatusTransitions:
         result = await service.confirm_case("Q20260215001")
 
         assert result.status == CaseStatus.confirmed
-        mock_repo.update_status.assert_called_once_with("Q20260215001", CaseStatus.confirmed)
+        mock_repo.update_status.assert_called_once_with(
+            "Q20260215001",
+            CaseStatus.confirmed
+        )
 
     async def test_close_case_success(self):
         """测试关闭工单"""
@@ -199,8 +219,8 @@ class TestCaseStatusTransitions:
             client_id="test-client",
             title="Test",
             status=CaseStatus.closed,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
         mock_repo.update_status = AsyncMock(return_value=mock_case)
 

@@ -63,12 +63,6 @@ async def list_audit_logs(
     if risk_level is not None:
         stmt = stmt.where(ToolAuditLog.risk_level == risk_level)
 
-    # 查询总数
-    count_result = await db.execute(
-        select(ToolAuditLog.id)
-        .where(*stmt.whereclause.clauses if stmt.whereclause is not None else [True])
-        .order_by(None)
-    )
     # 使用分页查询
     paginated_stmt = stmt.limit(limit).offset(offset)
     result = await db.execute(paginated_stmt)

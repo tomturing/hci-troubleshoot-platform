@@ -25,10 +25,11 @@ from app.main import app
 
 
 class TestGateway(unittest.TestCase):
+
     def setUp(self):
         self.client = TestClient(app)
 
-    @patch("app.routes.cases.httpx.AsyncClient")
+    @patch('app.routes.cases.httpx.AsyncClient')
     def test_create_case_proxy(self, mock_client_cls):
         """Test creating case is proxied to case-service"""
         mock_client = AsyncMock()
@@ -50,9 +51,9 @@ class TestGateway(unittest.TestCase):
         args, kwargs = mock_client.request.call_args
         self.assertEqual(args[0], "POST")
         self.assertIn("/api/cases/", args[1])
-        self.assertEqual(kwargs["json"], payload)
+        self.assertEqual(kwargs['json'], payload)
 
-    @patch("app.routes.cases.httpx.AsyncClient")
+    @patch('app.routes.cases.httpx.AsyncClient')
     def test_get_case_proxy(self, mock_client_cls):
         """Test getting case is proxied"""
         mock_client = AsyncMock()
@@ -72,6 +73,5 @@ class TestGateway(unittest.TestCase):
         args, _ = mock_client.request.call_args
         self.assertIn("/api/cases/123", args[1])
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

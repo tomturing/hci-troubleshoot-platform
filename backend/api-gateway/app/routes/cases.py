@@ -2,6 +2,7 @@
 Case Routes - API Gateway Proxy
 """
 
+
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -15,22 +16,29 @@ logger = get_logger("gateway-cases")
 CASE_SERVICE_URL = f"{settings.CASE_SERVICE_URL}/api/cases"
 SCHEDULER_SERVICE_URL = settings.SCHEDULER_SERVICE_URL
 
-
 async def proxy_request(
-    method: str, path: str, payload: dict | None = None, params: dict | None = None, headers: dict | None = None
+    method: str,
+    path: str,
+    payload: dict | None = None,
+    params: dict | None = None,
+    headers: dict | None = None
 ):
     async with httpx.AsyncClient() as client:
         try:
             url = f"{CASE_SERVICE_URL}{path}"
-            response = await client.request(method, url, json=payload, params=params, headers=headers)
+            response = await client.request(
+                method,
+                url,
+                json=payload,
+                params=params,
+                headers=headers
+            )
             return response
         except httpx.RequestError as exc:
             logger.error(f"Error requesting {exc.request.url!r}.")
-            raise HTTPException(status_code=503, detail="Service unavailable") from exc
-
+            raise HTTPException(status_code=503, detail="Service unavailable")
 
 # ============ Admin 路由（静态路径，放在 {case_id} 之前）============
-
 
 @router.get("/all")
 async def list_all_cases(request: Request):
@@ -38,13 +46,11 @@ async def list_all_cases(request: Request):
     response = await proxy_request("GET", "/all", params=dict(request.query_params))
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
-
 @router.get("/stats")
 async def get_case_stats(request: Request):
     """[Admin] 获取工单统计"""
     response = await proxy_request("GET", "/stats")
     return JSONResponse(content=response.json(), status_code=response.status_code)
-
 
 @router.get("/clients")
 async def get_client_list(request: Request):
@@ -52,9 +58,7 @@ async def get_client_list(request: Request):
     response = await proxy_request("GET", "/clients")
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
-
 # ============ 客户端路由 ============
-
 
 @router.post("/")
 async def create_case(request: Request):
@@ -62,7 +66,6 @@ async def create_case(request: Request):
     payload = await request.json()
     response = await proxy_request("POST", "/", payload)
     return JSONResponse(content=response.json(), status_code=response.status_code)
-
 
 @router.get("/{case_id}")
 async def get_case(case_id: str, request: Request):
@@ -72,13 +75,11 @@ async def get_case(case_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Case not found")
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
-
 @router.get("/")
 async def list_cases(client_id: str, request: Request):
     """查询工单列表"""
     response = await proxy_request("GET", "/", params={"client_id": client_id})
     return JSONResponse(content=response.json(), status_code=response.status_code)
-
 
 @router.put("/{case_id}/confirm")
 async def confirm_case(case_id: str, request: Request):
@@ -87,7 +88,6 @@ async def confirm_case(case_id: str, request: Request):
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Case not found")
     return JSONResponse(content=response.json(), status_code=response.status_code)
-
 
 @router.put("/{case_id}/close")
 async def close_case(case_id: str, request: Request):
@@ -101,7 +101,8 @@ async def close_case(case_id: str, request: Request):
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 release_resp = await client.post(
-                    f"{settings.SCHEDULER_SERVICE_URL}/api/scheduler/pods/release", json={"case_id": case_id}
+                    f"{settings.SCHEDULER_SERVICE_URL}/api/scheduler/pods/release",
+                    json={"case_id": case_id}
                 )
                 if release_resp.status_code == 200:
                     logger.info(f"Released pod for closed case {case_id}")

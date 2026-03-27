@@ -71,7 +71,7 @@ class StructuredLogger:
         # 添加额外字段
         log_data.update(kwargs)
 
-        return json.dumps(log_data, ensure_ascii=False)
+        return json.dumps(log_data, ensure_ascii=False, default=str)
 
     def info(self, event: str, message: str | None = None, trace_id: str | None = None, **kwargs):
         """记录 INFO 级别日志"""

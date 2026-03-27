@@ -10,10 +10,10 @@
 import json
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     """SSE 错误码枚举"""
 
     # AI 服务相关错误

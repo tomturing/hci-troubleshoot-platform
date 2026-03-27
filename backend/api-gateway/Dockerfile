@@ -4,6 +4,9 @@ FROM ${PYTHON_BASE_IMAGE}
 # 安装 uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# 安装 uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 WORKDIR /app
 
 # 安装依赖（使用 uv pip，无需虚拟环境）

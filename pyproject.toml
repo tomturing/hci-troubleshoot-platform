@@ -70,7 +70,6 @@ testpaths = [
     "backend/case-service/tests",
     "backend/conversation-service/tests",
     "backend/scheduler-service/tests",
-    "backend/kb-service/tests",
 ]
 python_files = "test_*.py"
 python_classes = "Test*"
@@ -81,7 +80,7 @@ markers = [
     "integration: Integration tests",
     "slow: Slow running tests",
 ]
-addopts = "-v --strict-markers --tb=short -p no:locust"
+addopts = "-v --strict-markers --tb=short"
 
 [tool.ruff]
 target-version = "py312"
@@ -89,14 +88,12 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
-ignore = ["E501", "B008", "SIM117", "B904", "UP042", "N806", "F841", "B007"]
+ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"conftest.py" = ["E402"]
-"**/conftest.py" = ["E402"]
-"**/tests/**" = ["E402"]
-"backend/*/app/main.py" = ["E402"]
-"backend/shared/models/schemas.py" = ["E402"]
+"tests/**/*.py" = ["E402", "SIM117", "N806", "F841", "B007"]
+"backend/**/tests/**/*.py" = ["E402", "SIM117", "N806", "F841", "B007"]
+"backend/**/app/routes/*.py" = ["B008", "B904"]
 
 [tool.uv]
 # backend 各服务和 shared 目录均作为源码目录

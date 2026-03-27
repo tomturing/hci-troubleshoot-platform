@@ -18,7 +18,7 @@ DEFAULT_ASSISTANT_REGISTRY = {
         "warm_pool_size": 2,
         "max_pool_size": 10,
         "enabled": True,
-        "labels": {"app": "openclaw", "assistant-type": "openclaw"},
+        "labels": {"app": "openclaw", "assistant-type": "openclaw"}
     }
 }
 
@@ -42,7 +42,8 @@ class Settings(BaseSettings):
 
     # AI助手注册表 (JSON字符串，支持环境变量注入)
     ASSISTANT_REGISTRY_JSON: str = Field(
-        default=json.dumps(DEFAULT_ASSISTANT_REGISTRY), description="AI助手注册表，JSON格式"
+        default=json.dumps(DEFAULT_ASSISTANT_REGISTRY),
+        description="AI助手注册表，JSON格式"
     )
 
     @property
@@ -62,6 +63,5 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = True
         extra = "ignore"
-
 
 settings = Settings()

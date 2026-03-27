@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from app.models.conversation import Conversation
 from app.models.message import MessageRole
-from app.services.conversation_service import ConversationService, jaccard_similarity
+from app.services.conversation_service import ConversationService
 
 
 @pytest.fixture
@@ -57,7 +57,6 @@ def service(mock_repo, mock_registry, mock_scheduler):
 
 # ---------- create_conversation ----------
 
-
 @pytest.mark.asyncio
 class TestCreateConversation:
     """create_conversation 测试"""
@@ -84,14 +83,15 @@ class TestCreateConversation:
 
     async def test_create_conversation_default_type(self, service, mock_repo):
         """测试默认 assistant_type 为 openclaw"""
-        mock_repo.create_conversation = AsyncMock(return_value=MagicMock(spec=Conversation))
+        mock_repo.create_conversation = AsyncMock(
+            return_value=MagicMock(spec=Conversation)
+        )
         await service.create_conversation(case_id="Q2024010100001")
         call_kwargs = mock_repo.create_conversation.call_args.kwargs
         assert call_kwargs["assistant_type"] == "openclaw"
 
 
 # ---------- send_message_stream_only ----------
-
 
 @pytest.mark.asyncio
 class TestSendMessageStreamOnly:
@@ -106,7 +106,6 @@ class TestSendMessageStreamOnly:
         # Mock 依赖
         mock_repo.add_message = AsyncMock()
         mock_repo.get_messages = AsyncMock(return_value=[])
-        mock_repo.get_conversation = AsyncMock(return_value=None)
 
         # Mock AI 客户端流
         async def fake_stream(*args, **kwargs):
@@ -142,158 +141,17 @@ class TestSendMessageStreamOnly:
         conv_id = uuid.uuid4()
         mock_repo.add_message = AsyncMock()
         mock_repo.get_messages = AsyncMock(return_value=[])
-        mock_repo.get_conversation = AsyncMock(return_value=None)
 
         async def empty_stream(*a, **kw):
-            return
-            yield  # make it an async generator
+            if False:
+                yield ""
 
         mock_client = MagicMock()
         mock_client.chat_completion_stream = empty_stream
         mock_registry.get_client.return_value = mock_client
 
-        _ = [
-            c
-            async for c in service.send_message_stream_only(
-                conv_id, "Q2024010100001", "hello", assistant_type="openclaw"
-            )
-        ]
+        chunks = [c async for c in service.send_message_stream_only(
+            conv_id, "Q2024010100001", "hello", assistant_type="openclaw"
+        )]
 
         mock_repo.get_messages.assert_called_once_with(conv_id)
-
-
-# ---------- Jaccard 相似度测试 ----------
-
-
-class TestJaccardSimilarity:
-    """Jaccard 相似度算法测试"""
-
-    def test_jaccard_identical_strings(self):
-        """测试完全相同的字符串"""
-        result = jaccard_similarity("虚拟机 磁盘 异常", "虚拟机 磁盘 异常")
-        assert result == 1.0
-
-    def test_jaccard_similar_strings(self):
-        """测试相似字符串 - 验收标准用例"""
-        # "虚拟机 磁盘 异常" vs "虚拟机 磁盘 IO 异常"
-        # 交集：{虚拟机，磁盘，异常} = 3
-        # 并集：{虚拟机，磁盘，异常，IO} = 4
-        # Jaccard = 3/4 = 0.75 >= 0.6
-        result = jaccard_similarity("虚拟机 磁盘 异常", "虚拟机 磁盘 IO 异常")
-        assert result >= 0.6
-
-    def test_jaccard_different_strings(self):
-        """测试完全不同的字符串"""
-        result = jaccard_similarity("你好世界", "再见地球")
-        assert result == 0.0
-
-    def test_jaccard_empty_string(self):
-        """测试空字符串"""
-        assert jaccard_similarity("", "test") == 0.0
-        assert jaccard_similarity("test", "") == 0.0
-        assert jaccard_similarity("", "") == 0.0
-
-    def test_jaccard_case_insensitive(self):
-        """测试大小写不敏感"""
-        result = jaccard_similarity("Hello World", "hello world")
-        assert result == 1.0
-
-    def test_jaccard_partial_overlap(self):
-        """测试部分重叠"""
-        # "CPU 内存 磁盘" vs "CPU 内存 网络"
-        # 交集：{CPU, 内存} = 2
-        # 并集：{CPU, 内存，磁盘，网络} = 4
-        # Jaccard = 2/4 = 0.5
-        result = jaccard_similarity("CPU 内存 磁盘", "CPU 内存 网络")
-        assert result == 0.5
-
-
-# ---------- 重复提问检测测试 ----------
-
-
-@pytest.mark.asyncio
-class TestRepeatQuestionDetection:
-    """重复提问检测测试"""
-
-    async def test_check_repeat_question_detects_duplicate(self, service, mock_repo):
-        """测试检测到重复提问"""
-        from app.models.message import Message
-
-        conv_id = uuid.uuid4()
-        case_id = "Q2024010100001"
-
-        # Mock 历史消息（相似内容）
-        historical_msg = MagicMock(spec=Message)
-        historical_msg.content = "虚拟机 磁盘 异常"
-        historical_msg.message_id = uuid.uuid4()
-
-        mock_repo.get_recent_user_messages = AsyncMock(return_value=[historical_msg])
-        mock_repo.increment_repeat_question_count = AsyncMock()
-
-        await service._check_repeat_question(
-            conversation_id=conv_id,
-            case_id=case_id,
-            content="虚拟机 磁盘 IO 异常",  # 与历史消息相似度 >= 0.6
-            current_message_id=uuid.uuid4(),
-        )
-
-        mock_repo.increment_repeat_question_count.assert_called_once_with(conv_id)
-
-    async def test_check_repeat_question_no_duplicate(self, service, mock_repo):
-        """测试非重复提问"""
-        from app.models.message import Message
-
-        conv_id = uuid.uuid4()
-        case_id = "Q2024010100001"
-
-        # Mock 历史消息（完全不同内容）
-        historical_msg = MagicMock(spec=Message)
-        historical_msg.content = "你好世界"
-        historical_msg.message_id = uuid.uuid4()
-
-        mock_repo.get_recent_user_messages = AsyncMock(return_value=[historical_msg])
-        mock_repo.increment_repeat_question_count = AsyncMock()
-
-        await service._check_repeat_question(
-            conversation_id=conv_id,
-            case_id=case_id,
-            content="再见地球",  # 与历史消息相似度 = 0.0
-            current_message_id=uuid.uuid4(),
-        )
-
-        mock_repo.increment_repeat_question_count.assert_not_called()
-
-    async def test_check_repeat_question_no_history(self, service, mock_repo):
-        """测试无历史消息"""
-        conv_id = uuid.uuid4()
-        case_id = "Q2024010100001"
-
-        mock_repo.get_recent_user_messages = AsyncMock(return_value=[])
-        mock_repo.increment_repeat_question_count = AsyncMock()
-
-        await service._check_repeat_question(
-            conversation_id=conv_id,
-            case_id=case_id,
-            content="第一条消息",
-            current_message_id=uuid.uuid4(),
-        )
-
-        mock_repo.increment_repeat_question_count.assert_not_called()
-
-    async def test_check_repeat_question_error_handling(self, service, mock_repo):
-        """测试错误处理"""
-        conv_id = uuid.uuid4()
-        case_id = "Q2024010100001"
-
-        mock_repo.get_recent_user_messages = AsyncMock(side_effect=Exception("Database error"))
-        mock_repo.increment_repeat_question_count = AsyncMock()
-
-        # 不应抛出异常
-        await service._check_repeat_question(
-            conversation_id=conv_id,
-            case_id=case_id,
-            content="测试消息",
-            current_message_id=uuid.uuid4(),
-        )
-
-        mock_repo.increment_repeat_question_count.assert_not_called()

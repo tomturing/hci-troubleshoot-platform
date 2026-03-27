@@ -202,8 +202,6 @@ class SearchEngine:
 
         Returns list of (chunk_id, content, document_id, title, cat_l1, cat_l2)
         """
-        trace_id = get_current_trace_id()
-
         # 生成 query 向量
         query_embedding = await self._embedding.embed_single(query)
 
