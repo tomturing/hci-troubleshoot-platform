@@ -369,7 +369,8 @@ if kill -0 $PF2_PID 2>/dev/null; then
 
   # ---- 5.7 KB 文档列表（GET /api/v1/kb/documents）----
   KB_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${API2}/api/v1/kb/documents" 2>/dev/null || echo "000")
-  if [[ "${KB_CODE}" == "200" || "${KB_CODE}" == "422" ]]; then
+  # 401 = 接口存在但需要 Bearer Token（admin 保护，属正常行为）
+  if [[ "${KB_CODE}" == "200" || "${KB_CODE}" == "401" || "${KB_CODE}" == "422" ]]; then
     ok "KB 文档列表接口可达: HTTP ${KB_CODE}"
     PASS=$((PASS + 1))
   else
