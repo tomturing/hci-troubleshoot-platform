@@ -246,7 +246,7 @@ type: Opaque
 stringData:
   POSTGRES_PASSWORD: "dev_password_123"          # 生产环境必须替换
   OPENCLAW_GATEWAY_TOKEN: "hci-dev-openclaw-token"
-  ZAI_API_KEY: ""                                 # 按需填写
+  OPENCLAW_API_KEY: ""                             # 按需填写（对应 Helm values 的 secrets.zaiApiKey）
   GF_SECURITY_ADMIN_PASSWORD: "admin"            # Grafana 管理员密码
 ```
 
