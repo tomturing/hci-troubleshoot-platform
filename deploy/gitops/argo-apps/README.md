@@ -31,8 +31,11 @@ argo-apps/
 # 1. 确认 kubectl context 指向本地集群
 kubectl config current-context
 
-# 2. 应用所有本地 Application
-kubectl apply -f deploy/gitops/argo-apps/local/
+# 2. 设置设备角色标签（仅首次）
+kubectl label ns argocd hci.env.role=dev --overwrite
+
+# 3. 通过角色校验脚本应用（推荐）
+bash scripts/ops/argocd-apply-apps.sh --scope local --yes
 ```
 
 ---
@@ -57,11 +60,14 @@ kubectl apply -f deploy/gitops/argo-apps/local/
 # 1. 确认 kubectl context 指向云端 ArgoCD 所在集群
 kubectl config current-context
 
-# 2. 注册 prod 集群到 ArgoCD（首次需要）
+# 2. 设置设备角色标签（仅首次）
+kubectl label ns argocd hci.env.role=staging --overwrite
+
+# 3. 注册 prod 集群到 ArgoCD（首次需要）
 argocd cluster add <prod-context-name>
 
-# 3. 应用所有云端 Application
-kubectl apply -f deploy/gitops/argo-apps/cloud/
+# 4. 通过角色校验脚本应用（推荐）
+bash scripts/ops/argocd-apply-apps.sh --scope cloud --yes
 ```
 
 ---
@@ -71,3 +77,12 @@ kubectl apply -f deploy/gitops/argo-apps/cloud/
 - `local/` 目录的 Application **禁止** `kubectl apply` 到云端集群
 - `cloud/` 目录的 Application **禁止** `kubectl apply` 到本地集群
 - prod Application 均关闭 `automated` 自动同步，所有变更需人工 `argocd app sync`
+
+## 统一入口脚本
+
+`scripts/ops/argocd-apply-apps.sh` 会在执行前校验设备角色：
+
+- `--scope local` 仅允许 `dev` 角色执行
+- `--scope cloud` 仅允许 `staging` 角色执行
+
+角色来源优先级：`--role` > `HCI_DEVICE_ROLE` > `argocd` namespace 的 `hci.env.role` 标签。
