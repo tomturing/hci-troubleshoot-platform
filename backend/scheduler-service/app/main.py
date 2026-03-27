@@ -7,17 +7,18 @@ Scheduler Service - 主应用
 - 添加后台初始化任务的异常处理，避免 fire-and-forget 静默失败
 """
 
-from fastapi import FastAPI
-from contextlib import asynccontextmanager
 import asyncio
+from contextlib import asynccontextmanager
 
+from fastapi import FastAPI
+from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
-from shared.database.redis import RedisManager
+
 from app.config import settings
+from app.routes import scheduler_routes
 from app.services.k8s_client import K8sClient
 from app.services.scheduler_service import SchedulerService
-from app.routes import scheduler_routes
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -32,23 +33,23 @@ async def lifespan(app: FastAPI):
         message=f"Starting {settings.SERVICE_NAME}",
         port=settings.SERVICE_PORT
     )
-    
+
     # 初始化 Redis
     redis_manager = RedisManager(settings.REDIS_URL)
     await redis_manager.connect()
-    
+
     # 初始化 K8s 客户端和调度服务
     k8s_client = K8sClient()
     scheduler_service = SchedulerService(k8s_client, redis_manager)
-    
+
     # 存入 app.state，供路由通过 request.app.state 访问
     app.state.redis_manager = redis_manager
     app.state.k8s_client = k8s_client
     app.state.scheduler_service = scheduler_service
-    
+
     # 注入依赖到路由（兼容 Depends(get_service) 模式）
     scheduler_routes.set_scheduler_service(scheduler_service)
-    
+
     # 后台初始化任务（带错误处理，避免 fire-and-forget 静默失败）
     async def _safe_start():
         try:
@@ -62,9 +63,9 @@ async def lifespan(app: FastAPI):
             )
 
     init_task = asyncio.create_task(_safe_start(), name="scheduler-init")
-    
+
     yield
-    
+
     logger.info(
         event="service_stopping",
         message=f"Stopping {settings.SERVICE_NAME}"

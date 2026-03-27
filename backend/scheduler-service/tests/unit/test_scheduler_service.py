@@ -9,8 +9,8 @@ Scheduler Service 单元测试
 - Redis Hash 持久化分配状态
 """
 
-import sys
 import os
+import sys
 
 # 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
 _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -24,8 +24,8 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-import sys
 import os
+import sys
 
 # 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
 _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -38,12 +38,12 @@ if _expect != _actual:
     if _svc in sys.path:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
+
+import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import json
-from unittest.mock import MagicMock, AsyncMock, patch
-
-from app.services.scheduler_service import SchedulerService, REDIS_ALLOCATIONS_KEY
+from app.services.scheduler_service import REDIS_ALLOCATIONS_KEY, SchedulerService
 
 
 @pytest.fixture

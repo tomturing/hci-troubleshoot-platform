@@ -90,6 +90,11 @@ line-length = 120
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["E402", "SIM117", "N806", "F841", "B007"]
+"backend/**/tests/**/*.py" = ["E402", "SIM117", "N806", "F841", "B007"]
+"backend/**/app/routes/*.py" = ["B008", "B904"]
+
 [tool.uv]
 # backend 各服务和 shared 目录均作为源码目录
 package = false

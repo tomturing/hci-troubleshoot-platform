@@ -4,11 +4,11 @@ Assistants Routes - AI助手API路由 (v2.0)
 代理到 Scheduler Service 的 /api/scheduler/assistants
 """
 
-from fastapi import APIRouter, HTTPException
 import httpx
+from fastapi import APIRouter, HTTPException
+from shared.utils.logger import get_logger
 
 from app.config import settings
-from shared.utils.logger import get_logger
 
 logger = get_logger("gateway-assistants")
 
@@ -19,15 +19,15 @@ router = APIRouter(prefix="/api/assistants", tags=["assistants"])
 async def list_assistants():
     """
     获取可用的AI助手列表
-    
+
     代理到 scheduler-service /api/scheduler/assistants
     """
     url = f"{settings.SCHEDULER_SERVICE_URL}/api/scheduler/assistants"
-    
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url)
-            
+
         if response.status_code == 200:
             items = response.json()
             if isinstance(items, list):

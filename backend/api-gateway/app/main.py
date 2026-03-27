@@ -6,16 +6,17 @@ API Gateway - 主应用
 - CORS 使用显式来源列表
 """
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from shared.utils.otel import init_telemetry, instrument_app
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
+from shared.utils.otel import init_telemetry, instrument_app
+
 from app.config import settings
+from app.routes import assistants, cases, conversations, health, websocket
 from app.services.session import SessionManager
-from app.routes import websocket, health, cases, conversations, assistants
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -31,21 +32,21 @@ async def lifespan(app: FastAPI):
         message=f"Starting {settings.SERVICE_NAME}",
         port=settings.SERVICE_PORT
     )
-    
+
     redis_manager = RedisManager(settings.REDIS_URL)
     await redis_manager.connect()
-    
+
     session_manager = SessionManager(redis_manager)
-    
+
     # 存入 app.state
     app.state.redis_manager = redis_manager
     app.state.session_manager = session_manager
-    
+
     # 兼容现有路由注入方式
     websocket.set_session_manager(session_manager)
-    
+
     yield
-    
+
     # 关闭
     logger.info(
         event="service_stopping",

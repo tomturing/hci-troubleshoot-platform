@@ -6,8 +6,8 @@ Conversation Service 单元测试 (v2.0 — 多类型AI助手架构)
 - send_message_stream_only(conversation_id, case_id, content, assistant_type)
 """
 
-import sys
 import os
+import sys
 
 # 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
 _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -21,13 +21,13 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-import pytest
 import uuid
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from app.services.conversation_service import ConversationService
+import pytest
 from app.models.conversation import Conversation
-from app.models.message import Message, MessageRole
+from app.models.message import MessageRole
+from app.services.conversation_service import ConversationService
 
 
 @pytest.fixture
@@ -143,8 +143,8 @@ class TestSendMessageStreamOnly:
         mock_repo.get_messages = AsyncMock(return_value=[])
 
         async def empty_stream(*a, **kw):
-            return
-            yield  # noqa: make it an async generator
+            if False:
+                yield ""
 
         mock_client = MagicMock()
         mock_client.chat_completion_stream = empty_stream

@@ -2,8 +2,8 @@
 API Gateway 测试 conftest — 激活 api-gateway 的 app 命名空间
 """
 
-import sys
 import os
+import sys
 
 _svc_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _expect = os.path.normpath(os.path.join(_svc_root, "app"))

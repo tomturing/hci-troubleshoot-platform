@@ -2,13 +2,14 @@
 Scheduler Service - 集成测试
 """
 
-import pytest
-import httpx
-from httpx import ASGITransport
 import uuid
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
+import httpx
+import pytest
 from app.main import app
+from httpx import ASGITransport
+
 
 @pytest.fixture
 def mock_k8s_client():
@@ -39,79 +40,76 @@ class TestSchedulerIntegration:
     @pytest.mark.asyncio
     async def test_health_check(self, test_app, mock_k8s_client):
         """测试健康检查接口"""
-        async with test_app.router.lifespan_context(test_app):
-            async with httpx.AsyncClient(
-                transport=ASGITransport(app=test_app),
-                base_url=self.BASE_URL
-            ) as client:
-                response = await client.get(f"{self.BASE_URL}/health")
-                assert response.status_code == 200
-                data = response.json()
-                assert data["status"] == "healthy"
-                assert "service" in data
+        async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
+            transport=ASGITransport(app=test_app),
+            base_url=self.BASE_URL
+        ) as client:
+            response = await client.get(f"{self.BASE_URL}/health")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "healthy"
+            assert "service" in data
 
     @pytest.mark.asyncio
     async def test_allocate_and_release_pod(self, test_app, mock_k8s_client):
         """测试Pod分配和释放的完整流程"""
         case_id = f"TEST-CASE-{uuid.uuid4().hex[:6]}"
         trace_id = f"trace-{uuid.uuid4().hex[:6]}"
-        
-        async with test_app.router.lifespan_context(test_app):
-            async with httpx.AsyncClient(
-                transport=ASGITransport(app=test_app),
-                base_url=self.BASE_URL
-            ) as client:
-                # 1. 验证分配 (Allocate)
-                response = await client.post(
-                    f"{self.BASE_URL}/api/scheduler/pods/allocate",
-                    json={
-                        "case_id": case_id
-                    },
-                    headers={"X-Trace-ID": trace_id}
-                )
-                assert response.status_code == 200
-                data = response.json()
-                assert "pod_name" in data
-                
-                pod_name = data["pod_name"]
-                
-                # 2. 验证再次分配返回同一个 (Idempotency / Reuse)
-                response2 = await client.post(
-                    f"{self.BASE_URL}/api/scheduler/pods/allocate",
-                    json={
-                        "case_id": case_id
-                    },
-                    headers={"X-Trace-ID": trace_id}
-                )
-                assert response2.status_code == 200
-                assert response2.json()["pod_name"] == pod_name
-                
-                # 3. 验证释放 (Release)
-                response3 = await client.post(
-                    f"{self.BASE_URL}/api/scheduler/pods/release",
-                    json={
-                        "case_id": case_id
-                    },
-                    headers={"X-Trace-ID": trace_id}
-                )
-                assert response3.status_code == 200
+
+        async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
+            transport=ASGITransport(app=test_app),
+            base_url=self.BASE_URL
+        ) as client:
+            # 1. 验证分配 (Allocate)
+            response = await client.post(
+                f"{self.BASE_URL}/api/scheduler/pods/allocate",
+                json={
+                    "case_id": case_id
+                },
+                headers={"X-Trace-ID": trace_id}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert "pod_name" in data
+
+            pod_name = data["pod_name"]
+
+            # 2. 验证再次分配返回同一个 (Idempotency / Reuse)
+            response2 = await client.post(
+                f"{self.BASE_URL}/api/scheduler/pods/allocate",
+                json={
+                    "case_id": case_id
+                },
+                headers={"X-Trace-ID": trace_id}
+            )
+            assert response2.status_code == 200
+            assert response2.json()["pod_name"] == pod_name
+
+            # 3. 验证释放 (Release)
+            response3 = await client.post(
+                f"{self.BASE_URL}/api/scheduler/pods/release",
+                json={
+                    "case_id": case_id
+                },
+                headers={"X-Trace-ID": trace_id}
+            )
+            assert response3.status_code == 200
 
     @pytest.mark.asyncio
     async def test_release_nonexistent_pod(self, test_app, mock_k8s_client):
         """测试释放不存在或未分配的Pod"""
         case_id = f"FAKE-CASE-{uuid.uuid4().hex[:6]}"
         pod_name = "openclaw-fake-pod"
-        
-        async with test_app.router.lifespan_context(test_app):
-            async with httpx.AsyncClient(
-                transport=ASGITransport(app=test_app),
-                base_url=self.BASE_URL
-            ) as client:
-                # Release without allocation shouldn't fail fatally, typically might ignore or return specific status
-                response = await client.post(
-                    f"{self.BASE_URL}/api/scheduler/pods/release",
-                    json={
-                        "case_id": case_id
-                    }
-                )
-                assert response.status_code == 404
+
+        async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
+            transport=ASGITransport(app=test_app),
+            base_url=self.BASE_URL
+        ) as client:
+            # Release without allocation shouldn't fail fatally, typically might ignore or return specific status
+            response = await client.post(
+                f"{self.BASE_URL}/api/scheduler/pods/release",
+                json={
+                    "case_id": case_id
+                }
+            )
+            assert response.status_code == 404

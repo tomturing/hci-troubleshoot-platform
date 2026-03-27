@@ -6,15 +6,15 @@ Scheduler Service - 多类型AI助手调度与生命周期管理 (v2.0)
 - 支持服务重启后自动恢复分配映射
 """
 
-import asyncio
 import json
-from typing import Optional, Dict, Any, Tuple
+
+from shared.database.redis import RedisManager
+from shared.utils.logger import get_logger
+
+from app.config import settings
 
 from .k8s_client import K8sClient
 from .pod_pool import PodPoolManager
-from shared.database.redis import RedisManager
-from shared.utils.logger import get_logger
-from app.config import settings
 
 logger = get_logger("scheduler-service")
 
@@ -24,7 +24,7 @@ REDIS_ALLOCATIONS_KEY = "scheduler:allocations"
 
 class SchedulerService:
     """调度服务 (v2.0: 支持多类型AI助手，Redis 持久化分配状态)"""
-    
+
     def __init__(self, k8s_client: K8sClient, redis_manager: RedisManager):
         self.k8s = k8s_client
         self.redis = redis_manager
@@ -32,7 +32,7 @@ class SchedulerService:
             k8s_client=k8s_client,
             assistant_registry=settings.assistant_registry
         )
-        
+
     async def start(self):
         """启动服务，初始化 Pod 池并开始后台维护任务"""
         logger.info("Starting Scheduler Service background tasks (v2.0)")
@@ -40,10 +40,10 @@ class SchedulerService:
         await self.pool_manager.initialize_all()
         # 再补充热备池
         await self.pool_manager.ensure_all_warm_pools()
-        
+
     # ────────── Redis 分配映射操作 ──────────
 
-    async def _get_allocation(self, case_id: str) -> Optional[Tuple[str, str]]:
+    async def _get_allocation(self, case_id: str) -> tuple[str, str] | None:
         """从 Redis 获取 case_id 的分配信息 -> (pod_name, assistant_type)"""
         raw = await self.redis.hget(REDIS_ALLOCATIONS_KEY, case_id)
         if not raw:
@@ -65,7 +65,7 @@ class SchedulerService:
         """删除分配信息"""
         await self.redis.hdel(REDIS_ALLOCATIONS_KEY, case_id)
 
-    async def _get_all_allocations(self) -> Dict[str, Tuple[str, str]]:
+    async def _get_all_allocations(self) -> dict[str, tuple[str, str]]:
         """获取所有分配信息"""
         raw_map = await self.redis.hgetall(REDIS_ALLOCATIONS_KEY)
         result = {}
@@ -83,7 +83,7 @@ class SchedulerService:
         self,
         case_id: str,
         assistant_type: str = "openclaw"
-    ) -> Optional[str]:
+    ) -> str | None:
         """为工单分配指定类型的Pod"""
         # 检查是否已有分配
         existing = await self._get_allocation(case_id)
@@ -97,13 +97,13 @@ class SchedulerService:
                     return pod_name
             # 类型不同或Pod已死，清理
             await self._del_allocation(case_id)
-        
+
         # 获取对应类型的Pod池
         pool = self.pool_manager.get_pool(assistant_type)
         if not pool:
             logger.error(f"No pool found for assistant type: {assistant_type}")
             return None
-        
+
         # 从池中获取
         pod_name = await pool.acquire_pod(case_id)
         if pod_name:
@@ -116,7 +116,7 @@ class SchedulerService:
                 assistant_type=assistant_type
             )
             return pod_name
-            
+
         return None
 
     async def release_pod(self, case_id: str) -> bool:
@@ -125,7 +125,7 @@ class SchedulerService:
         if existing:
             pod_name, assistant_type = existing
             await self._del_allocation(case_id)
-            
+
             logger.info(
                 event="pod_released",
                 message=f"Releasing {assistant_type} pod {pod_name} for case {case_id}",
@@ -133,7 +133,7 @@ class SchedulerService:
                 pod_name=pod_name,
                 assistant_type=assistant_type
             )
-            
+
             pool = self.pool_manager.get_pool(assistant_type)
             if pool:
                 await pool.release_pod(pod_name)
@@ -141,22 +141,22 @@ class SchedulerService:
                 # 池被移除，直接删除Pod
                 self.k8s.delete_pod(pod_name)
             return True
-            
+
         return False
 
-    async def get_pod_for_case(self, case_id: str) -> Optional[str]:
+    async def get_pod_for_case(self, case_id: str) -> str | None:
         """查询工单关联的Pod名称"""
         allocation = await self._get_allocation(case_id)
         return allocation[0] if allocation else None
 
-    async def get_allocation_info(self, case_id: str) -> Optional[Dict[str, str]]:
+    async def get_allocation_info(self, case_id: str) -> dict[str, str] | None:
         """查询工单分配详情（含类型）"""
         allocation = await self._get_allocation(case_id)
         if allocation:
             return {"pod_name": allocation[0], "assistant_type": allocation[1]}
         return None
 
-    def get_endpoint_for_case_sync(self, pod_name: str, assistant_type: str) -> Optional[str]:
+    def get_endpoint_for_case_sync(self, pod_name: str, assistant_type: str) -> str | None:
         """根据 pod_name 解析 Pod endpoint (http://<pod_ip>:<port>)。"""
         pod_ip = self.k8s.get_pod_ip(pod_name)
         if not pod_ip:
@@ -165,14 +165,14 @@ class SchedulerService:
         port = cfg.get("port", 18789)
         return f"http://{pod_ip}:{port}"
 
-    async def get_status(self) -> Dict:
+    async def get_status(self) -> dict:
         """获取服务状态"""
         all_allocs = await self._get_all_allocations()
         return {
             "allocated_cases": len(all_allocs),
             "pools": self.pool_manager.get_all_stats()
         }
-    
+
     def get_available_assistants(self) -> list:
         """获取可用的AI助手列表"""
         result = []

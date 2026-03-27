@@ -4,6 +4,7 @@ Shared Pydantic Schemas
 
 from datetime import datetime
 from enum import StrEnum
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -78,10 +79,6 @@ class MessageCreate(BaseModel):
     role: MessageRole
     content: str
     metadata: dict | None = None
-
-
-from uuid import UUID
-
 
 class MessageResponse(BaseModel):
     """消息响应"""

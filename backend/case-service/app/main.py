@@ -5,12 +5,13 @@ Case Service - 主应用
 - 使用 app.state 替代全局变量进行依赖注入
 """
 
-from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
-from shared.utils.otel import init_telemetry, instrument_app
+from fastapi import FastAPI
 from shared.database.postgres import DatabaseManager
 from shared.utils.logger import get_logger
+from shared.utils.otel import init_telemetry, instrument_app
+
 from app.config import settings
 from app.routes import cases
 
@@ -28,17 +29,17 @@ async def lifespan(app: FastAPI):
         message=f"Starting {settings.SERVICE_NAME}",
         port=settings.SERVICE_PORT
     )
-    
+
     database_manager = DatabaseManager(settings.DATABASE_URL)
-    
+
     # 存入 app.state
     app.state.database_manager = database_manager
-    
+
     # 兼容现有路由注入方式
     cases.set_database_manager(database_manager)
-    
+
     yield
-    
+
     # 关闭
     logger.info(
         event="service_stopping",

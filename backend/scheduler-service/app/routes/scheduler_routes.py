@@ -2,17 +2,16 @@
 Scheduler Routes - 调度API路由 (v2.0 多类型AI助手)
 """
 
+
 from fastapi import APIRouter, Depends, HTTPException
-from typing import Optional, Dict, List
+from pydantic import BaseModel, Field
 
 from ..services.scheduler_service import SchedulerService
-from ..services.k8s_client import K8sClient
-from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
 
 # 依赖注入
-scheduler_service: Optional[SchedulerService] = None
+scheduler_service: SchedulerService | None = None
 
 def set_scheduler_service(service: SchedulerService):
     global scheduler_service
@@ -32,10 +31,10 @@ class PodReleaseRequest(BaseModel):
 
 class PodResponse(BaseModel):
     pod_name: str
-    assistant_type: Optional[str] = None
-    status: Optional[str] = None
-    ip: Optional[str] = None
-    endpoint: Optional[str] = None
+    assistant_type: str | None = None
+    status: str | None = None
+    ip: str | None = None
+    endpoint: str | None = None
 
 class AssistantInfo(BaseModel):
     type: str
@@ -45,7 +44,7 @@ class AssistantInfo(BaseModel):
     pool_stats: dict = {}
 
 
-@router.get("/assistants", response_model=List[AssistantInfo])
+@router.get("/assistants", response_model=list[AssistantInfo])
 async def list_assistants(
     service: SchedulerService = Depends(get_service)
 ):
@@ -100,13 +99,13 @@ async def get_pod_for_case(
     info = await service.get_allocation_info(case_id)
     if not info:
         raise HTTPException(status_code=404, detail="No pod allocated for this case")
-    
+
     pod_name = info["pod_name"]
     assistant_type = info["assistant_type"]
     status = service.k8s.get_pod_status(pod_name)
     ip = service.k8s.get_pod_ip(pod_name)
     endpoint = service.get_endpoint_for_case_sync(pod_name, assistant_type)
-    
+
     return {
         "pod_name": pod_name,
         "assistant_type": assistant_type,

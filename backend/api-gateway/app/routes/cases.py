@@ -2,13 +2,13 @@
 Case Routes - API Gateway Proxy
 """
 
-from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+
 import httpx
-from typing import Optional
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
+from shared.utils.logger import get_logger
 
 from app.config import settings
-from shared.utils.logger import get_logger
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 logger = get_logger("gateway-cases")
@@ -19,9 +19,9 @@ SCHEDULER_SERVICE_URL = settings.SCHEDULER_SERVICE_URL
 async def proxy_request(
     method: str,
     path: str,
-    payload: Optional[dict] = None,
-    params: Optional[dict] = None,
-    headers: Optional[dict] = None
+    payload: dict | None = None,
+    params: dict | None = None,
+    headers: dict | None = None
 ):
     async with httpx.AsyncClient() as client:
         try:
@@ -95,7 +95,7 @@ async def close_case(case_id: str, request: Request):
     response = await proxy_request("PUT", f"/{case_id}/close")
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Case not found")
-    
+
     # 工单关闭成功后，通知 Scheduler 释放关联的 Pod，避免资源泄漏
     if response.status_code == 200:
         try:
@@ -111,5 +111,5 @@ async def close_case(case_id: str, request: Request):
         except Exception as e:
             # Pod 释放失败不影响工单关闭结果
             logger.warning(f"Failed to release pod for case {case_id}: {e}")
-    
+
     return JSONResponse(content=response.json(), status_code=response.status_code)

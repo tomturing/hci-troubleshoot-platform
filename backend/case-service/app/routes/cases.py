@@ -2,23 +2,25 @@
 Case Routes - API路由
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import List, Optional
 from datetime import datetime
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models.schemas import (
-    CaseCreate, CaseResponse,
-    CaseListResponse, CaseStatsResponse, ClientListResponse,
-)
+from fastapi import APIRouter, Depends, HTTPException, Query
 from shared.database.postgres import DatabaseManager
-from ..services.case_service import CaseService
+from shared.models.schemas import (
+    CaseCreate,
+    CaseListResponse,
+    CaseResponse,
+    CaseStatsResponse,
+    ClientListResponse,
+)
+
 from ..repositories.case_repo import CaseRepository
+from ..services.case_service import CaseService
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 
 # 这里需要在main.py中注入database_manager
-database_manager: Optional[DatabaseManager] = None
+database_manager: DatabaseManager | None = None
 
 def set_database_manager(db_manager: DatabaseManager):
     global database_manager
@@ -28,7 +30,7 @@ async def get_case_service() -> CaseService:
     """依赖注入: 获取Case Service"""
     if not database_manager:
         raise HTTPException(status_code=500, detail="Database not initialized")
-    
+
     async for session in database_manager.get_session():
         repo = CaseRepository(session)
         yield CaseService(repo)
@@ -39,10 +41,10 @@ async def get_case_service() -> CaseService:
 async def list_all_cases(
     skip: int = Query(0, ge=0, description="偏移量"),
     limit: int = Query(20, ge=1, le=100, description="每页数量"),
-    status: Optional[str] = Query(None, description="按状态筛选"),
-    client_id: Optional[str] = Query(None, description="按客户端筛选"),
-    start_time: Optional[datetime] = Query(None, description="开始时间"),
-    end_time: Optional[datetime] = Query(None, description="结束时间"),
+    status: str | None = Query(None, description="按状态筛选"),
+    client_id: str | None = Query(None, description="按客户端筛选"),
+    start_time: datetime | None = Query(None, description="开始时间"),
+    end_time: datetime | None = Query(None, description="结束时间"),
     service: CaseService = Depends(get_case_service),
 ):
     """[Admin] 获取所有工单列表（分页 + 筛选）"""
@@ -87,7 +89,7 @@ async def get_case(
         raise HTTPException(status_code=404, detail="Case not found")
     return case
 
-@router.get("/", response_model=List[CaseResponse])
+@router.get("/", response_model=list[CaseResponse])
 async def list_cases(
     client_id: str,
     service: CaseService = Depends(get_case_service)

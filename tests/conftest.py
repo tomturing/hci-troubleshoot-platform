@@ -2,8 +2,8 @@
 tests/ conftest — 此目录下的测试主要针对 case-service
 """
 
-import sys
 import os
+import sys
 
 
 def _activate_service(service_name: str) -> None:
