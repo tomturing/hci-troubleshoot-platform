@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-repo-server-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server-copyutil-watchdog
+    app.kubernetes.io/component: ops
+    app.kubernetes.io/part-of: argocd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-repo-server-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server-copyutil-watchdog
+    app.kubernetes.io/component: ops
+    app.kubernetes.io/part-of: argocd
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argocd-repo-server-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server-copyutil-watchdog
+    app.kubernetes.io/component: ops
+    app.kubernetes.io/part-of: argocd
+subjects:
+  - kind: ServiceAccount
+    name: argocd-repo-server-watchdog
+    namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-repo-server-watchdog
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: argocd-repo-server-copyutil-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server-copyutil-watchdog
+    app.kubernetes.io/component: ops
+    app.kubernetes.io/part-of: argocd
+spec:
+  schedule: "*/5 * * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: argocd-repo-server-copyutil-watchdog
+            app.kubernetes.io/component: ops
+            app.kubernetes.io/part-of: argocd
+        spec:
+          serviceAccountName: argocd-repo-server-watchdog
+          restartPolicy: Never
+          containers:
+            - name: watchdog
+              image: quay.io/argoproj/argocd:v3.3.6
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -ceu
+                - |
+                  TRACE_ID="argocd-repo-watchdog-$(date +%Y%m%d%H%M%S)-$$"
+                  API_HOST="${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}"
+                  API_SERVER_NAME="kubernetes.default.svc"
+                  SA_TOKEN_FILE="/var/run/secrets/kubernetes.io/serviceaccount/token"
+                  SA_CA_FILE="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+                  NOW_UTC() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+                  LOG() {
+                    level="$1"
+                    msg="$2"
+                    printf '[%s][trace_id=%s][component=argocd-repo-watchdog][level=%s] %s\n' "$(NOW_UTC)" "$TRACE_ID" "$level" "$msg"
+                  }
+
+                  api_call() {
+                    method="$1"
+                    path="$2"
+                    token="$(cat "$SA_TOKEN_FILE")"
+                    printf '%s %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nAccept: application/json\r\nConnection: close\r\n\r\n' \
+                      "$method" "$path" "$API_SERVER_NAME" "$token" \
+                      | openssl s_client -quiet -connect "$API_HOST" -servername "$API_SERVER_NAME" -CAfile "$SA_CA_FILE" 2>/dev/null
+                  }
+
+                  # 读取 argocd-repo-server Pod 列表（仅 argocd 命名空间）
+                  RESPONSE="$(api_call GET '/api/v1/namespaces/argocd/pods?labelSelector=app.kubernetes.io%2Fname%3Dargocd-repo-server' || true)"
+                  BODY="$(printf '%s' "$RESPONSE" | sed -n '/^\r$/,$p' | sed '1d' | tr -d '\n')"
+
+                  if [ -z "$BODY" ] || ! printf '%s' "$BODY" | grep -q '"items"'; then
+                    LOG WARN "读取 argocd-repo-server Pod 失败或返回为空，跳过"
+                    exit 0
+                  fi
+
+                  POD_NAMES="$(printf '%s' "$BODY" | grep -o '"name":"argocd-repo-server[^"]*"' | sed -E 's/"name":"([^"]+)"/\1/' | sort -u || true)"
+
+                  if [ -z "$POD_NAMES" ]; then
+                    LOG INFO "argocd-repo-server pod 不存在，跳过"
+                    exit 0
+                  fi
+
+                  if ! printf '%s' "$BODY" | grep -q '"name":"copyutil"'; then
+                    LOG INFO "未发现 copyutil 容器信息"
+                    exit 0
+                  fi
+
+                  if ! printf '%s' "$BODY" | grep -q '"reason":"CrashLoopBackOff"'; then
+                    LOG INFO "未发现 copyutil CrashLoopBackOff"
+                    exit 0
+                  fi
+
+                  deleted=0
+                  for pod in $POD_NAMES; do
+                    LOG WARN "检测到 copyutil CrashLoopBackOff，删除 pod=${pod}"
+                    api_call DELETE "/api/v1/namespaces/argocd/pods/${pod}" >/dev/null || true
+                    deleted=$((deleted + 1))
+                  done
+
+                  LOG INFO "处理完成，已删除 pod 数量=${deleted}"
