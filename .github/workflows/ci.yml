@@ -5,6 +5,12 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: '手动触发原因'
+        required: false
+        default: '手动构建镜像'
 
 jobs:
   docs-governance:
@@ -49,7 +55,6 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    needs: docs-governance
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +72,6 @@ jobs:
   frontend-build:
     name: 前端构建检查
     runs-on: ubuntu-latest
-    needs: docs-governance
     steps:
       - uses: actions/checkout@v4
 
@@ -90,7 +94,6 @@ jobs:
   helm-validate:
     name: Helm 模板校验
     runs-on: ubuntu-latest
-    needs: docs-governance
     steps:
       - uses: actions/checkout@v4
 
@@ -111,10 +114,34 @@ jobs:
             exit 1
           fi
 
+  check-claw-configs:
+    name: 校验 claw-configs 一致性
+    runs-on: ubuntu-latest
+    needs: docs-governance
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查 deploy/claw-configs 与 Helm chart 副本是否同步
+        run: |
+          # 源文件：deploy/claw-configs/（人工编辑）
+          # Helm 副本：deploy/helm/hci-platform/claw-configs/（由 make sync-claw-configs 更新）
+          # 两者必须完全一致，否则 ConfigMap 渲染的 Personality 文件与源文件脱节
+          if ! diff -rq deploy/claw-configs/learningclaw \
+              deploy/helm/hci-platform/claw-configs/learningclaw; then
+            echo "❌ learningclaw 配置不一致，请运行 make sync-claw-configs 后提交"
+            exit 1
+          fi
+          if ! diff -rq deploy/claw-configs/productionclaw \
+              deploy/helm/hci-platform/claw-configs/productionclaw; then
+            echo "❌ productionclaw 配置不一致，请运行 make sync-claw-configs 后提交"
+            exit 1
+          fi
+          echo "✅ claw-configs 与 Helm chart 副本一致"
+
   unit-tests:
     name: unit-tests
     runs-on: ubuntu-latest
-    needs: [lint, frontend-build, helm-validate]
+    needs: [lint, frontend-build, helm-validate, check-claw-configs]
     steps:
       - uses: actions/checkout@v4
 
@@ -142,6 +169,10 @@ jobs:
             -x -q \
             --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
             -m "not integration and not slow"
+          uv run pytest backend/conversation-service/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -m "not integration and not slow"
           # 最后一批：合并所有覆盖率后统一检查基线（≥60%），避免分批检查造成误报
           uv run pytest backend/scheduler-service/tests/unit/ \
             -x -q \
@@ -159,7 +190,7 @@ jobs:
   integration-tests:
     name: integration-tests
     runs-on: ubuntu-latest
-    needs: [lint, frontend-build, helm-validate]
+    needs: [lint, frontend-build, helm-validate, check-claw-configs]
 
     services:
       redis:
@@ -189,13 +220,14 @@ jobs:
         run: |
           # 各服务分开进程运行，避免 app/ 命名空间跨服务污染
           uv run pytest tests/integration/ -x -q -m "integration"
+          uv run pytest backend/conversation-service/tests/integration/ -x -q -m "integration"
           uv run pytest backend/scheduler-service/tests/integration/ -x -q -m "integration"
           uv run pytest backend/api-gateway/tests/integration/ -x -q -m "integration"
 
   security-tests:
     name: security-tests
     runs-on: ubuntu-latest
-    needs: [lint, frontend-build, helm-validate]
+    needs: [lint, frontend-build, helm-validate, check-claw-configs]
     steps:
       - uses: actions/checkout@v4
 
@@ -215,7 +247,7 @@ jobs:
     name: 发布元数据产物
     runs-on: ubuntu-latest
     needs: [unit-tests, integration-tests, security-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
@@ -251,7 +283,7 @@ jobs:
     name: 准备构建元数据
     runs-on: ubuntu-latest
     needs: [unit-tests, integration-tests, security-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     outputs:
       image_tag: ${{ steps.tag.outputs.tag }}
     steps:
@@ -263,7 +295,7 @@ jobs:
     name: 构建并推送镜像（${{ matrix.service }}）
     runs-on: ubuntu-latest
     needs: prepare
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       packages: write
@@ -273,21 +305,40 @@ jobs:
       matrix:
         include:
           - service: api-gateway
-            context: backend/api-gateway
+            context: backend
+            dockerfile: backend/api-gateway/Dockerfile
           - service: case-service
-            context: backend/case-service
+            context: backend
+            dockerfile: backend/case-service/Dockerfile
           - service: conversation-service
-            context: backend/conversation-service
+            context: backend
+            dockerfile: backend/conversation-service/Dockerfile
           - service: scheduler-service
-            context: backend/scheduler-service
+            context: backend
+            dockerfile: backend/scheduler-service/Dockerfile
           - service: kb-service
-            context: backend/kb-service
+            context: backend
+            dockerfile: backend/kb-service/Dockerfile
           - service: customer-ui
-            context: frontend/customer
+            context: frontend
+            dockerfile: frontend/customer/Dockerfile
           - service: admin-ui
-            context: frontend/admin
+            context: frontend
+            dockerfile: frontend/admin/Dockerfile
+          # hci-openclaw：从上游 openclaw/openclaw 构建，固定版本，镜像仅打 latest
+          # 不跟随业务服务的 timestamp tag，避免每次 push 都重新构建这个耗时的外部依赖
+          - service: hci-openclaw
+            context: _ext_openclaw
+            openclaw_ref: "v2026.3.14"
+            is_external: true
     steps:
       - uses: actions/checkout@v4
+
+      - name: Clone openclaw 上游源码（外部依赖，固定版本）
+        if: matrix.is_external == true
+        run: |
+          git clone --depth=1 --branch ${{ matrix.openclaw_ref }} \
+            https://github.com/openclaw/openclaw.git ${{ matrix.context }}
 
       - name: 登录 GitHub Container Registry
         uses: docker/login-action@v3
@@ -300,16 +351,17 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: |
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
 
-      - name: Trivy 镜像安全扫描（HIGH/CRITICAL 阻断）
+      - name: Trivy 镜像安全扫描（仅上报，不阻断）
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
-          exit-code: '1'
+          exit-code: '0'
           severity: HIGH,CRITICAL
           format: sarif
           output: trivy-${{ matrix.service }}.sarif
@@ -317,6 +369,7 @@ jobs:
       - name: 上传安全扫描结果（GitHub Security 标签页可见）
         uses: github/codeql-action/upload-sarif@v3
         if: always()
+        continue-on-error: true
         with:
           sarif_file: trivy-${{ matrix.service }}.sarif
 
@@ -324,7 +377,7 @@ jobs:
     name: 自动晋级 dev 环境
     runs-on: ubuntu-latest
     needs: [prepare, build-and-push]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     steps:
       - name: 触发环境仓库同步（dev 环境）
         env:

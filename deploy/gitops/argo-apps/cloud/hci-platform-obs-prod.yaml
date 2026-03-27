@@ -1,0 +1,51 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-obs-prod
+#
+# 目标集群：prod 独立 VM（192.168.0.3:6443），由云端 ArgoCD hub 统一管理
+# 管理可观测性栈（namespace: hci-observability）：
+#   - Prometheus Deployment + ServiceAccount + ConfigMap + Service
+#   - Loki Deployment + PVC + Service
+#   - Tempo Deployment + PVC + Service
+#   - Grafana Deployment + Service + Secret + ConfigMap
+#   - Promtail DaemonSet + ServiceAccount
+#
+# 设计原则：
+#   - prune: false — 生产日志/追踪数据绝对保护
+#   - 生产环境关闭 automated，所有同步须人工审批后手动触发
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-obs-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "prod 可观测性栈 — Prometheus + Loki + Tempo + Grafana + Promtail"
+spec:
+  project: default
+  destination:
+    # prod 集群独立 VM（192.168.0.3），ArgoCD 通过内网 API Server 管理
+    server: https://192.168.0.3:6443
+    namespace: hci-observability
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-obs
+      helm:
+        releaseName: hci-platform-obs
+        valueFiles:
+          - $values/environments/prod/values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  ignoreDifferences:
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
+        - /spec/volumeMode
+        - /spec/accessModes
+  syncPolicy:
+    # 生产环境默认手动同步，防止未审批变更自动生效
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true

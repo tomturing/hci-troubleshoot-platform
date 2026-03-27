@@ -136,7 +136,16 @@ CREATE TABLE IF NOT EXISTS conversation (
     started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     ended_at TIMESTAMP WITH TIME ZONE,
     message_count INT DEFAULT 0,
+    repeat_question_count INT DEFAULT 0 NOT NULL,  -- 重复提问计数（质量指标）
     metadata JSONB DEFAULT '{}'::jsonb,
+    -- 诊断状态字段（0003 迁移）
+    diagnostic_stage VARCHAR(8) NOT NULL DEFAULT 'S0',  -- 诊断阶段：S0意图识别→S6验证闭环
+    category_l1 VARCHAR(100),                          -- 一级分类（如：虚拟机/存储/网络）
+    category_l2 VARCHAR(100),                          -- 二级分类（如：虚拟机开机失败）
+    category_id VARCHAR(32),                           -- 分类 ID，对应 category_baseline.yaml
+    hypothesis JSONB DEFAULT '[]'::jsonb,              -- 当前假设列表 [{id,description,confidence,status}]
+    react_state JSONB DEFAULT '{}'::jsonb,             -- ReAct 执行器状态快照（断点续接）
+    pending_confirm JSONB,                             -- 待用户确认的工具调用 {tool_call_id,tool_name,args,risk_level}
     trace_id VARCHAR(64)
 );
 
@@ -146,6 +155,7 @@ CREATE INDEX idx_conversation_assistant_type ON conversation(assistant_type);
 CREATE INDEX idx_conversation_started_at ON conversation(started_at DESC);
 CREATE INDEX idx_conversation_trace_id ON conversation(trace_id);
 CREATE INDEX idx_conversation_case_started ON conversation(case_id, started_at DESC);
+CREATE INDEX idx_conversation_diagnostic_stage ON conversation(diagnostic_stage);
 
 COMMENT ON TABLE conversation IS '对话会话表，一个Case可以有多个会话';
 
@@ -465,6 +475,33 @@ CREATE TABLE IF NOT EXISTS kb_synonym (
 );
 
 COMMENT ON TABLE kb_synonym IS '同义词映射表 v3.0 — 统一 HCI 专业术语缩写，提升 BM25 召回率';
+
+-- ============================================================================
+-- 9. 工具调用审计日志表（Phase 3: ReAct 引擎工具接入，0003 迁移）
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS tool_audit_log (
+    id              VARCHAR(36)     PRIMARY KEY,                       -- ReactExecutor 预生成的 UUID
+    session_id      VARCHAR(36)     NOT NULL,                          -- 关联的 conversation_id
+    trace_id        VARCHAR(55),                                       -- W3C traceparent
+    tool_name       VARCHAR(100)    NOT NULL,                          -- 工具名称，如 get_active_alerts
+    tool_args       JSONB,                                             -- 工具调用参数
+    risk_level      INTEGER         NOT NULL,                          -- 1=只读 2=写操作需确认 3=高危
+    policy          VARCHAR(20),                                       -- auto|notify|confirm|block
+    authorized_by   VARCHAR(100),                                      -- risk_level>=2 时记录确认用户 ID
+    result          JSONB,                                             -- 执行结果（成功时，截断到 2000 字符）
+    error           TEXT,                                              -- 执行异常信息（失败时）
+    started_at      TIMESTAMP WITH TIME ZONE NOT NULL,
+    completed_at    TIMESTAMP WITH TIME ZONE NOT NULL,
+    duration_ms     INTEGER                                            -- 执行耗时（毫秒）
+);
+
+CREATE INDEX IF NOT EXISTS ix_tool_audit_log_session_id ON tool_audit_log(session_id);
+CREATE INDEX IF NOT EXISTS ix_tool_audit_log_started_at ON tool_audit_log(started_at);
+CREATE INDEX IF NOT EXISTS ix_tool_audit_log_risk_level ON tool_audit_log(risk_level);
+
+COMMENT ON TABLE tool_audit_log IS '工具调用审计日志表（生产安全要求，不可绕过）——记录 ReAct 执行器每次工具调用';
+COMMENT ON COLUMN tool_audit_log.risk_level IS '1=只读/低风险, 2=写操作需人工确认, 3=高危禁止自动执行';
 
 -- ============================================================================
 -- 完成

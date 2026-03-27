@@ -6,6 +6,7 @@ metadata:
 spec:
   project: default
   destination:
+    # staging 集群：云端 ArgoCD 所在 VM（kubernetes.default.svc = 本机集群）
     server: https://kubernetes.default.svc
     namespace: hci-staging
   sources:

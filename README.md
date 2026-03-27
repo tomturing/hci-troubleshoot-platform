@@ -119,7 +119,7 @@ bash scripts/k3s-verify.sh
 | 分类 | 文档 |
 |------|------|
 | 需求 | [需求说明](docs/requirements/) |
-| 架构 | [系统架构](docs/architecture/系统架构.md) · [数据库设计](docs/architecture/数据库设计.md) · [接口设计](docs/architecture/接口设计.md) · [可观测性](docs/architecture/可观测性设计.md) · [AI助手层](docs/architecture/AI助手层设计.md) · [知识库RAG](docs/architecture/知识库RAG设计.md) · [客户端](docs/architecture/客户端设计.md) |
+| 架构 | [系统架构](docs/architecture/01_系统架构.md) · [数据库设计](docs/architecture/02_数据库设计.md) · [接口设计](docs/architecture/03_接口设计.md) · [可观测性](docs/architecture/07_可观测性设计.md) · [AI助手层](docs/architecture/05_AI助手层设计.md) · [知识库RAG](docs/architecture/06_知识库RAG设计.md) · [客户端](docs/architecture/04_客户端设计.md) |
 | 决策 | [ADR 索引](docs/adr/README.md)（ADR-001 ~ ADR-005） |
 | 指南 | [开发指南](docs/guides/) · [项目交付标准化](docs/guides/项目交付标准化.md) |
 | 参考 | [发布检查清单与回滚 SOP](docs/reference/) |
