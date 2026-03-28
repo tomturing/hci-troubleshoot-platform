@@ -528,3 +528,64 @@ ALTER TABLE conversation
     ADD COLUMN IF NOT EXISTS react_state JSONB,
     ADD COLUMN IF NOT EXISTS pending_confirm JSONB;
 ```
+
+---
+
+## 九、GitOps / Helm 最佳实践补丁（2026-03-28）
+
+### 9.1 ArgoCD argocd-ops Application
+
+`deploy/gitops/argocd-ops/` 目录中的 watchdog 等运维配件现由专属 ArgoCD Application 管理，
+无需再手动 `kubectl apply`：
+
+```bash
+# 首次安装或重建时手动 apply 一次即可，后续由 ArgoCD 自维护
+kubectl apply -f deploy/gitops/argo-apps/local/argocd-ops.yaml
+```
+
+> 注：Application 自身不在 ArgoCD 管理范围内（App-of-Apps 未启用），
+> 只有 `argocd-ops/` 目录下的 K8s 资源才会被 ArgoCD 同步。
+
+### 9.2 postgres StorageClass 迁移（local-path → local-path-retain）
+
+Chart 默认值已改为 `local-path-retain`，**新环境**直接生效。
+
+**存量 dev 环境**的 PVC `storageClassName` 字段不可变，须手动完成迁移：
+
+```bash
+# 1. 备份数据
+kubectl exec -n hci-dev postgres-0 -- \
+  pg_dump -U hci_admin hci_db | gzip > /tmp/hci-db-backup-$(date +%Y%m%d).sql.gz
+
+# 2. 缩容 StatefulSet（保持 PVC 存在）
+kubectl scale statefulset postgres -n hci-dev --replicas=0
+
+# 3. 等待 Pod 完全终止
+kubectl wait -n hci-dev --for=delete pod/postgres-0 --timeout=60s
+
+# 4. 删除旧 PVC
+kubectl delete pvc postgres-data-postgres-0 -n hci-dev
+
+# 5. ArgoCD 重新同步（创建新 PVC 和 StatefulSet）
+argocd app sync hci-platform-data-dev
+
+# 6. 恢复数据
+kubectl exec -n hci-dev postgres-0 -- \
+  psql -U hci_admin hci_db < /tmp/hci-db-backup-*.sql.gz
+```
+
+> ⚠️ 此操作会造成 postgres 短暂停机，请提前告知业务团队。
+
+### 9.3 空 ReplicaSet 清理（revisionHistoryLimit: 3）
+
+Chart 已为所有 Deployment 设置 `revisionHistoryLimit: 3`，下次 ArgoCD 同步后自动生效。
+存量空 RS 不会被自动删除（K8s 只在新 RS 创建时触发 GC），如需立刻清理：
+
+```bash
+# 查看存量空 RS 数量
+kubectl get rs -n hci-dev --no-headers | awk '$2==0 && $3==0 && $4==0 {print $1}' | wc -l
+
+# 批量删除所有期望副本数为 0 的空 RS
+kubectl get rs -n hci-dev --no-headers | awk '$2==0 && $3==0 && $4==0 {print $1}' | \
+  xargs kubectl delete rs -n hci-dev
+```

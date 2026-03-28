@@ -238,6 +238,13 @@ spec:
           containers:
             - name: trigger
               image: curlimages/curl:8.5.0
+              resources:
+                requests:
+                  cpu: "10m"
+                  memory: "16Mi"
+                limits:
+                  cpu: "100m"
+                  memory: "64Mi"
               env:
                 - name: OPENCLAW_GATEWAY_TOKEN
                   valueFrom:

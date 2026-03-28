@@ -7,6 +7,7 @@ metadata:
     {{- include "hci.podLabels" (dict "name" "admin-ui" "Release" .Release "Chart" .Chart) | nindent 4 }}
 spec:
   replicas: {{ .Values.adminUI.replicaCount }}
+  revisionHistoryLimit: 3  # 只保留最近 3 个 ReplicaSet，避免空 RS 僵尸积累
   selector:
     matchLabels:
       {{- include "hci.selectorLabels" (dict "name" "admin-ui" "Release" .Release) | nindent 6 }}
