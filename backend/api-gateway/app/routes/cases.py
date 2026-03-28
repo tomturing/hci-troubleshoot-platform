@@ -6,12 +6,20 @@ Case Routes - API Gateway Proxy
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from prometheus_client import Counter
 from shared.utils.logger import get_logger
 
 from app.config import settings
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 logger = get_logger("gateway-cases")
+
+# H-3：Pod 释放失败指标，非静默（用于 Alert 规则 PodReleaseFailures）
+POD_RELEASE_FAILURES_TOTAL = Counter(
+    "hci_pod_release_failures_total",
+    "Pod 释放失败次数（工单关闭时）",
+    ["reason"],
+)
 
 CASE_SERVICE_URL = f"{settings.CASE_SERVICE_URL}/api/cases"
 SCHEDULER_SERVICE_URL = settings.SCHEDULER_SERVICE_URL
@@ -109,7 +117,14 @@ async def close_case(case_id: str, request: Request):
                 else:
                     logger.warning(f"Pod release returned {release_resp.status_code} for case {case_id}")
         except Exception as e:
-            # Pod 释放失败不影响工单关闭结果
-            logger.warning(f"Failed to release pod for case {case_id}: {e}")
+            # Pod 释放失败不阻断工单关闭，但推送 Prometheus 指标（非静默！H-3）
+            logger.warning(
+                event="pod_release_failed",
+                message=f"Pod 释放失败，case_id={case_id}",
+                case_id=case_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            POD_RELEASE_FAILURES_TOTAL.labels(reason=type(e).__name__).inc()
 
     return JSONResponse(content=response.json(), status_code=response.status_code)

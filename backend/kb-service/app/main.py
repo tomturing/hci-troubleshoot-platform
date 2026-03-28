@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.postgres import DatabaseManager
+from shared.utils.exception_handlers import register_exception_handlers
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
@@ -77,6 +78,9 @@ app = FastAPI(
 
 # 注入 OpenTelemetry 中间件
 instrument_app(app)
+
+# H-1: 注册全局业务异常处理器
+register_exception_handlers(app)
 
 # 注册路由
 app.include_router(health.router)

@@ -64,3 +64,16 @@
 - [ ] 风险评估与回滚方案可执行
 - [ ] 测试证据充分，结论可信
 - [ ] 不包含敏感信息（密钥、令牌、凭据）
+
+## 静默失效检查（涉及后端改动时必答）
+
+- [ ] 每个 `except Exception` 之前是否有 `except HTTPException: raise` / `except HCIException: raise`？
+- [ ] 外部 HTTP 调用是否调用了 `response.raise_for_status()`？
+- [ ] 后台任务 `asyncio.create_task()` 是否添加了 `add_done_callback` 捕获异常？
+- [ ] 业务关键操作失败是否记录了 WARNING 级别日志并上报 Prometheus 指标？
+
+## API 变更对齐（涉及 backend/shared/models/ 改动时必答）
+
+- [ ] 遵循三步法（共享类型 → 提供方 → 调用方）？
+- [ ] 保留旧字段过渡期（至少一个 Release）？
+- [ ] 契约测试（tests/integration/test_*_contract.py）通过？

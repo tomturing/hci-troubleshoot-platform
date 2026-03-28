@@ -62,6 +62,9 @@ clusterResources:
 # 正确操作：始终使用 scripts/ops/k3s-deploy-dualrepo.sh（自动检测当前状态）
 dataLayer:
   manage: false
+  # 双重开关防护（C-1）：仅当明确知道要删除数据层时，才可同时设置mange=false + forceDelete=true
+  # 默认必须为 false，防止误操作导致 StatefulSet 被 Helm 删除
+  forceDelete: false
 
 # ======================== 可观测性层资源管理开关 ================================
 # 可观测性栈（Prometheus/Loki/Tempo/Grafana/Promtail）已迁移到
@@ -75,13 +78,25 @@ observabilityLayer:
 workloadDefaults:
   securityContext:
     enabled: true
-    # 为 Pod 启用默认 seccomp，提升基础隔离能力
+    # J-3 Pod 安全上下文基线（OWASP K8s Top 10：避免以 root 运行）
+    # 所有业务 Pod 统一以 uid=1000/gid=1000 的非 root 用户运行
+    # 若特定镜像无法以非 root 运行，在该服务的 values 中覆盖此配置
     pod:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
       seccompProfile:
         type: RuntimeDefault
-    # 保守配置：不强制 runAsNonRoot，避免与现有镜像默认用户冲突
+    # J-3 容器安全上下文基线：删除所有 Linux capabilities，禁止提权
     container:
       allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      # readOnlyRootFilesystem 需要应用侧配合（tmpDir 挂载等），默认关闭
+      # 待所有服务适配后启用（见 J-3 里程碑二）
+      readOnlyRootFilesystem: false
   scheduling:
     antiAffinity:
       # 软反亲和：单节点不阻塞调度，多节点优先分散副本
@@ -363,7 +378,7 @@ ingress:
 
 # ======================== 应用配置（非敏感 → ConfigMap）=====================
 config:
-  postgresHost: postgres  # 跨 namespace 部署时可覆盖为完整 DNS，如 postgres.hci-troubleshoot.svc.cluster.local
+  postgresHost: postgres # 跨 namespace 部署时可覆盖为完整 DNS，如 postgres.hci-troubleshoot.svc.cluster.local
   postgresDb: hci_troubleshoot
   postgresUser: hci_admin
   redisUrl: "redis://redis:6379/0"
@@ -402,7 +417,7 @@ scpBaseUrl: ""
 # HCI SSH 连接配置（acli 命令执行）
 hciSsh:
   user: "admin"
-  keyPath: ""             # SSH 私钥路径，与 hci-ssh-password 二选一
+  keyPath: "" # SSH 私钥路径，与 hci-ssh-password 二选一
 
 # ======================== 敏感配置（→ Secret）===============================
 # 生产环境通过 helm install --set secrets.postgresPassword=xxx 覆盖

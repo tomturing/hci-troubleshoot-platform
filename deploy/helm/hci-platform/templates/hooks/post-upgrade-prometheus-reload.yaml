@@ -1,0 +1,106 @@
+{{- /*
+B-1: Helm post-upgrade hook — 触发 Prometheus 配置热重载
+在 helm upgrade 成功后发送 /-/reload 请求给 Prometheus，
+避免 ConfigMap 更新后需要手动 rollout restart。
+Prometheus 需启动 --web.enable-lifecycle（已在 prometheus.yaml 配置）。
+*/ -}}
+{{- if .Values.observability.enabled }}
+---
+# ServiceAccount: 仅需 pod exec/get 权限
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: helm-hook-sa
+  namespace: {{ include "hci.namespace" . }}
+  annotations:
+    "helm.sh/hook": post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: helm-hook-role
+  namespace: {{ .Values.observability.namespace }}
+  annotations:
+    "helm.sh/hook": post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec"]
+    verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: helm-hook-rolebinding
+  namespace: {{ .Values.observability.namespace }}
+  annotations:
+    "helm.sh/hook": post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+subjects:
+  - kind: ServiceAccount
+    name: helm-hook-sa
+    namespace: {{ include "hci.namespace" . }}
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: helm-hook-role
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: post-upgrade-prometheus-reload-{{ .Release.Revision }}
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: helm-hook
+  annotations:
+    "helm.sh/hook": post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: helm-hook
+    spec:
+      serviceAccountName: helm-hook-sa
+      restartPolicy: OnFailure
+      containers:
+        - name: prometheus-reload
+          image: bitnami/kubectl:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              OBS_NS={{ .Values.observability.namespace | quote }}
+              echo "[hook] 等待 Prometheus Pod 就绪..."
+              kubectl wait --for=condition=Ready pod \
+                -l app=prometheus \
+                -n "${OBS_NS}" \
+                --timeout=120s || {
+                echo "[hook] Prometheus Pod 未就绪，跳过热重载"
+                exit 0
+              }
+              PROM_POD=$(kubectl get pods -n "${OBS_NS}" \
+                -l app=prometheus \
+                -o jsonpath='{.items[0].metadata.name}')
+              echo "[hook] 触发 Prometheus 配置热重载: ${PROM_POD}"
+              kubectl exec -n "${OBS_NS}" "${PROM_POD}" -- \
+                wget -qO- --post-data='' http://localhost:9090/-/reload && \
+                echo "[hook] Prometheus 热重载成功 ✓" || \
+                echo "[hook] Prometheus 热重载失败（非致命，继续）"
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+{{- end }}

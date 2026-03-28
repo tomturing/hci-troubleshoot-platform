@@ -7,11 +7,26 @@
     "global": {
       "type": "object",
       "properties": {
-        "domain":      { "type": "string" },
-        "publicUrl":   { "type": "string" },
-        "imageRegistry": { "type": "string" },
-        "imagePullUser": { "type": "string" },
-        "imagePullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+        "domain": {
+          "type": "string"
+        },
+        "publicUrl": {
+          "type": "string"
+        },
+        "imageRegistry": {
+          "type": "string"
+        },
+        "imagePullUser": {
+          "type": "string"
+        },
+        "imagePullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
       }
     },
     "dataLayer": {
@@ -21,6 +36,10 @@
         "manage": {
           "type": "boolean",
           "description": "true=postgres/redis 由本 chart 管理；false=由独立 hci-platform-data chart 管理。手动 helm upgrade 时始终显式指定，避免意外删除数据库"
+        },
+        "forceDelete": {
+          "type": "boolean",
+          "description": "C-1 双重防护：仅当明确要删除数据层时才设为 true，必须与 manage=false 同时使用。默认 false。"
         }
       }
     },
@@ -48,12 +67,24 @@
     "secrets": {
       "type": "object",
       "properties": {
-        "postgresPassword":      { "type": "string" },
-        "openclawToken":         { "type": "string" },
-        "zaiApiKey":             { "type": "string" },
-        "grafanaAdminPassword":  { "type": "string" },
-        "internalApiToken":      { "type": "string" },
-        "ghcrToken":             { "type": "string" }
+        "postgresPassword": {
+          "type": "string"
+        },
+        "openclawToken": {
+          "type": "string"
+        },
+        "zaiApiKey": {
+          "type": "string"
+        },
+        "grafanaAdminPassword": {
+          "type": "string"
+        },
+        "internalApiToken": {
+          "type": "string"
+        },
+        "ghcrToken": {
+          "type": "string"
+        }
       }
     },
     "conversationService": {
@@ -68,19 +99,26 @@
     "openclaw": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean", "description": "不启用时三个 claw 工作负载均不创建，见 DEPLOY-003" }
+        "enabled": {
+          "type": "boolean",
+          "description": "不启用时三个 claw 工作负载均不创建，见 DEPLOY-003"
+        }
       }
     },
     "learningclaw": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean"
+        }
       }
     },
     "productionclaw": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean"
+        }
       }
     }
   }

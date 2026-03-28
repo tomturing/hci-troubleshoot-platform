@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from shared.database.postgres import DatabaseManager
+from shared.utils.exception_handlers import register_exception_handlers
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
@@ -57,6 +58,9 @@ app = FastAPI(
 # 注入 OpenTelemetry 中间件到 app 实例
 instrument_app(app)
 
+# H-1: 注册全局业务异常处理器
+register_exception_handlers(app)
+
 # 注册路由
 app.include_router(cases.router)
 
@@ -64,6 +68,25 @@ app.include_router(cases.router)
 async def health_check():
     """健康检查"""
     return {"status": "healthy", "service": settings.SERVICE_NAME}
+
+
+# ── J-2：三级探针分级健康端点 ─────────────────────
+@app.get("/health/live")
+async def health_live():
+    """Liveness 探针：只检查进程存活，不检查外部依赖"""
+    return {"status": "alive"}
+
+
+@app.get("/health/startup")
+async def health_startup():
+    """Startup 探针：初始化完成后返回 200"""
+    return {"status": "started"}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness 探针：服务就绪时才加入流量"""
+    return {"status": "ready"}
 
 if __name__ == "__main__":
     import uvicorn

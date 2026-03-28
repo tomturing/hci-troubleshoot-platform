@@ -8,6 +8,7 @@ import json as _json
 import urllib.error
 import urllib.request
 
+from shared.models.schemas import KBIngestPayload
 from shared.utils.logger import get_logger
 
 logger = get_logger("case-service-kb-pusher")
@@ -77,13 +78,14 @@ async def push_case_summary_to_kb(
     if resolution_summary:
         content_parts.append(f"## 解决方案\n\n{resolution_summary}")
 
-    payload = {
-        "title": f"工单摘要: {title}",
-        "content_md": "\n\n".join(content_parts),
-        "source_id": case_id,
-        "source_type": "realtime",
-        "yaml_meta": {"case_id": case_id},
-    }
+    ingest = KBIngestPayload(
+        title=f"工单摘要: {title}",
+        content_md="\n\n".join(content_parts),
+        source_id=case_id,
+        source_type="realtime",
+        yaml_meta={"case_id": case_id},
+    )
+    payload = ingest.model_dump()
 
     headers = {"Authorization": f"Bearer {internal_token}"}
     url = f"{kb_service_url.rstrip('/')}/api/kb/ingest"

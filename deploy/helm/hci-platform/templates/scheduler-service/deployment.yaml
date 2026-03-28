@@ -47,7 +47,7 @@ spec:
               value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: {{ .Values.schedulerService.port }}
             initialDelaySeconds: 15
             periodSeconds: 30
@@ -55,7 +55,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: {{ .Values.schedulerService.port }}
             initialDelaySeconds: 10
             periodSeconds: 10
@@ -63,7 +63,7 @@ spec:
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: /health
+              path: /health/startup
               port: {{ .Values.schedulerService.port }}
             initialDelaySeconds: 5
             periodSeconds: 5

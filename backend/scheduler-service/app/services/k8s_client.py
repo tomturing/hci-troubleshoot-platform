@@ -69,7 +69,8 @@ class K8sClient:
         labels = {
             "app": assistant_type,
             "assistant-type": assistant_type,
-            "managed-by": "hci-scheduler",
+            # A-3: 统一使用 scheduler-service 标签，供部署前孤立 Pod 清理脚本 selector 使用
+            "managed-by": "scheduler-service",
             "pod-name": pod_name,
         }
         labels.update(custom_labels)

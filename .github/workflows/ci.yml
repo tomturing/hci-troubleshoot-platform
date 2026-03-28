@@ -128,6 +128,16 @@ jobs:
             exit 1
           fi
 
+      # E-2: helm-unittest — 覆盖关键配置渲染场景
+      - name: 安装 helm-unittest 插件
+        run: |
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version v0.4.4 2>/dev/null || true
+
+      - name: 运行 Helm Unit Tests
+        run: |
+          helm unittest deploy/helm/hci-platform --strict
+          echo "✅ Helm Unit Tests 通过"
+
   check-claw-configs:
     name: 校验 claw-configs 一致性
     runs-on: ubuntu-latest

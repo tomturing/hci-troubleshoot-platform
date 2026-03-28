@@ -22,6 +22,10 @@ class Conversation(Base, TraceableMixin):
     assistant_type = Column(String(50), nullable=False, default="openclaw")
     started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     ended_at = Column(DateTime(timezone=True), nullable=True)
+    # [DB-TRIGGER] 由触发器 update_message_count_on_insert / update_message_count_on_delete
+    # 调用函数 update_conversation_message_count() 自动维护。
+    # 禁止在代码层手动递增，否则会造成双重计数。
+    # 只读：通过 session.refresh(conversation) 获取最新值。
     message_count = Column(Integer, default=0)
     repeat_question_count = Column(Integer, default=0, nullable=False)
     metadata_ = Column("metadata", JSONB, default=dict)

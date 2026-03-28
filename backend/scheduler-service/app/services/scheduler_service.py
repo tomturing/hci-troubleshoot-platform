@@ -40,6 +40,41 @@ class SchedulerService:
         await self.pool_manager.initialize_all()
         # 再补充热备池
         await self.pool_manager.ensure_all_warm_pools()
+        # H-3：对账 Redis 分配记录与 K8s 实际 Pod 状态（清除孤立分配）
+        await self.reconcile_allocations()
+
+    async def reconcile_allocations(self) -> None:
+        """
+        对账：将 Redis 分配记录与 K8s 实际 Pod 状态对齐（H-3 加固）
+
+        孤立分配（Redis 有记录但 Pod 不存在）→ 清理 Redis 记录
+        正常分配保留不动。
+        """
+        all_allocations = await self._get_all_allocations()
+        if not all_allocations:
+            logger.info(event="reconcile_skip", message="无活跃分配记录，跳过对账")
+            return
+
+        orphan_count = 0
+        for case_id, (pod_name, _assistant_type) in list(all_allocations.items()):
+            pod_status = self.k8s.get_pod_status(pod_name)
+            if pod_status is None:
+                # Pod 不存在，清除孤立分配记录
+                logger.warning(
+                    event="reconcile_orphan_allocation",
+                    message=f"发现孤立分配（Pod 不存在），清理 Redis 记录",
+                    case_id=case_id,
+                    pod_name=pod_name,
+                )
+                await self._del_allocation(case_id)
+                orphan_count += 1
+
+        logger.info(
+            event="reconcile_done",
+            message=f"对账完成，共检查 {len(all_allocations)} 条分配，清理孤立分配 {orphan_count} 条",
+            total=len(all_allocations),
+            orphans_cleaned=orphan_count,
+        )
 
     # ────────── Redis 分配映射操作 ──────────
 
