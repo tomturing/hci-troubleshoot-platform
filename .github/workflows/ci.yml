@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       reason:
-        description: '手动触发原因'
+        description: "手动触发原因"
         required: false
-        default: '手动构建镜像'
+        default: "手动构建镜像"
 
 jobs:
   docs-governance:
@@ -331,20 +331,10 @@ jobs:
           - service: admin-ui
             context: frontend
             dockerfile: frontend/admin/Dockerfile
-          # hci-openclaw：从上游 openclaw/openclaw 构建，固定版本，镜像仅打 latest
-          # 不跟随业务服务的 timestamp tag，避免每次 push 都重新构建这个耗时的外部依赖
-          - service: hci-openclaw
-            context: _ext_openclaw
-            openclaw_ref: "v2026.3.14"
-            is_external: true
+          # hci-openclaw 已从本 matrix 移出，由独立 workflow build-hci-openclaw.yml 管理
+          # （仅 workflow_dispatch 手动触发，固定版本 v2026.3.24，不阻断主流程）
     steps:
       - uses: actions/checkout@v4
-
-      - name: Clone openclaw 上游源码（外部依赖，固定版本）
-        if: matrix.is_external == true
-        run: |
-          git clone --depth=1 --branch ${{ matrix.openclaw_ref }} \
-            https://github.com/openclaw/openclaw.git ${{ matrix.context }}
 
       - name: 登录 GitHub Container Registry
         uses: docker/login-action@v3
@@ -367,7 +357,7 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
-          exit-code: '0'
+          exit-code: "0"
           severity: HIGH,CRITICAL
           format: sarif
           output: trivy-${{ matrix.service }}.sarif
