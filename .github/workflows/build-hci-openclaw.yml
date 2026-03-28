@@ -34,7 +34,9 @@ jobs:
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
-                  password: ${{ secrets.GITHUB_TOKEN }}
+                  # 首次创建新包需要 PAT（write:packages scope）
+                  # GITHUB_TOKEN 只能推送已存在的包，无法创建新包
+                  password: ${{ secrets.GHCR_PAT }}
 
             - name: 构建并推送镜像
               uses: docker/build-push-action@v5
