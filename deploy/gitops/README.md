@@ -18,6 +18,7 @@ deploy/gitops/
 │   ├── hci-platform-dev.yaml            业务服务 dev
 │   ├── hci-platform-staging.yaml        业务服务 staging
 │   └── hci-platform-prod.yaml           业务服务 prod
+├── argocd-ops/         ← ArgoCD 运维清单（watchdog 等）
 ├── env-repo-template/  ← 环境仓库骨架（复制到 hci-platform-env）
 └── local/              ← 本地密钥（不提交）
 ```
