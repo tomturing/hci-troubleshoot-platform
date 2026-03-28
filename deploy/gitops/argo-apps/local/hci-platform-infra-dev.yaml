@@ -1,24 +1,23 @@
 # =============================================================================
-# ArgoCD Application: hci-platform-infra-staging
+# ArgoCD Application: hci-platform-infra-dev
 #
-# 管理 staging 集群级基础设施资源（无 namespace）：
+# 目标集群：本地 WSL k3s（local-only ArgoCD，https://kubernetes.default.svc）
+# 管理集群级基础设施资源（无 namespace）：
 #   - StorageClass: local-path-retain
 #   - ClusterRole/ClusterRoleBinding: prometheus-hci
 #   - ClusterRole/ClusterRoleBinding: promtail
 #
 # 设计原则：
-#   - staging 集群专用，与 hci-platform-infra-prod 对称命名
-#   - 独立 Application 独占所有权，消除多 Application 竞争覆写同名对象的风险
-#   - destination.namespace 留空，让各资源自身决定作用域
+#   - 一个集群对应一个 infra Application，本文件仅用于本地 dev 集群
+#   - destination.namespace 留空，让各资源模板自身决定作用域
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: hci-platform-infra-staging
+  name: hci-platform-infra-dev
   namespace: argocd
   annotations:
-    # 说明：此 Application 管理的是集群级资源，不属于任何业务环境
-    argocd.argoproj.io/description: "staging 集群级基础设施资源 - StorageClass + RBAC"
+    argocd.argoproj.io/description: "dev 集群级基础设施 - StorageClass + RBAC（本地 WSL k3s）"
 spec:
   project: default
   destination:
@@ -29,7 +28,7 @@ spec:
       targetRevision: main
       path: deploy/helm/hci-platform-infra
       helm:
-        releaseName: hci-platform-infra  # 保持旧 releaseName，与已有集群资源标签保持一致
+        releaseName: hci-platform-infra
   syncPolicy:
     automated:
       prune: true

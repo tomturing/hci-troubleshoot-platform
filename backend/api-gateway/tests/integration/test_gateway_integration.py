@@ -10,6 +10,8 @@ import httpx
 import pytest
 from httpx import ASGITransport
 
+pytestmark = pytest.mark.integration
+
 # 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
 _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _expect = os.path.normpath(os.path.join(_svc, "app"))
@@ -29,18 +31,16 @@ from app.main import app
 def test_app():
     return app
 
-
-@pytest.mark.integration
 class TestGatewayIntegration:
     BASE_URL = "http://testserver"
 
     @pytest.mark.asyncio
     async def test_health_check(self, test_app):
         """测试网关健康检查和TraceID中间件"""
-        async with (
-            test_app.router.lifespan_context(test_app),
-            httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
-        ):
+        async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
+            transport=ASGITransport(app=test_app),
+            base_url=self.BASE_URL
+        ) as client:
             response = await client.get("/health")
             assert response.status_code == 200
             data = response.json()
@@ -53,16 +53,20 @@ class TestGatewayIntegration:
     @pytest.mark.asyncio
     async def test_case_proxy(self, test_app):
         """测试工单代理路由"""
-        with patch("app.routes.cases.proxy_request") as mock_proxy:
+        with patch('app.routes.cases.proxy_request') as mock_proxy:
             # 构造 httpx Response
             mock_response = httpx.Response(201, json={"case_id": "Q123", "status": "created"})
             mock_proxy.return_value = mock_response
 
-            async with (
-                test_app.router.lifespan_context(test_app),
-                httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
-            ):
-                payload = {"client_id": "test-client", "title": "Test Integration", "description": "Proxy test"}
+            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
+                transport=ASGITransport(app=test_app),
+                base_url=self.BASE_URL
+            ) as client:
+                payload = {
+                    "client_id": "test-client",
+                    "title": "Test Integration",
+                    "description": "Proxy test"
+                }
                 response = await client.post("/api/cases/", json=payload)
 
                 assert response.status_code == 201
@@ -80,14 +84,14 @@ class TestGatewayIntegration:
     @pytest.mark.asyncio
     async def test_conversation_proxy(self, test_app):
         """测试对话代理路由"""
-        with patch("app.routes.conversations.proxy_request") as mock_proxy:
+        with patch('app.routes.conversations.proxy_request') as mock_proxy:
             mock_response = httpx.Response(200, json=[{"role": "user", "content": "hi"}])
             mock_proxy.return_value = mock_response
 
-            async with (
-                test_app.router.lifespan_context(test_app),
-                httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
-            ):
+            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
+                transport=ASGITransport(app=test_app),
+                base_url=self.BASE_URL
+            ) as client:
                 conv_id = "test-conv-id"
                 response = await client.get(f"/api/conversations/{conv_id}/messages")
 

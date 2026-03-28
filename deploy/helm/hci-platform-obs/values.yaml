@@ -8,8 +8,14 @@
 # 可观测性栈部署的命名空间（本 Chart 自行创建）
 namespace: hci-observability
 
-# Prometheus 抓取的业务命名空间（prod: hci / staging: hci-staging / dev: hci-dev）
-# 生产部署时通过 ArgoCD Application values 覆盖此字段
+# Prometheus 抓取命名空间列表（默认同时覆盖业务、可观测性、argocd）
+# 生产部署时可在环境 values 中覆盖此字段。
+scrapeNamespaces:
+  - hci
+  - hci-observability
+  - argocd
+
+# 兼容历史字段（建议迁移到 scrapeNamespaces）
 scrapeNamespace: hci
 
 # ======================== 集群级资源管理开关 ==================================
@@ -30,7 +36,7 @@ global:
 
 # ======================== Ingress (Traefik) ==================================
 ingress:
-  enabled: false
+  enabled: true   # obs chart 部署即暴露 Grafana，无需 env repo 额外覆盖
   className: traefik
   annotations: {}
   # Grafana 路由优先级，需高于主站 / 回退路由，避免 /grafana 被 customer-ui 吞掉
@@ -39,6 +45,7 @@ ingress:
 # ======================== 敏感配置（由 env 仓库 environments/dev/values.yaml 提供）
 secrets:
   grafanaAdminPassword: ""  # 由 hci-platform-env 环境仓库覆盖，此处留空避免弱密码默认值
+  feishuWebhookUrl: ""      # 飞书机器人 Webhook URL，由 hci-platform-env 环境仓库覆盖
 
 # ======================== 组件配置 ===========================================
 loki:
@@ -99,3 +106,17 @@ grafana:
     limits:
       cpu: "500m"
       memory: "256Mi"
+
+# LimitRange：为 hci-observability 命名空间设置容器默认资源和上限
+limitRange:
+  enabled: true
+  defaultRequest:
+    cpu: "50m"
+    memory: "64Mi"
+  defaultLimit:
+    cpu: "2"
+    memory: "2Gi"
+  max:
+    cpu: "4"
+    memory: "4Gi"
+

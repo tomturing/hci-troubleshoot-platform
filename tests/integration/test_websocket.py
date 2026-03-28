@@ -179,12 +179,11 @@ class TestWebSocketEndpoint:
 
     def test_websocket_connect_and_receive_error_for_missing_conv_id(self, ws_app):
         """连接后发送缺少 conversation_id 的消息应收到错误回传"""
-        with TestClient(ws_app) as client:
-            with client.websocket_connect("/ws/test-client-1") as ws:
-                ws.send_text(json.dumps({"type": "message", "content": "你好"}))
-                data = json.loads(ws.receive_text())
-                assert "error" in data
-                assert "conversation_id" in data["error"].lower() or "missing" in data["error"].lower()
+        with TestClient(ws_app) as client, client.websocket_connect("/ws/test-client-1") as ws:
+            ws.send_text(json.dumps({"type": "message", "content": "你好"}))
+            data = json.loads(ws.receive_text())
+            assert "error" in data
+            assert "conversation_id" in data["error"].lower() or "missing" in data["error"].lower()
 
     def test_websocket_connect_valid_json(self, ws_app):
         """建立连接后服务端应接受并处理合法 JSON 消息（即使下游调用失败）"""
@@ -212,9 +211,8 @@ class TestWebSocketEndpoint:
 
     def test_websocket_invalid_json_is_handled(self, ws_app):
         """发送非 JSON 文本不应导致服务崩溃（连接保持活跃）"""
-        with TestClient(ws_app) as client:
-            with client.websocket_connect("/ws/test-client-3") as ws:
-                ws.send_text("not json at all !!!!")
-                # 连接应保持活跃，继续发送合法消息不报错
-                ws.send_text(json.dumps({"ping": True}))
+        with TestClient(ws_app) as client, client.websocket_connect("/ws/test-client-3") as ws:
+            ws.send_text("not json at all !!!!")
+            # 连接应保持活跃，继续发送合法消息不报错
+            ws.send_text(json.dumps({"ping": True}))
                 # 如无响应也正常（invalid json 会被 continue 跳过）

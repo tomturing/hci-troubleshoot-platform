@@ -3,13 +3,12 @@ Session Management Service - WebSocket会话管理
 """
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 
 logger = get_logger("session-service")
-
 
 class SessionManager:
     """会话管理器"""
@@ -18,16 +17,25 @@ class SessionManager:
         self.redis = redis_manager
         self.active_connections: dict[str, any] = {}
 
-    async def create_session(self, client_id: str, websocket: any, case_id: str | None = None) -> str:
+    async def create_session(
+        self,
+        client_id: str,
+        websocket: any,
+        case_id: str | None = None
+    ) -> str:
         """创建会话"""
         session_key = f"session:{client_id}"
 
-        session_data = {"client_id": client_id, "case_id": case_id or "", "connected_at": str(datetime.now(UTC))}
+        session_data = {
+            "client_id": client_id,
+            "case_id": case_id or "",
+            "connected_at": str(datetime.utcnow())
+        }
 
         await self.redis.set(
             session_key,
             json.dumps(session_data),
-            ex=86400,  # 24小时过期
+            ex=86400  # 24小时过期
         )
 
         self.active_connections[client_id] = websocket
@@ -36,7 +44,7 @@ class SessionManager:
             event="session_created",
             message=f"Session created for client {client_id}",
             client_id=client_id,
-            case_id=case_id,
+            case_id=case_id
         )
 
         return session_key
@@ -59,7 +67,11 @@ class SessionManager:
         if client_id in self.active_connections:
             del self.active_connections[client_id]
 
-        logger.info(event="session_closed", message=f"Session closed for client {client_id}", client_id=client_id)
+        logger.info(
+            event="session_closed",
+            message=f"Session closed for client {client_id}",
+            client_id=client_id
+        )
 
     def get_connection(self, client_id: str):
         """获取WebSocket连接"""

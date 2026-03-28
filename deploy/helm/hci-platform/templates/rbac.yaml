@@ -6,6 +6,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
+{{- if .Values.global.imagePullSecretName }}
+imagePullSecrets:
+  - name: {{ .Values.global.imagePullSecretName }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

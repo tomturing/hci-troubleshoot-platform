@@ -8,8 +8,8 @@ uv 管理虚拟环境和第三方依赖，此文件仅注册 root 和 backend（
 运行方式: uv run pytest
 """
 
-import os
 import sys
+import os
 
 _root = os.path.dirname(os.path.abspath(__file__))
 _backend = os.path.join(_root, "backend")

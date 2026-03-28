@@ -20,9 +20,14 @@ spec:
       labels:
         {{- include "hci-data.podLabels" (dict "name" "postgres" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgres
           image: {{ .Values.postgres.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
           ports:
             - containerPort: 5432
               protocol: TCP

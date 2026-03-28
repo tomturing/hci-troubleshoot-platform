@@ -1,4 +1,5 @@
 {{- if .Values.prometheus.enabled }}
+{{- $scrapeNamespaces := .Values.scrapeNamespaces | default (list .Values.scrapeNamespace) -}}
 ---
 # Prometheus 配置（scrapeNamespace 由 values.scrapeNamespace 指定，默认 hci）
 apiVersion: v1
@@ -15,6 +16,16 @@ data:
       evaluation_interval: 15s
       scrape_timeout: 10s
 
+    # 从独立 ConfigMap（prometheus-alert-rules）挂载告警规则文件
+    rule_files:
+      - "/etc/prometheus/rules/*.yml"
+
+    # 告警路由到 alertmanager
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['alertmanager:9093']
+
     scrape_configs:
       # 通过 K8s Pod 注解自动发现业务命名空间中的服务
       - job_name: 'hci-services'
@@ -22,7 +33,9 @@ data:
           - role: pod
             namespaces:
               names:
-                - {{ .Values.scrapeNamespace }}
+{{- range $ns := $scrapeNamespaces }}
+                - {{ $ns }}
+{{- end }}
         relabel_configs:
           # 只采集带有 prometheus.io/scrape=true 注解的 Pod
           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
@@ -60,6 +73,7 @@ metadata:
     app.kubernetes.io/name: prometheus
 spec:
   replicas: 1
+  revisionHistoryLimit: 3  # 只保留最近 3 个 ReplicaSet，避免空 RS 僵尸积累
   selector:
     matchLabels:
       app.kubernetes.io/name: prometheus
@@ -100,12 +114,18 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+              readOnly: true
             - name: storage
               mountPath: /prometheus
       volumes:
         - name: config
           configMap:
             name: prometheus-config
+        - name: rules
+          configMap:
+            name: prometheus-alert-rules
         - name: storage
           emptyDir: {}
 ---
@@ -178,4 +198,50 @@ subjects:
     name: prometheus
     namespace: {{ .Values.namespace }}
 {{- end }}
+---
+# Prometheus 告警规则（Pod 高频重启 + 容器 OOMKilled）
+# kube_pod_container_status_restarts_total 由 kube-state-metrics 提供
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alert-rules
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+data:
+  pod-alerts.yml: |
+    groups:
+      - name: pod-health
+        interval: 60s
+        rules:
+          # Pod 在1小时内重启超过3次
+          - alert: PodHighRestartRate
+            expr: |
+              increase(kube_pod_container_status_restarts_total{
+                namespace=~"hci-dev|hci-observability|argocd"
+              }[1h]) > 3
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ `{{` }} $labels.namespace {{ `}}` }}/{{ `{{` }} $labels.pod {{ `}}` }} 高频重启"
+              description: |
+                容器 {{ `{{` }} $labels.container {{ `}}` }} 过去1小时重启 {{ `{{` }} $value | printf "%.0f" {{ `}}` }} 次（阈值: 3次）。
+                请检查: kubectl logs -n {{ `{{` }} $labels.namespace {{ `}}` }} {{ `{{` }} $labels.pod {{ `}}` }} -c {{ `{{` }} $labels.container {{ `}}` }} --previous
+
+          # 容器因内存不足被 Kill（OOMKilled）
+          - alert: ContainerOOMKilled
+            expr: |
+              kube_pod_container_status_last_terminated_reason{
+                reason="OOMKilled",
+                namespace=~"hci-dev|hci-observability|argocd"
+              } == 1
+            for: 0m
+            labels:
+              severity: critical
+            annotations:
+              summary: "容器 {{ `{{` }} $labels.namespace {{ `}}` }}/{{ `{{` }} $labels.pod {{ `}}` }}/{{ `{{` }} $labels.container {{ `}}` }} OOMKilled"
+              description: |
+                容器因内存不足被终止，请检查内存 limits 设置。
+                kubectl describe pod -n {{ `{{` }} $labels.namespace {{ `}}` }} {{ `{{` }} $labels.pod {{ `}}` }}
 {{- end }}

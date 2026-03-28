@@ -11,6 +11,8 @@ from app.main import app
 from app.models.terminal import TerminalSessionInfo, TerminalSessionStatus
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def mock_terminal_service():

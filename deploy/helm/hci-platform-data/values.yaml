@@ -11,9 +11,12 @@ postgres:
   image: pgvector/pgvector:pg15   # 含 pgvector 扩展，支持向量检索
   storage: 5Gi
   # ⚠️  StorageClass 说明：
-  #   - 存量安装：保持 local-path（StatefulSet storageClass 不可变字段）
-  #   - 全新安装：可改为 local-path-retain 获得自动 Retain 策略
-  storageClass: local-path
+  #   - 存量安装：PVC storageClassName 创建后不可变，upgrade 无法修改
+  #     变更须人工操作：1) 备份数据  2) 删除 StatefulSet + PVC  3) helm upgrade  4) 恢复数据
+  #   - 全新安装：local-path-retain 在 PVC 删除后保留 PV 数据目录，防止意外数据丢失
+  storageClass: local-path-retain
+  # NodePort 对外暴露端口（仅 dev 环境需要，生产环境留空）
+  nodePort: 30054
   resources:
     requests:
       cpu: "100m"

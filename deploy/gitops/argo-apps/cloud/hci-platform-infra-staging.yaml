@@ -1,29 +1,29 @@
 # =============================================================================
-# ArgoCD Application: hci-platform-infra-prod
+# ArgoCD Application: hci-platform-infra-staging
 #
-# 管理 prod 集群级基础设施资源（无 namespace）：
+# 目标集群：云端 staging VM（kubernetes.default.svc = ArgoCD 所在集群）
+# 管理集群级基础设施资源（无 namespace）：
 #   - StorageClass: local-path-retain
 #   - ClusterRole/ClusterRoleBinding: prometheus-hci
 #   - ClusterRole/ClusterRoleBinding: promtail
 #
 # 设计原则：
-#   - prod 集群独立 VM（192.168.0.3），需独立部署一次集群级资源
-#   - 与 hci-platform-infra.yaml 使用同一 Chart，仅 destination 不同
-#   - destination.namespace 留空，让各资源自身决定作用域
+#   - staging 集群独立一份，与 prod 集群隔离
+#   - destination.namespace 留空，让各资源模板自身决定作用域
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: hci-platform-infra-prod
+  name: hci-platform-infra-staging
   namespace: argocd
   annotations:
-    argocd.argoproj.io/description: "prod 集群级基础设施资源 - StorageClass + RBAC（192.168.0.3）"
+    argocd.argoproj.io/description: "staging 集群级基础设施 - StorageClass + RBAC"
 spec:
   project: default
   destination:
-    # prod 集群独立 VM，ArgoCD 通过内网 API Server 管理
-    server: https://192.168.0.3:6443
-    namespace: ""   # 集群级资源不绑定 namespace，由各资源模板自身决定
+    # staging 集群：云端 ArgoCD 所在 VM（kubernetes.default.svc = 本机集群）
+    server: https://kubernetes.default.svc
+    namespace: ""   # 集群级资源不绑定 namespace
   sources:
     - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
       targetRevision: main

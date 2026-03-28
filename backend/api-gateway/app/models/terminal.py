@@ -4,13 +4,13 @@ Task 37: SSH 代理与终端交互后端能力
 """
 
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class AuthType(str, Enum):
+class AuthType(StrEnum):
     """认证方式"""
 
     PASSWORD = "password"
@@ -59,7 +59,7 @@ class TerminalSessionClose(BaseModel):
     message: str = Field(default="会话已关闭", description="关闭消息")
 
 
-class TerminalSessionStatus(str, Enum):
+class TerminalSessionStatus(StrEnum):
     """终端会话状态"""
 
     CONNECTING = "connecting"
@@ -84,7 +84,7 @@ class TerminalSessionInfo(BaseModel):
 
 
 # WebSocket 消息协议
-class WSMessageType(str, Enum):
+class WSMessageType(StrEnum):
     """WebSocket 消息类型"""
 
     # 客户端 -> 服务端

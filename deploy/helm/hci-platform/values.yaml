@@ -97,6 +97,18 @@ workloadDefaults:
     # 仅对副本数 > 1 的服务生成 PDB
     enabled: true
     minAvailable: 1
+  limitRange:
+    # 为命名空间设置容器资源默认值和上限，防止无 limits 的容器（如 productionclaw）打爆节点
+    enabled: true
+    defaultRequest:
+      cpu: "50m"
+      memory: "64Mi"
+    defaultLimit:
+      cpu: "2"
+      memory: "2Gi"
+    max:
+      cpu: "4"
+      memory: "4Gi"
 
 # ======================== PostgreSQL ========================================
 postgres:
@@ -108,6 +120,8 @@ postgres:
   #     现有 PV 已通过 kubectl patch pv 直接改为 Retain policy
   #   - 全新安装：可改为 local-path-retain（自动 Retain policy，更安全）
   storageClass: local-path
+  # NodePort 对外暴露端口（仅 dev 环境，生产环境留空）
+  nodePort: ""
   resources:
     requests:
       cpu: "100m"
@@ -370,7 +384,7 @@ config:
   learningclawServiceUrl: "http://learningclaw:18789"
   # ======================== 全局 AI 模型配置（所有 claw pod 共用）==========================
   # !! 修改此处即可切换平台所有 claw pod 使用的 AI 模型，无需逐个修改 ConfigMap !!
-  # API key 在 secrets.zaiApiKey，运行时通过 ${ZAI_API_KEY} 注入
+  # API key 在 secrets.zaiApiKey，Secret key 为 OPENCLAW_API_KEY
   glmProvider: "zhipu"
   glmModelId: "glm-5"
   glmBaseUrl: "https://open.bigmodel.cn/api/paas/v4"

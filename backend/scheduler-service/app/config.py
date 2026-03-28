@@ -18,7 +18,7 @@ DEFAULT_ASSISTANT_REGISTRY = {
         "warm_pool_size": 2,
         "max_pool_size": 10,
         "enabled": True,
-        "labels": {"app": "openclaw", "assistant-type": "openclaw"},
+        "labels": {"app": "openclaw", "assistant-type": "openclaw"}
     }
 }
 
@@ -35,13 +35,15 @@ class Settings(BaseSettings):
 
     # K8s配置
     K8S_NAMESPACE: str = "hci-troubleshoot"
+    K8S_IMAGE_PULL_SECRET: str = ""  # GHCR 镜像拉取 Secret 名称，空字符串表示不配置
 
     # Pod池全局配置
     POD_IDLE_TIMEOUT: int = 300  # 5分钟
 
     # AI助手注册表 (JSON字符串，支持环境变量注入)
     ASSISTANT_REGISTRY_JSON: str = Field(
-        default=json.dumps(DEFAULT_ASSISTANT_REGISTRY), description="AI助手注册表，JSON格式"
+        default=json.dumps(DEFAULT_ASSISTANT_REGISTRY),
+        description="AI助手注册表，JSON格式"
     )
 
     @property
@@ -61,6 +63,5 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = True
         extra = "ignore"
-
 
 settings = Settings()

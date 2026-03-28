@@ -1,5 +1,5 @@
 {{- if .Values.postgres.enabled }}
-# Headless Service — StatefulSet DNS 解析
+# Headless Service — StatefulSet governing service，提供稳定 DNS（postgres-0.postgres.ns.svc）
 apiVersion: v1
 kind: Service
 metadata:
@@ -17,4 +17,25 @@ spec:
       name: postgres
   selector:
     {{- include "hci-data.selectorLabels" (dict "name" "postgres" "Release" .Release) | nindent 4 }}
+---
+{{- if .Values.postgres.nodePort }}
+# NodePort Service — 供外部客户端（如 DB 管理工具）访问，与上方 Headless Service 独立
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-external
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hci-data.podLabels" (dict "name" "postgres" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  type: NodePort
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+      nodePort: {{ .Values.postgres.nodePort }}
+  selector:
+    {{- include "hci-data.selectorLabels" (dict "name" "postgres" "Release" .Release) | nindent 4 }}
+{{- end }}
 {{- end }}

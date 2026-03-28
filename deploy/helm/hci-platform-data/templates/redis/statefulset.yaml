@@ -20,9 +20,14 @@ spec:
       labels:
         {{- include "hci-data.podLabels" (dict "name" "redis" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: redis
           image: {{ .Values.redis.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
           command: ["redis-server", "--appendonly", "yes"]
           ports:
             - containerPort: 6379

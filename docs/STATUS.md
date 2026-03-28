@@ -55,10 +55,15 @@
 | 文档 | 状态 |
 |------|------|
 | [archive/31_文档代码审查结果.md](archive/31_文档代码审查结果.md) | ✅ **审查完成**（2026-03-24） |
-| archive/32_任务编排_P1_知识库重建.md | ⚠️ **文件待创建**（P1 启动前需先建此文档） |
-| archive/33_任务编排_P2_诊断状态机.md | ⚠️ **文件待创建**（注：部分代码已在主分支实现） |
-| archive/34_任务编排_P3_ReAct引擎与工具接入.md | ⚠️ **文件待创建**（注：ReAct 执行器已实现） |
-| archive/35_任务编排_P4_工具扩展与数据管道.md | ⚠️ **文件待创建**（注：工具审计日志已实现） |
+| archive/37_任务编排_P1_知识库重建.md | ⚠️ **文件待创建**（P1 启动前需先建此文档） |
+| archive/38_任务编排_P2_诊断状态机.md | ⚠️ **文件待创建**（注：部分代码已在主分支实现） |
+| archive/39_任务编排_P3_ReAct引擎与工具接入.md | ⚠️ **文件待创建**（注：ReAct 执行器已实现） |
+| archive/40_任务编排_P4_工具扩展与数据管道.md | ⚠️ **文件待创建**（注：工具审计日志已实现） |
+
+### 本地部署参考
+| 文档 | 一句话说明 |
+|------|----------|
+| [guides/本地K3s部署指南.md](guides/本地K3s部署指南.md) | WSL2+K3s 本地部署全流程 + 全部问题排查索引（含网络避坑） |
 
 ---
 
@@ -67,6 +72,7 @@
 ### archive/ 早期版本（已被 architecture/ 新文档取代）
 - `archive/00~13` — 项目初期设计文档，内容已被 architecture/ 超越
 - `archive/14~30` — 开发流程、发布规范等运维文档，按需查阅
+- `archive/31~36` — 2026-03-24 之后归档：代码审查记录、重构日志、RAG 早期设计草稿、本地部署日志原文（已合并到 guides/）
 
 ### 备选方案（决策已做，无需再读）
 - `architecture/09_框架全景比较.md` — 框架调研，ReAct 已选定
@@ -119,6 +125,33 @@ if self.response_model:
 
 本次修复基于对 `docs/phase0-4-task-orchestration` 分支代码审查报告结论，逐项修复所有问题。
 
+## 2026-03-27 Bug Fix：SSE 换行截断 + AI 回复落库失败
+
+**问题 1：custom-ui Markdown 实时渲染失效（SSE 换行截断）**
+
+- **根因**：提交 `9d56852`（Feature/knowledge rag）在重构路由时，将原本 `dcab8c8` 修复的 JSON 编码写法回退为裸文本 `yield f"data: {chunk}\n\n"`。  
+  当 AI 返回包含换行符的文本（Markdown 标题、列表、代码块），SSE 协议会将其拆分为多行，前端逐行解析时只取 `data:` 开头的行，其余内容丢失，导致渲染片段不完整。
+- **修复**：恢复 JSON 编码：`encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)`；`yield f"data: {encoded_chunk}\n\n"`。  
+  前端代码原本已支持 JSON 格式（`JSON.parse(data).content`），此改动向前兼容。
+
+**问题 2：刷新页面 AI 回复内容丢失（落库失败）**
+
+- **根因**：`get_conversation_service()` 依赖注入时未将 `session_factory` 传入 `ConversationService`，导致 `self.session_factory` 为 `None`。  
+  后台任务 `save_assistant_message` 执行时，请求作用域 DB session 已由 `get_session()` 的 `finally` 块关闭，回退到 `self.repository.add_message()` 调用失败（操作已关闭的 session），异常被 `except` 静默捕获，INSERT 不入库。
+- **修复**：`get_conversation_service()` 中添加 `session_factory=database_manager.async_session_factory`，后台任务改用独立 session 写入。
+
+**变更文件**：`backend/conversation-service/app/routes/conversations.py`
+
+---
+
+## 2026-03-26 ArgoCD GitOps prod 集群 namespace 修正
+
+**问题**：`hci-platform-prod` 和 `hci-platform-data-prod` ArgoCD Application 的 `destination.namespace` 错误配置为 `hci`，与 prod 集群实际使用的 namespace `hci-prod` 不一致。
+
+**修复**：
+- `deploy/gitops/argo-apps/hci-platform-prod.yaml`: namespace `hci` → `hci-prod`
+- `deploy/gitops/argo-apps/hci-platform-data-prod.yaml`: namespace `hci` → `hci-prod`
+
 ### 🔴 高优先级修复
 
 **`knowledge_retriever.py`：KB chunks 全部超限时 fallback_level 与 prompt 不一致**
@@ -146,3 +179,57 @@ if self.response_model:
 - `_build_context_breakdown` 改用显式 `has_b_layer = len(sections) > 4` 替代脆弱的 `len(sections) == 4 / > 4` 多分支判断，逻辑更清晰且对未来段数变化有弹性；补充 docstring 说明 5 段/4 段两种结构。
 - KB chunks 截断累计变量从 `total_chars` 重命名为 `chunks_total_chars`，与 audit_meta 中语义不同的 `total_chars`（全 context breakdown 总字符数）区分开。
 - `has_sop` 检查中 `and not isinstance(sop_node, Exception)` 冗余判断已删除（该路径在并发容错处理后 `sop_node` 必为 `None` 或 `dict`），改为 `sop_node is not None`，并附注释说明原因。
+
+## 2026-03-26：GitOps argo-apps 目录重构（PR #refactor/gitops-argo-apps-by-instance）
+
+**变更内容：** `deploy/gitops/argo-apps/` 按 ArgoCD 实例分目录
+
+- `local/`：本地 WSL dev 集群（infra-dev、data-dev、obs-dev、dev）
+- `cloud/`：云端 ArgoCD（staging + prod，各 4 个 Application）
+- 新增 `local/hci-platform-infra-dev.yaml`（原 `hci-platform-infra.yaml` 重命名）
+- 新增 `local/hci-platform-obs-dev.yaml`（原 `hci-platform-obs.yaml` 重命名，Application name 同步更新）
+- 新增 `cloud/hci-platform-infra-{staging,prod}.yaml`
+- 新增 `cloud/hci-platform-obs-{staging,prod}.yaml`
+- 新增 `deploy/gitops/argo-apps/README.md`：记录两目录用途和 Bootstrap 命令
+
+**同步变更（hci-platform-env commit `5f037f8`）：**
+- `environments/dev/values.yaml`：数据层迁移至 hci-dev，`postgresHost`/`redisUrl` 改为同 ns 短名
+
+## 2026-03-27 staging 对话链路事故修复复盘
+
+**现象：**
+- 创建工单最初返回 500
+- 创建对话返回 500
+- conversation-service `/health` 降级，依赖显示 `database` / `kb_service` / `ai_assistants` 不可用
+- 发送消息链路出现上游 401，最终影响真实 AI 回复
+
+**根因拆分：**
+1. **数据库 schema 漂移**：staging 数据库缺少 `case.close_reason` 与 `conversation.diagnostic_stage` 等补充字段，导致 ORM 写入失败。
+2. **AI 认证选择错误**：conversation-service 直连 `open.bigmodel.cn` 时错误复用了内部 gateway token，而不是 `OPENCLAW_API_KEY`。
+3. **DNS 搜索域硬编码**：`conversation-service` 在 `externalDns=true` 场景下，将 search domain 固定为 `hci-troubleshoot.svc.cluster.local`，在 `hci-staging` 中重启后无法解析 `postgres` / `kb-service` / `redis`。
+
+**修复动作：**
+- staging 库执行补充迁移脚本：
+   - `database/migrate_evaluation_v1.sql`
+   - `database/migrate_conversation_p4_v1.sql`
+- 调整 AI 客户端认证逻辑：
+   - 内部 claw gateway / Pod IP 使用 gateway token
+   - 外部模型提供商使用 `OPENCLAW_API_KEY`
+- 调整 Helm 模板：conversation-service 的 DNS search 由当前 namespace 动态渲染，不再写死 `hci-troubleshoot`
+- 增加单测覆盖上述认证分流逻辑
+- 更新发布手册，要求发布前校验补充迁移与 conversation-service 依赖健康
+
+**验证结果：**
+- `conversation-service /health` 恢复 `healthy`
+- `database=ok`、`kb_service=ok`、`ai_assistants={openclaw:true, productionclaw:true}`
+- 端到端回归通过：
+   - 创建工单 `201`
+   - 创建对话 `201`
+   - 发送消息 `200`
+   - SSE 正常返回 token 流
+
+**防回归项：**
+1. 所有 schema 增量必须同步提供补充迁移，并在 staging/prod 发布前执行列存在性校验。
+2. 任何“内部 gateway + 外部 provider”双路调用场景，必须显式区分 token 来源，禁止复用同一凭据。
+3. Helm 模板中凡涉及 namespace 相关 DNS，不允许硬编码环境名，统一从模板上下文渲染。
+4. 发布后必须检查 `conversation-service /health`，并覆盖一次真实“创建工单 → 创建对话 → 发送消息”链路。

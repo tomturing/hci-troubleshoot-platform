@@ -8,6 +8,7 @@ metadata:
     {{- include "hci.podLabels" (dict "name" "kb-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
 spec:
   replicas: {{ .Values.kbService.replicaCount }}
+  revisionHistoryLimit: 3  # 只保留最近 3 个 ReplicaSet，避免空 RS 僵尸积累
   selector:
     matchLabels:
       {{- include "hci.selectorLabels" (dict "name" "kb-service" "Release" .Release) | nindent 6 }}

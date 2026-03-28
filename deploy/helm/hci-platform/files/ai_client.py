@@ -7,8 +7,10 @@ AI Assistant Client - 多类型AI助手客户端抽象层 (v2.0)
 
 import json
 import os
+from ipaddress import ip_address
 from collections.abc import AsyncGenerator
 from typing import Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 import httpx
 from shared.utils.logger import get_logger
@@ -49,12 +51,34 @@ class OpenClawAssistant:
         assistant_type: str = "openclaw",
     ):
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+        self.gateway_token = api_key
+        self.provider_api_key = os.environ.get("OPENCLAW_API_KEY") or api_key
         self.default_model = default_model
         self.assistant_type = assistant_type
         # 流式 LLM 响应可能较慢，读超时通过环境变量 AI_CLIENT_READ_TIMEOUT_SEC 调整（默认 120s）
         _read_timeout = float(os.environ.get("AI_CLIENT_READ_TIMEOUT_SEC", "120.0"))
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=_read_timeout, write=10.0, pool=10.0))
+
+    @staticmethod
+    def _is_internal_gateway_endpoint(endpoint: str) -> bool:
+        """识别内部 claw 网关端点（Service DNS / Pod IP / 本机代理）。"""
+        host = (urlparse(endpoint).hostname or "").lower()
+        if not host:
+            return False
+        if host in {"localhost", "127.0.0.1", "host.docker.internal", "openclaw", "productionclaw", "learningclaw"}:
+            return True
+        if host.endswith(".svc") or host.endswith(".svc.cluster.local"):
+            return True
+        try:
+            return ip_address(host).is_private
+        except ValueError:
+            return False
+
+    def _resolve_auth_token(self, endpoint: str) -> str | None:
+        """内部 gateway 使用 gateway token；外部模型提供商使用 API key。"""
+        if self._is_internal_gateway_endpoint(endpoint):
+            return self.gateway_token or self.provider_api_key
+        return self.provider_api_key or self.gateway_token
 
     async def chat_completion_stream(
         self, messages: list[dict[str, str]], user_id: str, pod_endpoint: str | None = None, model: str = ""
@@ -72,7 +96,6 @@ class OpenClawAssistant:
         """
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
         }
 
         payload = {"model": model or self.default_model, "messages": messages, "stream": True, "user": user_id}
@@ -93,6 +116,10 @@ class OpenClawAssistant:
         for idx, endpoint in enumerate(endpoints_to_try, start=1):
             url = f"{endpoint}{_completions_path}"
             got_first_token = False
+            token = self._resolve_auth_token(endpoint)
+            request_headers = dict(headers)
+            if token:
+                request_headers["Authorization"] = f"Bearer {token}"
 
             logger.info(
                 event="ai_request",
@@ -101,10 +128,11 @@ class OpenClawAssistant:
                 user_id=user_id,
                 assistant_type=self.assistant_type,
                 attempt=idx,
+                auth_mode="gateway_token" if self._is_internal_gateway_endpoint(endpoint) else "provider_api_key",
             )
 
             try:
-                async with self.client.stream("POST", url, json=payload, headers=headers) as response:
+                async with self.client.stream("POST", url, json=payload, headers=request_headers) as response:
                     if response.status_code != 200:
                         error_body = await response.aread()
                         logger.error(
@@ -177,8 +205,9 @@ class OpenClawAssistant:
         headers = {
             "Content-Type": "application/json",
         }
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        token = self._resolve_auth_token(self.base_url)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
         try:
             response = await self.client.post(url, json={}, headers=headers)

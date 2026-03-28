@@ -11,19 +11,14 @@ from shared.models.schemas import (
     CaseStatsResponse,
     ClientInfo,
     ClientListResponse,
-    CloseReason,
 )
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
 
-from app.config import settings
-
 from ..models.case import Case, CaseStatus
 from ..repositories.case_repo import CaseRepository
-from .quality_score import QualityScoreService
 
 logger = get_logger("case-service")
-
 
 class CaseService:
     """工单业务服务"""
@@ -31,17 +26,31 @@ class CaseService:
     def __init__(self, repository: CaseRepository):
         self.repository = repository
 
-    async def create_case(self, case_create: CaseCreate) -> CaseResponse:
+    def _generate_case_id(self) -> str:
+        """生成工单ID: Q + YYYYMMDD + 5位序号"""
+        import random
+        from datetime import datetime
+        date_str = datetime.utcnow().strftime("%Y%m%d")
+        seq = str(random.randint(0, 99999)).zfill(5)
+        return f"Q{date_str}{seq}"
+
+    async def create_case(
+        self,
+        case_create: CaseCreate
+    ) -> CaseResponse:
         """创建新工单"""
-        case_id = await self.repository.generate_case_id()
+        case_id = self._generate_case_id()
         trace_id = get_current_trace_id()
 
         # 获取或创建用户
         from shared.models.user import User
-
         user = await self.repository.get_user_by_client_id(case_create.client_id)
         if not user:
-            user = User(client_id=case_create.client_id, user_type="temporary", trace_id=trace_id)
+            user = User(
+                client_id=case_create.client_id,
+                user_type="temporary",
+                trace_id=trace_id
+            )
             user = await self.repository.create_user(user)
             logger.info(f"Created new user for client_id: {case_create.client_id}")
 
@@ -53,13 +62,16 @@ class CaseService:
             description=case_create.description,
             status=CaseStatus.created,
             assistant_type=case_create.assistant_type or "openclaw",
-            trace_id=trace_id,
+            trace_id=trace_id
         )
 
         created_case = await self.repository.create(case)
 
         logger.info(
-            event="case_created", message=f"Created case {case_id}", case_id=case_id, client_id=case_create.client_id
+            event="case_created",
+            message=f"Created case {case_id}",
+            case_id=case_id,
+            client_id=case_create.client_id
         )
 
         return CaseResponse.model_validate(created_case)
@@ -76,92 +88,43 @@ class CaseService:
         cases = await self.repository.get_by_client_id(client_id)
         return [CaseResponse.model_validate(case) for case in cases]
 
-    async def confirm_case(self, case_id: str) -> CaseResponse | None:
+    async def confirm_case(
+        self,
+        case_id: str
+    ) -> CaseResponse | None:
         """确认工单"""
-        case = await self.repository.update_status(case_id, CaseStatus.confirmed)
+        case = await self.repository.update_status(
+            case_id,
+            CaseStatus.confirmed
+        )
         if not case:
             return None
 
-        logger.info(event="case_confirmed", message=f"Confirmed case {case_id}", case_id=case_id)
+        logger.info(
+            event="case_confirmed",
+            message=f"Confirmed case {case_id}",
+            case_id=case_id
+        )
 
         return CaseResponse.model_validate(case)
 
     async def close_case(
         self,
-        case_id: str,
-        close_reason: CloseReason | None = None,
+        case_id: str
     ) -> CaseResponse | None:
-        """关闭工单，并异步推送摘要至 KB Service 进行知识沉淀
-
-        Args:
-            case_id: 工单ID
-            close_reason: 关闭原因（user_command/timeout/abandon/admin_close）
-
-        Returns:
-            CaseResponse: 关闭后的工单信息，工单不存在返回 None
-        """
-        trace_id = get_current_trace_id()
-
-        # 1. 更新工单状态为关闭
-        case = await self.repository.update_status(case_id, CaseStatus.closed)
+        """关闭工单"""
+        case = await self.repository.update_status(
+            case_id,
+            CaseStatus.closed
+        )
         if not case:
             return None
 
-        # 2. 如果提供了关闭原因，写入 case 表
-        if close_reason:
-            case = await self.repository.update_close_reason(case_id, close_reason.value)
-            logger.info(
-                event="case_close_reason_recorded",
-                message=f"工单 {case_id} 关闭原因已记录: {close_reason.value}",
-                case_id=case_id,
-                close_reason=close_reason.value,
-                trace_id=trace_id,
-            )
-
         logger.info(
             event="case_closed",
-            message=f"工单 {case_id} 已关闭",
-            case_id=case_id,
-            close_reason=close_reason.value if close_reason else None,
-            trace_id=trace_id,
+            message=f"Closed case {case_id}",
+            case_id=case_id
         )
-
-        # 3. 调用 QualityScoreService 计算并保存质量评分
-        try:
-            quality_service = QualityScoreService(self.repository.session)
-            composite_score = await quality_service.calculate_and_save(
-                case_id=case_id,
-                close_reason=close_reason.value if close_reason else None,
-                trace_id=trace_id,
-            )
-            logger.info(
-                event="quality_score_triggered",
-                message=f"工单 {case_id} 质量评分已触发计算",
-                case_id=case_id,
-                composite_score=composite_score,
-                trace_id=trace_id,
-            )
-        except Exception as e:
-            # 质量评分失败不应影响关闭流程
-            logger.error(
-                event="quality_score_trigger_failed",
-                message=f"工单 {case_id} 质量评分触发失败: {e}",
-                case_id=case_id,
-                error=str(e),
-                trace_id=trace_id,
-            )
-
-        # 4. 异步 fire-and-forget 推送至 KB Service（不阻塞主流程）
-        if settings.KB_PUSH_ENABLED:
-            from .kb_pusher import fire_and_forget_push
-
-            fire_and_forget_push(
-                kb_service_url=settings.KB_SERVICE_URL,
-                internal_token=settings.INTERNAL_API_TOKEN,
-                case_id=case_id,
-                title=case.title or case_id,
-                description=case.description or "",
-            )
 
         return CaseResponse.model_validate(case)
 
@@ -178,12 +141,9 @@ class CaseService:
     ) -> CaseListResponse:
         """获取所有工单（Admin: 分页 + 筛选）"""
         items, total = await self.repository.get_all(
-            skip=skip,
-            limit=limit,
-            status=status,
-            client_id=client_id,
-            start_time=start_time,
-            end_time=end_time,
+            skip=skip, limit=limit,
+            status=status, client_id=client_id,
+            start_time=start_time, end_time=end_time,
         )
         return CaseListResponse(
             items=[CaseResponse.model_validate(c) for c in items],

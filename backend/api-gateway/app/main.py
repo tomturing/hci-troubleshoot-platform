@@ -52,7 +52,9 @@ async def lifespan(app: FastAPI):
 
     # 兼容现有路由注入方式
     websocket.set_session_manager(session_manager)
-    websocket.set_terminal_service(terminal_service)
+    # 部分分支的 websocket 路由未实现 terminal service 注入函数，做兼容判断
+    if hasattr(websocket, "set_terminal_service"):
+        websocket.set_terminal_service(terminal_service)
 
     yield
 

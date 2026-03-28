@@ -1,19 +1,17 @@
 # =============================================================================
 # ArgoCD Application: hci-platform-obs-staging
 #
-# 管理 staging 可观测性栈（namespace: hci-observability）：
+# 目标集群：云端 staging VM（kubernetes.default.svc = ArgoCD 所在集群）
+# 管理可观测性栈（namespace: hci-observability）：
 #   - Prometheus Deployment + ServiceAccount + ConfigMap + Service
 #   - Loki Deployment + PVC + Service
 #   - Tempo Deployment + PVC + Service
 #   - Grafana Deployment + Service + Secret + ConfigMap
 #   - Promtail DaemonSet + ServiceAccount
-#   - Grafana Ingress（ingress.enabled=true 时生效）
 #
 # 设计原则：
-#   - 三个业务环境（dev/staging/prod）共用同一可观测性命名空间 hci-observability
-#   - 单一 Application 独享资源所有权，消除多环境 Application 竞争覆写问题
+#   - staging 可观测性独立命名空间，与 prod 隔离
 #   - prune: false — Loki + Tempo PVC 受保护，防止日志/追踪数据意外丢失
-#   - ClusterRole/ClusterRoleBinding 已迁移至 hci-platform-infra，本 Chart 不渲染
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -21,28 +19,24 @@ metadata:
   name: hci-platform-obs-staging
   namespace: argocd
   annotations:
-    argocd.argoproj.io/description: "staging 可观测性栈 — Prometheus + Loki + Tempo + Grafana + Promtail（namespace: hci-observability）"
+    argocd.argoproj.io/description: "staging 可观测性栈 — Prometheus + Loki + Tempo + Grafana + Promtail"
 spec:
   project: default
   destination:
+    # staging 集群：云端 ArgoCD 所在 VM
     server: https://kubernetes.default.svc
     namespace: hci-observability
   sources:
-    # 应用仓库：提供 Helm Chart
     - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
       targetRevision: main
       path: deploy/helm/hci-platform-obs
       helm:
-        releaseName: hci-platform-obs   # 保持旧 releaseName，避免 spec.selector 不可变冲突
+        releaseName: hci-platform-obs
         valueFiles:
           - $values/environments/staging/values.yaml
-    # 环境仓库：提供 grafanaAdminPassword 等敏感配置
-    # staging ArgoCD 管理 staging in-cluster，obs-staging 使用 staging 环境配置
     - repoURL: https://github.com/tomturing/hci-platform-env.git
       targetRevision: main
       ref: values
-  # PVC spec（storageClassName 等）字段一旦创建不可变，忽略 Chart 与集群的差异
-  # 避免 ArgoCD 反复尝试 patch 已绑定的 PVC 导致 SyncFailed
   ignoreDifferences:
     - group: ""
       kind: PersistentVolumeClaim
@@ -52,8 +46,8 @@ spec:
         - /spec/accessModes
   syncPolicy:
     automated:
-      prune: false      # 禁止自动删除资源，保护 Loki + Tempo PVC 中的观测数据
+      prune: false      # 禁止自动删除，保护 Loki + Tempo PVC 观测数据
       selfHeal: true
     syncOptions:
-      - CreateNamespace=true         # 如 namespace 尚未被本 Chart 创建，ArgoCD 兜底创建
-      - RespectIgnoreDifferences=true  # sync 阶段同样跳过 ignoreDifferences 中声明的字段，防止 patch PVC 不可变字段报错
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true

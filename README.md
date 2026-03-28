@@ -95,17 +95,17 @@ Helm Chart 分四层，**按顺序部署**：
 
 | Chart | 内容 | ArgoCD App |
 |-------|------|------------|
-| `hci-platform-infra` | StorageClass + ClusterRole（集群级，仅首次） | `hci-platform-infra.yaml` |
+| `hci-platform-infra` | StorageClass + ClusterRole（集群级，仅首次） | `hci-platform-infra-dev.yaml` |
 | `hci-platform-data` | PostgreSQL + Redis（三套环境独立，prune:false 保护 PVC） | `hci-platform-data-{dev,staging,prod}.yaml` |
-| `hci-platform-obs` | Loki + Tempo + Grafana + Prometheus（全局一套，prune:false） | `hci-platform-obs.yaml` |
+| `hci-platform-obs` | Loki + Tempo + Grafana + Prometheus（三套环境独立，prune:false） | `hci-platform-obs-{dev,staging,prod}.yaml` |
 | `hci-platform` | 业务微服务 + 前端（三套环境） | `hci-platform-{dev,staging,prod}.yaml` |
 
 ```bash
 # 首次部署（按顺序）
-kubectl apply -f deploy/gitops/argo-apps/hci-platform-infra.yaml
-kubectl apply -f deploy/gitops/argo-apps/hci-platform-data-dev.yaml
-kubectl apply -f deploy/gitops/argo-apps/hci-platform-obs.yaml
-kubectl apply -f deploy/gitops/argo-apps/hci-platform-dev.yaml
+kubectl apply -f deploy/gitops/argo-apps/local/hci-platform-infra-dev.yaml
+kubectl apply -f deploy/gitops/argo-apps/local/hci-platform-data-dev.yaml
+kubectl apply -f deploy/gitops/argo-apps/local/hci-platform-obs-dev.yaml
+kubectl apply -f deploy/gitops/argo-apps/local/hci-platform-dev.yaml
 
 # 验证
 bash scripts/k3s-verify.sh
@@ -121,7 +121,7 @@ bash scripts/k3s-verify.sh
 | 需求 | [需求说明](docs/requirements/) |
 | 架构 | [系统架构](docs/architecture/01_系统架构.md) · [数据库设计](docs/architecture/02_数据库设计.md) · [接口设计](docs/architecture/03_接口设计.md) · [可观测性](docs/architecture/07_可观测性设计.md) · [AI助手层](docs/architecture/05_AI助手层设计.md) · [知识库RAG](docs/architecture/06_知识库RAG设计.md) · [客户端](docs/architecture/04_客户端设计.md) |
 | 决策 | [ADR 索引](docs/adr/README.md)（ADR-001 ~ ADR-005） |
-| 指南 | [开发指南](docs/guides/) · [项目交付标准化](docs/guides/项目交付标准化.md) |
+| 指南 | [开发指南](docs/guides/) · [本地K3s部署指南](docs/guides/本地K3s部署指南.md) · [项目交付标准化](docs/guides/项目交付标准化.md) |
 | 参考 | [发布检查清单与回滚 SOP](docs/reference/) |
 
 ## 📊 项目状态

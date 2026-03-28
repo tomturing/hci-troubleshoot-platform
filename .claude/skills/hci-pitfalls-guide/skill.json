@@ -1,0 +1,7 @@
+{
+  "name": "hci-pitfalls-guide",
+  "version": "1.0.0",
+  "description": "HCI 团队避坑指南 - 问题排查知识库",
+  "author": "hci-team",
+  "keywords": ["debugging", "troubleshooting", "pitfalls", "k8s", "python", "shell"]
+}

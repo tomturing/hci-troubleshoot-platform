@@ -28,7 +28,10 @@ class SchedulerService:
     def __init__(self, k8s_client: K8sClient, redis_manager: RedisManager):
         self.k8s = k8s_client
         self.redis = redis_manager
-        self.pool_manager = PodPoolManager(k8s_client=k8s_client, assistant_registry=settings.assistant_registry)
+        self.pool_manager = PodPoolManager(
+            k8s_client=k8s_client,
+            assistant_registry=settings.assistant_registry
+        )
 
     async def start(self):
         """启动服务，初始化 Pod 池并开始后台维护任务"""
@@ -76,8 +79,12 @@ class SchedulerService:
 
     # ────────── 核心调度方法 ──────────
 
-    async def allocate_pod(self, case_id: str, assistant_type: str = "productionclaw", case_info: dict | None = None) -> str | None:
-        """为工单分配指定类型的Pod（v3.0：传入工单信息供 Pod 初始化使用）"""
+    async def allocate_pod(
+        self,
+        case_id: str,
+        assistant_type: str = "openclaw"
+    ) -> str | None:
+        """为工单分配指定类型的Pod"""
         # 检查是否已有分配
         existing = await self._get_allocation(case_id)
         if existing:
@@ -97,8 +104,8 @@ class SchedulerService:
             logger.error(f"No pool found for assistant type: {assistant_type}")
             return None
 
-        # 从池中获取（传入 case_info 供 Pod 初始化使用）
-        pod_name = await pool.acquire_pod(case_id, case_info=case_info)
+        # 从池中获取
+        pod_name = await pool.acquire_pod(case_id)
         if pod_name:
             await self._set_allocation(case_id, pod_name, assistant_type)
             logger.info(
@@ -106,7 +113,7 @@ class SchedulerService:
                 message=f"Allocated {assistant_type} pod {pod_name} for case {case_id}",
                 case_id=case_id,
                 pod_name=pod_name,
-                assistant_type=assistant_type,
+                assistant_type=assistant_type
             )
             return pod_name
 
@@ -124,7 +131,7 @@ class SchedulerService:
                 message=f"Releasing {assistant_type} pod {pod_name} for case {case_id}",
                 case_id=case_id,
                 pod_name=pod_name,
-                assistant_type=assistant_type,
+                assistant_type=assistant_type
             )
 
             pool = self.pool_manager.get_pool(assistant_type)
@@ -161,7 +168,10 @@ class SchedulerService:
     async def get_status(self) -> dict:
         """获取服务状态"""
         all_allocs = await self._get_all_allocations()
-        return {"allocated_cases": len(all_allocs), "pools": self.pool_manager.get_all_stats()}
+        return {
+            "allocated_cases": len(all_allocs),
+            "pools": self.pool_manager.get_all_stats()
+        }
 
     def get_available_assistants(self) -> list:
         """获取可用的AI助手列表"""
@@ -170,13 +180,11 @@ class SchedulerService:
             if config.get("enabled", True):
                 pool = self.pool_manager.get_pool(atype)
                 stats = pool.get_stats() if pool else {}
-                result.append(
-                    {
-                        "type": atype,
-                        "name": config.get("name", atype),
-                        "description": config.get("description", ""),
-                        "enabled": True,
-                        "pool_stats": stats,
-                    }
-                )
+                result.append({
+                    "type": atype,
+                    "name": config.get("name", atype),
+                    "description": config.get("description", ""),
+                    "enabled": True,
+                    "pool_stats": stats
+                })
         return result

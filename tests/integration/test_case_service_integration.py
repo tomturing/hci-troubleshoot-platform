@@ -41,9 +41,9 @@ class TestCaseServiceIntegration:
                     json={
                         "client_id": "integration-test-client",
                         "title": "集成测试工单",
-                        "description": "这是一个集成测试",
+                        "description": "这是一个集成测试"
                     },
-                    headers={"X-Trace-ID": "int-test-001"},
+                    headers={"X-Trace-ID": "int-test-001"}
                 )
 
                 assert response.status_code == 201
@@ -61,14 +61,16 @@ class TestCaseServiceIntegration:
 
                 # 3. 确认工单
                 response = await client.put(
-                    f"{self.BASE_URL}/api/cases/{case_id}/confirm", headers={"X-Trace-ID": "int-test-002"}
+                    f"{self.BASE_URL}/api/cases/{case_id}/confirm",
+                    headers={"X-Trace-ID": "int-test-002"}
                 )
                 assert response.status_code == 200
                 assert response.json()["status"] == "confirmed"
 
                 # 4. 查询客户端的所有工单
                 response = await client.get(
-                    f"{self.BASE_URL}/api/cases/", params={"client_id": "integration-test-client"}
+                    f"{self.BASE_URL}/api/cases/",
+                    params={"client_id": "integration-test-client"}
                 )
                 assert response.status_code == 200
                 cases = response.json()
@@ -77,7 +79,8 @@ class TestCaseServiceIntegration:
 
                 # 5. 关闭工单
                 response = await client.put(
-                    f"{self.BASE_URL}/api/cases/{case_id}/close", headers={"X-Trace-ID": "int-test-003"}
+                    f"{self.BASE_URL}/api/cases/{case_id}/close",
+                    headers={"X-Trace-ID": "int-test-003"}
                 )
                 assert response.status_code == 200
                 assert response.json()["status"] == "closed"
@@ -108,6 +111,6 @@ class TestCaseServiceIntegration:
                 # 缺少必填字段
                 response = await client.post(
                     f"{self.BASE_URL}/api/cases/",
-                    json={"client_id": "test"},  # 缺少title
+                    json={"client_id": "test"}  # 缺少title
                 )
                 assert response.status_code == 422
