@@ -141,20 +141,25 @@ make vk                   # 启动 Vibe Kanban
 ## 7. 工作前必读（避坑指南）
 
 > **规则：在编写或审查对应类型的代码前，必须先读取相关避坑指南。**
+> **规则：在排查问题前，必须优先读取相关避坑指南。**
 
-经验库统一存放在 `~/Workflow/multi-agent-workflow/agent-global/pitfalls/`。
+经验库唯一权威来源：`docs/pitfalls/`（Git 管理，随代码演进）。
 
-Claude Code 用户：`~/.claude/pitfalls/`（symlink 到上述目录）会自动加载。
-Codex / Gemini 用户：请根据下表主动读取对应文件。
+**所有 Agent 必须首先读取 `docs/pitfalls/_index.md`（触发路由索引），再按场景读取对应文件。**
 
-| 触发场景 | 指南文件 |
-|---------|----------|
-| **任何涉及进程/状态/外部服务的问题排查** | `agent-global/pitfalls/debugging.md` |
-| **网络/服务访问异常** | `agent-global/pitfalls/network-service-check.md` |
-| Shell 脚本、Makefile | `agent-global/pitfalls/shell.md` |
-| Python 代码（ORM、异常、数据类） | `agent-global/pitfalls/python.md` |
-| 前端代码（pnpm、TypeScript、Vue） | `agent-global/pitfalls/frontend.md` |
-| K8s/K3s 镜像、Helm、网络 | `agent-global/pitfalls/k8s.md` |
-| dispatcher / 状态机 | `agent-global/pitfalls/dispatcher.md` |
+Claude Code 用户：`~/.claude/pitfalls/` 是 symlink，指向 `docs/pitfalls/`，会自动加载。
+Codex / OpenCode / Gemini 用户：请根据下表主动读取对应文件。
 
-跨设备同步经验库：`cd ~/Workflow/multi-agent-workflow && make sync-knowledge`
+| 触发场景 | 指南文件 | 关键条目 |
+|---------|----------|---------|
+| **任何涉及进程/状态/外部服务的问题排查** | `docs/pitfalls/debugging.md` | 原则一~六 |
+| **网络/服务访问异常（502/503/超时/SSL/LLM）** | `docs/pitfalls/network-service-check.md` | §一~十一 |
+| Shell 脚本、Makefile、CI 脚本 | `docs/pitfalls/shell.md` | PIT-001,002 |
+| Python 代码（ORM、异常、数据类） | `docs/pitfalls/python.md` | PIT-003,004,009 |
+| 前端代码（pnpm、TypeScript、Vue）/ Docker 构建 | `docs/pitfalls/frontend.md` | PIT-005,023,025,028,029 |
+| dispatcher / 状态机 / 幂等资源管理 | `docs/pitfalls/dispatcher.md` | PIT-006,007,008 |
+| K8s/K3s 镜像导入、Helm、网络、HostPath | `docs/pitfalls/k8s.md` | PIT-014~019,021,022,024,034,037,038 |
+| OpenClaw 401/崩溃/WebSocket/AI 超时 | `docs/pitfalls/openclaw.md` | PIT-010,013,026,027,030,032,035 |
+| Grafana 重定向/Ingress/iframe | `docs/pitfalls/grafana.md` | PIT-011,012,020,036 |
+
+> 新发现的坑：先在 `docs/pitfalls/_index.md` 分配编号，再写入对应分类文件，同一 commit 提交。
