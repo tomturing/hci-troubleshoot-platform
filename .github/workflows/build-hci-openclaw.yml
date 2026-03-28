@@ -50,6 +50,7 @@ jobs:
 
             - name: Trivy 镜像安全扫描（仅上报，不阻断）
               uses: aquasecurity/trivy-action@master
+              continue-on-error: true
               with:
                   image-ref: ghcr.io/${{ github.repository }}/hci-openclaw:${{ inputs.openclaw_ref }}
                   exit-code: "0"
@@ -59,7 +60,7 @@ jobs:
 
             - name: 上传安全扫描结果（GitHub Security 标签页可见）
               uses: github/codeql-action/upload-sarif@v3
-              if: always()
+              if: always() && hashFiles('trivy-hci-openclaw.sarif') != ''
               continue-on-error: true
               with:
                   sarif_file: trivy-hci-openclaw.sarif
