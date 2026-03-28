@@ -73,7 +73,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(kube_pod_container_status_waiting_reason{reason=\"ImagePullBackOff\"})",
+          "expr": "sum(kube_pod_container_status_waiting_reason{reason=\"ImagePullBackOff\"} or kube_pod_init_container_status_waiting_reason{reason=\"ImagePullBackOff\"})",
           "legendFormat": "ImagePullBackOff",
           "range": true,
           "refId": "A"
@@ -347,7 +347,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (namespace, reason) (kube_pod_container_status_waiting_reason{reason=~\"ImagePullBackOff|ErrImagePull|CrashLoopBackOff|CreateContainerError|RunContainerError\"})",
+          "expr": "sum by (namespace, reason) (kube_pod_container_status_waiting_reason{reason=~\"ImagePullBackOff|ErrImagePull|CrashLoopBackOff|CreateContainerError|RunContainerError\"} or kube_pod_init_container_status_waiting_reason{reason=~\"ImagePullBackOff|ErrImagePull|CrashLoopBackOff|CreateContainerError|RunContainerError\"})",
           "legendFormat": "{{namespace}}/{{reason}}",
           "range": true,
           "refId": "A"
@@ -403,7 +403,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (namespace, pod, reason) (kube_pod_container_status_waiting_reason{reason=~\"ImagePullBackOff|ErrImagePull|CrashLoopBackOff|CreateContainerError|RunContainerError\"})",
+          "expr": "sum by (namespace, pod, reason) (kube_pod_container_status_waiting_reason{reason=~\"ImagePullBackOff|ErrImagePull|CrashLoopBackOff|CreateContainerError|RunContainerError\"} or kube_pod_init_container_status_waiting_reason{reason=~\"ImagePullBackOff|ErrImagePull|CrashLoopBackOff|CreateContainerError|RunContainerError\"})",
           "format": "table",
           "instant": true,
           "legendFormat": "",
