@@ -1,0 +1,63 @@
+name: 构建 hci-openclaw（手动触发）
+
+# hci-openclaw 是外部固定版本依赖，不跟随每次业务代码 push 重新构建。
+# 仅在需要升级 openclaw 版本时，由人工 workflow_dispatch 触发。
+#
+# 触发方式：GitHub Actions 页面 → 本 workflow → Run workflow
+# 参数说明：
+#   openclaw_ref：上游 openclaw 仓库的 git tag / branch（默认 v2026.3.24）
+
+on:
+    workflow_dispatch:
+        inputs:
+            openclaw_ref:
+                description: "上游 openclaw 版本 tag（如 v2026.3.24）"
+                required: true
+                default: "v2026.3.24"
+
+jobs:
+    build-hci-openclaw:
+        name: 构建并推送 hci-openclaw 镜像
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+            security-events: write
+        steps:
+            - name: Clone openclaw 上游源码（固定版本）
+              run: |
+                  git clone --depth=1 --branch "${{ inputs.openclaw_ref }}" \
+                    https://github.com/openclaw/openclaw.git _ext_openclaw
+
+            - name: 登录 GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: 构建并推送镜像
+              uses: docker/build-push-action@v5
+              with:
+                  context: _ext_openclaw
+                  push: true
+                  # 仅打 latest tag，不带业务服务的 timestamp tag
+                  tags: |
+                      ghcr.io/${{ github.repository }}/hci-openclaw:${{ inputs.openclaw_ref }}
+                      ghcr.io/${{ github.repository }}/hci-openclaw:latest
+
+            - name: Trivy 镜像安全扫描（仅上报，不阻断）
+              uses: aquasecurity/trivy-action@master
+              with:
+                  image-ref: ghcr.io/${{ github.repository }}/hci-openclaw:${{ inputs.openclaw_ref }}
+                  exit-code: "0"
+                  severity: HIGH,CRITICAL
+                  format: sarif
+                  output: trivy-hci-openclaw.sarif
+
+            - name: 上传安全扫描结果（GitHub Security 标签页可见）
+              uses: github/codeql-action/upload-sarif@v3
+              if: always()
+              continue-on-error: true
+              with:
+                  sarif_file: trivy-hci-openclaw.sarif
