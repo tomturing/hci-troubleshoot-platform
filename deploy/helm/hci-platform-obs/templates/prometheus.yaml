@@ -1,4 +1,5 @@
 {{- if .Values.prometheus.enabled }}
+{{- $scrapeNamespaces := .Values.scrapeNamespaces | default (list .Values.scrapeNamespace) -}}
 ---
 # Prometheus 配置（scrapeNamespace 由 values.scrapeNamespace 指定，默认 hci）
 apiVersion: v1
@@ -22,7 +23,9 @@ data:
           - role: pod
             namespaces:
               names:
-                - {{ .Values.scrapeNamespace }}
+{{- range $ns := $scrapeNamespaces }}
+                - {{ $ns }}
+{{- end }}
         relabel_configs:
           # 只采集带有 prometheus.io/scrape=true 注解的 Pod
           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
