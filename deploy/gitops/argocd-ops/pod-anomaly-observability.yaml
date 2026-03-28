@@ -1,0 +1,262 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-state-metrics
+  namespace: hci-observability
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: hci-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-state-metrics-hci
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: hci-platform
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - nodes
+      - namespaces
+      - services
+      - configmaps
+      - resourcequotas
+      - replicationcontrollers
+      - persistentvolumeclaims
+      - persistentvolumes
+      - limitranges
+      - endpoints
+      - events
+      - secrets
+    verbs: ["list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - daemonsets
+      - statefulsets
+      - replicasets
+    verbs: ["list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - cronjobs
+      - jobs
+    verbs: ["list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["list", "watch"]
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+      - ingresses
+      - ingressclasses
+    verbs: ["list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      - storageclasses
+      - volumeattachments
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-state-metrics-hci
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: hci-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-state-metrics-hci
+subjects:
+  - kind: ServiceAccount
+    name: kube-state-metrics
+    namespace: hci-observability
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  namespace: hci-observability
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: hci-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-state-metrics
+        app.kubernetes.io/component: observability
+        app.kubernetes.io/part-of: hci-platform
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: kube-state-metrics
+      containers:
+        - name: kube-state-metrics
+          image: m.daocloud.io/registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http-metrics
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  namespace: hci-observability
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: hci-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kube-state-metrics
+  ports:
+    - name: http-metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-config
+  namespace: hci-observability
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: hci-platform
+type: Opaque
+stringData:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+
+    route:
+      receiver: feishu-webhook
+      group_by: ["alertname", "namespace", "pod"]
+      group_wait: 30s
+      group_interval: 2m
+      repeat_interval: 30m
+
+    receivers:
+      - name: default-log
+      - name: feishu-webhook
+        webhook_configs:
+          # 替换为飞书机器人 Webhook 地址
+          - url: https://open.feishu.cn/open-apis/bot/v2/hook/78c71133-50c4-40c2-8114-77524f8d8654
+            send_resolved: true
+            max_alerts: 20
+
+    inhibit_rules:
+      - source_matchers:
+          - severity="critical"
+        target_matchers:
+          - severity="warning"
+        equal: ["alertname", "namespace", "pod"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: hci-observability
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: hci-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alertmanager
+        app.kubernetes.io/component: observability
+        app.kubernetes.io/part-of: hci-platform
+    spec:
+      containers:
+        - name: alertmanager
+          image: quay.io/prometheus/alertmanager:v0.27.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+            - "--storage.path=/alertmanager"
+          ports:
+            - name: web
+              containerPort: 9093
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+      volumes:
+        - name: config
+          secret:
+            secretName: alertmanager-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: hci-observability
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: hci-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: alertmanager
+  ports:
+    - name: web
+      port: 9093
+      targetPort: 9093
+      protocol: TCP
