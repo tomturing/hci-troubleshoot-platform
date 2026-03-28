@@ -33,3 +33,11 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+  # 忽略 StatefulSet 不可变字段差异（K8s 自动注入，Helm 模板未显式设置）
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/podManagementPolicy
+        - /spec/revisionHistoryLimit
+        - /spec/persistentVolumeClaimRetentionPolicy

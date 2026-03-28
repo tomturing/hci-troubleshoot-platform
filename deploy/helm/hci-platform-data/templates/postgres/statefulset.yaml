@@ -11,6 +11,8 @@ metadata:
     helm.sh/resource-policy: keep
 spec:
   serviceName: postgres
+  # 显式设置 K8s 默认值，避免与已存在的 StatefulSet 冲突
+  podManagementPolicy: OrderedReady
   replicas: 1
   selector:
     matchLabels:
