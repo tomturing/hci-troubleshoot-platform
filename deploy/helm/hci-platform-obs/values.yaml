@@ -36,7 +36,7 @@ global:
 
 # ======================== Ingress (Traefik) ==================================
 ingress:
-  enabled: false
+  enabled: true   # obs chart 部署即暴露 Grafana，无需 env repo 额外覆盖
   className: traefik
   annotations: {}
   # Grafana 路由优先级，需高于主站 / 回退路由，避免 /grafana 被 customer-ui 吞掉
