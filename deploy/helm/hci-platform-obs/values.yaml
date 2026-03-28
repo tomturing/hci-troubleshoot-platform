@@ -106,3 +106,17 @@ grafana:
     limits:
       cpu: "500m"
       memory: "256Mi"
+
+# LimitRange：为 hci-observability 命名空间设置容器默认资源和上限
+limitRange:
+  enabled: true
+  defaultRequest:
+    cpu: "50m"
+    memory: "64Mi"
+  defaultLimit:
+    cpu: "2"
+    memory: "2Gi"
+  max:
+    cpu: "4"
+    memory: "4Gi"
+

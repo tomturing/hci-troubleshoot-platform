@@ -97,6 +97,18 @@ workloadDefaults:
     # 仅对副本数 > 1 的服务生成 PDB
     enabled: true
     minAvailable: 1
+  limitRange:
+    # 为命名空间设置容器资源默认值和上限，防止无 limits 的容器（如 productionclaw）打爆节点
+    enabled: true
+    defaultRequest:
+      cpu: "50m"
+      memory: "64Mi"
+    defaultLimit:
+      cpu: "2"
+      memory: "2Gi"
+    max:
+      cpu: "4"
+      memory: "4Gi"
 
 # ======================== PostgreSQL ========================================
 postgres:

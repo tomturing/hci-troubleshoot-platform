@@ -589,3 +589,68 @@ kubectl get rs -n hci-dev --no-headers | awk '$2==0 && $3==0 && $4==0 {print $1}
 kubectl get rs -n hci-dev --no-headers | awk '$2==0 && $3==0 && $4==0 {print $1}' | \
   xargs kubectl delete rs -n hci-dev
 ```
+
+
+## 10. 安全加固 & 可观测性补丁（#7/#8/#9）
+
+### 10.1 securityContext 说明
+
+**hci-platform chart（所有业务 Pod）**
+- 已通过 `workloadDefaults.securityContext` helper 自动注入：
+  - Pod 级：`seccompProfile.type: RuntimeDefault`
+  - 容器级：`allowPrivilegeEscalation: false`
+- **特殊容器**：
+  - **openclaw / learningclaw / productionclaw**：镜像已内置 `runAsUser: 1000/1001`，chart 同步设置了 `runAsNonRoot: true`
+  - **postgres / redis**：镜像默认 root（官方镜像限制），只加了 `seccompProfile` 和 `allowPrivilegeEscalation: false`，**不加 runAsNonRoot**
+
+**验证 securityContext 已生效：**
+```bash
+# 验证 Pod 级 seccompProfile
+kubectl get pod -n hci-dev api-gateway-xxx -o jsonpath='{.spec.securityContext}' | python3 -m json.tool
+
+# 验证容器级 allowPrivilegeEscalation
+kubectl get pod -n hci-dev api-gateway-xxx -o json | \
+  python3 -c "import json,sys; d=json.load(sys.stdin); print(d['spec']['containers'][0].get('securityContext','NOT SET'))"
+```
+
+### 10.2 告警规则（Pod 高频重启 + OOMKilled）
+
+告警规则通过 `prometheus-alert-rules` ConfigMap 挂载到 Prometheus，无需 Prometheus Operator。
+
+两条告警：
+- **PodHighRestartRate（warning）**：1小时内重启 > 3 次，持续 5 分钟后触发
+- **ContainerOOMKilled（critical）**：容器 OOMKill，立即触发
+
+告警路由：Prometheus → Alertmanager → 飞书 Webhook（由 `alertmanager-config` Secret 配置）
+
+**验证告警规则加载：**
+```bash
+# 检查 Prometheus 是否加载了告警规则
+kubectl exec -n hci-observability deployment/prometheus -- \
+  wget -qO- http://localhost:9090/api/v1/rules | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for group in data['data']['groups']:
+    print(f\"Group: {group['name']}\")
+    for rule in group['rules']:
+        print(f\"  {rule['name']}: {rule.get('health','?')}\")
+"
+```
+
+### 10.3 LimitRange（命名空间资源兜底）
+
+| 命名空间 | Chart | 资源名 | 作用 |
+|---------|-------|--------|------|
+| `hci-dev` | `hci-platform` | `hci-container-limits` | 防止 productionclaw 动态 Pod 无 limits 打爆节点 |
+| `hci-observability` | `hci-platform-obs` | `hci-obs-container-limits` | 防止 obs 服务内存泄漏 |
+
+默认值（可在 values 中覆盖）：
+- `defaultRequest`: cpu=50m, memory=64Mi
+- `defaultLimit`: cpu=2, memory=2Gi
+- `max`: cpu=4, memory=4Gi
+
+**验证 LimitRange 已生效：**
+```bash
+kubectl describe limitrange hci-container-limits -n hci-dev
+kubectl describe limitrange hci-obs-container-limits -n hci-observability
+```
