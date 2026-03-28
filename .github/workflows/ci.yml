@@ -55,6 +55,17 @@ jobs:
 
           echo "未检测到关键目录改动（workflow 配置变更无需文档同步），门禁通过"
 
+          # 检查 pitfalls 条目文件改动是否同步更新了 _index.md（编号注册表）
+          PITFALL_ENTRY=$(echo "$CHANGED_FILES" | grep -E '^docs/pitfalls/[^_]' || true)
+          if [[ -n "$PITFALL_ENTRY" ]]; then
+            if ! echo "$CHANGED_FILES" | grep -qE '^docs/pitfalls/_index\.md'; then
+              echo "⚠️  修改了 docs/pitfalls/ 条目文件，但未同步更新 _index.md"
+              echo "   请更新 _index.md 中的条目计数或 PIT 编号注册表，再提交"
+              exit 1
+            fi
+            echo "pitfalls 条目与 _index.md 同步更新，门禁通过"
+          fi
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
