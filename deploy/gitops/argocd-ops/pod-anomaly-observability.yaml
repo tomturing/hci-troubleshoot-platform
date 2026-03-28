@@ -203,6 +203,16 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/alertmanager
+      # PIT-034: Clash fake-IP (198.18.x.x) 通过 bypass rule 让 Pod 走 main 路由无法到达
+      # Alertmanager 只需发外部 webhook，无需 K8s 内部服务发现，使用真实 DNS 绕开 Clash fake-IP
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+          - 114.114.114.114
+          - 1.2.4.8
+        options:
+          - name: ndots
+            value: "1"
       volumes:
         - name: config
           secret:
