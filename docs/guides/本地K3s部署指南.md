@@ -124,7 +124,14 @@ curl -s http://172.26.101.255.nip.io/api/cases/health | python3 -m json.tool
 | 客户端 UI   | http://172.26.101.255.nip.io/               |
 | 管理控制台   | http://172.26.101.255.nip.io/admin/         |
 | API Gateway | http://172.26.101.255.nip.io/api            |
-| Grafana     | http://172.26.101.255.nip.io/grafana        |
+| Grafana     | http://172.26.101.255.nip.io/grafana/       |
+
+> **Grafana 路由说明**：`hci-platform-obs` chart 默认启用 Ingress（`ingress.enabled: true`），
+> 创建独立的 `grafana-ingress`，使用 Traefik priority 确保高于主站 `/` 回退路由，
+> 避免被 customer-ui 吞掉。如 Grafana 页面显示 customer-ui 内容，检查 `grafana-ingress` 是否存在：
+> ```bash
+> kubectl get ingress -n hci-observability
+> ```
 
 > **nip.io 无法访问时**：在本机 Windows hosts 文件添加 `172.26.101.255  172.26.101.255.nip.io`，或使用 NodePort 直连：
 > ```bash
