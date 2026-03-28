@@ -63,6 +63,7 @@ metadata:
     app.kubernetes.io/name: prometheus
 spec:
   replicas: 1
+  revisionHistoryLimit: 3  # 只保留最近 3 个 ReplicaSet，避免空 RS 僵尸积累
   selector:
     matchLabels:
       app.kubernetes.io/name: prometheus

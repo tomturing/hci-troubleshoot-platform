@@ -1,0 +1,37 @@
+# =============================================================================
+# ArgoCD Application: argocd-ops
+#
+# 管理 ArgoCD 运维配套资源（namespace: argocd）：
+#   - argocd-repo-server copyutil watchdog（CronJob + RBAC）
+#   - Pod 异常可观测性告警规则（PrometheusRule + AlertmanagerConfig）
+#
+# 设计原则：
+#   - prune: true  — ops 配件随 Git 变更弹性增删，无持久化数据风险
+#   - selfHeal: true — 防止手动误改 watchdog 逻辑被保留
+#   - directory.exclude: "*.json" — 排除 Grafana Dashboard JSON（非 K8s 资源）
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-ops
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "ArgoCD 运维配套 — copyutil watchdog + Pod 异常可观测性"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  source:
+    repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+    targetRevision: main
+    path: deploy/gitops/argocd-ops
+    directory:
+      recurse: false
+      exclude: "*.json"    # 排除 Grafana Dashboard JSON，仅处理 K8s 资源 YAML
+  syncPolicy:
+    automated:
+      prune: true           # ops 资源无状态，允许自动删除已移除的资源
+      selfHeal: true        # 防止 watchdog RBAC 被手动修改后漂移
+    syncOptions:
+      - CreateNamespace=false   # argocd namespace 已存在

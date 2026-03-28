@@ -27,9 +27,24 @@ spec:
       path: deploy/helm/hci-platform-data
       helm:
         releaseName: hci-platform-data
+  # StatefulSet 的 volumeClaimTemplates 字段创建后不可变，
+  # 修改 storageClass 等属性会导致 ArgoCD 反复尝试 patch 并 SyncFailed，
+  # 故整体忽略 volumeClaimTemplates 差异，StorageClass 变更须人工手动重建 PVC
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: postgres
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+    - group: apps
+      kind: StatefulSet
+      name: redis
+      jsonPointers:
+        - /spec/volumeClaimTemplates
   syncPolicy:
     automated:
       prune: false      # 禁止自动删除数据层资源，PVC 安全第一
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - RespectIgnoreDifferences=true   # sync 阶段同样跳过 ignoreDifferences 中声明的字段
