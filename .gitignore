@@ -73,6 +73,7 @@ deploy/env/secrets.env
 deploy/gitops/local/*.yaml
 deploy/gitops/local/*.yml
 !deploy/gitops/local/README.md
+!deploy/gitops/local/*.example.yaml
 
 # Coverage
 .coverage
