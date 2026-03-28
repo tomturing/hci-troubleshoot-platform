@@ -51,6 +51,31 @@ data:
             target_label: app
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             target_label: service_name
+          # kube-state-metrics 由独立 job 采集，此 job 跳过它，避免 namespace 标签被覆盖
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: drop
+            regex: 'kube-state-metrics'
+
+      # kube-state-metrics 专用 job：honor_labels=true 保留指标自带的 namespace/pod 标签
+      # 不可与 hci-services job 合并，否则 namespace relabel 会覆盖真实命名空间
+      - job_name: 'kube-state-metrics'
+        honor_labels: true
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - {{ .Values.namespace }}
+        relabel_configs:
+          # 只保留 kube-state-metrics Pod
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: keep
+            regex: 'kube-state-metrics'
+          # 用 Pod IP + prometheus.io/port 注解拼接抓取地址（与 hci-services 保持一致）
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
 ---
 # Prometheus Deployment
 apiVersion: apps/v1
