@@ -3,6 +3,8 @@ kind: Application
 metadata:
   name: hci-platform-prod
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "prod 业务微服务 — 全量服务（namespace: hci-prod，192.168.0.3，手动同步）"
 spec:
   project: default
   destination:
