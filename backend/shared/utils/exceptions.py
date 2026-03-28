@@ -9,10 +9,9 @@
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
-
 
 # ============================================================================
 # ErrorCode 枚举

@@ -62,7 +62,7 @@ class SchedulerService:
                 # Pod 不存在，清除孤立分配记录
                 logger.warning(
                     event="reconcile_orphan_allocation",
-                    message=f"发现孤立分配（Pod 不存在），清理 Redis 记录",
+                    message="发现孤立分配（Pod 不存在），清理 Redis 记录",
                     case_id=case_id,
                     pod_name=pod_name,
                 )

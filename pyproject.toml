@@ -94,6 +94,8 @@ ignore = ["E501"]
 "tests/**/*.py" = ["E402", "SIM117", "N806", "F841", "B007"]
 "backend/**/tests/**/*.py" = ["E402", "SIM117", "N806", "F841", "B007"]
 "backend/**/app/routes/*.py" = ["B008", "B904"]
+"backend/**/app/dependencies.py" = ["B008"]
+"backend/**/utils/exceptions.py" = ["N818"]
 
 [tool.uv]
 # backend 各服务和 shared 目录均作为源码目录

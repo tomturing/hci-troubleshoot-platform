@@ -4,11 +4,11 @@ I-2: FastAPI 依赖注入标准化
 实现类型安全的依赖传递，便于单测 mock 和依赖图分析。
 """
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from fastapi import Depends, HTTPException, Request
-
 from shared.database.postgres import DatabaseManager
+
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService

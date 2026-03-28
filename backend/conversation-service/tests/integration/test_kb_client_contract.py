@@ -13,12 +13,10 @@ KB Client 消费者契约测试（G-2）
   KB_SERVICE_URL=http://localhost:8004 uv run pytest ... -v -k "not mock"
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-import httpx
-from unittest.mock import AsyncMock, patch, MagicMock
-
 from shared.models.schemas import KBSearchResponse, KBSOPMatchResponse
-
 
 # ──────────────────────────────────────────────
 # 契约：KB Search 接口
@@ -76,8 +74,8 @@ class TestKBSearchContract:
     @pytest.mark.asyncio
     async def test_kb_client_search_calls_correct_endpoint(self):
         """契约：KBClient.search() 必须 POST 到 /api/kb/search"""
-        import sys
         import os
+        import sys
         # 确保 shared 模块路径可用
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../shared"))
 
@@ -146,8 +144,8 @@ class TestKBSOPMatchContract:
     @pytest.mark.asyncio
     async def test_kb_client_sop_match_calls_correct_endpoint(self):
         """契约：KBClient.sop_match() 必须 POST 到 /api/kb/sop/match"""
-        import sys
         import os
+        import sys
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../shared"))
 
         from app.services.kb_client import KBClient
