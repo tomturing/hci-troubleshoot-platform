@@ -31,6 +31,8 @@ spec:
         runAsUser: 1001
         runAsGroup: 1001
         fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
         # init 容器：将 ConfigMap 中的初始化文件复制到 openclaw workspace
         - name: init-workspace
@@ -39,6 +41,8 @@ spec:
           securityContext:
             runAsUser: 1001
             runAsGroup: 1001
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
           env:
             - name: OPENCLAW_API_KEY
               valueFrom:
@@ -160,6 +164,9 @@ spec:
             # 运行模式（可被 CronJob 覆盖）
             - name: LEARNINGCLAW_MODE
               value: "{{ .Values.learningclaw.defaultMode | default "batch" }}"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
           command: ["node", "dist/index.js", "gateway", "--allow-unconfigured", "--bind", "lan", "--port", "{{ .Values.learningclaw.port }}"]
           volumeMounts:
             - name: learningclaw-home

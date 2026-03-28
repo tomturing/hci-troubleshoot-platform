@@ -1,0 +1,27 @@
+{{- if .Values.limitRange.enabled }}
+# LimitRange：为 hci-observability 命名空间设置容器默认资源和上限。
+# 主要作用：为 Grafana/Loki/Prometheus/Tempo/Alertmanager 等 obs 服务
+# 提供兜底的 resource limits，防止单服务内存泄漏打爆共享节点。
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: hci-obs-container-limits
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      # 未显式指定 request 时自动注入
+      defaultRequest:
+        cpu: {{ .Values.limitRange.defaultRequest.cpu | quote }}
+        memory: {{ .Values.limitRange.defaultRequest.memory | quote }}
+      # 未显式指定 limits 时自动注入
+      default:
+        cpu: {{ .Values.limitRange.defaultLimit.cpu | quote }}
+        memory: {{ .Values.limitRange.defaultLimit.memory | quote }}
+      # 单容器最大上限
+      max:
+        cpu: {{ .Values.limitRange.max.cpu | quote }}
+        memory: {{ .Values.limitRange.max.memory | quote }}
+{{- end }}

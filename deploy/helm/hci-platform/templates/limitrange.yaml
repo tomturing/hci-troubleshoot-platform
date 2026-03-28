@@ -1,0 +1,29 @@
+{{- if .Values.workloadDefaults.limitRange.enabled }}
+# LimitRange：为命名空间中未显式设置 resources 的容器提供默认值和上限。
+# 主要作用：
+#   1. productionclaw 动态 Pod 无 limits 时，自动注入 defaultLimit 防止资源耗尽
+#   2. 为 Job 容器（trigger、pg-dump）设置兜底 limits
+#   3. 防止单个容器独占节点资源
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: hci-container-limits
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      # 未显式指定 request 时自动注入（不覆盖已设置的值）
+      defaultRequest:
+        cpu: {{ .Values.workloadDefaults.limitRange.defaultRequest.cpu | quote }}
+        memory: {{ .Values.workloadDefaults.limitRange.defaultRequest.memory | quote }}
+      # 未显式指定 limits 时自动注入（不覆盖已设置的值）
+      default:
+        cpu: {{ .Values.workloadDefaults.limitRange.defaultLimit.cpu | quote }}
+        memory: {{ .Values.workloadDefaults.limitRange.defaultLimit.memory | quote }}
+      # 单容器资源上限（超过此值的 Pod 无法调度）
+      max:
+        cpu: {{ .Values.workloadDefaults.limitRange.max.cpu | quote }}
+        memory: {{ .Values.workloadDefaults.limitRange.max.memory | quote }}
+{{- end }}
