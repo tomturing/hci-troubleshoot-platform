@@ -154,9 +154,11 @@ jdbc:postgresql://localhost:30054/hci_troubleshoot
 ```
 
 > **注意**：NodePort 需在环境配置中启用。配置字段位置：
-> - `hci-platform/values.yaml` → `postgres.nodePort: ""`（默认空，由 env repo 覆盖）
 > - `hci-platform-data/values.yaml` → `postgres.nodePort: 30054`（data chart 默认值）
 > - `hci-platform-env/environments/dev/values.yaml` → 覆盖实际端口值
+>
+> **Service 架构说明**：`postgres`（Headless，`clusterIP: None`）用于 StatefulSet governing service 和集群内 DNS 解析（`postgres-0.postgres.hci-dev.svc`）；
+> `postgres-external`（NodePort）仅用于外部客户端访问，两者独立，避免 ArgoCD sync 时因 `clusterIP` 不可变导致 SyncFailed。
 
 ---
 
