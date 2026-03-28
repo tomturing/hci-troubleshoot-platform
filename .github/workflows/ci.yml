@@ -129,9 +129,15 @@ jobs:
           fi
 
       # E-2: helm-unittest — 覆盖关键配置渲染场景
-      - name: 安装 helm-unittest 插件
+      - name: 安装 helm-unittest 插件（二进制方式）
+        env:
+          HELM_UNITTEST_VERSION: "v0.4.4"
         run: |
-          helm plugin install https://github.com/helm-unittest/helm-unittest --version v0.4.4 2>/dev/null || true
+          PLUGINS_DIR="$(helm env HELM_PLUGINS)"
+          mkdir -p "${PLUGINS_DIR}/helm-unittest"
+          curl -sSL "https://github.com/helm-unittest/helm-unittest/releases/download/${HELM_UNITTEST_VERSION}/helm-unittest-linux-amd64-${HELM_UNITTEST_VERSION}.tgz" \
+            | tar xz --strip-components=1 -C "${PLUGINS_DIR}/helm-unittest"
+          helm plugin list | grep unittest
 
       - name: 运行 Helm Unit Tests
         run: |
