@@ -45,7 +45,7 @@ spec:
               value: {{ .Values.apiGateway.port | quote }}
           livenessProbe:
             httpGet:
-              path: /health/live
+              path: /health
               port: {{ .Values.apiGateway.port }}
             initialDelaySeconds: 15
             periodSeconds: 30
@@ -53,7 +53,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health/ready
+              path: /health
               port: {{ .Values.apiGateway.port }}
             initialDelaySeconds: 10
             periodSeconds: 10
@@ -61,7 +61,7 @@ spec:
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: /health/startup
+              path: /health
               port: {{ .Values.apiGateway.port }}
             initialDelaySeconds: 5
             periodSeconds: 5

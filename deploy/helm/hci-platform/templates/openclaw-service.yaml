@@ -66,6 +66,8 @@ spec:
               value: "xterm-256color"
             - name: OPENCLAW_SKIP_CANVAS_HOST
               value: "1"
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=1536"
             - name: OPENCLAW_API_KEY
               valueFrom:
                 secretKeyRef:
