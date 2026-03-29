@@ -39,3 +39,15 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.customerUI.resources | nindent 12 }}
+          volumeMounts:
+            # J-3: nginx 以 uid=1000 运行时无权写 /var/cache/nginx 和 /var/run
+            # 挂载 emptyDir 覆盖这两个目录，nginx 可正常创建 temp 文件和 pid 文件
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
