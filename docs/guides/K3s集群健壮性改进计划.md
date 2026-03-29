@@ -1498,3 +1498,37 @@ Sprint 3（Week 5-6）：质量体系完善
 - `helm unittest deploy/helm/hci-platform/` 通过所有测试用例
 - Grafana 存在 `KBServiceDown`、`PodPoolExhausted`、`AIStreamErrorRateHigh` 三条告警规则
 - 前端任何组件中不再包含 `crypto.randomUUID` 的直接调用（统一通过 `generateUUID()` 工具函数）
+
+---
+
+## 事后改进：三层自动化防御（post-Sprint 3）
+
+### 背景
+PR #62（Sprint 1/2/3）合并后，staging 出现以下连锁故障：
+1. **nginx CrashLoopBackOff**（J-3 `runAsUser:1000` + emptyDir 遗漏）
+2. **探针路径 404**（J-2 probe 路径与后端路由不对齐）
+3. **openclaw OOM**（Node.js 堆内存超 512Mi 限制）
+4. **并发 hotfix 重复配置**（PR #63 + PR #64 同时修 nginx 产生重复块）
+
+### 三层防御实施
+
+#### Layer 1：ArgoCD PostSync 冒烟测试（smoke-test-job.yaml）
+- 每次 ArgoCD 同步完成后，Job 自动 curl 5 个后端服务 `/health` 端点
+- 超时（2 分钟）未就绪则 Sync 状态标记为 Degraded，阻止静默失败上线
+- 文件：`deploy/helm/hci-platform/templates/hooks/smoke-test-job.yaml`
+- values 控制：`smokeTest.enabled: true`（默认开启）
+
+#### Layer 2A：CI 探针路径对齐检查（probe-alignment job）
+- 在 CI `helm-validate` 之后、`unit-tests` 之前运行
+- 渲染 chart → 提取所有 `httpGet.path` → grep `backend/` 确认路由存在
+- 任何探针路径在后端代码中找不到对应路由时，CI 直接失败并输出错误信息
+
+#### Layer 3：CLAUDE.md 操作规范（PIT-023/024/025）
+- PIT-023：并发 hotfix 前置检查（`gh pr list --state open`）
+- PIT-024：安全基线改造按负载类型分批 PR
+- PIT-025：修改 runAsNonRoot 前确认镜像文件系统需求
+
+### 验收标准
+- `helm lint deploy/helm/hci-platform/` 通过（smokeTest block 渲染无误）
+- CI `probe-alignment` job 通过（所有探针路径在 backend/ 均有对应路由）
+- ArgoCD PostSync smoke-test Job 在 staging 成功执行并输出 `✅ 所有服务冒烟测试通过`

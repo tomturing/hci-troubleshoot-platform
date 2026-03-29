@@ -490,3 +490,13 @@ observability:
       limits:
         cpu: "500m"
         memory: "512Mi"
+
+# ======================== Smoke Test（ArgoCD PostSync）=====================
+# Layer-1 防御：每次 ArgoCD 同步后自动验证所有后端 /health 端点
+# 超时未就绪则 Sync 状态变为 Degraded，阻止静默失败上线
+smokeTest:
+  enabled: true
+  # 冒烟测试总超时秒数（12次重试×10s=120s，与 Job activeDeadlineSeconds 一致）
+  timeoutSeconds: 120
+  # 使用静态 tag 避免 imagePullPolicy:Always 在无网络环境下拉取失败
+  image: curlimages/curl:8.6.0
