@@ -1454,6 +1454,9 @@ Sprint 2（Week 3-4）：架构加固
             无权写 /var/cache/nginx 和 /var/run，导致 CrashLoopBackOff。
             修复：为两个 nginx deployment 挂载 emptyDir 卷覆盖这两个目录（hotfix PR #63）。
             这是运行非 root nginx 的标准做法，无需修改镜像。
+        ⚠️  并发修复冲突：PR #63 和 PR #64 同期修复同一问题，合并后产生重复的
+            volumeMounts / volumes 块，且路径不一致（/run vs /var/run）。
+            PR #66 清理了重复配置，统一路径为 /var/run，并调整 probe 路径为 /。
 
 Sprint 3（Week 5-6）：质量体系完善
 ────────────────────────────────────
