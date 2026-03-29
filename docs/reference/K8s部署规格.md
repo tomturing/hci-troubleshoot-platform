@@ -498,6 +498,9 @@ startupProbe:
 | redis | redis-cli ping | redis-cli ping | Redis PING/PONG |
 | customer-ui / admin-ui | GET / | GET / | Nginx 返回 200 |
 
+> **注意**：所有后端服务的 liveness/readiness/startup 探针统一使用 `/health` 路径。
+> 探针路径 `/health/live`、`/health/ready`、`/health/startup` 已废弃，不再使用。
+
 ---
 
 ## 8. 资源限制
