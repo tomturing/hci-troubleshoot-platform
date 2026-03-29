@@ -17,6 +17,12 @@ spec:
         {{- include "hci.podLabels" (dict "name" "customer-ui" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "customer-ui") | nindent 6 }}
+      # nginx 以非 root 用户（uid=1000）运行，需要 emptyDir 挂载可写目录
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
       containers:
         - name: customer-ui
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.customerUI.image) }}
@@ -25,6 +31,11 @@ spec:
           ports:
             - containerPort: {{ .Values.customerUI.port }}
               protocol: TCP
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /run
           livenessProbe:
             httpGet:
               path: /
