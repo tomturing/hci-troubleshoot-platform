@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from shared.database.redis import RedisManager
+from shared.utils.exception_handlers import register_exception_handlers
 from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
@@ -86,6 +87,9 @@ app = FastAPI(
 # 注入 OpenTelemetry 中间件到 app 实例
 instrument_app(app)
 
+# H-1: 注册全局业务异常处理器
+register_exception_handlers(app)
+
 # 注册路由
 app.include_router(scheduler_routes.router)
 
@@ -94,6 +98,37 @@ app.include_router(scheduler_routes.router)
 async def health_check():
     """健康检查"""
     return {"status": "healthy", "service": settings.SERVICE_NAME}
+
+
+# ── J-2：三级探针分级健康端点 ─────────────────────
+@app.get("/health/live")
+async def health_live():
+    """Liveness 探针：只检查进程存活"""
+    return {"status": "alive"}
+
+
+@app.get("/health/startup")
+async def health_startup():
+    """Startup 探针：初始化完成（Pod 池扫描完成）后返回 200"""
+    scheduler_service = getattr(app.state, "scheduler_service", None)
+    if scheduler_service is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="scheduler 仍在初始化")
+    return {"status": "started"}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness 探针：所有依赖就绪时才加入流量"""
+    checks: dict[str, str] = {}
+    scheduler_service = getattr(app.state, "scheduler_service", None)
+    checks["scheduler"] = "ok" if scheduler_service else "unavailable"
+    degraded = any(v != "ok" for v in checks.values())
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=503 if degraded else 200,
+        content={"status": "degraded" if degraded else "ready", "checks": checks},
+    )
 
 if __name__ == "__main__":
     import uvicorn

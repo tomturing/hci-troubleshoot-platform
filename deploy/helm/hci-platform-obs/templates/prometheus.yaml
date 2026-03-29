@@ -129,6 +129,19 @@ spec:
         - name: storage
           emptyDir: {}
 ---
+# Prometheus 告警规则 ConfigMap（H-4 改进）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alert-rules
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+data:
+  hci-rules.yml: |
+{{ .Files.Get "rules/alert_rules.yml" | indent 4 }}
+{{- end }}
+{{- if .Values.prometheus.enabled }}
 # Prometheus Service
 apiVersion: v1
 kind: Service

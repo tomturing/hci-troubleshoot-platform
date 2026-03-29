@@ -128,6 +128,22 @@ jobs:
             exit 1
           fi
 
+      # E-2: helm-unittest — 覆盖关键配置渲染场景
+      - name: 安装 helm-unittest 插件（二进制方式）
+        env:
+          HELM_UNITTEST_VERSION: "v0.4.4"
+        run: |
+          PLUGINS_DIR="$(helm env HELM_PLUGINS)"
+          mkdir -p "${PLUGINS_DIR}/helm-unittest"
+          curl -sSL "https://github.com/helm-unittest/helm-unittest/releases/download/${HELM_UNITTEST_VERSION}/helm-unittest-linux-amd64-${HELM_UNITTEST_VERSION#v}.tgz" \
+            | tar xz -C "${PLUGINS_DIR}/helm-unittest"
+          helm plugin list | grep unittest
+
+      - name: 运行 Helm Unit Tests
+        run: |
+          helm unittest deploy/helm/hci-platform --strict
+          echo "✅ Helm Unit Tests 通过"
+
   check-claw-configs:
     name: 校验 claw-configs 一致性
     runs-on: ubuntu-latest

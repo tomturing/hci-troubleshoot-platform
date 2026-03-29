@@ -1,0 +1,18 @@
+# E-2: Helm Unit Test — Ingress 配置测试
+# 验证 values.schema.json 约束能捕获非法配置渲染
+# 运行：helm unittest deploy/helm/hci-platform
+suite: "Ingress 配置测试"
+templates:
+  - ingress.yaml
+tests:
+  - it: "publicUrl 应渲染为合法 DNS 名（而非裸 IP）"
+    set:
+      global.publicUrl: "http://172.26.101.255.nip.io"
+      global.domain: "test.nip.io"
+      ingress.enabled: true
+    asserts:
+      - isKind:
+          of: Ingress
+      - matchRegex:
+          path: spec.rules[0].host
+          pattern: "^[a-z0-9A-Z.-]+$"

@@ -3,6 +3,26 @@
 */}}
 
 {{/*
+C-1 StatefulSet 双重防护 Guard
+在 postgres/redis StatefulSet 模板顶部调用：{{ include "hci.dataLayerGuard" . }}
+规则：
+  - dataLayer.manage=true  → 正常渲染，无限制
+  - dataLayer.manage=false → 检查集群中 postgres StatefulSet 是否存在；
+      存在且 forceDelete!=true → fail，阻止误删数据层
+      存在且 forceDelete=true  → 允许（运维人员明确确认删除数据）
+*/}}
+{{- define "hci.dataLayerGuard" -}}
+{{- if not .Values.dataLayer.manage -}}
+  {{- $existing := lookup "apps/v1" "StatefulSet" .Release.Namespace "postgres" -}}
+  {{- if $existing -}}
+    {{- if not .Values.dataLayer.forceDelete -}}
+      {{- fail "危险操作：dataLayer.manage=false 但 postgres StatefulSet 已存在。若要卸载数据层，请先备份数据并设置 dataLayer.forceDelete=true（C-1 双重防护）" -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 完整名称：release-name 前缀
 */}}
 {{- define "hci.fullname" -}}
@@ -121,4 +141,34 @@ dnsConfig:
   options:
     - name: ndots
       value: "1"
+{{- end }}
+
+{{/*
+J-3 Pod 安全上下文基线（OWASP K8s Top 10 合规快速引用）
+此 helper 是 hci.workloadPodSpecExtras 的摘要版，用于无法使用 workloadDefaults 的场景。
+用法:
+  {{ include "hci.podSecurityContext" . | nindent 6 }}
+*/}}
+{{- define "hci.podSecurityContext" -}}
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+{{- end }}
+
+{{/*
+J-3 容器安全上下文基线
+用法:
+  {{ include "hci.containerSecurityContext" . | nindent 10 }}
+*/}}
+{{- define "hci.containerSecurityContext" -}}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
 {{- end }}

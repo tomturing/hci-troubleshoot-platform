@@ -47,3 +47,20 @@
 - [ ] 风险评估与回滚方案可执行
 - [ ] 测试证据充分，结论可信
 - [ ] 不包含敏感信息（密钥、令牌、凭据）
+
+## 静默失效检查（横向改进：每个涉及后端的 PR 必答）
+
+> 静默失效是最难排查的问题类别，请认真逐项确认。
+
+- [ ] 每个 `except Exception` 之前是否有 `except HTTPException: raise` / `except HCIException: raise`？
+- [ ] 外部 HTTP 调用（httpx、aiohttp）是否调用了 `response.raise_for_status()`？
+- [ ] 后台任务 `asyncio.create_task()` 是否添加了 `add_done_callback` 捕获异常？
+- [ ] 业务关键操作失败（如 Pod 释放、KB ingest、DB 写入）是否记录了 WARNING 级别日志？
+- [ ] 是否有新增 Prometheus Counter/Gauge 追踪关键失败路径？
+- [ ] 共享状态（如 Pod 分配关系）是否在服务重启后能从 Redis 恢复？
+
+## API 变更对齐检查（涉及 backend/shared/models/ 改动时必填）
+
+- [ ] 是否遵循"变更三步法"（先更新共享类型 → 提供方 → 调用方）？
+- [ ] 是否保留了旧字段（至少一个 Release 的过渡期）？
+- [ ] 契约测试（tests/contract/ 或 tests/integration/test_*_contract.py）是否通过？

@@ -206,22 +206,39 @@ if [[ "$IMPORT_K3S" == true ]]; then
   fi
 
   IMPORTED=0
+  IMPORT_FAILED=0
   for entry in "${WORK_IMAGES[@]}"; do
     read -r name _ _ <<< "$entry"
     info "  导入 ${name}:${IMAGE_TAG} ..."
     if docker save "${name}:${IMAGE_TAG}" | ${K3S_CTR} images import -; then
-      ok "  → ${name}:${IMAGE_TAG} 已导入"
-      IMPORTED=$((IMPORTED + 1))
+      # A-1: 导入后立即验证镜像确实存在于 containerd（防止 Silent Import Failure）
+      if ${K3S_CTR} images ls | grep -q "${name}:${IMAGE_TAG}"; then
+        ok "  → ${name}:${IMAGE_TAG} 已导入并验证 ✓"
+        IMPORTED=$((IMPORTED + 1))
+      else
+        error "  → ${name}:${IMAGE_TAG} 导入命令成功，但 containerd 中未找到该镜像！"
+        error "     请检查：${K3S_CTR} images ls | grep ${name}"
+        IMPORT_FAILED=$((IMPORT_FAILED + 1))
+      fi
     else
       error "  → ${name}:${IMAGE_TAG} 导入失败"
+      IMPORT_FAILED=$((IMPORT_FAILED + 1))
     fi
   done
-  
+
   echo ""
-  info "导入完成: ${IMPORTED}/${#WORK_IMAGES[@]}"
-  
+  info "导入完成: ${GREEN}${IMPORTED} 成功${NC}, ${RED}${IMPORT_FAILED} 失败${NC}"
+
+  if [[ $IMPORT_FAILED -gt 0 ]]; then
+    error "${IMPORT_FAILED} 个镜像导入失败，部署前请修复！"
+    echo ""
+    info "当前 K3s 中的 HCI 镜像:"
+    ${K3S_CTR} images ls | grep "hci-" | awk '{print "  " $1}' || true
+    exit 1
+  fi
+
   echo ""
-  info "验证 K3s 中的 HCI 镜像:"
+  info "K3s 中的 HCI 镜像清单:"
   ${K3S_CTR} images ls | grep "hci-" | awk '{print "  " $1}' || true
 fi
 

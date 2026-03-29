@@ -163,3 +163,46 @@ Codex / OpenCode / Gemini 用户：请根据下表主动读取对应文件。
 | Grafana 重定向/Ingress/iframe | `docs/pitfalls/grafana.md` | PIT-011,012,020,036 |
 
 > 新发现的坑：先在 `docs/pitfalls/_index.md` 分配编号，再写入对应分类文件，同一 commit 提交。
+
+---
+
+## 8. 服务间 API 变更规范（G-4）
+
+> **违反此规范会导致服务间契约破裂和运行时 422 / KeyError 错误。**
+
+### 8.1 变更三步法
+
+所有修改 `backend/shared/models/` 或微服务 HTTP 接口的 PR **必须**遵循：
+
+```
+步骤 1：先更新共享类型（backend/shared/models/），提交并合并
+步骤 2：更新提供方实现（新字段向后兼容，不立即删除旧字段）
+步骤 3：更新所有调用方代码，移除对旧字段的依赖
+步骤 4：提交 PR，CI 契约测试（tests/contract/）必须全部通过
+```
+
+### 8.2 破坏性变更禁令
+
+| 禁止操作 | 原因 | 正确做法 |
+|---------|------|---------|
+| 直接重命名返回字段 | 调用方运行时 KeyError | 先增加新字段，一个 Release 后再删旧字段 |
+| 删除 Pydantic 模型字段 | schema 序列化失败 | 先标注 `deprecated=True`，再删除 |
+| 改变字段类型（str → int） | 类型校验报错 | 新增独立字段 + 过渡期兼容 |
+| 修改 API path 不保留旧路径 | 前端 404 | 保留旧路径（返回 301 或同等处理）至少一个 Release |
+
+### 8.3 共享类型版本管理
+
+```python
+# backend/shared/models/__init__.py
+__schema_version__ = "2.1.0"
+# 升级规则：
+#   patch (2.1.x)  — 新增可选字段（向后兼容）
+#   minor (2.x.0)  — 弃用字段（deprecated=True）
+#   major (x.0.0)  — 删除已弃用字段（破坏性变更，需整体升级协调）
+```
+
+### 8.4 内部服务调用规范
+
+- 所有服务间 HTTP 调用**必须**继承 `backend/shared/utils/internal_http.py` 的 `InternalHTTPClient`
+- 调用方**必须**调用 `response.raise_for_status()`，不允许静默忽略错误响应
+- 内部认证统一使用 `INTERNAL_API_TOKEN` 环境变量（由 Helm Secret 注入）

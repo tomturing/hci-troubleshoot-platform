@@ -16,8 +16,10 @@ spec:
       labels:
         {{- include "hci.podLabels" (dict "name" "api-gateway" "Release" .Release "Chart" .Chart) | nindent 8 }}
       annotations:
+        {{- if .Values.apiGateway.checksumAnnotations }}
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.apiGateway.port | quote }}
         prometheus.io/path: "/metrics"
@@ -43,7 +45,7 @@ spec:
               value: {{ .Values.apiGateway.port | quote }}
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: {{ .Values.apiGateway.port }}
             initialDelaySeconds: 15
             periodSeconds: 30
@@ -51,7 +53,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: {{ .Values.apiGateway.port }}
             initialDelaySeconds: 10
             periodSeconds: 10
@@ -59,7 +61,7 @@ spec:
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: /health
+              path: /health/startup
               port: {{ .Values.apiGateway.port }}
             initialDelaySeconds: 5
             periodSeconds: 5

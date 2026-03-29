@@ -10,7 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import MessageCreate, MessageResponse
-from shared.utils.exceptions import AIStreamError, ErrorCode
+from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceError
 
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
@@ -156,6 +156,20 @@ async def send_message(
                     content="".join(ai_content),
                 )
             yield f"event: error\ndata: {e.to_sse_data()}\n\n"
+        except ExternalServiceError as e:
+            # 外部服务故障（KB/Scheduler 等），回传可读错误码给前端
+            if ai_content:
+                background_tasks.add_task(
+                    service.save_assistant_message,
+                    conversation_id=conversation_id,
+                    case_id=message.case_id,
+                    content="".join(ai_content),
+                )
+            error_data = json.dumps(
+                {"code": e.code.value, "message": e.message},
+                ensure_ascii=False,
+            )
+            yield f"event: error\ndata: {error_data}\n\n"
         except Exception as e:
             # 其他未知错误，构造通用错误响应
             if ai_content:

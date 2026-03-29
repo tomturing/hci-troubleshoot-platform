@@ -284,6 +284,82 @@ helm_upgrade() {
 }
 
 # ============================================================================
+# A-3: pre_deploy_cleanup — 清理 scheduler 动态创建的孤立 Pod
+# ============================================================================
+# scheduler-service 用 managed-by=scheduler-service 打标，Helm 无法追踪这些 Pod。
+# 每次部署前主动清理，防止孤立 Pod 占用宿主机端口或残留错误配置。
+pre_deploy_cleanup() {
+  local ns="$1"
+  local count
+  count=$(${KUBECTL} get pod -l managed-by=scheduler-service -n "${ns}" \
+    --ignore-not-found --no-headers 2>/dev/null | wc -l || echo 0)
+  if [[ "$count" -gt 0 ]]; then
+    warn "[PRE-DEPLOY] 发现 ${count} 个 scheduler 孤立 Pod，开始清理..."
+    ${KUBECTL} delete pod \
+      -l managed-by=scheduler-service \
+      -n "${ns}" \
+      --ignore-not-found \
+      --grace-period=10 \
+      --wait=false
+    ok "[PRE-DEPLOY] 孤立 Pod 删除请求已发送（后台继续终止）"
+  else
+    info "[PRE-DEPLOY] 无 scheduler 孤立 Pod，跳过清理"
+  fi
+}
+
+# ============================================================================
+# C-3: check_nodeport_conflicts — NodePort 冲突预检
+# ============================================================================
+# 在部署前检测目标 Helm Chart 将使用的 NodePort 是否已被其他 namespace 占用。
+# 防止因端口冲突导致 Service 创建失败或静默复用错误端口。
+check_nodeport_conflicts() {
+  local chart_path="$1"
+  local values_file="$2"
+  local target_ns="$3"
+
+  info "[C-3] 检测 NodePort 冲突..."
+
+  # 渲染 chart 获取将使用的 NodePort 列表
+  local target_ports
+  target_ports=$(KUBECONFIG="$HELM_KUBECONFIG" helm template hci-precheck "${chart_path}" \
+    -f "${values_file}" \
+    --namespace "${target_ns}" 2>/dev/null \
+    | grep -oE "nodePort: [0-9]+" \
+    | grep -oE "[0-9]+" \
+    || true)
+
+  if [[ -z "${target_ports}" ]]; then
+    info "[C-3] Chart 未使用 NodePort，跳过冲突检测"
+    return 0
+  fi
+
+  local conflict_found=0
+  while IFS= read -r port; do
+    [[ -z "${port}" ]] && continue
+    # 查找除目标 namespace 之外的 NodePort 占用
+    local conflict
+    conflict=$(${KUBECTL} get svc -A --no-headers 2>/dev/null \
+      | grep -v "^${target_ns} " \
+      | awk '{print $6}' \
+      | grep ":${port}/" \
+      || true)
+    if [[ -n "${conflict}" ]]; then
+      error "[C-3] NodePort ${port} 已被其他 namespace 占用："
+      error "      ${conflict}"
+      error "      请先执行 helm uninstall 或修改目标 NodePort 配置"
+      conflict_found=1
+    fi
+  done <<< "${target_ports}"
+
+  if [[ "${conflict_found}" -eq 0 ]]; then
+    ok "[C-3] NodePort 无冲突"
+  else
+    error "[C-3] NodePort 冲突检测失败，部署中止"
+    exit 1
+  fi
+}
+
+# ============================================================================
 # 步骤 5：部署 hci-platform-infra（集群级 StorageClass + RBAC）
 # ============================================================================
 section "步骤 5：部署 hci-platform-infra（StorageClass + RBAC）"
@@ -302,6 +378,12 @@ KUBECONFIG="$HELM_KUBECONFIG" helm upgrade --install hci-platform-infra "$INFRA_
 ok "hci-platform-infra 完成"
 
 [[ "$INFRA_ONLY" == "true" ]] && { ok "已设置 --infra-only，部署结束"; exit 0; }
+
+# A-3: 部署前清理 scheduler 孤立 Pod
+pre_deploy_cleanup "$NAMESPACE"
+
+# C-3: NodePort 冲突预检（仅当 helm 可用时检测）
+check_nodeport_conflicts "${APP_CHART}" "${APP_VALUES}" "${NAMESPACE}"
 
 # ============================================================================
 # 步骤 6：部署 hci-platform（主业务 — Secret / ConfigMap / 服务）

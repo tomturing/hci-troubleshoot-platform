@@ -1,0 +1,22 @@
+# E-2: Helm Unit Test — dataLayer Guard 测试
+# 验证 C-1 StatefulSet 双重防护 guard 能正确阻断误操作
+suite: "DataLayer Guard 测试"
+templates:
+  - postgres/statefulset.yaml
+tests:
+  - it: "C-1 guard: dataLayer.manage=true 时允许渲染 postgres StatefulSet"
+    set:
+      dataLayer.manage: true
+      dataLayer.forceDelete: false
+      postgres.enabled: true
+    asserts:
+      - isKind:
+          of: StatefulSet
+
+  - it: "dataLayer.manage=false 且 postgres.enabled=false 时不渲染 StatefulSet"
+    set:
+      dataLayer.manage: false
+      postgres.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

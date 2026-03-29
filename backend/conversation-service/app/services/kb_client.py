@@ -4,6 +4,7 @@ KB Client - 知识库服务客户端
 """
 
 import httpx
+from shared.utils.internal_http import InternalHTTPClient
 from shared.utils.logger import get_logger
 
 logger = get_logger("conversation-kb-client")
@@ -12,13 +13,26 @@ logger = get_logger("conversation-kb-client")
 _REQUEST_TIMEOUT = 10.0
 
 
-class KBClient:
-    """知识库服务 HTTP 客户端"""
+class KBClient(InternalHTTPClient):
+    """
+    知识库服务 HTTP 客户端（G-3：继承 InternalHTTPClient，统一认证头管理）
+
+    持有长连接连接池，避免每次请求创建新 AsyncClient。
+    调用方应在服务关闭时调用 await kb_client.aclose()。
+    """
 
     def __init__(self, kb_service_url: str, internal_token: str):
-        self._service_url = kb_service_url.rstrip("/")  # 原始服务地址（无路径）
-        self._base_url = self._service_url + "/api/kb"
-        self._headers = {"Authorization": f"Bearer {internal_token}"}
+        import os
+        # 优先使用传入的 internal_token（兼容现有初始化方式），
+        # InternalHTTPClient 从 INTERNAL_API_TOKEN 环境变量读取；
+        # 若 token 已通过参数传入，暂时注入环境变量供基类读取。
+        os.environ.setdefault("INTERNAL_API_TOKEN", internal_token)
+        if internal_token:
+            os.environ["INTERNAL_API_TOKEN"] = internal_token
+        super().__init__(base_url=kb_service_url.rstrip("/"), timeout=_REQUEST_TIMEOUT)
+        # 兼容旧代码中直接访问 _base_url 的地方
+        self._api_prefix = "/api/kb"
+        self._atoms_prefix = "/api/v1/atoms"
 
     async def search(self, query: str, top_n: int = 5) -> list[dict]:
         """
@@ -27,31 +41,29 @@ class KBClient:
         返回 ChunkResult 列表，每项包含：
           - chunk_id, document_id, content, score, source_title, source_type, page_num
         """
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-            try:
-                resp = await client.post(
-                    f"{self._base_url}/search",
-                    json={"query": query, "top_n": top_n},
-                    headers=self._headers,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                return data.get("chunks", [])
-            except httpx.HTTPStatusError as exc:
-                logger.warning(
-                    event="kb_search_http_error",
-                    message=f"KB search returned HTTP {exc.response.status_code}",
-                    query=query[:80],
-                    status_code=exc.response.status_code,
-                )
-                return []
-            except httpx.RequestError as exc:
-                logger.warning(
-                    event="kb_search_unavailable",
-                    message=f"KB service unreachable: {exc}",
-                    query=query[:80],
-                )
-                return []
+        try:
+            resp = await self.post(
+                f"{self._api_prefix}/search",
+                json={"query": query, "top_n": top_n},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("chunks", [])
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                event="kb_search_http_error",
+                message=f"KB search returned HTTP {exc.response.status_code}",
+                query=query[:80],
+                status_code=exc.response.status_code,
+            )
+            return []
+        except httpx.RequestError as exc:
+            logger.warning(
+                event="kb_search_unavailable",
+                message=f"KB service unreachable: {exc}",
+                query=query[:80],
+            )
+            return []
 
     async def sop_match(self, query: str) -> dict | None:
         """
@@ -60,34 +72,32 @@ class KBClient:
         返回命中节点的完整内容，未命中返回 None：
           - node_id, title, content, category, keywords
         """
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-            try:
-                resp = await client.post(
-                    f"{self._base_url}/sop/match",
-                    json={"query": query},
-                    headers=self._headers,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                # 未命中时 matched=false
-                if not data.get("matched"):
-                    return None
-                return data
-            except httpx.HTTPStatusError as exc:
-                logger.warning(
-                    event="kb_sop_http_error",
-                    message=f"KB SOP match returned HTTP {exc.response.status_code}",
-                    query=query[:80],
-                    status_code=exc.response.status_code,
-                )
+        try:
+            resp = await self.post(
+                f"{self._api_prefix}/sop/match",
+                json={"query": query},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            # 未命中时 matched=false
+            if not data.get("matched"):
                 return None
-            except httpx.RequestError as exc:
-                logger.warning(
-                    event="kb_sop_unavailable",
-                    message=f"KB service unreachable: {exc}",
-                    query=query[:80],
-                )
-                return None
+            return data
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                event="kb_sop_http_error",
+                message=f"KB SOP match returned HTTP {exc.response.status_code}",
+                query=query[:80],
+                status_code=exc.response.status_code,
+            )
+            return None
+        except httpx.RequestError as exc:
+            logger.warning(
+                event="kb_sop_unavailable",
+                message=f"KB service unreachable: {exc}",
+                query=query[:80],
+            )
+            return None
 
     async def search_atoms(
         self,
@@ -113,9 +123,8 @@ class KBClient:
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
             try:
                 resp = await client.post(
-                    f"{self._service_url}/api/v1/atoms/search",
+                    f"{self._atoms_prefix}/search",
                     json=payload,
-                    headers=self._headers,
                 )
                 resp.raise_for_status()
                 data = resp.json()

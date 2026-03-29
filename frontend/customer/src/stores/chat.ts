@@ -328,8 +328,16 @@ export const useChatStore = defineStore('chat', () => {
             const idx = getAiMsgIndex()
             if (idx === -1) break
             if (pendingEventType === 'error') {
+              // 解析服务端返回的结构化错误信息（H-2：SSE 错误帧标准化）
+              let errorMsg = 'AI 响应出现错误，请稍后重试。'
+              try {
+                const errEvent = JSON.parse(data)
+                if (errEvent.message) {
+                  errorMsg = errEvent.message
+                }
+              } catch { }
               if (!messages.value[idx].content) {
-                messages.value[idx].content = 'AI 响应出现错误，请稍后重试。'
+                messages.value[idx].content = errorMsg
               }
             } else if (pendingEventType === 'confirm_request') {
               // 高风险操作需要用户确认：弹窗展示
@@ -342,7 +350,7 @@ export const useChatStore = defineStore('chat', () => {
                   risk_description: event.risk_description,
                   timeout_seconds: event.timeout_seconds ?? 120,
                 }
-              } catch {}
+              } catch { }
             } else if (pendingEventType === 'tool_executing') {
               // 工具执行通知：在 AI 消息流后追加提示行
               try {
@@ -351,7 +359,7 @@ export const useChatStore = defineStore('chat', () => {
                 if (idx2 !== -1) {
                   messages.value[idx2].content += `\n\n> 🔍 正在查询：\`${event.tool}\`…`
                 }
-              } catch {}
+              } catch { }
             } else if (pendingEventType === 'thinking') {
               // 推理步骤：追加到 AI 消息（可见调试信息）
               try {
@@ -360,7 +368,7 @@ export const useChatStore = defineStore('chat', () => {
                 if (idx2 !== -1 && event.message) {
                   messages.value[idx2].content += `\n\n> 🤔 步骤 ${event.step}：${event.message}`
                 }
-              } catch {}
+              } catch { }
             } else if (pendingEventType === 'stage_change') {
               // 诊断阶段切换：更新前端进度条状态
               try {

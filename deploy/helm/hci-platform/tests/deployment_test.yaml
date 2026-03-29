@@ -1,0 +1,44 @@
+# E-2: Helm Unit Test — Deployment 配置测试
+# 验证关键 Deployment 配置渲染正确
+# 注意：测试时通过 set: apiGateway.checksumAnnotations: false 禁用跨文件 include，
+# 使 helm-unittest 仅加载 api-gateway/deployment.yaml 即可完整渲染。
+suite: "Deployment 配置测试"
+templates:
+  - api-gateway/deployment.yaml
+tests:
+  - it: "api-gateway 必须设置三级探针"
+    set:
+      apiGateway.checksumAnnotations: false
+    asserts:
+      - isKind:
+          of: Deployment
+      - isNotNull:
+          path: spec.template.spec.containers[0].livenessProbe
+      - isNotNull:
+          path: spec.template.spec.containers[0].readinessProbe
+      - isNotNull:
+          path: spec.template.spec.containers[0].startupProbe
+
+  - it: "api-gateway livenessProbe 路径必须是 /health/live"
+    set:
+      apiGateway.checksumAnnotations: false
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /health/live
+
+  - it: "api-gateway readinessProbe 路径必须是 /health/ready"
+    set:
+      apiGateway.checksumAnnotations: false
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /health/ready
+
+  - it: "J-3 安全上下文：securityContext.enabled=true 时必须渲染 Pod securityContext"
+    set:
+      apiGateway.checksumAnnotations: false
+      workloadDefaults.securityContext.enabled: true
+    asserts:
+      - isNotNull:
+          path: spec.template.spec.securityContext

@@ -1,0 +1,30 @@
+{{- if .Values.coreDNS.enabled }}
+# CoreDNS 自定义 ConfigMap — D-1 NET-001 修复
+# 通过追加 coredns-custom ConfigMap 绕过 Clash fake-IP 污染，
+# 无需覆盖原始 coredns ConfigMap，K3s 会自动合并两者配置。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: hci-platform-infra
+  annotations:
+    meta.helm.sh/release-name: {{ .Release.Name }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace }}
+data:
+  github.override: |
+    # GitHub IP 直连解析，绕过 Clash fake-IP（NET-001 修复）
+    # 如遇 GitHub IP 变化请同步更新此处并提交 MR
+    hosts github-hosts {
+{{- range .Values.coreDNS.githubHosts }}
+      {{ .ip }} {{ .hostname }}
+{{- end }}
+      fallthrough
+    }
+{{- if .Values.coreDNS.extraConfig }}
+  extra.override: |
+{{ .Values.coreDNS.extraConfig | indent 4 }}
+{{- end }}
+{{- end }}
