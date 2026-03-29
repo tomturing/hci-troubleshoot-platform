@@ -167,6 +167,9 @@ redis:
 # ======================== API Gateway =======================================
 apiGateway:
   replicaCount: 1
+  # 启用 configmap/secret sha256 注解（用于 pod 滚动更新自动感知配置变化）
+  # 仅测试时可设 false，以避免 helm-unittest 加载跨文件 include 依赖
+  checksumAnnotations: true
   image:
     repository: hci-api-gateway
     tag: latest
