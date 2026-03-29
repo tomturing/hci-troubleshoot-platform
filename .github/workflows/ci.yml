@@ -437,19 +437,23 @@ jobs:
         with:
           sarif_file: trivy-${{ matrix.service }}.sarif
 
-  auto-deploy-dev:
-    name: 自动晋级 dev 环境
+  auto-deploy-non-prod:
+    name: 自动晋级 dev/staging 环境
     runs-on: ubuntu-latest
     needs: [prepare, build-and-push]
     if: always() && needs.prepare.result == 'success' && needs.build-and-push.result == 'success' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     steps:
-      - name: 触发环境仓库同步（dev 环境）
+      - name: 触发环境仓库同步（dev + staging 环境）
         env:
           GH_TOKEN: ${{ secrets.ENV_REPO_PAT }}
         run: |
-          # 注意：必须触发环境仓库（hci-platform-env）的 workflow，而非应用仓库自身
-          gh workflow run env-repo-sync.yml \
-            -R tomturing/hci-platform-env \
-            -f env_repo_name=tomturing/hci-platform-env \
-            -f target_env=dev \
-            -f image_tag="${{ needs.prepare.outputs.image_tag }}"
+          # 同时触发 dev 和 staging 环境同步（prod 环境需手动审批）
+          for env in dev staging; do
+            echo "触发 ${env} 环境同步..."
+            gh workflow run env-repo-sync.yml \
+              -R tomturing/hci-platform-env \
+              -f env_repo_name=tomturing/hci-platform-env \
+              -f target_env=${env} \
+              -f image_tag="${{ needs.prepare.outputs.image_tag }}"
+          done
+          echo "✅ dev/staging 环境同步已触发"
