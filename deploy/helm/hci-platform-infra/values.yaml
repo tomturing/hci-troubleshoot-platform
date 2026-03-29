@@ -7,24 +7,3 @@
 
 # Observability 栈部署的 namespace（ClusterRoleBinding 需要引用）
 observabilityNamespace: hci-observability
-
-# ==============================================================================
-# CoreDNS 自定义配置 — D-1 NET-001 修复
-# 通过 coredns-custom ConfigMap 覆盖 GitHub 解析，绕过 Clash fake-IP 污染
-# ==============================================================================
-coreDNS:
-  enabled: true
-  # GitHub 官方 IP 列表（如发生故障请先通过 dig @8.8.8.8 github.com 确认当前 IP）
-  githubHosts:
-    - ip: "140.82.112.4"
-      hostname: "github.com"
-    - ip: "140.82.114.4"
-      hostname: "github.com"
-    - ip: "185.199.108.133"
-      hostname: "raw.githubusercontent.com"
-    - ip: "185.199.109.133"
-      hostname: "raw.githubusercontent.com"
-    - ip: "185.199.108.154"
-      hostname: "objects.githubusercontent.com"
-  # 额外自定义 CoreDNS 配置块（追加到 extra.override 键），留空则不创建
-  extraConfig: ""

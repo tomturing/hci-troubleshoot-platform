@@ -17,7 +17,7 @@
 | 触发场景 | 读取文件 | 当前条目 |
 |---------|---------|---------|
 | 任何涉及进程/状态/外部服务的问题排查 | [debugging.md](debugging.md) | 原则一~六 + 工单500 |
-| 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一 |
+| 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039 |
 | 编写/审查 Shell/Makefile/CI 脚本 | [shell.md](shell.md) | PIT-001, PIT-002 |
 | 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009 |
 | 编写/审查前端（pnpm/Vue/Dockerfile） | [frontend.md](frontend.md) | PIT-005, PIT-023, PIT-025, PIT-028, PIT-029 |
@@ -46,7 +46,8 @@
 | **PIT-031** | **预留（曾分配，内容已删除/合并，禁止复用；详见 git log）** |
 | PIT-032~036 | openclaw.md：WS redirect(032), AI响应出错(035)；k8s.md：K3s服务检查RunBook(033-已去编号), fake-ip(034)；grafana.md：/grafana路由(036) |
 | PIT-037~038 | k8s.md：Docker build apt/pip(037), Docker 172.16端口映射(038) |
-| **PIT-039** | **下一个可用编号** |
+| PIT-039 | network-service-check.md：CoreDNS hosts插件冲突(039) |
+| **PIT-040** | **下一个可用编号** |
 
 ---
 

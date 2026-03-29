@@ -85,6 +85,66 @@ npm error: connect ETIMEDOUT 198.18.0.19:443
 
 ---
 
+### PIT-039：CoreDNS hosts 插件冲突（Pod 解析 GitHub 失败）
+
+**现象：**
+- CoreDNS CrashLoopBackOff，日志：`plugin/hosts: this plugin can only be used once per Server Block`
+- 所有 Pod DNS 解析失败（admin-ui、customer-ui 找不到 api-gateway）
+- WSL 重启后出现，之前运行正常
+
+**根因：**
+CoreDNS 的 `hosts` 插件在每个 Server Block（监听块）只能出现一次。如果通过 `import` 引入了额外的 hosts 配置，会导致冲突。
+
+错误示例（会崩溃）：
+```yaml
+# 主 Corefile
+.:53 {
+    hosts /etc/coredns/NodeHosts { ... }   # 第一个 hosts
+    import /etc/coredns/custom/*.override   # 引入下面的配置
+}
+
+# coredns-custom (custom.override)
+hosts github-hosts { ... }   # 第二个 hosts → 冲突！
+```
+
+**为什么 WSL 重启前没问题？**
+CoreDNS 的 `reload` 插件检测配置变化时，如果新配置有冲突，reload 会失败但**不会杀死旧进程**。旧的 CoreDNS 继续用旧配置运行。WSL 重启后 Pod 必须重新加载完整配置，才暴露冲突。
+
+**正确修复方法（环境层面，不动代码）：**
+
+修改 Clash 配置的 `fake-ip-filter`，让 GitHub 相关域名走真实 DNS：
+
+```yaml
+# Clash 配置文件（config.yaml）
+fake-ip-filter:
+  # GitHub 相关域名 — 获取真实 IP，绕过 fake-IP
+  - '+.github.com'
+  - '+.githubusercontent.com'
+  - '+.githubassets.com'
+  - 'github.com'
+  - '*.github.com'
+  - '*.githubusercontent.com'
+  - '*.githubassets.com'
+  # 其他需要真实 IP 的域名（按需添加）
+  - 'localhost'
+  - '*.localhost'
+  - '+.local'
+```
+
+**原理：** Clash TUN 模式会把 DNS 查询返回 fake-IP（198.18.x.x），导致 Pod 内访问 GitHub 时连接失败。配置 `fake-ip-filter` 后，这些域名会走真实 DNS 解析，得到 GitHub 真实 IP。
+
+**验证修复：**
+```bash
+# 重启 Clash TUN 后验证
+nslookup github.com
+# 应返回真实 IP（如 140.82.112.4），而不是 198.18.x.x
+
+# 从 Pod 内验证
+kubectl exec -n hci-dev <pod-name> -- nslookup github.com
+```
+
+---
+
 ## 三、K3s / Traefik 排查
 
 ```bash
