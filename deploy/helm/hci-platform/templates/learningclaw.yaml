@@ -122,6 +122,8 @@ spec:
               value: "xterm-256color"
             - name: OPENCLAW_SKIP_CANVAS_HOST
               value: "1"
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=1536"
             # AI 模型密钥（从 hci-secrets[OPENCLAW_API_KEY] 注入，对应 secrets.zaiApiKey）
             - name: OPENCLAW_API_KEY
               valueFrom:

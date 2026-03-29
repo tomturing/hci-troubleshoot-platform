@@ -19,21 +19,21 @@ tests:
       - isNotNull:
           path: spec.template.spec.containers[0].startupProbe
 
-  - it: "api-gateway livenessProbe 路径必须是 /health/live"
+  - it: "api-gateway livenessProbe 路径必须是 /health"
     set:
       apiGateway.checksumAnnotations: false
     asserts:
       - equal:
           path: spec.template.spec.containers[0].livenessProbe.httpGet.path
-          value: /health/live
+          value: /health
 
-  - it: "api-gateway readinessProbe 路径必须是 /health/ready"
+  - it: "api-gateway readinessProbe 路径必须是 /health"
     set:
       apiGateway.checksumAnnotations: false
     asserts:
       - equal:
           path: spec.template.spec.containers[0].readinessProbe.httpGet.path
-          value: /health/ready
+          value: /health
 
   - it: "J-3 安全上下文：securityContext.enabled=true 时必须渲染 Pod securityContext"
     set:
