@@ -1450,6 +1450,10 @@ Sprint 2（Week 3-4）：架构加固
 ✅ I-2  FastAPI Depends 标准化 DI
 ✅ J-2  三级探针（startup/liveness/readiness）标准化
 ✅ J-3  Pod 安全上下文基线（runAsNonRoot + capabilities drop ALL）
+        ⚠️  已知后效：admin-ui / customer-ui（标准 nginx 镜像）以 uid=1000 运行时
+            无权写 /var/cache/nginx 和 /var/run，导致 CrashLoopBackOff。
+            修复：为两个 nginx deployment 挂载 emptyDir 卷覆盖这两个目录（hotfix PR #63）。
+            这是运行非 root nginx 的标准做法，无需修改镜像。
 
 Sprint 3（Week 5-6）：质量体系完善
 ────────────────────────────────────
