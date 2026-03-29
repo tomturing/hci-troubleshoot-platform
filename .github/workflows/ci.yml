@@ -168,11 +168,52 @@ jobs:
           fi
           echo "✅ claw-configs 与 Helm chart 副本一致"
 
+  probe-alignment:
+    name: Layer-2A 探针路径对齐检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Helm
+        uses: azure/setup-helm@v4
+
+      - name: 渲染 Helm chart 并检查探针路径对齐
+        run: |
+          helm template hci-platform deploy/helm/hci-platform \
+            -f deploy/helm/hci-platform/values.yaml \
+            > /tmp/rendered.yaml
+
+          # 提取所有 liveness/readiness/startup probe 的 path 字段
+          PROBE_PATHS=$(grep -A2 'httpGet:' /tmp/rendered.yaml \
+            | grep 'path:' \
+            | awk '{print $2}' \
+            | sort -u)
+          echo "Chart 中使用的探针路径："
+          echo "${PROBE_PATHS}"
+
+          # 对每个探针路径，检查后端代码是否存在对应路由定义
+          ALL_OK=true
+          for PROBE_PATH in ${PROBE_PATHS}; do
+            if ! grep -rq "${PROBE_PATH}" backend/; then
+              echo "❌ 探针路径 '${PROBE_PATH}' 在 backend/ 中未找到对应路由定义！"
+              ALL_OK=false
+            else
+              echo "✓ 探针路径 '${PROBE_PATH}' 后端路由存在"
+            fi
+          done
+
+          if [ "${ALL_OK}" = "false" ]; then
+            echo ""
+            echo "探针路径与后端路由不对齐！修改 Helm chart probe path 后必须确认后端已实现对应路由。"
+            exit 1
+          fi
+          echo "✅ 所有探针路径均已在后端代码中找到对应路由"
+
   unit-tests:
     name: unit-tests
     runs-on: ubuntu-latest
-    needs: [lint, frontend-build, helm-validate, check-claw-configs]
-    if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success')
+    needs: [lint, frontend-build, helm-validate, check-claw-configs, probe-alignment]
+    if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success') && (needs.probe-alignment.result == 'success')
     steps:
       - uses: actions/checkout@v4
 
@@ -221,8 +262,8 @@ jobs:
   integration-tests:
     name: integration-tests
     runs-on: ubuntu-latest
-    needs: [lint, frontend-build, helm-validate, check-claw-configs]
-    if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success')
+    needs: [lint, frontend-build, helm-validate, check-claw-configs, probe-alignment]
+    if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success') && (needs.probe-alignment.result == 'success')
 
     services:
       redis:
@@ -259,8 +300,8 @@ jobs:
   security-tests:
     name: security-tests
     runs-on: ubuntu-latest
-    needs: [lint, frontend-build, helm-validate, check-claw-configs]
-    if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success')
+    needs: [lint, frontend-build, helm-validate, check-claw-configs, probe-alignment]
+    if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success') && (needs.probe-alignment.result == 'success')
     steps:
       - uses: actions/checkout@v4
 

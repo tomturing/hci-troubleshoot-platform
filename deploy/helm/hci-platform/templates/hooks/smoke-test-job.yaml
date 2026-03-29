@@ -1,0 +1,85 @@
+{{- /*
+Layer-1 防御：ArgoCD PostSync 冒烟测试
+每次 ArgoCD 同步完成后，自动 curl 所有后端 /health 端点，
+确认服务真正就绪后才把 Sync 状态标记为 Healthy。
+若任意服务连续 12 次（共 2 分钟）仍未就绪，Job 失败，
+ArgoCD 将 Sync 标记为 Degraded 并触发告警。
+*/ -}}
+{{- if .Values.smokeTest.enabled }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smoke-test-{{ .Release.Revision }}
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: smoke-test
+  annotations:
+    # ArgoCD PostSync Hook：同步完成后执行
+    argocd.argoproj.io/hook: PostSync
+    # 再次触发前先删除上一个同名 Job，避免 AlreadyExists 错误
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  # 失败后不重试（重试由 shell 循环自己控制，Job 级别只运行一次）
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.smokeTest.timeoutSeconds }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: smoke-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: smoke-test
+          image: {{ .Values.smokeTest.image }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              NS="{{ include "hci.namespace" . }}"
+              # 各后端服务的内网 DNS + 端口
+              SERVICES="
+                api-gateway:8000
+                case-service:8001
+                conversation-service:8002
+                scheduler-service:8003
+                kb-service:8004
+              "
+              RETRIES=12   # 每次间隔 10s，最多等 120s
+              SLEEP=10
+
+              for SVC in ${SERVICES}; do
+                NAME="${SVC%%:*}"
+                PORT="${SVC##*:}"
+                URL="http://${NAME}.${NS}.svc.cluster.local:${PORT}/health"
+                echo "[smoke] 检查 ${NAME} -> ${URL}"
+                ok=0
+                for i in $(seq 1 ${RETRIES}); do
+                  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                    --connect-timeout 3 --max-time 5 "${URL}" || true)
+                  if [ "${HTTP_CODE}" = "200" ]; then
+                    echo "[smoke] ✓ ${NAME} 就绪（HTTP ${HTTP_CODE}，第 ${i} 次）"
+                    ok=1
+                    break
+                  fi
+                  echo "[smoke] ✗ ${NAME} 未就绪（HTTP ${HTTP_CODE}，第 ${i}/${RETRIES} 次），等待 ${SLEEP}s..."
+                  sleep ${SLEEP}
+                done
+                if [ "${ok}" = "0" ]; then
+                  echo "[smoke] ❌ ${NAME} 超时未就绪，冒烟测试失败！"
+                  exit 1
+                fi
+              done
+              echo "[smoke] ✅ 所有服务冒烟测试通过"
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              cpu: "100m"
+              memory: "32Mi"
+{{- end }}
