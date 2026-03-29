@@ -149,6 +149,37 @@ D = Deployment, SS = StatefulSet
 | scheduler-service | Deployment | 1 | 8003 | 无状态服务 |
 | customer-ui | Deployment | 1 | 80 | 静态文件 Nginx |
 | admin-ui | Deployment | 1 | 80 | 静态文件 Nginx |
+
+**前端 Nginx volume 配置说明：**
+
+由于 Pod 以非 root 用户（uid=1000）运行，Nginx 无法创建缓存目录和 pid 文件。需在 deployment 中挂载 emptyDir：
+
+```yaml
+volumes:
+  - name: nginx-cache
+    emptyDir: {}
+  - name: nginx-run
+    emptyDir: {}
+containers:
+  - name: admin-ui  # 或 customer-ui
+    volumeMounts:
+      - name: nginx-cache
+        mountPath: /var/cache/nginx
+      - name: nginx-run
+        mountPath: /run
+```
+
+**OpenClaw / LearningClaw 内存配置说明：**
+
+Node.js AI 网关内存需求较高，默认 512Mi 限制会导致 OOM。建议生产环境配置：
+
+```yaml
+resources:
+  requests:
+    memory: "1Gi"
+  limits:
+    memory: "2Gi"
+```
 | postgres | StatefulSet | 1 | 5432 | 有状态存储，需持久卷 |
 | redis | StatefulSet | 1 | 6379 | 有状态缓存，需持久卷 |
 
@@ -511,6 +542,16 @@ resources:
   limits:
     cpu: "100m"
     memory: "64Mi"
+
+# OpenClaw / LearningClaw（Node.js AI 网关）
+# 内存需求较高，建议 2Gi 以上避免 OOM
+resources:
+  requests:
+    cpu: "100m"
+    memory: "1Gi"
+  limits:
+    cpu: "1000m"
+    memory: "2Gi"
 
 # PostgreSQL
 resources:

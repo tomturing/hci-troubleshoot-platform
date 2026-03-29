@@ -303,10 +303,10 @@ openclaw:
   resources:
     requests:
       cpu: "100m"
-      memory: "128Mi"
+      memory: "1Gi"
     limits:
       cpu: "1000m"
-      memory: "512Mi"
+      memory: "2Gi"
   # home 目录挂载策略：
   #   configMap.enabled=true  → 使用 ConfigMap 管理 openclaw.json（推荐生产环境）
   #   configMap.enabled=false → 保持 hostPath 挂载（兼容旧部署，保留 /home/node 所有文件）
@@ -347,10 +347,10 @@ learningclaw:
   resources:
     requests:
       cpu: "200m"
-      memory: "256Mi"
+      memory: "1Gi"
     limits:
       cpu: "1000m"
-      memory: "512Mi"
+      memory: "2Gi"
 
 # ======================== ProductionClaw（Per-Case 排障 Pod）================
 productionclaw:

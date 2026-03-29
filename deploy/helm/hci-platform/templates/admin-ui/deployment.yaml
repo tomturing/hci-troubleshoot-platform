@@ -17,6 +17,11 @@ spec:
         {{- include "hci.podLabels" (dict "name" "admin-ui" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "admin-ui") | nindent 6 }}
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
       containers:
         - name: admin-ui
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.adminUI.image) }}
@@ -25,6 +30,11 @@ spec:
           ports:
             - containerPort: {{ .Values.adminUI.port }}
               protocol: TCP
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /run
           livenessProbe:
             httpGet:
               path: /
