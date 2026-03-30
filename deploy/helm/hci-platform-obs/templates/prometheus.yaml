@@ -142,6 +142,7 @@ data:
 {{ .Files.Get "rules/alert_rules.yml" | indent 4 }}
 {{- end }}
 {{- if .Values.prometheus.enabled }}
+---
 # Prometheus Service
 apiVersion: v1
 kind: Service
