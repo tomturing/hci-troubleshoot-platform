@@ -24,11 +24,59 @@
 ## 编码约定
 
 - 代码注释和 Git commit 消息使用**中文**
+- **Git commit 消息和 PR 必须追加环境与工具标识**（见下方规则）
 - Python 包管理：`uv`；前端包管理：`pnpm`；禁止直接使用 pip/npm 安装
 - 所有 HTTP 请求日志必须携带 `trace_id`（W3C traceparent 格式）
 - 禁止在代码中硬编码 API Key / Token / 密码
 - Python lint/format：`ruff`，行长 120，`target-version = "py312"`
 - 前端：ESLint + Prettier + TypeScript strict mode
+
+### Git Commit/PR 标识规则
+
+**所有 commit 消息末尾必须追加 `[env:<环境>:<hostname>][agent:<工具>]` 标识。**
+
+**所有 PR 必须添加对应的 labels：`env:<环境>:<hostname>` 和 `agent:<工具>`。**
+
+格式：
+```
+<commit message>
+
+[env:<环境>:<hostname>][agent:<工具>]
+```
+
+示例：
+```
+fix: 修复 ArgoCD 升级脚本
+
+[env:dev:gs][agent:copilot]
+```
+
+**数据来源**：
+- **环境**：从 `argocd` namespace 的标签 `hci.env.role` 获取（dev/staging/prod）
+  ```bash
+  kubectl get ns argocd -o jsonpath='{.metadata.labels.hci\.env\.role}'
+  ```
+- **hostname**：完整主机名，转小写
+  ```bash
+  hostname | tr '[:upper:]' '[:lower:]'
+  ```
+- **工具**：`claude` 或 `copilot`
+
+**实现方式**：使用 `gcm` 和 `gpr` 函数（已配置在 `~/.my_custom_configs`）：
+
+```bash
+# GitHub Copilot 提交 commit
+AGENT=copilot gcm "feat: 新功能"
+
+# GitHub Copilot 创建 PR（自动添加 labels）
+AGENT=copilot gpr "feat: 新功能"
+
+# Claude Code 提交 commit
+gcm "fix: 修复问题"
+
+# Claude Code 创建 PR
+gpr "fix: 修复问题"
+```
 
 ## 测试约定
 
