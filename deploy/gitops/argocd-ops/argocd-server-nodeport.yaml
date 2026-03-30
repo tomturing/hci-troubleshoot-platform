@@ -1,0 +1,27 @@
+# ArgoCD Server NodePort 覆盖配置
+# 将 argocd-server 从默认的 ClusterIP 改为 NodePort，方便本地访问
+# 统一端口：30808（本地 + 云端环境一致）
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-server
+  namespace: argocd
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8080
+      nodePort: 30808
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    app.kubernetes.io/name: argocd-server
