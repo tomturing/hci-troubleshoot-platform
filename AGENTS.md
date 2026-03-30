@@ -82,11 +82,49 @@ hci-troubleshoot-platform/
 
 - 代码注释**必须使用**中文
 - Git commit 消息**必须使用**中文
+- **Git commit 消息必须追加环境与工具标识**（见下方规则）
 - 所有请求日志**必须使用** trace_id（W3C traceparent 自动传播）
 - 数据库表设计**必须包含** trace_id 字段
 - 所有新增模块**必须**进行可观测性设计（指标、日志、链路追踪）
 - Python: `ruff` 做 lint + format，`target-version = "py312"`, `line-length = 120`
 - TypeScript: ESLint + Prettier
+
+### Git Commit 标识规则
+
+**所有 commit 消息末尾必须追加 `[env:<环境>][agent:<工具>]` 标识。**
+
+格式：
+```
+<commit message>
+
+[env:<环境>][agent:<工具>]
+```
+
+示例：
+```
+fix: 修复 ArgoCD 升级脚本
+
+[env:dev][agent:claude]
+```
+
+**环境取值**：从 `argocd` namespace 的标签 `hci.env.role` 获取：
+```bash
+kubectl get ns argocd -o jsonpath='{.metadata.labels.hci\.env\.role}'
+# 返回: dev / staging / prod
+```
+
+**工具取值**：
+- `claude` — Claude Code 提交
+- `copilot` — GitHub Copilot 提交
+
+**实现方式**：使用 `gcm` 函数（已配置在 `~/.my_custom_configs`）：
+```bash
+# Claude Code 提交
+gcm "fix: 修复问题"
+
+# GitHub Copilot 提交
+AGENT=copilot gcm "feat: 新功能"
+```
 
 ---
 
