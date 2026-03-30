@@ -25,9 +25,20 @@ spec:
       path: deploy/helm/hci-platform-data
       helm:
         releaseName: hci-platform-data
+        valueFiles:
+          - $values/environments/staging/values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates
   syncPolicy:
     automated:
       prune: false      # 禁止自动删除数据层资源，PVC 安全第一
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - RespectIgnoreDifferences=true
