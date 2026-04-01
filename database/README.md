@@ -63,3 +63,6 @@ dbmate --url "..." dump
 
 **已有数据库的环境（存量引导）**：
 见 `database/seeds/` 目录下的 `00_baseline.sql`，需要在迁移工具接管前手动执行一次。
+
+> **注意**：`schema_migrations` 表结构与 dbmate 原生一致，只有 `version` 列，无 `ts` 列。
+> `00_baseline.sql` 的验证 SELECT 已按此结构对齐（2026-04-01 修复）。

@@ -138,3 +138,9 @@ dbmate --migrations-dir database/migrations new "描述"
 | Flyway | JVM 依赖，镜像体积大 |
 | Liquibase | XML/YAML 格式，复杂度高 |
 | 手动 SQL | 当前痛点根源，放弃 |
+
+---
+
+## 勘误记录
+
+- **2026-04-01**：`database/seeds/00_baseline.sql` 中验证 SELECT 引用了不存在的 `ts` 列，已修复为只查 `version`（dbmate 原生 `schema_migrations` 表的唯一列）。

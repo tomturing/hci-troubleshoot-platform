@@ -14,9 +14,9 @@
 -- ===========================================================================
 
 -- Step 1: 创建 dbmate 的版本记录表（如果尚不存在）
+-- 注意：dbmate 原生只有 version 列，此处仅用于兼容 baseline 脚本的 IF NOT EXISTS
 CREATE TABLE IF NOT EXISTS schema_migrations (
-    version  VARCHAR(255) NOT NULL PRIMARY KEY,
-    ts       TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+    version  VARCHAR(255) NOT NULL PRIMARY KEY
 );
 
 -- Step 2: 将历史迁移文件标记为"已执行"
@@ -33,7 +33,7 @@ INSERT INTO schema_migrations (version) VALUES
 ON CONFLICT (version) DO NOTHING;
 
 -- Step 3: 验证结果
-SELECT version, ts FROM schema_migrations ORDER BY version;
+SELECT version FROM schema_migrations ORDER BY version;
 
 -- ===========================================================================
 -- 执行后，dbmate up 会从下一个迁移文件开始（如 20260415_001_xxx.sql）
