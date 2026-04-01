@@ -1,5 +1,5 @@
 """
-scripts/kbd/run.py — KBD 知识生产管道 CLI 入口
+scripts/kbd/run.py — KBD 知识生产管道 CLI 入口（API 调用版）
 
 使用方式（在项目根目录下）：
 
@@ -18,8 +18,8 @@ scripts/kbd/run.py — KBD 知识生产管道 CLI 入口
   # 强制重新处理（覆盖已完成的记录）
   python -m scripts.kbd.run pipeline --excel --force
 
-  # 查看待审核案例
-  python -m scripts.kbd.run review-list
+  # SOP 文档导入
+  python -m scripts.kbd.import_sop --file /path/to/sop.docx --category-id "虚拟机-001"
 
   # 查看配置
   python -m scripts.kbd.run config
@@ -33,9 +33,11 @@ import logging
 import sys
 from pathlib import Path
 
+import httpx
+
 from .config import settings
-from .pipeline import Stage, run_pipeline, run_from_excel
 from .fetcher import read_ids_from_excel
+from .pipeline import Stage, run_from_excel
 
 # 日志配置
 logging.basicConfig(
@@ -111,79 +113,151 @@ async def _cmd_pipeline(args: argparse.Namespace) -> None:
 
 
 async def _cmd_fetch(args: argparse.Namespace) -> None:
-    import asyncpg
+    """Stage 1：抓取（文件存储，不依赖数据库）"""
     from .fetcher import fetch_batch
 
     case_ids = _get_case_ids(args)
-    pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
-    try:
-        stats = await fetch_batch(case_ids, pool, force=args.force)
-        print(json.dumps(stats, ensure_ascii=False, indent=2))
-    finally:
-        await pool.close()
+    stats = await fetch_batch(case_ids, force=args.force)
+    print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
 async def _cmd_vision(args: argparse.Namespace) -> None:
+    """Stage 2：图片语义化"""
     import asyncpg
+
     from .image_proc import process_images_batch
 
     case_ids = _get_case_ids(args)
+
+    # 检查已抓取的案例
+    from .fetcher import _is_fetched
+    ready_ids = [cid for cid in case_ids if _is_fetched(cid)]
+
+    if not ready_ids:
+        print("没有已抓取的案例需要处理")
+        return
+
     pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
     try:
-        stats = await process_images_batch(case_ids, pool)
+        stats = await process_images_batch(ready_ids, pool)
         print(json.dumps(stats, ensure_ascii=False, indent=2))
     finally:
         await pool.close()
 
 
 async def _cmd_import(args: argparse.Namespace) -> None:
-    import asyncpg
+    """Stage 3：MD 转换 + 入库（通过 API）"""
     from .importer import import_batch
 
     case_ids = _get_case_ids(args)
-    pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
-    try:
-        stats = await import_batch(case_ids, pool, force_draft=args.force)
+
+    if not settings.INTERNAL_API_TOKEN:
+        print("错误：INTERNAL_API_TOKEN 未配置")
+        print("请在环境变量或 .env 文件中设置 INTERNAL_API_TOKEN")
+        sys.exit(1)
+
+    # 检查已抓取且 Vision 完成的案例
+    from .fetcher import _case_dir, _is_fetched
+
+    ready_ids: list[str] = []
+    for support_id in case_ids:
+        if not _is_fetched(support_id):
+            continue
+
+        case_dir = _case_dir(support_id)
+        img_files = list(case_dir.glob("img_*.*"))
+        actual_images = [f for f in img_files if f.suffix not in (".failed", ".txt")]
+
+        if not actual_images:
+            ready_ids.append(support_id)
+            continue
+
+        all_vision_done = all(
+            (case_dir / f"{f.stem}.desc.txt").exists()
+            for f in actual_images
+        )
+        if all_vision_done:
+            ready_ids.append(support_id)
+
+    if not ready_ids:
+        print("没有已准备好可导入的案例")
+        return
+
+    async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
+        stats = await import_batch(ready_ids, None, force_draft=args.force, client=client)
         print(json.dumps(stats, ensure_ascii=False, indent=2))
-    finally:
-        await pool.close()
 
 
 async def _cmd_classify(args: argparse.Namespace) -> None:
+    """Stage 4：AI 分类（通过 API）"""
     import asyncpg
+
     from .classifier import classify_batch
 
     case_ids = _get_case_ids(args)
+
+    if not settings.INTERNAL_API_TOKEN:
+        print("错误：INTERNAL_API_TOKEN 未配置")
+        print("请在环境变量或 .env 文件中设置 INTERNAL_API_TOKEN")
+        sys.exit(1)
+
     pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
     try:
-        stats = await classify_batch(case_ids, pool)
+        # 只处理已入库且未分类的
+        classify_ids = await pool.fetch(
+            """SELECT case_id FROM kbd_entry
+               WHERE case_id = ANY($1)
+                 AND status = 'draft'
+                 AND (ai_category_id IS NULL OR ai_category_id = '')""",
+            case_ids,
+        )
+        classify_case_ids = [r["case_id"] for r in classify_ids]
+
+        if not classify_case_ids:
+            print("没有需要分类的案例")
+            return
+
+        stats = await classify_batch(classify_case_ids, pool)
         print(json.dumps(stats, ensure_ascii=False, indent=2))
     finally:
         await pool.close()
 
 
 async def _cmd_review_list(args: argparse.Namespace) -> None:
-    import asyncpg
-    from .importer import get_pending_review_cases
+    """列出待审核案例（调用 admin-service API）"""
+    if not settings.INTERNAL_API_TOKEN:
+        print("错误：INTERNAL_API_TOKEN 未配置")
+        sys.exit(1)
 
-    pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
-    try:
-        items = await get_pending_review_cases(pool, limit=args.limit or 50)
-        print(f"待审核案例（共 {len(items)} 条）：")
-        for item in items:
-            conf = item.get("ai_category_conf")
-            cat = item.get("ai_category_label") or item.get("ai_category_id") or "未分类"
-            conf_str = f"{conf:.2f}" if conf is not None else "N/A"
-            print(f"  {item['case_id']} | {item['title'][:40]} | {cat} (置信度: {conf_str})")
-    finally:
-        await pool.close()
+    async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
+        url = f"{settings.KB_SERVICE_URL}/api/admin/kb/pending"
+        headers = {
+            "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
+        }
+
+        try:
+            response = await client.get(url, headers=headers, params={"limit": args.limit or 50})
+            response.raise_for_status()
+            data = response.json()
+
+            items = data.get("items", [])
+            print(f"待审核案例（共 {len(items)} 条）：")
+            for item in items:
+                conf = item.get("ai_category_conf")
+                cat = item.get("ai_category_label") or item.get("ai_category_id") or "未分类"
+                conf_str = f"{conf:.2f}" if conf is not None else "N/A"
+                print(f"  {item.get('case_id')} | {item.get('title', '')[:40]} | {cat} (置信度: {conf_str})")
+
+        except Exception as exc:
+            print(f"获取待审核列表失败: {exc}")
+            print("提示：确保 admin-service API 可用且 INTERNAL_API_TOKEN 已配置")
 
 
 def _cmd_config(_args: argparse.Namespace) -> None:
     """打印当前配置（隐藏敏感信息）"""
     cfg = settings.model_dump()
     # 隐藏敏感字段
-    for key in ("SANGFOR_COOKIE", "ZAI_API_KEY", "DATABASE_URL"):
+    for key in ("SANGFOR_COOKIE", "ZAI_API_KEY", "DATABASE_URL", "INTERNAL_API_TOKEN"):
         if key in cfg and cfg[key]:
             cfg[key] = cfg[key][:8] + "****"
     print(json.dumps({k: str(v) for k, v in cfg.items()}, ensure_ascii=False, indent=2))
@@ -219,8 +293,8 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in [
         ("fetch",    "Stage 1：抓取 API + 下载图片"),
         ("vision",   "Stage 2：图片语义化（Vision LLM）"),
-        ("import",   "Stage 3：HTML→MD 转换 + 写入 kbd_entry"),
-        ("classify", "Stage 4：AI 分类（198 分类节点）"),
+        ("import",   "Stage 3：HTML→MD 转换 + 调用 API 入库"),
+        ("classify", "Stage 4：AI 分类（调用 kb-service API）"),
     ]:
         p_sub = sub.add_parser(name, help=help_text)
         _add_common(p_sub)

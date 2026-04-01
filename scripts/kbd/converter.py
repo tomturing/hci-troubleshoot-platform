@@ -27,12 +27,11 @@ import json
 import logging
 import re
 import time
-from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
 import markdownify
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, Tag
 
 from .config import settings
 
@@ -67,13 +66,13 @@ class _HciMarkdownConverter(markdownify.MarkdownConverter):
     - 带 data-vision-desc 属性的 span 标签 → 视觉描述引用块
     - 普通 img 标签（未替换）→ [图片]
     """
-    def convert_span(self, el: Tag, text: str, parent_tags: "set | None" = None, **kwargs) -> str:
+    def convert_span(self, el: Tag, text: str, parent_tags: set | None = None, **kwargs) -> str:
         desc = el.get("data-vision-desc")
         if desc:
             return f"\n\n> **【截图说明】**：{desc}\n\n"
         return text
 
-    def convert_img(self, el: Tag, text: str, parent_tags: "set | None" = None, **kwargs) -> str:
+    def convert_img(self, el: Tag, text: str, parent_tags: set | None = None, **kwargs) -> str:
         alt = el.get("alt") or ""
         return f"\n\n> **【图片】**：{alt or '[无描述]'}\n\n"
 
@@ -216,9 +215,7 @@ def _is_empty_content(html: str) -> bool:
     if soup.get_text(strip=True):
         return False
     # 有图片也不视为空（图片本身是内容）
-    if soup.find("img"):
-        return False
-    return True
+    return not soup.find("img")
 
 
 def convert_case(support_id: str) -> str | None:
