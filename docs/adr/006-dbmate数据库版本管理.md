@@ -144,3 +144,45 @@ dbmate --migrations-dir database/migrations new "描述"
 ## 勘误记录
 
 - **2026-04-01**：`database/seeds/00_baseline.sql` 中验证 SELECT 引用了不存在的 `ts` 列，已修复为只查 `version`（dbmate 原生 `schema_migrations` 表的唯一列）。
+
+---
+
+## 勘误记录 #2 — 2026-04-01：Migration 文件命名格式修正
+
+### 问题
+
+`database/migrations/` 下文件采用 `YYYYMMDD_NNN_name.sql` 格式，
+而 dbmate v2 提取版本号的正则为 `^(\d+).*\.sql$`——**只取开头纯数字前缀**。
+
+- `20260312_001_kb_rag_v3.sql` → version = `20260312`
+- `20260312_002_evaluation.sql` → version = `20260312`
+
+两个文件产生相同 version，dbmate 路由逻辑混乱（实际上 dbmate 用 version 作主键，
+重复 version 会导致第二个文件视为"已执行"，跳过执行）。
+
+另一个后果：我们手动在 schema_migrations 写入的是 `20260305_001_init_schema`（带下划线），
+dbmate 期望的 version 是 `20260305001`（纯数字前缀），因此 dbmate 认为 7 个文件全部 Pending。
+
+### 修复
+
+将所有文件重命名为 `YYYYMMDДНNN_name.sql`（YYYYMMDD 与 NNN 合并为连续数字）：
+
+| 旧名 | 新名 |
+|------|------|
+| `20260305_001_init_schema.sql` | `20260305001_init_schema.sql` |
+| `20260312_001_kb_rag_v3.sql` | `20260312001_kb_rag_v3.sql` |
+| `20260312_002_evaluation.sql` | `20260312002_evaluation.sql` |
+| `20260326_001_p4_state_machine.sql` | `20260326001_p4_state_machine.sql` |
+| `20260326_002_conversation_p4.sql` | `20260326002_conversation_p4.sql` |
+| `20260326_003_tool_audit_log.sql` | `20260326003_tool_audit_log.sql` |
+| `20260401_001_kbd_pipeline.sql` | `20260401001_kbd_pipeline.sql` |
+
+同步更新：
+- `database/seeds/00_baseline.sql`：version 改为 `20260305001` 等纯数字格式
+- `deploy/helm/hci-platform/templates/hooks/db-migrations-configmap.yaml`：文件名更新
+- dev 数据库 `schema_migrations`：重写 7 条记录为新格式
+
+### 后续命名规范
+
+新增迁移文件必须以连续数字为前缀，格式：`YYYYMMDДНNN_name.sql`，
+其中 `NNN` 为同一日期的序号（001, 002, ...）。禁止在数字部分使用下划线分隔。

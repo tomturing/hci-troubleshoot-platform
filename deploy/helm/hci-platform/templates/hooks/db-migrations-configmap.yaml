@@ -14,7 +14,7 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
     helm.sh/hook-weight: "-10"
 data:
-  20260305_001_init_schema.sql: |
+  20260305001_init_schema.sql: |
     -- migrate:up
     
     -- HCI Troubleshoot Platform - Database Initialization Script
@@ -569,7 +569,7 @@ data:
     -- migrate:down
     -- 不提供自动降级，手动回滚
 
-  20260312_001_kb_rag_v3.sql: |
+  20260312001_kb_rag_v3.sql: |
     -- migrate:up
     
     -- HCI Troubleshoot Platform - KB Schema Migration
@@ -780,7 +780,7 @@ data:
     -- migrate:down
     -- 不提供自动降级，手动回滚
 
-  20260312_002_evaluation.sql: |
+  20260312002_evaluation.sql: |
     -- migrate:up
     
     -- HCI Troubleshoot Platform - Database Migration Script
@@ -964,7 +964,7 @@ data:
     -- migrate:down
     -- 不提供自动降级，手动回滚
 
-  20260326_001_p4_state_machine.sql: |
+  20260326001_p4_state_machine.sql: |
     -- migrate:up
     
     -- P4 数据库迁移：raw_cases 和 knowledge_atoms 表
@@ -1059,7 +1059,7 @@ data:
     -- migrate:down
     -- 不提供自动降级，手动回滚
 
-  20260326_002_conversation_p4.sql: |
+  20260326002_conversation_p4.sql: |
     -- migrate:up
     
     -- =============================================================================
@@ -1111,7 +1111,7 @@ data:
     -- migrate:down
     -- 不提供自动降级，手动回滚
 
-  20260326_003_tool_audit_log.sql: |
+  20260326003_tool_audit_log.sql: |
     -- migrate:up
     
     -- HCI 智能排障平台 — 工具调用审计日志表迁移
@@ -1176,7 +1176,7 @@ data:
     -- migrate:down
     -- 不提供自动降级，手动回滚
 
-  20260401_001_kbd_pipeline.sql: |
+  20260401001_kbd_pipeline.sql: |
     -- migrate:up
     
     -- =============================================================================
