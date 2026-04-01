@@ -343,7 +343,6 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
 
         # 3. 更新 kbd_entry 状态（status, published_at, reviewer_id, review_note, embedding, tsv）
         now = datetime.now(UTC)
-        published_at_str = now.isoformat()
 
         # 构建 UPDATE SQL（embedding 使用 pgvector 格式）
         if embedding_vector:
