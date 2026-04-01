@@ -391,13 +391,30 @@ async def classify_intent(request: Request, body: IntentClassifyRequest) -> Inte
         logger.error(event="intent_classify_llm_error", error=str(e))
         raise HTTPException(status_code=503, detail=f"LLM 调用失败: {e}")
 
-    # 4. 解析响应
+    # 4. 解析响应（添加 schema 验证）
     top_results = llm_result.get("top3", [])
+    if not isinstance(top_results, list):
+        logger.warning(event="intent_classify_invalid_schema", result_type=type(top_results).__name__)
+        raise HTTPException(status_code=500, detail="LLM 返回格式异常：top3 不是列表")
     if not top_results:
         logger.warning(event="intent_classify_empty_result")
         raise HTTPException(status_code=500, detail="LLM 未返回分类结果")
 
-    # 构建 IntentCategoryItem 列表
+    # 5. 批量查询所有需要的 category_id（修复 N+1 查询问题）
+    needed_codes = [item.get("category_id", "") for item in top_results[:body.top_n]]
+    needed_codes = [c for c in needed_codes if c in valid_codes]  # 过滤有效 code
+
+    code_to_db_id: dict[str, int] = {}
+    if needed_codes:
+        async with _db_manager.async_session_factory() as session:
+            result = await session.execute(
+                text("SELECT id, code FROM kb_category WHERE code = ANY(:codes)"),
+                {"codes": needed_codes},
+            )
+            for row in result.fetchall():
+                code_to_db_id[row.code] = row.id
+
+    # 6. 构建 IntentCategoryItem 列表
     intent_items: list[IntentCategoryItem] = []
     needs_review = True  # 默认需要审核
 
@@ -407,14 +424,8 @@ async def classify_intent(request: Request, body: IntentClassifyRequest) -> Inte
             cat_info = code_to_category.get(category_code, {})
             score = min(1.0, max(0.0, item.get("score", 0.0)))
 
-            # 需要查询数据库获取 category_id（主键）
-            async with _db_manager.async_session_factory() as session:
-                result = await session.execute(
-                    text("SELECT id FROM kb_category WHERE code = :code"),
-                    {"code": category_code},
-                )
-                row = result.fetchone()
-                db_id = row.id if row else 0
+            # 从预查询结果获取 category_id（主键）
+            db_id = code_to_db_id.get(category_code, 0)
 
             intent_items.append(
                 IntentCategoryItem(
