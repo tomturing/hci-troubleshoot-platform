@@ -3,7 +3,17 @@
 
 取代 conversation_service.py 中的内联 Prompt 常量，
 独立成类以便单元测试和维护。
+
+S0 阶段专用：
+  - build_s0_prompt(): 构建意图识别 Prompt，注入 198 个分类列表
 """
+
+import re
+from typing import Any
+
+from shared.utils.logger import get_logger
+
+logger = get_logger("prompt-builder")
 
 # ─── 各阶段的 Segment 2 内容（诊断方法论细化版）─────────────────────────────
 STAGE_METHODOLOGY: dict[str, str] = {
@@ -192,3 +202,218 @@ class PromptBuilder:
             f"当前诊断阶段：{stage}\n"
             f"请直接开始{action}"
         )
+
+    # ─── S0 意图识别专用 Prompt 构建方法 ─────────────────────────────────────
+
+    def build_s0_prompt(
+        self,
+        context_info: dict[str, Any],
+        categories_by_domain: dict[str, list[dict]],
+        case_context: dict[str, Any],
+    ) -> str:
+        """
+        构建 S0 意图识别阶段的 System Prompt
+
+        S0 阶段的特殊之处：
+        1. 不进行 KB/SOP 检索，避免过早锁定到特定案例
+        2. 注入完整的 198 个分类列表，让 LLM 进行意图识别
+        3. 注入环境信息、告警日志、任务日志等上下文
+        4. LLM 输出必须包含「已确认故障分类：{分类code} {分类name}」标记
+
+        参数：
+          context_info: 环境信息字典，包含：
+            - env_info: 环境基本信息（版本、集群配置等）
+            - alert_logs: 最新告警日志（最多 10 条）
+            - task_logs: 近期任务日志（最多 5 条失败任务）
+          categories_by_domain: 分类列表按域分组，格式：
+            {
+              "虚拟机": [{"id": "虚拟机-001", "label": "虚拟机创建失败"}, ...],
+              "网络": [...],
+              ...
+            }
+          case_context: 工单上下文，包含 case_id 和 description
+
+        返回：
+          构建完成的 System Prompt 字符串
+        """
+        segments = [
+            self._segment_identity(),
+            self._segment_s0_methodology(),
+            self._segment_mechanism_knowledge(),
+            self._segment_s0_context_info(context_info),
+            self._segment_s0_categories(categories_by_domain),
+            self._segment_s0_output_format(),
+            self._segment_context(case_context, "S0"),
+        ]
+        prompt = "\n\n".join(s for s in segments if s)
+        logger.debug(
+            event="s0_prompt_built",
+            total_chars=len(prompt),
+            domain_count=len(categories_by_domain),
+            category_count=sum(len(cats) for cats in categories_by_domain.values()),
+        )
+        return prompt
+
+    def _segment_s0_methodology(self) -> str:
+        """S0 阶段专用方法论"""
+        return """【当前阶段：S0 意图识别】
+
+你的核心任务：根据客户描述、环境信息和系统日志，精准定位故障分类。
+
+工作流程：
+1. **实体提取**：从客户描述中提取关键实体
+   - 虚拟机名称/ID
+   - 集群名称
+   - 存储名称
+   - 故障发生时间点
+
+2. **日志分析**：结合告警日志和任务日志，识别异常模式
+   - 告警日志：关注错误级别告警、重复告警
+   - 任务日志：关注失败任务、卡住任务
+
+3. **分类匹配**：根据提取的实体和日志分析结果，在分类基准中找到最匹配的分类
+   - 优先匹配叶节点分类（如「虚拟机开机失败」）
+   - 若无法精确定位，先确定技术域（虚拟机/存储/网络/硬件/平台）
+
+4. **确认输出**：一旦确认分类，必须输出标准格式的确认标记
+
+注意事项：
+- 不要一次问超过 3 个问题
+- 如果信息不足以确定分类，先提出精准确认问题
+- 禁止猜测分类，必须有足够证据支撑"""
+
+    def _segment_s0_context_info(self, context_info: dict[str, Any]) -> str:
+        """注入环境信息、告警日志、任务日志"""
+        env_info = context_info.get("env_info", {})
+        alert_logs = context_info.get("alert_logs", [])
+        task_logs = context_info.get("task_logs", [])
+
+        # 环境信息格式化
+        env_text = ""
+        if env_info:
+            env_text = f"""## 当前环境信息
+- HCI 版本：{env_info.get('hci_version', '未知')}
+- 集群名称：{env_info.get('cluster_name', '未知')}
+- 主机数量：{env_info.get('host_count', '未知')}
+- 存储类型：{env_info.get('storage_type', '未知')}
+- 网络配置：{env_info.get('network_config', '未知')}"""
+
+        # 告警日志格式化（最多 10 条）
+        alert_text = ""
+        if alert_logs:
+            alert_lines = []
+            for alert in alert_logs[:10]:
+                alert_lines.append(
+                    f"- [{alert.get('level', 'INFO')}] {alert.get('time', '')} {alert.get('content', '')}"
+                )
+            alert_text = f"""## 最新告警（{len(alert_lines)} 条）
+{chr(10).join(alert_lines)}"""
+
+        # 任务日志格式化（最多 5 条失败任务）
+        task_text = ""
+        if task_logs:
+            task_lines = []
+            for task in task_logs[:5]:
+                task_lines.append(
+                    f"- [{task.get('status', 'failed')}] {task.get('time', '')} {task.get('name', '')}: {task.get('error', '')}"
+                )
+            task_text = f"""## 近期失败任务（{len(task_lines)} 条）
+{chr(10).join(task_lines)}"""
+
+        if not (env_text or alert_text or task_text):
+            return ""
+
+        return f"""【系统上下文信息】
+
+{env_text}
+
+{alert_text}
+
+{task_text}"""
+
+    def _segment_s0_categories(self, categories_by_domain: dict[str, list[dict]]) -> str:
+        """注入 198 个分类列表（按域分组）"""
+        if not categories_by_domain:
+            return "【故障分类基准】\n分类列表暂未加载，请基于 HCI 机制知识进行推理。"
+
+        # 计算总分类数
+        total_count = sum(len(cats) for cats in categories_by_domain.values())
+
+        # 域顺序（按重要性排序）
+        domain_order = ["虚拟机", "存储", "网络", "硬件", "平台"]
+
+        sections = []
+        for domain in domain_order:
+            categories = categories_by_domain.get(domain, [])
+            if not categories:
+                continue
+            # 格式化分类列表
+            cat_lines = []
+            for cat in categories:
+                cat_id = cat.get("id", "")
+                cat_label = cat.get("label", "")
+                cat_lines.append(f"- {cat_id} {cat_label}")
+            sections.append(f"""### {domain}域（{len(categories)}个）
+{chr(10).join(cat_lines)}""")
+
+        return f"""【故障分类基准】（共 {total_count} 个）
+
+{chr(10).join(sections)}
+
+**重要提示**：
+- 分类编码格式为「域-序号」，如「虚拟机-003」表示「虚拟机开机失败」
+- 选择分类时，优先选择最具体的叶节点分类
+- 若存在多个可能分类，选择与客户描述最匹配的那个"""
+
+    def _segment_s0_output_format(self) -> str:
+        """S0 阶段输出格式要求"""
+        return """【输出格式要求】
+
+一旦你确认了故障分类，必须按以下格式输出确认标记：
+
+**已确认故障分类：{分类code} {分类name}**
+
+示例：
+- 已确认故障分类：虚拟机-003 虚拟机开机失败
+- 已确认故障分类：存储-015 卡慢盘
+- 已确认故障分类：网络-007 主机vxlan网络丢包或不通
+
+输出确认标记后，进入下一阶段的故障诊断流程。
+
+如果尚未确认分类：
+1. 列出可能的分类候选（最多 3 个）
+2. 提出 1-3 个精准确认问题
+3. 等待用户回复后再确认"""
+
+
+# ─── 分类提取正则模式 ──────────────────────────────────────────────────────
+
+# S0 阶段分类确认标记的正则模式
+CATEGORY_CONFIRM_PATTERN = re.compile(
+    r"已确认故障分类[:：]\s*([\u4e00-\u9fa5]+-\d+)\s+([\u4e00-\u9fa5A-Za-z0-9\u4e00-\u9fa5]+)"
+)
+
+
+def extract_category_from_reply(assistant_reply: str) -> dict[str, str] | None:
+    """
+    从 LLM 回复中提取已确认的分类信息
+
+    Args:
+        assistant_reply: LLM 的完整回复文本
+
+    Returns:
+        提取成功时返回 {"code": "虚拟机-003", "name": "虚拟机开机失败"}
+        提取失败时返回 None
+    """
+    match = CATEGORY_CONFIRM_PATTERN.search(assistant_reply)
+    if match:
+        code = match.group(1)
+        name = match.group(2)
+        logger.info(
+            event="category_extracted",
+            message=f"从回复中提取分类：{code} {name}",
+            code=code,
+            name=name,
+        )
+        return {"code": code, "name": name}
+    return None

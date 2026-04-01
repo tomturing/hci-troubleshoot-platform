@@ -5,9 +5,18 @@
 - 无状态纯函数，所有输入/输出均通过参数传递，便于单元测试
 - 转换优先保守：宁可不转换，不要误转换
 - 分析 GLM 回复文本以检测阶段推进信号
+
+S0 阶段增强：
+- extract_category_from_reply(): 从 LLM 回复中提取「已确认故障分类」标记
+- detect_stage_transition(): S0→S1 转换时返回提取的分类信息
 """
 
 import re
+from typing import Any
+
+from shared.utils.logger import get_logger
+
+logger = get_logger("conversation-manager")
 
 # ─── 阶段转换触发词（正则模式，匹配 GLM 回复文本）────────────────────────────
 # key: (当前阶段, 下一阶段)
@@ -61,9 +70,19 @@ _RESET_KEYWORDS: list[str] = [
     "换一下",
 ]
 
+# S0 阶段分类确认标记的正则模式
+_CATEGORY_CONFIRM_PATTERN = re.compile(
+    r"已确认故障分类[:：]\s*([\u4e00-\u9fa5]+-\d+)\s+([\u4e00-\u9fa5A-Za-z0-9\u4e00-\u9fa5]+)"
+)
+
 
 class ConversationManager:
-    """管理诊断状态转换（无状态，所有数据通过参数传入）"""
+    """管理诊断状态转换（无状态，所有数据通过参数传入）
+
+    S0 阶段增强：
+    - detect_stage_transition_with_category(): 检测阶段转换并提取分类信息
+    - extract_category(): 从 LLM 回复中提取「已确认故障分类」标记
+    """
 
     def detect_stage_transition(
         self,
@@ -106,6 +125,68 @@ class ConversationManager:
             if re.search(pattern, assistant_reply):
                 return next_stage
 
+        return None
+
+    def detect_stage_transition_with_category(
+        self,
+        current_stage: str,
+        assistant_reply: str,
+        user_message: str,
+    ) -> tuple[str | None, dict[str, str] | None]:
+        """
+        分析 GLM 回复，判断是否应进行阶段转换，并提取分类信息。
+
+        这是 detect_stage_transition 的增强版本，专门用于 S0 阶段：
+        - 检测阶段转换
+        - 从 LLM 回复中提取「已确认故障分类：{code} {name}」标记
+
+        Args:
+            current_stage: 当前阶段（如 "S0"）
+            assistant_reply: AI 助手本轮完整回复文本
+            user_message: 用户本轮输入文本
+
+        Returns:
+            tuple:
+              - [0] 新阶段字符串（如 "S1"），或 None 表示不转换
+              - [1] 分类信息字典 {"code": "虚拟机-003", "name": "虚拟机开机失败"}，
+                   或 None 表示未提取到分类
+        """
+        # 先执行标准阶段转换检测
+        new_stage = self.detect_stage_transition(current_stage, assistant_reply, user_message)
+
+        # 提取分类信息（仅在 S0 阶段有意义）
+        category_info = None
+        if current_stage == "S0":
+            category_info = self.extract_category(assistant_reply)
+            if category_info:
+                logger.info(
+                    event="s0_category_extracted",
+                    message=f"S0 分类提取成功：{category_info['code']} {category_info['name']}",
+                    code=category_info["code"],
+                    name=category_info["name"],
+                )
+
+        return new_stage, category_info
+
+    def extract_category(self, assistant_reply: str) -> dict[str, str] | None:
+        """
+        从 LLM 回复中提取已确认的分类信息。
+
+        匹配模式：「已确认故障分类：{分类code} {分类name}」
+        示例：「已确认故障分类：虚拟机-003 虚拟机开机失败」
+
+        Args:
+            assistant_reply: LLM 的完整回复文本
+
+        Returns:
+            提取成功时返回 {"code": "虚拟机-003", "name": "虚拟机开机失败"}
+            提取失败时返回 None
+        """
+        match = _CATEGORY_CONFIRM_PATTERN.search(assistant_reply)
+        if match:
+            code = match.group(1)
+            name = match.group(2)
+            return {"code": code, "name": name}
         return None
 
     def _should_reset(self, user_message: str) -> bool:

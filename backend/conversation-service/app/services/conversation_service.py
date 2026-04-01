@@ -22,6 +22,7 @@ from .conversation_manager import ConversationManager
 from .kb_client import KBClient
 from .knowledge_extractor import KnowledgeExtractor
 from .knowledge_retriever import KnowledgeRetriever
+from .prompt_builder import PromptBuilder
 from .scheduler_client import SchedulerClient
 from .sse_queue import LogAuditService, QueueSSEEmitter
 
@@ -73,6 +74,11 @@ class ConversationService:
         self.kb_client = kb_client
         # 知识检索器（从 _build_system_prompt 提取）
         self._knowledge_retriever = KnowledgeRetriever(kb_client)
+        # Prompt 构建器（S0 专用）
+        self._prompt_builder = PromptBuilder()
+        # 分类缓存（按域分组，用于 S0 阶段）
+        self._categories_cache: dict[str, list[dict]] | None = None
+        self._categories_cache_time: float = 0.0
         # 独立事务 session 工厂，用于用户消息先行提交（与 AI 调用解耦）
         self.session_factory = session_factory
         # Phase 4: agent 模式组件（可选，未配置时回退到普通流式模式）
@@ -117,7 +123,7 @@ class ConversationService:
         return await self.repository.get_messages(conversation_id)
 
     async def _build_system_prompt(
-        self, query: str, case_id: str, diagnostic_stage: str = "S0"
+        self, query: str, case_id: str, diagnostic_stage: str = "S0", context_info: dict | None = None
     ) -> tuple[str, dict]:
         """
         构建 5段式 System Prompt（双轨知识架构 + 三级 Fallback）：
@@ -130,20 +136,91 @@ class ConversationService:
             → 优先级3：双轨均未命中（机制推理兜底，标注【机制推理】）
           Segment 5: 当前工单上下文
 
+        S0 阶段特殊处理：
+          - 禁止 KB/SOP 检索
+          - 注入 198 个分类列表
+          - 注入环境信息、告警日志、任务日志
+
         返回：
             [0] system_prompt 字符串
             [1] audit_meta 字典，包含：
                 - has_sop: bool
                 - kb_chunks_count: int
                 - kb_top_score: float | None
-                - fallback_level: str （"sop" / "kb_case" / "mechanism"）
+                - fallback_level: str （"sop" / "kb_case" / "mechanism" / "s0_intent_recognition"）
         """
-        # 委托给 KnowledgeRetriever 处理
+        # S0 阶段：使用专用的 Prompt 构建方法
+        if diagnostic_stage == "S0":
+            return await self._build_s0_system_prompt(query, case_id, context_info)
+
+        # S1+ 阶段：委托给 KnowledgeRetriever 处理
         return await self._knowledge_retriever.retrieve(
             query=query,
             case_id=case_id,
             diagnostic_stage=diagnostic_stage,
         )
+
+    async def _build_s0_system_prompt(
+        self, query: str, case_id: str, context_info: dict | None = None
+    ) -> tuple[str, dict]:
+        """
+        构建 S0 意图识别阶段的 System Prompt
+
+        S0 阶段的特殊之处：
+        1. 不进行 KB/SOP 检索
+        2. 注入 198 个分类列表
+        3. 注入环境信息、告警日志、任务日志
+
+        参数：
+            query: 用户查询（用于日志记录）
+            case_id: 工单 ID
+            context_info: 环境信息字典（可选）
+
+        返回：
+            [0] system_prompt 字符串
+            [1] audit_meta 字典
+        """
+        # 获取分类列表（带缓存，5 分钟有效期）
+        import time
+
+        cache_ttl = 300.0  # 5 分钟
+        if (
+            self._categories_cache is None
+            or (time.time() - self._categories_cache_time) > cache_ttl
+        ):
+            if self.kb_client:
+                self._categories_cache = await self.kb_client.get_categories_grouped()
+                self._categories_cache_time = time.time()
+                logger.info(
+                    event="s0_categories_loaded",
+                    message=f"已加载 {sum(len(c) for c in self._categories_cache.values())} 个分类",
+                    domain_count=len(self._categories_cache),
+                )
+            else:
+                self._categories_cache = {}
+
+        # 构建 S0 Prompt
+        system_prompt = self._prompt_builder.build_s0_prompt(
+            context_info=context_info or {},
+            categories_by_domain=self._categories_cache or {},
+            case_context={"case_id": case_id, "description": query},
+        )
+
+        # 构建 audit_meta
+        total_chars = len(system_prompt)
+        audit_meta = {
+            "has_sop": False,
+            "kb_chunks_count": 0,
+            "kb_top_score": None,
+            "fallback_level": "s0_intent_recognition",
+            "context_breakdown": [
+                {"code": "S0", "name": "意图识别", "chars": total_chars, "token_est": total_chars // 4}
+            ],
+            "total_chars": total_chars,
+            "total_token_est": total_chars // 4,
+        }
+
+        return system_prompt, audit_meta
 
     async def send_message_stream_only(
         self, conversation_id: uuid.UUID, case_id: str, content: str, assistant_type: str | None = None
@@ -282,7 +359,8 @@ class ConversationService:
             # 6. 流式完成后，检测诊断阶段转换并持久化（fire-and-forget）
             full_reply = "".join(_full_reply_buffer)
             if full_reply:
-                new_stage = self._conversation_manager.detect_stage_transition(
+                # 使用增强的阶段转换检测方法，同时提取分类信息
+                new_stage, category_info = self._conversation_manager.detect_stage_transition_with_category(
                     current_stage=current_stage,
                     assistant_reply=full_reply,
                     user_message=content,
@@ -295,6 +373,14 @@ class ConversationService:
                             old_stage=current_stage,
                         )
                     )
+                    # S0→S1 转换：提取分类信息，更新 Conversation.category_id 和命中计数
+                    if current_stage == "S0" and category_info:
+                        asyncio.create_task(
+                            self._update_conversation_category(
+                                conversation_id=conversation_id,
+                                category_info=category_info,
+                            )
+                        )
                     # S6 阶段：触发知识反馈闭环（fire-and-forget，不阻塞对话响应）
                     if new_stage == "S6" and self.knowledge_extractor is not None:
                         asyncio.create_task(
@@ -775,4 +861,81 @@ class ConversationService:
                 message=f"诊断阶段持久化失败：{e}",
                 conversation_id=str(conversation_id),
                 new_stage=new_stage,
+            )
+
+    async def _update_conversation_category(
+        self,
+        conversation_id: uuid.UUID,
+        category_info: dict[str, str],
+    ) -> None:
+        """
+        更新 Conversation.category_id 并增加分类命中计数（fire-and-forget 后台任务）
+
+        在 S0 阶段确认分类后调用：
+        1. 更新 Conversation.category_id
+        2. 更新 Conversation.category_l1（根据分类 code 提取域）
+        3. 更新 Conversation.category_l2（分类名称）
+        4. 调用 KB Client 增加分类命中计数
+
+        Args:
+            conversation_id: 会话 ID
+            category_info: 分类信息 {"code": "虚拟机-003", "name": "虚拟机开机失败"}
+        """
+        from sqlalchemy import update as sa_update
+
+        from ..models.conversation import Conversation as ConversationModel
+
+        try:
+            code = category_info.get("code", "")
+            name = category_info.get("name", "")
+
+            # 从 code 提取一级分类（域），如 "虚拟机-003" -> "虚拟机"
+            category_l1 = code.split("-")[0] if "-" in code else ""
+
+            # 更新 Conversation
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    await session.execute(
+                        sa_update(ConversationModel)
+                        .where(ConversationModel.conversation_id == conversation_id)
+                        .values(
+                            category_id=code,
+                            category_l1=category_l1,
+                            category_l2=name,
+                        )
+                    )
+                    await session.commit()
+            else:
+                conv = await self.repository.get_conversation(conversation_id)
+                if conv:
+                    conv.category_id = code
+                    conv.category_l1 = category_l1
+                    conv.category_l2 = name
+                    await self.repository.session.flush()
+
+            logger.info(
+                event="conversation_category_updated",
+                message=f"会话分类已更新：{code} {name}",
+                conversation_id=str(conversation_id),
+                category_id=code,
+                category_l1=category_l1,
+                category_l2=name,
+            )
+
+            # 增加 KB 分类命中计数
+            if self.kb_client and code:
+                hit_count = await self.kb_client.increment_category_hit(code)
+                logger.info(
+                    event="category_hit_count_updated",
+                    message=f"分类命中计数已更新：{code} -> {hit_count}",
+                    code=code,
+                    hit_count=hit_count,
+                )
+
+        except Exception as e:
+            logger.warning(
+                event="conversation_category_update_error",
+                message=f"会话分类更新失败：{e}",
+                conversation_id=str(conversation_id),
+                category_info=category_info,
             )

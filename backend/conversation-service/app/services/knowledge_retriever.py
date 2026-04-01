@@ -14,6 +14,11 @@
   第1轨：SOP 优先（根据 category_id 查询 sop_document）
   第2轨：KBD 覆盖（根据 category_id 查询 kbd_entry）
   第3轨：人工兜底（无匹配结果时返回 human_escalation）
+
+S0 阶段特殊处理：
+  - 禁止 KB/SOP 检索，避免过早锁定到特定案例
+  - 由 PromptBuilder.build_s0_prompt() 构建专用 Prompt（含 198 分类列表）
+  - 返回 fallback_level="s0_intent_recognition" 标识
 """
 
 from dataclasses import dataclass
@@ -22,6 +27,7 @@ from opentelemetry import trace
 from shared.utils.logger import get_logger
 
 from app.config import settings
+from app.services.prompt_builder import PromptBuilder, extract_category_from_reply
 
 logger = get_logger("knowledge-retriever")
 tracer = trace.get_tracer(__name__)
@@ -211,12 +217,46 @@ class KnowledgeRetriever:
         1. 调用 classify_intent(query) 进行意图识别，获取 category_id 列表
         2. 使用 top1 的 category_code 调用 route_by_category 获取知识内容
         3. 根据 route 返回的 track 类型（sop/kbd/human_escalation）注入不同 Segment
+
+        S0 阶段特殊处理：
+        - 禁止 KB/SOP 检索，避免过早锁定到特定案例
+        - 返回基础 prompt + 分类列表供 LLM 意图识别
         """
         # 获取当前诊断阶段描述
         stage_desc = STAGE_DESC_MAP.get(diagnostic_stage, f"{diagnostic_stage} - 进行中")
 
+        # ─── S0 阶段特殊处理：禁止 KB/SOP 检索 ─────────────────────────────
+        if diagnostic_stage == "S0":
+            logger.info(
+                event="s0_skip_kb_search",
+                message="S0 阶段禁止 KB/SOP 检索，使用分类列表进行意图识别",
+                case_id=case_id,
+            )
+            # S0 阶段不进行 KB 检索，返回基础 prompt
+            # 实际的分类列表注入由 ConversationService 调用 PromptBuilder.build_s0_prompt 完成
+            base_sections: list[str] = [
+                SEGMENT_IDENTITY,
+                SEGMENT_METHODOLOGY.format(stage_desc=stage_desc),
+                SEGMENT_REASONING_MODE,
+                SEGMENT_NO_REFERENCE,
+                SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id),
+            ]
+            _ctx_bd = _build_context_breakdown(base_sections, "mechanism")
+            span.set_attribute("s0_mode", True)
+            span.set_attribute("kb_search_skipped", True)
+            return "\n\n".join(base_sections), {
+                "has_sop": False,
+                "kb_chunks_count": 0,
+                "kb_top_score": None,
+                "fallback_level": "s0_intent_recognition",  # S0 专用标识
+                "context_breakdown": _ctx_bd,
+                "total_chars": sum(s["chars"] for s in _ctx_bd),
+                "total_token_est": sum(s["token_est"] for s in _ctx_bd),
+            }
+
+        # ─── S1+ 阶段：正常 KB 检索流程 ─────────────────────────────────────
         # Segment 1 + 2 + 3 固定段
-        base_sections: list[str] = [
+        base_sections = [
             SEGMENT_IDENTITY,
             SEGMENT_METHODOLOGY.format(stage_desc=stage_desc),
             SEGMENT_REASONING_MODE,

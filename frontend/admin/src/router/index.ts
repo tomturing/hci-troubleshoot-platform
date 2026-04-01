@@ -50,6 +50,12 @@ const router = createRouter({
       component: () => import('@/views/KbdReviewView.vue'),
       meta: { title: 'KBD 审核', icon: 'Document' },
     },
+    {
+      path: '/category',
+      name: 'CategoryManage',
+      component: () => import('@/views/CategoryManageView.vue'),
+      meta: { title: '分类基线', icon: 'Histogram' },
+    },
   ],
 })
 
