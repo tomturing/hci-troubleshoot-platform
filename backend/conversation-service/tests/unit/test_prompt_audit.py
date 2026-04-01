@@ -102,16 +102,37 @@ class TestBuildSystemPromptAuditMeta:
     async def test_build_system_prompt_returns_audit_meta_with_kb(
         self, service_with_kb, mock_kb_client
     ):
-        """测试 KB 启用时返回正确的 audit_meta"""
-        # Mock KB 客户端返回 SOP 和 Chunks
-        mock_kb_client.sop_match = AsyncMock(
-            return_value={"title": "SOP-001", "content": "这是 SOP 内容"}
+        """测试 KB 启用时返回正确的 audit_meta（新接口：classify_intent + route_by_category）"""
+        # Mock KB 客户端返回意图识别结果
+        mock_kb_client.classify_intent = AsyncMock(
+            return_value={
+                "categories": [
+                    {
+                        "category_id": 123,
+                        "code": "虚拟机-001",
+                        "name": "虚拟机创建失败",
+                        "domain": "虚拟机",
+                        "path_labels": ["虚拟机", "虚拟机创建"],
+                        "score": 0.85,
+                    }
+                ],
+                "needs_review": False,
+            }
         )
-        mock_kb_client.search = AsyncMock(
-            return_value=[
-                {"content": "chunk1", "score": 0.85, "source_title": "Doc1"},
-                {"content": "chunk2", "score": 0.72, "source_title": "Doc2"},
-            ]
+        # Mock KB 客户端返回三轨路由结果（SOP 轨道）
+        mock_kb_client.route_by_category = AsyncMock(
+            return_value={
+                "track": "sop",
+                "category_id": "虚拟机-001",
+                "results": [
+                    {
+                        "id": 1,
+                        "title": "SOP-001",
+                        "content_md": "这是 SOP 内容",
+                        "support_id": "sop-001",
+                    }
+                ],
+            }
         )
 
         # 调用方法
@@ -125,17 +146,49 @@ class TestBuildSystemPromptAuditMeta:
 
         # 断言 audit_meta 内容
         assert audit_meta["has_sop"] is True
-        assert audit_meta["kb_chunks_count"] == 2
-        assert audit_meta["kb_top_score"] == 0.85
+        assert audit_meta["category_id"] == "虚拟机-001"
+        assert audit_meta["category_score"] == 0.85
 
-    async def test_build_system_prompt_returns_audit_meta_without_sop(
+    async def test_build_system_prompt_returns_audit_meta_kbd_track(
         self, service_with_kb, mock_kb_client
     ):
-        """测试 KB 启用但无 SOP 时返回正确的 audit_meta"""
-        # Mock KB 客户端仅返回 Chunks
-        mock_kb_client.sop_match = AsyncMock(return_value=None)
-        mock_kb_client.search = AsyncMock(
-            return_value=[{"content": "chunk1", "score": 0.65}]
+        """测试 KBD 轨道命中时返回正确的 audit_meta"""
+        # Mock KB 客户端返回意图识别结果
+        mock_kb_client.classify_intent = AsyncMock(
+            return_value={
+                "categories": [
+                    {
+                        "category_id": 123,
+                        "code": "虚拟机-002",
+                        "name": "虚拟机状态异常",
+                        "domain": "虚拟机",
+                        "path_labels": ["虚拟机", "虚拟机状态"],
+                        "score": 0.72,
+                    }
+                ],
+                "needs_review": False,
+            }
+        )
+        # Mock KB 客户端返回 KBD 轨道结果
+        mock_kb_client.route_by_category = AsyncMock(
+            return_value={
+                "track": "kbd",
+                "category_id": "虚拟机-002",
+                "results": [
+                    {
+                        "id": 1,
+                        "title": "案例 A",
+                        "content_md": "chunk1 内容",
+                        "support_id": "36156",
+                    },
+                    {
+                        "id": 2,
+                        "title": "案例 B",
+                        "content_md": "chunk2 内容",
+                        "support_id": "36157",
+                    },
+                ],
+            }
         )
 
         system_prompt, audit_meta = await service_with_kb._build_system_prompt(
@@ -143,16 +196,15 @@ class TestBuildSystemPromptAuditMeta:
         )
 
         assert audit_meta["has_sop"] is False
-        assert audit_meta["kb_chunks_count"] == 1
-        assert audit_meta["kb_top_score"] == 0.65
+        assert audit_meta["kb_chunks_count"] == 2
+        assert audit_meta["category_id"] == "虚拟机-002"
 
     async def test_build_system_prompt_returns_audit_meta_empty_kb(
         self, service_with_kb, mock_kb_client
     ):
-        """测试 KB 启用但无返回时返回正确的 audit_meta"""
-        # Mock KB 客户端返回空
-        mock_kb_client.sop_match = AsyncMock(return_value=None)
-        mock_kb_client.search = AsyncMock(return_value=[])
+        """测试 KB 启用但意图识别返回空时返回正确的 audit_meta"""
+        # Mock KB 客户端返回空分类
+        mock_kb_client.classify_intent = AsyncMock(return_value={"categories": [], "needs_review": True})
 
         system_prompt, audit_meta = await service_with_kb._build_system_prompt(
             query="未知问题", case_id="Q003"
@@ -160,15 +212,15 @@ class TestBuildSystemPromptAuditMeta:
 
         assert audit_meta["has_sop"] is False
         assert audit_meta["kb_chunks_count"] == 0
-        assert audit_meta["kb_top_score"] is None
+        assert audit_meta["category_id"] is None
+        assert audit_meta["needs_review"] is True
 
-    async def test_build_system_prompt_returns_audit_meta_kb_error(
+    async def test_build_system_prompt_returns_audit_meta_intent_failed(
         self, service_with_kb, mock_kb_client
     ):
-        """测试 KB 客户端异常时返回正确的 audit_meta"""
-        # Mock KB 客户端抛出异常
-        mock_kb_client.sop_match = AsyncMock(side_effect=Exception("KB Error"))
-        mock_kb_client.search = AsyncMock(side_effect=Exception("Search Error"))
+        """测试意图识别失败时返回正确的 audit_meta"""
+        # Mock KB 客户端返回 None（意图识别失败）
+        mock_kb_client.classify_intent = AsyncMock(return_value=None)
 
         system_prompt, audit_meta = await service_with_kb._build_system_prompt(
             query="错误测试", case_id="Q004"
@@ -176,7 +228,8 @@ class TestBuildSystemPromptAuditMeta:
 
         assert audit_meta["has_sop"] is False
         assert audit_meta["kb_chunks_count"] == 0
-        assert audit_meta["kb_top_score"] is None
+        assert audit_meta["category_id"] is None
+        assert audit_meta["needs_review"] is True
 
     async def test_build_system_prompt_returns_audit_meta_without_kb(
         self, service_without_kb
@@ -191,26 +244,50 @@ class TestBuildSystemPromptAuditMeta:
         assert audit_meta["has_sop"] is False
         assert audit_meta["kb_chunks_count"] == 0
         assert audit_meta["kb_top_score"] is None
+        assert audit_meta["category_id"] is None
 
-    async def test_build_system_prompt_kb_score_missing(
+    async def test_build_system_prompt_needs_review_flag(
         self, service_with_kb, mock_kb_client
     ):
-        """测试 KB Chunk 缺少 score 字段时的处理"""
-        mock_kb_client.sop_match = AsyncMock(return_value=None)
-        mock_kb_client.search = AsyncMock(
-            return_value=[
-                {"content": "chunk1"},  # 没有 score
-                {"content": "chunk2", "score": 0.5},
-            ]
+        """测试 needs_review 标志正确传递"""
+        # Mock KB 客户端返回低置信度分类
+        mock_kb_client.classify_intent = AsyncMock(
+            return_value={
+                "categories": [
+                    {
+                        "category_id": 123,
+                        "code": "虚拟机-001",
+                        "name": "虚拟机创建失败",
+                        "domain": "虚拟机",
+                        "path_labels": ["虚拟机", "虚拟机创建"],
+                        "score": 0.35,
+                    }
+                ],
+                "needs_review": True,  # 低置信度需要人工确认
+            }
+        )
+        mock_kb_client.route_by_category = AsyncMock(
+            return_value={
+                "track": "kbd",
+                "category_id": "虚拟机-001",
+                "results": [
+                    {
+                        "id": 1,
+                        "title": "测试案例",
+                        "content_md": "测试内容",
+                        "support_id": "12345",
+                    }
+                ],
+            }
         )
 
         system_prompt, audit_meta = await service_with_kb._build_system_prompt(
             query="测试", case_id="Q006"
         )
 
-        assert audit_meta["kb_chunks_count"] == 2
-        # max(0.0, 0.5) = 0.5（没有 score 的默认为 0.0）
-        assert audit_meta["kb_top_score"] == 0.5
+        # 验证 needs_review 正确传递
+        assert audit_meta["needs_review"] is True
+        assert audit_meta["category_score"] == 0.35
 
 
 # ---------- _write_prompt_audit 测试 ----------
@@ -349,12 +426,35 @@ class TestSendMessageTriggersPromptAudit:
         """测试 _build_system_prompt 返回的 audit_meta 被正确传递"""
         case_id = "Q002"
 
-        # 设置 KB 返回
-        mock_kb_client.sop_match = AsyncMock(
-            return_value={"title": "SOP-TEST", "content": "SOP 内容"}
+        # 设置 KB 返回（新接口）
+        mock_kb_client.classify_intent = AsyncMock(
+            return_value={
+                "categories": [
+                    {
+                        "category_id": 123,
+                        "code": "虚拟机-001",
+                        "name": "虚拟机创建失败",
+                        "domain": "虚拟机",
+                        "path_labels": ["虚拟机", "虚拟机创建"],
+                        "score": 0.75,
+                    }
+                ],
+                "needs_review": False,
+            }
         )
-        mock_kb_client.search = AsyncMock(
-            return_value=[{"content": "chunk", "score": 0.75}]
+        mock_kb_client.route_by_category = AsyncMock(
+            return_value={
+                "track": "sop",
+                "category_id": "虚拟机-001",
+                "results": [
+                    {
+                        "id": 1,
+                        "title": "SOP-TEST",
+                        "content_md": "SOP 内容",
+                        "support_id": "sop-001",
+                    }
+                ],
+            }
         )
 
         # 直接测试 _build_system_prompt
@@ -365,8 +465,8 @@ class TestSendMessageTriggersPromptAudit:
         # 验证 audit_meta 内容正确
         assert isinstance(system_prompt, str)
         assert audit_meta["has_sop"] is True
-        assert audit_meta["kb_chunks_count"] == 1
-        assert audit_meta["kb_top_score"] == 0.75
+        assert audit_meta["category_id"] == "虚拟机-001"
+        assert audit_meta["category_score"] == 0.75
 
 
 # ---------- 采样率测试 ----------

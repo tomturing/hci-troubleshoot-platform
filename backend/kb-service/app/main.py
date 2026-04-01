@@ -18,7 +18,7 @@ from shared.utils.logger import get_logger
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
-from app.routes import admin, atoms, health, ingest, review, search
+from app.routes import admin, atoms, classify, health, ingest, review, route, search
 from app.services.embedding import EmbeddingService
 from app.services.sop_matcher import SopMatcher
 
@@ -57,9 +57,11 @@ async def lifespan(app: FastAPI):
     # 注入依赖到路由模块（兼容 Depends 模式）
     ingest.set_dependencies(database_manager, embedding_service)
     search.set_dependencies(database_manager, embedding_service, sop_matcher)
-    admin.set_dependencies(database_manager)
+    admin.set_dependencies(database_manager, embedding_service)  # 注入 embedding 服务
     atoms.set_dependencies(database_manager, embedding_service)
     review.set_dependencies(database_manager)
+    route.set_dependencies(database_manager)
+    classify.set_dependencies(database_manager)
 
     logger.info(event="service_started", message=f"{settings.SERVICE_NAME} ready")
 
@@ -85,10 +87,13 @@ register_exception_handlers(app)
 # 注册路由
 app.include_router(health.router)
 app.include_router(search.router)
+app.include_router(route.router)
 app.include_router(ingest.router)
 app.include_router(admin.router)
+app.include_router(admin.kbd_router)  # KBD 审核路由
 app.include_router(atoms.router)
 app.include_router(review.router)
+app.include_router(classify.router)
 
 
 @app.get("/metrics")
