@@ -1,142 +1,204 @@
 """
-scripts/kbd/classifier.py — AI 分类器
+scripts/kbd/classifier.py — AI 分类器（API 调用版）
 
 功能：
   对 kbd_entry 中 status='draft' 且 ai_category_id 为空的条目，
-  调用 LLM，从 category_baseline.yaml 的 198 个分类中选择最匹配的。
+  调用 kb-service API `/api/kb/classify` 进行分类。
 
-输出：
-  - ai_category_id: 分类 code（如 "虚拟机-003"）
-  - ai_category_conf: 置信度（0-1）
-  - ai_category_reason: 分类理由（供审核参考）
+变更（T2-02）：
+  - 废弃本地 LLM 调用和 category_baseline.yaml 直接读取
+  - 改为调用 kb-service API，由服务端统一管理分类树和 LLM 调用
+  - API 返回 category_id（分类编码如 "虚拟机-001"）、confidence、reason
 
 设计特点：
-  - 将 198 个分类格式化为结构化列表放入 prompt
-  - 要求 LLM 返回 JSON 格式（id + confidence + reason）
+  - 使用 httpx 异步客户端调用 API
+  - 从环境变量读取 KB_SERVICE_URL 和 INTERNAL_API_TOKEN
+  - 完善的错误处理和重试机制
   - 低置信度（< MIN_CLASSIFY_CONFIDENCE）时标记，提示人工重新分类
 """
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
-from pathlib import Path
+from typing import Any
 
 import asyncpg
-import yaml
-from openai import AsyncOpenAI
+import httpx
 
 from .config import settings
 
 logger = logging.getLogger("kbd.classifier")
 
 
-# ─── Category Baseline 加载 ──────────────────────────────────────────────────
-
-def _load_categories(yaml_path: Path | None = None) -> list[dict]:
-    """加载 category_baseline.yaml，返回分类列表"""
-    path = yaml_path or settings.CATEGORY_BASELINE
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    return data.get("categories", [])
+# ─── API 客户端 ──────────────────────────────────────────────────────────────
 
 
-def _format_category_list(categories: list[dict]) -> str:
+async def _call_classify_api(
+    title: str,
+    problem_desc: str,
+    client: httpx.AsyncClient,
+) -> dict[str, Any]:
     """
-    将分类列表格式化为 LLM prompt 中的分类参考文本。
-    示例：
-      虚拟机-001 | 虚拟机>虚拟机创建 | 虚拟机创建失败
+    调用 kb-service 分类 API。
+
+    Args:
+        title: 案例标题
+        problem_desc: 问题描述
+        client: httpx 异步客户端
+
+    Returns:
+        {
+            "category_id": "虚拟机-001",
+            "confidence": 0.85,
+            "reason": "分类理由",
+            "top3": [...],
+            "needs_review": false
+        }
+
+    Raises:
+        httpx.HTTPStatusError: API 返回非 2xx 状态码
+        httpx.TimeoutException: 请求超时
     """
-    lines: list[str] = []
-    for cat in categories:
-        code = cat.get("id") or cat.get("code") or ""
-        label = cat.get("label") or ""
-        path_parts = cat.get("path") or [cat.get("domain", ""), label]
-        path_str = " > ".join(str(p) for p in path_parts if p)
-        lines.append(f"{code} | {path_str} | {label}")
-    return "\n".join(lines)
+    url = f"{settings.KB_SERVICE_URL}/api/kb/classify"
+    headers = {
+        "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "title": title,
+        "problem_desc": problem_desc[:2000] if problem_desc else "",  # 截断防止超长
+    }
+
+    # 带重试的请求
+    for attempt in range(settings.API_MAX_RETRIES):
+        try:
+            response = await client.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=settings.API_TIMEOUT,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except httpx.TimeoutException:
+            if attempt == settings.API_MAX_RETRIES - 1:
+                raise
+            wait = 1.0 * (2 ** attempt)
+            logger.warning(
+                "分类 API 超时 title=%s 等待 %.1fs 后重试",
+                title[:30], wait
+            )
+            await asyncio.sleep(wait)
+
+        except httpx.HTTPStatusError as exc:
+            # 4xx 客户端错误不重试
+            if 400 <= exc.response.status_code < 500:
+                logger.error(
+                    "分类 API 客户端错误 status=%d title=%s",
+                    exc.response.status_code, title[:30]
+                )
+                raise
+            # 5xx 服务端错误重试
+            if attempt == settings.API_MAX_RETRIES - 1:
+                raise
+            wait = 1.0 * (2 ** attempt)
+            logger.warning(
+                "分类 API 服务端错误 status=%d 等待 %.1fs 后重试",
+                exc.response.status_code, wait
+            )
+            await asyncio.sleep(wait)
+
+    raise RuntimeError("unreachable")
 
 
-# ─── 分类 Prompt ─────────────────────────────────────────────────────────────
-
-_SYSTEM_PROMPT = """\
-你是深信服 HCI 超融合平台的技术支持专家，熟悉所有产品故障分类体系。
-你的任务是根据故障案例的标题和问题描述，从给定的故障分类列表中选择最匹配的分类。
-
-故障分类列表（格式：分类ID | 路径 | 标签）：
-{category_list}
-
-要求：
-1. 只能从以上分类中选择一个，不得创造新分类
-2. 选择最精确的叶节点分类，而非宽泛的顶层分类
-3. 置信度（confidence）：如果标题或描述与分类非常吻合，给 0.8-1.0；有一定歧义给 0.5-0.8；极不确定给 0.5 以下
-4. 返回 JSON 格式，字段：category_id（分类ID字符串）、confidence（浮点数）、reason（中文理由，30字以内）
-"""
-
-_USER_TEMPLATE = """\
-案例标题：{title}
-
-问题描述：
-{problem_desc}
-"""
+# ─── 分类逻辑 ────────────────────────────────────────────────────────────────
 
 
 async def classify_case(
     case_id: str,
-    title: str,
-    problem_desc: str,
-    client: AsyncOpenAI,
-    categories: list[dict],
+    pool: asyncpg.Pool,
+    client: httpx.AsyncClient,
 ) -> dict[str, object]:
     """
-    对单个案例调用 LLM 分类。
+    对单个案例调用 kb-service API 分类。
 
     Returns:
-        {"category_id": "...", "confidence": 0.85, "reason": "..."}
+        {"category_id": "...", "confidence": 0.85, "reason": "...", "status": "done"/"failed"}
     """
-    category_list_text = _format_category_list(categories)
-    system_msg = _SYSTEM_PROMPT.format(category_list=category_list_text)
-    # 问题描述截断（避免 token 过长）
-    desc_truncated = (problem_desc or "")[:800]
+    # 从 kbd_entry 读取标题和内容
+    row = await pool.fetchrow(
+        """SELECT title, content_md FROM kbd_entry
+           WHERE case_id = $1 AND (ai_category_id IS NULL OR ai_category_id = '')""",
+        case_id,
+    )
+    if not row:
+        logger.debug("案例 %s 不存在或已分类，跳过", case_id)
+        return {"category_id": None, "confidence": 0.0, "reason": "已分类或不存在", "status": "skipped"}
+
+    title = row["title"] or ""
+
+    # 从 content_md 提取问题描述（第一个 ## 问题描述 章节的内容）
+    problem_desc = _extract_problem_desc(row["content_md"] or "")
 
     try:
-        response = await client.chat.completions.create(
-            model=settings.CLASSIFY_MODEL,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": _USER_TEMPLATE.format(
-                    title=title,
-                    problem_desc=desc_truncated,
-                )},
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=200,
-            temperature=0.1,
-            timeout=settings.LLM_TIMEOUT,
-        )
-        raw = response.choices[0].message.content or "{}"
-        result = json.loads(raw)
+        result = await _call_classify_api(title, problem_desc, client)
 
-        # 校验 category_id 是否在合法列表中
-        valid_ids = {cat.get("id") or cat.get("code") for cat in categories}
-        cat_id = result.get("category_id", "")
-        if cat_id not in valid_ids:
-            logger.warning("LLM 返回无效分类 ID: %s，case_id=%s", cat_id, case_id)
-            result["category_id"] = None
-            result["confidence"] = 0.0
-            result["reason"] = f"LLM 返回无效分类 ID: {cat_id}"
+        category_id = result.get("category_id")
+        confidence = float(result.get("confidence", 0.0))
+        reason = str(result.get("reason") or "")
+        needs_review = result.get("needs_review", False)
+
+        # 更新 kbd_entry
+        await pool.execute(
+            """UPDATE kbd_entry
+               SET ai_category_id=$1, ai_category_conf=$2, ai_category_reason=$3, updated_at=NOW()
+               WHERE case_id=$4""",
+            category_id,
+            confidence,
+            reason,
+            case_id,
+        )
+
+        logger.debug(
+            "分类完成 case_id=%s category=%s conf=%.2f needs_review=%s",
+            case_id, category_id, confidence, needs_review
+        )
 
         return {
-            "category_id": result.get("category_id"),
-            "confidence": float(result.get("confidence", 0.0)),
-            "reason": str(result.get("reason") or ""),
+            "category_id": category_id,
+            "confidence": confidence,
+            "reason": reason,
+            "status": "done",
+            "needs_review": needs_review,
         }
 
-    except json.JSONDecodeError as exc:
-        logger.error("分类结果 JSON 解析失败 case_id=%s 原因=%s", case_id, exc)
-        return {"category_id": None, "confidence": 0.0, "reason": "JSON解析失败"}
     except Exception as exc:
-        logger.error("分类 LLM 调用失败 case_id=%s 原因=%s", case_id, exc)
-        return {"category_id": None, "confidence": 0.0, "reason": f"API调用失败: {exc}"}
+        logger.error("分类失败 case_id=%s 原因=%s", case_id, exc)
+        return {"category_id": None, "confidence": 0.0, "reason": f"API调用失败: {exc}", "status": "failed"}
+
+
+def _extract_problem_desc(content_md: str) -> str:
+    """从 content_md 提取问题描述章节内容"""
+    if not content_md:
+        return ""
+
+    # 查找 "## 问题描述" 章节
+    lines = content_md.split("\n")
+    in_problem_section = False
+    problem_lines: list[str] = []
+
+    for line in lines:
+        if line.strip().startswith("## 问题描述"):
+            in_problem_section = True
+            continue
+        if in_problem_section:
+            # 遇到下一个 ## 标题则停止
+            if line.strip().startswith("## ") and not line.strip().startswith("## 问题描述"):
+                break
+            problem_lines.append(line)
+
+    return "\n".join(problem_lines).strip()[:800]
 
 
 async def classify_batch(
@@ -147,64 +209,38 @@ async def classify_batch(
     批量对未分类的 kbd_entry 进行 AI 分类。
 
     Returns:
-        {"done": N, "failed": N, "low_confidence": N}
+        {"done": N, "failed": N, "low_confidence": N, "skipped": N}
     """
-    categories = _load_categories()
-    if not categories:
-        raise RuntimeError(f"category_baseline.yaml 加载失败或为空：{settings.CATEGORY_BASELINE}")
+    stats = {"done": 0, "failed": 0, "low_confidence": 0, "skipped": 0}
+    total = len(case_ids)
 
-    client = AsyncOpenAI(
-        api_key=settings.ZAI_API_KEY,
-        base_url=settings.ZAI_BASE_URL,
-        timeout=settings.LLM_TIMEOUT,
-    )
+    if not settings.INTERNAL_API_TOKEN:
+        raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
 
-    stats = {"done": 0, "failed": 0, "low_confidence": 0}
+    async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
+        for idx, case_id in enumerate(case_ids, 1):
+            logger.info("[%d/%d] 分类案例 %s", idx, total, case_id)
 
-    for case_id in case_ids:
-        row = await pool.fetchrow(
-            """SELECT title, problem_desc FROM kbd_entry
-               WHERE case_id = $1 AND (ai_category_id IS NULL OR ai_category_id = '')""",
-            case_id,
-        )
-        if not row:
-            continue
+            result = await classify_case(case_id, pool, client)
 
-        result = await classify_case(
-            case_id=case_id,
-            title=row["title"] or "",
-            problem_desc=row["problem_desc"] or "",
-            client=client,
-            categories=categories,
-        )
-
-        conf = result["confidence"]
-        is_low = conf < settings.MIN_CLASSIFY_CONFIDENCE
-
-        await pool.execute(
-            """UPDATE kbd_entry
-               SET ai_category_id=$1, ai_category_conf=$2, ai_category_reason=$3, updated_at=NOW()
-               WHERE case_id=$4""",
-            result["category_id"],
-            conf,
-            result["reason"],
-            case_id,
-        )
-
-        if result["category_id"]:
-            stats["done"] += 1
-            if is_low:
-                stats["low_confidence"] += 1
-        else:
-            stats["failed"] += 1
-
-        logger.debug(
-            "分类完成 case_id=%s category=%s conf=%.2f",
-            case_id, result["category_id"], conf,
-        )
+            status = result.get("status", "failed")
+            if status == "done":
+                stats["done"] += 1
+                if result.get("needs_review") or result.get("confidence", 0) < settings.MIN_CLASSIFY_CONFIDENCE:
+                    stats["low_confidence"] += 1
+            elif status == "skipped":
+                stats["skipped"] += 1
+            else:
+                stats["failed"] += 1
 
     logger.info(
-        "批量分类完成 done=%d failed=%d low_conf=%d",
-        stats["done"], stats["failed"], stats["low_confidence"],
+        "批量分类完成 done=%d failed=%d skipped=%d low_conf=%d",
+        stats["done"], stats["failed"], stats["skipped"], stats["low_confidence"],
     )
     return stats
+
+
+# ─── 旧版兼容接口（保留用于 pipeline.py）───────────────────────────────────────
+
+# 旧版 _load_categories 和 _format_category_list 函数已废弃
+# 分类逻辑现在由 kb-service API 统一提供
