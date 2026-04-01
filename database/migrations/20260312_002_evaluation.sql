@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- HCI Troubleshoot Platform - Database Migration Script
 -- Version: v1 (评分评价体系)
 -- Date: 2026-03-12
@@ -174,3 +176,7 @@ COMMENT ON COLUMN prompt_audit.user_rating IS '用户评分后回填（1-5 星�
 -- ============================================================================
 
 SELECT 'Migration v1 completed successfully! 评分评价体系 DDL 变更已完成' as status;
+
+
+-- migrate:down
+-- 不提供自动降级，手动回滚

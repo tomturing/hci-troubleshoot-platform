@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- HCI Troubleshoot Platform - KB Schema Migration
 -- Version: v2.0 → v3.0
 -- Date: 2026-03-05
@@ -201,3 +203,7 @@ FROM information_schema.tables t
 WHERE table_schema = 'public'
   AND table_name IN ('kb_document', 'kb_chunk', 'kb_sop_node', 'kb_category', 'kb_synonym')
 ORDER BY table_name;
+
+
+-- migrate:down
+-- 不提供自动降级，手动回滚

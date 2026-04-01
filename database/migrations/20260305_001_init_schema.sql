@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- HCI Troubleshoot Platform - Database Initialization Script
 -- Version: 3.0 (KB RAG + LearningClaw/ProductionClaw)
 -- Date: 2026-03-05
@@ -545,3 +547,7 @@ COMMENT ON COLUMN audit_log.payload IS 'prompt 类型：{has_sop,kb_chunks_count
 -- ============================================================================
 
 SELECT 'Database initialization completed successfully! (v3.1)' as status;
+
+
+-- migrate:down
+-- 不提供自动降级，手动回滚

@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- =============================================================================
 -- KBD 知识生产管道 — 数据库迁移 v1
 -- 创建日期：2026-04-01
@@ -159,3 +161,7 @@ COMMENT ON COLUMN kbd_entry.ai_category_conf IS
     'AI分类置信度 0~1，< 0.5 时审核页提示需人工重新确认';
 COMMENT ON COLUMN kbd_entry.embedding IS
     'content_md 全文语义向量（1536维），status→published 时由 kb-service 异步生成';
+
+
+-- migrate:down
+-- 不提供自动降级，手动回滚
