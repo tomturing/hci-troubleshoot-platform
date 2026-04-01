@@ -20,16 +20,18 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 
 -- Step 2: 将历史迁移文件标记为"已执行"
--- 每行对应 database/migrations/ 目录下的一个文件（version = 文件名去掉 .sql 后缀）
+-- 每行对应 database/migrations/ 目录下的一个文件
+-- version = dbmate 从文件名提取的纯数字前缀（\d+ 正则，遇到非数字字符截止）
+-- 文件格式 20260305001_init_schema.sql -> version = "20260305001"
 -- 按实际情况调整：如果某个环境真的没有执行某个 migration，就删掉对应的行
 INSERT INTO schema_migrations (version) VALUES
-    ('20260305_001_init_schema'),           -- 20260305_001_init_schema.sql
-    ('20260312_001_kb_rag_v3'),             -- 20260312_001_kb_rag_v3.sql
-    ('20260312_002_evaluation'),            -- 20260312_002_evaluation.sql
-    ('20260326_001_p4_state_machine'),      -- 20260326_001_p4_state_machine.sql
-    ('20260326_002_conversation_p4'),       -- 20260326_002_conversation_p4.sql
-    ('20260326_003_tool_audit_log'),        -- 20260326_003_tool_audit_log.sql
-    ('20260401_001_kbd_pipeline')           -- 20260401_001_kbd_pipeline.sql（如环境未执行，删除此行）
+    ('20260305001'),    -- 20260305001_init_schema.sql
+    ('20260312001'),    -- 20260312001_kb_rag_v3.sql
+    ('20260312002'),    -- 20260312002_evaluation.sql
+    ('20260326001'),    -- 20260326001_p4_state_machine.sql
+    ('20260326002'),    -- 20260326002_conversation_p4.sql
+    ('20260326003'),    -- 20260326003_tool_audit_log.sql
+    ('20260401001')     -- 20260401001_kbd_pipeline.sql（如环境未执行，删除此行）
 ON CONFLICT (version) DO NOTHING;
 
 -- Step 3: 验证结果
