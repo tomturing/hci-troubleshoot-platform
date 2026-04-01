@@ -268,7 +268,6 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
     )
 
     embedding_generated = False
-    published_at_str: str | None = None
 
     async with _db_manager.async_session_factory() as session:
         # 1. 查询 kbd_entry 是否存在
