@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- =============================================================================
 -- P4 阶段 V1 补充迁移：conversation 表诊断字段 + prompt_audit 上下文字段
 -- =============================================================================
@@ -42,3 +44,7 @@ ALTER TABLE prompt_audit
 COMMENT ON COLUMN prompt_audit.context_breakdown IS 'AI 提示词各部分 token 拆解，格式: {"system":120,"history":480,"kb_context":200,...}';
 
 \echo '--- migrate_conversation_p4_v1.sql 完成 ---'
+
+
+-- migrate:down
+-- 不提供自动降级，手动回滚

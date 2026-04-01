@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- P4 数据库迁移：raw_cases 和 knowledge_atoms 表
 -- 执行方式：psql -f database/migrate_p4_v1.sql
 
@@ -85,3 +87,7 @@ DROP TRIGGER IF EXISTS trg_knowledge_atoms_updated_at ON knowledge_atoms;
 CREATE TRIGGER trg_knowledge_atoms_updated_at
 BEFORE UPDATE ON knowledge_atoms
 FOR EACH ROW EXECUTE FUNCTION update_knowledge_atoms_updated_at();
+
+
+-- migrate:down
+-- 不提供自动降级，手动回滚

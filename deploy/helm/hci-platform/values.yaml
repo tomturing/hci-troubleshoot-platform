@@ -491,6 +491,12 @@ observability:
         cpu: "500m"
         memory: "512Mi"
 
+# ======================== DB Migration（ArgoCD PreSync）===================
+# 每次 ArgoCD Sync 前自动执行 dbmate up，只运行尚未执行的迁移文件
+# dbmate 内部维护 schema_migrations 表，保证各环境迁移版本一致
+dbMigrate:
+  enabled: true
+
 # ======================== Smoke Test（ArgoCD PostSync）=====================
 # Layer-1 防御：每次 ArgoCD 同步后自动验证所有后端 /health 端点
 # 超时未就绪则 Sync 状态变为 Degraded，阻止静默失败上线

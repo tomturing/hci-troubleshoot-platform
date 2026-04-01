@@ -1,0 +1,73 @@
+{{- if .Values.dbMigrate.enabled }}
+# DB 迁移 Job — ArgoCD PreSync Hook
+# 每次 ArgoCD Sync 前执行，dbmate 自动跳过已执行的迁移
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate-{{ .Release.Revision }}
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-migrate
+  annotations:
+    # ArgoCD Sync Hook：应用同步前执行
+    argocd.argoproj.io/hook: PreSync
+    # 策略：创建新 Job 前删除旧 Job（避免名称冲突；失败日志需及时查看）
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    # Helm 注解：强制在每次 sync 时重建（通过 Revision 变化实现）
+    helm.sh/hook-weight: "-5"
+spec:
+  # 失败不重试——迁移失败必须人工介入，重试可能导致部分执行状态
+  backoffLimit: 0
+  # Job 完成后保留 1 小时供查日志
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: db-migrate
+        {{- include "hci.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- if .Values.global.imagePullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.global.imagePullSecretName }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534   # nobody
+        fsGroup: 65534
+      containers:
+        - name: dbmate
+          # dbmate 官方镜像，Go 单二进制，无 JVM/Python 依赖
+          image: ghcr.io/amacneil/dbmate:2
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--no-dump-schema"         # 不在 Job 中 dump schema（由 CI 负责）
+            - "--migrations-dir"
+            - "/migrations"
+            - "up"                       # 只运行尚未执行的迁移
+          env:
+            - name: DATABASE_URL
+              # dbmate 使用标准 postgres:// URL（不是 asyncpg://）
+              value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: migrations
+          configMap:
+            name: db-migrations
+{{- end }}

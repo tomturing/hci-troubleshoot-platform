@@ -1,0 +1,1348 @@
+{{- if .Values.dbMigrate.enabled }}
+# 包含所有数据库迁移文件的 ConfigMap
+# 新增迁移文件后，重新 helm upgrade 即可触发 dbmate 执行新迁移
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-migrations
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    helm.sh/hook-weight: "-10"
+data:
+  20260305_001_init_schema.sql: |
+    -- migrate:up
+    
+    -- HCI Troubleshoot Platform - Database Initialization Script
+    -- Version: 3.0 (KB RAG + LearningClaw/ProductionClaw)
+    -- Date: 2026-03-05
+    -- Database: PostgreSQL 15
+    
+    -- ============================================================================
+    -- 1. 创建扩展
+    -- ============================================================================
+    
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";  -- 用于文本相似度搜索
+    CREATE EXTENSION IF NOT EXISTS "vector";   -- pgvector 向量存储扩展
+    
+    SET timezone = 'UTC';
+    
+    -- ============================================================================
+    -- 2. 创建枚举类型
+    -- ============================================================================
+    
+    CREATE TYPE case_status AS ENUM (
+        'created',      -- 已创建
+        'confirmed',    -- 已确认
+        'in_progress',  -- 进行中
+        'resolved',     -- 已解决
+        'closed',       -- 已关闭
+        'cancelled'     -- 已取消
+    );
+    
+    CREATE TYPE message_role AS ENUM (
+        'user',        -- 用户消息
+        'assistant',   -- AI助手消息
+        'system',      -- 系统消息
+        'command'      -- 命令建议
+    );
+    
+    -- ============================================================================
+    -- 3. 创建触发器函数
+    -- ============================================================================
+    
+    CREATE OR REPLACE FUNCTION update_updated_at_column()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = CURRENT_TIMESTAMP;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    CREATE OR REPLACE FUNCTION generate_case_id()
+    RETURNS VARCHAR AS $$
+    DECLARE
+        date_part VARCHAR(8);
+        seq_part VARCHAR(5);
+        next_seq INT;
+    BEGIN
+        date_part := TO_CHAR(CURRENT_DATE, 'YYYYMMDD');
+        
+        SELECT COALESCE(MAX(SUBSTRING(case_id FROM 10 FOR 5)::INT), 0) + 1
+        INTO next_seq
+        FROM "case"
+        WHERE case_id LIKE 'Q' || date_part || '%';
+        
+        seq_part := LPAD(next_seq::TEXT, 5, '0');
+        
+        RETURN 'Q' || date_part || seq_part;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    -- ============================================================================
+    -- 4. 创建表
+    -- ============================================================================
+    
+    -- 用户表
+    CREATE TABLE IF NOT EXISTS "user" (
+        user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        client_id VARCHAR(255) UNIQUE NOT NULL,
+        username VARCHAR(100),
+        email VARCHAR(255),
+        user_type VARCHAR(20) NOT NULL DEFAULT 'temporary',
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        last_login_at TIMESTAMP WITH TIME ZONE,
+        trace_id VARCHAR(64)
+    );
+    
+    CREATE INDEX idx_user_client_id ON "user"(client_id);
+    CREATE INDEX idx_user_trace_id ON "user"(trace_id);
+    CREATE INDEX idx_user_type ON "user"(user_type);
+    
+    CREATE TRIGGER update_user_updated_at BEFORE UPDATE ON "user"
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    
+    COMMENT ON TABLE "user" IS '用户表，存储临时用户和认证用户信息';
+    COMMENT ON COLUMN "user".client_id IS '客户端生成的唯一标识';
+    
+    -- 工单表
+    CREATE TABLE IF NOT EXISTS "case" (
+        case_id VARCHAR(20) PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES "user"(user_id) ON DELETE CASCADE,
+        client_id VARCHAR(255) NOT NULL,
+        title VARCHAR(500) NOT NULL,
+        description TEXT,
+        status case_status NOT NULL DEFAULT 'created',
+        priority VARCHAR(20) DEFAULT 'medium',
+        category VARCHAR(100),
+        assistant_type VARCHAR(50) NOT NULL DEFAULT 'openclaw',
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        confirmed_at TIMESTAMP WITH TIME ZONE,
+        resolved_at TIMESTAMP WITH TIME ZONE,
+        closed_at TIMESTAMP WITH TIME ZONE,
+        close_reason VARCHAR(20) CHECK (close_reason IN ('user_command', 'timeout', 'abandon', 'admin_close')),  -- 工单关闭原因（被动信号轨道）
+        trace_id VARCHAR(64)
+    );
+    
+    CREATE INDEX idx_case_user_id ON "case"(user_id);
+    CREATE INDEX idx_case_client_id ON "case"(client_id);
+    CREATE INDEX idx_case_status ON "case"(status);
+    CREATE INDEX idx_case_created_at ON "case"(created_at DESC);
+    CREATE INDEX idx_case_trace_id ON "case"(trace_id);
+    CREATE INDEX idx_case_category ON "case"(category);
+    CREATE INDEX idx_case_client_status ON "case"(client_id, status);
+    CREATE INDEX idx_case_assistant_type ON "case"(assistant_type);
+    
+    CREATE TRIGGER update_case_updated_at BEFORE UPDATE ON "case"
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    
+    COMMENT ON TABLE "case" IS '工单表，记录排障请求';
+    
+    -- 对话会话表
+    CREATE TABLE IF NOT EXISTS conversation (
+        conversation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        case_id VARCHAR(20) NOT NULL REFERENCES "case"(case_id) ON DELETE CASCADE,
+        pod_id VARCHAR(100),
+        assistant_type VARCHAR(50) NOT NULL DEFAULT 'openclaw',
+        started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        ended_at TIMESTAMP WITH TIME ZONE,
+        message_count INT DEFAULT 0,
+        repeat_question_count INT DEFAULT 0 NOT NULL,  -- 重复提问计数（质量指标）
+        metadata JSONB DEFAULT '{}'::jsonb,
+        -- 诊断状态字段（0003 迁移）
+        diagnostic_stage VARCHAR(8) NOT NULL DEFAULT 'S0',  -- 诊断阶段：S0意图识别→S6验证闭环
+        category_l1 VARCHAR(100),                          -- 一级分类（如：虚拟机/存储/网络）
+        category_l2 VARCHAR(100),                          -- 二级分类（如：虚拟机开机失败）
+        category_id VARCHAR(32),                           -- 分类 ID，对应 category_baseline.yaml
+        hypothesis JSONB DEFAULT '[]'::jsonb,              -- 当前假设列表 [{id,description,confidence,status}]
+        react_state JSONB DEFAULT '{}'::jsonb,             -- ReAct 执行器状态快照（断点续接）
+        pending_confirm JSONB,                             -- 待用户确认的工具调用 {tool_call_id,tool_name,args,risk_level}
+        trace_id VARCHAR(64)
+    );
+    
+    CREATE INDEX idx_conversation_case_id ON conversation(case_id);
+    CREATE INDEX idx_conversation_pod_id ON conversation(pod_id);
+    CREATE INDEX idx_conversation_assistant_type ON conversation(assistant_type);
+    CREATE INDEX idx_conversation_started_at ON conversation(started_at DESC);
+    CREATE INDEX idx_conversation_trace_id ON conversation(trace_id);
+    CREATE INDEX idx_conversation_case_started ON conversation(case_id, started_at DESC);
+    CREATE INDEX idx_conversation_diagnostic_stage ON conversation(diagnostic_stage);
+    
+    COMMENT ON TABLE conversation IS '对话会话表，一个Case可以有多个会话';
+    
+    -- 消息表
+    CREATE TABLE IF NOT EXISTS message (
+        message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id UUID NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        case_id VARCHAR(20) NOT NULL,
+        role message_role NOT NULL,
+        content TEXT NOT NULL,
+        command TEXT,
+        command_warning TEXT,
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        trace_id VARCHAR(64),
+        
+        CONSTRAINT check_command_content CHECK (
+            (role = 'command' AND command IS NOT NULL) OR
+            (role != 'command')
+        )
+    );
+    
+    CREATE INDEX idx_message_conversation_id ON message(conversation_id);
+    CREATE INDEX idx_message_case_id ON message(case_id);
+    CREATE INDEX idx_message_role ON message(role);
+    CREATE INDEX idx_message_created_at ON message(created_at DESC);
+    CREATE INDEX idx_message_trace_id ON message(trace_id);
+    CREATE INDEX idx_message_case_created ON message(case_id, created_at DESC);
+    CREATE INDEX idx_message_content_search ON message USING gin(to_tsvector('english', content));
+    
+    -- 消息计数触发器
+    CREATE OR REPLACE FUNCTION update_conversation_message_count()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        IF TG_OP = 'INSERT' THEN
+            UPDATE conversation 
+            SET message_count = message_count + 1
+            WHERE conversation_id = NEW.conversation_id;
+        ELSIF TG_OP = 'DELETE' THEN
+            UPDATE conversation 
+            SET message_count = message_count - 1
+            WHERE conversation_id = OLD.conversation_id;
+        END IF;
+        RETURN NULL;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    CREATE TRIGGER update_message_count_on_insert
+        AFTER INSERT ON message
+        FOR EACH ROW EXECUTE FUNCTION update_conversation_message_count();
+    
+    CREATE TRIGGER update_message_count_on_delete
+        AFTER DELETE ON message
+        FOR EACH ROW EXECUTE FUNCTION update_conversation_message_count();
+    
+    COMMENT ON TABLE message IS '消息表，存储所有对话消息';
+    
+    -- 环境信息表
+    CREATE TABLE IF NOT EXISTS environment (
+        environment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        case_id VARCHAR(20) NOT NULL REFERENCES "case"(case_id) ON DELETE CASCADE,
+        env_type VARCHAR(50) NOT NULL,
+        env_data JSONB NOT NULL,
+        collected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        trace_id VARCHAR(64)
+    );
+    
+    CREATE INDEX idx_environment_case_id ON environment(case_id);
+    CREATE INDEX idx_environment_type ON environment(env_type);
+    CREATE INDEX idx_environment_collected_at ON environment(collected_at DESC);
+    CREATE INDEX idx_environment_trace_id ON environment(trace_id);
+    CREATE INDEX idx_environment_data_gin ON environment USING gin(env_data);
+    
+    COMMENT ON TABLE environment IS '环境信息表，存储客户现场环境数据';
+    
+    -- AI助手评估表 (v2.0)
+    CREATE TABLE IF NOT EXISTS assistant_evaluation (
+        evaluation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        case_id VARCHAR(20) NOT NULL REFERENCES "case"(case_id) ON DELETE CASCADE,
+        conversation_id UUID REFERENCES conversation(conversation_id) ON DELETE SET NULL,
+        assistant_type VARCHAR(50) NOT NULL,
+        score SMALLINT CHECK (score >= 1 AND score <= 5),
+        feedback TEXT,
+        resolution_time_seconds INT,
+        message_count INT,
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        trace_id VARCHAR(64),
+        -- 评分评价体系（v1 迁移）
+        close_reason         VARCHAR(20),                  -- 工单关闭原因（冗余存储，避免跨表 JOIN）
+        session_duration_sec INTEGER,                      -- 会话时长（秒），用于解决效率维度计算
+        repeat_question_count INTEGER,                     -- 用户重复提问次数
+        composite_score      SMALLINT,                     -- 综合质量分 0-100，由 QualityScoreService 计算
+        score_breakdown      JSONB,                        -- 各维度分解：{close_intent, efficiency, user_rating, ai_quality}
+        calculated_at        TIMESTAMPTZ                   -- 综合质量分计算时间
+    );
+    
+    CREATE INDEX idx_eval_case_id ON assistant_evaluation(case_id);
+    CREATE INDEX idx_eval_assistant_type ON assistant_evaluation(assistant_type);
+    CREATE INDEX idx_eval_score ON assistant_evaluation(score);
+    CREATE INDEX idx_eval_created_at ON assistant_evaluation(created_at DESC);
+    CREATE INDEX idx_eval_trace_id ON assistant_evaluation(trace_id);
+    CREATE INDEX IF NOT EXISTS idx_eval_composite_score ON assistant_evaluation(composite_score) WHERE composite_score IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_eval_close_reason    ON assistant_evaluation(close_reason) WHERE close_reason IS NOT NULL;
+    
+    COMMENT ON TABLE assistant_evaluation IS 'AI助手评估表，记录助手表现评分';
+    COMMENT ON COLUMN assistant_evaluation.composite_score IS '综合质量分 0-100，由 QualityScoreService 计算（双轨制：无用户评分时自动降级为三维模型）';
+    COMMENT ON COLUMN assistant_evaluation.score_breakdown IS '各维度分解：{"close_intent": 90, "efficiency": 70, "user_rating": 80, "ai_quality": 65}';
+    
+    -- ============================================================================
+    -- 5. 创建视图
+    -- ============================================================================
+    
+    CREATE OR REPLACE VIEW active_cases AS
+    SELECT 
+        c.case_id,
+        c.client_id,
+        c.title,
+        c.status,
+        c.priority,
+        c.category,
+        c.created_at,
+        u.username,
+        u.email,
+        COUNT(DISTINCT conv.conversation_id) as conversation_count,
+        COUNT(m.message_id) as total_messages,
+        MAX(m.created_at) as last_message_at
+    FROM "case" c
+    LEFT JOIN "user" u ON c.user_id = u.user_id
+    LEFT JOIN conversation conv ON c.case_id = conv.case_id
+    LEFT JOIN message m ON conv.conversation_id = m.conversation_id
+    WHERE c.status IN ('created', 'confirmed', 'in_progress')
+    GROUP BY c.case_id, c.client_id, c.title, c.status, c.priority, c.category, c.created_at, u.username, u.email
+    ORDER BY c.created_at DESC;
+    
+    CREATE OR REPLACE VIEW case_statistics AS
+    SELECT 
+        c.case_id,
+        c.title,
+        c.status,
+        c.created_at,
+        c.closed_at,
+        EXTRACT(EPOCH FROM (COALESCE(c.closed_at, CURRENT_TIMESTAMP) - c.created_at)) / 3600 as duration_hours,
+        COUNT(DISTINCT conv.conversation_id) as conversation_count,
+        COUNT(m.message_id) as message_count,
+        COUNT(CASE WHEN m.role = 'command' THEN 1 END) as command_count,
+        JSONB_BUILD_OBJECT(
+            'user_messages', COUNT(CASE WHEN m.role = 'user' THEN 1 END),
+            'assistant_messages', COUNT(CASE WHEN m.role = 'assistant' THEN 1 END),
+            'system_messages', COUNT(CASE WHEN m.role = 'system' THEN 1 END)
+        ) as message_breakdown
+    FROM "case" c
+    LEFT JOIN conversation conv ON c.case_id = conv.case_id
+    LEFT JOIN message m ON conv.conversation_id = m.conversation_id
+    GROUP BY c.case_id, c.title, c.status, c.created_at, c.closed_at;
+    
+    -- ============================================================================
+    -- 6. 插入种子数据 (可选)
+    -- ============================================================================
+    
+    -- 插入测试用户
+    INSERT INTO "user" (client_id, username, user_type, trace_id)
+    VALUES ('client-test-001', 'test_user', 'temporary', 'hci-init-seed-001')
+    ON CONFLICT (client_id) DO NOTHING;
+    
+    -- ============================================================================
+    -- 7. 授权
+    -- ============================================================================
+    
+    -- 如果有特定的应用用户，在这里授权
+    -- GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO hci_app_user;
+    -- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO hci_app_user;
+    
+    -- ============================================================================
+    -- 8. 知识库表 (v3.0 RAG — LearningClaw/ProductionClaw)
+    -- ============================================================================
+    -- 注意：v2.0 → v3.0 Breaking Change
+    --   旧 kb_document 主键为 doc_id UUID，新版改为 id SERIAL（整型，性能更优）
+    --   旧 kb_chunk 主键为 chunk_id UUID，新版改为 id SERIAL
+    --   如已存在旧表，执行 database/migrate_kb_v3.sql 进行迁移
+    
+    -- 知识库文档表（v3.0）
+    CREATE TABLE IF NOT EXISTS kb_document (
+        id              SERIAL PRIMARY KEY,
+        source_id       VARCHAR(50) UNIQUE,                -- 原始案例ID（采集自 support system）
+        title           VARCHAR(500) NOT NULL,
+        product         VARCHAR(100) DEFAULT '超融合HCI',
+        content_md      TEXT NOT NULL,                     -- MD 全文（Source of Truth）
+        content_hash    VARCHAR(64),                       -- SHA256，用于变更检测，避免重复入库
+        yaml_meta       JSONB,                             -- 结构化元数据（LLM 增强后的字段集合）
+        category_l1     VARCHAR(100),                      -- 一级分类（如：虚拟机 / 存储 / 网络）
+        category_l2     VARCHAR(100),                      -- 二级分类（如：开关机 / 迁移 / 快照）
+        tags            TEXT[],                            -- 标签数组（如：['CPU', 'KVM', 'BIOS']）
+        judgment_logic  TEXT,                              -- 排查逻辑（中文，LLM 生成）
+        summary         TEXT,                              -- 摘要（中文，LLM 生成）
+        difficulty      SMALLINT DEFAULT 3,                -- 难度 1-5，3 为默认
+        status          VARCHAR(20) DEFAULT 'draft',       -- 状态机：draft/under_review/approved/published/rejected/archived
+        review_note     TEXT,                              -- 审核批注
+        reviewer        VARCHAR(100),                      -- 审核人
+        reviewed_at     TIMESTAMP WITH TIME ZONE,
+        source_type     VARCHAR(20) DEFAULT 'kb',          -- 来源：kb（历史案例）/ sop / realtime（在网工单）
+        has_images      BOOLEAN DEFAULT FALSE,             -- 是否含图片（需 OCR 处理）
+        verified_version VARCHAR(50),                     -- 已验证的产品版本
+        trace_id        VARCHAR(64),                       -- W3C traceparent 调用链 ID
+        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_document_status     ON kb_document(status);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_category   ON kb_document(category_l1, category_l2);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_source_id  ON kb_document(source_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_source_type ON kb_document(source_type);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_trace_id   ON kb_document(trace_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_created_at ON kb_document(created_at DESC);
+    
+    CREATE TRIGGER update_kb_document_updated_at BEFORE UPDATE ON kb_document
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    
+    COMMENT ON TABLE kb_document IS '知识库文档表 v3.0 — 状态机驱动的文档生命周期管理';
+    COMMENT ON COLUMN kb_document.status IS '状态机: draft→under_review→approved→published，也可→rejected/archived';
+    COMMENT ON COLUMN kb_document.source_type IS 'kb=历史案例批量导入, sop=SOP手册, realtime=在网工单实时生成';
+    COMMENT ON COLUMN kb_document.content_hash IS 'SHA256(content_md)，增量更新时用于跳过未变更文档';
+    
+    -- 知识库分块 + 向量表（v3.0）
+    -- 注意：IVFFlat 索引需在数据量 ≥ 1000 条后手动创建（空表无法创建 IVFFlat）
+    CREATE TABLE IF NOT EXISTS kb_chunk (
+        id              SERIAL PRIMARY KEY,
+        document_id     INTEGER NOT NULL REFERENCES kb_document(id) ON DELETE CASCADE,
+        chunk_index     SMALLINT NOT NULL,                 -- 块在文档中的顺序位置（0-based）
+        content         TEXT NOT NULL,                     -- 块文本（~512 tokens）
+        embedding       vector(384),                       -- 向量（主力 z.ai API / 降级 bge-small-zh，384维）
+        token_count     SMALLINT,                          -- 块的 token 数量
+        metadata        JSONB,                             -- 块级元数据（标题层级、页码等）
+        tsv             tsvector,                          -- BM25 全文索引（jieba 分词后的 tsvector）
+        trace_id        VARCHAR(64),                       -- 入库时的调用链 ID
+        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_document    ON kb_chunk(document_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_position    ON kb_chunk(document_id, chunk_index);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_tsv         ON kb_chunk USING GIN (tsv);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_trace_id    ON kb_chunk(trace_id);
+    
+    -- 向量检索索引（在有一定数据量后手动执行，空表无法创建 IVFFlat）：
+    -- CREATE INDEX idx_kb_chunk_embedding ON kb_chunk USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+    
+    COMMENT ON TABLE kb_chunk IS '知识库分块 + 向量表 v3.0 — 双路检索（BM25 tsvector + pgvector IVFFlat）';
+    COMMENT ON COLUMN kb_chunk.tsv IS 'BM25 全文检索索引，由 jieba 分词后写入（用 simple 配置，避免中文 parser 依赖）';
+    COMMENT ON COLUMN kb_chunk.embedding IS '384 维向量，主力使用 z.ai embedding API，降级使用本地 bge-small-zh-v1.5';
+    
+    -- 知识分类树（v3.0）
+    -- 4 层树形结构（L1-L4），L1 有 6 个主类别
+    CREATE TABLE IF NOT EXISTS kb_category (
+        id              SERIAL PRIMARY KEY,
+        parent_id       INTEGER REFERENCES kb_category(id),  -- NULL 表示 L1 根节点
+        name            VARCHAR(100) NOT NULL,
+        level           SMALLINT NOT NULL,                 -- 1=L1, 2=L2, 3=L3, 4=L4
+        keywords        TEXT[],                            -- 该类别的触发关键字
+        source          VARCHAR(20) DEFAULT 'manual',      -- manual（人工）/ auto_generated / auto_suggested
+        version         VARCHAR(20) DEFAULT '1.0',
+        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_category_parent   ON kb_category(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_category_level    ON kb_category(level);
+    CREATE INDEX IF NOT EXISTS idx_kb_category_keywords ON kb_category USING GIN (keywords);
+    
+    COMMENT ON TABLE kb_category IS '知识分类树 v3.0 — 4 层树形结构（L1:平台/网络/存储/硬件/客户机硬件/虚拟机）';
+    COMMENT ON COLUMN kb_category.source IS 'manual=人工维护, auto_generated=系统生成, auto_suggested=LLM建议待审核';
+    
+    -- ============================================================================
+    -- 9. 原始工单数据表（P4 数据管道迁移）
+    -- ============================================================================
+    CREATE TABLE IF NOT EXISTS raw_cases (
+        id             BIGSERIAL    PRIMARY KEY,
+        case_id        VARCHAR(64)  NOT NULL UNIQUE,        -- 来源系统的工单 ID（幂等键）
+        source_url     TEXT         NOT NULL DEFAULT '',    -- 工单在来源系统的 URL
+        content_text   TEXT         NOT NULL DEFAULT '',    -- 已脱敏的工单正文（Markdown 格式）
+        images         JSONB        NOT NULL DEFAULT '[]',  -- 图片/附件 URL 列表，格式：[{"url":"...","type":"..."}]
+        classification VARCHAR(128) NOT NULL DEFAULT '',    -- 故障分类（如 vm_power_failure）
+        quality_score  SMALLINT     NOT NULL DEFAULT 0,     -- 质量评分 0-100，低于 20 分的不入库
+        created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    
+    COMMENT ON TABLE  raw_cases               IS 'HCI 历史工单原始数据（已脱敏），供知识库提炼使用';
+    COMMENT ON COLUMN raw_cases.quality_score IS '工单质量评分 0-100，低于 20 分的不入库';
+    COMMENT ON COLUMN raw_cases.images        IS 'JSON 数组，每项 {"url": "...", "type": "error_screenshot|command_output|..."}';
+    
+    CREATE INDEX IF NOT EXISTS idx_raw_cases_classification ON raw_cases(classification);
+    CREATE INDEX IF NOT EXISTS idx_raw_cases_quality        ON raw_cases(quality_score DESC);
+    CREATE INDEX IF NOT EXISTS idx_raw_cases_created_at     ON raw_cases(created_at DESC);
+    
+    CREATE OR REPLACE FUNCTION update_raw_cases_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    DROP TRIGGER IF EXISTS trg_raw_cases_updated_at ON raw_cases;
+    CREATE TRIGGER trg_raw_cases_updated_at
+    BEFORE UPDATE ON raw_cases
+    FOR EACH ROW EXECUTE FUNCTION update_raw_cases_updated_at();
+    
+    -- ============================================================================
+    -- 11. 知识原子候选表（P4 知识反馈闭环迁移）
+    -- ============================================================================
+    CREATE TABLE IF NOT EXISTS knowledge_atoms (
+        id             VARCHAR(32)  PRIMARY KEY,            -- 格式：ka-{12位hex}
+        atom_type      VARCHAR(32)  NOT NULL,               -- diagnostic_step|fix_action|decision_gate|threshold|error_code_ref|background
+        category_id    VARCHAR(64)  NOT NULL DEFAULT '',    -- 关联的故障分类 ID
+        trigger_json   JSONB        NOT NULL DEFAULT '{}',  -- 触发条件 {stage, conditions, error_code_patterns, ...}
+        content_json   JSONB        NOT NULL DEFAULT '{}',  -- 内容 {full_text, commands, ...}
+        source_type    VARCHAR(16)  NOT NULL DEFAULT 'session',  -- session|manual
+        source_ref     VARCHAR(64)  NOT NULL DEFAULT '',    -- 来源 session_id 或操作者
+        verified       BOOLEAN      NOT NULL DEFAULT FALSE, -- 人工审核状态
+        confidence     NUMERIC(3,2) NOT NULL DEFAULT 0.70,  -- 置信度 0.00-1.00
+        created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        verified_at    TIMESTAMPTZ,                         -- 审核通过时间
+        verified_by    VARCHAR(64)                          -- 审核者 ID
+    );
+    
+    COMMENT ON TABLE  knowledge_atoms           IS 'AI 自动提炼的知识原子候选，verified=false 时待人工审核';
+    COMMENT ON COLUMN knowledge_atoms.atom_type IS 'diagnostic_step/fix_action/decision_gate/threshold/error_code_ref/background';
+    COMMENT ON COLUMN knowledge_atoms.verified  IS '人工审核通过后设为 true，被知识检索系统使用';
+    COMMENT ON COLUMN knowledge_atoms.confidence IS '机器生成默认 0.70，人工修正后可调高';
+    
+    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_verified  ON knowledge_atoms(verified, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_category  ON knowledge_atoms(category_id);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_source    ON knowledge_atoms(source_ref);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_atom_type ON knowledge_atoms(atom_type);
+    
+    CREATE OR REPLACE FUNCTION update_knowledge_atoms_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    DROP TRIGGER IF EXISTS trg_knowledge_atoms_updated_at ON knowledge_atoms;
+    CREATE TRIGGER trg_knowledge_atoms_updated_at
+    BEFORE UPDATE ON knowledge_atoms
+    FOR EACH ROW EXECUTE FUNCTION update_knowledge_atoms_updated_at();
+    
+    -- ============================================================================
+    -- 12. AI 行为统一审计日志表（合并自 prompt_audit + tool_audit_log）
+    -- ============================================================================
+    -- audit_type='prompt'    → 记录 LLM 调用上下文（原 prompt_audit）
+    -- audit_type='tool_call' → 记录 ReAct 工具执行（原 tool_audit_log）
+    -- audit_type='system'    → 系统级事件
+    
+    CREATE TABLE IF NOT EXISTS audit_log (
+        id              VARCHAR(36)  PRIMARY KEY,                          -- UUID
+        audit_type      VARCHAR(20)  NOT NULL,                             -- 'prompt' | 'tool_call' | 'system'
+        conversation_id UUID         NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        turn_index      SMALLINT,                                          -- prompt 类型：第几轮对话
+        tool_name       VARCHAR(100),                                      -- tool_call 类型：工具名称
+        risk_level      SMALLINT,                                          -- tool_call 类型：1=只读 2=写 3=高危
+        policy          VARCHAR(20),                                       -- tool_call 类型：auto|notify|confirm|block
+        authorized_by   VARCHAR(100),                                      -- tool_call 类型：高危操作确认用户
+        payload         JSONB        NOT NULL DEFAULT '{}',                -- 类型专属字段（prompt 上下文 / 工具结果）
+        error           TEXT,                                              -- 错误信息（失败时）
+        duration_ms     INTEGER,                                           -- 执行耗时（毫秒）
+        started_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        completed_at    TIMESTAMPTZ,
+        trace_id        VARCHAR(64)                                        -- W3C traceparent
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_audit_log_conversation ON audit_log(conversation_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_log_type         ON audit_log(audit_type, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_log_tool_name    ON audit_log(tool_name) WHERE tool_name IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_audit_log_risk_level   ON audit_log(risk_level) WHERE risk_level >= 2;
+    CREATE INDEX IF NOT EXISTS idx_audit_log_trace_id     ON audit_log(trace_id) WHERE trace_id IS NOT NULL;
+    
+    COMMENT ON TABLE audit_log IS 'AI 行为统一审计日志（合并自 prompt_audit + tool_audit_log）';
+    COMMENT ON COLUMN audit_log.audit_type IS 'prompt=LLM 调用审计, tool_call=工具执行审计, system=系统事件';
+    COMMENT ON COLUMN audit_log.risk_level IS '1=只读/低风险, 2=写操作需人工确认, 3=高危禁止自动执行';
+    COMMENT ON COLUMN audit_log.payload IS 'prompt 类型：{has_sop,kb_chunks_count,kb_top_score,context_breakdown,payload_ref,...}；tool_call 类型：{tool_args,result_summary,result_code}';
+    
+    -- ============================================================================
+    -- 完成
+    -- ============================================================================
+    
+    SELECT 'Database initialization completed successfully! (v3.1)' as status;
+    
+    
+    -- migrate:down
+    -- 不提供自动降级，手动回滚
+
+  20260312_001_kb_rag_v3.sql: |
+    -- migrate:up
+    
+    -- HCI Troubleshoot Platform - KB Schema Migration
+    -- Version: v2.0 → v3.0
+    -- Date: 2026-03-05
+    --
+    -- 作用：将已有生产/开发环境中的旧 kb_document（UUID主键）和 kb_chunk（UUID主键）
+    --       安全迁移为 v3.0 新 Schema（SERIAL整型主键 + 完整字段集）
+    --
+    -- 执行方式：
+    --   psql -U hci_admin -d hci_troubleshoot -f migrate_kb_v3.sql
+    --
+    -- 注意事项：
+    --   1. 迁移前请确保有数据库备份
+    --   2. 旧表会被重命名为 kb_document_v2_bak / kb_chunk_v2_bak，不会丢失数据
+    --   3. 如旧表中有数据需迁移，参考脚本末尾的数据迁移示例
+    --   4. 脚本可重复执行（幂等），已存在的新表不会被覆盖
+    
+    BEGIN;
+    
+    -- ============================================================================
+    -- 步骤 1：备份旧表（如果存在）
+    -- ============================================================================
+    
+    DO $$
+    BEGIN
+        -- 备份旧 kb_chunk（必须先于 kb_document，因为有外键依赖）
+        IF EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_name = 'kb_chunk'
+              AND table_schema = 'public'
+        ) THEN
+            -- 检查是否是旧版本（有 chunk_id UUID 列）
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'kb_chunk'
+                  AND column_name = 'chunk_id'
+            ) THEN
+                ALTER TABLE kb_chunk RENAME TO kb_chunk_v2_bak;
+                RAISE NOTICE '已将旧 kb_chunk 重命名为 kb_chunk_v2_bak';
+            ELSE
+                RAISE NOTICE 'kb_chunk 已是 v3.0 格式，跳过备份';
+            END IF;
+        END IF;
+    
+        -- 备份旧 kb_document
+        IF EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_name = 'kb_document'
+              AND table_schema = 'public'
+        ) THEN
+            -- 检查是否是旧版本（有 doc_id UUID 列）
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'kb_document'
+                  AND column_name = 'doc_id'
+            ) THEN
+                ALTER TABLE kb_document RENAME TO kb_document_v2_bak;
+                RAISE NOTICE '已将旧 kb_document 重命名为 kb_document_v2_bak';
+            ELSE
+                RAISE NOTICE 'kb_document 已是 v3.0 格式，跳过备份';
+            END IF;
+        END IF;
+    END $$;
+    
+    -- ============================================================================
+    -- 步骤 2：创建 v3.0 新表（与 init_schema.sql §8 保持一致）
+    -- ============================================================================
+    
+    CREATE TABLE IF NOT EXISTS kb_document (
+        id              SERIAL PRIMARY KEY,
+        source_id       VARCHAR(50) UNIQUE,
+        title           VARCHAR(500) NOT NULL,
+        product         VARCHAR(100) DEFAULT '超融合HCI',
+        content_md      TEXT NOT NULL,
+        content_hash    VARCHAR(64),
+        yaml_meta       JSONB,
+        category_l1     VARCHAR(100),
+        category_l2     VARCHAR(100),
+        tags            TEXT[],
+        judgment_logic  TEXT,
+        summary         TEXT,
+        difficulty      SMALLINT DEFAULT 3,
+        status          VARCHAR(20) DEFAULT 'draft',
+        review_note     TEXT,
+        reviewer        VARCHAR(100),
+        reviewed_at     TIMESTAMP WITH TIME ZONE,
+        source_type     VARCHAR(20) DEFAULT 'kb',
+        has_images      BOOLEAN DEFAULT FALSE,
+        verified_version VARCHAR(50),
+        trace_id        VARCHAR(64),
+        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_document_status     ON kb_document(status);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_category   ON kb_document(category_l1, category_l2);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_source_id  ON kb_document(source_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_source_type ON kb_document(source_type);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_trace_id   ON kb_document(trace_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_created_at ON kb_document(created_at DESC);
+    
+    -- updated_at 自动更新 trigger（需 update_updated_at_column 函数已存在）
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_trigger
+            WHERE tgname = 'update_kb_document_updated_at'
+        ) THEN
+            CREATE TRIGGER update_kb_document_updated_at
+                BEFORE UPDATE ON kb_document
+                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        END IF;
+    END $$;
+    
+    CREATE TABLE IF NOT EXISTS kb_chunk (
+        id              SERIAL PRIMARY KEY,
+        document_id     INTEGER NOT NULL REFERENCES kb_document(id) ON DELETE CASCADE,
+        chunk_index     SMALLINT NOT NULL,
+        content         TEXT NOT NULL,
+        embedding       vector(512),
+        token_count     SMALLINT,
+        metadata        JSONB,
+        tsv             tsvector,
+        trace_id        VARCHAR(64),
+        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_document    ON kb_chunk(document_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_position    ON kb_chunk(document_id, chunk_index);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_tsv         ON kb_chunk USING GIN (tsv);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_trace_id    ON kb_chunk(trace_id);
+    
+    CREATE TABLE IF NOT EXISTS kb_sop_node (
+        id              SERIAL PRIMARY KEY,
+        skill_id        VARCHAR(100) NOT NULL,
+        node_name       VARCHAR(200) NOT NULL,
+        parent_id       INTEGER REFERENCES kb_sop_node(id),
+        keywords        TEXT[] NOT NULL,
+        file_path       VARCHAR(500),
+        content         TEXT,
+        level           SMALLINT DEFAULT 1,
+        sort_order      SMALLINT DEFAULT 0,
+        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_sop_node_skill    ON kb_sop_node(skill_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_sop_node_keywords ON kb_sop_node USING GIN (keywords);
+    CREATE INDEX IF NOT EXISTS idx_kb_sop_node_parent   ON kb_sop_node(parent_id);
+    
+    CREATE TABLE IF NOT EXISTS kb_category (
+        id              SERIAL PRIMARY KEY,
+        parent_id       INTEGER REFERENCES kb_category(id),
+        name            VARCHAR(100) NOT NULL,
+        level           SMALLINT NOT NULL,
+        keywords        TEXT[],
+        source          VARCHAR(20) DEFAULT 'manual',
+        version         VARCHAR(20) DEFAULT '1.0',
+        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_category_parent   ON kb_category(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_category_level    ON kb_category(level);
+    CREATE INDEX IF NOT EXISTS idx_kb_category_keywords ON kb_category USING GIN (keywords);
+    
+    CREATE TABLE IF NOT EXISTS kb_synonym (
+        id              SERIAL PRIMARY KEY,
+        term            VARCHAR(100) NOT NULL,
+        canonical       VARCHAR(100) NOT NULL,
+        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(term, canonical)
+    );
+    
+    COMMIT;
+    
+    -- ============================================================================
+    -- 步骤 3（可选）：将旧数据迁移到新表
+    -- ============================================================================
+    -- 如果旧 kb_document_v2_bak 中有数据需要保留，取消注释以下语句执行：
+    --
+    -- INSERT INTO kb_document (title, content_md, source_type, trace_id, created_at, updated_at)
+    -- SELECT
+    --     title,
+    --     content AS content_md,
+    --     doc_type AS source_type,
+    --     trace_id,
+    --     created_at,
+    --     updated_at
+    -- FROM kb_document_v2_bak
+    -- ON CONFLICT DO NOTHING;
+    --
+    -- 注意：旧 kb_chunk（UUID外键）无法直接迁移，因为新表使用 SERIAL integer 主键
+    -- 建议重新对 kb_document 执行分块 + embedding 入库流程
+    
+    -- ============================================================================
+    -- 验证结果
+    -- ============================================================================
+    
+    SELECT
+        table_name,
+        (SELECT COUNT(*) FROM information_schema.columns c WHERE c.table_name = t.table_name) AS column_count
+    FROM information_schema.tables t
+    WHERE table_schema = 'public'
+      AND table_name IN ('kb_document', 'kb_chunk', 'kb_sop_node', 'kb_category', 'kb_synonym')
+    ORDER BY table_name;
+    
+    
+    -- migrate:down
+    -- 不提供自动降级，手动回滚
+
+  20260312_002_evaluation.sql: |
+    -- migrate:up
+    
+    -- HCI Troubleshoot Platform - Database Migration Script
+    -- Version: v1 (评分评价体系)
+    -- Date: 2026-03-12
+    -- Purpose: 实现评分评价体系核心 DDL 变更
+    --   - case 表新增 close_reason 字段
+    --   - conversation 表新增 repeat_question_count 字段
+    --   - assistant_evaluation 表增强评分相关字段
+    --   - 新建 prompt_audit 表
+    
+    -- ============================================================================
+    -- 1. case 表新增 close_reason 字段
+    -- ============================================================================
+    
+    -- 工单关闭原因：user_command（用户主动关闭）/ timeout（超时）/ abandon（用户放弃）/ admin_close（管理员强制关闭）
+    -- 用于被动信号轨道采集，是综合质量评分中权重 20% 的关闭意图维度数据来源
+    ALTER TABLE "case"
+        ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20)
+            CHECK (close_reason IN ('user_command', 'timeout', 'abandon', 'admin_close'));
+    
+    COMMENT ON COLUMN "case".close_reason IS '工单关闭原因：user_command/timeout/abandon/admin_close（被动信号轨道核心数据）';
+    
+    -- ============================================================================
+    -- 2. conversation 表新增 repeat_question_count 字段
+    -- ============================================================================
+    
+    -- 用户重复提问次数统计：conversation-service 在 save_user_message() 时，
+    -- 取当前消息与前 10 条用户消息做关键词 Jaccard 相似度，若最高相似度 >= 0.6 则计数 +1
+    -- 用于综合质量评分中权重 15% 的用户重复提问维度（负向信号：重复提问 = AI 回答无效）
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS repeat_question_count INTEGER NOT NULL DEFAULT 0;
+    
+    COMMENT ON COLUMN conversation.repeat_question_count IS '会话中用户重复提问次数，由 conversation-service 实时统计（Jaccard 相似度 >= 0.6 判定为重复）';
+    
+    -- ============================================================================
+    -- 3. assistant_evaluation 表增强
+    -- ============================================================================
+    
+    -- 3.1 新增 close_reason 字段：冗余存储关闭原因，避免跨表 JOIN
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20);
+    
+    COMMENT ON COLUMN assistant_evaluation.close_reason IS '工单关闭原因（冗余存储，避免跨表 JOIN）';
+    
+    -- 3.2 新增 session_duration_sec 字段：会话时长（秒），用于解决效率维度计算
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS session_duration_sec INTEGER;
+    
+    COMMENT ON COLUMN assistant_evaluation.session_duration_sec IS '会话时长（秒），用于解决效率维度计算';
+    
+    -- 3.3 新增 repeat_question_count 字段：用户重复提问次数，用于重复提问维度计算
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS repeat_question_count INTEGER;
+    
+    COMMENT ON COLUMN assistant_evaluation.repeat_question_count IS '用户重复提问次数（100% 覆盖，始终可采集）';
+    
+    -- 3.4 新增 composite_score 字段：综合质量分 0-100，由 QualityScoreService 计算
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS composite_score SMALLINT;
+    
+    COMMENT ON COLUMN assistant_evaluation.composite_score IS '综合质量分 0-100，由 QualityScoreService 计算（双轨制评价：无用户评分时自动降级为三维模型）';
+    
+    -- 3.5 新增 score_breakdown 字段：各维度详细分解，JSONB 格式
+    -- 格式示例：{"close_intent": 90, "efficiency": 70, "user_rating": 80, "ai_quality": 65}
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS score_breakdown JSONB;
+    
+    COMMENT ON COLUMN assistant_evaluation.score_breakdown IS '各维度详细分解：{"close_intent": 90, "efficiency": 70, "user_rating": 80, "ai_quality": 65}';
+    
+    -- 3.6 新增 calculated_at 字段：综合质量分计算时间
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS calculated_at TIMESTAMPTZ;
+    
+    COMMENT ON COLUMN assistant_evaluation.calculated_at IS '综合质量分计算时间';
+    
+    -- 3.7 创建索引：按综合分查询差 case（用于质量预警）
+    CREATE INDEX IF NOT EXISTS idx_eval_composite_score
+        ON assistant_evaluation(composite_score)
+        WHERE composite_score IS NOT NULL;
+    
+    -- 3.8 创建索引：按关闭原因分析（用于用户行为分析）
+    CREATE INDEX IF NOT EXISTS idx_eval_close_reason
+        ON assistant_evaluation(close_reason)
+        WHERE close_reason IS NOT NULL;
+    
+    -- ============================================================================
+    -- 4. 新建 prompt_audit 表
+    -- ============================================================================
+    
+    -- AI 层入口 Prompt 审计镜像表
+    -- 设计目的：
+    --   1. 元数据字段（has_sop, kb_chunks_count 等）100% 覆盖采集，始终参与综合质量评分
+    --   2. 完整 payload（messages 字段）按 10-20% 采样存储，用于深度 review 和 fine-tuning
+    --   3. 关联回路：用户评分后可回填 user_rating 字段
+    CREATE TABLE IF NOT EXISTS prompt_audit (
+        -- 主键
+        audit_id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+        -- 关联回路（外键）
+        conversation_id     UUID NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        case_id             VARCHAR(20),
+    
+        -- AI 助手信息
+        assistant_type      VARCHAR(50),
+        model               VARCHAR(100),
+    
+        -- 元数据（小字段，~200 bytes/条，100% 覆盖采集）
+        message_count       INTEGER,                   -- 当前会话消息总数
+        has_sop             BOOLEAN DEFAULT FALSE,     -- 是否命中 SOP 决策树
+        kb_chunks_count     INTEGER DEFAULT 0,         -- RAG 检索命中的 KB chunks 数量
+        kb_top_score        FLOAT DEFAULT 0.0,         -- 最高 KB 相关度分数（0-1）
+        system_prompt_chars INTEGER,                   -- System Prompt 字符数
+    
+        -- 完整 payload（大字段，5000-20000 chars，按策略采样存储）
+        messages            JSONB,                     -- 完整 messages[] 数组（采样时使用）
+        payload_ref         VARCHAR(200),              -- MinIO 文件路径（方案 C：大 payload 外置存储）
+    
+        -- 关联回路（用户评分后回填）
+        user_rating         SMALLINT CHECK (user_rating >= 1 AND user_rating <= 5),
+    
+        -- 审计字段
+        captured_at         TIMESTAMPTZ DEFAULT NOW(), -- 采集时间
+        trace_id            VARCHAR(64)                -- W3C traceparent 调用链 ID
+    );
+    
+    -- 创建索引：按 case_id 查询（用于单工单分析）
+    CREATE INDEX IF NOT EXISTS idx_prompt_audit_case ON prompt_audit(case_id);
+    
+    -- 创建索引：SOP 未命中查询（用于发现 SOP 覆盖盲区）
+    CREATE INDEX IF NOT EXISTS idx_prompt_audit_has_sop ON prompt_audit(has_sop) WHERE has_sop = FALSE;
+    
+    -- 创建索引：有用户评分的记录（用于评分率统计）
+    CREATE INDEX IF NOT EXISTS idx_prompt_audit_rating ON prompt_audit(user_rating) WHERE user_rating IS NOT NULL;
+    
+    -- 创建索引：按采集时间排序（用于趋势分析）
+    CREATE INDEX IF NOT EXISTS idx_prompt_audit_captured_at ON prompt_audit(captured_at DESC);
+    
+    -- 创建索引：按调用链追踪（用于可观测性）
+    CREATE INDEX IF NOT EXISTS idx_prompt_audit_trace_id ON prompt_audit(trace_id);
+    
+    COMMENT ON TABLE prompt_audit IS 'AI 层入口 Prompt 审计镜像：元数据 100% 覆盖采集，完整 payload 按 10-20% 采样存储';
+    COMMENT ON COLUMN prompt_audit.has_sop IS '是否命中 SOP 决策树（100% 覆盖，参与 AI 能力质量维度评分）';
+    COMMENT ON COLUMN prompt_audit.kb_chunks_count IS 'RAG 检索命中的 KB chunks 数量（100% 覆盖，参与 AI 能力质量维度评分）';
+    COMMENT ON COLUMN prompt_audit.kb_top_score IS '最高 KB 相关度分数 0-1（100% 覆盖，参与 AI 能力质量维度评分）';
+    COMMENT ON COLUMN prompt_audit.messages IS '完整 messages[] 数组（采样存储，用于深度 review 和 fine-tuning）';
+    COMMENT ON COLUMN prompt_audit.payload_ref IS 'MinIO 文件路径（大 payload 外置存储方案，可选）';
+    COMMENT ON COLUMN prompt_audit.user_rating IS '用户评分后回填（1-5 星，用于关联回路验证）';
+    
+    -- ============================================================================
+    -- 5. 验证查询（可选执行）
+    -- ============================================================================
+    
+    -- 验证 case 表新增列
+    -- SELECT column_name, data_type, is_nullable
+    -- FROM information_schema.columns
+    -- WHERE table_name = 'case' AND column_name = 'close_reason';
+    
+    -- 验证 conversation 表新增列
+    -- SELECT column_name, data_type, column_default
+    -- FROM information_schema.columns
+    -- WHERE table_name = 'conversation' AND column_name = 'repeat_question_count';
+    
+    -- 验证 assistant_evaluation 表新增列
+    -- SELECT column_name, data_type
+    -- FROM information_schema.columns
+    -- WHERE table_name = 'assistant_evaluation'
+    -- AND column_name IN ('close_reason', 'session_duration_sec', 'repeat_question_count', 'composite_score', 'score_breakdown', 'calculated_at');
+    
+    -- 验证 prompt_audit 表存在
+    -- SELECT COUNT(*) FROM information_schema.tables
+    -- WHERE table_name = 'prompt_audit';
+    
+    -- ============================================================================
+    -- 迁移完成
+    -- ============================================================================
+    
+    SELECT 'Migration v1 completed successfully! 评分评价体系 DDL 变更已完成' as status;
+    
+    
+    -- migrate:down
+    -- 不提供自动降级，手动回滚
+
+  20260326_001_p4_state_machine.sql: |
+    -- migrate:up
+    
+    -- P4 数据库迁移：raw_cases 和 knowledge_atoms 表
+    -- 执行方式：psql -f database/migrate_p4_v1.sql
+    
+    -- ──────────────────────────────────────────────────────────────────────────────
+    -- raw_cases：历史工单原始数据（T16 工单数据管道）
+    -- ──────────────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS raw_cases (
+        id             BIGSERIAL    PRIMARY KEY,
+        case_id        VARCHAR(64)  NOT NULL UNIQUE,     -- 来源系统的工单 ID（幂等键）
+        source_url     TEXT         NOT NULL DEFAULT '',  -- 工单在来源系统的 URL
+        content_text   TEXT         NOT NULL DEFAULT '',  -- 已脱敏的工单正文（Markdown 格式）
+        images         JSONB        NOT NULL DEFAULT '[]',-- 图片/附件 URL 列表（已脱敏）
+        classification VARCHAR(128) NOT NULL DEFAULT '',  -- 故障分类（如 vm_power_failure）
+        quality_score  SMALLINT     NOT NULL DEFAULT 0,   -- 质量评分 0-100
+        created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    
+    COMMENT ON TABLE  raw_cases              IS 'HCI 历史工单原始数据（已脱敏），供知识库提炼使用';
+    COMMENT ON COLUMN raw_cases.quality_score IS '工单质量评分 0-100，低于 20 分的不入库';
+    COMMENT ON COLUMN raw_cases.images        IS 'JSON 数组，每项 {"url": "...", "type": "error_screenshot|command_output|..."}';
+    
+    CREATE INDEX IF NOT EXISTS idx_raw_cases_classification
+        ON raw_cases (classification);
+    CREATE INDEX IF NOT EXISTS idx_raw_cases_quality
+        ON raw_cases (quality_score DESC);
+    CREATE INDEX IF NOT EXISTS idx_raw_cases_created_at
+        ON raw_cases (created_at DESC);
+    
+    -- 自动更新 updated_at
+    CREATE OR REPLACE FUNCTION update_raw_cases_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    DROP TRIGGER IF EXISTS trg_raw_cases_updated_at ON raw_cases;
+    CREATE TRIGGER trg_raw_cases_updated_at
+    BEFORE UPDATE ON raw_cases
+    FOR EACH ROW EXECUTE FUNCTION update_raw_cases_updated_at();
+    
+    
+    -- ──────────────────────────────────────────────────────────────────────────────
+    -- knowledge_atoms：知识原子候选（T17 知识反馈闭环）
+    -- ──────────────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS knowledge_atoms (
+        id             VARCHAR(32)  PRIMARY KEY,          -- 格式：ka-{12位hex}
+        atom_type      VARCHAR(32)  NOT NULL,              -- diagnostic_step|fix_action|decision_gate
+        category_id    VARCHAR(64)  NOT NULL DEFAULT '',   -- 关联的故障分类 ID
+        trigger_json   JSONB        NOT NULL DEFAULT '{}', -- 触发条件 {stage, conditions, ...}
+        content_json   JSONB        NOT NULL DEFAULT '{}', -- 内容 {full_text, commands, ...}
+        source_type    VARCHAR(16)  NOT NULL DEFAULT 'session', -- session|manual
+        source_ref     VARCHAR(64)  NOT NULL DEFAULT '',   -- 来源 session_id 或操作者
+        verified       BOOLEAN      NOT NULL DEFAULT FALSE,-- 人工审核状态
+        confidence     NUMERIC(3,2) NOT NULL DEFAULT 0.70, -- 置信度 0.00-1.00
+        created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        verified_at    TIMESTAMPTZ,                        -- 审核通过时间
+        verified_by    VARCHAR(64)                         -- 审核者 ID
+    );
+    
+    COMMENT ON TABLE  knowledge_atoms           IS 'AI 自动提炼的知识原子候选，verified=false 时待人工审核';
+    COMMENT ON COLUMN knowledge_atoms.verified  IS '人工审核通过后设为 true，被知识检索系统使用';
+    COMMENT ON COLUMN knowledge_atoms.confidence IS '机器生成默认 0.70，人工修正后可调高';
+    
+    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_verified
+        ON knowledge_atoms (verified, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_category
+        ON knowledge_atoms (category_id);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_source
+        ON knowledge_atoms (source_ref);
+    
+    -- 自动更新 updated_at
+    CREATE OR REPLACE FUNCTION update_knowledge_atoms_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    DROP TRIGGER IF EXISTS trg_knowledge_atoms_updated_at ON knowledge_atoms;
+    CREATE TRIGGER trg_knowledge_atoms_updated_at
+    BEFORE UPDATE ON knowledge_atoms
+    FOR EACH ROW EXECUTE FUNCTION update_knowledge_atoms_updated_at();
+    
+    
+    -- migrate:down
+    -- 不提供自动降级，手动回滚
+
+  20260326_002_conversation_p4.sql: |
+    -- migrate:up
+    
+    -- =============================================================================
+    -- P4 阶段 V1 补充迁移：conversation 表诊断字段 + prompt_audit 上下文字段
+    -- =============================================================================
+    -- 背景：migrate_p4_v1.sql 添加了 raw_cases / knowledge_atoms 表，
+    --       但 conversation 表的 P4 阶段诊断字段由于疏漏未包含在迁移脚本中，
+    --       导致代码（ORM 模型）与 DB schema 不一致（见 DUAL-006 事故记录）。
+    --
+    -- 说明：所有变更使用 ADD COLUMN IF NOT EXISTS，可重复执行（幂等）。
+    --
+    -- 执行方式：
+    --   psql -U hci_admin -d hci_troubleshoot -f database/migrate_conversation_p4_v1.sql
+    --   或由部署脚本自动执行（k3s-deploy-dualrepo.sh 步骤 8.5）
+    -- =============================================================================
+    
+    \echo '--- migrate_conversation_p4_v1.sql 开始 ---'
+    
+    -- ──────────────────────────────────────────────────────────────────────────────
+    -- conversation 表：P4 阶段新增诊断字段
+    -- ──────────────────────────────────────────────────────────────────────────────
+    -- diagnostic_stage: 诊断阶段状态机（S0 意图识别 → S1 假设生成 → S2 验证 → S3 确认 → S4 修复 → S5 验证闭环）
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS diagnostic_stage  VARCHAR(8)   NOT NULL DEFAULT 'S0',
+        ADD COLUMN IF NOT EXISTS category_l1       VARCHAR(100),                        -- 故障一级分类（如：虚拟机）
+        ADD COLUMN IF NOT EXISTS category_l2       VARCHAR(100),                        -- 故障二级分类（如：开机失败）
+        ADD COLUMN IF NOT EXISTS category_id       VARCHAR(32),                         -- 分类 ID（关联知识库）
+        ADD COLUMN IF NOT EXISTS hypothesis        JSONB,                               -- 当前诊断假设列表（JSON）
+        ADD COLUMN IF NOT EXISTS react_state       JSONB,                               -- ReAct 循环状态（JSON）
+        ADD COLUMN IF NOT EXISTS pending_confirm   JSONB;                               -- 待用户确认的操作（JSON）
+    
+    COMMENT ON COLUMN conversation.diagnostic_stage IS 'P4 诊断阶段: S0=意图识别 S1=假设生成 S2=验证中 S3=待确认 S4=修复执行 S5=验证闭环';
+    COMMENT ON COLUMN conversation.hypothesis        IS 'P4 当前假设列表，格式: [{"id":"h1","desc":"...","confidence":0.8}]';
+    COMMENT ON COLUMN conversation.react_state       IS 'P4 ReAct 状态机快照，格式: {"step":"think|act|observe","context":{...}}';
+    COMMENT ON COLUMN conversation.pending_confirm   IS 'P4 待用户确认操作，格式: {"action":"...","risk":"low|medium|high","cmd":"..."}';
+    
+    -- ──────────────────────────────────────────────────────────────────────────────
+    -- prompt_audit 表：AI 提示词上下文拆解字段
+    -- ──────────────────────────────────────────────────────────────────────────────
+    -- context_breakdown: 记录提示词各部分来源和 token 数，用于成本分析和优化
+    ALTER TABLE prompt_audit
+        ADD COLUMN IF NOT EXISTS context_breakdown JSONB;
+    
+    COMMENT ON COLUMN prompt_audit.context_breakdown IS 'AI 提示词各部分 token 拆解，格式: {"system":120,"history":480,"kb_context":200,...}';
+    
+    \echo '--- migrate_conversation_p4_v1.sql 完成 ---'
+    
+    
+    -- migrate:down
+    -- 不提供自动降级，手动回滚
+
+  20260326_003_tool_audit_log.sql: |
+    -- migrate:up
+    
+    -- HCI 智能排障平台 — 工具调用审计日志表迁移
+    -- Version: Phase 3 — ReAct 引擎工具接入
+    -- Date: 2026-03-23
+    -- 说明：新增 tool_audit_log 表，记录 ReAct 执行器每次工具调用的完整审计信息
+    
+    CREATE TABLE IF NOT EXISTS tool_audit_log (
+        -- 主键：由 ReactExecutor 预生成的 UUID
+        id              VARCHAR(36)     PRIMARY KEY,
+    
+        -- 会话关联（对应 conversation.conversation_id）
+        session_id      VARCHAR(36)     NOT NULL,
+    
+        -- 工具调用信息
+        tool_name       VARCHAR(100)    NOT NULL,
+        tool_args       JSONB           NULL,           -- 工具调用参数
+    
+        -- 风险控制字段
+        risk_level      INTEGER         NOT NULL,       -- 1=只读, 2=写操作需确认, 3=高危
+        policy          VARCHAR(20)     NOT NULL,       -- auto|notify|confirm|block
+        authorized_by   VARCHAR(100)    NULL,           -- risk_level>=2 时记录确认用户
+    
+        -- 执行结果
+        result          JSONB           NULL,           -- 执行结果摘要（截断到 2000 字符）
+        error           TEXT            NULL,           -- 执行异常信息
+    
+        -- 时间统计
+        started_at      TIMESTAMPTZ     NOT NULL,
+        completed_at    TIMESTAMPTZ     NOT NULL,
+        duration_ms     INTEGER         NULL,           -- 执行耗时（毫秒）
+    
+        -- 链路追踪
+        trace_id        VARCHAR(64)     NULL,
+    
+        -- 记录创建时间
+        created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+    );
+    
+    -- 索引：按会话 ID 查询（管理后台展示）
+    CREATE INDEX IF NOT EXISTS idx_tool_audit_log_session_id
+        ON tool_audit_log(session_id);
+    
+    -- 索引：按工具名称查询（工具使用统计）
+    CREATE INDEX IF NOT EXISTS idx_tool_audit_log_tool_name
+        ON tool_audit_log(tool_name);
+    
+    -- 索引：按链路追踪 ID 查询（问题排查）
+    CREATE INDEX IF NOT EXISTS idx_tool_audit_log_trace_id
+        ON tool_audit_log(trace_id) WHERE trace_id IS NOT NULL;
+    
+    -- 索引：按时间排序（最新记录查询）
+    CREATE INDEX IF NOT EXISTS idx_tool_audit_log_started_at
+        ON tool_audit_log(started_at DESC);
+    
+    COMMENT ON TABLE tool_audit_log IS 'ReAct 执行器工具调用审计日志，记录不可删除';
+    COMMENT ON COLUMN tool_audit_log.risk_level IS '风险等级：1=只读自动执行, 2=写操作需用户确认, 3=高危禁止执行';
+    COMMENT ON COLUMN tool_audit_log.policy IS '执行策略：auto=自动, notify=通知, confirm=确认, block=禁止';
+    COMMENT ON COLUMN tool_audit_log.result IS '执行结果 JSONB，截断至 2000 字符防止超大响应';
+    
+    
+    -- migrate:down
+    -- 不提供自动降级，手动回滚
+
+  20260401_001_kbd_pipeline.sql: |
+    -- migrate:up
+    
+    -- =============================================================================
+    -- KBD 知识生产管道 — 数据库迁移 v1
+    -- 创建日期：2026-04-01
+    -- 变更内容：
+    --   1. kb_category  添加 code / domain / path_labels / embedding 字段
+    --                   （支持 category_baseline.yaml 的 id 字段格式）
+    --   2. kbd_entry    新建（KBD 知识条目全生命周期）
+    --                   中间产物（原始JSON、图片、Vision描述）使用文件存储，不入库
+    -- 前提：
+    --   init_schema.sql 已执行（update_updated_at_column 函数已存在）
+    -- =============================================================================
+    
+    -- ─── 1. 扩展 kb_category ────────────────────────────────────────────────────
+    
+    -- code：对应 category_baseline.yaml 的 id 字段（如 "虚拟机-001"）
+    ALTER TABLE kb_category ADD COLUMN IF NOT EXISTS
+        code VARCHAR(32) UNIQUE;
+    
+    -- domain：一级技术域（中文，如 "虚拟机" / "网络" / "存储" / "硬件" / "平台"）
+    ALTER TABLE kb_category ADD COLUMN IF NOT EXISTS
+        domain VARCHAR(50);
+    
+    -- path_labels：从顶层到叶节点的完整路径（数组，供 AI 分类 prompt 使用）
+    -- 示例：["虚拟机", "虚拟机创建"]
+    ALTER TABLE kb_category ADD COLUMN IF NOT EXISTS
+        path_labels JSONB DEFAULT '[]'::jsonb;
+    
+    -- embedding：分类节点的语义向量（1536 维，用于意图识别路由）
+    -- 注意：extension pgvector 必须已安装
+    ALTER TABLE kb_category ADD COLUMN IF NOT EXISTS
+        embedding vector(1536);
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_category_code
+        ON kb_category(code);
+    
+    COMMENT ON COLUMN kb_category.code IS
+        'category_baseline.yaml 的 id 字段，格式：<domain>-<seq>，如 "虚拟机-001"';
+    COMMENT ON COLUMN kb_category.embedding IS
+        '分类节点语义向量（1536维），用于意图识别路由，由初始化脚本批量生成';
+    
+    
+    -- ─── 2. kbd_entry — KBD 知识条目（全生命周期）────────────────────────────────
+    
+    -- 中间产物说明：KBD 生产阶段的原始 JSON、图片文件、Vision 描述均使用文件存储
+    -- 文件结构：scripts/kbd/cache/{support_id}/
+    --   raw.json          — API 完整响应（存在 = fetch done，跳过）
+    --   fetch.failed      — 失败记录（JSON）
+    --   abnormal.json     — 必填字段缺失记录（写入异常队列，不入 kbd_entry）
+    --   img_0.png         — 原始图片（按序号）
+    --   img_0.desc.txt    — Vision 描述（存在 = vision done，跳过）
+    --   img_0.failed      — Vision 失败标记（可独立重跑）
+    -- 文件锁：{support_id}.lock（flock 防并发重复抓取）
+    
+    -- 生命周期：draft → published → archived
+    --                  ↘ rejected（填写 review_note）
+    
+    CREATE TABLE IF NOT EXISTS kbd_entry (
+        id                 BIGSERIAL    PRIMARY KEY,
+        support_id         VARCHAR(20)  UNIQUE NOT NULL,
+            -- 深信服案例ID（对应 API rows.id，如 "36156"）
+        support_url        TEXT,
+            -- 原始案例页面URL，供审核人点击溯源查看
+            -- 格式：https://support.sangfor.com.cn/cases/list?product_id=33&type=1&category_id={support_id}&isOpen=true
+        title              TEXT         NOT NULL,
+            -- 案例标题，对应 API rows.name
+    
+        content_md         TEXT,
+            -- 全段结构化 Markdown（含图片语义块，供审核编辑/检索/展示）
+            -- 必填段：#问题描述、#有效排查步骤、#解决方案；其余段有内容则包含
+            -- 图片替换格式：> **【截图说明】**：{vision_desc}
+    
+        metadata           JSONB        NOT NULL DEFAULT '{}',
+            -- API 补充字段，结构示例：
+            -- {
+            --   "sangfor_main_module": "网络问题",    -- API rows.mainModuleNames
+            --   "sangfor_sub_module":  "实体机网络",  -- API rows.childModuleNames
+            --   "suite_version":       "通用",        -- API rows.suiteVersion
+            --   "sangfor_updated_at":  "2026-01-15",  -- API rows.updateTime
+            --   "sangfor_created_at":  null,          -- API rows.createTime
+            --   "create_admin_id":     "68532",       -- API rows.createAdminId（工程师追溯）
+            --   "update_admin_id":     "14201"        -- API rows.updateAdminId（工程师追溯）
+            -- }
+    
+        -- ── 分类（双轨：AI建议 + 人工确认）──────────────────────────────────
+        category_id        VARCHAR(32)  REFERENCES kb_category(code),
+            -- 人工确认分类（审核时确认或修改，NULL=未分类）
+        ai_category_id     VARCHAR(32),
+            -- AI 分类建议（对应 kb_category.code）
+        ai_category_conf   FLOAT,
+            -- AI 置信度（0~1），< 0.5 时审核页提示「需人工重新分类」
+        ai_category_reason TEXT,
+            -- AI 分类理由（供审核参考）
+    
+        -- ── 检索字段（status=published 时生成）──────────────────────────────
+        embedding          vector(1536),
+            -- content_md 全文语义向量（1536维），published 时由 kb-service 异步生成
+        tsv                tsvector,
+            -- BM25 全文检索（基于 title + content_md）
+    
+        -- ── 状态机 ──────────────────────────────────────────────────────────
+        status             VARCHAR(20)  NOT NULL DEFAULT 'draft',
+            -- draft       = 脚本导入，等待审核
+            -- published   = 审核通过，embedding 已生成，可被检索
+            -- archived    = 手动归档，不参与检索
+            -- rejected    = 审核拒绝（review_note 记录原因）
+        reviewer_id        INTEGER,
+            -- 审核人 ID
+        reviewed_at        TIMESTAMPTZ,
+            -- 审核时间
+        review_note        TEXT,
+            -- 审核备注（拒绝原因 / 修改说明）
+        published_at       TIMESTAMPTZ,
+            -- 发布时间（触发 embedding 生成）
+        archived_at        TIMESTAMPTZ,
+            -- 归档时间（手动触发）
+    
+        created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    
+    -- 索引
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_status
+        ON kbd_entry(status);
+    
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_category
+        ON kbd_entry(category_id) WHERE status = 'published';
+    
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_ai_category
+        ON kbd_entry(ai_category_id);
+    
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_published
+        ON kbd_entry(published_at DESC) WHERE status = 'published';
+    
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv
+        ON kbd_entry USING GIN(tsv);
+    
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_metadata
+        ON kbd_entry USING GIN(metadata);
+    
+    -- updated_at 自动维护触发器
+    CREATE TRIGGER trigger_kbd_entry_updated_at
+        BEFORE UPDATE ON kbd_entry
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    
+    -- 注释
+    COMMENT ON TABLE kbd_entry IS
+        'KBD 知识条目 — 全生命周期（draft→published→archived/rejected）；中间产物见 scripts/kbd/cache/ 文件存储';
+    COMMENT ON COLUMN kbd_entry.support_id IS
+        '深信服案例ID（API rows.id），幂等键';
+    COMMENT ON COLUMN kbd_entry.support_url IS
+        '原始案例页面URL，供审核人溯源：https://support.sangfor.com.cn/cases/list?product_id=33&type=1&category_id={id}&isOpen=true';
+    COMMENT ON COLUMN kbd_entry.content_md IS
+        '全段结构化Markdown，包含所有有内容的HTML section（图片替换为Vision语义块）';
+    COMMENT ON COLUMN kbd_entry.metadata IS
+        'API补充字段：sangfor_main_module/sangfor_sub_module/suite_version/sangfor_updated_at/sangfor_created_at/create_admin_id/update_admin_id';
+    COMMENT ON COLUMN kbd_entry.status IS
+        'draft=待审核, published=已发布可检索, archived=已归档不检索, rejected=已拒绝';
+    COMMENT ON COLUMN kbd_entry.ai_category_conf IS
+        'AI分类置信度 0~1，< 0.5 时审核页提示需人工重新确认';
+    COMMENT ON COLUMN kbd_entry.embedding IS
+        'content_md 全文语义向量（1536维），status→published 时由 kb-service 异步生成';
+    
+    
+    -- migrate:down
+    -- 不提供自动降级，手动回滚
+
+{{- end }}

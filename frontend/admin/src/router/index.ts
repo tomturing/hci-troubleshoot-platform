@@ -44,6 +44,12 @@ const router = createRouter({
       component: () => import('@/views/KnowledgeReviewView.vue'),
       meta: { title: '知识审核', icon: 'Reading' },
     },
+    {
+      path: '/knowledge/kbd-review',
+      name: 'KbdReview',
+      component: () => import('@/views/KbdReviewView.vue'),
+      meta: { title: 'KBD 审核', icon: 'Document' },
+    },
   ],
 })
 
