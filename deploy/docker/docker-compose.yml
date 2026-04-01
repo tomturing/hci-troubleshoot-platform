@@ -146,8 +146,8 @@ services:
     volumes:
       - ./backend/kb-service:/app
       - ./backend/shared:/app/shared
-      - ./data-pipeline/sop_skills:/data/sop_skills:ro   # SOP 技能目录（只读）
-      - ./data-pipeline/config:/data/config:ro            # jieba 词典等配置（只读）
+      - ./data-pipeline/sop_skills:/data/sop_skills:ro         # SOP 技能目录（只读）
+      - ./backend/kb-service/config:/data/config:ro             # jieba 词典等配置（只读）
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
       interval: 30s
