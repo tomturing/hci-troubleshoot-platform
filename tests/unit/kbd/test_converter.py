@@ -14,9 +14,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from pathlib import Path
 from unittest.mock import patch
-import pytest
 
 _scripts_root = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts")
@@ -27,9 +25,7 @@ if _scripts_root not in sys.path:
 # 从 conftest 中引用样本 HTML
 from tests.unit.kbd.conftest import (
     MINIMAL_9_SECTION_HTML,
-    MISSING_MANDATORY_HTML,
 )
-
 
 # ─── _parse_sections ─────────────────────────────────────────────────────────
 

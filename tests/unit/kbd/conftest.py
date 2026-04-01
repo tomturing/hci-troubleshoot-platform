@@ -3,9 +3,8 @@ tests/unit/kbd/conftest.py — KBD 管道单元测试公共 fixtures
 """
 from __future__ import annotations
 
-import json
-import sys
 import os
+import sys
 
 import pytest
 

@@ -12,12 +12,11 @@ tests/unit/kbd/test_fetcher.py — kbd/fetcher.py 单元测试
 from __future__ import annotations
 
 import json
-import sys
 import os
-from pathlib import Path
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-import pytest_asyncio
 
 # 路径注入（conftest.py 已处理，此处防御性再加一次）
 _scripts_root = os.path.abspath(
@@ -158,11 +157,11 @@ class TestIsFetched:
         with patch("kbd.fetcher.settings") as mock_s:
             mock_s.KBD_CACHE_DIR = tmp_path
             from importlib import reload
+
             import kbd.fetcher as ft
             reload(ft)
             # 直接调用，patch settings
             with patch("kbd.fetcher.settings.KBD_CACHE_DIR", tmp_path):
-                from kbd.fetcher import _is_fetched
                 # 需要重新绑定，因为 _case_dir 也使用 settings
                 result = ft._is_fetched.__wrapped__("12345") if hasattr(ft._is_fetched, "__wrapped__") else None
 
