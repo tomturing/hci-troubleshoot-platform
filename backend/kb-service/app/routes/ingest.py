@@ -9,6 +9,12 @@ POST /api/kb/ingest
 POST /api/kb/sop/import
   - 调用方：管理员（手动导入 SOP 技能节点）
   - 批量写入 kb_sop_node
+
+POST /api/kbd/ingest
+  - 调用方：scripts/kbd/ 数据流水线
+  - 写入 kbd_entry 表（深信服案例原始数据）
+  - 幂等：support_id 唯一性校验
+  - 状态默认为 draft，审核通过后才生成 embedding
 """
 
 from __future__ import annotations
@@ -18,7 +24,9 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
+from sqlalchemy import select
 
+from app.models.kbd_entry import KbdEntry
 from app.services.ingestor import IngestorService
 
 if TYPE_CHECKING:
@@ -171,3 +179,130 @@ async def import_sop_nodes(request: Request, body: SopImportRequest):
 
     logger.info(event="sop_import_completed", created=created)
     return {"created": created, "total": len(body.nodes)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KBD 条目入库接口（kbd_entry 表）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class KbdIngestRequest(BaseModel):
+    """KBD 条目入库请求
+
+    用于 scripts/kbd/ 数据流水线调用，将深信服案例写入 kbd_entry 表。
+    """
+
+    support_id: str = Field(..., min_length=1, max_length=20, description="深信服案例ID（幂等键）")
+    support_url: str | None = Field(None, description="原始案例 URL")
+    title: str = Field(..., min_length=1, description="案例标题")
+    content_md: str = Field(..., min_length=1, description="结构化 Markdown 内容")
+    metadata: dict = Field(default_factory=dict, description="JSONB 补充字段")
+    ai_category_id: str | None = Field(None, max_length=32, description="AI 分类建议 ID")
+    ai_category_conf: float | None = Field(None, ge=0.0, le=1.0, description="分类置信度")
+    ai_category_reason: str | None = Field(None, description="分类理由")
+
+
+class KbdIngestResponse(BaseModel):
+    """KBD 条目入库响应"""
+
+    success: bool = Field(..., description="操作是否成功")
+    kbd_id: int = Field(..., description="KBD 条目 ID")
+    status: str = Field(..., description="当前状态")
+    message: str | None = Field(None, description="附加消息（如幂等提示）")
+
+
+@router.post("/kbd/ingest", status_code=status.HTTP_201_CREATED)
+async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
+    """KBD 条目入库
+
+    功能说明：
+    1. 写入 kbd_entry 表（深信服案例原始数据）
+    2. support_id 幂等性校验（已存在则返回 200 + 原条目信息）
+    3. 状态默认为 draft（审核通过后才生成 embedding）
+    4. 不生成 embedding（审核通过时由 approve_kbd_entry 触发）
+
+    调用方：scripts/kbd/ 数据流水线
+
+    响应体示例：
+    ```json
+    {
+      "success": true,
+      "kbd_id": 123,
+      "status": "draft"
+    }
+    ```
+
+    幂等场景（support_id 已存在）：
+    ```json
+    {
+      "success": true,
+      "kbd_id": 123,
+      "status": "draft",
+      "message": "条目已存在，跳过写入"
+    }
+    ```
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    logger.info(
+        event="kbd_ingest_request",
+        support_id=body.support_id,
+        title=body.title[:50],
+        content_length=len(body.content_md),
+        ai_category_id=body.ai_category_id,
+    )
+
+    async with _db_manager.async_session_factory() as session:
+        # 1. 幂等性校验：检查 support_id 是否已存在
+        existing_result = await session.execute(
+            select(KbdEntry).where(KbdEntry.support_id == body.support_id)
+        )
+        existing_entry = existing_result.scalar_one_or_none()
+
+        if existing_entry:
+            logger.info(
+                event="kbd_ingest_idempotent",
+                support_id=body.support_id,
+                kbd_id=existing_entry.id,
+                status=existing_entry.status,
+            )
+            return KbdIngestResponse(
+                success=True,
+                kbd_id=existing_entry.id,
+                status=existing_entry.status,
+                message="条目已存在，跳过写入",
+            )
+
+        # 2. 创建新条目
+        new_entry = KbdEntry(
+            support_id=body.support_id,
+            support_url=body.support_url,
+            title=body.title,
+            content_md=body.content_md,
+            metadata=body.metadata,
+            ai_category_id=body.ai_category_id,
+            ai_category_conf=body.ai_category_conf,
+            ai_category_reason=body.ai_category_reason,
+            status="draft",
+        )
+        session.add(new_entry)
+        await session.commit()
+
+        # 3. 刷新获取 ID
+        await session.refresh(new_entry)
+
+    logger.info(
+        event="kbd_ingest_created",
+        support_id=body.support_id,
+        kbd_id=new_entry.id,
+        title=body.title[:50],
+    )
+
+    return KbdIngestResponse(
+        success=True,
+        kbd_id=new_entry.id,
+        status=new_entry.status,
+    )

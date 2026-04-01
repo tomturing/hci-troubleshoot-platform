@@ -251,13 +251,7 @@ def convert_case(support_id: str) -> str | None:
     # 解析 9 个 section
     sections = _parse_sections(content_html)
 
-    # 必填验证
-    missing = [
-        f"*{s}" if not s.startswith("*") else s
-        for s in _MANDATORY_TITLES
-        if not sections.get(s, "").strip()
-           or sections.get(s, "").strip() == "<div></div>"
-    ]
+    # 必填验证（使用 _SECTIONS 定义，避免重复计算）
     missing = [
         md_title
         for _, md_title, required in _SECTIONS
