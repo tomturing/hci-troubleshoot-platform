@@ -78,6 +78,25 @@ gcm "fix: 修复问题"
 gpr "fix: 修复问题"
 ```
 
+> ⚠️ **GitHub Copilot 执行 PR 时的两条强制规则（易错，必须遵守）**：
+>
+> **规则1 — 标签**：`gpr` 默认 `AGENT=claude`，**Copilot 必须加 `AGENT=copilot` 前缀**，否则标签打错。
+>
+> **规则2 — PR body**：`gpr` 生成的 body 是硬编码占位符，**必须在 `gpr` 执行后立即补写完整描述**，格式为：
+> ```
+> ## 问题
+> （触发原因、影响范围、复现路径）
+> ## 修复
+> （按子任务分节列出具体改动）
+> ## 影响文件
+> （表格：文件 | 变更类型 | 说明）
+> [env:dev:<hostname>][agent:copilot]
+> ```
+> 补写命令：
+> ```bash
+> gh api --method PATCH /repos/{owner}/{repo}/pulls/{num} -f body="$(cat /tmp/pr_body.md)"
+> ```
+
 ## 测试约定
 
 - 各微服务测试必须隔离运行：`uv run pytest backend/<service>/tests/ -q`
