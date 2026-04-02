@@ -33,7 +33,7 @@ _db_manager: DatabaseManager | None = None
 _category_service: CategoryService | None = None
 
 
-def set_dependencies(db: DatabaseManager) -> None:
+def set_dependencies(db: DatabaseManager, embedding_service=None) -> None:
     """注入依赖"""
     global _db_manager, _category_service
     _db_manager = db
