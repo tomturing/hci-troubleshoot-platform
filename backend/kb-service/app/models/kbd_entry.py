@@ -33,7 +33,9 @@ class KbdEntry(Base):
     support_url = Column(Text, nullable=True)                            # 原始案例 URL
     title = Column(Text, nullable=False)                                 # 案例标题
     content_md = Column(Text, nullable=True)                             # 结构化 Markdown
-    metadata = Column(JSONB, nullable=False, default=dict)               # 补充元数据
+    # 使用 entry_metadata 作为 Python 属性名，"metadata" 作为数据库列名
+    # 避免 SQLAlchemy Base.metadata 保留属性冲突
+    entry_metadata = Column("metadata", JSONB, nullable=False, default=dict)  # 补充元数据
 
     # 分类字段（双轨制）
     category_id = Column(String(32), nullable=True)                      # 人工确认分类

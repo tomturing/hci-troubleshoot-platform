@@ -282,7 +282,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
             support_url=body.support_url,
             title=body.title,
             content_md=body.content_md,
-            metadata=body.metadata,
+            entry_metadata=body.metadata,
             ai_category_id=body.ai_category_id,
             ai_category_conf=body.ai_category_conf,
             ai_category_reason=body.ai_category_reason,
