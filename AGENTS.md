@@ -164,6 +164,20 @@ gpr "fix: 修复问题"
 AGENT=copilot gpr "feat: 新功能"
 ```
 
+> ⚠️ **注意（GitHub Copilot 执行时）**：
+> 1. `gpr` 默认 `AGENT=claude`，**Copilot 必须显式加 `AGENT=copilot` 前缀**，否则标签打错
+> 2. `gpr` 生成的 body 是硬编码占位符，**创建 PR 后必须立即用以下模板补写完整描述**：
+>    ```
+>    ## 问题
+>    （描述触发原因、影响范围、复现路径）
+>    ## 修复
+>    （按子任务分节列出具体改动）
+>    ## 影响文件
+>    （表格：文件 | 变更类型 | 说明）
+>    [env:dev:sz][agent:copilot]
+>    ```
+>    补写命令：`gh api --method PATCH /repos/{owner}/{repo}/pulls/{num} -f body="$(cat /tmp/pr_body.md)"`
+
 ---
 
 ## 5. 构建/测试命令
