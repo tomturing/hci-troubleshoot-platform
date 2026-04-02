@@ -15,6 +15,7 @@ Redis Key 设计：confirm:{session_id}（LIST 类型，BRPOP 等待，LPUSH 写
 
 import json
 import logging
+from enum import StrEnum
 
 from redis.asyncio import Redis
 
@@ -23,6 +24,14 @@ logger = logging.getLogger(__name__)
 # 等待用户确认的超时秒数（120s 后自动取消）
 CONFIRM_TIMEOUT = 120
 REDIS_KEY_PREFIX = "confirm:"
+
+
+class ConfirmResult(StrEnum):
+    """确认结果枚举，区分超时和用户拒绝"""
+
+    APPROVED = "approved"      # 用户确认执行
+    REJECTED = "rejected"      # 用户主动拒绝
+    TIMEOUT = "timeout"        # 等待超时，自动取消
 
 
 class ConfirmService:
@@ -37,13 +46,14 @@ class ConfirmService:
         tool_name: str,
         tool_args: dict,
         risk_level: int,
-    ) -> bool:
+    ) -> ConfirmResult:
         """
         请求用户确认，阻塞等待直到用户响应或超时（120s）。
 
         返回值：
-          True  = 用户点击"确认"
-          False = 用户点击"取消"或等待超时
+          APPROVED = 用户点击"确认"
+          REJECTED = 用户点击"取消"
+          TIMEOUT  = 等待超时，自动取消
         """
         key = f"{REDIS_KEY_PREFIX}{session_id}"
 
@@ -60,19 +70,20 @@ class ConfirmService:
 
         if result is None:
             logger.warning(f"用户确认超时 [session={session_id}] 工具={tool_name}")
-            return False
+            return ConfirmResult.TIMEOUT
 
         _, value = result
         try:
             data = json.loads(value)
             confirmed: bool = bool(data.get("confirmed", False))
+            result_type = ConfirmResult.APPROVED if confirmed else ConfirmResult.REJECTED
             logger.info(
-                f"用户确认结果 [session={session_id}] 工具={tool_name}: confirmed={confirmed}"
+                f"用户确认结果 [session={session_id}] 工具={tool_name}: {result_type.value}"
             )
-            return confirmed
+            return result_type
         except Exception as e:
             logger.error(f"解析确认结果失败 [session={session_id}]: {e}")
-            return False
+            return ConfirmResult.REJECTED
 
     async def submit_confirm(
         self,

@@ -50,8 +50,8 @@ class ConfirmServiceProtocol(Protocol):
         tool_name: str,
         tool_args: dict,
         risk_level: int,
-    ) -> bool:
-        """请求用户确认，返回 True=确认，False=取消/超时"""
+    ):
+        """请求用户确认，返回 ConfirmResult 枚举"""
         ...
 
 
@@ -201,7 +201,7 @@ class ReactExecutor:
             })
 
             try:
-                confirmed = await self.confirm_service.request_confirm(
+                confirm_result = await self.confirm_service.request_confirm(
                     session_id=state.session_id,
                     tool_name=tool_call.name,
                     tool_args=tool_call.args,
@@ -210,15 +210,53 @@ class ReactExecutor:
             except Exception as e:
                 # Redis 不可用时，高风险工具 fallback 为 block（安全优先）
                 logger.error(f"确认服务异常，工具 {tool_call.name} 被阻止 [session={state.session_id}]: {e}")
+                # 写入审计日志
+                audit_id = str(uuid.uuid4())
+                await self.audit.write(
+                    audit_id,
+                    session_id=state.session_id,
+                    tool_name=tool_call.name,
+                    tool_args=tool_call.args,
+                    risk_level=tool_def.risk_level,
+                    error="confirm_service_unavailable",
+                    authorized_by="system-error",
+                )
                 return {
                     "tool_call_id": tool_call.id,
                     "result": f"确认服务暂不可用，操作 {tool_call.name} 已中止",
                 }
 
-            if not confirmed:
+            # 处理确认结果
+            if confirm_result.value != "approved":
+                # 根据结果类型确定错误信息和授权者
+                if confirm_result.value == "timeout":
+                    error_msg = "confirm_timeout"
+                    authorized_by = "system-timeout"
+                    log_reason = "等待超时"
+                else:  # rejected
+                    error_msg = "user_rejected"
+                    authorized_by = "user-declined"
+                    log_reason = "用户拒绝"
+
+                logger.warning(
+                    f"工具确认{log_reason} [session={state.session_id}] 工具={tool_call.name}"
+                )
+
+                # 写入审计日志
+                audit_id = str(uuid.uuid4())
+                await self.audit.write(
+                    audit_id,
+                    session_id=state.session_id,
+                    tool_name=tool_call.name,
+                    tool_args=tool_call.args,
+                    risk_level=tool_def.risk_level,
+                    error=error_msg,
+                    authorized_by=authorized_by,
+                )
+
                 return {
                     "tool_call_id": tool_call.id,
-                    "result": "用户已取消该操作",
+                    "result": f"操作已取消（{log_reason}）",
                 }
 
         # 只读且 policy=notify：执行前通知前端
