@@ -218,6 +218,7 @@ class ConversationService:
             ],
             "total_chars": total_chars,
             "total_token_est": total_chars // 4,
+            "category_id": None,
         }
 
         return system_prompt, audit_meta
