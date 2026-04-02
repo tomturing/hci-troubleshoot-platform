@@ -5,7 +5,7 @@ ConfirmService 单元测试
   - request_confirm 正常确认流程（Redis BRPOP 返回确认结果）
   - request_confirm 超时返回 ConfirmResult.TIMEOUT
   - submit_confirm 写入 Redis 正确格式
-  - 解析确认结果异常时返回 ConfirmResult.TIMEOUT（降级）
+  - 解析确认结果异常时返回 ConfirmResult.REJECTED（安全降级）
 """
 
 import os
@@ -92,7 +92,7 @@ class TestRequestConfirm:
 
     @pytest.mark.asyncio
     async def test_request_confirm_parse_error_returns_false(self, service, mock_redis):
-        """BRPOP 返回无法解析的值时，不抛异常，返回 ConfirmResult.TIMEOUT（降级）"""
+        """BRPOP 返回无法解析的值时，不抛异常，安全降级返回 ConfirmResult.REJECTED"""
         mock_redis.brpop.return_value = ("key", b"not-json-at-all{{{{")
 
         result = await service.request_confirm(
@@ -102,7 +102,7 @@ class TestRequestConfirm:
             risk_level=2,
         )
 
-        assert result == ConfirmResult.TIMEOUT
+        assert result == ConfirmResult.REJECTED
 
 
 class TestSubmitConfirm:
