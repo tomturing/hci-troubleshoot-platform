@@ -3,9 +3,9 @@ ConfirmService 单元测试
 
 覆盖：
   - request_confirm 正常确认流程（Redis BRPOP 返回确认结果）
-  - request_confirm 超时返回 False
+  - request_confirm 超时返回 ConfirmResult.TIMEOUT
   - submit_confirm 写入 Redis 正确格式
-  - 解析确认结果异常时返回 False（降级）
+  - 解析确认结果异常时返回 ConfirmResult.TIMEOUT（降级）
 """
 
 import os
@@ -19,7 +19,12 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
-from app.services.confirm_service import CONFIRM_TIMEOUT, REDIS_KEY_PREFIX, ConfirmService
+from app.services.confirm_service import (
+    CONFIRM_TIMEOUT,
+    REDIS_KEY_PREFIX,
+    ConfirmResult,
+    ConfirmService,
+)
 
 
 @pytest.fixture
@@ -36,7 +41,7 @@ class TestRequestConfirm:
 
     @pytest.mark.asyncio
     async def test_request_confirm_approved_returns_true(self, service, mock_redis):
-        """BRPOP 返回 confirmed=True 时，request_confirm 返回 True"""
+        """BRPOP 返回 confirmed=True 时，request_confirm 返回 ConfirmResult.APPROVED"""
         payload = json.dumps({"confirmed": True, "authorized_by": "user@example.com"})
         mock_redis.brpop.return_value = ("key", payload.encode())
 
@@ -47,13 +52,13 @@ class TestRequestConfirm:
             risk_level=2,
         )
 
-        assert result is True
+        assert result == ConfirmResult.APPROVED
         # Redis key 应先被删除（清空残留）再等待
         mock_redis.delete.assert_called_once_with(f"{REDIS_KEY_PREFIX}sid-001")
 
     @pytest.mark.asyncio
     async def test_request_confirm_cancelled_returns_false(self, service, mock_redis):
-        """BRPOP 返回 confirmed=False 时，request_confirm 返回 False"""
+        """BRPOP 返回 confirmed=False 时，request_confirm 返回 ConfirmResult.REJECTED"""
         payload = json.dumps({"confirmed": False, "authorized_by": "user@example.com"})
         mock_redis.brpop.return_value = ("key", payload.encode())
 
@@ -64,11 +69,11 @@ class TestRequestConfirm:
             risk_level=2,
         )
 
-        assert result is False
+        assert result == ConfirmResult.REJECTED
 
     @pytest.mark.asyncio
     async def test_request_confirm_timeout_returns_false(self, service, mock_redis):
-        """BRPOP 超时（返回 None）时，request_confirm 返回 False"""
+        """BRPOP 超时（返回 None）时，request_confirm 返回 ConfirmResult.TIMEOUT"""
         mock_redis.brpop.return_value = None
 
         result = await service.request_confirm(
@@ -78,7 +83,7 @@ class TestRequestConfirm:
             risk_level=2,
         )
 
-        assert result is False
+        assert result == ConfirmResult.TIMEOUT
         # 确认超时时调用的 BRPOP timeout 参数应等于 CONFIRM_TIMEOUT
         mock_redis.brpop.assert_called_once_with(
             f"{REDIS_KEY_PREFIX}sid-003",
@@ -87,7 +92,7 @@ class TestRequestConfirm:
 
     @pytest.mark.asyncio
     async def test_request_confirm_parse_error_returns_false(self, service, mock_redis):
-        """BRPOP 返回无法解析的值时，不抛异常，返回 False"""
+        """BRPOP 返回无法解析的值时，不抛异常，返回 ConfirmResult.TIMEOUT（降级）"""
         mock_redis.brpop.return_value = ("key", b"not-json-at-all{{{{")
 
         result = await service.request_confirm(
@@ -97,7 +102,7 @@ class TestRequestConfirm:
             risk_level=2,
         )
 
-        assert result is False
+        assert result == ConfirmResult.TIMEOUT
 
 
 class TestSubmitConfirm:
