@@ -27,7 +27,6 @@ from opentelemetry import trace
 from shared.utils.logger import get_logger
 
 from app.config import settings
-from app.services.prompt_builder import PromptBuilder, extract_category_from_reply
 
 logger = get_logger("knowledge-retriever")
 tracer = trace.get_tracer(__name__)
