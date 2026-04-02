@@ -22,3 +22,26 @@ from dataclasses import field
 class Foo:
     items: list = field(default_factory=list)
 ```
+
+## PIT-040：SQLAlchemy 模型使用保留属性名导致启动失败
+
+SQLAlchemy Declarative Base 类有保留属性（如 `metadata`、`registry`），自定义列名不能与这些属性冲突。
+
+```python
+# 错误：metadata 是 Base 类的保留属性，用于存储表元数据
+class MyModel(Base):
+    metadata = Column(JSONB, ...)  # ❌ 启动时抛出 InvalidRequestError
+
+# 正确：使用不同属性名，通过 Column("列名", ...) 指定数据库列名
+class MyModel(Base):
+    extra_metadata = Column("metadata", JSONB, ...)  # ✅ 属性名避开保留字，列名不变
+```
+
+**症状：**
+- 服务启动时抛出 `sqlalchemy.exc.InvalidRequestError: Attribute name 'metadata' is reserved`
+- Pod 进入 CrashLoopBackOff
+
+**修复：**
+- Python 属性名改为非保留字（如 `entry_metadata`）
+- 数据库列名保持不变（无需数据迁移）
+- 使用 `Column("原列名", 类型, ...)` 语法
