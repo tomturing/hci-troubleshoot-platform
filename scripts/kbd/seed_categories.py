@@ -232,6 +232,8 @@ async def build_parent_mapping(pool: asyncpg.Pool) -> dict[str, int]:
     策略：根据 path_labels JSONB 查找父节点。
       父节点的 path_labels 应等于子节点 path_labels[:-1]
 
+    注意：asyncpg 读取 JSONB 时返回字符串，需用 json.loads() 解析。
+
     Returns:
         {path_str: id} 映射表
     """
@@ -240,9 +242,14 @@ async def build_parent_mapping(pool: asyncpg.Pool) -> dict[str, int]:
     )
     mapping = {}
     for row in rows:
-        path_labels = row["path_labels"]
-        if path_labels:
-            # JSONB 数组转字符串作为 key
+        path_labels_raw = row["path_labels"]
+        if path_labels_raw:
+            # asyncpg 返回 JSONB 为字符串，需解析为 Python list
+            if isinstance(path_labels_raw, str):
+                path_labels = json.loads(path_labels_raw)
+            else:
+                path_labels = path_labels_raw
+            # 序列化为 JSON 字符串作为 key
             path_str = json.dumps(path_labels, ensure_ascii=False)
             mapping[path_str] = row["id"]
     return mapping
