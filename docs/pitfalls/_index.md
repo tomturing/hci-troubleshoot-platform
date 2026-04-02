@@ -19,7 +19,7 @@
 | 任何涉及进程/状态/外部服务的问题排查 | [debugging.md](debugging.md) | 原则一~六 + 工单500 |
 | 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039 |
 | 编写/审查 Shell/Makefile/CI 脚本 | [shell.md](shell.md) | PIT-001, PIT-002 |
-| 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009 |
+| 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009, PIT-040 |
 | 编写/审查前端（pnpm/Vue/Dockerfile） | [frontend.md](frontend.md) | PIT-005, PIT-023, PIT-025, PIT-028, PIT-029 |
 | 调试 Dispatcher/状态机/幂等资源 | [dispatcher.md](dispatcher.md) | PIT-006, PIT-007, PIT-008 |
 | K8s/K3s 镜像/Helm/网络/HostPath | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038 |
@@ -36,7 +36,7 @@
 | 编号范围 | 分配情况 |
 |---------|---------|
 | PIT-001~002 | shell.md：here-doc(001), nohup(002) |
-| PIT-003~005 | python.md：SQLAlchemy(003), Pydantic(004), dataclass(009)；frontend.md：pnpm workspace(005) |
+| PIT-003~005 | python.md：SQLAlchemy(003), Pydantic(004), dataclass(009), 保留属性(040)；frontend.md：pnpm workspace(005) |
 | PIT-006~009 | dispatcher.md：分布式锁(006), 幂等键(007), in-flight恢复(008)；python.md：dataclass(009) |
 | PIT-010~013 | openclaw.md：401(010), JSON parse(013)；grafana.md：localhost重定向(011), 空rules(012) |
 | PIT-014~019 | k8s.md：Clash ClusterIP(014), Helm pending(015), K3s镜像(016), RESTARTS虚高(017), HostPath截断(018), UID不匹配(019) |
@@ -47,7 +47,8 @@
 | PIT-032~036 | openclaw.md：WS redirect(032), AI响应出错(035)；k8s.md：K3s服务检查RunBook(033-已去编号), fake-ip(034)；grafana.md：/grafana路由(036) |
 | PIT-037~038 | k8s.md：Docker build apt/pip(037), Docker 172.16端口映射(038) |
 | PIT-039 | network-service-check.md：CoreDNS hosts插件冲突(039) |
-| **PIT-040** | **下一个可用编号** |
+| PIT-040 | python.md：SQLAlchemy 保留属性名冲突(metadata) |
+| **PIT-041** | **下一个可用编号** |
 
 ---
 
