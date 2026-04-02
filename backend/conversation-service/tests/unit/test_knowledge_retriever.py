@@ -38,8 +38,33 @@ class TestKnowledgeRetriever:
     """KnowledgeRetriever 测试用例"""
 
     @pytest.mark.asyncio
+    async def test_s0_stage_skip_kb_search(self):
+        """测试 S0 阶段禁止 KB/SOP 检索"""
+        from app.services.knowledge_retriever import KnowledgeRetriever
+
+        kb_chunks = [{"chunk_id": "chunk-1", "content": "测试内容", "score": 0.9}]
+        kb_client = MockKBClient(intent_result=None, route_result=None)
+
+        with patch("app.services.knowledge_retriever.settings") as mock_settings:
+            mock_settings.KB_ENABLED = True
+            mock_settings.KB_SEARCH_TOP_N = 5
+            mock_settings.KB_CONTEXT_MAX_CHARS = 4000
+
+            retriever = KnowledgeRetriever(kb_client=kb_client)
+            prompt, meta = await retriever.retrieve(
+                query="测试查询",
+                case_id="case-001",
+                diagnostic_stage="S0",
+            )
+
+            # S0 阶段应该跳过 KB 检索
+            assert meta["fallback_level"] == "s0_intent_recognition"
+            assert meta["has_sop"] is False
+            assert meta["kb_chunks_count"] == 0
+
+    @pytest.mark.asyncio
     async def test_kb_not_enabled(self):
-        """测试 KB 未启用时进入机制推理模式"""
+        """测试 KB 未启用时进入机制推理模式（S1 阶段）"""
         from app.services.knowledge_retriever import KnowledgeRetriever
 
         with patch("app.services.knowledge_retriever.settings") as mock_settings:
@@ -49,7 +74,7 @@ class TestKnowledgeRetriever:
             prompt, meta = await retriever.retrieve(
                 query="测试查询",
                 case_id="case-001",
-                diagnostic_stage="S0",
+                diagnostic_stage="S1",
             )
 
             # 验证进入机制推理模式
@@ -63,7 +88,7 @@ class TestKnowledgeRetriever:
 
     @pytest.mark.asyncio
     async def test_kb_client_none(self):
-        """测试 kb_client 为 None 时进入机制推理模式"""
+        """测试 kb_client 为 None 时进入机制推理模式（S1 阶段）"""
         from app.services.knowledge_retriever import KnowledgeRetriever
 
         with patch("app.services.knowledge_retriever.settings") as mock_settings:
@@ -73,7 +98,7 @@ class TestKnowledgeRetriever:
             prompt, meta = await retriever.retrieve(
                 query="测试查询",
                 case_id="case-001",
-                diagnostic_stage="S0",
+                diagnostic_stage="S1",
             )
 
             assert "机制推理模式" in prompt
@@ -260,7 +285,7 @@ class TestKnowledgeRetriever:
             prompt, meta = await retriever.retrieve(
                 query="完全陌生的故障",
                 case_id="case-001",
-                diagnostic_stage="S0",
+                diagnostic_stage="S1",
             )
 
             # 验证人工兜底（机制推理）
@@ -312,7 +337,7 @@ class TestKnowledgeRetriever:
             prompt, meta = await retriever.retrieve(
                 query="测试查询",
                 case_id="case-001",
-                diagnostic_stage="S0",
+                diagnostic_stage="S1",
             )
 
             # 验证 needs_review 正确传递
@@ -321,7 +346,7 @@ class TestKnowledgeRetriever:
 
     @pytest.mark.asyncio
     async def test_context_breakdown(self):
-        """测试 context_breakdown 正确生成"""
+        """测试 context_breakdown 正确生成（S1 阶段）"""
         from app.services.knowledge_retriever import KnowledgeRetriever
 
         intent_result = {
@@ -362,7 +387,7 @@ class TestKnowledgeRetriever:
             prompt, meta = await retriever.retrieve(
                 query="测试",
                 case_id="case-001",
-                diagnostic_stage="S0",
+                diagnostic_stage="S1",
             )
 
             # 验证 context_breakdown 存在

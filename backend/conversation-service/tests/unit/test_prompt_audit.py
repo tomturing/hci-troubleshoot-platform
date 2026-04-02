@@ -51,7 +51,10 @@ def mock_scheduler():
 @pytest.fixture
 def mock_kb_client():
     """KB Client mock"""
-    return MagicMock(spec=KBClient)
+    mock = MagicMock(spec=KBClient)
+    # 默认为 get_categories_grouped 设置 AsyncMock 返回空字典
+    mock.get_categories_grouped = AsyncMock(return_value={})
+    return mock
 
 
 @pytest.fixture
@@ -135,9 +138,9 @@ class TestBuildSystemPromptAuditMeta:
             }
         )
 
-        # 调用方法
+        # 调用方法（S1 阶段才会触发 KB 检索）
         system_prompt, audit_meta = await service_with_kb._build_system_prompt(
-            query="磁盘 IO 异常", case_id="Q001"
+            query="磁盘 IO 异常", case_id="Q001", diagnostic_stage="S1"
         )
 
         # 断言返回类型
@@ -192,7 +195,7 @@ class TestBuildSystemPromptAuditMeta:
         )
 
         system_prompt, audit_meta = await service_with_kb._build_system_prompt(
-            query="网络延迟", case_id="Q002"
+            query="网络延迟", case_id="Q002", diagnostic_stage="S1"
         )
 
         assert audit_meta["has_sop"] is False
@@ -207,7 +210,7 @@ class TestBuildSystemPromptAuditMeta:
         mock_kb_client.classify_intent = AsyncMock(return_value={"categories": [], "needs_review": True})
 
         system_prompt, audit_meta = await service_with_kb._build_system_prompt(
-            query="未知问题", case_id="Q003"
+            query="未知问题", case_id="Q003", diagnostic_stage="S1"
         )
 
         assert audit_meta["has_sop"] is False
@@ -223,7 +226,7 @@ class TestBuildSystemPromptAuditMeta:
         mock_kb_client.classify_intent = AsyncMock(return_value=None)
 
         system_prompt, audit_meta = await service_with_kb._build_system_prompt(
-            query="错误测试", case_id="Q004"
+            query="错误测试", case_id="Q004", diagnostic_stage="S1"
         )
 
         assert audit_meta["has_sop"] is False
@@ -234,13 +237,15 @@ class TestBuildSystemPromptAuditMeta:
     async def test_build_system_prompt_returns_audit_meta_without_kb(
         self, service_without_kb
     ):
-        """测试 KB 未启用时返回正确的 audit_meta"""
+        """测试 KB 未启用时返回正确的 audit_meta（S0 阶段）"""
         system_prompt, audit_meta = await service_without_kb._build_system_prompt(
             query="测试查询", case_id="Q005"
         )
 
         assert isinstance(system_prompt, str)
-        assert "当前工单 ID：Q005" in system_prompt
+        assert "工单 ID：Q005" in system_prompt
+        # S0 阶段的 fallback_level 应该是 s0_intent_recognition
+        assert audit_meta["fallback_level"] == "s0_intent_recognition"
         assert audit_meta["has_sop"] is False
         assert audit_meta["kb_chunks_count"] == 0
         assert audit_meta["kb_top_score"] is None
@@ -282,7 +287,7 @@ class TestBuildSystemPromptAuditMeta:
         )
 
         system_prompt, audit_meta = await service_with_kb._build_system_prompt(
-            query="测试", case_id="Q006"
+            query="测试", case_id="Q006", diagnostic_stage="S1"
         )
 
         # 验证 needs_review 正确传递
@@ -423,7 +428,7 @@ class TestSendMessageTriggersPromptAudit:
     async def test_build_system_prompt_audit_meta_integration(
         self, service_with_kb, mock_kb_client
     ):
-        """测试 _build_system_prompt 返回的 audit_meta 被正确传递"""
+        """测试 _build_system_prompt 返回的 audit_meta 被正确传递（S1 阶段）"""
         case_id = "Q002"
 
         # 设置 KB 返回（新接口）
@@ -457,9 +462,9 @@ class TestSendMessageTriggersPromptAudit:
             }
         )
 
-        # 直接测试 _build_system_prompt
+        # 直接测试 _build_system_prompt（S1 阶段）
         system_prompt, audit_meta = await service_with_kb._build_system_prompt(
-            query="测试查询", case_id=case_id
+            query="测试查询", case_id=case_id, diagnostic_stage="S1"
         )
 
         # 验证 audit_meta 内容正确

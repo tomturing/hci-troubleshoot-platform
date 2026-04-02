@@ -19,6 +19,8 @@ logger = get_logger("conversation-kb-client")
 
 # 超时配置（KB 检索通常需要向量计算，给予充足时间）
 _REQUEST_TIMEOUT = 10.0
+# 分类列表获取超时（较短，因为只是简单查询）
+_CATEGORY_TIMEOUT = 5.0
 
 
 class KBClient(InternalHTTPClient):
@@ -244,3 +246,84 @@ class KBClient(InternalHTTPClient):
                     query=query[:80],
                 )
                 return []
+
+    async def get_categories_grouped(self) -> dict[str, list[dict]]:
+        """
+        获取分类列表（按域分组）
+
+        用于 S0 意图识别阶段，将 198 个分类注入 Prompt。
+        返回格式：
+        {
+            "虚拟机": [{"id": "虚拟机-001", "label": "虚拟机创建失败"}, ...],
+            "网络": [...],
+            "存储": [...],
+            "硬件": [...],
+            "平台": [...],
+        }
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_CATEGORY_TIMEOUT) as client:
+                resp = await client.get(
+                    f"{self._api_prefix}/categories/grouped",
+                    headers=self._headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("categories_by_domain", {})
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                event="kb_categories_http_error",
+                message=f"KB categories returned HTTP {exc.response.status_code}",
+                status_code=exc.response.status_code,
+            )
+            return {}
+        except httpx.RequestError as exc:
+            logger.warning(
+                event="kb_categories_unavailable",
+                message=f"KB service unreachable: {exc}",
+            )
+            return {}
+
+    async def increment_category_hit(self, code: str) -> int:
+        """
+        分类命中计数 +1
+
+        当 LLM 在 S0 阶段确认故障分类时调用，用于分析热门/冷门分类。
+
+        Args:
+            code: 分类编码，如 "虚拟机-003"
+
+        Returns:
+            更新后的 hit_count 值，失败返回 -1
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_CATEGORY_TIMEOUT) as client:
+                resp = await client.post(
+                    f"{self._api_prefix}/categories/{code}/hit",
+                    headers=self._headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                hit_count = data.get("hit_count", -1)
+                logger.info(
+                    event="category_hit_incremented",
+                    message=f"分类 {code} 命中计数已更新为 {hit_count}",
+                    code=code,
+                    hit_count=hit_count,
+                )
+                return hit_count
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                event="kb_category_hit_http_error",
+                message=f"KB category hit returned HTTP {exc.response.status_code}",
+                code=code,
+                status_code=exc.response.status_code,
+            )
+            return -1
+        except httpx.RequestError as exc:
+            logger.warning(
+                event="kb_category_hit_unavailable",
+                message=f"KB service unreachable: {exc}",
+                code=code,
+            )
+            return -1

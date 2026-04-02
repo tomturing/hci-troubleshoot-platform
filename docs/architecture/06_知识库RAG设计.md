@@ -28,12 +28,13 @@
 - **SOP 轨道优先**：症状匹配 SOP → 走程序性排障流程（`【SOP排障流程】`注入）
 - **KB 轨道兜底**：SOP 未命中 → 语义检索历史案例辅助推理（`【历史案例参考】`注入）
 - **双轨均未命中时机制推理**：LLM 基于训练领域知识推断，标注`【机制推理】`
-- **分类先行**：先定位问题域（S1 阶段），再触发检索，避免 S0 模糊期盲搜
+- **分类先行**：S0 专职确认故障分类（category_id），S1+ 才触发检索，避免 S0 模糊期盲搜
+- **category_id 直查路由**：S1+ 用 category_id 直接查 SOP（O(1)），不再做关键字/语义匹配
 - **人工审核门控**：所有生成的知识文档必须人工审核后才能对外可见
 
-> **重要架构变更（2026-03-23）**：原"SOP 关键字精确匹配"已升级为"语义路由匹配"，
-> 原"单轨 RAG 兜底"已升级为"双轨（SOP轨道 + KB轨道）三级Fallback"。
-> 详细决策依据见 `docs/architecture/08_HCI平台效果差距分析与重构方案.md` §「知识源深度对比分析」。
+> **架构变更（2026-03-23）**：SOP 关键字匹配 → 语义路由；单轨 RAG → 双轨三级 Fallback。
+> **架构变更（2026-04-02）**：SOP 语义路由 → category_id 直查路由（sop_document.category_id FK）；S0 专职分类，禁止在 S0 触发检索。
+> 详细决策依据见 [22_S0意图识别与分类基线重构方案.md](./22_S0意图识别与分类基线重构方案.md)。
 
 ### 1.3 双轨知识架构（现行方案）
 
@@ -47,42 +48,42 @@
 #### 双轨检索流程
 
 ```
-用户描述故障（S1 分类后）
+用户描述故障（S0 意图识别 → category_id 确认）
         │
-        ▼
-[SOP 路由] 语义匹配 SOP 章节标题 + 错误码
+        ▼ category_id 已知（如 虚拟机-003）
+[第1轨：SOP 直查] sop_document WHERE category_id = X
         │
-        ├─ 命中 ──→ 注入「SOP排障流程」知识原子集
-        │           AI 走程序性路径（执行命令→判断阈值→决策）
+        ├─ 命中 ──→ 加载 sop_chunk → SOP 步骤引导 → ✅ 返回
         │
         └─ 未命中
                 │
                 ▼
-        [KB 检索] BM25+向量混合检索 problem_desc 字段
+        [第2轨：KBD 检索] kbd_entry WHERE category_id = X
+                │           BM25(tsv) + 向量(embedding) → RRF → top5
                 │
-                ├─ 命中 ──→ 注入「历史案例参考」（保留完整案例，不拆分）
+                ├─ 命中 ──→ 注入「历史案例参考」
                 │           AI 用 root_cause 生成假设，验证后执行
                 │
                 └─ 未命中
                         │
                         ▼
-                [机制推理] 无外部知识注入
-                        AI 仅凭训练知识推断，所有结论标注【机制推理】
+                [第3轨：人工兜底]
+                        生成升级工单 + 标记 category_id → 转人工处理
 ```
 
 #### SOP 轨道存储规范
 
-- **存储单元**：知识原子（knowledge_atom），按决策树节点切分，不走 512-token 滑块
-- **必须字段**：`atom_type`（diagnostic_step / decision_gate / threshold / fix_action）、`parent_path`（从根到本节点的完整路径）、`command`、`expected_output_field`、`judgment_condition`、`applicable_version`
-- **Prompt 注入标签**：`【SOP 排障流程 | 来源: {chapter_path}】`
-- **路由机制**：embedding 语义相似度（≥0.75 阈值命中），禁止纯关键字字符串扫描
+- **存储单元**：`sop_document`（完整文档）+ `sop_chunk`（分块检索）
+- **路由机制**：`sop_document.category_id` 外键直查（O(1) 精确定位），无需语义计算
+- **检索字段**：`sop_chunk.embedding`（向量）+ `sop_chunk.tsv`（BM25），RRF 融合
+- **Prompt 注入标签**：`【SOP 排障流程 | 来源: {sop_document.title}】`
 
 #### KB 轨道存储规范
 
-- **存储单元**：完整案例文档（禁止分块），对 `problem_desc + root_cause` 建向量索引
-- **必须字段**：`problem_desc`（向量化依据）、`root_cause`（假设来源）、`solution`（参考步骤）、`error_codes`（精确匹配锚点）、`applicable_version`（时效控制）
-- **Prompt 注入标签**：`【历史案例参考 | 案例 #{id}】`
-- **路由机制**：混合检索（BM25 + pgvector），主要匹配 `problem_desc`，`error_codes` 可触发精确加权
+- **存储单元**：`kbd_entry`（KBD 知识条目，整条 embedding，无分块）
+- **路由机制**：`kbd_entry.category_id` 外键过滤 + BM25(tsv) + 向量(embedding) RRF 融合
+- **必须字段**：`title`、`content_md`（完整 Markdown）、`category_id`（分类过滤）、`embedding`、`tsv`
+- **Prompt 注入标签**：`【历史案例参考 | 案例 #{support_id}】`
 
 ### 1.4 架构选型说明（历史决策保留）
 
