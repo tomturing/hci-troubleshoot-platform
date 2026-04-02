@@ -94,6 +94,20 @@ class KbdSettings(BaseSettings):
     # AI 分类置信度阈值：低于此值时在 draft 标记"需人工重新分类"
     MIN_CLASSIFY_CONFIDENCE: float = Field(default=0.5, ge=0.0, le=1.0)
 
+    # ── kb-service API（数据管道调用）──────────────────────────────────────────
+    KB_SERVICE_URL: str = Field(
+        default="http://localhost:8004",
+        description="kb-service 内部 API 地址",
+    )
+    INTERNAL_API_TOKEN: str = Field(
+        default="hci-dev-internal-token",
+        description="内部服务认证 Token（Bearer Token）",
+    )
+    # API 请求超时（秒）
+    API_TIMEOUT: float = Field(default=30.0)
+    # API 最大重试次数
+    API_MAX_RETRIES: int = Field(default=3)
+
     @field_validator("KBD_CACHE_DIR", "EXCEL_FILE", "CATEGORY_BASELINE", mode="before")
     @classmethod
     def _to_path(cls, v: str | Path) -> Path:
