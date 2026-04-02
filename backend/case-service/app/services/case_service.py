@@ -20,6 +20,35 @@ from ..repositories.case_repo import CaseRepository
 
 logger = get_logger("case-service")
 
+# 分类关键词映射表（用于自动推断工单分类）
+_CATEGORY_KEYWORDS = {
+    "vm": ["虚拟机", "VM", "vm", "开机", "关机", "迁移", "快照", "虚机"],
+    "storage": ["存储", "磁盘", "卷", "NFS", "iSCSI", "ASAN", "硬盘"],
+    "network": ["网络", "IP", "VLAN", "连通", "丢包", "网口", "网卡", "vxlan"],
+    "cluster": ["集群", "节点", "宿主机", "host", "主机", "集群管理"],
+    "backup": ["备份", "恢复", "快照", "克隆", "容灾"],
+    "hardware": ["硬件", "IPMI", "风扇", "电源", "温度", "磁盘灯"],
+}
+
+
+def _infer_category(title: str, description: str | None) -> str | None:
+    """
+    基于标题和描述关键词推断工单分类。
+
+    Args:
+        title: 工单标题
+        description: 工单描述（可选）
+
+    Returns:
+        推断的分类字符串，无法匹配时返回 None
+    """
+    text = (title or "") + " " + (description or "")
+    for category, keywords in _CATEGORY_KEYWORDS.items():
+        if any(kw in text for kw in keywords):
+            return category
+    return None
+
+
 class CaseService:
     """工单业务服务"""
 
@@ -54,6 +83,17 @@ class CaseService:
             user = await self.repository.create_user(user)
             logger.info(f"Created new user for client_id: {case_create.client_id}")
 
+        # 自动推断分类（如果前端未传入）
+        category = case_create.category
+        if not category:
+            category = _infer_category(case_create.title, case_create.description)
+            if category:
+                logger.info(
+                    event="category_auto_inferred",
+                    case_id=case_id,
+                    inferred_category=category,
+                )
+
         case = Case(
             case_id=case_id,
             user_id=user.user_id,
@@ -62,6 +102,7 @@ class CaseService:
             description=case_create.description,
             status=CaseStatus.created,
             assistant_type=case_create.assistant_type or "openclaw",
+            category=category,
             trace_id=trace_id
         )
 
@@ -71,7 +112,8 @@ class CaseService:
             event="case_created",
             message=f"Created case {case_id}",
             case_id=case_id,
-            client_id=case_create.client_id
+            client_id=case_create.client_id,
+            category=category,
         )
 
         return CaseResponse.model_validate(created_case)

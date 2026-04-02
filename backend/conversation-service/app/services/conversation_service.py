@@ -828,11 +828,13 @@ class ConversationService:
         """持久化诊断阶段转换（fire-and-forget 后台任务）
 
         使用独立事务 session 确保与主请求解耦。
+        确保内存更新在 DB commit 成功后执行，避免状态不一致。
         """
         from sqlalchemy import update as sa_update
 
         from ..models.conversation import Conversation as ConversationModel
 
+        db_committed = False
         try:
             if self.session_factory:
                 async with self.session_factory() as session:
@@ -842,11 +844,17 @@ class ConversationService:
                         .values(diagnostic_stage=new_stage)
                     )
                     await session.commit()
+                db_committed = True
+                # DB 提交成功后更新内存
+                conv = await self.repository.get_conversation(conversation_id)
+                if conv:
+                    conv.diagnostic_stage = new_stage
             else:
                 conv = await self.repository.get_conversation(conversation_id)
                 if conv:
                     conv.diagnostic_stage = new_stage
                     await self.repository.session.flush()
+                db_committed = True
 
             label = self._conversation_manager.get_stage_label
             logger.info(
@@ -855,13 +863,18 @@ class ConversationService:
                 conversation_id=str(conversation_id),
                 old_stage=old_stage,
                 new_stage=new_stage,
+                db_committed=db_committed,
             )
         except Exception as e:
-            logger.warning(
+            # DB 提交失败，内存不更新，记录错误日志
+            logger.error(
                 event="diagnostic_stage_update_error",
                 message=f"诊断阶段持久化失败：{e}",
                 conversation_id=str(conversation_id),
+                old_stage=old_stage,
                 new_stage=new_stage,
+                db_committed=False,
+                error=str(e),
             )
 
     async def _update_conversation_category(
