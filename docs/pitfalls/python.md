@@ -45,3 +45,27 @@ class MyModel(Base):
 - Python 属性名改为非保留字（如 `entry_metadata`）
 - 数据库列名保持不变（无需数据迁移）
 - 使用 `Column("原列名", 类型, ...)` 语法
+
+## PIT-041：SQLAlchemy 模型重复定义导致 Table already defined 错误
+
+同一个表在多个文件中定义 ORM 类会导致冲突：
+
+```python
+# models/kb_category.py
+class KbCategory(Base):
+    __tablename__ = "kb_category"
+    # ...
+
+# routes/classify.py — ❌ 错误：重复定义
+class KbCategory(Base):
+    __tablename__ = "kb_category"
+    # ...
+```
+
+**症状：**
+- 服务启动时抛出 `InvalidRequestError: Table 'kb_category' is already defined for this MetaData instance`
+
+**修复：**
+- 一个表只定义一个 ORM 类
+- 其他文件通过 `from app.models import KbCategory` 导入
+- 避免在路由文件中重复定义模型

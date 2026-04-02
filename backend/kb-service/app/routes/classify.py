@@ -42,13 +42,13 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from shared.database.postgres import Base
 from shared.utils.logger import get_logger
-from sqlalchemy import Column, Integer, SmallInteger, String, Text, select, text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy import select, text
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
+
+from app.models.kb_category import KbCategory
 
 logger = get_logger("kb-service-classify")
 router = APIRouter(prefix="/api/kb", tags=["classify"])
@@ -94,32 +94,6 @@ class CategoriesResponse(BaseModel):
 
     categories: list[CategoryItem] = Field(..., description="分类节点列表（按 level 排序）")
     total: int = Field(..., description="总数量")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SQLAlchemy ORM 模型（用于查询 kb_category 表）
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class KbCategory(Base):
-    """kb_category 表 ORM 映射"""
-
-    __tablename__ = "kb_category"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    parent_id = Column(Integer, nullable=True)  # 自引用外键，查询时不需关联
-    name = Column(String(100), nullable=False)
-    level = Column(SmallInteger, nullable=False)
-    keywords = Column(ARRAY(Text), nullable=True)
-    source = Column(String(20), default="manual")
-    version = Column(String(20), default="1.0")
-    created_at = Column(String(50), nullable=True)  # TIMESTAMPTZ 映射为字符串，查询时不使用
-
-    # 扩展字段（来自 20260401001_kbd_pipeline.sql）
-    code = Column(String(32), unique=True, nullable=True)
-    domain = Column(String(50), nullable=True)
-    path_labels = Column(JSONB, nullable=True)
-    embedding = Column(String, nullable=True)  # vector(1536) 映射为字符串，需特殊处理
 
 
 # ─────────────────────────────────────────────────────────────────────────────
