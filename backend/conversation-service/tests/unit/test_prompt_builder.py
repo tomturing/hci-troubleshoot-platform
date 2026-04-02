@@ -5,8 +5,7 @@ PromptBuilder 单元测试
 """
 
 import pytest
-
-from app.services.prompt_builder import PromptBuilder, STAGE_METHODOLOGY
+from app.services.prompt_builder import PromptBuilder
 
 
 @pytest.fixture

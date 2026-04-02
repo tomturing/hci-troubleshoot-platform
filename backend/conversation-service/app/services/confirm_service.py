@@ -15,7 +15,7 @@ Redis Key 设计：confirm:{session_id}（LIST 类型，BRPOP 等待，LPUSH 写
 
 import json
 import logging
-from enum import Enum
+from enum import StrEnum
 
 from redis.asyncio import Redis
 
@@ -26,7 +26,7 @@ CONFIRM_TIMEOUT = 120
 REDIS_KEY_PREFIX = "confirm:"
 
 
-class ConfirmResult(str, Enum):
+class ConfirmResult(StrEnum):
     """确认结果枚举，区分超时和用户拒绝"""
 
     APPROVED = "approved"      # 用户确认执行
