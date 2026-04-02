@@ -83,16 +83,15 @@ class CaseService:
             user = await self.repository.create_user(user)
             logger.info(f"Created new user for client_id: {case_create.client_id}")
 
-        # 自动推断分类（如果前端未传入）
-        category = case_create.category
-        if not category:
-            category = _infer_category(case_create.title, case_create.description)
-            if category:
-                logger.info(
-                    event="category_auto_inferred",
-                    case_id=case_id,
-                    inferred_category=category,
-                )
+        # 工单分类由 S0 意图识别流程自动写入（PR #88），此处 category 初始为 None
+        # _infer_category 保留供后续兜底使用，暂不在创建工单时调用
+        category = _infer_category(case_create.title, case_create.description)
+        if category:
+            logger.info(
+                event="category_auto_inferred",
+                case_id=case_id,
+                inferred_category=category,
+            )
 
         case = Case(
             case_id=case_id,
