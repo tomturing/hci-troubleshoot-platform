@@ -953,3 +953,245 @@ class ConversationService:
                 conversation_id=str(conversation_id),
                 category_info=category_info,
             )
+
+    # ─── S0 失败兜底 (v2) ────────────────────────────────────────────────────
+
+    async def handle_s0_failure(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+    ) -> str:
+        """
+        S0 意图识别彻底失败后的兜底处理。
+
+        触发条件（满足任一）：
+          - 候选确认轮次超过 S0_MAX_CANDIDATE_ROUNDS（默认 2 轮）
+          - 用户两轮均选择 ③"以上都不是"
+
+        行为：
+          1. conversation.diagnostic_stage → "S0_FAILED"（标记失败原因）
+          2. case.status: created → in_progress（跳过 confirmed，直接移交人工）
+             close_reason 写 "s0_classification_failed"
+          3. 返回面向用户的提示文本（由调用方 yield 给前端）
+
+        Returns:
+            str: 推送给用户的提示消息
+        """
+        from sqlalchemy import update as sa_update
+
+        from ..models.conversation import Conversation as ConversationModel
+
+        # 1. 标记 conversation 失败状态
+        try:
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    await session.execute(
+                        sa_update(ConversationModel)
+                        .where(ConversationModel.conversation_id == conversation_id)
+                        .values(diagnostic_stage="S0_FAILED")
+                    )
+                    await session.commit()
+            else:
+                conv = await self.repository.get_conversation(conversation_id)
+                if conv:
+                    conv.diagnostic_stage = "S0_FAILED"
+                    await self.repository.session.flush()
+        except Exception as e:
+            logger.warning(
+                event="s0_failure_stage_update_error",
+                message=f"S0 失败状态写入异常：{e}",
+                conversation_id=str(conversation_id),
+            )
+
+        # 2. case.status → in_progress（直接跳，不经过 confirmed）
+        if self.scheduler_client:
+            try:
+                await self.scheduler_client.escalate_case_to_human(
+                    case_id=case_id,
+                    close_reason="s0_classification_failed",
+                )
+                logger.info(
+                    event="s0_failure_escalated",
+                    message=f"S0 分类失败，工单 {case_id} 已移交人工",
+                    case_id=case_id,
+                    conversation_id=str(conversation_id),
+                )
+            except Exception as e:
+                logger.error(
+                    event="s0_failure_escalate_error",
+                    message=f"S0 兜底移交人工失败：{e}",
+                    case_id=case_id,
+                )
+
+        return (
+            "抱歉，当前 AI 助手无法确认您描述的故障类型，"
+            f"已为您转接人工工程师处理。\n"
+            f"工单编号：{case_id}，工程师将尽快与您联系。"
+        )
+
+    # ─── S6 三选项处理方法 (v6.3) ────────────────────────────────────────────
+
+    async def send_s6_resolution_options(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> dict:
+        """
+        S6 阶段完成后，向用户推送三选项并持久化等待快照。
+
+        调用时机：AI 完成 S6 VM 验证工具调用后，在推送 SSE 事件前调用此方法。
+
+        流程：
+          1. 构造 pending_resolution JSONB 快照
+          2. 验证互斥约束（pending_confirm 必须为 NULL）
+          3. 写入 DB（conversation.pending_resolution）
+          4. 返回 SSE 消息体（由调用方推送）
+
+        Args:
+            conversation_id: 当前会话 ID
+
+        Returns:
+            dict: SSE 事件 payload，包含 event="s6_resolution_options_sent" 和 options
+
+        Raises:
+            ValueError: pending_confirm 非 NULL（约束 3 violation）
+        """
+        from sqlalchemy import update as sa_update
+
+        from ..models.conversation import Conversation as ConversationModel
+
+        conv = await self.repository.get_conversation(conversation_id)
+        if conv is None:
+            raise ValueError(f"会话不存在：{conversation_id}")
+
+        # 约束 3：pending_resolution 和 pending_confirm 不能同时非 NULL
+        if conv.pending_confirm is not None:
+            raise ValueError(
+                f"约束违反：pending_confirm 非 NULL（{conv.pending_confirm!r}）时"
+                "不能设置 pending_resolution，两种等待状态互斥"
+            )
+
+        pending = self._conversation_manager.build_pending_resolution()
+
+        if self.session_factory:
+            async with self.session_factory() as session:
+                await session.execute(
+                    sa_update(ConversationModel)
+                    .where(ConversationModel.conversation_id == conversation_id)
+                    .values(pending_resolution=pending)
+                )
+                await session.commit()
+        else:
+            conv.pending_resolution = pending
+            await self.repository.session.flush()
+
+        logger.info(
+            event="s6_resolution_options_sent",
+            message="S6 三选项已推送，等待用户选择",
+            conversation_id=str(conversation_id),
+            sent_at=pending["sent_at"],
+        )
+
+        return {
+            "event": "s6_resolution_options_sent",
+            "data": {
+                "message": "问题是否已解决？请选择：\nA. 是，问题已解决\nB. 否，还有新报错\nC. 需要人工支持",
+                "options": pending["options"],
+                "sent_at": pending["sent_at"],
+            },
+        }
+
+    async def handle_s6_resolution_choice(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        choice: str,
+    ) -> dict:
+        """
+        处理用户在 S6 三选项中的选择（A/B/C）。
+
+        实现 4 条服务层强制约束（见 01_系统架构.md §9.6）：
+          - 约束 1：resolved 只能从 confirmed 转入，且必须有 pending_resolution 快照
+          - 约束 4 (B选项)：先 batch archive 旧 diagnostic_item，再改 stage
+
+        Args:
+            conversation_id: 当前会话 ID
+            case_id: 工单 ID
+            choice: 用户选择 "A"/"B"/"C"
+
+        Returns:
+            dict: 执行结果摘要
+
+        Raises:
+            ValueError: choice 不合法，或业务状态不满足约束
+        """
+        from sqlalchemy import update as sa_update
+
+        from ..models.conversation import Conversation as ConversationModel
+        from ..models.diagnostic_item import STATUS_ARCHIVED, DiagnosticItem
+
+        # 获取动作描述（纯函数，不含副作用）
+        action = self._conversation_manager.handle_resolution_choice(choice)  # type: ignore[arg-type]
+
+        conv = await self.repository.get_conversation(conversation_id)
+        if conv is None:
+            raise ValueError(f"会话不存在：{conversation_id}")
+
+        # 约束 1：resolved 只能在有 pending_resolution 的情况下发起
+        if action["case_status"] == "resolved" and conv.pending_resolution is None:
+            raise ValueError(
+                "约束违反：选 A 要求 pending_resolution 非 NULL，但当前为 NULL，"
+                "请先调用 send_s6_resolution_options()"
+            )
+
+        results: dict = {"choice": choice, "action": action["action"]}
+
+        if self.session_factory:
+            async with self.session_factory() as session:
+                # 约束 4（B选项）：先 archive 旧 diagnostic_item
+                if action["archive_diagnostic_items"]:
+                    from sqlalchemy import and_
+                    result = await session.execute(
+                        sa_update(DiagnosticItem)
+                        .where(
+                            and_(
+                                DiagnosticItem.conversation_id == conversation_id,
+                                DiagnosticItem.status != STATUS_ARCHIVED,
+                            )
+                        )
+                        .values(status=STATUS_ARCHIVED)
+                    )
+                    results["archived_count"] = result.rowcount
+                    logger.info(
+                        event="diagnostic_items_archived",
+                        message=f"B 选项回退：已归档 {result.rowcount} 条诊断结论",
+                        conversation_id=str(conversation_id),
+                        archived_count=result.rowcount,
+                    )
+
+                # 更新 conversation 字段
+                conv_updates: dict = {}
+                if action["clear_pending_resolution"]:
+                    conv_updates["pending_resolution"] = None
+                if action["new_stage"]:
+                    conv_updates["diagnostic_stage"] = action["new_stage"]
+
+                if conv_updates:
+                    await session.execute(
+                        sa_update(ConversationModel)
+                        .where(ConversationModel.conversation_id == conversation_id)
+                        .values(**conv_updates)
+                    )
+
+                await session.commit()
+
+        logger.info(
+            event="s6_resolution_choice_handled",
+            message=f"S6 用户选 {choice}，执行 {action['action']}",
+            conversation_id=str(conversation_id),
+            case_id=case_id,
+            choice=choice,
+            action=action["action"],
+            new_case_status=action["case_status"],
+        )
+
+        return results

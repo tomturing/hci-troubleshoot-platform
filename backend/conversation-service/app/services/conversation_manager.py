@@ -9,9 +9,15 @@
 S0 阶段增强：
 - extract_category_from_reply(): 从 LLM 回复中提取「已确认故障分类」标记
 - detect_stage_transition(): S0→S1 转换时返回提取的分类信息
+
+S6 阶段处理（v6.3 新增）：
+- build_pending_resolution(): 构造 S6 等待快照，写入 conversation.pending_resolution
+- handle_resolution_choice(): 处理用户 A/B/C 选择，返回需执行的动作
 """
 
 import re
+from datetime import UTC, datetime
+from typing import Literal
 
 from shared.utils.logger import get_logger
 
@@ -73,6 +79,14 @@ _RESET_KEYWORDS: list[str] = [
 _CATEGORY_CONFIRM_PATTERN = re.compile(
     r"已确认故障分类[:：]\s*([\u4e00-\u9fa5]+-\d+)\s+([\u4e00-\u9fa5A-Za-z0-9\u4e00-\u9fa5]+)"
 )
+
+# S0 阶段候选选择正则：匹配用户输入 ①②③ 或 1/2/3（带可选后缀）
+_CANDIDATE_SELECT_PATTERN = re.compile(
+    r"^[\s\u3000]*([①②③]|[1-3](?:[\.、\s]|$))"
+)
+
+# S0 候选确认轮数上限（超过后触发兜底）
+S0_MAX_CANDIDATE_ROUNDS: int = 2
 
 
 class ConversationManager:
@@ -204,3 +218,167 @@ class ConversationManager:
             "S6": "S6-验证闭环",
         }
         return _labels.get(stage, stage)
+
+    # ─── S0 候选确认模式 (v2) ────────────────────────────────────────────────
+
+    def parse_candidate_selection(self, user_reply: str) -> int | None:
+        """
+        解析用户在 S0 候选选项中的选择。
+
+        支持格式：
+          ① ② ③（圆圈数字）
+          1 / 2 / 3（阿拉伯数字 + 可选标点/空格/行尾）
+
+        Args:
+            user_reply: 用户的回复文本（逐行扫描取第一个匹配）
+
+        Returns:
+            int 1 / 2 / 3，或 None（未匹配，视为自然语言补充描述）
+        """
+        _circle_map = {"①": 1, "②": 2, "③": 3}
+        for line in user_reply.splitlines():
+            line = line.strip()
+            m = _CANDIDATE_SELECT_PATTERN.match(line)
+            if m:
+                token = m.group(1).strip()
+                if token in _circle_map:
+                    return _circle_map[token]
+                # 阿拉伯数字
+                digit = token.rstrip(".、 \t")
+                if digit.isdigit():
+                    n = int(digit)
+                    if 1 <= n <= 3:
+                        return n
+        return None
+
+    def resolve_candidate_category(
+        self,
+        selection: int,
+        candidates: list[dict[str, str]],
+    ) -> dict[str, str] | None:
+        """
+        将用户选择序号（1/2）映射到对应的 category_info。
+
+        选择 3（"以上都不是"）返回 None，由调用方决定是否继续追问或触发失败兜底。
+
+        Args:
+            selection: parse_candidate_selection() 返回的序号（1/2/3）
+            candidates: 当前轮次 LLM 给出的候选列表，
+                        格式：[{"code": "虚拟机-003", "name": "虚拟机开机失败"}, ...]
+
+        Returns:
+            dict {"code": ..., "name": ...} 或 None
+        """
+        if selection == 3:
+            logger.info(event="s0_candidate_none", message="用户选 ③：以上都不是")
+            return None
+        idx = selection - 1  # 0-based
+        if 0 <= idx < len(candidates):
+            chosen = candidates[idx]
+            logger.info(
+                event="s0_candidate_selected",
+                message=f"用户选 {'①②'[idx]}：{chosen.get('code')} {chosen.get('name')}",
+                code=chosen.get("code"),
+                name=chosen.get("name"),
+            )
+            return {"code": chosen.get("code", ""), "name": chosen.get("name", "")}
+        return None
+
+    @staticmethod
+    def should_trigger_s0_failure(s0_candidate_rounds: int) -> bool:
+        """
+        判断 S0 是否应触发失败兜底。
+
+        超过 S0_MAX_CANDIDATE_ROUNDS 轮候选确认仍未收敛，
+        说明 AI 无法胜任该问题的分类，应快速移交人工。
+
+        Args:
+            s0_candidate_rounds: 已进行的候选确认轮次数
+
+        Returns:
+            True 表示应触发兜底
+        """
+        return s0_candidate_rounds >= S0_MAX_CANDIDATE_ROUNDS
+
+    def build_pending_resolution(self) -> dict:
+        """
+        构造 S6 完成后的等待快照（写入 conversation.pending_resolution）。
+
+        格式符合 schema_design.json 规范：
+          {"stage": "S6", "sent_at": "...", "options": ["A", "B", "C"]}
+
+        调用时机：AI 在 S6 阶段完成 VM 验证后，向用户推送三选项 SSE 事件时同步写入 DB。
+
+        Returns:
+            dict: pending_resolution JSONB 快照
+        """
+        return {
+            "stage": "S6",
+            "sent_at": datetime.now(UTC).isoformat(),
+            "options": ["A", "B", "C"],
+        }
+
+    def handle_resolution_choice(
+        self,
+        choice: Literal["A", "B", "C"],
+    ) -> dict:
+        """
+        处理用户在 S6 三选项中的选择，返回需要执行的动作描述。
+
+        无状态纯函数：不直接操作数据库，只返回动作描述，由调用方实现具体数据库操作。
+
+        Args:
+            choice: 用户的选择，"A"/"B"/"C" 之一
+
+        Returns:
+            dict，包含以下字段：
+              - action: str，动作类型（"resolve" / "retry_s1" / "escalate"）
+              - case_status: str | None，需要更新 case.status 的目标值（None 表示不更新）
+              - close_reason: str | None，需要更新 case.close_reason 的值
+              - new_stage: str | None，conversation.diagnostic_stage 的新值（None=不变）
+              - archive_diagnostic_items: bool，是否需要 batch UPDATE 旧 diagnostic_item 为 archived
+              - clear_pending_resolution: bool，是否需要清空 pending_resolution
+
+        Raises:
+            ValueError: choice 不是 "A"/"B"/"C" 时
+        """
+        if choice not in ("A", "B", "C"):
+            raise ValueError(f"无效的 S6 选择：{choice!r}，必须是 'A'、'B' 或 'C'")
+
+        if choice == "A":
+            # 用户选 A：问题已解决
+            # → case.status = resolved（等待 Pod 回收后变 closed）
+            logger.info(event="s6_choice_a", message="用户选 A：问题已解决，转 resolved")
+            return {
+                "action": "resolve",
+                "case_status": "resolved",
+                "close_reason": None,
+                "new_stage": None,
+                "archive_diagnostic_items": False,
+                "clear_pending_resolution": True,
+            }
+        elif choice == "B":
+            # 用户选 B：未解决，需要重新诊断
+            # → diagnostic_stage 回退 S1，旧 diagnostic_item 全部 archived
+            # → case.status 不变（仍为 confirmed，诊断仍在进行）
+            logger.info(event="s6_choice_b", message="用户选 B：未解决回退 S1，archive 旧诊断结论")
+            return {
+                "action": "retry_s1",
+                "case_status": None,
+                "close_reason": None,
+                "new_stage": "S1",
+                "archive_diagnostic_items": True,
+                "clear_pending_resolution": True,
+            }
+        else:  # C
+            # 用户选 C：升级人工
+            # → case.status = in_progress，close_reason = escalated
+            logger.info(event="s6_choice_c", message="用户选 C：升级人工，转 in_progress")
+            return {
+                "action": "escalate",
+                "case_status": "in_progress",
+                "close_reason": "escalated",
+                "new_stage": None,
+                "archive_diagnostic_items": False,
+                "clear_pending_resolution": True,
+            }

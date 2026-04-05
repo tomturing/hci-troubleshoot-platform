@@ -199,6 +199,44 @@ class CaseService:
         total = sum(by_status.values())
         return CaseStatsResponse(total=total, by_status=by_status)
 
+    async def escalate_to_human(
+        self,
+        case_id: str,
+        close_reason: str = "s0_classification_failed",
+    ) -> CaseResponse | None:
+        """
+        将工单直接跳转到 in_progress 状态，移交人工处理。
+
+        适用于以下场景：
+          - S0 意图识别彻底失败（close_reason="s0_classification_failed"）
+          - S6 用户选 C 升级人工（close_reason="escalated"，由 handle_s6_resolution_choice 调用）
+
+        与 confirm_case() 不同，此方法允许 created → in_progress 直接跳转，
+        跳过 confirmed 中间态（S0 失败时 AI 未完成分类，不应写 confirmed）。
+
+        Args:
+            case_id: 工单ID
+            close_reason: 关闭原因，默认 s0_classification_failed
+
+        Returns:
+            更新后的 CaseResponse，或 None（工单不存在）
+        """
+        case = await self.repository.update_status(
+            case_id,
+            CaseStatus.in_progress,
+            close_reason=close_reason,
+        )
+        if not case:
+            return None
+
+        logger.info(
+            event="case_escalated_to_human",
+            message=f"工单 {case_id} 已移交人工（{close_reason}）",
+            case_id=case_id,
+            close_reason=close_reason,
+        )
+        return CaseResponse.model_validate(case)
+
     async def get_client_list(self) -> ClientListResponse:
         """获取客户端列表（Admin）"""
         rows = await self.repository.get_client_stats()

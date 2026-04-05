@@ -30,14 +30,19 @@ class Conversation(Base, TraceableMixin):
     repeat_question_count = Column(Integer, default=0, nullable=False)
     metadata_ = Column("metadata", JSONB, default=dict)
 
-    # 诊断状态字段（Phase 2 新增，迁移 0003）
+    # 诊断状态字段（Phase 2 新增，迁移 0003；v6.2 移除 hypothesis/react_state，见 BUG-06）
     diagnostic_stage = Column(String(8), default="S0", nullable=False, comment="诊断阶段 S0-S6")
     category_l1 = Column(String(100), nullable=True, comment="一级分类")
     category_l2 = Column(String(100), nullable=True, comment="二级分类")
-    category_id = Column(String(32), nullable=True, comment="分类 ID")
-    hypothesis = Column(JSONB, default=list, nullable=True, comment="当前假设列表")
-    react_state = Column(JSONB, default=dict, nullable=True, comment="ReAct 状态快照")
-    pending_confirm = Column(JSONB, nullable=True, comment="待确认工具调用")
+    category_id = Column(String(32), nullable=True, comment="分类 ID，关联 kb_category.code")
+    # [v6.2 已移除] hypothesis: 原 JSONB blob，BUG-06 根因，改为 diagnostic_item 子实体表
+    # [v6.2 已移除] react_state: ReAct 推理草稿，正确设计是内存存活（AgentState），无需持久化
+    pending_confirm = Column(JSONB, nullable=True, comment="待确认工具调用快照（S3/S5 高危工具等待授权），断线重连恢复锚点")
+    # v6.3 新增：S6 完成后等待用户意图选择的快照
+    # 格式：{"stage":"S6","sent_at":"...","options":["A","B","C"]}
+    # 选 A(已解决) → case.status=resolved；选 B(未解决) → 回退S1；选 C(升级人工) → in_progress
+    # 与 pending_confirm 独立：两者不会同时出现（pending_confirm在S3/S5，此字段在S6）
+    pending_resolution = Column(JSONB, nullable=True, comment="S6 验证闭环后等待用户选择的快照，A/B/C 选择后清空")
 
     def __repr__(self):
         return f"<Conversation(conversation_id={self.conversation_id}, case_id={self.case_id}, stage={self.diagnostic_stage})>"

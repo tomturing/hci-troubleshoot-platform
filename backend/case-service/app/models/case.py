@@ -6,7 +6,7 @@ import enum
 
 from shared.database.postgres import Base
 from shared.models.base import TimestampMixin, TraceableMixin
-from sqlalchemy import Column, DateTime, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
@@ -25,10 +25,12 @@ class CaseStatus(enum.StrEnum):
 class CloseReason(enum.StrEnum):
     """工单关闭原因枚举"""
 
-    user_command = "user_command"  # 用户主动输入命令关闭
-    timeout = "timeout"            # 超时自动关闭
-    abandon = "abandon"            # 用户放弃/断开连接
-    admin_close = "admin_close"    # 管理员强制关闭
+    user_command = "user_command"              # 用户主动输入命令关闭
+    timeout = "timeout"                        # 超时自动关闭
+    abandon = "abandon"                        # 用户放弃/断开连接
+    admin_close = "admin_close"                # 管理员强制关闭
+    escalated = "escalated"                    # 用户在 S6 后选 C：升级人工
+    s0_classification_failed = "s0_classification_failed"  # S0 意图识别彻底失败，移交人工
 
 
 class Case(Base, TimestampMixin, TraceableMixin):
@@ -39,6 +41,7 @@ class Case(Base, TimestampMixin, TraceableMixin):
     case_id = Column(String(20), primary_key=True)
     user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     client_id = Column(String(255), nullable=False, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customer.customer_id", ondelete="SET NULL"), nullable=True, index=True)  # 关联客户档案（可选），ON DELETE SET NULL
     title = Column(String(500), nullable=False)
     description = Column(Text, nullable=True)
     status = Column(SQLEnum(CaseStatus, name="case_status"), default=CaseStatus.created, nullable=False)
