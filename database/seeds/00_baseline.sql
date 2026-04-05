@@ -31,7 +31,12 @@ INSERT INTO schema_migrations (version) VALUES
     ('20260326001'),    -- 20260326001_p4_state_machine.sql
     ('20260326002'),    -- 20260326002_conversation_p4.sql
     ('20260326003'),    -- 20260326003_tool_audit_log.sql
-    ('20260401001')     -- 20260401001_kbd_pipeline.sql（如环境未执行，删除此行）
+    ('20260401001'),    -- 20260401001_kbd_pipeline.sql
+    ('20260401002'),    -- 20260401002_gap_fill_kb_tables.sql
+    ('20260402001'),    -- 20260402001_kb_category_sop_hit_tracking.sql（双文件同前缀，取任意一个版本号）
+    ('20260402002'),    -- 20260402002_migrate_audit_data.sql
+    ('20260402003'),    -- 20260402003_drop_deprecated_tables.sql
+    ('20260404001')     -- 20260404001_v6_redesign.sql（v6.2 重设计迁移）
 ON CONFLICT (version) DO NOTHING;
 
 -- Step 3: 验证结果

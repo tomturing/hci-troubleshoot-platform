@@ -1,9 +1,9 @@
 # 虚拟机开机失败 — AI 交互全流程验证方案
 
 > 创建日期：2026-03-31
-> 最后更新：2026-04-02（合入云端 feat(s0) #88 S0 意图识别与分类基线重构；CP-00/CP-02/CP-03/CP-05 状态同步修订）
+> 最后更新：2026-04-04（v6.3 更新：CP-10 补充 S6 三选项流程；CP-11 细化关单验证；新增两个状态机约束验证）
 > 目的：以"虚拟机开机失败"为实例，定义覆盖全链路的检查点，明确每个节点的验证方式（数据库 + 可观测性日志）。
-> 关联文档：[架构 01](../architecture/01_系统架构.md) | [AI 层 05](../architecture/05_AI助手层设计.md) | [技术方案 11](../architecture/11_完整技术方案.md) | [S0 重构方案 22](../architecture/22_S0意图识别与分类基线重构方案.md)
+> 关联文档：[架构 01](../architecture/01_系统架构.md) | [AI 层 05](../architecture/05_AI助手层设计.md) | [技术方案 11](../architecture/11_完整技术方案.md) | [S0 重构方案 22](../architecture/22_S0意图识别与分类基线重构方案.md) | [状态机设计 01§9](../architecture/01_系统架构.md#9-ai-诊断状态机设计-v63)
 > 问题整改：[T-流程验证问题整改任务.md](./T-流程验证问题整改任务.md)
 
 ---
@@ -18,7 +18,7 @@
   → S3 [CP-06 acli 工具诊断] → [CP-07 写操作人工确认]
   → S4 [CP-08 根因确认]
   → S5 [CP-09 方案输出]
-  → S6 [CP-10 验证 VM 开机] → [CP-11 工单关闭]
+  → S6 [CP-10 验证 VM 开机 + S6 三选项推送] → [CP-10A/10B/10C 用户选择处理] → [CP-11 工单关闭/回退/升级]
 ```
 
 ---
@@ -352,50 +352,149 @@ LIMIT 1;
 
 ---
 
-### CP-10：S6 验证 VM 开机
+### CP-10：S6 验证 VM 开机 + 三选项推送
 
-**触发节点**：用户执行方案后回报结果，AI 主动调用 `get_vm_list` 验证 VM 状态。
+**触发节点**：用户执行方案后回报结果，AI 主动调用 `get_vm_list` 验证 VM 状态，验证通过后向用户推送三选项。
 
-**DB 验证**：
+**DB 验证（工具调用）**：
 ```sql
 SELECT result, started_at
-FROM tool_audit_log
-WHERE session_id = '{conversation_id}'
+FROM tool_result
+WHERE conversation_id = '{conversation_id}'
 AND tool_name = 'get_vm_list'
 ORDER BY started_at DESC
 LIMIT 1;
 -- 预期：result 中 vm-prod-001 的 power_state='on'
 ```
 
+**DB 验证（三选项推送）**：
+```sql
+SELECT pending_resolution, diagnostic_stage
+FROM conversation
+WHERE conversation_id = '{conversation_id}';
+-- 预期：pending_resolution IS NOT NULL，stage='S6'
+-- 格式示例：{"stage":"S6","sent_at":"2026-04-04T10:00:00Z","options":["A","B","C"]}
+```
+
+**约束验证（pending 互斥）**：
+```sql
+-- 验证 pending_confirm 和 pending_resolution 不会同时存在
+SELECT pending_confirm, pending_resolution
+FROM conversation WHERE conversation_id = '{conversation_id}';
+-- 预期：两者至多一个非 NULL
+```
+
+**日志验证（Loki）**：
+```logql
+{service="conversation-service"} | json | event="s6_resolution_options_sent"
+| line_format "conv={{.conversation_id}} sent_at={{.sent_at}}"
+```
+
 **完成标准**：
-- [ ] `get_vm_list` 结果中 vm-prod-001 `power_state='on'` 或等同字段
-- [ ] AI 回复包含"问题已解决"或"验证通过"等结语
+- [ ] `tool_result` 有 `get_vm_list` 记录，`result` 中 vm-prod-001 `power_state='on'` 或等同字段
+- [ ] AI 回复包含"问题是否已解决？"和 A/B/C 三个选项
+- [ ] `conversation.pending_resolution` 非 NULL，包含正确的 `sent_at` 和 `options`
+- [ ] `conversation.pending_confirm` 为 NULL（两者互斥）
+- [ ] Loki 中有 `s6_resolution_options_sent` 事件
 
 ---
 
-### CP-11：工单关闭
+### CP-10A：用户选 A（已解决）
 
-**触发节点**：用户确认已解决，前端调用关单接口，`case.status` 流转至 `resolved`。
+**触发节点**：前端收到 S6 三选项后用户点击"A. 是，问题已解决"。
+
+**DB 验证**：
+```sql
+SELECT status, resolved_at, pending_resolution,
+       EXTRACT(EPOCH FROM (resolved_at - confirmed_at))/60 AS ai_diagnostic_minutes
+FROM "case" c
+JOIN conversation cv ON c.case_id = cv.case_id
+WHERE c.case_id = '{case_id}';
+-- 预期：status='resolved'，resolved_at 非 NULL，pending_resolution=NULL，ai_diagnostic_minutes > 0
+```
+
+**完成标准**：
+- [ ] `case.status = 'resolved'`，`resolved_at` 有值（SLA 指标可计算）
+- [ ] `conversation.pending_resolution = NULL`（等待快照已清空）
+- [ ] Scheduler 队列中有 Pod 回收任务（Scheduler Service 日志）
+
+---
+
+### CP-10B：用户选 B（未解决 + 新报错）
+
+**触发节点**：用户点击"B. 否，还有新报错"，AI 重新进入 S1。
+
+**DB 验证**：
+```sql
+-- 验证旧 diagnostic_item 已归档
+SELECT type, status, COUNT(*) FROM diagnostic_item
+WHERE conversation_id = '{conversation_id}'
+GROUP BY type, status;
+-- 预期：之前的 hypothesis/root_cause/solution 状态全部为 'archived'
+
+-- 验证阶段已回退
+SELECT diagnostic_stage, pending_resolution
+FROM conversation WHERE conversation_id = '{conversation_id}';
+-- 预期：diagnostic_stage='S1'，pending_resolution=NULL
+```
+
+**完成标准**：
+- [ ] 本次诊断周期的所有 `diagnostic_item` 状态已更新为 `archived`
+- [ ] `conversation.diagnostic_stage = 'S1'`
+- [ ] AI 回复提示用户描述新报错："请描述新出现的错误信息"
+- [ ] `case.status` 仍为 `confirmed`（B 不改变业务状态）
+
+---
+
+### CP-10C：用户选 C（升级人工）
+
+**触发节点**：用户点击"C. 需要人工支持"。
+
+**DB 验证**：
+```sql
+SELECT status, close_reason, pending_resolution
+FROM "case" WHERE case_id = '{case_id}';
+-- 预期：status='in_progress'，close_reason='escalated'，pending_resolution=NULL
+```
+
+**完成标准**：
+- [ ] `case.status = 'in_progress'`
+- [ ] `case.close_reason = 'escalated'`
+- [ ] `conversation.pending_resolution = NULL`
+- [ ] AI 停止推理（SSE 推送结束消息）
+
+---
+
+---
+
+### CP-11：工单关闭（用户选 A 后 Pod 回收完成）
+
+**触发节点**：Scheduler Service 完成 Pod 回收，回调 case-service，`case.status` 自动流转至 `closed`。
 
 **DB 验证**：
 ```sql
 SELECT case_id, status, resolved_at, closed_at,
-       EXTRACT(EPOCH FROM (resolved_at - created_at))/60 AS duration_minutes
+       EXTRACT(EPOCH FROM (resolved_at - confirmed_at))/60 AS ai_diagnostic_minutes,
+       EXTRACT(EPOCH FROM (closed_at - resolved_at))/60 AS pod_cleanup_minutes
 FROM "case"
 WHERE case_id = '{case_id}';
--- 预期：status='resolved'，resolved_at 不为 null
+-- 预期：status='closed'，resolved_at 和 closed_at 均非 NULL
 ```
 
 **日志验证（Loki）**：
 ```logql
 {service="case-service"} | json | event="case_status_changed"
-| where new_status = "resolved"
-| line_format "case={{.case_id}} trace={{.trace_id}} duration_min={{.duration_minutes}}"
+| where new_status = "closed"
+| line_format "case={{.case_id}} trace={{.trace_id}} ai_minutes={{.ai_diagnostic_minutes}}"
 ```
 
 **完成标准**：
-- [ ] `case.status = 'resolved'`
-- [ ] `case.resolved_at` 有值，`duration_minutes` 合理（> 0）
+- [ ] `case.status = 'closed'`（终态）
+- [ ] `case.resolved_at` 和 `case.closed_at` 均有值
+- [ ] `ai_diagnostic_minutes = (resolved_at - confirmed_at) / 60` 合理（> 0，< 120）
+- [ ] 状态转换由 Scheduler 触发（Loki 中 trace 来源为 scheduler-service）
+
+**注意**：`resolved → closed` 只允许 Scheduler Service 发起（内部 token 鉴权），case-service 对外 API 禁止此转换。
 
 ---
 
@@ -413,8 +512,11 @@ WHERE case_id = '{case_id}';
 | CP-07 | 写操作人工确认 | S3 | `tool_audit_log` + Loki | `authorized_by` / `error` 字段完整 | 🔄 T-FIX-04 本地已完成 |
 | CP-08 | 根因确认 | S4 | `message` + `conversation` | 消息含"根因确认："，`stage='S4'` | — |
 | CP-09 | 方案输出 | S5 | `message` 表 | 含"快速恢复"，无原始占位符 | **T-FIX-02**（BUG-06 root_cause 写回残留） |
-| CP-10 | 验证 VM 开机 | S6 | `tool_audit_log` | `get_vm_list` 结果 `power_state=on` | — |
-| CP-11 | 工单关闭 | 后置 | `case` 表 + Loki | `status='resolved'`, `resolved_at` 有值 | — |
+| CP-10 | S6 验证 + 三选项推送 | S6 | `tool_result` + `conversation` | `get_vm_list` 结果，`pending_resolution` 非 NULL | — |
+| CP-10A | 用户选 A（已解决）| S6 后 | `case` + `conversation` | `status='resolved'`，`resolved_at` 有值，`pending_resolution=NULL` | — |
+| CP-10B | 用户选 B（未解决回退）| S6 后 | `diagnostic_item` + `conversation` | `diagnostic_item` 全 archived，`stage='S1'` | — |
+| CP-10C | 用户选 C（升级人工）| S6 后 | `case` | `status='in_progress'`，`close_reason='escalated'` | — |
+| CP-11 | 工单关闭（Pod 回收后）| 后置 | `case` + Loki | `status='closed'`，`closed_at` 有值，由 Scheduler 触发 | — |
 
 ---
 
