@@ -11,13 +11,11 @@ S0 意图识别候选确认模式单元测试（v2）
 """
 
 import pytest
-
 from app.services.conversation_manager import (
     S0_MAX_CANDIDATE_ROUNDS,
     ConversationManager,
 )
 from app.services.prompt_builder import PromptBuilder
-
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 

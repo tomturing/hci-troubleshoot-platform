@@ -10,8 +10,7 @@ v6.2 变更说明：
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, DateTime, Integer, SmallInteger, String, Text
-from sqlalchemy import ForeignKey
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, SmallInteger, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from ..database.postgres import Base

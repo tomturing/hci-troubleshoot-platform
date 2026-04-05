@@ -29,8 +29,7 @@ from datetime import UTC, datetime
 
 from shared.database.postgres import Base
 from shared.models.base import TraceableMixin
-from sqlalchemy import Column, DateTime, Float, SmallInteger, String
-from sqlalchemy import ForeignKey
+from sqlalchemy import Column, DateTime, Float, ForeignKey, SmallInteger, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 # status 值域常量（避免硬编码字符串）

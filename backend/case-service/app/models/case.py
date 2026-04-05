@@ -6,10 +6,9 @@ import enum
 
 from shared.database.postgres import Base
 from shared.models.base import TimestampMixin, TraceableMixin
-from sqlalchemy import Column, DateTime, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy import ForeignKey
 
 
 class CaseStatus(enum.StrEnum):

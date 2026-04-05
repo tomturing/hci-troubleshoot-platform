@@ -1127,7 +1127,7 @@ class ConversationService:
         from sqlalchemy import update as sa_update
 
         from ..models.conversation import Conversation as ConversationModel
-        from ..models.diagnostic_item import DiagnosticItem, STATUS_ARCHIVED
+        from ..models.diagnostic_item import STATUS_ARCHIVED, DiagnosticItem
 
         # 获取动作描述（纯函数，不含副作用）
         action = self._conversation_manager.handle_resolution_choice(choice)  # type: ignore[arg-type]

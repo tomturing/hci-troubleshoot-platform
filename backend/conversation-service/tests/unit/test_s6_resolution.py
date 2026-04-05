@@ -14,7 +14,6 @@ S6 三选项流程单元测试 (v6.3)
 注意：ConversationManager 是无状态纯函数，所有测试无需数据库。
 """
 
-import re
 from datetime import UTC, datetime
 
 import pytest
