@@ -261,7 +261,7 @@ kbService:
   # SOP 技能目录挂载（从宿主机或 PVC 挂载）
   sopSkillsDir: /data/sop_skills
   # SOP 技能目录宿主机路径（hostPath 挂载源）
-  sopSkillsHostPath: /aihci/hci-troubleshoot-platform/data-pipeline/sop_skills
+  sopSkillsHostPath: /aihci/hci-troubleshoot-platform/backend/kb-service/data/sop_skills
 
 # ======================== Customer UI =======================================
 customerUI:

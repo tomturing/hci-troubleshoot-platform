@@ -3,7 +3,7 @@ jieba + HCI 自定义词典初始化工具
 
 初始化说明：
 - jieba 加载 HCI 专业术语词典，提升 BM25 检索的中文分词质量
-- 词典路径优先使用 data-pipeline/config/hci_dict.txt，不存在时使用内置词条
+- 词典路径优先使用 backend/kb-service/config/hci_dict.txt，不存在时使用内置词条
 - 分词结果用于构建 tsvector（to_tsvector('simple', space_separated_tokens)）
 
 注意事项：
@@ -46,7 +46,7 @@ def init_jieba() -> None:
     try:
         import jieba
 
-        # 1. 尝试加载外部词典文件（data-pipeline/config/hci_dict.txt）
+        # 1. 尝试加载外部词典文件（kb-service/config/hci_dict.txt）
         dict_path = os.environ.get("HCI_JIEBA_DICT", "/data/config/hci_dict.txt")
         if os.path.exists(dict_path):
             jieba.load_userdict(dict_path)

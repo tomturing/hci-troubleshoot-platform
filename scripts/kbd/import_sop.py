@@ -18,7 +18,7 @@ scripts/kbd/import_sop.py — SOP 文档导入工具
 
 调用方：
   - CLI 手动导入
-  - data-pipeline ETL 脚本
+  - scripts/kbd CLI 手动导入
 """
 from __future__ import annotations
 

@@ -102,7 +102,7 @@ async def process_images_for_case(
         return stats
 
     sem = asyncio.Semaphore(settings.VISION_CONCURRENCY)
-    images_root = settings.IMAGES_DIR.parent  # data-pipeline 目录
+    images_root = settings.IMAGES_DIR.parent  # kbd cache 目录
 
     async def _process_one(row: asyncpg.Record) -> None:
         img_id = row["id"]
