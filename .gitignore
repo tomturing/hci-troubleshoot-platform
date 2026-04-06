@@ -90,3 +90,5 @@ frontend/admin/vite.config.d.ts
 data-pipeline/cases_raw/*.jsonl
 data-pipeline/cases_raw/.fetch_progress.json
 
+.obsidian/
+docs/.claude/

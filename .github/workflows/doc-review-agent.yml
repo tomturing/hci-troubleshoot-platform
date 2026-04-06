@@ -1,0 +1,206 @@
+name: AI 文档内容审查
+
+# 当 PR 中有文档变更时，调用 GitHub Models（GPT-4o）对变更内容进行准确性审查。
+# 结果以 PR 评论形式呈现，仅供参考，不阻断合并。
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/solution/**'
+      - 'docs/task/**'
+      - 'docs/deploy/**'
+      - 'docs/requirement/**'
+
+jobs:
+  doc-review:
+    name: AI 文档审查
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write   # 写 PR 审查评论
+      models: read           # 调用 GitHub Models API
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 获取变更的文档 diff（仅 docs/ 非 events/ 目录）
+      - name: 提取文档变更 diff
+        id: get_diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # 获取变更文档列表（排除 events/ pitfalls/ archive/）
+          CHANGED_DOCS=$(git -c core.quotepath=false diff --name-only "$BASE_SHA" "$HEAD_SHA" \
+            | grep '^docs/' \
+            | grep '\.md$' \
+            | grep -vE '/(events|pitfalls|archive)/' || true)
+
+          if [ -z "$CHANGED_DOCS" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "无相关文档变更，跳过 AI 审查"
+            exit 0
+          fi
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          echo "changed_docs<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$CHANGED_DOCS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          # 生成 diff 内容（截取前 4000 字符，避免超出模型 token 限制）
+          DIFF=$(git -c core.quotepath=false diff "$BASE_SHA" "$HEAD_SHA" -- $CHANGED_DOCS \
+            | head -c 4000 || true)
+
+          echo "doc_diff<<EODIFF" >> "$GITHUB_OUTPUT"
+          echo "$DIFF" >> "$GITHUB_OUTPUT"
+          echo "EODIFF" >> "$GITHUB_OUTPUT"
+
+          echo "变更文档："
+          echo "$CHANGED_DOCS"
+
+      # 调用 GitHub Models API 进行文档审查
+      - name: 调用 GitHub Models 审查文档
+        id: ai_review
+        if: steps.get_diff.outputs.has_changes == 'true'
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOC_DIFF: ${{ steps.get_diff.outputs.doc_diff }}
+          CHANGED_DOCS: ${{ steps.get_diff.outputs.changed_docs }}
+        with:
+          script: |
+            const diff = process.env.DOC_DIFF || '';
+            const changedDocs = process.env.CHANGED_DOCS || '';
+
+            if (!diff.trim()) {
+              core.info('无文档 diff 内容，跳过 AI 审查');
+              core.setOutput('review', '');
+              return;
+            }
+
+            // 调用 GitHub Models API（需要 models: read 权限）
+            let review = '';
+            try {
+              const response = await fetch(
+                'https://models.inference.ai.azure.com/chat/completions',
+                {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${process.env.GITHUB_TOKEN}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    model: 'gpt-4o-mini',
+                    messages: [
+                      {
+                        role: 'system',
+                        content: `你是 HCI 智能排障平台的技术文档审查员。
+项目背景：这是一个基于 K3s 部署的 AI 智能运维排障系统，包含工单(case)、对话(conversation)、AI助手(ai-assistant)、知识库(knowledge-base)、客户端UI(custom-ui)、管理台(admin-ui)等模块。
+
+审查变更的文档时，请重点检查：
+1. **内容准确性**：术语、接口名、表名、服务名是否与系统实际一致？
+2. **逻辑完整性**：流程图步骤是否完整，状态机是否覆盖边界情况？
+3. **一致性**：与系统架构（分层：Gateway→Service→AI Pod→KB→DB）是否一致？
+4. **遗漏项**：是否有明显缺失的重要信息或说明？
+
+请用中文回复，格式：
+### 审查总评（1-5 分，5 分最优）
+[评分和一句话总结]
+
+### 主要发现
+[问题列表，每条以 ✅/⚠️/❌ 开头，无问题则写"无明显问题"]
+
+### 改进建议
+[可选，如无建议则省略]`,
+                      },
+                      {
+                        role: 'user',
+                        content: `**变更的文档文件：**\n${changedDocs}\n\n**文档变更 diff：**\n\`\`\`diff\n${diff}\n\`\`\``,
+                      },
+                    ],
+                    max_tokens: 600,
+                    temperature: 0.3,
+                  }),
+                }
+              );
+
+              if (!response.ok) {
+                const errText = await response.text();
+                core.warning(`GitHub Models API 返回非 200：${response.status} — ${errText.substring(0, 200)}`);
+                review = `> ℹ️ GitHub Models API 暂时不可用（${response.status}），跳过 AI 内容审查。\n> 请人工检查文档内容的准确性。`;
+              } else {
+                const data = await response.json();
+                review = data.choices?.[0]?.message?.content || '未能获取审查结果';
+              }
+            } catch (err) {
+              core.warning(`调用 GitHub Models 失败：${err.message}`);
+              review = `> ℹ️ AI 审查服务暂时不可用，请人工检查文档内容的准确性。`;
+            }
+
+            core.setOutput('review', review);
+
+      # 将审查结果写入 PR 评论
+      - name: 写入 PR 审查评论
+        if: steps.get_diff.outputs.has_changes == 'true' && steps.ai_review.outputs.review != ''
+        uses: actions/github-script@v7
+        env:
+          REVIEW_CONTENT: ${{ steps.ai_review.outputs.review }}
+          CHANGED_DOCS: ${{ steps.get_diff.outputs.changed_docs }}
+        with:
+          script: |
+            const review = process.env.REVIEW_CONTENT || '';
+            const changedDocs = process.env.CHANGED_DOCS || '';
+
+            // 格式化变更文档列表
+            const docList = changedDocs.trim().split('\n')
+              .filter(Boolean)
+              .map(d => `- \`${d}\``)
+              .join('\n');
+
+            const body = [
+              '## 📝 AI 文档内容审查',
+              '',
+              `**变更文档：**`,
+              docList,
+              '',
+              '---',
+              '',
+              review,
+              '',
+              '---',
+              '*此审查由 [GitHub Models](https://github.com/marketplace/models) 自动生成，仅供参考，不阻塞 PR 合并。*',
+              '*如有异议请直接在下方评论，或忽略此评论。*',
+            ].join('\n');
+
+            // 查找并更新已有的 AI 审查评论（避免重复）
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.login === 'github-actions[bot]' &&
+              c.body.includes('AI 文档内容审查')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info('已更新现有 AI 审查评论');
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+              core.info('已创建 AI 审查评论');
+            }

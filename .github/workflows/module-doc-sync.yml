@@ -1,0 +1,128 @@
+name: 模块文档同步检查
+
+on:
+    pull_request:
+        branches: [main]
+        # 代码或文档目录有变更时触发
+        paths:
+            - "backend/**"
+            - "frontend/**"
+            - "database/**"
+            - "deploy/helm/**"
+            - "docs/**"
+            - "scripts/ci/check_module_doc_sync.py"
+
+jobs:
+    module-doc-sync:
+        name: 模块文档同步
+        runs-on: ubuntu-latest
+
+        permissions:
+            pull-requests: write # 写 PR 评论标注缺失文档
+            contents: read
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: 设置 Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+
+            # 检查旁路标签 doc-update-exempt
+            - name: 检查旁路标签
+              id: label_check
+              run: |
+                  LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
+                  if echo "$LABELS" | python3 -c "import sys,json; labels=json.load(sys.stdin); sys.exit(0 if 'doc-update-exempt' in labels else 1)" 2>/dev/null; then
+                    echo "bypass=1" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "bypass=0" >> "$GITHUB_OUTPUT"
+                  fi
+
+            # 执行模块文档同步检查
+            - name: 模块文档同步检查
+              id: sync_check
+              if: steps.label_check.outputs.bypass == '0'
+              env:
+                  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+                  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+                  # PR body 用于检测 [skip doc-sync] 内联旁路
+                  PR_BODY: ${{ github.event.pull_request.body }}
+                  DOC_SYNC_BYPASS: "0"
+              run: python scripts/ci/check_module_doc_sync.py
+
+            # 失败时在 PR 写评论，明确列出需要更新的文档
+            - name: 写入文档缺失评论
+              if: failure() && steps.sync_check.outcome == 'failure'
+              uses: actions/github-script@v7
+              with:
+                  script: |
+                      const body = [
+                        '## ⚠️ 模块文档同步检查失败',
+                        '',
+                        '检测到代码模块有变更，但对应的设计文档或任务文档未同步更新。',
+                        '具体缺失的文档请查看上方 Actions 日志。',
+                        '',
+                        '**修复方式（二选一）：**',
+                        '',
+                        '**方式 1 — 更新文档（推荐）**',
+                        '按日志提示更新对应文档后重新推送，CI 将自动重新验证。',
+                        '',
+                        '**方式 2 — 豁免（仅 typo/格式/测试等无功能变更时适用）**',
+                        '在 PR 描述中添加：`[skip doc-sync]`',
+                        '或在 PR 添加 `doc-update-exempt` 标签并说明原因。',
+                        '',
+                        '---',
+                        '*文档同步规则详见 [docs/文档管理规范.md](docs/文档管理规范.md)*',
+                      ].join('\n');
+
+                      // 查找是否已有此评论，避免重复
+                      const { data: comments } = await github.rest.issues.listComments({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: context.issue.number,
+                      });
+                      const existing = comments.find(c =>
+                        c.user.login === 'github-actions[bot]' &&
+                        c.body.includes('模块文档同步检查失败')
+                      );
+
+                      if (existing) {
+                        await github.rest.issues.updateComment({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          comment_id: existing.id,
+                          body,
+                        });
+                      } else {
+                        await github.rest.issues.createComment({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          issue_number: context.issue.number,
+                          body,
+                        });
+                      }
+
+            # 旁路时写说明评论
+            - name: 记录豁免原因评论
+              if: steps.label_check.outputs.bypass == '1'
+              uses: actions/github-script@v7
+              with:
+                  script: |
+                      await github.rest.issues.createComment({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: context.issue.number,
+                        body: [
+                          '## ℹ️ 模块文档同步检查已豁免',
+                          '',
+                          '本 PR 含 `doc-update-exempt` 标签，跳过模块文档同步自动检查。',
+                          '',
+                          '**请在合并前人工确认：**',
+                          '- 此次代码改动是否真的不影响模块文档内容？',
+                          '- PR 描述中是否已说明豁免原因？',
+                        ].join('\n')
+                      });
