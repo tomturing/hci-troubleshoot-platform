@@ -27,6 +27,22 @@
 -- =============================================================================
 
 -- ============================================================================
+-- §0. 确保基础扩展和函数存在（防御性，正常环境 init_schema 已创建）
+-- ============================================================================
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+CREATE EXTENSION IF NOT EXISTS "vector";
+
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================================
 -- §1. 新建 customer 表
 -- ============================================================================
 

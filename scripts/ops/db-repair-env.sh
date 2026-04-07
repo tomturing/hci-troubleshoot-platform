@@ -18,7 +18,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-MIGRATION_FILE="${REPO_ROOT}/database/20260407001_schema_repair.sql"
+MIGRATION_FILE="${REPO_ROOT}/database/migrations/20260407001_schema_repair.sql"
 
 NS="${1:?用法: $0 <namespace>  示例: hci-dev / hci-staging / hci-prod}"
 DB_USER="${2:-hci_admin}"
@@ -76,11 +76,14 @@ fi
 info ">>> 步骤 3/5：复制并执行修复 SQL"
 kubectl cp "${MIGRATION_FILE}" "${NS}/postgres-0:/tmp/schema_repair.sql" 2>/dev/null
 kubectl exec postgres-0 -n "${NS}" -- psql -U "${DB_USER}" -d "${DB_NAME}" \
-    -f /tmp/schema_repair.sql 2>&1
+    -v ON_ERROR_STOP=1 -f /tmp/schema_repair.sql 2>&1
 
 # 步骤 4：注册迁移版本
 info ">>> 步骤 4/5：注册迁移版本到 schema_migrations"
-kubectl exec postgres-0 -n "${NS}" -- psql -U "${DB_USER}" -d "${DB_NAME}" -c "
+kubectl exec postgres-0 -n "${NS}" -- psql -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -c "
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version VARCHAR(255) NOT NULL PRIMARY KEY
+);
 INSERT INTO schema_migrations (version) VALUES
     ('20260305001'),('20260312001'),('20260312002'),
     ('20260326001'),('20260326002'),('20260326003'),
@@ -91,10 +94,10 @@ ON CONFLICT DO NOTHING;" 2>/dev/null
 info ">>> 步骤 5/5：验证结果"
 TABLE_COUNT=$(kubectl exec postgres-0 -n "${NS}" -- psql -U "${DB_USER}" -d "${DB_NAME}" -t -c "
 SELECT COUNT(*) FROM information_schema.tables
-WHERE table_schema='public' AND table_type='BASE TABLE';" 2>/dev/null | tr -d ' ')
+WHERE table_schema='public' AND table_type='BASE TABLE';" 2>/dev/null | tr -d '[:space:]')
 
 MIGRATION_COUNT=$(kubectl exec postgres-0 -n "${NS}" -- psql -U "${DB_USER}" -d "${DB_NAME}" -t -c "
-SELECT COUNT(*) FROM schema_migrations;" 2>/dev/null | tr -d ' ')
+SELECT COUNT(*) FROM schema_migrations;" 2>/dev/null | tr -d '[:space:]')
 
 echo "============================================"
 if [[ "${TABLE_COUNT}" -ge 20 ]]; then

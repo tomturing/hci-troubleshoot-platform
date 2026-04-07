@@ -1356,8 +1356,11 @@ data:
     -- 注意：此处内嵌 SQL 必须与权威迁移文件保持一致，避免手工修复与 PreSync 执行结果漂移
     -- =============================================================================
 
-    -- §0. 依赖扩展与基础函数兜底，确保在 PreSync/dbmate 路径下可独立执行
+    -- §0. 确保基础扩展和函数存在（防御性，确保 PreSync/dbmate 路径下可独立执行）
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
     CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    CREATE EXTENSION IF NOT EXISTS "vector";
 
     CREATE OR REPLACE FUNCTION update_updated_at_column()
     RETURNS TRIGGER AS $$
