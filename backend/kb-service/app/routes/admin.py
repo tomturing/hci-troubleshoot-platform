@@ -280,7 +280,7 @@ async def list_kbd_entries(
         data_sql = text(  # noqa: S608
             f"""
             SELECT id, support_id, support_url, title,
-                   LEFT(content_md, 300) AS content_md,
+                   content_md,
                    metadata, category_id, ai_category_id,
                    ai_category_conf, ai_category_reason,
                    status, reviewer_id, review_note,
