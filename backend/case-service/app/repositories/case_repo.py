@@ -56,13 +56,29 @@ class CaseRepository:
         )
         return list(result.scalars().all())
 
-    async def update_status(self, case_id: str, status: CaseStatus) -> Case | None:
-        """更新工单状态"""
+    async def update_status(
+        self,
+        case_id: str,
+        status: CaseStatus,
+        close_reason: str | None = None,
+    ) -> Case | None:
+        """更新工单状态
+
+        Args:
+            case_id: 工单ID
+            status: 目标状态
+            close_reason: 关闭原因（可选），用于 S0 失败/S6 选 C 等场景
+
+        Returns:
+            更新后的 Case 对象，或 None（工单不存在）
+        """
         case = await self.get_by_id(case_id)
         if not case:
             return None
 
         case.status = status
+        if close_reason:
+            case.close_reason = close_reason
         if status == CaseStatus.closed:
             case.closed_at = datetime.now(UTC)
 
