@@ -333,7 +333,7 @@ async def list_kbd_entries(
 class KbdRejectRequest(BaseModel):
     """KBD 条目拒绝请求"""
 
-    reviewer_id: str = Field(..., description="审核人 ID")
+    reviewer_id: int = Field(..., description="审核人 ID")
     review_note: str = Field(..., min_length=1, max_length=500, description="拒绝原因（必填）")
 
 
