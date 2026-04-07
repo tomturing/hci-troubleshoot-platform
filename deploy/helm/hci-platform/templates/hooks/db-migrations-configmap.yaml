@@ -1,6 +1,6 @@
 {{- if .Values.dbMigrate.enabled }}
-# 包含所有数据库迁移文件的 ConfigMap
-# 新增迁移文件后，重新 helm upgrade 即可触发 dbmate 执行新迁移
+# 此文件由 scripts/ci/sync-db-migrations.sh 自动生成
+# 请勿手动编辑，修改 database/migrations/ 后重新运行脚本
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -1345,23 +1345,1087 @@ data:
     -- migrate:down
     -- 不提供自动降级，手动回滚
 
+  20260401002_gap_fill_kb_tables.sql: |
+    -- migrate:up
+    
+    -- =============================================================================
+    -- Gap-fill migration — 补建历史遗漏的知识库表
+    -- 创建日期：2026-04-01
+    --
+    -- 背景：
+    --   dev 环境原用 alembic 初始化数据库，00_baseline.sql 将 dbmate migrations
+    --   全部标记为"已执行"，但以下表从未实际创建：
+    --     - kb_document / kb_chunk / kb_category / audit_log (来自 20260305001)
+    --     - kb_sop_node / kb_synonym              (来自 20260312001)
+    --     - kbd_entry                              (来自 20260401001)
+    --
+    -- 本 migration 幂等地补建上述所有缺失的表（全部使用 IF NOT EXISTS）。
+    -- 对已存在的列/索引使用 IF NOT EXISTS，不影响已有数据。
+    --
+    -- 前提：
+    --   - update_updated_at_column() 函数已存在（20260305001 的 init_schema 已创建，
+    --     若不存在则 20260305001 中已定义）
+    --   - pgvector 扩展已安装（ALTER TABLE kb_category ADD embedding vector(1536)）
+    -- =============================================================================
+    
+    -- ─── 1. kb_document — 知识库文档（Source of Truth）─────────────────────────
+    
+    CREATE TABLE IF NOT EXISTS kb_document (
+        id              SERIAL PRIMARY KEY,
+        source_id       VARCHAR(50) UNIQUE,                -- 原始案例ID（采集自 support system）
+        title           VARCHAR(500) NOT NULL,
+        product         VARCHAR(100) DEFAULT '超融合HCI',
+        content_md      TEXT NOT NULL,                     -- MD 全文（Source of Truth）
+        content_hash    VARCHAR(64),                       -- SHA256，用于变更检测
+        yaml_meta       JSONB,                             -- 结构化元数据（LLM 增强后）
+        category_l1     VARCHAR(100),                      -- 一级分类
+        category_l2     VARCHAR(100),                      -- 二级分类
+        tags            TEXT[],                            -- 标签数组
+        judgment_logic  TEXT,                              -- 排查逻辑（中文，LLM 生成）
+        summary         TEXT,                              -- 摘要（中文，LLM 生成）
+        difficulty      SMALLINT DEFAULT 3,                -- 难度 1-5
+        status          VARCHAR(20) DEFAULT 'draft',       -- draft/under_review/approved/published/rejected/archived
+        review_note     TEXT,
+        reviewer        VARCHAR(100),
+        reviewed_at     TIMESTAMP WITH TIME ZONE,
+        source_type     VARCHAR(20) DEFAULT 'kb',          -- kb/sop/realtime
+        has_images      BOOLEAN DEFAULT FALSE,
+        verified_version VARCHAR(50),
+        trace_id        VARCHAR(64),
+        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_document_status      ON kb_document(status);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_category    ON kb_document(category_l1, category_l2);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_source_id   ON kb_document(source_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_source_type ON kb_document(source_type);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_trace_id    ON kb_document(trace_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_created_at  ON kb_document(created_at DESC);
+    
+    -- 触发器（函数来自 init_schema，已存在）
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_trigger
+            WHERE tgname = 'update_kb_document_updated_at'
+              AND tgrelid = 'kb_document'::regclass
+        ) THEN
+            CREATE TRIGGER update_kb_document_updated_at
+                BEFORE UPDATE ON kb_document
+                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        END IF;
+    END
+    $$;
+    
+    COMMENT ON TABLE kb_document IS '知识库文档 v3.0 — 状态机驱动的文档生命周期管理';
+    
+    -- ─── 2. kb_chunk — 文档分块 + 向量（双路检索）──────────────────────────────
+    
+    CREATE TABLE IF NOT EXISTS kb_chunk (
+        id          SERIAL PRIMARY KEY,
+        document_id INTEGER NOT NULL REFERENCES kb_document(id) ON DELETE CASCADE,
+        chunk_index SMALLINT NOT NULL,                     -- 块在文档中的顺序（0-based）
+        content     TEXT NOT NULL,                         -- 块文本（~512 tokens）
+        embedding   vector(384),                           -- 语义向量（384 维，bge-small-zh）
+        token_count SMALLINT,
+        metadata    JSONB,                                 -- 块级元数据（标题层级等）
+        tsv         tsvector,                              -- BM25 全文检索
+        trace_id    VARCHAR(64),
+        created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_document ON kb_chunk(document_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_position ON kb_chunk(document_id, chunk_index);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_tsv      ON kb_chunk USING GIN (tsv);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_trace_id ON kb_chunk(trace_id);
+    
+    -- IVFFlat 向量索引：数据量 ≥ 1000 后手动创建
+    -- CREATE INDEX idx_kb_chunk_embedding ON kb_chunk USING ivfflat (embedding vector_cosine_ops) WITH (lists=100);
+    
+    COMMENT ON TABLE kb_chunk IS '知识库分块 + 向量 v3.0 — 双路检索（BM25 tsvector + pgvector）';
+    
+    -- ─── 3. kb_category — 知识分类树（全局分类枢纽）────────────────────────────
+    
+    CREATE TABLE IF NOT EXISTS kb_category (
+        id         SERIAL PRIMARY KEY,
+        parent_id  INTEGER REFERENCES kb_category(id),    -- NULL = L1 根节点
+        name       VARCHAR(100) NOT NULL,
+        level      SMALLINT NOT NULL,                      -- 1=L1, 2=L2, 3=L3, 4=L4
+        keywords   TEXT[],
+        source     VARCHAR(20) DEFAULT 'manual',           -- manual/auto_generated/auto_suggested
+        version    VARCHAR(20) DEFAULT '1.0',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_category_parent   ON kb_category(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_category_level    ON kb_category(level);
+    CREATE INDEX IF NOT EXISTS idx_kb_category_keywords ON kb_category USING GIN (keywords);
+    
+    -- 补充 20260401001 的 ALTER（code/domain/path_labels/embedding 字段）
+    ALTER TABLE kb_category ADD COLUMN IF NOT EXISTS code         VARCHAR(32) UNIQUE;
+    ALTER TABLE kb_category ADD COLUMN IF NOT EXISTS domain       VARCHAR(50);
+    ALTER TABLE kb_category ADD COLUMN IF NOT EXISTS path_labels  JSONB DEFAULT '[]'::jsonb;
+    ALTER TABLE kb_category ADD COLUMN IF NOT EXISTS embedding    vector(1536);
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_category_code ON kb_category(code);
+    
+    -- HNSW 向量索引：198 条分类数据完成后手动创建
+    -- CREATE INDEX idx_kb_category_embed ON kb_category USING hnsw (embedding vector_cosine_ops);
+    
+    COMMENT ON TABLE kb_category IS '知识分类树 v3.0 — 198个叶节点，4层树形结构，全局分类枢纽';
+    COMMENT ON COLUMN kb_category.code IS 'category_baseline.yaml 的 id 字段，如 "虚拟机-001"';
+    COMMENT ON COLUMN kb_category.embedding IS '分类节点语义向量（1536维），由 seed_categories.py 批量生成';
+    
+    -- ─── 4. audit_log — AI 行为统一审计（合并自 prompt_audit + tool_audit_log）─
+    
+    CREATE TABLE IF NOT EXISTS audit_log (
+        id              VARCHAR(36)  PRIMARY KEY,           -- UUID
+        audit_type      VARCHAR(20)  NOT NULL,              -- 'prompt' | 'tool_call' | 'system'
+        conversation_id UUID         NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        turn_index      SMALLINT,                           -- prompt 类型：第几轮对话
+        tool_name       VARCHAR(100),                       -- tool_call 类型：工具名称
+        risk_level      SMALLINT,                           -- 1=只读 2=写 3=高危
+        policy          VARCHAR(20),                        -- auto|notify|confirm|block
+        authorized_by   VARCHAR(100),                       -- 高危操作确认用户
+        payload         JSONB        NOT NULL DEFAULT '{}', -- 类型专属字段
+        error           TEXT,
+        duration_ms     INTEGER,
+        started_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        completed_at    TIMESTAMPTZ,
+        trace_id        VARCHAR(64)
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_audit_log_conversation ON audit_log(conversation_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_log_type         ON audit_log(audit_type, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_log_tool_name    ON audit_log(tool_name) WHERE tool_name IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_audit_log_risk_level   ON audit_log(risk_level) WHERE risk_level >= 2;
+    CREATE INDEX IF NOT EXISTS idx_audit_log_trace_id     ON audit_log(trace_id) WHERE trace_id IS NOT NULL;
+    
+    COMMENT ON TABLE audit_log IS 'AI 行为统一审计日志（合并自 prompt_audit + tool_audit_log）';
+    
+    -- ─── 5. kb_sop_node — SOP 决策树节点（待迁移至 knowledge_atoms，暂保持）──
+    
+    -- 注意：kb_sop_node 架构上将被废弃（迁移方向：knowledge_atoms）
+    -- 当前 kb-service 代码仍引用此表，创建以维持服务正常运行
+    CREATE TABLE IF NOT EXISTS kb_sop_node (
+        id         SERIAL PRIMARY KEY,
+        skill_id   VARCHAR(100) NOT NULL,
+        node_name  VARCHAR(200) NOT NULL,
+        parent_id  INTEGER REFERENCES kb_sop_node(id),
+        keywords   TEXT[] NOT NULL,
+        file_path  VARCHAR(500),
+        content    TEXT,
+        level      SMALLINT DEFAULT 1,
+        sort_order SMALLINT DEFAULT 0,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kb_sop_node_skill    ON kb_sop_node(skill_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_sop_node_keywords ON kb_sop_node USING GIN (keywords);
+    CREATE INDEX IF NOT EXISTS idx_kb_sop_node_parent   ON kb_sop_node(parent_id);
+    
+    COMMENT ON TABLE kb_sop_node IS 'SOP 决策树节点（待废弃，迁移方向：knowledge_atoms），当前 kb-service 仍引用';
+    
+    -- ─── 6. kb_synonym — 同义词映射（可选合并入 kb_category.metadata）──────────
+    
+    CREATE TABLE IF NOT EXISTS kb_synonym (
+        id        SERIAL PRIMARY KEY,
+        term      VARCHAR(100) NOT NULL,
+        canonical VARCHAR(100) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (term, canonical)
+    );
+    
+    COMMENT ON TABLE kb_synonym IS '术语缩写到标准名映射，提升 BM25 召回率（< 500 条时可合并入 kb_category.metadata）';
+    
+    -- ─── 7. kbd_entry — KBD 知识条目（依赖 kb_category，必须最后创建）──────────
+    
+    CREATE TABLE IF NOT EXISTS kbd_entry (
+        id                 BIGSERIAL    PRIMARY KEY,
+        support_id         VARCHAR(20)  UNIQUE NOT NULL,
+        support_url        TEXT,
+        title              TEXT         NOT NULL,
+        content_md         TEXT,
+        metadata           JSONB        NOT NULL DEFAULT '{}',
+        -- 分类（双轨）
+        category_id        VARCHAR(32)  REFERENCES kb_category(code),
+        ai_category_id     VARCHAR(32),
+        ai_category_conf   FLOAT,
+        ai_category_reason TEXT,
+        -- 检索字段（published 时生成）
+        embedding          vector(1536),
+        tsv                tsvector,
+        -- 状态机：draft → published → archived / rejected
+        status             VARCHAR(20)  NOT NULL DEFAULT 'draft',
+        reviewer_id        INTEGER,
+        reviewed_at        TIMESTAMPTZ,
+        review_note        TEXT,
+        published_at       TIMESTAMPTZ,
+        archived_at        TIMESTAMPTZ,
+        created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_status      ON kbd_entry(status);
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_category    ON kbd_entry(category_id) WHERE status = 'published';
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_ai_category ON kbd_entry(ai_category_id);
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_published   ON kbd_entry(published_at DESC) WHERE status = 'published';
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv         ON kbd_entry USING GIN(tsv);
+    CREATE INDEX IF NOT EXISTS idx_kbd_entry_metadata    ON kbd_entry USING GIN(metadata);
+    
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_trigger
+            WHERE tgname = 'trigger_kbd_entry_updated_at'
+              AND tgrelid = 'kbd_entry'::regclass
+        ) THEN
+            CREATE TRIGGER trigger_kbd_entry_updated_at
+                BEFORE UPDATE ON kbd_entry
+                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        END IF;
+    END
+    $$;
+    
+    COMMENT ON TABLE kbd_entry IS 'KBD 知识条目 — 全生命周期（draft→published→archived/rejected）；属于知识库生产管道';
+    COMMENT ON COLUMN kbd_entry.support_id IS '深信服案例ID（API rows.id），幂等键';
+    COMMENT ON COLUMN kbd_entry.category_id IS '人工确认分类（引用 kb_category.code，如"虚拟机-001"）';
+    
+    -- migrate:down
+    -- 不提供自动降级（逐表手动删除，注意外键依赖顺序：kbd_entry → kb_category → kb_sop_node/kb_synonym/kb_chunk → kb_document → audit_log）
+
+  20260402001_kb_category_sop_hit_tracking.sql: |
+    -- migrate:up
+    
+    -- =============================================================================
+    -- kb_category 补充字段 — SOP 路由命中追踪与软删除支持
+    -- 创建日期：2026-04-02
+    -- 变更内容：
+    --   1. hit_count INTEGER — S0 意图识别命中次数统计，用于分析热门/冷门分类
+    --   2. is_active BOOLEAN — 软删除标记，禁用的分类不参与 S0 意图识别
+    --
+    -- 背景：
+    --   远端 kb_category 已有 code/domain/path_labels/embedding 字段支持意图识别。
+    --   本地新增两个字段用于 S0 意图识别场景的运营分析能力：
+    --   - hit_count：统计每个分类被 LLM 确认的次数，指导 SOP 覆盖优先级
+    --   - is_active：允许临时禁用某些分类而不删除数据
+    --
+    -- 关联文档：22_S0意图识别与分类基线重构方案.md
+    -- =============================================================================
+    
+    -- hit_count：意图识别命中次数统计
+    ALTER TABLE kb_category ADD COLUMN IF NOT EXISTS
+        hit_count INTEGER DEFAULT 0;
+    
+    -- is_active：软删除标记（默认 TRUE，禁用后不参与 S0 意图识别）
+    ALTER TABLE kb_category ADD COLUMN IF NOT EXISTS
+        is_active BOOLEAN DEFAULT TRUE;
+    
+    -- 索引：快速过滤活跃分类（S0 prompt 构建时使用）
+    CREATE INDEX IF NOT EXISTS idx_kb_category_is_active
+        ON kb_category(is_active) WHERE is_active = TRUE;
+    
+    -- 注释
+    COMMENT ON COLUMN kb_category.hit_count IS
+        'S0 意图识别命中次数，每次 LLM 确认该分类时 +1，用于分析热门/冷门分类，指导 SOP 覆盖优先级';
+    COMMENT ON COLUMN kb_category.is_active IS
+        '软删除标记，FALSE 时该分类不参与 S0 意图识别 prompt，但保留数据供历史查询';
+    
+    -- migrate:down
+    -- 提供 rollback 路径
+    ALTER TABLE kb_category DROP COLUMN IF EXISTS hit_count;
+    ALTER TABLE kb_category DROP COLUMN IF EXISTS is_active;
+    DROP INDEX IF EXISTS idx_kb_category_is_active;
+  20260402001_sop_tables.sql: |
+    -- migrate:up
+    
+    -- =============================================================================
+    -- SOP 排障手册 — 数据库迁移
+    -- 创建日期：2026-04-02
+    -- 变更内容：
+    --   1. sop_document  SOP 文档表（全生命周期管理）
+    --   2. sop_chunk     SOP 分块检索表（按章节拆分，支持向量检索）
+    -- 前提：
+    --   init_schema.sql 已执行（kb_category 表已存在）
+    --   pgvector 扩展已安装
+    -- =============================================================================
+    
+    -- ─── 1. SOP 文档表 ───────────────────────────────────────────────────────────
+    
+    -- 生命周期：draft → published → archived
+    -- source_id：幂等键，格式如 sop-vm-start-failure（对应 SOP 文档内部标识）
+    
+    CREATE TABLE IF NOT EXISTS sop_document (
+        id          SERIAL PRIMARY KEY,
+        source_id   VARCHAR(100) UNIQUE,             -- 幂等键，如 sop-vm-start-failure
+        category_id VARCHAR(32) REFERENCES kb_category(code),
+                                                -- 关联 KB 分类（可选）
+        title       VARCHAR(500),                    -- SOP 标题
+        content_md  TEXT,                            -- 完整 SOP Markdown
+        docx_hash   VARCHAR(64),                     -- 源文件哈希（幂等去重）
+        status      VARCHAR(20) DEFAULT 'draft',     -- draft/published/archived
+        reviewer_id INTEGER,                         -- 审核人 ID
+        reviewed_at TIMESTAMPTZ,                     -- 审核时间
+        published_at TIMESTAMPTZ,                    -- 发布时间
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+    
+    -- 索引：分类检索（仅 published）
+    CREATE INDEX idx_sop_document_category
+        ON sop_document(category_id) WHERE status = 'published';
+    
+    -- 索引：状态筛选
+    CREATE INDEX idx_sop_document_status
+        ON sop_document(status);
+    
+    -- updated_at 自动维护触发器
+    CREATE TRIGGER trigger_sop_document_updated_at
+        BEFORE UPDATE ON sop_document
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    
+    -- 表注释
+    COMMENT ON TABLE sop_document IS 'SOP 排障手册文档 — 全生命周期（draft→published→archived）';
+    COMMENT ON COLUMN sop_document.source_id IS '幂等键，格式如 sop-vm-start-failure';
+    COMMENT ON COLUMN sop_document.category_id IS '关联 KB 分类（kb_category.code）';
+    COMMENT ON COLUMN sop_document.content_md IS '完整 SOP Markdown 文档';
+    COMMENT ON COLUMN sop_document.docx_hash IS '源 .docx 文件 SHA256 哈希，用于幂等去重';
+    COMMENT ON COLUMN sop_document.status IS 'draft=待审核, published=已发布可检索, archived=已归档';
+    
+    
+    -- ─── 2. SOP 分块检索表 ───────────────────────────────────────────────────────
+    
+    -- 按 SOP 章节拆分，支持：
+    --   1. 向量语义检索（embedding）
+    --   2. 全文检索（tsv）
+    
+    CREATE TABLE IF NOT EXISTS sop_chunk (
+        id           SERIAL PRIMARY KEY,
+        document_id  INTEGER REFERENCES sop_document(id) ON DELETE CASCADE,
+                                                -- 关联 SOP 文档（删除时级联）
+        chunk_index  SMALLINT NOT NULL,         -- 分块序号（0-based）
+        chapter_title VARCHAR(200),             -- 章节标题（如"问题诊断"）
+        content      TEXT NOT NULL,             -- 分块内容
+        embedding    vector(1536),              -- 语义向量（1536 维）
+        tsv          tsvector,                  -- 全文检索向量
+        created_at   TIMESTAMPTZ DEFAULT NOW()
+    );
+    
+    -- 索引：文档关联
+    CREATE INDEX idx_sop_chunk_document
+        ON sop_chunk(document_id);
+    
+    -- 索引：全文检索（GIN）
+    CREATE INDEX idx_sop_chunk_tsv
+        ON sop_chunk USING GIN(tsv);
+    
+    -- 表注释
+    COMMENT ON TABLE sop_chunk IS 'SOP 分块检索 — 按章节拆分，支持向量检索和全文检索';
+    COMMENT ON COLUMN sop_chunk.document_id IS '关联 SOP 文档（级联删除）';
+    COMMENT ON COLUMN sop_chunk.chunk_index IS '分块序号（0-based），同一 document_id 内有序';
+    COMMENT ON COLUMN sop_chunk.chapter_title IS '章节标题，如"问题诊断"、"解决方案"';
+    COMMENT ON COLUMN sop_chunk.embedding IS '分块语义向量（1536 维），用于向量检索';
+    COMMENT ON COLUMN sop_chunk.tsv IS '全文检索向量（tsvector），用于 BM25 检索';
+    
+    
+    -- migrate:down
+    
+    -- 降级：按依赖顺序删除（先删子表，再删主表）
+    DROP TABLE IF EXISTS sop_chunk;
+    DROP TABLE IF EXISTS sop_document;
+  20260402002_migrate_audit_data.sql: |
+    -- migrate:up
+    
+    -- =============================================================================
+    -- 数据迁移：prompt_audit + tool_audit_log → audit_log
+    -- 创建日期：2026-04-02
+    --
+    -- 背景：
+    --   根据 docs/architecture/20_数据库重规划分析.md，将分散的审计表合并为统一的 audit_log：
+    --   - prompt_audit → audit_log (audit_type = 'prompt')
+    --   - tool_audit_log → audit_log (audit_type = 'tool_call')
+    --
+    -- 注意：
+    --   1. 本脚本仅迁移数据，不删除原表（删除由 20260402003_drop_deprecated_tables.sql 处理）
+    --   2. 使用 ON CONFLICT DO NOTHING 处理重复数据
+    --   3. 迁移后建议验证数据完整性
+    -- =============================================================================
+    
+    -- ─── 1. 迁移 prompt_audit 数据到 audit_log ───────────────────────────────────
+    
+    INSERT INTO audit_log (
+        id,
+        audit_type,
+        conversation_id,
+        turn_index,
+        tool_name,
+        risk_level,
+        policy,
+        authorized_by,
+        payload,
+        error,
+        duration_ms,
+        started_at,
+        completed_at,
+        trace_id
+    )
+    SELECT
+        audit_id::VARCHAR(36),                           -- id
+        'prompt',                                         -- audit_type
+        conversation_id,                                  -- conversation_id
+        NULL,                                             -- turn_index（prompt_audit 无此字段）
+        NULL,                                             -- tool_name
+        NULL,                                             -- risk_level
+        NULL,                                             -- policy
+        NULL,                                             -- authorized_by
+        jsonb_build_object(
+            'case_id', case_id,
+            'assistant_type', assistant_type,
+            'model', model,
+            'message_count', message_count,
+            'has_sop', has_sop,
+            'kb_chunks_count', kb_chunks_count,
+            'kb_top_score', kb_top_score,
+            'system_prompt_chars', system_prompt_chars,
+            'messages', messages,
+            'payload_ref', payload_ref,
+            'user_rating', user_rating
+        ),                                                -- payload
+        NULL,                                             -- error
+        NULL,                                             -- duration_ms
+        captured_at,                                      -- started_at
+        NULL,                                             -- completed_at
+        trace_id                                          -- trace_id
+    FROM prompt_audit
+    ON CONFLICT (id) DO NOTHING;
+    
+    -- 记录迁移统计
+    DO $$
+    DECLARE
+        prompt_count INTEGER;
+    BEGIN
+        SELECT COUNT(*) INTO prompt_count FROM prompt_audit;
+        RAISE NOTICE 'prompt_audit 迁移完成，源表记录数：%', prompt_count;
+    END
+    $$;
+    
+    -- ─── 2. 迁移 tool_audit_log 数据到 audit_log ───────────────────────────────────
+    
+    INSERT INTO audit_log (
+        id,
+        audit_type,
+        conversation_id,
+        turn_index,
+        tool_name,
+        risk_level,
+        policy,
+        authorized_by,
+        payload,
+        error,
+        duration_ms,
+        started_at,
+        completed_at,
+        trace_id
+    )
+    SELECT
+        id,                                                -- id
+        'tool_call',                                       -- audit_type
+        session_id::UUID,                                  -- conversation_id（session_id 对应 conversation_id）
+        NULL,                                              -- turn_index
+        tool_name,                                         -- tool_name
+        risk_level::SMALLINT,                              -- risk_level
+        policy,                                            -- policy
+        authorized_by,                                     -- authorized_by
+        jsonb_build_object(
+            'tool_args', tool_args,
+            'result', result
+        ),                                                 -- payload
+        error,                                             -- error
+        duration_ms,                                       -- duration_ms
+        started_at,                                        -- started_at
+        completed_at,                                      -- completed_at
+        trace_id                                           -- trace_id
+    FROM tool_audit_log
+    ON CONFLICT (id) DO NOTHING;
+    
+    -- 记录迁移统计
+    DO $$
+    DECLARE
+        tool_count INTEGER;
+    BEGIN
+        SELECT COUNT(*) INTO tool_count FROM tool_audit_log;
+        RAISE NOTICE 'tool_audit_log 迁移完成，源表记录数：%', tool_count;
+    END
+    $$;
+    
+    -- ─── 3. 迁移 kb_synonym 数据到 kb_category.metadata ───────────────────────────
+    -- 注意：kb_category.metadata 是 JSONB 字段，用于存储同义词映射
+    -- 由于 kb_category 表可能为空或 kb_synonym 数据无法直接关联，此迁移仅作备份记录
+    
+    -- 创建临时表记录同义词数据（供后续手动处理）
+    CREATE TABLE IF NOT EXISTS _kb_synonym_backup AS
+    SELECT * FROM kb_synonym;
+    
+    DO $$
+    DECLARE
+        synonym_count INTEGER;
+    BEGIN
+        SELECT COUNT(*) INTO synonym_count FROM kb_synonym;
+        RAISE NOTICE 'kb_synonym 数据已备份到 _kb_synonym_backup 表，记录数：%', synonym_count;
+        RAISE NOTICE 'kb_synonym 数据需手动合并到 kb_category.metadata 或保留备份表';
+    END
+    $$;
+    
+    -- ─── 4. 验证迁移结果 ───────────────────────────────────────────────────────────
+    
+    DO $$
+    DECLARE
+        total_prompt INTEGER;
+        total_tool INTEGER;
+        total_audit_log INTEGER;
+    BEGIN
+        SELECT COUNT(*) INTO total_prompt FROM audit_log WHERE audit_type = 'prompt';
+        SELECT COUNT(*) INTO total_tool FROM audit_log WHERE audit_type = 'tool_call';
+        SELECT COUNT(*) INTO total_audit_log FROM audit_log;
+    
+        RAISE NOTICE '=== 迁移验证 ===';
+        RAISE NOTICE 'audit_log 总记录数：%', total_audit_log;
+        RAISE NOTICE '  - prompt 类型：%', total_prompt;
+        RAISE NOTICE '  - tool_call 类型：%', total_tool;
+    END
+    $$;
+    
+    -- migrate:down
+    
+    -- 回滚：删除已迁移的数据（根据 audit_type 和原始 ID）
+    DELETE FROM audit_log WHERE audit_type IN ('prompt', 'tool_call');
+    DROP TABLE IF EXISTS _kb_synonym_backup;
+    
+    RAISE NOTICE '数据迁移已回滚';
+  20260402003_drop_deprecated_tables.sql: |
+    -- migrate:up
+    
+    -- =============================================================================
+    -- 废弃表清理迁移
+    -- 创建日期：2026-04-02
+    --
+    -- 背景：
+    --   根据 docs/architecture/20_数据库重规划分析.md，以下表已废弃：
+    --   - kb_document, kb_chunk：被 kbd_entry 替代（方案B：KBD 整条存储，不分块）
+    --   - kb_sop_node：被 sop_document/sop_chunk 替代（关键字路由架构已废弃）
+    --   - kb_synonym：已备份并合并到 kb_category.metadata
+    --   - raw_cases：数据不可用，已被 scripts/kbd/ 新流水线替代
+    --   - knowledge_atoms：方案B 中不是核心表
+    --   - prompt_audit：已迁移到 audit_log
+    --   - tool_audit_log：已迁移到 audit_log
+    --
+    -- 前提：
+    --   - 执行 20260402002_migrate_audit_data.sql 完成数据迁移
+    --   - 确认无业务依赖这些表
+    -- =============================================================================
+    
+    -- ─── 1. 删除知识库废弃表 ─────────────────────────────────────────────────────────
+    
+    -- kb_chunk 依赖 kb_document，先删除 kb_chunk
+    DROP TABLE IF EXISTS kb_chunk CASCADE;
+    RAISE NOTICE '已删除 kb_chunk 表';
+    
+    DROP TABLE IF EXISTS kb_document CASCADE;
+    RAISE NOTICE '已删除 kb_document 表';
+    
+    DROP TABLE IF EXISTS kb_sop_node CASCADE;
+    RAISE NOTICE '已删除 kb_sop_node 表';
+    
+    DROP TABLE IF EXISTS kb_synonym CASCADE;
+    RAISE NOTICE '已删除 kb_synonym 表（数据已备份到 _kb_synonym_backup）';
+    
+    -- ─── 2. 删除历史遗留表 ─────────────────────────────────────────────────────────
+    
+    DROP TABLE IF EXISTS raw_cases CASCADE;
+    RAISE NOTICE '已删除 raw_cases 表';
+    
+    DROP TABLE IF EXISTS knowledge_atoms CASCADE;
+    RAISE NOTICE '已删除 knowledge_atoms 表';
+    
+    -- ─── 3. 删除已迁移的审计表 ─────────────────────────────────────────────────────
+    
+    DROP TABLE IF EXISTS prompt_audit CASCADE;
+    RAISE NOTICE '已删除 prompt_audit 表（数据已迁移到 audit_log）';
+    
+    DROP TABLE IF EXISTS tool_audit_log CASCADE;
+    RAISE NOTICE '已删除 tool_audit_log 表（数据已迁移到 audit_log）';
+    
+    -- ─── 4. 清理备份表 ─────────────────────────────────────────────────────────────
+    
+    DROP TABLE IF EXISTS _kb_synonym_backup CASCADE;
+    RAISE NOTICE '已删除 _kb_synonym_backup 备份表';
+    
+    -- ─── 5. 验证最终表结构 ─────────────────────────────────────────────────────────
+    
+    DO $$
+    DECLARE
+        remaining_tables TEXT[];
+        expected_tables TEXT[] := ARRAY[
+            'user', 'case', 'environment',
+            'conversation', 'message', 'audit_log',
+            'assistant_evaluation',
+            'kb_category', 'kbd_entry', 'sop_document', 'sop_chunk'
+        ];
+        missing_tables TEXT[];
+        extra_tables TEXT[];
+        t TEXT;
+    BEGIN
+        -- 获取当前所有用户表
+        SELECT array_agg(tablename)
+        INTO remaining_tables
+        FROM pg_tables
+        WHERE schemaname = 'public';
+    
+        -- 检查缺失的表
+        FOREACH t IN ARRAY expected_tables LOOP
+            IF NOT t = ANY(remaining_tables) THEN
+                missing_tables := array_append(missing_tables, t);
+            END IF;
+        END LOOP;
+    
+        -- 报告结果
+        RAISE NOTICE '=== 表清理验证 ===';
+        RAISE NOTICE '当前表数量：%', array_length(remaining_tables, 1);
+        RAISE NOTICE '期望表：%', array_length(expected_tables, 1);
+    
+        IF array_length(missing_tables, 1) > 0 THEN
+            RAISE WARNING '缺失表：%', missing_tables;
+        ELSE
+            RAISE NOTICE '所有目标表已存在';
+        END IF;
+    END
+    $$;
+    
+    -- 列出最终保留的表
+    SELECT tablename AS "保留的表"
+    FROM pg_tables
+    WHERE schemaname = 'public'
+    ORDER BY tablename;
+    
+    -- migrate:down
+    
+    -- 无法自动回滚，需要从备份恢复或重新运行迁移
+    
+    RAISE NOTICE '无法自动回滚表删除操作，请从备份恢复';
+  20260404001_v6_redesign.sql: |
+    -- migrate:up
+    
+    -- =============================================================================
+    -- v6.2 数据库重设计迁移
+    -- 创建日期：2026-04-04
+    --
+    -- 设计依据：docs/architecture/20_数据库重规划分析.md § 九（v6.2 深度重设计）
+    -- 核心变更：
+    --   1. 新增 customer 表（HCI 产品客户，与 user 用户身份完全独立）
+    --   2. 新增 system_prompt 表（Prompt 模板版本管理）
+    --   3. 新增 tool_definition 表（工具知识库，Prompt 构建时动态注入）
+    --   4. 新增 diagnostic_item 表（诊断结论子表，解 BUG-06：conversation.hypothesis JSONB blob 反模式）
+    --   5. 新增 tool_result 表（工具执行记录，从 audit_log 拆分，解 BUG-03：缺少 step_no）
+    --   6. case 表新增 customer_id 外键
+    --   7. audit_log 表精简（删除 tool_call 专属字段，新增 system_prompt_id）
+    --   8. conversation 表删除 hypothesis/react_state（从未写入数据，BUG-06 根因）
+    --   9. 迁移 audit_log 中存量 tool_call 记录到 tool_result
+    -- =============================================================================
+    
+    -- ─── 0. 确保扩展就绪 ──────────────────────────────────────────────────────────
+    
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    
+    -- ─── 1. 新建 customer 表（客户档案，公司级别） ────────────────────────────────
+    
+    CREATE TABLE IF NOT EXISTS customer (
+        customer_id     UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
+        code            VARCHAR(64)     UNIQUE,                -- 外部系统客户 ID（幂等键），手动新增可为 NULL
+        name            VARCHAR(200)    NOT NULL,               -- 客户全称（公司名称）
+        short_name      VARCHAR(100),                           -- 客户简称，前端展示时优先
+        product_version VARCHAR(50),                            -- 购买的 HCI 产品版本（如 HCI 6.x）
+        region          VARCHAR(100),                           -- 客户所在区域（华南/华北/华东）
+        industry        VARCHAR(100),                           -- 所属行业（金融/医疗/政务/教育）
+        metadata        JSONB           NOT NULL DEFAULT '{}',  -- 扩展元数据（合同编号、销售负责人等）
+        created_at      TIMESTAMPTZ     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMPTZ     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        trace_id        VARCHAR(64)                             -- W3C traceparent 格式
+    );
+    
+    COMMENT ON TABLE  customer              IS 'HCI 产品客户表（公司/单位级别），与 user 用户身份完全独立：user=平台登录身份，customer=HCI 产品采购方';
+    COMMENT ON COLUMN customer.code        IS '客户编码（幂等键），对应外部 CRM 系统客户 ID，数据导入时用于去重';
+    COMMENT ON COLUMN customer.metadata    IS '扩展元数据，格式示例：{"contract_no":"HCI-2026-001","sales":"张三"}';
+    
+    CREATE INDEX IF NOT EXISTS idx_customer_name ON customer (name);
+    CREATE INDEX IF NOT EXISTS idx_customer_code ON customer (code) WHERE code IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_customer_product_version ON customer (product_version) WHERE product_version IS NOT NULL;
+    
+    -- 客户表 updated_at 触发器
+    CREATE OR REPLACE FUNCTION update_customer_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = CURRENT_TIMESTAMP;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    DROP TRIGGER IF EXISTS trg_customer_updated_at ON customer;
+    CREATE TRIGGER trg_customer_updated_at
+        BEFORE UPDATE ON customer
+        FOR EACH ROW EXECUTE FUNCTION update_customer_updated_at();
+    
+    -- ─── 2. 新建 system_prompt 表（System Instructions 模板版本管理） ──────────────
+    
+    CREATE TABLE IF NOT EXISTS system_prompt (
+        id               SERIAL          PRIMARY KEY,
+        stage            VARCHAR(5)      NOT NULL,              -- S0/S1/S2/S3/S4/S5/S6/BASE
+        name             VARCHAR(100)    NOT NULL UNIQUE,       -- 唯一名称，如 s0_intent_recognition_v2
+        description      TEXT,                                  -- 模板说明：用途、设计思路、与前版本区别
+        content_template TEXT            NOT NULL,              -- Prompt 模板，使用 {placeholder} 占位符
+        version          VARCHAR(20)     NOT NULL DEFAULT '1.0',
+        is_active        BOOLEAN         NOT NULL DEFAULT TRUE,  -- true=当前激活版本；同 stage 只能有一个 true
+        created_at       TIMESTAMPTZ     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at       TIMESTAMPTZ     NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    COMMENT ON TABLE  system_prompt                  IS 'System Instructions 模板库，支持按阶段多版本管理和快速回滚';
+    COMMENT ON COLUMN system_prompt.stage            IS '适用诊断阶段: S0=意图识别 S1=信息采集 S2=假设生成 S3=验证 S4=根因 S5=方案 S6=验证闭环 BASE=全局基础';
+    COMMENT ON COLUMN system_prompt.content_template IS 'Prompt 模板内容，占位符格式：{tool_list}, {category_name}, {hypotheses} 等';
+    COMMENT ON COLUMN system_prompt.is_active        IS '同一 stage 同时只有一个 is_active=true 的版本被注入 Prompt，切换时先 UPDATE 旧版为 false';
+    
+    CREATE INDEX IF NOT EXISTS idx_system_prompt_stage_active ON system_prompt (stage, is_active);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_system_prompt_name ON system_prompt (name);
+    
+    CREATE OR REPLACE FUNCTION update_system_prompt_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = CURRENT_TIMESTAMP;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    DROP TRIGGER IF EXISTS trg_system_prompt_updated_at ON system_prompt;
+    CREATE TRIGGER trg_system_prompt_updated_at
+        BEFORE UPDATE ON system_prompt
+        FOR EACH ROW EXECUTE FUNCTION update_system_prompt_updated_at();
+    
+    -- ─── 3. 新建 tool_definition 表（工具知识库） ─────────────────────────────────
+    
+    CREATE TABLE IF NOT EXISTS tool_definition (
+        id                SERIAL         PRIMARY KEY,
+        tool_name         VARCHAR(100)   NOT NULL UNIQUE,        -- 工具唯一标识（如 acli_vm_list）
+        display_name      VARCHAR(200)   NOT NULL,               -- 展示名（如'获取虚拟机列表'）
+        tool_type         VARCHAR(20)    NOT NULL,               -- acli / scp_api
+        category          VARCHAR(50),                           -- 故障域: vm/storage/network/cluster/platform; NULL=通用
+        description       TEXT           NOT NULL,               -- 工具功能描述（直接注入 Prompt 供 LLM 理解）
+        usage_template    TEXT,                                  -- 调用模板（acli 类型：命令格式；scp_api 类型：endpoint+method）
+        parameters_schema JSONB          NOT NULL DEFAULT '{}', -- OpenAPI 3.0 格式参数 Schema
+        examples          JSONB          NOT NULL DEFAULT '[]', -- 调用示例数组
+        risk_level        SMALLINT       NOT NULL DEFAULT 1,     -- 1=只读 2=写操作 3=高危
+        is_active         BOOLEAN        NOT NULL DEFAULT TRUE,  -- false=临时下线，不注入 Prompt
+        version           VARCHAR(20)    NOT NULL DEFAULT '1.0',
+        created_at        TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at        TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    COMMENT ON TABLE  tool_definition            IS 'AI 工具知识库：LLM 可调用的工具完整描述，Prompt 构建时按故障域过滤后动态注入';
+    COMMENT ON COLUMN tool_definition.tool_name  IS '工具唯一标识，与 tool_result.tool_name 保持一致，一条记录=一个原子操作';
+    COMMENT ON COLUMN tool_definition.category   IS 'NULL 表示通用工具（跨域均注入），非 NULL 只在对应故障域注入以控制 token 消耗';
+    COMMENT ON COLUMN tool_definition.risk_level IS '1=只读查询（不影响生产环境）/ 2=写操作（修改配置/状态）/ 3=高危（删除/重启/格式化）';
+    
+    CREATE INDEX IF NOT EXISTS idx_tool_definition_category ON tool_definition (category, is_active);
+    CREATE INDEX IF NOT EXISTS idx_tool_definition_risk ON tool_definition (risk_level) WHERE risk_level >= 2;
+    
+    CREATE OR REPLACE FUNCTION update_tool_definition_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = CURRENT_TIMESTAMP;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    DROP TRIGGER IF EXISTS trg_tool_definition_updated_at ON tool_definition;
+    CREATE TRIGGER trg_tool_definition_updated_at
+        BEFORE UPDATE ON tool_definition
+        FOR EACH ROW EXECUTE FUNCTION update_tool_definition_updated_at();
+    
+    -- ─── 4. 新建 tool_result 表（工具执行记录，从 audit_log 拆分） ────────────────
+    -- 解决 BUG-03：原 tool_audit_log 缺少 step_no 字段
+    -- 解决语义混乱：audit_log 不再承载工具执行数据
+    
+    CREATE TABLE IF NOT EXISTS tool_result (
+        id              VARCHAR(36)    PRIMARY KEY DEFAULT gen_random_uuid()::VARCHAR,
+        conversation_id UUID           NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        tool_name       VARCHAR(100)   NOT NULL,                -- 工具标识，对应 tool_definition.tool_name
+        tool_type       VARCHAR(20)    NOT NULL,                -- acli / scp_api
+        step_no         SMALLINT,                              -- 执行步骤编号（BUG-03 修复），对应 diagnostic_item.seq
+        risk_level      SMALLINT       NOT NULL DEFAULT 1,     -- 1=只读 2=写操作 3=高危
+        policy          VARCHAR(20)    NOT NULL,               -- auto/notify/confirm/block
+        authorized_by   VARCHAR(100),                          -- policy=confirm 时的授权用户标识
+        input_json      JSONB          NOT NULL DEFAULT '{}',  -- 工具调用输入参数
+        output_json     JSONB,                                 -- 工具执行结果
+        error           TEXT,                                  -- 错误信息（失败时写入）
+        duration_ms     INTEGER,                               -- 执行耗时（毫秒）
+        started_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        completed_at    TIMESTAMPTZ,
+        trace_id        VARCHAR(64)
+    );
+    
+    COMMENT ON TABLE  tool_result            IS '工具执行记录表，记录 ReAct 执行器每次工具调用的输入/输出/风险/授权。从 audit_log 拆分以解决 BUG-03（step_no 缺失）';
+    COMMENT ON COLUMN tool_result.step_no    IS '执行步骤编号，BUG-03 修复字段；对应 diagnostic_item 中 type=verification_step 记录的 seq';
+    COMMENT ON COLUMN tool_result.policy     IS 'auto=自动执行 / notify=执行并通知 / confirm=需人工确认 / block=已拦截（risk>=3 时）';
+    COMMENT ON COLUMN tool_result.authorized_by IS 'policy=confirm 场景必填，记录是谁授权了该高危操作';
+    
+    CREATE INDEX IF NOT EXISTS idx_tool_result_conversation ON tool_result (conversation_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_tool_result_tool_name ON tool_result (tool_name, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_tool_result_high_risk ON tool_result (risk_level, started_at DESC) WHERE risk_level >= 2;
+    CREATE INDEX IF NOT EXISTS idx_tool_result_trace ON tool_result (trace_id) WHERE trace_id IS NOT NULL;
+    
+    -- ─── 5. 新建 diagnostic_item 表（诊断结论子表） ───────────────────────────────
+    -- 解决 BUG-06：conversation.hypothesis JSONB blob 反模式
+    -- 与 message 完全同构的子实体设计模式（1 conversation → N diagnostic_item）
+    
+    CREATE TABLE IF NOT EXISTS diagnostic_item (
+        id              UUID           PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id UUID           NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        stage           VARCHAR(5)     NOT NULL,               -- S2/S3/S4/S5
+        type            VARCHAR(30)    NOT NULL,               -- hypothesis/verification_step/root_cause/solution
+        seq             SMALLINT       NOT NULL DEFAULT 1,     -- 同会话同类型内排序序号（从1开始）
+        content         JSONB          NOT NULL DEFAULT '{}', -- 结构化内容（按 type 格式不同）
+        probability     REAL,                                  -- 假设概率 0.0-1.0，仅 type=hypothesis 有值
+        status          VARCHAR(20)    NOT NULL DEFAULT 'pending', -- pending/in_progress/confirmed/rejected/skipped
+        created_at      TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        trace_id        VARCHAR(64)
+    );
+    
+    COMMENT ON TABLE  diagnostic_item          IS '诊断结论子表：存储 S2-S5 各阶段产生的结构化结论（假设/验证步骤/根因/方案）。解 BUG-06：废弃 conversation.hypothesis JSONB blob 反模式';
+    COMMENT ON COLUMN diagnostic_item.type     IS 'hypothesis=根因假设(S2) / verification_step=验证步骤(S3) / root_cause=根因结论(S4) / solution=解决方案(S5)';
+    COMMENT ON COLUMN diagnostic_item.seq      IS '同会话同类型内排序序号从1开始；hypothesis 按概率降序，verification_step 按执行顺序';
+    COMMENT ON COLUMN diagnostic_item.content  IS '结构化内容，按 type 格式不同：hypothesis:{description,probability,evidence_needed}；root_cause:{description,confidence,evidence}；solution:{steps[],commands[]}';
+    COMMENT ON COLUMN diagnostic_item.status   IS 'pending=待处理 / in_progress=验证中 / confirmed=已确认 / rejected=已排除 / skipped=跳过';
+    
+    CREATE INDEX IF NOT EXISTS idx_diagnostic_item_query ON diagnostic_item (conversation_id, type, seq);
+    CREATE INDEX IF NOT EXISTS idx_diagnostic_item_stage ON diagnostic_item (conversation_id, stage);
+    CREATE INDEX IF NOT EXISTS idx_diagnostic_item_trace ON diagnostic_item (trace_id) WHERE trace_id IS NOT NULL;
+    
+    CREATE OR REPLACE FUNCTION update_diagnostic_item_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = CURRENT_TIMESTAMP;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    DROP TRIGGER IF EXISTS trg_diagnostic_item_updated_at ON diagnostic_item;
+    CREATE TRIGGER trg_diagnostic_item_updated_at
+        BEFORE UPDATE ON diagnostic_item
+        FOR EACH ROW EXECUTE FUNCTION update_diagnostic_item_updated_at();
+    
+    -- ─── 6. case 表新增 customer_id 外键 ─────────────────────────────────────────
+    
+    ALTER TABLE "case"
+        ADD COLUMN IF NOT EXISTS customer_id UUID
+            REFERENCES customer(customer_id) ON DELETE SET NULL;
+    
+    COMMENT ON COLUMN "case".customer_id IS '关联客户档案（可选）；ON DELETE SET NULL，删除客户不影响历史工单。适用于运营人员关联投诉工单所属客户公司';
+    
+    CREATE INDEX IF NOT EXISTS idx_case_customer_id ON "case" (customer_id) WHERE customer_id IS NOT NULL;
+    
+    -- ─── 7. audit_log 表精简（删除 tool_call 专属字段，新增 system_prompt_id） ────
+    
+    -- 7a. 迁移 audit_log 中存量 tool_call 记录到 tool_result（保留历史数据）
+    INSERT INTO tool_result (
+        id,
+        conversation_id,
+        tool_name,
+        tool_type,
+        step_no,
+        risk_level,
+        policy,
+        authorized_by,
+        input_json,
+        output_json,
+        error,
+        duration_ms,
+        started_at,
+        completed_at,
+        trace_id
+    )
+    SELECT
+        id,
+        conversation_id,
+        COALESCE(tool_name, 'unknown'),   -- 工具名，unknown 表示迁移前旧数据
+        'acli',                            -- 旧数据未记录 tool_type，默认填 acli
+        NULL,                              -- step_no：旧数据无此字段（BUG-03 根因）
+        COALESCE(risk_level, 1),          -- 风险等级
+        COALESCE(policy, 'auto'),         -- 执行策略
+        authorized_by,
+        COALESCE(payload -> 'args', '{}'::jsonb),     -- 将 payload.args 作为 input_json
+        COALESCE(payload -> 'result', NULL),           -- 将 payload.result 作为 output_json
+        error,
+        duration_ms,
+        started_at,
+        completed_at,
+        trace_id
+    FROM audit_log
+    WHERE audit_type = 'tool_call'
+    ON CONFLICT (id) DO NOTHING;
+    
+    -- 7b. 删除已迁移的 tool_call 记录
+    DELETE FROM audit_log WHERE audit_type = 'tool_call';
+    
+    -- 7c. 新增 system_prompt_id 字段（Prompt 模板关联）
+    ALTER TABLE audit_log
+        ADD COLUMN IF NOT EXISTS system_prompt_id INTEGER
+            REFERENCES system_prompt(id) ON DELETE SET NULL;
+    
+    COMMENT ON COLUMN audit_log.system_prompt_id IS '本次 Prompt 构建使用的模板 ID；ON DELETE SET NULL，删除模板不影响历史审计记录';
+    
+    -- 7d. 删除 tool_call 专属字段（这些字段已迁移到 tool_result）
+    ALTER TABLE audit_log
+        DROP COLUMN IF EXISTS tool_name,
+        DROP COLUMN IF EXISTS risk_level,
+        DROP COLUMN IF EXISTS policy,
+        DROP COLUMN IF EXISTS authorized_by;
+    
+    COMMENT ON TABLE audit_log IS 'System Instructions 审计表：仅记录每轮对话的 Prompt 构建过程（模板版本/token数/注入工具数）。工具执行记录已迁移至 tool_result 表';
+    
+    -- ─── 8. conversation 表删除 hypothesis/react_state ────────────────────────────
+    -- 安全性确认：
+    --   - hypothesis：ORM Column 定义存在，但生产代码中零写入（BUG-06 根因）
+    --   - react_state：ReAct 推理草稿，正确设计是内存存活，不应持久化
+    -- 两列从来没有生产数据，DROP 无数据丢失风险
+    
+    ALTER TABLE conversation
+        DROP COLUMN IF EXISTS hypothesis,
+        DROP COLUMN IF EXISTS react_state;
+    
+    -- ─── 9. 验证迁移结果 ──────────────────────────────────────────────────────────
+    
+    DO $$
+    DECLARE
+        expected_tables TEXT[] := ARRAY[
+            'user', 'customer', 'case', 'environment', 'assistant_evaluation',
+            'conversation', 'message', 'diagnostic_item', 'tool_result', 'audit_log',
+            'system_prompt', 'tool_definition',
+            'kb_category', 'kbd_entry', 'sop_document', 'sop_chunk',
+            'schema_migrations'
+        ];
+        t TEXT;
+        missing TEXT[] := ARRAY[]::TEXT[];
+    BEGIN
+        FOREACH t IN ARRAY expected_tables LOOP
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t
+            ) THEN
+                missing := array_append(missing, t);
+            END IF;
+        END LOOP;
+    
+        IF array_length(missing, 1) > 0 THEN
+            RAISE EXCEPTION 'v6.2 迁移验证失败：以下表不存在：%', missing;
+        ELSE
+            RAISE NOTICE 'v6.2 迁移验证通过：17 张目标表均存在';
+        END IF;
+    END
+    $$;
+    
+    -- migrate:down
+    
+    -- 下面的 down 脚本为尽力回滚，不保证数据完整性
+    -- 如需完整回滚，请从数据库备份恢复
+    
+    -- 恢复 conversation 表的列（数据已丢失，只恢复结构）
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS hypothesis  JSONB,
+        ADD COLUMN IF NOT EXISTS react_state JSONB;
+    
+    -- 恢复 audit_log 表的列
+    ALTER TABLE audit_log
+        DROP COLUMN IF EXISTS system_prompt_id,
+        ADD COLUMN IF NOT EXISTS tool_name    VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS risk_level   SMALLINT,
+        ADD COLUMN IF NOT EXISTS policy       VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS authorized_by VARCHAR(100);
+    
+    -- 删除 case.customer_id
+    ALTER TABLE "case" DROP COLUMN IF EXISTS customer_id;
+    
+    -- 删除新增表（逆序，先删有外键依赖的）
+    DROP TABLE IF EXISTS diagnostic_item CASCADE;
+    DROP TABLE IF EXISTS tool_result CASCADE;
+    DROP TABLE IF EXISTS tool_definition CASCADE;
+    DROP TABLE IF EXISTS audit_log CASCADE;  -- 暂不级联，避免误删
+    DROP TABLE IF EXISTS system_prompt CASCADE;
+    DROP TABLE IF EXISTS customer CASCADE;
+    
+    -- ─── 附加：v6.3 S6 用户意图确认流程补充 ──────────────────────────────────────
+    -- 新增 conversation.pending_resolution 字段
+    -- S6 完成后持久化三选项等待状态，防止 Pod 重启丢失等待上下文
+    
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS pending_resolution JSONB;
+    
+    COMMENT ON COLUMN conversation.pending_resolution IS
+        'S6 完成后等待用户选择的快照（断线重连恢复锚点）。'
+        '格式：{"stage":"S6","sent_at":"...","options":["A","B","C"]}。'
+        '选 A(已解决)/B(未解决重进S1)/C(升级人工) 后清空为 NULL。'
+        '与 pending_confirm（工具执行确认）独立：两者不会同时出现';
+    
+    -- close_reason 值域扩展：加入 escalated（用户选 C 升级人工）
+    -- PostgreSQL ENUM 扩展：ADD VALUE 是无事务操作，需单独执行
+    -- 注意：若当前环境 close_reason 是 VARCHAR(20) 而非 ENUM，此步骤无需操作
+    DO $$
+    BEGIN
+        -- 仅当 close_reason 是 ENUM 类型时才扩展（当前 schema 是 VARCHAR，此块为预留）
+        IF EXISTS (
+            SELECT 1 FROM pg_type WHERE typname = 'close_reason_type'
+        ) THEN
+            ALTER TYPE close_reason_type ADD VALUE IF NOT EXISTS 'escalated';
+        END IF;
+    END
+    $$;
+
   20260407001_schema_repair.sql: |
     -- migrate:up
-
+    
     -- =============================================================================
     -- Schema 修复迁移 — 补齐 ORM 模型与实际 DB 之间的所有漂移
     -- 日期：2026-04-07
     -- 根因：schema_migrations 记录了 8 次迁移已执行，但实际 DDL 未生效
-    -- 幂等保证：所有操作使用 IF NOT EXISTS，可安全重复执行
-    -- 注意：此处内嵌 SQL 必须与权威迁移文件保持一致，避免手工修复与 PreSync 执行结果漂移
+    --       （DB 可能从早期备份恢复，migration 记录被带入但 DDL 未重放）
+    --
+    -- 修复内容：
+    --   §1  新建 customer 表（case.customer_id FK 目标）
+    --   §2  case 表补列（close_reason, customer_id）
+    --   §3  conversation 表补列（diagnostic 系列 + pending_resolution）
+    --   §4  assistant_evaluation 表补列（评分评价体系）
+    --   §5  新建 tool_result（v6.2 工具执行记录）
+    --   §6  新建 diagnostic_item（v6.2 诊断子表）
+    --
+    -- 注意：
+    --   本迁移不创建废弃表（kb_document/kb_chunk/kb_sop_node/kb_synonym/
+    --   raw_cases/knowledge_atoms/prompt_audit），这些表已在
+    --   20260402003_drop_deprecated_tables.sql 中删除。
+    --
+    -- 幂等保证：
+    --   - 所有 CREATE TABLE 使用 IF NOT EXISTS
+    --   - 所有 ALTER TABLE ADD COLUMN 使用 IF NOT EXISTS
+    --   - FK / CHECK 约束通过 DO $$ 块检测后添加
+    --   - 全量索引使用 IF NOT EXISTS
+    --   新环境 / 已修复环境可安全重复执行
     -- =============================================================================
-
-    -- §0. 确保基础扩展和函数存在（防御性，确保 PreSync/dbmate 路径下可独立执行）
+    
+    -- ============================================================================
+    -- §0. 确保基础扩展和函数存在（防御性，正常环境 init_schema 已创建）
+    -- ============================================================================
+    
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-    CREATE EXTENSION IF NOT EXISTS pgcrypto;
     CREATE EXTENSION IF NOT EXISTS "pg_trgm";
     CREATE EXTENSION IF NOT EXISTS "vector";
-
+    
     CREATE OR REPLACE FUNCTION update_updated_at_column()
     RETURNS TRIGGER AS $$
     BEGIN
@@ -1369,192 +2433,339 @@ data:
         RETURN NEW;
     END;
     $$ LANGUAGE plpgsql;
+    
+    -- ============================================================================
     -- §1. 新建 customer 表
+    -- ============================================================================
+    
     CREATE TABLE IF NOT EXISTS customer (
         customer_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        code          VARCHAR(64)  UNIQUE,
-        name          VARCHAR(200) NOT NULL,
-        short_name    VARCHAR(100),
-        product_version VARCHAR(50),
-        region        VARCHAR(100),
-        industry      VARCHAR(100),
-        metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
+        code          VARCHAR(64)  UNIQUE,                          -- 外部系统客户 ID（幂等键）
+        name          VARCHAR(200) NOT NULL,                        -- 客户全称
+        short_name    VARCHAR(100),                                 -- 客户简称
+        product_version VARCHAR(50),                                -- HCI 产品版本
+        region        VARCHAR(100),                                 -- 所在区域
+        industry      VARCHAR(100),                                 -- 所属行业
+        metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,           -- 扩展元数据
         created_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
         updated_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
         trace_id      VARCHAR(64)
     );
+    
     CREATE INDEX IF NOT EXISTS idx_customer_code ON customer(code);
     CREATE INDEX IF NOT EXISTS idx_customer_name ON customer(name);
     CREATE INDEX IF NOT EXISTS idx_customer_product_version ON customer(product_version);
+    
     DO $$ BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_customer_updated_at') THEN
-            CREATE TRIGGER update_customer_updated_at BEFORE UPDATE ON customer
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_trigger WHERE tgname = 'update_customer_updated_at'
+        ) THEN
+            CREATE TRIGGER update_customer_updated_at
+                BEFORE UPDATE ON customer
                 FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
         END IF;
     END $$;
-    COMMENT ON TABLE customer IS '客户档案表 — HCI 产品采购方（公司/单位级别）';
-
+    
+    COMMENT ON TABLE customer IS '客户档案表 — HCI 产品采购方（公司/单位级别），与 user 独立';
+    
+    -- ============================================================================
     -- §2. case 表补列
-    ALTER TABLE "case" ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20);
+    -- ============================================================================
+    
+    -- 2.1 close_reason：工单关闭原因（被动信号轨道核心数据）
+    ALTER TABLE "case"
+        ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20);
+    
+    -- 添加 CHECK 约束（包含 v6.3 新增的 escalated / s0_classification_failed）
     DO $$ BEGIN
         IF NOT EXISTS (
             SELECT 1 FROM pg_constraint
-            WHERE conrelid = '"case"'::regclass AND contype = 'c'
+            WHERE conrelid = '"case"'::regclass
+              AND contype = 'c'
               AND pg_get_constraintdef(oid) LIKE '%close_reason%'
         ) THEN
             ALTER TABLE "case" ADD CONSTRAINT case_close_reason_check
-                CHECK (close_reason IN ('user_command','timeout','abandon','admin_close','escalated','s0_classification_failed'));
+                CHECK (close_reason IN (
+                    'user_command', 'timeout', 'abandon', 'admin_close',
+                    'escalated', 's0_classification_failed'
+                ));
         END IF;
     END $$;
-    ALTER TABLE "case" ADD COLUMN IF NOT EXISTS customer_id UUID;
+    
+    COMMENT ON COLUMN "case".close_reason IS '工单关闭原因：user_command/timeout/abandon/admin_close/escalated/s0_classification_failed';
+    
+    -- 2.2 customer_id：关联客户档案（可选，ON DELETE SET NULL）
+    ALTER TABLE "case"
+        ADD COLUMN IF NOT EXISTS customer_id UUID;
+    
     DO $$ BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'case_customer_id_fkey') THEN
-            ALTER TABLE "case" ADD CONSTRAINT case_customer_id_fkey
-                FOREIGN KEY (customer_id) REFERENCES customer(customer_id) ON DELETE SET NULL;
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'case_customer_id_fkey'
+        ) THEN
+            ALTER TABLE "case"
+                ADD CONSTRAINT case_customer_id_fkey
+                FOREIGN KEY (customer_id) REFERENCES customer(customer_id)
+                ON DELETE SET NULL;
         END IF;
     END $$;
+    
     CREATE INDEX IF NOT EXISTS idx_case_customer_id ON "case"(customer_id);
-
+    
+    COMMENT ON COLUMN "case".customer_id IS '关联客户档案（可选），用于按客户维度聚合工单';
+    
+    -- ============================================================================
     -- §3. conversation 表补列
-    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS repeat_question_count INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS diagnostic_stage VARCHAR(8) NOT NULL DEFAULT 'S0';
-    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS category_l1 VARCHAR(100);
-    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS category_l2 VARCHAR(100);
-    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS category_id VARCHAR(32);
-    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS pending_confirm JSONB;
-    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS pending_resolution JSONB;
+    -- ============================================================================
+    
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS repeat_question_count INTEGER NOT NULL DEFAULT 0;
+    
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS diagnostic_stage VARCHAR(8) NOT NULL DEFAULT 'S0';
+    
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS category_l1 VARCHAR(100);
+    
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS category_l2 VARCHAR(100);
+    
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS category_id VARCHAR(32);
+    
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS pending_confirm JSONB;
+    
+    -- v6.3 新增：S6 验证闭环后等待用户选择的快照（A=已解决/B=未解决/C=升级人工）
+    ALTER TABLE conversation
+        ADD COLUMN IF NOT EXISTS pending_resolution JSONB;
+    
     CREATE INDEX IF NOT EXISTS idx_conversation_diagnostic_stage ON conversation(diagnostic_stage);
-
+    
+    COMMENT ON COLUMN conversation.diagnostic_stage IS 'P4 诊断阶段: S0→S1→S2→S3→S4→S5→S6';
+    COMMENT ON COLUMN conversation.pending_confirm IS '待用户确认的工具调用（S3/S5 高危工具），断线重连恢复锚点';
+    COMMENT ON COLUMN conversation.pending_resolution IS 'S6 验证闭环后等待用户选择 A/B/C 的快照';
+    
+    -- ============================================================================
     -- §4. assistant_evaluation 表补列
-    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20);
-    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS session_duration_sec INTEGER;
-    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS repeat_question_count INTEGER;
-    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS composite_score SMALLINT;
-    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS score_breakdown JSONB;
-    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS calculated_at TIMESTAMPTZ;
-    CREATE INDEX IF NOT EXISTS idx_eval_composite_score ON assistant_evaluation(composite_score) WHERE composite_score IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_eval_close_reason ON assistant_evaluation(close_reason) WHERE close_reason IS NOT NULL;
-
-    -- §5. 新建 kb_document / kb_chunk（v3.0）
-    CREATE TABLE IF NOT EXISTS kb_document (
-        id SERIAL PRIMARY KEY, source_id VARCHAR(50) UNIQUE,
-        title VARCHAR(500) NOT NULL, product VARCHAR(100) DEFAULT '超融合HCI',
-        content_md TEXT NOT NULL, content_hash VARCHAR(64), yaml_meta JSONB,
-        category_l1 VARCHAR(100), category_l2 VARCHAR(100), tags TEXT[],
-        judgment_logic TEXT, summary TEXT, difficulty SMALLINT DEFAULT 3,
-        status VARCHAR(20) DEFAULT 'draft', review_note TEXT, reviewer VARCHAR(100),
-        reviewed_at TIMESTAMPTZ, source_type VARCHAR(20) DEFAULT 'kb',
-        has_images BOOLEAN DEFAULT FALSE, verified_version VARCHAR(50),
-        trace_id VARCHAR(64),
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE INDEX IF NOT EXISTS idx_kb_document_status ON kb_document(status);
-    CREATE INDEX IF NOT EXISTS idx_kb_document_category ON kb_document(category_l1, category_l2);
-    CREATE INDEX IF NOT EXISTS idx_kb_document_source_id ON kb_document(source_id);
-    DO $$ BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_kb_document_updated_at') THEN
-            CREATE TRIGGER update_kb_document_updated_at BEFORE UPDATE ON kb_document
-                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-        END IF;
-    END $$;
-    CREATE TABLE IF NOT EXISTS kb_chunk (
-        id SERIAL PRIMARY KEY,
-        document_id INTEGER NOT NULL REFERENCES kb_document(id) ON DELETE CASCADE,
-        chunk_index SMALLINT NOT NULL, content TEXT NOT NULL,
-        embedding vector(384), token_count SMALLINT, metadata JSONB,
-        tsv tsvector, trace_id VARCHAR(64),
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE INDEX IF NOT EXISTS idx_kb_chunk_document ON kb_chunk(document_id);
-    CREATE INDEX IF NOT EXISTS idx_kb_chunk_position ON kb_chunk(document_id, chunk_index);
-    CREATE INDEX IF NOT EXISTS idx_kb_chunk_tsv ON kb_chunk USING GIN (tsv);
-
-    -- §6. 新建 kb_sop_node / kb_synonym
-    CREATE TABLE IF NOT EXISTS kb_sop_node (
-        id SERIAL PRIMARY KEY, skill_id VARCHAR(100) NOT NULL,
-        node_name VARCHAR(200) NOT NULL, parent_id INTEGER REFERENCES kb_sop_node(id),
-        keywords TEXT[] NOT NULL, file_path VARCHAR(500), content TEXT,
-        level SMALLINT DEFAULT 1, sort_order SMALLINT DEFAULT 0,
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE INDEX IF NOT EXISTS idx_kb_sop_node_skill ON kb_sop_node(skill_id);
-    CREATE INDEX IF NOT EXISTS idx_kb_sop_node_keywords ON kb_sop_node USING GIN (keywords);
-    CREATE TABLE IF NOT EXISTS kb_synonym (
-        id SERIAL PRIMARY KEY, term VARCHAR(100) NOT NULL,
-        canonical VARCHAR(100) NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(term, canonical)
-    );
-
-    -- §7. 新建 raw_cases / knowledge_atoms
-    CREATE TABLE IF NOT EXISTS raw_cases (
-        id BIGSERIAL PRIMARY KEY, case_id VARCHAR(64) NOT NULL UNIQUE,
-        source_url TEXT NOT NULL DEFAULT '', content_text TEXT NOT NULL DEFAULT '',
-        images JSONB NOT NULL DEFAULT '[]', classification VARCHAR(128) NOT NULL DEFAULT '',
-        quality_score SMALLINT NOT NULL DEFAULT 0,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS idx_raw_cases_classification ON raw_cases(classification);
-    CREATE INDEX IF NOT EXISTS idx_raw_cases_quality ON raw_cases(quality_score DESC);
-    CREATE TABLE IF NOT EXISTS knowledge_atoms (
-        id VARCHAR(32) PRIMARY KEY, atom_type VARCHAR(32) NOT NULL,
-        category_id VARCHAR(64) NOT NULL DEFAULT '', trigger_json JSONB NOT NULL DEFAULT '{}',
-        content_json JSONB NOT NULL DEFAULT '{}', source_type VARCHAR(16) NOT NULL DEFAULT 'session',
-        source_ref VARCHAR(64) NOT NULL DEFAULT '', verified BOOLEAN NOT NULL DEFAULT FALSE,
-        confidence NUMERIC(3,2) NOT NULL DEFAULT 0.70,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        verified_at TIMESTAMPTZ, verified_by VARCHAR(64)
-    );
-    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_verified ON knowledge_atoms(verified, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_category ON knowledge_atoms(category_id);
-
-    -- §8. 新建 prompt_audit
-    CREATE TABLE IF NOT EXISTS prompt_audit (
-        audit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        conversation_id UUID NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
-        case_id VARCHAR(20), assistant_type VARCHAR(50), model VARCHAR(100),
-        message_count INTEGER, has_sop BOOLEAN DEFAULT FALSE,
-        kb_chunks_count INTEGER DEFAULT 0, kb_top_score FLOAT DEFAULT 0.0,
-        system_prompt_chars INTEGER, messages JSONB, payload_ref VARCHAR(200),
-        user_rating SMALLINT CHECK (user_rating >= 1 AND user_rating <= 5),
-        context_breakdown JSONB, total_token_est INTEGER,
-        captured_at TIMESTAMPTZ DEFAULT NOW(), trace_id VARCHAR(64)
-    );
-    CREATE INDEX IF NOT EXISTS idx_prompt_audit_case ON prompt_audit(case_id);
-    CREATE INDEX IF NOT EXISTS idx_prompt_audit_captured_at ON prompt_audit(captured_at DESC);
-
-    -- §9. 新建 tool_result（v6.2 替代 tool_audit_log）
+    -- ============================================================================
+    
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20);
+    
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS session_duration_sec INTEGER;
+    
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS repeat_question_count INTEGER;
+    
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS composite_score SMALLINT;
+    
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS score_breakdown JSONB;
+    
+    ALTER TABLE assistant_evaluation
+        ADD COLUMN IF NOT EXISTS calculated_at TIMESTAMPTZ;
+    
+    CREATE INDEX IF NOT EXISTS idx_eval_composite_score
+        ON assistant_evaluation(composite_score) WHERE composite_score IS NOT NULL;
+    
+    CREATE INDEX IF NOT EXISTS idx_eval_close_reason
+        ON assistant_evaluation(close_reason) WHERE close_reason IS NOT NULL;
+    
+    COMMENT ON COLUMN assistant_evaluation.composite_score IS '综合质量分 0-100，QualityScoreService 计算';
+    COMMENT ON COLUMN assistant_evaluation.score_breakdown IS '各维度分解：{"close_intent":90,"efficiency":70,"user_rating":80,"ai_quality":65}';
+    
+    -- ============================================================================
+    -- §5. 新建 tool_result 表（v6.2 — 替代已废弃的 tool_audit_log）
+    -- ============================================================================
+    
     CREATE TABLE IF NOT EXISTS tool_result (
-        id VARCHAR(36) PRIMARY KEY,
-        conversation_id UUID NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
-        tool_name VARCHAR(100) NOT NULL, tool_type VARCHAR(20) NOT NULL,
-        step_no SMALLINT, risk_level SMALLINT NOT NULL DEFAULT 1,
-        policy VARCHAR(20) NOT NULL, authorized_by VARCHAR(100),
-        input_json JSONB NOT NULL DEFAULT '{}', output_json JSONB, error TEXT,
-        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), completed_at TIMESTAMPTZ,
-        duration_ms INTEGER, trace_id VARCHAR(64)
+        id                VARCHAR(36)   PRIMARY KEY,
+        conversation_id   UUID          NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        tool_name         VARCHAR(100)  NOT NULL,
+        tool_type         VARCHAR(20)   NOT NULL,
+        step_no           SMALLINT,                                    -- BUG-03 修复：关联 diagnostic_item.seq
+        risk_level        SMALLINT      NOT NULL DEFAULT 1,
+        policy            VARCHAR(20)   NOT NULL,
+        authorized_by     VARCHAR(100),
+        input_json        JSONB         NOT NULL DEFAULT '{}',
+        output_json       JSONB,
+        error             TEXT,
+        started_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+        completed_at      TIMESTAMPTZ,
+        duration_ms       INTEGER,
+        trace_id          VARCHAR(64)
     );
+    
     CREATE INDEX IF NOT EXISTS idx_tool_result_conversation ON tool_result(conversation_id);
-    CREATE INDEX IF NOT EXISTS idx_tool_result_tool_name ON tool_result(tool_name);
-
-    -- §10. 新建 diagnostic_item（v6.2）
+    CREATE INDEX IF NOT EXISTS idx_tool_result_tool_name    ON tool_result(tool_name);
+    CREATE INDEX IF NOT EXISTS idx_tool_result_trace_id     ON tool_result(trace_id) WHERE trace_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tool_result_started_at   ON tool_result(started_at DESC);
+    
+    COMMENT ON TABLE tool_result IS 'ReAct 工具执行记录（v6.2，替代 tool_audit_log），含 step_no 追踪';
+    
+    -- ============================================================================
+    -- §6. 新建 diagnostic_item 表（v6.2 — 解 BUG-06 hypothesis blob 问题）
+    -- ============================================================================
+    
     CREATE TABLE IF NOT EXISTS diagnostic_item (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        conversation_id UUID NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
-        stage VARCHAR(5) NOT NULL, type VARCHAR(30) NOT NULL,
-        seq SMALLINT NOT NULL DEFAULT 1, content JSONB NOT NULL DEFAULT '{}',
-        probability FLOAT, status VARCHAR(20) NOT NULL DEFAULT 'pending',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), trace_id VARCHAR(64)
+        id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id   UUID          NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        stage             VARCHAR(5)    NOT NULL,                      -- S2/S3/S4/S5
+        type              VARCHAR(30)   NOT NULL,                      -- hypothesis/verification_step/root_cause/solution
+        seq               SMALLINT      NOT NULL DEFAULT 1,
+        content           JSONB         NOT NULL DEFAULT '{}',
+        probability       FLOAT,                                       -- 仅 type=hypothesis
+        status            VARCHAR(20)   NOT NULL DEFAULT 'pending',   -- pending/in_progress/confirmed/rejected/skipped/archived
+        created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+        updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+        trace_id          VARCHAR(64)
     );
+    
     CREATE INDEX IF NOT EXISTS idx_diagnostic_item_conversation ON diagnostic_item(conversation_id);
-    CREATE INDEX IF NOT EXISTS idx_diagnostic_item_type ON diagnostic_item(type);
-
-    SELECT 'Schema repair completed — ' || COUNT(*) || ' tables'
-    FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';
-
-
+    CREATE INDEX IF NOT EXISTS idx_diagnostic_item_type         ON diagnostic_item(type);
+    CREATE INDEX IF NOT EXISTS idx_diagnostic_item_status       ON diagnostic_item(status);
+    
+    COMMENT ON TABLE diagnostic_item IS '诊断结论子表（v6.2）— 替代 conversation.hypothesis JSONB blob';
+    
+    -- ============================================================================
+    -- §7. 保留 schema_migrations 历史记录
+    -- ============================================================================
+    -- 不在 dbmate migration 中直接 DELETE schema_migrations 记录。
+    -- 20260401002 若与当前部署内容存在不一致，应通过对齐迁移目录/ConfigMap
+    -- 或调整 baseline 脚本解决，避免后续 dbmate status/up 反复将其识别为未执行。
+    
+    -- ============================================================================
+    -- 完成
+    -- ============================================================================
+    
+    SELECT 'Schema repair migration completed — '
+        || (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE')
+        || ' tables now in database'
+        AS status;
+    
+    
     -- migrate:down
-    -- 修复迁移不提供自动降级
+    -- 修复迁移不提供自动降级。
+    -- 如需回滚，请根据本文件中的变更逐项手动逆向处理：
+    -- 1) 删除本迁移新增的索引、外键、列、表；
+    -- 2) 评估并保留/清理已写入的新结构数据，避免误删现网数据；
+    -- 3) 如需恢复 schema_migrations 记录，请在确认版本来源后再手动补回。
 
+  20260407002_cleanup_deprecated_tables.sql: |
+    -- migrate:up
+    
+    -- =============================================================================
+    -- 废弃表再次清理迁移
+    -- 创建日期：2026-04-07
+    --
+    -- 背景：
+    --   PR #108 的 schema_repair.sql 重新创建了已在 20260402003_drop_deprecated_tables.sql
+    --   中删除的废弃表。这是 Copilot 创建迁移时直接复制设计文档中的 CREATE TABLE 语句，
+    --   没有排除废弃表清单中的表。
+    --
+    -- 需删除的表（7 张）：
+    --   - kb_document, kb_chunk：被 kbd_entry 替代（方案B）
+    --   - kb_sop_node, kb_synonym：被 sop_document/sop_chunk 替代
+    --   - raw_cases, knowledge_atoms：数据管道已废弃
+    --   - prompt_audit：已合并入 audit_log
+    -- =============================================================================
+    
+    -- ─── 1. 删除知识库废弃表（kb_chunk 依赖 kb_document，先删 kb_chunk）───
+    
+    DROP TABLE IF EXISTS kb_chunk CASCADE;
+    RAISE NOTICE '已删除 kb_chunk 表（再次清理）';
+    
+    DROP TABLE IF EXISTS kb_document CASCADE;
+    RAISE NOTICE '已删除 kb_document 表（再次清理）';
+    
+    DROP TABLE IF EXISTS kb_sop_node CASCADE;
+    RAISE NOTICE '已删除 kb_sop_node 表（再次清理）';
+    
+    DROP TABLE IF EXISTS kb_synonym CASCADE;
+    RAISE NOTICE '已删除 kb_synonym 表（再次清理）';
+    
+    -- ─── 2. 删除数据管道废弃表 ───────────────────────────────────────────────
+    
+    DROP TABLE IF EXISTS raw_cases CASCADE;
+    RAISE NOTICE '已删除 raw_cases 表（再次清理）';
+    
+    DROP TABLE IF EXISTS knowledge_atoms CASCADE;
+    RAISE NOTICE '已删除 knowledge_atoms 表（再次清理）';
+    
+    -- ─── 3. 删除已合并的审计表 ───────────────────────────────────────────────
+    
+    DROP TABLE IF EXISTS prompt_audit CASCADE;
+    RAISE NOTICE '已删除 prompt_audit 表（再次清理）';
+    
+    -- ─── 4. 验证最终表结构 ───────────────────────────────────────────────────
+    
+    DO $$
+    DECLARE
+        remaining_tables TEXT[];
+        expected_tables TEXT[] := ARRAY[
+            'customer', 'user', 'case', 'environment', 'assistant_evaluation',
+            'session', 'conversation', 'message', 'audit_log',
+            'diagnostic_item', 'tool_result', 'system_prompt', 'tool_definition',
+            'kb_category', 'kbd_entry', 'sop_document', 'sop_chunk'
+        ];
+        deprecated_tables TEXT[] := ARRAY[
+            'kb_document', 'kb_chunk', 'kb_sop_node', 'kb_synonym',
+            'raw_cases', 'knowledge_atoms', 'prompt_audit', 'tool_audit_log'
+        ];
+        found_deprecated TEXT[];
+        missing_expected TEXT[];
+        t TEXT;
+    BEGIN
+        -- 获取当前所有用户表
+        SELECT array_agg(tablename)
+        INTO remaining_tables
+        FROM pg_tables
+        WHERE schemaname = 'public';
+    
+        -- 检查废弃表是否还存在
+        FOREACH t IN ARRAY deprecated_tables LOOP
+            IF t = ANY(remaining_tables) THEN
+                found_deprecated := array_append(found_deprecated, t);
+            END IF;
+        END LOOP;
+    
+        -- 检查期望表是否缺失
+        FOREACH t IN ARRAY expected_tables LOOP
+            IF NOT t = ANY(remaining_tables) THEN
+                missing_expected := array_append(missing_expected, t);
+            END IF;
+        END LOOP;
+    
+        -- 报告结果
+        RAISE NOTICE '=== 表清理验证 ===';
+        RAISE NOTICE '当前表数量：%', array_length(remaining_tables, 1);
+        RAISE NOTICE '期望表数量：17';
+    
+        IF array_length(found_deprecated, 1) > 0 THEN
+            RAISE WARNING '废弃表仍存在：%', found_deprecated;
+        ELSE
+            RAISE NOTICE '所有废弃表已清理';
+        END IF;
+    
+        IF array_length(missing_expected, 1) > 0 THEN
+            RAISE WARNING '缺失期望表：%', missing_expected;
+        ELSE
+            RAISE NOTICE '所有期望表已存在';
+        END IF;
+    END
+    $$;
+    
+    -- 列出最终保留的表
+    SELECT tablename AS "保留的表"
+    FROM pg_tables
+    WHERE schemaname = 'public'
+    ORDER BY tablename;
+    
+    -- migrate:down
+    
+    -- 无法自动回滚，需要从备份恢复
+    
+    RAISE NOTICE '无法自动回滚表删除操作，请从备份恢复';
 {{- end }}
