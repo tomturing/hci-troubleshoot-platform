@@ -4,9 +4,10 @@ import { useRouter, useRoute } from 'vue-router'
 const router = useRouter()
 const route = useRoute()
 
-/** 侧边栏菜单项 */
+/** 侧边栏菜单项（按 order 排序） */
 const menuItems = router.getRoutes()
   .filter((r) => r.meta?.icon && !r.meta?.hidden)
+  .sort((a, b) => (a.meta?.order as number) - (b.meta?.order as number))
   .map((r) => ({
     path: r.path,
     title: r.meta?.title as string,
