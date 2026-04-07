@@ -7,6 +7,34 @@
 from pydantic import BaseModel, Field
 
 
+# ─── 诊断阶段常量定义 ────────────────────────────────────────────────────────
+# 避免在代码中硬编码字符串，统一使用常量
+class DiagnosticStage:
+    """诊断阶段常量"""
+
+    S0_INTENT = "S0"  # 意图识别
+    S1_LOCATION = "S1"  # 故障定位
+    S2_HYPOTHESIS = "S2"  # 假设生成
+    S3_VERIFICATION = "S3"  # 验证执行
+    S4_ROOT_CAUSE = "S4"  # 根因确认
+    S5_SOLUTION = "S5"  # 解决方案
+    S6_CLOSURE = "S6"  # 验证闭环
+    S0_FAILED = "S0_FAILED"  # S0 意图识别失败
+
+
+# 阶段标签映射（用于 UI 展示）
+STAGE_LABELS: dict[str, str] = {
+    DiagnosticStage.S0_INTENT: "S0-意图识别",
+    DiagnosticStage.S1_LOCATION: "S1-故障定位",
+    DiagnosticStage.S2_HYPOTHESIS: "S2-假设生成",
+    DiagnosticStage.S3_VERIFICATION: "S3-验证执行",
+    DiagnosticStage.S4_ROOT_CAUSE: "S4-根因确认",
+    DiagnosticStage.S5_SOLUTION: "S5-解决方案",
+    DiagnosticStage.S6_CLOSURE: "S6-验证闭环",
+    DiagnosticStage.S0_FAILED: "S0-意图识别失败",
+}
+
+
 class StageTransition(BaseModel):
     """诊断阶段转换记录"""
 
