@@ -1345,4 +1345,216 @@ data:
     -- migrate:down
     -- 不提供自动降级，手动回滚
 
+  20260407001_schema_repair.sql: |
+    -- migrate:up
+
+    -- =============================================================================
+    -- Schema 修复迁移 — 补齐 ORM 模型与实际 DB 之间的所有漂移
+    -- 日期：2026-04-07
+    -- 根因：schema_migrations 记录了 8 次迁移已执行，但实际 DDL 未生效
+    -- 幂等保证：所有操作使用 IF NOT EXISTS，可安全重复执行
+    -- 注意：此处内嵌 SQL 必须与权威迁移文件保持一致，避免手工修复与 PreSync 执行结果漂移
+    -- =============================================================================
+
+    -- §0. 确保基础扩展和函数存在（防御性，确保 PreSync/dbmate 路径下可独立执行）
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    CREATE EXTENSION IF NOT EXISTS "vector";
+
+    CREATE OR REPLACE FUNCTION update_updated_at_column()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = CURRENT_TIMESTAMP;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    -- §1. 新建 customer 表
+    CREATE TABLE IF NOT EXISTS customer (
+        customer_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        code          VARCHAR(64)  UNIQUE,
+        name          VARCHAR(200) NOT NULL,
+        short_name    VARCHAR(100),
+        product_version VARCHAR(50),
+        region        VARCHAR(100),
+        industry      VARCHAR(100),
+        metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        updated_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        trace_id      VARCHAR(64)
+    );
+    CREATE INDEX IF NOT EXISTS idx_customer_code ON customer(code);
+    CREATE INDEX IF NOT EXISTS idx_customer_name ON customer(name);
+    CREATE INDEX IF NOT EXISTS idx_customer_product_version ON customer(product_version);
+    DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_customer_updated_at') THEN
+            CREATE TRIGGER update_customer_updated_at BEFORE UPDATE ON customer
+                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        END IF;
+    END $$;
+    COMMENT ON TABLE customer IS '客户档案表 — HCI 产品采购方（公司/单位级别）';
+
+    -- §2. case 表补列
+    ALTER TABLE "case" ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20);
+    DO $$ BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid = '"case"'::regclass AND contype = 'c'
+              AND pg_get_constraintdef(oid) LIKE '%close_reason%'
+        ) THEN
+            ALTER TABLE "case" ADD CONSTRAINT case_close_reason_check
+                CHECK (close_reason IN ('user_command','timeout','abandon','admin_close','escalated','s0_classification_failed'));
+        END IF;
+    END $$;
+    ALTER TABLE "case" ADD COLUMN IF NOT EXISTS customer_id UUID;
+    DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'case_customer_id_fkey') THEN
+            ALTER TABLE "case" ADD CONSTRAINT case_customer_id_fkey
+                FOREIGN KEY (customer_id) REFERENCES customer(customer_id) ON DELETE SET NULL;
+        END IF;
+    END $$;
+    CREATE INDEX IF NOT EXISTS idx_case_customer_id ON "case"(customer_id);
+
+    -- §3. conversation 表补列
+    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS repeat_question_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS diagnostic_stage VARCHAR(8) NOT NULL DEFAULT 'S0';
+    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS category_l1 VARCHAR(100);
+    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS category_l2 VARCHAR(100);
+    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS category_id VARCHAR(32);
+    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS pending_confirm JSONB;
+    ALTER TABLE conversation ADD COLUMN IF NOT EXISTS pending_resolution JSONB;
+    CREATE INDEX IF NOT EXISTS idx_conversation_diagnostic_stage ON conversation(diagnostic_stage);
+
+    -- §4. assistant_evaluation 表补列
+    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20);
+    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS session_duration_sec INTEGER;
+    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS repeat_question_count INTEGER;
+    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS composite_score SMALLINT;
+    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS score_breakdown JSONB;
+    ALTER TABLE assistant_evaluation ADD COLUMN IF NOT EXISTS calculated_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_eval_composite_score ON assistant_evaluation(composite_score) WHERE composite_score IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_eval_close_reason ON assistant_evaluation(close_reason) WHERE close_reason IS NOT NULL;
+
+    -- §5. 新建 kb_document / kb_chunk（v3.0）
+    CREATE TABLE IF NOT EXISTS kb_document (
+        id SERIAL PRIMARY KEY, source_id VARCHAR(50) UNIQUE,
+        title VARCHAR(500) NOT NULL, product VARCHAR(100) DEFAULT '超融合HCI',
+        content_md TEXT NOT NULL, content_hash VARCHAR(64), yaml_meta JSONB,
+        category_l1 VARCHAR(100), category_l2 VARCHAR(100), tags TEXT[],
+        judgment_logic TEXT, summary TEXT, difficulty SMALLINT DEFAULT 3,
+        status VARCHAR(20) DEFAULT 'draft', review_note TEXT, reviewer VARCHAR(100),
+        reviewed_at TIMESTAMPTZ, source_type VARCHAR(20) DEFAULT 'kb',
+        has_images BOOLEAN DEFAULT FALSE, verified_version VARCHAR(50),
+        trace_id VARCHAR(64),
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_kb_document_status ON kb_document(status);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_category ON kb_document(category_l1, category_l2);
+    CREATE INDEX IF NOT EXISTS idx_kb_document_source_id ON kb_document(source_id);
+    DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_kb_document_updated_at') THEN
+            CREATE TRIGGER update_kb_document_updated_at BEFORE UPDATE ON kb_document
+                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        END IF;
+    END $$;
+    CREATE TABLE IF NOT EXISTS kb_chunk (
+        id SERIAL PRIMARY KEY,
+        document_id INTEGER NOT NULL REFERENCES kb_document(id) ON DELETE CASCADE,
+        chunk_index SMALLINT NOT NULL, content TEXT NOT NULL,
+        embedding vector(384), token_count SMALLINT, metadata JSONB,
+        tsv tsvector, trace_id VARCHAR(64),
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_document ON kb_chunk(document_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_position ON kb_chunk(document_id, chunk_index);
+    CREATE INDEX IF NOT EXISTS idx_kb_chunk_tsv ON kb_chunk USING GIN (tsv);
+
+    -- §6. 新建 kb_sop_node / kb_synonym
+    CREATE TABLE IF NOT EXISTS kb_sop_node (
+        id SERIAL PRIMARY KEY, skill_id VARCHAR(100) NOT NULL,
+        node_name VARCHAR(200) NOT NULL, parent_id INTEGER REFERENCES kb_sop_node(id),
+        keywords TEXT[] NOT NULL, file_path VARCHAR(500), content TEXT,
+        level SMALLINT DEFAULT 1, sort_order SMALLINT DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_kb_sop_node_skill ON kb_sop_node(skill_id);
+    CREATE INDEX IF NOT EXISTS idx_kb_sop_node_keywords ON kb_sop_node USING GIN (keywords);
+    CREATE TABLE IF NOT EXISTS kb_synonym (
+        id SERIAL PRIMARY KEY, term VARCHAR(100) NOT NULL,
+        canonical VARCHAR(100) NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(term, canonical)
+    );
+
+    -- §7. 新建 raw_cases / knowledge_atoms
+    CREATE TABLE IF NOT EXISTS raw_cases (
+        id BIGSERIAL PRIMARY KEY, case_id VARCHAR(64) NOT NULL UNIQUE,
+        source_url TEXT NOT NULL DEFAULT '', content_text TEXT NOT NULL DEFAULT '',
+        images JSONB NOT NULL DEFAULT '[]', classification VARCHAR(128) NOT NULL DEFAULT '',
+        quality_score SMALLINT NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_raw_cases_classification ON raw_cases(classification);
+    CREATE INDEX IF NOT EXISTS idx_raw_cases_quality ON raw_cases(quality_score DESC);
+    CREATE TABLE IF NOT EXISTS knowledge_atoms (
+        id VARCHAR(32) PRIMARY KEY, atom_type VARCHAR(32) NOT NULL,
+        category_id VARCHAR(64) NOT NULL DEFAULT '', trigger_json JSONB NOT NULL DEFAULT '{}',
+        content_json JSONB NOT NULL DEFAULT '{}', source_type VARCHAR(16) NOT NULL DEFAULT 'session',
+        source_ref VARCHAR(64) NOT NULL DEFAULT '', verified BOOLEAN NOT NULL DEFAULT FALSE,
+        confidence NUMERIC(3,2) NOT NULL DEFAULT 0.70,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        verified_at TIMESTAMPTZ, verified_by VARCHAR(64)
+    );
+    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_verified ON knowledge_atoms(verified, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_atoms_category ON knowledge_atoms(category_id);
+
+    -- §8. 新建 prompt_audit
+    CREATE TABLE IF NOT EXISTS prompt_audit (
+        audit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id UUID NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        case_id VARCHAR(20), assistant_type VARCHAR(50), model VARCHAR(100),
+        message_count INTEGER, has_sop BOOLEAN DEFAULT FALSE,
+        kb_chunks_count INTEGER DEFAULT 0, kb_top_score FLOAT DEFAULT 0.0,
+        system_prompt_chars INTEGER, messages JSONB, payload_ref VARCHAR(200),
+        user_rating SMALLINT CHECK (user_rating >= 1 AND user_rating <= 5),
+        context_breakdown JSONB, total_token_est INTEGER,
+        captured_at TIMESTAMPTZ DEFAULT NOW(), trace_id VARCHAR(64)
+    );
+    CREATE INDEX IF NOT EXISTS idx_prompt_audit_case ON prompt_audit(case_id);
+    CREATE INDEX IF NOT EXISTS idx_prompt_audit_captured_at ON prompt_audit(captured_at DESC);
+
+    -- §9. 新建 tool_result（v6.2 替代 tool_audit_log）
+    CREATE TABLE IF NOT EXISTS tool_result (
+        id VARCHAR(36) PRIMARY KEY,
+        conversation_id UUID NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        tool_name VARCHAR(100) NOT NULL, tool_type VARCHAR(20) NOT NULL,
+        step_no SMALLINT, risk_level SMALLINT NOT NULL DEFAULT 1,
+        policy VARCHAR(20) NOT NULL, authorized_by VARCHAR(100),
+        input_json JSONB NOT NULL DEFAULT '{}', output_json JSONB, error TEXT,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), completed_at TIMESTAMPTZ,
+        duration_ms INTEGER, trace_id VARCHAR(64)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_result_conversation ON tool_result(conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_tool_result_tool_name ON tool_result(tool_name);
+
+    -- §10. 新建 diagnostic_item（v6.2）
+    CREATE TABLE IF NOT EXISTS diagnostic_item (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id UUID NOT NULL REFERENCES conversation(conversation_id) ON DELETE CASCADE,
+        stage VARCHAR(5) NOT NULL, type VARCHAR(30) NOT NULL,
+        seq SMALLINT NOT NULL DEFAULT 1, content JSONB NOT NULL DEFAULT '{}',
+        probability FLOAT, status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), trace_id VARCHAR(64)
+    );
+    CREATE INDEX IF NOT EXISTS idx_diagnostic_item_conversation ON diagnostic_item(conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_diagnostic_item_type ON diagnostic_item(type);
+
+    SELECT 'Schema repair completed — ' || COUNT(*) || ' tables'
+    FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';
+
+
+    -- migrate:down
+    -- 修复迁移不提供自动降级
+
 {{- end }}
