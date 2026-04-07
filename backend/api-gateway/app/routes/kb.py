@@ -166,17 +166,46 @@ async def category_hit_proxy(code: str, request: Request):
 
 @categories_router.post("/import")
 async def category_import_proxy(request: Request):
-    """代理 YAML 导入请求 → kb-service（支持 multipart 文件上传）"""
+    """代理 YAML 导入请求 → kb-service。
+
+    下游 kb-service 读取的是 YAML 原文字节流，不支持将 multipart/form-data 原样透传。
+    因此这里需要在网关层对 multipart 上传进行解包，只转发文件内容本身。
+    """
     headers = _forward_headers(request)
-    raw_body = await request.body()
     content_type = request.headers.get("content-type", "")
+    outbound_headers = dict(headers)
+
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        upload = (
+            form.get("file")
+            or form.get("yaml_file")
+            or form.get("upload")
+            or form.get("content")
+        )
+        if upload is None or not hasattr(upload, "read"):
+            raise HTTPException(
+                status_code=400, detail="缺少 YAML 导入文件，请使用 multipart 文件字段 file 上传"
+            )
+
+        raw_body = await upload.read()
+        file_content_type = getattr(upload, "content_type", None) or ""
+        outbound_headers["content-type"] = (
+            file_content_type
+            if file_content_type in {"application/x-yaml", "text/yaml", "application/yaml", "text/plain"}
+            else "application/x-yaml"
+        )
+    else:
+        raw_body = await request.body()
+        outbound_headers["content-type"] = content_type or "application/x-yaml"
+
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             url = f"{KB_SERVICE_URL}/categories/import"
             resp = await client.post(
                 url,
                 content=raw_body,
-                headers={**headers, "content-type": content_type},
+                headers=outbound_headers,
                 params=dict(request.query_params),
             )
             return JSONResponse(content=resp.json(), status_code=resp.status_code)
