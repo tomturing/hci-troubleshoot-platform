@@ -1,11 +1,15 @@
-"""Schema 修复迁移 — 补齐 ORM 模型与实际 DB 之间的所有漂移
+"""Schema 修复迁移 — 补齐 ORM 模型与实际 DB 之间的结构漂移
 
 Revision ID: 0005
 Revises: 0004
 Create Date: 2026-04-07
 
-与 dbmate 的 20260407001_schema_repair.sql 等价。
-所有操作使用 IF NOT EXISTS，可安全重复执行（幂等）。
+说明：
+- 本迁移用于 Alembic 路径下补齐 ORM 运行所需的最小结构修复。
+- 本文件不是 dbmate 的 20260407001_schema_repair.sql 的完全镜像，
+  也不作为 dbmate/Helm 路径的权威 DDL 定义来源。
+- 如两条迁移链存在差异，应以各自链路中的权威迁移文件为准。
+- 本文件内已包含的操作尽量使用 IF NOT EXISTS / 条件判断，以保证可安全重复执行。
 
 变更内容：
   §1. 新建 customer 表

@@ -1353,8 +1353,19 @@ data:
     -- 日期：2026-04-07
     -- 根因：schema_migrations 记录了 8 次迁移已执行，但实际 DDL 未生效
     -- 幂等保证：所有操作使用 IF NOT EXISTS，可安全重复执行
+    -- 注意：此处内嵌 SQL 必须与权威迁移文件保持一致，避免手工修复与 PreSync 执行结果漂移
     -- =============================================================================
 
+    -- §0. 依赖扩展与基础函数兜底，确保在 PreSync/dbmate 路径下可独立执行
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+    CREATE OR REPLACE FUNCTION update_updated_at_column()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = CURRENT_TIMESTAMP;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
     -- §1. 新建 customer 表
     CREATE TABLE IF NOT EXISTS customer (
         customer_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1535,9 +1546,6 @@ data:
     );
     CREATE INDEX IF NOT EXISTS idx_diagnostic_item_conversation ON diagnostic_item(conversation_id);
     CREATE INDEX IF NOT EXISTS idx_diagnostic_item_type ON diagnostic_item(type);
-
-    -- §11. 清理孤立 migration 记录
-    DELETE FROM schema_migrations WHERE version = '20260401002';
 
     SELECT 'Schema repair completed — ' || COUNT(*) || ' tables'
     FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';

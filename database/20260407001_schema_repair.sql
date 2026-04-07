@@ -427,11 +427,11 @@ CREATE INDEX IF NOT EXISTS idx_diagnostic_item_status       ON diagnostic_item(s
 COMMENT ON TABLE diagnostic_item IS '诊断结论子表（v6.2）— 替代 conversation.hypothesis JSONB blob';
 
 -- ============================================================================
--- §11. 清理孤立的 schema_migrations 记录
+-- §11. 保留 schema_migrations 历史记录
 -- ============================================================================
--- 20260401002 在 schema_migrations 中存在但 ConfigMap 中无对应文件
--- 此记录无害但会造成混淆，清理之
-DELETE FROM schema_migrations WHERE version = '20260401002';
+-- 不在 dbmate migration 中直接 DELETE schema_migrations 记录。
+-- 20260401002 若与当前部署内容存在不一致，应通过对齐迁移目录/ConfigMap
+-- 或调整 baseline 脚本解决，避免后续 dbmate status/up 反复将其识别为未执行。
 
 -- ============================================================================
 -- 完成
@@ -444,4 +444,8 @@ SELECT 'Schema repair migration completed — '
 
 
 -- migrate:down
--- 修复迁移不提供自动降级，请参照 database/rollback_20260407001.md 手动操作
+-- 修复迁移不提供自动降级。
+-- 如需回滚，请根据本文件中的变更逐项手动逆向处理：
+-- 1) 删除本迁移新增的索引、外键、列、表；
+-- 2) 评估并保留/清理已写入的新结构数据，避免误删现网数据；
+-- 3) 如需恢复 schema_migrations 记录，请在确认版本来源后再手动补回。
