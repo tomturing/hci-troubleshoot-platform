@@ -20,9 +20,7 @@ Create Date: 2026-04-07
   §10. 新建 diagnostic_item（v6.2）
 """
 
-import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 revision = "0005"
 down_revision = "0004"
