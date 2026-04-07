@@ -4,11 +4,11 @@
 验证 case.status 状态机的合法转换规则（见 01_系统架构.md §9.6）
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, UTC
 import uuid
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from app.models.case import Case, CaseStatus, CloseReason
 from app.repositories.case_repo import CaseRepository
 from app.services.case_service import CaseService

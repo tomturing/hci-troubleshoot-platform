@@ -4,7 +4,6 @@
 验证 DiagnosticStage 常量和 STAGE_LABELS 映射
 """
 
-import pytest
 
 
 class TestDiagnosticStageConstants:
@@ -44,7 +43,7 @@ class TestDiagnosticStageConstants:
 
     def test_stage_labels_complete(self):
         """验证所有阶段都有对应的标签"""
-        from app.models.diagnostic_state import DiagnosticStage, STAGE_LABELS
+        from app.models.diagnostic_state import STAGE_LABELS, DiagnosticStage
 
         expected_stages = [
             DiagnosticStage.S0_INTENT,
