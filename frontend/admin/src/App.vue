@@ -4,9 +4,22 @@ import { useRouter, useRoute } from 'vue-router'
 const router = useRouter()
 const route = useRoute()
 
-/** 侧边栏菜单项 */
+/** 获取路由排序值：缺失或非法时排到最后，并输出告警日志 */
+const getRouteOrder = (routeRecord: ReturnType<typeof router.getRoutes>[number]) => {
+  const rawOrder = routeRecord.meta?.order
+
+  if (typeof rawOrder === 'number' && Number.isFinite(rawOrder)) {
+    return rawOrder
+  }
+
+  console.warn(`[菜单路由排序] 路由 ${routeRecord.path} 的 meta.order 缺失或不是合法数字，已按末尾排序处理`)
+  return Number.MAX_SAFE_INTEGER
+}
+
+/** 侧边栏菜单项（按 order 字段排序） */
 const menuItems = router.getRoutes()
   .filter((r) => r.meta?.icon && !r.meta?.hidden)
+  .sort((a, b) => getRouteOrder(a) - getRouteOrder(b))
   .map((r) => ({
     path: r.path,
     title: r.meta?.title as string,
