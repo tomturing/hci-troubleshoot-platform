@@ -33,28 +33,22 @@ const router = createRouter({
       meta: { title: '分类基线', icon: 'Histogram', order: 3 },
     },
     {
-      path: '/knowledge/review',
-      name: 'KnowledgeReview',
-      component: () => import('@/views/KnowledgeReviewView.vue'),
-      meta: { title: '知识审核', icon: 'Reading', order: 4 },
-    },
-    {
       path: '/knowledge/kbd-review',
       name: 'KbdReview',
       component: () => import('@/views/KbdReviewView.vue'),
-      meta: { title: 'KBD 审核', icon: 'Document', order: 5 },
+      meta: { title: 'KBD 审核', icon: 'Document', order: 4 },
     },
     {
       path: '/clients',
       name: 'Clients',
       component: () => import('@/views/ClientListView.vue'),
-      meta: { title: '用户管理', icon: 'User', order: 6 },
+      meta: { title: '用户管理', icon: 'User', order: 5 },
     },
     {
       path: '/monitoring',
       name: 'Monitoring',
       component: () => import('@/views/MonitoringView.vue'),
-      meta: { title: '系统监控', icon: 'Monitor', order: 7 },
+      meta: { title: '系统监控', icon: 'Monitor', order: 6 },
     },
   ],
 })

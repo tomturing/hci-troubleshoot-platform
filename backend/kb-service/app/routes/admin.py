@@ -219,8 +219,162 @@ async def delete_document(request: Request, doc_id: int):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KBD 条目审核接口（kbd_entry 表）
+# KBD 条目列表查询接口（kbd_entry 表）
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+@kbd_router.get("/pending")
+async def list_kbd_entries(
+    request: Request,
+    page: int = 1,
+    page_size: int = 20,
+    status: str = "draft",
+    category_id: str | None = None,
+):
+    """查询 KBD 条目列表（分页 + 状态/分类过滤）
+
+    Args:
+        page: 页码（从 1 开始）
+        page_size: 每页条数（最大 100）
+        status: 状态过滤（draft/published/rejected/archived）
+        category_id: 按 AI 分类 ID 过滤（可选）
+
+    Returns:
+        { entries: [...], total, page, page_size }
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    # 参数校验
+    page_size = min(max(page_size, 1), 100)
+    page = max(page, 1)
+    offset = (page - 1) * page_size
+
+    logger.info(
+        event="kbd_list_request",
+        page=page,
+        page_size=page_size,
+        status=status,
+        category_id=category_id,
+    )
+
+    async with _db_manager.async_session_factory() as session:
+        # 构建 WHERE 条件
+        where_clauses = ["status = :status"]
+        params: dict = {"status": status, "limit": page_size, "offset": offset}
+
+        if category_id:
+            where_clauses.append("(ai_category_id = :category_id OR category_id = :category_id)")
+            params["category_id"] = category_id
+
+        where_sql = " AND ".join(where_clauses)
+
+        # 查询总数
+        count_sql = text(f"SELECT COUNT(*) FROM kbd_entry WHERE {where_sql}")  # noqa: S608
+        count_result = await session.execute(count_sql, params)
+        total = count_result.scalar() or 0
+
+        # 查询分页数据
+        data_sql = text(  # noqa: S608
+            f"""
+            SELECT id, support_id, support_url, title,
+                   content_md,
+                   metadata, category_id, ai_category_id,
+                   ai_category_conf, ai_category_reason,
+                   status, reviewer_id, review_note,
+                   created_at, updated_at
+            FROM kbd_entry
+            WHERE {where_sql}
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+            """
+        )
+        result = await session.execute(data_sql, params)
+        rows = result.mappings().all()
+
+    entries = [
+        {
+            "id": row["id"],
+            "support_id": row["support_id"],
+            "support_url": row["support_url"] or "",
+            "title": row["title"],
+            "content_md": row["content_md"] or "",
+            "metadata": row["metadata"] or {},
+            "category_id": row["category_id"],
+            "ai_category_id": row["ai_category_id"],
+            "ai_category_conf": float(row["ai_category_conf"]) if row["ai_category_conf"] is not None else None,
+            "ai_category_reason": row["ai_category_reason"],
+            "status": row["status"],
+            "reviewer_id": row["reviewer_id"],
+            "review_note": row["review_note"],
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
+        for row in rows
+    ]
+
+    logger.info(event="kbd_list_response", total=total, returned=len(entries))
+
+    return {
+        "entries": entries,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KBD 条目拒绝接口
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class KbdRejectRequest(BaseModel):
+    """KBD 条目拒绝请求"""
+
+    reviewer_id: int = Field(..., description="审核人 ID")
+    review_note: str = Field(..., min_length=1, max_length=500, description="拒绝原因（必填）")
+
+
+@kbd_router.patch("/{kbd_id}/reject")
+async def reject_kbd_entry(request: Request, kbd_id: int, body: KbdRejectRequest):
+    """拒绝 KBD 条目，更新状态为 rejected"""
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    logger.info(event="kbd_reject_request", kbd_id=kbd_id, reviewer_id=body.reviewer_id)
+
+    now = datetime.now(UTC)
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text(
+                """
+                UPDATE kbd_entry
+                SET status = 'rejected',
+                    reviewer_id = :reviewer_id,
+                    reviewed_at = :reviewed_at,
+                    review_note = :review_note
+                WHERE id = :id AND status = 'draft'
+                RETURNING id, status
+                """
+            ),
+            {
+                "id": kbd_id,
+                "reviewer_id": body.reviewer_id,
+                "reviewed_at": now,
+                "review_note": body.review_note,
+            },
+        )
+        updated = result.mappings().first()
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在或状态非 draft")
+        await session.commit()
+
+    logger.info(event="kbd_rejected", kbd_id=kbd_id)
+    return {"success": True, "kbd_id": kbd_id, "status": "rejected"}
 
 
 class KbdApproveRequest(BaseModel):
