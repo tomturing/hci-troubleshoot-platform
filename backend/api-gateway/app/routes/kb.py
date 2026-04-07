@@ -43,6 +43,20 @@ def _forward_headers(request: Request) -> dict:
     return headers
 
 
+def _internal_auth_headers() -> dict:
+    """使用网关自身的 INTERNAL_API_TOKEN 构造鉴权头（下游服务调用）
+
+    防御性校验：token 为空时直接报 500，避免下游 401 难以定位。
+    """
+    token = settings.INTERNAL_API_TOKEN
+    if not token or not str(token).strip():
+        raise HTTPException(
+            status_code=500,
+            detail="INTERNAL_API_TOKEN 未配置，无法调用内部服务",
+        )
+    return {"Authorization": f"Bearer {str(token).strip()}"}
+
+
 # ============ 搜索接口（公开）============
 
 
@@ -127,7 +141,7 @@ categories_router = APIRouter(prefix="/api/kb/categories", tags=["kb-categories"
 @categories_router.get("")
 async def list_categories_proxy(request: Request):
     """代理分类列表请求 → kb-service"""
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await proxy_request(
         "GET", "/categories", params=dict(request.query_params), headers=headers
     )
@@ -137,7 +151,7 @@ async def list_categories_proxy(request: Request):
 @categories_router.get("/stats")
 async def category_stats_proxy(request: Request):
     """代理分类统计请求 → kb-service"""
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await proxy_request("GET", "/categories/stats", headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
@@ -146,7 +160,7 @@ async def category_stats_proxy(request: Request):
 async def update_category_proxy(code: str, request: Request):
     """代理分类更新请求 → kb-service"""
     body = await request.json()
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await proxy_request(
         "PUT", f"/categories/{code}", payload=body, headers=headers
     )
@@ -157,7 +171,7 @@ async def update_category_proxy(code: str, request: Request):
 async def category_hit_proxy(code: str, request: Request):
     """代理命中计数请求 → kb-service"""
     body = await request.json()
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await proxy_request(
         "POST", f"/categories/{code}/hit", payload=body, headers=headers
     )
@@ -171,7 +185,7 @@ async def category_import_proxy(request: Request):
     下游 kb-service 读取的是 YAML 原文字节流，不支持将 multipart/form-data 原样透传。
     因此这里需要在网关层对 multipart 上传进行解包，只转发文件内容本身。
     """
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     content_type = request.headers.get("content-type", "")
     outbound_headers = dict(headers)
 
@@ -243,7 +257,7 @@ async def _kbd_proxy(
 @kbd_router.get("/pending")
 async def kbd_list_proxy(request: Request):
     """代理 KBD 列表请求 → kb-service"""
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await _kbd_proxy("GET", "/pending", params=dict(request.query_params), headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
@@ -252,7 +266,7 @@ async def kbd_list_proxy(request: Request):
 async def kbd_approve_proxy(kbd_id: int, request: Request):
     """代理 KBD 审核通过请求 → kb-service"""
     body = await request.json()
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await _kbd_proxy("POST", f"/{kbd_id}/approve", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
@@ -261,6 +275,6 @@ async def kbd_approve_proxy(kbd_id: int, request: Request):
 async def kbd_reject_proxy(kbd_id: int, request: Request):
     """代理 KBD 拒绝请求 → kb-service"""
     body = await request.json()
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await _kbd_proxy("PATCH", f"/{kbd_id}/reject", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
