@@ -168,6 +168,18 @@ jobs:
           fi
           echo "✅ claw-configs 与 Helm chart 副本一致"
 
+  check-db-migrations-sync:
+    name: 检查数据库迁移同步
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查迁移文件是否已同步到 ConfigMap
+        run: |
+          chmod +x scripts/ci/check-db-migrations-sync.sh
+          scripts/ci/check-db-migrations-sync.sh
+
   probe-alignment:
     name: Layer-2A 探针路径对齐检查
     runs-on: ubuntu-latest
