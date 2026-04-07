@@ -20,7 +20,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: write   # 写 PR 审查评论
-      models: read           # 调用 GitHub Models API
 
     steps:
       - uses: actions/checkout@v4
