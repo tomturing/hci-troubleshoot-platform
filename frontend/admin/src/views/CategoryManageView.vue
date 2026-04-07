@@ -114,13 +114,20 @@ const filteredGroups = computed<DomainGroup[]>(() => {
 async function fetchCategories() {
   loading.value = true
   try {
-    const resp = await fetch('/api/kb/categories?active_only=false&include_stats=true', {
+    const resp = await fetch('/api/kb/categories?grouped=true', {
       headers: authHeader,
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
-    domainGroups.value = data.data.domains as DomainGroup[]
-    totalCategories.value = data.data.total ?? 0
+    // 后端返回 { domains: { domain: [cat, ...] }, total_domains: N }
+    // 转换为前端 DomainGroup[] 格式
+    const domainsDict = (data.domains ?? {}) as Record<string, KbCategory[]>
+    domainGroups.value = Object.entries(domainsDict).map(([domain, categories]) => ({
+      domain,
+      count: categories.length,
+      categories,
+    }))
+    totalCategories.value = domainGroups.value.reduce((sum, g) => sum + g.count, 0)
 
     // 计算统计
     const allCategories = domainGroups.value.flatMap((g) => g.categories)

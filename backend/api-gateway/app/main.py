@@ -94,6 +94,8 @@ app.include_router(cases.router)
 app.include_router(conversations.router)
 app.include_router(assistants.router)
 app.include_router(kb.router)
+app.include_router(kb.categories_router)
+app.include_router(kb.kbd_router)
 app.include_router(terminal.router)
 app.include_router(health.router)
 

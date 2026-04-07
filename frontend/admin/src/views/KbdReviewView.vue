@@ -84,7 +84,9 @@ async function fetchPending() {
     if (categoryFilter.value) {
       params.append('category_id', categoryFilter.value)
     }
-    const resp = await fetch(`/api/v1/kbd/pending?${params}`)
+    const resp = await fetch(`/api/v1/kbd/pending?${params}`, {
+      headers: authHeader,
+    })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data: PendingKbdResponse = await resp.json()
     entries.value = data.entries
