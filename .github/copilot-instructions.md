@@ -2,22 +2,22 @@
 
 ## 避坑指南（生成代码或辅助调试前必读）
 
-本项目有经过持续验证的避坑指南，存放于 `docs/pitfalls/`。  
+本项目的避坑指南分两类存放：部署类在 `docs/deploy/pitfalls/`，验证类在 `docs/verify/pitfalls/`。  
 遇到以下场景时，**参考对应文件后再编写代码**，避免已知问题重现：
 
 | 场景关键词 | 必读文件 |
 |-----------|---------|
-| 调试/进程/状态/日志定位 | `docs/pitfalls/debugging.md` |
-| 网络异常/502/超时/Clash TUN | `docs/pitfalls/network-service-check.md` |
-| Shell/Makefile/bash 脚本 | `docs/pitfalls/shell.md` |
-| Python/FastAPI/SQLAlchemy/Pydantic | `docs/pitfalls/python.md` |
-| Vue/TypeScript/pnpm/Docker build/nginx | `docs/pitfalls/frontend.md` |
-| K8s/K3s/Helm/镜像导入/HostPath | `docs/pitfalls/k8s.md` |
-| OpenClaw/认证 token/WebSocket/AI 超时 | `docs/pitfalls/openclaw.md` |
-| Grafana/Traefik Ingress/iframe | `docs/pitfalls/grafana.md` |
-| Dispatcher/状态机/幂等 | `docs/pitfalls/dispatcher.md` |
+| 调试/进程/状态/日志定位 | `docs/verify/pitfalls/debugging.md` |
+| 网络异常/502/超时/Clash TUN | `docs/deploy/pitfalls/network-service-check.md` |
+| Shell/Makefile/bash 脚本 | `docs/deploy/pitfalls/shell.md` |
+| Python/FastAPI/SQLAlchemy/Pydantic | `docs/verify/pitfalls/python.md` |
+| Vue/TypeScript/pnpm/Docker build/nginx | `docs/verify/pitfalls/frontend.md` |
+| K8s/K3s/Helm/镜像导入/HostPath | `docs/deploy/pitfalls/k8s.md` |
+| OpenClaw/认证 token/WebSocket/AI 超时 | `docs/verify/pitfalls/openclaw.md` |
+| Grafana/Traefik Ingress/iframe | `docs/deploy/pitfalls/grafana.md` |
+| Dispatcher/状态机/幂等 | `docs/verify/pitfalls/dispatcher.md` |
 
-完整触发路由和 PIT 编号注册表见 `docs/pitfalls/_index.md`。
+部署类触发路由见 `docs/deploy/pitfalls/_index.md`，验证类触发路由见 `docs/verify/pitfalls/_index.md`。
 
 ---
 

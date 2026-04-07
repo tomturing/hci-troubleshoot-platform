@@ -109,27 +109,3 @@ class TestNoRawPlaceholder:
         assert "{hypothesis}" not in result
         assert "{root_cause}" not in result
 
-
-class TestBuildSystemPrompt:
-    """测试完整 prompt 构建"""
-
-    def test_build_full_prompt(self, builder: PromptBuilder) -> None:
-        """测试完整 prompt 构建不抛异常"""
-        prompt = builder.build_system_prompt(
-            diagnostic_stage="S2",
-            knowledge_atoms=[
-                {"type": "diagnostic_step", "content": "检查 CPU 使用率", "source_ref": "SOP-001"}
-            ],
-            case_context={"case_id": "C-001", "description": "VM 开机失败"},
-            session_state={
-                "known_info": "VM 开机卡住",
-                "category_l1": "虚拟机",
-                "category_l2": "开机失败",
-                "hypothesis": ["资源不足"],
-            },
-        )
-        assert "智能排障专家" in prompt
-        assert "S2 假设生成" in prompt
-        assert "虚拟机 > 开机失败" in prompt  # category_path 在 S2 模板中
-        assert "资源不足" in prompt  # hypothesis 在 S2 模板中
-        assert "{" not in prompt or "【" in prompt  # 允许中文括号

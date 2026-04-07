@@ -20,7 +20,6 @@ from ..repositories.conversation_repo import ConversationRepository
 from .ai_client import AIAssistantRegistry
 from .conversation_manager import ConversationManager
 from .kb_client import KBClient
-from .knowledge_extractor import KnowledgeExtractor
 from .knowledge_retriever import KnowledgeRetriever
 from .prompt_builder import PromptBuilder
 from .scheduler_client import SchedulerClient
@@ -85,8 +84,6 @@ class ConversationService:
         self.tool_router = tool_router
         self.confirm_service = confirm_service
         self.glm_client = glm_client
-        # Phase 4: 知识反馈闭环（可选，未配置时跳过）
-        self.knowledge_extractor: KnowledgeExtractor | None = None
         self._audit_service = LogAuditService()
         # 诊断状态机（Phase 2）
         self._conversation_manager = ConversationManager()
@@ -382,17 +379,6 @@ class ConversationService:
                                 category_info=category_info,
                             )
                         )
-                    # S6 阶段：触发知识反馈闭环（fire-and-forget，不阻塞对话响应）
-                    if new_stage == "S6" and self.knowledge_extractor is not None:
-                        asyncio.create_task(
-                            self._trigger_knowledge_extraction(
-                                conversation_id=conversation_id,
-                                case_id=case_id,
-                                messages=full_reply,
-                                all_messages=_full_reply_buffer,
-                            )
-                        )
-
         except Exception as e:
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="error").inc()
             if isinstance(e, asyncio.CancelledError):
@@ -729,51 +715,6 @@ class ConversationService:
                     span.set_status(trace.StatusCode.ERROR, item["_error"])
                     raise _err
                 yield item
-
-    async def _trigger_knowledge_extraction(
-        self,
-        conversation_id: uuid.UUID,
-        case_id: str,
-        messages: str,          # 本轮 full_reply（类型占位，实际读取历史消息）
-        all_messages: list[str], # _full_reply_buffer（类型占位）
-    ) -> None:
-        """S6 阶段触发知识提炼（fire-and-forget，失败不影响主流程）"""
-        if self.knowledge_extractor is None:
-            return
-        try:
-            # 读取完整对话历史
-            if self.session_factory:
-                async with self.session_factory() as s:
-                    conversation_messages = await ConversationRepository(s).get_messages(conversation_id)
-            else:
-                conversation_messages = await self.repository.get_messages(conversation_id)
-
-            msgs_dicts = [
-                {"role": m.role.value, "content": m.content}
-                for m in conversation_messages[-20:]
-            ]
-
-            # 获取工单分类（来自 case）
-            category_id = ""
-            if self.session_factory:
-                async with self.session_factory() as s:
-                    convs = await ConversationRepository(s).get_conversations_by_case(case_id)
-                    if convs:
-                        meta = getattr(convs[0], "metadata_", None) or {}
-                        category_id = meta.get("category_id", "") or meta.get("classification", "")
-
-            await self.knowledge_extractor.extract_from_session(
-                session_id=str(conversation_id),
-                conversation_messages=msgs_dicts,
-                tool_audit_logs=[],  # MVP：工具调用日志暂不传递
-                category_id=category_id,
-            )
-        except Exception as exc:
-            logger.warning(
-                event="knowledge_extraction_trigger_error",
-                message=str(exc),
-                conversation_id=str(conversation_id),
-            )
 
     async def _write_prompt_audit(
         self,

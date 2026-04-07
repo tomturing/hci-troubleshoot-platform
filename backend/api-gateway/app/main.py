@@ -20,7 +20,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.routes import assistants, cases, conversations, health, kb, terminal, websocket
-from app.routes import atoms as atoms_route
 from app.services.session import SessionManager
 from app.services.terminal import TerminalService
 
@@ -95,7 +94,6 @@ app.include_router(cases.router)
 app.include_router(conversations.router)
 app.include_router(assistants.router)
 app.include_router(kb.router)
-app.include_router(atoms_route.router)
 app.include_router(terminal.router)
 app.include_router(health.router)
 

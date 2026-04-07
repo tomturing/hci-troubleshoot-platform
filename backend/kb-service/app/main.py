@@ -20,12 +20,10 @@ from shared.utils.otel import init_telemetry, instrument_app
 from app.config import settings
 from app.routes import (
     admin,
-    atoms,
     categories,
     classify,
     health,
     ingest,
-    review,
     route,
     search,
     sop_ingest,
@@ -69,8 +67,6 @@ async def lifespan(app: FastAPI):
     ingest.set_dependencies(database_manager, embedding_service)
     search.set_dependencies(database_manager, embedding_service, sop_matcher)
     admin.set_dependencies(database_manager, embedding_service)  # 注入 embedding 服务
-    atoms.set_dependencies(database_manager, embedding_service)
-    review.set_dependencies(database_manager)
     route.set_dependencies(database_manager)
     classify.set_dependencies(database_manager)
     sop_ingest.set_dependencies(database_manager)  # SOP 文档入库
@@ -105,8 +101,6 @@ app.include_router(ingest.router)
 app.include_router(admin.router)
 app.include_router(admin.kbd_router)  # KBD 审核路由
 app.include_router(admin.sop_router)  # SOP 审核路由
-app.include_router(atoms.router)
-app.include_router(review.router)
 app.include_router(classify.router)
 app.include_router(sop_ingest.router)  # SOP 文档入库
 app.include_router(categories.router)  # 分类管理路由

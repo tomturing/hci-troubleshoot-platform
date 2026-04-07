@@ -14,7 +14,7 @@ fix_sop_format.py — 修复 SOP 章节 Markdown 文件的格式问题
     python scripts/dev/fix_sop_format.py [--dry-run] [目录路径]
 
     --dry-run   仅打印改动，不写入文件（默认值：不加则直接修复）
-    目录路径    默认为 data-pipeline/sop_skills/vm_power_failure/chapters/
+    目录路径    默认为 backend/kb-service/data/sop_skills/vm_start_failure/chapters/
 """
 
 from __future__ import annotations
@@ -180,7 +180,7 @@ def main() -> None:
     parser.add_argument(
         "directory",
         nargs="?",
-        default="data-pipeline/sop_skills/vm_power_failure/chapters",
+        default="backend/kb-service/data/sop_skills/vm_start_failure/chapters",
         help="目标目录（默认：vm_power_failure/chapters）",
     )
     parser.add_argument(

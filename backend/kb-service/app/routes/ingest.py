@@ -107,7 +107,7 @@ async def ingest_document(request: Request, body: IngestRequest):
     将 Markdown 文档分块、embedding，写入知识库。
     支持幂等（相同内容不重复入库）。
 
-    调用方：LearningClaw / data-pipeline ETL 脚本
+    调用方：LearningClaw / scripts/kbd ETL 脚本
     """
     _check_auth(request)
 
@@ -148,7 +148,7 @@ async def ingest_document(request: Request, body: IngestRequest):
 async def import_sop_nodes(request: Request, body: SopImportRequest):
     """批量导入 SOP 节点到 kb_sop_node
 
-    调用方：管理员手动导入、data-pipeline ETL 脚本
+    调用方：管理员手动导入、scripts/kbd ETL 脚本
     """
     _check_auth(request)
 

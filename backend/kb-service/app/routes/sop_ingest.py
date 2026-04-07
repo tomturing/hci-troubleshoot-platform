@@ -2,7 +2,7 @@
 KB Service — SOP 文档入库路由
 
 POST /api/sop/ingest
-  - 调用方：data-pipeline ETL 脚本（SOP .docx 解析后写入）
+  - 调用方：scripts/kbd ETL 脚本（SOP .docx 解析后写入）
   - 鉴权：INTERNAL_API_TOKEN（简单 Bearer Token）
   - 幂等：相同 docx_hash 的文档不会重复入库
   - 分块：按 Markdown 章节（## 或 ###）自动分块
@@ -141,7 +141,7 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
     将 SOP Markdown 文档按章节分块，写入 sop_document 和 sop_chunk 表。
     支持幂等（相同 docx_hash 不重复入库）。
 
-    调用方：data-pipeline ETL 脚本
+    调用方：scripts/kbd ETL 脚本
     """
     _check_auth(request)
 

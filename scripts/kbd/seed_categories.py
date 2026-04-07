@@ -2,7 +2,7 @@
 scripts/kbd/seed_categories.py — 从 YAML 导入分类数据到 kb_category 表
 
 功能：
-  读取 data-pipeline/config/category_baseline.yaml，解析分类树结构，
+  读取 backend/kb-service/config/category_baseline.yaml，解析分类树结构，
   将分类数据导入 PostgreSQL kb_category 表。
 
   YAML 特点：
@@ -55,8 +55,8 @@ import yaml
 # 项目根目录
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 
-# 默认 YAML 文件路径（实际路径在 data-pipeline/config/）
-DEFAULT_YAML_PATH = _PROJECT_ROOT / "data-pipeline" / "config" / "category_baseline.yaml"
+# 默认 YAML 文件路径
+DEFAULT_YAML_PATH = _PROJECT_ROOT / "backend" / "kb-service" / "config" / "category_baseline.yaml"
 
 # 日志配置
 logging.basicConfig(

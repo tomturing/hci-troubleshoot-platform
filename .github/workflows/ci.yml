@@ -81,7 +81,7 @@ jobs:
         run: uv sync --group dev
 
       - name: Ruff 代码检查
-        run: uv run ruff check backend/ tests/ data-pipeline/
+        run: uv run ruff check backend/ tests/
 
   frontend-build:
     name: 前端构建检查

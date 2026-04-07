@@ -97,30 +97,6 @@ class PromptBuilder:
     - 知识原子优先注入 diagnostic_step 类型，其次 fix_action
     """
 
-    def build_system_prompt(
-        self,
-        diagnostic_stage: str,
-        knowledge_atoms: list[dict],
-        case_context: dict,
-        session_state: dict,
-    ) -> str:
-        """构建完整 system prompt
-
-        参数：
-          diagnostic_stage: 当前诊断阶段 S0-S6
-          knowledge_atoms: KB 检索结果（知识原子列表）
-          case_context: 工单上下文 {case_id, description}
-          session_state: 会话状态 {category_l1, category_l2, hypothesis, root_cause 等}
-        """
-        segments = [
-            self._segment_identity(),
-            self._segment_methodology(diagnostic_stage, session_state),
-            self._segment_mechanism_knowledge(),
-            self._segment_knowledge_atoms(knowledge_atoms),
-            self._segment_context(case_context, diagnostic_stage),
-        ]
-        return "\n\n".join(s for s in segments if s)
-
     def _segment_identity(self) -> str:
         """Segment 1：专家身份定义（固定）"""
         return (
@@ -144,53 +120,6 @@ class PromptBuilder:
     def _segment_mechanism_knowledge(self) -> str:
         """Segment 3：HCI 机制知识（不依赖 RAG）"""
         return _MECHANISM_KNOWLEDGE
-
-    def _segment_knowledge_atoms(self, atoms: list[dict]) -> str:
-        """Segment 4：KB 知识原子注入
-
-        优先注入 diagnostic_step 类型，其次 fix_action，最多 5 个。
-        """
-        if not atoms:
-            return (
-                "【知识库参考】\n"
-                "当前知识库暂无该类型故障的 SOP，将基于 HCI 机制知识进行推理。\n"
-                "所有机制推理内容将标注【机制推理】，与知识库匹配内容（【KB参考】）区分。"
-            )
-
-        # 按类型优先级排序：diagnostic_step > fix_action > 其余
-        _priority = {"diagnostic_step": 0, "fix_action": 1}
-        sorted_atoms = sorted(
-            atoms, key=lambda a: (_priority.get(a.get("type", ""), 99), 0)
-        )
-
-        _type_label = {
-            "diagnostic_step": "诊断步骤",
-            "fix_action": "解决方案",
-            "decision_gate": "判断条件",
-            "background": "背景知识",
-        }
-
-        atom_texts: list[str] = []
-        for atom in sorted_atoms[:5]:
-            content = atom.get("content") or {}
-            if isinstance(content, str):
-                full_text = content[:500]
-                commands: list[str] = []
-            else:
-                full_text = (content.get("full_text") or "")[:500]
-                commands = content.get("commands", [])
-
-            atom_type = atom.get("type", "")
-            source = atom.get("source_ref") or "知识库"
-            label = _type_label.get(atom_type, "参考")
-
-            cmd_text = "\n".join(f"  $ {c}" for c in commands[:3]) if commands else ""
-            entry = f"【KB参考 - {label}】[来源: {source}]\n{full_text}"
-            if cmd_text:
-                entry += f"\n关键命令：\n{cmd_text}"
-            atom_texts.append(entry)
-
-        return "【知识库参考资料】\n\n" + "\n\n---\n".join(atom_texts)
 
     def _segment_context(self, ctx: dict, stage: str) -> str:
         """Segment 5：当前工单上下文"""
