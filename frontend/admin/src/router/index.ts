@@ -27,16 +27,10 @@ const router = createRouter({
       meta: { title: '工单详情', hidden: true },
     },
     {
-      path: '/clients',
-      name: 'Clients',
-      component: () => import('@/views/ClientListView.vue'),
-      meta: { title: '用户管理', icon: 'User' },
-    },
-    {
-      path: '/monitoring',
-      name: 'Monitoring',
-      component: () => import('@/views/MonitoringView.vue'),
-      meta: { title: '系统监控', icon: 'Monitor' },
+      path: '/category',
+      name: 'CategoryManage',
+      component: () => import('@/views/CategoryManageView.vue'),
+      meta: { title: '分类基线', icon: 'Histogram' },
     },
     {
       path: '/knowledge/review',
@@ -51,10 +45,16 @@ const router = createRouter({
       meta: { title: 'KBD 审核', icon: 'Document' },
     },
     {
-      path: '/category',
-      name: 'CategoryManage',
-      component: () => import('@/views/CategoryManageView.vue'),
-      meta: { title: '分类基线', icon: 'Histogram' },
+      path: '/clients',
+      name: 'Clients',
+      component: () => import('@/views/ClientListView.vue'),
+      meta: { title: '用户管理', icon: 'User' },
+    },
+    {
+      path: '/monitoring',
+      name: 'Monitoring',
+      component: () => import('@/views/MonitoringView.vue'),
+      meta: { title: '系统监控', icon: 'Monitor' },
     },
   ],
 })
