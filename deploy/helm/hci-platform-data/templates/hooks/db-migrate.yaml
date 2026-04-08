@@ -1,50 +1,42 @@
 {{- if .Values.dbMigrate.enabled }}
-# B-2: DB 迁移 Helm pre-upgrade/pre-install Job
-# 在 helm upgrade 之前自动执行 Alembic 迁移，确保 schema 与应用版本同步。
-# 失败时 helm upgrade 中止，防止应用与 schema 版本不一致的半漂移状态。
+# ⚠️  Alembic 迁移 Job 已废弃（2026-04-08）
+# 数据库迁移统一由 hci-platform 的 dbmate PreSync Hook 负责。
+# 本 Job 已通过 dbMigrate.enabled=false 停用，此模板仅保留作历史参考。
+# 权威迁移工具：dbmate（见 deploy/helm/hci-platform/templates/hooks/）
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: db-migrate-{{ .Release.Revision }}
+  name: db-migrate-alembic-{{ .Release.Revision }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "hci-data.labels" . | nindent 4 }}
-    app.kubernetes.io/component: db-migration
+    app.kubernetes.io/component: db-migration-deprecated
   annotations:
     "helm.sh/hook": pre-upgrade,pre-install
     "helm.sh/hook-weight": "-5"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
-  backoffLimit: 3
-  activeDeadlineSeconds: 300
+  backoffLimit: 0
+  activeDeadlineSeconds: 10
   template:
     metadata:
       labels:
         {{- include "hci-data.labels" . | nindent 8 }}
-        app.kubernetes.io/component: db-migration
+        app.kubernetes.io/component: db-migration-deprecated
     spec:
-      restartPolicy: OnFailure
+      restartPolicy: Never
       containers:
-        - name: alembic
-          # 使用 case-service 镜像（包含 alembic + migration 脚本）
-          image: {{ .Values.dbMigrate.image }}
-          imagePullPolicy: {{ .Values.dbMigrate.imagePullPolicy | default "IfNotPresent" }}
+        - name: noop
+          image: busybox:1.36
           command:
             - /bin/sh
             - -c
             - |
-              set -euo pipefail
-              echo "[DB-MIGRATE] 开始执行 Alembic 迁移..."
-              echo "[DB-MIGRATE] 当前 revision: $(alembic current 2>/dev/null || echo '(获取失败)')"
-              alembic upgrade head
-              echo "[DB-MIGRATE] 迁移完成，当前 revision: $(alembic current)"
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: hci-platform-secrets
-                  key: database-url
+              echo "[DB-MIGRATE-DEPRECATED] Alembic 迁移链已废弃，dbmate 是唯一权威迁移工具。"
+              echo "[DB-MIGRATE-DEPRECATED] 本 Job 为空操作占位，不执行任何迁移。"
+              echo "[DB-MIGRATE-DEPRECATED] 请确认 dbMigrate.enabled=false 以彻底停用此 Job。"
+              exit 0
       {{- if .Values.global.imagePullSecretName }}
       imagePullSecrets:
         - name: {{ .Values.global.imagePullSecretName }}
