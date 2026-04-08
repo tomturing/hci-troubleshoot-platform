@@ -1,0 +1,24 @@
+# db-migrate 迁移镜像
+# 基于官方 Atlas 二进制镜像，将迁移文件打包进镜像
+# CI 在每次 main push 时构建并推送，标签格式与其他服务镜像一致
+#
+# 使用场景：
+#   - 全新 DB（测试/开发环境）：atlas migrate apply 执行全量迁移（含 baseline）
+#   - 已有 DB（dev/staging/prod）：配合 --baseline 标志跳过 baseline，仅执行新迁移
+#
+# 本地构建测试：
+#   docker build -f Dockerfile.migrations -t hci-db-migrate:local .
+
+FROM ghcr.io/ariga/atlas:latest
+
+# 以非 root 用户运行（安全基线）
+USER nobody
+
+# 将迁移文件打包进镜像（不依赖 ConfigMap 挂载）
+COPY --chown=nobody:nobody database/atlas-migrations/ /atlas-migrations/
+
+# 默认工作目录
+WORKDIR /
+
+# 健康检查（供 K8s Job initContainer 使用，确认迁移文件存在）
+# Job 不需要常驻进程，不设定 ENTRYPOINT，由 K8s Job 的 args 控制命令
