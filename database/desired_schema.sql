@@ -80,6 +80,9 @@ $$ LANGUAGE plpgsql;
 -- 工单 ID 生成函数
 -- 格式: Q{YYYYMMDD}{NNNNN}，当天序号从 00001 开始自增
 -- 服务层调用: SELECT generate_case_id(); 后将返回值写入 case_id
+-- 并发安全: 使用 pg_advisory_xact_lock 事务级排他锁（事务结束自动释放）
+--   锁 key = hashtext('generate_case_id:' || v_today)，不同日期互不阻塞
+--   同一天并发写入时串行化，避免 COUNT(*)+1 竞态导致重复 case_id
 CREATE OR REPLACE FUNCTION generate_case_id()
 RETURNS VARCHAR(20) AS $$
 DECLARE
@@ -87,7 +90,10 @@ DECLARE
     v_seq   INTEGER;
 BEGIN
     v_today := TO_CHAR(CURRENT_DATE, 'YYYYMMDD');
-    SELECT COUNT(*) + 1 INTO v_seq FROM "case"
+    -- 事务级排他锁：同一天并发调用时串行化，不同天并行无影响
+    PERFORM pg_advisory_xact_lock(hashtext('generate_case_id:' || v_today));
+    SELECT COALESCE(MAX(CAST(SUBSTRING(case_id FROM 10 FOR 5) AS INTEGER)), 0) + 1
+        INTO v_seq FROM "case"
         WHERE case_id LIKE 'Q' || v_today || '%';
     RETURN 'Q' || v_today || LPAD(v_seq::TEXT, 5, '0');
 END;
@@ -129,11 +135,9 @@ COMMENT ON COLUMN "user".last_login_at IS '最后登录/活跃时间，临时用
 COMMENT ON COLUMN "user".trace_id IS '创建该用户的请求追踪 ID（W3C traceparent），用于问题溯源';
 
 -- 索引: user
--- UPSERT / 工单列表查询
-CREATE INDEX IF NOT EXISTS idx_user_client_id ON "user" (client_id);
--- 链路追踪排查
-CREATE INDEX IF NOT EXISTS idx_user_trace_id ON "user" (trace_id);
--- 用户类型统计
+-- P1-1: idx_user_client_id 已移除（client_id 有 UNIQUE 约束，隐含 B-tree 索引，无需重复创建）
+-- O-001: idx_user_trace_id 已移除（链路追踪通过 Tempo/日志查找，不走数据库）
+-- 用户类型统计（低基数，按需保留用于分析查询）
 CREATE INDEX IF NOT EXISTS idx_user_type ON "user" (user_type);
 
 -- 触发器: 自动刷新 updated_at
@@ -299,8 +303,7 @@ CREATE INDEX IF NOT EXISTS idx_environment_type ON environment (env_type);
 CREATE INDEX IF NOT EXISTS idx_environment_collected_at ON environment (collected_at DESC);
 -- JSONB 内容检索
 CREATE INDEX IF NOT EXISTS idx_environment_data_gin ON environment USING GIN (env_data);
--- 链路追踪
-CREATE INDEX IF NOT EXISTS idx_environment_trace_id ON environment (trace_id);
+-- O-001: idx_environment_trace_id 已移除（环境表链路追踪通过日志/Tempo 查找，不走 DB）
 
 -- ------------------------------------------------------------
 -- 表: assistant_evaluation  [模块: case-service]
@@ -326,6 +329,9 @@ CREATE TABLE IF NOT EXISTS assistant_evaluation (
     created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     trace_id varchar(64),
     CONSTRAINT fk_assistant_evaluation_case_id FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
+    -- D-006: 评分范围约束，防止 ORM/前端写入非法值
+    CONSTRAINT chk_assistant_evaluation_score CHECK (score IS NULL OR (score >= 1 AND score <= 5)),
+    CONSTRAINT chk_assistant_evaluation_composite_score CHECK (composite_score IS NULL OR (composite_score >= 0 AND composite_score <= 100)),
     CONSTRAINT assistant_evaluation_pkey PRIMARY KEY (evaluation_id)
 );
 
@@ -357,8 +363,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_assistant_type ON assistant_evaluation (assi
 CREATE INDEX IF NOT EXISTS idx_eval_score ON assistant_evaluation (score);
 -- 时间排序
 CREATE INDEX IF NOT EXISTS idx_eval_created_at ON assistant_evaluation (created_at DESC);
--- 链路追踪
-CREATE INDEX IF NOT EXISTS idx_eval_trace_id ON assistant_evaluation (trace_id);
+-- O-001: idx_eval_trace_id 已移除（评估表不在请求热路径，链路追踪不需要 DB 索引）
 -- 综合质量分排名统计（仅已计算）
 CREATE INDEX IF NOT EXISTS idx_eval_composite_score ON assistant_evaluation (composite_score) WHERE composite_score IS NOT NULL;
 
@@ -384,6 +389,8 @@ CREATE TABLE IF NOT EXISTS conversation (
     repeat_question_count integer NOT NULL DEFAULT 0,
     trace_id varchar(64),
     CONSTRAINT fk_conversation_case_id FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
+    -- D-006: 防止非法阶段值写入（状态机只允许 S0-S6）
+    CONSTRAINT chk_conversation_diagnostic_stage CHECK (diagnostic_stage IN ('S0','S1','S2','S3','S4','S5','S6')),
     CONSTRAINT conversation_pkey PRIMARY KEY (conversation_id)
 );
 
@@ -484,7 +491,9 @@ CREATE INDEX IF NOT EXISTS idx_message_trace_id ON message (trace_id);
 -- 复合索引：按工单查消息
 CREATE INDEX IF NOT EXISTS idx_message_case_created ON message (case_id, created_at DESC);
 -- 全文检索
-CREATE INDEX IF NOT EXISTS idx_message_content_search ON message USING GIN (to_tsvector('english', content));
+-- D-003: 修复全文检索语言配置，content 为中文对话内容，english 分词无效
+-- 使用 simple（按标点/空格分词，无需扩展），如生产环境安装了 zhparser 可改为 'chinese'
+CREATE INDEX IF NOT EXISTS idx_message_content_search ON message USING GIN (to_tsvector('simple', content));
 
 -- 触发器: 自动维护 conversation.message_count（message 表已建立，此处注册触发器）
 DROP TRIGGER IF EXISTS update_conversation_message_count ON message;
@@ -510,6 +519,11 @@ CREATE TABLE IF NOT EXISTS diagnostic_item (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     trace_id varchar(64),
     CONSTRAINT fk_diagnostic_item_conversation_id FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE CASCADE,
+    -- D-004: 防止重复 (conversation_id, type, seq) 组合导致 Prompt 构建混乱
+    CONSTRAINT uq_diagnostic_item_conv_type_seq UNIQUE (conversation_id, "type", seq),
+    -- D-006: 数据有效性约束
+    CONSTRAINT chk_diagnostic_item_probability CHECK (probability IS NULL OR (probability >= 0 AND probability <= 1)),
+    CONSTRAINT chk_diagnostic_item_stage CHECK (stage IN ('S2','S3','S4','S5')),
     CONSTRAINT diagnostic_item_pkey PRIMARY KEY (id)
 );
 
@@ -568,6 +582,8 @@ CREATE TABLE IF NOT EXISTS tool_result (
     completed_at timestamptz,
     trace_id varchar(64),
     CONSTRAINT fk_tool_result_conversation_id FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE CASCADE,
+    -- D-006: 风险等级只允许 1（只读）/ 2（需确认）/ 3（高危）
+    CONSTRAINT chk_tool_result_risk_level CHECK (risk_level IS NULL OR (risk_level >= 1 AND risk_level <= 3)),
     CONSTRAINT tool_result_pkey PRIMARY KEY (id)
 );
 
@@ -657,6 +673,8 @@ CREATE TABLE IF NOT EXISTS session (
     expires_at timestamptz,
     trace_id varchar(64),
     CONSTRAINT fk_session_case_id FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
+    -- D-005: 补全外键约束，防止孤儿 session 记录
+    CONSTRAINT fk_session_user_id FOREIGN KEY (user_id) REFERENCES "user" (user_id) ON DELETE CASCADE,
     CONSTRAINT session_pkey PRIMARY KEY (session_id)
 );
 
@@ -730,6 +748,8 @@ CREATE TABLE IF NOT EXISTS tool_definition (
     version varchar(20) DEFAULT '1.0',
     created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    -- D-006: 工具风险等级约束：1=只读安全 / 2=需用户确认 / 3=高危
+    CONSTRAINT chk_tool_definition_risk_level CHECK (risk_level >= 1 AND risk_level <= 3),
     CONSTRAINT tool_definition_pkey PRIMARY KEY (id)
 );
 
@@ -806,6 +826,10 @@ CREATE INDEX IF NOT EXISTS idx_kb_category_parent ON kb_category (parent_id);
 CREATE INDEX IF NOT EXISTS idx_kb_category_level ON kb_category (level);
 -- 关键词检索
 CREATE INDEX IF NOT EXISTS idx_kb_category_keywords ON kb_category USING GIN (keywords);
+-- D-002: 向量相似度检索索引（S0 意图识别阶段语义匹配）
+-- IVFFlat lists=100：适合 ~200 个分类节点；当数据量超过 10000 时切换 HNSW
+CREATE INDEX IF NOT EXISTS idx_kb_category_embedding ON kb_category
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- kb_category 数据统计:
 --   total: 235
@@ -877,6 +901,15 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_published ON kbd_entry (published_at DE
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv ON kbd_entry USING GIN (tsv);
 -- JSONB 内容检索
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_metadata ON kbd_entry USING GIN (metadata);
+-- D-002: 向量相似度检索索引（知识库语义检索，仅已发布条目）
+CREATE INDEX IF NOT EXISTS idx_kbd_entry_embedding ON kbd_entry
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- P2-2: 补全 updated_at 触发器（schema 注释中要求由触发器维护，但原先缺失）
+DROP TRIGGER IF EXISTS update_kbd_entry_updated_at ON kbd_entry;
+CREATE TRIGGER update_kbd_entry_updated_at
+    BEFORE UPDATE ON kbd_entry
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- kbd_entry 状态流转:
 --   draft → published: 审核通过
@@ -948,3 +981,20 @@ COMMENT ON COLUMN sop_chunk.content IS '章节内容';
 COMMENT ON COLUMN sop_chunk.embedding IS '章节语义向量（1536 维）';
 COMMENT ON COLUMN sop_chunk.tsv IS 'BM25 全文检索向量';
 COMMENT ON COLUMN sop_chunk.created_at IS '创建时间';
+
+-- 索引: sop_document
+-- D-002: SOP 文档向量索引（通过 sop_chunk 实现，见下方）
+-- P2-2: 补全 updated_at 触发器（字段有 updated_at 但原先无触发器）
+DROP TRIGGER IF EXISTS update_sop_document_updated_at ON sop_document;
+CREATE TRIGGER update_sop_document_updated_at
+    BEFORE UPDATE ON sop_document
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- 索引: sop_chunk
+-- chunk 顺序检索（按文档 + 分块序号）
+CREATE INDEX IF NOT EXISTS idx_sop_chunk_document ON sop_chunk (document_id, chunk_index);
+-- 全文检索
+CREATE INDEX IF NOT EXISTS idx_sop_chunk_tsv ON sop_chunk USING GIN (tsv);
+-- D-002: 向量相似度检索索引（SOP 章节语义检索，S1+ 阶段使用）
+CREATE INDEX IF NOT EXISTS idx_sop_chunk_embedding ON sop_chunk
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
