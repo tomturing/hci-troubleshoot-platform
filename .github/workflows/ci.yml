@@ -168,17 +168,8 @@ jobs:
           fi
           echo "✅ claw-configs 与 Helm chart 副本一致"
 
-  check-db-migrations-sync:
-    name: 检查数据库迁移同步
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 检查迁移文件是否已同步到 ConfigMap
-        run: |
-          chmod +x scripts/ci/check-db-migrations-sync.sh
-          scripts/ci/check-db-migrations-sync.sh
+  # check-db-migrations-sync job 已删除（Atlas 改造后不再需要 ConfigMap 同步检查）
+  # 替代方案：.github/workflows/db-migration-test.yml 中的 atlas migrate lint + apply 验证
 
   probe-alignment:
     name: Layer-2A 探针路径对齐检查
@@ -411,6 +402,10 @@ jobs:
           - service: admin-ui
             context: frontend
             dockerfile: frontend/admin/Dockerfile
+          # db-migrate 迁移镜像：Atlas + 迁移文件，替换原 dbmate + ConfigMap 方案
+          - service: db-migrate
+            context: .
+            dockerfile: Dockerfile.migrations
           # hci-openclaw 已从本 matrix 移出，由独立 workflow build-hci-openclaw.yml 管理
           # （仅 workflow_dispatch 手动触发，固定版本 v2026.3.24，不阻断主流程）
     steps:

@@ -1,6 +1,16 @@
 {{- if .Values.dbMigrate.enabled }}
 # DB 迁移 Job — ArgoCD PreSync Hook
-# 每次 ArgoCD Sync 前执行，dbmate 自动跳过已执行的迁移
+# 每次 ArgoCD Sync 前执行，Atlas 自动跳过已执行的迁移（通过 atlas_schema_revisions 表）
+#
+# 迁移工具：Atlas（替换原 dbmate）
+#   - 声明式 schema 管理：开发者维护 database/desired_schema.sql，Atlas diff 生成迁移
+#   - 迁移文件打包进镜像（Dockerfile.migrations），不依赖 ConfigMap
+#   - --baseline 标志：已有 DB 首次切换时跳过 baseline 迁移，避免重建已有表
+#
+# Baseline 使用场景：
+#   - 全新 DB（测试/CI）：不设 atlasBaseline，执行所有迁移（含全量建表 baseline）
+#   - 已有 DB（dev/staging/prod 首次切换）：设 atlasBaseline: "20260408000000" 跳过 baseline
+#   - 切换完成后：可移除 atlasBaseline 字段（atlas_schema_revisions 已记录 baseline 已执行）
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -37,23 +47,28 @@ spec:
         runAsUser: 65534   # nobody
         fsGroup: 65534
       containers:
-        - name: dbmate
-          # dbmate 官方镜像，Go 单二进制，无 JVM/Python 依赖
-          image: ghcr.io/amacneil/dbmate:2
-          imagePullPolicy: IfNotPresent
+        - name: atlas
+          # db-migrate 自定义镜像：基于 ghcr.io/ariga/atlas，内含 atlas-migrations/ 目录
+          # 镜像由 CI 在 main push 时构建，标签格式：YYYYMMDD-HHMM-<sha7>
+          image: {{ .Values.dbMigrate.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
+          command: ["atlas"]
           args:
-            - "--no-dump-schema"         # 不在 Job 中 dump schema（由 CI 负责）
-            - "--migrations-dir"
-            - "/migrations"
-            - "up"                       # 只运行尚未执行的迁移
+            - "migrate"
+            - "apply"
+            - "--url"
+            - "$(DATABASE_URL)"    # 引用 env 变量，避免密码出现在 Pod spec args 中
+            - "--dir"
+            - "file:///atlas-migrations"
+            {{- if .Values.dbMigrate.atlasBaseline }}
+            # 已有 DB 首次切换时：跳过 baseline 迁移，从之后的新迁移开始执行
+            - "--baseline"
+            - {{ .Values.dbMigrate.atlasBaseline | quote }}
+            {{- end }}
+            - "--allow-dirty"    # 允许 DB 中有 atlas 未知的历史表（dbmate 遗留）
           env:
             - name: DATABASE_URL
-              # dbmate 使用标准 postgres:// URL（不是 asyncpg://）
               value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
-          volumeMounts:
-            - name: migrations
-              mountPath: /migrations
-              readOnly: true
           resources:
             requests:
               cpu: "50m"
@@ -66,8 +81,4 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-      volumes:
-        - name: migrations
-          configMap:
-            name: db-migrations
 {{- end }}
