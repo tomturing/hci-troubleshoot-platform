@@ -51,10 +51,11 @@ config:
   postgresUser: hci_admin
 
 # ======================== B-2: DB 迁移 pre-upgrade Job =====================
-# 在 helm upgrade 之前自动执行 Alembic 迁移，确保 schema 与应用版本同步。
-# 需要配置 case-service 镜像路径（包含 alembic 和迁移脚本）。
+# ⚠️  Alembic 迁移 Job 已废弃（2026-04-08）
+# 数据库迁移统一由 hci-platform 的 dbmate PreSync Hook 负责。
+# 此配置块保留作历史参考，enabled 必须保持 false，禁止改为 true。
 dbMigrate:
-  enabled: false # 待 Alembic 完全集成后启用（当前为过渡期）
+  enabled: false # 已废弃 — dbmate 是唯一权威迁移工具，禁止启用
   image: "ghcr.io/tomturing/hci-troubleshoot-platform/hci-case-service:latest"
   imagePullPolicy: IfNotPresent
 

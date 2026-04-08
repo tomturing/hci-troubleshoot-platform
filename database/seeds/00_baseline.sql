@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 -- version = dbmate 从文件名提取的纯数字前缀（\d+ 正则，遇到非数字字符截止）
 -- 文件格式 20260305001_init_schema.sql -> version = "20260305001"
 -- 按实际情况调整：如果某个环境真的没有执行某个 migration，就删掉对应的行
+--
+-- 注意：20260402001_sop_tables.sql 已删除（重复 version），
+--       sop_document/sop_chunk 由 20260408001_sop_tables_fix_version.sql 创建。
 INSERT INTO schema_migrations (version) VALUES
     ('20260305001'),    -- 20260305001_init_schema.sql
     ('20260312001'),    -- 20260312001_kb_rag_v3.sql
@@ -33,15 +36,18 @@ INSERT INTO schema_migrations (version) VALUES
     ('20260326003'),    -- 20260326003_tool_audit_log.sql
     ('20260401001'),    -- 20260401001_kbd_pipeline.sql
     ('20260401002'),    -- 20260401002_gap_fill_kb_tables.sql
-    ('20260402001'),    -- 20260402001_kb_category_sop_hit_tracking.sql（双文件同前缀，取任意一个版本号）
+    ('20260402001'),    -- 20260402001_kb_category_sop_hit_tracking.sql
     ('20260402002'),    -- 20260402002_migrate_audit_data.sql
     ('20260402003'),    -- 20260402003_drop_deprecated_tables.sql
-    ('20260404001')     -- 20260404001_v6_redesign.sql（v6.2 重设计迁移）
+    ('20260404001'),    -- 20260404001_v6_redesign.sql
+    ('20260407001'),    -- 20260407001_schema_repair.sql
+    ('20260407002'),    -- 20260407002_cleanup_deprecated_tables.sql
+    ('20260407003')     -- 20260407003_fix_migration_chain.sql
 ON CONFLICT (version) DO NOTHING;
 
 -- Step 3: 验证结果
 SELECT version FROM schema_migrations ORDER BY version;
 
 -- ===========================================================================
--- 执行后，dbmate up 会从下一个迁移文件开始（如 20260415_001_xxx.sql）
+-- 执行后，dbmate up 仅执行 20260408001 及之后的新迁移文件
 -- ===========================================================================

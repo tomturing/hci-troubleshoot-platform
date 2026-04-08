@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill sync-claw-configs check-claw-configs
+.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill sync-claw-configs check-claw-configs db-sync db-check
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -23,6 +23,10 @@ help:
 	@echo "  make k3s-deploy-prod- 🔴 生产 Helm 升级（会弹出 5 秒确认，需集群权限）"
 	@echo "  make release-observe- 发布后观察（默认30分钟采样）"
 	@echo "  make rollback-drill - 回滚演练（默认演练模式，不执行真实回滚）"
+	@echo ""
+	@echo "  数据库迁移命令（dbmate）:"
+	@echo "  make db-sync        - 同步 database/migrations/ 到 Helm ConfigMap（新增迁移后必须运行）"
+	@echo "  make db-check       - 检查同步状态 + version 唯一性（CI 同款检查）"
 
 install:
 	@echo "安装Python依赖 (uv sync)..."
@@ -145,3 +149,13 @@ check-claw-configs:
 		deploy/helm/hci-platform/claw-configs/productionclaw && \
 		echo "  ✓ productionclaw 一致" || \
 		echo "  ⚠️  productionclaw 不一致，请运行 make sync-claw-configs"
+
+## 同步 database/migrations/ 到 Helm ConfigMap（新增迁移文件后必须运行）
+db-sync:
+	@echo "=== 同步数据库迁移到 ConfigMap ==="
+	@bash scripts/ci/sync-db-migrations.sh
+	@echo "✅ 完成。请将 db-migrations-configmap.yaml 纳入本次 commit。"
+
+## 检查迁移文件是否已同步 ConfigMap，并检测重复 version 号（CI 同款检查）
+db-check:
+	@bash scripts/ci/check-db-migrations-sync.sh
