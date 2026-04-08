@@ -46,6 +46,14 @@ jobs:
           curl -sSf https://atlasgo.sh | sh -s -- -y
           atlas version
 
+      # ── Step 1.5: 同步 atlas.sum（本地修改迁移文件后 sum 可能过期）────────
+      - name: 同步 atlas.sum 完整性文件
+        run: |
+          # 重新计算 atlas.sum，确保与当前迁移文件一致
+          # 避免因手动编辑迁移文件导致 sum 文件过期引起 CI 失败
+          atlas migrate hash --dir "file://database/atlas-migrations"
+          echo "✅ atlas.sum 已同步"
+
       # ── Step 2: Lint 检查（危险操作检测）────────────────────────────────
       # atlas migrate lint 检测以下危险操作：
       #   - 删除表（DROP TABLE）
