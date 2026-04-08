@@ -17,31 +17,22 @@
 -- =============================================================================
 
 -- ─── 1. 删除知识库废弃表（kb_chunk 依赖 kb_document，先删 kb_chunk）───
+-- 注意：RAISE 是 PL/pgSQL 语句，不能在 DO 块之外直接执行（dbmate 当普通 SQL 运行）
+-- 进度日志放在末尾的 DO $$ $$ 验证块中输出
 
 DROP TABLE IF EXISTS kb_chunk CASCADE;
-RAISE NOTICE '已删除 kb_chunk 表（再次清理）';
-
 DROP TABLE IF EXISTS kb_document CASCADE;
-RAISE NOTICE '已删除 kb_document 表（再次清理）';
-
 DROP TABLE IF EXISTS kb_sop_node CASCADE;
-RAISE NOTICE '已删除 kb_sop_node 表（再次清理）';
-
 DROP TABLE IF EXISTS kb_synonym CASCADE;
-RAISE NOTICE '已删除 kb_synonym 表（再次清理）';
 
 -- ─── 2. 删除数据管道废弃表 ───────────────────────────────────────────────
 
 DROP TABLE IF EXISTS raw_cases CASCADE;
-RAISE NOTICE '已删除 raw_cases 表（再次清理）';
-
 DROP TABLE IF EXISTS knowledge_atoms CASCADE;
-RAISE NOTICE '已删除 knowledge_atoms 表（再次清理）';
 
 -- ─── 3. 删除已合并的审计表 ───────────────────────────────────────────────
 
 DROP TABLE IF EXISTS prompt_audit CASCADE;
-RAISE NOTICE '已删除 prompt_audit 表（再次清理）';
 
 -- ─── 4. 验证最终表结构 ───────────────────────────────────────────────────
 

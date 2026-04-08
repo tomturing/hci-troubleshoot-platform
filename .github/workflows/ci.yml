@@ -180,6 +180,93 @@ jobs:
           chmod +x scripts/ci/check-db-migrations-sync.sh
           scripts/ci/check-db-migrations-sync.sh
 
+  migration-execution-test:
+    name: 迁移文件执行验证
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: hci
+          POSTGRES_PASSWORD: hci_test
+          POSTGRES_DB: hci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 dbmate
+        run: |
+          curl -fsSL -o /usr/local/bin/dbmate \
+            https://github.com/amacneil/dbmate/releases/latest/download/dbmate-linux-amd64
+          chmod +x /usr/local/bin/dbmate
+
+      - name: 执行全量迁移（从零开始）
+        env:
+          DATABASE_URL: postgres://hci:hci_test@localhost:5432/hci_test?sslmode=disable
+        run: |
+          echo "=== 执行全量迁移（不使用 baseline，测试所有迁移文件）==="
+          # 先创建 schema_migrations 表，dbmate 自动管理
+          dbmate --url "$DATABASE_URL" --migrations-dir database/migrations up
+          echo "✅ 全量迁移执行成功"
+
+      - name: 验证核心表是否存在
+        env:
+          PGPASSWORD: hci_test
+        run: |
+          TABLES=$(psql -h localhost -U hci -d hci_test \
+            -t -c "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename;" \
+            | tr -d ' ' | grep -v '^$')
+
+          echo "=== 当前表列表 ==="
+          echo "$TABLES"
+
+          # 验证 17 张核心表
+          REQUIRED_TABLES="audit_log case conversation customer diagnostic_item environment \
+            kb_category kbd_entry message session sop_chunk sop_document \
+            system_prompt tool_definition tool_result user assistant_evaluation"
+
+          MISSING=""
+          for t in $REQUIRED_TABLES; do
+            if ! echo "$TABLES" | grep -qx "$t"; then
+              MISSING="$MISSING $t"
+            fi
+          done
+
+          if [ -n "$MISSING" ]; then
+            echo "❌ 缺少以下核心表：$MISSING"
+            exit 1
+          fi
+          echo "✅ 所有核心表均已创建"
+
+      - name: 验证无废弃表残留
+        env:
+          PGPASSWORD: hci_test
+        run: |
+          DEPRECATED="kb_document kb_chunk kb_sop_node kb_synonym raw_cases knowledge_atoms prompt_audit"
+          FOUND=""
+          for t in $DEPRECATED; do
+            EXISTS=$(psql -h localhost -U hci -d hci_test \
+              -t -c "SELECT COUNT(*) FROM pg_tables WHERE schemaname='public' AND tablename='$t';")
+            if [ "$(echo $EXISTS | tr -d ' ')" = "1" ]; then
+              FOUND="$FOUND $t"
+            fi
+          done
+
+          if [ -n "$FOUND" ]; then
+            echo "❌ 废弃表仍存在：$FOUND"
+            exit 1
+          fi
+          echo "✅ 无废弃表残留"
+
   probe-alignment:
     name: Layer-2A 探针路径对齐检查
     runs-on: ubuntu-latest

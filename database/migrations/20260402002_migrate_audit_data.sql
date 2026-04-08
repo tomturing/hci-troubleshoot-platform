@@ -16,127 +16,118 @@
 -- =============================================================================
 
 -- ─── 1. 迁移 prompt_audit 数据到 audit_log ───────────────────────────────────
+-- 幂等：当 prompt_audit 表不存在时跳过
 
-INSERT INTO audit_log (
-    id,
-    audit_type,
-    conversation_id,
-    turn_index,
-    tool_name,
-    risk_level,
-    policy,
-    authorized_by,
-    payload,
-    error,
-    duration_ms,
-    started_at,
-    completed_at,
-    trace_id
-)
-SELECT
-    audit_id::VARCHAR(36),                           -- id
-    'prompt',                                         -- audit_type
-    conversation_id,                                  -- conversation_id
-    NULL,                                             -- turn_index（prompt_audit 无此字段）
-    NULL,                                             -- tool_name
-    NULL,                                             -- risk_level
-    NULL,                                             -- policy
-    NULL,                                             -- authorized_by
-    jsonb_build_object(
-        'case_id', case_id,
-        'assistant_type', assistant_type,
-        'model', model,
-        'message_count', message_count,
-        'has_sop', has_sop,
-        'kb_chunks_count', kb_chunks_count,
-        'kb_top_score', kb_top_score,
-        'system_prompt_chars', system_prompt_chars,
-        'messages', messages,
-        'payload_ref', payload_ref,
-        'user_rating', user_rating
-    ),                                                -- payload
-    NULL,                                             -- error
-    NULL,                                             -- duration_ms
-    captured_at,                                      -- started_at
-    NULL,                                             -- completed_at
-    trace_id                                          -- trace_id
-FROM prompt_audit
-ON CONFLICT (id) DO NOTHING;
-
--- 记录迁移统计
 DO $$
-DECLARE
-    prompt_count INTEGER;
 BEGIN
-    SELECT COUNT(*) INTO prompt_count FROM prompt_audit;
-    RAISE NOTICE 'prompt_audit 迁移完成，源表记录数：%', prompt_count;
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'prompt_audit') THEN
+        INSERT INTO audit_log (
+            id, audit_type, conversation_id, turn_index, tool_name, risk_level,
+            policy, authorized_by, payload, error, duration_ms, started_at,
+            completed_at, trace_id
+        )
+        SELECT
+            audit_id::VARCHAR(36),
+            'prompt',
+            conversation_id,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            jsonb_build_object(
+                'case_id', case_id,
+                'assistant_type', assistant_type,
+                'model', model,
+                'message_count', message_count,
+                'has_sop', has_sop,
+                'kb_chunks_count', kb_chunks_count,
+                'kb_top_score', kb_top_score,
+                'system_prompt_chars', system_prompt_chars,
+                'messages', messages,
+                'payload_ref', payload_ref,
+                'user_rating', user_rating
+            ),
+            NULL,
+            NULL,
+            captured_at,
+            NULL,
+            trace_id
+        FROM prompt_audit
+        ON CONFLICT (id) DO NOTHING;
+
+        RAISE NOTICE 'prompt_audit 迁移完成，源表记录数：%', (SELECT COUNT(*) FROM prompt_audit);
+    ELSE
+        RAISE NOTICE 'prompt_audit 表不存在，跳过数据迁移（幂等）';
+    END IF;
 END
 $$;
 
 -- ─── 2. 迁移 tool_audit_log 数据到 audit_log ───────────────────────────────────
+-- 幂等：当 tool_audit_log 表不存在时跳过（某些环境可能该表已被清理）
 
-INSERT INTO audit_log (
-    id,
-    audit_type,
-    conversation_id,
-    turn_index,
-    tool_name,
-    risk_level,
-    policy,
-    authorized_by,
-    payload,
-    error,
-    duration_ms,
-    started_at,
-    completed_at,
-    trace_id
-)
-SELECT
-    id,                                                -- id
-    'tool_call',                                       -- audit_type
-    session_id::UUID,                                  -- conversation_id（session_id 对应 conversation_id）
-    NULL,                                              -- turn_index
-    tool_name,                                         -- tool_name
-    risk_level::SMALLINT,                              -- risk_level
-    policy,                                            -- policy
-    authorized_by,                                     -- authorized_by
-    jsonb_build_object(
-        'tool_args', tool_args,
-        'result', result
-    ),                                                 -- payload
-    error,                                             -- error
-    duration_ms,                                       -- duration_ms
-    started_at,                                        -- started_at
-    completed_at,                                      -- completed_at
-    trace_id                                           -- trace_id
-FROM tool_audit_log
-ON CONFLICT (id) DO NOTHING;
-
--- 记录迁移统计
 DO $$
-DECLARE
-    tool_count INTEGER;
 BEGIN
-    SELECT COUNT(*) INTO tool_count FROM tool_audit_log;
-    RAISE NOTICE 'tool_audit_log 迁移完成，源表记录数：%', tool_count;
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'tool_audit_log') THEN
+        INSERT INTO audit_log (
+            id,
+            audit_type,
+            conversation_id,
+            turn_index,
+            tool_name,
+            risk_level,
+            policy,
+            authorized_by,
+            payload,
+            error,
+            duration_ms,
+            started_at,
+            completed_at,
+            trace_id
+        )
+        SELECT
+            id,
+            'tool_call',
+            session_id::UUID,
+            NULL,
+            tool_name,
+            risk_level::SMALLINT,
+            policy,
+            authorized_by,
+            jsonb_build_object(
+                'tool_args', tool_args,
+                'result', result
+            ),
+            error,
+            duration_ms,
+            started_at,
+            completed_at,
+            trace_id
+        FROM tool_audit_log
+        ON CONFLICT (id) DO NOTHING;
+
+        RAISE NOTICE 'tool_audit_log 迁移完成，源表记录数：%', (SELECT COUNT(*) FROM tool_audit_log);
+    ELSE
+        RAISE NOTICE 'tool_audit_log 表不存在，跳过数据迁移（幂等）';
+    END IF;
 END
 $$;
 
 -- ─── 3. 迁移 kb_synonym 数据到 kb_category.metadata ───────────────────────────
--- 注意：kb_category.metadata 是 JSONB 字段，用于存储同义词映射
--- 由于 kb_category 表可能为空或 kb_synonym 数据无法直接关联，此迁移仅作备份记录
-
--- 创建临时表记录同义词数据（供后续手动处理）
-CREATE TABLE IF NOT EXISTS _kb_synonym_backup AS
-SELECT * FROM kb_synonym;
+-- 幂等：当 kb_synonym 表不存在时跳过
 
 DO $$
-DECLARE
-    synonym_count INTEGER;
 BEGIN
-    SELECT COUNT(*) INTO synonym_count FROM kb_synonym;
-    RAISE NOTICE 'kb_synonym 数据已备份到 _kb_synonym_backup 表，记录数：%', synonym_count;
-    RAISE NOTICE 'kb_synonym 数据需手动合并到 kb_category.metadata 或保留备份表';
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'kb_synonym') THEN
+        CREATE TABLE IF NOT EXISTS _kb_synonym_backup AS
+        SELECT * FROM kb_synonym WHERE FALSE;  -- 仅复制结构（数据由下方 INSERT 填充）
+
+        INSERT INTO _kb_synonym_backup SELECT * FROM kb_synonym ON CONFLICT DO NOTHING;
+
+        RAISE NOTICE 'kb_synonym 数据已备份到 _kb_synonym_backup 表，记录数：%', (SELECT COUNT(*) FROM kb_synonym);
+    ELSE
+        RAISE NOTICE 'kb_synonym 表不存在，跳过备份（幂等）';
+    END IF;
 END
 $$;
 

@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill sync-claw-configs check-claw-configs db-sync db-check
+.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill sync-claw-configs check-claw-configs db-sync db-check db-migrate-test
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -159,3 +159,27 @@ db-sync:
 ## 检查迁移文件是否已同步 ConfigMap，并检测重复 version 号（CI 同款检查）
 db-check:
 	@bash scripts/ci/check-db-migrations-sync.sh
+
+## 在本地 Docker PostgreSQL 中执行全量迁移，验证所有 SQL 语法正确（提交 PR 前必须通过）
+## 用法：make db-migrate-test
+## 依赖：Docker 已运行，dbmate 已安装（brew install dbmate 或 curl 安装）
+db-migrate-test:
+	@echo "=== 本地迁移执行验证（全量，使用临时 PostgreSQL 容器）==="
+	@docker run --rm -d \
+		--name hci-migrate-test-pg \
+		-e POSTGRES_USER=hci \
+		-e POSTGRES_PASSWORD=hci_test \
+		-e POSTGRES_DB=hci_test \
+		-p 15432:5432 \
+		postgres:15 2>/dev/null || true
+	@echo "等待 PostgreSQL 就绪..."
+	@sleep 3 && docker exec hci-migrate-test-pg pg_isready -U hci -d hci_test -q || sleep 3
+	@DATABASE_URL="postgres://hci:hci_test@localhost:15432/hci_test?sslmode=disable" \
+		dbmate --migrations-dir database/migrations up \
+		&& echo "✅ 全量迁移执行成功" \
+		|| (echo "❌ 迁移失败，查看上方错误"; docker stop hci-migrate-test-pg 2>/dev/null; exit 1)
+	@echo "=== 验证核心表 ==="
+	@PGPASSWORD=hci_test psql -h localhost -p 15432 -U hci -d hci_test \
+		-t -c "SELECT string_agg(tablename, ', ' ORDER BY tablename) FROM pg_tables WHERE schemaname='public';"
+	@docker stop hci-migrate-test-pg 2>/dev/null || true
+	@echo "✅ db-migrate-test 完成"
