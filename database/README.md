@@ -35,7 +35,7 @@ YYYYMMDDNNN_描述.sql
 
 **⚠️ 禁止在 YYYYMMDD 和 NNN 之间插入下划线**。dbmate 以文件名开头纯数字为 version 主键，
 `20260312_001_xxx.sql` 和 `20260312_002_xxx.sql` 会产生相同 version `20260312`，
-导致第二个文件被静默跳过（PIT-XXX）。
+导致第二个文件被静默跳过（相关避坑索引见 [`docs/deploy/pitfalls/_index.md`](../docs/deploy/pitfalls/_index.md)）。
 
 **⚠️ 同一天的序号必须唯一**。两个文件共享 version 时 dbmate 只执行字典序更早的文件，
 另一个文件的 DDL 永远不会执行，且不会有任何错误提示。
