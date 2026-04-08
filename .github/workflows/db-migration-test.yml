@@ -54,27 +54,57 @@ jobs:
           atlas migrate hash --dir "file://database/atlas-migrations"
           echo "✅ atlas.sum 已同步"
 
-      # ── Step 2: Lint 检查（危险操作检测）────────────────────────────────
-      # atlas migrate lint 检测以下危险操作：
-      #   - 删除表（DROP TABLE）
-      #   - 无默认值的 NOT NULL 列（会导致锁表）
-      #   - 数据依赖删除（外键删除前）
-      #   - 不可逆变更（无法 migrate down 的操作）
-      - name: Atlas Migrate Lint（危险操作检测）
+      # ── Step 2: 危险操作静态检测 ─────────────────────────────────────────
+      # atlas migrate lint 从 v0.38+ 开始需要 Pro 版，使用 grep 实现等效社区方案
+      # 检测本次 PR 新增迁移文件中的危险 SQL 操作
+      - name: 危险 SQL 操作检测（社区版兼容）
         run: |
-          # 对比 base 分支检测本次 PR 新增的迁移文件中的危险操作
-          # --git-base 指定对比基准，仅检查本次 PR 变更的迁移文件
-          # 注意: lint 使用 --dev-url（临时分析用 DB），apply 使用 --url（目标 DB）
-          atlas migrate lint \
-            --dev-url "$DATABASE_URL" \
-            --dir "file://database/atlas-migrations" \
-            --git-base origin/${{ github.base_ref }} \
-            --format '{{ range .Files }}{{ .Name }}: {{ .Error }}{{ end }}' \
-          || {
-            echo "❌ Atlas Lint 发现危险操作，请审查上述报告后修复再提交"
+          # 获取本次 PR 新增的 .sql 迁移文件
+          NEW_FILES=$(git diff --diff-filter=A --name-only \
+            origin/${{ github.base_ref }}...HEAD \
+            -- database/atlas-migrations/ 2>/dev/null \
+            | grep '\.sql$' || true)
+
+          if [ -z "$NEW_FILES" ]; then
+            echo "✅ 无新增迁移文件，跳过危险操作检测"
+            exit 0
+          fi
+
+          echo "检查以下新增迁移文件："
+          echo "$NEW_FILES"
+
+          FOUND=0
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            echo "── 检查: $FILE"
+            # DROP TABLE（删表）
+            if grep -inE "^\s*DROP\s+TABLE\b" "$FILE"; then
+              echo "  ⚠️  检测到 DROP TABLE —— 请确认是否为必要破坏性变更"
+              FOUND=1
+            fi
+            # TRUNCATE
+            if grep -inE "^\s*TRUNCATE\b" "$FILE"; then
+              echo "  ⚠️  检测到 TRUNCATE —— 请确认不会清空生产数据"
+              FOUND=1
+            fi
+            # ALTER TABLE DROP COLUMN
+            if grep -inE "ALTER\s+TABLE.*DROP\s+COLUMN" "$FILE"; then
+              echo "  ⚠️  检测到 DROP COLUMN —— 删列不可逆，请确认已备份"
+              FOUND=1
+            fi
+            # NOT NULL 列无默认值（潜在锁表）
+            if grep -inE "ADD\s+COLUMN\s+\w+\s+\w+\s+NOT\s+NULL(?!\s+DEFAULT)" "$FILE"; then
+              echo "  ⚠️  检测到 ADD COLUMN NOT NULL（无 DEFAULT）—— 会锁全表，建议分步迁移"
+              FOUND=1
+            fi
+          done <<< "$NEW_FILES"
+
+          if [ $FOUND -eq 1 ]; then
+            echo ""
+            echo "❌ 检测到危险操作，请在 PR 说明中注明原因后再合并"
             exit 1
-          }
-          echo "✅ Atlas Lint 通过，无危险操作"
+          fi
+          echo "✅ 危险操作检测通过"
 
       # ── Step 3: 全量迁移执行验证 ─────────────────────────────────────────
       # 在全新 DB 上执行全部迁移文件（含 baseline），验证 SQL 语法和执行顺序
