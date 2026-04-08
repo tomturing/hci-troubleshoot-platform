@@ -18,7 +18,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-MIGRATION_FILE="${REPO_ROOT}/database/migrations/20260407001_schema_repair.sql"
+# 历史 dbmate 迁移文件已归档至 docs/archive/db-migrations-history/
+MIGRATION_FILE="${REPO_ROOT}/docs/archive/db-migrations-history/migrations/20260407001_schema_repair.sql"
 
 NS="${1:?用法: $0 <namespace>  示例: hci-dev / hci-staging / hci-prod}"
 DB_USER="${2:-hci_admin}"
