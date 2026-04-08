@@ -20,5 +20,5 @@ COPY --chown=nobody:nobody database/atlas-migrations/ /atlas-migrations/
 # 默认工作目录
 WORKDIR /
 
-# 健康检查（供 K8s Job initContainer 使用，确认迁移文件存在）
+# 该镜像仅打包迁移文件，未定义 Docker HEALTHCHECK
 # Job 不需要常驻进程，不设定 ENTRYPOINT，由 K8s Job 的 args 控制命令

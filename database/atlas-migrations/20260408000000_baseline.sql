@@ -17,6 +17,8 @@
 -- 扩展
 -- ============================================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- gen_random_uuid() 在 PG13+ 为内置函数；此处仍启用 pgcrypto 保证旧版本兼容性
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 CREATE EXTENSION IF NOT EXISTS "vector";
 
@@ -72,7 +74,9 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ============================================================
--- 表结构（与 desired_schema.sql 完全一致，用于全新 DB 初始化）
+-- 表结构（Atlas baseline 引导建表 SQL，用于全新 DB 初始化）
+-- 注意：本文件用于记录 Atlas 接管时的基线状态，不保证与 desired_schema.sql 完全一致。
+-- 如需使用 atlas migrate diff，请首先统一 source schema 与迁移基线内容，避免生成意外变更
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS "user" (
@@ -464,11 +468,30 @@ CREATE INDEX IF NOT EXISTS idx_sop_chunk_tsv ON sop_chunk USING GIN (tsv);
 
 -- ============================================================
 -- 延迟添加的外键约束（打破循环依赖）
+-- 注意: PostgreSQL 15 不支持 ADD CONSTRAINT IF NOT EXISTS，使用 DO 块做存在性判断
 -- ============================================================
-ALTER TABLE assistant_evaluation
-    ADD CONSTRAINT IF NOT EXISTS fk_eval_case_id
-    FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'fk_eval_case_id'
+          AND table_name = 'assistant_evaluation'
+    ) THEN
+        ALTER TABLE assistant_evaluation
+            ADD CONSTRAINT fk_eval_case_id
+            FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE;
+    END IF;
+END $$;
 
-ALTER TABLE assistant_evaluation
-    ADD CONSTRAINT IF NOT EXISTS fk_eval_conversation_id
-    FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE SET NULL;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'fk_eval_conversation_id'
+          AND table_name = 'assistant_evaluation'
+    ) THEN
+        ALTER TABLE assistant_evaluation
+            ADD CONSTRAINT fk_eval_conversation_id
+            FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE SET NULL;
+    END IF;
+END $$;

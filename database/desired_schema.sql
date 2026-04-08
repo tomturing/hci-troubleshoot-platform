@@ -28,6 +28,8 @@
 -- ============================================================
 -- UUID 辅助生成函数
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- gen_random_uuid() 在 PG13+ 为内置函数；此处仍启用 pgcrypto 保证旧版本兼容性
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- 文本三元组相似度
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 -- pgvector 向量存储与检索（1536 维）
@@ -324,7 +326,6 @@ CREATE TABLE IF NOT EXISTS assistant_evaluation (
     created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     trace_id varchar(64),
     CONSTRAINT fk_assistant_evaluation_case_id FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
-    CONSTRAINT fk_assistant_evaluation_conversation_id FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE SET NULL,
     CONSTRAINT assistant_evaluation_pkey PRIMARY KEY (evaluation_id)
 );
 
@@ -423,11 +424,10 @@ CREATE INDEX IF NOT EXISTS idx_conversation_category_id ON conversation (categor
 -- 有重复提问的会话过滤（质量分析）
 CREATE INDEX IF NOT EXISTS idx_conversation_repeat_question ON conversation (repeat_question_count) WHERE repeat_question_count > 0;
 
--- 触发器: 自动维护 message_count
-DROP TRIGGER IF EXISTS update_conversation_message_count ON message;
-CREATE TRIGGER update_conversation_message_count
-    AFTER INSERT OR DELETE ON message
-    FOR EACH ROW EXECUTE FUNCTION fn_update_conversation_message_count();
+-- conversation 表已建立，现在添加 assistant_evaluation 的 conversation 外键
+ALTER TABLE assistant_evaluation
+    ADD CONSTRAINT fk_assistant_evaluation_conversation_id
+    FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE SET NULL;
 
 -- 注意事项:
 --   * message_count 禁止代码层手动递增（会导致双重计数）
@@ -485,6 +485,12 @@ CREATE INDEX IF NOT EXISTS idx_message_trace_id ON message (trace_id);
 CREATE INDEX IF NOT EXISTS idx_message_case_created ON message (case_id, created_at DESC);
 -- 全文检索
 CREATE INDEX IF NOT EXISTS idx_message_content_search ON message USING GIN (to_tsvector('english', content));
+
+-- 触发器: 自动维护 conversation.message_count（message 表已建立，此处注册触发器）
+DROP TRIGGER IF EXISTS update_conversation_message_count ON message;
+CREATE TRIGGER update_conversation_message_count
+    AFTER INSERT OR DELETE ON message
+    FOR EACH ROW EXECUTE FUNCTION fn_update_conversation_message_count();
 
 -- ------------------------------------------------------------
 -- 表: diagnostic_item  [模块: conversation-service]
@@ -636,6 +642,38 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_type ON audit_log (audit_type, started_
 CREATE INDEX IF NOT EXISTS idx_audit_log_trace_id ON audit_log (trace_id) WHERE trace_id IS NOT NULL;
 -- Prompt 模板效果追踪
 CREATE INDEX IF NOT EXISTS idx_audit_log_system_prompt_id ON audit_log (system_prompt_id) WHERE system_prompt_id IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 表: session  [模块: conversation-service]
+-- 说明: 用户会话 Token 表 — 存储 SSE 长连接会话凭证，关联工单与用户
+-- 用途: 用户打开工单时创建 session，SSE 连接建立时校验有效性；expires_at 控制超时
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS session (
+    session_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    case_id varchar(20) NOT NULL,
+    user_id uuid NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    expires_at timestamptz,
+    trace_id varchar(64),
+    CONSTRAINT fk_session_case_id FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
+    CONSTRAINT session_pkey PRIMARY KEY (session_id)
+);
+
+COMMENT ON TABLE session IS '用户会话 Token 表 — 存储 SSE 长连接会话凭证，关联工单与用户';
+COMMENT ON COLUMN session.session_id IS '会话 Token 主键，全局唯一';
+COMMENT ON COLUMN session.case_id IS '关联工单，ON DELETE CASCADE';
+COMMENT ON COLUMN session.user_id IS '关联用户';
+COMMENT ON COLUMN session.metadata IS '扩展字段';
+COMMENT ON COLUMN session.created_at IS '会话创建时间';
+COMMENT ON COLUMN session.expires_at IS '会话过期时间，NULL 表示不过期';
+COMMENT ON COLUMN session.trace_id IS '创建会话的请求 trace ID';
+
+-- 索引: session
+-- 工单会话查询
+CREATE INDEX IF NOT EXISTS idx_session_case_id ON session (case_id);
+-- 用户会话查询
+CREATE INDEX IF NOT EXISTS idx_session_user_id ON session (user_id);
 
 -- ------------------------------------------------------------
 -- 表: system_prompt  [模块: conversation-service]
