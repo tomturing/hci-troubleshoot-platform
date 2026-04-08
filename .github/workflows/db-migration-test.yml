@@ -64,8 +64,9 @@ jobs:
         run: |
           # 对比 base 分支检测本次 PR 新增的迁移文件中的危险操作
           # --git-base 指定对比基准，仅检查本次 PR 变更的迁移文件
+          # 注意: lint 使用 --dev-url（临时分析用 DB），apply 使用 --url（目标 DB）
           atlas migrate lint \
-            --url "$DATABASE_URL" \
+            --dev-url "$DATABASE_URL" \
             --dir "file://database/atlas-migrations" \
             --git-base origin/${{ github.base_ref }} \
             --format '{{ range .Files }}{{ .Name }}: {{ .Error }}{{ end }}' \
@@ -101,6 +102,7 @@ jobs:
             "diagnostic_item"
             "tool_result"
             "audit_log"
+            "session"
             "system_prompt"
             "tool_definition"
             "kb_category"
