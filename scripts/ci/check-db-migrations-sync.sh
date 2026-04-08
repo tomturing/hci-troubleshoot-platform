@@ -32,7 +32,7 @@ echo "检查 version 号唯一性:"
 echo "----------------------------------------"
 DUPLICATE_VERSIONS=$(echo "$MIGRATION_FILES" \
     | xargs -I{} basename {} \
-    | grep -oP '^\d+' \
+    | sed 's/^\([0-9][0-9]*\).*/\1/' \
     | sort \
     | uniq -d)
 
