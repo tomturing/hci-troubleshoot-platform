@@ -33,10 +33,12 @@ spec:
             - /bin/sh
             - -c
             - |
-              echo "[DB-MIGRATE-DEPRECATED] Alembic 迁移链已废弃，dbmate 是唯一权威迁移工具。"
-              echo "[DB-MIGRATE-DEPRECATED] 本 Job 为空操作占位，不执行任何迁移。"
-              echo "[DB-MIGRATE-DEPRECATED] 请确认 dbMigrate.enabled=false 以彻底停用此 Job。"
-              exit 0
+              echo "[ERROR] dbMigrate.enabled=true 是错误配置！"
+              echo "[ERROR] Alembic 迁移链已于 2026-04-08 废弃，禁止再次启用。"
+              echo "[ERROR] 数据库迁移统一由 hci-platform 的 dbmate PreSync Hook 负责。"
+              echo "[ERROR] 正确路径：deploy/helm/hci-platform/templates/hooks/db-migrate-job.yaml"
+              echo "[ERROR] 请立即将 dbMigrate.enabled 改回 false 并重新执行 helm upgrade。"
+              exit 1
       {{- if .Values.global.imagePullSecretName }}
       imagePullSecrets:
         - name: {{ .Values.global.imagePullSecretName }}
