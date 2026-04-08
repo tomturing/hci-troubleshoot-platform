@@ -141,7 +141,6 @@ jobs:
             "sop_chunk"
             "environment"
             "assistant_evaluation"
-            "atlas_schema_revisions"
           )
 
           MISSING=0
@@ -157,11 +156,22 @@ jobs:
             fi
           done
 
+          # atlas_schema_revisions 可能在 atlas schema 或 public schema，不限制 schemaname
+          REVISIONS_COUNT=$(psql "$DATABASE_URL" -t -c \
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename='atlas_schema_revisions';" \
+            | tr -d '[:space:]')
+          if [ "$REVISIONS_COUNT" -ge "1" ]; then
+            echo "  ✅ atlas_schema_revisions"
+          else
+            echo "  ❌ atlas_schema_revisions (缺失)"
+            MISSING=$((MISSING + 1))
+          fi
+
           if [ $MISSING -gt 0 ]; then
             echo "❌ 发现 $MISSING 张表缺失"
             exit 1
           fi
-          echo "✅ 所有 ${#EXPECTED_TABLES[@]} 张表均存在"
+          echo "✅ 所有 $((${#EXPECTED_TABLES[@]} + 1)) 张表均存在"
 
       # ── Step 5: 幂等性验证（第二次执行应 0 变更）───────────────────────
       - name: 幂等性验证
