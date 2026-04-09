@@ -24,9 +24,11 @@ help:
 	@echo "  make release-observe- 发布后观察（默认30分钟采样）"
 	@echo "  make rollback-drill - 回滚演练（默认演练模式，不执行真实回滚）"
 	@echo ""
-	@echo "  数据库迁移命令（dbmate）:"
-	@echo "  make db-sync        - 同步 database/migrations/ 到 Helm ConfigMap（新增迁移后必须运行）"
-	@echo "  make db-check       - 检查同步状态 + version 唯一性（CI 同款检查）"
+	@echo "  数据库迁移命令（Atlas v6.3+）:"
+	@echo "  atlas migrate diff --env local <name>  - 生成迁移文件"
+	@echo "  atlas migrate apply --env local        - 本地应用迁移"
+	@echo "  atlas migrate status --env local       - 查看迁移状态"
+	@echo "  [废弃] db-sync / db-check              - dbmate 工具已停用"
 
 install:
 	@echo "安装Python依赖 (uv sync)..."
@@ -150,12 +152,17 @@ check-claw-configs:
 		echo "  ✓ productionclaw 一致" || \
 		echo "  ⚠️  productionclaw 不一致，请运行 make sync-claw-configs"
 
-## 同步 database/migrations/ 到 Helm ConfigMap（新增迁移文件后必须运行）
+## [已废弃] 原 dbmate 迁移同步，自 v6.3 起由 Atlas 接管
+## 历史迁移文件已归档至 docs/archive/db-migrations-history/
 db-sync:
-	@echo "=== 同步数据库迁移到 ConfigMap ==="
-	@bash scripts/ci/sync-db-migrations.sh
-	@echo "✅ 完成。请将 db-migrations-configmap.yaml 纳入本次 commit。"
+	@echo "⚠️  db-sync 已废弃（dbmate → Atlas v6.3）"
+	@echo "    Schema 变更请修改 database/desired_schema.sql 并运行 atlas migrate diff"
+	@echo "    等价命令: atlas migrate diff --env local <name>"
+	@exit 0
 
-## 检查迁移文件是否已同步 ConfigMap，并检测重复 version 号（CI 同款检查）
+## [已废弃] 原 dbmate 迁移检查
 db-check:
-	@bash scripts/ci/check-db-migrations-sync.sh
+	@echo "⚠️  db-check 已废弃（dbmate → Atlas v6.3）"
+	@echo "    迁移状态请使用: atlas migrate status --env local"
+	@atlas migrate status --env local 2>/dev/null || echo "    (atlas 未安装或无数据库连接，请手动执行)"
+	@exit 0
