@@ -69,6 +69,8 @@ spec:
           env:
             - name: DATABASE_URL
               value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            - name: HOME
+              value: /tmp
           resources:
             requests:
               cpu: "50m"
