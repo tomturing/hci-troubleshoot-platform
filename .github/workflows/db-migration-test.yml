@@ -71,10 +71,10 @@ jobs:
       # 与 db-migrate.sh 完全相同的三步流程（函数 → Atlas apply → 触发器）
       - name: 全量迁移（函数 → Atlas → 触发器）
         run: |
-          echo ">>> Step 3a: 应用函数"
+          echo ">>> Step 2a: 应用函数"
           psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/desired_extras.sql
 
-          echo ">>> Step 3b: Atlas schema apply"
+          echo ">>> Step 2b: Atlas schema apply"
           atlas schema apply \
             --url "$DATABASE_URL" \
             --to "file://database/desired_schema.sql" \
@@ -82,7 +82,7 @@ jobs:
             --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
             --auto-approve
 
-          echo ">>> Step 3c: 应用触发器"
+          echo ">>> Step 2c: 应用触发器"
           psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/desired_extras.sql
           echo "✅ Schema 全量应用成功"
 
@@ -90,8 +90,6 @@ jobs:
       # 验证 17 张业务表存在，7 张废弃表未被创建
       - name: Schema 完整性检查
         run: |
-          sudo apt-get install -q -y postgresql-client
-
           EXPECTED_TABLES=(
             "user" "customer" "case" "conversation" "message"
             "diagnostic_item" "tool_result" "audit_log" "session"

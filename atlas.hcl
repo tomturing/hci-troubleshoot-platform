@@ -38,3 +38,16 @@ env "ci" {
   url = var.db_url
   dev = var.dev_url
 }
+
+# ── 生产环境（只读 diff，禁止直接 apply）────────────────────────────────────
+# 依赖：
+#   DATABASE_URL → postgres://<user>:<pass>@<prod-host>:5432/hci_troubleshoot?sslmode=require
+#   DEV_URL      → 同实例内的临时 schema（如 ...?search_path=atlas_schema_dev）
+# 用法（仅限 diff，不可 apply）：
+#   atlas schema diff --env prod
+# 注意：生产变更必须通过 db-migrate Job（K8s），禁止本地 apply
+env "prod" {
+  src = "file://database/desired_schema.sql"
+  url = var.db_url
+  dev = var.dev_url
+}
