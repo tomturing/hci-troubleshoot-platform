@@ -81,7 +81,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: db-migrate
-          image: {{ .Values.dbMigrate.image }}
+          image: {{ .Values.dbMigrate.image.repository }}:{{ .Values.dbMigrate.image.tag }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
           # 使用镜像 ENTRYPOINT（/db-migrate.sh），无需覆盖 command
           env:
