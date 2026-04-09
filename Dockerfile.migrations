@@ -9,7 +9,7 @@
 # 本地构建测试：
 #   docker build -f Dockerfile.migrations -t hci-db-migrate:local .
 
-FROM ghcr.io/ariga/atlas:latest
+FROM arigaio/atlas:latest
 
 # 以非 root 用户运行（安全基线）
 USER nobody
