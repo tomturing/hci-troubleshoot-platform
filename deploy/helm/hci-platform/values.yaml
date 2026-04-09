@@ -504,7 +504,7 @@ observability:
 #   所有环境切换完成后可移除此字段
 dbMigrate:
   enabled: true
-  image: "ghcr.io/sangfor-hci/hci-platform/db-migrate:latest"
+  image: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate:latest"
   # atlasBaseline: "20260408000000"   # 已有 DB 首次切换时取消注释
 
 # ======================== Smoke Test（ArgoCD PostSync）=====================
