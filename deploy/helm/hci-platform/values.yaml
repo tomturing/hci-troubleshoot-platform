@@ -496,12 +496,15 @@ observability:
 # 单一真实来源：database/desired_schema.sql，Atlas 自动计算并执行 diff，无需增量迁移文件
 #
 # image：db-migrate 自定义镜像，由 CI 在 main push 时构建（Dockerfile.migrations）
-#   格式：ghcr.io/<owner>/hci-troubleshoot-platform/db-migrate:YYYYMMDD-HHMM-<sha7>
+#   格式（repository + tag 分离，与其他服务保持一致，env-repo-sync 可自动替换 tag 字段）：
+#     repository: ghcr.io/<owner>/hci-troubleshoot-platform/db-migrate
+#     tag: YYYYMMDD-HHMM-<sha7>
 #   镜像内含 database/desired_schema.sql，atlas schema apply 以声明式模式同步数据库
 dbMigrate:
   enabled: true
-  image: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate:latest"
-  # atlasBaseline: "20260408000000"   # 已有 DB 首次切换时取消注释（切换 Atlas 声明式后已废弃）
+  image:
+    repository: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate"
+    tag: "latest"
 
 # ======================== Smoke Test（ArgoCD PostSync）=====================
 # Layer-1 防御：每次 ArgoCD 同步后自动验证所有后端 /health 端点
