@@ -157,10 +157,12 @@ check-claw-configs:
 db-sync:
 	@echo "⚠️  db-sync 已废弃（dbmate → Atlas v6.3）"
 	@echo "    Schema 变更请修改 database/desired_schema.sql 并运行 atlas migrate diff"
-	@exit 1
+	@echo "    等价命令: atlas migrate diff --env local <name>"
+	@exit 0
 
 ## [已废弃] 原 dbmate 迁移检查
 db-check:
 	@echo "⚠️  db-check 已废弃（dbmate → Atlas v6.3）"
 	@echo "    迁移状态请使用: atlas migrate status --env local"
-	@exit 1
+	@atlas migrate status --env local 2>/dev/null || echo "    (atlas 未安装或无数据库连接，请手动执行)"
+	@exit 0

@@ -81,8 +81,9 @@ $$ LANGUAGE plpgsql;
 -- 格式: Q{YYYYMMDD}{NNNNN}，当天序号从 00001 开始自增
 -- 服务层调用: SELECT generate_case_id(); 后将返回值写入 case_id
 -- 并发安全: 使用 pg_advisory_xact_lock 事务级排他锁（事务结束自动释放）
---   锁 key = hashtext('generate_case_id:' || v_today)，不同日期互不阻塞
---   同一天并发写入时串行化，避免 COUNT(*)+1 竞态导致重复 case_id
+--   双参数形式 (key1 int4, key2 int4)：key1 = hashtext('generate_case_id')（函数命名空间固定值，
+--   避免与其他 advisory lock 碰撞），key2 = v_today::integer（YYYYMMDD 日期整数，< 2^31），
+--   不同日期互不阻塞，同一天并发写入时串行化，避免 COUNT(*)+1 竞态导致重复 case_id
 CREATE OR REPLACE FUNCTION generate_case_id()
 RETURNS VARCHAR(20) AS $$
 DECLARE
@@ -90,8 +91,8 @@ DECLARE
     v_seq   INTEGER;
 BEGIN
     v_today := TO_CHAR(CURRENT_DATE, 'YYYYMMDD');
-    -- 事务级排他锁：同一天并发调用时串行化，不同天并行无影响
-    PERFORM pg_advisory_xact_lock(hashtext('generate_case_id:' || v_today));
+    -- 事务级排他锁（双参数，无 int32 哈希碰撞风险）：不同天并行，同天串行
+    PERFORM pg_advisory_xact_lock(hashtext('generate_case_id'), v_today::integer);
     SELECT COALESCE(MAX(CAST(SUBSTRING(case_id FROM 10 FOR 5) AS INTEGER)), 0) + 1
         INTO v_seq FROM "case"
         WHERE case_id LIKE 'Q' || v_today || '%';
@@ -511,7 +512,7 @@ CREATE TABLE IF NOT EXISTS diagnostic_item (
     conversation_id uuid NOT NULL,
     stage varchar(5) NOT NULL,
     "type" varchar(30) NOT NULL,
-    seq smallint,
+    seq smallint NOT NULL DEFAULT 0,
     content jsonb NOT NULL DEFAULT '{}'::jsonb,
     probability real,
     status varchar(20) NOT NULL DEFAULT 'pending',
@@ -571,7 +572,7 @@ CREATE TABLE IF NOT EXISTS tool_result (
     tool_name varchar(100) NOT NULL,
     tool_type varchar(20),
     step_no smallint,
-    risk_level smallint,
+    risk_level smallint NOT NULL DEFAULT 1,
     policy varchar(20),
     authorized_by varchar(100),
     input_json jsonb DEFAULT '{}'::jsonb,
@@ -582,8 +583,8 @@ CREATE TABLE IF NOT EXISTS tool_result (
     completed_at timestamptz,
     trace_id varchar(64),
     CONSTRAINT fk_tool_result_conversation_id FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE CASCADE,
-    -- D-006: 风险等级只允许 1（只读）/ 2（需确认）/ 3（高危）
-    CONSTRAINT chk_tool_result_risk_level CHECK (risk_level IS NULL OR (risk_level >= 1 AND risk_level <= 3)),
+    -- D-006: 风险等级只允许 1（只读）/ 2（需确认）/ 3（高危），NOT NULL DEFAULT 1
+    CONSTRAINT chk_tool_result_risk_level CHECK (risk_level >= 1 AND risk_level <= 3),
     CONSTRAINT tool_result_pkey PRIMARY KEY (id)
 );
 
@@ -828,6 +829,9 @@ CREATE INDEX IF NOT EXISTS idx_kb_category_level ON kb_category (level);
 CREATE INDEX IF NOT EXISTS idx_kb_category_keywords ON kb_category USING GIN (keywords);
 -- D-002: 向量相似度检索索引（S0 意图识别阶段语义匹配）
 -- IVFFlat lists=100：适合 ~200 个分类节点；当数据量超过 10000 时切换 HNSW
+-- ⚠️  注意：IVFFlat 索引需在数据量 > 1000 行且执行 ANALYZE 后才能正常发挥效果。
+--    全新部署建库后如数据量不足，查询会自动退化为顺序扫描（不影响正确性，仅影响性能）。
+--    建议在批量导入知识库数据后执行：ANALYZE kb_category;
 CREATE INDEX IF NOT EXISTS idx_kb_category_embedding ON kb_category
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
@@ -902,8 +906,11 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv ON kbd_entry USING GIN (tsv);
 -- JSONB 内容检索
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_metadata ON kbd_entry USING GIN (metadata);
 -- D-002: 向量相似度检索索引（知识库语义检索，仅已发布条目）
+-- 部分索引：只对 status='published' 的条目建索引，减少写入/存储开销，与业务查询路径吻合。
+-- ⚠️  同 kb_category：数据量不足 1000 时效果有限，建议批量导入后执行：ANALYZE kbd_entry;
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_embedding ON kbd_entry
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
+    WHERE status = 'published';
 
 -- P2-2: 补全 updated_at 触发器（schema 注释中要求由触发器维护，但原先缺失）
 DROP TRIGGER IF EXISTS update_kbd_entry_updated_at ON kbd_entry;
@@ -996,5 +1003,7 @@ CREATE INDEX IF NOT EXISTS idx_sop_chunk_document ON sop_chunk (document_id, chu
 -- 全文检索
 CREATE INDEX IF NOT EXISTS idx_sop_chunk_tsv ON sop_chunk USING GIN (tsv);
 -- D-002: 向量相似度检索索引（SOP 章节语义检索，S1+ 阶段使用）
+-- ⚠️  注意：IVFFlat 需数据量 > 1000 行且执行 ANALYZE 后才能正常发挥效果。
+--    建议在批量导入 SOP 内容后执行：ANALYZE sop_chunk;
 CREATE INDEX IF NOT EXISTS idx_sop_chunk_embedding ON sop_chunk
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
