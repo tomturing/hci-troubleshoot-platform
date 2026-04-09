@@ -24,14 +24,11 @@
 --   vector_search: 通过 pgvector 扩展支持 1536 维向量，用于知识库语义检索和意图识别
 
 -- ============================================================
--- 扩展（Atlas 声明式管理，幂等安装；生产环境由 init-configmap.yaml 预装，此处为 IF NOT EXISTS）
+-- 扩展（由 postgres init SQL 管理，不在此处声明）
 -- 依赖：uuid-ossp, pgcrypto, pg_trgm, vector
 -- 见 deploy/helm/hci-platform/templates/postgres/init-configmap.yaml
+-- 注意：Atlas Community 不支持在 schema 文件中声明 extensions（需要 atlas login）
 -- ============================================================
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-CREATE EXTENSION IF NOT EXISTS vector;
 
 -- ============================================================
 -- 自定义 ENUM 类型

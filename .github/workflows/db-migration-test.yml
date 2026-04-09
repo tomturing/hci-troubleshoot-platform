@@ -139,6 +139,18 @@ jobs:
       # atlas schema diff 输出为空 → 当前 DB 与期望 Schema 完全一致 → 幂等
       - name: 幂等性验证（atlas schema diff）
         run: |
+          # atlas schema apply 使用 --dev-url 时会 DROP SCHEMA public CASCADE 清空 atlas_dev，
+          # 导致 pgvector 注册在 public schema 的类型对象丢失（扩展条目仍在但类型消失）。
+          # 重建 atlas_dev 数据库是最可靠的恢复方式。
+          psql "$DATABASE_URL" -c "DROP DATABASE atlas_dev;"
+          psql "$DATABASE_URL" -c "CREATE DATABASE atlas_dev;"
+          psql "$DEV_URL" -c "
+            CREATE EXTENSION IF NOT EXISTS vector;
+            CREATE EXTENSION IF NOT EXISTS pgcrypto;
+            CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+            CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          "
+
           DIFF=$(atlas schema diff \
             --from "$DATABASE_URL" \
             --to "file://database/desired_schema.sql" \
