@@ -49,37 +49,66 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS update_user_updated_at ON "user";
-CREATE TRIGGER update_user_updated_at
-    BEFORE UPDATE ON "user"
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+-- 触发器：用 DO $$ 块包裹，仅在目标表存在时执行（保护全新 DB 场景）
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='user') THEN
+    DROP TRIGGER IF EXISTS update_user_updated_at ON "user";
+    CREATE TRIGGER update_user_updated_at
+        BEFORE UPDATE ON "user"
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+END $$;
 
-DROP TRIGGER IF EXISTS update_customer_updated_at ON customer;
-CREATE TRIGGER update_customer_updated_at
-    BEFORE UPDATE ON customer
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='customer') THEN
+    DROP TRIGGER IF EXISTS update_customer_updated_at ON customer;
+    CREATE TRIGGER update_customer_updated_at
+        BEFORE UPDATE ON customer
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+END $$;
 
-DROP TRIGGER IF EXISTS update_case_updated_at ON "case";
-CREATE TRIGGER update_case_updated_at
-    BEFORE UPDATE ON "case"
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='case') THEN
+    DROP TRIGGER IF EXISTS update_case_updated_at ON "case";
+    CREATE TRIGGER update_case_updated_at
+        BEFORE UPDATE ON "case"
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+END $$;
 
-DROP TRIGGER IF EXISTS update_conversation_message_count ON message;
-CREATE TRIGGER update_conversation_message_count
-    AFTER INSERT OR DELETE ON message
-    FOR EACH ROW EXECUTE FUNCTION fn_update_conversation_message_count();
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='message') THEN
+    DROP TRIGGER IF EXISTS update_conversation_message_count ON message;
+    CREATE TRIGGER update_conversation_message_count
+        AFTER INSERT OR DELETE ON message
+        FOR EACH ROW EXECUTE FUNCTION fn_update_conversation_message_count();
+  END IF;
+END $$;
 
-DROP TRIGGER IF EXISTS update_diagnostic_item_updated_at ON diagnostic_item;
-CREATE TRIGGER update_diagnostic_item_updated_at
-    BEFORE UPDATE ON diagnostic_item
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='diagnostic_item') THEN
+    DROP TRIGGER IF EXISTS update_diagnostic_item_updated_at ON diagnostic_item;
+    CREATE TRIGGER update_diagnostic_item_updated_at
+        BEFORE UPDATE ON diagnostic_item
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+END $$;
 
-DROP TRIGGER IF EXISTS update_kbd_entry_updated_at ON kbd_entry;
-CREATE TRIGGER update_kbd_entry_updated_at
-    BEFORE UPDATE ON kbd_entry
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='kbd_entry') THEN
+    DROP TRIGGER IF EXISTS update_kbd_entry_updated_at ON kbd_entry;
+    CREATE TRIGGER update_kbd_entry_updated_at
+        BEFORE UPDATE ON kbd_entry
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+END $$;
 
-DROP TRIGGER IF EXISTS update_sop_document_updated_at ON sop_document;
-CREATE TRIGGER update_sop_document_updated_at
-    BEFORE UPDATE ON sop_document
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='sop_document') THEN
+    DROP TRIGGER IF EXISTS update_sop_document_updated_at ON sop_document;
+    CREATE TRIGGER update_sop_document_updated_at
+        BEFORE UPDATE ON sop_document
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+END $$;

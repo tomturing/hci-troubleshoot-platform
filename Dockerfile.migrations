@@ -11,8 +11,8 @@
 # 本地构建测试：
 #   docker build -f Dockerfile.migrations -t hci-db-migrate:local .
 
-# Stage 1: 获取 Atlas 二进制（官方镜像）
-FROM arigaio/atlas:latest AS atlas-bin
+# Stage 1: 获取 Atlas 二进制（固定版本，升级时显式更新）
+FROM arigaio/atlas:1.1.6-community AS atlas-bin
 
 # Stage 2: 基础镜像用 postgres:15-alpine（自带 psql）
 FROM postgres:15-alpine

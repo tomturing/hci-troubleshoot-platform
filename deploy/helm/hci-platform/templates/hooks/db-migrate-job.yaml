@@ -74,7 +74,7 @@ spec:
             - name: DATABASE_URL
               value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
             - name: ATLAS_DEV_URL
-              value: {{ printf "postgres://%s:%s@%s:5432/atlas_dev?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+              value: {{ printf "postgres://%s:%s@%s:5432/atlas_dev?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -88,7 +88,7 @@ spec:
             - name: DATABASE_URL
               value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
             - name: DEV_URL
-              value: {{ printf "postgres://%s:%s@%s:5432/atlas_dev?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+              value: {{ printf "postgres://%s:%s@%s:5432/atlas_dev?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost | quote }}
             - name: HOME
               value: /tmp
           resources:
@@ -100,116 +100,6 @@ spec:
               memory: "256Mi"
           securityContext:
             allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-{{- end }}
-
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: db-migrate-{{ .Release.Revision }}
-  namespace: {{ include "hci.namespace" . }}
-  labels:
-    {{- include "hci.labels" . | nindent 4 }}
-    app.kubernetes.io/component: db-migrate
-  annotations:
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    helm.sh/hook-weight: "-5"
-spec:
-  backoffLimit: 0
-  ttlSecondsAfterFinished: 3600
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/component: db-migrate
-        {{- include "hci.labels" . | nindent 8 }}
-    spec:
-      restartPolicy: Never
-      {{- if .Values.global.imagePullSecretName }}
-      imagePullSecrets:
-        - name: {{ .Values.global.imagePullSecretName }}
-      {{- end }}
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534   # nobody
-        fsGroup: 65534
-      volumes:
-        - name: tmp
-          emptyDir: {}
-      # initContainer：确保 Atlas dev 数据库和必要 extension 存在（幂等）
-      # Atlas 需要一个同版本 PostgreSQL 空库来规范化 Schema SQL
-      initContainers:
-        - name: init-atlas-dev
-          image: postgres:15-alpine
-          imagePullPolicy: IfNotPresent
-          command: ["sh", "-c"]
-          args:
-            - |
-              set -e
-              # 创建 atlas_dev 数据库（若不存在）
-              psql "$(DATABASE_URL)" -tc \
-                "SELECT 1 FROM pg_database WHERE datname='atlas_dev';" \
-                | grep -q 1 || \
-                psql "$(DATABASE_URL)" -c "CREATE DATABASE atlas_dev;"
-              # 在 atlas_dev 中安装必要 extensions
-              psql "$(ATLAS_DEV_URL)" -c "
-                CREATE EXTENSION IF NOT EXISTS vector;
-                CREATE EXTENSION IF NOT EXISTS pgcrypto;
-                CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
-                CREATE EXTENSION IF NOT EXISTS pg_trgm;
-              "
-              echo "atlas_dev 初始化完成"
-          env:
-            - name: DATABASE_URL
-              value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
-            - name: ATLAS_DEV_URL
-              value: {{ printf "postgres://%s:%s@%s:5432/atlas_dev?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-      containers:
-        - name: atlas
-          image: {{ .Values.dbMigrate.image }}
-          imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
-          command: ["/atlas"]
-          args:
-            - "schema"
-            - "apply"
-            - "--url"
-            - "$(DATABASE_URL)"
-            - "--to"
-            - "file:///desired_schema.sql"
-            - "--dev-url"
-            - "$(DEV_URL)"
-            # 排除工具跟踪表：由 dbmate/Alembic 自行管理，Atlas 不应 DROP 它们
-            - "--exclude"
-            - "schema_migrations"
-            - "--exclude"
-            - "alembic_version"
-            - "--auto-approve"
-          env:
-            - name: DATABASE_URL
-              value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
-            # DEV_URL：独立空数据库（atlas_dev），Atlas 用于规范化 Schema SQL，由 initContainer 初始化
-            - name: DEV_URL
-              value: {{ printf "postgres://%s:%s@%s:5432/atlas_dev?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
-            - name: HOME
-              value: /tmp
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "200m"
-              memory: "128Mi"
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
 {{- end }}

@@ -92,9 +92,10 @@ jobs:
             FOUND=1
           fi
           # ADD COLUMN NOT NULL 无 DEFAULT 会锁全表
-          if echo "$DIFF_LINES" | grep -qiE '^\+.*\bNOT\s+NULL\b' \
-            && ! echo "$DIFF_LINES" | grep -qiE '^\+.*\bDEFAULT\b'; then
-            echo "⚠️  疑似检测到 NOT NULL 列无 DEFAULT —— 会锁全表，建议分步添加"
+          # 逐行匹配：仅当同一行既有 ADD COLUMN + NOT NULL 又缺少 DEFAULT 时报警
+          if echo "$DIFF_LINES" | grep -iE '^\+.*\bADD\s+COLUMN\b.*\bNOT\s+NULL\b' \
+            | grep -qviE '\bDEFAULT\b'; then
+            echo "⚠️  疑似检测到 ADD COLUMN NOT NULL 无 DEFAULT —— 会锁全表，建议分步添加"
             FOUND=1
           fi
 
