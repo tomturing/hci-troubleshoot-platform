@@ -500,8 +500,9 @@ observability:
 #   镜像内含 database/desired_schema.sql，atlas schema apply 以声明式模式同步数据库
 dbMigrate:
   enabled: true
-  image: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate:latest"
-  # atlasBaseline: "20260408000000"   # 已有 DB 首次切换时取消注释（切换 Atlas 声明式后已废弃）
+  image:
+    repository: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate"
+    tag: "latest"
 
 # ======================== Smoke Test（ArgoCD PostSync）=====================
 # Layer-1 防御：每次 ArgoCD 同步后自动验证所有后端 /health 端点
