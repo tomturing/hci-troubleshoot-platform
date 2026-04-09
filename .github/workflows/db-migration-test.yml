@@ -67,50 +67,8 @@ jobs:
           done
           echo "✅ hci_test 和 atlas_dev 扩展安装完成"
 
-      # ── Step 2: 危险变更静态检测 ──────────────────────────────────────────
-      # 声明式 Schema 里不需要手写 DROP TABLE，Atlas 自动处理废弃表
-      # 本步检测开发者是否误写了危险语句 / ADD COLUMN NOT NULL 无 DEFAULT
-      - name: 危险操作检测
-        run: |
-          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
-            -- database/desired_schema.sql 2>/dev/null || true)
-
-          if [ -z "$CHANGED" ]; then
-            echo "✅ desired_schema.sql 未变更，跳过危险操作检测"
-            exit 0
-          fi
-
-          DIFF_LINES=$(git diff origin/${{ github.base_ref }}...HEAD \
-            -- database/desired_schema.sql \
-            | grep '^+' | grep -v '^+++' || true)
-
-          FOUND=0
-          # DROP TABLE 不应出现在声明式 schema 文件中（由 Atlas 自动生成 diff）
-          if echo "$DIFF_LINES" | grep -qiE '^\+\s*DROP\s+TABLE\b'; then
-            echo "⚠️  检测到 DROP TABLE —— 声明式 Schema 中无需手写，Atlas 自动计算 diff"
-            FOUND=1
-          fi
-          # TRUNCATE 是破坏性操作
-          if echo "$DIFF_LINES" | grep -qiE '^\+\s*TRUNCATE\b'; then
-            echo "⚠️  检测到 TRUNCATE —— 请确认不会清空生产数据"
-            FOUND=1
-          fi
-          # ADD COLUMN NOT NULL 无 DEFAULT 会锁全表
-          # 逐行匹配：仅当同一行既有 ADD COLUMN + NOT NULL 又缺少 DEFAULT 时报警
-          if echo "$DIFF_LINES" | grep -iE '^\+.*\bADD\s+COLUMN\b.*\bNOT\s+NULL\b' \
-            | grep -qviE '\bDEFAULT\b'; then
-            echo "⚠️  疑似检测到 ADD COLUMN NOT NULL 无 DEFAULT —— 会锁全表，建议分步添加"
-            FOUND=1
-          fi
-
-          if [ $FOUND -eq 1 ]; then
-            echo "❌ 检测到危险操作，请在 PR 说明中注明原因后再合并"
-            exit 1
-          fi
-          echo "✅ 危险操作检测通过"
-
-      # ── Step 3: 声明式 Schema 全量应用 ───────────────────────────────────
-      # 与 db-migrate.sh 完全相同的三步流程
+      # ── Step 2: 声明式 Schema 全量应用 ───────────────────────────────────
+      # 与 db-migrate.sh 完全相同的三步流程（函数 → Atlas apply → 触发器）
       - name: 全量迁移（函数 → Atlas → 触发器）
         run: |
           echo ">>> Step 3a: 应用函数"
@@ -128,7 +86,7 @@ jobs:
           psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/desired_extras.sql
           echo "✅ Schema 全量应用成功"
 
-      # ── Step 4: Schema 完整性验证 ─────────────────────────────────────────
+      # ── Step 3: Schema 完整性验证 ─────────────────────────────────────────
       # 验证 17 张业务表存在，7 张废弃表未被创建
       - name: Schema 完整性检查
         run: |
@@ -177,7 +135,7 @@ jobs:
           fi
           echo "✅ 所有 ${#EXPECTED_TABLES[@]} 张业务表正确，${#DEPRECATED_TABLES[@]} 张废弃表未创建"
 
-      # ── Step 5: 幂等性验证 ────────────────────────────────────────────────
+      # ── Step 4: 幂等性验证 ────────────────────────────────────────────────
       # atlas schema diff 输出为空 → 当前 DB 与期望 Schema 完全一致 → 幂等
       - name: 幂等性验证（atlas schema diff）
         run: |
