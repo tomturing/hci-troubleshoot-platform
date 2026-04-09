@@ -14,6 +14,8 @@ ENV_REPO_PATH="${ENV_REPO_PATH:-}"
 TARGET_ENV="${TARGET_ENV:-dev}"
 IMAGE_TAG="${IMAGE_TAG:-}"
 SERVICES_CSV="${SERVICES_CSV:-apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI}"
+# 镜像仓库前缀（与 values.yaml 中的 global.imageRegistry 一致）
+IMAGE_REGISTRY="${IMAGE_REGISTRY:-ghcr.io/tomturing/hci-troubleshoot-platform}"
 
 if [[ -z "$ENV_REPO_PATH" ]]; then
   echo "ENV_REPO_PATH 未设置"
@@ -61,5 +63,30 @@ for svc in "${services[@]}"; do
   echo "更新 ${svc}.image.tag -> ${IMAGE_TAG}"
   update_service_tag "$VALUES_FILE" "$svc" "$IMAGE_TAG"
 done
+
+# dbMigrate.image 是完整镜像 URL（非 .image.tag 嵌套结构），单独处理
+update_db_migrate_image() {
+  local file="$1"
+  local tag="$2"
+  local new_image="${IMAGE_REGISTRY}/db-migrate:${tag}"
+  local tmp
+  tmp="$(mktemp)"
+  # 匹配 dbMigrate: 块内的 image: "..." 行，整体替换 URL
+  awk -v new_img="$new_image" '
+    BEGIN { in_block=0 }
+    {
+      if ($0 ~ /^dbMigrate:$/) { in_block=1; print; next }
+      if (in_block && $0 ~ /^[A-Za-z0-9_]+:$/) { in_block=0 }
+      if (in_block && $0 ~ /^[[:space:]]+image:[[:space:]]*"[^"]*"/) {
+        sub(/image:[[:space:]]*"[^"]*"/, "image: \"" new_img "\"")
+      }
+      print
+    }
+  ' "$file" > "$tmp"
+  mv "$tmp" "$file"
+}
+
+echo "更新 dbMigrate.image -> ${IMAGE_REGISTRY}/db-migrate:${IMAGE_TAG}"
+update_db_migrate_image "$VALUES_FILE" "$IMAGE_TAG"
 
 echo "同步完成: ${VALUES_FILE}"

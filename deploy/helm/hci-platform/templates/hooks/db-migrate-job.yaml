@@ -1,16 +1,16 @@
 {{- if .Values.dbMigrate.enabled }}
-# DB 迁移 Job — ArgoCD PreSync Hook
-# 每次 ArgoCD Sync 前执行，Atlas 自动跳过已执行的迁移（通过 atlas_schema_revisions 表）
+# DB Schema 同步 Job — ArgoCD PreSync Hook
+# 每次 ArgoCD Sync 前执行，入口脚本 db-migrate.sh 按顺序完成三步迁移
 #
-# 迁移工具：Atlas（替换原 dbmate）
-#   - 声明式 schema 管理：开发者维护 database/desired_schema.sql，Atlas diff 生成迁移
-#   - 迁移文件打包进镜像（Dockerfile.migrations），不依赖 ConfigMap
-#   - --baseline 标志：已有 DB 首次切换时跳过 baseline 迁移，避免重建已有表
+# 工作模式：声明式（Atlas schema apply）+ 幂等（psql 函数/触发器）
+#   1. psql → desired_extras.sql（函数，幂等：CREATE OR REPLACE FUNCTION）
+#   2. atlas schema apply → desired_schema.sql（表/ENUM/索引，声明式差量）
+#   3. psql → desired_extras.sql（触发器，幂等：DROP TRIGGER IF EXISTS + CREATE TRIGGER）
 #
-# Baseline 使用场景：
-#   - 全新 DB（测试/CI）：不设 atlasBaseline，执行所有迁移（含全量建表 baseline）
-#   - 已有 DB（dev/staging/prod 首次切换）：设 atlasBaseline: "20260408000000" 跳过 baseline
-#   - 切换完成后：可移除 atlasBaseline 字段（atlas_schema_revisions 已记录 baseline 已执行）
+# 开发者工作流：
+#   修改表结构 → 编辑 database/desired_schema.sql
+#   修改函数/触发器 → 编辑 database/desired_extras.sql
+#   提交 PR → CI 验证 → 合并 → 自动构建镜像 → ArgoCD sync → 本 Job 执行
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -20,16 +20,104 @@ metadata:
     {{- include "hci.labels" . | nindent 4 }}
     app.kubernetes.io/component: db-migrate
   annotations:
-    # ArgoCD Sync Hook：应用同步前执行
     argocd.argoproj.io/hook: PreSync
-    # 策略：创建新 Job 前删除旧 Job（避免名称冲突；失败日志需及时查看）
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    # Helm 注解：强制在每次 sync 时重建（通过 Revision 变化实现）
     helm.sh/hook-weight: "-5"
 spec:
-  # 失败不重试——迁移失败必须人工介入，重试可能导致部分执行状态
   backoffLimit: 0
-  # Job 完成后保留 1 小时供查日志
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: db-migrate
+        {{- include "hci.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- if .Values.global.imagePullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.global.imagePullSecretName }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534   # nobody（postgres:15-alpine 默认用户）
+        fsGroup: 65534
+      # initContainer：为 Atlas dev-url 建立 atlas_dev 空数据库（幂等）
+      # Atlas 需要一个与目标版本一致的空 PostgreSQL 库来规范化 DDL
+      initContainers:
+        - name: init-atlas-dev
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              # 1. 确保目标库有所有必要 extensions（声明式 schema 使用 vector/pgcrypto 类型）
+              psql "$DATABASE_URL" -c "
+                CREATE EXTENSION IF NOT EXISTS vector;
+                CREATE EXTENSION IF NOT EXISTS pgcrypto;
+                CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+                CREATE EXTENSION IF NOT EXISTS pg_trgm;
+              "
+              # 2. 确保 Atlas dev 空数据库存在（Atlas 用于规范化 DDL，需与目标库同版本）
+              psql "$DATABASE_URL" -tc \
+                "SELECT 1 FROM pg_database WHERE datname='atlas_dev';" \
+                | grep -q 1 || \
+                psql "$DATABASE_URL" -c "CREATE DATABASE atlas_dev;"
+              psql "$ATLAS_DEV_URL" -c "
+                CREATE EXTENSION IF NOT EXISTS vector;
+                CREATE EXTENSION IF NOT EXISTS pgcrypto;
+                CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+                CREATE EXTENSION IF NOT EXISTS pg_trgm;
+              "
+              echo "初始化完成"
+          env:
+            - name: DATABASE_URL
+              value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            - name: ATLAS_DEV_URL
+              value: {{ printf "postgres://%s:%s@%s:5432/atlas_dev?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: db-migrate
+          image: {{ .Values.dbMigrate.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
+          # 使用镜像 ENTRYPOINT（/db-migrate.sh），无需覆盖 command
+          env:
+            - name: DATABASE_URL
+              value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            - name: DEV_URL
+              value: {{ printf "postgres://%s:%s@%s:5432/atlas_dev?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            - name: HOME
+              value: /tmp
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+{{- end }}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate-{{ .Release.Revision }}
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    helm.sh/hook-weight: "-5"
+spec:
+  backoffLimit: 0
   ttlSecondsAfterFinished: 3600
   template:
     metadata:
@@ -46,28 +134,67 @@ spec:
         runAsNonRoot: true
         runAsUser: 65534   # nobody
         fsGroup: 65534
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      # initContainer：确保 Atlas dev 数据库和必要 extension 存在（幂等）
+      # Atlas 需要一个同版本 PostgreSQL 空库来规范化 Schema SQL
+      initContainers:
+        - name: init-atlas-dev
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              # 创建 atlas_dev 数据库（若不存在）
+              psql "$(DATABASE_URL)" -tc \
+                "SELECT 1 FROM pg_database WHERE datname='atlas_dev';" \
+                | grep -q 1 || \
+                psql "$(DATABASE_URL)" -c "CREATE DATABASE atlas_dev;"
+              # 在 atlas_dev 中安装必要 extensions
+              psql "$(ATLAS_DEV_URL)" -c "
+                CREATE EXTENSION IF NOT EXISTS vector;
+                CREATE EXTENSION IF NOT EXISTS pgcrypto;
+                CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+                CREATE EXTENSION IF NOT EXISTS pg_trgm;
+              "
+              echo "atlas_dev 初始化完成"
+          env:
+            - name: DATABASE_URL
+              value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            - name: ATLAS_DEV_URL
+              value: {{ printf "postgres://%s:%s@%s:5432/atlas_dev?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: atlas
-          # db-migrate 自定义镜像：基于 ghcr.io/ariga/atlas，内含 atlas-migrations/ 目录
-          # 镜像由 CI 在 main push 时构建，标签格式：YYYYMMDD-HHMM-<sha7>
           image: {{ .Values.dbMigrate.image }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
           command: ["/atlas"]
           args:
-            - "migrate"
+            - "schema"
             - "apply"
             - "--url"
-            - "$(DATABASE_URL)"    # 引用 env 变量，避免密码出现在 Pod spec args 中
-            - "--dir"
-            - "file:///atlas-migrations"
-            {{- if .Values.dbMigrate.atlasBaseline }}
-            # 已有 DB 首次切换时：跳过 baseline 迁移，从之后的新迁移开始执行
-            - "--baseline"
-            - {{ .Values.dbMigrate.atlasBaseline | quote }}
-            {{- end }}
+            - "$(DATABASE_URL)"
+            - "--to"
+            - "file:///desired_schema.sql"
+            - "--dev-url"
+            - "$(DEV_URL)"
+            # 排除工具跟踪表：由 dbmate/Alembic 自行管理，Atlas 不应 DROP 它们
+            - "--exclude"
+            - "schema_migrations"
+            - "--exclude"
+            - "alembic_version"
+            - "--auto-approve"
           env:
             - name: DATABASE_URL
               value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            # DEV_URL：独立空数据库（atlas_dev），Atlas 用于规范化 Schema SQL，由 initContainer 初始化
+            - name: DEV_URL
+              value: {{ printf "postgres://%s:%s@%s:5432/atlas_dev?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
             - name: HOME
               value: /tmp
           resources:
@@ -77,6 +204,9 @@ spec:
             limits:
               cpu: "200m"
               memory: "128Mi"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

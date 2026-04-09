@@ -18,7 +18,10 @@ data:
     -- ============================================================================
 
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pgcrypto";
     CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    -- pgvector：知识库语义检索（1536 维向量）
+    CREATE EXTENSION IF NOT EXISTS "vector";
 
     SET timezone = 'UTC';
 
