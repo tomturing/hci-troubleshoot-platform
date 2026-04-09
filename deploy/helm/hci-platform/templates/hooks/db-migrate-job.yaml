@@ -52,7 +52,7 @@ spec:
           # 镜像由 CI 在 main push 时构建，标签格式：YYYYMMDD-HHMM-<sha7>
           image: {{ .Values.dbMigrate.image }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
-          command: ["atlas"]
+          command: ["/atlas"]
           args:
             - "migrate"
             - "apply"
