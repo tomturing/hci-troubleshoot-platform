@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
 
@@ -73,15 +73,6 @@ class CategoryHitRequest(BaseModel):
     """命中计数请求（预留扩展）"""
 
     trace_id: str | None = Field(None, description="调用链 ID（用于溯源）")
-
-
-class CategoryImportRequest(BaseModel):
-    """YAML 导入请求"""
-
-    dry_run: bool = Field(
-        False,
-        description="仅验证不写入（True=验证模式，False=实际导入）",
-    )
 
 
 # ---- 路由 ----
@@ -245,7 +236,8 @@ async def increment_hit(
 @router.post("/import")
 async def import_categories(
     request: Request,
-    body: CategoryImportRequest,
+    file: UploadFile = File(..., description="YAML 分类文件"),
+    dry_run: bool = Query(default=False, description="仅验证不写入"),
 ):
     """导入 YAML 分类数据（两阶段）
 
@@ -253,9 +245,10 @@ async def import_categories(
     1. dry_run=True：仅验证 YAML 格式和字段合法性，不写入数据库
     2. dry_run=False：验证通过后实际写入（upsert）
 
-    请求体：
-    - YAML 文件作为 multipart/form-data 上传
-    - dry_run 参数通过 query string 传递
+    请求格式：
+    - Content-Type: multipart/form-data
+    - file: YAML 文件
+    - dry_run: 表单字段（可选，默认 false）
 
     Returns:
         {
@@ -274,24 +267,24 @@ async def import_categories(
     if _category_service is None:
         raise HTTPException(status_code=503, detail="服务未就绪")
 
-    # 从 request body 读取 YAML 内容
-    # 注意：FastAPI 不支持同时接收 JSON 和文件，这里改用 raw body
-    content = await request.body()
+    # 读取上传的文件内容
+    content = await file.read()
     if not content:
         raise HTTPException(
             status_code=400,
-            detail="缺少 YAML 文件内容",
+            detail="YAML 文件内容为空",
         )
 
     logger.info(
         event="import_categories_request",
-        dry_run=body.dry_run,
+        dry_run=dry_run,
+        filename=file.filename,
         content_size=len(content),
     )
 
     result = await _category_service.import_from_yaml(
         content=content,
-        dry_run=body.dry_run,
+        dry_run=dry_run,
     )
 
     if not result.get("success"):
