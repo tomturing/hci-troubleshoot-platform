@@ -54,14 +54,18 @@ jobs:
         run: |
           # 创建独立的 Atlas dev 数据库（Atlas 用于规范化 DDL，需与目标库同版本）
           psql "$DATABASE_URL" -c "CREATE DATABASE atlas_dev;"
-          # 安装必要 extensions（desired_schema.sql 使用 vector 类型）
-          psql "$DEV_URL" -c "
-            CREATE EXTENSION IF NOT EXISTS vector;
-            CREATE EXTENSION IF NOT EXISTS pgcrypto;
-            CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
-            CREATE EXTENSION IF NOT EXISTS pg_trgm;
-          "
-          echo "✅ atlas_dev 准备完成"
+          # 两个数据库都需要安装 extensions（desired_schema.sql 使用 vector 类型）
+          # hci_test（主库）：Atlas apply 时实际执行建表，需要 vector 类型
+          # atlas_dev（dev库）：Atlas 规范化 DDL 时也需要 vector 类型
+          for DB_URL in "$DATABASE_URL" "$DEV_URL"; do
+            psql "$DB_URL" -c "
+              CREATE EXTENSION IF NOT EXISTS vector;
+              CREATE EXTENSION IF NOT EXISTS pgcrypto;
+              CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+              CREATE EXTENSION IF NOT EXISTS pg_trgm;
+            "
+          done
+          echo "✅ hci_test 和 atlas_dev 扩展安装完成"
 
       # ── Step 2: 危险变更静态检测 ──────────────────────────────────────────
       # 声明式 Schema 里不需要手写 DROP TABLE，Atlas 自动处理废弃表
