@@ -1,24 +1,33 @@
-# db-migrate 迁移镜像
-# 基于官方 Atlas 二进制镜像，将迁移文件打包进镜像
-# CI 在每次 main push 时构建并推送，标签格式与其他服务镜像一致
+# db-migrate 迁移镜像（多阶段构建）
+# 工作方式（声明式 + 幂等）：
+#   1. psql 应用函数（desired_extras.sql）— CREATE OR REPLACE，幂等
+#   2. atlas schema apply（desired_schema.sql）— 声明式差量同步表结构
+#   3. psql 应用触发器（desired_extras.sql）— DROP+CREATE，幂等
 #
-# 使用场景：
-#   - 全新 DB（测试/开发环境）：atlas migrate apply 执行全量迁移（含 baseline）
-#   - 已有 DB（dev/staging/prod）：配合 --baseline 标志跳过 baseline，仅执行新迁移
+# 文件职责：
+#   database/desired_schema.sql  → Atlas 管理（ENUM/表/索引/外键）
+#   database/desired_extras.sql  → psql 管理（函数/触发器）
 #
 # 本地构建测试：
 #   docker build -f Dockerfile.migrations -t hci-db-migrate:local .
 
-FROM arigaio/atlas:latest
+# Stage 1: 获取 Atlas 二进制（固定版本，升级时显式更新）
+FROM arigaio/atlas:1.1.6-community AS atlas-bin
 
-# 以非 root 用户运行（安全基线）
-USER nobody
+# Stage 2: 基础镜像用 postgres:15-alpine（自带 psql）
+FROM postgres:15-alpine
 
-# 将迁移文件打包进镜像（不依赖 ConfigMap 挂载）
-COPY --chown=nobody:nobody database/atlas-migrations/ /atlas-migrations/
+# 复制 Atlas 二进制
+COPY --from=atlas-bin /atlas /usr/local/bin/atlas
 
-# 默认工作目录
+# 复制 Schema 文件
+COPY database/desired_schema.sql /desired_schema.sql
+COPY database/desired_extras.sql /desired_extras.sql
+
+# 复制入口脚本
+COPY scripts/db-migrate.sh /db-migrate.sh
+RUN chmod +x /db-migrate.sh
+
 WORKDIR /
 
-# 该镜像仅打包迁移文件，未定义 Docker HEALTHCHECK
-# Job 不需要常驻进程，不设定 ENTRYPOINT，由 K8s Job 的 args 控制命令
+ENTRYPOINT ["/db-migrate.sh"]

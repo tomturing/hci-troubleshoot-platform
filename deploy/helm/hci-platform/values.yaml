@@ -492,20 +492,16 @@ observability:
         memory: "512Mi"
 
 # ======================== DB Migration（ArgoCD PreSync）===================
-# 每次 ArgoCD Sync 前自动执行 atlas migrate apply，只运行尚未执行的迁移文件
-# Atlas 内部维护 atlas_schema_revisions 表，保证各环境迁移版本一致
+# 每次 ArgoCD Sync 前自动执行 atlas schema apply（声明式）
+# 单一真实来源：database/desired_schema.sql，Atlas 自动计算并执行 diff，无需增量迁移文件
 #
 # image：db-migrate 自定义镜像，由 CI 在 main push 时构建（Dockerfile.migrations）
-#   格式：ghcr.io/sangfor-hci/hci-platform/db-migrate:YYYYMMDD-HHMM-<sha7>
-#
-# atlasBaseline：已有 DB（dev/staging/prod）首次切换到 Atlas 时设置
-#   值为 baseline 迁移版本号（20260408000000），作用：跳过 baseline 全量建表
-#   全新 DB（CI 测试环境）不设置此字段，执行所有迁移（含 baseline）
-#   所有环境切换完成后可移除此字段
+#   格式：ghcr.io/<owner>/hci-troubleshoot-platform/db-migrate:YYYYMMDD-HHMM-<sha7>
+#   镜像内含 database/desired_schema.sql，atlas schema apply 以声明式模式同步数据库
 dbMigrate:
   enabled: true
   image: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate:latest"
-  # atlasBaseline: "20260408000000"   # 已有 DB 首次切换时取消注释
+  # atlasBaseline: "20260408000000"   # 已有 DB 首次切换时取消注释（切换 Atlas 声明式后已废弃）
 
 # ======================== Smoke Test（ArgoCD PostSync）=====================
 # Layer-1 防御：每次 ArgoCD 同步后自动验证所有后端 /health 端点

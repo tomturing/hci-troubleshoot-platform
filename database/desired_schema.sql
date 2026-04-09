@@ -24,81 +24,21 @@
 --   vector_search: 通过 pgvector 扩展支持 1536 维向量，用于知识库语义检索和意图识别
 
 -- ============================================================
--- 扩展
+-- 扩展（由 postgres init SQL 管理，不在此处声明）
+-- 依赖：uuid-ossp, pgcrypto, pg_trgm, vector
+-- 见 deploy/helm/hci-platform/templates/postgres/init-configmap.yaml
+-- 注意：Atlas Community 不支持在 schema 文件中声明 extensions（需要 atlas login）
 -- ============================================================
--- UUID 辅助生成函数
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
--- gen_random_uuid() 在 PG13+ 为内置函数；此处仍启用 pgcrypto 保证旧版本兼容性
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
--- 文本三元组相似度
-CREATE EXTENSION IF NOT EXISTS "pg_trgm";
--- pgvector 向量存储与检索（1536 维）
-CREATE EXTENSION IF NOT EXISTS "vector";
 
 -- ============================================================
 -- 自定义 ENUM 类型
 -- ============================================================
-DO $$ BEGIN
-    CREATE TYPE case_status AS ENUM ('created', 'confirmed', 'in_progress', 'resolved', 'closed', 'cancelled');
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+CREATE TYPE case_status AS ENUM ('created', 'confirmed', 'in_progress', 'resolved', 'closed', 'cancelled');
 
-DO $$ BEGIN
-    CREATE TYPE message_role AS ENUM ('user', 'assistant', 'system', 'command');
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+CREATE TYPE message_role AS ENUM ('user', 'assistant', 'system', 'command');
 
--- ============================================================
--- 触发器函数
--- ============================================================
 
--- 通用 updated_at 自动维护函数（用于所有含 updated_at 的业务表）
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
 
--- conversation.message_count 自动维护函数
--- 触发时机: message 表每次 INSERT 或 DELETE 后自动执行
-CREATE OR REPLACE FUNCTION fn_update_conversation_message_count()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF TG_OP = 'INSERT' THEN
-        UPDATE conversation SET message_count = message_count + 1
-            WHERE conversation_id = NEW.conversation_id;
-    ELSIF TG_OP = 'DELETE' THEN
-        UPDATE conversation SET message_count = GREATEST(message_count - 1, 0)
-            WHERE conversation_id = OLD.conversation_id;
-    END IF;
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
--- 工单 ID 生成函数
--- 格式: Q{YYYYMMDD}{NNNNN}，当天序号从 00001 开始自增
--- 服务层调用: SELECT generate_case_id(); 后将返回值写入 case_id
--- 并发安全: 使用 pg_advisory_xact_lock 事务级排他锁（事务结束自动释放）
---   双参数形式 (key1 int4, key2 int4)：key1 = hashtext('generate_case_id')（函数命名空间固定值，
---   避免与其他 advisory lock 碰撞），key2 = v_today::integer（YYYYMMDD 日期整数，< 2^31），
---   不同日期互不阻塞，同一天并发写入时串行化，避免 COUNT(*)+1 竞态导致重复 case_id
-CREATE OR REPLACE FUNCTION generate_case_id()
-RETURNS VARCHAR(20) AS $$
-DECLARE
-    v_today VARCHAR(8);
-    v_seq   INTEGER;
-BEGIN
-    v_today := TO_CHAR(CURRENT_DATE, 'YYYYMMDD');
-    -- 事务级排他锁（双参数，无 int32 哈希碰撞风险）：不同天并行，同天串行
-    PERFORM pg_advisory_xact_lock(hashtext('generate_case_id'), v_today::integer);
-    SELECT COALESCE(MAX(CAST(SUBSTRING(case_id FROM 10 FOR 5) AS INTEGER)), 0) + 1
-        INTO v_seq FROM "case"
-        WHERE case_id LIKE 'Q' || v_today || '%';
-    RETURN 'Q' || v_today || LPAD(v_seq::TEXT, 5, '0');
-END;
-$$ LANGUAGE plpgsql;
 
 -- ============================================================
 -- 表结构
@@ -141,11 +81,6 @@ COMMENT ON COLUMN "user".trace_id IS '创建该用户的请求追踪 ID（W3C tr
 -- 用户类型统计（低基数，按需保留用于分析查询）
 CREATE INDEX IF NOT EXISTS idx_user_type ON "user" (user_type);
 
--- 触发器: 自动刷新 updated_at
-DROP TRIGGER IF EXISTS update_user_updated_at ON "user";
-CREATE TRIGGER update_user_updated_at
-    BEFORE UPDATE ON "user"
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ------------------------------------------------------------
 -- 表: customer  [模块: case-service]
@@ -191,10 +126,6 @@ CREATE INDEX IF NOT EXISTS idx_customer_product_version ON customer (product_ver
 CREATE INDEX IF NOT EXISTS idx_customer_region ON customer (region);
 
 -- 触发器: 自动刷新 updated_at
-DROP TRIGGER IF EXISTS update_customer_updated_at ON customer;
-CREATE TRIGGER update_customer_updated_at
-    BEFORE UPDATE ON customer
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ------------------------------------------------------------
 -- 表: case  [模块: case-service]
@@ -265,11 +196,6 @@ CREATE INDEX IF NOT EXISTS idx_case_assistant_type ON "case" (assistant_type);
 -- 客户维度工单查询
 CREATE INDEX IF NOT EXISTS idx_case_customer_id ON "case" (customer_id) WHERE customer_id IS NOT NULL;
 
--- 触发器: 自动刷新 updated_at
-DROP TRIGGER IF EXISTS update_case_updated_at ON "case";
-CREATE TRIGGER update_case_updated_at
-    BEFORE UPDATE ON "case"
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ------------------------------------------------------------
 -- 表: environment  [模块: case-service]
@@ -497,10 +423,6 @@ CREATE INDEX IF NOT EXISTS idx_message_case_created ON message (case_id, created
 CREATE INDEX IF NOT EXISTS idx_message_content_search ON message USING GIN (to_tsvector('simple', content));
 
 -- 触发器: 自动维护 conversation.message_count（message 表已建立，此处注册触发器）
-DROP TRIGGER IF EXISTS update_conversation_message_count ON message;
-CREATE TRIGGER update_conversation_message_count
-    AFTER INSERT OR DELETE ON message
-    FOR EACH ROW EXECUTE FUNCTION fn_update_conversation_message_count();
 
 -- ------------------------------------------------------------
 -- 表: diagnostic_item  [模块: conversation-service]
@@ -550,10 +472,6 @@ CREATE INDEX IF NOT EXISTS idx_diagnostic_item_conv_stage ON diagnostic_item (co
 CREATE INDEX IF NOT EXISTS idx_diagnostic_item_status ON diagnostic_item ("type", status);
 
 -- 触发器: 自动刷新 updated_at
-DROP TRIGGER IF EXISTS update_diagnostic_item_updated_at ON diagnostic_item;
-CREATE TRIGGER update_diagnostic_item_updated_at
-    BEFORE UPDATE ON diagnostic_item
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- 注意事项:
 --   * 不存储 AI 的推理过程（思考链、中间观察），那些留在 AgentState 内存中
@@ -619,6 +537,37 @@ CREATE INDEX IF NOT EXISTS idx_tool_result_trace_id ON tool_result (trace_id) WH
 -- 表: audit_log  [模块: conversation-service]
 -- 说明: System Instructions 审计表 — 记录每轮对话的 Prompt 构建过程（含使用的模板版本、注入的工具列表片段、最终 Prompt token 数）。工具执行审计已移入 tool_result 表
 -- 用途: 每次构建 System Instructions 时写入一条记录；payload 字段存储 {system_prompt_id, tool_count, rendered_token_count, model, case_id} 等信息，用于追踪 AI 行为来源和 Prompt 版本迭代效果
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS system_prompt (
+    id serial NOT NULL,
+    stage varchar(5) NOT NULL,
+    name varchar(100) NOT NULL,
+    description text,
+    content_template text NOT NULL,
+    version varchar(20) NOT NULL DEFAULT '1.0',
+    is_active boolean DEFAULT true,
+    created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT system_prompt_pkey PRIMARY KEY (id)
+);
+
+COMMENT ON TABLE system_prompt IS 'System Instructions 模板表 — 存储 S0-S6 各诊断阶段的 Prompt 模板，支持版本管理和阶段级 A/B 测试';
+COMMENT ON COLUMN system_prompt.id IS '模板主键，自增';
+COMMENT ON COLUMN system_prompt.stage IS '适用诊断阶段：S0/S1/S2/S3/S4/S5/S6 或 BASE（全局基础 Prompt，各阶段共用）';
+COMMENT ON COLUMN system_prompt.name IS '模板唯一名称（如 s0_intent_recognition_v2），建议格式为 {stage}_{purpose}_{version}';
+COMMENT ON COLUMN system_prompt.description IS '模板说明，描述该 Prompt 的用途、设计思路和与前版本的区别';
+COMMENT ON COLUMN system_prompt.content_template IS 'Prompt 模板内容，使用 {placeholder} 占位符（如 {tool_list}、{category_name}、{sop_content}、{hypothesis_list}）';
+COMMENT ON COLUMN system_prompt.version IS '版本号（如 1.0 / 1.1 / 2.0），配合 is_active 实现版本管理';
+COMMENT ON COLUMN system_prompt.is_active IS '是否为当前激活版本；同一 stage 同时只有一个 is_active=true 的版本被注入 Prompt';
+COMMENT ON COLUMN system_prompt.created_at IS '创建时间';
+COMMENT ON COLUMN system_prompt.updated_at IS '最后更新时间';
+
+-- 索引: system_prompt
+-- 按阶段查当前激活模板（核心查询）
+CREATE INDEX IF NOT EXISTS idx_system_prompt_stage_active ON system_prompt (stage, is_active);
+-- 版本历史查询
+CREATE INDEX IF NOT EXISTS idx_system_prompt_stage_version ON system_prompt (stage, version);
+
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS audit_log (
     id varchar(36) NOT NULL,
@@ -698,37 +647,6 @@ CREATE INDEX IF NOT EXISTS idx_session_user_id ON session (user_id);
 -- 表: system_prompt  [模块: conversation-service]
 -- 说明: System Instructions 模板表 — 存储 S0-S6 各诊断阶段的 Prompt 模板，支持版本管理和阶段级 A/B 测试
 -- 用途: Prompt 版本化管理：每个阶段可维护多个版本，is_active=true 的版本被激活；audit_log 记录每次使用的 system_prompt.id，用于效果追踪和快速回滚
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS system_prompt (
-    id serial NOT NULL,
-    stage varchar(5) NOT NULL,
-    name varchar(100) NOT NULL,
-    description text,
-    content_template text NOT NULL,
-    version varchar(20) NOT NULL DEFAULT '1.0',
-    is_active boolean DEFAULT true,
-    created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
-    updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT system_prompt_pkey PRIMARY KEY (id)
-);
-
-COMMENT ON TABLE system_prompt IS 'System Instructions 模板表 — 存储 S0-S6 各诊断阶段的 Prompt 模板，支持版本管理和阶段级 A/B 测试';
-COMMENT ON COLUMN system_prompt.id IS '模板主键，自增';
-COMMENT ON COLUMN system_prompt.stage IS '适用诊断阶段：S0/S1/S2/S3/S4/S5/S6 或 BASE（全局基础 Prompt，各阶段共用）';
-COMMENT ON COLUMN system_prompt.name IS '模板唯一名称（如 s0_intent_recognition_v2），建议格式为 {stage}_{purpose}_{version}';
-COMMENT ON COLUMN system_prompt.description IS '模板说明，描述该 Prompt 的用途、设计思路和与前版本的区别';
-COMMENT ON COLUMN system_prompt.content_template IS 'Prompt 模板内容，使用 {placeholder} 占位符（如 {tool_list}、{category_name}、{sop_content}、{hypothesis_list}）';
-COMMENT ON COLUMN system_prompt.version IS '版本号（如 1.0 / 1.1 / 2.0），配合 is_active 实现版本管理';
-COMMENT ON COLUMN system_prompt.is_active IS '是否为当前激活版本；同一 stage 同时只有一个 is_active=true 的版本被注入 Prompt';
-COMMENT ON COLUMN system_prompt.created_at IS '创建时间';
-COMMENT ON COLUMN system_prompt.updated_at IS '最后更新时间';
-
--- 索引: system_prompt
--- 按阶段查当前激活模板（核心查询）
-CREATE INDEX IF NOT EXISTS idx_system_prompt_stage_active ON system_prompt (stage, is_active);
--- 版本历史查询
-CREATE INDEX IF NOT EXISTS idx_system_prompt_stage_version ON system_prompt (stage, version);
-
 -- ------------------------------------------------------------
 -- 表: tool_definition  [模块: conversation-service]
 -- 说明: 工具定义表 — AI 工具知识库，存储 LLM 可调用工具的完整描述（acli 命令 / SCP API）。Prompt 构建时动态注入，让 LLM 知道何时调用哪个工具以及如何传参
@@ -913,10 +831,6 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_embedding ON kbd_entry
     WHERE status = 'published';
 
 -- P2-2: 补全 updated_at 触发器（schema 注释中要求由触发器维护，但原先缺失）
-DROP TRIGGER IF EXISTS update_kbd_entry_updated_at ON kbd_entry;
-CREATE TRIGGER update_kbd_entry_updated_at
-    BEFORE UPDATE ON kbd_entry
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- kbd_entry 状态流转:
 --   draft → published: 审核通过
@@ -992,10 +906,6 @@ COMMENT ON COLUMN sop_chunk.created_at IS '创建时间';
 -- 索引: sop_document
 -- D-002: SOP 文档向量索引（通过 sop_chunk 实现，见下方）
 -- P2-2: 补全 updated_at 触发器（字段有 updated_at 但原先无触发器）
-DROP TRIGGER IF EXISTS update_sop_document_updated_at ON sop_document;
-CREATE TRIGGER update_sop_document_updated_at
-    BEFORE UPDATE ON sop_document
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- 索引: sop_chunk
 -- chunk 顺序检索（按文档 + 分块序号）

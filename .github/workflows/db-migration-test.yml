@@ -1,21 +1,21 @@
-name: DB Migration Test
+name: DB Schema 声明式验证
 
 on:
   pull_request:
     branches: [main]
     paths:
-      # 迁移文件变更时触发
-      - "database/atlas-migrations/**"
-      # schema 声明文件变更时触发
+      # 表结构变更时触发（Atlas 管理）
       - "database/desired_schema.sql"
-      # Atlas 配置变更时触发
-      - "atlas.hcl"
+      # 函数/触发器变更时触发（psql 管理）
+      - "database/desired_extras.sql"
       # 迁移镜像 Dockerfile 变更时触发
       - "Dockerfile.migrations"
+      # 入口脚本变更时触发
+      - "scripts/db-migrate.sh"
 
 jobs:
-  db-migration-test:
-    name: DB 迁移质量验证
+  db-schema-declarative-test:
+    name: Atlas 声明式 Schema 验证
     runs-on: ubuntu-latest
 
     services:
@@ -35,112 +35,73 @@ jobs:
 
     env:
       DATABASE_URL: "postgres://hci_test:ci_test_pass@localhost:5432/hci_test?sslmode=disable"
+      # DEV_URL：独立空数据库，Atlas 用于规范化 Schema SQL
+      DEV_URL: "postgres://hci_test:ci_test_pass@localhost:5432/atlas_dev?sslmode=disable"
 
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # ── Step 1: 安装 Atlas ────────────────────────────────────────────────
+      # ── Step 1: 安装 Atlas CLI + 准备 dev 数据库 ─────────────────────────
       - name: 安装 Atlas CLI
         run: |
           curl -sSf https://atlasgo.sh | sh -s -- -y
           atlas version
 
-      # ── Step 1.5: 同步 atlas.sum（本地修改迁移文件后 sum 可能过期）────────
-      - name: 同步 atlas.sum 完整性文件
+      - name: 准备 Atlas dev 数据库
         run: |
-          # 重新计算 atlas.sum，确保与当前迁移文件一致
-          # 避免因手动编辑迁移文件导致 sum 文件过期引起 CI 失败
-          atlas migrate hash --dir "file://database/atlas-migrations"
-          echo "✅ atlas.sum 已同步"
+          # 创建独立的 Atlas dev 数据库（Atlas 用于规范化 DDL，需与目标库同版本）
+          psql "$DATABASE_URL" -c "CREATE DATABASE atlas_dev;"
+          # 两个数据库都需要安装 extensions（desired_schema.sql 使用 vector 类型）
+          # hci_test（主库）：Atlas apply 时实际执行建表，需要 vector 类型
+          # atlas_dev（dev库）：Atlas 规范化 DDL 时也需要 vector 类型
+          for DB_URL in "$DATABASE_URL" "$DEV_URL"; do
+            psql "$DB_URL" -c "
+              CREATE EXTENSION IF NOT EXISTS vector;
+              CREATE EXTENSION IF NOT EXISTS pgcrypto;
+              CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+              CREATE EXTENSION IF NOT EXISTS pg_trgm;
+            "
+          done
+          echo "✅ hci_test 和 atlas_dev 扩展安装完成"
 
-      # ── Step 2: 危险操作静态检测 ─────────────────────────────────────────
-      # atlas migrate lint 从 v0.38+ 开始需要 Pro 版，使用 grep 实现等效社区方案
-      # 检测本次 PR 新增迁移文件中的危险 SQL 操作
-      - name: 危险 SQL 操作检测（社区版兼容）
+      # ── Step 2: 声明式 Schema 全量应用 ───────────────────────────────────
+      # 与 db-migrate.sh 完全相同的三步流程（函数 → Atlas apply → 触发器）
+      - name: 全量迁移（函数 → Atlas → 触发器）
         run: |
-          # 获取本次 PR 新增的 .sql 迁移文件
-          NEW_FILES=$(git diff --diff-filter=A --name-only \
-            origin/${{ github.base_ref }}...HEAD \
-            -- database/atlas-migrations/ 2>/dev/null \
-            | grep '\.sql$' || true)
+          echo ">>> Step 3a: 应用函数"
+          psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/desired_extras.sql
 
-          if [ -z "$NEW_FILES" ]; then
-            echo "✅ 无新增迁移文件，跳过危险操作检测"
-            exit 0
-          fi
-
-          echo "检查以下新增迁移文件："
-          echo "$NEW_FILES"
-
-          FOUND=0
-          while IFS= read -r FILE; do
-            [ -z "$FILE" ] && continue
-            echo "── 检查: $FILE"
-            # DROP TABLE（删表）
-            if grep -inE "^\s*DROP\s+TABLE\b" "$FILE"; then
-              echo "  ⚠️  检测到 DROP TABLE —— 请确认是否为必要破坏性变更"
-              FOUND=1
-            fi
-            # TRUNCATE
-            if grep -inE "^\s*TRUNCATE\b" "$FILE"; then
-              echo "  ⚠️  检测到 TRUNCATE —— 请确认不会清空生产数据"
-              FOUND=1
-            fi
-            # ALTER TABLE DROP COLUMN
-            if grep -inE "ALTER\s+TABLE.*DROP\s+COLUMN" "$FILE"; then
-              echo "  ⚠️  检测到 DROP COLUMN —— 删列不可逆，请确认已备份"
-              FOUND=1
-            fi
-            # NOT NULL 列无默认值（潜在锁表）
-            if grep -inE "ADD\s+COLUMN\s+\w+\s+\w+\s+NOT\s+NULL(?!\s+DEFAULT)" "$FILE"; then
-              echo "  ⚠️  检测到 ADD COLUMN NOT NULL（无 DEFAULT）—— 会锁全表，建议分步迁移"
-              FOUND=1
-            fi
-          done <<< "$NEW_FILES"
-
-          if [ $FOUND -eq 1 ]; then
-            echo ""
-            echo "❌ 检测到危险操作，请在 PR 说明中注明原因后再合并"
-            exit 1
-          fi
-          echo "✅ 危险操作检测通过"
-
-      # ── Step 3: 全量迁移执行验证 ─────────────────────────────────────────
-      # 在全新 DB 上执行全部迁移文件（含 baseline），验证 SQL 语法和执行顺序
-      - name: Atlas Migrate Apply（全量执行验证）
-        run: |
-          atlas migrate apply \
+          echo ">>> Step 3b: Atlas schema apply"
+          atlas schema apply \
             --url "$DATABASE_URL" \
-            --dir "file://database/atlas-migrations" \
-            --allow-dirty
-          echo "✅ 全量迁移执行成功"
+            --to "file://database/desired_schema.sql" \
+            --dev-url "$DEV_URL" \
+            --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
+            --auto-approve
 
-      # ── Step 4: Schema 完整性验证 ─────────────────────────────────────────
-      # 验证核心业务表存在，确保迁移没有遗漏关键表
+          echo ">>> Step 3c: 应用触发器"
+          psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/desired_extras.sql
+          echo "✅ Schema 全量应用成功"
+
+      # ── Step 3: Schema 完整性验证 ─────────────────────────────────────────
+      # 验证 17 张业务表存在，7 张废弃表未被创建
       - name: Schema 完整性检查
         run: |
-          # 安装 psql 客户端
           sudo apt-get install -q -y postgresql-client
 
           EXPECTED_TABLES=(
-            "user"
-            "customer"
-            "case"
-            "conversation"
-            "message"
-            "diagnostic_item"
-            "tool_result"
-            "audit_log"
-            "session"
-            "system_prompt"
-            "tool_definition"
-            "kb_category"
-            "kbd_entry"
-            "sop_document"
-            "sop_chunk"
-            "environment"
-            "assistant_evaluation"
+            "user" "customer" "case" "conversation" "message"
+            "diagnostic_item" "tool_result" "audit_log" "session"
+            "system_prompt" "tool_definition" "kb_category"
+            "kbd_entry" "sop_document" "sop_chunk"
+            "environment" "assistant_evaluation"
+          )
+          DEPRECATED_TABLES=(
+            "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"
+            "raw_cases" "knowledge_atoms" "prompt_audit"
           )
 
           MISSING=0
@@ -151,64 +112,56 @@ jobs:
             if [ "$COUNT" -eq "1" ]; then
               echo "  ✅ $TABLE"
             else
-              echo "  ❌ $TABLE (缺失)"
+              echo "  ❌ $TABLE（缺失）"
               MISSING=$((MISSING + 1))
             fi
           done
 
-          # atlas_schema_revisions 可能在 atlas schema 或 public schema，不限制 schemaname
-          REVISIONS_COUNT=$(psql "$DATABASE_URL" -t -c \
-            "SELECT COUNT(*) FROM pg_tables WHERE tablename='atlas_schema_revisions';" \
-            | tr -d '[:space:]')
-          if [ "$REVISIONS_COUNT" -ge "1" ]; then
-            echo "  ✅ atlas_schema_revisions"
-          else
-            echo "  ❌ atlas_schema_revisions (缺失)"
-            MISSING=$((MISSING + 1))
-          fi
+          for TABLE in "${DEPRECATED_TABLES[@]}"; do
+            COUNT=$(psql "$DATABASE_URL" -t -c \
+              "SELECT COUNT(*) FROM pg_tables WHERE schemaname='public' AND tablename='$TABLE';" \
+              | tr -d '[:space:]')
+            if [ "$COUNT" -eq "0" ]; then
+              echo "  ✅ $TABLE（正确：废弃表未创建）"
+            else
+              echo "  ❌ $TABLE（废弃表意外存在）"
+              MISSING=$((MISSING + 1))
+            fi
+          done
 
           if [ $MISSING -gt 0 ]; then
-            echo "❌ 发现 $MISSING 张表缺失"
+            echo "❌ Schema 完整性检查失败（$MISSING 项异常）"
             exit 1
           fi
-          echo "✅ 所有 $((${#EXPECTED_TABLES[@]} + 1)) 张表均存在"
+          echo "✅ 所有 ${#EXPECTED_TABLES[@]} 张业务表正确，${#DEPRECATED_TABLES[@]} 张废弃表未创建"
 
-      # ── Step 5: 幂等性验证（第二次执行应 0 变更）───────────────────────
-      - name: 幂等性验证
+      # ── Step 4: 幂等性验证 ────────────────────────────────────────────────
+      # atlas schema diff 输出为空 → 当前 DB 与期望 Schema 完全一致 → 幂等
+      - name: 幂等性验证（atlas schema diff）
         run: |
-          RESULT=$(atlas migrate apply \
-            --url "$DATABASE_URL" \
-            --dir "file://database/atlas-migrations" \
-            --allow-dirty 2>&1)
-          echo "$RESULT"  
+          # atlas schema apply 使用 --dev-url 时会 DROP SCHEMA public CASCADE 清空 atlas_dev，
+          # 导致 pgvector 注册在 public schema 的类型对象丢失（扩展条目仍在但类型消失）。
+          # 重建 atlas_dev 数据库是最可靠的恢复方式。
+          psql "$DATABASE_URL" -c "DROP DATABASE atlas_dev;"
+          psql "$DATABASE_URL" -c "CREATE DATABASE atlas_dev;"
+          psql "$DEV_URL" -c "
+            CREATE EXTENSION IF NOT EXISTS vector;
+            CREATE EXTENSION IF NOT EXISTS pgcrypto;
+            CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+            CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          "
 
-          # 第二次执行应该显示 "No migration files to execute" 或 0 文件执行
-          if echo "$RESULT" | grep -q "no changes\|already at version\|0 files"; then
-            echo "✅ 幂等性验证通过，第二次执行 0 变更"
+          DIFF=$(atlas schema diff \
+            --from "$DATABASE_URL" \
+            --to "file://database/desired_schema.sql" \
+            --dev-url "$DEV_URL" \
+            --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
+            2>&1 || true)
+
+          if [ -z "$DIFF" ] || echo "$DIFF" | grep -q "Schemas are synced"; then
+            echo "✅ 幂等性验证通过：DB 与期望 Schema 完全一致，无待变更项"
           else
-            # Atlas 幂等性：已执行的迁移不会重复执行，记录在 atlas_schema_revisions 中
-            # 如果第二次有新的变更输出，则说明迁移不是幂等的
-            MIGRATION_COUNT=$(echo "$RESULT" | grep -c "Migrating" || true)
-            if [ "$MIGRATION_COUNT" -gt "0" ]; then
-              echo "❌ 幂等性验证失败：第二次执行发现新的迁移（不应该有）"
-              exit 1
-            fi
-            echo "✅ 幂等性验证通过"
-          fi
-
-      # ── Step 6: Atlas 版本追踪验证 ───────────────────────────────────────
-      - name: 验证 atlas_schema_revisions 记录
-        run: |
-          REVISION_COUNT=$(psql "$DATABASE_URL" -t -c \
-            "SELECT COUNT(*) FROM atlas_schema_revisions;" \
-            | tr -d '[:space:]')
-          echo "atlas_schema_revisions 记录数: $REVISION_COUNT"
-
-          MIGRATION_FILE_COUNT=$(ls database/atlas-migrations/*.sql | wc -l | tr -d '[:space:]')
-          echo "迁移文件数: $MIGRATION_FILE_COUNT"
-
-          if [ "$REVISION_COUNT" -ne "$MIGRATION_FILE_COUNT" ]; then
-            echo "❌ atlas_schema_revisions 记录数（$REVISION_COUNT）与迁移文件数（$MIGRATION_FILE_COUNT）不一致"
+            echo "❌ 幂等性验证失败：apply 后仍存在 diff："
+            echo "$DIFF"
             exit 1
           fi
-          echo "✅ 版本追踪完整，所有迁移已记录"
