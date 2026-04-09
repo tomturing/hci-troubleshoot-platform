@@ -27,6 +27,8 @@ MIGRATION_FILE="${REPO_ROOT}/docs/archive/db-migrations-history/migrations/20260
 NS="${1:?用法: $0 <namespace>  示例: hci-dev / hci-staging / hci-prod}"
 DB_USER="${2:-hci_admin}"
 DB_NAME="${3:-hci_troubleshoot}"
+# v6.x 目标表数（17 张业务表）
+EXPECTED_TABLE_COUNT=17
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -99,10 +101,10 @@ SELECT COUNT(*) FROM information_schema.tables
 WHERE table_schema='public' AND table_type='BASE TABLE';" 2>/dev/null | tr -d '[:space:]')
 
 echo "============================================"
-if [[ "${TABLE_COUNT}" -ge 17 ]]; then
-    info "✅ 表数量: ${TABLE_COUNT} (≥17，v6.x 目标：17 张业务表)"
+if [[ "${TABLE_COUNT}" -ge "${EXPECTED_TABLE_COUNT}" ]]; then
+    info "✅ 表数量: ${TABLE_COUNT} (≥${EXPECTED_TABLE_COUNT}，v6.x 目标：${EXPECTED_TABLE_COUNT} 张业务表)"
 else
-    error "❌ 表数量: ${TABLE_COUNT} (<17，可能有建表缺失)"
+    error "❌ 表数量: ${TABLE_COUNT} (<${EXPECTED_TABLE_COUNT}，可能有建表缺失)"
 fi
 
 echo "--- 最终 Atlas 迁移记录 ---"
