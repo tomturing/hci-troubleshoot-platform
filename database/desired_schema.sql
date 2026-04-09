@@ -538,6 +538,37 @@ CREATE INDEX IF NOT EXISTS idx_tool_result_trace_id ON tool_result (trace_id) WH
 -- 说明: System Instructions 审计表 — 记录每轮对话的 Prompt 构建过程（含使用的模板版本、注入的工具列表片段、最终 Prompt token 数）。工具执行审计已移入 tool_result 表
 -- 用途: 每次构建 System Instructions 时写入一条记录；payload 字段存储 {system_prompt_id, tool_count, rendered_token_count, model, case_id} 等信息，用于追踪 AI 行为来源和 Prompt 版本迭代效果
 -- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS system_prompt (
+    id serial NOT NULL,
+    stage varchar(5) NOT NULL,
+    name varchar(100) NOT NULL,
+    description text,
+    content_template text NOT NULL,
+    version varchar(20) NOT NULL DEFAULT '1.0',
+    is_active boolean DEFAULT true,
+    created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT system_prompt_pkey PRIMARY KEY (id)
+);
+
+COMMENT ON TABLE system_prompt IS 'System Instructions 模板表 — 存储 S0-S6 各诊断阶段的 Prompt 模板，支持版本管理和阶段级 A/B 测试';
+COMMENT ON COLUMN system_prompt.id IS '模板主键，自增';
+COMMENT ON COLUMN system_prompt.stage IS '适用诊断阶段：S0/S1/S2/S3/S4/S5/S6 或 BASE（全局基础 Prompt，各阶段共用）';
+COMMENT ON COLUMN system_prompt.name IS '模板唯一名称（如 s0_intent_recognition_v2），建议格式为 {stage}_{purpose}_{version}';
+COMMENT ON COLUMN system_prompt.description IS '模板说明，描述该 Prompt 的用途、设计思路和与前版本的区别';
+COMMENT ON COLUMN system_prompt.content_template IS 'Prompt 模板内容，使用 {placeholder} 占位符（如 {tool_list}、{category_name}、{sop_content}、{hypothesis_list}）';
+COMMENT ON COLUMN system_prompt.version IS '版本号（如 1.0 / 1.1 / 2.0），配合 is_active 实现版本管理';
+COMMENT ON COLUMN system_prompt.is_active IS '是否为当前激活版本；同一 stage 同时只有一个 is_active=true 的版本被注入 Prompt';
+COMMENT ON COLUMN system_prompt.created_at IS '创建时间';
+COMMENT ON COLUMN system_prompt.updated_at IS '最后更新时间';
+
+-- 索引: system_prompt
+-- 按阶段查当前激活模板（核心查询）
+CREATE INDEX IF NOT EXISTS idx_system_prompt_stage_active ON system_prompt (stage, is_active);
+-- 版本历史查询
+CREATE INDEX IF NOT EXISTS idx_system_prompt_stage_version ON system_prompt (stage, version);
+
+-- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS audit_log (
     id varchar(36) NOT NULL,
     audit_type varchar(20) NOT NULL,
@@ -616,37 +647,6 @@ CREATE INDEX IF NOT EXISTS idx_session_user_id ON session (user_id);
 -- 表: system_prompt  [模块: conversation-service]
 -- 说明: System Instructions 模板表 — 存储 S0-S6 各诊断阶段的 Prompt 模板，支持版本管理和阶段级 A/B 测试
 -- 用途: Prompt 版本化管理：每个阶段可维护多个版本，is_active=true 的版本被激活；audit_log 记录每次使用的 system_prompt.id，用于效果追踪和快速回滚
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS system_prompt (
-    id serial NOT NULL,
-    stage varchar(5) NOT NULL,
-    name varchar(100) NOT NULL,
-    description text,
-    content_template text NOT NULL,
-    version varchar(20) NOT NULL DEFAULT '1.0',
-    is_active boolean DEFAULT true,
-    created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
-    updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT system_prompt_pkey PRIMARY KEY (id)
-);
-
-COMMENT ON TABLE system_prompt IS 'System Instructions 模板表 — 存储 S0-S6 各诊断阶段的 Prompt 模板，支持版本管理和阶段级 A/B 测试';
-COMMENT ON COLUMN system_prompt.id IS '模板主键，自增';
-COMMENT ON COLUMN system_prompt.stage IS '适用诊断阶段：S0/S1/S2/S3/S4/S5/S6 或 BASE（全局基础 Prompt，各阶段共用）';
-COMMENT ON COLUMN system_prompt.name IS '模板唯一名称（如 s0_intent_recognition_v2），建议格式为 {stage}_{purpose}_{version}';
-COMMENT ON COLUMN system_prompt.description IS '模板说明，描述该 Prompt 的用途、设计思路和与前版本的区别';
-COMMENT ON COLUMN system_prompt.content_template IS 'Prompt 模板内容，使用 {placeholder} 占位符（如 {tool_list}、{category_name}、{sop_content}、{hypothesis_list}）';
-COMMENT ON COLUMN system_prompt.version IS '版本号（如 1.0 / 1.1 / 2.0），配合 is_active 实现版本管理';
-COMMENT ON COLUMN system_prompt.is_active IS '是否为当前激活版本；同一 stage 同时只有一个 is_active=true 的版本被注入 Prompt';
-COMMENT ON COLUMN system_prompt.created_at IS '创建时间';
-COMMENT ON COLUMN system_prompt.updated_at IS '最后更新时间';
-
--- 索引: system_prompt
--- 按阶段查当前激活模板（核心查询）
-CREATE INDEX IF NOT EXISTS idx_system_prompt_stage_active ON system_prompt (stage, is_active);
--- 版本历史查询
-CREATE INDEX IF NOT EXISTS idx_system_prompt_stage_version ON system_prompt (stage, version);
-
 -- ------------------------------------------------------------
 -- 表: tool_definition  [模块: conversation-service]
 -- 说明: 工具定义表 — AI 工具知识库，存储 LLM 可调用工具的完整描述（acli 命令 / SCP API）。Prompt 构建时动态注入，让 LLM 知道何时调用哪个工具以及如何传参
