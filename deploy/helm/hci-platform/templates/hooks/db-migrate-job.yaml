@@ -65,7 +65,6 @@ spec:
             - "--baseline"
             - {{ .Values.dbMigrate.atlasBaseline | quote }}
             {{- end }}
-            - "--allow-dirty"    # 允许 DB 中有 atlas 未知的历史表（dbmate 遗留）
           env:
             - name: DATABASE_URL
               value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
