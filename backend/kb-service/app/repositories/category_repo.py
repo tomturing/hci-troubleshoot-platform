@@ -296,7 +296,6 @@ class CategoryRepository:
                 "total": int,              # 实际处理节点数（含 L1 + 中间层 + 叶节点）
                 "created": int,
                 "updated": int,
-                "skipped": int,
                 "errors": list[str],
                 "details": list[dict],
             }
@@ -317,7 +316,6 @@ class CategoryRepository:
                     "total": 0,
                     "created": 0,
                     "updated": 0,
-                    "skipped": 0,
                     "errors": errors,
                     "details": details,
                 }
