@@ -12,6 +12,10 @@ on:
             - "docs/**"
             - "scripts/ci/check_module_doc_sync.py"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
     module-doc-sync:
         name: 模块文档同步

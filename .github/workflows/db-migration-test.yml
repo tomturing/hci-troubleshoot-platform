@@ -13,6 +13,10 @@ on:
       # 入口脚本变更时触发
       - "scripts/db-migrate.sh"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   db-schema-declarative-test:
     name: Atlas 声明式 Schema 验证
