@@ -15,7 +15,6 @@ KB Service — 分类数据访问层
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -169,31 +168,36 @@ class CategoryRepository:
             return category
 
     @staticmethod
-    def _parse_baseline_yaml(categories_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _parse_baseline_yaml(
+        categories_data: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         """将 category_baseline.yaml 的叶节点列表展开为完整节点列表。
 
         基准 YAML 只包含叶节点（格式：id/label/domain/path），level 隐含于 path 长度中。
         本方法实现四阶段解析，与 scripts/kbd/seed_categories.py 逻辑等价：
           Phase 1: 从 domain 字段推断并生成 L1 域节点（code 格式：<domain>-L1）
-          Phase 2: 从 L3/L4 叶节点 path 提取中间层节点（L2+，code 格式：<domain>-L<n>-<hash8>）
+          Phase 2: 从 L3/L4 叶节点 path 提取中间层节点（code 格式：<domain>-L<n>-<path最后元素>）
           Phase 3: 解析叶节点（id→code, label→name, len(path)→level, path→path_labels）
           Phase 4: 按 level 排序，确保父节点先于子节点写入
 
-        中间层节点 code 使用 path 的 md5 前 8 位保证幂等性：
-          相同 path → 相同 code，重复导入安全。
+        中间层节点 code 规则与 scripts/kbd/seed_categories.py 保持一致：
+          <domain>-L<depth>-<sub_path[-1]>，相同 path 永远生成相同 code（幂等安全）。
 
         Args:
             categories_data: YAML 中的 categories 列表（原始格式）
 
         Returns:
-            按 level 升序排列的记录列表，每条包含：
-            code, name, domain, path_labels(list), level, source
+            (records, parse_errors) 元组：
+              records: 按 level 升序排列的记录列表
+              parse_errors: 解析过程中发现的字段错误（非空则导入应终止）
         """
+        parse_errors: list[str] = []
+
         # ── Phase 1: 推断 L1 域节点 ──────────────────────────────────────────
         domains: dict[str, dict[str, Any]] = {}
         for cat in categories_data:
             domain = cat.get("domain", "")
-            if domain and domain not in domains:
+            if isinstance(domain, str) and domain and domain not in domains:
                 domains[domain] = {
                     "code": f"{domain}-L1",
                     "name": domain,
@@ -205,21 +209,21 @@ class CategoryRepository:
 
         # ── Phase 2: 从 path 提取中间层节点（L3+ 叶节点才有中间层）──────────
         # 例如 path=['虚拟机','FC','FC存储添加失败'] → 中间层 ['虚拟机','FC']
+        # code 规则：<domain>-L<depth>-<路径最后元素>，与 seed_categories.py 保持一致
         intermediate: dict[str, dict[str, Any]] = {}
         for cat in categories_data:
-            path: list[str] = cat.get("path", [])
+            path = cat.get("path", [])
+            if not isinstance(path, list):  # 非 list 类型在 Phase 3 统一报错
+                continue
             domain: str = cat.get("domain", "")
             level: int = len(path)
             if level >= 3:
-                # 提取所有中间路径（从 path[0:2] 到 path[0:level-1]）
                 for depth in range(2, level):
                     sub_path = path[:depth]
                     path_key = json.dumps(sub_path, ensure_ascii=False)
                     if path_key not in intermediate:
-                        # 使用路径的 md5 hash 前 8 位作为 code 后缀，保证幂等
-                        hash_suffix = hashlib.md5(path_key.encode()).hexdigest()[:8]
                         intermediate[path_key] = {
-                            "code": f"{domain}-L{depth}-{hash_suffix}",
+                            "code": f"{domain}-L{depth}-{sub_path[-1]}",
                             "name": sub_path[-1],
                             "domain": domain,
                             "path_labels": sub_path,
@@ -230,14 +234,23 @@ class CategoryRepository:
         # ── Phase 3: 解析叶节点（YAML 原始 198 条）──────────────────────────
         # 字段映射：id→code, label→name（兼容旧格式 name），path→path_labels, len(path)→level
         leaf_records: list[dict[str, Any]] = []
-        for cat in categories_data:
+        for idx, cat in enumerate(categories_data):
             path = cat.get("path", [])
+            if not isinstance(path, list):
+                parse_errors.append(
+                    f"第 {idx + 1} 条记录 path 字段非 list 类型（实际: {type(path).__name__}）"
+                )
+                continue
             code = cat.get("id", "")
             name = cat.get("label") or cat.get("name", "")  # 兼容旧格式
             domain = cat.get("domain", "")
-            level = len(path)
-            if not code or not name:
+            if not code:
+                parse_errors.append(f"第 {idx + 1} 条记录缺少 id 字段")
                 continue
+            if not name:
+                parse_errors.append(f"第 {idx + 1} 条记录（{code}）缺少 label/name 字段")
+                continue
+            level = len(path)
             leaf_records.append({
                 "code": code,
                 "name": name,
@@ -250,7 +263,7 @@ class CategoryRepository:
         # ── Phase 4: 合并并按 level 排序（父节点先于子节点写入）──────────────
         all_records = list(domains.values()) + list(intermediate.values()) + leaf_records
         all_records.sort(key=lambda r: r["level"])
-        return all_records
+        return all_records, parse_errors
 
     async def import_from_yaml(
         self,
@@ -317,7 +330,6 @@ class CategoryRepository:
                 "total": 0,
                 "created": 0,
                 "updated": 0,
-                "skipped": 0,
                 "errors": errors,
                 "details": details,
             }
@@ -326,7 +338,19 @@ class CategoryRepository:
         yaml_count = len(raw_categories)
 
         # ── 四阶段解析：生成完整节点列表（L1 + 中间层 + 叶节点）──────────────
-        all_records = self._parse_baseline_yaml(raw_categories)
+        all_records, parse_errors = self._parse_baseline_yaml(raw_categories)
+        if parse_errors:
+            errors.extend(parse_errors)
+            return {
+                "success": False,
+                "dry_run": dry_run,
+                "yaml_categories": yaml_count,
+                "total": 0,
+                "created": 0,
+                "updated": 0,
+                "errors": errors,
+                "details": details,
+            }
         total = len(all_records)
 
         logger.info(
@@ -339,7 +363,6 @@ class CategoryRepository:
 
         created = 0
         updated = 0
-        skipped = 0
 
         async with self._db.async_session_factory() as session:
             # 查询已存在的 code → id 映射
@@ -495,7 +518,10 @@ class CategoryRepository:
                 )
 
             if not dry_run:
-                await session.commit()
+                if errors:
+                    await session.rollback()
+                else:
+                    await session.commit()
 
         success = len(errors) == 0
         logger.info(
@@ -505,7 +531,6 @@ class CategoryRepository:
             total=total,
             created=created,
             updated=updated,
-            skipped=skipped,
             errors=len(errors),
             success=success,
             trace_id=trace_id,
@@ -518,7 +543,6 @@ class CategoryRepository:
             "total": total,
             "created": created,
             "updated": updated,
-            "skipped": skipped,
             "errors": errors,
             "details": details,
         }
