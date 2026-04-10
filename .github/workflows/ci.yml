@@ -462,7 +462,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # fetch-depth: 0 确保能访问 github.event.before 对应的 commit
+          # 用于比较整个 push 范围（而非仅 HEAD^ 最后一个 commit）
+          fetch-depth: 0
 
       - name: 检测 schema 相关文件是否变更
         id: check
@@ -473,8 +475,11 @@ jobs:
             echo "workflow_dispatch：强制构建 db-migrate"
             exit 0
           fi
-          # push 时检测 HEAD^ vs HEAD 的差异
-          CHANGED=$(git diff --name-only HEAD^ HEAD -- \
+          # push 时比较完整 push 范围（before..sha）
+          # 避免仅比较 HEAD^ vs HEAD 导致 rebase/merge 多 commit 时漏检
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+          CHANGED=$(git diff --name-only "${BEFORE}" "${AFTER}" -- \
             database/desired_schema.sql \
             database/desired_extras.sql \
             Dockerfile.migrations \
@@ -528,7 +533,13 @@ jobs:
     name: 自动晋级 dev/staging 环境
     runs-on: ubuntu-latest
     needs: [prepare, build-and-push, build-db-migrate]
-    if: always() && needs.prepare.result == 'success' && needs.build-and-push.result == 'success' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
+    # build-db-migrate 失败且本次确实应该构建（built==true）时阻止发布，避免传递一个实际没有推送的 tag
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.build-and-push.result == 'success' &&
+      (needs.build-db-migrate.result == 'success' || needs.build-db-migrate.outputs.built != 'true') &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     steps:
       - name: 触发环境仓库同步（dev 优先，串行执行）
         env:
