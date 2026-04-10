@@ -180,38 +180,19 @@ async def category_hit_proxy(code: str, request: Request):
 
 @categories_router.post("/import")
 async def category_import_proxy(request: Request):
-    """代理 YAML 导入请求 → kb-service。
+    """代理 YAML 导入请求 → kb-service（透明透传）
 
-    下游 kb-service 读取的是 YAML 原文字节流，不支持将 multipart/form-data 原样透传。
-    因此这里需要在网关层对 multipart 上传进行解包，只转发文件内容本身。
+    透明透传设计：
+    - 网关层直接透传请求体（body）和 Content-Type 头
+    - 下游 kb-service 负责解析 multipart/form-data
+    - 无需在网关层解析请求，符合"透明代理"原则
     """
+    # 直接透传请求体和 Content-Type
+    raw_body = await request.body()
+    content_type = request.headers.get("content-type", "application/x-yaml")
+
     headers = _internal_auth_headers()
-    content_type = request.headers.get("content-type", "")
-    outbound_headers = dict(headers)
-
-    if content_type.startswith("multipart/form-data"):
-        form = await request.form()
-        upload = (
-            form.get("file")
-            or form.get("yaml_file")
-            or form.get("upload")
-            or form.get("content")
-        )
-        if upload is None or not hasattr(upload, "read"):
-            raise HTTPException(
-                status_code=400, detail="缺少 YAML 导入文件，请使用 multipart 文件字段 file 上传"
-            )
-
-        raw_body = await upload.read()
-        file_content_type = getattr(upload, "content_type", None) or ""
-        outbound_headers["content-type"] = (
-            file_content_type
-            if file_content_type in {"application/x-yaml", "text/yaml", "application/yaml", "text/plain"}
-            else "application/x-yaml"
-        )
-    else:
-        raw_body = await request.body()
-        outbound_headers["content-type"] = content_type or "application/x-yaml"
+    headers["content-type"] = content_type
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
@@ -219,7 +200,7 @@ async def category_import_proxy(request: Request):
             resp = await client.post(
                 url,
                 content=raw_body,
-                headers=outbound_headers,
+                headers=headers,
                 params=dict(request.query_params),
             )
             return JSONResponse(content=resp.json(), status_code=resp.status_code)
