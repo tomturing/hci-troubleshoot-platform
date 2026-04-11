@@ -1,102 +1,102 @@
 name: 文档命名规范检查
 
 on:
-    pull_request:
-        branches: [main]
-        # 只在以下路径有变更时触发，避免无关 PR 跑此检查
-        paths:
-            - "docs/**"
-            - "scripts/ci/check_docs_naming.py"
-    # 允许手动触发全量扫描（初始建立/定期审查时使用）
-    workflow_dispatch:
-        inputs:
-            mode:
-                description: "检查模式"
-                required: false
-                default: "full"
-                type: choice
-                options:
-                    - full
-                    - pr
+  pull_request:
+    branches: [main]
+    # 只在以下路径有变更时触发，避免无关 PR 跑此检查
+    paths:
+      - "docs/**"
+      - "scripts/ci/check_docs_naming.py"
+  # 允许手动触发全量扫描（初始建立/定期审查时使用）
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "检查模式"
+        required: false
+        default: "full"
+        type: choice
+        options:
+          - full
+          - pr
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-    naming-convention:
-        name: 文档命名规范
-        runs-on: ubuntu-latest
-        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+  naming-convention:
+    name: 文档命名规范
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
 
-        permissions:
-            pull-requests: write # 写 PR 评论（标注具体问题）
-            contents: read
+    permissions:
+      pull-requests: write # 写 PR 评论（标注具体问题）
+      contents: read
 
-        steps:
-            - uses: actions/checkout@v4
-              with:
-                  fetch-depth: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-            - name: 设置 Python
-              uses: actions/setup-python@v5
-              with:
-                  python-version: "3.12"
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-            # 检查 PR 是否含 naming-approved 旁路标签
-            - name: 检查旁路标签
-              id: label_check
-              if: github.event_name == 'pull_request'
-              run: |
-                  LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
-                  echo "PR labels: $LABELS"
-                  if echo "$LABELS" | python3 -c "import sys,json; labels=json.load(sys.stdin); sys.exit(0 if 'naming-approved' in labels else 1)" 2>/dev/null; then
-                    echo "bypass=1" >> "$GITHUB_OUTPUT"
-                    echo "ℹ️ 检测到 naming-approved 标签"
-                  else
-                    echo "bypass=0" >> "$GITHUB_OUTPUT"
-                  fi
+      # 检查 PR 是否含 naming-approved 旁路标签
+      - name: 检查旁路标签
+        id: label_check
+        if: github.event_name == 'pull_request'
+        run: |
+          LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
+          echo "PR labels: $LABELS"
+          if echo "$LABELS" | python3 -c "import sys,json; labels=json.load(sys.stdin); sys.exit(0 if 'naming-approved' in labels else 1)" 2>/dev/null; then
+            echo "bypass=1" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ 检测到 naming-approved 标签"
+          else
+            echo "bypass=0" >> "$GITHUB_OUTPUT"
+          fi
 
-            # PR 模式：检查变更文件
-            - name: 命名规范检查（PR 模式）
-              if: github.event_name == 'pull_request' && steps.label_check.outputs.bypass == '0'
-              env:
-                  BASE_SHA: ${{ github.event.pull_request.base.sha }}
-                  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-                  NAMING_BYPASS: "0"
-              run: python scripts/ci/check_docs_naming.py
+      # PR 模式：检查变更文件
+      - name: 命名规范检查（PR 模式）
+        if: github.event_name == 'pull_request' && steps.label_check.outputs.bypass == '0'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          NAMING_BYPASS: "0"
+        run: python scripts/ci/check_docs_naming.py
 
-            # 手动触发：全量检查
-            - name: 命名规范检查（全量模式）
-              if: github.event_name == 'workflow_dispatch'
-              run: |
-                  MODE="${{ github.event.inputs.mode }}"
-                  if [ "$MODE" = "full" ]; then
-                    python scripts/ci/check_docs_naming.py --full
-                  else
-                    python scripts/ci/check_docs_naming.py
-                  fi
+      # 手动触发：全量检查
+      - name: 命名规范检查（全量模式）
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ "$MODE" = "full" ]; then
+            python scripts/ci/check_docs_naming.py --full
+          else
+            python scripts/ci/check_docs_naming.py
+          fi
 
-            # naming-approved 旁路时写评论说明已豁免
-            - name: 记录豁免原因评论
-              if: >-
-                  github.event_name == 'pull_request' &&
-                  steps.label_check.outputs.bypass == '1'
-              uses: actions/github-script@v7
-              with:
-                  script: |
-                      await github.rest.issues.createComment({
-                        owner: context.repo.owner,
-                        repo: context.repo.repo,
-                        issue_number: context.issue.number,
-                        body: [
-                          '## ℹ️ 命名规范检查已豁免',
-                          '',
-                          '本 PR 含 `naming-approved` 标签，跳过文件命名规范自动检查。',
-                          '',
-                          '**请在合并前人工确认以下内容：**',
-                          '- 不符合规范的文件名是否有合理原因？',
-                          '- 是否已在 PR 描述中说明原因？',
-                          '- 是否应该修复文件名而非豁免？',
-                        ].join('\n')
-                      });
+      # naming-approved 旁路时写评论说明已豁免
+      - name: 记录豁免原因评论
+        if: >-
+          github.event_name == 'pull_request' &&
+          steps.label_check.outputs.bypass == '1'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '## ℹ️ 命名规范检查已豁免',
+                '',
+                '本 PR 含 `naming-approved` 标签，跳过文件命名规范自动检查。',
+                '',
+                '**请在合并前人工确认以下内容：**',
+                '- 不符合规范的文件名是否有合理原因？',
+                '- 是否已在 PR 描述中说明原因？',
+                '- 是否应该修复文件名而非豁免？',
+              ].join('\n')
+            });

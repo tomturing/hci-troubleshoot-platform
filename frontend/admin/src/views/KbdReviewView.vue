@@ -303,7 +303,7 @@ onMounted(() => fetchPending())
   <div class="kbd-review">
     <!-- 页面头部 -->
     <div class="page-header">
-      <h2 class="page-title">KBD 知识条目审核</h2>
+      <h2 class="page-title">KBD知识条目管理</h2>
       <p class="page-desc">
         以下是从深信服技术支持门户抓取、经 AI 分类的知识条目，请逐条核实内容与分类后决定是否发布。
       </p>

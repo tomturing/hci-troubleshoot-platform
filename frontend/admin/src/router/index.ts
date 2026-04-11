@@ -36,7 +36,7 @@ const router = createRouter({
       path: '/knowledge/kbd-review',
       name: 'KbdReview',
       component: () => import('@/views/KbdReviewView.vue'),
-      meta: { title: 'KBD 审核', icon: 'Document', order: 4 },
+      meta: { title: 'KBD管理', icon: 'Document', order: 4 },
     },
     {
       path: '/clients',
