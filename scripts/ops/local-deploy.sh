@@ -182,17 +182,18 @@ if [[ "$MODE" == "push" ]]; then
   info "── Phase 2: 推送镜像到 ghcr.io ────────────────────────────────────────"
   echo ""
 
-  # 检查 ghcr.io 登录状态
-  if ! docker info 2>/dev/null | grep -q "ghcr.io"; then
-    warn "未检测到 ghcr.io 登录状态，尝试登录..."
-    warn "需要 GitHub Personal Access Token（write:packages 权限）"
-    warn "执行: echo \$GITHUB_TOKEN | docker login ghcr.io -u tomturing --password-stdin"
+  # 检查 ghcr.io 登录状态（通过 ~/.docker/config.json 判断）
+  if ! grep -q "ghcr.io" "${HOME}/.docker/config.json" 2>/dev/null; then
+    warn "未检测到 ghcr.io 登录状态，尝试自动登录..."
     if [[ "$DRY_RUN" != "1" ]]; then
-      read -r -p "是否现在登录 ghcr.io？[y/N] " confirm
-      if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        docker login ghcr.io -u tomturing
+      # 优先使用 gh CLI token（已通过 gh auth login，无需额外 PAT）
+      if command -v gh &>/dev/null && gh auth token &>/dev/null; then
+        info "使用 gh CLI token 登录 ghcr.io..."
+        gh auth token | docker login ghcr.io -u "$(gh api user --jq .login 2>/dev/null || echo tomturing)" --password-stdin
       else
-        error "未登录 ghcr.io，无法 push。请改用 import 模式：bash $0 import"
+        error "gh CLI 未登录，且未找到 ghcr.io 凭证。请先执行："
+        error "  gh auth login  或  echo \$GITHUB_TOKEN | docker login ghcr.io -u <用户名> --password-stdin"
+        error "如 ghcr.io 不可用，改用 import 模式：bash $0 import"
         exit 1
       fi
     fi
@@ -305,6 +306,7 @@ if run "cd '${ENV_REPO_PATH}' && git add environments/${TARGET_ENV}/values.yaml 
   info "  → 无变更，跳过提交"
 else
   run "cd '${ENV_REPO_PATH}' && git commit -m '${COMMIT_MSG}'"
+  run "cd '${ENV_REPO_PATH}' && git pull --rebase origin main"
   run "cd '${ENV_REPO_PATH}' && git push origin main"
   ok "env repo 已推送"
 fi
