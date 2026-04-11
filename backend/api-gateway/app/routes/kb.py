@@ -259,3 +259,71 @@ async def kbd_reject_proxy(kbd_id: int, request: Request):
     headers = _internal_auth_headers()
     response = await _kbd_proxy("PATCH", f"/{kbd_id}/reject", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.patch("/{kbd_id}")
+async def kbd_update_proxy(kbd_id: int, request: Request):
+    """代理 KBD 条目内容编辑请求（标题/正文/分类）→ kb-service"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("PATCH", f"/{kbd_id}", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.post("/{kbd_id}/republish")
+async def kbd_republish_proxy(kbd_id: int, request: Request):
+    """代理 KBD 重新发布请求（rejected → published）→ kb-service"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/republish", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+# ============ SOP 管理代理（前端使用 /api/v1/sop 前缀） ============
+
+SOP_ADMIN_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/sop"
+sop_admin_router = APIRouter(prefix="/api/v1/sop", tags=["sop-admin"])
+
+
+async def _sop_proxy(
+    method: str,
+    path: str,
+    payload: dict | None = None,
+    params: dict | None = None,
+    headers: dict | None = None,
+):
+    """通用代理请求，透传至 kb-service SOP 管理路由"""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            url = f"{SOP_ADMIN_SERVICE_URL}{path}"
+            response = await client.request(method, url, json=payload, params=params, headers=headers)
+            return response
+        except httpx.RequestError as exc:
+            logger.error(f"KB Service SOP 请求失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+
+
+@sop_admin_router.get("")
+async def sop_list_proxy(request: Request):
+    """代理 SOP 文档列表请求 → kb-service"""
+    headers = _internal_auth_headers()
+    response = await _sop_proxy("GET", "", params=dict(request.query_params), headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@sop_admin_router.post("/{document_id}/approve")
+async def sop_approve_proxy(document_id: int, request: Request):
+    """代理 SOP 文档发布（生成 embedding）→ kb-service"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _sop_proxy("POST", f"/{document_id}/approve", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@sop_admin_router.patch("/{document_id}")
+async def sop_update_proxy(document_id: int, request: Request):
+    """代理 SOP 文档状态更新（归档等）→ kb-service"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _sop_proxy("PATCH", f"/{document_id}", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)

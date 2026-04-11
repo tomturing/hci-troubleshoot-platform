@@ -96,6 +96,7 @@ app.include_router(assistants.router)
 app.include_router(kb.router)
 app.include_router(kb.categories_router)
 app.include_router(kb.kbd_router)
+app.include_router(kb.sop_admin_router)
 app.include_router(terminal.router)
 app.include_router(health.router)
 

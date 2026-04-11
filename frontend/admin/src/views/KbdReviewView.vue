@@ -67,6 +67,14 @@ const rejectLoading = ref(false)
 // 审核人 ID（实际项目中应来自登录态）
 const currentUser = ref('admin')
 
+// 编辑弹窗
+const editDialogVisible = ref(false)
+const editingEntry = ref<KbdEntry | null>(null)
+const editTitle = ref('')
+const editContent = ref('')
+const editCategoryId = ref('')
+const editLoading = ref(false)
+
 // ──────────────────────────────────────────────────────────────────────────────
 // API
 // ──────────────────────────────────────────────────────────────────────────────
@@ -171,6 +179,79 @@ function openDetailDialog(entry: KbdEntry) {
 function handlePageChange(newPage: number) {
   page.value = newPage
   fetchPending()
+}
+
+function openEditDialog(entry: KbdEntry) {
+  editingEntry.value = entry
+  editTitle.value = entry.title
+  editContent.value = entry.content_md || ''
+  editCategoryId.value = entry.category_id || entry.ai_category_id || ''
+  editDialogVisible.value = true
+}
+
+async function submitEdit() {
+  if (!editingEntry.value) return
+  editLoading.value = true
+  try {
+    const payload: Record<string, string> = {}
+    if (editTitle.value.trim() && editTitle.value !== editingEntry.value.title) {
+      payload.title = editTitle.value.trim()
+    }
+    if (editContent.value !== editingEntry.value.content_md) {
+      payload.content_md = editContent.value
+    }
+    if (editCategoryId.value !== (editingEntry.value.category_id || editingEntry.value.ai_category_id || '')) {
+      payload.category_id = editCategoryId.value
+    }
+    if (Object.keys(payload).length === 0) {
+      ElMessage.info('内容未变更')
+      editDialogVisible.value = false
+      return
+    }
+    const resp = await fetch(`/api/v1/kbd/${editingEntry.value.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify(payload),
+    })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    ElMessage.success('保存成功')
+    editDialogVisible.value = false
+    // 更新本地数据
+    const idx = entries.value.findIndex((e) => e.id === editingEntry.value!.id)
+    if (idx !== -1) {
+      if (payload.title) entries.value[idx].title = payload.title
+      if (payload.content_md !== undefined) entries.value[idx].content_md = payload.content_md
+      if (payload.category_id !== undefined) entries.value[idx].category_id = payload.category_id
+    }
+  } catch {
+    ElMessage.error('保存失败，请重试')
+  } finally {
+    editLoading.value = false
+  }
+}
+
+async function handleRepublish(entry: KbdEntry) {
+  try {
+    await ElMessageBox.confirm(
+      `确认重新发布此 KBD 条目？\n\n「${entry.title}」\n\n将重新生成 embedding 并发布。`,
+      '重新发布',
+      { confirmButtonText: '确认发布', cancelButtonText: '取消', type: 'warning' },
+    )
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/republish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({ reviewer_id: currentUser.value }),
+    })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    ElMessage.success('重新发布成功')
+    entries.value = entries.value.filter((e) => e.id !== entry.id)
+    total.value -= 1
+    detailDialogVisible.value = false
+  } catch (e: unknown) {
+    if ((e as { message?: string })?.message !== 'cancel') {
+      ElMessage.error('操作失败，请重试')
+    }
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -401,12 +482,16 @@ onMounted(() => fetchPending())
         </el-table-column>
 
         <!-- 操作 -->
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button type="info" size="small" text @click="openDetailDialog(row)">详情</el-button>
+            <el-button type="primary" size="small" text @click="openEditDialog(row)">编辑</el-button>
             <template v-if="row.status === 'draft'">
               <el-button type="success" size="small" text @click="handleApprove(row)">通过</el-button>
               <el-button type="danger" size="small" text @click="openRejectDialog(row)">拒绝</el-button>
+            </template>
+            <template v-else-if="row.status === 'rejected'">
+              <el-button type="warning" size="small" text @click="handleRepublish(row)">重新发布</el-button>
             </template>
           </template>
         </el-table-column>
@@ -522,6 +607,9 @@ onMounted(() => fetchPending())
           <el-button type="danger" @click="openRejectDialog(detailEntry)">拒绝</el-button>
           <el-button type="success" @click="handleApprove(detailEntry)">审核通过并发布</el-button>
         </template>
+        <template v-else-if="detailEntry && detailEntry.status === 'rejected'">
+          <el-button type="warning" @click="handleRepublish(detailEntry)">重新发布</el-button>
+        </template>
       </template>
     </el-dialog>
 
@@ -547,6 +635,37 @@ onMounted(() => fetchPending())
       <template #footer>
         <el-button @click="rejectDialogVisible = false">取消</el-button>
         <el-button type="danger" :loading="rejectLoading" @click="submitReject">确认拒绝</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 编辑弹窗 -->
+    <el-dialog
+      v-model="editDialogVisible"
+      title="编辑 KBD 条目"
+      width="800px"
+      top="4vh"
+      :close-on-click-modal="false"
+    >
+      <el-form label-width="80px">
+        <el-form-item label="标题">
+          <el-input v-model="editTitle" placeholder="条目标题" />
+        </el-form-item>
+        <el-form-item label="分类 ID">
+          <el-input v-model="editCategoryId" placeholder="如 虚拟机-001" style="width: 240px" />
+        </el-form-item>
+        <el-form-item label="内容">
+          <el-input
+            v-model="editContent"
+            type="textarea"
+            :rows="18"
+            placeholder="Markdown 格式内容"
+            style="font-family: monospace; font-size: 13px"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editLoading" @click="submitEdit">保存</el-button>
       </template>
     </el-dialog>
   </div>

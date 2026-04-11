@@ -779,3 +779,285 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         chunks_embedded=chunks_embedded,
         published_at=now.isoformat(),
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOP 文档列表查询接口
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@sop_router.get("")
+async def list_sop_documents(
+    request: Request,
+    page: int = 1,
+    page_size: int = 20,
+    status: str | None = None,
+    category_id: str | None = None,
+):
+    """查询 SOP 文档列表（分页 + 状态/分类过滤）
+
+    Returns:
+        { documents: [...], total, page, page_size }
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    page_size = min(max(page_size, 1), 100)
+    page = max(page, 1)
+    offset = (page - 1) * page_size
+
+    async with _db_manager.async_session_factory() as session:
+        where_clauses = []
+        params: dict = {"limit": page_size, "offset": offset}
+
+        if status:
+            where_clauses.append("status = :status")
+            params["status"] = status
+        if category_id:
+            where_clauses.append("category_id = :category_id")
+            params["category_id"] = category_id
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        count_sql = text(f"SELECT COUNT(*) FROM sop_document {where_sql}")  # noqa: S608
+        count_result = await session.execute(count_sql, params)
+        total = count_result.scalar() or 0
+
+        data_sql = text(  # noqa: S608
+            f"""
+            SELECT id, source_id, category_id, title, status,
+                   reviewer_id, reviewed_at, published_at, created_at, updated_at,
+                   (SELECT COUNT(*) FROM sop_chunk WHERE document_id = sop_document.id) AS chunk_count
+            FROM sop_document
+            {where_sql}
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+            """
+        )
+        result = await session.execute(data_sql, params)
+        rows = result.mappings().all()
+
+    documents = [
+        {
+            "id": row["id"],
+            "source_id": row["source_id"],
+            "category_id": row["category_id"],
+            "title": row["title"],
+            "status": row["status"],
+            "chunk_count": row["chunk_count"],
+            "reviewer_id": row["reviewer_id"],
+            "reviewed_at": row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
+            "published_at": row["published_at"].isoformat() if row["published_at"] else None,
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
+        for row in rows
+    ]
+
+    return {
+        "documents": documents,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOP 文档状态更新接口（下线/归档）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class SopStatusUpdateRequest(BaseModel):
+    """SOP 文档状态更新请求"""
+
+    status: str = Field(..., description="目标状态：archived")
+
+
+@sop_router.patch("/{document_id}")
+async def update_sop_status(request: Request, document_id: int, body: SopStatusUpdateRequest):
+    """更新 SOP 文档状态（如归档）"""
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    if body.status not in SopDocument.VALID_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"非法状态: {body.status}，合法值: {list(SopDocument.VALID_STATUSES)}",
+        )
+
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(select(SopDocument).where(SopDocument.id == document_id))
+        sop_doc = result.scalar_one_or_none()
+        if not sop_doc:
+            raise HTTPException(status_code=404, detail=f"SOP 文档 {document_id} 不存在")
+
+        sop_doc.status = body.status
+        await session.commit()
+
+    logger.info(event="sop_status_updated", document_id=document_id, new_status=body.status)
+    return {"success": True, "document_id": document_id, "status": body.status}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KBD 条目内容编辑接口
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class KbdUpdateRequest(BaseModel):
+    """KBD 条目内容编辑请求"""
+
+    title: str | None = Field(None, max_length=500, description="新标题（可选）")
+    content_md: str | None = Field(None, description="新 Markdown 内容（可选）")
+    category_id: str | None = Field(None, description="新分类 ID（可选）")
+
+
+@kbd_router.patch("/{kbd_id}")
+async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest):
+    """编辑 KBD 条目的标题、内容或分类"""
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    # 至少需要一个字段
+    if body.title is None and body.content_md is None and body.category_id is None:
+        raise HTTPException(status_code=400, detail="至少需要提供一个可更新字段")
+
+    set_clauses = []
+    params: dict = {"id": kbd_id}
+    if body.title is not None:
+        set_clauses.append("title = :title")
+        params["title"] = body.title
+    if body.content_md is not None:
+        set_clauses.append("content_md = :content_md")
+        params["content_md"] = body.content_md
+    if body.category_id is not None:
+        set_clauses.append("category_id = :category_id")
+        params["category_id"] = body.category_id
+
+    set_sql = ", ".join(set_clauses)
+
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text(f"UPDATE kbd_entry SET {set_sql} WHERE id = :id RETURNING id, status"),  # noqa: S608
+            params,
+        )
+        updated = result.mappings().first()
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+        await session.commit()
+
+    logger.info(event="kbd_updated", kbd_id=kbd_id, fields=list(params.keys()))
+    return {"success": True, "kbd_id": kbd_id}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KBD 条目重新发布接口（rejected → published）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@kbd_router.post("/{kbd_id}/republish", response_model=KbdApproveResponse)
+async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveRequest):
+    """重新发布已拒绝的 KBD 条目（rejected → published），重新生成 embedding"""
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    logger.info(event="kbd_republish_request", kbd_id=kbd_id, reviewer_id=body.reviewer_id)
+
+    # 查询条目（允许 rejected 或 draft 状态）
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text("SELECT id, title, content_md, status FROM kbd_entry WHERE id = :id"),
+            {"id": kbd_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+        if row["status"] not in {"draft", "rejected"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"KBD 条目当前状态为 {row['status']}，只有 draft/rejected 状态可重新发布",
+            )
+        content_md = row["content_md"]
+        if not content_md:
+            raise HTTPException(status_code=400, detail=f"KBD 条目 {kbd_id} 缺少 content_md")
+
+    # 生成 embedding（事务外调用）
+    embedding_generated = False
+    embedding_vector: list[float] | None = None
+    if _embedding_service:
+        try:
+            embedding_vector = await _embedding_service.embed_single(content_md)
+            embedding_generated = True
+            logger.info(event="kbd_republish_embedding_generated", kbd_id=kbd_id, vector_dim=len(embedding_vector))
+        except Exception as exc:
+            logger.warning(event="kbd_republish_embedding_failed", kbd_id=kbd_id, error=str(exc))
+
+    now = datetime.now(UTC)
+    async with _db_manager.async_session_factory() as session:
+        if embedding_vector:
+            vector_str = "[" + ",".join(str(v) for v in embedding_vector) + "]"
+            update_sql = text(
+                """
+                UPDATE kbd_entry
+                SET status = 'published',
+                    published_at = :published_at,
+                    reviewer_id = :reviewer_id,
+                    reviewed_at = :reviewed_at,
+                    review_note = COALESCE(:review_note, review_note),
+                    embedding = :embedding::vector,
+                    tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
+                WHERE id = :id
+                RETURNING id, status, embedding, published_at
+                """
+            )
+            params = {
+                "id": kbd_id,
+                "published_at": now,
+                "reviewer_id": body.reviewer_id,
+                "reviewed_at": now,
+                "review_note": body.review_note,
+                "embedding": vector_str,
+            }
+        else:
+            update_sql = text(
+                """
+                UPDATE kbd_entry
+                SET status = 'published',
+                    published_at = :published_at,
+                    reviewer_id = :reviewer_id,
+                    reviewed_at = :reviewed_at,
+                    review_note = COALESCE(:review_note, review_note),
+                    tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
+                WHERE id = :id
+                RETURNING id, status, embedding, published_at
+                """
+            )
+            params = {
+                "id": kbd_id,
+                "published_at": now,
+                "reviewer_id": body.reviewer_id,
+                "reviewed_at": now,
+                "review_note": body.review_note,
+            }
+
+        result = await session.execute(update_sql, params)
+        updated = result.mappings().first()
+        if not updated:
+            raise HTTPException(status_code=500, detail=f"KBD 条目 {kbd_id} 更新失败")
+        await session.commit()
+
+    logger.info(event="kbd_republished", kbd_id=kbd_id, reviewer_id=body.reviewer_id)
+    return KbdApproveResponse(
+        success=True,
+        kbd_id=kbd_id,
+        status="published",
+        embedding_generated=embedding_generated,
+        published_at=updated["published_at"].isoformat() if updated["published_at"] else None,
+    )

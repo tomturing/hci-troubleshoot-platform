@@ -39,6 +39,12 @@ const router = createRouter({
       meta: { title: 'KBD管理', icon: 'Document', order: 4 },
     },
     {
+      path: '/knowledge/sop',
+      name: 'SopManage',
+      component: () => import('@/views/SopManageView.vue'),
+      meta: { title: 'SOP管理', icon: 'Notebook', order: 5 },
+    },
+    {
       path: '/clients',
       name: 'Clients',
       component: () => import('@/views/ClientListView.vue'),
