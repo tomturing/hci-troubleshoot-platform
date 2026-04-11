@@ -115,14 +115,14 @@ k3s-release:
 
 local-deploy:
 	@echo "🔧 本地构建部署（CI 替代）: push 模式（构建 → 推送 ghcr.io → ArgoCD 同步）"
-	@echo "SERVICES=${SERVICES:-（全量）}  IMAGE_TAG=${IMAGE_TAG:-（自动生成）}"
-	SERVICES="${SERVICES:-}" IMAGE_TAG="${IMAGE_TAG:-}" DRY_RUN="${DRY_RUN:-0}" \
+	@echo "SERVICES=$(SERVICES)  IMAGE_TAG=$(IMAGE_TAG)"
+	SERVICES="$(SERVICES)" IMAGE_TAG="$(IMAGE_TAG)" DRY_RUN="$(or $(DRY_RUN),0)" \
 		bash scripts/ops/local-deploy.sh push
 
 local-deploy-import:
 	@echo "🔧 本地构建部署（CI 替代）: import 模式（构建 → 导入 K3s → ArgoCD 同步）"
-	@echo "SERVICES=${SERVICES:-（全量）}  IMAGE_TAG=${IMAGE_TAG:-（自动生成）}"
-	SERVICES="${SERVICES:-}" IMAGE_TAG="${IMAGE_TAG:-}" DRY_RUN="${DRY_RUN:-0}" \
+	@echo "SERVICES=$(SERVICES)  IMAGE_TAG=$(IMAGE_TAG)"
+	SERVICES="$(SERVICES)" IMAGE_TAG="$(IMAGE_TAG)" DRY_RUN="$(or $(DRY_RUN),0)" \
 		bash scripts/ops/local-deploy.sh import
 
 k3s-deploy-prod:
