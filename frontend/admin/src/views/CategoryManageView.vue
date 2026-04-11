@@ -2,7 +2,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Histogram, Upload, Download } from '@element-plus/icons-vue'
-import type { UploadFile, UploadRawFile } from 'element-plus'
+import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义（适配 kb_category 表结构）
@@ -26,26 +26,24 @@ interface DomainGroup {
   categories: KbCategory[]
 }
 
-interface DiffItem {
+interface ImportDetailItem {
+  index: number
   code: string
+  status: 'would_create' | 'would_update' | 'error'
   name?: string
-  field?: string
-  old?: string
-  new?: string
+  level?: number
+  reason?: string
 }
 
 interface ImportDiff {
+  success: boolean
   dry_run: boolean
-  summary: {
-    total_in_file: number
-    added: number
-    modified: number
-    unchanged: number
-  }
-  diff: {
-    added: DiffItem[]
-    modified: DiffItem[]
-  }
+  yaml_categories: number  // YAML 原始叶节点数
+  total: number            // 含 L1+中间层+叶节点的总节点数
+  created: number          // 将新增节点数
+  updated: number          // 将更新节点数
+  errors: string[]
+  details: ImportDetailItem[]
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -86,6 +84,7 @@ const importLoading = ref(false)
 const importDiff = ref<ImportDiff | null>(null)
 const pendingFile = ref<File | null>(null)
 const importConfirming = ref(false)
+const uploadRef = ref<UploadInstance>()
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 计算属性：过滤后的域分组
@@ -194,8 +193,14 @@ async function saveEdit() {
 // YAML 导入 — 第一阶段（dry_run）
 // ──────────────────────────────────────────────────────────────────────────────
 async function handleFileUpload(uploadFile: UploadFile) {
+  // 仅处理「已就绪」状态，跳过重复触发
+  if (uploadFile.status !== 'ready') return
   const raw = uploadFile.raw as UploadRawFile | undefined
   if (!raw) return
+
+  // 清空旧文件列表，保证只有当前一个文件
+  uploadRef.value?.clearFiles()
+
   pendingFile.value = raw
   importLoading.value = true
   importDiff.value = null
@@ -209,16 +214,26 @@ async function handleFileUpload(uploadFile: UploadFile) {
     })
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}))
-      throw new Error(err.message ?? `HTTP ${resp.status}`)
+      // 后端 400 错误包含 detail.message 或 detail 字符串
+      const msg = err.detail?.message ?? err.detail ?? `HTTP ${resp.status}`
+      throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
     }
-    const data = await resp.json()
-    importDiff.value = data.data as ImportDiff
+    // 后端直接返回 ImportDiff 对象（无 data 包装层）
+    const data: ImportDiff = await resp.json()
+    importDiff.value = data
   } catch (e: unknown) {
     ElMessage.error(`解析失败：${(e as Error).message}`)
     pendingFile.value = null
   } finally {
     importLoading.value = false
   }
+}
+
+// 超出文件数限制时：清旧文件并重新触发上传
+function handleExceed(files: File[]) {
+  uploadRef.value?.clearFiles()
+  const file = files[0] as UploadRawFile
+  uploadRef.value?.handleStart(file)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -252,6 +267,7 @@ function cancelImport() {
   importDialogVisible.value = false
   importDiff.value = null
   pendingFile.value = null
+  uploadRef.value?.clearFiles()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -416,40 +432,52 @@ onMounted(fetchCategories)
     <el-dialog v-model="importDialogVisible" title="导入分类 YAML" width="600px">
       <div v-if="!importDiff">
         <el-upload
+          ref="uploadRef"
           drag
           :auto-upload="false"
+          :limit="1"
           :on-change="handleFileUpload"
+          :on-exceed="handleExceed"
           accept=".yaml,.yml"
         >
           <el-icon size="48"><Upload /></el-icon>
           <div>拖拽或点击上传 category_baseline.yaml</div>
         </el-upload>
+        <div v-if="importLoading" style="text-align:center;padding:12px 0;color:#409EFF">
+          解析中，请稍候…
+        </div>
       </div>
 
       <div v-else class="import-preview">
         <h4>预览结果</h4>
         <div class="preview-summary">
-          <span>文件共 {{ importDiff.summary.total_in_file }} 条</span>
-          <span class="added">新增: {{ importDiff.summary.added }}</span>
-          <span class="modified">修改: {{ importDiff.summary.modified }}</span>
-          <span class="unchanged">无变化: {{ importDiff.summary.unchanged }}</span>
+          <span>YAML 叶节点 {{ importDiff.yaml_categories }} 条，含中间层共 {{ importDiff.total }} 个节点</span>
+          <span class="added">新增: {{ importDiff.created }}</span>
+          <span class="modified">更新: {{ importDiff.updated }}</span>
         </div>
 
-        <div v-if="importDiff.diff.added.length" class="diff-section">
+        <div v-if="importDiff.details.filter(d => d.status === 'would_create').length" class="diff-section">
           <h5>新增分类</h5>
           <ul>
-            <li v-for="item in importDiff.diff.added" :key="item.code">
+            <li v-for="item in importDiff.details.filter(d => d.status === 'would_create')" :key="item.code">
               {{ item.code }} - {{ item.name }}
             </li>
           </ul>
         </div>
 
-        <div v-if="importDiff.diff.modified.length" class="diff-section">
-          <h5>修改内容</h5>
+        <div v-if="importDiff.details.filter(d => d.status === 'would_update').length" class="diff-section">
+          <h5>将更新分类</h5>
           <ul>
-            <li v-for="item in importDiff.diff.modified" :key="item.code">
-              {{ item.code }}: {{ item.field }} "{{ item.old }}" → "{{ item.new }}"
+            <li v-for="item in importDiff.details.filter(d => d.status === 'would_update')" :key="item.code">
+              {{ item.code }} - {{ item.name }}
             </li>
+          </ul>
+        </div>
+
+        <div v-if="importDiff.errors.length" class="diff-section">
+          <h5 style="color:#F56C6C">错误</h5>
+          <ul>
+            <li v-for="(err, i) in importDiff.errors" :key="i" style="color:#F56C6C">{{ err }}</li>
           </ul>
         </div>
       </div>
