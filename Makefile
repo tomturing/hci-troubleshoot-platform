@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill sync-claw-configs check-claw-configs db-sync db-check
+.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill sync-claw-configs check-claw-configs db-sync db-check local-deploy local-deploy-import
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -23,6 +23,12 @@ help:
 	@echo "  make k3s-deploy-prod- 🔴 生产 Helm 升级（会弹出 5 秒确认，需集群权限）"
 	@echo "  make release-observe- 发布后观察（默认30分钟采样）"
 	@echo "  make rollback-drill - 回滚演练（默认演练模式，不执行真实回滚）"
+	@echo ""
+	@echo "  CI 替代命令（GitHub Actions 不可用时）:"
+	@echo "  make local-deploy            - 构建并 push 到 ghcr.io → ArgoCD 同步（全量）"
+	@echo "  SERVICES=kb-service make local-deploy       - 仅构建指定服务"
+	@echo "  SERVICES=kb-service make local-deploy-import - 构建并直接导入 K3s（离线）"
+	@echo "  DRY_RUN=1 SERVICES=kb-service make local-deploy - 预览模式"
 	@echo ""
 	@echo "  数据库迁移命令（Atlas v6.3+）:"
 	@echo "  atlas migrate diff --env local <name>  - 生成迁移文件"
@@ -106,6 +112,18 @@ k3s-release:
 	@echo "⚠️  应急发布路径（正常发布请走 GitOps：环境仓库 PR → ArgoCD 同步）"
 	@echo "执行 K3s 一键发布流程..."
 	bash scripts/ops/k3s-release.sh
+
+local-deploy:
+	@echo "🔧 本地构建部署（CI 替代）: push 模式（构建 → 推送 ghcr.io → ArgoCD 同步）"
+	@echo "SERVICES=$(SERVICES)  IMAGE_TAG=$(IMAGE_TAG)"
+	SERVICES="$(SERVICES)" IMAGE_TAG="$(IMAGE_TAG)" DRY_RUN="$(or $(DRY_RUN),0)" \
+		bash scripts/ops/local-deploy.sh push
+
+local-deploy-import:
+	@echo "🔧 本地构建部署（CI 替代）: import 模式（构建 → 导入 K3s → ArgoCD 同步）"
+	@echo "SERVICES=$(SERVICES)  IMAGE_TAG=$(IMAGE_TAG)"
+	SERVICES="$(SERVICES)" IMAGE_TAG="$(IMAGE_TAG)" DRY_RUN="$(or $(DRY_RUN),0)" \
+		bash scripts/ops/local-deploy.sh import
 
 k3s-deploy-prod:
 	@echo ""

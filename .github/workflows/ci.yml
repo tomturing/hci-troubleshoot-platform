@@ -12,6 +12,10 @@ on:
         required: false
         default: "手动构建镜像"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   docs-governance:
     name: docs-governance
