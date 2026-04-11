@@ -306,7 +306,9 @@ if run "cd '${ENV_REPO_PATH}' && git add environments/${TARGET_ENV}/values.yaml 
   info "  → 无变更，跳过提交"
 else
   run "cd '${ENV_REPO_PATH}' && git commit -m '${COMMIT_MSG}'"
+  run "cd '${ENV_REPO_PATH}' && git stash --include-untracked --quiet || true"
   run "cd '${ENV_REPO_PATH}' && git pull --rebase origin main"
+  run "cd '${ENV_REPO_PATH}' && git stash pop --quiet || true"
   run "cd '${ENV_REPO_PATH}' && git push origin main"
   ok "env repo 已推送"
 fi
