@@ -15,10 +15,13 @@ POST /api/admin/sop/{id}/approve  — SOP 文档审核通过（遍历 chunks 生
 
 from __future__ import annotations
 
+import hashlib
+import io
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
 from sqlalchemy import select, text
@@ -870,24 +873,29 @@ async def list_sop_documents(
 
 
 class SopStatusUpdateRequest(BaseModel):
-    """SOP 文档状态更新请求"""
+    """SOP 文档状态/信息更新请求"""
 
-    status: str = Field(..., description="目标状态：archived")
+    status: str | None = Field(None, description="目标状态：archived 等")
+    title: str | None = Field(None, max_length=500, description="新标题（可选）")
+    category_id: str | None = Field(None, max_length=32, description="新分类 ID（可选，传空字符串清除）")
 
 
 @sop_router.patch("/{document_id}")
 async def update_sop_status(request: Request, document_id: int, body: SopStatusUpdateRequest):
-    """更新 SOP 文档状态（如归档）"""
+    """更新 SOP 文档状态、标题或分类"""
     _check_auth(request)
 
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
-    if body.status not in SopDocument.VALID_STATUSES:
+    if body.status is not None and body.status not in SopDocument.VALID_STATUSES:
         raise HTTPException(
             status_code=400,
             detail=f"非法状态: {body.status}，合法值: {list(SopDocument.VALID_STATUSES)}",
         )
+
+    if body.status is None and body.title is None and body.category_id is None:
+        raise HTTPException(status_code=400, detail="至少需要提供一个更新字段")
 
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(select(SopDocument).where(SopDocument.id == document_id))
@@ -895,11 +903,18 @@ async def update_sop_status(request: Request, document_id: int, body: SopStatusU
         if not sop_doc:
             raise HTTPException(status_code=404, detail=f"SOP 文档 {document_id} 不存在")
 
-        sop_doc.status = body.status
+        if body.status is not None:
+            sop_doc.status = body.status
+        if body.title is not None:
+            sop_doc.title = body.title
+        if body.category_id is not None:
+            # 传空字符串表示清除分类
+            sop_doc.category_id = body.category_id or None
+
         await session.commit()
 
-    logger.info(event="sop_status_updated", document_id=document_id, new_status=body.status)
-    return {"success": True, "document_id": document_id, "status": body.status}
+    logger.info(event="sop_updated", document_id=document_id, new_status=body.status, new_title=body.title)
+    return {"success": True, "document_id": document_id, "status": sop_doc.status}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1061,3 +1076,195 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         embedding_generated=embedding_generated,
         published_at=updated["published_at"].isoformat() if updated["published_at"] else None,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOP 文档上传（docx 文件直接导入）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _parse_docx_bytes(content: bytes) -> tuple[str, str, list[tuple[str, str]]]:
+    """解析 .docx 二进制内容，返回 (title, full_markdown, chapters)"""
+    try:
+        from docx import Document  # noqa: PLC0415
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="服务器未安装 python-docx，请联系管理员") from exc
+
+    doc = Document(io.BytesIO(content))
+
+    title = ""
+    md_lines: list[str] = []
+    chapters: list[tuple[str, str]] = []
+    current_chapter_title = "概述"
+    current_chapter_lines: list[str] = []
+
+    for para in doc.paragraphs:
+        style_name = para.style.name if para.style else ""
+        text = para.text.strip()
+        if not text:
+            continue
+
+        if style_name.startswith("Heading"):
+            try:
+                level = int(style_name.split()[-1])
+            except ValueError:
+                level = 1
+
+            if current_chapter_lines:
+                chapter_content = "\n".join(current_chapter_lines).strip()
+                if chapter_content:
+                    chapters.append((current_chapter_title, chapter_content))
+
+            heading_prefix = "#" * min(level, 3)
+            heading_line = f"{heading_prefix} {text}"
+            md_lines.append(heading_line)
+            current_chapter_title = text
+            current_chapter_lines = [heading_line]
+
+            if level == 1 and not title:
+                title = text
+        else:
+            md_lines.append(text)
+            current_chapter_lines.append(text)
+
+    if current_chapter_lines:
+        chapter_content = "\n".join(current_chapter_lines).strip()
+        if chapter_content:
+            chapters.append((current_chapter_title, chapter_content))
+
+    if not title:
+        title = "未命名 SOP 文档"
+
+    full_markdown = "\n\n".join(md_lines)
+    return title, full_markdown, chapters
+
+
+def _split_md_chapters(content_md: str) -> list[tuple[str, str]]:
+    """按 Markdown 标题分块（与 sop_ingest.py 保持一致）"""
+    chapters: list[tuple[str, str]] = []
+    heading_pattern = re.compile(r"^(#{1,3})\s+(.+)$")
+    current_title = "概述"
+    current_lines: list[str] = []
+    found_first = False
+
+    for line in content_md.split("\n"):
+        match = heading_pattern.match(line)
+        if match:
+            if current_lines:
+                content = "\n".join(current_lines).strip()
+                if content:
+                    chapters.append((current_title, content))
+            current_title = match.group(2).strip()
+            current_lines = [line]
+            found_first = True
+        else:
+            current_lines.append(line)
+
+    if current_lines:
+        content = "\n".join(current_lines).strip()
+        if content:
+            chapters.append((current_title, content))
+
+    if not found_first and chapters:
+        pass
+
+    return chapters
+
+
+@sop_router.post("/upload", status_code=status.HTTP_201_CREATED)
+async def upload_sop_docx(
+    request: Request,
+    file: UploadFile = File(..., description=".docx 文件"),
+    category_id: str | None = Form(None, description="分类编码，如 虚拟机-003"),
+):
+    """直接上传 .docx 文件，解析后写入 SOP 草稿
+
+    支持幂等：相同文件内容（SHA256 哈希）不会重复导入。
+    上传成功后状态为 draft，需在本页面点击「发布」后方可被 AI 搜索。
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    filename = file.filename or ""
+    if not filename.lower().endswith(".docx"):
+        raise HTTPException(status_code=400, detail="仅支持 .docx 格式文件")
+
+    content = await file.read()
+    if len(content) > 50 * 1024 * 1024:  # 50MB 限制
+        raise HTTPException(status_code=400, detail="文件过大，最大支持 50MB")
+
+    docx_hash = hashlib.sha256(content).hexdigest()
+
+    # 解析 docx
+    try:
+        doc_title, content_md, _ = _parse_docx_bytes(content)
+    except Exception as exc:
+        logger.error(event="sop_upload_parse_error", filename=filename, error=str(exc))
+        raise HTTPException(status_code=400, detail=f"文件解析失败：{exc}") from exc
+
+    async with _db_manager.async_session_factory() as session:
+        # 幂等：已存在相同哈希则返回已有文档
+        from sqlalchemy import select as sa_select  # noqa: PLC0415
+        existing = await session.execute(
+            sa_select(SopDocument).where(SopDocument.docx_hash == docx_hash)
+        )
+        existing_doc = existing.scalar_one_or_none()
+        if existing_doc:
+            chunk_count_result = await session.execute(
+                sa_select(SopChunk).where(SopChunk.document_id == existing_doc.id)
+            )
+            chunks_n = len(chunk_count_result.scalars().all())
+            return {
+                "success": True,
+                "document_id": existing_doc.id,
+                "chunks_created": chunks_n,
+                "status": existing_doc.status,
+                "duplicate": True,
+                "message": f"文件已导入（document_id={existing_doc.id}），跳过重复入库",
+            }
+
+        # 新建 sop_document
+        sop_doc = SopDocument(
+            source_id=f"sop-upload-{docx_hash[:12]}",
+            title=doc_title,
+            content_md=content_md,
+            category_id=category_id or None,
+            docx_hash=docx_hash,
+            status="draft",
+        )
+        session.add(sop_doc)
+        await session.flush()
+
+        # 分块写入 sop_chunk
+        chapters = _split_md_chapters(content_md)
+        for idx, (chapter_title, chapter_content) in enumerate(chapters):
+            chunk = SopChunk(
+                document_id=sop_doc.id,
+                chunk_index=idx,
+                chapter_title=chapter_title[:200] if chapter_title else None,
+                content=chapter_content,
+            )
+            session.add(chunk)
+
+        await session.commit()
+
+        document_id = sop_doc.id
+        chunks_created = len(chapters)
+
+    logger.info(
+        event="sop_upload_completed",
+        document_id=document_id,
+        title=doc_title[:50],
+        filename=filename,
+        chunks_created=chunks_created,
+    )
+    return {
+        "success": True,
+        "document_id": document_id,
+        "chunks_created": chunks_created,
+        "status": "draft",
+        "duplicate": False,
+        "title": doc_title,
+    }

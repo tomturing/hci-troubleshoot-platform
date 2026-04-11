@@ -327,3 +327,21 @@ async def sop_update_proxy(document_id: int, request: Request):
     headers = _internal_auth_headers()
     response = await _sop_proxy("PATCH", f"/{document_id}", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@sop_admin_router.post("/upload")
+async def sop_upload_proxy(request: Request):
+    """透传 .docx 文件上传请求（multipart/form-data）→ kb-service"""
+    raw_body = await request.body()
+    content_type = request.headers.get("content-type", "")
+    headers = _internal_auth_headers()
+    headers["content-type"] = content_type
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        try:
+            url = f"{SOP_ADMIN_SERVICE_URL}/upload"
+            resp = await client.post(url, content=raw_body, headers=headers)
+            return JSONResponse(content=resp.json(), status_code=resp.status_code)
+        except httpx.RequestError as exc:
+            logger.error(f"KB Service SOP 上传请求失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
