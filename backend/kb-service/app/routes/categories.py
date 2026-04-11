@@ -19,7 +19,9 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
+from sqlalchemy import distinct, select
 
+from app.models.sop_document import SopDocument
 from app.services.category_service import CategoryService
 
 if TYPE_CHECKING:
@@ -105,13 +107,27 @@ async def list_categories(
         force_refresh=force_refresh,
     )
 
+    # 查询已发布 SOP 所覆盖的分类集合
+    sop_coverage: set[str] = set()
+    if _db_manager is not None:
+        async with _db_manager.async_session_factory() as session:
+            sop_result = await session.execute(
+                select(distinct(SopDocument.category_id))
+                .where(SopDocument.status == "published")
+                .where(SopDocument.category_id.isnot(None))
+            )
+            sop_coverage = set(sop_result.scalars().all())
+
     if grouped:
         grouped_data = await _category_service.get_grouped_by_domain(
             force_refresh=force_refresh
         )
         return {
             "domains": {
-                domain: [cat.to_dict() for cat in cats]
+                domain: [
+                    {**cat.to_dict(), "has_sop": bool(cat.code and cat.code in sop_coverage)}
+                    for cat in cats
+                ]
                 for domain, cats in grouped_data.items()
             },
             "total_domains": len(grouped_data),
@@ -121,7 +137,10 @@ async def list_categories(
             force_refresh=force_refresh
         )
         return {
-            "categories": [cat.to_dict() for cat in categories],
+            "categories": [
+                {**cat.to_dict(), "has_sop": bool(cat.code and cat.code in sop_coverage)}
+                for cat in categories
+            ],
             "total": len(categories),
         }
 

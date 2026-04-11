@@ -785,6 +785,51 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SOP 文档单条详情查询（含 content_md）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@sop_router.get("/{document_id}")
+async def get_sop_document(request: Request, document_id: int):
+    """获取单个 SOP 文档详情（含 content_md 正文）"""
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        row = (await session.execute(
+            text(
+                """
+                SELECT id, source_id, category_id, title, content_md, status,
+                       reviewer_id, reviewed_at, published_at, created_at, updated_at,
+                       (SELECT COUNT(*) FROM sop_chunk WHERE document_id = sop_document.id) AS chunk_count
+                FROM sop_document WHERE id = :id
+                """
+            ),
+            {"id": document_id},
+        )).mappings().first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"SOP 文档 {document_id} 不存在")
+
+    return {
+        "id": row["id"],
+        "source_id": row["source_id"],
+        "category_id": row["category_id"],
+        "title": row["title"],
+        "content_md": row["content_md"],
+        "status": row["status"],
+        "chunk_count": row["chunk_count"],
+        "reviewer_id": row["reviewer_id"],
+        "reviewed_at": row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
+        "published_at": row["published_at"].isoformat() if row["published_at"] else None,
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SOP 文档列表查询接口
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -878,6 +923,7 @@ class SopStatusUpdateRequest(BaseModel):
     status: str | None = Field(None, description="目标状态：archived 等")
     title: str | None = Field(None, max_length=500, description="新标题（可选）")
     category_id: str | None = Field(None, max_length=32, description="新分类 ID（可选，传空字符串清除）")
+    content_md: str | None = Field(None, description="更新后的 Markdown 正文（可选，修改后将重新分块）")
 
 
 @sop_router.patch("/{document_id}")
@@ -894,8 +940,12 @@ async def update_sop_status(request: Request, document_id: int, body: SopStatusU
             detail=f"非法状态: {body.status}，合法值: {list(SopDocument.VALID_STATUSES)}",
         )
 
-    if body.status is None and body.title is None and body.category_id is None:
+    if body.status is None and body.title is None and body.category_id is None and body.content_md is None:
         raise HTTPException(status_code=400, detail="至少需要提供一个更新字段")
+
+    rechunked = False
+    new_chunk_count = 0
+    downgraded_to_draft = False
 
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(select(SopDocument).where(SopDocument.id == document_id))
@@ -911,10 +961,45 @@ async def update_sop_status(request: Request, document_id: int, body: SopStatusU
             # 传空字符串表示清除分类
             sop_doc.category_id = body.category_id or None
 
+        if body.content_md is not None:
+            sop_doc.content_md = body.content_md
+            # 删除旧分块，重新按新内容创建
+            await session.execute(
+                text("DELETE FROM sop_chunk WHERE document_id = :id"),
+                {"id": document_id},
+            )
+            chapters = _split_md_chapters(body.content_md)
+            for idx, (chapter_title, chapter_content) in enumerate(chapters):
+                session.add(SopChunk(
+                    document_id=document_id,
+                    chunk_index=idx,
+                    chapter_title=chapter_title[:200] if chapter_title else None,
+                    content=chapter_content,
+                ))
+            new_chunk_count = len(chapters)
+            rechunked = True
+            # 内容变更后若已发布则降级为草稿（embedding 已失效）
+            if sop_doc.status == "published" and body.status is None:
+                sop_doc.status = "draft"
+                downgraded_to_draft = True
+
         await session.commit()
 
-    logger.info(event="sop_updated", document_id=document_id, new_status=body.status, new_title=body.title)
-    return {"success": True, "document_id": document_id, "status": sop_doc.status}
+    logger.info(
+        event="sop_updated",
+        document_id=document_id,
+        new_status=sop_doc.status,
+        new_title=body.title,
+        rechunked=rechunked,
+        new_chunk_count=new_chunk_count if rechunked else None,
+        downgraded=downgraded_to_draft,
+    )
+    resp = {"success": True, "document_id": document_id, "status": sop_doc.status}
+    if rechunked:
+        resp["chunks_updated"] = new_chunk_count
+    if downgraded_to_draft:
+        resp["message"] = "内容已更新并重新分块，文档已降级为草稿，请重新发布"
+    return resp
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1140,12 +1225,11 @@ def _parse_docx_bytes(content: bytes) -> tuple[str, str, list[tuple[str, str]]]:
 
 
 def _split_md_chapters(content_md: str) -> list[tuple[str, str]]:
-    """按 Markdown 标题分块（与 sop_ingest.py 保持一致）"""
-    chapters: list[tuple[str, str]] = []
+    """按 Markdown 标题分块，并合并无正文的标题章节到后续章节"""
     heading_pattern = re.compile(r"^(#{1,3})\s+(.+)$")
     current_title = "概述"
     current_lines: list[str] = []
-    found_first = False
+    raw_chapters: list[tuple[str, str]] = []
 
     for line in content_md.split("\n"):
         match = heading_pattern.match(line)
@@ -1153,22 +1237,47 @@ def _split_md_chapters(content_md: str) -> list[tuple[str, str]]:
             if current_lines:
                 content = "\n".join(current_lines).strip()
                 if content:
-                    chapters.append((current_title, content))
+                    raw_chapters.append((current_title, content))
             current_title = match.group(2).strip()
             current_lines = [line]
-            found_first = True
         else:
             current_lines.append(line)
 
     if current_lines:
         content = "\n".join(current_lines).strip()
         if content:
-            chapters.append((current_title, content))
+            raw_chapters.append((current_title, content))
 
-    if not found_first and chapters:
-        pass
+    # 后处理：将无正文内容（仅含标题行）的章节合并到下一有正文章节
+    def _has_body(text: str) -> bool:
+        return any(
+            line.strip() and not line.strip().startswith("#")
+            for line in text.split("\n")
+        )
 
-    return chapters
+    merged: list[tuple[str, str]] = []
+    pending_content = ""
+    pending_title = ""
+
+    for title, content in raw_chapters:
+        if _has_body(content):
+            if pending_content:
+                # 将无正文前缀并入当前有正文章节
+                merged.append((pending_title, (pending_content + "\n\n" + content).strip()))
+                pending_content = ""
+                pending_title = ""
+            else:
+                merged.append((title, content))
+        else:
+            # 无正文章节，积累为后续章节前缀
+            pending_content = (pending_content + "\n\n" + content).strip() if pending_content else content
+            pending_title = title
+
+    # 末尾残留的无正文章节（孤立标题）保留
+    if pending_content:
+        merged.append((pending_title, pending_content))
+
+    return merged if merged else raw_chapters
 
 
 @sop_router.post("/upload", status_code=status.HTTP_201_CREATED)

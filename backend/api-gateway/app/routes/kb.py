@@ -311,6 +311,14 @@ async def sop_list_proxy(request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@sop_admin_router.get("/{document_id}")
+async def sop_detail_proxy(document_id: int, request: Request):
+    """代理 SOP 文档详情请求（含 content_md）→ kb-service"""
+    headers = _internal_auth_headers()
+    response = await _sop_proxy("GET", f"/{document_id}", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @sop_admin_router.post("/{document_id}/approve")
 async def sop_approve_proxy(document_id: int, request: Request):
     """代理 SOP 文档发布（生成 embedding）→ kb-service"""

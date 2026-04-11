@@ -51,6 +51,9 @@ const editDialogVisible = ref(false)
 const editDoc = ref<SopDocument | null>(null)
 const editTitle = ref('')
 const editCategoryId = ref('')
+const editContentMd = ref('')
+const editOriginalContentMd = ref('')  // 用于检测正文是否变更
+const editLoadingContent = ref(false)
 const editLoading = ref(false)
 
 // 导入弹窗
@@ -167,11 +170,32 @@ function openViewDialog(doc: SopDocument) {
 }
 
 // ─── 编辑 ────────────────────────────────────────────────────────────────────
-function openEditDialog(doc: SopDocument) {
+async function openEditDialog(doc: SopDocument) {
   editDoc.value = doc
   editTitle.value = doc.title
   editCategoryId.value = doc.category_id || ''
+  editContentMd.value = doc.content_md || ''
+  editOriginalContentMd.value = doc.content_md || ''
   editDialogVisible.value = true
+
+  // 列表接口不返回 content_md，需单独请求
+  if (!doc.content_md) {
+    editLoadingContent.value = true
+    try {
+      const resp = await fetch(`/api/v1/sop/${doc.id}`, { headers: authHeader })
+      if (resp.ok) {
+        const detail = await resp.json()
+        editContentMd.value = detail.content_md || ''
+        editOriginalContentMd.value = detail.content_md || ''
+        const idx = documents.value.findIndex((d) => d.id === doc.id)
+        if (idx !== -1) documents.value[idx].content_md = detail.content_md
+      }
+    } catch {
+      ElMessage.warning('正文加载失败，可手动输入内容')
+    } finally {
+      editLoadingContent.value = false
+    }
+  }
 }
 
 async function submitEdit() {
@@ -186,6 +210,10 @@ async function submitEdit() {
     if (editTitle.value.trim() !== editDoc.value.title) payload.title = editTitle.value.trim()
     const newCat = editCategoryId.value.trim() || null
     if (newCat !== editDoc.value.category_id) payload.category_id = newCat
+    const newContent = editContentMd.value.trim()
+    if (newContent && newContent !== editOriginalContentMd.value.trim()) {
+      payload.content_md = newContent
+    }
 
     if (Object.keys(payload).length === 0) {
       ElMessage.info('内容未变更')
@@ -201,11 +229,23 @@ async function submitEdit() {
       const err = await resp.json().catch(() => ({}))
       throw new Error(err.detail || `HTTP ${resp.status}`)
     }
-    ElMessage.success('保存成功')
+    const result = await resp.json()
+    const successMsg = result.message
+      ? `保存成功：${result.message}`
+      : (result.chunks_updated !== undefined
+        ? `保存成功，已重新分块 ${result.chunks_updated} 个`
+        : '保存成功')
+    ElMessage.success(successMsg)
     const idx = documents.value.findIndex((d) => d.id === editDoc.value!.id)
     if (idx !== -1) {
       if (payload.title) documents.value[idx].title = payload.title as string
       if ('category_id' in payload) documents.value[idx].category_id = payload.category_id
+      if (payload.content_md) {
+        documents.value[idx].content_md = payload.content_md as string
+        if (result.status === 'draft' && documents.value[idx].status === 'published') {
+          documents.value[idx].status = 'draft'
+        }
+      }
     }
     editDialogVisible.value = false
   } catch (e: unknown) {
@@ -415,15 +455,32 @@ onMounted(() => fetchDocuments())
     </el-dialog>
 
     <!-- ── 编辑弹窗 ── -->
-    <el-dialog v-model="editDialogVisible" title="编辑 SOP 文档信息" width="500px">
-      <el-form label-width="80px">
-        <el-form-item label="标题" required>
-          <el-input v-model="editTitle" placeholder="SOP 文档标题" />
-        </el-form-item>
-        <el-form-item label="分类 ID">
-          <el-input v-model="editCategoryId" placeholder="如 虚拟机-003（留空则清除分类）" />
-        </el-form-item>
-      </el-form>
+    <el-dialog v-model="editDialogVisible" title="编辑 SOP 文档" width="900px" :close-on-click-modal="false">
+      <div v-loading="editLoadingContent" style="min-height:80px">
+        <el-form label-width="80px">
+          <el-form-item label="标题" required>
+            <el-input v-model="editTitle" placeholder="SOP 文档标题" />
+          </el-form-item>
+          <el-form-item label="分类 ID">
+            <el-input v-model="editCategoryId" placeholder="如 虚拟机-003（留空则清除分类）" />
+          </el-form-item>
+          <el-form-item label="正文内容">
+            <el-alert
+              v-if="editDoc?.status === 'published'"
+              type="warning"
+              :closable="false"
+              style="margin-bottom:8px;font-size:12px"
+            >修改正文后文档将变为「草稿」，需重新发布才可被 AI 搜索引用。</el-alert>
+            <el-input
+              v-model="editContentMd"
+              type="textarea"
+              :rows="22"
+              placeholder="Markdown 格式正文..."
+              style="font-family: 'SFMono-Regular', Consolas, monospace; font-size: 13px; line-height: 1.6"
+            />
+          </el-form-item>
+        </el-form>
+      </div>
       <template #footer>
         <el-button @click="editDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="editLoading" @click="submitEdit">保存</el-button>
