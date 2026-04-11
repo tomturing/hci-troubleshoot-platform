@@ -164,12 +164,26 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
             )
             existing_doc = result.scalar_one_or_none()
             if existing_doc:
-                logger.info(
-                    event="sop_ingest_duplicate",
-                    docx_hash=body.docx_hash,
-                    existing_id=existing_doc.id,
-                    message="文档已存在，跳过入库",
-                )
+                # 若调用方传入了新的 category_id，且与现有分类不同，则更新
+                if body.category_id and body.category_id != existing_doc.category_id:
+                    old_category = existing_doc.category_id
+                    existing_doc.category_id = body.category_id
+                    await session.commit()
+                    logger.info(
+                        event="sop_ingest_category_updated",
+                        docx_hash=body.docx_hash,
+                        existing_id=existing_doc.id,
+                        old_category=old_category,
+                        new_category=body.category_id,
+                        message="文档已存在，更新 category_id",
+                    )
+                else:
+                    logger.info(
+                        event="sop_ingest_duplicate",
+                        docx_hash=body.docx_hash,
+                        existing_id=existing_doc.id,
+                        message="文档已存在，跳过入库",
+                    )
                 # 返回已存在的文档信息
                 chunk_count = await session.execute(
                     select(SopChunk).where(SopChunk.document_id == existing_doc.id)

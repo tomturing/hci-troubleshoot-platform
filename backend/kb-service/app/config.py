@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # 降级：本地 bge-small-zh-v1.5（网络故障时使用）
     BGE_MODEL_PATH: str = "/models/bge-small-zh-v1.5"  # 容器内路径
-    EMBEDDING_DIM: int = 512                            # 向量维度（bge-small-zh-v1.5 实际输出 512 维）
+    EMBEDDING_DIM: int = 1536                           # 向量维度（与 DB Vector(1536) 保持一致；z.ai embedding-3 输出 1536 维）
 
     # Embedding 超时（超时后自动降级到本地模型）
     EMBEDDING_TIMEOUT_SEC: float = 5.0
