@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.models.sop_chunk import SopChunk
 from app.models.sop_document import SopDocument
@@ -203,16 +203,62 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
             )
             existing_by_source = result.scalar_one_or_none()
             if existing_by_source:
+                # 若 hash 相同：完全幂等，直接返回
+                if body.docx_hash and body.docx_hash == existing_by_source.docx_hash:
+                    logger.info(
+                        event="sop_ingest_duplicate_source",
+                        source_id=body.source_id,
+                        existing_id=existing_by_source.id,
+                        message="source_id + hash 均相同，跳过入库",
+                    )
+                    chunk_count = await session.execute(
+                        select(SopChunk).where(SopChunk.document_id == existing_by_source.id)
+                    )
+                    chunks_created = len(chunk_count.scalars().all())
+                    return SopIngestResponse(
+                        success=True,
+                        document_id=existing_by_source.id,
+                        chunks_created=chunks_created,
+                        status=existing_by_source.status,
+                    )
+
+                # hash 不同（内容已更新）：upsert 文档内容 + 重建 chunks + 重置为 draft
+                old_hash = existing_by_source.docx_hash
+                existing_by_source.title = body.title
+                existing_by_source.content_md = body.content_md
+                existing_by_source.docx_hash = body.docx_hash
+                if body.category_id:
+                    existing_by_source.category_id = body.category_id
+                existing_by_source.status = "draft"  # 内容变更，需重新审核
+                existing_by_source.published_at = None
+                existing_by_source.reviewed_at = None
+
+                # 删除旧 chunks，重建
+                await session.execute(
+                    delete(SopChunk).where(SopChunk.document_id == existing_by_source.id)
+                )
+                chapters = split_by_chapters(body.content_md)
+                chunks_created = 0
+                for idx, (chapter_title, content) in enumerate(chapters):
+                    chunk = SopChunk(
+                        document_id=existing_by_source.id,
+                        chunk_index=idx,
+                        chapter_title=chapter_title[:200] if chapter_title else None,
+                        content=content,
+                    )
+                    session.add(chunk)
+                    chunks_created += 1
+
+                await session.commit()
                 logger.info(
-                    event="sop_ingest_duplicate_source",
+                    event="sop_ingest_updated",
                     source_id=body.source_id,
-                    existing_id=existing_by_source.id,
-                    message="source_id 已存在，跳过入库",
+                    document_id=existing_by_source.id,
+                    old_hash=old_hash,
+                    new_hash=body.docx_hash,
+                    chunks_created=chunks_created,
+                    message="文档内容已更新，chunks 已重建，状态重置为 draft",
                 )
-                chunk_count = await session.execute(
-                    select(SopChunk).where(SopChunk.document_id == existing_by_source.id)
-                )
-                chunks_created = len(chunk_count.scalars().all())
                 return SopIngestResponse(
                     success=True,
                     document_id=existing_by_source.id,
