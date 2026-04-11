@@ -4,16 +4,19 @@ KB Service — 分类数据访问层
 职责：
 - CRUD 操作（基于 code 业务键）
 - YAML 导入（两阶段：dry_run 验证 + 实际写入）
+  - 支持 category_baseline.yaml 标准格式（id/label/domain/path）
+  - 自动推断 level（= path 长度），同时生成 L1 域节点和中间层节点
 - hit_count 增量更新
 
 注意：
 - 所有操作使用 async session
-- 导入操作需处理 parent_id 关系（code → id 映射）
+- YAML 格式不要求显式 level 字段，从 path 长度推断（DRY 原则）
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import json
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from shared.utils.logger import get_logger
@@ -164,12 +167,122 @@ class CategoryRepository:
             )
             return category
 
+    @staticmethod
+    def _parse_baseline_yaml(
+        categories_data: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """将 category_baseline.yaml 的叶节点列表展开为完整节点列表。
+
+        基准 YAML 只包含叶节点（格式：id/label/domain/path），level 隐含于 path 长度中。
+        本方法实现四阶段解析，与 scripts/kbd/seed_categories.py 逻辑等价：
+          Phase 1: 从 domain 字段推断并生成 L1 域节点（code 格式：<domain>-L1）
+          Phase 2: 从 L3/L4 叶节点 path 提取中间层节点（code 格式：<domain>-L<n>-<path最后元素>）
+          Phase 3: 解析叶节点（id→code, label→name, len(path)→level, path→path_labels）
+          Phase 4: 按 level 排序，确保父节点先于子节点写入
+
+        中间层节点 code 规则与 scripts/kbd/seed_categories.py 保持一致：
+          <domain>-L<depth>-<sub_path[-1]>，相同 path 永远生成相同 code（幂等安全）。
+
+        Args:
+            categories_data: YAML 中的 categories 列表（原始格式）
+
+        Returns:
+            (records, parse_errors) 元组：
+              records: 按 level 升序排列的记录列表
+              parse_errors: 解析过程中发现的字段错误（非空则导入应终止）
+        """
+        parse_errors: list[str] = []
+
+        # ── Phase 1: 推断 L1 域节点 ──────────────────────────────────────────
+        domains: dict[str, dict[str, Any]] = {}
+        for cat in categories_data:
+            domain = cat.get("domain", "")
+            if isinstance(domain, str) and domain and domain not in domains:
+                domains[domain] = {
+                    "code": f"{domain}-L1",
+                    "name": domain,
+                    "domain": domain,
+                    "path_labels": [domain],
+                    "level": 1,
+                    "source": "baseline_yaml",
+                }
+
+        # ── Phase 2: 从 path 提取中间层节点（L3+ 叶节点才有中间层）──────────
+        # 例如 path=['虚拟机','FC','FC存储添加失败'] → 中间层 ['虚拟机','FC']
+        # code 规则：<domain>-L<depth>-<路径最后元素>，与 seed_categories.py 保持一致
+        intermediate: dict[str, dict[str, Any]] = {}
+        for cat in categories_data:
+            path = cat.get("path", [])
+            if not isinstance(path, list):  # 非 list 类型在 Phase 3 统一报错
+                continue
+            domain: str = cat.get("domain", "")
+            level: int = len(path)
+            if level >= 3:
+                for depth in range(2, level):
+                    sub_path = path[:depth]
+                    path_key = json.dumps(sub_path, ensure_ascii=False)
+                    if path_key not in intermediate:
+                        intermediate[path_key] = {
+                            "code": f"{domain}-L{depth}-{sub_path[-1]}",
+                            "name": sub_path[-1],
+                            "domain": domain,
+                            "path_labels": sub_path,
+                            "level": depth,
+                            "source": "baseline_yaml",
+                        }
+
+        # ── Phase 3: 解析叶节点（YAML 原始 198 条）──────────────────────────
+        # 字段映射：id→code, label→name（兼容旧格式 name），path→path_labels, len(path)→level
+        leaf_records: list[dict[str, Any]] = []
+        for idx, cat in enumerate(categories_data):
+            path = cat.get("path", [])
+            if not isinstance(path, list):
+                parse_errors.append(
+                    f"第 {idx + 1} 条记录 path 字段非 list 类型（实际: {type(path).__name__}）"
+                )
+                continue
+            code = cat.get("id", "")
+            name = cat.get("label") or cat.get("name", "")  # 兼容旧格式
+            domain = cat.get("domain", "")
+            if not code:
+                parse_errors.append(f"第 {idx + 1} 条记录缺少 id 字段")
+                continue
+            if not name:
+                parse_errors.append(f"第 {idx + 1} 条记录（{code}）缺少 label/name 字段")
+                continue
+            level = len(path)
+            leaf_records.append({
+                "code": code,
+                "name": name,
+                "domain": domain,
+                "path_labels": path,
+                "level": level,
+                "source": "baseline_yaml",
+            })
+
+        # ── Phase 4: 合并并按 level 排序（父节点先于子节点写入）──────────────
+        all_records = list(domains.values()) + list(intermediate.values()) + leaf_records
+        all_records.sort(key=lambda r: r["level"])
+        return all_records, parse_errors
+
     async def import_from_yaml(
         self,
         content: bytes,
         dry_run: bool = False,
     ) -> dict:
-        """从 YAML 导入分类数据（两阶段）
+        """从 category_baseline.yaml 导入分类数据（两阶段 upsert）。
+
+        支持基准 YAML 标准格式（字段：id/label/domain/path），
+        level 从 path 长度自动推断，无需在 YAML 中显式声明。
+
+        导入结果包含：
+          - L1 域节点：<domain>-L1（5 条）
+          - L2+ 中间层节点：从叶节点 path 提取（约 32 条）
+          - 叶节点：YAML 原始数据（198 条）
+
+        两阶段策略：
+          Phase 1：全量 upsert（parent_id 暂为 NULL）
+          Phase 2：根据 path_labels 批量 UPDATE parent_id（建立树形关系）
 
         Args:
             content: YAML 文件内容（bytes）
@@ -179,19 +292,19 @@ class CategoryRepository:
             {
                 "success": bool,
                 "dry_run": bool,
-                "total": int,          # YAML 中的分类总数
-                "created": int,        # 新创建的数量
-                "updated": int,        # 更新的数量
-                "skipped": int,        # 跳过的数量（无变化）
-                "errors": list[str],   # 错误信息
-                "details": list[dict], # 每条记录的处理结果
+                "yaml_categories": int,    # YAML 原始叶节点数
+                "total": int,              # 实际处理节点数（含 L1 + 中间层 + 叶节点）
+                "created": int,
+                "updated": int,
+                "errors": list[str],
+                "details": list[dict],
             }
         """
         trace_id = get_current_trace_id()
         errors: list[str] = []
         details: list[dict] = []
 
-        # 解析 YAML
+        # ── 解析 YAML ─────────────────────────────────────────────────────────
         try:
             data = yaml.safe_load(content)
             if not data or "categories" not in data:
@@ -199,10 +312,10 @@ class CategoryRepository:
                 return {
                     "success": False,
                     "dry_run": dry_run,
+                    "yaml_categories": 0,
                     "total": 0,
                     "created": 0,
                     "updated": 0,
-                    "skipped": 0,
                     "errors": errors,
                     "details": details,
                 }
@@ -211,160 +324,211 @@ class CategoryRepository:
             return {
                 "success": False,
                 "dry_run": dry_run,
+                "yaml_categories": 0,
                 "total": 0,
                 "created": 0,
                 "updated": 0,
-                "skipped": 0,
                 "errors": errors,
                 "details": details,
             }
 
-        categories_data = data["categories"]
-        total = len(categories_data)
-        created = 0
-        updated = 0
-        skipped = 0
+        raw_categories = data["categories"]
+        yaml_count = len(raw_categories)
+
+        # ── 四阶段解析：生成完整节点列表（L1 + 中间层 + 叶节点）──────────────
+        all_records, parse_errors = self._parse_baseline_yaml(raw_categories)
+        if parse_errors:
+            errors.extend(parse_errors)
+            return {
+                "success": False,
+                "dry_run": dry_run,
+                "yaml_categories": yaml_count,
+                "total": 0,
+                "created": 0,
+                "updated": 0,
+                "errors": errors,
+                "details": details,
+            }
+        total = len(all_records)
 
         logger.info(
             event="repo_import_start",
             dry_run=dry_run,
-            total=total,
+            yaml_categories=yaml_count,
+            total_records=total,
             trace_id=trace_id,
         )
 
-        # 构建现有分类的 code → id 映射（用于处理 parent_code）
+        created = 0
+        updated = 0
+
         async with self._db.async_session_factory() as session:
-            # 第一阶段：构建映射表
+            # 查询已存在的 code → id 映射
             existing_result = await session.execute(select(KbCategory.code, KbCategory.id))
-            code_to_id = {row[0]: row[1] for row in existing_result.fetchall() if row[0]}
+            code_to_id: dict[str, int] = {
+                row[0]: row[1] for row in existing_result.fetchall() if row[0]
+            }
 
-            # 处理每条记录
-            for idx, cat_data in enumerate(categories_data):
-                cat_code = cat_data.get("id")  # YAML 中 id 字段对应 code
-                if not cat_code:
-                    errors.append(f"第 {idx + 1} 条记录缺少 id 字段")
-                    details.append({"index": idx + 1, "status": "error", "reason": "缺少 id"})
-                    continue
+            # ── Phase 1: 全量 upsert（parent_id=NULL，先建立所有节点）────────
+            for idx, rec in enumerate(all_records):
+                code = rec["code"]
+                name = rec["name"]
+                level = rec["level"]
+                path_labels = rec["path_labels"]
+                domain = rec["domain"]
+                source = rec["source"]
 
-                # 解析 parent_code
-                parent_code = cat_data.get("parent_id")  # YAML 中 parent_id 是 parent_code
-                parent_id = None
-                if parent_code:
-                    if parent_code in code_to_id:
-                        parent_id = code_to_id[parent_code]
-                    else:
-                        # 父节点尚未处理（可能在本批次中），暂时跳过
-                        # 实际导入时需要按层级顺序处理
-                        errors.append(f"第 {idx + 1} 条记录 parent_id={parent_code} 未找到")
-                        details.append({
-                            "index": idx + 1,
-                            "code": cat_code,
-                            "status": "error",
-                            "reason": f"parent_id {parent_code} 未找到",
-                        })
-                        continue
-
-                # 验证字段
-                level = cat_data.get("level")
+                # 验证 level 合法性（防御性校验）
                 if level not in KbCategory.VALID_LEVELS:
-                    errors.append(f"第 {idx + 1} 条记录 level={level} 非法")
+                    errors.append(f"节点 {code} level={level} 非法（应为 1-4）")
                     details.append({
                         "index": idx + 1,
-                        "code": cat_code,
+                        "code": code,
                         "status": "error",
-                        "reason": f"level {level} 非法",
+                        "reason": f"level={level} 超出合法范围 1-4",
                     })
                     continue
 
                 if dry_run:
                     # 仅验证，不写入
-                    if cat_code in code_to_id:
+                    if code in code_to_id:
                         details.append({
                             "index": idx + 1,
-                            "code": cat_code,
+                            "code": code,
                             "status": "would_update",
-                            "name": cat_data.get("name"),
+                            "name": name,
+                            "level": level,
                         })
                         updated += 1
                     else:
                         details.append({
                             "index": idx + 1,
-                            "code": cat_code,
+                            "code": code,
                             "status": "would_create",
-                            "name": cat_data.get("name"),
+                            "name": name,
+                            "level": level,
                         })
                         created += 1
                 else:
-                    # 实际写入：使用 upsert（ON CONFLICT）
                     try:
                         stmt = insert(KbCategory).values(
-                            code=cat_code,
-                            name=cat_data.get("name", ""),
+                            code=code,
+                            name=name,
                             level=level,
-                            domain=cat_data.get("domain"),
-                            parent_id=parent_id,
-                            path_labels=cat_data.get("path_labels", []),
-                            keywords=cat_data.get("keywords", []),
-                            source=cat_data.get("source", "manual"),
-                            version=cat_data.get("version", "1.0"),
+                            domain=domain,
+                            parent_id=None,  # Phase 1 统一置 NULL，Phase 2 再更新
+                            path_labels=path_labels,
+                            keywords=[],
+                            source=source,
+                            version="1.0",
                             is_active=True,
                             hit_count=0,
                         ).on_conflict_do_update(
                             index_elements=["code"],
                             set_={
-                                "name": cat_data.get("name", ""),
+                                "name": name,
                                 "level": level,
-                                "domain": cat_data.get("domain"),
-                                "parent_id": parent_id,
-                                "path_labels": cat_data.get("path_labels", []),
-                                "keywords": cat_data.get("keywords", []),
-                                "source": cat_data.get("source", "manual"),
-                                "version": cat_data.get("version", "1.0"),
+                                "domain": domain,
+                                "path_labels": path_labels,
+                                "source": source,
+                                "version": "1.0",
                             },
-                        )
-                        result = await session.execute(stmt)
+                        ).returning(KbCategory.id, KbCategory.code)
 
-                        # 判断是 insert 还是 update
-                        if result.inserted_primary_key:
-                            # 新创建的记录
-                            created += 1
-                            details.append({
-                                "index": idx + 1,
-                                "code": cat_code,
-                                "status": "created",
-                                "name": cat_data.get("name"),
-                            })
-                            # 更新映射表（后续记录可能引用）
-                            code_to_id[cat_code] = result.inserted_primary_key[0]
-                        else:
-                            # 更新已有记录
-                            updated += 1
-                            details.append({
-                                "index": idx + 1,
-                                "code": cat_code,
-                                "status": "updated",
-                                "name": cat_data.get("name"),
-                            })
+                        result = await session.execute(stmt)
+                        row = result.fetchone()
+                        if row:
+                            new_id = row[0]
+                            # 判断是新建（ON CONFLICT 前）
+                            if code not in code_to_id:
+                                created += 1
+                                details.append({
+                                    "index": idx + 1,
+                                    "code": code,
+                                    "status": "created",
+                                    "name": name,
+                                    "level": level,
+                                })
+                                code_to_id[code] = new_id
+                            else:
+                                updated += 1
+                                details.append({
+                                    "index": idx + 1,
+                                    "code": code,
+                                    "status": "updated",
+                                    "name": name,
+                                    "level": level,
+                                })
                     except Exception as e:
-                        errors.append(f"第 {idx + 1} 条记录写入失败：{str(e)}")
+                        errors.append(f"节点 {code} 写入失败：{str(e)}")
                         details.append({
                             "index": idx + 1,
-                            "code": cat_code,
+                            "code": code,
                             "status": "error",
                             "reason": str(e),
                         })
 
+            # ── Phase 2: 批量 UPDATE parent_id（建立树形关系）────────────────
+            # 策略：子节点的 parent path = path_labels[:-1]，从 code_to_id 通过 path 反查
+            if not dry_run and not errors:
+                # 构建 path_labels(JSON) → id 的映射
+                path_result = await session.execute(
+                    select(KbCategory.id, KbCategory.path_labels)
+                    .where(KbCategory.path_labels.is_not(None))
+                )
+                path_to_id: dict[str, int] = {}
+                for id_val, path_val in path_result.fetchall():
+                    if path_val is not None:
+                        key = json.dumps(path_val, ensure_ascii=False)
+                        path_to_id[key] = id_val
+
+                # 对所有非 L1 节点，计算其父节点 path，更新 parent_id
+                for rec in all_records:
+                    if rec["level"] <= 1:
+                        continue
+                    path_labels = rec["path_labels"]
+                    parent_path = path_labels[:-1]
+                    parent_path_key = json.dumps(parent_path, ensure_ascii=False)
+                    parent_id = path_to_id.get(parent_path_key)
+
+                    if parent_id is None:
+                        # 父节点路径未找到（正常情况：L2 节点父节点是 L1，path=[domain]）
+                        # L1 path_labels = [domain]，key 应该能找到
+                        logger.warning(
+                            event="repo_import_parent_not_found",
+                            code=rec["code"],
+                            parent_path=parent_path,
+                            trace_id=trace_id,
+                        )
+                        continue
+
+                    node_id = code_to_id.get(rec["code"])
+                    if node_id:
+                        await session.execute(
+                            update(KbCategory)
+                            .where(KbCategory.id == node_id)
+                            .values(parent_id=parent_id)
+                        )
+
+                logger.info(
+                    event="repo_import_parent_update_done",
+                    trace_id=trace_id,
+                )
+
             if not dry_run:
-                await session.commit()
+                if errors:
+                    await session.rollback()
+                else:
+                    await session.commit()
 
         success = len(errors) == 0
         logger.info(
             event="repo_import_done",
             dry_run=dry_run,
+            yaml_categories=yaml_count,
             total=total,
             created=created,
             updated=updated,
-            skipped=skipped,
             errors=len(errors),
             success=success,
             trace_id=trace_id,
@@ -373,10 +537,10 @@ class CategoryRepository:
         return {
             "success": success,
             "dry_run": dry_run,
+            "yaml_categories": yaml_count,
             "total": total,
             "created": created,
             "updated": updated,
-            "skipped": skipped,
             "errors": errors,
             "details": details,
         }
