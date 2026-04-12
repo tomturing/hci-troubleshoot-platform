@@ -42,9 +42,18 @@ router = APIRouter(prefix="/api/kb", tags=["classify"])
 _db_manager: DatabaseManager | None = None
 
 # LLM 配置（从环境变量读取）
-ZAI_API_KEY = os.environ.get("ZAI_API_KEY", "")
+# ZAI_API_KEY 优先使用 ZAI_API_KEY，若 ZAI_BASE_URL 指向集群 openclaw proxy，则用 OPENCLAW_GATEWAY_TOKEN
 ZAI_BASE_URL = os.environ.get("ZAI_BASE_URL", "http://host.docker.internal:18790")
-LLM_MODEL = os.environ.get("ZAI_LLM_MODEL") or os.environ.get("OPENCLAW_DEFAULT_MODEL", "glm-4-flash")
+_is_openclaw_proxy = "openclaw" in ZAI_BASE_URL
+ZAI_API_KEY = (
+    os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+    if _is_openclaw_proxy
+    else os.environ.get("ZAI_API_KEY", "")
+)
+# 模型名：openclaw proxy 用 "openclaw"，直连 ZhipuAI 用 glm-4-flash
+LLM_MODEL = os.environ.get("ZAI_LLM_MODEL") or (
+    "openclaw" if _is_openclaw_proxy else os.environ.get("OPENCLAW_DEFAULT_MODEL", "glm-4-flash")
+)
 
 # 分类置信度阈值
 CONFIDENCE_THRESHOLD = 0.5
