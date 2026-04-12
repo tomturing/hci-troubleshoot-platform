@@ -487,8 +487,14 @@ function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
       currentField = 2
     } else if (/^3[.、]\s*\*\*截图中的报错/.test(trimmed)) {
       currentField = 3
+      // 提取内联内容：如 "3. **...**：无" 中的 "无"
+      const inline3 = trimmed.replace(/^3[.、]\s*\*\*[^*]+\*\*[：:]\s*/, '').trim()
+      if (inline3) errorContent.push(inline3)
     } else if (/^4[.、]\s*\*\*对故障排查/.test(trimmed)) {
       currentField = 4
+      // 提取内联内容：如 "4. **...**：无" 中的 "无"
+      const inline4 = trimmed.replace(/^4[.、]\s*\*\*[^*]+\*\*[：:]\s*/, '').trim()
+      if (inline4) techTips.push(inline4)
     } else if (/^-\s/.test(trimmed)) {
       // 子项 bullet
       const item = trimmed.slice(2).trim()
