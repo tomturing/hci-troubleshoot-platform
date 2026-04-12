@@ -8,6 +8,7 @@ asyncpg==0.29.0
 httpx==0.26.0
 pgvector==0.2.4
 jieba==0.42.1
+openai>=1.0.0
 opentelemetry-api
 opentelemetry-sdk
 opentelemetry-exporter-otlp
