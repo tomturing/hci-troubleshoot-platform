@@ -42,9 +42,15 @@ router = APIRouter(prefix="/api/kb", tags=["classify"])
 _db_manager: DatabaseManager | None = None
 
 # LLM 配置（从环境变量读取）
-# ZAI_API_KEY 优先使用 ZAI_API_KEY，若 ZAI_BASE_URL 指向集群 openclaw proxy，则用 OPENCLAW_GATEWAY_TOKEN
-ZAI_BASE_URL = os.environ.get("ZAI_BASE_URL", "http://host.docker.internal:18790")
-_is_openclaw_proxy = "openclaw" in ZAI_BASE_URL
+# 自动适配 openclaw proxy：检测 ZAI_BASE_URL 是否指向集群内代理
+_raw_base_url = os.environ.get("ZAI_BASE_URL", "http://host.docker.internal:18790")
+_is_openclaw_proxy = "openclaw" in _raw_base_url
+# openai SDK 需要 base_url 包含 /v1；openclaw proxy 端点通常无 /v1 后缀需手动添加
+ZAI_BASE_URL = (
+    _raw_base_url.rstrip("/") + "/v1"
+    if _is_openclaw_proxy and not _raw_base_url.rstrip("/").endswith("/v1")
+    else _raw_base_url
+)
 ZAI_API_KEY = (
     os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
     if _is_openclaw_proxy
