@@ -112,3 +112,32 @@ class ConversationRepository:
             .order_by(Message.created_at.asc())
         )
         return list(result.scalars().all())
+
+    async def get_recent_user_messages(
+        self,
+        case_id: str,
+        current_message_id: uuid.UUID,
+        limit: int = 10,
+    ) -> list[Message]:
+        """获取工单下最近 N 条用户消息（排除当前消息）
+
+        用于重复提问检测：查询同一工单下其他对话中的用户消息，
+        计算与当前消息的 Jaccard 相似度。
+
+        Args:
+            case_id: 工单 ID
+            current_message_id: 当前消息 ID（需要排除）
+            limit: 返回数量上限
+
+        Returns:
+            用户消息列表（按时间倒序）
+        """
+        result = await self.session.execute(
+            select(Message)
+            .where(Message.case_id == case_id)
+            .where(Message.role == MessageRole.USER)
+            .where(Message.message_id != current_message_id)
+            .order_by(desc(Message.created_at))
+            .limit(limit)
+        )
+        return list(result.scalars().all())
