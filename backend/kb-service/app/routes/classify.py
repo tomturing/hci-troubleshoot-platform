@@ -44,7 +44,7 @@ _db_manager: DatabaseManager | None = None
 # LLM 配置（从环境变量读取）
 ZAI_API_KEY = os.environ.get("ZAI_API_KEY", "")
 ZAI_BASE_URL = os.environ.get("ZAI_BASE_URL", "http://host.docker.internal:18790")
-LLM_MODEL = os.environ.get("ZAI_LLM_MODEL", "gpt-4o-mini")
+LLM_MODEL = os.environ.get("ZAI_LLM_MODEL") or os.environ.get("OPENCLAW_DEFAULT_MODEL", "glm-4-flash")
 
 # 分类置信度阈值
 CONFIDENCE_THRESHOLD = 0.5
