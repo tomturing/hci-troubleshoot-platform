@@ -34,19 +34,81 @@ from .config import settings
 logger = logging.getLogger("kbd.image_proc")
 
 # Vision prompt —— 专门针对 HCI 故障排查截图
+# 字段 0（背景色）用于前端截图自动分类：白色=管理界面，黑色=终端/日志
 _VISION_PROMPT = """\
-这是一张深信服 HCI 超融合平台的故障排查截图，请用中文详细描述：
+这是一张深信服 HCI 超融合平台的故障排查截图，请用中文描述。
 
-1. 截图界面类型（命令行终端 / Web 管理界面 / 错误弹窗 / 日志输出 / 配置页面等）
-2. 截图中所有可见的：IP 地址、主机名、版本号、错误码、状态值、关键数字
-3. 截图中的报错信息或异常状态（精确引用原文）
-4. 对故障排查有价值的技术细节
+严格按以下格式输出，禁止使用 JSON、Markdown 标题（#）、表格，每行必须完全符合示例格式：
 
-输出要求：
-- 中文，200字以内
-- 聚焦技术信息，不描述视觉设计
-- 如截图清晰显示命令输出，请包含关键命令和结果
+0. **截图背景颜色**：黑色
+1. **截图界面类型**：命令行终端
+2. **截图中所有可见的文字内容**：
+- 第一行关键文字原文
+- 第二行关键文字原文
+3. **截图中的报错信息或异常状态**：
+- 报错原文（无报错写：无）
+4. **对故障排查有价值的技术细节**：
+- 关键技术细节
+
+注意：字段0只填黑色/白色/其他；字段2和3内容原文照录不加工，每项一行bullet（"- "开头），最多6条；总输出不超过300字。
 """
+
+
+import json as _json
+import re as _re
+
+
+def _normalize_vision_output(text: str) -> str:
+    """
+    将 Vision LLM 可能输出的 JSON 格式归一化为编号字段格式。
+    如果不是 JSON 则原样返回。
+    """
+    stripped = text.strip()
+    # 尝试提取 JSON 代码块
+    json_match = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, _re.DOTALL)
+    if json_match:
+        json_str = json_match.group(1)
+    elif stripped.startswith("{"):
+        json_str = stripped
+    else:
+        return text
+
+    try:
+        data = _json.loads(json_str)
+    except (_json.JSONDecodeError, ValueError):
+        return text
+
+    bg = data.get("截图背景颜色", "其他")
+    iface = data.get("截图界面类型", "")
+    visible = data.get("截图中所有可见的文字内容", [])
+    errors = data.get("截图中的报错信息或异常状态", [])
+    tips = data.get("对故障排查有价值的技术细节", [])
+
+    # 统一转为列表
+    def _to_list(v: object) -> list[str]:
+        if isinstance(v, list):
+            return [str(i) for i in v]
+        if v and str(v) not in ("无", ""):
+            return [str(v)]
+        return []
+
+    visible_list = _to_list(visible)
+    errors_list = _to_list(errors)
+    tips_list = _to_list(tips)
+
+    error_bullets = [f"- {item}" for item in errors_list[:3]] if errors_list else ["- 无"]
+    lines = [
+        f"0. **截图背景颜色**：{bg}",
+        f"1. **截图界面类型**：{iface}",
+        "2. **截图中所有可见的文字内容**：",
+        *[f"- {item}" for item in visible_list[:6]],
+        "3. **截图中的报错信息或异常状态**：",
+        *error_bullets,
+        "4. **对故障排查有价值的技术细节**：",
+        *[f"- {item}" for item in tips_list[:3]],
+    ]
+    return "\n".join(lines)
+
 
 
 async def _describe_image(
@@ -79,7 +141,9 @@ async def _describe_image(
     )
     desc = response.choices[0].message.content or ""
     tokens = response.usage.total_tokens if response.usage else 0
-    return desc.strip(), tokens
+    # 归一化输出格式（防止 Vision 模型返回 JSON 格式）
+    desc = _normalize_vision_output(desc.strip())
+    return desc, tokens
 
 
 def _find_images(case_dir: Path) -> list[Path]:

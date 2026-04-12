@@ -59,7 +59,8 @@ interface ScreenshotTypeInfo {
 
 interface ScreenshotFields {
   intro: string
-  typeName: string
+  bgColorText: string    // Vision 字段0：截图背景颜色（黑色/白色/其他）
+  typeName: string       // Vision 字段1：界面类型（参考用，不作主要分类依据）
   visibleContent: string[]
   errorContent: string[]
   techTips: string[]
@@ -402,16 +403,40 @@ function escapeHtml(s: string): string {
 // 截图说明解析（accordion 卡片）
 // ──────────────────────────────────────────────────────────────────────────────
 
-/** 根据截图界面类型文字返回展示信息 */
-function detectScreenshotType(typeText: string): ScreenshotTypeInfo {
-  if (/告警|报警/.test(typeText))
+/**
+ * 截图多维度分类（优先级由高到低）
+ * 判断依据：Vision 字段0（背景色）+ visibleContent + errorContent 全文关键词
+ *
+ * 1. 白色背景 + 含「紧急/普通/历史告警数/未处理」   → 告警截图
+ * 2. 白色背景 + 含任务表格字段 或 中文状态词        → 任务截图
+ * 3. 黑色背景 + 含 Shell 命令特征                → 终端截图
+ * 4. 黑色背景 + Vision 标注「日志」或含时间戳格式   → 日志截图
+ * 5. 其他                                        → 其他截图
+ */
+function detectScreenshotType(fields: ScreenshotFields): ScreenshotTypeInfo {
+  const isBlack = /黑/.test(fields.bgColorText)
+  const isWhite = /白/.test(fields.bgColorText)
+  // 将可见内容和报错内容合并为全文便于关键词搜索
+  const fullText = [...fields.visibleContent, ...fields.errorContent].join(' ')
+
+  // 告警截图：白色背景且含告警级别词
+  if (isWhite && /紧急|普通|历史告警数|未处理/.test(fullText))
     return { label: '告警截图', color: '#E6A23C', bgColor: '#FEF7EC', icon: '🔔' }
-  if (/终端|命令行/.test(typeText))
-    return { label: '终端截图', color: '#722ED1', bgColor: '#F5EEFF', icon: '💻' }
-  if (/任务|操作|管理界面|平台界面/.test(typeText))
+
+  // 任务截图：白色背景且含任务表格字段或任务状态词
+  if (isWhite && (/操作人|对象类型|行为|开始时间|结束时间/.test(fullText)
+    || /完成|失败|进行中/.test(fullText)))
     return { label: '任务截图', color: '#409EFF', bgColor: '#EEF6FF', icon: '📋' }
-  if (/日志/.test(typeText))
+
+  // 终端截图：黑色背景且含 Shell 命令特征
+  if (isBlack && /\$\s|#\s|sudo|chmod|\/var\/|\/etc\/|0x[0-9a-fA-F]/.test(fullText))
+    return { label: '终端截图', color: '#722ED1', bgColor: '#F5EEFF', icon: '💻' }
+
+  // 日志截图：黑色背景且 Vision 界面类型含「日志」或全文含时间戳格式日志行
+  if (isBlack && (/日志/.test(fields.typeName) || /\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/.test(fullText)))
     return { label: '日志截图', color: '#67C23A', bgColor: '#F0F9EB', icon: '📄' }
+
+  // 兜底：其他截图
   return { label: '其他截图', color: '#909399', bgColor: '#F5F7FA', icon: '🖼️' }
 }
 
@@ -426,21 +451,36 @@ function detectErrorLabel(items: string[]): string {
 
 /** 将截图说明行组解析为 ScreenshotSegment */
 function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
-  // 第一行: > **【截图说明】**：这是一张...
+  // 第一行: > **【截图说明】**：[可能直接是字段0内容]
   const introLine = lines[0] || ''
-  const intro = introLine.replace(/^>\s*\*\*【截图说明】\*\*[：:]\s*/, '').trim()
+  const introRaw = introLine.replace(/^>\s*\*\*【截图说明】\*\*[：:]\s*/, '').trim()
+
+  // 字段0 可能直接嵌在 intro 行（converter 将 desc.txt 首行拼在 "【截图说明】：" 后面）
+  let bgColorText = ''
+  let intro = introRaw
+  const field0Match = introRaw.match(/^0[.、]\s*\*?\*?截图背景颜色\*?\*?[：:]\s*(.+)/)
+  if (field0Match) {
+    bgColorText = field0Match[1].replace(/\*\*/g, '').trim()
+    intro = '' // 字段0已解析，不作为 intro 展示
+  }
 
   let typeName = ''
   const visibleContent: string[] = []
   const errorContent: string[] = []
   const techTips: string[] = []
-  let currentField = 0 // 1=类型 2=可见内容 3=报错 4=技术细节
+  // -1=intro之前 0=背景色 1=类型 2=可见内容 3=报错 4=技术细节
+  let currentField = -1
 
   for (const line of lines.slice(1)) {
     const trimmed = line.trim()
     if (!trimmed) continue
 
-    if (/^1[.、]\s*\*\*截图界面类型\*\*[：:]/.test(trimmed)) {
+    // 字段0：截图背景颜色（Vision 新增字段）
+    if (/^0[.、]\s*\*?\*?截图背景颜色\*?\*?[：:]/.test(trimmed)) {
+      bgColorText = trimmed.replace(/^0[.、]\s*\*?\*?截图背景颜色\*?\*?[：:]\s*/, '').replace(/\*\*/g, '').trim()
+      currentField = 0
+    // 字段1：界面类型
+    } else if (/^1[.、]\s*\*\*截图界面类型\*\*[：:]/.test(trimmed)) {
       typeName = trimmed.replace(/^1[.、]\s*\*\*截图界面类型\*\*[：:]\s*/, '').replace(/\*\*/g, '').trim()
       currentField = 1
     } else if (/^2[.、]\s*\*\*截图中所有可见/.test(trimmed)) {
@@ -463,12 +503,13 @@ function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
     }
   }
 
-  const typeInfo = detectScreenshotType(typeName)
+  const fields: ScreenshotFields = { intro, bgColorText, typeName, visibleContent, errorContent, techTips }
+  const typeInfo = detectScreenshotType(fields)
   return {
     type: 'screenshot',
     typeInfo,
     errorLabel: detectErrorLabel(errorContent),
-    fields: { intro, typeName, visibleContent, errorContent, techTips },
+    fields,
     expanded: false,
   }
 }

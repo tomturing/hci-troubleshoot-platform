@@ -1,17 +1,7 @@
-这是一张深信服 HCI 超融合平台命令行终端的截图。
-
-1. **截图界面类型**：命令行终端
-2. **截图中所有可见的信息**：
-   - IP 地址：未明确显示
-   - 主机名：未明确显示
-   - 版本号：未明确显示
-   - 错误码：E 2556403
-   - 状态值：未明确显示
-   - 关键数字：0x1, 0x2, 0x105, 1821, 1841, 376
-3. **截图中的报错信息或异常状态**：
-   - 报错信息：“os-posix.c(error_writer):376 | kvm: block/cbt_b bitmap.c:1843: cbt_bitmap_load_in_mig: Assertion `bitmap_bs->cur failed.”
-4. **对故障排查有价值的技术细节**：
-   - 命令行输出显示了与 cbt_bitmap 相关的错误，可能涉及超融合平台的内存管理问题。
-   - 关键命令和结果包括“cbt_bitmap_set_sfs_direct_io”设置成功以及“cbt_bitmap_load_in_mig”过程中出现的断言失败。
-
-建议进一步检查相关日志文件和系统配置，以确定具体原因并修复此问题。
+0. **截图背景颜色**：黑色  
+1. **截图界面类型**：命令行终端  
+2. **截图中所有可见的文字内容**：  
+   - `2025-10-14 01:59:53 debug svt_qemu_6166200431340(2556403): 14.902 D 2566403 block.c(bdrv_unref):6726 | bdrv_unref refcnt:3 format:[file] /sf/data/227e6ef68f07fd58d6ec9c900a5269082/images/`  
+   - `2025-10-14 01:59:54 debug svt_qemu_6166200431340(2556403): 14.902 D 2566403 block.c(bdrv_unref):6726 | bdrv_unref refcnt:3 format:[file] /sf/data/227e6ef68f07fd58d6ec9c900a5269082/images/`  
+   - `2025-10-14 01:59:55 debug svt_qemu_6166200431340(2556403): 14.902 D 2566403 block.c(bdrv_unref):6726 | bdrv_unref refcnt:2 format:[file] /sf/data/227e6ef68f07fd58d6ec9c900a5269082/images/`  
+   - `2025-10-14 01:59:56 debug svt_qemu_6166200431340(2556403): 14.902 D 2566403 block.c(bdrv_unref):6726 | bdrv_unref
