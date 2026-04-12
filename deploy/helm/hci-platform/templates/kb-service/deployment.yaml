@@ -47,7 +47,9 @@ spec:
             - name: SOP_SKILLS_DIR
               value: {{ .Values.kbService.sopSkillsDir | quote }}
             - name: ZAI_BASE_URL
-              value: "http://openclaw:{{ .Values.openclaw.port }}"
+              value: {{ .Values.kbService.llmBaseUrl | default (printf "http://openclaw:%v" .Values.openclaw.port) | quote }}
+            - name: ZAI_LLM_MODEL
+              value: {{ .Values.kbService.llmModel | default "" | quote }}
             - name: BGE_MODEL_PATH
               value: "/models/bge-small-zh-v1.5"
           volumeMounts:
