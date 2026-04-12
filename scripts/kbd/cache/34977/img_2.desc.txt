@@ -1,0 +1,18 @@
+这是一张深信服 HCI 超融合平台的日志输出截图。
+
+1. **截图界面类型**：日志输出
+
+2. **截图中所有可见的信息**：
+   - IP 地址：未明确显示
+   - 主机名：未明确显示
+   - 版本号：未明确显示
+   - 错误码：0x80000000
+   - 状态值：Resource temporarily unavailable
+   - 关键数字：0x80000000, 0x7c926a840
+
+3. **截图中的报错信息或异常状态**：
+   - "Could not open /data/2276ef68f75d8e6ce9005269082/images/cluster/ca73c52cced1/61662004b51340/vm/disk-2.qcow2.cbt bitmap: Resource temporarily unavailable"
+   - "Could not open /data/2276ef68f75d8e6ce9005269082/images/cluster/ca73c52cced1/61662004b51340/vm/disk-2.qcow2.cbt bitmap: disk-virtio bitmap load from migration bitmap fail: reason: Could not open /data/2276ef68f75d8e6ce9005269082/images/cluster/ca73c52cced1/61662004b51340/vm/disk-2.qcow2.cbt bitmap: Resource temporarily unavailable"
+
+4. **对故障排查有价值的技术细节**：
+   - 报错信息表明无法打开磁盘映像文件 `/data/2276ef68f75d8e6ce9005269082/images/cluster/ca73c52cced1/61662004b51340/vm/disk-2.qcow2.cbt`，

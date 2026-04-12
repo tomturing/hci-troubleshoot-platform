@@ -129,7 +129,7 @@ async def classify_case(
     # 从 kbd_entry 读取标题和内容
     row = await pool.fetchrow(
         """SELECT title, content_md FROM kbd_entry
-           WHERE case_id = $1 AND (ai_category_id IS NULL OR ai_category_id = '')""",
+           WHERE support_id = $1 AND (ai_category_id IS NULL OR ai_category_id = '')""",
         case_id,
     )
     if not row:
@@ -153,7 +153,7 @@ async def classify_case(
         await pool.execute(
             """UPDATE kbd_entry
                SET ai_category_id=$1, ai_category_conf=$2, ai_category_reason=$3, updated_at=NOW()
-               WHERE case_id=$4""",
+               WHERE support_id=$4""",
             category_id,
             confidence,
             reason,

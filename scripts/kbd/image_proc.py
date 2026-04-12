@@ -2,8 +2,9 @@
 scripts/kbd/image_proc.py — 图片语义化（Vision LLM）
 
 功能：
-  对 kbd_image 表中 vision_status='pending' 的图片，
-  调用 Vision LLM 生成汉语语义描述，写回 vision_desc 字段。
+  扫描 cache/{support_id}/ 目录下的图片文件（img_N.*），
+  对尚无对应 img_N.desc.txt 的图片调用 Vision LLM 生成中文语义描述，
+  将描述写入 img_N.desc.txt 供 converter.py 使用。
 
 描述重点：
   - 界面类型（命令行 / Web 管理界面 / 错误弹窗 / 日志等）
@@ -11,18 +12,21 @@ scripts/kbd/image_proc.py — 图片语义化（Vision LLM）
   - 指向故障根因的技术信息
 
 设计：
+  - 纯文件系统操作，无数据库依赖
   - 读本地图片文件，以 Base64 + data URI 发送（避免 URL 访问权限问题）
   - 并发处理（asyncio.Semaphore 控制并发数）
-  - 失败时标记 vision_status='failed'，不中断整体流程
+  - 失败时写 img_N.desc.failed，不中断整体流程
+  - 幂等：img_N.desc.txt 已存在则跳过
 """
 from __future__ import annotations
 
 import asyncio
 import base64
 import logging
+import mimetypes
 from pathlib import Path
+from typing import Any
 
-import asyncpg
 from openai import AsyncOpenAI
 
 from .config import settings
@@ -78,89 +82,89 @@ async def _describe_image(
     return desc.strip(), tokens
 
 
+def _find_images(case_dir: Path) -> list[Path]:
+    """
+    扫描案例缓存目录，返回待处理的图片文件列表（按 seq 排序）。
+    排除 .failed、.txt 等非图片文件。
+    """
+    # 支持的后缀
+    img_suffixes = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+    images: list[Path] = []
+    for p in case_dir.iterdir():
+        if p.name.startswith("img_") and p.suffix.lower() in img_suffixes:
+            images.append(p)
+    # 按 img_N 中的 N 排序
+    def _seq(p: Path) -> int:
+        try:
+            return int(p.stem.split("_", 1)[1])
+        except (IndexError, ValueError):
+            return 0
+    images.sort(key=_seq)
+    return images
+
+
 async def process_images_for_case(
     case_id: str,
-    pool: asyncpg.Pool,
     client: AsyncOpenAI,
 ) -> dict[str, int]:
     """
-    处理单个案例的所有待处理图片。
+    处理单个案例的所有待处理图片，将描述写入 img_N.desc.txt。
 
     Returns:
         {"done": N, "failed": N, "skipped": N}
     """
-    # 查询该案例未处理的图片
-    rows = await pool.fetch(
-        """SELECT id, local_path, mime_type
-           FROM kbd_image
-           WHERE case_id = $1 AND vision_status = 'pending'
-           ORDER BY seq""",
-        case_id,
-    )
-    stats = {"done": 0, "failed": 0, "skipped": 0}
-    if not rows:
+    from .fetcher import _case_dir
+    case_dir = _case_dir(case_id)
+    stats: dict[str, int] = {"done": 0, "failed": 0, "skipped": 0}
+
+    images = _find_images(case_dir)
+    if not images:
         return stats
 
     sem = asyncio.Semaphore(settings.VISION_CONCURRENCY)
-    images_root = settings.IMAGES_DIR.parent  # kbd cache 目录
 
-    async def _process_one(row: asyncpg.Record) -> None:
-        img_id = row["id"]
-        local_path = row["local_path"]
-        mime = row["mime_type"] or "image/jpeg"
-
-        if not local_path:
-            await pool.execute(
-                "UPDATE kbd_image SET vision_status='skipped', processed_at=NOW() WHERE id=$1",
-                img_id,
-            )
+    async def _process_one(img_path: Path) -> None:
+        desc_path = img_path.with_suffix(".desc.txt")
+        # 已有描述文件 → 跳过（幂等）
+        if desc_path.exists():
             stats["skipped"] += 1
             return
 
-        full_path = images_root / local_path
-        if not full_path.exists():
-            logger.warning("图片文件不存在: %s", full_path)
-            await pool.execute(
-                "UPDATE kbd_image SET vision_status='skipped', processed_at=NOW() WHERE id=$1",
-                img_id,
-            )
-            stats["skipped"] += 1
-            return
+        mime = mimetypes.guess_type(str(img_path))[0] or "image/jpeg"
 
         async with sem:
             try:
-                desc, tokens = await _describe_image(client, full_path, mime)
-                await pool.execute(
-                    """UPDATE kbd_image
-                       SET vision_desc=$1, vision_status='done',
-                           vision_model=$2, vision_tokens=$3, processed_at=NOW()
-                       WHERE id=$4""",
-                    desc, settings.VISION_MODEL, tokens, img_id,
-                )
+                desc, tokens = await _describe_image(client, img_path, mime)
+                desc_path.write_text(desc, encoding="utf-8")
                 stats["done"] += 1
-                logger.debug("图片描述完成 id=%d tokens=%d", img_id, tokens)
+                logger.debug("图片描述完成 path=%s tokens=%d", img_path.name, tokens)
             except Exception as exc:
-                logger.error("图片描述失败 id=%d 原因=%s", img_id, exc)
-                await pool.execute(
-                    "UPDATE kbd_image SET vision_status='failed', processed_at=NOW() WHERE id=$1",
-                    img_id,
+                logger.error("图片描述失败 path=%s 原因=%s", img_path.name, exc)
+                (img_path.with_suffix(".desc.failed")).write_text(
+                    str(exc), encoding="utf-8"
                 )
                 stats["failed"] += 1
 
-    await asyncio.gather(*[_process_one(row) for row in rows])
+    await asyncio.gather(*[_process_one(img) for img in images])
     return stats
 
 
 async def process_images_batch(
     case_ids: list[str],
-    pool: asyncpg.Pool,
+    _pool: Any = None,  # 废弃参数，保留向后兼容
 ) -> dict[str, int]:
     """
-    批量处理一组案例的图片语义化。
+    批量处理一组案例的图片语义化（纯文件系统版）。
+
+    Args:
+        case_ids: 要处理的案例 ID 列表
+        _pool:    废弃参数（原 asyncpg 连接池），忽略
 
     Returns:
         汇总统计 {"done": N, "failed": N, "skipped": N}
     """
+    from .fetcher import _case_dir as _cd
+
     client = AsyncOpenAI(
         api_key=settings.ZAI_API_KEY,
         base_url=settings.ZAI_BASE_URL,
@@ -170,16 +174,17 @@ async def process_images_batch(
     total = len(case_ids)
 
     for idx, case_id in enumerate(case_ids, 1):
-        # 检查是否有待处理图片
-        count = await pool.fetchval(
-            "SELECT COUNT(*) FROM kbd_image WHERE case_id=$1 AND vision_status='pending'",
-            case_id,
-        )
-        if not count:
+        case_dir = _cd(case_id)
+        pending = [
+            p for p in _find_images(case_dir)
+            if not p.with_suffix(".desc.txt").exists()
+        ]
+        if not pending:
+            logger.debug("[%d/%d] 案例 %s 无待处理图片，跳过", idx, total, case_id)
             continue
 
-        logger.info("[%d/%d] 处理案例 %s 的 %d 张图片", idx, total, case_id, count)
-        stats = await process_images_for_case(case_id, pool, client)
+        logger.info("[%d/%d] 处理案例 %s 共 %d 张图片", idx, total, case_id, len(pending))
+        stats = await process_images_for_case(case_id, client)
         for k in total_stats:
             total_stats[k] += stats.get(k, 0)
 

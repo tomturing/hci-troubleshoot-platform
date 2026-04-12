@@ -205,13 +205,13 @@ async def _cmd_classify(args: argparse.Namespace) -> None:
     try:
         # 只处理已入库且未分类的
         classify_ids = await pool.fetch(
-            """SELECT case_id FROM kbd_entry
-               WHERE case_id = ANY($1)
+            """SELECT support_id FROM kbd_entry
+               WHERE support_id = ANY($1)
                  AND status = 'draft'
                  AND (ai_category_id IS NULL OR ai_category_id = '')""",
             case_ids,
         )
-        classify_case_ids = [r["case_id"] for r in classify_ids]
+        classify_case_ids = [r["support_id"] for r in classify_ids]
 
         if not classify_case_ids:
             print("没有需要分类的案例")

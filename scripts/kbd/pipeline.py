@@ -130,13 +130,13 @@ async def run_pipeline(
             logger.info("─── Stage 4: AI 分类 ───")
             # 只处理已写入 kbd_entry 且 ai_category_id 为空的
             classify_ids = await pool.fetch(
-                """SELECT case_id FROM kbd_entry
-                   WHERE case_id = ANY($1)
+                """SELECT support_id FROM kbd_entry
+                   WHERE support_id = ANY($1)
                      AND status = 'draft'
                      AND (ai_category_id IS NULL OR ai_category_id = '')""",
                 case_ids,
             )
-            classify_case_ids = [r["case_id"] for r in classify_ids]
+            classify_case_ids = [r["support_id"] for r in classify_ids]
             t0 = time.monotonic()
             stats = await classify_batch(classify_case_ids, pool)
             all_stats["classify"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}

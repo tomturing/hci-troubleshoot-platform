@@ -350,7 +350,13 @@ async def fetch_categories_for_classify(db_manager: DatabaseManager) -> list[dic
 
         categories = []
         for row in rows:
-            path_labels = json.loads(row.path_labels) if row.path_labels else []
+            raw = row.path_labels
+            if isinstance(raw, list):
+                path_labels = raw
+            elif isinstance(raw, str):
+                path_labels = json.loads(raw)
+            else:
+                path_labels = []
             categories.append(
                 {
                     "code": row.code,
