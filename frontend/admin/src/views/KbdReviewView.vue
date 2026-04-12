@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -41,6 +41,45 @@ interface PendingKbdResponse {
   page_size: number
 }
 
+// 分类基线选项
+interface CategoryOption {
+  code: string          // "虚拟机-001"
+  name: string          // "虚拟机创建失败"
+  domain: string        // "虚拟机"
+  path_labels: string[]
+}
+
+// 截图说明解析类型
+interface ScreenshotTypeInfo {
+  label: string   // "告警截图"
+  color: string   // 前景色
+  bgColor: string // 背景色
+  icon: string    // emoji 图标
+}
+
+interface ScreenshotFields {
+  intro: string
+  typeName: string
+  visibleContent: string[]
+  errorContent: string[]
+  techTips: string[]
+}
+
+interface NormalSegment {
+  type: 'normal'
+  html: string
+}
+
+interface ScreenshotSegment {
+  type: 'screenshot'
+  typeInfo: ScreenshotTypeInfo
+  errorLabel: string
+  fields: ScreenshotFields
+  expanded: boolean
+}
+
+type ContentSegment = NormalSegment | ScreenshotSegment
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 响应式状态
 // ──────────────────────────────────────────────────────────────────────────────
@@ -52,11 +91,21 @@ const pageSize = ref(20)
 const categoryFilter = ref('')
 const statusFilter = ref('draft')
 
+// 分类基线（用于 select）
+const categoriesLoading = ref(false)
+const categoryOptions = ref<CategoryOption[]>([])
+
 // 详情弹窗
 const detailDialogVisible = ref(false)
 const detailEntry = ref<KbdEntry | null>(null)
 const reviewNote = ref('')
 const editableCategoryId = ref('')
+
+// 详情弹窗 — 内容内联编辑
+const editingContent = ref(false)
+const inlineContent = ref('')
+const inlineEditLoading = ref(false)
+const parsedSegments = ref<ContentSegment[]>([])
 
 // 拒绝弹窗
 const rejectDialogVisible = ref(false)
@@ -103,6 +152,19 @@ async function fetchPending() {
     ElMessage.error('加载 KBD 条目失败，请刷新重试')
   } finally {
     loading.value = false
+  }
+}
+
+// 加载分类基线（用于 select 选项）
+async function fetchCategories() {
+  categoriesLoading.value = true
+  try {
+    const resp = await fetch('/api/kb/categories?grouped=true', { headers: authHeader })
+    if (!resp.ok) return
+    const data: Record<string, CategoryOption[]> = await resp.json()
+    categoryOptions.value = Object.values(data).flat().sort((a, b) => a.code.localeCompare(b.code))
+  } catch { /* 分类加载失败时仍允许手动输入 */ } finally {
+    categoriesLoading.value = false
   }
 }
 
@@ -173,6 +235,9 @@ function openDetailDialog(entry: KbdEntry) {
   detailEntry.value = entry
   reviewNote.value = entry.review_note || ''
   editableCategoryId.value = entry.category_id || entry.ai_category_id || ''
+  editingContent.value = false
+  inlineContent.value = entry.content_md || ''
+  parsedSegments.value = parseContentMd(entry.content_md || '')
   detailDialogVisible.value = true
 }
 
@@ -255,66 +320,61 @@ async function handleRepublish(entry: KbdEntry) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 简易 Markdown → HTML 渲染（避免引入外部库）
+// Markdown 渲染（修复 ol/ul 状态混乱 + 缩进子列表）
 // ──────────────────────────────────────────────────────────────────────────────
 function renderMarkdown(md: string): string {
   if (!md) return ''
   const lines = md.split('\n')
   const html: string[] = []
-  let inList = false
+  let listType: 'none' | 'ul' | 'ol' = 'none'
   let inBlockquote = false
 
   const flushList = () => {
-    if (inList) { html.push('</ul>'); inList = false }
+    if (listType === 'ul') { html.push('</ul>'); listType = 'none' }
+    else if (listType === 'ol') { html.push('</ol>'); listType = 'none' }
   }
   const flushBlockquote = () => {
     if (inBlockquote) { html.push('</blockquote>'); inBlockquote = false }
   }
 
-  for (const rawLine of lines) {
-    const line = rawLine
-
-    // 二级标题
+  for (const line of lines) {
     if (line.startsWith('## ')) {
       flushList(); flushBlockquote()
       html.push(`<h3 class="md-h2">${escapeHtml(line.slice(3))}</h3>`)
       continue
     }
-    // 三级标题
     if (line.startsWith('### ')) {
       flushList(); flushBlockquote()
       html.push(`<h4 class="md-h3">${escapeHtml(line.slice(4))}</h4>`)
       continue
     }
-    // 大引用块（含图片说明）
     if (line.startsWith('> ')) {
       flushList()
       if (!inBlockquote) { html.push('<blockquote class="md-blockquote">'); inBlockquote = true }
-      // 去掉 > 前缀，内联转义和加粗
-      const inner = inlineRender(line.slice(2))
-      html.push(`<p>${inner}</p>`)
+      html.push(`<p>${inlineRender(line.slice(2))}</p>`)
       continue
     }
-    // 无序列表
-    if (line.startsWith('- ') || line.startsWith('* ')) {
+    // 无序列表（含 2+ 空格缩进的子项）
+    const ulMatch = line.match(/^(\s*)[-*]\s+(.+)$/)
+    if (ulMatch) {
       flushBlockquote()
-      if (!inList) { html.push('<ul class="md-list">'); inList = true }
-      html.push(`<li>${inlineRender(line.slice(2))}</li>`)
+      if (listType !== 'ul') { flushList(); html.push('<ul class="md-list">'); listType = 'ul' }
+      const indentPx = ulMatch[1].length * 10
+      const style = indentPx > 0 ? ` style="margin-left:${indentPx}px"` : ''
+      html.push(`<li${style}>${inlineRender(ulMatch[2])}</li>`)
       continue
     }
-    // 有序列表
-    const olMatch = line.match(/^(\d+)\.\s+(.+)$/)
+    // 有序列表（中文 1、 或英文 1. 开头）
+    const olMatch = line.match(/^(\s*)\d+[.、]\s+(.+)$/)
     if (olMatch) {
       flushBlockquote()
-      if (!inList) { html.push('<ol class="md-list">'); inList = true }
+      if (listType !== 'ol') { flushList(); html.push('<ol class="md-list">'); listType = 'ol' }
       html.push(`<li>${inlineRender(olMatch[2])}</li>`)
       continue
     }
-
     flushList(); flushBlockquote()
-
     if (line.trim() === '') {
-      html.push('<br>')
+      // 跳过多余空行，段间距由 CSS 控制
     } else {
       html.push(`<p class="md-p">${inlineRender(line)}</p>`)
     }
@@ -336,6 +396,185 @@ function escapeHtml(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 截图说明解析（accordion 卡片）
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** 根据截图界面类型文字返回展示信息 */
+function detectScreenshotType(typeText: string): ScreenshotTypeInfo {
+  if (/告警|报警/.test(typeText))
+    return { label: '告警截图', color: '#E6A23C', bgColor: '#FEF7EC', icon: '🔔' }
+  if (/终端|命令行/.test(typeText))
+    return { label: '终端截图', color: '#722ED1', bgColor: '#F5EEFF', icon: '💻' }
+  if (/任务|操作|管理界面|平台界面/.test(typeText))
+    return { label: '任务截图', color: '#409EFF', bgColor: '#EEF6FF', icon: '📋' }
+  if (/日志/.test(typeText))
+    return { label: '日志截图', color: '#67C23A', bgColor: '#F0F9EB', icon: '📄' }
+  return { label: '其他截图', color: '#909399', bgColor: '#F5F7FA', icon: '🖼️' }
+}
+
+/** 根据报错内容决定字段标签名 */
+function detectErrorLabel(items: string[]): string {
+  const joined = items.join(' ')
+  if (/告警/.test(joined)) return '告警信息'
+  if (/红框|标注/.test(joined)) return '红框标注'
+  if (/失败|任务/.test(joined)) return '失败任务'
+  return '报错日志'
+}
+
+/** 将截图说明行组解析为 ScreenshotSegment */
+function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
+  // 第一行: > **【截图说明】**：这是一张...
+  const introLine = lines[0] || ''
+  const intro = introLine.replace(/^>\s*\*\*【截图说明】\*\*[：:]\s*/, '').trim()
+
+  let typeName = ''
+  const visibleContent: string[] = []
+  const errorContent: string[] = []
+  const techTips: string[] = []
+  let currentField = 0 // 1=类型 2=可见内容 3=报错 4=技术细节
+
+  for (const line of lines.slice(1)) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    if (/^1[.、]\s*\*\*截图界面类型\*\*[：:]/.test(trimmed)) {
+      typeName = trimmed.replace(/^1[.、]\s*\*\*截图界面类型\*\*[：:]\s*/, '').replace(/\*\*/g, '').trim()
+      currentField = 1
+    } else if (/^2[.、]\s*\*\*截图中所有可见/.test(trimmed)) {
+      currentField = 2
+    } else if (/^3[.、]\s*\*\*截图中的报错/.test(trimmed)) {
+      currentField = 3
+    } else if (/^4[.、]\s*\*\*对故障排查/.test(trimmed)) {
+      currentField = 4
+    } else if (/^-\s/.test(trimmed)) {
+      // 子项 bullet
+      const item = trimmed.slice(2).trim()
+      if (currentField === 2) visibleContent.push(item)
+      else if (currentField === 3) errorContent.push(item)
+      else if (currentField === 4) techTips.push(item)
+    } else if (currentField > 0 && !/^\d+[.、]/.test(trimmed)) {
+      // 字段内的连续文本
+      if (currentField === 2) visibleContent.push(trimmed)
+      else if (currentField === 3) errorContent.push(trimmed)
+      else if (currentField === 4) techTips.push(trimmed)
+    }
+  }
+
+  const typeInfo = detectScreenshotType(typeName)
+  return {
+    type: 'screenshot',
+    typeInfo,
+    errorLabel: detectErrorLabel(errorContent),
+    fields: { intro, typeName, visibleContent, errorContent, techTips },
+    expanded: false,
+  }
+}
+
+/**
+ * 将 content_md 分割为普通文本段和截图说明段。
+ * 截图段以 "> **【截图说明】**" 开头，包含后续编号字段（1-4）和缩进子项。
+ */
+function parseContentMd(md: string): ContentSegment[] {
+  if (!md) return []
+  const lines = md.split('\n')
+  const segments: ContentSegment[] = []
+  let normalLines: string[] = []
+  let screenshotLines: string[] = []
+  let inScreenshot = false
+
+  const flushNormal = () => {
+    if (normalLines.length > 0) {
+      const html = renderMarkdown(normalLines.join('\n'))
+      if (html.trim()) segments.push({ type: 'normal', html })
+      normalLines = []
+    }
+  }
+  const flushScreenshot = () => {
+    if (screenshotLines.length > 0) {
+      segments.push(parseScreenshotBlock(screenshotLines))
+      screenshotLines = []
+    }
+  }
+
+  for (const line of lines) {
+    const isScreenshotStart = line.startsWith('> ') && line.includes('【截图说明】')
+
+    if (isScreenshotStart) {
+      flushNormal()
+      flushScreenshot()
+      inScreenshot = true
+      screenshotLines = [line]
+      continue
+    }
+
+    if (inScreenshot) {
+      const trimmed = line.trim()
+      // 截图块内的行：空行、缩进子项、以 "1. **" 开头的字段行、普通 bullet
+      const isFieldLine = /^\d+[.、]\s+\*\*/.test(trimmed)
+      const isBulletLine = /^-\s/.test(trimmed) || /^\s{2,}-\s/.test(line)
+      const isBlank = trimmed === ''
+      // 检测截图块结束：有内容的非截图行
+      const isEndLine = !isBlank && !isFieldLine && !isBulletLine && !/^\d+\.\s+\*\*/.test(trimmed)
+
+      if (isEndLine && screenshotLines.length > 1) {
+        flushScreenshot()
+        inScreenshot = false
+        normalLines.push(line)
+      } else {
+        screenshotLines.push(line)
+      }
+    } else {
+      normalLines.push(line)
+    }
+  }
+  flushNormal()
+  flushScreenshot()
+  return segments
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 内联编辑（详情弹窗内直接修改 content_md）
+// ──────────────────────────────────────────────────────────────────────────────
+function startInlineEdit() {
+  inlineContent.value = detailEntry.value?.content_md || ''
+  editingContent.value = true
+}
+
+function cancelInlineEdit() {
+  editingContent.value = false
+}
+
+async function saveInlineEdit() {
+  if (!detailEntry.value) return
+  const newContent = inlineContent.value
+  if (newContent === detailEntry.value.content_md) {
+    editingContent.value = false
+    return
+  }
+  inlineEditLoading.value = true
+  try {
+    const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({ content_md: newContent }),
+    })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    // 同步更新本地状态
+    detailEntry.value.content_md = newContent
+    const idx = entries.value.findIndex((e) => e.id === detailEntry.value!.id)
+    if (idx !== -1) entries.value[idx].content_md = newContent
+    // 重新解析内容预览
+    parsedSegments.value = parseContentMd(newContent)
+    editingContent.value = false
+    ElMessage.success('内容已保存')
+  } catch {
+    ElMessage.error('保存失败，请重试')
+  } finally {
+    inlineEditLoading.value = false
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -377,7 +616,10 @@ const metaKeys: (keyof KbdMetadata)[] = [
   'create_admin_id', 'update_admin_id',
 ]
 
-onMounted(() => fetchPending())
+onMounted(() => {
+  fetchPending()
+  fetchCategories()
+})
 </script>
 
 <template>
@@ -555,12 +797,25 @@ onMounted(() => fetchPending())
             >需人工重新分类</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="确认分类（可修改）">
-            <el-input
+            <el-select
               v-model="editableCategoryId"
               size="small"
-              placeholder="输入 kb_category.code，如 虚拟机-001"
-              style="width: 200px"
-            />
+              filterable
+              clearable
+              placeholder="选择或搜索分类（如 虚拟机-001）"
+              style="width: 280px"
+              :loading="categoriesLoading"
+            >
+              <el-option
+                v-for="cat in categoryOptions"
+                :key="cat.code"
+                :value="cat.code"
+                :label="`${cat.code}  ${cat.name}`"
+              >
+                <span style="font-family:monospace;color:#606266;font-size:12px">{{ cat.code }}</span>
+                <span style="margin-left:8px;color:#909399;font-size:12px">{{ cat.name }}</span>
+              </el-option>
+            </el-select>
           </el-descriptions-item>
 
           <el-descriptions-item v-if="detailEntry.ai_category_reason" label="AI 分类理由" :span="2">
@@ -582,11 +837,89 @@ onMounted(() => fetchPending())
 
         <!-- content_md 渲染 -->
         <div class="section-block">
-          <h4 class="section-title">内容预览</h4>
-          <div
-            class="md-render"
-            v-html="renderMarkdown(detailEntry.content_md)"
+          <div class="section-header-row">
+            <h4 class="section-title">内容预览</h4>
+            <div class="section-actions">
+              <el-button
+                v-if="!editingContent"
+                text type="primary" size="small"
+                @click="startInlineEdit"
+              >✏️ 编辑原文</el-button>
+              <template v-else>
+                <el-button text size="small" @click="cancelInlineEdit">取消</el-button>
+                <el-button
+                  text type="primary" size="small"
+                  :loading="inlineEditLoading"
+                  @click="saveInlineEdit"
+                >保存</el-button>
+              </template>
+            </div>
+          </div>
+
+          <!-- 编辑模式：可直接修改 Markdown 原文 -->
+          <el-input
+            v-if="editingContent"
+            v-model="inlineContent"
+            type="textarea"
+            :rows="22"
+            placeholder="Markdown 格式内容"
+            style="font-family: monospace; font-size: 13px; margin-top: 8px"
           />
+
+          <!-- 预览模式：普通段 + 截图 accordion 卡片 -->
+          <template v-else>
+            <template v-for="(seg, i) in parsedSegments" :key="i">
+              <!-- 普通 Markdown 段落 -->
+              <div v-if="seg.type === 'normal'" class="md-render" v-html="seg.html" />
+
+              <!-- 截图说明 accordion 卡片 -->
+              <div
+                v-else
+                class="screenshot-card"
+                :style="{ borderLeftColor: seg.typeInfo.color }"
+              >
+                <!-- 收起状态：只显示类型标签 -->
+                <div
+                  class="screenshot-header"
+                  :style="{ backgroundColor: seg.typeInfo.bgColor }"
+                  @click="seg.expanded = !seg.expanded"
+                >
+                  <span class="screenshot-badge" :style="{ color: seg.typeInfo.color, borderColor: seg.typeInfo.color }">
+                    {{ seg.typeInfo.icon }} {{ seg.typeInfo.label }}
+                  </span>
+                  <span v-if="seg.fields.intro" class="screenshot-intro-preview">
+                    {{ seg.fields.intro.slice(0, 30) }}{{ seg.fields.intro.length > 30 ? '…' : '' }}
+                  </span>
+                  <span class="toggle-arrow">{{ seg.expanded ? '▲' : '▼' }}</span>
+                </div>
+
+                <!-- 展开内容 -->
+                <div v-if="seg.expanded" class="screenshot-body">
+                  <!-- 1. 可见内容 -->
+                  <div v-if="seg.fields.visibleContent.length" class="ss-field">
+                    <div class="ss-field-label">1. <strong>可见内容</strong></div>
+                    <ul class="ss-field-list">
+                      <li v-for="(item, j) in seg.fields.visibleContent" :key="j">{{ item }}</li>
+                    </ul>
+                  </div>
+                  <!-- 2. 报错/状态（标签动态选择）-->
+                  <div v-if="seg.fields.errorContent.length" class="ss-field">
+                    <div class="ss-field-label">2. <strong>{{ seg.errorLabel }}</strong></div>
+                    <ul class="ss-field-list">
+                      <li v-for="(item, j) in seg.fields.errorContent" :key="j">{{ item }}</li>
+                    </ul>
+                  </div>
+                  <!-- 3. 排障建议 -->
+                  <div v-if="seg.fields.techTips.length" class="ss-field">
+                    <div class="ss-field-label">3. <strong>排障建议</strong></div>
+                    <ul class="ss-field-list">
+                      <li v-for="(item, j) in seg.fields.techTips" :key="j">{{ item }}</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </template>
         </div>
 
         <!-- 审核备注 -->
@@ -650,8 +983,25 @@ onMounted(() => fetchPending())
         <el-form-item label="标题">
           <el-input v-model="editTitle" placeholder="条目标题" />
         </el-form-item>
-        <el-form-item label="分类 ID">
-          <el-input v-model="editCategoryId" placeholder="如 虚拟机-001" style="width: 240px" />
+        <el-form-item label="分类">
+          <el-select
+            v-model="editCategoryId"
+            filterable
+            clearable
+            placeholder="选择或搜索分类（如 虚拟机-001）"
+            style="width: 300px"
+            :loading="categoriesLoading"
+          >
+            <el-option
+              v-for="cat in categoryOptions"
+              :key="cat.code"
+              :value="cat.code"
+              :label="`${cat.code}  ${cat.name}`"
+            >
+              <span style="font-family:monospace;color:#606266;font-size:12px">{{ cat.code }}</span>
+              <span style="margin-left:8px;color:#909399;font-size:12px">{{ cat.name }}</span>
+            </el-option>
+          </el-select>
         </el-form-item>
         <el-form-item label="内容">
           <el-input
@@ -817,5 +1167,101 @@ onMounted(() => fetchPending())
 .md-render :deep(strong) {
   font-weight: 700;
   color: #1a1a2e;
+}
+
+/* 内容预览：标题行（含编辑按钮） */
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.section-header-row .section-title {
+  margin: 0;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.section-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* 截图说明 accordion 卡片 */
+.screenshot-card {
+  border: 1px solid #e4e7ed;
+  border-left: 4px solid #909399;  /* 左侧彩色竖线，由 :style 覆盖 */
+  border-radius: 4px;
+  margin: 8px 0;
+  overflow: hidden;
+}
+
+.screenshot-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: filter 0.15s;
+}
+.screenshot-header:hover {
+  filter: brightness(0.97);
+}
+
+.screenshot-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.screenshot-intro-preview {
+  flex: 1;
+  font-size: 12px;
+  color: #909399;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toggle-arrow {
+  font-size: 11px;
+  color: #909399;
+  margin-left: auto;
+}
+
+.screenshot-body {
+  padding: 10px 16px 12px;
+  background: #fff;
+  border-top: 1px solid #ebeef5;
+}
+
+.ss-field {
+  margin-bottom: 10px;
+}
+.ss-field:last-child {
+  margin-bottom: 0;
+}
+
+.ss-field-label {
+  font-size: 13px;
+  color: #303133;
+  margin-bottom: 4px;
+}
+
+.ss-field-list {
+  margin: 0 0 0 20px;
+  padding: 0;
+  list-style: disc;
+}
+.ss-field-list li {
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.7;
 }
 </style>
