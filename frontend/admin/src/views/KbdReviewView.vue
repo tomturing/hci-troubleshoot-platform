@@ -950,18 +950,20 @@ onMounted(() => {
                     </ul>
                   </div>
                   <!-- 2. 报错/状态（标签动态选择）-->
-                  <div v-if="seg.fields.errorContent.length" class="ss-field">
+                  <div class="ss-field">
                     <div class="ss-field-label">2. <strong>{{ seg.errorLabel }}</strong></div>
-                    <ul class="ss-field-list">
+                    <ul v-if="seg.fields.errorContent.length" class="ss-field-list">
                       <li v-for="(item, j) in seg.fields.errorContent" :key="j">{{ item }}</li>
                     </ul>
+                    <span v-else class="ss-empty">无</span>
                   </div>
                   <!-- 3. 排障建议 -->
-                  <div v-if="seg.fields.techTips.length" class="ss-field">
+                  <div class="ss-field">
                     <div class="ss-field-label">3. <strong>排障建议</strong></div>
-                    <ul class="ss-field-list">
+                    <ul v-if="seg.fields.techTips.length" class="ss-field-list">
                       <li v-for="(item, j) in seg.fields.techTips" :key="j">{{ item }}</li>
                     </ul>
+                    <span v-else class="ss-empty">无</span>
                   </div>
                 </div>
               </div>
@@ -1310,5 +1312,10 @@ onMounted(() => {
   font-size: 13px;
   color: #606266;
   line-height: 1.7;
+}
+.ss-empty {
+  font-size: 13px;
+  color: #c0c4cc;
+  font-style: italic;
 }
 </style>

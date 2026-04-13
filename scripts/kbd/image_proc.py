@@ -50,7 +50,7 @@ _VISION_PROMPT = """\
 4. **对故障排查有价值的技术细节**：
 - 关键技术细节
 
-注意：字段0只填黑色/白色/其他；字段2和3内容原文照录不加工，每项一行bullet（"- "开头），最多6条；总输出不超过300字。
+注意：字段0只填黑色/白色/其他；字段2和3内容原文照录不加工，每项一行bullet（"- "开头），字段2最多4条、字段3最多3条；**字段3和字段4必须输出**，无内容写：- 无；总输出不超过400字。
 """
 
 
@@ -110,6 +110,29 @@ def _normalize_vision_output(text: str) -> str:
     return "\n".join(lines)
 
 
+def _ensure_all_fields(text: str) -> str:
+    """
+    保证 Vision 输出包含字段 0-4。
+    如果输出被截断导致某字段缺失，自动补充 "- 无"。
+    """
+    required = {
+        "0": "0. **截图背景颜色**：其他",
+        "3": "3. **截图中的报错信息或异常状态**：\n- 无",
+        "4": "4. **对故障排查有价值的技术细节**：\n- 无",
+    }
+    lines = text.strip().split("\n")
+    # 检测哪些字段已存在
+    existing = set()
+    for line in lines:
+        m = _re.match(r"^(\d+)\s*[.、]\s*\*\*", line.strip())
+        if m:
+            existing.add(m.group(1))
+    # 补全缺失字段（按顺序追加）
+    for fid in ("0", "3", "4"):
+        if fid not in existing:
+            lines.append(required[fid])
+    return "\n".join(lines)
+
 
 async def _describe_image(
     client: AsyncOpenAI,
@@ -135,7 +158,7 @@ async def _describe_image(
                 ],
             }
         ],
-        max_tokens=400,
+        max_tokens=600,
         temperature=0.1,
         timeout=settings.LLM_TIMEOUT,
     )
@@ -143,6 +166,8 @@ async def _describe_image(
     tokens = response.usage.total_tokens if response.usage else 0
     # 归一化输出格式（防止 Vision 模型返回 JSON 格式）
     desc = _normalize_vision_output(desc.strip())
+    # 补全截断导致的缺失字段
+    desc = _ensure_all_fields(desc)
     return desc, tokens
 
 
