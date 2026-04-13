@@ -13,6 +13,7 @@ from typing import Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import httpx
+from shared.utils.exceptions import AIStreamError, ErrorCode
 from shared.utils.logger import get_logger
 
 logger = get_logger("ai-client")
@@ -142,14 +143,22 @@ class OpenClawAssistant:
                 async with self.client.stream("POST", url, json=payload, headers=request_headers) as response:
                     if response.status_code != 200:
                         error_body = await response.aread()
+                        error_text = error_body.decode("utf-8", errors="ignore")
                         logger.error(
                             event="ai_error",
                             message=f"OpenClaw returned status {response.status_code}",
                             status=response.status_code,
-                            body=error_body.decode("utf-8", errors="ignore"),
+                            body=error_text,
                             attempt=idx,
                         )
-                        response.raise_for_status()
+
+                        # 解析错误详情并抛出结构化异常
+                        error_detail = self._parse_ai_error(response.status_code, error_text)
+                        raise AIStreamError(
+                            code=error_detail["code"],
+                            message=error_detail["message"],
+                            detail=error_detail["detail"],
+                        )
 
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data: "):
@@ -170,6 +179,9 @@ class OpenClawAssistant:
                             continue
 
                 return
+            except AIStreamError:
+                # AIStreamError 直接透传，不包装
+                raise
             except Exception as e:
                 last_error = e
                 retriable = self._is_retriable_stream_error(e)
@@ -187,10 +199,137 @@ class OpenClawAssistant:
 
                 if can_retry:
                     continue
-                raise
+                # 将未捕获的异常转换为结构化错误
+                error_detail = self._parse_generic_error(e)
+                raise AIStreamError(
+                    code=error_detail["code"],
+                    message=error_detail["message"],
+                    detail=error_detail["detail"],
+                )
 
         if last_error:
-            raise last_error
+            # 所有端点都失败，抛出结构化错误
+            error_detail = self._parse_generic_error(last_error)
+            raise AIStreamError(
+                code=error_detail["code"],
+                message=error_detail["message"],
+                detail=error_detail["detail"],
+            )
+
+    def _parse_ai_error(self, status_code: int, error_body: str) -> dict:
+        """
+        解析 AI 服务返回的错误响应，生成用户友好的错误信息
+
+        Args:
+            status_code: HTTP 状态码
+            error_body: 错误响应体
+
+        Returns:
+            dict: {code, message, detail} 用于构造 AIStreamError
+        """
+        # 尝试解析 JSON 错误体
+        error_info = {}
+        try:
+            parsed = json.loads(error_body)
+            if "error" in parsed:
+                error_info = parsed["error"]
+        except json.JSONDecodeError:
+            error_info = {"message": error_body[:200]}
+
+        raw_message = error_info.get("message", "")
+        error_type = error_info.get("type", "")
+
+        # 根据状态码和错误类型生成友好消息
+        if status_code == 401:
+            return {
+                "code": ErrorCode.AI_AUTH_FAILED,
+                "message": "AI 服务认证失败，请检查 API 密钥配置",
+                "detail": f"status=401, type={error_type}, message={raw_message}",
+            }
+        elif status_code == 429:
+            # Rate limit - 提取具体原因
+            friendly_msg = "AI 服务请求频率超限"
+            if "余额不足" in raw_message or "充值" in raw_message:
+                friendly_msg = "AI 服务账户余额不足，请充值后重试"
+            elif "rate limit" in raw_message.lower():
+                friendly_msg = "AI 服务请求过于频繁，请稍后重试"
+            return {
+                "code": ErrorCode.AI_RATE_LIMITED,
+                "message": friendly_msg,
+                "detail": f"status=429, type={error_type}, message={raw_message}",
+            }
+        elif status_code == 404:
+            return {
+                "code": ErrorCode.AI_UNAVAILABLE,
+                "message": "AI 服务接口不存在，请检查配置",
+                "detail": f"status=404, url={url}",
+            }
+        elif status_code == 400:
+            return {
+                "code": ErrorCode.AI_UPSTREAM_ERROR,
+                "message": f"AI 服务请求参数错误：{raw_message}",
+                "detail": f"status=400, type={error_type}, message={raw_message}",
+            }
+        elif status_code >= 500:
+            return {
+                "code": ErrorCode.AI_UPSTREAM_ERROR,
+                "message": "AI 上游服务故障，请稍后重试",
+                "detail": f"status={status_code}, type={error_type}, message={raw_message}",
+            }
+        else:
+            return {
+                "code": ErrorCode.AI_UPSTREAM_ERROR,
+                "message": f"AI 服务返回错误（{status_code}）：{raw_message[:100]}",
+                "detail": f"status={status_code}, type={error_type}, message={raw_message}",
+            }
+
+    def _parse_generic_error(self, exc: Exception) -> dict:
+        """
+        解析通用异常，生成用户友好的错误信息
+
+        Args:
+            exc: 原始异常
+
+        Returns:
+            dict: {code, message, detail} 用于构造 AIStreamError
+        """
+        exc_type = type(exc).__name__
+        exc_message = str(exc)
+
+        # HTTP 状态错误
+        if isinstance(exc, httpx.HTTPStatusError):
+            return self._parse_ai_error(exc.response.status_code, exc.response.text)
+
+        # 连接超时
+        if isinstance(exc, httpx.TimeoutException):
+            return {
+                "code": ErrorCode.AI_TIMEOUT,
+                "message": "AI 服务响应超时，请稍后重试",
+                "detail": f"type={exc_type}, message={exc_message}",
+            }
+
+        # 连接错误
+        if isinstance(exc, httpx.ConnectError):
+            return {
+                "code": ErrorCode.AI_UNAVAILABLE,
+                "message": "无法连接到 AI 服务，请检查网络或服务状态",
+                "detail": f"type={exc_type}, message={exc_message}",
+            }
+
+        # 其他网络错误
+        if isinstance(exc, httpx.RequestError):
+            return {
+                "code": ErrorCode.AI_UNAVAILABLE,
+                "message": f"AI 服务网络错误：{exc_message[:100]}",
+                "detail": f"type={exc_type}, message={exc_message}",
+            }
+
+        # 未知错误
+        return {
+            "code": ErrorCode.INTERNAL_ERROR,
+            "message": f"AI 服务内部错误：{exc_message[:100]}",
+            "detail": f"type={exc_type}, message={exc_message}",
+        }
 
     @staticmethod
     def _is_retriable_stream_error(exc: Exception) -> bool:

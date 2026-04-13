@@ -159,7 +159,7 @@ async def send_message(
                 )
             yield f"event: error\ndata: {e.to_sse_data()}\n\n"
         except ExternalServiceError as e:
-            # 外部服务故障（KB/Scheduler 等），回传可读错误码给前端
+            # 外部服务故障（KB/Scheduler 等），回传完整错误信息给前端
             if ai_content:
                 background_tasks.add_task(
                     service.save_assistant_message,
@@ -168,12 +168,12 @@ async def send_message(
                     content="".join(ai_content),
                 )
             error_data = json.dumps(
-                {"code": e.code.value, "message": e.message},
+                {"code": e.code.value, "message": e.message, "detail": e.detail},
                 ensure_ascii=False,
             )
             yield f"event: error\ndata: {error_data}\n\n"
         except Exception as e:
-            # 其他未知错误，构造通用错误响应
+            # 其他未知错误，透传真实错误信息而非笼统的"内部错误"
             logger.error(
                 event="sse_stream_error",
                 message="SSE 流发生未捕获异常",
@@ -188,10 +188,12 @@ async def send_message(
                     case_id=message.case_id,
                     content="".join(ai_content),
                 )
+            # 透传真实错误信息，让用户了解问题根因
+            error_message = str(e)[:200] if str(e) else f"{type(e).__name__}（无详细信息）"
             error_data = json.dumps(
                 {
                     "code": ErrorCode.INTERNAL_ERROR.value,
-                    "message": "服务内部错误，请稍后重试",
+                    "message": f"服务异常：{error_message}",
                     "detail": type(e).__name__,
                 },
                 ensure_ascii=False,
