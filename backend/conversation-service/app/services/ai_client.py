@@ -174,16 +174,10 @@ class OpenClawAssistant:
                                     url=url,
                                     attempt=idx,
                                 )
-                                # 尝试下一个端点或抛出错误
-                                if idx < len(endpoints_to_try):
-                                    continue  # 尝试 fallback endpoint
-                                else:
-                                    raise AIStreamError(
-                                        code=ErrorCode.AI_RATE_LIMITED,
-                                        message="AI 服务返回空响应，可能是请求频率超限或账户余额不足",
-                                        detail="status=200, body=empty, got_first_token=False",
-                                    )
-                            return
+                                # 空响应：跳出 SSE 循环，让代码进入流结束检查
+                                # （流结束检查会尝试 fallback endpoint 或抛出错误）
+                                break
+                            return  # 正常结束，有内容
 
                         try:
                             data = json.loads(data_str)
@@ -204,7 +198,7 @@ class OpenClawAssistant:
                         attempt=idx,
                     )
                     if idx < len(endpoints_to_try):
-                        continue  # 尝试 fallback endpoint
+                        continue  # 尝试 fallback endpoint（endpoint 循环的下一个迭代）
                     else:
                         raise AIStreamError(
                             code=ErrorCode.AI_RATE_LIMITED,
@@ -212,7 +206,7 @@ class OpenClawAssistant:
                             detail="status=200, stream ended without content",
                         )
 
-                return
+                return  # 成功获取内容，退出 endpoint 循环
             except AIStreamError:
                 # AIStreamError 直接透传，不包装
                 raise
