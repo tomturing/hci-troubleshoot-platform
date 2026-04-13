@@ -166,6 +166,23 @@ class OpenClawAssistant:
 
                         data_str = line[6:]  # 跳过 "data: "
                         if data_str.strip() == "[DONE]":
+                            # 收到 [DONE] 但没有任何实际内容 → 上游服务可能静默失败
+                            if not got_first_token:
+                                logger.warning(
+                                    event="ai_empty_response",
+                                    message="AI 服务返回空响应（可能 rate limit 或服务异常）",
+                                    url=url,
+                                    attempt=idx,
+                                )
+                                # 尝试下一个端点或抛出错误
+                                if idx < len(endpoints_to_try):
+                                    continue  # 尝试 fallback endpoint
+                                else:
+                                    raise AIStreamError(
+                                        code=ErrorCode.AI_RATE_LIMITED,
+                                        message="AI 服务返回空响应，可能是请求频率超限或账户余额不足",
+                                        detail="status=200, body=empty, got_first_token=False",
+                                    )
                             return
 
                         try:
@@ -177,6 +194,23 @@ class OpenClawAssistant:
                                 yield content
                         except json.JSONDecodeError:
                             continue
+
+                # 流结束后检查是否有实际内容
+                if not got_first_token:
+                    logger.warning(
+                        event="ai_stream_no_content",
+                        message="AI 流结束但无任何内容",
+                        url=url,
+                        attempt=idx,
+                    )
+                    if idx < len(endpoints_to_try):
+                        continue  # 尝试 fallback endpoint
+                    else:
+                        raise AIStreamError(
+                            code=ErrorCode.AI_RATE_LIMITED,
+                            message="AI 服务返回空响应，可能是请求频率超限或账户余额不足",
+                            detail="status=200, stream ended without content",
+                        )
 
                 return
             except AIStreamError:
