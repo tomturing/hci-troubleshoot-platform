@@ -42,6 +42,13 @@ class KBClient(InternalHTTPClient):
         super().__init__(base_url=kb_service_url.rstrip("/"), timeout=_REQUEST_TIMEOUT)
         # 兼容旧代码中直接访问 _base_url 的地方
         self._api_prefix = "/api/kb"
+        # 兼容旧代码中直接访问 _headers 的地方（基类只有 _client.headers）
+        service_name = os.environ.get("SERVICE_NAME", "unknown")
+        self._headers = {
+            "Authorization": f"Bearer {internal_token}",
+            "X-Service-Name": service_name,
+            "Content-Type": "application/json",
+        }
 
     async def classify_intent(
         self,
@@ -215,14 +222,14 @@ class KBClient(InternalHTTPClient):
         }
         """
         try:
-            async with httpx.AsyncClient(timeout=_CATEGORY_TIMEOUT) as client:
-                resp = await client.get(
-                    f"{self._api_prefix}/categories/grouped",
-                    headers=self._headers,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                return data.get("categories_by_domain", {})
+            # 使用基类的 _client（已配置 base_url），避免创建新 client 导致 URL 缺少协议
+            resp = await self._client.get(
+                f"{self._api_prefix}/categories/grouped",
+                timeout=_CATEGORY_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("categories_by_domain", {})
         except httpx.HTTPStatusError as exc:
             logger.warning(
                 event="kb_categories_http_error",
@@ -250,21 +257,21 @@ class KBClient(InternalHTTPClient):
             更新后的 hit_count 值，失败返回 -1
         """
         try:
-            async with httpx.AsyncClient(timeout=_CATEGORY_TIMEOUT) as client:
-                resp = await client.post(
-                    f"{self._api_prefix}/categories/{code}/hit",
-                    headers=self._headers,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                hit_count = data.get("hit_count", -1)
-                logger.info(
-                    event="category_hit_incremented",
-                    message=f"分类 {code} 命中计数已更新为 {hit_count}",
-                    code=code,
-                    hit_count=hit_count,
-                )
-                return hit_count
+            # 使用基类的 _client（已配置 base_url），避免创建新 client 导致 URL 缺少协议
+            resp = await self._client.post(
+                f"{self._api_prefix}/categories/{code}/hit",
+                timeout=_CATEGORY_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            hit_count = data.get("hit_count", -1)
+            logger.info(
+                event="category_hit_incremented",
+                message=f"分类 {code} 命中计数已更新为 {hit_count}",
+                code=code,
+                hit_count=hit_count,
+            )
+            return hit_count
         except httpx.HTTPStatusError as exc:
             logger.warning(
                 event="kb_category_hit_http_error",

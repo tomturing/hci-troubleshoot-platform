@@ -17,6 +17,7 @@ from app.config import settings
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
+from shared.models.audit import AuditLog
 from .ai_client import AIAssistantRegistry
 from .conversation_manager import ConversationManager
 from .kb_client import KBClient
@@ -726,23 +727,31 @@ class ConversationService:
         audit_meta: dict,
         sample_payload: list | None,
     ) -> None:
-        """写入 prompt_audit 记录（后台任务，失败不影响主流程）"""
+        """写入 audit_log 记录（后台任务，失败不影响主流程）
+
+        v6.2 重构：prompt_audit 功能已合并到 audit_log 表，
+        直接使用 AuditLog ORM 模型写入。
+        """
         try:
             async with self.session_factory() as session:
-                await ConversationRepository(session).insert_prompt_audit(
+                audit_log = AuditLog(
                     conversation_id=conversation_id,
-                    case_id=case_id,
-                    assistant_type=assistant_type,
+                    audit_type="prompt",
+                    payload={
+                        "case_id": case_id,
+                        "assistant_type": assistant_type,
+                        "message_count": message_count,
+                        "has_sop": audit_meta["has_sop"],
+                        "kb_chunks_count": audit_meta["kb_chunks_count"],
+                        "kb_top_score": audit_meta["kb_top_score"],
+                        "messages": sample_payload,
+                        "context_breakdown": audit_meta.get("context_breakdown"),
+                        "total_chars": audit_meta.get("total_chars"),
+                        "total_token_est": audit_meta.get("total_token_est"),
+                    },
                     trace_id=trace_id,
-                    message_count=message_count,
-                    has_sop=audit_meta["has_sop"],
-                    kb_chunks_count=audit_meta["kb_chunks_count"],
-                    kb_top_score=audit_meta["kb_top_score"],
-                    messages=sample_payload,
-                    context_breakdown=audit_meta.get("context_breakdown"),
-                    total_chars=audit_meta.get("total_chars"),
-                    total_token_est=audit_meta.get("total_token_est"),
                 )
+                session.add(audit_log)
                 await session.commit()
             logger.info(
                 event="prompt_audit_written",
