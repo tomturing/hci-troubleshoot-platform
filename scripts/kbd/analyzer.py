@@ -141,6 +141,12 @@ async def analyze_screenshot(
         AnalysisResult(type, key, tips)
     """
     if not full_text:
+        # full_text 为空时用背景色兜底推断类型，避免黑色背景日志错误归类为"其他截图"
+        if background == "黑色":
+            logger.warning(
+                "LLM 分析：full_text 为空，背景为黑色，兜底分类为日志截图"
+            )
+            return AnalysisResult(type="日志截图")
         logger.warning("LLM 分析：full_text 为空，返回默认结果")
         return AnalysisResult()
 
