@@ -135,7 +135,7 @@ class ConversationRepository:
         result = await self.session.execute(
             select(Message)
             .where(Message.case_id == case_id)
-            .where(Message.role == MessageRole.USER)
+            .where(Message.role == MessageRole.user)
             .where(Message.message_id != current_message_id)
             .order_by(desc(Message.created_at))
             .limit(limit)
