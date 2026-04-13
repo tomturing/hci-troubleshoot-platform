@@ -172,6 +172,13 @@ async def send_message(
             yield f"event: error\ndata: {error_data}\n\n"
         except Exception as e:
             # 其他未知错误，构造通用错误响应
+            logger.error(
+                event="sse_stream_error",
+                message="SSE 流发生未捕获异常",
+                error_type=type(e).__name__,
+                error_message=str(e),
+                conversation_id=str(conversation_id),
+            )
             if ai_content:
                 background_tasks.add_task(
                     service.save_assistant_message,
