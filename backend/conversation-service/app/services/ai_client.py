@@ -109,11 +109,18 @@ class OpenClawAssistant:
             endpoints_to_try.append(fallback_endpoint)
 
         # ZhipuAI v4 API 路径为 /chat/completions（无 /v1/），OpenAI 兴容接口为 /v1/chat/completions
-        # 通过环境变量 AI_COMPLETIONS_PATH 可覆盖（默认兼容 OpenAI）
-        _completions_path = os.environ.get("AI_COMPLETIONS_PATH", "/v1/chat/completions")
+        # 根据 endpoint 类型动态选择正确路径，而不是依赖单一环境变量
+        _default_internal_path = "/v1/chat/completions"  # OpenAI 兴容接口（OpenClaw Pod）
+        _default_external_path = "/chat/completions"  # ZhipuAI v4 API
 
         last_error: Exception | None = None
         for idx, endpoint in enumerate(endpoints_to_try, start=1):
+            # 根据 endpoint 类型选择正确的 completions path
+            if self._is_internal_gateway_endpoint(endpoint):
+                _completions_path = os.environ.get("AI_COMPLETIONS_PATH", _default_internal_path)
+            else:
+                # 外部 API（智谱）固定使用 /chat/completions，环境变量可覆盖
+                _completions_path = os.environ.get("AI_COMPLETIONS_PATH_EXTERNAL", _default_external_path)
             url = f"{endpoint}{_completions_path}"
             got_first_token = False
             token = self._resolve_auth_token(endpoint)
