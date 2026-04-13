@@ -1,7 +1,8 @@
-0. **截图背景颜色**：黑色  
-1. **截图界面类型**：命令行终端  
-2. **截图中所有可见的文字内容**：  
-   - `2025-10-14 01:59:53 debug svt_qemu_6166200431340(2556403): 14.902 D 2566403 block.c(bdrv_unref):6726 | bdrv_unref refcnt:3 format:[file] /sf/data/227e6ef68f07fd58d6ec9c900a5269082/images/`  
-   - `2025-10-14 01:59:54 debug svt_qemu_6166200431340(2556403): 14.902 D 2566403 block.c(bdrv_unref):6726 | bdrv_unref refcnt:3 format:[file] /sf/data/227e6ef68f07fd58d6ec9c900a5269082/images/`  
-   - `2025-10-14 01:59:55 debug svt_qemu_6166200431340(2556403): 14.902 D 2566403 block.c(bdrv_unref):6726 | bdrv_unref refcnt:2 format:[file] /sf/data/227e6ef68f07fd58d6ec9c900a5269082/images/`  
-   - `2025-10-14 01:59:56 debug svt_qemu_6166200431340(2556403): 14.902 D 2566403 block.c(bdrv_unref):6726 | bdrv_unref
+BACKGROUND: 黑色
+TYPE: 其他截图
+FULL_TEXT:
+- （无文字）
+KEY:
+- 无
+TIPS:
+- 无

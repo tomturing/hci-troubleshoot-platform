@@ -52,6 +52,14 @@ dependencies = [
     "pyyaml>=6.0.0",
 ]
 
+[project.optional-dependencies]
+# KBD 截图工具额外依赖（scripts/kbd 本地 CLI 工具使用，不进 Docker 镜像）
+# Pillow 用于背景色采样，Vision LLM 弥补 PaddleOCR 在此环境中的兼容性问题
+# 安装：uv pip install -e ".[kbd]"
+kbd = [
+    "pillow>=10.0.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=7.4.3,<9.0",

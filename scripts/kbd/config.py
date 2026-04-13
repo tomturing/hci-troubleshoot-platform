@@ -67,20 +67,26 @@ class KbdSettings(BaseSettings):
     DB_POOL_MIN: int = Field(default=2)
     DB_POOL_MAX: int = Field(default=10)
 
-    # ── LLM（Vision + 分类）────────────────────────────────────────────────────
-    ZAI_API_KEY: str = Field(default="", description="z.ai API Key（必填）")
+    # ── LLM（Vision 兜底 + 分析）───────────────────────────────────────────────
+    # 旧字段保留向后兼容（用于 Vision 兜底 OCR，模型换为 DashScope qwen3.5-plus）
+    ZAI_API_KEY: str = Field(default="", description="DashScope API Key（必填，替代旧 z.ai key）")
     ZAI_BASE_URL: str = Field(
-        default="https://api.z.ai/v1",
-        description="OpenAI-compatible API Base URL",
+        default="https://coding.dashscope.aliyuncs.com/v1",
+        description="DashScope OpenAI-compatible API Base URL",
     )
-    # Vision 模型（支持图片输入）
+    # Vision 兜底模型（支持图片输入，PaddleOCR 失败时启用）
     VISION_MODEL: str = Field(
-        default="gpt-4o",
-        description="Vision LLM 模型名称（需支持 image_url 输入）",
+        default="qwen3.5-plus",
+        description="Vision 兜底 OCR 模型（需支持 image_url 输入，DashScope qwen3.5-plus）",
     )
-    # 分类模型
+    # 截图分析 LLM（文本模式，接收 PaddleOCR 文字做类型判断+关键内容提取+排障建议）
+    ANALYSIS_MODEL: str = Field(
+        default="qwen3-max-2026-01-23",
+        description="截图分析 LLM，接收纯文本进行智能分析（DashScope qwen3-max）",
+    )
+    # 分类模型（保留兼容）
     CLASSIFY_MODEL: str = Field(
-        default="gpt-4o-mini",
+        default="qwen3.5-plus",
         description="分类 LLM 模型名称",
     )
     # LLM 请求超时（秒）
