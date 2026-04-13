@@ -60,6 +60,37 @@ _MANDATORY_TITLES: frozenset[str] = frozenset(
 
 # ─── HTML → Markdown 转换器 ──────────────────────────────────────────────────
 
+def _desc_to_screenshot_block(desc: str) -> str:
+    """
+    将 desc.txt 内容（v1 或 v2 格式）转换为 content_md 中的截图块。
+
+    v2 格式（含 BACKGROUND:/TYPE:/FULL_TEXT:/KEY:/TIPS: 行）：
+      每行独立成一个 "> {line}" 行，整体以 "> **【截图说明】**" 为首行。
+
+    v1 格式（旧版 0-4 字段）：
+      兼容旧格式，首行拼接在 "【截图说明】**：" 后，后续行直接追加。
+
+    Returns:
+        content_md 片段，头尾各有空行分隔。
+    """
+    stripped = desc.strip()
+    if not stripped:
+        return ""
+
+    lines = stripped.split("\n")
+    # 检测 v2 格式：第一行以 BACKGROUND: 开头
+    if lines[0].startswith("BACKGROUND:") or lines[0].startswith("TYPE:"):
+        # v2：每行独立 ">" 行
+        block_lines = ["> **【截图说明】**"]
+        for line in lines:
+            # 空行处理
+            block_lines.append(f"> {line}" if line.strip() else ">")
+        return "\n\n" + "\n".join(block_lines) + "\n\n"
+    else:
+        # v1 兼容：原有行内拼接格式
+        return f"\n\n> **【截图说明】**：{stripped}\n\n"
+
+
 class _HciMarkdownConverter(markdownify.MarkdownConverter):
     """
     定制 Markdown 转换器：
@@ -69,7 +100,7 @@ class _HciMarkdownConverter(markdownify.MarkdownConverter):
     def convert_span(self, el: Tag, text: str, parent_tags: set | None = None, **kwargs) -> str:
         desc = el.get("data-vision-desc")
         if desc:
-            return f"\n\n> **【截图说明】**：{desc}\n\n"
+            return _desc_to_screenshot_block(desc)
         return text
 
     def convert_img(self, el: Tag, text: str, parent_tags: set | None = None, **kwargs) -> str:

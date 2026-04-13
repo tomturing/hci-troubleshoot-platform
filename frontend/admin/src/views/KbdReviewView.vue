@@ -58,10 +58,27 @@ interface ScreenshotTypeInfo {
 }
 
 interface ScreenshotFields {
-  intro: string
-  bgColorText: string    // Vision 字段0：截图背景颜色（黑色/白色/其他）
-  typeName: string       // Vision 字段1：界面类型（参考用，不作主要分类依据）
+  // ── v2 字段（PaddleOCR + LLM 双引擎新格式）─────────────────────────────────
+  /** 背景颜色（黑色/白色/其他），后端 Pillow 采样决定 */
+  background: string
+  /** 截图类型（终端截图/日志截图/告警截图/任务截图/其他截图），后端 LLM 权威判断 */
+  screenshotType: string
+  /** PaddleOCR 全量文字行 */
+  fullText: string[]
+  /**
+   * 截断后的可见内容（根据截图类型决定方向）：
+   *   终端/日志截图 → FULL_TEXT 后 N 行（最新输出在末尾）
+   *   告警/任务截图 → FULL_TEXT 前 N 行（最新内容在最前）
+   */
   visibleContent: string[]
+  /** 类型相关关键内容（KEY 字段）：终端→命令返回；日志→错误日志；告警→重要告警；任务→失败任务 */
+  key: string[]
+  /** 排障建议（TIPS 字段） */
+  tips: string[]
+  // ── v1 兼容字段（旧格式 0-4 字段，新条目不再写入）────────────────────────
+  intro: string
+  bgColorText: string
+  typeName: string
   errorContent: string[]
   techTips: string[]
 }
@@ -403,44 +420,44 @@ function escapeHtml(s: string): string {
 // 截图说明解析（accordion 卡片）
 // ──────────────────────────────────────────────────────────────────────────────
 
+/** 将截图类型字符串映射为 ScreenshotTypeInfo（v2 格式，后端已判断） */
+function typeNameToInfo(typeName: string): ScreenshotTypeInfo {
+  if (/告警截图/.test(typeName)) return { label: '告警截图', color: '#E6A23C', bgColor: '#FEF7EC', icon: '🔔' }
+  if (/任务截图/.test(typeName)) return { label: '任务截图', color: '#409EFF', bgColor: '#EEF6FF', icon: '📋' }
+  if (/终端截图/.test(typeName)) return { label: '终端截图', color: '#722ED1', bgColor: '#F5EEFF', icon: '💻' }
+  if (/日志截图/.test(typeName)) return { label: '日志截图', color: '#67C23A', bgColor: '#F0F9EB', icon: '📄' }
+  return { label: '其他截图', color: '#909399', bgColor: '#F5F7FA', icon: '🖼️' }
+}
+
 /**
- * 截图多维度分类（优先级由高到低）
- * 判断依据：Vision 字段0（背景色）+ visibleContent + errorContent 全文关键词
- *
- * 1. 白色背景 + 含「紧急/普通/历史告警数/未处理」   → 告警截图
- * 2. 白色背景 + 含任务表格字段 或 中文状态词        → 任务截图
- * 3. 黑色背景 + 含 Shell 命令特征                → 终端截图
- * 4. 黑色背景 + Vision 标注「日志」或含时间戳格式   → 日志截图
- * 5. 其他                                        → 其他截图
+ * v1 兼容：基于内容关键词推断截图类型（旧格式 0-4 字段，TYPE 字段不存在时使用）
  */
 function detectScreenshotType(fields: ScreenshotFields): ScreenshotTypeInfo {
   const isBlack = /黑/.test(fields.bgColorText)
   const isWhite = /白/.test(fields.bgColorText)
-  // 将可见内容和报错内容合并为全文便于关键词搜索
   const fullText = [...fields.visibleContent, ...fields.errorContent].join(' ')
 
-  // 告警截图：白色背景且含告警级别词
   if (isWhite && /紧急|普通|历史告警数|未处理/.test(fullText))
     return { label: '告警截图', color: '#E6A23C', bgColor: '#FEF7EC', icon: '🔔' }
-
-  // 任务截图：白色背景且含任务表格字段或任务状态词
-  if (isWhite && (/操作人|对象类型|行为|开始时间|结束时间/.test(fullText)
-    || /完成|失败|进行中/.test(fullText)))
+  if (isWhite && (/操作人|对象类型|行为|开始时间|结束时间/.test(fullText) || /完成|失败|进行中/.test(fullText)))
     return { label: '任务截图', color: '#409EFF', bgColor: '#EEF6FF', icon: '📋' }
-
-  // 终端截图：黑色背景且含 Shell 命令特征
-  if (isBlack && /\$\s|#\s|sudo|chmod|\/var\/|\/etc\/|0x[0-9a-fA-F]/.test(fullText))
+  if (isBlack && /\$\s|#\s|sudo|chmod|\/var\/|\/etc\//.test(fullText))
     return { label: '终端截图', color: '#722ED1', bgColor: '#F5EEFF', icon: '💻' }
-
-  // 日志截图：黑色背景且 Vision 界面类型含「日志」或全文含时间戳格式日志行
   if (isBlack && (/日志/.test(fields.typeName) || /\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/.test(fullText)))
     return { label: '日志截图', color: '#67C23A', bgColor: '#F0F9EB', icon: '📄' }
-
-  // 兜底：其他截图
   return { label: '其他截图', color: '#909399', bgColor: '#F5F7FA', icon: '🖼️' }
 }
 
-/** 根据报错内容决定字段标签名 */
+/** 根据截图类型决定字段2的标签名 */
+function getErrorLabelByType(screenshotType: string): string {
+  if (/终端截图/.test(screenshotType)) return '命令返回'
+  if (/日志截图/.test(screenshotType)) return '错误日志'
+  if (/告警截图/.test(screenshotType)) return '重要告警'
+  if (/任务截图/.test(screenshotType)) return '失败任务'
+  return '相关信息'
+}
+
+/** v1 兼容：根据内容关键词推断字段2标签名 */
 function detectErrorLabel(items: string[]): string {
   const joined = items.join(' ')
   if (/告警/.test(joined)) return '告警信息'
@@ -449,8 +466,82 @@ function detectErrorLabel(items: string[]): string {
   return '报错日志'
 }
 
-/** 将截图说明行组解析为 ScreenshotSegment */
+/** 最大展示行数（可见内容截断） */
+const MAX_VISIBLE_LINES = 10
+
+/**
+ * v2 格式截图块解析器（PaddleOCR + LLM 双引擎新格式）。
+ * 识别 BACKGROUND/TYPE/FULL_TEXT/KEY/TIPS 关键词 section。
+ * 根据截图类型决定 FULL_TEXT 截断方向：
+ *   终端/日志截图 → 取后 N 行（最新输出在末尾）
+ *   告警/任务/其他截图 → 取前 N 行
+ */
+function parseScreenshotBlockV2(lines: string[]): ScreenshotSegment {
+  let section = ''
+  let background = '其他'
+  let screenshotType = '其他截图'
+  const fullText: string[] = []
+  const key: string[] = []
+  const tips: string[] = []
+
+  for (const line of lines) {
+    // 剥离 "> " 前缀（v2 格式每行都以 "> " 开头）
+    const stripped = line.replace(/^>\s*/, '').trim()
+    if (!stripped) continue
+
+    if (/^BACKGROUND:\s*/.test(stripped)) {
+      background = stripped.replace(/^BACKGROUND:\s*/, '').trim()
+    } else if (/^TYPE:\s*/.test(stripped)) {
+      screenshotType = stripped.replace(/^TYPE:\s*/, '').trim()
+    } else if (/^FULL_TEXT:$/.test(stripped)) {
+      section = 'full'
+    } else if (/^KEY:$/.test(stripped)) {
+      section = 'key'
+    } else if (/^TIPS:$/.test(stripped)) {
+      section = 'tips'
+    } else if (/^-\s/.test(stripped)) {
+      const item = stripped.slice(2).trim()
+      // 跳过占位符
+      if (item === '无' || item === '（无文字）') continue
+      if (section === 'full') fullText.push(item)
+      else if (section === 'key') key.push(item)
+      else if (section === 'tips') tips.push(item)
+    }
+  }
+
+  // 根据 TYPE 决定 FULL_TEXT 截断方向
+  const isEndFirst = /终端截图|日志截图/.test(screenshotType)
+  const visibleContent = isEndFirst
+    ? fullText.slice(-MAX_VISIBLE_LINES)   // 后 N 行（最新内容）
+    : fullText.slice(0, MAX_VISIBLE_LINES)  // 前 N 行（最新内容在最前）
+
+  const typeInfo = typeNameToInfo(screenshotType)
+  const errorLabel = getErrorLabelByType(screenshotType)
+
+  const fields: ScreenshotFields = {
+    background,
+    screenshotType,
+    fullText,
+    visibleContent,
+    key,
+    tips,
+    // v1 兼容字段（v2 条目不使用，填充 v2 值兼容旧模板引用）
+    intro: '',
+    bgColorText: background,
+    typeName: screenshotType,
+    errorContent: key,
+    techTips: tips,
+  }
+  return { type: 'screenshot', typeInfo, errorLabel, fields, expanded: false }
+}
+
+/** 将截图说明行组解析为 ScreenshotSegment（自动检测 v1/v2 格式） */
 function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
+  // 检测格式版本：v2 格式的行以 "> BACKGROUND:" 或 "> TYPE:" 等开头
+  const isV2 = lines.some(l => /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS):/.test(l))
+  if (isV2) return parseScreenshotBlockV2(lines)
+
+  // ── v1 兼容解析（旧格式 0-4 字段）──────────────────────────────────────────
   // 第一行: > **【截图说明】**：[可能直接是字段0内容]
   const introLine = lines[0] || ''
   const introRaw = introLine.replace(/^>\s*\*\*【截图说明】\*\*[：:]\s*/, '').trim()
@@ -509,7 +600,16 @@ function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
     }
   }
 
-  const fields: ScreenshotFields = { intro, bgColorText, typeName, visibleContent, errorContent, techTips }
+  const fields: ScreenshotFields = {
+    // v1 字段
+    intro, bgColorText, typeName, visibleContent, errorContent, techTips,
+    // v2 字段（v1 格式时从旧字段映射）
+    background: bgColorText,
+    screenshotType: typeName,
+    fullText: visibleContent,
+    key: errorContent,
+    tips: techTips,
+  }
   const typeInfo = detectScreenshotType(fields)
   return {
     type: 'screenshot',
@@ -559,9 +659,12 @@ function parseContentMd(md: string): ContentSegment[] {
 
     if (inScreenshot) {
       const trimmed = line.trim()
-      // 截图块内的行：空行、缩进子项、以 "1. **" 开头的字段行、普通 bullet
+      // 截图块内的行：空行、bullet、字段行（v1 数字字段 或 v2 关键词 section）
       const isFieldLine = /^\d+[.、]\s+\*\*/.test(trimmed)
+        || /^(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS):/.test(trimmed)
+        || /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS):/.test(trimmed)
       const isBulletLine = /^-\s/.test(trimmed) || /^\s{2,}-\s/.test(line)
+        || /^>\s*-\s/.test(line)  // v2 格式："> - item"
       const isBlank = trimmed === ''
       // 检测截图块结束：有内容的非截图行
       const isEndLine = !isBlank && !isFieldLine && !isBulletLine && !/^\d+\.\s+\*\*/.test(trimmed)
@@ -942,26 +1045,31 @@ onMounted(() => {
 
                 <!-- 展开内容 -->
                 <div v-if="seg.expanded" class="screenshot-body">
-                  <!-- 1. 可见内容 -->
-                  <div v-if="seg.fields.visibleContent.length" class="ss-field">
-                    <div class="ss-field-label">1. <strong>可见内容</strong></div>
-                    <ul class="ss-field-list">
+                  <!-- 1. 可见内容（根据截图类型决定截断方向，后端已处理） -->
+                  <div class="ss-field">
+                    <div class="ss-field-label">1. <strong>可见内容</strong>
+                      <span v-if="seg.fields.fullText.length > seg.fields.visibleContent.length" class="ss-truncate-hint">
+                        （显示 {{ seg.fields.visibleContent.length }} / 共 {{ seg.fields.fullText.length }} 行）
+                      </span>
+                    </div>
+                    <ul v-if="seg.fields.visibleContent.length" class="ss-field-list">
                       <li v-for="(item, j) in seg.fields.visibleContent" :key="j">{{ item }}</li>
                     </ul>
+                    <span v-else class="ss-empty">无</span>
                   </div>
-                  <!-- 2. 报错/状态（标签动态选择）-->
+                  <!-- 2. 类型相关关键内容（标签由后端 TYPE 决定）-->
                   <div class="ss-field">
                     <div class="ss-field-label">2. <strong>{{ seg.errorLabel }}</strong></div>
-                    <ul v-if="seg.fields.errorContent.length" class="ss-field-list">
-                      <li v-for="(item, j) in seg.fields.errorContent" :key="j">{{ item }}</li>
+                    <ul v-if="seg.fields.key.length" class="ss-field-list">
+                      <li v-for="(item, j) in seg.fields.key" :key="j">{{ item }}</li>
                     </ul>
                     <span v-else class="ss-empty">无</span>
                   </div>
                   <!-- 3. 排障建议 -->
                   <div class="ss-field">
                     <div class="ss-field-label">3. <strong>排障建议</strong></div>
-                    <ul v-if="seg.fields.techTips.length" class="ss-field-list">
-                      <li v-for="(item, j) in seg.fields.techTips" :key="j">{{ item }}</li>
+                    <ul v-if="seg.fields.tips.length" class="ss-field-list">
+                      <li v-for="(item, j) in seg.fields.tips" :key="j">{{ item }}</li>
                     </ul>
                     <span v-else class="ss-empty">无</span>
                   </div>
@@ -1317,5 +1425,11 @@ onMounted(() => {
   font-size: 13px;
   color: #c0c4cc;
   font-style: italic;
+}
+.ss-truncate-hint {
+  font-size: 11px;
+  color: #909399;
+  font-weight: normal;
+  margin-left: 6px;
 }
 </style>
