@@ -403,7 +403,7 @@ kubectl label ns argocd hci.env.role=staging --overwrite
 | Agent 终端环境 | shell 初始化不完整时 kubeconfig 指向可能不同，读到空值 |
 | 新环境遗漏 | namespace 创建时不自动打标签 |
 
-更稳健的补充手段：将集群 context 名称命名为 `k3s-dev` / `k3s-staging`，通过 `kubectl config current-context` 辅助判断。两种方式并用，互为校验。
+更稳健的补充手段：将集群 context 名称命名为 `dev` / `staging`，通过 `kubectl config current-context` 辅助判断。两种方式并用，互为校验。
 
 ### 预防检查
 
