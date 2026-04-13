@@ -42,6 +42,13 @@ class KBClient(InternalHTTPClient):
         super().__init__(base_url=kb_service_url.rstrip("/"), timeout=_REQUEST_TIMEOUT)
         # 兼容旧代码中直接访问 _base_url 的地方
         self._api_prefix = "/api/kb"
+        # 兼容旧代码中直接访问 _headers 的地方（基类只有 _client.headers）
+        service_name = os.environ.get("SERVICE_NAME", "unknown")
+        self._headers = {
+            "Authorization": f"Bearer {internal_token}",
+            "X-Service-Name": service_name,
+            "Content-Type": "application/json",
+        }
 
     async def classify_intent(
         self,

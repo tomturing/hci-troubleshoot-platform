@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import MessageCreate, MessageResponse
 from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceError
+from shared.utils.logger import get_logger
 
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
@@ -19,6 +20,7 @@ from ..services.kb_client import KBClient
 from ..services.scheduler_client import SchedulerClient
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
+logger = get_logger("conversation-routes")
 
 # 全局依赖，需要在main.py中注入
 database_manager: DatabaseManager | None = None
