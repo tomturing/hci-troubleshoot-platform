@@ -362,3 +362,49 @@ http://acli.sangfor.com.cn:4888/grafana  → Grafana 监控
 - HPA 已启用：api-gateway（max 3）、case-service/conversation-service（max 6）会自动扩缩容。
 - `learningclaw-0` 处于 `Init:ImagePullBackOff` 是预存问题，镜像未 import 到 K3s，不影响核心测试流程。
 - `k3s-verify.sh` 第 3 节会自动创建并关闭测试工单（编号 Q20260310xxxxx），属正常行为。
+
+---
+
+## PIT-043：手动 kubectl apply 旧格式 Application 导致 releaseName 漂移
+
+**触发场景**：排查 ArgoCD sync 失败时，用本地旧 yaml 文件手动重建 Application，导致 `releaseName` 与集群中已有 Deployment 的 selector 不一致。
+
+**根本原因**：
+- Helm 的 `app.kubernetes.io/instance` selector 由 `releaseName` 决定，**Deployment 创建后该字段不可变**
+- `argocd-ops` Application 过去只管 `deploy/gitops/argocd-ops/` 目录，**`argo-apps/local/` 目录下的 Application 定义无 GitOps 守护**
+- 任何人用错误 yaml `kubectl apply` 后，ArgoCD selfHeal 不会恢复（因为 Application 本身不在 GitOps 管理范围内）
+
+**典型症状**：
+```
+spec.selector: Invalid value: {"matchLabels":{"app.kubernetes.io/instance":"hci-platform-dev",...}}:
+field is immutable (retried 5 times)
+```
+Deployments 全部 Running、Healthy，但 SyncStatus = OutOfSync + SyncError。
+
+**排查步骤**：
+```bash
+# 1. 确认 Application 的 releaseName
+kubectl get application hci-platform-dev -n argocd -o json | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('releaseName:', d['spec'].get('source',{}).get('helm',{}).get('releaseName','(未设置，默认用 App name)'))
+print('sources:', [s.get('helm',{}).get('releaseName') for s in d['spec'].get('sources',[])])
+"
+
+# 2. 确认现有 Deployment 的 selector
+kubectl get deployment -n hci-dev -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.selector.matchLabels}{"\n"}{end}'
+```
+
+**修复方法**：
+```bash
+# 用 Git 里正确的多源格式覆盖（不需要删除 Deployment）
+kubectl apply -f deploy/gitops/argo-apps/local/hci-platform-dev.yaml
+```
+
+**根治方案（PIT-039 防护机制）**：
+`argocd-ops` Application 已扩展为多源，同时监视 `argo-apps/local/` 目录：
+- `selfHeal: true` 确保任何手动覆盖 5 分钟内自动恢复
+- Git 里的 `argo-apps/local/*.yaml` 是唯一权威来源
+
+**禁止操作**：
+- ❌ 不得用本地备份/临时 yaml 直接 `kubectl apply` ArgoCD Application
+- ❌ 不得 `kubectl delete application xxx` 后重建，必须通过 `kubectl apply -f deploy/gitops/argo-apps/local/` 操作

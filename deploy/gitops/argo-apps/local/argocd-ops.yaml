@@ -5,9 +5,13 @@
 #   - argocd-repo-server copyutil watchdog（CronJob + RBAC）
 #   - Pod 异常可观测性告警规则（PrometheusRule + AlertmanagerConfig）
 #
+# 同时作为 App of Apps，管理 dev 环境全部 Application 定义（argo-apps/local/）：
+#   - selfHeal: true 保证任何人手动覆盖错误 Application 后 5 分钟内自动恢复
+#   - Git 里的 argo-apps/local/*.yaml 是唯一权威来源（PIT-039）
+#
 # 设计原则：
 #   - prune: true  — ops 配件随 Git 变更弹性增删，无持久化数据风险
-#   - selfHeal: true — 防止手动误改 watchdog 逻辑被保留
+#   - selfHeal: true — 防止手动误改 watchdog 逻辑或 Application 配置被保留
 #   - directory.exclude: "*.json" — 排除 Grafana Dashboard JSON（非 K8s 资源）
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
@@ -16,22 +20,28 @@ metadata:
   name: argocd-ops
   namespace: argocd
   annotations:
-    argocd.argoproj.io/description: "ArgoCD 运维配套 — copyutil watchdog + Pod 异常可观测性"
+    argocd.argoproj.io/description: "ArgoCD 运维配套 — copyutil watchdog + Pod 异常可观测性 + App of Apps（dev）"
 spec:
   project: default
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
-  source:
-    repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
-    targetRevision: main
-    path: deploy/gitops/argocd-ops
-    directory:
-      recurse: false
-      exclude: "*.json"    # 排除 Grafana Dashboard JSON，仅处理 K8s 资源 YAML
+  sources:
+    # 运维配套资源（watchdog CronJob、RBAC、告警规则等）
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/gitops/argocd-ops
+      directory:
+        recurse: false
+        exclude: "*.json"    # 排除 Grafana Dashboard JSON，仅处理 K8s 资源 YAML
+    # App of Apps：dev 环境全部 Application 定义（PIT-039 防护）
+    # selfHeal 确保手动 apply 错误 yaml 后自动恢复
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/gitops/argo-apps/local
   syncPolicy:
     automated:
       prune: true           # ops 资源无状态，允许自动删除已移除的资源
-      selfHeal: true        # 防止 watchdog RBAC 被手动修改后漂移
+      selfHeal: true        # 防止 watchdog RBAC / Application 配置被手动修改后漂移
     syncOptions:
       - CreateNamespace=false   # argocd namespace 已存在
