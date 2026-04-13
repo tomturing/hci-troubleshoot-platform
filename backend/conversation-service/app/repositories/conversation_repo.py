@@ -141,3 +141,13 @@ class ConversationRepository:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def increment_repeat_question_count(self, conversation_id: uuid.UUID) -> None:
+        """增加重复提问计数
+
+        当检测到用户重复提问时调用，更新 conversation.repeat_question_count。
+        """
+        conversation = await self.get_conversation(conversation_id)
+        if conversation:
+            conversation.repeat_question_count += 1
+            await self.session.flush()
