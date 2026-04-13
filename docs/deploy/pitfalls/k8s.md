@@ -328,6 +328,97 @@ sudo ip rule add priority 95 from 10.42.0.0/16 to 198.18.0.0/15 lookup 2022
 
 ---
 
+## D-001：ArgoCD 多集群 App of Apps 分层管理 + 环境标识方式
+
+### 背景
+
+多集群 GitOps 场景下（dev + staging/prod），常见两个互相关联的问题：
+
+**问题一：`cloud/` Application 被 dev ArgoCD 误管**
+
+`argo-apps/cloud/` 里的 Application 目标 namespace 是 staging/prod 集群，如果 dev 集群的 ArgoCD 把这些文件 apply 进来，会尝试把 staging 的负载注册到 dev 集群的 ArgoCD，因为 dev ArgoCD 没有 staging 集群凭据，同步会一直失败。
+
+**现象：** ArgoCD UI 出现大量 `Unable to connect to cluster` 或 `no such host` 告警，staging Application 状态永久 `Unknown`。
+
+**根因：** 没有 App of Apps 分层，dev ArgoCD 的 `source` 路径误覆盖了 `cloud/` 目录。
+
+**问题二：环境标识依赖可变标签，Copilot/Agent 无法自动判断当前环境**
+
+通过 `kubectl get ns argocd -o jsonpath='{.metadata.labels.hci\.env\.role}'` 查询环境，但：
+- 标签需要手动维护，新环境初始化时可能忘记打标签
+- Copilot 终端 session 的 shell 环境初始化不完整，可能连到错误集群
+- Agent 读不到标签时容易凭目录命名（`local/` = dev）做错误推断，导致在 staging 机器上执行了 dev 侧的改动
+
+### 正确架构：严格分层
+
+```
+dev 集群
+└── ArgoCD
+    └── argocd-ops          # source: argocd-ops/ + argo-apps/local/
+        ├── hci-platform-dev          → destination: dev 集群
+        ├── hci-platform-data-dev     → destination: dev 集群
+        └── hci-platform-obs-dev      → destination: dev 集群
+
+staging 集群（或 Hub）
+└── ArgoCD
+    └── argocd-ops-staging  # source: argocd-ops/ + argo-apps/cloud/
+        ├── hci-platform-staging      → destination: staging 集群
+        ├── hci-platform-data-staging → destination: staging 集群
+        └── hci-platform-obs-staging  → destination: staging 集群
+```
+
+### 修复方案
+
+**步骤 1：拆分 App of Apps**
+
+- dev 侧：`argocd-ops.yaml` 改为 `sources`，加入 `path: deploy/gitops/argo-apps/local`
+- staging 侧：新建 `argo-apps/cloud/argocd-ops-staging.yaml`，sources 包含 `argo-apps/cloud/`
+
+**步骤 2：bootstrap（仅首次，手动执行一次）**
+
+```bash
+# staging 机器上
+kubectl apply -f deploy/gitops/argo-apps/cloud/argocd-ops-staging.yaml
+
+# dev 机器上（argocd-ops.yaml 更新后 ArgoCD 会自动 reconcile，无需手动 apply）
+```
+
+**步骤 3：确保环境标签存在（防止 Agent 误判）**
+
+```bash
+# dev 机器
+kubectl label ns argocd hci.env.role=dev --overwrite
+
+# staging 机器
+kubectl label ns argocd hci.env.role=staging --overwrite
+```
+
+### 关于环境识别的改进建议
+
+`kubectl get ns argocd -o jsonpath='{.metadata.labels.hci\.env\.role}'` 是可行方案，但有以下限制：
+
+| 限制 | 说明 |
+|------|------|
+| 标签可变 | 人为修改 namespace 标签即失效 |
+| Agent 终端环境 | shell 初始化不完整时 kubeconfig 指向可能不同，读到空值 |
+| 新环境遗漏 | namespace 创建时不自动打标签 |
+
+更稳健的补充手段：将集群 context 名称命名为 `k3s-dev` / `k3s-staging`，通过 `kubectl config current-context` 辅助判断。两种方式并用，互为校验。
+
+### 预防检查
+
+Agent 在操作 `deploy/gitops/argo-apps/` 文件前，**必须先确认当前环境**：
+
+```bash
+kubectl get ns argocd -o jsonpath='{.metadata.labels.hci\.env\.role}'
+# 或
+kubectl config current-context
+```
+
+结果与操作目标不一致时，停止操作，告知用户确认。
+
+---
+
 ## HCI 环境健康检查清单（原 PIT-033，属 Runbook 非坑点）
 
 **场景：** 每次开始测试前，或怀疑某个服务异常时，需要快速确认环境健康状态。
