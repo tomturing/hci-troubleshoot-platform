@@ -209,7 +209,7 @@ make vk                   # 启动 Vibe Kanban
 ### VK 仓库脚本配置
 
 - **Setup Script**: `uv sync && cd frontend && pnpm install`
-- **数据库初始化**（新环境）: `psql -f database/init_schema.sql && uv run alembic stamp head`
+- **数据库初始化**（新环境）: `psql -f database/desired_extras.sql && atlas schema apply --env local --auto-approve`
 - **Cleanup Script**: `bash scripts/ci/agent-quality-gate.sh`
 - **Dev Server**: `make dev-up`
 

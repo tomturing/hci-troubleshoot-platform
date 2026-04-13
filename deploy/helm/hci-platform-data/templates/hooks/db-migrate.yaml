@@ -1,8 +1,8 @@
 {{- if .Values.dbMigrate.enabled }}
 # ⚠️  Alembic 迁移 Job 已废弃（2026-04-08）
-# 数据库迁移统一由 hci-platform 的 dbmate PreSync Hook 负责。
+# 数据库迁移统一由 hci-platform 的 Atlas PreSync Hook 负责。
 # 本 Job 已通过 dbMigrate.enabled=false 停用，此模板仅保留作历史参考。
-# 权威迁移工具：dbmate（见 deploy/helm/hci-platform/templates/hooks/）
+# 权威迁移工具：Atlas 声明式管理（见 deploy/helm/hci-platform/templates/hooks/db-migrate-job.yaml）
 ---
 apiVersion: batch/v1
 kind: Job
@@ -35,7 +35,7 @@ spec:
             - |
               echo "[ERROR] dbMigrate.enabled=true 是错误配置！"
               echo "[ERROR] Alembic 迁移链已于 2026-04-08 废弃，禁止再次启用。"
-              echo "[ERROR] 数据库迁移统一由 hci-platform 的 dbmate PreSync Hook 负责。"
+              echo "[ERROR] 数据库迁移统一由 hci-platform 的 Atlas PreSync Hook 负责。"
               echo "[ERROR] 正确路径：deploy/helm/hci-platform/templates/hooks/db-migrate-job.yaml"
               echo "[ERROR] 请立即将 dbMigrate.enabled 改回 false 并重新执行 helm upgrade。"
               exit 1
