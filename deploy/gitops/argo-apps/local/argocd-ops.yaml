@@ -33,7 +33,7 @@ spec:
       path: deploy/gitops/argocd-ops
       directory:
         recurse: false
-        exclude: "*.json"    # 排除 Grafana Dashboard JSON，仅处理 K8s 资源 YAML
+        exclude: "*.json" # 排除 Grafana Dashboard JSON，仅处理 K8s 资源 YAML
     # App of Apps：dev 环境全部 Application 定义（PIT-039 防护）
     # selfHeal 确保手动 apply 错误 yaml 后自动恢复
     - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
@@ -41,7 +41,7 @@ spec:
       path: deploy/gitops/argo-apps/local
   syncPolicy:
     automated:
-      prune: true           # ops 资源无状态，允许自动删除已移除的资源
-      selfHeal: true        # 防止 watchdog RBAC / Application 配置被手动修改后漂移
+      prune: true # ops 资源无状态，允许自动删除已移除的资源
+      selfHeal: true # 防止 watchdog RBAC / Application 配置被手动修改后漂移
     syncOptions:
-      - CreateNamespace=false   # argocd namespace 已存在
+      - CreateNamespace=false # argocd namespace 已存在
