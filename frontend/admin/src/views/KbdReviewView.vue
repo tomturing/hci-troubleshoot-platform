@@ -803,8 +803,10 @@ onMounted(() => {
           </el-select>
         </el-col>
         <el-col :span="4">
-          <el-button type="primary" @click="fetchPending">搜索</el-button>
-          <el-button @click="categoryFilter = ''; statusFilter = 'draft'; fetchPending()">重置</el-button>
+          <div class="filter-btn-group">
+            <el-button type="primary" @click="fetchPending">搜索</el-button>
+            <el-button @click="categoryFilter = ''; statusFilter = 'draft'; fetchPending()">重置</el-button>
+          </div>
         </el-col>
         <el-col :span="9" class="total-info">
           <span>共 <strong>{{ total }}</strong> 条</span>
@@ -874,8 +876,9 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 操作 -->
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
+            <div class="action-btn-group">
             <el-button type="info" size="small" text @click="openDetailDialog(row)">详情</el-button>
             <el-button type="primary" size="small" text @click="openEditDialog(row)">编辑</el-button>
             <template v-if="row.status === 'draft'">
@@ -885,6 +888,7 @@ onMounted(() => {
             <template v-else-if="row.status === 'rejected'">
               <el-button type="warning" size="small" text @click="handleRepublish(row)">重新发布</el-button>
             </template>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -1181,6 +1185,22 @@ onMounted(() => {
 <style scoped>
 .kbd-review {
   padding: 20px;
+}
+
+/* 过滤栏搜索/重置按钮容器：flex 保持同行同高 */
+.filter-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+/* 操作列按钮容器：nowrap 防止换行 */
+.action-btn-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 2px;
 }
 
 .page-header {

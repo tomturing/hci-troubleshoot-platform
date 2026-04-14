@@ -602,6 +602,11 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
     4. 设置 published_at = NOW()
     5. 记录 reviewer_id
 
+    三段式事务设计（避免 embedding 调用持有 DB 连接导致超时）：
+      - 短事务1：查询 document + chunks（验证已存在）
+      - 无事务：遍历 chunks 生成 embedding（耗时长，释放连接）
+      - 短事务2：批量更新 chunk embedding/tsv + document 状态
+
     响应体示例：
     ```json
     {
@@ -624,155 +629,197 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         reviewer_id=body.reviewer_id,
     )
 
-    chunks_embedded = 0
+    try:
+        # ── 短事务1：查询验证（快速释放连接）────────────────────────────────────
+        async with _db_manager.async_session_factory() as session:
+            result = await session.execute(select(SopDocument).where(SopDocument.id == document_id))
+            sop_doc = result.scalar_one_or_none()
 
-    async with _db_manager.async_session_factory() as session:
-        # 1. 查询 sop_document 是否存在
-        result = await session.execute(select(SopDocument).where(SopDocument.id == document_id))
-        sop_doc = result.scalar_one_or_none()
+            if not sop_doc:
+                raise HTTPException(status_code=404, detail=f"SOP 文档 {document_id} 不存在")
 
-        if not sop_doc:
-            raise HTTPException(status_code=404, detail=f"SOP 文档 {document_id} 不存在")
+            if sop_doc.status == "published":
+                # 已发布，直接返回 chunk embedding 统计
+                chunk_result = await session.execute(
+                    select(SopChunk).where(SopChunk.document_id == document_id)
+                )
+                existing_chunks = chunk_result.scalars().all()
+                embedded_count = sum(1 for c in existing_chunks if c.embedding is not None)
+                return SopApproveResponse(
+                    success=True,
+                    document_id=document_id,
+                    status="published",
+                    chunks_embedded=embedded_count,
+                    published_at=sop_doc.published_at.isoformat() if sop_doc.published_at else None,
+                )
 
-        current_status = sop_doc.status
-        if current_status == "published":
-            # 已发布，检查 chunks 的 embedding 状态
-            chunk_result = await session.execute(select(SopChunk).where(SopChunk.document_id == document_id))
-            existing_chunks = chunk_result.scalars().all()
-            embedded_count = sum(1 for c in existing_chunks if c.embedding is not None)
-            return SopApproveResponse(
-                success=True,
-                document_id=document_id,
-                status="published",
-                chunks_embedded=embedded_count,
-                published_at=sop_doc.published_at.isoformat() if sop_doc.published_at else None,
+            published_at_existing = sop_doc.published_at
+
+            # 查询所有 chunks（仅取必要字段，减少内存占用）
+            chunk_result = await session.execute(
+                select(SopChunk.id, SopChunk.chunk_index, SopChunk.chapter_title, SopChunk.content)
+                .where(SopChunk.document_id == document_id)
+                .order_by(SopChunk.chunk_index)
             )
+            chunk_rows = chunk_result.mappings().all()
 
-        # 2. 查询该文档的所有 chunks
-        chunk_result = await session.execute(
-            select(SopChunk).where(SopChunk.document_id == document_id).order_by(SopChunk.chunk_index)
-        )
-        chunks = chunk_result.scalars().all()
-
-        if not chunks:
+        if not chunk_rows:
             logger.warning(
                 event="sop_approve_no_chunks",
                 document_id=document_id,
                 message="SOP 文档没有分块，无法生成 embedding",
             )
-            # 允许无 chunks 的文档发布（仅更新状态）
 
-        # 3. 遍历 chunks 生成 embedding 和 tsv
+        # ── 无事务：遍历 chunks 生成 embedding（释放 DB 连接，耗时可能很长）────
         now = datetime.now(UTC)
+        chunks_embedded = 0
 
-        for chunk in chunks:
-            if not chunk.content:
+        # 存储每个 chunk 的处理结果，供后续批量写入
+        chunk_updates: list[dict] = []
+
+        for row in chunk_rows:
+            chunk_id = row["id"]
+            chapter_title = row["chapter_title"] or ""
+            content = row["content"]
+
+            if not content:
                 logger.warning(
                     event="sop_chunk_empty_content",
                     document_id=document_id,
-                    chunk_id=chunk.id,
-                    chunk_index=chunk.chunk_index,
+                    chunk_id=chunk_id,
+                    chunk_index=row["chunk_index"],
                     message="分块内容为空，跳过 embedding 生成",
                 )
+                chunk_updates.append({"chunk_id": chunk_id, "chapter_title": chapter_title, "content": content, "embedding_vector": None})
                 continue
 
-            # 生成 embedding（调用 embedding 服务）
             embedding_vector: list[float] | None = None
             if _embedding_service:
                 try:
-                    embedding_vector = await _embedding_service.embed_single(chunk.content)
-
-                    # 检查向量维度
-                    # sop_chunk.embedding 定义为 vector(1536)
-                    expected_dim = 1536
+                    embedding_vector = await _embedding_service.embed_single(content)
                     actual_dim = len(embedding_vector)
+                    expected_dim = 1536
                     if actual_dim != expected_dim:
                         logger.warning(
                             event="sop_chunk_embedding_dim_mismatch",
                             document_id=document_id,
-                            chunk_id=chunk.id,
+                            chunk_id=chunk_id,
                             expected_dim=expected_dim,
                             actual_dim=actual_dim,
-                            message=f"向量维度不匹配（期望 {expected_dim}，实际 {actual_dim}）",
+                            message=f"向量维度不匹配（期望 {expected_dim}，实际 {actual_dim}），跳过写入",
                         )
-                        # 维度不匹配时跳过 embedding 写入，避免数据库报错
                         embedding_vector = None
-
-                    logger.info(
-                        event="sop_chunk_embedding_generated",
-                        document_id=document_id,
-                        chunk_id=chunk.id,
-                        chunk_index=chunk.chunk_index,
-                        vector_dim=actual_dim,
-                    )
+                    else:
+                        logger.info(
+                            event="sop_chunk_embedding_generated",
+                            document_id=document_id,
+                            chunk_id=chunk_id,
+                            chunk_index=row["chunk_index"],
+                            vector_dim=actual_dim,
+                        )
                 except Exception as exc:
                     logger.warning(
                         event="sop_chunk_embedding_failed",
                         document_id=document_id,
-                        chunk_id=chunk.id,
-                        chunk_index=chunk.chunk_index,
+                        chunk_id=chunk_id,
+                        chunk_index=row["chunk_index"],
                         error=str(exc),
                         message="embedding 生成失败，将继续处理其他分块",
                     )
-                    # 单个 chunk 失败不阻断整体流程
 
-            # 更新 chunk 的 embedding 和 tsv（使用原生 SQL）
-            if embedding_vector:
-                vector_str = "[" + ",".join(str(v) for v in embedding_vector) + "]"
-                await session.execute(
-                    text(
-                        """
-                        UPDATE sop_chunk
-                        SET embedding = CAST(:embedding AS vector),
-                            tsv = to_tsvector('simple', COALESCE(:chapter_title, '') || ' ' || COALESCE(:content, ''))
-                        WHERE id = :chunk_id
-                        """
-                    ),
-                    {
-                        "chunk_id": chunk.id,
-                        "embedding": vector_str,
-                        "chapter_title": chunk.chapter_title or "",
-                        "content": chunk.content,
-                    },
-                )
-                chunks_embedded += 1
-            else:
-                # 仅生成 tsv（无 embedding）
-                await session.execute(
-                    text(
-                        """
-                        UPDATE sop_chunk
-                        SET tsv = to_tsvector('simple', COALESCE(:chapter_title, '') || ' ' || COALESCE(:content, ''))
-                        WHERE id = :chunk_id
-                        """
-                    ),
-                    {
-                        "chunk_id": chunk.id,
-                        "chapter_title": chunk.chapter_title or "",
-                        "content": chunk.content,
-                    },
-                )
+            chunk_updates.append({
+                "chunk_id": chunk_id,
+                "chapter_title": chapter_title,
+                "content": content,
+                "embedding_vector": embedding_vector,
+            })
 
-        # 4. 更新 sop_document 状态
-        sop_doc.status = "published"
-        sop_doc.published_at = now
-        sop_doc.reviewer_id = body.reviewer_id
-        sop_doc.reviewed_at = now
-        if body.review_note:
-            # 使用原生 SQL 更新 review_note（避免 SQLAlchemy 的 None 处理）
+        # ── 短事务2：批量更新 chunks 和 document 状态───────────────────────────
+        async with _db_manager.async_session_factory() as session:
+            for upd in chunk_updates:
+                embedding_vector = upd["embedding_vector"]
+                if embedding_vector:
+                    vector_str = "[" + ",".join(str(v) for v in embedding_vector) + "]"
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE sop_chunk
+                            SET embedding = CAST(:embedding AS vector),
+                                tsv = to_tsvector('simple', COALESCE(:chapter_title, '') || ' ' || COALESCE(:content, ''))
+                            WHERE id = :chunk_id
+                            """
+                        ),
+                        {
+                            "chunk_id": upd["chunk_id"],
+                            "embedding": vector_str,
+                            "chapter_title": upd["chapter_title"],
+                            "content": upd["content"],
+                        },
+                    )
+                    chunks_embedded += 1
+                else:
+                    # 仅生成 tsv（无 embedding 或 embedding 生成失败）
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE sop_chunk
+                            SET tsv = to_tsvector('simple', COALESCE(:chapter_title, '') || ' ' || COALESCE(:content, ''))
+                            WHERE id = :chunk_id
+                            """
+                        ),
+                        {
+                            "chunk_id": upd["chunk_id"],
+                            "chapter_title": upd["chapter_title"],
+                            "content": upd["content"] or "",
+                        },
+                    )
+
+            # 更新 sop_document 状态
+            update_params: dict = {
+                "id": document_id,
+                "published_at": now,
+                "reviewer_id": body.reviewer_id,
+                "reviewed_at": now,
+            }
+            review_note_sql = ", review_note = :review_note" if body.review_note else ""
+            if body.review_note:
+                update_params["review_note"] = body.review_note
+
             await session.execute(
-                text("UPDATE sop_document SET review_note = :note WHERE id = :id"),
-                {"id": document_id, "note": body.review_note},
+                text(
+                    f"""
+                    UPDATE sop_document
+                    SET status = 'published',
+                        published_at = :published_at,
+                        reviewer_id = :reviewer_id,
+                        reviewed_at = :reviewed_at
+                        {review_note_sql}
+                    WHERE id = :id
+                    """  # noqa: S608
+                ),
+                update_params,
             )
+            await session.commit()
 
-        await session.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            event="sop_approve_unexpected_error",
+            document_id=document_id,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"发布 SOP 文档时发生内部错误：{exc}",
+        ) from exc
 
     logger.info(
         event="sop_approved",
         document_id=document_id,
         reviewer_id=body.reviewer_id,
         chunks_embedded=chunks_embedded,
-        total_chunks=len(chunks),
+        total_chunks=len(chunk_rows) if chunk_rows else 0,
     )
 
     return SopApproveResponse(
