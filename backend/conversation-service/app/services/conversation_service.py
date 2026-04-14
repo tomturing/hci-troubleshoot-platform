@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from opentelemetry import trace
+from shared.models.audit import AuditLog
 from shared.utils.logger import get_logger
 from shared.utils.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
 from shared.utils.otel import get_current_trace_id
@@ -17,7 +18,6 @@ from app.config import settings
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
-from shared.models.audit import AuditLog
 from .ai_client import AIAssistantRegistry
 from .conversation_manager import ConversationManager
 from .kb_client import KBClient

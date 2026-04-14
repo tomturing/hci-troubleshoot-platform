@@ -404,7 +404,7 @@ config:
   # !! 修改此处即可切换平台所有 claw pod 使用的 AI 模型，无需逐个修改 ConfigMap !!
   # API key 在 secrets.zaiApiKey，Secret key 为 OPENCLAW_API_KEY
   glmProvider: "zhipu"
-  glmModelId: "glm-5"
+  glmModelId: "glm-4-flash"
   glmBaseUrl: "https://open.bigmodel.cn/api/paas/v4"
   glmContextWindow: 128000
 

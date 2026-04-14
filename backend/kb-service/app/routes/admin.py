@@ -508,7 +508,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                     reviewer_id = :reviewer_id,
                     reviewed_at = :reviewed_at,
                     review_note = COALESCE(:review_note, review_note),
-                    embedding = :embedding::vector,
+                    embedding = CAST(:embedding AS vector),
                     tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
                 WHERE id = :id
                 RETURNING id, status, embedding, published_at
@@ -723,7 +723,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     text(
                         """
                         UPDATE sop_chunk
-                        SET embedding = :embedding::vector,
+                        SET embedding = CAST(:embedding AS vector),
                             tsv = to_tsvector('simple', COALESCE(:chapter_title, '') || ' ' || COALESCE(:content, ''))
                         WHERE id = :chunk_id
                         """
@@ -1111,7 +1111,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                     reviewer_id = :reviewer_id,
                     reviewed_at = :reviewed_at,
                     review_note = COALESCE(:review_note, review_note),
-                    embedding = :embedding::vector,
+                    embedding = CAST(:embedding AS vector),
                     tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
                 WHERE id = :id
                 RETURNING id, status, embedding, published_at
