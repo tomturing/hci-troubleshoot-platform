@@ -20,7 +20,7 @@ if _expect != _actual:
     sys.path.insert(0, _svc)
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.services.conversation_service import ConversationService

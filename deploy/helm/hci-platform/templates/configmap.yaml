@@ -20,7 +20,7 @@ data:
   SCHEDULER_SERVICE_URL: "http://scheduler-service:{{ .Values.schedulerService.port }}"
   # OpenClaw（可通过 config.openclawBaseUrl 覆盖，用于直连外部 LLM API，如智谱 open.bigmodel.cn）
   OPENCLAW_BASE_URL: {{ (.Values.config.openclawBaseUrl | default (printf "http://openclaw:%v" .Values.openclaw.port)) | quote }}
-  OPENCLAW_DEFAULT_MODEL: {{ (.Values.config.openclawDefaultModel | default "zhipu/glm-5") | quote }}
+  OPENCLAW_DEFAULT_MODEL: {{ (.Values.config.openclawDefaultModel | default $glmModel) | quote }}
   # Chat completions 路径：OpenAI=/v1/chat/completions，智谱 v4 API=/chat/completions
   AI_COMPLETIONS_PATH: {{ (.Values.config.aiCompletionsPath | default "/v1/chat/completions") | quote }}
   # 可观测性
