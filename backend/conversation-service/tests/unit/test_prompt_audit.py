@@ -317,39 +317,25 @@ class TestWritePromptAudit:
         }
         sample_payload = [{"role": "user", "content": "test"}]
 
-        # Mock ConversationRepository 和 insert_prompt_audit
-        mock_repo_instance = AsyncMock()
-        mock_repo_class = MagicMock(return_value=mock_repo_instance)
+        await service_with_kb._write_prompt_audit(
+            conversation_id=conv_id,
+            case_id=case_id,
+            assistant_type="openclaw",
+            trace_id="test-trace-001",
+            message_count=5,
+            audit_meta=audit_meta,
+            sample_payload=sample_payload,
+        )
 
-        with patch("app.services.conversation_service.ConversationRepository", mock_repo_class):
-            await service_with_kb._write_prompt_audit(
-                conversation_id=conv_id,
-                case_id=case_id,
-                assistant_type="openclaw",
-                trace_id="test-trace-001",
-                message_count=5,
-                audit_meta=audit_meta,
-                sample_payload=sample_payload,
-            )
-
-            # 验证 Repository 方法被调用
-            mock_repo_instance.insert_prompt_audit.assert_called_once_with(
-                conversation_id=conv_id,
-                case_id=case_id,
-                assistant_type="openclaw",
-                trace_id="test-trace-001",
-                message_count=5,
-                has_sop=True,
-                kb_chunks_count=3,
-                kb_top_score=0.85,
-                messages=sample_payload,
-                context_breakdown=None,
-                total_chars=None,
-                total_token_est=None,
-            )
-
-            # 验证 session.commit 被调用
-            session.commit.assert_called_once()
+        # v6.2 重构后：直接通过 session.add(AuditLog) 写入，验证 add 和 commit 被调用
+        session.add.assert_called_once()
+        added_obj = session.add.call_args[0][0]
+        assert added_obj.audit_type == "prompt"
+        assert added_obj.conversation_id == conv_id
+        assert added_obj.trace_id == "test-trace-001"
+        assert added_obj.payload["has_sop"] is True
+        assert added_obj.payload["messages"] == sample_payload
+        session.commit.assert_called_once()
 
     async def test_write_prompt_audit_no_sample(
         self, service_with_kb, mock_session_factory
@@ -364,35 +350,22 @@ class TestWritePromptAudit:
             "kb_top_score": None,
         }
 
-        # Mock ConversationRepository 和 insert_prompt_audit
-        mock_repo_instance = AsyncMock()
-        mock_repo_class = MagicMock(return_value=mock_repo_instance)
+        await service_with_kb._write_prompt_audit(
+            conversation_id=conv_id,
+            case_id="Q002",
+            assistant_type="openclaw",
+            trace_id="test-trace-002",
+            message_count=1,
+            audit_meta=audit_meta,
+            sample_payload=None,
+        )
 
-        with patch("app.services.conversation_service.ConversationRepository", mock_repo_class):
-            await service_with_kb._write_prompt_audit(
-                conversation_id=conv_id,
-                case_id="Q002",
-                assistant_type="openclaw",
-                trace_id="test-trace-002",
-                message_count=1,
-                audit_meta=audit_meta,
-                sample_payload=None,
-            )
-
-            mock_repo_instance.insert_prompt_audit.assert_called_once_with(
-                conversation_id=conv_id,
-                case_id="Q002",
-                assistant_type="openclaw",
-                trace_id="test-trace-002",
-                message_count=1,
-                has_sop=False,
-                kb_chunks_count=0,
-                kb_top_score=None,
-                messages=None,
-                context_breakdown=None,
-                total_chars=None,
-                total_token_est=None,
-            )
+        # v6.2 重构后：验证 session.add(AuditLog) 写入
+        session.add.assert_called_once()
+        added_obj = session.add.call_args[0][0]
+        assert added_obj.audit_type == "prompt"
+        assert added_obj.payload["messages"] is None
+        assert added_obj.payload["has_sop"] is False
 
     async def test_write_prompt_audit_error_handling(
         self, service_with_kb, mock_repo, mock_session_factory
