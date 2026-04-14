@@ -135,6 +135,7 @@ class K8sClient:
             {
                 "name": "init-workspace",
                 "image": image,
+                "imagePullPolicy": "IfNotPresent",  # 本地 import 模式；latest tag 默认 Always 会导致 GHCR 403
                 "securityContext": {"runAsUser": 1001, "runAsGroup": 1001},
                 "command": ["/bin/sh", "-c"],
                 "args": [
@@ -199,6 +200,7 @@ echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}�
                     {
                         "name": assistant_type,
                         "image": image,
+                        "imagePullPolicy": "IfNotPresent",  # 本地 import 模式；latest tag 默认 Always 会导致 GHCR 403
                         "ports": [{"containerPort": port}],
                         "env": env_vars,
                         "volumeMounts": volume_mounts,
