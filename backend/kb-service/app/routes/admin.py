@@ -653,8 +653,6 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     published_at=sop_doc.published_at.isoformat() if sop_doc.published_at else None,
                 )
 
-            published_at_existing = sop_doc.published_at
-
             # 查询所有 chunks（仅取必要字段，减少内存占用）
             chunk_result = await session.execute(
                 select(SopChunk.id, SopChunk.chunk_index, SopChunk.chapter_title, SopChunk.content)
