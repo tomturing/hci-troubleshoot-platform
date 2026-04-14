@@ -233,7 +233,7 @@ class OpenClawAssistant:
                     code=error_detail["code"],
                     message=error_detail["message"],
                     detail=error_detail["detail"],
-                )
+                ) from e
 
         if last_error:
             # 所有端点都失败，抛出结构化错误
@@ -290,7 +290,7 @@ class OpenClawAssistant:
             return {
                 "code": ErrorCode.AI_UNAVAILABLE,
                 "message": "AI 服务接口不存在，请检查配置",
-                "detail": f"status=404, url={url}",
+                "detail": f"status=404, body={error_body[:200]}",
             }
         elif status_code == 400:
             return {
