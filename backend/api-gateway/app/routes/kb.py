@@ -4,8 +4,9 @@ KB Routes - API Gateway Proxy
 将 /api/v1/kbd/* 代理到 kb-service:8004/api/admin/kbd/*
 """
 
-import httpx
 import json
+
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from shared.utils.logger import get_logger
