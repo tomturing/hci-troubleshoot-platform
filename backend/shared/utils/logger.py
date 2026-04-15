@@ -104,6 +104,33 @@ class StructuredLogger:
         log_str = self._format_log("DEBUG", event, message, trace_id, **kwargs)
         self.logger.debug(log_str)
 
+    def exception(
+        self,
+        event: str,
+        message: str | None = None,
+        trace_id: str | None = None,
+        error: Exception | None = None,
+        **kwargs,
+    ):
+        """记录 CRITICAL/ERROR 级别日志，并附带完整 Python traceback
+
+        应在 except 块内调用，自动捕获当前的异常堆栈信息。
+        比 error() 更适合记录需要完整调用栈的异常。
+        """
+        import traceback
+
+        if error:
+            kwargs["error_type"] = type(error).__name__
+            kwargs["error_message"] = str(error)
+
+        # 获取当前活跃的异常堆栈（在 except 块内有效）
+        tb = traceback.format_exc()
+        if tb and tb.strip() != "NoneType: None":
+            kwargs["traceback"] = tb
+
+        log_str = self._format_log("ERROR", event, message, trace_id, **kwargs)
+        self.logger.error(log_str)
+
 
 # 日志实例缓存，避免重复创建
 _logger_cache: dict[str, "StructuredLogger"] = {}

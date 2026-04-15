@@ -12,6 +12,7 @@ from collections import deque
 from typing import Any
 
 from shared.utils.logger import get_logger
+from shared.utils.metrics import POD_POOL_ACTIVE, POD_POOL_IDLE
 
 from .k8s_client import K8sClient
 
@@ -151,6 +152,7 @@ class PodPool:
             # 异步补充池子（带错误处理）
             _safe_create_task(self.ensure_warm_pool(), name=f"warm-{self.assistant_type}")
 
+            self._update_metrics()
             return pod_name
 
     async def release_pod(self, pod_name: str):
@@ -164,6 +166,7 @@ class PodPool:
 
             # 异步补充（带错误处理）
             _safe_create_task(self.ensure_warm_pool(), name=f"warm-{self.assistant_type}")
+            self._update_metrics()
 
     def get_stats(self) -> dict[str, Any]:
         return {
@@ -174,6 +177,11 @@ class PodPool:
             "warm_pool_size": self.warm_pool_size,
             "max_pool_size": self.max_pool_size
         }
+
+    def _update_metrics(self) -> None:
+        """同步更新 Prometheus Gauge 指标，反映当前池状态"""
+        POD_POOL_IDLE.labels(assistant_type=self.assistant_type).set(len(self.idle_pods))
+        POD_POOL_ACTIVE.labels(assistant_type=self.assistant_type).set(len(self.active_pods))
 
 
 class PodPoolManager:

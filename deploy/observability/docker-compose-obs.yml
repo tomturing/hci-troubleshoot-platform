@@ -5,6 +5,8 @@ services:
     ports:
       - "3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki   # 持久化日志存储（修复 #8）
     networks:
       - hci-troubleshoot-platform_default
 
@@ -27,6 +29,7 @@ services:
     command: [ "-config.file=/etc/tempo.yaml" ]
     volumes:
       - ./config/tempo-config.yaml:/etc/tempo.yaml
+      - tempo_data:/var/tempo   # 持久化 Trace 存储（修复 #3）
     ports:
       - "3200:3200"   # Tempo query frontend
       - "4317:4317"   # OTLP gRPC receiver
@@ -43,6 +46,7 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'   # 支持 Tempo metrics_generator 写入（修复 #10）
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./config/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
@@ -74,11 +78,13 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_SECURITY_ADMIN_USER=admin
+      # 安全加固（修复 #11）：密码从环境变量读取，默认仳字孤用于本地开发。
+      # 生产环境必须在 deploy/env/obs.env 中设置强密码。
+      - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-admin}
       - GF_SECURITY_ALLOW_EMBEDDING=true
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      # 块展匿名访问：娱名用户可查看面板但无法使用 Explore（查看链路/日志）
+      - GF_AUTH_ANONYMOUS_ENABLED=false
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
     networks:
@@ -90,6 +96,8 @@ services:
 
 volumes:
   prometheus_data:
+  loki_data:      # Loki 持久化存储
+  tempo_data:     # Tempo Trace 持久化存储
 
 networks:
   hci-troubleshoot-platform_default:

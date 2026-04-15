@@ -24,7 +24,8 @@ datasources:
         filterByTraceID: true
         filterBySpanID: false
       serviceMap:
-        datasourceUid: loki
+        # 修复 #9：Service Graph 指标由 Tempo metrics_generator 写入 Prometheus，数据源应为 prometheus 而非 loki
+        datasourceUid: prometheus
       nodeGraph:
         enabled: true
 

@@ -43,3 +43,26 @@ scrape_configs:
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+
+  # KB Service
+  - job_name: 'kb-service'
+    static_configs:
+      - targets: ['kb-service:8004']
+    metrics_path: '/metrics'
+
+  # ────────────────────────────────────────
+  # 以下为可选项：部署对应 exporter 后取消注释即可生效
+  # 修复 #7：说明 node-exporter/kube-state-metrics 需单独部署才能启用
+  # ────────────────────────────────────────
+
+  # Node Exporter （内存/磁盘告警依赖）
+  # 先在 K3s 上部署：https://github.com/prometheus/node_exporter
+  # - job_name: 'node-exporter'
+  #   static_configs:
+  #     - targets: ['node-exporter:9100']
+
+  # Kube State Metrics （Pod 重启计数告警依赖）
+  # 先在 K3s 上部署：https://github.com/kubernetes/kube-state-metrics
+  # - job_name: 'kube-state-metrics'
+  #   static_configs:
+  #     - targets: ['kube-state-metrics:8080']
