@@ -370,8 +370,10 @@ onMounted(() => fetchDocuments())
           <el-input v-model="categoryFilter" placeholder="按分类 ID 筛选（如 虚拟机-003）" clearable @clear="fetchDocuments" @keyup.enter="fetchDocuments" />
         </el-col>
         <el-col :span="4">
-          <el-button type="primary" @click="fetchDocuments">搜索</el-button>
-          <el-button @click="statusFilter = ''; categoryFilter = ''; fetchDocuments()">重置</el-button>
+          <div class="filter-btn-group">
+            <el-button type="primary" @click="fetchDocuments">搜索</el-button>
+            <el-button @click="statusFilter = ''; categoryFilter = ''; fetchDocuments()">重置</el-button>
+          </div>
         </el-col>
         <el-col :span="9" class="total-info">共 <strong>{{ total }}</strong> 个文档</el-col>
       </el-row>
@@ -517,6 +519,7 @@ onMounted(() => fetchDocuments())
 .page-title { margin: 0 0 8px; font-size: 22px; color: #303133; }
 .page-desc { margin: 0; color: #666; font-size: 14px; }
 .filter-card { margin-bottom: 16px; }
+.filter-btn-group { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
 .total-info { text-align: right; color: #909399; font-size: 14px; }
 .table-card { min-height: 400px; }
 .doc-id { color: #909399; font-family: monospace; font-size: 13px; }
