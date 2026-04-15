@@ -772,28 +772,25 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                         },
                     )
 
-            # 更新 sop_document 状态
+            # 更新 sop_document 状态（使用 COALESCE 参数化避免 f-string 拼接 SQL）
             update_params: dict = {
                 "id": document_id,
                 "published_at": now,
                 "reviewer_id": body.reviewer_id,
                 "reviewed_at": now,
+                "review_note": body.review_note,  # None 时 COALESCE 保留原值
             }
-            review_note_sql = ", review_note = :review_note" if body.review_note else ""
-            if body.review_note:
-                update_params["review_note"] = body.review_note
-
             await session.execute(
                 text(
-                    f"""
+                    """
                     UPDATE sop_document
                     SET status = 'published',
                         published_at = :published_at,
                         reviewer_id = :reviewer_id,
-                        reviewed_at = :reviewed_at
-                        {review_note_sql}
+                        reviewed_at = :reviewed_at,
+                        review_note = COALESCE(:review_note, review_note)
                     WHERE id = :id
-                    """  # noqa: S608
+                    """
                 ),
                 update_params,
             )
@@ -802,14 +799,15 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(
+        logger.exception(
+            "发布 SOP 文档时发生未预期异常",
             event="sop_approve_unexpected_error",
             document_id=document_id,
-            error=str(exc),
+            error_type=type(exc).__name__,
         )
         raise HTTPException(
             status_code=500,
-            detail=f"发布 SOP 文档时发生内部错误：{exc}",
+            detail="发布 SOP 文档失败，请联系管理员或查看服务日志",
         ) from exc
 
     logger.info(
