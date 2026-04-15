@@ -408,3 +408,40 @@ kubectl apply -f deploy/gitops/argo-apps/local/hci-platform-dev.yaml
 **禁止操作**：
 - ❌ 不得用本地备份/临时 yaml 直接 `kubectl apply` ArgoCD Application
 - ❌ 不得 `kubectl delete application xxx` 后重建，必须通过 `kubectl apply -f deploy/gitops/argo-apps/local/` 操作
+
+---
+
+## PIT-044：迁移体系切换后遗留触发器双倍计数
+
+**场景**：从 Alembic/dbmate 迁移体系切换到 Atlas 声明式管理后，旧体系创建的数据库触发器和函数未被清理。
+
+**症状**：
+- DB 迁移 Job 历史成功，但 `conversation.message_count` 持续偏高（实际值的 2 倍）
+- `kubectl exec postgres-0 -- psql ... -c "\d+ message"` 可见多个计数触发器共存
+- `pb trigger JOIN pg_class` 查询显示同名功能的触发器 > 1 个
+
+**根本原因**：
+Alembic 迁移文件历史上创建了 `update_message_count_on_insert` 和 `update_message_count_on_delete` 触发器（调用 `update_conversation_message_count()` 函数）。切换到 Atlas 后，新迁移逻辑创建了替代触发器 `update_conversation_message_count`（调用 `fn_update_conversation_message_count()`），但旧触发器/函数未删除，两套逻辑并存导致每次 INSERT/DELETE 使 `message_count` ±2。
+
+**排查步骤**：
+```bash
+# 检查 message 表触发器数量
+kubectl exec -n hci-dev postgres-0 -- env PGPASSWORD=xxx psql -U hci_admin -d hci_troubleshoot \
+  -c "SELECT tgname, relname FROM pg_trigger JOIN pg_class ON tgrelid=pg_class.oid WHERE NOT tgisinternal ORDER BY relname, tgname;"
+
+# 若 message 表有超过 1 个 INSERT/DELETE 触发器，即为双倍计数
+```
+
+**修复方法**：
+在 `database/desired_extras.sql` 头部添加幂等清理块，在触发器创建前先 DROP 遗留对象：
+```sql
+-- 清理遗留触发器（顺序不可颠倒：先 DROP 触发器，再 DROP 函数）
+DROP TRIGGER IF EXISTS update_message_count_on_insert ON message;
+DROP TRIGGER IF EXISTS update_message_count_on_delete ON message;
+DROP TRIGGER IF EXISTS trigger_kbd_entry_updated_at ON kbd_entry;
+DROP FUNCTION IF EXISTS update_conversation_message_count();
+```
+
+**预防**：
+- 切换迁移体系时，必须在新迁移脚本中显式 DROP 旧体系创建的所有数据库对象
+- `desired_extras.sql` 的幂等清理块涵盖所有已知遗留对象，下次 ArgoCD deploy 自动清理

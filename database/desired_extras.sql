@@ -49,6 +49,35 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- ═══════════════════════════════════════════════════════════════
+-- 清理 Alembic 遗留对象（幂等，每次 deploy 执行，PR #144 后残留）
+--
+-- 背景：PR #144 清除了 Alembic 迁移体系，但历史迁移创建的触发器和函数
+-- 未同步删除，导致以下问题：
+--   1. message 表存在双重计数触发器 —— update_message_count_on_insert /
+--      update_message_count_on_delete 与当前 update_conversation_message_count
+--      并存，每次 INSERT/DELETE 使 message_count +2/-2
+--   2. kbd_entry 表存在冗余触发器 trigger_kbd_entry_updated_at，与
+--      update_kbd_entry_updated_at 功能重复（无害但需清理）
+--   3. 遗留函数 update_conversation_message_count() 已无触发器引用
+--
+-- 修复方案：先删遗留触发器，再删遗留函数，顺序不可颠倒
+-- ═══════════════════════════════════════════════════════════════
+DO $$ BEGIN
+  -- 清理 message 表 Alembic 遗留触发器（避免 message_count 双倍计数）
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='message') THEN
+    DROP TRIGGER IF EXISTS update_message_count_on_insert ON message;
+    DROP TRIGGER IF EXISTS update_message_count_on_delete ON message;
+  END IF;
+  -- 清理 kbd_entry 表 Alembic 遗留触发器（冗余 updated_at 触发器）
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='kbd_entry') THEN
+    DROP TRIGGER IF EXISTS trigger_kbd_entry_updated_at ON kbd_entry;
+  END IF;
+END $$;
+-- 清理 Alembic 遗留函数（Alembic 迁移早期版本创建，已由 fn_update_conversation_message_count 替代）
+-- 注意：必须在上方 DROP TRIGGER 之后执行，否则残留触发器依赖会报错
+DROP FUNCTION IF EXISTS update_conversation_message_count();
+
 -- 触发器：用 DO $$ 块包裹，仅在目标表存在时执行（保护全新 DB 场景）
 DO $$ BEGIN
   IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='user') THEN

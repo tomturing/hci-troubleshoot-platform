@@ -15,7 +15,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 > 2. 再写入对应分类文件  
 > 3. 同一 commit/PR 提交，不允许分开提交  
 >
-> **下一个可用编号：D-001**（旧格式延续：PIT-044）
+> **下一个可用编号：D-001**（旧格式延续：PIT-045）
 
 ---
 
@@ -27,7 +27,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 |---------|---------|---------|
 | 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039 |
 | 编写/审查 Shell/Makefile/CI 脚本 | [shell.md](shell.md) | PIT-001, PIT-002 |
-| K8s/K3s 镜像/Helm/网络/HostPath | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043 |
+| K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移 | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044 |
 | Grafana 重定向/Ingress/iframe 白屏 | [grafana.md](grafana.md) | PIT-011, PIT-012, PIT-020, PIT-036 |
 
 ---
@@ -61,6 +61,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | PIT-038 | k8s.md | Docker 172.16 端口映射 |
 | PIT-039 | network-service-check.md | CoreDNS hosts 插件冲突 |
 | PIT-043 | k8s.md | ArgoCD Application 手动覆盖导致 releaseName 漂移 |
+| PIT-044 | k8s.md | 迁移体系切换后遗留触发器双倍计数 |
 
 ---
 
