@@ -4,6 +4,8 @@ KB Routes - API Gateway Proxy
 将 /api/v1/kbd/* 代理到 kb-service:8004/api/admin/kbd/*
 """
 
+import json
+
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -291,15 +293,33 @@ async def _sop_proxy(
     payload: dict | None = None,
     params: dict | None = None,
     headers: dict | None = None,
+    timeout: float = 60.0,
 ):
     """通用代理请求，透传至 kb-service SOP 管理路由"""
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             url = f"{SOP_ADMIN_SERVICE_URL}{path}"
             response = await client.request(method, url, json=payload, params=params, headers=headers)
             return response
+        except httpx.TimeoutException as exc:
+            logger.error(
+                event="kb_service_sop_request_timeout",
+                message="KB Service SOP 请求超时",
+                method=method,
+                path=path,
+                timeout=timeout,
+                error=exc,
+            )
+            raise HTTPException(status_code=504, detail="KB Service 请求超时，请稍后重试") from exc
         except httpx.RequestError as exc:
-            logger.error(f"KB Service SOP 请求失败: {exc.request.url!r}")
+            logger.error(
+                event="kb_service_sop_request_failed",
+                message="KB Service SOP 请求失败",
+                method=method,
+                path=path,
+                url=str(exc.request.url),
+                error=exc,
+            )
             raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
 
 
@@ -321,11 +341,19 @@ async def sop_detail_proxy(document_id: int, request: Request):
 
 @sop_admin_router.post("/{document_id}/approve")
 async def sop_approve_proxy(document_id: int, request: Request):
-    """代理 SOP 文档发布（生成 embedding）→ kb-service"""
+    """代理 SOP 文档发布（生成 embedding）→ kb-service，使用 600s 超时应对大文档"""
     body = await request.json()
     headers = _internal_auth_headers()
-    response = await _sop_proxy("POST", f"/{document_id}/approve", payload=body, headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    # SOP 发布需遍历所有 chunks 生成 embedding，耗时较长，使用独立 600s 超时
+    response = await _sop_proxy("POST", f"/{document_id}/approve", payload=body, headers=headers, timeout=600.0)
+    try:
+        resp_body = response.json()
+    except (ValueError, json.JSONDecodeError):
+        resp_body = {
+            "detail": response.text or "kb-service 返回了非 JSON 响应",
+            "status_code": response.status_code,
+        }
+    return JSONResponse(content=resp_body, status_code=response.status_code)
 
 
 @sop_admin_router.patch("/{document_id}")

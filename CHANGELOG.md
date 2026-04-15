@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.1](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.3.0...v2.3.1) (2026-04-15)
+
+
+### 🐛 Bug 修复
+
+* **db:** 清理 Alembic 遗留触发器，修复 message_count 双倍计数 bug ([#147](https://github.com/tomturing/hci-troubleshoot-platform/issues/147)) ([fc3f171](https://github.com/tomturing/hci-troubleshoot-platform/commit/fc3f171704daca7ee51b5bd73c572bbfc15400d2))
+* SOP 发布 HTTP 500 改为带原因的错误提示 + 管理台按钮布局修复 ([#146](https://github.com/tomturing/hci-troubleshoot-platform/issues/146)) ([750d23b](https://github.com/tomturing/hci-troubleshoot-platform/commit/750d23ba84e3e33c058a77283fb0f10892d2c883))
+
 ## [2.3.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.2.0...v2.3.0) (2026-04-14)
 
 
