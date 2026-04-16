@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.2](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.3.1...v2.3.2) (2026-04-16)
+
+
+### 🐛 Bug 修复
+
+* **obs:** 全面修复可观测性 14 项缺陷 ([#149](https://github.com/tomturing/hci-troubleshoot-platform/issues/149)) ([eb4e387](https://github.com/tomturing/hci-troubleshoot-platform/commit/eb4e3874603b946590dee8045476d60530211a78))
+
 ## [2.3.1](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.3.0...v2.3.1) (2026-04-15)
 
 
