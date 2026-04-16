@@ -584,7 +584,7 @@ values_file = sys.argv[1]
 new_tag = os.environ["DB_MIGRATE_TAG"]
 with open(values_file) as f:
     content = f.read()
-new_content = re.sub(r'(dbMigrate:.*?tag:\s*)"[^"]*"', r'\g<1>"' + re.escape(new_tag) + r'"', content, count=1, flags=re.DOTALL)
+new_content = re.sub(r'(dbMigrate:.*?tag:\s*)"[^"]*"', lambda m: m.group(1) + '"' + new_tag + '"', content, count=1, flags=re.DOTALL)
 if new_content == content:
     print(f"警告：未找到 dbMigrate.tag，跳过")
 else:
@@ -605,11 +605,15 @@ values_file = sys.argv[1]
 prev_tag = os.environ["PREV_TAG"]
 with open(values_file) as f:
     content = f.read()
-new_content = re.sub(r'(dbMigrate:.*?tag:\s*)"[^"]*"', r'\g<1>"' + re.escape(prev_tag) + r'"', content, count=1, flags=re.DOTALL)
+new_content = re.sub(r'(dbMigrate:.*?tag:\s*)"[^"]*"', lambda m: m.group(1) + '"' + prev_tag + '"', content, count=1, flags=re.DOTALL)
 if new_content != content:
     open(values_file, 'w').write(new_content)
     print(f"dbMigrate.tag 已恢复为 {prev_tag}")
 PY
+              else
+                echo "❌ 无法从 git 历史获取 dbMigrate.tag，回滚文件避免写入错误 tag"
+                git checkout -- "${VALUES_FILE}"
+                exit 1
               fi
             fi
 
@@ -618,8 +622,22 @@ PY
             else
               git add "${VALUES_FILE}"
               git commit -m "chore(${env}): 自动更新镜像标签为 ${IMAGE_TAG} [skip ci]"
-              git push origin main
-              echo "✅ ${env} 环境标签已推送"
+              # 推送前 rebase，避免并发提交导致 non-fast-forward 失败
+              pushed=0
+              for attempt in 1 2 3; do
+                echo "第 ${attempt} 次同步远端并推送 ${env} 环境标签"
+                if git pull --rebase origin main && git push origin main; then
+                  pushed=1
+                  echo "✅ ${env} 环境标签已推送"
+                  break
+                fi
+                echo "⚠️ ${env} 环境标签推送失败，准备重试"
+                sleep 2
+              done
+              if [[ "${pushed}" != "1" ]]; then
+                echo "❌ ${env} 环境标签推送失败：多次重试后仍无法完成 rebase/push"
+                exit 1
+              fi
             fi
           done
 
