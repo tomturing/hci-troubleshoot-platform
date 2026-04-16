@@ -49,7 +49,7 @@ secrets:
 
 # ======================== 组件配置 ===========================================
 loki:
-  image: grafana/loki:latest
+  image: grafana/loki:3.4.2
   storage: 2Gi
   # StorageClass 说明：
   #   - 存量安装：保持 local-path（PVC storageClassName 创建后不可变，upgrade 无法修改）
@@ -88,7 +88,7 @@ prometheus:
       memory: "512Mi"
 
 promtail:
-  image: grafana/promtail:latest
+  image: grafana/promtail:3.4.2
   resources:
     requests:
       cpu: "25m"
@@ -98,7 +98,7 @@ promtail:
       memory: "128Mi"
 
 grafana:
-  image: grafana/grafana:latest
+  image: grafana/grafana:11.5.2
   resources:
     requests:
       cpu: "50m"
