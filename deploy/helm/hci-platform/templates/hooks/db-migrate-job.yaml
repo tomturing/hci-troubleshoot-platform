@@ -14,8 +14,8 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  {{- $tag := .Values.dbMigrate.image.tag | default "latest" | regexReplaceAll "[^a-z0-9A-Z-]" "" | lower | trunc 15 | trimSuffix "-" }}
-  {{- $chartVer := .Chart.Version | regexReplaceAll "[^a-z0-9]" "" | lower }}
+  {{- $tag := .Values.dbMigrate.image.tag | default "latest" | lower | replace "." "-" | replace "_" "-" | trunc 15 | trimSuffix "-" }}
+  {{- $chartVer := .Chart.Version | lower | replace "." "" }}
   name: db-migrate-{{ $tag }}-{{ $chartVer }}
   namespace: {{ include "hci.namespace" . }}
   labels:
