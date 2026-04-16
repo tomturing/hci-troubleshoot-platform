@@ -536,3 +536,46 @@ DROP FUNCTION IF EXISTS update_conversation_message_count();
 **预防**：
 - 切换迁移体系时，必须在新迁移脚本中显式 DROP 旧体系创建的所有数据库对象
 - `desired_extras.sql` 的幂等清理块涵盖所有已知遗留对象，下次 ArgoCD deploy 自动清理
+
+---
+
+## PIT-045：nginx 启动时 upstream DNS 解析失败导致 Pod crash
+
+**触发场景：** nginx 容器作为反向代理，通过 `proxy_pass http://<service-name>:<port>` 访问 K8s 内部服务，在 Pod 启动阶段 DNS 尚未就绪或目标服务未注册时崩溃。
+
+**现象：**
+- nginx Pod 日志报错：`host not found in upstream 'api-gateway'`
+- Pod 状态：`CrashLoopBackOff`，反复重启失败
+- 容器启动后立即退出，无法进入 Running 状态
+
+**根因：**
+nginx 静态 upstream 在配置加载阶段（启动时）一次性解析 DNS，解析失败直接报错退出。K8s 环境中常见时序问题：
+1. CoreDNS Pod 尚未就绪（镜像拉取慢、节点重启后 DNS 缓存丢失）
+2. 目标 Service（如 api-gateway）尚未创建或 Endpoints 未注册
+3. Pod 启动顺序不确定，nginx 可能先于依赖服务启动
+
+**修复：** 使用动态 DNS 解析，让 nginx 在请求时而非启动时解析域名：
+```nginx
+# API 代理到 gateway（动态 DNS 解析，解决启动时 upstream 未就绪问题）
+location /api/ {
+    resolver 10.43.0.10 valid=30s;  # Kubernetes DNS Service IP
+    set $upstream http://api-gateway:8000;
+    proxy_pass $upstream;
+    ...
+}
+```
+
+关键配置说明：
+- `resolver 10.43.0.10`：使用 K8s CoreDNS Service IP（固定值，各集群一致）
+- `valid=30s`：DNS 缓存 30 秒，平衡性能与动态性
+- `set $upstream ...`：必须通过变量间接引用，触发动态解析
+- 直接 `proxy_pass http://api-gateway:8000` 仍为静态解析，改用变量才能动态
+
+**适用范围：**
+- nginx 反向代理 K8s Service 的所有场景
+- WebSocket 代理（`/ws/` location）同样需要动态解析
+- 多 replica 场景下无需逐一配置 upstream 服务器
+
+**预防：**
+- 前端 nginx.conf 中所有指向 K8s Service 的 `proxy_pass` 均使用动态解析模式
+- 新增前端模块时参考 `frontend/admin/nginx.conf` 和 `frontend/customer/nginx.conf` 模板
