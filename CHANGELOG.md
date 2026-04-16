@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.3](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.3.2...v2.3.3) (2026-04-16)
+
+
+### 🐛 Bug 修复
+
+* **case-service:** 补充 prometheus-client 依赖，修复新镜像启动崩溃 ([#151](https://github.com/tomturing/hci-troubleshoot-platform/issues/151)) ([36155b5](https://github.com/tomturing/hci-troubleshoot-platform/commit/36155b5bb3097544c683b989c9522330130b5544))
+* **ci:** 绕过 hci-platform-env workflow dispatch，改为直接 git push 同步镜像标签 ([#153](https://github.com/tomturing/hci-troubleshoot-platform/issues/153)) ([a34c19d](https://github.com/tomturing/hci-troubleshoot-platform/commit/a34c19d6130dee72bbe6a3bb2a897cc760e94448))
+
 ## [2.3.2](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.3.1...v2.3.2) (2026-04-16)
 
 
