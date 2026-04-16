@@ -125,7 +125,11 @@ async def list_categories(
         return {
             "domains": {
                 domain: [
-                    {**cat.to_dict(), "has_sop": bool(cat.code and cat.code in sop_coverage)}
+                    {
+                        **cat.to_dict(),
+                        "label": cat.name,  # 兼容 conversation-service prompt_builder 的期望字段
+                        "has_sop": bool(cat.code and cat.code in sop_coverage),
+                    }
                     for cat in cats
                 ]
                 for domain, cats in grouped_data.items()
