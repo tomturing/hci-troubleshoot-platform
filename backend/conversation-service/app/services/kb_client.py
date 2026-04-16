@@ -222,14 +222,17 @@ class KBClient(InternalHTTPClient):
         }
         """
         try:
-            # 使用基类的 _client（已配置 base_url），避免创建新 client 导致 URL 缺少协议
+            # grouped=true 是查询参数，不是路径段（/categories?grouped=true）
+            # kb-service GET /api/kb/categories 接受 ?grouped=bool 参数
+            # 响应字段名为 "domains"（非 "categories_by_domain"）
             resp = await self._client.get(
-                f"{self._api_prefix}/categories/grouped",
+                f"{self._api_prefix}/categories",
+                params={"grouped": True},
                 timeout=_CATEGORY_TIMEOUT,
             )
             resp.raise_for_status()
             data = resp.json()
-            return data.get("categories_by_domain", {})
+            return data.get("domains", {})
         except httpx.HTTPStatusError as exc:
             logger.warning(
                 event="kb_categories_http_error",
