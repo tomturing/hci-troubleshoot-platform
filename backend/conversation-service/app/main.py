@@ -13,6 +13,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.postgres import DatabaseManager
 from shared.utils.exception_handlers import register_exception_handlers
 from shared.utils.logger import get_logger
+from shared.utils.metrics import HTTPMetricsMiddleware
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
@@ -105,6 +106,7 @@ app = FastAPI(
 
 # 注入 OpenTelemetry 中间件到 app 实例
 instrument_app(app)
+app.add_middleware(HTTPMetricsMiddleware)
 
 # H-1: 注册全局业务异常处理器
 register_exception_handlers(app)

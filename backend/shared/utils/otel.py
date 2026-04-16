@@ -57,6 +57,11 @@ def init_telemetry(service_name: str):
     try:
         from opentelemetry.instrumentation.logging import LoggingInstrumentor
 
+        # 注意：LoggingInstrumentor 只影响通过 Python 标准 logging 模块输出的日志
+        # （如三方库 SQLAlchemy、httpx 内部日志）。
+        # 业务代码使用 StructuredLogger（shared/utils/logger.py），
+        # 后者已直接从 OTel Span Context 读取 trace_id/span_id，
+        # 不依赖 LoggingInstrumentor，且 propagate=False 阻止了重复输出。
         LoggingInstrumentor().instrument(set_logging_format=True)
     except ImportError:
         pass

@@ -507,3 +507,12 @@ flowchart LR
 ```
 
 *数据流图版本: 1.0 | 补充日期: 2026-04-06*
+
+
+---
+
+## 变更历史
+
+| 版本 | 日期 | 说明 |
+|------|------|------|
+| v1.1 | 2026-04-16 | 注入 HTTPMetricsMiddleware；pod_pool.py acquire/release 后调用 _update_metrics() 上报 hci_pod_pool_idle/active，修复 WarmPoolExhausted 等告警（可观测性修复 #1 #2） |

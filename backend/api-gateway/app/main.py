@@ -12,9 +12,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from opentelemetry import trace as otel_trace
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
+from shared.utils.metrics import HTTPMetricsMiddleware
 from shared.utils.otel import init_telemetry, instrument_app
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -64,12 +66,24 @@ async def lifespan(app: FastAPI):
 
 
 class TraceIDMiddleware(BaseHTTPMiddleware):
-    """为每个请求注入 X-Trace-ID 响应头（取请求头中的值或新生成 UUID）"""
+    """将 OTel Trace ID 注入到响应头 X-Trace-Id，使前端可直接用于 Grafana Tempo 查询。
+
+    降级策略：若当前请求无有效 OTel Span（如健康检查），则使用 uuid4() 保持向后兼容。
+    """
 
     async def dispatch(self, request: Request, call_next):
-        trace_id = request.headers.get("X-Trace-ID") or str(uuid.uuid4())
         response = await call_next(request)
-        response.headers["X-Trace-ID"] = trace_id
+
+        # 优先从 OTel Span Context 获取真实 Trace ID（32 位十六进制）
+        span = otel_trace.get_current_span()
+        ctx = span.get_span_context()
+        if ctx and ctx.is_valid:
+            trace_id = format(ctx.trace_id, "032x")
+        else:
+            # 无 OTel Span 时（如 /health）降级为 UUID，保持响应头始终存在
+            trace_id = request.headers.get("X-Trace-Id") or str(uuid.uuid4())
+
+        response.headers["X-Trace-Id"] = trace_id
         return response
 
 
@@ -80,6 +94,7 @@ instrument_app(app)
 
 # 中间件 — CORS 使用显式来源列表，避免 allow_origins=["*"] + allow_credentials=True 的 RFC 6454 违规
 app.add_middleware(TraceIDMiddleware)
+app.add_middleware(HTTPMetricsMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

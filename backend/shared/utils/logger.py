@@ -104,6 +104,33 @@ class StructuredLogger:
         log_str = self._format_log("DEBUG", event, message, trace_id, **kwargs)
         self.logger.debug(log_str)
 
+    def exception(
+        self,
+        event: str,
+        message: str | None = None,
+        trace_id: str | None = None,
+        error: Exception | None = None,
+        **kwargs,
+    ):
+        """记录 CRITICAL/ERROR 级别日志，并附带完整 Python traceback
+
+        应在 except 块内调用，自动捕获当前的异常堆栈信息。
+        比 error() 更适合记录需要完整调用栈的异常。
+        """
+        import traceback
+
+        if error:
+            kwargs["error_type"] = type(error).__name__
+            kwargs["error_message"] = str(error)
+
+        # 获取当前活跃的异常堆栈（在 except 块内有效）
+        tb = traceback.format_exc()
+        if tb and tb.strip() != "NoneType: None":
+            kwargs["traceback"] = tb
+
+        log_str = self._format_log("ERROR", event, message, trace_id, **kwargs)
+        self.logger.error(log_str)
+
 
 # 日志实例缓存，避免重复创建
 _logger_cache: dict[str, "StructuredLogger"] = {}
@@ -124,99 +151,3 @@ def get_logger(service_name: str, log_level: str = "INFO") -> "StructuredLogger"
     if cache_key not in _logger_cache:
         _logger_cache[cache_key] = StructuredLogger(service_name, log_level)
     return _logger_cache[cache_key]
-
-
-# 日志装饰器
-def log_function_call(logger: "StructuredLogger"):
-    """
-    函数调用日志装饰器
-
-    Usage:
-        @log_function_call(logger)
-        async def my_function(arg1, arg2):
-            pass
-    """
-    from functools import wraps
-
-    def decorator(func):
-        @wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            func_name = func.__name__
-            start_time = datetime.now(UTC)
-
-            logger.debug(
-                event="function_start",
-                message=f"Starting {func_name}",
-                function=func_name,
-                args_count=len(args),
-                kwargs_count=len(kwargs),
-            )
-
-            try:
-                result = await func(*args, **kwargs)
-                duration_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
-
-                logger.debug(
-                    event="function_complete",
-                    message=f"Completed {func_name}",
-                    function=func_name,
-                    duration_ms=duration_ms,
-                    status="success",
-                )
-
-                return result
-            except Exception as e:
-                duration_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
-
-                logger.error(
-                    event="function_error",
-                    message=f"Error in {func_name}",
-                    function=func_name,
-                    duration_ms=duration_ms,
-                    error=e,
-                    status="error",
-                )
-                raise
-
-        @wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            func_name = func.__name__
-            start_time = datetime.now(UTC)
-
-            logger.debug(event="function_start", message=f"Starting {func_name}", function=func_name)
-
-            try:
-                result = func(*args, **kwargs)
-                duration_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
-
-                logger.debug(
-                    event="function_complete",
-                    message=f"Completed {func_name}",
-                    function=func_name,
-                    duration_ms=duration_ms,
-                    status="success",
-                )
-
-                return result
-            except Exception as e:
-                duration_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
-
-                logger.error(
-                    event="function_error",
-                    message=f"Error in {func_name}",
-                    function=func_name,
-                    duration_ms=duration_ms,
-                    error=e,
-                    status="error",
-                )
-                raise
-
-        # 检查是否是异步函数
-        import inspect
-
-        if inspect.iscoroutinefunction(func):
-            return async_wrapper
-        else:
-            return sync_wrapper
-
-    return decorator

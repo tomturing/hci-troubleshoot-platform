@@ -23,6 +23,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from shared.utils.logger import get_logger
+from shared.utils.metrics import KB_SEARCH_DURATION_SECONDS
 from shared.utils.otel import get_current_trace_id
 from sqlalchemy import func, select
 
@@ -134,6 +135,8 @@ class SearchEngine:
         ranked = self._rrf_fusion(bm25_results, vector_results, top_n=top_n)
 
         total_ms = int((time.monotonic() - t_start) * 1000)
+        # 上报 KB 检索耗时指标（修复 #6：KB_SEARCH_DURATION_SECONDS 指标之前已定义但从未上报）
+        KB_SEARCH_DURATION_SECONDS.observe(total_ms / 1000)
         logger.info(
             event="search_completed",
             query=query[:50],
