@@ -2,7 +2,8 @@
 共享 Prometheus 指标定义
 
 所有服务通过导入此模块获取统一的指标对象，避免重复注册。
-每个指标均带有 service 标签以便在多服务单 Prometheus 实例下区分来源。
+HTTP 层指标（http_request_duration_seconds / http_requests_total）依赖
+Prometheus scrape job 区分来源；业务指标（hci_* 前缀）通过 labelnames 区分。
 """
 
 import contextlib
@@ -43,22 +44,27 @@ class HTTPMetricsMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next) -> Response:
         start = time.monotonic()
-        response = await call_next(request)
-        duration = time.monotonic() - start
+        status_code = "500"
+        try:
+            response = await call_next(request)
+            status_code = str(response.status_code)
+        finally:
+            duration = time.monotonic() - start
 
-        # 优先使用 FastAPI 路由模板，避免动态路径导致高基数
-        route = request.url.path
-        with contextlib.suppress(KeyError, AttributeError):
-            route = request.scope["route"].path
+            # 优先使用 FastAPI 路由模板，避免动态路径导致高基数；
+            # 无匹配路由时（404/探测路径）统一归类为 "unmatched"
+            route = "unmatched"
+            with contextlib.suppress(KeyError, AttributeError):
+                route = request.scope["route"].path
 
-        HTTP_REQUEST_DURATION_SECONDS.labels(
-            method=request.method,
-            route=route,
-        ).observe(duration)
-        HTTP_REQUESTS_TOTAL.labels(
-            method=request.method,
-            status=str(response.status_code),
-        ).inc()
+            HTTP_REQUEST_DURATION_SECONDS.labels(
+                method=request.method,
+                route=route,
+            ).observe(duration)
+            HTTP_REQUESTS_TOTAL.labels(
+                method=request.method,
+                status=status_code,
+            ).inc()
 
         return response
 

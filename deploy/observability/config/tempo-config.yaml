@@ -20,16 +20,19 @@ metrics_generator:
     external_labels:
       source: tempo
       cluster: hci-local
+  # 修复 #10：将 span-metrics/service-graph 写入 Prometheus
+  # remote_write 必须置于 metrics_generator 块下，而非顶层 storage 块
+  storage:
+    path: /var/tempo/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
 
 storage:
   trace:
     backend: local
     local:
       path: /var/tempo/blocks   # 修复 #3：从 /tmp 改为持久化目录，并配合 volume 挂载
-  # 修复 #10：metrics_generator 生成的 span-metrics/service-graph 写入 Prometheus
-  remote_write:
-    - url: http://prometheus:9090/api/v1/write
-      send_exemplars: true
 
 overrides:
   defaults:

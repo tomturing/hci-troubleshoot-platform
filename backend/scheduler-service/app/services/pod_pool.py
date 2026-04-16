@@ -97,6 +97,9 @@ class PodPool:
                 message=f"Could not scan existing pods for '{self.assistant_type}': {e}",
                 error=str(e)
             )
+        finally:
+            # 初始化后同步一次 Gauge，无论成功或跳过都反映当前实际状态
+            self._update_metrics()
 
     async def ensure_warm_pool(self):
         """维护热备池大小"""
@@ -140,6 +143,7 @@ class PodPool:
                         assistant_config=self.config
                     ):
                         self.active_pods.add(pod_name)
+                        self._update_metrics()  # on-demand 创建后同步 Gauge
                         return pod_name
                 return None
 

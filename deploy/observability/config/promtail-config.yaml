@@ -22,16 +22,16 @@ scrape_configs:
       - source_labels:
           ["__meta_docker_container_label_com_docker_compose_project"]
         target_label: "project"
-    # 修复 #4：添加 JSON pipeline，提取结构化字段为 Loki 标签
-    # 使 Tempo → Loki 的 filterByTraceID 真实有效
+    # 修复 #4：添加 JSON pipeline，提取结构化字段
+    # trace_id 仅解析不升为 label（避免每请求一条 stream 的高基数问题）
+    # Trace→Log 联动通过 Grafana Tempo datasource 的 tracesToLogsV2 customQuery 实现：
+    #   {container="$container"} | json | trace_id="$traceId"
     pipeline_stages:
       - docker: {}         # 解析 Docker JSON 外层（timestamp/log/stream）
       - json:
           expressions:
             level: level
-            trace_id: trace_id
             service: service
       - labels:
           level:
-          trace_id:
           service:
