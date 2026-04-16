@@ -53,7 +53,9 @@ class OpenClawAssistant:
     ):
         self.base_url = base_url.rstrip("/")
         self.gateway_token = api_key
-        self.provider_api_key = os.environ.get("OPENCLAW_API_KEY") or api_key
+        # 优先使用构造时传入的 api_key（per-assistant 密钥），缺省时回退到全局环境变量
+        # 这样 dashscope/qwen 等直连助手能使用各自的 API key，而不会被全局 zhipu key 覆盖
+        self.provider_api_key = api_key or os.environ.get("OPENCLAW_API_KEY")
         self.default_model = default_model
         self.assistant_type = assistant_type
         # 流式 LLM 响应可能较慢，读超时通过环境变量 AI_CLIENT_READ_TIMEOUT_SEC 调整（默认 120s）
