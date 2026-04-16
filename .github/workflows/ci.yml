@@ -578,38 +578,12 @@ jobs:
             # 单独处理 db-migrate tag
             if [[ -n "${DB_MIGRATE_TAG}" ]]; then
               echo "更新 dbMigrate.tag 为: ${DB_MIGRATE_TAG}"
-              DB_MIGRATE_TAG="${DB_MIGRATE_TAG}" python3 - "${VALUES_FILE}" <<'PY'
-import re, sys, os
-values_file = sys.argv[1]
-new_tag = os.environ["DB_MIGRATE_TAG"]
-with open(values_file) as f:
-    content = f.read()
-new_content = re.sub(r'(dbMigrate:.*?tag:\s*)"[^"]*"', lambda m: m.group(1) + '"' + new_tag + '"', content, count=1, flags=re.DOTALL)
-if new_content == content:
-    print(f"警告：未找到 dbMigrate.tag，跳过")
-else:
-    open(values_file, 'w').write(new_content)
-    print(f"dbMigrate.tag 已更新为 {new_tag}")
-PY
+              awk -v tag="${DB_MIGRATE_TAG}" '/dbMigrate:/{in_db=1} in_db && /tag:/{sub(/"[^"]*"/, "\"" tag "\""); in_db=0} {print}' "${VALUES_FILE}" > /tmp/_hci_upd && mv /tmp/_hci_upd "${VALUES_FILE}" && echo "dbMigrate.tag 已更新为 ${DB_MIGRATE_TAG}"
             else
               echo "恢复 dbMigrate.tag 为历史值（防止被全量 sed 覆盖）"
-              PREV_TAG=$(git show HEAD:"${VALUES_FILE}" 2>/dev/null | python3 -c "
-import sys, re
-m = re.search(r'dbMigrate:.*?tag:\s*\"([^\"]+)\"', sys.stdin.read(), re.DOTALL)
-print(m.group(1) if m else '')
-" 2>/dev/null || echo "")
+              PREV_TAG=$(git show HEAD:"${VALUES_FILE}" 2>/dev/null | awk '/dbMigrate:/{in_db=1} in_db && /tag:/{match($0, /"([^"]+)"/, a); print a[1]; exit}' 2>/dev/null || echo "")
               if [[ -n "${PREV_TAG}" ]]; then
-                PREV_TAG="${PREV_TAG}" python3 - "${VALUES_FILE}" <<'PY'
-import re, sys, os
-values_file = sys.argv[1]
-prev_tag = os.environ["PREV_TAG"]
-with open(values_file) as f:
-    content = f.read()
-new_content = re.sub(r'(dbMigrate:.*?tag:\s*)"[^"]*"', lambda m: m.group(1) + '"' + prev_tag + '"', content, count=1, flags=re.DOTALL)
-if new_content != content:
-    open(values_file, 'w').write(new_content)
-    print(f"dbMigrate.tag 已恢复为 {prev_tag}")
-PY
+                awk -v tag="${PREV_TAG}" '/dbMigrate:/{in_db=1} in_db && /tag:/{sub(/"[^"]*"/, "\"" tag "\""); in_db=0} {print}' "${VALUES_FILE}" > /tmp/_hci_upd && mv /tmp/_hci_upd "${VALUES_FILE}" && echo "dbMigrate.tag 已恢复为 ${PREV_TAG}"
               else
                 echo "❌ 无法从 git 历史获取 dbMigrate.tag，回滚文件避免写入错误 tag"
                 git checkout -- "${VALUES_FILE}"
