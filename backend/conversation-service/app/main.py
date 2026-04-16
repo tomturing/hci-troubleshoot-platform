@@ -51,11 +51,16 @@ async def lifespan(app: FastAPI):
         if not cfg.get("enabled", True):
             continue
         base_url = cfg.get("base_url", settings.OPENCLAW_BASE_URL)
+        # gateway_token: 内部 OpenClaw 网关鉴权，对直连外部 API（dashscope 等）可为空
         gateway_token = cfg.get("gateway_token", settings.OPENCLAW_GATEWAY_TOKEN)
+        # provider_api_key: 外部 LLM 提供商密钥（dashscope/qwen/zhipu 等），与 gateway_token 分离
+        # 若未配置则回退到 OPENCLAW_API_KEY 环境变量（ai_client.py 内处理）
+        provider_key = cfg.get("provider_api_key") or None
         model = cfg.get("model", assistant_type)
         client = create_openclaw_client(
             base_url=base_url,
             api_key=gateway_token,
+            provider_api_key=provider_key,
             default_model=model,
             assistant_type=assistant_type,
         )
