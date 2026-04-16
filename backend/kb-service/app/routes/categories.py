@@ -127,6 +127,7 @@ async def list_categories(
                 domain: [
                     {
                         **cat.to_dict(),
+                        "id": cat.code,   # 覆盖 DB 整型主键，prompt_builder 期望业务编码如 '虚拟机-003'
                         "label": cat.name,  # 兼容 conversation-service prompt_builder 的期望字段
                         "has_sop": bool(cat.code and cat.code in sop_coverage),
                     }

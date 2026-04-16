@@ -227,7 +227,7 @@ class KBClient(InternalHTTPClient):
             # 响应字段名为 "domains"（非 "categories_by_domain"）
             resp = await self._client.get(
                 f"{self._api_prefix}/categories",
-                params={"grouped": "true"},
+                params={"grouped": True},
                 timeout=_CATEGORY_TIMEOUT,
             )
             resp.raise_for_status()
