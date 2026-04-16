@@ -545,44 +545,82 @@ jobs:
       (needs.build-db-migrate.result == 'success' || needs.build-db-migrate.outputs.built != 'true') &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     steps:
-      - name: 触发环境仓库同步（dev 优先，串行执行）
+      - name: 直接推送镜像标签到环境仓库（dev 优先，串行执行）
         env:
-          GH_TOKEN: ${{ secrets.ENV_REPO_PAT }}
+          ENV_REPO_PAT: ${{ secrets.ENV_REPO_PAT }}
         run: |
-          # 串行执行环境同步，dev 优先
-          # 每个环境同步完成后等待，确保 Git 推送完成，避免并发竞争
-          # 详见 docs/solution/events/2026-04-07-环境同步串行化方案.md
-          environments=("dev" "staging")
-
-          # 本次是否构建了新的 db-migrate 镜像
+          # 绕过 hci-platform-env workflow dispatch（私有仓库 Actions 分钟额度限制）
+          # 改为在当前公开仓库（免费 Actions）中直接 clone → sed → push
+          # 逻辑与 hci-platform-env/.github/workflows/env-repo-sync.yml 保持一致
+          IMAGE_TAG="${{ needs.prepare.outputs.image_tag }}"
           DB_MIGRATE_BUILT="${{ needs.build-db-migrate.outputs.built }}"
           DB_MIGRATE_TAG=""
           if [[ "$DB_MIGRATE_BUILT" == "true" ]]; then
-            DB_MIGRATE_TAG="${{ needs.prepare.outputs.image_tag }}"
+            DB_MIGRATE_TAG="${IMAGE_TAG}"
             echo "本次有 schema 变更，db-migrate tag：${DB_MIGRATE_TAG}"
           else
             echo "本次无 schema 变更，不更新 db-migrate tag"
           fi
 
-          for env in "${environments[@]}"; do
-            echo "========== 触发 ${env} 环境同步 =========="
-            gh workflow run env-repo-sync.yml \
-              -R tomturing/hci-platform-env \
-              -f env_repo_name=tomturing/hci-platform-env \
-              -f target_env=${env} \
-              -f image_tag="${{ needs.prepare.outputs.image_tag }}" \
-              -f db_migrate_tag="${DB_MIGRATE_TAG}"
+          # clone 环境仓库
+          git clone "https://x-access-token:${ENV_REPO_PAT}@github.com/tomturing/hci-platform-env.git" env-repo
+          cd env-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-            # 等待 workflow 启动并完成 Git 推送（约 30 秒）
-            echo "等待 ${env} 环境同步完成..."
-            sleep 30
+          for env in dev staging; do
+            echo "========== 更新 ${env} 环境 =========="
+            VALUES_FILE="environments/${env}/values.yaml"
 
-            # 输出最近一次同步状态
-            echo "检查 ${env} 环境同步状态..."
-            gh run list -R tomturing/hci-platform-env \
-              --workflow env-repo-sync.yml \
-              --limit 1 \
-              --json conclusion,displayTitle
+            # 替换所有服务镜像标签
+            sed -i 's/^\(\s*tag:\s*\)"[^"]*"/\1"'"${IMAGE_TAG}"'"/' "$VALUES_FILE"
+
+            # 单独处理 db-migrate tag
+            if [[ -n "${DB_MIGRATE_TAG}" ]]; then
+              echo "更新 dbMigrate.tag 为: ${DB_MIGRATE_TAG}"
+              DB_MIGRATE_TAG="${DB_MIGRATE_TAG}" python3 - "${VALUES_FILE}" <<'PY'
+import re, sys, os
+values_file = sys.argv[1]
+new_tag = os.environ["DB_MIGRATE_TAG"]
+with open(values_file) as f:
+    content = f.read()
+new_content = re.sub(r'(dbMigrate:.*?tag:\s*)"[^"]*"', r'\g<1>"' + re.escape(new_tag) + r'"', content, count=1, flags=re.DOTALL)
+if new_content == content:
+    print(f"警告：未找到 dbMigrate.tag，跳过")
+else:
+    open(values_file, 'w').write(new_content)
+    print(f"dbMigrate.tag 已更新为 {new_tag}")
+PY
+            else
+              echo "恢复 dbMigrate.tag 为历史值（防止被全量 sed 覆盖）"
+              PREV_TAG=$(git show HEAD:"${VALUES_FILE}" 2>/dev/null | python3 -c "
+import sys, re
+m = re.search(r'dbMigrate:.*?tag:\s*\"([^\"]+)\"', sys.stdin.read(), re.DOTALL)
+print(m.group(1) if m else '')
+" 2>/dev/null || echo "")
+              if [[ -n "${PREV_TAG}" ]]; then
+                PREV_TAG="${PREV_TAG}" python3 - "${VALUES_FILE}" <<'PY'
+import re, sys, os
+values_file = sys.argv[1]
+prev_tag = os.environ["PREV_TAG"]
+with open(values_file) as f:
+    content = f.read()
+new_content = re.sub(r'(dbMigrate:.*?tag:\s*)"[^"]*"', r'\g<1>"' + re.escape(prev_tag) + r'"', content, count=1, flags=re.DOTALL)
+if new_content != content:
+    open(values_file, 'w').write(new_content)
+    print(f"dbMigrate.tag 已恢复为 {prev_tag}")
+PY
+              fi
+            fi
+
+            if git diff --quiet "${VALUES_FILE}"; then
+              echo "${env} 标签未变化，跳过提交"
+            else
+              git add "${VALUES_FILE}"
+              git commit -m "chore(${env}): 自动更新镜像标签为 ${IMAGE_TAG} [skip ci]"
+              git push origin main
+              echo "✅ ${env} 环境标签已推送"
+            fi
           done
 
-          echo "✅ dev/staging 环境同步已触发（串行执行完成）"
+          echo "✅ dev/staging 环境同步完成（直接推送模式）"
