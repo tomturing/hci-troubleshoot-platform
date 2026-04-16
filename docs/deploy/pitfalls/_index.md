@@ -2,20 +2,20 @@
 status: active
 category: deploy
 audience: agent
-last_updated: 2026-04-05
+last_updated: 2026-04-16
 owner: team
 update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 ---
 
 # 部署类避坑指南路由索引
 
-> **唯一来源：** `docs/deploy/pitfalls/`（Git 管理，随代码演进）  
-> **写坑规则：**  
+> **唯一来源：** `docs/deploy/pitfalls/`（Git 管理，随代码演进）
+> **写坑规则：**
 > 1. 先在下方"PIT 编号注册表"分配编号（D- 前缀为新编号格式，旧 PIT-xxx 保留）
-> 2. 再写入对应分类文件  
-> 3. 同一 commit/PR 提交，不允许分开提交  
+> 2. 再写入对应分类文件
+> 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：D-002**（旧格式延续：PIT-045）
+> **下一个可用编号：D-002**（旧格式延续：PIT-046）
 
 ---
 
@@ -27,7 +27,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 |---------|---------|---------|
 | 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039 |
 | 编写/审查 Shell/Makefile/CI 脚本 | [shell.md](shell.md) | PIT-001, PIT-002 |
-| K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移 | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, D-001 |
+| K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移 | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001 |
 | ArgoCD 多集群 App of Apps / 环境标识 | [k8s.md](k8s.md) | D-001 |
 | Grafana 重定向/Ingress/iframe 白屏 | [grafana.md](grafana.md) | PIT-011, PIT-012, PIT-020, PIT-036 |
 
@@ -35,7 +35,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 
 ## PIT 编号注册表（部署类）
 
-> 旧版全局编号注册表见 git 历史 `docs/pitfalls/_index.md`。  
+> 旧版全局编号注册表见 git 历史 `docs/pitfalls/_index.md`。
 > 此处仅登记隶属本目录的 PIT 条目，防止新增编号重复。
 
 | 编号 | 文件 | 描述 |
@@ -63,6 +63,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | PIT-039 | network-service-check.md | CoreDNS hosts 插件冲突 |
 | PIT-043 | k8s.md | ArgoCD Application 手动覆盖导致 releaseName 漂移 |
 | PIT-044 | k8s.md | 迁移体系切换后遗留触发器双倍计数 |
+| PIT-045 | k8s.md | nginx 启动时 upstream DNS 解析失败 |
 | **D-001** | k8s.md | ArgoCD 多集群 App of Apps 分层 + 环境标识方式 |
 
 ---
