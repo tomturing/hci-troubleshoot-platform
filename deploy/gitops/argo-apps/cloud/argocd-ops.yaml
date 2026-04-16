@@ -1,18 +1,18 @@
 # =============================================================================
 # ArgoCD Application: argocd-ops
 #
-# 双职责（sources 多源）：
+# 运行在 staging 集群的 ArgoCD，双职责（sources 多源）：
 #   1. 运维配件（deploy/gitops/argocd-ops/）：
 #      - argocd-repo-server copyutil watchdog（CronJob + RBAC）
 #      - Pod 异常可观测性告警规则（PrometheusRule + AlertmanagerConfig）
-#   2. App of Apps（deploy/gitops/argo-apps/local/）：
-#      - dev 集群所有 Application 定义，selfHeal 防止手动覆盖后漂移（D-001 防护）
-#      - Git 里的 argo-apps/local/*.yaml 是唯一权威来源
+#   2. App of Apps（deploy/gitops/argo-apps/cloud/）：
+#      - staging/prod 集群所有 Application 定义，由 staging 侧 ArgoCD 统一管理
 #
 # 设计原则：
+#   - staging 集群有自己的 ArgoCD，只管 cloud/ 下的 Application 定义
+#   - 不得混入 local/（dev 侧）的 Application，避免跨环境注册
 #   - prune: true  — ops 配件随 Git 变更弹性增删，无持久化数据风险
-#   - selfHeal: true — 防止 watchdog RBAC / Application 配置被手动修改后漂移
-#   - directory.exclude: "*.json" — 排除 Grafana Dashboard JSON（非 K8s 资源）
+#   - selfHeal: true — 防止 watchdog RBAC 被手动修改后漂移
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -20,10 +20,11 @@ metadata:
   name: argocd-ops
   namespace: argocd
   annotations:
-    argocd.argoproj.io/description: "ArgoCD 运维配套 — copyutil watchdog + Pod 异常可观测性 + App of Apps（dev）"
+    argocd.argoproj.io/description: "Staging ArgoCD 运维配套 + App of Apps（argo-apps/cloud/）"
 spec:
   project: default
   destination:
+    # staging 集群自己的 API server（kubernetes.default.svc = 本机集群）
     server: https://kubernetes.default.svc
     namespace: argocd
   sources:
@@ -34,15 +35,15 @@ spec:
       directory:
         recurse: false
         exclude: "*.json"    # 排除 Grafana Dashboard JSON，仅处理 K8s 资源 YAML
-    # App of Apps：dev 集群所有 Application 定义（argo-apps/local/）
+    # App of Apps：staging/prod 所有 Application 定义（argo-apps/cloud/）
     - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
       targetRevision: main
-      path: deploy/gitops/argo-apps/local
+      path: deploy/gitops/argo-apps/cloud
       directory:
         recurse: false
   syncPolicy:
     automated:
-      prune: true # ops 资源无状态，允许自动删除已移除的资源
-      selfHeal: true # 防止 watchdog RBAC / Application 配置被手动修改后漂移
+      prune: true
+      selfHeal: true
     syncOptions:
-      - CreateNamespace=false # argocd namespace 已存在
+      - CreateNamespace=false   # argocd namespace 已存在
