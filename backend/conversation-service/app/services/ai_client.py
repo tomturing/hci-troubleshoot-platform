@@ -48,14 +48,16 @@ class OpenClawAssistant:
         self,
         base_url: str,
         api_key: str | None = None,
+        provider_api_key: str | None = None,
         default_model: str = "openclaw",
         assistant_type: str = "openclaw",
     ):
         self.base_url = base_url.rstrip("/")
+        # gateway_token: 内部 OpenClaw 网关鉴权（Bearer token，由 OPENCLAW_GATEWAY_TOKEN 环境变量或 registry 配置提供）
         self.gateway_token = api_key
-        # 优先使用构造时传入的 api_key（per-assistant 密钥），缺省时回退到全局环境变量
-        # 这样 dashscope/qwen 等直连助手能使用各自的 API key，而不会被全局 zhipu key 覆盖
-        self.provider_api_key = api_key or os.environ.get("OPENCLAW_API_KEY")
+        # provider_api_key: 外部 LLM 提供商鉴权（优先级: 构造参数 > 环境变量 > gateway_token 兜底）
+        # 通过独立参数传入，与 gateway_token 彻底解耦，避免两者承担同一 api_key 参数的混用问题
+        self.provider_api_key = provider_api_key or os.environ.get("OPENCLAW_API_KEY") or api_key
         self.default_model = default_model
         self.assistant_type = assistant_type
         # 流式 LLM 响应可能较慢，读超时通过环境变量 AI_CLIENT_READ_TIMEOUT_SEC 调整（默认 120s）
@@ -451,6 +453,7 @@ class AIAssistantRegistry:
 def create_openclaw_client(
     base_url: str,
     api_key: str | None = None,
+    provider_api_key: str | None = None,
     default_model: str = "openclaw",
     assistant_type: str = "openclaw",
 ) -> OpenClawAssistant:
@@ -458,6 +461,7 @@ def create_openclaw_client(
     return OpenClawAssistant(
         base_url=base_url,
         api_key=api_key,
+        provider_api_key=provider_api_key,
         default_model=default_model,
         assistant_type=assistant_type,
     )
