@@ -227,42 +227,6 @@ function formatDate(d: string): string {
               placeholder="详细描述您遇到的问题..."
             />
           </el-form-item>
-          <!-- AI 助手选择器（v2.1：后端智能控制显示）-->
-          <el-form-item v-if="chatStore.showAssistantSelector" label="AI 助手">
-            <el-select
-              v-model="chatStore.selectedAssistant"
-              placeholder="选择 AI 助手"
-              style="width: 100%"
-            >
-              <el-option
-                v-for="assistant in chatStore.assistants"
-                :key="assistant.type"
-                :label="assistant.display_name"
-                :value="assistant.type"
-                :disabled="!assistant.available"
-              >
-                <div class="assistant-option">
-                  <div class="assistant-header">
-                    <span class="assistant-name">{{ assistant.display_name }}</span>
-                    <el-tag v-if="assistant.is_default" size="small" type="success">默认</el-tag>
-                    <el-tag v-if="!assistant.available" type="warning" size="small">暂不可用</el-tag>
-                  </div>
-                  <span class="assistant-desc">{{ assistant.description }}</span>
-                  <div class="assistant-capabilities" v-if="assistant.capabilities?.length">
-                    <el-tag
-                      v-for="cap in assistant.capabilities"
-                      :key="cap"
-                      size="small"
-                      type="info"
-                      effect="plain"
-                    >
-                      {{ cap }}
-                    </el-tag>
-                  </div>
-                </div>
-              </el-option>
-            </el-select>
-          </el-form-item>
         </el-form>
       </div>
       <template #footer>
@@ -278,6 +242,30 @@ function formatDate(d: string): string {
     </el-dialog>
 
     <!-- 消息区域 -->
+    <!-- AI 助手选择器（v2.2：对话界面顶部，始终可见）-->
+    <div class="assistant-selector-bar" v-if="chatStore.showAssistantSelector && chatStore.hasActiveCase">
+      <span class="assistant-label">当前助手：</span>
+      <el-select
+        v-model="chatStore.selectedAssistant"
+        size="small"
+        placeholder="选择 AI 助手"
+        style="width: 180px"
+      >
+        <el-option
+          v-for="assistant in chatStore.assistants"
+          :key="assistant.type"
+          :label="assistant.display_name"
+          :value="assistant.type"
+          :disabled="!assistant.available"
+        >
+          <div class="assistant-option-compact">
+            <span>{{ assistant.display_name }}</span>
+            <el-tag v-if="assistant.is_default" size="small" type="success">默认</el-tag>
+            <el-tag v-if="!assistant.available" size="small" type="warning">不可用</el-tag>
+          </div>
+        </el-option>
+      </el-select>
+    </div>
     <!-- 诊断阶段进度条 (仅在非 S0 时显示) -->
     <DiagnosticProgress
       v-if="chatStore.diagnosticStage !== 'S0'"
@@ -479,6 +467,29 @@ function formatDate(d: string): string {
   color: #909399;
   padding: 8px 16px;
   font-size: 14px;
+}
+
+/* AI 助手选择器顶部栏（v2.2）*/
+.assistant-selector-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e4e7ed;
+  font-size: 14px;
+}
+
+.assistant-label {
+  color: #606266;
+  font-weight: 500;
+}
+
+.assistant-option-compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
 }
 
 .input-area {

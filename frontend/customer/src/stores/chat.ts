@@ -313,6 +313,7 @@ export const useChatStore = defineStore('chat', () => {
           case_id: currentCase.value.case_id,
           role: 'user',
           content,
+          assistant_type: selectedAssistant.value,  // v2.2: 动态切换助手
         }),
       })
 
