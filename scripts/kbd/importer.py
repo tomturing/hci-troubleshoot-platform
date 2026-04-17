@@ -3,13 +3,18 @@ scripts/kbd/importer.py — KBD 条目入库（API 调用版）
 
 功能：
   从文件缓存（cache/{support_id}/raw.json）通过 converter 生成 content_md，
-  然后调用 kb-service API `/api/kbd/ingest` 写入 kbd_entry 表。
+  然后调用 kb-service API `/api/kb/kbd/ingest` 写入 kbd_entry 表。
 
 变更（T2-03）：
   - 不再直接写数据库（废弃 asyncpg 直接写入）
-  - 改为调用 kb-service API `/api/kbd/ingest`
+  - 改为调用 kb-service API `/api/kb/kbd/ingest`
   - API 端负责写入 kbd_entry 表，状态默认 draft
   - 幂等性由 API 端 support_id 唯一性校验保证
+
+变更（自动 port-forward）：
+  - 检测 kb-service 是否可达（k3s ClusterIP 服务本地无法直接访问）
+  - 自动启动 kubectl port-forward 到本地端口
+  - 进程 PID 记录到缓存目录，支持清理
 
 幂等规则：
   - support_id UNIQUE：API 端已有 draft 记录 → 返回已存在提示
@@ -23,6 +28,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
+import subprocess
+import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -30,6 +40,144 @@ import httpx
 from .config import settings
 
 logger = logging.getLogger("kbd.importer")
+
+# ─── Port-forward 管理 ────────────────────────────────────────────────────────────
+
+_PORT_FORWARD_PID_FILE = settings.KBD_CACHE_DIR.parent / ".kb-service-portforward.pid"
+_PORT_FORWARD_PROCESS: subprocess.Popen | None = None
+
+
+def _check_kb_service_reachable(timeout: float = 2.0) -> bool:
+    """快速检测 kb-service 是否可达。"""
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            # 尝试访问 API docs，快速判断服务是否响应
+            resp = client.get(f"{settings.KB_SERVICE_URL}/docs", follow_redirects=True)
+            return resp.status_code < 500
+    except (httpx.ConnectError, httpx.TimeoutException, OSError):
+        return False
+
+
+def _start_port_forward() -> subprocess.Popen | None:
+    """
+    启动 kubectl port-forward 将 kb-service 暴露到本地。
+
+    Returns:
+        启动的 subprocess.Popen 对象，失败返回 None
+    """
+    # 解析本地端口
+    local_port = settings.KB_SERVICE_URL.split(":")[-1].rstrip("/")
+    service_name = "kb-service"
+    namespace = "hci-dev"
+
+    cmd = [
+        "kubectl",
+        "port-forward",
+        f"svc/{service_name}",
+        "-n",
+        namespace,
+        f"{local_port}:{local_port}",
+        "--address",
+        "127.0.0.1",
+    ]
+
+    logger.info("启动 port-forward: %s", " ".join(cmd))
+
+    try:
+        # 启动后台进程，输出重定向到空
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # 创建新会话，避免随父进程终止
+        )
+
+        # 等待端口就绪（最多 5 秒）
+        for _ in range(10):
+            time.sleep(0.5)
+            if _check_kb_service_reachable():
+                logger.info("port-forward 已就绪 PID=%d", proc.pid)
+                # 记录 PID 到文件，便于后续清理
+                _PORT_FORWARD_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+                _PORT_FORWARD_PID_FILE.write_text(str(proc.pid))
+                return proc
+            if proc.poll() is not None:
+                logger.error("port-forward 进程已退出 retcode=%d", proc.returncode)
+                return None
+
+        logger.warning("port-forward 启动超时，服务仍未就绪")
+        proc.terminate()
+        return None
+
+    except FileNotFoundError:
+        logger.error("kubectl 未安装或不在 PATH 中")
+        return None
+    except Exception as exc:
+        logger.error("启动 port-forward 失败: %s", exc)
+        return None
+
+
+def _stop_port_forward() -> None:
+    """停止 port-forward 进程。"""
+    global _PORT_FORWARD_PROCESS
+
+    # 先尝试用 PID 文件清理（可能是上次残留）
+    if _PORT_FORWARD_PID_FILE.exists():
+        try:
+            pid = int(_PORT_FORWARD_PID_FILE.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            logger.info("已终止残留 port-forward 进程 PID=%d", pid)
+        except (ValueError, ProcessLookupError, OSError):
+            pass
+        _PORT_FORWARD_PID_FILE.unlink(missing_ok=True)
+
+    # 清理当前进程
+    if _PORT_FORWARD_PROCESS and _PORT_FORWARD_PROCESS.poll() is None:
+        _PORT_FORWARD_PROCESS.terminate()
+        logger.info("已终止当前 port-forward 进程 PID=%d", _PORT_FORWARD_PROCESS.pid)
+        _PORT_FORWARD_PROCESS = None
+
+
+def ensure_kb_service_reachable() -> bool:
+    """
+    确保 kb-service 可达，自动启动 port-forward（如果需要）。
+
+    Returns:
+        True 表示服务可达，False 表示无法连接
+    """
+    global _PORT_FORWARD_PROCESS
+
+    # 1. 先检测是否已可达（可能是已有 port-forward 或本地 Docker 环境）
+    if _check_kb_service_reachable():
+        logger.debug("kb-service 已可达，无需 port-forward")
+        return True
+
+    # 2. 检查是否有残留 PID 文件
+    if _PORT_FORWARD_PID_FILE.exists():
+        try:
+            pid = int(_PORT_FORWARD_PID_FILE.read_text().strip())
+            # 检查进程是否还在运行
+            os.kill(pid, 0)  # 发送信号 0 只检测进程存在
+            logger.info("发现已有 port-forward 进程 PID=%d，等待就绪", pid)
+            # 等待服务就绪
+            for _ in range(5):
+                time.sleep(0.5)
+                if _check_kb_service_reachable():
+                    return True
+            # 进程存在但服务不可达，可能已僵死，重新启动
+            logger.warning("残留 port-forward 进程僵死，重新启动")
+            _stop_port_forward()
+        except (ValueError, ProcessLookupError, OSError):
+            # 进程不存在，清理 PID 文件
+            _PORT_FORWARD_PID_FILE.unlink(missing_ok=True)
+
+    # 3. 启动新的 port-forward
+    _PORT_FORWARD_PROCESS = _start_port_forward()
+    if _PORT_FORWARD_PROCESS:
+        return True
+
+    # 4. 最终检测
+    return _check_kb_service_reachable()
 
 
 # ─── API 客户端 ──────────────────────────────────────────────────────────────
@@ -238,6 +386,12 @@ async def import_batch(
 
     if not settings.INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
+
+    # 自动检测并启动 port-forward（k3s ClusterIP 服务本地访问需要）
+    if not ensure_kb_service_reachable():
+        logger.error("kb-service 不可达，无法执行入库操作")
+        stats["error"] = total
+        return stats
 
     # 使用传入的 client 或创建临时客户端
     should_close = False
