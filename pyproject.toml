@@ -49,15 +49,16 @@ dependencies = [
     "tqdm>=4.66.0",
     "lxml>=5.0.0",
     "pyyaml>=6.0.0",
+
+    # === 图片处理 ===
+    # Pillow 用于截图背景色采样（KBD pipeline）
+    "pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
-# KBD 截图工具额外依赖（scripts/kbd 本地 CLI 工具使用，不进 Docker 镜像）
-# Pillow 用于背景色采样，Vision LLM 弥补 PaddleOCR 在此环境中的兼容性问题
-# 安装：uv pip install -e ".[kbd]"
-kbd = [
-    "pillow>=10.0.0",
-]
+# KBD 截图工具已无额外依赖，Pillow 已合并到主依赖
+# 此配置保留向后兼容，未来可移除
+kbd = []
 
 [dependency-groups]
 dev = [
