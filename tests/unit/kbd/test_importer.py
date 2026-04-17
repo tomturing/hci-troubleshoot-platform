@@ -2,7 +2,7 @@
 tests/unit/kbd/test_importer.py — kbd/importer.py 单元测试
 
 覆盖：
-  - import_entry：API 调用成功（created / idempotent）
+  - import_entry：API 调用成功（created / skipped / overridden）
   - import_entry：converter 返回 None 时输出 "error"
   - import_entry：API 返回错误时输出 "error"
   - import_batch：批量统计计数
@@ -107,7 +107,7 @@ class TestImportEntry:
 
     @pytest.mark.asyncio
     async def test_idempotent_when_already_exists(self, tmp_path, minimal_rows):
-        """API 返回已存在时，返回 'idempotent'"""
+        """API 返回已存在时，返回 'skipped'"""
         case_dir = tmp_path / "36156"
         case_dir.mkdir(parents=True)
         (case_dir / "raw.json").write_text(
@@ -119,6 +119,7 @@ class TestImportEntry:
             "success": True,
             "kbd_id": 123,
             "status": "draft",
+            "action": "skipped",
             "message": "KBD 条目已存在",
         })
 
@@ -132,7 +133,7 @@ class TestImportEntry:
             from kbd.importer import import_entry
             result = await import_entry("36156", client)
 
-        assert result == "idempotent"
+        assert result == "skipped"
 
     @pytest.mark.asyncio
     async def test_returns_error_when_converter_fails(self, tmp_path):
@@ -220,15 +221,15 @@ class TestImportBatch:
 
         # 创建 mock client
         client = MagicMock(spec=httpx.AsyncClient)
-        # 第一个返回 created，第二个返回 idempotent
+        # 第一个返回 created，第二个返回 skipped
         responses = [
             MagicMock(
                 status_code=200,
-                json=MagicMock(return_value={"success": True, "kbd_id": 1, "status": "draft", "message": "创建成功"})
+                json=MagicMock(return_value={"success": True, "kbd_id": 1, "status": "draft", "action": "created", "message": "创建成功"})
             ),
             MagicMock(
                 status_code=200,
-                json=MagicMock(return_value={"success": True, "kbd_id": 2, "status": "draft", "message": "KBD 条目已存在"})
+                json=MagicMock(return_value={"success": True, "kbd_id": 2, "status": "draft", "action": "skipped", "message": "KBD 条目已存在"})
             ),
         ]
         client.post = AsyncMock(side_effect=responses)
@@ -246,7 +247,7 @@ class TestImportBatch:
             result = await import_batch(["36156", "36157"], client=client)
 
         assert result["created"] == 1
-        assert result["idempotent"] == 1
+        assert result["skipped"] == 1
         assert result["error"] == 0
 
     @pytest.mark.asyncio
@@ -259,4 +260,4 @@ class TestImportBatch:
             from kbd.importer import import_batch
             result = await import_batch([], client=None)
 
-        assert result == {"created": 0, "idempotent": 0, "skipped": 0, "error": 0}
+        assert result == {"created": 0, "skipped": 0, "overridden": 0, "error": 0}

@@ -190,6 +190,14 @@ class KbdIngestRequest(BaseModel):
     """KBD 条目入库请求
 
     用于 scripts/kbd/ 数据流水线调用，将深信服案例写入 kbd_entry 表。
+
+    参数设计（遵循第一性原理）：
+    - 默认幂等：已存在记录跳过，避免重复入库
+    - override=true：强制覆盖已存在记录
+    - override_status：状态过滤，防止误覆盖已发布数据
+        - 不传 = 默认 ['draft']（安全覆盖）
+        - ['all'] = 所有状态（谨慎使用）
+        - ['draft', 'published'] = 仅指定状态
     """
 
     support_id: str = Field(..., min_length=1, max_length=20, description="深信服案例ID（幂等键）")
@@ -201,6 +209,25 @@ class KbdIngestRequest(BaseModel):
     ai_category_conf: float | None = Field(None, ge=0.0, le=1.0, description="分类置信度")
     ai_category_reason: str | None = Field(None, description="分类理由")
 
+    # 新参数：覆盖控制
+    override: bool = Field(
+        False,
+        description="强制覆盖已存在的记录。false=幂等跳过；true=根据 override_status 覆盖",
+    )
+    override_status: list[str] | None = Field(
+        None,
+        description=(
+            "仅覆盖指定状态的记录。"
+            "不传=默认['draft']；['all']=所有状态；['draft','published']=仅指定状态"
+        ),
+    )
+
+    # 向后兼容（deprecated）
+    force_update: bool = Field(
+        False,
+        description="[已废弃] 请使用 override 参数。仅更新 draft 状态的记录",
+    )
+
 
 class KbdIngestResponse(BaseModel):
     """KBD 条目入库响应"""
@@ -208,7 +235,16 @@ class KbdIngestResponse(BaseModel):
     success: bool = Field(..., description="操作是否成功")
     kbd_id: int = Field(..., description="KBD 条目 ID")
     status: str = Field(..., description="当前状态")
+    action: str | None = Field(
+        None,
+        description="执行动作：created / skipped / overridden",
+    )
     message: str | None = Field(None, description="附加消息（如幂等提示）")
+
+
+# KBD 入库接口常量
+DEFAULT_OVERRIDE_STATUS = ["draft"]
+ALL_STATUS_MARKER = ["all", "*"]
 
 
 @router.post("/kbd/ingest", status_code=status.HTTP_201_CREATED)
@@ -217,28 +253,58 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
 
     功能说明：
     1. 写入 kbd_entry 表（深信服案例原始数据）
-    2. support_id 幂等性校验（已存在则返回 200 + 原条目信息）
+    2. support_id 幂等性校验（已存在则根据 override 决定行为）
     3. 状态默认为 draft（审核通过后才生成 embedding）
     4. 不生成 embedding（审核通过时由 approve_kbd_entry 触发）
+
+    参数行为矩阵：
+    | override | override_status | 记录状态 | 结果 |
+    |----------|-----------------|---------|------|
+    | false    | -               | 不存在  | ✅ created |
+    | false    | -               | 已存在  | ⏭️ skipped |
+    | true     | 不传（默认draft）| draft   | ✅ overridden |
+    | true     | 不传（默认draft）| published | ⏭️ skipped（状态不匹配）|
+    | true     | ['all']         | draft   | ✅ overridden |
+    | true     | ['all']         | published | ✅ overridden（谨慎使用）|
+    | true     | ['draft','published'] | draft | ✅ overridden |
 
     调用方：scripts/kbd/ 数据流水线
 
     响应体示例：
     ```json
-    {
-      "success": true,
-      "kbd_id": 123,
-      "status": "draft"
-    }
-    ```
-
-    幂等场景（support_id 已存在）：
-    ```json
+    // 新建成功
     {
       "success": true,
       "kbd_id": 123,
       "status": "draft",
-      "message": "条目已存在，跳过写入"
+      "action": "created"
+    }
+
+    // 幂等跳过
+    {
+      "success": true,
+      "kbd_id": 123,
+      "status": "draft",
+      "action": "skipped",
+      "message": "记录已存在，幂等跳过"
+    }
+
+    // 覆盖成功
+    {
+      "success": true,
+      "kbd_id": 123,
+      "status": "draft",
+      "action": "overridden",
+      "message": "记录已覆盖"
+    }
+
+    // 状态不匹配跳过
+    {
+      "success": true,
+      "kbd_id": 123,
+      "status": "published",
+      "action": "skipped",
+      "message": "记录状态 'published' 不在 override_status 范围内"
     }
     ```
     """
@@ -247,12 +313,27 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
+    # 参数解析：向后兼容 force_update → override
+    override = body.override or body.force_update
+
+    if body.override_status is None:
+        # 不传 override_status = 默认仅 draft
+        allowed_statuses = DEFAULT_OVERRIDE_STATUS
+    elif any(s in ALL_STATUS_MARKER for s in body.override_status):
+        # ['all'] 或 ['*'] = 无限制（所有状态）
+        allowed_statuses = None  # None 表示"所有状态"
+    else:
+        # 用户指定的状态列表
+        allowed_statuses = body.override_status
+
     logger.info(
         event="kbd_ingest_request",
         support_id=body.support_id,
         title=body.title[:50],
         content_length=len(body.content_md),
-        ai_category_id=body.ai_category_id,
+        override=override,
+        override_status=body.override_status,
+        allowed_statuses=allowed_statuses,
     )
 
     async with _db_manager.async_session_factory() as session:
@@ -263,18 +344,77 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
         existing_entry = existing_result.scalar_one_or_none()
 
         if existing_entry:
-            logger.info(
-                event="kbd_ingest_idempotent",
-                support_id=body.support_id,
-                kbd_id=existing_entry.id,
-                status=existing_entry.status,
-            )
-            return KbdIngestResponse(
-                success=True,
-                kbd_id=existing_entry.id,
-                status=existing_entry.status,
-                message="条目已存在，跳过写入",
-            )
+            # 已存在记录的处理逻辑
+            existing_status = existing_entry.status
+
+            if override:
+                # 检查状态是否允许覆盖
+                status_allowed = (
+                    allowed_statuses is None  # 无限制
+                    or existing_status in allowed_statuses
+                )
+
+                if status_allowed:
+                    # 执行覆盖
+                    existing_entry.title = body.title
+                    existing_entry.content_md = body.content_md
+                    existing_entry.entry_metadata = body.metadata
+                    if body.ai_category_id:
+                        existing_entry.ai_category_id = body.ai_category_id
+                    if body.ai_category_conf:
+                        existing_entry.ai_category_conf = body.ai_category_conf
+                    if body.ai_category_reason:
+                        existing_entry.ai_category_reason = body.ai_category_reason
+                    await session.commit()
+
+                    logger.info(
+                        event="kbd_ingest_overridden",
+                        support_id=body.support_id,
+                        kbd_id=existing_entry.id,
+                        status=existing_status,
+                        content_length=len(body.content_md),
+                    )
+
+                    return KbdIngestResponse(
+                        success=True,
+                        kbd_id=existing_entry.id,
+                        status=existing_status,
+                        action="overridden",
+                        message="记录已覆盖",
+                    )
+                else:
+                    # 状态不匹配，跳过覆盖
+                    logger.info(
+                        event="kbd_ingest_status_mismatch",
+                        support_id=body.support_id,
+                        kbd_id=existing_entry.id,
+                        existing_status=existing_status,
+                        allowed_statuses=allowed_statuses,
+                    )
+
+                    return KbdIngestResponse(
+                        success=True,
+                        kbd_id=existing_entry.id,
+                        status=existing_status,
+                        action="skipped",
+                        message=f"记录状态 '{existing_status}' 不在 override_status 范围内",
+                    )
+            else:
+                # 幂等跳过（不覆盖）
+                logger.info(
+                    event="kbd_ingest_idempotent",
+                    support_id=body.support_id,
+                    kbd_id=existing_entry.id,
+                    status=existing_status,
+                )
+
+                return KbdIngestResponse(
+                    success=True,
+                    kbd_id=existing_entry.id,
+                    status=existing_status,
+                    action="skipped",
+                    message="记录已存在，幂等跳过",
+                )
 
         # 2. 创建新条目
         new_entry = KbdEntry(
@@ -305,4 +445,5 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
         success=True,
         kbd_id=new_entry.id,
         status=new_entry.status,
+        action="created",
     )
