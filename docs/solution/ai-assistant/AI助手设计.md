@@ -1,13 +1,13 @@
 # HCI 智能排障平台 — AI 助手层设计（架构决策 WHY）
 
 > **文档目的**：记录 AI 助手层的架构决策背景和选型理由，回答"为什么这样设计"。
-> **最后更新**：2026-03-25
+> **最后更新**：2026-04-17
 > **关联文档**：[08_HCI平台效果差距分析与重构方案.md](./08_HCI平台效果差距分析与重构方案.md) | [11_完整技术方案.md](./11_完整技术方案.md)
 
 ---
 
 > **文档定位**：WHY — 记录 AI 层核心架构的选型讨论与设计决策，供新成员理解设计动机。
-> **版本**：4.0 | **更新日期**：2026-03-25
+> **版本**：5.0 | **更新日期**：2026-04-17
 > **关联文档**：[08 核心设计理念](./08_HCI平台效果差距分析与重构方案.md) | [11 实施规范与进度](./11_完整技术方案.md)
 
 ---
@@ -515,6 +515,205 @@ flowchart LR
 
 ---
 
+## 十、助手配置与选择器显示（v2.1）
+
+> **设计原则**：单一真实来源 + 后端驱动 + 智能默认。
+> 前端助手选择器显示由后端 API 响应决定，无需前端环境变量硬开关。
+
+### 10.1 配置字段说明
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `type` | string | 是 | 助手类型标识，全局唯一（如 `openclaw`、`qwen3-max`） |
+| `display_name` | string | 是 | 前端显示名称（如 `OpenClaw (GLM-4-Flash)`） |
+| `description` | string | 否 | 助手功能描述，前端下拉选项中展示 |
+| `capabilities` | string[] | 否 | 能力标签数组，前端以 Tag 形式展示（如 `["troubleshooting", "network"]`） |
+| `is_default` | boolean | 否 | 是否为默认助手，前端默认选中 |
+| `enabled` | boolean | 否 | 是否启用，默认 `true` |
+| `warm_pool_size` | int | Pod 模式必填 | 热备池大小，Pod 模式下 Scheduler 维持的最小空闲 Pod 数 |
+| `max_pool_size` | int | Pod 模式必填 | 最大池大小，Pod 模式下允许创建的最大 Pod 数 |
+| `base_url` | string | 直连模式必填 | API 地址（如 `https://dashscope.aliyuncs.com/compatible-mode/v1`） |
+| `provider_api_key` | string | 直连模式必填 | 外部模型 API Key，用于调用外部 LLM API |
+| `gateway_token` | string | Pod 模式必填 | OpenClaw 内部网关鉴权 Token |
+
+### 10.2 选择器显示逻辑
+
+后端通过 `ASSISTANT_SHOW_SELECTOR` 配置控制前端助手选择器的显示：
+
+| 配置值 | 行为 | 适用场景 |
+|--------|------|----------|
+| `auto` | **智能判断**：可用助手数量 > 1 时显示选择器 | 推荐，生产环境默认 |
+| `true` | 强制显示选择器 | 开发/测试环境，需要强制展示 |
+| `false` | 强制隐藏选择器 | 单助手生产环境，简化用户界面 |
+
+**智能判断规则**：
+- 直连模式（`warm_pool_size=0`）的助手**始终视为可用**
+- Pod 模式的助手需要有空闲 Pod 才视为可用
+- 只有**真正可用**的助手才计入可用数量
+
+### 10.3 配置文件与配置方式
+
+#### 配置文件位置
+
+| 文件 | 说明 |
+|------|------|
+| `deploy/helm/hci-platform/values.yaml` | Helm 默认配置 |
+| `deploy/helm/hci-platform/templates/configmap.yaml` | ConfigMap 模板，注入环境变量 |
+| `values-prod.override.yaml`（环境仓库） | 生产环境覆盖配置 |
+
+#### 配置方式
+
+**方式一：Helm values 文件配置（推荐）**
+
+```yaml
+# values-prod.override.yaml
+config:
+  # 助手选择器显示模式
+  assistantShowSelector: "auto"
+  
+  # 助手注册表（JSON 字符串）
+  assistantRegistryJson: |
+    {
+      "productionclaw": {
+        "display_name": "ProductionClaw (GLM)",
+        "description": "专业排障助手，基于 GLM-4-Flash",
+        "capabilities": ["troubleshooting", "hci-knowledge"],
+        "is_default": true,
+        "warm_pool_size": 2,
+        "max_pool_size": 10,
+        "enabled": true,
+        "labels": {"claw-role": "production"}
+      },
+      "qwen3-max": {
+        "display_name": "Qwen3-Max",
+        "description": "深度推理模型，适合复杂故障诊断",
+        "capabilities": ["deep-reasoning", "code-analysis"],
+        "is_default": false,
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "provider_api_key": "${QWEN_API_KEY}",
+        "warm_pool_size": 0,
+        "max_pool_size": 0,
+        "enabled": true
+      }
+    }
+
+secrets:
+  qwenApiKey: "sk-xxx"  # 外部模型 API Key
+```
+
+**方式二：环境变量覆盖（临时调试）**
+
+```bash
+kubectl set env deployment/scheduler-service -n hci-troubleshoot \
+  ASSISTANT_SHOW_SELECTOR=true \
+  ASSISTANT_REGISTRY_JSON='{"openclaw":{"display_name":"OpenClaw","capabilities":["troubleshooting"],"warm_pool_size":2,"max_pool_size":10,"enabled":true}}'
+```
+
+### 10.4 API 响应结构
+
+前端通过 `GET /api/assistants` 获取助手列表和显示决策：
+
+```json
+{
+  "assistants": [
+    {
+      "type": "productionclaw",
+      "display_name": "ProductionClaw (GLM)",
+      "description": "专业排障助手",
+      "capabilities": ["troubleshooting", "hci-knowledge"],
+      "available": true,
+      "is_default": true,
+      "pool_stats": {"idle_count": 2, "total_count": 2}
+    },
+    {
+      "type": "qwen3-max",
+      "display_name": "Qwen3-Max",
+      "description": "深度推理模型",
+      "capabilities": ["deep-reasoning", "code-analysis"],
+      "available": true,
+      "is_default": false,
+      "pool_stats": {}
+    }
+  ],
+  "show_selector": true,
+  "default_assistant": "productionclaw",
+  "selector_mode": "auto"
+}
+```
+
+**字段说明**：
+- `show_selector`：前端是否显示助手选择器
+- `default_assistant`：默认选中的助手类型
+- `selector_mode`：当前生效的显示模式（用于前端调试）
+
+### 10.5 配置示例
+
+#### 多助手场景（显示选择器）
+
+```yaml
+config:
+  assistantShowSelector: "auto"  # 智能模式：多助手自动显示
+  
+  assistantRegistryJson: |
+    {
+      "productionclaw": {
+        "display_name": "ProductionClaw (GLM)",
+        "description": "快速响应排障助手",
+        "capabilities": ["troubleshooting", "hci-knowledge"],
+        "is_default": true,
+        "warm_pool_size": 2,
+        "max_pool_size": 10,
+        "enabled": true
+      },
+      "qwen3-max": {
+        "display_name": "Qwen3-Max",
+        "description": "深度推理，适合复杂诊断",
+        "capabilities": ["deep-reasoning", "code-analysis"],
+        "is_default": false,
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "provider_api_key": "${QWEN_API_KEY}",
+        "warm_pool_size": 0,
+        "max_pool_size": 0,
+        "enabled": true
+      }
+    }
+```
+
+**结果**：前端显示助手选择器，用户可选择 ProductionClaw 或 Qwen3-Max。
+
+#### 单助手场景（自动隐藏选择器）
+
+```yaml
+config:
+  assistantShowSelector: "auto"  # 智能模式：单助手自动隐藏
+  
+  assistantRegistryJson: |
+    {
+      "openclaw": {
+        "display_name": "OpenClaw (GLM)",
+        "description": "通用 AI 排障助手",
+        "capabilities": ["troubleshooting"],
+        "is_default": true,
+        "warm_pool_size": 2,
+        "max_pool_size": 10,
+        "enabled": true
+      }
+    }
+```
+
+**结果**：前端**不显示**助手选择器，用户直接使用 OpenClaw。
+
+#### 强制隐藏（单助手多助手通用）
+
+```yaml
+config:
+  assistantShowSelector: "false"  # 强制隐藏
+```
+
+**结果**：无论有多少助手，前端都不显示选择器。
+
+---
+
 ## 变更历史
 
 | 版本 | 日期 | 说明 |
@@ -522,3 +721,4 @@ flowchart LR
 | v1.1 | 2026-04-16 | 注入 HTTPMetricsMiddleware；pod_pool.py acquire/release 后调用 _update_metrics() 上报 hci_pod_pool_idle/active，修复 WarmPoolExhausted 等告警（可观测性修复 #1 #2） |
 | v1.2 | 2026-04-16 | 新增外部多模型直连模式（PR #158）：`warm_pool_size=0` + `max_pool_size=0` 时 Scheduler 跳过 K8s Pod 分配，直接将请求路由到 `base_url`（OpenAI 兼容端点）；`provider_api_key` 新构造参数优先于全局 `OPENCLAW_API_KEY` 环境变量；已接入 qwen3.5-plus / qwen3-max / glm-4.7 / kimi-k2.5（均通过 dashscope 统一 endpoint）。 |
 | v1.3 | 2026-04-17 | `gateway_token` 与 `provider_api_key` 彻底解耦（PR #158 后续）：`gateway_token` 仅用于 OpenClaw 内部网关鉴权；外部模型通过 `provider_api_key` 字段注入，互不干扰；main.py 从 `ASSISTANT_REGISTRY_JSON` 读取 `provider_api_key` 并传入 `OpenClawAssistant` 构造函数。 |
+| v2.1 | 2026-04-17 | 助手选择器智能显示重构：删除前端 `VITE_SHOW_ASSISTANT_SELECTOR` 环境变量硬开关；改为后端 API 响应驱动（`show_selector` 字段）；新增 `ASSISTANT_SHOW_SELECTOR` 配置项支持 `auto/true/false` 三档控制；新增 `capabilities` 能力标签字段；新增 `is_default` 默认助手字段；`/api/assistants` 返回结构化响应 `{assistants, show_selector, default_assistant, selector_mode}`；values.yaml 扩展配置字段说明。 |
