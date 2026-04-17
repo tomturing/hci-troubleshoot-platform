@@ -209,17 +209,52 @@ class SchedulerService:
         }
 
     def get_available_assistants(self) -> list:
-        """获取可用的AI助手列表"""
-        result = []
+        """获取可用的AI助手列表（向后兼容：返回简单列表格式）"""
+        return self.get_available_assistants_response()["assistants"]
+
+    def get_available_assistants_response(self) -> dict:
+        """获取可用AI助手列表及显示决策（v2.1 结构化响应）"""
+        assistants = []
+        available_count = 0
+        default_assistant = None
+
         for atype, config in settings.assistant_registry.items():
             if config.get("enabled", True):
                 pool = self.pool_manager.get_pool(atype)
                 stats = pool.get_stats() if pool else {}
-                result.append({
+
+                # 判断可用性：直连模式(warm_pool_size=0)始终可用，Pod模式需要有空闲Pod
+                is_direct_mode = config.get("warm_pool_size", 0) == 0 and config.get("max_pool_size", 0) == 0
+                available = is_direct_mode or stats.get("idle_count", 0) > 0
+
+                assistant_info = {
                     "type": atype,
-                    "name": config.get("name", atype),
+                    "display_name": config.get("display_name") or config.get("name") or atype,
                     "description": config.get("description", ""),
-                    "enabled": True,
-                    "pool_stats": stats
-                })
-        return result
+                    "capabilities": config.get("capabilities", []),
+                    "available": available,
+                    "is_default": config.get("is_default", False),
+                    "pool_stats": stats,
+                }
+                assistants.append(assistant_info)
+
+                if available:
+                    available_count += 1
+                    if default_assistant is None or assistant_info["is_default"]:
+                        default_assistant = atype
+
+        # 计算 show_selector
+        mode = settings.get_show_selector_mode()
+        if mode == "true":
+            show_selector = True
+        elif mode == "false":
+            show_selector = False
+        else:  # auto - 多于1个可用助手时显示
+            show_selector = available_count > 1
+
+        return {
+            "assistants": assistants,
+            "show_selector": show_selector,
+            "default_assistant": default_assistant,
+            "selector_mode": mode,
+        }

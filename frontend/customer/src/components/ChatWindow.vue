@@ -227,7 +227,7 @@ function formatDate(d: string): string {
               placeholder="详细描述您遇到的问题..."
             />
           </el-form-item>
-          <!-- AI 助手选择器 (生产环境通过环境变量隐藏) -->
+          <!-- AI 助手选择器（v2.1：后端智能控制显示）-->
           <el-form-item v-if="chatStore.showAssistantSelector" label="AI 助手">
             <el-select
               v-model="chatStore.selectedAssistant"
@@ -242,8 +242,23 @@ function formatDate(d: string): string {
                 :disabled="!assistant.available"
               >
                 <div class="assistant-option">
-                  <span>{{ assistant.display_name }}</span>
+                  <div class="assistant-header">
+                    <span class="assistant-name">{{ assistant.display_name }}</span>
+                    <el-tag v-if="assistant.is_default" size="small" type="success">默认</el-tag>
+                    <el-tag v-if="!assistant.available" type="warning" size="small">暂不可用</el-tag>
+                  </div>
                   <span class="assistant-desc">{{ assistant.description }}</span>
+                  <div class="assistant-capabilities" v-if="assistant.capabilities?.length">
+                    <el-tag
+                      v-for="cap in assistant.capabilities"
+                      :key="cap"
+                      size="small"
+                      type="info"
+                      effect="plain"
+                    >
+                      {{ cap }}
+                    </el-tag>
+                  </div>
                 </div>
               </el-option>
             </el-select>
@@ -641,16 +656,38 @@ function formatDate(d: string): string {
   text-align: center;
 }
 
-/* AI 助手选择器下拉选项 */
+/* AI 助手选择器下拉选项（v2.1 增强）*/
 .assistant-option {
   display: flex;
   flex-direction: column;
+  gap: 4px;
   line-height: 1.4;
+}
+
+.assistant-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.assistant-name {
+  font-weight: 500;
+  color: #303133;
 }
 
 .assistant-desc {
   font-size: 12px;
-  color: #909399;
+  color: #606266;
+}
+
+.assistant-capabilities {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.assistant-capabilities .el-tag {
+  font-size: 11px;
 }
 
 .workspace-drawer :deep(.el-drawer) {

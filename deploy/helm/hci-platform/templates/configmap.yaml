@@ -42,3 +42,5 @@ data:
   LEARNINGCLAW_SERVICE_URL: {{ .Values.config.learningclawServiceUrl | default "http://learningclaw:18789" | quote }}
   # v3.0 多助手注册表（productionclaw 一 Pod 一 Case 模式）
   ASSISTANT_REGISTRY_JSON: {{ (.Values.config.assistantRegistryJson | default $defaultAssistantRegistry) | quote }}
+  # v2.1 助手选择器显示控制（auto/true/false）
+  ASSISTANT_SHOW_SELECTOR: {{ .Values.config.assistantShowSelector | default "auto" | quote }}

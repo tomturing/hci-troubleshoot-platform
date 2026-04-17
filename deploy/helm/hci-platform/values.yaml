@@ -409,6 +409,31 @@ config:
   assistantRegistryJson: ""
   # 注意：assistantRegistryJson 中的 base_url 使用 K8s Service 内部地址
   # 格式：http://<service-name>:<port>
+  #
+  # ======================== assistantRegistryJson 字段说明（v2.1）==================
+  # | 字段           | 类型     | 必填 | 说明                                   |
+  # |----------------|----------|------|----------------------------------------|
+  # | type           | string   | 是   | 助手类型标识，全局唯一                  |
+  # | display_name   | string   | 是   | 前端显示名称                            |
+  # | description    | string   | 否   | 助手功能描述                            |
+  # | capabilities   | string[] | 否   | 能力标签数组，前端显示                  |
+  # | is_default     | boolean  | 否   | 是否为默认助手                          |
+  # | enabled        | boolean  | 否   | 是否启用，默认 true                     |
+  # | warm_pool_size | int      | 否   | 热备池大小，Pod 模式必填                |
+  # | max_pool_size  | int      | 否   | 最大池大小，Pod 模式必填                |
+  # | base_url       | string   | 否   | API 地址，直连模式必填                  |
+  # | provider_api_key| string  | 否   | 外部模型 API Key，直连模式必填          |
+  # | gateway_token  | string   | 否   | OpenClaw 网关 Token，Pod 模式必填       |
+  #
+  # 接入模式说明：
+  # - Pod 模式（warm_pool_size > 0）：Scheduler 在 K8s 启动 AI Pod
+  # - 直连模式（warm_pool_size=0 & max_pool_size=0）：直接调用外部 LLM API
+
+  # ======================== 助手选择器显示控制（v2.1）===========================
+  # 可选值：auto（智能判断）、true（强制显示）、false（强制隐藏）
+  # auto 模式：当可用助手数量 > 1 时自动显示选择器
+  # 生产环境建议使用 auto 或 false（单助手场景自动隐藏）
+  assistantShowSelector: "auto"
 
 # ======================== Phase 3: ReAct 引擎外部依赖配置 ===================
 # SCP 平台 API base URL，格式：http://host:port（通过环境变量注入 conversation-service）

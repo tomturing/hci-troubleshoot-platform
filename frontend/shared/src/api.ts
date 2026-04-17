@@ -14,6 +14,7 @@ import type {
   ConversationResponse,
   MessageResponse,
   AssistantInfo,
+  AssistantsResponse,
 } from './types'
 
 /** 创建带通用拦截器的 Axios 实例 */
@@ -94,9 +95,9 @@ export function createCaseApi(client: AxiosInstance) {
 /** Assistant API 方法集合 */
 export function createAssistantApi(client: AxiosInstance) {
   return {
-    /** 获取可用 AI 助手列表 */
+    /** 获取可用 AI 助手列表（v2.1：结构化响应）*/
     list() {
-      return client.get<AssistantInfo[]>('/assistants/')
+      return client.get<AssistantsResponse>('/assistants/')
     },
   }
 }
