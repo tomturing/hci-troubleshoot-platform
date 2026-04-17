@@ -328,12 +328,13 @@ async def _vision_analyze(
                 }
             ],
             max_tokens=settings.VISION_MAX_TOKENS,
+            temperature=0.0,
             timeout=settings.LLM_TIMEOUT,
         )
         # 详细日志：响应信息
         tokens = response.usage.total_tokens if response.usage else 0
         logger.debug(
-            "Vision OCR API 成功 path=%s tokens=%d finish_reason=%s",
+            "Vision LLM 分析成功 path=%s tokens=%d finish_reason=%s",
             image_path.name,
             tokens,
             response.choices[0].finish_reason if response.choices else "N/A",
@@ -381,7 +382,6 @@ def _parse_full_text(raw: str) -> list[str]:
     lines = [item.strip() for item in items if item.strip()]
     if lines in (["（无文字）"], ["(无文字)"]):
         return []
-    return lines
     return lines
 
 
