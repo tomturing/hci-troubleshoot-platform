@@ -240,6 +240,7 @@ class TestImportBatch:
             patch("kbd.importer.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
             patch("kbd.importer.settings.KB_SERVICE_URL", "http://kb-service"),
             patch("kbd.importer.settings.INTERNAL_API_TOKEN", "test-token"),
+            patch("kbd.importer.ensure_kb_service_reachable", return_value=True),
         ):
             from kbd.importer import import_batch
             result = await import_batch(["36156", "36157"], client=client)
