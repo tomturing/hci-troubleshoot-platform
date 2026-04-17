@@ -79,6 +79,7 @@ class MessageCreate(BaseModel):
     role: MessageRole
     content: str
     metadata: dict | None = None
+    assistant_type: str | None = Field(None, description="AI助手类型，用于动态切换助手")
 
 class MessageResponse(BaseModel):
     """消息响应"""
