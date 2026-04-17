@@ -14,6 +14,7 @@ import type {
   ConversationResponse,
   MessageResponse,
   AssistantInfo,
+  AssistantsResponse,
 } from './types'
 
 /** 创建带通用拦截器的 Axios 实例 */
