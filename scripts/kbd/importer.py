@@ -54,7 +54,7 @@ def _check_kb_service_reachable(timeout: float = 2.0) -> bool:
             # 尝试访问 API docs，快速判断服务是否响应
             resp = client.get(f"{settings.KB_SERVICE_URL}/docs", follow_redirects=True)
             return resp.status_code < 500
-    except (httpx.ConnectError, httpx.TimeoutException, OSError):
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError):
         return False
 
 
