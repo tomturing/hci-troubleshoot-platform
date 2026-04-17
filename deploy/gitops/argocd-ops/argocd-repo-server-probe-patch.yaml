@@ -1,54 +1,80 @@
 # =============================================================================
-# ArgoCD repo-server Probe 优化 StrategicMergePatch
+# ArgoCD repo-server Probe 优化 — PreSync Hook
 #
 # 问题根因：
-#   liveness probe 使用 /healthz?full=true，在 gRPC 阻塞时超时导致 Pod 重启
+#   ArgoCD directory 模式不支持 StrategicMergePatch，需要通过 kubectl patch 应用
 #
 # 解决方案：
-#   - liveness probe → /healthz（只检查进程存活）
+#   使用 PreSync Hook Job 执行 kubectl patch，应用 probe 配置变更
+#
+# Probe 策略：
+#   - liveness probe → /healthz（只检查进程存活，timeout 5秒）
 #   - readiness probe → /healthz?full=true（检查功能可用，timeout 60秒）
 #   - 并行度限制 → 4（减少 gRPC 阻塞概率）
 #
 # 变更历史：
-#   2026-04-17 v1.0 初版（PR #168）
+#   2026-04-17 v1.0 初版（PR #168 → PR #169 修复）
 #
 # 参考：docs/deploy/events/2026-04-17-argocd-repo-server-probe-优化.md
 # =============================================================================
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: batch/v1
+kind: Job
 metadata:
-  name: argocd-repo-server
+  name: argocd-repo-server-probe-patch
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
 spec:
   template:
     spec:
+      serviceAccountName: argocd-repo-server-watchdog
+      restartPolicy: Never
       containers:
-        - name: argocd-repo-server
-          # Liveness Probe：只检查进程存活
-          # 不使用 full=true，避免 gRPC 阻塞导致错误重启
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8084
-              scheme: HTTP
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 3
+        - name: patch
+          image: quay.io/argoproj/argocd:v3.3.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "[PROBE-PATCH] 开始应用 ArgoCD repo-server probe 配置..."
 
-          # Readiness Probe：检查完整功能可用
-          # 使用 full=true，timeout 与 gRPC 连接超时匹配（60秒）
-          readinessProbe:
-            httpGet:
-              path: /healthz?full=true
-              port: 8084
-              scheme: HTTP
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 60
-            failureThreshold: 3
+              # 应用 StrategicMergePatch
+              kubectl patch deployment argocd-repo-server -n argocd --type='json' -p='[
+                {
+                  "op": "replace",
+                  "path": "/spec/template/spec/containers/0/livenessProbe/httpGet/path",
+                  "value": "/healthz"
+                },
+                {
+                  "op": "replace",
+                  "path": "/spec/template/spec/containers/0/livenessProbe/timeoutSeconds",
+                  "value": 5
+                },
+                {
+                  "op": "replace",
+                  "path": "/spec/template/spec/containers/0/readinessProbe/httpGet/path",
+                  "value": "/healthz?full=true"
+                },
+                {
+                  "op": "replace",
+                  "path": "/spec/template/spec/containers/0/readinessProbe/timeoutSeconds",
+                  "value": 60
+                },
+                {
+                  "op": "add",
+                  "path": "/spec/template/spec/containers/0/env/-",
+                  "value": {
+                    "name": "ARGOCD_REPO_SERVER_PARALLELISM_LIMIT",
+                    "value": "4"
+                  }
+                }
+              ]'
 
-          # 并行度限制：减少 gRPC 阻塞概率
-          env:
-            - name: ARGOCD_REPO_SERVER_PARALLELISM_LIMIT
-              value: "4"
+              echo "[PROBE-PATCH] ✓ Probe 配置已应用，等待 Deployment rollout..."
+
+              # 等待 rollout 完成
+              kubectl rollout status deployment/argocd-repo-server -n argocd --timeout=120s
+
+              echo "[PROBE-PATCH] ✓ Deployment rollout 完成"
