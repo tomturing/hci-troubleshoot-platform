@@ -67,7 +67,9 @@ async def run_pipeline(
     case_ids: list[str],
     stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY),
     *,
-    force: bool = False,
+    force_fetch: bool = False,
+    override: bool = False,
+    override_status: list[str] | None = None,
 ) -> dict[str, dict]:
     """
     执行指定 stages 的完整流水线。
@@ -75,7 +77,9 @@ async def run_pipeline(
     Args:
         case_ids: 要处理的案例 ID 列表
         stages: 要执行的阶段（默认全部）
-        force: 强制重新处理已完成的记录
+        force_fetch: 强制重新抓取已完成的案例（仅影响 Stage 1）
+        override: 强制覆盖已存在的记录（仅影响 Stage 3 导入阶段）
+        override_status: 仅覆盖指定状态的记录。None=默认['draft']；['all']=所有状态
 
     Returns:
         各 stage 的统计结果
@@ -102,7 +106,7 @@ async def run_pipeline(
             logger.info("─── Stage 1: 数据抓取 ───")
             t0 = time.monotonic()
             # fetch_batch 现在返回文件存储统计，不依赖数据库写入
-            stats = await fetch_batch(case_ids, force=force)
+            stats = await fetch_batch(case_ids, force=force_fetch)
             all_stats["fetch"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
             logger.info("Stage 1 完成 %s", all_stats["fetch"])
 
@@ -122,7 +126,9 @@ async def run_pipeline(
             # 检查 cache 目录下有 raw.json 且所有图片都有 .desc.txt 或无图片
             ready_ids = await _get_import_ready_ids(case_ids, pool)
             t0 = time.monotonic()
-            stats = await import_batch(ready_ids, pool, force_draft=force, client=http_client)
+            stats = await import_batch(
+            ready_ids, pool, override=override, override_status=override_status, client=http_client
+        )
             all_stats["import"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
             logger.info("Stage 3 完成 %s", all_stats["import"])
 
@@ -190,7 +196,9 @@ async def _get_import_ready_ids(case_ids: list[str], pool: asyncpg.Pool) -> list
 async def run_from_excel(
     stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY),
     *,
-    force: bool = False,
+    force_fetch: bool = False,
+    override: bool = False,
+    override_status: list[str] | None = None,
     limit: int | None = None,
 ) -> dict[str, dict]:
     """从 Excel 文件读取全量 ID 并运行流水线"""
@@ -198,4 +206,10 @@ async def run_from_excel(
     if limit:
         case_ids = case_ids[:limit]
     logger.info("从 Excel 读取 %d 个案例 ID（limit=%s）", len(case_ids), limit)
-    return await run_pipeline(case_ids, stages=stages, force=force)
+    return await run_pipeline(
+        case_ids,
+        stages=stages,
+        force_fetch=force_fetch,
+        override=override,
+        override_status=override_status,
+    )
