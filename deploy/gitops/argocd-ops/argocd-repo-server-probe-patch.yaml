@@ -1,0 +1,54 @@
+# =============================================================================
+# ArgoCD repo-server Probe 优化 StrategicMergePatch
+#
+# 问题根因：
+#   liveness probe 使用 /healthz?full=true，在 gRPC 阻塞时超时导致 Pod 重启
+#
+# 解决方案：
+#   - liveness probe → /healthz（只检查进程存活）
+#   - readiness probe → /healthz?full=true（检查功能可用，timeout 60秒）
+#   - 并行度限制 → 4（减少 gRPC 阻塞概率）
+#
+# 变更历史：
+#   2026-04-17 v1.0 初版（PR #168）
+#
+# 参考：docs/deploy/events/2026-04-17-argocd-repo-server-probe-优化.md
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-repo-server
+  namespace: argocd
+spec:
+  template:
+    spec:
+      containers:
+        - name: argocd-repo-server
+          # Liveness Probe：只检查进程存活
+          # 不使用 full=true，避免 gRPC 阻塞导致错误重启
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8084
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Readiness Probe：检查完整功能可用
+          # 使用 full=true，timeout 与 gRPC 连接超时匹配（60秒）
+          readinessProbe:
+            httpGet:
+              path: /healthz?full=true
+              port: 8084
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 60
+            failureThreshold: 3
+
+          # 并行度限制：减少 gRPC 阻塞概率
+          env:
+            - name: ARGOCD_REPO_SERVER_PARALLELISM_LIMIT
+              value: "4"
