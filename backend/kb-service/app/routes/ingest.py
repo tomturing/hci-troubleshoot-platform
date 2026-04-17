@@ -242,6 +242,11 @@ class KbdIngestResponse(BaseModel):
     message: str | None = Field(None, description="附加消息（如幂等提示）")
 
 
+# KBD 入库接口常量
+DEFAULT_OVERRIDE_STATUS = ["draft"]
+ALL_STATUS_MARKER = ["all", "*"]
+
+
 @router.post("/kbd/ingest", status_code=status.HTTP_201_CREATED)
 async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
     """KBD 条目入库
@@ -310,9 +315,6 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
 
     # 参数解析：向后兼容 force_update → override
     override = body.override or body.force_update
-    # 默认状态过滤：['draft']
-    DEFAULT_OVERRIDE_STATUS = ["draft"]
-    ALL_STATUS_MARKER = ["all", "*"]
 
     if body.override_status is None:
         # 不传 override_status = 默认仅 draft
