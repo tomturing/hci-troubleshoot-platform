@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.4.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.3.3...v2.4.0) (2026-04-17)
+
+
+### ✨ 新功能
+
+* dashscope 多模型直连 ([#158](https://github.com/tomturing/hci-troubleshoot-platform/issues/158)) ([d0dd51a](https://github.com/tomturing/hci-troubleshoot-platform/commit/d0dd51a9942d871836575aec5e77508b9f1acf1f))
+* **gitops:** 引入 App of Apps 分层架构，统一命名规范（D-001） ([#159](https://github.com/tomturing/hci-troubleshoot-platform/issues/159)) ([778eae7](https://github.com/tomturing/hci-troubleshoot-platform/commit/778eae7c3ec1d3437534ff746ef88b84f4b2f700))
+
+
+### 🐛 Bug 修复
+
+* **helm:** 修复 db-migrate hook 死锁缺陷（Revision 命名 + delete-policy） ([#157](https://github.com/tomturing/hci-troubleshoot-platform/issues/157)) ([7b7fc6a](https://github.com/tomturing/hci-troubleshoot-platform/commit/7b7fc6ad61edc51a96df5afb588aebd297f97169))
+* **kb-client:** 修复 categories API 三层 Bug 导致 S0 分类注入为空 ([#156](https://github.com/tomturing/hci-troubleshoot-platform/issues/156)) ([472ba55](https://github.com/tomturing/hci-troubleshoot-platform/commit/472ba55f63d52baf9aa1b5625f1e265299809c43))
+* nginx 动态 DNS 解析解决启动时 upstream 未就绪问题 ([#160](https://github.com/tomturing/hci-troubleshoot-platform/issues/160)) ([1aa014f](https://github.com/tomturing/hci-troubleshoot-platform/commit/1aa014f4b3925f0c3f10bd856383022f0709c617))
+* **obs:** 修复 Tempo→Loki 跳转按钮不显示；固定观测组件镜像版本 ([#154](https://github.com/tomturing/hci-troubleshoot-platform/issues/154)) ([857b0eb](https://github.com/tomturing/hci-troubleshoot-platform/commit/857b0eb2127a5752e071cff9dc5527fbd324da9c))
+
+
+### 📝 文档
+
+* 全量文档同步更新 — App of Apps架构/dashscope多模型/nginx动态DNS (PR [#157](https://github.com/tomturing/hci-troubleshoot-platform/issues/157)-160) ([#161](https://github.com/tomturing/hci-troubleshoot-platform/issues/161)) ([9785846](https://github.com/tomturing/hci-troubleshoot-platform/commit/97858469b55630cf5c3b7e3110ea3b2948b3f137))
+
 ## [2.3.3](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.3.2...v2.3.3) (2026-04-16)
 
 
