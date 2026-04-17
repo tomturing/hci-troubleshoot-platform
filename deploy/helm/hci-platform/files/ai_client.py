@@ -7,12 +7,13 @@ AI Assistant Client - 多类型AI助手客户端抽象层 (v2.0)
 
 import json
 import os
-from ipaddress import ip_address
 from collections.abc import AsyncGenerator
+from ipaddress import ip_address
 from typing import Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import httpx
+from shared.utils.exceptions import AIStreamError, ErrorCode
 from shared.utils.logger import get_logger
 
 logger = get_logger("ai-client")
@@ -47,12 +48,16 @@ class OpenClawAssistant:
         self,
         base_url: str,
         api_key: str | None = None,
+        provider_api_key: str | None = None,
         default_model: str = "openclaw",
         assistant_type: str = "openclaw",
     ):
         self.base_url = base_url.rstrip("/")
+        # gateway_token: 内部 OpenClaw 网关鉴权（Bearer token，由 OPENCLAW_GATEWAY_TOKEN 环境变量或 registry 配置提供）
         self.gateway_token = api_key
-        self.provider_api_key = os.environ.get("OPENCLAW_API_KEY") or api_key
+        # provider_api_key: 外部 LLM 提供商鉴权（优先级: 构造参数 > 环境变量 > gateway_token 兜底）
+        # 通过独立参数传入，与 gateway_token 彻底解耦，避免两者承担同一 api_key 参数的混用问题
+        self.provider_api_key = provider_api_key or os.environ.get("OPENCLAW_API_KEY") or api_key
         self.default_model = default_model
         self.assistant_type = assistant_type
         # 流式 LLM 响应可能较慢，读超时通过环境变量 AI_CLIENT_READ_TIMEOUT_SEC 调整（默认 120s）
@@ -108,12 +113,19 @@ class OpenClawAssistant:
         if fallback_endpoint not in endpoints_to_try:
             endpoints_to_try.append(fallback_endpoint)
 
-        # ZhipuAI v4 API 路径为 /chat/completions（无 /v1/），OpenAI 兼容接口为 /v1/chat/completions
-        # 通过环境变量 AI_COMPLETIONS_PATH 可覆盖（默认兼容 OpenAI）
-        _completions_path = os.environ.get("AI_COMPLETIONS_PATH", "/v1/chat/completions")
+        # ZhipuAI v4 API 路径为 /chat/completions（无 /v1/），OpenAI 兴容接口为 /v1/chat/completions
+        # 根据 endpoint 类型动态选择正确路径，而不是依赖单一环境变量
+        _default_internal_path = "/v1/chat/completions"  # OpenAI 兴容接口（OpenClaw Pod）
+        _default_external_path = "/chat/completions"  # ZhipuAI v4 API
 
         last_error: Exception | None = None
         for idx, endpoint in enumerate(endpoints_to_try, start=1):
+            # 根据 endpoint 类型选择正确的 completions path
+            if self._is_internal_gateway_endpoint(endpoint):
+                _completions_path = os.environ.get("AI_COMPLETIONS_PATH", _default_internal_path)
+            else:
+                # 外部 API（智谱）固定使用 /chat/completions，环境变量可覆盖
+                _completions_path = os.environ.get("AI_COMPLETIONS_PATH_EXTERNAL", _default_external_path)
             url = f"{endpoint}{_completions_path}"
             got_first_token = False
             token = self._resolve_auth_token(endpoint)
@@ -135,14 +147,22 @@ class OpenClawAssistant:
                 async with self.client.stream("POST", url, json=payload, headers=request_headers) as response:
                     if response.status_code != 200:
                         error_body = await response.aread()
+                        error_text = error_body.decode("utf-8", errors="ignore")
                         logger.error(
                             event="ai_error",
                             message=f"OpenClaw returned status {response.status_code}",
                             status=response.status_code,
-                            body=error_body.decode("utf-8", errors="ignore"),
+                            body=error_text,
                             attempt=idx,
                         )
-                        response.raise_for_status()
+
+                        # 解析错误详情并抛出结构化异常
+                        error_detail = self._parse_ai_error(response.status_code, error_text)
+                        raise AIStreamError(
+                            code=error_detail["code"],
+                            message=error_detail["message"],
+                            detail=error_detail["detail"],
+                        )
 
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data: "):
@@ -150,7 +170,18 @@ class OpenClawAssistant:
 
                         data_str = line[6:]  # 跳过 "data: "
                         if data_str.strip() == "[DONE]":
-                            return
+                            # 收到 [DONE] 但没有任何实际内容 → 上游服务可能静默失败
+                            if not got_first_token:
+                                logger.warning(
+                                    event="ai_empty_response",
+                                    message="AI 服务返回空响应（可能 rate limit 或服务异常）",
+                                    url=url,
+                                    attempt=idx,
+                                )
+                                # 空响应：跳出 SSE 循环，让代码进入流结束检查
+                                # （流结束检查会尝试 fallback endpoint 或抛出错误）
+                                break
+                            return  # 正常结束，有内容
 
                         try:
                             data = json.loads(data_str)
@@ -162,7 +193,27 @@ class OpenClawAssistant:
                         except json.JSONDecodeError:
                             continue
 
-                return
+                # 流结束后检查是否有实际内容
+                if not got_first_token:
+                    logger.warning(
+                        event="ai_stream_no_content",
+                        message="AI 流结束但无任何内容",
+                        url=url,
+                        attempt=idx,
+                    )
+                    if idx < len(endpoints_to_try):
+                        continue  # 尝试 fallback endpoint（endpoint 循环的下一个迭代）
+                    else:
+                        raise AIStreamError(
+                            code=ErrorCode.AI_RATE_LIMITED,
+                            message="AI 服务返回空响应，可能是请求频率超限或账户余额不足",
+                            detail="status=200, stream ended without content",
+                        )
+
+                return  # 成功获取内容，退出 endpoint 循环
+            except AIStreamError:
+                # AIStreamError 直接透传，不包装
+                raise
             except Exception as e:
                 last_error = e
                 retriable = self._is_retriable_stream_error(e)
@@ -180,10 +231,137 @@ class OpenClawAssistant:
 
                 if can_retry:
                     continue
-                raise
+                # 将未捕获的异常转换为结构化错误
+                error_detail = self._parse_generic_error(e)
+                raise AIStreamError(
+                    code=error_detail["code"],
+                    message=error_detail["message"],
+                    detail=error_detail["detail"],
+                ) from e
 
         if last_error:
-            raise last_error
+            # 所有端点都失败，抛出结构化错误
+            error_detail = self._parse_generic_error(last_error)
+            raise AIStreamError(
+                code=error_detail["code"],
+                message=error_detail["message"],
+                detail=error_detail["detail"],
+            )
+
+    def _parse_ai_error(self, status_code: int, error_body: str) -> dict:
+        """
+        解析 AI 服务返回的错误响应，生成用户友好的错误信息
+
+        Args:
+            status_code: HTTP 状态码
+            error_body: 错误响应体
+
+        Returns:
+            dict: {code, message, detail} 用于构造 AIStreamError
+        """
+        # 尝试解析 JSON 错误体
+        error_info = {}
+        try:
+            parsed = json.loads(error_body)
+            if "error" in parsed:
+                error_info = parsed["error"]
+        except json.JSONDecodeError:
+            error_info = {"message": error_body[:200]}
+
+        raw_message = error_info.get("message", "")
+        error_type = error_info.get("type", "")
+
+        # 根据状态码和错误类型生成友好消息
+        if status_code == 401:
+            return {
+                "code": ErrorCode.AI_AUTH_FAILED,
+                "message": "AI 服务认证失败，请检查 API 密钥配置",
+                "detail": f"status=401, type={error_type}, message={raw_message}",
+            }
+        elif status_code == 429:
+            # Rate limit - 提取具体原因
+            friendly_msg = "AI 服务请求频率超限"
+            if "余额不足" in raw_message or "充值" in raw_message:
+                friendly_msg = "AI 服务账户余额不足，请充值后重试"
+            elif "rate limit" in raw_message.lower():
+                friendly_msg = "AI 服务请求过于频繁，请稍后重试"
+            return {
+                "code": ErrorCode.AI_RATE_LIMITED,
+                "message": friendly_msg,
+                "detail": f"status=429, type={error_type}, message={raw_message}",
+            }
+        elif status_code == 404:
+            return {
+                "code": ErrorCode.AI_UNAVAILABLE,
+                "message": "AI 服务接口不存在，请检查配置",
+                "detail": f"status=404, body={error_body[:200]}",
+            }
+        elif status_code == 400:
+            return {
+                "code": ErrorCode.AI_UPSTREAM_ERROR,
+                "message": f"AI 服务请求参数错误：{raw_message}",
+                "detail": f"status=400, type={error_type}, message={raw_message}",
+            }
+        elif status_code >= 500:
+            return {
+                "code": ErrorCode.AI_UPSTREAM_ERROR,
+                "message": "AI 上游服务故障，请稍后重试",
+                "detail": f"status={status_code}, type={error_type}, message={raw_message}",
+            }
+        else:
+            return {
+                "code": ErrorCode.AI_UPSTREAM_ERROR,
+                "message": f"AI 服务返回错误（{status_code}）：{raw_message[:100]}",
+                "detail": f"status={status_code}, type={error_type}, message={raw_message}",
+            }
+
+    def _parse_generic_error(self, exc: Exception) -> dict:
+        """
+        解析通用异常，生成用户友好的错误信息
+
+        Args:
+            exc: 原始异常
+
+        Returns:
+            dict: {code, message, detail} 用于构造 AIStreamError
+        """
+        exc_type = type(exc).__name__
+        exc_message = str(exc)
+
+        # HTTP 状态错误
+        if isinstance(exc, httpx.HTTPStatusError):
+            return self._parse_ai_error(exc.response.status_code, exc.response.text)
+
+        # 连接超时
+        if isinstance(exc, httpx.TimeoutException):
+            return {
+                "code": ErrorCode.AI_TIMEOUT,
+                "message": "AI 服务响应超时，请稍后重试",
+                "detail": f"type={exc_type}, message={exc_message}",
+            }
+
+        # 连接错误
+        if isinstance(exc, httpx.ConnectError):
+            return {
+                "code": ErrorCode.AI_UNAVAILABLE,
+                "message": "无法连接到 AI 服务，请检查网络或服务状态",
+                "detail": f"type={exc_type}, message={exc_message}",
+            }
+
+        # 其他网络错误
+        if isinstance(exc, httpx.RequestError):
+            return {
+                "code": ErrorCode.AI_UNAVAILABLE,
+                "message": f"AI 服务网络错误：{exc_message[:100]}",
+                "detail": f"type={exc_type}, message={exc_message}",
+            }
+
+        # 未知错误
+        return {
+            "code": ErrorCode.INTERNAL_ERROR,
+            "message": f"AI 服务内部错误：{exc_message[:100]}",
+            "detail": f"type={exc_type}, message={exc_message}",
+        }
 
     @staticmethod
     def _is_retriable_stream_error(exc: Exception) -> bool:
@@ -275,6 +453,7 @@ class AIAssistantRegistry:
 def create_openclaw_client(
     base_url: str,
     api_key: str | None = None,
+    provider_api_key: str | None = None,
     default_model: str = "openclaw",
     assistant_type: str = "openclaw",
 ) -> OpenClawAssistant:
@@ -282,6 +461,7 @@ def create_openclaw_client(
     return OpenClawAssistant(
         base_url=base_url,
         api_key=api_key,
+        provider_api_key=provider_api_key,
         default_model=default_model,
         assistant_type=assistant_type,
     )
