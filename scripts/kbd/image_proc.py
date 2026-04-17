@@ -84,6 +84,86 @@ def _detect_background(image_path: Path) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 图片压缩预处理（避免大图片超时）
+# ──────────────────────────────────────────────────────────────────────────────
+
+_MAX_VISION_IMAGE_SIZE = 500 * 1024  # 500KB，超过此大小需要压缩
+
+
+def _compress_image_if_needed(image_path: Path) -> tuple[bytes, str]:
+    """
+    如果图片超过 MAX_VISION_IMAGE_SIZE，压缩到合适大小。
+
+    Returns:
+        (image_bytes, mime_type)
+    """
+    try:
+        from PIL import Image  # type: ignore[import-untyped]
+    except ImportError:
+        logger.warning("Pillow 未安装，无法压缩图片，直接使用原图")
+        return image_path.read_bytes(), mimetypes.guess_type(str(image_path))[0] or "image/png"
+
+    original_size = image_path.stat().st_size
+    mime_type = mimetypes.guess_type(str(image_path))[0] or "image/png"
+
+    if original_size <= _MAX_VISION_IMAGE_SIZE:
+        logger.debug("图片大小合适，无需压缩 path=%s size=%dKB", image_path.name, original_size // 1024)
+        return image_path.read_bytes(), mime_type
+
+    logger.info(
+        "图片过大，开始压缩 path=%s original_size=%dKB max_size=%dKB",
+        image_path.name,
+        original_size // 1024,
+        _MAX_VISION_IMAGE_SIZE // 1024,
+    )
+
+    try:
+        img = Image.open(image_path)
+        original_mode = img.mode
+
+        # 转换为 RGB（去除 alpha 通道以减小大小）
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+
+        # 缩放图片：保持宽高比，宽度限制为 2000px
+        max_width = 2000
+        if img.width > max_width:
+            ratio = max_width / img.width
+            new_height = int(img.height * ratio)
+            img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+            logger.debug(
+                "图片缩放完成 path=%s 从 (%d, %d) 到 (%d, %d)",
+                image_path.name,
+                img.width,
+                img.height,
+                max_width,
+                new_height,
+            )
+
+        # 保存为 JPEG（比 PNG 更小）
+        import io
+        buffer = io.BytesIO()
+        quality = 85
+        img.save(buffer, format="JPEG", quality=quality)
+        compressed_data = buffer.getvalue()
+
+        compressed_size = len(compressed_data)
+        compression_ratio = (1 - compressed_size / original_size) * 100
+        logger.info(
+            "图片压缩完成 path=%s original=%dKB compressed=%dKB ratio=%.1f%%",
+            image_path.name,
+            original_size // 1024,
+            compressed_size // 1024,
+            compression_ratio,
+        )
+
+        return compressed_data, "image/jpeg"
+    except Exception as exc:
+        logger.warning("图片压缩失败 path=%s 原因=%s，使用原图", image_path.name, exc)
+        return image_path.read_bytes(), mime_type
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Vision LLM 兜底 OCR
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -106,9 +186,20 @@ async def _vision_ocr_fallback(
     mime_type: str,
 ) -> list[str]:
     """Vision LLM 兜底 OCR，返回文字行列表；失败时返回空列表。"""
-    image_data = image_path.read_bytes()
+    # 压缩预处理（大图片需要压缩以避免超时）
+    image_data, actual_mime = _compress_image_if_needed(image_path)
     b64 = base64.b64encode(image_data).decode("utf-8")
-    data_uri = f"data:{mime_type};base64,{b64}"
+    data_uri = f"data:{actual_mime};base64,{b64}"
+
+    # 详细日志：请求参数
+    logger.info(
+        "Vision OCR 开始 path=%s size=%dKB base64_len=%d model=%s timeout=%ds",
+        image_path.name,
+        len(image_data) // 1024,
+        len(b64),
+        settings.VISION_MODEL,
+        settings.LLM_TIMEOUT,
+    )
 
     try:
         response = await client.chat.completions.create(
@@ -126,15 +217,44 @@ async def _vision_ocr_fallback(
             temperature=0.0,
             timeout=settings.LLM_TIMEOUT,
         )
+        # 详细日志：响应信息
+        tokens = response.usage.total_tokens if response.usage else 0
+        logger.debug(
+            "Vision OCR API 成功 path=%s tokens=%d finish_reason=%s",
+            image_path.name,
+            tokens,
+            response.choices[0].finish_reason if response.choices else "N/A",
+        )
     except Exception as exc:
-        logger.error("Vision 兜底 OCR 失败 path=%s 原因=%s", image_path.name, exc)
+        # 详细日志：错误信息（区分超时和其他错误）
+        exc_type = type(exc).__name__
+        if "Timeout" in exc_type or "timeout" in str(exc).lower():
+            logger.error(
+                "Vision OCR 超时失败 path=%s size=%dKB timeout=%ds 原因=%s",
+                image_path.name,
+                len(image_data) // 1024,
+                settings.LLM_TIMEOUT,
+                exc,
+            )
+        else:
+            logger.error(
+                "Vision OCR 失败 path=%s 原因=%s: %s",
+                image_path.name,
+                exc_type,
+                exc,
+            )
         return []
 
     raw = (response.choices[0].message.content or "").strip()
+    # 详细日志：OCR 内容预览
+    preview = raw[:200] if len(raw) > 200 else raw
+    logger.info("Vision OCR 响应内容（前200字）：%s", preview.replace("\n", "\\n"))
+
     if raw in ("（无文字）", "(无文字)", ""):
+        logger.warning("Vision OCR 返回空结果 path=%s raw='%s'", image_path.name, raw)
         return []
     lines = [line.strip() for line in raw.split("\n") if line.strip()]
-    logger.info("Vision 兜底 OCR 完成 path=%s 行数=%d", image_path.name, len(lines))
+    logger.info("Vision OCR 完成 path=%s 行数=%d", image_path.name, len(lines))
     return lines
 
 
