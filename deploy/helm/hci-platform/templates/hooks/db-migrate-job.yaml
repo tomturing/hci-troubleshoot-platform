@@ -23,7 +23,7 @@ metadata:
     app.kubernetes.io/component: db-migrate
   annotations:
     argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
     helm.sh/hook-weight: "-5"
 spec:
   backoffLimit: 0
