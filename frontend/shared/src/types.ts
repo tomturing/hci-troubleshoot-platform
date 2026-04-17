@@ -95,6 +95,7 @@ export interface MessageCreate {
   role: MessageRole
   content: string
   metadata?: Record<string, unknown>
+  assistant_type?: string  // v2.2: 动态切换助手
 }
 
 /** 会话响应 */
