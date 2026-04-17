@@ -200,6 +200,7 @@ class KbdIngestRequest(BaseModel):
     ai_category_id: str | None = Field(None, max_length=32, description="AI 分类建议 ID")
     ai_category_conf: float | None = Field(None, ge=0.0, le=1.0, description="分类置信度")
     ai_category_reason: str | None = Field(None, description="分类理由")
+    force_update: bool = Field(False, description="强制更新已存在的记录（仅更新 draft 状态）")
 
 
 class KbdIngestResponse(BaseModel):
@@ -263,18 +264,46 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
         existing_entry = existing_result.scalar_one_or_none()
 
         if existing_entry:
-            logger.info(
-                event="kbd_ingest_idempotent",
-                support_id=body.support_id,
-                kbd_id=existing_entry.id,
-                status=existing_entry.status,
-            )
-            return KbdIngestResponse(
-                success=True,
-                kbd_id=existing_entry.id,
-                status=existing_entry.status,
-                message="条目已存在，跳过写入",
-            )
+            # 幂等校验：已存在时根据 force_update 决定行为
+            if body.force_update and existing_entry.status == "draft":
+                # 强制更新 draft 状态的记录
+                existing_entry.title = body.title
+                existing_entry.content_md = body.content_md
+                existing_entry.entry_metadata = body.metadata
+                if body.ai_category_id:
+                    existing_entry.ai_category_id = body.ai_category_id
+                if body.ai_category_conf:
+                    existing_entry.ai_category_conf = body.ai_category_conf
+                if body.ai_category_reason:
+                    existing_entry.ai_category_reason = body.ai_category_reason
+                await session.commit()
+                logger.info(
+                    event="kbd_ingest_updated",
+                    support_id=body.support_id,
+                    kbd_id=existing_entry.id,
+                    content_length=len(body.content_md),
+                )
+                return KbdIngestResponse(
+                    success=True,
+                    kbd_id=existing_entry.id,
+                    status=existing_entry.status,
+                    message="条目已更新",
+                )
+            else:
+                # 不更新，返回幂等提示
+                logger.info(
+                    event="kbd_ingest_idempotent",
+                    support_id=body.support_id,
+                    kbd_id=existing_entry.id,
+                    status=existing_entry.status,
+                    force_update=body.force_update,
+                )
+                return KbdIngestResponse(
+                    success=True,
+                    kbd_id=existing_entry.id,
+                    status=existing_entry.status,
+                    message="条目已存在，跳过写入",
+                )
 
         # 2. 创建新条目
         new_entry = KbdEntry(

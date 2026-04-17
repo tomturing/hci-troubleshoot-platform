@@ -193,6 +193,7 @@ async def _call_kbd_ingest_api(
     ai_category_conf: float | None = None,
     ai_category_reason: str | None = None,
     client: httpx.AsyncClient | None = None,
+    force_update: bool = False,
 ) -> dict[str, Any]:
     """
     调用 kb-service KBD 入库 API。
@@ -207,6 +208,7 @@ async def _call_kbd_ingest_api(
         ai_category_conf: 分类置信度（可选）
         ai_category_reason: 分类理由（可选）
         client: httpx 异步客户端（可选，不传则创建临时客户端）
+        force_update: 强制更新已存在的 draft 记录
 
     Returns:
         {"success": true, "kbd_id": 123, "status": "draft", "message": "..."}
@@ -229,6 +231,7 @@ async def _call_kbd_ingest_api(
         "ai_category_id": ai_category_id,
         "ai_category_conf": ai_category_conf,
         "ai_category_reason": ai_category_reason,
+        "force_update": force_update,
     }
 
     # 使用传入的 client 或创建临时客户端
@@ -300,7 +303,7 @@ async def import_entry(
     Args:
         support_id:  案例 ID（与 raw.json 目录名一致）
         client:      httpx 异步客户端（共享连接）
-        force_draft: 已废弃，由 API 端处理幂等逻辑
+        force_draft: 强制更新已存在的 draft 记录（更新 content_md）
 
     Returns:
         "created" | "updated" | "skipped" | "error" | "idempotent"
@@ -334,6 +337,7 @@ async def import_entry(
             content_md=content_md,
             metadata=metadata,
             client=client,
+            force_update=force_draft,  # force_draft 用于强制更新
         )
 
         success = api_result.get("success", False)
@@ -343,8 +347,11 @@ async def import_entry(
             kbd_id = api_result.get("kbd_id")
             status = api_result.get("status", "draft")
 
-            # 判断是新建还是已存在（幂等）
-            if message and "已存在" in message:
+            # 判断是新建、更新还是已存在（幂等）
+            if message and "已更新" in message:
+                logger.info("案例 %s 已更新（kbd_id=%d status=%s）", support_id, kbd_id, status)
+                return "updated"
+            elif message and "已存在" in message:
                 logger.info("案例 %s 已存在（kbd_id=%d status=%s）", support_id, kbd_id, status)
                 return "idempotent"
             else:
@@ -375,13 +382,13 @@ async def import_batch(
     Args:
         support_ids: 要导入的案例 ID 列表
         _pool: 废弃参数（原 asyncpg 连接池），保留向后兼容
-        force_draft: 已废弃
+        force_draft: 强制更新已存在的 draft 记录
         client: 可选的 httpx 客户端（不传则创建临时客户端）
 
     Returns:
-        {"created": N, "idempotent": N, "skipped": N, "error": N}
+        {"created": N, "updated": N, "idempotent": N, "skipped": N, "error": N}
     """
-    stats: dict[str, int] = {"created": 0, "idempotent": 0, "skipped": 0, "error": 0}
+    stats: dict[str, int] = {"created": 0, "updated": 0, "idempotent": 0, "skipped": 0, "error": 0}
     total = len(support_ids)
 
     if not settings.INTERNAL_API_TOKEN:

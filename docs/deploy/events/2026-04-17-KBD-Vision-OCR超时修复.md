@@ -62,6 +62,19 @@ logger.info("LLM 分析响应内容（前200字）：%s", ...)
 logger.info("LLM 分析完成 type=%s key_count=%d tips_count=%d tokens=%d", ...)
 ```
 
+### 3. API force_update 功能（需重新构建镜像）
+
+**API 端修改（backend/kb-service/app/routes/ingest.py）：**
+- 新增 `force_update` 参数支持更新已存在的 draft 记录
+- `force_update=true` 时更新 content_md、title、metadata
+
+**调用端修改（scripts/kbd/importer.py）：**
+- `_call_kbd_ingest_api()` 新增 `force_update` 参数
+- `import_entry()` 将 `force_draft` 传递给 API 作为 `force_update`
+- 新增 "updated" 返回状态
+
+**注意：** kb-service 镜像需要重新构建才能使 API force_update 功能生效。当前通过数据库直接更新解决。
+
 ## 修复后效果
 
 ```
@@ -84,6 +97,12 @@ Stats: {'done': 2, 'failed': 0, 'skipped': 0}
 |------|---------|------|
 | `scripts/kbd/image_proc.py` | 功能增强 | 图片压缩预处理 + 详细日志 |
 | `scripts/kbd/analyzer.py` | 日志增强 | LLM 分析详细日志 |
+| `backend/kb-service/app/routes/ingest.py` | 功能增强 | API force_update 支持（需重新构建镜像） |
+| `scripts/kbd/importer.py` | 功能增强 | 调用端 force_update 支持 |
+
+## 后续任务
+
+- 重新构建 kb-service 镜像以启用 force_update API 功能
 
 ## 关联 PIT
 
