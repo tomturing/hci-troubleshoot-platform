@@ -37,19 +37,29 @@ class PodResponse(BaseModel):
     endpoint: str | None = None
 
 class AssistantInfo(BaseModel):
+    """AI助手信息（v2.1 扩展）"""
     type: str
-    name: str
-    description: str
-    enabled: bool
+    display_name: str = Field(description="前端显示名称")
+    description: str = ""
+    capabilities: list[str] = Field(default_factory=list, description="能力标签数组")
+    available: bool = True
+    is_default: bool = False
     pool_stats: dict = {}
 
+class AssistantsResponse(BaseModel):
+    """AI助手列表响应（v2.1 结构化）"""
+    assistants: list[AssistantInfo]
+    show_selector: bool = Field(description="是否显示助手选择器")
+    default_assistant: str | None = Field(description="默认助手类型")
+    selector_mode: str = Field(description="选择器显示模式: auto/true/false")
 
-@router.get("/assistants", response_model=list[AssistantInfo])
+
+@router.get("/assistants", response_model=AssistantsResponse)
 async def list_assistants(
     service: SchedulerService = Depends(get_service)
 ):
-    """获取可用的AI助手列表"""
-    return service.get_available_assistants()
+    """获取可用的AI助手列表（v2.1 结构化响应）"""
+    return service.get_available_assistants_response()
 
 
 @router.post("/pods/allocate", response_model=PodResponse)

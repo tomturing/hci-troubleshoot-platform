@@ -33,12 +33,22 @@ export interface CaseCreate {
   assistant_type?: string  // v2.0: 可选，不传则系统自动分配
 }
 
-/** AI 助手信息 */
+/** AI 助手信息（v2.1 扩展）*/
 export interface AssistantInfo {
   type: string
   display_name: string
   description: string
+  capabilities: string[]  // 能力标签数组
   available: boolean
+  is_default?: boolean    // 是否为默认助手
+}
+
+/** AI 助手列表响应（v2.1 结构化）*/
+export interface AssistantsResponse {
+  assistants: AssistantInfo[]
+  show_selector: boolean       // 是否显示助手选择器
+  default_assistant: string | null  // 默认助手类型
+  selector_mode: string        // 选择器显示模式: auto/true/false
 }
 
 /** 工单分页列表响应 */

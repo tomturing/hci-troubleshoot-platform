@@ -47,6 +47,12 @@ class Settings(BaseSettings):
         description="AI助手注册表，JSON格式"
     )
 
+    # v2.1：助手选择器显示控制
+    ASSISTANT_SHOW_SELECTOR: str = Field(
+        default="auto",
+        description="助手选择器显示模式: auto(智能判断多于1个可用助手时显示), true(强制显示), false(强制隐藏)"
+    )
+
     @property
     def assistant_registry(self) -> dict[str, Any]:
         """解析AI助手注册表"""
@@ -54,6 +60,13 @@ class Settings(BaseSettings):
             return json.loads(self.ASSISTANT_REGISTRY_JSON)
         except json.JSONDecodeError:
             return DEFAULT_ASSISTANT_REGISTRY
+
+    def get_show_selector_mode(self) -> str:
+        """获取助手选择器显示模式"""
+        mode = self.ASSISTANT_SHOW_SELECTOR.lower()
+        if mode not in ("auto", "true", "false"):
+            return "auto"
+        return mode
 
     # 向后兼容：保留旧配置项（已弃用）
     OPENCLAW_IMAGE: str = "openclaw:latest"

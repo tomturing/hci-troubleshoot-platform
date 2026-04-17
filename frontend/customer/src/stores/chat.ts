@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, nextTick } from 'vue'
 import { createApiClient, createCaseApi, createConversationApi, createAssistantApi } from '@hci/shared'
-import type { CaseResponse, MessageResponse, AssistantInfo } from '@hci/shared'
+import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
 import { checkBridgeRunning, type BridgeStatus } from '@/api/terminal'
@@ -33,8 +33,9 @@ export const useChatStore = defineStore('chat', () => {
   const assistantApi = createAssistantApi(apiClient)
   const evaluateApi = createEvaluateApi(apiClient)
 
-  // 是否显示助手选择器 (生产环境隐藏)
-  const showAssistantSelector = import.meta.env.VITE_SHOW_ASSISTANT_SELECTOR !== 'false'
+  // 是否显示助手选择器（v2.1：从后端 API 响应获取）
+  const showAssistantSelector = ref(false)
+  const defaultAssistant = ref<string | null>(null)
 
   // 状态
   const messages = ref<ChatMessage[]>([])
@@ -101,27 +102,43 @@ export const useChatStore = defineStore('chat', () => {
     return currentCase.value !== null && !hasActiveCase.value
   })
 
-  /** 获取可用 AI 助手列表 */
+  /** 获取可用 AI 助手列表（v2.1：从响应获取显示决策）*/
   async function fetchAssistants() {
     try {
       const res = await assistantApi.list()
-      assistants.value = (res.data as any[]).map((item) => ({
+      const data = res.data as AssistantsResponse
+
+      // 从响应中获取显示决策
+      showAssistantSelector.value = data.show_selector ?? false
+      defaultAssistant.value = data.default_assistant
+
+      assistants.value = (data.assistants || []).map((item: AssistantInfo) => ({
         type: item.type,
-        display_name: item.display_name ?? item.name ?? item.type,
+        display_name: item.display_name ?? item.type,
         description: item.description ?? '',
-        available: item.available ?? item.enabled ?? true,
+        capabilities: item.capabilities ?? [],
+        available: item.available ?? true,
+        is_default: item.is_default ?? false,
       }))
-      const firstAvailable = assistants.value.find(a => a.available)
-      if (firstAvailable) {
-        selectedAssistant.value = firstAvailable.type
+
+      // 选择默认助手或第一个可用助手
+      const defaultOrFirst = assistants.value.find(a => a.is_default && a.available)
+        || assistants.value.find(a => a.available)
+      if (defaultOrFirst) {
+        selectedAssistant.value = defaultOrFirst.type
       }
     } catch (e) {
       console.warn('获取助手列表失败，使用默认值', e)
+      // 降级响应：单助手，不显示选择器
+      showAssistantSelector.value = false
+      defaultAssistant.value = 'openclaw'
       assistants.value = [{
         type: 'openclaw',
         display_name: 'OpenClaw (GLM)',
         description: '基于智谱 GLM 模型的 AI 排障助手',
+        capabilities: ['troubleshooting'],
         available: true,
+        is_default: true,
       }]
       selectedAssistant.value = 'openclaw'
     }
