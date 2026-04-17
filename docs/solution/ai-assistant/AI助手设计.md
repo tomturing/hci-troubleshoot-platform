@@ -501,12 +501,16 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    CVS["Conversation Service"] -->|"POST /v1/chat/completions\n{messages, stream=true}"| AI["AI Pod\n(OpenClaw/NaboBot/...)"]
+    CVS["Conversation Service"] -->|"POST /v1/chat/completions\n{messages, stream=true}"| AI["AI Pod / 外部模型\n(OpenClaw / dashscope / kimi...)"]
     AI -->|"SSE: data: {delta: {content: 'token'}}\ndata: [DONE]"| CVS
-    ENV["ENV 注入\n*_API_KEY / GATEWAY_TOKEN\nASSISTANT_TYPE"] -.->|"容器启动时注入"| AI
+    ENV["ASSISTANT_REGISTRY_JSON\n- gateway_token（OpenClaw 内部网关）\n- provider_api_key（外部模型直连）\n- warm_pool_size=0 → 跳过 Pod 分配"] -.->|"Helm values 注入"| AI
 ```
 
-*数据流图版本: 1.0 | 补充日期: 2026-04-06*
+> **两种接入模式**（v1.2+）：
+> - **Pod 模式**（`warm_pool_size > 0`）：Scheduler 在 K8s 启动 AI Pod，Conversation Service 经 Scheduler 获取 endpoint；`gateway_token` 鉴权。
+> - **直连模式**（`warm_pool_size=0 & max_pool_size=0`）：Scheduler 直接返回 `base_url`，Conversation Service 以 `provider_api_key` 直接调用外部 LLM API（OpenAI 兼容）；当前 dashscope 四模型均使用此模式。
+
+*数据流图版本: 1.1 | 更新日期: 2026-04-17*
 
 
 ---
@@ -516,3 +520,5 @@ flowchart LR
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v1.1 | 2026-04-16 | 注入 HTTPMetricsMiddleware；pod_pool.py acquire/release 后调用 _update_metrics() 上报 hci_pod_pool_idle/active，修复 WarmPoolExhausted 等告警（可观测性修复 #1 #2） |
+| v1.2 | 2026-04-16 | 新增外部多模型直连模式（PR #158）：`warm_pool_size=0` + `max_pool_size=0` 时 Scheduler 跳过 K8s Pod 分配，直接将请求路由到 `base_url`（OpenAI 兼容端点）；`provider_api_key` 新构造参数优先于全局 `OPENCLAW_API_KEY` 环境变量；已接入 qwen3.5-plus / qwen3-max / glm-4.7 / kimi-k2.5（均通过 dashscope 统一 endpoint）。 |
+| v1.3 | 2026-04-17 | `gateway_token` 与 `provider_api_key` 彻底解耦（PR #158 后续）：`gateway_token` 仅用于 OpenClaw 内部网关鉴权；外部模型通过 `provider_api_key` 字段注入，互不干扰；main.py 从 `ASSISTANT_REGISTRY_JSON` 读取 `provider_api_key` 并传入 `OpenClawAssistant` 构造函数。 |
