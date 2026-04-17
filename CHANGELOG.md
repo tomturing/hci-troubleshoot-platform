@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.4.1](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.4.0...v2.4.1) (2026-04-17)
+
+
+### 🐛 Bug 修复
+
+* **db-password-check:** 修复 Secret 名称依赖错误，采用业界最佳实践 ([#167](https://github.com/tomturing/hci-troubleshoot-platform/issues/167)) ([ac60f71](https://github.com/tomturing/hci-troubleshoot-platform/commit/ac60f712c18daaf80055dac128f0227f12c5663e))
+* **helm:** 修复 regexReplaceAll pipeline 参数顺序错误导致 Job 名为空 ([#162](https://github.com/tomturing/hci-troubleshoot-platform/issues/162)) ([e6075c5](https://github.com/tomturing/hci-troubleshoot-platform/commit/e6075c5c5cb75f686d62e74daa2c16b995aea1d9))
+* **helm:** 同步 ai_client.py 到 ConfigMap 版本，修复 provider_api_key 参数缺失 ([#165](https://github.com/tomturing/hci-troubleshoot-platform/issues/165)) ([33bb311](https://github.com/tomturing/hci-troubleshoot-platform/commit/33bb3113ac5a8a2a21d649850f31da655e42eaa8))
+* **helm:** 彻底移除 aiClientPatch 双重维护机制 ([#166](https://github.com/tomturing/hci-troubleshoot-platform/issues/166)) ([28b0ed7](https://github.com/tomturing/hci-troubleshoot-platform/commit/28b0ed722644d2cde29f3e137664e33541ccfda1))
+* **helm:** 移除 HookSucceeded delete-policy 避免 ArgoCD sync 卡住 ([#164](https://github.com/tomturing/hci-troubleshoot-platform/issues/164)) ([ba437f2](https://github.com/tomturing/hci-troubleshoot-platform/commit/ba437f22605b38348236b4be57d6ab21c6c0fc0a))
+
 ## [2.4.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.3.3...v2.4.0) (2026-04-17)
 
 
