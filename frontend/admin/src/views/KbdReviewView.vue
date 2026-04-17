@@ -75,6 +75,8 @@ interface ScreenshotFields {
   key: string[]
   /** 排障建议（TIPS 字段） */
   tips: string[]
+  /** 语义描述（DESCRIPTION 字段，v3 格式）：Vision LLM 生成的图片语义摘要，供 RAG 召回 */
+  description: string
   // ── v1 兼容字段（旧格式 0-4 字段，新条目不再写入）────────────────────────
   intro: string
   bgColorText: string
@@ -483,6 +485,7 @@ function parseScreenshotBlockV2(lines: string[]): ScreenshotSegment {
   const fullText: string[] = []
   const key: string[] = []
   const tips: string[] = []
+  const descriptionLines: string[] = []
 
   for (const line of lines) {
     // 剥离 "> " 前缀（v2 格式每行都以 "> " 开头）
@@ -499,6 +502,8 @@ function parseScreenshotBlockV2(lines: string[]): ScreenshotSegment {
       section = 'key'
     } else if (/^TIPS:$/.test(stripped)) {
       section = 'tips'
+    } else if (/^DESCRIPTION:$/.test(stripped)) {
+      section = 'description'
     } else if (/^-\s/.test(stripped)) {
       const item = stripped.slice(2).trim()
       // 跳过占位符
@@ -506,6 +511,11 @@ function parseScreenshotBlockV2(lines: string[]): ScreenshotSegment {
       if (section === 'full') fullText.push(item)
       else if (section === 'key') key.push(item)
       else if (section === 'tips') tips.push(item)
+    } else if (section === 'description') {
+      // DESCRIPTION 是纯文字段落（非 - 格式），跳过占位符
+      if (stripped !== '（无描述）' && stripped !== '(无描述)') {
+        descriptionLines.push(stripped)
+      }
     }
   }
 
@@ -525,6 +535,7 @@ function parseScreenshotBlockV2(lines: string[]): ScreenshotSegment {
     visibleContent,
     key,
     tips,
+    description: descriptionLines.join('\n'),
     // v1 兼容字段（v2 条目不使用，填充 v2 值兼容旧模板引用）
     intro: '',
     bgColorText: background,
@@ -538,7 +549,7 @@ function parseScreenshotBlockV2(lines: string[]): ScreenshotSegment {
 /** 将截图说明行组解析为 ScreenshotSegment（自动检测 v1/v2 格式） */
 function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
   // 检测格式版本：v2 格式的行以 "> BACKGROUND:" 或 "> TYPE:" 等开头
-  const isV2 = lines.some(l => /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS):/.test(l))
+  const isV2 = lines.some(l => /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(l))
   if (isV2) return parseScreenshotBlockV2(lines)
 
   // ── v1 兼容解析（旧格式 0-4 字段）──────────────────────────────────────────
@@ -609,6 +620,7 @@ function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
     fullText: visibleContent,
     key: errorContent,
     tips: techTips,
+    description: '',
   }
   const typeInfo = detectScreenshotType(fields)
   return {
@@ -661,8 +673,8 @@ function parseContentMd(md: string): ContentSegment[] {
       const trimmed = line.trim()
       // 截图块内的行：空行、bullet、字段行（v1 数字字段 或 v2 关键词 section）
       const isFieldLine = /^\d+[.、]\s+\*\*/.test(trimmed)
-        || /^(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS):/.test(trimmed)
-        || /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS):/.test(trimmed)
+        || /^(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(trimmed)
+        || /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(trimmed)
       const isBulletLine = /^-\s/.test(trimmed) || /^\s{2,}-\s/.test(line)
         || /^>\s*-\s/.test(line)  // v2 格式："> - item"
       const isBlank = trimmed === ''
@@ -1061,16 +1073,17 @@ onMounted(() => {
                     </ul>
                     <span v-else class="ss-empty">无</span>
                   </div>
-                  <!-- 2. 类型相关关键内容（标签由后端 TYPE 决定）-->
+                  <!-- 2. 语义描述（v3 DESCRIPTION）或类型关键内容（v2 KEY）-->
                   <div class="ss-field">
-                    <div class="ss-field-label">2. <strong>{{ seg.errorLabel }}</strong></div>
-                    <ul v-if="seg.fields.key.length" class="ss-field-list">
+                    <div class="ss-field-label">2. <strong>{{ seg.fields.description ? '语义描述' : seg.errorLabel }}</strong></div>
+                    <p v-if="seg.fields.description" class="ss-description">{{ seg.fields.description }}</p>
+                    <ul v-else-if="seg.fields.key.length" class="ss-field-list">
                       <li v-for="(item, j) in seg.fields.key" :key="j">{{ item }}</li>
                     </ul>
                     <span v-else class="ss-empty">无</span>
                   </div>
-                  <!-- 3. 排障建议 -->
-                  <div class="ss-field">
+                  <!-- 3. 排障建议（v2 TIPS，v3 无此字段时隐藏）-->
+                  <div v-if="!seg.fields.description || seg.fields.tips.length" class="ss-field">
                     <div class="ss-field-label">3. <strong>排障建议</strong></div>
                     <ul v-if="seg.fields.tips.length" class="ss-field-list">
                       <li v-for="(item, j) in seg.fields.tips" :key="j">{{ item }}</li>

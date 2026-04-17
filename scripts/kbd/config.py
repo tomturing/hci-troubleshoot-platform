@@ -79,11 +79,6 @@ class KbdSettings(BaseSettings):
         default="qwen3.5-plus",
         description="Vision 兜底 OCR 模型（需支持 image_url 输入，DashScope qwen3.5-plus）",
     )
-    # 截图分析 LLM（文本模式，接收 PaddleOCR 文字做类型判断+关键内容提取+排障建议）
-    ANALYSIS_MODEL: str = Field(
-        default="qwen3-max-2026-01-23",
-        description="截图分析 LLM，接收纯文本进行智能分析（DashScope qwen3-max）",
-    )
     # 分类模型（保留兼容）
     CLASSIFY_MODEL: str = Field(
         default="qwen3.5-plus",
@@ -91,6 +86,8 @@ class KbdSettings(BaseSettings):
     )
     # LLM 请求超时（秒）
     LLM_TIMEOUT: float = Field(default=60.0)
+    # Vision 输出最大 token 数（DashScope qwen3.5-plus 支持 2048；BigModel glm-4v-flash 上限 1024）
+    VISION_MAX_TOKENS: int = Field(default=2048, ge=128, le=8192)
     # Vision 并发数（控制每个案例的图片并行处理数）
     VISION_CONCURRENCY: int = Field(default=3, ge=1, le=10)
 
