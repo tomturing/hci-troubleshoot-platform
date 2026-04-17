@@ -102,12 +102,30 @@ def _get_case_ids(args: argparse.Namespace) -> list[str]:
 async def _cmd_pipeline(args: argparse.Namespace) -> None:
     """执行完整流水线（或指定 stages）"""
     stages = _parse_stages(getattr(args, "stages", None))
+
+    # 解析 override_status 参数（逗号分隔的字符串 → list）
+    override_status = None
+    if args.override_status:
+        override_status = [s.strip() for s in args.override_status.split(",")]
+
     if args.excel and not args.ids and not args.id_file:
-        stats = await run_from_excel(stages=stages, force=args.force, limit=args.limit)
+        stats = await run_from_excel(
+            stages=stages,
+            force_fetch=args.force_fetch,
+            override=args.override,
+            override_status=override_status,
+            limit=args.limit,
+        )
     else:
         case_ids = _get_case_ids(args)
         from .pipeline import run_pipeline
-        stats = await run_pipeline(case_ids, stages=stages, force=args.force)
+        stats = await run_pipeline(
+            case_ids,
+            stages=stages,
+            force_fetch=args.force_fetch,
+            override=args.override,
+            override_status=override_status,
+        )
     print("\n─── 流水线完成 ───")
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
@@ -183,8 +201,19 @@ async def _cmd_import(args: argparse.Namespace) -> None:
         print("没有已准备好可导入的案例")
         return
 
+    # 解析 override_status 参数（逗号分隔的字符串 → list）
+    override_status = None
+    if args.override_status:
+        override_status = [s.strip() for s in args.override_status.split(",")]
+
     async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
-        stats = await import_batch(ready_ids, None, force_draft=args.force, client=client)
+        stats = await import_batch(
+            ready_ids,
+            None,
+            override=args.override,
+            override_status=override_status,
+            client=client,
+        )
         print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
@@ -279,7 +308,6 @@ def build_parser() -> argparse.ArgumentParser:
         group.add_argument("--ids", help="逗号分隔的案例 ID，如 34977,36179")
         group.add_argument("--id-file", help="每行一个 ID 的文本文件路径")
         p.add_argument("--limit", type=int, default=None, help="最多处理 N 条（测试用）")
-        p.add_argument("--force", action="store_true", help="强制重新处理已完成的记录")
 
     # pipeline 子命令
     p_pipeline = sub.add_parser("pipeline", help="运行完整流水线（或指定 stages）")
@@ -287,6 +315,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_pipeline.add_argument(
         "--stages",
         help="指定要运行的 stages（逗号分隔）：fetch,vision,import,classify",
+    )
+    # 抓取阶段参数
+    p_pipeline.add_argument(
+        "--force-fetch",
+        action="store_true",
+        help="强制重新抓取已完成的案例（仅影响 Stage 1）",
+    )
+    # 导入阶段参数
+    p_pipeline.add_argument(
+        "--override",
+        action="store_true",
+        help="强制覆盖已存在的记录（仅影响 Stage 3 导入阶段）",
+    )
+    p_pipeline.add_argument(
+        "--override-status",
+        type=str,
+        default=None,
+        help=(
+            "仅覆盖指定状态的记录（逗号分隔）。"
+            "不传=默认仅draft；'all'=所有状态；'draft,published'=仅指定状态"
+        ),
     )
 
     # 单独 stage 子命令
@@ -298,6 +347,29 @@ def build_parser() -> argparse.ArgumentParser:
     ]:
         p_sub = sub.add_parser(name, help=help_text)
         _add_common(p_sub)
+        # fetch 子命令的 force 参数
+        if name == "fetch":
+            p_sub.add_argument(
+                "--force",
+                action="store_true",
+                help="强制重新抓取已完成的案例",
+            )
+        # import 子命令的 override 参数
+        if name == "import":
+            p_sub.add_argument(
+                "--override",
+                action="store_true",
+                help="强制覆盖已存在的记录",
+            )
+            p_sub.add_argument(
+                "--override-status",
+                type=str,
+                default=None,
+                help=(
+                    "仅覆盖指定状态的记录（逗号分隔）。"
+                    "不传=默认仅draft；'all'=所有状态；'draft,published'=仅指定状态"
+                ),
+            )
 
     # review-list 子命令
     p_review = sub.add_parser("review-list", help="列出待审核案例")

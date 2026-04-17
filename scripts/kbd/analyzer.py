@@ -140,6 +140,15 @@ async def analyze_screenshot(
     Returns:
         AnalysisResult(type, key, tips)
     """
+    # 详细日志：输入参数
+    logger.info(
+        "LLM 分析开始 background=%s text_lines=%d model=%s timeout=%ds",
+        background,
+        len(full_text),
+        model,
+        timeout,
+    )
+
     if not full_text:
         # full_text 为空时用背景色兜底推断类型，避免黑色背景日志错误归类为"其他截图"
         if background == "黑色":
@@ -156,6 +165,9 @@ async def analyze_screenshot(
         line_count=len(full_text),
         full_text_block=full_text_block,
     )
+    # 详细日志：Prompt 预览
+    prompt_preview = prompt[:300] if len(prompt) > 300 else prompt
+    logger.debug("LLM 分析 Prompt（前300字）：%s", prompt_preview.replace("\n", "\\n"))
 
     try:
         response = await client.chat.completions.create(
@@ -165,17 +177,44 @@ async def analyze_screenshot(
             temperature=0.1,
             timeout=timeout,
         )
+        # 详细日志：响应信息
+        tokens = response.usage.total_tokens if response.usage else 0
+        prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+        completion_tokens = response.usage.completion_tokens if response.usage else 0
+        logger.debug(
+            "LLM 分析 API 成功 tokens=%d (prompt=%d, completion=%d)",
+            tokens,
+            prompt_tokens,
+            completion_tokens,
+        )
     except Exception as exc:
-        logger.error("LLM 分析调用失败 model=%s 原因=%s", model, exc)
+        exc_type = type(exc).__name__
+        if "Timeout" in exc_type or "timeout" in str(exc).lower():
+            logger.error(
+                "LLM 分析超时失败 model=%s timeout=%ds 原因=%s",
+                model,
+                timeout,
+                exc,
+            )
+        else:
+            logger.error(
+                "LLM 分析失败 model=%s 原因=%s: %s",
+                model,
+                exc_type,
+                exc,
+            )
         return AnalysisResult()
 
     raw = (response.choices[0].message.content or "").strip()
-    logger.debug("LLM 分析原始输出（前200字）：%s", raw[:200])
+    # 详细日志：响应内容预览
+    logger.info("LLM 分析响应内容（前200字）：%s", raw[:200].replace("\n", "\\n"))
 
     result = _parse_analysis(raw)
-    tokens = response.usage.total_tokens if response.usage else 0
-    logger.debug(
+    logger.info(
         "LLM 分析完成 type=%s key_count=%d tips_count=%d tokens=%d",
-        result.type, len(result.key), len(result.tips), tokens,
+        result.type,
+        len(result.key),
+        len(result.tips),
+        tokens if response.usage else 0,
     )
     return result

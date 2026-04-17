@@ -193,6 +193,8 @@ async def _call_kbd_ingest_api(
     ai_category_conf: float | None = None,
     ai_category_reason: str | None = None,
     client: httpx.AsyncClient | None = None,
+    override: bool = False,
+    override_status: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     调用 kb-service KBD 入库 API。
@@ -207,9 +209,11 @@ async def _call_kbd_ingest_api(
         ai_category_conf: 分类置信度（可选）
         ai_category_reason: 分类理由（可选）
         client: httpx 异步客户端（可选，不传则创建临时客户端）
+        override: 强制覆盖已存在的记录
+        override_status: 仅覆盖指定状态的记录。None=默认['draft']；['all']=所有状态
 
     Returns:
-        {"success": true, "kbd_id": 123, "status": "draft", "message": "..."}
+        {"success": true, "kbd_id": 123, "status": "draft", "action": "created", "message": "..."}
 
     Raises:
         httpx.HTTPStatusError: API 返回非 2xx 状态码
@@ -229,6 +233,8 @@ async def _call_kbd_ingest_api(
         "ai_category_id": ai_category_id,
         "ai_category_conf": ai_category_conf,
         "ai_category_reason": ai_category_reason,
+        "override": override,
+        "override_status": override_status,
     }
 
     # 使用传入的 client 或创建临时客户端
@@ -292,18 +298,20 @@ async def import_entry(
     support_id: str,
     client: httpx.AsyncClient,
     *,
-    force_draft: bool = False,
+    override: bool = False,
+    override_status: list[str] | None = None,
 ) -> str:
     """
     将单个案例的处理结果通过 API 写入 kbd_entry。
 
     Args:
-        support_id:  案例 ID（与 raw.json 目录名一致）
-        client:      httpx 异步客户端（共享连接）
-        force_draft: 已废弃，由 API 端处理幂等逻辑
+        support_id:      案例 ID（与 raw.json 目录名一致）
+        client:          httpx 异步客户端（共享连接）
+        override:        强制覆盖已存在的记录
+        override_status: 仅覆盖指定状态的记录。None=默认['draft']；['all']=所有状态
 
     Returns:
-        "created" | "updated" | "skipped" | "error" | "idempotent"
+        "created" | "overridden" | "skipped" | "error"
     """
     from .converter import convert_case_with_meta
 
@@ -334,21 +342,31 @@ async def import_entry(
             content_md=content_md,
             metadata=metadata,
             client=client,
+            override=override,
+            override_status=override_status,
         )
 
         success = api_result.get("success", False)
+        action = api_result.get("action", "")
         message = api_result.get("message", "")
 
         if success:
             kbd_id = api_result.get("kbd_id")
             status = api_result.get("status", "draft")
 
-            # 判断是新建还是已存在（幂等）
-            if message and "已存在" in message:
-                logger.info("案例 %s 已存在（kbd_id=%d status=%s）", support_id, kbd_id, status)
-                return "idempotent"
+            # 根据 action 判断结果
+            if action == "created":
+                logger.info("案例 %s 已创建（kbd_id=%d status=%s）", support_id, kbd_id, status)
+                return "created"
+            elif action == "overridden":
+                logger.info("案例 %s 已覆盖（kbd_id=%d status=%s）", support_id, kbd_id, status)
+                return "overridden"
+            elif action == "skipped":
+                logger.info("案例 %s 已跳过（kbd_id=%d status=%s reason=%s）", support_id, kbd_id, status, message)
+                return "skipped"
             else:
-                logger.info("案例 %s 已入库（kbd_id=%d status=%s）", support_id, kbd_id, status)
+                # 兜底：根据 message 判断
+                logger.info("案例 %s 已入库（kbd_id=%d status=%s action=%s）", support_id, kbd_id, status, action)
                 return "created"
         else:
             logger.error("案例 %s 入库失败: %s", support_id, message)
@@ -366,7 +384,8 @@ async def import_batch(
     support_ids: list[str],
     _pool: Any = None,  # 废弃参数，保留兼容性
     *,
-    force_draft: bool = False,
+    override: bool = False,
+    override_status: list[str] | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, int]:
     """
@@ -375,13 +394,14 @@ async def import_batch(
     Args:
         support_ids: 要导入的案例 ID 列表
         _pool: 废弃参数（原 asyncpg 连接池），保留向后兼容
-        force_draft: 已废弃
+        override: 强制覆盖已存在的记录
+        override_status: 仅覆盖指定状态的记录。None=默认['draft']；['all']=所有状态
         client: 可选的 httpx 客户端（不传则创建临时客户端）
 
     Returns:
-        {"created": N, "idempotent": N, "skipped": N, "error": N}
+        {"created": N, "overridden": N, "skipped": N, "error": N}
     """
-    stats: dict[str, int] = {"created": 0, "idempotent": 0, "skipped": 0, "error": 0}
+    stats: dict[str, int] = {"created": 0, "overridden": 0, "skipped": 0, "error": 0}
     total = len(support_ids)
 
     if not settings.INTERNAL_API_TOKEN:
@@ -402,7 +422,9 @@ async def import_batch(
     try:
         for idx, support_id in enumerate(support_ids, 1):
             logger.info("[%d/%d] 导入案例 %s", idx, total, support_id)
-            status = await import_entry(support_id, client, force_draft=force_draft)
+            status = await import_entry(
+                support_id, client, override=override, override_status=override_status
+            )
             stats[status] = stats.get(status, 0) + 1
 
     finally:
@@ -410,8 +432,8 @@ async def import_batch(
             await client.aclose()
 
     logger.info(
-        "批量导入完成 created=%d idempotent=%d skipped=%d error=%d",
-        stats["created"], stats["idempotent"], stats["skipped"], stats["error"],
+        "批量导入完成 created=%d overridden=%d skipped=%d error=%d",
+        stats["created"], stats["overridden"], stats["skipped"], stats["error"],
     )
     return stats
 
