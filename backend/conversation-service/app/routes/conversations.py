@@ -120,7 +120,8 @@ async def send_message(
             async for chunk in service.send_message_stream_only(
                 conversation_id=conversation_id,
                 case_id=message.case_id,
-                content=message.content
+                content=message.content,
+                assistant_type=message.assistant_type  # v2.2: 支持动态切换助手
             ):
                 if chunk:
                     ai_content.append(chunk)
