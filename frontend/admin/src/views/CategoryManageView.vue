@@ -17,7 +17,9 @@ interface KbCategory {
   path_labels: string[]         // 完整路径
   hit_count: number             // S0 命中次数
   is_active: boolean            // 启用状态
-  has_sop: boolean              // 是否有 SOP 覆盖（计算字段）
+  // 统计字段（后端子查询返回）
+  published_kbd_count: number   // 已发布 KBD 数量
+  published_sop_count: number   // 已发布 SOP 数量
 }
 
 interface DomainGroup {
@@ -65,6 +67,7 @@ const filterActive = ref<boolean | null>(null)
 const totalCategories = ref(0)
 const totalActive = ref(0)
 const totalWithSop = ref(0)
+const totalPublishedKbd = ref(0)
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 响应式状态：右侧详情
@@ -108,6 +111,23 @@ const filteredGroups = computed<DomainGroup[]>(() => {
 })
 
 // ──────────────────────────────────────────────────────────────────────────────
+// 计算属性：域汇总统计（统计每个域下所有活跃子分类的 SOP/KBD 数量之和）
+// ──────────────────────────────────────────────────────────────────────────────
+const domainStats = computed<Record<string, { sop: number; kbd: number }>>(() => {
+  const stats: Record<string, { sop: number; kbd: number }> = {}
+  const allCategories = domainGroups.value.flatMap((g) => g.categories)
+  for (const cat of allCategories) {
+    if (!cat.is_active) continue
+    if (!stats[cat.domain]) {
+      stats[cat.domain] = { sop: 0, kbd: 0 }
+    }
+    stats[cat.domain].sop += cat.published_sop_count || 0
+    stats[cat.domain].kbd += cat.published_kbd_count || 0
+  }
+  return stats
+})
+
+// ──────────────────────────────────────────────────────────────────────────────
 // 数据加载
 // ──────────────────────────────────────────────────────────────────────────────
 async function fetchCategories() {
@@ -131,7 +151,11 @@ async function fetchCategories() {
     // 计算统计
     const allCategories = domainGroups.value.flatMap((g) => g.categories)
     totalActive.value = allCategories.filter((c) => c.is_active).length
-    totalWithSop.value = allCategories.filter((c) => c.has_sop).length
+    totalWithSop.value = allCategories.filter((c) => c.published_sop_count > 0).length
+    // 计算已发布 KBD 总数（只统计活跃分类）
+    totalPublishedKbd.value = allCategories
+      .filter((c) => c.is_active)
+      .reduce((sum, c) => sum + (c.published_kbd_count || 0), 0)
   } catch {
     ElMessage.error('加载分类失败，请刷新重试')
   } finally {
@@ -346,6 +370,10 @@ onMounted(fetchCategories)
             <div class="domain-header">
               <span class="domain-name">{{ group.domain }}</span>
               <span class="domain-count">{{ group.count }}</span>
+              <span class="domain-stats">
+                [SOP:{{ domainStats[group.domain]?.sop || 0 }}]
+                [KBD:{{ domainStats[group.domain]?.kbd || 0 }}]
+              </span>
             </div>
             <div
               v-for="cat in group.categories"
@@ -359,7 +387,8 @@ onMounted(fetchCategories)
             >
               <span class="cat-code">{{ cat.code }}</span>
               <span class="cat-name">{{ cat.name }}</span>
-              <span v-if="cat.has_sop" class="sop-badge">SOP</span>
+              <span class="count-tag">[SOP:{{ cat.published_sop_count || 0 }}]</span>
+              <span class="count-tag">[KBD:{{ cat.published_kbd_count || 0 }}]</span>
               <span v-if="!cat.is_active" class="inactive-badge">禁用</span>
             </div>
           </div>
@@ -370,6 +399,7 @@ onMounted(fetchCategories)
           <span>总计: {{ totalCategories }}</span>
           <span>启用: {{ totalActive }}</span>
           <span>有SOP: {{ totalWithSop }}</span>
+          <span>已发布KBD: {{ totalPublishedKbd }}</span>
         </div>
       </div>
 
@@ -379,51 +409,48 @@ onMounted(fetchCategories)
           请从左侧选择一个分类查看详情
         </div>
         <div v-else class="detail-form">
-          <h3>分类详情</h3>
-
-          <div class="form-item">
-            <label>业务编码</label>
-            <el-input :model-value="selectedCategory.code" disabled />
+          <!-- 标题行：分类详情 + 状态开关 + 保存按钮 -->
+          <div class="detail-header">
+            <h3 class="detail-title">分类详情</h3>
+            <div class="detail-status">
+              <el-radio-group v-model="editForm.is_active" size="small">
+                <el-radio :value="true">启用</el-radio>
+                <el-radio :value="false">禁用</el-radio>
+              </el-radio-group>
+            </div>
+            <div class="detail-actions">
+              <el-button type="primary" size="small" :loading="editSaving" @click="saveEdit">
+                保存修改
+              </el-button>
+            </div>
           </div>
 
-          <div class="form-item">
-            <label>分类名称</label>
-            <el-input v-model="editForm.name" />
-          </div>
+          <!-- 基本信息：4列×2行表格 -->
+          <table class="info-table">
+            <tr>
+              <td class="label">业务编码</td>
+              <td class="value">{{ selectedCategory.code }}</td>
+              <td class="label">分类名称</td>
+              <td class="value">{{ selectedCategory.name }}</td>
+            </tr>
+            <tr>
+              <td class="label">所属域</td>
+              <td class="value">{{ selectedCategory.domain }}</td>
+              <td class="label">完整路径</td>
+              <td class="value">{{ selectedCategory.path_labels?.join(' / ') || '' }}</td>
+            </tr>
+          </table>
 
-          <div class="form-item">
-            <label>所属域</label>
-            <el-input :model-value="selectedCategory.domain" disabled />
-          </div>
-
-          <div class="form-item">
-            <label>完整路径</label>
-            <el-input :model-value="selectedCategory.path_labels?.join(' / ') || ''" disabled />
-          </div>
-
-          <div class="form-item">
-            <label>状态</label>
-            <el-radio-group v-model="editForm.is_active">
-              <el-radio :value="true">启用</el-radio>
-              <el-radio :value="false">禁用</el-radio>
-            </el-radio-group>
-          </div>
-
-          <div class="form-item">
-            <label>SOP 覆盖</label>
-            <el-tag :type="selectedCategory.has_sop ? 'success' : 'info'">
-              {{ selectedCategory.has_sop ? '已绑定 SOP' : '无 SOP' }}
-            </el-tag>
-          </div>
-
+          <!-- 命中次数 -->
           <div class="form-item">
             <label>命中次数</label>
             <span class="hit-count">{{ selectedCategory.hit_count }} 次</span>
           </div>
 
-          <el-button type="primary" :loading="editSaving" @click="saveEdit">
-            保存修改
-          </el-button>
+          <!-- 无数据提示 -->
+          <div class="empty-section" v-if="selectedCategory.published_sop_count === 0 && selectedCategory.published_kbd_count === 0">
+            <span class="empty-text">暂无已发布的 SOP/KBD</span>
+          </div>
         </div>
       </div>
     </div>
@@ -527,7 +554,7 @@ onMounted(fetchCategories)
 }
 
 .left-panel {
-  width: 320px;
+  width: 420px;
   border-right: 1px solid #e4e7ed;
   display: flex;
   flex-direction: column;
@@ -607,6 +634,21 @@ onMounted(fetchCategories)
   margin-left: 4px;
 }
 
+.count-tag {
+  font-size: 10px;
+  padding: 2px 4px;
+  background: #f0f2f5;
+  color: #606266;
+  border-radius: 2px;
+  margin-left: 4px;
+}
+
+.domain-stats {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 8px;
+}
+
 .inactive-badge {
   font-size: 10px;
   padding: 2px 6px;
@@ -643,6 +685,63 @@ onMounted(fetchCategories)
   margin-bottom: 20px;
   padding-bottom: 12px;
   border-bottom: 1px solid #e4e7ed;
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid #e4e7ed;
+  margin-bottom: 16px;
+}
+
+.detail-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.detail-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.detail-actions {
+  margin-left: auto;
+}
+
+.info-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 16px;
+}
+
+.info-table td {
+  padding: 8px 12px;
+  border: 1px solid #e4e7ed;
+}
+
+.info-table .label {
+  background: #f5f7fa;
+  font-weight: 500;
+  color: #606266;
+  width: 100px;
+}
+
+.info-table .value {
+  color: #303133;
+}
+
+.empty-section {
+  padding: 24px 0;
+  text-align: center;
+}
+
+.empty-text {
+  color: #909399;
+  font-size: 13px;
 }
 
 .form-item {
