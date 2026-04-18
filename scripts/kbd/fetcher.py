@@ -28,12 +28,11 @@ import mimetypes
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
 
 import httpx
-from bs4 import BeautifulSoup
 
 from .config import settings
+from .html_utils import extract_image_urls
 
 logger = logging.getLogger("kbd.fetcher")
 
@@ -76,20 +75,15 @@ async def _retry_request(
     raise RuntimeError("unreachable")
 
 
+# ─── 向后兼容封装（供单元测试使用）───────────────────────────────────────────
+
 def _extract_image_urls(html: str) -> list[str]:
-    """从 HTML 中提取所有 img src，解析为绝对 URL，去重，保序"""
-    soup = BeautifulSoup(html, "lxml")
-    seen: set[str] = set()
-    urls: list[str] = []
-    for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or ""
-        if not src or src.startswith("data:"):
-            continue
-        abs_url = urljoin(settings.SANGFOR_API_BASE, src)
-        if abs_url not in seen:
-            seen.add(abs_url)
-            urls.append(abs_url)
-    return urls
+    """
+    向后兼容封装：调用公共 extract_image_urls，使用 settings.SANGFOR_API_BASE。
+
+    单元测试 tests/unit/kbd/test_fetcher.py 直接导入此函数。
+    """
+    return extract_image_urls(html, settings.SANGFOR_API_BASE)
 
 
 def _extract_metadata(rows: dict[str, Any]) -> dict[str, Any]:

@@ -405,6 +405,7 @@ function renderMarkdown(md: string): string {
 
 function inlineRender(text: string): string {
   return escapeHtml(text)
+    .replace(/\\_/g, '_')  // 处理 Markdown 转义下划线
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
@@ -635,6 +636,7 @@ function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
 /**
  * 将 content_md 分割为普通文本段和截图说明段。
  * 截图段以 "> **【截图说明】**" 开头，包含后续编号字段（1-4）和缩进子项。
+ * v3 格式：DESCRIPTION 后的纯文字段落也属于截图块（非 bullet 格式）。
  */
 function parseContentMd(md: string): ContentSegment[] {
   if (!md) return []
@@ -643,6 +645,7 @@ function parseContentMd(md: string): ContentSegment[] {
   let normalLines: string[] = []
   let screenshotLines: string[] = []
   let inScreenshot = false
+  let inDescription = false  // v3: DESCRIPTION section 状态跟踪
 
   const flushNormal = () => {
     if (normalLines.length > 0) {
@@ -665,25 +668,41 @@ function parseContentMd(md: string): ContentSegment[] {
       flushNormal()
       flushScreenshot()
       inScreenshot = true
+      inDescription = false
       screenshotLines = [line]
       continue
     }
 
     if (inScreenshot) {
       const trimmed = line.trim()
-      // 截图块内的行：空行、bullet、字段行（v1 数字字段 或 v2 关键词 section）
+      // 截图块内的行：空行、bullet、字段行（v1 数字字段 或 v2/v3 关键词 section）
       const isFieldLine = /^\d+[.、]\s+\*\*/.test(trimmed)
         || /^(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(trimmed)
         || /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(trimmed)
       const isBulletLine = /^-\s/.test(trimmed) || /^\s{2,}-\s/.test(line)
         || /^>\s*-\s/.test(line)  // v2 格式："> - item"
       const isBlank = trimmed === ''
-      // 检测截图块结束：有内容的非截图行
-      const isEndLine = !isBlank && !isFieldLine && !isBulletLine && !/^\d+\.\s+\*\*/.test(trimmed)
 
-      if (isEndLine && screenshotLines.length > 1) {
+      // 检测进入 DESCRIPTION section
+      if (/^>\s*DESCRIPTION:$/.test(trimmed) || /^DESCRIPTION:$/.test(trimmed)) {
+        inDescription = true
+      }
+      // DESCRIPTION section 结束：遇到下一个 section 关键词
+      if (inDescription && /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS):/.test(trimmed)) {
+        inDescription = false
+      }
+
+      // v3: DESCRIPTION section 内的纯文字行属于截图块
+      const isDescriptionText = inDescription && !isBlank && !isFieldLine && !isBulletLine && !trimmed.startsWith('>')
+
+      // 检测截图块结束：有内容的非截图行（且不在 DESCRIPTION section）
+      const isEndLine = !isBlank && !isFieldLine && !isBulletLine && !/^\d+\.\s+\*\*/.test(trimmed) && !isDescriptionText && !inDescription
+
+      // 截图块结束条件：遇到下一个 section 标题（##）
+      if (trimmed.startsWith('## ') || isEndLine && screenshotLines.length > 1) {
         flushScreenshot()
         inScreenshot = false
+        inDescription = false
         normalLines.push(line)
       } else {
         screenshotLines.push(line)
