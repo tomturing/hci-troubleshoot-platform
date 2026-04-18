@@ -69,38 +69,7 @@ def _strip_html(html: str) -> str:
     return text.strip()
 
 
-def _extract_image_urls_with_positions(html: str, base_url: str) -> list[tuple[str, int]]:
-    """
-    从 HTML 中提取图片 URL 及其首次出现位置，去重保序。
-
-    Returns:
-        [(abs_url, char_pos), ...] 去重后按出现顺序排列
-    """
-    try:
-        from bs4 import BeautifulSoup  # type: ignore[import-untyped]
-    except ImportError as exc:
-        raise ImportError("beautifulsoup4 未安装：uv pip install beautifulsoup4 lxml") from exc
-
-    soup = BeautifulSoup(html, "lxml")
-    seen: set[str] = set()
-    result: list[tuple[str, int]] = []
-
-    for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or ""
-        if not src or src.startswith("data:"):
-            continue
-        abs_url = urljoin(base_url, src)
-        if abs_url in seen:
-            continue
-        seen.add(abs_url)
-
-        # 在原始 HTML 中找该 src 首次出现的字符位置
-        escaped_src = re.escape(src)
-        m = re.search(escaped_src, html)
-        pos = m.start() if m else 0
-        result.append((abs_url, pos))
-
-    return result
+from .html_utils import extract_image_urls_with_positions as _extract_image_urls_with_positions
 
 
 def _extract_context(html: str, img_pos: int) -> str:

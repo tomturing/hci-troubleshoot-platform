@@ -76,20 +76,7 @@ async def _retry_request(
     raise RuntimeError("unreachable")
 
 
-def _extract_image_urls(html: str) -> list[str]:
-    """从 HTML 中提取所有 img src，解析为绝对 URL，去重，保序"""
-    soup = BeautifulSoup(html, "lxml")
-    seen: set[str] = set()
-    urls: list[str] = []
-    for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or ""
-        if not src or src.startswith("data:"):
-            continue
-        abs_url = urljoin(settings.SANGFOR_API_BASE, src)
-        if abs_url not in seen:
-            seen.add(abs_url)
-            urls.append(abs_url)
-    return urls
+from .html_utils import extract_image_urls
 
 
 def _extract_metadata(rows: dict[str, Any]) -> dict[str, Any]:
@@ -287,7 +274,7 @@ async def fetch_case(
 
         # ── Step 3: 提取图片 URL 并下载 ──────────────────────────────────────
         content_html: str = rows.get("content") or ""
-        image_urls = _extract_image_urls(content_html)
+        image_urls = extract_image_urls(content_html, settings.SANGFOR_API_BASE)
 
         if image_urls:
             case_dir = _case_dir(support_id)
