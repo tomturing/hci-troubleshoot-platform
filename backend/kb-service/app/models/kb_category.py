@@ -63,7 +63,7 @@ class KbCategory(Base):
 
     def to_dict(self) -> dict:
         """序列化为字典（用于 API 响应）"""
-        return {
+        result = {
             "id": self.id,
             "code": self.code,
             "name": self.name,
@@ -72,9 +72,13 @@ class KbCategory(Base):
             "parent_id": self.parent_id,
             "path_labels": self.path_labels or [],
             "keywords": self.keywords or [],
-            "source": self.source,
-            "version": self.version,
-            "hit_count": self.hit_count,
+            "source": self.source or "",
+            "version": self.version or "1.0",
+            "hit_count": self.hit_count or 0,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+        # 统计字段（动态属性，可能不存在）
+        result["published_kbd_count"] = getattr(self, "published_kbd_count", 0)
+        result["published_sop_count"] = getattr(self, "published_sop_count", 0)
+        return result
