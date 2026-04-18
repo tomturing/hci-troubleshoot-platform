@@ -28,12 +28,11 @@ import mimetypes
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
 
 import httpx
-from bs4 import BeautifulSoup
 
 from .config import settings
+from .html_utils import extract_image_urls
 
 logger = logging.getLogger("kbd.fetcher")
 
@@ -76,7 +75,15 @@ async def _retry_request(
     raise RuntimeError("unreachable")
 
 
-from .html_utils import extract_image_urls
+# ─── 向后兼容封装（供单元测试使用）───────────────────────────────────────────
+
+def _extract_image_urls(html: str) -> list[str]:
+    """
+    向后兼容封装：调用公共 extract_image_urls，使用 settings.SANGFOR_API_BASE。
+
+    单元测试 tests/unit/kbd/test_fetcher.py 直接导入此函数。
+    """
+    return extract_image_urls(html, settings.SANGFOR_API_BASE)
 
 
 def _extract_metadata(rows: dict[str, Any]) -> dict[str, Any]:
@@ -274,7 +281,7 @@ async def fetch_case(
 
         # ── Step 3: 提取图片 URL 并下载 ──────────────────────────────────────
         content_html: str = rows.get("content") or ""
-        image_urls = extract_image_urls(content_html, settings.SANGFOR_API_BASE)
+        image_urls = _extract_image_urls(content_html)
 
         if image_urls:
             case_dir = _case_dir(support_id)

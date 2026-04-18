@@ -37,11 +37,11 @@ import mimetypes
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
 
 from openai import AsyncOpenAI
 
 from .config import settings
+from .html_utils import extract_image_urls_with_positions as _extract_image_urls_with_positions
 
 logger = logging.getLogger("kbd.image_proc")
 
@@ -67,9 +67,6 @@ def _strip_html(html: str) -> str:
     text = re.sub(r"&nbsp;", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
-
-
-from .html_utils import extract_image_urls_with_positions as _extract_image_urls_with_positions
 
 
 def _extract_context(html: str, img_pos: int) -> str:
