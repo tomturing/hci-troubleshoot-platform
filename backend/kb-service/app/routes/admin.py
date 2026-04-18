@@ -329,6 +329,66 @@ async def list_kbd_entries(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# KBD 条目单条详情接口
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@kbd_router.get("/{kbd_id}")
+async def get_kbd_entry_detail(request: Request, kbd_id: int):
+    """获取单个 KBD 条目详情（含完整 content_md）
+
+    Args:
+        kbd_id: KBD 条目 ID
+
+    Returns:
+        KBD 条目完整详情（含 content_md、metadata 等）
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    logger.info(event="kbd_detail_request", kbd_id=kbd_id)
+
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text("""
+                SELECT id, support_id, support_url, title, content_md,
+                       metadata, category_id, ai_category_id,
+                       ai_category_conf, ai_category_reason,
+                       status, reviewer_id, review_note,
+                       created_at, updated_at, published_at
+                FROM kbd_entry
+                WHERE id = :id
+            """),
+            {"id": kbd_id},
+        )
+        row = result.mappings().first()
+
+        if not row:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+
+    return {
+        "id": row["id"],
+        "support_id": row["support_id"],
+        "support_url": row["support_url"] or "",
+        "title": row["title"],
+        "content_md": row["content_md"] or "",
+        "metadata": row["metadata"] or {},
+        "category_id": row["category_id"],
+        "ai_category_id": row["ai_category_id"],
+        "ai_category_conf": float(row["ai_category_conf"]) if row["ai_category_conf"] is not None else None,
+        "ai_category_reason": row["ai_category_reason"],
+        "status": row["status"],
+        "reviewer_id": row["reviewer_id"],
+        "review_note": row["review_note"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        "published_at": row["published_at"].isoformat() if row["published_at"] else None,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # KBD 条目拒绝接口
 # ─────────────────────────────────────────────────────────────────────────────
 
