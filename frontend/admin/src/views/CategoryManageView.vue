@@ -49,6 +49,24 @@ interface ImportDiff {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// 已发布条目列表类型
+// ──────────────────────────────────────────────────────────────────────────────
+interface SopListItem {
+  id: number
+  title: string
+  hit_count: number
+  category_id: string | null
+}
+
+interface KbdListItem {
+  id: number
+  support_id: string
+  title: string
+  hit_count: number
+  category_id: string | null
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // 鉴权头
 // ──────────────────────────────────────────────────────────────────────────────
 const internalToken = import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
@@ -78,6 +96,33 @@ const editForm = reactive({
   name: '',
   is_active: true,
 })
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 响应式状态：已发布 SOP/KBD 列表
+// ──────────────────────────────────────────────────────────────────────────────
+const publishedSopList = ref<SopListItem[]>([])
+const publishedKbdList = ref<KbdListItem[]>([])
+const listLoading = ref(false)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 响应式状态：详情弹窗
+// ──────────────────────────────────────────────────────────────────────────────
+const detailDialogVisible = ref(false)
+const detailKbdEntry = ref<{
+  id: number
+  support_id: string
+  title: string
+  content_md: string
+  hit_count: number
+} | null>(null)
+const detailSopEntry = ref<{
+  id: number
+  title: string
+  content_md: string
+  hit_count: number
+} | null>(null)
+const detailLoading = ref(false)
+const detailHtml = ref('')
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 响应式状态：YAML 导入
@@ -170,6 +215,174 @@ function selectCategory(cat: KbCategory) {
   selectedCategory.value = cat
   editForm.name = cat.name
   editForm.is_active = cat.is_active
+  // 加载已发布 SOP/KBD 列表
+  fetchPublishedList(cat.code)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 加载已发布 SOP/KBD 列表
+// ──────────────────────────────────────────────────────────────────────────────
+async function fetchPublishedList(categoryCode: string) {
+  listLoading.value = true
+  publishedSopList.value = []
+  publishedKbdList.value = []
+  try {
+    // 查询已发布 KBD（使用 admin API）
+    const kbdResp = await fetch(`/api/admin/kbd/pending?status=published&category_id=${encodeURIComponent(categoryCode)}`, {
+      headers: authHeader,
+    })
+    if (kbdResp.ok) {
+      const kbdData = await kbdResp.json()
+      publishedKbdList.value = (kbdData.entries || []).map((e: KbdListItem) => ({
+        id: e.id,
+        support_id: e.support_id,
+        title: e.title,
+        hit_count: e.hit_count || 0,
+        category_id: e.category_id,
+      }))
+    }
+
+    // 查询已发布 SOP（使用 kb API）
+    const sopResp = await fetch(`/api/admin/sop?status=published&category_id=${encodeURIComponent(categoryCode)}`, {
+      headers: authHeader,
+    })
+    if (sopResp.ok) {
+      const sopData = await sopResp.json()
+      publishedSopList.value = (sopData.documents || []).map((d: SopListItem) => ({
+        id: d.id,
+        title: d.title,
+        hit_count: d.hit_count || 0,
+        category_id: d.category_id,
+      }))
+    }
+  } catch {
+    // 列表加载失败不影响主功能
+  } finally {
+    listLoading.value = false
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 详情弹窗：KBD 详情
+// ──────────────────────────────────────────────────────────────────────────────
+async function openKbdDetail(kbdId: number) {
+  detailLoading.value = true
+  detailDialogVisible.value = true
+  detailKbdEntry.value = null
+  detailSopEntry.value = null
+  detailHtml.value = ''
+  try {
+    const resp = await fetch(`/api/admin/kbd/${kbdId}`, { headers: authHeader })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    detailKbdEntry.value = data
+    detailHtml.value = renderMarkdown(data.content_md || '')
+  } catch {
+    ElMessage.error('加载 KBD 详情失败')
+    detailDialogVisible.value = false
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 详情弹窗：SOP 详情
+// ──────────────────────────────────────────────────────────────────────────────
+async function openSopDetail(sopId: number) {
+  detailLoading.value = true
+  detailDialogVisible.value = true
+  detailKbdEntry.value = null
+  detailSopEntry.value = null
+  detailHtml.value = ''
+  try {
+    const resp = await fetch(`/api/admin/sop/${sopId}`, { headers: authHeader })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    detailSopEntry.value = data
+    detailHtml.value = renderMarkdown(data.content_md || '')
+  } catch {
+    ElMessage.error('加载 SOP 详情失败')
+    detailDialogVisible.value = false
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Markdown 渲染（简化版）
+// ──────────────────────────────────────────────────────────────────────────────
+function renderMarkdown(md: string): string {
+  if (!md) return ''
+  const lines = md.split('\n')
+  const html: string[] = []
+  let listType: 'none' | 'ul' | 'ol' = 'none'
+  let inBlockquote = false
+
+  const flushList = () => {
+    if (listType === 'ul') { html.push('</ul>'); listType = 'none' }
+    else if (listType === 'ol') { html.push('</ol>'); listType = 'none' }
+  }
+  const flushBlockquote = () => {
+    if (inBlockquote) { html.push('</blockquote>'); inBlockquote = false }
+  }
+
+  for (const line of lines) {
+    if (line.startsWith('## ')) {
+      flushList(); flushBlockquote()
+      html.push(`<h3 class="md-h2">${escapeHtml(line.slice(3))}</h3>`)
+      continue
+    }
+    if (line.startsWith('### ')) {
+      flushList(); flushBlockquote()
+      html.push(`<h4 class="md-h3">${escapeHtml(line.slice(4))}</h4>`)
+      continue
+    }
+    if (line.startsWith('> ')) {
+      flushList()
+      if (!inBlockquote) { html.push('<blockquote class="md-blockquote">'); inBlockquote = true }
+      html.push(`<p>${inlineRender(line.slice(2))}</p>`)
+      continue
+    }
+    const ulMatch = line.match(/^(\s*)[-*]\s+(.+)$/)
+    if (ulMatch) {
+      flushBlockquote()
+      if (listType !== 'ul') { flushList(); html.push('<ul class="md-list">'); listType = 'ul' }
+      const indentPx = ulMatch[1].length * 10
+      const style = indentPx > 0 ? ` style="margin-left:${indentPx}px"` : ''
+      html.push(`<li${style}>${inlineRender(ulMatch[2])}</li>`)
+      continue
+    }
+    const olMatch = line.match(/^(\s*)\d+[.、]\s+(.+)$/)
+    if (olMatch) {
+      flushBlockquote()
+      if (listType !== 'ol') { flushList(); html.push('<ol class="md-list">'); listType = 'ol' }
+      html.push(`<li>${inlineRender(olMatch[2])}</li>`)
+      continue
+    }
+    flushList(); flushBlockquote()
+    if (line.trim() === '') {
+      // 跳过空行
+    } else {
+      html.push(`<p class="md-p">${inlineRender(line)}</p>`)
+    }
+  }
+  flushList(); flushBlockquote()
+  return html.join('\n')
+}
+
+function inlineRender(text: string): string {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -447,8 +660,40 @@ onMounted(fetchCategories)
             <span class="hit-count">{{ selectedCategory.hit_count }} 次</span>
           </div>
 
+          <!-- 已发布 SOP 列表 -->
+          <div class="published-section" v-if="selectedCategory.published_sop_count > 0">
+            <h4 class="section-title">已发布 SOP ({{ selectedCategory.published_sop_count }}篇)</h4>
+            <div class="published-list" v-loading="listLoading">
+              <div
+                v-for="sop in publishedSopList"
+                :key="sop.id"
+                class="published-item"
+              >
+                <span class="hit-tag">[命中:{{ sop.hit_count || 0 }}]</span>
+                <span class="item-title">{{ sop.title }}</span>
+                <el-button size="small" text type="primary" @click="openSopDetail(sop.id)">详情</el-button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 已发布 KBD 列表 -->
+          <div class="published-section" v-if="selectedCategory.published_kbd_count > 0">
+            <h4 class="section-title">已发布 KBD ({{ selectedCategory.published_kbd_count }}篇)</h4>
+            <div class="published-list" v-loading="listLoading">
+              <div
+                v-for="kbd in publishedKbdList"
+                :key="kbd.id"
+                class="published-item"
+              >
+                <span class="hit-tag">[命中:{{ kbd.hit_count || 0 }}]</span>
+                <span class="item-title">{{ kbd.title }}</span>
+                <el-button size="small" text type="primary" @click="openKbdDetail(kbd.id)">详情</el-button>
+              </div>
+            </div>
+          </div>
+
           <!-- 无数据提示 -->
-          <div class="empty-section" v-if="selectedCategory.published_sop_count === 0 && selectedCategory.published_kbd_count === 0">
+          <div class="empty-section" v-if="selectedCategory.published_sop_count === 0 && selectedCategory.published_kbd_count === 0 && !listLoading">
             <span class="empty-text">暂无已发布的 SOP/KBD</span>
           </div>
         </div>
@@ -519,6 +764,37 @@ onMounted(fetchCategories)
         >
           确认导入
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ── KBD/SOP 详情弹窗 ── -->
+    <el-dialog
+      v-model="detailDialogVisible"
+      :title="detailKbdEntry?.title || detailSopEntry?.title || '详情'"
+      width="700px"
+      top="5vh"
+    >
+      <div v-loading="detailLoading" class="detail-content">
+        <template v-if="detailKbdEntry">
+          <!-- KBD 元信息 -->
+          <div class="kbd-meta">
+            <span>案例ID: {{ detailKbdEntry.support_id }}</span>
+            <span>命中次数: {{ detailKbdEntry.hit_count || 0 }}</span>
+          </div>
+          <!-- KBD 内容渲染 -->
+          <div class="kbd-content" v-html="detailHtml"></div>
+        </template>
+        <template v-else-if="detailSopEntry">
+          <!-- SOP 元信息 -->
+          <div class="kbd-meta">
+            <span>命中次数: {{ detailSopEntry.hit_count || 0 }}</span>
+          </div>
+          <!-- SOP 内容渲染 -->
+          <div class="kbd-content" v-html="detailHtml"></div>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="detailDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -741,6 +1017,107 @@ onMounted(fetchCategories)
 
 .empty-text {
   color: #909399;
+  font-size: 13px;
+}
+
+.published-section {
+  margin-bottom: 16px;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #606266;
+  margin: 16px 0 8px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.published-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.published-item {
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  background: #f5f7fa;
+}
+
+.hit-tag {
+  font-size: 12px;
+  padding: 2px 6px;
+  background: #409eff;
+  color: white;
+  border-radius: 4px;
+  margin-right: 8px;
+}
+
+.item-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: #303133;
+}
+
+.detail-content {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.kbd-meta {
+  display: flex;
+  gap: 16px;
+  padding: 8px 0;
+  color: #909399;
+  font-size: 12px;
+  border-bottom: 1px solid #ebeef5;
+  margin-bottom: 16px;
+}
+
+.kbd-content {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.kbd-content .md-h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 16px 0 8px 0;
+}
+
+.kbd-content .md-h3 {
+  font-size: 14px;
+  font-weight: 500;
+  margin: 12px 0 6px 0;
+}
+
+.kbd-content .md-p {
+  margin: 8px 0;
+}
+
+.kbd-content .md-list {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.kbd-content .md-blockquote {
+  margin: 8px 0;
+  padding: 8px 16px;
+  background: #f5f7fa;
+  border-left: 4px solid #e4e7ed;
+}
+
+.kbd-content code {
+  background: #f5f7fa;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
   font-size: 13px;
 }
 
