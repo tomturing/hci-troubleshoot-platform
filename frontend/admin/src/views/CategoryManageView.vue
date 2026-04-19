@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Histogram, Upload, Download } from '@element-plus/icons-vue'
+import { Histogram, Upload, Download, WarningFilled } from '@element-plus/icons-vue'
 import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -102,6 +102,7 @@ const editForm = reactive({
 const publishedSopList = ref<SopListItem[]>([])
 const publishedKbdList = ref<KbdListItem[]>([])
 const listLoading = ref(false)
+const listLoadError = ref<string | null>(null) // 列表加载失败消息
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 响应式状态：详情弹窗
@@ -222,6 +223,7 @@ function selectCategory(cat: KbCategory) {
 // ──────────────────────────────────────────────────────────────────────────────
 async function fetchPublishedList(categoryCode: string) {
   listLoading.value = true
+  listLoadError.value = null
   publishedSopList.value = []
   publishedKbdList.value = []
   try {
@@ -258,7 +260,10 @@ async function fetchPublishedList(categoryCode: string) {
       }))
     }
   } catch (e: unknown) {
-    // 列表加载失败记录日志，但不阻塞主功能
+    // 竞态保护：只有当前分类仍是发起时的分类才记录错误
+    if (selectedCategory.value?.code === categoryCode) {
+      listLoadError.value = `加载失败：${(e as Error).message}`
+    }
     console.warn(`加载 ${categoryCode} 已发布列表失败:`, (e as Error).message)
   } finally {
     // 竞态保护：只有当前分类仍是发起时的分类才关闭 loading
@@ -712,8 +717,15 @@ onMounted(fetchCategories)
             </div>
           </div>
 
+          <!-- 列表加载失败占位 -->
+          <div class="error-section" v-if="listLoadError && !listLoading">
+            <el-icon class="error-icon"><WarningFilled /></el-icon>
+            <span class="error-text">{{ listLoadError }}</span>
+            <el-button size="small" text type="primary" @click="fetchPublishedList(selectedCategory.code)">重试</el-button>
+          </div>
+
           <!-- 无数据提示 -->
-          <div class="empty-section" v-if="selectedCategory.published_sop_count === 0 && selectedCategory.published_kbd_count === 0 && !listLoading">
+          <div class="empty-section" v-if="selectedCategory.published_sop_count === 0 && selectedCategory.published_kbd_count === 0 && !listLoading && !listLoadError">
             <span class="empty-text">暂无已发布的 SOP/KBD</span>
           </div>
         </div>
@@ -1037,6 +1049,25 @@ onMounted(fetchCategories)
 
 .empty-text {
   color: #909399;
+  font-size: 13px;
+}
+
+.error-section {
+  padding: 16px 0;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.error-icon {
+  color: #f56c6c;
+  font-size: 16px;
+}
+
+.error-text {
+  color: #f56c6c;
   font-size: 13px;
 }
 
