@@ -93,7 +93,6 @@ const totalPublishedKbd = ref(0)
 const selectedCategory = ref<KbCategory | null>(null)
 const editSaving = ref(false)
 const editForm = reactive({
-  name: '',
   is_active: true,
 })
 
@@ -213,7 +212,6 @@ async function fetchCategories() {
 // ──────────────────────────────────────────────────────────────────────────────
 function selectCategory(cat: KbCategory) {
   selectedCategory.value = cat
-  editForm.name = cat.name
   editForm.is_active = cat.is_active
   // 加载已发布 SOP/KBD 列表
   fetchPublishedList(cat.code)
@@ -392,8 +390,8 @@ async function saveEdit() {
   if (!selectedCategory.value) return
   editSaving.value = true
   try {
+    // 只允许修改 is_active 状态，分类名称通过 YAML 导入统一管理
     const body: Record<string, unknown> = {
-      name: editForm.name,
       is_active: editForm.is_active,
     }
     const resp = await fetch(`/api/kb/categories/${encodeURIComponent(selectedCategory.value.code)}`, {
@@ -409,16 +407,18 @@ async function saveEdit() {
       if (idx >= 0) {
         g.categories[idx] = {
           ...g.categories[idx],
-          name: editForm.name,
           is_active: editForm.is_active,
         }
         selectedCategory.value = g.categories[idx]
         break
       }
     }
-    // 重新统计
+    // 重新统计（包括 totalActive 和 totalPublishedKbd）
     const allCategories = domainGroups.value.flatMap((g) => g.categories)
     totalActive.value = allCategories.filter((c) => c.is_active).length
+    totalPublishedKbd.value = allCategories
+      .filter((c) => c.is_active)
+      .reduce((sum, c) => sum + (c.published_kbd_count || 0), 0)
   } catch {
     ElMessage.error('保存失败，请重试')
   } finally {

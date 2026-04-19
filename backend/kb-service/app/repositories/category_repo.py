@@ -47,7 +47,7 @@ class CategoryRepository:
                     SELECT
                       c.id, c.code, c.name, c.domain, c.level, c.parent_id,
                       c.path_labels, c.hit_count, c.is_active, c.keywords,
-                      c.source, c.version,
+                      c.source, c.version, c.created_at,
                       (SELECT COUNT(*) FROM kbd_entry
                        WHERE status = 'published' AND category_id = c.code) AS published_kbd_count,
                       (SELECT COUNT(*) FROM sop_document
@@ -72,6 +72,7 @@ class CategoryRepository:
                     keywords=row["keywords"] or [],
                     source=row["source"],
                     version=row["version"],
+                    created_at=row["created_at"],
                 )
                 # 统计字段作为动态属性存储（to_dict 时输出）
                 cat.published_kbd_count = row["published_kbd_count"] or 0
@@ -93,7 +94,7 @@ class CategoryRepository:
                     SELECT
                       c.id, c.code, c.name, c.domain, c.level, c.parent_id,
                       c.path_labels, c.hit_count, c.is_active, c.keywords,
-                      c.source, c.version,
+                      c.source, c.version, c.created_at,
                       (SELECT COUNT(*) FROM kbd_entry
                        WHERE status = 'published' AND category_id = c.code) AS published_kbd_count,
                       (SELECT COUNT(*) FROM sop_document
@@ -119,6 +120,7 @@ class CategoryRepository:
                     keywords=row["keywords"] or [],
                     source=row["source"],
                     version=row["version"],
+                    created_at=row["created_at"],
                 )
                 cat.published_kbd_count = row["published_kbd_count"] or 0
                 cat.published_sop_count = row["published_sop_count"] or 0
