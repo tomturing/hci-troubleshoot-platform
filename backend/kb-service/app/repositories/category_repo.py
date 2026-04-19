@@ -42,17 +42,28 @@ class CategoryRepository:
         """获取所有分类（按 level + domain 排序），含 KBD/SOP 统计"""
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
+            # 使用 LEFT JOIN + 聚合避免 per-row SubPlan（Issue 6 性能优化）
             result = await session.execute(
                 text("""
                     SELECT
                       c.id, c.code, c.name, c.domain, c.level, c.parent_id,
                       c.path_labels, c.hit_count, c.is_active, c.keywords,
                       c.source, c.version, c.created_at,
-                      (SELECT COUNT(*) FROM kbd_entry
-                       WHERE status = 'published' AND category_id = c.code) AS published_kbd_count,
-                      (SELECT COUNT(*) FROM sop_document
-                       WHERE status = 'published' AND category_id = c.code) AS published_sop_count
+                      kbd_stats.cnt AS published_kbd_count,
+                      sop_stats.cnt AS published_sop_count
                     FROM kb_category c
+                    LEFT JOIN (
+                      SELECT category_id, COUNT(*) as cnt
+                      FROM kbd_entry
+                      WHERE status = 'published'
+                      GROUP BY category_id
+                    ) kbd_stats ON kbd_stats.category_id = c.code
+                    LEFT JOIN (
+                      SELECT category_id, COUNT(*) as cnt
+                      FROM sop_document
+                      WHERE status = 'published'
+                      GROUP BY category_id
+                    ) sop_stats ON sop_stats.category_id = c.code
                     ORDER BY c.level, c.domain, c.code
                 """)
             )
@@ -89,17 +100,28 @@ class CategoryRepository:
         """获取所有活跃分类（is_active=True），含 KBD/SOP 统计"""
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
+            # 使用 LEFT JOIN + 聚合避免 per-row SubPlan（Issue 6 性能优化）
             result = await session.execute(
                 text("""
                     SELECT
                       c.id, c.code, c.name, c.domain, c.level, c.parent_id,
                       c.path_labels, c.hit_count, c.is_active, c.keywords,
                       c.source, c.version, c.created_at,
-                      (SELECT COUNT(*) FROM kbd_entry
-                       WHERE status = 'published' AND category_id = c.code) AS published_kbd_count,
-                      (SELECT COUNT(*) FROM sop_document
-                       WHERE status = 'published' AND category_id = c.code) AS published_sop_count
+                      kbd_stats.cnt AS published_kbd_count,
+                      sop_stats.cnt AS published_sop_count
                     FROM kb_category c
+                    LEFT JOIN (
+                      SELECT category_id, COUNT(*) as cnt
+                      FROM kbd_entry
+                      WHERE status = 'published'
+                      GROUP BY category_id
+                    ) kbd_stats ON kbd_stats.category_id = c.code
+                    LEFT JOIN (
+                      SELECT category_id, COUNT(*) as cnt
+                      FROM sop_document
+                      WHERE status = 'published'
+                      GROUP BY category_id
+                    ) sop_stats ON sop_stats.category_id = c.code
                     WHERE c.is_active = TRUE
                     ORDER BY c.level, c.domain, c.code
                 """)

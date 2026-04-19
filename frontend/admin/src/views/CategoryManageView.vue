@@ -225,12 +225,14 @@ async function fetchPublishedList(categoryCode: string) {
   publishedSopList.value = []
   publishedKbdList.value = []
   try {
-    // 查询已发布 KBD（使用 admin API）
-    const kbdResp = await fetch(`/api/admin/kbd/pending?status=published&category_id=${encodeURIComponent(categoryCode)}`, {
+    // 查询已发布 KBD（使用 admin API，传入 page_size 避免静默截断）
+    const kbdResp = await fetch(`/api/admin/kbd/pending?status=published&category_id=${encodeURIComponent(categoryCode)}&page_size=100`, {
       headers: authHeader,
     })
     if (kbdResp.ok) {
       const kbdData = await kbdResp.json()
+      // 竞态保护：写入前校验当前分类是否仍是发起请求时的分类
+      if (selectedCategory.value?.code !== categoryCode) return
       publishedKbdList.value = (kbdData.entries || []).map((e: KbdListItem) => ({
         id: e.id,
         support_id: e.support_id,
@@ -240,12 +242,14 @@ async function fetchPublishedList(categoryCode: string) {
       }))
     }
 
-    // 查询已发布 SOP（使用 kb API）
-    const sopResp = await fetch(`/api/admin/sop?status=published&category_id=${encodeURIComponent(categoryCode)}`, {
+    // 查询已发布 SOP（使用 kb API，传入 page_size）
+    const sopResp = await fetch(`/api/admin/sop?status=published&category_id=${encodeURIComponent(categoryCode)}&page_size=100`, {
       headers: authHeader,
     })
     if (sopResp.ok) {
       const sopData = await sopResp.json()
+      // 竞态保护：写入前校验当前分类是否仍是发起请求时的分类
+      if (selectedCategory.value?.code !== categoryCode) return
       publishedSopList.value = (sopData.documents || []).map((d: SopListItem) => ({
         id: d.id,
         title: d.title,
@@ -253,10 +257,14 @@ async function fetchPublishedList(categoryCode: string) {
         category_id: d.category_id,
       }))
     }
-  } catch {
-    // 列表加载失败不影响主功能
+  } catch (e: unknown) {
+    // 列表加载失败记录日志，但不阻塞主功能
+    console.warn(`加载 ${categoryCode} 已发布列表失败:`, (e as Error).message)
   } finally {
-    listLoading.value = false
+    // 竞态保护：只有当前分类仍是发起时的分类才关闭 loading
+    if (selectedCategory.value?.code === categoryCode) {
+      listLoading.value = false
+    }
   }
 }
 
@@ -369,10 +377,22 @@ function renderMarkdown(md: string): string {
 }
 
 function inlineRender(text: string): string {
-  return escapeHtml(text)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
+  // 先将 code span 替换为占位符，避免后续 bold/em 正则误匹配 code 内容
+  const codeSpans: string[] = []
+  let processed = escapeHtml(text).replace(/`([^`]+)`/g, (_, content) => {
+    const index = codeSpans.length
+    codeSpans.push(content)
+    return `__CODE_PLACEHOLDER_${index}__`
+  })
+  // 处理 bold 和 em（不会作用于 code placeholder）
+  processed = processed
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  // 还原 code span
+  processed = processed.replace(/__CODE_PLACEHOLDER_(\d+)__/g, (_, index) => {
+    return `<code>${codeSpans[parseInt(index)]}</code>`
+  })
+  return processed
 }
 
 function escapeHtml(s: string): string {

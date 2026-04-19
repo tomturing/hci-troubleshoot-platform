@@ -908,8 +908,9 @@ COMMENT ON COLUMN sop_chunk.created_at IS '创建时间';
 -- 索引: sop_document
 -- D-002: SOP 文档向量索引（通过 sop_chunk 实现，见下方）
 -- P2-2: 补全 updated_at 触发器（字段有 updated_at 但原先无触发器）
--- 分类统计查询索引：支持 WHERE status = 'published' AND category_id = ?
-CREATE INDEX IF NOT EXISTS idx_sop_document_category_status ON sop_document (category_id, status);
+-- 分类统计查询索引：支持 WHERE category_id = ? AND status = 'published'
+-- 使用部分索引减少索引体积（仅索引 published 状态）
+CREATE INDEX IF NOT EXISTS idx_sop_document_category_published ON sop_document (category_id) WHERE status = 'published';
 
 -- 索引: sop_chunk
 -- chunk 顺序检索（按文档 + 分块序号）

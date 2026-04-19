@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
+from shared.utils.otel import get_current_trace_id
 from sqlalchemy import select, text
 
 from app.models.document import KBDocument
@@ -348,7 +349,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
-    logger.info(event="kbd_detail_request", kbd_id=kbd_id)
+    logger.info(event="kbd_detail_request", kbd_id=kbd_id, trace_id=get_current_trace_id())
 
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(

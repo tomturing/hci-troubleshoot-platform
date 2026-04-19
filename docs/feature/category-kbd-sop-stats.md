@@ -29,7 +29,7 @@
 - `GET /api/kb/categories`: 返回字段新增 `published_kbd_count` 和 `published_sop_count`
 - 使用子查询统计：
   ```sql
-  (SELECT COUNT(*) FROM kbd_entry WHERE status = 'published' AND category_id = c.code) AS published_kbd_count
+  (SELECT COUNT(*) FROM kbd_entry WHERE status = 'published' AND category_id = c.code) AS published_kbd_count,
   (SELECT COUNT(*) FROM sop_document WHERE status = 'published' AND category_id = c.code) AS published_sop_count
   ```
 
@@ -44,9 +44,10 @@
 
 ### 4. 数据库索引优化
 
-新增索引提升分类统计查询性能：
+新增部分索引提升分类统计查询性能：
 ```sql
-CREATE INDEX IF NOT EXISTS idx_sop_document_category_status ON sop_document (category_id, status);
+-- 使用部分索引减少索引体积（仅索引 published 状态）
+CREATE INDEX IF NOT EXISTS idx_sop_document_category_published ON sop_document (category_id) WHERE status = 'published';
 ```
 
 ## 前端交互说明

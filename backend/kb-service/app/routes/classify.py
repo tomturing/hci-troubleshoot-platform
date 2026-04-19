@@ -381,7 +381,12 @@ async def fetch_categories_for_classify(db_manager: DatabaseManager) -> list[dic
                 }
             )
 
-        logger.info(f"从 kb_category 读取 {len(categories)} 个活跃分类节点")
+        logger.info(
+            event="fetch_categories_for_classify",
+            table="kb_category",
+            status="success",
+            category_count=len(categories),
+        )
         return categories
 
 
