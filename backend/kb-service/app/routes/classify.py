@@ -349,14 +349,14 @@ CLASSIFY_PROMPT_TEMPLATE = """你是 HCI 超融合平台的故障分类专家。
 
 
 async def fetch_categories_for_classify(db_manager: DatabaseManager) -> list[dict]:
-    """从 kb_category 表读取所有分类节点（用于 LLM 分类）"""
+    """从 kb_category 表读取所有活跃分类节点（用于 LLM 分类）"""
     async with db_manager.async_session_factory() as session:
         result = await session.execute(
             text(
                 """
                 SELECT code, name, domain, path_labels
                 FROM kb_category
-                WHERE code IS NOT NULL
+                WHERE code IS NOT NULL AND is_active = TRUE
                 ORDER BY domain, code
                 """
             )
@@ -381,7 +381,12 @@ async def fetch_categories_for_classify(db_manager: DatabaseManager) -> list[dic
                 }
             )
 
-        logger.info(f"从 kb_category 读取 {len(categories)} 个分类节点")
+        logger.info(
+            event="fetch_categories_for_classify",
+            table="kb_category",
+            status="success",
+            category_count=len(categories),
+        )
         return categories
 
 
