@@ -12,39 +12,43 @@ env_type 决定 env_data 的结构：
 """
 
 from shared.database.postgres import Base
-from shared.models.base import TraceableMixin
-from sqlalchemy import Column, ForeignKey, String
+from shared.models.base import TimestampMixin, TraceableMixin
+from sqlalchemy import Column, DateTime, ForeignKey, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 
-class Environment(Base, TraceableMixin):
+class Environment(Base, TimestampMixin, TraceableMixin):
     """环境信息表 — 存储 HCI 现场环境数据"""
 
     __tablename__ = "environment"
 
-    environment_id = Column(UUID(as_uuid=True), primary_key=True, server_default="gen_random_uuid()")
+    environment_id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
     case_id = Column(
         String(20),
         ForeignKey("case.case_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
-        comment="关联工单 ID"
+        comment="关联工单 ID",
     )
     env_type = Column(
         String(50),
         nullable=False,
         index=True,
-        comment="环境类型：cluster/host/vm/network/alert/task"
+        comment="环境类型：cluster/host/vm/network/alert/task",
     )
     env_data = Column(
         JSONB,
         nullable=False,
-        comment="环境数据 JSONB 内容，结构随 env_type 变化"
+        comment="环境数据 JSONB 内容，结构随 env_type 变化",
     )
     collected_at = Column(
-        String(32),
+        DateTime(timezone=True),
         nullable=True,
-        comment="数据采集时间（ISO 8601 格式）"
+        comment="数据采集时间",
     )
 
     def __repr__(self):

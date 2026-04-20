@@ -96,7 +96,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // === 环境数据采集状态 ===
   const collectionState = ref<'idle' | 'collecting' | 'success' | 'error'>('idle')
-  const collectionProgress = ref<Record<string, 'pending' | 'done' | 'error'>>({})
+  const collectionProgress = ref<Record<string, 'pending' | 'collecting' | 'done' | 'empty' | 'error'>>({})
   const environmentData = ref<EnvironmentResponse[]>([])
   const environmentContext = ref<EnvironmentContextResponse | null>(null)
 
@@ -675,23 +675,23 @@ export const useChatStore = defineStore('chat', () => {
       const res = await environmentApi.getContext(caseId)
       environmentContext.value = res.data
 
-      // 更新进度状态
+      // 更新进度状态（区分 'done' 有数据、'empty' 无数据、'error' 失败）
       if (res.data.env_info && Object.keys(res.data.env_info).length > 0) {
         collectionProgress.value.cluster = 'done'
       } else {
-        collectionProgress.value.cluster = 'error'
+        collectionProgress.value.cluster = 'empty'  // 成功但无数据
       }
 
       if (res.data.alert_logs && res.data.alert_logs.length > 0) {
         collectionProgress.value.alert = 'done'
       } else {
-        collectionProgress.value.alert = 'pending' // 无告警也算成功，只是没有数据
+        collectionProgress.value.alert = 'empty'  // 无告警也算成功
       }
 
       if (res.data.task_logs && res.data.task_logs.length > 0) {
         collectionProgress.value.task = 'done'
       } else {
-        collectionProgress.value.task = 'pending'
+        collectionProgress.value.task = 'empty'  // 无任务也算成功
       }
 
       // 刷新列表

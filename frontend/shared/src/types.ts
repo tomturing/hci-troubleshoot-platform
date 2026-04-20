@@ -139,8 +139,9 @@ export interface EnvironmentResponse {
   case_id: string
   env_type: EnvType
   env_data: Record<string, unknown>
-  collected_at: string | null
-  created_at: string
+  collected_at: string | null  // ISO 8601 datetime
+  created_at: string  // ISO 8601 datetime
+  updated_at: string  // ISO 8601 datetime
   trace_id: string | null
 }
 
@@ -149,7 +150,7 @@ export interface EnvironmentCreate {
   case_id: string
   env_type: EnvType
   env_data: Record<string, unknown>
-  collected_at?: string
+  collected_at?: string  // ISO 8601 datetime，可选
 }
 
 /** 工单环境数据列表响应 */
