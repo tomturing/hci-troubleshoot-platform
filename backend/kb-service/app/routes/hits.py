@@ -191,8 +191,8 @@ async def decrement_kbd_hit(
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="服务未就绪")
 
-    from sqlalchemy import func
     from shared.utils.trace import get_current_trace_id
+    from sqlalchemy import func
     trace_id = get_current_trace_id()
 
     async with _db_manager.async_session_factory() as session:

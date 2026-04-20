@@ -869,7 +869,8 @@ class ConversationService:
             case_id: 工单 ID（用于 case 级去重检查）
             category_info: 分类信息 {"code": "虚拟机-003", "name": "虚拟机开机失败"}
         """
-        from sqlalchemy import select, update as sa_update
+        from sqlalchemy import select
+        from sqlalchemy import update as sa_update
 
         from ..models.conversation import Conversation as ConversationModel
 
@@ -968,7 +969,8 @@ class ConversationService:
             case_id: 工单 ID（用于 case 级去重）
             sop_document_id: SOP 文档 ID（来自 knowledge_retriever audit_meta）
         """
-        from sqlalchemy import select, update as sa_update
+        from sqlalchemy import select
+        from sqlalchemy import update as sa_update
 
         from ..models.conversation import Conversation as ConversationModel
 
