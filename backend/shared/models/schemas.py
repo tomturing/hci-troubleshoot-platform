@@ -210,3 +210,58 @@ class PoolStatusResponse(BaseModel):
     def is_exhausted(self) -> bool:
         """池是否耗尽（无空闲且有活跃 Pod，可能存在资源泄漏）"""
         return self.idle == 0 and self.active > 0
+
+
+# ──────────────────────────────────────────────
+# Environment 服务契约模型（Custom-UI 数据采集）
+# ──────────────────────────────────────────────
+
+
+class EnvType(StrEnum):
+    """环境数据类型枚举"""
+
+    CLUSTER = "cluster"      # 集群基本信息
+    HOST = "host"            # 主机配置列表
+    VM = "vm"                # 虚拟机列表
+    NETWORK = "network"      # 网络拓扑
+    ALERT = "alert"          # 告警列表（用于 S0 Prompt）
+    TASK = "task"            # 任务状态列表（用于 S0 Prompt）
+
+
+class EnvironmentCreate(BaseModel):
+    """创建环境数据请求"""
+
+    case_id: str = Field(..., description="关联工单 ID")
+    env_type: EnvType = Field(..., description="环境数据类型")
+    env_data: dict = Field(..., description="环境数据 JSONB 内容")
+    collected_at: str | None = Field(None, description="数据采集时间（ISO 8601）")
+
+
+class EnvironmentResponse(BaseModel):
+    """环境数据响应"""
+
+    environment_id: UUID
+    case_id: str
+    env_type: str
+    env_data: dict
+    collected_at: str | None
+    created_at: datetime
+    trace_id: str | None
+
+    class Config:
+        from_attributes = True
+
+
+class EnvironmentListResponse(BaseModel):
+    """工单环境数据列表响应"""
+
+    items: list[EnvironmentResponse] = []
+    total: int = 0
+
+
+class EnvironmentContextResponse(BaseModel):
+    """S0 阶段 Prompt 构建所需的环境上下文响应"""
+
+    env_info: dict = Field(default_factory=dict, description="环境基本信息")
+    alert_logs: list[dict] = Field(default_factory=list, description="告警日志列表")
+    task_logs: list[dict] = Field(default_factory=list, description="任务日志列表")
