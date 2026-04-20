@@ -32,7 +32,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: patch
-          image: quay.io/argoproj/argocd:v3.3.6
+          image: quay.io/argoproj/argocd:v3.0.8
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
