@@ -6,6 +6,7 @@ from .assistant_evaluation import AssistantEvaluation
 from .case import Case, CaseStatus, CloseReason
 from .conversation import Conversation
 from .customer import Customer
+from .environment import Environment
 from .prompt_audit import PromptAudit
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "Customer",
     "AssistantEvaluation",
     "PromptAudit",
+    "Environment",
 ]

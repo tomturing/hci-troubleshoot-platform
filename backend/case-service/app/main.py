@@ -17,7 +17,7 @@ from shared.utils.metrics import HTTPMetricsMiddleware
 from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
-from app.routes import cases
+from app.routes import cases, environments
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
 
     # 兼容现有路由注入方式
     cases.set_database_manager(database_manager)
+    environments.set_database_manager(database_manager)
 
     yield
 
@@ -67,6 +68,7 @@ register_exception_handlers(app)
 
 # 注册路由
 app.include_router(cases.router)
+app.include_router(environments.router)
 
 
 @app.get("/metrics")
