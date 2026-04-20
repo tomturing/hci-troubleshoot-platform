@@ -358,6 +358,7 @@ class KnowledgeRetriever:
         has_sop = False
         kb_chunks_count = 0
         kb_top_score = None
+        sop_document_id: int | None = None  # T7: 提取 SOP 文档 ID 用于 hit_count 统计
 
         if route_result:
             track = route_result.get("track", "human_escalation")
@@ -367,6 +368,8 @@ class KnowledgeRetriever:
             if track == "sop" and results:
                 sop_content = results[0].get("content_md", "")
                 sop_title = results[0].get("title", "SOP 排障手册")
+                # T7: 提取 SOP 文档 ID（用于写入 conversation.sop_document_id 和 hit_count +1）
+                sop_document_id = results[0].get("id")
                 base_sections.append(
                     SEGMENT_SOP_REFERENCE.format(
                         sop_source=sop_title,
@@ -475,6 +478,7 @@ class KnowledgeRetriever:
             "category_id": category_code,  # 新增：意图识别返回的分类编码
             "category_score": category_score,  # 新增：意图识别置信度
             "needs_review": needs_review_from_intent,  # 新增：是否需要人工确认
+            "sop_document_id": sop_document_id,  # T7: SOP 文档 ID（None 表示未命中 SOP）
         }
 
         return "\n\n".join(base_sections), audit_meta

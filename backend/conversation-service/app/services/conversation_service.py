@@ -281,6 +281,17 @@ class ConversationService:
 
         system_prompt, _audit_meta = await self._build_system_prompt(content, case_id, diagnostic_stage=current_stage)
 
+        # T7: 若本次检索命中了 SOP，异步写入 conversation.sop_document_id 并更新 hit_count
+        sop_document_id_from_meta = _audit_meta.get("sop_document_id") if _audit_meta else None
+        if sop_document_id_from_meta is not None:
+            asyncio.create_task(
+                self._update_sop_usage(
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    sop_document_id=sop_document_id_from_meta,
+                )
+            )
+
         # 3. 获取历史上下文 (最近 20 条)
         # 注意：必须使用独立 session，避免请求作用域 session 在流式传输期间长期持有事务锁
         # 导致后续 INSERT（包括 save_assistant_message 背景任务）等待锁无法落库
@@ -928,6 +939,86 @@ class ConversationService:
                 message=f"会话分类更新失败：{e}",
                 conversation_id=str(conversation_id),
                 category_info=category_info,
+            )
+
+    async def _update_sop_usage(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        sop_document_id: int,
+    ) -> None:
+        """
+        写入 conversation.sop_document_id 并触发 SOP hit_count +1（fire-and-forget 后台任务）
+
+        Case 级去重：同一 case 已有 conversation 写入相同 sop_document_id，跳过 hit +1。
+
+        Args:
+            conversation_id: 当前会话 ID
+            case_id: 工单 ID（用于 case 级去重）
+            sop_document_id: SOP 文档 ID（来自 knowledge_retriever audit_meta）
+        """
+        from sqlalchemy import select, update as sa_update
+
+        from ..models.conversation import Conversation as ConversationModel
+
+        try:
+            # case 级去重：检查同 case 其他 conversation 是否已写入相同 sop_document_id
+            already_hit = False
+            if self.session_factory:
+                async with self.session_factory() as dedup_session:
+                    result = await dedup_session.execute(
+                        select(ConversationModel.conversation_id)
+                        .where(
+                            ConversationModel.case_id == case_id,
+                            ConversationModel.sop_document_id == sop_document_id,
+                            ConversationModel.conversation_id != conversation_id,
+                        )
+                        .limit(1)
+                    )
+                    already_hit = result.scalar_one_or_none() is not None
+
+            if already_hit:
+                logger.info(
+                    event="sop_hit_dedup_skipped",
+                    message=f"case {case_id} 已有其他 conversation 命中 SOP {sop_document_id}，跳过计数",
+                    conversation_id=str(conversation_id),
+                    case_id=case_id,
+                    sop_document_id=sop_document_id,
+                )
+
+            # 写入 conversation.sop_document_id（无论是否去重都写）
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    await session.execute(
+                        sa_update(ConversationModel)
+                        .where(ConversationModel.conversation_id == conversation_id)
+                        .values(sop_document_id=sop_document_id)
+                    )
+                    await session.commit()
+
+            logger.info(
+                event="conversation_sop_document_id_updated",
+                message=f"会话 SOP 文档 ID 已写入：{sop_document_id}",
+                conversation_id=str(conversation_id),
+                sop_document_id=sop_document_id,
+            )
+
+            # 触发 SOP hit_count +1（仅 case 首次）
+            if self.kb_client and not already_hit:
+                await self.kb_client.increment_sop_hit(sop_document_id)
+                logger.info(
+                    event="sop_hit_count_updated",
+                    message=f"SOP 命中计数已更新：{sop_document_id}",
+                    sop_document_id=sop_document_id,
+                    case_id=case_id,
+                )
+
+        except Exception as e:
+            logger.warning(
+                event="sop_usage_update_error",
+                message=f"SOP 使用记录更新失败：{e}",
+                conversation_id=str(conversation_id),
+                sop_document_id=sop_document_id,
             )
 
     # ─── S0 失败兜底 (v2) ────────────────────────────────────────────────────
