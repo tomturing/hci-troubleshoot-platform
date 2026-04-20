@@ -4,8 +4,8 @@
 
 import { defineStore } from 'pinia'
 import { ref, computed, nextTick } from 'vue'
-import { createApiClient, createCaseApi, createConversationApi, createAssistantApi } from '@hci/shared'
-import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse } from '@hci/shared'
+import { createApiClient, createCaseApi, createConversationApi, createAssistantApi, createEnvironmentApi } from '@hci/shared'
+import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
 import { checkBridgeRunning, type BridgeStatus } from '@/api/terminal'
@@ -32,6 +32,7 @@ export const useChatStore = defineStore('chat', () => {
   const conversationApi = createConversationApi(apiClient)
   const assistantApi = createAssistantApi(apiClient)
   const evaluateApi = createEvaluateApi(apiClient)
+  const environmentApi = createEnvironmentApi(apiClient)
 
   // 是否显示助手选择器（v2.1：从后端 API 响应获取）
   const showAssistantSelector = ref(false)
@@ -92,6 +93,12 @@ export const useChatStore = defineStore('chat', () => {
 
   // Bridge 运行状态
   const bridgeStatus = ref<BridgeStatus>('not_running')
+
+  // === 环境数据采集状态 ===
+  const collectionState = ref<'idle' | 'collecting' | 'success' | 'error'>('idle')
+  const collectionProgress = ref<Record<string, 'pending' | 'collecting' | 'done' | 'empty' | 'error'>>({})
+  const environmentData = ref<EnvironmentResponse[]>([])
+  const environmentContext = ref<EnvironmentContextResponse | null>(null)
 
   // 计算属性
   const hasActiveCase = computed(() => {
@@ -652,6 +659,76 @@ export const useChatStore = defineStore('chat', () => {
     sshErrorMessage.value = ''
   }
 
+  /** 采集环境数据（SSH 连接成功后自动调用或手动触发） */
+  async function collectEnvironmentData(caseId: string) {
+    if (collectionState.value === 'collecting') return
+
+    collectionState.value = 'collecting'
+    collectionProgress.value = {
+      cluster: 'pending',
+      alert: 'pending',
+      task: 'pending',
+    }
+
+    try {
+      // 获取环境上下文（包含 cluster/alert/task）
+      const res = await environmentApi.getContext(caseId)
+      environmentContext.value = res.data
+
+      // 更新进度状态（区分 'done' 有数据、'empty' 无数据、'error' 失败）
+      if (res.data.env_info && Object.keys(res.data.env_info).length > 0) {
+        collectionProgress.value.cluster = 'done'
+      } else {
+        collectionProgress.value.cluster = 'empty'  // 成功但无数据
+      }
+
+      if (res.data.alert_logs && res.data.alert_logs.length > 0) {
+        collectionProgress.value.alert = 'done'
+      } else {
+        collectionProgress.value.alert = 'empty'  // 无告警也算成功
+      }
+
+      if (res.data.task_logs && res.data.task_logs.length > 0) {
+        collectionProgress.value.task = 'done'
+      } else {
+        collectionProgress.value.task = 'empty'  // 无任务也算成功
+      }
+
+      // 刷新列表
+      const listRes = await environmentApi.listByCase(caseId)
+      environmentData.value = listRes.data.items
+      collectionState.value = 'success'
+
+      console.log('[collectEnvironmentData] 采集完成', environmentData.value.length, '条数据')
+    } catch (e: any) {
+      collectionState.value = 'error'
+      collectionProgress.value = { cluster: 'error', alert: 'error', task: 'error' }
+      console.error('[collectEnvironmentData] 采集失败', e)
+    }
+  }
+
+  /** 手动刷新环境数据 */
+  async function refreshEnvironmentData() {
+    if (!currentCase.value) return
+    await collectEnvironmentData(currentCase.value.case_id)
+  }
+
+  /** 提交环境数据（aClient 采集后调用） */
+  async function submitEnvironmentData(data: { case_id: string; env_type: EnvType; env_data: Record<string, unknown>; collected_at?: string }) {
+    try {
+      const res = await environmentApi.create(data)
+      // 刷新列表
+      if (currentCase.value) {
+        const listRes = await environmentApi.listByCase(currentCase.value.case_id)
+        environmentData.value = listRes.data.items
+      }
+      return res.data
+    } catch (e: any) {
+      console.error('[submitEnvironmentData] 提交失败', e)
+      throw e
+    }
+  }
+
   return {
     messages,
     currentCase,
@@ -715,5 +792,13 @@ export const useChatStore = defineStore('chat', () => {
     initialize,
     sendMessage,
     startNewConversation,
+    // 环境数据采集
+    collectionState,
+    collectionProgress,
+    environmentData,
+    environmentContext,
+    collectEnvironmentData,
+    refreshEnvironmentData,
+    submitEnvironmentData,
   }
 })

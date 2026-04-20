@@ -129,6 +129,27 @@ def _is_fetched(support_id: str) -> bool:
         return False
 
 
+def _is_fetch_failed(support_id: str) -> bool:
+    """检查是否有 fetch.failed 标记"""
+    case_dir = _case_dir(support_id)
+    return (case_dir / "fetch.failed").exists()
+
+
+def _has_image_download_failed(support_id: str) -> bool:
+    """检查是否有图片下载失败的标记（img_N.failed）"""
+    case_dir = _case_dir(support_id)
+    return any(case_dir.glob("img_*.failed"))
+
+
+def get_failed_fetch_ids(case_ids: list[str]) -> list[str]:
+    """从案例列表中筛选出抓取失败的案例（有 fetch.failed 或 img_N.failed 标记）"""
+    failed = []
+    for cid in case_ids:
+        if _is_fetch_failed(cid) or _has_image_download_failed(cid):
+            failed.append(cid)
+    return failed
+
+
 def _write_raw(support_id: str, rows: dict[str, Any]) -> None:
     """写入 raw.json（使用文件锁防并发冲突）"""
     case_dir = _case_dir(support_id)
