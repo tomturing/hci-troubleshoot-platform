@@ -15,6 +15,12 @@ scripts/kbd/run.py — KBD 知识生产管道 CLI 入口（API 调用版）
   python -m scripts.kbd.run import --excel
   python -m scripts.kbd.run classify --excel
 
+  # 从上次中断处继续（断点续传）
+  python -m scripts.kbd.run pipeline --excel --resume
+
+  # 仅处理失败的案例
+  python -m scripts.kbd.run vision --excel --failed-only
+
   # 强制重新处理（覆盖已完成的记录）
   python -m scripts.kbd.run pipeline --excel --force
 
@@ -31,6 +37,7 @@ import asyncio
 import json
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -39,12 +46,59 @@ from .config import settings
 from .fetcher import read_ids_from_excel
 from .pipeline import Stage, run_from_excel
 
-# 日志配置
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
-)
+
+# ─── 日志配置（终端 + 文件双输出）────────────────────────────────────────────────
+
+def _setup_logging(run_id: str | None = None) -> str:
+    """
+    配置日志：终端输出 + 文件持久化。
+
+    Args:
+        run_id: 可选的 run_id，不传则自动生成（YYYYMMDD_HHMMSS）
+
+    Returns:
+        实际使用的 run_id
+    """
+    if run_id is None:
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # 确保 logs 目录存在
+    settings.KBD_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    log_path = settings.KBD_LOGS_DIR / f"kbd_{run_id}.log"
+
+    # 配置 root logger，影响所有子模块（kbd.run, kbd.pipeline, kbd.fetcher 等）
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # 清除已有 handlers（避免重复）
+    root_logger.handlers.clear()
+
+    # 日志格式
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    # StreamHandler（终端输出）
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(formatter)
+    root_logger.addHandler(stream_handler)
+
+    # FileHandler（文件持久化，DEBUG 级别更详细）
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+    logger = logging.getLogger("kbd.run")
+    logger.info("日志初始化完成 run_id=%s log_path=%s", run_id, log_path)
+
+    return run_id
+
+
+# 模块级别的 logger（用于初始化前的日志）
 logger = logging.getLogger("kbd.run")
 
 
@@ -99,7 +153,7 @@ def _get_case_ids(args: argparse.Namespace) -> list[str]:
         sys.exit(1)
 
 
-async def _cmd_pipeline(args: argparse.Namespace) -> None:
+async def _cmd_pipeline(args: argparse.Namespace, run_id: str) -> None:
     """执行完整流水线（或指定 stages）"""
     stages = _parse_stages(getattr(args, "stages", None))
 
@@ -108,44 +162,80 @@ async def _cmd_pipeline(args: argparse.Namespace) -> None:
     if args.override_status:
         override_status = [s.strip() for s in args.override_status.split(",")]
 
+    # 处理 resume 参数
+    resume = getattr(args, "resume", False)
+    resume_run_id = getattr(args, "resume_run_id", None)
+    failed_only = getattr(args, "failed_only", False)
+
     if args.excel and not args.ids and not args.id_file:
-        stats = await run_from_excel(
+        stats, actual_run_id = await run_from_excel(
             stages=stages,
             force_fetch=args.force_fetch,
             override=args.override,
             override_status=override_status,
             limit=args.limit,
+            resume=resume,
+            resume_run_id=resume_run_id,
+            failed_only=failed_only,
+            run_id=run_id,
         )
     else:
         case_ids = _get_case_ids(args)
         from .pipeline import run_pipeline
-        stats = await run_pipeline(
+        stats, actual_run_id = await run_pipeline(
             case_ids,
             stages=stages,
             force_fetch=args.force_fetch,
             override=args.override,
             override_status=override_status,
+            resume=resume,
+            resume_run_id=resume_run_id,
+            failed_only=failed_only,
+            run_id=run_id,
         )
     print("\n─── 流水线完成 ───")
+    print(f"run_id: {actual_run_id}")
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
-async def _cmd_fetch(args: argparse.Namespace) -> None:
+async def _cmd_fetch(args: argparse.Namespace, run_id: str) -> None:
     """Stage 1：抓取（文件存储，不依赖数据库）"""
     from .fetcher import fetch_batch
 
     case_ids = _get_case_ids(args)
+
+    # --failed-only 参数：仅处理抓取失败的案例
+    failed_only = getattr(args, "failed_only", False)
+    if failed_only:
+        from .fetcher import get_failed_fetch_ids
+        logger.info("--failed-only 模式：筛选 Fetch 失败案例")
+        case_ids = get_failed_fetch_ids(case_ids)
+        if not case_ids:
+            print("没有抓取失败的案例需要处理")
+            return
+
+    logger.info("Fetch 处理开始 cases=%d run_id=%s", len(case_ids), run_id)
     stats = await fetch_batch(case_ids, force=args.force)
+    print(f"run_id: {run_id}")
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
-async def _cmd_vision(args: argparse.Namespace) -> None:
+async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
     """Stage 2：图片语义化"""
     import asyncpg
 
-    from .image_proc import process_images_batch
+    from .image_proc import process_images_batch, get_failed_vision_ids
 
     case_ids = _get_case_ids(args)
+
+    # --failed-only 参数：仅处理失败的案例
+    failed_only = getattr(args, "failed_only", False)
+    if failed_only:
+        logger.info("--failed-only 模式：筛选 Vision 失败案例")
+        case_ids = get_failed_vision_ids(case_ids)
+        if not case_ids:
+            print("没有 Vision 失败的案例需要处理")
+            return
 
     # 检查已抓取的案例
     from .fetcher import _is_fetched
@@ -155,15 +245,18 @@ async def _cmd_vision(args: argparse.Namespace) -> None:
         print("没有已抓取的案例需要处理")
         return
 
+    logger.info("Vision 处理开始 cases=%d run_id=%s", len(ready_ids), run_id)
+
     pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
     try:
         stats = await process_images_batch(ready_ids, pool)
+        print(f"run_id: {run_id}")
         print(json.dumps(stats, ensure_ascii=False, indent=2))
     finally:
         await pool.close()
 
 
-async def _cmd_import(args: argparse.Namespace) -> None:
+async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
     """Stage 3：MD 转换 + 入库（通过 API）"""
     from .importer import import_batch
 
@@ -206,6 +299,7 @@ async def _cmd_import(args: argparse.Namespace) -> None:
     if args.override_status:
         override_status = [s.strip() for s in args.override_status.split(",")]
 
+    logger.info("Import 处理开始 cases=%d run_id=%s", len(ready_ids), run_id)
     async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
         stats = await import_batch(
             ready_ids,
@@ -214,10 +308,11 @@ async def _cmd_import(args: argparse.Namespace) -> None:
             override_status=override_status,
             client=client,
         )
+        print(f"run_id: {run_id}")
         print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
-async def _cmd_classify(args: argparse.Namespace) -> None:
+async def _cmd_classify(args: argparse.Namespace, run_id: str) -> None:
     """Stage 4：AI 分类（通过 API）"""
     import asyncpg
 
@@ -246,18 +341,21 @@ async def _cmd_classify(args: argparse.Namespace) -> None:
             print("没有需要分类的案例")
             return
 
+        logger.info("Classify 处理开始 cases=%d run_id=%s", len(classify_case_ids), run_id)
         stats = await classify_batch(classify_case_ids, pool)
+        print(f"run_id: {run_id}")
         print(json.dumps(stats, ensure_ascii=False, indent=2))
     finally:
         await pool.close()
 
 
-async def _cmd_review_list(args: argparse.Namespace) -> None:
+async def _cmd_review_list(args: argparse.Namespace, run_id: str) -> None:
     """列出待审核案例（调用 admin-service API）"""
     if not settings.INTERNAL_API_TOKEN:
         print("错误：INTERNAL_API_TOKEN 未配置")
         sys.exit(1)
 
+    logger.info("Review-list 处理开始 run_id=%s", run_id)
     async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
         url = f"{settings.KB_SERVICE_URL}/api/admin/kb/pending"
         headers = {
@@ -337,6 +435,23 @@ def build_parser() -> argparse.ArgumentParser:
             "不传=默认仅draft；'all'=所有状态；'draft,published'=仅指定状态"
         ),
     )
+    # 进度追踪参数
+    p_pipeline.add_argument(
+        "--resume",
+        action="store_true",
+        help="从上次中断处继续，自动跳过已完成的案例",
+    )
+    p_pipeline.add_argument(
+        "--resume-run-id",
+        type=str,
+        default=None,
+        help="指定要恢复的 run_id（不传则自动查找最新的 progress 文件）",
+    )
+    p_pipeline.add_argument(
+        "--failed-only",
+        action="store_true",
+        help="仅处理失败的案例（有 .failed 标记或识别为无文字）",
+    )
 
     # 单独 stage 子命令
     for name, help_text in [
@@ -354,6 +469,29 @@ def build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="强制重新抓取已完成的案例",
             )
+            p_sub.add_argument(
+                "--resume",
+                action="store_true",
+                help="从上次中断处继续",
+            )
+            p_sub.add_argument(
+                "--resume-run-id",
+                type=str,
+                default=None,
+                help="指定要恢复的 run_id",
+            )
+            p_sub.add_argument(
+                "--failed-only",
+                action="store_true",
+                help="仅处理抓取失败的案例",
+            )
+        # vision 子命令的 failed-only 参数
+        if name == "vision":
+            p_sub.add_argument(
+                "--failed-only",
+                action="store_true",
+                help="仅处理 Vision 失败的案例（.desc.failed 或识别为无文字）",
+            )
         # import 子命令的 override 参数
         if name == "import":
             p_sub.add_argument(
@@ -369,6 +507,11 @@ def build_parser() -> argparse.ArgumentParser:
                     "仅覆盖指定状态的记录（逗号分隔）。"
                     "不传=默认仅draft；'all'=所有状态；'draft,published'=仅指定状态"
                 ),
+            )
+            p_sub.add_argument(
+                "--failed-only",
+                action="store_true",
+                help="仅处理导入失败的案例",
             )
 
     # review-list 子命令
@@ -400,11 +543,18 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
+    # config 命令不需要日志初始化
     if args.command == "config":
         _cmd_config(args)
         return
 
-    asyncio.run(cmd(args))
+    # 初始化日志（双 Handler：终端 + 文件）
+    # 如果有 --resume-run-id 参数，使用它；否则自动生成
+    resume_run_id = getattr(args, "resume_run_id", None)
+    run_id = _setup_logging(resume_run_id)
+
+    # 执行异步命令，传递 run_id
+    asyncio.run(cmd(args, run_id))
 
 
 if __name__ == "__main__":
