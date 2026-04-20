@@ -208,6 +208,8 @@ CREATE TABLE IF NOT EXISTS environment (
     env_type varchar(50) NOT NULL,
     env_data jsonb NOT NULL,
     collected_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     trace_id varchar(64),
     CONSTRAINT fk_environment_case_id FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
     CONSTRAINT environment_pkey PRIMARY KEY (environment_id)
@@ -216,9 +218,11 @@ CREATE TABLE IF NOT EXISTS environment (
 COMMENT ON TABLE environment IS '环境信息表 — 存储前端采集的 HCI 现场环境数据，JSONB 全量存储';
 COMMENT ON COLUMN environment.environment_id IS '环境信息主键，全局唯一';
 COMMENT ON COLUMN environment.case_id IS '关联工单，ON DELETE CASCADE';
-COMMENT ON COLUMN environment.env_type IS '环境类型（如 cluster/host/vm/network）';
+COMMENT ON COLUMN environment.env_type IS '环境类型（如 cluster/host/vm/network/alert/task）';
 COMMENT ON COLUMN environment.env_data IS '环境数据，JSONB 全量存储，结构根据 env_type 不同而变化';
-COMMENT ON COLUMN environment.collected_at IS '数据采集时间';
+COMMENT ON COLUMN environment.collected_at IS '数据采集时间（可空，由客户端传入）';
+COMMENT ON COLUMN environment.created_at IS '记录创建时间';
+COMMENT ON COLUMN environment.updated_at IS '记录更新时间';
 COMMENT ON COLUMN environment.trace_id IS '采集请求 trace ID';
 
 -- 索引: environment
@@ -226,8 +230,8 @@ COMMENT ON COLUMN environment.trace_id IS '采集请求 trace ID';
 CREATE INDEX IF NOT EXISTS idx_environment_case_id ON environment (case_id);
 -- 类型过滤
 CREATE INDEX IF NOT EXISTS idx_environment_type ON environment (env_type);
--- 时间排序
-CREATE INDEX IF NOT EXISTS idx_environment_collected_at ON environment (collected_at DESC);
+-- 时间排序（collected_at 可空，NULLS LAST 确保 NULL 不排在最前）
+CREATE INDEX IF NOT EXISTS idx_environment_collected_at ON environment (collected_at DESC NULLS LAST);
 -- JSONB 内容检索
 CREATE INDEX IF NOT EXISTS idx_environment_data_gin ON environment USING GIN (env_data);
 -- O-001: idx_environment_trace_id 已移除（环境表链路追踪通过日志/Tempo 查找，不走 DB）

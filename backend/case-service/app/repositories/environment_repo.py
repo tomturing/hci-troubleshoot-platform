@@ -26,7 +26,7 @@ class EnvironmentRepository:
         result = await self.session.execute(
             select(Environment)
             .where(Environment.case_id == case_id)
-            .order_by(Environment.collected_at.desc())
+            .order_by(Environment.collected_at.desc().nullslast())
         )
         return list(result.scalars().all())
 
@@ -36,7 +36,7 @@ class EnvironmentRepository:
             select(Environment)
             .where(Environment.case_id == case_id)
             .where(Environment.env_type == env_type)
-            .order_by(Environment.collected_at.desc())
+            .order_by(Environment.collected_at.desc().nullslast())
             .limit(1)
         )
         return result.scalar_one_or_none()
