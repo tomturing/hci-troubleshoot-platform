@@ -359,6 +359,7 @@ class KnowledgeRetriever:
         kb_chunks_count = 0
         kb_top_score = None
         sop_document_id: int | None = None  # T7: 提取 SOP 文档 ID 用于 hit_count 统计
+        kbd_candidate_ids: list[int] = []   # T8: 提取 KBD 候选 ID 列表，用于 S4 关联 resolved_kbd
 
         if route_result:
             track = route_result.get("track", "human_escalation")
@@ -394,7 +395,11 @@ class KnowledgeRetriever:
                     content = item.get("content_md", "")
                     title = item.get("title", "未知文档")
                     support_id = item.get("support_id", "")
-                    meta = f"案例 #{support_id}" if support_id else f"来源：{title}"
+                    # T8: 提取 KBD 数据库主键（用于 S4 resolved_kbd_entry_id 关联）
+                    kbd_item_id = item.get("id")
+                    if kbd_item_id is not None:
+                        kbd_candidate_ids.append(int(kbd_item_id))
+                    meta = f"案例 #{support_id}（KBD-{kbd_item_id}）" if support_id else f"来源：{title}（KBD-{kbd_item_id}）"
                     if chunks_total_chars + len(content) > settings.KB_CONTEXT_MAX_CHARS:
                         break
                     chunks_text_parts.append(f"[{i}] {meta}\n{content}")
@@ -479,6 +484,7 @@ class KnowledgeRetriever:
             "category_score": category_score,  # 新增：意图识别置信度
             "needs_review": needs_review_from_intent,  # 新增：是否需要人工确认
             "sop_document_id": sop_document_id,  # T7: SOP 文档 ID（None 表示未命中 SOP）
+            "kbd_candidate_ids": kbd_candidate_ids,  # T8: KBD 候选 ID 列表（用于 S4 resolved_kbd）
         }
 
         return "\n\n".join(base_sections), audit_meta

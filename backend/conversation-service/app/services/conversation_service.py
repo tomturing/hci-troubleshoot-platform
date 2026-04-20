@@ -392,6 +392,17 @@ class ConversationService:
                                 category_info=category_info,
                             )
                         )
+                    # S3→S4 转换（实为 AI 输出根因时）：提取关联 KBD，写 resolved_kbd_entry_id
+                    # 注意：new_stage 是目标阶段，若从 S3 转换到 S4，current_stage 为 S3
+                    if new_stage == "S4" and current_stage == "S3":
+                        kbd_entry_id = self._conversation_manager.extract_resolved_kbd(full_reply)
+                        asyncio.create_task(
+                            self._update_resolved_kbd(
+                                conversation_id=conversation_id,
+                                case_id=case_id,
+                                kbd_entry_id=kbd_entry_id,
+                            )
+                        )
         except Exception as e:
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="error").inc()
             if isinstance(e, asyncio.CancelledError):
@@ -1019,6 +1030,73 @@ class ConversationService:
                 message=f"SOP 使用记录更新失败：{e}",
                 conversation_id=str(conversation_id),
                 sop_document_id=sop_document_id,
+            )
+
+    async def _update_resolved_kbd(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        kbd_entry_id: int | None,
+    ) -> None:
+        """
+        写入 conversation.resolved_kbd_entry_id 并触发 KBD hit_count +1（fire-and-forget）
+
+        S4 根因确认后调用：
+        - kbd_entry_id 非 None → 写入字段 + hit +1
+        - kbd_entry_id 为 None → 新问题未收录，仅记录日志
+
+        Args:
+            conversation_id: 当前会话 ID
+            case_id: 工单 ID
+            kbd_entry_id: KBD 条目 ID（None 表示新问题）
+        """
+        from sqlalchemy import update as sa_update
+
+        from ..models.conversation import Conversation as ConversationModel
+
+        if kbd_entry_id is None:
+            logger.info(
+                event="resolved_kbd_null",
+                message=f"case {case_id} 根因确认为新问题，resolved_kbd_entry_id 为 NULL",
+                conversation_id=str(conversation_id),
+                case_id=case_id,
+            )
+            return
+
+        try:
+            # 写入 conversation.resolved_kbd_entry_id
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    await session.execute(
+                        sa_update(ConversationModel)
+                        .where(ConversationModel.conversation_id == conversation_id)
+                        .values(resolved_kbd_entry_id=kbd_entry_id)
+                    )
+                    await session.commit()
+
+            logger.info(
+                event="conversation_resolved_kbd_updated",
+                message=f"会话 resolved_kbd_entry_id 已写入：{kbd_entry_id}",
+                conversation_id=str(conversation_id),
+                kbd_entry_id=kbd_entry_id,
+            )
+
+            # 触发 KBD hit_count +1
+            if self.kb_client:
+                await self.kb_client.increment_kbd_hit(kbd_entry_id)
+                logger.info(
+                    event="kbd_hit_count_updated",
+                    message=f"KBD 命中计数已更新：{kbd_entry_id}",
+                    kbd_entry_id=kbd_entry_id,
+                    case_id=case_id,
+                )
+
+        except Exception as e:
+            logger.warning(
+                event="resolved_kbd_update_error",
+                message=f"resolved_kbd_entry_id 更新失败：{e}",
+                conversation_id=str(conversation_id),
+                kbd_entry_id=kbd_entry_id,
             )
 
     # ─── S0 失败兜底 (v2) ────────────────────────────────────────────────────

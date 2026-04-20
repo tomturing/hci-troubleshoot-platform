@@ -80,6 +80,9 @@ _CATEGORY_CONFIRM_PATTERN = re.compile(
     r"已确认故障分类[:：]\s*([\u4e00-\u9fa5]+-\d+)\s+([\u4e00-\u9fa5A-Za-z0-9\u4e00-\u9fa5]+)"
 )
 
+# T8: S4 根因确认中 AI 输出「关联案例：KBD-{id}」的提取正则
+_KBD_RELATED_PATTERN = re.compile(r"关联案例[:：]\s*KBD-(\d+)")
+
 # S0 阶段候选选择正则：匹配用户输入 ①②③ 或 1/2/3（带可选后缀）
 _CANDIDATE_SELECT_PATTERN = re.compile(
     r"^[\s\u3000]*([①②③]|[1-3](?:[\.、\s]|$))"
@@ -200,6 +203,30 @@ class ConversationManager:
             code = match.group(1)
             name = match.group(2)
             return {"code": code, "name": name}
+        return None
+
+    def extract_resolved_kbd(self, assistant_reply: str) -> int | None:
+        """
+        从 S4 AI 回复中提取「关联案例：KBD-{id}」标记。
+
+        AI 在 S4 确认根因时，若参考了 KBD 案例，会输出「关联案例：KBD-{id}」。
+        本方法解析该标记，返回 kbd_entry.id（整数），或 None（表示新问题未收录）。
+
+        Args:
+            assistant_reply: S4 阶段 AI 完整回复文本
+
+        Returns:
+            int: kbd_entry.id；None: 未提取到（新问题或 AI 未引用 KBD）
+        """
+        match = _KBD_RELATED_PATTERN.search(assistant_reply)
+        if match:
+            kbd_id = int(match.group(1))
+            logger.info(
+                event="s4_kbd_extracted",
+                message=f"S4 阶段提取到关联 KBD：{kbd_id}",
+                kbd_id=kbd_id,
+            )
+            return kbd_id
         return None
 
     def _should_reset(self, user_message: str) -> bool:
