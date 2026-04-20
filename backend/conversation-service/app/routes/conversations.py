@@ -8,6 +8,7 @@ import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import MessageCreate, MessageResponse
 from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceError
@@ -202,3 +203,76 @@ async def send_message(
             yield f"event: error\ndata: {error_data}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream", background=background_tasks)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin 接口：修正工单关联的根因 KBD 条目
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ResolvedKbdUpdateRequest(BaseModel):
+    """管理员修正根因 KBD 关联请求"""
+
+    kbd_entry_id: int | None = None
+
+
+@router.patch("/admin/cases/{case_id}/resolved_kbd")
+async def update_resolved_kbd(
+    case_id: str,
+    body: ResolvedKbdUpdateRequest,
+    service: ConversationService = Depends(get_conversation_service),
+):
+    """
+    [Admin] 修正工单关联的根因 KBD 条目，并自动调整 hit_count
+
+    - 若旧值非 null → 旧 KBD hit_count -1
+    - 若新值非 null → 新 KBD hit_count +1
+    """
+    from sqlalchemy import update as sa_update
+
+    from ..models.conversation import Conversation as ConversationModel
+
+    # 查找该 case 最新 conversation（按 started_at DESC 排序）
+    conversations = await service.repository.get_conversations_by_case(case_id)
+    if not conversations:
+        raise HTTPException(status_code=404, detail="未找到该工单的对话记录")
+
+    conv = conversations[0]
+    old_kbd_id = conv.resolved_kbd_entry_id
+    new_kbd_id = body.kbd_entry_id
+
+    # 字段写入（不管是否变化，确保数据一致）
+    await service.repository.session.execute(
+        sa_update(ConversationModel)
+        .where(ConversationModel.conversation_id == conv.conversation_id)
+        .values(resolved_kbd_entry_id=new_kbd_id)
+    )
+
+    # 调整 hit_count（仅当值发生变化时）
+    changed = old_kbd_id != new_kbd_id
+    if changed and kb_client:
+        if old_kbd_id is not None:
+            await kb_client.decrement_kbd_hit(old_kbd_id)
+        if new_kbd_id is not None:
+            await kb_client.increment_kbd_hit(new_kbd_id)
+
+    # 查询新 KBD 信息用于前端展示
+    kbd_info = None
+    if new_kbd_id is not None and kb_client:
+        kbd_info = await kb_client.get_kbd_info(new_kbd_id)
+
+    logger.info(
+        event="admin_resolved_kbd_updated",
+        case_id=case_id,
+        old_kbd_entry_id=old_kbd_id,
+        new_kbd_entry_id=new_kbd_id,
+        changed=changed,
+    )
+
+    return {
+        "success": True,
+        "case_id": case_id,
+        "old_kbd_entry_id": old_kbd_id,
+        "new_kbd_entry_id": new_kbd_id,
+        "changed": changed,
+        "kbd_info": kbd_info,
+    }

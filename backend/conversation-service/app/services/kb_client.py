@@ -335,3 +335,23 @@ class KBClient(InternalHTTPClient):
         except (httpx.HTTPStatusError, httpx.RequestError) as exc:
             logger.warning(event="kb_kbd_decrement_error", kbd_id=kbd_id, error=str(exc))
             return -1
+
+    async def get_kbd_info(self, kbd_id: int) -> dict | None:
+        """查询 KBD 条目基本信息（id, support_id, title），供 admin 前端展示用"""
+        try:
+            resp = await self._client.get(
+                f"/api/admin/kbd/{kbd_id}",
+                timeout=_CATEGORY_TIMEOUT,
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            return {
+                "id": data["id"],
+                "support_id": data.get("support_id", ""),
+                "title": data.get("title", ""),
+            }
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            logger.warning(event="kb_kbd_info_error", kbd_id=kbd_id, error=str(exc))
+            return None

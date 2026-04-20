@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased] - 知识命中统计（hit_count）重设计
+
+### ✨ 新功能
+
+* **kb-service**: SOP/KBD hit_count 统计接口（POST /api/kb/sop/{id}/hit，POST /api/kb/kbd/{id}/hit[/decrement]）
+* **conversation-service**: S1 阶段写入 conversation.sop_document_id，S4 根因确认写入 resolved_kbd_entry_id
+* **admin-UI (CaseDetailView)**: 工单详情页展示关联 KBD，支持管理员手动修正并自动调整 hit_count
+* **admin-UI (CategoryManageView)**: SOP/KBD 列表展示真实 hit_count 数据
+
+### 🐛 Bug 修复
+
+* **conversation-service**: 修复 kb_category.hit_count 断线重连虚增问题（case 级去重）
+* **kb-service**: KBD/SOP 列表 API 补充 hit_count 字段返回
+
+### 🗄️ Schema 变更（需执行 Atlas migrate diff）
+
+* `conversation` 表新增 `sop_document_id`、`resolved_kbd_entry_id` 字段
+* `kbd_entry` / `sop_document` 表新增 `hit_count` 字段
+
 ## [2.4.1](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.4.0...v2.4.1) (2026-04-17)
 
 
