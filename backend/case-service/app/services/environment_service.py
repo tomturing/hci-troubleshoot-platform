@@ -34,9 +34,12 @@ class EnvironmentService:
             case_id=env_create.case_id,
             env_type=env_create.env_type.value,
             env_data=env_create.env_data,
-            collected_at=env_create.collected_at,
             trace_id=trace_id,
         )
+
+        # 仅在客户端传入 collected_at 时才赋值，否则让 DB 默认值生效
+        if env_create.collected_at is not None:
+            environment.collected_at = env_create.collected_at
 
         created_env = await self.repository.create(environment)
 

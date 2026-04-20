@@ -234,7 +234,7 @@ class EnvironmentCreate(BaseModel):
     case_id: str = Field(..., description="关联工单 ID")
     env_type: EnvType = Field(..., description="环境数据类型")
     env_data: dict = Field(..., description="环境数据 JSONB 内容")
-    collected_at: str | None = Field(None, description="数据采集时间（ISO 8601）")
+    collected_at: datetime | None = Field(None, description="数据采集时间")
 
 
 class EnvironmentResponse(BaseModel):
@@ -242,10 +242,11 @@ class EnvironmentResponse(BaseModel):
 
     environment_id: UUID
     case_id: str
-    env_type: str
+    env_type: EnvType  # 使用枚举类型，确保类型安全
     env_data: dict
-    collected_at: str | None
+    collected_at: datetime | None
     created_at: datetime
+    updated_at: datetime
     trace_id: str | None
 
     class Config:

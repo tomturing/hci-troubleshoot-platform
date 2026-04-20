@@ -15,6 +15,7 @@ import type {
   MessageResponse,
   AssistantInfo,
   AssistantsResponse,
+  EnvType,
   EnvironmentCreate,
   EnvironmentResponse,
   EnvironmentListResponse,
@@ -214,7 +215,7 @@ export function createEnvironmentApi(client: AxiosInstance) {
     },
 
     /** 获取指定类型环境数据 */
-    getByType(caseId: string, envType: string) {
+    getByType(caseId: string, envType: EnvType) {
       return client.get<EnvironmentResponse>(`/environments/case/${caseId}/type/${envType}`)
     },
 
