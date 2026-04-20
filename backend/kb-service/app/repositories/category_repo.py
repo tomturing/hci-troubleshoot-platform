@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models.kb_category import KbCategory
@@ -39,14 +39,56 @@ class CategoryRepository:
         self._db = db_manager
 
     async def get_all(self) -> list[KbCategory]:
-        """获取所有分类（按 level + domain 排序）"""
+        """获取所有分类（按 level + domain 排序），含 KBD/SOP 统计"""
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
+            # 使用 LEFT JOIN + 聚合避免 per-row SubPlan（Issue 6 性能优化）
             result = await session.execute(
-                select(KbCategory)
-                .order_by(KbCategory.level, KbCategory.domain, KbCategory.code)
+                text("""
+                    SELECT
+                      c.id, c.code, c.name, c.domain, c.level, c.parent_id,
+                      c.path_labels, c.hit_count, c.is_active, c.keywords,
+                      c.source, c.version, c.created_at,
+                      kbd_stats.cnt AS published_kbd_count,
+                      sop_stats.cnt AS published_sop_count
+                    FROM kb_category c
+                    LEFT JOIN (
+                      SELECT category_id, COUNT(*) as cnt
+                      FROM kbd_entry
+                      WHERE status = 'published'
+                      GROUP BY category_id
+                    ) kbd_stats ON kbd_stats.category_id = c.code
+                    LEFT JOIN (
+                      SELECT category_id, COUNT(*) as cnt
+                      FROM sop_document
+                      WHERE status = 'published'
+                      GROUP BY category_id
+                    ) sop_stats ON sop_stats.category_id = c.code
+                    ORDER BY c.level, c.domain, c.code
+                """)
             )
-            categories = result.scalars().all()
+            rows = result.mappings().all()
+            categories = []
+            for row in rows:
+                cat = KbCategory(
+                    id=row["id"],
+                    code=row["code"],
+                    name=row["name"],
+                    domain=row["domain"],
+                    level=row["level"],
+                    parent_id=row["parent_id"],
+                    path_labels=row["path_labels"],
+                    hit_count=row["hit_count"] or 0,
+                    is_active=row["is_active"],
+                    keywords=row["keywords"] or [],
+                    source=row["source"],
+                    version=row["version"],
+                    created_at=row["created_at"],
+                )
+                # 统计字段作为动态属性存储（to_dict 时输出）
+                cat.published_kbd_count = row["published_kbd_count"] or 0
+                cat.published_sop_count = row["published_sop_count"] or 0
+                categories.append(cat)
             logger.info(
                 event="repo_get_all",
                 count=len(categories),
@@ -55,15 +97,56 @@ class CategoryRepository:
             return list(categories)
 
     async def get_all_active(self) -> list[KbCategory]:
-        """获取所有活跃分类（is_active=True）"""
+        """获取所有活跃分类（is_active=True），含 KBD/SOP 统计"""
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
+            # 使用 LEFT JOIN + 聚合避免 per-row SubPlan（Issue 6 性能优化）
             result = await session.execute(
-                select(KbCategory)
-                .where(KbCategory.is_active.is_(True))
-                .order_by(KbCategory.level, KbCategory.domain, KbCategory.code)
+                text("""
+                    SELECT
+                      c.id, c.code, c.name, c.domain, c.level, c.parent_id,
+                      c.path_labels, c.hit_count, c.is_active, c.keywords,
+                      c.source, c.version, c.created_at,
+                      kbd_stats.cnt AS published_kbd_count,
+                      sop_stats.cnt AS published_sop_count
+                    FROM kb_category c
+                    LEFT JOIN (
+                      SELECT category_id, COUNT(*) as cnt
+                      FROM kbd_entry
+                      WHERE status = 'published'
+                      GROUP BY category_id
+                    ) kbd_stats ON kbd_stats.category_id = c.code
+                    LEFT JOIN (
+                      SELECT category_id, COUNT(*) as cnt
+                      FROM sop_document
+                      WHERE status = 'published'
+                      GROUP BY category_id
+                    ) sop_stats ON sop_stats.category_id = c.code
+                    WHERE c.is_active = TRUE
+                    ORDER BY c.level, c.domain, c.code
+                """)
             )
-            categories = result.scalars().all()
+            rows = result.mappings().all()
+            categories = []
+            for row in rows:
+                cat = KbCategory(
+                    id=row["id"],
+                    code=row["code"],
+                    name=row["name"],
+                    domain=row["domain"],
+                    level=row["level"],
+                    parent_id=row["parent_id"],
+                    path_labels=row["path_labels"],
+                    hit_count=row["hit_count"] or 0,
+                    is_active=row["is_active"],
+                    keywords=row["keywords"] or [],
+                    source=row["source"],
+                    version=row["version"],
+                    created_at=row["created_at"],
+                )
+                cat.published_kbd_count = row["published_kbd_count"] or 0
+                cat.published_sop_count = row["published_sop_count"] or 0
+                categories.append(cat)
             logger.info(
                 event="repo_get_all_active",
                 count=len(categories),
