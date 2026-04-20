@@ -377,6 +377,7 @@ class ConversationService:
                         asyncio.create_task(
                             self._update_conversation_category(
                                 conversation_id=conversation_id,
+                                case_id=case_id,
                                 category_info=category_info,
                             )
                         )
@@ -830,22 +831,23 @@ class ConversationService:
     async def _update_conversation_category(
         self,
         conversation_id: uuid.UUID,
+        case_id: str,
         category_info: dict[str, str],
     ) -> None:
         """
         更新 Conversation.category_id 并增加分类命中计数（fire-and-forget 后台任务）
 
         在 S0 阶段确认分类后调用：
-        1. 更新 Conversation.category_id
-        2. 更新 Conversation.category_l1（根据分类 code 提取域）
-        3. 更新 Conversation.category_l2（分类名称）
-        4. 调用 KB Client 增加分类命中计数
+        1. 更新 Conversation.category_id / category_l1 / category_l2
+        2. Case 级去重：同一 case 已有 conversation 写入相同 category_id，跳过 hit +1
+        3. 调用 KB Client 增加分类命中计数（仅首次）
 
         Args:
             conversation_id: 会话 ID
+            case_id: 工单 ID（用于 case 级去重检查）
             category_info: 分类信息 {"code": "虚拟机-003", "name": "虚拟机开机失败"}
         """
-        from sqlalchemy import update as sa_update
+        from sqlalchemy import select, update as sa_update
 
         from ..models.conversation import Conversation as ConversationModel
 
@@ -855,6 +857,30 @@ class ConversationService:
 
             # 从 code 提取一级分类（域），如 "虚拟机-003" -> "虚拟机"
             category_l1 = code.split("-")[0] if "-" in code else ""
+
+            # case 级去重：检查同 case 其他 conversation 是否已写入相同 category_id
+            already_hit = False
+            if self.session_factory and code:
+                async with self.session_factory() as dedup_session:
+                    result = await dedup_session.execute(
+                        select(ConversationModel.conversation_id)
+                        .where(
+                            ConversationModel.case_id == case_id,
+                            ConversationModel.category_id == code,
+                            ConversationModel.conversation_id != conversation_id,
+                        )
+                        .limit(1)
+                    )
+                    already_hit = result.scalar_one_or_none() is not None
+
+            if already_hit:
+                logger.info(
+                    event="category_hit_dedup_skipped",
+                    message=f"case {case_id} 已有其他 conversation 命中分类 {code}，跳过计数",
+                    conversation_id=str(conversation_id),
+                    case_id=case_id,
+                    category_id=code,
+                )
 
             # 更新 Conversation
             if self.session_factory:
@@ -886,8 +912,8 @@ class ConversationService:
                 category_l2=name,
             )
 
-            # 增加 KB 分类命中计数
-            if self.kb_client and code:
+            # 增加 KB 分类命中计数（仅 case 首次）
+            if self.kb_client and code and not already_hit:
                 hit_count = await self.kb_client.increment_category_hit(code)
                 logger.info(
                     event="category_hit_count_updated",
