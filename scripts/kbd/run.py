@@ -62,14 +62,19 @@ def _setup_logging(run_id: str | None = None) -> str:
     if run_id is None:
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    # 安全校验：run_id必须符合 YYYYMMDD_HHMMSS 格式，防止路径穿越
+    import re
+    if not re.match(r"^\d{8}_\d{6}$", run_id):
+        raise ValueError(f"run_id 格式非法: {run_id}，必须为 YYYYMMDD_HHMMSS 格式")
+
     # 确保 logs 目录存在
     settings.KBD_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     log_path = settings.KBD_LOGS_DIR / f"kbd_{run_id}.log"
 
-    # 配置 root logger，影响所有子模块（kbd.run, kbd.pipeline, kbd.fetcher 等）
+    # 配置 root logger，DEBUG 级别以允许 DEBUG 日志通过（Handler 会进一步过滤）
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
+    root_logger.setLevel(logging.DEBUG)
 
     # 清除已有 handlers（避免重复）
     root_logger.handlers.clear()
@@ -80,7 +85,7 @@ def _setup_logging(run_id: str | None = None) -> str:
         datefmt="%H:%M:%S",
     )
 
-    # StreamHandler（终端输出）
+    # StreamHandler（终端输出，INFO 级别）
     stream_handler = logging.StreamHandler()
     stream_handler.setLevel(logging.INFO)
     stream_handler.setFormatter(formatter)
@@ -507,11 +512,6 @@ def build_parser() -> argparse.ArgumentParser:
                     "仅覆盖指定状态的记录（逗号分隔）。"
                     "不传=默认仅draft；'all'=所有状态；'draft,published'=仅指定状态"
                 ),
-            )
-            p_sub.add_argument(
-                "--failed-only",
-                action="store_true",
-                help="仅处理导入失败的案例",
             )
 
     # review-list 子命令

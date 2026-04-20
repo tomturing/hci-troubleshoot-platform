@@ -3,7 +3,7 @@ scripts/kbd/progress.py — KBD Pipeline 进度追踪模块
 
 功能：
   - 生成 run_id（YYYYMMDD_HHMMSS 格式）
-  - 保存进度到 logs/progress_{run_id}.json
+  - 保存进度到 logs/progress_{run_id}.json（原子写入）
   - 跟踪各 stage 的完成状态
   - 支持读取已有进度文件实现 resume
 
@@ -27,6 +27,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -38,19 +41,36 @@ logger = logging.getLogger("kbd.progress")
 # 所有 stage 名称
 ALL_STAGES = ["fetch", "vision", "import", "classify"]
 
+# 状态到统计字段的映射
+_STATUS_TO_STATS_KEY = {
+    "done": "completed_ids",
+    "failed": "failed_ids",
+    "skipped": "skipped_ids",
+    "pending": None,  # pending 不计入统计
+}
+
 
 def generate_run_id() -> str:
     """生成 run_id（YYYYMMDD_HHMMSS 格式）"""
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+def validate_run_id(run_id: str) -> bool:
+    """校验 run_id 格式（防止路径穿越）"""
+    return bool(re.match(r"^\d{8}_\d{6}$", run_id))
+
+
 def get_progress_path(run_id: str) -> Path:
     """获取进度文件路径"""
+    if not validate_run_id(run_id):
+        raise ValueError(f"run_id 格式非法: {run_id}")
     return settings.KBD_LOGS_DIR / f"progress_{run_id}.json"
 
 
 def get_log_path(run_id: str) -> Path:
     """获取日志文件路径"""
+    if not validate_run_id(run_id):
+        raise ValueError(f"run_id 格式非法: {run_id}")
     return settings.KBD_LOGS_DIR / f"kbd_{run_id}.log"
 
 
@@ -87,15 +107,33 @@ def init_progress(run_id: str, case_ids: list[str], stages: list[str]) -> dict[s
 
 
 def save_progress(run_id: str, progress: dict[str, Any]) -> None:
-    """保存进度到 JSON 文件"""
+    """
+    保存进度到 JSON 文件（原子写入）。
+
+    写入流程：
+    1. 写入临时文件
+    2. rename 替换目标文件（原子操作）
+    """
     settings.KBD_LOGS_DIR.mkdir(parents=True, exist_ok=True)
     path = get_progress_path(run_id)
-    path.write_text(json.dumps(progress, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 原子写入：先写临时文件，再 rename
+    content = json.dumps(progress, ensure_ascii=False, indent=2)
+    fd, tmp_path = tempfile.mkstemp(suffix=".json", dir=settings.KBD_LOGS_DIR)
+    try:
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        shutil.move(tmp_path, path)  # 原子操作
+    except Exception:
+        # 失败时清理临时文件
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
+
     logger.debug("进度已保存 path=%s", path)
 
 
 def load_progress(run_id: str) -> dict[str, Any] | None:
-    """加载已有进度文件，失败返回 None"""
+    """加载已有进度文件，失败时备份损坏文件并返回 None"""
     path = get_progress_path(run_id)
     if not path.exists():
         logger.debug("进度文件不存在 run_id=%s", run_id)
@@ -105,7 +143,10 @@ def load_progress(run_id: str) -> dict[str, Any] | None:
         logger.info("进度文件加载成功 run_id=%s cases=%d", run_id, len(data.get("cases", {})))
         return data
     except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("进度文件损坏 path=%s 原因=%s", path, exc)
+        # 备份损坏文件以便排查
+        backup_path = path.with_suffix(f".corrupted_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        shutil.copy(path, backup_path)
+        logger.warning("进度文件损坏 path=%s 已备份到=%s 原因=%s", path, backup_path, exc)
         return None
 
 
@@ -124,13 +165,22 @@ def update_stage_status(
     if support_id in progress.get("cases", {}):
         progress["cases"][support_id][stage] = status
 
-    # 更新 stages 统计
+    # 更新 stages 统计（使用正确的映射）
+    stats_key = _STATUS_TO_STATS_KEY.get(status)
+    if stats_key is None:
+        logger.debug("状态更新 case=%s stage=%s status=%s（不计入统计）", support_id, stage, status)
+        return
+
     stages_stats = progress.get("stages", {}).get(stage, {})
-    stats_key = f"{status}_ids"
     if stats_key in stages_stats:
         id_list = stages_stats[stats_key]
         if support_id not in id_list:
             id_list.append(support_id)
+            # 从其他统计列表中移除（保持一致性）
+            for other_key in ["completed_ids", "failed_ids", "skipped_ids"]:
+                if other_key != stats_key and other_key in stages_stats:
+                    if support_id in stages_stats[other_key]:
+                        stages_stats[other_key].remove(support_id)
 
     logger.debug("状态更新 case=%s stage=%s status=%s", support_id, stage, status)
 
@@ -149,6 +199,9 @@ def find_latest_progress_file() -> str | None:
         return None
 
     progress_files = list(logs_dir.glob("progress_*.json"))
+    # 排除损坏文件
+    progress_files = [f for f in progress_files if ".corrupted" not in f.name]
+
     if not progress_files:
         return None
 
@@ -162,12 +215,12 @@ def find_latest_progress_file() -> str | None:
     return run_id
 
 
-def get_completed_ids_for_stage(progress: dict[str, Any], stage: str) -> list[str]:
-    """获取某个 stage 已完成的案例 ID 列表（包含 done 和 skipped）"""
+def get_completed_ids_for_stage(progress: dict[str, Any], stage: str) -> set[str]:
+    """获取某个 stage 已完成的案例 ID 集合（包含 done 和 skipped），返回 set 以支持 O(1) membership"""
     stages_stats = progress.get("stages", {}).get(stage, {})
     completed = stages_stats.get("completed_ids", [])
     skipped = stages_stats.get("skipped_ids", [])
-    return list(set(completed + skipped))
+    return set(completed + skipped)
 
 
 def get_case_stage_status(progress: dict[str, Any], support_id: str, stage: str) -> str:

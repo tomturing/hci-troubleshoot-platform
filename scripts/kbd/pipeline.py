@@ -119,26 +119,31 @@ async def run_pipeline(
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
 
     # ── 进度追踪初始化 ──
-    if run_id is None:
-        if resume and resume_run_id is None:
-            # resume 模式：自动查找最新的 progress 文件
+    progress = None
+
+    # resume 模式：加载已有进度文件
+    if resume:
+        if resume_run_id is None:
+            # 自动查找最新的 progress 文件
             resume_run_id = find_latest_progress_file()
             if resume_run_id:
                 logger.info("Resume 模式：找到最新进度文件 run_id=%s", resume_run_id)
             else:
                 logger.warning("Resume 模式：未找到进度文件，将从头开始")
-        run_id = generate_run_id()
 
-    progress = None
-    if resume and resume_run_id:
-        progress = load_progress(resume_run_id)
-        if progress:
-            logger.info("已加载进度文件 run_id=%s cases=%d", resume_run_id, len(progress.get("cases", {})))
-        else:
-            logger.warning("进度文件加载失败，将从头开始 run_id=%s", resume_run_id)
+        if resume_run_id:
+            progress = load_progress(resume_run_id)
+            if progress:
+                # 成功加载进度，沿用旧的 run_id
+                run_id = progress.get("run_id", resume_run_id)
+                logger.info("已加载进度文件 run_id=%s cases=%d（沿用旧 run_id）", run_id, len(progress.get("cases", {})))
+            else:
+                logger.warning("进度文件加载失败，将从头开始 run_id=%s", resume_run_id)
 
-    # 初始化进度（如果没有加载到）
+    # 如果没有加载到进度（或非 resume 模式），生成新 run_id
     if progress is None:
+        if run_id is None:
+            run_id = generate_run_id()
         stage_names = [s.name.lower() for s in stages]
         progress = init_progress(run_id, case_ids, stage_names)
 
