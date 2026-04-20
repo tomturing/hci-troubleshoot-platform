@@ -11,11 +11,10 @@ env_type 决定 env_data 的结构：
   - task: 任务状态列表（用于 S0 Prompt 注入）
 """
 
-from sqlalchemy import Column, ForeignKey, String
-from sqlalchemy.dialects.postgresql import JSONB, UUID
-
 from shared.database.postgres import Base
 from shared.models.base import TraceableMixin
+from sqlalchemy import Column, ForeignKey, String
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 
 class Environment(Base, TraceableMixin):

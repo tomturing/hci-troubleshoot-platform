@@ -5,13 +5,12 @@ Environment Routes - Case Service API
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import (
+    EnvironmentContextResponse,
     EnvironmentCreate,
     EnvironmentListResponse,
     EnvironmentResponse,
-    EnvironmentContextResponse,
     EnvType,
 )
 

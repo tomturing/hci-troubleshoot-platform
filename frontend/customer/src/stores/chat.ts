@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, nextTick } from 'vue'
 import { createApiClient, createCaseApi, createConversationApi, createAssistantApi, createEnvironmentApi } from '@hci/shared'
-import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse } from '@hci/shared'
+import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
 import { checkBridgeRunning, type BridgeStatus } from '@/api/terminal'
@@ -714,7 +714,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /** 提交环境数据（aClient 采集后调用） */
-  async function submitEnvironmentData(data: { case_id: string; env_type: string; env_data: Record<string, unknown>; collected_at?: string }) {
+  async function submitEnvironmentData(data: { case_id: string; env_type: EnvType; env_data: Record<string, unknown>; collected_at?: string }) {
     try {
       const res = await environmentApi.create(data)
       // 刷新列表
