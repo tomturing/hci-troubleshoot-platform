@@ -10,7 +10,10 @@
 # Probe 策略：
 #   - liveness probe → /healthz（只检查进程存活，timeout 5秒）
 #   - readiness probe → /healthz?full=true（检查功能可用，timeout 60秒）
-#   - 并行度限制 → 4（减少 gRPC 阻塞概率）
+#
+# 注意：env 变量（REDIS_PASSWORD、ARGOCD_EXEC_TIMEOUT、dnsPolicy）
+#   由 scripts/ops/argocd-upgrade.sh post_upgrade_patch() 函数在升级时注入，
+#   不在此 PreSync Job 中处理，避免每次 Sync 重复 append 导致 env 数组膨胀。
 #
 # 变更历史：
 #   2026-04-17 v1.0 初版（PR #168 → PR #169 修复）
@@ -38,6 +41,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              set -e
               echo "[PROBE-PATCH] 开始应用 ArgoCD repo-server probe 配置..."
 
               # 应用 StrategicMergePatch
@@ -61,16 +65,12 @@ spec:
                   "op": "replace",
                   "path": "/spec/template/spec/containers/0/readinessProbe/timeoutSeconds",
                   "value": 60
-                },
-                {
-                  "op": "add",
-                  "path": "/spec/template/spec/containers/0/env/-",
-                  "value": {
-                    "name": "ARGOCD_REPO_SERVER_PARALLELISM_LIMIT",
-                    "value": "4"
-                  }
                 }
               ]'
+
+              # 并行度限制通过 ConfigMap 设置（幂等，避免每次 Sync append env 数组）
+              kubectl patch cm argocd-cmd-params-cm -n argocd --type merge \
+                -p '{"data":{"reposerver.parallelism.limit":"4"}}'
 
               echo "[PROBE-PATCH] ✓ Probe 配置已应用，等待 Deployment rollout..."
 
