@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.5.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.4.1...v2.5.0) (2026-04-21)
+
+
+### ✨ 新功能
+
+* AI 助手选择器交互优化 — 支持对话中随时切换 ([#172](https://github.com/tomturing/hci-troubleshoot-platform/issues/172)) ([bdc32cc](https://github.com/tomturing/hci-troubleshoot-platform/commit/bdc32cc08ae75dcd24e29e2e8b75d9378d6b25a6))
+* AI 助手选择器智能显示重构（v2.1） ([#171](https://github.com/tomturing/hci-troubleshoot-platform/issues/171)) ([8276f30](https://github.com/tomturing/hci-troubleshoot-platform/commit/8276f300d9b7d1f2b718cb370f63df6c1c196ca5))
+* **kbd:** Pipeline 日志持久化与进度追踪改进 ([#180](https://github.com/tomturing/hci-troubleshoot-platform/issues/180)) ([bbb607a](https://github.com/tomturing/hci-troubleshoot-platform/commit/bbb607acf42396b6bdd70d8e23993ccc4c38cecb))
+* **kbd:** 截图语义化重构 v3 — Vision LLM 单次调用+文档上下文注入 ([#175](https://github.com/tomturing/hci-troubleshoot-platform/issues/175)) ([5c19e22](https://github.com/tomturing/hci-troubleshoot-platform/commit/5c19e22a75c3339e1a675d6d6f02bb041def6691))
+* **kbd:** 新增 override + override_status 参数支持 ([#174](https://github.com/tomturing/hci-troubleshoot-platform/issues/174)) ([7b2aa66](https://github.com/tomturing/hci-troubleshoot-platform/commit/7b2aa66523ad33251ae94f18c729d7f66f959a15))
+* SSH 集成创建工单 — Environment 数据采集 UI 入口 ([#187](https://github.com/tomturing/hci-troubleshoot-platform/issues/187)) ([ace5f0f](https://github.com/tomturing/hci-troubleshoot-platform/commit/ace5f0f0d755ae08590c9ba210aca830bda227b3))
+* 分类管理增强 — KBD/SOP 统计显示与多项问题修复 ([#179](https://github.com/tomturing/hci-troubleshoot-platform/issues/179)) ([dd95cdd](https://github.com/tomturing/hci-troubleshoot-platform/commit/dd95cdd0ba0bbbe7830e3980979c57b51f697515))
+* 实现 Environment API — alert/task/environment 数据存库 ([#181](https://github.com/tomturing/hci-troubleshoot-platform/issues/181)) ([f7b7f1e](https://github.com/tomturing/hci-troubleshoot-platform/commit/f7b7f1ecd8cdf42f77acf84ef85e644774f70d53))
+* 知识命中统计（hit_count）重设计 - T1~T10 完整实现 ([#184](https://github.com/tomturing/hci-troubleshoot-platform/issues/184)) ([02674da](https://github.com/tomturing/hci-troubleshoot-platform/commit/02674da2d8175f78201c00301a063e9b06a78ffe))
+
+
+### 🐛 Bug 修复
+
+* ArgoCD v3.3.6 升级问题复盘 - 补充避坑指南并优化升级脚本 ([#188](https://github.com/tomturing/hci-troubleshoot-platform/issues/188)) ([6436c84](https://github.com/tomturing/hci-troubleshoot-platform/commit/6436c847e0c653bf0fed554e80070b4d49d7e59d))
+* **argocd:** StrategicMergePatch 改为 PreSync Hook Job ([#170](https://github.com/tomturing/hci-troubleshoot-platform/issues/170)) ([732610f](https://github.com/tomturing/hci-troubleshoot-platform/commit/732610f77f363f2caf8d2a66f775b45fc204b0aa))
+* **argocd:** 优化 repo-server probe 策略，解决 CrashLoopBackOff ([#168](https://github.com/tomturing/hci-troubleshoot-platform/issues/168)) ([86da16e](https://github.com/tomturing/hci-troubleshoot-platform/commit/86da16e808d2561ab61ff8ce623650c5eef83f21))
+* Environment API 类型与状态修复 ([#182](https://github.com/tomturing/hci-troubleshoot-platform/issues/182)) ([7a97118](https://github.com/tomturing/hci-troubleshoot-platform/commit/7a97118f7bd180415cc4be081e739543d8792290))
+* Environment API 补充修复 ([#183](https://github.com/tomturing/hci-troubleshoot-platform/issues/183)) ([364009e](https://github.com/tomturing/hci-troubleshoot-platform/commit/364009e8cdb9f057ef59031ec06ec6510f498ec2))
+* **kbd:** 修复 KBD Pipeline 配置问题 + 自动 port-forward 检测 ([#173](https://github.com/tomturing/hci-troubleshoot-platform/issues/173)) ([7553928](https://github.com/tomturing/hci-troubleshoot-platform/commit/755392890472332da3548fed1f1f06e2822b0ff3))
+* 恢复知识库设计.md 文档内容（PR [#182](https://github.com/tomturing/hci-troubleshoot-platform/issues/182)误删1265行） ([#185](https://github.com/tomturing/hci-troubleshoot-platform/issues/185)) ([07c5dca](https://github.com/tomturing/hci-troubleshoot-platform/commit/07c5dca62b316fc95779f1ab3085d90541a2fdf8))
+* 捕获 httpx.RemoteProtocolError 异常 ([#176](https://github.com/tomturing/hci-troubleshoot-platform/issues/176)) ([843eb14](https://github.com/tomturing/hci-troubleshoot-platform/commit/843eb1476a6bc9afeaf25ae5cfca1bf6b96063a7))
+
+
+### ♻️ 代码重构
+
+* **kbd:** 抽取公共图片 URL 提取函数 ([#177](https://github.com/tomturing/hci-troubleshoot-platform/issues/177)) ([1bb8fa9](https://github.com/tomturing/hci-troubleshoot-platform/commit/1bb8fa95ca5bdd4a0887c316e53bdb84cff7e17d))
+
+
+### 📝 文档
+
+* 文档治理合规审计 + SSH 集成创建工单方案文档 ([#186](https://github.com/tomturing/hci-troubleshoot-platform/issues/186)) ([851faf8](https://github.com/tomturing/hci-troubleshoot-platform/commit/851faf84aa389ef952c166aff591959cb04b042d))
+
 ## [Unreleased] - 知识命中统计（hit_count）重设计
 
 ### ✨ 新功能
