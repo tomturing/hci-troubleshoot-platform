@@ -15,7 +15,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 > 2. 再写入对应分类文件
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：D-002**（旧格式延续：PIT-046）
+> **下一个可用编号：D-005**（旧格式延续：PIT-047）
 
 ---
 
@@ -25,10 +25,10 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 
 | 触发场景 | 读取文件 | 当前条目 |
 |---------|---------|---------|
-| 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039 |
+| 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039, PIT-046 |
 | 编写/审查 Shell/Makefile/CI 脚本 | [shell.md](shell.md) | PIT-001, PIT-002 |
-| K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移 | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001 |
-| ArgoCD 多集群 App of Apps / 环境标识 | [k8s.md](k8s.md) | D-001 |
+| K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移/ArgoCD | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001, D-002, D-003, D-004 |
+| ArgoCD 升级/多集群/PreSync SA/Redis EOF | [k8s.md](k8s.md) | D-001, D-002, D-003, D-004 |
 | Grafana 重定向/Ingress/iframe 白屏 | [grafana.md](grafana.md) | PIT-011, PIT-012, PIT-020, PIT-036 |
 
 ---
@@ -64,7 +64,11 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | PIT-043 | k8s.md | ArgoCD Application 手动覆盖导致 releaseName 漂移 |
 | PIT-044 | k8s.md | 迁移体系切换后遗留触发器双倍计数 |
 | PIT-045 | k8s.md | nginx 启动时 upstream DNS 解析失败 |
+| PIT-046 | network-service-check.md | WSL resolv.conf 自动生成为 Clash fake-IP DNS（10.255.255.254），K3s 全局 DNS 劫持 |
 | **D-001** | k8s.md | ArgoCD 多集群 App of Apps 分层 + 环境标识方式 |
+| **D-002** | k8s.md | K3s + ECR 镜像离线导入（docker pull → tag → k3s ctr import）|
+| **D-003** | k8s.md | ArgoCD PreSync Job 依赖 SA 鸡蛋问题（首次部署需手动预创建 SA）|
+| **D-004** | k8s.md | ArgoCD v3.x repo-server Redis EOF（连接池空闲）+ K8s Pod git 网络（Clash TUN 不拦截 flannel 流量）|
 
 ---
 
