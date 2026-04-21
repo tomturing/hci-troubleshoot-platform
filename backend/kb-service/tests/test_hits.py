@@ -11,14 +11,12 @@ KB Service — hits 路由单元测试
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from app.routes.hits import kbd_hit_router, set_dependencies, sop_hit_router
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
-from app.routes.hits import kbd_hit_router, set_dependencies, sop_hit_router
 
 # 测试用 token（与 config 默认值一致）
 _VALID_TOKEN = "hci-dev-internal-token"
