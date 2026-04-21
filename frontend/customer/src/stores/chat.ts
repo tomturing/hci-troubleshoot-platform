@@ -78,9 +78,20 @@ export const useChatStore = defineStore('chat', () => {
   const terminalInputCommand = ref('')
   const assistantDraftText = ref('')
 
-  // SSH 连接状态（由 TerminalPanel 内部管理，store 只保留显示用状态）
+  // === 全局 SSH 连接状态 ===
+  const sshWebSocket = ref<WebSocket | null>(null)
   const sshConnectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
+  const sshCurrentConfig = ref<{
+    host: string
+    port: number
+    username: string
+    authType: 'password' | 'key'
+    caseId: string
+  } | null>(null)
   const sshErrorMessage = ref('')
+  const sshOutputBuffer = ref<string>('')
+  const sshCommandConsumer = ref<'terminal' | 'collection' | null>(null)
+  const sshTerminalOutputEvent = ref<string>('')
 
   // Agent 模式：待确认的高风险操作（confirm_request SSE 事件）
   const pendingConfirm = ref<{
@@ -647,16 +658,183 @@ export const useChatStore = defineStore('chat', () => {
     showBridgeDownload.value = false
   }
 
-  function setSshConnectionState(state: 'disconnected' | 'connecting' | 'connected' | 'error') {
-    sshConnectionState.value = state
+  // === 全局 SSH 连接方法 ===
+
+  /** 认证超时定时器 */
+  let sshAuthTimer: number | null = null
+  const SSH_AUTH_TIMEOUT = 15000
+
+  /** 清除认证超时定时器 */
+  function clearSshAuthTimer() {
+    if (sshAuthTimer !== null) {
+      window.clearTimeout(sshAuthTimer)
+      sshAuthTimer = null
+    }
   }
 
-  function setSshErrorMessage(message: string) {
-    sshErrorMessage.value = message
+  /** 清理 SSH WebSocket */
+  function cleanupSshWebSocket() {
+    clearSshAuthTimer()
+    if (sshWebSocket.value) {
+      sshWebSocket.value.onopen = null
+      sshWebSocket.value.onmessage = null
+      sshWebSocket.value.onerror = null
+      sshWebSocket.value.onclose = null
+      sshWebSocket.value.close()
+      sshWebSocket.value = null
+    }
   }
 
-  function clearSshErrorMessage() {
-    sshErrorMessage.value = ''
+  /** 全局 SSH 连接方法 */
+  function connectSSH(config: {
+    host: string
+    port: number
+    username: string
+    authType: 'password' | 'key'
+    password?: string
+    privateKey?: string
+    passphrase?: string
+    caseId: string
+  }): Promise<void> {
+    console.log('[SSH] 开始连接', {
+      host: config.host,
+      port: config.port,
+      username: config.username,
+      caseId: config.caseId,
+      timestamp: new Date().toISOString()
+    })
+
+    return new Promise((resolve, reject) => {
+      // 清理旧连接
+      cleanupSshWebSocket()
+      sshOutputBuffer.value = ''
+      sshErrorMessage.value = ''
+      sshConnectionState.value = 'connecting'
+      sshCurrentConfig.value = {
+        host: config.host,
+        port: config.port,
+        username: config.username,
+        authType: config.authType,
+        caseId: config.caseId,
+      }
+
+      // 创建 WebSocket
+      const socket = createBridgeSocket()
+      sshWebSocket.value = socket
+
+      socket.onopen = () => {
+        console.log('[SSH] WebSocket 已打开，发送连接命令')
+        clearSshAuthTimer()
+
+        // 15 秒认证超时
+        sshAuthTimer = window.setTimeout(() => {
+          if (sshConnectionState.value === 'connecting') {
+            console.error('[SSH] 认证超时')
+            sshErrorMessage.value = 'SSH 认证超时（15秒）'
+            sshConnectionState.value = 'error'
+            cleanupSshWebSocket()
+            reject(new Error('SSH 认证超时'))
+          }
+        }, SSH_AUTH_TIMEOUT)
+
+        // 发送 SSH 连接命令
+        socket.send(buildConnectMessage({
+          host: config.host,
+          port: config.port,
+          username: config.username,
+          auth_type: config.authType,
+          password: config.password,
+          private_key: config.privateKey,
+          passphrase: config.passphrase,
+          case_id: config.caseId,
+        }))
+      }
+
+      socket.onmessage = (e) => {
+        let msg: TerminalWsMessage
+        try {
+          msg = JSON.parse(String(e.data || ''))
+        } catch {
+          console.warn('[SSH] 无法解析消息:', e.data)
+          return
+        }
+
+        console.log('[SSH] 收到消息', { type: msg.type })
+
+        if (msg.case_id && msg.case_id !== config.caseId) {
+          console.log('[SSH] 消息 case_id 不匹配，忽略')
+          return
+        }
+
+        if (msg.type === 'ssh_connected') {
+          console.log('[SSH] 远程会话已建立')
+          clearSshAuthTimer()
+          sshConnectionState.value = 'connected'
+          resolve()
+        } else if (msg.type === 'ssh_output' && msg.output) {
+          sshOutputBuffer.value += msg.output
+          // 如果有消费者，触发输出事件
+          if (sshCommandConsumer.value) {
+            sshTerminalOutputEvent.value = msg.output
+          }
+        } else if (msg.type === 'ssh_error') {
+          console.error('[SSH] 收到错误', { message: msg.message })
+          clearSshAuthTimer()
+          sshErrorMessage.value = msg.message || 'SSH 连接出错'
+          sshConnectionState.value = 'error'
+          cleanupSshWebSocket()
+          reject(new Error(msg.message || 'SSH 连接出错'))
+        } else if (msg.type === 'ssh_disconnected') {
+          console.log('[SSH] 连接断开')
+          clearSshAuthTimer()
+          if (sshConnectionState.value === 'connected') {
+            sshConnectionState.value = 'disconnected'
+            cleanupSshWebSocket()
+          }
+        }
+      }
+
+      socket.onerror = () => {
+        console.error('[SSH] WebSocket 错误')
+        clearSshAuthTimer()
+        sshErrorMessage.value = 'SSH Bridge 未运行（ws://localhost:9999）'
+        sshConnectionState.value = 'error'
+        cleanupSshWebSocket()
+        reject(new Error('SSH Bridge 未运行'))
+      }
+
+      socket.onclose = () => {
+        console.log('[SSH] WebSocket 关闭')
+        clearSshAuthTimer()
+        if (sshConnectionState.value !== 'error') {
+          sshConnectionState.value = 'disconnected'
+        }
+      }
+    })
+  }
+
+  /** 断开 SSH 连接 */
+  function disconnectSSH() {
+    console.log('[SSH] 断开连接')
+    if (sshWebSocket.value && sshConnectionState.value === 'connected') {
+      sshWebSocket.value.send(buildDisconnectMessage(sshCurrentConfig.value?.caseId || ''))
+    }
+    cleanupSshWebSocket()
+    sshConnectionState.value = 'disconnected'
+    sshCurrentConfig.value = null
+    sshOutputBuffer.value = ''
+    sshCommandConsumer.value = null
+  }
+
+  /** 发送 SSH 命令 */
+  function sendSSHCommand(command: string, consumer: 'terminal' | 'collection') {
+    if (!sshWebSocket.value || sshConnectionState.value !== 'connected') {
+      console.warn('[SSH] 未连接，无法发送命令')
+      return
+    }
+    console.log('[SSH] 发送命令', { command, consumer })
+    sshCommandConsumer.value = consumer
+    sshWebSocket.value.send(buildInputMessage(sshCurrentConfig.value?.caseId || '', `${command}\n`))
   }
 
   /** 采集环境数据（SSH 连接成功后自动调用或手动触发） */
@@ -1164,12 +1342,17 @@ export const useChatStore = defineStore('chat', () => {
     bridgeStatus,
     showBridgeDownload,
     closeBridgeDownload,
-    // SSH 状态（TerminalPanel 同步过来，仅供展示）
+    // 全局 SSH 连接状态和方法
+    sshWebSocket,
     sshConnectionState,
+    sshCurrentConfig,
     sshErrorMessage,
-    setSshConnectionState,
-    setSshErrorMessage,
-    clearSshErrorMessage,
+    sshOutputBuffer,
+    sshTerminalOutputEvent,
+    sshCommandConsumer,
+    connectSSH,
+    disconnectSSH,
+    sendSSHCommand,
     // Agent 模式：高风险操作确认
     pendingConfirm,
     handleConfirmResult,
@@ -1188,7 +1371,6 @@ export const useChatStore = defineStore('chat', () => {
     sshCreationPhase,
     sshCreationError,
     acliAvailable,
-    sshCreationSocket,
     connectSSHAndCreateCase,
     createCaseWithoutSSH,
     cancelSSHCreation,
