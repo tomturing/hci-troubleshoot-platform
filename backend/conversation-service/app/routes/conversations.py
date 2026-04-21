@@ -14,6 +14,8 @@ from shared.models.schemas import MessageCreate, MessageResponse
 from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceError
 from shared.utils.logger import get_logger
 
+from .evaluate import require_admin_token
+
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService
@@ -219,6 +221,7 @@ class ResolvedKbdUpdateRequest(BaseModel):
 async def update_resolved_kbd(
     case_id: str,
     body: ResolvedKbdUpdateRequest,
+    _: None = Depends(require_admin_token),
     service: ConversationService = Depends(get_conversation_service),
 ):
     """
@@ -227,6 +230,8 @@ async def update_resolved_kbd(
     - 若旧值非 null → 旧 KBD hit_count -1
     - 若新值非 null → 新 KBD hit_count +1
     """
+    from sqlalchemy import func
+    from sqlalchemy import select as sa_select
     from sqlalchemy import update as sa_update
 
     from ..models.conversation import Conversation as ConversationModel
@@ -239,6 +244,35 @@ async def update_resolved_kbd(
     conv = conversations[0]
     old_kbd_id = conv.resolved_kbd_entry_id
     new_kbd_id = body.kbd_entry_id
+    changed = old_kbd_id != new_kbd_id
+
+    # case 级去重：统计 case 内其他 conversation 对 old/new KBD 的引用数（写入前统计，保证准确）
+    old_ref_count = 0
+    new_ref_count = 0
+    if changed and service.session_factory:
+        async with service.session_factory() as count_session:
+            if old_kbd_id is not None:
+                r = await count_session.execute(
+                    sa_select(func.count())
+                    .select_from(ConversationModel)
+                    .where(
+                        ConversationModel.case_id == case_id,
+                        ConversationModel.resolved_kbd_entry_id == old_kbd_id,
+                        ConversationModel.conversation_id != conv.conversation_id,
+                    )
+                )
+                old_ref_count = r.scalar() or 0
+            if new_kbd_id is not None:
+                r = await count_session.execute(
+                    sa_select(func.count())
+                    .select_from(ConversationModel)
+                    .where(
+                        ConversationModel.case_id == case_id,
+                        ConversationModel.resolved_kbd_entry_id == new_kbd_id,
+                        ConversationModel.conversation_id != conv.conversation_id,
+                    )
+                )
+                new_ref_count = r.scalar() or 0
 
     # 字段写入（不管是否变化，确保数据一致）
     await service.repository.session.execute(
@@ -247,12 +281,13 @@ async def update_resolved_kbd(
         .values(resolved_kbd_entry_id=new_kbd_id)
     )
 
-    # 调整 hit_count（仅当值发生变化时）
-    changed = old_kbd_id != new_kbd_id
+    # 调整 hit_count（case 级去重：仅当该 case 内无其他 conversation 引用时才调整）
     if changed and kb_client:
-        if old_kbd_id is not None:
+        if old_kbd_id is not None and old_ref_count == 0:
+            # 无其他 conversation 引用旧值，安全 -1
             await kb_client.decrement_kbd_hit(old_kbd_id)
-        if new_kbd_id is not None:
+        if new_kbd_id is not None and new_ref_count == 0:
+            # 无其他 conversation 已引用新值，安全 +1
             await kb_client.increment_kbd_hit(new_kbd_id)
 
     # 查询新 KBD 信息用于前端展示

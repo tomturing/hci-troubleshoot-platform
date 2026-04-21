@@ -399,7 +399,8 @@ class KnowledgeRetriever:
                     kbd_item_id = item.get("id")
                     if kbd_item_id is not None:
                         kbd_candidate_ids.append(int(kbd_item_id))
-                    meta = f"案例 #{support_id}（KBD-{kbd_item_id}）" if support_id else f"来源：{title}（KBD-{kbd_item_id}）"
+                    kbd_tag = f"（KBD-{kbd_item_id}）" if kbd_item_id is not None else ""
+                    meta = f"案例 #{support_id}{kbd_tag}" if support_id else f"来源：{title}{kbd_tag}"
                     if chunks_total_chars + len(content) > settings.KB_CONTEXT_MAX_CHARS:
                         break
                     chunks_text_parts.append(f"[{i}] {meta}\n{content}")

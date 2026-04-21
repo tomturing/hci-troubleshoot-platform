@@ -999,12 +999,15 @@ class ConversationService:
                     sop_document_id=sop_document_id,
                 )
 
-            # 写入 conversation.sop_document_id（无论是否去重都写）
+            # 写入 conversation.sop_document_id（仅首次写入，不覆盖已有值）
             if self.session_factory:
                 async with self.session_factory() as session:
                     await session.execute(
                         sa_update(ConversationModel)
-                        .where(ConversationModel.conversation_id == conversation_id)
+                        .where(
+                            ConversationModel.conversation_id == conversation_id,
+                            ConversationModel.sop_document_id.is_(None),
+                        )
                         .values(sop_document_id=sop_document_id)
                     )
                     await session.commit()
@@ -1052,6 +1055,7 @@ class ConversationService:
             case_id: 工单 ID
             kbd_entry_id: KBD 条目 ID（None 表示新问题）
         """
+        from sqlalchemy import select
         from sqlalchemy import update as sa_update
 
         from ..models.conversation import Conversation as ConversationModel
@@ -1066,6 +1070,30 @@ class ConversationService:
             return
 
         try:
+            # case 级去重：检查同 case 其他 conversation 是否已写入相同 resolved_kbd_entry_id
+            already_hit = False
+            if self.session_factory:
+                async with self.session_factory() as dedup_session:
+                    result = await dedup_session.execute(
+                        select(ConversationModel.conversation_id)
+                        .where(
+                            ConversationModel.case_id == case_id,
+                            ConversationModel.resolved_kbd_entry_id == kbd_entry_id,
+                            ConversationModel.conversation_id != conversation_id,
+                        )
+                        .limit(1)
+                    )
+                    already_hit = result.scalar_one_or_none() is not None
+
+            if already_hit:
+                logger.info(
+                    event="kbd_hit_dedup_skipped",
+                    message=f"case {case_id} 已有其他 conversation 命中 KBD {kbd_entry_id}，跳过计数",
+                    conversation_id=str(conversation_id),
+                    case_id=case_id,
+                    kbd_entry_id=kbd_entry_id,
+                )
+
             # 写入 conversation.resolved_kbd_entry_id
             if self.session_factory:
                 async with self.session_factory() as session:
@@ -1083,8 +1111,8 @@ class ConversationService:
                 kbd_entry_id=kbd_entry_id,
             )
 
-            # 触发 KBD hit_count +1
-            if self.kb_client:
+            # 触发 KBD hit_count +1（仅 case 首次）
+            if self.kb_client and not already_hit:
                 await self.kb_client.increment_kbd_hit(kbd_entry_id)
                 logger.info(
                     event="kbd_hit_count_updated",
