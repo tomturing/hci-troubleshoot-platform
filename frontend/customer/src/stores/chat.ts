@@ -8,7 +8,7 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
-import { checkBridgeRunning, type BridgeStatus } from '@/api/terminal'
+import { checkBridgeRunning, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
 
 /** 前端聊天消息 */
 export interface ChatMessage {
@@ -729,6 +729,179 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // === SSH 连接状态（创建工单时） ===
+  const sshCreationPhase = ref<'idle' | 'connecting' | 'connected' | 'acll_check' | 'collecting' | 'done' | 'error' | 'acll_not_found'>('idle')
+  const sshCreationError = ref<{ message: string; detail: string } | null>(null)
+  const acliAvailable = ref<boolean | null>(null)
+
+  /** SSH 配置信息 */
+  interface SSHConfig {
+    host: string
+    port: number
+    username: string
+    password: string
+  }
+
+  /** 通过 SSH 连接并创建工单（一站式流程） */
+  async function connectSSHAndCreateCase(
+    title: string,
+    description: string,
+    sshConfig: SSHConfig,
+    assistantType?: string,
+  ): Promise<void> {
+    sshCreationPhase.value = 'connecting'
+    sshCreationError.value = null
+    acliAvailable.value = null
+
+    // 创建工单
+    isLoading.value = true
+    try {
+      const res = await caseApi.create({
+        client_id: clientId,
+        title,
+        description,
+        assistant_type: assistantType || selectedAssistant.value || undefined,
+      })
+      currentCase.value = res.data
+      addSystemMessage(`工单 ${res.data.case_id} 已创建...`)
+
+      // 确认工单
+      const confirmed = await caseApi.confirm(res.data.case_id)
+      currentCase.value = confirmed.data
+
+      // 建立 SSH 连接
+      const socket = createBridgeSocket()
+      const caseId = res.data.case_id
+
+      // 连接超时定时器
+      let authTimer: number | null = null
+      const clearAuthTimer = () => {
+        if (authTimer !== null) {
+          window.clearTimeout(authTimer)
+          authTimer = null
+        }
+      }
+
+      socket.onopen = () => {
+        sshCreationPhase.value = 'connected'
+        clearAuthTimer()
+        authTimer = window.setTimeout(() => {
+          if (sshCreationPhase.value === 'connected') {
+            sshCreationError.value = { message: 'SSH 认证超时', detail: '15秒内未收到认证成功信号' }
+            sshCreationPhase.value = 'error'
+            socket.close()
+          }
+        }, 15000)
+
+        // 发送 SSH 连接命令
+        socket.send(buildConnectMessage({
+          host: sshConfig.host,
+          port: sshConfig.port,
+          username: sshConfig.username,
+          auth_type: 'password',
+          password: sshConfig.password,
+          case_id: caseId,
+        }))
+      }
+
+      socket.onmessage = (e) => {
+        let msg: TerminalWsMessage
+        try {
+          msg = JSON.parse(String(e.data || ''))
+        } catch {
+          return
+        }
+
+        if (msg.case_id && msg.case_id !== caseId) return
+
+        if (msg.type === 'ssh_connected') {
+          clearAuthTimer()
+          sshConnectionState.value = 'connected'
+          sshCreationPhase.value = 'acll_check'
+
+          // 检查 acli 工具
+          executeCommandAndCheckAcli(socket, caseId)
+        } else if (msg.type === 'ssh_output' && msg.output) {
+          // 处理 acli 输出
+          handleAcliOutput(msg.output)
+        } else if (msg.type === 'ssh_error') {
+          clearAuthTimer()
+          sshCreationError.value = { message: msg.message || 'SSH 连接出错', detail: msg.detail || '' }
+          sshCreationPhase.value = 'error'
+          socket.close()
+        }
+      }
+
+      socket.onerror = () => {
+        clearAuthTimer()
+        sshCreationError.value = { message: '本地 SSH Bridge 未运行', detail: '浏览器无法连接 ws://localhost:9999' }
+        sshCreationPhase.value = 'error'
+      }
+
+      socket.onclose = () => {
+        clearAuthTimer()
+      }
+
+    } catch (e: any) {
+      sshCreationError.value = { message: '创建工单失败', detail: e.response?.data?.detail || e.message }
+      sshCreationPhase.value = 'error'
+      isLoading.value = false
+      throw e
+    }
+  }
+
+  /** 执行命令检查 acli */
+  function executeCommandAndCheckAcli(socket: WebSocket, caseId: string) {
+    // 发送 acli 命令检查工具是否可用
+    socket.send(buildInputMessage(caseId, 'acli\n'))
+  }
+
+  /** 处理 acli 输出结果 */
+  function handleAcliOutput(output: string) {
+    // 检测 acli 是否可用
+    if (output.includes('command not found') || output.includes('not recognized')) {
+      acliAvailable.value = false
+      sshCreationPhase.value = 'acll_not_found'
+      return
+    }
+
+    // acli 可用，继续采集
+    if (sshCreationPhase.value === 'acll_check' && output.includes('Usage') || output.includes('acli')) {
+      acliAvailable.value = true
+      sshCreationPhase.value = 'collecting'
+      // TODO: 执行采集命令（需要 WebSocket 连接保持）
+    }
+  }
+
+  /** 无 SSH 创建工单 */
+  async function createCaseWithoutSSH(template: CaseTemplate, assistantType?: string) {
+    showCaseTemplate.value = false
+    addUserMessage(pendingUserMessage.value)
+    isLoading.value = true
+    try {
+      const res = await caseApi.create({
+        client_id: clientId,
+        title: template.title,
+        description: template.description,
+        assistant_type: assistantType || selectedAssistant.value || undefined,
+      })
+      currentCase.value = res.data
+      addSystemMessage(`工单 ${res.data.case_id} 已创建（无 SSH 连接）`)
+
+      const confirmed = await caseApi.confirm(res.data.case_id)
+      currentCase.value = confirmed.data
+      addSystemMessage('工单已确认，正在连接 AI 助手...')
+
+      await createConversation()
+      await streamAIResponse(pendingUserMessage.value)
+    } catch (e: any) {
+      addSystemMessage(`创建工单失败: ${e.response?.data?.detail || e.message}`)
+    } finally {
+      isLoading.value = false
+      pendingUserMessage.value = ''
+    }
+  }
+
   return {
     messages,
     currentCase,
@@ -800,5 +973,11 @@ export const useChatStore = defineStore('chat', () => {
     collectEnvironmentData,
     refreshEnvironmentData,
     submitEnvironmentData,
+    // SSH 连接状态（创建工单时）
+    sshCreationPhase,
+    sshCreationError,
+    acliAvailable,
+    connectSSHAndCreateCase,
+    createCaseWithoutSSH,
   }
 })
