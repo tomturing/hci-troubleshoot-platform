@@ -987,7 +987,9 @@ export const useChatStore = defineStore('chat', () => {
         currentCase.value = confirmed.data
 
         // 3. 建立 SSH 连接
+        console.log('[SSH-CREATE] 开始建立 WebSocket 连接到 Bridge')
         const socket = createBridgeSocket()
+        console.log('[SSH-CREATE] WebSocket 对象已创建，等待连接')
         sshCreationSocket.value = socket
 
         // 采集输出缓冲
@@ -1017,11 +1019,13 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         socket.onopen = () => {
+          console.log('[SSH-CREATE] WebSocket 连接已打开')
           sshCreationPhase.value = 'connected'
           clearAuthTimer()
 
           // 15 秒认证超时
           authTimer = window.setTimeout(() => {
+            console.log('[SSH-CREATE] 认证超时检查', { phase: sshCreationPhase.value })
             if (sshCreationPhase.value === 'connected' || sshCreationPhase.value === 'acli_check') {
               sshCreationError.value = { message: 'SSH 认证超时', detail: '15秒内未收到认证成功信号' }
               sshCreationPhase.value = 'error'
@@ -1031,40 +1035,54 @@ export const useChatStore = defineStore('chat', () => {
           }, 15000)
 
           // 发送 SSH 连接命令
-          socket.send(buildConnectMessage({
+          const connectMsg = buildConnectMessage({
             host: sshConfig.host,
             port: sshConfig.port,
             username: sshConfig.username,
             auth_type: 'password',
             password: sshConfig.password,
             case_id: caseId,
-          }))
+          })
+          console.log('[SSH-CREATE] 发送 SSH 连接命令', { host: sshConfig.host, port: sshConfig.port, caseId })
+          socket.send(connectMsg)
         }
 
         socket.onmessage = (e) => {
+          console.log('[SSH-CREATE] 收到 WebSocket 消息', { raw: e.data })
+
           let msg: TerminalWsMessage
           try {
             msg = JSON.parse(String(e.data || ''))
-          } catch {
+            console.log('[SSH-CREATE] 解析后', { type: msg.type, case_id: msg.case_id, output: msg.output?.substring(0, 100) })
+          } catch (parseErr) {
+            console.error('[SSH-CREATE] JSON 解析失败', parseErr)
             return
           }
 
-          if (msg.case_id && msg.case_id !== caseId) return
+          if (msg.case_id && msg.case_id !== caseId) {
+            console.log('[SSH-CREATE] 忽略其他 case_id', { expected: caseId, actual: msg.case_id })
+            return
+          }
 
           if (msg.type === 'ssh_connected') {
+            console.log('[SSH-CREATE] SSH 连接成功')
             clearAuthTimer()
             sshConnectionState.value = 'connected'
             sshCreationPhase.value = 'acli_check'
 
             // 检查 acli 工具
+            console.log('[SSH-CREATE] 发送 acli 检查命令')
             socket.send(buildInputMessage(caseId, 'acli\n'))
 
           } else if (msg.type === 'ssh_output' && msg.output) {
             const output = msg.output
+            console.log('[SSH-CREATE] ssh_output', { phase: sshCreationPhase.value, outputPreview: output.substring(0, 50) })
 
             // 阶段：acli 检查
             if (sshCreationPhase.value === 'acli_check') {
+              console.log('[SSH-CREATE] acli 检查阶段')
               if (output.includes('command not found') || output.includes('not recognized')) {
+                console.log('[SSH-CREATE] acli 未找到')
                 acliAvailable.value = false
                 sshCreationPhase.value = 'acli_not_found'
                 // 继续完成工单流程（无环境数据）
@@ -1077,6 +1095,7 @@ export const useChatStore = defineStore('chat', () => {
                   .catch((err) => reject(err))
               } else if (output.includes('Usage') || output.includes('HCI')) {
                 // acli 可用
+                console.log('[SSH-CREATE] acli 可用，开始采集')
                 acliAvailable.value = true
                 sshCreationPhase.value = 'collecting'
                 currentCollectIndex = 0
@@ -1084,6 +1103,7 @@ export const useChatStore = defineStore('chat', () => {
 
                 // 开始执行第一个采集命令
                 const cmd = COLLECT_COMMANDS[0].cmd
+                console.log('[SSH-CREATE] 发送采集命令:', cmd)
                 socket.send(buildInputMessage(caseId, `${cmd}\n`))
               }
             }
@@ -1091,11 +1111,13 @@ export const useChatStore = defineStore('chat', () => {
             // 阶段：采集数据
             else if (sshCreationPhase.value === 'collecting') {
               collectingOutput += output
+              console.log('[SSH-CREATE] 采集阶段', { index: currentCollectIndex, bufferLength: collectingOutput.length })
 
               // 检测命令结束（通过输出特征判断）
               if (collectingOutput.includes('}') || collectingOutput.includes('\n\n') || output.includes('$')) {
                 // 保存当前采集结果
                 const currentCmd = COLLECT_COMMANDS[currentCollectIndex]
+                console.log('[SSH-CREATE] 采集完成', { name: currentCmd.name })
                 collectBuffer[currentCmd.name] = collectingOutput.trim()
                 collectingOutput = ''
 
@@ -1103,9 +1125,11 @@ export const useChatStore = defineStore('chat', () => {
                 currentCollectIndex++
                 if (currentCollectIndex < COLLECT_COMMANDS.length) {
                   const nextCmd = COLLECT_COMMANDS[currentCollectIndex].cmd
+                  console.log('[SSH-CREATE] 发送下一个采集命令:', nextCmd)
                   socket.send(buildInputMessage(caseId, `${nextCmd}\n`))
                 } else {
                   // 所有采集完成，提交数据
+                  console.log('[SSH-CREATE] 所有采集完成，提交数据')
                   submitCollectedData(caseId, collectBuffer)
                     .then(async () => {
                       // 刷新环境数据
@@ -1143,7 +1167,8 @@ export const useChatStore = defineStore('chat', () => {
           }
         }
 
-        socket.onerror = () => {
+        socket.onerror = (err) => {
+          console.error('[SSH-CREATE] WebSocket 错误', err)
           clearAuthTimer()
           sshCreationError.value = { message: '本地 SSH Bridge 未运行', detail: '浏览器无法连接 ws://localhost:9999' }
           sshCreationPhase.value = 'error'
@@ -1152,7 +1177,8 @@ export const useChatStore = defineStore('chat', () => {
           reject(new Error('本地 SSH Bridge 未运行'))
         }
 
-        socket.onclose = () => {
+        socket.onclose = (event) => {
+          console.log('[SSH-CREATE] WebSocket 关闭', { code: event.code, reason: event.reason, phase: sshCreationPhase.value })
           clearAuthTimer()
           // 如果还没完成，说明异常关闭
           if (sshCreationPhase.value !== 'done' && sshCreationPhase.value !== 'error') {
