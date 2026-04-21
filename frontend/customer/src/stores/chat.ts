@@ -1414,6 +1414,7 @@ export const useChatStore = defineStore('chat', () => {
     sshCreationPhase,
     sshCreationError,
     acliAvailable,
+    sshCommandConsumer,
     connectSSHAndCreateCase,
     createCaseWithoutSSH,
     cancelSSHCreation,
