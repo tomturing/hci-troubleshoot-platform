@@ -727,13 +727,16 @@ kubectl exec -n argocd <repo-server-pod> -- bash -c \
 
 **正确做法：**
 
-| 工具 | 推荐镜像 | 版本选择 |
-|------|---------|---------|
-| kubectl | `rancher/kubectl` | 与 apiserver 保持 ±1 minor（支持范围） |
-| helm | `alpine/helm` | 固定版本号 |
-| aws CLI | `amazon/aws-cli` | 固定版本号 |
+| 工具 | 推荐镜像 | 说明 |
+|------|---------|------|
+| kubectl + shell | `bitnami/kubectl:latest` | 包含 kubectl 和 shell，latest 版本当前 v1.35.x |
+| helm + shell | `alpine/helm` | 包含 helm 和 shell |
+| aws CLI + shell | `amazon/aws-cli` | 包含 aws CLI 和 shell |
 
-> ⚠️ **注意：** `bitnami/kubectl` 镜像使用 sha256 标签而非版本号标签（如 `1.31`），不便引用固定版本。推荐使用 `rancher/kubectl`，版本标签清晰（如 `v1.33.9`）。
+> ⚠️ **重要：**
+> - `rancher/kubectl` 是纯 kubectl 静态二进制镜像，**不含 shell**，无法执行 `/bin/sh -c '...'` 脚本
+> - `bitnami/kubectl` 只提供 `latest` 标签（无版本号标签），存在版本漂移风险，但当前版本符合 ±1 minor 策略
+> - PreSync Hook Job 脚本需要 shell，必须使用包含 shell 的镜像
 
 **版本偏移策略：**
 ```bash
@@ -750,9 +753,9 @@ kubectl version -o json | jq -r '.serverVersion.gitVersion'
 curl -s "https://hub.docker.com/v2/repositories/rancher/kubectl/tags?page_size=20" | jq -r '.results[].name' | grep -v arm | grep -v amd
 
 # 固定版本号示例
-image: rancher/kubectl:v1.33.9    # ✓ 正确：与集群 v1.34 相差 1 minor，在支持范围
-image: rancher/kubectl:v1.32.13   # ✗ 错误：与集群 v1.34 相差 2 minor，超出支持范围
-image: rancher/kubectl:latest     # ✗ 错误：版本漂移
+image: bitnami/kubectl:latest    # ✓ 正确：包含 shell + kubectl（当前 v1.35.x）
+image: rancher/kubectl:v1.33.9   # ✗ 错误：纯 kubectl，不含 shell，无法执行脚本
+image: bitnami/kubectl:1.31      # ✗ 错误：版本号标签不存在
 ```
 
 **Hook Job 最佳实践：**
@@ -763,7 +766,7 @@ spec:
       activeDeadlineSeconds: 180  # 超时保护，需大于脚本内 --timeout（如 120s）+ 缓冲
       containers:
         - name: hook
-          image: rancher/kubectl:v1.33.9
+          image: bitnami/kubectl:latest  # 包含 shell + kubectl
           imagePullPolicy: IfNotPresent
           resources:  # 资源限制
             requests:
@@ -779,5 +782,6 @@ spec:
 **参考案例：**
 - PR#170 PreSync Hook 失败：使用 `quay.io/argoproj/argocd:v3.3.6`（不含 kubectl），导致 7 个 Error pods
 - PR#195 初步修复：改用 `bitnami/kubectl:1.31` → **失败**（版本标签不存在，ErrImagePull）
-- PR#195 最终修复：改用 `rancher/kubectl:v1.33.9`（符合 ±1 minor 版本偏移策略）
+- PR#196 版本偏移修复：改用 `rancher/kubectl:v1.33.9` → **失败**（不含 shell，无法执行脚本）
+- PR#197 最终修复：改用 `bitnami/kubectl:latest`（包含 shell + kubectl）
 - 若返回超时而非正常 refs，说明网络问题，先解决再触发 Sync
