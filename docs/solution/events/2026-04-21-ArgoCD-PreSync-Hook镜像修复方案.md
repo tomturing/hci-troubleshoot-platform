@@ -41,15 +41,15 @@ owner: team
 
 | 方案 | 镜像 | 优点 | 缺点 | 评分 |
 |------|------|------|------|------|
-| **A（选中）** | `rancher/kubectl:v1.32.13` | 官方工具镜像、版本稳定、标签清晰 | 需单独维护版本 | ★★★★☆ |
+| **A（选中）** | `rancher/kubectl:v1.33.9` | 官方工具镜像、版本偏移合规（±1 minor） | 需单独维护版本 | ★★★★☆ |
 | B | 参考 copyutil-watchdog 用 openssl + SA token | 不依赖外部镜像 | 实现复杂、需重写逻辑 | ★★☆☆☆ |
 | C | 构建自定义镜像（argocd + kubectl） | 功能完整 | 维护成本高、偏离官方 | ★☆☆☆☆ |
 
 ### 为什么选择方案 A？
 
 1. **符合业界标准**：`rancher/kubectl` 是社区广泛使用的工具镜像
-2. **版本兼容**：kubectl v1.32 ≤ 集群 1.34，API 兼容
-3. **标签清晰**：版本号标签（如 `v1.32.13`）便于引用和审计
+2. **版本偏移合规**：kubectl v1.33 与集群 v1.34 相差 1 minor，在 Kubernetes 官方支持范围（±1 minor）
+3. **标签清晰**：版本号标签（如 `v1.33.9`）便于引用和审计
 4. **修复成本低**：只需改一行镜像配置
 
 ### 为什么不选方案 B 和 C？
@@ -67,6 +67,10 @@ curl -s "https://hub.docker.com/v2/repositories/bitnami/kubectl/tags?page_size=2
 ```
 使用 `bitnami/kubectl:1.31` 会导致 `ErrImagePull: not found`。
 
+### 为什么不用 rancher/kubectl:v1.32.13？
+
+虽然 v1.32 ≤ v1.34，但两者相差 2 个 minor，超出 Kubernetes 官方版本偏移支持范围（±1 minor）。正确的选择应与 apiserver 保持同 minor 或相差最多 1 个 minor。
+
 ---
 
 ## 详细变更
@@ -79,10 +83,10 @@ containers:
   - name: patch
     image: bitnami/kubectl:1.31  # 错误：版本标签不存在
 
-# 改动后（PR#195 最终修复）
+# 改动后（PR#196 最终修复）
 containers:
   - name: patch
-    image: rancher/kubectl:v1.32.13
+    image: rancher/kubectl:v1.33.9  # 正确：±1 minor 版本偏移合规
     imagePullPolicy: IfNotPresent
     resources:  # 新增：资源限制
       requests:
@@ -92,11 +96,11 @@ containers:
         cpu: 100m
         memory: 128Mi
 
-# 新增：超时保护
+# 新增：超时保护（需大于 rollout timeout + 缓冲）
 spec:
   template:
     spec:
-      activeDeadlineSeconds: 120
+      activeDeadlineSeconds: 180  # rollout timeout 120s + 缓冲
 ```
 
 ---
