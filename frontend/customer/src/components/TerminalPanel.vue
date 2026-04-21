@@ -57,11 +57,7 @@ let xterm: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let resizeObserver: ResizeObserver | null = null
 
-watch(connectionState, (s) => chatStore.setSshConnectionState(s))
-watch(errorMessage, (m) => {
-  if (m) chatStore.setSshErrorMessage(m)
-  else chatStore.clearSshErrorMessage()
-})
+// 注意：SSH 状态现在由 chatStore 全局管理，不再需要手动同步
 
 watch(
   () => chatStore.terminalInputCommand,
