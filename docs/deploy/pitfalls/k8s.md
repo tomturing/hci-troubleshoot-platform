@@ -613,7 +613,7 @@ sudo k3s crictl images | grep redis
 **预防：**
 - ArgoCD 升级前检查新版本依赖的所有新镜像地址（`grep -r "image:" manifests/install.yaml | sort -u`）
 - 若镜像源在 ECR / gcr.io 等特殊仓库，提前完成离线导入再执行升级
-- 在升级脚本中加入镜像预检步骤（`scripts/ops/argocd-upgrade.sh` 已包含此逻辑）
+- 可在升级脚本中加入镜像预检步骤；若当前 `scripts/ops/argocd-upgrade.sh` 尚未实现该逻辑，请在升级前手动完成上述镜像查证与离线导入确认
 
 ---
 

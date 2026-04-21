@@ -41,6 +41,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              set -e
               echo "[PROBE-PATCH] 开始应用 ArgoCD repo-server probe 配置..."
 
               # 应用 StrategicMergePatch

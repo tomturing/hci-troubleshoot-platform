@@ -196,7 +196,7 @@ post_upgrade_patch() {
     info "设置 repo-server dnsPolicy:None + nameservers..."
     ${KUBECTL} patch deployment argocd-repo-server -n argocd --type='json' -p='[
       {"op":"replace","path":"/spec/template/spec/dnsPolicy","value":"None"},
-      {"op":"replace","path":"/spec/template/spec/dnsConfig","value":{
+      {"op":"add","path":"/spec/template/spec/dnsConfig","value":{
         "nameservers":["223.5.5.5","8.8.8.8","10.43.0.10"],
         "options":[{"name":"ndots","value":"1"}],
         "searches":["argocd.svc.cluster.local","svc.cluster.local","cluster.local"]
