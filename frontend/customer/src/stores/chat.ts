@@ -1133,6 +1133,7 @@ export const useChatStore = defineStore('chat', () => {
     handleCloseCase,
     showCaseTemplate,
     caseTemplate,
+    pendingUserMessage,
     confirmCreateCase,
     cancelCreateCase,
     showHistoryDrawer,

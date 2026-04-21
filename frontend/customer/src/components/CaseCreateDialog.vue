@@ -199,9 +199,6 @@ watch(
       // 检测 Bridge（使用 detectBridge 映射 boolean）
       bridgeDetected.value = 'checking'
       bridgeDetected.value = await detectBridge()
-      checkBridgeRunning().then((status) => {
-        bridgeDetected.value = status
-      })
     }
   },
 )

@@ -143,8 +143,8 @@ const collectionState = computed(() => chatStore.collectionState)
             <el-tag :type="alert.level === 'CRITICAL' ? 'danger' : alert.level === 'WARNING' ? 'warning' : 'info'" size="small">
               {{ alert.level || 'INFO' }}
             </el-tag>
-            <span class="alert-message">{{ alert.message || alert.content }}</span>
-            <span class="alert-time" v-if="alert.timestamp">@{{ alert.timestamp }}</span>
+            <span class="alert-message">{{ alert.content }}</span>
+            <span class="alert-time" v-if="alert.time">@{{ alert.time }}</span>
           </div>
           <div v-if="chatStore.environmentContext.alert_logs.length > 10" class="more-hint">
             ... 共 {{ chatStore.environmentContext.alert_logs.length }} 条告警
@@ -167,8 +167,8 @@ const collectionState = computed(() => chatStore.collectionState)
             <el-tag :type="task.status === 'FAILED' ? 'danger' : task.status === 'RUNNING' ? 'warning' : 'success'" size="small">
               {{ task.status || 'UNKNOWN' }}
             </el-tag>
-            <span class="task-name">{{ task.name || task.job_id }}</span>
-            <span class="task-time" v-if="task.start_time">@{{ task.start_time }}</span>
+            <span class="task-name">{{ task.name }}</span>
+            <span class="task-time" v-if="task.time">@{{ task.time }}</span>
           </div>
           <div v-if="chatStore.environmentContext.task_logs.length > 10" class="more-hint">
             ... 共 {{ chatStore.environmentContext.task_logs.length }} 条任务
