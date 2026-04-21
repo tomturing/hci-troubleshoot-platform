@@ -97,15 +97,21 @@ function validateForm(): boolean {
 
 // 连接 SSH 并创建工单
 async function handleConnectAndCreate() {
+  console.log('[CREATE-DIALOG] handleConnectAndCreate 被调用')
   if (!validateForm()) return
-  if (!canConnectSSH.value) return
+  if (!canConnectSSH.value) {
+    console.log('[CREATE-DIALOG] canConnectSSH 为 false，无法连接')
+    return
+  }
 
+  console.log('[CREATE-DIALOG] 开始连接流程', { host: form.sshHost, username: form.sshUsername })
   sshPhase.value = 'connecting'
   sshErrorMessage.value = ''
   sshErrorDetail.value = ''
 
   try {
     // 调用 Store 的连接方法
+    console.log('[CREATE-DIALOG] 调用 chatStore.connectSSHAndCreateCase')
     await chatStore.connectSSHAndCreateCase(
       form.title,
       form.description,
