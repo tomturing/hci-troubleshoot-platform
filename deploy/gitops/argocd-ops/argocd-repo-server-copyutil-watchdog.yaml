@@ -70,7 +70,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: watchdog
-              image: quay.io/argoproj/argocd:v3.0.8
+              image: quay.io/argoproj/argocd:v3.3.6
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh

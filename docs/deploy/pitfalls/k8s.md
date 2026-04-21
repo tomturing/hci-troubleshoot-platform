@@ -579,3 +579,138 @@ location /api/ {
 **预防：**
 - 前端 nginx.conf 中所有指向 K8s Service 的 `proxy_pass` 均使用动态解析模式
 - 新增前端模块时参考 `frontend/admin/nginx.conf` 和 `frontend/customer/nginx.conf` 模板
+
+---
+
+## D-002：K3s 环境拉取 ECR 镜像失败（离线导入方案）
+
+**触发场景：** ArgoCD 升级到 v3.3.6+ 后，Redis 镜像地址变为 `public.ecr.aws/docker/library/redis:8.2.3-alpine`，K3s 节点无法直接拉取 ECR 镜像。
+
+**现象：**
+- argocd-redis Pod 一直 `ImagePullBackOff`
+- `k3s crictl pull public.ecr.aws/...` 报 `connection refused` 或超时
+- Docker Desktop / WSL2 环境下 ECR 拉取需要特殊认证或代理
+
+**根本原因：**
+- AWS ECR Public 需要经过代理访问（在 WSL2/内网环境下）
+- K3s containerd 的代理配置与 Docker 独立，Docker 能拉取不代表 K3s 能拉取
+
+**修复（离线导入方案）：**
+```bash
+# 1. 用 Docker 拉取（Docker 走系统代理）
+docker pull redis:8.2.3-alpine
+
+# 2. 打 ECR 镜像标签
+docker tag redis:8.2.3-alpine public.ecr.aws/docker/library/redis:8.2.3-alpine
+
+# 3. 导出并导入 K3s containerd
+docker save public.ecr.aws/docker/library/redis:8.2.3-alpine | sudo k3s ctr images import -
+
+# 4. 验证
+sudo k3s crictl images | grep redis
+```
+
+**预防：**
+- ArgoCD 升级前检查新版本依赖的所有新镜像地址（`grep -r "image:" manifests/install.yaml | sort -u`）
+- 若镜像源在 ECR / gcr.io 等特殊仓库，提前完成离线导入再执行升级
+- 在升级脚本中加入镜像预检步骤（`scripts/ops/argocd-upgrade.sh` 已包含此逻辑）
+
+---
+
+## D-003：ArgoCD PreSync Job 依赖的 SA 鸡蛋问题
+
+**触发场景：** App of Apps 模式下，argocd-ops Application 管理的资源中包含 ServiceAccount（SA），同时该 Application 的 PreSync Hook Job 需要使用这个 SA。
+
+**现象：**
+- PreSync Job 启动失败：`Error: serviceaccounts "argocd-repo-server-watchdog" not found`
+- argocd-ops 永远无法完成第一次 Sync（SA 不存在 → PreSync 失败 → SA 永远不被创建）
+- 删除 Application 重建也无法解决，因为 Job 启动早于 SA 创建
+
+**根本原因：**
+- ArgoCD Sync 顺序：PreSync Hook 最先执行，此时 Application 管理的主资源（包括 SA）尚未被 apply
+- 第一次部署时，集群中没有这个 SA，Job 无法绑定 serviceAccountName
+
+**修复（手动预创建 SA）：**
+```bash
+# 首次部署前手动创建 SA + RBAC（只需执行一次）
+kubectl apply -f deploy/gitops/argocd-ops/argocd-repo-server-copyutil-watchdog.yaml
+
+# 验证
+kubectl get sa argocd-repo-server-watchdog -n argocd
+```
+
+**预防：**
+- PreSync Hook Job 所需的 RBAC 资源（SA/Role/RoleBinding）**不应**由同一个 Application 管理
+- 将 RBAC 资源分离到独立的 bootstrap 脚本或单独的 Application（无 PreSync 依赖）
+- 或在 `argocd-upgrade.sh` 的 `post_upgrade_patch()` 步骤中预先 apply 这些资源（当前脚本已包含此逻辑）
+
+---
+
+## D-004：ArgoCD v3.x repo-server Redis EOF + K8s Pod git 网络（Clash TUN 环境）
+
+**触发场景：** 两个独立问题在日志中都表现为 `EOF`，容易混淆：
+
+### 问题一：Redis 连接池 EOF（非阻塞）
+
+**现象：**
+- repo-server 日志每隔几分钟出现：`Error attempting to retrieve git references from cache: EOF`
+- 所有 Application 状态变为 `Unknown`，ComparisonError 为 `failed to list refs: EOF`
+
+**根本原因：**
+- go-redis 连接池复用空闲连接时，服务端已关闭该连接（TCP half-close），客户端读到 EOF
+- ArgoCD v3.x repo-server 在 Redis cache 读取 EOF 时，不是静默 fallback，而是向上传播错误
+- 非 TLS 问题（确认方式：`kubectl get secret argocd-redis -n argocd -o jsonpath='{.data}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(list(d.keys()))"` 只有 `auth` 字段则无 TLS）
+
+**修复：**
+```bash
+# 1. 重启 repo-server 强制重建连接池
+kubectl rollout restart deployment/argocd-repo-server -n argocd
+
+# 2. 确保 argocd-cmd-params-cm 无 redis.tls.* 配置（纯密码模式）
+kubectl get cm argocd-cmd-params-cm -n argocd -o yaml | grep redis
+
+# 3. 触发新的 Sync（缓存重建后恢复正常）
+argocd app sync argocd-ops --prune
+```
+
+**长效措施：** `argocd-repo-server-copyutil-watchdog.yaml` 中的 CronJob 定期重启 repo-server，防止长期积累空闲连接
+
+### 问题二：K8s Pod 无法访问 GitHub（WSL2 + Clash TUN 环境）
+
+**现象：**
+- repo-server 内 `git ls-remote https://github.com/...` 超时
+- `getent hosts github.com` 返回 `198.18.0.11`（Clash fake-IP）
+- 从 WSL2 宿主机 git 可以访问，但 Pod 内不行
+
+**根本原因：**
+- Clash Verge 使用**虚拟网卡（TUN）模式**而非**系统代理**模式
+- WSL2 eth0 流量经过 TUN 拦截，GitHub DNS 返回 fake-IP（`198.18.0.xx`），由 TUN 接管路由
+- K8s Pod 走的是 flannel CNI 网络（非 eth0），TUN 无法拦截 flannel 流量
+- 结果：Pod 拿到 fake-IP 后直接路由，无 TUN 代理，连接失败
+
+**诊断命令：**
+```bash
+# 在 repo-server pod 内确认 DNS 返回的是 fake-IP
+kubectl exec -n argocd <repo-server-pod> -- getent hosts github.com
+# 若返回 198.18.0.xx → 是 fake-IP
+
+# 测试 TCP 连通性
+kubectl exec -n argocd <repo-server-pod> -- bash -c \
+  "timeout 5 bash -c 'echo > /dev/tcp/198.18.0.11/443' && echo TCP:OK || echo TCP:FAIL"
+# Pod 内 FAIL，宿主机 OK → 确认是 flannel 流量未被 TUN 拦截
+```
+
+**修复选项：**
+1. **Clash 开启"局域网连接"** + 给 repo-server 配置 `HTTPS_PROXY=http://<windows-host-ip>:7897`（若 Windows 防火墙允许 WSL2 访问）
+2. **使用 SSH 协议替代 HTTPS**：在 ArgoCD 仓库配置中改用 `git@github.com:...`，避免 HTTPS 代理问题
+3. **在 WSL2 起 HTTP CONNECT 代理**（监听 cni0 `10.42.0.1`），让 Pod 流量走代理出去
+
+**当前已知可用的临时解法：** 每次需要 Sync 时手动通过 API 触发（此时 ArgoCD 会复用已有的 git 缓存或短暂网络可达时完成 fetch）
+
+**预防：**
+- 新环境部署 ArgoCD 前，先从 repo-server Pod 内验证 GitHub 可达性：
+  ```bash
+  kubectl exec -n argocd <repo-server-pod> -- git ls-remote \
+    https://github.com/<org>/<repo>.git HEAD
+  ```
+- 若返回超时而非正常 refs，说明网络问题，先解决再触发 Sync

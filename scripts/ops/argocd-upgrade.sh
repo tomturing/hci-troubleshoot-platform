@@ -131,10 +131,91 @@ upgrade() {
 
   ${KUBECTL} create namespace argocd --dry-run=client -o yaml | ${KUBECTL} apply -f -
 
-  if ! ${KUBECTL} apply -n argocd -f "${install_url}"; then
-    warn "常规 apply 失败，尝试 server-side apply"
-    ${KUBECTL} apply --server-side -n argocd -f "${install_url}"
+  # 使用 server-side apply + force-conflicts，防止字段管理器冲突（PIT: P1）
+  ${KUBECTL} apply --server-side --force-conflicts -n argocd -f "${install_url}"
+}
+
+# 升级后补丁：恢复被 install.yaml 覆盖的自定义配置
+# 背景：ArgoCD install.yaml 升级会覆盖手动 patch 的 Deployment 配置，需升级后重新应用
+# 参考：docs/deploy/pitfalls/k8s.md D-003, D-004
+post_upgrade_patch() {
+  info "应用升级后补丁（恢复自定义配置）..."
+
+  # ── 1. 预创建 watchdog SA/RBAC（解决 PreSync Job SA 鸡蛋问题，D-003）──
+  if [[ -f "${WATCHDOG_MANIFEST}" ]]; then
+    info "预创建 watchdog SA/RBAC：${WATCHDOG_MANIFEST}"
+    ${KUBECTL} apply -f "${WATCHDOG_MANIFEST}"
+  else
+    warn "未找到 watchdog 清单，跳过 SA 预创建：${WATCHDOG_MANIFEST}"
   fi
+
+  # ── 2. 恢复 NodePort 访问（install.yaml 会把 argocd-server 重置为 ClusterIP）──
+  local nodeport_manifest
+  nodeport_manifest="$(dirname "${WATCHDOG_MANIFEST}")/argocd-server-nodeport.yaml"
+  if [[ -f "${nodeport_manifest}" ]]; then
+    info "恢复 NodePort Service：${nodeport_manifest}"
+    ${KUBECTL} apply -f "${nodeport_manifest}"
+  else
+    warn "未找到 NodePort 清单，跳过：${nodeport_manifest}"
+  fi
+
+  # ── 3. repo-server：注入 REDIS_PASSWORD（解决 Redis cache EOF，D-004）──
+  # 检查是否已存在，避免重复添加
+  local has_redis_pw
+  has_redis_pw=$(${KUBECTL} get deployment argocd-repo-server -n argocd \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="REDIS_PASSWORD")].name}' 2>/dev/null)
+  if [[ -z "$has_redis_pw" ]]; then
+    info "注入 REDIS_PASSWORD 环境变量..."
+    ${KUBECTL} patch deployment argocd-repo-server -n argocd --type='json' -p='[
+      {"op":"add","path":"/spec/template/spec/containers/0/env/-",
+       "value":{"name":"REDIS_PASSWORD","valueFrom":{"secretKeyRef":{"key":"auth","name":"argocd-redis"}}}}
+    ]'
+  else
+    info "REDIS_PASSWORD 已存在，跳过"
+  fi
+
+  # ── 4. repo-server：设置 ARGOCD_EXEC_TIMEOUT（防止 git fetch 90s 超时）──
+  local has_exec_timeout
+  has_exec_timeout=$(${KUBECTL} get deployment argocd-repo-server -n argocd \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ARGOCD_EXEC_TIMEOUT")].name}' 2>/dev/null)
+  if [[ -z "$has_exec_timeout" ]]; then
+    info "注入 ARGOCD_EXEC_TIMEOUT=600s..."
+    ${KUBECTL} patch deployment argocd-repo-server -n argocd --type='json' -p='[
+      {"op":"add","path":"/spec/template/spec/containers/0/env/-",
+       "value":{"name":"ARGOCD_EXEC_TIMEOUT","value":"600s"}}
+    ]'
+  else
+    info "ARGOCD_EXEC_TIMEOUT 已存在，跳过"
+  fi
+
+  # ── 5. repo-server：dnsPolicy:None + 自定义 nameservers（D-004 git 网络）──
+  local dns_policy
+  dns_policy=$(${KUBECTL} get deployment argocd-repo-server -n argocd \
+    -o jsonpath='{.spec.template.spec.dnsPolicy}' 2>/dev/null)
+  if [[ "$dns_policy" != "None" ]]; then
+    info "设置 repo-server dnsPolicy:None + nameservers..."
+    ${KUBECTL} patch deployment argocd-repo-server -n argocd --type='json' -p='[
+      {"op":"replace","path":"/spec/template/spec/dnsPolicy","value":"None"},
+      {"op":"replace","path":"/spec/template/spec/dnsConfig","value":{
+        "nameservers":["223.5.5.5","8.8.8.8","10.43.0.10"],
+        "options":[{"name":"ndots","value":"1"}],
+        "searches":["argocd.svc.cluster.local","svc.cluster.local","cluster.local"]
+      }}
+    ]'
+  else
+    info "dnsPolicy:None 已设置，跳过"
+  fi
+
+  # ── 6. argocd-cmd-params-cm：补充 git 超时配置 ──
+  ${KUBECTL} patch cm argocd-cmd-params-cm -n argocd --type merge -p \
+    '{"data":{"reposerver.git.request.timeout":"600s","reposerver.parallelism.limit":"4"}}'
+  info "argocd-cmd-params-cm 已更新"
+
+  # ── 7. 等待 repo-server 完成 rollout ──
+  info "等待 repo-server rollout 完成..."
+  ${KUBECTL} rollout status deployment/argocd-repo-server -n argocd --timeout=120s
+
+  info "升级后补丁全部应用完成"
 }
 
 # 等待就绪
@@ -181,12 +262,10 @@ main() {
   backup
   upgrade
   wait_ready
+  post_upgrade_patch
 
   if [[ -f "${WATCHDOG_MANIFEST}" ]]; then
-    info "应用 watchdog 清单：${WATCHDOG_MANIFEST}"
-    ${KUBECTL} apply -f "${WATCHDOG_MANIFEST}"
-  else
-    warn "未找到 watchdog 清单，跳过"
+    info "watchdog 清单已在 post_upgrade_patch 中应用，跳过重复 apply"
   fi
 
   verify
