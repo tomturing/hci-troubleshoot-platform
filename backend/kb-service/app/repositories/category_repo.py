@@ -64,7 +64,9 @@ class CategoryRepository:
                       WHERE status = 'published'
                       GROUP BY category_id
                     ) sop_stats ON sop_stats.category_id = c.code
-                    ORDER BY c.level, c.domain, c.code
+                    ORDER BY c.level, c.domain,
+                      SPLIT_PART(c.code, '-', 1),
+                      LPAD(COALESCE(NULLIF(SPLIT_PART(c.code, '-', 2), ''), '0'), 10, '0')
                 """)
             )
             rows = result.mappings().all()
@@ -123,7 +125,9 @@ class CategoryRepository:
                       GROUP BY category_id
                     ) sop_stats ON sop_stats.category_id = c.code
                     WHERE c.is_active = TRUE
-                    ORDER BY c.level, c.domain, c.code
+                    ORDER BY c.level, c.domain,
+                      SPLIT_PART(c.code, '-', 1),
+                      LPAD(COALESCE(NULLIF(SPLIT_PART(c.code, '-', 2), ''), '0'), 10, '0')
                 """)
             )
             rows = result.mappings().all()
