@@ -713,4 +713,57 @@ kubectl exec -n argocd <repo-server-pod> -- bash -c \
   kubectl exec -n argocd <repo-server-pod> -- git ls-remote \
     https://github.com/<org>/<repo>.git HEAD
   ```
+
+---
+
+## D-005：ArgoCD PreSync/PostSync Hook 需使用包含目标工具的镜像
+
+**触发场景：** ArgoCD PreSync/PostSync Hook Job 需要执行 `kubectl`、`helm`、`aws` 等外部命令。
+
+**错误做法：**
+- 使用 ArgoCD 官方镜像（`quay.io/argoproj/argocd:vx.y.z`）→ **不含 kubectl/helm**
+- 使用 `latest` tag → 版本漂移，不可审计、不可复现
+- 复制其他 Job 的镜像时未检查是否包含目标工具
+
+**正确做法：**
+
+| 工具 | 推荐镜像 | 版本选择 |
+|------|---------|---------|
+| kubectl | `bitnami/kubectl` | ≤ 集群 K8s 版本 |
+| helm | `alpine/helm` | 固定版本号 |
+| aws CLI | `amazon/aws-cli` | 固定版本号 |
+
+**版本查询与选择：**
+```bash
+# 查集群版本
+kubectl version -o json | jq -r '.serverVersion.major + "." + .serverVersion.minor'
+# 例：输出 1.34 → 选择 bitnami/kubectl:1.31（≤ 集群版本）
+
+# 固定版本号示例
+image: bitnami/kubectl:1.31    # ✓ 正确：固定版本
+image: bitnami/kubectl:latest  # ✗ 错误：版本漂移
+```
+
+**Hook Job 最佳实践：**
+```yaml
+spec:
+  template:
+    spec:
+      activeDeadlineSeconds: 120  # 超时保护
+      containers:
+        - name: hook
+          image: bitnami/kubectl:1.31
+          imagePullPolicy: IfNotPresent
+          resources:  # 资源限制
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+```
+
+**参考案例：**
+- PR#170 PreSync Hook 失败：使用 `quay.io/argoproj/argocd:v3.3.6`（不含 kubectl），导致 7 个 Error pods
+- PR#194 修复：改用 `bitnami/kubectl:1.31`
 - 若返回超时而非正常 refs，说明网络问题，先解决再触发 Sync
