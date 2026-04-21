@@ -55,6 +55,9 @@ class KbdEntry(Base):
     published_at = Column(DateTime(timezone=True), nullable=True)        # 发布时间
     archived_at = Column(DateTime(timezone=True), nullable=True)         # 归档时间
 
+    # 命中统计（case 级去重，物化列）
+    hit_count = Column(Integer, nullable=False, default=0)               # 有多少个唯一 case 命中此条目（S4 根因确认时 +1）
+
     # 时间戳
     created_at = Column(
         DateTime(timezone=True),

@@ -290,3 +290,68 @@ class KBClient(InternalHTTPClient):
                 code=code,
             )
             return -1
+
+    async def increment_sop_hit(self, document_id: int) -> int:
+        """SOP 文档命中计数 +1（case 级去重由调用方保证）"""
+        try:
+            resp = await self._client.post(
+                f"{self._api_prefix}/sop/{document_id}/hit",
+                timeout=_CATEGORY_TIMEOUT,
+            )
+            resp.raise_for_status()
+            hit_count = resp.json().get("hit_count", -1)
+            logger.info(event="sop_hit_incremented", document_id=document_id, hit_count=hit_count)
+            return hit_count
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            logger.warning(event="kb_sop_hit_error", document_id=document_id, error=str(exc))
+            return -1
+
+    async def increment_kbd_hit(self, kbd_id: int) -> int:
+        """KBD 条目命中计数 +1（S4 根因确认后调用）"""
+        try:
+            resp = await self._client.post(
+                f"{self._api_prefix}/kbd/{kbd_id}/hit",
+                timeout=_CATEGORY_TIMEOUT,
+            )
+            resp.raise_for_status()
+            hit_count = resp.json().get("hit_count", -1)
+            logger.info(event="kbd_hit_incremented", kbd_id=kbd_id, hit_count=hit_count)
+            return hit_count
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            logger.warning(event="kb_kbd_hit_error", kbd_id=kbd_id, error=str(exc))
+            return -1
+
+    async def decrement_kbd_hit(self, kbd_id: int) -> int:
+        """KBD 条目命中计数 -1（admin 修正 resolved_kbd_entry_id 时扣减旧值）"""
+        try:
+            resp = await self._client.post(
+                f"{self._api_prefix}/kbd/{kbd_id}/hit/decrement",
+                timeout=_CATEGORY_TIMEOUT,
+            )
+            resp.raise_for_status()
+            hit_count = resp.json().get("hit_count", -1)
+            logger.info(event="kbd_hit_decremented", kbd_id=kbd_id, hit_count=hit_count)
+            return hit_count
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            logger.warning(event="kb_kbd_decrement_error", kbd_id=kbd_id, error=str(exc))
+            return -1
+
+    async def get_kbd_info(self, kbd_id: int) -> dict | None:
+        """查询 KBD 条目基本信息（id, support_id, title），供 admin 前端展示用"""
+        try:
+            resp = await self._client.get(
+                f"/api/admin/kbd/{kbd_id}",
+                timeout=_CATEGORY_TIMEOUT,
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            return {
+                "id": data["id"],
+                "support_id": data.get("support_id", ""),
+                "title": data.get("title", ""),
+            }
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            logger.warning(event="kb_kbd_info_error", kbd_id=kbd_id, error=str(exc))
+            return None

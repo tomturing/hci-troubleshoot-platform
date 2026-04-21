@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import {
   createApiClient,
   createCaseApi,
@@ -22,6 +23,10 @@ const conversationApi = createConversationApi(apiClient)
 const promptAuditApi = createPromptAuditApi(apiClient)
 const auditLogApi = createAuditLogApi(apiClient)
 
+// 鉴权头（admin 接口需要）
+const internalToken = import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
+const authHeader = { Authorization: `Bearer ${internalToken}` }
+
 const caseDetail = ref<CaseResponse | null>(null)
 const messages = ref<MessageResponse[]>([])
 const loading = ref(true)
@@ -36,6 +41,17 @@ const auditLogs = ref<any[]>([])
 const auditLogsLoading = ref(false)
 const expandedLogId = ref<string | null>(null)
 
+// ── 关联 KBD 状态 ──
+interface KbdInfo { id: number; support_id: string; title: string }
+const resolvedKbdId = ref<number | null>(null)
+const resolvedKbdInfo = ref<KbdInfo | null>(null)
+// 编辑弹窗
+const editKbdDialogVisible = ref(false)
+const editKbdInputId = ref<number | null>(null)
+const editKbdPreview = ref<KbdInfo | null>(null)
+const editKbdPreviewLoading = ref(false)
+const editKbdSaving = ref(false)
+
 onMounted(async () => {
   try {
     // 加载工单详情
@@ -48,6 +64,12 @@ onMounted(async () => {
     if (conversations.length > 0) {
       const msgRes = await conversationApi.getMessages(conversations[0].conversation_id)
       messages.value = msgRes.data
+      // 提取最新 conversation 的 resolved_kbd_entry_id
+      const latestConv = conversations[0]
+      resolvedKbdId.value = latestConv.resolved_kbd_entry_id ?? null
+      if (resolvedKbdId.value !== null) {
+        await loadKbdInfo(resolvedKbdId.value)
+      }
     }
   } catch (e) {
     console.error('加载工单详情失败', e)
@@ -93,6 +115,73 @@ function onTabChange(tabName: string) {
   if (tabName === 'ai-context') {
     loadAiContext()
   }
+}
+
+// ── 关联 KBD 功能 ──
+async function loadKbdInfo(kbdId: number) {
+  try {
+    const resp = await fetch(`/api/admin/kbd/${kbdId}`, { headers: authHeader })
+    if (!resp.ok) return
+    const data = await resp.json()
+    resolvedKbdInfo.value = { id: data.id, support_id: data.support_id, title: data.title }
+  } catch {
+    // 静默失败，不影响页面主流程
+  }
+}
+
+function openEditKbdDialog() {
+  editKbdInputId.value = resolvedKbdId.value
+  editKbdPreview.value = resolvedKbdInfo.value
+  editKbdDialogVisible.value = true
+}
+
+async function previewKbdById() {
+  if (editKbdInputId.value === null || editKbdInputId.value === undefined) {
+    editKbdPreview.value = null
+    return
+  }
+  editKbdPreviewLoading.value = true
+  try {
+    const resp = await fetch(`/api/admin/kbd/${editKbdInputId.value}`, { headers: authHeader })
+    if (!resp.ok) {
+      editKbdPreview.value = null
+      ElMessage.warning(`未找到 KBD-${editKbdInputId.value}`)
+      return
+    }
+    const data = await resp.json()
+    editKbdPreview.value = { id: data.id, support_id: data.support_id, title: data.title }
+  } catch {
+    editKbdPreview.value = null
+    ElMessage.error('查询 KBD 信息失败')
+  } finally {
+    editKbdPreviewLoading.value = false
+  }
+}
+
+async function saveResolvedKbd() {
+  editKbdSaving.value = true
+  try {
+    const resp = await fetch(`/api/conversations/admin/cases/${encodeURIComponent(caseId)}/resolved_kbd`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({ kbd_entry_id: editKbdInputId.value ?? null }),
+    })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const result = await resp.json()
+    resolvedKbdId.value = result.new_kbd_entry_id
+    resolvedKbdInfo.value = result.kbd_info ?? null
+    editKbdDialogVisible.value = false
+    ElMessage.success(result.changed ? '关联 KBD 已更新' : '未发生变化')
+  } catch {
+    ElMessage.error('保存失败，请重试')
+  } finally {
+    editKbdSaving.value = false
+  }
+}
+
+function clearResolvedKbd() {
+  editKbdInputId.value = null
+  editKbdPreview.value = null
 }
 
 // 格式化日期
@@ -212,6 +301,17 @@ function getRiskLabel(level: number): { text: string; type: '' | 'success' | 'wa
           <el-descriptions-item label="创建时间">{{ formatDate(caseDetail.created_at) }}</el-descriptions-item>
           <el-descriptions-item label="关闭时间">
             {{ caseDetail.closed_at ? formatDate(caseDetail.closed_at) : '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="关联 KBD" :span="2">
+            <span v-if="resolvedKbdInfo">
+              <el-tag type="success" size="small" style="margin-right: 6px">{{ resolvedKbdInfo.support_id }}</el-tag>
+              {{ resolvedKbdInfo.title }}
+            </span>
+            <span v-else-if="resolvedKbdId !== null" style="color: #909399">KBD-{{ resolvedKbdId }}（信息加载失败）</span>
+            <span v-else style="color: #909399">未关联（AI 未确认根因 KBD）</span>
+            <el-button size="small" text type="primary" style="margin-left: 8px" @click="openEditKbdDialog">
+              修正
+            </el-button>
           </el-descriptions-item>
         </el-descriptions>
       </el-card>
@@ -405,6 +505,36 @@ function getRiskLabel(level: number): { text: string; type: '' | 'success' | 'wa
       </el-card>
     </template>
   </div>
+
+  <!-- ── 关联 KBD 编辑弹窗 ── -->
+  <el-dialog v-model="editKbdDialogVisible" title="修正关联 KBD" width="480px" :close-on-click-modal="false">
+    <div class="edit-kbd-body">
+      <p class="edit-kbd-hint">输入 KBD 条目 ID 进行绑定，或清空以解除关联。</p>
+      <div class="edit-kbd-row">
+        <el-input-number
+          v-model="editKbdInputId"
+          :min="1"
+          :controls="false"
+          placeholder="输入 KBD ID"
+          style="width: 160px"
+          @change="editKbdPreview = null"
+        />
+        <el-button size="small" :loading="editKbdPreviewLoading" @click="previewKbdById">查询</el-button>
+        <el-button size="small" type="danger" text @click="clearResolvedKbd">清除</el-button>
+      </div>
+      <div v-if="editKbdPreview" class="kbd-preview">
+        <el-tag type="success" size="small">{{ editKbdPreview.support_id }}</el-tag>
+        <span class="kbd-preview-title">{{ editKbdPreview.title }}</span>
+      </div>
+      <div v-else-if="editKbdInputId === null" class="kbd-preview-empty">
+        保存后将解除 KBD 关联，AI 未能确认根因。
+      </div>
+    </div>
+    <template #footer>
+      <el-button @click="editKbdDialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="editKbdSaving" @click="saveResolvedKbd">保存</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -626,5 +756,43 @@ function getRiskLabel(level: number): { text: string; type: '' | 'success' | 'wa
   .ai-context-container {
     grid-template-columns: 1fr;
   }
+}
+
+/* 关联 KBD 编辑弹窗 */
+.edit-kbd-hint {
+  font-size: 13px;
+  color: #606266;
+  margin: 0 0 12px 0;
+}
+
+.edit-kbd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.kbd-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f0f9eb;
+  border-radius: 4px;
+  border: 1px solid #b3e19d;
+}
+
+.kbd-preview-title {
+  font-size: 13px;
+  color: #303133;
+}
+
+.kbd-preview-empty {
+  font-size: 13px;
+  color: #909399;
+  padding: 8px 12px;
+  background: #fafafa;
+  border-radius: 4px;
+  border: 1px solid #ebeef5;
 }
 </style>
