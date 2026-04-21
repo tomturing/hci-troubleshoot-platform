@@ -7,8 +7,12 @@ const chatStore = useChatStore()
 // 展开/折叠状态
 const expanded = ref(false)
 
+// SSH 连接状态
+const isSshConnected = computed(() => chatStore.sshConnectionState === 'connected')
+
 // 刷新数据
 async function handleRefresh() {
+  if (!isSshConnected.value) return
   await chatStore.refreshEnvironmentData()
 }
 
@@ -178,9 +182,18 @@ const collectionState = computed(() => chatStore.collectionState)
 
       <!-- 操作按钮 -->
       <div class="card-actions">
-        <el-button size="small" @click="handleRefresh">
-          刷新数据
-        </el-button>
+        <el-tooltip
+          :content="isSshConnected ? '重新采集环境数据' : '需要 SSH 连接才能刷新'"
+          placement="top"
+        >
+          <el-button
+            size="small"
+            :disabled="!isSshConnected"
+            @click="handleRefresh"
+          >
+            刷新数据
+          </el-button>
+        </el-tooltip>
         <el-button size="small" type="primary" @click="handleSendToAssistant">
           发送到助手
         </el-button>

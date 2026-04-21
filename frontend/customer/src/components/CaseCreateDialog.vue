@@ -12,6 +12,7 @@ const BRIDGE_DOWNLOAD_URL =
 
 // Bridge 检测状态（需要将 boolean 映射为 BridgeStatus）
 const bridgeDetected = ref<BridgeStatus>('checking')
+const isRefreshingBridge = ref(false)
 
 // 本地编辑副本
 const form = reactive({
@@ -181,6 +182,17 @@ function handleDownloadBridge() {
   setTimeout(() => document.body.removeChild(a), 200)
 }
 
+// 重新检测 Bridge
+async function handleRefreshBridge() {
+  isRefreshingBridge.value = true
+  bridgeDetected.value = 'checking'
+  try {
+    bridgeDetected.value = await detectBridge()
+  } finally {
+    isRefreshingBridge.value = false
+  }
+}
+
 // 监听弹框打开，重置状态
 watch(
   () => chatStore.showCaseTemplate,
@@ -267,9 +279,14 @@ watch(
             浏览器无法连接 ws://localhost:9999<br />
             请先启动 terminal_bridge.exe
           </p>
-          <el-button type="primary" size="small" class="bridge-download-link" @click="handleDownloadBridge">
-            下载 SSH Bridge
-          </el-button>
+          <div class="bridge-actions">
+            <el-button type="primary" size="small" @click="handleDownloadBridge">
+              下载 SSH Bridge
+            </el-button>
+            <el-button size="small" @click="handleRefreshBridge" :loading="isRefreshingBridge">
+              重新检测
+            </el-button>
+          </div>
         </el-alert>
       </div>
 
@@ -299,19 +316,19 @@ watch(
       <!-- SSH 连接状态 -->
       <div v-if="sshPhase !== 'idle'" class="ssh-status">
         <div v-if="sshPhase === 'connecting'" class="status-connecting">
-          <el-icon class="is-loading"><i class="el-icon-loading" /></el-icon>
-          <span>正在连接 SSH...</span>
-          <p class="status-detail">目标: {{ form.sshUsername }}@{{ form.sshHost }}:{{ form.sshPort }}</p>
+          <el-icon class="is-loading status-icon-blue"><i class="el-icon-loading" /></el-icon>
+          <span class="status-primary">正在连接 SSH...</span>
+          <p class="status-secondary">目标: {{ form.sshUsername }}@{{ form.sshHost }}:{{ form.sshPort }}</p>
         </div>
 
         <div v-if="sshPhase === 'acli_check'" class="status-checking">
-          <el-icon class="is-loading"><i class="el-icon-loading" /></el-icon>
-          <span>检查 acli 工具...</span>
+          <el-icon class="is-loading status-icon-blue"><i class="el-icon-loading" /></el-icon>
+          <span class="status-primary">检查 acli 工具...</span>
         </div>
 
         <div v-if="sshPhase === 'collecting'" class="status-collecting">
-          <el-icon class="is-loading"><i class="el-icon-loading" /></el-icon>
-          <span>正在采集环境数据...</span>
+          <el-icon class="is-loading status-icon-blue"><i class="el-icon-loading" /></el-icon>
+          <span class="status-primary">正在采集环境数据...</span>
           <ul class="collect-items">
             <li>集群信息...</li>
             <li>告警列表...</li>
@@ -466,7 +483,9 @@ watch(
   line-height: 1.6;
 }
 
-.bridge-download-link {
+.bridge-actions {
+  display: flex;
+  gap: 8px;
   margin-top: 12px;
 }
 
@@ -482,9 +501,28 @@ watch(
 .status-checking,
 .status-collecting {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.status-icon-blue {
+  color: #409eff;
+}
+
+.status-primary {
+  color: #409eff;
+  font-size: 15px;
+  font-weight: 500;
+  display: flex;
   align-items: center;
   gap: 8px;
-  color: #409eff;
+}
+
+.status-secondary {
+  color: #909399;
+  font-size: 13px;
+  margin-top: 4px;
 }
 
 .status-done {

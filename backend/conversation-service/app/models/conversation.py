@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from shared.database.postgres import Base
 from shared.models.base import TraceableMixin
-from sqlalchemy import Column, DateTime, Integer, String
+from sqlalchemy import BigInteger, Column, DateTime, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 
@@ -43,6 +43,13 @@ class Conversation(Base, TraceableMixin):
     # 选 A(已解决) → case.status=resolved；选 B(未解决) → 回退S1；选 C(升级人工) → in_progress
     # 与 pending_confirm 独立：两者不会同时出现（pending_confirm在S3/S5，此字段在S6）
     pending_resolution = Column(JSONB, nullable=True, comment="S6 验证闭环后等待用户选择的快照，A/B/C 选择后清空")
+
+    # 知识资产命中引用（case 级去重，hit_count 物化列的数据源）
+    # S1 阶段按 category_id 命中 SOP 后写入；NULL 表示无 SOP 或未到 S1
+    sop_document_id = Column(Integer, nullable=True, comment="S1 命中的 SOP 文档 ID，FK → sop_document.id")
+    # S4 根因确认后 AI 推断的 KBD 叶节点；NULL 表示新问题未收录或未到 S4
+    # admin-UI 可手动修正（修正时重新计算 hit_count）
+    resolved_kbd_entry_id = Column(BigInteger, nullable=True, comment="S4 根因确认的 KBD 条目 ID，FK → kbd_entry.id")
 
     def __repr__(self):
         return f"<Conversation(conversation_id={self.conversation_id}, case_id={self.case_id}, stage={self.diagnostic_stage})>"

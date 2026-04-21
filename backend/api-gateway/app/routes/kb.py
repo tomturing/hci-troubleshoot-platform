@@ -245,6 +245,14 @@ async def kbd_list_proxy(request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@kbd_router.get("/{kbd_id}")
+async def kbd_get_proxy(kbd_id: int, request: Request):
+    """代理获取单条 KBD 详情（含 content_md）→ kb-service"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("GET", f"/{kbd_id}", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @kbd_router.patch("/{kbd_id}/approve")
 async def kbd_approve_proxy(kbd_id: int, request: Request):
     """代理 KBD 审核通过请求 → kb-service"""

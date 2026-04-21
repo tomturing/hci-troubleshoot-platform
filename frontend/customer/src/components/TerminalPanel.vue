@@ -5,13 +5,6 @@ import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 
 import { useChatStore } from '@/stores/chat'
-import {
-  createBridgeSocket,
-  buildConnectMessage,
-  buildInputMessage,
-  buildDisconnectMessage,
-  type TerminalWsMessage,
-} from '@/api/terminal'
 
 const chatStore = useChatStore()
 
@@ -19,10 +12,7 @@ const terminalInputRef = ref<{ focus: () => void } | null>(null)
 const terminalContainer = ref<HTMLElement | null>(null)
 
 const localInput = ref('')
-const bridgeSocket = ref<WebSocket | null>(null)
 const manualDisconnect = ref(false)
-const connectStage = ref<'idle' | 'bridge' | 'remote_session'>('idle')
-const authTimeoutTimer = ref<number | null>(null)
 
 const sshForm = ref({
   host: '',
@@ -34,35 +24,38 @@ const sshForm = ref({
   passphrase: '',
 })
 
-const connectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
-const errorMessage = ref('')
-const errorDetail = ref('')
-
 const fullOutputText = ref('')
 const currentCommandOutput = ref('')
 const lastCommandOutput = ref('')
 const hasExecutedCommand = ref(false)
 
-const isConnected = computed(() => connectionState.value === 'connected')
-const isConnecting = computed(() => connectionState.value === 'connecting')
-const isError = computed(() => connectionState.value === 'error')
+// 使用 chatStore 的全局 SSH 状态
+const isConnected = computed(() => chatStore.sshConnectionState === 'connected')
+const isConnecting = computed(() => chatStore.sshConnectionState === 'connecting')
+const isError = computed(() => chatStore.sshConnectionState === 'error')
 const connectingLabel = computed(() => {
-  if (connectStage.value === 'bridge') return '连接本地 Bridge...'
-  if (connectStage.value === 'remote_session') return '建立远程 SSH 会话中...'
+  if (chatStore.sshConnectionState === 'connecting') return '正在连接...'
   return '连接中...'
 })
 const caseId = computed(() => chatStore.currentCase?.case_id || 'default')
+
+const errorMessage = computed(() => chatStore.sshErrorMessage)
 
 let xterm: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let resizeObserver: ResizeObserver | null = null
 
-watch(connectionState, (s) => chatStore.setSshConnectionState(s))
-watch(errorMessage, (m) => {
-  if (m) chatStore.setSshErrorMessage(m)
-  else chatStore.clearSshErrorMessage()
-})
+// 监听全局 SSH 输出事件
+watch(
+  () => chatStore.sshTerminalOutputEvent,
+  (output) => {
+    if (output && chatStore.sshCommandConsumer === 'terminal') {
+      writeTerminal(output)
+    }
+  },
+)
 
+// 监听命令注入
 watch(
   () => chatStore.terminalInputCommand,
   (cmd) => {
@@ -77,6 +70,7 @@ watch(
   { immediate: true },
 )
 
+// 监听连接状态变化
 watch(isConnected, async (connected) => {
   if (!connected) return
   await nextTick()
@@ -201,104 +195,15 @@ function validateForm(): string | null {
   return null
 }
 
-function closeSocket() {
-  if (!bridgeSocket.value) return
-  bridgeSocket.value.onopen = null
-  bridgeSocket.value.onclose = null
-  bridgeSocket.value.onmessage = null
-  bridgeSocket.value.onerror = null
-  bridgeSocket.value.close()
-  bridgeSocket.value = null
-}
-
-function setErrorState(message: string, detail = '') {
-  connectionState.value = 'error'
-  connectStage.value = 'idle'
-  errorMessage.value = message
-  errorDetail.value = detail
-}
-
-function clearErrorState() {
-  errorMessage.value = ''
-  errorDetail.value = ''
-}
-
-function clearAuthTimer() {
-  if (authTimeoutTimer.value !== null) {
-    window.clearTimeout(authTimeoutTimer.value)
-    authTimeoutTimer.value = null
-  }
-}
-
-function startAuthTimer() {
-  clearAuthTimer()
-  authTimeoutTimer.value = window.setTimeout(() => {
-    if (connectionState.value !== 'connecting') return
-    setErrorState('连接远程主机超时', '认证阶段在限定时间内未收到成功或失败信号')
-    writeInfoLine(`错误: ${errorMessage.value}`)
-    if (errorDetail.value) writeInfoLine(`详情: ${errorDetail.value}`)
-    manualDisconnect.value = true
-    closeSocket()
-  }, 15000)
-}
-
-function handleBridgeMessage(raw: string) {
-  let msg: TerminalWsMessage
-  try {
-    msg = JSON.parse(raw)
-  } catch {
-    writeInfoLine(`无法解析消息: ${raw}`)
-    return
-  }
-
-  if (msg.case_id && msg.case_id !== caseId.value) {
-    return
-  }
-
-  if (msg.type === 'ssh_connected') {
-    clearAuthTimer()
-    connectionState.value = 'connected'
-    connectStage.value = 'idle'
-    clearErrorState()
-    writeInfoLine(`SSH 已登录到 ${sshForm.value.host}`)
-    return
-  }
-
-  if (msg.type === 'ssh_disconnected') {
-    clearAuthTimer()
-    connectStage.value = 'idle'
-    if (connectionState.value !== 'error') {
-      connectionState.value = 'disconnected'
-      writeInfoLine('SSH 会话已断开')
-    }
-    return
-  }
-
-  if (msg.type === 'ssh_output' && msg.output) {
-    writeTerminal(msg.output)
-    return
-  }
-
-  if (msg.type === 'ssh_error') {
-    clearAuthTimer()
-    setErrorState(msg.message || 'SSH 连接出错', msg.detail || '')
-    writeInfoLine(`错误: ${errorMessage.value}`)
-    if (errorDetail.value) writeInfoLine(`详情: ${errorDetail.value}`)
-  }
-}
-
+// 使用全局 SSH 连接
 async function connectSsh() {
   const err = validateForm()
   if (err) {
-    errorMessage.value = err
+    // 直接显示错误，不再用 errorMessage ref
     return
   }
 
-  connectionState.value = 'connecting'
-  connectStage.value = 'bridge'
-  clearErrorState()
   manualDisconnect.value = false
-
   fullOutputText.value = ''
   currentCommandOutput.value = ''
   lastCommandOutput.value = ''
@@ -307,69 +212,35 @@ async function connectSsh() {
 
   writeInfoLine(`正在连接 ${sshForm.value.username}@${sshForm.value.host}:${sshForm.value.port}...`)
 
-  closeSocket()
-  const socket = createBridgeSocket()
-  bridgeSocket.value = socket
+  try {
+    await chatStore.connectSSH({
+      host: sshForm.value.host.trim(),
+      port: Number(sshForm.value.port) || 22,
+      username: sshForm.value.username.trim(),
+      authType: sshForm.value.authType,
+      password: sshForm.value.authType === 'password' ? sshForm.value.password : undefined,
+      privateKey: sshForm.value.authType === 'key' ? sshForm.value.privateKey : undefined,
+      passphrase: sshForm.value.authType === 'key' && sshForm.value.passphrase.trim()
+        ? sshForm.value.passphrase.trim()
+        : undefined,
+      caseId: caseId.value,
+    })
 
-  socket.onopen = () => {
-    connectStage.value = 'remote_session'
-    writeInfoLine('本地 SSH Bridge 已连接，正在建立远程 SSH 会话...')
-    startAuthTimer()
-    socket.send(
-      buildConnectMessage({
-        host: sshForm.value.host.trim(),
-        port: Number(sshForm.value.port) || 22,
-        username: sshForm.value.username.trim(),
-        auth_type: sshForm.value.authType,
-        password: sshForm.value.authType === 'password' ? sshForm.value.password : undefined,
-        private_key: sshForm.value.authType === 'key' ? sshForm.value.privateKey : undefined,
-        passphrase:
-          sshForm.value.authType === 'key' && sshForm.value.passphrase.trim()
-            ? sshForm.value.passphrase.trim()
-            : undefined,
-        case_id: caseId.value,
-      }),
-    )
-  }
-
-  socket.onmessage = (e) => handleBridgeMessage(String(e.data || ''))
-
-  socket.onerror = () => {
-    clearAuthTimer()
-    setErrorState('本地 SSH Bridge 未运行', '浏览器无法连接 ws://localhost:9999，请确认 terminal_bridge.exe 已启动')
-    writeInfoLine(`错误: ${errorMessage.value}`)
-    if (errorDetail.value) writeInfoLine(`详情: ${errorDetail.value}`)
-    closeSocket()
-  }
-
-  socket.onclose = () => {
-    clearAuthTimer()
-    connectStage.value = 'idle'
-    bridgeSocket.value = null
-    if (!manualDisconnect.value && connectionState.value !== 'disconnected' && connectionState.value !== 'error') {
-      setErrorState('本地 SSH Bridge 连接中断', 'Bridge 与浏览器之间的 WebSocket 已关闭')
-      writeInfoLine(`错误: ${errorMessage.value}`)
-      if (errorDetail.value) writeInfoLine(`详情: ${errorDetail.value}`)
-    }
+    writeInfoLine(`SSH 已登录到 ${sshForm.value.host}`)
+  } catch (e: any) {
+    writeInfoLine(`错误: ${e.message}`)
   }
 }
 
 function disconnectSsh() {
   manualDisconnect.value = true
-  clearAuthTimer()
-  if (bridgeSocket.value?.readyState === WebSocket.OPEN) {
-    bridgeSocket.value.send(buildDisconnectMessage(caseId.value))
-  }
-  closeSocket()
-  connectStage.value = 'idle'
-  connectionState.value = 'disconnected'
-  clearErrorState()
+  chatStore.disconnectSSH()
   writeInfoLine('已断开 SSH 会话')
 }
 
 function executeCommand() {
   const command = localInput.value.trim()
-  if (!command || !isConnected.value || bridgeSocket.value?.readyState !== WebSocket.OPEN) return
+  if (!command || !isConnected.value) return
 
   if (currentCommandOutput.value.trim()) {
     lastCommandOutput.value = currentCommandOutput.value
@@ -378,7 +249,7 @@ function executeCommand() {
   hasExecutedCommand.value = true
 
   writeTerminal(`\n$ ${command}\n`)
-  bridgeSocket.value.send(buildInputMessage(caseId.value, command.endsWith('\n') ? command : `${command}\n`))
+  chatStore.sendSSHCommand(command, 'terminal')
   localInput.value = ''
 }
 
@@ -436,8 +307,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  clearAuthTimer()
-  closeSocket()
+  disconnectSsh()
   disposeTerminal()
 })
 </script>
@@ -501,9 +371,7 @@ onBeforeUnmount(() => {
           v-if="errorMessage"
           type="error"
           :title="errorMessage"
-          :description="errorDetail || undefined"
           :closable="true"
-          @close="clearErrorState"
         />
       </el-form>
     </div>
