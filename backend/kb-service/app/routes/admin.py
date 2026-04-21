@@ -288,7 +288,7 @@ async def list_kbd_entries(
                    metadata, category_id, ai_category_id,
                    ai_category_conf, ai_category_reason,
                    status, reviewer_id, review_note,
-                   created_at, updated_at
+                   hit_count, created_at, updated_at
             FROM kbd_entry
             WHERE {where_sql}
             ORDER BY created_at DESC
@@ -313,6 +313,7 @@ async def list_kbd_entries(
             "status": row["status"],
             "reviewer_id": row["reviewer_id"],
             "review_note": row["review_note"],
+            "hit_count": row.get("hit_count", 0),
             "created_at": row["created_at"].isoformat() if row["created_at"] else None,
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
@@ -980,7 +981,7 @@ async def list_sop_documents(
         data_sql = text(  # noqa: S608
             f"""
             SELECT id, source_id, category_id, title, status,
-                   reviewer_id, reviewed_at, published_at, created_at, updated_at,
+                   reviewer_id, reviewed_at, published_at, created_at, updated_at, hit_count,
                    (SELECT COUNT(*) FROM sop_chunk WHERE document_id = sop_document.id) AS chunk_count
             FROM sop_document
             {where_sql}
@@ -1004,6 +1005,7 @@ async def list_sop_documents(
             "published_at": row["published_at"].isoformat() if row["published_at"] else None,
             "created_at": row["created_at"].isoformat() if row["created_at"] else None,
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+            "hit_count": row.get("hit_count", 0),
         }
         for row in rows
     ]

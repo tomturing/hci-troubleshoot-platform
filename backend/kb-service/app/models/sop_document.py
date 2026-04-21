@@ -31,6 +31,9 @@ class SopDocument(Base):
     reviewer_id = Column(Integer, nullable=True)                           # 审核人 ID
     reviewed_at = Column(DateTime(timezone=True), nullable=True)           # 审核时间
     published_at = Column(DateTime(timezone=True), nullable=True)          # 发布时间
+    # 命中统计（case 级去重，物化列）
+    hit_count = Column(Integer, nullable=False, default=0)                 # 有多少个唯一 case 命中此 SOP（S1 命中时 +1）
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(
         DateTime(timezone=True),

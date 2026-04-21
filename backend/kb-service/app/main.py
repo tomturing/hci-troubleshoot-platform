@@ -23,6 +23,7 @@ from app.routes import (
     categories,
     classify,
     health,
+    hits,
     ingest,
     route,
     search,
@@ -71,6 +72,7 @@ async def lifespan(app: FastAPI):
     classify.set_dependencies(database_manager)
     sop_ingest.set_dependencies(database_manager)  # SOP 文档入库
     categories.set_dependencies(database_manager, embedding_service)  # 分类管理路由
+    hits.set_dependencies(database_manager)  # 知识命中统计路由
 
     logger.info(event="service_started", message=f"{settings.SERVICE_NAME} ready")
 
@@ -104,6 +106,8 @@ app.include_router(admin.sop_router)  # SOP 审核路由
 app.include_router(classify.router)
 app.include_router(sop_ingest.router)  # SOP 文档入库
 app.include_router(categories.router)  # 分类管理路由
+app.include_router(hits.sop_hit_router)  # SOP 命中统计路由
+app.include_router(hits.kbd_hit_router)  # KBD 命中统计路由
 
 
 @app.get("/metrics")
