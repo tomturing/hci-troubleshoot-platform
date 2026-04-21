@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, reactive, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import MessageBubble from './MessageBubble.vue'
 import RatingCard from './RatingCard.vue'
 import TerminalPanel from './TerminalPanel.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import DiagnosticProgress from './DiagnosticProgress.vue'
+import CaseCreateDialog from './CaseCreateDialog.vue'
+import EnvironmentSummary from './EnvironmentSummary.vue'
 
 const chatStore = useChatStore()
 const inputText = ref('')
@@ -45,22 +47,6 @@ const startResizeHistory = (e: MouseEvent) => {
   }
   document.addEventListener('mousemove', onMouseMove)
   document.addEventListener('mouseup', onMouseUp)
-}
-
-// 工单创建模板本地编辑副本
-const templateForm = reactive({ title: '', description: '' })
-
-// 监听 store 弹出模板时同步到本地编辑
-watch(() => chatStore.showCaseTemplate, (val) => {
-  if (val) {
-    templateForm.title = chatStore.caseTemplate.title
-    templateForm.description = chatStore.caseTemplate.description
-  }
-})
-
-/** 确认创建工单 */
-function handleConfirmTemplate() {
-  chatStore.confirmCreateCase({ ...templateForm })
 }
 
 /** 发送消息 */
@@ -205,41 +191,8 @@ function formatDate(d: string): string {
       </template>
     </el-dialog>
 
-    <!-- 工单创建模板对话框 -->
-    <el-dialog
-      v-model="chatStore.showCaseTemplate"
-      title="创建工单"
-      width="500px"
-      :close-on-click-modal="false"
-      align-center
-    >
-      <div class="template-dialog-content">
-        <p class="template-hint">请确认或编辑工单信息后提交：</p>
-        <el-form label-position="top">
-          <el-form-item label="工单标题">
-            <el-input v-model="templateForm.title" placeholder="简要描述问题" maxlength="100" show-word-limit />
-          </el-form-item>
-          <el-form-item label="问题描述">
-            <el-input
-              v-model="templateForm.description"
-              type="textarea"
-              :autosize="{ minRows: 3, maxRows: 8 }"
-              placeholder="详细描述您遇到的问题..."
-            />
-          </el-form-item>
-        </el-form>
-      </div>
-      <template #footer>
-        <el-button @click="chatStore.cancelCreateCase()">取消</el-button>
-        <el-button
-          type="primary"
-          :disabled="!templateForm.title.trim() || !templateForm.description.trim()"
-          @click="handleConfirmTemplate"
-        >
-          提交工单
-        </el-button>
-      </template>
-    </el-dialog>
+    <!-- SSH 集成创建工单对话框 -->
+    <CaseCreateDialog />
 
     <!-- 消息区域 -->
     <!-- AI 助手选择器（v2.2：对话界面顶部，始终可见）-->
@@ -271,6 +224,8 @@ function formatDate(d: string): string {
       v-if="chatStore.diagnosticStage !== 'S0'"
       :stage="chatStore.diagnosticStage"
     />
+    <!-- 环境数据卡片（工单创建成功后显示） -->
+    <EnvironmentSummary v-if="chatStore.hasActiveCase" />
     <div ref="messagesContainer" class="messages-area">
       <MessageBubble
         v-for="msg in chatStore.messages"
@@ -556,13 +511,6 @@ function formatDate(d: string): string {
 
 .pending-case-info strong {
   color: #303133;
-}
-
-/* 工单创建模板对话框 */
-.template-hint {
-  color: #909399;
-  font-size: 13px;
-  margin-bottom: 12px;
 }
 
 /* 历史工单抽屉 */

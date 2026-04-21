@@ -4,11 +4,11 @@
 
 import { defineStore } from 'pinia'
 import { ref, computed, nextTick } from 'vue'
-import { createApiClient, createCaseApi, createConversationApi, createAssistantApi } from '@hci/shared'
-import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse } from '@hci/shared'
+import { createApiClient, createCaseApi, createConversationApi, createAssistantApi, createEnvironmentApi } from '@hci/shared'
+import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
-import { checkBridgeRunning, type BridgeStatus } from '@/api/terminal'
+import { checkBridgeRunning, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
 
 /** 前端聊天消息 */
 export interface ChatMessage {
@@ -32,6 +32,7 @@ export const useChatStore = defineStore('chat', () => {
   const conversationApi = createConversationApi(apiClient)
   const assistantApi = createAssistantApi(apiClient)
   const evaluateApi = createEvaluateApi(apiClient)
+  const environmentApi = createEnvironmentApi(apiClient)
 
   // 是否显示助手选择器（v2.1：从后端 API 响应获取）
   const showAssistantSelector = ref(false)
@@ -77,9 +78,20 @@ export const useChatStore = defineStore('chat', () => {
   const terminalInputCommand = ref('')
   const assistantDraftText = ref('')
 
-  // SSH 连接状态（由 TerminalPanel 内部管理，store 只保留显示用状态）
+  // === 全局 SSH 连接状态 ===
+  const sshWebSocket = ref<WebSocket | null>(null)
   const sshConnectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
+  const sshCurrentConfig = ref<{
+    host: string
+    port: number
+    username: string
+    authType: 'password' | 'key'
+    caseId: string
+  } | null>(null)
   const sshErrorMessage = ref('')
+  const sshOutputBuffer = ref<string>('')
+  const sshCommandConsumer = ref<'terminal' | 'collection' | null>(null)
+  const sshTerminalOutputEvent = ref<string>('')
 
   // Agent 模式：待确认的高风险操作（confirm_request SSE 事件）
   const pendingConfirm = ref<{
@@ -92,6 +104,12 @@ export const useChatStore = defineStore('chat', () => {
 
   // Bridge 运行状态
   const bridgeStatus = ref<BridgeStatus>('not_running')
+
+  // === 环境数据采集状态 ===
+  const collectionState = ref<'idle' | 'collecting' | 'success' | 'error'>('idle')
+  const collectionProgress = ref<Record<string, 'pending' | 'collecting' | 'done' | 'empty' | 'error'>>({})
+  const environmentData = ref<EnvironmentResponse[]>([])
+  const environmentContext = ref<EnvironmentContextResponse | null>(null)
 
   // 计算属性
   const hasActiveCase = computed(() => {
@@ -640,16 +658,636 @@ export const useChatStore = defineStore('chat', () => {
     showBridgeDownload.value = false
   }
 
-  function setSshConnectionState(state: 'disconnected' | 'connecting' | 'connected' | 'error') {
-    sshConnectionState.value = state
+  // === 全局 SSH 连接方法 ===
+
+  /** 认证超时定时器 */
+  let sshAuthTimer: number | null = null
+  const SSH_AUTH_TIMEOUT = 15000
+
+  /** 清除认证超时定时器 */
+  function clearSshAuthTimer() {
+    if (sshAuthTimer !== null) {
+      window.clearTimeout(sshAuthTimer)
+      sshAuthTimer = null
+    }
   }
 
-  function setSshErrorMessage(message: string) {
-    sshErrorMessage.value = message
+  /** 清理 SSH WebSocket */
+  function cleanupSshWebSocket() {
+    clearSshAuthTimer()
+    if (sshWebSocket.value) {
+      sshWebSocket.value.onopen = null
+      sshWebSocket.value.onmessage = null
+      sshWebSocket.value.onerror = null
+      sshWebSocket.value.onclose = null
+      sshWebSocket.value.close()
+      sshWebSocket.value = null
+    }
   }
 
-  function clearSshErrorMessage() {
-    sshErrorMessage.value = ''
+  /** 全局 SSH 连接方法 */
+  function connectSSH(config: {
+    host: string
+    port: number
+    username: string
+    authType: 'password' | 'key'
+    password?: string
+    privateKey?: string
+    passphrase?: string
+    caseId: string
+  }): Promise<void> {
+    console.log('[SSH] 开始连接', {
+      host: config.host,
+      port: config.port,
+      username: config.username,
+      caseId: config.caseId,
+      timestamp: new Date().toISOString()
+    })
+
+    return new Promise((resolve, reject) => {
+      // 清理旧连接
+      cleanupSshWebSocket()
+      sshOutputBuffer.value = ''
+      sshErrorMessage.value = ''
+      sshConnectionState.value = 'connecting'
+      sshCurrentConfig.value = {
+        host: config.host,
+        port: config.port,
+        username: config.username,
+        authType: config.authType,
+        caseId: config.caseId,
+      }
+
+      // 创建 WebSocket
+      const socket = createBridgeSocket()
+      sshWebSocket.value = socket
+
+      socket.onopen = () => {
+        console.log('[SSH] WebSocket 已打开，发送连接命令')
+        clearSshAuthTimer()
+
+        // 15 秒认证超时
+        sshAuthTimer = window.setTimeout(() => {
+          if (sshConnectionState.value === 'connecting') {
+            console.error('[SSH] 认证超时')
+            sshErrorMessage.value = 'SSH 认证超时（15秒）'
+            sshConnectionState.value = 'error'
+            cleanupSshWebSocket()
+            reject(new Error('SSH 认证超时'))
+          }
+        }, SSH_AUTH_TIMEOUT)
+
+        // 发送 SSH 连接命令
+        socket.send(buildConnectMessage({
+          host: config.host,
+          port: config.port,
+          username: config.username,
+          auth_type: config.authType,
+          password: config.password,
+          private_key: config.privateKey,
+          passphrase: config.passphrase,
+          case_id: config.caseId,
+        }))
+      }
+
+      socket.onmessage = (e) => {
+        let msg: TerminalWsMessage
+        try {
+          msg = JSON.parse(String(e.data || ''))
+        } catch {
+          console.warn('[SSH] 无法解析消息:', e.data)
+          return
+        }
+
+        console.log('[SSH] 收到消息', { type: msg.type })
+
+        if (msg.case_id && msg.case_id !== config.caseId) {
+          console.log('[SSH] 消息 case_id 不匹配，忽略')
+          return
+        }
+
+        if (msg.type === 'ssh_connected') {
+          console.log('[SSH] 远程会话已建立')
+          clearSshAuthTimer()
+          sshConnectionState.value = 'connected'
+          resolve()
+        } else if (msg.type === 'ssh_output' && msg.output) {
+          sshOutputBuffer.value += msg.output
+          // 如果有消费者，触发输出事件
+          if (sshCommandConsumer.value) {
+            sshTerminalOutputEvent.value = msg.output
+          }
+        } else if (msg.type === 'ssh_error') {
+          console.error('[SSH] 收到错误', { message: msg.message })
+          clearSshAuthTimer()
+          sshErrorMessage.value = msg.message || 'SSH 连接出错'
+          sshConnectionState.value = 'error'
+          cleanupSshWebSocket()
+          reject(new Error(msg.message || 'SSH 连接出错'))
+        } else if (msg.type === 'ssh_disconnected') {
+          console.log('[SSH] 连接断开')
+          clearSshAuthTimer()
+          if (sshConnectionState.value === 'connected') {
+            sshConnectionState.value = 'disconnected'
+            cleanupSshWebSocket()
+          }
+        }
+      }
+
+      socket.onerror = () => {
+        console.error('[SSH] WebSocket 错误')
+        clearSshAuthTimer()
+        sshErrorMessage.value = 'SSH Bridge 未运行（ws://localhost:9999）'
+        sshConnectionState.value = 'error'
+        cleanupSshWebSocket()
+        reject(new Error('SSH Bridge 未运行'))
+      }
+
+      socket.onclose = () => {
+        console.log('[SSH] WebSocket 关闭')
+        clearSshAuthTimer()
+        if (sshConnectionState.value !== 'error') {
+          sshConnectionState.value = 'disconnected'
+        }
+      }
+    })
+  }
+
+  /** 断开 SSH 连接 */
+  function disconnectSSH() {
+    console.log('[SSH] 断开连接')
+    if (sshWebSocket.value && sshConnectionState.value === 'connected') {
+      sshWebSocket.value.send(buildDisconnectMessage(sshCurrentConfig.value?.caseId || ''))
+    }
+    cleanupSshWebSocket()
+    sshConnectionState.value = 'disconnected'
+    sshCurrentConfig.value = null
+    sshOutputBuffer.value = ''
+    sshCommandConsumer.value = null
+  }
+
+  /** 发送 SSH 命令 */
+  function sendSSHCommand(command: string, consumer: 'terminal' | 'collection') {
+    if (!sshWebSocket.value || sshConnectionState.value !== 'connected') {
+      console.warn('[SSH] 未连接，无法发送命令')
+      return
+    }
+    console.log('[SSH] 发送命令', { command, consumer })
+    sshCommandConsumer.value = consumer
+    sshWebSocket.value.send(buildInputMessage(sshCurrentConfig.value?.caseId || '', `${command}\n`))
+  }
+
+  /** 采集环境数据（SSH 连接成功后自动调用或手动触发） */
+  async function collectEnvironmentData(caseId: string) {
+    if (collectionState.value === 'collecting') return
+
+    collectionState.value = 'collecting'
+    collectionProgress.value = {
+      cluster: 'pending',
+      alert: 'pending',
+      task: 'pending',
+    }
+
+    try {
+      // 获取环境上下文（包含 cluster/alert/task）
+      const res = await environmentApi.getContext(caseId)
+      environmentContext.value = res.data
+
+      // 更新进度状态（区分 'done' 有数据、'empty' 无数据、'error' 失败）
+      if (res.data.env_info && Object.keys(res.data.env_info).length > 0) {
+        collectionProgress.value.cluster = 'done'
+      } else {
+        collectionProgress.value.cluster = 'empty'  // 成功但无数据
+      }
+
+      if (res.data.alert_logs && res.data.alert_logs.length > 0) {
+        collectionProgress.value.alert = 'done'
+      } else {
+        collectionProgress.value.alert = 'empty'  // 无告警也算成功
+      }
+
+      if (res.data.task_logs && res.data.task_logs.length > 0) {
+        collectionProgress.value.task = 'done'
+      } else {
+        collectionProgress.value.task = 'empty'  // 无任务也算成功
+      }
+
+      // 刷新列表
+      const listRes = await environmentApi.listByCase(caseId)
+      environmentData.value = listRes.data.items
+      collectionState.value = 'success'
+
+      console.log('[collectEnvironmentData] 采集完成', environmentData.value.length, '条数据')
+    } catch (e: any) {
+      collectionState.value = 'error'
+      collectionProgress.value = { cluster: 'error', alert: 'error', task: 'error' }
+      console.error('[collectEnvironmentData] 采集失败', e)
+    }
+  }
+
+  /** 手动刷新环境数据 */
+  async function refreshEnvironmentData() {
+    if (!currentCase.value) return
+    await collectEnvironmentData(currentCase.value.case_id)
+  }
+
+  /** 提交环境数据（aClient 采集后调用） */
+  async function submitEnvironmentData(data: { case_id: string; env_type: EnvType; env_data: Record<string, unknown>; collected_at?: string }) {
+    try {
+      const res = await environmentApi.create(data)
+      // 刷新列表
+      if (currentCase.value) {
+        const listRes = await environmentApi.listByCase(currentCase.value.case_id)
+        environmentData.value = listRes.data.items
+      }
+      return res.data
+    } catch (e: any) {
+      console.error('[submitEnvironmentData] 提交失败', e)
+      throw e
+    }
+  }
+
+  // === SSH 连接状态（创建工单时） ===
+  // 注意：状态名称使用 acli_* 而非 acll_* 避免混淆
+  const sshCreationPhase = ref<'idle' | 'connecting' | 'connected' | 'acli_check' | 'collecting' | 'done' | 'error' | 'acli_not_found'>('idle')
+  const sshCreationError = ref<{ message: string; detail: string } | null>(null)
+  const acliAvailable = ref<boolean | null>(null)
+  const sshCreationSocket = ref<WebSocket | null>(null)
+
+  /** SSH 配置信息 */
+  interface SSHConfig {
+    host: string
+    port: number
+    username: string
+    password: string
+  }
+
+  /** 采集命令列表 */
+  const COLLECT_COMMANDS = [
+    { name: 'cluster', cmd: 'acli platform info get' },
+    { name: 'alert', cmd: 'acli --formatter json alert list' },
+    { name: 'task', cmd: 'acli --formatter json task list' },
+  ]
+
+  /**
+   * 共享流程：创建工单 + 确认 + 建对话 + 首条消息发送
+   * 被 confirmCreateCase 和 SSH 流程共用
+   */
+  async function completeCaseCreationFlow(caseId: string, userMessage: string, assistantType?: string) {
+    showCaseTemplate.value = false
+    addUserMessage(userMessage)
+
+    addSystemMessage(`工单 ${caseId} 已创建，正在确认...`)
+
+    // 确认工单（若未确认）
+    if (currentCase.value?.status === 'created') {
+      const confirmed = await caseApi.confirm(caseId)
+      currentCase.value = confirmed.data
+    }
+
+    addSystemMessage('工单已确认，正在连接 AI 助手...')
+
+    // 创建对话
+    await createConversation()
+
+    // 发送首条消息
+    await streamAIResponse(userMessage)
+
+    isLoading.value = false
+    pendingUserMessage.value = ''
+  }
+
+  /** 通过 SSH 连接并创建工单（一站式流程） - 返回 Promise 等待完成 */
+  function connectSSHAndCreateCase(
+    title: string,
+    description: string,
+    sshConfig: SSHConfig,
+    assistantType?: string,
+    userMessage?: string,
+  ): Promise<void> {
+    return new Promise(async (resolve, reject) => {
+      sshCreationPhase.value = 'connecting'
+      sshCreationError.value = null
+      acliAvailable.value = null
+      isLoading.value = true
+
+      try {
+        // 1. 创建工单
+        const res = await caseApi.create({
+          client_id: clientId,
+          title,
+          description,
+          assistant_type: assistantType || selectedAssistant.value || undefined,
+        })
+        currentCase.value = res.data
+        const caseId = res.data.case_id
+
+        // 2. 确认工单
+        const confirmed = await caseApi.confirm(caseId)
+        currentCase.value = confirmed.data
+
+        // 3. 建立 SSH 连接
+        const socket = createBridgeSocket()
+        sshCreationSocket.value = socket
+
+        // 采集输出缓冲
+        const collectBuffer: Record<string, string> = { cluster: '', alert: '', task: '' }
+        let currentCollectIndex = 0
+        let collectingOutput = ''
+
+        // 连接超时定时器
+        let authTimer: number | null = null
+        const clearAuthTimer = () => {
+          if (authTimer !== null) {
+            window.clearTimeout(authTimer)
+            authTimer = null
+          }
+        }
+
+        const cleanupSocket = () => {
+          clearAuthTimer()
+          if (sshCreationSocket.value) {
+            sshCreationSocket.value.onopen = null
+            sshCreationSocket.value.onmessage = null
+            sshCreationSocket.value.onerror = null
+            sshCreationSocket.value.onclose = null
+            sshCreationSocket.value.close()
+            sshCreationSocket.value = null
+          }
+        }
+
+        socket.onopen = () => {
+          sshCreationPhase.value = 'connected'
+          clearAuthTimer()
+
+          // 15 秒认证超时
+          authTimer = window.setTimeout(() => {
+            if (sshCreationPhase.value === 'connected' || sshCreationPhase.value === 'acli_check') {
+              sshCreationError.value = { message: 'SSH 认证超时', detail: '15秒内未收到认证成功信号' }
+              sshCreationPhase.value = 'error'
+              cleanupSocket()
+              reject(new Error('SSH 认证超时'))
+            }
+          }, 15000)
+
+          // 发送 SSH 连接命令
+          socket.send(buildConnectMessage({
+            host: sshConfig.host,
+            port: sshConfig.port,
+            username: sshConfig.username,
+            auth_type: 'password',
+            password: sshConfig.password,
+            case_id: caseId,
+          }))
+        }
+
+        socket.onmessage = (e) => {
+          let msg: TerminalWsMessage
+          try {
+            msg = JSON.parse(String(e.data || ''))
+          } catch {
+            return
+          }
+
+          if (msg.case_id && msg.case_id !== caseId) return
+
+          if (msg.type === 'ssh_connected') {
+            clearAuthTimer()
+            sshConnectionState.value = 'connected'
+            sshCreationPhase.value = 'acli_check'
+
+            // 检查 acli 工具
+            socket.send(buildInputMessage(caseId, 'acli\n'))
+
+          } else if (msg.type === 'ssh_output' && msg.output) {
+            const output = msg.output
+
+            // 阶段：acli 检查
+            if (sshCreationPhase.value === 'acli_check') {
+              if (output.includes('command not found') || output.includes('not recognized')) {
+                acliAvailable.value = false
+                sshCreationPhase.value = 'acli_not_found'
+                // 继续完成工单流程（无环境数据）
+                completeCaseCreationFlow(caseId, userMessage || description, assistantType)
+                  .then(() => {
+                    sshCreationPhase.value = 'done'
+                    cleanupSocket()
+                    resolve()
+                  })
+                  .catch((err) => reject(err))
+              } else if (output.includes('Usage') || output.includes('HCI')) {
+                // acli 可用
+                acliAvailable.value = true
+                sshCreationPhase.value = 'collecting'
+                currentCollectIndex = 0
+                collectingOutput = ''
+
+                // 开始执行第一个采集命令
+                const cmd = COLLECT_COMMANDS[0].cmd
+                socket.send(buildInputMessage(caseId, `${cmd}\n`))
+              }
+            }
+
+            // 阶段：采集数据
+            else if (sshCreationPhase.value === 'collecting') {
+              collectingOutput += output
+
+              // 检测命令结束（通过输出特征判断）
+              if (collectingOutput.includes('}') || collectingOutput.includes('\n\n') || output.includes('$')) {
+                // 保存当前采集结果
+                const currentCmd = COLLECT_COMMANDS[currentCollectIndex]
+                collectBuffer[currentCmd.name] = collectingOutput.trim()
+                collectingOutput = ''
+
+                // 下一个采集命令
+                currentCollectIndex++
+                if (currentCollectIndex < COLLECT_COMMANDS.length) {
+                  const nextCmd = COLLECT_COMMANDS[currentCollectIndex].cmd
+                  socket.send(buildInputMessage(caseId, `${nextCmd}\n`))
+                } else {
+                  // 所有采集完成，提交数据
+                  submitCollectedData(caseId, collectBuffer)
+                    .then(async () => {
+                      // 刷新环境数据
+                      await collectEnvironmentData(caseId)
+
+                      // 完成工单流程
+                      await completeCaseCreationFlow(caseId, userMessage || description, assistantType)
+
+                      sshCreationPhase.value = 'done'
+                      cleanupSocket()
+                      resolve()
+                    })
+                    .catch((err) => {
+                      // 提交失败仍继续流程
+                      console.warn('[collectEnvironment] 提交失败，继续流程:', err)
+                      completeCaseCreationFlow(caseId, userMessage || description, assistantType)
+                        .then(() => {
+                          sshCreationPhase.value = 'done'
+                          cleanupSocket()
+                          resolve()
+                        })
+                        .catch((e) => reject(e))
+                    })
+                }
+              }
+            }
+
+          } else if (msg.type === 'ssh_error') {
+            clearAuthTimer()
+            sshCreationError.value = { message: msg.message || 'SSH 连接出错', detail: msg.detail || '' }
+            sshCreationPhase.value = 'error'
+            isLoading.value = false
+            cleanupSocket()
+            reject(new Error(msg.message || 'SSH 连接出错'))
+          }
+        }
+
+        socket.onerror = () => {
+          clearAuthTimer()
+          sshCreationError.value = { message: '本地 SSH Bridge 未运行', detail: '浏览器无法连接 ws://localhost:9999' }
+          sshCreationPhase.value = 'error'
+          isLoading.value = false
+          cleanupSocket()
+          reject(new Error('本地 SSH Bridge 未运行'))
+        }
+
+        socket.onclose = () => {
+          clearAuthTimer()
+          // 如果还没完成，说明异常关闭
+          if (sshCreationPhase.value !== 'done' && sshCreationPhase.value !== 'error') {
+            sshCreationError.value = { message: 'SSH 连接意外中断', detail: '' }
+            sshCreationPhase.value = 'error'
+            isLoading.value = false
+            reject(new Error('SSH 连接意外中断'))
+          }
+        }
+
+      } catch (e: any) {
+        sshCreationError.value = { message: '创建工单失败', detail: e.response?.data?.detail || e.message }
+        sshCreationPhase.value = 'error'
+        isLoading.value = false
+        reject(e)
+      }
+    })
+  }
+
+  /** 提交采集数据到 Environment API */
+  async function submitCollectedData(caseId: string, buffer: Record<string, string>) {
+    // 解析并提交集群信息
+    if (buffer.cluster) {
+      try {
+        const clusterData = parseClusterOutput(buffer.cluster)
+        await environmentApi.create({
+          case_id: caseId,
+          env_type: 'cluster',
+          env_data: clusterData,
+        })
+      } catch (e) {
+        console.warn('[submitCollectedData] cluster 提交失败:', e)
+      }
+    }
+
+    // 解析并提交告警
+    if (buffer.alert) {
+      try {
+        const alertData = parseJsonOutput(buffer.alert)
+        if (alertData && Array.isArray(alertData)) {
+          await environmentApi.create({
+            case_id: caseId,
+            env_type: 'alert',
+            env_data: { alerts: alertData },
+          })
+        }
+      } catch (e) {
+        console.warn('[submitCollectedData] alert 提交失败:', e)
+      }
+    }
+
+    // 解析并提交任务
+    if (buffer.task) {
+      try {
+        const taskData = parseJsonOutput(buffer.task)
+        if (taskData && Array.isArray(taskData)) {
+          await environmentApi.create({
+            case_id: caseId,
+            env_type: 'task',
+            env_data: { tasks: taskData },
+          })
+        }
+      } catch (e) {
+        console.warn('[submitCollectedData] task 提交失败:', e)
+      }
+    }
+  }
+
+  /** 解析 acli platform info get 输出 */
+  function parseClusterOutput(output: string): Record<string, unknown> {
+    const result: Record<string, unknown> = {}
+    const lines = output.split('\n')
+    for (const line of lines) {
+      if (line.includes(':')) {
+        const [key, value] = line.split(':').map(s => s.trim())
+        if (key && value) {
+          result[key.toLowerCase().replace(/\s+/g, '_')] = value
+        }
+      }
+    }
+    return result
+  }
+
+  /** 解析 JSON 输出（acli --formatter json）*/
+  function parseJsonOutput(output: string): unknown {
+    // 尝试从输出中提取 JSON 部分
+    const jsonMatch = output.match(/\{[\s\S]*\}/) || output.match(/\[[\s\S]*\]/)
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0])
+      } catch {
+        return null
+      }
+    }
+    return null
+  }
+
+  /** 取消 SSH 创建流程 */
+  function cancelSSHCreation() {
+    if (sshCreationSocket.value) {
+      sshCreationSocket.value.close()
+      sshCreationSocket.value = null
+    }
+    sshCreationPhase.value = 'idle'
+    sshCreationError.value = null
+    isLoading.value = false
+  }
+
+  /** 无 SSH 创建工单 */
+  async function createCaseWithoutSSH(template: CaseTemplate, assistantType?: string) {
+    showCaseTemplate.value = false
+    addUserMessage(pendingUserMessage.value)
+    isLoading.value = true
+    try {
+      const res = await caseApi.create({
+        client_id: clientId,
+        title: template.title,
+        description: template.description,
+        assistant_type: assistantType || selectedAssistant.value || undefined,
+      })
+      currentCase.value = res.data
+      addSystemMessage(`工单 ${res.data.case_id} 已创建（无 SSH 连接）`)
+
+      const confirmed = await caseApi.confirm(res.data.case_id)
+      currentCase.value = confirmed.data
+      addSystemMessage('工单已确认，正在连接 AI 助手...')
+
+      await createConversation()
+      await streamAIResponse(pendingUserMessage.value)
+    } catch (e: any) {
+      addSystemMessage(`创建工单失败: ${e.response?.data?.detail || e.message}`)
+    } finally {
+      isLoading.value = false
+      pendingUserMessage.value = ''
+    }
   }
 
   return {
@@ -673,6 +1311,7 @@ export const useChatStore = defineStore('chat', () => {
     handleCloseCase,
     showCaseTemplate,
     caseTemplate,
+    pendingUserMessage,
     confirmCreateCase,
     cancelCreateCase,
     showHistoryDrawer,
@@ -703,17 +1342,37 @@ export const useChatStore = defineStore('chat', () => {
     bridgeStatus,
     showBridgeDownload,
     closeBridgeDownload,
-    // SSH 状态（TerminalPanel 同步过来，仅供展示）
+    // 全局 SSH 连接状态和方法
+    sshWebSocket,
     sshConnectionState,
+    sshCurrentConfig,
     sshErrorMessage,
-    setSshConnectionState,
-    setSshErrorMessage,
-    clearSshErrorMessage,
+    sshOutputBuffer,
+    sshTerminalOutputEvent,
+    sshCommandConsumer,
+    connectSSH,
+    disconnectSSH,
+    sendSSHCommand,
     // Agent 模式：高风险操作确认
     pendingConfirm,
     handleConfirmResult,
     initialize,
     sendMessage,
     startNewConversation,
+    // 环境数据采集
+    collectionState,
+    collectionProgress,
+    environmentData,
+    environmentContext,
+    collectEnvironmentData,
+    refreshEnvironmentData,
+    submitEnvironmentData,
+    // SSH 连接状态（创建工单时）
+    sshCreationPhase,
+    sshCreationError,
+    acliAvailable,
+    connectSSHAndCreateCase,
+    createCaseWithoutSSH,
+    cancelSSHCreation,
   }
 })

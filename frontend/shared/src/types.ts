@@ -125,3 +125,53 @@ export const STATUS_COLORS: Record<CaseStatus, string> = {
   closed: 'info',
   cancelled: 'danger',
 }
+
+// ──────────────────────────────────────────────
+// Environment 服务契约模型（Custom-UI 数据采集）
+// ──────────────────────────────────────────────
+
+/** 环境数据类型 */
+export type EnvType = 'cluster' | 'host' | 'vm' | 'network' | 'alert' | 'task'
+
+/** 环境数据响应 */
+export interface EnvironmentResponse {
+  environment_id: string
+  case_id: string
+  env_type: EnvType
+  env_data: Record<string, unknown>
+  collected_at: string | null  // ISO 8601 datetime
+  created_at: string  // ISO 8601 datetime
+  updated_at: string  // ISO 8601 datetime
+  trace_id: string | null
+}
+
+/** 创建环境数据请求 */
+export interface EnvironmentCreate {
+  case_id: string
+  env_type: EnvType
+  env_data: Record<string, unknown>
+  collected_at?: string  // ISO 8601 datetime，可选
+}
+
+/** 工单环境数据列表响应 */
+export interface EnvironmentListResponse {
+  items: EnvironmentResponse[]
+  total: number
+}
+
+/** S0 阶段 Prompt 构建所需的环境上下文响应 */
+export interface EnvironmentContextResponse {
+  env_info: Record<string, unknown>
+  alert_logs: Array<{
+    level: string
+    time: string
+    content: string
+    source?: string
+  }>
+  task_logs: Array<{
+    status: string
+    time: string
+    name: string
+    error?: string
+  }>
+}

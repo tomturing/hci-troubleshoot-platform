@@ -471,6 +471,40 @@ def _find_images(case_dir: Path) -> list[Path]:
     return images
 
 
+def _has_failed_vision(case_dir: Path) -> bool:
+    """
+    检查是否有图片处理失败的标记：
+    - .desc.failed 文件存在
+    - 或 desc.txt 内容为"（无文字）"（疑似 API 限流）
+    """
+    # 检查是否有 .desc.failed 文件
+    if any(case_dir.glob("img_*.desc.failed")):
+        return True
+
+    # 检查是否有识别为"无文字"的 desc.txt（疑似失败）
+    for desc_file in case_dir.glob("img_*.desc.txt"):
+        try:
+            content = desc_file.read_text(encoding="utf-8")
+            if "（无文字）" in content and "DESCRIPTION:" in content:
+                return True
+        except OSError:
+            continue
+
+    return False
+
+
+def get_failed_vision_ids(case_ids: list[str]) -> list[str]:
+    """从案例列表中筛选出 Vision 处理失败的案例"""
+    from .fetcher import _case_dir
+    failed = []
+    for cid in case_ids:
+        case_dir = _case_dir(cid)
+        if _has_failed_vision(case_dir):
+            failed.append(cid)
+    logger.debug("筛选 Vision 失败案例 total=%d failed=%d", len(case_ids), len(failed))
+    return failed
+
+
 async def process_images_for_case(
     case_id: str,
     client: AsyncOpenAI,

@@ -281,6 +281,17 @@ class ConversationService:
 
         system_prompt, _audit_meta = await self._build_system_prompt(content, case_id, diagnostic_stage=current_stage)
 
+        # T7: 若本次检索命中了 SOP，异步写入 conversation.sop_document_id 并更新 hit_count
+        sop_document_id_from_meta = _audit_meta.get("sop_document_id") if _audit_meta else None
+        if sop_document_id_from_meta is not None:
+            asyncio.create_task(
+                self._update_sop_usage(
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    sop_document_id=sop_document_id_from_meta,
+                )
+            )
+
         # 3. 获取历史上下文 (最近 20 条)
         # 注意：必须使用独立 session，避免请求作用域 session 在流式传输期间长期持有事务锁
         # 导致后续 INSERT（包括 save_assistant_message 背景任务）等待锁无法落库
@@ -377,7 +388,19 @@ class ConversationService:
                         asyncio.create_task(
                             self._update_conversation_category(
                                 conversation_id=conversation_id,
+                                case_id=case_id,
                                 category_info=category_info,
+                            )
+                        )
+                    # S3→S4 转换（实为 AI 输出根因时）：提取关联 KBD，写 resolved_kbd_entry_id
+                    # 注意：new_stage 是目标阶段，若从 S3 转换到 S4，current_stage 为 S3
+                    if new_stage == "S4" and current_stage == "S3":
+                        kbd_entry_id = self._conversation_manager.extract_resolved_kbd(full_reply)
+                        asyncio.create_task(
+                            self._update_resolved_kbd(
+                                conversation_id=conversation_id,
+                                case_id=case_id,
+                                kbd_entry_id=kbd_entry_id,
                             )
                         )
         except Exception as e:
@@ -830,21 +853,23 @@ class ConversationService:
     async def _update_conversation_category(
         self,
         conversation_id: uuid.UUID,
+        case_id: str,
         category_info: dict[str, str],
     ) -> None:
         """
         更新 Conversation.category_id 并增加分类命中计数（fire-and-forget 后台任务）
 
         在 S0 阶段确认分类后调用：
-        1. 更新 Conversation.category_id
-        2. 更新 Conversation.category_l1（根据分类 code 提取域）
-        3. 更新 Conversation.category_l2（分类名称）
-        4. 调用 KB Client 增加分类命中计数
+        1. 更新 Conversation.category_id / category_l1 / category_l2
+        2. Case 级去重：同一 case 已有 conversation 写入相同 category_id，跳过 hit +1
+        3. 调用 KB Client 增加分类命中计数（仅首次）
 
         Args:
             conversation_id: 会话 ID
+            case_id: 工单 ID（用于 case 级去重检查）
             category_info: 分类信息 {"code": "虚拟机-003", "name": "虚拟机开机失败"}
         """
+        from sqlalchemy import select
         from sqlalchemy import update as sa_update
 
         from ..models.conversation import Conversation as ConversationModel
@@ -855,6 +880,30 @@ class ConversationService:
 
             # 从 code 提取一级分类（域），如 "虚拟机-003" -> "虚拟机"
             category_l1 = code.split("-")[0] if "-" in code else ""
+
+            # case 级去重：检查同 case 其他 conversation 是否已写入相同 category_id
+            already_hit = False
+            if self.session_factory and code:
+                async with self.session_factory() as dedup_session:
+                    result = await dedup_session.execute(
+                        select(ConversationModel.conversation_id)
+                        .where(
+                            ConversationModel.case_id == case_id,
+                            ConversationModel.category_id == code,
+                            ConversationModel.conversation_id != conversation_id,
+                        )
+                        .limit(1)
+                    )
+                    already_hit = result.scalar_one_or_none() is not None
+
+            if already_hit:
+                logger.info(
+                    event="category_hit_dedup_skipped",
+                    message=f"case {case_id} 已有其他 conversation 命中分类 {code}，跳过计数",
+                    conversation_id=str(conversation_id),
+                    case_id=case_id,
+                    category_id=code,
+                )
 
             # 更新 Conversation
             if self.session_factory:
@@ -886,8 +935,8 @@ class ConversationService:
                 category_l2=name,
             )
 
-            # 增加 KB 分类命中计数
-            if self.kb_client and code:
+            # 增加 KB 分类命中计数（仅 case 首次）
+            if self.kb_client and code and not already_hit:
                 hit_count = await self.kb_client.increment_category_hit(code)
                 logger.info(
                     event="category_hit_count_updated",
@@ -902,6 +951,182 @@ class ConversationService:
                 message=f"会话分类更新失败：{e}",
                 conversation_id=str(conversation_id),
                 category_info=category_info,
+            )
+
+    async def _update_sop_usage(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        sop_document_id: int,
+    ) -> None:
+        """
+        写入 conversation.sop_document_id 并触发 SOP hit_count +1（fire-and-forget 后台任务）
+
+        Case 级去重：同一 case 已有 conversation 写入相同 sop_document_id，跳过 hit +1。
+
+        Args:
+            conversation_id: 当前会话 ID
+            case_id: 工单 ID（用于 case 级去重）
+            sop_document_id: SOP 文档 ID（来自 knowledge_retriever audit_meta）
+        """
+        from sqlalchemy import select
+        from sqlalchemy import update as sa_update
+
+        from ..models.conversation import Conversation as ConversationModel
+
+        try:
+            # case 级去重：检查同 case 其他 conversation 是否已写入相同 sop_document_id
+            already_hit = False
+            if self.session_factory:
+                async with self.session_factory() as dedup_session:
+                    result = await dedup_session.execute(
+                        select(ConversationModel.conversation_id)
+                        .where(
+                            ConversationModel.case_id == case_id,
+                            ConversationModel.sop_document_id == sop_document_id,
+                            ConversationModel.conversation_id != conversation_id,
+                        )
+                        .limit(1)
+                    )
+                    already_hit = result.scalar_one_or_none() is not None
+
+            if already_hit:
+                logger.info(
+                    event="sop_hit_dedup_skipped",
+                    message=f"case {case_id} 已有其他 conversation 命中 SOP {sop_document_id}，跳过计数",
+                    conversation_id=str(conversation_id),
+                    case_id=case_id,
+                    sop_document_id=sop_document_id,
+                )
+
+            # 写入 conversation.sop_document_id（仅首次写入，不覆盖已有值）
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    await session.execute(
+                        sa_update(ConversationModel)
+                        .where(
+                            ConversationModel.conversation_id == conversation_id,
+                            ConversationModel.sop_document_id.is_(None),
+                        )
+                        .values(sop_document_id=sop_document_id)
+                    )
+                    await session.commit()
+
+            logger.info(
+                event="conversation_sop_document_id_updated",
+                message=f"会话 SOP 文档 ID 已写入：{sop_document_id}",
+                conversation_id=str(conversation_id),
+                sop_document_id=sop_document_id,
+            )
+
+            # 触发 SOP hit_count +1（仅 case 首次）
+            if self.kb_client and not already_hit:
+                await self.kb_client.increment_sop_hit(sop_document_id)
+                logger.info(
+                    event="sop_hit_count_updated",
+                    message=f"SOP 命中计数已更新：{sop_document_id}",
+                    sop_document_id=sop_document_id,
+                    case_id=case_id,
+                )
+
+        except Exception as e:
+            logger.warning(
+                event="sop_usage_update_error",
+                message=f"SOP 使用记录更新失败：{e}",
+                conversation_id=str(conversation_id),
+                sop_document_id=sop_document_id,
+            )
+
+    async def _update_resolved_kbd(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        kbd_entry_id: int | None,
+    ) -> None:
+        """
+        写入 conversation.resolved_kbd_entry_id 并触发 KBD hit_count +1（fire-and-forget）
+
+        S4 根因确认后调用：
+        - kbd_entry_id 非 None → 写入字段 + hit +1
+        - kbd_entry_id 为 None → 新问题未收录，仅记录日志
+
+        Args:
+            conversation_id: 当前会话 ID
+            case_id: 工单 ID
+            kbd_entry_id: KBD 条目 ID（None 表示新问题）
+        """
+        from sqlalchemy import select
+        from sqlalchemy import update as sa_update
+
+        from ..models.conversation import Conversation as ConversationModel
+
+        if kbd_entry_id is None:
+            logger.info(
+                event="resolved_kbd_null",
+                message=f"case {case_id} 根因确认为新问题，resolved_kbd_entry_id 为 NULL",
+                conversation_id=str(conversation_id),
+                case_id=case_id,
+            )
+            return
+
+        try:
+            # case 级去重：检查同 case 其他 conversation 是否已写入相同 resolved_kbd_entry_id
+            already_hit = False
+            if self.session_factory:
+                async with self.session_factory() as dedup_session:
+                    result = await dedup_session.execute(
+                        select(ConversationModel.conversation_id)
+                        .where(
+                            ConversationModel.case_id == case_id,
+                            ConversationModel.resolved_kbd_entry_id == kbd_entry_id,
+                            ConversationModel.conversation_id != conversation_id,
+                        )
+                        .limit(1)
+                    )
+                    already_hit = result.scalar_one_or_none() is not None
+
+            if already_hit:
+                logger.info(
+                    event="kbd_hit_dedup_skipped",
+                    message=f"case {case_id} 已有其他 conversation 命中 KBD {kbd_entry_id}，跳过计数",
+                    conversation_id=str(conversation_id),
+                    case_id=case_id,
+                    kbd_entry_id=kbd_entry_id,
+                )
+
+            # 写入 conversation.resolved_kbd_entry_id
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    await session.execute(
+                        sa_update(ConversationModel)
+                        .where(ConversationModel.conversation_id == conversation_id)
+                        .values(resolved_kbd_entry_id=kbd_entry_id)
+                    )
+                    await session.commit()
+
+            logger.info(
+                event="conversation_resolved_kbd_updated",
+                message=f"会话 resolved_kbd_entry_id 已写入：{kbd_entry_id}",
+                conversation_id=str(conversation_id),
+                kbd_entry_id=kbd_entry_id,
+            )
+
+            # 触发 KBD hit_count +1（仅 case 首次）
+            if self.kb_client and not already_hit:
+                await self.kb_client.increment_kbd_hit(kbd_entry_id)
+                logger.info(
+                    event="kbd_hit_count_updated",
+                    message=f"KBD 命中计数已更新：{kbd_entry_id}",
+                    kbd_entry_id=kbd_entry_id,
+                    case_id=case_id,
+                )
+
+        except Exception as e:
+            logger.warning(
+                event="resolved_kbd_update_error",
+                message=f"resolved_kbd_entry_id 更新失败：{e}",
+                conversation_id=str(conversation_id),
+                kbd_entry_id=kbd_entry_id,
             )
 
     # ─── S0 失败兜底 (v2) ────────────────────────────────────────────────────

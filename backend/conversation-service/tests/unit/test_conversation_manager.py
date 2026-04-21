@@ -126,3 +126,41 @@ class TestEdgeCases:
         assert manager.get_stage_label("S0") == "S0-意图识别"
         assert manager.get_stage_label("S3") == "S3-验证执行"
         assert manager.get_stage_label("S99") == "S99"  # 未知阶段返回原值
+
+
+class TestExtractResolvedKbd:
+    """extract_resolved_kbd 单元测试"""
+
+    def test_normal_extract(self, manager: ConversationManager):
+        """正常格式：'关联案例：KBD-123' 返回整数 123"""
+        reply = "根据分析，根本原因已确认。\n关联案例：KBD-123"
+        assert manager.extract_resolved_kbd(reply) == 123
+
+    def test_full_width_colon(self, manager: ConversationManager):
+        """全角冒号：'关联案例：KBD-456' 也能正确提取"""
+        reply = "根因确认完成。关联案例：KBD-456\n修复方案如下。"
+        assert manager.extract_resolved_kbd(reply) == 456
+
+    def test_with_spaces(self, manager: ConversationManager):
+        """冒号后含空格：'关联案例:  KBD-789' 也能正确提取"""
+        reply = "关联案例:  KBD-789"
+        assert manager.extract_resolved_kbd(reply) == 789
+
+    def test_no_marker_returns_none(self, manager: ConversationManager):
+        """回复中没有 KBD 标记时返回 None"""
+        reply = "根因已确认，但是该问题属于新问题，知识库暂未收录。"
+        assert manager.extract_resolved_kbd(reply) is None
+
+    def test_empty_reply_returns_none(self, manager: ConversationManager):
+        """空回复返回 None"""
+        assert manager.extract_resolved_kbd("") is None
+
+    def test_malformed_kbd_returns_none(self, manager: ConversationManager):
+        """格式错误（KBD-abc 非数字）返回 None"""
+        reply = "关联案例：KBD-abc"
+        assert manager.extract_resolved_kbd(reply) is None
+
+    def test_inline_text(self, manager: ConversationManager):
+        """标记出现在段落中间也能正确提取"""
+        reply = "综合以上分析，关联案例：KBD-999，建议按以下方案处理。"
+        assert manager.extract_resolved_kbd(reply) == 999

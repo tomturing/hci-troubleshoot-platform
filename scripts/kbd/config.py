@@ -54,6 +54,11 @@ class KbdSettings(BaseSettings):
         default=_PROJECT_ROOT / "scripts" / "kbd" / "cache",
         description="KBD 缓存根目录，结构为 {KBD_CACHE_DIR}/{support_id}/raw.json + img_N.png 等",
     )
+    # KBD Pipeline logs 目录（保存 kbd_{run_id}.log 和 progress_{run_id}.json）
+    KBD_LOGS_DIR: Path = Field(
+        default=_PROJECT_ROOT / "scripts" / "kbd" / "logs",
+        description="KBD pipeline logs 目录，保存 kbd_{run_id}.log 和 progress_{run_id}.json",
+    )
     # category_baseline.yaml 路径
     CATEGORY_BASELINE: Path = Field(
         default=_PROJECT_ROOT / "backend" / "kb-service" / "config" / "category_baseline.yaml",
@@ -111,7 +116,7 @@ class KbdSettings(BaseSettings):
     # API 最大重试次数
     API_MAX_RETRIES: int = Field(default=3)
 
-    @field_validator("KBD_CACHE_DIR", "EXCEL_FILE", "CATEGORY_BASELINE", mode="before")
+    @field_validator("KBD_CACHE_DIR", "KBD_LOGS_DIR", "EXCEL_FILE", "CATEGORY_BASELINE", mode="before")
     @classmethod
     def _to_path(cls, v: str | Path) -> Path:
         return Path(v)

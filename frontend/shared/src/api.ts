@@ -15,6 +15,11 @@ import type {
   MessageResponse,
   AssistantInfo,
   AssistantsResponse,
+  EnvType,
+  EnvironmentCreate,
+  EnvironmentResponse,
+  EnvironmentListResponse,
+  EnvironmentContextResponse,
 } from './types'
 
 /** 创建带通用拦截器的 Axios 实例 */
@@ -192,6 +197,31 @@ export function createAuditLogApi(client: AxiosInstance) {
           trace_id: string | null
         }>
       }>('/api/v1/audit-logs', { params })
+    },
+  }
+}
+
+/** Environment API 方法集合（Custom-UI 数据采集） */
+export function createEnvironmentApi(client: AxiosInstance) {
+  return {
+    /** 创建环境数据（alert/task/environment 采集） */
+    create(data: EnvironmentCreate) {
+      return client.post<EnvironmentResponse>('/environments/', data)
+    },
+
+    /** 获取工单所有环境数据 */
+    listByCase(caseId: string) {
+      return client.get<EnvironmentListResponse>(`/environments/case/${caseId}`)
+    },
+
+    /** 获取指定类型环境数据 */
+    getByType(caseId: string, envType: EnvType) {
+      return client.get<EnvironmentResponse>(`/environments/case/${caseId}/type/${envType}`)
+    },
+
+    /** 获取 S0 阶段 Prompt 构建所需的环境上下文 */
+    getContext(caseId: string) {
+      return client.get<EnvironmentContextResponse>(`/environments/case/${caseId}/context`)
     },
   }
 }
