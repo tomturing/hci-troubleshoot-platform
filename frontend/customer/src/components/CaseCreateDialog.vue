@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useChatStore } from '@/stores/chat'
 import { checkBridgeRunning, type BridgeStatus } from '@/api/terminal'
 
@@ -9,7 +10,7 @@ const chatStore = useChatStore()
 const BRIDGE_DOWNLOAD_URL =
   import.meta.env.VITE_BRIDGE_DOWNLOAD_URL || '/downloads/terminal_bridge.exe'
 
-// Bridge 检测状态
+// Bridge 检测状态（需要将 boolean 映射为 BridgeStatus）
 const bridgeDetected = ref<BridgeStatus>('checking')
 
 // 本地编辑副本
@@ -23,8 +24,8 @@ const form = reactive({
   sshPassword: '',
 })
 
-// SSH 连接阶段
-const sshPhase = ref<'idle' | 'connecting' | 'connected' | 'acll_check' | 'collecting' | 'done' | 'error' | 'acll_not_found'>('idle')
+// SSH 连接阶段（使用 acli_* 而非 acll_*）
+const sshPhase = ref<'idle' | 'connecting' | 'connected' | 'acli_check' | 'collecting' | 'done' | 'error' | 'acli_not_found'>('idle')
 const sshErrorMessage = ref('')
 const sshErrorDetail = ref('')
 
@@ -55,9 +56,15 @@ watch(
   { immediate: true },
 )
 
+// Bridge 检测函数（将 boolean 映射为 BridgeStatus）
+async function detectBridge(): Promise<BridgeStatus> {
+  const running = await checkBridgeRunning()
+  return running ? 'running' : 'not_running'
+}
+
 // 弹框打开时检测 Bridge
 onMounted(async () => {
-  bridgeDetected.value = await checkBridgeRunning()
+  bridgeDetected.value = await detectBridge()
 })
 
 // 计算属性
@@ -71,25 +78,25 @@ const canConnectSSH = computed(() => {
 })
 
 const isConnecting = computed(() => {
-  return sshPhase.value === 'connecting' || sshPhase.value === 'acll_check' || sshPhase.value === 'collecting'
+  return sshPhase.value === 'connecting' || sshPhase.value === 'acli_check' || sshPhase.value === 'collecting'
 })
 
-// 校验表单
-function validateForm(): string | null {
-  if (!form.title.trim()) return '请填写工单标题'
-  if (!form.description.trim()) return '请填写问题描述'
-  return null
+// 校验表单（使用 ElMessage 显示错误）
+function validateForm(): boolean {
+  if (!form.title.trim()) {
+    ElMessage.warning('请填写工单标题')
+    return false
+  }
+  if (!form.description.trim()) {
+    ElMessage.warning('请填写问题描述')
+    return false
+  }
+  return true
 }
 
 // 连接 SSH 并创建工单
 async function handleConnectAndCreate() {
-  const err = validateForm()
-  if (err) {
-    // TODO: 显示错误提示
-    console.warn(err)
-    return
-  }
-
+  if (!validateForm()) return
   if (!canConnectSSH.value) return
 
   sshPhase.value = 'connecting'
@@ -108,6 +115,7 @@ async function handleConnectAndCreate() {
         password: form.sshPassword,
       },
       form.assistantType,
+      chatStore.pendingUserMessage, // 传递用户原始消息
     )
 
     // 连接成功，保存 SSH 配置到 localStorage（不含密码）
@@ -141,14 +149,10 @@ function handleNoSSHCreate() {
 }
 
 function handleConfirmNoSSHCreate() {
-  const err = validateForm()
-  if (err) {
-    console.warn(err)
-    return
-  }
+  if (!validateForm()) return
 
-  // 调用 Store 的无 SSH 创建方法
-  chatStore.confirmCreateCase({
+  // 调用 Store 的无 SSH 创建方法（正确的签名）
+  chatStore.createCaseWithoutSSH({
     title: form.title,
     description: form.description,
   }, form.assistantType)
@@ -160,6 +164,10 @@ function handleConfirmNoSSHCreate() {
 // 取消
 function handleCancel() {
   chatStore.cancelCreateCase()
+  // 如果正在连接，取消 SSH 流程
+  if (sshPhase.value !== 'idle' && sshPhase.value !== 'done' && sshPhase.value !== 'error') {
+    chatStore.cancelSSHCreation?.()
+  }
 }
 
 // 下载 Bridge
@@ -176,7 +184,7 @@ function handleDownloadBridge() {
 // 监听弹框打开，重置状态
 watch(
   () => chatStore.showCaseTemplate,
-  (val) => {
+  async (val) => {
     if (val) {
       // 重置 SSH 连接状态
       sshPhase.value = 'idle'
@@ -188,7 +196,9 @@ watch(
       form.title = chatStore.caseTemplate.title
       form.description = chatStore.caseTemplate.description
 
-      // 检测 Bridge
+      // 检测 Bridge（使用 detectBridge 映射 boolean）
+      bridgeDetected.value = 'checking'
+      bridgeDetected.value = await detectBridge()
       checkBridgeRunning().then((status) => {
         bridgeDetected.value = status
       })
@@ -297,7 +307,7 @@ watch(
           <p class="status-detail">目标: {{ form.sshUsername }}@{{ form.sshHost }}:{{ form.sshPort }}</p>
         </div>
 
-        <div v-if="sshPhase === 'acll_check'" class="status-checking">
+        <div v-if="sshPhase === 'acli_check'" class="status-checking">
           <el-icon class="is-loading"><i class="el-icon-loading" /></el-icon>
           <span>检查 acli 工具...</span>
         </div>
@@ -317,7 +327,7 @@ watch(
           <span>连接成功，环境数据已采集</span>
         </div>
 
-        <div v-if="sshPhase === 'acll_not_found'" class="status-acll-error">
+        <div v-if="sshPhase === 'acli_not_found'" class="status-acli-error">
           <el-icon color="#e6a23c"><i class="el-icon-warning" /></el-icon>
           <span>acli 工具未安装</span>
           <p class="status-detail">环境数据采集将跳过，您可以手动描述环境信息</p>
@@ -487,7 +497,7 @@ watch(
   color: #67c23a;
 }
 
-.status-acll-error {
+.status-acli-error {
   display: flex;
   align-items: center;
   gap: 8px;
