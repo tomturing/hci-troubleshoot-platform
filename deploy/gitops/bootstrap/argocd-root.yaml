@@ -1,0 +1,50 @@
+# =============================================================================
+# ArgoCD Root Application — Bootstrap 入口
+#
+# 设计原则（官方最佳实践）：
+#   - Root Application 定义在独立目录（bootstrap/），不在被管理的目录中
+#   - 避免"管理者管理自己"的循环引用问题
+#   - 手动 apply 后，它自动管理所有子 Applications
+#
+# 管理范围：
+#   1. argocd-ops/ — ArgoCD 运维配套（watchdog + 可观测性）
+#   2. argo-apps/local/ — dev 环境所有子 Applications
+#
+# Bootstrap 步骤：
+#   kubectl apply -f deploy/gitops/bootstrap/argocd-root.yaml
+#
+# 变更历史：
+#   2026-04-22 v1.0 从 argocd-ops 重构为 argocd-root，解决循环引用问题
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-root
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "ArgoCD Root Application — 管理 argocd-ops + argo-apps/local（bootstrap 入口）"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  sources:
+    # Source 1: ArgoCD 运维配套资源
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/gitops/argocd-ops
+      directory:
+        recurse: false
+        exclude: "*.json"    # 排除 Grafana Dashboard JSON（非 K8s 资源）
+    # Source 2: dev 环境所有子 Applications
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/gitops/argo-apps/local
+      directory:
+        recurse: false
+  syncPolicy:
+    automated:
+      prune: true           # ops 资源无状态，允许自动删除已移除的资源
+      selfHeal: true        # 防止 Application 配置被手动修改后漂移
+    syncOptions:
+      - CreateNamespace=false   # argocd namespace 已存在
