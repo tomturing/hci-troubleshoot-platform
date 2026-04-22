@@ -17,7 +17,11 @@
 #
 # 变更历史：
 #   2026-04-17 v1.0 初版（PR #168 → PR #169 修复）
+#   2026-04-21 v1.1 修复镜像不含 kubectl 问题（PR #195 → bitnami/kubectl:1.31 无效）
+#   2026-04-21 v1.2 修复无效镜像版本（rancher/kubectl:v1.32 → v1.33 版本偏移合规）
+#   2026-04-21 v1.3 修复镜像不含 shell 问题（rancher/kubectl → bitnami/kubectl:latest）
 #
+# 避坑指南：D-005（docs/deploy/pitfalls/k8s.md）
 # 参考：docs/deploy/events/2026-04-17-argocd-repo-server-probe-优化.md
 # =============================================================================
 apiVersion: batch/v1
@@ -33,10 +37,21 @@ spec:
     spec:
       serviceAccountName: argocd-repo-server-watchdog
       restartPolicy: Never
+      activeDeadlineSeconds: 180  # 超时保护，防止 Job 无限等待（大于 rollout timeout 120s）
       containers:
         - name: patch
-          image: quay.io/argoproj/argocd:v3.3.6
+          # D-005：PreSync Hook 需使用包含目标工具的镜像
+          # bitnami/kubectl 包含 kubectl 和 shell，latest 版本 v1.35.x 符合 ±1 minor 策略
+          # 注意：rancher/kubectl 是纯 kubectl 静态二进制，不含 shell，无法执行脚本
+          image: bitnami/kubectl:latest
           imagePullPolicy: IfNotPresent
+          resources:  # 资源限制，防止占用过多资源
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
           command:
             - /bin/sh
             - -c

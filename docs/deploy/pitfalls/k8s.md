@@ -713,4 +713,75 @@ kubectl exec -n argocd <repo-server-pod> -- bash -c \
   kubectl exec -n argocd <repo-server-pod> -- git ls-remote \
     https://github.com/<org>/<repo>.git HEAD
   ```
+
+---
+
+## D-005：ArgoCD PreSync/PostSync Hook 需使用包含目标工具的镜像
+
+**触发场景：** ArgoCD PreSync/PostSync Hook Job 需要执行 `kubectl`、`helm`、`aws` 等外部命令。
+
+**错误做法：**
+- 使用 ArgoCD 官方镜像（`quay.io/argoproj/argocd:vx.y.z`）→ **不含 kubectl/helm**
+- 使用 `latest` tag → 版本漂移，不可审计、不可复现
+- 复制其他 Job 的镜像时未检查是否包含目标工具
+
+**正确做法：**
+
+| 工具 | 推荐镜像 | 说明 |
+|------|---------|------|
+| kubectl + shell | `bitnami/kubectl:latest` | 包含 kubectl 和 shell，latest 版本当前 v1.35.x |
+| helm + shell | `alpine/helm` | 包含 helm 和 shell |
+| aws CLI + shell | `amazon/aws-cli` | 包含 aws CLI 和 shell |
+
+> ⚠️ **重要：**
+> - `rancher/kubectl` 是纯 kubectl 静态二进制镜像，**不含 shell**，无法执行 `/bin/sh -c '...'` 脚本
+> - `bitnami/kubectl` 只提供 `latest` 标签（无版本号标签），存在版本漂移风险，但当前版本符合 ±1 minor 策略
+> - PreSync Hook Job 脚本需要 shell，必须使用包含 shell 的镜像
+
+**版本偏移策略：**
+```bash
+# 查集群版本
+kubectl version -o json | jq -r '.serverVersion.gitVersion'
+# 例：输出 v1.34.5+k3s1 → 集群 minor = 34
+
+# 版本选择规则（Kubernetes 官方支持范围）：
+# - 最佳：kubectl minor = apiserver minor（如 v1.34.x）
+# - 可接受：kubectl minor = apiserver minor ± 1（如 v1.33.x 或 v1.35.x）
+# - 超出范围：kubectl minor 相差 ≥ 2（如 v1.32.x 与 v1.34相差 2 minor，超出支持）
+
+# 查 rancher/kubectl 可用版本
+curl -s "https://hub.docker.com/v2/repositories/rancher/kubectl/tags?page_size=20" | jq -r '.results[].name' | grep -v arm | grep -v amd
+
+# 固定版本号示例
+image: bitnami/kubectl:latest    # ✓ 正确：包含 shell + kubectl（当前 v1.35.x）
+image: rancher/kubectl:v1.33.9   # ✗ 错误：纯 kubectl，不含 shell，无法执行脚本
+image: bitnami/kubectl:1.31      # ✗ 错误：版本号标签不存在
+```
+
+**Hook Job 最佳实践：**
+```yaml
+spec:
+  template:
+    spec:
+      activeDeadlineSeconds: 180  # 超时保护，需大于脚本内 --timeout（如 120s）+ 缓冲
+      containers:
+        - name: hook
+          image: bitnami/kubectl:latest  # 包含 shell + kubectl
+          imagePullPolicy: IfNotPresent
+          resources:  # 资源限制
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+```
+
+> ⚠️ **超时配置注意：** `activeDeadlineSeconds` 应明显大于脚本内 `kubectl rollout status --timeout` 值，否则 patch 操作 + 日志输出消耗时间可能导致 Pod 在 rollout 等待完成前被强杀，Hook Job 误失败。
+
+**参考案例：**
+- PR#170 PreSync Hook 失败：使用 `quay.io/argoproj/argocd:v3.3.6`（不含 kubectl），导致 7 个 Error pods
+- PR#195 初步修复：改用 `bitnami/kubectl:1.31` → **失败**（版本标签不存在，ErrImagePull）
+- PR#196 版本偏移修复：改用 `rancher/kubectl:v1.33.9` → **失败**（不含 shell，无法执行脚本）
+- PR#197 最终修复：改用 `bitnami/kubectl:latest`（包含 shell + kubectl）
 - 若返回超时而非正常 refs，说明网络问题，先解决再触发 Sync
