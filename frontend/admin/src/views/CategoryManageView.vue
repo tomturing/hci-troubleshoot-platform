@@ -2,6 +2,8 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Histogram, Upload, Download, WarningFilled } from '@element-plus/icons-vue'
+import { marked } from 'marked'
+import DOMPurify, { type Config as DOMPurifyConfig } from 'dompurify'
 import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -320,92 +322,45 @@ async function openSopDetail(sopId: number) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Markdown 渲染（简化版）
+// Markdown 渲染（使用 marked 库，符合业界最佳实践）
 // ──────────────────────────────────────────────────────────────────────────────
+// 配置 marked：GFM 模式（支持表格、代码块、任务列表等）
+marked.setOptions({ gfm: true, breaks: true })
+
+// 配置 DOMPurify：仅允许安全标签和属性，防止 XSS 注入
+const DOMPURIFY_CONFIG: DOMPurifyConfig = {
+  // 允许常见排版标签
+  ALLOWED_TAGS: [
+    'h1','h2','h3','h4','h5','h6',
+    'p','br','hr','blockquote','pre','code',
+    'ul','ol','li','table','thead','tbody','tr','th','td',
+    'strong','em','del','a','img','span','div',
+  ],
+  // 允许安全属性；链接统一加 rel 防止 opener 攻击
+  ALLOWED_ATTR: ['class','id','href','src','alt','title','rel','target'],
+  // 强制所有链接添加安全属性
+  FORCE_BODY: false,
+  ADD_ATTR: [],
+}
+
 function renderMarkdown(md: string): string {
   if (!md) return ''
-  const lines = md.split('\n')
-  const html: string[] = []
-  let listType: 'none' | 'ul' | 'ol' = 'none'
-  let inBlockquote = false
-
-  const flushList = () => {
-    if (listType === 'ul') { html.push('</ul>'); listType = 'none' }
-    else if (listType === 'ol') { html.push('</ol>'); listType = 'none' }
-  }
-  const flushBlockquote = () => {
-    if (inBlockquote) { html.push('</blockquote>'); inBlockquote = false }
-  }
-
-  for (const line of lines) {
-    if (line.startsWith('## ')) {
-      flushList(); flushBlockquote()
-      html.push(`<h3 class="md-h2">${escapeHtml(line.slice(3))}</h3>`)
-      continue
+  const result = marked.parse(md)
+  const raw = typeof result === 'string' ? result : ''
+  // 对 marked 输出做 XSS 清洗，并为所有链接补充 rel="noopener noreferrer"
+  // sanitize 返回 string | TrustedHTML，强转为 string
+  const clean = String(DOMPurify.sanitize(raw, DOMPURIFY_CONFIG))
+  // 使用 DOMParser 为外部链接补 rel/target（DOMPurify 清洗后做 DOM 操作最安全）
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(clean, 'text/html')
+  doc.querySelectorAll('a[href]').forEach((el) => {
+    const href = el.getAttribute('href') || ''
+    if (href.startsWith('http://') || href.startsWith('https://')) {
+      el.setAttribute('rel', 'noopener noreferrer')
+      el.setAttribute('target', '_blank')
     }
-    if (line.startsWith('### ')) {
-      flushList(); flushBlockquote()
-      html.push(`<h4 class="md-h3">${escapeHtml(line.slice(4))}</h4>`)
-      continue
-    }
-    if (line.startsWith('> ')) {
-      flushList()
-      if (!inBlockquote) { html.push('<blockquote class="md-blockquote">'); inBlockquote = true }
-      html.push(`<p>${inlineRender(line.slice(2))}</p>`)
-      continue
-    }
-    const ulMatch = line.match(/^(\s*)[-*]\s+(.+)$/)
-    if (ulMatch) {
-      flushBlockquote()
-      if (listType !== 'ul') { flushList(); html.push('<ul class="md-list">'); listType = 'ul' }
-      const indentPx = ulMatch[1].length * 10
-      const style = indentPx > 0 ? ` style="margin-left:${indentPx}px"` : ''
-      html.push(`<li${style}>${inlineRender(ulMatch[2])}</li>`)
-      continue
-    }
-    const olMatch = line.match(/^(\s*)\d+[.、]\s+(.+)$/)
-    if (olMatch) {
-      flushBlockquote()
-      if (listType !== 'ol') { flushList(); html.push('<ol class="md-list">'); listType = 'ol' }
-      html.push(`<li>${inlineRender(olMatch[2])}</li>`)
-      continue
-    }
-    flushList(); flushBlockquote()
-    if (line.trim() === '') {
-      // 跳过空行
-    } else {
-      html.push(`<p class="md-p">${inlineRender(line)}</p>`)
-    }
-  }
-  flushList(); flushBlockquote()
-  return html.join('\n')
-}
-
-function inlineRender(text: string): string {
-  // 先将 code span 替换为占位符，避免后续 bold/em 正则误匹配 code 内容
-  const codeSpans: string[] = []
-  let processed = escapeHtml(text).replace(/`([^`]+)`/g, (_, content) => {
-    const index = codeSpans.length
-    codeSpans.push(content)
-    return `__CODE_PLACEHOLDER_${index}__`
   })
-  // 处理 bold 和 em（不会作用于 code placeholder）
-  processed = processed
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  // 还原 code span
-  processed = processed.replace(/__CODE_PLACEHOLDER_(\d+)__/g, (_, index) => {
-    return `<code>${codeSpans[parseInt(index)]}</code>`
-  })
-  return processed
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
+  return doc.body.innerHTML
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -663,7 +618,7 @@ onMounted(fetchCategories)
             </div>
           </div>
 
-          <!-- 基本信息：4列×2行表格 -->
+          <!-- 基本信息：4列×3行表格 -->
           <table class="info-table">
             <tr>
               <td class="label">业务编码</td>
@@ -677,13 +632,26 @@ onMounted(fetchCategories)
               <td class="label">完整路径</td>
               <td class="value">{{ selectedCategory.path_labels?.join(' / ') || '' }}</td>
             </tr>
+            <tr>
+              <td class="label">
+                分类命中次数
+                <el-tooltip
+                  content="AI 将工单路由到本分类的累计次数（与下方文档命中次数独立统计）"
+                  placement="top"
+                  :trigger="['hover', 'focus']"
+                >
+                  <button
+                    class="help-icon"
+                    type="button"
+                    aria-label="分类命中次数说明"
+                  >?</button>
+                </el-tooltip>
+              </td>
+              <td class="value hit-count-cell">{{ selectedCategory.hit_count }} 次</td>
+              <td class="label">层级</td>
+              <td class="value">L{{ selectedCategory.level }}</td>
+            </tr>
           </table>
-
-          <!-- 命中次数 -->
-          <div class="form-item">
-            <label>命中次数</label>
-            <span class="hit-count">{{ selectedCategory.hit_count }} 次</span>
-          </div>
 
           <!-- 已发布 SOP 列表 -->
           <div class="published-section" v-if="selectedCategory.published_sop_count > 0">
@@ -803,8 +771,8 @@ onMounted(fetchCategories)
     <el-dialog
       v-model="detailDialogVisible"
       :title="detailKbdEntry?.title || detailSopEntry?.title || '详情'"
-      width="700px"
-      top="5vh"
+      width="min(960px, 90vw)"
+      top="4vh"
     >
       <div v-loading="detailLoading" class="detail-content">
         <template v-if="detailKbdEntry">
@@ -989,12 +957,6 @@ onMounted(fetchCategories)
   color: #909399;
 }
 
-.detail-form h3 {
-  margin-bottom: 20px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #e4e7ed;
-}
-
 .detail-header {
   display: flex;
   align-items: center;
@@ -1008,6 +970,9 @@ onMounted(fetchCategories)
   font-size: 16px;
   font-weight: 600;
   margin: 0;
+  padding: 0;
+  border-bottom: none;
+  line-height: 1;
 }
 
 .detail-status {
@@ -1117,8 +1082,9 @@ onMounted(fetchCategories)
 }
 
 .detail-content {
-  max-height: 70vh;
+  max-height: 78vh;
   overflow-y: auto;
+  padding-right: 4px;
 }
 
 .kbd-meta {
@@ -1131,62 +1097,147 @@ onMounted(fetchCategories)
   margin-bottom: 16px;
 }
 
+/* ── Markdown 内容区：GitHub 风格排版 ── */
 .kbd-content {
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.75;
+  color: #24292f;
+  word-break: break-word;
 }
 
-.kbd-content .md-h2 {
-  font-size: 16px;
+.kbd-content :deep(h1),
+.kbd-content :deep(h2),
+.kbd-content :deep(h3),
+.kbd-content :deep(h4),
+.kbd-content :deep(h5),
+.kbd-content :deep(h6) {
+  margin: 20px 0 8px 0;
   font-weight: 600;
-  margin: 16px 0 8px 0;
+  line-height: 1.25;
+  color: #1f2328;
 }
 
-.kbd-content .md-h3 {
-  font-size: 14px;
-  font-weight: 500;
-  margin: 12px 0 6px 0;
-}
+.kbd-content :deep(h1) { font-size: 20px; border-bottom: 1px solid #d0d7de; padding-bottom: 6px; }
+.kbd-content :deep(h2) { font-size: 18px; border-bottom: 1px solid #d0d7de; padding-bottom: 4px; }
+.kbd-content :deep(h3) { font-size: 16px; }
+.kbd-content :deep(h4) { font-size: 14px; }
 
-.kbd-content .md-p {
+.kbd-content :deep(p) {
   margin: 8px 0;
 }
 
-.kbd-content .md-list {
+.kbd-content :deep(ul),
+.kbd-content :deep(ol) {
   margin: 8px 0;
-  padding-left: 20px;
+  padding-left: 24px;
 }
 
-.kbd-content .md-blockquote {
-  margin: 8px 0;
+.kbd-content :deep(li) {
+  margin: 4px 0;
+}
+
+.kbd-content :deep(li > ul),
+.kbd-content :deep(li > ol) {
+  margin: 2px 0;
+}
+
+.kbd-content :deep(blockquote) {
+  margin: 10px 0;
   padding: 8px 16px;
-  background: #f5f7fa;
-  border-left: 4px solid #e4e7ed;
+  background: #f6f8fa;
+  border-left: 4px solid #d0d7de;
+  color: #57606a;
 }
 
-.kbd-content code {
-  background: #f5f7fa;
+.kbd-content :deep(code) {
+  background: #f6f8fa;
   padding: 2px 6px;
-  border-radius: 4px;
-  font-family: monospace;
+  border-radius: 6px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 85%;
+  border: 1px solid #d0d7de;
+}
+
+.kbd-content :deep(pre) {
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 12px 0;
+  line-height: 1.45;
+}
+
+.kbd-content :deep(pre code) {
+  background: transparent;
+  padding: 0;
+  border: none;
+  font-size: 13px;
+  border-radius: 0;
+}
+
+.kbd-content :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
   font-size: 13px;
 }
 
-.form-item {
-  margin-bottom: 16px;
+.kbd-content :deep(th),
+.kbd-content :deep(td) {
+  border: 1px solid #d0d7de;
+  padding: 6px 12px;
+  text-align: left;
 }
 
-.form-item label {
-  display: block;
-  margin-bottom: 8px;
-  font-size: 14px;
-  color: #606266;
+.kbd-content :deep(th) {
+  background: #f6f8fa;
+  font-weight: 600;
 }
 
-.hit-count {
-  font-size: 16px;
+.kbd-content :deep(tr:nth-child(even) td) {
+  background: #f6f8fa;
+}
+
+.kbd-content :deep(hr) {
+  border: none;
+  border-top: 1px solid #d0d7de;
+  margin: 16px 0;
+}
+
+.kbd-content :deep(a) {
+  color: #0969da;
+  text-decoration: none;
+}
+
+.kbd-content :deep(strong) {
+  font-weight: 600;
+}
+
+.hit-count-cell {
   font-weight: 600;
   color: #409eff;
+}
+
+.help-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #909399;
+  color: white;
+  font-size: 10px;
+  cursor: pointer;
+  margin-left: 4px;
+  vertical-align: middle;
+  /* 重置按钮默认样式 */
+  border: none;
+  padding: 0;
+  line-height: 1;
+  /* 键盘焦点可见轮廓 */
+  outline-offset: 2px;
 }
 
 .import-preview {
