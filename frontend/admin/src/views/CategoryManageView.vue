@@ -3,7 +3,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Histogram, Upload, Download, WarningFilled } from '@element-plus/icons-vue'
 import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import DOMPurify, { type Config as DOMPurifyConfig } from 'dompurify'
 import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -328,7 +328,7 @@ async function openSopDetail(sopId: number) {
 marked.setOptions({ gfm: true, breaks: true })
 
 // 配置 DOMPurify：仅允许安全标签和属性，防止 XSS 注入
-const DOMPURIFY_CONFIG: DOMPurify.Config = {
+const DOMPURIFY_CONFIG: DOMPurifyConfig = {
   // 允许常见排版标签
   ALLOWED_TAGS: [
     'h1','h2','h3','h4','h5','h6',
@@ -348,7 +348,8 @@ function renderMarkdown(md: string): string {
   const result = marked.parse(md)
   const raw = typeof result === 'string' ? result : ''
   // 对 marked 输出做 XSS 清洗，并为所有链接补充 rel="noopener noreferrer"
-  const clean = DOMPurify.sanitize(raw, DOMPURIFY_CONFIG)
+  // sanitize 返回 string | TrustedHTML，强转为 string
+  const clean = String(DOMPurify.sanitize(raw, DOMPURIFY_CONFIG))
   // 使用 DOMParser 为外部链接补 rel/target（DOMPurify 清洗后做 DOM 操作最安全）
   const parser = new DOMParser()
   const doc = parser.parseFromString(clean, 'text/html')
