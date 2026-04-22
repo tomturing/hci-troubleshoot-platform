@@ -6,14 +6,25 @@
 #
 # 设计原则：
 #   - 无 Hook，纯声明式资源 → ArgoCD 可自动自愈
-#   - 优先于 argocd-ops 同步 → 解决 PreSync Job 的权限依赖
 #   - prune: false → RBAC 资源不随 Git 删除而自动删除（安全保留）
+#
+# 同步顺序控制：
+#   通过 argocd.argoproj.io/sync-wave annotation 控制 App of Apps 中的同步顺序：
+#   - argocd-rbac: sync-wave: -1（先于 argocd-ops 同步）
+#   - argocd-ops: sync-wave: 0（默认）
+#   确保 PreSync Job 执行时 RBAC 权限已就绪
 #
 # 依赖关系：
 #   argocd-rbac → argocd-ops（PreSync Job 需要 Role 权限）
 #
+# 迁移说明：
+#   从旧状态（RBAC 在 argocd-ops 内）迁移时，需先手动 apply RBAC 资源：
+#   kubectl apply -f deploy/gitops/argocd-rbac/
+#   然后触发 argocd-ops 同步，避免权限不足导致的失败重试。
+#
 # 变更历史：
 #   2026-04-22 v1.0 初版，从 argocd-ops 拆分解决同步顺序依赖
+#   2026-04-22 v1.1 添加 sync-wave annotation，修复 RBAC verbs
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -21,7 +32,8 @@ metadata:
   name: argocd-rbac
   namespace: argocd
   annotations:
-    argocd.argoproj.io/description: "argocd-repo-server-watchdog RBAC — 优先同步，无 Hook，可自动自愈"
+    argocd.argoproj.io/sync-wave: "-1"  # 先于 argocd-ops 同步
+    argocd.argoproj.io/description: "argocd-repo-server-watchdog RBAC — 无 Hook，可自动自愈"
 spec:
   project: default
   destination:

@@ -11,18 +11,21 @@
 #      - Git 里的 argo-apps/local/*.yaml 是唯一权威来源
 #
 # 依赖关系：
-#   argocd-rbac（纯 RBAC）→ 先同步 → Role 权限就绪
+#   argocd-rbac（纯 RBAC，sync-wave: -1）→ 先同步 → Role 权限就绪
 #          ↓
-#   argocd-ops（含 PreSync Job）→ Job 执行成功（已有权限）
+#   argocd-ops（sync-wave: 0，含 PreSync Job）→ Job 执行成功（已有权限）
 #
 # 设计原则：
 #   - prune: true  — ops 配件随 Git 变更弹性增删，无持久化数据风险
-#   - selfHeal: true — 防止 watchdog RBAC / Application 配置被手动修改后漂移
+#   - selfHeal: true — 防止 Application 配置被手动修改后漂移
 #   - directory.exclude: "*.json" — 排除 Grafana Dashboard JSON（非 K8s 资源）
+#
+# 注意：RBAC 资源已拆分至 argocd-rbac Application，selfHeal 不再覆盖 RBAC
 #
 # 变更历史：
 #   2026-03-27 v1.0 初版
 #   2026-04-22 v1.1 RBAC 拆分至 argocd-rbac，解决 PreSync Job 同步顺序依赖
+#   2026-04-22 v1.2 更新注释说明 RBAC 已拆分，添加 sync-wave 依赖说明
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -30,6 +33,7 @@ metadata:
   name: argocd-ops
   namespace: argocd
   annotations:
+    argocd.argoproj.io/sync-wave: "0"  # 在 argocd-rbac 之后同步
     argocd.argoproj.io/description: "ArgoCD 运维配套 — copyutil watchdog + Pod 异常可观测性 + App of Apps（dev）"
 spec:
   project: default
@@ -37,7 +41,7 @@ spec:
     server: https://kubernetes.default.svc
     namespace: argocd
   sources:
-    # 运维配件：copyutil watchdog CronJob + RBAC + PrometheusRule
+    # 运维配件：copyutil watchdog CronJob + PreSync Job + PrometheusRule
     - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
       targetRevision: main
       path: deploy/gitops/argocd-ops
@@ -53,6 +57,6 @@ spec:
   syncPolicy:
     automated:
       prune: true # ops 资源无状态，允许自动删除已移除的资源
-      selfHeal: true # 防止 watchdog RBAC / Application 配置被手动修改后漂移
+      selfHeal: true # 防止 Application 配置被手动修改后漂移（RBAC 在 argocd-rbac 中管理）
     syncOptions:
       - CreateNamespace=false # argocd namespace 已存在
