@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Histogram, Upload, Download, WarningFilled } from '@element-plus/icons-vue'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -326,12 +327,39 @@ async function openSopDetail(sopId: number) {
 // 配置 marked：GFM 模式（支持表格、代码块、任务列表等）
 marked.setOptions({ gfm: true, breaks: true })
 
+// 配置 DOMPurify：仅允许安全标签和属性，防止 XSS 注入
+const DOMPURIFY_CONFIG: DOMPurify.Config = {
+  // 允许常见排版标签
+  ALLOWED_TAGS: [
+    'h1','h2','h3','h4','h5','h6',
+    'p','br','hr','blockquote','pre','code',
+    'ul','ol','li','table','thead','tbody','tr','th','td',
+    'strong','em','del','a','img','span','div',
+  ],
+  // 允许安全属性；链接统一加 rel 防止 opener 攻击
+  ALLOWED_ATTR: ['class','id','href','src','alt','title','rel','target'],
+  // 强制所有链接添加安全属性
+  FORCE_BODY: false,
+  ADD_ATTR: [],
+}
+
 function renderMarkdown(md: string): string {
   if (!md) return ''
   const result = marked.parse(md)
-  // marked.parse 可能返回 Promise，对于同步场景做兼容
-  if (typeof result === 'string') return result
-  return ''
+  const raw = typeof result === 'string' ? result : ''
+  // 对 marked 输出做 XSS 清洗，并为所有链接补充 rel="noopener noreferrer"
+  const clean = DOMPurify.sanitize(raw, DOMPURIFY_CONFIG)
+  // 使用 DOMParser 为外部链接补 rel/target（DOMPurify 清洗后做 DOM 操作最安全）
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(clean, 'text/html')
+  doc.querySelectorAll('a[href]').forEach((el) => {
+    const href = el.getAttribute('href') || ''
+    if (href.startsWith('http://') || href.startsWith('https://')) {
+      el.setAttribute('rel', 'noopener noreferrer')
+      el.setAttribute('target', '_blank')
+    }
+  })
+  return doc.body.innerHTML
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -606,8 +634,16 @@ onMounted(fetchCategories)
             <tr>
               <td class="label">
                 分类命中次数
-                <el-tooltip content="AI 将工单路由到本分类的累计次数（与下方文档命中次数独立统计）" placement="top">
-                  <span class="help-icon">?</span>
+                <el-tooltip
+                  content="AI 将工单路由到本分类的累计次数（与下方文档命中次数独立统计）"
+                  placement="top"
+                  :trigger="['hover', 'focus']"
+                >
+                  <button
+                    class="help-icon"
+                    type="button"
+                    aria-label="分类命中次数说明"
+                  >?</button>
                 </el-tooltip>
               </td>
               <td class="value hit-count-cell">{{ selectedCategory.hit_count }} 次</td>
@@ -1195,6 +1231,12 @@ onMounted(fetchCategories)
   cursor: pointer;
   margin-left: 4px;
   vertical-align: middle;
+  /* 重置按钮默认样式 */
+  border: none;
+  padding: 0;
+  line-height: 1;
+  /* 键盘焦点可见轮廓 */
+  outline-offset: 2px;
 }
 
 .import-preview {

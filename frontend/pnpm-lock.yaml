@@ -16,12 +16,12 @@ importers:
       '@hci/shared':
         specifier: workspace:*
         version: link:../shared
-      '@types/marked':
-        specifier: ^6.0.0
-        version: 6.0.0
       axios:
         specifier: ^1.7.9
         version: 1.13.6
+      dompurify:
+        specifier: ^3.3.3
+        version: 3.3.3
       element-plus:
         specifier: ^2.9.1
         version: 2.13.5(typescript@5.6.3)(vue@3.5.30(typescript@5.6.3))
@@ -512,10 +512,6 @@ packages:
 
   '@types/lodash@4.17.24':
     resolution: {integrity: sha512-gIW7lQLZbue7lRSWEFql49QJJWThrTFFeIMJdp3eH4tKoxm1OvEPg02rm4wCCSHS0cL3/Fizimb35b7k8atwsQ==}
-
-  '@types/marked@6.0.0':
-    resolution: {integrity: sha512-jmjpa4BwUsmhxcfsgUit/7A9KbrC48Q0q8KvnY107ogcjGgTFDlIL3RpihNpx2Mu1hM4mdFQjoVc4O6JoGKHsA==}
-    deprecated: This is a stub types definition. marked provides its own type definitions, so you do not need this installed.
 
   '@types/node@22.19.15':
     resolution: {integrity: sha512-F0R/h2+dsy5wJAUe3tAU6oqa2qbWY5TpNfL/RGmo1y38hiyO1w3x2jPtt76wmuaJI4DQnOBu21cNXQ2STIUUWg==}
@@ -1318,10 +1314,6 @@ snapshots:
       '@types/lodash': 4.17.24
 
   '@types/lodash@4.17.24': {}
-
-  '@types/marked@6.0.0':
-    dependencies:
-      marked: 17.0.4
 
   '@types/node@22.19.15':
     dependencies:
