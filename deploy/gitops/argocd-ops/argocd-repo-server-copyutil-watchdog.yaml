@@ -1,53 +1,18 @@
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: argocd-repo-server-watchdog
-  namespace: argocd
-  labels:
-    app.kubernetes.io/name: argocd-repo-server-copyutil-watchdog
-    app.kubernetes.io/component: ops
-    app.kubernetes.io/part-of: argocd
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: argocd-repo-server-watchdog
-  namespace: argocd
-  labels:
-    app.kubernetes.io/name: argocd-repo-server-copyutil-watchdog
-    app.kubernetes.io/component: ops
-    app.kubernetes.io/part-of: argocd
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "delete"]
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    resourceNames: ["argocd-repo-server"]
-    verbs: ["get", "list", "patch", "update"]
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    resourceNames: ["argocd-cmd-params-cm"]
-    verbs: ["get", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: argocd-repo-server-watchdog
-  namespace: argocd
-  labels:
-    app.kubernetes.io/name: argocd-repo-server-copyutil-watchdog
-    app.kubernetes.io/component: ops
-    app.kubernetes.io/part-of: argocd
-subjects:
-  - kind: ServiceAccount
-    name: argocd-repo-server-watchdog
-    namespace: argocd
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: argocd-repo-server-watchdog
----
+# =============================================================================
+# argocd-repo-server copyutil watchdog CronJob
+#
+# 功能：
+#   定期检查 argocd-repo-server Pod 中 copyutil init 容器的 CrashLoopBackOff 状态，
+#   自动删除异常 Pod，触发 Deployment 重建。
+#
+# RBAC：
+#   已拆分至 argocd-rbac Application（deploy/gitops/argocd-rbac/）
+#   解决 PreSync Job 与 Role 的同步顺序依赖问题。
+#
+# 变更历史：
+#   2026-03-27 v1.0 初版
+#   2026-04-22 v1.1 移除 RBAC 部分，拆分至 argocd-rbac Application
+# =============================================================================
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -71,7 +36,7 @@ spec:
             app.kubernetes.io/component: ops
             app.kubernetes.io/part-of: argocd
         spec:
-          serviceAccountName: argocd-repo-server-watchdog
+          serviceAccountName: argocd-repo-server-watchdog  # 来自 argocd-rbac Application
           restartPolicy: Never
           containers:
             - name: watchdog

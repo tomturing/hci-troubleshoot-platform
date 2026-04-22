@@ -1,0 +1,41 @@
+# =============================================================================
+# ArgoCD Application: argocd-rbac
+#
+# 职责：
+#   argocd-repo-server-watchdog 的 RBAC 资源（ServiceAccount + Role + RoleBinding）
+#
+# 设计原则：
+#   - 无 Hook，纯声明式资源 → ArgoCD 可自动自愈
+#   - 优先于 argocd-ops 同步 → 解决 PreSync Job 的权限依赖
+#   - prune: false → RBAC 资源不随 Git 删除而自动删除（安全保留）
+#
+# 依赖关系：
+#   argocd-rbac → argocd-ops（PreSync Job 需要 Role 权限）
+#
+# 变更历史：
+#   2026-04-22 v1.0 初版，从 argocd-ops 拆分解决同步顺序依赖
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-rbac
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "argocd-repo-server-watchdog RBAC — 优先同步，无 Hook，可自动自愈"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  source:
+    repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+    targetRevision: main
+    path: deploy/gitops/argocd-rbac
+    directory:
+      recurse: false
+  syncPolicy:
+    automated:
+      prune: false  # RBAC 资源安全保留，不自动删除
+      selfHeal: true  # 防止手动修改后漂移
+    syncOptions:
+      - CreateNamespace=false  # argocd namespace 已存在

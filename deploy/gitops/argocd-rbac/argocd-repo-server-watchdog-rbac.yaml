@@ -1,0 +1,73 @@
+# =============================================================================
+# argocd-repo-server-watchdog RBAC — 独立 Application（无 Hook）
+#
+# 设计目的：
+#   将 RBAC 资源从 argocd-ops 拆分，避免 PreSync Job 与 Role 的同步顺序依赖：
+#   - PreSync Job 需要 Role 权限才能执行
+#   - 但 Role 在 Sync 阶段才同步 → 循环依赖导致死锁
+#
+# 解决方案：
+#   本文件独立为 argocd-rbac Application，优先同步，无 Hook，ArgoCD 可自动自愈
+#
+# 依赖关系：
+#   argocd-rbac（纯 RBAC）→ 先同步 → Role 权限就绪
+#          ↓
+#   argocd-ops（含 PreSync Job）→ Job 执行成功（已有权限）
+#
+# 变更历史：
+#   2026-04-22 v1.0 从 argocd-ops 拆分，解决同步顺序依赖问题
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-repo-server-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server-watchdog
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: argocd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-repo-server-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server-watchdog
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: argocd
+rules:
+  # Pod 操作权限（watchdog 删除 CrashLoopBackOff Pod）
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+
+  # Deployment patch 权限（PreSync Job patch argocd-repo-server probe）
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["argocd-repo-server"]
+    verbs: ["get", "list", "patch", "update"]
+
+  # ConfigMap patch 权限（PreSync Job patch argocd-cmd-params-cm parallelism）
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["argocd-cmd-params-cm"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argocd-repo-server-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server-watchdog
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: argocd
+subjects:
+  - kind: ServiceAccount
+    name: argocd-repo-server-watchdog
+    namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-repo-server-watchdog
