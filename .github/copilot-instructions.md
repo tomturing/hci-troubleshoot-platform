@@ -1,47 +1,20 @@
-# GitHub Copilot 项目指令 — HCI 智能排障平台
+# GitHub Copilot 指令
 
-## 避坑指南（生成代码或辅助调试前必读）
-
-本项目的避坑指南分两类存放：部署类在 `docs/deploy/pitfalls/`，验证类在 `docs/verify/pitfalls/`。  
-遇到以下场景时，**参考对应文件后再编写代码**，避免已知问题重现：
-
-| 场景关键词 | 必读文件 |
-|-----------|---------|
-| 调试/进程/状态/日志定位 | `docs/verify/pitfalls/debugging.md` |
-| 网络异常/502/超时/Clash TUN | `docs/deploy/pitfalls/network-service-check.md` |
-| Shell/Makefile/bash 脚本 | `docs/deploy/pitfalls/shell.md` |
-| Python/FastAPI/SQLAlchemy/Pydantic | `docs/verify/pitfalls/python.md` |
-| Vue/TypeScript/pnpm/Docker build/nginx | `docs/verify/pitfalls/frontend.md` |
-| K8s/K3s/Helm/镜像导入/HostPath | `docs/deploy/pitfalls/k8s.md` |
-| OpenClaw/认证 token/WebSocket/AI 超时 | `docs/verify/pitfalls/openclaw.md` |
-| Grafana/Traefik Ingress/iframe | `docs/deploy/pitfalls/grafana.md` |
-| Dispatcher/状态机/幂等 | `docs/verify/pitfalls/dispatcher.md` |
-
-部署类触发路由见 `docs/deploy/pitfalls/_index.md`，验证类触发路由见 `docs/verify/pitfalls/_index.md`。
+本文件为 GitHub Copilot CLI 和 VS Code Copilot 提供项目级指令。
 
 ---
 
-## 编码约定
+## Git Commit/PR 标识规则（强制）
 
-- 代码注释和 Git commit 消息使用**中文**
-- **Git commit 消息和 PR 必须追加环境与工具标识**（见下方规则）
-- Python 包管理：`uv`；前端包管理：`pnpm`；禁止直接使用 pip/npm 安装
-- 所有 HTTP 请求日志必须携带 `trace_id`（W3C traceparent 格式）
-- 禁止在代码中硬编码 API Key / Token / 密码
-- Python lint/format：`ruff`，行长 120，`target-version = "py312"`
-- 前端：ESLint + Prettier + TypeScript strict mode
+**所有 commit 消息末尾必须追加 `[env:<环境>:<hostname>][agent:copilot]` 标识。**
 
-### Git Commit/PR 标识规则
-
-**所有 commit 消息末尾必须追加 `[env:<环境>:<hostname>][agent:<工具>]` 标识。**
-
-**所有 PR 必须添加对应的 labels：`env:<环境>:<hostname>` 和 `agent:<工具>`。**
+**所有 PR 必须添加对应的 labels：`env:<环境>:<hostname>` 和 `agent:copilot`。**
 
 格式：
 ```
 <commit message>
 
-[env:<环境>:<hostname>][agent:<工具>]
+[env:<环境>:<hostname>][agent:copilot]
 ```
 
 示例：
@@ -51,86 +24,53 @@ fix: 修复 ArgoCD 升级脚本
 [env:dev:gs][agent:copilot]
 ```
 
-**数据来源**：
-- **环境**：从 `argocd` namespace 的标签 `hci.env.role` 获取（dev/staging/prod）
-  ```bash
-  kubectl get ns argocd -o jsonpath='{.metadata.labels.hci\.env\.role}'
-  ```
-- **hostname**：完整主机名，转小写
-  ```bash
-  hostname | tr '[:upper:]' '[:lower:]'
-  ```
-- **工具**：`claude` 或 `copilot`
+### 强制执行流程
 
-**实现方式**：使用 `gcm` 和 `gpr` 函数（已配置在 `~/.my_custom_configs`）：
+填写 `[env:<环境>:<hostname>]` 前，**必须先执行**以下命令获取当前值：
 
 ```bash
-# GitHub Copilot 提交 commit
+# 步骤 1：获取环境（dev/staging/prod）
+kubectl get ns argocd -o jsonpath='{.metadata.labels.hci\.env\.role}'
+
+# 步骤 2：获取 hostname
+hostname | tr '[:upper:]' '[:lower:]'
+```
+
+**禁止使用记忆中的值、假设值或旧对话中的值**。每次都必须重新执行命令验证。
+
+### 实现方式
+
+使用 `gcm` 和 `gpr` 函数（已配置在 `~/.my_custom_configs`）：
+
+```bash
+# GitHub Copilot 提交 commit（必须显式指定 AGENT）
 AGENT=copilot gcm "feat: 新功能"
 
-# GitHub Copilot 创建 PR（自动添加 labels）
+# GitHub Copilot 创建 PR（必须显式指定 AGENT）
 AGENT=copilot gpr "feat: 新功能"
-
-# Claude Code 提交 commit
-gcm "fix: 修复问题"
-
-# Claude Code 创建 PR
-gpr "fix: 修复问题"
 ```
 
-> ⚠️ **GitHub Copilot 执行 PR 时的两条强制规则（易错，必须遵守）**：
->
-> **规则1 — 标签**：`gpr` 默认 `AGENT=claude`，**Copilot 必须加 `AGENT=copilot` 前缀**，否则标签打错。
->
-> **规则2 — PR body**：`gpr` 生成的 body 是硬编码占位符，**必须在 `gpr` 执行后立即补写完整描述**，格式为：
-> ```
-> ## 问题
-> （触发原因、影响范围、复现路径）
-> ## 修复
-> （按子任务分节列出具体改动）
-> ## 影响文件
-> （表格：文件 | 变更类型 | 说明）
-> [env:dev:<hostname>][agent:copilot]
-> ```
-> 补写命令：
-> ```bash
-> gh api --method PATCH /repos/{owner}/{repo}/pulls/{num} -f body="$(cat /tmp/pr_body.md)"
-> ```
+⚠️ **注意**：`gpr` 默认 `AGENT=claude`，Copilot 必须显式加 `AGENT=copilot` 前缀，否则标签打错。
 
-## 测试约定
+---
 
-- 各微服务测试必须隔离运行：`uv run pytest backend/<service>/tests/ -q`
-- 禁止跨服务共享 test fixture 导致命名空间冲突
+## 编码规范
 
-## 部署约定
+- 代码注释**必须使用**中文
+- Git commit 消息**必须使用**中文
+- Python 环境管理: **必须使用** `uv`
+- 前端包管理: **必须使用** `pnpm`
 
-- K3s 环境每次构建镜像后必须手动导入：`docker save ... | sudo k3s ctr images import -`（见 PIT-016）
-- Docker build 在 Clash TUN 宿主机上必须加 `--network host`（见 PIT-028）
+---
 
-## Git 推送规则（强制）
+## 避坑指南
 
-### 文档门禁
-改动 `backend/`、`frontend/`、`deploy/`、`scripts/`、`database/`、`.github/workflows/` 时，
-**必须在同一 commit/PR 中**同步更新 `docs/`、`README.md`、`AGENTS.md` 或 `CLAUDE.md` 至少一项。
-否则 CI `docs-governance` job 失败，PR 无法合并。
+在编写或审查代码前，必须先读取相关避坑指南：
+- 首先读取 `docs/pitfalls/_index.md`
+- 按场景选择具体文件（shell/python/frontend/k8s 等）
 
-### 分支与 PR 流程
-- main 分支有保护规则，**禁止直接推送**，必须通过 PR
-- 提交流程：创建 feature/hotfix 分支 → 推送远程 → 创建 PR → CI 全绿后合并
+---
 
-### PIT-023：并发 hotfix 前置检查
-创建 hotfix 分支**前**必须先执行：
-```bash
-gh pr list --state open
-```
-确认无其他 PR 正在修改同一目录。有并发 PR 时先协调合并，避免产生重复配置块。
+## 更多规范
 
-### PIT-024：安全基线改造必须分批 PR
-全量修改 `securityContext`、`probe`、`resources.limits` 时，
-必须按负载类型（**nginx / Python / Node.js**）拆成独立 PR，
-不可一次提交跨多种运行时的安全基线变更。
-
-### PIT-025：修改 runAsNonRoot 前确认镜像文件系统
-修改 `securityContext.runAsUser` 或 `runAsNonRoot` 前，确认镜像在非 root 下的写权限需求：
-- **nginx 官方镜像**：需写 `/var/cache/nginx` 和 `/var/run`，必须挂载 `emptyDir` 覆盖这两个路径
-- Python/Node.js 镜像：确认应用日志、临时文件写入路径的权限
+详见 `AGENTS.md`（项目级完整规范）和 `~/.claude/CLAUDE.md`（全局规范）。

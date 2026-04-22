@@ -137,16 +137,18 @@ fix: 修复 ArgoCD 升级脚本
 [env:dev:gs][agent:claude]
 ```
 
-**数据来源**：
-- **环境**：从 `argocd` namespace 的标签 `hci.env.role` 获取（dev/staging/prod）
-  ```bash
-  kubectl get ns argocd -o jsonpath='{.metadata.labels.hci\.env\.role}'
-  ```
-- **hostname**：完整主机名，转小写
-  ```bash
-  hostname | tr '[:upper:]' '[:lower:]'
-  ```
-- **工具**：`claude` 或 `copilot`
+**强制执行流程**：
+填写 `[env:<环境>:<hostname>]` 前，**必须先执行**以下命令获取当前值：
+```bash
+# 步骤 1：获取环境（dev/staging/prod）
+kubectl get ns argocd -o jsonpath='{.metadata.labels.hci\.env\.role}'
+
+# 步骤 2：获取 hostname
+hostname | tr '[:upper:]' '[:lower:]'
+```
+**禁止使用记忆中的值、假设值或旧对话中的值**。每次都必须重新执行命令验证。
+
+- **工具**：根据当前会话使用的工具填写 `claude` 或 `copilot`
 
 **实现方式**：使用 `gcm` 和 `gpr` 函数（已配置在 `~/.my_custom_configs`）：
 
