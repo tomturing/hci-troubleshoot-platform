@@ -1,5 +1,5 @@
 # =============================================================================
-# ArgoCD Root Application — Bootstrap 入口
+# ArgoCD Root Application — App of Apps 入口
 #
 # 设计原则（官方最佳实践）：
 #   - Root Application 定义在独立目录（bootstrap/），不在被管理的目录中
@@ -7,14 +7,24 @@
 #   - 手动 apply 后，它自动管理所有子 Applications
 #
 # 管理范围：
-#   1. argocd-ops/ — ArgoCD 运维配套（watchdog + 可观测性）
-#   2. argo-apps/local/ — dev 环境所有子 Applications
+#   argo-apps/local/ — dev 环境所有子 Applications
+#     - argocd-rbac.yaml (sync-wave: -1) → RBAC 权限先就绪
+#     - argocd-ops.yaml (sync-wave: 0) → PreSync Job 可正常执行
+#     - hci-platform-*.yaml → 业务应用
+#
+# 同步顺序控制：
+#   通过 argocd.argoproj.io/sync-wave annotation 控制子 Application 同步顺序：
+#   - sync-wave: -1 → argocd-rbac（先同步，确保 SA/Role 就绪）
+#   - sync-wave: 0 → argocd-ops（PreSync Job 需要 RBAC 权限）
+#   - sync-wave: 默认 → 其他业务 Application
 #
 # Bootstrap 步骤：
 #   kubectl apply -f deploy/gitops/bootstrap/argocd-root.yaml
 #
 # 变更历史：
 #   2026-04-22 v1.0 从 argocd-ops 重构为 argocd-root，解决循环引用问题
+#   2026-04-22 v1.1 移除 argocd-ops 目录 source，改为独立子 Application
+#                   解决 PreSync Hook 与 RBAC 的同步顺序依赖
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -22,29 +32,21 @@ metadata:
   name: argocd-root
   namespace: argocd
   annotations:
-    argocd.argoproj.io/description: "ArgoCD Root Application — 管理 argocd-ops + argo-apps/local（bootstrap 入口）"
+    argocd.argoproj.io/description: "ArgoCD Root Application — App of Apps 管理所有子 Applications（bootstrap 入口）"
 spec:
   project: default
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
-  sources:
-    # Source 1: ArgoCD 运维配套资源
-    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
-      targetRevision: main
-      path: deploy/gitops/argocd-ops
-      directory:
-        recurse: false
-        exclude: "*.json"    # 排除 Grafana Dashboard JSON（非 K8s 资源）
-    # Source 2: dev 环境所有子 Applications
-    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
-      targetRevision: main
-      path: deploy/gitops/argo-apps/local
-      directory:
-        recurse: false
+  source:
+    repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+    targetRevision: main
+    path: deploy/gitops/argo-apps/local
+    directory:
+      recurse: false
   syncPolicy:
     automated:
-      prune: true           # ops 资源无状态，允许自动删除已移除的资源
+      prune: true           # 子 Application 随 Git 变更弹性增删
       selfHeal: true        # 防止 Application 配置被手动修改后漂移
     syncOptions:
       - CreateNamespace=false   # argocd namespace 已存在
