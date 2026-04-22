@@ -227,8 +227,8 @@ async function fetchPublishedList(categoryCode: string) {
   publishedSopList.value = []
   publishedKbdList.value = []
   try {
-    // 查询已发布 KBD（使用 admin API，传入 page_size 避免静默截断）
-    const kbdResp = await fetch(`/api/admin/kbd/pending?status=published&category_id=${encodeURIComponent(categoryCode)}&page_size=100`, {
+    // 查询已发布 KBD（通过 api-gateway /api/v1/ 前缀，传入 page_size 避免静默截断）
+    const kbdResp = await fetch(`/api/v1/kbd/pending?status=published&category_id=${encodeURIComponent(categoryCode)}&page_size=100`, {
       headers: authHeader,
     })
     if (kbdResp.ok) {
@@ -244,8 +244,8 @@ async function fetchPublishedList(categoryCode: string) {
       }))
     }
 
-    // 查询已发布 SOP（使用 kb API，传入 page_size）
-    const sopResp = await fetch(`/api/admin/sop?status=published&category_id=${encodeURIComponent(categoryCode)}&page_size=100`, {
+    // 查询已发布 SOP（通过 api-gateway /api/v1/ 前缀，传入 page_size）
+    const sopResp = await fetch(`/api/v1/sop?status=published&category_id=${encodeURIComponent(categoryCode)}&page_size=100`, {
       headers: authHeader,
     })
     if (sopResp.ok) {
@@ -283,7 +283,7 @@ async function openKbdDetail(kbdId: number) {
   detailSopEntry.value = null
   detailHtml.value = ''
   try {
-    const resp = await fetch(`/api/admin/kbd/${kbdId}`, { headers: authHeader })
+    const resp = await fetch(`/api/v1/kbd/${kbdId}`, { headers: authHeader })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
     detailKbdEntry.value = data
@@ -306,7 +306,7 @@ async function openSopDetail(sopId: number) {
   detailSopEntry.value = null
   detailHtml.value = ''
   try {
-    const resp = await fetch(`/api/admin/sop/${sopId}`, { headers: authHeader })
+    const resp = await fetch(`/api/v1/sop/${sopId}`, { headers: authHeader })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
     detailSopEntry.value = data
@@ -998,7 +998,7 @@ onMounted(fetchCategories)
 .detail-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 16px;
   padding: 12px 0;
   border-bottom: 1px solid #e4e7ed;
   margin-bottom: 16px;
