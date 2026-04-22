@@ -1,0 +1,91 @@
+# =============================================================================
+# argocd-repo-server-watchdog RBAC — 独立 Application（无 Hook）
+#
+# 设计目的：
+#   将 RBAC 资源从 argocd-ops 拆分，避免 PreSync Job 与 Role 的同步顺序依赖：
+#   - PreSync Job 需要 Role 权限才能执行
+#   - 但 Role 在 Sync 阶段才同步 → 循环依赖导致死锁
+#
+# 解决方案：
+#   本文件独立为 argocd-rbac Application，无 Hook，ArgoCD 可自动自愈
+#
+# 依赖关系：
+#   argocd-rbac（纯 RBAC）→ 无 Hook → ArgoCD 可直接 apply
+#          ↓
+#   argocd-ops（含 PreSync Job）→ Job 执行成功（已有权限）
+#
+# 同步顺序控制：
+#   argocd-rbac Application 设置 sync-wave: -1（通过 annotation）
+#   argocd-ops Application 设置 sync-wave: 0（默认）
+#   确保 argocd-rbac 在 argocd-ops 之前同步
+#
+# 变更历史：
+#   2026-04-22 v1.0 从 argocd-ops 拆分，解决同步顺序依赖问题
+#   2026-04-22 v1.1 修复 RBAC verbs（拆分 resourceNames 规则，添加 watch）
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-repo-server-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server-watchdog
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: argocd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-repo-server-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server-watchdog
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: argocd
+rules:
+  # Pod 操作权限（watchdog 删除 CrashLoopBackOff Pod）
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+
+  # Deployment 只读权限（kubectl rollout status 需要 list/watch）
+  # 注意：resourceNames 规则不匹配 collection 级请求（list/watch）
+  # 参考：https://kubernetes.io/docs/reference/access-authn-authz/rbac/#referring-to-resources
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+
+  # Deployment patch 权限（仅限 argocd-repo-server）
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["argocd-repo-server"]
+    verbs: ["patch", "update"]
+
+  # ConfigMap 只读权限
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+
+  # ConfigMap patch 权限（仅限 argocd-cmd-params-cm）
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["argocd-cmd-params-cm"]
+    verbs: ["patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argocd-repo-server-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server-watchdog
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: argocd
+subjects:
+  - kind: ServiceAccount
+    name: argocd-repo-server-watchdog
+    namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-repo-server-watchdog
