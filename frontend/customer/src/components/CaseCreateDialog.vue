@@ -6,6 +6,32 @@ import { checkBridgeRunning, type BridgeStatus } from '@/api/terminal'
 
 const chatStore = useChatStore()
 
+// 开发环境专用日志（生产环境自动禁用）
+const isDev = import.meta.env.DEV
+function devLog(tag: string, message: string, data?: unknown) {
+  if (!isDev) return
+  // 脱敏敏感字段（仅对对象类型）
+  const sanitized = data && typeof data === 'object' && !Array.isArray(data)
+    ? sanitizeSensitive(data as Record<string, unknown>)
+    : data
+  console.log(`[${tag}] ${message}`, sanitized ?? '')
+}
+
+// 脱敏敏感信息（host 只显示前3字符，password 完全隐藏）
+function sanitizeSensitive(data: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(data)) {
+    if (key.toLowerCase().includes('password') || key.toLowerCase().includes('passwd')) {
+      result[key] = '***'
+    } else if (key.toLowerCase().includes('host') && typeof value === 'string') {
+      result[key] = value.length > 6 ? `${value.substring(0, 3)}...${value.substring(value.length - 3)}` : value
+    } else {
+      result[key] = value
+    }
+  }
+  return result
+}
+
 // Bridge 下载地址
 const BRIDGE_DOWNLOAD_URL =
   import.meta.env.VITE_BRIDGE_DOWNLOAD_URL || '/downloads/terminal_bridge.exe'
@@ -97,15 +123,21 @@ function validateForm(): boolean {
 
 // 连接 SSH 并创建工单
 async function handleConnectAndCreate() {
+  devLog('CREATE-DIALOG', 'handleConnectAndCreate 被调用')
   if (!validateForm()) return
-  if (!canConnectSSH.value) return
+  if (!canConnectSSH.value) {
+    devLog('CREATE-DIALOG', 'canConnectSSH 为 false，无法连接')
+    return
+  }
 
+  devLog('CREATE-DIALOG', '开始连接流程', { host: form.sshHost, username: form.sshUsername })
   sshPhase.value = 'connecting'
   sshErrorMessage.value = ''
   sshErrorDetail.value = ''
 
   try {
     // 调用 Store 的连接方法
+    devLog('CREATE-DIALOG', '调用 chatStore.connectSSHAndCreateCase')
     await chatStore.connectSSHAndCreateCase(
       form.title,
       form.description,
