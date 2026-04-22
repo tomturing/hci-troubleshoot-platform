@@ -1057,12 +1057,15 @@ export const useChatStore = defineStore('chat', () => {
       ? `[SSH-CREATE][${sshCreationFlowId.value}][${step}]`
       : `[SSH-CREATE][${step}]`
 
+    // 控制台日志：error 级别始终输出（便于生产环境排查）；info/warn 仅开发环境输出
     if (level === 'error') {
       console.error(prefix, message, sanitized ?? '')
-    } else if (level === 'warn') {
-      console.warn(prefix, message, sanitized ?? '')
-    } else {
-      console.info(prefix, message, sanitized ?? '')
+    } else if (isDev) {
+      if (level === 'warn') {
+        console.warn(prefix, message, sanitized ?? '')
+      } else {
+        console.info(prefix, message, sanitized ?? '')
+      }
     }
   }
 
@@ -1102,20 +1105,22 @@ export const useChatStore = defineStore('chat', () => {
     assistantType?: string,
     userMessage?: string,
   ): Promise<void> {
-    return new Promise(async (resolve, reject) => {
-      const flowId = `ssh-create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-      resetSshCreationLogs(flowId)
-      sshCreationPhase.value = 'connecting'
-      sshCreationError.value = null
-      acliAvailable.value = null
-      isLoading.value = true
-      appendSshCreationLog('info', 'start', '开始执行 SSH 集成创建工单流程', {
-        title,
-        assistantType: assistantType || selectedAssistant.value || 'default',
-        host: sshConfig.host,
-        port: sshConfig.port,
-        username: sshConfig.username,
-      })
+    // 使用非 async executor + IIFE 模式，避免 async executor anti-pattern
+    return new Promise((resolve, reject) => {
+      (async () => {
+        const flowId = `ssh-create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+        resetSshCreationLogs(flowId)
+        sshCreationPhase.value = 'connecting'
+        sshCreationError.value = null
+        acliAvailable.value = null
+        isLoading.value = true
+        appendSshCreationLog('info', 'start', '开始执行 SSH 集成创建工单流程', {
+          title,
+          assistantType: assistantType || selectedAssistant.value || 'default',
+          host: sshConfig.host,
+          port: sshConfig.port,
+          username: sshConfig.username,
+        })
 
       try {
         // 1. 创建工单
@@ -1436,6 +1441,7 @@ export const useChatStore = defineStore('chat', () => {
         appendSshCreationLog('error', 'case', '创建工单接口失败', { detail })
         reject(createFlowError('创建工单失败', detail))
       }
+      })().catch(reject)
     })
   }
 
