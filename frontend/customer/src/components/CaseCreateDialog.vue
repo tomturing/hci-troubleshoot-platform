@@ -51,10 +51,12 @@ const form = reactive({
   sshPassword: '',
 })
 
-// SSH 连接阶段（使用 acli_* 而非 acll_*）
-const sshPhase = ref<'idle' | 'connecting' | 'connected' | 'acli_check' | 'collecting' | 'done' | 'error' | 'acli_not_found'>('idle')
-const sshErrorMessage = ref('')
-const sshErrorDetail = ref('')
+// SSH 连接阶段直接复用 Store，避免本地状态与真实流程脱节
+const sshPhase = computed(() => chatStore.sshCreationPhase)
+const sshErrorMessage = computed(() => chatStore.sshCreationError?.message || '')
+const sshErrorDetail = computed(() => chatStore.sshCreationError?.detail || '')
+const sshFlowId = computed(() => chatStore.sshCreationFlowId)
+const sshLogs = computed(() => chatStore.sshCreationLogs)
 
 // 是否显示无 SSH 确认弹框
 const showNoSSHConfirm = ref(false)
@@ -108,6 +110,20 @@ const isConnecting = computed(() => {
   return sshPhase.value === 'connecting' || sshPhase.value === 'acli_check' || sshPhase.value === 'collecting'
 })
 
+function formatLogTime(timestamp: string): string {
+  return new Date(timestamp).toLocaleTimeString('zh-CN', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+function formatLogData(data?: Record<string, unknown>): string {
+  if (!data || Object.keys(data).length === 0) return ''
+  return JSON.stringify(data, null, 2)
+}
+
 // 校验表单（使用 ElMessage 显示错误）
 function validateForm(): boolean {
   if (!form.title.trim()) {
@@ -131,9 +147,6 @@ async function handleConnectAndCreate() {
   }
 
   devLog('CREATE-DIALOG', '开始连接流程', { host: form.sshHost, username: form.sshUsername })
-  sshPhase.value = 'connecting'
-  sshErrorMessage.value = ''
-  sshErrorDetail.value = ''
 
   try {
     // 调用 Store 的连接方法
@@ -162,17 +175,13 @@ async function handleConnectAndCreate() {
       }),
     )
 
-    sshPhase.value = 'done'
-
     // 终端面板自动打开
     chatStore.openTerminalSidebar()
 
     // 关闭弹框
     chatStore.showCaseTemplate = false
-  } catch (e: any) {
-    sshPhase.value = 'error'
-    sshErrorMessage.value = e.message || 'SSH 连接失败'
-    sshErrorDetail.value = e.detail || ''
+  } catch {
+    // 错误信息由 Store 统一维护，这里无需重复覆盖
   }
 }
 
@@ -199,7 +208,7 @@ function handleCancel() {
   chatStore.cancelCreateCase()
   // 如果正在连接，取消 SSH 流程
   if (sshPhase.value !== 'idle' && sshPhase.value !== 'done' && sshPhase.value !== 'error') {
-    chatStore.cancelSSHCreation?.()
+    chatStore.cancelSSHCreation()
   }
 }
 
@@ -230,10 +239,8 @@ watch(
   () => chatStore.showCaseTemplate,
   async (val) => {
     if (val) {
-      // 重置 SSH 连接状态
-      sshPhase.value = 'idle'
-      sshErrorMessage.value = ''
-      sshErrorDetail.value = ''
+      // 每次打开弹框都重置上一次的一站式 SSH 创建状态
+      chatStore.cancelSSHCreation()
       showNoSSHConfirm.value = false
 
       // 同步标题和描述
@@ -391,6 +398,28 @@ watch(
               <li>密码是否正确</li>
               <li>目标主机 SSH 服务是否运行</li>
             </ul>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="sshLogs.length > 0" class="ssh-debug-panel">
+        <div class="debug-header">
+          <span class="debug-title">排查日志</span>
+          <span v-if="sshFlowId" class="debug-flow-id">Flow: {{ sshFlowId }}</span>
+        </div>
+        <div class="debug-log-list">
+          <div
+            v-for="log in sshLogs"
+            :key="log.id"
+            class="debug-log-item"
+            :class="`debug-log-${log.level}`"
+          >
+            <div class="debug-log-main">
+              <span class="debug-log-time">{{ formatLogTime(log.timestamp) }}</span>
+              <span class="debug-log-step">{{ log.step }}</span>
+              <span class="debug-log-message">{{ log.message }}</span>
+            </div>
+            <pre v-if="log.data" class="debug-log-data">{{ formatLogData(log.data) }}</pre>
           </div>
         </div>
       </div>
@@ -579,6 +608,101 @@ watch(
   font-size: 12px;
   color: #606266;
   margin-top: 4px;
+}
+
+.ssh-debug-panel {
+  margin-top: 12px;
+  padding: 12px;
+  background: #111827;
+  border-radius: 6px;
+  border: 1px solid #1f2937;
+}
+
+.debug-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  gap: 8px;
+}
+
+.debug-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f3f4f6;
+}
+
+.debug-flow-id {
+  font-size: 11px;
+  color: #9ca3af;
+  font-family: Consolas, Monaco, monospace;
+}
+
+.debug-log-list {
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.debug-log-item {
+  padding: 8px;
+  border-radius: 4px;
+  background: #0f172a;
+  border-left: 3px solid #64748b;
+}
+
+.debug-log-info {
+  border-left-color: #409eff;
+}
+
+.debug-log-warn {
+  border-left-color: #e6a23c;
+}
+
+.debug-log-error {
+  border-left-color: #f56c6c;
+}
+
+.debug-log-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  line-height: 1.5;
+}
+
+.debug-log-time {
+  color: #9ca3af;
+  font-size: 11px;
+  font-family: Consolas, Monaco, monospace;
+}
+
+.debug-log-step {
+  color: #67c23a;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.debug-log-message {
+  color: #e5e7eb;
+  font-size: 12px;
+}
+
+.debug-log-data {
+  margin-top: 6px;
+  margin-bottom: 0;
+  padding: 8px;
+  background: #020617;
+  border-radius: 4px;
+  color: #cbd5e1;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: Consolas, Monaco, monospace;
 }
 
 .collect-items {
