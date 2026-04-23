@@ -13,10 +13,10 @@
  *
  * 所有 SSH 流程在弹框内完成，不跳出第二个弹框
  */
-import { ref, reactive, watch, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, watch, computed, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useChatStore } from '@/stores/chat'
-import { checkBridgeBeforeOpen, checkBridgeRunning } from '@/api/terminal'
+import { checkBridgeBeforeOpen } from '@/api/terminal'
 import {
   createBridgeSocket,
   buildConnectMessage,
@@ -96,7 +96,6 @@ function formatLogTime(ts: Date): string {
 let tempSocket: WebSocket | null = null
 let authTimer: ReturnType<typeof setTimeout> | null = null
 const AUTH_TIMEOUT = 15000
-const COLLECT_TIMEOUT = 60000
 
 function closeTempSocket() {
   if (authTimer) {
@@ -235,10 +234,28 @@ async function runCollectionAndUpsert() {
         }
         addLog('success', `${cmdInfo.label} 采集成功`)
       } else if (cmdInfo.name === 'alert') {
-        collectedData.alert = Array.isArray(parsed) ? parsed : []
+        // 兼容纯数组和 {entities:[...]} / {alerts:[...]} 包装格式
+        let alertList: unknown[] | null = null
+        if (Array.isArray(parsed)) {
+          alertList = parsed
+        } else if (parsed && typeof parsed === 'object') {
+          const obj = parsed as Record<string, unknown>
+          const candidate = obj['entities'] ?? obj['alerts'] ?? obj['data'] ?? null
+          if (Array.isArray(candidate)) alertList = candidate
+        }
+        collectedData.alert = alertList ?? []
         addLog('success', `${cmdInfo.label} 采集成功（${collectedData.alert.length} 条）`)
       } else if (cmdInfo.name === 'task') {
-        collectedData.task = Array.isArray(parsed) ? parsed : []
+        // 兼容纯数组和 {entities:[...]} / {tasks:[...]} 包装格式
+        let taskList: unknown[] | null = null
+        if (Array.isArray(parsed)) {
+          taskList = parsed
+        } else if (parsed && typeof parsed === 'object') {
+          const obj = parsed as Record<string, unknown>
+          const candidate = obj['entities'] ?? obj['tasks'] ?? obj['data'] ?? null
+          if (Array.isArray(candidate)) taskList = candidate
+        }
+        collectedData.task = taskList ?? []
         addLog('success', `${cmdInfo.label} 采集成功（${collectedData.task.length} 条）`)
       }
     } catch (e: any) {
@@ -254,19 +271,16 @@ async function runCollectionAndUpsert() {
     }
   }
 
-  // Upsert 到数据库
+  // Upsert 到数据库（即使列表为空也要提交，表示"已采集但无数据")
   if (createdCaseId.value) {
     addLog('info', '正在写入环境数据...')
     try {
       if (collectedData.cluster) {
         await environmentApi.upsert(createdCaseId.value, 'cluster', collectedData.cluster)
       }
-      if (collectedData.alert && collectedData.alert.length > 0) {
-        await environmentApi.upsert(createdCaseId.value, 'alert', { alerts: collectedData.alert })
-      }
-      if (collectedData.task && collectedData.task.length > 0) {
-        await environmentApi.upsert(createdCaseId.value, 'task', { tasks: collectedData.task })
-      }
+      // alert/task 即使为空数组也要 upsert，表示采集完成
+      await environmentApi.upsert(createdCaseId.value, 'alert', { alerts: collectedData.alert ?? [] })
+      await environmentApi.upsert(createdCaseId.value, 'task', { tasks: collectedData.task ?? [] })
       addLog('success', '环境数据已入库')
     } catch (e: any) {
       addLog('error', `环境数据入库失败: ${e.message}`)
@@ -277,6 +291,10 @@ async function runCollectionAndUpsert() {
 
 // ===== 主流程：SSH 连接 + 采集 + 创建工单 =====
 async function runSshAndCreateCase() {
+  // 表单验证
+  if (!validateCaseForm()) return
+  if (!validateSshForm()) return
+
   viewState.value = 'progress'
   currentStep.value = 0
   logs.value = []
@@ -583,6 +601,12 @@ watch(
       errorMessage.value = ''
       createdCaseId.value = ''
       currentStep.value = 0
+      // 根据 bridgeStatus 重置 viewState
+      if (props.bridgeStatus === 'not-running') {
+        viewState.value = 'bridge-guide'
+      } else {
+        viewState.value = 'form'
+      }
     }
   },
 )
@@ -719,8 +743,8 @@ onBeforeUnmount(() => {
       <!-- 3 步进度条 -->
       <el-steps :active="currentStep" finish-status="success" class="flow-steps">
         <el-step title="SSH 认证" />
-        <el-step title="采集环境" />
         <el-step title="创建工单" />
+        <el-step title="采集环境" />
       </el-steps>
 
       <!-- 当前阶段描述 -->

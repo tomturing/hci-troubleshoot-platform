@@ -100,6 +100,10 @@ async function handleConnect() {
     ElMessage.warning('请填写密码')
     return
   }
+  if (authType.value === 'key' && !sshForm.privateKey) {
+    ElMessage.warning('请填写私钥')
+    return
+  }
 
   viewState.value = 'progress'
   errorMessage.value = ''
