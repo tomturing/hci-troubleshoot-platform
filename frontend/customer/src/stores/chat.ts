@@ -700,7 +700,71 @@ export const useChatStore = defineStore('chat', () => {
     showBridgeDownload.value = false
   }
 
-  // === 全局 SSH 连接方法 ===
+  // === 统一 SSH 连接弹框状态 ===
+  /** 弹框是否可见 */
+  const sshFlowDialogVisible = ref(false)
+  /** 关联的工单 ID（terminal-only 模式下可能为 null） */
+  const sshFlowDialogCaseId = ref<string | null>(null)
+  /** 弹框模式：create-case 或 terminal-only */
+  const sshFlowDialogMode = ref<'create-case' | 'terminal-only'>('terminal-only')
+  /** 创建工单时选择的助手类型（供弹框用于 completeCaseCreationFlow） */
+  const sshFlowDialogAssistantType = ref<string | undefined>(undefined)
+
+  /** 打开统一 SSH 弹框 */
+  function openSshFlowDialog(
+    caseId: string | null,
+    mode: 'create-case' | 'terminal-only',
+    assistantType?: string,
+  ) {
+    console.log('[SSH-FLOW-DIALOG] 打开弹框', { caseId, mode, assistantType })
+    sshFlowDialogCaseId.value = caseId
+    sshFlowDialogMode.value = mode
+    sshFlowDialogAssistantType.value = assistantType
+    sshFlowDialogVisible.value = true
+  }
+
+  /** 关闭统一 SSH 弹框 */
+  function closeSshFlowDialog() {
+    sshFlowDialogVisible.value = false
+  }
+
+  /**
+   * 创建工单并打开 SSH 连接弹框（CaseCreateDialog 调用）
+   * 执行步骤：创建工单 → 确认工单 → 打开 SshConnectDialog（携带 caseId）
+   */
+  async function createCaseAndOpenSsh(params: {
+    title: string
+    description: string
+    assistantType?: string
+  }) {
+    console.log('[createCaseAndOpenSsh] 创建工单', params)
+    showCaseTemplate.value = false
+
+    try {
+      const res = await caseApi.create({
+        client_id: clientId,
+        title: params.title,
+        description: params.description,
+        assistant_type: params.assistantType || selectedAssistant.value || undefined,
+      })
+      currentCase.value = res.data
+      const caseId = res.data.case_id
+      console.log('[createCaseAndOpenSsh] 工单创建成功', { caseId })
+
+      // 确认工单
+      const confirmed = await caseApi.confirm(caseId)
+      currentCase.value = confirmed.data
+      console.log('[createCaseAndOpenSsh] 工单确认成功', { caseId, status: confirmed.data.status })
+
+      openSshFlowDialog(caseId, 'create-case', params.assistantType)
+    } catch (e: any) {
+      const detail = e.response?.data?.detail || e.message
+      console.error('[createCaseAndOpenSsh] 创建工单失败', detail)
+      throw e
+    }
+  }
+
+
 
   /** 认证超时定时器 */
   let sshAuthTimer: number | null = null
@@ -1447,65 +1511,117 @@ export const useChatStore = defineStore('chat', () => {
 
   /** 提交采集数据到 Environment API */
   async function submitCollectedData(caseId: string, buffer: Record<string, string>) {
+    console.log('[submitCollectedData] 开始提交采集数据', {
+      caseId,
+      hasCluster: Boolean(buffer.cluster),
+      hasAlert: Boolean(buffer.alert),
+      hasTask: Boolean(buffer.task),
+      clusterOutputLen: buffer.cluster?.length ?? 0,
+      alertOutputLen: buffer.alert?.length ?? 0,
+      taskOutputLen: buffer.task?.length ?? 0,
+    })
+
     // 解析并提交集群信息
     if (buffer.cluster) {
       try {
-        const clusterData = parseClusterOutput(buffer.cluster)
-        await environmentApi.create({
-          case_id: caseId,
-          env_type: 'cluster',
-          env_data: clusterData,
-        })
+        const cleaned = stripAnsi(buffer.cluster)
+        console.log('[submitCollectedData][cluster] 原始输出片段:', cleaned.substring(0, 300))
+        const clusterData = parseClusterOutput(cleaned)
+        console.log('[submitCollectedData][cluster] 解析结果:', JSON.stringify(clusterData).substring(0, 200))
+        await environmentApi.upsert(caseId, 'cluster', clusterData)
+        console.log('[submitCollectedData][cluster] upsert 成功')
       } catch (e) {
-        console.warn('[submitCollectedData] cluster 提交失败:', e)
+        console.error('[submitCollectedData][cluster] 提交失败:', e)
       }
+    } else {
+      console.warn('[submitCollectedData][cluster] buffer 为空，跳过')
     }
 
     // 解析并提交告警
     if (buffer.alert) {
       try {
-        const alertData = parseJsonOutput(buffer.alert)
-        if (alertData && Array.isArray(alertData)) {
-          await environmentApi.create({
-            case_id: caseId,
-            env_type: 'alert',
-            env_data: { alerts: alertData },
-          })
+        const cleaned = stripAnsi(buffer.alert)
+        console.log('[submitCollectedData][alert] 原始输出片段:', cleaned.substring(0, 300))
+        const parsed = parseJsonOutput(cleaned)
+        console.log('[submitCollectedData][alert] 解析类型:', typeof parsed, Array.isArray(parsed) ? 'array' : '')
+
+        // 兼容纯数组和 {entities:[...]} / {alerts:[...]} 包装格式
+        let alertList: unknown[] | null = null
+        if (Array.isArray(parsed)) {
+          alertList = parsed
+        } else if (parsed && typeof parsed === 'object') {
+          const obj = parsed as Record<string, unknown>
+          const candidate = obj['entities'] ?? obj['alerts'] ?? obj['data'] ?? null
+          if (Array.isArray(candidate)) alertList = candidate
+        }
+
+        if (alertList !== null) {
+          await environmentApi.upsert(caseId, 'alert', { alerts: alertList })
+          console.log('[submitCollectedData][alert] upsert 成功，条数:', alertList.length)
+        } else {
+          // 即使无法解析为列表，也以原始文本提交，确保数据不丢失
+          console.warn('[submitCollectedData][alert] 无法解析为列表，以原始输出提交')
+          await environmentApi.upsert(caseId, 'alert', { raw_output: cleaned, parse_error: '无法提取 alert 列表' })
         }
       } catch (e) {
-        console.warn('[submitCollectedData] alert 提交失败:', e)
+        console.error('[submitCollectedData][alert] 提交失败:', e)
       }
+    } else {
+      console.warn('[submitCollectedData][alert] buffer 为空，跳过')
     }
 
     // 解析并提交任务
     if (buffer.task) {
       try {
-        const taskData = parseJsonOutput(buffer.task)
-        if (taskData && Array.isArray(taskData)) {
-          await environmentApi.create({
-            case_id: caseId,
-            env_type: 'task',
-            env_data: { tasks: taskData },
-          })
+        const cleaned = stripAnsi(buffer.task)
+        console.log('[submitCollectedData][task] 原始输出片段:', cleaned.substring(0, 300))
+        const parsed = parseJsonOutput(cleaned)
+        console.log('[submitCollectedData][task] 解析类型:', typeof parsed, Array.isArray(parsed) ? 'array' : '')
+
+        // 兼容纯数组和 {entities:[...]} / {tasks:[...]} 包装格式
+        let taskList: unknown[] | null = null
+        if (Array.isArray(parsed)) {
+          taskList = parsed
+        } else if (parsed && typeof parsed === 'object') {
+          const obj = parsed as Record<string, unknown>
+          const candidate = obj['entities'] ?? obj['tasks'] ?? obj['data'] ?? null
+          if (Array.isArray(candidate)) taskList = candidate
+        }
+
+        if (taskList !== null) {
+          await environmentApi.upsert(caseId, 'task', { tasks: taskList })
+          console.log('[submitCollectedData][task] upsert 成功，条数:', taskList.length)
+        } else {
+          console.warn('[submitCollectedData][task] 无法解析为列表，以原始输出 upsert')
+          await environmentApi.upsert(caseId, 'task', { raw_output: cleaned, parse_error: '无法提取 task 列表' })
         }
       } catch (e) {
-        console.warn('[submitCollectedData] task 提交失败:', e)
+        console.error('[submitCollectedData][task] 提交失败:', e)
       }
+    } else {
+      console.warn('[submitCollectedData][task] buffer 为空，跳过')
     }
+
+    console.log('[submitCollectedData] 所有数据提交完成', { caseId })
   }
 
   /** 解析 acli platform info get 输出 */
   function parseClusterOutput(output: string): Record<string, unknown> {
-    const jsonData = parseJsonOutput(output)
+    // 先剥离 ANSI 控制码
+    const cleaned = stripAnsi(output)
+    const jsonData = parseJsonOutput(cleaned)
     if (jsonData && typeof jsonData === 'object' && !Array.isArray(jsonData)) {
       return jsonData as Record<string, unknown>
     }
 
+    // 回退：按 key: value 行解析
     const result: Record<string, unknown> = {}
-    const lines = output.split('\n')
+    const lines = cleaned.split('\n')
     for (const line of lines) {
       if (line.includes(':')) {
-        const [key, value] = line.split(':').map(s => s.trim())
+        const colonIdx = line.indexOf(':')
+        const key = line.slice(0, colonIdx).trim()
+        const value = line.slice(colonIdx + 1).trim()
         if (key && value) {
           result[key.toLowerCase().replace(/\s+/g, '_')] = value
         }
@@ -1514,17 +1630,49 @@ export const useChatStore = defineStore('chat', () => {
     return result
   }
 
+  /**
+   * 剥离 ANSI/VT100 转义码（终端颜色码等），保留纯文本
+   * 避免 SSH 终端输出带控制序列时干扰 JSON 解析
+   */
+  function stripAnsi(output: string): string {
+    // 匹配 ESC 序列: ESC [ ... m / ESC ] ... ST / 裸 ESC 等
+    // eslint-disable-next-line no-control-regex
+    return output.replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))/g, '')
+  }
+
   /** 解析 JSON 输出（acli --formatter json）*/
   function parseJsonOutput(output: string): unknown {
-    // 尝试从输出中提取 JSON 部分
-    const jsonMatch = output.match(/\{[\s\S]*\}/) || output.match(/\[[\s\S]*\]/)
-    if (jsonMatch) {
+    // 先剥离 ANSI 转义码，再提取 JSON
+    const cleaned = stripAnsi(output)
+
+    // 优先尝试直接解析（整个输出就是 JSON）
+    const trimmed = cleaned.trim()
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
       try {
-        return JSON.parse(jsonMatch[0])
-      } catch {
-        return null
+        return JSON.parse(trimmed)
+      } catch { /* 继续尝试提取 */ }
+    }
+
+    // 贪婪提取：找最后一个 } 或 ] 以获得完整 JSON
+    const lastBrace = cleaned.lastIndexOf('}')
+    const lastBracket = cleaned.lastIndexOf(']')
+
+    if (lastBrace > lastBracket) {
+      const firstBrace = cleaned.indexOf('{')
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        try {
+          return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1))
+        } catch { /* fall through */ }
+      }
+    } else if (lastBracket !== -1) {
+      const firstBracket = cleaned.indexOf('[')
+      if (firstBracket !== -1 && lastBracket > firstBracket) {
+        try {
+          return JSON.parse(cleaned.slice(firstBracket, lastBracket + 1))
+        } catch { /* fall through */ }
       }
     }
+
     return null
   }
 
@@ -1625,6 +1773,14 @@ export const useChatStore = defineStore('chat', () => {
     bridgeStatus,
     showBridgeDownload,
     closeBridgeDownload,
+    // 统一 SSH 连接弹框
+    sshFlowDialogVisible,
+    sshFlowDialogCaseId,
+    sshFlowDialogMode,
+    sshFlowDialogAssistantType,
+    openSshFlowDialog,
+    closeSshFlowDialog,
+    createCaseAndOpenSsh,
     // 全局 SSH 连接状态和方法
     sshWebSocket,
     sshConnectionState,
@@ -1650,6 +1806,8 @@ export const useChatStore = defineStore('chat', () => {
     collectEnvironmentData,
     refreshEnvironmentData,
     submitEnvironmentData,
+    submitCollectedData,
+    completeCaseCreationFlow,
     // SSH 连接状态（创建工单时）
     sshCreationPhase,
     sshCreationError,

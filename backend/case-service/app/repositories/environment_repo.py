@@ -41,6 +41,40 @@ class EnvironmentRepository:
         )
         return result.scalar_one_or_none()
 
+    async def upsert_by_case_and_type(
+        self,
+        case_id: str,
+        env_type: str,
+        env_data: dict,
+        collected_at=None,
+    ) -> tuple["Environment", bool]:
+        """
+        upsert 环境数据（有则更新，无则创建）
+        返回 (Environment, created: bool)
+        """
+        existing = await self.get_by_case_and_type(case_id, env_type)
+        if existing:
+            # 更新已有记录
+            existing.env_data = env_data
+            if collected_at is not None:
+                existing.collected_at = collected_at
+            await self.session.flush()
+            await self.session.refresh(existing)
+            return existing, False
+        else:
+            # 创建新记录
+            environment = Environment(
+                case_id=case_id,
+                env_type=env_type,
+                env_data=env_data,
+            )
+            if collected_at is not None:
+                environment.collected_at = collected_at
+            self.session.add(environment)
+            await self.session.flush()
+            await self.session.refresh(environment)
+            return environment, True
+
     async def delete_by_case_id(self, case_id: str) -> int:
         """删除工单所有环境数据（级联删除已由外键约束保证，此方法仅用于手动清理）"""
         result = await self.session.execute(

@@ -51,6 +51,16 @@ async def create_environment(request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@router.put("/case/{case_id}/type/{env_type}")
+async def upsert_environment(case_id: str, env_type: str, request: Request):
+    """upsert 环境数据（幂等：有则更新，无则创建）"""
+    payload = await request.json()
+    response = await proxy_request("PUT", f"/case/{case_id}/type/{env_type}", payload)
+    if response.status_code == 400:
+        raise HTTPException(status_code=400, detail=response.json().get("detail", "Invalid env_type"))
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @router.get("/case/{case_id}")
 async def get_environments_by_case(case_id: str):
     """获取工单所有环境数据"""

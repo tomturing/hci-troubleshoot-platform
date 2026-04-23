@@ -14,15 +14,7 @@ const terminalContainer = ref<HTMLElement | null>(null)
 const localInput = ref('')
 const manualDisconnect = ref(false)
 
-const sshForm = ref({
-  host: '',
-  port: '22',
-  username: '',
-  password: '',
-  authType: 'password' as 'password' | 'key',
-  privateKey: '',
-  passphrase: '',
-})
+
 
 const fullOutputText = ref('')
 const currentCommandOutput = ref('')
@@ -185,52 +177,7 @@ function latestOutputText(): string {
   return stripAnsiForText(fullOutputText.value)
 }
 
-function validateForm(): string | null {
-  if (!sshForm.value.host.trim()) return '请填写主机地址'
-  if (!sshForm.value.username.trim()) return '请填写用户名'
-  const port = Number(sshForm.value.port)
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return '端口范围应为 1-65535'
-  if (sshForm.value.authType === 'password' && !sshForm.value.password) return '请填写密码'
-  if (sshForm.value.authType === 'key' && !sshForm.value.privateKey.trim()) return '请填写私钥'
-  return null
-}
 
-// 使用全局 SSH 连接
-async function connectSsh() {
-  const err = validateForm()
-  if (err) {
-    // 直接显示错误，不再用 errorMessage ref
-    return
-  }
-
-  manualDisconnect.value = false
-  fullOutputText.value = ''
-  currentCommandOutput.value = ''
-  lastCommandOutput.value = ''
-  hasExecutedCommand.value = false
-  if (xterm) xterm.clear()
-
-  writeInfoLine(`正在连接 ${sshForm.value.username}@${sshForm.value.host}:${sshForm.value.port}...`)
-
-  try {
-    await chatStore.connectSSH({
-      host: sshForm.value.host.trim(),
-      port: Number(sshForm.value.port) || 22,
-      username: sshForm.value.username.trim(),
-      authType: sshForm.value.authType,
-      password: sshForm.value.authType === 'password' ? sshForm.value.password : undefined,
-      privateKey: sshForm.value.authType === 'key' ? sshForm.value.privateKey : undefined,
-      passphrase: sshForm.value.authType === 'key' && sshForm.value.passphrase.trim()
-        ? sshForm.value.passphrase.trim()
-        : undefined,
-      caseId: caseId.value,
-    })
-
-    writeInfoLine(`SSH 已登录到 ${sshForm.value.host}`)
-  } catch (e: any) {
-    writeInfoLine(`错误: ${e.message}`)
-  }
-}
 
 function disconnectSsh() {
   manualDisconnect.value = true
@@ -330,50 +277,19 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="!isConnected" class="ssh-login-form">
-      <el-form :model="sshForm" label-width="70px" size="small">
-        <el-form-item label="主机">
-          <el-input v-model="sshForm.host" placeholder="192.168.1.100" />
-        </el-form-item>
-        <el-form-item label="端口">
-          <el-input v-model="sshForm.port" placeholder="22" style="width: 100px" />
-        </el-form-item>
-        <el-form-item label="用户名">
-          <el-input v-model="sshForm.username" placeholder="root" />
-        </el-form-item>
-        <el-form-item label="认证方式">
-          <el-radio-group v-model="sshForm.authType" size="small">
-            <el-radio-button label="password">密码</el-radio-button>
-            <el-radio-button label="key">密钥</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item v-if="sshForm.authType === 'password'" label="密码">
-          <el-input v-model="sshForm.password" type="password" placeholder="请输入密码" show-password />
-        </el-form-item>
-        <template v-else>
-          <el-form-item label="私钥">
-            <el-input
-              v-model="sshForm.privateKey"
-              type="textarea"
-              :rows="4"
-              placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;..."
-            />
-          </el-form-item>
-          <el-form-item label="密钥密码">
-            <el-input v-model="sshForm.passphrase" type="password" placeholder="可选" show-password />
-          </el-form-item>
-        </template>
-        <el-form-item>
-          <el-button type="primary" size="small" @click="connectSsh" :loading="isConnecting">连接</el-button>
-          <el-button size="small" @click="() => Object.assign(sshForm, { host: '', port: '22', username: '', password: '', privateKey: '', passphrase: '' })">重置</el-button>
-        </el-form-item>
-        <el-alert
-          v-if="errorMessage"
-          type="error"
-          :title="errorMessage"
-          :closable="true"
-        />
-      </el-form>
+    <div v-if="!isConnected" class="ssh-connect-area">
+      <!-- 未连接时显示连接按钮，SSH 表单已统一移至 SshFlowPanel -->
+      <el-button
+        type="primary"
+        size="large"
+        :loading="isConnecting"
+        class="btn-connect-ssh"
+        @click="chatStore.checkAndOpenTerminal()"
+      >
+        {{ isConnecting ? '正在连接...' : '🖥 连接 SSH' }}
+      </el-button>
+      <p v-if="isError" class="connect-error">{{ errorMessage }}</p>
+      <p class="connect-hint">点击后根据当前状态智能选择流程</p>
     </div>
 
     <div v-else class="terminal-stage">
@@ -405,7 +321,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="terminal-footer">
-      <span v-if="!isConnected">请先填写 SSH 信息并连接</span>
+      <span v-if="!isConnected">请先点击『连接 SSH』按鈕</span>
       <span v-else>
         Enter 执行 · Shift+Enter 换行 ·
         <el-link type="primary" :underline="false" @click="disconnectSsh">断开连接</el-link>
@@ -457,37 +373,33 @@ onBeforeUnmount(() => {
   color: #9cdcfe;
 }
 
-.ssh-login-form {
-  padding: 16px;
-  background: #252526;
-  border-bottom: 1px solid #333;
+.ssh-connect-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex: 1;
+  padding: 24px;
 }
 
-.ssh-login-form :deep(.el-form-item) {
-  margin-bottom: 12px;
+.btn-connect-ssh {
+  min-width: 160px;
+  font-size: 15px;
 }
 
-.ssh-login-form :deep(.el-form-item__label) {
-  color: #9cdcfe;
-  font-size: 13px;
+.connect-error {
+  color: #f56c6c;
+  font-size: 12px;
+  margin: 0;
 }
 
-.ssh-login-form :deep(.el-input__inner) {
-  background: #1e1e1e;
-  border-color: #444;
-  color: #d4d4d4;
+.connect-hint {
+  color: #909399;
+  font-size: 12px;
+  margin: 0;
 }
 
-.ssh-login-form :deep(.el-input__inner:focus) {
-  border-color: #409eff;
-}
-
-.ssh-login-form :deep(.el-textarea__inner) {
-  background: #1e1e1e;
-  border-color: #444;
-  color: #d4d4d4;
-  font-family: Consolas, Monaco, monospace;
-}
 
 .terminal-stage {
   flex: 1;
