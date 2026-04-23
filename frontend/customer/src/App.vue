@@ -83,7 +83,7 @@ function handleDownloadBridge() {
     </main>
 
     <!-- SSH 连接弹框（create-case / terminal-only 统一入口） -->
-    <SshConnectDialog />
+    <SshConnectDialog :bridge-status="chatStore.sshConnectDialogBridgeStatus" />
 
     <!-- Bridge 未运行时的下载提示弹窗 -->
     <el-dialog

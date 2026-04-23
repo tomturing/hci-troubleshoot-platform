@@ -62,6 +62,31 @@ export function checkBridgeRunning(): Promise<boolean> {
 }
 
 /**
+ * 前置 Bridge 检测（弹框弹出前调用）
+ * 3s 超时，返回 'running' | 'not-running' 字符串状态
+ * 供 CaseCreateDialog 和 SshConnectDialog 共用
+ */
+export async function checkBridgeBeforeOpen(timeoutMs = 3000): Promise<'running' | 'not-running'> {
+  return new Promise((resolve) => {
+    const probe = new WebSocket(BRIDGE_URL)
+    const timer = setTimeout(() => {
+      probe.close()
+      resolve('not-running')
+    }, timeoutMs)
+
+    probe.onopen = () => {
+      clearTimeout(timer)
+      probe.close()
+      resolve('running')
+    }
+    probe.onerror = () => {
+      clearTimeout(timer)
+      resolve('not-running')
+    }
+  })
+}
+
+/**
  * 创建 Bridge WebSocket 连接
  */
 export function createBridgeSocket(): WebSocket {

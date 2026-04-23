@@ -8,7 +8,7 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
-import { checkBridgeRunning, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
+import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
 
 // 开发环境专用日志（生产环境自动禁用）
 const isDev = import.meta.env.DEV
@@ -101,6 +101,8 @@ export const useChatStore = defineStore('chat', () => {
   const showCaseTemplate = ref(false)
   const caseTemplate = ref<CaseTemplate>({ title: '', description: '' })
   const pendingUserMessage = ref('')
+  const caseCreateDialogBridgeStatus = ref<'running' | 'not-running' | 'checking'>('checking')
+  const sshConnectDialogBridgeStatus = ref<'running' | 'not-running' | 'checking'>('checking')
 
   // 历史工单查看
   const showHistoryDrawer = ref(false)
@@ -289,6 +291,9 @@ export const useChatStore = defineStore('chat', () => {
       pendingUserMessage.value = content
       const title = content.length > 50 ? content.substring(0, 50) + '...' : content
       caseTemplate.value = { title, description: content }
+      // T-FE-5: 无工单时先进行 Bridge 前置检测
+      const bridgeStatus = await checkBridgeBeforeOpen()
+      caseCreateDialogBridgeStatus.value = bridgeStatus
       showCaseTemplate.value = true
       return
     }
@@ -1713,6 +1718,8 @@ export const useChatStore = defineStore('chat', () => {
     showCaseTemplate,
     caseTemplate,
     pendingUserMessage,
+    caseCreateDialogBridgeStatus,
+    sshConnectDialogBridgeStatus,
     confirmCreateCase,
     cancelCreateCase,
     showHistoryDrawer,
