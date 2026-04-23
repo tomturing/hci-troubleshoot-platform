@@ -1,10 +1,18 @@
 <script setup lang="ts">
+/**
+ * TerminalPanel.vue
+ * 三态按钮实现：
+ * - 状态A：无工单 + 无SSH → "连接SSH并创建工单" → 打开 CaseCreateDialog
+ * - 状态B：有工单 + 无SSH → "连接SSH" → 打开 SshConnectDialog
+ * - 状态C：已连接 → 显示 xterm 终端
+ */
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 
 import { useChatStore } from '@/stores/chat'
+import { checkBridgeBeforeOpen } from '@/api/terminal'
 
 const chatStore = useChatStore()
 
@@ -13,6 +21,40 @@ const terminalContainer = ref<HTMLElement | null>(null)
 
 const localInput = ref('')
 const manualDisconnect = ref(false)
+
+// ===== 三态判断 =====
+const terminalState = computed(() => {
+  if (chatStore.sshConnectionState === 'connected') return 'C'  // 已连接
+  if (chatStore.currentCase) return 'B'                         // 有工单，未连接
+  return 'A'                                                      // 无工单，无连接
+})
+
+// ===== 前置检测 loading =====
+const checkingBridge = ref(false)
+
+async function handleConnectAndCreate() {
+  // 状态A：打开 CaseCreateDialog
+  checkingBridge.value = true
+  try {
+    const status = await checkBridgeBeforeOpen()
+    chatStore.caseCreateDialogBridgeStatus = status
+    chatStore.showCaseTemplate = true
+  } finally {
+    checkingBridge.value = false
+  }
+}
+
+async function handleOpenSshDialog() {
+  // 状态B：打开 SshConnectDialog
+  checkingBridge.value = true
+  try {
+    const status = await checkBridgeBeforeOpen()
+    chatStore.sshConnectDialogBridgeStatus = status
+    chatStore.openSshFlowDialog(chatStore.currentCase?.case_id || null, 'terminal-only')
+  } finally {
+    checkingBridge.value = false
+  }
+}
 
 
 
@@ -277,22 +319,38 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="!isConnected" class="ssh-connect-area">
-      <!-- 未连接时显示连接按钮，点击打开 SSH 连接弹框（terminal-only 模式） -->
+    <!-- ===== 三态连接区域 ===== -->
+    <!-- 状态A：无工单 + 无SSH -->
+    <div v-if="terminalState === 'A'" class="ssh-connect-area">
       <el-button
         type="primary"
         size="large"
-        :loading="isConnecting"
+        :loading="checkingBridge"
         class="btn-connect-ssh"
-        @click="chatStore.openSshFlowDialog(chatStore.currentCase?.case_id || null, 'terminal-only')"
+        @click="handleConnectAndCreate"
       >
-        {{ isConnecting ? '正在连接...' : '🖥 连接 SSH' }}
+        {{ checkingBridge ? '正在检测 Bridge...' : '🖥 连接 SSH 并创建工单' }}
       </el-button>
-      <p v-if="isError" class="connect-error">{{ errorMessage }}</p>
-      <p class="connect-hint">点击后打开 SSH 连接弹框</p>
+      <p class="connect-hint">点击后检测 Bridge 并打开工单创建弹框</p>
     </div>
 
-    <div v-else class="terminal-stage">
+    <!-- 状态B：有工单 + 无SSH -->
+    <div v-if="terminalState === 'B'" class="ssh-connect-area">
+      <el-button
+        type="primary"
+        size="large"
+        :loading="checkingBridge || isConnecting"
+        class="btn-connect-ssh"
+        @click="handleOpenSshDialog"
+      >
+        {{ checkingBridge ? '正在检测 Bridge...' : (isConnecting ? '正在连接...' : '🖥 连接 SSH') }}
+      </el-button>
+      <p v-if="isError" class="connect-error">{{ errorMessage }}</p>
+      <p class="connect-hint">点击后检测 Bridge 并打开 SSH 连接弹框</p>
+    </div>
+
+    <!-- 状态C：已连接 → 显示终端 -->
+    <div v-if="terminalState === 'C'" class="terminal-stage">
       <div ref="terminalContainer" class="terminal-canvas" />
     </div>
 
