@@ -9,9 +9,9 @@ from shared.database.postgres import DatabaseManager
 from shared.models.schemas import (
     EnvironmentContextResponse,
     EnvironmentCreate,
-    EnvironmentUpsert,
     EnvironmentListResponse,
     EnvironmentResponse,
+    EnvironmentUpsert,
     EnvType,
 )
 
