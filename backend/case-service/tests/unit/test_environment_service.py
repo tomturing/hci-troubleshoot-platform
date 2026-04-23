@@ -20,6 +20,10 @@ def mock_repository():
     repo.create = AsyncMock()
     repo.get_by_case_id = AsyncMock()
     repo.get_by_case_and_type = AsyncMock()
+    repo.upsert_by_case_and_type = AsyncMock()
+    repo.session = MagicMock()
+    repo.session.flush = AsyncMock()
+    repo.session.refresh = AsyncMock()
     return repo
 
 
@@ -166,3 +170,51 @@ class TestBuildContextInfo:
         assert result.env_info == {}
         assert result.alert_logs == []
         assert result.task_logs == []
+
+
+class TestUpsertEnvironment:
+    """upsert_environment 测试组"""
+
+    async def test_upsert_create_new_record(self, service, mock_repository, mock_environment):
+        """测试 upsert 创建新记录（不存在时）"""
+        mock_repository.get_by_case_and_type.return_value = None  # 不存在
+        mock_repository.upsert_by_case_and_type.return_value = (mock_environment, True)  # created=True
+
+        result = await service.upsert_environment(
+            case_id="Q2026042000001",
+            env_type=EnvType.CLUSTER,
+            env_data={"hci_version": "6.8.1"},
+            collected_at=datetime.now(UTC),
+        )
+
+        assert result.case_id == "Q2026042000001"
+        mock_repository.upsert_by_case_and_type.assert_called_once()
+
+    async def test_upsert_update_existing_record(self, service, mock_repository, mock_environment):
+        """测试 upsert 更新已有记录（存在时）"""
+        mock_repository.upsert_by_case_and_type.return_value = (mock_environment, False)  # created=False
+
+        result = await service.upsert_environment(
+            case_id="Q2026042000001",
+            env_type=EnvType.CLUSTER,
+            env_data={"hci_version": "6.8.2"},  # 更新版本
+            collected_at=datetime.now(UTC),
+        )
+
+        assert result.case_id == "Q2026042000001"
+        mock_repository.upsert_by_case_and_type.assert_called_once()
+
+    async def test_upsert_without_collected_at(self, service, mock_repository, mock_environment):
+        """测试 upsert 不传 collected_at（repo 层默认当前时间）"""
+        mock_repository.upsert_by_case_and_type.return_value = (mock_environment, False)
+
+        result = await service.upsert_environment(
+            case_id="Q2026042000001",
+            env_type=EnvType.CLUSTER,
+            env_data={"hci_version": "6.8.1"},
+            collected_at=None,  # 不传，repo 层应使用当前时间
+        )
+
+        mock_repository.upsert_by_case_and_type.assert_called_once()
+        call_args = mock_repository.upsert_by_case_and_type.call_args
+        assert call_args.kwargs["collected_at"] is None

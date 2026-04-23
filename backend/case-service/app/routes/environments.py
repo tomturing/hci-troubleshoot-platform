@@ -11,6 +11,7 @@ from shared.models.schemas import (
     EnvironmentCreate,
     EnvironmentListResponse,
     EnvironmentResponse,
+    EnvironmentUpsert,
     EnvType,
 )
 
@@ -45,6 +46,30 @@ async def create_environment(
 ):
     """创建环境数据（alert/task/environment 采集）"""
     return await service.create_environment(env_create)
+
+
+@router.put("/case/{case_id}/type/{env_type}", response_model=EnvironmentResponse)
+async def upsert_environment(
+    case_id: str,
+    env_type: str,
+    env_upsert: EnvironmentUpsert,  # 使用专用 schema（不包含 case_id/env_type）
+    service: EnvironmentService = Depends(get_environment_service),
+):
+    """upsert 环境数据（幂等：有则更新，无则创建）—— REST 标准幂等 PUT
+
+    case_id 和 env_type 由 path 参数指定，body 仅包含 env_data 和可选的 collected_at。
+    """
+    try:
+        env_type_enum = EnvType(env_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid env_type: {env_type}")
+
+    return await service.upsert_environment(
+        case_id=case_id,
+        env_type=env_type_enum,
+        env_data=env_upsert.env_data,
+        collected_at=env_upsert.collected_at,
+    )
 
 
 @router.get("/case/{case_id}", response_model=EnvironmentListResponse)

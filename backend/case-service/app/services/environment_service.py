@@ -53,6 +53,35 @@ class EnvironmentService:
 
         return EnvironmentResponse.model_validate(created_env)
 
+    async def upsert_environment(self, case_id: str, env_type: EnvType, env_data: dict, collected_at=None) -> EnvironmentResponse:
+        """幂等 upsert 环境数据（有则更新，无则创建）"""
+        trace_id = get_current_trace_id()
+
+        env, created = await self.repository.upsert_by_case_and_type(
+            case_id=case_id,
+            env_type=env_type.value,
+            env_data=env_data,
+            collected_at=collected_at,
+        )
+
+        # 如果是新建，设置 trace_id
+        if created:
+            env.trace_id = trace_id
+            await self.repository.session.flush()
+            await self.repository.session.refresh(env)
+
+        action = "created" if created else "updated"
+        logger.info(
+            event=f"environment_{action}",
+            message=f"Upsert environment data for case {case_id} ({env_type.value}): {action}",
+            case_id=case_id,
+            env_type=env_type.value,
+            data_size=len(str(env_data)),
+            created=created,
+        )
+
+        return EnvironmentResponse.model_validate(env)
+
     async def get_environments_by_case(self, case_id: str) -> EnvironmentListResponse:
         """获取工单所有环境数据"""
         envs = await self.repository.get_by_case_id(case_id)

@@ -3,6 +3,7 @@ import { onMounted } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
+import SshConnectDialog from '@/components/SshConnectDialog.vue'
 
 const chatStore = useChatStore()
 const clientId = getClientId()
@@ -80,6 +81,9 @@ function handleDownloadBridge() {
     <main class="app-main">
       <ChatWindow />
     </main>
+
+    <!-- SSH 连接弹框（create-case / terminal-only 统一入口） -->
+    <SshConnectDialog />
 
     <!-- Bridge 未运行时的下载提示弹窗 -->
     <el-dialog

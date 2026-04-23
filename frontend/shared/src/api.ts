@@ -219,6 +219,19 @@ export function createEnvironmentApi(client: AxiosInstance) {
       return client.get<EnvironmentResponse>(`/environments/case/${caseId}/type/${envType}`)
     },
 
+    /**
+     * upsert 环境数据（幂等：有则更新，无则创建）
+     * 业界最佳实践：REST PUT 幂等语义，多次调用结果相同
+     */
+    upsert(caseId: string, envType: EnvType, envData: Record<string, unknown>, collectedAt?: string) {
+      return client.put<EnvironmentResponse>(`/environments/case/${caseId}/type/${envType}`, {
+        case_id: caseId,
+        env_type: envType,
+        env_data: envData,
+        ...(collectedAt ? { collected_at: collectedAt } : {}),
+      })
+    },
+
     /** 获取 S0 阶段 Prompt 构建所需的环境上下文 */
     getContext(caseId: string) {
       return client.get<EnvironmentContextResponse>(`/environments/case/${caseId}/context`)
