@@ -192,7 +192,7 @@ function formatDate(d: string): string {
     </el-dialog>
 
     <!-- SSH 集成创建工单对话框 -->
-    <CaseCreateDialog />
+    <CaseCreateDialog :bridge-status="chatStore.caseCreateDialogBridgeStatus" />
 
     <!-- 消息区域 -->
     <!-- AI 助手选择器（v2.2：对话界面顶部，始终可见）-->
