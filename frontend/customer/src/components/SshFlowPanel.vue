@@ -10,7 +10,7 @@
  * 内部流程：
  *   checkBridge → SSH 表单 → connecting → acli-check → collecting → done
  */
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { getClientId } from '@/utils/clientId'
 import { createApiClient, createEnvironmentApi } from '@hci/shared'
 import {
@@ -80,11 +80,16 @@ const logsExpanded = ref(false)  // 日志默认折叠
 const logs = ref<LogEntry[]>([])
 let logCounter = 0
 
+// 认证类型切换
+const authType = ref<'password' | 'key'>('password')
+
 const sshForm = reactive({
   host: '',
   port: '22',
   username: '',
   password: '',
+  privateKey: '',
+  passphrase: '',
 })
 
 // 当前步骤（0=连接, 1=检测acli, 2=采集, 3=完成）
@@ -144,13 +149,13 @@ function loadSavedSshConfig() {
 
 // ─── 采集数据提交（upsert） ──────────────────────────────────────────────────
 async function submitBuffer(buffer: Record<string, string>) {
-  const caseId = props.caseId
-  if (!caseId) {
+  const sessionId = props.caseId
+  if (!sessionId) {
     addLog('warn', '无工单 ID，跳过采集数据提交')
     return
   }
 
-  console.log('[SshFlowPanel][submitCollectedData] 开始提交', { caseId })
+  console.log('[SshFlowPanel][submitCollectedData] 开始提交', { sessionId })
 
   // 提交 cluster
   if (buffer.cluster) {
@@ -172,7 +177,7 @@ async function submitBuffer(buffer: Record<string, string>) {
           }
         }
       }
-      await environmentApi.upsert(caseId, 'cluster', clusterData)
+      await environmentApi.upsert(sessionId, 'cluster', clusterData)
       addLog('success', '集群信息 upsert 成功')
       console.log('[SshFlowPanel][cluster] upsert 成功', clusterData)
     } catch (e) {
@@ -195,11 +200,11 @@ async function submitBuffer(buffer: Record<string, string>) {
         if (Array.isArray(candidate)) alertList = candidate
       }
       if (alertList !== null) {
-        await environmentApi.upsert(caseId, 'alert', { alerts: alertList })
+        await environmentApi.upsert(sessionId, 'alert', { alerts: alertList })
         addLog('success', `告警列表 upsert 成功（${alertList.length} 条）`)
       } else {
         addLog('warn', '告警数据无法解析为列表，以原始格式提交')
-        await environmentApi.upsert(caseId, 'alert', { raw_output: cleaned, parse_error: '无法提取 alert 列表' })
+        await environmentApi.upsert(sessionId, 'alert', { raw_output: cleaned, parse_error: '无法提取 alert 列表' })
       }
       console.log('[SshFlowPanel][alert] upsert 成功')
     } catch (e) {
@@ -222,11 +227,11 @@ async function submitBuffer(buffer: Record<string, string>) {
         if (Array.isArray(candidate)) taskList = candidate
       }
       if (taskList !== null) {
-        await environmentApi.upsert(caseId, 'task', { tasks: taskList })
+        await environmentApi.upsert(sessionId, 'task', { tasks: taskList })
         addLog('success', `任务列表 upsert 成功（${taskList.length} 条）`)
       } else {
         addLog('warn', '任务数据无法解析为列表，以原始格式提交')
-        await environmentApi.upsert(caseId, 'task', { raw_output: cleaned, parse_error: '无法提取 task 列表' })
+        await environmentApi.upsert(sessionId, 'task', { raw_output: cleaned, parse_error: '无法提取 task 列表' })
       }
       console.log('[SshFlowPanel][task] upsert 成功')
     } catch (e) {
@@ -235,20 +240,29 @@ async function submitBuffer(buffer: Record<string, string>) {
     }
   }
 
-  console.log('[SshFlowPanel][submitCollectedData] 提交完成', { caseId })
+  console.log('[SshFlowPanel][submitCollectedData] 提交完成', { sessionId })
 }
 
 // ─── 主 SSH 连接流程 ─────────────────────────────────────────────────────────
 async function startSshFlow() {
-  if (!sshForm.host.trim() || !sshForm.username.trim() || !sshForm.password.trim()) {
-    errorMessage.value = '请填写主机地址、用户名和密码'
+  // 表单验证
+  if (!sshForm.host.trim() || !sshForm.username.trim()) {
+    errorMessage.value = '请填写主机地址和用户名'
+    return
+  }
+  if (authType.value === 'password' && !sshForm.password.trim()) {
+    errorMessage.value = '请填写密码'
+    return
+  }
+  if (authType.value === 'key' && !sshForm.privateKey.trim()) {
+    errorMessage.value = '请填写私钥'
     return
   }
 
   phase.value = 'connecting'
   currentStep.value = 0
   errorMessage.value = ''
-  addLog('info', `正在连接 SSH: ${sshForm.username}@${sshForm.host}:${sshForm.port}`)
+  addLog('info', `正在连接 SSH: ${sshForm.username}@${sshForm.host}:${sshForm.port}（${authType.value === 'key' ? '密钥认证' : '密码认证'}）`)
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -257,7 +271,8 @@ async function startSshFlow() {
         const socket = createBridgeSocket()
         tempSocket = socket
 
-        const caseId = props.caseId || 'flow'
+        // 生成唯一 sessionId（防止多弹框消息串线）
+        const sessionId = props.caseId || `flow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
         const commandBuffer: Record<string, string> = {}
         let pendingCommand: { name: string; marker: string; buffer: string; timeout: ReturnType<typeof setTimeout> } | null = null
         let acliAvailable = false
@@ -274,7 +289,7 @@ async function startSshFlow() {
         // 执行单条命令（marker 协议）
         function runCommand(name: string, label: string, cmd: string, timeoutMs: number): Promise<string> {
           return new Promise((res, rej) => {
-            const marker = buildBridgeMarker(caseId, name, Date.now())
+            const marker = buildBridgeMarker(sessionId, name, Date.now())
             let buf = ''
             addLog('info', `执行: ${label}`)
             console.log(`[SshFlowPanel][cmd] ${label}: ${cmd}`)
@@ -291,7 +306,7 @@ async function startSshFlow() {
               timeout: timer,
             }
 
-            socket.send(buildInputMessage(caseId, buildBridgeCommandPayload(cmd, marker)))
+            socket.send(buildInputMessage(sessionId, buildBridgeCommandPayload(cmd, marker)))
 
             // 使用轮询检查（pendingCommand.buffer 由 onmessage 填充）
             const poll = setInterval(() => {
@@ -354,9 +369,11 @@ async function startSshFlow() {
             host: sshForm.host.trim(),
             port: Number(sshForm.port) || 22,
             username: sshForm.username.trim(),
-            auth_type: 'password',
-            password: sshForm.password,
-            case_id: caseId,
+            auth_type: authType.value,
+            password: authType.value === 'password' ? sshForm.password : undefined,
+            private_key: authType.value === 'key' ? sshForm.privateKey : undefined,
+            passphrase: authType.value === 'key' ? sshForm.passphrase || undefined : undefined,
+            case_id: sessionId,
           }))
         }
 
@@ -366,6 +383,11 @@ async function startSshFlow() {
             msg = JSON.parse(String(e.data || ''))
           } catch {
             return
+          }
+
+          // 按 case_id 过滤消息，防止多弹框会话串线
+          if (msg.case_id && msg.case_id !== sessionId) {
+            return  // 忽略非当前会话的消息
           }
 
           // 累积 pendingCommand buffer
@@ -405,7 +427,7 @@ async function startSshFlow() {
               currentStep.value = 3
             }
 
-            // ── 步骤3：采集（仅当有 caseId 且 acli 可用）──────────────────
+            // ── 步骤3：采集（仅当有 sessionId 且 acli 可用）──────────────────
             if (acliAvailable && props.caseId) {
               flowPhase = 'collecting'
               collectionQueue = [...COLLECT_COMMANDS]
@@ -517,6 +539,12 @@ onMounted(async () => {
   loadSavedSshConfig()
   await detectBridge()
 })
+
+// 组件卸载时清理所有定时器和 socket，防止泄漏
+onBeforeUnmount(() => {
+  closeTempSocket()
+  chatStore.clearSshAuthTimer()
+})
 </script>
 
 <template>
@@ -594,8 +622,32 @@ onMounted(async () => {
           <el-form-item label="用户名" class="form-half">
             <el-input v-model="sshForm.username" placeholder="root" />
           </el-form-item>
-          <el-form-item label="密码" class="form-half">
+        </div>
+        <!-- 认证类型切换 -->
+        <div class="form-row auth-type-switch">
+          <el-radio-group v-model="authType" size="small">
+            <el-radio-button value="password">密码认证</el-radio-button>
+            <el-radio-button value="key">密钥认证</el-radio-button>
+          </el-radio-group>
+        </div>
+        <!-- 密码认证 -->
+        <div v-if="authType === 'password'" class="form-row">
+          <el-form-item label="密码" class="form-full">
             <el-input v-model="sshForm.password" type="password" placeholder="请输入密码" show-password />
+          </el-form-item>
+        </div>
+        <!-- 密钥认证 -->
+        <div v-else class="form-row key-auth-section">
+          <el-form-item label="私钥" class="form-full">
+            <el-input
+              v-model="sshForm.privateKey"
+              type="textarea"
+              :autosize="{ minRows: 3, maxRows: 6 }"
+              placeholder="粘贴 SSH 私钥内容（如 id_rsa 文件内容）"
+            />
+          </el-form-item>
+          <el-form-item label="私钥密码（可选）" class="form-full">
+            <el-input v-model="sshForm.passphrase" type="password" placeholder="若私钥有密码保护则填写" show-password />
           </el-form-item>
         </div>
         <p v-if="sshForm.host && sshForm.username" class="ssh-autofill-hint">

@@ -278,18 +278,18 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="!isConnected" class="ssh-connect-area">
-      <!-- 未连接时显示连接按钮，SSH 表单已统一移至 SshFlowPanel -->
+      <!-- 未连接时显示连接按钮，点击打开 SSH 连接弹框（terminal-only 模式） -->
       <el-button
         type="primary"
         size="large"
         :loading="isConnecting"
         class="btn-connect-ssh"
-        @click="chatStore.checkAndOpenTerminal()"
+        @click="chatStore.openSshFlowDialog(chatStore.currentCase?.case_id || null, 'terminal-only')"
       >
         {{ isConnecting ? '正在连接...' : '🖥 连接 SSH' }}
       </el-button>
       <p v-if="isError" class="connect-error">{{ errorMessage }}</p>
-      <p class="connect-hint">点击后根据当前状态智能选择流程</p>
+      <p class="connect-hint">点击后打开 SSH 连接弹框</p>
     </div>
 
     <div v-else class="terminal-stage">
@@ -321,7 +321,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="terminal-footer">
-      <span v-if="!isConnected">请先点击『连接 SSH』按鈕</span>
+      <span v-if="!isConnected">请先点击『连接 SSH』按钮</span>
       <span v-else>
         Enter 执行 · Shift+Enter 换行 ·
         <el-link type="primary" :underline="false" @click="disconnectSsh">断开连接</el-link>

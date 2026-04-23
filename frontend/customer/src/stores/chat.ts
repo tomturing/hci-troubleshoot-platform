@@ -8,7 +8,7 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
-import { checkBridgeRunning, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
+import { checkBridgeRunning, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
 
 // 开发环境专用日志（生产环境自动禁用）
 const isDev = import.meta.env.DEV
@@ -723,9 +723,26 @@ export const useChatStore = defineStore('chat', () => {
     sshFlowDialogVisible.value = true
   }
 
-  /** 关闭统一 SSH 弹框 */
-  function closeSshFlowDialog() {
+  /** 关闭统一 SSH 弹框（create-case 模式下回退到普通对话流程） */
+  async function closeSshFlowDialog() {
+    const caseId = sshFlowDialogCaseId.value
+    const mode = sshFlowDialogMode.value
+    const assistantType = sshFlowDialogAssistantType.value
+
     sshFlowDialogVisible.value = false
+
+    // create-case 模式下用户取消/无 SSH → 回退到普通对话流程，避免工单卡死
+    if (mode === 'create-case' && caseId && currentCase.value?.case_id === caseId) {
+      const userMessage = pendingUserMessage.value || currentCase.value.description || ''
+      if (userMessage && !conversationId.value) {
+        devLog('SSH-FLOW-DIALOG', '用户取消 SSH，回退到普通对话流程', { caseId })
+        try {
+          await completeCaseCreationFlow(caseId, userMessage, assistantType)
+        } catch (e: any) {
+          addSystemMessage(`创建对话失败: ${e.message || '未知错误'}`)
+        }
+      }
+    }
   }
 
   /**
@@ -1511,25 +1528,22 @@ export const useChatStore = defineStore('chat', () => {
 
   /** 提交采集数据到 Environment API */
   async function submitCollectedData(caseId: string, buffer: Record<string, string>) {
-    console.log('[submitCollectedData] 开始提交采集数据', {
+    devLog('submitCollectedData', '开始提交采集数据', {
       caseId,
       hasCluster: Boolean(buffer.cluster),
       hasAlert: Boolean(buffer.alert),
       hasTask: Boolean(buffer.task),
-      clusterOutputLen: buffer.cluster?.length ?? 0,
-      alertOutputLen: buffer.alert?.length ?? 0,
-      taskOutputLen: buffer.task?.length ?? 0,
     })
 
     // 解析并提交集群信息
     if (buffer.cluster) {
       try {
         const cleaned = stripAnsi(buffer.cluster)
-        console.log('[submitCollectedData][cluster] 原始输出片段:', cleaned.substring(0, 300))
+        devLog('submitCollectedData', 'cluster 原始输出（截断）', { outputPreview: cleaned.substring(0, 100) })
         const clusterData = parseClusterOutput(cleaned)
-        console.log('[submitCollectedData][cluster] 解析结果:', JSON.stringify(clusterData).substring(0, 200))
+        devLog('submitCollectedData', 'cluster 解析成功', { keys: Object.keys(clusterData || {}) })
         await environmentApi.upsert(caseId, 'cluster', clusterData)
-        console.log('[submitCollectedData][cluster] upsert 成功')
+        devLog('submitCollectedData', 'cluster upsert 成功', { caseId })
       } catch (e) {
         console.error('[submitCollectedData][cluster] 提交失败:', e)
       }
@@ -1541,9 +1555,9 @@ export const useChatStore = defineStore('chat', () => {
     if (buffer.alert) {
       try {
         const cleaned = stripAnsi(buffer.alert)
-        console.log('[submitCollectedData][alert] 原始输出片段:', cleaned.substring(0, 300))
+        devLog('submitCollectedData', 'alert 原始输出（截断）', { outputPreview: cleaned.substring(0, 100) })
         const parsed = parseJsonOutput(cleaned)
-        console.log('[submitCollectedData][alert] 解析类型:', typeof parsed, Array.isArray(parsed) ? 'array' : '')
+        devLog('submitCollectedData', 'alert 解析类型', { type: typeof parsed, isArray: Array.isArray(parsed) })
 
         // 兼容纯数组和 {entities:[...]} / {alerts:[...]} 包装格式
         let alertList: unknown[] | null = null
@@ -1557,7 +1571,7 @@ export const useChatStore = defineStore('chat', () => {
 
         if (alertList !== null) {
           await environmentApi.upsert(caseId, 'alert', { alerts: alertList })
-          console.log('[submitCollectedData][alert] upsert 成功，条数:', alertList.length)
+          devLog('submitCollectedData', 'alert upsert 成功', { count: alertList.length })
         } else {
           // 即使无法解析为列表，也以原始文本提交，确保数据不丢失
           console.warn('[submitCollectedData][alert] 无法解析为列表，以原始输出提交')
@@ -1574,9 +1588,9 @@ export const useChatStore = defineStore('chat', () => {
     if (buffer.task) {
       try {
         const cleaned = stripAnsi(buffer.task)
-        console.log('[submitCollectedData][task] 原始输出片段:', cleaned.substring(0, 300))
+        devLog('submitCollectedData', 'task 原始输出（截断）', { outputPreview: cleaned.substring(0, 100) })
         const parsed = parseJsonOutput(cleaned)
-        console.log('[submitCollectedData][task] 解析类型:', typeof parsed, Array.isArray(parsed) ? 'array' : '')
+        devLog('submitCollectedData', 'task 解析类型', { type: typeof parsed, isArray: Array.isArray(parsed) })
 
         // 兼容纯数组和 {entities:[...]} / {tasks:[...]} 包装格式
         let taskList: unknown[] | null = null
@@ -1590,7 +1604,7 @@ export const useChatStore = defineStore('chat', () => {
 
         if (taskList !== null) {
           await environmentApi.upsert(caseId, 'task', { tasks: taskList })
-          console.log('[submitCollectedData][task] upsert 成功，条数:', taskList.length)
+          devLog('submitCollectedData', 'task upsert 成功', { count: taskList.length })
         } else {
           console.warn('[submitCollectedData][task] 无法解析为列表，以原始输出 upsert')
           await environmentApi.upsert(caseId, 'task', { raw_output: cleaned, parse_error: '无法提取 task 列表' })
@@ -1602,7 +1616,7 @@ export const useChatStore = defineStore('chat', () => {
       console.warn('[submitCollectedData][task] buffer 为空，跳过')
     }
 
-    console.log('[submitCollectedData] 所有数据提交完成', { caseId })
+    devLog('submitCollectedData', '所有数据提交完成', { caseId })
   }
 
   /** 解析 acli platform info get 输出 */
@@ -1630,51 +1644,7 @@ export const useChatStore = defineStore('chat', () => {
     return result
   }
 
-  /**
-   * 剥离 ANSI/VT100 转义码（终端颜色码等），保留纯文本
-   * 避免 SSH 终端输出带控制序列时干扰 JSON 解析
-   */
-  function stripAnsi(output: string): string {
-    // 匹配 ESC 序列: ESC [ ... m / ESC ] ... ST / 裸 ESC 等
-    // eslint-disable-next-line no-control-regex
-    return output.replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))/g, '')
-  }
-
-  /** 解析 JSON 输出（acli --formatter json）*/
-  function parseJsonOutput(output: string): unknown {
-    // 先剥离 ANSI 转义码，再提取 JSON
-    const cleaned = stripAnsi(output)
-
-    // 优先尝试直接解析（整个输出就是 JSON）
-    const trimmed = cleaned.trim()
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-      try {
-        return JSON.parse(trimmed)
-      } catch { /* 继续尝试提取 */ }
-    }
-
-    // 贪婪提取：找最后一个 } 或 ] 以获得完整 JSON
-    const lastBrace = cleaned.lastIndexOf('}')
-    const lastBracket = cleaned.lastIndexOf(']')
-
-    if (lastBrace > lastBracket) {
-      const firstBrace = cleaned.indexOf('{')
-      if (firstBrace !== -1 && lastBrace > firstBrace) {
-        try {
-          return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1))
-        } catch { /* fall through */ }
-      }
-    } else if (lastBracket !== -1) {
-      const firstBracket = cleaned.indexOf('[')
-      if (firstBracket !== -1 && lastBracket > firstBracket) {
-        try {
-          return JSON.parse(cleaned.slice(firstBracket, lastBracket + 1))
-        } catch { /* fall through */ }
-      }
-    }
-
-    return null
-  }
+  // stripAnsi / parseJsonOutput 已从 @/api/terminal 引入，避免实现漂移
 
   /** 取消 SSH 创建流程 */
   function cancelSSHCreation() {
@@ -1817,5 +1787,7 @@ export const useChatStore = defineStore('chat', () => {
     connectSSHAndCreateCase,
     createCaseWithoutSSH,
     cancelSSHCreation,
+    // SSH 认证超时清理（供 SshFlowPanel onBeforeUnmount 调用）
+    clearSshAuthTimer,
   }
 })

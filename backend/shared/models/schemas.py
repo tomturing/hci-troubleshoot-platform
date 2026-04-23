@@ -237,6 +237,13 @@ class EnvironmentCreate(BaseModel):
     collected_at: datetime | None = Field(None, description="数据采集时间")
 
 
+class EnvironmentUpsert(BaseModel):
+    """upsert 环境数据请求（case_id/env_type 由 path 参数指定）"""
+
+    env_data: dict = Field(..., description="环境数据 JSONB 内容")
+    collected_at: datetime | None = Field(None, description="数据采集时间（可选，默认当前时间）")
+
+
 class EnvironmentResponse(BaseModel):
     """环境数据响应"""
 

@@ -2,6 +2,8 @@
 Environment Repository - 环境数据访问层
 """
 
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,8 +58,8 @@ class EnvironmentRepository:
         if existing:
             # 更新已有记录
             existing.env_data = env_data
-            if collected_at is not None:
-                existing.collected_at = collected_at
+            # 更新采集时间：显式传入则使用，否则默认当前时间（确保排序语义可靠）
+            existing.collected_at = collected_at if collected_at is not None else datetime.now(timezone.utc)
             await self.session.flush()
             await self.session.refresh(existing)
             return existing, False
@@ -68,6 +70,7 @@ class EnvironmentRepository:
                 env_type=env_type,
                 env_data=env_data,
             )
+            # 创建时：显式传入则使用，否则让 DB 默认值生效
             if collected_at is not None:
                 environment.collected_at = collected_at
             self.session.add(environment)
