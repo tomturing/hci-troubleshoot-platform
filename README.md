@@ -1,8 +1,18 @@
 # HCI 智能排障平台
 
-> 版本 **v2.1.0** · 2026-04-06
+> 版本 **v2.1.1** · 2026-04-24
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
+
+### v2.1.1 更新说明（2026-04-24）
+
+- **SSH UX 修复**：修复 Copilot Review 提出的 15 个代码质量问题
+  - SshFormSection 使用本地副本模式避免 props 直接修改
+  - CaseCreateDialog 进度条步骤顺序调整为 SSH认证→创建工单→采集环境
+  - alert/task JSON 解析兼容包装对象格式 {alerts:[...]}
+  - console.log 替换为 devLog（生产环境自动禁用）
+  - 弹框打开时根据 bridgeStatus 重置 viewState
+  - environmentApi.upsert 移除冗余字段（case_id/env_type 已在 URL path 中）
 
 ---
 

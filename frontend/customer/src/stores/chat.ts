@@ -457,7 +457,7 @@ export const useChatStore = defineStore('chat', () => {
               try {
                 const event = JSON.parse(data)
                 diagnosticStage.value = event.to ?? 'S0'
-                console.log('[stage_change] 诊断阶段切换:', event.from, '→', event.to, event.label)
+                devLog('stage_change', '诊断阶段切换', { from: event.from, to: event.to, label: event.label })
               } catch (e) {
                 console.warn('[stage_change] 解析失败:', e)
               }
@@ -721,7 +721,7 @@ export const useChatStore = defineStore('chat', () => {
     mode: 'create-case' | 'terminal-only',
     assistantType?: string,
   ) {
-    console.log('[SSH-FLOW-DIALOG] 打开弹框', { caseId, mode, assistantType })
+    devLog('SSH-FLOW-DIALOG', '打开弹框', { caseId, mode, assistantType })
     sshFlowDialogCaseId.value = caseId
     sshFlowDialogMode.value = mode
     sshFlowDialogAssistantType.value = assistantType
@@ -759,7 +759,7 @@ export const useChatStore = defineStore('chat', () => {
     description: string
     assistantType?: string
   }) {
-    console.log('[createCaseAndOpenSsh] 创建工单', params)
+    devLog('createCaseAndOpenSsh', '创建工单', params)
     showCaseTemplate.value = false
 
     try {
@@ -771,12 +771,12 @@ export const useChatStore = defineStore('chat', () => {
       })
       currentCase.value = res.data
       const caseId = res.data.case_id
-      console.log('[createCaseAndOpenSsh] 工单创建成功', { caseId })
+      devLog('createCaseAndOpenSsh', '工单创建成功', { caseId })
 
       // 确认工单
       const confirmed = await caseApi.confirm(caseId)
       currentCase.value = confirmed.data
-      console.log('[createCaseAndOpenSsh] 工单确认成功', { caseId, status: confirmed.data.status })
+      devLog('createCaseAndOpenSsh', '工单确认成功', { caseId, status: confirmed.data.status })
 
       openSshFlowDialog(caseId, 'create-case', params.assistantType)
     } catch (e: any) {
@@ -1005,7 +1005,7 @@ export const useChatStore = defineStore('chat', () => {
       environmentData.value = listRes.data.items
       collectionState.value = 'success'
 
-      console.log('[collectEnvironmentData] 采集完成', environmentData.value.length, '条数据')
+      devLog('collectEnvironmentData', '采集完成', { count: environmentData.value.length })
     } catch (e: any) {
       collectionState.value = 'error'
       collectionProgress.value = { cluster: 'error', alert: 'error', task: 'error' }

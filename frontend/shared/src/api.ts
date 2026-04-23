@@ -222,11 +222,10 @@ export function createEnvironmentApi(client: AxiosInstance) {
     /**
      * upsert 环境数据（幂等：有则更新，无则创建）
      * 业界最佳实践：REST PUT 幂等语义，多次调用结果相同
+     * URL path 已指定资源位置，body 仅含 env_data 和可选的 collected_at
      */
     upsert(caseId: string, envType: EnvType, envData: Record<string, unknown>, collectedAt?: string) {
       return client.put<EnvironmentResponse>(`/environments/case/${caseId}/type/${envType}`, {
-        case_id: caseId,
-        env_type: envType,
         env_data: envData,
         ...(collectedAt ? { collected_at: collectedAt } : {}),
       })

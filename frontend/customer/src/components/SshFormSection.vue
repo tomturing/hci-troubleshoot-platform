@@ -4,7 +4,7 @@
  * SSH 连接表单共享组件
  * 供 CaseCreateDialog 和 SshConnectDialog 复用
  */
-import { ref, reactive, onMounted, watch, computed } from 'vue'
+import { ref, watch, computed } from 'vue'
 import type { TerminalAuthType } from '@/api/terminal'
 
 // Props: 接收外部表单数据
@@ -26,16 +26,31 @@ const emit = defineEmits<{
   'update:authType': [value: TerminalAuthType]
 }>()
 
-// 内部引用（方便模板绑定）
-const form = reactive(props.sshForm)
-const auth = ref(props.authType)
+// 内部维护本地副本（避免直接修改 props）
+const localForm = ref({
+  host: props.sshForm.host,
+  port: props.sshForm.port,
+  username: props.sshForm.username,
+  password: props.sshForm.password,
+  privateKey: props.sshForm.privateKey,
+  passphrase: props.sshForm.passphrase,
+})
+const localAuthType = ref<TerminalAuthType>(props.authType)
 
-// 同步到父组件
-watch(form, (val) => emit('update:sshForm', val), { deep: true })
-watch(auth, (val) => emit('update:authType', val))
+// 监听 props 变化，同步到本地副本
+watch(() => props.sshForm, (val) => {
+  localForm.value = { ...val }
+}, { deep: true })
+watch(() => props.authType, (val) => {
+  localAuthType.value = val
+})
+
+// 同步本地副本变更到父组件
+watch(localForm, (val) => emit('update:sshForm', { ...val }), { deep: true })
+watch(localAuthType, (val) => emit('update:authType', val))
 
 // localStorage 自动填充提示
-const hasAutoFill = computed(() => form.host && form.username)
+const hasAutoFill = computed(() => localForm.value.host && localForm.value.username)
 
 // 加载上次成功的 SSH 配置（不含密码）
 function loadSavedSshConfig() {
@@ -43,9 +58,9 @@ function loadSavedSshConfig() {
     const saved = localStorage.getItem('hci_last_ssh_config')
     if (saved) {
       const config = JSON.parse(saved)
-      if (!form.host && config.host) form.host = config.host
-      if (!form.port && config.port) form.port = String(config.port)
-      if (!form.username && config.username) form.username = config.username
+      if (!localForm.value.host && config.host) localForm.value.host = config.host
+      if (!localForm.value.port && config.port) localForm.value.port = String(config.port)
+      if (!localForm.value.username && config.username) localForm.value.username = config.username
     }
   } catch {
     // ignore
@@ -53,9 +68,7 @@ function loadSavedSshConfig() {
 }
 
 // 组件挂载时自动填充
-onMounted(() => {
-  loadSavedSshConfig()
-})
+loadSavedSshConfig()
 </script>
 
 <template>
@@ -64,33 +77,33 @@ onMounted(() => {
       <!-- 主机地址 + 端口 -->
       <div class="form-row">
         <el-form-item label="主机地址" class="form-host">
-          <el-input v-model="form.host" placeholder="192.168.1.100" />
+          <el-input v-model="localForm.host" placeholder="192.168.1.100" />
         </el-form-item>
         <el-form-item label="端口" class="form-port">
-          <el-input v-model="form.port" placeholder="22" />
+          <el-input v-model="localForm.port" placeholder="22" />
         </el-form-item>
       </div>
 
       <!-- 用户名 -->
       <div class="form-row">
         <el-form-item label="用户名" class="form-half">
-          <el-input v-model="form.username" placeholder="root" />
+          <el-input v-model="localForm.username" placeholder="root" />
         </el-form-item>
       </div>
 
       <!-- 认证类型切换 -->
       <div class="form-row auth-type-switch">
-        <el-radio-group v-model="auth" size="small">
+        <el-radio-group v-model="localAuthType" size="small">
           <el-radio-button value="password">密码认证</el-radio-button>
           <el-radio-button value="key">密钥认证</el-radio-button>
         </el-radio-group>
       </div>
 
       <!-- 密码认证 -->
-      <div v-if="auth === 'password'" class="form-row">
+      <div v-if="localAuthType === 'password'" class="form-row">
         <el-form-item label="密码" class="form-full">
           <el-input
-            v-model="form.password"
+            v-model="localForm.password"
             type="password"
             placeholder="请输入密码"
             show-password
@@ -102,7 +115,7 @@ onMounted(() => {
       <div v-else class="form-row key-auth-section">
         <el-form-item label="私钥" class="form-full">
           <el-input
-            v-model="form.privateKey"
+            v-model="localForm.privateKey"
             type="textarea"
             :autosize="{ minRows: 3, maxRows: 6 }"
             placeholder="粘贴 SSH 私钥内容（如 id_rsa 文件内容）"
@@ -110,7 +123,7 @@ onMounted(() => {
         </el-form-item>
         <el-form-item label="私钥密码（可选）" class="form-full">
           <el-input
-            v-model="form.passphrase"
+            v-model="localForm.passphrase"
             type="password"
             placeholder="若私钥有密码保护则填写"
             show-password

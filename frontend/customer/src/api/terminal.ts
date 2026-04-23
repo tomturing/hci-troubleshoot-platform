@@ -81,6 +81,7 @@ export async function checkBridgeBeforeOpen(timeoutMs = 3000): Promise<'running'
     }
     probe.onerror = () => {
       clearTimeout(timer)
+      probe.close()
       resolve('not-running')
     }
   })
