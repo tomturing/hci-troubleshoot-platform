@@ -20,6 +20,7 @@ from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
 from .ai_client import AIAssistantRegistry
 from .conversation_manager import ConversationManager
+from .environment_client import EnvironmentClient
 from .kb_client import KBClient
 from .knowledge_retriever import KnowledgeRetriever
 from .prompt_builder import PromptBuilder
@@ -63,6 +64,7 @@ class ConversationService:
         ai_registry: AIAssistantRegistry,
         scheduler_client: SchedulerClient | None = None,
         kb_client: KBClient | None = None,
+        environment_client: EnvironmentClient | None = None,
         session_factory=None,
         tool_router=None,       # ToolRouter | None（Phase 4 agent 模式）
         confirm_service=None,   # ConfirmService | None
@@ -72,6 +74,7 @@ class ConversationService:
         self.ai_registry = ai_registry
         self.scheduler_client = scheduler_client
         self.kb_client = kb_client
+        self.environment_client = environment_client
         # 知识检索器（从 _build_system_prompt 提取）
         self._knowledge_retriever = KnowledgeRetriever(kb_client)
         # Prompt 构建器（S0 专用）
@@ -279,7 +282,27 @@ class ConversationService:
             if _conv and _conv.diagnostic_stage:
                 current_stage = _conv.diagnostic_stage
 
-        system_prompt, _audit_meta = await self._build_system_prompt(content, case_id, diagnostic_stage=current_stage)
+        # 2.5 【修复】获取环境上下文信息（Segment 4 数据）
+        context_info: dict | None = None
+        if current_stage == "S0" and self.environment_client:
+            env_context = await self.environment_client.get_context_info(case_id)
+            if env_context:
+                context_info = {
+                    "env_info": env_context.env_info,
+                    "alert_logs": env_context.alert_logs,
+                    "task_logs": env_context.task_logs,
+                }
+                logger.info(
+                    event="s0_context_info_loaded",
+                    message="S0 Prompt 已加载环境上下文",
+                    case_id=case_id,
+                    alert_count=len(env_context.alert_logs),
+                    task_count=len(env_context.task_logs),
+                )
+
+        system_prompt, _audit_meta = await self._build_system_prompt(
+            content, case_id, diagnostic_stage=current_stage, context_info=context_info
+        )
 
         # T7: 若本次检索命中了 SOP，异步写入 conversation.sop_document_id 并更新 hit_count
         sop_document_id_from_meta = _audit_meta.get("sop_document_id") if _audit_meta else None

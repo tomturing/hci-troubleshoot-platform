@@ -20,6 +20,7 @@ from app.config import settings
 from app.routes import audit as audit_route
 from app.routes import conversations, evaluate
 from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
+from app.services.environment_client import EnvironmentClient
 from app.services.kb_client import KBClient
 from app.services.scheduler_client import SchedulerClient
 
@@ -80,14 +81,25 @@ async def lifespan(app: FastAPI):
         )
         logger.info(event="kb_client_initialized", message=f"KB client 已初始化，目标: {settings.KB_SERVICE_URL}")
 
+    # 初始化 Environment 客户端（用于获取 S0 阶段环境上下文）
+    environment_client = EnvironmentClient(
+        base_url=settings.CASE_SERVICE_URL,
+        timeout_sec=settings.ENVIRONMENT_CONTEXT_TIMEOUT_SEC,
+    )
+    logger.info(
+        event="environment_client_initialized",
+        message=f"Environment client 已初始化，目标: {settings.CASE_SERVICE_URL}"
+    )
+
     # 存入 app.state
     app.state.database_manager = database_manager
     app.state.ai_registry = ai_registry
     app.state.scheduler_client = scheduler_client
     app.state.kb_client = kb_client
+    app.state.environment_client = environment_client
 
     # 兼容现有路由注入方式
-    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client)
+    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client, environment_client)
     evaluate.set_database_manager(database_manager)
     audit_route.set_audit_database_manager(database_manager)
 

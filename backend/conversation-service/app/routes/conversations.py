@@ -17,6 +17,7 @@ from shared.utils.logger import get_logger
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService
+from ..services.environment_client import EnvironmentClient
 from ..services.kb_client import KBClient
 from ..services.scheduler_client import SchedulerClient
 from .evaluate import require_admin_token
@@ -29,6 +30,7 @@ database_manager: DatabaseManager | None = None
 ai_registry: AIAssistantRegistry | None = None
 scheduler_client: SchedulerClient | None = None
 kb_client: KBClient | None = None
+environment_client: EnvironmentClient | None = None
 
 
 def set_dependencies(
@@ -36,12 +38,14 @@ def set_dependencies(
     registry: AIAssistantRegistry,
     scheduler: SchedulerClient | None = None,
     kb: KBClient | None = None,
+    env_client: EnvironmentClient | None = None,
 ):
-    global database_manager, ai_registry, scheduler_client, kb_client
+    global database_manager, ai_registry, scheduler_client, kb_client, environment_client
     database_manager = db
     ai_registry = registry
     scheduler_client = scheduler
     kb_client = kb
+    environment_client = env_client
 
 
 async def get_conversation_service() -> ConversationService:
@@ -52,7 +56,7 @@ async def get_conversation_service() -> ConversationService:
     async for session in database_manager.get_session():
         repo = ConversationRepository(session)
         yield ConversationService(
-            repo, ai_registry, scheduler_client, kb_client,
+            repo, ai_registry, scheduler_client, kb_client, environment_client,
             database_manager.async_session_factory,
         )
 
