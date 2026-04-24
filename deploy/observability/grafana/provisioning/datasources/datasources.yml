@@ -37,3 +37,19 @@ datasources:
     editable: true
     jsonData:
       timeInterval: "15s"
+
+  - name: PostgreSQL
+    uid: postgres
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: hci_admin
+    editable: true
+    jsonData:
+      database: hci_troubleshoot
+      sslmode: disable
+      maxOpenConns: 10
+      maxIdleConns: 5
+      connMaxLifetime: 60
+    secureJsonData:
+      password: ${GRAFANA_PG_PASSWORD}

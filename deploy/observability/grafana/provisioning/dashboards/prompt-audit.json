@@ -1,0 +1,127 @@
+{
+  "title": "HCI Prompt 审计分析",
+  "uid": "hci-prompt-audit",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["hci", "audit", "prompt"],
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Prompt 构建次数",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 6 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (assistant_type) (rate(hci_ai_requests_total[5m]))",
+          "legendFormat": "{{assistant_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 2,
+      "title": "SOP 命中率",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 6 },
+      "datasource": { "uid": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT ROUND(COUNT(*) FILTER (WHERE payload->>'has_sop' = 'true') * 100.0 / COUNT(*), 2) as sop_hit_rate FROM audit_log WHERE audit_type = 'prompt' AND started_at > NOW() - INTERVAL '1 hour'",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent" }
+      }
+    },
+    {
+      "id": 3,
+      "title": "KB chunks 注入分布",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 8, "h": 6 },
+      "datasource": { "uid": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT started_at, (payload->>'kb_chunks_count')::int as chunks FROM audit_log WHERE audit_type = 'prompt' AND started_at > NOW() - INTERVAL '1 hour' ORDER BY started_at",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Prompt Token 估算分布",
+      "type": "histogram",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "datasource": { "uid": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT (payload->>'total_token_est')::int as tokens FROM audit_log WHERE audit_type = 'prompt' AND payload->>'total_token_est' IS NOT NULL AND started_at > NOW() - INTERVAL '1 hour'",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    },
+    {
+      "id": 5,
+      "title": "上下文结构 breakdown",
+      "type": "piechart",
+      "gridPos": { "x": 12, "y": 6, "w": 8, "h": 8 },
+      "datasource": { "uid": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT cb->>'name' as segment, SUM((cb->>'chars')::int) as total_chars FROM audit_log, jsonb_array_elements(payload->'context_breakdown') as cb WHERE audit_type = 'prompt' AND started_at > NOW() - INTERVAL '1 hour' GROUP BY cb->>'name'",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "最近 Prompt 审计记录详情",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 10 },
+      "datasource": { "uid": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT id, started_at, conversation_id, payload->>'case_id' as case_id, payload->>'assistant_type' as assistant_type, payload->>'has_sop' as has_sop, payload->>'kb_chunks_count' as kb_chunks, payload->>'kb_top_score' as kb_score, payload->>'total_token_est' as tokens, payload->>'total_chars' as chars, CASE WHEN payload->'messages' IS NOT NULL THEN 'sampled' ELSE 'null' END as messages_status FROM audit_log WHERE audit_type = 'prompt' ORDER BY started_at DESC LIMIT 50",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "完整 Prompt Messages（仅采样记录）",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
+      "datasource": { "uid": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT id, started_at, payload->>'case_id' as case_id, jsonb_pretty(payload->'messages') as full_messages FROM audit_log WHERE audit_type = 'prompt' AND payload->'messages' IS NOT NULL ORDER BY started_at DESC LIMIT 5",
+          "format": "table"
+        }
+      ]
+    }
+  ],
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus 数据源",
+      "type": "datasource",
+      "pluginId": "prometheus"
+    },
+    {
+      "name": "DS_POSTGRES",
+      "label": "PostgreSQL",
+      "description": "PostgreSQL 数据源（audit_log 表）",
+      "type": "datasource",
+      "pluginId": "postgres"
+    }
+  ]
+}
