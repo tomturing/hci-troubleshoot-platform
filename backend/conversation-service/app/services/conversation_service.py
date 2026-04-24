@@ -339,7 +339,6 @@ class ConversationService:
             return
 
         # 4.x 写入 prompt_audit（fire-and-forget，100% 采样完整 payload 用于审计分析）
-        import random
         _do_sample = True  # 100% 采样，便于 Grafana Dashboard 审计 Agent 收到的完整上下文
         _sample_payload = history_messages if _do_sample else None
 
