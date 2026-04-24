@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     SCHEDULER_POD_READY_TIMEOUT_SEC: int = 20
     SCHEDULER_POD_POLL_INTERVAL_SEC: float = 1.0
 
+    # Case Service 配置（用于获取环境上下文）
+    CASE_SERVICE_URL: str = "http://case-service:8001"
+    ENVIRONMENT_CONTEXT_TIMEOUT_SEC: float = 5.0
+
     # 多助手注册表（可选覆盖）
     # JSON 格式：
     # {
