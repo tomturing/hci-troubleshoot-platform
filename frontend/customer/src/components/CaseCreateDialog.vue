@@ -125,9 +125,9 @@ const collectedData = reactive<{
 
 // ===== 采集命令定义 =====
 const COLLECT_COMMANDS = [
-  { name: 'cluster', label: '集群信息', cmd: 'acli platform info get', timeout: 10000 },
-  { name: 'alert', label: '告警列表', cmd: 'acli --formatter json alert list', timeout: 10000 },
-  { name: 'task', label: '任务状态', cmd: 'acli --formatter json task list', timeout: 10000 },
+  { name: 'cluster', label: '集群信息', cmd: 'acli platform info get', timeout: 30000 },
+  { name: 'alert', label: '告警列表', cmd: 'acli --formatter json alert list', timeout: 30000 },
+  { name: 'task', label: '任务状态', cmd: 'acli --formatter json task list', timeout: 30000 },
 ]
 
 // ===== API 客户端 =====
@@ -193,9 +193,10 @@ function runCommand(name: string, label: string, cmd: string, timeoutMs: number)
       reject,
     }
 
+    // 使用与 buildConnectMessage 相同的 case_id，确保 Bridge 能找到对应的 SSH session
     tempSocket.send(JSON.stringify({
       type: 'ssh_input',
-      case_id: createdCaseId.value || 'temp',
+      case_id: 'ssh-create-temp',
       data: payload,
     }))
 
@@ -260,27 +261,25 @@ async function runCollectionAndUpsert() {
       }
     } catch (e: any) {
       addLog('error', `${cmdInfo.label} 采集失败: ${e.message}`)
-      // 采集失败：记录原始数据带 parse_error
-      if (cmdInfo.name === 'cluster') {
-        collectedData.cluster = { parse_error: e.message, raw: '' }
-      } else if (cmdInfo.name === 'alert') {
-        collectedData.alert = [{ parse_error: e.message }]
-      } else if (cmdInfo.name === 'task') {
-        collectedData.task = [{ parse_error: e.message }]
-      }
+      // 采集失败：保持 collectedData[name] 为 null，不入库错误消息
+      // （避免将超时/错误文本作为有效环境数据写入数据库干扰 AI 推理）
     }
   }
 
-  // Upsert 到数据库（即使列表为空也要提交，表示"已采集但无数据")
+  // Upsert 到数据库（仅提交成功采集到的数据；失败项跳过，不入库错误占位符）
   if (createdCaseId.value) {
     addLog('info', '正在写入环境数据...')
     try {
       if (collectedData.cluster) {
         await environmentApi.upsert(createdCaseId.value, 'cluster', collectedData.cluster)
       }
-      // alert/task 即使为空数组也要 upsert，表示采集完成
-      await environmentApi.upsert(createdCaseId.value, 'alert', { alerts: collectedData.alert ?? [] })
-      await environmentApi.upsert(createdCaseId.value, 'task', { tasks: collectedData.task ?? [] })
+      // alert/task：有数据才提交；为空数组时也提交，表示采集完成但无条目
+      if (collectedData.alert !== null) {
+        await environmentApi.upsert(createdCaseId.value, 'alert', { alerts: collectedData.alert ?? [] })
+      }
+      if (collectedData.task !== null) {
+        await environmentApi.upsert(createdCaseId.value, 'task', { tasks: collectedData.task ?? [] })
+      }
       addLog('success', '环境数据已入库')
     } catch (e: any) {
       addLog('error', `环境数据入库失败: ${e.message}`)
@@ -395,6 +394,8 @@ async function runSshAndCreateCase() {
 
     // 确认工单
     const confirmed = await caseApi.confirm(createdCaseId.value)
+    // 同步写入 chatStore.currentCase，使头部工单 badge 即刻生效且后续 completeCaseCreationFlow 能找到对应工单
+    chatStore.currentCase = confirmed.data
     addLog('success', '工单已确认')
 
     currentStep.value = 2

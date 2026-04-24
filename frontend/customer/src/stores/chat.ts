@@ -233,8 +233,11 @@ export const useChatStore = defineStore('chat', () => {
     if (!pendingCase.value) return
     currentCase.value = pendingCase.value
     showPendingDialog.value = false
-    await loadConversationHistory(pendingCase.value.case_id)
+    const caseId = pendingCase.value.case_id
+    await loadConversationHistory(caseId)
     pendingCase.value = null
+    // 恢复工单时同步加载环境数据（fire-and-forget，不阻塞对话恢复）
+    collectEnvironmentData(caseId).catch(() => {})
   }
 
   async function closePendingCase() {
@@ -324,6 +327,8 @@ export const useChatStore = defineStore('chat', () => {
       const confirmed = await caseApi.confirm(res.data.case_id)
       currentCase.value = confirmed.data
       addSystemMessage('工单已确认，正在连接 AI 助手...')
+      // 无 SSH 流程也尝试加载历史环境数据（fire-and-forget）
+      collectEnvironmentData(res.data.case_id).catch(() => {})
 
       await createConversation()
       await streamAIResponse(pendingUserMessage.value)
@@ -597,7 +602,10 @@ export const useChatStore = defineStore('chat', () => {
       currentCase.value = caseItem
       conversationId.value = null
       messages.value = []
+      environmentContext.value = null  // 先清空，避免展示旧工单的环境数据
       await loadConversationHistory(caseItem.case_id)
+      // 切换工单时同步加载对应环境数据（fire-and-forget）
+      collectEnvironmentData(caseItem.case_id).catch(() => {})
     }
   }
 
