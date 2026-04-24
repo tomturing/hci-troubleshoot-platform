@@ -125,9 +125,9 @@ const collectedData = reactive<{
 
 // ===== 采集命令定义 =====
 const COLLECT_COMMANDS = [
-  { name: 'cluster', label: '集群信息', cmd: 'acli platform info get', timeout: 30000 },
-  { name: 'alert', label: '告警列表', cmd: 'acli --formatter json alert list', timeout: 60000 },
-  { name: 'task', label: '任务状态', cmd: 'acli --formatter json task list', timeout: 60000 },
+  { name: 'cluster', label: '集群信息', cmd: 'acli platform info get', timeout: 10000 },
+  { name: 'alert', label: '告警列表', cmd: 'acli --formatter json alert list', timeout: 10000 },
+  { name: 'task', label: '任务状态', cmd: 'acli --formatter json task list', timeout: 10000 },
 ]
 
 // ===== API 客户端 =====

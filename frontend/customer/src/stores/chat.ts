@@ -341,18 +341,30 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function createConversation() {
-    if (!currentCase.value) return
+    if (!currentCase.value) {
+      console.error('[createConversation] currentCase 为空，无法创建对话')
+      throw new Error('currentCase 为空，无法创建对话')
+    }
     try {
       const assistantType = currentCase.value.assistant_type || selectedAssistant.value || undefined
+      console.log('[createConversation] 开始创建对话', { caseId: currentCase.value.case_id, assistantType })
       const res = await conversationApi.create(currentCase.value.case_id, assistantType)
       conversationId.value = res.data.conversation_id
+      console.log('[createConversation] 对话创建成功', { conversationId: conversationId.value })
     } catch (e: any) {
-      addSystemMessage(`创建对话失败: ${e.response?.data?.detail || e.message}`)
+      const errorMsg = `创建对话失败: ${e.response?.data?.detail || e.message}`
+      console.error('[createConversation]', errorMsg, e)
+      addSystemMessage(errorMsg)
+      throw e  // 抛出错误，让调用方知道失败
     }
   }
 
   async function streamAIResponse(content: string) {
-    if (!conversationId.value || !currentCase.value) return
+    if (!conversationId.value || !currentCase.value) {
+      const errorMsg = !conversationId.value ? 'conversationId 为空' : 'currentCase 为空'
+      console.error('[streamAIResponse]', errorMsg, '无法发送消息')
+      throw new Error(`无法发送消息: ${errorMsg}`)
+    }
 
     isStreaming.value = true
     const aiMsgId = `ai-${Date.now()}`
@@ -1173,11 +1185,21 @@ export const useChatStore = defineStore('chat', () => {
 
     addSystemMessage('工单已确认，正在连接 AI 助手...')
 
-    // 创建对话
-    await createConversation()
+    // 创建对话（失败时会抛出错误并显示提示）
+    try {
+      await createConversation()
+    } catch (e) {
+      isLoading.value = false
+      pendingUserMessage.value = ''
+      return  // 创建对话失败，不继续发送消息
+    }
 
     // 发送首条消息
-    await streamAIResponse(userMessage)
+    try {
+      await streamAIResponse(userMessage)
+    } catch (e: any) {
+      addSystemMessage(`AI 响应失败: ${e.message || '未知错误'}`)
+    }
 
     isLoading.value = false
     pendingUserMessage.value = ''
