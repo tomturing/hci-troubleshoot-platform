@@ -41,7 +41,7 @@ from ..models.terminal import (
 
 logger = get_logger("terminal-service")
 
-# 会话配置
+# 会话配置（Task 42: 终端操作录制）
 SESSION_PREFIX = "terminal:session:"
 SESSION_INDEX_KEY = "terminal:sessions"
 SESSION_EXPIRE_SECONDS = 3600  # 1 小时过期
