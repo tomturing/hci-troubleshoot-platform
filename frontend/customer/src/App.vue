@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
 import SshConnectDialog from '@/components/SshConnectDialog.vue'
+import TerminalReplay from '@/components/TerminalReplay.vue'
 
 const chatStore = useChatStore()
 const clientId = getClientId()
@@ -12,6 +13,9 @@ const clientId = getClientId()
 // 部署时在 .env 中配置 VITE_BRIDGE_DOWNLOAD_URL 指向实际文件
 const BRIDGE_DOWNLOAD_URL =
   import.meta.env.VITE_BRIDGE_DOWNLOAD_URL || '/downloads/terminal_bridge.exe'
+
+// 终端历史弹窗状态
+const showTerminalReplayDialog = ref(false)
 
 onMounted(() => {
   chatStore.initialize()
@@ -33,6 +37,13 @@ function handleDownloadBridge() {
   // 延迟移除，确保点击事件已触发
   setTimeout(() => document.body.removeChild(a), 200)
 }
+
+/**
+ * 打开当前工单的终端历史回放
+ */
+function openTerminalHistory() {
+  showTerminalReplayDialog.value = true
+}
 </script>
 
 <template>
@@ -51,6 +62,15 @@ function handleDownloadBridge() {
           >
             <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><i class="el-icon-connection" /></el-icon>
             SSH终端
+          </el-button>
+          <el-button
+            v-if="chatStore.hasActiveCase"
+            size="small"
+            round
+            class="terminal-history-btn header-action-btn"
+            @click="openTerminalHistory"
+          >
+            📹 终端历史
           </el-button>
           <el-button
             v-if="chatStore.hasActiveCase"
@@ -108,6 +128,21 @@ function handleDownloadBridge() {
           下载并打开
         </el-button>
       </template>
+    </el-dialog>
+
+    <!-- 终端历史回放弹窗 -->
+    <el-dialog
+      v-model="showTerminalReplayDialog"
+      title="终端历史回放"
+      width="80%"
+      top="5vh"
+      :close-on-click-modal="false"
+      class="terminal-replay-dialog"
+    >
+      <TerminalReplay
+        v-if="chatStore.currentCase?.case_id"
+        :case-id="chatStore.currentCase.case_id"
+      />
     </el-dialog>
   </div>
 </template>
@@ -257,5 +292,28 @@ body {
   align-items: center;
   justify-content: center;
   gap: 4px;
+}
+
+/* 终端历史按钮 */
+.terminal-history-btn {
+  background: rgba(64, 158, 255, 0.3) !important;
+  border: 1px solid rgba(64, 158, 255, 0.5) !important;
+  color: #fff !important;
+  font-size: 12px !important;
+}
+
+.terminal-history-btn:hover {
+  background: rgba(64, 158, 255, 0.5) !important;
+}
+
+/* 终端回放弹窗 */
+.terminal-replay-dialog :deep(.el-dialog__body) {
+  padding: 12px;
+  max-height: 80vh;
+  overflow: hidden;
+}
+
+.terminal-replay-dialog :deep(.el-dialog) {
+  max-width: 1200px;
 }
 </style>

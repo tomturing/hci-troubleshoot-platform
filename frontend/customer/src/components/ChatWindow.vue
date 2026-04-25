@@ -4,6 +4,7 @@ import { useChatStore } from '@/stores/chat'
 import MessageBubble from './MessageBubble.vue'
 import RatingCard from './RatingCard.vue'
 import TerminalPanel from './TerminalPanel.vue'
+import TerminalReplay from './TerminalReplay.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import DiagnosticProgress from './DiagnosticProgress.vue'
 import CaseCreateDialog from './CaseCreateDialog.vue'
@@ -17,6 +18,8 @@ const terminalPinned = ref(false)
 const historyPinned = ref(false)
 const terminalPanelWidth = ref(getDefaultPanelWidth())
 const historyPanelWidth = ref(getDefaultPanelWidth())
+const showTerminalReplayDialog = ref(false)
+const terminalReplayCaseId = ref<string | null>(null)
 
 // 拖拽调整抽屉宽度
 const startResizeTerminal = (e: MouseEvent) => {
@@ -153,6 +156,27 @@ function formatDate(d: string): string {
   return new Date(d).toLocaleString('zh-CN', {
     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
   })
+}
+
+/** 打开终端历史回放 */
+function openTerminalReplay() {
+  if (chatStore.historyCase) {
+    terminalReplayCaseId.value = chatStore.historyCase.case_id
+    showTerminalReplayDialog.value = true
+  }
+}
+
+function closeTerminalReplay() {
+  showTerminalReplayDialog.value = false
+  terminalReplayCaseId.value = null
+}
+
+/** 处理从终端回放引用内容到聊天 */
+function handleQuoteToChat(content: string) {
+  // 设置助手输入框内容
+  chatStore.setAssistantDraftText(`请分析以下终端操作记录：\n${content}`)
+  // 关闭终端回放弹窗
+  closeTerminalReplay()
 }
 </script>
 
@@ -341,6 +365,9 @@ function formatDate(d: string): string {
                 {{ statusLabel(chatStore.historyCase.status) }}
               </el-tag>
             </div>
+            <el-button size="small" type="primary" plain @click="openTerminalReplay">
+              终端历史
+            </el-button>
           </div>
           <div class="history-messages" v-loading="chatStore.historyLoading">
             <MessageBubble
@@ -362,6 +389,23 @@ function formatDate(d: string): string {
         </div>
       </div>
     </el-drawer>
+
+    <!-- 终端历史回放弹窗 -->
+    <el-dialog
+      v-model="showTerminalReplayDialog"
+      title="终端历史回放"
+      width="80%"
+      top="5vh"
+      :close-on-click-modal="false"
+      class="terminal-replay-dialog"
+      @close="closeTerminalReplay"
+    >
+      <TerminalReplay
+        v-if="terminalReplayCaseId"
+        :case-id="terminalReplayCaseId"
+        @quote-to-chat="handleQuoteToChat"
+      />
+    </el-dialog>
 
     <!-- 输入区域 -->
     <div class="input-area">
@@ -578,8 +622,15 @@ function formatDate(d: string): string {
 }
 
 .history-detail-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
   padding: 0 0 12px 0;
   border-bottom: 1px solid #f0f2f5;
+}
+
+.history-detail-header .el-button--primary {
+  margin-top: 4px;
 }
 
 .history-detail-info {
@@ -713,6 +764,17 @@ function formatDate(d: string): string {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+}
+
+/* 终端回放弹窗样式 */
+.terminal-replay-dialog :deep(.el-dialog__body) {
+  padding: 12px;
+  max-height: 80vh;
+  overflow: hidden;
+}
+
+.terminal-replay-dialog :deep(.el-dialog) {
+  max-width: 1200px;
 }
 
 </style>

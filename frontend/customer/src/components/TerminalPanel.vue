@@ -5,6 +5,10 @@
  * - 状态A：无工单 + 无SSH → "连接SSH并创建工单" → 打开 CaseCreateDialog
  * - 状态B：有工单 + 无SSH → "连接SSH" → 打开 SshConnectDialog
  * - 状态C：已连接 → 显示 xterm 终端
+ *
+ * Task 42: 终端操作录制功能
+ * - 命令输入和输出回显自动录制并上传数据库
+ * - 用于排障复盘和审计回放
  */
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { Terminal } from 'xterm'
@@ -13,8 +17,20 @@ import 'xterm/css/xterm.css'
 
 import { useChatStore } from '@/stores/chat'
 import { checkBridgeBeforeOpen } from '@/api/terminal'
+import {
+  createRecordingState,
+  startRecording,
+  stopRecording,
+  recordInput,
+  recordOutput,
+  forceFlushOutput,
+  stripAnsi,
+} from '@/api/terminal-recording'
 
 const chatStore = useChatStore()
+
+// ===== 终端操作录制状态 =====
+const recordingState = createRecordingState()
 
 const terminalInputRef = ref<{ focus: () => void } | null>(null)
 const terminalContainer = ref<HTMLElement | null>(null)
@@ -106,10 +122,21 @@ watch(
 
 // 监听连接状态变化
 watch(isConnected, async (connected) => {
-  if (!connected) return
-  await nextTick()
-  initTerminal()
-  if (fitAddon) fitAddon.fit()
+  if (connected) {
+    // 连接成功 → 开始录制
+    if (chatStore.currentCase?.case_id) {
+      startRecording(recordingState, chatStore.currentCase.case_id, {
+        conversationId: chatStore.currentConversationId,
+        sessionId: chatStore.sshCurrentConfig?.sessionId,
+      })
+    }
+    await nextTick()
+    initTerminal()
+    if (fitAddon) fitAddon.fit()
+  } else {
+    // 断开连接 → 停止录制
+    await stopRecording(recordingState)
+  }
 })
 
 function initTerminal() {
@@ -185,6 +212,11 @@ function writeTerminal(text: string) {
   if (xterm) {
     xterm.write(normalizeTerminalText(text))
   }
+
+  // Task 42: 录制输出（异步上传，不影响实时渲染）
+  if (recordingState.isRecording.value) {
+    recordOutput(recordingState, text)
+  }
 }
 
 function writeInfoLine(text: string) {
@@ -223,6 +255,11 @@ function latestOutputText(): string {
 
 function disconnectSsh() {
   manualDisconnect.value = true
+  // Task 42: 停止录制（先刷新输出缓冲区）
+  if (recordingState.isRecording.value) {
+    forceFlushOutput(recordingState)
+    stopRecording(recordingState)
+  }
   chatStore.disconnectSSH()
   writeInfoLine('已断开 SSH 会话')
 }
@@ -231,6 +268,11 @@ function executeCommand() {
   const command = localInput.value.trim()
   if (!command || !isConnected.value) return
 
+  // Task 42: 刷新上一条命令的输出缓冲区
+  if (recordingState.isRecording.value) {
+    forceFlushOutput(recordingState)
+  }
+
   if (currentCommandOutput.value.trim()) {
     lastCommandOutput.value = currentCommandOutput.value
   }
@@ -238,6 +280,12 @@ function executeCommand() {
   hasExecutedCommand.value = true
 
   writeTerminal(`\n$ ${command}\n`)
+
+  // Task 42: 录制输入命令
+  if (recordingState.isRecording.value) {
+    recordInput(recordingState, command)
+  }
+
   chatStore.sendSSHCommand(command, 'terminal')
   localInput.value = ''
 }
