@@ -117,13 +117,16 @@ class TestBuildContextInfo:
     async def test_build_success_all_types(self, service, mock_repository):
         """测试完整构建（所有类型都有数据）"""
         cluster_env = MagicMock()
-        cluster_env.env_data = {"hci_version": "6.8.1", "cluster_name": "prod-hci", "host_count": "3"}
+        # env_data 字段名与 acli platform info get 输出一致（key=value ini 格式）
+        cluster_env.env_data = {"hci_version": "6.8.1", "name": "prod-hci", "host_count": "3"}
 
         alert_env = MagicMock()
-        alert_env.env_data = {"alerts": [{"level": "CRITICAL", "trigger_time": "09:02", "content": "磁盘异常"}]}
+        # alerts 字段名与 acli alert list 实际输出一致：urgent_type/start/description/target
+        alert_env.env_data = {"alerts": [{"urgent_type": "紧急", "start": "09:02", "description": "磁盘异常", "target": "node-1"}]}
 
         task_env = MagicMock()
-        task_env.env_data = {"tasks": [{"status": "FAILED", "start_time": "09:01", "name": "Migration"}]}
+        # tasks 字段名与 acli task list 实际输出一致：process/start/type/description
+        task_env.env_data = {"tasks": [{"process": "失败", "start": "09:01", "type": "Migration", "description": ""}]}
 
         mock_repository.get_by_case_and_type.side_effect = [cluster_env, alert_env, task_env]
 
@@ -131,9 +134,11 @@ class TestBuildContextInfo:
 
         assert result.env_info["hci_version"] == "6.8.1"
         assert len(result.alert_logs) == 1
+        # urgent_type="紧急" 映射为 "CRITICAL"
         assert result.alert_logs[0]["level"] == "CRITICAL"
         assert len(result.task_logs) == 1
-        assert result.task_logs[0]["status"] == "FAILED"
+        # process 字段直接透传中文字符串
+        assert result.task_logs[0]["status"] == "失败"
 
     async def test_build_partial_data(self, service, mock_repository):
         """测试部分缺失（只有 cluster，无 alert/task）"""

@@ -106,10 +106,19 @@ watch(
 
 // 监听连接状态变化
 watch(isConnected, async (connected) => {
-  if (!connected) return
+  if (!connected) {
+    // 断开时销毁 xterm 实例，避免重连后 initTerminal 被守卫拦截
+    disposeTerminal()
+    return
+  }
   await nextTick()
   initTerminal()
-  if (fitAddon) fitAddon.fit()
+  // double rAF：等待浏览器完成布局后再 fit，避免 Drawer 动画期间取到错误尺寸
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (fitAddon) fitAddon.fit()
+    })
+  })
 })
 
 function initTerminal() {
@@ -292,7 +301,15 @@ function closePanel() {
 }
 
 onMounted(() => {
-  initTerminal()
+  // 如果 SSH 已连接（如 CaseCreateDialog 流程：SSH 先连接再打开 Drawer），
+  // Drawer 可能正处于开启动画中，此时容器尺寸未稳定。
+  // 用 double rAF 确保浏览器完成布局后再执行 fit。
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      initTerminal()
+      if (fitAddon) fitAddon.fit()
+    })
+  })
 })
 
 onBeforeUnmount(() => {
@@ -461,15 +478,18 @@ onBeforeUnmount(() => {
 
 .terminal-stage {
   flex: 1;
-  min-height: 240px;
+  min-height: 0;           /* 允许 flex-item 缩小到内容以下，防止撑破父容器 */
   background: #1e1e1e;
   padding: 10px 10px 0 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .terminal-canvas {
   width: 100%;
-  height: 100%;
-  min-height: 230px;
+  flex: 1;                 /* 填满 terminal-stage 的剩余高度，替代不稳定的 height: 100% */
+  min-height: 0;           /* flex 子元素必须显式清零，否则 min-height: auto 会阻止收缩 */
   border: 1px solid #333;
   border-radius: 6px;
   overflow: hidden;
@@ -541,7 +561,7 @@ onBeforeUnmount(() => {
   }
 
   .terminal-stage {
-    min-height: 200px;
+    min-height: 0;
   }
 }
 </style>

@@ -1654,28 +1654,76 @@ export const useChatStore = defineStore('chat', () => {
     devLog('submitCollectedData', '所有数据提交完成', { caseId })
   }
 
-  /** 解析 acli platform info get 输出 */
+  /**
+   * 解析 acli platform info get 输出
+   *
+   * acli platform info get 输出格式为 ini 风格：
+   *   [section]
+   *   key=value
+   *   key=value
+   *   ...
+   * 同时包含若干自由文本行（版本号行、内核行、历史记录行、Shell 提示符行）
+   *
+   * Bridge 命令实际包含 DONE marker：
+   *   acli platform info get; status=$?; printf '\n__HCI_DONE_...__:%s\n' "$status"
+   * 因此输出中还会包含 marker 行和命令回显行。
+   */
   function parseClusterOutput(output: string): Record<string, unknown> {
-    // 先剥离 ANSI 控制码
     const cleaned = stripAnsi(output)
-    const jsonData = parseJsonOutput(cleaned)
-    if (jsonData && typeof jsonData === 'object' && !Array.isArray(jsonData)) {
-      return jsonData as Record<string, unknown>
-    }
-
-    // 回退：按 key: value 行解析
     const result: Record<string, unknown> = {}
     const lines = cleaned.split('\n')
-    for (const line of lines) {
-      if (line.includes(':')) {
-        const colonIdx = line.indexOf(':')
-        const key = line.slice(0, colonIdx).trim()
-        const value = line.slice(colonIdx + 1).trim()
-        if (key && value) {
-          result[key.toLowerCase().replace(/\s+/g, '_')] = value
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim()
+      if (!line) continue
+
+      // 1. 跳过 DONE marker 行（__HCI_DONE_xxx__:0 格式）
+      if (line.startsWith('__HCI_DONE_')) continue
+
+      // 2. 跳过命令回显行（包含完整命令字符串）
+      if (line.includes('printf') || line.includes('__HCI_DONE_') || line.startsWith('acli ')) continue
+
+      // 3. 跳过 Shell 提示符行（Sangfor:xxx # 格式）
+      if (/^Sangfor:/.test(line)) continue
+
+      // 4. 跳过历史记录行（update 日志，格式为 "YYYY-MM-DD HH:MM:SS  update | ..."）
+      if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+update/.test(line)) continue
+
+      // 5. 跳过 section 标题行 [xxx]
+      if (/^\[.+\]$/.test(line)) continue
+
+      // 6. 解析 key=value 行（acli 的主要格式）
+      const eqIdx = line.indexOf('=')
+      if (eqIdx > 0) {
+        const key = line.slice(0, eqIdx).trim()
+        const value = line.slice(eqIdx + 1).trim()
+        // key 必须是合法标识符（字母、数字、下划线），排除误匹配
+        if (/^[a-zA-Z][a-zA-Z0-9_]*$/.test(key)) {
+          result[key] = value
+          continue
         }
       }
+
+      // 7. 提取特殊自由文本行：版本号行（如 "6.10.0_R2"）
+      if (/^\d+\.\d+\.\d+/.test(line) && !result['hci_version']) {
+        result['hci_version'] = line.trim()
+        continue
+      }
+
+      // 8. 提取内核信息行（Linux xxx ...）
+      if (line.startsWith('Linux ') && !result['kernel']) {
+        result['kernel'] = line.trim()
+        continue
+      }
+
+      // 9. 提取 build 时间行（build YYYY-MM-DD ...）
+      if (line.startsWith('build ') && !result['build_time']) {
+        result['build_time'] = line.trim()
+        continue
+      }
     }
+
+    devLog('parseClusterOutput', '解析完成', { keys: Object.keys(result) })
     return result
   }
 
