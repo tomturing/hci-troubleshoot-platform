@@ -322,11 +322,7 @@ export const useChatStore = defineStore('chat', () => {
         assistant_type: selectedAssistant.value || undefined,
       })
       currentCase.value = res.data
-      addSystemMessage(`工单 ${res.data.case_id} 已创建，正在自动确认...`)
-
-      const confirmed = await caseApi.confirm(res.data.case_id)
-      currentCase.value = confirmed.data
-      addSystemMessage('工单已确认，正在连接 AI 助手...')
+      addSystemMessage(`工单 ${res.data.case_id} 已创建，AI 正在识别故障类型，请稍候…`)
       // 无 SSH 流程也尝试加载历史环境数据（fire-and-forget）
       collectEnvironmentData(res.data.case_id).catch(() => {})
 

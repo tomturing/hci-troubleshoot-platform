@@ -1009,6 +1009,34 @@ class ConversationService:
                     hit_count=hit_count,
                 )
 
+            # SP-1 同步点（T1）：S0 分类写库成功后通知 case-service 推进工单状态为 confirmed
+            # 404 视为幂等成功（已 confirmed）；非 200/404 仅 warning 不中断主流程
+            if case_id and settings.CASE_SERVICE_URL:
+                import httpx  # noqa: PLC0415
+                try:
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        resp = await client.put(
+                            f"{settings.CASE_SERVICE_URL}/api/cases/{case_id}/confirm"
+                        )
+                    if resp.status_code not in (200, 404):
+                        logger.warning(
+                            event="case_confirm_failed",
+                            case_id=case_id,
+                            status_code=resp.status_code,
+                        )
+                    else:
+                        logger.info(
+                            event="case_confirmed_by_s0",
+                            message=f"工单 {case_id} 已由 S0 分类写库触发 confirm",
+                            case_id=case_id,
+                        )
+                except Exception as confirm_exc:
+                    logger.warning(
+                        event="case_confirm_error",
+                        case_id=case_id,
+                        error=str(confirm_exc),
+                    )
+
         except Exception as e:
             logger.warning(
                 event="conversation_category_update_error",
