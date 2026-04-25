@@ -139,37 +139,70 @@ class EnvironmentService:
         return context_info
 
     def _extract_env_info(self, env_data: dict) -> dict:
-        """提取环境基本信息（标准化格式）"""
+        """
+        提取环境基本信息（标准化格式）
+
+        acli platform info get 输出经前端 parseClusterOutput 解析后的字段：
+        - hci_version: 版本号行（如 "6.10.0_R2"）
+        - name: [cluster] section 的 name= 值（集群名）
+        - mcastaddr: [cluster] section 的 mcastaddr= 值（组播地址，体现网络配置）
+        - host_count / storage_type：当前 acli platform info get 不提供，保留"未知"
+        """
         return {
             "hci_version": env_data.get("hci_version", "未知"),
-            "cluster_name": env_data.get("cluster_name", "未知"),
-            "host_count": env_data.get("host_count", "未知"),
+            "cluster_name": env_data.get("name", "未知"),       # [cluster] name= 字段
+            "host_count": env_data.get("host_count", "未知"),   # 当前采集命令不含此字段
             "storage_type": env_data.get("storage_type", "未知"),
-            "network_config": env_data.get("network_config", "未知"),
+            "network_config": env_data.get("mcastaddr", "未知"),  # 组播地址体现网络配置
         }
 
     def _extract_alert_logs(self, env_data: dict) -> list[dict]:
-        """提取告警日志列表（标准化格式）"""
+        """
+        提取告警日志列表（标准化格式）
+
+        acli alert 数据实际字段（与历史期望字段对比）：
+          urgent_type: "紧急"/"普通"  →  level: "CRITICAL"/"WARNING"
+          description: 详细描述       →  content（截断 200 字符）
+          start: 告警时间             →  time
+          target: 告警目标            →  source
+        """
         alerts = env_data.get("alerts", [])
+
+        def map_level(urgent_type: str) -> str:
+            """将中文紧急程度映射为英文标准级别"""
+            if urgent_type == "紧急":
+                return "CRITICAL"
+            if urgent_type == "普通":
+                return "WARNING"
+            return "INFO"
+
         return [
             {
-                "level": a.get("level", "INFO"),
-                "time": a.get("trigger_time", ""),
-                "content": a.get("content", ""),
-                "source": a.get("source", ""),
+                "level": map_level(a.get("urgent_type", "")),
+                "time": a.get("start", ""),
+                "content": (a.get("description", "") or "")[:200],  # 截断避免 prompt 过长
+                "source": a.get("target", ""),
             }
             for a in alerts[:10]  # 最多 10 条
         ]
 
     def _extract_task_logs(self, env_data: dict) -> list[dict]:
-        """提取任务日志列表（标准化格式）"""
+        """
+        提取任务日志列表（标准化格式）
+
+        acli task 数据实际字段（与历史期望字段对比）：
+          process: "失败"/"完成"/"执行中"  →  status（替代数字 status 字段）
+          type: "系统备份" 等任务类型名    →  name
+          start: 开始时间                →  time
+          description: 错误详情          →  error（截断 300 字符）
+        """
         tasks = env_data.get("tasks", [])
         return [
             {
-                "status": t.get("status", "unknown"),
-                "time": t.get("start_time", ""),
-                "name": t.get("name", ""),
-                "error": t.get("error_msg", ""),
+                "status": t.get("process", "unknown"),             # 取中文字符串，而非数字 3
+                "time": t.get("start", ""),
+                "name": t.get("type", ""),                        # 任务类型名称
+                "error": (t.get("description", "") or "")[:300],  # 截断避免 prompt 过长
             }
-            for t in tasks[:5]  # 最多 5 条失败任务
+            for t in tasks[:5]  # 最多 5 条
         ]
