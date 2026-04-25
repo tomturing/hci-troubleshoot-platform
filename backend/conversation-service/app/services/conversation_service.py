@@ -282,7 +282,48 @@ class ConversationService:
             if _conv and _conv.diagnostic_stage:
                 current_stage = _conv.diagnostic_stage
 
-        # 2.5 【修复】获取环境上下文信息（Segment 4 数据）
+        # 2.5 S0 候选预处理（T3-c）：在调用 AI 之前拦截用户的 ①②③ 选择
+        # 若用户回复的是序号，直接写库 + 推进/兜底，不走 AI 本轮
+        if current_stage == "S0":
+            _selection = self._conversation_manager.parse_candidate_selection(content)
+            if _selection is not None:
+                # 用户输入了 ①②③ 序号
+                _candidates = await self._extract_s0_candidates(conversation_id)
+                if _candidates:
+                    _chosen = self._conversation_manager.resolve_candidate_category(_selection, _candidates)
+                    if _chosen:
+                        # 用户确认有效分类 → 写库、强制推进 S1，不调 AI
+                        asyncio.create_task(
+                            self._update_conversation_category(
+                                conversation_id=conversation_id,
+                                case_id=case_id,
+                                category_info=_chosen,
+                            )
+                        )
+                        asyncio.create_task(
+                            self._update_diagnostic_stage(
+                                conversation_id=conversation_id,
+                                new_stage="S1",
+                                old_stage="S0",
+                            )
+                        )
+                        yield (
+                            f"好的，确认故障分类为【{_chosen['code']} {_chosen['name']}】。\n"
+                            "开始故障定位分析，请稍候…"
+                        )
+                        return
+                    else:
+                        # 用户选 ③"以上都不是"
+                        _s0_rounds = await self._get_s0_candidate_rounds(conversation_id)
+                        if ConversationManager.should_trigger_s0_failure(_s0_rounds):
+                            _failure_msg = await self.handle_s0_failure(conversation_id, case_id)
+                            yield _failure_msg
+                            return
+                        asyncio.create_task(self._increment_s0_candidate_rounds(conversation_id))
+                        # 轮次未满：继续调用 AI，让其基于"以上都不是"重新给出候选
+                # 若提取不到历史候选（AI 尚未给出 ① ② 时直接回了序号），交 AI 处理
+
+        # 2.6 【修复】获取环境上下文信息（Segment 4 数据）
         context_info: dict | None = None
         if current_stage == "S0" and self.environment_client:
             env_context = await self.environment_client.get_context_info(case_id)
@@ -405,15 +446,6 @@ class ConversationService:
                             old_stage=current_stage,
                         )
                     )
-                    # S0→S1 转换：提取分类信息，更新 Conversation.category_id 和命中计数
-                    if current_stage == "S0" and category_info:
-                        asyncio.create_task(
-                            self._update_conversation_category(
-                                conversation_id=conversation_id,
-                                case_id=case_id,
-                                category_info=category_info,
-                            )
-                        )
                     # S3→S4 转换（实为 AI 输出根因时）：提取关联 KBD，写 resolved_kbd_entry_id
                     # 注意：new_stage 是目标阶段，若从 S3 转换到 S4，current_stage 为 S3
                     if new_stage == "S4" and current_stage == "S3":
@@ -425,6 +457,16 @@ class ConversationService:
                                 kbd_entry_id=kbd_entry_id,
                             )
                         )
+                # S0 阶段 category 写入与阶段转换解耦：只要 AI 输出了分类信息就写入，
+                # 不依赖 new_stage 是否同时触发（修复 T3-b）
+                if current_stage == "S0" and category_info:
+                    asyncio.create_task(
+                        self._update_conversation_category(
+                            conversation_id=conversation_id,
+                            case_id=case_id,
+                            category_info=category_info,
+                        )
+                    )
         except Exception as e:
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="error").inc()
             if isinstance(e, asyncio.CancelledError):
@@ -1149,6 +1191,135 @@ class ConversationService:
                 message=f"resolved_kbd_entry_id 更新失败：{e}",
                 conversation_id=str(conversation_id),
                 kbd_entry_id=kbd_entry_id,
+            )
+
+    # ─── S0 候选辅助方法 (T3-c) ─────────────────────────────────────────────
+
+    async def _extract_s0_candidates(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> list[dict[str, str]]:
+        """
+        从上一条 assistant 消息中提取 S0 给出的候选分类列表。
+
+        扫描最近一条 AI 消息，用正则提取 ① ② 对应的 {code, name}。
+        格式示例：
+          ① 虚拟机-003 虚拟机开机失败
+          ② 存储-005 存储卷挂载异常
+
+        Returns:
+            list[dict]，每项格式 {"code": "...", "name": "..."}；
+            无匹配时返回 []
+        """
+        import re
+
+        from sqlalchemy import select
+
+        from ..models.conversation import Message as MessageModel
+
+        _candidate_item_pattern = re.compile(
+            r"[①②]\s*([\u4e00-\u9fa5A-Za-z]+-\d+)\s+([\u4e00-\u9fa5A-Za-z0-9\s]+?)(?:\n|$)"
+        )
+        try:
+            # 取最近一条 assistant 消息
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    result = await session.execute(
+                        select(MessageModel.content)
+                        .where(
+                            MessageModel.conversation_id == conversation_id,
+                            MessageModel.role == "assistant",
+                        )
+                        .order_by(MessageModel.created_at.desc())
+                        .limit(1)
+                    )
+                    last_ai_content = result.scalar_one_or_none()
+            else:
+                msgs = await self.repository.get_messages(conversation_id)
+                ai_msgs = [m for m in msgs if m.role.value == "assistant"]
+                last_ai_content = ai_msgs[-1].content if ai_msgs else None
+
+            if not last_ai_content:
+                return []
+
+            candidates: list[dict[str, str]] = []
+            for m in _candidate_item_pattern.finditer(last_ai_content):
+                candidates.append({"code": m.group(1).strip(), "name": m.group(2).strip()})
+            return candidates
+        except Exception as e:
+            logger.warning(
+                event="extract_s0_candidates_error",
+                message=f"提取 S0 候选分类失败：{e}",
+                conversation_id=str(conversation_id),
+            )
+            return []
+
+    async def _get_s0_candidate_rounds(self, conversation_id: uuid.UUID) -> int:
+        """
+        读取 S0 候选确认已进行的轮次数。
+
+        从 conversation.metadata_["s0_candidate_rounds"] 读取，默认 0。
+        """
+        from sqlalchemy import select
+
+        from ..models.conversation import Conversation as ConversationModel
+
+        try:
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    result = await session.execute(
+                        select(ConversationModel.metadata_).where(
+                            ConversationModel.conversation_id == conversation_id
+                        )
+                    )
+                    meta = result.scalar_one_or_none() or {}
+            else:
+                conv = await self.repository.get_conversation(conversation_id)
+                meta = conv.metadata_ if conv else {}
+            return int((meta or {}).get("s0_candidate_rounds", 0))
+        except Exception:
+            return 0
+
+    async def _increment_s0_candidate_rounds(self, conversation_id: uuid.UUID) -> None:
+        """
+        将 conversation.metadata_["s0_candidate_rounds"] 原子 +1 写回。
+
+        采用 read-modify-write 方式：先读出 metadata_，+1 后整体写回。
+        并发写冲突极小（S0 每轮只有 1 次用户选 ③），可接受。
+        """
+        from sqlalchemy import select
+        from sqlalchemy import update as sa_update
+
+        from ..models.conversation import Conversation as ConversationModel
+
+        try:
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    result = await session.execute(
+                        select(ConversationModel.metadata_).where(
+                            ConversationModel.conversation_id == conversation_id
+                        )
+                    )
+                    meta = dict(result.scalar_one_or_none() or {})
+                    meta["s0_candidate_rounds"] = int(meta.get("s0_candidate_rounds", 0)) + 1
+                    await session.execute(
+                        sa_update(ConversationModel)
+                        .where(ConversationModel.conversation_id == conversation_id)
+                        .values(metadata_=meta)
+                    )
+                    await session.commit()
+            else:
+                conv = await self.repository.get_conversation(conversation_id)
+                if conv:
+                    meta = dict(conv.metadata_ or {})
+                    meta["s0_candidate_rounds"] = int(meta.get("s0_candidate_rounds", 0)) + 1
+                    conv.metadata_ = meta
+                    await self.repository.session.flush()
+        except Exception as e:
+            logger.warning(
+                event="increment_s0_rounds_error",
+                message=f"递增 s0_candidate_rounds 失败：{e}",
+                conversation_id=str(conversation_id),
             )
 
     # ─── S0 失败兜底 (v2) ────────────────────────────────────────────────────
