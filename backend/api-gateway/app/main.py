@@ -44,8 +44,8 @@ async def lifespan(app: FastAPI):
     session_manager = SessionManager(redis_manager)
 
     # 数据库连接（终端操作录制写库需要）
+    # DatabaseManager.__init__ 中已创建引擎，无需显式 connect()
     db_manager = DatabaseManager(settings.DATABASE_URL)
-    await db_manager.connect()
 
     # 终端服务：注入 db_manager，修复操作记录无法写库的问题（T4）
     terminal_service = TerminalService(redis_manager, db_manager=db_manager)
