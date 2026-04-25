@@ -126,8 +126,7 @@ watch(isConnected, async (connected) => {
     // 连接成功 → 开始录制
     if (chatStore.currentCase?.case_id) {
       startRecording(recordingState, chatStore.currentCase.case_id, {
-        conversationId: chatStore.currentConversationId,
-        sessionId: chatStore.sshCurrentConfig?.sessionId,
+        conversationId: chatStore.conversationId,
       })
     }
     await nextTick()
