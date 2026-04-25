@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     # Redis配置
     REDIS_URL: str = "redis://redis:6379/0"
 
+    # PostgreSQL数据库配置
+    DATABASE_URL: str = "postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot"
+
     # CORS 允许的来源（逗号分隔，支持环境变量覆盖）
     ALLOWED_ORIGINS: str = "http://localhost:3001,http://localhost:3002"
 

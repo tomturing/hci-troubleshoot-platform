@@ -1,16 +1,23 @@
 """
 终端会话 HTTP API 路由
 Task 37: SSH 代理与终端交互后端能力
+Task 42: 终端操作录制功能
 
 提供：
 - POST /api/terminal/sessions - 创建终端会话
 - POST /api/terminal/sessions/{id}/close - 关闭终端会话
 - GET /api/terminal/sessions/{id} - 获取会话信息
+- POST /api/terminal/operations - 创建操作记录
+- GET /api/terminal/operations - 查询操作记录
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..models.terminal import (
+    OperationDirection,
+    TerminalOperationCreate,
+    TerminalOperationListResponse,
+    TerminalOperationResponse,
     TerminalSessionClose,
     TerminalSessionCreate,
     TerminalSessionResponse,
@@ -128,3 +135,73 @@ async def get_session(
         raise HTTPException(status_code=403, detail="无权限访问该会话")
 
     return session_info
+
+
+# ============================================================
+# 终端操作录制 API (Task 42)
+# ============================================================
+
+
+@router.post("/operations", response_model=TerminalOperationResponse)
+async def create_operation(
+    body: TerminalOperationCreate,
+    service: TerminalService = Depends(get_terminal_service),
+):
+    """
+    创建终端操作记录
+
+    前端录制命令输入或输出回显后调用此接口写入数据库。
+    """
+    try:
+        operation = await service.create_operation(
+            case_id=body.case_id,
+            conversation_id=body.conversation_id,
+            session_id=body.session_id,
+            seq_number=body.seq_number,
+            direction=body.direction,
+            command=body.command,
+            content=body.content,
+            content_clean=body.content_clean,
+            exit_code=body.exit_code,
+            diagnostic_stage=body.diagnostic_stage,
+        )
+        return operation
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"创建操作记录失败: {e}")
+
+
+@router.get("/operations", response_model=TerminalOperationListResponse)
+async def list_operations(
+    case_id: str = Query(..., description="工单 ID"),
+    stage: str | None = Query(default=None, description="诊断阶段过滤"),
+    search: str | None = Query(default=None, description="关键词搜索"),
+    direction: OperationDirection | None = Query(default=None, description="方向过滤"),
+    order: str = Query(default="asc", description="排序方向"),
+    limit: int = Query(default=100, ge=1, le=1000, description="返回数量限制"),
+    offset: int = Query(default=0, ge=0, description="偏移量"),
+    service: TerminalService = Depends(get_terminal_service),
+):
+    """
+    查询终端操作记录
+
+    支持按工单、诊断阶段、关键词过滤，用于回放展示。
+    """
+    try:
+        total, operations = await service.list_operations(
+            case_id=case_id,
+            stage=stage,
+            search=search,
+            direction=direction,
+            order=order,
+            limit=limit,
+            offset=offset,
+        )
+        return TerminalOperationListResponse(total=total, operations=operations)
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询操作记录失败: {e}")

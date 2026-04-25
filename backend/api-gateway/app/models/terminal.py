@@ -1,6 +1,7 @@
 """
 SSH 终端会话相关模型
 Task 37: SSH 代理与终端交互后端能力
+Task 42: 终端操作录制功能
 """
 
 from datetime import UTC, datetime
@@ -117,3 +118,61 @@ class TerminalStatusMessage(BaseModel):
     type: WSMessageType = WSMessageType.STATUS
     state: TerminalSessionStatus
     message: str | None = None
+
+
+# ============================================================
+# 终端操作录制相关模型 (Task 42)
+# ============================================================
+
+class OperationDirection(StrEnum):
+    """操作方向"""
+    INPUT = "input"
+    OUTPUT = "output"
+
+
+class TerminalOperationCreate(BaseModel):
+    """创建终端操作记录请求"""
+
+    case_id: str = Field(..., description="工单 ID")
+    conversation_id: str | None = Field(default=None, description="会话 ID（可选）")
+    session_id: str | None = Field(default=None, description="SSH session ID（可选）")
+    seq_number: int = Field(..., ge=1, description="操作序号")
+    direction: OperationDirection = Field(..., description="操作方向")
+    command: str | None = Field(default=None, description="命令文本（仅 input 类型）")
+    content: str = Field(..., description="原始内容（含 ANSI 码）")
+    content_clean: str | None = Field(default=None, description="纯文本内容（剔除 ANSI）")
+    exit_code: int | None = Field(default=None, description="退出码（仅 output 类型）")
+    diagnostic_stage: str | None = Field(default=None, description="诊断阶段 S0-S6")
+
+
+class TerminalOperationResponse(BaseModel):
+    """终端操作记录响应"""
+
+    id: int = Field(..., description="记录 ID")
+    case_id: str = Field(..., description="工单 ID")
+    seq_number: int = Field(..., description="操作序号")
+    direction: OperationDirection = Field(..., description="操作方向")
+    command: str | None = Field(default=None, description="命令文本")
+    content: str = Field(..., description="原始内容")
+    exit_code: int | None = Field(default=None, description="退出码")
+    diagnostic_stage: str | None = Field(default=None, description="诊断阶段")
+    created_at: str = Field(..., description="操作时间")
+
+
+class TerminalOperationListResponse(BaseModel):
+    """终端操作记录列表响应"""
+
+    total: int = Field(..., description="总记录数")
+    operations: list[TerminalOperationResponse] = Field(default_factory=list, description="操作列表")
+
+
+class TerminalOperationQuery(BaseModel):
+    """终端操作查询参数"""
+
+    case_id: str = Field(..., description="工单 ID")
+    stage: str | None = Field(default=None, description="诊断阶段过滤")
+    search: str | None = Field(default=None, description="关键词搜索")
+    direction: OperationDirection | None = Field(default=None, description="方向过滤")
+    order: str = Field(default="asc", description="排序方向 asc/desc")
+    limit: int = Field(default=100, ge=1, le=1000, description="返回数量限制")
+    offset: int = Field(default=0, ge=0, description="偏移量")
