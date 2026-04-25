@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from opentelemetry import trace as otel_trace
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from shared.database.postgres import DatabaseManager
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from shared.utils.metrics import HTTPMetricsMiddleware
@@ -42,12 +43,17 @@ async def lifespan(app: FastAPI):
 
     session_manager = SessionManager(redis_manager)
 
-    # 终端服务
-    terminal_service = TerminalService(redis_manager)
+    # 数据库连接（终端操作录制写库需要）
+    db_manager = DatabaseManager(settings.DATABASE_URL)
+    await db_manager.connect()
+
+    # 终端服务：注入 db_manager，修复操作记录无法写库的问题（T4）
+    terminal_service = TerminalService(redis_manager, db_manager=db_manager)
     await terminal_service.start()
 
     # 存入 app.state
     app.state.redis_manager = redis_manager
+    app.state.db_manager = db_manager
     app.state.session_manager = session_manager
     app.state.terminal_service = terminal_service
 
@@ -62,6 +68,7 @@ async def lifespan(app: FastAPI):
     # 关闭
     logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
     await terminal_service.shutdown()
+    await db_manager.close()
     await redis_manager.close()
 
 
