@@ -292,7 +292,7 @@ class ConversationService:
                 if _candidates:
                     _chosen = self._conversation_manager.resolve_candidate_category(_selection, _candidates)
                     if _chosen:
-                        # 用户确认有效分类 → 写库、强制推进 S1，不调 AI
+                        # 用户确认有效分类 → 写库、强制推进 S1，继续调用 AI 开始 S1 分析
                         asyncio.create_task(
                             self._update_conversation_category(
                                 conversation_id=conversation_id,
@@ -310,9 +310,11 @@ class ConversationService:
                         )
                         yield (
                             f"好的，确认故障分类为【{_chosen['code']} {_chosen['name']}】。\n"
-                            "开始故障定位分析，请稍候…"
+                            "开始故障定位分析，请稍候…\n\n"
                         )
-                        return
+                        # 发出阶段切换事件通知前端，并继续以 S1 身份调用 AI
+                        yield "\x00event:stage_change:S1\x00"
+                        current_stage = "S1"
                     else:
                         # 用户选 ③"以上都不是"
                         _s0_rounds = await self._get_s0_candidate_rounds(conversation_id)
