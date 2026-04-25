@@ -28,7 +28,6 @@ from shared.database.postgres import DatabaseManager
 from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
-
 from ..models.terminal import (
     AuthType,
     OperationDirection,
