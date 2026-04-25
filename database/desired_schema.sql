@@ -944,8 +944,56 @@ CREATE INDEX IF NOT EXISTS idx_sop_document_category_published ON sop_document (
 CREATE INDEX IF NOT EXISTS idx_sop_chunk_document ON sop_chunk (document_id, chunk_index);
 -- 全文检索
 CREATE INDEX IF NOT EXISTS idx_sop_chunk_tsv ON sop_chunk USING GIN (tsv);
--- D-002: 向量相似度检索索引（SOP 章节语义检索，S1+ 阶段使用）
+-- D-002: 向量相似度检索索引（SOP 竨节语义检索，S1+ 阶段使用）
 -- ⚠️  注意：IVFFlat 需数据量 > 1000 行且执行 ANALYZE 后才能正常发挥效果。
 --    建议在批量导入 SOP 内容后执行：ANALYZE sop_chunk;
 CREATE INDEX IF NOT EXISTS idx_sop_chunk_embedding ON sop_chunk
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+
+-- ------------------------------------------------------------
+-- 表: terminal_operation  [模块: case-service]
+-- 说明: 终端操作录制表 — 记录 SSH 终端的命令输入和输出回显，用于排障复盘和审计
+-- 用途: 工程师通过 SSH 终端执行诊断命令时，前端拦截输入/输出并写入此表；后续在 custom-ui/admin-ui 回放操作序列
+-- 归属分析: case_id 必填，生命周期依赖工单，与 diagnostic_item 同构（诊断过程的"行动"证据），归属工单模块
+-- 版本: v7.0 新增（2026-04-25）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS terminal_operation (
+    id serial NOT NULL,
+    case_id varchar(32) NOT NULL,
+    conversation_id uuid,
+    session_id varchar(64),
+    seq_number integer NOT NULL,
+    direction varchar(10) NOT NULL,
+    command text,
+    content text NOT NULL,
+    content_clean text,
+    exit_code integer,
+    diagnostic_stage varchar(10),
+    created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    trace_id varchar(64),
+    CONSTRAINT terminal_operation_pkey PRIMARY KEY (id)
+);
+
+COMMENT ON TABLE terminal_operation IS '终端操作录制表 — 记录 SSH 终端的命令输入和输出回显，用于排障复盘和审计';
+COMMENT ON COLUMN terminal_operation.id IS '主键，自增';
+COMMENT ON COLUMN terminal_operation.case_id IS '工单 ID，关联 case 表（非外键，工单可能跨服务）';
+COMMENT ON COLUMN terminal_operation.conversation_id IS '会话 ID，可选关联，用于追溯对话上下文';
+COMMENT ON COLUMN terminal_operation.session_id IS 'SSH session ID，关联 api-gateway 的终端会话';
+COMMENT ON COLUMN terminal_operation.seq_number IS '操作序号，同一工单内递增，用于回放时排序';
+COMMENT ON COLUMN terminal_operation.direction IS '操作方向枚举：input（用户输入）/ output（命令回显）';
+COMMENT ON COLUMN terminal_operation.command IS '输入命令文本（仅 input 类型有值），用于快速展示';
+COMMENT ON COLUMN terminal_operation.content IS '原始内容（含 ANSI 转义码），用于回放时 xterm.js 渲染';
+COMMENT ON COLUMN terminal_operation.content_clean IS '剥离 ANSI 转义码的纯文本，用于关键词搜索';
+COMMENT ON COLUMN terminal_operation.exit_code IS '命令退出码（仅 output 类型有值），0=成功，非0=失败';
+COMMENT ON COLUMN terminal_operation.diagnostic_stage IS '诊断阶段（S0-S6），可选，用于阶段过滤';
+COMMENT ON COLUMN terminal_operation.created_at IS '操作时间，精确到毫秒';
+COMMENT ON COLUMN terminal_operation.trace_id IS '请求追踪 ID（W3C traceparent），用于问题溯源';
+
+-- 索引: terminal_operation
+-- 按工单+序号查询（回放主查询）
+CREATE INDEX IF NOT EXISTS idx_terminal_operation_case_seq ON terminal_operation (case_id, seq_number);
+-- 按工单+时间查询（时间范围过滤）
+CREATE INDEX IF NOT EXISTS idx_terminal_operation_case_time ON terminal_operation (case_id, created_at);
+-- 全文搜索（关键词检索）
+CREATE INDEX IF NOT EXISTS idx_terminal_operation_content_search ON terminal_operation USING GIN (to_tsvector('simple', content_clean));

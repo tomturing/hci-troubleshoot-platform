@@ -12,6 +12,7 @@ import {
   STATUS_COLORS,
 } from '@hci/shared'
 import type { CaseResponse, MessageResponse } from '@hci/shared'
+import TerminalReplay from '@/components/TerminalReplay.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -500,6 +501,17 @@ function getRiskLabel(level: number): { text: string; type: '' | 'success' | 'wa
                 </div>
               </div>
             </div>
+          </el-tab-pane>
+
+          <!-- 终端历史标签页 -->
+          <el-tab-pane label="终端历史" name="terminal-history">
+            <template #label>
+              <span>
+                <el-icon><Monitor /></el-icon>
+                终端历史
+              </span>
+            </template>
+            <TerminalReplay :case-id="caseId" />
           </el-tab-pane>
         </el-tabs>
       </el-card>
