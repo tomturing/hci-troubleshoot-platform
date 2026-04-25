@@ -58,9 +58,11 @@ function loadSavedSshConfig() {
     const saved = localStorage.getItem('hci_last_ssh_config')
     if (saved) {
       const config = JSON.parse(saved)
-      if (!localForm.value.host && config.host) localForm.value.host = config.host
-      if (!localForm.value.port && config.port) localForm.value.port = String(config.port)
-      if (!localForm.value.username && config.username) localForm.value.username = config.username
+      // 始终覆盖，确保上次使用的端口和用户名都能正确还原
+      // port 默认值 '22' 是 truthy，不能用 !port 判断是否需要填充
+      if (config.host) localForm.value.host = config.host
+      if (config.port) localForm.value.port = String(config.port)
+      if (config.username) localForm.value.username = config.username
     }
   } catch {
     // ignore

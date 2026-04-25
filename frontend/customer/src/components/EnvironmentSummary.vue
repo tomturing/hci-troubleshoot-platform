@@ -68,7 +68,13 @@ const summaryText = computed(() => {
   const parts: string[] = []
 
   if (ctx.env_info) {
-    parts.push(`集群信息: ${ctx.env_info.hci_version || '未知'}, ${ctx.env_info.host_count || '未知'}节点`)
+    const version = ctx.env_info.hci_version && ctx.env_info.hci_version !== '未知' ? ctx.env_info.hci_version : null
+    const hostCount = ctx.env_info.host_count && ctx.env_info.host_count !== '未知' ? ctx.env_info.host_count : null
+    if (version || hostCount) {
+      parts.push(`集群信息: ${version || '版本待采集'}, ${hostCount || '?'}节点`)
+    } else {
+      parts.push('集群信息: 待采集')
+    }
   }
 
   if (ctx.alert_logs) {
@@ -121,14 +127,24 @@ const collectionState = computed(() => chatStore.collectionState)
           <span class="section-title">集群信息</span>
         </div>
         <div class="section-content">
-          <div v-if="chatStore.environmentContext.env_info.hci_version">
+          <!-- 仅展示有实际值（非"未知"占位）的字段 -->
+          <div v-if="chatStore.environmentContext.env_info.hci_version && chatStore.environmentContext.env_info.hci_version !== '未知'">
             集群版本: {{ chatStore.environmentContext.env_info.hci_version }}
           </div>
-          <div v-if="chatStore.environmentContext.env_info.cluster_name">
+          <div v-if="chatStore.environmentContext.env_info.cluster_name && chatStore.environmentContext.env_info.cluster_name !== '未知'">
             集群名称: {{ chatStore.environmentContext.env_info.cluster_name }}
           </div>
-          <div v-if="chatStore.environmentContext.env_info.host_count">
+          <div v-if="chatStore.environmentContext.env_info.host_count && chatStore.environmentContext.env_info.host_count !== '未知'">
             节点数量: {{ chatStore.environmentContext.env_info.host_count }}
+          </div>
+          <!-- 所有字段均为"未知"时显示提示 -->
+          <div
+            v-if="(!chatStore.environmentContext.env_info.hci_version || chatStore.environmentContext.env_info.hci_version === '未知')
+              && (!chatStore.environmentContext.env_info.cluster_name || chatStore.environmentContext.env_info.cluster_name === '未知')
+              && (!chatStore.environmentContext.env_info.host_count || chatStore.environmentContext.env_info.host_count === '未知')"
+            class="no-data-hint"
+          >
+            集群数据暂未采集（SSH 连接后自动采集）
           </div>
         </div>
       </div>
@@ -359,5 +375,12 @@ const collectionState = computed(() => chatStore.collectionState)
   font-size: 12px;
   color: #909399;
   line-height: 1.8;
+}
+
+/* 集群数据暂无提示 */
+.no-data-hint {
+  font-size: 12px;
+  color: #909399;
+  font-style: italic;
 }
 </style>

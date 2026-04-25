@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { ChatMessage } from '@/stores/chat'
+import { useChatStore } from '@/stores/chat'
 import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
 import CommandBlock from './CommandBlock.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
+
+const chatStore = useChatStore()
 
 const isUser = computed(() => props.message.role === 'user')
 const isSystem = computed(() => props.message.role === 'system')
@@ -247,6 +250,67 @@ function generateDescription(command: string): string {
 function renderTextSegment(content: string): string {
   return renderMarkdown(content)
 }
+
+// ============================================================
+// 选项选择渲染（S0 候选故障 / S6 等需要用户点选的阶段）
+// ============================================================
+
+/** 圆圈数字字符集（①-⑨，覆盖常见多候选场景） */
+const CIRCLED_DIGITS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨']
+
+interface ChoiceItem {
+  label: string   // 圆圈数字，如 "①"
+  title: string   // 候选项首行简短标题
+}
+
+/**
+ * 从 AI 消息内容中提取可点击选项列表。
+ *
+ * 识别规则：消息中出现至少两个圆圈数字（①②③...）开头的行，
+ * 且消息末尾包含类似"请回复"/"请选择"/"请确认"/"请回复"的交互引导语。
+ * 仅对尚未流式输出完成的消息静默跳过，避免中途渲染。
+ */
+const choiceOptions = computed<ChoiceItem[]>(() => {
+  if (!props.message.content || props.message.isStreaming) return []
+  if (props.message.role !== 'assistant') return []
+
+  const content = props.message.content
+  const lines = content.split('\n')
+
+  // 提取以圆圈数字开头的行
+  const choices: ChoiceItem[] = []
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const digit = CIRCLED_DIGITS.find(d => trimmed.startsWith(d))
+    if (digit) {
+      // 取首行作为标题：去掉开头的圆圈数字和多余空白
+      const title = trimmed.slice(digit.length).trim()
+      // 取第一个句子（到句号/换行为止），最多50字
+      const shortTitle = title.split(/[。！？\n]/)[0].slice(0, 50)
+      choices.push({ label: digit, title: shortTitle || digit })
+    }
+  }
+
+  // 至少需要2个选项才渲染按钮（排除普通列表干扰）
+  if (choices.length < 2) return []
+
+  // 消息必须包含交互引导语（"请回复"/"请选择"/"请确认"）
+  const hasGuide = /请回复|请选择|请确认|请输入|请告知/.test(content)
+  if (!hasGuide) return []
+
+  return choices
+})
+
+/** 已选选项（防止重复发送） */
+const selectedChoice = ref<string | null>(null)
+
+/** 点击选项：将选项标签作为用户消息发送 */
+async function handleChoiceSelect(choice: ChoiceItem) {
+  if (selectedChoice.value || chatStore.isLoading) return
+  selectedChoice.value = choice.label
+  await chatStore.sendMessage(choice.label)
+}
 </script>
 
 <template>
@@ -320,6 +384,24 @@ function renderTextSegment(content: string): string {
             </div>
           </template>
         </div>
+        <!-- 可点击选项区（S0候选故障选择 / S6等交互阶段） -->
+        <div v-if="choiceOptions.length > 0" class="choice-selector">
+          <div class="choice-hint">点击选择：</div>
+          <div class="choice-buttons">
+            <el-button
+              v-for="choice in choiceOptions"
+              :key="choice.label"
+              size="small"
+              :type="selectedChoice === choice.label ? 'primary' : 'default'"
+              :disabled="!!selectedChoice || chatStore.isLoading"
+              class="choice-btn"
+              @click="handleChoiceSelect(choice)"
+            >
+              {{ choice.label }} {{ choice.title }}
+            </el-button>
+          </div>
+        </div>
+
         <div class="bubble-meta">
           <span class="bubble-time">{{ formatTime(message.timestamp) }}</span>
           <el-button
@@ -744,5 +826,33 @@ function renderTextSegment(content: string): string {
 }
 .streaming-command-placeholder code {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+/* 可点击选项区（S0/S6 等交互选择阶段） */
+.choice-selector {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e4e7ed;
+}
+
+.choice-hint {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 6px;
+}
+
+.choice-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.choice-btn {
+  max-width: 280px;
+  white-space: normal;
+  text-align: left;
+  height: auto;
+  line-height: 1.4;
+  padding: 6px 12px;
 }
 </style>
