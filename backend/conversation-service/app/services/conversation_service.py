@@ -298,6 +298,7 @@ class ConversationService:
                                 conversation_id=conversation_id,
                                 case_id=case_id,
                                 category_info=_chosen,
+                                trigger_confirm=True,
                             )
                         )
                         asyncio.create_task(
@@ -919,6 +920,7 @@ class ConversationService:
         conversation_id: uuid.UUID,
         case_id: str,
         category_info: dict[str, str],
+        trigger_confirm: bool = False,
     ) -> None:
         """
         更新 Conversation.category_id 并增加分类命中计数（fire-and-forget 后台任务）
@@ -927,11 +929,13 @@ class ConversationService:
         1. 更新 Conversation.category_id / category_l1 / category_l2
         2. Case 级去重：同一 case 已有 conversation 写入相同 category_id，跳过 hit +1
         3. 调用 KB Client 增加分类命中计数（仅首次）
+        4. 仅当 trigger_confirm=True（用户明确选择 ①②③ 时）才触发 SP-1 confirm
 
         Args:
             conversation_id: 会话 ID
             case_id: 工单 ID（用于 case 级去重检查）
             category_info: 分类信息 {"code": "虚拟机-003", "name": "虚拟机开机失败"}
+            trigger_confirm: 是否触发 SP-1 工单状态确认（True=用户明确选择，False=AI 回复解析）
         """
         from sqlalchemy import select
         from sqlalchemy import update as sa_update
@@ -1009,9 +1013,9 @@ class ConversationService:
                     hit_count=hit_count,
                 )
 
-            # SP-1 同步点（T1）：S0 分类写库成功后通知 case-service 推进工单状态为 confirmed
+            # SP-1 同步点（T1）：仅用户明确选择 ①②③ 后才触发 confirm，防止 AI 生成候选时误触发
             # 404 视为幂等成功（已 confirmed）；非 200/404 仅 warning 不中断主流程
-            if case_id and settings.CASE_SERVICE_URL:
+            if trigger_confirm and case_id and settings.CASE_SERVICE_URL:
                 import httpx  # noqa: PLC0415
                 try:
                     async with httpx.AsyncClient(timeout=5.0) as client:

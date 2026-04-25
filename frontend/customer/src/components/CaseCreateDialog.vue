@@ -30,6 +30,7 @@ import {
 } from '@/api/terminal'
 import { createApiClient, createCaseApi, createEnvironmentApi } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
+import { parseClusterOutput } from '@/utils/parseCluster'
 import SshFormSection from './SshFormSection.vue'
 
 const chatStore = useChatStore()
@@ -218,20 +219,11 @@ async function runCollectionAndUpsert() {
       const parsed = parseJsonOutput(output)
 
       if (cmdInfo.name === 'cluster') {
-        // 集群信息可能是 key:value 格式
+        // 集群信息：优先尝试 JSON 解析，否则用 parseClusterOutput 解析 key=value 格式
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           collectedData.cluster = parsed as Record<string, unknown>
         } else {
-          // 尝试解析 key:value 格式
-          const lines = stripAnsi(output).split('\n')
-          const clusterData: Record<string, unknown> = {}
-          for (const line of lines) {
-            const match = line.match(/^([^:]+):\s*(.+)$/)
-            if (match) {
-              clusterData[match[1].trim()] = match[2].trim()
-            }
-          }
-          collectedData.cluster = clusterData
+          collectedData.cluster = parseClusterOutput(output)
         }
         addLog('success', `${cmdInfo.label} 采集成功`)
       } else if (cmdInfo.name === 'alert') {
