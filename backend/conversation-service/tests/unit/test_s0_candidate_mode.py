@@ -203,13 +203,15 @@ class TestS0PromptMethodology:
 
 
 class TestS0PromptOutputFormat:
-    """S0 输出格式规范（两路分支）"""
+    """S0 输出格式规范（统一候选确认模式）"""
 
-    def test_contains_direct_confirm_case(self, builder: PromptBuilder):
-        """情况一：高置信度直接确认格式"""
+    def test_no_direct_confirm_case(self, builder: PromptBuilder):
+        """T2 修复：高置信度直接确认路径已删除，格式中不得出现 '80%' 置信度阈值触发直接确认的说明"""
         fmt = builder._segment_s0_output_format()
-        assert "已确认故障分类" in fmt
-        assert "80%" in fmt
+        # '80%' 仅出现在旧版情况一的阈值判断中，新版统一候选模式不应存在该值
+        assert "80%" not in fmt
+        # 禁止说明里会出现'已确认故障分类'字样（作为禁止示例），但不应作为正向指令输出
+        assert "⛔" in fmt  # 严格禁止标记必须存在
 
     def test_contains_candidate_confirm_case(self, builder: PromptBuilder):
         """情况二：候选选项格式"""
@@ -239,9 +241,10 @@ class TestS0PromptOutputFormat:
         assert "判断依据" in fmt
 
     def test_example_category_format(self, builder: PromptBuilder):
-        """示例格式包含完整 code + name"""
+        """T2 修复后：输出格式使用占位符模板，不再嵌入具体分类示例"""
         fmt = builder._segment_s0_output_format()
-        assert "虚拟机-003" in fmt
+        # 新格式用占位符而非固定示例分类码
+        assert "{分类code-1}" in fmt or "分类code" in fmt
 
 
 # ─── 候选选择 + 分类提取集成路径 ─────────────────────────────────────────────
