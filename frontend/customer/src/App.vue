@@ -16,6 +16,8 @@ const BRIDGE_DOWNLOAD_URL =
 
 // 终端历史弹窗状态
 const showTerminalReplayDialog = ref(false)
+// 每次打开弹窗时自增，强制 TerminalReplay 重新挂载以触发数据刷新
+const replayKey = ref(0)
 
 onMounted(() => {
   chatStore.initialize()
@@ -42,6 +44,7 @@ function handleDownloadBridge() {
  * 打开当前工单的终端历史回放
  */
 function openTerminalHistory() {
+  replayKey.value++
   showTerminalReplayDialog.value = true
 }
 </script>
@@ -141,6 +144,7 @@ function openTerminalHistory() {
     >
       <TerminalReplay
         v-if="chatStore.currentCase?.case_id"
+        :key="replayKey"
         :case-id="chatStore.currentCase.case_id"
       />
     </el-dialog>

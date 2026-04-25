@@ -305,11 +305,72 @@ const choiceOptions = computed<ChoiceItem[]>(() => {
 /** 已选选项（防止重复发送） */
 const selectedChoice = ref<string | null>(null)
 
+/**
+ * 判断该消息的选项是否已经被交互过（页面刷新后仍有效）。
+ * 判断逻辑：在 chatStore.messages 中找到当前消息之后是否存在用户的圆圈数字回复消息。
+ */
+const hasBeenInteracted = computed(() => {
+  if (!choiceOptions.value.length) return false
+  const msgIndex = chatStore.messages.findIndex(m => m.id === props.message.id)
+  if (msgIndex === -1) return false
+  const laterMessages = chatStore.messages.slice(msgIndex + 1)
+  return laterMessages.some(
+    m => m.role === 'user' && CIRCLED_DIGITS.some(d => m.content.startsWith(d))
+  )
+})
+
+/** 历史交互中已选中的选项左签（用于刷新后继续高亮展示） */
+const interactedChoice = computed(() => {
+  if (!choiceOptions.value.length) return null
+  const msgIndex = chatStore.messages.findIndex(m => m.id === props.message.id)
+  if (msgIndex === -1) return null
+  const laterMessages = chatStore.messages.slice(msgIndex + 1)
+  const found = laterMessages.find(
+    m => m.role === 'user' && CIRCLED_DIGITS.some(d => m.content.startsWith(d))
+  )
+  if (!found) return null
+  return CIRCLED_DIGITS.find(d => found.content.startsWith(d)) ?? null
+})
+
+/** 判断是否为“以上都不是”类型的选项（点击后需要正文输入） */
+function isNoneOfAbove(choice: ChoiceItem): boolean {
+  return choice.title.includes('以上都不是') || choice.title.includes('补充症状') || choice.title.includes('补充描述')
+}
+
+/** 待输入的选项（以上都不是流程） */
+const pendingInputChoice = ref<ChoiceItem | null>(null)
+/** 补充信息输入框内容 */
+const freeInputText = ref('')
+
 /** 点击选项：将选项标签作为用户消息发送 */
 async function handleChoiceSelect(choice: ChoiceItem) {
-  if (selectedChoice.value || chatStore.isLoading) return
+  if (selectedChoice.value || hasBeenInteracted.value || chatStore.isLoading) return
+
+  // 如果是“以上都不是”类型，展开输入框而不立即发送
+  if (isNoneOfAbove(choice)) {
+    pendingInputChoice.value = choice
+    return
+  }
+
   selectedChoice.value = choice.label
   await chatStore.sendMessage(choice.label)
+}
+
+/** 提交“以上都不是”的补充描述 */
+async function handleFreeInputSubmit() {
+  if (!pendingInputChoice.value || !freeInputText.value.trim()) return
+  const choice = pendingInputChoice.value
+  const text = freeInputText.value.trim()
+  selectedChoice.value = choice.label
+  freeInputText.value = ''
+  pendingInputChoice.value = null
+  await chatStore.sendMessage(`${choice.label} ${text}`)
+}
+
+/** 取消补充输入 */
+function cancelFreeInput() {
+  pendingInputChoice.value = null
+  freeInputText.value = ''
 }
 </script>
 
@@ -386,19 +447,43 @@ async function handleChoiceSelect(choice: ChoiceItem) {
         </div>
         <!-- 可点击选项区（S0候选故障选择 / S6等交互阶段） -->
         <div v-if="choiceOptions.length > 0" class="choice-selector">
-          <div class="choice-hint">点击选择：</div>
+          <div class="choice-hint">
+            <template v-if="hasBeenInteracted || selectedChoice">已选择：</template>
+            <template v-else>点击选择：</template>
+          </div>
           <div class="choice-buttons">
             <el-button
               v-for="choice in choiceOptions"
               :key="choice.label"
               size="small"
-              :type="selectedChoice === choice.label ? 'primary' : 'default'"
-              :disabled="!!selectedChoice || chatStore.isLoading"
+              :type="(selectedChoice === choice.label || interactedChoice === choice.label) ? 'primary' : 'default'"
+              :disabled="!!selectedChoice || hasBeenInteracted || chatStore.isLoading"
               class="choice-btn"
+              :class="{ 'choice-btn--interacted': hasBeenInteracted && interactedChoice !== choice.label }"
               @click="handleChoiceSelect(choice)"
             >
               {{ choice.label }} {{ choice.title }}
             </el-button>
+          </div>
+          <!-- “以上都不是”补充输入框 -->
+          <div v-if="pendingInputChoice" class="free-input-area">
+            <div class="free-input-hint">{{ pendingInputChoice.label }} {{ pendingInputChoice.title }}，请补充具体症状：</div>
+            <el-input
+              v-model="freeInputText"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 5 }"
+              placeholder="请输入具体症状描述..."
+              autofocus
+            />
+            <div class="free-input-actions">
+              <el-button size="small" @click="cancelFreeInput">取消</el-button>
+              <el-button
+                size="small"
+                type="primary"
+                :disabled="!freeInputText.trim() || chatStore.isLoading"
+                @click="handleFreeInputSubmit"
+              >提交</el-button>
+            </div>
           </div>
         </div>
 
@@ -854,5 +939,33 @@ async function handleChoiceSelect(choice: ChoiceItem) {
   height: auto;
   line-height: 1.4;
   padding: 6px 12px;
+}
+
+/* 已交互状态：非选中项置灰 */
+.choice-btn--interacted {
+  opacity: 0.45;
+}
+
+/* 以上都不是补充输入区 */
+.free-input-area {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #f5f7fa;
+  border-radius: 6px;
+  border: 1px solid #e4e7ed;
+}
+
+.free-input-hint {
+  font-size: 12px;
+  color: #606266;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.free-input-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
 }
 </style>
