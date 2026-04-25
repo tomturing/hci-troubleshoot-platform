@@ -22,7 +22,6 @@ from typing import Any
 import asyncssh
 from fastapi import WebSocket
 from sqlalchemy import text
-
 from app.config import settings
 from shared.database.postgres import DatabaseManager
 from shared.database.redis import RedisManager
