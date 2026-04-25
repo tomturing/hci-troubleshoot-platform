@@ -19,7 +19,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from app.config import settings
 import asyncssh
 from fastapi import WebSocket
 from shared.database.postgres import DatabaseManager
@@ -27,6 +26,8 @@ from shared.database.redis import RedisManager
 from shared.utils.logger import get_logger
 from shared.utils.otel import get_current_trace_id
 from sqlalchemy import text
+
+from app.config import settings
 
 from ..models.terminal import (
     AuthType,
