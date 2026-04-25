@@ -789,11 +789,6 @@ export const useChatStore = defineStore('chat', () => {
       const caseId = res.data.case_id
       devLog('createCaseAndOpenSsh', '工单创建成功', { caseId })
 
-      // 确认工单
-      const confirmed = await caseApi.confirm(caseId)
-      currentCase.value = confirmed.data
-      devLog('createCaseAndOpenSsh', '工单确认成功', { caseId, status: confirmed.data.status })
-
       openSshFlowDialog(caseId, 'create-case', params.assistantType)
     } catch (e: any) {
       const detail = e.response?.data?.detail || e.message
@@ -1179,15 +1174,7 @@ export const useChatStore = defineStore('chat', () => {
     showCaseTemplate.value = false
     addUserMessage(userMessage)
 
-    addSystemMessage(`工单 ${caseId} 已创建，正在确认...`)
-
-    // 确认工单（若未确认）
-    if (currentCase.value?.status === 'created') {
-      const confirmed = await caseApi.confirm(caseId)
-      currentCase.value = confirmed.data
-    }
-
-    addSystemMessage('工单已确认，正在连接 AI 助手...')
+    addSystemMessage(`工单 ${caseId} 已创建，AI 正在识别故障类型，请稍候…`)
 
     // 创建对话（失败时会抛出错误并显示提示）
     try {
@@ -1246,12 +1233,7 @@ export const useChatStore = defineStore('chat', () => {
         const caseId = res.data.case_id
         appendSshCreationLog('info', 'case', '工单创建成功', { caseId, status: res.data.status })
 
-        // 2. 确认工单
-        const confirmed = await caseApi.confirm(caseId)
-        currentCase.value = confirmed.data
-        appendSshCreationLog('info', 'case', '工单确认成功', { caseId, status: confirmed.data.status })
-
-        // 3. 建立 SSH 连接
+        // 2. 建立 SSH 连接
         devLog('SSH-CREATE', '开始建立 WebSocket 连接到 Bridge')
         const socket = createBridgeSocket()
         devLog('SSH-CREATE', 'WebSocket 对象已创建，等待连接')
@@ -1754,11 +1736,7 @@ export const useChatStore = defineStore('chat', () => {
         assistant_type: assistantType || selectedAssistant.value || undefined,
       })
       currentCase.value = res.data
-      addSystemMessage(`工单 ${res.data.case_id} 已创建（无 SSH 连接）`)
-
-      const confirmed = await caseApi.confirm(res.data.case_id)
-      currentCase.value = confirmed.data
-      addSystemMessage('工单已确认，正在连接 AI 助手...')
+      addSystemMessage(`工单 ${res.data.case_id} 已创建，AI 正在识别故障类型，请稍候…`)
 
       await createConversation()
       await streamAIResponse(pendingUserMessage.value)
