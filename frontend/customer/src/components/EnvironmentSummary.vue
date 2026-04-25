@@ -30,11 +30,11 @@ function buildEnvironmentSummary(ctx: any): string {
 
   if (ctx.env_info) {
     lines.push('\n【集群信息】')
-    lines.push(`集群版本: ${ctx.env_info.cluster_version || '未知'}`)
-    lines.push(`节点数量: ${ctx.env_info.node_count || '未知'}`)
-    if (ctx.env_info.storage_pools) {
-      lines.push(`存储池: ${ctx.env_info.storage_pools}`)
+    lines.push(`集群版本: ${ctx.env_info.hci_version || '未知'}`)
+    if (ctx.env_info.cluster_name) {
+      lines.push(`集群名称: ${ctx.env_info.cluster_name}`)
     }
+    lines.push(`节点数量: ${ctx.env_info.host_count || '未知'}`)
   }
 
   if (ctx.alert_logs && ctx.alert_logs.length > 0) {
@@ -68,7 +68,7 @@ const summaryText = computed(() => {
   const parts: string[] = []
 
   if (ctx.env_info) {
-    parts.push(`集群信息: ${ctx.env_info.cluster_version || '未知'}, ${ctx.env_info.node_count || '未知'}节点`)
+    parts.push(`集群信息: ${ctx.env_info.hci_version || '未知'}, ${ctx.env_info.host_count || '未知'}节点`)
   }
 
   if (ctx.alert_logs) {
@@ -76,8 +76,9 @@ const summaryText = computed(() => {
   }
 
   if (ctx.task_logs) {
-    const failed = ctx.task_logs.filter((t: any) => t.status === 'FAILED').length
-    const running = ctx.task_logs.filter((t: any) => t.status === 'RUNNING').length
+    // 后端返回中文状态值：'失败'、'完成'、'执行中'
+    const failed = ctx.task_logs.filter((t: any) => t.status === '失败').length
+    const running = ctx.task_logs.filter((t: any) => t.status === '执行中').length
     parts.push(`任务状态: ${failed} 条失败 / ${running} 条运行中`)
   }
 
@@ -120,14 +121,14 @@ const collectionState = computed(() => chatStore.collectionState)
           <span class="section-title">集群信息</span>
         </div>
         <div class="section-content">
-          <div v-if="chatStore.environmentContext.env_info.cluster_version">
-            集群版本: {{ chatStore.environmentContext.env_info.cluster_version }}
+          <div v-if="chatStore.environmentContext.env_info.hci_version">
+            集群版本: {{ chatStore.environmentContext.env_info.hci_version }}
           </div>
-          <div v-if="chatStore.environmentContext.env_info.node_count">
-            节点数量: {{ chatStore.environmentContext.env_info.node_count }}
+          <div v-if="chatStore.environmentContext.env_info.cluster_name">
+            集群名称: {{ chatStore.environmentContext.env_info.cluster_name }}
           </div>
-          <div v-if="chatStore.environmentContext.env_info.storage_pools">
-            存储池: {{ chatStore.environmentContext.env_info.storage_pools }}
+          <div v-if="chatStore.environmentContext.env_info.host_count">
+            节点数量: {{ chatStore.environmentContext.env_info.host_count }}
           </div>
         </div>
       </div>
@@ -168,7 +169,7 @@ const collectionState = computed(() => chatStore.collectionState)
             :key="idx"
             class="task-item"
           >
-            <el-tag :type="task.status === 'FAILED' ? 'danger' : task.status === 'RUNNING' ? 'warning' : 'success'" size="small">
+            <el-tag :type="task.status === '失败' ? 'danger' : task.status === '执行中' ? 'warning' : 'success'" size="small">
               {{ task.status || 'UNKNOWN' }}
             </el-tag>
             <span class="task-name">{{ task.name }}</span>
