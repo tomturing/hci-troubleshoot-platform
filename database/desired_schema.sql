@@ -952,10 +952,11 @@ CREATE INDEX IF NOT EXISTS idx_sop_chunk_embedding ON sop_chunk
 
 
 -- ------------------------------------------------------------
--- 表: terminal_operation  [模块: api-gateway]
+-- 表: terminal_operation  [模块: case-service]
 -- 说明: 终端操作录制表 — 记录 SSH 终端的命令输入和输出回显，用于排障复盘和审计
 -- 用途: 工程师通过 SSH 终端执行诊断命令时，前端拦截输入/输出并写入此表；后续在 custom-ui/admin-ui 回放操作序列
--- 版本: v6.3 新增（2026-04-25）
+-- 归属分析: case_id 必填，生命周期依赖工单，与 diagnostic_item 同构（诊断过程的"行动"证据），归属工单模块
+-- 版本: v7.0 新增（2026-04-25）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS terminal_operation (
     id serial NOT NULL,
