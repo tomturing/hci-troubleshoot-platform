@@ -130,6 +130,16 @@ async def send_message(
                 assistant_type=message.assistant_type  # v2.2: 支持动态切换助手
             ):
                 if chunk:
+                    # 检测特殊内部事件标记（\x00event:<type>:<data>\x00）
+                    if chunk.startswith("\x00event:") and chunk.endswith("\x00"):
+                        # 解析内部事件并转换为 SSE 事件格式
+                        inner = chunk[7:-1]  # 去掉前缀 \x00event: 和末尾 \x00
+                        parts = inner.split(":", 1)
+                        evt_type = parts[0]
+                        evt_data = parts[1] if len(parts) > 1 else ""
+                        event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
+                        yield f"event: {evt_type}\ndata: {event_payload}\n\n"
+                        continue
                     ai_content.append(chunk)
                     # JSON encode chunk 以安全保留换行符，避免 SSE 多行截断
                     encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)

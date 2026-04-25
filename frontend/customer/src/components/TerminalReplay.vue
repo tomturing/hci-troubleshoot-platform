@@ -44,6 +44,8 @@ const loading = ref(false)
 const operations = ref<TerminalOperationResponse[]>([])
 const totalOps = ref(0)
 const currentSeq = ref(0)
+// 当前播放索引（0-based），用于按位置导航，避免依赖 seq_number 连续性
+const currentIndex = ref(0)
 
 // 时间轴控制
 const isPlaying = ref(false)
@@ -69,12 +71,12 @@ let resizeObserver: ResizeObserver | null = null
 // ============================================================
 
 const currentOp = computed(() => {
-  return operations.value.find((op) => op.seq_number === currentSeq.value)
+  return operations.value[currentIndex.value] ?? null
 })
 
 const progressPercent = computed(() => {
   if (totalOps.value === 0) return 0
-  return Math.round((currentSeq.value / totalOps.value) * 100)
+  return Math.round(((currentIndex.value + 1) / totalOps.value) * 100)
 })
 
 const inputOps = computed(() => {
@@ -102,6 +104,7 @@ async function loadOperations() {
     totalOps.value = result.total
 
     if (result.operations.length > 0) {
+      currentIndex.value = 0
       currentSeq.value = result.operations[0].seq_number
     }
 
@@ -266,7 +269,7 @@ function scheduleNextPlay() {
 
   playTimer.value = setTimeout(() => {
     nextOperation()
-    if (currentSeq.value < totalOps.value) {
+    if (currentIndex.value < totalOps.value - 1) {
       scheduleNextPlay()
     } else {
       // 播放完毕
@@ -277,23 +280,25 @@ function scheduleNextPlay() {
 }
 
 function nextOperation() {
-  const nextSeq = currentSeq.value + 1
-  if (nextSeq <= totalOps.value) {
-    currentSeq.value = nextSeq
+  if (currentIndex.value < operations.value.length - 1) {
+    currentIndex.value++
+    currentSeq.value = operations.value[currentIndex.value].seq_number
     renderCurrentOperation()
   }
 }
 
 function prevOperation() {
-  const prevSeq = currentSeq.value - 1
-  if (prevSeq >= 1) {
-    currentSeq.value = prevSeq
+  if (currentIndex.value > 0) {
+    currentIndex.value--
+    currentSeq.value = operations.value[currentIndex.value].seq_number
     renderCurrentOperation()
   }
 }
 
 function jumpToSeq(seq: number) {
-  if (seq >= 1 && seq <= totalOps.value) {
+  const idx = operations.value.findIndex((op) => op.seq_number === seq)
+  if (idx !== -1) {
+    currentIndex.value = idx
     currentSeq.value = seq
     renderCurrentOperation()
   }
@@ -467,10 +472,10 @@ watch(() => props.caseId, () => {
     <!-- 时间轴控制 -->
     <div v-if="viewMode === 'timeline'" class="timeline-control">
       <el-button-group>
-        <el-button :disabled="currentSeq <= 1" @click="prevOperation">◀</el-button>
+        <el-button :disabled="currentIndex <= 0" @click="prevOperation">◀</el-button>
         <el-button v-if="isPlaying" type="primary" @click="pause">⏸ 暂停</el-button>
-        <el-button v-else type="primary" :disabled="currentSeq >= totalOps" @click="play">▶ 播放</el-button>
-        <el-button :disabled="currentSeq >= totalOps" @click="nextOperation">▶</el-button>
+        <el-button v-else type="primary" :disabled="currentIndex >= totalOps - 1" @click="play">▶ 播放</el-button>
+        <el-button :disabled="currentIndex >= totalOps - 1" @click="nextOperation">▶</el-button>
       </el-button-group>
 
       <el-select v-model="speed" style="width: 80px">
@@ -479,7 +484,7 @@ watch(() => props.caseId, () => {
         <el-option label="5x" :value="5" />
       </el-select>
 
-      <span class="progress-text">进度: {{ currentSeq }}/{{ totalOps }}</span>
+      <span class="progress-text">进度: {{ currentIndex + 1 }}/{{ totalOps }}</span>
 
       <el-progress :percentage="progressPercent" :show-text="false" style="width: 200px" />
     </div>
