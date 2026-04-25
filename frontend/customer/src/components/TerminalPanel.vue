@@ -346,6 +346,12 @@ function closePanel() {
 
 onMounted(() => {
   // 如果 SSH 已连接（如 CaseCreateDialog 流程：SSH 先连接再打开 Drawer），
+  // watch(isConnected) 不会触发（因为没有 transition），需在 onMounted 手动启动录制
+  if (isConnected.value && chatStore.currentCase?.case_id) {
+    startRecording(recordingState, chatStore.currentCase.case_id, {
+      conversationId: chatStore.conversationId ?? undefined,
+    })
+  }
   // Drawer 可能正处于开启动画中，此时容器尺寸未稳定。
   // 用 double rAF 确保浏览器完成布局后再执行 fit。
   requestAnimationFrame(() => {

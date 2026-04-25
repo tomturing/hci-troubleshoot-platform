@@ -383,12 +383,10 @@ async function runSshAndCreateCase() {
     })
     createdCaseId.value = caseRes.data.case_id
     addLog('success', `工单已创建: ${createdCaseId.value}`)
-
-    // 确认工单
-    const confirmed = await caseApi.confirm(createdCaseId.value)
+    // 注意：工单 confirm 由后端 SP-1（用户选择 S0 分类后）触发，前端不主动 confirm
     // 同步写入 chatStore.currentCase，使头部工单 badge 即刻生效且后续 completeCaseCreationFlow 能找到对应工单
-    chatStore.currentCase = confirmed.data
-    addLog('success', '工单已确认')
+    chatStore.currentCase = caseRes.data
+    addLog('success', '工单已创建')
 
     currentStep.value = 2
 
@@ -507,8 +505,7 @@ async function handleNoSSHCreate() {
     })
     createdCaseId.value = caseRes.data.case_id
 
-    // 确认工单
-    await caseApi.confirm(createdCaseId.value)
+    // 注意：工单 confirm 由后端 SP-1（用户选择 S0 分类后）触发，前端不主动 confirm
 
     currentStep.value = 3
     addLog('success', `工单已创建: ${createdCaseId.value}（无环境数据）`)

@@ -1247,7 +1247,7 @@ class ConversationService:
 
         from sqlalchemy import select
 
-        from ..models.conversation import Message as MessageModel
+        from ..models.message import Message as MessageModel
 
         _candidate_item_pattern = re.compile(
             r"[①②]\s*([\u4e00-\u9fa5A-Za-z]+-\d+)\s+([\u4e00-\u9fa5A-Za-z0-9\s]+?)(?:\n|$)"
