@@ -180,7 +180,7 @@ bash scripts/ops/k3s-verify.sh
 ```
 hci-troubleshoot-platform/
 ├── backend/                   # 后端微服务
-│   ├── api-gateway/           # API 网关 :8000
+│   ├── api-gateway/           # API 网关 :8000（含 SSH 终端、终端操作录制）
 │   ├── case-service/          # 工单服务 :8001
 │   ├── conversation-service/  # 对话服务 :8002
 │   ├── scheduler-service/     # 调度服务 :8003
