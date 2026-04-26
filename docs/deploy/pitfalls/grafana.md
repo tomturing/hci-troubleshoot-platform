@@ -43,26 +43,41 @@ sudo k3s kubectl port-forward svc/grafana 3000:3000 -n hci-observability
 **现象：**
 - admin-ui「系统监控」页面 iframe 显示的是 customer-ui（HCI 故障排查助手）。
 - `curl http://<host>/grafana/` 返回 HTML 标题是 `HCI 故障排查助手` 而不是 `Grafana`。
+- HTTPS 访问时 `/grafana` 显示 customer-ui 内容（Grafana Ingress 只监听 HTTP）。
 
 **根因：**
-路径路由模式下，Grafana 独立 Ingress 若未绑定主 Host 或优先级不足，Traefik 可能将 `/grafana` 命中到主站 Ingress 的 `path: /` 回退规则，最终转发到 customer-ui。
+1. **优先级问题**：路径路由模式下，Grafana 独立 Ingress 若未绑定主 Host 或优先级不足，Traefik 可能将 `/grafana` 命中到主站 Ingress 的 `path: /` 回退规则。
+2. **入口点问题（2026-04 新增）**：当主站启用 TLS 时，主站 Ingress 使用 `websecure` 入口点（HTTPS），但 Grafana Ingress 仍使用 `web` 入口点（HTTP）。HTTPS 请求只会匹配 `websecure` 入口点的 Ingress，导致 Grafana Ingress 不匹配，被主站 `/` 回退规则捕获。
 
 **永久修复（已验证）：**
 1. 在 `templates/observability/ingress.yaml` 为 grafana-ingress 设置更高优先级：
-	- `traefik.ingress.kubernetes.io/router.priority: "2000"`
+	- `traefik.ingress.kubernetes.io/router.priority: “2000”`
 2. 在 `routingMode=path` 下，grafana-ingress 使用与主站一致的 host（从 `global.publicUrl` 提取）。
-3. 在 values 固化参数：
-	- `ingress.grafanaRouterPriority: "2000"`
+3. **入口点自动切换（2026-04 新增）**：根据 `ingress.tls` 配置自动选择入口点：
+	```yaml
+	{{- if .Values.ingress.tls }}
+	traefik.ingress.kubernetes.io/router.entrypoints: websecure
+	{{- else }}
+	traefik.ingress.kubernetes.io/router.entrypoints: web
+	{{- end }}
+	```
+4. 在 values 固化参数：
+	- `ingress.grafanaRouterPriority: “2000”`
 
 **验证：**
 ```bash
-# 1) 直接看页面标题
-curl -s http://acli.sangfor.com.cn:4888/grafana/ | grep -i "<title>"
+# 1) 直接看页面标题（HTTP）
+curl -s http://acli.sangfor.com.cn:4888/grafana/ | grep -i “<title>”
 # 期望：<title>Grafana</title>
 
-# 2) 运行平台验收脚本（已含命中内容校验）
+# 2) HTTPS 访问验证
+curl -sk https://acli.sangfor.com.cn:4443/grafana/ | grep -i “<title>”
+# 期望：<title>Grafana</title>
+
+# 3) 运行平台验收脚本（已含命中内容校验）
 cd /aihci/hci-troubleshoot-platform && bash scripts/k3s-verify.sh
 ```
 
 **防回归：**
-- 发布后必须执行 `k3s-verify.sh`，其 grafana 检查已升级为“校验内容来自 Grafana”，不再只看 HTTP 200。
+- 发布后必须执行 `k3s-verify.sh`，其 grafana 检查已升级为”校验内容来自 Grafana”，不再只看 HTTP 200。
+- 启用 TLS 后必须验证 HTTPS 端口的 `/grafana` 路由正确。
