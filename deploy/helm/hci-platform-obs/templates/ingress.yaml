@@ -9,7 +9,13 @@ metadata:
   labels:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
+    # 根据是否启用 TLS 选择 entrypoint
+    # TLS 启用时使用 websecure（HTTPS，端口 4443），否则使用 web（HTTP，端口 4888）
+    {{- if .Values.ingress.tls }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    {{- else }}
     traefik.ingress.kubernetes.io/router.entrypoints: web
+    {{- end }}
     # /grafana 路由必须高于主 ingress 的 / 回退路由，否则会被 customer-ui 吞掉（PIT-020 回归）
     traefik.ingress.kubernetes.io/router.priority: {{ .Values.ingress.grafanaRouterPriority | quote }}
     {{- with .Values.ingress.annotations }}
