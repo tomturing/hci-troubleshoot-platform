@@ -1,0 +1,50 @@
+# =============================================================================
+# ArgoCD Root Application (staging) — App of Apps 入口
+#
+# 设计原则（官方最佳实践）：
+#   - Root Application 定义在独立目录（bootstrap/），不在被管理的目录中
+#   - 避免"管理者管理自己"的循环引用问题
+#   - 手动 apply 后，它自动管理所有子 Applications
+#
+# 管理范围：
+#   argo-apps/cloud/ — staging/prod 环境所有子 Applications
+#     - argocd-rbac.yaml (sync-wave: -1) → RBAC 权限先就绪
+#     - argocd-ops.yaml (sync-wave: 0) → PreSync Job 可正常执行
+#     - hci-platform-*.yaml → 业务应用
+#
+# 同步顺序控制：
+#   通过 argocd.argoproj.io/sync-wave annotation 控制子 Application 同步顺序：
+#   - sync-wave: -1 → argocd-rbac（先同步，确保 SA/Role 就绪）
+#   - sync-wave: 0 → argocd-ops（PreSync Job 需要 RBAC 权限）
+#   - sync-wave: 默认 → 其他业务 Application
+#
+# Bootstrap 步骤：
+#   kubectl apply -f deploy/gitops/bootstrap/argocd-root-cloud.yaml
+#
+# 变更历史：
+#   2026-04-26 v1.0 初版，统一dev/staging ArgoCD架构
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-root
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "ArgoCD Root Application (staging) — App of Apps 管理所有子 Applications（bootstrap 入口）"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  source:
+    repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+    targetRevision: main
+    path: deploy/gitops/argo-apps/cloud
+    directory:
+      recurse: false
+  syncPolicy:
+    automated:
+      prune: true           # 子 Application 随 Git 变更弹性增删
+      selfHeal: true        # 防止 Application 配置被手动修改后漂移
+    syncOptions:
+      - CreateNamespace=false   # argocd namespace 已存在
