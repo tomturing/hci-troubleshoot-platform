@@ -485,12 +485,37 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 
 // ── 主入口 ────────────────────────────────────────────────────────────────────
 
+// corsWebSocketHandler 包装 websocket.Handler，添加 CORS 头支持
+// 解决 Chrome Private Network Access (PNA) 限制：
+// 从公网域名访问 localhost 时，浏览器要求服务端返回特定的 CORS 头
+func corsWebSocketHandler(wsHandler websocket.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 设置 CORS 头，允许任意来源访问
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// 关键：声明允许从公共网络访问私有网络
+		w.Header().Set("Access-Control-Allow-Private-Network", "true")
+		// 允许的请求方法和头
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		// 处理 CORS 预检请求（OPTIONS）
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// 非 OPTIONS 请求，交给 WebSocket handler 处理
+		wsHandler.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	bridge := newBridge()
-	http.Handle("/", websocket.Handler(bridge.handle))
+	http.Handle("/", corsWebSocketHandler(websocket.Handler(bridge.handle)))
 
 	addr := fmt.Sprintf("localhost:%d", wsPort)
-	log.Printf("[Bridge] HCI SSH Bridge 已启动，监听 ws://%s\n", addr)
+	log.Printf("[Bridge] HCI SSH Bridge 已启动，监听 ws://%s", addr)
+	log.Printf("[Bridge] CORS 已启用，支持从公网域名访问")
 
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal("[Bridge] 启动失败:", err)
