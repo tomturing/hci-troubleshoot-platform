@@ -1,5 +1,65 @@
 # K8s / K3s / Helm 运维避坑
 
+## D-007：公网 HTTP 页面访问 localhost 被 PNA 阻止
+
+> **触发场景：** 用户从公网域名访问系统，WebSocket 连接本地 bridge（ws://localhost:9999）失败。
+
+**现象：**
+- 本地 dev 环境（`http://hci.local`）正常连接 terminal_bridge
+- 云端 staging 环境（`http://acli.sangfor.com.cn:4888`）WebSocket 连接失败
+- 浏览器控制台报错：`WebSocket connection to 'ws://localhost:9999/' failed`
+- fetch 测试显示：`The request client is not a secure context and the resource is in more-private address space 'loopback'`
+
+**根因：** Chrome 104+ 引入 [Private Network Access (PNA)](https://developer.chrome.com/blog/private-network-access-preflight/) 安全机制：
+- 非安全上下文（HTTP + 公网域名）禁止访问 localhost（私有网络）
+- 这是浏览器硬性限制，CORS 头无法绕过
+
+**判断方式：**
+| 环境 | 页面协议 | 域名类型 | 安全上下文 | 访问 localhost |
+|-----|---------|---------|----------|---------------|
+| dev | HTTP | 本地域名 | ✅ 是 | ✅ 允许 |
+| staging | HTTP | 公网域名 | ❌ 否 | ❌ 禁止 |
+| staging | HTTPS | 公网域名 | ✅ 是 | ✅ 允许（需 PNA 预检） |
+
+**解决方案：** 为公网环境启用 HTTPS
+
+1. 生成自签名证书：
+   ```bash
+   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+     -keyout /tmp/staging-tls.key \
+     -out /tmp/staging-tls.crt \
+     -subj "/CN=acli.sangfor.com.cn" \
+     -addext "subjectAltName=DNS:acli.sangfor.com.cn"
+   ```
+
+2. 创建 K8s Secret：
+   ```bash
+   kubectl create secret tls staging-tls \
+     --cert=/tmp/staging-tls.crt \
+     --key=/tmp/staging-tls.key \
+     -n hci-staging
+   ```
+
+3. 更新环境 values.yaml：
+   ```yaml
+   global:
+     publicUrl: "https://acli.sangfor.com.cn:4443"
+
+   ingress:
+     tls:
+       - secretName: staging-tls
+         hosts:
+           - acli.sangfor.com.cn
+   ```
+
+4. 访问地址变为 `https://acli.sangfor.com.cn:4443`（首次访问需接受自签名证书警告）
+
+**相关文件：**
+- `terminal_bridge/main.go`：CORS 头支持（PR #225, #226）
+- `deploy/helm/hci-platform/templates/ingress.yaml`：TLS 入口切换（PR #227）
+
+---
+
 ## D-006：GitHub PAT 失效导致 ghcr.io 镜像拉取失败（ImagePullBackOff）
 
 > **⚠️ 高频问题，排查镜像拉取问题前首先检查此项！**

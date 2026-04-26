@@ -71,6 +71,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-004** | k8s.md | ArgoCD v3.x repo-server Redis EOF（连接池空闲）+ K8s Pod git 网络（Clash TUN 不拦截 flannel 流量）|
 | **D-005** | k8s.md | ArgoCD PreSync/PostSync Hook 需使用包含目标工具的镜像（kubectl/helm/aws CLI）|
 | **D-006** | k8s.md | GitHub PAT 失效导致 ghcr.io 镜像拉取失败（ImagePullBackOff）|
+| **D-007** | k8s.md | 公网 HTTP 页面访问 localhost 被 PNA 阻止，需启用 HTTPS |
 
 ---
 
