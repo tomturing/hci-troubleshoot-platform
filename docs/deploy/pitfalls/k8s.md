@@ -55,8 +55,14 @@
 4. 访问地址变为 `https://acli.sangfor.com.cn:4443`（首次访问需接受自签名证书警告）
 
 **相关文件：**
-- `terminal_bridge/main.go`：CORS 头支持（PR #225, #226）
-- `deploy/helm/hci-platform/templates/ingress.yaml`：TLS 入口切换（PR #227）
+- `terminal_bridge/main.go`：CORS 头支持（PR #225, #226）— **仅在 HTTPS 场景下必要**，PNA 预检需要服务端返回 `Access-Control-Allow-Private-Network: true`
+- `deploy/helm/hci-platform/templates/ingress.yaml`：TLS 入口切换（PR #227）— **真正的解决方案**，使页面成为安全上下文
+
+**错误判断（易踩坑）：**
+| 错误判断 | 实际情况 |
+|---------|---------|
+| 添加 CORS 头可以解决 HTTP 公网页面访问 localhost | HTTP 公网页面是"非安全上下文"，浏览器直接阻止，不发预检请求 |
+| CORS 头对 HTTP 场景有效 | CORS 头仅在 HTTPS 场景下被浏览器检查 |
 
 ---
 
