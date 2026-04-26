@@ -50,15 +50,6 @@ config:
   postgresDb: hci_troubleshoot
   postgresUser: hci_admin
 
-# ======================== B-2: DB 迁移 pre-upgrade Job =====================
-# ⚠️  Alembic 迁移 Job 已废弃（2026-04-08）
-# 数据库迁移统一由 hci-platform 的 Atlas PreSync Hook 负责。
-# 此配置块保留作历史参考，enabled 必须保持 false，禁止改为 true。
-dbMigrate:
-  enabled: false # 已废弃 — Atlas 声明式管理是唯一权威迁移工具，禁止启用
-  image: "ghcr.io/tomturing/hci-troubleshoot-platform/hci-case-service:latest"
-  imagePullPolicy: IfNotPresent
-
 # ======================== B-3: DB 密码漂移预检 Job ========================
 # 在 helm upgrade 之前验证 K8s Secret 中的密码与 DB 实际密码一致。
 # 密码不一致时阻断部署，避免服务启动后因密码错误导致连接失败。
