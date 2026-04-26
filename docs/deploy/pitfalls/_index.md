@@ -15,7 +15,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 > 2. 再写入对应分类文件
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：D-006**（旧格式延续：PIT-047）
+> **下一个可用编号：D-007**（旧格式延续：PIT-048）
 
 ---
 
@@ -70,6 +70,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-003** | k8s.md | ArgoCD PreSync Job 依赖 SA 鸡蛋问题（首次部署需手动预创建 SA）|
 | **D-004** | k8s.md | ArgoCD v3.x repo-server Redis EOF（连接池空闲）+ K8s Pod git 网络（Clash TUN 不拦截 flannel 流量）|
 | **D-005** | k8s.md | ArgoCD PreSync/PostSync Hook 需使用包含目标工具的镜像（kubectl/helm/aws CLI）|
+| **D-006** | k8s.md | GitHub PAT 失效导致 ghcr.io 镜像拉取失败（ImagePullBackOff）|
 
 ---
 

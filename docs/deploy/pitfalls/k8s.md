@@ -1,5 +1,62 @@
 # K8s / K3s / Helm 运维避坑
 
+## D-006：GitHub PAT 失效导致 ghcr.io 镜像拉取失败（ImagePullBackOff）
+
+> **⚠️ 高频问题，排查镜像拉取问题前首先检查此项！**
+
+**触发场景：** Pod 处于 `ImagePullBackOff` 或 `ErrImagePull` 状态，特别是新部署或镜像 tag 更新后。
+
+**现象：**
+- Pod 状态 `ImagePullBackOff`
+- `kubectl describe pod` 显示 `failed to authorize: failed to fetch anonymous token: unexpected status 401 Unauthorized`
+- 节点上 `crictl pull` 失败，报 `401 Unauthorized`
+
+**错误判断（易踩坑）：**
+| 错误判断 | 实际情况 |
+|---------|---------|
+| Clash TUN / fake-ip 劫持 ghcr.io | 网络通，`curl https://ghcr.io/v2/` 返回 401（认证失败，非网络问题） |
+| DNS 解析问题 | DNS 正常返回 IP，问题是认证 |
+| 需要配置代理 | 代理不是根因，PAT 失效才是 |
+
+**验证方法：**
+```bash
+# 1. 检查网络是否通（返回 401 表示网络通，认证失败）
+curl -s -o /dev/null -w "%{http_code}" https://ghcr.io/v2/
+# 预期输出：401（网络通，需要认证）
+
+# 2. 验证 PAT 是否有效
+curl -sI -u "tomturing:<your-token>" https://api.github.com/ | grep x-oauth-scopes
+# 预期输出：x-oauth-scopes: read:packages
+
+# 3. 测试 PAT 是否能获取 ghcr.io token
+TOKEN="<your-token>"
+curl -s "https://ghcr.io/token?scope=repository:tomturing/hci-troubleshoot-platform/api-gateway:pull&service=ghcr.io" -u "tomturing:$TOKEN"
+# 预期输出：{"token":"..."}（有 token 表示 PAT 有效）
+
+# 4. 检查当前集群中的 secret
+kubectl get secret ghcr-pull-secret -n <namespace> -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | jq '.auths.ghcr.io.password'
+```
+
+**根因：** `hci-platform-env` 中的 `secrets.ghcrToken` 是过期或无效的 GitHub PAT，导致 ArgoCD 渲染的 `ghcr-pull-secret` 无法认证 ghcr.io。
+
+**解决方案：**
+1. 创建新的 GitHub PAT（需要 `read:packages` scope）
+2. 更新 `hci-platform-env` 仓库中的 `secrets.ghcrToken`：
+   ```yaml
+   # hci-platform-env/environments/<env>/values.yaml
+   secrets:
+     ghcrToken: "ghp_xxxx"  # 新的 PAT
+   ```
+3. 推送后 ArgoCD 自动同步，Secret 更新
+4. 删除旧的 ImagePullBackOff Pod，让 Deployment 创建新 Pod
+
+**预防措施：**
+- GitHub PAT 默认有效期 90 天，设置日历提醒定期更新
+- 使用 GitHub App 或 fine-grained PAT 可获得更长的有效期
+- 监控告警：添加镜像拉取失败的告警规则
+
+---
+
 ## PIT-014：Clash TUN 模式劫持 K8s ClusterIP 流量
 
 **触发场景：** 宿主机开启 Clash TUN 模式，K8s Pod 间通过 Service（ClusterIP）调用时超时或断连。
