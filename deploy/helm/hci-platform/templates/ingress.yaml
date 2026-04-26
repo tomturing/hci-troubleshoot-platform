@@ -7,10 +7,13 @@ metadata:
   labels:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
-    # entrypoints 名称为 "web"，对应 Traefik 内部监听端口
-    # 宿主机对外端口由 HelmChartConfig (traefik-custom.yaml) 控制（当前: 4888）
-    # 修改对外端口只需改 HelmChartConfig，此处注解无需变更
+    # 根据是否启用 TLS 选择 entrypoint
+    # TLS 启用时使用 websecure（HTTPS，端口 4443），否则使用 web（HTTP，端口 4888）
+    {{- if .Values.ingress.tls }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    {{- else }}
     traefik.ingress.kubernetes.io/router.entrypoints: web
+    {{- end }}
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
