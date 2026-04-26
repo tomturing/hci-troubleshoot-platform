@@ -1,5 +1,58 @@
 # Changelog
 
+## [2.6.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.5.0...v2.6.0) (2026-04-26)
+
+
+### ✨ 新功能
+
+* **argocd:** 统一dev/staging ArgoCD App of Apps架构 ([#221](https://github.com/tomturing/hci-troubleshoot-platform/issues/221)) ([569010e](https://github.com/tomturing/hci-troubleshoot-platform/commit/569010e46ed3b40a7c9c0fb5c99ebff9865fe93d))
+* SSH UX 全场景重构 - CaseCreateDialog 6视图状态机 ([#204](https://github.com/tomturing/hci-troubleshoot-platform/issues/204)) ([0a8bdc6](https://github.com/tomturing/hci-troubleshoot-platform/commit/0a8bdc61ba334695f3760f04a641ffed73cec2b3))
+* SSH UX 全场景重构 - CaseCreateDialog 6视图状态机 ([#205](https://github.com/tomturing/hci-troubleshoot-platform/issues/205)) ([39558d5](https://github.com/tomturing/hci-troubleshoot-platform/commit/39558d520ce0616b99271ac7b9dbd6197dbc5b15))
+* 新增 Prompt 审计 Dashboard 和上下文可观测性文档 ([#210](https://github.com/tomturing/hci-troubleshoot-platform/issues/210)) ([85f78c4](https://github.com/tomturing/hci-troubleshoot-platform/commit/85f78c4f39b5fef498016f5dffa0b96324cdf5b6))
+* 添加 k8s-routing-bypass 脚本修复 Clash TUN 下 Pod DNS 问题 ([#222](https://github.com/tomturing/hci-troubleshoot-platform/issues/222)) ([5a4be53](https://github.com/tomturing/hci-troubleshoot-platform/commit/5a4be5312592b5af82cd58e1278368fe0e47a0af))
+* 终端操作录制功能 (Task 42) [WIP] ([#211](https://github.com/tomturing/hci-troubleshoot-platform/issues/211)) ([6d9c3fc](https://github.com/tomturing/hci-troubleshoot-platform/commit/6d9c3fca88c3f79b14fcd2611679ee36eb7b2cfd))
+
+
+### 🐛 Bug 修复
+
+* **admin:** 修复分类详情页 UI 三处问题（对齐/命中次数/Markdown渲染） ([#200](https://github.com/tomturing/hci-troubleshoot-platform/issues/200)) ([2dafd46](https://github.com/tomturing/hci-troubleshoot-platform/commit/2dafd465e1e25efc24f95860082562b5ecf0c1bf))
+* **argocd:** PreSync Hook 镜像改为 bitnami/kubectl:1.31 ([#195](https://github.com/tomturing/hci-troubleshoot-platform/issues/195)) ([6311d95](https://github.com/tomturing/hci-troubleshoot-platform/commit/6311d9574c413148b90f53b85ae2a5b77c26c0d2))
+* **cluster+s0:** Issue A 集群数据解析错误 + Issue B S0 提前 confirm ([#217](https://github.com/tomturing/hci-troubleshoot-platform/issues/217)) ([f5d60ee](https://github.com/tomturing/hci-troubleshoot-platform/commit/f5d60ee1b6b8032f5217225384b0a087f6bfaaea))
+* **frontend:** 终端历史强制刷新 + 选项置灰 + 以上都不是输入框 ([#220](https://github.com/tomturing/hci-troubleshoot-platform/issues/220)) ([825850d](https://github.com/tomturing/hci-troubleshoot-platform/commit/825850d508e8f886498997ea98f8097ca8821181))
+* **s0+terminal-replay:** S0→S1 AI流程断开 + 终端回放导航失效 ([#219](https://github.com/tomturing/hci-troubleshoot-platform/issues/219)) ([7afdf19](https://github.com/tomturing/hci-troubleshoot-platform/commit/7afdf19649cb6af3aae7cdb7880896cd2f3b018c))
+* SSH 连接日志增强，用于排查前端无输出问题 ([#194](https://github.com/tomturing/hci-troubleshoot-platform/issues/194)) ([5a1f8e5](https://github.com/tomturing/hci-troubleshoot-platform/commit/5a1f8e5059e7495cd4346a06c84c85eae7e11183))
+* SSH 采集超时和 AI 对话无响应问题 ([#207](https://github.com/tomturing/hci-troubleshoot-platform/issues/207)) ([c808e68](https://github.com/tomturing/hci-troubleshoot-platform/commit/c808e68a124c99ad06ddf1f386a3eac944c463d4))
+* SSH 集成体验修复 - upsert机制/统一入口/SshFlowPanel重构 ([#203](https://github.com/tomturing/hci-troubleshoot-platform/issues/203)) ([c22a9e0](https://github.com/tomturing/hci-troubleshoot-platform/commit/c22a9e0fb3fb12876a78d2c91d68de3645e25357))
+* SSH 集成创建工单流程增强 - 解决卡住问题并新增排查日志 ([#202](https://github.com/tomturing/hci-troubleshoot-platform/issues/202)) ([2b684ca](https://github.com/tomturing/hci-troubleshoot-platform/commit/2b684cadda0d884cebaf09d93ed739fd96de4795))
+* 修复 ArgoCD PreSync Hook 镜像版本无效问题 ([#196](https://github.com/tomturing/hci-troubleshoot-platform/issues/196)) ([109064b](https://github.com/tomturing/hci-troubleshoot-platform/commit/109064b2e3e12afccac21188dd073f78d03b8940))
+* 修复 Copilot Review 提出的 15 个问题 ([#206](https://github.com/tomturing/hci-troubleshoot-platform/issues/206)) ([2e6a3d9](https://github.com/tomturing/hci-troubleshoot-platform/commit/2e6a3d9ffac1a7a4c2224176acff4b8b37e52e87))
+* 修复 PreSync Hook 镜像不含 shell 问题 ([#197](https://github.com/tomturing/hci-troubleshoot-platform/issues/197)) ([7aa2663](https://github.com/tomturing/hci-troubleshoot-platform/commit/7aa266366a03b08d4d84b2acf23a5d0a86e10cab))
+* 修复 S0 Prompt Segment 4 为空问题 ([#209](https://github.com/tomturing/hci-troubleshoot-platform/issues/209)) ([8303fad](https://github.com/tomturing/hci-troubleshoot-platform/commit/8303fadede918b9f61d369bcbc5dfe9bc888cf68))
+* 修复分类管理页面三处 Bug（API路径/排序/对齐） ([#193](https://github.com/tomturing/hci-troubleshoot-platform/issues/193)) ([e85cf0d](https://github.com/tomturing/hci-troubleshoot-platform/commit/e85cf0d6341958c407ce57e0bdddedefd71a72f8))
+* 修复前端 UX 五个问题（SSH采集/工单badge/AI无响应/环境数据） ([#208](https://github.com/tomturing/hci-troubleshoot-platform/issues/208)) ([d1d20d1](https://github.com/tomturing/hci-troubleshoot-platform/commit/d1d20d1265ec61033d3969ef09f3f99bff306774))
+* 修复工单状态流转、S0→S1 诊断卡死及终端录制无法写库四处缺陷 ([#215](https://github.com/tomturing/hci-troubleshoot-platform/issues/215)) ([893268f](https://github.com/tomturing/hci-troubleshoot-platform/commit/893268fadbaf8c60f8d079568906ba5eeedb1efa))
+* 修复环境数据全链路字段映射错误及SSH终端显示异常（B1-B5） ([#212](https://github.com/tomturing/hci-troubleshoot-platform/issues/212)) ([c65c8a4](https://github.com/tomturing/hci-troubleshoot-platform/commit/c65c8a48644f711f4c3d09c0c0ad6e0cd8ecfee3))
+* 修复环境数据统计和显示字段不一致问题 ([#214](https://github.com/tomturing/hci-troubleshoot-platform/issues/214)) ([bbb6dc5](https://github.com/tomturing/hci-troubleshoot-platform/commit/bbb6dc524b56b7e332366615843ae2139485c888))
+* 修复终端操作接口500、集群信息未知、SSH配置恢复及S0选项渲染 ([#216](https://github.com/tomturing/hci-troubleshoot-platform/issues/216)) ([41bee8c](https://github.com/tomturing/hci-troubleshoot-platform/commit/41bee8c74a81be57493c856e4cbaf2d0349eb44a))
+* 恢复全局SSH连接方法，修复合并冲突丢失的代码 ([#191](https://github.com/tomturing/hci-troubleshoot-platform/issues/191)) ([93164ea](https://github.com/tomturing/hci-troubleshoot-platform/commit/93164ea6ac8d61a607c98b4de4836027241088dc))
+* 根治 Issue1/2/3 三个生产 Bug ([#218](https://github.com/tomturing/hci-troubleshoot-platform/issues/218)) ([3ac78af](https://github.com/tomturing/hci-troubleshoot-platform/commit/3ac78af4570fafba5ff274fe656b41b7b5318f4d))
+* 补充 api-gateway 缺失的 sqlalchemy 和 asyncpg 依赖 ([#213](https://github.com/tomturing/hci-troubleshoot-platform/issues/213)) ([74ef599](https://github.com/tomturing/hci-troubleshoot-platform/commit/74ef5991fea6216a986700e64b21940e55c30be1))
+
+
+### ♻️ 代码重构
+
+* ArgoCD 架构重构 - 分离 Root Application 解决循环引用问题 ([#199](https://github.com/tomturing/hci-troubleshoot-platform/issues/199)) ([89c3213](https://github.com/tomturing/hci-troubleshoot-platform/commit/89c32130f3b0e278f447527745abb1ae7cff6b80))
+* SSH 连接架构重构 - 全局统一管理 + Bridge刷新 + UX优化 ([#189](https://github.com/tomturing/hci-troubleshoot-platform/issues/189)) ([d07b161](https://github.com/tomturing/hci-troubleshoot-platform/commit/d07b16100dd262c2cb21455c90be9760e6ab46db))
+* 拆分 argocd-ops RBAC 至独立 Application 解决同步顺序依赖 ([#198](https://github.com/tomturing/hci-troubleshoot-platform/issues/198)) ([1c18cff](https://github.com/tomturing/hci-troubleshoot-platform/commit/1c18cff68d33f4aa99694ac2ba56169602037c31))
+
+
+### 📝 文档
+
+* 客户端设计.md v1.4、对话设计.md v1.5 同步变更历史 ([3ac78af](https://github.com/tomturing/hci-troubleshoot-platform/commit/3ac78af4570fafba5ff274fe656b41b7b5318f4d))
+* 对话任务.md 追加 BUG 修复记录 ([825850d](https://github.com/tomturing/hci-troubleshoot-platform/commit/825850d508e8f886498997ea98f8097ca8821181))
+* 对话任务.md 追加 BUG 修复记录 ([7afdf19](https://github.com/tomturing/hci-troubleshoot-platform/commit/7afdf19649cb6af3aae7cdb7880896cd2f3b018c))
+* 整理分类管理KBD统计显示方案与任务文档 ([#192](https://github.com/tomturing/hci-troubleshoot-platform/issues/192)) ([8e9205b](https://github.com/tomturing/hci-troubleshoot-platform/commit/8e9205b81f93625bbd35ef452daf2d8bcaa72e0b))
+
 ## [2.5.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.4.1...v2.5.0) (2026-04-21)
 
 
