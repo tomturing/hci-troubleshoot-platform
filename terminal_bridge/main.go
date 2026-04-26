@@ -490,21 +490,30 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 // 从公网域名访问 localhost 时，浏览器要求服务端返回特定的 CORS 头
 func corsWebSocketHandler(wsHandler websocket.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 设置 CORS 头，允许任意来源访问
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// 获取请求来源，用于回填 Access-Control-Allow-Origin
+		// PNA 预检要求返回具体的 origin，不能用 "*"
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = "*"
+		}
+
+		// 设置 CORS 头
+		w.Header().Set("Access-Control-Allow-Origin", origin)
 		// 关键：声明允许从公共网络访问私有网络
 		w.Header().Set("Access-Control-Allow-Private-Network", "true")
 		// 允许的请求方法和头
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-		// 处理 CORS 预检请求（OPTIONS）
+		// 记录预检请求日志，便于调试
 		if r.Method == "OPTIONS" {
+			log.Printf("[Bridge] CORS 预检请求: origin=%s path=%s", origin, r.URL.Path)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
 		// 非 OPTIONS 请求，交给 WebSocket handler 处理
+		log.Printf("[Bridge] WebSocket 请求: origin=%s method=%s", origin, r.Method)
 		wsHandler.ServeHTTP(w, r)
 	})
 }
