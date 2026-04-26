@@ -373,6 +373,10 @@ ingress:
   # Grafana 独立 ingress 的 Traefik 路由优先级。
   # 必须高于主站 hci-ingress 的 / 回退路由，避免 /grafana 被 customer-ui 吞掉。
   grafanaRouterPriority: "2000"
+  # TLS 入口点名称（启用 TLS 时使用）
+  # staging 默认使用 websecure（端口 4443）
+  # prod 可设置为 prod-websecure（端口 3443）
+  # entrypoint: websecure
   # tls: []
 
 # ======================== 应用配置（非敏感 → ConfigMap）=====================

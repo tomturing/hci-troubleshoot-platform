@@ -10,9 +10,9 @@ metadata:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
     # 根据是否启用 TLS 选择 entrypoint
-    # TLS 启用时使用 websecure（HTTPS，端口 4443），否则使用 web（HTTP，端口 4888）
+    # TLS 启用时使用 websecure 或自定义入口点，否则使用 web（HTTP）
     {{- if .Values.ingress.tls }}
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.entrypoints: {{ .Values.ingress.entrypoint | default "websecure" }}
     {{- else }}
     traefik.ingress.kubernetes.io/router.entrypoints: web
     {{- end }}

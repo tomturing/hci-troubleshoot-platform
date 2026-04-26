@@ -41,6 +41,11 @@ ingress:
   annotations: {}
   # Grafana 路由优先级，需高于主站 / 回退路由，避免 /grafana 被 customer-ui 吞掉
   grafanaRouterPriority: "2000"
+  # TLS 入口点名称（启用 TLS 时使用）
+  # staging 默认使用 websecure（端口 4443）
+  # prod 可设置为 prod-websecure（端口 3443）
+  # entrypoint: websecure
+  # tls: []
 
 # ======================== 敏感配置（由 env 仓库 environments/dev/values.yaml 提供）
 secrets:
