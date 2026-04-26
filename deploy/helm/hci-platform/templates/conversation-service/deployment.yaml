@@ -82,9 +82,10 @@ spec:
                   name: hci-secrets
                   key: HCI_SSH_PASSWORD
                   optional: true          # 使用密钥时此字段可为空
+          # J-2: 三级探针分级健康检查，避免 AI 健康检查导致超时
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live      # 只检查进程存活
               port: {{ .Values.conversationService.port }}
             initialDelaySeconds: 15
             periodSeconds: 30
@@ -92,7 +93,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready     # 检查 DB + KB，不检查 AI
               port: {{ .Values.conversationService.port }}
             initialDelaySeconds: 10
             periodSeconds: 10
@@ -100,10 +101,11 @@ spec:
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: /health
+              path: /health/startup   # 检查 DB 初始化完成
               port: {{ .Values.conversationService.port }}
             initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 3         # startup 也需要 timeout，避免 DB 连接慢时超时
             failureThreshold: 30
           resources:
             {{- toYaml .Values.conversationService.resources | nindent 12 }}
