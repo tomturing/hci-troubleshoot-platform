@@ -465,3 +465,235 @@ def create_openclaw_client(
         default_model=default_model,
         assistant_type=assistant_type,
     )
+
+
+class OpsAgentAssistant:
+    """
+    Ops-Agent AI助手适配器
+
+    复用OpenClawAssistant的HTTP调用逻辑
+    但针对OA的特定行为做微调
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str | None = None,
+        provider_api_key: str | None = None,
+        default_model: str = "ops-agent",
+        assistant_type: str = "ops-agent",
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.gateway_token = api_key
+        self.provider_api_key = provider_api_key or os.environ.get("OPS_AGENT_API_KEY")
+        self.default_model = default_model
+        self.assistant_type = assistant_type
+        _read_timeout = float(os.environ.get("AI_CLIENT_READ_TIMEOUT_SEC", "180.0"))  # OA执行可能较慢
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=_read_timeout, write=10.0, pool=10.0))
+
+    async def chat_completion_stream(
+        self, messages: list[dict[str, str]], user_id: str, pod_endpoint: str | None = None, model: str = ""
+    ) -> AsyncGenerator[str, None]:
+        """
+        调用OA的OpenAI-compatible端点
+
+        Args:
+            messages: 消息列表
+            user_id: 用户ID（用于trace关联）
+            pod_endpoint: 不使用（OA不支持热备池）
+            model: 模型名称（固定为ops-agent）
+        """
+        headers = {
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "model": model or self.default_model,
+            "messages": messages,
+            "stream": True,
+            "user": user_id,
+        }
+
+        # 只使用base_url（OA不支持热备池）
+        url = f"{self.base_url}/v1/chat/completions"
+
+        token = self.provider_api_key or self.gateway_token
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        logger.info(
+            event="ai_request",
+            message="Sending request to Ops-Agent",
+            url=url,
+            user_id=user_id,
+            assistant_type=self.assistant_type,
+        )
+
+        try:
+            async with self.client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    error_text = error_body.decode("utf-8", errors="replace")
+                    logger.error(
+                        event="ai_error",
+                        message=f"Ops-Agent returned status {response.status_code}",
+                        status=response.status_code,
+                        body=error_text,
+                    )
+                    error_detail = self._parse_ai_error(response.status_code, error_text)
+                    raise AIStreamError(
+                        code=error_detail["code"],
+                        message=error_detail["message"],
+                        detail=error_detail["detail"],
+                    )
+
+                got_first_token = False
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        if not got_first_token:
+                            logger.warning(
+                                event="ai_empty_response",
+                                message="Ops-Agent returned empty response",
+                                url=url,
+                            )
+                        return
+
+                    try:
+                        data = json.loads(data_str)
+                        delta = data.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            got_first_token = True
+                            yield content
+                    except json.JSONDecodeError:
+                        continue
+
+                if not got_first_token:
+                    logger.warning(
+                        event="ai_stream_no_content",
+                        message="Ops-Agent stream ended without content",
+                        url=url,
+                    )
+                    raise AIStreamError(
+                        code=ErrorCode.AI_UPSTREAM_ERROR,
+                        message="Ops-Agent returned no content",
+                        detail="stream ended without content",
+                    )
+
+        except AIStreamError:
+            raise
+        except Exception as e:
+            logger.error(
+                event="ai_exception",
+                message="Error calling Ops-Agent API",
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
+            error_detail = self._parse_generic_error(e)
+            raise AIStreamError(
+                code=error_detail["code"],
+                message=error_detail["message"],
+                detail=error_detail["detail"],
+            ) from e
+
+    def _parse_ai_error(self, status_code: int, error_body: str) -> dict:
+        """解析AI服务返回的错误响应"""
+        try:
+            parsed = json.loads(error_body)
+            if "error" in parsed:
+                error_info = parsed["error"]
+            else:
+                error_info = {"message": error_body[:200]}
+        except json.JSONDecodeError:
+            error_info = {"message": error_body[:200]}
+
+        raw_message = error_info.get("message", "")
+        error_type = error_info.get("type", "")
+
+        if status_code == 401:
+            return {
+                "code": ErrorCode.AI_AUTH_FAILED,
+                "message": "Ops-Agent认证失败",
+                "detail": f"status=401, type={error_type}, message={raw_message}",
+            }
+        elif status_code == 429:
+            return {
+                "code": ErrorCode.AI_RATE_LIMITED,
+                "message": "Ops-Agent请求频率超限",
+                "detail": f"status=429, type={error_type}, message={raw_message}",
+            }
+        elif status_code >= 500:
+            return {
+                "code": ErrorCode.AI_UPSTREAM_ERROR,
+                "message": "Ops-Agent服务故障",
+                "detail": f"status={status_code}, type={error_type}, message={raw_message}",
+            }
+        else:
+            return {
+                "code": ErrorCode.AI_UPSTREAM_ERROR,
+                "message": f"Ops-Agent返回错误（{status_code}）：{raw_message[:100]}",
+                "detail": f"status={status_code}, type={error_type}, message={raw_message}",
+            }
+
+    def _parse_generic_error(self, exc: Exception) -> dict:
+        """解析通用异常"""
+        exc_type = type(exc).__name__
+        exc_message = str(exc)
+
+        if isinstance(exc, httpx.TimeoutException):
+            return {
+                "code": ErrorCode.AI_TIMEOUT,
+                "message": "Ops-Agent响应超时",
+                "detail": f"type={exc_type}, message={exc_message}",
+            }
+        if isinstance(exc, httpx.ConnectError):
+            return {
+                "code": ErrorCode.AI_UNAVAILABLE,
+                "message": "无法连接到Ops-Agent服务",
+                "detail": f"type={exc_type}, message={exc_message}",
+            }
+        if isinstance(exc, httpx.RequestError):
+            return {
+                "code": ErrorCode.AI_UNAVAILABLE,
+                "message": f"Ops-Agent网络错误：{exc_message[:100]}",
+                "detail": f"type={exc_type}, message={exc_message}",
+            }
+        return {
+            "code": ErrorCode.INTERNAL_ERROR,
+            "message": f"Ops-Agent内部错误：{exc_message[:100]}",
+            "detail": f"type={exc_type}, message={exc_message}",
+        }
+
+    async def check_health(self) -> bool:
+        """检查OA服务健康状态"""
+        url = f"{self.base_url}/health"
+        try:
+            response = await self.client.get(url)
+            return response.status_code == 200
+        except Exception:
+            return False
+
+    async def close(self):
+        """关闭客户端"""
+        await self.client.aclose()
+
+
+def create_ops_agent_client(
+    base_url: str,
+    api_key: str | None = None,
+    provider_api_key: str | None = None,
+    default_model: str = "ops-agent",
+    assistant_type: str = "ops-agent",
+) -> OpsAgentAssistant:
+    """工厂函数: 创建OA助手客户端"""
+    return OpsAgentAssistant(
+        base_url=base_url,
+        api_key=api_key,
+        provider_api_key=provider_api_key,
+        default_model=default_model,
+        assistant_type=assistant_type,
+    )

@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     OPENCLAW_GATEWAY_TOKEN: str = "default_token"
     OPENCLAW_DEFAULT_MODEL: str = "openclaw"
 
+    # Ops-Agent集成配置
+    OPS_AGENT_ENABLED: bool = False
+    OPS_AGENT_BASE_URL: str = "http://ops-agent-service:8006"
+    OPS_AGENT_API_KEY: str = ""
+
     # KB 服务配置
     KB_SERVICE_URL: str = "http://kb-service:8004"
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
@@ -80,6 +85,16 @@ class Settings(BaseSettings):
                 "enabled": True,
             }
         }
+
+        # 添加Ops-Agent配置
+        if self.OPS_AGENT_ENABLED:
+            default_registry["ops-agent"] = {
+                "base_url": self.OPS_AGENT_BASE_URL,
+                "gateway_token": self.OPS_AGENT_API_KEY,
+                "model": "ops-agent",
+                "enabled": True,
+            }
+
         try:
             custom = json.loads(self.ASSISTANT_REGISTRY_JSON or "{}")
             if isinstance(custom, dict):

@@ -19,7 +19,7 @@ from shared.utils.otel import init_telemetry, instrument_app
 from app.config import settings
 from app.routes import audit as audit_route
 from app.routes import conversations, evaluate
-from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
+from app.services.ai_client import AIAssistantRegistry, create_openclaw_client, create_ops_agent_client
 from app.services.environment_client import EnvironmentClient
 from app.services.kb_client import KBClient
 from app.services.scheduler_client import SchedulerClient
@@ -58,13 +58,25 @@ async def lifespan(app: FastAPI):
         # 若未配置则回退到 OPENCLAW_API_KEY 环境变量（ai_client.py 内处理）
         provider_key = cfg.get("provider_api_key") or None
         model = cfg.get("model", assistant_type)
-        client = create_openclaw_client(
-            base_url=base_url,
-            api_key=gateway_token,
-            provider_api_key=provider_key,
-            default_model=model,
-            assistant_type=assistant_type,
-        )
+
+        # 根据助手类型选择创建函数
+        if assistant_type == "ops-agent":
+            client = create_ops_agent_client(
+                base_url=base_url,
+                api_key=gateway_token,
+                provider_api_key=provider_key,
+                default_model=model,
+                assistant_type=assistant_type,
+            )
+        else:
+            client = create_openclaw_client(
+                base_url=base_url,
+                api_key=gateway_token,
+                provider_api_key=provider_key,
+                default_model=model,
+                assistant_type=assistant_type,
+            )
+
         ai_registry.register(assistant_type, client)
 
     logger.info(
