@@ -90,6 +90,9 @@ services:
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-hci-dev-openclaw-token}
       KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
       KB_ENABLED: ${KB_ENABLED:-true}
+      OPS_AGENT_ENABLED: ${OPS_AGENT_ENABLED:-false}
+      OPS_AGENT_BASE_URL: ${OPS_AGENT_BASE_URL:-http://ops-agent-service:8006}
+      OPS_AGENT_API_KEY: ${OPS_AGENT_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

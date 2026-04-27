@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  ops-agent-service:
+    build:
+      context: ../../ops-agent
+      dockerfile: Dockerfile.ops-server
+    container_name: ops-agent-service
+    ports:
+      - "8006:8006"
+    environment:
+      - OPS_CONFIG_PATH=/app/ops_config.yaml
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - HCI_TP_ENABLED=true
+    volumes:
+      - ../../ops-agent/ops_config.yaml.example:/app/ops_config.yaml:ro
+      - ../../ops-agent/data:/app/data:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - otel-collector
