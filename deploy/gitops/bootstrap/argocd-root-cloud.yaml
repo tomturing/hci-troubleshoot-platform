@@ -36,6 +36,13 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      name: argocd-rbac
+      namespace: argocd
+      jsonPointers:
+        - /spec/source/directory
   source:
     repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
     targetRevision: main

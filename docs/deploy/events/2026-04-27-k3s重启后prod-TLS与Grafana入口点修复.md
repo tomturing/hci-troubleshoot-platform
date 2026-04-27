@@ -127,13 +127,14 @@ curl -sk -H "Host: acli.sangfor.com.cn" https://127.0.0.1:3443/grafana/ | grep -
 ## 5. 经验总结与防回归措施
 
 ### 5.1 根本原因
-- **k3s 重启会丢失手动创建的 Secret**：`kubectl create` 创建的资源非持久化
+- **prod HTTPS 期望值未被 Git 持续固化**：运行态虽然恢复了 `prod-tls` 与 TLS Ingress，但 env 仓库一度已回退为 HTTP，后续一旦按 Git 收敛就会再次失去 HTTPS
+- **手动创建的 Secret 不能替代配置源修复**：只补 `kubectl create secret tls prod-tls` 只能恢复当下运行态，不能保证后续 ArgoCD/重启后的最终状态
 - **环境配置不一致**：staging 与 prod 的 Ingress 配置存在差异
 - **入口点自动切换机制未生效**：Helm Chart 的入口点自动切换逻辑依赖 `ingress.tls` 配置
 
 ### 5.2 防回归措施
 1. **TLS 证书持久化**：
-   - 将 TLS 证书纳入 Helm values 管理
+  - 将 prod HTTPS 访问地址与 `ingress.tls` 明确纳入 env 仓库管理
    - 或使用 CertManager 自动签发 Let's Encrypt 证书
 
 2. **环境配置一致性检查**：
@@ -149,7 +150,7 @@ curl -sk -H "Host: acli.sangfor.com.cn" https://127.0.0.1:3443/grafana/ | grep -
 
 4. **文档更新**：
    - 在避坑指南 `grafana.md` PIT-036 补充"环境重启后验证清单"
-   - 明确 TLS 证书管理规范
+  - 明确 prod 与 staging 统一保留 HTTPS 的配置基线
 
 ### 5.3 相关避坑指南
 - **PIT-036**：`/grafana` 被主站 `/` 回退路由吞掉
@@ -160,7 +161,7 @@ curl -sk -H "Host: acli.sangfor.com.cn" https://127.0.0.1:3443/grafana/ | grep -
 
 | 优先级 | 改进项 | 负责人 | 完成时间 |
 |--------|--------|--------|----------|
-| P0 | 将 TLS 证书纳入 Helm values 管理 | team | 2026-04-30 |
+| P0 | 将 prod 保持 HTTPS 的 `publicUrl` 与 `ingress.tls` 固化到 env 仓库 | team | 2026-04-30 |
 | P1 | 添加环境配置一致性检查脚本 | team | 2026-05-07 |
 | P2 | 扩展 k3s-verify.sh 验证入口点 | team | 2026-05-14 |
 
@@ -168,5 +169,5 @@ curl -sk -H "Host: acli.sangfor.com.cn" https://127.0.0.1:3443/grafana/ | grep -
 
 **文档版本**: 1.0
 **更新日期**: 2026-04-27
-**验证状态**: ✅ 生产环境已修复
-**关联 PR**: #待补充
+**验证状态**: ✅ 生产环境运行态已修复，Git 期望值已调整为继续保留 HTTPS
+**关联 PR**: #234（文档与控制面修复），环境仓库需单独提交 prod HTTPS 配置变更

@@ -30,6 +30,7 @@ owner: team
 | 2026-03-30-K8s部署规格.md | 2026-03-30 | K8s 部署规格定义 |
 | 2026-04-01-dbmate数据库版本管理.md | 2026-04-01 | dbmate 数据库版本管理方案 |
 | 2026-04-27-k3s重启后prod-TLS与Grafana入口点修复.md | 2026-04-27 | k3s 重启后 prod TLS 证书丢失与 Grafana 入口点修复 |
+| 2026-04-27-staging-prometheus-reload-hook修复.md | 2026-04-27 | staging 环境 Prometheus reload Hook 卡死修复 |
 
 ---
 

@@ -37,8 +37,6 @@ spec:
     repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
     targetRevision: main
     path: deploy/gitops/argocd-rbac
-    directory:
-      recurse: false
   syncPolicy:
     automated:
       prune: false  # RBAC 资源安全保留，不自动删除
