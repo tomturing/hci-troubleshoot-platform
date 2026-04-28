@@ -1,0 +1,22 @@
+# =============================================================================
+# Ops-Agent集成 - 开发环境覆盖配置
+# =============================================================================
+# 使用方式：helm upgrade hci-platform -f values.yaml -f values-opsagent-dev.yaml
+# =============================================================================
+
+global:
+  namespace: hci-dev
+
+# 启用Ops-Agent
+conversationService:
+  opsAgentEnabled: true
+  opsAgentBaseUrl: "http://ops-agent-service:8006"
+
+# Ops-Agent服务配置
+# 注意：ops-agent-service相关模板需要在templates/目录下，可能需要单独部署
+# 或者可以通过kubectl apply -f templates/ops-agent-service/
+
+# 配置说明：
+# 1. 先构建并导入ops-agent镜像
+# 2. 部署ops-agent-service
+# 3. 再更新conversation-service配置
