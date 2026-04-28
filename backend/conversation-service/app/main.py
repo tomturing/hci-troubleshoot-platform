@@ -16,6 +16,9 @@ from shared.utils.logger import get_logger
 from shared.utils.metrics import HTTPMetricsMiddleware
 from shared.utils.otel import init_telemetry, instrument_app
 
+from app.adapters.brain_router import BrainRouter
+from app.adapters.htp_brain_adapter import HTPBrainAdapter
+from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
 from app.config import settings
 from app.routes import audit as audit_route
 from app.routes import conversations, evaluate
@@ -98,8 +101,16 @@ async def lifespan(app: FastAPI):
     app.state.kb_client = kb_client
     app.state.environment_client = environment_client
 
+    # T1-6: 组装大脑路由器（BrainRouter）
+    htp_adapter = HTPBrainAdapter(ai_registry=ai_registry, scheduler_client=scheduler_client)
+    ops_adapter = None
+    if settings.OPS_AGENT_ENABLED:
+        ops_adapter = OpsAgentBrainAdapter(base_url=settings.OPS_AGENT_BASE_URL)
+    brain_router = BrainRouter(htp_adapter=htp_adapter, ops_agent_adapter=ops_adapter)
+    app.state.brain_router = brain_router
+
     # 兼容现有路由注入方式
-    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client, environment_client)
+    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client, environment_client, router=brain_router)
     evaluate.set_database_manager(database_manager)
     audit_route.set_audit_database_manager(database_manager)
 
@@ -111,6 +122,8 @@ async def lifespan(app: FastAPI):
     )
     if ai_registry:
         await ai_registry.close_all()
+    if ops_adapter:
+        await ops_adapter.close()
     if database_manager:
         await database_manager.close()
 

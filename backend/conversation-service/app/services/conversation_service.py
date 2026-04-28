@@ -15,6 +15,9 @@ from shared.utils.otel import get_current_trace_id
 
 from app.config import settings
 
+# T1-3 ~ T1-6: 大脑可选架构组件
+from ..adapters.brain_router import BrainRouter
+from ..core.brain_port import BrainStageUpdate, BrainTextChunk
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
@@ -69,6 +72,7 @@ class ConversationService:
         tool_router=None,       # ToolRouter | None（Phase 4 agent 模式）
         confirm_service=None,   # ConfirmService | None
         glm_client=None,        # GLMClient | None（ReactExecutor 专用）
+        brain_router: BrainRouter | None = None,  # T1-6: 大脑路由器（可选，渐进接入）
     ):
         self.repository = repository
         self.ai_registry = ai_registry
@@ -91,6 +95,8 @@ class ConversationService:
         self._audit_service = LogAuditService()
         # 诊断状态机（Phase 2）
         self._conversation_manager = ConversationManager()
+        # T1-6: 大脑路由器（可选，None 时保持原有直接调用 ai_registry 的路径）
+        self._brain_router: BrainRouter | None = brain_router
 
     async def create_conversation(
         self,
@@ -375,12 +381,6 @@ class ConversationService:
 
         # 4. 从注册表获取 AI 助手客户端
         resolved_assistant_type = await self._resolve_assistant_type(conversation_id, assistant_type)
-        ai_client = self.ai_registry.get_client(resolved_assistant_type)
-        if not ai_client:
-            error_msg = f"未找到类型为 '{resolved_assistant_type}' 的 AI 助手"
-            logger.error(event="ai_client_not_found", message=error_msg, assistant_type=resolved_assistant_type)
-            yield f"\n[System Error: {error_msg}]"
-            return
 
         # 4.x 写入 prompt_audit（fire-and-forget，100% 采样完整 payload 用于审计分析）
         _do_sample = True  # 100% 采样，便于 Grafana Dashboard 审计 Agent 收到的完整上下文
@@ -399,36 +399,64 @@ class ConversationService:
                 )
             )
 
-        pod_endpoint = await self._resolve_pod_endpoint(case_id, resolved_assistant_type)
-
-        # 5. 调用 AI 并流式返回，同时记录 TTFT (Time To First Token)
+        # 5. 调用大脑并流式返回
+        # T1-6: 若已注入 BrainRouter，走新大脑可选路径；否则保持原有 ai_registry 路径（向后兼容）
         import time
 
-        _stream_start = time.monotonic()
-        _ttft_logged = False
-        _full_reply_buffer: list[str] = []  # 收集完整回复用于阶段检测
+        _full_reply_buffer: list[str] = []
         try:
-            async for chunk in ai_client.chat_completion_stream(
-                messages=history_messages,
-                user_id=f"case-{case_id}",
-                pod_endpoint=pod_endpoint,
-            ):
-                if chunk:
-                    if not _ttft_logged:
-                        _ttft_ms = int((time.monotonic() - _stream_start) * 1000)
-                        logger.info(
-                            event="ai_ttft",
-                            message="First token received",
-                            ttft_ms=_ttft_ms,
-                            assistant_type=resolved_assistant_type,
-                            case_id=case_id,
-                            conversation_id=str(conversation_id),
-                        )
-                        # 记录首 Token 延迟到 Prometheus histogram
-                        AI_TTFT_SECONDS.labels(assistant_type=resolved_assistant_type).observe(_ttft_ms / 1000.0)
-                        _ttft_logged = True
-                    _full_reply_buffer.append(chunk)
-                    yield chunk
+            if self._brain_router is not None:
+                # ── 新路径：通过 BrainRouter 路由（ops-agent 或 htp 大脑）────────
+                session_id = str(conversation_id)
+                async for brain_event in self._brain_router.process(
+                    assistant_type=resolved_assistant_type,
+                    session_id=session_id,
+                    messages=history_messages,
+                    env_context=None,  # Phase 2 (T2-1) 再注入实时环境数据
+                    stream=True,
+                    case_id=case_id,
+                    user_id=f"case-{case_id}",
+                ):
+                    if isinstance(brain_event, BrainTextChunk) and brain_event.content:
+                        _full_reply_buffer.append(brain_event.content)
+                        yield brain_event.content
+                    elif isinstance(brain_event, BrainStageUpdate):
+                        # 阶段变化事件：以内联标记传递给前端（保持向后兼容的 SSE 格式）
+                        yield f"\x00event:stage_change:{brain_event.stage}\x00"
+            else:
+                # ── 原有路径：直接调用 ai_registry（BrainRouter 未注入时兜底）───
+                ai_client = self.ai_registry.get_client(resolved_assistant_type)
+                if not ai_client:
+                    error_msg = f"未找到类型为 '{resolved_assistant_type}' 的 AI 助手"
+                    logger.error(event="ai_client_not_found", message=error_msg, assistant_type=resolved_assistant_type)
+                    yield f"\n[System Error: {error_msg}]"
+                    return
+
+                pod_endpoint = await self._resolve_pod_endpoint(case_id, resolved_assistant_type)
+                _stream_start = time.monotonic()
+                _ttft_logged = False
+                async for chunk in ai_client.chat_completion_stream(
+                    messages=history_messages,
+                    user_id=f"case-{case_id}",
+                    pod_endpoint=pod_endpoint,
+                ):
+                    if chunk:
+                        if not _ttft_logged:
+                            _ttft_ms = int((time.monotonic() - _stream_start) * 1000)
+                            logger.info(
+                                event="ai_ttft",
+                                message="First token received",
+                                ttft_ms=_ttft_ms,
+                                assistant_type=resolved_assistant_type,
+                                case_id=case_id,
+                                conversation_id=str(conversation_id),
+                            )
+                            # 记录首 Token 延迟到 Prometheus histogram
+                            AI_TTFT_SECONDS.labels(assistant_type=resolved_assistant_type).observe(_ttft_ms / 1000.0)
+                            _ttft_logged = True
+                        _full_reply_buffer.append(chunk)
+                        yield chunk
+
 
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
 
@@ -450,7 +478,6 @@ class ConversationService:
                         )
                     )
                     # S3→S4 转换（实为 AI 输出根因时）：提取关联 KBD，写 resolved_kbd_entry_id
-                    # 注意：new_stage 是目标阶段，若从 S3 转换到 S4，current_stage 为 S3
                     if new_stage == "S4" and current_stage == "S3":
                         kbd_entry_id = self._conversation_manager.extract_resolved_kbd(full_reply)
                         asyncio.create_task(
@@ -460,8 +487,7 @@ class ConversationService:
                                 kbd_entry_id=kbd_entry_id,
                             )
                         )
-                # S0 阶段 category 写入与阶段转换解耦：只要 AI 输出了分类信息就写入，
-                # 不依赖 new_stage 是否同时触发（修复 T3-b）
+                # S0 阶段 category 写入与阶段转换解耦：只要 AI 输出了分类信息就写入
                 if current_stage == "S0" and category_info:
                     asyncio.create_task(
                         self._update_conversation_category(
@@ -482,8 +508,6 @@ class ConversationService:
                 assistant_type=resolved_assistant_type,
                 error=str(e),
             )
-            # 不在此处 yield 内联错误文本，由上层路由 event_generator() 捕获此异常
-            # 下层将统一以 "event: error\ndata: ..." 形式回传 SSE 结构化错误事件
             raise
 
     async def save_assistant_message(self, conversation_id: uuid.UUID, case_id: str, content: str) -> None:

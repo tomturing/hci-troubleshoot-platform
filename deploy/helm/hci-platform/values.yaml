@@ -550,6 +550,8 @@ opsAgent:
   service:
     type: ClusterIP
     port: 8006
+  # conversation-service 调用 ops-agent 的 HTTP 地址
+  baseUrl: "http://ops-agent-service:8006"
   otelEndpoint: "http://hci-platform-otel-collector:4318"
   resources:
     requests:

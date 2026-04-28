@@ -82,6 +82,10 @@ spec:
                   name: hci-secrets
                   key: HCI_SSH_PASSWORD
                   optional: true          # 使用密钥时此字段可为空
+            - name: OPS_AGENT_BASE_URL
+              value: {{ (.Values.opsAgent | default dict).baseUrl | default "http://ops-agent-service:8006" | quote }}
+            - name: OPS_AGENT_ENABLED
+              value: {{ (.Values.opsAgent | default dict).enabled | default false | quote }}
           # J-2: 三级探针分级健康检查，避免 AI 健康检查导致超时
           livenessProbe:
             httpGet:
