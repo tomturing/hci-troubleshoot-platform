@@ -536,3 +536,17 @@ smokeTest:
   timeoutSeconds: 120
   # 使用静态 tag 避免 imagePullPolicy:Always 在无网络环境下拉取失败
   image: curlimages/curl:8.6.0
+
+# ======================== ops-agent 服务配置 ==============================
+# ops-agent 独立大脑服务，提供 AI 运维能力
+# OPENAI_COMPATIBLE_API_KEY 由 hci-secrets.SCP_API_KEY 注入
+opsAgent:
+  image: "ghcr.io/tomturing/ops-agent:latest"
+  otelEndpoint: "http://hci-platform-otel-collector:4318"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

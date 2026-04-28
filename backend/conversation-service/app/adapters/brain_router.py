@@ -18,9 +18,9 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.core.brain_port import BrainEvent, BrainTextChunk, BrainUnavailableError
 from app.adapters.htp_brain_adapter import HTPBrainAdapter
 from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
+from app.core.brain_port import BrainEvent, BrainTextChunk, BrainUnavailableError
 
 logger = logging.getLogger("brain-router")
 

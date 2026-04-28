@@ -40,7 +40,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: hci-secrets
-                  key: OPENCLAW_API_KEY
+                  key: SCP_API_KEY
           volumeMounts:
             - name: ops-config
               mountPath: /app/ops_config.yaml

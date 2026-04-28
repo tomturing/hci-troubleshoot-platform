@@ -10,27 +10,27 @@ data:
     agents:
       enable_lakeview: false
       ops_agent:
-        model: glm4-flash-openclaw
+        model: glm47-dashscope
         max_steps: 500
         sop_catalog_path: data/case_sop_data/af/sop/node_sops.jsonl
         query_sub_agent:
-          model: glm4-flash-openclaw
+          model: glm47-dashscope
           max_steps: 80
           tool_call_budget: 40
           budget_warning_threshold: 10
 
-    # 使用与 htp conversation-service 相同的 openclaw 内部网关
-    # OPENAI_COMPATIBLE_API_KEY 由 Deployment env 注入（来自 hci-secrets.OPENCLAW_API_KEY）
+    # 使用 dashscope openai_compatible 接口调用 glm-4.7
+    # OPENAI_COMPATIBLE_API_KEY 由 Deployment env 注入（来自 hci-secrets.SCP_API_KEY）
     model_providers:
-      openclaw-gw:
+      dashscope:
         api_key: ""
-        base_url: http://openclaw:18789
+        base_url: https://coding.dashscope.aliyuncs.com/v1
         provider: openai_compatible
 
     models:
-      glm4-flash-openclaw:
-        model_provider: openclaw-gw
-        model: glm-4-flash
+      glm47-dashscope:
+        model_provider: dashscope
+        model: glm-4.7
         max_tokens: 8192
         temperature: 0.8
         top_p: 0.95
