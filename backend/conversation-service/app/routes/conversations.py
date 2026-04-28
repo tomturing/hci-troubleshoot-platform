@@ -20,6 +20,7 @@ from ..services.conversation_service import ConversationService
 from ..services.environment_client import EnvironmentClient
 from ..services.kb_client import KBClient
 from ..services.scheduler_client import SchedulerClient
+from ..adapters.brain_router import BrainRouter
 from .evaluate import require_admin_token
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -31,6 +32,7 @@ ai_registry: AIAssistantRegistry | None = None
 scheduler_client: SchedulerClient | None = None
 kb_client: KBClient | None = None
 environment_client: EnvironmentClient | None = None
+brain_router: BrainRouter | None = None  # T1-6: 大脑路由器
 
 
 def set_dependencies(
@@ -39,13 +41,15 @@ def set_dependencies(
     scheduler: SchedulerClient | None = None,
     kb: KBClient | None = None,
     env_client: EnvironmentClient | None = None,
+    router: BrainRouter | None = None,  # T1-6: 大脑路由器（可选）
 ):
-    global database_manager, ai_registry, scheduler_client, kb_client, environment_client
+    global database_manager, ai_registry, scheduler_client, kb_client, environment_client, brain_router
     database_manager = db
     ai_registry = registry
     scheduler_client = scheduler
     kb_client = kb
     environment_client = env_client
+    brain_router = router
 
 
 async def get_conversation_service() -> ConversationService:
@@ -58,6 +62,7 @@ async def get_conversation_service() -> ConversationService:
         yield ConversationService(
             repo, ai_registry, scheduler_client, kb_client, environment_client,
             database_manager.async_session_factory,
+            brain_router=brain_router,  # T1-6: 注入大脑路由器
         )
 
 @router.post("/", status_code=201)

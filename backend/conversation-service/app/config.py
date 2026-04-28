@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     SCP_BASE_URL: str = ""               # 如 http://192.168.1.100:8082
     SCP_API_KEY: str = ""                # x-auth-token 头部认证 Key
 
+    # ── T1: ops-agent 大脑可选集成 ──────────────────────────────────────────
+    OPS_AGENT_BASE_URL: str = "http://ops-agent-service:8006"  # ops-agent ClusterIP
+    OPS_AGENT_ENABLED: bool = False  # 默认关闭，OPS_AGENT_ENABLED=true 时启用
+
     # ReAct 是否启用（需要 SCP_BASE_URL + SCP_API_KEY 同时非空才生效）
     REACT_ENABLED: bool = False
 

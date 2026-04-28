@@ -23,6 +23,9 @@ from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
 from app.services.environment_client import EnvironmentClient
 from app.services.kb_client import KBClient
 from app.services.scheduler_client import SchedulerClient
+from app.adapters.brain_router import BrainRouter
+from app.adapters.htp_brain_adapter import HTPBrainAdapter
+from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -98,8 +101,17 @@ async def lifespan(app: FastAPI):
     app.state.kb_client = kb_client
     app.state.environment_client = environment_client
 
+    # T1-6: 组装大脑路由器（BrainRouter）
+    htp_adapter = HTPBrainAdapter(ai_registry=ai_registry, scheduler_client=scheduler_client)
+    ops_adapter = OpsAgentBrainAdapter(
+        base_url=settings.OPS_AGENT_BASE_URL,
+        enabled=settings.OPS_AGENT_ENABLED,
+    )
+    brain_router = BrainRouter(htp_adapter=htp_adapter, ops_adapter=ops_adapter)
+    app.state.brain_router = brain_router
+
     # 兼容现有路由注入方式
-    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client, environment_client)
+    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client, environment_client, router=brain_router)
     evaluate.set_database_manager(database_manager)
     audit_route.set_audit_database_manager(database_manager)
 
