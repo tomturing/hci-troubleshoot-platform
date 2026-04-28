@@ -133,9 +133,8 @@ components:
           default: "ops-agent"
           description: "模型标识，固定为 ops-agent"
         session_id:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
           description: |
             【htp 扩展字段】会话 ID，对应 htp 的 conversation.id（UUID）。
             - 传入时：ops-agent 从 session store（内存或 Redis）恢复此 session 的对话历史，在已有上下文基础上继续推理
@@ -166,8 +165,7 @@ components:
           type: string
 
     HCIContext:
-      type: object
-      nullable: true
+      type: [object, "null"]
       description: |
         【htp 扩展字段】htp 预取的实时平台数据。
         ops-agent 将其格式化后注入为首条 system 消息，使其能感知实时环境状态。
@@ -207,8 +205,7 @@ components:
                 type: string
           default: []
         env_info:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: "集群/环境基本信息（来自 EnvironmentClient）"
           properties:
             cluster_name:
@@ -252,19 +249,17 @@ components:
                 type: object
                 properties:
                   role:
-                    type: string
-                    nullable: true
+                    type: [string, "null"]
                   content:
-                    type: string
-                    nullable: true
+                    type: [string, "null"]
                     description: "LLM 生成的文本片段，实时 yield（TTFT ≤ 3s）"
               finish_reason:
-                type: string
-                nullable: true
-                enum: [stop, length, null]
+                oneOf:
+                  - type: string
+                    enum: [stop, length]
+                  - type: "null"
         x_stage_update:
-          type: object
-          nullable: true
+          type: [object, "null"]
           description: |
             【非标准扩展字段，前缀 x_ 表示非 OpenAI 规范】
             ops-agent 内部阶段变化通知。
