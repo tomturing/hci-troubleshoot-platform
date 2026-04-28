@@ -1,0 +1,321 @@
+openapi: "3.1.0"
+info:
+  title: Brain HTTP API
+  version: "1.0.0"
+  description: |
+    hci-troubleshoot-platform (htp) 调用 ops-agent 大脑的 HTTP 接口规范。
+
+    ## 角色说明
+    - **调用方（Consumer）**：htp 的 OpsAgentBrainAdapter
+    - **实现方（Provider）**：ops-agent 的 /server/openai_compat.py
+
+    ## 变更治理
+    此文件是接口契约的**唯一权威来源**，存于 hci-troubleshoot-platform 仓库。
+    任何修改必须：
+      1. 先在此文件完成修改并合并（htp PR）
+      2. 对应修改 ops-agent 的实现（ops-agent PR 引用 htp PR）
+      3. 向后兼容变更：ops-agent 先合并；破坏性变更：两侧同步合并
+
+    ## 与标准 OpenAI Chat Completions API 的关系
+    本接口是标准 OpenAI `/v1/chat/completions` 的超集：
+    - Request：增加可选字段 `session_id` 和 `hci_context`
+    - Response（流式）：增加可选扩展字段 `x_stage_update`
+    - 不传新增字段时，行为与标准 OpenAI 规范完全一致（向后兼容）
+
+  contact:
+    name: platform-team
+  license:
+    name: Internal
+
+servers:
+  - url: "http://ops-agent-service:8006"
+    description: "K8s 内部服务地址（开发/staging）"
+  - url: "http://localhost:8006"
+    description: "本地开发"
+
+paths:
+  /v1/chat/completions:
+    post:
+      operationId: brainChatCompletions
+      summary: 处理一轮诊断对话（ops-agent 大脑）
+      description: |
+        htp 通过此接口将用户消息发送给 ops-agent 大脑。
+        ops-agent 大脑根据 session_id 恢复或创建会话上下文，
+        结合 hci_context 中的实时环境数据，推理并返回流式响应。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrainRequest'
+            examples:
+              new_session:
+                summary: 新建会话（首次对话）
+                value:
+                  messages:
+                    - role: "user"
+                      content: "VPN 隧道断了，日志显示 IKE 协商超时"
+                  session_id: "550e8400-e29b-41d4-a716-446655440000"
+                  hci_context:
+                    active_alerts:
+                      - alert_name: "VPN_TUNNEL_DOWN"
+                        severity: "critical"
+                        started_at: "2026-04-28T10:00:00Z"
+                    failed_tasks: []
+                  stream: true
+              continue_session:
+                summary: 续接已有会话
+                value:
+                  messages:
+                    - role: "user"
+                      content: "Phase 2 协商失败，错误码 TS_UNACCEPTABLE"
+                  session_id: "550e8400-e29b-41d4-a716-446655440000"
+                  stream: true
+      responses:
+        '200':
+          description: |
+            成功响应。
+            - `stream=true`（默认）：Server-Sent Events 流，每行格式为 `data: <json>\n\n`，以 `data: [DONE]\n\n` 结束
+            - `stream=false`：完整 JSON 响应（用于测试）
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/BrainSSEStream'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrainNonStreamResponse'
+        '422':
+          description: 请求参数校验失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '503':
+          description: ops-agent 服务暂时不可用（模型加载中等）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceUnavailableError'
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: 健康检查（htp 用于判断是否降级）
+      responses:
+        '200':
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+
+components:
+  schemas:
+    BrainRequest:
+      type: object
+      required:
+        - messages
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          description: |
+            对话消息列表。htp 调用时只传最新一条 user 消息。
+            ops-agent 通过 session_id 自行管理完整历史，不依赖此字段传入历史。
+          items:
+            $ref: '#/components/schemas/Message'
+        model:
+          type: string
+          default: "ops-agent"
+          description: "模型标识，固定为 ops-agent"
+        session_id:
+          type: [string, "null"]
+          format: uuid
+          description: |
+            【htp 扩展字段】会话 ID，对应 htp 的 conversation.id（UUID）。
+            - 传入时：ops-agent 从 session store（内存或 Redis）恢复此 session 的对话历史，在已有上下文基础上继续推理
+            - 不传时：视为新会话，从 intake 阶段重新开始
+            - 生命周期：htp 负责维护，ops-agent 不主动删除
+        hci_context:
+          $ref: '#/components/schemas/HCIContext'
+        stream:
+          type: boolean
+          default: true
+          description: "true 返回 SSE 流，false 返回完整 JSON（开发调试用）"
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          description: "LLM 温度参数，不传使用 ops-agent 默认配置"
+
+    Message:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          type: string
+
+    HCIContext:
+      type: [object, "null"]
+      description: |
+        【htp 扩展字段】htp 预取的实时平台数据。
+        ops-agent 将其格式化后注入为首条 system 消息，使其能感知实时环境状态。
+        此字段缺失时，ops-agent 行为不变（可能会通过 get_info_from_user 工具询问用户）。
+      properties:
+        active_alerts:
+          type: array
+          description: "当前活跃告警列表（来自 SCP API）"
+          items:
+            type: object
+            properties:
+              alert_name:
+                type: string
+              severity:
+                type: string
+                enum: [info, warning, critical]
+              started_at:
+                type: string
+                format: date-time
+              description:
+                type: string
+          default: []
+        failed_tasks:
+          type: array
+          description: "最近失败任务列表（来自 SCP API）"
+          items:
+            type: object
+            properties:
+              task_id:
+                type: string
+              task_type:
+                type: string
+              failed_at:
+                type: string
+                format: date-time
+              error_message:
+                type: string
+          default: []
+        env_info:
+          type: [object, "null"]
+          description: "集群/环境基本信息（来自 EnvironmentClient）"
+          properties:
+            cluster_name:
+              type: string
+            cluster_version:
+              type: string
+            node_count:
+              type: integer
+        fetched_at:
+          type: string
+          format: date-time
+          description: "数据预取时间，供 ops-agent 判断数据时效性"
+
+    BrainSSEStream:
+      type: string
+      description: |
+        Server-Sent Events 流，每行格式：`data: <BrainSSEChunk JSON>\n\n`
+        流结束标志：`data: [DONE]\n\n`
+
+    BrainSSEChunk:
+      type: object
+      description: "SSE 流中每个数据块的结构（标准 OpenAI 格式 + 可选扩展字段）"
+      required:
+        - choices
+      properties:
+        id:
+          type: string
+          description: "本次响应 ID"
+        object:
+          type: string
+          enum: [chat.completion.chunk]
+        choices:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              delta:
+                type: object
+                properties:
+                  role:
+                    type: [string, "null"]
+                  content:
+                    type: [string, "null"]
+                    description: "LLM 生成的文本片段，实时 yield（TTFT ≤ 3s）"
+              finish_reason:
+                oneOf:
+                  - type: string
+                    enum: [stop, length]
+                  - type: "null"
+        x_stage_update:
+          type: [object, "null"]
+          description: |
+            【非标准扩展字段，前缀 x_ 表示非 OpenAI 规范】
+            ops-agent 内部阶段变化通知。
+            htp 收到此字段时可更新前端的阶段展示组件，但不用于控制 htp 自身的状态机。
+          properties:
+            current_stage:
+              type: string
+              enum:
+                - intake
+                - routing
+                - validation
+                - solution
+                - confirmation
+                - reroute
+                - escalation
+                - closed
+            stage_label:
+              type: string
+              description: "阶段的人类可读标签（中文）"
+              example: "诊断中"
+
+    BrainNonStreamResponse:
+      type: object
+      description: "stream=false 时的完整响应（用于测试）"
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [chat.completion]
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              message:
+                $ref: '#/components/schemas/Message'
+              finish_reason:
+                type: string
+
+    ValidationError:
+      type: object
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+
+    ServiceUnavailableError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              enum: [service_unavailable]
