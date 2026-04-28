@@ -35,12 +35,12 @@ spec:
               value: "true"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.opsAgent.otelEndpoint | default "http://hci-platform-otel-collector:4318" | quote }}
-            - name: OPENROUTER_API_KEY
+            # openai_compatible provider 的 API key（与 htp conversation-service 共用同一 openclaw key）
+            - name: OPENAI_COMPATIBLE_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: ops-agent-secret
-                  key: openrouter-api-key
-                  optional: true
+                  name: hci-secrets
+                  key: OPENCLAW_API_KEY
           volumeMounts:
             - name: ops-config
               mountPath: /app/ops_config.yaml
