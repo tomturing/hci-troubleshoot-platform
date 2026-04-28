@@ -1,0 +1,81 @@
+{{- if .Values.opsAgent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ops-agent-service
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "ops-agent-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "ops-agent-service" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "ops-agent-service" "Release" .Release "Chart" .Chart) | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/ops-agent-service/configmap.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8006"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "ops-agent-service") | nindent 6 }}
+      containers:
+        - name: ops-agent
+          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.opsAgent.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
+          ports:
+            - name: http
+              containerPort: 8006
+              protocol: TCP
+          env:
+            - name: OPS_CONFIG_PATH
+              value: /app/ops_config.yaml
+            - name: HCI_TP_ENABLED
+              value: "true"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.opsAgent.otelEndpoint | default "http://hci-platform-otel-collector:4318" | quote }}
+            # dashscope openai_compatible provider 的 API key，来自 hci-secrets.SCP_API_KEY
+            - name: OPENAI_COMPATIBLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: SCP_API_KEY
+          volumeMounts:
+            - name: ops-config
+              mountPath: /app/ops_config.yaml
+              subPath: ops_config.yaml
+          resources:
+            {{- (.Values.opsAgent.resources | default (dict "requests" (dict "cpu" "100m" "memory" "128Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | toYaml | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+      volumes:
+        - name: ops-config
+          configMap:
+            name: ops-agent-config
+{{- end }}

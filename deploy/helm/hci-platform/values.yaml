@@ -536,3 +536,25 @@ smokeTest:
   timeoutSeconds: 120
   # 使用静态 tag 避免 imagePullPolicy:Always 在无网络环境下拉取失败
   image: curlimages/curl:8.6.0
+
+# ======================== ops-agent 服务配置 ==============================
+# ops-agent 独立大脑服务（Ports & Adapters 架构中的 OpsAgentBrainAdapter 调用目标）
+# 模型：dashscope glm-5（OPENAI_COMPATIBLE_API_KEY 来自 hci-secrets.SCP_API_KEY）
+# 服务端口：8006（K8s 内部 ClusterIP：http://ops-agent-service:8006）
+opsAgent:
+  # 设为 true 时才会创建 Deployment/ConfigMap/Service，避免离线环境拉取镜像失败
+  enabled: false
+  image:
+    repository: "ghcr.io/tomturing/ops-agent"
+    tag: "latest"
+  service:
+    type: ClusterIP
+    port: 8006
+  otelEndpoint: "http://hci-platform-otel-collector:4318"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
