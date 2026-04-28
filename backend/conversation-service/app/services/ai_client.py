@@ -70,7 +70,7 @@ class OpenClawAssistant:
         host = (urlparse(endpoint).hostname or "").lower()
         if not host:
             return False
-        if host in {"localhost", "127.0.0.1", "host.docker.internal", "openclaw", "productionclaw", "learningclaw"}:
+        if host in {"localhost", "127.0.0.1", "host.docker.internal", "openclaw", "productionclaw", "learningclaw", "ops-agent-service"}:
             return True
         if host.endswith(".svc") or host.endswith(".svc.cluster.local"):
             return True

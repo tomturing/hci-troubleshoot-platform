@@ -1174,6 +1174,17 @@ export const useChatStore = defineStore('chat', () => {
     showCaseTemplate.value = false
     addUserMessage(userMessage)
 
+    // 【修复 Issue 3】加载 case 对象，避免 createConversation 因 currentCase.value 为 null 而失败
+    try {
+      const caseRes = await caseApi.getById(caseId)
+      currentCase.value = caseRes.data
+    } catch (e) {
+      addSystemMessage(`加载工单 ${caseId} 失败，无法继续对话`)
+      isLoading.value = false
+      pendingUserMessage.value = ''
+      return
+    }
+
     addSystemMessage(`工单 ${caseId} 已创建，AI 正在识别故障类型，请稍候…`)
 
     // 创建对话（失败时会抛出错误并显示提示）
