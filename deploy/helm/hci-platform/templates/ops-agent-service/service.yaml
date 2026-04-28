@@ -1,3 +1,4 @@
+{{- if .Values.opsAgent.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,9 +9,10 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-    - port: {{ .Values.opsAgent.port | default 8006 }}
-      targetPort: {{ .Values.opsAgent.port | default 8006 }}
+    - port: {{ .Values.opsAgent.service.port | default 8006 }}
+      targetPort: {{ .Values.opsAgent.service.port | default 8006 }}
       protocol: TCP
       name: http
   selector:
     {{- include "hci.selectorLabels" (dict "name" "ops-agent-service" "Release" .Release) | nindent 4 }}
+{{- end }}
