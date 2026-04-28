@@ -11,9 +11,9 @@ BrainPort Protocol：大脑可选架构的核心接口定义（T1-3）
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Protocol, runtime_checkable
-
+from typing import Any, Protocol, runtime_checkable
 
 # ── 事件类型定义 ────────────────────────────────────────────────────────────────
 

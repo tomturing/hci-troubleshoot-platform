@@ -14,13 +14,13 @@ from shared.models.schemas import MessageCreate, MessageResponse
 from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceError
 from shared.utils.logger import get_logger
 
+from ..adapters.brain_router import BrainRouter
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService
 from ..services.environment_client import EnvironmentClient
 from ..services.kb_client import KBClient
 from ..services.scheduler_client import SchedulerClient
-from ..adapters.brain_router import BrainRouter
 from .evaluate import require_admin_token
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])

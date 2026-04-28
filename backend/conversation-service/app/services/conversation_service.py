@@ -15,6 +15,9 @@ from shared.utils.otel import get_current_trace_id
 
 from app.config import settings
 
+# T1-3 ~ T1-6: 大脑可选架构组件
+from ..adapters.brain_router import BrainRouter
+from ..core.brain_port import BrainStageUpdate, BrainTextChunk
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
@@ -26,10 +29,6 @@ from .knowledge_retriever import KnowledgeRetriever
 from .prompt_builder import PromptBuilder
 from .scheduler_client import SchedulerClient
 from .sse_queue import LogAuditService, QueueSSEEmitter
-
-# T1-3 ~ T1-6: 大脑可选架构组件
-from ..adapters.brain_router import BrainRouter
-from ..core.brain_port import BrainTextChunk, BrainStageUpdate
 
 logger = get_logger("conversation-service")
 tracer = trace.get_tracer(__name__)

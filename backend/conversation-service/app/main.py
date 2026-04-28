@@ -16,6 +16,9 @@ from shared.utils.logger import get_logger
 from shared.utils.metrics import HTTPMetricsMiddleware
 from shared.utils.otel import init_telemetry, instrument_app
 
+from app.adapters.brain_router import BrainRouter
+from app.adapters.htp_brain_adapter import HTPBrainAdapter
+from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
 from app.config import settings
 from app.routes import audit as audit_route
 from app.routes import conversations, evaluate
@@ -23,9 +26,6 @@ from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
 from app.services.environment_client import EnvironmentClient
 from app.services.kb_client import KBClient
 from app.services.scheduler_client import SchedulerClient
-from app.adapters.brain_router import BrainRouter
-from app.adapters.htp_brain_adapter import HTPBrainAdapter
-from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)

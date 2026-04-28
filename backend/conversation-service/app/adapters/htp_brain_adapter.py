@@ -13,13 +13,11 @@ HTPBrainAdapter：htp 原有大脑的 BrainPort 实现（T1-4：逻辑搬家）
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
-import httpx
 from shared.utils.exceptions import AIStreamError
 from shared.utils.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
 
