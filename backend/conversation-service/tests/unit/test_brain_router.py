@@ -12,7 +12,7 @@ import os
 import sys
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -30,7 +30,6 @@ if _expect != _actual:
 
 from app.adapters.brain_router import BrainRouter
 from app.core.brain_port import BrainEvent, BrainStageUpdate, BrainTextChunk, BrainUnavailableError
-
 
 # ── 辅助工厂 ──────────────────────────────────────────────────────────────────
 
