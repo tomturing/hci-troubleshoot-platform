@@ -1,3 +1,4 @@
+{{- if .Values.opsAgent.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,14 +17,17 @@ spec:
       labels:
         {{- include "hci.podLabels" (dict "name" "ops-agent-service" "Release" .Release "Chart" .Chart) | nindent 8 }}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/ops-agent-service/configmap.yaml") . | sha256sum }}
         prometheus.io/scrape: "true"
         prometheus.io/port: "8006"
         prometheus.io/path: "/metrics"
     spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "ops-agent-service") | nindent 6 }}
       containers:
         - name: ops-agent
-          image: {{ .Values.opsAgent.image | default "ghcr.io/tomturing/ops-agent:latest" }}
+          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.opsAgent.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
           ports:
             - name: http
               containerPort: 8006
@@ -46,7 +50,7 @@ spec:
               mountPath: /app/ops_config.yaml
               subPath: ops_config.yaml
           resources:
-            {{- toYaml .Values.opsAgent.resources | default (dict "requests" (dict "cpu" "100m" "memory" "128Mi") "limits" (dict "cpu" "500m" "memory" "512Mi")) | nindent 12 }}
+            {{- (.Values.opsAgent.resources | default (dict "requests" (dict "cpu" "100m" "memory" "128Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | toYaml | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /health/live
@@ -74,3 +78,4 @@ spec:
         - name: ops-config
           configMap:
             name: ops-agent-config
+{{- end }}
