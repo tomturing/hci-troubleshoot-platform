@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.7.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.6.0...v2.7.0) (2026-04-29)
+
+
+### ✨ 新功能
+
+* **conversation:** Phase 1 大脑可选——BrainPort/Adapter/Router 架构 ([#238](https://github.com/tomturing/hci-troubleshoot-platform/issues/238)) ([8ccbc67](https://github.com/tomturing/hci-troubleshoot-platform/commit/8ccbc67d5bb3ee9ec0bbb4a1206b2a6bee973586))
+* **helm:** ops-agent 大脑服务 Helm 部署配置（dashscope glm-5） ([#237](https://github.com/tomturing/hci-troubleshoot-platform/issues/237)) ([7a747e5](https://github.com/tomturing/hci-troubleshoot-platform/commit/7a747e56f38266fb14b463db12cdeac64d0fbf82))
+
+
+### 🐛 Bug 修复
+
+* **conversation-service:** 探针改用分级健康检查端点 ([#230](https://github.com/tomturing/hci-troubleshoot-platform/issues/230)) ([d4ca503](https://github.com/tomturing/hci-troubleshoot-platform/commit/d4ca503a70474b4dd6fc6508b23bef30e66991bf))
+* **data:** 彻底删除 Alembic 熔断器，解决配置冲突 ([#231](https://github.com/tomturing/hci-troubleshoot-platform/issues/231)) ([4e6ae44](https://github.com/tomturing/hci-troubleshoot-platform/commit/4e6ae443380c77feb3faf46f8662fa5b7239c98c))
+* **deploy:** 修复 ArgoCD Hook 并统一 prod/staging HTTPS 基线 ([#234](https://github.com/tomturing/hci-troubleshoot-platform/issues/234)) ([9f6fbc9](https://github.com/tomturing/hci-troubleshoot-platform/commit/9f6fbc9f30a36df7289c733f461e449d5ff2ab8e))
+* **frontend:** no-SSH 流程 completeCaseCreationFlow 因 currentCase 为 null 导致 createConversation 失败 ([#239](https://github.com/tomturing/hci-troubleshoot-platform/issues/239)) ([446c4a4](https://github.com/tomturing/hci-troubleshoot-platform/commit/446c4a4be6f36057f6166ae612a50356f6c5fb1a))
+* **ingress:** Grafana Ingress 支持 TLS 时自动切换到 websecure 入口 ([#229](https://github.com/tomturing/hci-troubleshoot-platform/issues/229)) ([4c45d74](https://github.com/tomturing/hci-troubleshoot-platform/commit/4c45d74820578dc01059c7df79a9d740d66da784))
+* **ingress:** 支持 TLS 时自动切换到 websecure 入口 ([#227](https://github.com/tomturing/hci-troubleshoot-platform/issues/227)) ([c78e3ac](https://github.com/tomturing/hci-troubleshoot-platform/commit/c78e3ac70d85a9fb9fc64c209a23777d38d652ac))
+* **terminal_bridge:** 修正 CORS 头使用请求 Origin 回填 ([#226](https://github.com/tomturing/hci-troubleshoot-platform/issues/226)) ([97c6c2e](https://github.com/tomturing/hci-troubleshoot-platform/commit/97c6c2eae13157e3893e33cfc926d89421066d44))
+* **terminal_bridge:** 添加 CORS 头支持 Chrome Private Network Access ([#225](https://github.com/tomturing/hci-troubleshoot-platform/issues/225)) ([2a59b5c](https://github.com/tomturing/hci-troubleshoot-platform/commit/2a59b5cb7b269dd9a324f4a1d150a15c2183103d))
+
+
+### 📝 文档
+
+* Phase 1 大脑可选集成规范化文档 ([#236](https://github.com/tomturing/hci-troubleshoot-platform/issues/236)) ([6a39488](https://github.com/tomturing/hci-troubleshoot-platform/commit/6a39488b8f0bf2e4b5aff674328e3ef026e1792e))
+* 更新部署架构文档，补充完整端口映射和环境说明 ([#233](https://github.com/tomturing/hci-troubleshoot-platform/issues/233)) ([c501d6e](https://github.com/tomturing/hci-troubleshoot-platform/commit/c501d6e52188b8d428290e91e66c1e69a0104021))
+* 添加 D-006 GitHub PAT 失效导致镜像拉取失败避坑指南 ([#223](https://github.com/tomturing/hci-troubleshoot-platform/issues/223)) ([bb19d9e](https://github.com/tomturing/hci-troubleshoot-platform/commit/bb19d9e2ce90693d5097e249a00b6a64b1278f92))
+* 补充 D-007 易踩坑说明，明确 CORS 头仅在 HTTPS 场景有效 ([#228](https://github.com/tomturing/hci-troubleshoot-platform/issues/228)) ([1dcd368](https://github.com/tomturing/hci-troubleshoot-platform/commit/1dcd368d23cf6509ba8c4872929c9545ce629b85))
+
 ## [2.6.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.5.0...v2.6.0) (2026-04-26)
 
 
