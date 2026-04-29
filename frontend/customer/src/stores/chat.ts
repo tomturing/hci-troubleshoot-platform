@@ -1175,15 +1175,26 @@ export const useChatStore = defineStore('chat', () => {
     addUserMessage(userMessage)
 
     // 在调用 createConversation 之前必须先将 currentCase 赋值，
-    // 否则 createConversation 内部的 currentCase 为 null 检查会抛出异常
-    try {
-      const caseRes = await caseApi.getById(caseId)
-      currentCase.value = caseRes.data
-    } catch (e) {
-      addSystemMessage(`加载工单 ${caseId} 失败，无法继续对话`)
-      isLoading.value = false
-      pendingUserMessage.value = ''
-      return
+    // 否则 createConversation 内部的 currentCase 为 null 检查会抛出异常。
+    // 仅当前工单不存在或与目标 caseId 不匹配时才重新拉取，避免重复请求；
+    // 若拉取失败但已有可用 currentCase，则优先回退使用现有工单继续流程。
+    const hasMatchingCurrentCase = currentCase.value?.case_id === caseId
+    if (!hasMatchingCurrentCase) {
+      try {
+        const caseRes = await caseApi.getById(caseId)
+        currentCase.value = caseRes.data
+      } catch (e: any) {
+        console.error(`[ChatStore] 加载工单失败: ${caseId}`, e)
+        const errorMessage = e.response?.data?.detail || e.message || '未知错误'
+        if (!currentCase.value) {
+          addSystemMessage(`加载工单 ${caseId} 失败：${errorMessage}，无法继续对话`)
+          isLoading.value = false
+          pendingUserMessage.value = ''
+          return
+        }
+        // currentCase 已有旧值，继续使用不中断流程
+        console.warn(`[ChatStore] 加载工单 ${caseId} 失败，回退使用现有工单 ${currentCase.value.case_id}`)
+      }
     }
 
     addSystemMessage(`工单 ${caseId} 已创建，AI 正在识别故障类型，请稍候…`)
