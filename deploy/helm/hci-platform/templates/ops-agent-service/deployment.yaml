@@ -26,7 +26,7 @@ spec:
       containers:
         - name: ops-agent
           image: {{ .Values.opsAgent.image.repository }}:{{ .Values.opsAgent.image.tag | default "latest" }}
-          imagePullPolicy: {{ .Values.opsAgent.image.pullPolicy | default "IfNotPresent" }}
+          imagePullPolicy: {{- if .Values.opsAgent.image.pullPolicy }}{{ .Values.opsAgent.image.pullPolicy }}{{- else if eq (.Values.opsAgent.image.tag | default "latest") "latest" }}Always{{- else }}IfNotPresent{{- end }}
           {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
           ports:
             - name: http
