@@ -13,7 +13,7 @@ data:
       ops_agent:
         model: glm5-dashscope
         max_steps: 500
-        sop_catalog_path: data/case_sop_data/af/sop/node_sops.jsonl
+        sop_catalog_path: data/case_sop_data/hci/sop/node_sops.jsonl
         query_sub_agent:
           model: glm5-dashscope
           max_steps: 80
