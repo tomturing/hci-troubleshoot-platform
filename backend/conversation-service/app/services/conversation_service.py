@@ -44,7 +44,7 @@ def _bigram_tokens(s: str) -> set[str]:
     """
     字符级 bigram 分词，同时支持中文和英文。
 
-    英文按空格拆词后再对每个词做 bigram；中文直接对整句做 bigram。
+    对整个字符串做字符级 bigram（含空格和标点），不区分中英文，统一处理。
     对长度 ≤ 1 的字符串，退化为单字符集合（避免空集）。
     """
     s = s.lower().strip()
@@ -105,10 +105,11 @@ def _acli_is_readonly(cmd: str) -> bool:
     """判断 acli 命令是否为只读操作（可自动执行）。
 
     约定：acli <resource> <verb> ... 或 acli <verb> ...
-    只要任意 token 是只读动词即认为只读（保守：不确定时 → False）。
+    仅检查 `acli` 之后前两个 token（兼容 `<verb>` 或 `<resource> <verb>` 两种形式）：
+    只要这两个候选位置之一是只读动词即认为只读（保守：不确定时 → False）。
     """
     parts = [p.lower() for p in cmd.strip().split()]
-    return any(p in _ACLI_READONLY_VERBS for p in parts[1:3])  # 跳过 'acli' 本身
+    return any(p in _ACLI_READONLY_VERBS for p in parts[1:3])  # 跳过 `acli`，仅检查 verb 候选位置
 
 
 class ConversationService:
@@ -1482,17 +1483,17 @@ class ConversationService:
                     await session.execute(
                         sa_text("""
                             UPDATE conversation
-                            SET metadata_ = jsonb_set(
-                                COALESCE(metadata_, '{}'),
+                            SET "metadata" = jsonb_set(
+                                COALESCE("metadata", '{}'),
                                 '{s0_candidate_rounds}',
                                 (COALESCE(
-                                    (COALESCE(metadata_, '{}')->>'s0_candidate_rounds')::int,
+                                    (COALESCE("metadata", '{}')->>'s0_candidate_rounds')::int,
                                     0
                                 ) + 1)::text::jsonb
                             )
                             WHERE conversation_id = :cid
                         """),
-                        {"cid": str(conversation_id)},
+                        {"cid": conversation_id},
                     )
                     await session.commit()
             else:

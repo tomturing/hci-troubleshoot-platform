@@ -1,23 +1,36 @@
 """
 针对 2026-05-07 htp 大脑诊断检出质量修复的单元测试
 
-覆盖 P0/P1/P2/P3 修复点：
+当前文件实际覆盖的内容：
 - N-1: Jaccard bigram 中文相似度
-- N-3: env_context 传递（集成测试覆盖，此处只验证参数传入）
-- D-3: ReactExecutor 使用 diagnostic_stage 构建 Prompt
-- N-2: KB 检索 S1+ 跳过意图识别
-- N-4: ops-agent 路径跳过状态机检测
-- P2: S3 acli 命令提取
-"""
-import pytest
+- P2: acli 命令只读判定
 
+说明：
+- 其余修复点（N-2/N-3/D-3/N-4）由集成测试或其他测试文件覆盖，不在此
+  文件中声明，以避免对单元测试覆盖范围产生误解。
+"""
+import os
+import sys
+
+# 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
+_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_expect = os.path.normpath(os.path.join(_svc, "app"))
+_actual = os.path.normpath(getattr(sys.modules.get("app"), "__path__", [""])[0]) if "app" in sys.modules else ""
+if _expect != _actual:
+    for _k in list(sys.modules):
+        if _k == "app" or _k.startswith("app."):
+            del sys.modules[_k]
+    if _svc in sys.path:
+        sys.path.remove(_svc)
+    sys.path.insert(0, _svc)
+
+import pytest
 from app.services.conversation_service import (
+    _acli_is_readonly,
     _bigram_tokens,
     _extract_acli_commands,
-    _acli_is_readonly,
     jaccard_similarity,
 )
-
 
 # ─── N-1: Jaccard bigram 中文相似度 ─────────────────────────────────────────
 

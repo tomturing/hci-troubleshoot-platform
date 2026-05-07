@@ -229,6 +229,21 @@ export const useChatStore = defineStore('chat', () => {
     initialized.value = true
   }
 
+  // 从工单数据恢复助手选择；若已保存的助手不可用则降级到默认可用助手
+  function _restoreAssistantFromCase(caseData: { assistant_type?: string }) {
+    const saved = caseData.assistant_type
+    if (!saved) return
+    if (assistants.value.some(a => a.type === saved && a.available)) {
+      selectedAssistant.value = saved
+      return
+    }
+    // 已保存的助手当前不可用（如被禁用），降级到默认可用助手
+    devLog('chat', `助手 ${saved} 不可用，回退到默认助手`, { saved })
+    const fallback = assistants.value.find(a => a.is_default && a.available)
+      || assistants.value.find(a => a.available)
+    if (fallback) selectedAssistant.value = fallback.type
+  }
+
   async function resumePendingCase() {
     if (!pendingCase.value) return
     currentCase.value = pendingCase.value
@@ -236,10 +251,7 @@ export const useChatStore = defineStore('chat', () => {
     const caseId = pendingCase.value.case_id
 
     // 从工单数据恢复助手选择
-    const caseAssistantType = pendingCase.value.assistant_type
-    if (caseAssistantType && assistants.value.some(a => a.type === caseAssistantType && a.available)) {
-      selectedAssistant.value = caseAssistantType
-    }
+    _restoreAssistantFromCase(pendingCase.value)
 
     await loadConversationHistory(caseId)
     pendingCase.value = null
@@ -608,10 +620,7 @@ export const useChatStore = defineStore('chat', () => {
       environmentContext.value = null  // 先清空，避免展示旧工单的环境数据
 
       // 从工单数据恢复助手选择
-      const caseAssistantType = caseItem.assistant_type
-      if (caseAssistantType && assistants.value.some(a => a.type === caseAssistantType && a.available)) {
-        selectedAssistant.value = caseAssistantType
-      }
+      _restoreAssistantFromCase(caseItem)
 
       await loadConversationHistory(caseItem.case_id)
       // 切换工单时同步加载对应环境数据（fire-and-forget）

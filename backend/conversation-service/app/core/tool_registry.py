@@ -302,6 +302,25 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         policy="confirm",
         category="acli",
     ),
+    # ─── S3 阶段自动执行（通用只读命令通道）────────────────────────────────────
+    "acli_run": ToolDefinition(
+        name="acli_run",
+        description=(
+            "直接执行指定的 acli 只读命令（S3 阶段自动执行用途）。"
+            "调用方须确保命令已通过 _acli_is_readonly() 校验；适配器层会再次验证只读性。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "完整的 acli 命令字符串，如 'acli vm list'"},
+                "node_ip": {"type": "string", "description": "目标节点 IP，留空表示本机"},
+            },
+            "required": ["command"],
+        },
+        risk_level=1,
+        policy="auto",
+        category="acli",
+    ),
 }
 
 

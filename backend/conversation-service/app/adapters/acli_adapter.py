@@ -30,6 +30,11 @@ _IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
 # VM ID / 服务名 / NIC 名：只允许字母、数字、连字符、下划线，最长 64 字符
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 
+# 只读 acli 动词白名单（与 conversation_service._ACLI_READONLY_VERBS 保持一致，防御性重复校验）
+_ACLI_READONLY_VERBS = frozenset(
+    {"get", "list", "show", "describe", "status", "info", "check", "query", "fetch"}
+)
+
 
 def _validate_ip(ip: str) -> str:
     """校验 IPv4 地址，非法时抛出 ValueError"""
@@ -141,6 +146,16 @@ class AcliAdapter:
                     target_ip = _validate_ip(target_ip)
                     return f"acli plugin netdoctor {target_ip}", node_ip
                 return "acli plugin netdoctor", node_ip
+
+            case "acli_run":
+                # S3 自动执行通道：接受原始命令字符串，防御性重校验只读性
+                raw_cmd = str(args.get("command", "")).strip()
+                if not raw_cmd.startswith("acli "):
+                    raise ValueError(f"acli_run 命令须以 'acli ' 开头: {raw_cmd!r}")
+                _parts = raw_cmd.split()
+                if not any(p.lower() in _ACLI_READONLY_VERBS for p in _parts[1:3]):
+                    raise ValueError(f"acli_run 拒绝非只读命令: {raw_cmd!r}")
+                return raw_cmd, node_ip
 
             case _:
                 raise ValueError(f"AcliAdapter 未实现工具: {tool_name}")
