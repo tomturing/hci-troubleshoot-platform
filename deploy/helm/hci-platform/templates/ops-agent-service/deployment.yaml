@@ -25,7 +25,7 @@ spec:
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "ops-agent-service") | nindent 6 }}
       containers:
         - name: ops-agent
-          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.opsAgent.image) }}
+          image: {{ .Values.opsAgent.image.repository }}:{{ .Values.opsAgent.image.tag | default "latest" }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
           {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
           ports:
