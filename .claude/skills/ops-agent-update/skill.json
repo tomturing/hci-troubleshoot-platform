@@ -1,0 +1,5 @@
+{
+  "name": "ops-agent-update",
+  "description": "更新 ops-agent 镜像 tag 到 hci-platform-env 仓库，触发 ArgoCD 自动同步部署",
+  "trigger": "当用户请求更新 ops-agent 版本或同步 ops-agent 镜像时调用"
+}
