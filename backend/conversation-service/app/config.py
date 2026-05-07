@@ -77,16 +77,32 @@ class Settings(BaseSettings):
     def assistant_registry(self) -> dict[str, dict[str, Any]]:
         """解析助手注册表。优先从 ASSISTANT_REGISTRY_JSON 环境变量读取，与 scheduler-service 配置统一。
 
+        过滤规则：
+        1. 仅保留 cfg 为 dict 的有效条目（避免非 dict 配置导致 AttributeError）
+        2. 排除 ops-agent（它通过 BrainRouter 独立路由，不通过 ai_registry）
+
         如果环境变量为空或解析失败，降级为默认 openclaw 配置。
         """
         # 优先使用环境变量注入的统一配置（来自 hci-common-config ASSISTANT_REGISTRY_JSON）
         try:
             registry = json.loads(self.ASSISTANT_REGISTRY_JSON or "{}")
             if isinstance(registry, dict) and registry:
-                # 验证至少有一个有效的助手配置
-                for _atype, cfg in registry.items():
-                    if isinstance(cfg, dict) and cfg.get("enabled", True):
-                        return registry  # 使用统一配置
+                # 构造新的 dict：仅保留有效条目，排除 ops-agent
+                valid_registry: dict[str, dict[str, Any]] = {}
+                for atype, cfg in registry.items():
+                    # 过滤条件 1：cfg 必须是 dict
+                    if not isinstance(cfg, dict):
+                        continue
+                    # 过滤条件 2：排除 ops-agent（它通过 BrainRouter 独立路由）
+                    if atype == "ops-agent":
+                        continue
+                    # 仅保留 enabled=true 或未配置 enabled 的条目
+                    if cfg.get("enabled", True):
+                        valid_registry[atype] = cfg
+
+                # 如果过滤后仍有有效条目，返回过滤后的 registry
+                if valid_registry:
+                    return valid_registry
         except json.JSONDecodeError:
             pass
 
