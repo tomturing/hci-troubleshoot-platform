@@ -3,6 +3,7 @@ Conversation Service - 对话业务逻辑层 (v2.0 多类型 AI 助手)
 """
 
 import asyncio
+import re
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -39,11 +40,27 @@ JACCARD_THRESHOLD = 0.6
 HISTORY_LIMIT = 10
 
 
+def _bigram_tokens(s: str) -> set[str]:
+    """
+    字符级 bigram 分词，同时支持中文和英文。
+
+    对整个字符串做字符级 bigram（含空格和标点），不区分中英文，统一处理。
+    对长度 ≤ 1 的字符串，退化为单字符集合（避免空集）。
+    """
+    s = s.lower().strip()
+    if not s:
+        return set()
+    if len(s) == 1:
+        return {s}
+    return {s[i : i + 2] for i in range(len(s) - 1)}
+
+
 def jaccard_similarity(a: str, b: str) -> float:
     """
-    计算两个字符串的 Jaccard 相似度（token 级）
+    计算两个字符串的 Jaccard 相似度（bigram 字符级）
 
-    中英文分词使用简单的 split()，不需要 jieba
+    使用 bigram 字符级分词，原生支持中文（无需分词库）。
+    修复了原 split() 方案对中文永远返回 0 的问题。
 
     Args:
         a: 字符串 a
@@ -52,10 +69,47 @@ def jaccard_similarity(a: str, b: str) -> float:
     Returns:
         相似度分数 (0.0-1.0)，若任一字符串为空则返回 0.0
     """
-    sa, sb = set(a.lower().split()), set(b.lower().split())
+    sa, sb = _bigram_tokens(a), _bigram_tokens(b)
     if not sa or not sb:
         return 0.0
     return len(sa & sb) / len(sa | sb)
+
+
+# ─── S3 阶段 acli 命令自动提取（P2）────────────────────────────────────────────
+
+# 匹配 Markdown 代码块或行内代码中的 acli 命令
+_ACLI_CMD_PATTERN = re.compile(
+    r"```(?:bash|shell|sh)?\s*(acli\s+[^\n`]+)\s*```|`(acli\s+[^`\n]+)`",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# 只读 acli 动词——满足则自动执行（无需人工确认）
+_ACLI_READONLY_VERBS = frozenset(
+    {"get", "list", "show", "describe", "status", "info", "check", "query", "fetch"}
+)
+
+
+def _extract_acli_commands(text: str) -> list[str]:
+    """从 LLM 回复中提取 acli 命令（去重，保持顺序）。"""
+    seen: set[str] = set()
+    result: list[str] = []
+    for m in _ACLI_CMD_PATTERN.finditer(text):
+        cmd = (m.group(1) or m.group(2) or "").strip()
+        if cmd and cmd not in seen:
+            seen.add(cmd)
+            result.append(cmd)
+    return result
+
+
+def _acli_is_readonly(cmd: str) -> bool:
+    """判断 acli 命令是否为只读操作（可自动执行）。
+
+    约定：acli <resource> <verb> ... 或 acli <verb> ...
+    仅检查 `acli` 之后前两个 token（兼容 `<verb>` 或 `<resource> <verb>` 两种形式）：
+    只要这两个候选位置之一是只读动词即认为只读（保守：不确定时 → False）。
+    """
+    parts = [p.lower() for p in cmd.strip().split()]
+    return any(p in _ACLI_READONLY_VERBS for p in parts[1:3])  # 跳过 `acli`，仅检查 verb 候选位置
 
 
 class ConversationService:
@@ -130,7 +184,12 @@ class ConversationService:
         return await self.repository.get_messages(conversation_id)
 
     async def _build_system_prompt(
-        self, query: str, case_id: str, diagnostic_stage: str = "S0", context_info: dict | None = None
+        self,
+        query: str,
+        case_id: str,
+        diagnostic_stage: str = "S0",
+        context_info: dict | None = None,
+        confirmed_category_code: str | None = None,
     ) -> tuple[str, dict]:
         """
         构建 5段式 System Prompt（双轨知识架构 + 三级 Fallback）：
@@ -161,10 +220,12 @@ class ConversationService:
             return await self._build_s0_system_prompt(query, case_id, context_info)
 
         # S1+ 阶段：委托给 KnowledgeRetriever 处理
+        # N-2 修复：传入 S0 已确认的分类编码，S1+ 跳过重复的意图识别 LLM 调用
         return await self._knowledge_retriever.retrieve(
             query=query,
             case_id=case_id,
             diagnostic_stage=diagnostic_stage,
+            confirmed_category_code=confirmed_category_code,
         )
 
     async def _build_s0_system_prompt(
@@ -278,15 +339,20 @@ class ConversationService:
 
         # 2. 读取当前诊断阶段并构建 System Prompt（并发 SOP + 向量检索）
         current_stage = "S0"
+        _confirmed_category_code: str | None = None  # N-2：S0 确认的分类编码
         if self.session_factory:
             async with self.session_factory() as stage_session:
                 _conv = await ConversationRepository(stage_session).get_conversation(conversation_id)
                 if _conv and _conv.diagnostic_stage:
                     current_stage = _conv.diagnostic_stage
+                if _conv and getattr(_conv, "category_id", None):
+                    _confirmed_category_code = _conv.category_id  # session 关闭前捕获
         else:
             _conv = await self.repository.get_conversation(conversation_id)
             if _conv and _conv.diagnostic_stage:
                 current_stage = _conv.diagnostic_stage
+            if _conv and getattr(_conv, "category_id", None):
+                _confirmed_category_code = _conv.category_id
 
         # 2.5 S0 候选预处理（T3-c）：在调用 AI 之前拦截用户的 ①②③ 选择
         # 若用户回复的是序号，直接写库 + 推进/兜底，不走 AI 本轮
@@ -351,7 +417,12 @@ class ConversationService:
                 )
 
         system_prompt, _audit_meta = await self._build_system_prompt(
-            content, case_id, diagnostic_stage=current_stage, context_info=context_info
+            content,
+            case_id,
+            diagnostic_stage=current_stage,
+            context_info=context_info,
+            # N-2 修复：S1+ 阶段复用 S0 确认的分类，跳过重复意图识别
+            confirmed_category_code=_confirmed_category_code,
         )
 
         # T7: 若本次检索命中了 SOP，异步写入 conversation.sop_document_id 并更新 hit_count
@@ -404,15 +475,18 @@ class ConversationService:
         import time
 
         _full_reply_buffer: list[str] = []
+        # N-4 修复：记录是否走了 ops-agent 路径（跳过 htp 状态机后验检测）
+        _used_ops_agent_path = False
         try:
             if self._brain_router is not None:
                 # ── 新路径：通过 BrainRouter 路由（ops-agent 或 htp 大脑）────────
                 session_id = str(conversation_id)
+                _used_ops_agent_path = (resolved_assistant_type == "ops-agent")
                 async for brain_event in self._brain_router.process(
                     assistant_type=resolved_assistant_type,
                     session_id=session_id,
                     messages=history_messages,
-                    env_context=None,  # Phase 2 (T2-1) 再注入实时环境数据
+                    env_context=context_info,  # 传入已预取的实时环境数据（N-3 修复）
                     stream=True,
                     case_id=case_id,
                     user_id=f"case-{case_id}",
@@ -460,9 +534,46 @@ class ConversationService:
 
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
 
+            # 6a. P2 修复：S3 阶段自动提取并执行只读 acli 命令
+            full_reply = "".join(_full_reply_buffer)
+            if full_reply and current_stage == "S3" and not _used_ops_agent_path and self.tool_router:
+                acli_cmds = _extract_acli_commands(full_reply)
+                for _cmd in acli_cmds:
+                    if _acli_is_readonly(_cmd):
+                        try:
+                            _exec_result = await self.tool_router.execute(
+                                "acli_run", {"command": _cmd}
+                            )
+                            _auto_block = (
+                                f"\n\n**[自动执行]** `{_cmd}`\n```\n{_exec_result}\n```\n"
+                            )
+                            _full_reply_buffer.append(_auto_block)
+                            yield _auto_block
+                            logger.info(
+                                event="s3_acli_auto_executed",
+                                message=f"S3 阶段自动执行 acli 命令：{_cmd}",
+                                case_id=case_id,
+                                conversation_id=str(conversation_id),
+                                command=_cmd,
+                            )
+                        except Exception as _acli_err:
+                            logger.warning(
+                                event="s3_acli_auto_exec_failed",
+                                message=f"S3 acli 命令执行失败：{_acli_err}",
+                                command=_cmd,
+                                conversation_id=str(conversation_id),
+                            )
+                    else:
+                        logger.debug(
+                            event="s3_acli_write_skipped",
+                            message=f"S3 写操作 acli 命令需用户确认，跳过自动执行：{_cmd}",
+                            command=_cmd,
+                        )
+
             # 6. 流式完成后，检测诊断阶段转换并持久化（fire-and-forget）
             full_reply = "".join(_full_reply_buffer)
-            if full_reply:
+            if full_reply and not _used_ops_agent_path:
+                # N-4 修复：ops-agent 路径由其自身状态机管理阶段，跳过 htp 后验正则检测
                 # 使用增强的阶段转换检测方法，同时提取分类信息
                 new_stage, category_info = self._conversation_manager.detect_stage_transition_with_category(
                     current_stage=current_stage,
@@ -496,6 +607,13 @@ class ConversationService:
                             category_info=category_info,
                         )
                     )
+            elif full_reply and _used_ops_agent_path:
+                logger.debug(
+                    event="ops_agent_stage_detection_skipped",
+                    message="ops-agent 路径跳过 htp 状态机后验检测",
+                    conversation_id=str(conversation_id),
+                    current_stage=current_stage,
+                )
         except Exception as e:
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="error").inc()
             if isinstance(e, asyncio.CancelledError):
@@ -771,8 +889,20 @@ class ConversationService:
                     trace_id=trace_id,
                 )
 
-            # 2. 构建 System Prompt
-            system_prompt, _audit_meta = await self._build_system_prompt(content, case_id)
+            # 2. 构建 System Prompt（D-3 修复：读取当前诊断阶段，避免永远使用 S0 Prompt）
+            react_stage = "S0"
+            if self.session_factory:
+                async with self.session_factory() as _s:
+                    _react_conv = await ConversationRepository(_s).get_conversation(conversation_id)
+                    if _react_conv and _react_conv.diagnostic_stage:
+                        react_stage = _react_conv.diagnostic_stage
+            else:
+                _react_conv = await self.repository.get_conversation(conversation_id)
+                if _react_conv and _react_conv.diagnostic_stage:
+                    react_stage = _react_conv.diagnostic_stage
+            system_prompt, _audit_meta = await self._build_system_prompt(
+                content, case_id, diagnostic_stage=react_stage
+            )
 
             # 3. 获取历史消息（独立 session 避免长事务）
             if self.session_factory:
@@ -1342,31 +1472,32 @@ class ConversationService:
         """
         将 conversation.metadata_["s0_candidate_rounds"] 原子 +1 写回。
 
-        采用 read-modify-write 方式：先读出 metadata_，+1 后整体写回。
-        并发写冲突极小（S0 每轮只有 1 次用户选 ③），可接受。
+        N-5 修复：使用 PostgreSQL jsonb_set 原子更新，避免 Python 层
+        read-modify-write 在并发场景下产生的竞态计数丢失。
         """
-        from sqlalchemy import select
-        from sqlalchemy import update as sa_update
-
-        from ..models.conversation import Conversation as ConversationModel
+        from sqlalchemy import text as sa_text
 
         try:
             if self.session_factory:
                 async with self.session_factory() as session:
-                    result = await session.execute(
-                        select(ConversationModel.metadata_).where(
-                            ConversationModel.conversation_id == conversation_id
-                        )
-                    )
-                    meta = dict(result.scalar_one_or_none() or {})
-                    meta["s0_candidate_rounds"] = int(meta.get("s0_candidate_rounds", 0)) + 1
                     await session.execute(
-                        sa_update(ConversationModel)
-                        .where(ConversationModel.conversation_id == conversation_id)
-                        .values(metadata_=meta)
+                        sa_text("""
+                            UPDATE conversation
+                            SET "metadata" = jsonb_set(
+                                COALESCE("metadata", '{}'),
+                                '{s0_candidate_rounds}',
+                                (COALESCE(
+                                    (COALESCE("metadata", '{}')->>'s0_candidate_rounds')::int,
+                                    0
+                                ) + 1)::text::jsonb
+                            )
+                            WHERE conversation_id = :cid
+                        """),
+                        {"cid": conversation_id},
                     )
                     await session.commit()
             else:
+                # 无 session_factory 时降级为原有方式（测试场景兜底）
                 conv = await self.repository.get_conversation(conversation_id)
                 if conv:
                     meta = dict(conv.metadata_ or {})

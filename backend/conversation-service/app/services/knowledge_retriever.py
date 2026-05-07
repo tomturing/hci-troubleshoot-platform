@@ -184,9 +184,18 @@ class KnowledgeRetriever:
         query: str,
         case_id: str,
         diagnostic_stage: str = "S0",
+        confirmed_category_code: str | None = None,
     ) -> tuple[str, dict]:
         """
         构建 5段式 System Prompt（双轨知识架构 + 三级 Fallback）
+
+        Args:
+            query: 用户当前消息。
+            case_id: 工单 ID。
+            diagnostic_stage: 当前诊断阶段。
+            confirmed_category_code: S0 阶段已确认的分类编码（N-2 修复）。
+                非 None 时，S1+ 阶段跳过 classify_intent，直接使用该分类进行路由，
+                避免每轮重新识别意图导致的分类漂移和 LLM 额外开销。
 
         返回：
             [0] system_prompt 字符串
@@ -196,8 +205,11 @@ class KnowledgeRetriever:
             span.set_attribute("case_id", case_id)
             span.set_attribute("diagnostic_stage", diagnostic_stage)
             span.set_attribute("query_len", len(query))
+            span.set_attribute("confirmed_category", confirmed_category_code or "")
             try:
-                return await self._retrieve_impl(span, query, case_id, diagnostic_stage)
+                return await self._retrieve_impl(
+                    span, query, case_id, diagnostic_stage, confirmed_category_code
+                )
             except Exception as exc:
                 span.record_exception(exc)
                 span.set_status(trace.StatusCode.ERROR, str(exc))
@@ -209,6 +221,7 @@ class KnowledgeRetriever:
         query: str,
         case_id: str,
         diagnostic_stage: str,
+        confirmed_category_code: str | None = None,
     ) -> tuple[str, dict]:
         """retrieve 的实际实现，由 retrieve() 包裹在 OTel span 中调用。
 
@@ -287,65 +300,79 @@ class KnowledgeRetriever:
             }
 
         # ─── 第0轨：意图识别 ─────────────────────────────────────────────────────
-        intent_result = await self._kb_client.classify_intent(query, top_n=3)
-        if not intent_result:
-            logger.warning(
-                event="intent_classify_failed",
-                message="意图识别失败，降级为机制推理",
+        # ─── 第0轨：意图识别（N-2 修复：S1+ 阶段且有确认分类时跳过 LLM 调用）───────
+        if confirmed_category_code and diagnostic_stage != "S0":
+            # 使用 S0 已确认分类，直接进入三轨路由，避免分类漂移和额外 LLM 开销
+            category_code = confirmed_category_code
+            category_score = 1.0  # 用户已确认，置信度视为最高
+            needs_review_from_intent = False
+            logger.info(
+                event="intent_classify_skipped",
+                message=f"S1+ 阶段使用 S0 确认分类跳过意图识别：{category_code}",
                 case_id=case_id,
+                category_code=category_code,
+                diagnostic_stage=diagnostic_stage,
             )
-            base_sections.append(SEGMENT_NO_REFERENCE)
-            base_sections.append(SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id))
-            _ctx_bd = _build_context_breakdown(base_sections, "mechanism")
-            return "\n\n".join(base_sections), {
-                "has_sop": False,
-                "kb_chunks_count": 0,
-                "kb_top_score": None,
-                "fallback_level": "mechanism",
-                "context_breakdown": _ctx_bd,
-                "total_chars": sum(s["chars"] for s in _ctx_bd),
-                "total_token_est": sum(s["token_est"] for s in _ctx_bd),
-                "category_id": None,
-                "needs_review": True,
-            }
+        else:
+            intent_result = await self._kb_client.classify_intent(query, top_n=3)
+            if not intent_result:
+                logger.warning(
+                    event="intent_classify_failed",
+                    message="意图识别失败，降级为机制推理",
+                    case_id=case_id,
+                )
+                base_sections.append(SEGMENT_NO_REFERENCE)
+                base_sections.append(SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id))
+                _ctx_bd = _build_context_breakdown(base_sections, "mechanism")
+                return "\n\n".join(base_sections), {
+                    "has_sop": False,
+                    "kb_chunks_count": 0,
+                    "kb_top_score": None,
+                    "fallback_level": "mechanism",
+                    "context_breakdown": _ctx_bd,
+                    "total_chars": sum(s["chars"] for s in _ctx_bd),
+                    "total_token_est": sum(s["token_est"] for s in _ctx_bd),
+                    "category_id": None,
+                    "needs_review": True,
+                }
 
-        categories = intent_result.get("categories", [])
-        needs_review_from_intent = intent_result.get("needs_review", False)
+            categories = intent_result.get("categories", [])
+            needs_review_from_intent = intent_result.get("needs_review", False)
 
-        if not categories:
-            logger.warning(
-                event="intent_classify_empty",
-                message="意图识别返回空分类，降级为机制推理",
+            if not categories:
+                logger.warning(
+                    event="intent_classify_empty",
+                    message="意图识别返回空分类，降级为机制推理",
+                    case_id=case_id,
+                )
+                base_sections.append(SEGMENT_NO_REFERENCE)
+                base_sections.append(SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id))
+                _ctx_bd = _build_context_breakdown(base_sections, "mechanism")
+                return "\n\n".join(base_sections), {
+                    "has_sop": False,
+                    "kb_chunks_count": 0,
+                    "kb_top_score": None,
+                    "fallback_level": "mechanism",
+                    "context_breakdown": _ctx_bd,
+                    "total_chars": sum(s["chars"] for s in _ctx_bd),
+                    "total_token_est": sum(s["token_est"] for s in _ctx_bd),
+                    "category_id": None,
+                    "needs_review": True,
+                }
+
+            # 取 top1 分类作为主要分类
+            top_category = categories[0]
+            category_code = top_category.get("code")
+            category_score = top_category.get("score", 0.0)
+
+            logger.info(
+                event="intent_classify_success",
+                message=f"意图识别成功：{category_code}（置信度 {category_score:.2f})",
                 case_id=case_id,
+                category_code=category_code,
+                category_score=category_score,
+                needs_review=needs_review_from_intent,
             )
-            base_sections.append(SEGMENT_NO_REFERENCE)
-            base_sections.append(SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id))
-            _ctx_bd = _build_context_breakdown(base_sections, "mechanism")
-            return "\n\n".join(base_sections), {
-                "has_sop": False,
-                "kb_chunks_count": 0,
-                "kb_top_score": None,
-                "fallback_level": "mechanism",
-                "context_breakdown": _ctx_bd,
-                "total_chars": sum(s["chars"] for s in _ctx_bd),
-                "total_token_est": sum(s["token_est"] for s in _ctx_bd),
-                "category_id": None,
-                "needs_review": True,
-            }
-
-        # 取 top1 分类作为主要分类
-        top_category = categories[0]
-        category_code = top_category.get("code")
-        category_score = top_category.get("score", 0.0)
-
-        logger.info(
-            event="intent_classify_success",
-            message=f"意图识别成功：{category_code}（置信度 {category_score:.2f})",
-            case_id=case_id,
-            category_code=category_code,
-            category_score=category_score,
-            needs_review=needs_review_from_intent,
-        )
 
         # ─── 三轨路由（SOP → KBD → 人工） ───────────────────────────────────────
         route_result = await self._kb_client.route_by_category(
