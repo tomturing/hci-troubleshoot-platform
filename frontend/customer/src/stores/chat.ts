@@ -3,7 +3,7 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { createApiClient, createCaseApi, createConversationApi, createAssistantApi, createEnvironmentApi } from '@hci/shared'
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
@@ -19,6 +19,25 @@ function devLog(tag: string, message: string, data?: unknown) {
     ? sanitizeSensitive(data as Record<string, unknown>)
     : data
   console.log(`[${tag}] ${message}`, sanitized ?? '')
+}
+
+// 助手选择持久化 key
+const ASSISTANT_STORAGE_KEY = 'hci-selected-assistant'
+
+function loadSavedAssistant(): string | null {
+  try {
+    return localStorage.getItem(ASSISTANT_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function saveSelectedAssistant(assistantType: string): void {
+  try {
+    localStorage.setItem(ASSISTANT_STORAGE_KEY, assistantType)
+  } catch {
+    // 忽略存储错误
+  }
 }
 
 // 脱敏敏感信息（password 完全隐藏，host 部分隐藏，output 截断）
@@ -92,6 +111,13 @@ export const useChatStore = defineStore('chat', () => {
   // AI 助手列表
   const assistants = ref<AssistantInfo[]>([])
   const selectedAssistant = ref<string>('')
+
+  // 监听助手选择变化，自动保存到 localStorage
+  watch(selectedAssistant, (newValue) => {
+    if (newValue) {
+      saveSelectedAssistant(newValue)
+    }
+  })
 
   // 未关闭工单确认流程
   const pendingCase = ref<CaseResponse | null>(null)
@@ -183,11 +209,18 @@ export const useChatStore = defineStore('chat', () => {
         is_default: item.is_default ?? false,
       }))
 
-      // 选择默认助手或第一个可用助手
-      const defaultOrFirst = assistants.value.find(a => a.is_default && a.available)
-        || assistants.value.find(a => a.available)
-      if (defaultOrFirst) {
-        selectedAssistant.value = defaultOrFirst.type
+      // 优先从 localStorage 恢复上次选择的助手
+      const savedAssistant = loadSavedAssistant()
+      const savedAssistantAvailable = savedAssistant && assistants.value.some(a => a.type === savedAssistant && a.available)
+      if (savedAssistantAvailable) {
+        selectedAssistant.value = savedAssistant!
+      } else {
+        // 选择默认助手或第一个可用助手
+        const defaultOrFirst = assistants.value.find(a => a.is_default && a.available)
+          || assistants.value.find(a => a.available)
+        if (defaultOrFirst) {
+          selectedAssistant.value = defaultOrFirst.type
+        }
       }
     } catch (e) {
       console.warn('获取助手列表失败，使用默认值', e)
