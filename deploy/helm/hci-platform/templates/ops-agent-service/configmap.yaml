@@ -13,7 +13,12 @@ data:
       ops_agent:
         model: glm5-dashscope
         max_steps: 500
+        # SOP catalog 配置
+        # HTTP server 启动需要 sop_catalog_path（默认 catalog）
+        # CLI 使用 sop_catalogs（命名 catalog），通过 --sop hci 指定
         sop_catalog_path: data/case_sop_data/hci/sop/node_sops.jsonl
+        sop_catalogs:
+          hci: data/case_sop_data/hci/sop/node_sops.jsonl
         query_sub_agent:
           model: glm5-dashscope
           max_steps: 80
