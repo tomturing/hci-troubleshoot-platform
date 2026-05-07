@@ -75,7 +75,22 @@ class Settings(BaseSettings):
 
     @property
     def assistant_registry(self) -> dict[str, dict[str, Any]]:
-        """解析助手注册表并与默认 openclaw 配置合并。"""
+        """解析助手注册表。优先从 ASSISTANT_REGISTRY_JSON 环境变量读取，与 scheduler-service 配置统一。
+
+        如果环境变量为空或解析失败，降级为默认 openclaw 配置。
+        """
+        # 优先使用环境变量注入的统一配置（来自 hci-common-config ASSISTANT_REGISTRY_JSON）
+        try:
+            registry = json.loads(self.ASSISTANT_REGISTRY_JSON or "{}")
+            if isinstance(registry, dict) and registry:
+                # 验证至少有一个有效的助手配置
+                for _atype, cfg in registry.items():
+                    if isinstance(cfg, dict) and cfg.get("enabled", True):
+                        return registry  # 使用统一配置
+        except json.JSONDecodeError:
+            pass
+
+        # 降级：默认只有 openclaw（向后兼容）
         default_registry: dict[str, dict[str, Any]] = {
             "openclaw": {
                 "base_url": self.OPENCLAW_BASE_URL,
@@ -84,15 +99,6 @@ class Settings(BaseSettings):
                 "enabled": True,
             }
         }
-        try:
-            custom = json.loads(self.ASSISTANT_REGISTRY_JSON or "{}")
-            if isinstance(custom, dict):
-                for assistant_type, cfg in custom.items():
-                    if isinstance(cfg, dict):
-                        merged = {**default_registry.get(assistant_type, {}), **cfg}
-                        default_registry[assistant_type] = merged
-        except json.JSONDecodeError:
-            pass
         return default_registry
 
     class Config:

@@ -224,8 +224,12 @@ class SchedulerService:
                 stats = pool.get_stats() if pool else {}
 
                 # 判断可用性：直连模式(warm_pool_size=0)始终可用，Pod模式需要有空闲Pod
-                is_direct_mode = config.get("warm_pool_size", 0) == 0 and config.get("max_pool_size", 0) == 0
-                available = is_direct_mode or stats.get("idle_count", 0) > 0
+                is_direct_mode = (
+                    config.get("warm_pool_size", 0) == 0
+                    and config.get("max_pool_size", 0) == 0
+                    and bool(config.get("base_url"))  # 必须有 API 地址才算直连模式
+                )
+                available = is_direct_mode or stats.get("idle", 0) > 0
 
                 assistant_info = {
                     "type": atype,
