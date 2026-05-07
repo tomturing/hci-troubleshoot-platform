@@ -49,6 +49,11 @@ spec:
             - name: ops-config
               mountPath: /app/ops_config.yaml
               subPath: ops_config.yaml
+            - name: sop-data
+              mountPath: /app/data/case_sop_data/af/sop/node_sops.jsonl
+              subPath: node_sops.jsonl
+            - name: trajectories
+              mountPath: /app/.trajectories
           resources:
             {{- (.Values.opsAgent.resources | default (dict "requests" (dict "cpu" "100m" "memory" "128Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | toYaml | nindent 12 }}
           livenessProbe:
@@ -78,4 +83,9 @@ spec:
         - name: ops-config
           configMap:
             name: ops-agent-config
+        - name: sop-data
+          configMap:
+            name: ops-agent-sop-data
+        - name: trajectories
+          emptyDir: {}
 {{- end }}

@@ -1,0 +1,12 @@
+{{- if .Values.opsAgent.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ops-agent-sop-data
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+data:
+  node_sops.jsonl: |
+{{ .Files.Get "files/node_sops.jsonl" | indent 4 }}
+{{- end }}
