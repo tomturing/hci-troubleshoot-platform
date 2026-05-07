@@ -26,7 +26,7 @@ spec:
       containers:
         - name: ops-agent
           image: {{ .Values.opsAgent.image.repository }}:{{ .Values.opsAgent.image.tag | default "latest" }}
-          imagePullPolicy: {{ .Values.opsAgent.image.pullPolicy | default "IfNotPresent" }}
+          imagePullPolicy: {{- if .Values.opsAgent.image.pullPolicy }}{{ .Values.opsAgent.image.pullPolicy }}{{- else if eq (.Values.opsAgent.image.tag | default "latest") "latest" }}Always{{- else }}IfNotPresent{{- end }}
           {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
           ports:
             - name: http
@@ -49,6 +49,14 @@ spec:
             - name: ops-config
               mountPath: /app/ops_config.yaml
               subPath: ops_config.yaml
+            # SOP 数据目录挂载（HostPath 方案）
+            # 宿主机目录由 .Values.opsAgent.sopDataHostPath 配置
+            # 数据更新：修改宿主机文件 + 重启 Pod
+            - name: sop-data
+              mountPath: /app/data/case_sop_data/hci/sop
+            # trajectories 目录（emptyDir 解决权限问题）
+            - name: trajectories
+              mountPath: /app/.trajectories
           resources:
             {{- (.Values.opsAgent.resources | default (dict "requests" (dict "cpu" "100m" "memory" "128Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | toYaml | nindent 12 }}
           livenessProbe:
@@ -78,4 +86,12 @@ spec:
         - name: ops-config
           configMap:
             name: ops-agent-config
+        # SOP 数据 HostPath 挂载
+        # 支持手动更新 SOP 数据，ops-agent 镜像与 SOP 数据解耦
+        - name: sop-data
+          hostPath:
+            path: {{ .Values.opsAgent.sopDataHostPath | default "/aihci/ops-agent/data/case_sop_data/hci/sop" }}
+            type: DirectoryOrCreate
+        - name: trajectories
+          emptyDir: {}
 {{- end }}
