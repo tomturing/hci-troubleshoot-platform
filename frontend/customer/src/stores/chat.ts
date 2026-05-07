@@ -234,6 +234,13 @@ export const useChatStore = defineStore('chat', () => {
     currentCase.value = pendingCase.value
     showPendingDialog.value = false
     const caseId = pendingCase.value.case_id
+
+    // 从工单数据恢复助手选择
+    const caseAssistantType = pendingCase.value.assistant_type
+    if (caseAssistantType && assistants.value.some(a => a.type === caseAssistantType && a.available)) {
+      selectedAssistant.value = caseAssistantType
+    }
+
     await loadConversationHistory(caseId)
     pendingCase.value = null
     // 恢复工单时同步加载环境数据（fire-and-forget，不阻塞对话恢复）
@@ -599,6 +606,13 @@ export const useChatStore = defineStore('chat', () => {
       conversationId.value = null
       messages.value = []
       environmentContext.value = null  // 先清空，避免展示旧工单的环境数据
+
+      // 从工单数据恢复助手选择
+      const caseAssistantType = caseItem.assistant_type
+      if (caseAssistantType && assistants.value.some(a => a.type === caseAssistantType && a.available)) {
+        selectedAssistant.value = caseAssistantType
+      }
+
       await loadConversationHistory(caseItem.case_id)
       // 切换工单时同步加载对应环境数据（fire-and-forget）
       collectEnvironmentData(caseItem.case_id).catch(() => {})
