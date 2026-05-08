@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.8.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.7.0...v2.8.0) (2026-05-08)
+
+
+### ✨ 新功能
+
+* **brain:** ops-agent ACP REST 客户端集成 + OOMKilled 修复 + BrainInteractiveRequest ([#249](https://github.com/tomturing/hci-troubleshoot-platform/issues/249)) ([0a9e02d](https://github.com/tomturing/hci-troubleshoot-platform/commit/0a9e02d86838d0e5f723e71a938ceae1c05f53f3))
+* **brain:** T-E6/T-E7 ops-agent 交互卡片全链路实现 ([#250](https://github.com/tomturing/hci-troubleshoot-platform/issues/250)) ([84777fb](https://github.com/tomturing/hci-troubleshoot-platform/commit/84777fbc85ee5861a8dcb7f12439799ebfb2486e))
+
+
+### 🐛 Bug 修复
+
+* htp 助手选择恢复 + 大脑诊断检出质量 P0-P3 修复 ([#248](https://github.com/tomturing/hci-troubleshoot-platform/issues/248)) ([1b7bccb](https://github.com/tomturing/hci-troubleshoot-platform/commit/1b7bccbfae5c01000ad06098f73108ae83605a20))
+* ops-agent 使用 imagePullPolicy: Always ([#242](https://github.com/tomturing/hci-troubleshoot-platform/issues/242)) ([6acb188](https://github.com/tomturing/hci-troubleshoot-platform/commit/6acb18840a494d2634f39933fd7c6742287babd7))
+* ops-agent 镜像使用独立 registry 不拼接 global.imageRegistry ([#240](https://github.com/tomturing/hci-troubleshoot-platform/issues/240)) ([b059f4e](https://github.com/tomturing/hci-troubleshoot-platform/commit/b059f4e94812456fb8165a281671677c37e531c5))
+* **ops-agent:** SOP 数据 HostPath 挂载方案 ([#245](https://github.com/tomturing/hci-troubleshoot-platform/issues/245)) ([5637782](https://github.com/tomturing/hci-troubleshoot-platform/commit/5637782bb4fb8a16c5629a542fde3208831014a2))
+* **ops-agent:** 修复 Helm template imagePullPolicy YAML parse 错误 ([#246](https://github.com/tomturing/hci-troubleshoot-platform/issues/246)) ([bead216](https://github.com/tomturing/hci-troubleshoot-platform/commit/bead216f8bb6039920edb8ee2c863802629970d9))
+* **scheduler:** 修复助手选择器可用性判断 Bug + ops-agent 注册 ([#243](https://github.com/tomturing/hci-troubleshoot-platform/issues/243)) ([f48677d](https://github.com/tomturing/hci-troubleshoot-platform/commit/f48677d873779e186d7f9629e519f49e928f984b))
+
+
+### 📝 文档
+
+* ops-agent 手动更新 Skill + 跨仓库联动方案设计 ([#244](https://github.com/tomturing/hci-troubleshoot-platform/issues/244)) ([e213225](https://github.com/tomturing/hci-troubleshoot-platform/commit/e21322563a4725e5773d4b2a14478d3e304de6e9))
+
 ## [2.7.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.6.0...v2.7.0) (2026-04-29)
 
 
