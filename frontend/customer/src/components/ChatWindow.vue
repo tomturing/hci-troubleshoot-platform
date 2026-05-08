@@ -6,6 +6,7 @@ import RatingCard from './RatingCard.vue'
 import TerminalPanel from './TerminalPanel.vue'
 import TerminalReplay from './TerminalReplay.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
+import InteractiveRequestCard from './InteractiveRequestCard.vue'
 import DiagnosticProgress from './DiagnosticProgress.vue'
 import CaseCreateDialog from './CaseCreateDialog.vue'
 import EnvironmentSummary from './EnvironmentSummary.vue'
@@ -188,6 +189,14 @@ function handleQuoteToChat(content: string) {
       :event="{ type: 'confirm_request', ...chatStore.pendingConfirm }"
       :session-id="chatStore.conversationId ?? ''"
       @confirmed="chatStore.handleConfirmResult"
+    />
+
+    <!-- T-E7: ops-agent 交互请求卡片（SOP 操作确认 / 信息确认） -->
+    <InteractiveRequestCard
+      v-if="chatStore.pendingInteractive"
+      :event="chatStore.pendingInteractive"
+      :conversation-id="String(chatStore.conversationId ?? '')"
+      @submitted="chatStore.clearInteractiveRequest()"
     />
 
     <!-- 未关闭工单确认对话框 -->

@@ -146,6 +146,18 @@ export const useChatStore = defineStore('chat', () => {
     timeout_seconds: number
   } | null>(null)
 
+  // T-E7: ops-agent 交互请求（interactive_request SSE 事件）
+  const pendingInteractive = ref<{
+    requestId: string
+    acpSessionId: string
+    kind: string
+    title: string
+    prompt: string
+    options: Array<{ optionId: string; name: string }>
+    customInput: boolean
+    metadata: Record<string, unknown>
+  } | null>(null)
+
   // Bridge 运行状态
   const bridgeStatus = ref<BridgeStatus>('not_running')
 
@@ -493,6 +505,23 @@ export const useChatStore = defineStore('chat', () => {
               } catch (e) {
                 console.warn('[stage_change] 解析失败:', e)
               }
+            } else if (pendingEventType === 'interactive_request') {
+              // T-E7: ops-agent 交互请求（SOP 操作卡 / 信息确认卡）
+              try {
+                const event = JSON.parse(data)
+                pendingInteractive.value = {
+                  requestId: event.requestId,
+                  acpSessionId: event.acpSessionId,
+                  kind: event.kind ?? 'info_request',
+                  title: event.title ?? '',
+                  prompt: event.prompt ?? '',
+                  options: event.options ?? [],
+                  customInput: event.customInput ?? true,
+                  metadata: event.metadata ?? {},
+                }
+              } catch (e) {
+                console.warn('[interactive_request] 解析失败:', e)
+              }
             } else {
               try {
                 const parsed = JSON.parse(data)
@@ -537,8 +566,9 @@ export const useChatStore = defineStore('chat', () => {
       addSystemMessage(`工单 ${res.data.case_id} 已关闭。发送新消息开启新工单。`)
       const convId = conversationId.value
       conversationId.value = null
-      // 重置诊断阶段
+      // 重置诊断阶段 + 清除交互卡片
       diagnosticStage.value = 'S0'
+      pendingInteractive.value = null
       if (convId) {
         ratingConversationId.value = convId
         showRatingCard.value = true
@@ -553,6 +583,7 @@ export const useChatStore = defineStore('chat', () => {
     conversationId.value = null
     messages.value = []
     diagnosticStage.value = 'S0'
+    pendingInteractive.value = null
     addSystemMessage('请描述您遇到的新问题，我会帮您创建工单。')
   }
 
@@ -617,6 +648,7 @@ export const useChatStore = defineStore('chat', () => {
       currentCase.value = caseItem
       conversationId.value = null
       messages.value = []
+      pendingInteractive.value = null  // 切换工单时清除旧交互卡片
       environmentContext.value = null  // 先清空，避免展示旧工单的环境数据
 
       // 从工单数据恢复助手选择
@@ -1870,6 +1902,9 @@ export const useChatStore = defineStore('chat', () => {
     // Agent 模式：高风险操作确认
     pendingConfirm,
     handleConfirmResult,
+    // T-E7: ops-agent 交互请求卡片
+    pendingInteractive,
+    clearInteractiveRequest: () => { pendingInteractive.value = null },
     initialize,
     sendMessage,
     startNewConversation,

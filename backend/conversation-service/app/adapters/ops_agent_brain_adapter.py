@@ -153,7 +153,7 @@ class OpsAgentBrainAdapter:
         acp_session_id: str,
         request_id: str,
         outcome: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         """提交用户对 _ops/request_input 的响应，唤醒挂起的 Agent。
 
         由 ConversationService 在收到前端 interactive-response 请求时调用（T-E6）。
@@ -187,6 +187,7 @@ class OpsAgentBrainAdapter:
             raise BrainUnavailableError(
                 brain_name="ops-agent", reason=f"submit_response 失败: {exc}"
             ) from exc
+        return True
 
     # ── 私有方法 ──────────────────────────────────────────────────────────────
 

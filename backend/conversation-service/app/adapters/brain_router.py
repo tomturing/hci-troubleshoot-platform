@@ -49,6 +49,10 @@ class BrainRouter:
         self._htp = htp_adapter
         self._ops_agent = ops_agent_adapter
 
+    def get_ops_agent_adapter(self) -> OpsAgentBrainAdapter | None:
+        """返回 OpsAgentBrainAdapter 实例（供 interactive-response 提交使用）。"""
+        return self._ops_agent
+
     async def process(
         self,
         *,

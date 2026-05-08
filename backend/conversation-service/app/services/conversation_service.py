@@ -18,7 +18,7 @@ from app.config import settings
 
 # T1-3 ~ T1-6: 大脑可选架构组件
 from ..adapters.brain_router import BrainRouter
-from ..core.brain_port import BrainStageUpdate, BrainTextChunk
+from ..core.brain_port import BrainInteractiveRequest, BrainStageUpdate, BrainTextChunk, BrainUnavailableError
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
@@ -497,6 +497,20 @@ class ConversationService:
                     elif isinstance(brain_event, BrainStageUpdate):
                         # 阶段变化事件：以内联标记传递给前端（保持向后兼容的 SSE 格式）
                         yield f"\x00event:stage_change:{brain_event.stage}\x00"
+                    elif isinstance(brain_event, BrainInteractiveRequest):
+                        # T-E6: ops-agent 交互请求 → 推送 interactive_request SSE 事件给前端
+                        import json as _json
+                        _ir_payload = _json.dumps({
+                            "requestId": brain_event.request_id,
+                            "acpSessionId": brain_event.acp_session_id,
+                            "kind": brain_event.kind,
+                            "title": brain_event.title,
+                            "prompt": brain_event.prompt,
+                            "options": brain_event.options,
+                            "customInput": brain_event.custom_input,
+                            "metadata": brain_event.metadata,
+                        }, ensure_ascii=False)
+                        yield f"\x00event:interactive_request:{_ir_payload}\x00"
             else:
                 # ── 原有路径：直接调用 ai_registry（BrainRouter 未注入时兜底）───
                 ai_client = self.ai_registry.get_client(resolved_assistant_type)
@@ -1752,3 +1766,70 @@ class ConversationService:
         )
 
         return results
+
+    async def submit_interactive_response(
+        self,
+        conversation_id: uuid.UUID,
+        request_id: str,
+        acp_session_id: str,
+        outcome: dict,
+    ) -> bool:
+        """T-E6: 将用户对交互卡片的响应回传给 ops-agent ACP 会话。
+
+        由 POST /api/conversations/{id}/interactive-response 调用。
+        仅在 BrainRouter 已注入且 OpsAgentBrainAdapter 可用时生效。
+
+        Args:
+            conversation_id: 对话 ID（用于日志追踪）。
+            request_id:      ACP request_id（来自 BrainInteractiveRequest.request_id）。
+            acp_session_id:  ops-agent ACP session_id（来自 BrainInteractiveRequest.acp_session_id）。
+            outcome:         提交结果，格式 {"outcome": "selected", "optionId": "A"}
+                             或 {"outcome": "free_text", "text": "..."}。
+
+        Returns:
+            True  = 提交成功；False = OpsAgentBrainAdapter 不可用（ops-agent 未启用）。
+        """
+        if self._brain_router is None:
+            logger.warning(
+                event="interactive_response_no_router",
+                message="submit_interactive_response: BrainRouter 未注入，跳过",
+                conversation_id=str(conversation_id),
+                request_id=request_id,
+            )
+            return False
+
+        ops_adapter = self._brain_router.get_ops_agent_adapter()
+        if ops_adapter is None:
+            logger.warning(
+                event="interactive_response_no_adapter",
+                message="submit_interactive_response: OpsAgentBrainAdapter 未启用，跳过",
+                conversation_id=str(conversation_id),
+                request_id=request_id,
+            )
+            return False
+
+        try:
+            success = await ops_adapter.submit_acp_response(
+                acp_session_id=acp_session_id,
+                request_id=request_id,
+                outcome=outcome,
+            )
+        except BrainUnavailableError as exc:
+            logger.warning(
+                event="interactive_response_brain_error",
+                message="ops-agent ACP 接口不可达，交互响应已丢就",
+                conversation_id=str(conversation_id),
+                acp_session_id=acp_session_id,
+                request_id=request_id,
+                error=str(exc),
+            )
+            return False
+        logger.info(
+            event="interactive_response_submitted",
+            message="ops-agent 交互响应已回传",
+            conversation_id=str(conversation_id),
+            acp_session_id=acp_session_id,
+            request_id=request_id,
+            success=success,
+        )
+        return success
