@@ -129,42 +129,71 @@ owner: platform-team
 
 ---
 
-### T-E5：brain_port.py 新增 BrainInteractiveRequest
+### 第一性原理分析：htp 侧改动必要性（2026-05-08）
 
-- **文件**：`backend/conversation-service/app/core/brain_port.py`
-- **描述**：新增 `BrainInteractiveRequest` dataclass，更新 `BrainEvent` 联合类型定义
-- **验收标准**：
-  - [ ] `from app.core.brain_port import BrainInteractiveRequest` 无导入错误
-  - [ ] `BrainEvent` 类型包含 `BrainInteractiveRequest`
-- **预计耗时**：0.5 天
+| 任务 | 文件 | 改动性质 | 是否必须 | 影响分析 |
+|------|------|---------|---------|---------|
+| T-E5：BrainInteractiveRequest 类型 | `brain_port.py` | 纯新增 dataclass + 更新联合类型 | ✅ 必须（T-E6 依赖） | 零影响：旧 BrainTextChunk/BrainStageUpdate/BrainEscalation 完全不变 |
+| T-E6：OpsAgentBrainAdapter ACP 化 | `ops_agent_brain_adapter.py` | 内部实现替换（接口签名不变） | ✅ 必须（核心切换点） | `process()` 签名 100% 不变，BrainRouter/ConversationService 无需改动；BrainUnavailableError 降级路径不变 |
+| T-E7：ConversationService 处理交互事件 | `conversation_service.py` | 新增 isinstance 分支 + 方法 | ⚠️ 渐进式必须 | Phase1（仅文本）：BrainInteractiveRequest 静默丢弃，文字回复不受影响；Phase2（完整交互）：必须实现 |
+| T-E8：/interactive-response 路由 | `conversations.py` | 纯新增路由 | ⚠️ 渐进式必须（同 T-E7） | 新增端点，对现有路由零影响 |
+
+**第一性原理推导**：
+- T-E5/T-E6 是 **必须一起实施**的最小集合，实现后即可获得"ops-agent 正常文字回复"的核心价值
+- T-E7/T-E8 构成完整交互闭环，可在 T-E5/T-E6 验证通过后作为独立迭代实施
+- 三个系统保护点（均不需改动）：
+  1. `BrainRouter`：`process()` 签名不变，降级逻辑不变 ✅
+  2. `HTPBrainAdapter`：完全没有涉及 ✅
+  3. `BrainPort Protocol`：只扩展 BrainEvent 联合类型，不改变 process() 约束 ✅
 
 ---
 
-### T-E6：OpsAgentBrainAdapter 重构为 ACP 客户端
+### T-E5：✅ 已完成 — brain_port.py 新增 BrainInteractiveRequest
+
+- **文件**：`backend/conversation-service/app/core/brain_port.py`
+- **必要性**：✅ T-E6 的前提，纯新增零风险
+- **实现内容**：新增 `BrainInteractiveRequest` dataclass，更新 `BrainEvent` 联合类型定义
+- **验收标准**：
+  - [x] `from app.core.brain_port import BrainInteractiveRequest` 无导入错误
+  - [x] `BrainEvent` 类型包含 `BrainInteractiveRequest`
+
+---
+
+### T-E6：✅ 已完成 — OpsAgentBrainAdapter 重构为 ACP 客户端
 
 - **文件**：`backend/conversation-service/app/adapters/ops_agent_brain_adapter.py`
-- **描述**：
-  - 保留 `process()` 接口签名（BrainPort 兼容）
-  - 内部实现替换为 ACP 协议：  
-    1. `_get_or_create_acp_session()` ← `POST /acp/sessions`（首次）或复用缓存
-    2. `_start_prompt()` ← `POST /acp/sessions/{id}/prompt`
-    3. `_consume_events()` ← `GET /acp/sessions/{id}/events` SSE，翻译 → BrainEvent
-  - 新增 `submit_response()` 方法 ← `POST /acp/sessions/{id}/responses/{req_id}`
-  - 新增内部 `Dict[htp_session_id → acp_session_id]` 缓存（LRU 1000）
+- **必要性**：✅ 核心切换点，从 `/v1/chat/completions`（无交互）→ ACP REST（完整交互）
+- **实现内容**：
+  - 保留 `process()` 接口签名（BrainPort 兼容，BrainRouter/ConversationService 无需改动）
+  - ACP session ID 直接使用 htp `conversation_id`（利用 T-E1 可选参数，无需维护 ID 映射表）
+  - `_ensure_acp_session()` ← `POST /acp/sessions`（幂等，已存在则返回）
+  - `_submit_prompt()` ← `POST /acp/sessions/{id}/prompt`
+  - `_consume_events()` ← `GET /acp/sessions/{id}/events`，翻译为 BrainEvent
+  - 新增 `submit_acp_response()` 方法 ← `POST /acp/sessions/{id}/responses/{req_id}`（T-E7 使用）
 - **验收标准**：
+  - [x] `process()` 接口签名与 BrainPort 兼容（验证通过）
   - [ ] 发送消息后可以收到 BrainTextChunk 事件流（文本内容）
   - [ ] 触发 SOP 操作卡时，收到 BrainInteractiveRequest 事件
   - [ ] ops-agent-service 不可达时，raise BrainUnavailableError（降级机制不变）
-- **预计耗时**：2 天
 
 ---
 
 ### T-E7：ConversationService 处理 BrainInteractiveRequest
 
 - **文件**：`backend/conversation-service/app/services/conversation_service.py`
+- **必要性**：⚠️ Phase2 必须。Phase1 可跳过（BrainInteractiveRequest 静默丢弃，文字响应正常）
 - **描述**：
-  - 在 `send_message_stream_only()` 的事件分发逻辑中，增加 `BrainInteractiveRequest` 的 SSE 推送处理
-  - 新增 `submit_ops_agent_response()` 方法（委托给 `OpsAgentBrainAdapter.submit_response()`）
+  - 在 `send_message_stream_only()` 的事件分发 `async for brain_event` 循环中，增加：
+    ```python
+    elif isinstance(brain_event, BrainInteractiveRequest):
+        # 通过 SSE 通知前端渲染交互 UI
+        yield f"\x00event:interactive_request:{json.dumps({...})}\x00"
+    ```
+  - 新增 `submit_ops_agent_response()` 方法（委托给 `OpsAgentBrainAdapter.submit_acp_response()`）
+- **影响分析**：
+  - 现有 `BrainTextChunk` / `BrainStageUpdate` 处理路径：零影响（新增 elif 分支）
+  - `BrainRouter._route_ops_agent()` 降级路径：零影响
+  - htp 原有大脑（HTPBrainAdapter）：永远不会 yield BrainInteractiveRequest，零影响
 - **验收标准**：
   - [ ] 收到 BrainInteractiveRequest 后，前端 SSE 可接收 `interactive_request` 事件
   - [ ] `submit_ops_agent_response()` 成功调用 ops-agent-service
@@ -175,9 +204,11 @@ owner: platform-team
 ### T-E8：新增 /interactive-response 路由
 
 - **文件**：`backend/conversation-service/app/routes/conversations.py`
+- **必要性**：⚠️ Phase2 必须（依赖 T-E7）
 - **描述**：
   新增端点 `POST /api/conversations/{conversation_id}/interactive-response`，
-  校验 requestId / acpSessionId / outcome 格式，委托 ConversationService 处理。
+  校验 requestId / acpSessionId / outcome 格式，委托 ConversationService.submit_ops_agent_response() 处理。
+- **影响分析**：纯新增路由，对现有路由（发消息、查询历史等）零影响
 - **验收标准**：
   - [ ] 正确 outcome 格式返回 200
   - [ ] 无效 requestId 返回 404（透传 ops-agent-service 的 404）
@@ -249,9 +280,10 @@ T-E10 和 T-E11 可并行。
 
 ## 里程碑
 
-| 里程碑 | 完成条件 | 对应任务 |
-|-------|---------|---------|
-| M0：运维恢复 | ops-agent 无交互模式正常回复 | T0-1 |
-| M1：双向通信建立 | curl 测试 ACP REST 接口全部可用 | T-E1~T-E4 |
-| M2：后端集成 | 通过 API 测试验证交互事件流转 | T-E5~T-E8 |
-| M3：完整交互闭环 | 端到端：SOP 操作卡可展示并提交 | T-E9~T-E11 |
+| 里程碑 | 完成条件 | 对应任务 | 状态 |
+|-------|---------|---------|------|
+| M0：运维恢复 | ops-agent 无交互模式正常回复 | T0-1 | ✅ 已修复推送 |
+| M1：ACP REST 接口就绪（ops-agent 侧） | curl 测试 ACP REST 接口全部可用 | T-E1~T-E3 | ✅ 已实现 |
+| M2：ACP 客户端对接（htp 侧文字回复） | 选 ops-agent 助手可收到文字回复（无交互卡片） | T-E5~T-E6 | ✅ 已实现（待集成验证） |
+| M3：完整交互后端闭环 | SOP 操作卡事件流转，/interactive-response 可响应 | T-E7~T-E8 | ⏳ 待实现 |
+| M4：完整交互端到端 | 前端展示操作卡，用户选择后 Agent 继续推理 | T-E9~T-E11 | ⏳ 待实现 |

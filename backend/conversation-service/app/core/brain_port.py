@@ -51,8 +51,29 @@ class BrainEscalation:
     context: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class BrainInteractiveRequest:
+    """ops-agent 大脑发出的用户交互请求（SOP操作卡 / 用户提问）。
+
+    ConversationService 收到此事件后，通过 SSE 推送 interactive_request
+    事件给前端，前端渲染交互 UI，用户响应后通过
+    POST /api/conversations/{id}/interactive-response 回传。
+
+    对应 ACP 协议的 _ops/request_input 事件。
+    """
+
+    request_id: str              # ACP request_id，用于 submit_response 关联
+    acp_session_id: str          # ops-agent ACP session_id
+    kind: str                    # "sop_step" | "info_request"
+    title: str                   # 卡片标题（operation_goal 或 question）
+    prompt: str                  # 向用户呈现的引导文本
+    options: list[dict[str, Any]] = field(default_factory=list)  # [{optionId, name}, ...]
+    custom_input: bool = True    # 是否允许自定义文本输入
+    metadata: dict[str, Any] = field(default_factory=dict)  # 额外元数据（route, risk 等）
+
+
 # BrainEvent = 大脑可以产出的所有事件类型（用于 IDE 类型提示）
-BrainEvent = BrainTextChunk | BrainStageUpdate | BrainEscalation
+BrainEvent = BrainTextChunk | BrainStageUpdate | BrainEscalation | BrainInteractiveRequest
 
 
 # ── 错误类型 ────────────────────────────────────────────────────────────────────
