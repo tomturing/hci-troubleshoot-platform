@@ -18,7 +18,7 @@ from app.config import settings
 
 # T1-3 ~ T1-6: 大脑可选架构组件
 from ..adapters.brain_router import BrainRouter
-from ..core.brain_port import BrainInteractiveRequest, BrainStageUpdate, BrainTextChunk
+from ..core.brain_port import BrainInteractiveRequest, BrainStageUpdate, BrainTextChunk, BrainUnavailableError
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
