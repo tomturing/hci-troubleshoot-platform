@@ -1236,7 +1236,8 @@ export const useChatStore = defineStore('chat', () => {
     // 否则 createConversation 内部的 currentCase 为 null 检查会抛出异常。
     // 仅当前工单不存在或与目标 caseId 不匹配时才重新拉取，避免重复请求；
     // 若拉取失败但已有可用 currentCase，则优先回退使用现有工单继续流程。
-    const hasMatchingCurrentCase = currentCase.value?.case_id === caseId    if (!hasMatchingCurrentCase) {
+    const hasMatchingCurrentCase = currentCase.value?.case_id === caseId
+    if (!hasMatchingCurrentCase) {
       try {
         const caseRes = await caseApi.getById(caseId)
         currentCase.value = caseRes.data
