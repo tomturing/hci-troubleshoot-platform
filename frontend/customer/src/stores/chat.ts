@@ -146,6 +146,18 @@ export const useChatStore = defineStore('chat', () => {
     timeout_seconds: number
   } | null>(null)
 
+  // T-E7: ops-agent 交互请求（interactive_request SSE 事件）
+  const pendingInteractive = ref<{
+    requestId: string
+    acpSessionId: string
+    kind: string
+    title: string
+    prompt: string
+    options: Array<{ optionId: string; name: string }>
+    customInput: boolean
+    metadata: Record<string, string>
+  } | null>(null)
+
   // Bridge 运行状态
   const bridgeStatus = ref<BridgeStatus>('not_running')
 
@@ -492,6 +504,23 @@ export const useChatStore = defineStore('chat', () => {
                 devLog('stage_change', '诊断阶段切换', { from: event.from, to: event.to, label: event.label })
               } catch (e) {
                 console.warn('[stage_change] 解析失败:', e)
+              }
+            } else if (pendingEventType === 'interactive_request') {
+              // T-E7: ops-agent 交互请求（SOP 操作卡 / 信息确认卡）
+              try {
+                const event = JSON.parse(data)
+                pendingInteractive.value = {
+                  requestId: event.requestId,
+                  acpSessionId: event.acpSessionId,
+                  kind: event.kind ?? 'info_request',
+                  title: event.title ?? '',
+                  prompt: event.prompt ?? '',
+                  options: event.options ?? [],
+                  customInput: event.customInput ?? true,
+                  metadata: event.metadata ?? {},
+                }
+              } catch (e) {
+                console.warn('[interactive_request] 解析失败:', e)
               }
             } else {
               try {
@@ -1870,6 +1899,9 @@ export const useChatStore = defineStore('chat', () => {
     // Agent 模式：高风险操作确认
     pendingConfirm,
     handleConfirmResult,
+    // T-E7: ops-agent 交互请求卡片
+    pendingInteractive,
+    clearInteractiveRequest: () => { pendingInteractive.value = null },
     initialize,
     sendMessage,
     startNewConversation,

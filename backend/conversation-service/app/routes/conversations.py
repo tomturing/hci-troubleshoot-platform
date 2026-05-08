@@ -142,8 +142,12 @@ async def send_message(
                         parts = inner.split(":", 1)
                         evt_type = parts[0]
                         evt_data = parts[1] if len(parts) > 1 else ""
-                        event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
-                        yield f"event: {evt_type}\ndata: {event_payload}\n\n"
+                        if evt_type == "interactive_request":
+                            # interactive_request 数据本身已是完整 JSON，直接透传，无需包装
+                            yield f"event: {evt_type}\ndata: {evt_data}\n\n"
+                        else:
+                            event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
+                            yield f"event: {evt_type}\ndata: {event_payload}\n\n"
                         continue
                     ai_content.append(chunk)
                     # JSON encode chunk 以安全保留换行符，避免 SSE 多行截断
@@ -329,3 +333,41 @@ async def update_resolved_kbd(
         "changed": changed,
         "kbd_info": kbd_info,
     }
+
+
+# ── T-E6: ops-agent 交互响应回传 ─────────────────────────────────────────────
+
+
+class InteractiveResponseBody(BaseModel):
+    """POST /api/conversations/{id}/interactive-response 请求体。"""
+    request_id: str               # 来自前端收到的 BrainInteractiveRequest.requestId
+    acp_session_id: str           # 来自前端收到的 BrainInteractiveRequest.acpSessionId
+    outcome: dict                 # {"outcome": "selected", "optionId": "A"}
+                                  # 或 {"outcome": "free_text", "text": "..."}
+
+
+@router.post("/{conversation_id}/interactive-response")
+async def submit_interactive_response(
+    conversation_id: uuid.UUID,
+    body: InteractiveResponseBody,
+    service: ConversationService = Depends(get_conversation_service),
+):
+    """将用户对 ops-agent 交互卡片（SOP操作卡 / 信息确认卡）的响应回传给 ACP 会话。
+
+    由前端 InteractiveRequestCard 提交按钮触发。
+
+    响应 200：{"ok": true}
+    响应 404：ops-agent 适配器不可用（ops-agent 未启用或 BrainRouter 未注入）
+    """
+    success = await service.submit_interactive_response(
+        conversation_id=conversation_id,
+        request_id=body.request_id,
+        acp_session_id=body.acp_session_id,
+        outcome=body.outcome,
+    )
+    if not success:
+        raise HTTPException(
+            status_code=404,
+            detail="OpsAgentBrainAdapter 不可用，请确认 ops-agent 已启用",
+        )
+    return {"ok": True}
