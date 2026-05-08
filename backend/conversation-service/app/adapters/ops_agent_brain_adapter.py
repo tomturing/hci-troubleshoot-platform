@@ -265,10 +265,7 @@ class OpsAgentBrainAdapter:
                     if update_type == "agent_message_chunk":
                         # Agent 输出文本片段
                         content = update.get("content", {})
-                        if isinstance(content, dict):
-                            text = content.get("text", "")
-                        else:
-                            text = str(content)
+                        text = content.get("text", "") if isinstance(content, dict) else str(content)
                         if text:
                             yield BrainTextChunk(content=text)
 
