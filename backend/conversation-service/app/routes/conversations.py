@@ -367,7 +367,7 @@ async def submit_interactive_response(
     )
     if not success:
         raise HTTPException(
-            status_code=404,
-            detail="OpsAgentBrainAdapter 不可用，请确认 ops-agent 已启用",
+            status_code=503,
+            detail="OpsAgentBrainAdapter 不可用：ops-agent 未启用或 ACP 接口不可达",
         )
     return {"ok": True}

@@ -1808,11 +1808,22 @@ class ConversationService:
             )
             return False
 
-        success = await ops_adapter.submit_acp_response(
-            acp_session_id=acp_session_id,
-            request_id=request_id,
-            outcome=outcome,
-        )
+        try:
+            success = await ops_adapter.submit_acp_response(
+                acp_session_id=acp_session_id,
+                request_id=request_id,
+                outcome=outcome,
+            )
+        except BrainUnavailableError as exc:
+            logger.warning(
+                event="interactive_response_brain_error",
+                message="ops-agent ACP 接口不可达，交互响应已丢就",
+                conversation_id=str(conversation_id),
+                acp_session_id=acp_session_id,
+                request_id=request_id,
+                error=str(exc),
+            )
+            return False
         logger.info(
             event="interactive_response_submitted",
             message="ops-agent 交互响应已回传",

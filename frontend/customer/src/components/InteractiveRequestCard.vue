@@ -119,7 +119,7 @@ export interface InteractiveRequestEvent {
   prompt: string
   options: Array<{ optionId: string; name: string }>
   customInput: boolean
-  metadata: Record<string, string>
+  metadata: Record<string, unknown>
 }
 
 const props = defineProps<{
@@ -167,7 +167,7 @@ async function submitFreeText() {
 async function doSubmit(outcome: Record<string, string>, _visibleReply: string) {
   submitting.value = true
   try {
-    await fetch(`/api/conversations/${props.conversationId}/interactive-response`, {
+    const resp = await fetch(`/api/conversations/${props.conversationId}/interactive-response`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -176,12 +176,20 @@ async function doSubmit(outcome: Record<string, string>, _visibleReply: string) 
         outcome,
       }),
     })
-  } catch (e) {
-    console.warn('[InteractiveRequestCard] 提交响应失败:', e)
-  } finally {
-    submitting.value = false
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => ({}))
+      console.warn('[InteractiveRequestCard] 提交失败:', resp.status, errBody)
+      // 保留卡片，允许用户重试
+      return
+    }
+    // 仅在成功时关闭卡片
     visible.value = false
     emit('submitted')
+  } catch (e) {
+    console.warn('[InteractiveRequestCard] 提交请求异常（网络错误）:', e)
+    // 网络错误也保留卡片，允许用户重试
+  } finally {
+    submitting.value = false
   }
 }
 </script>

@@ -155,7 +155,7 @@ export const useChatStore = defineStore('chat', () => {
     prompt: string
     options: Array<{ optionId: string; name: string }>
     customInput: boolean
-    metadata: Record<string, string>
+    metadata: Record<string, unknown>
   } | null>(null)
 
   // Bridge 运行状态
@@ -566,8 +566,9 @@ export const useChatStore = defineStore('chat', () => {
       addSystemMessage(`工单 ${res.data.case_id} 已关闭。发送新消息开启新工单。`)
       const convId = conversationId.value
       conversationId.value = null
-      // 重置诊断阶段
+      // 重置诊断阶段 + 清除交互卡片
       diagnosticStage.value = 'S0'
+      pendingInteractive.value = null
       if (convId) {
         ratingConversationId.value = convId
         showRatingCard.value = true
@@ -582,6 +583,7 @@ export const useChatStore = defineStore('chat', () => {
     conversationId.value = null
     messages.value = []
     diagnosticStage.value = 'S0'
+    pendingInteractive.value = null
     addSystemMessage('请描述您遇到的新问题，我会帮您创建工单。')
   }
 
@@ -646,6 +648,7 @@ export const useChatStore = defineStore('chat', () => {
       currentCase.value = caseItem
       conversationId.value = null
       messages.value = []
+      pendingInteractive.value = null  // 切换工单时清除旧交互卡片
       environmentContext.value = null  // 先清空，避免展示旧工单的环境数据
 
       // 从工单数据恢复助手选择
