@@ -36,7 +36,7 @@ vi.mock('@hci/shared', () => ({
     listByClient: vi.fn().mockResolvedValue({ data: [] }),
     getById: mockCaseGetById,
     close: vi.fn().mockResolvedValue({}),
-    create: vi.fn().mockResolvedValue({ data: { case_id: 'c-new', assistant_type: 'qwen', status: 'open', client_id: 'test', title: 'test', description: null, created_at: '', updated_at: '', closed_at: null, trace_id: null } }),
+    create: vi.fn().mockResolvedValue({ data: { case_id: 'c-new', assistant_type: 'qwen', status: 'in_progress', client_id: 'test', title: 'test', description: null, created_at: '', updated_at: '', closed_at: null, trace_id: null } }),
   }),
   createConversationApi: () => ({
     create: mockConvCreate,
@@ -83,7 +83,7 @@ function makeCase(overrides: Partial<CaseResponse> = {}): CaseResponse {
   return {
     case_id: 'case-1',
     client_id: 'test-client-id',
-    status: 'open',
+    status: 'in_progress',
     title: 'Test Case',
     description: null,
     assistant_type: 'ops-agent',
