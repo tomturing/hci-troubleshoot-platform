@@ -241,16 +241,18 @@ export const useChatStore = defineStore('chat', () => {
     initialized.value = true
   }
 
-  // 从工单数据恢复助手选择；若已保存的助手不可用则降级到默认可用助手
+  // 从工单数据恢复助手选择；若助手类型已从列表中移除则降级到默认可用助手
   function _restoreAssistantFromCase(caseData: { assistant_type?: string }) {
     const saved = caseData.assistant_type
     if (!saved) return
-    if (assistants.value.some(a => a.type === saved && a.available)) {
+    // 只要助手类型存在于列表（不论当前 available 状态），即恢复用户保存的偏好；
+    // available 状态是调度层的实时概念，不应影响已绑定工单的助手恢复
+    if (assistants.value.some(a => a.type === saved)) {
       selectedAssistant.value = saved
       return
     }
-    // 已保存的助手当前不可用（如被禁用），降级到默认可用助手
-    devLog('chat', `助手 ${saved} 不可用，回退到默认助手`, { saved })
+    // 助手类型完全不在列表中（已删除或下线），降级到默认可用助手
+    devLog('chat', `助手 ${saved} 不在列表中，回退到默认助手`, { saved })
     const fallback = assistants.value.find(a => a.is_default && a.available)
       || assistants.value.find(a => a.available)
     if (fallback) selectedAssistant.value = fallback.type
@@ -422,7 +424,8 @@ export const useChatStore = defineStore('chat', () => {
           case_id: currentCase.value.case_id,
           role: 'user',
           content,
-          assistant_type: selectedAssistant.value,  // v2.2: 动态切换助手
+          // v2.2: 优先使用工单绑定的助手类型，确保对话路由一致性
+          assistant_type: currentCase.value.assistant_type || selectedAssistant.value,
         }),
       })
 
@@ -1233,8 +1236,7 @@ export const useChatStore = defineStore('chat', () => {
     // 否则 createConversation 内部的 currentCase 为 null 检查会抛出异常。
     // 仅当前工单不存在或与目标 caseId 不匹配时才重新拉取，避免重复请求；
     // 若拉取失败但已有可用 currentCase，则优先回退使用现有工单继续流程。
-    const hasMatchingCurrentCase = currentCase.value?.case_id === caseId
-    if (!hasMatchingCurrentCase) {
+    const hasMatchingCurrentCase = currentCase.value?.case_id === caseId    if (!hasMatchingCurrentCase) {
       try {
         const caseRes = await caseApi.getById(caseId)
         currentCase.value = caseRes.data
@@ -1253,6 +1255,12 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     addSystemMessage(`工单 ${caseId} 已创建，AI 正在识别故障类型，请稍候…`)
+
+    // 同步 selectedAssistant，确保 UI 显示正确且 streamAIResponse 使用工单绑定的助手
+    const resolvedAssistantType = currentCase.value?.assistant_type || assistantType
+    if (resolvedAssistantType && assistants.value.some(a => a.type === resolvedAssistantType)) {
+      selectedAssistant.value = resolvedAssistantType
+    }
 
     // 创建对话（失败时会抛出错误并显示提示）
     try {
