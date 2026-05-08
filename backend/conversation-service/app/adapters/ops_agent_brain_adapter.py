@@ -228,8 +228,14 @@ class OpsAgentBrainAdapter:
     async def _consume_events(
         self, session_id: str, headers: dict
     ) -> AsyncGenerator[BrainEvent, None]:
-        """消费 GET /acp/sessions/{id}/events SSE 流，翻译为 BrainEvent。"""
+        """消费 GET /acp/sessions/{id}/events SSE 流，翻译为 BrainEvent。
+
+        若 session/done 到达时未产出任何文本内容，抛出 BrainUnavailableError 以触发 HTP fallback，
+        避免因 ops-agent 内部静默失败（exception 被 execute_task 吞掉，stop_reason="end_turn"）
+        导致前端显示空白气泡。
+        """
         url = f"{self._base_url}/acp/sessions/{session_id}/events"
+        text_emitted = False  # 追踪是否产出过有效文本
         async with self._client.stream("GET", url, headers=headers) as resp:
             if resp.status_code != 200:
                 body = await resp.aread()
@@ -251,12 +257,21 @@ class OpsAgentBrainAdapter:
                 method = data.get("method", "")
 
                 if method == "session/done":
-                    # 会话结束哨兵，停止消费
+                    stop_reason = data.get("params", {}).get("stopReason", "end_turn")
                     logger.info(
-                        "OpsAgentBrainAdapter: session/done session_id=%s stopReason=%s",
+                        "OpsAgentBrainAdapter: session/done session_id=%s stopReason=%s text_emitted=%s",
                         session_id,
-                        data.get("params", {}).get("stopReason"),
+                        stop_reason,
+                        text_emitted,
                     )
+                    if not text_emitted:
+                        # ops-agent 运行结束但没有产出任何文本：
+                        # 可能是 execute_task() 内部异常被吞掉、task_done 未被调用、
+                        # 或 task_done.summary 为空。抛出 BrainUnavailableError 触发 HTP fallback。
+                        raise BrainUnavailableError(
+                            brain_name="ops-agent",
+                            reason=f"session/done without content (stopReason={stop_reason})，降级到备用助手",
+                        )
                     return
 
                 if method == "session/update":
@@ -268,6 +283,7 @@ class OpsAgentBrainAdapter:
                         content = update.get("content", {})
                         text = content.get("text", "") if isinstance(content, dict) else str(content)
                         if text:
+                            text_emitted = True
                             yield BrainTextChunk(content=text)
 
                     elif update_type == "session_info_update":

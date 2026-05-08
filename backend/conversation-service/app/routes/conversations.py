@@ -357,7 +357,7 @@ async def submit_interactive_response(
     由前端 InteractiveRequestCard 提交按钮触发。
 
     响应 200：{"ok": true}
-    响应 404：ops-agent 适配器不可用（ops-agent 未启用或 BrainRouter 未注入）
+    响应 503：ops-agent 适配器不可用（ops-agent 未启用或 BrainRouter 未注入）
     """
     success = await service.submit_interactive_response(
         conversation_id=conversation_id,
