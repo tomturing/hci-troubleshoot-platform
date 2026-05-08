@@ -110,6 +110,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
+/** metadata 字段的带可选字段接口（避免 strict TS 下 unknown 赋值错误） */
+export interface InteractiveRequestMetadata {
+  feedbackRequest?: string
+  route?: string
+  operationGoal?: string
+  [key: string]: unknown
+}
+
 /** interactive_request SSE 事件的原始 payload 结构（由后端 conversation_service yield） */
 export interface InteractiveRequestEvent {
   requestId: string
@@ -119,7 +127,7 @@ export interface InteractiveRequestEvent {
   prompt: string
   options: Array<{ optionId: string; name: string }>
   customInput: boolean
-  metadata: Record<string, unknown>
+  metadata: InteractiveRequestMetadata
 }
 
 const props = defineProps<{

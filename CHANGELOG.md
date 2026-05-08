@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### 🐛 Bug 修复
+
+* **ops-agent:** 修复 `_consume_events` 空响应根因——session/done 无文本内容时抛出 `BrainUnavailableError`，触发 HTP fallback，消除空白气泡 ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
+* **conversation-service:** 修正 `/interactive-response` 接口注释 404→503，日志文案"已丢就"→"已丢弃/已降级" ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
+* **frontend:** 修正 `InteractiveRequestCard` metadata 字段类型为 `InteractiveRequestMetadata`，消除 vue-tsc strict 模式类型错误；`@pinia/testing` 降级至 `^0.1.7` 与 pinia 2.x 兼容 ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
+
+### 🧪 测试
+
+* **conversation-service:** 新增 `test_ops_agent_adapter.py`（6个单元测试），覆盖 `_consume_events` 所有关键路径 ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
+* **ci:** 新增 `frontend-unit-test` job，`unit-tests` job 依赖前端测试通过 ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
+
 ## [2.8.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.7.0...v2.8.0) (2026-05-08)
 
 

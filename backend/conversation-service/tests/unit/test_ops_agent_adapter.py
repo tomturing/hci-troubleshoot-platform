@@ -4,13 +4,11 @@ OpsAgentBrainAdapter._consume_events 单元测试
 覆盖 2026-05 修复：session/done 到达但无文本产出时触发 BrainUnavailableError（fallback）。
 """
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
 from app.core.brain_port import BrainTextChunk, BrainUnavailableError
-
 
 # ── 构造辅助函数 ────────────────────────────────────────────────────────────
 

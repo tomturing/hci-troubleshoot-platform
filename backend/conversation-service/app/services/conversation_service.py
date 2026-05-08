@@ -1817,7 +1817,7 @@ class ConversationService:
         except BrainUnavailableError as exc:
             logger.warning(
                 event="interactive_response_brain_error",
-                message="ops-agent ACP 接口不可达，交互响应已丢就",
+                message="ops-agent ACP 接口不可达，交互响应已丢弃/已降级",
                 conversation_id=str(conversation_id),
                 acp_session_id=acp_session_id,
                 request_id=request_id,
