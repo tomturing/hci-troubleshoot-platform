@@ -13,7 +13,8 @@ COPY shared/package.json shared/
 COPY customer/package.json customer/
 
 # --no-frozen-lockfile: lockfile 与 package.json 不一致时仍可安装（构建前 k3s-build.sh 会同步）
-RUN pnpm install --no-frozen-lockfile
+# --ignore-scripts=false: 允许 esbuild/vue-demi 等依赖运行构建脚本（pnpm v9 安全特性）
+RUN pnpm install --no-frozen-lockfile --ignore-scripts=false
 
 # 再 COPY 源码并构建
 COPY shared/ shared/
