@@ -1,10 +1,49 @@
 # Changelog
 
-## [Unreleased]
+## [2.9.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.8.0...v2.9.0) (2026-05-09)
+
+
+### ✨ 新功能
+
+* **brain:** ops-agent ACP REST 全链路交互集成（T-E1～T-E7 + BUG-1 修复） ([#254](https://github.com/tomturing/hci-troubleshoot-platform/issues/254)) ([ec654c8](https://github.com/tomturing/hci-troubleshoot-platform/commit/ec654c86f383279db91daa2041043b149cba804d))
+
 
 ### 🐛 Bug 修复
 
-* **ops-agent:** 修复 `_consume_events` 空响应根因——session/done 无文本内容时抛出 `BrainUnavailableError`，触发 HTP fallback，消除空白气泡 ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
+* **api-gateway:** 新增 interactive-response 路由代理（RC-5） ([#259](https://github.com/tomturing/hci-troubleshoot-platform/issues/259)) ([fc592b5](https://github.com/tomturing/hci-troubleshoot-platform/commit/fc592b57bcd017a10cf447a1d07b57f201880122))
+* **brain:** ops-agent 未启用时返回友好提示而非报错 ([#253](https://github.com/tomturing/hci-troubleshoot-platform/issues/253)) ([fcb83e7](https://github.com/tomturing/hci-troubleshoot-platform/commit/fcb83e73b03a3fbcde37880a9406f168d6e51f5f))
+* **ci:** 用 sync-env-repo-tags.sh 统一同步逻辑，修复 opsAgent tag 被覆盖问题 ([#260](https://github.com/tomturing/hci-troubleshoot-platform/issues/260)) ([f876372](https://github.com/tomturing/hci-troubleshoot-platform/commit/f876372678632625c810c16d8a0fa010d8d339c1))
+* **conversation-service:** ops-agent 超时/fallback/glm-5 三项修复 ([#257](https://github.com/tomturing/hci-troubleshoot-platform/issues/257)) ([5013956](https://github.com/tomturing/hci-troubleshoot-platform/commit/50139563b2b476dabfbc93b4add6dda9955a7489))
+* **frontend:** pnpm install 添加 --ignore-scripts=false 解决构建失败 ([#258](https://github.com/tomturing/hci-troubleshoot-platform/issues/258)) ([744e743](https://github.com/tomturing/hci-troubleshoot-platform/commit/744e74350f6b8a0f13a6baa52fb016a8c58c5739))
+* **ops-agent:** 修复空响应根因 + 前端单元测试 CI ([#251](https://github.com/tomturing/hci-troubleshoot-platform/issues/251)) ([a7116df](https://github.com/tomturing/hci-troubleshoot-platform/commit/a7116dfee7363eaed7262f305a1185352d87d57a))
+
+
+### 📝 文档
+
+* **ops-agent:** 新增模块设计文档，基于源码深度分析 ([#255](https://github.com/tomturing/hci-troubleshoot-platform/issues/255)) ([56d661f](https://github.com/tomturing/hci-troubleshoot-platform/commit/56d661ff58cc99f265f13fd7b07f20d70f9ccbf7))
+* **ops-agent:** 添加手动测试方案文档 ([#256](https://github.com/tomturing/hci-troubleshoot-platform/issues/256)) ([26d6388](https://github.com/tomturing/hci-troubleshoot-platform/commit/26d63880041a22b331bad64b462eafd829ec68bd))
+
+## [Unreleased]
+
+### ✨ 新功能
+
+* **conversation-service/frontend:** ops-agent 弹框交互内容（interactive_request/interactive_response）落库到 message 表，支持对话历史查看；前端 `ChatMessage` 新增 `metadata` 字段映射，`InteractiveRequestCard` 提交选项时携带 `optionLabel` 便于可读落库
+
+### 🧪 测试
+
+* **conversation-service:** 新增 10 个单元测试，覆盖 `_format_interactive_request_content`、`_format_interactive_response_content`、`submit_interactive_response` 落库全路径（含适配器不可用时不落库的负向场景）
+
+### 🐛 Bug 修复
+
+* **ci:** 修复 `auto-deploy-non-prod` job 内联 `sed` 绕过 `BLOCKED_SERVICES` 保护导致 `opsAgent.tag` 被 htp CI tag 错误覆盖的问题 ([#260](https://github.com/tomturing/hci-troubleshoot-platform/pull/260))
+* **ci/scripts:** 修复 `update_db_migrate_image` 使用错误结构（单行 URL）匹配，实际 values.yaml 为嵌套 `image.tag` 结构，导致 dbMigrate 从未被正确更新 ([#260](https://github.com/tomturing/hci-troubleshoot-platform/pull/260))
+
+### ♻️ 重构
+
+* **ci:** `auto-deploy-non-prod` job 改为调用 `scripts/ops/sync-env-repo-tags.sh`，消除内联重复逻辑；`env-repo-sync.yml`（手动触发）与 CI 自动触发共用同一脚本 ([#260](https://github.com/tomturing/hci-troubleshoot-platform/pull/260))
+* **scripts:** `sync-env-repo-tags.sh` 新增 `SKIP_DB_MIGRATE` 环境变量、`set -euo pipefail` 严格模式 ([#260](https://github.com/tomturing/hci-troubleshoot-platform/pull/260))
+
+——session/done 无文本内容时抛出 `BrainUnavailableError`，触发 HTP fallback，消除空白气泡 ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
 * **conversation-service:** 修正 `/interactive-response` 接口注释 404→503，日志文案"已丢就"→"已丢弃/已降级" ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
 * **frontend:** 修正 `InteractiveRequestCard` metadata 字段类型为 `InteractiveRequestMetadata`，消除 vue-tsc strict 模式类型错误；`@pinia/testing` 降级至 `^0.1.7` 与 pinia 2.x 兼容 ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
 

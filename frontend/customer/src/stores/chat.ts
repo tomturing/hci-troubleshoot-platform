@@ -49,6 +49,7 @@ export interface ChatMessage {
   content: string
   timestamp: Date
   isStreaming?: boolean
+  metadata?: Record<string, unknown>
 }
 
 /** 工单创建模板 */
@@ -272,7 +273,7 @@ export const useChatStore = defineStore('chat', () => {
     await loadConversationHistory(caseId)
     pendingCase.value = null
     // 恢复工单时同步加载环境数据（fire-and-forget，不阻塞对话恢复）
-    collectEnvironmentData(caseId).catch(() => {})
+    collectEnvironmentData(caseId).catch(() => { })
   }
 
   async function closePendingCase() {
@@ -301,6 +302,7 @@ export const useChatStore = defineStore('chat', () => {
           role: m.role as ChatMessage['role'],
           content: m.content,
           timestamp: new Date(m.created_at),
+          metadata: (m as any).metadata ?? undefined,
         }))
       }
       if (messages.value.length === 0) {
@@ -359,7 +361,7 @@ export const useChatStore = defineStore('chat', () => {
       currentCase.value = res.data
       addSystemMessage(`工单 ${res.data.case_id} 已创建，AI 正在识别故障类型，请稍候…`)
       // 无 SSH 流程也尝试加载历史环境数据（fire-and-forget）
-      collectEnvironmentData(res.data.case_id).catch(() => {})
+      collectEnvironmentData(res.data.case_id).catch(() => { })
 
       await createConversation()
       await streamAIResponse(pendingUserMessage.value)
@@ -512,9 +514,10 @@ export const useChatStore = defineStore('chat', () => {
               }
             } else if (pendingEventType === 'interactive_request') {
               // T-E7: ops-agent 交互请求（SOP 操作卡 / 信息确认卡）
+              // 改为对话气泡展示，不再弹窗
               try {
                 const event = JSON.parse(data)
-                pendingInteractive.value = {
+                const irEvent = {
                   requestId: event.requestId,
                   acpSessionId: event.acpSessionId,
                   kind: event.kind ?? 'info_request',
@@ -524,6 +527,17 @@ export const useChatStore = defineStore('chat', () => {
                   customInput: event.customInput ?? true,
                   metadata: event.metadata ?? {},
                 }
+                // 将 interactive_request 作为 assistant 气泡追加到消息列表
+                const irMsgId = `ir-${event.requestId ?? Date.now()}`
+                messages.value.push({
+                  id: irMsgId,
+                  role: 'assistant',
+                  content: event.prompt ?? event.title ?? '',
+                  timestamp: new Date(),
+                  metadata: { kind: 'interactive_request', event: irEvent },
+                })
+                // 同步更新 pendingInteractive 以兼容旧代码路径（已关闭弹窗，但保留状态供外部使用）
+                pendingInteractive.value = irEvent
               } catch (e) {
                 console.warn('[interactive_request] 解析失败:', e)
               }
@@ -624,6 +638,7 @@ export const useChatStore = defineStore('chat', () => {
           role: m.role as ChatMessage['role'],
           content: m.content,
           timestamp: new Date(m.created_at),
+          metadata: (m as any).metadata ?? undefined,
         }))
       }
       if (historyMessages.value.length === 0) {
@@ -661,7 +676,7 @@ export const useChatStore = defineStore('chat', () => {
 
       await loadConversationHistory(caseItem.case_id)
       // 切换工单时同步加载对应环境数据（fire-and-forget）
-      collectEnvironmentData(caseItem.case_id).catch(() => {})
+      collectEnvironmentData(caseItem.case_id).catch(() => { })
     }
   }
 
@@ -1310,320 +1325,320 @@ export const useChatStore = defineStore('chat', () => {
           username: sshConfig.username,
         })
 
-      try {
-        // 1. 创建工单
-        const res = await caseApi.create({
-          client_id: clientId,
-          title,
-          description,
-          assistant_type: assistantType || selectedAssistant.value || undefined,
-        })
-        currentCase.value = res.data
-        const caseId = res.data.case_id
-        appendSshCreationLog('info', 'case', '工单创建成功', { caseId, status: res.data.status })
-
-        // 2. 建立 SSH 连接
-        devLog('SSH-CREATE', '开始建立 WebSocket 连接到 Bridge')
-        const socket = createBridgeSocket()
-        devLog('SSH-CREATE', 'WebSocket 对象已创建，等待连接')
-        sshCreationSocket.value = socket
-        appendSshCreationLog('info', 'bridge', '开始连接本地 SSH Bridge', { caseId })
-
-        const collectBuffer: Record<string, string> = { cluster: '', alert: '', task: '' }
-        let authTimer: number | null = null
-        let pendingCommand: PendingBridgeCommand | null = null
-        let flowSettled = false
-
-        const clearAuthTimer = () => {
-          if (authTimer !== null) {
-            window.clearTimeout(authTimer)
-            authTimer = null
-          }
-        }
-
-        const clearPendingCommand = () => {
-          if (!pendingCommand) return
-          window.clearTimeout(pendingCommand.timeoutId)
-          pendingCommand = null
-        }
-
-        const cleanupSocket = () => {
-          clearAuthTimer()
-          clearPendingCommand()
-          if (sshCreationSocket.value) {
-            sshCreationSocket.value.onopen = null
-            sshCreationSocket.value.onmessage = null
-            sshCreationSocket.value.onerror = null
-            sshCreationSocket.value.onclose = null
-            sshCreationSocket.value.close()
-            sshCreationSocket.value = null
-          }
-        }
-
-        const rejectFlow = (error: unknown) => {
-          if (flowSettled) return
-          flowSettled = true
-
-          const normalized = error instanceof Error
-            ? (error as Error & { detail?: string })
-            : createFlowError('SSH 创建流程失败')
-
-          if (pendingCommand) {
-            const currentCommand = pendingCommand
-            clearPendingCommand()
-            currentCommand.reject(normalized)
-          }
-
-          sshCreationError.value = {
-            message: normalized.message || 'SSH 创建流程失败',
-            detail: normalized.detail || '',
-          }
-          sshCreationPhase.value = 'error'
-          isLoading.value = false
-          appendSshCreationLog('error', 'flow', sshCreationError.value.message, {
-            detail: sshCreationError.value.detail || '',
+        try {
+          // 1. 创建工单
+          const res = await caseApi.create({
+            client_id: clientId,
+            title,
+            description,
+            assistant_type: assistantType || selectedAssistant.value || undefined,
           })
-          cleanupSocket()
-          console.error('[SSH-CREATE] 流程失败', normalized.message, normalized.detail || '')
-          reject(normalized)
-        }
+          currentCase.value = res.data
+          const caseId = res.data.case_id
+          appendSshCreationLog('info', 'case', '工单创建成功', { caseId, status: res.data.status })
 
-        const runBridgeCommand = (
-          name: string,
-          command: string,
-          timeoutMs = SSH_CREATION_COMMAND_TIMEOUT_MS,
-        ): Promise<BridgeCommandResult> => {
-          if (flowSettled) {
-            return Promise.reject(createFlowError('SSH 创建流程已结束'))
-          }
-          if (pendingCommand) {
-            return Promise.reject(createFlowError(`存在未完成的命令：${pendingCommand.name}`))
+          // 2. 建立 SSH 连接
+          devLog('SSH-CREATE', '开始建立 WebSocket 连接到 Bridge')
+          const socket = createBridgeSocket()
+          devLog('SSH-CREATE', 'WebSocket 对象已创建，等待连接')
+          sshCreationSocket.value = socket
+          appendSshCreationLog('info', 'bridge', '开始连接本地 SSH Bridge', { caseId })
+
+          const collectBuffer: Record<string, string> = { cluster: '', alert: '', task: '' }
+          let authTimer: number | null = null
+          let pendingCommand: PendingBridgeCommand | null = null
+          let flowSettled = false
+
+          const clearAuthTimer = () => {
+            if (authTimer !== null) {
+              window.clearTimeout(authTimer)
+              authTimer = null
+            }
           }
 
-          return new Promise((commandResolve, commandReject) => {
-            const marker = buildBridgeMarker(caseId, name, Date.now())
-            const timeoutId = window.setTimeout(() => {
-              const timeoutError = createFlowError(`${name}超时`, `命令执行超过 ${Math.ceil(timeoutMs / 1000)} 秒仍未返回`)
+          const clearPendingCommand = () => {
+            if (!pendingCommand) return
+            window.clearTimeout(pendingCommand.timeoutId)
+            pendingCommand = null
+          }
+
+          const cleanupSocket = () => {
+            clearAuthTimer()
+            clearPendingCommand()
+            if (sshCreationSocket.value) {
+              sshCreationSocket.value.onopen = null
+              sshCreationSocket.value.onmessage = null
+              sshCreationSocket.value.onerror = null
+              sshCreationSocket.value.onclose = null
+              sshCreationSocket.value.close()
+              sshCreationSocket.value = null
+            }
+          }
+
+          const rejectFlow = (error: unknown) => {
+            if (flowSettled) return
+            flowSettled = true
+
+            const normalized = error instanceof Error
+              ? (error as Error & { detail?: string })
+              : createFlowError('SSH 创建流程失败')
+
+            if (pendingCommand) {
+              const currentCommand = pendingCommand
               clearPendingCommand()
-              appendSshCreationLog('error', 'command', timeoutError.message, {
+              currentCommand.reject(normalized)
+            }
+
+            sshCreationError.value = {
+              message: normalized.message || 'SSH 创建流程失败',
+              detail: normalized.detail || '',
+            }
+            sshCreationPhase.value = 'error'
+            isLoading.value = false
+            appendSshCreationLog('error', 'flow', sshCreationError.value.message, {
+              detail: sshCreationError.value.detail || '',
+            })
+            cleanupSocket()
+            console.error('[SSH-CREATE] 流程失败', normalized.message, normalized.detail || '')
+            reject(normalized)
+          }
+
+          const runBridgeCommand = (
+            name: string,
+            command: string,
+            timeoutMs = SSH_CREATION_COMMAND_TIMEOUT_MS,
+          ): Promise<BridgeCommandResult> => {
+            if (flowSettled) {
+              return Promise.reject(createFlowError('SSH 创建流程已结束'))
+            }
+            if (pendingCommand) {
+              return Promise.reject(createFlowError(`存在未完成的命令：${pendingCommand.name}`))
+            }
+
+            return new Promise((commandResolve, commandReject) => {
+              const marker = buildBridgeMarker(caseId, name, Date.now())
+              const timeoutId = window.setTimeout(() => {
+                const timeoutError = createFlowError(`${name}超时`, `命令执行超过 ${Math.ceil(timeoutMs / 1000)} 秒仍未返回`)
+                clearPendingCommand()
+                appendSshCreationLog('error', 'command', timeoutError.message, {
+                  command: name,
+                  timeoutMs,
+                })
+                commandReject(timeoutError)
+              }, timeoutMs)
+
+              pendingCommand = {
+                name,
+                marker,
+                buffer: '',
+                timeoutId,
+                firstChunkLogged: false,
+                resolve: commandResolve,
+                reject: commandReject,
+              }
+
+              devLog('SSH-CREATE', '发送 Bridge 命令', { name, timeoutMs })
+              appendSshCreationLog('info', 'command', '发送 SSH 命令', {
                 command: name,
                 timeoutMs,
               })
-              commandReject(timeoutError)
-            }, timeoutMs)
-
-            pendingCommand = {
-              name,
-              marker,
-              buffer: '',
-              timeoutId,
-              firstChunkLogged: false,
-              resolve: commandResolve,
-              reject: commandReject,
-            }
-
-            devLog('SSH-CREATE', '发送 Bridge 命令', { name, timeoutMs })
-            appendSshCreationLog('info', 'command', '发送 SSH 命令', {
-              command: name,
-              timeoutMs,
+              socket.send(buildInputMessage(caseId, buildBridgeCommandPayload(command, marker)))
             })
-            socket.send(buildInputMessage(caseId, buildBridgeCommandPayload(command, marker)))
-          })
-        }
+          }
 
-        const continueAfterConnected = async () => {
-          try {
-            sshCreationPhase.value = 'acli_check'
+          const continueAfterConnected = async () => {
+            try {
+              sshCreationPhase.value = 'acli_check'
 
-            const acliCheckResult = await runBridgeCommand(
-              '检查 acli',
-              "command -v acli >/dev/null 2>&1 && printf '__HCI_ACLI_OK__' || printf '__HCI_ACLI_MISSING__'",
-              SSH_CREATION_ACLI_CHECK_TIMEOUT_MS,
-            )
+              const acliCheckResult = await runBridgeCommand(
+                '检查 acli',
+                "command -v acli >/dev/null 2>&1 && printf '__HCI_ACLI_OK__' || printf '__HCI_ACLI_MISSING__'",
+                SSH_CREATION_ACLI_CHECK_TIMEOUT_MS,
+              )
 
-            if (acliCheckResult.output.includes('__HCI_ACLI_MISSING__')) {
-              acliAvailable.value = false
-              sshCreationPhase.value = 'acli_not_found'
-              appendSshCreationLog('warn', 'acli', '目标主机未安装 acli，跳过环境采集')
-            } else if (acliCheckResult.output.includes('__HCI_ACLI_OK__')) {
-              acliAvailable.value = true
-              sshCreationPhase.value = 'collecting'
-              appendSshCreationLog('info', 'acli', '检测到 acli 可用，开始采集环境数据')
+              if (acliCheckResult.output.includes('__HCI_ACLI_MISSING__')) {
+                acliAvailable.value = false
+                sshCreationPhase.value = 'acli_not_found'
+                appendSshCreationLog('warn', 'acli', '目标主机未安装 acli，跳过环境采集')
+              } else if (acliCheckResult.output.includes('__HCI_ACLI_OK__')) {
+                acliAvailable.value = true
+                sshCreationPhase.value = 'collecting'
+                appendSshCreationLog('info', 'acli', '检测到 acli 可用，开始采集环境数据')
 
-              for (const command of COLLECT_COMMANDS) {
-                const result = await runBridgeCommand(command.label, command.cmd)
-                if (result.exitCode !== 0) {
-                  throw buildCommandError(command.label, result.output, result.exitCode)
+                for (const command of COLLECT_COMMANDS) {
+                  const result = await runBridgeCommand(command.label, command.cmd)
+                  if (result.exitCode !== 0) {
+                    throw buildCommandError(command.label, result.output, result.exitCode)
+                  }
+                  collectBuffer[command.name] = result.output
+                  appendSshCreationLog('info', 'collect', '采集命令执行完成', {
+                    command: command.name,
+                    outputLength: result.output.length,
+                  })
                 }
-                collectBuffer[command.name] = result.output
-                appendSshCreationLog('info', 'collect', '采集命令执行完成', {
-                  command: command.name,
-                  outputLength: result.output.length,
+
+                await submitCollectedData(caseId, collectBuffer)
+                appendSshCreationLog('info', 'collect', '环境数据已提交到 Environment API', {
+                  cluster: Boolean(collectBuffer.cluster),
+                  alert: Boolean(collectBuffer.alert),
+                  task: Boolean(collectBuffer.task),
                 })
+                await collectEnvironmentData(caseId)
+                appendSshCreationLog('info', 'collect', '环境上下文刷新完成', {
+                  caseId,
+                })
+              } else {
+                throw createFlowError('检查 acli 失败', acliCheckResult.output)
               }
 
-              await submitCollectedData(caseId, collectBuffer)
-              appendSshCreationLog('info', 'collect', '环境数据已提交到 Environment API', {
-                cluster: Boolean(collectBuffer.cluster),
-                alert: Boolean(collectBuffer.alert),
-                task: Boolean(collectBuffer.task),
-              })
-              await collectEnvironmentData(caseId)
-              appendSshCreationLog('info', 'collect', '环境上下文刷新完成', {
+              await completeCaseCreationFlow(caseId, userMessage || description, assistantType)
+              appendSshCreationLog('info', 'conversation', '工单创建后续流程完成，开始建立终端会话', {
                 caseId,
               })
-            } else {
-              throw createFlowError('检查 acli 失败', acliCheckResult.output)
-            }
 
-            await completeCaseCreationFlow(caseId, userMessage || description, assistantType)
-            appendSshCreationLog('info', 'conversation', '工单创建后续流程完成，开始建立终端会话', {
+              cleanupSocket()
+              await connectSSH({
+                host: sshConfig.host,
+                port: sshConfig.port,
+                username: sshConfig.username,
+                authType: 'password',
+                password: sshConfig.password,
+                caseId,
+              })
+              appendSshCreationLog('info', 'terminal', '终端侧全局 SSH 会话建立成功', {
+                caseId,
+              })
+
+              flowSettled = true
+              sshCreationPhase.value = 'done'
+              isLoading.value = false
+              appendSshCreationLog('info', 'done', 'SSH 集成创建工单流程完成', {
+                caseId,
+              })
+              resolve()
+            } catch (error) {
+              rejectFlow(error)
+            }
+          }
+
+          socket.onopen = () => {
+            devLog('SSH-CREATE', 'WebSocket 连接已打开')
+            sshCreationPhase.value = 'connected'
+            clearAuthTimer()
+            appendSshCreationLog('info', 'bridge', '本地 SSH Bridge 已连接', {
               caseId,
             })
 
-            cleanupSocket()
-            await connectSSH({
+            // 15 秒认证超时
+            authTimer = window.setTimeout(() => {
+              devLog('SSH-CREATE', '认证超时检查', { phase: sshCreationPhase.value })
+              if (sshCreationPhase.value === 'connected' || sshCreationPhase.value === 'acli_check') {
+                rejectFlow(createFlowError('SSH 认证超时', '15 秒内未收到认证成功信号'))
+              }
+            }, SSH_CREATION_AUTH_TIMEOUT_MS)
+
+            // 发送 SSH 连接命令
+            const connectMsg = buildConnectMessage({
               host: sshConfig.host,
               port: sshConfig.port,
               username: sshConfig.username,
-              authType: 'password',
+              auth_type: 'password',
               password: sshConfig.password,
-              caseId,
+              case_id: caseId,
             })
-            appendSshCreationLog('info', 'terminal', '终端侧全局 SSH 会话建立成功', {
-              caseId,
-            })
-
-            flowSettled = true
-            sshCreationPhase.value = 'done'
-            isLoading.value = false
-            appendSshCreationLog('info', 'done', 'SSH 集成创建工单流程完成', {
-              caseId,
-            })
-            resolve()
-          } catch (error) {
-            rejectFlow(error)
+            devLog('SSH-CREATE', '发送 SSH 连接命令', { host: sshConfig.host, port: sshConfig.port, caseId })
+            socket.send(connectMsg)
           }
-        }
 
-        socket.onopen = () => {
-          devLog('SSH-CREATE', 'WebSocket 连接已打开')
-          sshCreationPhase.value = 'connected'
-          clearAuthTimer()
-          appendSshCreationLog('info', 'bridge', '本地 SSH Bridge 已连接', {
-            caseId,
-          })
+          socket.onmessage = (e) => {
+            devLog('SSH-CREATE', '收到 WebSocket 消息', { raw: e.data })
 
-          // 15 秒认证超时
-          authTimer = window.setTimeout(() => {
-            devLog('SSH-CREATE', '认证超时检查', { phase: sshCreationPhase.value })
-            if (sshCreationPhase.value === 'connected' || sshCreationPhase.value === 'acli_check') {
-              rejectFlow(createFlowError('SSH 认证超时', '15 秒内未收到认证成功信号'))
+            let msg: TerminalWsMessage
+            try {
+              msg = JSON.parse(String(e.data || ''))
+              devLog('SSH-CREATE', '解析后', { type: msg.type, case_id: msg.case_id, output: msg.output?.substring(0, 100) })
+            } catch (parseErr) {
+              devLog('SSH-CREATE', 'ERROR: JSON 解析失败', parseErr)
+              return
             }
-          }, SSH_CREATION_AUTH_TIMEOUT_MS)
 
-          // 发送 SSH 连接命令
-          const connectMsg = buildConnectMessage({
-            host: sshConfig.host,
-            port: sshConfig.port,
-            username: sshConfig.username,
-            auth_type: 'password',
-            password: sshConfig.password,
-            case_id: caseId,
-          })
-          devLog('SSH-CREATE', '发送 SSH 连接命令', { host: sshConfig.host, port: sshConfig.port, caseId })
-          socket.send(connectMsg)
-        }
+            if (msg.case_id && msg.case_id !== caseId) {
+              devLog('SSH-CREATE', '忽略其他 case_id', { expected: caseId, actual: msg.case_id })
+              return
+            }
 
-        socket.onmessage = (e) => {
-          devLog('SSH-CREATE', '收到 WebSocket 消息', { raw: e.data })
+            if (msg.type === 'ssh_connected') {
+              devLog('SSH-CREATE', 'SSH 连接成功')
+              clearAuthTimer()
+              appendSshCreationLog('info', 'ssh', '目标主机 SSH 认证成功', {
+                caseId,
+                host: sshConfig.host,
+                username: sshConfig.username,
+              })
+              void continueAfterConnected()
 
-          let msg: TerminalWsMessage
-          try {
-            msg = JSON.parse(String(e.data || ''))
-            devLog('SSH-CREATE', '解析后', { type: msg.type, case_id: msg.case_id, output: msg.output?.substring(0, 100) })
-          } catch (parseErr) {
-            devLog('SSH-CREATE', 'ERROR: JSON 解析失败', parseErr)
-            return
-          }
+            } else if (msg.type === 'ssh_output' && msg.output) {
+              if (!pendingCommand) return
 
-          if (msg.case_id && msg.case_id !== caseId) {
-            devLog('SSH-CREATE', '忽略其他 case_id', { expected: caseId, actual: msg.case_id })
-            return
-          }
-
-          if (msg.type === 'ssh_connected') {
-            devLog('SSH-CREATE', 'SSH 连接成功')
-            clearAuthTimer()
-            appendSshCreationLog('info', 'ssh', '目标主机 SSH 认证成功', {
-              caseId,
-              host: sshConfig.host,
-              username: sshConfig.username,
-            })
-            void continueAfterConnected()
-
-          } else if (msg.type === 'ssh_output' && msg.output) {
-            if (!pendingCommand) return
-
-            pendingCommand.buffer += msg.output
-            if (!pendingCommand.firstChunkLogged) {
-              pendingCommand.firstChunkLogged = true
-              appendSshCreationLog('info', 'command', '收到命令输出片段', {
+              pendingCommand.buffer += msg.output
+              if (!pendingCommand.firstChunkLogged) {
+                pendingCommand.firstChunkLogged = true
+                appendSshCreationLog('info', 'command', '收到命令输出片段', {
+                  command: pendingCommand.name,
+                  outputPreview: msg.output.substring(0, 120),
+                })
+              }
+              devLog('SSH-CREATE', 'ssh_output', {
+                phase: sshCreationPhase.value,
                 command: pendingCommand.name,
-                outputPreview: msg.output.substring(0, 120),
+                outputPreview: msg.output.substring(0, 50),
               })
-            }
-            devLog('SSH-CREATE', 'ssh_output', {
-              phase: sshCreationPhase.value,
-              command: pendingCommand.name,
-              outputPreview: msg.output.substring(0, 50),
-            })
 
-            const result = parseBridgeCommandResult(pendingCommand.buffer, pendingCommand.marker)
-            if (result) {
-              const currentCommand = pendingCommand
-              clearPendingCommand()
-              appendSshCreationLog('info', 'command', '命令执行结束', {
-                command: currentCommand.name,
-                exitCode: result.exitCode,
-                outputPreview: result.output.substring(0, 160),
+              const result = parseBridgeCommandResult(pendingCommand.buffer, pendingCommand.marker)
+              if (result) {
+                const currentCommand = pendingCommand
+                clearPendingCommand()
+                appendSshCreationLog('info', 'command', '命令执行结束', {
+                  command: currentCommand.name,
+                  exitCode: result.exitCode,
+                  outputPreview: result.output.substring(0, 160),
+                })
+                currentCommand.resolve(result)
+              }
+            } else if (msg.type === 'ssh_error') {
+              appendSshCreationLog('error', 'ssh', 'Bridge 返回 SSH 错误', {
+                message: msg.message || '',
+                detail: msg.detail || '',
               })
-              currentCommand.resolve(result)
+              rejectFlow(createFlowError(msg.message || 'SSH 连接出错', msg.detail || ''))
             }
-          } else if (msg.type === 'ssh_error') {
-            appendSshCreationLog('error', 'ssh', 'Bridge 返回 SSH 错误', {
-              message: msg.message || '',
-              detail: msg.detail || '',
-            })
-            rejectFlow(createFlowError(msg.message || 'SSH 连接出错', msg.detail || ''))
           }
-        }
 
-        socket.onerror = (err) => {
-          devLog('SSH-CREATE', 'ERROR: WebSocket 错误', err)
-          appendSshCreationLog('error', 'bridge', '本地 SSH Bridge WebSocket 连接失败')
-          rejectFlow(createFlowError('本地 SSH Bridge 未运行', '浏览器无法连接 ws://localhost:9999'))
-        }
-
-        socket.onclose = (event) => {
-          devLog('SSH-CREATE', 'WebSocket 关闭', { code: event.code, reason: event.reason, phase: sshCreationPhase.value })
-          if (!flowSettled && sshCreationPhase.value !== 'done' && sshCreationPhase.value !== 'error') {
-            appendSshCreationLog('warn', 'bridge', '本地 SSH Bridge 连接异常关闭', {
-              code: event.code,
-              reason: event.reason || '',
-            })
-            rejectFlow(createFlowError('SSH 连接意外中断'))
+          socket.onerror = (err) => {
+            devLog('SSH-CREATE', 'ERROR: WebSocket 错误', err)
+            appendSshCreationLog('error', 'bridge', '本地 SSH Bridge WebSocket 连接失败')
+            rejectFlow(createFlowError('本地 SSH Bridge 未运行', '浏览器无法连接 ws://localhost:9999'))
           }
-        }
 
-      } catch (e: any) {
-        const detail = e.response?.data?.detail || e.message
-        sshCreationError.value = { message: '创建工单失败', detail }
-        sshCreationPhase.value = 'error'
-        isLoading.value = false
-        appendSshCreationLog('error', 'case', '创建工单接口失败', { detail })
-        reject(createFlowError('创建工单失败', detail))
-      }
+          socket.onclose = (event) => {
+            devLog('SSH-CREATE', 'WebSocket 关闭', { code: event.code, reason: event.reason, phase: sshCreationPhase.value })
+            if (!flowSettled && sshCreationPhase.value !== 'done' && sshCreationPhase.value !== 'error') {
+              appendSshCreationLog('warn', 'bridge', '本地 SSH Bridge 连接异常关闭', {
+                code: event.code,
+                reason: event.reason || '',
+              })
+              rejectFlow(createFlowError('SSH 连接意外中断'))
+            }
+          }
+
+        } catch (e: any) {
+          const detail = e.response?.data?.detail || e.message
+          sshCreationError.value = { message: '创建工单失败', detail }
+          sshCreationPhase.value = 'error'
+          isLoading.value = false
+          appendSshCreationLog('error', 'case', '创建工单接口失败', { detail })
+          reject(createFlowError('创建工单失败', detail))
+        }
       })().catch(reject)
     })
   }

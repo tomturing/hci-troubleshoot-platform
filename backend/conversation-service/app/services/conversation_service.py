@@ -511,6 +511,23 @@ class ConversationService:
                             "metadata": brain_event.metadata,
                         }, ensure_ascii=False)
                         yield f"\x00event:interactive_request:{_ir_payload}\x00"
+                        # 将弹框内容以 assistant 角色异步落库，供历史记录查看
+                        _ir_content = self._format_interactive_request_content(brain_event)
+                        asyncio.create_task(
+                            self._save_message_bg(
+                                conversation_id=conversation_id,
+                                case_id=case_id,
+                                role=MessageRole.assistant,
+                                content=_ir_content,
+                                metadata={
+                                    "kind": "interactive_request",
+                                    "requestId": brain_event.request_id,
+                                    "acpSessionId": brain_event.acp_session_id,
+                                    "interactiveKind": brain_event.kind,
+                                    "options": brain_event.options,
+                                },
+                            )
+                        )
             else:
                 # ── 原有路径：直接调用 ai_registry（BrainRouter 未注入时兜底）───
                 ai_client = self.ai_registry.get_client(resolved_assistant_type)
@@ -684,6 +701,91 @@ class ConversationService:
                 event="conversation_save_error",
                 message="Error saving AI response in background",
                 conversation_id=str(conversation_id),
+                error=str(e),
+            )
+
+    @staticmethod
+    def _format_interactive_request_content(event: "BrainInteractiveRequest") -> str:
+        """将 BrainInteractiveRequest 格式化为可读 Markdown 文字，用于落库到 message.content。"""
+        lines: list[str] = []
+        meta = event.metadata or {}
+        if event.kind == "sop_step":
+            lines.append("**📋 SOP 操作步骤确认**")
+            if meta.get("route"):
+                lines.append(f"\n**当前路径**：{meta['route']}")
+            if meta.get("operationGoal"):
+                lines.append(f"\n**操作目标**：{meta['operationGoal']}")
+            if meta.get("expectedResult"):
+                lines.append(f"\n**预期结果**：{meta['expectedResult']}")
+            if meta.get("executionGuidance"):
+                lines.append(f"\n**操作指引**：{meta['executionGuidance']}")
+            feedback = meta.get("feedbackRequest") or event.prompt
+            if feedback:
+                lines.append(f"\n**请反馈**：{feedback}")
+        else:
+            lines.append("**❓ 信息确认**")
+            question = meta.get("question") or event.prompt
+            if question:
+                lines.append(f"\n{question}")
+            if meta.get("context"):
+                lines.append(f"\n**背景说明**：{meta['context']}")
+        if event.options:
+            opt_parts = [f"{o.get('optionId', i + 1)}. {o.get('name', '')}" for i, o in enumerate(event.options)]
+            lines.append(f"\n\n**可选项**：{'  /  '.join(opt_parts)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_interactive_response_content(outcome: dict) -> str:
+        """将用户的交互响应格式化为可读文字，用于落库到 message.content。"""
+        outcome_type = outcome.get("outcome", "")
+        if outcome_type == "selected":
+            label = outcome.get("optionLabel") or outcome.get("optionId", "")
+            return f"[操作选择] {label}"
+        elif outcome_type == "free_text":
+            text = outcome.get("text", "")
+            return f"[补充输入] {text}"
+        import json as _json
+        return f"[交互响应] {_json.dumps(outcome, ensure_ascii=False)}"
+
+    async def _save_message_bg(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        role: "MessageRole",
+        content: str,
+        metadata: dict | None = None,
+    ) -> None:
+        """在独立 session 中后台保存消息（供 asyncio.create_task 调用）。"""
+        if not content:
+            return
+        trace_id = get_current_trace_id()
+        try:
+            if self.session_factory:
+                async with self.session_factory() as independent_session:
+                    await ConversationRepository(independent_session).add_message(
+                        conversation_id=conversation_id,
+                        case_id=case_id,
+                        role=role,
+                        content=content,
+                        trace_id=trace_id,
+                        metadata=metadata or {},
+                    )
+                    await independent_session.commit()
+            else:
+                await self.repository.add_message(
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    role=role,
+                    content=content,
+                    trace_id=trace_id,
+                    metadata=metadata or {},
+                )
+        except Exception as e:
+            logger.error(
+                event="save_message_bg_error",
+                message="后台保存消息失败",
+                conversation_id=str(conversation_id),
+                role=str(role),
                 error=str(e),
             )
 
@@ -1832,4 +1934,29 @@ class ConversationService:
             request_id=request_id,
             success=success,
         )
+        # 将用户的弹框选择/输入以 user 角色落库，供历史记录查看
+        try:
+            conv = await self.repository.get_conversation(conversation_id)
+            if conv:
+                await self.repository.add_message(
+                    conversation_id=conversation_id,
+                    case_id=conv.case_id,
+                    role=MessageRole.user,
+                    content=self._format_interactive_response_content(outcome),
+                    trace_id=get_current_trace_id(),
+                    metadata={
+                        "kind": "interactive_response",
+                        "requestId": request_id,
+                        "acpSessionId": acp_session_id,
+                        "outcome": outcome,
+                    },
+                )
+        except Exception as _e:
+            logger.error(
+                event="interactive_response_save_error",
+                message="保存用户交互响应到 message 表失败",
+                conversation_id=str(conversation_id),
+                error=str(_e),
+            )
         return success
+
