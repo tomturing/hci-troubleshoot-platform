@@ -4,7 +4,15 @@
 
 ### 🐛 Bug 修复
 
-* **ops-agent:** 修复 `_consume_events` 空响应根因——session/done 无文本内容时抛出 `BrainUnavailableError`，触发 HTP fallback，消除空白气泡 ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
+* **ci:** 修复 `auto-deploy-non-prod` job 内联 `sed` 绕过 `BLOCKED_SERVICES` 保护导致 `opsAgent.tag` 被 htp CI tag 错误覆盖的问题 ([#260](https://github.com/tomturing/hci-troubleshoot-platform/pull/260))
+* **ci/scripts:** 修复 `update_db_migrate_image` 使用错误结构（单行 URL）匹配，实际 values.yaml 为嵌套 `image.tag` 结构，导致 dbMigrate 从未被正确更新 ([#260](https://github.com/tomturing/hci-troubleshoot-platform/pull/260))
+
+### ♻️ 重构
+
+* **ci:** `auto-deploy-non-prod` job 改为调用 `scripts/ops/sync-env-repo-tags.sh`，消除内联重复逻辑；`env-repo-sync.yml`（手动触发）与 CI 自动触发共用同一脚本 ([#260](https://github.com/tomturing/hci-troubleshoot-platform/pull/260))
+* **scripts:** `sync-env-repo-tags.sh` 新增 `SKIP_DB_MIGRATE` 环境变量、`set -euo pipefail` 严格模式 ([#260](https://github.com/tomturing/hci-troubleshoot-platform/pull/260))
+
+——session/done 无文本内容时抛出 `BrainUnavailableError`，触发 HTP fallback，消除空白气泡 ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
 * **conversation-service:** 修正 `/interactive-response` 接口注释 404→503，日志文案"已丢就"→"已丢弃/已降级" ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
 * **frontend:** 修正 `InteractiveRequestCard` metadata 字段类型为 `InteractiveRequestMetadata`，消除 vue-tsc strict 模式类型错误；`@pinia/testing` 降级至 `^0.1.7` 与 pinia 2.x 兼容 ([#251](https://github.com/tomturing/hci-troubleshoot-platform/pull/251))
 
