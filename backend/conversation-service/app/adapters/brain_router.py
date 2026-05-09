@@ -8,8 +8,10 @@ BrainRouter：大脑路由器（T1-6）
 - BrainRouter 是 ConversationService 的成员，不是独立微服务
 - 路由逻辑：assistant_type=ops-agent → OpsAgentBrainAdapter
              其他（openclaw/glm/未知）→ HTPBrainAdapter
-- 降级逻辑：OpsAgentBrainAdapter raise BrainUnavailableError 时
-            自动切换到 HTPBrainAdapter 并记录降级事件
+- 降级逻辑：
+  - ops-agent 未启用（_ops_agent is None）时降级到 htp
+  - OpsAgentBrainAdapter raise BrainUnavailableError 时降级到 htp
+  - 两种场景统一使用 _fallback_to_htp() 方法处理
 """
 
 from __future__ import annotations
@@ -29,6 +31,9 @@ OPS_AGENT_TYPE = "ops-agent"
 
 # 降级提示消息（用户可见）
 _FALLBACK_NOTICE = "\n\n> [系统提示] ops-agent 暂时不可用，已自动切换到备用助手继续为您服务。\n\n"
+
+# ops-agent 未启用提示（用户可见）
+_OPS_AGENT_DISABLED_NOTICE = "\n\n> [系统提示] ops-agent 服务未启用，已自动切换到备用助手继续为您服务。\n\n"
 
 
 class BrainRouter:
@@ -78,16 +83,32 @@ class BrainRouter:
         Yields:
             BrainEvent 序列（来自目标大脑或降级后的备用大脑）。
         """
-        if assistant_type == OPS_AGENT_TYPE and self._ops_agent is not None:
-            async for event in self._route_ops_agent(
-                session_id=session_id,
-                messages=messages,
-                env_context=env_context,
-                stream=stream,
-                user_id=user_id,
-                case_id=case_id,
-            ):
-                yield event
+        if assistant_type == OPS_AGENT_TYPE:
+            if self._ops_agent is None:
+                # ops-agent 未启用，降级到 htp 大脑
+                logger.warning(
+                    "BrainRouter: ops-agent 未启用，降级到 htp 大脑. session_id=%s",
+                    session_id,
+                )
+                async for event in self._fallback_to_htp(
+                    notice=_OPS_AGENT_DISABLED_NOTICE,
+                    session_id=session_id,
+                    messages=messages,
+                    stream=stream,
+                    case_id=case_id,
+                    user_id=user_id,
+                ):
+                    yield event
+            else:
+                async for event in self._route_ops_agent(
+                    session_id=session_id,
+                    messages=messages,
+                    env_context=env_context,
+                    stream=stream,
+                    user_id=user_id,
+                    case_id=case_id,
+                ):
+                    yield event
         else:
             async for event in self._htp.process(
                 session_id=session_id,
@@ -126,16 +147,49 @@ class BrainRouter:
                 session_id,
                 exc.reason,
             )
-            # 向用户发送降级通知
-            yield BrainTextChunk(content=_FALLBACK_NOTICE)
-            # 降级到 htp 大脑（用 "openclaw" 兜底）
-            async for event in self._htp.process(
+            async for event in self._fallback_to_htp(
+                notice=_FALLBACK_NOTICE,
                 session_id=session_id,
                 messages=messages,
-                env_context=None,  # htp 大脑环境上下文已在 system_prompt 中
                 stream=stream,
-                assistant_type="openclaw",
                 case_id=case_id,
                 user_id=user_id,
             ):
                 yield event
+
+    async def _fallback_to_htp(
+        self,
+        *,
+        notice: str,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        stream: bool,
+        case_id: str,
+        user_id: str,
+    ) -> AsyncGenerator[BrainEvent, None]:
+        """统一的降级处理：发送提示消息并切换到 htp 大脑。
+
+        Args:
+            notice: 用户可见的降级提示文本。
+            session_id: 对话 session ID。
+            messages: OpenAI 格式消息列表。
+            stream: 是否流式输出。
+            case_id: 工单 ID。
+            user_id: 用户 ID。
+
+        Yields:
+            BrainEvent 序列（降级提示 + htp 大脑输出）。
+        """
+        # 向用户发送降级通知
+        yield BrainTextChunk(content=notice)
+        # 降级到 htp 大脑（用 "openclaw" 兜底）
+        async for event in self._htp.process(
+            session_id=session_id,
+            messages=messages,
+            env_context=None,  # htp 大脑环境上下文已在 system_prompt 中
+            stream=stream,
+            assistant_type="openclaw",
+            case_id=case_id,
+            user_id=user_id,
+        ):
+            yield event
