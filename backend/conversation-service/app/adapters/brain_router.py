@@ -17,6 +17,7 @@ BrainRouter：大脑路由器（T1-6）
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -182,13 +183,15 @@ class BrainRouter:
         """
         # 向用户发送降级通知
         yield BrainTextChunk(content=notice)
-        # 降级到 htp 大脑（用 "openclaw" 兜底）
+        # 降级到 htp 大脑（从环境变量读取降级模型，默认 glm-5；
+        # openclaw 已 disabled，不可硬编码为 "openclaw"）
+        fallback_type = os.environ.get("OPS_AGENT_FALLBACK_ASSISTANT_TYPE", "glm-5")
         async for event in self._htp.process(
             session_id=session_id,
             messages=messages,
             env_context=None,  # htp 大脑环境上下文已在 system_prompt 中
             stream=stream,
-            assistant_type="openclaw",
+            assistant_type=fallback_type,
             case_id=case_id,
             user_id=user_id,
         ):
