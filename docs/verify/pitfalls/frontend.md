@@ -91,3 +91,24 @@ RUN cd admin && node ../node_modules/vite/bin/vite.js build
 ```
 
 **效果：** 依赖不变时，`npm install` 层完全跳过，从 8 分钟降至 **~20 秒**（仅 vite build）。
+
+## V-001：pnpm v9 默认禁止依赖构建脚本导致 Docker 构建失败
+
+**现象：** CI构建失败，`pnpm install` 报错：
+```
+[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: esbuild@0.25.12, vue-demi@0.14.10
+Run "pnpm approve-builds" to pick which dependencies should be allowed to run scripts.
+```
+
+**根因：** pnpm v9 引入新安全机制，默认禁止依赖包运行构建脚本（如 esbuild 的 native binary 编译）。这些构建脚本对某些依赖是必需的，禁止后会导致安装失败。
+
+**修复：** 在 Dockerfile 的 `pnpm install` 命令中添加 `--ignore-scripts=false` 参数：
+```dockerfile
+RUN pnpm install --no-frozen-lockfile --ignore-scripts=false
+```
+
+**替代方案：**
+1. 在 `.npmrc` 中添加 `ignore-scripts=false`（全局生效）
+2. 运行 `pnpm approve-builds` 预先批准特定依赖的构建脚本
+
+**注意：** 此问题仅影响 pnpm v9+，pnpm v8 无此安全特性。
