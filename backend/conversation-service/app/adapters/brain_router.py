@@ -183,7 +183,7 @@ class BrainRouter:
         """
         # 向用户发送降级通知
         yield BrainTextChunk(content=notice)
-        # 降级到 htp 大脑（从环境变量读取降级模型，默认 qwen3.5-plus；
+        # 降级到 htp 大脑（从环境变量读取降级模型，默认 glm-5；
         # openclaw 已 disabled，不可硬编码为 "openclaw"）
         fallback_type = os.environ.get("OPS_AGENT_FALLBACK_ASSISTANT_TYPE", "glm-5")
         async for event in self._htp.process(

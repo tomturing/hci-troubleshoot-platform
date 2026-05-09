@@ -58,8 +58,7 @@ class OpsAgentBrainAdapter:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key or os.environ.get("OPS_AGENT_API_KEY")
         self._default_model = default_model
-        _read_timeout = float(os.environ.get("OPS_AGENT_READ_TIMEOUT_SEC",
-                              os.environ.get("AI_CLIENT_READ_TIMEOUT_SEC", "300.0")))
+        _read_timeout = float(os.environ.get("OPS_AGENT_READ_TIMEOUT_SEC", "300.0"))
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=_read_timeout, write=10.0, pool=10.0)
         )
