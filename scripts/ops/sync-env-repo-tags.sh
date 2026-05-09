@@ -24,6 +24,9 @@ SKIP_DB_MIGRATE="${SKIP_DB_MIGRATE:-false}"
 # 禁止被本脚本更新的 key（来自独立仓库，有自己的发布流程）
 BLOCKED_SERVICES="opsAgent"
 
+# 禁止被本脚本更新的 key（来自独立仓库，有自己的发布流程）
+BLOCKED_SERVICES="opsAgent"
+
 if [[ -z "$ENV_REPO_PATH" ]]; then
   echo "ENV_REPO_PATH 未设置"
   echo "推荐固定路径: /mnt/d/aihci/hci-platform-env"
