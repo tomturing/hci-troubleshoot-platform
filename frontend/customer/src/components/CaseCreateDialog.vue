@@ -586,6 +586,8 @@ watch(
       // 弹框打开时同步标题/描述
       caseForm.title = props.pendingTitle || chatStore.caseTemplate.title
       caseForm.description = props.pendingDescription || chatStore.caseTemplate.description
+      // 每次弹框打开都重新同步助手选择（避免上次挂载时锁定的旧值）
+      caseForm.assistantType = chatStore.selectedAssistant || ''
       // 重置状态
       logs.value = []
       errorMessage.value = ''
