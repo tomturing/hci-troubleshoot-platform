@@ -567,21 +567,24 @@ jobs:
       (needs.build-db-migrate.result == 'success' || needs.build-db-migrate.outputs.built != 'true') &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     steps:
+      - name: Checkout 应用仓库（获取 sync-env-repo-tags.sh）
+        uses: actions/checkout@v4
+
       - name: 直接推送镜像标签到环境仓库（dev 优先，串行执行）
         env:
           ENV_REPO_PAT: ${{ secrets.ENV_REPO_PAT }}
         run: |
           # 绕过 hci-platform-env workflow dispatch（私有仓库 Actions 分钟额度限制）
-          # 改为在当前公开仓库（免费 Actions）中直接 clone → sed → push
-          # 逻辑与 hci-platform-env/.github/workflows/env-repo-sync.yml 保持一致
+          # 改为在当前公开仓库（免费 Actions）中直接 clone → 调用脚本 → push
           IMAGE_TAG="${{ needs.prepare.outputs.image_tag }}"
           DB_MIGRATE_BUILT="${{ needs.build-db-migrate.outputs.built }}"
-          DB_MIGRATE_TAG=""
+
           if [[ "$DB_MIGRATE_BUILT" == "true" ]]; then
-            DB_MIGRATE_TAG="${IMAGE_TAG}"
-            echo "本次有 schema 变更，db-migrate tag：${DB_MIGRATE_TAG}"
+            echo "本次有 schema 变更，db-migrate tag：${IMAGE_TAG}"
+            SKIP_DB_MIGRATE="false"
           else
-            echo "本次无 schema 变更，不更新 db-migrate tag"
+            echo "本次无 schema 变更，跳过 db-migrate 更新"
+            SKIP_DB_MIGRATE="true"
           fi
 
           # clone 环境仓库
@@ -592,43 +595,15 @@ jobs:
 
           for env in dev staging; do
             echo "========== 更新 ${env} 环境 =========="
+
+            # 调用统一的同步脚本（含 BLOCKED_SERVICES 保护，防止 opsAgent 等独立仓库 tag 被覆盖）
+            ENV_REPO_PATH="$(pwd)" \
+            TARGET_ENV="${env}" \
+            IMAGE_TAG="${IMAGE_TAG}" \
+            SKIP_DB_MIGRATE="${SKIP_DB_MIGRATE}" \
+              bash "$GITHUB_WORKSPACE/scripts/ops/sync-env-repo-tags.sh"
+
             VALUES_FILE="environments/${env}/values.yaml"
-
-            # 替换所有服务镜像标签
-            sed -i 's/^\(\s*tag:\s*\)"[^"]*"/\1"'"${IMAGE_TAG}"'"/' "$VALUES_FILE"
-
-            # ⚠️ 保护：恢复来自独立仓库的服务 tag（不应被 htp CI 覆盖）
-            # opsAgent 镜像来自 ghcr.io/p3n9w31/ops-agent，有独立发布流程
-            PREV_OPS_AGENT_TAG=$(git show HEAD:"${VALUES_FILE}" 2>/dev/null | awk '/^opsAgent:/{in_block=1} in_block && /repository.*p3n9w31/{found_repo=1} in_block && found_repo && /tag:/{match($0, /"([^"]+)"/, a); print a[1]; exit}' 2>/dev/null || echo "")
-            if [[ -n "${PREV_OPS_AGENT_TAG}" ]]; then
-              awk -v tag="${PREV_OPS_AGENT_TAG}" '
-                /^opsAgent:/{in_block=1} 
-                in_block && /repository.*p3n9w31/{found_repo=1}
-                in_block && found_repo && /tag:/{sub(/"[^"]*"/, "\"" tag "\""); found_repo=0}
-                /^[A-Za-z0-9_]+:$/ && !/^opsAgent:$/{in_block=0}
-                {print}
-              ' "${VALUES_FILE}" > /tmp/_hci_upd && mv /tmp/_hci_upd "${VALUES_FILE}"
-              echo "🔒 已保护 opsAgent.tag（恢复为 ${PREV_OPS_AGENT_TAG}，来自独立仓库）"
-            else
-              echo "⚠️ 无法从 git 历史获取 opsAgent.tag，跳过保护（可能是首次部署）"
-            fi
-
-            # 单独处理 db-migrate tag
-            if [[ -n "${DB_MIGRATE_TAG}" ]]; then
-              echo "更新 dbMigrate.tag 为: ${DB_MIGRATE_TAG}"
-              awk -v tag="${DB_MIGRATE_TAG}" '/dbMigrate:/{in_db=1} in_db && /tag:/{sub(/"[^"]*"/, "\"" tag "\""); in_db=0} {print}' "${VALUES_FILE}" > /tmp/_hci_upd && mv /tmp/_hci_upd "${VALUES_FILE}" && echo "dbMigrate.tag 已更新为 ${DB_MIGRATE_TAG}"
-            else
-              echo "恢复 dbMigrate.tag 为历史值（防止被全量 sed 覆盖）"
-              PREV_TAG=$(git show HEAD:"${VALUES_FILE}" 2>/dev/null | awk '/dbMigrate:/{in_db=1} in_db && /tag:/{match($0, /"([^"]+)"/, a); print a[1]; exit}' 2>/dev/null || echo "")
-              if [[ -n "${PREV_TAG}" ]]; then
-                awk -v tag="${PREV_TAG}" '/dbMigrate:/{in_db=1} in_db && /tag:/{sub(/"[^"]*"/, "\"" tag "\""); in_db=0} {print}' "${VALUES_FILE}" > /tmp/_hci_upd && mv /tmp/_hci_upd "${VALUES_FILE}" && echo "dbMigrate.tag 已恢复为 ${PREV_TAG}"
-              else
-                echo "❌ 无法从 git 历史获取 dbMigrate.tag，回滚文件避免写入错误 tag"
-                git checkout -- "${VALUES_FILE}"
-                exit 1
-              fi
-            fi
-
             if git diff --quiet "${VALUES_FILE}"; then
               echo "${env} 标签未变化，跳过提交"
             else

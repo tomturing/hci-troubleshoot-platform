@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 🟢 运维脚本 — 期展镜像 Tag 到环境仓库
+# 🟢 运维脚本 — 同步镜像 Tag 到环境仓库
 # =============================================================================
 # 职责：将镜像 Tag 同步写入环境仓库的 values.yaml（按环境/服务维度）
 # 使用场景：CI 流水线中自动调用（人工一般不直接运行）
 # 使用方法：
 #   ENV_REPO_PATH=/path/to/env-repo TARGET_ENV=dev IMAGE_TAG=20260319-1430-abc1234 \
 #     SERVICES_CSV=apiGateway,caseService bash scripts/ops/sync-env-repo-tags.sh
+# 环境变量：
+#   SKIP_DB_MIGRATE=true  跳过 dbMigrate.image 更新（无 schema 变更时使用）
 # 影响范围：🟡 第三方环境仓库（hci-platform-env）的 values.yaml
 # =============================================================================
 
@@ -16,6 +18,8 @@ IMAGE_TAG="${IMAGE_TAG:-}"
 SERVICES_CSV="${SERVICES_CSV:-apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI}"
 # 镜像仓库前缀（与 values.yaml 中的 global.imageRegistry 一致）
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-ghcr.io/tomturing/hci-troubleshoot-platform}"
+# 设为 true 时跳过 dbMigrate.image 更新（本次无 schema 变更）
+SKIP_DB_MIGRATE="${SKIP_DB_MIGRATE:-false}"
 
 # 禁止被本脚本更新的 key（来自独立仓库，有自己的发布流程）
 BLOCKED_SERVICES="opsAgent"
@@ -94,7 +98,11 @@ update_db_migrate_image() {
   mv "$tmp" "$file"
 }
 
-echo "更新 dbMigrate.image -> ${IMAGE_REGISTRY}/db-migrate:${IMAGE_TAG}"
-update_db_migrate_image "$VALUES_FILE" "$IMAGE_TAG"
+if [[ "${SKIP_DB_MIGRATE}" == "true" ]]; then
+  echo "跳过 dbMigrate.image 更新（SKIP_DB_MIGRATE=true，本次无 schema 变更）"
+else
+  echo "更新 dbMigrate.image -> ${IMAGE_REGISTRY}/db-migrate:${IMAGE_TAG}"
+  update_db_migrate_image "$VALUES_FILE" "$IMAGE_TAG"
+fi
 
 echo "同步完成: ${VALUES_FILE}"
