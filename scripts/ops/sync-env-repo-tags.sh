@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # =============================================================================
 # 🟢 运维脚本 — 同步镜像 Tag 到环境仓库
 # =============================================================================
@@ -79,33 +80,19 @@ for svc in "${services[@]}"; do
   update_service_tag "$VALUES_FILE" "$svc" "$IMAGE_TAG"
 done
 
-# dbMigrate.image 是完整镜像 URL（非 .image.tag 嵌套结构），单独处理
-update_db_migrate_image() {
+# dbMigrate 使用嵌套结构（image.repository + image.tag），只需更新 tag 字段
+# 复用 update_service_tag，以 dbMigrate 为块键匹配
+update_db_migrate_tag() {
   local file="$1"
   local tag="$2"
-  local new_image="${IMAGE_REGISTRY}/db-migrate:${tag}"
-  local tmp
-  tmp="$(mktemp)"
-  # 匹配 dbMigrate: 块内的 image: "..." 行，整体替换 URL
-  awk -v new_img="$new_image" '
-    BEGIN { in_block=0 }
-    {
-      if ($0 ~ /^dbMigrate:$/) { in_block=1; print; next }
-      if (in_block && $0 ~ /^[A-Za-z0-9_]+:$/) { in_block=0 }
-      if (in_block && $0 ~ /^[[:space:]]+image:[[:space:]]*"[^"]*"/) {
-        sub(/image:[[:space:]]*"[^"]*"/, "image: \"" new_img "\"")
-      }
-      print
-    }
-  ' "$file" > "$tmp"
-  mv "$tmp" "$file"
+  update_service_tag "$file" "dbMigrate" "$tag"
 }
 
 if [[ "${SKIP_DB_MIGRATE}" == "true" ]]; then
-  echo "跳过 dbMigrate.image 更新（SKIP_DB_MIGRATE=true，本次无 schema 变更）"
+  echo "跳过 dbMigrate.image.tag 更新（SKIP_DB_MIGRATE=true，本次无 schema 变更）"
 else
-  echo "更新 dbMigrate.image -> ${IMAGE_REGISTRY}/db-migrate:${IMAGE_TAG}"
-  update_db_migrate_image "$VALUES_FILE" "$IMAGE_TAG"
+  echo "更新 dbMigrate.image.tag -> ${IMAGE_TAG}"
+  update_db_migrate_tag "$VALUES_FILE" "$IMAGE_TAG"
 fi
 
 echo "同步完成: ${VALUES_FILE}"
