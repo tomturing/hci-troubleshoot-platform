@@ -17,6 +17,9 @@ SERVICES_CSV="${SERVICES_CSV:-apiGateway,caseService,conversationService,schedul
 # 镜像仓库前缀（与 values.yaml 中的 global.imageRegistry 一致）
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-ghcr.io/tomturing/hci-troubleshoot-platform}"
 
+# 禁止被本脚本更新的 key（来自独立仓库，有自己的发布流程）
+BLOCKED_SERVICES="opsAgent"
+
 if [[ -z "$ENV_REPO_PATH" ]]; then
   echo "ENV_REPO_PATH 未设置"
   echo "推荐固定路径: /mnt/d/aihci/hci-platform-env"
@@ -60,6 +63,11 @@ update_service_tag() {
 
 IFS=',' read -r -a services <<< "$SERVICES_CSV"
 for svc in "${services[@]}"; do
+  # 跳过来自独立仓库的服务，防止 tag 被 htp CI 错误覆盖
+  if echo ",${BLOCKED_SERVICES}," | grep -q ",${svc},"; then
+    echo "⚠️  跳过 ${svc}（在保护名单中，tag 来自独立仓库）"
+    continue
+  fi
   echo "更新 ${svc}.image.tag -> ${IMAGE_TAG}"
   update_service_tag "$VALUES_FILE" "$svc" "$IMAGE_TAG"
 done

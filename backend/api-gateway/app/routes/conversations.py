@@ -127,3 +127,11 @@ async def send_message(conversation_id: str, request: Request):
     """发送消息 (SSE流式返回)"""
     payload = await request.json()
     return await proxy_request_stream("POST", f"/{conversation_id}/message", payload, headers={})
+
+
+@router.post("/{conversation_id}/interactive-response")
+async def submit_interactive_response(conversation_id: str, request: Request):
+    """提交 ops-agent 交互式响应（用户选择备选项后回传）"""
+    payload = await request.json()
+    response = await proxy_request("POST", f"/{conversation_id}/interactive-response", payload=payload)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
