@@ -100,15 +100,20 @@ RUN cd admin && node ../node_modules/vite/bin/vite.js build
 Run "pnpm approve-builds" to pick which dependencies should be allowed to run scripts.
 ```
 
-**根因：** pnpm v9 引入新安全机制，默认禁止依赖包运行构建脚本（如 esbuild 的 native binary 编译）。这些构建脚本对某些依赖是必需的，禁止后会导致安装失败。
+**根因：** pnpm v9 引入新安全机制，默认禁止依赖包运行构建脚本（如 esbuild 的 native binary 编编）。这些构建脚本对某些依赖是必需的，禁止后会导致安装失败。
 
-**修复：** 在 Dockerfile 的 `pnpm install` 命令中添加 `--ignore-scripts=false` 参数：
+**修复：** 使用白名单机制仅放行必需依赖，并固定 pnpm 版本：
 ```dockerfile
-RUN pnpm install --no-frozen-lockfile --ignore-scripts=false
+# 固定 pnpm 9.x 版本，避免未来大版本变化导致行为漂移
+RUN npm install -g pnpm@9 --registry https://registry.npmmirror.com
+
+# 仅对白名单依赖放行 build scripts，避免全量执行生命周期脚本（供应链安全）
+RUN pnpm config set onlyBuiltDependencies[0] esbuild \
+    && pnpm config set onlyBuiltDependencies[1] vue-demi \
+    && pnpm install --no-frozen-lockfile
 ```
 
-**替代方案：**
-1. 在 `.npmrc` 中添加 `ignore-scripts=false`（全局生效）
-2. 运行 `pnpm approve-builds` 预先批准特定依赖的构建脚本
-
-**注意：** 此问题仅影响 pnpm v9+，pnpm v8 无此安全特性。
+**注意：**
+- 此问题仅影响 pnpm v9+，pnpm v8 无此安全特性
+- `--ignore-scripts=false` 会允许**所有**依赖执行生命周期脚本，扩大供应链攻击面，不推荐
+- 白名单机制更安全，仅放行必需的 esbuild/vue-demi 等依赖
