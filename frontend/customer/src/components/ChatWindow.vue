@@ -191,13 +191,13 @@ function handleQuoteToChat(content: string) {
       @confirmed="chatStore.handleConfirmResult"
     />
 
-    <!-- T-E7: ops-agent 交互请求卡片（SOP 操作确认 / 信息确认） -->
-    <InteractiveRequestCard
+    <!-- T-E7: ops-agent 交互请求（已改为对话气泡，弹窗停用） -->
+    <!-- <InteractiveRequestCard
       v-if="chatStore.pendingInteractive"
       :event="chatStore.pendingInteractive"
       :conversation-id="String(chatStore.conversationId ?? '')"
       @submitted="chatStore.clearInteractiveRequest()"
-    />
+    /> -->
 
     <!-- 未关闭工单确认对话框 -->
     <el-dialog
