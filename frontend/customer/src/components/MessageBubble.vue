@@ -372,6 +372,111 @@ function cancelFreeInput() {
   pendingInputChoice.value = null
   freeInputText.value = ''
 }
+
+// ============================================================
+// interactive_request 气泡渲染（ops-agent SOP 操作卡 / 信息确认卡）
+// ============================================================
+
+/** 提取 interactive_request metadata 中的 event 结构 */
+const interactiveEvent = computed(() => {
+  if (props.message.metadata?.kind !== 'interactive_request') return null
+  return props.message.metadata.event as {
+    requestId: string
+    acpSessionId: string
+    kind: string
+    title: string
+    prompt: string
+    options: Array<{ optionId: string; name: string }>
+    customInput: boolean
+    metadata: Record<string, unknown>
+  } | null
+})
+
+/** 当前 interactive 气泡之后是否已有用户响应（防止重复提交） */
+const interactiveSubmitted = computed(() => {
+  if (!interactiveEvent.value) return false
+  const msgIndex = chatStore.messages.findIndex(m => m.id === props.message.id)
+  if (msgIndex === -1) return false
+  return chatStore.messages.slice(msgIndex + 1).some(
+    m => m.role === 'user' && m.metadata?.kind === 'interactive_response'
+  )
+})
+
+const interactiveSubmitting = ref(false)
+const interactiveFreeText = ref('')
+
+/** 点击选项提交 */
+async function handleInteractiveOption(optionId: string, optionName: string) {
+  if (interactiveSubmitting.value || interactiveSubmitted.value) return
+  const ev = interactiveEvent.value
+  if (!ev) return
+  interactiveSubmitting.value = true
+  try {
+    const convId = chatStore.conversationId
+    if (!convId) return
+    const resp = await fetch(`/api/conversations/${convId}/interactive-response`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        request_id: ev.requestId,
+        acp_session_id: ev.acpSessionId,
+        outcome: { outcome: 'selected', optionId, optionLabel: optionName },
+      }),
+    })
+    if (resp.ok) {
+      // 追加用户响应气泡
+      chatStore.messages.push({
+        id: `ir-resp-${Date.now()}`,
+        role: 'user',
+        content: `[操作选择] ${optionName}`,
+        timestamp: new Date(),
+        metadata: { kind: 'interactive_response' },
+      })
+      chatStore.clearInteractiveRequest()
+    } else {
+      console.warn('[interactive] 提交失败:', resp.status)
+    }
+  } finally {
+    interactiveSubmitting.value = false
+  }
+}
+
+/** 提交自由文本 */
+async function handleInteractiveFreeText() {
+  const text = interactiveFreeText.value.trim()
+  if (!text || interactiveSubmitting.value || interactiveSubmitted.value) return
+  const ev = interactiveEvent.value
+  if (!ev) return
+  interactiveSubmitting.value = true
+  try {
+    const convId = chatStore.conversationId
+    if (!convId) return
+    const resp = await fetch(`/api/conversations/${convId}/interactive-response`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        request_id: ev.requestId,
+        acp_session_id: ev.acpSessionId,
+        outcome: { outcome: 'free_text', text },
+      }),
+    })
+    if (resp.ok) {
+      chatStore.messages.push({
+        id: `ir-resp-${Date.now()}`,
+        role: 'user',
+        content: `[补充输入] ${text}`,
+        timestamp: new Date(),
+        metadata: { kind: 'interactive_response' },
+      })
+      interactiveFreeText.value = ''
+      chatStore.clearInteractiveRequest()
+    } else {
+      console.warn('[interactive] 自由文本提交失败:', resp.status)
+    }
+  } finally {
+    interactiveSubmitting.value = false
+  }
+}
 </script>
 
 <template>
@@ -401,8 +506,11 @@ function cancelFreeInput() {
           class="bubble-body"
           :class="{ 'is-command-available': !message.isStreaming && contentSegments.some(s => s.type === 'command') }"
         >
+          <!-- interactive_request 气泡：不渲染普通 content，下方有专用区域 -->
+          <template v-if="message.metadata?.kind === 'interactive_request'" />
+
           <!-- 阶段1：Thinking 状态（流式中且内容为空） -->
-          <template v-if="message.isStreaming && !message.content">
+          <template v-else-if="message.isStreaming && !message.content">
             <div class="thinking-indicator">
               <span class="thinking-dot" />
               <span class="thinking-dot" />
@@ -445,6 +553,93 @@ function cancelFreeInput() {
             </div>
           </template>
         </div>
+
+        <!-- interactive_request 气泡（ops-agent SOP 操作卡 / 信息确认卡） -->
+        <div v-if="interactiveEvent" class="interactive-bubble">
+          <!-- 标题 -->
+          <div class="interactive-title">
+            {{ interactiveEvent.kind === 'sop_step' ? '📋 SOP 操作步骤确认' : '❓ 信息确认' }}
+          </div>
+
+          <!-- SOP 卡：展示路径/目标/预期/操作指引 -->
+          <template v-if="interactiveEvent.kind === 'sop_step'">
+            <div v-if="interactiveEvent.metadata?.route" class="ir-field">
+              <span class="ir-label">当前路径</span>
+              <code class="ir-route">{{ interactiveEvent.metadata.route }}</code>
+            </div>
+            <div class="ir-grid">
+              <div v-if="interactiveEvent.metadata?.operationGoal" class="ir-field">
+                <span class="ir-label">操作目标</span>
+                <p>{{ interactiveEvent.metadata.operationGoal }}</p>
+              </div>
+              <div v-if="interactiveEvent.metadata?.expectedResult" class="ir-field">
+                <span class="ir-label">预期结果</span>
+                <p>{{ interactiveEvent.metadata.expectedResult }}</p>
+              </div>
+            </div>
+            <div v-if="interactiveEvent.metadata?.executionGuidance" class="ir-field">
+              <span class="ir-label">操作指引</span>
+              <p>{{ interactiveEvent.metadata.executionGuidance }}</p>
+            </div>
+            <div v-if="interactiveEvent.metadata?.feedbackRequest || interactiveEvent.prompt" class="ir-field">
+              <span class="ir-label">请反馈</span>
+              <p>{{ interactiveEvent.metadata?.feedbackRequest || interactiveEvent.prompt }}</p>
+            </div>
+          </template>
+
+          <!-- 信息确认卡：核心问题 + 背景说明 -->
+          <template v-else>
+            <div class="ir-field">
+              <span class="ir-label">核心问题</span>
+              <p class="ir-question">{{ (interactiveEvent.metadata?.question as string) || interactiveEvent.prompt }}</p>
+            </div>
+            <div v-if="interactiveEvent.metadata?.context" class="ir-field">
+              <span class="ir-label">背景说明</span>
+              <p>{{ interactiveEvent.metadata.context }}</p>
+            </div>
+          </template>
+
+          <!-- 选项按钮 -->
+          <div v-if="interactiveEvent.options?.length && !interactiveSubmitted" class="ir-options">
+            <span class="ir-label">可选回复</span>
+            <div class="ir-option-list">
+              <el-button
+                v-for="opt in interactiveEvent.options"
+                :key="opt.optionId"
+                size="default"
+                :loading="interactiveSubmitting"
+                @click="handleInteractiveOption(opt.optionId, opt.name)"
+              >
+                <span class="ir-opt-id">{{ opt.optionId }}.</span> {{ opt.name }}
+              </el-button>
+            </div>
+          </div>
+
+          <!-- 已提交后展示灰色提示 -->
+          <div v-if="interactiveSubmitted" class="ir-done">✓ 已提交选择</div>
+
+          <!-- 自由文本输入 -->
+          <div v-if="interactiveEvent.customInput && !interactiveSubmitted" class="ir-free-input">
+            <span class="ir-label">补充信息（可选）</span>
+            <el-input
+              v-model="interactiveFreeText"
+              type="textarea"
+              :rows="2"
+              placeholder="输入更准确的现场信息或执行结果。"
+              :disabled="interactiveSubmitting"
+            />
+            <el-button
+              class="mt-2"
+              size="small"
+              :disabled="!interactiveFreeText.trim() || interactiveSubmitting"
+              :loading="interactiveSubmitting"
+              @click="handleInteractiveFreeText"
+            >
+              提交补充信息
+            </el-button>
+          </div>
+        </div>
+
         <!-- 可点击选项区（S0候选故障选择 / S6等交互阶段） -->
         <div v-if="choiceOptions.length > 0" class="choice-selector">
           <div class="choice-hint">
@@ -967,5 +1162,94 @@ function cancelFreeInput() {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
+}
+
+/* ===== interactive_request 气泡样式 ===== */
+.interactive-bubble {
+  margin-top: 8px;
+  background: #f7f8fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+
+.interactive-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #303133;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.ir-field {
+  margin-bottom: 8px;
+}
+
+.ir-label {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #909399;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.ir-route {
+  display: block;
+  font-size: 12px;
+  background: #ecf5ff;
+  color: #409eff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.ir-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ir-question {
+  font-weight: 500;
+  color: #303133;
+}
+
+.ir-options {
+  margin-top: 10px;
+}
+
+.ir-option-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ir-opt-id {
+  color: #909399;
+  margin-right: 2px;
+}
+
+.ir-done {
+  color: #67c23a;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.ir-free-input {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mt-2 {
+  margin-top: 6px;
+  align-self: flex-start;
 }
 </style>
