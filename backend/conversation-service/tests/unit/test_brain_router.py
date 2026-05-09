@@ -136,7 +136,7 @@ class TestBrainRouterFallback:
 
     @pytest.mark.asyncio
     async def test_no_ops_adapter_uses_htp(self):
-        """ops_agent_adapter=None 时，assistant_type=ops-agent 也走 htp 路径。"""
+        """ops_agent_adapter=None 时，assistant_type=ops-agent 降级到 htp 并发送提示。"""
         htp_chunks = [BrainTextChunk(content="htp only")]
         htp = _make_mock_adapter(htp_chunks)
         router = BrainRouter(htp_adapter=htp, ops_agent_adapter=None)
@@ -148,8 +148,14 @@ class TestBrainRouterFallback:
             messages=[],
         )
 
-        assert len(events) == 1
-        assert events[0].content == "htp only"
+        # 应包含降级提示 + htp 输出
+        text_contents = [e.content for e in events if isinstance(e, BrainTextChunk)]
+        assert any("未启用" in c or "备用" in c or "自动切换" in c for c in text_contents), (
+            "应包含未启用提示文本"
+        )
+        assert any(c == "htp only" for c in text_contents), (
+            "应包含 htp fallback 输出"
+        )
 
 
 class TestBrainRouterStageUpdate:
