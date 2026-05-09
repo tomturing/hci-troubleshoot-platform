@@ -49,6 +49,7 @@ export interface ChatMessage {
   content: string
   timestamp: Date
   isStreaming?: boolean
+  metadata?: Record<string, unknown>
 }
 
 /** 工单创建模板 */
@@ -301,6 +302,7 @@ export const useChatStore = defineStore('chat', () => {
           role: m.role as ChatMessage['role'],
           content: m.content,
           timestamp: new Date(m.created_at),
+          metadata: (m as any).metadata ?? undefined,
         }))
       }
       if (messages.value.length === 0) {
@@ -624,6 +626,7 @@ export const useChatStore = defineStore('chat', () => {
           role: m.role as ChatMessage['role'],
           content: m.content,
           timestamp: new Date(m.created_at),
+          metadata: (m as any).metadata ?? undefined,
         }))
       }
       if (historyMessages.value.length === 0) {

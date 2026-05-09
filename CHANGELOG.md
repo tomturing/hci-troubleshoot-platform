@@ -25,6 +25,14 @@
 
 ## [Unreleased]
 
+### ✨ 新功能
+
+* **conversation-service/frontend:** ops-agent 弹框交互内容（interactive_request/interactive_response）落库到 message 表，支持对话历史查看；前端 `ChatMessage` 新增 `metadata` 字段映射，`InteractiveRequestCard` 提交选项时携带 `optionLabel` 便于可读落库
+
+### 🧪 测试
+
+* **conversation-service:** 新增 10 个单元测试，覆盖 `_format_interactive_request_content`、`_format_interactive_response_content`、`submit_interactive_response` 落库全路径（含适配器不可用时不落库的负向场景）
+
 ### 🐛 Bug 修复
 
 * **ci:** 修复 `auto-deploy-non-prod` job 内联 `sed` 绕过 `BLOCKED_SERVICES` 保护导致 `opsAgent.tag` 被 htp CI tag 错误覆盖的问题 ([#260](https://github.com/tomturing/hci-troubleshoot-platform/pull/260))

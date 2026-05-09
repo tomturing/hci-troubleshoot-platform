@@ -158,7 +158,7 @@ const feedbackPrompt = computed(() =>
 
 async function submitSelected(optionId: string, optionName: string) {
   await doSubmit(
-    { outcome: 'selected', optionId },
+    { outcome: 'selected', optionId, optionLabel: optionName },
     optionName,
   )
 }

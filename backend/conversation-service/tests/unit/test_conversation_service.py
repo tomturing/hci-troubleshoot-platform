@@ -155,3 +155,179 @@ class TestSendMessageStreamOnly:
         )]
 
         mock_repo.get_messages.assert_called_once_with(conv_id)
+
+
+# ---------- _format_interactive_request_content ----------
+
+class TestFormatInteractiveRequestContent:
+    """_format_interactive_request_content 静态方法测试"""
+
+    def _make_event(self, kind="info_request", prompt="", options=None, metadata=None):
+        from app.core.brain_port import BrainInteractiveRequest
+        return BrainInteractiveRequest(
+            request_id="req-1",
+            acp_session_id="sess-1",
+            kind=kind,
+            title="",
+            prompt=prompt,
+            options=options or [],
+            custom_input=True,
+            metadata=metadata or {},
+        )
+
+    def test_info_request_with_prompt(self):
+        """info_request 类型：使用 prompt 作为问题"""
+        event = self._make_event(kind="info_request", prompt="当前节点的内存使用率是多少？")
+        result = ConversationService._format_interactive_request_content(event)
+        assert "❓ 信息确认" in result
+        assert "当前节点的内存使用率是多少？" in result
+
+    def test_info_request_with_meta_question(self):
+        """info_request 类型：metadata.question 优先于 prompt"""
+        event = self._make_event(
+            kind="info_request",
+            prompt="fallback",
+            metadata={"question": "CPU 是否超过阈值？", "context": "节点处于高负载状态"},
+        )
+        result = ConversationService._format_interactive_request_content(event)
+        assert "CPU 是否超过阈值？" in result
+        assert "背景说明" in result
+        assert "节点处于高负载状态" in result
+        assert "fallback" not in result
+
+    def test_sop_step_with_full_meta(self):
+        """sop_step 类型：包含路径/目标/预期/指引/反馈"""
+        event = self._make_event(
+            kind="sop_step",
+            prompt="请确认执行结果",
+            metadata={
+                "route": "云计算 > 虚拟机",
+                "operationGoal": "释放资源",
+                "expectedResult": "虚拟机成功启动",
+                "executionGuidance": "点击开机按钮",
+                "feedbackRequest": "虚拟机是否已启动？",
+            },
+        )
+        result = ConversationService._format_interactive_request_content(event)
+        assert "📋 SOP 操作步骤确认" in result
+        assert "云计算 > 虚拟机" in result
+        assert "释放资源" in result
+        assert "虚拟机成功启动" in result
+        assert "点击开机按钮" in result
+        assert "虚拟机是否已启动？" in result
+
+    def test_options_rendered(self):
+        """选项列表正常渲染"""
+        event = self._make_event(
+            kind="info_request",
+            prompt="请选择",
+            options=[
+                {"optionId": "1", "name": "虚拟机成功启动"},
+                {"optionId": "2", "name": "启动失败"},
+            ],
+        )
+        result = ConversationService._format_interactive_request_content(event)
+        assert "1. 虚拟机成功启动" in result
+        assert "2. 启动失败" in result
+
+
+# ---------- _format_interactive_response_content ----------
+
+class TestFormatInteractiveResponseContent:
+    """_format_interactive_response_content 静态方法测试"""
+
+    def test_selected_with_label(self):
+        """选项选择：优先用 optionLabel"""
+        result = ConversationService._format_interactive_response_content(
+            {"outcome": "selected", "optionId": "1", "optionLabel": "虚拟机成功启动，状态变为运行中"}
+        )
+        assert result == "[操作选择] 虚拟机成功启动，状态变为运行中"
+
+    def test_selected_fallback_to_id(self):
+        """选项选择：无 optionLabel 时降级到 optionId"""
+        result = ConversationService._format_interactive_response_content(
+            {"outcome": "selected", "optionId": "2"}
+        )
+        assert result == "[操作选择] 2"
+
+    def test_free_text(self):
+        """自由文本输入"""
+        result = ConversationService._format_interactive_response_content(
+            {"outcome": "free_text", "text": "内存已释放，节点恢复正常"}
+        )
+        assert result == "[补充输入] 内存已释放，节点恢复正常"
+
+    def test_unknown_outcome(self):
+        """未知 outcome 类型：回退到 JSON 序列化"""
+        result = ConversationService._format_interactive_response_content(
+            {"outcome": "custom", "data": "x"}
+        )
+        assert "[交互响应]" in result
+
+
+# ---------- submit_interactive_response 落库 ----------
+
+@pytest.mark.asyncio
+class TestSubmitInteractiveResponsePersist:
+    """submit_interactive_response 成功后落库到 message 表"""
+
+    async def test_user_message_saved_on_success(self, service, mock_repo):
+        """ACP 回传成功后，用户响应以 user 角色写入 message 表"""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.models.conversation import Conversation
+        from app.models.message import MessageRole
+
+        conv_id = uuid.uuid4()
+        case_id = "Q2024010100001"
+
+        # Mock BrainRouter + OpsAgentBrainAdapter
+        mock_adapter = AsyncMock()
+        mock_adapter.submit_acp_response = AsyncMock(return_value=True)
+        mock_router = MagicMock()
+        mock_router.get_ops_agent_adapter.return_value = mock_adapter
+
+        # Mock conversation 查询
+        mock_conv = MagicMock(spec=Conversation)
+        mock_conv.case_id = case_id
+        mock_repo.get_conversation = AsyncMock(return_value=mock_conv)
+        mock_repo.add_message = AsyncMock()
+
+        service._brain_router = mock_router
+
+        outcome = {"outcome": "selected", "optionId": "1", "optionLabel": "虚拟机成功启动"}
+        result = await service.submit_interactive_response(
+            conversation_id=conv_id,
+            request_id="req-abc",
+            acp_session_id="sess-abc",
+            outcome=outcome,
+        )
+
+        assert result is True
+
+        # 验证 add_message 被调用，且 role=user，content 包含选项文本
+        mock_repo.add_message.assert_called_once()
+        call_kwargs = mock_repo.add_message.call_args.kwargs
+        assert call_kwargs["role"] == MessageRole.user
+        assert "虚拟机成功启动" in call_kwargs["content"]
+        assert call_kwargs["conversation_id"] == conv_id
+        assert call_kwargs["case_id"] == case_id
+        assert call_kwargs["metadata"]["kind"] == "interactive_response"
+
+    async def test_no_message_on_adapter_unavailable(self, service, mock_repo):
+        """ops-agent 适配器不可用时：返回 False，不落库"""
+        mock_router = MagicMock()
+        mock_router.get_ops_agent_adapter.return_value = None
+        service._brain_router = mock_router
+        mock_repo.add_message = AsyncMock()
+
+        result = await service.submit_interactive_response(
+            conversation_id=uuid.uuid4(),
+            request_id="req-x",
+            acp_session_id="sess-x",
+            outcome={"outcome": "selected", "optionId": "1"},
+        )
+
+        assert result is False
+        mock_repo.add_message.assert_not_called()
+
