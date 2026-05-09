@@ -15,7 +15,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 > 2. 再写入对应分类文件
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：D-007**（旧格式延续：PIT-048）
+> **下一个可用编号：D-009**（旧格式延续：PIT-050）
 
 ---
 
@@ -25,7 +25,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 
 | 触发场景 | 读取文件 | 当前条目 |
 |---------|---------|---------|
-| 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039, PIT-046 |
+| 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039, PIT-046, D-008 |
 | 编写/审查 Shell/Makefile/CI 脚本 | [shell.md](shell.md) | PIT-001, PIT-002 |
 | K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移/ArgoCD | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001, D-002, D-003, D-004 |
 | ArgoCD 升级/多集群/PreSync SA/Redis EOF/PreSync Hook 镜像 | [k8s.md](k8s.md) | D-001, D-002, D-003, D-004, D-005 |
@@ -72,6 +72,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-005** | k8s.md | ArgoCD PreSync/PostSync Hook 需使用包含目标工具的镜像（kubectl/helm/aws CLI）|
 | **D-006** | k8s.md | GitHub PAT 失效导致 ghcr.io 镜像拉取失败（ImagePullBackOff）|
 | **D-007** | k8s.md | 公网 HTTP 页面访问 localhost 被 PNA 阻止，需启用 HTTPS |
+| **D-008** | network-service-check.md | Clash fake-ip-filter 缺失 AI API 域名（coding.dashscope.aliyuncs.com），Pod 内 AI 请求 ConnectTimeout |
 
 ---
 

@@ -385,3 +385,77 @@ k3s kubectl get pod -n hci-observability
 
 > 本节内容已迁移到 `debugging.md` **原则六**（K8s ConfigMap subPath + 应用层 schema 漂移）范畺，请在那里查阅。
 包含：现象描述、根因分析、快速修复命令、验证步骤、预防措施。
+
+---
+
+### D-008（PIT-049）：Clash fake-ip-filter 缺失 AI API 域名，Pod 内 AI 请求 ConnectTimeout
+
+**触发场景：** 前端选择 AI 助手（如 Qwen3.5-Plus、GLM-5 等）后报错 `大脑 [htp] 不可达: AI_TIMEOUT / ConnectTimeout`；或 ops-agent 报 `暂时不可用，已自动切换到备用助手`。
+
+**现象特征：**
+```
+# 前端错误
+服务异常：大脑 [htp] 不可达: {"code": "AI_TIMEOUT", "message": "AI 服务响应超时，请稍后重试", "detail": "type=ConnectTimeout, message="}
+
+# 系统提示
+[系统提示] ops-agent 暂时不可用，已自动切换到备用助手继续为您服务。
+```
+
+**根因：** Clash TUN 开启了 `enhanced-mode: fake-ip`，`dns-hijack: any:53` 劫持所有 DNS 查询。`coding.dashscope.aliyuncs.com`（DashScope AI API）不在 `fake-ip-filter` 中，被分配假 IP（`198.18.x.x`）。K3s Pod 内拿到假 IP 后：
+- GET 请求偶尔被 Clash TUN 路由处理，返回 404
+- POST 请求（聊天补全）直接 ConnectTimeout，触发 `AI_TIMEOUT`
+
+**快速诊断：**
+```bash
+# 从 Pod 内检查 DNS 解析（是否为 198.18.x.x）
+k3s kubectl exec -n hci-staging <conversation-service-pod> -- python3 -c "
+import socket
+print(socket.getaddrinfo('coding.dashscope.aliyuncs.com', 443)[0][4][0])
+"
+# 若输出 198.18.x.x → 命中此坑
+
+# 从宿主机验证 Clash 解析（应返回真实 IP）
+curl -s --unix-socket /tmp/verge/verge-mihomo.sock \
+  'http://localhost/dns/query?name=coding.dashscope.aliyuncs.com' | python3 -m json.tool | grep data
+```
+
+**修复：** 在 Clash Verge DNS 配置文件 `dns_config.yaml` 的 `fake-ip-filter` 中添加 `aliyuncs.com`：
+
+```bash
+# 编辑 Clash Verge DNS 配置
+vi /home/node/.local/share/io.github.clash-verge-rev.clash-verge-rev/dns_config.yaml
+```
+
+在 `fake-ip-filter:` 列表头部添加：
+```yaml
+fake-ip-filter:
+  - '+.aliyuncs.com'         # DashScope / 阿里云 AI API 全域名
+  - '+.dashscope.aliyuncs.com'
+  # ... 原有条目保留
+```
+
+```bash
+# 通过 Clash Unix socket API 热重载（无需重启 Clash）
+curl -s --unix-socket /tmp/verge/verge-mihomo.sock \
+  -X PUT http://localhost/configs \
+  -H "Content-Type: application/json" \
+  -d '{"force": false}'
+
+# 验证修复（Pod 内应返回真实 IP，不再是 198.18.x.x）
+k3s kubectl exec -n hci-staging <conversation-service-pod> -- python3 -c "
+import socket
+print(socket.getaddrinfo('coding.dashscope.aliyuncs.com', 443)[0][4][0])
+"
+```
+
+**重启持久性：** `dns_config.yaml` 是 Clash Verge 的 DNS 组件配置，重启后自动加载，修改持久。  
+**注意：** 若通过 Clash Verge GUI 修改 DNS 设置并保存，可能覆盖文件，需重新添加。
+
+**其他同类 AI API 域名（如遇到同样问题，按需添加）：**
+```yaml
+- '+.bigmodel.cn'            # 智谱 AI GLM
+- '+.openai.com'             # OpenAI
+- '+.anthropic.com'          # Anthropic Claude
+```
+
+**参见：** PIT-027（OpenClaw api.zai.chat Clash 劫持）、PIT-034（Pod fake-IP 连接失败）
