@@ -17,11 +17,16 @@ const {
   mockCaseGetById,
   mockConvCreate,
   mockConvGetMessages,
+  mockListByClient,
+  mockAssistantList,
 } = vi.hoisted(() => ({
   mockApiGet: vi.fn().mockResolvedValue({ data: [] }),
   mockCaseGetById: vi.fn(),
   mockConvCreate: vi.fn().mockResolvedValue({ data: { conversation_id: 'conv-test-1' } }),
   mockConvGetMessages: vi.fn().mockResolvedValue({ data: [] }),
+  // Bug 3 测试所需：让 initialize() 的真实 API 流程可被 per-test 控制
+  mockListByClient: vi.fn().mockResolvedValue({ data: [] }),
+  mockAssistantList: vi.fn(),
 }))
 
 // ── 模块 mock ─────────────────────────────────────────────────────────────
@@ -33,7 +38,7 @@ vi.mock('@hci/shared', () => ({
     delete: vi.fn().mockResolvedValue({ data: {} }),
   }),
   createCaseApi: () => ({
-    listByClient: vi.fn().mockResolvedValue({ data: [] }),
+    listByClient: mockListByClient,
     getById: mockCaseGetById,
     close: vi.fn().mockResolvedValue({}),
     create: vi.fn().mockResolvedValue({ data: { case_id: 'c-new', assistant_type: 'qwen', status: 'in_progress', client_id: 'test', title: 'test', description: null, created_at: '', updated_at: '', closed_at: null, trace_id: null } }),
@@ -43,15 +48,7 @@ vi.mock('@hci/shared', () => ({
     getMessages: mockConvGetMessages,
   }),
   createAssistantApi: () => ({
-    // 默认返回两个助手：qwen（默认可用）、ops-agent（当前不可用）
-    list: vi.fn().mockResolvedValue({
-      data: {
-        assistants: [],
-        show_selector: false,
-        default_assistant: null,
-        selector_mode: 'auto',
-      },
-    }),
+    list: mockAssistantList,
   }),
   createEnvironmentApi: () => ({
     getEnvironmentByCase: vi.fn().mockResolvedValue({ data: null }),
@@ -137,6 +134,11 @@ describe('chat store — 助手选择行为', () => {
     vi.clearAllMocks()
     // 默认 loadConversationHistory 返回空列表（无历史对话）
     mockApiGet.mockResolvedValue({ data: [] })
+    // 默认：无未关闭工单，空助手列表（各测试按需覆盖）
+    mockListByClient.mockResolvedValue({ data: [] })
+    mockAssistantList.mockResolvedValue({
+      data: { assistants: [], show_selector: false, default_assistant: null, selector_mode: 'auto' },
+    })
   })
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -298,6 +300,97 @@ describe('chat store — 助手选择行为', () => {
       ).resolves.not.toThrow()
 
       vi.unstubAllGlobals()
+    })
+  })
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Bug 3 修复：initialize() 找到 activeCase 后应立即恢复 selectedAssistant
+  //
+  // 修复前的执行路径：
+  //   initialize()
+  //     → fetchAssistants()  → selectedAssistant = 'qwen'（默认值）← 被设置
+  //     → listByClient()     → 找到 activeCase(ops-agent)
+  //     → pendingCase = activeCase; showPendingDialog = true  ← 仅此而已
+  //   此时 selectedAssistant 仍是 'qwen'！只有用户点"续上"才变成 ops-agent
+  //
+  // 修复后：initialize 在找到 activeCase 后直接调用 _restoreAssistantFromCase
+  // ═══════════════════════════════════════════════════════════════════════
+  describe('Bug 3 修复: initialize 立即恢复助手（无需用户点"续上"）', () => {
+    it('initialize: 找到 activeCase(ops-agent) 后 selectedAssistant 立即更新，不依赖 resumePendingCase', async () => {
+      // 助手列表：qwen 为默认，ops-agent 可用
+      mockAssistantList.mockResolvedValue({
+        data: {
+          assistants: [
+            makeAssistant('qwen', true, true),
+            makeAssistant('ops-agent', true),
+          ],
+          show_selector: true,
+          default_assistant: 'qwen',
+          selector_mode: 'auto',
+        },
+      })
+      // 存在未关闭工单，绑定 ops-agent
+      mockListByClient.mockResolvedValue({
+        data: [makeCase({ assistant_type: 'ops-agent', status: 'in_progress' })],
+      })
+
+      const { useChatStore } = await import('../chat')
+      const store = useChatStore()
+
+      await store.initialize()
+
+      // 修复前："qwen"（fetchAssistants 的默认值，点"续上"才变 ops-agent）
+      // 修复后：initialize 找到 activeCase 后立即调用 _restoreAssistantFromCase
+      expect(store.selectedAssistant).toBe('ops-agent')
+      // 弹框仍然弹出（让用户选择续上/关闭），行为不变
+      expect(store.showPendingDialog).toBe(true)
+      expect(store.pendingCase?.assistant_type).toBe('ops-agent')
+    })
+
+    it('initialize: activeCase 绑定的助手已从列表中移除时，降级到默认可用助手', async () => {
+      mockAssistantList.mockResolvedValue({
+        data: {
+          assistants: [makeAssistant('qwen', true, true)],
+          show_selector: false,
+          default_assistant: 'qwen',
+          selector_mode: 'auto',
+        },
+      })
+      // 工单绑定的 ops-agent 已从列表删除
+      mockListByClient.mockResolvedValue({
+        data: [makeCase({ assistant_type: 'ops-agent', status: 'in_progress' })],
+      })
+
+      const { useChatStore } = await import('../chat')
+      const store = useChatStore()
+
+      await store.initialize()
+
+      // ops-agent 不在列表中 → 降级到默认 qwen
+      expect(store.selectedAssistant).toBe('qwen')
+    })
+
+    it('initialize: 无 activeCase 时 selectedAssistant 保持 fetchAssistants 的默认值', async () => {
+      mockAssistantList.mockResolvedValue({
+        data: {
+          assistants: [
+            makeAssistant('qwen', true, true),
+            makeAssistant('ops-agent', true),
+          ],
+          show_selector: true,
+          default_assistant: 'qwen',
+          selector_mode: 'auto',
+        },
+      })
+      mockListByClient.mockResolvedValue({ data: [] })
+
+      const { useChatStore } = await import('../chat')
+      const store = useChatStore()
+
+      await store.initialize()
+
+      expect(store.selectedAssistant).toBe('qwen')
+      expect(store.showPendingDialog).toBe(false)
     })
   })
 })

@@ -231,6 +231,8 @@ export const useChatStore = defineStore('chat', () => {
       if (activeCase) {
         pendingCase.value = activeCase
         showPendingDialog.value = true
+        // 立即恢复工单绑定的助手选择（不等用户点"续上"，避免刷新后 top-bar 显示错误默认值）
+        _restoreAssistantFromCase(activeCase)
       } else {
         addSystemMessage('您好！我是 HCI 故障排查助手。请描述您遇到的问题，我会帮您创建工单并提供解决方案。')
       }
