@@ -4,12 +4,32 @@ OpenTelemetry 统一初始化模块
 """
 
 import os
+import re
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+
+def _parse_grpc_endpoint(raw: str) -> tuple[str, bool]:
+    """
+    将 OTLP env var 格式的端点（http://host:port 或 https://host:port）
+    转换为 gRPC channel 所需的 host:port 格式。
+
+    gRPC channel 不接受 http:// scheme，必须剥离；
+    通过 scheme 判断是否使用 insecure 通道：http → insecure，https → TLS。
+
+    Returns:
+        (endpoint_without_scheme, is_insecure)
+    """
+    scheme_match = re.match(r'^(https?)://', raw)
+    if scheme_match:
+        scheme = scheme_match.group(1)
+        return raw[len(scheme) + 3:], scheme == "http"
+    # 无 scheme：默认 insecure（集群内部通信）
+    return raw, True
 
 
 def init_telemetry(service_name: str):
@@ -29,13 +49,16 @@ def init_telemetry(service_name: str):
         3. 所有 Span 通过 OTLP gRPC 上报到 Tempo
         4. Logging 自动注入 trace_id / span_id
     """
-    # Tempo 的 OTLP gRPC 端点，默认为 Docker 内网
-    otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4317")
+    # 读取环境变量（OTEL_EXPORTER_OTLP_ENDPOINT 使用 http://host:port 格式）
+    # 必须 strip scheme 后再传给 gRPC channel，否则 grpc.insecure_channel() 会把
+    # "http:" 解析为主机名，导致 StatusCode.UNAVAILABLE（TCP 通但 gRPC 握手失败）
+    raw_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4317")
+    otlp_endpoint, is_insecure = _parse_grpc_endpoint(raw_endpoint)
 
     resource = Resource.create({SERVICE_NAME: service_name})
 
     provider = TracerProvider(resource=resource)
-    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True))
+    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=is_insecure))
     provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
 
