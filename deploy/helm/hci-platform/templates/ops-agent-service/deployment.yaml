@@ -9,6 +9,10 @@ metadata:
 spec:
   replicas: 1
   revisionHistoryLimit: 3
+  {{- with .Values.opsAgent.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "hci.selectorLabels" (dict "name" "ops-agent-service" "Release" .Release) | nindent 6 }}
