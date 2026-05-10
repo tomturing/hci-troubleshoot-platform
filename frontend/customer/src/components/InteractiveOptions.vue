@@ -29,6 +29,8 @@ const props = defineProps<{
   selectedOptionId: string | null
   /** 正在提交中（显示 loading 状态） */
   submitting?: boolean
+  /** 强制禁用所有按钮（例如自由文本已提交，但没有选中任何选项 ID） */
+  forceDisabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -36,7 +38,7 @@ const emit = defineEmits<{
   select: [optionId: string, name: string]
 }>()
 
-const isSubmitted = computed(() => props.selectedOptionId !== null)
+const isSubmitted = computed(() => props.selectedOptionId !== null || props.forceDisabled)
 
 function handleClick(optionId: string, name: string) {
   if (isSubmitted.value || props.submitting) return
