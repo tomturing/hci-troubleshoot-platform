@@ -69,21 +69,14 @@
       />
     </template>
 
-    <!-- 选项列表 -->
-    <div v-if="props.event.options?.length" class="options-section">
-      <span class="field-label">可选回复</span>
-      <div class="options-list">
-        <el-button
-          v-for="opt in props.event.options"
-          :key="opt.optionId"
-          size="default"
-          @click="submitSelected(opt.optionId, opt.name)"
-          :loading="submitting"
-        >
-          <span class="option-id">{{ opt.optionId }}.</span> {{ opt.name }}
-        </el-button>
-      </div>
-    </div>
+    <!-- 选项列表（共用 InteractiveOptions 组件） -->
+    <InteractiveOptions
+      v-if="props.event.options?.length"
+      :options="props.event.options"
+      :selected-option-id="selectedOptionId"
+      :submitting="submitting"
+      @select="submitSelected"
+    />
 
     <!-- 自由文本输入 -->
     <div v-if="props.event.customInput" class="custom-input-section">
@@ -109,6 +102,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import InteractiveOptions from './InteractiveOptions.vue'
 
 /** metadata 字段的带可选字段接口（避免 strict TS 下 unknown 赋值错误） */
 export interface InteractiveRequestMetadata {
@@ -143,6 +137,8 @@ const emit = defineEmits<{
 const visible = ref(true)
 const submitting = ref(false)
 const customText = ref('')
+/** 已选中的选项 ID（提交成功后设置，用于高亮显示） */
+const selectedOptionId = ref<string | null>(null)
 
 /** _meta 展平字段（来自 BrainInteractiveRequest.metadata，含 route / operationGoal 等） */
 const meta = computed(() => props.event.metadata ?? {})
@@ -157,10 +153,12 @@ const feedbackPrompt = computed(() =>
 )
 
 async function submitSelected(optionId: string, optionName: string) {
-  await doSubmit(
+  const ok = await doSubmit(
     { outcome: 'selected', optionId, optionLabel: optionName },
     optionName,
   )
+  // 提交成功后记录已选 ID，选项组件展示蓝色高亮；对话框保持打开
+  if (ok) selectedOptionId.value = optionId
 }
 
 async function submitFreeText() {
@@ -172,7 +170,7 @@ async function submitFreeText() {
   )
 }
 
-async function doSubmit(outcome: Record<string, string>, _visibleReply: string) {
+async function doSubmit(outcome: Record<string, string>, _visibleReply: string): Promise<boolean> {
   submitting.value = true
   try {
     const resp = await fetch(`/api/conversations/${props.conversationId}/interactive-response`, {
@@ -188,14 +186,15 @@ async function doSubmit(outcome: Record<string, string>, _visibleReply: string) 
       const errBody = await resp.json().catch(() => ({}))
       console.warn('[InteractiveRequestCard] 提交失败:', resp.status, errBody)
       // 保留卡片，允许用户重试
-      return
+      return false
     }
-    // 仅在成功时关闭卡片
-    visible.value = false
+    // 成功：通知父组件，但不立即关闭对话框（保留选中状态供用户查看）
     emit('submitted')
+    return true
   } catch (e) {
     console.warn('[InteractiveRequestCard] 提交请求异常（网络错误）:', e)
     // 网络错误也保留卡片，允许用户重试
+    return false
   } finally {
     submitting.value = false
   }
@@ -253,12 +252,6 @@ async function doSubmit(outcome: Record<string, string>, _visibleReply: string) 
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 6px;
-}
-
-.option-id {
-  font-weight: 600;
-  margin-right: 2px;
-  color: #6366f1;
 }
 
 .custom-input-section {
