@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.10.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.9.0...v2.10.0) (2026-05-10)
+
+
+### ✨ 新功能
+
+* **custom-ui:** interactive_request 弹框改为对话气泡，命令块正常渲染 ([#264](https://github.com/tomturing/hci-troubleshoot-platform/issues/264)) ([25d0fb0](https://github.com/tomturing/hci-troubleshoot-platform/commit/25d0fb0e0f231fc9ece8559bd521f93081658dea))
+* **frontend:** 交互选项提交后保持显示，提取 InteractiveOptions 共用组件 ([#267](https://github.com/tomturing/hci-troubleshoot-platform/issues/267)) ([f8ef9f6](https://github.com/tomturing/hci-troubleshoot-platform/commit/f8ef9f65278767e18e7add34ca6d92584281dc6b))
+* **helm:** ops-agent Deployment 支持自定义滚动更新策略 ([#265](https://github.com/tomturing/hci-troubleshoot-platform/issues/265)) ([db99f72](https://github.com/tomturing/hci-troubleshoot-platform/commit/db99f7247f6a4f0bedcbcc34648b20fb7c356491))
+* **ops-agent:** interactive_request/response 全链路落库到 message 表 ([#262](https://github.com/tomturing/hci-troubleshoot-platform/issues/262)) ([515c05b](https://github.com/tomturing/hci-troubleshoot-platform/commit/515c05b1701889d00b40c1b606c529d989d013da))
+
+
+### 🐛 Bug 修复
+
+* 修复 OTLP gRPC 端点 scheme 处理问题 ([#266](https://github.com/tomturing/hci-troubleshoot-platform/issues/266)) ([f70dde0](https://github.com/tomturing/hci-troubleshoot-platform/commit/f70dde0e0337137315709fea701040f92855b73e))
+
 ## [2.9.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.8.0...v2.9.0) (2026-05-09)
 
 
