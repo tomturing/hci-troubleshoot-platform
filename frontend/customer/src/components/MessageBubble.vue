@@ -616,6 +616,7 @@ async function handleInteractiveFreeText() {
             v-if="interactiveEvent.options?.length"
             :options="interactiveEvent.options"
             :selected-option-id="selectedInteractiveOptionId"
+            :force-disabled="interactiveSubmitted"
             :submitting="interactiveSubmitting"
             @select="handleInteractiveOption"
           />
