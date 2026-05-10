@@ -4,6 +4,7 @@ import type { ChatMessage } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
 import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
 import CommandBlock from './CommandBlock.vue'
+import InteractiveOptions from './InteractiveOptions.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
 
@@ -402,6 +403,17 @@ const interactiveSubmitted = computed(() => {
   )
 })
 
+/** 已选中的选项 ID（从响应消息 metadata 读取，支持刷新后恢复高亮） */
+const selectedInteractiveOptionId = computed<string | null>(() => {
+  if (!interactiveEvent.value) return null
+  const msgIndex = chatStore.messages.findIndex(m => m.id === props.message.id)
+  if (msgIndex === -1) return null
+  const resp = chatStore.messages.slice(msgIndex + 1).find(
+    m => m.role === 'user' && m.metadata?.kind === 'interactive_response'
+  )
+  return (resp?.metadata?.selectedOptionId as string) ?? null
+})
+
 const interactiveSubmitting = ref(false)
 const interactiveFreeText = ref('')
 
@@ -424,13 +436,13 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
       }),
     })
     if (resp.ok) {
-      // 追加用户响应气泡
+      // 追加用户响应气泡（selectedOptionId 用于恢复已选高亮）
       chatStore.messages.push({
         id: `ir-resp-${Date.now()}`,
         role: 'user',
         content: `[操作选择] ${optionName}`,
         timestamp: new Date(),
-        metadata: { kind: 'interactive_response' },
+        metadata: { kind: 'interactive_response', selectedOptionId: optionId },
       })
       chatStore.clearInteractiveRequest()
     } else {
@@ -599,26 +611,16 @@ async function handleInteractiveFreeText() {
             </div>
           </template>
 
-          <!-- 选项按钮 -->
-          <div v-if="interactiveEvent.options?.length && !interactiveSubmitted" class="ir-options">
-            <span class="ir-label">可选回复</span>
-            <div class="ir-option-list">
-              <el-button
-                v-for="opt in interactiveEvent.options"
-                :key="opt.optionId"
-                size="default"
-                :loading="interactiveSubmitting"
-                @click="handleInteractiveOption(opt.optionId, opt.name)"
-              >
-                <span class="ir-opt-id">{{ opt.optionId }}.</span> {{ opt.name }}
-              </el-button>
-            </div>
-          </div>
+          <!-- 选项按钮（共用 InteractiveOptions 组件：提交后保留显示，已选蓝色，其余置灰） -->
+          <InteractiveOptions
+            v-if="interactiveEvent.options?.length"
+            :options="interactiveEvent.options"
+            :selected-option-id="selectedInteractiveOptionId"
+            :submitting="interactiveSubmitting"
+            @select="handleInteractiveOption"
+          />
 
-          <!-- 已提交后展示灰色提示 -->
-          <div v-if="interactiveSubmitted" class="ir-done">✓ 已提交选择</div>
-
-          <!-- 自由文本输入 -->
+          <!-- 自由文本输入（提交后隐藏） -->
           <div v-if="interactiveEvent.customInput && !interactiveSubmitted" class="ir-free-input">
             <span class="ir-label">补充信息（可选）</span>
             <el-input
@@ -1217,28 +1219,6 @@ async function handleInteractiveFreeText() {
 .ir-question {
   font-weight: 500;
   color: #303133;
-}
-
-.ir-options {
-  margin-top: 10px;
-}
-
-.ir-option-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 6px;
-}
-
-.ir-opt-id {
-  color: #909399;
-  margin-right: 2px;
-}
-
-.ir-done {
-  color: #67c23a;
-  font-size: 12px;
-  margin-top: 8px;
 }
 
 .ir-free-input {
