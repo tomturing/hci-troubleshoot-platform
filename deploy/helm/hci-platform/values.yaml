@@ -560,3 +560,9 @@ opsAgent:
     limits:
       cpu: "500m"
       memory: "512Mi"
+  # ops-web (Streamlit) NodePort Service 配置
+  # enabled: true 时创建独立的 NodePort Service 暴露 8501 端口
+  # 访问方式: http://<node-ip>:<nodePort>
+  opsWeb:
+    enabled: false
+    nodePort: 30791

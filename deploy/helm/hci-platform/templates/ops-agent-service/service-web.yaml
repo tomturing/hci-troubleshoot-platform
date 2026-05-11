@@ -1,0 +1,20 @@
+{{- if and .Values.opsAgent.enabled .Values.opsAgent.opsWeb.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: ops-agent-web
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "ops-agent-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+    app.kubernetes.io/component: ops-web
+spec:
+  type: NodePort
+  ports:
+    - port: 8501
+      targetPort: 8501
+      nodePort: {{ .Values.opsAgent.opsWeb.nodePort | default 30791 }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "ops-agent-service" "Release" .Release) | nindent 4 }}
+{{- end }}
