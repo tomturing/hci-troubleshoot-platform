@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import type { ChatMessage } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
 import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
+import { inferRiskLevel } from '@/utils/commandRisk'
 import CommandBlock from './CommandBlock.vue'
 import InteractiveOptions from './InteractiveOptions.vue'
 
@@ -73,6 +74,10 @@ interface ContentSegment {
   content: string
   language?: string
   commandIndex?: number
+  /** 命令风险等级（由 inferRiskLevel 计算） */
+  riskLevel?: 'none' | 'readonly' | 'caution' | 'danger'
+  /** 是否为消息中第一个命令块 */
+  isFirstBlock?: boolean
 }
 
 import { marked } from 'marked'
@@ -112,6 +117,8 @@ const contentSegments = computed<ContentSegment[]>(() => {
           content: cmd,
           language: token.lang,
           commandIndex,
+          riskLevel: inferRiskLevel(cmd),
+          isFirstBlock: commandIndex === 0,
         })
         commandIndex += 1
       }
@@ -551,8 +558,10 @@ async function handleInteractiveFreeText() {
                   :command="segment.content"
                   :language="segment.language || 'bash'"
                   :description="generateDescription(segment.content)"
-                  :risk-level="detectRiskLevel(segment.content)"
+                  :risk-level="segment.riskLevel || 'none'"
                   :index="segment.commandIndex || 0"
+                  :is-first-block="segment.isFirstBlock || false"
+                  :block-id="segment.id"
                 />
               </template>
 

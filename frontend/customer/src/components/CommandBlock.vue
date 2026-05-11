@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
+import { canAutoExecute } from '@/utils/commandRisk'
 
 /**
  * 命令卡片组件
  * 将 AI 输出的命令渲染为独立卡片，提供发送到终端、复制等功能
+ * 支持自动执行模式：倒计时 3 秒后通过 SSH 自动执行
  */
 
 // 组件属性定义
@@ -19,6 +21,10 @@ interface Props {
   riskLevel?: 'none' | 'readonly' | 'caution' | 'danger'
   /** 命令索引 (用于追踪) */
   index?: number
+  /** 是否为消息中的第一个命令块（仅第一个触发自动执行） */
+  isFirstBlock?: boolean
+  /** 命令块 ID（传给 store 用于追踪） */
+  blockId?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -26,6 +32,8 @@ const props = withDefaults(defineProps<Props>(), {
   description: '',
   riskLevel: 'none',
   index: 0,
+  isFirstBlock: false,
+  blockId: '',
 })
 
 // 使用 chat store 获取终端相关状态
@@ -34,6 +42,13 @@ const chatStore = useChatStore()
 // 本地状态
 const isExpanded = ref(false) // 说明区域展开状态
 const isCopied = ref(false) // 复制状态
+
+// 自动执行状态机
+type AutoExecState = 'idle' | 'countdown' | 'executing' | 'success' | 'failed'
+const autoExecState = ref<AutoExecState>('idle')
+const countdown = ref(3)
+let countdownTimer: ReturnType<typeof setInterval> | null = null
+const execExitCode = ref<number | null>(null)
 
 /**
  * 风险提示标签映射
@@ -110,6 +125,83 @@ function sendToTerminal() {
   chatStore.sendCommandToTerminal(processedCommand.value)
 }
 
+// ===== 自动执行逻辑 =====
+
+/**
+ * 是否满足自动执行条件：
+ * - 是该消息的第一个命令块
+ * - 风险等级允许（canAutoExecute 判断）
+ * - SSH 已连接
+ * - 没有命令正在执行（串行锁）
+ */
+const shouldAutoExec = computed(() =>
+  props.isFirstBlock &&
+  canAutoExecute(props.riskLevel ?? 'none', chatStore.autoExecuteMode) &&
+  chatStore.sshConnectionState === 'connected' &&
+  !chatStore.isExecutingCommand,
+)
+
+/** 清理倒计时 */
+function clearCountdown() {
+  if (countdownTimer !== null) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+}
+
+/** 取消自动执行（用户手动取消） */
+function cancelAutoExec() {
+  clearCountdown()
+  autoExecState.value = 'idle'
+}
+
+/** 立即执行命令（不再等待倒计时） */
+async function doExecute() {
+  clearCountdown()
+  autoExecState.value = 'executing'
+  const id = props.blockId || `block-${props.index}`
+  try {
+    const result = await chatStore.executeCommandViaSSH(processedCommand.value, id)
+    execExitCode.value = result.exitCode
+    autoExecState.value = result.exitCode === 0 ? 'success' : 'failed'
+  } catch (_e) {
+    execExitCode.value = -1
+    autoExecState.value = 'failed'
+  }
+}
+
+/** 启动倒计时 */
+function startCountdown() {
+  if (autoExecState.value !== 'idle') return
+  countdown.value = 3
+  autoExecState.value = 'countdown'
+  countdownTimer = setInterval(() => {
+    countdown.value -= 1
+    if (countdown.value <= 0) {
+      clearCountdown()
+      doExecute()
+    }
+  }, 1000)
+}
+
+// 挂载后若条件满足则立即启动倒计时
+onMounted(() => {
+  if (shouldAutoExec.value) {
+    startCountdown()
+  }
+})
+
+// 若执行中途条件不再满足（如用户关闭自动执行），取消倒计时
+watch(shouldAutoExec, (val) => {
+  if (!val && autoExecState.value === 'countdown') {
+    cancelAutoExec()
+  }
+})
+
+onBeforeUnmount(() => {
+  clearCountdown()
+})
+
 /**
  * 切换说明展开状态
  */
@@ -159,7 +251,56 @@ function toggleDescription() {
           <el-icon><i class="el-icon-copy-document" /></el-icon>
           <span>{{ isCopied ? '已复制' : '复制' }}</span>
         </el-button>
+
+        <!-- 自动执行：倒计时状态 -->
+        <template v-if="autoExecState === 'countdown'">
+          <el-button
+            type="primary"
+            size="small"
+            class="auto-exec-btn countdown-btn"
+            @click="doExecute"
+          >
+            ▶ {{ countdown }}s 后自动执行
+          </el-button>
+          <el-button
+            size="small"
+            class="action-btn cancel-btn"
+            @click="cancelAutoExec"
+          >
+            ✕
+          </el-button>
+        </template>
+
+        <!-- 自动执行：执行中状态 -->
+        <template v-else-if="autoExecState === 'executing'">
+          <el-button
+            type="info"
+            size="small"
+            class="auto-exec-btn"
+            :loading="true"
+            disabled
+          >
+            执行中
+          </el-button>
+        </template>
+
+        <!-- 自动执行：成功状态 -->
+        <template v-else-if="autoExecState === 'success'">
+          <el-tag type="success" size="small" class="exec-result-tag">
+            ✓ 已执行 (exit {{ execExitCode }})
+          </el-tag>
+        </template>
+
+        <!-- 自动执行：失败状态 -->
+        <template v-else-if="autoExecState === 'failed'">
+          <el-tag type="danger" size="small" class="exec-result-tag">
+            ✗ 执行失败 (exit {{ execExitCode }})
+          </el-tag>
+        </template>
+
+        <!-- 默认：手动发送按钮 -->
         <el-button
+          v-else
           type="primary"
           size="small"
           class="send-btn"
@@ -274,6 +415,31 @@ function toggleDescription() {
 
 .send-btn :deep(.el-icon) {
   margin-right: 4px;
+}
+
+/* 自动执行按钮样式 */
+.auto-exec-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.countdown-btn {
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  from { opacity: 0.85; }
+  to { opacity: 1; }
+}
+
+.cancel-btn {
+  color: #f56c6c;
+  padding: 4px 6px;
+  min-width: unset;
+}
+
+.exec-result-tag {
+  font-size: 11px;
 }
 
 /* 命令内容区域 */
