@@ -88,6 +88,58 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 30
+        {{- if .Values.opsAgent.opsWeb.enabled }}
+        - name: ops-web
+          image: {{ .Values.opsAgent.image.repository }}:{{ .Values.opsAgent.image.tag | default "latest" }}
+          imagePullPolicy: {{ .Values.opsAgent.image.pullPolicy | default (ternary "Always" "IfNotPresent" (eq (.Values.opsAgent.image.tag | default "latest") "latest")) }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
+          ports:
+            - name: ops-web
+              containerPort: 8501
+              protocol: TCP
+          env:
+            - name: HOME
+              value: /app
+            - name: STREAMLIT_SERVER_PORT
+              value: "8501"
+            - name: STREAMLIT_SERVER_ADDRESS
+              value: "0.0.0.0"
+            - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+              value: "false"
+          command: ["/app/.venv/bin/python3", "/app/.venv/bin/streamlit", "run", "/app/ops_web/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+          workingDir: /app
+          volumeMounts:
+            - name: ops-config
+              mountPath: /app/ops_config.yaml
+              subPath: ops_config.yaml
+            - name: sop-data
+              mountPath: /app/data/case_sop_data/hci/sop
+            - name: trajectories
+              mountPath: /app/.trajectories
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: ops-web
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: ops-web
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+        {{- end }}
       volumes:
         - name: ops-config
           configMap:
