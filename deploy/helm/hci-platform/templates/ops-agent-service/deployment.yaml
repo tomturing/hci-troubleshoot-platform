@@ -36,6 +36,11 @@ spec:
             - name: http
               containerPort: 8006
               protocol: TCP
+            {{- if .Values.opsAgent.opsWeb.enabled }}
+            - name: ops-web
+              containerPort: 8501
+              protocol: TCP
+            {{- end }}
           env:
             - name: HOME
               value: /app
@@ -51,6 +56,56 @@ spec:
                 secretKeyRef:
                   name: hci-secrets
                   key: SCP_API_KEY
+            {{- if .Values.opsAgent.opsWeb.enabled }}
+            - name: STREAMLIT_SERVER_PORT
+              value: "8501"
+            - name: STREAMLIT_SERVER_ADDRESS
+              value: "0.0.0.0"
+            - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+              value: "false"
+            {{- end }}
+          {{- if .Values.opsAgent.opsWeb.enabled }}
+          # 单容器方案：同时启动 ops-server (后台) 和 ops-web (前台)
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # 信号处理：确保后台进程随容器终止
+              cleanup() {
+                echo "Received signal, stopping ops-server (PID $OPS_SERVER_PID)..."
+                kill $OPS_SERVER_PID 2>/dev/null
+                exit 0
+              }
+              trap cleanup SIGTERM SIGINT
+
+              # 启动 ops-server (后台)
+              /app/.venv/bin/python3 /app/.venv/bin/ops-server &
+              OPS_SERVER_PID=$!
+              echo "ops-server started with PID $OPS_SERVER_PID"
+
+              # 等待 ops-server 就绪
+              READY=false
+              for i in {1..30}; do
+                if curl -s http://localhost:8006/health > /dev/null 2>&1; then
+                  echo "ops-server is ready"
+                  READY=true
+                  break
+                fi
+                sleep 1
+              done
+
+              # ops-server 未就绪则快速失败
+              if [ "$READY" = false ]; then
+                echo "ERROR: ops-server failed to start within 30 seconds"
+                exit 1
+              fi
+
+              # 启动 ops-web (前台，作为主进程)
+              exec /app/.venv/bin/python3 /app/.venv/bin/streamlit run /app/ops_web/streamlit_app.py \
+                --server.port=8501 \
+                --server.address=0.0.0.0
+          workingDir: /app
+          {{- end }}
           volumeMounts:
             - name: ops-config
               mountPath: /app/ops_config.yaml
@@ -88,58 +143,6 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 30
-        {{- if .Values.opsAgent.opsWeb.enabled }}
-        - name: ops-web
-          image: {{ .Values.opsAgent.image.repository }}:{{ .Values.opsAgent.image.tag | default "latest" }}
-          imagePullPolicy: {{ .Values.opsAgent.image.pullPolicy | default (ternary "Always" "IfNotPresent" (eq (.Values.opsAgent.image.tag | default "latest") "latest")) }}
-          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
-          ports:
-            - name: ops-web
-              containerPort: 8501
-              protocol: TCP
-          env:
-            - name: HOME
-              value: /app
-            - name: STREAMLIT_SERVER_PORT
-              value: "8501"
-            - name: STREAMLIT_SERVER_ADDRESS
-              value: "0.0.0.0"
-            - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
-              value: "false"
-          command: ["/app/.venv/bin/python3", "/app/.venv/bin/streamlit", "run", "/app/ops_web/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
-          workingDir: /app
-          volumeMounts:
-            - name: ops-config
-              mountPath: /app/ops_config.yaml
-              subPath: ops_config.yaml
-            - name: sop-data
-              mountPath: /app/data/case_sop_data/hci/sop
-            - name: trajectories
-              mountPath: /app/.trajectories
-          resources:
-            requests:
-              cpu: "100m"
-              memory: "256Mi"
-            limits:
-              cpu: "500m"
-              memory: "512Mi"
-          livenessProbe:
-            httpGet:
-              path: /_stcore/health
-              port: ops-web
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 3
-          readinessProbe:
-            httpGet:
-              path: /_stcore/health
-              port: ops-web
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 3
-        {{- end }}
       volumes:
         - name: ops-config
           configMap:
