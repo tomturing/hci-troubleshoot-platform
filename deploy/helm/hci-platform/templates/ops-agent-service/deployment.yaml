@@ -70,19 +70,35 @@ spec:
             - /bin/bash
             - -c
             - |
+              # 信号处理：确保后台进程随容器终止
+              cleanup() {
+                echo "Received signal, stopping ops-server (PID $OPS_SERVER_PID)..."
+                kill $OPS_SERVER_PID 2>/dev/null
+                exit 0
+              }
+              trap cleanup SIGTERM SIGINT
+
               # 启动 ops-server (后台)
               /app/.venv/bin/python3 /app/.venv/bin/ops-server &
               OPS_SERVER_PID=$!
               echo "ops-server started with PID $OPS_SERVER_PID"
 
               # 等待 ops-server 就绪
+              READY=false
               for i in {1..30}; do
                 if curl -s http://localhost:8006/health > /dev/null 2>&1; then
                   echo "ops-server is ready"
+                  READY=true
                   break
                 fi
                 sleep 1
               done
+
+              # ops-server 未就绪则快速失败
+              if [ "$READY" = false ]; then
+                echo "ERROR: ops-server failed to start within 30 seconds"
+                exit 1
+              fi
 
               # 启动 ops-web (前台，作为主进程)
               exec /app/.venv/bin/python3 /app/.venv/bin/streamlit run /app/ops_web/streamlit_app.py \
