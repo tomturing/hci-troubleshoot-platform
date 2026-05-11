@@ -83,10 +83,10 @@ spec:
               OPS_SERVER_PID=$!
               echo "ops-server started with PID $OPS_SERVER_PID"
 
-              # 等待 ops-server 就绪
+              # 等待 ops-server 就绪（用 Python 代替 curl，镜像无 curl）
               READY=false
               for i in {1..30}; do
-                if curl -s http://localhost:8006/health > /dev/null 2>&1; then
+                if python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')" 2>/dev/null; then
                   echo "ops-server is ready"
                   READY=true
                   break
