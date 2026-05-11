@@ -37,6 +37,8 @@ spec:
               containerPort: 8006
               protocol: TCP
           env:
+            - name: HOME
+              value: /app
             - name: OPS_CONFIG_PATH
               value: /app/ops_config.yaml
             - name: HCI_TP_ENABLED
