@@ -165,8 +165,12 @@ export const useChatStore = defineStore('chat', () => {
   // === 命令自动执行状态 ===
   /** 自动执行模式，持久化到 localStorage */
   const AUTO_EXEC_MODE_KEY = 'hci_auto_execute_mode'
+  const AUTO_EXEC_VALID_MODES = ['off', 'safe-only', 'aggressive'] as const
+  const _storedMode = localStorage.getItem(AUTO_EXEC_MODE_KEY)
   const autoExecuteMode = ref<'off' | 'safe-only' | 'aggressive'>(
-    (localStorage.getItem(AUTO_EXEC_MODE_KEY) as 'off' | 'safe-only' | 'aggressive') || 'off',
+    AUTO_EXEC_VALID_MODES.includes(_storedMode as 'off' | 'safe-only' | 'aggressive')
+      ? (_storedMode as 'off' | 'safe-only' | 'aggressive')
+      : 'off',
   )
   /** 串行执行锁，保证同一时刻只有一条命令在执行 */
   const isExecutingCommand = ref(false)
@@ -817,11 +821,14 @@ export const useChatStore = defineStore('chat', () => {
 
       devLog('AUTO-EXEC', '发送命令', { command: command.substring(0, 50), marker })
 
+      // 记录发送前的 buffer 偏移，避免从历史输出中误匹配 marker
+      const bufferOffsetBeforeSend = sshOutputBuffer.value.length
+
       // 发送命令到 SSH 对端
       sshWebSocket.value.send(buildInputMessage(caseId, payload))
       autoExecCount.value++
 
-      // === 等待命令执行完成（marker 出现在 sshOutputBuffer） ===
+      // === 等待命令执行完成（marker 出现在 sshOutputBuffer 的新部分） ===
       const result = await new Promise<{ output: string; exitCode: number }>((resolve, reject) => {
         const timeoutMs = 30000
         const pollIntervalMs = 200
@@ -837,8 +844,9 @@ export const useChatStore = defineStore('chat', () => {
             return
           }
 
-          // 解析 marker
-          const parsed = parseBridgeCommandResult(sshOutputBuffer.value, marker)
+          // 仅在发送命令后的新输出中解析 marker，避免历史 buffer 污染
+          const newOutput = sshOutputBuffer.value.slice(bufferOffsetBeforeSend)
+          const parsed = parseBridgeCommandResult(newOutput, marker)
           if (parsed) {
             clearInterval(poll)
             resolve(parsed)

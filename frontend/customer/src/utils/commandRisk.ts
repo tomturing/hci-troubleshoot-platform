@@ -193,6 +193,15 @@ export function inferRiskLevel(command: string): RiskLevel {
   }
 
   // readonly（明确只读白名单）
+  // 注意：必须在 shell 元字符检测之后，防止 readonly 前缀命令通过管道/重定向绕过
+
+  // 含 shell 管道/重定向/命令替换等元字符时，无法保证无副作用
+  // 即使前缀在只读白名单中也升级为 caution（防止 curl ... | bash、echo x > file 等绕过）
+  if (/[|><;`]|\$\(|&&|\|\|/.test(cmd)) {
+    return 'caution'
+  }
+
+  // 只读（明确白名单）
   if (READONLY_PREFIXES.some((p) => cmdLower.startsWith(p.toLowerCase()))) {
     return 'readonly'
   }
@@ -214,7 +223,7 @@ export function canAutoExecute(
   if (mode === 'off') return false
   if (riskLevel === 'danger') return false // danger 永远不自动执行
   if (mode === 'safe-only') return riskLevel === 'none' || riskLevel === 'readonly'
-  if (mode === 'aggressive') return riskLevel !== 'danger'
+  if (mode === 'aggressive') return true // 'danger' 已在上方 return false，此处不可能为 danger
   return false
 }
 

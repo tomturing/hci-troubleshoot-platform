@@ -147,49 +147,6 @@ function splitCommands(code: string): string[] {
 }
 
 /**
- * 检测风险提示级别
- * 根据命令内容和上下文判断风险等级
- * @param command 命令内容
- * @returns 风险等级
- */
-function detectRiskLevel(command: string): 'none' | 'readonly' | 'caution' | 'danger' {
-  const lowerCmd = command.toLowerCase()
-
-  // 高危命令检测
-  const dangerPatterns = [
-    'rm -rf', 'rm -r /', 'dd if=/dev/zero', 'mkfs.', 'fdisk',
-    '> /dev/sda', 'shutdown', 'reboot', 'poweroff', 'init 0',
-    'systemctl stop', 'kill -9', ':(){ :|:& };:' // fork bomb
-  ]
-  if (dangerPatterns.some(p => lowerCmd.includes(p))) {
-    return 'danger'
-  }
-
-  // 谨慎命令检测
-  const cautionPatterns = [
-    'apt remove', 'yum remove', 'pip uninstall', 'npm uninstall',
-    'docker rm', 'docker rmi', 'kubectl delete',
-    'chmod 777', 'chown -R'
-  ]
-  if (cautionPatterns.some(p => lowerCmd.includes(p))) {
-    return 'caution'
-  }
-
-  // 只读命令检测
-  const readonlyPatterns = [
-    'cat ', 'ls ', 'ps ', 'top', 'htop', 'df ', 'du ', 'free',
-    'uptime', 'who', 'w', 'last', 'dmesg', 'journalctl',
-    'cat\t', 'ls\t', 'ps\t', 'df\t', 'du\t'
-  ]
-  if (readonlyPatterns.some(p => lowerCmd.startsWith(p) || lowerCmd.includes(' ' + p))) {
-    return 'readonly'
-  }
-
-  // 默认安全
-  return 'none'
-}
-
-/**
  * 生成命令描述
  * 基于命令内容生成简单说明
  * @param command 命令内容

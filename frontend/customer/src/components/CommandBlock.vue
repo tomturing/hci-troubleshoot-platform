@@ -30,7 +30,7 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   language: 'bash',
   description: '',
-  riskLevel: 'none',
+  riskLevel: 'caution', // 默认 caution，防止推断失败时命令被误判为可自动执行
   index: 0,
   isFirstBlock: false,
   blockId: '',
@@ -136,9 +136,10 @@ function sendToTerminal() {
  */
 const shouldAutoExec = computed(() =>
   props.isFirstBlock &&
-  canAutoExecute(props.riskLevel ?? 'none', chatStore.autoExecuteMode) &&
+  canAutoExecute(props.riskLevel ?? 'caution', chatStore.autoExecuteMode) &&
   chatStore.sshConnectionState === 'connected' &&
-  !chatStore.isExecutingCommand,
+  !chatStore.isExecutingCommand &&
+  chatStore.pageVisible, // 页面隐藏时不触发自动执行
 )
 
 /** 清理倒计时 */
