@@ -297,13 +297,34 @@ export const useChatStore = defineStore('chat', () => {
         conversationId.value = conv.conversation_id
         const msgRes = await conversationApi.getMessages(conv.conversation_id)
         const history: MessageResponse[] = msgRes.data
-        messages.value = history.map((m) => ({
-          id: m.message_id,
-          role: m.role as ChatMessage['role'],
-          content: m.content,
-          timestamp: new Date(m.created_at),
-          metadata: (m as any).metadata ?? undefined,
-        }))
+        messages.value = history.map((m) => {
+          const meta = (m as any).metadata ?? undefined
+          // 向后兼容：旧格式保存的 interactive_request metadata 是扁平结构（无 event 嵌套）
+          // 新格式已修复为 { kind, event: {...} }，此处做转换以兼容旧历史数据
+          const normalizedMeta =
+            meta?.kind === 'interactive_request' && !meta.event
+              ? {
+                  kind: 'interactive_request',
+                  event: {
+                    requestId: meta.requestId,
+                    acpSessionId: meta.acpSessionId,
+                    kind: meta.interactiveKind ?? 'info_request',
+                    title: meta.title ?? '',
+                    prompt: meta.prompt ?? m.content ?? '',
+                    options: meta.options ?? [],
+                    customInput: meta.customInput ?? true,
+                    metadata: meta.metadata ?? {},
+                  },
+                }
+              : meta
+          return {
+            id: m.message_id,
+            role: m.role as ChatMessage['role'],
+            content: m.content,
+            timestamp: new Date(m.created_at),
+            metadata: normalizedMeta,
+          }
+        })
       }
       if (messages.value.length === 0) {
         addSystemMessage(`工单 ${caseId} 已恢复。您可以继续描述问题，或输入 /close 关闭工单。`)
