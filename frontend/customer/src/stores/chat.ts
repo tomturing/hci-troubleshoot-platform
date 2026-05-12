@@ -491,6 +491,7 @@ export const useChatStore = defineStore('chat', () => {
       const decoder = new TextDecoder()
       let buffer = ''
 
+      let pendingEventType = 'message'
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -499,7 +500,6 @@ export const useChatStore = defineStore('chat', () => {
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
-        let pendingEventType = 'message'
         for (const line of lines) {
           if (line.startsWith('event: ')) {
             pendingEventType = line.slice(7).trim()
@@ -637,6 +637,7 @@ export const useChatStore = defineStore('chat', () => {
   async function resumeOpsAgentStream(): Promise<void> {
     if (!conversationId.value) return
 
+    isStreaming.value = true
     const aiMsgId = `ai-resume-${Date.now()}`
     messages.value.push({
       id: aiMsgId,
@@ -659,6 +660,7 @@ export const useChatStore = defineStore('chat', () => {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let pendingEventType = 'message'
 
       while (true) {
         const { done, value } = await reader.read()
@@ -668,7 +670,6 @@ export const useChatStore = defineStore('chat', () => {
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
-        let pendingEventType = 'message'
         for (const line of lines) {
           if (line.startsWith('event: ')) {
             pendingEventType = line.slice(7).trim()
@@ -736,6 +737,7 @@ export const useChatStore = defineStore('chat', () => {
           messages.value[idx] = { ...messages.value[idx], isStreaming: false }
         }
       }
+      isStreaming.value = false
     }
   }
 
