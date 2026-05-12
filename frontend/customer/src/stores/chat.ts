@@ -660,6 +660,7 @@ export const useChatStore = defineStore('chat', () => {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let pendingEventType = 'message'
 
       while (true) {
         const { done, value } = await reader.read()
@@ -669,7 +670,6 @@ export const useChatStore = defineStore('chat', () => {
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
-        let pendingEventType = 'message'
         for (const line of lines) {
           if (line.startsWith('event: ')) {
             pendingEventType = line.slice(7).trim()
