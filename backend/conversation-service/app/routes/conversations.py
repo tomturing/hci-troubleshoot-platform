@@ -390,7 +390,8 @@ async def resume_ops_agent_stream(
 
     若 ops-agent session 不存在或 active_prompt=False，立即返回 [DONE]。
 
-    响应格式与 POST /{id}/message 完全一致（data: {content} / event: interactive_request / [DONE]）。
+    响应格式与 POST /{id}/message 基本一致（data: {content} / event: interactive_request / [DONE]），
+    但异常时不产出 event: error 帧，而是记录日志后直接返回 [DONE]。
     """
     ai_content: list[str] = []
 

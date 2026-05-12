@@ -726,10 +726,8 @@ class ConversationService:
             if self.session_factory:
                 async with self.session_factory() as s:
                     conv = await ConversationRepository(s).get_conversation(conversation_id)
-                    case_id = conv.case_id if conv else ""
             else:
                 conv = await self.repository.get_conversation(conversation_id)
-                case_id = conv.case_id if conv else ""
         except Exception as e:
             logger.warning(
                 event="resume_stream_case_id_lookup_failed",
@@ -738,7 +736,14 @@ class ConversationService:
                 error=str(e),
             )
             return
-        await self.save_assistant_message(conversation_id, case_id, content)
+        if conv is None:
+            logger.warning(
+                event="resume_stream_conv_not_found",
+                message="resume 场景 conversation 不存在，跳过落库，避免写入孤儿记录",
+                conversation_id=str(conversation_id),
+            )
+            return
+        await self.save_assistant_message(conversation_id, conv.case_id, content)
 
     @staticmethod
     def _format_interactive_request_content(event: "BrainInteractiveRequest") -> str:

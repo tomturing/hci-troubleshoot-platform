@@ -199,7 +199,7 @@ class OpsAgentBrainAdapter:
         ops-agent 正在（或已经）处理续写，但前端 SSE 连接已断开。
         通过本方法重新连接 outbox，把续写内容传回前端。
 
-        若 session 不存在或 active_prompt=False 且 outbox 为空，
+        若 session 不存在，或 session 状态显示 activePrompt=False，
         立即返回（不挂起）。
         """
         headers: dict[str, str] = {"Content-Type": "application/json"}

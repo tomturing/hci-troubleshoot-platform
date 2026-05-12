@@ -624,6 +624,121 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+
+  /**
+   * 重新消费 ops-agent 续写事件流（不提交新 prompt）。
+   *
+   * 适用场景：
+   * 1. 用户提交 interactive_response 后立即调用，接收 ops-agent 的续写内容
+   * 2. 页面刷新后检测到 interactive_response 是最后一条用户消息且无后续 AI 回复时自动调用
+   *
+   * 若 ops-agent 中 active_prompt=False 或 session 不存在，后端立即返回 [DONE]，不挂起。
+   */
+  async function resumeOpsAgentStream(): Promise<void> {
+    if (!conversationId.value) return
+
+    const aiMsgId = `ai-resume-${Date.now()}`
+    messages.value.push({
+      id: aiMsgId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      isStreaming: true,
+    })
+
+    const getAiMsgIndex = () => messages.value.findIndex((m) => m.id === aiMsgId)
+
+    try {
+      const response = await fetch(`/api/conversations/${conversationId.value}/resume-stream`, {
+        headers: { 'X-Client-ID': clientId },
+      })
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        let pendingEventType = 'message'
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            pendingEventType = line.slice(7).trim()
+          } else if (line.startsWith('data: ')) {
+            const data = line.slice(6)
+            if (data === '[DONE]') {
+              pendingEventType = 'message'
+              continue
+            }
+            if (pendingEventType === 'interactive_request') {
+              try {
+                const event = JSON.parse(data)
+                const irEvent = {
+                  requestId: event.requestId,
+                  acpSessionId: event.acpSessionId,
+                  kind: event.kind,
+                  title: event.title ?? '',
+                  prompt: event.prompt ?? '',
+                  options: event.options ?? [],
+                  customInput: event.customInput ?? true,
+                  metadata: event.metadata ?? {},
+                }
+                const irMsgId = `ir-${event.requestId ?? Date.now()}`
+                messages.value.push({
+                  id: irMsgId,
+                  role: 'assistant',
+                  content: event.prompt ?? event.title ?? '',
+                  timestamp: new Date(),
+                  metadata: { kind: 'interactive_request', event: irEvent },
+                })
+                pendingInteractive.value = irEvent as any
+              } catch (e) {
+                console.warn('[resumeOpsAgentStream] interactive_request 解析失败:', e)
+              }
+            } else if (pendingEventType === 'stage_change') {
+              try {
+                const event = JSON.parse(data)
+                diagnosticStage.value = event.to ?? diagnosticStage.value
+              } catch { }
+            } else {
+              try {
+                const parsed = JSON.parse(data)
+                const idx2 = getAiMsgIndex()
+                if (idx2 !== -1) {
+                  messages.value[idx2].content += parsed.content || ''
+                }
+              } catch { }
+            }
+            pendingEventType = 'message'
+          } else if (line === '') {
+            pendingEventType = 'message'
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn('[resumeOpsAgentStream] 连接失败:', e)
+    } finally {
+      const idx = getAiMsgIndex()
+      if (idx !== -1) {
+        await nextTick()
+        // 若续写内容为空（ops-agent 未活跃），移除空占位气泡
+        if (!messages.value[idx].content) {
+          messages.value.splice(idx, 1)
+        } else {
+          messages.value[idx] = { ...messages.value[idx], isStreaming: false }
+        }
+      }
+    }
+  }
+
   async function handleCloseCase() {
     if (!currentCase.value) {
       addSystemMessage('当前没有活跃的工单。')
@@ -2150,6 +2265,7 @@ export const useChatStore = defineStore('chat', () => {
     // T-E7: ops-agent 交互请求卡片
     pendingInteractive,
     clearInteractiveRequest: () => { pendingInteractive.value = null },
+    resumeOpsAgentStream,
     initialize,
     sendMessage,
     startNewConversation,
