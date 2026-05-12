@@ -24,6 +24,7 @@ from typing import Any
 from app.adapters.htp_brain_adapter import HTPBrainAdapter
 from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
 from app.core.brain_port import BrainEvent, BrainTextChunk, BrainUnavailableError
+from app.services.ai_client import AIAssistantRegistry
 
 logger = logging.getLogger("brain-router")
 
@@ -51,9 +52,11 @@ class BrainRouter:
         self,
         htp_adapter: HTPBrainAdapter,
         ops_agent_adapter: OpsAgentBrainAdapter | None = None,
+        ai_registry: AIAssistantRegistry | None = None,
     ) -> None:
         self._htp = htp_adapter
         self._ops_agent = ops_agent_adapter
+        self._ai_registry = ai_registry
 
     def get_ops_agent_adapter(self) -> OpsAgentBrainAdapter | None:
         """返回 OpsAgentBrainAdapter 实例（供 interactive-response 提交使用）。"""
@@ -183,9 +186,22 @@ class BrainRouter:
         """
         # 向用户发送降级通知
         yield BrainTextChunk(content=notice)
-        # 降级到 htp 大脑（从环境变量读取降级模型，默认 glm-5；
-        # openclaw 已 disabled，不可硬编码为 "openclaw"）
-        fallback_type = os.environ.get("OPS_AGENT_FALLBACK_ASSISTANT_TYPE", "glm-5")
+        # 降级助手类型选取优先级：
+        # 1. 环境变量 OPS_AGENT_FALLBACK_ASSISTANT_TYPE 显式指定
+        # 2. ai_registry.get_default_type()：读 ConfigMap 中 is_default=true 的助手，或第一个已注册助手
+        # 3. 外部已如到此不再硬编码 glm-5
+        env_fallback = os.environ.get("OPS_AGENT_FALLBACK_ASSISTANT_TYPE", "")
+        if env_fallback:
+            fallback_type = env_fallback
+        elif self._ai_registry is not None:
+            fallback_type = self._ai_registry.get_default_type()
+        else:
+            fallback_type = "glm-4.7"  # 最后兼容兴属
+        logger.info(
+            "BrainRouter: 降级助手类型=%s session_id=%s",
+            fallback_type,
+            session_id,
+        )
         async for event in self._htp.process(
             session_id=session_id,
             messages=messages,

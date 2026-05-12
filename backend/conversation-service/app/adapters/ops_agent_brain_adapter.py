@@ -199,14 +199,17 @@ class OpsAgentBrainAdapter:
         ops-agent 正在（或已经）处理续写，但前端 SSE 连接已断开。
         通过本方法重新连接 outbox，把续写内容传回前端。
 
-        若 session 不存在，或 session 状态显示 activePrompt=False，
-        立即返回（不挂起）。
+        若 session 不存在（404），立即返回。
+        不依赖 activePrompt 状态——当 ops-agent 处于等待用户输入状态时
+        activePrompt=false，但 outbox 中可能仍有未消费的 interactive_request 事件；
+        跳过会导致事件永久丢失（竞态 Bug1 修复）。
+        ops-agent 的 GET /events 在 outbox 为空时立即关闭流，不会无限期挂起。
         """
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
-        # 检查 session 是否存在且有活跃 prompt，避免无意义的长连接
+        # 仅检查 session 是否存在，避免对不存在的 session 发起无效连接
         try:
             state_resp = await self._client.get(
                 f"{self._base_url}/acp/sessions/{session_id}/state",
@@ -219,12 +222,14 @@ class OpsAgentBrainAdapter:
                     session_id,
                 )
                 return
-            if state_resp.status_code == 200 and not state_resp.json().get("activePrompt"):
-                logger.info(
-                    "OpsAgentBrainAdapter.resume_event_stream: active_prompt=False，跳过 session_id=%s",
-                    session_id,
-                )
-                return
+            # 不再因 activePrompt=false 而跳过：ops-agent 在等待交互响应时
+            # activePrompt 为 false，但 outbox 中可能有未消费的 interactive_request
+            active_prompt = state_resp.status_code == 200 and state_resp.json().get("activePrompt", False)
+            logger.info(
+                "OpsAgentBrainAdapter.resume_event_stream: 检查状态 session_id=%s activePrompt=%s，继续消费 outbox",
+                session_id,
+                active_prompt,
+            )
         except Exception as exc:
             logger.warning(
                 "OpsAgentBrainAdapter.resume_event_stream: 检查状态失败，跳过 session_id=%s error=%s",
@@ -269,10 +274,13 @@ class OpsAgentBrainAdapter:
         """
         url = f"{self._base_url}/acp/sessions/{session_id}/prompt"
         try:
+            # httpx 的 delete() 不支持 json= 关键字参数，需用 content= 传序列化后的 JSON
             resp = await self._client.delete(
                 url,
-                json={"reason": "客户端恢复对话请求，取消挂起的 prompt", "wait_timeout": 5.0},
-                headers=headers,
+                content=json.dumps(
+                    {"reason": "客户端恢复对话请求，取消挂起的 prompt", "wait_timeout": 5.0}
+                ).encode(),
+                headers={**headers, "Content-Type": "application/json"},
             )
             if resp.status_code == 404:
                 # session 不存在，可能已自动清理，无需处理

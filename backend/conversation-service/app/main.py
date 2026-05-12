@@ -68,11 +68,13 @@ async def lifespan(app: FastAPI):
             default_model=model,
             assistant_type=assistant_type,
         )
-        ai_registry.register(assistant_type, client)
+        # is_default=true 的助手作为 ops-agent 降级时的首选
+        is_default = bool(cfg.get("is_default", False))
+        ai_registry.register(assistant_type, client, is_default=is_default)
 
     logger.info(
         event="ai_registry_initialized",
-        message=f"Registered AI assistants: {ai_registry.list_types()}"
+        message=f"Registered AI assistants: {ai_registry.list_types()}, default={ai_registry.get_default_type()}"
     )
 
     # 初始化 KB 客户端（可选：KB_ENABLED=false 时跳过）
@@ -106,7 +108,7 @@ async def lifespan(app: FastAPI):
     ops_adapter = None
     if settings.OPS_AGENT_ENABLED:
         ops_adapter = OpsAgentBrainAdapter(base_url=settings.OPS_AGENT_BASE_URL)
-    brain_router = BrainRouter(htp_adapter=htp_adapter, ops_agent_adapter=ops_adapter)
+    brain_router = BrainRouter(htp_adapter=htp_adapter, ops_agent_adapter=ops_adapter, ai_registry=ai_registry)
     app.state.brain_router = brain_router
 
     # 兼容现有路由注入方式

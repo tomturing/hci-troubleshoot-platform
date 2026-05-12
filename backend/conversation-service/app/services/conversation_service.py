@@ -510,11 +510,9 @@ class ConversationService:
                             "customInput": brain_event.custom_input,
                             "metadata": brain_event.metadata,
                         }, ensure_ascii=False)
-                        yield f"\x00event:interactive_request:{_ir_payload}\x00"
-                        # 将弹框内容以 assistant 角色异步落库，供历史记录查看
-                        # metadata 结构必须与前端 SSE 处理后的嵌套格式一致：
-                        # { kind: 'interactive_request', event: {...} }
-                        # 否则历史加载时 MessageBubble.vue 读取 metadata.event 会得到 undefined
+                        # Bug2 修复：先落库（create_task）再 yield 给前端
+                        # 原来顺序相反：yield 后若客户端断开 generator 被 cancel，
+                        # create_task 永远不会执行，导致 interactive_request 不落库。
                         _ir_content = self._format_interactive_request_content(brain_event)
                         asyncio.create_task(
                             self._save_message_bg(
@@ -537,6 +535,7 @@ class ConversationService:
                                 },
                             )
                         )
+                        yield f"\x00event:interactive_request:{_ir_payload}\x00"
             else:
                 # ── 原有路径：直接调用 ai_registry（BrainRouter 未注入时兜底）───
                 ai_client = self.ai_registry.get_client(resolved_assistant_type)
