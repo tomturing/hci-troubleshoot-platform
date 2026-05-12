@@ -240,12 +240,13 @@ class TestSubmitPromptWith409:
         async def mock_post(url, **kwargs):
             return _mock_request("POST", url, **kwargs)
 
-        async def mock_delete(url, **kwargs):
-            return _mock_request("DELETE", url, **kwargs)
+        async def mock_request(method, url, **kwargs):
+            """捕获 client.request() 调用（用于 DELETE terminate）。"""
+            return _mock_request(method, url, **kwargs)
 
         with (
             patch.object(adapter._client, "post", side_effect=mock_post),
-            patch.object(adapter._client, "delete", side_effect=mock_delete),
+            patch.object(adapter._client, "request", side_effect=mock_request),
         ):
             # 不应抛出异常
             await adapter._submit_prompt("sess-abc", [{"type": "text", "text": "继续"}], {})
@@ -268,7 +269,8 @@ class TestSubmitPromptWith409:
             resp.text = "Still busy"
             return resp
 
-        async def mock_delete(url, **kwargs):
+        async def mock_request(method, url, **kwargs):
+            """捕获 client.request('DELETE', ...) 调用。"""
             resp = MagicMock(spec=httpx.Response)
             resp.status_code = 200
             resp.json.return_value = {"activePrompt": True, "terminated": True, "drainedEvents": 0}
@@ -277,7 +279,7 @@ class TestSubmitPromptWith409:
 
         with (
             patch.object(adapter._client, "post", side_effect=mock_post),
-            patch.object(adapter._client, "delete", side_effect=mock_delete),
+            patch.object(adapter._client, "request", side_effect=mock_request),
         ):
             with pytest.raises(BrainUnavailableError) as exc_info:
                 await adapter._submit_prompt("sess-abc", [{"type": "text", "text": "继续"}], {})
@@ -388,21 +390,27 @@ class TestResumeEventStream:
 
 
 class TestTerminateAcpPromptJsonFix:
-    """Bug3 修复验证：_terminate_acp_prompt 使用 content= 而非 json=（httpx delete 不支持 json=）。"""
+    """Bug3 修复验证：_terminate_acp_prompt 使用 client.request("DELETE", ...) 而非 delete()。
+
+    httpx.AsyncClient 的 delete() 便捷方法不支持 body 参数（content=/json= 均会触发
+    TypeError），必须使用 client.request("DELETE", ...) 才能携带请求体。
+    """
 
     @pytest.mark.asyncio
-    async def test_terminate_uses_content_not_json_kwarg(self):
+    async def test_terminate_uses_request_delete_with_content(self):
         """
-        _terminate_acp_prompt 必须用 content= 传 JSON body，
-        不能用 json=（httpx.AsyncClient.delete() 不接受 json= 参数）。
+        _terminate_acp_prompt 必须通过 client.request("DELETE", ...) 传 JSON body，
+        不能通过 delete() 便捷方法（不支持 body 参数）。
 
-        验证：mock delete 成功收到调用，且 kwargs 中没有 json= 键。
+        验证：实际调用的是 request()，method 为 DELETE，且 content= 含合法 JSON body。
         """
         adapter = _make_adapter()
-        delete_kwargs_captured = {}
+        request_args_captured: list = []
+        request_kwargs_captured: dict = {}
 
-        async def mock_delete(url, **kwargs):
-            delete_kwargs_captured.update(kwargs)
+        async def mock_request(method, url, **kwargs):
+            request_args_captured.extend([method, url])
+            request_kwargs_captured.update(kwargs)
             resp = MagicMock(spec=httpx.Response)
             resp.status_code = 200
             resp.json.return_value = {
@@ -412,17 +420,20 @@ class TestTerminateAcpPromptJsonFix:
             }
             return resp
 
-        with patch.object(adapter._client, "delete", side_effect=mock_delete):
+        with patch.object(adapter._client, "request", side_effect=mock_request):
             await adapter._terminate_acp_prompt("sess-abc", {"Content-Type": "application/json"})
 
-        # 关键断言：不能有 json= 参数，必须有 content=
-        assert "json" not in delete_kwargs_captured, (
-            "httpx.AsyncClient.delete() 不支持 json= 参数，修复应使用 content="
+        # 必须通过 request() 方法，且 method 为 DELETE
+        assert request_args_captured[0] == "DELETE", (
+            "应使用 client.request('DELETE', ...) 而非 client.delete()，"
+            "delete() 不支持 body 参数"
         )
-        assert "content" in delete_kwargs_captured
-        # content 必须是合法 JSON bytes
+        # 必须有 content= 而非 json=
+        assert "json" not in request_kwargs_captured, "不能使用 json= 参数"
+        assert "content" in request_kwargs_captured, "必须使用 content= 传序列化 JSON"
+        # content 必须是合法 JSON bytes，包含 reason 和 wait_timeout
         import json as _json
-        payload = _json.loads(delete_kwargs_captured["content"])
+        payload = _json.loads(request_kwargs_captured["content"])
         assert "reason" in payload
         assert "wait_timeout" in payload
 

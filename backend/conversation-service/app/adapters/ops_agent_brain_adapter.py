@@ -274,8 +274,10 @@ class OpsAgentBrainAdapter:
         """
         url = f"{self._base_url}/acp/sessions/{session_id}/prompt"
         try:
-            # httpx 的 delete() 不支持 json= 关键字参数，需用 content= 传序列化后的 JSON
-            resp = await self._client.delete(
+            # httpx 的 delete() 便捷方法不支持 body 参数（content=/json= 均会报 TypeError）
+            # 必须使用 client.request("DELETE", ...) 才能传递请求体
+            resp = await self._client.request(
+                "DELETE",
                 url,
                 content=json.dumps(
                     {"reason": "客户端恢复对话请求，取消挂起的 prompt", "wait_timeout": 5.0}

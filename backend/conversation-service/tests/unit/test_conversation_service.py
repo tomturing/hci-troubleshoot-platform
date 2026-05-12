@@ -424,3 +424,69 @@ class TestBrainRouterInteractiveRequestMetadata:
         assert ev["customInput"] is True
         assert ev["metadata"]["question"] == "虚拟机具体出现了什么异常现象？"
 
+
+
+# ---------- Bug2 回归：generator 断连后 interactive_request 仍应落库 ----------
+
+@pytest.mark.asyncio
+class TestBug2InteractiveRequestSaveBeforeYield:
+    """Bug2 回归验证：create_task 在 yield 之前执行，客户端断连后落库任务仍被调度。"""
+
+    async def test_save_called_even_after_generator_closed(self, service, mock_repo):
+        """模拟客户端在收到 interactive_request 后立即断开（关闭 generator），
+        验证 _save_message_bg 对应的 create_task 已在 yield 前注册，落库不丢失。
+        """
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.core.brain_port import BrainInteractiveRequest
+
+        conv_id = uuid.uuid4()
+        case_id = "Q2024010100001"
+
+        ir_event = BrainInteractiveRequest(
+            request_id="req-cancel-001",
+            acp_session_id="sess-cancel-001",
+            kind="info_request",
+            title="断连场景测试",
+            prompt="哪台主机出现了异常？",
+            options=[{"optionId": "1", "name": "主机A"}],
+            custom_input=False,
+            metadata={},
+        )
+
+        async def fake_brain_process(*args, **kwargs):
+            yield ir_event
+
+        mock_router = MagicMock()
+        mock_router.process = fake_brain_process
+        service._brain_router = mock_router
+
+        mock_repo.add_message = AsyncMock()
+        mock_repo.get_messages = AsyncMock(return_value=[])
+        mock_repo.get_conversation = AsyncMock()
+        service.session_factory = None
+
+        # 消费 generator，收到 interactive_request 后立即关闭（模拟客户端断连）
+        gen = service.send_message_stream_only(
+            conversation_id=conv_id,
+            case_id=case_id,
+            content="触发 interactive_request",
+            assistant_type="ops-agent",
+        )
+        async for chunk in gen:
+            if "interactive_request" in chunk:
+                await gen.aclose()  # 模拟客户端断连
+                break
+
+        # 让 event loop 运行已调度的 create_task
+        await asyncio.sleep(0)
+
+        # Bug2 修复验证：create_task 在 yield 之前调用，即使 generator 已关闭任务仍被执行
+        ir_calls = [
+            call for call in mock_repo.add_message.call_args_list
+            if call.kwargs.get("metadata", {}).get("kind") == "interactive_request"
+        ]
+        assert len(ir_calls) >= 1, (
+            "Bug2 回归：generator 关闭后 interactive_request 落库任务应已注册并执行"
+        )

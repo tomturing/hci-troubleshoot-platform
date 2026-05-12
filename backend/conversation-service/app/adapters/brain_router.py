@@ -189,14 +189,14 @@ class BrainRouter:
         # 降级助手类型选取优先级：
         # 1. 环境变量 OPS_AGENT_FALLBACK_ASSISTANT_TYPE 显式指定
         # 2. ai_registry.get_default_type()：读 ConfigMap 中 is_default=true 的助手，或第一个已注册助手
-        # 3. 外部已如到此不再硬编码 glm-5
+        # 3. 无 ai_registry 注入时，使用固定 assistant_type 作为最终兜底
         env_fallback = os.environ.get("OPS_AGENT_FALLBACK_ASSISTANT_TYPE", "")
         if env_fallback:
             fallback_type = env_fallback
         elif self._ai_registry is not None:
             fallback_type = self._ai_registry.get_default_type()
         else:
-            fallback_type = "glm-4.7"  # 最后兼容兴属
+            fallback_type = "glm-4.7"  # 无 ai_registry 注入时的最终兜底 assistant_type
         logger.info(
             "BrainRouter: 降级助手类型=%s session_id=%s",
             fallback_type,
