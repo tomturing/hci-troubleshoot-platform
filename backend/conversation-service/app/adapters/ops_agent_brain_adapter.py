@@ -192,7 +192,7 @@ class OpsAgentBrainAdapter:
     async def resume_event_stream(
         self,
         session_id: str,
-    ) -> AsyncGenerator["BrainEvent", None]:
+    ) -> AsyncGenerator[BrainEvent, None]:
         """消费 ops-agent outbox 事件流，不提交新 prompt。
 
         适用场景：页面刷新后用户提交了 interactive response，
