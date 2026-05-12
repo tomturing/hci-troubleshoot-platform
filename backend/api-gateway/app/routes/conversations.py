@@ -20,7 +20,7 @@ logger = get_logger("gateway-conversations")
 CONVERSATION_SERVICE_URL = f"{settings.CONVERSATION_SERVICE_URL}/api/conversations"
 
 
-async def proxy_request_stream(method: str, path: str, payload: dict, headers: dict):
+async def proxy_request_stream(method: str, path: str, payload: dict | None, headers: dict):
     """Proxy request with response streaming (SSE)"""
     # SSE 场景下，默认 httpx timeout(约 5s) 很容易触发 ReadTimeout，且 str(e) 可能为空。
     # 这里禁用超时，让上游按实际流式节奏输出。
@@ -29,7 +29,11 @@ async def proxy_request_stream(method: str, path: str, payload: dict, headers: d
 
     async def stream_generator():
         try:
-            async with client.stream(method, url, json=payload, headers=headers) as response:
+            # GET 请求不传 json body，避免部分服务端拒绝带 body 的 GET
+            stream_kwargs = {"headers": headers}
+            if payload is not None:
+                stream_kwargs["json"] = payload
+            async with client.stream(method, url, **stream_kwargs) as response:
                 if response.status_code != 200:
                     # 使用 json.dumps 安全序列化错误信息
                     error_data = json.dumps(
@@ -135,3 +139,9 @@ async def submit_interactive_response(conversation_id: str, request: Request):
     payload = await request.json()
     response = await proxy_request("POST", f"/{conversation_id}/interactive-response", payload=payload)
     return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.get("/{conversation_id}/resume-stream")
+async def resume_stream(conversation_id: str, request: Request):
+    """重连 ops-agent outbox SSE 流（页面刷新后恢复会话续写）"""
+    return await proxy_request_stream("GET", f"/{conversation_id}/resume-stream", payload=None, headers={})
