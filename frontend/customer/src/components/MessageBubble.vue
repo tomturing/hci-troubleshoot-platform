@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import type { ChatMessage } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
 import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
+import { inferRiskLevel } from '@/utils/commandRisk'
 import CommandBlock from './CommandBlock.vue'
 import InteractiveOptions from './InteractiveOptions.vue'
 
@@ -73,6 +74,10 @@ interface ContentSegment {
   content: string
   language?: string
   commandIndex?: number
+  /** 命令风险等级（由 inferRiskLevel 计算） */
+  riskLevel?: 'none' | 'readonly' | 'caution' | 'danger'
+  /** 是否为消息中第一个命令块 */
+  isFirstBlock?: boolean
 }
 
 import { marked } from 'marked'
@@ -112,6 +117,8 @@ const contentSegments = computed<ContentSegment[]>(() => {
           content: cmd,
           language: token.lang,
           commandIndex,
+          riskLevel: inferRiskLevel(cmd),
+          isFirstBlock: commandIndex === 0,
         })
         commandIndex += 1
       }
@@ -137,49 +144,6 @@ const contentSegments = computed<ContentSegment[]>(() => {
 function splitCommands(code: string): string[] {
   const normalized = code.trimEnd()
   return normalized ? [normalized] : []
-}
-
-/**
- * 检测风险提示级别
- * 根据命令内容和上下文判断风险等级
- * @param command 命令内容
- * @returns 风险等级
- */
-function detectRiskLevel(command: string): 'none' | 'readonly' | 'caution' | 'danger' {
-  const lowerCmd = command.toLowerCase()
-
-  // 高危命令检测
-  const dangerPatterns = [
-    'rm -rf', 'rm -r /', 'dd if=/dev/zero', 'mkfs.', 'fdisk',
-    '> /dev/sda', 'shutdown', 'reboot', 'poweroff', 'init 0',
-    'systemctl stop', 'kill -9', ':(){ :|:& };:' // fork bomb
-  ]
-  if (dangerPatterns.some(p => lowerCmd.includes(p))) {
-    return 'danger'
-  }
-
-  // 谨慎命令检测
-  const cautionPatterns = [
-    'apt remove', 'yum remove', 'pip uninstall', 'npm uninstall',
-    'docker rm', 'docker rmi', 'kubectl delete',
-    'chmod 777', 'chown -R'
-  ]
-  if (cautionPatterns.some(p => lowerCmd.includes(p))) {
-    return 'caution'
-  }
-
-  // 只读命令检测
-  const readonlyPatterns = [
-    'cat ', 'ls ', 'ps ', 'top', 'htop', 'df ', 'du ', 'free',
-    'uptime', 'who', 'w', 'last', 'dmesg', 'journalctl',
-    'cat\t', 'ls\t', 'ps\t', 'df\t', 'du\t'
-  ]
-  if (readonlyPatterns.some(p => lowerCmd.startsWith(p) || lowerCmd.includes(' ' + p))) {
-    return 'readonly'
-  }
-
-  // 默认安全
-  return 'none'
 }
 
 /**
@@ -551,8 +515,10 @@ async function handleInteractiveFreeText() {
                   :command="segment.content"
                   :language="segment.language || 'bash'"
                   :description="generateDescription(segment.content)"
-                  :risk-level="detectRiskLevel(segment.content)"
+                  :risk-level="segment.riskLevel || 'none'"
                   :index="segment.commandIndex || 0"
+                  :is-first-block="segment.isFirstBlock || false"
+                  :block-id="segment.id"
                 />
               </template>
 

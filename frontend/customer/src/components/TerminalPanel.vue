@@ -377,6 +377,19 @@ onBeforeUnmount(() => {
         <el-tag v-else-if="isConnecting" size="small" type="warning" effect="plain">{{ connectingLabel }}</el-tag>
         <el-tag v-else-if="isError" size="small" type="danger" effect="plain">连接错误</el-tag>
         <el-tag v-else size="small" type="info" effect="plain">未连接</el-tag>
+        <!-- 自动执行模式开关（仅 SSH 已连接时显示） -->
+        <el-select
+          v-if="isConnected"
+          :model-value="chatStore.autoExecuteMode"
+          size="small"
+          class="auto-exec-select"
+          placeholder="自动执行"
+          @change="chatStore.setAutoExecuteMode($event)"
+        >
+          <el-option value="off" label="🔴 关闭自动执行" />
+          <el-option value="safe-only" label="🟢 安全模式" />
+          <el-option value="aggressive" label="🟠 激进模式 ⚠️" />
+        </el-select>
       </div>
       <div class="header-actions">
         <el-button text size="small" @click="copyLatestOutput">复制本次输出</el-button>
@@ -496,6 +509,22 @@ onBeforeUnmount(() => {
 
 .header-actions :deep(.el-button) {
   color: #9cdcfe;
+}
+
+/* 自动执行模式下拉 */
+.auto-exec-select {
+  width: 148px;
+}
+
+.auto-exec-select :deep(.el-input__wrapper) {
+  background: #3a3a3a;
+  box-shadow: none;
+  border: 1px solid #555;
+}
+
+.auto-exec-select :deep(.el-input__inner) {
+  color: #e0e0e0;
+  font-size: 12px;
 }
 
 .ssh-connect-area {

@@ -162,6 +162,33 @@ export const useChatStore = defineStore('chat', () => {
   // Bridge 运行状态
   const bridgeStatus = ref<BridgeStatus>('not_running')
 
+  // === 命令自动执行状态 ===
+  /** 自动执行模式，持久化到 localStorage */
+  const AUTO_EXEC_MODE_KEY = 'hci_auto_execute_mode'
+  const AUTO_EXEC_VALID_MODES = ['off', 'safe-only', 'aggressive'] as const
+  const _storedMode = localStorage.getItem(AUTO_EXEC_MODE_KEY)
+  const autoExecuteMode = ref<'off' | 'safe-only' | 'aggressive'>(
+    AUTO_EXEC_VALID_MODES.includes(_storedMode as 'off' | 'safe-only' | 'aggressive')
+      ? (_storedMode as 'off' | 'safe-only' | 'aggressive')
+      : 'off',
+  )
+  /** 串行执行锁，保证同一时刻只有一条命令在执行 */
+  const isExecutingCommand = ref(false)
+  /** 当前正在执行的命令信息（供 CommandBlock UI 展示） */
+  const executingCommand = ref<{
+    command: string
+    startedAt: Date
+    blockId: string
+  } | null>(null)
+  /** 单次会话自动执行计数（防止 Agent Loop） */
+  const autoExecCount = ref(0)
+  const AUTO_EXEC_MAX = 10
+  /** 连续失败计数（熔断保护） */
+  const consecutiveAutoFailures = ref(0)
+  const AUTO_EXEC_FAILURE_BREAKER = 3
+  /** 页面可见性（后台时暂停队列） */
+  const pageVisible = ref(true)
+
   // === 环境数据采集状态 ===
   const collectionState = ref<'idle' | 'collecting' | 'success' | 'error'>('idle')
   const collectionProgress = ref<Record<string, 'pending' | 'collecting' | 'done' | 'empty' | 'error'>>({})
@@ -242,6 +269,8 @@ export const useChatStore = defineStore('chat', () => {
       addSystemMessage('您好！我是 HCI 故障排查助手。请描述您遇到的问题。')
     }
     initialized.value = true
+    // 初始化页面可见性监听（用于自动执行后台暂停）
+    initPageVisibility()
   }
 
   // 从工单数据恢复助手选择；若助手类型已从列表中移除则降级到默认可用助手
@@ -742,7 +771,7 @@ export const useChatStore = defineStore('chat', () => {
     closeRatingCard()
   }
 
-  /** 发送命令到终端（CommandBlock 调用） */
+  /** 发送命令到终端（CommandBlock 手动模式调用，仅填充输入框） */
   function sendCommandToTerminal(command: string) {
     terminalInputCommand.value = command
     showTerminalSidebar.value = true
@@ -750,6 +779,167 @@ export const useChatStore = defineStore('chat', () => {
 
   function clearTerminalInput() {
     terminalInputCommand.value = ''
+  }
+
+  /**
+   * 设置自动执行模式并持久化
+   */
+  function setAutoExecuteMode(mode: 'off' | 'safe-only' | 'aggressive') {
+    autoExecuteMode.value = mode
+    localStorage.setItem(AUTO_EXEC_MODE_KEY, mode)
+    // 切换到 off 时重置计数器
+    if (mode === 'off') {
+      autoExecCount.value = 0
+      consecutiveAutoFailures.value = 0
+    }
+    devLog('AUTO-EXEC', `模式切换为 ${mode}`)
+  }
+
+  /**
+   * 自动执行命令（通过全局 sshWebSocket + marker 协议）
+   * 串行锁保证同一时刻只有一条命令在执行
+   * 命令完成后结果作为 role:user 消息注入对话并触发 AI 继续分析
+   *
+   * @param command 命令内容
+   * @param blockId CommandBlock 的唯一 ID（用于 UI 状态绑定）
+   * @returns 执行结果（output + exitCode）
+   */
+  async function executeCommandViaSSH(
+    command: string,
+    blockId: string,
+  ): Promise<{ output: string; exitCode: number }> {
+    // === 前提条件检查 ===
+    if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
+      throw new Error('SSH 未连接，无法自动执行命令')
+    }
+    if (!currentCase.value) {
+      throw new Error('无当前工单，无法自动执行命令')
+    }
+    if (isExecutingCommand.value) {
+      throw new Error('有命令正在执行中（串行锁），请稍后重试')
+    }
+
+    // === Agent Loop 防护：会话计数上限 ===
+    if (autoExecCount.value >= AUTO_EXEC_MAX) {
+      autoExecuteMode.value = 'off'
+      localStorage.setItem(AUTO_EXEC_MODE_KEY, 'off')
+      addSystemMessage(
+        `[自动执行] 本次会话已累计自动执行 ${AUTO_EXEC_MAX} 条命令，已自动关闭。如需继续，请手动重新开启。`,
+      )
+      throw new Error(`已达到单会话自动执行上限 (${AUTO_EXEC_MAX})`)
+    }
+
+    const caseId = currentCase.value.case_id
+
+    // === 获取串行锁 ===
+    isExecutingCommand.value = true
+    executingCommand.value = { command, startedAt: new Date(), blockId }
+
+    try {
+      // 构建 marker（用于从输出流中精确识别命令结束）
+      const marker = buildBridgeMarker(caseId, 'autoexec', autoExecCount.value)
+      const payload = buildBridgeCommandPayload(command, marker)
+
+      devLog('AUTO-EXEC', '发送命令', { command: command.substring(0, 50), marker })
+
+      // 记录发送前的 buffer 偏移，避免从历史输出中误匹配 marker
+      const bufferOffsetBeforeSend = sshOutputBuffer.value.length
+
+      // 发送命令到 SSH 对端
+      sshWebSocket.value.send(buildInputMessage(caseId, payload))
+      autoExecCount.value++
+
+      // === 等待命令执行完成（marker 出现在 sshOutputBuffer 的新部分） ===
+      const result = await new Promise<{ output: string; exitCode: number }>((resolve, reject) => {
+        const timeoutMs = 30000
+        const pollIntervalMs = 200
+        let elapsed = 0
+
+        const poll = setInterval(() => {
+          elapsed += pollIntervalMs
+
+          // 超时检查
+          if (elapsed >= timeoutMs) {
+            clearInterval(poll)
+            reject(new Error(`命令执行超时（${timeoutMs / 1000}s）`))
+            return
+          }
+
+          // 仅在发送命令后的新输出中解析 marker，避免历史 buffer 污染
+          const newOutput = sshOutputBuffer.value.slice(bufferOffsetBeforeSend)
+          const parsed = parseBridgeCommandResult(newOutput, marker)
+          if (parsed) {
+            clearInterval(poll)
+            resolve(parsed)
+          }
+        }, pollIntervalMs)
+      })
+
+      devLog('AUTO-EXEC', '命令执行完成', { exitCode: result.exitCode, outputLen: result.output.length })
+
+      // === 连续失败熔断 ===
+      if (result.exitCode !== 0) {
+        consecutiveAutoFailures.value++
+        if (consecutiveAutoFailures.value >= AUTO_EXEC_FAILURE_BREAKER) {
+          autoExecuteMode.value = 'off'
+          localStorage.setItem(AUTO_EXEC_MODE_KEY, 'off')
+          addSystemMessage(
+            `[自动执行] 连续 ${AUTO_EXEC_FAILURE_BREAKER} 次命令失败，已自动关闭。请检查命令后手动继续。`,
+          )
+        }
+      } else {
+        consecutiveAutoFailures.value = 0
+      }
+
+      // === 结果注入对话上下文 ===
+      const MAX_OUTPUT_LINES = 200
+      const outputLines = result.output.split('\n')
+      const truncated = outputLines.length > MAX_OUTPUT_LINES
+      const displayOutput = truncated
+        ? outputLines.slice(0, MAX_OUTPUT_LINES).join('\n') +
+          `\n（输出已截断，仅显示前 ${MAX_OUTPUT_LINES} 行，完整输出见终端历史）`
+        : result.output
+
+      const exitLabel = result.exitCode === 0 ? '' : `\n退出码: ${result.exitCode}`
+      const injectContent =
+        `[命令自动执行结果] #${autoExecCount.value}\n` +
+        `$ ${command}\n` +
+        exitLabel +
+        `\n\n${displayOutput}`
+
+      // 追加为 role:user 消息（AI 可感知）
+      addUserMessage(injectContent)
+
+      // 确保 conversation 存在再触发 AI 分析
+      if (!conversationId.value) {
+        await createConversation()
+      }
+      // 触发 AI 继续分析（不 await，让 AI 在后台响应）
+      streamAIResponse(injectContent).catch((e) => {
+        console.warn('[AUTO-EXEC] streamAIResponse 失败', e)
+      })
+
+      return result
+    } finally {
+      // === 释放串行锁 ===
+      isExecutingCommand.value = false
+      executingCommand.value = null
+    }
+  }
+
+  /**
+   * 初始化 Page Visibility 监听（页面后台时暂停自动执行命令队列）
+   * 在 store 初始化时调用
+   */
+  function initPageVisibility() {
+    document.addEventListener('visibilitychange', () => {
+      pageVisible.value = document.visibilityState === 'visible'
+      if (pageVisible.value) {
+        devLog('AUTO-EXEC', '页面恢复可见')
+      } else {
+        devLog('AUTO-EXEC', '页面切入后台，自动执行将暂停派发')
+      }
+    })
   }
 
   // 终端输出回填到助手输入框
@@ -1923,6 +2113,14 @@ export const useChatStore = defineStore('chat', () => {
     openTerminalSidebar,
     closeTerminalSidebar,
     checkAndOpenTerminal,
+    // 命令自动执行
+    autoExecuteMode,
+    isExecutingCommand,
+    executingCommand,
+    autoExecCount,
+    pageVisible,
+    setAutoExecuteMode,
+    executeCommandViaSSH,
     // Bridge 状态
     bridgeStatus,
     showBridgeDownload,
