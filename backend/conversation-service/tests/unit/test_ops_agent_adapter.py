@@ -10,6 +10,7 @@ import httpx
 import pytest
 from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
 from app.core.brain_port import BrainTextChunk, BrainUnavailableError
+from app.services.ai_client import AIAssistantRegistry
 
 # ── 构造辅助函数 ────────────────────────────────────────────────────────────
 
@@ -431,9 +432,6 @@ class TestAIRegistryDefaultType:
 
     def test_register_with_is_default_sets_default_type(self):
         """register(is_default=True) 应更新 default_type。"""
-        from unittest.mock import MagicMock
-        from app.services.ai_client import AIAssistantRegistry
-
         registry = AIAssistantRegistry()
         fake_client = MagicMock()
         registry.register("glm-4.7", fake_client, is_default=True)
@@ -441,9 +439,6 @@ class TestAIRegistryDefaultType:
 
     def test_get_default_type_falls_back_to_first_registered(self):
         """default_type 未注册时，get_default_type 返回第一个已注册类型。"""
-        from unittest.mock import MagicMock
-        from app.services.ai_client import AIAssistantRegistry
-
         registry = AIAssistantRegistry()
         # 默认 _default_type="openclaw"，不注册 openclaw，只注册 qwen3-max
         registry.register("qwen3-max", MagicMock())
@@ -452,9 +447,6 @@ class TestAIRegistryDefaultType:
 
     def test_set_default_type(self):
         """set_default_type 直接设置 default_type。"""
-        from unittest.mock import MagicMock
-        from app.services.ai_client import AIAssistantRegistry
-
         registry = AIAssistantRegistry()
         registry.register("qwen3-max", MagicMock())
         registry.register("glm-4.7", MagicMock())
