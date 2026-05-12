@@ -512,6 +512,9 @@ class ConversationService:
                         }, ensure_ascii=False)
                         yield f"\x00event:interactive_request:{_ir_payload}\x00"
                         # 将弹框内容以 assistant 角色异步落库，供历史记录查看
+                        # metadata 结构必须与前端 SSE 处理后的嵌套格式一致：
+                        # { kind: 'interactive_request', event: {...} }
+                        # 否则历史加载时 MessageBubble.vue 读取 metadata.event 会得到 undefined
                         _ir_content = self._format_interactive_request_content(brain_event)
                         asyncio.create_task(
                             self._save_message_bg(
@@ -521,10 +524,16 @@ class ConversationService:
                                 content=_ir_content,
                                 metadata={
                                     "kind": "interactive_request",
-                                    "requestId": brain_event.request_id,
-                                    "acpSessionId": brain_event.acp_session_id,
-                                    "interactiveKind": brain_event.kind,
-                                    "options": brain_event.options,
+                                    "event": {
+                                        "requestId": brain_event.request_id,
+                                        "acpSessionId": brain_event.acp_session_id,
+                                        "kind": brain_event.kind,
+                                        "title": brain_event.title,
+                                        "prompt": brain_event.prompt,
+                                        "options": brain_event.options,
+                                        "customInput": brain_event.custom_input,
+                                        "metadata": brain_event.metadata,
+                                    },
                                 },
                             )
                         )
