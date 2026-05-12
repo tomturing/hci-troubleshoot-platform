@@ -346,7 +346,7 @@ class TestBrainRouterInteractiveRequestMetadata:
         否则前端历史加载时 metadata.event 为 undefined，气泡渲染为空。
         """
         import asyncio
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from app.core.brain_port import BrainInteractiveRequest
 
