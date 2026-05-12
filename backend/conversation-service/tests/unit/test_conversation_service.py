@@ -331,3 +331,96 @@ class TestSubmitInteractiveResponsePersist:
         assert result is False
         mock_repo.add_message.assert_not_called()
 
+
+# ---------- BrainRouter 路径落库 metadata 结构验证 ----------
+
+@pytest.mark.asyncio
+class TestBrainRouterInteractiveRequestMetadata:
+    """验证 BrainRouter 路径下 BrainInteractiveRequest 落库时 metadata 含完整 event 嵌套结构"""
+
+    async def test_save_message_bg_contains_event_nested_structure(self, service, mock_repo):
+        """BrainRouter yield BrainInteractiveRequest 时，_save_message_bg 传入的
+        metadata 必须为 { kind, event: { requestId, acpSessionId, kind, title,
+        prompt, options, customInput, metadata } } 嵌套格式，
+        而非旧的扁平结构（interactiveKind/requestId 等顶层字段），
+        否则前端历史加载时 metadata.event 为 undefined，气泡渲染为空。
+        """
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from app.core.brain_port import BrainInteractiveRequest
+
+        conv_id = uuid.uuid4()
+        case_id = "Q2024010100001"
+
+        # 构造 BrainInteractiveRequest 事件
+        ir_event = BrainInteractiveRequest(
+            request_id="req-brain-001",
+            acp_session_id="sess-brain-001",
+            kind="info_request",
+            title="信息确认",
+            prompt="虚拟机具体出现了什么异常现象？",
+            options=[
+                {"optionId": "1", "name": "无法启动"},
+                {"optionId": "2", "name": "网络异常"},
+            ],
+            custom_input=True,
+            metadata={"question": "虚拟机具体出现了什么异常现象？", "context": "排障初始阶段"},
+        )
+
+        # Mock BrainRouter.process yield BrainInteractiveRequest
+        async def fake_brain_process(*args, **kwargs):
+            yield ir_event
+
+        mock_router = MagicMock()
+        mock_router.process = fake_brain_process
+        service._brain_router = mock_router
+
+        # Mock repo 基础依赖
+        mock_repo.add_message = AsyncMock()
+        mock_repo.get_messages = AsyncMock(return_value=[])
+        mock_repo.get_conversation = AsyncMock()
+
+        # session_factory 置 None 使 _save_message_bg 走 self.repository 路径
+        service.session_factory = None
+
+        # 收集流输出
+        chunks = []
+        async for chunk in service.send_message_stream_only(
+            conversation_id=conv_id,
+            case_id=case_id,
+            content="虚拟机有异常",
+            assistant_type="ops-agent",
+        ):
+            chunks.append(chunk)
+
+        # 等待后台 asyncio.create_task 完成
+        await asyncio.sleep(0)
+
+        # 找到 kind=interactive_request 的落库调用
+        ir_calls = [
+            call for call in mock_repo.add_message.call_args_list
+            if call.kwargs.get("metadata", {}).get("kind") == "interactive_request"
+        ]
+        assert len(ir_calls) >= 1, "_save_message_bg 应当以 kind=interactive_request 落库一次"
+
+        saved_metadata = ir_calls[0].kwargs["metadata"]
+
+        # 核心断言：必须有 event 嵌套，不能是旧的扁平结构
+        assert "event" in saved_metadata, (
+            "落库的 metadata 缺少 event 字段，前端历史加载时 metadata.event 将为 undefined"
+        )
+        assert "interactiveKind" not in saved_metadata, (
+            "落库的 metadata 不应包含旧版 interactiveKind 字段（扁平结构已废弃）"
+        )
+
+        ev = saved_metadata["event"]
+        assert ev["requestId"] == "req-brain-001"
+        assert ev["acpSessionId"] == "sess-brain-001"
+        assert ev["kind"] == "info_request"
+        assert ev["title"] == "信息确认"
+        assert ev["prompt"] == "虚拟机具体出现了什么异常现象？"
+        assert len(ev["options"]) == 2
+        assert ev["customInput"] is True
+        assert ev["metadata"]["question"] == "虚拟机具体出现了什么异常现象？"
+

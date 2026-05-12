@@ -355,6 +355,107 @@ describe('chat store — interactive_request 气泡行为', () => {
     })
 
     // ═══════════════════════════════════════════════════════════════════════
+    // loadConversationHistory — 旧格式 metadata 归一化（向后兼容）
+    // ═══════════════════════════════════════════════════════════════════
+    describe('loadConversationHistory — 旧格式 metadata 归一化', () => {
+        it('旧格式（扁平结构，无 event 字段）历史消息加载后 metadata.event 可用', async () => {
+            // 模拟后端返回旧格式扁平 metadata（修复前的存储格式）
+            const oldFlatMetadata = {
+                kind: 'interactive_request',
+                requestId: 'req-old-001',
+                acpSessionId: 'sess-old-001',
+                interactiveKind: 'info_request',
+                options: [
+                    { optionId: '1', name: '虚拟机无法启动' },
+                    { optionId: '2', name: '虚拟机网络异常' },
+                ],
+            }
+            mockApiGet.mockResolvedValueOnce({
+                data: [{ conversation_id: 'conv-hist-1' }],
+            })
+            mockConvGetMessages.mockResolvedValueOnce({
+                data: [
+                    {
+                        message_id: 'msg-old-1',
+                        role: 'assistant',
+                        content: '请确认异常现象',
+                        created_at: '2026-01-01T00:00:00Z',
+                        metadata: oldFlatMetadata,
+                    },
+                ],
+            })
+
+            const { useChatStore } = await import('../chat')
+            const store = useChatStore()
+            // 通过 pendingCase + resumePendingCase 触发 loadConversationHistory
+            store.pendingCase = makeCase() as any
+            await store.resumePendingCase()
+
+            const irMsg = store.messages.find(
+                (m) => m.metadata?.kind === 'interactive_request'
+            )
+            expect(irMsg).toBeDefined()
+
+            // 核心断言：旧格式已被归一化为嵌套格式，metadata.event 可用
+            const ev = irMsg?.metadata?.event as any
+            expect(ev).toBeDefined()
+            expect(ev.requestId).toBe('req-old-001')
+            expect(ev.acpSessionId).toBe('sess-old-001')
+            expect(ev.kind).toBe('info_request')
+            expect(ev.options).toHaveLength(2)
+            expect(ev.prompt).toBe('请确认异常现象') // 从 content 回填
+            expect(ev.customInput).toBe(true)
+        })
+
+        it('新格式（嵌套结构，含 event 字段）历史消息加载后 metadata.event 保持不变', async () => {
+            const newNestedMetadata = {
+                kind: 'interactive_request',
+                event: {
+                    requestId: 'req-new-001',
+                    acpSessionId: 'sess-new-001',
+                    kind: 'sop_step',
+                    title: 'SOP 确认',
+                    prompt: '请确认操作',
+                    options: [{ optionId: '1', name: '已完成' }],
+                    customInput: false,
+                    metadata: { route: '虚拟机 > 启动' },
+                },
+            }
+            mockApiGet.mockResolvedValueOnce({
+                data: [{ conversation_id: 'conv-hist-2' }],
+            })
+            mockConvGetMessages.mockResolvedValueOnce({
+                data: [
+                    {
+                        message_id: 'msg-new-1',
+                        role: 'assistant',
+                        content: '请确认操作',
+                        created_at: '2026-01-01T00:00:00Z',
+                        metadata: newNestedMetadata,
+                    },
+                ],
+            })
+
+            const { useChatStore } = await import('../chat')
+            const store = useChatStore()
+            store.pendingCase = makeCase() as any
+            await store.resumePendingCase()
+
+            const irMsg = store.messages.find(
+                (m) => m.metadata?.kind === 'interactive_request'
+            )
+            expect(irMsg).toBeDefined()
+
+            const ev = irMsg?.metadata?.event as any
+            expect(ev).toBeDefined()
+            expect(ev.requestId).toBe('req-new-001')
+            expect(ev.kind).toBe('sop_step')
+            expect(ev.customInput).toBe(false)
+            expect(ev.metadata?.route).toBe('虚拟机 > 启动')
+        })
+    })
+
+    // ═══════════════════════════════════════════════════════════════════════
     // startNewConversation / handleCloseCase 清除 pendingInteractive
     // ═══════════════════════════════════════════════════════════════════════
     describe('工单关闭/新建会话清除 pendingInteractive', () => {
