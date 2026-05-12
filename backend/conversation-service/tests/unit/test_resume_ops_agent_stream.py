@@ -12,7 +12,7 @@ import asyncio
 import os
 import sys
 import uuid
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,14 +29,9 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-from app.core.brain_port import (
-    BrainInteractiveRequest,
-    BrainStageUpdate,
-    BrainTextChunk,
-)
+from app.core.brain_port import BrainInteractiveRequest, BrainStageUpdate, BrainTextChunk
 from app.models.conversation import Conversation
 from app.services.conversation_service import ConversationService
-
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -103,10 +98,7 @@ class TestResumeOpsAgentStreamOutput:
         mock_router.get_ops_agent_adapter.return_value = ops_adapter
         service._brain_router = mock_router
 
-        if repo is not None:
-            mock_repo = repo
-        else:
-            mock_repo = service.repository
+        mock_repo = repo if repo is not None else service.repository
         mock_repo.get_conversation = AsyncMock(return_value=conv)
         mock_repo.add_message = AsyncMock()
         service.session_factory = None
