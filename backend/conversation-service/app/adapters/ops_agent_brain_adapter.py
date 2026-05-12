@@ -189,6 +189,56 @@ class OpsAgentBrainAdapter:
             ) from exc
         return True
 
+    async def resume_event_stream(
+        self,
+        session_id: str,
+    ) -> AsyncGenerator["BrainEvent", None]:
+        """消费 ops-agent outbox 事件流，不提交新 prompt。
+
+        适用场景：页面刷新后用户提交了 interactive response，
+        ops-agent 正在（或已经）处理续写，但前端 SSE 连接已断开。
+        通过本方法重新连接 outbox，把续写内容传回前端。
+
+        若 session 不存在或 active_prompt=False 且 outbox 为空，
+        立即返回（不挂起）。
+        """
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        # 检查 session 是否存在且有活跃 prompt，避免无意义的长连接
+        try:
+            state_resp = await self._client.get(
+                f"{self._base_url}/acp/sessions/{session_id}/state",
+                headers=headers,
+                timeout=5.0,
+            )
+            if state_resp.status_code == 404:
+                logger.info(
+                    "OpsAgentBrainAdapter.resume_event_stream: session 不存在，跳过 session_id=%s",
+                    session_id,
+                )
+                return
+            if state_resp.status_code == 200 and not state_resp.json().get("activePrompt"):
+                logger.info(
+                    "OpsAgentBrainAdapter.resume_event_stream: active_prompt=False，跳过 session_id=%s",
+                    session_id,
+                )
+                return
+        except Exception as exc:
+            logger.warning(
+                "OpsAgentBrainAdapter.resume_event_stream: 检查状态失败，跳过 session_id=%s error=%s",
+                session_id, exc,
+            )
+            return
+
+        logger.info(
+            "OpsAgentBrainAdapter.resume_event_stream: 开始消费事件 session_id=%s",
+            session_id,
+        )
+        async for event in self._consume_events(session_id, headers):
+            yield event
+
     # ── 私有方法 ──────────────────────────────────────────────────────────────
 
     async def _ensure_acp_session(self, session_id: str, headers: dict) -> None:

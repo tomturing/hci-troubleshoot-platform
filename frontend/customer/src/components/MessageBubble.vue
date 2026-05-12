@@ -409,6 +409,8 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
         metadata: { kind: 'interactive_response', selectedOptionId: optionId },
       })
       chatStore.clearInteractiveRequest()
+      // 立即接收 ops-agent 对该 interactive_response 的续写内容
+      chatStore.resumeOpsAgentStream()
     } else {
       console.warn('[interactive] 提交失败:', resp.status)
     }
@@ -446,6 +448,8 @@ async function handleInteractiveFreeText() {
       })
       interactiveFreeText.value = ''
       chatStore.clearInteractiveRequest()
+      // 立即接收 ops-agent 对该 interactive_response 的续写内容
+      chatStore.resumeOpsAgentStream()
     } else {
       console.warn('[interactive] 自由文本提交失败:', resp.status)
     }

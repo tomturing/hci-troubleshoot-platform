@@ -713,6 +713,33 @@ class ConversationService:
                 error=str(e),
             )
 
+    async def save_assistant_message_for_resume(
+        self, conversation_id: uuid.UUID, content: str
+    ) -> None:
+        """resume-stream 场景下保存 AI 续写回复（自动从 DB 查 case_id）。
+
+        由 BackgroundTasks 在 resume-stream 响应完成后调用。
+        """
+        if not content:
+            return
+        try:
+            if self.session_factory:
+                async with self.session_factory() as s:
+                    conv = await ConversationRepository(s).get_conversation(conversation_id)
+                    case_id = conv.case_id if conv else ""
+            else:
+                conv = await self.repository.get_conversation(conversation_id)
+                case_id = conv.case_id if conv else ""
+        except Exception as e:
+            logger.warning(
+                event="resume_stream_case_id_lookup_failed",
+                message="resume 场景 case_id 查询失败，跳过落库",
+                conversation_id=str(conversation_id),
+                error=str(e),
+            )
+            return
+        await self.save_assistant_message(conversation_id, case_id, content)
+
     @staticmethod
     def _format_interactive_request_content(event: "BrainInteractiveRequest") -> str:
         """将 BrainInteractiveRequest 格式化为可读 Markdown 文字，用于落库到 message.content。"""
@@ -1968,4 +1995,76 @@ class ConversationService:
                 error=str(_e),
             )
         return success
+
+    async def resume_ops_agent_stream(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> AsyncGenerator[str, None]:
+        """恢复消费 ops-agent 续写事件流（不提交新 prompt）。
+
+        适用场景：
+        - 用户提交 interactive_response 后，ops-agent 的续写事件需要传回前端
+        - 前端 SSE 连接因页面刷新而断开后重新接收事件
+
+        实现：
+        1. 通过 OpsAgentBrainAdapter.resume_event_stream() 消费 outbox
+        2. 将 BrainEvent 序列化为与 send_message_stream_only 相同的 SSE 格式
+        3. active_prompt=False 时立即返回，不挂起
+
+        Yields:
+            str: SSE 格式的文本/事件片段，与 send_message_stream_only 格式一致
+        """
+        import json as _json
+
+        if self._brain_router is None:
+            return
+
+        ops_adapter = self._brain_router.get_ops_agent_adapter()
+        if ops_adapter is None:
+            return
+
+        # 预查 case_id，供后续落库使用（interactive_request 需要关联 case）
+        _conv = await self.repository.get_conversation(conversation_id)
+        _case_id = _conv.case_id if _conv else ""
+
+        session_id = str(conversation_id)
+        async for brain_event in ops_adapter.resume_event_stream(session_id):
+            if isinstance(brain_event, BrainTextChunk) and brain_event.content:
+                yield brain_event.content
+            elif isinstance(brain_event, BrainInteractiveRequest):
+                _ir_payload = _json.dumps({
+                    "requestId": brain_event.request_id,
+                    "acpSessionId": brain_event.acp_session_id,
+                    "kind": brain_event.kind,
+                    "title": brain_event.title,
+                    "prompt": brain_event.prompt,
+                    "options": brain_event.options,
+                    "customInput": brain_event.custom_input,
+                    "metadata": brain_event.metadata,
+                }, ensure_ascii=False)
+                yield f"\x00event:interactive_request:{_ir_payload}\x00"
+                # 新的交互请求也需要落库
+                asyncio.create_task(
+                    self._save_message_bg(
+                        conversation_id=conversation_id,
+                        case_id=_case_id,
+                        role=MessageRole.assistant,
+                        content=self._format_interactive_request_content(brain_event),
+                        metadata={
+                            "kind": "interactive_request",
+                            "event": {
+                                "requestId": brain_event.request_id,
+                                "acpSessionId": brain_event.acp_session_id,
+                                "kind": brain_event.kind,
+                                "title": brain_event.title,
+                                "prompt": brain_event.prompt,
+                                "options": brain_event.options,
+                                "customInput": brain_event.custom_input,
+                                "metadata": brain_event.metadata,
+                            },
+                        },
+                    )
+                )
+            elif isinstance(brain_event, BrainStageUpdate):
+                yield f"\x00event:stage_change:{brain_event.stage}\x00"
 
