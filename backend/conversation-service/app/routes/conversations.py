@@ -371,3 +371,77 @@ async def submit_interactive_response(
             detail="OpsAgentBrainAdapter 不可用：ops-agent 未启用或 ACP 接口不可达",
         )
     return {"ok": True}
+
+
+# ── 恢复 ops-agent 事件流（不提交新 prompt）──────────────────────────────────
+
+@router.get("/{conversation_id}/resume-stream")
+async def resume_ops_agent_stream(
+    conversation_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    service: ConversationService = Depends(get_conversation_service),
+):
+    """恢复消费 ops-agent 续写事件流（不提交新 prompt，用于页面刷新后重接 SSE）。
+
+    典型场景：
+    - 用户提交了 interactive_response（选项或自由文本），ops-agent 开始续写
+    - 用户刷新页面，原 SSE 连接断开
+    - 前端提交 interactive_response 后调用本接口，重新接收续写内容
+
+    若 ops-agent session 不存在或 active_prompt=False，立即返回 [DONE]。
+
+    响应格式与 POST /{id}/message 基本一致（data: {content} / event: interactive_request / [DONE]），
+    但异常时不产出 event: error 帧，而是记录日志后直接返回 [DONE]。
+    """
+    ai_content: list[str] = []
+
+    async def event_generator():
+        try:
+            async for chunk in service.resume_ops_agent_stream(conversation_id):
+                if chunk:
+                    if chunk.startswith("\x00event:") and chunk.endswith("\x00"):
+                        inner = chunk[7:-1]
+                        parts = inner.split(":", 1)
+                        evt_type = parts[0]
+                        evt_data = parts[1] if len(parts) > 1 else ""
+                        if evt_type == "interactive_request":
+                            yield f"event: {evt_type}\ndata: {evt_data}\n\n"
+                        else:
+                            event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
+                            yield f"event: {evt_type}\ndata: {event_payload}\n\n"
+                        continue
+                    ai_content.append(chunk)
+                    encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)
+                    yield f"data: {encoded_chunk}\n\n"
+            # 续写内容落库（fire-and-forget）
+            if ai_content:
+                background_tasks.add_task(
+                    service.save_assistant_message_for_resume,
+                    conversation_id=conversation_id,
+                    content="".join(ai_content),
+                )
+        except asyncio.CancelledError:
+            if ai_content:
+                background_tasks.add_task(
+                    service.save_assistant_message_for_resume,
+                    conversation_id=conversation_id,
+                    content="".join(ai_content),
+                )
+            raise
+        except Exception as e:
+            logger.error(
+                event="resume_stream_error",
+                message="resume_ops_agent_stream 异常",
+                error_type=type(e).__name__,
+                error_message=str(e),
+                conversation_id=str(conversation_id),
+            )
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        background=background_tasks,
+    )
