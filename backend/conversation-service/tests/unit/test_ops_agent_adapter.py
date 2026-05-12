@@ -4,8 +4,9 @@ OpsAgentBrainAdapter._consume_events 单元测试
 覆盖 2026-05 修复：session/done 到达但无文本产出时触发 BrainUnavailableError（fallback）。
 """
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
 from app.core.brain_port import BrainTextChunk, BrainUnavailableError
@@ -205,9 +206,6 @@ class TestSubmitPromptWith409:
         覆盖场景：页面刷新后 session 有 active_prompt=True（等待 _ops/request_input），
         新消息到来时先终止旧 prompt 再重试，实现会话恢复而非降级。
         """
-        from unittest.mock import MagicMock
-        import httpx
-
         adapter = _make_adapter()
         call_sequence = []
 
@@ -261,9 +259,6 @@ class TestSubmitPromptWith409:
         terminate 后重试仍然失败（非 200/202）时应抛出 BrainUnavailableError，
         不再进一步重试（防止无限循环）。
         """
-        from unittest.mock import MagicMock
-        import httpx
-
         adapter = _make_adapter()
 
         async def mock_post(url, **kwargs):
