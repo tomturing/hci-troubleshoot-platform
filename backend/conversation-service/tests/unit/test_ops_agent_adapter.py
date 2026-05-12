@@ -189,3 +189,101 @@ class TestConsumeEvents:
 
         assert len(events) == 1
         assert events[0].content == "实际内容"
+
+
+class TestSubmitPromptWith409:
+    """_submit_prompt 409 Conflict 场景：terminate + retry 逻辑测试。"""
+
+    @pytest.mark.asyncio
+    async def test_409_triggers_terminate_then_retry_success(self):
+        """
+        _submit_prompt 收到 409 时应：
+        1. 调用 DELETE /acp/sessions/{id}/prompt（terminate + drain）
+        2. 重新 POST /acp/sessions/{id}/prompt
+        3. 新 prompt 202 → 正常完成，不触发 BrainUnavailableError
+
+        覆盖场景：页面刷新后 session 有 active_prompt=True（等待 _ops/request_input），
+        新消息到来时先终止旧 prompt 再重试，实现会话恢复而非降级。
+        """
+        from unittest.mock import MagicMock
+        import httpx
+
+        adapter = _make_adapter()
+        call_sequence = []
+
+        def _mock_request(method, url, **kwargs):
+            call_sequence.append((method, url))
+            resp = MagicMock(spec=httpx.Response)
+            if method == "POST" and "/prompt" in url:
+                if len([c for c in call_sequence if c[0] == "POST" and "/prompt" in c[1]]) == 1:
+                    # 第一次 POST → 409
+                    resp.status_code = 409
+                    resp.text = "A prompt is already running"
+                else:
+                    # 重试 POST → 202
+                    resp.status_code = 202
+                    resp.text = ""
+            elif method == "DELETE" and "/prompt" in url:
+                # DELETE（terminate） → 200
+                resp.status_code = 200
+                resp.json.return_value = {
+                    "activePrompt": True,
+                    "pendingRequestsCancelled": 1,
+                    "terminated": True,
+                    "drainedEvents": 2,
+                }
+                resp.text = ""
+            else:
+                resp.status_code = 500
+                resp.text = "Unexpected"
+            return resp
+
+        async def mock_post(url, **kwargs):
+            return _mock_request("POST", url, **kwargs)
+
+        async def mock_delete(url, **kwargs):
+            return _mock_request("DELETE", url, **kwargs)
+
+        with (
+            patch.object(adapter._client, "post", side_effect=mock_post),
+            patch.object(adapter._client, "delete", side_effect=mock_delete),
+        ):
+            # 不应抛出异常
+            await adapter._submit_prompt("sess-abc", [{"type": "text", "text": "继续"}], {})
+
+        # 验证调用顺序：POST(409) → DELETE(terminate) → POST(retry 202)
+        methods = [(m, "prompt" in u) for m, u in call_sequence]
+        assert methods == [("POST", True), ("DELETE", True), ("POST", True)]
+
+    @pytest.mark.asyncio
+    async def test_409_retry_also_fails_raises_unavailable(self):
+        """
+        terminate 后重试仍然失败（非 200/202）时应抛出 BrainUnavailableError，
+        不再进一步重试（防止无限循环）。
+        """
+        from unittest.mock import MagicMock
+        import httpx
+
+        adapter = _make_adapter()
+
+        async def mock_post(url, **kwargs):
+            resp = MagicMock(spec=httpx.Response)
+            resp.status_code = 409
+            resp.text = "Still busy"
+            return resp
+
+        async def mock_delete(url, **kwargs):
+            resp = MagicMock(spec=httpx.Response)
+            resp.status_code = 200
+            resp.json.return_value = {"activePrompt": True, "terminated": True, "drainedEvents": 0}
+            resp.text = ""
+            return resp
+
+        with (
+            patch.object(adapter._client, "post", side_effect=mock_post),
+            patch.object(adapter._client, "delete", side_effect=mock_delete),
+        ):
+            with pytest.raises(BrainUnavailableError) as exc_info:
+                await adapter._submit_prompt("sess-abc", [{"type": "text", "text": "继续"}], {})
+
+        assert "重试后仍失败" in str(exc_info.value)

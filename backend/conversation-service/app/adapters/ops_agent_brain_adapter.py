@@ -207,18 +207,81 @@ class OpsAgentBrainAdapter:
             resp.status_code,
         )
 
+    async def _terminate_acp_prompt(self, session_id: str, headers: dict) -> None:
+        """终止 ops-agent session 当前运行的 prompt，并清空 outbox。
+
+        页面刷新恢复场景：session 可能仍有旧 prompt 在等待 _ops/request_input 响应。
+        调用此方法取消旧 prompt（向 agent 返回 cancelled），并清空 outbox，
+        防止旧 session/done 事件污染随后新 prompt 的 SSE 流。
+
+        失败时仅记录警告，不抛出异常——后续 _submit_prompt 会再次尝试，
+        若真的无法恢复再触发 BrainUnavailableError。
+        """
+        url = f"{self._base_url}/acp/sessions/{session_id}/prompt"
+        try:
+            resp = await self._client.delete(
+                url,
+                json={"reason": "客户端恢复对话请求，取消挂起的 prompt", "wait_timeout": 5.0},
+                headers=headers,
+            )
+            if resp.status_code == 404:
+                # session 不存在，可能已自动清理，无需处理
+                logger.debug(
+                    "OpsAgentBrainAdapter: terminate_prompt session 不存在（404），继续重试 session_id=%s",
+                    session_id,
+                )
+                return
+            if resp.status_code == 200:
+                data = resp.json()
+                logger.info(
+                    "OpsAgentBrainAdapter: terminate_prompt 成功 session_id=%s "
+                    "activePrompt=%s pendingCancelled=%d drained=%d",
+                    session_id,
+                    data.get("activePrompt"),
+                    data.get("pendingRequestsCancelled", 0),
+                    data.get("drainedEvents", 0),
+                )
+            else:
+                logger.warning(
+                    "OpsAgentBrainAdapter: terminate_prompt 非预期状态 session_id=%s status=%d",
+                    session_id,
+                    resp.status_code,
+                )
+        except Exception as exc:
+            logger.warning(
+                "OpsAgentBrainAdapter: terminate_prompt 调用失败 session_id=%s error=%s（继续重试）",
+                session_id,
+                exc,
+            )
+
     async def _submit_prompt(
         self, session_id: str, prompt: list[dict], headers: dict
     ) -> None:
-        """向 ACP 会话提交 prompt（立即返回 202，Agent 后台执行）。"""
+        """向 ACP 会话提交 prompt（立即返回 202，Agent 后台执行）。
+
+        若收到 409（session 有旧 prompt 在运行），自动执行 terminate+retry：
+        1. 调用 DELETE /acp/sessions/{id}/prompt 终止旧 prompt 并清空 outbox
+        2. 重新提交新 prompt
+        此机制覆盖"页面刷新后 ops-agent session 仍等待 _ops/request_input"的恢复场景，
+        避免直接降级到备用助手。
+        """
         url = f"{self._base_url}/acp/sessions/{session_id}/prompt"
         resp = await self._client.post(url, json={"prompt": prompt}, headers=headers)
         if resp.status_code == 409:
-            # 该会话已有 prompt 在运行（理论上不应发生，因为 conversation_service 是串行的）
-            raise BrainUnavailableError(
-                brain_name="ops-agent",
-                reason="会话已有 prompt 正在运行（409 Conflict），请等待当前 prompt 完成",
+            # 会话已有 prompt 在运行（页面刷新恢复场景：agent 正在等待交互响应）
+            # 先终止旧 prompt（清空 outbox），再重试新 prompt
+            logger.info(
+                "OpsAgentBrainAdapter: session 有活跃 prompt（409），执行 terminate+retry session_id=%s",
+                session_id,
             )
+            await self._terminate_acp_prompt(session_id, headers)
+            resp = await self._client.post(url, json={"prompt": prompt}, headers=headers)
+            if resp.status_code not in (200, 202):
+                raise BrainUnavailableError(
+                    brain_name="ops-agent",
+                    reason=f"submit_prompt 重试后仍失败 HTTP {resp.status_code}: {resp.text[:200]}",
+                )
+            return
         if resp.status_code not in (200, 202):
             raise BrainUnavailableError(
                 brain_name="ops-agent",
