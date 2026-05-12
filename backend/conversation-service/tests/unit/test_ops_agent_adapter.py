@@ -10,6 +10,7 @@ import httpx
 import pytest
 from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
 from app.core.brain_port import BrainTextChunk, BrainUnavailableError
+from app.services.ai_client import AIAssistantRegistry
 
 # ── 构造辅助函数 ────────────────────────────────────────────────────────────
 
@@ -239,12 +240,13 @@ class TestSubmitPromptWith409:
         async def mock_post(url, **kwargs):
             return _mock_request("POST", url, **kwargs)
 
-        async def mock_delete(url, **kwargs):
-            return _mock_request("DELETE", url, **kwargs)
+        async def mock_request(method, url, **kwargs):
+            """捕获 client.request() 调用（用于 DELETE terminate）。"""
+            return _mock_request(method, url, **kwargs)
 
         with (
             patch.object(adapter._client, "post", side_effect=mock_post),
-            patch.object(adapter._client, "delete", side_effect=mock_delete),
+            patch.object(adapter._client, "request", side_effect=mock_request),
         ):
             # 不应抛出异常
             await adapter._submit_prompt("sess-abc", [{"type": "text", "text": "继续"}], {})
@@ -267,7 +269,8 @@ class TestSubmitPromptWith409:
             resp.text = "Still busy"
             return resp
 
-        async def mock_delete(url, **kwargs):
+        async def mock_request(method, url, **kwargs):
+            """捕获 client.request('DELETE', ...) 调用。"""
             resp = MagicMock(spec=httpx.Response)
             resp.status_code = 200
             resp.json.return_value = {"activePrompt": True, "terminated": True, "drainedEvents": 0}
@@ -276,9 +279,188 @@ class TestSubmitPromptWith409:
 
         with (
             patch.object(adapter._client, "post", side_effect=mock_post),
-            patch.object(adapter._client, "delete", side_effect=mock_delete),
+            patch.object(adapter._client, "request", side_effect=mock_request),
         ):
             with pytest.raises(BrainUnavailableError) as exc_info:
                 await adapter._submit_prompt("sess-abc", [{"type": "text", "text": "继续"}], {})
 
         assert "重试后仍失败" in str(exc_info.value)
+
+
+class TestResumeEventStream:
+    """resume_event_stream Bug1 修复验证：activePrompt=false 时不再跳过 outbox 消费。"""
+
+    def _make_state_resp(self, active_prompt: bool, status: int = 200) -> MagicMock:
+        """构造 GET /state 响应 mock（同步 MagicMock，与 httpx 实际行为一致）。"""
+        mock = MagicMock()
+        mock.status_code = status
+        mock.json.return_value = {"activePrompt": active_prompt}
+        return mock
+
+    @pytest.mark.asyncio
+    async def test_resume_skips_session_when_404(self):
+        """session 不存在（404）时，resume_event_stream 应立即返回（不消费）。"""
+        adapter = _make_adapter()
+        state_resp = self._make_state_resp(False, status=404)
+
+        with patch.object(adapter._client, "get", new=AsyncMock(return_value=state_resp)) as mock_get:
+            events = []
+            async for ev in adapter.resume_event_stream("sess-404"):
+                events.append(ev)
+
+        # 只有一次 GET state 调用，没有 GET events 调用
+        assert mock_get.call_count == 1
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_resume_consumes_outbox_even_when_active_prompt_false(self):
+        """
+        Bug1 修复验证：activePrompt=false 时（ops-agent 等待用户输入），
+        resume_event_stream 仍应连接 GET /events 消费 outbox 中残留的 interactive_request。
+
+        场景：用户选择选项 → 页面刷新 → ops-agent 产生新 interactive_request 并等待 →
+               activePrompt=false，但 outbox 有未消费事件 → 修复前：跳过 → 事件丢失
+                                                              → 修复后：消费成功
+        """
+        from app.core.brain_port import BrainInteractiveRequest
+
+        adapter = _make_adapter()
+        state_resp = self._make_state_resp(active_prompt=False)  # activePrompt=false
+
+        # outbox 中有一条 _ops/request_input 事件
+        ir_line = _sse_line({
+            "jsonrpc": "2.0",
+            "id": "req-abc",
+            "method": "_ops/request_input",
+            "params": {
+                "request": {
+                    "kind": "info_request",
+                    "title": "信息确认",
+                    "prompt": "具体是哪台主机？",
+                    "options": [{"optionId": "1", "name": "主机A"}],
+                    "customInput": True,
+                    "_meta": {},
+                }
+            },
+        })
+        mock_stream_resp = _make_mock_stream_resp([ir_line])
+
+        with (
+            patch.object(adapter._client, "get", new=AsyncMock(return_value=state_resp)),
+            patch.object(adapter._client, "stream") as mock_stream,
+        ):
+            mock_stream.return_value.__aenter__ = AsyncMock(return_value=mock_stream_resp)
+            mock_stream.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            events = []
+            async for ev in adapter.resume_event_stream("sess-xyz"):
+                events.append(ev)
+
+        # 修复后：应该消费到 BrainInteractiveRequest
+        assert len(events) == 1
+        assert isinstance(events[0], BrainInteractiveRequest)
+        assert events[0].prompt == "具体是哪台主机？"
+
+    @pytest.mark.asyncio
+    async def test_resume_consumes_when_active_prompt_true(self):
+        """activePrompt=true（ops-agent 正在生成）时，resume 同样正常消费。"""
+        adapter = _make_adapter()
+        state_resp = self._make_state_resp(active_prompt=True)
+
+        lines = [
+            _sse_line(_make_agent_message_chunk("续写内容来了")),
+            _sse_line(_make_session_done("end_turn")),
+        ]
+        mock_stream_resp = _make_mock_stream_resp(lines)
+
+        with (
+            patch.object(adapter._client, "get", new=AsyncMock(return_value=state_resp)),
+            patch.object(adapter._client, "stream") as mock_stream,
+        ):
+            mock_stream.return_value.__aenter__ = AsyncMock(return_value=mock_stream_resp)
+            mock_stream.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            events = []
+            async for ev in adapter.resume_event_stream("sess-abc"):
+                events.append(ev)
+
+        assert len(events) == 1
+        assert isinstance(events[0], BrainTextChunk)
+        assert events[0].content == "续写内容来了"
+
+
+class TestTerminateAcpPromptJsonFix:
+    """Bug3 修复验证：_terminate_acp_prompt 使用 client.request("DELETE", ...) 而非 delete()。
+
+    httpx.AsyncClient 的 delete() 便捷方法不支持 body 参数（content=/json= 均会触发
+    TypeError），必须使用 client.request("DELETE", ...) 才能携带请求体。
+    """
+
+    @pytest.mark.asyncio
+    async def test_terminate_uses_request_delete_with_content(self):
+        """
+        _terminate_acp_prompt 必须通过 client.request("DELETE", ...) 传 JSON body，
+        不能通过 delete() 便捷方法（不支持 body 参数）。
+
+        验证：实际调用的是 request()，method 为 DELETE，且 content= 含合法 JSON body。
+        """
+        adapter = _make_adapter()
+        request_args_captured: list = []
+        request_kwargs_captured: dict = {}
+
+        async def mock_request(method, url, **kwargs):
+            request_args_captured.extend([method, url])
+            request_kwargs_captured.update(kwargs)
+            resp = MagicMock(spec=httpx.Response)
+            resp.status_code = 200
+            resp.json.return_value = {
+                "activePrompt": False,
+                "pendingRequestsCancelled": 1,
+                "drainedEvents": 0,
+            }
+            return resp
+
+        with patch.object(adapter._client, "request", side_effect=mock_request):
+            await adapter._terminate_acp_prompt("sess-abc", {"Content-Type": "application/json"})
+
+        # 必须通过 request() 方法，且 method 为 DELETE
+        assert request_args_captured[0] == "DELETE", (
+            "应使用 client.request('DELETE', ...) 而非 client.delete()，"
+            "delete() 不支持 body 参数"
+        )
+        # 必须有 content= 而非 json=
+        assert "json" not in request_kwargs_captured, "不能使用 json= 参数"
+        assert "content" in request_kwargs_captured, "必须使用 content= 传序列化 JSON"
+        # content 必须是合法 JSON bytes，包含 reason 和 wait_timeout
+        import json as _json
+        payload = _json.loads(request_kwargs_captured["content"])
+        assert "reason" in payload
+        assert "wait_timeout" in payload
+
+
+class TestAIRegistryDefaultType:
+    """Bug4 修复验证：AIAssistantRegistry 支持动态 default_type。"""
+
+    def test_register_with_is_default_sets_default_type(self):
+        """register(is_default=True) 应更新 default_type。"""
+        registry = AIAssistantRegistry()
+        fake_client = MagicMock()
+        registry.register("glm-4.7", fake_client, is_default=True)
+        assert registry.get_default_type() == "glm-4.7"
+
+    def test_get_default_type_falls_back_to_first_registered(self):
+        """default_type 未注册时，get_default_type 返回第一个已注册类型。"""
+        registry = AIAssistantRegistry()
+        # 默认 _default_type="openclaw"，不注册 openclaw，只注册 qwen3-max
+        registry.register("qwen3-max", MagicMock())
+        # openclaw 未注册，应降级到 qwen3-max
+        assert registry.get_default_type() == "qwen3-max"
+
+    def test_set_default_type(self):
+        """set_default_type 直接设置 default_type。"""
+        registry = AIAssistantRegistry()
+        registry.register("qwen3-max", MagicMock())
+        registry.register("glm-4.7", MagicMock())
+        registry.set_default_type("glm-4.7")
+        assert registry.get_default_type() == "glm-4.7"
+

@@ -412,10 +412,25 @@ class AIAssistantRegistry:
         self._clients: dict[str, AIAssistantClient] = {}
         self._default_type: str = "openclaw"
 
-    def register(self, assistant_type: str, client: AIAssistantClient) -> None:
-        """注册AI助手客户端"""
+    def register(self, assistant_type: str, client: AIAssistantClient, *, is_default: bool = False) -> None:
+        """注册AI助手客户端。is_default=True 时将其设为降级首选助手。"""
         self._clients[assistant_type] = client
+        if is_default:
+            self._default_type = assistant_type
         logger.info(f"Registered AI assistant client: {assistant_type}")
+
+    def set_default_type(self, assistant_type: str) -> None:
+        """设置默认（降级）助手类型。"""
+        self._default_type = assistant_type
+
+    def get_default_type(self) -> str:
+        """返回当前默认助手类型，若默认类型未注册则返回第一个已注册的类型。"""
+        if self._default_type in self._clients:
+            return self._default_type
+        # 降级：取第一个注册的类型，避免硬编码 key 与实际注册不一致
+        if self._clients:
+            return next(iter(self._clients))
+        return self._default_type  # 注册表为空时保留原值（兜底，不会被正常使用）
 
     def get_client(self, assistant_type: str | None = None) -> AIAssistantClient | None:
         """获取指定类型的AI助手客户端"""
