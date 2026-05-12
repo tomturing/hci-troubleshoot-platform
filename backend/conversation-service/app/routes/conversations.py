@@ -436,7 +436,7 @@ async def resume_ops_agent_stream(
                 error_message=str(e),
                 conversation_id=str(conversation_id),
             )
-        finally:
+        else:
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(

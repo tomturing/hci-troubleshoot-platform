@@ -2030,7 +2030,13 @@ class ConversationService:
 
         # 预查 case_id，供后续落库使用（interactive_request 需要关联 case）
         _conv = await self.repository.get_conversation(conversation_id)
-        _case_id = _conv.case_id if _conv else ""
+        if _conv is None:
+            logger.warning(
+                event="resume_stream_conv_not_found",
+                message="resume_ops_agent_stream: conversation 不存在，跳过落库",
+                conversation_id=str(conversation_id),
+            )
+        _case_id = _conv.case_id if _conv else None
 
         session_id = str(conversation_id)
         async for brain_event in ops_adapter.resume_event_stream(session_id):
@@ -2048,28 +2054,29 @@ class ConversationService:
                     "metadata": brain_event.metadata,
                 }, ensure_ascii=False)
                 yield f"\x00event:interactive_request:{_ir_payload}\x00"
-                # 新的交互请求也需要落库
-                asyncio.create_task(
-                    self._save_message_bg(
-                        conversation_id=conversation_id,
-                        case_id=_case_id,
-                        role=MessageRole.assistant,
-                        content=self._format_interactive_request_content(brain_event),
-                        metadata={
-                            "kind": "interactive_request",
-                            "event": {
-                                "requestId": brain_event.request_id,
-                                "acpSessionId": brain_event.acp_session_id,
-                                "kind": brain_event.kind,
-                                "title": brain_event.title,
-                                "prompt": brain_event.prompt,
-                                "options": brain_event.options,
-                                "customInput": brain_event.custom_input,
-                                "metadata": brain_event.metadata,
+                # 新的交互请求也需要落库（conv 不存在时跳过，避免 case_id='' 脏数据）
+                if _case_id is not None:
+                    asyncio.create_task(
+                        self._save_message_bg(
+                            conversation_id=conversation_id,
+                            case_id=_case_id,
+                            role=MessageRole.assistant,
+                            content=self._format_interactive_request_content(brain_event),
+                            metadata={
+                                "kind": "interactive_request",
+                                "event": {
+                                    "requestId": brain_event.request_id,
+                                    "acpSessionId": brain_event.acp_session_id,
+                                    "kind": brain_event.kind,
+                                    "title": brain_event.title,
+                                    "prompt": brain_event.prompt,
+                                    "options": brain_event.options,
+                                    "customInput": brain_event.custom_input,
+                                    "metadata": brain_event.metadata,
+                                },
                             },
-                        },
+                        )
                     )
-                )
             elif isinstance(brain_event, BrainStageUpdate):
                 yield f"\x00event:stage_change:{brain_event.stage}\x00"
 
