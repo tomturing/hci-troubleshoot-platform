@@ -360,12 +360,15 @@ export const useChatStore = defineStore('chat', () => {
         // 说明 AI 正在思考/生成，刷新后需自动 resume-stream 接回流
         const isOpsAgent = selectedAssistant.value === 'ops-agent'
           || (conv as any).assistant_type === 'ops-agent'
+        // resumeScheduled：防止场景A/B同时满足条件时重复调度 resumeOpsAgentStream
+        let resumeScheduled = false
         if (isOpsAgent && messages.value.length > 0) {
           const lastMsg = messages.value[messages.value.length - 1]
           const lastMsgIsUserNormal = lastMsg.role === 'user'
             && (lastMsg.metadata as any)?.kind !== 'interactive_response'
           if (lastMsgIsUserNormal) {
             // AI 思考中刷新：自动重连 resume-stream
+            resumeScheduled = true
             nextTick().then(() => resumeOpsAgentStream())
           }
         }
@@ -396,8 +399,8 @@ export const useChatStore = defineStore('chat', () => {
               && msgsAfterIR.slice(lastIRResponseIdx + 1).some(
                 m => m.role === 'assistant' && m.metadata?.kind !== 'interactive_request'
               )
-            if (!hasSubsequentAIReply && lastIRResponseIdx >= 0) {
-              // ops-agent 续写事件尚未到达前端，页面稳定后自动重连
+            if (!hasSubsequentAIReply && lastIRResponseIdx >= 0 && !resumeScheduled) {
+              // ops-agent 续写事件尚未到达前端，页面稳定后自动重连（场景A未调度时才触发）
               nextTick().then(() => resumeOpsAgentStream())
             }
           }
@@ -684,6 +687,8 @@ export const useChatStore = defineStore('chat', () => {
    */
   async function resumeOpsAgentStream(): Promise<void> {
     if (!conversationId.value) return
+    // 防重入：isStreaming=true 时说明已有流在运行（场景A/B同时触发时去重）
+    if (isStreaming.value) return
 
     isStreaming.value = true
     const aiMsgId = `ai-resume-${Date.now()}`
