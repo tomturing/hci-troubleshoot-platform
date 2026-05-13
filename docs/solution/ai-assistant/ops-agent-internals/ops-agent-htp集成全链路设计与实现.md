@@ -931,4 +931,51 @@ EOF
 
 ---
 
+## 变更记录
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-05-13 | v1.1 | 修复进程重启后 LLM 上下文丢失（per-session trajectory_dir） | [2026-05-13-ops-agent刷新后上下文丢失根因分析与修复方案.md](../events/2026-05-13-ops-agent刷新后上下文丢失根因分析与修复方案.md) |
+
+---
+
+## 附录：进程重启后上下文恢复机制（2026-05-13 补充）
+
+### 问题背景
+
+ops-agent REST server 的 `ACPServer(...)` 构造时未传 `trajectory_file`，
+导致 `session_new` 始终以空 `llm_message_history` 初始化 `ACPSession`。
+进程重启（pod 重调度、服务更新）后 `_sessions` 内存字典清空，
+hci-platform 重建 session 时 ops-agent 失去全部诊断上下文，从步骤 1 重新开始。
+
+### 修复方案（per-session trajectory_dir）
+
+**ops-agent 侧**：`ACPSession` 新增 `trajectory_dir` 字段；`session_new` 接受该参数并用于：
+1. 加载历史：`load_latest_message_history(trajectory_dir)`
+2. 持久化：`_create_agent` 将 `trajectory_dir` 传给 `Agent`，`trajectory_recorder` 绑定到该路径
+
+**hci-platform 侧**：`OpsAgentBrainAdapter._ensure_acp_session` 在请求体中附带：
+```json
+{
+  "session_id": "<conversation_id>",
+  "trajectory_dir": "/data/ops-agent-trajectories/<conversation_id>"
+}
+```
+
+### 与 ops-web 机制的对比
+
+| 维度 | ops-web（修复参考） | hci REST（修复后） |
+|------|--------------------|--------------------|
+| trajectory 路径来源 | `ACPServer(trajectory_file=per_chat_dir)` | `session_new(trajectory_dir=per_conv_dir)` |
+| per-session 隔离 | ✅ 不同 `chat_id` 目录不同 | ✅ 不同 `conversation_id` 目录不同 |
+| 历史恢复触发点 | `session_new` | `session_new` |
+| ops-web 兼容性 | N/A（ops-web 自己的路径） | ✅ 不影响（参数可选，原有路径无改动） |
+
+### 部署要求
+
+生产环境 ops-agent pod 须将 `/data/ops-agent-trajectories` 挂载到 **PVC**。
+dev 环境可使用 `hostPath`（`kubectl rollout restart` 后仍能恢复，pod 重调度后丢失）。
+
+---
+
 *文档由 GitHub Copilot（Claude Sonnet 4.6）自动生成，基于 ops-agent `feature-hci` 及 hci-troubleshoot-platform `feature/ops-agent-interactive-ui` 分支实际代码整理。*

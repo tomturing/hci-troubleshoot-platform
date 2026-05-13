@@ -27,6 +27,29 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "ops-agent-service") | nindent 6 }}
+      # initContainer：修复 hostPath DirectoryOrCreate 创建的目录默认为 root:root 0755
+      # ops-agent 主容器以 runAsUser=1000 运行，无写入权限。此处以 root 身份 chown
+      # 注意：仅对 trajectory-data hostPath 卷做 chown，不影响其他挂载
+      initContainers:
+        - name: fix-trajectory-dir-permissions
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - chown -R 1000:1000 /data/ops-agent-trajectories
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+                - CHOWN
+              drop:
+                - ALL
+          volumeMounts:
+            - name: trajectory-data
+              mountPath: /data/ops-agent-trajectories
       containers:
         - name: ops-agent
           image: {{ .Values.opsAgent.image.repository }}:{{ .Values.opsAgent.image.tag | default "latest" }}
@@ -46,6 +69,10 @@ spec:
               value: /app
             - name: OPS_CONFIG_PATH
               value: /app/ops_config.yaml
+            # per-session trajectory 根目录（与 brain_adapter.py OPS_AGENT_TRAJECTORY_DIR 一致）
+            # 挂载到 hostPath 保证进程重启后历史不丢失（pod 重调度仍在同一节点时有效）
+            - name: OPS_AGENT_TRAJECTORY_DIR
+              value: /data/ops-agent-trajectories
             - name: HCI_TP_ENABLED
               value: "true"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -115,9 +142,13 @@ spec:
             # 数据更新：修改宿主机文件 + 重启 Pod
             - name: sop-data
               mountPath: /app/data/case_sop_data/hci/sop
-            # trajectories 目录（emptyDir 解决权限问题）
+            # trajectories 目录（emptyDir 解决权限问题，供 ops-web 使用）
             - name: trajectories
               mountPath: /app/.trajectories
+            # per-session trajectory 数据目录（HostPath 持久化，供 REST API 会话恢复使用）
+            # 对应 OPS_AGENT_TRAJECTORY_DIR 环境变量
+            - name: trajectory-data
+              mountPath: /data/ops-agent-trajectories
           resources:
             {{- (.Values.opsAgent.resources | default (dict "requests" (dict "cpu" "100m" "memory" "128Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | toYaml | nindent 12 }}
           livenessProbe:
@@ -155,4 +186,10 @@ spec:
             type: DirectoryOrCreate
         - name: trajectories
           emptyDir: {}
+        # per-session trajectory 数据持久化（HostPath 方案，与 sop-data 保持一致）
+        # pod 重启后仍在同一节点时可从磁盘恢复 LLM 消息历史
+        - name: trajectory-data
+          hostPath:
+            path: {{ .Values.opsAgent.trajectoryDataHostPath | default "/data/ops-agent-trajectories" }}
+            type: DirectoryOrCreate
 {{- end }}
