@@ -46,6 +46,10 @@ spec:
               value: /app
             - name: OPS_CONFIG_PATH
               value: /app/ops_config.yaml
+            # per-session trajectory 根目录（与 brain_adapter.py OPS_AGENT_TRAJECTORY_DIR 一致）
+            # 挂载到 hostPath 保证进程重启后历史不丢失（pod 重调度仍在同一节点时有效）
+            - name: OPS_AGENT_TRAJECTORY_DIR
+              value: /data/ops-agent-trajectories
             - name: HCI_TP_ENABLED
               value: "true"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -115,9 +119,13 @@ spec:
             # 数据更新：修改宿主机文件 + 重启 Pod
             - name: sop-data
               mountPath: /app/data/case_sop_data/hci/sop
-            # trajectories 目录（emptyDir 解决权限问题）
+            # trajectories 目录（emptyDir 解决权限问题，供 ops-web 使用）
             - name: trajectories
               mountPath: /app/.trajectories
+            # per-session trajectory 数据目录（HostPath 持久化，供 REST API 会话恢复使用）
+            # 对应 OPS_AGENT_TRAJECTORY_DIR 环境变量
+            - name: trajectory-data
+              mountPath: /data/ops-agent-trajectories
           resources:
             {{- (.Values.opsAgent.resources | default (dict "requests" (dict "cpu" "100m" "memory" "128Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | toYaml | nindent 12 }}
           livenessProbe:
@@ -155,4 +163,10 @@ spec:
             type: DirectoryOrCreate
         - name: trajectories
           emptyDir: {}
+        # per-session trajectory 数据持久化（HostPath 方案，与 sop-data 保持一致）
+        # pod 重启后仍在同一节点时可从磁盘恢复 LLM 消息历史
+        - name: trajectory-data
+          hostPath:
+            path: {{ .Values.opsAgent.trajectoryDataHostPath | default "/data/ops-agent-trajectories" }}
+            type: DirectoryOrCreate
 {{- end }}
