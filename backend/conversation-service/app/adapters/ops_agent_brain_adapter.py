@@ -59,6 +59,11 @@ class OpsAgentBrainAdapter:
         self._api_key = api_key or os.environ.get("OPS_AGENT_API_KEY")
         self._default_model = default_model
         _read_timeout = float(os.environ.get("OPS_AGENT_READ_TIMEOUT_SEC", "300.0"))
+        # per-session trajectory 根目录：ops-agent 将各 session 的 LLM 消息历史写入其中
+        # 挂载持久化存储（PVC / hostPath）到此路径，确保 ops-agent 重启后可恢复上下文
+        self._trajectory_base_dir = os.environ.get(
+            "OPS_AGENT_TRAJECTORY_DIR", "/data/ops-agent-trajectories"
+        )
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=_read_timeout, write=10.0, pool=10.0)
         )
@@ -247,9 +252,16 @@ class OpsAgentBrainAdapter:
     # ── 私有方法 ──────────────────────────────────────────────────────────────
 
     async def _ensure_acp_session(self, session_id: str, headers: dict) -> None:
-        """幂等创建 ACP 会话（ops-agent 已存在则直接返回）。"""
+        """幂等创建 ACP 会话（ops-agent 已存在则直接返回）。
+
+        传入 trajectory_dir 让 ops-agent 在进程重启后从磁盘恢复该 session 的
+        LLM 消息历史，避免重新从步骤1问"您遇到了什么问题"。
+        ops-agent 侧若 session 已在内存中则直接幂等返回，trajectory_dir 参数被忽略。
+        """
         url = f"{self._base_url}/acp/sessions"
-        payload = {"session_id": session_id}
+        # 使用 conversation_id 作为子目录名，确保 per-session 隔离
+        trajectory_dir = f"{self._trajectory_base_dir}/{session_id}"
+        payload = {"session_id": session_id, "trajectory_dir": trajectory_dir}
         resp = await self._client.post(url, json=payload, headers=headers)
         if resp.status_code not in (200, 201):
             raise BrainUnavailableError(
@@ -257,8 +269,9 @@ class OpsAgentBrainAdapter:
                 reason=f"session_new HTTP {resp.status_code}: {resp.text[:200]}",
             )
         logger.debug(
-            "OpsAgentBrainAdapter: ACP 会话就绪 session_id=%s status=%d",
+            "OpsAgentBrainAdapter: ACP 会话就绪 session_id=%s trajectory_dir=%s status=%d",
             session_id,
+            trajectory_dir,
             resp.status_code,
         )
 
