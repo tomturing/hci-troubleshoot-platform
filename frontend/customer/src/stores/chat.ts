@@ -354,6 +354,57 @@ export const useChatStore = defineStore('chat', () => {
             metadata: normalizedMeta,
           }
         })
+
+        // ── 场景A: ops-agent 生成中途刷新（activePrompt=True，无 interactive_request）──
+        // 判断：当前是 ops-agent 助手 + 最后一条消息是用户发送的普通消息 + 后面没有 AI 回复
+        // 说明 AI 正在思考/生成，刷新后需自动 resume-stream 接回流
+        const isOpsAgent = selectedAssistant.value === 'ops-agent'
+          || (conv as any).assistant_type === 'ops-agent'
+        // resumeScheduled：防止场景A/B同时满足条件时重复调度 resumeOpsAgentStream
+        let resumeScheduled = false
+        if (isOpsAgent && messages.value.length > 0) {
+          const lastMsg = messages.value[messages.value.length - 1]
+          const lastMsgIsUserNormal = lastMsg.role === 'user'
+            && (lastMsg.metadata as any)?.kind !== 'interactive_response'
+          if (lastMsgIsUserNormal) {
+            // AI 思考中刷新：自动重连 resume-stream
+            resumeScheduled = true
+            nextTick().then(() => resumeOpsAgentStream())
+          }
+        }
+
+        // ── 场景B: ops-agent 交互请求相关恢复（pendingInteractive 重建 / interactive_response 后续写未到）──
+        // 找到最后一条 interactive_request，若其后没有对应的 interactive_response，
+        // 说明该交互请求尚未被用户回答，恢复 pendingInteractive 供卡片 UI 正常展示
+        const lastIRMsg = [...messages.value].reverse().find(
+          m => m.role === 'assistant' && m.metadata?.kind === 'interactive_request' && m.metadata?.event
+        )
+        if (lastIRMsg?.metadata?.event) {
+          const irMsgIdx = messages.value.indexOf(lastIRMsg)
+          const hasResponse = messages.value.slice(irMsgIdx + 1).some(
+            m => m.role === 'user' && (m.metadata as any)?.kind === 'interactive_response'
+          )
+          if (!hasResponse) {
+            // 未回答的交互请求：恢复 pendingInteractive，确保卡片 UI 显示"可交互"状态
+            pendingInteractive.value = lastIRMsg.metadata.event as any
+          } else {
+            // 用户已提交 interactive_response，检查 ops-agent 续写是否已传回前端
+            // 若最后一条 user/interactive_response 之后没有 AI 文字回复，
+            // 说明续写事件仍在 ops-agent outbox 中，需要重连事件流
+            const msgsAfterIR = messages.value.slice(irMsgIdx + 1)
+            const lastIRResponseIdx = msgsAfterIR.map((m, i) => ({ m, i }))
+              .filter(({ m }) => m.role === 'user' && (m.metadata as any)?.kind === 'interactive_response')
+              .pop()?.i ?? -1
+            const hasSubsequentAIReply = lastIRResponseIdx >= 0
+              && msgsAfterIR.slice(lastIRResponseIdx + 1).some(
+                m => m.role === 'assistant' && m.metadata?.kind !== 'interactive_request'
+              )
+            if (!hasSubsequentAIReply && lastIRResponseIdx >= 0 && !resumeScheduled) {
+              // ops-agent 续写事件尚未到达前端，页面稳定后自动重连（场景A未调度时才触发）
+              nextTick().then(() => resumeOpsAgentStream())
+            }
+          }
+        }
       }
       if (messages.value.length === 0) {
         addSystemMessage(`工单 ${caseId} 已恢复。您可以继续描述问题，或输入 /close 关闭工单。`)
@@ -636,6 +687,8 @@ export const useChatStore = defineStore('chat', () => {
    */
   async function resumeOpsAgentStream(): Promise<void> {
     if (!conversationId.value) return
+    // 防重入：isStreaming=true 时说明已有流在运行（场景A/B同时触发时去重）
+    if (isStreaming.value) return
 
     isStreaming.value = true
     const aiMsgId = `ai-resume-${Date.now()}`
