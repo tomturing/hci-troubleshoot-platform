@@ -162,8 +162,8 @@ class EnvironmentService:
         if not ts:
             return ""
         try:
-            from datetime import datetime, timezone
-            return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            from datetime import UTC, datetime
+            return datetime.fromtimestamp(int(ts), tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             return str(ts)
 
