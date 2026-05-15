@@ -156,12 +156,24 @@ class EnvironmentService:
             "network_config": env_data.get("mcastaddr", "未知"),  # 组播地址体现网络配置
         }
 
+    @staticmethod
+    def _fmt_ts(ts) -> str:
+        """Unix 时间戳转可读字符串（复用于告警和任务）"""
+        if not ts:
+            return ""
+        try:
+            from datetime import datetime, timezone
+            return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return str(ts)
+
     def _extract_alert_logs(self, env_data: dict) -> list[dict]:
         """
         提取告警日志列表（标准化格式）
 
         acli --formatter json alert list 实际字段：
           urgent_type: 1=紧急, 0=普通（整数）   →  level: "CRITICAL"/"WARNING"
+                       兼容历史中文值 "紧急"/"普通"
           end:         Unix 时间戳              →  time（转为可读字符串）
           target:      告警对象
           type:        事件类型
@@ -172,28 +184,18 @@ class EnvironmentService:
         alerts = env_data.get("alerts", [])
 
         def map_level(urgent_type) -> str:
-            """urgent_type 1=紧急→CRITICAL，0=普通→WARNING"""
-            if urgent_type in (1, "1"):
+            """urgent_type 1/"1"/"紧急"→CRITICAL，0/"0"/"普通"→WARNING"""
+            if urgent_type in (1, "1", "紧急"):
                 return "CRITICAL"
-            if urgent_type in (0, "0"):
+            if urgent_type in (0, "0", "普通"):
                 return "WARNING"
             return "WARNING"
-
-        def fmt_ts(ts) -> str:
-            """Unix 时间戳转可读字符串"""
-            if not ts:
-                return ""
-            try:
-                from datetime import datetime, timezone
-                return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                return str(ts)
 
         result = []
         for a in alerts[:10]:  # 最多 10 条
             item: dict = {
                 "level": map_level(a.get("urgent_type")),
-                "time": fmt_ts(a.get("end", "")),
+                "time": self._fmt_ts(a.get("end", "")),
                 "target": a.get("target", ""),
                 "type": a.get("type", ""),
                 "description": (a.get("description", "") or "")[:300],
@@ -210,6 +212,7 @@ class EnvironmentService:
 
         acli --formatter json task list 实际字段：
           status:          3=失败, 2=完成（整数）    →  status: "失败"/"完成"
+                           兼容历史中文值 "失败"/"完成"/"执行中"（process 字段回退）
           type:            任务行为/类型名称          →  type
           end:             Unix 时间戳               →  time（转为可读字符串）
           host:            主机名
@@ -221,27 +224,22 @@ class EnvironmentService:
         """
         tasks = env_data.get("tasks", [])
 
-        def map_status(status) -> str:
-            """status 整数 3=失败，2=完成"""
+        def map_status(status, process=None) -> str:
+            """status 整数 3=失败，2=完成；未知时回退到 process 字段（历史中文值）"""
             mapping = {3: "失败", "3": "失败", 2: "完成", "2": "完成"}
-            return mapping.get(status, str(status) if status is not None else "未知")
-
-        def fmt_ts(ts) -> str:
-            """Unix 时间戳转可读字符串"""
-            if not ts:
-                return ""
-            try:
-                from datetime import datetime, timezone
-                return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                return str(ts)
+            if status in mapping:
+                return mapping[status]
+            # 回退：process 字段可能直接存中文状态（历史数据格式）
+            if process and isinstance(process, str):
+                return process
+            return "未知"
 
         result = []
         for t in tasks[:10]:  # 最多 10 条
             item: dict = {
-                "status": map_status(t.get("status")),
+                "status": map_status(t.get("status"), t.get("process")),
                 "type": t.get("type", ""),
-                "time": fmt_ts(t.get("end", "")),
+                "time": self._fmt_ts(t.get("end", "")),
                 "host": t.get("host", ""),
                 "target": t.get("target", ""),
                 "description": (t.get("description", "") or "")[:300],

@@ -205,7 +205,7 @@ const collectionState = computed(() => chatStore.collectionState)
             :key="idx"
             class="task-item"
           >
-            <el-tag :type="task.status === '失败' ? 'danger' : 'success'" size="small">
+            <el-tag :type="task.status === '失败' ? 'danger' : task.status === '完成' ? 'success' : 'warning'" size="small">
               {{ task.status || '未知' }}
             </el-tag>
             <span class="task-time" v-if="task.time">{{ task.time }}</span>
