@@ -216,10 +216,15 @@ class TestBuildContextInfo:
         assert result.task_logs[0]["errcode_tracing"] == "0x0CFFFFFF"
         assert result.task_logs[0]["trace_id"] == "trace-abc"
         assert result.task_logs[0]["description"] == "磁盘 IO 超时"
+        # Unix end 时间戳 → 可读字符串（非空）
+        assert result.task_logs[0]["time"] != ""
+        assert len(result.task_logs[0]["time"]) == len("2025-05-16 00:00:00")
         # 整数 status=2 → "完成"
         assert result.task_logs[1]["status"] == "完成"
-        # 无 status 字段时回退 process 字段
+        assert result.task_logs[1]["time"] != ""
+        # 无 status 字段时回退 process 字段；end=0 → time 为空字符串
         assert result.task_logs[2]["status"] == "执行中"
+        assert result.task_logs[2]["time"] == ""
 
     async def test_alert_logs_field_mapping(self, service, mock_repository):
         """告警列表字段映射：整数 urgent_type 和字符串中文值均支持"""

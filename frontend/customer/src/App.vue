@@ -53,7 +53,7 @@ function handleDownloadBridge() {
               <el-button
                 size="small"
                 round
-                class="history-btn"
+                class="case-info-btn"
               >
                 📋 工单信息
               </el-button>
@@ -230,14 +230,14 @@ body {
   font-style: italic;
 }
 
-.history-btn {
+.case-info-btn {
   background: rgba(255, 255, 255, 0.2) !important;
   border: 1px solid rgba(255, 255, 255, 0.3) !important;
   color: #fff !important;
   font-size: 12px !important;
 }
 
-.history-btn:hover {
+.case-info-btn:hover {
   background: rgba(255, 255, 255, 0.35) !important;
 }
 
