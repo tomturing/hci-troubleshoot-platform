@@ -182,6 +182,87 @@ class TestBuildContextInfo:
         assert result.alert_logs == []
         assert result.task_logs == []
 
+    async def test_task_logs_field_mapping(self, service, mock_repository):
+        """任务列表字段映射：整数 status 转中文、Unix end 时间戳转可读字符串"""
+        task_env = MagicMock()
+        # 模拟 acli 返回的真实字段格式：status 为整数，end 为 Unix 时间戳
+        task_env.env_data = {"tasks": [
+            {
+                "status": 3, "type": "启动虚拟机", "end": 1747353600,
+                "host": "node-1", "target": "vm-001", "description": "磁盘 IO 超时",
+                "errcode_tracing": "0x0CFFFFFF", "request_id": "trace-abc",
+            },
+            {
+                "status": 2, "type": "登录", "end": 1747350000,
+                "host": "node-2", "target": "user-root", "description": "",
+                "errcode_tracing": "", "request_id": "trace-xyz",
+            },
+            {
+                # 无 status 字段，回退到 process 字段（历史数据格式）
+                "process": "执行中", "type": "系统备份", "end": 0,
+                "host": "node-1", "target": "", "description": "",
+                "errcode_tracing": "", "request_id": "",
+            },
+        ]}
+
+        mock_repository.get_by_case_and_type.side_effect = [None, None, task_env]
+
+        result = await service.build_context_info("Q2026042000001")
+
+        assert len(result.task_logs) == 3
+        # 整数 status=3 → "失败"
+        assert result.task_logs[0]["status"] == "失败"
+        assert result.task_logs[0]["type"] == "启动虚拟机"
+        assert result.task_logs[0]["errcode_tracing"] == "0x0CFFFFFF"
+        assert result.task_logs[0]["trace_id"] == "trace-abc"
+        assert result.task_logs[0]["description"] == "磁盘 IO 超时"
+        # Unix end 时间戳 → 可读字符串（非空）
+        assert result.task_logs[0]["time"] != ""
+        assert len(result.task_logs[0]["time"]) == len("2025-05-16 00:00:00")
+        # 整数 status=2 → "完成"
+        assert result.task_logs[1]["status"] == "完成"
+        assert result.task_logs[1]["time"] != ""
+        # 无 status 字段时回退 process 字段；end=0 → time 为空字符串
+        assert result.task_logs[2]["status"] == "执行中"
+        assert result.task_logs[2]["time"] == ""
+
+    async def test_alert_logs_field_mapping(self, service, mock_repository):
+        """告警列表字段映射：整数 urgent_type 和字符串中文值均支持"""
+        alert_env = MagicMock()
+        alert_env.env_data = {"alerts": [
+            {
+                "urgent_type": 1, "end": 1747353600, "target": "cluster",
+                "type": "存储故障", "description": "磁盘 SMART 告警", "host": "node-1",
+            },
+            {
+                "urgent_type": 0, "end": 1747350000, "target": "vm-001",
+                "type": "内存告警", "description": "内存使用率超 90%", "host": "node-2",
+                "vm": "vm-centos-01",
+            },
+            {
+                # 兼容历史中文值
+                "urgent_type": "紧急", "end": 1747340000, "target": "node-3",
+                "type": "网络", "description": "链路断开", "host": "node-3",
+            },
+        ]}
+
+        mock_repository.get_by_case_and_type.side_effect = [None, alert_env, None]
+
+        result = await service.build_context_info("Q2026042000001")
+
+        assert len(result.alert_logs) == 3
+        # 整数 urgent_type=1 → "CRITICAL"
+        assert result.alert_logs[0]["level"] == "CRITICAL"
+        assert result.alert_logs[0]["type"] == "存储故障"
+        assert result.alert_logs[0]["host"] == "node-1"
+        # 整数 urgent_type=0 → "WARNING"
+        assert result.alert_logs[1]["level"] == "WARNING"
+        # vm 字段仅在存在时写入
+        assert result.alert_logs[1].get("vm") == "vm-centos-01"
+        assert "vm" not in result.alert_logs[0]
+        # 历史中文值 "紧急" → "CRITICAL"
+        assert result.alert_logs[2]["level"] == "CRITICAL"
+
 
 class TestUpsertEnvironment:
     """upsert_environment 测试组"""

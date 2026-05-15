@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { Monitor } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
 import SshConnectDialog from '@/components/SshConnectDialog.vue'
-import TerminalReplay from '@/components/TerminalReplay.vue'
 
 const chatStore = useChatStore()
 const clientId = getClientId()
@@ -13,11 +13,6 @@ const clientId = getClientId()
 // 部署时在 .env 中配置 VITE_BRIDGE_DOWNLOAD_URL 指向实际文件
 const BRIDGE_DOWNLOAD_URL =
   import.meta.env.VITE_BRIDGE_DOWNLOAD_URL || '/downloads/terminal_bridge.exe'
-
-// 终端历史弹窗状态
-const showTerminalReplayDialog = ref(false)
-// 每次打开弹窗时自增，强制 TerminalReplay 重新挂载以触发数据刷新
-const replayKey = ref(0)
 
 onMounted(() => {
   chatStore.initialize()
@@ -40,13 +35,6 @@ function handleDownloadBridge() {
   setTimeout(() => document.body.removeChild(a), 200)
 }
 
-/**
- * 打开当前工单的终端历史回放
- */
-function openTerminalHistory() {
-  replayKey.value++
-  showTerminalReplayDialog.value = true
-}
 </script>
 
 <template>
@@ -55,26 +43,46 @@ function openTerminalHistory() {
       <div class="header-content">
         <h1>HCI 故障排查助手</h1>
         <div class="header-badges">
-          <!-- 终端按钮：点击先检测 Bridge -->
-          <el-button
-            size="small"
-            round
-            class="terminal-btn header-action-btn"
-            :loading="chatStore.bridgeStatus === 'checking'"
-            @click="chatStore.checkAndOpenTerminal()"
+          <!-- 工单信息：历史工单入口 + ID/工单号展示 -->
+          <el-popover
+            placement="bottom-end"
+            :width="260"
+            trigger="click"
           >
-            <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><i class="el-icon-connection" /></el-icon>
-            SSH终端
-          </el-button>
-          <el-button
-            v-if="chatStore.hasActiveCase"
-            size="small"
-            round
-            class="terminal-history-btn header-action-btn"
-            @click="openTerminalHistory"
-          >
-            📹 终端历史
-          </el-button>
+            <template #reference>
+              <el-button
+                size="small"
+                round
+                class="case-info-btn"
+              >
+                📋 工单信息
+              </el-button>
+            </template>
+            <div class="case-info-popover">
+              <div class="case-info-row">
+                <span class="case-info-label">客户端 ID</span>
+                <span class="case-info-value selectable" :title="clientId">{{ clientId }}</span>
+              </div>
+              <div v-if="chatStore.currentCase" class="case-info-row">
+                <span class="case-info-label">当前工单</span>
+                <span class="case-info-value selectable">{{ chatStore.currentCase.case_id }}</span>
+              </div>
+              <div v-else class="case-info-row">
+                <span class="case-info-label">当前工单</span>
+                <span class="case-info-value muted">暂无</span>
+              </div>
+              <el-divider style="margin: 10px 0" />
+              <el-button
+                size="small"
+                style="width: 100%"
+                @click="chatStore.openHistoryDrawer()"
+              >
+                📋 查看历史工单
+              </el-button>
+            </div>
+          </el-popover>
+
+          <!-- 关闭工单 -->
           <el-button
             v-if="chatStore.hasActiveCase"
             size="small"
@@ -84,20 +92,18 @@ function openTerminalHistory() {
           >
             ✅ 关闭工单
           </el-button>
+
+          <!-- SSH终端按钮：点击先检测 Bridge -->
           <el-button
             size="small"
             round
-            class="history-btn"
-            @click="chatStore.openHistoryDrawer()"
+            class="terminal-btn header-action-btn"
+            :loading="chatStore.bridgeStatus === 'checking'"
+            @click="chatStore.checkAndOpenTerminal()"
           >
-            📋 历史工单
+            <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><Monitor /></el-icon>
+            SSH终端
           </el-button>
-          <span class="client-badge" :title="clientId">
-            ID: {{ clientId.substring(0, 15) }}...
-          </span>
-          <span v-if="chatStore.currentCase" class="case-badge">
-            工单: {{ chatStore.currentCase.case_id }}
-          </span>
         </div>
       </div>
     </header>
@@ -133,21 +139,6 @@ function openTerminalHistory() {
       </template>
     </el-dialog>
 
-    <!-- 终端历史回放弹窗 -->
-    <el-dialog
-      v-model="showTerminalReplayDialog"
-      title="终端历史回放"
-      width="80%"
-      top="5vh"
-      :close-on-click-modal="false"
-      class="terminal-replay-dialog"
-    >
-      <TerminalReplay
-        v-if="chatStore.currentCase?.case_id"
-        :key="replayKey"
-        :case-id="chatStore.currentCase.case_id"
-      />
-    </el-dialog>
   </div>
 </template>
 
@@ -205,24 +196,48 @@ body {
   gap: 8px;
 }
 
-.client-badge {
-  background: rgba(255, 255, 255, 0.15);
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  cursor: pointer;
-  user-select: all;
-  opacity: 0.85;
+.case-info-popover {
+  padding: 4px 0;
 }
 
-.history-btn {
+.case-info-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.case-info-label {
+  flex-shrink: 0;
+  color: #909399;
+  width: 64px;
+}
+
+.case-info-value {
+  color: #303133;
+  word-break: break-all;
+}
+
+.case-info-value.selectable {
+  cursor: text;
+  user-select: all;
+}
+
+.case-info-value.muted {
+  color: #c0c4cc;
+  font-style: italic;
+}
+
+.case-info-btn {
   background: rgba(255, 255, 255, 0.2) !important;
   border: 1px solid rgba(255, 255, 255, 0.3) !important;
   color: #fff !important;
   font-size: 12px !important;
 }
 
-.history-btn:hover {
+.case-info-btn:hover {
   background: rgba(255, 255, 255, 0.35) !important;
 }
 

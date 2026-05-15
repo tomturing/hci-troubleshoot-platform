@@ -11,6 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
     "@hci/shared": "workspace:*",
     "axios": "^1.7.9",
     "dompurify": "^3.3.3",

@@ -167,6 +167,15 @@ function openTerminalReplay() {
   }
 }
 
+/** 从 TerminalPanel 打开当前工单的终端历史回放 */
+function openCurrentCaseTerminalHistory() {
+  const caseId = chatStore.currentCase?.case_id ?? null
+  if (caseId) {
+    terminalReplayCaseId.value = caseId
+    showTerminalReplayDialog.value = true
+  }
+}
+
 function closeTerminalReplay() {
   showTerminalReplayDialog.value = false
   terminalReplayCaseId.value = null
@@ -308,7 +317,7 @@ function handleQuoteToChat(content: string) {
         </div>
       </template>
       <div class="drawer-body-content terminal-content">
-        <TerminalPanel />
+        <TerminalPanel @open-terminal-history="openCurrentCaseTerminalHistory" />
       </div>
     </el-drawer>
 

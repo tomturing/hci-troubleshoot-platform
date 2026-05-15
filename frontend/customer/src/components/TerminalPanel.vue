@@ -28,6 +28,7 @@ import {
 } from '@/api/terminal-recording'
 
 const chatStore = useChatStore()
+const emit = defineEmits<{ 'open-terminal-history': [] }>()
 
 // ===== 终端操作录制状态 =====
 const recordingState = createRecordingState()
@@ -395,6 +396,11 @@ onBeforeUnmount(() => {
         <el-button text size="small" @click="copyLatestOutput">复制本次输出</el-button>
         <el-button text size="small" @click="sendLatestOutputToAssistant">发送到助手</el-button>
         <el-button text size="small" @click="clearOutput">清空</el-button>
+        <el-tooltip :content="terminalState === 'A' ? '请先创建工单后再查看终端历史' : '查看终端回放历史'" placement="top">
+          <span>
+            <el-button text size="small" :disabled="terminalState === 'A'" @click="emit('open-terminal-history')">📹 终端历史</el-button>
+          </span>
+        </el-tooltip>
         <el-button text size="small" @click="closePanel">✕</el-button>
       </div>
     </div>
