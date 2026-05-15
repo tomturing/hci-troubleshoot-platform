@@ -121,12 +121,15 @@ class TestBuildContextInfo:
         cluster_env.env_data = {"hci_version": "6.8.1", "name": "prod-hci", "host_count": "3"}
 
         alert_env = MagicMock()
-        # alerts 字段名与 acli alert list 实际输出一致：urgent_type/start/description/target
-        alert_env.env_data = {"alerts": [{"urgent_type": "紧急", "start": "09:02", "description": "磁盘异常", "target": "node-1"}]}
+        # alerts 字段名与 acli --formatter json alert list 实际输出一致
+        # urgent_type: 1=紧急→CRITICAL, 0=普通→WARNING（整数）
+        # end: Unix 时间戳
+        alert_env.env_data = {"alerts": [{"urgent_type": 1, "end": 1746000000, "type": "disk_io_high", "description": "磁盘异常", "target": "node-1", "host": "host-01"}]}
 
         task_env = MagicMock()
-        # tasks 字段名与 acli task list 实际输出一致：process/start/type/description
-        task_env.env_data = {"tasks": [{"process": "失败", "start": "09:01", "type": "Migration", "description": ""}]}
+        # tasks 字段名与 acli --formatter json task list 实际输出一致
+        # status: 3=失败, 2=完成（整数）；end: Unix 时间戳
+        task_env.env_data = {"tasks": [{"status": 3, "end": 1746000000, "type": "Migration", "description": "存储不足", "target": "vm-01", "host": "host-01", "errcode_tracing": "", "request_id": ""}]}
 
         mock_repository.get_by_case_and_type.side_effect = [cluster_env, alert_env, task_env]
 
@@ -134,11 +137,14 @@ class TestBuildContextInfo:
 
         assert result.env_info["hci_version"] == "6.8.1"
         assert len(result.alert_logs) == 1
-        # urgent_type="紧急" 映射为 "CRITICAL"
+        # urgent_type=1 映射为 "CRITICAL"
         assert result.alert_logs[0]["level"] == "CRITICAL"
+        assert result.alert_logs[0]["target"] == "node-1"
+        assert result.alert_logs[0]["host"] == "host-01"
         assert len(result.task_logs) == 1
-        # process 字段直接透传中文字符串
+        # status=3 整数 映射为 "失败"
         assert result.task_logs[0]["status"] == "失败"
+        assert result.task_logs[0]["type"] == "Migration"
 
     async def test_build_partial_data(self, service, mock_repository):
         """测试部分缺失（只有 cluster，无 alert/task）"""

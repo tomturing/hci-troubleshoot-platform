@@ -160,49 +160,95 @@ class EnvironmentService:
         """
         提取告警日志列表（标准化格式）
 
-        acli alert 数据实际字段（与历史期望字段对比）：
-          urgent_type: "紧急"/"普通"  →  level: "CRITICAL"/"WARNING"
-          description: 详细描述       →  content（截断 200 字符）
-          start: 告警时间             →  time
-          target: 告警目标            →  source
+        acli --formatter json alert list 实际字段：
+          urgent_type: 1=紧急, 0=普通（整数）   →  level: "CRITICAL"/"WARNING"
+          end:         Unix 时间戳              →  time（转为可读字符串）
+          target:      告警对象
+          type:        事件类型
+          description: 告警描述（截断 300 字符）
+          host:        主机名
+          vm:          虚拟机名（可选，不存在则不写入）
         """
         alerts = env_data.get("alerts", [])
 
-        def map_level(urgent_type: str) -> str:
-            """将中文紧急程度映射为英文标准级别"""
-            if urgent_type == "紧急":
+        def map_level(urgent_type) -> str:
+            """urgent_type 1=紧急→CRITICAL，0=普通→WARNING"""
+            if urgent_type in (1, "1"):
                 return "CRITICAL"
-            if urgent_type == "普通":
+            if urgent_type in (0, "0"):
                 return "WARNING"
-            return "INFO"
+            return "WARNING"
 
-        return [
-            {
-                "level": map_level(a.get("urgent_type", "")),
-                "time": a.get("start", ""),
-                "content": (a.get("description", "") or "")[:200],  # 截断避免 prompt 过长
-                "source": a.get("target", ""),
+        def fmt_ts(ts) -> str:
+            """Unix 时间戳转可读字符串"""
+            if not ts:
+                return ""
+            try:
+                from datetime import datetime, timezone
+                return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return str(ts)
+
+        result = []
+        for a in alerts[:10]:  # 最多 10 条
+            item: dict = {
+                "level": map_level(a.get("urgent_type")),
+                "time": fmt_ts(a.get("end", "")),
+                "target": a.get("target", ""),
+                "type": a.get("type", ""),
+                "description": (a.get("description", "") or "")[:300],
+                "host": a.get("host", ""),
             }
-            for a in alerts[:10]  # 最多 10 条
-        ]
+            if a.get("vm"):  # vm 字段仅在存在时写入
+                item["vm"] = a["vm"]
+            result.append(item)
+        return result
 
     def _extract_task_logs(self, env_data: dict) -> list[dict]:
         """
         提取任务日志列表（标准化格式）
 
-        acli task 数据实际字段（与历史期望字段对比）：
-          process: "失败"/"完成"/"执行中"  →  status（替代数字 status 字段）
-          type: "系统备份" 等任务类型名    →  name
-          start: 开始时间                →  time
-          description: 错误详情          →  error（截断 300 字符）
+        acli --formatter json task list 实际字段：
+          status:          3=失败, 2=完成（整数）    →  status: "失败"/"完成"
+          type:            任务行为/类型名称          →  type
+          end:             Unix 时间戳               →  time（转为可读字符串）
+          host:            主机名
+          vm:              虚拟机名（可选，不存在则不写入）
+          target:          操作对象
+          description:     错误描述（截断 300 字符）
+          errcode_tracing: 错误码
+          request_id:      trace_id
         """
         tasks = env_data.get("tasks", [])
-        return [
-            {
-                "status": t.get("process", "unknown"),             # 取中文字符串，而非数字 3
-                "time": t.get("start", ""),
-                "name": t.get("type", ""),                        # 任务类型名称
-                "error": (t.get("description", "") or "")[:300],  # 截断避免 prompt 过长
+
+        def map_status(status) -> str:
+            """status 整数 3=失败，2=完成"""
+            mapping = {3: "失败", "3": "失败", 2: "完成", "2": "完成"}
+            return mapping.get(status, str(status) if status is not None else "未知")
+
+        def fmt_ts(ts) -> str:
+            """Unix 时间戳转可读字符串"""
+            if not ts:
+                return ""
+            try:
+                from datetime import datetime, timezone
+                return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return str(ts)
+
+        result = []
+        for t in tasks[:10]:  # 最多 10 条
+            item: dict = {
+                "status": map_status(t.get("status")),
+                "type": t.get("type", ""),
+                "time": fmt_ts(t.get("end", "")),
+                "host": t.get("host", ""),
+                "target": t.get("target", ""),
+                "description": (t.get("description", "") or "")[:300],
+                "errcode_tracing": t.get("errcode_tracing", ""),
+                "trace_id": t.get("request_id", ""),
             }
-            for t in tasks[:5]  # 最多 5 条
-        ]
+            if t.get("vm"):  # vm 字段仅在存在时写入
+                item["vm"] = t["vm"]
+            result.append(item)
+        return result
