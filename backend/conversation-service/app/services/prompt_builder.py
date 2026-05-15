@@ -228,21 +228,47 @@ class PromptBuilder:
         if alert_logs:
             alert_lines = []
             for alert in alert_logs[:10]:
-                alert_lines.append(
-                    f"- [{alert.get('level', 'INFO')}] {alert.get('time', '')} {alert.get('content', '')}"
-                )
+                parts = [f"[{alert.get('level', 'WARNING')}]"]
+                if alert.get("time"):
+                    parts.append(alert["time"])
+                if alert.get("target"):
+                    parts.append(f"对象: {alert['target']}")
+                if alert.get("type"):
+                    parts.append(f"事件: {alert['type']}")
+                if alert.get("host"):
+                    parts.append(f"主机: {alert['host']}")
+                if alert.get("vm"):
+                    parts.append(f"VM: {alert['vm']}")
+                if alert.get("description"):
+                    parts.append(f"描述: {alert['description']}")
+                alert_lines.append("- " + " | ".join(parts))
             alert_text = f"""## 最新告警（{len(alert_lines)} 条）
 {chr(10).join(alert_lines)}"""
 
-        # 任务日志格式化（最多 5 条失败任务）
+        # 任务日志格式化（最多 10 条）
         task_text = ""
         if task_logs:
             task_lines = []
-            for task in task_logs[:5]:
-                task_lines.append(
-                    f"- [{task.get('status', 'failed')}] {task.get('time', '')} {task.get('name', '')}: {task.get('error', '')}"
-                )
-            task_text = f"""## 近期失败任务（{len(task_lines)} 条）
+            for task in task_logs[:10]:
+                parts = [f"[{task.get('status', '未知')}]"]
+                if task.get("time"):
+                    parts.append(task["time"])
+                if task.get("type"):
+                    parts.append(f"行为: {task['type']}")
+                if task.get("host"):
+                    parts.append(f"主机: {task['host']}")
+                if task.get("vm"):
+                    parts.append(f"VM: {task['vm']}")
+                if task.get("target"):
+                    parts.append(f"对象: {task['target']}")
+                if task.get("errcode_tracing"):
+                    parts.append(f"错误码: {task['errcode_tracing']}")
+                if task.get("trace_id"):
+                    parts.append(f"trace_id: {task['trace_id']}")
+                if task.get("description"):
+                    parts.append(f"描述: {task['description']}")
+                task_lines.append("- " + " | ".join(parts))
+            task_text = f"""## 近期任务（{len(task_lines)} 条）
 {chr(10).join(task_lines)}"""
 
         if not (env_text or alert_text or task_text):

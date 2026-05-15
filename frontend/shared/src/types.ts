@@ -163,15 +163,23 @@ export interface EnvironmentListResponse {
 export interface EnvironmentContextResponse {
   env_info: Record<string, unknown>
   alert_logs: Array<{
-    level: string
-    time: string
-    content: string
-    source?: string
+    level: string       // "CRITICAL" | "WARNING"，来自 urgent_type 1/0
+    time: string        // 可读时间字符串，来自 end 时间戳转换
+    target: string      // 告警对象
+    type: string        // 事件类型
+    description: string // 告警描述
+    host: string        // 主机名
+    vm?: string         // 虚拟机名（可选）
   }>
   task_logs: Array<{
-    status: string
-    time: string
-    name: string
-    error?: string
+    status: string            // "失败" | "完成"，来自 status 整数 3/2
+    type: string              // 任务行为/类型
+    time: string              // 可读时间字符串，来自 end 时间戳转换
+    host: string              // 主机名
+    target: string            // 操作对象
+    description: string       // 错误描述
+    errcode_tracing: string   // 错误码
+    trace_id: string          // 来自 request_id
+    vm?: string               // 虚拟机名（可选）
   }>
 }

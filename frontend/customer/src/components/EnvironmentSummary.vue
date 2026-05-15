@@ -40,7 +40,14 @@ function buildEnvironmentSummary(ctx: any): string {
   if (ctx.alert_logs && ctx.alert_logs.length > 0) {
     lines.push('\n【告警列表】')
     ctx.alert_logs.slice(0, 5).forEach((alert: any) => {
-      lines.push(`[${alert.level || 'INFO'}] ${alert.message || alert.content} @${alert.timestamp || ''}`)
+      const parts = [`[${alert.level || 'WARNING'}]`]
+      if (alert.time) parts.push(alert.time)
+      if (alert.target) parts.push(`对象: ${alert.target}`)
+      if (alert.type) parts.push(`事件: ${alert.type}`)
+      if (alert.host) parts.push(`主机: ${alert.host}`)
+      if (alert.vm) parts.push(`VM: ${alert.vm}`)
+      if (alert.description) parts.push(`描述: ${alert.description}`)
+      lines.push(parts.join(' | '))
     })
     if (ctx.alert_logs.length > 5) {
       lines.push(`... 共 ${ctx.alert_logs.length} 条告警`)
@@ -50,7 +57,16 @@ function buildEnvironmentSummary(ctx: any): string {
   if (ctx.task_logs && ctx.task_logs.length > 0) {
     lines.push('\n【任务状态】')
     ctx.task_logs.slice(0, 5).forEach((task: any) => {
-      lines.push(`[${task.status || 'UNKNOWN'}] ${task.name || task.job_id} @${task.start_time || ''}`)
+      const parts = [`[${task.status || '未知'}]`]
+      if (task.time) parts.push(task.time)
+      if (task.type) parts.push(`行为: ${task.type}`)
+      if (task.host) parts.push(`主机: ${task.host}`)
+      if (task.vm) parts.push(`VM: ${task.vm}`)
+      if (task.target) parts.push(`对象: ${task.target}`)
+      if (task.errcode_tracing) parts.push(`错误码: ${task.errcode_tracing}`)
+      if (task.trace_id) parts.push(`trace_id: ${task.trace_id}`)
+      if (task.description) parts.push(`描述: ${task.description}`)
+      lines.push(parts.join(' | '))
     })
     if (ctx.task_logs.length > 5) {
       lines.push(`... 共 ${ctx.task_logs.length} 条任务`)
@@ -82,10 +98,10 @@ const summaryText = computed(() => {
   }
 
   if (ctx.task_logs) {
-    // 后端返回中文状态值：'失败'、'完成'、'执行中'
+    // status: '失败'（来自整数 3）| '完成'（来自整数 2）
     const failed = ctx.task_logs.filter((t: any) => t.status === '失败').length
-    const running = ctx.task_logs.filter((t: any) => t.status === '执行中').length
-    parts.push(`任务状态: ${failed} 条失败 / ${running} 条运行中`)
+    const total = ctx.task_logs.length
+    parts.push(`任务状态: ${failed} 条失败 / 共 ${total} 条`)
   }
 
   return parts.join(' | ')
@@ -161,11 +177,15 @@ const collectionState = computed(() => chatStore.collectionState)
             :key="idx"
             class="alert-item"
           >
-            <el-tag :type="alert.level === 'CRITICAL' ? 'danger' : alert.level === 'WARNING' ? 'warning' : 'info'" size="small">
-              {{ alert.level || 'INFO' }}
+            <el-tag :type="alert.level === 'CRITICAL' ? 'danger' : 'warning'" size="small">
+              {{ alert.level === 'CRITICAL' ? '紧急' : '普通' }}
             </el-tag>
-            <span class="alert-message">{{ alert.content }}</span>
-            <span class="alert-time" v-if="alert.time">@{{ alert.time }}</span>
+            <span class="alert-time" v-if="alert.time">{{ alert.time }}</span>
+            <span v-if="alert.target" class="alert-field">对象: {{ alert.target }}</span>
+            <span v-if="alert.type" class="alert-field">事件: {{ alert.type }}</span>
+            <span v-if="alert.host" class="alert-field">主机: {{ alert.host }}</span>
+            <span v-if="alert.vm" class="alert-field">VM: {{ alert.vm }}</span>
+            <span v-if="alert.description" class="alert-message">{{ alert.description }}</span>
           </div>
           <div v-if="chatStore.environmentContext.alert_logs.length > 10" class="more-hint">
             ... 共 {{ chatStore.environmentContext.alert_logs.length }} 条告警
@@ -185,11 +205,17 @@ const collectionState = computed(() => chatStore.collectionState)
             :key="idx"
             class="task-item"
           >
-            <el-tag :type="task.status === '失败' ? 'danger' : task.status === '执行中' ? 'warning' : 'success'" size="small">
-              {{ task.status || 'UNKNOWN' }}
+            <el-tag :type="task.status === '失败' ? 'danger' : task.status === '完成' ? 'success' : 'warning'" size="small">
+              {{ task.status || '未知' }}
             </el-tag>
-            <span class="task-name">{{ task.name }}</span>
-            <span class="task-time" v-if="task.time">@{{ task.time }}</span>
+            <span class="task-time" v-if="task.time">{{ task.time }}</span>
+            <span v-if="task.type" class="task-field">行为: {{ task.type }}</span>
+            <span v-if="task.host" class="task-field">主机: {{ task.host }}</span>
+            <span v-if="task.vm" class="task-field">VM: {{ task.vm }}</span>
+            <span v-if="task.target" class="task-field">对象: {{ task.target }}</span>
+            <span v-if="task.errcode_tracing" class="task-errcode">错误码: {{ task.errcode_tracing }}</span>
+            <span v-if="task.trace_id" class="task-traceid">trace_id: {{ task.trace_id }}</span>
+            <span v-if="task.description" class="task-desc">{{ task.description }}</span>
           </div>
           <div v-if="chatStore.environmentContext.task_logs.length > 10" class="more-hint">
             ... 共 {{ chatStore.environmentContext.task_logs.length }} 条任务
@@ -314,17 +340,33 @@ const collectionState = computed(() => chatStore.collectionState)
 .alert-item,
 .task-item {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 
 .alert-message,
-.task-name {
-  flex: 1;
+.task-desc {
+  flex-basis: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: #909399;
+  font-size: 11px;
+}
+
+.alert-field,
+.task-field,
+.task-errcode,
+.task-traceid {
+  font-size: 11px;
+  color: #606266;
+}
+
+.task-errcode,
+.task-traceid {
+  color: #f56c6c;
 }
 
 .alert-time,

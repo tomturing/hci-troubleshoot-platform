@@ -109,3 +109,99 @@ class TestNoRawPlaceholder:
         assert "{hypothesis}" not in result
         assert "{root_cause}" not in result
 
+
+class TestSegmentS0ContextInfo:
+    """测试 _segment_s0_context_info 输出格式与字段"""
+
+    def test_empty_context_returns_empty(self, builder: PromptBuilder) -> None:
+        """空上下文返回空字符串"""
+        result = builder._segment_s0_context_info({})
+        assert result == ""
+
+    def test_alert_fields_present(self, builder: PromptBuilder) -> None:
+        """告警字段 target/type/host/description 均出现在输出中"""
+        context = {
+            "alert_logs": [
+                {
+                    "level": "CRITICAL",
+                    "time": "2026-05-15 10:00:00",
+                    "target": "vm-001",
+                    "type": "CPU告警",
+                    "host": "host-01",
+                    "description": "CPU 使用率超阈值",
+                }
+            ],
+            "task_logs": [],
+        }
+        result = builder._segment_s0_context_info(context)
+        assert "CRITICAL" in result
+        assert "vm-001" in result
+        assert "CPU告警" in result
+        assert "host-01" in result
+        assert "CPU 使用率超阈值" in result
+
+    def test_alert_optional_vm_field(self, builder: PromptBuilder) -> None:
+        """告警含 vm 字段时出现在输出中"""
+        context = {
+            "alert_logs": [
+                {
+                    "level": "WARNING",
+                    "target": "storage-01",
+                    "type": "存储告警",
+                    "host": "host-02",
+                    "vm": "vm-abc",
+                    "description": "存储延迟高",
+                }
+            ],
+            "task_logs": [],
+        }
+        result = builder._segment_s0_context_info(context)
+        assert "vm-abc" in result
+
+    def test_task_fields_present(self, builder: PromptBuilder) -> None:
+        """任务字段 type/host/target/errcode_tracing/trace_id 均出现在输出中"""
+        context = {
+            "alert_logs": [],
+            "task_logs": [
+                {
+                    "status": "失败",
+                    "type": "开机",
+                    "time": "2026-05-15 09:00:00",
+                    "host": "host-01",
+                    "target": "vm-002",
+                    "errcode_tracing": "ERR-1234",
+                    "trace_id": "abc-xyz-001",
+                    "description": "开机超时",
+                }
+            ],
+        }
+        result = builder._segment_s0_context_info(context)
+        assert "失败" in result
+        assert "开机" in result
+        assert "host-01" in result
+        assert "vm-002" in result
+        assert "ERR-1234" in result
+        assert "abc-xyz-001" in result
+        assert "开机超时" in result
+
+    def test_empty_alert_and_task_lists(self, builder: PromptBuilder) -> None:
+        """alert_logs 和 task_logs 均为空列表时返回空字符串"""
+        context = {"alert_logs": [], "task_logs": [], "env_info": {}}
+        result = builder._segment_s0_context_info(context)
+        assert result == ""
+
+    def test_env_info_rendered(self, builder: PromptBuilder) -> None:
+        """env_info 字段正确渲染到输出中"""
+        context = {
+            "env_info": {
+                "hci_version": "6.5.0",
+                "cluster_name": "cluster-dev",
+                "host_count": 3,
+            },
+            "alert_logs": [],
+            "task_logs": [],
+        }
+        result = builder._segment_s0_context_info(context)
+        assert "6.5.0" in result
+        assert "cluster-dev" in result
+
