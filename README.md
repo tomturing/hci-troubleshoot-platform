@@ -205,7 +205,8 @@ hci-troubleshoot-platform/
 │   ├── dev/                   # 本地开发辅助
 │   ├── ops/                   # K3s 运维操作
 │   ├── tools/                 # 测试工具
-│   └── kbd/                   # 知识库数据导入
+│   ├── kbd/                   # 知识库数据导入
+│   └── evaluation/            # 意图识别评估脚本（intent_eval.py · test_sse.py · write_ai_response.py · write_intent_to_excel.py）
 ├── tests/                     # 集成测试
 └── docs/                      # 文档（见 docs/README.md）
     ├── requirement/           # 需求文档
