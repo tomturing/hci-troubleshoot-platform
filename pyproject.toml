@@ -1,6 +1,6 @@
 [project]
 name = "hci-troubleshoot-platform"
-version = "2.10.0"
+version = "2.11.0"
 description = "HCI 智能排障平台 — 多助手 AI 排障微服务系统"
 requires-python = ">=3.12"
 
