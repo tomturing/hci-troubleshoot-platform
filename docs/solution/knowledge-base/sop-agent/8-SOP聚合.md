@@ -6,6 +6,76 @@
 
 ---
 
+## 核心特点
+
+- **多阶段树状归并**：聚合流程分为 4 个阶段（pre_group → batch_reduce → intermediate_merge → final_merge），案例量大时先语义预分组，再分批并行生成候选分支，最后树状归并——既保证聚合质量，又控制 LLM 调用次数。
+- **双模型架构**：WORKHORSE（主力模型）用于大量并行任务，CRITICAL（关键模型）用于高难度决策任务（pre_group_merge、intermediate_merge_plan、final_merge_plan）。
+- **本地强校验**：每个 LLM 调用后均执行本地校验（步骤 ID 连贯性、跳转合法性、循环检测、CLI 语法、命令保真度），校验失败时将错误反馈追加到消息中重新请求。
+- **断点续跑**：每个节点的处理状态保存在 checkpoint 文件中，中断后可从断点继续。
+
+## 核心问题
+
+同节点下可能有数十到数百个案例，故障表现相似但根因分散。如何将多个高异质性案例合并为一条统一、完整、无冲突的排障 SOP？
+
+## 核心思路
+
+分阶段归并：先语义预分组（降低后续批次的复杂度），再分批生成候选分支（并行化），最后多轮树状归并（处理大批次）。每阶段通过本地强校验确保输出质量，通过失败反馈机制引导模型自我修正。
+
+## 核心目标
+
+1. 将同节点下多个案例事实卡合并为一个标准化 SOP
+2. 每个分支对应一类故障场景，可追溯到来源案例
+3. 入口 flow 高精度路由到正确分支
+4. excluded_cases 排除无真实故障信号的案例
+
+## 核心约束
+
+1. 禁止无依据合并：不同根因、不同修复路径的案例不能强行归入同一分支
+2. 禁止丢失命令：来源案例中的可执行命令必须在候选分支中保留
+3. 禁止丢失关键信号：日志关键行、错误码、报错文案不能在归并中被丢弃
+4. 禁止弱检查承载强根因：如果无法稳定区分两个分支，必须拆分
+
+## LLM 使用情况
+
+**使用**：是（多阶段）
+
+### Prompt 路径
+
+| 阶段 | HCI | AF |
+|------|-----|-----|
+| pre_group | `prompt/node_sop/node_sop_pre_group_prompt_*.md` | 同 |
+| pre_group_define | `prompt/node_sop/node_sop_pre_group_define_prompt_*.md` | 同 |
+| pre_group_merge | `prompt/node_sop/node_sop_pre_group_merge_prompt_*.md` | 同 |
+| pre_group_assign | `prompt/node_sop/node_sop_pre_group_assign_prompt_*.md` | 同 |
+| batch_reduce | `prompt/node_sop/node_sop_batch_reduce_prompt_*.md` | 同 |
+| intermediate_merge_plan | `prompt/node_sop/node_sop_intermediate_merge_plan_prompt_*.md` | 同 |
+| final_merge_plan | `prompt/node_sop/node_sop_final_merge_plan_prompt_*.md` | 同 |
+| branch_content | `prompt/node_sop/node_sop_branch_content_prompt_*.md` | 同 |
+
+### Prompt 核心用法分析
+
+**用法一：聚合阶段 — 分支合并边界规则**
+
+`batch_reduce` Prompt 中明确列出了"允许合并"（三个条件同时满足：入口检查相似 + 根因同类 + 处理动作同类）和"必须拆分"的具体场景，并给出了"弱检查禁止"原则。这是一种**强约束规则编码**——将"什么时候可以合并、什么时候必须拆分"转化为可查表的判断条件，减少模型在边界场景的自由裁量。
+
+**用法二：聚合阶段 — 检查步骤的状态机建模**
+
+Prompt 要求每个 check 步骤必须只判断一件事，用四个字段表达同一件事（`command_or_path` / `expected_result` / `matched_signals` / `if_true_next`），将诊断逻辑形式化为状态机。这与事实提取阶段的"步骤图"设计一脉相承——通过标准化的结构让聚合阶段的 LLM 能够准确理解和合并来自不同案例的步骤。
+
+**用法三：final_merge_plan — 入口 flow 路由设计**
+
+Prompt 要求 flow 的唯一职责是"把进入该节点的案例高精度路由到正确的分支"，并禁止在 flow 中塞入处理动作（只做判断）。这是一种**职责边界约束**——flow 专用于路由决策，不处理业务逻辑，从而保证 flow 简短且高区分度。
+
+**用法四：final_merge_plan — 编号规则约束**
+
+Prompt 规定了点分层级编号（`entry-1`、`entry-1.1`）和分支编号规则（branch-A 到 branch-Z，超过 26 个用 branch-AA）。这是一种**确定性格式规范**——编号格式的确定性减少了解析和校验的复杂度，也便于后续渲染阶段按编号生成目录和导航。
+
+**用法五：校验反馈机制（失败重试 + 错误消息追加）**
+
+多个阶段的代码在校验失败时，将错误信息追加到下一轮用户消息中。这是一种**程序化自我修正**——不是让模型"自己想想对不对"，而是由外部代码明确告诉模型"哪里错了"，让模型在下一轮中有针对性地修正。
+
+---
+
 ## 一、核心目标
 
 ### 1.1 要解决的问题
