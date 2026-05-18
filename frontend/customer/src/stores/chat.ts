@@ -1544,7 +1544,7 @@ export const useChatStore = defineStore('chat', () => {
   const COLLECT_COMMANDS = [
     { name: 'cluster', label: '采集集群信息', cmd: 'acli platform info get' },
     { name: 'alert', label: '采集告警列表', cmd: 'acli --formatter json alert list' },
-    { name: 'task', label: '采集任务列表', cmd: 'acli --formatter json task get -l 10' },
+    { name: 'task', label: '采集失败任务列表', cmd: 'acli --formatter json task get -s failed -l 10' },
   ]
 
   function escapeRegExp(value: string): string {
