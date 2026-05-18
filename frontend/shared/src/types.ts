@@ -173,6 +173,7 @@ export interface EnvironmentContextResponse {
   }>
   task_logs: Array<{
     status: string            // "失败" | "完成"，来自 status 整数 3/2
+    process?: string          // process 原始值字符串：'100'=完成, '-1'=失败, '-2'=排队中, '-3'=取消中, '0~99'=进行中百分比
     type: string              // 任务行为/类型
     time: string              // 可读时间字符串，来自 end 时间戳转换
     host: string              // 主机名
