@@ -1,5 +1,44 @@
 # Changelog
 
+## [2.11.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.10.0...v2.11.0) (2026-05-16)
+
+
+### ✨ 新功能
+
+* **custom-ui:** 命令自动执行功能 v0.23 ([#276](https://github.com/tomturing/hci-troubleshoot-platform/issues/276)) ([acd1d16](https://github.com/tomturing/hci-troubleshoot-platform/commit/acd1d16673d78896ae8ef74035d6dadef71911af))
+* **frontend:** 工具栏重排、终端历史按钮移入 TerminalPanel、采集命令更新 ([#286](https://github.com/tomturing/hci-troubleshoot-platform/issues/286)) ([87cc85f](https://github.com/tomturing/hci-troubleshoot-platform/commit/87cc85fd2ce8fde500dd165464d47b8c03a9fd1a))
+* **ops-agent:** 新增 ops-web NodePort Service ([#271](https://github.com/tomturing/hci-troubleshoot-platform/issues/271)) ([5a1e580](https://github.com/tomturing/hci-troubleshoot-platform/commit/5a1e580a45f9aa52f2acdaca6f2b7d33f2fd238e))
+* **ops-agent:** 新增 ops-web sidecar 容器自动启动 Streamlit ([#272](https://github.com/tomturing/hci-troubleshoot-platform/issues/272)) ([fcd3edf](https://github.com/tomturing/hci-troubleshoot-platform/commit/fcd3edfa9ffd5691e63513a00014b76b1e5e7d6a))
+* 添加意图识别评估脚本 ([#289](https://github.com/tomturing/hci-troubleshoot-platform/issues/289)) ([b8ab91c](https://github.com/tomturing/hci-troubleshoot-platform/commit/b8ab91ca746315a1e91f147c921feac0e1b2eb52))
+
+
+### 🐛 Bug 修复
+
+* **api-gateway:** 新增 GET resume-stream 代理路由，修复交互选项点击后无续写（404） ([#280](https://github.com/tomturing/hci-troubleshoot-platform/issues/280)) ([3a3bd06](https://github.com/tomturing/hci-troubleshoot-platform/commit/3a3bd069b9acd8f41fe6cc1923afac8cc74f4725))
+* **conversation:** ops-agent 会话刷新后 409 自动终止旧 prompt 并重试，防止降级到备用助手 ([#278](https://github.com/tomturing/hci-troubleshoot-platform/issues/278)) ([359e2e3](https://github.com/tomturing/hci-troubleshoot-platform/commit/359e2e3c15eb012efc46d86122d9c1c4f821e9ca))
+* **environment:** 修正 acli 环境采集字段映射与前端展示 ([#285](https://github.com/tomturing/hci-troubleshoot-platform/issues/285)) ([1862c28](https://github.com/tomturing/hci-troubleshoot-platform/commit/1862c2845b1a2938096846f3841c7126905a8e68))
+* **frontend:** loadConversationHistory 补充场景A——ops-agent 生成中途刷新自动 resume ([#283](https://github.com/tomturing/hci-troubleshoot-platform/issues/283)) ([be5674e](https://github.com/tomturing/hci-troubleshoot-platform/commit/be5674e3088af05b25002bc7a4175c6cde9ccefc))
+* **frontend:** 自由文本提交后同步禁用选项按钮（4+1模式） ([#268](https://github.com/tomturing/hci-troubleshoot-platform/issues/268)) ([e5ffa1c](https://github.com/tomturing/hci-troubleshoot-platform/commit/e5ffa1ce7743da2a2af85096693b349781cf438e))
+* ops-agent 刷新后上下文丢失完整修复（前端+后端+部署） ([#284](https://github.com/tomturing/hci-troubleshoot-platform/issues/284)) ([fb66c8b](https://github.com/tomturing/hci-troubleshoot-platform/commit/fb66c8bad9e52128a39c205e230ef86b62237d7b))
+* **ops-agent:** 启动脚本用 Python 代替 curl 检查健康 ([#275](https://github.com/tomturing/hci-troubleshoot-platform/issues/275)) ([6ec6d97](https://github.com/tomturing/hci-troubleshoot-platform/commit/6ec6d974e11dbb2d1f0d6c16787ab99baca161f1))
+* **ops-agent:** 设置 HOME=/app 解决 Streamlit 权限问题 ([#270](https://github.com/tomturing/hci-troubleshoot-platform/issues/270)) ([0a02497](https://github.com/tomturing/hci-troubleshoot-platform/commit/0a02497066c987f7cd1e5fbf17dd35aa55129b7b))
+* **resume-stream:** 修复 Copilot 审查发现的5个代码质量问题 ([#281](https://github.com/tomturing/hci-troubleshoot-platform/issues/281)) ([7789a5f](https://github.com/tomturing/hci-troubleshoot-platform/commit/7789a5fe686be245a47acb8c983f5ea6c5ffd664))
+* 修复 interactive_request 历史记录刷新后气泡内容为空的问题 ([#277](https://github.com/tomturing/hci-troubleshoot-platform/issues/277)) ([71181df](https://github.com/tomturing/hci-troubleshoot-platform/commit/71181df0afad1c2e521edf069a179cc16d2a0f93))
+* 修复4个独立Bug：resume竞态/interactive落库竞态/delete-json参数/glm-5降级 ([#282](https://github.com/tomturing/hci-troubleshoot-platform/issues/282)) ([897ce8b](https://github.com/tomturing/hci-troubleshoot-platform/commit/897ce8b8ad10bb024f25ccc45e4ed34e358b0550))
+* 修复交互卡片响应后无续写内容及发消息降级备用助手的双 Bug ([#279](https://github.com/tomturing/hci-troubleshoot-platform/issues/279)) ([090d48d](https://github.com/tomturing/hci-troubleshoot-platform/commit/090d48d571c07bcfc93f22138b91e3956c4f42f8))
+
+
+### ♻️ 代码重构
+
+* **ops-agent:** 回滚 sidecar 方案，改用单容器方案 ([#274](https://github.com/tomturing/hci-troubleshoot-platform/issues/274)) ([ee3fa99](https://github.com/tomturing/hci-troubleshoot-platform/commit/ee3fa99ca9928bb11d80ae304eafa6548ff3e53e))
+
+
+### 📝 文档
+
+* 添加 sop-agent 完整阶段分析文档 ([#290](https://github.com/tomturing/hci-troubleshoot-platform/issues/290)) ([f8ddb17](https://github.com/tomturing/hci-troubleshoot-platform/commit/f8ddb1710d924128baaa3f0f41482413f29d6b6b))
+* 补充部署事件、知识库与任务文档 ([#288](https://github.com/tomturing/hci-troubleshoot-platform/issues/288)) ([e362c51](https://github.com/tomturing/hci-troubleshoot-platform/commit/e362c515ea09de31cf2aa7f56b408ddad60f9e04))
+* 重命名 ops-agent-internals 目录为 ops-agent，文件名中文规范化 ([#291](https://github.com/tomturing/hci-troubleshoot-platform/issues/291)) ([744698b](https://github.com/tomturing/hci-troubleshoot-platform/commit/744698bffde06487de78d774265e079a44c5ed04))
+
 ## [2.10.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.9.0...v2.10.0) (2026-05-10)
 
 
