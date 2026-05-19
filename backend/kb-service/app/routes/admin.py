@@ -1306,7 +1306,7 @@ def _parse_docx_bytes(content: bytes) -> tuple[str, str, list[tuple[str, str]]]:
                 if chapter_content:
                     chapters.append((current_chapter_title, chapter_content))
 
-            heading_prefix = "#" * min(level, 3)
+            heading_prefix = "#" * level
             heading_line = f"{heading_prefix} {text}"
             md_lines.append(heading_line)
             current_chapter_title = text
