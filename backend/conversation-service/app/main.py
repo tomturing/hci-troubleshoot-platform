@@ -19,6 +19,7 @@ from shared.utils.otel import init_telemetry, instrument_app
 from app.adapters.brain_router import BrainRouter
 from app.adapters.htp_brain_adapter import HTPBrainAdapter
 from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
+from app.adapters.pydantic_ai_brain_adapter import PydanticAIBrainAdapter
 from app.config import settings
 from app.routes import audit as audit_route
 from app.routes import conversations, evaluate
@@ -108,7 +109,24 @@ async def lifespan(app: FastAPI):
     ops_adapter = None
     if settings.OPS_AGENT_ENABLED:
         ops_adapter = OpsAgentBrainAdapter(base_url=settings.OPS_AGENT_BASE_URL)
-    brain_router = BrainRouter(htp_adapter=htp_adapter, ops_agent_adapter=ops_adapter, ai_registry=ai_registry)
+    pydantic_ai_adapter = None
+    if settings.PYDANTIC_AI_ENABLED:
+        from app.adapters.acli_adapter import AcliAdapter
+        from app.adapters.scp_adapter import SCPAdapter
+        _scp = SCPAdapter(base_url=settings.SCP_BASE_URL, api_key=settings.SCP_API_KEY)
+        _acli = AcliAdapter()
+        pydantic_ai_adapter = PydanticAIBrainAdapter.from_env(
+            scp_adapter=_scp,
+            acli_adapter=_acli,
+            kb_client=kb_client,
+        )
+        logger.info(event="pydantic_ai_adapter_initialized", message="pydantic-ai C 大脑已启用")
+    brain_router = BrainRouter(
+        htp_adapter=htp_adapter,
+        ops_agent_adapter=ops_adapter,
+        pydantic_ai_adapter=pydantic_ai_adapter,
+        ai_registry=ai_registry,
+    )
     app.state.brain_router = brain_router
 
     # 兼容现有路由注入方式
@@ -126,6 +144,8 @@ async def lifespan(app: FastAPI):
         await ai_registry.close_all()
     if ops_adapter:
         await ops_adapter.close()
+    if pydantic_ai_adapter is not None and hasattr(pydantic_ai_adapter, "aclose"):
+        await pydantic_ai_adapter.aclose()
     if database_manager:
         await database_manager.close()
 

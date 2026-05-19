@@ -314,3 +314,30 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
         chunks_created=chunks_created,
         status="draft",
     )
+
+
+@router.get("/{document_id}/tree", summary="查询 SOP 决策树")
+async def get_sop_tree(document_id: int, request: Request) -> dict:
+    """查询已解析的 SOP 决策树（供 AI Agent 工具侧遍历）。
+
+    返回 tree_json（SOPNode.model_dump() 格式）。
+    404 表示树尚未生成，调用方应降级到文本摘要。
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="数据库未初始化")
+
+    async with _db_manager.session() as session:
+        result = await session.execute(
+            select(SopTree).where(SopTree.document_id == document_id)
+        )
+        sop_tree = result.scalar_one_or_none()
+
+    if sop_tree is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"SOP 文档 {document_id} 的决策树尚未生成",
+        )
+
+    return {"document_id": document_id, "tree": sop_tree.tree_json}
