@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 KB Service — SOP 多叉决策树 Pydantic 校验模型
 
@@ -53,9 +55,7 @@ KB Service — SOP 多叉决策树 Pydantic 校验模型
   统一节点类型使遍历算法无需区分根 vs 非根，更简洁。
 """
 
-from __future__ import annotations
-
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator  # noqa: E402
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 叶节点内部结构 1/2：判断方法段落
@@ -185,7 +185,7 @@ class SOPNode(BaseModel):
         return [s.strip() for s in v if s.strip()]
 
     @model_validator(mode="after")
-    def warn_leaf_missing_fields(self) -> "SOPNode":
+    def warn_leaf_missing_fields(self) -> SOPNode:
         """宽松校验：叶节点缺少 diagnosis 或 solution 时不抛异常，
         仅在 SOPValidationResult 层记录 error（此方法不做任何校验）。
 
