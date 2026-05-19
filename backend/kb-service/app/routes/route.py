@@ -7,7 +7,7 @@ GET /api/kb/route
   - 无需鉴权（Pod 内部调用）
 
 三轨优先级：
-  1. SOP：标准操作流程（sop_document 表尚未创建，暂时跳过）
+  1. SOP：标准操作流程（sop_document 直查 category_id）
   2. KBD：知识库条目（已发布的 kbd_entry）
   3. 人工兜底：无匹配结果时返回 human_escalation
 """
@@ -71,7 +71,7 @@ async def route(
     """三轨串行路由
 
     流程：
-    1. SOP 轨：标准操作流程（sop_document 表尚未创建，暂时跳过）
+    1. SOP 轨：标准操作流程（sop_document 直查 category_id）
     2. KBD 轨：知识库条目检索（BM25 全文检索）
     3. 人工轨：无匹配结果时返回 human_escalation
 
@@ -144,6 +144,7 @@ async def route(
                 SELECT id, title, content_md, support_id, category_id
                 FROM kbd_entry
                 WHERE category_id = :category_id AND status = 'published'
+                    AND tsv @@ plainto_tsquery('simple', :query)
                 ORDER BY ts_rank(tsv, plainto_tsquery('simple', :query)) DESC
                 LIMIT :top_k
                 """

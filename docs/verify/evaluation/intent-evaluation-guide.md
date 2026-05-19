@@ -11,115 +11,49 @@
 
 ## 快速开始
 
-### 1. 查看帮助
+### 1. 修改配置参数
 
-```bash
-# 查看总帮助
-python scripts/evaluation/intent_eval.py --help
+`intent_eval.py` 为独立脚本，配置直接写在 `main()` 函数顶部，运行前需编辑以下变量：
 
-# 查看子命令帮助
-python scripts/evaluation/intent_eval.py run --help
-python scripts/evaluation/intent_eval.py export --help
-python scripts/evaluation/intent_eval.py status --help
+```python
+# scripts/evaluation/intent_eval.py — main() 函数顶部
+excel_path     = Path("/path/to/HCI-xxx.xlsx")  # 输入 Excel 文件路径
+api_base_url   = "http://172.22.73.249"           # HCI API 地址
+assistant_type = "glm-5"                           # AI 助手类型
+output_dir     = Path(__file__).parent             # 输出目录（默认脚本目录）
 ```
 
 ### 2. 运行评估
 
 ```bash
-# 基本用法
-python scripts/evaluation/intent_eval.py run --input data.xlsx
-
-# 指定输出目录
-python scripts/evaluation/intent_eval.py run --input data.xlsx --output-dir ./output
-
-# 指定 API 地址
-python scripts/evaluation/intent_eval.py run --input data.xlsx --api http://172.22.73.249
+# 修改配置后直接执行
+python scripts/evaluation/intent_eval.py
 ```
+
+支持 `Ctrl+C` 安全中断，下次运行自动从断点继续。
 
 ### 3. 查看进度
 
 ```bash
-# 查看当前评估进度
-python scripts/evaluation/intent_eval.py status
-
-# 指定输出目录
-python scripts/evaluation/intent_eval.py status --output-dir ./output
+# 查看断点续传进度文件
+cat scripts/evaluation/progress.json
 ```
 
 ### 4. 导出结果
 
 ```bash
-# 将 AI 回复导出到 Excel
-python scripts/evaluation/intent_eval.py export --input data.xlsx --output result.xlsx
-
-# 指定结果文件
-python scripts/evaluation/intent_eval.py export --input data.xlsx --results ./output/eval_results.json
+# 修改 export_ai_responses.py 中的路径后运行
+python scripts/evaluation/export_ai_responses.py
 ```
 
-## 命令详解
+## 配置参数
 
-### `run` - 运行评估
-
-| 参数 | 简写 | 必填 | 默认值 | 说明 |
-|-----|------|------|-------|------|
-| `--input` | `-i` | 是 | - | 输入 Excel 文件路径 |
-| `--api` | `-a` | 否 | `http://172.22.73.249` | API 地址 |
-| `--assistant` | - | 否 | `glm-5` | AI 助手类型 |
-| `--output-dir` | `-o` | 否 | 脚本所在目录 | 输出目录 |
-
-**示例：**
-
-```bash
-# 处理 HCI-虚拟机开关机非P4-20260101-260515.xlsx
-python scripts/evaluation/intent_eval.py run \
-  --input HCI-虚拟机开关机非P4-20260101-260515.xlsx \
-  --output-dir scripts/evaluation/vm_output
-```
-
-### `export` - 导出结果
-
-| 参数 | 简写 | 必填 | 默认值 | 说明 |
-|-----|------|------|-------|------|
-| `--input` | `-i` | 是 | - | 原始 Excel 文件路径 |
-| `--output` | `-o` | 否 | 原文件名-结果.xlsx | 输出 Excel 文件路径 |
-| `--results` | `-r` | 否 | eval_results.json | 评估结果 JSON 文件 |
-| `--api` | `-a` | 否 | `http://172.22.73.249` | API 地址 |
-
-**示例：**
-
-```bash
-# 导出 AI 回复到 Excel
-python scripts/evaluation/intent_eval.py export \
-  --input HCI-虚拟机开关机非P4-20260101-260515.xlsx \
-  --output HCI-虚拟机开关机非P4-20260101-260515-结果.xlsx
-```
-
-### `status` - 查看进度
-
-| 参数 | 简写 | 必填 | 默认值 | 说明 |
-|-----|------|------|-------|------|
-| `--output-dir` | `-o` | 否 | 脚本所在目录 | 输出目录 |
-
-**示例：**
-
-```bash
-python scripts/evaluation/intent_eval.py status
-```
-
-**输出示例：**
-
-```
-======================================================================
-评估进度状态
-======================================================================
-最后处理: 第 360 条
-总数: 712
-更新时间: 2026-05-18T11:27:15.681342
-进度: 50.6%
-成功记录: 340
-失败记录: 20
-======================================================================
-```
+| 参数 | 说明 | 默认值 |
+|------|------|-------|
+| `excel_path` | 输入 Excel 文件路径 | 脚本目录下 `HCI-内存硬盘非P4-260101-26058.xlsx` |
+| `api_base_url` | HCI API 地址 | `http://172.22.73.249` |
+| `assistant_type` | AI 助手类型 | `glm-5` |
+| `output_dir` | 输出目录 | 脚本所在目录 |
 
 ## 输入文件格式
 
@@ -196,11 +130,11 @@ Excel 文件必须包含以下列：
 
 ```bash
 # 第一次运行，处理到第 100 条时中断
-python scripts/evaluation/intent_eval.py run --input data.xlsx
+python scripts/evaluation/intent_eval.py
 # Ctrl+C 中断
 
 # 再次运行，从第 101 条继续
-python scripts/evaluation/intent_eval.py run --input data.xlsx
+python scripts/evaluation/intent_eval.py
 # 输出: 📦 断点续传: 从第 101 条继续 (共 712 条)
 ```
 
@@ -212,44 +146,39 @@ python scripts/evaluation/intent_eval.py run --input data.xlsx
 
 **解决方案**：
 - 检查 K3s 服务是否正常运行
-- 确认 API 地址是否正确（默认 `http://172.22.73.249`）
-- 使用 `--api` 参数指定正确的地址
+- 确认 `intent_eval.py` 中 `api_base_url` 配置是否正确（默认 `http://172.22.73.249`）
 
 ### 2. Excel 文件不存在
 
 **错误信息**：`❌ Excel 文件不存在: ...`
 
 **解决方案**：
-- 检查文件路径是否正确
-- 使用绝对路径或相对于当前目录的路径
+- 检查 `intent_eval.py` 中 `excel_path` 配置是否指向正确文件
+- 确认文件已存在于指定路径
 
 ### 3. 进度文件不存在
 
 **错误信息**：`❌ 未找到进度文件，可能尚未开始评估`
 
 **解决方案**：
-- 先运行 `run` 命令开始评估
-- 使用 `--output-dir` 指定正确的输出目录
+- 先运行脚本开始评估，`progress.json` 会自动生成
+- 确认 `output_dir` 配置与查看的目录一致
 
 ## 完整示例
 
 ```bash
-# 1. 准备 Excel 文件
-ls HCI-虚拟机开关机非P4-20260101-260515.xlsx
+# 1. 编辑 intent_eval.py，修改配置参数
+vim scripts/evaluation/intent_eval.py
+# 修改: excel_path / api_base_url / assistant_type / output_dir
 
 # 2. 运行评估
-python scripts/evaluation/intent_eval.py run \
-  --input HCI-虚拟机开关机非P4-20260101-260515.xlsx \
-  --output-dir scripts/evaluation/vm_output
+python scripts/evaluation/intent_eval.py
 
 # 3. 查看进度（另开终端）
-python scripts/evaluation/intent_eval.py status \
-  --output-dir scripts/evaluation/vm_output
+cat scripts/evaluation/vm_output/progress.json
 
-# 4. 导出结果
-python scripts/evaluation/intent_eval.py export \
-  --input HCI-虚拟机开关机非P4-20260101-260515.xlsx \
-  --output-dir scripts/evaluation/vm_output
+# 4. 导出结果（修改 export_ai_responses.py 中的路径后运行）
+python scripts/evaluation/export_ai_responses.py
 
 # 5. 在 admin-ui 查看工单
 # 访问 http://172.22.73.249/admin/
