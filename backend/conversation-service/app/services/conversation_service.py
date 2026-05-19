@@ -387,6 +387,8 @@ class ConversationService:
                         # 发出阶段切换事件通知前端，并继续以 S1 身份调用 AI
                         yield "\x00event:stage_change:S1\x00"
                         current_stage = "S1"
+                        # N-2 修复：同步更新本次请求的确认分类，使 retrieve() 跳过 classify_intent
+                        _confirmed_category_code = _chosen["code"]
                     else:
                         # 用户选 ③"以上都不是"
                         _s0_rounds = await self._get_s0_candidate_rounds(conversation_id)
