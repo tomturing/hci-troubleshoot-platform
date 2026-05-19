@@ -7,7 +7,7 @@ GET /api/kb/route
   - 无需鉴权（Pod 内部调用）
 
 三轨优先级：
-  1. SOP：标准操作流程（sop_document 表尚未创建，暂时跳过）
+  1. SOP：标准操作流程（sop_document 直查 category_id）
   2. KBD：知识库条目（已发布的 kbd_entry）
   3. 人工兜底：无匹配结果时返回 human_escalation
 """
@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from shared.utils.logger import get_logger
+from sqlalchemy import text
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -70,7 +71,7 @@ async def route(
     """三轨串行路由
 
     流程：
-    1. SOP 轨：标准操作流程（sop_document 表尚未创建，暂时跳过）
+    1. SOP 轨：标准操作流程（sop_document 直查 category_id）
     2. KBD 轨：知识库条目检索（BM25 全文检索）
     3. 人工轨：无匹配结果时返回 human_escalation
 
@@ -101,56 +102,62 @@ async def route(
         top_k=top_k,
     )
 
-    # 第 1 轨：SOP 优先（sop_document 表尚未创建，暂时跳过）
-    # TODO: sop_document 表创建后启用
-    # sop_docs = await _db_manager.fetch(
-    #     """
-    #     SELECT id, title, content
-    #     FROM sop_document
-    #     WHERE category_id = $1 AND status = 'published'
-    #     ORDER BY updated_at DESC
-    #     LIMIT $2
-    #     """,
-    #     category_id,
-    #     top_k,
-    # )
-    # if sop_docs:
-    #     logger.info(event="route_sop_matched", category_id=category_id, count=len(sop_docs))
-    #     return RouteResponse(
-    #         track="sop",
-    #         category_id=category_id,
-    #         results=[
-    #             RouteResult(
-    #                 id=doc["id"],
-    #                 title=doc["title"],
-    #                 content_md=doc.get("content"),
-    #                 support_id=f"sop-{doc['id']}",
-    #                 category_id=category_id,
-    #             )
-    #             for doc in sop_docs
-    #         ],
-    #     )
+    # 第 1 轨：SOP 优先
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT id, title, content_md
+                FROM sop_document
+                WHERE category_id = :category_id AND status = 'published'
+                ORDER BY updated_at DESC
+                LIMIT :top_k
+                """
+            ),
+            {"category_id": category_id, "top_k": top_k},
+        )
+        sop_rows = result.fetchall()
+
+    if sop_rows:
+        logger.info(event="route_sop_matched", category_id=category_id, count=len(sop_rows))
+        return RouteResponse(
+            track="sop",
+            category_id=category_id,
+            results=[
+                RouteResult(
+                    id=row.id,
+                    title=row.title,
+                    content_md=row.content_md,
+                    support_id=f"sop-{row.id}",
+                    category_id=category_id,
+                )
+                for row in sop_rows
+            ],
+        )
 
     # 第 2 轨：KBD 覆盖
     # 使用 PostgreSQL 全文检索（tsvector + ts_rank）
-    kbd_entries = await _db_manager.fetch(
-        """
-        SELECT id, title, content_md, support_id, category_id
-        FROM kbd_entry
-        WHERE category_id = $1 AND status = 'published'
-        ORDER BY ts_rank(tsv, plainto_tsquery('simple', $2)) DESC
-        LIMIT $3
-        """,
-        category_id,
-        query,
-        top_k,
-    )
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT id, title, content_md, support_id, category_id
+                FROM kbd_entry
+                WHERE category_id = :category_id AND status = 'published'
+                    AND tsv @@ plainto_tsquery('simple', :query)
+                ORDER BY ts_rank(tsv, plainto_tsquery('simple', :query)) DESC
+                LIMIT :top_k
+                """
+            ),
+            {"category_id": category_id, "query": query, "top_k": top_k},
+        )
+        kbd_rows = result.fetchall()
 
-    if kbd_entries:
+    if kbd_rows:
         logger.info(
             event="route_kbd_matched",
             category_id=category_id,
-            count=len(kbd_entries),
+            count=len(kbd_rows),
             query=query[:50],
         )
         return RouteResponse(
@@ -158,13 +165,13 @@ async def route(
             category_id=category_id,
             results=[
                 RouteResult(
-                    id=entry["id"],
-                    title=entry["title"],
-                    content_md=entry.get("content_md"),
-                    support_id=entry["support_id"],
-                    category_id=entry.get("category_id"),
+                    id=row.id,
+                    title=row.title,
+                    content_md=row.content_md,
+                    support_id=row.support_id,
+                    category_id=row.category_id,
                 )
-                for entry in kbd_entries
+                for row in kbd_rows
             ],
         )
 

@@ -28,7 +28,10 @@ class Settings(BaseSettings):
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
     # KB 检索参数
     KB_SEARCH_TOP_N: int = 5           # RRF 融合后取 top-N
-    KB_CONTEXT_MAX_CHARS: int = 2000   # 注入 Prompt 的最大字符数
+    KB_CONTEXT_MAX_CHARS: int = 40000  # 注入 Prompt 的最大字符数
+    # 40000 依据：GLM-5 128K context × 32K最优区间上限 × 1.5chars/token = 48K chars，
+    # 保守取 40K，覆盖当前最大 SOP 文档(18843 chars) 并保留 2.1x 增长余量。
+    # 推导：(128K - 4096出力 - 533静态段 - 1728历史20条) × (32K/128K) × 1.5 ≈ 40000
     KB_ENABLED: bool = True             # 是否启用 KB 注入（可通过环境变量动态关闭）
 
     # Scheduler 配置（用于真实 Pod 分配链路）

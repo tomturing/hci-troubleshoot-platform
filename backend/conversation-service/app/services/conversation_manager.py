@@ -187,6 +187,14 @@ class ConversationManager:
                     code=category_info["code"],
                     name=category_info["name"],
                 )
+            # N-3 修复：S0→S1 自动转换必须伴随确认分类信息（避免 AI 仅呈现候选时误触发）
+            # S0→S1 的正式转换由步骤2.5（用户点击候选按钮）通过 _update_diagnostic_stage 控制
+            if new_stage == "S1" and category_info is None:
+                logger.debug(
+                    event="s0_s1_transition_blocked",
+                    message="S0→S1 自动转换被拦截：AI 回复未包含「已确认故障分类」标记",
+                )
+                new_stage = None
 
         return new_stage, category_info
 

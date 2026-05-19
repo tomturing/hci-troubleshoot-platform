@@ -10,10 +10,17 @@ const expanded = ref(false)
 // SSH 连接状态
 const isSshConnected = computed(() => chatStore.sshConnectionState === 'connected')
 
-// 刷新数据
+// 刷新加载状态
+const isRefreshing = ref(false)
+
+// 刷新数据（始终从 API 拉取最新数据，无需 SSH 连接）
 async function handleRefresh() {
-  if (!isSshConnected.value) return
-  await chatStore.refreshEnvironmentData()
+  isRefreshing.value = true
+  try {
+    await chatStore.refreshEnvironmentData()
+  } finally {
+    isRefreshing.value = false
+  }
 }
 
 // 发送到助手（将环境数据摘要追加到输入框）
@@ -109,6 +116,26 @@ const summaryText = computed(() => {
 
 // 采集状态
 const collectionState = computed(() => chatStore.collectionState)
+
+/**
+ * 解析 process 字段，返回展示类型
+ *   'done'       - process='100'，已完成
+ *   'failed'     - process='-1'，失败
+ *   'queued'     - process='-2'，排队中
+ *   'cancelling' - process='-3'，取消中
+ *   'progress'   - process=0~99（数值），进行中
+ *   'unknown'    - 无 process 字段或未知值，回退到 status 文字
+ */
+function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cancelling' | 'progress' | 'unknown' {
+  if (process === null || process === undefined || process === '') return 'unknown'
+  if (process === '100') return 'done'
+  if (process === '-1') return 'failed'
+  if (process === '-2') return 'queued'
+  if (process === '-3') return 'cancelling'
+  const n = Number(process)
+  if (!isNaN(n) && n >= 0 && n < 100) return 'progress'
+  return 'unknown'
+}
 </script>
 
 <template>
@@ -205,7 +232,32 @@ const collectionState = computed(() => chatStore.collectionState)
             :key="idx"
             class="task-item"
           >
-            <el-tag :type="task.status === '失败' ? 'danger' : task.status === '完成' ? 'success' : 'warning'" size="small">
+            <!-- 基于 process 字段决定状态展示方式 -->
+            <!-- 完成：绿色对勾图标 + 文字 -->
+            <span v-if="getProcessType(task.process) === 'done'" class="task-status task-status-done">
+              ✅ 完成
+            </span>
+            <!-- 失败：红色 × 图标 + 文字 -->
+            <span v-else-if="getProcessType(task.process) === 'failed'" class="task-status task-status-failed">
+              ❌ 失败
+            </span>
+            <!-- 排队中：纯文字 -->
+            <span v-else-if="getProcessType(task.process) === 'queued'" class="task-status task-status-text">
+              排队中
+            </span>
+            <!-- 取消中：纯文字 -->
+            <span v-else-if="getProcessType(task.process) === 'cancelling'" class="task-status task-status-text">
+              取消中
+            </span>
+            <!-- 进行中：进度条 + 百分比 -->
+            <span v-else-if="getProcessType(task.process) === 'progress'" class="task-progress">
+              <span class="task-progress-track">
+                <span class="task-progress-fill" :style="{ width: `${Number(task.process)}%` }"></span>
+              </span>
+              <span class="task-progress-text">{{ task.process }}%</span>
+            </span>
+            <!-- 无 process 字段：回退到 status 文字标签 -->
+            <el-tag v-else :type="task.status === '失败' ? 'danger' : task.status === '完成' ? 'success' : 'warning'" size="small">
               {{ task.status || '未知' }}
             </el-tag>
             <span class="task-time" v-if="task.time">{{ task.time }}</span>
@@ -226,12 +278,12 @@ const collectionState = computed(() => chatStore.collectionState)
       <!-- 操作按钮 -->
       <div class="card-actions">
         <el-tooltip
-          :content="isSshConnected ? '重新采集环境数据' : '需要 SSH 连接才能刷新'"
+          :content="isSshConnected ? '重新采集环境数据（SSH 已连接）' : '从服务器加载最新环境数据'"
           placement="top"
         >
           <el-button
             size="small"
-            :disabled="!isSshConnected"
+            :loading="isRefreshing"
             @click="handleRefresh"
           >
             刷新数据
@@ -373,6 +425,55 @@ const collectionState = computed(() => chatStore.collectionState)
 .task-time {
   font-size: 11px;
   color: #c0c4cc;
+}
+
+/* 任务状态：基于 process 字段的展示 */
+.task-status {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.task-status-done {
+  color: #67c23a;
+}
+
+.task-status-failed {
+  color: #f56c6c;
+}
+
+.task-status-text {
+  color: #909399;
+}
+
+/* 进度条 */
+.task-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-progress-track {
+  display: inline-block;
+  width: 80px;
+  height: 6px;
+  background: #e4e7ed;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.task-progress-fill {
+  display: block;
+  height: 100%;
+  background: #409eff;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.task-progress-text {
+  font-size: 11px;
+  color: #409eff;
+  font-weight: 500;
 }
 
 .more-hint {

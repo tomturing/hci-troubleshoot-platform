@@ -238,6 +238,7 @@ class EnvironmentService:
         for t in tasks[:10]:  # 最多 10 条
             item: dict = {
                 "status": map_status(t.get("status"), t.get("process")),
+                "process": str(t["process"]) if t.get("process") is not None else None,
                 "type": t.get("type", ""),
                 "time": self._fmt_ts(t.get("end", "")),
                 "host": t.get("host", ""),
