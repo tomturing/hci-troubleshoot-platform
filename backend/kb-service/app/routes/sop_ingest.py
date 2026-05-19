@@ -26,6 +26,7 @@ from sqlalchemy import delete, select
 
 from app.models.sop_chunk import SopChunk
 from app.models.sop_document import SopDocument
+from app.models.sop_tree import SopTree
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager

@@ -19,13 +19,15 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.adapters.htp_brain_adapter import HTPBrainAdapter
 from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
-from app.adapters.pydantic_ai_brain_adapter import PydanticAIBrainAdapter
 from app.core.brain_port import BrainEvent, BrainTextChunk, BrainUnavailableError
 from app.services.ai_client import AIAssistantRegistry
+
+if TYPE_CHECKING:
+    from app.adapters.pydantic_ai_brain_adapter import PydanticAIBrainAdapter
 
 logger = logging.getLogger("brain-router")
 

@@ -19,7 +19,6 @@ from shared.utils.otel import init_telemetry, instrument_app
 from app.adapters.brain_router import BrainRouter
 from app.adapters.htp_brain_adapter import HTPBrainAdapter
 from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
-from app.adapters.pydantic_ai_brain_adapter import PydanticAIBrainAdapter
 from app.config import settings
 from app.routes import audit as audit_route
 from app.routes import conversations, evaluate
@@ -112,6 +111,7 @@ async def lifespan(app: FastAPI):
     pydantic_ai_adapter = None
     if settings.PYDANTIC_AI_ENABLED:
         from app.adapters.acli_adapter import AcliAdapter
+        from app.adapters.pydantic_ai_brain_adapter import PydanticAIBrainAdapter
         from app.adapters.scp_adapter import SCPAdapter
         _scp = SCPAdapter(base_url=settings.SCP_BASE_URL, api_key=settings.SCP_API_KEY)
         _acli = AcliAdapter()

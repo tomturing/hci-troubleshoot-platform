@@ -261,7 +261,7 @@ class PydanticAIBrainAdapter:
         scp_adapter: SCPAdapter,
         acli_adapter: AcliAdapter,
         kb_client: KBClient | None = None,
-    ) -> "PydanticAIBrainAdapter":
+    ) -> PydanticAIBrainAdapter:
         """从环境变量构造实例（复用 OpenClaw 的 OPENCLAW_BASE_URL / OPENCLAW_API_KEY）。
 
         GLM_MODEL 默认值为 "glm-4-flash"。
