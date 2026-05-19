@@ -95,17 +95,24 @@ class _SectionEntry:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+# 不识别为 diagnosis/solution 的后缀词（中间节点标题通常以这些词结尾）
+_STRUCTURAL_SUFFIXES: frozenset[str] = frozenset(
+    ["概述", "汇总", "总览", "简介", "概要", "目录"]
+)
+
+
 def classify_heading(text: str) -> Literal["diagnosis", "solution", "node"]:
     """判断标题文本的语义类型
 
-    Args:
-        text: 标题原文
-
-    Returns:
-        "diagnosis" — 包含 DIAGNOSIS_KEYWORDS 中任一关键词
-        "solution"  — 包含 SOLUTION_KEYWORDS 中任一关键词
-        "node"      — 其他情况（普通树节点标题）
+    匹配规则：标题包含 diagnosis/solution 关键词，且不以结构性后缀词结尾。
+    例：
+      "判断方法"          → diagnosis（精确等于关键词）
+      "Redis OOM 判断方法" → diagnosis（包含关键词，无结构后缀）
+      "判断方法概述"       → node（包含关键词但以"概述"结尾，为中间节点标题）
     """
+    for suffix in _STRUCTURAL_SUFFIXES:
+        if text.endswith(suffix):
+            return "node"
     for kw in DIAGNOSIS_KEYWORDS:
         if kw in text:
             return "diagnosis"

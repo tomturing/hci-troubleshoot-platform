@@ -154,6 +154,12 @@ class TestClassifyHeading:
         """空字符串 → node（无关键词）"""
         assert classify_heading("") == "node"
 
+    def test_structural_suffix_not_classified(self):
+        """包含关键词但以结构性后缀（概述/汇总）结尾的标题 → node（中间节点）"""
+        assert classify_heading("判断方法概述") == "node", "章节汇总标题不应识别为 diagnosis"
+        assert classify_heading("解决方案汇总") == "node", "章节汇总标题不应识别为 solution"
+        assert classify_heading("排查方法总览") == "node", "目录型标题不应识别为 diagnosis"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 空文档测试

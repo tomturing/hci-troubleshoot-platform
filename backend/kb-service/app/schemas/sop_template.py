@@ -55,7 +55,7 @@ KB Service — SOP 多叉决策树 Pydantic 校验模型
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 叶节点内部结构 1/2：判断方法段落
@@ -183,6 +183,16 @@ class SOPNode(BaseModel):
     @classmethod
     def strip_prerequisites(cls, v: list[str]) -> list[str]:
         return [s.strip() for s in v if s.strip()]
+
+    @model_validator(mode="after")
+    def warn_leaf_missing_fields(self) -> "SOPNode":
+        """宽松校验：叶节点缺少 diagnosis 或 solution 时不抛异常，
+        仅在 SOPValidationResult 层记录 error（此方法不做任何校验）。
+
+        外部调用方（如单元测试）可通过 SOPValidationResult 获取完整校验结果。
+        此 validator 占位存在，为未来开关式严格模式预留接口。
+        """
+        return self
 
     @property
     def is_leaf(self) -> bool:
