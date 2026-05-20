@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from shared.observability.logger import get_logger
-from sqlalchemy import select
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,10 +18,10 @@ logger = get_logger("quality_score")
 # 关闭原因评分映射（与 case-service/quality_score.py 保持严格一致，避免重算时分值漂移）
 CLOSE_REASON_SCORE = {
     "user_command": 100,  # 用户主动解决：最高分
-    "timeout": 50,        # 超时：中性基础分
-    "admin_close": 50,    # 人工干预：略高于中性
-    "abandon": 10,        # 放弃：最低分
-    None: 50,             # 未知：中性
+    "timeout": 50,  # 超时：中性基础分
+    "admin_close": 50,  # 人工干预：略高于中性
+    "abandon": 10,  # 放弃：最低分
+    None: 50,  # 未知：中性
 }
 
 # 基础权重配置（归一化前）
@@ -249,7 +248,6 @@ class QualityScoreService:
 
         # 3. 读取 prompt_audit 元数据（确保 ai_quality 维度始终参与评分）
         # 使用原始 SQL 查询，无需在 conversation-service 中定义 PromptAudit ORM 模型
-        from sqlalchemy import text
 
         audit_result = await self.session.execute(
             text(
@@ -343,7 +341,6 @@ class QualityScoreService:
 
     async def _get_existing_rating(self, case_id: str) -> int | None:
         """获取已存在的用户评分"""
-        from sqlalchemy import text
 
         result = await self.session.execute(
             text(
@@ -362,7 +359,6 @@ class QualityScoreService:
 
     async def _get_evaluation(self, case_id: str) -> dict[str, Any] | None:
         """获取评价记录"""
-        from sqlalchemy import text
 
         result = await self.session.execute(
             text(
@@ -399,7 +395,6 @@ class QualityScoreService:
         trace_id: str | None,
     ) -> None:
         """UPSERT assistant_evaluation 记录"""
-        from sqlalchemy import text
 
         # 先查询最新一条评价记录，避免依赖 case_id 的唯一约束
         existing = await self._get_evaluation(case_id)
@@ -475,7 +470,6 @@ class QualityStatsService:
         Returns:
             dict: 包含平均综合分、关闭原因分布等
         """
-        from sqlalchemy import text
 
         # 近 N 天平均 composite_score
         result = await self.session.execute(
@@ -560,7 +554,6 @@ class QualityStatsService:
         Returns:
             dict: 包含工单列表和分页信息
         """
-        from sqlalchemy import text
 
         # 查询低分工件列表
         result = await self.session.execute(
@@ -588,17 +581,19 @@ class QualityStatsService:
 
         cases = []
         for row in result.fetchall():
-            cases.append({
-                "case_id": row[0],
-                "conversation_id": str(row[1]) if row[1] else None,
-                "user_rating": row[2],
-                "composite_score": row[3],
-                "close_reason": row[4],
-                "score_breakdown": row[5],
-                "evaluated_at": row[6].isoformat() if row[6] else None,
-                "case_title": row[7],
-                "case_status": row[8],
-            })
+            cases.append(
+                {
+                    "case_id": row[0],
+                    "conversation_id": str(row[1]) if row[1] else None,
+                    "user_rating": row[2],
+                    "composite_score": row[3],
+                    "close_reason": row[4],
+                    "score_breakdown": row[5],
+                    "evaluated_at": row[6].isoformat() if row[6] else None,
+                    "case_title": row[7],
+                    "case_status": row[8],
+                }
+            )
 
         # 查询总数
         count_result = await self.session.execute(
