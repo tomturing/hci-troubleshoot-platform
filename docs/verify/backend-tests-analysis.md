@@ -251,23 +251,29 @@
 
 ## 六、改进计划
 
-### Phase 1：P0 修复（预计 1 天）
+### Phase 1：P0 修复（已完成 ✅）
 
-1. 修复 eval-service/test_eval_service_api.py 的 Mock 实现
-2. 删除 scheduler-service/test_scheduler_service.py 重复代码
+| 序号 | 任务 | 状态 | 说明 |
+|------|------|------|------|
+| 1 | eval-service Mock 实现修复 | ✅ 已完成 | conftest.py 添加命名空间清除逻辑 |
+| 2 | scheduler-service 重复代码删除 | ✅ 已完成 | test_scheduler_service.py 删除重复命名空间处理代码 |
 
-### Phase 2：P1 补充核心测试（预计 3 天）
+### Phase 2：P1 补充核心测试（待完成）
 
-3. agent-service：添加 chat_completion_stream 测试
-4. scheduler-service：添加 reconcile_allocations 测试
-5. api-gateway：添加 close_case 测试
-6. eval-service：添加 QualityScoreService 测试
+| 序号 | 任务 | 状态 | 优先级 |
+|------|------|------|--------|
+| 3 | agent-service: chat_completion_stream 测试 | 🔄 进行中 | 高 |
+| 4 | scheduler-service: reconcile_allocations 测试 | ⏳ 待开始 | 高 |
+| 5 | api-gateway: close_case 测试 | ⏳ 待开始 | 高 |
+| 6 | eval-service: QualityScoreService 测试 | ⏳ 待开始 | 高 |
 
-### Phase 3：P2 扩展覆盖（预计 2 天）
+### Phase 3：P2 扩展覆盖（待完成）
 
-7. case-service：补充状态机完整测试
-8. conversation-service：简化 fixture
-9. kb-service：添加并发竞态测试
+| 序号 | 任务 | 状态 |
+|------|------|------|
+| 7 | case-service: 状态机完整测试 | ⏳ 待开始 |
+| 8 | conversation-service: fixture 简化 | ⏳ 待开始 |
+| 9 | kb-service: 并发竞态测试 | ⏳ 待开始 |
 
 ---
 

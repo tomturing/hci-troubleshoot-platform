@@ -9,6 +9,7 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import MessageCreate, MessageResponse
 from shared.observability.logger import get_logger
@@ -16,11 +17,8 @@ from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceErr
 
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.agent_client import AgentClient
-from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService
 from ..services.environment_client import EnvironmentClient
-from ..services.kb_client import KBClient
-from ..services.scheduler_client import SchedulerClient
 from .evaluate import require_admin_token
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
