@@ -56,28 +56,9 @@ class Settings(BaseSettings):
     # }
     ASSISTANT_REGISTRY_JSON: str = "{}"
 
-    # ── Phase 3：ReAct 引擎配置 ──────────────────────────────────────────────
-    # GLMClient 使用 OPENCLAW_BASE_URL + OPENCLAW_GATEWAY_TOKEN，
-    # 单独的 API Key 环境变量兼容裸 GLM 直连场景
-    OPENCLAW_API_KEY: str = ""           # 若非空则优先于 OPENCLAW_GATEWAY_TOKEN
-    GLM_MODEL: str = "glm-4-flash"       # GLM 模型名称
-
-    # SCP REST API 配置（深信服 HCI 管理平台）
-    SCP_BASE_URL: str = ""               # 如 http://192.168.1.100:8082
-    SCP_API_KEY: str = ""                # x-auth-token 头部认证 Key
-
-    # ── T1: ops-agent 大脑可选集成 ──────────────────────────────────────────
-    OPS_AGENT_BASE_URL: str = "http://ops-agent-service:8006"  # ops-agent ClusterIP
-    OPS_AGENT_ENABLED: bool = False  # 默认关闭，OPS_AGENT_ENABLED=true 时启用
-
-    # ── pydantic-ai C 大脑可选集成（A/B/C 三向测试）──────────────────────────────────
-    PYDANTIC_AI_ENABLED: bool = False  # 默认关闭，PYDANTIC_AI_ENABLED=true 时启用
-
-    # ReAct 是否启用（需要 SCP_BASE_URL + SCP_API_KEY 同时非空才生效）
-    REACT_ENABLED: bool = False
-
-    # 人工确认超时（秒）
-    CONFIRM_TIMEOUT_SEC: int = 120
+    # ── [PR-B] agent-service 集成配置 ───────────────────────────────────────
+    AGENT_SERVICE_URL: str = "http://agent-service:8005"
+    AGENT_SERVICE_ENABLED: bool = True  # false 时回退到直连 ai_registry 路径（兜底）
 
     @property
     def assistant_registry(self) -> dict[str, dict[str, Any]]:

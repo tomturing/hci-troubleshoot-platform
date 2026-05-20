@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """意图识别评估脚本 - 支持批量创建工单并触发AI意图识别"""
 
 import argparse
@@ -74,35 +73,34 @@ class IntentEvaluation:
         ai_content = []
         error_msg = None
 
-        async with httpx.AsyncClient(timeout=Config.TIMEOUT) as client:
-            async with client.stream(
-                "POST",
-                f"{self.api_base_url}/api/conversations/{conversation_id}/message",
-                json={"case_id": case_id, "role": "user", "content": content},
-            ) as response:
-                # 检查 HTTP 状态码
-                if response.status_code != 200:
-                    error_msg = f"HTTP {response.status_code}"
+        async with httpx.AsyncClient(timeout=Config.TIMEOUT) as client, client.stream(
+            "POST",
+            f"{self.api_base_url}/api/conversations/{conversation_id}/message",
+            json={"case_id": case_id, "role": "user", "content": content},
+        ) as response:
+            # 检查 HTTP 状态码
+            if response.status_code != 200:
+                error_msg = f"HTTP {response.status_code}"
 
-                async for line in response.aiter_lines():
-                    # 处理 SSE 事件行
-                    if line.startswith("event:"):
-                        event_type = line[6:].strip()
-                        if event_type == "error":
-                            continue
+            async for line in response.aiter_lines():
+                # 处理 SSE 事件行
+                if line.startswith("event:"):
+                    event_type = line[6:].strip()
+                    if event_type == "error":
+                        continue
 
-                    if line.startswith("data: "):
-                        data = line[6:]
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                            if "error" in chunk or "code" in chunk:
-                                error_msg = chunk.get("message", chunk.get("error", str(chunk)))
-                            elif "content" in chunk:
-                                ai_content.append(chunk["content"])
-                        except json.JSONDecodeError:
-                            pass
+                if line.startswith("data: "):
+                    data = line[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        if "error" in chunk or "code" in chunk:
+                            error_msg = chunk.get("message", chunk.get("error", str(chunk)))
+                        elif "content" in chunk:
+                            ai_content.append(chunk["content"])
+                    except json.JSONDecodeError:
+                        pass
 
         if error_msg and not ai_content:
             raise Exception(error_msg)
@@ -260,7 +258,7 @@ def cmd_run(args):
     try:
         with httpx.Client() as client:
             resp = client.get(f"{api_base_url}/api/cases/all?limit=1", timeout=5.0)
-            print(f"✅ API 服务正常")
+            print("✅ API 服务正常")
     except Exception as e:
         print(f"❌ API 不可达: {e}")
         return 1
@@ -305,7 +303,7 @@ def cmd_export(args):
     df = pd.read_excel(excel_path)
     print(f"Excel总行数: {len(df)}")
 
-    with open(results_path, "r", encoding="utf-8") as f:
+    with open(results_path, encoding="utf-8") as f:
         results = json.load(f)
 
     problem_conv = {}
@@ -315,7 +313,7 @@ def cmd_export(args):
 
     failed_problems = set()
     if failed_path.exists():
-        with open(failed_path, "r", encoding="utf-8") as f:
+        with open(failed_path, encoding="utf-8") as f:
             failed = json.load(f)
         failed_problems = {f["problem_id"] for f in failed}
 

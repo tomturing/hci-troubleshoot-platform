@@ -123,7 +123,7 @@ workloadDefaults:
       memory: "2Gi"
     max:
       cpu: "4"
-      memory: "8Gi"  # 2026-05-09: ops-agent SOP检索峰值超4Gi，提升上限
+      memory: "8Gi" # 2026-05-09: ops-agent SOP检索峰值超4Gi，提升上限
 
 # ======================== PostgreSQL ========================================
 postgres:
@@ -566,3 +566,44 @@ opsAgent:
   opsWeb:
     enabled: false
     nodePort: 30791
+
+# ======================== Agent Service =====================================
+# [PR-B] 从 conversation-service 拆分出的 AI 推理引擎独立微服务
+# 服务端口：8005（K8s 内部 ClusterIP：http://agent-service:8005）
+agentService:
+  replicaCount: 1
+  image:
+    repository: hci-agent-service
+    tag: latest
+  port: 8005
+  # 设为 true 后 Pod 使用 dnsPolicy:None + 真实公网 DNS，用于外部 AI 端点访问
+  externalDns: false
+  glmModel: "glm-4-flash"
+  reactEnabled: "false"
+  pydanticAiEnabled: "false"
+  confirmTimeoutSec: "120"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+
+# ======================== Eval Service ======================================
+# [PR-B] 从 conversation-service 拆分出的评分/统计独立微服务
+# 服务端口：8007（K8s 内部 ClusterIP：http://eval-service:8007）
+evalService:
+  replicaCount: 1
+  image:
+    repository: hci-eval-service
+    tag: latest
+  port: 8007
+  prometheusUrl: "http://prometheus:9090"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "96Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"

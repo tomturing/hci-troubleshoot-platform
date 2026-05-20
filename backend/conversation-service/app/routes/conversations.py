@@ -14,8 +14,8 @@ from shared.models.schemas import MessageCreate, MessageResponse
 from shared.observability.logger import get_logger
 from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceError
 
-from ..adapters.agent_router import AgentRouter
 from ..repositories.conversation_repo import ConversationRepository
+from ..services.agent_client import AgentClient
 from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService
 from ..services.environment_client import EnvironmentClient
@@ -32,7 +32,7 @@ ai_registry: AIAssistantRegistry | None = None
 scheduler_client: SchedulerClient | None = None
 kb_client: KBClient | None = None
 environment_client: EnvironmentClient | None = None
-agent_router: AgentRouter | None = None  # T1-6: 大脑路由器
+agent_client: AgentClient | None = None  # [PR-B] agent-service HTTP 客户端
 
 
 def set_dependencies(
@@ -41,15 +41,15 @@ def set_dependencies(
     scheduler: SchedulerClient | None = None,
     kb: KBClient | None = None,
     env_client: EnvironmentClient | None = None,
-    router: AgentRouter | None = None,  # T1-6: 大脑路由器（可选）
+    agent_client: AgentClient | None = None,  # [PR-B] agent-service 客户端
 ):
-    global database_manager, ai_registry, scheduler_client, kb_client, environment_client, agent_router
+    global database_manager, ai_registry, scheduler_client, kb_client, environment_client
     database_manager = db
     ai_registry = registry
     scheduler_client = scheduler
     kb_client = kb
     environment_client = env_client
-    agent_router = router
+    # agent_client 通过参数直接使用，无需 global 声明
 
 
 async def get_conversation_service() -> ConversationService:
@@ -62,7 +62,7 @@ async def get_conversation_service() -> ConversationService:
         yield ConversationService(
             repo, ai_registry, scheduler_client, kb_client, environment_client,
             database_manager.async_session_factory,
-            agent_router=agent_router,  # T1-6: 注入大脑路由器
+            agent_client=agent_client,
         )
 
 @router.post("/", status_code=201)

@@ -241,7 +241,15 @@ jobs:
   unit-tests:
     name: unit-tests
     runs-on: ubuntu-latest
-    needs: [lint, frontend-build, frontend-unit-test, helm-validate, check-claw-configs, probe-alignment]
+    needs:
+      [
+        lint,
+        frontend-build,
+        frontend-unit-test,
+        helm-validate,
+        check-claw-configs,
+        probe-alignment,
+      ]
     if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.frontend-unit-test.result == 'success') && (needs.helm-validate.result == 'success') && (needs.probe-alignment.result == 'success')
     steps:
       - uses: actions/checkout@v4
@@ -291,7 +299,8 @@ jobs:
   integration-tests:
     name: integration-tests
     runs-on: ubuntu-latest
-    needs: [lint, frontend-build, helm-validate, check-claw-configs, probe-alignment]
+    needs:
+      [lint, frontend-build, helm-validate, check-claw-configs, probe-alignment]
     if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success') && (needs.probe-alignment.result == 'success')
 
     services:
@@ -329,7 +338,8 @@ jobs:
   security-tests:
     name: security-tests
     runs-on: ubuntu-latest
-    needs: [lint, frontend-build, helm-validate, check-claw-configs, probe-alignment]
+    needs:
+      [lint, frontend-build, helm-validate, check-claw-configs, probe-alignment]
     if: always() && (needs.lint.result == 'success') && (needs.frontend-build.result == 'success') && (needs.helm-validate.result == 'success') && (needs.probe-alignment.result == 'success')
     steps:
       - uses: actions/checkout@v4
@@ -416,6 +426,12 @@ jobs:
           - service: conversation-service
             context: backend
             dockerfile: backend/conversation-service/Dockerfile
+          - service: agent-service
+            context: backend
+            dockerfile: backend/agent-service/Dockerfile
+          - service: eval-service
+            context: backend
+            dockerfile: backend/eval-service/Dockerfile
           - service: scheduler-service
             context: backend
             dockerfile: backend/scheduler-service/Dockerfile

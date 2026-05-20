@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: eval-service
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "eval-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.evalService.port }}
+      targetPort: {{ .Values.evalService.port }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "eval-service" "Release" .Release) | nindent 4 }}

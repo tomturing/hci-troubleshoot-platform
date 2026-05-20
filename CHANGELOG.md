@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### ♻️ 重构
+
+* **[PR-B] agent-service + eval-service 服务拆分**：将 conversation-service 中的 AI 推理引擎提取为独立 `agent-service`（端口 8005），将评分/统计逻辑提取为独立 `eval-service`（端口 8007）。conversation-service 通过 `AgentClient` HTTP/SSE 委托推理任务，不再直接依赖 AgentRouter/GLMClient/ReactExecutor 等组件。新增 Helm 模板（agent-service、eval-service）和 CI 构建矩阵。
+
 ## [2.11.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.10.0...v2.11.0) (2026-05-16)
 
 

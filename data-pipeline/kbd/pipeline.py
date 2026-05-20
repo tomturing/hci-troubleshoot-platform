@@ -44,19 +44,18 @@ import httpx
 
 from .classifier import classify_batch
 from .config import settings
-from .fetcher import fetch_batch, read_ids_from_excel, get_failed_fetch_ids, _is_fetched, _case_dir
-from .image_proc import process_images_batch, get_failed_vision_ids, _has_failed_vision, _find_images
+from .fetcher import _case_dir, _is_fetched, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
+from .image_proc import _find_images, _has_failed_vision, get_failed_vision_ids, process_images_batch
 from .importer import import_batch
 from .progress import (
-    generate_run_id,
-    init_progress,
-    save_progress,
-    load_progress,
-    update_stage_status,
-    finish_progress,
     find_latest_progress_file,
+    finish_progress,
+    generate_run_id,
     get_completed_ids_for_stage,
-    ALL_STAGES,
+    init_progress,
+    load_progress,
+    save_progress,
+    update_stage_status,
 )
 
 logger = logging.getLogger("kbd.pipeline")
