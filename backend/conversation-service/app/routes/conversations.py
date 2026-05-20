@@ -41,7 +41,7 @@ def set_dependencies(
     scheduler: SchedulerClient | None = None,
     kb: KBClient | None = None,
     env_client: EnvironmentClient | None = None,
-    agent_client: AgentClient | None = None,  # [PR-B] agent-service 客户端
+    ac: AgentClient | None = None,  # [PR-B] agent-service 客户端
 ):
     global database_manager, ai_registry, scheduler_client, kb_client, environment_client, agent_client
     database_manager = db
@@ -49,7 +49,7 @@ def set_dependencies(
     scheduler_client = scheduler
     kb_client = kb
     environment_client = env_client
-    agent_client = agent_client  # noqa: PLW0127
+    agent_client = ac  # noqa: N816
 
 
 async def get_conversation_service() -> ConversationService:
@@ -62,7 +62,7 @@ async def get_conversation_service() -> ConversationService:
         yield ConversationService(
             repo, ai_registry, scheduler_client, kb_client, environment_client,
             database_manager.async_session_factory,
-            agent_router=agent_router,  # T1-6: 注入大脑路由器
+            agent_client=agent_client,
         )
 
 @router.post("/", status_code=201)
