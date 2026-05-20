@@ -2,10 +2,11 @@
 Eval Service API 集成测试
 """
 
-import pytest
-from fastapi.testclient import TestClient
+import uuid
 
+import pytest
 from app.main import app
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture
@@ -60,9 +61,12 @@ class TestEvalServiceEndpoints:
 
     def test_admin_stats_unauthorized(self, client):
         """测试管理员接口未授权"""
-        # 没有 token 应该返回 401
+        # 没有 token 应该直接返回 401，避免放宽为 422 掩盖认证回归
         response = client.get("/api/admin/quality/stats")
-        assert response.status_code in (401, 422)  # 取决于是否有依赖验证
+        assert response.status_code == 401
+        data = response.json()
+        assert "detail" in data
+        assert data["detail"]
 
     def test_admin_stats_wrong_token(self, client):
         """测试管理员接口使用错误的 token"""
@@ -70,51 +74,65 @@ class TestEvalServiceEndpoints:
             "/api/admin/quality/stats",
             headers={"Authorization": "Bearer wrong-token"}
         )
-        # 由于没有数据库，可能会有其他错误，但应该拒绝访问
-        assert response.status_code in (401, 403, 500)
+        # 错误 token 应该返回 403，不应出现 500
+        assert response.status_code == 403
 
-    def test_get_evaluation_nonexistent_conversation(self, client, mocker):
-        """测试获取不存在对话的评价"""
-        # Mock the database manager to be None
+    def test_get_evaluation_db_not_initialized(self, client):
+        """测试数据库未初始化时返回 500"""
         import app.routes.evaluate as eval_routes
         original_db = eval_routes.database_manager
         eval_routes.database_manager = None
 
         try:
-            # 使用不存在的 UUID
-            import uuid
             fake_conv_id = str(uuid.uuid4())
             response = client.get(f"/api/conversations/{fake_conv_id}/evaluation")
-            # 取决于是否有数据库连接
-            assert response.status_code in (404, 500)
+            # 数据库未初始化应该返回 500
+            assert response.status_code == 500
+            data = response.json()
+            assert "detail" in data
         finally:
             eval_routes.database_manager = original_db
 
-    def test_submit_evaluation_validation(self, client):
-        """测试提交评价时的验证"""
-        # 不测试实际数据库操作，只测试基本验证
-        # 使用不存在的对话
-        import uuid
-        fake_conv_id = str(uuid.uuid4())
+    def test_submit_evaluation_invalid_score(self, client):
+        """测试提交评价时的参数验证（使用 dependency override 隔离数据库）"""
+        from unittest.mock import AsyncMock
 
-        # 无效评分（大于 5）
-        response = client.post(
-            f"/api/conversations/{fake_conv_id}/evaluate",
-            json={"score": 10}
-        )
-        # 应该有验证错误或者数据库错误
-        assert response.status_code in (404, 422, 500)
+        from app.routes.evaluate import get_db_session
 
-        # 无效评分（小于 1）
-        response = client.post(
-            f"/api/conversations/{fake_conv_id}/evaluate",
-            json={"score": 0}
-        )
-        assert response.status_code in (404, 422, 500)
+        # Mock 数据库会话以隔离数据库依赖
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock()
+        mock_session.fetchone = AsyncMock(return_value=None)
 
-        # 缺少评分字段
-        response = client.post(
-            f"/api/conversations/{fake_conv_id}/evaluate",
-            json={}
-        )
-        assert response.status_code in (404, 422, 500)
+        async def mock_get_db_session():
+            yield mock_session
+
+        # 使用 dependency override
+        app.dependency_overrides[get_db_session] = mock_get_db_session
+
+        try:
+            fake_conv_id = str(uuid.uuid4())
+
+            # 无效评分（大于 5）应该返回 422
+            response = client.post(
+                f"/api/conversations/{fake_conv_id}/evaluate",
+                json={"score": 10}
+            )
+            assert response.status_code == 422
+
+            # 无效评分（小于 1）应该返回 422
+            response = client.post(
+                f"/api/conversations/{fake_conv_id}/evaluate",
+                json={"score": 0}
+            )
+            assert response.status_code == 422
+
+            # 缺少评分字段应该返回 422
+            response = client.post(
+                f"/api/conversations/{fake_conv_id}/evaluate",
+                json={}
+            )
+            assert response.status_code == 422
+        finally:
+            # 清理 dependency override
+            app.dependency_overrides.clear()

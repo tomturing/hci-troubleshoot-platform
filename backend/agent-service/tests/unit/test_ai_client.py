@@ -3,7 +3,7 @@ AI Client 单元测试
 """
 
 import pytest
-from app.services.ai_client import AIAssistantRegistry, OpenClawAssistant, create_openclaw_client
+from shared.clients.ai_client import AIAssistantRegistry, OpenClawAssistant, create_openclaw_client
 
 
 class TestOpenClawAssistant:
@@ -110,13 +110,21 @@ class TestAIAssistantRegistry:
         assert "glm-4-flash" in types
         assert "glm-4" in types
 
+    @pytest.fixture
+    def mock_client_factory(self, mocker):
+        """创建独立 mock 客户端的工厂"""
+        def _create(healthy=True):
+            client = mocker.Mock()
+            client.check_health = mocker.AsyncMock(return_value=healthy)
+            client.close = mocker.AsyncMock()
+            return client
+        return _create
+
     @pytest.mark.asyncio
-    async def test_health_check_all(self, registry, mock_client):
+    async def test_health_check_all(self, registry, mock_client_factory):
         """测试健康检查"""
-        healthy_client = mock_client
-        healthy_client.check_health.return_value = True
-        unhealthy_client = mock_client
-        unhealthy_client.check_health.return_value = False
+        healthy_client = mock_client_factory(healthy=True)
+        unhealthy_client = mock_client_factory(healthy=False)
         registry.register("healthy", healthy_client)
         registry.register("unhealthy", unhealthy_client)
         results = await registry.health_check_all()

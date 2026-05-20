@@ -253,7 +253,7 @@ class TestBaseWeights:
     def test_weights_sum_to_one(self):
         """验证权重之和为 1.0"""
         total = sum(BASE_WEIGHTS.values())
-        assert total == 1.0
+        assert total == pytest.approx(1.0)
 
     def test_weights_structure(self):
         """验证权重结构"""
