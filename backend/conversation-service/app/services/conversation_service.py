@@ -16,11 +16,10 @@ from shared.observability.otel import get_current_trace_id
 
 from app.config import settings
 
-# T1-3 ~ T1-6: agent-service HTTP 客户端（替代本地 AgentRouter）
-from .agent_client import AgentClient
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
+from .agent_client import AgentClient
 from .ai_client import AIAssistantRegistry
 from .conversation_manager import ConversationManager
 from .environment_client import EnvironmentClient
@@ -83,9 +82,7 @@ _ACLI_CMD_PATTERN = re.compile(
 )
 
 # 只读 acli 动词——满足则自动执行（无需人工确认）
-_ACLI_READONLY_VERBS = frozenset(
-    {"get", "list", "show", "describe", "status", "info", "check", "query", "fetch"}
-)
+_ACLI_READONLY_VERBS = frozenset({"get", "list", "show", "describe", "status", "info", "check", "query", "fetch"})
 
 
 def _extract_acli_commands(text: str) -> list[str]:
@@ -122,9 +119,9 @@ class ConversationService:
         kb_client: KBClient | None = None,
         environment_client: EnvironmentClient | None = None,
         session_factory=None,
-        tool_router=None,       # ToolRouter | None（Phase 4 agent 模式）
-        confirm_service=None,   # ConfirmService | None
-        glm_client=None,        # GLMClient | None（ReactExecutor 专用）
+        tool_router=None,  # ToolRouter | None（Phase 4 agent 模式）
+        confirm_service=None,  # ConfirmService | None
+        glm_client=None,  # GLMClient | None（ReactExecutor 专用）
         agent_client: AgentClient | None = None,  # T1-6: agent-service HTTP 客户端（替代本地 AgentRouter）
     ):
         self.repository = repository
@@ -251,10 +248,7 @@ class ConversationService:
         import time
 
         cache_ttl = 300.0  # 5 分钟
-        if (
-            self._categories_cache is None
-            or (time.time() - self._categories_cache_time) > cache_ttl
-        ):
+        if self._categories_cache is None or (time.time() - self._categories_cache_time) > cache_ttl:
             if self.kb_client:
                 self._categories_cache = await self.kb_client.get_categories_grouped()
                 self._categories_cache_time = time.time()
@@ -309,12 +303,20 @@ class ConversationService:
         if self.session_factory:
             async with self.session_factory() as independent_session:
                 user_message = await ConversationRepository(independent_session).add_message(
-                    conversation_id=conversation_id, case_id=case_id, role=MessageRole.user, content=content, trace_id=trace_id
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    role=MessageRole.user,
+                    content=content,
+                    trace_id=trace_id,
                 )
                 await independent_session.commit()
         else:
             user_message = await self.repository.add_message(
-                conversation_id=conversation_id, case_id=case_id, role=MessageRole.user, content=content, trace_id=trace_id
+                conversation_id=conversation_id,
+                case_id=case_id,
+                role=MessageRole.user,
+                content=content,
+                trace_id=trace_id,
             )
 
         # 1.5 重复提问检测（使用后台任务，避免阻塞主流程）
@@ -482,8 +484,9 @@ class ConversationService:
             if self._agent_client is not None:
                 # ── 新路径：委托 agent-service（HTTP SSE）────────────────────
                 import json as _json
+
                 session_id = str(conversation_id)
-                _used_ops_agent_path = (resolved_assistant_type == "ops-agent")
+                _used_ops_agent_path = resolved_assistant_type == "ops-agent"
                 async for agent_event in self._agent_client.stream(
                     assistant_type=resolved_assistant_type,
                     session_id=session_id,
@@ -503,16 +506,19 @@ class ConversationService:
                         _stage = agent_event.get("stage", "")
                         yield f"\x00event:stage_change:{_stage}\x00"
                     elif event_type == "interactive_request":
-                        _ir_payload = _json.dumps({
-                            "requestId": agent_event.get("request_id"),
-                            "acpSessionId": agent_event.get("acp_session_id"),
-                            "kind": agent_event.get("kind"),
-                            "title": agent_event.get("title"),
-                            "prompt": agent_event.get("prompt"),
-                            "options": agent_event.get("options"),
-                            "customInput": agent_event.get("custom_input"),
-                            "metadata": agent_event.get("metadata"),
-                        }, ensure_ascii=False)
+                        _ir_payload = _json.dumps(
+                            {
+                                "requestId": agent_event.get("request_id"),
+                                "acpSessionId": agent_event.get("acp_session_id"),
+                                "kind": agent_event.get("kind"),
+                                "title": agent_event.get("title"),
+                                "prompt": agent_event.get("prompt"),
+                                "options": agent_event.get("options"),
+                                "customInput": agent_event.get("custom_input"),
+                                "metadata": agent_event.get("metadata"),
+                            },
+                            ensure_ascii=False,
+                        )
                         # Bug2 修复保持：先落库再 yield
                         _ir_content = self._format_interactive_request_content_dict(agent_event)
                         asyncio.create_task(
@@ -575,7 +581,6 @@ class ConversationService:
                         _full_reply_buffer.append(chunk)
                         yield chunk
 
-
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
 
             # 6a. P2 修复：S3 阶段自动提取并执行只读 acli 命令
@@ -585,12 +590,8 @@ class ConversationService:
                 for _cmd in acli_cmds:
                     if _acli_is_readonly(_cmd):
                         try:
-                            _exec_result = await self.tool_router.execute(
-                                "acli_run", {"command": _cmd}
-                            )
-                            _auto_block = (
-                                f"\n\n**[自动执行]** `{_cmd}`\n```\n{_exec_result}\n```\n"
-                            )
+                            _exec_result = await self.tool_router.execute("acli_run", {"command": _cmd})
+                            _auto_block = f"\n\n**[自动执行]** `{_cmd}`\n```\n{_exec_result}\n```\n"
                             _full_reply_buffer.append(_auto_block)
                             yield _auto_block
                             logger.info(
@@ -717,9 +718,7 @@ class ConversationService:
                 error=str(e),
             )
 
-    async def save_assistant_message_for_resume(
-        self, conversation_id: uuid.UUID, content: str
-    ) -> None:
+    async def save_assistant_message_for_resume(self, conversation_id: uuid.UUID, content: str) -> None:
         """resume-stream 场景下保存 AI 续写回复（自动从 DB 查 case_id）。
 
         由 BackgroundTasks 在 resume-stream 响应完成后调用。
@@ -750,7 +749,7 @@ class ConversationService:
         await self.save_assistant_message(conversation_id, conv.case_id, content)
 
     @staticmethod
-    def _format_interactive_request_content(event: "AgentInteractiveRequest") -> str:
+    def _format_interactive_request_content(event: Any) -> str:
         """将 AgentInteractiveRequest 格式化为可读 Markdown 文字，用于落库到 message.content。"""
         lines: list[str] = []
         meta = event.metadata or {}
@@ -778,7 +777,6 @@ class ConversationService:
             opt_parts = [f"{o.get('optionId', i + 1)}. {o.get('name', '')}" for i, o in enumerate(event.options)]
             lines.append(f"\n\n**可选项**：{'  /  '.join(opt_parts)}")
         return "\n".join(lines)
-
 
     @staticmethod
     def _format_interactive_request_content_dict(event: dict) -> str:
@@ -812,6 +810,7 @@ class ConversationService:
             opt_parts = [f"{o.get('optionId', i + 1)}. {o.get('name', '')}" for i, o in enumerate(options)]
             _lines.append(f"\n\n**可选项**：{'  /  '.join(opt_parts)}")
         return "\n".join(_lines)
+
     @staticmethod
     def _format_interactive_response_content(outcome: dict) -> str:
         """将用户的交互响应格式化为可读文字，用于落库到 message.content。"""
@@ -823,6 +822,7 @@ class ConversationService:
             text = outcome.get("text", "")
             return f"[补充输入] {text}"
         import json as _json
+
         return f"[交互响应] {_json.dumps(outcome, ensure_ascii=False)}"
 
     async def _save_message_bg(
@@ -904,7 +904,8 @@ class ConversationService:
             case_description = meta.get("case_description")
 
         allocated = await self.scheduler_client.allocate_pod(
-            case_id, assistant_type,
+            case_id,
+            assistant_type,
             case_title=case_title,
             case_description=case_description,
         )
@@ -1030,11 +1031,7 @@ class ConversationService:
     @property
     def agent_mode_available(self) -> bool:
         """检查 agent 模式所需组件是否已完整初始化"""
-        return (
-            self.tool_router is not None
-            and self.confirm_service is not None
-            and self.glm_client is not None
-        )
+        return self.tool_router is not None and self.confirm_service is not None and self.glm_client is not None
 
     async def send_message_react_stream(
         self,
@@ -1094,9 +1091,7 @@ class ConversationService:
                 _react_conv = await self.repository.get_conversation(conversation_id)
                 if _react_conv and _react_conv.diagnostic_stage:
                     react_stage = _react_conv.diagnostic_stage
-            system_prompt, _audit_meta = await self._build_system_prompt(
-                content, case_id, diagnostic_stage=react_stage
-            )
+            system_prompt, _audit_meta = await self._build_system_prompt(content, case_id, diagnostic_stage=react_stage)
 
             # 3. 获取历史消息（独立 session 避免长事务）
             if self.session_factory:
@@ -1367,11 +1362,10 @@ class ConversationService:
             # 404 视为幂等成功（已 confirmed）；非 200/404 仅 warning 不中断主流程
             if trigger_confirm and case_id and settings.CASE_SERVICE_URL:
                 import httpx  # noqa: PLC0415
+
                 try:
                     async with httpx.AsyncClient(timeout=5.0) as client:
-                        resp = await client.put(
-                            f"{settings.CASE_SERVICE_URL}/api/cases/{case_id}/confirm"
-                        )
+                        resp = await client.put(f"{settings.CASE_SERVICE_URL}/api/cases/{case_id}/confirm")
                     if resp.status_code not in (200, 404):
                         logger.warning(
                             event="case_confirm_failed",
@@ -1650,9 +1644,7 @@ class ConversationService:
             if self.session_factory:
                 async with self.session_factory() as session:
                     result = await session.execute(
-                        select(ConversationModel.metadata_).where(
-                            ConversationModel.conversation_id == conversation_id
-                        )
+                        select(ConversationModel.metadata_).where(ConversationModel.conversation_id == conversation_id)
                     )
                     meta = result.scalar_one_or_none() or {}
             else:
@@ -1890,8 +1882,7 @@ class ConversationService:
         # 约束 1：resolved 只能在有 pending_resolution 的情况下发起
         if action["case_status"] == "resolved" and conv.pending_resolution is None:
             raise ValueError(
-                "约束违反：选 A 要求 pending_resolution 非 NULL，但当前为 NULL，"
-                "请先调用 send_s6_resolution_options()"
+                "约束违反：选 A 要求 pending_resolution 非 NULL，但当前为 NULL，请先调用 send_s6_resolution_options()"
             )
 
         results: dict = {"choice": choice, "action": action["action"]}
@@ -1901,6 +1892,7 @@ class ConversationService:
                 # 约束 4（B选项）：先 archive 旧 diagnostic_item
                 if action["archive_diagnostic_items"]:
                     from sqlalchemy import and_
+
                     result = await session.execute(
                         sa_update(DiagnosticItem)
                         .where(
@@ -2067,16 +2059,19 @@ class ConversationService:
                 if _chunk:
                     yield _chunk
             elif event_type == "interactive_request":
-                _ir_payload = _json.dumps({
-                    "requestId": agent_event.get("request_id"),
-                    "acpSessionId": agent_event.get("acp_session_id"),
-                    "kind": agent_event.get("kind"),
-                    "title": agent_event.get("title"),
-                    "prompt": agent_event.get("prompt"),
-                    "options": agent_event.get("options"),
-                    "customInput": agent_event.get("custom_input"),
-                    "metadata": agent_event.get("metadata"),
-                }, ensure_ascii=False)
+                _ir_payload = _json.dumps(
+                    {
+                        "requestId": agent_event.get("request_id"),
+                        "acpSessionId": agent_event.get("acp_session_id"),
+                        "kind": agent_event.get("kind"),
+                        "title": agent_event.get("title"),
+                        "prompt": agent_event.get("prompt"),
+                        "options": agent_event.get("options"),
+                        "customInput": agent_event.get("custom_input"),
+                        "metadata": agent_event.get("metadata"),
+                    },
+                    ensure_ascii=False,
+                )
                 yield f"\x00event:interactive_request:{_ir_payload}\x00"
                 # 交互请求落库（conv 不存在时跳过，避免 case_id='' 脏数据）
                 if _case_id is not None:
@@ -2106,4 +2101,3 @@ class ConversationService:
                 yield f"\x00event:stage_change:{_stage}\x00"
             elif event_type == "done":
                 break
-
