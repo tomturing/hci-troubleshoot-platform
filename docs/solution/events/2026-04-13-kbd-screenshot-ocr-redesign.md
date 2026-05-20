@@ -45,7 +45,7 @@ owner: team
 
 ## 详细设计
 
-### 1. scripts/kbd/ocr.py（双后端封装）
+### 1. data-pipeline/kbd/ocr.py（双后端封装）
 
 - **PaddleOCR 后端**：`extract_text(image_path: Path) -> list[str]`
   - 单例懒加载，避免进程启动时等待
@@ -56,14 +56,14 @@ owner: team
   - 置信度阈值 0.3（低于 PaddleOCR 的 0.5，因 EasyOCR 对终端等宽字体得分偏低）
 - 共用 `_merge_same_row()` 按坐标合并同行文字块
 
-### 2. 新增 scripts/kbd/analyzer.py（LLM 分析层）
+### 2. 新增 data-pipeline/kbd/analyzer.py（LLM 分析层）
 
 - 接口：`analyze_screenshot(background: str, full_text: list[str]) -> AnalysisResult`
 - 调用 DashScope qwen3-max-2026-01-23（文本模式，无图片）
 - Prompt 驱动：提供背景色 + 完整文字，要求输出 TYPE/KEY/TIPS
 - 解析 LLM 输出为 `AnalysisResult(type, key, tips)`
 
-### 3. 重构 scripts/kbd/image_proc.py
+### 3. 重构 data-pipeline/kbd/image_proc.py
 
 **完整流程**：
 ```python
@@ -202,11 +202,11 @@ v2 解析器：
 
 ## 影响范围
 
-- `scripts/kbd/ocr.py` - 新增（PaddleOCR 封装 + EasyOCR 封装，共用坐标合并逻辑）
-- `scripts/kbd/analyzer.py` - 新增（分析 LLM，带指数退避重试）
-- `scripts/kbd/image_proc.py` - 重构（多后端路由 + Vision LLM 兜底重试，不影响 CLI 接口）
-- `scripts/kbd/converter.py` - 新格式输出（向前兼容旧 desc.txt）
-- `scripts/kbd/config.py` - 新增 ZAI_API_KEY/ANALYSIS_MODEL/KBD_ENV/OCR_BACKEND/LLM_MAX_RETRIES/LLM_RETRY_BACKOFF，新增 `ocr_backend_effective` 属性
+- `data-pipeline/kbd/ocr.py` - 新增（PaddleOCR 封装 + EasyOCR 封装，共用坐标合并逻辑）
+- `data-pipeline/kbd/analyzer.py` - 新增（分析 LLM，带指数退避重试）
+- `data-pipeline/kbd/image_proc.py` - 重构（多后端路由 + Vision LLM 兜底重试，不影响 CLI 接口）
+- `data-pipeline/kbd/converter.py` - 新格式输出（向前兼容旧 desc.txt）
+- `data-pipeline/kbd/config.py` - 新增 ZAI_API_KEY/ANALYSIS_MODEL/KBD_ENV/OCR_BACKEND/LLM_MAX_RETRIES/LLM_RETRY_BACKOFF，新增 `ocr_backend_effective` 属性
 - `frontend/admin/src/views/KbdReviewView.vue` - 新增 v2 解析器，保留 v1
 - `pyproject.toml` - 新增 `[project.optional-dependencies] ocr` 组
 
@@ -224,7 +224,7 @@ v2 解析器：
 
 ## 验收标准
 
-- [x] `uv run python -m scripts.kbd.run vision --ids 34977` 成功生成 v2 格式 desc.txt
+- [x] `uv run PYTHONPATH=data-pipeline python -m kbd.run vision --ids 34977` 成功生成 v2 格式 desc.txt
 - [x] img_0 FULL_TEXT 行数 >= 5，TYPE = 任务截图，KEY 含失败任务
 - [x] img_1 FULL_TEXT 行数 >= 5，TYPE = 日志截图（实测 14 行 QEMU 日志，Vision LLM 主路径）
 - [ ] img_2 TYPE = 日志截图（持续超时后返回「无文字」，BACKGROUND=「其他」未命中兜底，遗留）

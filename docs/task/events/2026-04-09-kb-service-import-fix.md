@@ -22,14 +22,14 @@ owner: team
 
 ### T2: 更新 .env.example 文档
 - **描述**：添加 Docker Compose 和 K3s 两种环境的 token 配置说明
-- **文件变更**：`scripts/kbd/.env.example`
+- **文件变更**：`data-pipeline/kbd/.env.example`
 - **验收标准**：文档清晰说明如何获取正确的 token
 - **依赖**：无
 - **状态**：✅ 已完成
 
 ### T3: 更新 import_sop.py 用法说明
 - **描述**：添加完整的前置操作步骤
-- **文件变更**：`scripts/kbd/import_sop.py`
+- **文件变更**：`data-pipeline/kbd/import_sop.py`
 - **验收标准**：文档包含 Docker Compose 和 K3s 两种环境的操作指南
 - **依赖**：无
 - **状态**：✅ 已完成

@@ -9,7 +9,7 @@
 --   - kb_document, kb_chunk：被 kbd_entry 替代（方案B：KBD 整条存储，不分块）
 --   - kb_sop_node：被 sop_document/sop_chunk 替代（关键字路由架构已废弃）
 --   - kb_synonym：已备份并合并到 kb_category.metadata
---   - raw_cases：数据不可用，已被 scripts/kbd/ 新流水线替代
+--   - raw_cases：数据不可用，已被 data-pipeline/kbd/ 新流水线替代
 --   - knowledge_atoms：方案B 中不是核心表
 --   - prompt_audit：已迁移到 audit_log
 --   - tool_audit_log：已迁移到 audit_log

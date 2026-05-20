@@ -11,7 +11,7 @@ POST /api/kb/sop/import
   - 批量写入 kb_sop_node
 
 POST /api/kbd/ingest
-  - 调用方：scripts/kbd/ 数据流水线
+  - 调用方：data-pipeline/kbd/ 数据流水线
   - 写入 kbd_entry 表（深信服案例原始数据）
   - 幂等：support_id 唯一性校验
   - 状态默认为 draft，审核通过后才生成 embedding
@@ -107,7 +107,7 @@ async def ingest_document(request: Request, body: IngestRequest):
     将 Markdown 文档分块、embedding，写入知识库。
     支持幂等（相同内容不重复入库）。
 
-    调用方：LearningClaw / scripts/kbd ETL 脚本
+    调用方：LearningClaw / data-pipeline/kbd ETL 脚本
     """
     _check_auth(request)
 
@@ -148,7 +148,7 @@ async def ingest_document(request: Request, body: IngestRequest):
 async def import_sop_nodes(request: Request, body: SopImportRequest):
     """批量导入 SOP 节点到 kb_sop_node
 
-    调用方：管理员手动导入、scripts/kbd ETL 脚本
+    调用方：管理员手动导入、data-pipeline/kbd ETL 脚本
     """
     _check_auth(request)
 
@@ -189,7 +189,7 @@ async def import_sop_nodes(request: Request, body: SopImportRequest):
 class KbdIngestRequest(BaseModel):
     """KBD 条目入库请求
 
-    用于 scripts/kbd/ 数据流水线调用，将深信服案例写入 kbd_entry 表。
+    用于 data-pipeline/kbd/ 数据流水线调用，将深信服案例写入 kbd_entry 表。
 
     参数设计（遵循第一性原理）：
     - 默认幂等：已存在记录跳过，避免重复入库
@@ -268,7 +268,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
     | true     | ['all']         | published | ✅ overridden（谨慎使用）|
     | true     | ['draft','published'] | draft | ✅ overridden |
 
-    调用方：scripts/kbd/ 数据流水线
+    调用方：data-pipeline/kbd/ 数据流水线
 
     响应体示例：
     ```json

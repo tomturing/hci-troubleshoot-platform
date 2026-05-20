@@ -49,8 +49,8 @@ async def import_categories(
 
 ## 影响范围
 - `backend/kb-service/app/routes/categories.py` — 核心修复
-- `scripts/kbd/.env.example` — 文档完善
-- `scripts/kbd/import_sop.py` — 文档完善
+- `data-pipeline/kbd/.env.example` — 文档完善
+- `data-pipeline/kbd/import_sop.py` — 文档完善
 
 ## 风险与缓解
 | 风险 | 影响 | 概率 | 缓解措施 |

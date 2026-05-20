@@ -19,7 +19,7 @@ owner: team
 | 层 | 文件 | 对 YAML 的理解 | level 来源 |
 |---|---|---|---|
 | **数据文件** | `category_baseline.yaml` | 叶节点扁平表，字段 `id/domain/label/path` | 无 level（path 长度隐含） |
-| **ETL 脚本** | `scripts/kbd/seed_categories.py` | **正确理解**基准格式 | `len(path)` 推断 |
+| **ETL 脚本** | `data-pipeline/kbd/seed_categories.py` | **正确理解**基准格式 | `len(path)` 推断 |
 | **API 接口** | `category_repo.py::import_from_yaml` | 假定"带 level/name/parent_id 的完整格式" | 期望 YAML 中明确有 `level` |
 
 ## 方案比较

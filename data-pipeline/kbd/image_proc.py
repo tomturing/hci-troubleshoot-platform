@@ -1,5 +1,5 @@
 """
-scripts/kbd/image_proc.py — 图片语义化（Vision LLM 单次调用 + 文档上下文注入）
+data-pipeline/kbd/image_proc.py — 图片语义化（Vision LLM 单次调用 + 文档上下文注入）
 
 流水线（v3）：
   Step 0  解析文档 HTML，提取每张图片的上下文文字（纯 Python，无 LLM）

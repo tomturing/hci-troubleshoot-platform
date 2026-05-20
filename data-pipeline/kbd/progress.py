@@ -1,5 +1,5 @@
 """
-scripts/kbd/progress.py — KBD Pipeline 进度追踪模块
+data-pipeline/kbd/progress.py — KBD Pipeline 进度追踪模块
 
 功能：
   - 生成 run_id（YYYYMMDD_HHMMSS 格式）

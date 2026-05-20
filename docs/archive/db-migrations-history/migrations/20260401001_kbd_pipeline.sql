@@ -44,7 +44,7 @@ COMMENT ON COLUMN kb_category.embedding IS
 -- ─── 2. kbd_entry — KBD 知识条目（全生命周期）────────────────────────────────
 
 -- 中间产物说明：KBD 生产阶段的原始 JSON、图片文件、Vision 描述均使用文件存储
--- 文件结构：scripts/kbd/cache/{support_id}/
+-- 文件结构：data-pipeline/kbd/cache/{support_id}/
 --   raw.json          — API 完整响应（存在 = fetch done，跳过）
 --   fetch.failed      — 失败记录（JSON）
 --   abnormal.json     — 必填字段缺失记录（写入异常队列，不入 kbd_entry）
@@ -146,7 +146,7 @@ CREATE TRIGGER trigger_kbd_entry_updated_at
 
 -- 注释
 COMMENT ON TABLE kbd_entry IS
-    'KBD 知识条目 — 全生命周期（draft→published→archived/rejected）；中间产物见 scripts/kbd/cache/ 文件存储';
+    'KBD 知识条目 — 全生命周期（draft→published→archived/rejected）；中间产物见 data-pipeline/kbd/cache/ 文件存储';
 COMMENT ON COLUMN kbd_entry.support_id IS
     '深信服案例ID（API rows.id），幂等键';
 COMMENT ON COLUMN kbd_entry.support_url IS

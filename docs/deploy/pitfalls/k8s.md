@@ -409,6 +409,20 @@ docker build --network host -t <image>:<tag> -f <Dockerfile> <context>
 - Pod 内：`getent hosts open.bigmodel.cn` → 同样 `198.18.x.90`，但 curl 超时 ❌
 - Pod 日志（如 openclaw）："LLM request timed out."
 
+**⚠️ 重要：与 D-008（Clash 热重载问题）的区分**
+
+| 场景 | 宿主机 DNS | Pod DNS | 宿主机连通性 | Pod 连通性 |
+|------|-----------|---------|-------------|-----------|
+| **PIT-034（本条目）** | 198.18.x.x | 同上 | ✅ | ❌ |
+| **D-008（热重载）** | 真实 IP 或新 fake-ip | 旧 198.18.x.x | ✅ | ❌ |
+
+**诊断命令：**
+```bash
+# 检查宿主机和 Pod DNS 是否一致
+# 如果不一致 → D-008（重启 Clash）
+# 如果一致但都不通 → PIT-034（本条目，路由规则问题）
+```
+
 **根因：** K3s Pod 的 bypass 规则 `ip rule 100: from 10.42.0.0/16 lookup main` 让 Pod 流量走 main 路由表，不经过 Clash TUN（`Meta` 设备，table 2022）。`198.18.x.x` 是 Clash 虚假 IP，只能通过 Meta TUN 到达，在 main 路由表中发往真实公网，连接失败。
 
 **快速诊断：**

@@ -2,7 +2,7 @@
 
 ## 问题背景
 
-运行 `uv run python -m scripts.kbd.run pipeline --ids 35694 --override` 时，
+运行 `uv run PYTHONPATH=data-pipeline python -m kbd.run pipeline --ids 35694 --override` 时，
 `_check_kb_service_reachable()` 函数抛出 `httpx.RemoteProtocolError: Server disconnected without sending a response` 异常。
 
 ## 根因分析
@@ -30,7 +30,7 @@ except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError, O
 
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
-| `scripts/kbd/importer.py` | Bug fix | 添加 RemoteProtocolError 捕获 |
+| `data-pipeline/kbd/importer.py` | Bug fix | 添加 RemoteProtocolError 捕获 |
 
 ## 关联功能
 

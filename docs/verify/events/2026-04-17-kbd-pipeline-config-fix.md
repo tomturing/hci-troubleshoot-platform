@@ -6,7 +6,7 @@
 
 ## 问题
 
-运行 KBD Pipeline (`python -m scripts.kbd.run pipeline --ids 35694`) 时发现三个问题导致流水线失败：
+运行 KBD Pipeline (`PYTHONPATH=data-pipeline python -m kbd.run pipeline --ids 35694`) 时发现三个问题导致流水线失败：
 
 1. **Vision OCR HTTP 400**
    - `.env` 配置未随 PR #143 更新，仍使用智谱 AI API
@@ -56,8 +56,8 @@
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
 | `pyproject.toml` | 修改 | Pillow 移入主依赖 |
-| `scripts/kbd/.env.example` | 修改 | 更新 DashScope 配置示例 |
-| `scripts/kbd/importer.py` | 新增功能 | 自动 port-forward 检测 |
+| `data-pipeline/kbd/.env.example` | 修改 | 更新 DashScope 配置示例 |
+| `data-pipeline/kbd/importer.py` | 新增功能 | 自动 port-forward 检测 |
 | `uv.lock` | 自动更新 | 依赖锁定 |
 
 ## 后续清理

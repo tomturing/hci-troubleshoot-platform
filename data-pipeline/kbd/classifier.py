@@ -1,5 +1,5 @@
 """
-scripts/kbd/classifier.py — AI 分类器（API 调用版）
+data-pipeline/kbd/classifier.py — AI 分类器（API 调用版）
 
 功能：
   对 kbd_entry 中 status='draft' 且 ai_category_id 为空的条目，

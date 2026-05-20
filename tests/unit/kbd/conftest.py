@@ -8,12 +8,12 @@ import sys
 
 import pytest
 
-# 将 scripts/ 目录加入路径，使 `from kbd.xxx import ...` 可用
-_scripts_root = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts")
+# 将 data-pipeline/ 目录加入路径，使 `from kbd.xxx import ...` 可用
+_data_pipeline_root = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "data-pipeline")
 )
-if _scripts_root not in sys.path:
-    sys.path.insert(0, _scripts_root)
+if _data_pipeline_root not in sys.path:
+    sys.path.insert(0, _data_pipeline_root)
 
 
 # ─── 公共 HTML 测试样本 ───────────────────────────────────────────────────────

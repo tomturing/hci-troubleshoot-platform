@@ -1,5 +1,5 @@
 """
-scripts/kbd/config.py — KBD 知识生产管道配置
+data-pipeline/kbd/config.py — KBD 知识生产管道配置
 
 所有配置通过环境变量注入（或 .env 文件）。
 脚本目录下运行：cp .env.example .env && nano .env

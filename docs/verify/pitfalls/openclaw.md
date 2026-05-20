@@ -99,6 +99,15 @@ Pod 日志出现：
 [agent/embedded] embedded run agent end: isError=true error=LLM request timed out.
 ```
 
+**⚠️ 重要：先排查根因类型**
+
+| 根因 | 诊断特征 | 修复方案 |
+|------|---------|---------|
+| **API 域名本身不可达** | 宿主机 curl 也超时/SSL 失败 | 切换 provider（本条目方案 A/B） |
+| **Clash 热重载状态不一致** | 宿主机通、Pod 不通，DNS 结果不一致 | 重启 Clash（见 D-008） |
+| **Pod bypass 规则问题** | 宿主机和 Pod DNS 相同 fake-ip，但 Pod 不通 | 配置 Pod DNS（见 PIT-034） |
+| **API 余额不足** | HTTP 429 错误 | 充值或更换 API key |
+
 **根因：** `openclaw.json` 配置的模型 provider 为 `zai`，OpenClaw 默认访问 `api.zai.chat`。
 该域名被 Clash TUN 劫持解析到 `198.18.0.4`，TLS 握手失败（`SSL_ERROR_SYSCALL`），请求超时。
 
@@ -142,6 +151,8 @@ k3s kubectl rollout restart deployment/openclaw -n hci-troubleshoot
 
 **预防：** 初始化 openclaw.json 时优先使用 `open.bigmodel.cn` 等国内可直连域名的 provider；
 避免使用 Clash TUN 会劫持的境外域名，或提前配 NO_PROXY 排除 AI API 域名（参见 PIT-014）。
+
+**参见：** D-008（Clash 热重载导致 fake-ip 映射不一致）、PIT-034（Pod bypass 规则导致 fake-ip 不通）
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## 问题背景
 
-执行 `uv run python -m scripts.kbd.run pipeline --ids 35694` 时，图片识别失败，没有任何报错信息，desc.txt 显示 `（无文字）`。
+执行 `uv run PYTHONPATH=data-pipeline python -m kbd.run pipeline --ids 35694` 时，图片识别失败，没有任何报错信息，desc.txt 显示 `（无文字）`。
 
 ## 根因分析
 
@@ -68,7 +68,7 @@ logger.info("LLM 分析完成 type=%s key_count=%d tips_count=%d tokens=%d", ...
 - 新增 `force_update` 参数支持更新已存在的 draft 记录
 - `force_update=true` 时更新 content_md、title、metadata
 
-**调用端修改（scripts/kbd/importer.py）：**
+**调用端修改（data-pipeline/kbd/importer.py）：**
 - `_call_kbd_ingest_api()` 新增 `force_update` 参数
 - `import_entry()` 将 `force_draft` 传递给 API 作为 `force_update`
 - 新增 "updated" 返回状态
@@ -95,10 +95,10 @@ Stats: {'done': 2, 'failed': 0, 'skipped': 0}
 
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
-| `scripts/kbd/image_proc.py` | 功能增强 | 图片压缩预处理 + 详细日志 |
-| `scripts/kbd/analyzer.py` | 日志增强 | LLM 分析详细日志 |
+| `data-pipeline/kbd/image_proc.py` | 功能增强 | 图片压缩预处理 + 详细日志 |
+| `data-pipeline/kbd/analyzer.py` | 日志增强 | LLM 分析详细日志 |
 | `backend/kb-service/app/routes/ingest.py` | 功能增强 | API force_update 支持（需重新构建镜像） |
-| `scripts/kbd/importer.py` | 功能增强 | 调用端 force_update 支持 |
+| `data-pipeline/kbd/importer.py` | 功能增强 | 调用端 force_update 支持 |
 
 ## 后续任务
 

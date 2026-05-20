@@ -263,13 +263,13 @@ class CategoryRepository:
         """将 category_baseline.yaml 的叶节点列表展开为完整节点列表。
 
         基准 YAML 只包含叶节点（格式：id/label/domain/path），level 隐含于 path 长度中。
-        本方法实现四阶段解析，与 scripts/kbd/seed_categories.py 逻辑等价：
+        本方法实现四阶段解析，与 data-pipeline/kbd/seed_categories.py 逻辑等价：
           Phase 1: 从 domain 字段推断并生成 L1 域节点（code 格式：<domain>-L1）
           Phase 2: 从 L3/L4 叶节点 path 提取中间层节点（code 格式：<domain>-L<n>-<path最后元素>）
           Phase 3: 解析叶节点（id→code, label→name, len(path)→level, path→path_labels）
           Phase 4: 按 level 排序，确保父节点先于子节点写入
 
-        中间层节点 code 规则与 scripts/kbd/seed_categories.py 保持一致：
+        中间层节点 code 规则与 data-pipeline/kbd/seed_categories.py 保持一致：
           <domain>-L<depth>-<sub_path[-1]>，相同 path 永远生成相同 code（幂等安全）。
 
         Args:
