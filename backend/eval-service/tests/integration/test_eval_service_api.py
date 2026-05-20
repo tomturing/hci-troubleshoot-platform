@@ -99,10 +99,14 @@ class TestEvalServiceEndpoints:
 
         from app.routes.evaluate import get_db_session
 
-        # Mock 数据库会话以隔离数据库依赖
+        # 正确 Mock 数据库会话：fetchone 应在 Result 对象上
+        mock_result = AsyncMock()
+        mock_result.fetchone.return_value = None
+        mock_result.scalar.return_value = 0
+
         mock_session = AsyncMock()
-        mock_session.execute = AsyncMock()
-        mock_session.fetchone = AsyncMock(return_value=None)
+        mock_session.execute.return_value = mock_result
+        mock_session.commit = AsyncMock()
 
         async def mock_get_db_session():
             yield mock_session

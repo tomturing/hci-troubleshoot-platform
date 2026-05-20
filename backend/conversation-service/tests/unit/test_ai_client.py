@@ -15,7 +15,7 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-from app.services.ai_client import OpenClawAssistant
+from shared.clients.ai_client import OpenClawAssistant
 
 
 class TestOpenClawAssistantAuth:

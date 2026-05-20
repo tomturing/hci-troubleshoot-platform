@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.services.conversation_service import ConversationService
-from app.services.kb_client import KBClient
+from shared.clients import KBClient
 
 
 @pytest.fixture
