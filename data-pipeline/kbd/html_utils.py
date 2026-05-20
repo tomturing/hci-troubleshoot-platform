@@ -1,5 +1,5 @@
 """
-scripts/kbd/html_utils.py — HTML 图片 URL 提取公共函数
+data-pipeline/kbd/html_utils.py — HTML 图片 URL 提取公共函数
 
 提供统一的"提取图片 URL + 去重保序"逻辑，供 fetcher 和 image_proc 共用。
 避免两侧规则不一致导致序号错位。

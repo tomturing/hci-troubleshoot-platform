@@ -18,19 +18,19 @@ owner: team
 
 ### 架构变更
 无架构变更，仅模块内部新增功能：
-- 新增 `scripts/kbd/progress.py` 模块（进度追踪）
-- 新增 `scripts/kbd/logs/` 目录（日志和进度文件存储）
+- 新增 `data-pipeline/kbd/progress.py` 模块（进度追踪）
+- 新增 `data-pipeline/kbd/logs/` 目录（日志和进度文件存储）
 
 ### 文件变更
 
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
-| `scripts/kbd/config.py` | 修改 | 添加 `KBD_LOGS_DIR` 字段 |
-| `scripts/kbd/progress.py` | 新增 | 进度追踪模块（约 100 行） |
-| `scripts/kbd/fetcher.py` | 修改 | 添加 `_is_fetch_failed()`, `get_failed_fetch_ids()` |
-| `scripts/kbd/image_proc.py` | 修改 | 添加 `_has_failed_vision()`, `get_failed_vision_ids()` |
-| `scripts/kbd/pipeline.py` | 修改 | 集成进度追踪，添加 resume/failed-only 逻辑 |
-| `scripts/kbd/run.py` | 修改 | 日志配置、CLI 参数、主函数入口 |
+| `data-pipeline/kbd/config.py` | 修改 | 添加 `KBD_LOGS_DIR` 字段 |
+| `data-pipeline/kbd/progress.py` | 新增 | 进度追踪模块（约 100 行） |
+| `data-pipeline/kbd/fetcher.py` | 修改 | 添加 `_is_fetch_failed()`, `get_failed_fetch_ids()` |
+| `data-pipeline/kbd/image_proc.py` | 修改 | 添加 `_has_failed_vision()`, `get_failed_vision_ids()` |
+| `data-pipeline/kbd/pipeline.py` | 修改 | 集成进度追踪，添加 resume/failed-only 逻辑 |
+| `data-pipeline/kbd/run.py` | 修改 | 日志配置、CLI 参数、主函数入口 |
 | `docs/solution/knowledge-base/知识库设计.md` | 修改 | 更新 Pipeline 运行日志章节 |
 
 ### 关键技术点
@@ -183,7 +183,7 @@ def get_failed_vision_ids(case_ids: list[str]) -> list[str]:
 ## 影响范围
 
 ### 受影响的模块
-- scripts/kbd/ — Pipeline 所有脚本
+- data-pipeline/kbd/ — Pipeline 所有脚本
 - docs/solution/knowledge-base/ — 知识库设计文档
 
 ### 需要更新的文档
@@ -224,19 +224,19 @@ def get_failed_vision_ids(case_ids: list[str]) -> list[str]:
 ### 人工测试
 ```bash
 # 测试日志持久化
-uv run python -m scripts.kbd.run pipeline --ids 15414 --stages fetch
-ls scripts/kbd/logs/
-cat scripts/kbd/logs/kbd_*.log
+uv run PYTHONPATH=data-pipeline python -m kbd.run pipeline --ids 15414 --stages fetch
+ls data-pipeline/kbd/logs/
+cat data-pipeline/kbd/logs/kbd_*.log
 
 # 测试进度文件
-cat scripts/kbd/logs/progress_*.json
+cat data-pipeline/kbd/logs/progress_*.json
 
 # 测试 resume
-uv run python -m scripts.kbd.run pipeline --ids 15414,15415 --stages fetch --resume
+uv run PYTHONPATH=data-pipeline python -m kbd.run pipeline --ids 15414,15415 --stages fetch --resume
 
 # 测试 failed-only（先删除部分 desc.txt）
-find scripts/kbd/cache -name "*.desc.txt" -exec grep -l "（无文字）" {} \; | head -5 | xargs rm
-uv run python -m scripts.kbd.run vision --failed-only --ids 15414
+find data-pipeline/kbd/cache -name "*.desc.txt" -exec grep -l "（无文字）" {} \; | head -5 | xargs rm
+uv run PYTHONPATH=data-pipeline python -m kbd.run vision --failed-only --ids 15414
 ```
 
 ## 验收标准

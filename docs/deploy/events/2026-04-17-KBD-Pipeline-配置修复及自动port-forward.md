@@ -2,7 +2,7 @@
 
 ## 问题背景
 
-执行 `uv run python -m scripts.kbd.run pipeline --ids 35694` 时遇到两个问题：
+执行 `uv run PYTHONPATH=data-pipeline python -m kbd.run pipeline --ids 35694` 时遇到两个问题：
 
 1. **Vision OCR 修复后，内容未更新**：图片识别成功，但 API 返回幂等跳过，数据库内容未变更
 2. **kb-service 不可达**：本地执行 `import` stage 时，无法访问 k3s ClusterIP 服务
@@ -23,7 +23,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
 
 Pipeline 调用端：
 ```python
-# scripts/kbd/importer.py
+# data-pipeline/kbd/importer.py
 stats = await import_batch(ready_ids, None, force_draft=args.force, client=client)
 ```
 
@@ -37,7 +37,7 @@ stats = await import_batch(ready_ids, None, force_draft=args.force, client=clien
 
 原代码：
 ```python
-# scripts/kbd/importer.py
+# data-pipeline/kbd/importer.py
 async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
     stats = await import_batch(...)  # 直接调用 API，失败返回 ConnectionError
 ```
@@ -94,7 +94,7 @@ else:
     allowed_statuses = body.override_status
 ```
 
-调用层（scripts/kbd/importer.py）：
+调用层（data-pipeline/kbd/importer.py）：
 ```python
 async def import_batch(
     support_ids: list[str],
@@ -106,7 +106,7 @@ async def import_batch(
 ) -> dict[str, int]:
 ```
 
-Pipeline 层（scripts/kbd/pipeline.py）：
+Pipeline 层（data-pipeline/kbd/pipeline.py）：
 ```python
 async def run_pipeline(
     case_ids: list[str],
@@ -118,16 +118,16 @@ async def run_pipeline(
 ) -> dict[str, dict]:
 ```
 
-CLI 层（scripts/kbd/run.py）：
+CLI 层（data-pipeline/kbd/run.py）：
 ```bash
 # 强制覆盖 draft 状态的记录
-python -m scripts.kbd.run import --ids 35694 --override
+PYTHONPATH=data-pipeline python -m kbd.run import --ids 35694 --override
 
 # 强制覆盖所有状态的记录（谨慎使用）
-python -m scripts.kbd.run import --ids 35694 --override --override-status all
+PYTHONPATH=data-pipeline python -m kbd.run import --ids 35694 --override --override-status all
 
 # 强制覆盖指定状态的记录
-python -m scripts.kbd.run import --ids 35694 --override --override-status draft,published
+PYTHONPATH=data-pipeline python -m kbd.run import --ids 35694 --override --override-status draft,published
 ```
 
 ### 方案二：自动 Port-Forward 检测
@@ -138,7 +138,7 @@ python -m scripts.kbd.run import --ids 35694 --override --override-status draft,
 2. **本地开发需求**：需要访问 kb-service API
 3. **自动化原则**：无需手动启动 port-forward
 
-**实现变更（scripts/kbd/importer.py）：**
+**实现变更（data-pipeline/kbd/importer.py）：**
 
 ```python
 def _check_kb_service_reachable(timeout: float = 2.0) -> bool:
@@ -187,14 +187,14 @@ async def import_batch(...) -> dict[str, int]:
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
 | `backend/kb-service/app/routes/ingest.py` | 功能增强 | API override + override_status 支持 |
-| `scripts/kbd/importer.py` | 功能增强 | 调用端 override 支持 + 自动 port-forward |
-| `scripts/kbd/pipeline.py` | 功能增强 | Pipeline 参数传递 |
-| `scripts/kbd/run.py` | 功能增强 | CLI 参数解析 |
+| `data-pipeline/kbd/importer.py` | 功能增强 | 调用端 override 支持 + 自动 port-forward |
+| `data-pipeline/kbd/pipeline.py` | 功能增强 | Pipeline 参数传递 |
+| `data-pipeline/kbd/run.py` | 功能增强 | CLI 参数解析 |
 
 ## 后续任务
 
 - 重新构建 kb-service Docker 镜像以启用 API override 功能
-- 测试完整流水线：`python -m scripts.kbd.run pipeline --ids 35694 --override`
+- 测试完整流水线：`PYTHONPATH=data-pipeline python -m kbd.run pipeline --ids 35694 --override`
 
 ## 关联 PIT
 

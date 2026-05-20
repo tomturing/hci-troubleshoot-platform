@@ -1,34 +1,34 @@
 """
-scripts/kbd/run.py — KBD 知识生产管道 CLI 入口（API 调用版）
+data-pipeline/kbd/run.py — KBD 知识生产管道 CLI 入口（API 调用版）
 
 使用方式（在项目根目录下）：
 
   # 完整流水线（从 Excel 读取所有 ID）
-  python -m scripts.kbd.run pipeline --excel
+  python -m kbd.run pipeline --excel
 
   # 完整流水线（指定 ID 列表）
-  python -m scripts.kbd.run pipeline --ids 34977,36179,36166
+  python -m kbd.run pipeline --ids 34977,36179,36166
 
   # 只跑特定 Stage
-  python -m scripts.kbd.run fetch --excel --limit 100
-  python -m scripts.kbd.run vision --ids 34977,36179
-  python -m scripts.kbd.run import --excel
-  python -m scripts.kbd.run classify --excel
+  python -m kbd.run fetch --excel --limit 100
+  python -m kbd.run vision --ids 34977,36179
+  python -m kbd.run import --excel
+  python -m kbd.run classify --excel
 
   # 从上次中断处继续（断点续传）
-  python -m scripts.kbd.run pipeline --excel --resume
+  python -m kbd.run pipeline --excel --resume
 
   # 仅处理失败的案例
-  python -m scripts.kbd.run vision --excel --failed-only
+  python -m kbd.run vision --excel --failed-only
 
   # 强制重新处理（覆盖已完成的记录）
-  python -m scripts.kbd.run pipeline --excel --force
+  python -m kbd.run pipeline --excel --force
 
   # SOP 文档导入
-  python -m scripts.kbd.import_sop --file /path/to/sop.docx --category-id "虚拟机-001"
+  python -m kbd.import_sop --file /path/to/sop.docx --category-id "虚拟机-001"
 
   # 查看配置
-  python -m scripts.kbd.run config
+  python -m kbd.run config
 """
 from __future__ import annotations
 
@@ -399,7 +399,7 @@ def _cmd_config(_args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m scripts.kbd.run",
+        prog="python -m kbd.run",
         description="KBD 知识生产管道",
     )
     sub = parser.add_subparsers(dest="command", required=True)

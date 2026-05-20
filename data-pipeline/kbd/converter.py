@@ -1,5 +1,5 @@
 """
-scripts/kbd/converter.py — 文件缓存 → 结构化 content_md
+data-pipeline/kbd/converter.py — 文件缓存 → 结构化 content_md
 
 功能：
   1. 从 cache/{support_id}/raw.json 读取原始 API 响应（rows 字段）

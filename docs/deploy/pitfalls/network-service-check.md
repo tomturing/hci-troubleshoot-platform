@@ -58,6 +58,7 @@ nslookup api.zai.chat && nslookup open.bigmodel.cn
 | K3s Pod 出网（fake-ip） | Pod 内访问外部 AI API 超时 | `k8s.md` PIT-034 |
 | Docker build 构建容器 | npm/apt/pip install 超时 (198.18.x.x) | `frontend.md` PIT-028 / `k8s.md` PIT-037 |
 | OpenClaw LLM API 域名 | LLM request timed out（api.zai.chat） | `openclaw.md` PIT-027 |
+| Clash 热重载后 | Pod DNS 缓存与 Clash 映射不一致 | 本文件 D-008（PIT-049） |
 
 **判断是否为 Clash 劫持：**
 ```bash
@@ -388,74 +389,84 @@ k3s kubectl get pod -n hci-observability
 
 ---
 
-### D-008（PIT-049）：Clash fake-ip-filter 缺失 AI API 域名，Pod 内 AI 请求 ConnectTimeout
+### D-008（PIT-049）：Clash 热重载后 fake-ip 映射不一致，Pod 内 AI 请求 ConnectTimeout
 
-**触发场景：** 前端选择 AI 助手（如 Qwen3.5-Plus、GLM-5 等）后报错 `大脑 [htp] 不可达: AI_TIMEOUT / ConnectTimeout`；或 ops-agent 报 `暂时不可用，已自动切换到备用助手`。
+**触发场景：** 前端选择 AI 助手（如 Qwen3.5-Plus、GLM-5 等）后报错 `AI 响应失败: network error` 或 `大脑 [htp] 不可达: AI_TIMEOUT / ConnectTimeout`。
 
 **现象特征：**
 ```
 # 前端错误
-服务异常：大脑 [htp] 不可达: {"code": "AI_TIMEOUT", "message": "AI 服务响应超时，请稍后重试", "detail": "type=ConnectTimeout, message="}
-
-# 系统提示
-[系统提示] ops-agent 暂时不可用，已自动切换到备用助手继续为您服务。
+AI 响应失败: network error
+服务异常：大脑 [htp] 不可达: {"code": "AI_TIMEOUT", "message": "AI 服务响应超时，请稍后重试"}
 ```
 
-**根因：** Clash TUN 开启了 `enhanced-mode: fake-ip`，`dns-hijack: any:53` 劫持所有 DNS 查询。`coding.dashscope.aliyuncs.com`（DashScope AI API）不在 `fake-ip-filter` 中，被分配假 IP（`198.18.x.x`）。K3s Pod 内拿到假 IP 后：
-- GET 请求偶尔被 Clash TUN 路由处理，返回 404
-- POST 请求（聊天补全）直接 ConnectTimeout，触发 `AI_TIMEOUT`
+**根因：** Clash TUN 开启了 `enhanced-mode: fake-ip`，正常情况下宿主机和 Pod 都解析到 `198.18.x.x`，Clash 透明代理正常工作。但当 Clash 执行**热重载配置**后，可能出现以下状态不一致：
+- Clash 内部 fake-ip 映射表被重建，旧的 `198.18.x.x` 映射失效
+- CoreDNS 有 30s 缓存，Pod 内仍持有旧 fake-ip 地址
+- 流量打到旧的 fake-ip 地址无法路由 → 连接失败
 
-**快速诊断：**
-```bash
-# 从 Pod 内检查 DNS 解析（是否为 198.18.x.x）
-k3s kubectl exec -n hci-staging <conversation-service-pod> -- python3 -c "
-import socket
-print(socket.getaddrinfo('coding.dashscope.aliyuncs.com', 443)[0][4][0])
-"
-# 若输出 198.18.x.x → 命中此坑
-
-# 从宿主机验证 Clash 解析（应返回真实 IP）
-curl -s --unix-socket /tmp/verge/verge-mihomo.sock \
-  'http://localhost/dns/query?name=coding.dashscope.aliyuncs.com' | python3 -m json.tool | grep data
-```
-
-**修复：** 在 Clash Verge DNS 配置文件 `dns_config.yaml` 的 `fake-ip-filter` 中添加 `aliyuncs.com`：
+**关键诊断：区分两种场景**
 
 ```bash
-# 编辑 Clash Verge DNS 配置
-vi /home/node/.local/share/io.github.clash-verge-rev.clash-verge-rev/dns_config.yaml
-```
+# 1. 检查宿主机和 Pod 是否解析到相同的 fake-ip
+echo "宿主机 DNS:"
+nslookup coding.dashscope.aliyuncs.com | grep -A1 "Name:"
 
-在 `fake-ip-filter:` 列表头部添加：
-```yaml
-fake-ip-filter:
-  - '+.aliyuncs.com'         # DashScope / 阿里云 AI API 全域名
-  - '+.dashscope.aliyuncs.com'
-  # ... 原有条目保留
-```
-
-```bash
-# 通过 Clash Unix socket API 热重载（无需重启 Clash）
-curl -s --unix-socket /tmp/verge/verge-mihomo.sock \
-  -X PUT http://localhost/configs \
-  -H "Content-Type: application/json" \
-  -d '{"force": false}'
-
-# 验证修复（Pod 内应返回真实 IP，不再是 198.18.x.x）
-k3s kubectl exec -n hci-staging <conversation-service-pod> -- python3 -c "
+echo "Pod 内 DNS:"
+k3s kubectl exec -n hci-dev deployment/conversation-service -- python3 -c "
 import socket
 print(socket.getaddrinfo('coding.dashscope.aliyuncs.com', 443)[0][4][0])
 "
 ```
 
-**重启持久性：** `dns_config.yaml` 是 Clash Verge 的 DNS 组件配置，重启后自动加载，修改持久。  
-**注意：** 若通过 Clash Verge GUI 修改 DNS 设置并保存，可能覆盖文件，需重新添加。
+| 场景 | 宿主机 DNS | Pod DNS | 宿主机连通性 | Pod 连通性 | 根因 |
+|------|-----------|---------|-------------|-----------|------|
+| **正常** | 198.18.x.x | 同上 | ✅ | ✅ | Clash 透明代理正常 |
+| **热重载不一致** | 真实 IP / 新 fake-ip | 旧 198.18.x.x | ✅ | ❌ | Clash 不再维护旧映射 |
+| **Pod bypass TUN** | 198.18.x.x | 同上 | ✅ | ❌ | Pod 路由规则问题（见 PIT-034） |
 
-**其他同类 AI API 域名（如遇到同样问题，按需添加）：**
-```yaml
-- '+.bigmodel.cn'            # 智谱 AI GLM
-- '+.openai.com'             # OpenAI
-- '+.anthropic.com'          # Anthropic Claude
+**修复方案：**
+
+**方案 A（推荐）：重启 Clash**
+- 关闭 Clash Verge 应用
+- 重新打开 Clash Verge
+- 这会重建完整的 fake-ip 映射表和 TUN 路由
+
+**方案 B：清除 CoreDNS 缓存**
+```bash
+# 重启 CoreDNS 强制清除缓存
+kubectl rollout restart deployment/coredns -n kube-system
+
+# 验证 Pod 内 DNS 已更新
+kubectl run dns-test --rm -it --image=busybox --restart=Never -- nslookup coding.dashscope.aliyuncs.com
 ```
 
-**参见：** PIT-027（OpenClaw api.zai.chat Clash 劫持）、PIT-034（Pod fake-IP 连接失败）
+**验证修复：**
+```bash
+# 1. 确认宿主机和 Pod DNS 一致
+# 宿主机应返回 fake-ip（如 198.18.0.20）
+nslookup coding.dashscope.aliyuncs.com
+
+# Pod 内应返回相同的 fake-ip
+k3s kubectl exec -n hci-dev deployment/conversation-service -- python3 -c "
+import socket
+print(socket.getaddrinfo('coding.dashscope.aliyuncs.com', 443)[0][4][0])
+"
+
+# 2. 测试实际 AI API 调用
+k3s kubectl exec -n hci-dev deployment/conversation-service -- python3 -c "
+import urllib.request
+req = urllib.request.Request('https://coding.dashscope.aliyuncs.com/v1/chat/completions',
+    headers={'Authorization': 'Bearer <api-key>', 'Content-Type': 'application/json'},
+    data=b'{\"model\": \"glm-5\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"max_tokens\": 5}')
+with urllib.request.urlopen(req, timeout=15) as resp:
+    print(f'✅ AI API 成功: HTTP {resp.status}')
+"
+```
+
+**预防措施：**
+- 避免 Clash 频繁热重载配置
+- 如需修改 Clash 配置，优先重启 Clash 而非热重载
+- AI 相关服务 Pod 可配置 `dnsPolicy: None` + 公共 DNS，完全绕开 Clash（见 PIT-034）
+
+**参见：** PIT-034（Pod bypass 规则导致 fake-ip 不通）、PIT-027（OpenClaw LLM 超时）

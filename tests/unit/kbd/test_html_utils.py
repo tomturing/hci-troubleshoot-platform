@@ -1,5 +1,5 @@
 """
-tests/unit/kbd/test_html_utils.py — 测试 scripts/kbd/html_utils.py
+tests/unit/kbd/test_html_utils.py — 测试 data-pipeline/kbd/html_utils.py
 
 测试公共图片 URL 提取函数，确保：
   - 基本提取功能正常

@@ -1,5 +1,5 @@
 """
-scripts/kbd/importer.py — KBD 条目入库（API 调用版）
+data-pipeline/kbd/importer.py — KBD 条目入库（API 调用版）
 
 功能：
   从文件缓存（cache/{support_id}/raw.json）通过 converter 生成 content_md，
@@ -22,7 +22,7 @@ scripts/kbd/importer.py — KBD 条目入库（API 调用版）
 
 调用方：
   - pipeline.py Stage 3（import）
-  - CLI: python -m scripts.kbd.run import --ids xxx
+  - CLI: python -m kbd.run import --ids xxx
 """
 from __future__ import annotations
 

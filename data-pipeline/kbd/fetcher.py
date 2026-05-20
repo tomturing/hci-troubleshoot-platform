@@ -1,5 +1,5 @@
 """
-scripts/kbd/fetcher.py — 源数据抓取器（文件存储版）
+data-pipeline/kbd/fetcher.py — 源数据抓取器（文件存储版）
 
 功能：
   1. 从 support.sangfor.com.cn API（Cookie 认证）抓取 KBD 案例详情

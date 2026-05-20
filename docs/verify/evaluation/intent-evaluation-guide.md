@@ -16,7 +16,7 @@
 `intent_eval.py` 为独立脚本，配置直接写在 `main()` 函数顶部，运行前需编辑以下变量：
 
 ```python
-# scripts/evaluation/intent_eval.py — main() 函数顶部
+# evaluation/intent_eval.py — main() 函数顶部
 excel_path     = Path("/path/to/HCI-xxx.xlsx")  # 输入 Excel 文件路径
 api_base_url   = "http://172.22.73.249"           # HCI API 地址
 assistant_type = "glm-5"                           # AI 助手类型
@@ -27,7 +27,7 @@ output_dir     = Path(__file__).parent             # 输出目录（默认脚本
 
 ```bash
 # 修改配置后直接执行
-python scripts/evaluation/intent_eval.py
+python evaluation/intent_eval.py
 ```
 
 支持 `Ctrl+C` 安全中断，下次运行自动从断点继续。
@@ -36,14 +36,14 @@ python scripts/evaluation/intent_eval.py
 
 ```bash
 # 查看断点续传进度文件
-cat scripts/evaluation/progress.json
+cat evaluation/progress.json
 ```
 
 ### 4. 导出结果
 
 ```bash
 # 修改 export_ai_responses.py 中的路径后运行
-python scripts/evaluation/export_ai_responses.py
+python evaluation/export_ai_responses.py
 ```
 
 ## 配置参数
@@ -130,11 +130,11 @@ Excel 文件必须包含以下列：
 
 ```bash
 # 第一次运行，处理到第 100 条时中断
-python scripts/evaluation/intent_eval.py
+python evaluation/intent_eval.py
 # Ctrl+C 中断
 
 # 再次运行，从第 101 条继续
-python scripts/evaluation/intent_eval.py
+python evaluation/intent_eval.py
 # 输出: 📦 断点续传: 从第 101 条继续 (共 712 条)
 ```
 
@@ -168,17 +168,17 @@ python scripts/evaluation/intent_eval.py
 
 ```bash
 # 1. 编辑 intent_eval.py，修改配置参数
-vim scripts/evaluation/intent_eval.py
+vim evaluation/intent_eval.py
 # 修改: excel_path / api_base_url / assistant_type / output_dir
 
 # 2. 运行评估
-python scripts/evaluation/intent_eval.py
+python evaluation/intent_eval.py
 
 # 3. 查看进度（另开终端）
-cat scripts/evaluation/vm_output/progress.json
+cat evaluation/vm_output/progress.json
 
 # 4. 导出结果（修改 export_ai_responses.py 中的路径后运行）
-python scripts/evaluation/export_ai_responses.py
+python evaluation/export_ai_responses.py
 
 # 5. 在 admin-ui 查看工单
 # 访问 http://172.22.73.249/admin/

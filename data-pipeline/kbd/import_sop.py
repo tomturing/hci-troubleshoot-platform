@@ -1,5 +1,5 @@
 """
-scripts/kbd/import_sop.py — SOP 文档导入工具
+data-pipeline/kbd/import_sop.py — SOP 文档导入工具
 
 功能：
   1. 读取本地 .docx 文件
@@ -9,7 +9,7 @@ scripts/kbd/import_sop.py — SOP 文档导入工具
 前置操作（必须）：
   ── Docker Compose 环境 ───────────────────────────────
     1. 启动 kb-service：docker compose -f deploy/docker/docker-compose.yml up -d kb-service
-    2. 创建配置文件：cp scripts/kbd/.env.example scripts/kbd/.env
+    2. 创建配置文件：cp data-pipeline/kbd/.env.example data-pipeline/kbd/.env
     3. （可选）修改 .env 中的 INTERNAL_API_TOKEN
 
   ── K3s 环境 ───────────────────────────────────────────
@@ -18,14 +18,14 @@ scripts/kbd/import_sop.py — SOP 文档导入工具
     2. 获取正确的 INTERNAL_API_TOKEN：
        kubectl exec -n hci-dev deploy/kb-service -- env | grep INTERNAL_API_TOKEN
     3. 创建配置文件（使用正确 token）：
-       cat > scripts/kbd/.env << 'EOF'
+       cat > data-pipeline/kbd/.env << 'EOF'
        KB_SERVICE_URL=http://localhost:8004
        INTERNAL_API_TOKEN=<从步骤2获取的值>
        EOF
 
 用法：
-  python -m scripts.kbd.import_sop --file /path/to/sop.docx --category-id "虚拟机-001"
-  python -m scripts.kbd.import_sop --dir /path/to/sop_docs/ --category-id "虚拟机-001"
+  python -m kbd.import_sop --file /path/to/sop.docx --category-id "虚拟机-001"
+  python -m kbd.import_sop --dir /path/to/sop_docs/ --category-id "虚拟机-001"
 
 设计特点：
   - 使用 python-docx 解析 Word 文档
@@ -35,7 +35,7 @@ scripts/kbd/import_sop.py — SOP 文档导入工具
 
 调用方：
   - CLI 手动导入
-  - scripts/kbd CLI 手动导入
+  - data-pipeline/kbd CLI 手动导入
 """
 from __future__ import annotations
 
@@ -356,7 +356,7 @@ async def import_sop_dir(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m scripts.kbd.import_sop",
+        prog="python -m kbd.import_sop",
         description="SOP 文档导入工具",
     )
 

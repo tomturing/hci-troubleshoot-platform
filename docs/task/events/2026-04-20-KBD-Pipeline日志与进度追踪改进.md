@@ -14,16 +14,16 @@ owner: claude
 ## 任务清单
 
 ### T1: config.py 添加 KBD_LOGS_DIR
-- **描述**：在 `scripts/kbd/config.py` 添加 `KBD_LOGS_DIR` 字段，并更新 validator
-- **文件变更**：`scripts/kbd/config.py`
+- **描述**：在 `data-pipeline/kbd/config.py` 添加 `KBD_LOGS_DIR` 字段，并更新 validator
+- **文件变更**：`data-pipeline/kbd/config.py`
 - **验收标准**：lint 通过，`settings.KBD_LOGS_DIR` 可用
 - **依赖**：无
 - **预计耗时**：10min
 - **状态**：✅ 已完成
 
 ### T2: 创建 progress.py 模块
-- **描述**：创建 `scripts/kbd/progress.py`，包含进度追踪核心函数
-- **文件变更**：`scripts/kbd/progress.py`（新增）
+- **描述**：创建 `data-pipeline/kbd/progress.py`，包含进度追踪核心函数
+- **文件变更**：`data-pipeline/kbd/progress.py`（新增）
 - **验收标准**：
   - 函数签名符合设计
   - JSON 结构符合设计文档
@@ -34,7 +34,7 @@ owner: claude
 
 ### T3: fetcher.py 添加失败检测函数
 - **描述**：添加 `_is_fetch_failed()` 和 `get_failed_fetch_ids()` 函数
-- **文件变更**：`scripts/kbd/fetcher.py`
+- **文件变更**：`data-pipeline/kbd/fetcher.py`
 - **验收标准**：函数能正确识别有 `.failed` 标记的案例
 - **依赖**：无
 - **预计耗时**：20min
@@ -42,7 +42,7 @@ owner: claude
 
 ### T4: image_proc.py 添加失败检测函数
 - **描述**：添加 `_has_failed_vision()` 和 `get_failed_vision_ids()` 函数
-- **文件变更**：`scripts/kbd/image_proc.py`
+- **文件变更**：`data-pipeline/kbd/image_proc.py`
 - **验收标准**：函数能正确识别 `.desc.failed` 和"无文字"内容
 - **依赖**：无
 - **预计耗时**：20min
@@ -54,7 +54,7 @@ owner: claude
   - 添加 `--resume`, `--resume-run-id`, `--failed-only` CLI 参数
   - 修改 `main()` 初始化日志
   - 修改 `_cmd_pipeline()` 传递 run_id
-- **文件变更**：`scripts/kbd/run.py`
+- **文件变更**：`data-pipeline/kbd/run.py`
 - **验收标准**：
   - 日志文件正确生成
   - CLI 参数解析正常
@@ -69,7 +69,7 @@ owner: claude
   - 每个 Stage 完成后调用 `update_stage_status()` 和 `save_progress()`
   - 实现 resume 和 failed_only 逻辑
   - 修改 `run_from_excel()` 同样支持新参数
-- **文件变更**：`scripts/kbd/pipeline.py`
+- **文件变更**：`data-pipeline/kbd/pipeline.py`
 - **验收标准**：
   - progress.json 正确生成和更新
   - --resume 正确跳过已完成案例
@@ -136,16 +136,16 @@ T4 ────────→ T6
 ### 人工测试命令
 ```bash
 # 测试日志持久化
-uv run python -m scripts.kbd.run pipeline --ids 15414 --stages fetch
-ls scripts/kbd/logs/
-cat scripts/kbd/logs/kbd_*.log
-cat scripts/kbd/logs/progress_*.json
+uv run PYTHONPATH=data-pipeline python -m kbd.run pipeline --ids 15414 --stages fetch
+ls data-pipeline/kbd/logs/
+cat data-pipeline/kbd/logs/kbd_*.log
+cat data-pipeline/kbd/logs/progress_*.json
 
 # 测试 resume
-uv run python -m scripts.kbd.run pipeline --ids 15414,15415 --stages fetch --resume
+uv run PYTHONPATH=data-pipeline python -m kbd.run pipeline --ids 15414,15415 --stages fetch --resume
 
 # 测试 failed-only
-uv run python -m scripts.kbd.run vision --failed-only --excel --limit 5
+uv run PYTHONPATH=data-pipeline python -m kbd.run vision --failed-only --excel --limit 5
 ```
 
 ## 变更历史

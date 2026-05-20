@@ -24,7 +24,7 @@ owner: team
   - FastAPI 无法将 multipart 数据解析为 Pydantic 模型，抛出 422 错误被转换为 500
 
 ### 问题二：导入 SOP 脚本报错连接失败
-- **业务背景**：开发者使用 `scripts/kbd/import_sop.py` 导入 SOP 文档
+- **业务背景**：开发者使用 `data-pipeline/kbd/import_sop.py` 导入 SOP 文档
 - **核心痛点**：
   1. `All connection attempts failed` — kb-service 在 K3s 中运行，Service 类型是 ClusterIP，无法从 localhost:8004 直接访问
   2. `401 Unauthorized` — 脚本使用的默认 token 与 K3s 实际配置不一致
@@ -37,8 +37,8 @@ owner: team
 - 使用 FastAPI 的 `UploadFile` 和 `Query` 参数替代错误的 raw body 解析
 
 ### 问题二修复
-- 更新 `scripts/kbd/.env.example` 文档，说明 Docker Compose 和 K3s 两种环境的 token 配置方法
-- 更新 `scripts/kbd/import_sop.py` 用法说明，添加完整的前置操作步骤
+- 更新 `data-pipeline/kbd/.env.example` 文档，说明 Docker Compose 和 K3s 两种环境的 token 配置方法
+- 更新 `data-pipeline/kbd/import_sop.py` 用法说明，添加完整的前置操作步骤
 
 ## 验收标准
 - [ ] admin-ui 页面可以成功导入分类 YAML 文件

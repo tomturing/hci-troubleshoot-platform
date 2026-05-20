@@ -1,5 +1,5 @@
 """
-scripts/kbd/pipeline.py — KBD 知识生产管道编排（API 调用版）
+data-pipeline/kbd/pipeline.py — KBD 知识生产管道编排（API 调用版）
 
 完整流水线分四个 Stage：
 
@@ -23,14 +23,14 @@ scripts/kbd/pipeline.py — KBD 知识生产管道编排（API 调用版）
   - 失败记录可通过 --stage=N --retry-failed 重试
 
 用法：
-  python -m scripts.kbd.run pipeline --excel          # 从 Excel 全量跑
-  python -m scripts.kbd.run pipeline --ids 34977,36179
-  python -m scripts.kbd.run pipeline --excel --resume  # 从上次中断处继续
-  python -m scripts.kbd.run pipeline --excel --failed-only  # 仅处理失败案例
-  python -m scripts.kbd.run fetch --ids 34977
-  python -m scripts.kbd.run vision --excel
-  python -m scripts.kbd.run import --excel
-  python -m scripts.kbd.run classify --excel
+  python -m kbd.run pipeline --excel          # 从 Excel 全量跑
+  python -m kbd.run pipeline --ids 34977,36179
+  python -m kbd.run pipeline --excel --resume  # 从上次中断处继续
+  python -m kbd.run pipeline --excel --failed-only  # 仅处理失败案例
+  python -m kbd.run fetch --ids 34977
+  python -m kbd.run vision --excel
+  python -m kbd.run import --excel
+  python -m kbd.run classify --excel
 """
 from __future__ import annotations
 

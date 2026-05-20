@@ -23,7 +23,7 @@ owner: team
 
 原因：`import_from_yaml` 设计时预设了一个**从未存在过的"API 专用格式"**（要求 YAML 中明确包含 `level`、`name`、`parent_id` 字段），但实际只有 `category_baseline.yaml` 这一个文件可用，格式永久不匹配。
 
-同期的 `scripts/kbd/seed_categories.py` 正确处理了基准 YAML，但未被 API 层复用。
+同期的 `data-pipeline/kbd/seed_categories.py` 正确处理了基准 YAML，但未被 API 层复用。
 
 ### 影响范围
 
@@ -45,7 +45,7 @@ owner: team
 - [ ] 实际导入后 `kb_category` 表包含 L1（5条）+ 中间节点（约 32 条）+ 叶节点（198条）
 - [ ] 所有非 L1 节点的 `parent_id` 均非 NULL
 - [ ] 幂等：重复导入结果不变，不产生重复记录
-- [ ] 已有 `scripts/kbd/seed_categories.py` 导入的数据，再次通过 API 导入不冲突
+- [ ] 已有 `data-pipeline/kbd/seed_categories.py` 导入的数据，再次通过 API 导入不冲突
 
 ## 约束条件
 

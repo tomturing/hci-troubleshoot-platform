@@ -170,7 +170,7 @@ bash scripts/ops/k3s-verify.sh
 ### ⏳ 进行中
 
 - KB Service：RAG Pipeline 代码落地（`feature/knowledge-rag` 分支）
-- `scripts/kbd` → kb-service API → `kbd_entry` 入库流程联调
+- `data-pipeline/kbd` → kb-service API → `kbd_entry` 入库流程联调
 - Scheduler Redis 集成测试（fakeredis）
 
 ---
