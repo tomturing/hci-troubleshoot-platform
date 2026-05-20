@@ -952,6 +952,59 @@ CREATE INDEX IF NOT EXISTS idx_sop_chunk_embedding ON sop_chunk
 
 
 -- ------------------------------------------------------------
+-- 表: sop_tree  [模块: kb-service]
+-- 说明: SOP 多叉决策树结构表 — 存储 docx 解析后的结构化 JSON 决策树
+-- 用途: AI Agent（ReAct）遍历决策树执行排障；支持 markdown ↔ JSON 双向同步
+-- 与 sop_document 的关系: 1:1，document 删除时 tree 级联删除
+-- 版本: v7.x 新增（2026-05-xx）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sop_tree (
+    id                  SERIAL          NOT NULL,
+    document_id         INTEGER         NOT NULL,               -- 1:1 关联 sop_document.id
+    schema_version      VARCHAR(20)     NOT NULL DEFAULT 'sop-tree-v1',  -- 结构版本，解析器升级时更新
+    scenario_name       VARCHAR(500)    NOT NULL,               -- 冗余根节点名，方便按名称检索
+    tree_json           JSONB           NOT NULL,               -- SOPNode 根节点 model_dump() 输出
+    leaf_count          INTEGER         NOT NULL DEFAULT 0,     -- 叶节点（案例）数量
+    total_node_count    INTEGER         NOT NULL DEFAULT 0,     -- 总节点数（含路由节点）
+    validation_status   VARCHAR(20)     NOT NULL DEFAULT 'valid',  -- valid / warnings / error
+    validation_issues   JSONB                    DEFAULT NULL,  -- ValidationIssue[] JSON（可为空）
+    generated_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(), -- 首次解析生成时间
+    generator_version   VARCHAR(50)              DEFAULT 'sop-parser-v1',  -- 解析器版本
+    created_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    CONSTRAINT sop_tree_pkey           PRIMARY KEY (id),
+    CONSTRAINT sop_tree_document_uniq  UNIQUE (document_id),
+    CONSTRAINT fk_sop_tree_document    FOREIGN KEY (document_id)
+        REFERENCES sop_document (id) ON DELETE CASCADE
+);
+
+COMMENT ON TABLE sop_tree IS 'SOP 多叉决策树表 — SOP 的结构化 JSON 表示，供 AI Agent 遍历';
+COMMENT ON COLUMN sop_tree.id IS '主键，自增';
+COMMENT ON COLUMN sop_tree.document_id IS '1:1 关联 sop_document.id，CASCADE DELETE';
+COMMENT ON COLUMN sop_tree.schema_version IS '树结构 schema 版本（如 sop-tree-v1）';
+COMMENT ON COLUMN sop_tree.scenario_name IS '冗余：根节点 name（场景名），方便按名称查找';
+COMMENT ON COLUMN sop_tree.tree_json IS 'SOPNode 根节点完整 JSON（含所有子树）';
+COMMENT ON COLUMN sop_tree.leaf_count IS '叶节点（案例节点）数量';
+COMMENT ON COLUMN sop_tree.total_node_count IS '总节点数（含路由节点和叶节点）';
+COMMENT ON COLUMN sop_tree.validation_status IS 'valid=完全合规; warnings=有警告但已入库; error=解析失败';
+COMMENT ON COLUMN sop_tree.validation_issues IS 'ValidationIssue 列表 JSON（warnings/errors）';
+COMMENT ON COLUMN sop_tree.generated_at IS '树首次生成时间';
+COMMENT ON COLUMN sop_tree.generator_version IS '解析器版本，用于判断是否需要重新解析';
+COMMENT ON COLUMN sop_tree.created_at IS '记录创建时间';
+COMMENT ON COLUMN sop_tree.updated_at IS '记录最后更新时间（markdown 或 JSON 重新同步时更新）';
+
+-- 索引: sop_tree
+-- 通过 document_id 快查（unique 约束已含索引，此处补充 GIN 索引支持 JSONB 查询）
+CREATE INDEX IF NOT EXISTS idx_sop_tree_document ON sop_tree (document_id);
+-- GIN 索引：支持 tree_json @> '{"name": "..."}' 等 JSONB 条件检索
+CREATE INDEX IF NOT EXISTS idx_sop_tree_json ON sop_tree USING GIN (tree_json);
+-- 场景名称前缀检索
+CREATE INDEX IF NOT EXISTS idx_sop_tree_scenario ON sop_tree (scenario_name);
+
+
+
+
+-- ------------------------------------------------------------
 -- 表: terminal_operation  [模块: case-service]
 -- 说明: 终端操作录制表 — 记录 SSH 终端的命令输入和输出回显，用于排障复盘和审计
 -- 用途: 工程师通过 SSH 终端执行诊断命令时，前端拦截输入/输出并写入此表；后续在 custom-ui/admin-ui 回放操作序列

@@ -42,8 +42,9 @@ class SopDocument(Base):
         nullable=False,
     )
 
-    # 关联（级联删除 chunks）
+    # 关联（级联删除 chunks 和决策树）
     chunks = relationship("SopChunk", back_populates="document", cascade="all, delete-orphan", lazy="select")
+    tree = relationship("SopTree", back_populates="document", cascade="all, delete-orphan", uselist=False, lazy="select")
 
     # 合法状态集合
     VALID_STATUSES = frozenset({"draft", "published", "archived"})
