@@ -4,7 +4,7 @@ Environment Client - 与 case-service 交互获取环境上下文的 HTTP 客户
 
 import httpx
 from shared.models.schemas import EnvironmentContextResponse
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 logger = get_logger("environment-client")
 

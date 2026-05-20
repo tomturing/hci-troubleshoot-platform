@@ -9,7 +9,7 @@ Scheduler Service - 多类型AI助手调度与生命周期管理 (v2.0)
 import json
 
 from shared.database.redis import RedisManager
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 from app.config import settings
 

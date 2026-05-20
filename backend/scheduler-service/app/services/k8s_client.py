@@ -7,7 +7,7 @@ from typing import Any
 
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 from app.config import settings
 

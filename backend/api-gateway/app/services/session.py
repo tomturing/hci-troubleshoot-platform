@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 
 from shared.database.redis import RedisManager
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 logger = get_logger("session-service")
 

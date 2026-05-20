@@ -12,8 +12,8 @@ from shared.models.schemas import (
     ClientInfo,
     ClientListResponse,
 )
-from shared.utils.logger import get_logger
-from shared.utils.otel import get_current_trace_id
+from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 
 from ..models.case import Case, CaseStatus
 from ..repositories.case_repo import CaseRepository

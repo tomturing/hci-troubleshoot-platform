@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 from sqlalchemy import select
 
 from app.models.kbd_entry import KbdEntry

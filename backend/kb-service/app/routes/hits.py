@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request, status
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 from sqlalchemy import update
 
 from app.models.kbd_entry import KbdEntry

@@ -11,7 +11,7 @@ S0 阶段专用：
 import re
 from typing import Any
 
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 logger = get_logger("prompt-builder")
 

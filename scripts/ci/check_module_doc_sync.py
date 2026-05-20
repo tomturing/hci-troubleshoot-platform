@@ -9,7 +9,7 @@
   backend/case-service/         → solution/case/工单设计.md        + task/case/工单任务.md
   backend/conversation-service/ → solution/conversation/对话设计.md + task/conversation/对话任务.md
   backend/kb-service/           → solution/knowledge-base/知识库设计.md + task/knowledge-base/知识库任务.md
-  backend/scheduler-service/    → solution/ai-assistant/AI助手设计.md  + task/ai-assistant/AI助手任务.md
+  backend/scheduler-service/    → solution/agent/AI助手设计.md  + task/agent/AI助手任务.md
   backend/api-gateway/          → solution/架构设计.md              + task/架构任务.md
   backend/shared/               → solution/架构设计.md              （共享库影响全局架构）
   frontend/customer/            → solution/custom-ui/custom-ui设计.md + task/custom-ui/custom-ui任务.md
@@ -86,8 +86,8 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
     ModuleMapping(
         code_prefix="backend/scheduler-service/",
         display_name="AI 调度服务（scheduler-service）",
-        solution_doc="docs/solution/ai-assistant/AI助手设计.md",
-        task_doc="docs/task/ai-assistant/AI助手任务.md",
+        solution_doc="docs/solution/agent/AI助手设计.md",
+        task_doc="docs/task/agent/AI助手任务.md",
     ),
     ModuleMapping(
         code_prefix="backend/api-gateway/",

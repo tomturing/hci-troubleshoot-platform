@@ -21,8 +21,8 @@ except ImportError:
     _PROMETHEUS_AVAILABLE = False
     Counter = Gauge = Histogram = None  # type: ignore[assignment,misc]
 
-from shared.utils.logger import get_logger
-from shared.utils.otel import get_current_trace_id
+from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

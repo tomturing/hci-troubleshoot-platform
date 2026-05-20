@@ -11,8 +11,8 @@ import uuid
 from collections import deque
 from typing import Any
 
-from shared.utils.logger import get_logger
-from shared.utils.metrics import POD_POOL_ACTIVE, POD_POOL_IDLE
+from shared.observability.logger import get_logger
+from shared.observability.metrics import POD_POOL_ACTIVE, POD_POOL_IDLE
 
 from .k8s_client import K8sClient
 

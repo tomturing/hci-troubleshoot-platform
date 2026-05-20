@@ -11,8 +11,8 @@ from shared.models.schemas import (
     EnvironmentResponse,
     EnvType,
 )
-from shared.utils.logger import get_logger
-from shared.utils.otel import get_current_trace_id
+from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 
 from ..models.environment import Environment
 from ..repositories.environment_repo import EnvironmentRepository

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

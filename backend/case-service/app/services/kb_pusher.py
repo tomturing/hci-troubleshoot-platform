@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 
 from shared.models.schemas import KBIngestPayload
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 logger = get_logger("case-service-kb-pusher")
 

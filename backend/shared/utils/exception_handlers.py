@@ -15,7 +15,7 @@ import traceback
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from shared.utils.exceptions import ErrorCode, HCIException
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 logger = get_logger("exception-handler")
 

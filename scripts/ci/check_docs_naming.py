@@ -63,7 +63,7 @@ ALLOWED_EXTRAS = {
 BRANCH_APPROVED_STEMS: dict[str, list[str]] = {
     "case":           ["工单"],
     "conversation":   ["对话"],
-    "ai-assistant":   ["AI助手"],
+    "agent":          ["AI助手", "agent"],  # 2026-05-20 由 ai-assistant 重命名
     "knowledge-base": ["知识库"],
     "custom-ui":      ["客户端"],
     "admin-ui":       ["管理台"],
@@ -170,7 +170,7 @@ def check_dir_names() -> list[str]:
                 errors.append(
                     f"❌ 目录 {d}\n"
                     f"   目录名 '{d.name}' 不符合规范，应为全小写英文（字母/数字/连字符），\n"
-                    f"   如：case、ai-assistant、custom-ui"
+                    f"   如：case、agent、custom-ui"
                 )
     return errors
 
