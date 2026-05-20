@@ -1306,7 +1306,11 @@ def _parse_docx_bytes(content: bytes) -> tuple[str, str, list[tuple[str, str]]]:
                 if chapter_content:
                     chapters.append((current_chapter_title, chapter_content))
 
-            heading_prefix = "#" * min(level, 3)
+            # 为保持与下游 _split_md_chapters 仅按 H1-H3 分章的既有契约一致，
+            # 这里将 docx 的深层标题映射为最多三级 Markdown 标题，避免 H4+ 被写入
+            # content_md 后无法被后续分块逻辑识别。
+            heading_level = min(level, 3)
+            heading_prefix = "#" * heading_level
             heading_line = f"{heading_prefix} {text}"
             md_lines.append(heading_line)
             current_chapter_title = text

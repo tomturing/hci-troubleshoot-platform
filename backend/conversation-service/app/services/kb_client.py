@@ -355,3 +355,26 @@ class KBClient(InternalHTTPClient):
         except (httpx.HTTPStatusError, httpx.RequestError) as exc:
             logger.warning(event="kb_kbd_info_error", kbd_id=kbd_id, error=str(exc))
             return None
+
+    async def get_sop_tree(self, document_id: int) -> dict | None:
+        """获取 SOP 决策树（供 pydantic-ai Agent 工具使用）。
+
+        Returns:
+            tree_json dict（SOPNode.model_dump() 格式），404 时返回 None。
+        """
+        try:
+            resp = await self.get(
+                f"/api/sop/{document_id}/tree",
+                timeout=_REQUEST_TIMEOUT,
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.json()
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            logger.warning(
+                event="kb_get_sop_tree_error",
+                document_id=document_id,
+                error=str(exc),
+            )
+            return None

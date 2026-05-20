@@ -46,10 +46,6 @@ spec:
               value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
             - name: SOP_SKILLS_DIR
               value: {{ .Values.kbService.sopSkillsDir | quote }}
-            - name: ZAI_BASE_URL
-              value: {{ .Values.kbService.llmBaseUrl | default (printf "http://openclaw:%v" .Values.openclaw.port) | quote }}
-            - name: ZAI_LLM_MODEL
-              value: {{ .Values.kbService.llmModel | default "" | quote }}
             - name: BGE_MODEL_PATH
               value: "/models/bge-small-zh-v1.5"
           volumeMounts:

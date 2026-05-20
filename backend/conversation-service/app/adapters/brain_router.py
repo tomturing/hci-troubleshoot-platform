@@ -19,17 +19,21 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.adapters.htp_brain_adapter import HTPBrainAdapter
 from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
 from app.core.brain_port import BrainEvent, BrainTextChunk, BrainUnavailableError
 from app.services.ai_client import AIAssistantRegistry
 
+if TYPE_CHECKING:
+    from app.adapters.pydantic_ai_brain_adapter import PydanticAIBrainAdapter
+
 logger = logging.getLogger("brain-router")
 
-# ops-agent 大脑路由的 assistant_type 标识
+# 各大脑路由的 assistant_type 标识
 OPS_AGENT_TYPE = "ops-agent"
+PYDANTIC_AI_TYPE = "pydantic-ai"
 
 # 降级提示消息（用户可见）
 _FALLBACK_NOTICE = "\n\n> [系统提示] ops-agent 暂时不可用，已自动切换到备用助手继续为您服务。\n\n"
@@ -52,10 +56,12 @@ class BrainRouter:
         self,
         htp_adapter: HTPBrainAdapter,
         ops_agent_adapter: OpsAgentBrainAdapter | None = None,
+        pydantic_ai_adapter: PydanticAIBrainAdapter | None = None,
         ai_registry: AIAssistantRegistry | None = None,
     ) -> None:
         self._htp = htp_adapter
         self._ops_agent = ops_agent_adapter
+        self._pydantic_ai = pydantic_ai_adapter
         self._ai_registry = ai_registry
 
     def get_ops_agent_adapter(self) -> OpsAgentBrainAdapter | None:
@@ -87,7 +93,47 @@ class BrainRouter:
         Yields:
             BrainEvent 序列（来自目标大脑或降级后的备用大脑）。
         """
-        if assistant_type == OPS_AGENT_TYPE:
+        if assistant_type == PYDANTIC_AI_TYPE:
+            if self._pydantic_ai is None:
+                logger.warning(
+                    "BrainRouter: pydantic-ai 未启用，降级到 htp 大脑. session_id=%s",
+                    session_id,
+                )
+                async for event in self._htp.process(
+                    session_id=session_id,
+                    messages=messages,
+                    env_context=env_context,
+                    stream=stream,
+                    assistant_type="glm-4-flash",
+                    case_id=case_id,
+                    user_id=user_id,
+                ):
+                    yield event
+            else:
+                try:
+                    async for event in self._pydantic_ai.process(
+                        session_id=session_id,
+                        messages=messages,
+                        env_context=env_context,
+                        stream=stream,
+                    ):
+                        yield event
+                except BrainUnavailableError as exc:
+                    logger.warning(
+                        "BrainRouter: pydantic-ai 不可达，降级到 htp 大脑. session_id=%s reason=%s",
+                        session_id,
+                        exc.reason,
+                    )
+                    async for event in self._fallback_to_htp(
+                        notice=_FALLBACK_NOTICE,
+                        session_id=session_id,
+                        messages=messages,
+                        stream=stream,
+                        case_id=case_id,
+                        user_id=user_id,
+                    ):
+                        yield event
+        elif assistant_type == OPS_AGENT_TYPE:
             if self._ops_agent is None:
                 # ops-agent 未启用，降级到 htp 大脑
                 logger.warning(
