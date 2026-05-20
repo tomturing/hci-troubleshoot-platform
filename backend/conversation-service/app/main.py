@@ -9,8 +9,6 @@ Conversation Service - 主应用 (v2.0 多类型AI助手)
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.responses import Response
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
 from shared.observability.metrics import HTTPMetricsMiddleware
@@ -31,13 +29,12 @@ init_telemetry(settings.SERVICE_NAME)
 
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     logger.info(
-        event="service_starting",
-        message=f"Starting {settings.SERVICE_NAME} (v2.0)",
-        port=settings.SERVICE_PORT
+        event="service_starting", message=f"Starting {settings.SERVICE_NAME} (v2.0)", port=settings.SERVICE_PORT
     )
 
     # 初始化数据库
@@ -69,7 +66,7 @@ async def lifespan(app: FastAPI):
 
     logger.info(
         event="ai_registry_initialized",
-        message=f"Registered AI assistants: {ai_registry.list_types()}, default={ai_registry.get_default_type()}"
+        message=f"Registered AI assistants: {ai_registry.list_types()}, default={ai_registry.get_default_type()}",
     )
 
     # 初始化 KB 客户端（可选）
@@ -88,7 +85,7 @@ async def lifespan(app: FastAPI):
     )
     logger.info(
         event="environment_client_initialized",
-        message=f"Environment client 已初始化，目标: {settings.CASE_SERVICE_URL}"
+        message=f"Environment client 已初始化，目标: {settings.CASE_SERVICE_URL}",
     )
 
     # [PR-B] 初始化 AgentClient（委托推理给 agent-service）
@@ -130,11 +127,12 @@ async def lifespan(app: FastAPI):
     if database_manager:
         await database_manager.close()
 
+
 app = FastAPI(
     title="HCI Troubleshoot - Conversation Service",
     description="对话管理服务 (v2.0 多类型AI助手)",
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # 注入 OpenTelemetry 中间件到 app 实例
