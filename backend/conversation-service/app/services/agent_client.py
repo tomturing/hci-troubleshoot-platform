@@ -73,41 +73,40 @@ class AgentClient:
         )
 
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", url, json=payload) as resp:
-                    if resp.status_code != 200:
-                        body = await resp.aread()
-                        logger.error(
-                            event="agent_client_http_error",
-                            message=f"agent-service 返回 {resp.status_code}",
-                            status_code=resp.status_code,
-                            body=body.decode(errors="replace")[:500],
+            async with httpx.AsyncClient(timeout=None) as client, client.stream("POST", url, json=payload) as resp:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    logger.error(
+                        event="agent_client_http_error",
+                        message=f"agent-service 返回 {resp.status_code}",
+                        status_code=resp.status_code,
+                        body=body.decode(errors="replace")[:500],
+                    )
+                    yield {
+                        "type": "error",
+                        "message": f"agent-service HTTP {resp.status_code}",
+                    }
+                    return
+
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    raw = line[6:]  # 去掉 "data: " 前缀
+                    try:
+                        event = json.loads(raw)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            event="agent_client_parse_error",
+                            message=f"无法解析 SSE 行: {raw[:200]}",
                         )
-                        yield {
-                            "type": "error",
-                            "message": f"agent-service HTTP {resp.status_code}",
-                        }
-                        return
+                        continue
 
-                    async for line in resp.aiter_lines():
-                        line = line.strip()
-                        if not line or not line.startswith("data: "):
-                            continue
-                        raw = line[6:]  # 去掉 "data: " 前缀
-                        try:
-                            event = json.loads(raw)
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                event="agent_client_parse_error",
-                                message=f"无法解析 SSE 行: {raw[:200]}",
-                            )
-                            continue
+                    yield event
 
-                        yield event
-
-                        # "done" 事件后退出迭代
-                        if event.get("type") == "done":
-                            break
+                    # "done" 事件后退出迭代
+                    if event.get("type") == "done":
+                        break
 
         except httpx.ConnectError as exc:
             logger.error(
@@ -166,31 +165,29 @@ class AgentClient:
         """
         url = f"{self._base_url}/v1/agent/resume-stream/{session_id}"
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("GET", url) as resp:
-                    if resp.status_code != 200:
-                        logger.warning(
-                            event="agent_client_resume_error",
-                            message=f"resume-stream HTTP {resp.status_code}",
-                            session_id=session_id,
-                        )
-                        return
-                    async for line in resp.aiter_lines():
-                        line = line.strip()
-                        if not line or not line.startswith("data: "):
-                            continue
-                        raw = line[6:]
-                        try:
-                            event = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        yield event
-                        if event.get("type") == "done":
-                            break
+            async with httpx.AsyncClient(timeout=None) as client, client.stream("GET", url) as resp:
+                if resp.status_code != 200:
+                    logger.warning(
+                        event="agent_client_resume_error",
+                        message=f"resume-stream HTTP {resp.status_code}",
+                        session_id=session_id,
+                    )
+                    return
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    raw = line[6:]
+                    try:
+                        event = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    yield event
+                    if event.get("type") == "done":
+                        break
         except Exception as exc:
             logger.error(
                 event="agent_client_resume_exception",
                 message=f"resume_stream 异常: {exc}",
                 session_id=session_id,
             )
-
