@@ -52,6 +52,14 @@ class AgentStreamRequest(BaseModel):
     stream: bool = True
 
 
+class InteractiveResponseRequest(BaseModel):
+    """ACP 交互响应请求体"""
+
+    acp_session_id: str
+    request_id: str
+    outcome: str
+
+
 # ── SSE 序列化辅助 ────────────────────────────────────────────────────────────
 
 
@@ -136,9 +144,7 @@ async def _event_stream(
             agent_name=exc.agent_name,
             session_id=req.session_id,
         )
-        yield _sse(
-            {"type": "error", "message": f"大脑 [{exc.agent_name}] 不可达: {exc.reason}"}
-        )
+        yield _sse({"type": "error", "message": f"大脑 [{exc.agent_name}] 不可达: {exc.reason}"})
     except Exception as exc:
         logger.error(
             event="agent_stream_error",
@@ -238,17 +244,19 @@ async def resume_ops_agent_stream(session_id: str) -> StreamingResponse:
             if isinstance(event, AgentTextChunk) and event.content:
                 yield _sse({"type": "text_chunk", "content": event.content})
             elif isinstance(event, AgentInteractiveRequest):
-                yield _sse({
-                    "type": "interactive_request",
-                    "request_id": event.request_id,
-                    "acp_session_id": event.acp_session_id,
-                    "kind": event.kind,
-                    "title": event.title,
-                    "prompt": event.prompt,
-                    "options": event.options,
-                    "custom_input": event.custom_input,
-                    "metadata": event.metadata,
-                })
+                yield _sse(
+                    {
+                        "type": "interactive_request",
+                        "request_id": event.request_id,
+                        "acp_session_id": event.acp_session_id,
+                        "kind": event.kind,
+                        "title": event.title,
+                        "prompt": event.prompt,
+                        "options": event.options,
+                        "custom_input": event.custom_input,
+                        "metadata": event.metadata,
+                    }
+                )
             elif isinstance(event, AgentStageUpdate):
                 yield _sse({"type": "stage_update", "stage": event.stage, "metadata": event.metadata})
         yield _sse({"type": "done"})
