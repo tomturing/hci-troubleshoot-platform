@@ -11,8 +11,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
-from sqlalchemy import select
-
 from sqlalchemy import text
 
 from app.config import settings
@@ -146,8 +144,6 @@ async def submit_evaluation(
     quality_service = QualityScoreService(session)
 
     # 3. 检查是否已评分（幂等性）
-    from sqlalchemy import text
-
     existing_result = await session.execute(
         text(
             """
@@ -185,7 +181,7 @@ async def submit_evaluation(
             case_id=case_id,
             conversation_id=str(conversation_id),
             user_rating=evaluation.score,
-            trace_id=getattr(conversation, "trace_id", None),
+            trace_id=None,
         )
 
         logger.info(
@@ -227,10 +223,12 @@ async def get_evaluation(
     """
     # 查询 conversation 获取 case_id
     # 获取 case_id（原始 SQL，eval-service 无 Conversation ORM）
-    conv_row2 = (await session.execute(
-        text("SELECT case_id FROM conversation WHERE conversation_id = :cid"),
-        {"cid": str(conversation_id)},
-    )).fetchone()
+    conv_row2 = (
+        await session.execute(
+            text("SELECT case_id FROM conversation WHERE conversation_id = :cid"),
+            {"cid": str(conversation_id)},
+        )
+    ).fetchone()
 
     if not conv_row2:
         raise HTTPException(status_code=404, detail="对话不存在")
