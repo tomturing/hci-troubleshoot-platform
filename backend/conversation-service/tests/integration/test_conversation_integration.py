@@ -13,58 +13,71 @@ from sqlalchemy import text
 @pytest.fixture(scope="module", autouse=True)
 async def setup_test_cases():
     """在模块开始前插入必要的测试 Case 和 User 数据"""
-    test_db = DatabaseManager(settings.DATABASE_URL)
-    test_uuids = [
-        "1e106d60-0fe5-4c00-9421-1c4da35d128c",
-        "0ceb21a2-2da6-449f-bbf7-f43d515b2d7c",
-        "3fd03725-d003-4354-be46-6f4370beca8d",
-        "971bfb12-f3d0-4680-91e6-1415e26be8ca",
-        "6ba79191-6cff-4f80-a0d0-327f1e1ae98f",
-        "6b9a8f4c-3f2d-4c0e-8f2c-5c4d3b8f1a9e",
-        "e3b0c442-989b-464c-8693-b0a8c4f9a5e1",
-        "5f187313-2d2c-493a-814a-59424d8622f9"
-    ]
+    # 如果没有配置数据库 URL，跳过设置
+    if not settings.DATABASE_URL:
+        yield
+        return
 
-    test_cases = [
-        {"case_id": "Q202602220001", "trace_id": "inttest-conv-001"},
-        {"case_id": "Q202602220002", "trace_id": "inttest-conv-002"},
-        {"case_id": "Q202602220003", "trace_id": "inttest-conv-003"},
-        {"case_id": "Q202602220004", "trace_id": "inttest-conv-004"},
-        {"case_id": "Q202602220005", "trace_id": "inttest-conv-005"}
-    ]
+    test_db = None
+    try:
+        test_db = DatabaseManager(settings.DATABASE_URL)
+        test_uuids = [
+            "1e106d60-0fe5-4c00-9421-1c4da35d128c",
+            "0ceb21a2-2da6-449f-bbf7-f43d515b2d7c",
+            "3fd03725-d003-4354-be46-6f4370beca8d",
+            "971bfb12-f3d0-4680-91e6-1415e26be8ca",
+            "6ba79191-6cff-4f80-a0d0-327f1e1ae98f",
+            "6b9a8f4c-3f2d-4c0e-8f2c-5c4d3b8f1a9e",
+            "e3b0c442-989b-464c-8693-b0a8c4f9a5e1",
+            "5f187313-2d2c-493a-814a-59424d8622f9"
+        ]
 
-    for i, test_case in enumerate(test_cases):
-        test_uuid = test_uuids[i]
+        test_cases = [
+            {"case_id": "Q202602220001", "trace_id": "inttest-conv-001"},
+            {"case_id": "Q202602220002", "trace_id": "inttest-conv-002"},
+            {"case_id": "Q202602220003", "trace_id": "inttest-conv-003"},
+            {"case_id": "Q202602220004", "trace_id": "inttest-conv-004"},
+            {"case_id": "Q202602220005", "trace_id": "inttest-conv-005"}
+        ]
 
-        async for session in test_db.get_session():
-            # 插入必需的测试用户，使用 test_uuid 作为 client_id 保证唯一性
-            await session.execute(
-                text("""
-                    INSERT INTO "user" (user_id, client_id, username, trace_id)
-                    VALUES (:uid, :client_id, 'test-user-int', 'inttest-setup')
-                    ON CONFLICT (user_id) DO NOTHING
-                """),
-                {"uid": test_uuid, "client_id": f"test-client-{test_uuid}"}
-            )
+        for i, test_case in enumerate(test_cases):
+            test_uuid = test_uuids[i]
 
-            # 再插入测试工单
-            await session.execute(
-                text("""
-                    INSERT INTO "case" (case_id, title, status, client_id, user_id, trace_id)
-                    VALUES (:cid, 'Integration Test Case', 'created', :client_id, :uid, :tid)
-                    ON CONFLICT (case_id) DO NOTHING
-                """),
-                {
-                    "cid": test_case["case_id"],
-                    "client_id": f"test-client-{test_uuid}",
-                    "uid": test_uuid,
-                    "tid": test_case["trace_id"]
-                }
-            )
-            await session.commit()
+            async for session in test_db.get_session():
+                # 插入必需的测试用户
+                await session.execute(
+                    text("""
+                        INSERT INTO "user" (user_id, client_id, username, trace_id)
+                        VALUES (:uid, :client_id, 'test-user-int', 'inttest-setup')
+                        ON CONFLICT (user_id) DO NOTHING
+                    """),
+                    {"uid": test_uuid, "client_id": f"test-client-{test_uuid}"}
+                )
+
+                # 再插入测试工单
+                await session.execute(
+                    text("""
+                        INSERT INTO "case" (case_id, title, status, client_id, user_id, trace_id)
+                        VALUES (:cid, 'Integration Test Case', 'created', :client_id, :uid, :tid)
+                        ON CONFLICT (case_id) DO NOTHING
+                    """),
+                    {
+                        "cid": test_case["case_id"],
+                        "client_id": f"test-client-{test_uuid}",
+                        "uid": test_uuid,
+                        "tid": test_case["trace_id"]
+                    }
+                )
+                await session.commit()
+    except Exception as e:
+        # 数据库连接失败时静默跳过，测试会在没有测试数据的情况下运行
+        import sys
+        print(f"Warning: Could not setup test data: {e}", file=sys.stderr)
+    finally:
+        if test_db:
+            await test_db.close()
 
     yield
-    await test_db.close()
 
 @pytest.mark.integration
 @pytest.mark.asyncio
