@@ -22,22 +22,32 @@ _CONV_SVC = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "backend", "conversation-service")
 )
 
+# agent-service 路径（PR #309 新增，glm_client 已迁移至此）
+_AGENT_SVC = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "backend", "agent-service")
+)
 
-def _use_conversation_app() -> None:
-    """确保 sys.modules 中的 app 指向 conversation-service（在 fixture 内调用）"""
-    _expect = os.path.normpath(os.path.join(_CONV_SVC, "app"))
-    _actual = (
-        os.path.normpath(getattr(sys.modules.get("app"), "__path__", [""])[0])
-        if "app" in sys.modules
-        else ""
-    )
-    if _expect != _actual:
-        for _k in list(sys.modules):
-            if _k == "app" or _k.startswith("app."):
-                del sys.modules[_k]
-        if _CONV_SVC in sys.path:
-            sys.path.remove(_CONV_SVC)
-        sys.path.insert(0, _CONV_SVC)
+
+def _use_app() -> None:
+    """确保 sys.modules 中的 app 指向正确的服务（在 fixture 内调用）"""
+    # 优先尝试 conversation-service，若无 glm_client 则使用 agent-service
+    for svc_path in [_CONV_SVC, _AGENT_SVC]:
+        app_path = os.path.join(svc_path, "app")
+        if os.path.exists(os.path.join(app_path, "core", "glm_client.py")):
+            _expect = os.path.normpath(app_path)
+            _actual = (
+                os.path.normpath(getattr(sys.modules.get("app"), "__path__", [""])[0])
+                if "app" in sys.modules
+                else ""
+            )
+            if _expect != _actual:
+                for _k in list(sys.modules):
+                    if _k == "app" or _k.startswith("app."):
+                        del sys.modules[_k]
+                if svc_path in sys.path:
+                    sys.path.remove(svc_path)
+                sys.path.insert(0, svc_path)
+            return
 
 
 # ─── 工具函数 _safe_parse_json 测试 ──────────────────────────────────────────
@@ -45,8 +55,8 @@ def _use_conversation_app() -> None:
 @pytest.fixture
 def glm_client():
     """创建 GLMClient 实例（mock OpenAI client，不发网络请求）"""
-    # 在测试执行阶段切换 app 指向，避免收集阶段污染其他服务的命名空间
-    _use_conversation_app()
+    # 在测试执行阶段切换 app 指向，优先使用 conversation-service 或 agent-service
+    _use_app()
     from app.core.glm_client import GLMClient
     with patch("app.core.glm_client.AsyncOpenAI"):
         client = GLMClient(
