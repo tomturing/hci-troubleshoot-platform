@@ -364,7 +364,7 @@ class KBClient(InternalHTTPClient):
         """
         try:
             resp = await self.get(
-                f"{self._api_prefix}/sop/{document_id}/tree",
+                f"/api/sop/{document_id}/tree",
                 timeout=_REQUEST_TIMEOUT,
             )
             if resp.status_code == 404:

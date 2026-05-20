@@ -329,7 +329,7 @@ async def get_sop_tree(document_id: int, request: Request) -> dict:
     if _db_manager is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="数据库未初始化")
 
-    async with _db_manager.session() as session:
+    async with _db_manager.async_session_factory() as session:
         result = await session.execute(
             select(SopTree).where(SopTree.document_id == document_id)
         )

@@ -41,25 +41,16 @@ router = APIRouter(prefix="/api/kb", tags=["classify"])
 # 由 main.py 的 set_dependencies 注入
 _db_manager: DatabaseManager | None = None
 
-# LLM 配置（从环境变量读取）
-# 自动适配 openclaw proxy：检测 ZAI_BASE_URL 是否指向集群内代理
-_raw_base_url = os.environ.get("ZAI_BASE_URL", "http://host.docker.internal:18790")
-_is_openclaw_proxy = "openclaw" in _raw_base_url
-# openai SDK 需要 base_url 包含 /v1；openclaw proxy 端点通常无 /v1 后缀需手动添加
-ZAI_BASE_URL = (
+# LLM 配置（统一从 OPENCLAW_* 环境变量读取，与 conversation-service 保持一致）
+_raw_base_url = os.environ.get("OPENCLAW_BASE_URL", "http://host.docker.internal:18790")
+# openai SDK 需要 base_url 包含 /v1；若 base_url 不含 /v1 则补充
+LLM_BASE_URL = (
     _raw_base_url.rstrip("/") + "/v1"
-    if _is_openclaw_proxy and not _raw_base_url.rstrip("/").endswith("/v1")
+    if not _raw_base_url.rstrip("/").endswith("/v1")
     else _raw_base_url
 )
-ZAI_API_KEY = (
-    os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
-    if _is_openclaw_proxy
-    else os.environ.get("ZAI_API_KEY", "")
-)
-# 模型名：openclaw proxy 用 "openclaw"，直连 ZhipuAI 用 glm-4-flash
-LLM_MODEL = os.environ.get("ZAI_LLM_MODEL") or (
-    "openclaw" if _is_openclaw_proxy else os.environ.get("OPENCLAW_DEFAULT_MODEL", "glm-4-flash")
-)
+LLM_API_KEY = os.environ.get("OPENCLAW_API_KEY", "")
+LLM_MODEL = os.environ.get("OPENCLAW_DEFAULT_MODEL", "glm-4-flash")
 
 # 分类置信度阈值
 CONFIDENCE_THRESHOLD = 0.5
@@ -402,15 +393,15 @@ def build_categories_text(categories: list[dict]) -> str:
 
 
 async def call_llm(prompt: str) -> dict:
-    """调用 ZAI LLM API"""
+    """调用 LLM API（使用统一的 OPENCLAW_* 配置）"""
     from openai import AsyncOpenAI
 
-    if not ZAI_API_KEY:
-        raise HTTPException(status_code=503, detail="ZAI_API_KEY 未配置")
+    if not LLM_API_KEY:
+        raise HTTPException(status_code=503, detail="OPENCLAW_API_KEY 未配置")
 
     client = AsyncOpenAI(
-        api_key=ZAI_API_KEY,
-        base_url=ZAI_BASE_URL,
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
     )
 
     try:
