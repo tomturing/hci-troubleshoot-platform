@@ -24,21 +24,6 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-import os
-import sys
-
-# 多服务共享 app/ 命名空间，仅在 app 指向错误服务时清除重载
-_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_expect = os.path.normpath(os.path.join(_svc, "app"))
-_actual = os.path.normpath(getattr(sys.modules.get("app"), "__path__", [""])[0]) if "app" in sys.modules else ""
-if _expect != _actual:
-    for _k in list(sys.modules):
-        if _k == "app" or _k.startswith("app."):
-            del sys.modules[_k]
-    if _svc in sys.path:
-        sys.path.remove(_svc)
-    sys.path.insert(0, _svc)
-
 import json
 from unittest.mock import AsyncMock, MagicMock
 

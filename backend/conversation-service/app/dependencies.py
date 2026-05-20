@@ -7,13 +7,11 @@ I-2: FastAPI 依赖注入标准化
 from collections.abc import AsyncGenerator
 
 from fastapi import Depends, HTTPException, Request
+from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient
 from shared.database.postgres import DatabaseManager
 
 from ..repositories.conversation_repo import ConversationRepository
-from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService
-from ..services.kb_client import KBClient
-from ..services.scheduler_client import SchedulerClient
 
 
 def get_database_manager(request: Request) -> DatabaseManager:

@@ -10,12 +10,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from shared.database.postgres import DatabaseManager
+from shared.models.conversation import Conversation
 from shared.observability.logger import get_logger
 from sqlalchemy import select
 
 from app.config import settings
 
-from ..models.conversation import Conversation
 from ..services.quality_score import QualityScoreService
 
 router = APIRouter(prefix="/api", tags=["evaluation"])

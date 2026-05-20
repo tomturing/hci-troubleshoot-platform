@@ -1,5 +1,7 @@
 """
 Conversation Model - 对话会话表
+
+完整定义，供 case-service 和 conversation-service 共用。
 """
 
 import uuid

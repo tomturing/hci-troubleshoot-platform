@@ -31,11 +31,11 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, Text
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.tools import RunContext
 from pydantic_ai.usage import UsageLimits
+from shared.clients import KBClient
 
 from app.adapters.acli_adapter import AcliAdapter
 from app.adapters.scp_adapter import SCPAdapter
 from app.core.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
-from app.services.kb_client import KBClient
 
 logger = logging.getLogger("pydantic-ai-brain")
 tracer = trace.get_tracer(__name__)

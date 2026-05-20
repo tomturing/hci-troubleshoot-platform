@@ -18,12 +18,11 @@ import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from shared.clients import AIAssistantRegistry, SchedulerClient
 from shared.observability.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
 from shared.utils.exceptions import AIStreamError
 
 from app.core.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
-from app.services.ai_client import AIAssistantRegistry
-from app.services.scheduler_client import SchedulerClient
 
 logger = logging.getLogger("htp-brain-adapter")
 

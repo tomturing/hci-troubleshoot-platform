@@ -93,7 +93,7 @@ class TestKBClassifyIntentContract:
 
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../shared"))
 
-        from app.services.kb_client import KBClient
+        from shared.clients import KBClient
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -210,7 +210,7 @@ class TestKBRouteContract:
 
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../shared"))
 
-        from app.services.kb_client import KBClient
+        from shared.clients import KBClient
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -305,7 +305,7 @@ class TestKBSearchContract:
 
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../shared"))
 
-        from app.services.kb_client import KBClient
+        from shared.clients import KBClient
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -375,7 +375,7 @@ class TestKBSOPMatchContract:
 
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../shared"))
 
-        from app.services.kb_client import KBClient
+        from shared.clients import KBClient
 
         mock_response = MagicMock()
         mock_response.json.return_value = {

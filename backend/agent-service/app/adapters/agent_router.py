@@ -21,10 +21,11 @@ import os
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+from shared.clients import AIAssistantRegistry
+
 from app.adapters.htp_agent_adapter import HTPAgentAdapter
 from app.adapters.ops_agent_adapter import OpsAgentAdapter
 from app.core.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
-from app.services.ai_client import AIAssistantRegistry
 
 if TYPE_CHECKING:
     from app.adapters.pai_agent_adapter import PaiAgentAdapter
