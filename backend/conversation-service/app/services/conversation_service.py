@@ -11,13 +11,13 @@ from typing import Any
 from opentelemetry import trace
 from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient
 from shared.models.audit import AuditLog
+from shared.models.conversation import Conversation
 from shared.observability.logger import get_logger
 from shared.observability.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
 from shared.observability.otel import get_current_trace_id
 
 from app.config import settings
 
-from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
 from .agent_client import AgentClient

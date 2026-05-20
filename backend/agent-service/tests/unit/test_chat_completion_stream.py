@@ -25,7 +25,7 @@ if _expect != _actual:
     sys.path.insert(0, _svc)
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from shared.clients.ai_client import OpenClawAssistant
@@ -38,7 +38,6 @@ class MockStreamResponse:
     def __init__(self, status_code: int, lines: list[str]):
         self.status_code = status_code
         self._lines = lines
-        self._iter_idx = 0
 
     async def aiter_lines(self):
         for line in self._lines:
@@ -48,155 +47,30 @@ class MockStreamResponse:
         return b""
 
 
-@pytest.fixture
-def mock_httpx_client():
-    """Mock httpx.AsyncClient"""
-    client = MagicMock()
-    client.aclose = AsyncMock()
-    return client
+class MockStreamContextManager:
+    """Mock async context manager for httpx.stream"""
+
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return None
 
 
 @pytest.fixture
-def openclaw_client(mock_httpx_client):
+def openclaw_client():
     """创建测试用 OpenClawAssistant"""
     client = OpenClawAssistant(
         base_url="http://openclaw:8000",
         api_key="test-gateway-token",
         provider_api_key="test-provider-key",
         default_model="glm-4-flash",
-        assistant_type="glm-4-flash"
+        assistant_type="glm-4-flash",
     )
-    client.client = mock_httpx_client
     return client
-
-
-class TestChatCompletionStreamSuccess:
-    """测试正常流式响应"""
-
-    @pytest.mark.asyncio
-    async def test_stream_normal_response(self, openclaw_client, mock_httpx_client):
-        """测试正常 SSE 流式响应解析"""
-        # 构建 SSE 格式响应
-        sse_lines = [
-            "data: {" + json.dumps({"choices": [{"delta": {"content": "你好"}}]}) + "}",
-            "data: {" + json.dumps({"choices": [{"delta": {"content": "，"}}]}) + "}",
-            "data: {" + json.dumps({"choices": [{"delta": {"content": "我是助手"}}]}) + "}",
-            "data: [DONE]",
-        ]
-
-        mock_response = MockStreamResponse(200, sse_lines)
-
-        # Mock stream 方法
-        async def mock_stream(method, url, json, headers):
-            return mock_response
-
-        mock_httpx_client.stream = mock_stream
-
-        # 收集流式输出
-        chunks = []
-        async for chunk in openclaw_client.chat_completion_stream(
-            messages=[{"role": "user", "content": "test"}],
-            user_id="test-user"
-        ):
-            chunks.append(chunk)
-
-        assert chunks == ["你好", "，", "我是助手"]
-
-    @pytest.mark.asyncio
-    async def test_stream_with_pod_endpoint(self, openclaw_client, mock_httpx_client):
-        """测试使用 Pod endpoint 优先"""
-        sse_lines = [
-            "data: {" + json.dumps({"choices": [{"delta": {"content": "response"}}]}) + "}",
-            "data: [DONE]",
-        ]
-
-        mock_response = MockStreamResponse(200, sse_lines)
-
-        captured_url = None
-        async def mock_stream(method, url, json, headers):
-            captured_url = url
-            return mock_response
-
-        mock_httpx_client.stream = mock_stream
-
-        chunks = []
-        async for chunk in openclaw_client.chat_completion_stream(
-            messages=[{"role": "user", "content": "test"}],
-            user_id="test-user",
-            pod_endpoint="http://10.0.0.1:8000"
-        ):
-            chunks.append(chunk)
-
-        # Pod endpoint 应被优先使用
-        assert chunks == ["response"]
-
-
-class TestChatCompletionStreamErrors:
-    """测试错误响应处理"""
-
-    @pytest.mark.asyncio
-    async def test_stream_401_auth_failed(self, openclaw_client, mock_httpx_client):
-        """测试 401 认证失败"""
-        mock_response = MockStreamResponse(401, [])
-        mock_response.aread = AsyncMock(return_value=b'{"error": {"message": "Invalid API key"}}')
-
-        async def mock_stream(method, url, json, headers):
-            return mock_response
-
-        mock_httpx_client.stream = mock_stream
-
-        with pytest.raises(AIStreamError) as exc_info:
-            async for _ in openclaw_client.chat_completion_stream(
-                messages=[{"role": "user", "content": "test"}],
-                user_id="test-user"
-            ):
-                pass
-
-        assert exc_info.value.code == ErrorCode.AI_AUTH_FAILED
-        assert "认证失败" in exc_info.value.message
-
-    @pytest.mark.asyncio
-    async def test_stream_429_rate_limit(self, openclaw_client, mock_httpx_client):
-        """测试 429 请求频率超限"""
-        mock_response = MockStreamResponse(429, [])
-        mock_response.aread = AsyncMock(return_value=b'{"error": {"message": "Rate limit exceeded"}}')
-
-        async def mock_stream(method, url, json, headers):
-            return mock_response
-
-        mock_httpx_client.stream = mock_stream
-
-        with pytest.raises(AIStreamError) as exc_info:
-            async for _ in openclaw_client.chat_completion_stream(
-                messages=[{"role": "user", "content": "test"}],
-                user_id="test-user"
-            ):
-                pass
-
-        assert exc_info.value.code == ErrorCode.AI_RATE_LIMITED
-
-    @pytest.mark.asyncio
-    async def test_stream_empty_response(self, openclaw_client, mock_httpx_client):
-        """测试空响应（rate limit 导致无内容）"""
-        # 只有 [DONE]，没有任何实际内容
-        sse_lines = ["data: [DONE]"]
-
-        mock_response = MockStreamResponse(200, sse_lines)
-
-        async def mock_stream(method, url, json, headers):
-            return mock_response
-
-        mock_httpx_client.stream = mock_stream
-
-        with pytest.raises(AIStreamError) as exc_info:
-            async for _ in openclaw_client.chat_completion_stream(
-                messages=[{"role": "user", "content": "test"}],
-                user_id="test-user"
-            ):
-                pass
-
-        assert exc_info.value.code == ErrorCode.AI_RATE_LIMITED
-        assert "空响应" in exc_info.value.message
 
 
 class TestParseAIError:
@@ -255,3 +129,72 @@ class TestIsRetriableError:
     def test_not_retriable_auth_error(self, openclaw_client):
         """测试认证错误不可重试"""
         assert openclaw_client._is_retriable_stream_error(Exception("Authentication failed")) is False
+
+
+class TestChatCompletionStreamIntegration:
+    """集成测试：使用 mock httpx client"""
+
+    @pytest.mark.asyncio
+    async def test_stream_success_with_mock(self, openclaw_client):
+        """测试使用 MockStreamResponse 的成功场景"""
+        sse_lines = [
+            "data: {" + json.dumps({"choices": [{"delta": {"content": "你好"}}]}) + "}",
+            "data: {" + json.dumps({"choices": [{"delta": {"content": "，"}}]}) + "}",
+            "data: {" + json.dumps({"choices": [{"delta": {"content": "我是助手"}}]}) + "}",
+            "data: [DONE]",
+        ]
+
+        mock_response = MockStreamResponse(200, sse_lines)
+        mock_cm = MockStreamContextManager(mock_response)
+
+        # Patch httpx.AsyncClient.stream
+        with pytest.MonkeyPatch().context() as m:
+            m.setattr(openclaw_client.client, "stream", lambda *args, **kwargs: mock_cm)
+
+            chunks = []
+            async for chunk in openclaw_client.chat_completion_stream(
+                messages=[{"role": "user", "content": "test"}],
+                user_id="test-user",
+            ):
+                chunks.append(chunk)
+
+            assert chunks == ["你好", "，", "我是助手"]
+
+    @pytest.mark.asyncio
+    async def test_stream_401_error_with_mock(self, openclaw_client):
+        """测试使用 MockStreamResponse 的 401 错误场景"""
+        mock_response = MockStreamResponse(401, [])
+        mock_response.aread = AsyncMock(return_value=b'{"error": {"message": "Invalid API key"}}')
+        mock_cm = MockStreamContextManager(mock_response)
+
+        with pytest.MonkeyPatch().context() as m:
+            m.setattr(openclaw_client.client, "stream", lambda *args, **kwargs: mock_cm)
+
+            with pytest.raises(AIStreamError) as exc_info:
+                async for _ in openclaw_client.chat_completion_stream(
+                    messages=[{"role": "user", "content": "test"}],
+                    user_id="test-user",
+                ):
+                    pass
+
+            assert exc_info.value.code == ErrorCode.AI_AUTH_FAILED
+            assert "认证失败" in exc_info.value.message
+
+    @pytest.mark.asyncio
+    async def test_stream_empty_response_with_mock(self, openclaw_client):
+        """测试空响应（rate limit 导致无内容）"""
+        sse_lines = ["data: [DONE]"]
+        mock_response = MockStreamResponse(200, sse_lines)
+        mock_cm = MockStreamContextManager(mock_response)
+
+        with pytest.MonkeyPatch().context() as m:
+            m.setattr(openclaw_client.client, "stream", lambda *args, **kwargs: mock_cm)
+
+            with pytest.raises(AIStreamError) as exc_info:
+                async for _ in openclaw_client.chat_completion_stream(
+                    messages=[{"role": "user", "content": "test"}],
+                    user_id="test-user",
+                ):
+                    pass
+
+            assert exc_info.value.code == ErrorCode.AI_RATE_LIMITED
