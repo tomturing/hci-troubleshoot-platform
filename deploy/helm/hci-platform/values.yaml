@@ -123,7 +123,7 @@ workloadDefaults:
       memory: "2Gi"
     max:
       cpu: "4"
-      memory: "8Gi"  # 2026-05-09: ops-agent SOP检索峰值超4Gi，提升上限
+      memory: "8Gi" # 2026-05-09: ops-agent SOP检索峰值超4Gi，提升上限
 
 # ======================== PostgreSQL ========================================
 postgres:

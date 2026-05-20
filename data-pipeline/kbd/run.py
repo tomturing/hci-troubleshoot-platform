@@ -46,7 +46,6 @@ from .config import settings
 from .fetcher import read_ids_from_excel
 from .pipeline import Stage, run_from_excel
 
-
 # ─── 日志配置（终端 + 文件双输出）────────────────────────────────────────────────
 
 def _setup_logging(run_id: str | None = None) -> str:
@@ -229,7 +228,7 @@ async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
     """Stage 2：图片语义化"""
     import asyncpg
 
-    from .image_proc import process_images_batch, get_failed_vision_ids
+    from .image_proc import get_failed_vision_ids, process_images_batch
 
     case_ids = _get_case_ids(args)
 

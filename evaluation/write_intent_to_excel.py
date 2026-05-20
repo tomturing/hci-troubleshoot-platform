@@ -10,9 +10,9 @@
 
 import json
 import re
-import pandas as pd
 from pathlib import Path
-from openpyxl import load_workbook
+
+import pandas as pd
 
 
 def extract_intent_result(ai_response: str) -> str:
@@ -64,7 +64,7 @@ def main():
     print(f"Excel总行数: {len(df)}")
 
     # 读取评估结果
-    with open(results_path, 'r', encoding='utf-8') as f:
+    with open(results_path, encoding='utf-8') as f:
         results = json.load(f)
 
     # 按问题编号去重，保留最后一次成功的记录
@@ -79,7 +79,7 @@ def main():
     print(f"成功结果数: {len(problem_results)}")
 
     # 读取失败记录
-    with open(failed_path, 'r', encoding='utf-8') as f:
+    with open(failed_path, encoding='utf-8') as f:
         failed = json.load(f)
 
     failed_problems = {f['problem_id']: f for f in failed}
@@ -109,7 +109,7 @@ def main():
             intent_results.append("")
             no_match_count += 1
 
-    print(f"\n匹配统计:")
+    print("\n匹配统计:")
     print(f"  成功匹配: {matched_count}")
     print(f"  失败记录: {failed_count}")
     print(f"  未匹配: {no_match_count}")

@@ -9,9 +9,10 @@
 """
 
 import json
+from pathlib import Path
+
 import httpx
 import pandas as pd
-from pathlib import Path
 
 
 def main():
@@ -29,7 +30,7 @@ def main():
     print(f"Excel总行数: {len(df)}")
 
     # 读取评估结果，获取conversation_id
-    with open(results_path, 'r', encoding='utf-8') as f:
+    with open(results_path, encoding='utf-8') as f:
         results = json.load(f)
 
     # 按问题编号建立索引（保留最后一次）
@@ -40,7 +41,7 @@ def main():
             problem_conv[problem_id] = r['conversation_id']
 
     # 读取失败记录
-    with open(failed_path, 'r', encoding='utf-8') as f:
+    with open(failed_path, encoding='utf-8') as f:
         failed = json.load(f)
     failed_problems = {f['problem_id'] for f in failed}
 
