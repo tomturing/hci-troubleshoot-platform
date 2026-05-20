@@ -446,6 +446,9 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: true
+          # 缓存破坏参数：使用 GITHUB_SHA 确保每次构建都重新 COPY shared 目录
+          build-args: |
+            CACHEBUST=${{ github.sha }}
           tags: |
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
