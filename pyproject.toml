@@ -110,3 +110,13 @@ ignore = ["E501"]
 [tool.uv]
 # backend 各服务和 shared 目录均作为源码目录
 package = false
+
+[tool.uv.workspace]
+# 各后端服务作为 uv workspace 成员，统一锁版本（uv.lock 在仓库根目录）
+members = [
+    "backend/api-gateway",
+    "backend/case-service",
+    "backend/conversation-service",
+    "backend/kb-service",
+    "backend/scheduler-service",
+]

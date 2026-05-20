@@ -1,15 +1,15 @@
 """
-OpsAgentBrainAdapter._consume_events 单元测试
+OpsAgentAdapter._consume_events 单元测试
 
-覆盖 2026-05 修复：session/done 到达但无文本产出时触发 BrainUnavailableError（fallback）。
+覆盖 2026-05 修复：session/done 到达但无文本产出时触发 AgentUnavailableError（fallback）。
 """
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
-from app.core.brain_port import BrainTextChunk, BrainUnavailableError
+from app.adapters.ops_agent_adapter import OpsAgentAdapter
+from app.core.agent_port import AgentTextChunk, AgentUnavailableError
 from app.services.ai_client import AIAssistantRegistry
 
 # ── 构造辅助函数 ────────────────────────────────────────────────────────────
@@ -55,8 +55,8 @@ def _make_mock_stream_resp(lines: list[str]):
     return mock_resp
 
 
-def _make_adapter() -> OpsAgentBrainAdapter:
-    adapter = OpsAgentBrainAdapter(base_url="http://ops-agent:8080")
+def _make_adapter() -> OpsAgentAdapter:
+    adapter = OpsAgentAdapter(base_url="http://ops-agent:8080")
     return adapter
 
 
@@ -68,7 +68,7 @@ class TestConsumeEvents:
 
     @pytest.mark.asyncio
     async def test_text_chunk_is_yielded_on_agent_message_chunk(self):
-        """正常文本事件应被翻译为 BrainTextChunk。"""
+        """正常文本事件应被翻译为 AgentTextChunk。"""
         adapter = _make_adapter()
         lines = [
             _sse_line(_make_agent_message_chunk("你好，正在分析问题...")),
@@ -85,14 +85,14 @@ class TestConsumeEvents:
                 events.append(ev)
 
         assert len(events) == 2
-        assert all(isinstance(ev, BrainTextChunk) for ev in events)
+        assert all(isinstance(ev, AgentTextChunk) for ev in events)
         assert events[0].content == "你好，正在分析问题..."
         assert events[1].content == "分析完成，建议检查网络配置。"
 
     @pytest.mark.asyncio
     async def test_session_done_without_content_raises_unavailable(self):
         """
-        session/done 到达但未产出任何文本时，应抛出 BrainUnavailableError。
+        session/done 到达但未产出任何文本时，应抛出 AgentUnavailableError。
 
         根因：ops-agent execute_task() 内部异常被 except 吞掉，stop_reason 仍为
         "end_turn"，如不主动抛错则 HTP fallback 永远不触发，导致空白气泡。
@@ -107,7 +107,7 @@ class TestConsumeEvents:
         with patch.object(adapter._client, "stream") as mock_stream:
             mock_stream.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
             mock_stream.return_value.__aexit__ = AsyncMock(return_value=False)
-            with pytest.raises(BrainUnavailableError) as exc_info:
+            with pytest.raises(AgentUnavailableError) as exc_info:
                 async for _ in adapter._consume_events("test-session", {}):
                     pass
 
@@ -115,7 +115,7 @@ class TestConsumeEvents:
 
     @pytest.mark.asyncio
     async def test_session_done_without_content_refusal_raises_unavailable(self):
-        """stopReason='refusal' 且无文本时同样应抛出 BrainUnavailableError。"""
+        """stopReason='refusal' 且无文本时同样应抛出 AgentUnavailableError。"""
         adapter = _make_adapter()
         lines = [
             _sse_line(_make_session_done("refusal")),
@@ -125,7 +125,7 @@ class TestConsumeEvents:
         with patch.object(adapter._client, "stream") as mock_stream:
             mock_stream.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
             mock_stream.return_value.__aexit__ = AsyncMock(return_value=False)
-            with pytest.raises(BrainUnavailableError):
+            with pytest.raises(AgentUnavailableError):
                 async for _ in adapter._consume_events("test-session", {}):
                     pass
 
@@ -164,8 +164,8 @@ class TestConsumeEvents:
         with patch.object(adapter._client, "stream") as mock_stream:
             mock_stream.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
             mock_stream.return_value.__aexit__ = AsyncMock(return_value=False)
-            # 空文本应触发 BrainUnavailableError（不视为有效内容）
-            with pytest.raises(BrainUnavailableError):
+            # 空文本应触发 AgentUnavailableError（不视为有效内容）
+            with pytest.raises(AgentUnavailableError):
                 async for _ in adapter._consume_events("test-session", {}):
                     pass
 
@@ -202,7 +202,7 @@ class TestSubmitPromptWith409:
         _submit_prompt 收到 409 时应：
         1. 调用 DELETE /acp/sessions/{id}/prompt（terminate + drain）
         2. 重新 POST /acp/sessions/{id}/prompt
-        3. 新 prompt 202 → 正常完成，不触发 BrainUnavailableError
+        3. 新 prompt 202 → 正常完成，不触发 AgentUnavailableError
 
         覆盖场景：页面刷新后 session 有 active_prompt=True（等待 _ops/request_input），
         新消息到来时先终止旧 prompt 再重试，实现会话恢复而非降级。
@@ -258,7 +258,7 @@ class TestSubmitPromptWith409:
     @pytest.mark.asyncio
     async def test_409_retry_also_fails_raises_unavailable(self):
         """
-        terminate 后重试仍然失败（非 200/202）时应抛出 BrainUnavailableError，
+        terminate 后重试仍然失败（非 200/202）时应抛出 AgentUnavailableError，
         不再进一步重试（防止无限循环）。
         """
         adapter = _make_adapter()
@@ -281,7 +281,7 @@ class TestSubmitPromptWith409:
             patch.object(adapter._client, "post", side_effect=mock_post),
             patch.object(adapter._client, "request", side_effect=mock_request),
         ):
-            with pytest.raises(BrainUnavailableError) as exc_info:
+            with pytest.raises(AgentUnavailableError) as exc_info:
                 await adapter._submit_prompt("sess-abc", [{"type": "text", "text": "继续"}], {})
 
         assert "重试后仍失败" in str(exc_info.value)
@@ -322,7 +322,7 @@ class TestResumeEventStream:
                activePrompt=false，但 outbox 有未消费事件 → 修复前：跳过 → 事件丢失
                                                               → 修复后：消费成功
         """
-        from app.core.brain_port import BrainInteractiveRequest
+        from app.core.agent_port import AgentInteractiveRequest
 
         adapter = _make_adapter()
         state_resp = self._make_state_resp(active_prompt=False)  # activePrompt=false
@@ -356,9 +356,9 @@ class TestResumeEventStream:
             async for ev in adapter.resume_event_stream("sess-xyz"):
                 events.append(ev)
 
-        # 修复后：应该消费到 BrainInteractiveRequest
+        # 修复后：应该消费到 AgentInteractiveRequest
         assert len(events) == 1
-        assert isinstance(events[0], BrainInteractiveRequest)
+        assert isinstance(events[0], AgentInteractiveRequest)
         assert events[0].prompt == "具体是哪台主机？"
 
     @pytest.mark.asyncio
@@ -385,7 +385,7 @@ class TestResumeEventStream:
                 events.append(ev)
 
         assert len(events) == 1
-        assert isinstance(events[0], BrainTextChunk)
+        assert isinstance(events[0], AgentTextChunk)
         assert events[0].content == "续写内容来了"
 
 

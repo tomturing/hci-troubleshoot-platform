@@ -1,12 +1,12 @@
 openapi: "3.1.0"
 info:
-  title: Brain HTTP API
+  title: Agent HTTP API
   version: "1.0.0"
   description: |
     hci-troubleshoot-platform (htp) 调用 ops-agent 大脑的 HTTP 接口规范。
 
     ## 角色说明
-    - **调用方（Consumer）**：htp 的 OpsAgentBrainAdapter
+    - **调用方（Consumer）**：htp 的 OpsAgentAdapter
     - **实现方（Provider）**：ops-agent 的 /server/openai_compat.py
 
     ## 变更治理
@@ -36,7 +36,7 @@ servers:
 paths:
   /v1/chat/completions:
     post:
-      operationId: brainChatCompletions
+      operationId: agentChatCompletions
       summary: 处理一轮诊断对话（ops-agent 大脑）
       description: |
         htp 通过此接口将用户消息发送给 ops-agent 大脑。
@@ -47,7 +47,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/BrainRequest'
+              $ref: '#/components/schemas/AgentRequest'
             examples:
               new_session:
                 summary: 新建会话（首次对话）
@@ -80,10 +80,10 @@ paths:
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/BrainSSEStream'
+                $ref: '#/components/schemas/AgentSSEStream'
             application/json:
               schema:
-                $ref: '#/components/schemas/BrainNonStreamResponse'
+                $ref: '#/components/schemas/AgentNonStreamResponse'
         '422':
           description: 请求参数校验失败
           content:
@@ -115,7 +115,7 @@ paths:
 
 components:
   schemas:
-    BrainRequest:
+    AgentRequest:
       type: object
       required:
         - messages
@@ -219,13 +219,13 @@ components:
           format: date-time
           description: "数据预取时间，供 ops-agent 判断数据时效性"
 
-    BrainSSEStream:
+    AgentSSEStream:
       type: string
       description: |
-        Server-Sent Events 流，每行格式：`data: <BrainSSEChunk JSON>\n\n`
+        Server-Sent Events 流，每行格式：`data: <AgentSSEChunk JSON>\n\n`
         流结束标志：`data: [DONE]\n\n`
 
-    BrainSSEChunk:
+    AgentSSEChunk:
       type: object
       description: "SSE 流中每个数据块的结构（标准 OpenAI 格式 + 可选扩展字段）"
       required:
@@ -281,7 +281,7 @@ components:
               description: "阶段的人类可读标签（中文）"
               example: "诊断中"
 
-    BrainNonStreamResponse:
+    AgentNonStreamResponse:
       type: object
       description: "stream=false 时的完整响应（用于测试）"
       properties:

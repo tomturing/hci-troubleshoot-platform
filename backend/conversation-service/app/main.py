@@ -16,9 +16,9 @@ from shared.observability.metrics import HTTPMetricsMiddleware
 from shared.observability.otel import init_telemetry, instrument_app
 from shared.utils.exception_handlers import register_exception_handlers
 
-from app.adapters.brain_router import BrainRouter
-from app.adapters.htp_brain_adapter import HTPBrainAdapter
-from app.adapters.ops_agent_brain_adapter import OpsAgentBrainAdapter
+from app.adapters.agent_router import AgentRouter
+from app.adapters.htp_agent_adapter import HTPAgentAdapter
+from app.adapters.ops_agent_adapter import OpsAgentAdapter
 from app.config import settings
 from app.routes import audit as audit_route
 from app.routes import conversations, evaluate
@@ -103,34 +103,34 @@ async def lifespan(app: FastAPI):
     app.state.kb_client = kb_client
     app.state.environment_client = environment_client
 
-    # T1-6: 组装大脑路由器（BrainRouter）
-    htp_adapter = HTPBrainAdapter(ai_registry=ai_registry, scheduler_client=scheduler_client)
+    # T1-6: 组装大脑路由器（AgentRouter）
+    htp_adapter = HTPAgentAdapter(ai_registry=ai_registry, scheduler_client=scheduler_client)
     ops_adapter = None
     if settings.OPS_AGENT_ENABLED:
-        ops_adapter = OpsAgentBrainAdapter(base_url=settings.OPS_AGENT_BASE_URL)
-    pydantic_ai_adapter = None
+        ops_adapter = OpsAgentAdapter(base_url=settings.OPS_AGENT_BASE_URL)
+    pai_adapter = None
     if settings.PYDANTIC_AI_ENABLED:
         from app.adapters.acli_adapter import AcliAdapter
-        from app.adapters.pydantic_ai_brain_adapter import PydanticAIBrainAdapter
+        from app.adapters.pai_agent_adapter import PaiAgentAdapter
         from app.adapters.scp_adapter import SCPAdapter
         _scp = SCPAdapter(base_url=settings.SCP_BASE_URL, api_key=settings.SCP_API_KEY)
         _acli = AcliAdapter()
-        pydantic_ai_adapter = PydanticAIBrainAdapter.from_env(
+        pai_adapter = PaiAgentAdapter.from_env(
             scp_adapter=_scp,
             acli_adapter=_acli,
             kb_client=kb_client,
         )
-        logger.info(event="pydantic_ai_adapter_initialized", message="pydantic-ai C 大脑已启用")
-    brain_router = BrainRouter(
+        logger.info(event="pai_adapter_initialized", message="pydantic-ai C 大脑已启用")
+    agent_router = AgentRouter(
         htp_adapter=htp_adapter,
         ops_agent_adapter=ops_adapter,
-        pydantic_ai_adapter=pydantic_ai_adapter,
+        pai_adapter=pai_adapter,
         ai_registry=ai_registry,
     )
-    app.state.brain_router = brain_router
+    app.state.agent_router = agent_router
 
     # 兼容现有路由注入方式
-    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client, environment_client, router=brain_router)
+    conversations.set_dependencies(database_manager, ai_registry, scheduler_client, kb_client, environment_client, router=agent_router)
     evaluate.set_database_manager(database_manager)
     audit_route.set_audit_database_manager(database_manager)
 
@@ -144,8 +144,8 @@ async def lifespan(app: FastAPI):
         await ai_registry.close_all()
     if ops_adapter:
         await ops_adapter.close()
-    if pydantic_ai_adapter is not None and hasattr(pydantic_ai_adapter, "aclose"):
-        await pydantic_ai_adapter.aclose()
+    if pai_adapter is not None and hasattr(pai_adapter, "aclose"):
+        await pai_adapter.aclose()
     if database_manager:
         await database_manager.close()
 

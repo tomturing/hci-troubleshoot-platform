@@ -1,5 +1,5 @@
 """
-PydanticAIBrainAdapter：基于 pydantic-ai 的 C 大脑实现（A/B/C 三向测试）
+PaiAgentAdapter：基于 pydantic-ai 的 C 大脑实现（A/B/C 三向测试）
 
 对接 GLM OpenAI-compatible 端点（通过 OPENCLAW_BASE_URL / OPENCLAW_API_KEY 环境变量）。
 用 pydantic-ai Agent 图替代手写 ReAct 循环：
@@ -34,7 +34,7 @@ from pydantic_ai.usage import UsageLimits
 
 from app.adapters.acli_adapter import AcliAdapter
 from app.adapters.scp_adapter import SCPAdapter
-from app.core.brain_port import BrainEvent, BrainTextChunk, BrainUnavailableError
+from app.core.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
 from app.services.kb_client import KBClient
 
 logger = logging.getLogger("pydantic-ai-brain")
@@ -219,11 +219,11 @@ def _openai_messages_to_pydantic(
     return user_prompt, history
 
 
-class PydanticAIBrainAdapter:
+class PaiAgentAdapter:
     """pydantic-ai C 大脑适配器。
 
     对接 GLM OpenAI-compatible 端点，用 pydantic-ai Agent 图替代手写 ReAct 循环。
-    实现 BrainPort 协议，可被 BrainRouter 以 "pydantic-ai" assistant_type 路由。
+    实现 AgentPort 协议，可被 AgentRouter 以 "pydantic-ai" assistant_type 路由。
 
     工具集（Phase 1）：SOP 决策树导航 + SCP 只读查询（无写操作）
     """
@@ -261,7 +261,7 @@ class PydanticAIBrainAdapter:
         scp_adapter: SCPAdapter,
         acli_adapter: AcliAdapter,
         kb_client: KBClient | None = None,
-    ) -> PydanticAIBrainAdapter:
+    ) -> PaiAgentAdapter:
         """从环境变量构造实例（复用 OpenClaw 的 OPENCLAW_BASE_URL / OPENCLAW_API_KEY）。
 
         GLM_MODEL 默认值为 "glm-4-flash"。
@@ -283,8 +283,8 @@ class PydanticAIBrainAdapter:
         env_context: dict[str, Any] | None = None,
         stream: bool = True,
         **_kwargs: Any,
-    ) -> AsyncGenerator[BrainEvent, None]:
-        """调用 pydantic-ai Agent，流式产出 BrainTextChunk。
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """调用 pydantic-ai Agent，流式产出 AgentTextChunk。
 
         工具调用在 pydantic-ai 内部透明处理，对调用方只暴露最终文本增量流。
 
@@ -295,7 +295,7 @@ class PydanticAIBrainAdapter:
             stream: 是否流式输出（当前实现始终流式，此参数保留用于接口兼容）
 
         Raises:
-            BrainUnavailableError: 调用失败时抛出，由 BrainRouter 负责降级
+            AgentUnavailableError: 调用失败时抛出，由 AgentRouter 负责降级
         """
         user_prompt, message_history = _openai_messages_to_pydantic(messages)
 
@@ -304,7 +304,7 @@ class PydanticAIBrainAdapter:
                 "pydantic-ai brain: 没有 user 消息，session_id=%s",
                 session_id,
             )
-            yield BrainTextChunk(content="[系统提示] 未收到有效的用户消息。")
+            yield AgentTextChunk(content="[系统提示] 未收到有效的用户消息。")
             return
 
         deps = PydanticAIDeps(
@@ -330,7 +330,7 @@ class PydanticAIBrainAdapter:
                 ) as streamed:
                     async for text in streamed.stream_text(delta=True):
                         if text:
-                            yield BrainTextChunk(content=text)
+                            yield AgentTextChunk(content=text)
 
             except Exception as exc:
                 logger.exception(
@@ -338,7 +338,7 @@ class PydanticAIBrainAdapter:
                     session_id,
                     exc,
                 )
-                raise BrainUnavailableError(
-                    brain_name="pydantic-ai",
+                raise AgentUnavailableError(
+                    agent_name="pydantic-ai",
                     reason=str(exc),
                 ) from exc

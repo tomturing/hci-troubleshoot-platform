@@ -85,7 +85,7 @@ class Settings(BaseSettings):
 
         过滤规则：
         1. 仅保留 cfg 为 dict 的有效条目（避免非 dict 配置导致 AttributeError）
-        2. 排除 ops-agent（它通过 BrainRouter 独立路由，不通过 ai_registry）
+        2. 排除 ops-agent（它通过 AgentRouter 独立路由，不通过 ai_registry）
 
         如果环境变量为空或解析失败，降级为默认 openclaw 配置。
         """
@@ -99,7 +99,7 @@ class Settings(BaseSettings):
                     # 过滤条件 1：cfg 必须是 dict
                     if not isinstance(cfg, dict):
                         continue
-                    # 过滤条件 2：排除 ops-agent（它通过 BrainRouter 独立路由）
+                    # 过滤条件 2：排除 ops-agent（它通过 AgentRouter 独立路由）
                     if atype == "ops-agent":
                         continue
                     # 仅保留 enabled=true 或未配置 enabled 的条目
