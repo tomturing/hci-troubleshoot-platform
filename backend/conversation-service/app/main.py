@@ -9,6 +9,7 @@ Conversation Service - 主应用 (v2.0 多类型AI助手)
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient, create_openclaw_client
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
 from shared.observability.metrics import HTTPMetricsMiddleware
@@ -19,10 +20,7 @@ from app.config import settings
 from app.routes import audit as audit_route
 from app.routes import conversations, evaluate
 from app.services.agent_client import AgentClient
-from shared.clients import AIAssistantRegistry, create_openclaw_client
 from app.services.environment_client import EnvironmentClient
-from shared.clients import KBClient
-from shared.clients import SchedulerClient
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)

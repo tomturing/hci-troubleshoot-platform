@@ -6,10 +6,10 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from shared.models.conversation import Conversation
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models.conversation import Conversation
 from ..models.message import Message, MessageRole
 
 

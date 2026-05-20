@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from opentelemetry import trace
+from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient
 from shared.models.audit import AuditLog
 from shared.observability.logger import get_logger
 from shared.observability.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
@@ -20,13 +21,10 @@ from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
 from .agent_client import AgentClient
-from shared.clients import AIAssistantRegistry
 from .conversation_manager import ConversationManager
 from .environment_client import EnvironmentClient
-from shared.clients import KBClient
 from .knowledge_retriever import KnowledgeRetriever
 from .prompt_builder import PromptBuilder
-from shared.clients import SchedulerClient
 from .sse_queue import LogAuditService, QueueSSEEmitter
 
 logger = get_logger("conversation-service")

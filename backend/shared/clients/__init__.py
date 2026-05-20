@@ -8,8 +8,8 @@
 """
 
 from .ai_client import AIAssistantRegistry, create_openclaw_client
-from .scheduler_client import SchedulerClient
 from .kb_client import KBClient
+from .scheduler_client import SchedulerClient
 
 __all__ = [
     "AIAssistantRegistry",
