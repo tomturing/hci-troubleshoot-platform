@@ -66,6 +66,7 @@ async def setup_test_cases():
     yield
     await test_db.close()
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 class TestConversationServiceIntegration:
     """对话服务集成测试"""
