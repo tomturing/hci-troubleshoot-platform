@@ -1013,9 +1013,8 @@ class ConversationService:
         使用独立事务 session 确保与主请求解耦。
         确保内存更新在 DB commit 成功后执行，避免状态不一致。
         """
+        from shared.models.conversation import Conversation as ConversationModel
         from sqlalchemy import update as sa_update
-
-        from ..models.conversation import Conversation as ConversationModel
 
         db_committed = False
         try:
@@ -1082,10 +1081,9 @@ class ConversationService:
             category_info: 分类信息 {"code": "虚拟机-003", "name": "虚拟机开机失败"}
             trigger_confirm: 是否触发 SP-1 工单状态确认（True=用户明确选择，False=AI 回复解析）
         """
+        from shared.models.conversation import Conversation as ConversationModel
         from sqlalchemy import select
         from sqlalchemy import update as sa_update
-
-        from ..models.conversation import Conversation as ConversationModel
 
         try:
             code = category_info.get("code", "")
@@ -1209,10 +1207,9 @@ class ConversationService:
             case_id: 工单 ID（用于 case 级去重）
             sop_document_id: SOP 文档 ID（来自 knowledge_retriever audit_meta）
         """
+        from shared.models.conversation import Conversation as ConversationModel
         from sqlalchemy import select
         from sqlalchemy import update as sa_update
-
-        from ..models.conversation import Conversation as ConversationModel
 
         try:
             # case 级去重：检查同 case 其他 conversation 是否已写入相同 sop_document_id
@@ -1295,10 +1292,9 @@ class ConversationService:
             case_id: 工单 ID
             kbd_entry_id: KBD 条目 ID（None 表示新问题）
         """
+        from shared.models.conversation import Conversation as ConversationModel
         from sqlalchemy import select
         from sqlalchemy import update as sa_update
-
-        from ..models.conversation import Conversation as ConversationModel
 
         if kbd_entry_id is None:
             logger.info(
@@ -1435,9 +1431,8 @@ class ConversationService:
 
         从 conversation.metadata_["s0_candidate_rounds"] 读取，默认 0。
         """
+        from shared.models.conversation import Conversation as ConversationModel
         from sqlalchemy import select
-
-        from ..models.conversation import Conversation as ConversationModel
 
         try:
             if self.session_factory:
@@ -1519,9 +1514,8 @@ class ConversationService:
         Returns:
             str: 推送给用户的提示消息
         """
+        from shared.models.conversation import Conversation as ConversationModel
         from sqlalchemy import update as sa_update
-
-        from ..models.conversation import Conversation as ConversationModel
 
         # 1. 标记 conversation 失败状态
         try:
@@ -1597,9 +1591,8 @@ class ConversationService:
         Raises:
             ValueError: pending_confirm 非 NULL（约束 3 violation）
         """
+        from shared.models.conversation import Conversation as ConversationModel
         from sqlalchemy import update as sa_update
-
-        from ..models.conversation import Conversation as ConversationModel
 
         conv = await self.repository.get_conversation(conversation_id)
         if conv is None:
@@ -1666,9 +1659,9 @@ class ConversationService:
         Raises:
             ValueError: choice 不合法，或业务状态不满足约束
         """
+        from shared.models.conversation import Conversation as ConversationModel
         from sqlalchemy import update as sa_update
 
-        from ..models.conversation import Conversation as ConversationModel
         from ..models.diagnostic_item import STATUS_ARCHIVED, DiagnosticItem
 
         # 获取动作描述（纯函数，不含副作用）
