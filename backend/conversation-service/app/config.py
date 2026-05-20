@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     OPS_AGENT_BASE_URL: str = "http://ops-agent-service:8006"  # ops-agent ClusterIP
     OPS_AGENT_ENABLED: bool = False  # 默认关闭，OPS_AGENT_ENABLED=true 时启用
 
+    # ── pydantic-ai C 大脑可选集成（A/B/C 三向测试）──────────────────────────────────
+    PYDANTIC_AI_ENABLED: bool = False  # 默认关闭，PYDANTIC_AI_ENABLED=true 时启用
+
     # ReAct 是否启用（需要 SCP_BASE_URL + SCP_API_KEY 同时非空才生效）
     REACT_ENABLED: bool = False
 
