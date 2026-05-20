@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eval-service
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "eval-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: {{ .Values.evalService.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "eval-service" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "eval-service" "Release" .Release "Chart" .Chart) | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.evalService.port | quote }}
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "eval-service") | nindent 6 }}
+      containers:
+        - name: eval-service
+          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.evalService.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
+          ports:
+            - containerPort: {{ .Values.evalService.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: hci-common-config
+            - secretRef:
+                name: hci-secrets
+          env:
+            - name: SERVICE_NAME
+              value: "eval-service"
+            - name: SERVICE_PORT
+              value: {{ .Values.evalService.port | quote }}
+            - name: DATABASE_URL
+              # urlquery 对密码做 URL 编码（PIT-022）
+              value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            - name: PROMETHEUS_URL
+              value: {{ .Values.evalService.prometheusUrl | default "http://prometheus:9090" | quote }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.evalService.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.evalService.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.evalService.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.evalService.resources | nindent 12 }}

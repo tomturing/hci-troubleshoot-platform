@@ -416,6 +416,12 @@ jobs:
           - service: conversation-service
             context: backend
             dockerfile: backend/conversation-service/Dockerfile
+          - service: agent-service
+            context: backend
+            dockerfile: backend/agent-service/Dockerfile
+          - service: eval-service
+            context: backend
+            dockerfile: backend/eval-service/Dockerfile
           - service: scheduler-service
             context: backend
             dockerfile: backend/scheduler-service/Dockerfile

@@ -20,8 +20,6 @@ dependencies = [
     "opentelemetry-instrumentation-sqlalchemy",
     "opentelemetry-instrumentation-logging",
     "prometheus-client>=0.19.0",
-    # pai C 智能体（A/B/C 三向测试，PYDANTIC_AI_ENABLED=true 时激活）
-    "pydantic-ai[openai]==0.8.1",
 ]
 
 [tool.uv]

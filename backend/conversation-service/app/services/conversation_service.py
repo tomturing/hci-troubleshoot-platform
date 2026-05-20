@@ -16,9 +16,8 @@ from shared.observability.otel import get_current_trace_id
 
 from app.config import settings
 
-# T1-3 ~ T1-6: 大脑可选架构组件
-from ..adapters.agent_router import AgentRouter
-from ..core.agent_port import AgentInteractiveRequest, AgentStageUpdate, AgentTextChunk, AgentUnavailableError
+# T1-3 ~ T1-6: agent-service HTTP 客户端（替代本地 AgentRouter）
+from .agent_client import AgentClient
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
@@ -126,7 +125,7 @@ class ConversationService:
         tool_router=None,       # ToolRouter | None（Phase 4 agent 模式）
         confirm_service=None,   # ConfirmService | None
         glm_client=None,        # GLMClient | None（ReactExecutor 专用）
-        agent_router: AgentRouter | None = None,  # T1-6: 大脑路由器（可选，渐进接入）
+        agent_client: AgentClient | None = None,  # T1-6: agent-service HTTP 客户端（替代本地 AgentRouter）
     ):
         self.repository = repository
         self.ai_registry = ai_registry
@@ -149,8 +148,8 @@ class ConversationService:
         self._audit_service = LogAuditService()
         # 诊断状态机（Phase 2）
         self._conversation_manager = ConversationManager()
-        # T1-6: 大脑路由器（可选，None 时保持原有直接调用 ai_registry 的路径）
-        self._agent_router: AgentRouter | None = agent_router
+        # T1-6: agent-service 客户端（可选，None 时保持原有直接调用 ai_registry 的路径）
+        self._agent_client: AgentClient | None = agent_client
 
     async def create_conversation(
         self,
@@ -480,42 +479,42 @@ class ConversationService:
         # N-4 修复：记录是否走了 ops-agent 路径（跳过 htp 状态机后验检测）
         _used_ops_agent_path = False
         try:
-            if self._agent_router is not None:
-                # ── 新路径：通过 AgentRouter 路由（ops-agent 或 htp 大脑）────────
+            if self._agent_client is not None:
+                # ── 新路径：委托 agent-service（HTTP SSE）────────────────────
+                import json as _json
                 session_id = str(conversation_id)
                 _used_ops_agent_path = (resolved_assistant_type == "ops-agent")
-                async for agent_event in self._agent_router.process(
+                async for agent_event in self._agent_client.stream(
                     assistant_type=resolved_assistant_type,
                     session_id=session_id,
-                    messages=history_messages,
-                    env_context=context_info,  # 传入已预取的实时环境数据（N-3 修复）
-                    stream=True,
                     case_id=case_id,
                     user_id=f"case-{case_id}",
+                    messages=history_messages,
+                    env_context=context_info,
+                    stream=True,
                 ):
-                    if isinstance(agent_event, AgentTextChunk) and agent_event.content:
-                        _full_reply_buffer.append(agent_event.content)
-                        yield agent_event.content
-                    elif isinstance(agent_event, AgentStageUpdate):
-                        # 阶段变化事件：以内联标记传递给前端（保持向后兼容的 SSE 格式）
-                        yield f"\x00event:stage_change:{agent_event.stage}\x00"
-                    elif isinstance(agent_event, AgentInteractiveRequest):
-                        # T-E6: ops-agent 交互请求 → 推送 interactive_request SSE 事件给前端
-                        import json as _json
+                    event_type = agent_event.get("type")
+                    if event_type == "text_chunk":
+                        _chunk = agent_event.get("content", "")
+                        if _chunk:
+                            _full_reply_buffer.append(_chunk)
+                            yield _chunk
+                    elif event_type == "stage_update":
+                        _stage = agent_event.get("stage", "")
+                        yield f"\x00event:stage_change:{_stage}\x00"
+                    elif event_type == "interactive_request":
                         _ir_payload = _json.dumps({
-                            "requestId": agent_event.request_id,
-                            "acpSessionId": agent_event.acp_session_id,
-                            "kind": agent_event.kind,
-                            "title": agent_event.title,
-                            "prompt": agent_event.prompt,
-                            "options": agent_event.options,
-                            "customInput": agent_event.custom_input,
-                            "metadata": agent_event.metadata,
+                            "requestId": agent_event.get("request_id"),
+                            "acpSessionId": agent_event.get("acp_session_id"),
+                            "kind": agent_event.get("kind"),
+                            "title": agent_event.get("title"),
+                            "prompt": agent_event.get("prompt"),
+                            "options": agent_event.get("options"),
+                            "customInput": agent_event.get("custom_input"),
+                            "metadata": agent_event.get("metadata"),
                         }, ensure_ascii=False)
-                        # Bug2 修复：先落库（create_task）再 yield 给前端
-                        # 原来顺序相反：yield 后若客户端断开 generator 被 cancel，
-                        # create_task 永远不会执行，导致 interactive_request 不落库。
-                        _ir_content = self._format_interactive_request_content(agent_event)
+                        # Bug2 修复保持：先落库再 yield
+                        _ir_content = self._format_interactive_request_content_dict(agent_event)
                         asyncio.create_task(
                             self._save_message_bg(
                                 conversation_id=conversation_id,
@@ -525,19 +524,23 @@ class ConversationService:
                                 metadata={
                                     "kind": "interactive_request",
                                     "event": {
-                                        "requestId": agent_event.request_id,
-                                        "acpSessionId": agent_event.acp_session_id,
-                                        "kind": agent_event.kind,
-                                        "title": agent_event.title,
-                                        "prompt": agent_event.prompt,
-                                        "options": agent_event.options,
-                                        "customInput": agent_event.custom_input,
-                                        "metadata": agent_event.metadata,
+                                        "requestId": agent_event.get("request_id"),
+                                        "acpSessionId": agent_event.get("acp_session_id"),
+                                        "kind": agent_event.get("kind"),
+                                        "title": agent_event.get("title"),
+                                        "prompt": agent_event.get("prompt"),
+                                        "options": agent_event.get("options"),
+                                        "customInput": agent_event.get("custom_input"),
+                                        "metadata": agent_event.get("metadata"),
                                     },
                                 },
                             )
                         )
                         yield f"\x00event:interactive_request:{_ir_payload}\x00"
+                    elif event_type == "error":
+                        yield f"\n[Agent Error: {agent_event.get('message', '未知错误')}]"
+                    elif event_type == "done":
+                        break
             else:
                 # ── 原有路径：直接调用 ai_registry（AgentRouter 未注入时兜底）───
                 ai_client = self.ai_registry.get_client(resolved_assistant_type)
@@ -776,6 +779,39 @@ class ConversationService:
             lines.append(f"\n\n**可选项**：{'  /  '.join(opt_parts)}")
         return "\n".join(lines)
 
+
+    @staticmethod
+    def _format_interactive_request_content_dict(event: dict) -> str:
+        """将 agent-service 返回的 interactive_request dict 格式化为可读 Markdown 文字。"""
+        _lines: list[str] = []
+        meta = event.get("metadata") or {}
+        kind = event.get("kind", "")
+        prompt = event.get("prompt", "")
+        options = event.get("options") or []
+        if kind == "sop_step":
+            _lines.append("**📋 SOP 操作步骤确认**")
+            if meta.get("route"):
+                _lines.append(f"\n**当前路径**：{meta['route']}")
+            if meta.get("operationGoal"):
+                _lines.append(f"\n**操作目标**：{meta['operationGoal']}")
+            if meta.get("expectedResult"):
+                _lines.append(f"\n**预期结果**：{meta['expectedResult']}")
+            if meta.get("executionGuidance"):
+                _lines.append(f"\n**操作指引**：{meta['executionGuidance']}")
+            feedback = meta.get("feedbackRequest") or prompt
+            if feedback:
+                _lines.append(f"\n**请反馈**：{feedback}")
+        else:
+            _lines.append("**❓ 信息确认**")
+            question = meta.get("question") or prompt
+            if question:
+                _lines.append(f"\n{question}")
+            if meta.get("context"):
+                _lines.append(f"\n**背景说明**：{meta['context']}")
+        if options:
+            opt_parts = [f"{o.get('optionId', i + 1)}. {o.get('name', '')}" for i, o in enumerate(options)]
+            _lines.append(f"\n\n**可选项**：{'  /  '.join(opt_parts)}")
+        return "\n".join(_lines)
     @staticmethod
     def _format_interactive_response_content(outcome: dict) -> str:
         """将用户的交互响应格式化为可读文字，用于落库到 message.content。"""
@@ -1933,39 +1969,27 @@ class ConversationService:
         Returns:
             True  = 提交成功；False = OpsAgentAdapter 不可用（ops-agent 未启用）。
         """
-        if self._agent_router is None:
+        if self._agent_client is None:
             logger.warning(
-                event="interactive_response_no_router",
-                message="submit_interactive_response: AgentRouter 未注入，跳过",
-                conversation_id=str(conversation_id),
-                request_id=request_id,
-            )
-            return False
-
-        ops_adapter = self._agent_router.get_ops_agent_adapter()
-        if ops_adapter is None:
-            logger.warning(
-                event="interactive_response_no_adapter",
-                message="submit_interactive_response: OpsAgentAdapter 未启用，跳过",
+                event="interactive_response_no_client",
+                message="submit_interactive_response: AgentClient 未注入，跳过",
                 conversation_id=str(conversation_id),
                 request_id=request_id,
             )
             return False
 
         try:
-            success = await ops_adapter.submit_acp_response(
+            success = await self._agent_client.submit_interactive_response(
                 acp_session_id=acp_session_id,
                 request_id=request_id,
                 outcome=outcome,
             )
-        except AgentUnavailableError as exc:
+        except Exception as exc:
             logger.warning(
-                event="interactive_response_brain_error",
-                message="ops-agent ACP 接口不可达，交互响应已丢弃/已降级",
+                event="interactive_response_error",
+                message=f"submit_interactive_response 异常: {exc}",
                 conversation_id=str(conversation_id),
-                acp_session_id=acp_session_id,
                 request_id=request_id,
-                error=str(exc),
             )
             return False
         logger.info(
@@ -2022,14 +2046,10 @@ class ConversationService:
         """
         import json as _json
 
-        if self._agent_router is None:
+        if self._agent_client is None:
             return
 
-        ops_adapter = self._agent_router.get_ops_agent_adapter()
-        if ops_adapter is None:
-            return
-
-        # 预查 case_id，供后续落库使用（interactive_request 需要关联 case）
+        # 预查 case_id，供后续落库使用
         _conv = await self.repository.get_conversation(conversation_id)
         if _conv is None:
             logger.warning(
@@ -2040,44 +2060,50 @@ class ConversationService:
         _case_id = _conv.case_id if _conv else None
 
         session_id = str(conversation_id)
-        async for agent_event in ops_adapter.resume_event_stream(session_id):
-            if isinstance(agent_event, AgentTextChunk) and agent_event.content:
-                yield agent_event.content
-            elif isinstance(agent_event, AgentInteractiveRequest):
+        async for agent_event in self._agent_client.resume_stream(session_id):
+            event_type = agent_event.get("type")
+            if event_type == "text_chunk":
+                _chunk = agent_event.get("content", "")
+                if _chunk:
+                    yield _chunk
+            elif event_type == "interactive_request":
                 _ir_payload = _json.dumps({
-                    "requestId": agent_event.request_id,
-                    "acpSessionId": agent_event.acp_session_id,
-                    "kind": agent_event.kind,
-                    "title": agent_event.title,
-                    "prompt": agent_event.prompt,
-                    "options": agent_event.options,
-                    "customInput": agent_event.custom_input,
-                    "metadata": agent_event.metadata,
+                    "requestId": agent_event.get("request_id"),
+                    "acpSessionId": agent_event.get("acp_session_id"),
+                    "kind": agent_event.get("kind"),
+                    "title": agent_event.get("title"),
+                    "prompt": agent_event.get("prompt"),
+                    "options": agent_event.get("options"),
+                    "customInput": agent_event.get("custom_input"),
+                    "metadata": agent_event.get("metadata"),
                 }, ensure_ascii=False)
                 yield f"\x00event:interactive_request:{_ir_payload}\x00"
-                # 新的交互请求也需要落库（conv 不存在时跳过，避免 case_id='' 脏数据）
+                # 交互请求落库（conv 不存在时跳过，避免 case_id='' 脏数据）
                 if _case_id is not None:
                     asyncio.create_task(
                         self._save_message_bg(
                             conversation_id=conversation_id,
                             case_id=_case_id,
                             role=MessageRole.assistant,
-                            content=self._format_interactive_request_content(agent_event),
+                            content=self._format_interactive_request_content_dict(agent_event),
                             metadata={
                                 "kind": "interactive_request",
                                 "event": {
-                                    "requestId": agent_event.request_id,
-                                    "acpSessionId": agent_event.acp_session_id,
-                                    "kind": agent_event.kind,
-                                    "title": agent_event.title,
-                                    "prompt": agent_event.prompt,
-                                    "options": agent_event.options,
-                                    "customInput": agent_event.custom_input,
-                                    "metadata": agent_event.metadata,
+                                    "requestId": agent_event.get("request_id"),
+                                    "acpSessionId": agent_event.get("acp_session_id"),
+                                    "kind": agent_event.get("kind"),
+                                    "title": agent_event.get("title"),
+                                    "prompt": agent_event.get("prompt"),
+                                    "options": agent_event.get("options"),
+                                    "customInput": agent_event.get("custom_input"),
+                                    "metadata": agent_event.get("metadata"),
                                 },
                             },
                         )
                     )
-            elif isinstance(agent_event, AgentStageUpdate):
-                yield f"\x00event:stage_change:{agent_event.stage}\x00"
+            elif event_type == "stage_update":
+                _stage = agent_event.get("stage", "")
+                yield f"\x00event:stage_change:{_stage}\x00"
+            elif event_type == "done":
+                break
 
