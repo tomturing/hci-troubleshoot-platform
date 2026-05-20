@@ -1391,12 +1391,12 @@ def _split_md_chapters(content_md: str) -> list[tuple[str, str]]:
 
 
 @sop_router.post("/upload", status_code=status.HTTP_201_CREATED)
-async def upload_sop_docx(
+async def upload_sop_document(
     request: Request,
-    file: UploadFile = File(..., description=".docx 文件"),
+    file: UploadFile = File(..., description=".docx 或 .md 文件"),
     category_id: str | None = Form(None, description="分类编码，如 虚拟机-003"),
 ):
-    """直接上传 .docx 文件，解析后写入 SOP 草稿
+    """直接上传 .docx 或 .md 文件，解析后写入 SOP 草稿
 
     支持幂等：相同文件内容（SHA256 哈希）不会重复导入。
     上传成功后状态为 draft，需在本页面点击「发布」后方可被 AI 搜索。
@@ -1407,21 +1407,33 @@ async def upload_sop_docx(
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
     filename = file.filename or ""
-    if not filename.lower().endswith(".docx"):
-        raise HTTPException(status_code=400, detail="仅支持 .docx 格式文件")
+    file_ext = filename.lower().split(".")[-1] if "." in filename else ""
+
+    if file_ext not in ("docx", "md"):
+        raise HTTPException(status_code=400, detail="仅支持 .docx 或 .md 格式文件")
 
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:  # 50MB 限制
         raise HTTPException(status_code=400, detail="文件过大，最大支持 50MB")
 
-    docx_hash = hashlib.sha256(content).hexdigest()
+    file_hash = hashlib.sha256(content).hexdigest()
 
-    # 解析 docx
+    # 根据文件类型解析
     try:
-        doc_title, content_md, _ = _parse_docx_bytes(content)
+        if file_ext == "docx":
+            doc_title, content_md, _ = _parse_docx_bytes(content)
+        else:  # .md 文件
+            content_md = content.decode("utf-8")
+            # 从文件名或首行提取标题
+            doc_title = filename.rsplit(".", 1)[0] if filename else "未命名 SOP"
+            first_line = content_md.split("\n", 1)[0].strip()
+            if first_line.startswith("# "):
+                doc_title = first_line[2:].strip()
     except Exception as exc:
         logger.error(event="sop_upload_parse_error", filename=filename, error=str(exc))
         raise HTTPException(status_code=400, detail=f"文件解析失败：{exc}") from exc
+
+    docx_hash = file_hash if file_ext == "docx" else None
 
     async with _db_manager.async_session_factory() as session:
         # 幂等：已存在相同哈希则返回已有文档
@@ -1446,7 +1458,7 @@ async def upload_sop_docx(
 
         # 新建 sop_document
         sop_doc = SopDocument(
-            source_id=f"sop-upload-{docx_hash[:12]}",
+            source_id=f"sop-upload-{file_hash[:12]}",
             title=doc_title,
             content_md=content_md,
             category_id=category_id or None,
