@@ -573,7 +573,7 @@ opsAgent:
 agentService:
   replicaCount: 1
   image:
-    repository: hci-agent-service
+    repository: agent-service
     tag: latest
   port: 8005
   # 设为 true 后 Pod 使用 dnsPolicy:None + 真实公网 DNS，用于外部 AI 端点访问
@@ -596,7 +596,7 @@ agentService:
 evalService:
   replicaCount: 1
   image:
-    repository: hci-eval-service
+    repository: eval-service
     tag: latest
   port: 8007
   prometheusUrl: "http://prometheus:9090"
