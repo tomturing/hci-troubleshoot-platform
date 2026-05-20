@@ -101,9 +101,8 @@ async def lifespan(app: FastAPI):
     # ── ConfirmService（ReAct 人工确认，依赖 Redis）──────────────────────────
     confirm_service: ConfirmService | None = None
     if redis_client is not None:
-        confirm_service = ConfirmService(
+        confirm_service = ConfirmService(  # noqa: F841
             redis=redis_client,
-            timeout_sec=settings.CONFIRM_TIMEOUT_SEC,
         )
 
     # ── HTP 大脑适配器 ────────────────────────────────────────────────────────
@@ -125,7 +124,7 @@ async def lifespan(app: FastAPI):
         from app.adapters.scp_adapter import SCPAdapter
 
         _scp = SCPAdapter(base_url=settings.SCP_BASE_URL, api_key=settings.SCP_API_KEY)
-        _acli = AcliAdapter()
+        _acli = AcliAdapter.from_env()
         pai_adapter = PaiAgentAdapter.from_env(
             scp_adapter=_scp,
             acli_adapter=_acli,
