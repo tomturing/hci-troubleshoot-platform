@@ -90,6 +90,9 @@ spec:
               value: {{ (.Values.opsAgent | default dict).readTimeoutSec | default "300.0" | quote }}
             - name: OPS_AGENT_FALLBACK_ASSISTANT_TYPE
               value: {{ (.Values.opsAgent | default dict).fallbackAssistantType | default "glm-5" | quote }}
+            # ── pydantic-ai C 大脑启用开关 ──────────────────────────────────────────
+            - name: PYDANTIC_AI_ENABLED
+              value: {{ .Values.conversationService.pydanticAiEnabled | default "false" | quote }}
           # J-2: 三级探针分级健康检查，避免 AI 健康检查导致超时
           livenessProbe:
             httpGet:
