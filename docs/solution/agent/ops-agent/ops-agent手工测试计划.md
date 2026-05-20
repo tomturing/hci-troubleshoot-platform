@@ -4,7 +4,7 @@
 > **日期**: 2026-05-09
 > **测试环境**: hci-dev (K3s)
 > **ops-agent 镜像**: ghcr.io/p3n9w31/ops-agent:20260509-0744-08b1354
-> **参考文档**: `docs/solution/ai-assistant/ops-agent-internals/`
+> **参考文档**: `docs/solution/agent/ops-agent-internals/`
 
 ---
 

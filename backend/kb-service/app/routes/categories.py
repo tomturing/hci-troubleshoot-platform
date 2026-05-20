@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 from app.services.category_service import CategoryService
 

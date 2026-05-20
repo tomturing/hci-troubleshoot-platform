@@ -19,8 +19,8 @@ import time
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from shared.utils.logger import get_logger
-from shared.utils.otel import get_current_trace_id
+from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 
 from app.models.kb_category import KbCategory
 from app.repositories.category_repo import CategoryRepository

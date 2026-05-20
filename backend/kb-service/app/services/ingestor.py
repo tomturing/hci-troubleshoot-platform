@@ -22,8 +22,8 @@ import hashlib
 import time
 from typing import TYPE_CHECKING
 
-from shared.utils.logger import get_logger
-from shared.utils.otel import get_current_trace_id
+from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 

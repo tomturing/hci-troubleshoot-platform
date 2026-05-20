@@ -7,7 +7,7 @@ Assistants Routes - AI助手API路由 (v2.1)
 
 import httpx
 from fastapi import APIRouter, HTTPException
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 from app.config import settings
 

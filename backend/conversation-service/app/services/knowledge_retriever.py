@@ -24,7 +24,7 @@ S0 阶段特殊处理：
 from dataclasses import dataclass
 
 from opentelemetry import trace
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 from app.config import settings
 

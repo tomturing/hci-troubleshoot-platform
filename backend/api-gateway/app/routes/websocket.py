@@ -6,7 +6,7 @@ import json
 
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 from ..services.session import SessionManager
 

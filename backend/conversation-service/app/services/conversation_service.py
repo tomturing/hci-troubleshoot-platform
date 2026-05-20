@@ -10,9 +10,9 @@ from typing import Any
 
 from opentelemetry import trace
 from shared.models.audit import AuditLog
-from shared.utils.logger import get_logger
-from shared.utils.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
-from shared.utils.otel import get_current_trace_id
+from shared.observability.logger import get_logger
+from shared.observability.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
+from shared.observability.otel import get_current_trace_id
 
 from app.config import settings
 

@@ -28,7 +28,7 @@ import json
 import os
 from pathlib import Path
 
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 logger = get_logger("kb-service-sop")
 

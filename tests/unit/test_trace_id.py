@@ -4,7 +4,7 @@ TraceID 工具单元测试
 测试当前 OTel 封装的 get_trace_id() / get_span_id()
 """
 
-from shared.utils.trace_id import get_span_id, get_trace_id
+from shared.observability.trace_id import get_span_id, get_trace_id
 
 
 class TestGetTraceId:

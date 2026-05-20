@@ -11,10 +11,10 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.postgres import DatabaseManager
+from shared.observability.logger import get_logger
+from shared.observability.metrics import HTTPMetricsMiddleware
+from shared.observability.otel import init_telemetry, instrument_app
 from shared.utils.exception_handlers import register_exception_handlers
-from shared.utils.logger import get_logger
-from shared.utils.metrics import HTTPMetricsMiddleware
-from shared.utils.otel import init_telemetry, instrument_app
 
 from app.config import settings
 from app.routes import cases, environments

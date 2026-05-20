@@ -35,7 +35,7 @@ owner: team
 | `task/conversation/events/` | Task 30-D/E/F, 31-33 | 6 |
 | `task/custom-ui/events/` | Task 34-37 | 4 |
 | `task/knowledge-base/events/` | Task 01-06 | 6 |
-| `task/ai-assistant/events/` | Task 07-17 | 11 |
+| `task/agent/events/` | Task 07-17 | 11 |
 
 ---
 

@@ -18,8 +18,8 @@ import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from shared.observability.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
 from shared.utils.exceptions import AIStreamError
-from shared.utils.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
 
 from app.core.brain_port import BrainEvent, BrainTextChunk, BrainUnavailableError
 from app.services.ai_client import AIAssistantRegistry

@@ -23,8 +23,8 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from shared.utils.logger import get_logger
-from shared.utils.otel import get_current_trace_id
+from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 from sqlalchemy import select, text
 
 from app.models.document import KBDocument

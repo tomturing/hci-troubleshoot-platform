@@ -9,7 +9,7 @@ owner: platform-team
 # 方案E：ACP REST 接口 — 设计原理与详细拆解
 
 > 关联分析：[2026-05-08-ops-agent交互性缺陷根因分析与方案对比.md](./2026-05-08-ops-agent交互性缺陷根因分析与方案对比.md)  
-> 关联任务：[2026-05-08-ops-agent方案E任务分解.md](../../../task/ai-assistant/events/2026-05-08-ops-agent方案E任务分解.md)
+> 关联任务：[2026-05-08-ops-agent方案E任务分解.md](../../../task/agent/events/2026-05-08-ops-agent方案E任务分解.md)
 
 ---
 

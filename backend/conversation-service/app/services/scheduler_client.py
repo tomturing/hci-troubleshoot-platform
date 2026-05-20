@@ -5,7 +5,7 @@ Scheduler Client - 与 scheduler-service 交互的 HTTP 客户端
 import asyncio
 
 import httpx
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 from app.config import settings
 

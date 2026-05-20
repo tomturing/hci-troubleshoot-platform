@@ -11,8 +11,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import MessageCreate, MessageResponse
+from shared.observability.logger import get_logger
 from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceError
-from shared.utils.logger import get_logger
 
 from ..adapters.brain_router import BrainRouter
 from ..repositories.conversation_repo import ConversationRepository

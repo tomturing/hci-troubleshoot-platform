@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 from app.services.search_engine import SearchEngine
 

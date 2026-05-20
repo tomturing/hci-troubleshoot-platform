@@ -19,8 +19,8 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from shared.utils.logger import get_logger
-from shared.utils.otel import get_current_trace_id
+from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 

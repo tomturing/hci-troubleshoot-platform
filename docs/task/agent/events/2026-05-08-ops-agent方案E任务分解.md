@@ -8,8 +8,8 @@ owner: platform-team
 
 # ops-agent 方案E：任务分解
 
-> 关联方案：[2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md](../../../solution/ai-assistant/events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md)  
-> 关联分析：[2026-05-08-ops-agent交互性缺陷根因分析与方案对比.md](../../../solution/ai-assistant/events/2026-05-08-ops-agent交互性缺陷根因分析与方案对比.md)
+> 关联方案：[2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md](../../../solution/agent/events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md)  
+> 关联分析：[2026-05-08-ops-agent交互性缺陷根因分析与方案对比.md](../../../solution/agent/events/2026-05-08-ops-agent交互性缺陷根因分析与方案对比.md)
 
 ---
 

@@ -19,7 +19,7 @@ import re
 from datetime import UTC, datetime
 from typing import Literal
 
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 logger = get_logger("conversation-manager")
 

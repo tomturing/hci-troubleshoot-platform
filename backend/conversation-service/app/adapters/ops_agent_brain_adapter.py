@@ -9,7 +9,7 @@ OpsAgentBrainAdapter：ops-agent ACP 客户端适配器（方案E实现）
   - 支持 BrainInteractiveRequest 事件（_ops/request_input → 前端 SOP 操作卡）
   - ops-agent 不可达时 raise BrainUnavailableError（降级机制与原方案一致）
 
-跨仓库接口依据：docs/solution/ai-assistant/events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md
+跨仓库接口依据：docs/solution/agent/events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md
 
 第一性原理分析（改动必要性）：
   - process() 接口签名不变（BrainPort 兼容），BrainRouter 和 ConversationService 无需改动

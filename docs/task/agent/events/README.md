@@ -6,9 +6,9 @@ last_updated: 2026-04-06
 owner: team
 ---
 
-# ai-assistant（AI助手模块）任务事件文档
+# agent（AI Agent 模块）任务事件文档
 
-> 本目录存放 **ai-assistant（AI助手模块）** 的历史任务事件文档。
+> 本目录存放 **agent（AI Agent 模块）** 的历史任务事件文档。
 
 ---
 
@@ -32,8 +32,8 @@ owner: team
 
 ## 相关目录
 
-- `../` - ai-assistant 主干文档（AI助手任务.md）
-- `../../solution/ai-assistant/events/` - 方案事件文档
+- `../` - agent 主干文档（AI助手任务.md）
+- `../../solution/agent/events/` - 方案事件文档
 
 ---
 

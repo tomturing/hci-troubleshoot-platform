@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from shared.database.postgres import DatabaseManager
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 from sqlalchemy import select
 
 from app.config import settings

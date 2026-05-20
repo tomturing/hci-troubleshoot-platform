@@ -7,7 +7,7 @@
 import json
 
 from redis.asyncio import Redis
-from shared.utils.logger import get_logger
+from shared.observability.logger import get_logger
 
 logger = get_logger("dialog-tools")
 

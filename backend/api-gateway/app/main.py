@@ -16,9 +16,9 @@ from opentelemetry import trace as otel_trace
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.postgres import DatabaseManager
 from shared.database.redis import RedisManager
-from shared.utils.logger import get_logger
-from shared.utils.metrics import HTTPMetricsMiddleware
-from shared.utils.otel import init_telemetry, instrument_app
+from shared.observability.logger import get_logger
+from shared.observability.metrics import HTTPMetricsMiddleware
+from shared.observability.otel import init_telemetry, instrument_app
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
