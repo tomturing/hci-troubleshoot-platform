@@ -256,7 +256,7 @@ async def update_resolved_kbd(
     from sqlalchemy import select as sa_select
     from sqlalchemy import update as sa_update
 
-    from ..models.conversation import Conversation as ConversationModel
+    from shared.models.conversation import Conversation as ConversationModel
 
     # 查找该 case 最新 conversation（按 started_at DESC 排序）
     conversations = await service.repository.get_conversations_by_case(case_id)

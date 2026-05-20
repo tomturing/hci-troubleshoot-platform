@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.conversation import Conversation
+from shared.models.conversation import Conversation
 from ..models.message import Message, MessageRole
 
 

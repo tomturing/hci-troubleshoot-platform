@@ -20,13 +20,13 @@ from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
 from .agent_client import AgentClient
-from .ai_client import AIAssistantRegistry
+from shared.clients import AIAssistantRegistry
 from .conversation_manager import ConversationManager
 from .environment_client import EnvironmentClient
-from .kb_client import KBClient
+from shared.clients import KBClient
 from .knowledge_retriever import KnowledgeRetriever
 from .prompt_builder import PromptBuilder
-from .scheduler_client import SchedulerClient
+from shared.clients import SchedulerClient
 from .sse_queue import LogAuditService, QueueSSEEmitter
 
 logger = get_logger("conversation-service")
@@ -73,41 +73,6 @@ def jaccard_similarity(a: str, b: str) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
-# ─── S3 阶段 acli 命令自动提取（P2）────────────────────────────────────────────
-
-# 匹配 Markdown 代码块或行内代码中的 acli 命令
-_ACLI_CMD_PATTERN = re.compile(
-    r"```(?:bash|shell|sh)?\s*(acli\s+[^\n`]+)\s*```|`(acli\s+[^`\n]+)`",
-    re.MULTILINE | re.IGNORECASE,
-)
-
-# 只读 acli 动词——满足则自动执行（无需人工确认）
-_ACLI_READONLY_VERBS = frozenset({"get", "list", "show", "describe", "status", "info", "check", "query", "fetch"})
-
-
-def _extract_acli_commands(text: str) -> list[str]:
-    """从 LLM 回复中提取 acli 命令（去重，保持顺序）。"""
-    seen: set[str] = set()
-    result: list[str] = []
-    for m in _ACLI_CMD_PATTERN.finditer(text):
-        cmd = (m.group(1) or m.group(2) or "").strip()
-        if cmd and cmd not in seen:
-            seen.add(cmd)
-            result.append(cmd)
-    return result
-
-
-def _acli_is_readonly(cmd: str) -> bool:
-    """判断 acli 命令是否为只读操作（可自动执行）。
-
-    约定：acli <resource> <verb> ... 或 acli <verb> ...
-    仅检查 `acli` 之后前两个 token（兼容 `<verb>` 或 `<resource> <verb>` 两种形式）：
-    只要这两个候选位置之一是只读动词即认为只读（保守：不确定时 → False）。
-    """
-    parts = [p.lower() for p in cmd.strip().split()]
-    return any(p in _ACLI_READONLY_VERBS for p in parts[1:3])  # 跳过 `acli`，仅检查 verb 候选位置
-
-
 class ConversationService:
     """对话业务服务 (v2.0: 通过 AIAssistantRegistry 支持多类型 AI 助手)"""
 
@@ -119,10 +84,7 @@ class ConversationService:
         kb_client: KBClient | None = None,
         environment_client: EnvironmentClient | None = None,
         session_factory=None,
-        tool_router=None,  # ToolRouter | None（Phase 4 agent 模式）
-        confirm_service=None,  # ConfirmService | None
-        glm_client=None,  # GLMClient | None（ReactExecutor 专用）
-        agent_client: AgentClient | None = None,  # T1-6: agent-service HTTP 客户端（替代本地 AgentRouter）
+        agent_client: AgentClient | None = None,  # T1-6: agent-service HTTP 客户端
     ):
         self.repository = repository
         self.ai_registry = ai_registry
@@ -138,10 +100,6 @@ class ConversationService:
         self._categories_cache_time: float = 0.0
         # 独立事务 session 工厂，用于用户消息先行提交（与 AI 调用解耦）
         self.session_factory = session_factory
-        # Phase 4: agent 模式组件（可选，未配置时回退到普通流式模式）
-        self.tool_router = tool_router
-        self.confirm_service = confirm_service
-        self.glm_client = glm_client
         self._audit_service = LogAuditService()
         # 诊断状态机（Phase 2）
         self._conversation_manager = ConversationManager()
@@ -583,39 +541,7 @@ class ConversationService:
 
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
 
-            # 6a. P2 修复：S3 阶段自动提取并执行只读 acli 命令
-            full_reply = "".join(_full_reply_buffer)
-            if full_reply and current_stage == "S3" and not _used_ops_agent_path and self.tool_router:
-                acli_cmds = _extract_acli_commands(full_reply)
-                for _cmd in acli_cmds:
-                    if _acli_is_readonly(_cmd):
-                        try:
-                            _exec_result = await self.tool_router.execute("acli_run", {"command": _cmd})
-                            _auto_block = f"\n\n**[自动执行]** `{_cmd}`\n```\n{_exec_result}\n```\n"
-                            _full_reply_buffer.append(_auto_block)
-                            yield _auto_block
-                            logger.info(
-                                event="s3_acli_auto_executed",
-                                message=f"S3 阶段自动执行 acli 命令：{_cmd}",
-                                case_id=case_id,
-                                conversation_id=str(conversation_id),
-                                command=_cmd,
-                            )
-                        except Exception as _acli_err:
-                            logger.warning(
-                                event="s3_acli_auto_exec_failed",
-                                message=f"S3 acli 命令执行失败：{_acli_err}",
-                                command=_cmd,
-                                conversation_id=str(conversation_id),
-                            )
-                    else:
-                        logger.debug(
-                            event="s3_acli_write_skipped",
-                            message=f"S3 写操作 acli 命令需用户确认，跳过自动执行：{_cmd}",
-                            command=_cmd,
-                        )
-
-            # 6. 流式完成后，检测诊断阶段转换并持久化（fire-and-forget）
+            # 流式完成后，检测诊断阶段转换并持久化（fire-and-forget）
             full_reply = "".join(_full_reply_buffer)
             if full_reply and not _used_ops_agent_path:
                 # N-4 修复：ops-agent 路径由其自身状态机管理阶段，跳过 htp 后验正则检测
@@ -1025,130 +951,6 @@ class ConversationService:
                 case_id=case_id,
                 error=str(e),
             )
-
-    # ─── Phase 4 Agent 模式（ReAct 推理 + 工具调用）────────────────────────────
-
-    @property
-    def agent_mode_available(self) -> bool:
-        """检查 agent 模式所需组件是否已完整初始化"""
-        return self.tool_router is not None and self.confirm_service is not None and self.glm_client is not None
-
-    async def send_message_react_stream(
-        self,
-        session_id: str,
-        conversation_id: uuid.UUID,
-        case_id: str,
-        content: str,
-    ) -> AsyncGenerator[dict, None]:
-        """
-        Agent 模式流式响应（ReAct 推理 + 工具调用 + 人工确认）。
-
-        产出序列：
-          {"type": "thinking", "step": N, "message": "..."}      # 推理步骤 SSE 事件
-          {"type": "confirm_request", "tool_name": ..., ...}      # 高风险操作确认请求
-          {"type": "tool_executing", "tool": ..., "args": {...}}  # 工具执行通知
-          {"content": "文本片段"}                                  # AI 文字回复块
-
-        注意：需要先调用方确保 agent_mode_available=True。
-        """
-        from ..core.react_executor import AgentState, ReactExecutor
-
-        trace_id = get_current_trace_id()
-
-        with tracer.start_as_current_span("conversation.react_stream") as span:
-            span.set_attribute("session_id", session_id)
-            span.set_attribute("case_id", case_id)
-            span.set_attribute("trace_id", trace_id or "")
-
-            # 1. 保存用户消息（独立事务）
-            if self.session_factory:
-                async with self.session_factory() as s:
-                    await ConversationRepository(s).add_message(
-                        conversation_id=conversation_id,
-                        case_id=case_id,
-                        role=MessageRole.user,
-                        content=content,
-                        trace_id=trace_id,
-                    )
-                    await s.commit()
-            else:
-                await self.repository.add_message(
-                    conversation_id=conversation_id,
-                    case_id=case_id,
-                    role=MessageRole.user,
-                    content=content,
-                    trace_id=trace_id,
-                )
-
-            # 2. 构建 System Prompt（D-3 修复：读取当前诊断阶段，避免永远使用 S0 Prompt）
-            react_stage = "S0"
-            if self.session_factory:
-                async with self.session_factory() as _s:
-                    _react_conv = await ConversationRepository(_s).get_conversation(conversation_id)
-                    if _react_conv and _react_conv.diagnostic_stage:
-                        react_stage = _react_conv.diagnostic_stage
-            else:
-                _react_conv = await self.repository.get_conversation(conversation_id)
-                if _react_conv and _react_conv.diagnostic_stage:
-                    react_stage = _react_conv.diagnostic_stage
-            system_prompt, _audit_meta = await self._build_system_prompt(content, case_id, diagnostic_stage=react_stage)
-
-            # 3. 获取历史消息（独立 session 避免长事务）
-            if self.session_factory:
-                async with self.session_factory() as s:
-                    all_messages = await ConversationRepository(s).get_messages(conversation_id)
-            else:
-                all_messages = await self.repository.get_messages(conversation_id)
-
-            history = [
-                {"role": msg.role.value, "content": msg.content}
-                for msg in (all_messages[-20:] if len(all_messages) > 20 else all_messages)
-            ]
-
-            # 4. 创建 per-request asyncio.Queue 桥接 SSE 事件与文本流
-            queue: asyncio.Queue[dict | None] = asyncio.Queue()
-            sse_emitter = QueueSSEEmitter(queue)
-
-            # 5. 构建 AgentState 和 ReactExecutor
-            state = AgentState(session_id=session_id, messages=history)
-            executor = ReactExecutor(
-                glm_client=self.glm_client,
-                tool_executor=self.tool_router,
-                confirm_service=self.confirm_service,
-                audit_service=self._audit_service,
-                sse_emitter=sse_emitter,
-            )
-
-            # 6. 在后台任务中运行 ReactExecutor，将结果放入队列
-            async def _run_agent() -> None:
-                try:
-                    async for chunk in executor.run(state, system_prompt):
-                        if chunk:
-                            await queue.put({"content": chunk})
-                except Exception as exc:
-                    logger.error(
-                        event="react_executor_error",
-                        message=str(exc),
-                        session_id=session_id,
-                    )
-                    await queue.put({"_error": str(exc)})
-                finally:
-                    # 放入哨兵，通知消费者流结束
-                    await queue.put(None)
-
-            asyncio.create_task(_run_agent())
-
-            # 7. 从队列消费并 yield 事件
-            while True:
-                item = await queue.get()
-                if item is None:
-                    break
-                if "_error" in item:
-                    _err = RuntimeError(item["_error"])
-                    span.record_exception(_err)
-                    span.set_status(trace.StatusCode.ERROR, item["_error"])
-                    raise _err
-                yield item
 
     async def _write_prompt_audit(
         self,

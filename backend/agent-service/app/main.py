@@ -30,10 +30,10 @@ from app.adapters.ops_agent_adapter import OpsAgentAdapter
 from app.config import settings
 from app.routes.agent import router as agent_router_route
 from app.routes.agent import set_agent_router
-from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
+from shared.clients import AIAssistantRegistry, create_openclaw_client
 from app.services.confirm_service import ConfirmService
-from app.services.kb_client import KBClient
-from app.services.scheduler_client import SchedulerClient
+from shared.clients import KBClient
+from shared.clients import SchedulerClient
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)

@@ -2,7 +2,8 @@
 Conversation Service Models（v6.2 更新）
 """
 
-from .conversation import Conversation
+from shared.models.conversation import Conversation
+
 from .diagnostic_item import DiagnosticItem
 from .diagnostic_state import DiagnosticSession, StageTransition
 from .message import Message, MessageRole

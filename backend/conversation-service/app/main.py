@@ -19,10 +19,10 @@ from app.config import settings
 from app.routes import audit as audit_route
 from app.routes import conversations, evaluate
 from app.services.agent_client import AgentClient
-from app.services.ai_client import AIAssistantRegistry, create_openclaw_client
+from shared.clients import AIAssistantRegistry, create_openclaw_client
 from app.services.environment_client import EnvironmentClient
-from app.services.kb_client import KBClient
-from app.services.scheduler_client import SchedulerClient
+from shared.clients import KBClient
+from shared.clients import SchedulerClient
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
