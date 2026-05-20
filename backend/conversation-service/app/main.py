@@ -146,3 +146,95 @@ register_exception_handlers(app)
 app.include_router(conversations.router)
 app.include_router(evaluate.router)
 app.include_router(audit_route.router)
+
+
+# 健康检查端点
+@app.get("/health")
+async def health_check():
+    """健康检查，验证 DB + AI 助手 + KB 服务"""
+    ai_status: dict = {}
+    db_ok = False
+    kb_ok: str = "disabled"
+
+    db_manager = getattr(app.state, "database_manager", None)
+    if db_manager:
+        db_ok = await db_manager.health_check()
+
+    registry = getattr(app.state, "ai_registry", None)
+    if registry:
+        ai_status = await registry.health_check_all()
+
+    kb_client = getattr(app.state, "kb_client", None)
+    if kb_client:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=0.5) as client:
+                resp = await client.get(f"{settings.KB_SERVICE_URL}/health")
+            kb_ok = "ok" if resp.status_code == 200 else "degraded"
+        except Exception:
+            kb_ok = "unavailable"
+
+    all_ok = db_ok and (not ai_status or any(v == "ok" for v in ai_status.values()))
+    return {
+        "status": "healthy" if all_ok else "degraded",
+        "service": settings.SERVICE_NAME,
+        "version": "2.1.0",
+        "dependencies": {
+            "database": "ok" if db_ok else "unavailable",
+            "ai_assistants": ai_status,
+            "kb": kb_ok,
+        },
+    }
+
+
+@app.get("/health/live")
+async def health_live():
+    """存活探针：Pod 认为进程存活即返回 200"""
+    return {"status": "alive"}
+
+
+@app.get("/health/startup")
+async def health_startup():
+    """启动探针：验证 DB 连接是否就绪"""
+    db_manager = getattr(app.state, "database_manager", None)
+    if db_manager and not await db_manager.health_check():
+        return {"status": "not_ready", "reason": "database_unavailable"}
+    return {"status": "ready"}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """就绪探针：验证所有依赖服务"""
+    checks: dict = {}
+    all_ok = True
+
+    db_manager = getattr(app.state, "database_manager", None)
+    if db_manager:
+        checks["database"] = "ok" if await db_manager.health_check() else "unavailable"
+        if checks["database"] != "ok":
+            all_ok = False
+
+    registry = getattr(app.state, "ai_registry", None)
+    if registry:
+        try:
+            ai_status = await registry.health_check_all()
+            checks["ai_assistants"] = ai_status
+        except Exception as e:
+            checks["ai_assistants"] = {"error": str(e)}
+            all_ok = False
+
+    kb_client = getattr(app.state, "kb_client", None)
+    if kb_client:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=1.0) as client:
+                resp = await client.get(f"{settings.KB_SERVICE_URL}/health")
+            checks["kb"] = "ok" if resp.status_code == 200 else "degraded"
+        except Exception:
+            checks["kb"] = "unavailable"
+            all_ok = False
+
+    return {
+        "status": "ready" if all_ok else "not_ready",
+        "checks": checks,
+    }
