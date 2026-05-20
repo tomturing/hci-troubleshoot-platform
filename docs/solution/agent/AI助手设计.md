@@ -16,6 +16,7 @@
 
 | 版本 | 日期 | 变更内容 |
 |------|------|----------|
+| **6.2** | **2026-05-20** | **Docker CACHEBUST 参数修复 shared 目录缓存问题（PR #306）**：scheduler-service Dockerfile 新增 `CACHEBUST` ARG，CI 构建时传入 `GITHUB_SHA`，强制每次构建都重新 COPY shared 目录 |
 | **6.1** | **2026-05-07** | **助手选择器 Bug 修复 + ops-agent 注册**：修复 scheduler-service 可用性判断 key 不匹配（`idle_count` → `idle`）；ops-agent 注册到助手选择器（直连模式）；改进直连模式判断逻辑（增加 base_url 检查），详见 [事件文档](../events/2026-05-07-助手选择器Bug修复.md) |
 
 ---
