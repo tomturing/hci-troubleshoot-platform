@@ -25,7 +25,7 @@ if _expect != _actual:
     sys.path.insert(0, _svc)
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from shared.clients.ai_client import OpenClawAssistant
@@ -92,7 +92,7 @@ class TestParseAIError:
         """测试 429 请求频率超限"""
         result = openclaw_client._parse_ai_error(429, '{"error": {"message": "rate limit exceeded"}}')
         assert result["code"] == ErrorCode.AI_RATE_LIMITED
-        assert "频率超限" in result["message"]
+        assert "频繁" in result["message"]  # 消息为"请求过于频繁"
 
     def test_parse_404_not_found(self, openclaw_client):
         """测试 404 接口不存在"""
@@ -147,18 +147,17 @@ class TestChatCompletionStreamIntegration:
         mock_response = MockStreamResponse(200, sse_lines)
         mock_cm = MockStreamContextManager(mock_response)
 
-        # Patch httpx.AsyncClient.stream
-        with pytest.MonkeyPatch().context() as m:
-            m.setattr(openclaw_client.client, "stream", lambda *args, **kwargs: mock_cm)
+        # 使用 MagicMock 模拟 stream 方法返回上下文管理器
+        openclaw_client.client.stream = MagicMock(return_value=mock_cm)
 
-            chunks = []
-            async for chunk in openclaw_client.chat_completion_stream(
-                messages=[{"role": "user", "content": "test"}],
-                user_id="test-user",
-            ):
-                chunks.append(chunk)
+        chunks = []
+        async for chunk in openclaw_client.chat_completion_stream(
+            messages=[{"role": "user", "content": "test"}],
+            user_id="test-user",
+        ):
+            chunks.append(chunk)
 
-            assert chunks == ["你好", "，", "我是助手"]
+        assert chunks == ["你好", "，", "我是助手"]
 
     @pytest.mark.asyncio
     async def test_stream_401_error_with_mock(self, openclaw_client):
@@ -167,18 +166,17 @@ class TestChatCompletionStreamIntegration:
         mock_response.aread = AsyncMock(return_value=b'{"error": {"message": "Invalid API key"}}')
         mock_cm = MockStreamContextManager(mock_response)
 
-        with pytest.MonkeyPatch().context() as m:
-            m.setattr(openclaw_client.client, "stream", lambda *args, **kwargs: mock_cm)
+        openclaw_client.client.stream = MagicMock(return_value=mock_cm)
 
-            with pytest.raises(AIStreamError) as exc_info:
-                async for _ in openclaw_client.chat_completion_stream(
-                    messages=[{"role": "user", "content": "test"}],
-                    user_id="test-user",
-                ):
-                    pass
+        with pytest.raises(AIStreamError) as exc_info:
+            async for _ in openclaw_client.chat_completion_stream(
+                messages=[{"role": "user", "content": "test"}],
+                user_id="test-user",
+            ):
+                pass
 
-            assert exc_info.value.code == ErrorCode.AI_AUTH_FAILED
-            assert "认证失败" in exc_info.value.message
+        assert exc_info.value.code == ErrorCode.AI_AUTH_FAILED
+        assert "认证失败" in exc_info.value.message
 
     @pytest.mark.asyncio
     async def test_stream_empty_response_with_mock(self, openclaw_client):
@@ -187,14 +185,13 @@ class TestChatCompletionStreamIntegration:
         mock_response = MockStreamResponse(200, sse_lines)
         mock_cm = MockStreamContextManager(mock_response)
 
-        with pytest.MonkeyPatch().context() as m:
-            m.setattr(openclaw_client.client, "stream", lambda *args, **kwargs: mock_cm)
+        openclaw_client.client.stream = MagicMock(return_value=mock_cm)
 
-            with pytest.raises(AIStreamError) as exc_info:
-                async for _ in openclaw_client.chat_completion_stream(
-                    messages=[{"role": "user", "content": "test"}],
-                    user_id="test-user",
-                ):
-                    pass
+        with pytest.raises(AIStreamError) as exc_info:
+            async for _ in openclaw_client.chat_completion_stream(
+                messages=[{"role": "user", "content": "test"}],
+                user_id="test-user",
+            ):
+                pass
 
-            assert exc_info.value.code == ErrorCode.AI_RATE_LIMITED
+        assert exc_info.value.code == ErrorCode.AI_RATE_LIMITED
