@@ -3,7 +3,6 @@ AgentRouter 单元测试
 """
 
 import pytest
-
 from app.adapters.agent_router import AgentRouter, OPS_AGENT_TYPE, PYDANTIC_AI_TYPE
 from app.core.agent_port import AgentTextChunk, AgentUnavailableError
 

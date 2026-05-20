@@ -3,7 +3,6 @@ Quality Score 单元测试
 """
 
 import pytest
-
 from app.services.quality_score import (
     BASE_WEIGHTS,
     CLOSE_REASON_SCORE,

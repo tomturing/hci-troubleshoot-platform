@@ -3,7 +3,6 @@ AgentPort Protocol 和事件类型单元测试
 """
 
 import pytest
-
 from app.core.agent_port import (
     AgentEscalation,
     AgentInteractiveRequest,

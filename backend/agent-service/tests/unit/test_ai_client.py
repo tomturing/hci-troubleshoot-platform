@@ -3,7 +3,6 @@ AI Client 单元测试
 """
 
 import pytest
-
 from app.services.ai_client import AIAssistantRegistry, OpenClawAssistant, create_openclaw_client
 
 
