@@ -41,7 +41,7 @@ def set_dependencies(
     scheduler: SchedulerClient | None = None,
     kb: KBClient | None = None,
     env_client: EnvironmentClient | None = None,
-    ac: AgentClient | None = None,  # [PR-B] agent-service 客户端
+    agent_client: AgentClient | None = None,  # [PR-B] agent-service 客户端
 ):
     global database_manager, ai_registry, scheduler_client, kb_client, environment_client, agent_client
     database_manager = db
@@ -49,7 +49,7 @@ def set_dependencies(
     scheduler_client = scheduler
     kb_client = kb
     environment_client = env_client
-    agent_client = ac  # noqa: N816
+    agent_client = agent_client  # noqa: N816
 
 
 async def get_conversation_service() -> ConversationService:
