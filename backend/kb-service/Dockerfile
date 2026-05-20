@@ -12,6 +12,9 @@ WORKDIR /app
 COPY kb-service/requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
 
+# 使用 CACHEBUST ARG 破坏缓存，确保 COPY shared 总是重新执行
+RUN echo "CACHEBUST=${CACHEBUST}" > /tmp/cachebust
+
 COPY shared /app/shared
 COPY kb-service /app
 
