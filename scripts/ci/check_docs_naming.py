@@ -64,7 +64,7 @@ BRANCH_APPROVED_STEMS: dict[str, list[str]] = {
     "case":           ["工单"],
     "conversation":   ["对话"],
     "agent":          ["AI助手", "agent"],  # 2026-05-20 由 ai-assistant 重命名
-    "knowledge-base": ["知识库"],
+    "knowledge-base": ["知识库", "SOP树"],
     "custom-ui":      ["客户端"],
     "admin-ui":       ["管理台"],
 }
