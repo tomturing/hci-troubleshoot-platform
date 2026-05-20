@@ -267,8 +267,9 @@ function handleFileChange(e: Event) {
   const input = e.target as HTMLInputElement
   if (input.files && input.files[0]) {
     const f = input.files[0]
-    if (!f.name.toLowerCase().endsWith('.docx')) {
-      ElMessage.warning('仅支持 .docx 格式文件')
+    const ext = f.name.toLowerCase().split('.').pop()
+    if (ext !== 'docx' && ext !== 'md') {
+      ElMessage.warning('仅支持 .docx 或 .md 格式文件')
       input.value = ''
       return
     }
@@ -278,7 +279,7 @@ function handleFileChange(e: Event) {
 
 async function submitImport() {
   if (!importFile.value) {
-    ElMessage.warning('请选择 .docx 文件')
+    ElMessage.warning('请选择文件')
     return
   }
   importLoading.value = true
@@ -351,7 +352,7 @@ onMounted(() => fetchDocuments())
           <h2 class="page-title">SOP 文档管理</h2>
           <p class="page-desc">管理排障手册（SOP）文档的发布状态。草稿需发布后方可被 AI 搜索引用。</p>
         </div>
-        <el-button type="primary" @click="openImportDialog">＋ 导入 .docx</el-button>
+        <el-button type="primary" @click="openImportDialog">＋ 导入文档</el-button>
       </div>
     </div>
 
@@ -446,7 +447,7 @@ onMounted(() => fetchDocuments())
         </el-descriptions>
         <el-alert type="info" :closable="false" show-icon>
           <template #title>内容说明</template>
-          文档共 {{ viewDoc.chunk_count }} 个章节分块，已按标题拆分存入向量数据库。如需查看原始内容，请参考导入时的 .docx 源文件。
+          文档共 {{ viewDoc.chunk_count }} 个章节分块，已按标题拆分存入向量数据库。如需查看原始内容，请参考导入时的源文件。
         </el-alert>
       </template>
       <template #footer>
@@ -490,14 +491,14 @@ onMounted(() => fetchDocuments())
     </el-dialog>
 
     <!-- ── 导入弹窗 ── -->
-    <el-dialog v-model="importDialogVisible" title="导入 SOP 文档（.docx）" width="520px">
+    <el-dialog v-model="importDialogVisible" title="导入 SOP 文档" width="520px">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>导入说明</template>
-        上传 Word 文档（.docx），系统自动按章节标题分块。导入后状态为「草稿」，需手动点击「发布」后 AI 才可搜索引用。相同文件（SHA256）不会重复导入。
+        上传 Word（.docx）或 Markdown（.md）文档，系统自动按章节标题分块。导入后状态为「草稿」，需手动点击「发布」后 AI 才可搜索引用。相同文件（SHA256）不会重复导入。
       </el-alert>
       <el-form label-width="90px">
-        <el-form-item label=".docx 文件" required>
-          <input ref="importFileInput" type="file" accept=".docx" class="file-input" @change="handleFileChange" />
+        <el-form-item label="文档文件" required>
+          <input ref="importFileInput" type="file" accept=".docx,.md" class="file-input" @change="handleFileChange" />
           <div v-if="importFile" class="file-name-hint">已选：{{ importFile.name }}（{{ (importFile.size / 1024).toFixed(1) }} KB）</div>
         </el-form-item>
         <el-form-item label="分类 ID">
