@@ -25,7 +25,7 @@ from .conversation_manager import ConversationManager
 from .environment_client import EnvironmentClient
 from .knowledge_retriever import KnowledgeRetriever
 from .prompt_builder import PromptBuilder
-from .sse_queue import LogAuditService, QueueSSEEmitter
+from .sse_queue import LogAuditService
 
 logger = get_logger("conversation-service")
 tracer = trace.get_tracer(__name__)
@@ -1387,7 +1387,6 @@ class ConversationService:
             list[dict]，每项格式 {"code": "...", "name": "..."}；
             无匹配时返回 []
         """
-        import re
 
         from sqlalchemy import select
 
