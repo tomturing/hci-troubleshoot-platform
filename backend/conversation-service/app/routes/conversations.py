@@ -14,7 +14,7 @@ from shared.models.schemas import MessageCreate, MessageResponse
 from shared.observability.logger import get_logger
 from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceError
 
-from ..adapters.brain_router import BrainRouter
+from ..adapters.agent_router import AgentRouter
 from ..repositories.conversation_repo import ConversationRepository
 from ..services.ai_client import AIAssistantRegistry
 from ..services.conversation_service import ConversationService
@@ -32,7 +32,7 @@ ai_registry: AIAssistantRegistry | None = None
 scheduler_client: SchedulerClient | None = None
 kb_client: KBClient | None = None
 environment_client: EnvironmentClient | None = None
-brain_router: BrainRouter | None = None  # T1-6: 大脑路由器
+agent_router: AgentRouter | None = None  # T1-6: 大脑路由器
 
 
 def set_dependencies(
@@ -41,15 +41,15 @@ def set_dependencies(
     scheduler: SchedulerClient | None = None,
     kb: KBClient | None = None,
     env_client: EnvironmentClient | None = None,
-    router: BrainRouter | None = None,  # T1-6: 大脑路由器（可选）
+    router: AgentRouter | None = None,  # T1-6: 大脑路由器（可选）
 ):
-    global database_manager, ai_registry, scheduler_client, kb_client, environment_client, brain_router
+    global database_manager, ai_registry, scheduler_client, kb_client, environment_client, agent_router
     database_manager = db
     ai_registry = registry
     scheduler_client = scheduler
     kb_client = kb
     environment_client = env_client
-    brain_router = router
+    agent_router = router
 
 
 async def get_conversation_service() -> ConversationService:
@@ -62,7 +62,7 @@ async def get_conversation_service() -> ConversationService:
         yield ConversationService(
             repo, ai_registry, scheduler_client, kb_client, environment_client,
             database_manager.async_session_factory,
-            brain_router=brain_router,  # T1-6: 注入大脑路由器
+            agent_router=agent_router,  # T1-6: 注入大脑路由器
         )
 
 @router.post("/", status_code=201)
@@ -340,8 +340,8 @@ async def update_resolved_kbd(
 
 class InteractiveResponseBody(BaseModel):
     """POST /api/conversations/{id}/interactive-response 请求体。"""
-    request_id: str               # 来自前端收到的 BrainInteractiveRequest.requestId
-    acp_session_id: str           # 来自前端收到的 BrainInteractiveRequest.acpSessionId
+    request_id: str               # 来自前端收到的 AgentInteractiveRequest.requestId
+    acp_session_id: str           # 来自前端收到的 AgentInteractiveRequest.acpSessionId
     outcome: dict                 # {"outcome": "selected", "optionId": "A"}
                                   # 或 {"outcome": "free_text", "text": "..."}
 
@@ -357,7 +357,7 @@ async def submit_interactive_response(
     由前端 InteractiveRequestCard 提交按钮触发。
 
     响应 200：{"ok": true}
-    响应 503：ops-agent 适配器不可用（ops-agent 未启用或 BrainRouter 未注入）
+    响应 503：ops-agent 适配器不可用（ops-agent 未启用或 AgentRouter 未注入）
     """
     success = await service.submit_interactive_response(
         conversation_id=conversation_id,
@@ -368,7 +368,7 @@ async def submit_interactive_response(
     if not success:
         raise HTTPException(
             status_code=503,
-            detail="OpsAgentBrainAdapter 不可用：ops-agent 未启用或 ACP 接口不可达",
+            detail="OpsAgentAdapter 不可用：ops-agent 未启用或 ACP 接口不可达",
         )
     return {"ok": True}
 

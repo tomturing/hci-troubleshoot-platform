@@ -163,8 +163,8 @@ class TestFormatInteractiveRequestContent:
     """_format_interactive_request_content 静态方法测试"""
 
     def _make_event(self, kind="info_request", prompt="", options=None, metadata=None):
-        from app.core.brain_port import BrainInteractiveRequest
-        return BrainInteractiveRequest(
+        from app.core.agent_port import AgentInteractiveRequest
+        return AgentInteractiveRequest(
             request_id="req-1",
             acp_session_id="sess-1",
             kind=kind,
@@ -281,7 +281,7 @@ class TestSubmitInteractiveResponsePersist:
         conv_id = uuid.uuid4()
         case_id = "Q2024010100001"
 
-        # Mock BrainRouter + OpsAgentBrainAdapter
+        # Mock AgentRouter + OpsAgentAdapter
         mock_adapter = AsyncMock()
         mock_adapter.submit_acp_response = AsyncMock(return_value=True)
         mock_router = MagicMock()
@@ -293,7 +293,7 @@ class TestSubmitInteractiveResponsePersist:
         mock_repo.get_conversation = AsyncMock(return_value=mock_conv)
         mock_repo.add_message = AsyncMock()
 
-        service._brain_router = mock_router
+        service._agent_router = mock_router
 
         outcome = {"outcome": "selected", "optionId": "1", "optionLabel": "虚拟机成功启动"}
         result = await service.submit_interactive_response(
@@ -318,7 +318,7 @@ class TestSubmitInteractiveResponsePersist:
         """ops-agent 适配器不可用时：返回 False，不落库"""
         mock_router = MagicMock()
         mock_router.get_ops_agent_adapter.return_value = None
-        service._brain_router = mock_router
+        service._agent_router = mock_router
         mock_repo.add_message = AsyncMock()
 
         result = await service.submit_interactive_response(
@@ -332,14 +332,14 @@ class TestSubmitInteractiveResponsePersist:
         mock_repo.add_message.assert_not_called()
 
 
-# ---------- BrainRouter 路径落库 metadata 结构验证 ----------
+# ---------- AgentRouter 路径落库 metadata 结构验证 ----------
 
 @pytest.mark.asyncio
-class TestBrainRouterInteractiveRequestMetadata:
-    """验证 BrainRouter 路径下 BrainInteractiveRequest 落库时 metadata 含完整 event 嵌套结构"""
+class TestAgentRouterInteractiveRequestMetadata:
+    """验证 AgentRouter 路径下 AgentInteractiveRequest 落库时 metadata 含完整 event 嵌套结构"""
 
     async def test_save_message_bg_contains_event_nested_structure(self, service, mock_repo):
-        """BrainRouter yield BrainInteractiveRequest 时，_save_message_bg 传入的
+        """AgentRouter yield AgentInteractiveRequest 时，_save_message_bg 传入的
         metadata 必须为 { kind, event: { requestId, acpSessionId, kind, title,
         prompt, options, customInput, metadata } } 嵌套格式，
         而非旧的扁平结构（interactiveKind/requestId 等顶层字段），
@@ -348,13 +348,13 @@ class TestBrainRouterInteractiveRequestMetadata:
         import asyncio
         from unittest.mock import AsyncMock, MagicMock
 
-        from app.core.brain_port import BrainInteractiveRequest
+        from app.core.agent_port import AgentInteractiveRequest
 
         conv_id = uuid.uuid4()
         case_id = "Q2024010100001"
 
-        # 构造 BrainInteractiveRequest 事件
-        ir_event = BrainInteractiveRequest(
+        # 构造 AgentInteractiveRequest 事件
+        ir_event = AgentInteractiveRequest(
             request_id="req-brain-001",
             acp_session_id="sess-brain-001",
             kind="info_request",
@@ -368,13 +368,13 @@ class TestBrainRouterInteractiveRequestMetadata:
             metadata={"question": "虚拟机具体出现了什么异常现象？", "context": "排障初始阶段"},
         )
 
-        # Mock BrainRouter.process yield BrainInteractiveRequest
+        # Mock AgentRouter.process yield AgentInteractiveRequest
         async def fake_brain_process(*args, **kwargs):
             yield ir_event
 
         mock_router = MagicMock()
         mock_router.process = fake_brain_process
-        service._brain_router = mock_router
+        service._agent_router = mock_router
 
         # Mock repo 基础依赖
         mock_repo.add_message = AsyncMock()
@@ -439,12 +439,12 @@ class TestBug2InteractiveRequestSaveBeforeYield:
         import asyncio
         from unittest.mock import AsyncMock, MagicMock
 
-        from app.core.brain_port import BrainInteractiveRequest
+        from app.core.agent_port import AgentInteractiveRequest
 
         conv_id = uuid.uuid4()
         case_id = "Q2024010100001"
 
-        ir_event = BrainInteractiveRequest(
+        ir_event = AgentInteractiveRequest(
             request_id="req-cancel-001",
             acp_session_id="sess-cancel-001",
             kind="info_request",
@@ -460,7 +460,7 @@ class TestBug2InteractiveRequestSaveBeforeYield:
 
         mock_router = MagicMock()
         mock_router.process = fake_brain_process
-        service._brain_router = mock_router
+        service._agent_router = mock_router
 
         mock_repo.add_message = AsyncMock()
         mock_repo.get_messages = AsyncMock(return_value=[])

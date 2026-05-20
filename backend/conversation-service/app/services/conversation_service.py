@@ -17,8 +17,8 @@ from shared.observability.otel import get_current_trace_id
 from app.config import settings
 
 # T1-3 ~ T1-6: 大脑可选架构组件
-from ..adapters.brain_router import BrainRouter
-from ..core.brain_port import BrainInteractiveRequest, BrainStageUpdate, BrainTextChunk, BrainUnavailableError
+from ..adapters.agent_router import AgentRouter
+from ..core.agent_port import AgentInteractiveRequest, AgentStageUpdate, AgentTextChunk, AgentUnavailableError
 from ..models.conversation import Conversation
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
@@ -126,7 +126,7 @@ class ConversationService:
         tool_router=None,       # ToolRouter | None（Phase 4 agent 模式）
         confirm_service=None,   # ConfirmService | None
         glm_client=None,        # GLMClient | None（ReactExecutor 专用）
-        brain_router: BrainRouter | None = None,  # T1-6: 大脑路由器（可选，渐进接入）
+        agent_router: AgentRouter | None = None,  # T1-6: 大脑路由器（可选，渐进接入）
     ):
         self.repository = repository
         self.ai_registry = ai_registry
@@ -150,7 +150,7 @@ class ConversationService:
         # 诊断状态机（Phase 2）
         self._conversation_manager = ConversationManager()
         # T1-6: 大脑路由器（可选，None 时保持原有直接调用 ai_registry 的路径）
-        self._brain_router: BrainRouter | None = brain_router
+        self._agent_router: AgentRouter | None = agent_router
 
     async def create_conversation(
         self,
@@ -473,18 +473,18 @@ class ConversationService:
             )
 
         # 5. 调用大脑并流式返回
-        # T1-6: 若已注入 BrainRouter，走新大脑可选路径；否则保持原有 ai_registry 路径（向后兼容）
+        # T1-6: 若已注入 AgentRouter，走新大脑可选路径；否则保持原有 ai_registry 路径（向后兼容）
         import time
 
         _full_reply_buffer: list[str] = []
         # N-4 修复：记录是否走了 ops-agent 路径（跳过 htp 状态机后验检测）
         _used_ops_agent_path = False
         try:
-            if self._brain_router is not None:
-                # ── 新路径：通过 BrainRouter 路由（ops-agent 或 htp 大脑）────────
+            if self._agent_router is not None:
+                # ── 新路径：通过 AgentRouter 路由（ops-agent 或 htp 大脑）────────
                 session_id = str(conversation_id)
                 _used_ops_agent_path = (resolved_assistant_type == "ops-agent")
-                async for brain_event in self._brain_router.process(
+                async for agent_event in self._agent_router.process(
                     assistant_type=resolved_assistant_type,
                     session_id=session_id,
                     messages=history_messages,
@@ -493,29 +493,29 @@ class ConversationService:
                     case_id=case_id,
                     user_id=f"case-{case_id}",
                 ):
-                    if isinstance(brain_event, BrainTextChunk) and brain_event.content:
-                        _full_reply_buffer.append(brain_event.content)
-                        yield brain_event.content
-                    elif isinstance(brain_event, BrainStageUpdate):
+                    if isinstance(agent_event, AgentTextChunk) and agent_event.content:
+                        _full_reply_buffer.append(agent_event.content)
+                        yield agent_event.content
+                    elif isinstance(agent_event, AgentStageUpdate):
                         # 阶段变化事件：以内联标记传递给前端（保持向后兼容的 SSE 格式）
-                        yield f"\x00event:stage_change:{brain_event.stage}\x00"
-                    elif isinstance(brain_event, BrainInteractiveRequest):
+                        yield f"\x00event:stage_change:{agent_event.stage}\x00"
+                    elif isinstance(agent_event, AgentInteractiveRequest):
                         # T-E6: ops-agent 交互请求 → 推送 interactive_request SSE 事件给前端
                         import json as _json
                         _ir_payload = _json.dumps({
-                            "requestId": brain_event.request_id,
-                            "acpSessionId": brain_event.acp_session_id,
-                            "kind": brain_event.kind,
-                            "title": brain_event.title,
-                            "prompt": brain_event.prompt,
-                            "options": brain_event.options,
-                            "customInput": brain_event.custom_input,
-                            "metadata": brain_event.metadata,
+                            "requestId": agent_event.request_id,
+                            "acpSessionId": agent_event.acp_session_id,
+                            "kind": agent_event.kind,
+                            "title": agent_event.title,
+                            "prompt": agent_event.prompt,
+                            "options": agent_event.options,
+                            "customInput": agent_event.custom_input,
+                            "metadata": agent_event.metadata,
                         }, ensure_ascii=False)
                         # Bug2 修复：先落库（create_task）再 yield 给前端
                         # 原来顺序相反：yield 后若客户端断开 generator 被 cancel，
                         # create_task 永远不会执行，导致 interactive_request 不落库。
-                        _ir_content = self._format_interactive_request_content(brain_event)
+                        _ir_content = self._format_interactive_request_content(agent_event)
                         asyncio.create_task(
                             self._save_message_bg(
                                 conversation_id=conversation_id,
@@ -525,21 +525,21 @@ class ConversationService:
                                 metadata={
                                     "kind": "interactive_request",
                                     "event": {
-                                        "requestId": brain_event.request_id,
-                                        "acpSessionId": brain_event.acp_session_id,
-                                        "kind": brain_event.kind,
-                                        "title": brain_event.title,
-                                        "prompt": brain_event.prompt,
-                                        "options": brain_event.options,
-                                        "customInput": brain_event.custom_input,
-                                        "metadata": brain_event.metadata,
+                                        "requestId": agent_event.request_id,
+                                        "acpSessionId": agent_event.acp_session_id,
+                                        "kind": agent_event.kind,
+                                        "title": agent_event.title,
+                                        "prompt": agent_event.prompt,
+                                        "options": agent_event.options,
+                                        "customInput": agent_event.custom_input,
+                                        "metadata": agent_event.metadata,
                                     },
                                 },
                             )
                         )
                         yield f"\x00event:interactive_request:{_ir_payload}\x00"
             else:
-                # ── 原有路径：直接调用 ai_registry（BrainRouter 未注入时兜底）───
+                # ── 原有路径：直接调用 ai_registry（AgentRouter 未注入时兜底）───
                 ai_client = self.ai_registry.get_client(resolved_assistant_type)
                 if not ai_client:
                     error_msg = f"未找到类型为 '{resolved_assistant_type}' 的 AI 助手"
@@ -747,8 +747,8 @@ class ConversationService:
         await self.save_assistant_message(conversation_id, conv.case_id, content)
 
     @staticmethod
-    def _format_interactive_request_content(event: "BrainInteractiveRequest") -> str:
-        """将 BrainInteractiveRequest 格式化为可读 Markdown 文字，用于落库到 message.content。"""
+    def _format_interactive_request_content(event: "AgentInteractiveRequest") -> str:
+        """将 AgentInteractiveRequest 格式化为可读 Markdown 文字，用于落库到 message.content。"""
         lines: list[str] = []
         meta = event.metadata or {}
         if event.kind == "sop_step":
@@ -1921,32 +1921,32 @@ class ConversationService:
         """T-E6: 将用户对交互卡片的响应回传给 ops-agent ACP 会话。
 
         由 POST /api/conversations/{id}/interactive-response 调用。
-        仅在 BrainRouter 已注入且 OpsAgentBrainAdapter 可用时生效。
+        仅在 AgentRouter 已注入且 OpsAgentAdapter 可用时生效。
 
         Args:
             conversation_id: 对话 ID（用于日志追踪）。
-            request_id:      ACP request_id（来自 BrainInteractiveRequest.request_id）。
-            acp_session_id:  ops-agent ACP session_id（来自 BrainInteractiveRequest.acp_session_id）。
+            request_id:      ACP request_id（来自 AgentInteractiveRequest.request_id）。
+            acp_session_id:  ops-agent ACP session_id（来自 AgentInteractiveRequest.acp_session_id）。
             outcome:         提交结果，格式 {"outcome": "selected", "optionId": "A"}
                              或 {"outcome": "free_text", "text": "..."}。
 
         Returns:
-            True  = 提交成功；False = OpsAgentBrainAdapter 不可用（ops-agent 未启用）。
+            True  = 提交成功；False = OpsAgentAdapter 不可用（ops-agent 未启用）。
         """
-        if self._brain_router is None:
+        if self._agent_router is None:
             logger.warning(
                 event="interactive_response_no_router",
-                message="submit_interactive_response: BrainRouter 未注入，跳过",
+                message="submit_interactive_response: AgentRouter 未注入，跳过",
                 conversation_id=str(conversation_id),
                 request_id=request_id,
             )
             return False
 
-        ops_adapter = self._brain_router.get_ops_agent_adapter()
+        ops_adapter = self._agent_router.get_ops_agent_adapter()
         if ops_adapter is None:
             logger.warning(
                 event="interactive_response_no_adapter",
-                message="submit_interactive_response: OpsAgentBrainAdapter 未启用，跳过",
+                message="submit_interactive_response: OpsAgentAdapter 未启用，跳过",
                 conversation_id=str(conversation_id),
                 request_id=request_id,
             )
@@ -1958,7 +1958,7 @@ class ConversationService:
                 request_id=request_id,
                 outcome=outcome,
             )
-        except BrainUnavailableError as exc:
+        except AgentUnavailableError as exc:
             logger.warning(
                 event="interactive_response_brain_error",
                 message="ops-agent ACP 接口不可达，交互响应已丢弃/已降级",
@@ -2013,8 +2013,8 @@ class ConversationService:
         - 前端 SSE 连接因页面刷新而断开后重新接收事件
 
         实现：
-        1. 通过 OpsAgentBrainAdapter.resume_event_stream() 消费 outbox
-        2. 将 BrainEvent 序列化为与 send_message_stream_only 相同的 SSE 格式
+        1. 通过 OpsAgentAdapter.resume_event_stream() 消费 outbox
+        2. 将 AgentEvent 序列化为与 send_message_stream_only 相同的 SSE 格式
         3. active_prompt=False 时立即返回，不挂起
 
         Yields:
@@ -2022,10 +2022,10 @@ class ConversationService:
         """
         import json as _json
 
-        if self._brain_router is None:
+        if self._agent_router is None:
             return
 
-        ops_adapter = self._brain_router.get_ops_agent_adapter()
+        ops_adapter = self._agent_router.get_ops_agent_adapter()
         if ops_adapter is None:
             return
 
@@ -2040,19 +2040,19 @@ class ConversationService:
         _case_id = _conv.case_id if _conv else None
 
         session_id = str(conversation_id)
-        async for brain_event in ops_adapter.resume_event_stream(session_id):
-            if isinstance(brain_event, BrainTextChunk) and brain_event.content:
-                yield brain_event.content
-            elif isinstance(brain_event, BrainInteractiveRequest):
+        async for agent_event in ops_adapter.resume_event_stream(session_id):
+            if isinstance(agent_event, AgentTextChunk) and agent_event.content:
+                yield agent_event.content
+            elif isinstance(agent_event, AgentInteractiveRequest):
                 _ir_payload = _json.dumps({
-                    "requestId": brain_event.request_id,
-                    "acpSessionId": brain_event.acp_session_id,
-                    "kind": brain_event.kind,
-                    "title": brain_event.title,
-                    "prompt": brain_event.prompt,
-                    "options": brain_event.options,
-                    "customInput": brain_event.custom_input,
-                    "metadata": brain_event.metadata,
+                    "requestId": agent_event.request_id,
+                    "acpSessionId": agent_event.acp_session_id,
+                    "kind": agent_event.kind,
+                    "title": agent_event.title,
+                    "prompt": agent_event.prompt,
+                    "options": agent_event.options,
+                    "customInput": agent_event.custom_input,
+                    "metadata": agent_event.metadata,
                 }, ensure_ascii=False)
                 yield f"\x00event:interactive_request:{_ir_payload}\x00"
                 # 新的交互请求也需要落库（conv 不存在时跳过，避免 case_id='' 脏数据）
@@ -2062,22 +2062,22 @@ class ConversationService:
                             conversation_id=conversation_id,
                             case_id=_case_id,
                             role=MessageRole.assistant,
-                            content=self._format_interactive_request_content(brain_event),
+                            content=self._format_interactive_request_content(agent_event),
                             metadata={
                                 "kind": "interactive_request",
                                 "event": {
-                                    "requestId": brain_event.request_id,
-                                    "acpSessionId": brain_event.acp_session_id,
-                                    "kind": brain_event.kind,
-                                    "title": brain_event.title,
-                                    "prompt": brain_event.prompt,
-                                    "options": brain_event.options,
-                                    "customInput": brain_event.custom_input,
-                                    "metadata": brain_event.metadata,
+                                    "requestId": agent_event.request_id,
+                                    "acpSessionId": agent_event.acp_session_id,
+                                    "kind": agent_event.kind,
+                                    "title": agent_event.title,
+                                    "prompt": agent_event.prompt,
+                                    "options": agent_event.options,
+                                    "customInput": agent_event.custom_input,
+                                    "metadata": agent_event.metadata,
                                 },
                             },
                         )
                     )
-            elif isinstance(brain_event, BrainStageUpdate):
-                yield f"\x00event:stage_change:{brain_event.stage}\x00"
+            elif isinstance(agent_event, AgentStageUpdate):
+                yield f"\x00event:stage_change:{agent_event.stage}\x00"
 

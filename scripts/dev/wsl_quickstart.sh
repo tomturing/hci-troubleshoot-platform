@@ -63,10 +63,14 @@ if [[ "$WITH_DEPS" == "1" ]]; then
   info "installing python deps (WITH_DEPS=1)"
   source .venv/bin/activate
   uv pip install -r tests/requirements.txt
-  uv pip install -r backend/api-gateway/requirements.txt
-  uv pip install -r backend/case-service/requirements.txt
-  uv pip install -r backend/conversation-service/requirements.txt
-  uv pip install -r backend/scheduler-service/requirements.txt
+  # 各服务已改用 pyproject.toml，通过 uv pip compile 生成依赖列表后安装
+  _req_tmp=$(mktemp)
+  for _svc in api-gateway case-service conversation-service scheduler-service; do
+    uv pip compile "backend/$_svc/pyproject.toml" --no-annotate --no-header -q >> "$_req_tmp"
+  done
+  uv pip install -r "$_req_tmp"
+  rm -f "$_req_tmp"
+  unset _req_tmp _svc
 
   if command -v pnpm >/dev/null 2>&1; then
     info "installing frontend deps"

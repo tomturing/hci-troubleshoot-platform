@@ -1,21 +1,21 @@
 """
-OpsAgentBrainAdapter：ops-agent ACP 客户端适配器（方案E实现）
+OpsAgentAdapter：ops-agent ACP 客户端适配器（方案E实现）
 
 将 ops-agent 从"无交互单向文本生成器"升级为"完整双向交互引擎"。
 核心改进（对比原 /v1/chat/completions 方案）：
   - 使用 ACP REST 协议：session_new → submit_prompt → SSE events → submit_response
   - ACP session ID 直接使用 htp conversation_id（利用 ops-agent T-E1 可选参数），
     无需维护 ID 映射表，session 在 ops-agent 跨轮次持久化
-  - 支持 BrainInteractiveRequest 事件（_ops/request_input → 前端 SOP 操作卡）
-  - ops-agent 不可达时 raise BrainUnavailableError（降级机制与原方案一致）
+  - 支持 AgentInteractiveRequest 事件（_ops/request_input → 前端 SOP 操作卡）
+  - ops-agent 不可达时 raise AgentUnavailableError（降级机制与原方案一致）
 
 跨仓库接口依据：docs/solution/agent/events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md
 
 第一性原理分析（改动必要性）：
-  - process() 接口签名不变（BrainPort 兼容），BrainRouter 和 ConversationService 无需改动
+  - process() 接口签名不变（AgentPort 兼容），AgentRouter 和 ConversationService 无需改动
   - 内部切换 HTTP 端点（/v1/chat/completions → /acp/sessions/*），调用方完全无感知
-  - BrainUnavailableError 降级路径与原方案完全一致
-  - BrainInteractiveRequest 若无处理则静默丢弃（不影响文本响应功能，支持渐进式实现）
+  - AgentUnavailableError 降级路径与原方案完全一致
+  - AgentInteractiveRequest 若无处理则静默丢弃（不影响文本响应功能，支持渐进式实现）
 """
 
 from __future__ import annotations
@@ -29,18 +29,18 @@ from typing import Any
 
 import httpx
 
-from app.core.brain_port import (
-    BrainEvent,
-    BrainInteractiveRequest,
-    BrainStageUpdate,
-    BrainTextChunk,
-    BrainUnavailableError,
+from app.core.agent_port import (
+    AgentEvent,
+    AgentInteractiveRequest,
+    AgentStageUpdate,
+    AgentTextChunk,
+    AgentUnavailableError,
 )
 
 logger = logging.getLogger("ops-agent-brain-adapter")
 
 
-class OpsAgentBrainAdapter:
+class OpsAgentAdapter:
     """ops-agent ACP 客户端适配器。
 
     通过 ACP REST 协议调用 ops-agent，实现完整的双向交互会话。
@@ -77,26 +77,26 @@ class OpsAgentBrainAdapter:
         stream: bool = True,
         user_id: str = "",
         **_kwargs: Any,
-    ) -> AsyncGenerator[BrainEvent, None]:
-        """调用 ops-agent ACP REST API，以流式 BrainEvent 产出响应。
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """调用 ops-agent ACP REST API，以流式 AgentEvent 产出响应。
 
         session_id 直接作为 ACP session ID 传入 ops-agent，
         ops-agent 侧在跨轮次对话中保持会话上下文（无需在此处维护映射表）。
 
         Yields:
-            BrainTextChunk: Agent 输出的文本片段
-            BrainStageUpdate: 会话标题更新（session_info_update）
-            BrainInteractiveRequest: Agent 请求用户交互（SOP操作卡/提问）
+            AgentTextChunk: Agent 输出的文本片段
+            AgentStageUpdate: 会话标题更新（session_info_update）
+            AgentInteractiveRequest: Agent 请求用户交互（SOP操作卡/提问）
 
         Raises:
-            BrainUnavailableError: ops-agent 服务不可达或返回非 2xx 状态码。
+            AgentUnavailableError: ops-agent 服务不可达或返回非 2xx 状态码。
         """
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
         logger.info(
-            "OpsAgentBrainAdapter: 开始 ACP 会话 session_id=%s has_env=%s messages=%d",
+            "OpsAgentAdapter: 开始 ACP 会话 session_id=%s has_env=%s messages=%d",
             session_id,
             env_context is not None,
             len(messages),
@@ -116,41 +116,41 @@ class OpsAgentBrainAdapter:
             # Step 3：提交 prompt（非阻塞，立即返回 202）
             await self._submit_prompt(session_id, prompt, headers)
 
-            # Step 4：消费 SSE 事件流，翻译为 BrainEvent
+            # Step 4：消费 SSE 事件流，翻译为 AgentEvent
             stream_start = time.monotonic()
             ttft_logged = False
-            async for brain_event in self._consume_events(session_id, headers):
-                if isinstance(brain_event, BrainTextChunk) and not ttft_logged:
+            async for agent_event in self._consume_events(session_id, headers):
+                if isinstance(agent_event, AgentTextChunk) and not ttft_logged:
                     ttft_ms = int((time.monotonic() - stream_start) * 1000)
                     logger.info(
-                        "OpsAgentBrainAdapter TTFT: %dms session_id=%s", ttft_ms, session_id
+                        "OpsAgentAdapter TTFT: %dms session_id=%s", ttft_ms, session_id
                     )
                     ttft_logged = True
-                yield brain_event
+                yield agent_event
 
-        except BrainUnavailableError:
+        except AgentUnavailableError:
             raise
         except httpx.TimeoutException as exc:
             logger.warning(
-                "OpsAgentBrainAdapter: 超时 session_id=%s error=%s", session_id, exc
+                "OpsAgentAdapter: 超时 session_id=%s error=%s", session_id, exc
             )
-            raise BrainUnavailableError(brain_name="ops-agent", reason=f"请求超时: {exc}") from exc
+            raise AgentUnavailableError(agent_name="ops-agent", reason=f"请求超时: {exc}") from exc
         except httpx.ConnectError as exc:
             logger.warning(
-                "OpsAgentBrainAdapter: 连接失败 session_id=%s error=%s", session_id, exc
+                "OpsAgentAdapter: 连接失败 session_id=%s error=%s", session_id, exc
             )
-            raise BrainUnavailableError(
-                brain_name="ops-agent", reason=f"无法连接: {exc}"
+            raise AgentUnavailableError(
+                agent_name="ops-agent", reason=f"无法连接: {exc}"
             ) from exc
         except Exception as exc:
             logger.error(
-                "OpsAgentBrainAdapter: 意外错误 session_id=%s type=%s error=%s",
+                "OpsAgentAdapter: 意外错误 session_id=%s type=%s error=%s",
                 session_id,
                 type(exc).__name__,
                 exc,
             )
-            raise BrainUnavailableError(
-                brain_name="ops-agent", reason=f"{type(exc).__name__}: {exc}"
+            raise AgentUnavailableError(
+                agent_name="ops-agent", reason=f"{type(exc).__name__}: {exc}"
             ) from exc
 
     async def submit_acp_response(
@@ -165,7 +165,7 @@ class OpsAgentBrainAdapter:
 
         Args:
             acp_session_id: ops-agent ACP session ID（即 htp conversation_id）
-            request_id:     ACP request_id（来自 BrainInteractiveRequest.request_id）
+            request_id:     ACP request_id（来自 AgentInteractiveRequest.request_id）
             outcome:        用户响应 {"outcome": "selected", "optionId": "1"} 等
         """
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -177,27 +177,27 @@ class OpsAgentBrainAdapter:
             resp = await self._client.post(url, json={"result": {"outcome": outcome}}, headers=headers)
             if resp.status_code not in (200, 201):
                 logger.error(
-                    "OpsAgentBrainAdapter: submit_response 失败 session_id=%s request_id=%s status=%d",
+                    "OpsAgentAdapter: submit_response 失败 session_id=%s request_id=%s status=%d",
                     acp_session_id,
                     request_id,
                     resp.status_code,
                 )
-                raise BrainUnavailableError(
-                    brain_name="ops-agent",
+                raise AgentUnavailableError(
+                    agent_name="ops-agent",
                     reason=f"submit_response HTTP {resp.status_code}",
                 )
-        except BrainUnavailableError:
+        except AgentUnavailableError:
             raise
         except Exception as exc:
-            raise BrainUnavailableError(
-                brain_name="ops-agent", reason=f"submit_response 失败: {exc}"
+            raise AgentUnavailableError(
+                agent_name="ops-agent", reason=f"submit_response 失败: {exc}"
             ) from exc
         return True
 
     async def resume_event_stream(
         self,
         session_id: str,
-    ) -> AsyncGenerator[BrainEvent, None]:
+    ) -> AsyncGenerator[AgentEvent, None]:
         """消费 ops-agent outbox 事件流，不提交新 prompt。
 
         适用场景：页面刷新后用户提交了 interactive response，
@@ -223,7 +223,7 @@ class OpsAgentBrainAdapter:
             )
             if state_resp.status_code == 404:
                 logger.info(
-                    "OpsAgentBrainAdapter.resume_event_stream: session 不存在，跳过 session_id=%s",
+                    "OpsAgentAdapter.resume_event_stream: session 不存在，跳过 session_id=%s",
                     session_id,
                 )
                 return
@@ -231,19 +231,19 @@ class OpsAgentBrainAdapter:
             # activePrompt 为 false，但 outbox 中可能有未消费的 interactive_request
             active_prompt = state_resp.status_code == 200 and state_resp.json().get("activePrompt", False)
             logger.info(
-                "OpsAgentBrainAdapter.resume_event_stream: 检查状态 session_id=%s activePrompt=%s，继续消费 outbox",
+                "OpsAgentAdapter.resume_event_stream: 检查状态 session_id=%s activePrompt=%s，继续消费 outbox",
                 session_id,
                 active_prompt,
             )
         except Exception as exc:
             logger.warning(
-                "OpsAgentBrainAdapter.resume_event_stream: 检查状态失败，跳过 session_id=%s error=%s",
+                "OpsAgentAdapter.resume_event_stream: 检查状态失败，跳过 session_id=%s error=%s",
                 session_id, exc,
             )
             return
 
         logger.info(
-            "OpsAgentBrainAdapter.resume_event_stream: 开始消费事件 session_id=%s",
+            "OpsAgentAdapter.resume_event_stream: 开始消费事件 session_id=%s",
             session_id,
         )
         async for event in self._consume_events(session_id, headers):
@@ -264,12 +264,12 @@ class OpsAgentBrainAdapter:
         payload = {"session_id": session_id, "trajectory_dir": trajectory_dir}
         resp = await self._client.post(url, json=payload, headers=headers)
         if resp.status_code not in (200, 201):
-            raise BrainUnavailableError(
-                brain_name="ops-agent",
+            raise AgentUnavailableError(
+                agent_name="ops-agent",
                 reason=f"session_new HTTP {resp.status_code}: {resp.text[:200]}",
             )
         logger.debug(
-            "OpsAgentBrainAdapter: ACP 会话就绪 session_id=%s trajectory_dir=%s status=%d",
+            "OpsAgentAdapter: ACP 会话就绪 session_id=%s trajectory_dir=%s status=%d",
             session_id,
             trajectory_dir,
             resp.status_code,
@@ -283,7 +283,7 @@ class OpsAgentBrainAdapter:
         防止旧 session/done 事件污染随后新 prompt 的 SSE 流。
 
         失败时仅记录警告，不抛出异常——后续 _submit_prompt 会再次尝试，
-        若真的无法恢复再触发 BrainUnavailableError。
+        若真的无法恢复再触发 AgentUnavailableError。
         """
         url = f"{self._base_url}/acp/sessions/{session_id}/prompt"
         try:
@@ -300,14 +300,14 @@ class OpsAgentBrainAdapter:
             if resp.status_code == 404:
                 # session 不存在，可能已自动清理，无需处理
                 logger.debug(
-                    "OpsAgentBrainAdapter: terminate_prompt session 不存在（404），继续重试 session_id=%s",
+                    "OpsAgentAdapter: terminate_prompt session 不存在（404），继续重试 session_id=%s",
                     session_id,
                 )
                 return
             if resp.status_code == 200:
                 data = resp.json()
                 logger.info(
-                    "OpsAgentBrainAdapter: terminate_prompt 成功 session_id=%s "
+                    "OpsAgentAdapter: terminate_prompt 成功 session_id=%s "
                     "activePrompt=%s pendingCancelled=%d drained=%d",
                     session_id,
                     data.get("activePrompt"),
@@ -316,13 +316,13 @@ class OpsAgentBrainAdapter:
                 )
             else:
                 logger.warning(
-                    "OpsAgentBrainAdapter: terminate_prompt 非预期状态 session_id=%s status=%d",
+                    "OpsAgentAdapter: terminate_prompt 非预期状态 session_id=%s status=%d",
                     session_id,
                     resp.status_code,
                 )
         except Exception as exc:
             logger.warning(
-                "OpsAgentBrainAdapter: terminate_prompt 调用失败 session_id=%s error=%s（继续重试）",
+                "OpsAgentAdapter: terminate_prompt 调用失败 session_id=%s error=%s（继续重试）",
                 session_id,
                 exc,
             )
@@ -344,29 +344,29 @@ class OpsAgentBrainAdapter:
             # 会话已有 prompt 在运行（页面刷新恢复场景：agent 正在等待交互响应）
             # 先终止旧 prompt（清空 outbox），再重试新 prompt
             logger.info(
-                "OpsAgentBrainAdapter: session 有活跃 prompt（409），执行 terminate+retry session_id=%s",
+                "OpsAgentAdapter: session 有活跃 prompt（409），执行 terminate+retry session_id=%s",
                 session_id,
             )
             await self._terminate_acp_prompt(session_id, headers)
             resp = await self._client.post(url, json={"prompt": prompt}, headers=headers)
             if resp.status_code not in (200, 202):
-                raise BrainUnavailableError(
-                    brain_name="ops-agent",
+                raise AgentUnavailableError(
+                    agent_name="ops-agent",
                     reason=f"submit_prompt 重试后仍失败 HTTP {resp.status_code}: {resp.text[:200]}",
                 )
             return
         if resp.status_code not in (200, 202):
-            raise BrainUnavailableError(
-                brain_name="ops-agent",
+            raise AgentUnavailableError(
+                agent_name="ops-agent",
                 reason=f"submit_prompt HTTP {resp.status_code}: {resp.text[:200]}",
             )
 
     async def _consume_events(
         self, session_id: str, headers: dict
-    ) -> AsyncGenerator[BrainEvent, None]:
-        """消费 GET /acp/sessions/{id}/events SSE 流，翻译为 BrainEvent。
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """消费 GET /acp/sessions/{id}/events SSE 流，翻译为 AgentEvent。
 
-        若 session/done 到达时未产出任何文本内容，抛出 BrainUnavailableError 以触发 HTP fallback，
+        若 session/done 到达时未产出任何文本内容，抛出 AgentUnavailableError 以触发 HTP fallback，
         避免因 ops-agent 内部静默失败（exception 被 execute_task 吞掉，stop_reason="end_turn"）
         导致前端显示空白气泡。
         """
@@ -375,8 +375,8 @@ class OpsAgentBrainAdapter:
         async with self._client.stream("GET", url, headers=headers) as resp:
             if resp.status_code != 200:
                 body = await resp.aread()
-                raise BrainUnavailableError(
-                    brain_name="ops-agent",
+                raise AgentUnavailableError(
+                    agent_name="ops-agent",
                     reason=f"events SSE HTTP {resp.status_code}: {body.decode()[:200]}",
                 )
 
@@ -395,7 +395,7 @@ class OpsAgentBrainAdapter:
                 if method == "session/done":
                     stop_reason = data.get("params", {}).get("stopReason", "end_turn")
                     logger.info(
-                        "OpsAgentBrainAdapter: session/done session_id=%s stopReason=%s text_emitted=%s",
+                        "OpsAgentAdapter: session/done session_id=%s stopReason=%s text_emitted=%s",
                         session_id,
                         stop_reason,
                         text_emitted,
@@ -403,9 +403,9 @@ class OpsAgentBrainAdapter:
                     if not text_emitted:
                         # ops-agent 运行结束但没有产出任何文本：
                         # 可能是 execute_task() 内部异常被吞掉、task_done 未被调用、
-                        # 或 task_done.summary 为空。抛出 BrainUnavailableError 触发 HTP fallback。
-                        raise BrainUnavailableError(
-                            brain_name="ops-agent",
+                        # 或 task_done.summary 为空。抛出 AgentUnavailableError 触发 HTP fallback。
+                        raise AgentUnavailableError(
+                            agent_name="ops-agent",
                             reason=f"session/done without content (stopReason={stop_reason})，降级到备用助手",
                         )
                     return
@@ -420,20 +420,20 @@ class OpsAgentBrainAdapter:
                         text = content.get("text", "") if isinstance(content, dict) else str(content)
                         if text:
                             text_emitted = True
-                            yield BrainTextChunk(content=text)
+                            yield AgentTextChunk(content=text)
 
                     elif update_type == "session_info_update":
                         # 会话标题更新（前端可选显示进度）
                         title = update.get("title") or ""
                         if title:
-                            yield BrainStageUpdate(stage=title)
+                            yield AgentStageUpdate(stage=title)
 
                 elif method == "_ops/request_input":
                     # Agent 请求用户交互（SOP操作卡 / 用户提问）
                     req_id = data.get("id", "")
                     params = data.get("params", {})
                     request = params.get("request", {})
-                    yield BrainInteractiveRequest(
+                    yield AgentInteractiveRequest(
                         request_id=req_id,
                         acp_session_id=session_id,
                         kind=request.get("kind", "info_request"),

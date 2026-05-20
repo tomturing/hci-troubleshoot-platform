@@ -110,3 +110,8 @@ ignore = ["E501"]
 [tool.uv]
 # backend 各服务和 shared 目录均作为源码目录
 package = false
+# 注意：各服务间存在 httpx/fastapi 版本差异（api-gateway==0.26.0 vs case-service>=0.27.0），
+# 暂不启用 workspace 成员解析，避免 uv sync 冲突。
+# 待各服务版本统一后，在独立 PR 中开启：
+# [tool.uv.workspace]
+# members = ["backend/api-gateway", "backend/case-service", ...]

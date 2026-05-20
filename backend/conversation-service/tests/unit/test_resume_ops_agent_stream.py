@@ -2,10 +2,10 @@
 resume_ops_agent_stream 单元测试
 
 覆盖以下场景：
-1. BrainTextChunk → 产出文本内容
-2. BrainInteractiveRequest → 产出 \\x00event:interactive_request:...\\x00 内部格式并落库
-3. BrainStageUpdate → 产出 \\x00event:stage_change:...\\x00 内部格式
-4. _conv=None 时 BrainInteractiveRequest 不触发落库（避免 case_id='' 脏数据）
+1. AgentTextChunk → 产出文本内容
+2. AgentInteractiveRequest → 产出 \\x00event:interactive_request:...\\x00 内部格式并落库
+3. AgentStageUpdate → 产出 \\x00event:stage_change:...\\x00 内部格式
+4. _conv=None 时 AgentInteractiveRequest 不触发落库（避免 case_id='' 脏数据）
 """
 
 import asyncio
@@ -29,7 +29,7 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
-from app.core.brain_port import BrainInteractiveRequest, BrainStageUpdate, BrainTextChunk
+from app.core.agent_port import AgentInteractiveRequest, AgentStageUpdate, AgentTextChunk
 from app.models.conversation import Conversation
 from app.services.conversation_service import ConversationService
 
@@ -61,7 +61,7 @@ def service(mock_repo, mock_registry, mock_scheduler):
 
 
 def _make_ops_adapter(events: list) -> MagicMock:
-    """构造返回指定事件序列的 OpsAgentBrainAdapter mock。"""
+    """构造返回指定事件序列的 OpsAgentAdapter mock。"""
 
     async def _fake_resume(session_id: str) -> AsyncGenerator:
         for ev in events:
@@ -72,8 +72,8 @@ def _make_ops_adapter(events: list) -> MagicMock:
     return adapter
 
 
-def _make_ir_event() -> BrainInteractiveRequest:
-    return BrainInteractiveRequest(
+def _make_ir_event() -> AgentInteractiveRequest:
+    return AgentInteractiveRequest(
         request_id="req-001",
         acp_session_id="sess-001",
         kind="info_request",
@@ -96,7 +96,7 @@ class TestResumeOpsAgentStreamOutput:
         ops_adapter = _make_ops_adapter(events)
         mock_router = MagicMock()
         mock_router.get_ops_agent_adapter.return_value = ops_adapter
-        service._brain_router = mock_router
+        service._agent_router = mock_router
 
         mock_repo = repo if repo is not None else service.repository
         mock_repo.get_conversation = AsyncMock(return_value=conv)
@@ -111,20 +111,20 @@ class TestResumeOpsAgentStreamOutput:
         return chunks
 
     async def test_text_chunk_yields_content(self, service, mock_repo):
-        """BrainTextChunk → 产出文本内容字符串"""
+        """AgentTextChunk → 产出文本内容字符串"""
         conv_id = uuid.uuid4()
         conv = Conversation(conversation_id=conv_id, case_id="Q001")
-        events = [BrainTextChunk(content="hello"), BrainTextChunk(content=" world")]
+        events = [AgentTextChunk(content="hello"), AgentTextChunk(content=" world")]
 
         chunks = await self._run(service, conv_id, events, conv=conv, repo=mock_repo)
 
         assert chunks == ["hello", " world"]
 
     async def test_stage_change_yields_internal_marker(self, service, mock_repo):
-        """BrainStageUpdate → 产出 \\x00event:stage_change:S3\\x00 格式"""
+        """AgentStageUpdate → 产出 \\x00event:stage_change:S3\\x00 格式"""
         conv_id = uuid.uuid4()
         conv = Conversation(conversation_id=conv_id, case_id="Q001")
-        events = [BrainStageUpdate(stage="S3")]
+        events = [AgentStageUpdate(stage="S3")]
 
         chunks = await self._run(service, conv_id, events, conv=conv, repo=mock_repo)
 
@@ -132,7 +132,7 @@ class TestResumeOpsAgentStreamOutput:
         assert chunks[0] == "\x00event:stage_change:S3\x00"
 
     async def test_interactive_request_yields_marker(self, service, mock_repo):
-        """BrainInteractiveRequest → 产出含 event:interactive_request 的内部标记"""
+        """AgentInteractiveRequest → 产出含 event:interactive_request 的内部标记"""
         conv_id = uuid.uuid4()
         conv = Conversation(conversation_id=conv_id, case_id="Q001")
         ir_event = _make_ir_event()
@@ -145,7 +145,7 @@ class TestResumeOpsAgentStreamOutput:
         assert chunks[0].endswith("\x00")
 
     async def test_interactive_request_saves_to_db_when_conv_exists(self, service, mock_repo):
-        """BrainInteractiveRequest + conv 存在 → 触发落库（case_id 非空）"""
+        """AgentInteractiveRequest + conv 存在 → 触发落库（case_id 非空）"""
         conv_id = uuid.uuid4()
         conv = Conversation(conversation_id=conv_id, case_id="Q001")
         ir_event = _make_ir_event()
@@ -159,7 +159,7 @@ class TestResumeOpsAgentStreamOutput:
         assert call_kwargs.get("metadata", {}).get("kind") == "interactive_request"
 
     async def test_interactive_request_skips_db_when_conv_not_found(self, service, mock_repo):
-        """_conv=None 时 BrainInteractiveRequest 不触发落库，避免 case_id='' 脏数据"""
+        """_conv=None 时 AgentInteractiveRequest 不触发落库，避免 case_id='' 脏数据"""
         conv_id = uuid.uuid4()
         ir_event = _make_ir_event()
 
@@ -169,21 +169,21 @@ class TestResumeOpsAgentStreamOutput:
         mock_repo.add_message.assert_not_called()
 
     async def test_empty_text_chunk_not_yielded(self, service, mock_repo):
-        """BrainTextChunk.content 为空字符串时不产出"""
+        """AgentTextChunk.content 为空字符串时不产出"""
         conv_id = uuid.uuid4()
         conv = Conversation(conversation_id=conv_id, case_id="Q001")
-        events = [BrainTextChunk(content=""), BrainTextChunk(content="ok")]
+        events = [AgentTextChunk(content=""), AgentTextChunk(content="ok")]
 
         chunks = await self._run(service, conv_id, events, conv=conv, repo=mock_repo)
 
-        assert chunks == ["ok"], "空 content 的 BrainTextChunk 不应产出"
+        assert chunks == ["ok"], "空 content 的 AgentTextChunk 不应产出"
 
     async def test_no_ops_adapter_yields_nothing(self, service, mock_repo):
-        """_brain_router.get_ops_agent_adapter() 返回 None 时不产出任何内容"""
+        """_agent_router.get_ops_agent_adapter() 返回 None 时不产出任何内容"""
         conv_id = uuid.uuid4()
         mock_router = MagicMock()
         mock_router.get_ops_agent_adapter.return_value = None
-        service._brain_router = mock_router
+        service._agent_router = mock_router
 
         chunks = []
         async for chunk in service.resume_ops_agent_stream(conv_id):
