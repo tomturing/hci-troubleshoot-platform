@@ -30,7 +30,7 @@ ai_registry: AIAssistantRegistry | None = None
 scheduler_client: SchedulerClient | None = None
 kb_client: KBClient | None = None
 environment_client: EnvironmentClient | None = None
-agent_client: AgentClient | None = None  # [PR-B] agent-service HTTP 客户端
+_agent_client: AgentClient | None = None  # [PR-B] agent-service HTTP 客户端
 
 
 def set_dependencies(
@@ -39,15 +39,15 @@ def set_dependencies(
     scheduler: SchedulerClient | None = None,
     kb: KBClient | None = None,
     env_client: EnvironmentClient | None = None,
-    agent_client_: AgentClient | None = None,  # [PR-B] agent-service 客户端
+    agent_client: AgentClient | None = None,  # [PR-B] agent-service 客户端
 ):
-    global database_manager, ai_registry, scheduler_client, kb_client, environment_client, agent_client
+    global database_manager, ai_registry, scheduler_client, kb_client, environment_client, _agent_client
     database_manager = db
     ai_registry = registry
     scheduler_client = scheduler
     kb_client = kb
     environment_client = env_client
-    agent_client = agent_client_  # [PR-B] 修复：参数重命名避免与全局变量同名，global 声明才能赋值
+    _agent_client = agent_client  # [PR-B] 修复：全局变量改名为 _agent_client，避免与参数同名冲突
 
 
 async def get_conversation_service() -> ConversationService:
@@ -60,7 +60,7 @@ async def get_conversation_service() -> ConversationService:
         yield ConversationService(
             repo, ai_registry, scheduler_client, kb_client, environment_client,
             database_manager.async_session_factory,
-            agent_client=agent_client,
+            agent_client=_agent_client,
         )
 
 @router.post("/", status_code=201)
