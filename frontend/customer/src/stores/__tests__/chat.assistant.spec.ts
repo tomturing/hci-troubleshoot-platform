@@ -194,14 +194,15 @@ describe('chat store — 助手选择行为', () => {
   })
 
   // ═══════════════════════════════════════════════════════════════════════
-  // Fix A：streamAIResponse 必须用 currentCase.assistant_type 而非 selectedAssistant
+  // Fix A：streamAIResponse 优先使用用户当前选择的助手（允许切换助手生效）
   // ═══════════════════════════════════════════════════════════════════════
   describe('Fix A: 消息发送时路由到正确助手', () => {
-    it('sendMessage 发送的 assistant_type 应来自 currentCase，而非 selectedAssistant', async () => {
+    it('sendMessage 发送的 assistant_type 应优先使用 selectedAssistant（允许用户切换助手）', async () => {
       const { useChatStore } = await import('../chat')
       const store = useChatStore()
 
-      // 模拟：用户选的是 qwen（默认），但工单绑定的是 ops-agent
+      // 模拟：用户选的是 qwen，工单绑定的是 ops-agent
+      // 修复后：优先使用用户选择的 qwen（允许切换助手生效）
       store.selectedAssistant = 'qwen'
       store.currentCase = makeCase({ case_id: 'case-1', assistant_type: 'ops-agent' })
       store.conversationId = 'conv-1'
@@ -213,9 +214,9 @@ describe('chat store — 助手选择行为', () => {
 
       expect(capturedBodies).toHaveLength(1)
       const body = JSON.parse(capturedBodies[0])
-      // Fix A 修复前：body.assistant_type === 'qwen'（错误）
-      // Fix A 修复后：body.assistant_type === 'ops-agent'（正确）
-      expect(body.assistant_type).toBe('ops-agent')
+      // Fix A 修复前：body.assistant_type === 'ops-agent'（强制用工单绑定）
+      // Fix A 修复后：body.assistant_type === 'qwen'（优先用用户选择，允许切换）
+      expect(body.assistant_type).toBe('qwen')
       expect(body.content).toBe('帮我排查 HCI 节点故障')
 
       vi.unstubAllGlobals()
