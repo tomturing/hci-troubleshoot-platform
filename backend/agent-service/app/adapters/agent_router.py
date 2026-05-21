@@ -35,7 +35,7 @@ logger = logging.getLogger("brain-router")
 
 # 各大脑路由的 assistant_type 标识
 OPS_AGENT_TYPE = "ops-agent"
-PYDANTIC_AI_TYPE = "pydantic-ai"
+PYDANTIC_AI_TYPE = "pai-agent"  # 修复：与 ASSISTANT_REGISTRY_JSON 中的 key 保持一致
 
 # 降级提示消息（用户可见）
 _FALLBACK_NOTICE = "\n\n> [系统提示] ops-agent 暂时不可用，已自动切换到备用助手继续为您服务。\n\n"

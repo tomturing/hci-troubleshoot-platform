@@ -47,7 +47,8 @@ def set_dependencies(
     scheduler_client = scheduler
     kb_client = kb
     environment_client = env_client
-    # agent_client 通过参数直接使用，无需 global 声明
+    # 修复：agent_client 参数名与模块级变量同名导致 global 声明失效，需用 globals() 显式赋值
+    globals()['agent_client'] = agent_client
 
 
 async def get_conversation_service() -> ConversationService:

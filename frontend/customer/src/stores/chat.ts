@@ -529,8 +529,8 @@ export const useChatStore = defineStore('chat', () => {
           case_id: currentCase.value.case_id,
           role: 'user',
           content,
-          // v2.2: 优先使用工单绑定的助手类型，确保对话路由一致性
-          assistant_type: currentCase.value.assistant_type || selectedAssistant.value,
+          // 修复：优先使用用户当前选择的助手类型，允许切换助手生效
+          assistant_type: selectedAssistant.value || currentCase.value.assistant_type,
         }),
       })
 
