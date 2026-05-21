@@ -4,7 +4,7 @@ API Gateway - 集成测试
 
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -99,3 +99,115 @@ class TestGatewayIntegration:
                 data = response.json()
                 assert len(data) == 1
                 assert data[0]["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_close_case_success(self, test_app):
+        """测试关闭工单成功并释放 Pod"""
+        with patch('app.routes.cases.proxy_request') as mock_proxy, \
+             patch('httpx.AsyncClient.post') as mock_scheduler_post:
+            # 模拟工单关闭成功
+            mock_case_response = httpx.Response(200, json={"case_id": "Q123", "status": "closed"})
+            mock_proxy.return_value = mock_case_response
+
+            # 模拟 scheduler 释放成功
+            mock_scheduler_resp = AsyncMock()
+            mock_scheduler_resp.status_code = 200
+            mock_scheduler_post.return_value = mock_scheduler_resp
+
+            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
+                transport=ASGITransport(app=test_app),
+                base_url=self.BASE_URL
+            ) as client:
+                response = await client.put("/api/cases/Q123/close")
+
+                assert response.status_code == 200
+                data = response.json()
+                assert data["case_id"] == "Q123"
+                assert data["status"] == "closed"
+
+                # 验证调用了 proxy_request 关闭工单
+                mock_proxy.assert_called_once()
+                args, _ = mock_proxy.call_args
+                assert args[0] == "PUT"
+                assert args[1] == "/Q123/close"
+
+                # 验证调用了 scheduler 释放 Pod
+                mock_scheduler_post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_case_not_found(self, test_app):
+        """测试关闭不存在的工单"""
+        with patch('app.routes.cases.proxy_request') as mock_proxy:
+            # 模拟工单不存在
+            mock_case_response = httpx.Response(404, json={"detail": "Case not found"})
+            mock_proxy.return_value = mock_case_response
+
+            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
+                transport=ASGITransport(app=test_app),
+                base_url=self.BASE_URL
+            ) as client:
+                response = await client.put("/api/cases/non-existent/close")
+
+                assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_close_case_scheduler_failure(self, test_app):
+        """测试关闭工单成功但 scheduler 释放失败（不应阻断）"""
+        with patch('app.routes.cases.proxy_request') as mock_proxy, \
+             patch('httpx.AsyncClient.post') as mock_scheduler_post:
+            # 模拟工单关闭成功
+            mock_case_response = httpx.Response(200, json={"case_id": "Q123", "status": "closed"})
+            mock_proxy.return_value = mock_case_response
+
+            # 模拟 scheduler 释放失败
+            mock_scheduler_resp = AsyncMock()
+            mock_scheduler_resp.status_code = 500
+            mock_scheduler_post.return_value = mock_scheduler_resp
+
+            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
+                transport=ASGITransport(app=test_app),
+                base_url=self.BASE_URL
+            ) as client:
+                response = await client.put("/api/cases/Q123/close")
+
+                # 即使 scheduler 失败，工单关闭也应成功
+                assert response.status_code == 200
+                data = response.json()
+                assert data["case_id"] == "Q123"
+                assert data["status"] == "closed"
+
+                # 验证尝试调用了 scheduler
+                mock_scheduler_post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_case_scheduler_exception(self, test_app):
+        """测试关闭工单成功但 scheduler 调用抛出异常（不应阻断）"""
+        with patch('app.routes.cases.proxy_request') as mock_proxy, \
+             patch('httpx.AsyncClient.post') as mock_scheduler_post, \
+             patch('app.routes.cases.POD_RELEASE_FAILURES_TOTAL.labels') as mock_metric:
+            # 模拟工单关闭成功
+            mock_case_response = httpx.Response(200, json={"case_id": "Q123", "status": "closed"})
+            mock_proxy.return_value = mock_case_response
+
+            # 模拟 scheduler 调用抛出异常
+            mock_scheduler_post.side_effect = Exception("Scheduler unavailable")
+
+            # 模拟 metric（Prometheus metric.inc() 是同步调用，用 MagicMock）
+            mock_metric_instance = MagicMock()
+            mock_metric.return_value = mock_metric_instance
+
+            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
+                transport=ASGITransport(app=test_app),
+                base_url=self.BASE_URL
+            ) as client:
+                response = await client.put("/api/cases/Q123/close")
+
+                # 即使 scheduler 异常，工单关闭也应成功
+                assert response.status_code == 200
+                data = response.json()
+                assert data["case_id"] == "Q123"
+                assert data["status"] == "closed"
+
+                # 验证 metric 被记录
+                mock_metric.assert_called_once()
+                mock_metric_instance.inc.assert_called_once()
