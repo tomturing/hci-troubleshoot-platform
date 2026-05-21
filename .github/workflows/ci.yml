@@ -468,6 +468,9 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
+          # 禁用 provenance 和 sbom，避免 BuildKit 使用远程 inline cache
+          provenance: false
+          sbom: false
 
       - name: Trivy 镜像安全扫描（仅上报，不阻断）
         uses: aquasecurity/trivy-action@master
