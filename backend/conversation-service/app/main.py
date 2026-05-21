@@ -111,7 +111,7 @@ async def lifespan(app: FastAPI):
         scheduler_client,
         kb_client,
         environment_client,
-        agent_client=agent_client,
+        agent_client_=agent_client,
     )
     evaluate.set_database_manager(database_manager)
     audit_route.set_audit_database_manager(database_manager)

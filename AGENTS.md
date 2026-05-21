@@ -226,6 +226,7 @@ make vk                   # 启动 Vibe Kanban
 | 修改 `deploy/helm/` 中的 Secret 值 | 安全敏感 |
 | 在代码中硬编码 API Key / Token | 安全规范 |
 | 修改 `pyproject.toml` 的 Python 版本要求 | 全局影响 |
+| 在 `set_dependencies` 等函数中，参数名与全局变量名同名但不加 global 声明 | Python E741 lint 错误 + 运行时变量未正确赋值 |
 | 删除或重命名已有的 REST API 路径 | 前后端兼容性 |
 
 ---

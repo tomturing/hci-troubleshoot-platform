@@ -39,7 +39,7 @@ def set_dependencies(
     scheduler: SchedulerClient | None = None,
     kb: KBClient | None = None,
     env_client: EnvironmentClient | None = None,
-    agent_client: AgentClient | None = None,  # [PR-B] agent-service 客户端
+    agent_client_: AgentClient | None = None,  # [PR-B] agent-service 客户端
 ):
     global database_manager, ai_registry, scheduler_client, kb_client, environment_client, agent_client
     database_manager = db
@@ -47,7 +47,7 @@ def set_dependencies(
     scheduler_client = scheduler
     kb_client = kb
     environment_client = env_client
-    agent_client = agent_client  # [PR-B] 修复：需要 global 声明才能赋值全局变量
+    agent_client = agent_client_  # [PR-B] 修复：参数重命名避免与全局变量同名，global 声明才能赋值
 
 
 async def get_conversation_service() -> ConversationService:
