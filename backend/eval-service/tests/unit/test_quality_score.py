@@ -2,12 +2,16 @@
 Quality Score 单元测试
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 from app.services.quality_score import (
     BASE_WEIGHTS,
     CLOSE_REASON_SCORE,
     QualityScore,
+    QualityScoreService,
     QualitySignals,
+    QualityStatsService,
     _ai_quality_score,
     _duration_score,
     _message_count_score,
@@ -298,3 +302,275 @@ class TestQualityScore:
         assert score.composite_score == 85
         assert score.rating_included is True
         assert len(score.breakdown) == 3
+
+
+class TestQualityScoreService:
+    """测试 QualityScoreService 类"""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Mock 数据库会话"""
+        from unittest.mock import MagicMock
+
+        session = MagicMock()
+        session.execute = AsyncMock()
+        session.commit = AsyncMock()
+        return session
+
+    @pytest.fixture
+    def service(self, mock_session):
+        """创建服务实例"""
+        return QualityScoreService(mock_session)
+
+    @pytest.mark.asyncio
+    async def test_calculate_and_save_success(self, service, mock_session):
+        """测试计算并保存质量评分"""
+        from datetime import UTC, datetime, timedelta
+        from unittest.mock import MagicMock
+
+        # Mock conversation 查询结果
+        conv_result = MagicMock()
+        conv_result.fetchone.return_value = (
+            5,  # message_count
+            0,  # repeat_question_count
+            datetime.now(UTC) - timedelta(minutes=5),  # started_at
+            datetime.now(UTC),  # ended_at
+        )
+
+        # Mock prompt_audit 查询结果
+        audit_result = MagicMock()
+        audit_result.fetchone.return_value = (
+            True,  # has_sop
+            3,  # kb_chunks_count
+            0.8,  # kb_top_score
+        )
+
+        # Mock evaluation 查询结果（无已存在）
+        eval_result = MagicMock()
+        eval_result.fetchone.return_value = None
+
+        # Mock insert 执行结果
+        insert_result = MagicMock()
+
+        def mock_execute_side_effect(query, params=None):
+            query_str = str(query)
+            if "conversation" in query_str:
+                return conv_result
+            elif "prompt_audit" in query_str:
+                return audit_result
+            elif "evaluation_id" in query_str.lower() and "select" in query_str.lower():
+                return eval_result
+            else:
+                return insert_result
+
+        mock_session.execute.side_effect = mock_execute_side_effect
+
+        score = await service.calculate_and_save(
+            case_id="TEST001",
+            conversation_id="conv-001",
+            close_reason="user_command",
+            user_rating=5,
+            trace_id="trace-001",
+        )
+
+        assert 0 <= score <= 100
+        assert mock_session.commit.called
+
+    @pytest.mark.asyncio
+    async def test_calculate_and_save_no_conversation(self, service, mock_session):
+        """测试无对话记录时的评分计算"""
+        from unittest.mock import MagicMock
+
+        # 使用调用计数器来区分不同的查询
+        call_count = [0]
+
+        def mock_execute_side_effect(query, params=None):
+            call_count[0] += 1
+            query_str = str(query)
+
+            # 第 1 次调用：conversation 查询
+            if "FROM conversation" in query_str:
+                conv_result = MagicMock()
+                conv_result.fetchone.return_value = None
+                return conv_result
+
+            # 第 2 次调用：assistant_evaluation 查询（_get_existing_rating）
+            # 第 3 次调用：prompt_audit 查询
+            # 第 4 次调用：assistant_evaluation 查询（_get_evaluation）
+            # 第 5 次调用：INSERT 语句
+            eval_result = MagicMock()
+            eval_result.fetchone.return_value = None
+            return eval_result
+
+        mock_session.execute.side_effect = mock_execute_side_effect
+
+        score = await service.calculate_and_save(
+            case_id="TEST002",
+            conversation_id=None,
+            close_reason="abandon",
+            user_rating=None,
+        )
+
+        # 无数据时应该返回有效分数
+        assert 0 <= score <= 100
+
+    @pytest.mark.asyncio
+    async def test_update_user_rating(self, service, mock_session):
+        """测试更新用户评分"""
+        from datetime import UTC, datetime, timedelta
+        from unittest.mock import MagicMock
+
+        # Mock _get_evaluation 结果
+        eval_result = MagicMock()
+        eval_result.fetchone.return_value = (
+            1,  # evaluation_id
+            None,  # score
+            "user_command",  # close_reason
+            75,  # composite_score
+        )
+
+        # Mock conversation 查询结果
+        conv_result = MagicMock()
+        conv_result.fetchone.return_value = (
+            5,  # message_count
+            0,  # repeat_question_count
+            datetime.now(UTC) - timedelta(minutes=5),  # started_at
+            datetime.now(UTC),  # ended_at
+        )
+
+        # Mock prompt_audit 查询结果
+        audit_result = MagicMock()
+        audit_result.fetchone.return_value = (True, 3, 0.8)
+
+        insert_result = MagicMock()
+
+        def mock_execute_side_effect(query, params=None):
+            query_str = str(query)
+            if "evaluation_id" in query_str.lower() and "select" in query_str.lower():
+                return eval_result
+            elif "conversation" in query_str:
+                return conv_result
+            elif "prompt_audit" in query_str:
+                return audit_result
+            else:
+                return insert_result
+
+        mock_session.execute.side_effect = mock_execute_side_effect
+
+        score = await service.update_user_rating(
+            case_id="TEST001",
+            conversation_id="conv-001",
+            user_rating=5,
+        )
+
+        assert 0 <= score <= 100
+
+
+class TestQualityStatsService:
+    """测试 QualityStatsService 类"""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Mock 数据库会话"""
+        from unittest.mock import MagicMock
+
+        session = MagicMock()
+        session.execute = AsyncMock()
+        return session
+
+    @pytest.fixture
+    def service(self, mock_session):
+        """创建服务实例"""
+        return QualityStatsService(mock_session)
+
+    @pytest.mark.asyncio
+    async def test_get_quality_stats(self, service, mock_session):
+        """测试获取质量统计"""
+        from unittest.mock import MagicMock
+
+        # Mock 统计查询结果
+        stats_result = MagicMock()
+        stats_result.fetchone.return_value = (
+            75.5,  # avg_score
+            100,  # total_count
+            15,  # low_score_count
+        )
+
+        # Mock 关闭原因分布结果
+        reason_result = MagicMock()
+        reason_result.fetchall.return_value = [
+            ("user_command", 50),
+            ("timeout", 30),
+            ("abandon", 20),
+        ]
+
+        # Mock 评分分布结果
+        rating_result = MagicMock()
+        rating_result.fetchall.return_value = [
+            ("5", 40),
+            ("4", 30),
+            ("unrated", 30),
+        ]
+
+        def mock_execute_side_effect(query, params=None):
+            query_str = str(query)
+            if "AVG(composite_score)" in query_str:
+                return stats_result
+            elif "close_reason" in query_str:
+                return reason_result
+            elif "score::text" in query_str:
+                return rating_result
+            return MagicMock()
+
+        mock_session.execute.side_effect = mock_execute_side_effect
+
+        stats = await service.get_quality_stats(days=7)
+
+        assert stats["period_days"] == 7
+        assert stats["average_composite_score"] == 75.5
+        assert stats["total_evaluated_cases"] == 100
+        assert stats["low_score_cases"] == 15
+        assert "close_reason_distribution" in stats
+        assert "user_rating_distribution" in stats
+
+    @pytest.mark.asyncio
+    async def test_get_low_score_cases(self, service, mock_session):
+        """测试获取低分工单列表"""
+        from datetime import UTC, datetime
+        from unittest.mock import MagicMock
+
+        # Mock 低分工单查询结果
+        cases_result = MagicMock()
+        cases_result.fetchall.return_value = [
+            (
+                "CASE001",
+                "conv-001",
+                2,  # user_rating
+                25,  # composite_score
+                "abandon",  # close_reason
+                {"close_intent": 10},  # score_breakdown
+                datetime.now(UTC),
+                "测试工单",
+                "closed",
+            ),
+        ]
+
+        # Mock 总数查询结果
+        count_result = MagicMock()
+        count_result.scalar.return_value = 10
+
+        def mock_execute_side_effect(query, params=None):
+            query_str = str(query)
+            if "COUNT(*)" in query_str:
+                return count_result
+            else:
+                return cases_result
+
+        mock_session.execute.side_effect = mock_execute_side_effect
+
+        result = await service.get_low_score_cases(min_score=0, max_score=39, limit=20, offset=0)
+
+        assert result["total"] == 10
+        assert len(result["items"]) == 1
+        assert result["items"][0]["case_id"] == "CASE001"
+        assert result["items"][0]["composite_score"] == 25
