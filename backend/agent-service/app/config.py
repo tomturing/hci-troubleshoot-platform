@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     OPS_AGENT_BASE_URL: str = "http://ops-agent-service:8006"
     OPS_AGENT_ENABLED: bool = False
     OPS_AGENT_READ_TIMEOUT_SEC: float = 300.0
-    OPS_AGENT_FALLBACK_ASSISTANT_TYPE: str = "glm-5"
+    OPS_AGENT_FALLBACK_ASSISTANT_TYPE: str = "htp-agent"
 
     # pydantic-ai C 大脑集成
     PYDANTIC_AI_ENABLED: bool = False

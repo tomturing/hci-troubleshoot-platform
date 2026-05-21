@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 🐛 Bug 修复
+
+* **fallback-assistant-type:** 修复 `OPS_AGENT_FALLBACK_ASSISTANT_TYPE` 默认值使用模型名 `"glm-5"` 而非注册表 key，导致 ops-agent/pydantic-ai 降级时抛出 `AgentUnavailableError`；同步修复 `agent_router.py` 硬编码降级类型及 `conversation_service.py` 兜底返回未注册类型 `openclaw`，统一改为 `"htp-agent"`
+
 ### ♻️ 重构
 
 * **[PR-B] agent-service + eval-service 服务拆分**：将 conversation-service 中的 AI 推理引擎提取为独立 `agent-service`（端口 8005），将评分/统计逻辑提取为独立 `eval-service`（端口 8007）。conversation-service 通过 `AgentClient` HTTP/SSE 委托推理任务，不再直接依赖 AgentRouter/GLMClient/ReactExecutor 等组件。新增 Helm 模板（agent-service、eval-service）和 CI 构建矩阵。

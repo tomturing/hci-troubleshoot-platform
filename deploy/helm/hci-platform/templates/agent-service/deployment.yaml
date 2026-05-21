@@ -69,7 +69,7 @@ spec:
             - name: OPS_AGENT_READ_TIMEOUT_SEC
               value: {{ (.Values.opsAgent | default dict).readTimeoutSec | default "300.0" | quote }}
             - name: OPS_AGENT_FALLBACK_ASSISTANT_TYPE
-              value: {{ (.Values.opsAgent | default dict).fallbackAssistantType | default "glm-5" | quote }}
+              value: {{ (.Values.opsAgent | default dict).fallbackAssistantType | default "htp-agent" | quote }}
             # pydantic-ai C 大脑
             - name: PYDANTIC_AI_ENABLED
               value: {{ .Values.agentService.pydanticAiEnabled | default "false" | quote }}

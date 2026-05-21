@@ -802,7 +802,7 @@ class ConversationService:
         conversation = await self.repository.get_conversation(conversation_id)
         if conversation and getattr(conversation, "assistant_type", None):
             return conversation.assistant_type
-        return "openclaw"
+        return "htp-agent"
 
     def _get_fallback_endpoint(self, assistant_type: str) -> str | None:
         cfg = settings.assistant_registry.get(assistant_type, {})

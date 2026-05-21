@@ -17,7 +17,6 @@ AgentRouter：大脑路由器（T1-6）
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +28,8 @@ from app.core.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableErro
 
 if TYPE_CHECKING:
     from app.adapters.pai_agent_adapter import PaiAgentAdapter
+
+from app.config import settings
 
 logger = logging.getLogger("brain-router")
 
@@ -100,12 +101,17 @@ class AgentRouter:
                     "AgentRouter: pydantic-ai 未启用，降级到 htp 大脑. session_id=%s",
                     session_id,
                 )
+                _fallback_type = (
+                    self._ai_registry.get_default_type()
+                    if self._ai_registry is not None
+                    else settings.OPS_AGENT_FALLBACK_ASSISTANT_TYPE
+                )
                 async for event in self._htp.process(
                     session_id=session_id,
                     messages=messages,
                     env_context=env_context,
                     stream=stream,
-                    assistant_type="glm-5",
+                    assistant_type=_fallback_type,
                     case_id=case_id,
                     user_id=user_id,
                 ):
@@ -237,13 +243,14 @@ class AgentRouter:
         # 1. 环境变量 OPS_AGENT_FALLBACK_ASSISTANT_TYPE 显式指定
         # 2. ai_registry.get_default_type()：读 ConfigMap 中 is_default=true 的助手，或第一个已注册助手
         # 3. 无 ai_registry 注入时，使用固定 assistant_type 作为最终兜底
-        env_fallback = os.environ.get("OPS_AGENT_FALLBACK_ASSISTANT_TYPE", "")
-        if env_fallback:
+        env_fallback = settings.OPS_AGENT_FALLBACK_ASSISTANT_TYPE
+        if env_fallback and env_fallback != "htp-agent" and self._ai_registry and env_fallback in self._ai_registry.list_types():
+            # 仅当显式配置了一个已注册的非默认类型时才使用
             fallback_type = env_fallback
         elif self._ai_registry is not None:
             fallback_type = self._ai_registry.get_default_type()
         else:
-            fallback_type = "glm-4.7"  # 无 ai_registry 注入时的最终兜底 assistant_type
+            fallback_type = settings.OPS_AGENT_FALLBACK_ASSISTANT_TYPE  # 无 ai_registry 注入时的最终兜底
         logger.info(
             "AgentRouter: 降级助手类型=%s session_id=%s",
             fallback_type,
