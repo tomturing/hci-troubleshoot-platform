@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill sync-claw-configs check-claw-configs db-sync db-check local-deploy local-deploy-import
+.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill db-sync db-check local-deploy local-deploy-import
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -142,33 +142,6 @@ release-observe:
 rollback-drill:
 	@echo "执行回滚演练（默认不执行真实回滚）..."
 	bash scripts/ops/rollback-drill.sh
-
-# ======================== Claw 配置管理 =====================================
-
-## 将 deploy/claw-configs/ 同步到 Helm chart 内副本
-## 规则：deploy/claw-configs/ 是人工编辑的源，Helm chart 副本用于 .Files.Get
-## 每次修改 deploy/claw-configs/ 后运行此命令，然后 helm upgrade
-sync-claw-configs:
-	@echo "同步 claw-configs 到 Helm chart..."
-	@cp -r deploy/claw-configs/learningclaw \
-		deploy/helm/hci-platform/claw-configs/learningclaw && \
-		echo "  ✓ learningclaw 已同步"
-	@cp -r deploy/claw-configs/productionclaw \
-		deploy/helm/hci-platform/claw-configs/productionclaw && \
-		echo "  ✓ productionclaw 已同步"
-	@echo "✅ 同步完成（请运行 helm upgrade 让更改生效）"
-
-## 检查 deploy/claw-configs/ 与 Helm chart 副本是否一致
-check-claw-configs:
-	@echo "检查 claw-configs 一致性..."
-	@diff -r deploy/claw-configs/learningclaw \
-		deploy/helm/hci-platform/claw-configs/learningclaw && \
-		echo "  ✓ learningclaw 一致" || \
-		echo "  ⚠️  learningclaw 不一致，请运行 make sync-claw-configs"
-	@diff -r deploy/claw-configs/productionclaw \
-		deploy/helm/hci-platform/claw-configs/productionclaw && \
-		echo "  ✓ productionclaw 一致" || \
-		echo "  ⚠️  productionclaw 不一致，请运行 make sync-claw-configs"
 
 ## [已废弃] 原 dbmate 迁移同步，自 v6.3 起由 Atlas 接管
 ## 历史迁移文件已归档至 docs/archive/db-migrations-history/
