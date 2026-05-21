@@ -15,7 +15,7 @@ class ConversationSessionResponse(BaseModel):
 
     conversation_id: uuid.UUID
     case_id: str
-    assistant_type: str = "openclaw"
+    assistant_type: str = "htp-agent"
     diagnostic_stage: str = "S0"
     category_l1: str | None = None
     category_l2: str | None = None

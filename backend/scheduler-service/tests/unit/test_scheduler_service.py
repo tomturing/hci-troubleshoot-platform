@@ -74,7 +74,7 @@ class TestSchedulerAllocatePod:
         pool.acquire_pod = AsyncMock(return_value="openclaw-pool-abc12345")
         service.pool_manager.get_pool = MagicMock(return_value=pool)
 
-        result = await service.allocate_pod("case-001", "openclaw")
+        result = await service.allocate_pod("case-001", "htp-agent")
 
         assert result == "openclaw-pool-abc12345"
         # 验证写入 Redis
@@ -84,17 +84,17 @@ class TestSchedulerAllocatePod:
         assert call_args[0][1] == "case-001"
         stored = json.loads(call_args[0][2])
         assert stored["pod_name"] == "openclaw-pool-abc12345"
-        assert stored["assistant_type"] == "openclaw"
+        assert stored["assistant_type"] == "htp-agent"
 
     async def test_allocate_pod_reuse_existing(self, service, mock_k8s, mock_redis):
         """测试复用已有的 Pod（同类型且存活）"""
         mock_redis.hget.return_value = json.dumps({
             "pod_name": "openclaw-pool-existing",
-            "assistant_type": "openclaw"
+            "assistant_type": "htp-agent"
         })
         mock_k8s.get_pod_status.return_value = "Running"
 
-        result = await service.allocate_pod("case-001", "openclaw")
+        result = await service.allocate_pod("case-001", "htp-agent")
 
         assert result == "openclaw-pool-existing"
         # 不应重新写入 Redis
@@ -104,7 +104,7 @@ class TestSchedulerAllocatePod:
         """测试助手类型不匹配时清理旧分配"""
         mock_redis.hget.return_value = json.dumps({
             "pod_name": "openclaw-pool-old",
-            "assistant_type": "openclaw"
+            "assistant_type": "htp-agent"
         })
         pool = MagicMock()
         pool.acquire_pod = AsyncMock(return_value="nabobot-pool-new123")
@@ -134,7 +134,7 @@ class TestSchedulerReleasePod:
         """测试成功释放 Pod"""
         mock_redis.hget.return_value = json.dumps({
             "pod_name": "openclaw-pool-abc",
-            "assistant_type": "openclaw"
+            "assistant_type": "htp-agent"
         })
         pool = MagicMock()
         pool.release_pod = AsyncMock()
@@ -162,7 +162,7 @@ class TestSchedulerStatus:
     async def test_get_status(self, service, mock_redis):
         """测试获取服务状态"""
         mock_redis.hgetall.return_value = {
-            "case-001": json.dumps({"pod_name": "pod1", "assistant_type": "openclaw"}),
+            "case-001": json.dumps({"pod_name": "pod1", "assistant_type": "htp-agent"}),
             "case-002": json.dumps({"pod_name": "pod2", "assistant_type": "nabobot"}),
         }
 
@@ -175,14 +175,14 @@ class TestSchedulerStatus:
         """测试查询分配详情"""
         mock_redis.hget.return_value = json.dumps({
             "pod_name": "openclaw-pool-xyz",
-            "assistant_type": "openclaw"
+            "assistant_type": "htp-agent"
         })
 
         info = await service.get_allocation_info("case-001")
 
         assert info is not None
         assert info["pod_name"] == "openclaw-pool-xyz"
-        assert info["assistant_type"] == "openclaw"
+        assert info["assistant_type"] == "htp-agent"
 
     async def test_get_allocation_info_none(self, service, mock_redis):
         """测试查询不存在的分配"""

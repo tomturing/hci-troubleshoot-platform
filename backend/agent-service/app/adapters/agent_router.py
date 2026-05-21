@@ -105,7 +105,7 @@ class AgentRouter:
                     messages=messages,
                     env_context=env_context,
                     stream=stream,
-                    assistant_type="glm-4-flash",
+                    assistant_type="glm-5",
                     case_id=case_id,
                     user_id=user_id,
                 ):

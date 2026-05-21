@@ -169,7 +169,7 @@ class ConfigurationError(HCIException):
     此类错误通常在启动阶段抛出，应导致服务拒绝启动而非静默运行。
 
     示例：
-        raise ConfigurationError("OPENCLAW_API_KEY 未配置")
+        raise ConfigurationError("LLM_API_KEY 未配置")
     """
 
     def __init__(

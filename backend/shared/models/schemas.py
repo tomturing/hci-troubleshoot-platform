@@ -44,7 +44,7 @@ class CaseCreate(BaseModel):
     client_id: str = Field(..., description="客户端ID")
     title: str = Field(..., max_length=200, description="工单标题")
     description: str | None = Field(None, description="工单描述")
-    assistant_type: str | None = Field(None, description="AI助手类型，默认openclaw")
+    assistant_type: str | None = Field(None, description="AI助手类型，默认htp-agent")
 
 
 class CaseCloseRequest(BaseModel):
@@ -61,7 +61,7 @@ class CaseResponse(BaseModel):
     status: CaseStatus
     title: str
     description: str | None
-    assistant_type: str | None = "openclaw"
+    assistant_type: str | None = "htp-agent"
     created_at: datetime
     updated_at: datetime
     closed_at: datetime | None
@@ -185,7 +185,7 @@ class PodAllocationResponse(BaseModel):
     allocated: bool = Field(..., description="是否成功分配")
     pod_name: str | None = Field(None, description="分配的 Pod 名称")
     pod_ip: str | None = Field(None, description="分配的 Pod IP")
-    assistant_type: str | None = Field(None, description="AI 助手类型（openclaw/learningclaw 等）")
+    assistant_type: str | None = Field(None, description="AI 助手类型（htp-agent/ops-agent/pai-agent）")
     case_id: str | None = Field(None, description="绑定的工单 ID")
     error: str | None = Field(None, description="失败原因（allocated=false 时填充）")
 

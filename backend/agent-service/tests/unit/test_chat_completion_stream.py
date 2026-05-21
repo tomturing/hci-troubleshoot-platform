@@ -67,8 +67,8 @@ def openclaw_client():
         base_url="http://openclaw:8000",
         api_key="test-gateway-token",
         provider_api_key="test-provider-key",
-        default_model="glm-4-flash",
-        assistant_type="glm-4-flash",
+        default_model="glm-5",
+        assistant_type="glm-5",
     )
     return client
 

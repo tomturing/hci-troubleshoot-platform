@@ -89,13 +89,6 @@ spec:
                 name: admin-ui
                 port:
                   number: {{ .Values.adminUI.port }}
-          - path: /openclaw
-            pathType: Prefix
-            backend:
-              service:
-                name: openclaw
-                port:
-                  number: {{ .Values.openclaw.port }}
           - path: /
             pathType: Prefix
             backend:

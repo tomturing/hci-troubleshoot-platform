@@ -16,6 +16,7 @@
 
 | 版本 | 日期 | 变更内容 |
 |------|------|----------|
+| **6.4** | **2026-05-21** | **配置迁移至 dashscope 网关（PR #314）**：移除本地 OpenClaw/ProductionClaw/LearningClaw Pod 池，统一使用 dashscope 网关调用 GLM-5；环境变量重命名 `OPENCLAW_*` → `LLM_*` |
 | **6.3** | **2026-05-20** | **Docker CACHEBUST 修复补强（PR #307）**：PR #306 的 `ARG CACHEBUST` 定义不会真正破坏 Docker 缓存，补强为在 `COPY shared` 前添加 `RUN echo CACHEBUST` 命令 |
 | **6.2** | **2026-05-20** | **Docker CACHEBUST 参数修复 shared 目录缓存问题（PR #306）**：scheduler-service Dockerfile 新增 `CACHEBUST` ARG，CI 构建时传入 `GITHUB_SHA`，强制每次构建都重新 COPY shared 目录 |
 | **6.1** | **2026-05-07** | **助手选择器 Bug 修复 + ops-agent 注册**：修复 scheduler-service 可用性判断 key 不匹配（`idle_count` → `idle`）；ops-agent 注册到助手选择器（直连模式）；改进直连模式判断逻辑（增加 base_url 检查），详见 [事件文档](../events/2026-05-07-助手选择器Bug修复.md) |

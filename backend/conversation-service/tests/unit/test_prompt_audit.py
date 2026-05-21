@@ -320,7 +320,7 @@ class TestWritePromptAudit:
         await service_with_kb._write_prompt_audit(
             conversation_id=conv_id,
             case_id=case_id,
-            assistant_type="openclaw",
+            assistant_type="htp-agent",
             trace_id="test-trace-001",
             message_count=5,
             audit_meta=audit_meta,
@@ -353,7 +353,7 @@ class TestWritePromptAudit:
         await service_with_kb._write_prompt_audit(
             conversation_id=conv_id,
             case_id="Q002",
-            assistant_type="openclaw",
+            assistant_type="htp-agent",
             trace_id="test-trace-002",
             message_count=1,
             audit_meta=audit_meta,
@@ -381,7 +381,7 @@ class TestWritePromptAudit:
         await service_with_kb._write_prompt_audit(
             conversation_id=conv_id,
             case_id="Q003",
-            assistant_type="openclaw",
+            assistant_type="htp-agent",
             trace_id="test-trace-003",
             message_count=2,
             audit_meta=audit_meta,

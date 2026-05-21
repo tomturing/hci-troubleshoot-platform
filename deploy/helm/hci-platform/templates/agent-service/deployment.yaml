@@ -24,7 +24,6 @@ spec:
     spec:
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "agent-service") | nindent 6 }}
       {{- if .Values.agentService.externalDns }}
-      # 同时保留 K8s 内部 DNS 和公网 DNS，确保外部 AI 端点（如 open.bigmodel.cn）可解析
       dnsPolicy: None
       dnsConfig:
         nameservers:
@@ -57,20 +56,12 @@ spec:
               value: "agent-service"
             - name: SERVICE_PORT
               value: {{ .Values.agentService.port | quote }}
-            # ── ReAct / GLM 配置 ───────────────────────────────────────────────
+            # GLM 模型配置
             - name: GLM_MODEL
-              value: {{ .Values.agentService.glmModel | default "glm-4-flash" | quote }}
+              value: {{ .Values.agentService.glmModel | default "glm-5" | quote }}
             - name: REACT_ENABLED
               value: {{ .Values.agentService.reactEnabled | default "false" | quote }}
-            - name: SCP_BASE_URL
-              value: {{ .Values.scpBaseUrl | default "" | quote }}
-            - name: SCP_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: hci-secrets
-                  key: SCP_API_KEY
-                  optional: true
-            # ── ops-agent 集成 ─────────────────────────────────────────────────
+            # ops-agent 集成
             - name: OPS_AGENT_BASE_URL
               value: {{ (.Values.opsAgent | default dict).baseUrl | default "http://ops-agent-service:8006" | quote }}
             - name: OPS_AGENT_ENABLED
@@ -79,7 +70,7 @@ spec:
               value: {{ (.Values.opsAgent | default dict).readTimeoutSec | default "300.0" | quote }}
             - name: OPS_AGENT_FALLBACK_ASSISTANT_TYPE
               value: {{ (.Values.opsAgent | default dict).fallbackAssistantType | default "glm-5" | quote }}
-            # ── pydantic-ai C 大脑 ─────────────────────────────────────────────
+            # pydantic-ai C 大脑
             - name: PYDANTIC_AI_ENABLED
               value: {{ .Values.agentService.pydanticAiEnabled | default "false" | quote }}
             - name: CONFIRM_TIMEOUT_SEC

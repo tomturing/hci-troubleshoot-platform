@@ -36,7 +36,7 @@ def create_mock_case(case_id: str, status: CaseStatus) -> Case:
         title="Test Case",
         description="Test description",
         status=status,
-        assistant_type="openclaw",
+        assistant_type="htp-agent",
         trace_id="test-trace-id",
         created_at=now,
         updated_at=now,

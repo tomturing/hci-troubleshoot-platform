@@ -18,14 +18,13 @@ class Settings(BaseSettings):
     # Redis（用于 confirm_service / dialog_tools BRPOP）
     REDIS_URL: str = "redis://redis:6379/0"
 
-    # OpenClaw 配置（HTP 大脑）
-    OPENCLAW_BASE_URL: str = "http://host.docker.internal:18790"
-    OPENCLAW_GATEWAY_TOKEN: str = "default_token"
-    OPENCLAW_DEFAULT_MODEL: str = "openclaw"
-    OPENCLAW_API_KEY: str = ""  # 若非空则优先于 OPENCLAW_GATEWAY_TOKEN
+    # LLM 配置（统一使用 dashscope 网关）
+    LLM_BASE_URL: str = "https://coding.dashscope.aliyuncs.com/v1"
+    LLM_API_KEY: str = ""  # 从 hci-secrets 注入
+    LLM_DEFAULT_MODEL: str = "glm-5"
 
-    # GLM 模型（ReAct 引擎）
-    GLM_MODEL: str = "glm-4-flash"
+    # GLM 模型（ReAct 引擎，从 configmap 注入）
+    GLM_MODEL: str = "glm-5"
 
     # KB 服务配置
     KB_SERVICE_URL: str = "http://kb-service:8004"
@@ -46,12 +45,8 @@ class Settings(BaseSettings):
     OPS_AGENT_READ_TIMEOUT_SEC: float = 300.0
     OPS_AGENT_FALLBACK_ASSISTANT_TYPE: str = "glm-5"
 
-    # ── pydantic-ai C 大脑集成 ──────────────────────────────────────────────
+    # pydantic-ai C 大脑集成
     PYDANTIC_AI_ENABLED: bool = False
-
-    # SCP REST API 配置（深信服 HCI 管理平台，ReAct 工具调用）
-    SCP_BASE_URL: str = ""
-    SCP_API_KEY: str = ""
 
     # ReAct 引擎开关
     REACT_ENABLED: bool = False
@@ -81,10 +76,10 @@ class Settings(BaseSettings):
         except json.JSONDecodeError:
             pass
         return {
-            "openclaw": {
-                "base_url": self.OPENCLAW_BASE_URL,
-                "gateway_token": self.OPENCLAW_GATEWAY_TOKEN,
-                "model": self.OPENCLAW_DEFAULT_MODEL,
+            "htp-agent": {
+                "base_url": self.LLM_BASE_URL,
+                "api_key": self.LLM_API_KEY,
+                "model": self.LLM_DEFAULT_MODEL,
                 "enabled": True,
             }
         }

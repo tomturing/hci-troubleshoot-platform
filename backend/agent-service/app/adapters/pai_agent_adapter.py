@@ -1,7 +1,7 @@
 """
 PaiAgentAdapter：基于 pydantic-ai 的 C 大脑实现（A/B/C 三向测试）
 
-对接 GLM OpenAI-compatible 端点（通过 OPENCLAW_BASE_URL / OPENCLAW_API_KEY 环境变量）。
+对接 GLM OpenAI-compatible 端点（通过 LLM_BASE_URL / LLM_API_KEY 环境变量）。
 用 pydantic-ai Agent 图替代手写 ReAct 循环：
   - @agent.tool 自动从函数签名生成 JSON Schema
   - pydantic-ai 内部透明处理工具调用循环，最大轮次由 UsageLimits.request_limit=15 控制
@@ -241,7 +241,7 @@ class PaiAgentAdapter:
         Args:
             base_url: OpenAI-compatible API base URL（例如 GLM 的 http://...）
             api_key: API 密钥
-            model: 模型名称（例如 "glm-4-flash"）
+            model: 模型名称（例如 "glm-5"）
             scp_adapter: SCP 平台 API 适配器（注入工具）
             acli_adapter: acli SSH 执行适配器（注入工具，Phase 1 未直接使用）
             kb_client: KB 服务客户端（可选，为 None 时 get_sop_tree 返回错误）
@@ -258,18 +258,18 @@ class PaiAgentAdapter:
     @classmethod
     def from_env(
         cls,
-        scp_adapter: SCPAdapter,
+        scp_adapter: SCPAdapter | None,
         acli_adapter: AcliAdapter,
         kb_client: KBClient | None = None,
     ) -> PaiAgentAdapter:
-        """从环境变量构造实例（复用 OpenClaw 的 OPENCLAW_BASE_URL / OPENCLAW_API_KEY）。
+        """从环境变量构造实例（使用 LLM_BASE_URL / LLM_API_KEY）。
 
-        GLM_MODEL 默认值为 "glm-4-flash"。
+        GLM_MODEL 默认值为 "glm-5"。
         """
         return cls(
-            base_url=os.environ["OPENCLAW_BASE_URL"],
-            api_key=os.environ["OPENCLAW_API_KEY"],
-            model=os.environ.get("GLM_MODEL", "glm-4-flash"),
+            base_url=os.environ.get("LLM_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1"),
+            api_key=os.environ.get("LLM_API_KEY", ""),
+            model=os.environ.get("GLM_MODEL", "glm-5"),
             scp_adapter=scp_adapter,
             acli_adapter=acli_adapter,
             kb_client=kb_client,

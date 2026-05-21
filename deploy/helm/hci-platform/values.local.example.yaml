@@ -2,16 +2,13 @@
 # HCI 智能排障平台 - 本地 Helm 覆盖配置模板
 # =============================================================================
 # 使用方式：
-#   cp .local/values-prod.override.yaml.example .local/values-prod.override.yaml
+#   cp deploy/helm/hci-platform/values.local.example.yaml .local/values-local.yaml
 #   编辑填入真实值
 #   该文件已在 .gitignore 中，不会提交到 git
-#
-# 配置变量详细说明见：deploy/env/platform.env 和 deploy/env/secrets.env.example
 # =============================================================================
 
 global:
-  # 平台根域名，子域名从此推导：api/app/admin/grafana.<domain>
-  # 确认 hosts 文件中 <TRAEFIK_IP> 已指向这些域名
+  # 平台根域名
   domain: "hci.local"
   imageRegistry: ""
   imagePullPolicy: IfNotPresent
@@ -25,17 +22,11 @@ secrets:
   # !! 首次部署后 Postgres 密码不要修改（PVC 中已固化）
   postgresPassword: "CHANGE_ME_strong_password"
 
-  # !! 此 token 必须与宿主机 ~/.openclaw/openclaw.json gateway.auth.token 完全一致
-  # 验证命令：cat ~/.openclaw/openclaw.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['gateway']['auth']['token'])"
-  openclawToken: "hci-dev-openclaw-token"
-
-  # ZAI API Key，从 https://open.bigmodel.cn/ 获取
+  # LLM API Key，从 https://open.bigmodel.cn/ 获取
   # 留空则 AI 对话返回 422 错误
-  zaiApiKey: "CHANGE_ME_your_zai_api_key"
+  llmApiKey: "CHANGE_ME_your_llm_api_key"
 
   # Grafana admin 密码
-  # 如果是已部署的环境，Helm upgrade 不会修改 Grafana Pod 内的密码
-  # 需要手动执行：kubectl exec -n hci-observability <grafana-pod> -- grafana cli admin reset-admin-password 'new-password'
   grafanaAdminPassword: "CHANGE_ME_grafana_password"
 
 # 兼容已有 PVC（避免修改 volumeClaimTemplates 触发 Forbidden）

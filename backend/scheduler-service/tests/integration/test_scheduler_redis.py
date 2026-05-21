@@ -47,7 +47,7 @@ async def service(fake_redis, mock_k8s) -> SchedulerService:
     svc = SchedulerService(k8s_client=mock_k8s, redis_manager=fake_redis)
 
     # 向默认池(openclaw)注入一个可用 Pod（跳过 K8s 初始化）
-    pool = svc.pool_manager.get_pool("openclaw")
+    pool = svc.pool_manager.get_pool("htp-agent")
     if pool:
         pool.idle_pods.append("test-pod-001")  # deque.append，非 asyncio.Queue.put
 
@@ -55,7 +55,7 @@ async def service(fake_redis, mock_k8s) -> SchedulerService:
 
 
 # 获取测试中使用的助手类型（与默认配置一致）
-TEST_ASSISTANT_TYPE = "openclaw"
+TEST_ASSISTANT_TYPE = "htp-agent"
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ class TestRedisOperations:
 
     async def test_del_allocation(self, service):
         """删除分配后应返回 None"""
-        await service._set_allocation("CASE-002", "pod-xyz", "openclaw")
+        await service._set_allocation("CASE-002", "pod-xyz", "htp-agent")
         await service._del_allocation("CASE-002")
 
         result = await service._get_allocation("CASE-002")

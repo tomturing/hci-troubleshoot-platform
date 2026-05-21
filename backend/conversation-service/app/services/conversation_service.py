@@ -107,7 +107,7 @@ class ConversationService:
     async def create_conversation(
         self,
         case_id: str,
-        assistant_type: str = "openclaw",
+        assistant_type: str = "htp-agent",
         initial_message: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Conversation:
@@ -809,7 +809,7 @@ class ConversationService:
         endpoint = cfg.get("base_url")
         if endpoint:
             return str(endpoint).rstrip("/")
-        return settings.OPENCLAW_BASE_URL.rstrip("/")
+        return settings.LLM_BASE_URL.rstrip("/")
 
     async def _resolve_pod_endpoint(self, case_id: str, assistant_type: str) -> str | None:
         """优先走 scheduler 实时分配，失败则回退到静态 base_url。

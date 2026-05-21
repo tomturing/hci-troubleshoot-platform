@@ -41,16 +41,12 @@ router = APIRouter(prefix="/api/kb", tags=["classify"])
 # 由 main.py 的 set_dependencies 注入
 _db_manager: DatabaseManager | None = None
 
-# LLM 配置（统一从 OPENCLAW_* 环境变量读取，与 conversation-service 保持一致）
-_raw_base_url = os.environ.get("OPENCLAW_BASE_URL", "http://host.docker.internal:18790")
-# openai SDK 需要 base_url 包含 /v1；若 base_url 不含 /v1 则补充
-LLM_BASE_URL = (
-    _raw_base_url.rstrip("/") + "/v1"
-    if not _raw_base_url.rstrip("/").endswith("/v1")
-    else _raw_base_url
-)
-LLM_API_KEY = os.environ.get("OPENCLAW_API_KEY", "")
-LLM_MODEL = os.environ.get("OPENCLAW_DEFAULT_MODEL", "glm-4-flash")
+# LLM 配置（统一从 LLM_* 环境变量读取）
+_raw_base_url = os.environ.get("LLM_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1")
+# dashscope API 已包含 /v1，无需额外补充
+LLM_BASE_URL = _raw_base_url.rstrip("/")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_MODEL = os.environ.get("GLM_MODEL", "glm-5")
 
 # 分类置信度阈值
 CONFIDENCE_THRESHOLD = 0.5
@@ -393,11 +389,11 @@ def build_categories_text(categories: list[dict]) -> str:
 
 
 async def call_llm(prompt: str) -> dict:
-    """调用 LLM API（使用统一的 OPENCLAW_* 配置）"""
+    """调用 LLM API（使用统一的 LLM_* 配置）"""
     from openai import AsyncOpenAI
 
     if not LLM_API_KEY:
-        raise HTTPException(status_code=503, detail="OPENCLAW_API_KEY 未配置")
+        raise HTTPException(status_code=503, detail="LLM_API_KEY 未配置")
 
     client = AsyncOpenAI(
         api_key=LLM_API_KEY,

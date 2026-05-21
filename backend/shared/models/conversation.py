@@ -21,7 +21,7 @@ class Conversation(Base, TraceableMixin):
     conversation_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     case_id = Column(String(20), nullable=False, index=True)
     pod_id = Column(String(100), nullable=True)
-    assistant_type = Column(String(50), nullable=False, default="openclaw")
+    assistant_type = Column(String(50), nullable=False, default="htp-agent")
     started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     ended_at = Column(DateTime(timezone=True), nullable=True)
     # [DB-TRIGGER] 由触发器 update_message_count_on_insert / update_message_count_on_delete

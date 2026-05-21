@@ -117,7 +117,7 @@ class SchedulerService:
     async def allocate_pod(
         self,
         case_id: str,
-        assistant_type: str = "openclaw"
+        assistant_type: str = "htp-agent"
     ) -> str | None:
         """为工单分配指定类型的Pod"""
         # 检查是否已有分配
