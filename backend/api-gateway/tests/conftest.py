@@ -28,6 +28,10 @@ def mock_redis(monkeypatch):
 
     async def fake_connect(self):
         self.client = AsyncMock()
+        # 为 TerminalService 后台清理任务设置默认返回值
+        self.client.smembers = AsyncMock(return_value=set())
+        self.client.sadd = AsyncMock(return_value=1)
+        self.client.srem = AsyncMock(return_value=1)
 
     async def fake_close(self):
         return None

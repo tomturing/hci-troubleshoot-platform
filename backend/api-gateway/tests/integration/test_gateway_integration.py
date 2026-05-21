@@ -4,7 +4,7 @@ API Gateway - 集成测试
 
 import os
 import sys
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -192,8 +192,8 @@ class TestGatewayIntegration:
             # 模拟 scheduler 调用抛出异常
             mock_scheduler_post.side_effect = Exception("Scheduler unavailable")
 
-            # 模拟 metric
-            mock_metric_instance = AsyncMock()
+            # 模拟 metric（Prometheus metric.inc() 是同步调用，用 MagicMock）
+            mock_metric_instance = MagicMock()
             mock_metric.return_value = mock_metric_instance
 
             async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(

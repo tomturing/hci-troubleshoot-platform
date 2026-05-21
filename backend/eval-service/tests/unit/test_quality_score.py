@@ -353,12 +353,12 @@ class TestQualityScoreService:
         insert_result = MagicMock()
 
         def mock_execute_side_effect(query, params=None):
-            query_str = str(query)
-            if "conversation" in query_str:
+            query_str_lower = str(query).lower()
+            if "from conversation" in query_str_lower:
                 return conv_result
-            elif "prompt_audit" in query_str:
+            elif "from prompt_audit" in query_str_lower:
                 return audit_result
-            elif "evaluation_id" in query_str.lower() and "select" in query_str.lower():
+            elif "select" in query_str_lower and "evaluation_id" in query_str_lower:
                 return eval_result
             else:
                 return insert_result
@@ -445,12 +445,12 @@ class TestQualityScoreService:
         insert_result = MagicMock()
 
         def mock_execute_side_effect(query, params=None):
-            query_str = str(query)
-            if "evaluation_id" in query_str.lower() and "select" in query_str.lower():
+            query_str_lower = str(query).lower()
+            if "select" in query_str_lower and "evaluation_id" in query_str_lower:
                 return eval_result
-            elif "conversation" in query_str:
+            elif "from conversation" in query_str_lower:
                 return conv_result
-            elif "prompt_audit" in query_str:
+            elif "from prompt_audit" in query_str_lower:
                 return audit_result
             else:
                 return insert_result
