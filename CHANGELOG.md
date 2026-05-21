@@ -1,5 +1,45 @@
 # Changelog
 
+## [2.12.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.11.0...v2.12.0) (2026-05-21)
+
+
+### ✨ 新功能
+
+* agent-service + eval-service 服务拆分（AI 推理引擎独立微服务） ([#309](https://github.com/tomturing/hci-troubleshoot-platform/issues/309)) ([80fa9ae](https://github.com/tomturing/hci-troubleshoot-platform/commit/80fa9ae33b602e110a4bf4ef9e29ab83ad6b6b77))
+* pydantic-ai C 大脑适配器（A/B/C 三向测试） ([#298](https://github.com/tomturing/hci-troubleshoot-platform/issues/298)) ([71ed58e](https://github.com/tomturing/hci-troubleshoot-platform/commit/71ed58e4b91f61ff5948670326e8fa26a56b9d4e))
+* **tests:** 新增agent-service and eval-service模块单元测试和集成测试 ([#310](https://github.com/tomturing/hci-troubleshoot-platform/issues/310)) ([bef8558](https://github.com/tomturing/hci-troubleshoot-platform/commit/bef8558092df47207cfbcc636e7e085316cdc8bb))
+* 实现 SOP 多叉决策树 Markdown 解析器与数据模型 ([#297](https://github.com/tomturing/hci-troubleshoot-platform/issues/297)) ([579432c](https://github.com/tomturing/hci-troubleshoot-platform/commit/579432cef06469b689776cb50a1e72a5b3d294db))
+* 添加 PYDANTIC_AI_ENABLED 环境变量注入 ([#305](https://github.com/tomturing/hci-troubleshoot-platform/issues/305)) ([7c16061](https://github.com/tomturing/hci-troubleshoot-platform/commit/7c16061e9b4931fb75fe4d9cd447a4036518916c))
+* 添加 pydantic-ai 助手配置并支持 Markdown SOP 导入 ([#301](https://github.com/tomturing/hci-troubleshoot-platform/issues/301)) ([5a20800](https://github.com/tomturing/hci-troubleshoot-platform/commit/5a2080002a14bcf9f2b716a293b754036bc8017b))
+
+
+### 🐛 Bug 修复
+
+* agent-service/eval-service 缺少 opentelemetry-exporter-otlp 依赖 ([#311](https://github.com/tomturing/hci-troubleshoot-platform/issues/311)) ([cf42413](https://github.com/tomturing/hci-troubleshoot-platform/commit/cf42413640f82b6958596d5fdf4f1dfc8feec2d1))
+* Docker CACHEBUST 修复补强 - 使用 RUN echo 命令真正破坏缓存 ([#308](https://github.com/tomturing/hci-troubleshoot-platform/issues/308)) ([28b8d2c](https://github.com/tomturing/hci-troubleshoot-platform/commit/28b8d2c30be3cb2e36c676d989cba4b3b656f3b8))
+* Helm ConfigMap 模板可选字段条件渲染 ([#315](https://github.com/tomturing/hci-troubleshoot-platform/issues/315)) ([9385766](https://github.com/tomturing/hci-troubleshoot-platform/commit/9385766d76714465f15801a828517ad2811a256f))
+* 修复 conversation-service Docker 构建失败（pydantic 依赖版本冲突） ([#299](https://github.com/tomturing/hci-troubleshoot-platform/issues/299)) ([139ee63](https://github.com/tomturing/hci-troubleshoot-platform/commit/139ee63a0fddfacab746729f5d75d88cd179dbf5))
+* 修复 Docker 构建缓存导致 shared 目录未更新 ([#306](https://github.com/tomturing/hci-troubleshoot-platform/issues/306)) ([bfc1031](https://github.com/tomturing/hci-troubleshoot-platform/commit/bfc103123f15fa9edd87ebccaa4eda57ccbdadf6))
+* 修复虚拟机开机失败排查 SOP 路由禁用、KB上下文截断及状态机转换缺陷 ([#296](https://github.com/tomturing/hci-troubleshoot-platform/issues/296)) ([6aff2a6](https://github.com/tomturing/hci-troubleshoot-platform/commit/6aff2a69890964096fde463faa1df2c37eee2ad4))
+* 刷新按钮去 SSH 守卫 + 任务状态改用 process 字段展示 ([#294](https://github.com/tomturing/hci-troubleshoot-platform/issues/294)) ([c428965](https://github.com/tomturing/hci-troubleshoot-platform/commit/c428965e44da510b05b71967d364a85e67180a0c))
+* 升级 fastapi 版本以兼容 pydantic-ai 依赖 ([#303](https://github.com/tomturing/hci-troubleshoot-platform/issues/303)) ([bbe59a3](https://github.com/tomturing/hci-troubleshoot-platform/commit/bbe59a3d2c46f62cb31b75425add381c3e2b7282))
+* 升级 httpx 版本以兼容 pydantic-ai 依赖 ([#302](https://github.com/tomturing/hci-troubleshoot-platform/issues/302)) ([64afda0](https://github.com/tomturing/hci-troubleshoot-platform/commit/64afda07882b12d992300bbc14bac6b1531919cc))
+* 禁用 Docker provenance 和 sbom 避免 BuildKit 远程缓存 ([#316](https://github.com/tomturing/hci-troubleshoot-platform/issues/316)) ([70b6e48](https://github.com/tomturing/hci-troubleshoot-platform/commit/70b6e48055727c14f4352a36d7c1044701882091))
+
+
+### ♻️ 代码重构
+
+* brain→agent 概念全量对齐 + PaiAgentAdapter + requirements→pyproject ([#307](https://github.com/tomturing/hci-troubleshoot-platform/issues/307)) ([35ad8ac](https://github.com/tomturing/hci-troubleshoot-platform/commit/35ad8ac24445709390338e54a2e076f351ee937a))
+* 后端代码整合与残留清理 ([#312](https://github.com/tomturing/hci-troubleshoot-platform/issues/312)) ([f889fd4](https://github.com/tomturing/hci-troubleshoot-platform/commit/f889fd4e9af20371a8b4fa8f0aa4c343ce022719))
+* 架构重构 — 残留代码清理、可观测性模块重组、docs/agent 目录对齐 ([#304](https://github.com/tomturing/hci-troubleshoot-platform/issues/304)) ([2e0372a](https://github.com/tomturing/hci-troubleshoot-platform/commit/2e0372a44e9b25461e3b16270fc1a6809509590c))
+* 移除 OpenClaw/ProductionClaw/LearningClaw 配置 ([#314](https://github.com/tomturing/hci-troubleshoot-platform/issues/314)) ([666fc0b](https://github.com/tomturing/hci-troubleshoot-platform/commit/666fc0b7b77affec6bb8cc322071ff8fa1c88ee8))
+* 重构目录结构，迁移 evaluation 和 kbd 模块 ([#300](https://github.com/tomturing/hci-troubleshoot-platform/issues/300)) ([2e03ebd](https://github.com/tomturing/hci-troubleshoot-platform/commit/2e03ebd1c348fc1226069d88a055675160e348e8))
+
+
+### 📝 文档
+
+* 统一 SOP Agent 阶段文档格式规范 ([#292](https://github.com/tomturing/hci-troubleshoot-platform/issues/292)) ([a6d0ef1](https://github.com/tomturing/hci-troubleshoot-platform/commit/a6d0ef193aadc147a3927da3bf8cbf17270411e4))
+
 ## [Unreleased]
 
 ### ♻️ 重构
