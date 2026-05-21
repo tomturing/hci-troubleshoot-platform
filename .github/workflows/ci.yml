@@ -462,7 +462,8 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: true
-          # 缓存破坏参数：使用 GITHUB_SHA 确保每次构建都重新 COPY shared 目录
+          # 完全禁用缓存，强制重新构建所有 layer
+          no-cache: true
           build-args: |
             CACHEBUST=${{ github.sha }}
           tags: |
