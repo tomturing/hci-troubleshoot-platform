@@ -26,7 +26,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: 检查是否跳过文档门禁
+        id: skip-check
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # 检查 PR body 或 commit message 中是否包含 [skip docs] 标记
+          if echo "$PR_BODY" | grep -qi '\[skip docs\]'; then
+            echo "PR body 包含 [skip docs] 标记，跳过文档门禁"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 检查 commit message（最近 5 个）
+          SKIP_COMMITS=$(git log -5 --format=%s | grep -i '\[skip docs\]' || true)
+          if [[ -n "$SKIP_COMMITS" ]]; then
+            echo "Commit message 包含 [skip docs] 标记，跳过文档门禁"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "skip=false" >> $GITHUB_OUTPUT
+
       - name: 检查关键改动是否同步文档
+        if: steps.skip-check.outputs.skip != 'true'
         run: |
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
