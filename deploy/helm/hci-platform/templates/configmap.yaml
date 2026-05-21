@@ -5,9 +5,7 @@ metadata:
   namespace: {{ include "hci.namespace" . }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
-{{- $openclawImage := include "hci.image" (dict "global" .Values.global "image" .Values.openclaw.image) }}
-{{- $glmModel := printf "%s/%s" (.Values.config.glmProvider | default "zhipu") (.Values.config.glmModelId | default "glm-4-flash") }}
-{{- $defaultAssistantRegistry := printf "{\"productionclaw\":{\"image\":\"%s\",\"port\":18789,\"warm_pool_size\":2,\"max_pool_size\":10,\"idle_timeout\":0,\"display_name\":\"ProductionClaw (GLM)\",\"description\":\"Production assistant\",\"model\":\"openclaw\",\"init_configmap\":\"productionclaw-init-config\",\"labels\":{\"claw-role\":\"production\"}},\"openclaw\":{\"image\":\"%s\",\"port\":18789,\"warm_pool_size\":1,\"max_pool_size\":5,\"idle_timeout\":300,\"display_name\":\"OpenClaw (GLM)\",\"description\":\"General assistant\",\"model\":\"openclaw\",\"labels\":{\"app.kubernetes.io/name\":\"openclaw\"}},\"ops-agent\":{\"warm_pool_size\":0,\"max_pool_size\":0,\"base_url\":\"http://ops-agent-service:8006\",\"display_name\":\"Ops-Agent (GLM-5)\",\"description\":\"基于 SOP 知识库的智能排障助手\",\"enabled\":true,\"is_default\":false}}" $openclawImage $openclawImage }}
+{{- $defaultAssistantRegistry := "{\"htp-agent\":{\"base_url\":\"https://coding.dashscope.aliyuncs.com/v1\",\"provider_api_key\":\"{{ .Values.secrets.llmApiKey }}\",\"model\":\"glm-5\",\"warm_pool_size\":0,\"max_pool_size\":0,\"display_name\":\"HTP Agent (GLM-5)\",\"description\":\"HCI智能排障平台核心助手\",\"is_default\":true,\"enabled\":true},\"ops-agent\":{\"warm_pool_size\":0,\"max_pool_size\":0,\"base_url\":\"http://ops-agent-service:8006\",\"display_name\":\"Ops Agent (GLM-5)\",\"description\":\"基于SOP知识库的智能排障助手\",\"enabled\":true},\"pai-agent\":{\"name\":\"PydanticAI\",\"display_name\":\"PAI Agent (GLM-5)\",\"description\":\"基于pydantic-ai框架的排障助手\",\"base_url\":\"http://conversation-service:8002\",\"warm_pool_size\":0,\"max_pool_size\":0,\"enabled\":true,\"is_default\":false}}" }}
 data:
   # 数据库（非敏感）
   POSTGRES_DB: {{ .Values.config.postgresDb | quote }}
@@ -18,13 +16,11 @@ data:
   CASE_SERVICE_URL: "http://case-service:{{ .Values.caseService.port }}"
   CONVERSATION_SERVICE_URL: "http://conversation-service:{{ .Values.conversationService.port }}"
   SCHEDULER_SERVICE_URL: "http://scheduler-service:{{ .Values.schedulerService.port }}"
-  # OpenClaw（可通过 config.openclawBaseUrl 覆盖，用于直连外部 LLM API，如智谱 open.bigmodel.cn）
-  OPENCLAW_BASE_URL: {{ (.Values.config.openclawBaseUrl | default (printf "http://openclaw:%v" .Values.openclaw.port)) | quote }}
-  OPENCLAW_DEFAULT_MODEL: {{ (.Values.config.openclawDefaultModel | default $glmModel) | quote }}
-  # GLM_MODEL：供 pydantic-ai C 大脑和 glm_client 读取（与 OPENCLAW_DEFAULT_MODEL 保持一致）
-  GLM_MODEL: {{ (.Values.config.openclawDefaultModel | default $glmModel) | quote }}
-  # Chat completions 路径：OpenAI=/v1/chat/completions，智谱 v4 API=/chat/completions
-  AI_COMPLETIONS_PATH: {{ (.Values.config.aiCompletionsPath | default "/v1/chat/completions") | quote }}
+  # LLM 配置（统一使用 dashscope 网关）
+  LLM_BASE_URL: {{ .Values.config.llmBaseUrl | default "https://coding.dashscope.aliyuncs.com/v1" | quote }}
+  LLM_DEFAULT_MODEL: {{ .Values.config.llmDefaultModel | default "glm-5" | quote }}
+  GLM_MODEL: {{ .Values.config.llmDefaultModel | default "glm-5" | quote }}
+  AI_COMPLETIONS_PATH: {{ .Values.config.aiCompletionsPath | default "/chat/completions" | quote }}
   # 可观测性
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
@@ -34,15 +30,12 @@ data:
   WARM_POOL_SIZE: {{ .Values.config.warmPoolSize | quote }}
   MAX_POOL_SIZE: {{ .Values.config.maxPoolSize | quote }}
   POD_IDLE_TIMEOUT: {{ .Values.config.podIdleTimeout | quote }}
-  # Pool Pod 镜像与 openclaw 部署镜像保持同步（含 imageRegistry 前缀）
-  OPENCLAW_IMAGE: {{ $openclawImage | quote }}
   # AI 客户端超时（秒）
   AI_CLIENT_READ_TIMEOUT_SEC: {{ .Values.config.aiClientReadTimeoutSec | default "120.0" | quote }}
-  # v3.0 LearningClaw / ProductionClaw 服务地址
+  # 服务地址
   KB_SERVICE_URL: {{ .Values.config.kbServiceUrl | default "http://kb-service:8004" | quote }}
   KB_ENABLED: {{ .Values.kbService.enabled | toString | quote }}
-  LEARNINGCLAW_SERVICE_URL: {{ .Values.config.learningclawServiceUrl | default "http://learningclaw:18789" | quote }}
-  # v3.0 多助手注册表（productionclaw 一 Pod 一 Case 模式）
+  # 多助手注册表（3 个助手：htp-agent、ops-agent、pai-agent）
   ASSISTANT_REGISTRY_JSON: {{ (.Values.config.assistantRegistryJson | default $defaultAssistantRegistry) | quote }}
-  # v2.1 助手选择器显示控制（auto/true/false）
+  # 助手选择器显示控制（auto/true/false）
   ASSISTANT_SHOW_SELECTOR: {{ .Values.config.assistantShowSelector | default "auto" | quote }}

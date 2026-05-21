@@ -54,7 +54,7 @@ class MockAIRegistry:
     """Mock AIAssistantRegistry"""
 
     def get_default_type(self):
-        return "glm-4-flash"
+        return "glm-5"
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ class TestAgentRouterRouting:
         router = AgentRouter(htp_adapter=htp_adapter, ai_registry=ai_registry)
 
         events = [event async for event in router.process(
-            assistant_type="glm-4-flash",
+            assistant_type="glm-5",
             session_id="test-001",
             messages=[{"role": "user", "content": "test"}]
         )]

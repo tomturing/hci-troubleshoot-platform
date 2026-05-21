@@ -55,7 +55,7 @@ class HTPAgentAdapter:
         env_context: dict[str, Any] | None = None,
         stream: bool = True,
         # htp 侧额外参数（AgentPort 扩展，通过 **kwargs 传入不影响 Protocol 兼容性）
-        assistant_type: str = "openclaw",
+        assistant_type: str = "htp-agent",
         case_id: str = "",
         user_id: str = "",
     ) -> AsyncGenerator[AgentEvent, None]:
@@ -141,6 +141,6 @@ class HTPAgentAdapter:
         from app.config import settings
 
         fallback_map: dict[str, str | None] = {
-            "openclaw": getattr(settings, "OPENCLAW_BASE_URL", None),
+            "htp-agent": getattr(settings, "LLM_BASE_URL", None),
         }
         return fallback_map.get(assistant_type)

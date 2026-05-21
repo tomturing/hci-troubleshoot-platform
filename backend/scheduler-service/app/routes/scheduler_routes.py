@@ -24,7 +24,7 @@ def get_service() -> SchedulerService:
 
 class PodAllocationRequest(BaseModel):
     case_id: str
-    assistant_type: str = Field(default="openclaw", description="AI助手类型")
+    assistant_type: str = Field(default="htp-agent", description="AI助手类型")
 
 class PodReleaseRequest(BaseModel):
     case_id: str

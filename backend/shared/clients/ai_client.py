@@ -49,15 +49,14 @@ class OpenClawAssistant:
         base_url: str,
         api_key: str | None = None,
         provider_api_key: str | None = None,
-        default_model: str = "openclaw",
-        assistant_type: str = "openclaw",
+        default_model: str = "glm-5",
+        assistant_type: str = "htp-agent",
     ):
         self.base_url = base_url.rstrip("/")
-        # gateway_token: 内部 OpenClaw 网关鉴权（Bearer token，由 OPENCLAW_GATEWAY_TOKEN 环境变量或 registry 配置提供）
-        self.gateway_token = api_key
-        # provider_api_key: 外部 LLM 提供商鉴权（优先级: 构造参数 > 环境变量 > gateway_token 兜底）
-        # 通过独立参数传入，与 gateway_token 彻底解耦，避免两者承担同一 api_key 参数的混用问题
-        self.provider_api_key = provider_api_key or os.environ.get("OPENCLAW_API_KEY") or api_key
+        # api_key: LLM API 鉴权密钥
+        self.api_key = api_key
+        # provider_api_key: 外部 LLM 提供商鉴权（优先级: 构造参数 > 环境变量 > api_key 兜底）
+        self.provider_api_key = provider_api_key or os.environ.get("LLM_API_KEY") or api_key
         self.default_model = default_model
         self.assistant_type = assistant_type
         # 流式 LLM 响应可能较慢，读超时通过环境变量 AI_CLIENT_READ_TIMEOUT_SEC 调整（默认 120s）
@@ -80,10 +79,10 @@ class OpenClawAssistant:
             return False
 
     def _resolve_auth_token(self, endpoint: str) -> str | None:
-        """内部 gateway 使用 gateway token；外部模型提供商使用 API key。"""
+        """内部 gateway 使用 api_key；外部模型提供商使用 provider_api_key。"""
         if self._is_internal_gateway_endpoint(endpoint):
-            return self.gateway_token or self.provider_api_key
-        return self.provider_api_key or self.gateway_token
+            return self.api_key or self.provider_api_key
+        return self.provider_api_key or self.api_key
 
     async def chat_completion_stream(
         self, messages: list[dict[str, str]], user_id: str, pod_endpoint: str | None = None, model: str = ""
@@ -470,7 +469,7 @@ def create_openclaw_client(
     api_key: str | None = None,
     provider_api_key: str | None = None,
     default_model: str = "openclaw",
-    assistant_type: str = "openclaw",
+    assistant_type: str = "htp-agent",
 ) -> OpenClawAssistant:
     """工厂函数: 创建OpenClaw助手客户端"""
     return OpenClawAssistant(

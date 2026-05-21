@@ -23,7 +23,7 @@ class ConversationRepository:
         self,
         case_id: str,
         trace_id: str,
-        assistant_type: str = "openclaw",
+        assistant_type: str = "htp-agent",
         metadata: dict[str, Any] | None = None
     ) -> Conversation:
         """创建新对话"""

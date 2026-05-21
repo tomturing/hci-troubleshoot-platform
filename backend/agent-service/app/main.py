@@ -53,14 +53,13 @@ async def lifespan(app: FastAPI):
     for assistant_type, cfg in settings.assistant_registry.items():
         if not cfg.get("enabled", True):
             continue
-        base_url = cfg.get("base_url", settings.OPENCLAW_BASE_URL)
-        gateway_token = cfg.get("gateway_token", settings.OPENCLAW_GATEWAY_TOKEN)
-        provider_key = cfg.get("provider_api_key") or None
+        base_url = cfg.get("base_url", settings.LLM_BASE_URL)
+        api_key = cfg.get("api_key") or cfg.get("provider_api_key") or settings.LLM_API_KEY
         model = cfg.get("model", assistant_type)
         client = create_openclaw_client(
             base_url=base_url,
-            api_key=gateway_token,
-            provider_api_key=provider_key,
+            api_key=api_key,
+            provider_api_key=None,
             default_model=model,
             assistant_type=assistant_type,
         )
@@ -119,12 +118,10 @@ async def lifespan(app: FastAPI):
     if settings.PYDANTIC_AI_ENABLED:
         from app.adapters.acli_adapter import AcliAdapter
         from app.adapters.pai_agent_adapter import PaiAgentAdapter
-        from app.adapters.scp_adapter import SCPAdapter
 
-        _scp = SCPAdapter(base_url=settings.SCP_BASE_URL, api_key=settings.SCP_API_KEY)
         _acli = AcliAdapter.from_env()
         pai_adapter = PaiAgentAdapter.from_env(
-            scp_adapter=_scp,
+            scp_adapter=None,
             acli_adapter=_acli,
             kb_client=kb_client,
         )

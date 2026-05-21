@@ -10,24 +10,33 @@ from pydantic_settings import BaseSettings
 
 # 默认AI助手注册表配置
 DEFAULT_ASSISTANT_REGISTRY = {
-    "openclaw": {
-        "name": "OpenClaw",
-        "display_name": "OpenClaw (GLM)",
-        "description": "通用AI排障助手，基于GLM大模型",
-        "image": "openclaw:latest",
-        "port": 18789,
-        "warm_pool_size": 2,
-        "max_pool_size": 10,
+    "htp-agent": {
+        "name": "HTPAgent",
+        "display_name": "HTP Agent (GLM-5)",
+        "description": "HCI智能排障平台核心助手",
+        "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+        "model": "glm-5",
+        "warm_pool_size": 0,
+        "max_pool_size": 0,
         "enabled": True,
         "is_default": True,
         "capabilities": ["troubleshooting"],
-        "labels": {"app": "openclaw", "assistant-type": "openclaw"}
     },
-    "pydantic-ai": {
+    "ops-agent": {
+        "name": "OpsAgent",
+        "display_name": "Ops Agent (GLM-5)",
+        "description": "基于SOP知识库的智能排障助手",
+        "base_url": "http://ops-agent-service:8006",
+        "warm_pool_size": 0,
+        "max_pool_size": 0,
+        "enabled": True,
+        "is_default": False,
+        "capabilities": ["troubleshooting"],
+    },
+    "pai-agent": {
         "name": "PydanticAI",
-        "display_name": "PydanticAI (GLM)",
-        "description": "基于 pydantic-ai 框架的 C 大脑，支持工具调用循环",
-        # 直连模式：不需要 Pod 池，直接调用 conversation-service
+        "display_name": "PAI Agent (GLM-5)",
+        "description": "基于pydantic-ai框架的排障助手",
         "base_url": "http://conversation-service:8002",
         "warm_pool_size": 0,
         "max_pool_size": 0,
@@ -83,14 +92,10 @@ class Settings(BaseSettings):
             return "auto"
         return mode
 
-    # 向后兼容：保留旧配置项（已弃用）
-    OPENCLAW_IMAGE: str = "openclaw:latest"
-    WARM_POOL_SIZE: int = 2
-    MAX_POOL_SIZE: int = 10
-
     class Config:
         env_file = ".env"
         case_sensitive = True
         extra = "ignore"
+
 
 settings = Settings()

@@ -39,20 +39,26 @@ customerUI:
 adminUI:
   image:
     tag: "2026.03.02-1"
-openclaw:
+agentService:
+  image:
+    tag: "2026.03.02-1"
+kbService:
+  image:
+    tag: "2026.03.02-1"
+evalService:
   image:
     tag: "2026.03.02-1"
 
 secrets:
   postgresPassword: "<replace-strong-password>"
-  openclawToken: "<replace-openclaw-token>"
-  zaiApiKey: "<replace-if-used>"
+  llmApiKey: "<replace-llm-api-key>"
   grafanaAdminPassword: "<replace-grafana-password>"
 
 config:
   logLevel: "INFO"
-  # gateway_token 已从 JSON 中移除，改由 secrets.openclawToken → OPENCLAW_GATEWAY_TOKEN env 注入（Secret 统一管理）
-  assistantRegistryJson: '{"openclaw":{"name":"OpenClaw","description":"通用AI排障助手","image":"hci-openclaw:2026.03.02-1","port":18789,"warm_pool_size":2,"max_pool_size":10,"enabled":true,"base_url":"http://openclaw:18789","model":"openclaw","labels":{"app":"openclaw","assistant-type":"openclaw"}}}'
+  # LLM 配置（使用 dashscope 网关）
+  llmBaseUrl: "https://coding.dashscope.aliyuncs.com/v1"
+  llmDefaultModel: "glm-5"
 
 ingress:
   annotations:

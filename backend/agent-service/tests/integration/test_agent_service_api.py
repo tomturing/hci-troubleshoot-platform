@@ -78,7 +78,7 @@ class TestAgentStreamEndpoint:
             # 不实际调用，因为需要 SSE 客户端
             # 这里只测试未就绪的错误路径
             request = {
-                "assistant_type": "glm-4-flash",
+                "assistant_type": "glm-5",
                 "session_id": "test-session",
                 "case_id": "TEST001",
                 "user_id": "test-user",

@@ -18,10 +18,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot"
     REDIS_URL: str = "redis://redis:6379/0"
 
-    # OpenClaw配置
-    OPENCLAW_BASE_URL: str = "http://host.docker.internal:18790"
-    OPENCLAW_GATEWAY_TOKEN: str = "default_token"
-    OPENCLAW_DEFAULT_MODEL: str = "openclaw"
+    # LLM 配置（统一使用 dashscope 网关）
+    LLM_BASE_URL: str = "https://coding.dashscope.aliyuncs.com/v1"
+    LLM_API_KEY: str = ""  # 从 hci-secrets 注入
+    LLM_DEFAULT_MODEL: str = "glm-5"
 
     # KB 服务配置
     KB_SERVICE_URL: str = "http://kb-service:8004"
@@ -47,10 +47,10 @@ class Settings(BaseSettings):
     # 多助手注册表（可选覆盖）
     # JSON 格式：
     # {
-    #   "openclaw": {
-    #     "base_url": "http://openclaw:18789",
-    #     "gateway_token": "xxx",
-    #     "model": "openclaw",
+    #   "htp-agent": {
+    #     "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+    #     "api_key": "xxx",
+    #     "model": "glm-5",
     #     "enabled": true
     #   }
     # }
@@ -93,12 +93,12 @@ class Settings(BaseSettings):
         except json.JSONDecodeError:
             pass
 
-        # 降级：默认只有 openclaw（向后兼容）
+        # 降级：默认只有 htp-agent（向后兼容）
         default_registry: dict[str, dict[str, Any]] = {
-            "openclaw": {
-                "base_url": self.OPENCLAW_BASE_URL,
-                "gateway_token": self.OPENCLAW_GATEWAY_TOKEN,
-                "model": self.OPENCLAW_DEFAULT_MODEL,
+            "htp-agent": {
+                "base_url": self.LLM_BASE_URL,
+                "api_key": self.LLM_API_KEY,
+                "model": self.LLM_DEFAULT_MODEL,
                 "enabled": True,
             }
         }

@@ -61,27 +61,10 @@ spec:
             - name: DATABASE_URL
               # 使用 Helm 渲染时 urlquery 对密码做 URL 编码，防止密码含 @ / : # 等特殊字符导致解析错误（PIT-022）
               value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
-            # ── Phase 3: ReAct 引擎环境变量 ──────────────────────────────────────────
+            # ReAct 引擎开关
             - name: REACT_ENABLED
               value: {{ .Values.conversationService.reactEnabled | default "false" | quote }}
-            - name: SCP_BASE_URL
-              value: {{ .Values.scpBaseUrl | default "" | quote }}
-            - name: SCP_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: hci-secrets
-                  key: SCP_API_KEY
-                  optional: true          # dev 环境无 SCP 时允许 Pod 正常启动
-            - name: HCI_SSH_USER
-              value: {{ .Values.hciSsh.user | default "admin" | quote }}
-            - name: HCI_SSH_KEY_PATH
-              value: {{ .Values.hciSsh.keyPath | default "" | quote }}
-            - name: HCI_SSH_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: hci-secrets
-                  key: HCI_SSH_PASSWORD
-                  optional: true          # 使用密钥时此字段可为空
+            # ops-agent 集成
             - name: OPS_AGENT_BASE_URL
               value: {{ (.Values.opsAgent | default dict).baseUrl | default "http://ops-agent-service:8006" | quote }}
             - name: OPS_AGENT_ENABLED
@@ -90,7 +73,7 @@ spec:
               value: {{ (.Values.opsAgent | default dict).readTimeoutSec | default "300.0" | quote }}
             - name: OPS_AGENT_FALLBACK_ASSISTANT_TYPE
               value: {{ (.Values.opsAgent | default dict).fallbackAssistantType | default "glm-5" | quote }}
-            # ── pydantic-ai C 大脑启用开关 ──────────────────────────────────────────
+            # pydantic-ai C 大脑启用开关
             - name: PYDANTIC_AI_ENABLED
               value: {{ .Values.conversationService.pydanticAiEnabled | default "false" | quote }}
           # J-2: 三级探针分级健康检查，避免 AI 健康检查导致超时

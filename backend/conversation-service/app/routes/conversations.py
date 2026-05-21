@@ -66,7 +66,7 @@ async def get_conversation_service() -> ConversationService:
 @router.post("/", status_code=201)
 async def create_conversation(
     case_id: str,
-    assistant_type: str = "openclaw",
+    assistant_type: str = "htp-agent",
     initial_message: str | None = None,
     case_title: str | None = None,
     case_description: str | None = None,

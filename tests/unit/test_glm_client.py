@@ -62,7 +62,7 @@ def glm_client():
         client = GLMClient(
             base_url="http://localhost:11434",
             api_key="test-key",
-            model="glm-4-flash",
+            model="glm-5",
         )
     return client
 

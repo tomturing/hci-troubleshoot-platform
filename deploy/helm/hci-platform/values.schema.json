@@ -48,19 +48,19 @@
       "properties": {
         "assistantRegistryJson": {
           "type": "string",
-          "description": "JSON 字符串格式的 AI 助手池配置（注意：必须是字符串，不能写成 YAML 对象，否则 Helm 会将 {} 解析为空列表 []）。示例: '{\"pool\":[{...}]}'。见 DUAL-002 事故记录"
+          "description": "JSON 字符串格式的 AI 助手池配置（注意：必须是字符串，不能写成 YAML 对象，否则 Helm 会将 {} 解析为空列表 []）。示例: '{\"htp-agent\":{\"base_url\":\"...\",\"model\":\"glm-5\"}}'"
         },
-        "openclawBaseUrl": {
+        "llmBaseUrl": {
           "type": "string",
-          "description": "AI 后端 base URL。不启用 openclaw Pod 时可设为 ZhipuAI 直连地址: https://open.bigmodel.cn/api/paas/v4"
+          "description": "LLM API base URL（默认 dashscope 网关）"
         },
-        "openclawDefaultModel": {
+        "llmDefaultModel": {
           "type": "string",
-          "description": "默认 AI 模型名。智谱 AI 使用 glm-4-flash，本地 openclaw 使用 zhipu/glm-5"
+          "description": "默认 AI 模型名（默认 glm-5）"
         },
         "aiCompletionsPath": {
           "type": "string",
-          "description": "AI 补全接口路径。ZhipuAI v4 为 /chat/completions（无 /v1/），OpenAI 兼容为 /v1/chat/completions。见 DUAL-008 事故记录"
+          "description": "AI 补全接口路径（默认 /chat/completions）"
         }
       }
     },
@@ -70,11 +70,9 @@
         "postgresPassword": {
           "type": "string"
         },
-        "openclawToken": {
-          "type": "string"
-        },
-        "zaiApiKey": {
-          "type": "string"
+        "llmApiKey": {
+          "type": "string",
+          "description": "LLM API Key（用于 dashscope 网关调用 GLM-5）"
         },
         "grafanaAdminPassword": {
           "type": "string"
@@ -92,32 +90,7 @@
       "properties": {
         "externalDns": {
           "type": "boolean",
-          "description": "true=为 conversation-service Pod 配置 dnsPolicy:None + 双 nameserver（kube-dns + 公共 DNS），用于直连外部 AI API（如 ZhipuAI）时解决域名解析问题"
-        }
-      }
-    },
-    "openclaw": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "不启用时三个 claw 工作负载均不创建，见 DEPLOY-003"
-        }
-      }
-    },
-    "learningclaw": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        }
-      }
-    },
-    "productionclaw": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
+          "description": "true=为 conversation-service Pod 配置 dnsPolicy:None + 双 nameserver（kube-dns + 公共 DNS），用于直连外部 AI API 时解决域名解析问题"
         }
       }
     }

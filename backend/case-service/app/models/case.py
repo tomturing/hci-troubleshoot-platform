@@ -47,7 +47,7 @@ class Case(Base, TimestampMixin, TraceableMixin):
     status = Column(SQLEnum(CaseStatus, name="case_status"), default=CaseStatus.created, nullable=False)
     priority = Column(String(20), default="medium")
     category = Column(String(100), nullable=True)
-    assistant_type = Column(String(50), nullable=False, default="openclaw")
+    assistant_type = Column(String(50), nullable=False, default="htp-agent")
     metadata_ = Column("metadata", JSONB, default=dict)
     confirmed_at = Column(DateTime(timezone=True), nullable=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)

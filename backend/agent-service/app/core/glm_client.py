@@ -163,7 +163,7 @@ class GLMClient:
     def from_env(cls) -> "GLMClient":
         """从环境变量创建实例"""
         return cls(
-            base_url=os.environ["OPENCLAW_BASE_URL"],
-            api_key=os.environ["OPENCLAW_API_KEY"],
-            model=os.environ.get("GLM_MODEL", "glm-4-flash"),
+            base_url=os.environ.get("LLM_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1"),
+            api_key=os.environ.get("LLM_API_KEY", ""),
+            model=os.environ.get("GLM_MODEL", "glm-5"),
         )

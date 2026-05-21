@@ -14,13 +14,13 @@ class TestOpenClawAssistant:
         client = OpenClawAssistant(
             base_url="http://localhost:8000",
             api_key="test-key",
-            default_model="glm-4-flash",
-            assistant_type="glm-4-flash"
+            default_model="glm-5",
+            assistant_type="glm-5"
         )
         assert client.base_url == "http://localhost:8000"
         assert client.gateway_token == "test-key"
-        assert client.default_model == "glm-4-flash"
-        assert client.assistant_type == "glm-4-flash"
+        assert client.default_model == "glm-5"
+        assert client.assistant_type == "glm-5"
 
     def test_is_internal_gateway_endpoint(self):
         """测试内部网关端点识别"""
@@ -77,22 +77,22 @@ class TestAIAssistantRegistry:
 
     def test_register_client(self, registry, mock_client):
         """测试注册客户端"""
-        registry.register("glm-4-flash", mock_client)
-        assert registry.get_client("glm-4-flash") is mock_client
-        assert "glm-4-flash" in registry.list_types()
+        registry.register("glm-5", mock_client)
+        assert registry.get_client("glm-5") is mock_client
+        assert "glm-5" in registry.list_types()
 
     def test_register_default_client(self, registry, mock_client):
         """测试注册默认客户端"""
         client1 = mock_client
         client2 = mock_client
-        registry.register("glm-4-flash", client1)
+        registry.register("glm-5", client1)
         registry.register("glm-4", client2, is_default=True)
         assert registry.get_default_type() == "glm-4"
         assert registry.get_client() is client2  # 不传参数获取默认
 
     def test_set_default_type(self, registry, mock_client):
         """测试设置默认类型"""
-        registry.register("glm-4-flash", mock_client)
+        registry.register("glm-5", mock_client)
         registry.register("glm-4", mock_client)
         registry.set_default_type("glm-4")
         assert registry.get_default_type() == "glm-4"
@@ -103,11 +103,11 @@ class TestAIAssistantRegistry:
 
     def test_list_types(self, registry, mock_client):
         """测试列出所有类型"""
-        registry.register("glm-4-flash", mock_client)
+        registry.register("glm-5", mock_client)
         registry.register("glm-4", mock_client)
         types = registry.list_types()
         assert len(types) == 2
-        assert "glm-4-flash" in types
+        assert "glm-5" in types
         assert "glm-4" in types
 
     @pytest.fixture
@@ -134,7 +134,7 @@ class TestAIAssistantRegistry:
     @pytest.mark.asyncio
     async def test_close_all(self, registry, mock_client):
         """测试关闭所有客户端"""
-        registry.register("glm-4-flash", mock_client)
+        registry.register("glm-5", mock_client)
         registry.register("glm-4", mock_client)
         await registry.close_all()
         assert mock_client.close.call_count == 2
@@ -149,8 +149,8 @@ class TestCreateOpenClawClient:
         client = create_openclaw_client(
             base_url="http://localhost:8000",
             api_key="test-key",
-            default_model="glm-4-flash",
-            assistant_type="glm-4-flash"
+            default_model="glm-5",
+            assistant_type="glm-5"
         )
         assert isinstance(client, OpenClawAssistant)
         assert client.base_url == "http://localhost:8000"

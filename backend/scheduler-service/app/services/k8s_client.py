@@ -41,7 +41,7 @@ class K8sClient:
         pod_name: str,
         case_id: str | None = None,
         trace_id: str | None = None,
-        assistant_type: str = "productionclaw",
+        assistant_type: str = "htp-agent",
         assistant_config: dict[str, Any] | None = None,
         case_info: dict[str, Any] | None = None,
     ) -> bool:
@@ -52,19 +52,18 @@ class K8sClient:
             pod_name: Pod名称
             case_id: 工单ID
             trace_id: 追踪ID
-            assistant_type: AI助手类型（productionclaw 等）
-            assistant_config: 助手配置（image, port, init_configmap 等）
+            assistant_type: AI助手类型（htp-agent 等）
+            assistant_config: 助手配置（base_url, model 等）
             case_info: 工单附加信息（title, description, created_at），注入为环境变量
 
         Returns:
             bool: 是否成功触发创建
         """
         cfg = assistant_config or {}
-        image = cfg.get("image", settings.OPENCLAW_IMAGE)
-        port = cfg.get("port", 18789)
+        base_url = cfg.get("base_url", "")
+        model = cfg.get("model", "glm-5")
         custom_labels = cfg.get("labels", {})
         custom_env = cfg.get("env", [])
-        init_configmap = cfg.get("init_configmap", "productionclaw-init-config")
 
         labels = {
             "app": assistant_type,
@@ -81,15 +80,12 @@ class K8sClient:
         env_vars = [
             {"name": "HOME", "value": "/home/node"},
             {"name": "TERM", "value": "xterm-256color"},
-            {"name": "OPENCLAW_SKIP_CANVAS_HOST", "value": "1"},
             # Pod 身份（Downward API）
             {"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}},
-            # AI 模型密钥
-            {"name": "OPENCLAW_API_KEY", "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_API_KEY"}}},
-            {
-                "name": "OPENCLAW_GATEWAY_TOKEN",
-                "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_GATEWAY_TOKEN"}},
-            },
+            # LLM 配置
+            {"name": "LLM_BASE_URL", "value": base_url},
+            {"name": "LLM_MODEL", "value": model},
+            {"name": "LLM_API_KEY", "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "LLM_API_KEY"}}},
             {
                 "name": "INTERNAL_API_TOKEN",
                 "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "INTERNAL_API_TOKEN"}},
@@ -109,7 +105,7 @@ class K8sClient:
             },
         ]
 
-        # ── 工单信息注入（ProductionClaw 专属）────────────────────
+        # ── 工单信息注入 ────────────────────────────────────────
         if case_id:
             env_vars.append({"name": "CASE_ID", "value": case_id})
         if case_info:
@@ -124,63 +120,14 @@ class K8sClient:
             if isinstance(ev, dict):
                 env_vars.append({"name": ev.get("name", ""), "value": ev.get("value", "")})
 
-        # ── volumes：emptyDir for /home/node + ConfigMap init ────
-        volumes = [
-            {"name": "claw-home", "emptyDir": {}},
-            {"name": "init-config", "configMap": {"name": init_configmap}},
-        ]
-
-        # ── init 容器：复制 ConfigMap 配置到 /home/node/.openclaw/ ─
-        init_containers = [
-            {
-                "name": "init-workspace",
-                "image": image,
-                "imagePullPolicy": settings.K8S_IMAGE_PULL_POLICY,
-                "securityContext": {"runAsUser": 1001, "runAsGroup": 1001},
-                "command": ["/bin/sh", "-c"],
-                "args": [
-                    r"""set -e
-mkdir -p /home/node/.openclaw/workspace/memory
-mkdir -p /home/node/.openclaw/agents/main/sessions
-echo "--- ProductionClaw 初始化 ---"
-echo "工单 ID: ${CASE_ID:-未设置}"
-for f in SOUL.md IDENTITY.md AGENTS.md BOOTSTRAP.md TOOLS.md USER.md; do
-  cp "/init-config/${f}" "/home/node/.openclaw/workspace/${f}"
-  echo "  已加载 ${f}"
-done
-sed "s/\${OPENCLAW_GATEWAY_TOKEN}/${OPENCLAW_GATEWAY_TOKEN}/g; s/\${OPENCLAW_API_KEY}/${OPENCLAW_API_KEY}/g" /init-config/openclaw.json > /home/node/.openclaw/openclaw.json
-# 快速失败：验证 agents.defaults.model.primary 必须配置，防止静默 fallback 到 anthropic/claude-opus-4-6
-PRIMARY=$(node -e "const c=JSON.parse(require('fs').readFileSync('/home/node/.openclaw/openclaw.json','utf8')); console.log(c?.agents?.defaults?.model?.primary||'')" 2>/dev/null)
-if [ -z "$PRIMARY" ]; then
-  echo "❌ FATAL: agents.defaults.model.primary 未配置！openclaw 将 fallback 到 anthropic/claude-opus-4-6（无 API key）"
-  exit 1
-fi
-echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}，model=${PRIMARY}"
-"""
-                ],
-                "env": [
-                    {"name": "CASE_ID", "value": case_id or ""},
-                    {
-                        "name": "OPENCLAW_GATEWAY_TOKEN",
-                        "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_GATEWAY_TOKEN"}},
-                    },
-                    {
-                        "name": "OPENCLAW_API_KEY",
-                        "valueFrom": {"secretKeyRef": {"name": "hci-secrets", "key": "OPENCLAW_API_KEY"}},
-                    },
-                ],
-                "volumeMounts": [
-                    {"name": "claw-home", "mountPath": "/home/node"},
-                    {"name": "init-config", "mountPath": "/init-config", "readOnly": True},
-                ],
-            }
-        ]
-
-        volume_mounts = [
-            {"name": "claw-home", "mountPath": "/home/node"},
-        ]
+        # ── volumes ───────────────────────────────────────────────
+        volumes: list[dict[str, Any]] = []
+        init_containers: list[dict[str, Any]] = []
+        volume_mounts: list[dict[str, Any]] = []
 
         # ── Pod Manifest ────────────────────────────────────────
+        # 注意：当前架构不再使用动态 Pod 创建，所有助手通过 base_url 直连
+        # 此代码保留用于未来可能的动态 Pod 场景
         pod_manifest = {
             "apiVersion": "v1",
             "kind": "Pod",
@@ -199,28 +146,10 @@ echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}�
                 "containers": [
                     {
                         "name": assistant_type,
-                        "image": image,
+                        "image": cfg.get("image", ""),
                         "imagePullPolicy": settings.K8S_IMAGE_PULL_POLICY,
-                        "ports": [{"containerPort": port}],
                         "env": env_vars,
                         "volumeMounts": volume_mounts,
-                        "command": [
-                            "node", "dist/index.js", "gateway",
-                            "--allow-unconfigured", "--bind", "lan",
-                            "--port", str(port),
-                        ],
-                        "livenessProbe": {
-                            "tcpSocket": {"port": port},
-                            "initialDelaySeconds": 30,
-                            "periodSeconds": 60,
-                            "failureThreshold": 3,
-                        },
-                        "readinessProbe": {
-                            "tcpSocket": {"port": port},
-                            "initialDelaySeconds": 15,
-                            "periodSeconds": 30,
-                            "failureThreshold": 3,
-                        },
                     }
                 ],
                 "volumes": volumes,
@@ -235,10 +164,9 @@ echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}�
             },
         }
 
-        manifest_version = "v3_with_init_workspace"
+        manifest_version = "v4_llm_config"
         has_init_container = bool(init_containers)
         has_claw_home_volume = any(v.get("name") == "claw-home" for v in volumes)
-        has_init_config_volume = any(v.get("name") == "init-config" for v in volumes)
 
         # 指数退避重试，应对 K8s API 瞬时抖动（最多 3 次，间隔 0.5s / 1.0s）
         max_retries, base_delay = 3, 0.5
@@ -252,10 +180,8 @@ echo "✅ ProductionClaw workspace 初始化完成，工单 ${CASE_ID:-unknown}�
                     assistant_type=assistant_type,
                     case_id=case_id,
                     manifest_version=manifest_version,
-                    init_configmap=init_configmap,
                     has_init_container=has_init_container,
                     has_claw_home_volume=has_claw_home_volume,
-                    has_init_config_volume=has_init_config_volume,
                     trace_id=trace_id,
                 )
                 return True
