@@ -3,7 +3,7 @@ status: active
 category: solution
 audience: developer
 last_updated: 2026-05-22
-version: v1.1
+version: v1.2
 owner: team
 ---
 
@@ -21,6 +21,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-05-22 | v1.2 | 简化 API 响应：`GET /api/sop/{id}/tree` 直接返回 SOPNode 树 | — |
 | 2026-05-22 | v1.1 | 实现 `approve_sop_document()` 中的 sop_tree 生成逻辑 | — |
 | 2026-05-22 | v1.0 | 初版：完整生产/消费流程分析 | — |
 

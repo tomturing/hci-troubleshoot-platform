@@ -321,7 +321,7 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
 async def get_sop_tree(document_id: int, request: Request) -> dict:
     """查询已解析的 SOP 决策树（供 AI Agent 工具侧遍历）。
 
-    返回 tree_json（SOPNode.model_dump() 格式）。
+    直接返回 SOPNode 树（tree_json），调用方无需解包。
     404 表示树尚未生成，调用方应降级到文本摘要。
     """
     _check_auth(request)
@@ -341,4 +341,4 @@ async def get_sop_tree(document_id: int, request: Request) -> dict:
             detail=f"SOP 文档 {document_id} 的决策树尚未生成",
         )
 
-    return {"document_id": document_id, "tree": sop_tree.tree_json}
+    return sop_tree.tree_json
