@@ -2,8 +2,8 @@
 status: active
 category: solution
 audience: developer
-last_updated: 2026-05-01
-version: v1.0
+last_updated: 2026-05-22
+version: v1.2
 owner: team
 ---
 
@@ -20,6 +20,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-05-22 | v1.2 | 文档整理：合并 `SOP树设计.md` 内容，统一为单一设计文档 | — |
 | 2026-05-19 | v1.1 | 解析策略重构：叶优先/关键词匹配；`sop_template.py` 移除 model_validator（宽松模式）；DiagnosisDetail/SolutionDetail 新增 `source_heading` 溯源字段；§2.2 去掉 H5 固定假设；§3 模型说明更新；§5.1 解析流程更新；新增 §八 validation_issues 三层作用 | [2026-05-19-SOP解析策略与校验模式设计.md](./events/2026-05-19-SOP解析策略与校验模式设计.md) |
 | 2026-05-01 | v1.0 | 初版：多叉决策树设计，sop_tree 表，Pydantic 模型，双向同步规则 | — |
 
@@ -405,4 +406,9 @@ ORDER BY doc_count ASC;
 2. **`_parse_docx_bytes()` 修复**：`admin.py` 中 `heading_prefix = "#" * min(level, 3)` 需改为 `"#" * level`，否则 H4+ 标题被压缩（Task T2）
 3. **中文编号列表**：`1、2、` 格式（中文顿号）已支持；`（1）（2）` 括号格式暂不支持
 4. **宽松模式的数据一致性**：`validation_status=error` 时 `tree_json` 仍可能存在（残缺树），消费方需检查 `validation_status` 再使用
-5. **pydantic-ai 集成**：本文档设计的 `SOPNode` 结构将作为 ReAct Agent 的 tool 返回类型，未来 S1-S6 重构时直接使用
+5. **pydantic-ai 集成**：本文档设计的 `SOPNode` 结构将作为 pydantic-ai Agent（C 大脑）的 `@agent.tool` 返回类型，在 A/B/C 三向测试方案中直接使用。
+   - `SOPNode` 是 `pydantic.BaseModel`，pydantic-ai 工具系统天然支持 Pydantic 类型作为工具返回类型，无需手写 JSON Schema
+   - LLM 可以直接以结构化 JSON 形式访问 `prerequisites`、`diagnosis.page_methods`、`solution.quick_recovery` 等字段
+   - 集成方式：`@agent.tool async def get_sop_node(...) -> SOPNode`，pydantic-ai 自动序列化并传递给 LLM
+   - 验证时间：2026-05-19（已确认 GLMClient 使用 `AsyncOpenAI(base_url=...)` 接入 GLM，OpenAI-compatible，pydantic-ai 零适配成本接入）
+   - 相关文档：[大脑可选-集成重设计方案.md §十一](../agent/大脑可选-集成重设计方案.md)
