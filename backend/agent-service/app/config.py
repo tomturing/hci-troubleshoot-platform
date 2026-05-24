@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     SERVICE_PORT: int = 8005
     LOG_LEVEL: str = "INFO"
 
-    # Redis（用于 confirm_service / dialog_tools BRPOP）
+    # Redis（用于 confirm_service BRPOP）
     REDIS_URL: str = "redis://redis:6379/0"
 
     # LLM 配置（统一使用 dashscope 网关）
@@ -50,6 +50,9 @@ class Settings(BaseSettings):
 
     # ReAct 引擎开关
     REACT_ENABLED: bool = False
+
+    # HTP Agent 默认执行模式（direct | react | plan）
+    HTP_DEFAULT_MODE: str = "direct"
 
     # 人工确认超时（秒）
     CONFIRM_TIMEOUT_SEC: int = 120

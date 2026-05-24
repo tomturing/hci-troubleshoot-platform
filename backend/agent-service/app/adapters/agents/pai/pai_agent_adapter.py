@@ -33,9 +33,9 @@ from pydantic_ai.tools import RunContext
 from pydantic_ai.usage import UsageLimits
 from shared.clients import KBClient
 
-from app.adapters.acli_adapter import AcliAdapter
-from app.adapters.scp_adapter import SCPAdapter
-from app.core.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
+from app.adapters.clients.acli_client import AcliClient
+from app.adapters.clients.scp_client import SCPClient
+from app.domain.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
 
 logger = logging.getLogger("pydantic-ai-brain")
 tracer = trace.get_tracer(__name__)
@@ -63,8 +63,8 @@ class PydanticAIDeps:
     """pydantic-ai Agent 工具的依赖注入（通过 ctx.deps 访问）"""
 
     kb_client: KBClient | None
-    scp_adapter: SCPAdapter
-    acli_adapter: AcliAdapter
+    scp_client: SCPClient
+    acli_client: AcliClient
     env_context: dict[str, Any]
 
 
@@ -106,7 +106,7 @@ def _build_agent() -> Agent[PydanticAIDeps]:
         Args:
             limit: 返回告警数量，默认 10，最大 50
         """
-        return await ctx.deps.scp_adapter.execute("get_active_alerts", {"limit": min(limit, 50)})
+        return await ctx.deps.scp_client.execute("get_active_alerts", {"limit": min(limit, 50)})
 
     @agent.tool
     async def get_vm_list(
@@ -120,7 +120,7 @@ def _build_agent() -> Agent[PydanticAIDeps]:
             name_filter: 虚拟机名称关键词过滤（可选，空字符串查询全部）
             limit: 返回数量限制，默认 20
         """
-        return await ctx.deps.scp_adapter.execute(
+        return await ctx.deps.scp_client.execute(
             "get_vm_list",
             {"name_filter": name_filter, "limit": limit},
         )
@@ -140,7 +140,7 @@ def _build_agent() -> Agent[PydanticAIDeps]:
         args: dict[str, Any] = {"limit": limit}
         if task_type:
             args["task_type"] = task_type
-        return await ctx.deps.scp_adapter.execute("get_failed_tasks", args)
+        return await ctx.deps.scp_client.execute("get_failed_tasks", args)
 
     @agent.tool
     async def get_cluster_detail(ctx: RunContext[PydanticAIDeps], cluster_id: str) -> dict:
@@ -149,7 +149,7 @@ def _build_agent() -> Agent[PydanticAIDeps]:
         Args:
             cluster_id: 集群 ID（UUID 格式）
         """
-        return await ctx.deps.scp_adapter.execute(
+        return await ctx.deps.scp_client.execute(
             "get_cluster_detail",
             {"cluster_id": cluster_id},
         )
@@ -233,8 +233,8 @@ class PaiAgentAdapter:
         base_url: str,
         api_key: str,
         model: str,
-        scp_adapter: SCPAdapter,
-        acli_adapter: AcliAdapter,
+        scp_client: SCPClient,
+        acli_client: AcliClient,
         kb_client: KBClient | None = None,
     ) -> None:
         """
@@ -242,8 +242,8 @@ class PaiAgentAdapter:
             base_url: OpenAI-compatible API base URL（例如 GLM 的 http://...）
             api_key: API 密钥
             model: 模型名称（例如 "glm-5"）
-            scp_adapter: SCP 平台 API 适配器（注入工具）
-            acli_adapter: acli SSH 执行适配器（注入工具，Phase 1 未直接使用）
+            scp_client: SCP 平台 API 客户端（注入工具）
+            acli_client: acli SSH 执行客户端（注入工具，Phase 1 未直接使用）
             kb_client: KB 服务客户端（可选，为 None 时 get_sop_tree 返回错误）
         """
         self._openai_model = OpenAIModel(
@@ -251,15 +251,15 @@ class PaiAgentAdapter:
             base_url=base_url,
             api_key=api_key,
         )
-        self._scp = scp_adapter
-        self._acli = acli_adapter
+        self._scp = scp_client
+        self._acli = acli_client
         self._kb = kb_client
 
     @classmethod
     def from_env(
         cls,
-        scp_adapter: SCPAdapter | None,
-        acli_adapter: AcliAdapter,
+        scp_client: SCPClient | None,
+        acli_client: AcliClient,
         kb_client: KBClient | None = None,
     ) -> PaiAgentAdapter:
         """从环境变量构造实例（使用 LLM_BASE_URL / LLM_API_KEY）。
@@ -270,8 +270,8 @@ class PaiAgentAdapter:
             base_url=os.environ.get("LLM_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1"),
             api_key=os.environ.get("LLM_API_KEY", ""),
             model=os.environ.get("GLM_MODEL", "glm-5"),
-            scp_adapter=scp_adapter,
-            acli_adapter=acli_adapter,
+            scp_client=scp_client,
+            acli_client=acli_client,
             kb_client=kb_client,
         )
 
@@ -309,8 +309,8 @@ class PaiAgentAdapter:
 
         deps = PydanticAIDeps(
             kb_client=self._kb,
-            scp_adapter=self._scp,
-            acli_adapter=self._acli,
+            scp_client=self._scp,
+            acli_client=self._acli,
             env_context=env_context or {},
         )
 

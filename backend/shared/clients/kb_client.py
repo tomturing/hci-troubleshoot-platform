@@ -378,3 +378,65 @@ class KBClient(InternalHTTPClient):
                 error=str(exc),
             )
             return None
+
+    async def search_cases_with_steps(
+        self,
+        category_id: str,
+        query: str,
+        top_k: int = 15,
+    ) -> list[dict]:
+        """案例差异诊断（CDD）所需接口：按分类检索含结构化步骤的候选案例。
+
+        调用 GET /api/kb/cases/search?category_id=X&query=...&top_k=K
+
+        返回 list[dict]，每项格式：
+          {
+            "id": "case-001",
+            "name": "虚拟机开机失败-内存不足",
+            "category_id": "虚拟机-003",
+            "similarity": 0.87,
+            "root_cause": "宿主机可用内存不足，无法分配",
+            "solution": "迁移其他虚拟机或扩容宿主机内存",
+            "steps": [
+              {
+                "tool_name": "acli_vm_config",
+                "tool_args_template": {"vm_name": "{{vm_name}}"},
+                "expected_pattern": "__CONTAINS__:memory_mb"
+              },
+              ...
+            ]
+          }
+
+        Args:
+            category_id: 故障分类编码，如 "虚拟机-003"
+            query: 用户原始问题描述（用于语义相关性排序）
+            top_k: 最多返回候选案例数量，默认 15
+
+        Returns:
+            案例列表，按相似度降序；服务不可用时返回空列表
+        """
+        try:
+            resp = await self.get(
+                f"{self._api_prefix}/cases/search",
+                params={"category_id": category_id, "query": query, "top_k": top_k},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("cases", [])
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                event="kb_cases_search_http_error",
+                message=f"KB cases search returned HTTP {exc.response.status_code}",
+                category_id=category_id,
+                query=query[:80],
+                status_code=exc.response.status_code,
+            )
+            return []
+        except httpx.RequestError as exc:
+            logger.warning(
+                event="kb_cases_search_unavailable",
+                message=f"KB service unreachable: {exc}",
+                category_id=category_id,
+                query=query[:80],
+            )
+            return []

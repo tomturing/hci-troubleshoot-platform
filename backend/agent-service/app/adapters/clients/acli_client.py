@@ -54,7 +54,7 @@ def _validate_safe_id(value: str, field_name: str = "参数") -> str:
     return value.strip()
 
 
-class AcliAdapter:
+class AcliClient:
     """
     acli 命令执行适配器，通过 SSH 连接 HCI 节点。
 
@@ -78,7 +78,7 @@ class AcliAdapter:
         self.password = password
 
     @classmethod
-    def from_env(cls) -> AcliAdapter:
+    def from_env(cls) -> AcliClient:
         """从环境变量创建实例"""
         return cls(
             username=os.environ.get("HCI_SSH_USER", "admin"),
@@ -87,7 +87,7 @@ class AcliAdapter:
         )
 
     async def execute(self, tool_name: str, args: dict) -> Any:
-        """统一工具执行入口，供 ToolRouter 调用"""
+        """统一工具执行入口，供 ReactExecutor 调用"""
         try:
             command, node_ip = self._build_command(tool_name, args)
         except (ValueError, KeyError) as e:
@@ -158,7 +158,7 @@ class AcliAdapter:
                 return raw_cmd, node_ip
 
             case _:
-                raise ValueError(f"AcliAdapter 未实现工具: {tool_name}")
+                raise ValueError(f"AcliClient 未实现工具: {tool_name}")
 
     async def _run_ssh(self, host: str, command: str) -> dict:
         """通过 asyncssh 在目标节点执行命令，返回结构化结果"""

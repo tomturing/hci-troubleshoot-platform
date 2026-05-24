@@ -23,8 +23,6 @@ from ..repositories.conversation_repo import ConversationRepository
 from .agent_client import AgentClient
 from .conversation_manager import ConversationManager
 from .environment_client import EnvironmentClient
-from .knowledge_retriever import KnowledgeRetriever
-from .prompt_builder import PromptBuilder
 from .sse_queue import LogAuditService
 
 logger = get_logger("conversation-service")
@@ -89,13 +87,6 @@ class ConversationService:
         self.scheduler_client = scheduler_client
         self.kb_client = kb_client
         self.environment_client = environment_client
-        # 知识检索器（从 _build_system_prompt 提取）
-        self._knowledge_retriever = KnowledgeRetriever(kb_client)
-        # Prompt 构建器（S0 专用）
-        self._prompt_builder = PromptBuilder()
-        # 分类缓存（按域分组，用于 S0 阶段）
-        self._categories_cache: dict[str, list[dict]] | None = None
-        self._categories_cache_time: float = 0.0
         # 独立事务 session 工厂，用于用户消息先行提交（与 AI 调用解耦）
         self.session_factory = session_factory
         self._audit_service = LogAuditService()
@@ -134,111 +125,6 @@ class ConversationService:
     async def get_messages(self, conversation_id: uuid.UUID) -> list[Message]:
         """获取对话历史"""
         return await self.repository.get_messages(conversation_id)
-
-    async def _build_system_prompt(
-        self,
-        query: str,
-        case_id: str,
-        diagnostic_stage: str = "S0",
-        context_info: dict | None = None,
-        confirmed_category_code: str | None = None,
-    ) -> tuple[str, dict]:
-        """
-        构建 5段式 System Prompt（双轨知识架构 + 三级 Fallback）：
-          Segment 1: 专家身份定义（固定）
-          Segment 2: 诊断方法论（含当前诊断阶段）
-          Segment 3: 推理规范（如何使用各类知识）
-          Segment 4: 动态参考资料（三级 Fallback）
-            → 优先级1：SOP 命中（程序性知识，按步骤执行）
-            → 优先级2：KB 案例命中（陈述性知识，提取假设）
-            → 优先级3：双轨均未命中（机制推理兜底，标注【机制推理】）
-          Segment 5: 当前工单上下文
-
-        S0 阶段特殊处理：
-          - 禁止 KB/SOP 检索
-          - 注入 198 个分类列表
-          - 注入环境信息、告警日志、任务日志
-
-        返回：
-            [0] system_prompt 字符串
-            [1] audit_meta 字典，包含：
-                - has_sop: bool
-                - kb_chunks_count: int
-                - kb_top_score: float | None
-                - fallback_level: str （"sop" / "kb_case" / "mechanism" / "s0_intent_recognition"）
-        """
-        # S0 阶段：使用专用的 Prompt 构建方法
-        if diagnostic_stage == "S0":
-            return await self._build_s0_system_prompt(query, case_id, context_info)
-
-        # S1+ 阶段：委托给 KnowledgeRetriever 处理
-        # N-2 修复：传入 S0 已确认的分类编码，S1+ 跳过重复的意图识别 LLM 调用
-        return await self._knowledge_retriever.retrieve(
-            query=query,
-            case_id=case_id,
-            diagnostic_stage=diagnostic_stage,
-            confirmed_category_code=confirmed_category_code,
-        )
-
-    async def _build_s0_system_prompt(
-        self, query: str, case_id: str, context_info: dict | None = None
-    ) -> tuple[str, dict]:
-        """
-        构建 S0 意图识别阶段的 System Prompt
-
-        S0 阶段的特殊之处：
-        1. 不进行 KB/SOP 检索
-        2. 注入 198 个分类列表
-        3. 注入环境信息、告警日志、任务日志
-
-        参数：
-            query: 用户查询（用于日志记录）
-            case_id: 工单 ID
-            context_info: 环境信息字典（可选）
-
-        返回：
-            [0] system_prompt 字符串
-            [1] audit_meta 字典
-        """
-        # 获取分类列表（带缓存，5 分钟有效期）
-        import time
-
-        cache_ttl = 300.0  # 5 分钟
-        if self._categories_cache is None or (time.time() - self._categories_cache_time) > cache_ttl:
-            if self.kb_client:
-                self._categories_cache = await self.kb_client.get_categories_grouped()
-                self._categories_cache_time = time.time()
-                logger.info(
-                    event="s0_categories_loaded",
-                    message=f"已加载 {sum(len(c) for c in self._categories_cache.values())} 个分类",
-                    domain_count=len(self._categories_cache),
-                )
-            else:
-                self._categories_cache = {}
-
-        # 构建 S0 Prompt
-        system_prompt = self._prompt_builder.build_s0_prompt(
-            context_info=context_info or {},
-            categories_by_domain=self._categories_cache or {},
-            case_context={"case_id": case_id, "description": query},
-        )
-
-        # 构建 audit_meta
-        total_chars = len(system_prompt)
-        audit_meta = {
-            "has_sop": False,
-            "kb_chunks_count": 0,
-            "kb_top_score": None,
-            "fallback_level": "s0_intent_recognition",
-            "context_breakdown": [
-                {"code": "S0", "name": "意图识别", "chars": total_chars, "token_est": total_chars // 4}
-            ],
-            "total_chars": total_chars,
-            "total_token_est": total_chars // 4,
-            "category_id": None,
-        }
-
-        return system_prompt, audit_meta
 
     async def send_message_stream_only(
         self, conversation_id: uuid.UUID, case_id: str, content: str, assistant_type: str | None = None
@@ -369,31 +255,11 @@ class ConversationService:
                 }
                 logger.info(
                     event="s0_context_info_loaded",
-                    message="S0 Prompt 已加载环境上下文",
+                    message="S0 环境上下文已加载",
                     case_id=case_id,
                     alert_count=len(env_context.alert_logs),
                     task_count=len(env_context.task_logs),
                 )
-
-        system_prompt, _audit_meta = await self._build_system_prompt(
-            content,
-            case_id,
-            diagnostic_stage=current_stage,
-            context_info=context_info,
-            # N-2 修复：S1+ 阶段复用 S0 确认的分类，跳过重复意图识别
-            confirmed_category_code=_confirmed_category_code,
-        )
-
-        # T7: 若本次检索命中了 SOP，异步写入 conversation.sop_document_id 并更新 hit_count
-        sop_document_id_from_meta = _audit_meta.get("sop_document_id") if _audit_meta else None
-        if sop_document_id_from_meta is not None:
-            asyncio.create_task(
-                self._update_sop_usage(
-                    conversation_id=conversation_id,
-                    case_id=case_id,
-                    sop_document_id=sop_document_id_from_meta,
-                )
-            )
 
         # 3. 获取历史上下文 (最近 20 条)
         # 注意：必须使用独立 session，避免请求作用域 session 在流式传输期间长期持有事务锁
@@ -403,31 +269,15 @@ class ConversationService:
                 all_messages = await ConversationRepository(msg_session).get_messages(conversation_id)
         else:
             all_messages = await self.repository.get_messages(conversation_id)
-        history_messages: list[dict] = [{"role": "system", "content": system_prompt}]
-        selected_messages = all_messages[-20:] if len(all_messages) > 20 else all_messages
 
+        # 构建消息历史（不再加入 system_prompt，由 agent-service 自己构建）
+        history_messages: list[dict] = []
+        selected_messages = all_messages[-20:] if len(all_messages) > 20 else all_messages
         for msg in selected_messages:
             history_messages.append({"role": msg.role.value, "content": msg.content})
 
         # 4. 从注册表获取 AI 助手客户端
         resolved_assistant_type = await self._resolve_assistant_type(conversation_id, assistant_type)
-
-        # 4.x 写入 prompt_audit（fire-and-forget，100% 采样完整 payload 用于审计分析）
-        _do_sample = True  # 100% 采样，便于 Grafana Dashboard 审计 Agent 收到的完整上下文
-        _sample_payload = history_messages if _do_sample else None
-
-        if self.session_factory:
-            asyncio.create_task(
-                self._write_prompt_audit(
-                    conversation_id=conversation_id,
-                    case_id=case_id,
-                    assistant_type=resolved_assistant_type,
-                    trace_id=trace_id,
-                    message_count=len(all_messages),
-                    audit_meta=_audit_meta,
-                    sample_payload=_sample_payload,
-                )
-            )
 
         # 5. 调用大脑并流式返回
         # T1-6: 若已注入 AgentRouter，走新大脑可选路径；否则保持原有 ai_registry 路径（向后兼容）
@@ -451,6 +301,8 @@ class ConversationService:
                     messages=history_messages,
                     env_context=context_info,
                     stream=True,
+                    diagnostic_stage=current_stage,
+                    category_id=_confirmed_category_code,
                 ):
                     event_type = agent_event.get("type")
                     if event_type == "text_chunk":

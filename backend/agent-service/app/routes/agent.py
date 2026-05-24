@@ -15,8 +15,8 @@ from pydantic import BaseModel
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 
-from app.adapters.agent_router import AgentRouter
-from app.core.agent_port import (
+from app.adapters.agents.agent_router import AgentRouter
+from app.domain.agent_port import (
     AgentEscalation,
     AgentInteractiveRequest,
     AgentStageUpdate,
@@ -50,6 +50,10 @@ class AgentStreamRequest(BaseModel):
     messages: list[dict[str, Any]]
     env_context: dict[str, Any] | None = None
     stream: bool = True
+    diagnostic_stage: str = "S0"  # 诊断阶段（S0/S1/S2/S3/S4/S5/S6）
+    category_id: str | None = None  # S0 确认的分类编码（S1+ 阶段必须）
+    execution_mode: str = "direct"  # 执行模式（direct/react）
+    system_prompt: str | None = None  # 自定义 system_prompt（可选）
 
 
 class InteractiveResponseRequest(BaseModel):
@@ -95,6 +99,10 @@ async def _event_stream(
             stream=req.stream,
             case_id=req.case_id,
             user_id=req.user_id,
+            diagnostic_stage=req.diagnostic_stage,
+            category_id=req.category_id,
+            execution_mode=req.execution_mode,
+            system_prompt=req.system_prompt,
         ):
             if isinstance(event, AgentTextChunk):
                 yield _sse({"type": "text_chunk", "content": event.content})

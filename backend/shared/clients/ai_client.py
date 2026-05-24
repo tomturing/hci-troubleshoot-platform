@@ -8,8 +8,9 @@ AI Assistant Client - 多类型AI助手客户端抽象层 (v2.0)
 import json
 import os
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
 from ipaddress import ip_address
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import httpx
@@ -17,6 +18,26 @@ from shared.observability.logger import get_logger
 from shared.utils.exceptions import AIStreamError, ErrorCode
 
 logger = get_logger("ai-client")
+
+
+# ─── 工具调用结果数据模型 ──────────────────────────────────────────────────────────
+
+
+@dataclass
+class ToolCallRequest:
+    """LLM 请求执行的工具调用（OpenAI function calling 协议）"""
+
+    id: str           # call_xxxx，工具结果回传时用于关联
+    name: str         # 工具名称
+    arguments: dict[str, Any] = field(default_factory=dict)  # JSON parse 后的参数
+
+
+@dataclass
+class InvokeResult:
+    """invoke() 的返回值：工具调用或文字终止，二者互斥。"""
+
+    content: str | None = None                            # 文字终止时非空（finish_reason=stop）
+    tool_calls: list[ToolCallRequest] = field(default_factory=list)  # 需要调用工具时非空
 
 
 @runtime_checkable
@@ -395,6 +416,110 @@ class OpenClawAssistant:
             return False
         except Exception:
             return False
+
+    async def invoke(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        user_id: str = "",
+        model: str = "",
+        response_format: dict | None = None,
+    ) -> InvokeResult:
+        """非流式 LLM 调用，支持工具调用（function calling）和结构化 JSON 输出。
+
+        工具调用轮次使用非流式（stream=False），因为：
+          - tool_calls 字段只在完整响应中出现，流式下需拼接 delta 容易出 bug
+          - 用户看不到工具调用的中间推理，无需流式体验
+
+        Args:
+            messages: OpenAI 格式消息列表
+            tools: 工具定义列表（OpenAI function calling 格式），非空时启用工具调用
+            user_id: 用户 ID
+            model: 模型名称（留空使用默认）
+            response_format: 如 {"type": "json_object"} 强制 JSON 输出
+
+        Returns:
+            InvokeResult:
+                .content 非空 → LLM 给出最终文字答案（finish_reason=stop）
+                .tool_calls 非空 → LLM 要求执行工具（finish_reason=tool_calls）
+        """
+        endpoint = self.base_url.rstrip("/")
+        if self._is_internal_gateway_endpoint(endpoint):
+            path = os.environ.get("AI_COMPLETIONS_PATH", "/v1/chat/completions")
+        else:
+            path = os.environ.get("AI_COMPLETIONS_PATH_EXTERNAL", "/chat/completions")
+        url = f"{endpoint}{path}"
+
+        payload: dict[str, Any] = {
+            "model": model or self.default_model,
+            "messages": messages,
+            "stream": False,
+            "user": user_id,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        if response_format:
+            payload["response_format"] = response_format
+
+        token = self._resolve_auth_token(endpoint)
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        logger.info(
+            event="ai_invoke",
+            message="非流式 LLM 调用",
+            url=url,
+            user_id=user_id,
+            has_tools=bool(tools),
+            tool_count=len(tools) if tools else 0,
+        )
+
+        try:
+            response = await self.client.post(url, json=payload, headers=headers)
+            if response.status_code != 200:
+                error_detail = self._parse_ai_error(response.status_code, response.text)
+                raise AIStreamError(
+                    code=error_detail["code"],
+                    message=error_detail["message"],
+                    detail=error_detail["detail"],
+                )
+
+            data = response.json()
+            choice = data.get("choices", [{}])[0]
+            message = choice.get("message", {})
+
+            # 工具调用分支（finish_reason="tool_calls"）
+            raw_tool_calls: list[dict] = message.get("tool_calls") or []
+            if raw_tool_calls:
+                parsed: list[ToolCallRequest] = []
+                for tc in raw_tool_calls:
+                    fn = tc.get("function", {})
+                    try:
+                        args = json.loads(fn.get("arguments", "{}"))
+                    except json.JSONDecodeError:
+                        args = {}
+                    parsed.append(ToolCallRequest(
+                        id=tc.get("id", ""),
+                        name=fn.get("name", ""),
+                        arguments=args,
+                    ))
+                return InvokeResult(content=None, tool_calls=parsed)
+
+            # 文字终止分支（finish_reason="stop"）
+            content = message.get("content") or ""
+            return InvokeResult(content=content, tool_calls=[])
+
+        except AIStreamError:
+            raise
+        except Exception as e:
+            error_detail = self._parse_generic_error(e)
+            raise AIStreamError(
+                code=error_detail["code"],
+                message=error_detail["message"],
+                detail=error_detail["detail"],
+            ) from e
 
     async def close(self):
         """关闭客户端"""

@@ -12,7 +12,6 @@ from pydantic import BaseModel
 
 class ToolDefinition(BaseModel):
     """工具定义（OpenAI function calling 格式 + 扩展字段）"""
-
     name: str
     description: str
     parameters: dict          # JSON Schema
@@ -244,7 +243,7 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
             "required": [],
         },
         risk_level=1,
-        policy="notify",      # notify：显示"正在获取日志"提示
+        policy="notify",
         category="acli",
     ),
     # ─── acli Level 2 变更工具（需用户确认）────────────────────────────────────
@@ -336,5 +335,5 @@ def get_tools_for_llm() -> list[dict]:
             },
         }
         for tool in TOOL_REGISTRY.values()
-        if tool.policy != "block"    # 高危工具（block）不暴露给 LLM
+        if tool.policy != "block"
     ]

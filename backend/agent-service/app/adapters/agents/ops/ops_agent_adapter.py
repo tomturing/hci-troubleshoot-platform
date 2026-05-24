@@ -29,7 +29,7 @@ from typing import Any
 
 import httpx
 
-from app.core.agent_port import (
+from app.domain.agent_port import (
     AgentEvent,
     AgentInteractiveRequest,
     AgentStageUpdate,

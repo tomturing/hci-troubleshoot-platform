@@ -21,8 +21,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-class SCPAdapter:
-    """SCP REST API 工具执行适配器，供 ReactExecutor 注入使用"""
+class SCPClient:
+    """SCP REST API 工具执行客户端，供 ReactExecutor 和 pai-agent 注入使用"""
 
     # 连接超时 10s，读超时 15s（SCP API 响应可能较慢）
     DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=15.0, write=10.0, pool=10.0)
@@ -42,7 +42,7 @@ class SCPAdapter:
         }
 
     @classmethod
-    def from_env(cls) -> "SCPAdapter":
+    def from_env(cls) -> "SCPClient":
         """从环境变量创建实例"""
         return cls(
             base_url=os.environ["SCP_BASE_URL"],
@@ -59,7 +59,7 @@ class SCPAdapter:
         }
         handler = dispatch.get(tool_name)
         if not handler:
-            return {"error": f"SCPAdapter 未实现工具: {tool_name}"}
+            return {"error": f"SCPClient 未实现工具: {tool_name}"}
         return await handler(**args)
 
     async def get_active_alerts(self, limit: int = 10) -> dict:

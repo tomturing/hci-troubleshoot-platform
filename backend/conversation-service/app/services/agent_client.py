@@ -45,6 +45,10 @@ class AgentClient:
         messages: list[dict[str, Any]],
         env_context: dict[str, Any] | None = None,
         stream: bool = True,
+        diagnostic_stage: str = "S0",  # 诊断阶段
+        category_id: str | None = None,  # S0 确认的分类
+        execution_mode: str = "direct",  # 执行模式
+        system_prompt: str | None = None,  # 自定义 system_prompt
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         调用 agent-service POST /v1/agent/stream，以异步生成器方式 yield 事件 dict。
@@ -61,6 +65,10 @@ class AgentClient:
             "messages": messages,
             "env_context": env_context,
             "stream": stream,
+            "diagnostic_stage": diagnostic_stage,
+            "category_id": category_id,
+            "execution_mode": execution_mode,
+            "system_prompt": system_prompt,
         }
 
         url = f"{self._base_url}/v1/agent/stream"
