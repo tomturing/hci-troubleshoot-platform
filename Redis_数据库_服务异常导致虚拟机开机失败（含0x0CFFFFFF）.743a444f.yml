@@ -1,0 +1,1774 @@
+meta:
+  node_path: 云计算-排障-虚拟机-虚拟机生命周期-虚拟机管理-虚拟机开机失败-虚拟分组L1_9102a881
+  node_name: Redis/数据库/服务异常导致虚拟机开机失败（含0x0CFFFFFF）
+  source_case_count: 10
+  high_confidence_case_count: 10
+  medium_confidence_case_count: 0
+  source_bucket_distribution:
+    云计算-高置信样本: 10
+  batch_count: 4
+  generated_at: 2026-05-12T17:17:19.0161330+08:00
+  workhorse_model: deepseek-v4-flash
+  critical_model: deepseek-v4-flash
+  pipeline_version: node-sop-aggregation-v2
+  is_virtual_node: true
+  base_node_path: 云计算-排障-虚拟机-虚拟机生命周期-虚拟机管理-虚拟机开机失败
+  parent_node_path: 云计算-排障-虚拟机-虚拟机生命周期-虚拟机管理-虚拟机开机失败
+  virtual_split_level: 1
+  virtual_group_id: G10
+  virtual_group_name: Redis/数据库/服务异常导致虚拟机开机失败（含0x0CFFFFFF）
+  virtual_group_case_count: 10
+  virtual_group_hash: 9102a881
+  virtual_source_group_ids:
+    - G10
+  virtual_group_lineage:
+    - Redis/数据库/服务异常导致虚拟机开机失败（含0x0CFFFFFF）
+  pre_group_count: 4
+  pre_groups:
+    - group_id: G1
+      group_name: Redis OOM或连接异常导致虚拟机开机失败（错误码0x0CFFFFFF）
+      case_count: 4
+    - group_id: G2
+      group_name: Exporter/Prometheus服务异常导致虚拟机开机失败（虚拟机未运行）
+      case_count: 1
+    - group_id: G3
+      group_name: MySQL连接满或配置异常导致虚拟机开机失败
+      case_count: 3
+    - group_id: G4
+      group_name: 数据库死锁或网卡异常导致虚拟机开机失败（创建网卡连接失败）
+      case_count: 2
+entry:
+  summary: 本节点覆盖HCI平台虚拟机开机失败场景，涵盖因Redis服务异常（OOM/连接超时）、vn-node-agent-api服务内存过高、go-zero框架CPU计算异常、asv服务组件异常（exporter/prometheus）、MySQL连接数满、MySQL配置缺失（server-id）、数据库只读/配置异常、数据库死锁/IO超时等根因导致的虚拟机开机失败问题。
+  symptoms:
+    - 虚拟机开机任务失败
+    - 前端报错：服务不可用，可能由于系统繁忙导致，请刷新页面重试
+    - 错误码：0x0CFFFFFF
+    - 虚拟机未运行
+    - 获取快照类型失败！错误码：0x0000000000FF1D84
+    - 更新网卡设备信息失败：数据处理失败
+    - 错误码：0x0100186D
+    - 创建虚拟机网卡连接失败
+  alerts_or_keywords:
+    - 服务不可用，可能由于系统繁忙导致
+    - 0x0CFFFFFF
+    - 虚拟机未运行
+    - 获取快照类型失败
+    - 0x0000000000FF1D84
+    - 更新网卡设备信息失败
+    - 0x0100186D
+    - 创建虚拟机网卡连接失败
+  prerequisites:
+    - 具备acli命令行工具访问权限
+    - 具备SSH登录集群节点权限
+    - 故障发生日期
+  environment_scope:
+    - HCI-VT平台
+    - HCI 6.8.0（x86架构）
+    - 超融合平台
+flow:
+  - step_id: entry-1
+    action: 查询失败任务详情，确认错误码和报错信息（关键命令/路径：acli task get -k '可能由于系统繁忙导致' -t <故障日期> -s -1）
+    command_or_path: acli task get -k '可能由于系统繁忙导致' -t <故障日期> -s -1
+    command_example: acli task get -k '可能由于系统繁忙导致' -t 2024-08-15 -s -1
+    expected_result: 返回状态为“失败”、描述包含“服务不可用，可能由于系统繁忙导致”的任务记录
+    matched_signals:
+      - 状态：失败
+      - 描述：服务不可用，可能由于系统繁忙导致
+    is_high_risk_operation: false
+    command_line_executable: true
+    branches:
+      - when: 任务记录中存在错误码0x0CFFFFFF
+        goto_branch_id: branch-A
+    if_no_match_next: entry-2
+    if_no_match_exit_reason: ''
+    source_case_ids:
+      - manual-vm-power-llm-0023
+      - manual-vm-power-llm-0024
+      - manual-vm-power-llm-0026
+      - manual-vm-power-llm-0027
+    source_type: explicit
+    evidence_quotes:
+      - 前端报错“服务不可用，可能由于系统繁忙导致，请刷新页面重试”，错误码为0x0CFFFFFF
+    source_case_count: 4
+  - step_id: entry-2
+    action: 查询失败任务详情，确认报错信息是否为“虚拟机未运行”（关键命令/路径：acli task get -k '虚拟机未运行' -t <故障日期> -s -1）
+    command_or_path: acli task get -k '虚拟机未运行' -t <故障日期> -s -1
+    command_example: acli task get -k '虚拟机未运行' -t 2024-08-15 -s -1
+    expected_result: 返回状态为“失败”、描述包含“虚拟机未运行”的任务记录
+    matched_signals:
+      - 虚拟机未运行
+    is_high_risk_operation: false
+    command_line_executable: true
+    branches:
+      - when: 任务记录中包含“虚拟机未运行”
+        goto_branch_id: branch-B
+    if_no_match_next: entry-3
+    if_no_match_exit_reason: ''
+    source_case_ids:
+      - manual-vm-power-llm-0030
+    source_type: explicit
+    evidence_quotes:
+      - 界面提示：“虚拟机未运行”
+    source_case_count: 1
+  - step_id: entry-3
+    action: 查询失败任务详情，确认报错信息是否为“获取快照类型失败”（关键命令/路径：acli task get -k '获取快照类型失败' -t <故障日期> -s -1）
+    command_or_path: acli task get -k '获取快照类型失败' -t <故障日期> -s -1
+    command_example: acli task get -k '获取快照类型失败' -t 2024-08-15 -s -1
+    expected_result: 返回状态为“失败”、描述包含“获取快照类型失败”的任务记录
+    matched_signals:
+      - 获取快照类型失败
+    is_high_risk_operation: false
+    command_line_executable: true
+    branches:
+      - when: 任务记录中包含错误码0x0000000000FF1D84
+        goto_branch_id: branch-C
+    if_no_match_next: entry-4
+    if_no_match_exit_reason: ''
+    source_case_ids:
+      - manual-vm-power-llm-0034
+    source_type: explicit
+    evidence_quotes:
+      - 启动虚拟机任务报错：获取快照类型失败！错误码：0x0000000000FF1D84
+    source_case_count: 1
+  - step_id: entry-4
+    action: 查询失败任务详情，确认报错信息是否为“更新网卡设备信息失败”或“创建虚拟机网卡连接失败”（关键命令/路径：acli task get -k '更新网卡设备信息失败|创建虚拟机网卡连接失败' -t <故障日期> -s -1）
+    command_or_path: acli task get -k '更新网卡设备信息失败|创建虚拟机网卡连接失败' -t <故障日期> -s -1
+    command_example: acli task get -k '更新网卡设备信息失败|创建虚拟机网卡连接失败' -t 2024-08-15 -s -1
+    expected_result: 返回状态为“失败”、描述包含“更新网卡设备信息失败”或“创建虚拟机网卡连接失败”的任务记录
+    matched_signals:
+      - 更新网卡设备信息失败
+      - 创建虚拟机网卡连接失败
+    is_high_risk_operation: false
+    command_line_executable: true
+    branches:
+      - when: 任务记录中包含“更新网卡设备信息失败”
+        goto_branch_id: branch-D
+      - when: 任务记录中包含“创建虚拟机网卡连接失败”
+        goto_branch_id: branch-E
+    if_no_match_next: entry-5
+    if_no_match_exit_reason: ''
+    source_case_ids:
+      - manual-vm-power-llm-0039
+      - manual-vm-power-llm-0040
+      - manual-vm-power-llm-0041
+    source_type: explicit
+    evidence_quotes:
+      - 更新网卡设备信息失败：数据处理失败
+      - 创建虚拟机网卡连接失败
+    source_case_count: 3
+  - step_id: entry-5
+    action: 查询失败任务详情，确认报错信息是否为MySQL服务健康检查失败或未生成启动任务（关键命令/路径：acli platform check -p mysql）
+    command_or_path: acli platform check -p mysql
+    command_example: acli platform check -p mysql
+    expected_result: 返回MySQL服务健康检查结果
+    matched_signals:
+      - '[fail]'
+    is_high_risk_operation: false
+    command_line_executable: true
+    branches:
+      - when: MySQL服务健康检查返回[fail]
+        goto_branch_id: branch-F
+    if_no_match_next: '[EXIT]'
+    if_no_match_exit_reason: fallback_parent
+    source_case_ids:
+      - manual-vm-power-llm-0054
+    source_type: explicit
+    evidence_quotes:
+      - MySQL 服务健康检查结果为 [fail]
+    source_case_count: 1
+branches:
+  - branch_id: branch-A
+    branch_name: Redis服务异常导致虚拟机开机失败（错误码0x0CFFFFFF）
+    branch_type: runbook
+    branch_summary: 本分支覆盖因Redis服务异常（OOM或连接超时）、vn-node-agent-api服务内存过高、go-zero框架CPU计算异常导致的虚拟机开机失败场景，入口症状为前端报错“服务不可用，可能由于系统繁忙导致”，错误码0x0CFFFFFF。合并自4个案例：manual-vm-power-llm-0023（Redis OOM）、manual-vm-power-llm-0027（Redis连接超时）、manual-vm-power-llm-0024（vn-node-agent-api内存过高）、manual-vm-power-llm-0026（go-zero框架异常）。这些案例共享相同的入口检查（确认错误码0x0CFFFFFF的任务）和相似的修复路径（重启相关服务），但根因细节不同，需通过后续检查分支区分。核心检查路径：检查vtpdaemon日志中Redis OOM关键字、检查vtpdaemon日志中Redis连接超时关键字、检查vn-node-agent-api日志中“Too man”关键字、检查statuscenterd.log中go-zero框架drop请求日志。修复路径：根据根因分别执行重启Redis服务、排查网络放通6379端口、重启vn-node-agent-api服务、安装补丁或升级版本。
+    branch_summary_source_type: mixed
+    source_case_ids:
+      - manual-vm-power-llm-0023
+      - manual-vm-power-llm-0024
+      - manual-vm-power-llm-0026
+      - manual-vm-power-llm-0027
+    scene_titles:
+      - Redis OOM导致虚拟机开机失败
+      - 虚拟机开机失败 Redis连接超时
+      - 虚拟机开机失败服务不可用
+      - 虚拟机开机失败错误码0x0CFFFFFF
+    routing_signals:
+      - 错误码：0x0CFFFFFF
+      - 服务不可用，可能由于系统繁忙导致
+    root_causes:
+      - 后台 Redis 服务已使用内存超过 maxmemory 限制，导致写命令被拒绝（OOM）
+      - 集群主机间的Redis服务端口6379被网络设备或主机防火墙拦截，导致vtpdaemon无法建立到Redis的连接
+      - vn-node-agent-api服务内存占用过高，导致API服务不可用
+      - go-zero框架CPU计算异常：x86架构下，go-zero框架在计算CPU负载时出现数值无限大的异常，错误触发过载保护，丢弃与虚拟机启动相关的HTTP请求
+    checks:
+      - step_id: check-1
+        action: 使用 acli task get 命令搜索包含“可能由于系统繁忙导致”的失败任务，确认是否存在状态为“失败”、错误码为 0x0CFFFFFF 的任务记录（关键命令/路径：acli task get -k "可能由于系统繁忙导致" -t <故障日期> -s -1）
+        command_or_path: acli task get -k "可能由于系统繁忙导致" -t <故障日期> -s -1
+        command_example: acli task get -k "可能由于系统繁忙导致" -t 2024-01-01 -s -1
+        expected_result: 返回状态为“失败”、错误码为 0x0CFFFFFF 的任务记录
+        matched_signals:
+          - 任务状态：失败
+          - 错误码：0x0CFFFFFF
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: check-2
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: not_match
+        source_type: explicit
+        evidence_quotes:
+          - 使用 acli task get 命令搜索包含“可能由于系统繁忙导致”的失败任务
+          - 返回状态为“失败”、错误码为 0x0CFFFFFF 的任务记录
+      - step_id: check-2
+        action: 在 sfvt_vtpdaemon.log 日志中搜索 Redis OOM 关键字，确认是否存在 OOM 报错（关键命令/路径：acli log get -k 'OOM command not allowed when used memory' -p /sf/log/<日志日期>/ -f sfvt_vtpdaemon.log）
+        command_or_path: acli log get -k 'OOM command not allowed when used memory' -p /sf/log/<日志日期>/ -f sfvt_vtpdaemon.log
+        command_example: acli log get -k 'OOM command not allowed when used memory' -p /sf/log/20240101/ -f sfvt_vtpdaemon.log
+        expected_result: 输出中包含 OOM command not allowed when used memory > 'maxmemory' 的日志行
+        matched_signals:
+          - OOM command not allowed when used memory > 'maxmemory'
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-1
+        if_false_next: check-3
+        if_true_exit_reason: ''
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - 在 sfvt_vtpdaemon.log 日志中搜索 Redis OOM 关键字
+          - OOM command not allowed when used memory > 'maxmemory'
+      - step_id: check-3
+        action: "在 sfvt_vtpdaemon.log 日志中搜索 Redis 连接超时关键字，确认是否存在连接超时报错（关键命令/路径：acli log get -E -k \"Cloud not connect to Redis server at .*:6379: Connection timed out\" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'）"
+        command_or_path: "acli log get -E -k \"Cloud not connect to Redis server at .*:6379: Connection timed out\" -p '/sf/log/${date}/' -f 'sfvt_vtpdaemon.log'"
+        command_example: "acli log get -E -k \"Cloud not connect to Redis server at .*:6379: Connection timed out\" -p '/sf/log/2024-08-15/' -f 'sfvt_vtpdaemon.log'"
+        expected_result: '日志行中包含 Cloud not connect to Redis server at .*:6379: Connection timed out'
+        matched_signals:
+          - 'Cloud not connect to Redis server at .*:6379: Connection timed out'
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: check-4
+        if_false_next: check-5
+        if_true_exit_reason: ''
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - 'Cloud not connect to Redis server at .*:6379: Connection timed out'
+      - step_id: check-4
+        action: 在出现故障的节点上，使用 telnet 工具测试到其他集群主机管理 IP 的 6379 端口连通性（关键命令/路径：acli system telnet <对端主机管理IP> 6379）
+        command_or_path: acli system telnet <对端主机管理IP> 6379
+        command_example: acli system telnet 192.168.1.100 6379
+        expected_result: telnet 连接失败（连接超时或拒绝）
+        matched_signals:
+          - Connection timed out
+          - Connection refused
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: check-4.1
+        if_false_next: check-4.1
+        if_true_exit_reason: ''
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes: []
+      - step_id: check-4.1
+        action: 确认本机及对端主机的 Redis 服务均在运行（关键命令/路径：acli service asv redis status）
+        command_or_path: acli service asv redis status
+        command_example: acli service asv redis status
+        expected_result: Redis 服务状态为运行中
+        matched_signals:
+          - running
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-5
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes: []
+      - step_id: check-5
+        action: 查看 vn-node-agent-api 服务日志，检索内存相关错误关键字“Too man”（关键命令/路径：acli log get -k 'Too man' -p /sf/log/<日期> -f vn-node-agent-api.log）
+        command_or_path: acli log get -k 'Too man' -p /sf/log/<日期> -f vn-node-agent-api.log
+        command_example: acli log get -k 'Too man' -p /sf/log/2025-03-20 -f vn-node-agent-api.log
+        expected_result: 日志中出现“Too man”关键字
+        matched_signals:
+          - Too man
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-8
+        if_false_next: check-6
+        if_true_exit_reason: ''
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - acli log get -k 'Too man' -p /sf/log/${date} -f vn-node-agent-api.log
+      - step_id: check-6
+        action: 查看故障当天 statuscenterd.log 中是否存在 go-zero 框架丢弃请求的日志（包含 dropreq 或 [http] dropped 关键字）（关键命令/路径：acli log get -E -k 'dropreq|[http] dropped' -p /sf/log/<故障日期>/statuscenterd.log）
+        command_or_path: acli log get -E -k 'dropreq|[http] dropped' -p /sf/log/<故障日期>/statuscenterd.log
+        command_example: acli log get -E -k 'dropreq|[http] dropped' -p /sf/log/YYYY-MM-DD/statuscenterd.log
+        expected_result: "输出中包含类似 'load/apaptivesshedder.go:197 dropreq，cpu：9xxxxxxxxxxxx, maxPass: xx' 和 'handler/sheddinghandle.go:38 [http] dropped' 的日志行"
+        matched_signals:
+          - 'load/apaptivesshedder.go:197 dropreq，cpu：9xxxxxxxxxxxx, maxPass: xx'
+          - handler/sheddinghandle.go:38 [http] dropped
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-10
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: not_match
+        source_type: explicit
+        evidence_quotes:
+          - acli log get -E -k 'dropreq|[http] dropped' -p /sf/log/YYYY-MM-DD/statuscenterd.log
+          - 如果日志命中上述特征，则确认为 go-zero 框架问题
+    solution_steps:
+      - step_id: solution-1
+        action: 确认当前 HCI 系统版本
+        command_or_path: ''
+        command_example: ''
+        expected_result: 获取到系统版本信息
+        matched_signals: []
+        is_high_risk_operation: false
+        command_line_executable: false
+        if_success_next: solution-2
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - 确认当前 HCI 系统版本
+      - step_id: solution-2
+        action: 根据确认的系统版本，执行对应的 Redis 重启命令：版本为 680 之前执行 /sf/etc/init.d/redis-server restart；版本为 680 及以上执行 acli service asv redis-server restart（关键命令/路径：if [ "$version" -lt 680 ]; then /sf/etc/init.d/redis-server restart; else acli service asv redis-server restart; fi）
+        command_or_path: if [ "$version" -lt 680 ]; then /sf/etc/init.d/redis-server restart; else acli service asv redis-server restart; fi
+        command_example: /sf/etc/init.d/redis-server restart
+        expected_result: Redis 服务重启成功
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: true
+        if_success_next: solution-3
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - 版本为 680 之前（不含 680）：/sf/etc/init.d/redis-server restart
+          - 版本为 680 及以上：acli service asv redis-server restart
+      - step_id: solution-3
+        action: 等待 1~2 分钟，确保 Redis 服务恢复正常（关键命令/路径：sleep 120）
+        command_or_path: sleep 120
+        command_example: sleep 120
+        expected_result: Redis 服务恢复正常
+        matched_signals: []
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_success_next: solution-4
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - 等待 1~2 分钟，确保 Redis 服务恢复正常
+      - step_id: solution-4
+        action: 重新尝试启动之前失败的虚拟机，观察任务是否正常完成；同时可再次执行日志检查命令，确认不再出现新的 OOM 报错
+        command_or_path: ''
+        command_example: ''
+        expected_result: 虚拟机启动成功，不再出现 OOM 报错
+        matched_signals: []
+        is_high_risk_operation: false
+        command_line_executable: false
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - 重新尝试启动之前失败的虚拟机，观察任务是否正常完成
+          - 再次执行排查步骤中的日志检查命令，确认不再出现新的 OOM 报错
+      - step_id: solution-5
+        action: 检查并放通集群主机间安全设备（如防火墙、安全组）对 6379 端口的拦截策略
+        command_or_path: ''
+        command_example: ''
+        expected_result: 6379 端口放通后，telnet 连接成功
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: false
+        if_success_next: solution-6
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes: []
+      - step_id: solution-6
+        action: 检查并放通管理交换机 ACL 策略中对 6379 端口的拦截
+        command_or_path: ''
+        command_example: ''
+        expected_result: 6379 端口放通后，telnet 连接成功
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: false
+        if_success_next: solution-7
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes: []
+      - step_id: solution-7
+        action: 检查并放通集群主机自身防火墙规则（如 iptables、nftables）中对 6379 端口的允许
+        command_or_path: ''
+        command_example: ''
+        expected_result: 6379 端口放通后，telnet 连接成功
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: false
+        if_success_next: solution-7.1
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes: []
+      - step_id: solution-7.1
+        action: 再次执行 telnet 测试确认 6379 端口已连通（关键命令/路径：acli system telnet <对端主机管理IP> 6379）
+        command_or_path: acli system telnet <对端主机管理IP> 6379
+        command_example: acli system telnet 192.168.1.100 6379
+        expected_result: 端口已连通
+        matched_signals:
+          - Connected to
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_success_next: solution-7.2
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes: []
+      - step_id: solution-7.2
+        action: 重试虚拟机开机操作，确认不再报错 0x0CFFFFFF
+        command_or_path: ''
+        command_example: ''
+        expected_result: 虚拟机开机成功，不再报错 0x0CFFFFFF
+        matched_signals: []
+        is_high_risk_operation: false
+        command_line_executable: false
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes: []
+      - step_id: solution-8
+        action: 重启 vn-node-agent-api 服务（关键命令/路径：acli service anet vn-node-agent-api restart）
+        command_or_path: acli service anet vn-node-agent-api restart
+        command_example: acli service anet vn-node-agent-api restart
+        expected_result: 重启完成后，重新尝试启动虚拟机，观察是否成功；或再次执行日志检索命令，确认不再新增“Too man”类错误
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: true
+        if_success_next: '[EXIT]'
+        if_failure_next: solution-9
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - acli service anet vn-node-agent-api restart
+      - step_id: solution-9
+        action: 升级平台版本至 6.8.0 并打上最新集合补丁，或升级至 690 及更高版本
+        command_or_path: ''
+        command_example: ''
+        expected_result: 长期监控 vn-node-agent-api 进程内存使用，确保不再发生内存溢出；同时验证虚拟机开机功能正常
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: false
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: escalate
+        source_type: explicit
+        evidence_quotes:
+          - 升级至6.8.0并打上最新的集和补丁，或者升级至690及更高版本
+      - step_id: solution-10
+        action: 为 6.8.0 版本安装最新集合补丁，临时修复 go-zero 框架 CPU 计算异常问题
+        command_or_path: ''
+        command_example: ''
+        expected_result: 补丁安装完成后，重新启动虚拟机成功，不再返回错误码 0x0CFFFFFF；statuscenterd.log 中不再出现新的 drop 请求记录
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: false
+        if_success_next: '[EXIT]'
+        if_failure_next: solution-11
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - 安装补丁可能引起相关服务重启，短暂影响管理面业务，请在业务低峰期或维护窗口操作
+          - 此方案为临时修复，若需永久解决，建议升级至方案三的版本
+      - step_id: solution-11
+        action: 将集群升级至 6.8.0R1 以后 LTS 版本，永久修复 go-zero 框架缺陷
+        command_or_path: ''
+        command_example: ''
+        expected_result: 升级完成后，集群所有服务状态正常，创建新虚拟机启动任务无报错，statuscenterd.log 中无 drop 请求日志
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: false
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: escalate
+        source_type: explicit
+        evidence_quotes:
+          - 版本升级涉及管理服务重启、数据迁移等重大变更，务必在规划的维护窗口内执行
+          - 此方案为永久修复，因为更高版本已彻底解决该框架缺陷
+    field_source_types:
+      root_causes: explicit
+      temporary_workaround: mixed
+      permanent_fix: mixed
+      risk_and_impact: mixed
+      rollback_or_recovery: empty
+      escalation_conditions: explicit
+    symptoms:
+      - 虚拟机启动任务失败
+      - 前端报错：服务不可用，可能由于系统繁忙导致，请刷新页面重试
+      - 错误码：0x0CFFFFFF
+    alerts_or_keywords:
+      - 服务不可用，可能由于系统繁忙导致
+      - 0x0CFFFFFF
+      - OOM command not allowed when used memory > 'maxmemory'
+      - 'Cloud not connect to Redis server at .*:6379: Connection timed out'
+      - Too man
+      - dropreq
+      - '[http] dropped'
+    prerequisites: []
+    environment_scope: []
+    temporary_workaround:
+      - 重启Redis服务
+      - 重启vn-node-agent-api服务
+    permanent_fix:
+      - 排查并放通集群主机间安全设备、交换机ACL、主机防火墙对6379端口的拦截策略
+      - 升级平台版本至6.8.0并打上最新集合补丁，或升级至690及更高版本
+      - 升级至6.8.0R1以后LTS版本，彻底解决go-zero框架缺陷
+    risk_and_impact:
+      - 重启 Redis 服务会导致 Redis 服务短暂中断，影响依赖该服务的平台组件
+      - 重启vn-node-agent-api服务会导致短暂的API服务中断，可能影响正在处理的任务
+      - 升级平台版本影响整个HCI集群所有节点及虚拟机管理功能，需停机执行
+      - 安装补丁可能引起相关服务重启，短暂影响管理面业务
+      - 版本升级涉及管理服务重启、数据迁移等重大变更
+    rollback_or_recovery: []
+    escalation_conditions:
+      - 若所有排查步骤均未命中，建议收集完整的acli task详细信息、系统日志并联系深信服技术支持进一步分析
+    evidence_quotes:
+      - 使用 acli task get 命令搜索包含“可能由于系统繁忙导致”的失败任务
+      - 返回状态为“失败”、错误码为 0x0CFFFFFF 的任务记录
+      - 在 sfvt_vtpdaemon.log 日志中搜索 Redis OOM 关键字
+      - OOM command not allowed when used memory > 'maxmemory'
+      - 'Cloud not connect to Redis server at .*:6379: Connection timed out'
+      - acli log get -k 'Too man' -p /sf/log/${date} -f vn-node-agent-api.log
+      - acli log get -E -k 'dropreq|[http] dropped' -p /sf/log/YYYY-MM-DD/statuscenterd.log
+      - 如果日志命中上述特征，则确认为 go-zero 框架问题
+    source_case_count: 4
+    source_case_confidence_counts:
+      high: 4
+    decision_tree_visual: >-
+      check-1: 使用 acli task get 命令搜索包含“可能由于系统繁忙导致”的失败任…
+
+      │   ├── [✓ true]
+
+      │   │   check-2: 在 sfvt_vtpdaemon.log 日志中搜索 Redis OOM 关键…
+
+      │   │   │   ├── [✓ true]
+
+      │   │   │   │   solution-1: 确认当前 HCI 系统版本
+
+      │   │   │   │   │   ├── [✓ success]
+
+      │   │   │   │   │   │   solution-2: 根据确认的系统版本，执行对应的 Redis 重启命令：版本为 680 之前执行…
+
+      │   │   │   │   │   │   │   ├── [✓ success]
+
+      │   │   │   │   │   │   │   │   solution-3: 等待 1~2 分钟，确保 Redis 服务恢复正常（关键命令/路径：sleep…
+
+      │   │   │   │   │   │   │   │   │   ├── [✓ success]
+
+      │   │   │   │   │   │   │   │   │   │   solution-4: 重新尝试启动之前失败的虚拟机，观察任务是否正常完成；同时可再次执行日志检查命令…
+
+      │   │   │   │   │   │   │   │   │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │   │   │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │   └── [✗ false]
+
+      │   │   │       check-3: 在 sfvt_vtpdaemon.log 日志中搜索 Redis 连接超时关键…
+
+      │   │   │       │   ├── [✓ true]
+
+      │   │   │       │   │   check-4: 在出现故障的节点上，使用 telnet 工具测试到其他集群主机管理 IP 的 …
+
+      │   │   │       │   │   │   ├── [✓ true]
+
+      │   │   │       │   │   │   │   check-4.1: 确认本机及对端主机的 Redis 服务均在运行（关键命令/路径：acli se…
+
+      │   │   │       │   │   │   │   │   ├── [✓ true]
+
+      │   │   │       │   │   │   │   │   │   solution-5: 检查并放通集群主机间安全设备（如防火墙、安全组）对 6379 端口的拦截策略
+
+      │   │   │       │   │   │   │   │   │   │   ├── [✓ success]
+
+      │   │   │       │   │   │   │   │   │   │   │   solution-6: 检查并放通管理交换机 ACL 策略中对 6379 端口的拦截
+
+      │   │   │       │   │   │   │   │   │   │   │   │   ├── [✓ success]
+
+      │   │   │       │   │   │   │   │   │   │   │   │   │   solution-7: 检查并放通集群主机自身防火墙规则（如 iptables、nftables）中对…
+
+      │   │   │       │   │   │   │   │   │   │   │   │   │   │   ├── [✓ success]
+
+      │   │   │       │   │   │   │   │   │   │   │   │   │   │   │   solution-7.1: 再次执行 telnet 测试确认 6379 端口已连通（关键命令/路径：acl…
+
+      │   │   │       │   │   │   │   │   │   │   │   │   │   │   │   │   ├── [✓ success]
+
+      │   │   │       │   │   │   │   │   │   │   │   │   │   │   │   │   │   solution-7.2: 重试虚拟机开机操作，确认不再报错 0x0CFFFFFF
+
+      │   │   │       │   │   │   │   │   │   │   │   │   │   │   │   │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │       │   │   │   │   │   │   │   │   │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │   │   │   │   │   │   │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │   │   │   │   │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │   │   │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │   │   │   │   │   └── [✗ false] → [EXIT:manual_review]
+
+      │   │   │       │   │   │   └── [✗ false] → check-4.1
+
+      │   │   │       │   └── [✗ false]
+
+      │   │   │       │       check-5: 查看 vn-node-agent-api 服务日志，检索内存相关错误关键字“T…
+
+      │   │   │       │       │   ├── [✓ true]
+
+      │   │   │       │       │   │   solution-8: 重启 vn-node-agent-api 服务（关键命令/路径：acli se…
+
+      │   │   │       │       │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │       │       │   │   │   └── [✗ failure]
+
+      │   │   │       │       │   │   │       solution-9: 升级平台版本至 6.8.0 并打上最新集合补丁，或升级至 690 及更高版本
+
+      │   │   │       │       │   │   │       │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │       │       │   │   │       │   └── [✗ failure] → [EXIT:escalate]
+
+      │   │   │       │       │   └── [✗ false]
+
+      │   │   │       │       │       check-6: 查看故障当天 statuscenterd.log 中是否存在 go-zero …
+
+      │   │   │       │       │       │   ├── [✓ true]
+
+      │   │   │       │       │       │   │   solution-10: 为 6.8.0 版本安装最新集合补丁，临时修复 go-zero 框架 CPU …
+
+      │   │   │       │       │       │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │       │       │       │   │   │   └── [✗ failure]
+
+      │   │   │       │       │       │   │   │       solution-11: 将集群升级至 6.8.0R1 以后 LTS 版本，永久修复 go-zero 框…
+
+      │   │   │       │       │       │   │   │       │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │       │       │       │   │   │       │   └── [✗ failure] → [EXIT:escalate]
+
+      │   │   │       │       │       │   └── [✗ false] → [EXIT:not_match]
+
+      │   └── [✗ false] → [EXIT:not_match]
+  - branch_id: branch-B
+    branch_name: asv服务组件异常（exporter/prometheus）导致虚拟机开机失败
+    branch_type: runbook
+    branch_summary: 本分支覆盖因asv服务中的exporter或prometheus组件异常导致虚拟机开机失败，界面提示“虚拟机未运行”的场景。核心检查路径：检查exporter服务状态及文件是否存在，检查prometheus服务状态及/sf/data/local分区使用率。修复路径：手动启动exporter服务，清理/sf/data/local分区空间。
+    branch_summary_source_type: explicit
+    source_case_ids:
+      - manual-vm-power-llm-0030
+    scene_titles:
+      - Exporter/Prometheus服务异常致开机失败
+    routing_signals:
+      - 虚拟机未运行
+    root_causes:
+      - exporter 服务未正常运行或组件文件缺失
+      - 磁盘空间不足（/sf/data/local 分区满）导致 prometheus 服务异常
+    checks:
+      - step_id: check-1
+        action: 检查 exporter 服务状态，执行命令 acli service asv exporter status，确认服务是否为 running 状态
+        command_or_path: acli service asv exporter status
+        command_example: acli service asv exporter status
+        expected_result: 服务状态为 running
+        matched_signals:
+          - 返回状态为非 running（如 stopped、not running 等）
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: check-1.1
+        if_false_next: check-2
+        if_true_exit_reason: ''
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - acli service asv exporter status
+          - 预期结果：服务状态为 running
+      - step_id: check-1.1
+        action: 当 exporter 服务状态异常时，进入系统 Shell 并检查 /sf/bin/exporter 文件是否存在（关键命令/路径：acli system && ls /sf/bin/exporter）
+        command_or_path: acli system && ls /sf/bin/exporter
+        command_example: acli system && ls /sf/bin/exporter
+        expected_result: 文件存在（终端回显该文件路径）
+        matched_signals:
+          - 文件不存在
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-1
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - ls /sf/bin/exporter
+          - 预期结果：文件存在
+      - step_id: check-2
+        action: 检查 prometheus 服务状态，执行命令 acli service asv prometheus status，确认服务是否为 running 状态
+        command_or_path: acli service asv prometheus status
+        command_example: acli service asv prometheus status
+        expected_result: 服务状态为 running
+        matched_signals:
+          - 返回状态为非 running
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: '[EXIT]'
+        if_false_next: check-2.1
+        if_true_exit_reason: manual_review
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - acli service asv prometheus status
+          - 预期结果：服务状态为 running
+      - step_id: check-2.1
+        action: 当 prometheus 服务未运行时，检查主控节点 /sf/data/local 分区使用率，执行命令 acli system df -h /sf/data/local
+        command_or_path: acli system df -h /sf/data/local
+        command_example: acli system df -h /sf/data/local
+        expected_result: /sf/data/local 分区使用率未满
+        matched_signals:
+          - 使用率达到或接近100%
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-2
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - acli system df -h /sf/data/local
+          - 预期结果：/sf/data/local 分区使用率未满
+    solution_steps:
+      - step_id: solution-1
+        action: 手动启动 exporter 服务，执行命令 acli service asv exporter start
+        command_or_path: acli service asv exporter start
+        command_example: acli service asv exporter start
+        expected_result: 服务启动成功，状态变为 running
+        matched_signals:
+          - acli service asv exporter status 返回 running
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_success_next: solution-1.1
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - acli service asv exporter start
+      - step_id: solution-1.1
+        action: 验证 exporter 服务状态，执行命令 acli service asv exporter status，确认状态变为 running，然后在超融合管理界面重试虚拟机开机
+        command_or_path: acli service asv exporter status
+        command_example: acli service asv exporter status
+        expected_result: 状态为 running，且虚拟机开机成功
+        matched_signals:
+          - 状态变为 running
+          - 虚拟机开机成功
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - 再次执行 acli service asv exporter status，确认状态变为 running
+          - 在超融合管理界面重试虚拟机开机
+      - step_id: solution-2
+        action: 清理 /sf/data/local 分区中的可删除文件以释放空间，操作前需确认具体可删除内容，建议在技术支持指导下进行
+        command_or_path: ''
+        command_example: ''
+        expected_result: 分区使用率显著下降
+        matched_signals:
+          - df -h 显示使用率下降
+        is_high_risk_operation: true
+        command_line_executable: false
+        if_success_next: solution-2.1
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: inferred
+        evidence_quotes:
+          - 清理该分区中的可删除文件
+          - 误删关键文件可能导致监控或管理功能异常
+      - step_id: solution-2.1
+        action: 清理完成后，执行命令 acli system df -h /sf/data/local 确认使用率已显著下降，然后在超融合管理界面重试虚拟机开机
+        command_or_path: acli system df -h /sf/data/local
+        command_example: acli system df -h /sf/data/local
+        expected_result: 使用率显著下降，且虚拟机开机成功
+        matched_signals:
+          - 使用率下降
+          - 虚拟机开机成功
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - 执行 acli system df -h /sf/data/local 确认使用率已显著下降
+          - 在超融合管理界面重试虚拟机开机
+    field_source_types:
+      root_causes: explicit
+      temporary_workaround: empty
+      permanent_fix: empty
+      risk_and_impact: explicit
+      rollback_or_recovery: empty
+      escalation_conditions: explicit
+    symptoms:
+      - 虚拟机开机操作后未运行
+      - 界面提示“虚拟机未运行”
+    alerts_or_keywords:
+      - 虚拟机未运行
+      - acli service asv exporter status 返回非 running 状态
+      - acli service asv prometheus status 返回非 running 状态
+      - /sf/data/local 分区使用率达到或接近100%
+    prerequisites: []
+    environment_scope: []
+    temporary_workaround: []
+    permanent_fix: []
+    risk_and_impact:
+      - 清理 /sf/data/local 分区时误删关键文件可能导致监控或管理功能异常，操作前需确认具体可删除内容，建议在技术支持指导下进行
+    rollback_or_recovery: []
+    escalation_conditions:
+      - exporter 服务文件不存在时，需人工补录具体操作步骤
+      - exporter 服务启动失败时，需检索深信服技术支持KB或联系技术支持
+      - prometheus 服务运行正常但服务层面未发现异常时，需人工补录后续排查步骤
+      - prometheus 服务未运行但分区使用率正常时，需人工补录后续排查步骤
+      - 清理 /sf/data/local 分区的具体文件列表和清理命令需人工检索KB或由一线工程师确认
+      - prometheus 服务清理后仍未运行时，其启动命令需参照KB或寻求支持
+    evidence_quotes:
+      - 界面提示：“虚拟机未运行”
+      - acli service asv exporter status
+      - acli service asv prometheus status
+      - acli system df -h /sf/data/local
+      - 若文件不存在，说明 exporter 组件可能未完整安装
+      - 若使用率达到或接近100%，则判定为分区满导致 prometheus 服务异常
+    source_case_count: 1
+    source_case_confidence_counts:
+      high: 1
+    decision_tree_visual: >-
+      check-1: 检查 exporter 服务状态，执行命令 acli service asv …
+
+      │   ├── [✓ true]
+
+      │   │   check-1.1: 当 exporter 服务状态异常时，进入系统 Shell 并检查 /sf/b…
+
+      │   │   │   ├── [✓ true]
+
+      │   │   │   │   solution-1: 手动启动 exporter 服务，执行命令 acli service asv …
+
+      │   │   │   │   │   ├── [✓ success]
+
+      │   │   │   │   │   │   solution-1.1: 验证 exporter 服务状态，执行命令 acli service asv …
+
+      │   │   │   │   │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │   └── [✗ false] → [EXIT:manual_review]
+
+      │   └── [✗ false]
+
+      │       check-2: 检查 prometheus 服务状态，执行命令 acli service as…
+
+      │       │   ├── [✓ true] → [EXIT:manual_review]
+
+      │       │   └── [✗ false]
+
+      │       │       check-2.1: 当 prometheus 服务未运行时，检查主控节点 /sf/data/loc…
+
+      │       │       │   ├── [✓ true]
+
+      │       │       │   │   solution-2: 清理 /sf/data/local 分区中的可删除文件以释放空间，操作前需确认…
+
+      │       │       │   │   │   ├── [✓ success]
+
+      │       │       │   │   │   │   solution-2.1: 清理完成后，执行命令 acli system df -h /sf/data/l…
+
+      │       │       │   │   │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │       │       │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │       │       │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │       │       │   └── [✗ false] → [EXIT:manual_review]
+  - branch_id: branch-C
+    branch_name: MySQL连接数满导致虚拟机开机失败
+    branch_type: runbook
+    branch_summary: "本分支覆盖因MySQL数据库连接数达到上限（Too many connections）且数据库主节点未部署在集群控制节点上，导致vtpdaemon组件获取虚拟机快照类型失败，最终虚拟机无法开机的场景。核心检查路径：通过acli task get确认错误码0x0000000000FF1D84，检查vtpdaemon日志中是否存在'failed: Too many connections at'，检查mysqld.log中是否存在'Too many connections'，确认MySQL主节点是否在控制节点上。修复路径：切换控制节点将数据库所在节点切换为控制节点（快速恢复），或深入排查MySQL连接数过高问题（永久根治）。"
+    branch_summary_source_type: explicit
+    source_case_ids:
+      - manual-vm-power-llm-0034
+    scene_titles:
+      - MySQL连接满致虚拟机开机失败
+    routing_signals:
+      - 获取快照类型失败！错误码：0x0000000000FF1D84
+    root_causes:
+      - MySQL数据库连接数达到上限（Too many connections）
+      - 数据库主节点（mysql-master）未与集群控制节点（具备acloud.zk标识）部署在同一节点上
+    checks:
+      - step_id: check-1
+        action: 在集群管理节点执行acli命令，查询包含“获取快照类型失败”的失败任务，确认故障是否存在并记录任务时间与节点信息。（关键命令/路径：acli task get -k "获取快照类型失败" -t <故障日期> -s -l 1）
+        command_or_path: acli task get -k "获取快照类型失败" -t <故障日期> -s -l 1
+        command_example: acli task get -k "获取快照类型失败" -t 2023-10-01 -s -l 1
+        expected_result: 命令返回的任务列表中包含一条错误码为0x0000000000FF1D84的记录，并显示任务生成时间及所在节点。
+        matched_signals:
+          - 0x0000000000FF1D84
+          - 获取快照类型失败
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: check-2
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - acli task get -k "获取快照类型失败" -t ${YYYY-MM-DD} -s -l 1
+          - 错误码为0x0000000000FF1D84
+      - step_id: check-2
+        action: "在失败任务所在节点或任何一台集群节点上，查看sfvt_vtpdaemon.log日志，检查是否存在MySQL连接过多报错。（关键命令/路径：acli log get -k \"failed: Too many connections at\" -p '/sf/log/<故障日期>/' -f 'sfvt_vtpdaemon.log'）"
+        command_or_path: "acli log get -k \"failed: Too many connections at\" -p '/sf/log/<故障日期>/' -f 'sfvt_vtpdaemon.log'"
+        command_example: "acli log get -k \"failed: Too many connections at\" -p '/sf/log/2023-10-01/' -f 'sfvt_vtpdaemon.log'"
+        expected_result: '日志输出中包含“failed: Too many connections at”以及“获取虚拟机快照列表失败，请稍后重试！0x010003E6”。'
+        matched_signals:
+          - 'failed: Too many connections at'
+          - 获取虚拟机快照列表失败，请稍后重试！0x010003E6
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: check-3
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - 'failed: Too many connections at'
+          - 获取虚拟机快照列表失败，请稍后重试！0x010003E6
+      - step_id: check-3
+        action: 检查MySQL主节点日志mysqld.log，确认是否存在“Too many connections”记录。（关键命令/路径：grep 'Too many connections' /var/log/mysqld.log）
+        command_or_path: grep 'Too many connections' /var/log/mysqld.log
+        command_example: grep 'Too many connections' /var/log/mysqld.log
+        expected_result: 日志输出中包含“Too many connections”记录。
+        matched_signals:
+          - Too many connections
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: check-4
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - 查看mysqld.log日志
+          - Too many connections
+      - step_id: check-4
+        action: 确认MySQL主节点是否在集群控制节点上。（关键命令/路径：cat /etc/hosts | grep mysql-master | grep 'acloud.zk'）
+        command_or_path: cat /etc/hosts | grep mysql-master | grep 'acloud.zk'
+        command_example: cat /etc/hosts | grep mysql-master | grep 'acloud.zk'
+        expected_result: 无输出，表示MySQL主节点不在控制节点上。
+        matched_signals:
+          - acloud.zk
+          - mysql-master
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: '[EXIT]'
+        if_false_next: solution-1
+        if_true_exit_reason: manual_review
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - cat /etc/hosts | grep mysql-master | grep 'acloud.zk'
+    solution_steps:
+      - step_id: solution-1
+        action: 在超融合管理平台GUI上，将数据库所在节点切换为控制节点。
+        command_or_path: ''
+        command_example: ''
+        expected_result: 重新执行cat /etc/hosts | grep mysql-master | grep 'acloud.zk'，确认mysql-master与acloud.zk出现在同一行。
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: false
+        if_success_next: '[EXIT]'
+        if_failure_next: solution-2
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - 界面切换控制节点，将数据库所在节点切换成控制节点
+      - step_id: solution-2
+        action: 深入排查MySQL连接数过高问题，如检查SHOW PROCESSLIST、应用连接池配置、调整max_connections参数等。
+        command_or_path: ''
+        command_example: ''
+        expected_result: 持续监控MySQL连接数和vtpdaemon日志，确保不再因连接数满而引发业务失败。
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: false
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: escalate
+        source_type: explicit
+        evidence_quotes:
+          - 深入排查MySQL连接数过高问题（永久根治）
+    field_source_types:
+      root_causes: explicit
+      temporary_workaround: explicit
+      permanent_fix: explicit
+      risk_and_impact: explicit
+      rollback_or_recovery: empty
+      escalation_conditions: explicit
+    symptoms:
+      - 虚拟机无法开机
+      - 平台任务报错：获取快照类型失败！错误码：0x0000000000FF1D84
+    alerts_or_keywords:
+      - 获取快照类型失败！错误码：0x0000000000FF1D84
+      - 获取虚拟机快照列表失败，请稍后重试！0x010003E6
+      - 'failed: Too many connections at'
+      - Too many connections
+    prerequisites: []
+    environment_scope: []
+    temporary_workaround:
+      - 方案一：切换控制节点，将数据库所在节点切换成控制节点，可快速恢复虚拟机开机
+    permanent_fix:
+      - 方案二：深入排查MySQL连接数过高问题，如检查SHOW PROCESSLIST、应用连接池配置、调整max_connections参数等
+    risk_and_impact:
+      - 切换控制节点涉及集群控制角色迁移，可能触发控制平面重选，影响管理操作响应
+      - 修改数据库参数可能影响所有依赖该库的服务
+      - 务必在业务低谷期执行，并提前备份集群配置
+    rollback_or_recovery: []
+    escalation_conditions:
+      - 步骤1未找到匹配任务且问题仍存在时，需人工补录
+      - 步骤2未找到MySQL连接过多报错时，需人工补录
+      - 步骤3未命中Too many connections时，需人工补录
+      - 步骤4确认MySQL主节点在控制节点上时，需人工补录
+      - 方案一具体操作需人工查阅产品手册或联系技术支持
+      - 方案二需联系专业DBA或深信服技术支持协助
+    evidence_quotes:
+      - 启动虚拟机任务报错：获取快照类型失败！错误码：0x0000000000FF1D84
+      - 'vtpdaemon.log关键日志：获取虚拟机快照列表失败，请稍后重试！0x010003E6，以及failed: Too many connections at'
+      - mysqld.log关键日志：Too many connections
+      - MySQL数据库连接数达到上限（Too many connections），并且数据库主节点（mysql-master）未与集群控制节点（具备acloud.zk标识）部署在同一节点上
+    source_case_count: 1
+    source_case_confidence_counts:
+      high: 1
+    decision_tree_visual: >-
+      check-1: 在集群管理节点执行acli命令，查询包含“获取快照类型失败”的失败任务，确认故…
+
+      │   ├── [✓ true]
+
+      │   │   check-2: 在失败任务所在节点或任何一台集群节点上，查看sfvt_vtpdaemon.lo…
+
+      │   │   │   ├── [✓ true]
+
+      │   │   │   │   check-3: 检查MySQL主节点日志mysqld.log，确认是否存在“Too many …
+
+      │   │   │   │   │   ├── [✓ true]
+
+      │   │   │   │   │   │   check-4: 确认MySQL主节点是否在集群控制节点上。（关键命令/路径：cat /etc/…
+
+      │   │   │   │   │   │   │   ├── [✓ true] → [EXIT:manual_review]
+
+      │   │   │   │   │   │   │   └── [✗ false]
+
+      │   │   │   │   │   │   │       solution-1: 在超融合管理平台GUI上，将数据库所在节点切换为控制节点。
+
+      │   │   │   │   │   │   │       │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │   │   │   │   │       │   └── [✗ failure]
+
+      │   │   │   │   │   │   │       │       solution-2: 深入排查MySQL连接数过高问题，如检查SHOW PROCESSLIST、应用…
+
+      │   │   │   │   │   │   │       │       │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │   │   │   │   │       │       │   └── [✗ failure] → [EXIT:escalate]
+
+      │   │   │   │   │   └── [✗ false] → [EXIT:manual_review]
+
+      │   │   │   └── [✗ false] → [EXIT:manual_review]
+
+      │   └── [✗ false] → [EXIT:manual_review]
+  - branch_id: branch-D
+    branch_name: 数据库只读或配置异常导致虚拟机开机失败（更新网卡设备信息失败）
+    branch_type: runbook
+    branch_summary: 本分支覆盖因数据库只读或mysqld配置异常（如缺少server-id）导致虚拟机开机失败，报错“更新网卡设备信息失败：数据处理失败”（错误码0x0100186D）的场景。核心检查路径：登录数据库主库节点检查MySQL服务状态及可写状态，检查mysqld日志中是否存在server-id相关错误。修复路径：若数据库只读，检查数据库分区容量并清理空间，若仍只读则上升技术支持；若为配置异常，上升云BG-LMT技术支持修复。
+    branch_summary_source_type: explicit
+    source_case_ids:
+      - manual-vm-power-llm-0039
+    scene_titles:
+      - 数据库只读导致虚拟机开机失败
+    routing_signals:
+      - 更新网卡设备信息失败：数据处理失败
+      - 0x0100186D
+    root_causes:
+      - 数据库只读，导致平台在处理虚拟机开机流程时无法更新网卡设备信息
+      - mysqld配置异常（如缺少mandatory server-id），导致平台在处理虚拟机开机流程时无法更新网卡设备信息
+    checks:
+      - step_id: check-1
+        action: 登录数据库主库节点，检查MySQL服务状态及可写状态，确认数据库是否只读（关键命令/路径：ssh <数据库主库节点IP> && acli service asv mysql status && acli platform mysql-manager-cli status writable --get）
+        command_or_path: ssh <数据库主库节点IP> && acli service asv mysql status && acli platform mysql-manager-cli status writable --get
+        command_example: ssh mysql-master && acli service asv mysql status && acli platform mysql-manager-cli status writable --get
+        expected_result: acli platform mysql-manager-cli status writable --get 返回 W（表示可写）
+        matched_signals:
+          - 返回 R 表示数据库只读
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-1
+        if_false_next: check-2
+        if_true_exit_reason: ''
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - 如果返回 `R` 表示数据库只读，则进入解决方案1
+          - 如果返回 `W` 表示可写，则继续排查步骤2
+      - step_id: check-2
+        action: 查看mysqld日志中是否存在由于缺少server-id等配置导致的报错（关键命令/路径：acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"）
+        command_or_path: acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+        command_example: acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/20250101/mysqld.log"
+        expected_result: 未命中该错误关键字
+        matched_signals:
+          - err.*mysqld.*provided the mandatory server-id.*
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-2
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - 如果日志中出现相关错误，则数据库配置异常，进入解决方案2
+          - 如果未命中，则原文未提供后续排查路径，需上升研发
+    solution_steps:
+      - step_id: solution-1
+        action: 检查数据库分区容量，若分区使用率接近100%则需清理空间；若分区容量正常或清理后仍只读，则拨打400或上升云BG-LMT技术支持（关键命令/路径：acli system df -h /sf/data/platform_database/）
+        command_or_path: acli system df -h /sf/data/platform_database/
+        command_example: acli system df -h /sf/data/platform_database/
+        expected_result: 分区使用率正常或清理后数据库可写
+        matched_signals:
+          - 分区使用率接近100%
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: escalate
+        source_type: explicit
+        evidence_quotes:
+          - 如果分区使用率接近100%，则需要清理空间（原文未提供具体清理操作，需人工补录或上升研发）
+          - 若分区容量正常或清理后数据库仍为只读，请拨打400或上升云BG-LMT技术支持
+      - step_id: solution-2
+        action: 上升云BG-LMT技术支持修复数据库配置异常
+        command_or_path: ''
+        command_example: ''
+        expected_result: mysqld日志不再有相关错误，且虚拟机可正常开机
+        matched_signals: []
+        is_high_risk_operation: false
+        command_line_executable: false
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: escalate
+        source_type: explicit
+        evidence_quotes:
+          - 原文未提供具体修复操作，需拨打400或上升云BG-LMT技术支持
+    field_source_types:
+      root_causes: explicit
+      temporary_workaround: empty
+      permanent_fix: empty
+      risk_and_impact: empty
+      rollback_or_recovery: empty
+      escalation_conditions: explicit
+    symptoms:
+      - 虚拟机开机失败
+      - 任务返回错误：“更新网卡设备信息失败：数据处理失败”
+      - 错误码：0x0100186D
+    alerts_or_keywords:
+      - 更新网卡设备信息失败：数据处理失败
+      - 0x0100186D
+      - err.*mysqld.*provided the mandatory server-id.*
+    prerequisites: []
+    environment_scope: []
+    temporary_workaround: []
+    permanent_fix: []
+    risk_and_impact: []
+    rollback_or_recovery: []
+    escalation_conditions:
+      - 步骤1中清理空间后数据库仍为只读
+      - 步骤2命中mysqld日志配置错误但原文未提供修复操作
+      - 上述排查路径未命中或无法解决
+    evidence_quotes:
+      - 更新网卡设备信息失败：数据处理失败
+      - 0x0100186D
+      - 返回 R 表示数据库只读
+      - err.*mysqld.*provided the mandatory server-id.*
+    source_case_count: 1
+    source_case_confidence_counts:
+      high: 1
+    decision_tree_visual: >-
+      check-1: 登录数据库主库节点，检查MySQL服务状态及可写状态，确认数据库是否只读（关键…
+
+      │   ├── [✓ true]
+
+      │   │   solution-1: 检查数据库分区容量，若分区使用率接近100%则需清理空间；若分区容量正常或清理…
+
+      │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │   └── [✗ failure] → [EXIT:escalate]
+
+      │   └── [✗ false]
+
+      │       check-2: 查看mysqld日志中是否存在由于缺少server-id等配置导致的报错（关键…
+
+      │       │   ├── [✓ true]
+
+      │       │   │   solution-2: 上升云BG-LMT技术支持修复数据库配置异常
+
+      │       │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │       │   │   │   └── [✗ failure] → [EXIT:escalate]
+
+      │       │   └── [✗ false] → [EXIT:manual_review]
+  - branch_id: branch-E
+    branch_name: 数据库死锁或IO超时导致虚拟机开机失败（创建虚拟机网卡连接失败）
+    branch_type: runbook
+    branch_summary: 本分支覆盖因数据库服务异常（死锁或IO超时）导致虚拟机开机失败，报错“创建虚拟机网卡连接失败”的场景。合并自两个案例：manual-vm-power-llm-0040（数据库死锁）和manual-vm-power-llm-0041（网卡异常导致MySQL IO超时）。两者共享相同的入口检查（确认报错任务）和相似的修复路径（重启数据库相关服务），但根因细节不同，需通过后续检查分支区分。核心检查路径：查询失败任务确认报错，检查vn-manager-service-api日志中是否存在'DB Deadlock sql exception'，检查内核日志中是否存在网卡队列超时（pfifo_fast_reset或transmit queue 0 timed out），人工确认是否存在数据库服务版本缺陷。修复路径：若为死锁，重启mysql-managerd和mysql服务；若为网卡异常，重启虚拟网络管理面服务；若为版本缺陷，依次重启MySQL管理服务和MySQL服务。
+    branch_summary_source_type: mixed
+    source_case_ids:
+      - manual-vm-power-llm-0040
+      - manual-vm-power-llm-0041
+    scene_titles:
+      - 数据库死锁致虚拟机开机失败
+      - 网卡异常导致虚拟机开机失败
+    routing_signals:
+      - 创建虚拟机网卡连接失败
+    root_causes:
+      - 业务代码逻辑缺陷导致数据库死锁
+      - 网卡短暂异常导致数据库MySQL IO超时
+      - 数据库服务版本缺陷
+    checks:
+      - step_id: check-1
+        action: 查询是否存在报错为“创建虚拟机网卡连接失败”的任务（关键命令/路径：acli task get -k '创建虚拟机网卡连接失败' -t <故障日期> -s -1）
+        command_or_path: acli task get -k '创建虚拟机网卡连接失败' -t <故障日期> -s -1
+        command_example: acli task get -k '创建虚拟机网卡连接失败' -t 2024-07-25 -s -1
+        expected_result: 输出中包含失败任务记录
+        matched_signals:
+          - 创建虚拟机网卡连接失败
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: check-2
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: not_match
+        source_type: explicit
+        evidence_quotes:
+          - acli task get -k '创建虚拟机网卡连接失败' -t ${YYYY-MM-DD} -s -1
+      - step_id: check-2
+        action: 检查vn-manager-service-api日志中是否存在数据库死锁关键字“DB Deadlock sql exception”（关键命令/路径：acli log get -k 'DB Deadlock sql exception' -t <故障日期> -p /sf/log/<日志日期>/vn/vn-manager-service-api.log）
+        command_or_path: acli log get -k 'DB Deadlock sql exception' -t <故障日期> -p /sf/log/<日志日期>/vn/vn-manager-service-api.log
+        command_example: acli log get -k 'DB Deadlock sql exception' -t 2024-07-25 -p /sf/log/2024-07-25/vn/vn-manager-service-api.log
+        expected_result: 日志中出现包含“DB Deadlock sql exception”的行
+        matched_signals:
+          - DB Deadlock sql exception
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-1
+        if_false_next: check-3
+        if_true_exit_reason: ''
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - acli log get -k 'DB Deadlock sql exception' -t ${YYYY-MM-DD} -p /sf/log/${date}/vn/vn-manager-service-api.log
+      - step_id: check-3
+        action: 检查内核日志中是否存在网卡队列超时或重置的堆栈信息（关键命令/路径：acli log get -E -k 'pfifo_fast_reset|p_eth0(igb):transmit queue 0 timed out' -t <故障日期> -f /sf/log/<日期目录>/kernel.log）
+        command_or_path: acli log get -E -k 'pfifo_fast_reset|p_eth0(igb):transmit queue 0 timed out' -t <故障日期> -f /sf/log/<日期目录>/kernel.log
+        command_example: acli log get -E -k 'pfifo_fast_reset|p_eth0(igb):transmit queue 0 timed out' -t 2024-01-15 -f /sf/log/2024-01-15/kernel.log
+        expected_result: 输出中包含关键字 pfifo_fast_reset 或 transmit queue 0 timed out
+        matched_signals:
+          - pfifo_fast_reset
+          - p_eth0(igb):transmit queue 0 timed out
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-2
+        if_false_next: check-4
+        if_true_exit_reason: ''
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - acli log get -E -k 'pfifo_fast_reset|p_eth0(igb):transmit queue 0 timed out' -t ${YYYY-MM-DD} -f /sf/log/${date}/kernel.log
+      - step_id: check-4
+        action: 人工确认是否存在数据库服务版本缺陷
+        command_or_path: ''
+        command_example: ''
+        expected_result: 人工确认存在数据库服务版本缺陷
+        matched_signals: []
+        is_high_risk_operation: false
+        command_line_executable: false
+        if_true_next: solution-3
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: not_match
+        source_type: inferred
+        evidence_quotes:
+          - 原文提到：非网卡异常场景可能为数据库服务版本缺陷导致服务瞬时不可用（具体判断方法原文未提供）
+    solution_steps:
+      - step_id: solution-1
+        action: 重启mysql-managerd和mysql服务来临时恢复（关键命令/路径：acli service asv mysql-managerd restart && acli service asv mysql restart）
+        command_or_path: acli service asv mysql-managerd restart && acli service asv mysql restart
+        command_example: acli service asv mysql-managerd restart && acli service asv mysql restart
+        expected_result: 数据库服务重启完成，不再出现新的“DB Deadlock sql exception”错误
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: true
+        if_success_next: solution-4
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - acli service asv mysql-managerd restart
+          - acli service asv mysql restart
+      - step_id: solution-2
+        action: 重启虚拟网络管理面服务（vn-manager-service-api）（关键命令/路径：acli service anet vn-manager-service-api restart）
+        command_or_path: acli service anet vn-manager-service-api restart
+        command_example: acli service anet vn-manager-service-api restart
+        expected_result: 服务重启成功，再次执行虚拟机开机任务成功
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: true
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - acli service anet vn-manager-service-api restart
+      - step_id: solution-3
+        action: 依次重启 MySQL 管理服务和 MySQL 服务（关键命令/路径：acli service asv mysql-managerd restart && acli service asv mysql restart）
+        command_or_path: acli service asv mysql-managerd restart && acli service asv mysql restart
+        command_example: acli service asv mysql-managerd restart && acli service asv mysql restart
+        expected_result: 服务重启成功，再次执行虚拟机开机任务成功
+        matched_signals: []
+        is_high_risk_operation: true
+        command_line_executable: true
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - acli service asv mysql-managerd restart
+          - acli service asv mysql restart
+      - step_id: solution-4
+        action: 验证：查看日志确认不再出现“DB Deadlock sql exception”错误，并重新执行虚拟机开机操作（关键命令/路径：acli log get -k 'DB Deadlock sql exception' -t <故障日期> -p /sf/log/<日志日期>/vn/vn-manager-service-api.log）
+        command_or_path: acli log get -k 'DB Deadlock sql exception' -t <故障日期> -p /sf/log/<日志日期>/vn/vn-manager-service-api.log
+        command_example: acli log get -k 'DB Deadlock sql exception' -t 2024-07-25 -p /sf/log/2024-07-25/vn/vn-manager-service-api.log
+        expected_result: 日志中不再出现新的“DB Deadlock sql exception”错误；虚拟机开机任务成功完成
+        matched_signals: []
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - acli log get -k 'DB Deadlock sql exception' -t ${YYYY-MM-DD} -p /sf/log/${date}/vn/vn-manager-service-api.log
+    field_source_types:
+      root_causes: explicit
+      temporary_workaround: explicit
+      permanent_fix: empty
+      risk_and_impact: explicit
+      rollback_or_recovery: empty
+      escalation_conditions: empty
+    symptoms:
+      - 虚拟机开机任务失败
+      - 报错：创建虚拟机网卡连接失败
+      - 虚拟网络服务更新网卡设备信息时界面提示服务不可用
+    alerts_or_keywords:
+      - 创建虚拟机网卡连接失败
+      - DB Deadlock sql exception
+      - pfifo_fast_reset
+      - p_eth0(igb):transmit queue 0 timed out
+    prerequisites: []
+    environment_scope: []
+    temporary_workaround:
+      - 重启数据库服务临时恢复
+    permanent_fix: []
+    risk_and_impact:
+      - 重启数据库服务会短暂中断数据库连接，可能影响HCI平台管理功能
+      - 重启虚拟网络管理面服务不影响已有虚拟机的网络通信，但重启操作本身存在一定风险
+    rollback_or_recovery: []
+    escalation_conditions: []
+    evidence_quotes:
+      - 创建虚拟机网卡连接失败
+      - DB Deadlock sql exception
+      - acli task get -k '创建虚拟机网卡连接失败' -t ${YYYY-MM-DD} -s -1
+      - acli log get -k 'DB Deadlock sql exception' -t ${YYYY-MM-DD} -p /sf/log/${date}/vn/vn-manager-service-api.log
+      - 内核日志 `/sf/log/${date}/kernel.log` 关键字：`pfifo_fast_reset` 或 `p_eth0(igb):transmit queue 0 timed out`
+      - 网卡短暂异常（内核日志出现 `pfifo_fast_reset` 或 `transmit queue 0 timed out`）导致数据库服务 MySQL IO 超时
+    source_case_count: 2
+    source_case_confidence_counts:
+      high: 2
+    decision_tree_visual: >-
+      check-1: 查询是否存在报错为“创建虚拟机网卡连接失败”的任务（关键命令/路径：acli …
+
+      │   ├── [✓ true]
+
+      │   │   check-2: 检查vn-manager-service-api日志中是否存在数据库死锁关键字…
+
+      │   │   │   ├── [✓ true]
+
+      │   │   │   │   solution-1: 重启mysql-managerd和mysql服务来临时恢复（关键命令/路径：a…
+
+      │   │   │   │   │   ├── [✓ success]
+
+      │   │   │   │   │   │   solution-4: 验证：查看日志确认不再出现“DB Deadlock sql exception…
+
+      │   │   │   │   │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │   └── [✗ false]
+
+      │   │   │       check-3: 检查内核日志中是否存在网卡队列超时或重置的堆栈信息（关键命令/路径：acli …
+
+      │   │   │       │   ├── [✓ true]
+
+      │   │   │       │   │   solution-2: 重启虚拟网络管理面服务（vn-manager-service-api）（关键命…
+
+      │   │   │       │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │       │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │   └── [✗ false]
+
+      │   │   │       │       check-4: 人工确认是否存在数据库服务版本缺陷
+
+      │   │   │       │       │   ├── [✓ true]
+
+      │   │   │       │       │   │   solution-3: 依次重启 MySQL 管理服务和 MySQL 服务（关键命令/路径：acli …
+
+      │   │   │       │       │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │       │       │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │       │   └── [✗ false] → [EXIT:not_match]
+
+      │   └── [✗ false] → [EXIT:not_match]
+  - branch_id: branch-F
+    branch_name: MySQL配置缺失（server-id）导致虚拟机开机失败
+    branch_type: runbook
+    branch_summary: 本分支覆盖因MySQL配置文件缺少server-id配置项，导致mysqld启动失败，进而引发虚拟机开机失败的场景。入口症状为：虚拟机开机未生成启动任务，MySQL服务健康检查返回[fail]，mysqld日志报错'provided the mandatory server-id'。核心检查路径：执行acli platform check -p mysql确认MySQL服务状态，检查数据库主备节点信息，检查ZooKeeper记录，检查mysqld日志中server-id相关错误，检查MySQL配置文件是否缺少server-id。修复路径：从历史备份恢复正确的MySQL配置文件（临时方案），或升级平台至6.1.0R2并应用补丁（彻底方案）。
+    branch_summary_source_type: explicit
+    source_case_ids:
+      - manual-vm-power-llm-0054
+    scene_titles:
+      - MySQL配置缺失导致虚拟机开机失败
+    routing_signals:
+      - MySQL服务健康检查结果为[fail]
+      - err.*mysqld.*provided the mandatory server-id.*
+    root_causes:
+      - 异常控制节点的MySQL配置文件/sf/cfg/mysql/my.cnf.d/mysql.cnf中缺少必要的server-id配置项，导致mysqld启动失败并在日志中报错“provided the mandatory server-id”，进而引发MySQL服务异常，平台健康检查显示[fail]，最终阻断虚拟机开机任务的执行。
+    checks:
+      - step_id: check-1
+        action: 执行acli platform check -p mysql命令检查MySQL服务状态，确认是否有检查项返回[fail]
+        command_or_path: acli platform check -p mysql
+        command_example: acli platform check -p mysql
+        expected_result: 所有检查项均为[ok]
+        matched_signals:
+          - 输出中包含[fail]
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: check-2
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: not_match
+        source_type: explicit
+        evidence_quotes:
+          - acli platform check -p mysql
+      - step_id: check-2
+        action: 执行acli platform mysql node list命令检查数据库主备节点信息，确认主库和备库节点IP及状态是否正常
+        command_or_path: acli platform mysql node list
+        command_example: acli platform mysql node list
+        expected_result: 显示主库（Master）和备库（Slave）节点IP及正常状态
+        matched_signals:
+          - 输出缺少主备节点（例如仅显示一个节点）
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: '[EXIT]'
+        if_false_next: check-3
+        if_true_exit_reason: not_match
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - acli platform mysql node list
+          - container_exec -n platform-module -c "/sf/cluster/bin/mysql-manager-cli cluster nodelist"
+      - step_id: check-3
+        action: 执行acli platform zookeeper zkcli命令检查ZooKeeper中MySQL主备记录，确认与步骤2的节点信息一致（关键命令/路径：acli platform zookeeper zkcli --get /vtroot/cfg/mysql-mgrd/master）
+        command_or_path: acli platform zookeeper zkcli --get /vtroot/cfg/mysql-mgrd/master
+        command_example: acli platform zookeeper zkcli --get /vtroot/cfg/mysql-mgrd/master
+        expected_result: ZK记录的主库节点与步骤2结果一致，且members列表包含两个节点
+        matched_signals:
+          - ZK记录与步骤2的节点信息不对应（如数量不一致或主库节点不同）
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: '[EXIT]'
+        if_false_next: check-4
+        if_true_exit_reason: not_match
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - acli platform zookeeper zkcli --get /vtroot/cfg/mysql-mgrd/master
+          - zkcli-c --get /vtroot/cfg/mysql-mgrd/master
+          - zkcli-c --list /vtroot/cfg/mysql-mgrd/members
+      - step_id: check-4
+        action: 执行acli log get命令检查mysqld日志中是否包含'provided the mandatory server-id'错误（关键命令/路径：acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"）
+        command_or_path: acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+        command_example: acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/2024-07-17/mysqld.log"
+        expected_result: 无匹配的ERROR日志
+        matched_signals:
+          - 搜索到包含“provided the mandatory server-id”的错误日志
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-1
+        if_false_next: check-5
+        if_true_exit_reason: ''
+        if_false_exit_reason: ''
+        source_type: explicit
+        evidence_quotes:
+          - acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+      - step_id: check-5
+        action: 执行acli platform mysql config get命令检查异常控制节点的MySQL配置文件中是否包含server-id配置项
+        command_or_path: acli platform mysql config get
+        command_example: acli platform mysql config get
+        expected_result: 配置文件中存在server-id配置行
+        matched_signals:
+          - 异常节点的配置缺少server-id
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_true_next: solution-1
+        if_false_next: '[EXIT]'
+        if_true_exit_reason: ''
+        if_false_exit_reason: not_match
+        source_type: explicit
+        evidence_quotes:
+          - acli platform mysql config get
+          - sfd_cluster_cmd.sh e "cat /sf/cfg/mysql/my.cnf.d/mysql.cnf"
+    solution_steps:
+      - step_id: solution-1
+        action: 登录异常控制节点，进入备份目录，解压历史备份的sfcfg.tar.gz文件，覆盖当前异常的MySQL配置文件（关键命令/路径：cd /sf/log/<备份日期> && tar zxf sfcfg.tar.gz && cp mnt/shared/sf/cfg/mysql/my.cnf.d/mysql.cnf /sf/cfg/mysql/my.cnf.d/mysql.cnf）
+        command_or_path: cd /sf/log/<备份日期> && tar zxf sfcfg.tar.gz && cp mnt/shared/sf/cfg/mysql/my.cnf.d/mysql.cnf /sf/cfg/mysql/my.cnf.d/mysql.cnf
+        command_example: cd /sf/log/17/ && tar zxf sfcfg.tar.gz && cp mnt/shared/sf/cfg/mysql/my.cnf.d/mysql.cnf /sf/cfg/mysql/my.cnf.d/mysql.cnf
+        expected_result: MySQL配置文件被正确覆盖，服务恢复正常
+        matched_signals:
+          - 执行acli platform check -p mysql后所有检查项为[ok]
+          - mysqld日志中无新增server-id相关报错
+        is_high_risk_operation: true
+        command_line_executable: true
+        if_success_next: solution-1.1
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - cd /sf/log/17/
+          - tar zxf sfcfg.tar.gz
+          - cp mnt/shared/sf/cfg/mysql/my.cnf.d/mysql.cnf /sf/cfg/mysql/my.cnf.d/mysql.cnf
+      - step_id: solution-1.1
+        action: 执行acli platform check -p mysql命令验证MySQL服务状态，确认所有检查项为[ok]
+        command_or_path: acli platform check -p mysql
+        command_example: acli platform check -p mysql
+        expected_result: 所有检查项均为[ok]
+        matched_signals:
+          - 输出中无[fail]
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_success_next: solution-1.2
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - acli platform check -p mysql
+      - step_id: solution-1.2
+        action: 执行acli log get命令确认mysqld日志中无新增server-id相关报错（关键命令/路径：acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"）
+        command_or_path: acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+        command_example: acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/2024-07-17/mysqld.log"
+        expected_result: 无匹配的ERROR日志
+        matched_signals:
+          - 日志中无'provided the mandatory server-id'错误
+        is_high_risk_operation: false
+        command_line_executable: true
+        if_success_next: solution-1.3
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: ''
+        if_failure_exit_reason: manual_review
+        source_type: explicit
+        evidence_quotes:
+          - acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+      - step_id: solution-1.3
+        action: 尝试虚拟机开机操作，确认启动任务正常生成且虚拟机状态变为运行中
+        command_or_path: ''
+        command_example: ''
+        expected_result: 虚拟机开机成功，启动任务正常生成，状态变为运行中
+        matched_signals:
+          - 虚拟机状态变为运行中
+        is_high_risk_operation: false
+        command_line_executable: false
+        if_success_next: '[EXIT]'
+        if_failure_next: '[EXIT]'
+        if_success_exit_reason: resolved
+        if_failure_exit_reason: manual_review
+        source_type: inferred
+        evidence_quotes:
+          - 尝试虚拟机开机操作，确认启动任务正常生成且虚拟机状态变为运行中
+    field_source_types:
+      root_causes: explicit
+      temporary_workaround: explicit
+      permanent_fix: explicit
+      risk_and_impact: explicit
+      rollback_or_recovery: empty
+      escalation_conditions: empty
+    symptoms:
+      - 虚拟机开机失败，未生成启动任务
+      - MySQL服务健康检查结果为[fail]
+      - mysqld日志报错：provided the mandatory server-id
+    alerts_or_keywords:
+      - MySQL 服务健康检查结果为 [fail]
+      - err.*mysqld.*provided the mandatory server-id.*
+      - 配置文件缺少 server-id 配置项
+    prerequisites: []
+    environment_scope: []
+    temporary_workaround:
+      - 从历史备份中恢复正确的MySQL配置文件：cd /sf/log/<备份日期>/ && tar zxf sfcfg.tar.gz && cp mnt/shared/sf/cfg/mysql/my.cnf.d/mysql.cnf /sf/cfg/mysql/my.cnf.d/mysql.cnf
+    permanent_fix:
+      - 将平台升级至6.1.0R2版本并应用最新合集补丁包，彻底修复MySQL配置缺失问题
+    risk_and_impact:
+      - 直接覆盖当前MySQL配置文件可能导致服务中断或数据不一致
+      - 操作前须确认备份正确，并评估业务影响
+    rollback_or_recovery: []
+    escalation_conditions: []
+    evidence_quotes:
+      - acli platform check -p mysql
+      - acli platform mysql node list
+      - acli log get -E -k "err.*mysqld.*provided the mandatory server-id.*" -p "/sf/log/${date}/mysqld.log"
+      - 配置文件/sf/cfg/mysql/my.cnf.d/mysql.cnf缺少server-id配置项
+    source_case_count: 1
+    source_case_confidence_counts:
+      high: 1
+    decision_tree_visual: >-
+      check-1: 执行acli platform check -p mysql命令检查MySQL…
+
+      │   ├── [✓ true]
+
+      │   │   check-2: 执行acli platform mysql node list命令检查数据库主…
+
+      │   │   │   ├── [✓ true] → [EXIT:not_match]
+
+      │   │   │   └── [✗ false]
+
+      │   │   │       check-3: 执行acli platform zookeeper zkcli命令检查ZooK…
+
+      │   │   │       │   ├── [✓ true] → [EXIT:not_match]
+
+      │   │   │       │   └── [✗ false]
+
+      │   │   │       │       check-4: 执行acli log get命令检查mysqld日志中是否包含'provide…
+
+      │   │   │       │       │   ├── [✓ true]
+
+      │   │   │       │       │   │   solution-1: 登录异常控制节点，进入备份目录，解压历史备份的sfcfg.tar.gz文件，覆…
+
+      │   │   │       │       │   │   │   ├── [✓ success]
+
+      │   │   │       │       │   │   │   │   solution-1.1: 执行acli platform check -p mysql命令验证MySQL…
+
+      │   │   │       │       │   │   │   │   │   ├── [✓ success]
+
+      │   │   │       │       │   │   │   │   │   │   solution-1.2: 执行acli log get命令确认mysqld日志中无新增server-id…
+
+      │   │   │       │       │   │   │   │   │   │   │   ├── [✓ success]
+
+      │   │   │       │       │   │   │   │   │   │   │   │   solution-1.3: 尝试虚拟机开机操作，确认启动任务正常生成且虚拟机状态变为运行中
+
+      │   │   │       │       │   │   │   │   │   │   │   │   │   ├── [✓ success] → [EXIT:resolved]
+
+      │   │   │       │       │   │   │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │       │   │   │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │       │   │   │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │       │   │   │   └── [✗ failure] → [EXIT:manual_review]
+
+      │   │   │       │       │   └── [✗ false]
+
+      │   │   │       │       │       check-5: 执行acli platform mysql config get命令检查异常控…
+
+      │   │   │       │       │       │   ├── [✓ true] → solution-1
+
+      │   │   │       │       │       │   └── [✗ false] → [EXIT:not_match]
+
+      │   └── [✗ false] → [EXIT:not_match]
+excluded_cases: []
+flow_visual: >-
+  entry-1: 查询失败任务详情，确认错误码和报错信息（关键命令/路径：acli task g…
+
+  │   ├── [任务记录中存在错误码0x0CFFFFFF] → branch-A
+
+  │   └── [no_match]
+
+  │       entry-2: 查询失败任务详情，确认报错信息是否为“虚拟机未运行”（关键命令/路径：acli…
+
+  │       │   ├── [任务记录中包含“虚拟机未运行”] → branch-B
+
+  │       │   └── [no_match]
+
+  │       │       entry-3: 查询失败任务详情，确认报错信息是否为“获取快照类型失败”（关键命令/路径：ac…
+
+  │       │       │   ├── [任务记录中包含错误码0x0000000000FF1D84] → branch-C
+
+  │       │       │   └── [no_match]
+
+  │       │       │       entry-4: 查询失败任务详情，确认报错信息是否为“更新网卡设备信息失败”或“创建虚拟机网卡…
+
+  │       │       │       │   ├── [任务记录中包含“更新网卡设备信息失败”] → branch-D
+
+  │       │       │       │   ├── [任务记录中包含“创建虚拟机网卡连接失败”] → branch-E
+
+  │       │       │       │   └── [no_match]
+
+  │       │       │       │       entry-5: 查询失败任务详情，确认报错信息是否为MySQL服务健康检查失败或未生成启动任务…
+
+  │       │       │       │       │   └── [MySQL服务健康检查返回[fail]] → branch-F
+
+  │       │       │       │       │   └── [no_match] → [EXIT:fallback_parent]

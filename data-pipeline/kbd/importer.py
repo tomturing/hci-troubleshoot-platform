@@ -186,8 +186,18 @@ async def _call_kbd_ingest_api(
     support_id: str,
     title: str,
     support_url: str | None,
-    content_md: str,
+    content_md: str | None,
     metadata: dict[str, Any],
+    problem_description: str = "",
+    alert_info: str = "",
+    steps_text: str = "",
+    root_cause: str = "",
+    solution: str = "",
+    operational_impact: str = "",
+    is_temporary: str = "",
+    recommendations: str = "",
+    steps_json: list[dict] | None = None,
+    images_json: list[dict] | None = None,
     ai_category_id: str | None = None,
     ai_category_conf: float | None = None,
     ai_category_reason: str | None = None,
@@ -202,8 +212,17 @@ async def _call_kbd_ingest_api(
         support_id: 案例 ID（幂等键）
         title: 案例标题
         support_url: 原始案例 URL
-        content_md: 结构化 Markdown 内容
+        content_md: 聚合渲染 Markdown（含视觉描述）
         metadata: 补充元数据
+        problem_description: 问题描述章节
+        alert_info: 告警信息章节
+        steps_text: 有效排查步骤（自然语言 Markdown）
+        root_cause: 根因章节
+        solution: 解决方案章节
+        operational_impact: 操作影响范围章节
+        is_temporary: 是否是临时解决方案章节
+        recommendations: 建议与总结章节
+        steps_json: 结构化工具步骤（默认为空列表）
         ai_category_id: AI 分类建议 ID（可选）
         ai_category_conf: 分类置信度（可选）
         ai_category_reason: 分类理由（可选）
@@ -227,6 +246,18 @@ async def _call_kbd_ingest_api(
         "support_id": support_id,
         "support_url": support_url,
         "title": title,
+        # 8 大章节字段
+        "problem_description": problem_description,
+        "alert_info": alert_info,
+        "steps_text": steps_text,
+        "root_cause": root_cause,
+        "solution": solution,
+        "operational_impact": operational_impact,
+        "is_temporary": is_temporary,
+        "recommendations": recommendations,
+        "steps_json": steps_json if steps_json is not None else [],
+        "images_json": images_json if images_json is not None else [],
+        # 聚合渲染
         "content_md": content_md,
         "metadata": metadata,
         "ai_category_id": ai_category_id,
@@ -312,10 +343,10 @@ async def import_entry(
     Returns:
         "created" | "overridden" | "skipped" | "error"
     """
-    from .converter import convert_case_with_meta
+    from .converter import convert_case_structured
 
-    # 转换：从文件缓存生成 content_md + metadata
-    result = convert_case_with_meta(support_id)
+    # 转换：从文件缓存提取结构化章节字段 + content_md + metadata
+    result = convert_case_structured(support_id)
     if not result:
         # 转换失败或缺少必填 section（已写 abnormal.json）
         logger.warning("案例 %s 转换结果为空，跳过（详见 abnormal.json）", support_id)
@@ -340,6 +371,16 @@ async def import_entry(
             support_url=support_url,
             content_md=content_md,
             metadata=metadata,
+            problem_description=result.get("problem_description", ""),
+            alert_info=result.get("alert_info", ""),
+            steps_text=result.get("steps_text", ""),
+            root_cause=result.get("root_cause", ""),
+            solution=result.get("solution", ""),
+            operational_impact=result.get("operational_impact", ""),
+            is_temporary=result.get("is_temporary", ""),
+            recommendations=result.get("recommendations", ""),
+            steps_json=result.get("steps_json", []),
+            images_json=result.get("images_json", []),
             client=client,
             override=override,
             override_status=override_status,

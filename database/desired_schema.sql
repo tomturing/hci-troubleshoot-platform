@@ -795,7 +795,12 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     -- 结构化工具步骤（供 agent 执行，需人工编辑或 AI 生成，默认为空）
     -- 格式：[{"tool_name": "acli_vm_config", "tool_args_template": {...}, "expected_pattern": "..."}]
     steps_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+    -- 图片视觉描述（pipeline Vision LLM 生成，结构化存储，独立于 content_md）
+    -- 格式：[{"seq": 0, "section": "steps_text", "desc": "TYPE: 日志截图\n..."}]
+    -- 章节字段中对应位置以 ![img:N] 占位符标记；rebuild_content_md() 展开为完整 【截图说明】 块
+    images_json jsonb NOT NULL DEFAULT '[]'::jsonb,
     -- 渲染聚合（由 pipeline 生成或从章节字段重建，含截图说明等视觉信息）
+    -- 供 LLM 上下文注入使用；rebuild_content_md() 会将章节字段的 ![img:N] 展开为 images_json 中的描述
     content_md text,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     category_id varchar(32),
@@ -831,13 +836,14 @@ COMMENT ON COLUMN kbd_entry.operational_impact IS '操作影响范围（8 大章
 COMMENT ON COLUMN kbd_entry.is_temporary IS '是否是临时解决方案（8 大章节之一，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.recommendations IS '建议与总结（8 大章节之一，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.steps_json IS '结构化工具步骤（供 agent 执行）；格式：[{tool_name, tool_args_template, expected_pattern}]；默认为空，需 admin 人工编辑或 AI 提取后填充；非空时 kbd_entry 才对 InvestigationAgent 可见';
-COMMENT ON COLUMN kbd_entry.content_md IS '聚合渲染 Markdown（含截图视觉描述）；由 pipeline 生成，admin 编辑章节后自动重建；供展示和 LLM 上下文注入使用';
+COMMENT ON COLUMN kbd_entry.images_json IS '图片视觉描述（pipeline Vision LLM 生成）；格式：[{"seq": N, "section": "field_name", "desc": "..."}]；章节字段中以 ![img:N] 标记位置，rebuild_content_md() 展开为 > **【截图说明】** 块；独立存储确保 admin 编辑章节字段后视觉信息不丢失';
+COMMENT ON COLUMN kbd_entry.content_md IS '聚合渲染 Markdown（含截图视觉描述）；由 pipeline 生成或 rebuild_content_md() 从章节字段+images_json 重建；供 LLM 上下文注入；embedding 不使用此字段（使用问题侧字段 title+problem_description+alert_info+root_cause）';
 COMMENT ON COLUMN kbd_entry.metadata IS '扩展元数据（如案例类型、适用版本、标签等）';
 COMMENT ON COLUMN kbd_entry.category_id IS '人工确认的分类编码，关联 kb_category.code';
 COMMENT ON COLUMN kbd_entry.ai_category_id IS 'AI 分类建议编码';
 COMMENT ON COLUMN kbd_entry.ai_category_conf IS 'AI 分类置信度（0-1）';
 COMMENT ON COLUMN kbd_entry.ai_category_reason IS 'AI 分类理由';
-COMMENT ON COLUMN kbd_entry.embedding IS '全文语义向量（1536 维），published 时生成';
+COMMENT ON COLUMN kbd_entry.embedding IS '问题侧语义向量（1536 维），published 时生成；输入 = title + problem_description + alert_info + root_cause（不含 solution，避免答案侧污染向量空间）';
 COMMENT ON COLUMN kbd_entry.tsv IS 'BM25 全文检索向量，published 时生成';
 COMMENT ON COLUMN kbd_entry.status IS '状态机：draft（草稿）/ published（已发布）/ archived（已归档）/ rejected（已拒绝）';
 COMMENT ON COLUMN kbd_entry.reviewer_id IS '审核人 ID';
@@ -863,6 +869,9 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv ON kbd_entry USING GIN (tsv);
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_metadata ON kbd_entry USING GIN (metadata);
 -- steps_json 结构查询（如查找使用特定 tool_name 的 KBD）
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_steps_json ON kbd_entry USING GIN (steps_json);
+-- images_json 结构查询（如查找含特定 section 图片的 KBD）
+CREATE INDEX IF NOT EXISTS idx_kbd_entry_images_json ON kbd_entry USING GIN (images_json)
+    WHERE images_json != '[]'::jsonb;
 -- agent 可用条目快速过滤（steps_json 非空 + published，InvestigationAgent 专用索引）
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_agent_usable ON kbd_entry (category_id, published_at DESC)
     WHERE status = 'published' AND steps_json != '[]'::jsonb;

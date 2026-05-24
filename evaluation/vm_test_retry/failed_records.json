@@ -1,0 +1,205 @@
+[
+  {
+    "index": 4,
+    "problem_id": "Q2026051200299",
+    "problem_desc": "有台虚拟机故障重启，客户要查原因",
+    "error": "",
+    "failed_at": "2026-05-19T15:29:48.097414"
+  },
+  {
+    "index": 6,
+    "problem_id": "Q2026043000347",
+    "problem_desc": "C86架构HCI，centos虚拟机勾选hostcpu取消后进不去系统需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-19T15:33:12.623970"
+  },
+  {
+    "index": 11,
+    "problem_id": "Q2026041601412",
+    "problem_desc": "会议室的共享虚拟机经常自动关机",
+    "error": "",
+    "failed_at": "2026-05-19T15:41:32.906862"
+  },
+  {
+    "index": 18,
+    "problem_id": "Q2026040701339",
+    "problem_desc": "1、云虚拟机自动关机需要协助排查\n2、备份空间占用问题需要协助",
+    "error": "",
+    "failed_at": "2026-05-19T15:50:45.186823"
+  },
+  {
+    "index": 20,
+    "problem_id": "Q2026040201862",
+    "problem_desc": "多台虚拟机内部关机查原因",
+    "error": "",
+    "failed_at": "2026-05-19T15:54:29.816589"
+  },
+  {
+    "index": 21,
+    "problem_id": "Q2026033102030",
+    "problem_desc": "平台显示虚拟机异常关机协助排查原因",
+    "error": "",
+    "failed_at": "2026-05-19T15:56:30.655877"
+  },
+  {
+    "index": 26,
+    "problem_id": "Q2026032600868",
+    "problem_desc": "虚拟机异常重启",
+    "error": "",
+    "failed_at": "2026-05-19T16:04:25.943747"
+  },
+  {
+    "index": 28,
+    "problem_id": "Q2026032500016",
+    "problem_desc": "数据库虚拟机异常关机",
+    "error": "",
+    "failed_at": "2026-05-19T16:07:34.022248"
+  },
+  {
+    "index": 30,
+    "problem_id": "Q2026032301243",
+    "problem_desc": "偶尔出现虚拟机内部关机，需要分析排查",
+    "error": "",
+    "failed_at": "2026-05-19T16:10:59.965132"
+  },
+  {
+    "index": 35,
+    "problem_id": "Q2026031601367",
+    "problem_desc": "3D虚拟机全部重启了，开机很慢需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-19T16:18:11.158501"
+  },
+  {
+    "index": 37,
+    "problem_id": "Q2026031200612",
+    "problem_desc": "早上集中虚拟机开机比较慢，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-19T16:22:19.373514"
+  },
+  {
+    "index": 46,
+    "problem_id": "Q2026020601773",
+    "problem_desc": "【目的】用户有台虚拟机无法启动\n1.控制台检查虚拟机发现无法开机进入引导，怀疑虚拟机系统盘损坏\n2.关闭虚拟机后从快照节点克隆虚一台拟机后，把故障虚拟机磁盘删除后添加到克隆虚拟机上后无法挂载，提示物理磁盘冲突\n\nHCI版本：SANGFOR HCI 6.8.0_R1 Build20230429\nKEY ID：20231103A0000540\n用户名称：韶关市鸿昊工程管理有限公司",
+    "error": "",
+    "failed_at": "2026-05-19T16:34:57.086801"
+  },
+  {
+    "index": 52,
+    "problem_id": "Q2026020501829",
+    "problem_desc": "HCI，服务器 和虚拟机都需要重启，需要协助保障",
+    "error": "",
+    "failed_at": "2026-05-19T16:43:46.449367"
+  },
+  {
+    "index": 70,
+    "problem_id": "Q2026020300262",
+    "problem_desc": "超融合centos7.9版本虚拟机异常重启，已安装性能优化工具，平台是全新部署的，需要协助进一步看看",
+    "error": "",
+    "failed_at": "2026-05-19T17:04:46.889763"
+  },
+  {
+    "index": 82,
+    "problem_id": "Q2026013100312",
+    "problem_desc": "有两个虚拟机重启后进不去系统，影响业务，非核心",
+    "error": "",
+    "failed_at": "2026-05-19T17:18:23.611940"
+  },
+  {
+    "index": 85,
+    "problem_id": "Q2026013100151",
+    "problem_desc": "虚拟机异常重启查原因",
+    "error": "",
+    "failed_at": "2026-05-19T17:23:44.346772"
+  },
+  {
+    "index": 86,
+    "problem_id": "Q2026013001965",
+    "problem_desc": "虚拟机重启了一下，外置存储挂不上",
+    "error": "",
+    "failed_at": "2026-05-19T17:25:47.398418"
+  },
+  {
+    "index": 109,
+    "problem_id": "Q2026012800326",
+    "problem_desc": "一台虚拟机反馈昨天重启，需要协助排查原因",
+    "error": "",
+    "failed_at": "2026-05-19T17:53:40.628672"
+  },
+  {
+    "index": 136,
+    "problem_id": "Q2026012500017",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：HCI虚拟存储过满导致虚拟机无法启动，之前扩容了eds能否挂在到eds？",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-19T18:21:43.980255"
+  },
+  {
+    "index": 158,
+    "problem_id": "Q2026012001345",
+    "problem_desc": "centos虚拟机启用UUID后进入了紧急模式\n没有业务 搭建中",
+    "error": "",
+    "failed_at": "2026-05-19T18:47:18.913748"
+  },
+  {
+    "index": 166,
+    "problem_id": "Q2026011900738",
+    "problem_desc": "HCI 里面的一台主机库虚拟机 突然连不上了，客户尝试重启了也没恢复还导致虚拟机也起不来了 ",
+    "error": "",
+    "failed_at": "2026-05-19T18:58:58.970865"
+  },
+  {
+    "index": 168,
+    "problem_id": "Q2026011900085",
+    "problem_desc": "6.10.0集群上的虚拟机导入6.11.1反馈开机会卡死，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-19T19:01:55.530545"
+  },
+  {
+    "index": 181,
+    "problem_id": "Q2026011600017",
+    "problem_desc": "虚拟机重启查原因   目前业务正常  ",
+    "error": "",
+    "failed_at": "2026-05-19T19:16:41.286229"
+  },
+  {
+    "index": 186,
+    "problem_id": "Q2026011501019",
+    "problem_desc": "虚拟机异常重启",
+    "error": "",
+    "failed_at": "2026-05-19T19:23:08.909944"
+  },
+  {
+    "index": 188,
+    "problem_id": "Q2026011500093",
+    "problem_desc": "虚拟机自动关机了，查原因",
+    "error": "",
+    "failed_at": "2026-05-19T19:26:41.255298"
+  },
+  {
+    "index": 199,
+    "problem_id": "Q2026011400109",
+    "problem_desc": "虚拟机自动关机查原因",
+    "error": "",
+    "failed_at": "2026-05-19T19:41:14.653816"
+  },
+  {
+    "index": 240,
+    "problem_id": "Q2026010700448",
+    "problem_desc": "单台虚拟机开机会超过15分钟",
+    "error": "",
+    "failed_at": "2026-05-19T20:31:26.101575"
+  },
+  {
+    "index": 263,
+    "problem_id": "Q2026010500290",
+    "problem_desc": "虚拟机周六重启后一直处于开机备份状态，需要如何处理。",
+    "error": "",
+    "failed_at": "2026-05-19T20:58:12.588307"
+  },
+  {
+    "index": 266,
+    "problem_id": "Q2026010401552",
+    "problem_desc": "巡检测到虚拟机监控中心,Sangfor aMC 2.0.3 20200904中存在磁盘id为virtio格式，会导致虚拟机磁盘配置丢失，虚拟机重新启动时磁盘无法找到，影响业务",
+    "error": "",
+    "failed_at": "2026-05-19T21:02:39.332251"
+  }
+]

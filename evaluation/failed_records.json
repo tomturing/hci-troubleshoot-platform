@@ -1,0 +1,1332 @@
+[
+  {
+    "index": 29,
+    "problem_id": "Q2026050800390",
+    "problem_desc": "存储有个硬盘提示隔离了，需要分析",
+    "error": "",
+    "failed_at": "2026-05-11T17:00:08.196555"
+  },
+  {
+    "index": 34,
+    "problem_id": "Q2026050701790",
+    "problem_desc": "协助放通SSD",
+    "error": "",
+    "failed_at": "2026-05-11T17:05:07.671938"
+  },
+  {
+    "index": 56,
+    "problem_id": "Q2026050700532",
+    "problem_desc": "第三方服务器厂商需要升级固件，目前一直在数据同步需要协助",
+    "error": "",
+    "failed_at": "2026-05-11T17:28:31.559415"
+  },
+  {
+    "index": 59,
+    "problem_id": "Q2026050700386",
+    "problem_desc": "超融合内存系统预留了160G ",
+    "error": "",
+    "failed_at": "2026-05-11T17:31:26.916648"
+  },
+  {
+    "index": 90,
+    "problem_id": "Q2026050600240",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：硬盘被隔离，数据的重建完后裸容量未恢复，需要帮忙确认硬盘是否故障",
+    "error": "",
+    "failed_at": "2026-05-11T18:07:12.458876"
+  },
+  {
+    "index": 110,
+    "problem_id": "Q2026050500016",
+    "problem_desc": "协助找到磁盘，一体机协助替换磁盘",
+    "error": "",
+    "failed_at": "2026-05-11T18:23:36.223509"
+  },
+  {
+    "index": 126,
+    "problem_id": "Q2026043001090",
+    "problem_desc": "换盘需要协助保障",
+    "error": "",
+    "failed_at": "2026-05-11T18:40:56.521356"
+  },
+  {
+    "index": 133,
+    "problem_id": "Q2026043000368",
+    "problem_desc": "硬盘坏了需要返修，客户已经过保",
+    "error": "",
+    "failed_at": "2026-05-11T18:46:53.414304"
+  },
+  {
+    "index": 146,
+    "problem_id": "Q2026042901084",
+    "problem_desc": "磁盘离线需要协助看下，反馈有重新插拔没用",
+    "error": "",
+    "failed_at": "2026-05-11T19:02:25.225917"
+  },
+  {
+    "index": 163,
+    "problem_id": "Q2026042900110",
+    "problem_desc": "一体机扩容nvme磁盘需要保障",
+    "error": "",
+    "failed_at": "2026-05-11T19:15:12.609424"
+  },
+  {
+    "index": 166,
+    "problem_id": "Q2026042801973",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260425860001\r\n    事件等级：Priority3\r\n    产品线：HCI::6.10.0_R2\r\n\n====客户信息====\n    客户ID：363\r\n    客户MDM ID：null\r\n    客户名称：TELEC Electronics & Machinery (Pvt.) Ltd\r\n    客户区域：Pakistan\r\n    客户类型：null\r\n\n====工单信息====\n\r设备部署模式： 6.10.0R2\r\n客户背景： 海外\r\n问题现象： 更换磁盘时没有检测到磁盘\r\n排查过程：\r\n  1）检查发现有avago磁盘，这个应该是os盘才对，不知道为什么这里检测到\r\n2）for host_path in /sys/class/scsi_host/*/scan; do echo \"- - -\"  $host_path; done和disk_scan.sh问题依旧\r\n3）尝试换slot问题依旧\r\n4）磁盘换去其他主机问题依旧\r\n5）更换磁盘做替换问题依旧  \r\n重要备注：\r\n是否已开群（企微）：是\r\n企微群名：Ticket#20260425860001海外【替换磁盘没有看到磁盘】",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-11T19:17:23.813672"
+  },
+  {
+    "index": 179,
+    "problem_id": "Q2026042801316",
+    "problem_desc": "协助替换磁盘",
+    "error": "",
+    "failed_at": "2026-05-11T19:33:12.846490"
+  },
+  {
+    "index": 189,
+    "problem_id": "Q2026042800699",
+    "problem_desc": "DRS评分显示磁盘坏道，但是实际坏道磁盘已经换掉了",
+    "error": "",
+    "failed_at": "2026-05-11T19:46:45.799533"
+  },
+  {
+    "index": 208,
+    "problem_id": "Q2026042701587",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260427860044\r\n    事件等级：Priority3\r\n    产品线：HCI::6.10.0_R2\r\n\n====客户信息====\n    客户ID：5498\r\n    客户MDM ID：d81ed983deb6d3b53096271173048925\r\n    客户名称：Macau University of Science and Technology【Macao】\r\n    客户区域：Macao\r\n    客户类型：\r\n\n====工单信息====\n\r设备部署模式：HCI 6.10.0_R2\r\n客户背景： 澳门科技大学\r\n问题现象： 更换磁盘后，在HCI前端执行“替换磁盘”操作时，新磁盘未显示，无法完成替换流程。 \r\n排查过程：\r\n1. 通过日志分析定位到被隔离的磁盘信息。 \r\n2. 针对隔离磁盘执行新磁盘更换操作。 \r\n3. 在前端界面执行“替换磁盘”时，没有显示新的磁盘做替换。 \r\n\r\n重要备注：-\r\n是否已开群（企微）：是\r\n企微群名：Q2026030901585&Q2026032001164 澳门科技大学&HCI售后问",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-11T20:05:25.179450"
+  },
+  {
+    "index": 213,
+    "problem_id": "Q2026042701436",
+    "problem_desc": "两个一体机，单独发过来的硬盘，插入到服务器  平台识别不到",
+    "error": "",
+    "failed_at": "2026-05-11T20:11:34.574294"
+  },
+  {
+    "index": 240,
+    "problem_id": "Q2026042600228",
+    "problem_desc": "主机（172.17.14.15）的硬盘（2号盘）疑似卡盘（请找吉林-长春-HCI01确认），会导致业务卡慢。为防止业务再次受到影响。",
+    "error": "",
+    "failed_at": "2026-05-11T20:42:53.667578"
+  },
+  {
+    "index": 249,
+    "problem_id": "Q2026042500327",
+    "problem_desc": "搬迁机房 主机上线后 磁盘显示异常（在窗口期）",
+    "error": "",
+    "failed_at": "2026-05-11T20:53:56.990182"
+  },
+  {
+    "index": 251,
+    "problem_id": "Q2026042500145",
+    "problem_desc": "平台显示磁盘异常协助处理",
+    "error": "",
+    "failed_at": "2026-05-11T20:56:37.125898"
+  },
+  {
+    "index": 257,
+    "problem_id": "Q2026042401678",
+    "problem_desc": "服务器硬盘出现问题，VR应用已经断了",
+    "error": "",
+    "failed_at": "2026-05-11T21:02:58.772401"
+  },
+  {
+    "index": 272,
+    "problem_id": "Q2026042400853",
+    "problem_desc": "更换内存条和磁盘协助保障",
+    "error": "",
+    "failed_at": "2026-05-11T21:20:46.754816"
+  },
+  {
+    "index": 279,
+    "problem_id": "Q2026042400142",
+    "problem_desc": "hci 磁盘离线，hci识别不到了，bmc带外看着没问题，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-11T21:30:19.785703"
+  },
+  {
+    "index": 307,
+    "problem_id": "Q2026042300213",
+    "problem_desc": "三方服务器替换磁盘，协助保障",
+    "error": "",
+    "failed_at": "2026-05-11T22:03:21.870571"
+  },
+  {
+    "index": 318,
+    "problem_id": "Q2026042201464",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260417860082\r\n    事件等级：Priority3\r\n    产品线：HCI::6.11.1_R1\r\n\n====客户信息====\n    客户ID：503\r\n    客户MDM ID：null\r\n    客户名称：IT Impresa Srl\r\n    客户区域：Italy\r\n    客户类型：null\r\n\n====工单信息====\n\r客户：IT Impressa\r\n环境：HCI 6.11.1 R1\r\n问题：4月17日一块SSD进入离线状态后自动恢复\r\n排查：\r\n1. 磁盘 sde 离线后自动上线 （sdf），磁盘没有负载。2. 磁盘fw不需要更新3. 磁盘没有坏道4. 目前VS 是正常状态",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-11T22:15:55.717961"
+  },
+  {
+    "index": 334,
+    "problem_id": "Q2026042200418",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：HCI本地磁盘异常掉线",
+    "error": "",
+    "failed_at": "2026-05-11T22:33:04.277520"
+  },
+  {
+    "index": 341,
+    "problem_id": "Q2026042200081",
+    "problem_desc": "超融合磁盘被隔离\n",
+    "error": "",
+    "failed_at": "2026-05-11T22:40:18.114807"
+  },
+  {
+    "index": 376,
+    "problem_id": "Q2026042001033",
+    "problem_desc": "硬盘坏了，需要协助查看一下",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-11T23:20:19.848682"
+  },
+  {
+    "index": 399,
+    "problem_id": "Q2026042000177",
+    "problem_desc": "HCL资源池主机硬盘告警，经过基础排查服务器主机硬盘灯是正常状态，以及登录带外管理口查看硬盘是正常的 ，需要协助后台扫描查看下磁盘情况",
+    "error": "",
+    "failed_at": "2026-05-11T23:42:04.818561"
+  },
+  {
+    "index": 418,
+    "problem_id": "Q2026041701470",
+    "problem_desc": "一体机用三方磁盘，需要评估是否可以使用",
+    "error": "",
+    "failed_at": "2026-05-12T00:02:56.945117"
+  },
+  {
+    "index": 424,
+    "problem_id": "Q2026041700934",
+    "problem_desc": "服务器硬盘故障设备过保需要协助走返修",
+    "error": "",
+    "failed_at": "2026-05-12T00:09:51.591940"
+  },
+  {
+    "index": 466,
+    "problem_id": "Q2026041501834",
+    "problem_desc": "磁盘故障，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T00:50:16.835126"
+  },
+  {
+    "index": 467,
+    "problem_id": "Q2026041501824",
+    "problem_desc": "HCI，第三方，有一个SSD上电时间超过5年了，替换了SSD的硬盘，之前的告警还是取消不了，需要协助处理。",
+    "error": "",
+    "failed_at": "2026-05-12T00:52:17.165267"
+  },
+  {
+    "index": 470,
+    "problem_id": "Q2026041501526",
+    "problem_desc": "磁盘故障，设备过保，想要付费返修",
+    "error": "",
+    "failed_at": "2026-05-12T00:57:17.686154"
+  },
+  {
+    "index": 471,
+    "problem_id": "Q2026041501413",
+    "problem_desc": "查看HCI内存频率",
+    "error": "",
+    "failed_at": "2026-05-12T00:59:18.037847"
+  },
+  {
+    "index": 548,
+    "problem_id": "Q2026041001419",
+    "problem_desc": "巡检工具检测磁盘寿命剩余天数，寿命有些短的但是剩余天数更高，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T02:01:04.360394"
+  },
+  {
+    "index": 556,
+    "problem_id": "Q2026041000147",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260331860028\r\n    事件等级：Priority3\r\n    产品线：HCI::6.11.1\r\n\n====工单信息====\n\r客服负责人：Celine Lim\r\n研发负责人：\r\n【事件编号】Ticket#20260331860028\r\n【版本信息】6.11.1\r\n【CTI专家】陈平\r\n【问题描述】该硬盘接口速率低于6Gbps，建议联系供应商\r\n【业务影响】暂无影响\r\n【当前进展】\r\n\r\n前台报错：该硬盘接口速率低于6Gbps，建议联系供应商处理\r\n版本： 6.11.1\r\n磁盘是: NVME[Photo]\r\n后台检查了磁盘（sdd)：[Photo]\r\ndisk_dump: 存在13，11\r\n\r\nRAID / Controller 层在列出所有物理磁盘信息:[Photo]\r\nnvme list 没有任何list：[Photo]\r\nlspci -vv | grep -E \"LnkSta|nvme\"\r\n有正常 NVMe（8GT/s x8）\r\n也有 degraded link（降速）[Photo] \r\n\r\n想请问看\r\n1.什么方法可以确定NVME 磁盘接口速率高于6Gbps，还是系统误报呢？\r\n2.后台bypass后，重启主机问题会再出现，有其他的解决办法吗？",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T02:08:35.920915"
+  },
+  {
+    "index": 559,
+    "problem_id": "Q2026040902091",
+    "problem_desc": "客户开机删除磁盘 失败   ，担心出问题 要求协助远程看看 \n客户想继续使用这个磁盘  ",
+    "error": "",
+    "failed_at": "2026-05-12T02:11:29.474683"
+  },
+  {
+    "index": 576,
+    "problem_id": "Q2026040901194",
+    "problem_desc": "又有磁盘故障，还要协助返修",
+    "error": "",
+    "failed_at": "2026-05-12T02:32:06.345752"
+  },
+  {
+    "index": 578,
+    "problem_id": "Q2026040900975",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：hci存储告警\n检测到主机(172.20.0.15)的硬\n盘(WDCWD8002FRYZ-01FF2B0 VK1G76NY)被拔出\n如果是误拔，请尽快把硬盘重新插回原盘位!\n\n检查到虚拟机(【测试】浩丰用\n友U8-ERP)仅剩一个可用副本，在以下的场景中虚拟机可\n能因单副本导致无法通过HA机制恢复业务:\n1、极端情况下，副本与虚拟机运行在同一物理主机上，该\n物理主机故障宕机或管理网中断;\n2、极端情况下，副本分布的硬盘发生单点故障，无可用副\n本。\n建议及时增加虚拟机可用副本。",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T02:33:00.533738"
+  },
+  {
+    "index": 579,
+    "problem_id": "Q2026040900954",
+    "problem_desc": "使用工具放通SSD不生效 需后台放通下",
+    "error": "",
+    "failed_at": "2026-05-12T02:35:00.764665"
+  },
+  {
+    "index": 589,
+    "problem_id": "Q2026040900163",
+    "problem_desc": "磁盘告警，需要协助处理。",
+    "error": "",
+    "failed_at": "2026-05-12T02:44:55.308729"
+  },
+  {
+    "index": 607,
+    "problem_id": "Q2026040801190",
+    "problem_desc": "放通SSD",
+    "error": "",
+    "failed_at": "2026-05-12T03:02:03.928756"
+  },
+  {
+    "index": 608,
+    "problem_id": "Q2026040801189",
+    "problem_desc": "ssd问题",
+    "error": "",
+    "failed_at": "2026-05-12T03:04:04.302510"
+  },
+  {
+    "index": 609,
+    "problem_id": "Q2026040801187",
+    "problem_desc": "磁盘坏道，协助返修",
+    "error": "",
+    "failed_at": "2026-05-12T03:06:04.629861"
+  },
+  {
+    "index": 622,
+    "problem_id": "Q2026040701558",
+    "problem_desc": "放通SSD",
+    "error": "",
+    "failed_at": "2026-05-12T03:21:22.219229"
+  },
+  {
+    "index": 657,
+    "problem_id": "Q2026040400077",
+    "problem_desc": "内存告警ECC错误",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-12T03:59:13.759736"
+  },
+  {
+    "index": 664,
+    "problem_id": "Q2026040300859",
+    "problem_desc": "HCI 有一个硬盘出现了告警，",
+    "error": "",
+    "failed_at": "2026-05-12T04:06:55.254749"
+  },
+  {
+    "index": 668,
+    "problem_id": "Q2026040300593",
+    "problem_desc": "主机告警不可纠正的ECC错误，需要协助处理",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-12T04:11:52.083514"
+  },
+  {
+    "index": 669,
+    "problem_id": "Q2026040300340",
+    "problem_desc": "HCI，磁盘离线需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T04:13:52.427977"
+  },
+  {
+    "index": 688,
+    "problem_id": "Q2026040200787",
+    "problem_desc": "超融合第三方服务器提示主机告警存在多块系统盘，需要协助。",
+    "error": "",
+    "failed_at": "2026-05-12T04:34:47.007069"
+  },
+  {
+    "index": 691,
+    "problem_id": "Q2026040200707",
+    "problem_desc": "磁盘故障需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T04:38:29.488991"
+  },
+  {
+    "index": 714,
+    "problem_id": "Q2026033102017",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：硬盘被隔离需要协助排查是否异常选择返修",
+    "error": "",
+    "failed_at": "2026-05-12T05:00:39.355153"
+  },
+  {
+    "index": 716,
+    "problem_id": "Q2026033101731",
+    "problem_desc": "HCI 控制台显示磁盘被隔离  需要协助查看 ",
+    "error": "",
+    "failed_at": "2026-05-12T05:03:11.366854"
+  },
+  {
+    "index": 722,
+    "problem_id": "Q2026033101232",
+    "problem_desc": "超融合一体机提示格式化硬盘失败，需要协助。",
+    "error": "",
+    "failed_at": "2026-05-12T05:10:50.285832"
+  },
+  {
+    "index": 734,
+    "problem_id": "Q2026033100311",
+    "problem_desc": "磁盘故障需要协助看下是否返修",
+    "error": "",
+    "failed_at": "2026-05-12T05:20:54.257918"
+  },
+  {
+    "index": 749,
+    "problem_id": "Q2026033001175",
+    "problem_desc": "三方服务器放通SSD",
+    "error": "",
+    "failed_at": "2026-05-12T05:37:10.574257"
+  },
+  {
+    "index": 761,
+    "problem_id": "Q2026033000274",
+    "problem_desc": "协助更换磁盘",
+    "error": "",
+    "failed_at": "2026-05-12T05:49:55.091549"
+  },
+  {
+    "index": 764,
+    "problem_id": "Q2026033000130",
+    "problem_desc": "需要对客户的HCI进行固件升级，需要技术支持",
+    "error": "",
+    "failed_at": "2026-05-12T05:53:34.645645"
+  },
+  {
+    "index": 773,
+    "problem_id": "Q2026032900119",
+    "problem_desc": "HCI计算节点有个硬盘告警了",
+    "error": "",
+    "failed_at": "2026-05-12T06:02:19.406934"
+  },
+  {
+    "index": 775,
+    "problem_id": "Q2026032800137",
+    "problem_desc": "内存ECC告警",
+    "error": "",
+    "failed_at": "2026-05-12T06:05:05.689776"
+  },
+  {
+    "index": 778,
+    "problem_id": "Q2026032800070",
+    "problem_desc": "HCI 扩容硬盘，机械硬盘报坏道检测失败，新硬盘无法扩容。",
+    "error": "",
+    "failed_at": "2026-05-12T06:09:32.875610"
+  },
+  {
+    "index": 802,
+    "problem_id": "Q2026032601974",
+    "problem_desc": "放通SSD",
+    "error": "",
+    "failed_at": "2026-05-12T06:35:33.512704"
+  },
+  {
+    "index": 827,
+    "problem_id": "Q2026032501995",
+    "problem_desc": "升级版本后ssd固件提示不兼容",
+    "error": "",
+    "failed_at": "2026-05-12T07:03:04.391872"
+  },
+  {
+    "index": 830,
+    "problem_id": "Q2026032501814",
+    "problem_desc": "磁盘卡慢告警",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-12T07:05:20.699538"
+  },
+  {
+    "index": 855,
+    "problem_id": "Q2026032401990",
+    "problem_desc": "硬件离线了 协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T07:32:28.597605"
+  },
+  {
+    "index": 856,
+    "problem_id": "Q2026032401984",
+    "problem_desc": "HCI ， 需要协助放通硬盘",
+    "error": "",
+    "failed_at": "2026-05-12T07:34:30.794085"
+  },
+  {
+    "index": 867,
+    "problem_id": "Q2026032401096",
+    "problem_desc": "告警大页内存有变动",
+    "error": "",
+    "failed_at": "2026-05-12T07:46:23.616482"
+  },
+  {
+    "index": 886,
+    "problem_id": "Q2026032400236",
+    "problem_desc": "缓存盘更换需要保障",
+    "error": "",
+    "failed_at": "2026-05-12T08:05:54.791875"
+  },
+  {
+    "index": 887,
+    "problem_id": "Q2026032400112",
+    "problem_desc": "2块磁盘异常，协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T08:07:55.980335"
+  },
+  {
+    "index": 893,
+    "problem_id": "Q2026032301767",
+    "problem_desc": "hci一体机有内存条告警，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T08:15:08.952183"
+  },
+  {
+    "index": 896,
+    "problem_id": "Q2026032301399",
+    "problem_desc": "磁盘离线，协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T08:19:42.949810"
+  },
+  {
+    "index": 914,
+    "problem_id": "Q2026032100287",
+    "problem_desc": "1. 检测到硬盘（主机(172.16.216.25), 硬盘名称: 71T0A1B5FQYF TOSHIBA AL15SEB24EQY）发生IO错误，会严重危害您的数据安全，请更换该硬盘！\n2、主机（172.16.216.25）的硬盘（71T0A19NFQYF TOSHIBA AL15SEB24EQY）出现卡慢，已被临时隔离，请勿对此硬盘进行拔插操作。\n刚刚智能运维监测到客户硬件异常，并且十几台虚拟机异常挂起，需要尽快处理下\n问题处理群拉下唐鑫鑫",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T08:37:54.499383"
+  },
+  {
+    "index": 916,
+    "problem_id": "Q2026032100112",
+    "problem_desc": "检测到硬盘存在异常",
+    "error": "",
+    "failed_at": "2026-05-12T08:41:22.934333"
+  },
+  {
+    "index": 928,
+    "problem_id": "Q2026032001164",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260320860021\r\n    事件等级：Priority3\r\n    产品线：HCI::6.10.0_R2\r\n\n====客户信息====\n    客户ID：5498\r\n    客户MDM ID：d81ed983deb6d3b53096271173048925\r\n    客户名称：Macau University of Science and Technology【Macao】\r\n    客户区域：Macao\r\n    客户类型：\r\n\n====工单信息====\n\r旧盘已经拔了 有/dev/sdn\r\n运行disk_scan后又卡了\r\n方便的话能上来看看吗？替换磁盘没识别到新盘",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T08:51:48.191166"
+  },
+  {
+    "index": 937,
+    "problem_id": "Q2026032000303",
+    "problem_desc": "替换磁盘识别不到新的硬盘",
+    "error": "",
+    "failed_at": "2026-05-12T09:03:28.642175"
+  },
+  {
+    "index": 938,
+    "problem_id": "Q2026032000153",
+    "problem_desc": "HCI告警“检测到主机的硬盘服务存在异常”，需要查原因",
+    "error": "",
+    "failed_at": "2026-05-12T09:05:31.422628"
+  },
+  {
+    "index": 977,
+    "problem_id": "Q2026031800053",
+    "problem_desc": "第三方服务器HCI有个硬盘故障 之前替换过一次了 目前同个槽位有报错了 ",
+    "error": "",
+    "failed_at": "2026-05-12T09:51:12.511853"
+  },
+  {
+    "index": 986,
+    "problem_id": "Q2026031701314",
+    "problem_desc": "HCI告警磁盘离线",
+    "error": "",
+    "failed_at": "2026-05-12T10:00:48.013609"
+  },
+  {
+    "index": 1012,
+    "problem_id": "Q2026031600434",
+    "problem_desc": "反馈有磁盘坏道协助排查",
+    "error": "",
+    "failed_at": "2026-05-12T10:27:27.562604"
+  },
+  {
+    "index": 1032,
+    "problem_id": "Q2026031301367",
+    "problem_desc": "硬盘告警",
+    "error": "",
+    "failed_at": "2026-05-12T10:49:10.126279"
+  },
+  {
+    "index": 1054,
+    "problem_id": "Q2026031300007",
+    "problem_desc": "磁盘告警老化  需要具体确认    ",
+    "error": "",
+    "failed_at": "2026-05-12T11:12:22.182235"
+  },
+  {
+    "index": 1063,
+    "problem_id": "Q2026031201349",
+    "problem_desc": "HCI硬盘自动隔离了需要协助查看",
+    "error": "",
+    "failed_at": "2026-05-12T11:23:01.883004"
+  },
+  {
+    "index": 1065,
+    "problem_id": "Q2026031201306",
+    "problem_desc": "HCI一体机 控制台告警磁盘故障   ",
+    "error": "",
+    "failed_at": "2026-05-12T11:26:09.897544"
+  },
+  {
+    "index": 1071,
+    "problem_id": "Q2026031200554",
+    "problem_desc": "磁盘提示上电时间超过年，需要协助后台查看相关信息",
+    "error": "",
+    "failed_at": "2026-05-12T11:34:35.692036"
+  },
+  {
+    "index": 1074,
+    "problem_id": "Q2026031200085",
+    "problem_desc": "HCI 报错磁盘挂载 已经隔离 ",
+    "error": "",
+    "failed_at": "2026-05-12T11:38:41.940906"
+  },
+  {
+    "index": 1075,
+    "problem_id": "Q2026031200065",
+    "problem_desc": "HCI的硬盘服务器异常",
+    "error": "",
+    "failed_at": "2026-05-12T11:40:44.922543"
+  },
+  {
+    "index": 1078,
+    "problem_id": "Q2026031101578",
+    "problem_desc": "需要将磁盘加回热备盘",
+    "error": "",
+    "failed_at": "2026-05-12T11:45:13.862724"
+  },
+  {
+    "index": 1084,
+    "problem_id": "Q2026031101331",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：深信服虚拟存储卷识别不到。本地硬盘识别不到",
+    "error": "",
+    "failed_at": "2026-05-12T11:50:59.833958"
+  },
+  {
+    "index": 1116,
+    "problem_id": "Q2026031001008",
+    "problem_desc": "HCI硬盘自动隔离，需要后台判断是否到替换标准",
+    "error": "",
+    "failed_at": "2026-05-12T12:24:30.874302"
+  },
+  {
+    "index": 1117,
+    "problem_id": "Q2026031000850",
+    "problem_desc": "硬盘故障需要协助确认报价单次返修",
+    "error": "",
+    "failed_at": "2026-05-12T12:26:33.613079"
+  },
+  {
+    "index": 1123,
+    "problem_id": "Q2026031000740",
+    "problem_desc": "磁盘异常 需要协助判断返修",
+    "error": "",
+    "failed_at": "2026-05-12T12:33:48.833725"
+  },
+  {
+    "index": 1124,
+    "problem_id": "Q2026031000680",
+    "problem_desc": "HCI有一个磁盘故障了，需要协助评估返修",
+    "error": "",
+    "failed_at": "2026-05-12T12:35:52.351471"
+  },
+  {
+    "index": 1143,
+    "problem_id": "Q2026030901641",
+    "problem_desc": "缓存盘看不到寿命",
+    "error": "",
+    "failed_at": "2026-05-12T13:00:38.343753"
+  },
+  {
+    "index": 1144,
+    "problem_id": "Q2026030901585",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260304860082\r\n    事件等级：Priority3\r\n    产品线：HCI::6.10.0_R2\r\n\n====工单信息====\n\r客服负责人：Chong Jun Xiang\r\n研发负责人：\r\n【事件编号】 Ticket#20260304860082\r\n【版本信息】 HCI 6.10.0_R2\r\n【CTI专家】 \r\n【问题描述】 磁盘离线\r\n【业务影响】 无\r\n\r\n【当前进展】\r\n1. raid上看有检测到该磁盘。\r\n2. lsblk磁盘数量也是对的。\r\n3.  但是cfg这里无法获取dev。\r\n4. 跑了disk_scan.sh 会卡着，扫不回来。",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T13:00:38.450909"
+  },
+  {
+    "index": 1152,
+    "problem_id": "Q2026030900968",
+    "problem_desc": "协助替换磁盘",
+    "error": "",
+    "failed_at": "2026-05-12T13:10:46.459470"
+  },
+  {
+    "index": 1176,
+    "problem_id": "Q2026030700169",
+    "problem_desc": "保障替换磁盘，之前工单号Q2026022801257",
+    "error": "",
+    "failed_at": "2026-05-12T13:39:08.250296"
+  },
+  {
+    "index": 1179,
+    "problem_id": "Q2026030601644",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260304860080\r\n    事件等级：Priority3\r\n    产品线：HCI::6.11.1_R1\r\n\n====客户信息====\n    客户ID：1669\r\n    客户MDM ID：null\r\n    客户名称：Sangfor Turkey\r\n    客户区域：Turkey\r\n    客户类型：\r\n\n====工单信息====\n\rHCI 6.11.1R1\r\n大佬想确认一下这个离线磁盘可以直接替换不；我看数据一致性有private/delete/cluster.; 在存储侧执行清理了还是有；",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T13:41:25.127927"
+  },
+  {
+    "index": 1232,
+    "problem_id": "Q2026030401116",
+    "problem_desc": "巡检提示磁盘和CPLD固件版本需要升级，协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T14:36:56.725384"
+  },
+  {
+    "index": 1236,
+    "problem_id": "Q2026030400896",
+    "problem_desc": "【信服云】【紧急事件】2026-03-04 00:01:55 至 2026-03-04 00:03:00 期间，已聚合租户“宜宾市翠屏区妇幼保健计划生育服务中心”的1条“磁盘损坏告警”\n级别：紧急\n所属租户：宜宾市翠屏区妇幼保健计划生育服务中心\n主事件名称：磁盘损坏告警\n受影响资源对象：主机（172.168.32.203）的硬盘（WX00E5WW）\n聚合告警与风险：1\n受影响数据中心：172.168.30.240（172.168.30.240）\n受影响集群：HIS集群\n受影响资源池：HIS集群\n事件描述：\n1. 检测到主机（172.168.32.203）的硬盘（WX00E5WW）被拔出，如果是",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T14:40:33.449445"
+  },
+  {
+    "index": 1255,
+    "problem_id": "Q2026030301430",
+    "problem_desc": "H3C服务器安装HCI数据盘识别不到协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T14:59:09.465757"
+  },
+  {
+    "index": 1259,
+    "problem_id": "Q2026030300967",
+    "problem_desc": "新增磁盘提示磁盘未签名",
+    "error": "",
+    "failed_at": "2026-05-12T15:04:23.447237"
+  },
+  {
+    "index": 1261,
+    "problem_id": "Q2026030300916",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260224860011\r\n    事件等级：Priority3\r\n    产品线：HCI::Unknown Version\r\n\n====客户信息====\n    客户ID：1741\r\n    客户MDM ID：null\r\n    客户名称：J&T Express Indonesia\r\n    客户区域：Indonesia\r\n    客户类型：\r\n\n====工单信息====\n\r客服负责人：Chong Jun Xiang\r\n研发负责人：\r\n【事件编号】 Ticket#20260224860011\r\n【版本信息】 HCI 6.10.0_R2\r\n【CTI专家】 \r\n【问题描述】 J&T HDD disk high latency error\r\n【业务影响】 无\r\n \r\n【当前进展】\r\n1. iostat -x (Check the high latency)\r\n2. Kernel logs：【Disk isolated before by HCI】\r\n3. Card slow disk test report\r\n4. ZC21RAWG 是被单盘影响多盘了。 故障的是WD-WMC6N0F596W7。 需要升级raid 固件。还有需要打最新合集补丁，如果已经打了看看能不能升级6111R1 LTS版本再打。",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T15:05:44.494423"
+  },
+  {
+    "index": 1288,
+    "problem_id": "Q2026030200457",
+    "problem_desc": "需要替换硬盘，点灯",
+    "error": "",
+    "failed_at": "2026-05-12T15:36:23.725153"
+  },
+  {
+    "index": 1293,
+    "problem_id": "Q2026030200206",
+    "problem_desc": "HCI 巡检提示内核日志检测异常，主机:172.20.10.203检测项:磁盘错误告警检测硬件类型:磁盘检测结果:磁盘(sdc)出现错误告警\n巡检工具当前 没其他的磁盘报错 \n第三方服务器",
+    "error": "",
+    "failed_at": "2026-05-12T15:44:34.350743"
+  },
+  {
+    "index": 1309,
+    "problem_id": "Q2026022800834",
+    "problem_desc": "一块数据盘磁盘被隔离，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-12T16:02:55.010168"
+  },
+  {
+    "index": 1313,
+    "problem_id": "Q2026022800614",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260226860101\r\n    事件等级：Priority3\r\n    产品线：HCI::6.11.1\r\n\n====客户信息====\n    客户ID：19671\r\n    客户MDM ID：631f1914677d729da36254017d579460\r\n    客户名称：CLICKIP TECNOLOGIA【Brazil】\r\n    客户区域：Brazil\r\n    客户类型：\r\n\n====工单信息====\n\r设备部署模式：6主机集群\r\n客户背景： 巴西客户\r\n问题现象：系统盘软raid，添加磁盘时无法识别磁盘\r\n排查过程：\r\n1. lsblk可以识别到磁盘\r\n2. 本地存储也可以识别\r\n3. 系统盘是NVme盘\r\n4. 经过研发确认，NVMe盘存在限制导致无法识别\r\n5. 研发在确认解决方案\r\n\r\n重要备注：无\r\n是否已开群（企微）：是\r\n企微群名：【巴西】【系统盘软raid磁盘识别问题】",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T16:06:48.390452"
+  },
+  {
+    "index": 1346,
+    "problem_id": "Q2026022700332",
+    "problem_desc": "磁盘异常需要协助返修",
+    "error": "",
+    "failed_at": "2026-05-12T16:40:50.535196"
+  },
+  {
+    "index": 1359,
+    "problem_id": "Q2026022600877",
+    "problem_desc": "内存和磁盘有告警，协助确认",
+    "error": "",
+    "failed_at": "2026-05-12T16:53:45.712636"
+  },
+  {
+    "index": 1364,
+    "problem_id": "Q2026022600590",
+    "problem_desc": "第三方服务器虚拟存储无法识别到硬盘",
+    "error": "",
+    "failed_at": "2026-05-12T16:59:45.397316"
+  },
+  {
+    "index": 1401,
+    "problem_id": "Q2026022500133",
+    "problem_desc": "磁盘只读隔离",
+    "error": "",
+    "failed_at": "2026-05-12T17:42:45.931971"
+  },
+  {
+    "index": 1459,
+    "problem_id": "Q2026021500022",
+    "problem_desc": "主事件名称：磁盘损坏告警\n受影响资源对象：172.16.31.12\n聚合告警与风险：1\n受影响数据中心：172.16.31.15（172.16.31.15）\n受影响集群：HCI_database\n受影响资源池：HCI_database\n事件描述：\n1. 检测到硬盘（主机(172.16.31.12)，硬盘名称: WSE10NVV）存在坏道，建议更换该硬盘！\n\n问题处理群需要拉下管家宋来",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T18:39:42.944697"
+  },
+  {
+    "index": 1494,
+    "problem_id": "Q2026021200047",
+    "problem_desc": "磁盘提示被拔出",
+    "error": "",
+    "failed_at": "2026-05-12T19:17:55.287570"
+  },
+  {
+    "index": 1505,
+    "problem_id": "Q2026021100562",
+    "problem_desc": "磁盘离线",
+    "error": "",
+    "failed_at": "2026-05-12T19:29:48.734314"
+  },
+  {
+    "index": 1512,
+    "problem_id": "Q2026021001449",
+    "problem_desc": "服务器断电后无法启动 所有硬盘灯不亮    四台都无法启动",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-12T19:35:13.000223"
+  },
+  {
+    "index": 1515,
+    "problem_id": "Q2026021001323",
+    "problem_desc": "sata的ssd能不能换成nvme的",
+    "error": "",
+    "failed_at": "2026-05-12T19:41:05.275401"
+  },
+  {
+    "index": 1520,
+    "problem_id": "Q2026021001046",
+    "problem_desc": "超融合一体机巡检提示检查到主机硬盘出现错误，需要协助。",
+    "error": "",
+    "failed_at": "2026-05-12T19:48:28.810598"
+  },
+  {
+    "index": 1527,
+    "problem_id": "Q2026021000588",
+    "problem_desc": "中午需要主机硬盘，需要给保障下",
+    "error": "",
+    "failed_at": "2026-05-12T19:56:13.982160"
+  },
+  {
+    "index": 1534,
+    "problem_id": "Q2026021000040",
+    "problem_desc": "10点到现场，替换硬盘，需要保障",
+    "error": "",
+    "failed_at": "2026-05-12T20:04:06.218210"
+  },
+  {
+    "index": 1538,
+    "problem_id": "Q2026020901451",
+    "problem_desc": "识别不到硬盘",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-12T20:07:27.834753"
+  },
+  {
+    "index": 1561,
+    "problem_id": "Q2026020900108",
+    "problem_desc": "检测到主机（信创Insupr-43）的硬盘（PHYF936304PX3P8EGN）服务存在异常，看虚拟存储的状态是正常的，想麻烦检查一下日志到底是什么问题",
+    "error": "",
+    "failed_at": "2026-05-12T20:29:17.330137"
+  },
+  {
+    "index": 1565,
+    "problem_id": "Q2026020800133",
+    "problem_desc": "磁盘离线协助排查",
+    "error": "",
+    "failed_at": "2026-05-12T20:34:05.539208"
+  },
+  {
+    "index": 1598,
+    "problem_id": "Q2026020600194",
+    "problem_desc": "磁盘故障",
+    "error": "",
+    "failed_at": "2026-05-12T21:06:58.317531"
+  },
+  {
+    "index": 1622,
+    "problem_id": "Q2026020500289",
+    "problem_desc": "内存条异常",
+    "error": "",
+    "failed_at": "2026-05-12T21:29:45.794933"
+  },
+  {
+    "index": 1624,
+    "problem_id": "Q2026020500218",
+    "problem_desc": "原厂磁盘提示识别不到磁盘寿命不支持添加",
+    "error": "",
+    "failed_at": "2026-05-12T21:32:42.551455"
+  },
+  {
+    "index": 1675,
+    "problem_id": "Q2026020201767",
+    "problem_desc": "原来组了集群，集群没有拆分干净导致，部分硬盘还被原来的集群关联着，现在弄新集群，可以添加主机，但是呢，只能识别出未被老集群关联的硬盘",
+    "error": "",
+    "failed_at": "2026-05-12T22:24:58.544972"
+  },
+  {
+    "index": 1678,
+    "problem_id": "Q2026020201688",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：超融合磁盘告警 scp灾备状态一直告警",
+    "error": "",
+    "failed_at": "2026-05-12T22:28:48.917720"
+  },
+  {
+    "index": 1681,
+    "problem_id": "Q2026020201450",
+    "problem_desc": "磁盘离线，需要协助分析",
+    "error": "",
+    "failed_at": "2026-05-12T22:32:37.144420"
+  },
+  {
+    "index": 1684,
+    "problem_id": "Q2026020200850",
+    "problem_desc": "所属租户：均瑶集团\n主事件名称：磁盘损坏告警\n受影响资源对象：主机（10.220.130.10）的硬盘（2号盘）\n聚合告警与风险：1\n受影响数据中心：10.220.130.33（10.220.130.33）\n受影响集群：混闪集群\n受影响资源池：混闪集群\n事件描述：\n1. 检测到主机（10.220.130.10）的硬盘（2号盘）被拔出，如果是误拔，请尽快把硬盘重新插回原盘位！",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-12T22:33:48.648939"
+  },
+  {
+    "index": 1699,
+    "problem_id": "Q2026013100315",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：混闪卷硬盘离线",
+    "error": "",
+    "failed_at": "2026-05-12T22:52:59.444557"
+  },
+  {
+    "index": 1707,
+    "problem_id": "Q2026013100085",
+    "problem_desc": "磁盘识别异常",
+    "error": "",
+    "failed_at": "2026-05-12T23:02:09.426074"
+  },
+  {
+    "index": 1714,
+    "problem_id": "Q2026013001321",
+    "problem_desc": "磁盘故障",
+    "error": "",
+    "failed_at": "2026-05-12T23:12:22.809963"
+  },
+  {
+    "index": 1725,
+    "problem_id": "Q2026013000692",
+    "problem_desc": "磁盘有坏道需要返修",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-12T23:22:28.619449"
+  },
+  {
+    "index": 1729,
+    "problem_id": "Q2026013000337",
+    "problem_desc": "三方服务器安装磁盘不识别",
+    "error": "",
+    "failed_at": "2026-05-12T23:27:51.867883"
+  },
+  {
+    "index": 1735,
+    "problem_id": "Q2026013000024",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：U.2硬盘安装",
+    "error": "",
+    "failed_at": "2026-05-12T23:34:08.151861"
+  },
+  {
+    "index": 1737,
+    "problem_id": "Q2026012901613",
+    "problem_desc": "协助保障更换磁盘",
+    "error": "",
+    "failed_at": "2026-05-12T23:37:00.340513"
+  },
+  {
+    "index": 1744,
+    "problem_id": "Q2026012901277",
+    "problem_desc": "放通 磁盘  ssd",
+    "error": "",
+    "failed_at": "2026-05-12T23:44:55.507460"
+  },
+  {
+    "index": 1746,
+    "problem_id": "Q2026012901230",
+    "problem_desc": "一体机 通过web页面点亮硬盘灯 硬盘灯不亮",
+    "error": "",
+    "failed_at": "2026-05-12T23:48:35.382273"
+  },
+  {
+    "index": 1747,
+    "problem_id": "Q2026012901199",
+    "problem_desc": "巡检提示硬盘异常，协助确认",
+    "error": "",
+    "failed_at": "2026-05-12T23:50:38.178570"
+  },
+  {
+    "index": 1758,
+    "problem_id": "Q2026012900170",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：HCI 磁盘告警，环境：单台服务器本地存储 全闪存                   \n \" [ 2026-01-28 23:10:59 ] 主机&lt;222.222.22.90&gt;访问存储&lt;storage&gt;的&lt;sda&gt;盘时&lt;写&gt;延迟持续超过阈值50ms，请检查存储设备或存储网络是否异常\"",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-13T00:02:48.939401"
+  },
+  {
+    "index": 1778,
+    "problem_id": "Q2026012800298",
+    "problem_desc": "扩容硬盘，三方服务器磁盘识别不到",
+    "error": "",
+    "failed_at": "2026-05-13T00:24:14.530490"
+  },
+  {
+    "index": 1819,
+    "problem_id": "Q2026012600348",
+    "problem_desc": "磁盘显示离线，需要协助看一下",
+    "error": "",
+    "failed_at": "2026-05-13T01:08:00.264847"
+  },
+  {
+    "index": 1866,
+    "problem_id": "Q2026012201740",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260121860003\r\n    事件等级：Priority3\r\n    产品线：HCI::6.10.0_R1\r\n\n====工单信息====\n\r设备部署模式： 6.10.0_R2\r\n客户背景： 新加波\r\n问题现象： 磁盘离线\r\n排查过程：\r\n 1) 磁盘19号早上开始离线报错。\r\n2）磁盘离线之前有打包，重启主机等操作\r\n3）客户服务器是第三方服务器  \r\n重要备注：\r\n是否已开群（企微）：是\r\n企微群名：中台陈赞宇Ticket#20260121860003【新加波】【磁盘离线】",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-13T01:53:34.840684"
+  },
+  {
+    "index": 1877,
+    "problem_id": "Q2026012200406",
+    "problem_desc": "内存条告警",
+    "error": "",
+    "failed_at": "2026-05-13T02:05:40.896797"
+  },
+  {
+    "index": 1886,
+    "problem_id": "Q2026012101973",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260119860094\r\n    事件等级：Priority3\r\n    产品线：HCI::6.11.1\r\n\n====客户信息====\n    客户ID：1163\r\n    客户MDM ID：0cffa7c0eb1846ad9785afc47fe9a39d\r\n    客户名称：Al Kendi IT services【United Arab Emirates】\r\n    客户区域：United Arab Emirates\r\n    客户类型：\r\n\n====工单信息====\n\r内部已经提单跟进：[2026012000331]【技术支持】【Ticket#20260119860094-Al Kendi IT services】一键检测报错硬盘转速检测超时",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-13T02:14:33.597480"
+  },
+  {
+    "index": 1923,
+    "problem_id": "Q2026012001132",
+    "problem_desc": "需要更换所有的缓存盘和数据盘",
+    "error": "",
+    "failed_at": "2026-05-13T02:51:40.901019"
+  },
+  {
+    "index": 1931,
+    "problem_id": "Q2026012000216",
+    "problem_desc": "虚拟存储有个三方硬盘需要协助定位和更换",
+    "error": "",
+    "failed_at": "2026-05-13T02:59:17.552778"
+  },
+  {
+    "index": 1936,
+    "problem_id": "Q2026012000040",
+    "problem_desc": "内存UECC错误，需要协助定位。",
+    "error": "",
+    "failed_at": "2026-05-13T03:03:57.340771"
+  },
+  {
+    "index": 1938,
+    "problem_id": "Q2026011901977",
+    "problem_desc": "单台主机上全部磁盘离线，影响核心业务使用",
+    "error": "",
+    "failed_at": "2026-05-13T03:08:02.439885"
+  },
+  {
+    "index": 1941,
+    "problem_id": "Q2026011901891",
+    "problem_desc": "磁盘坏了，需要返修",
+    "error": "",
+    "failed_at": "2026-05-13T03:12:05.610836"
+  },
+  {
+    "index": 1942,
+    "problem_id": "Q2026011901862",
+    "problem_desc": "放通SSD",
+    "error": "",
+    "failed_at": "2026-05-13T03:14:10.715917"
+  },
+  {
+    "index": 1945,
+    "problem_id": "Q2026011901754",
+    "problem_desc": "硬盘故障",
+    "error": "",
+    "failed_at": "2026-05-13T03:18:35.788925"
+  },
+  {
+    "index": 1965,
+    "problem_id": "Q2026011900345",
+    "problem_desc": "HCI中两台主机各一块磁盘提示卡慢盘需要替换的，需要判断下是不是磁盘出现问题需要更换。",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-13T03:36:38.462175"
+  },
+  {
+    "index": 1966,
+    "problem_id": "Q2026011900301",
+    "problem_desc": "服务器内存反馈有告警，需要协助处理",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-13T03:36:38.549414"
+  },
+  {
+    "index": 1980,
+    "problem_id": "Q2026011601786",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260114860130\r\n    事件等级：Priority3\r\n    产品线：HCI::Unknown Version\r\n\n====客户信息====\n    客户ID：16339\r\n    客户MDM ID：499d670e1757c484373b909bf9e8337c\r\n    客户名称：EDI Effetti Digitali Italiani【Italy】\r\n    客户区域：Italy\r\n    客户类型：\r\n\n====工单信息====\n\r客户：EDI Effetti Digitali Italiani\r\n环境：HCI 6.1.0EN （第三方设备）\r\n问题：HCI 未识别新数据磁盘HDD\r\n[图片]\r\n\r\n排查：\r\n1. 后台lsblk 也是无法识别新数据磁。\r\n2. BMC 平台上能正常显示新数据磁，也手动插拔确认是对的磁盘。\r\n3. 点本地磁盘也无法识别HDD。\r\n4. kernel 日志上没有包磁盘报错[图片]\r\n5. 在iDRAC 上磁盘状态是正常的[图片]",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-13T03:50:32.861705"
+  },
+  {
+    "index": 1983,
+    "problem_id": "Q2026011601571",
+    "problem_desc": "有多个磁盘有卡慢，协助处理 ",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-13T03:53:12.057576"
+  },
+  {
+    "index": 1990,
+    "problem_id": "Q2026011601147",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：使用aCheck巡检 虚拟磁盘volume_type字段故障 建议链接打开无内容",
+    "error": "",
+    "failed_at": "2026-05-13T04:02:44.582277"
+  },
+  {
+    "index": 1997,
+    "problem_id": "Q2026011600364",
+    "problem_desc": "卡慢盘",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-13T04:07:48.550359"
+  },
+  {
+    "index": 1998,
+    "problem_id": "Q2026011600069",
+    "problem_desc": "外置存储告警卡慢",
+    "error": "",
+    "failed_at": "2026-05-13T04:09:53.722548"
+  },
+  {
+    "index": 2028,
+    "problem_id": "Q2026011500016",
+    "problem_desc": "主事件名称：磁盘损坏告警\n受影响资源对象：172.16.100.113\n聚合告警与风险：1\n受影响数据中心：172.16.100.198（172.16.100.198）\n受影响集群：HCI_Cluster_A\n受影响资源池：SCETC_Cluster_A\n事件描述：\n1. 检测到硬盘（主机(172.16.100.113)，硬盘名称: 2号盘）存在坏道，建议更换该硬盘！\n\n磁盘有坏道，需要协助判断",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-13T04:37:25.447749"
+  },
+  {
+    "index": 2029,
+    "problem_id": "Q2026011500006",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260114860127\r\n    事件等级：Priority3\r\n    产品线：HCI::6.3.0R1\r\n\n====客户信息====\n    客户ID：333\r\n    客户MDM ID：\r\n    客户名称：Nextaly\r\n    客户区域：Italy\r\n    客户类型：\r\n\n====工单信息====\n\r客户：Nextaly\r\n环境：HCI 6.11.1 第三方设备 （Inspur）\r\n问题：升级版本后提示 SSD 固件版本不兼容\r\n[图片]\r\n\r\n1. 磁盘信息：[图片]\r\n2. 执行升级脚本时提示报错：[图片]\r\n3. HCI_3 主机原本还没加入VS。我当时执行脚本也是同样报错然后就手动执行 hdparm 升级了。[图片]",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-13T04:37:25.515204"
+  },
+  {
+    "index": 2035,
+    "problem_id": "Q2026011401733",
+    "problem_desc": " 磁盘离线",
+    "error": "",
+    "failed_at": "2026-05-13T04:45:42.580801"
+  },
+  {
+    "index": 2043,
+    "problem_id": "Q2026011401154",
+    "problem_desc": "第三方磁盘离线，协助确认",
+    "error": "",
+    "failed_at": "2026-05-13T04:52:45.561964"
+  },
+  {
+    "index": 2045,
+    "problem_id": "Q2026011401019",
+    "problem_desc": "三方服务器组建虚拟存储SSD提示不兼容",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-13T04:53:47.507886"
+  },
+  {
+    "index": 2100,
+    "problem_id": "Q2026011201018",
+    "problem_desc": "磁盘离线，需要协助看一下",
+    "error": "",
+    "failed_at": "2026-05-13T05:51:06.865172"
+  },
+  {
+    "index": 2109,
+    "problem_id": "Q2026011200715",
+    "problem_desc": "卡慢盘 协助处理。核心业务卡慢中",
+    "error": "",
+    "failed_at": "2026-05-13T06:03:21.632866"
+  },
+  {
+    "index": 2110,
+    "problem_id": "Q2026011200702",
+    "problem_desc": "内存ECC可纠正报错，需要协助处理",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-13T06:03:21.719017"
+  },
+  {
+    "index": 2111,
+    "problem_id": "Q2026011200690",
+    "problem_desc": "磁盘卡慢自动恢复",
+    "error": "",
+    "failed_at": "2026-05-13T06:05:27.257105"
+  },
+  {
+    "index": 2116,
+    "problem_id": "Q2026011200168",
+    "problem_desc": "HCI 硬盘离线，现场没有人操作过，需要协助看下硬盘是否正常",
+    "error": "",
+    "failed_at": "2026-05-13T06:11:45.896141"
+  },
+  {
+    "index": 2136,
+    "problem_id": "Q2026010901773",
+    "problem_desc": "vaf组件和内存条频率检测异常",
+    "error": "",
+    "failed_at": "2026-05-13T06:33:11.219126"
+  },
+  {
+    "index": 2141,
+    "problem_id": "Q2026010900896",
+    "problem_desc": "另外一个集群有一个看不到寿命，一体机",
+    "error": "",
+    "failed_at": "2026-05-13T06:38:20.573486"
+  },
+  {
+    "index": 2163,
+    "problem_id": "Q2026010801454",
+    "problem_desc": "一体机  重装linxu系统 ipmi识别不到磁盘  需要协助排查硬件问题",
+    "error": "",
+    "failed_at": "2026-05-13T07:01:18.237411"
+  },
+  {
+    "index": 2165,
+    "problem_id": "Q2026010801296",
+    "problem_desc": "11月及之前的卡慢盘告警 需要查原因",
+    "error": "",
+    "failed_at": "2026-05-13T07:03:49.798283"
+  },
+  {
+    "index": 2166,
+    "problem_id": "Q2026010801292",
+    "problem_desc": "主机内存不可纠正的错误，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-13T07:05:52.742277"
+  },
+  {
+    "index": 2168,
+    "problem_id": "Q2026010801211",
+    "problem_desc": "替换磁盘失败，报有相关卷在进行操作",
+    "error": "",
+    "failed_at": "2026-05-13T07:09:18.313972"
+  },
+  {
+    "index": 2170,
+    "problem_id": "Q2026010800691",
+    "problem_desc": "有块硬盘替换失败  ",
+    "error": "",
+    "failed_at": "2026-05-13T07:12:22.626497"
+  },
+  {
+    "index": 2177,
+    "problem_id": "Q2026010702101",
+    "problem_desc": "ssd提示固件不兼容",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-13T07:20:32.881673"
+  },
+  {
+    "index": 2179,
+    "problem_id": "Q2026010701641",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260102860040\r\n    事件等级：Priority3\r\n    产品线：HCI::6.8.0\r\n\n====客户信息====\n    客户ID：11530\r\n    客户MDM ID：249c7bffd4ca17065d738387d25a5b60\r\n    客户名称：MSE DOTNET SDN. BHD.【Malaysia】\r\n    客户区域：Malaysia\r\n    客户类型：\r\n\n====工单信息====\n\r设备部署模式： 6.8.0_R1  \r\n客户背景： 马来\r\n问题现象： 磁盘出现IO问题\r\n排查过程：\r\n  1）报错时间点从5号开始。\r\n2）asan分析只有分层问题\r\n   3）卡慢盘平台检测出现Non-dedium error count.\r\n重要备注：\r\n是否已开群（企微）：是\r\n企微群名：Ticket#20260102860040【马来】【磁盘IO错误】",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-13T07:20:50.600684"
+  },
+  {
+    "index": 2181,
+    "problem_id": "Q2026010701616",
+    "problem_desc": "HCI检测到缓存盘速率不足6Gb，但是硬件侧给的参数是能达到的，需要协助查看。",
+    "error": "",
+    "failed_at": "2026-05-13T07:23:24.143083"
+  },
+  {
+    "index": 2185,
+    "problem_id": "Q2026010701427",
+    "problem_desc": "新的超融合一体机，未激活未配置，上电状态被拔掉一块ssd系统盘后，hci无法正常启动",
+    "error": "",
+    "failed_at": "2026-05-13T07:29:01.672211"
+  },
+  {
+    "index": 2188,
+    "problem_id": "Q2026010701244",
+    "problem_desc": "组建集群报磁盘不兼容",
+    "error": "",
+    "failed_at": "2026-05-13T07:33:11.723708"
+  },
+  {
+    "index": 2189,
+    "problem_id": "Q2026010701232",
+    "problem_desc": "磁盘故障，需要报价返修 确认磁盘型号",
+    "error": "",
+    "failed_at": "2026-05-13T07:35:15.263249"
+  },
+  {
+    "index": 2199,
+    "problem_id": "Q2026010700281",
+    "problem_desc": "巡检提示检测到磁盘固件版本低，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-13T07:47:57.996077"
+  },
+  {
+    "index": 2201,
+    "problem_id": "Q2026010700252",
+    "problem_desc": "服务器内存条异常协助处理",
+    "error": "",
+    "failed_at": "2026-05-13T07:50:53.765123"
+  },
+  {
+    "index": 2205,
+    "problem_id": "Q2026010700011",
+    "problem_desc": "需要400判定是否磁盘需要更换",
+    "error": "",
+    "failed_at": "2026-05-13T07:56:01.462556"
+  },
+  {
+    "index": 2207,
+    "problem_id": "Q2026010601780",
+    "problem_desc": "超融合平台告警硬盘只读，已被隔离，需要协助",
+    "error": "",
+    "failed_at": "2026-05-13T07:58:50.825109"
+  },
+  {
+    "index": 2210,
+    "problem_id": "Q2026010601656",
+    "problem_desc": "第三方服务器如何查看磁盘是sata还是vnme",
+    "error": "",
+    "failed_at": "2026-05-13T08:04:07.416499"
+  },
+  {
+    "index": 2214,
+    "problem_id": "Q2026010601304",
+    "problem_desc": "HCi显示磁盘卡慢",
+    "error": "",
+    "failed_at": "2026-05-13T08:10:07.124107"
+  },
+  {
+    "index": 2228,
+    "problem_id": "Q2026010600518",
+    "problem_desc": "无法定位硬盘，需协助。",
+    "error": "",
+    "failed_at": "2026-05-13T08:25:41.167953"
+  },
+  {
+    "index": 2236,
+    "problem_id": "Q2026010600032",
+    "problem_desc": "检测到硬盘（主机(172.16.100.93)，硬盘名称：2号盘）存在坏道，麻烦确认下硬盘坏道数量，达到翻修条件没，达到了安排下翻修\n所属租户：四川工程职业技术大学\n主事件名称：磁盘损坏告警\n受影响资源对象：172.16.100.93\n聚合告警与风险：1\n受影响数据中心：172.16.100.198（172.16.100.198）\n受影响集群：HCI_Cluster_C\n受影响资源池：SCETC_Cluster_C",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-13T08:33:45.420065"
+  },
+  {
+    "index": 2253,
+    "problem_id": "Q2026010500956",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20251225860003\r\n    事件等级：Priority3\r\n    产品线：HCI\r\n\n====工单信息====\n\r一线负责人：William\r\n客服负责人：Lee Chiew Min\r\n研发负责人：陈武【事件编号】Qxxxxxxx\r\n【版本信息】6.3.0\r\n【CTI专家】黄庭丰\r\n【问题描述】\r\n1）原主机离线，重启轮询查找启动项\r\n2）主机上线后，前置板硬件问题 导致2个HDD磁盘无法被识别\r\n\r\n【业务影响】暂无，但是目前单主机运行 业务风险高\r\n【当前进展】\r\n1)问题1 已解决，由于后置背板槽位 检测不到系统盘\r\n-将系统盘嵌入前置磁盘槽位后，raid1 才能正常识别到2个系统盘，将raid1设置为primary 启动,\r\n- 问题解决\r\n\r\n问题2：\r\n1）主机上线后，2HDD磁盘显示离线\r\n2）后台与IPMI都没有看到该HDD\r\n3）换了其他槽位仍然识别失败，后续验证了该磁盘是没有问题的\r\n4）该主机接到本地办公环境后，替换前置板，问题依旧\r\n\r\n【下一步计划】\r\n- 目前将新磁盘 都放入 备机上 尝试恢复\r\n- 当前遇到问题\r\n1）raid卡型号不一致\r\n2）新备机，只有一个 raid卡槽位",
+    "error": "Client error '422 Unprocessable Entity' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422",
+    "failed_at": "2026-05-13T08:47:35.052977"
+  },
+  {
+    "index": 2305,
+    "problem_id": "Q2026010100035",
+    "problem_desc": "磁盘固件和raid卡固件需要升级",
+    "error": "",
+    "failed_at": "2026-05-13T09:42:28.777608"
+  }
+]

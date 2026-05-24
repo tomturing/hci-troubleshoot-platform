@@ -521,7 +521,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
     # 1. 查询 kbd_entry（短事务，快速释放连接）
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
-            text("SELECT id, title, content_md, status, published_at, embedding FROM kbd_entry WHERE id = :id"),
+            text("SELECT id, title, content_md, problem_description, alert_info, root_cause, status, published_at, embedding FROM kbd_entry WHERE id = :id"),
             {"id": kbd_id},
         )
         row = result.mappings().first()
@@ -546,13 +546,22 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 status_code=400,
                 detail=f"KBD 条目 {kbd_id} 缺少 content_md，无法生成 embedding",
             )
+        # 构建 embedding 输入（问题侧字段，避免答案侧污染向量空间）
+        embedding_text = "\n\n".join(filter(None, [
+            row["title"],
+            row["problem_description"],
+            row["alert_info"],
+            row["root_cause"],
+        ]))
+        if not embedding_text.strip():
+            embedding_text = content_md  # 降级：章节字段均空时用 content_md
 
     # 2. 生成 embedding（事务外调用，避免长时间占用连接）
     embedding_generated = False
     embedding_vector: list[float] | None = None
     if _embedding_service:
         try:
-            embedding_vector = await _embedding_service.embed_single(content_md)
+            embedding_vector = await _embedding_service.embed_single(embedding_text)
             embedding_generated = True
 
             # 检查向量维度是否与数据库一致
@@ -1261,7 +1270,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
     # 查询条目（允许 rejected 或 draft 状态）
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
-            text("SELECT id, title, content_md, status FROM kbd_entry WHERE id = :id"),
+            text("SELECT id, title, content_md, problem_description, alert_info, root_cause, status FROM kbd_entry WHERE id = :id"),
             {"id": kbd_id},
         )
         row = result.mappings().first()
@@ -1275,13 +1284,22 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         content_md = row["content_md"]
         if not content_md:
             raise HTTPException(status_code=400, detail=f"KBD 条目 {kbd_id} 缺少 content_md")
+        # 构建 embedding 输入（问题侧字段，避免答案侧污染向量空间）
+        embedding_text = "\n\n".join(filter(None, [
+            row["title"],
+            row["problem_description"],
+            row["alert_info"],
+            row["root_cause"],
+        ]))
+        if not embedding_text.strip():
+            embedding_text = content_md
 
     # 生成 embedding（事务外调用）
     embedding_generated = False
     embedding_vector: list[float] | None = None
     if _embedding_service:
         try:
-            embedding_vector = await _embedding_service.embed_single(content_md)
+            embedding_vector = await _embedding_service.embed_single(embedding_text)
             embedding_generated = True
             logger.info(event="kbd_republish_embedding_generated", kbd_id=kbd_id, vector_dim=len(embedding_vector))
         except Exception as exc:

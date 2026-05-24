@@ -1,0 +1,8 @@
+BACKGROUND: 其他
+TYPE: 其他截图
+FULL_TEXT:
+- （无文字）
+KEY:
+- 无
+TIPS:
+- 无

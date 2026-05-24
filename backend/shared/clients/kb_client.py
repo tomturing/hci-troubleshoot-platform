@@ -387,7 +387,7 @@ class KBClient(InternalHTTPClient):
     ) -> list[dict]:
         """案例差异诊断（CDD）所需接口：按分类检索含结构化步骤的候选案例。
 
-        调用 GET /api/kb/cases/search?category_id=X&query=...&top_k=K
+        调用 GET /api/kb/kbd/search?category_id=X&query=...&top_k=K
 
         返回 list[dict]，每项格式：
           {
@@ -417,7 +417,7 @@ class KBClient(InternalHTTPClient):
         """
         try:
             resp = await self.get(
-                f"{self._api_prefix}/cases/search",
+                f"{self._api_prefix}/kbd/search",
                 params={"category_id": category_id, "query": query, "top_k": top_k},
             )
             resp.raise_for_status()

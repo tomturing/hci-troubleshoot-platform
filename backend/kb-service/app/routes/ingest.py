@@ -191,7 +191,12 @@ class KbdIngestRequest(BaseModel):
 
     用于 data-pipeline/kbd/ 数据流水线调用，将深信服案例写入 kbd_entry 表。
 
-    参数设计（遵循第一性原理）：
+    字段设计（与 8 大标准章节对齐）：
+    - 章节字段（叙述类）：由 pipeline 从案例 HTML 自动提取，Markdown 格式
+    - steps_json：结构化工具步骤（pipeline 写入空列表，admin 后续填充）
+    - content_md：由 pipeline 传入（含截图视觉描述），admin 编辑后重建时可省略
+
+    幂等控制：
     - 默认幂等：已存在记录跳过，避免重复入库
     - override=true：强制覆盖已存在记录
     - override_status：状态过滤，防止误覆盖已发布数据
@@ -203,13 +208,46 @@ class KbdIngestRequest(BaseModel):
     support_id: str = Field(..., min_length=1, max_length=20, description="深信服案例ID（幂等键）")
     support_url: str | None = Field(None, description="原始案例 URL")
     title: str = Field(..., min_length=1, description="案例标题")
-    content_md: str = Field(..., min_length=1, description="结构化 Markdown 内容")
-    metadata: dict = Field(default_factory=dict, description="JSONB 补充字段")
+
+    # 8 大标准章节（叙述字段，Markdown 格式）
+    problem_description: str = Field("", description="问题描述（## 问题描述 章节 Markdown）")
+    alert_info: str = Field("", description="告警信息（## 告警信息 章节 Markdown）")
+    steps_text: str = Field("", description="有效排查步骤（自然语言 Markdown，供人阅读）")
+    root_cause: str = Field("", description="根因（## 根因 章节 Markdown）")
+    solution: str = Field("", description="解决方案（## 解决方案 章节 Markdown）")
+    operational_impact: str = Field("", description="操作影响范围（可选章节 Markdown）")
+    is_temporary: str = Field("", description="是否是临时解决方案（可选章节 Markdown）")
+    recommendations: str = Field("", description="建议与总结（可选章节 Markdown）")
+
+    # 结构化工具步骤（pipeline 写入空列表，admin 人工/AI 填充后 agent 可见）
+    steps_json: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "结构化工具步骤（供 agent 执行）；"
+            "格式：[{tool_name, tool_args_template, expected_pattern}]；"
+            "pipeline 写入空列表，需 admin 编辑后填充"
+        ),
+    )
+
+    # 图片视觉描述列表（pipeline 从 Vision LLM 缓存写入；admin 只读）
+    images_json: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "图片视觉描述列表；格式：[{seq, section, desc}]；"
+            "seq: 跨章节全局序号（从0开始）；"
+            "section: 归属章节字段名；desc: Vision LLM 生成的描述"
+        ),
+    )
+
+    # 聚合渲染（含视觉描述，pipeline 写入；admin 编辑章节后服务端自动重建）
+    content_md: str | None = Field(None, description="聚合渲染 Markdown（含截图视觉描述）；不传时由章节字段自动组装")
+
+    metadata: dict = Field(default_factory=dict, description="JSONB 补充字段（来源元信息等）")
     ai_category_id: str | None = Field(None, max_length=32, description="AI 分类建议 ID")
     ai_category_conf: float | None = Field(None, ge=0.0, le=1.0, description="分类置信度")
     ai_category_reason: str | None = Field(None, description="分类理由")
 
-    # 新参数：覆盖控制
+    # 覆盖控制
     override: bool = Field(
         False,
         description="强制覆盖已存在的记录。false=幂等跳过；true=根据 override_status 覆盖",
@@ -355,13 +393,24 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                 )
 
                 if status_allowed:
-                    # 执行覆盖
+                    # 执行覆盖（结构化章节字段）
                     existing_entry.title = body.title
-                    existing_entry.content_md = body.content_md
+                    existing_entry.problem_description = body.problem_description
+                    existing_entry.alert_info = body.alert_info
+                    existing_entry.steps_text = body.steps_text
+                    existing_entry.root_cause = body.root_cause
+                    existing_entry.solution = body.solution
+                    existing_entry.operational_impact = body.operational_impact
+                    existing_entry.is_temporary = body.is_temporary
+                    existing_entry.recommendations = body.recommendations
+                    existing_entry.steps_json = body.steps_json
+                    existing_entry.images_json = body.images_json
+                    # content_md：优先用传入值（含视觉描述），否则从章节重建
+                    existing_entry.content_md = body.content_md or existing_entry.rebuild_content_md()
                     existing_entry.entry_metadata = body.metadata
                     if body.ai_category_id:
                         existing_entry.ai_category_id = body.ai_category_id
-                    if body.ai_category_conf:
+                    if body.ai_category_conf is not None:
                         existing_entry.ai_category_conf = body.ai_category_conf
                     if body.ai_category_reason:
                         existing_entry.ai_category_reason = body.ai_category_reason
@@ -372,7 +421,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                         support_id=body.support_id,
                         kbd_id=existing_entry.id,
                         status=existing_status,
-                        content_length=len(body.content_md),
+                        has_steps_json=len(body.steps_json) > 0,
                     )
 
                     return KbdIngestResponse(
@@ -416,11 +465,22 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                     message="记录已存在，幂等跳过",
                 )
 
-        # 2. 创建新条目
+        # 2. 创建新条目（结构化章节字段）
         new_entry = KbdEntry(
             support_id=body.support_id,
             support_url=body.support_url,
             title=body.title,
+            problem_description=body.problem_description,
+            alert_info=body.alert_info,
+            steps_text=body.steps_text,
+            root_cause=body.root_cause,
+            solution=body.solution,
+            operational_impact=body.operational_impact,
+            is_temporary=body.is_temporary,
+            recommendations=body.recommendations,
+            steps_json=body.steps_json,
+            images_json=body.images_json,
+            # content_md：优先用传入值（含视觉描述），否则从章节重建
             content_md=body.content_md,
             entry_metadata=body.metadata,
             ai_category_id=body.ai_category_id,

@@ -116,13 +116,13 @@ def _load_vision_desc(support_id: str, seq: int) -> str:
     return ""
 
 
-def _build_image_seq_map(support_id: str, content_html: str) -> dict[str, str]:
+def _build_image_seq_map(support_id: str, content_html: str) -> dict[str, dict]:
     """
-    按图片在 content HTML 中的出现顺序，建立 {绝对URL: vision_desc} 映射。
-    全 section 统一编号（跨 section）。
+    按图片在 content HTML 中的出现顺序，建立 {绝对URL: {"seq": int, "desc": str}} 映射。
+    全 section 统一编号（跨 section），从 0 开始递增。
     """
     soup = BeautifulSoup(content_html, "lxml")
-    img_map: dict[str, str] = {}
+    img_map: dict[str, dict] = {}
     seq = 0
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src") or ""
@@ -131,14 +131,14 @@ def _build_image_seq_map(support_id: str, content_html: str) -> dict[str, str]:
         abs_url = urljoin(settings.SANGFOR_API_BASE, src)
         if abs_url not in img_map:
             desc = _load_vision_desc(support_id, seq)
-            img_map[abs_url] = desc
+            img_map[abs_url] = {"seq": seq, "desc": desc}
             seq += 1
     return img_map
 
 
-def _html_to_md(html: str, image_map: dict[str, str]) -> str:
+def _html_to_md(html: str, image_map: dict[str, dict]) -> str:
     """
-    将 section 内容 HTML 转为 Markdown：
+    将 section 内容 HTML 转为 Markdown（用于 content_md）：
     - img 标签 → 视觉描述引用块（先替换为自定义 span）
     - 过滤多余空白
     """
@@ -147,11 +147,12 @@ def _html_to_md(html: str, image_map: dict[str, str]) -> str:
 
     soup = BeautifulSoup(html, "lxml")
 
-    # 替换 img 为携带 vision_desc 的 span
+    # 替换 img 为携带 vision_desc 的 span（展开为完整视觉描述块）
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src") or ""
         abs_src = urljoin(settings.SANGFOR_API_BASE, src)
-        desc = image_map.get(abs_src) or ""
+        entry = image_map.get(abs_src)
+        desc = entry["desc"] if entry else ""
         if desc:
             span = soup.new_tag("span", attrs={"data-vision-desc": desc})
         else:
@@ -159,6 +160,40 @@ def _html_to_md(html: str, image_map: dict[str, str]) -> str:
             span = img  # 不替换，让转换器处理
             continue
         img.replace_with(span)
+
+    md = _HciMarkdownConverter(
+        heading_style=markdownify.ATX,
+        bullets="-",
+        strip=["script", "style", "input", "a"],
+    ).convert(str(soup))
+
+    # 规范化多余空行
+    md = re.sub(r'\n{3,}', '\n\n', md)
+    return md.strip()
+
+
+def _html_to_md_with_placeholder(html: str, image_map: dict[str, dict]) -> str:
+    """
+    将 section 内容 HTML 转为 Markdown（用于章节字段存储）：
+    - img 标签 → ![img:N] 占位符（N 为全局图片序号）
+    - 不展开视觉描述，视觉描述单独存入 images_json
+    - 过滤多余空白
+    """
+    if not html or not html.strip():
+        return ""
+
+    soup = BeautifulSoup(html, "lxml")
+
+    # 替换 img 为 ![img:N] 占位符文本节点
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or ""
+        abs_src = urljoin(settings.SANGFOR_API_BASE, src)
+        entry = image_map.get(abs_src)
+        if entry is not None:
+            placeholder = soup.new_string(f" ![img:{entry['seq']}] ")
+        else:
+            placeholder = soup.new_string(" [图片] ")
+        img.replace_with(placeholder)
 
     md = _HciMarkdownConverter(
         heading_style=markdownify.ATX,
@@ -340,4 +375,168 @@ def convert_case_with_meta(support_id: str) -> dict[str, Any] | None:
         "support_url": _make_support_url(support_id),
         "content_md": content_md,
         "metadata": _extract_metadata(rows),
+    }
+
+
+# Markdown 章节标题 → KbdIngestRequest 字段名映射
+_MD_TITLE_TO_FIELD: dict[str, str] = {
+    "问题描述":         "problem_description",
+    "告警信息":         "alert_info",
+    "有效排查步骤":     "steps_text",
+    "根因":             "root_cause",
+    "解决方案":         "solution",
+    "操作影响范围":     "operational_impact",
+    "是否是临时解决方案": "is_temporary",
+    "建议与总结":       "recommendations",
+    # "排查内容" 不映射到独立字段，但会并入 steps_text（见下方注释）
+}
+
+
+def convert_case_structured(support_id: str) -> dict[str, Any] | None:
+    """
+    转换案例，返回结构化字段字典（供 importer.py 调用 /api/kb/kbd/ingest 使用）。
+
+    字段名与 KbdIngestRequest 对齐：
+      - problem_description  ← 问题描述（含 ![img:N] 占位符）
+      - alert_info           ← 告警信息（含 ![img:N] 占位符）
+      - steps_text           ← 有效排查步骤（+ 排查内容，含 ![img:N] 占位符）
+      - root_cause           ← 根因（含 ![img:N] 占位符）
+      - solution             ← 解决方案（含 ![img:N] 占位符）
+      - operational_impact   ← 操作影响范围（含 ![img:N] 占位符）
+      - is_temporary         ← 是否是临时解决方案
+      - recommendations      ← 建议与总结
+      - steps_json           ← [] （空，待 admin 填充）
+      - images_json          ← [{"seq": N, "section": field_name, "desc": "..."}]
+      - content_md           ← 全部章节聚合 Markdown（含完整视觉描述块，供 LLM 注入）
+
+    图片处理策略（方案 B）：
+      章节字段中，图片位置以 ![img:N] 占位符标记（N 为跨章节全局序号）。
+      视觉描述独立存储在 images_json 中，保证 admin 编辑章节后视觉信息不丢失。
+      content_md 仍包含完整视觉描述块，供 LLM 上下文注入。
+
+    "排查内容" section 说明：
+      此字段非 8 大标准章节，内容并入 steps_text 末尾（以 "---" 分隔）。
+
+    Returns:
+        dict 或 None（缺少必填 section 时）
+    """
+    raw_path = settings.KBD_CACHE_DIR / support_id / "raw.json"
+    if not raw_path.exists():
+        logger.warning("案例 %s raw.json 不存在，跳过转换", support_id)
+        return None
+
+    rows: dict[str, Any] = json.loads(raw_path.read_text(encoding="utf-8"))
+    title: str = rows.get("name") or rows.get("title") or f"案例 {support_id}"
+    content_html: str = rows.get("content") or ""
+
+    if not content_html.strip():
+        logger.warning("案例 %s content 为空，跳过转换", support_id)
+        _write_abnormal(support_id, title, ["*全部（content 为空）"])
+        return None
+
+    # 建立图片序号→{seq, desc}映射（跨 section 统一编号，从 0 开始）
+    image_map = _build_image_seq_map(support_id, content_html)
+
+    # 解析 9 个 section 的 HTML
+    sections = _parse_sections(content_html)
+
+    # 必填验证
+    missing = [
+        md_title
+        for _, md_title, required in _SECTIONS
+        if required and _is_empty_content(sections.get(md_title, ""))
+    ]
+    if missing:
+        _write_abnormal(support_id, title, missing)
+        return None
+
+    # ── 两路并行转换 ─────────────────────────────────────────────────────────
+    # 路径 A：章节字段（含 ![img:N] 占位符，不含视觉描述文本）
+    # 路径 B：content_md（含完整视觉描述块，供 LLM 注入）
+    section_mds_placeholder: dict[str, str] = {}   # 路径 A
+    section_mds_full: dict[str, str] = {}          # 路径 B
+
+    for _, md_title, _ in _SECTIONS:
+        section_html = sections.get(md_title, "")
+        if _is_empty_content(section_html):
+            section_mds_placeholder[md_title] = ""
+            section_mds_full[md_title] = ""
+        else:
+            section_mds_placeholder[md_title] = _html_to_md_with_placeholder(
+                section_html, image_map
+            ).strip()
+            section_mds_full[md_title] = _html_to_md(section_html, image_map).strip()
+
+    # ── 构建 8 大章节字段（含占位符） ───────────────────────────────────────
+    structured_fields: dict[str, str] = {
+        field: "" for field in _MD_TITLE_TO_FIELD.values()
+    }
+    for md_title, field in _MD_TITLE_TO_FIELD.items():
+        structured_fields[field] = section_mds_placeholder.get(md_title, "")
+
+    # "排查内容" 并入 steps_text（若有内容）
+    chacha_html = sections.get("排查内容", "")
+    if not _is_empty_content(chacha_html):
+        chacha_placeholder = _html_to_md_with_placeholder(chacha_html, image_map).strip()
+        chacha_full = _html_to_md(chacha_html, image_map).strip()
+        if chacha_placeholder:
+            existing = structured_fields["steps_text"]
+            structured_fields["steps_text"] = (
+                existing + "\n\n---\n\n" + chacha_placeholder if existing else chacha_placeholder
+            )
+        if chacha_full:
+            section_mds_full["排查内容"] = chacha_full
+
+    # ── 构建 images_json（图片视觉描述结构化列表） ──────────────────────────
+    # 按 seq 排序，记录每张图属于哪个章节字段
+    # 通过扫描章节占位符文本来确定归属
+    images_json: list[dict[str, Any]] = []
+    # 构建 seq → section field 的反向映射
+    # ── 构建 images_json（图片视觉描述结构化列表） ──────────────────────────
+    # 通过扫描章节占位符文本确定每张图的归属章节字段
+    seq_to_section: dict[int, str] = {}
+    for md_title, field_name in _MD_TITLE_TO_FIELD.items():
+        placeholder_text = section_mds_placeholder.get(md_title, "")
+        for m in re.finditer(r'!\[img:(\d+)\]', placeholder_text):
+            seq_to_section[int(m.group(1))] = field_name
+    # 排查内容归属到 steps_text
+    chacha_ph = section_mds_placeholder.get("排查内容", "")
+    for m in re.finditer(r'!\[img:(\d+)\]', chacha_ph):
+        seq_to_section[int(m.group(1))] = "steps_text"
+
+    images_json: list[dict[str, Any]] = []
+    for entry in image_map.values():
+        images_json.append({
+            "seq": entry["seq"],
+            "section": seq_to_section.get(entry["seq"], "unknown"),
+            "desc": entry["desc"],
+        })
+    images_json.sort(key=lambda x: x["seq"])
+
+    # ── 聚合 content_md（含完整视觉描述，供 LLM 注入） ──────────────────────
+    content_md_parts: list[str] = []
+    for _, md_title, _ in _SECTIONS:
+        md_text = section_mds_full.get(md_title, "")
+        if md_text:
+            content_md_parts.append(f"## {md_title}\n\n{md_text}")
+    content_md = "\n\n".join(content_md_parts)
+
+    if not content_md:
+        logger.warning("案例 %s 所有 section 转换后均为空", support_id)
+        return None
+
+    from .fetcher import _extract_metadata, _make_support_url
+    return {
+        "support_id": support_id,
+        "title": title,
+        "support_url": _make_support_url(support_id),
+        "metadata": _extract_metadata(rows),
+        # 8 大章节字段（含 ![img:N] 占位符，不含视觉描述文本）
+        **structured_fields,
+        # 结构化工具步骤（空列表，需 admin 后续填充）
+        "steps_json": [],
+        # 图片视觉描述（结构化，独立存储）
+        "images_json": images_json,
+        # 聚合渲染（含完整视觉描述块，供 LLM 上下文注入）
+        "content_md": content_md,
     }

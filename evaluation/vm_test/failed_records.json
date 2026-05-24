@@ -1,0 +1,1955 @@
+[
+  {
+    "index": 3,
+    "problem_id": "Q2026051400797",
+    "problem_desc": "虚拟机经常重启，然后内部看服务器log日志没有问题，然后超融合日志也没有问题",
+    "error": "",
+    "failed_at": "2026-05-18T16:50:58.173575"
+  },
+  {
+    "index": 5,
+    "problem_id": "Q2026051400417",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：虚拟机异常关机",
+    "error": "",
+    "failed_at": "2026-05-18T16:54:14.178472"
+  },
+  {
+    "index": 10,
+    "problem_id": "Q2026051301161",
+    "problem_desc": "物理机迁移到HCI开机进不去系统，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-18T17:01:30.741403"
+  },
+  {
+    "index": 21,
+    "problem_id": "Q2026051200299",
+    "problem_desc": "有台虚拟机故障重启，客户要查原因",
+    "error": "",
+    "failed_at": "2026-05-18T17:14:48.098785"
+  },
+  {
+    "index": 62,
+    "problem_id": "Q2026050400111",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260504860046\r\n    事件等级：Priority1\r\n    产品线：HCI::6.11.1\r\n\n====工单信息====\n\r【事件编号】Ticket#20260504860046\r\n【上升工单】\r\n【版本信息】6.11.1\r\n【问题描述】虚拟机开机进入UEFI SHEll界面无法进入系统\r\n【业务影响】客户核心业务虚拟机web托管业务\r\n【当前进展】\r\n1）修改虚拟机启动项到Seabios会卡在从磁盘启动，无法找到磁盘[图片]2）UEFI修复启动项，无法找到grabX64的启动文件[图片][图片]2）检查虚拟机镜像正常，只一个40G的磁盘[图片]3)尝试恢复昨天5.3日的备份，发现启动也是在这个界面[图片]4）当前环境里面没有centos7.9的ISO正在下载",
+    "error": "",
+    "failed_at": "2026-05-18T18:06:37.602462"
+  },
+  {
+    "index": 73,
+    "problem_id": "Q2026043000347",
+    "problem_desc": "C86架构HCI，centos虚拟机勾选hostcpu取消后进不去系统需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-18T18:18:45.413925"
+  },
+  {
+    "index": 85,
+    "problem_id": "Q2026042802019",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260428860096\r\n    事件等级：Priority1\r\n    产品线：HCI::6.11.1\r\n\n====客户信息====\n    客户ID：52\r\n    客户MDM ID：b5b4503b2d688f68877f8694329bb3b8\r\n    客户名称：DATA ALLIANCE SDN BHD【Malaysia】\r\n    客户区域：Malaysia\r\n    客户类型：\r\n\n====工单信息====\n\r一线负责人：林锦达Liam(17240\r\n客服负责人：李超民 Lee Chiew Min (85200)\r\n研发负责人：易涛(36002)\r\n【事件编号】-\r\n【版本信息】6.11.1\r\n【CTI专家】xxxx\r\n【问题描述】虚拟机开机失败\r\n【业务影响】核心业务虚拟机无法开启\r\n【当前进展】\r\n1）查看日志发现该虚拟机镜像文件脑裂\r\n2）使用 vsfire脚本修复后正常\r\n3）目前业务已恢复，发现环境 2+1 但是仲裁节点未入卷内\r\n4）此外还有一个虚拟机的磁盘镜像脑裂，但是目前正在运行业务 需要协调时间\r\n【下一步计划】\r\n- 需要研发协助查看根因",
+    "error": "",
+    "failed_at": "2026-05-18T18:32:10.737082"
+  },
+  {
+    "index": 88,
+    "problem_id": "Q2026042801072",
+    "problem_desc": "升级中出现winserver内部重启需要排查原因",
+    "error": "",
+    "failed_at": "2026-05-18T18:36:23.135113"
+  },
+  {
+    "index": 133,
+    "problem_id": "Q2026042100700",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260414860040\r\n    事件等级：Priority3\r\n    产品线：HCI::6.7.0R2\r\n\n====客户信息====\n    客户ID：571\r\n    客户MDM ID：null\r\n    客户名称：Tele-Paper (M) Sdn Bhd\r\n    客户区域：Malaysia\r\n    客户类型：null\r\n\n====工单信息====\n\r设备部署模式：HCI 6.7.0R2\r\n客户背景： Tele-Paper (M) Sdn Bhd（马来）\r\n问题现象：虚拟机内部自动重启\r\n排查过程：研发协助排查处理\r\n\r\n重要备注：-\r\n是否已开群（企微）：是\r\n企微群名：【马来】【虚拟机内部自动重启】",
+    "error": "",
+    "failed_at": "2026-05-18T19:30:10.105300"
+  },
+  {
+    "index": 140,
+    "problem_id": "Q2026042001424",
+    "problem_desc": "Windows server 2008 R2 启动不了 修复引导未恢复",
+    "error": "",
+    "failed_at": "2026-05-18T19:38:17.522872"
+  },
+  {
+    "index": 160,
+    "problem_id": "Q2026041601412",
+    "problem_desc": "会议室的共享虚拟机经常自动关机",
+    "error": "",
+    "failed_at": "2026-05-18T20:01:03.349059"
+  },
+  {
+    "index": 180,
+    "problem_id": "Q2026041301388",
+    "problem_desc": "HCI上虚拟机重启导致MAC改变软件授权信息不匹配，需要协助查看虚拟机为什么重启会自动修改MAC。以及如何将MAC改回去",
+    "error": "",
+    "failed_at": "2026-05-18T20:23:48.446472"
+  },
+  {
+    "index": 188,
+    "problem_id": "Q2026041100051",
+    "problem_desc": "内部有一台托管云，晚上出现虚拟机异常关机无法重启",
+    "error": "流传输错误",
+    "failed_at": "2026-05-18T20:34:34.270943"
+  },
+  {
+    "index": 191,
+    "problem_id": "Q2026041001446",
+    "problem_desc": "超融合有一台虚拟机，近一周已经差不多同一时间重启了3次了，有部分报表数据丢失(生产上采集的)，目前正常，需要协助。",
+    "error": "",
+    "failed_at": "2026-05-18T20:38:23.533988"
+  },
+  {
+    "index": 202,
+    "problem_id": "Q2026040901699",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260407860026\r\n    事件等级：Priority3\r\n    产品线：HCI::6.3.0R2\r\n\n====客户信息====\n    客户ID：18189\r\n    客户MDM ID：5791bd06e8a548689d1e97a88a78b2a2\r\n    客户名称：TEK AUTOMOTIVE MALAYSIA SDN. BHD.【Malaysia】\r\n    客户区域：Malaysia\r\n    客户类型：\r\n\n====工单信息====\n\r设备部署模式：HCI 630R2\r\n客户背景： 马来 / TEK AUTOMOTIVE\r\n问题现象：机房跳电后， Win 2016 虚拟机无法开机\r\n排查过程：\r\n\r\n研发协助排查， 暂时发现是虚拟机有未安装的系统update\r\n\r\n重要备注：\r\n是否已开群（企微）：是\r\n企微群名：【马来/TEK】- 机房跳电，虚拟机无法正常开机",
+    "error": "",
+    "failed_at": "2026-05-18T20:50:43.290254"
+  },
+  {
+    "index": 209,
+    "problem_id": "Q2026040801258",
+    "problem_desc": "HCI 虚拟机，系统有问题，PE进入系统，挂盘4个，virtio的盘 进不去系统，不开virtio盘 超过了4个盘无法开机 需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-18T21:01:42.103586"
+  },
+  {
+    "index": 217,
+    "problem_id": "Q2026040701770",
+    "problem_desc": "备份一体机上恢复备份到hci上开机\n虚拟机无法开机\n反馈操作系统兼容",
+    "error": "",
+    "failed_at": "2026-05-18T21:11:13.535397"
+  },
+  {
+    "index": 219,
+    "problem_id": "Q2026040701339",
+    "problem_desc": "1、云虚拟机自动关机需要协助排查\n2、备份空间占用问题需要协助",
+    "error": "",
+    "failed_at": "2026-05-18T21:14:40.187095"
+  },
+  {
+    "index": 235,
+    "problem_id": "Q2026040300636",
+    "problem_desc": "一台server系统，客户在HCI平台手动重启，HCI平台记录的重启时间跟server系统日志记录的重启时间不一样，协助确认是否是当时虚拟机的时间跟平台时间不一致的原因",
+    "error": "",
+    "failed_at": "2026-05-18T21:31:54.853576"
+  },
+  {
+    "index": 239,
+    "problem_id": "Q2026040201862",
+    "problem_desc": "多台虚拟机内部关机查原因",
+    "error": "",
+    "failed_at": "2026-05-18T21:36:38.370225"
+  },
+  {
+    "index": 251,
+    "problem_id": "Q2026033102030",
+    "problem_desc": "平台显示虚拟机异常关机协助排查原因",
+    "error": "",
+    "failed_at": "2026-05-18T21:50:33.251282"
+  },
+  {
+    "index": 252,
+    "problem_id": "Q2026033101574",
+    "problem_desc": "虚拟机一直卡在正在启动",
+    "error": "",
+    "failed_at": "2026-05-18T21:52:35.915895"
+  },
+  {
+    "index": 270,
+    "problem_id": "Q2026032701610",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：虚拟机自动关机",
+    "error": "",
+    "failed_at": "2026-05-18T22:11:12.359827"
+  },
+  {
+    "index": 276,
+    "problem_id": "Q2026032601854",
+    "problem_desc": "一台虚拟机内部关闭虚拟机，用来3D授权的服务器。",
+    "error": "",
+    "failed_at": "2026-05-18T22:17:38.113419"
+  },
+  {
+    "index": 277,
+    "problem_id": "Q2026032601793",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：HCI6.0.1R1版本，有CentOS虚拟机异常重启，操作系统层面排查日志定位是虚拟化驱动存在缺陷导致，需要协助排查。",
+    "error": "",
+    "failed_at": "2026-05-18T22:19:38.355066"
+  },
+  {
+    "index": 281,
+    "problem_id": "Q2026032600868",
+    "problem_desc": "虚拟机异常重启",
+    "error": "",
+    "failed_at": "2026-05-18T22:24:39.674187"
+  },
+  {
+    "index": 284,
+    "problem_id": "Q2026032600686",
+    "problem_desc": "NFV VSSL告警内部重启，IP也变了协助排查原因",
+    "error": "",
+    "failed_at": "2026-05-18T22:29:32.725235"
+  },
+  {
+    "index": 300,
+    "problem_id": "Q2026032500016",
+    "problem_desc": "数据库虚拟机异常关机",
+    "error": "",
+    "failed_at": "2026-05-18T22:49:45.603489"
+  },
+  {
+    "index": 304,
+    "problem_id": "Q2026032401128",
+    "problem_desc": "虚拟机自动内部重启，伴随内存不足告警信息",
+    "error": "",
+    "failed_at": "2026-05-18T22:53:53.679637"
+  },
+  {
+    "index": 309,
+    "problem_id": "Q2026032301243",
+    "problem_desc": "偶尔出现虚拟机内部关机，需要分析排查",
+    "error": "",
+    "failed_at": "2026-05-18T23:00:57.136849"
+  },
+  {
+    "index": 315,
+    "problem_id": "Q2026032300106",
+    "problem_desc": "虚拟机异常重启，查原因",
+    "error": "",
+    "failed_at": "2026-05-18T23:07:42.267177"
+  },
+  {
+    "index": 327,
+    "problem_id": "Q2026031900852",
+    "problem_desc": "虚拟机开机之后进不去系统",
+    "error": "流传输错误",
+    "failed_at": "2026-05-18T23:19:34.181970"
+  },
+  {
+    "index": 328,
+    "problem_id": "Q2026031900599",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260314860025\r\n    事件等级：Priority4\r\n    产品线：HCI::6.1.0\r\n\n====客户信息====\n    客户ID：1454\r\n    客户MDM ID：null\r\n    客户名称：KEMENTERIAN KEMAJUAN DESA DAN WILAYAH (KKDW)\r\n    客户区域：Malaysia\r\n    客户类型：\r\n\n====工单信息====\n\r设备部署模式：HCI 6.1.0\r\n客户背景： 马来西亚 - KKDW\r\n问题现象：虚拟机内部重启原因排查\r\n排查过程：\r\n\r\n发现是NFS 内存泄漏，研发协助重启服务\r\n\r\n重要备注：\r\n是否已开群（企微）：是\r\n企微群名：【马来/乡村及区域发展部 KKDW】 - 虚拟机内部重启确认根因",
+    "error": "",
+    "failed_at": "2026-05-18T23:21:34.526804"
+  },
+  {
+    "index": 333,
+    "problem_id": "Q2026031800806",
+    "problem_desc": "客户超融合得有一个客户突然无法启动进入系统，使用备份恢复以后也无法启动",
+    "error": "",
+    "failed_at": "2026-05-18T23:27:43.427438"
+  },
+  {
+    "index": 341,
+    "problem_id": "Q2026031601367",
+    "problem_desc": "3D虚拟机全部重启了，开机很慢需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-18T23:39:26.529815"
+  },
+  {
+    "index": 358,
+    "problem_id": "Q2026031201273",
+    "problem_desc": "hci有三台虚拟机经常会重启，其中一台没有勾选虚拟机异常时重启，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-19T00:02:26.035153"
+  },
+  {
+    "index": 359,
+    "problem_id": "Q2026031200612",
+    "problem_desc": "早上集中虚拟机开机比较慢，需要协助处理",
+    "error": "",
+    "failed_at": "2026-05-19T00:04:26.389648"
+  },
+  {
+    "index": 394,
+    "problem_id": "Q2026030700125",
+    "problem_desc": "【服务升级】：客户通过数字化服务平台发起工单，渠道无响应服务升级，请尽快联系处理！&lt;br&gt;【工单描述】：VMware虚拟机迁移至深信服HCI开机后无法正常进入操作系统",
+    "error": "",
+    "failed_at": "2026-05-19T00:47:19.286346"
+  },
+  {
+    "index": 411,
+    "problem_id": "Q2026030401431",
+    "problem_desc": "虚拟机启动后 隔一段时间自动内部关闭虚拟机",
+    "error": "",
+    "failed_at": "2026-05-19T01:06:23.957670"
+  },
+  {
+    "index": 420,
+    "problem_id": "Q2026030201290",
+    "problem_desc": "一台虚拟机重启需要查原因",
+    "error": "",
+    "failed_at": "2026-05-19T01:17:17.667090"
+  },
+  {
+    "index": 431,
+    "problem_id": "Q2026022700044",
+    "problem_desc": "单个虚拟机无法启动，提示虚拟机重启失败，虚拟机内部关机失败，虚拟机控制台上查看是windows错误恢复界面",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"AI 服务网络错误：\", \"detail\": \"type=ReadError, message=\"}",
+    "failed_at": "2026-05-19T01:29:22.980647"
+  },
+  {
+    "index": 475,
+    "problem_id": "Q2026020900793",
+    "problem_desc": "虚拟机无法开机内存不足 ",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:39:56.840809"
+  },
+  {
+    "index": 476,
+    "problem_id": "Q2026020800215",
+    "problem_desc": "虚拟存储掉线，虚拟机无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:39:57.103681"
+  },
+  {
+    "index": 477,
+    "problem_id": "Q2026020700309",
+    "problem_desc": "数据库虚拟机关机不了",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:39:57.440862"
+  },
+  {
+    "index": 478,
+    "problem_id": "Q2026020700294",
+    "problem_desc": "虚拟机重启之后无法进系统",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:39:57.837834"
+  },
+  {
+    "index": 479,
+    "problem_id": "Q2026020601773",
+    "problem_desc": "【目的】用户有台虚拟机无法启动\n1.控制台检查虚拟机发现无法开机进入引导，怀疑虚拟机系统盘损坏\n2.关闭虚拟机后从快照节点克隆虚一台拟机后，把故障虚拟机磁盘删除后添加到克隆虚拟机上后无法挂载，提示物理磁盘冲突\n\nHCI版本：SANGFOR HCI 6.8.0_R1 Build20230429\nKEY ID：20231103A0000540\n用户名称：韶关市鸿昊工程管理有限公司",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:39:58.115206"
+  },
+  {
+    "index": 480,
+    "problem_id": "Q2026020601637",
+    "problem_desc": "一台虚拟机无法开机需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:39:58.400855"
+  },
+  {
+    "index": 481,
+    "problem_id": "Q2026020601369",
+    "problem_desc": "用scmt迁移以后开不起来",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:39:58.712131"
+  },
+  {
+    "index": 482,
+    "problem_id": "Q2026020600540",
+    "problem_desc": "DMP 虚拟机卡死了，重启不了，重启超时，界面上不允许重启电源，",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:39:59.179651"
+  },
+  {
+    "index": 483,
+    "problem_id": "Q2026020501920",
+    "problem_desc": "页面点击A虚拟机详情的时候会跳到B虚拟机，如果今天关闭A虚拟机就关闭成了B虚拟机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:39:59.447503"
+  },
+  {
+    "index": 484,
+    "problem_id": "Q2026020501888",
+    "problem_desc": "反馈虚拟机安装了.net驱动后，开机无法进入系统需要协助修复",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:39:59.724552"
+  },
+  {
+    "index": 485,
+    "problem_id": "Q2026020501829",
+    "problem_desc": "HCI，服务器 和虚拟机都需要重启，需要协助保障",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:00.012483"
+  },
+  {
+    "index": 486,
+    "problem_id": "Q2026020501168",
+    "problem_desc": "openeular从vmware迁移过来到HCI里面启动失败",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:00.317628"
+  },
+  {
+    "index": 487,
+    "problem_id": "Q2026020500945",
+    "problem_desc": "昨天打了补丁后，客户反馈说其中一个虚拟机的服务起不来了",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:00.812808"
+  },
+  {
+    "index": 488,
+    "problem_id": "Q2026020500744",
+    "problem_desc": "window虚拟机宕机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:01.085624"
+  },
+  {
+    "index": 489,
+    "problem_id": "Q2026020500393",
+    "problem_desc": "HCI有一台windows系统自动重启，协助排查。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:01.370083"
+  },
+  {
+    "index": 490,
+    "problem_id": "Q2026020500253",
+    "problem_desc": "Rocky9.4的虚拟机是从VMware迁移过来的 目前无法启动",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:01.669732"
+  },
+  {
+    "index": 491,
+    "problem_id": "Q2026020401957",
+    "problem_desc": "虚拟机无法启动",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:02.017680"
+  },
+  {
+    "index": 492,
+    "problem_id": "Q2026020401692",
+    "problem_desc": "HCI ,虚拟机多次出现内部关机，不是因为资源不足导致的，windows日志 显示意外关机 和异常重启的告警，需要协助排查下原因。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:03.810624"
+  },
+  {
+    "index": 493,
+    "problem_id": "Q2026020400035",
+    "problem_desc": "虚拟机（win10模板）启动失败, 没有主机能够启动这台虚拟机，具体原因如下：\n主机（192.169.10.2）：此主机仅允许运行GPU虚拟机。若需要放开限制，请到主机详情页面左下角，修改虚拟机运行限制。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:04.432300"
+  },
+  {
+    "index": 494,
+    "problem_id": "Q2026020301858",
+    "problem_desc": "有台虚拟机关不掉",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:05.004141"
+  },
+  {
+    "index": 495,
+    "problem_id": "Q2026020301691",
+    "problem_desc": "HCI虚拟机开机提示可配置内存不足，实际主机内存足够",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:05.287729"
+  },
+  {
+    "index": 496,
+    "problem_id": "Q2026020301545",
+    "problem_desc": "纳管VMware迁移虚拟机完成，开机卡住，教务系统无法使用",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:05.656633"
+  },
+  {
+    "index": 497,
+    "problem_id": "Q2026020301320",
+    "problem_desc": "SCMT迁移华三的虚拟机，反馈迁移完成后再重启虚拟机会进入紧急模式，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:06.024924"
+  },
+  {
+    "index": 498,
+    "problem_id": "Q2026020301110",
+    "problem_desc": "HCI 硬盘任务同步，任务也无法取消，虚拟机无法启动，影响到核心业务",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:06.307624"
+  },
+  {
+    "index": 499,
+    "problem_id": "Q2026020301094",
+    "problem_desc": "HCI ，二合一，启动虚拟机， 启动失败，内部异常，请稍后重试，单个虚拟机，",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:06.644636"
+  },
+  {
+    "index": 500,
+    "problem_id": "Q2026020300669",
+    "problem_desc": "Windows虚拟机启动卡主，重启后又正常，协助排查",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:06.937656"
+  },
+  {
+    "index": 501,
+    "problem_id": "Q2026020300607",
+    "problem_desc": "SM HCI上有个虚拟机启动异常协助恢复，有业务影响，非核心",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:07.381169"
+  },
+  {
+    "index": 502,
+    "problem_id": "Q2026020300593",
+    "problem_desc": "业务虚拟机开机很慢",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:07.668747"
+  },
+  {
+    "index": 503,
+    "problem_id": "Q2026020300262",
+    "problem_desc": "超融合centos7.9版本虚拟机异常重启，已安装性能优化工具，平台是全新部署的，需要协助进一步看看",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:07.937275"
+  },
+  {
+    "index": 504,
+    "problem_id": "Q2026020300219",
+    "problem_desc": "HCI 虚拟机起不来，报错 该主机内存不够，尝试腾出一台主机还是无法开起来，这个是核心业务 数据中台，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:08.193127"
+  },
+  {
+    "index": 505,
+    "problem_id": "Q2026020300213",
+    "problem_desc": "一台虚拟机无法开机，提示准备开机环境失败，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:08.633257"
+  },
+  {
+    "index": 506,
+    "problem_id": "Q2026020300118",
+    "problem_desc": "linux虚拟机重启后找不到引导项，一直卡在硬盘启动的界面，影响核心业务",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:08.956536"
+  },
+  {
+    "index": 507,
+    "problem_id": "Q2026020300055",
+    "problem_desc": "一台server虚拟机异常进不去系统需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:09.241830"
+  },
+  {
+    "index": 508,
+    "problem_id": "Q2026020300029",
+    "problem_desc": "一台业务虚拟机自动关机了，算是服务器，平台告警提示启动没有足够的内存，影响办公业务，急用，需尽快恢复",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:09.540121"
+  },
+  {
+    "index": 509,
+    "problem_id": "Q2026020201719",
+    "problem_desc": "虚拟机开机失败协助排查，有业务影响，非核心",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:09.803471"
+  },
+  {
+    "index": 510,
+    "problem_id": "Q2026020200596",
+    "problem_desc": "单台虚拟机卡在开机界面",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:10.256447"
+  },
+  {
+    "index": 511,
+    "problem_id": "Q2026020200519",
+    "problem_desc": "域控虚拟机自动重启，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:10.528373"
+  },
+  {
+    "index": 512,
+    "problem_id": "Q2026020200201",
+    "problem_desc": "虚拟机开机报错",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:10.840488"
+  },
+  {
+    "index": 513,
+    "problem_id": "Q2026020100201",
+    "problem_desc": "机房下电以后，虚拟机开机提示正在启动存储",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:11.097865"
+  },
+  {
+    "index": 514,
+    "problem_id": "Q2026020100090",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：1.amd主机导入scp虚拟机，开机提示显卡没有初始化\n2.更换显卡依旧，更换启动方式依旧，更换内存cpu，依旧\n3.社区帖子内容反馈修改grub.cfg内容，从一开始的失败变成uefi",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:11.370176"
+  },
+  {
+    "index": 515,
+    "problem_id": "Q2026013100312",
+    "problem_desc": "有两个虚拟机重启后进不去系统，影响业务，非核心",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:11.816787"
+  },
+  {
+    "index": 516,
+    "problem_id": "Q2026013100300",
+    "problem_desc": "虚拟机安装数据库管理工具后系统进不去，协助确认 PE也进不去",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:12.173495"
+  },
+  {
+    "index": 517,
+    "problem_id": "Q2026013100154",
+    "problem_desc": "一台虚拟机无法进入系统，需要协助看下",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:12.470134"
+  },
+  {
+    "index": 518,
+    "problem_id": "Q2026013100151",
+    "problem_desc": "虚拟机异常重启查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:12.735011"
+  },
+  {
+    "index": 519,
+    "problem_id": "Q2026013001965",
+    "problem_desc": "虚拟机重启了一下，外置存储挂不上",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:13.027811"
+  },
+  {
+    "index": 520,
+    "problem_id": "Q2026013001870",
+    "problem_desc": "scp虚拟机迁移到HCI之后起不来",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:13.432776"
+  },
+  {
+    "index": 521,
+    "problem_id": "Q2026013001461",
+    "problem_desc": "虚拟机关不掉 现在就是要数据盘挂载但是无法关闭虚拟机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:13.683444"
+  },
+  {
+    "index": 522,
+    "problem_id": "Q2026013000817",
+    "problem_desc": "主机离线了，有一个数据库虚拟机一直卡死的，一直正在启动",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:13.980176"
+  },
+  {
+    "index": 523,
+    "problem_id": "Q2026013000409",
+    "problem_desc": "超融合有一台虚拟机夜里自动重启了，需要排查原因。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:14.266768"
+  },
+  {
+    "index": 524,
+    "problem_id": "Q2026013000400",
+    "problem_desc": "超融合有个虚拟机异常，重启后也没有恢复",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:14.714833"
+  },
+  {
+    "index": 525,
+    "problem_id": "Q2026013000250",
+    "problem_desc": "关闭虚拟机电源卡住协助排查",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:15.024065"
+  },
+  {
+    "index": 526,
+    "problem_id": "Q2026013000033",
+    "problem_desc": "winserver死机动不了，重启后回复，需要排查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:15.283331"
+  },
+  {
+    "index": 527,
+    "problem_id": "Q2026012901927",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260126860082\r\n    事件等级：Priority3\r\n    产品线：HCI::6.10.0\r\n\n====客户信息====\n    客户ID：72\r\n    客户MDM ID：87632faeae4d911d9fc5ea7bf463c904\r\n    客户名称：Professional Link Srl【Italy】\r\n    客户区域：Italy\r\n    客户类型：null\r\n\n====工单信息====\n\rTAC负责人：陈平\r\n研发责任人：\r\n【事件编号】Ticket#20260126860082\r\n【上升工单】\r\n【版本信息】\r\n【问题描述】1月26日客户操作虚拟机关机，10:15操作关机没有成功，然后10:55渠道操作关机一直没有完成，直到13:18才提示报错，13:18之后客户才重启完成虚拟机\r\n\r\n【业务影响】\r\n【当前进展】\r\n1）查看qemu日志只有从10:19到13:01的日志，期间没有\r\n\r\n【下一步计划】需要协助分析下虚拟机关机这么慢的原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:15.538875"
+  },
+  {
+    "index": 528,
+    "problem_id": "Q2026012901140",
+    "problem_desc": "winserver重启起不来",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:15.802898"
+  },
+  {
+    "index": 529,
+    "problem_id": "Q2026012901077",
+    "problem_desc": "磁盘报坏道，虚拟机无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:17.504016"
+  },
+  {
+    "index": 530,
+    "problem_id": "Q2026012900678",
+    "problem_desc": "客户侧两虚拟机运行异常，已成重启恢复了现在需要查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:17.774267"
+  },
+  {
+    "index": 531,
+    "problem_id": "Q2026012900596",
+    "problem_desc": "hci虚拟机卡主需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:18.050003"
+  },
+  {
+    "index": 532,
+    "problem_id": "Q2026012900484",
+    "problem_desc": "win10虚拟机开机卡住\n在欢迎界面  ",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:18.391880"
+  },
+  {
+    "index": 533,
+    "problem_id": "Q2026012900455",
+    "problem_desc": "两台核心业务虚拟机同时重启  业务中断几分钟 目前已恢复  需要排查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:18.812130"
+  },
+  {
+    "index": 534,
+    "problem_id": "Q2026012900369",
+    "problem_desc": "内部关闭虚拟机的任务卡住",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:19.071486"
+  },
+  {
+    "index": 535,
+    "problem_id": "Q2026012900071",
+    "problem_desc": "kylin的虚拟机一直是在正在重启状态卡主。HA拉起虚拟机失败？",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:19.385027"
+  },
+  {
+    "index": 536,
+    "problem_id": "Q2026012801834",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260114860133\r\n    事件等级：Priority3\r\n    产品线：HCI::6.11.1\r\n\n====客户信息====\n    客户ID：150\r\n    客户MDM ID：null\r\n    客户名称：University of Calabria\r\n    客户区域：Italy\r\n    客户类型：null\r\n\n====工单信息====\n\r一线负责人：无\r\n客服负责人：Teoh\r\n研发负责人：21206朱伟\r\n【事件编号】Ticket#20260114860133\r\n【版本信息】HCI 6.11.1\r\n【CTI专家】陈平\r\n【业务影响】无\r\n【问题描述】客户3D虚拟机无法开机，显示资源不足\r\n【排查进展】\r\n-四台主机为GPU主机，有三台的主机GPU配置资源很多不知道为什么显示资源不足  -主机10，11，12的资源都有，但是虚拟机无法获取vgpu资源\r\n-主机和虚拟机的配置\r\n-HCI 有aGPU授权\r\n - 执行 /usr/bin/perl /sf/bin/ini_host_gpu.pl && /usr/bin/perl /sf/bin/ini_vgpu_load.pl初始化显卡，但是问题依旧  \r\n  -/sf/cfg/gpu_info.ini 是有配置的\r\n  -对应驱动版本也没问题\r\n  -强制运行主机位置也一样\r\n  -vtpdaemon日志\r\n【远程信息】\r\nID TeamViewer: 1 903 370 442\r\npassword: j221dncj",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:19.645309"
+  },
+  {
+    "index": 537,
+    "problem_id": "Q2026012801751",
+    "problem_desc": "新建的虚拟机当前一直在HA，强制关机也关不了，编辑也编辑不了，协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:19.904898"
+  },
+  {
+    "index": 538,
+    "problem_id": "Q2026012801529",
+    "problem_desc": "HCI上有个虚拟机自动重启了，协助排查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:20.315220"
+  },
+  {
+    "index": 539,
+    "problem_id": "Q2026012801417",
+    "problem_desc": "存储卷满了   核心数据库虚拟机无法启动",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:20.585213"
+  },
+  {
+    "index": 540,
+    "problem_id": "Q2026012800988",
+    "problem_desc": "服务器内存64G。只运行一台32G，然后其他虚拟机无法开机协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:20.830293"
+  },
+  {
+    "index": 541,
+    "problem_id": "Q2026012800666",
+    "problem_desc": "linux无法开机，经常凌晨2点无响应",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:21.090059"
+  },
+  {
+    "index": 542,
+    "problem_id": "Q2026012800326",
+    "problem_desc": "一台虚拟机反馈昨天重启，需要协助排查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:21.405890"
+  },
+  {
+    "index": 543,
+    "problem_id": "Q2026012800138",
+    "problem_desc": "虚拟机自动重启，协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:21.797849"
+  },
+  {
+    "index": 544,
+    "problem_id": "Q2026012800136",
+    "problem_desc": "早上发现好多虚拟机都重启了，然后看日志这里有 ha失败。需要排查下是什么原因引起虚拟机重启",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:22.080766"
+  },
+  {
+    "index": 545,
+    "problem_id": "Q2026012701871",
+    "problem_desc": "Ubuntu 24.04.03系统安装之完之后无法开机 ",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:22.349309"
+  },
+  {
+    "index": 546,
+    "problem_id": "Q2026012701207",
+    "problem_desc": "虚拟机无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:22.625560"
+  },
+  {
+    "index": 547,
+    "problem_id": "Q2026012701131",
+    "problem_desc": "HCI日常巡检提示 存储快照导致虚拟机不能开机\nhci是HCI6.10.0_R1的版本不是R2 ",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:23.203371"
+  },
+  {
+    "index": 548,
+    "problem_id": "Q2026012701114",
+    "problem_desc": "虚拟机因为内存问题 无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:23.838229"
+  },
+  {
+    "index": 549,
+    "problem_id": "Q2026012701099",
+    "problem_desc": "虚拟机启动不了怀疑是360杀毒更新了东西\n\n",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:24.488746"
+  },
+  {
+    "index": 550,
+    "problem_id": "Q2026012700888",
+    "problem_desc": "虚拟机无法开机 提示文件保护",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:24.791035"
+  },
+  {
+    "index": 551,
+    "problem_id": "Q2026012700354",
+    "problem_desc": "虚拟机重启快20小时了还没重启起来",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:25.072802"
+  },
+  {
+    "index": 552,
+    "problem_id": "Q2026012700299",
+    "problem_desc": "虚拟机会自动重启 协助看下",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:25.472367"
+  },
+  {
+    "index": 553,
+    "problem_id": "Q2026012700213",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：redhat虚拟机磁盘有问题，进修复模式后，进不了虚拟机系统",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:25.738723"
+  },
+  {
+    "index": 554,
+    "problem_id": "Q2026012700122",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：超融合一台虚拟机无响应自动重启 查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:25.997881"
+  },
+  {
+    "index": 555,
+    "problem_id": "Q2026012601842",
+    "problem_desc": "物理机迁移到EDS存储上开不了机，黑屏，当前还在窗口期",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:26.251143"
+  },
+  {
+    "index": 556,
+    "problem_id": "Q2026012601757",
+    "problem_desc": "HCI 模版派生的虚拟机重启后密码错误",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:26.616030"
+  },
+  {
+    "index": 557,
+    "problem_id": "Q2026012601348",
+    "problem_desc": "虚拟存储满了，删除了部分备份，虚拟机开机失败，报内部错误",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:26.875540"
+  },
+  {
+    "index": 558,
+    "problem_id": "Q2026012601337",
+    "problem_desc": "剩余可配置内存42G，反馈配置32G虚拟机无法开机提示内存不足，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:27.137822"
+  },
+  {
+    "index": 559,
+    "problem_id": "Q2026012601087",
+    "problem_desc": "大批量桌面云虚拟机登录报错：虚拟开机失败，vtp请求超时",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:27.406774"
+  },
+  {
+    "index": 560,
+    "problem_id": "Q2026012601053",
+    "problem_desc": "windows Server虚拟机打了系统补丁包后反馈进不去系统，HCI告警也有异常",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:27.831835"
+  },
+  {
+    "index": 561,
+    "problem_id": "Q2026012600858",
+    "problem_desc": "物理机故障无法开机，所有虚拟机无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:29.131550"
+  },
+  {
+    "index": 562,
+    "problem_id": "Q2026012600792",
+    "problem_desc": "测试环境，调整了网络后有部分虚拟机无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:29.421433"
+  },
+  {
+    "index": 563,
+    "problem_id": "Q2026012600387",
+    "problem_desc": "虚拟机无法开机，影响非核心业务",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:29.718472"
+  },
+  {
+    "index": 564,
+    "problem_id": "Q2026012600181",
+    "problem_desc": "虚拟机开机进不去系统，需要协助看一下",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:29.978756"
+  },
+  {
+    "index": 565,
+    "problem_id": "Q2026012600027",
+    "problem_desc": "园区断电，断电前关闭虚拟机和主机了，恢复电后部分虚拟机进入紧急模式",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:30.409301"
+  },
+  {
+    "index": 566,
+    "problem_id": "Q2026012600010",
+    "problem_desc": "现在虚拟机关机了，需要查询虚拟机之前运行了多久",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:30.662035"
+  },
+  {
+    "index": 567,
+    "problem_id": "Q2026012600008",
+    "problem_desc": "单台虚拟机无法启动，影响核心业务",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:30.913463"
+  },
+  {
+    "index": 568,
+    "problem_id": "Q2026012500222",
+    "problem_desc": "HCI掉电后有部分虚拟机无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:31.167784"
+  },
+  {
+    "index": 569,
+    "problem_id": "Q2026012500017",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：HCI虚拟存储过满导致虚拟机无法启动，之前扩容了eds能否挂在到eds？",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:31.423863"
+  },
+  {
+    "index": 570,
+    "problem_id": "Q2026012500006",
+    "problem_desc": "HCI重启之后有一台linux进紧急模式",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:31.944917"
+  },
+  {
+    "index": 571,
+    "problem_id": "Q2026012400380",
+    "problem_desc": "VM虚拟机迁移到HCI后，虚拟机开不起来，怀疑是FSTAB问题",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:32.210759"
+  },
+  {
+    "index": 572,
+    "problem_id": "Q2026012400134",
+    "problem_desc": "虚拟机无法开机   ",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:32.527154"
+  },
+  {
+    "index": 573,
+    "problem_id": "Q2026012400017",
+    "problem_desc": "升级后 核心业务虚拟机无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:32.789975"
+  },
+  {
+    "index": 574,
+    "problem_id": "Q2026012400013",
+    "problem_desc": "一台虚拟机重启后起不来",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:33.054184"
+  },
+  {
+    "index": 575,
+    "problem_id": "Q2026012301688",
+    "problem_desc": "虚拟机关机启动后进入救援模式",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:33.528267"
+  },
+  {
+    "index": 576,
+    "problem_id": "Q2026012301371",
+    "problem_desc": "软件这边卸载JAVA  JDK后就无法进入系统了，协助处理，反馈做手术的服务器受到影响",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:33.796485"
+  },
+  {
+    "index": 577,
+    "problem_id": "Q2026012300938",
+    "problem_desc": "arm架构的hci  导入scp开机异常",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:34.074159"
+  },
+  {
+    "index": 578,
+    "problem_id": "Q2026012201420",
+    "problem_desc": "超融合有几台核心虚拟机挂了，影响业务，需要协助。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:34.324078"
+  },
+  {
+    "index": 579,
+    "problem_id": "Q2026012201359",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：客户把虚拟机内存开的太大，虚拟机重启后显示离线状态",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:34.740595"
+  },
+  {
+    "index": 580,
+    "problem_id": "Q2026012201322",
+    "problem_desc": "1、迁移到超融合上的的虚拟机重启的时候很慢；\n",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:35.005320"
+  },
+  {
+    "index": 581,
+    "problem_id": "Q2026012201161",
+    "problem_desc": "vm虚拟机迁移到hci后进不了系统",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:35.269863"
+  },
+  {
+    "index": 582,
+    "problem_id": "Q2026012200860",
+    "problem_desc": "单台数据库虚拟机任务卡死 无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:35.579365"
+  },
+  {
+    "index": 583,
+    "problem_id": "Q2026012200561",
+    "problem_desc": "巡检有多个告警  存储快照导致虚拟机开机失败检测\n异常",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:35.857082"
+  },
+  {
+    "index": 584,
+    "problem_id": "Q2026012200180",
+    "problem_desc": "虚拟机运行出现：ERROR:Wrong Bin File Size: 58 (should be 29)\n无法开机 需要协助恢复\n无远程不在现场 影响部分业务",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:36.347753"
+  },
+  {
+    "index": 585,
+    "problem_id": "Q2026012101300",
+    "problem_desc": "虚拟机开机失败",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:36.618608"
+  },
+  {
+    "index": 586,
+    "problem_id": "Q2026012100838",
+    "problem_desc": "核心业务系统，windows 2008  上午重启了一次，现在业务正常     有dump日志，需要支持分析\n\nPS：需要尽快分析，担心再次重启影响业务",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:36.874212"
+  },
+  {
+    "index": 587,
+    "problem_id": "Q2026012100821",
+    "problem_desc": "核心业务系统虚拟机无法开机 ，提示虚拟机镜像正在忙 正在进行其他操作 ，IO读写异常",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:37.149299"
+  },
+  {
+    "index": 588,
+    "problem_id": "Q2026012001787",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260116860038\r\n    事件等级：Priority2\r\n    产品线：HCI::6.8.0_R1\r\n\n====客户信息====\n    客户ID：40\r\n    客户MDM ID：null\r\n    客户名称：Peritech\r\n    客户区域：Malaysia\r\n    客户类型：\r\n\n====工单信息====\n\r设备部署模式：\r\n客户背景： 马来西亚政府机构\r\n问题现象： 虚拟机MYJBGM无法找到根分区，进不去系统\r\n排查过程：\r\n1.debain系统，在当前模式尝试输入lsblk查看没有这些命令，\r\n2）使用iso进入救援模式，参考百度方法修复，没修复成功\r\n3）客户反馈之前使用备份恢复，恢复的也有问题  \r\n4）问题研发协助并且已恢复\r\n重要备注：目前无风险，已恢复\r\n是否已开群（企微）：是\r\n企微群名：【MBPG】【虚拟机启动问题】",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:37.615422"
+  },
+  {
+    "index": 589,
+    "problem_id": "Q2026012001375",
+    "problem_desc": "虚拟机重启状态  一直再这状态强制关机也不行",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:37.908352"
+  },
+  {
+    "index": 590,
+    "problem_id": "Q2026012001359",
+    "problem_desc": "虚拟机内部重启  查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:38.181674"
+  },
+  {
+    "index": 591,
+    "problem_id": "Q2026012001345",
+    "problem_desc": "centos虚拟机启用UUID后进入了紧急模式\n没有业务 搭建中",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:38.490226"
+  },
+  {
+    "index": 592,
+    "problem_id": "Q2026012000146",
+    "problem_desc": "主机内存故障，导致主机进亚健康虚拟机无法开机，需协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:38.811869"
+  },
+  {
+    "index": 593,
+    "problem_id": "Q2026011901978",
+    "problem_desc": "虚拟机开机提示可配置内存不足，主机详情看配置内存还有50G， 需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:39.197240"
+  },
+  {
+    "index": 594,
+    "problem_id": "Q2026011901713",
+    "problem_desc": "虚拟机启动慢，需要协助看一下",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:39.471364"
+  },
+  {
+    "index": 595,
+    "problem_id": "Q2026011901441",
+    "problem_desc": "虚拟机内部重启。查原因。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:39.723104"
+  },
+  {
+    "index": 596,
+    "problem_id": "Q2026011901317",
+    "problem_desc": "VDI集群被转换了格式，给了新集群，当前老集群中有一台虚拟机需要拷贝一些文件，需要协助看 是否可以临时拉起虚拟机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:39.979520"
+  },
+  {
+    "index": 597,
+    "problem_id": "Q2026011901302",
+    "problem_desc": "测试超融合虚拟机开机失败提示获取版本号失败，需要协助。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:40.305285"
+  },
+  {
+    "index": 598,
+    "problem_id": "Q2026011900799",
+    "problem_desc": "核心虚拟机重启或者关机都失败",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:40.804709"
+  },
+  {
+    "index": 599,
+    "problem_id": "Q2026011900738",
+    "problem_desc": "HCI 里面的一台主机库虚拟机 突然连不上了，客户尝试重启了也没恢复还导致虚拟机也起不来了 ",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:41.112375"
+  },
+  {
+    "index": 600,
+    "problem_id": "Q2026011900668",
+    "problem_desc": "单台虚拟机开机失败，提示服务不可用",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:41.364456"
+  },
+  {
+    "index": 601,
+    "problem_id": "Q2026011900085",
+    "problem_desc": "6.10.0集群上的虚拟机导入6.11.1反馈开机会卡死，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:41.638782"
+  },
+  {
+    "index": 602,
+    "problem_id": "Q2026011900080",
+    "problem_desc": "虚拟机内部重启，协助排查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:42.242324"
+  },
+  {
+    "index": 603,
+    "problem_id": "Q2026011900031",
+    "problem_desc": "单台虚拟机接入的时候提示开机失败",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:42.716949"
+  },
+  {
+    "index": 604,
+    "problem_id": "Q2026011900017",
+    "problem_desc": "【申请协助】：客户通过数字化服务平台发起，但是找不到服务商协助，请尽快联系客户处理！&lt;br&gt;【工单描述】：\n业务虚拟机启动不起来，提示内部异常，重启无反应，协助解决并排查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:43.333288"
+  },
+  {
+    "index": 605,
+    "problem_id": "Q2026011700436",
+    "problem_desc": "虚拟机开机失败虚拟机正在进行其他操作请稍后重试，反馈是核心业务，晚上要用",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:43.649412"
+  },
+  {
+    "index": 606,
+    "problem_id": "Q2026011700357",
+    "problem_desc": "windwos虚拟机重启后无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:43.925311"
+  },
+  {
+    "index": 607,
+    "problem_id": "Q2026011700157",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260117860002\r\n    事件等级：Priority4\r\n    产品线：HCI::6.9.1\r\n\n====客户信息====\n    客户ID：315\r\n    客户MDM ID：null\r\n    客户名称：Sangfor Thailand\r\n    客户区域：Thailand\r\n    客户类型：null\r\n\n====工单信息====\n\r一线负责人：tanapong\r\n客服负责人：low wei yik\r\n研发负责人：陈赞宇(93517)\r\n【事件编号】-\r\n【版本信息】HCI 6.9.1\r\n【CTI专家】-\r\n【问题描述】虚拟机开启卡着30%\r\n【业务影响】-\r\n【当前进展】\r\n1. 有一台虚拟机开机将近一个小时还是无法开启（卡着30%）\r\n2. 虚拟机磁盘也不会很大；\r\n3. 后台看进程有个sync D\r\n\r\n【下一步计划】\r\n1. 重启问题主机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:44.203312"
+  },
+  {
+    "index": 608,
+    "problem_id": "Q2026011601700",
+    "problem_desc": "两主机集群，有一台掉线了。当前有两台虚拟机起不来",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:46.307042"
+  },
+  {
+    "index": 609,
+    "problem_id": "Q2026011601284",
+    "problem_desc": "虚拟机异常重启失败，主机内存不足",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:46.581175"
+  },
+  {
+    "index": 610,
+    "problem_id": "Q2026011601135",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：内存超配比后虚拟机开不了机 报内存不够",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:46.851692"
+  },
+  {
+    "index": 611,
+    "problem_id": "Q2026011601096",
+    "problem_desc": "单台业务虚拟机报表服务异常 虚拟机无法启动",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:47.119282"
+  },
+  {
+    "index": 612,
+    "problem_id": "Q2026011600268",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：2003虚机从VMware迁移到HCI上，一直卡在启动界面",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:47.587513"
+  },
+  {
+    "index": 613,
+    "problem_id": "Q2026011600254",
+    "problem_desc": "虚拟机总是内部重启虚拟机\n需要查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:47.844447"
+  },
+  {
+    "index": 614,
+    "problem_id": "Q2026011600017",
+    "problem_desc": "虚拟机重启查原因   目前业务正常  ",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:48.108751"
+  },
+  {
+    "index": 615,
+    "problem_id": "Q2026011501806",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：2026年1月15日22点对超融合上的一台虚拟服务器开启“高性能虚拟机”，重启时可能会出现无法重启、任务无法取消的情况，若再次出现此类问题，需要协助后台取消任务，回退操作。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:48.372094"
+  },
+  {
+    "index": 616,
+    "problem_id": "Q2026011501714",
+    "problem_desc": "虚拟异常重启后进不去系统，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:48.696323"
+  },
+  {
+    "index": 617,
+    "problem_id": "Q2026011501640",
+    "problem_desc": "关机了一台虚拟机，10G内存，将10G内存添加到其他虚拟机上了，过了10分钟，虚拟机也无法开机，报错内存不足，内存没有正常释放，需要协助看下",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:49.080303"
+  },
+  {
+    "index": 618,
+    "problem_id": "Q2026011501131",
+    "problem_desc": "单台linux虚拟机无法开机，影响非核心业务",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:49.351238"
+  },
+  {
+    "index": 619,
+    "problem_id": "Q2026011501019",
+    "problem_desc": "虚拟机异常重启",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:49.622136"
+  },
+  {
+    "index": 620,
+    "problem_id": "Q2026011500745",
+    "problem_desc": "派生虚拟机 无法进入系统，卡在booting from hard disk 需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:49.883829"
+  },
+  {
+    "index": 621,
+    "problem_id": "Q2026011500093",
+    "problem_desc": "虚拟机自动关机了，查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:50.333069"
+  },
+  {
+    "index": 622,
+    "problem_id": "Q2026011402022",
+    "problem_desc": "linux虚拟机进不去系统",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:50.625706"
+  },
+  {
+    "index": 623,
+    "problem_id": "Q2026011401871",
+    "problem_desc": "数据库虚拟机扩容了磁盘，现在拉不起来了，需要协助看一下",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:50.893975"
+  },
+  {
+    "index": 624,
+    "problem_id": "Q2026011401667",
+    "problem_desc": "虚拟机无响应 会自动异常重启  ",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:51.147197"
+  },
+  {
+    "index": 625,
+    "problem_id": "Q2026011401639",
+    "problem_desc": "虚拟机开机提示可配置内存不足，主机详情看下可配置内存是有的",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:51.626858"
+  },
+  {
+    "index": 626,
+    "problem_id": "Q2026011401541",
+    "problem_desc": "HCI的windows虚拟机安装完补丁后重启起不来了，影响业务，非核心业务",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:51.889850"
+  },
+  {
+    "index": 627,
+    "problem_id": "Q2026011401457",
+    "problem_desc": "迁移到HCI上的一台虚拟机，开机蓝屏",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:52.141767"
+  },
+  {
+    "index": 628,
+    "problem_id": "Q2026011401225",
+    "problem_desc": "导入scp虚拟机，起不来，有报错，是uefi启动的还是不行",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:52.407980"
+  },
+  {
+    "index": 629,
+    "problem_id": "Q2026011400824",
+    "problem_desc": "存储在外置存储的虚拟机开机提示镜像异常",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:52.664821"
+  },
+  {
+    "index": 630,
+    "problem_id": "Q2026011400740",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：重置密码虚拟机关闭失败，客户反馈重置密码前虚拟机也卡顿",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:53.217292"
+  },
+  {
+    "index": 631,
+    "problem_id": "Q2026011400142",
+    "problem_desc": "虚拟机业务中断，反馈是核心业务，反馈虚拟机无法关机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:53.490920"
+  },
+  {
+    "index": 632,
+    "problem_id": "Q2026011400109",
+    "problem_desc": "虚拟机自动关机查原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:53.827180"
+  },
+  {
+    "index": 633,
+    "problem_id": "Q2026011301935",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260112860090\r\n    事件等级：Priority3\r\n    产品线：HCI::6.10.0_R2\r\n\n====客户信息====\n    客户ID：772\r\n    客户MDM ID：null\r\n    客户名称：Ministry of Home Affairs of Malaysia (KDN)\r\n    客户区域：Malaysia\r\n    客户类型：KA\r\n\n====工单信息====\n\r一线负责人：GOO\r\nTAC负责人：陈平\r\n研发责任人：\r\n【事件编号】Ticket#20260112860090\r\n【上升工单】\r\n【版本信息】6.10.0R2\r\n【问题描述】Parlimendb(6A72)(10.21.72.224)_2026_01_05-10_34_16 fail to boot up after failover to HCI.[图片]【业务影响】\r\n【当前进展】\r\n1）确认是Linux 系统启动时 LVM（逻辑卷管理）初始化失败，尝试手动激活lvm卷，提示没有这个lvm2[图片]2)查看fstab文件里面没有vda2，df -h看也只有vda3[图片]【下一步计划】",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:54.088178"
+  },
+  {
+    "index": 634,
+    "problem_id": "Q2026011301648",
+    "problem_desc": "虚拟机开机失败，报错镜像忙，影响非核心业务使用",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:54.346823"
+  },
+  {
+    "index": 635,
+    "problem_id": "Q2026011301572",
+    "problem_desc": "reboot重启虚拟机失败，然后重启电源也是失败的，能看下吗",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:54.758475"
+  },
+  {
+    "index": 636,
+    "problem_id": "Q2026011300643",
+    "problem_desc": "虚拟机无法启动  显示内存够，但是运行又说不够用\n\n",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:55.025323"
+  },
+  {
+    "index": 637,
+    "problem_id": "Q2026011300614",
+    "problem_desc": "物理服务器重启之后，1台预控虚拟机启动不了",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:55.275782"
+  },
+  {
+    "index": 638,
+    "problem_id": "Q2026011300520",
+    "problem_desc": "adm的HCI服务器集群  导入SCP 虚拟机之后不能开机 提示 Guest has not initialized the display (yet)",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:55.561039"
+  },
+  {
+    "index": 639,
+    "problem_id": "Q2026011300273",
+    "problem_desc": "pacs业务系统无法启动",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:56.038072"
+  },
+  {
+    "index": 640,
+    "problem_id": "Q2026011201617",
+    "problem_desc": "虚拟机重启后进不去系统需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:56.297173"
+  },
+  {
+    "index": 641,
+    "problem_id": "Q2026011200831",
+    "problem_desc": "数据库虚拟机重启后虚拟机打不开",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:56.558756"
+  },
+  {
+    "index": 642,
+    "problem_id": "Q2026011200643",
+    "problem_desc": "一般业务虚拟机无法正常开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:56.866843"
+  },
+  {
+    "index": 643,
+    "problem_id": "Q2026011200618",
+    "problem_desc": "acmp开不了机，授权也异常，目前所有的虚拟机无法开机了",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:57.227365"
+  },
+  {
+    "index": 644,
+    "problem_id": "Q2026011200511",
+    "problem_desc": "虚拟机无法关机，关闭电源也是黑的",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:57.590413"
+  },
+  {
+    "index": 645,
+    "problem_id": "Q2026011200495",
+    "problem_desc": "虚拟机开机提示内存不足",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:57.943129"
+  },
+  {
+    "index": 646,
+    "problem_id": "Q2026011100178",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260111860004\r\n    事件等级：Priority1\r\n    产品线：HCI\r\n\n====客户信息====\n    客户ID：641\r\n    客户MDM ID：null\r\n    客户名称：Innotel\r\n    客户区域：Vietnam\r\n    客户类型：null\r\n\n====工单信息====\n\r一线负责人：Kevin Vo\r\n客服负责人：Lee Chiew Min\r\n研发负责人：赵亚军 11201\r\n【事件编号】\r\n【版本信息】611.1\r\n【问题描述】客户有进行电池模块替换，重启后 vs离线\r\n【业务影响】核心业务虚拟机无法启动\r\n排查：\r\n1）后台看挂载点没了\r\n2）VS离线\r\n3）磁盘看着是还在的\r\nvs_vginfo:\r\n\r\n下一步：\r\n协助查看问题和解决",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:58.211305"
+  },
+  {
+    "index": 647,
+    "problem_id": "Q2026011100061",
+    "problem_desc": "有台物理机故障  虚拟机有起不来 ",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:58.471650"
+  },
+  {
+    "index": 648,
+    "problem_id": "Q2026011000380",
+    "problem_desc": "虚拟机打补丁后提示要重启或迁移",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:58.996450"
+  },
+  {
+    "index": 649,
+    "problem_id": "Q2026011000279",
+    "problem_desc": "导入scp无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:59.254752"
+  },
+  {
+    "index": 650,
+    "problem_id": "Q2026011000254",
+    "problem_desc": "纳管迁移后虚拟机无法启动，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:59.520795"
+  },
+  {
+    "index": 651,
+    "problem_id": "Q2026010901961",
+    "problem_desc": "虚拟机重启后数据丢失，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:40:59.776491"
+  },
+  {
+    "index": 652,
+    "problem_id": "Q2026010901797",
+    "problem_desc": "超融合虚拟机自己重启了，需要协助排查原因。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:00.231052"
+  },
+  {
+    "index": 653,
+    "problem_id": "Q2026010900806",
+    "problem_desc": "虚拟机卡在开机界面，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:00.495280"
+  },
+  {
+    "index": 654,
+    "problem_id": "Q2026010900606",
+    "problem_desc": "vdi接入报错：开机失败，虚拟机磁盘不存在，请稍后重试，有三四个用户无法使用",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:00.758433"
+  },
+  {
+    "index": 655,
+    "problem_id": "Q2026010900492",
+    "problem_desc": "VM迁移至HCI上的虚拟机 无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:01.019799"
+  },
+  {
+    "index": 656,
+    "problem_id": "Q2026010900329",
+    "problem_desc": "单台虚拟机无法进入系统",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:01.629452"
+  },
+  {
+    "index": 657,
+    "problem_id": "Q2026010900305",
+    "problem_desc": "HCI上的虚拟机迁移到VM上，无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:02.040994"
+  },
+  {
+    "index": 658,
+    "problem_id": "Q2026010900159",
+    "problem_desc": "centos通过SCMT迁移之后无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:02.695364"
+  },
+  {
+    "index": 659,
+    "problem_id": "Q2026010900023",
+    "problem_desc": "HCI6.10.0R2 有一台主机故障。3D虚拟机无法开机，驻外在去现场的路上，预计需要一个小时左右到，但是可以先拉群跟客户那边先对接处理看一下，确认是否正常开机了。反馈离线主机还能ping通。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:02.953481"
+  },
+  {
+    "index": 660,
+    "problem_id": "Q2026010801836",
+    "problem_desc": "一个业务系统无法开机，提示镜像忙，是PACS系统",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:03.253569"
+  },
+  {
+    "index": 661,
+    "problem_id": "Q2026010801719",
+    "problem_desc": "虚拟机点了重启电源卡了一个小时，需要协助取消",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:03.513688"
+  },
+  {
+    "index": 662,
+    "problem_id": "Q2026010801587",
+    "problem_desc": "虚拟机无响应自动重启",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:04.967672"
+  },
+  {
+    "index": 663,
+    "problem_id": "Q2026010801483",
+    "problem_desc": "一台虚拟机一直关机卡主20%",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:05.233066"
+  },
+  {
+    "index": 664,
+    "problem_id": "Q2026010702089",
+    "problem_desc": "scmt从物理机迁移到HCI，windows开不了机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:05.596297"
+  },
+  {
+    "index": 665,
+    "problem_id": "Q2026010701789",
+    "problem_desc": "HCI上的虚拟机在重启完之后，时间会加快了8个小时",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:05.849339"
+  },
+  {
+    "index": 666,
+    "problem_id": "Q2026010701680",
+    "problem_desc": "虚拟机重启后业务异常",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:06.297929"
+  },
+  {
+    "index": 667,
+    "problem_id": "Q2026010701565",
+    "problem_desc": "主机断电重启后起不来 一台虚拟机起不来",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:06.547640"
+  },
+  {
+    "index": 668,
+    "problem_id": "Q2026010701484",
+    "problem_desc": "超融合6111 有一台虚拟机宕机了  重启 无法启动 启动的时候提示找不到 UFI什么 核心业务虚拟机 生产环境",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:06.839339"
+  },
+  {
+    "index": 669,
+    "problem_id": "Q2026010701125",
+    "problem_desc": "liunx虚拟机异常重启了，需要协助看一下",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:07.092124"
+  },
+  {
+    "index": 670,
+    "problem_id": "Q2026010700801",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：日志显示： 内部重启成功了，手动关机失败，手动关闭电源成功\n实际虚拟机情况： 内部重启卡住了，手动关机失败，手动关闭电源成功\n\n这个内部卡住，手动关机失败这个大概率正常，因为发送手动关机是发送命令到虚拟机内来执行的；看下看能否查到虚拟机卡住的原因吧\n\n\n虚拟机重启卡住，提示显示现在正在配置, 请勿关机，帮忙排查下",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:07.422561"
+  },
+  {
+    "index": 671,
+    "problem_id": "Q2026010700793",
+    "problem_desc": "虚拟机开机提示计算内存不足，实体机显示内存是有几十G内存，需协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:07.747086"
+  },
+  {
+    "index": 672,
+    "problem_id": "Q2026010700733",
+    "problem_desc": "虚拟机开机卡主：正在启动",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:08.028239"
+  },
+  {
+    "index": 673,
+    "problem_id": "Q2026010700448",
+    "problem_desc": "单台虚拟机开机会超过15分钟",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:08.312105"
+  },
+  {
+    "index": 674,
+    "problem_id": "Q2026010700397",
+    "problem_desc": "存在大量虚拟机要开启异常重启和HA功能，需要后台批量操作",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:08.566158"
+  },
+  {
+    "index": 675,
+    "problem_id": "Q2026010700115",
+    "problem_desc": "linux虚拟机无法开机，需要协助修复",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:09.088075"
+  },
+  {
+    "index": 676,
+    "problem_id": "Q2026010700084",
+    "problem_desc": "虚拟机进不去系统",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:09.357218"
+  },
+  {
+    "index": 677,
+    "problem_id": "Q2026010601895",
+    "problem_desc": "hci虚拟机开机报错 就是内部重启开不了",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:09.622704"
+  },
+  {
+    "index": 678,
+    "problem_id": "Q2026010601824",
+    "problem_desc": "主机重启之后出现：欧拉虚拟机开机进去救援模式",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:09.912972"
+  },
+  {
+    "index": 679,
+    "problem_id": "Q2026010601663",
+    "problem_desc": "虚拟内部自动重启",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:10.169935"
+  },
+  {
+    "index": 680,
+    "problem_id": "Q2026010601611",
+    "problem_desc": "【服务升级】：服务商通过数字化服务平台发起服务升级，请尽快联系服务商处理！<br>【工单描述】：虚拟机操作系统开机失败，无法进入系统",
+    "error": "Server error '500 Internal Server Error' for url 'http://172.22.73.249/api/cases/'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+    "failed_at": "2026-05-19T11:41:10.351165"
+  },
+  {
+    "index": 681,
+    "problem_id": "Q2026010601286",
+    "problem_desc": "虚拟机进行了系统更新，没有成功。便又进行了配置还原，现在卡在配置还原的状态",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:10.815256"
+  },
+  {
+    "index": 682,
+    "problem_id": "Q2026010601170",
+    "problem_desc": "导入的虚拟机，无法正常开机，需要协助看下",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:11.090276"
+  },
+  {
+    "index": 683,
+    "problem_id": "Q2026010601018",
+    "problem_desc": "磁盘损坏不分虚拟机无法开机  ",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:11.403060"
+  },
+  {
+    "index": 684,
+    "problem_id": "Q2026010600954",
+    "problem_desc": "虚拟机重启后zabbix会提示时间慢了一秒",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:11.676549"
+  },
+  {
+    "index": 685,
+    "problem_id": "Q2026010600698",
+    "problem_desc": "虚拟机无响应，vdc还提示agent版本与系统版本不一致，一直都在关机中的状态",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:12.015184"
+  },
+  {
+    "index": 686,
+    "problem_id": "Q2026010600467",
+    "problem_desc": "虚拟机开机，VDC上显示未锁定状态，需要协助看一下",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:12.349098"
+  },
+  {
+    "index": 687,
+    "problem_id": "Q2026010600450",
+    "problem_desc": "主机的存储网卡配置错误 被隔离  虚拟存储掉线  虚拟机无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:12.616557"
+  },
+  {
+    "index": 688,
+    "problem_id": "Q2026010600179",
+    "problem_desc": "虚拟机开机提示检测到disksafe软件",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:12.878717"
+  },
+  {
+    "index": 689,
+    "problem_id": "Q2026010600047",
+    "problem_desc": "erp服务器重启之后起不来了",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:13.195067"
+  },
+  {
+    "index": 690,
+    "problem_id": "Q2026010502035",
+    "problem_desc": "断电关机重启后有3台redhat开机不了",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:13.531968"
+  },
+  {
+    "index": 691,
+    "problem_id": "Q2026010501770",
+    "problem_desc": "【事故描述】虚拟机内部重启，需要帮忙排查下原因，反复重启\n【客户态度和诉求】 需要尽快恢复业务，OA虚拟机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:13.999955"
+  },
+  {
+    "index": 692,
+    "problem_id": "Q2026010501492",
+    "problem_desc": "win11虚拟机开机卡在开机界面",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:14.274722"
+  },
+  {
+    "index": 693,
+    "problem_id": "Q2026010500912",
+    "problem_desc": "HCI 的虚拟机重启以后网卡名称发生了改变，影响到核心业务 无法使用了，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:14.587033"
+  },
+  {
+    "index": 694,
+    "problem_id": "Q2026010500834",
+    "problem_desc": "有一个虚拟机重启报错重启失败，内部关机超时，虚拟机进救援模式了",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:14.855842"
+  },
+  {
+    "index": 695,
+    "problem_id": "Q2026010500557",
+    "problem_desc": "业务虚拟机异常无法开机，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:15.291240"
+  },
+  {
+    "index": 696,
+    "problem_id": "Q2026010500290",
+    "problem_desc": "虚拟机周六重启后一直处于开机备份状态，需要如何处理。",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:15.572739"
+  },
+  {
+    "index": 697,
+    "problem_id": "Q2026010500135",
+    "problem_desc": "有台业务虚拟机被关机了，早上发现业务访问不正常，才发现被关机了，需排查虚拟机被关机的原因，避免后续再出现类似问题",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:15.893971"
+  },
+  {
+    "index": 698,
+    "problem_id": "Q2026010401607",
+    "problem_desc": "虚拟机启动失败",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:21.332974"
+  },
+  {
+    "index": 699,
+    "problem_id": "Q2026010401552",
+    "problem_desc": "巡检测到虚拟机监控中心,Sangfor aMC 2.0.3 20200904中存在磁盘id为virtio格式，会导致虚拟机磁盘配置丢失，虚拟机重新启动时磁盘无法找到，影响业务",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:21.949307"
+  },
+  {
+    "index": 700,
+    "problem_id": "Q2026010401388",
+    "problem_desc": "外置存储断电，两台虚拟机无法启动，需协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:22.239604"
+  },
+  {
+    "index": 701,
+    "problem_id": "Q2026010400923",
+    "problem_desc": "虚拟机开机报 镜像忙",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:22.543687"
+  },
+  {
+    "index": 702,
+    "problem_id": "Q2026010400852",
+    "problem_desc": "超融合挂载的华三外置存储，虚拟机开机失败，报错搜索不到镜像，有一台虚拟机配置没了，暂时没有影响业务，在部署业务中",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:22.857908"
+  },
+  {
+    "index": 703,
+    "problem_id": "Q2026010400833",
+    "problem_desc": "有个虚拟机一直反复重启",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:23.297924"
+  },
+  {
+    "index": 704,
+    "problem_id": "Q2026010400506",
+    "problem_desc": "HCI 有一台linux虚拟机起不来",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:23.901855"
+  },
+  {
+    "index": 705,
+    "problem_id": "Q2026010400305",
+    "problem_desc": "linux无法重启成功，无法开机",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:24.221365"
+  },
+  {
+    "index": 706,
+    "problem_id": "Q2026010400136",
+    "problem_desc": "虚拟机开机进入救援模式，需要协助处理",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:24.508515"
+  },
+  {
+    "index": 707,
+    "problem_id": "Q2026010300164",
+    "problem_desc": "====海外工单信息====\n    海外工单ID：20260103860005\r\n    事件等级：Priority2\r\n    产品线：HCI::6.11.1\r\n\n====客户信息====\n    客户ID：37768\r\n    客户MDM ID：eeb5b82c80228e55d147f0716c5eae42\r\n    客户名称：SANTA CLARA COMPANY LIMITED【Vietnam】\r\n    客户区域：Vietnam\r\n    客户类型：\r\n\n====工单信息====\n\r设备部署模式：4主机环境，6.11.1\r\n客户背景： 香港 - Simway\r\n问题现象：3台虚拟机挂起\r\n排查过程：\r\n\r\n1） 发现3台主机CPU 使用率100%\r\n2） .87 .89 主机磁盘原本计划星期一替换，今天渠道反馈.88主机有异常，只读状态\r\n\r\n下一步：\r\n\r\n1）优先恢复虚拟机\r\n2）检查主机100%CPU 使用率\r\n\r\n重要备注：\r\n是否已开群（企微）：是\r\n企微群名：谢攀【香港/Simway】- 集群多台主机显示100%CPU使用率",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:24.775277"
+  },
+  {
+    "index": 708,
+    "problem_id": "Q2026010300095",
+    "problem_desc": "虚拟机无法开机，显示正在修复",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:25.055161"
+  },
+  {
+    "index": 709,
+    "problem_id": "Q2026010300063",
+    "problem_desc": "有个虚拟机卡在启动界面",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:25.628272"
+  },
+  {
+    "index": 710,
+    "problem_id": "Q2026010100163",
+    "problem_desc": "客户反馈有台虚拟机卡死了，HCI侧无法重启电源，提示当前有任务在执行，需要查一下卡死的原因",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:25.904091"
+  },
+  {
+    "index": 711,
+    "problem_id": "Q2026010100051",
+    "problem_desc": "虚拟机开机失败，提示磁盘繁忙",
+    "error": "服务异常：大脑 [htp] 不可达: {\"code\": \"AI_UNAVAILABLE\", \"message\": \"无法连接到 AI 服务，请检查网络或服务状态\", \"detail\": \"type=ConnectError, message=\"}",
+    "failed_at": "2026-05-19T11:41:26.190578"
+  },
+  {
+    "index": 712,
+    "problem_id": "Q2026010100048",
+    "problem_desc": "核心业务无法开机",
+    "error": "Server error '503 Service Unavailable' for url 'http://172.22.73.249/api/conversations/?case_id=Q2026051900241&assistant_type=glm-5'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503",
+    "failed_at": "2026-05-19T11:41:31.360701"
+  }
+]
