@@ -14,7 +14,6 @@ Redis Key 设计：confirm:{session_id}（LIST 类型，BRPOP 等待，LPUSH 写
 """
 
 import json
-import logging
 from enum import StrEnum
 
 from redis.asyncio import Redis

@@ -12,8 +12,7 @@ KBD 数据模型（知识库文档 Knowledge Base Document）
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
+from dataclasses import dataclass
 
 # 期望模式前缀常量，供判断逻辑识别
 PATTERN_REGEX_PREFIX = "__REGEX__:"

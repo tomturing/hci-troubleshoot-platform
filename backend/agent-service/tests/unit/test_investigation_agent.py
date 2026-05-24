@@ -7,9 +7,9 @@ InvestigationAgent 单元测试
   3. kb_client 无知识时走降级路径
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from app.adapters.agents.htp.investigation_agent import InvestigationAgent
 from app.domain.agent_port import AgentStageUpdate, AgentTextChunk
 

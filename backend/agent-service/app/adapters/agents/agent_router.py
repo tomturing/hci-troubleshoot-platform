@@ -24,10 +24,10 @@ from typing import TYPE_CHECKING, Any
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
-from app.adapters.agents.htp.triage_agent import TriageAgent
 from app.adapters.agents.htp.investigation_agent import InvestigationAgent
-from app.adapters.agents.htp.remediation_agent import RemediationAgent
 from app.adapters.agents.htp.kbd_model import KBD
+from app.adapters.agents.htp.remediation_agent import RemediationAgent
+from app.adapters.agents.htp.triage_agent import TriageAgent
 from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
 from app.domain.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
 
@@ -280,7 +280,7 @@ class AgentRouter:
             if not category_id:
                 logger.warning(
                     event="route_investigation_missing_category",
-                    message=f"S1+ 阶段缺少 category_id",
+                    message="S1+ 阶段缺少 category_id",
                     session_id=session_id,
                     stage=diagnostic_stage,
                 )

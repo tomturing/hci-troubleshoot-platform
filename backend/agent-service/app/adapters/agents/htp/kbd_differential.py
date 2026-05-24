@@ -20,18 +20,18 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
-from collections.abc import AsyncGenerator
 
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
 from app.adapters.agents.htp.kbd_model import (
     KBD,
-    KBDStep,
     PATTERN_CONTAINS_PREFIX,
     PATTERN_REGEX_PREFIX,
+    KBDStep,
 )
 from app.domain.agent_port import AgentEvent, AgentStageUpdate, AgentTextChunk
 
@@ -440,12 +440,7 @@ class KBDDiagnostic:
         )
 
         kbds_summary = "\n".join(
-            "- **{name}**（相似度 {sim:.0%}）\n  根因：{rc}\n  方案：{sol}".format(
-                name=kbd.name,
-                sim=kbd.similarity,
-                rc=kbd.root_cause,
-                sol=kbd.solution,
-            )
+            f"- **{kbd.name}**（相似度 {kbd.similarity:.0%}）\n  根因：{kbd.root_cause}\n  方案：{kbd.solution}"
             for kbd in matched_kbds[:5]
         )
 

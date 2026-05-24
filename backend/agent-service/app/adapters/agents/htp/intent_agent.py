@@ -12,7 +12,6 @@ IntentAgent: S0 意图识别 Agent
   - ReAct 循环（纯意图识别）
 """
 
-import logging
 import re
 import time
 from collections.abc import AsyncGenerator

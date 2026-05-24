@@ -25,7 +25,6 @@ from app.adapters.agents.htp.react_engine import ReactEngine
 from app.domain.agent_port import (
     AgentEvent,
     AgentStageUpdate,
-    AgentTextChunk,
     AgentUnavailableError,
 )
 from app.domain.base_agent import BaseAgent, Message, Observation, Step, ToolCall

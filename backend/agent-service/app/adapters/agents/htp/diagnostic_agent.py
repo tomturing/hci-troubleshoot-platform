@@ -12,7 +12,6 @@ DiagnosticAgent: S1+ 诊断推理 Agent
   - react: ReAct 循环（工具调用 + 高危确认）
 """
 
-import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 

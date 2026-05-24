@@ -19,8 +19,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Union
-
+from typing import Any
 
 # ─── 核心数据结构 ────────────────────────────────────────────────────────────────
 
@@ -53,7 +52,7 @@ class Observation:
 # 推理结果类型：
 #   ToolCall → 需要继续执行动作（循环）
 #   str      → 最终答案（终止）
-Step = Union[ToolCall, str]
+Step = ToolCall | str
 
 
 # ─── Agent 基类 ──────────────────────────────────────────────────────────────────

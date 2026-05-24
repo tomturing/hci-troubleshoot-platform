@@ -10,14 +10,12 @@ ReactEngine: ReAct 循环执行引擎
 被 DiagnosticAgent 内部使用（execution_mode=react 时）
 """
 
-import logging
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from opentelemetry import trace
-
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 

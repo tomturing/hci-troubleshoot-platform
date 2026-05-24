@@ -20,12 +20,13 @@ Agent Service - 主应用
 """
 
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from redis.asyncio import Redis
-from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient, create_openclaw_client
+from shared.clients import AIAssistantRegistry, KBClient, create_openclaw_client
 from shared.observability.logger import get_logger
 from shared.observability.metrics import HTTPMetricsMiddleware
 from shared.observability.otel import init_telemetry, instrument_app
@@ -40,6 +41,10 @@ from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
 from app.config import settings
 from app.routes.agent import router as agent_router_route
 from app.routes.agent import set_agent_router
+
+if TYPE_CHECKING:
+    from app.adapters.clients.acli_client import AcliClient
+    from app.adapters.clients.scp_client import SCPClient
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)

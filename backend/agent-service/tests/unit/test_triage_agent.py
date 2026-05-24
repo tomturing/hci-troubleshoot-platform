@@ -7,12 +7,11 @@ TriageAgent 单元测试
   3. process()：流程测试（mock LLM，验证 yield 事件）
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from app.adapters.agents.htp.triage_agent import TriageAgent
-from app.domain.agent_port import AgentInteractiveRequest, AgentStageUpdate, AgentTextChunk
-
+from app.domain.agent_port import AgentInteractiveRequest, AgentStageUpdate
 
 # ─── _parse_intent_result 测试 ────────────────────────────────────────────────
 

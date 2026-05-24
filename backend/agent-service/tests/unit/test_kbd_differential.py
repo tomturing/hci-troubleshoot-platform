@@ -9,14 +9,11 @@ KBDDiagnostic 单元测试
   5. 有效性验证：N=10 候选 KBD，≤8 步锁定正确 KBD
 """
 
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
 from app.adapters.agents.htp.kbd_model import KBD, KBDStep
-
 
 # ─── 测试数据工厂 ─────────────────────────────────────────────────────────────
 
