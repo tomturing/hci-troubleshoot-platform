@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -28,9 +29,7 @@ from shared.observability.otel import get_current_trace_id
 from sqlalchemy import select, text
 
 from app.models.document import KBDocument
-from app.models.sop_chunk import SopChunk
 from app.models.sop_document import SopDocument
-from app.models.sop_tree import SopTree
 from app.services.sop_parser import parse_sop_markdown
 
 if TYPE_CHECKING:
@@ -286,7 +285,9 @@ async def list_kbd_entries(
         data_sql = text(  # noqa: S608
             f"""
             SELECT id, support_id, support_url, title,
-                   content_md,
+                   problem_description, alert_info, steps_text, root_cause,
+                   solution, operational_impact, is_temporary, recommendations,
+                   steps_json, content_md,
                    metadata, category_id, ai_category_id,
                    ai_category_conf, ai_category_reason,
                    status, reviewer_id, review_note,
@@ -306,6 +307,16 @@ async def list_kbd_entries(
             "support_id": row["support_id"],
             "support_url": row["support_url"] or "",
             "title": row["title"],
+            # 8 大章节字段（摘要列表，完整内容在 detail 接口获取）
+            "problem_description": row["problem_description"] or "",
+            "alert_info": row["alert_info"] or "",
+            "steps_text": row["steps_text"] or "",
+            "root_cause": row["root_cause"] or "",
+            "solution": row["solution"] or "",
+            "operational_impact": row["operational_impact"] or "",
+            "is_temporary": row["is_temporary"] or "",
+            "recommendations": row["recommendations"] or "",
+            "steps_json": row["steps_json"] or [],
             "content_md": row["content_md"] or "",
             "metadata": row["metadata"] or {},
             "category_id": row["category_id"],
@@ -357,7 +368,10 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
             text("""
-                SELECT id, support_id, support_url, title, content_md,
+                SELECT id, support_id, support_url, title,
+                       problem_description, alert_info, steps_text, root_cause,
+                       solution, operational_impact, is_temporary, recommendations,
+                       steps_json, content_md,
                        metadata, category_id, ai_category_id,
                        ai_category_conf, ai_category_reason,
                        status, reviewer_id, review_note,
@@ -377,6 +391,16 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "support_id": row["support_id"],
         "support_url": row["support_url"] or "",
         "title": row["title"],
+        # 8 大章节字段（完整内容）
+        "problem_description": row["problem_description"] or "",
+        "alert_info": row["alert_info"] or "",
+        "steps_text": row["steps_text"] or "",
+        "root_cause": row["root_cause"] or "",
+        "solution": row["solution"] or "",
+        "operational_impact": row["operational_impact"] or "",
+        "is_temporary": row["is_temporary"] or "",
+        "recommendations": row["recommendations"] or "",
+        "steps_json": row["steps_json"] or [],
         "content_md": row["content_md"] or "",
         "metadata": row["metadata"] or {},
         "category_id": row["category_id"],
@@ -633,7 +657,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SOP 文档审核接口（sop_document + sop_chunk 表）
+# SOP 文档审核接口（sop_document 单表，tree_json 合并存储）
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -650,7 +674,7 @@ class SopApproveResponse(BaseModel):
     success: bool = Field(..., description="操作是否成功")
     document_id: int = Field(..., description="SOP 文档 ID")
     status: str = Field(..., description="当前状态")
-    chunks_embedded: int = Field(..., description="成功生成 embedding 的分块数")
+    chunks_embedded: int = Field(0, description="已废弃字段（sop_chunk 已删除），始终为 0")
     tree_generated: bool = Field(..., description="是否成功生成 SOP 决策树")
     tree_leaf_count: int | None = Field(None, description="决策树叶节点数量")
     tree_validation_status: str | None = Field(None, description="决策树校验状态（valid/warnings）")
@@ -663,15 +687,16 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
     功能清单：
     1. 更新 sop_document.status → published
-    2. 触发 sop_chunk embedding 生成（遍历所有 chunks）
-    3. 生成 sop_chunk.tsv（BM25 索引，使用 to_tsvector('simple', content)）
-    4. 设置 published_at = NOW()
-    5. 记录 reviewer_id
+    2. 解析 content_md 生成 SOP 决策树（SOPNode JSON），写入 sop_document.tree_json
+    3. 设置 published_at = NOW()
+    4. 记录 reviewer_id
 
-    三段式事务设计（避免 embedding 调用持有 DB 连接导致超时）：
-      - 短事务1：查询 document + chunks（验证已存在）
-      - 无事务：遍历 chunks 生成 embedding（耗时长，释放连接）
-      - 短事务2：批量更新 chunk embedding/tsv + document 状态
+    两段式事务设计（解析树不持有 DB 连接）：
+      - 短事务1：查询 document（验证存在）
+      - 无事务：解析 SOP Markdown 生成决策树（无 IO 操作，但解析可能耗时）
+      - 短事务2：UPDATE sop_document（状态 + tree_json）
+
+    注意：sop_chunk 表已废弃，chunks_embedded 字段始终为 0（向后兼容保留）。
 
     响应体示例：
     ```json
@@ -705,191 +730,57 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                 raise HTTPException(status_code=404, detail=f"SOP 文档 {document_id} 不存在")
 
             if sop_doc.status == "published":
-                # 已发布，直接返回 chunk embedding 统计和 tree 信息
-                chunk_result = await session.execute(select(SopChunk).where(SopChunk.document_id == document_id))
-                existing_chunks = chunk_result.scalars().all()
-                embedded_count = sum(1 for c in existing_chunks if c.embedding is not None)
-
-                # 查询 sop_tree
-                tree_result = await session.execute(select(SopTree).where(SopTree.document_id == document_id))
-                existing_tree = tree_result.scalar_one_or_none()
-
+                # 已发布，直接返回当前 tree 信息
                 return SopApproveResponse(
                     success=True,
                     document_id=document_id,
                     status="published",
-                    chunks_embedded=embedded_count,
-                    tree_generated=existing_tree is not None,
-                    tree_leaf_count=existing_tree.leaf_count if existing_tree else None,
-                    tree_validation_status=existing_tree.validation_status if existing_tree else None,
+                    chunks_embedded=0,
+                    tree_generated=sop_doc.tree_json is not None,
+                    tree_leaf_count=sop_doc.tree_leaf_count if sop_doc.tree_json is not None else None,
+                    tree_validation_status=sop_doc.tree_validation_status if sop_doc.tree_json is not None else None,
                     published_at=sop_doc.published_at.isoformat() if sop_doc.published_at else None,
                 )
 
-            # 查询所有 chunks（仅取必要字段，减少内存占用）
-            chunk_result = await session.execute(
-                select(SopChunk.id, SopChunk.chunk_index, SopChunk.chapter_title, SopChunk.content)
-                .where(SopChunk.document_id == document_id)
-                .order_by(SopChunk.chunk_index)
-            )
-            chunk_rows = chunk_result.mappings().all()
+            content_md = sop_doc.content_md
 
-        if not chunk_rows:
-            logger.warning(
-                event="sop_approve_no_chunks",
-                document_id=document_id,
-                message="SOP 文档没有分块，无法生成 embedding",
-            )
-
-        # ── 无事务：解析 SOP 决策树（与 embedding 生成并行，释放 DB 连接）───────
-        tree_result = None
+        # ── 无事务：解析 SOP 决策树（不持有 DB 连接）──────────────────────────
+        now = datetime.now(UTC)
         tree_generated = False
         tree_leaf_count = 0
-        tree_validation_status = "valid"
+        tree_validation_status: str | None = None
 
-        if sop_doc.content_md:
-            tree_result = parse_sop_markdown(sop_doc.content_md)
-            if tree_result.is_valid and tree_result.tree:
+        if content_md:
+            parse_result = parse_sop_markdown(content_md)
+            if parse_result.is_valid and parse_result.tree:
                 tree_generated = True
-                tree_leaf_count = len(tree_result.tree.collect_leaves())
-                tree_validation_status = "warnings" if tree_result.warnings else "valid"
+                tree_leaf_count = len(parse_result.tree.collect_leaves())
+                tree_validation_status = "warnings" if parse_result.warnings else "valid"
                 logger.info(
                     event="sop_tree_parsed",
                     document_id=document_id,
                     leaf_count=tree_leaf_count,
-                    warning_count=len(tree_result.warnings),
+                    warning_count=len(parse_result.warnings),
                 )
             else:
-                # 解析失败（存在 error 级别问题）
                 tree_validation_status = "error"
                 logger.warning(
                     event="sop_tree_parse_failed",
                     document_id=document_id,
-                    error_count=len(tree_result.errors),
-                    errors=[e.message for e in tree_result.errors[:3]],  # 仅记录前 3 条
+                    error_count=len(parse_result.errors),
+                    errors=[e.message for e in parse_result.errors[:3]],
                 )
         else:
+            parse_result = None
             logger.warning(
                 event="sop_tree_no_content",
                 document_id=document_id,
                 message="SOP 文档没有 content_md，无法生成决策树",
             )
 
-        # ── 无事务：遍历 chunks 生成 embedding（释放 DB 连接，耗时可能很长）────
-        now = datetime.now(UTC)
-        chunks_embedded = 0
-
-        # 存储每个 chunk 的处理结果，供后续批量写入
-        chunk_updates: list[dict] = []
-
-        for row in chunk_rows:
-            chunk_id = row["id"]
-            chapter_title = row["chapter_title"] or ""
-            content = row["content"]
-
-            if not content:
-                logger.warning(
-                    event="sop_chunk_empty_content",
-                    document_id=document_id,
-                    chunk_id=chunk_id,
-                    chunk_index=row["chunk_index"],
-                    message="分块内容为空，跳过 embedding 生成",
-                )
-                chunk_updates.append(
-                    {"chunk_id": chunk_id, "chapter_title": chapter_title, "content": content, "embedding_vector": None}
-                )
-                continue
-
-            embedding_vector: list[float] | None = None
-            if _embedding_service:
-                try:
-                    embedding_vector = await _embedding_service.embed_single(content)
-                    actual_dim = len(embedding_vector)
-                    expected_dim = 1536
-                    if actual_dim != expected_dim:
-                        logger.warning(
-                            event="sop_chunk_embedding_dim_mismatch",
-                            document_id=document_id,
-                            chunk_id=chunk_id,
-                            expected_dim=expected_dim,
-                            actual_dim=actual_dim,
-                            message=f"向量维度不匹配（期望 {expected_dim}，实际 {actual_dim}），跳过写入",
-                        )
-                        embedding_vector = None
-                    else:
-                        logger.info(
-                            event="sop_chunk_embedding_generated",
-                            document_id=document_id,
-                            chunk_id=chunk_id,
-                            chunk_index=row["chunk_index"],
-                            vector_dim=actual_dim,
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        event="sop_chunk_embedding_failed",
-                        document_id=document_id,
-                        chunk_id=chunk_id,
-                        chunk_index=row["chunk_index"],
-                        error=str(exc),
-                        message="embedding 生成失败，将继续处理其他分块",
-                    )
-
-            chunk_updates.append(
-                {
-                    "chunk_id": chunk_id,
-                    "chapter_title": chapter_title,
-                    "content": content,
-                    "embedding_vector": embedding_vector,
-                }
-            )
-
-        # ── 短事务2：批量更新 chunks 和 document 状态───────────────────────────
+        # ── 短事务2：UPDATE sop_document（状态 + tree_json）────────────────────
         async with _db_manager.async_session_factory() as session:
-            for upd in chunk_updates:
-                embedding_vector = upd["embedding_vector"]
-                if embedding_vector:
-                    vector_str = "[" + ",".join(str(v) for v in embedding_vector) + "]"
-                    await session.execute(
-                        text(
-                            """
-                            UPDATE sop_chunk
-                            SET embedding = CAST(:embedding AS vector),
-                                tsv = to_tsvector('simple', COALESCE(:chapter_title, '') || ' ' || COALESCE(:content, ''))
-                            WHERE id = :chunk_id
-                            """
-                        ),
-                        {
-                            "chunk_id": upd["chunk_id"],
-                            "embedding": vector_str,
-                            "chapter_title": upd["chapter_title"],
-                            "content": upd["content"],
-                        },
-                    )
-                    chunks_embedded += 1
-                else:
-                    # 仅生成 tsv（无 embedding 或 embedding 生成失败）
-                    await session.execute(
-                        text(
-                            """
-                            UPDATE sop_chunk
-                            SET tsv = to_tsvector('simple', COALESCE(:chapter_title, '') || ' ' || COALESCE(:content, ''))
-                            WHERE id = :chunk_id
-                            """
-                        ),
-                        {
-                            "chunk_id": upd["chunk_id"],
-                            "chapter_title": upd["chapter_title"],
-                            "content": upd["content"] or "",
-                        },
-                    )
-
-            # 更新 sop_document 状态（使用 COALESCE 参数化避免 f-string 拼接 SQL）
-            update_params: dict = {
-                "id": document_id,
-                "published_at": now,
-                "reviewer_id": body.reviewer_id,
-                "reviewed_at": now,
-                "review_note": body.review_note,  # None 时 COALESCE 保留原值
-            }
+            # 更新状态字段
             await session.execute(
                 text(
                     """
@@ -902,43 +793,64 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     WHERE id = :id
                     """
                 ),
-                update_params,
+                {
+                    "id": document_id,
+                    "published_at": now,
+                    "reviewer_id": body.reviewer_id,
+                    "reviewed_at": now,
+                    "review_note": body.review_note,
+                },
             )
 
-            # ── 写入 SOP 决策树（若解析成功）──────────────────────────────────────
-            if tree_result and tree_result.is_valid and tree_result.tree:
-                # 先删除旧树（幂等：重新发布时覆盖）
-                await session.execute(
-                    text("DELETE FROM sop_tree WHERE document_id = :document_id"),
-                    {"document_id": document_id},
-                )
-
+            # 写入决策树（若解析成功）
+            if parse_result and parse_result.is_valid and parse_result.tree:
                 # 统计总节点数（递归遍历）
                 def count_nodes(node) -> int:
                     return 1 + sum(count_nodes(c) for c in node.children)
 
-                total_node_count = count_nodes(tree_result.tree)
+                total_node_count = count_nodes(parse_result.tree)
 
-                # 构建 validation_issues JSON
                 validation_issues = None
-                if tree_result.warnings:
-                    validation_issues = [w.model_dump() for w in tree_result.warnings]
+                if parse_result.warnings:
+                    validation_issues = [w.model_dump() for w in parse_result.warnings]
 
-                # 插入新树
-                sop_tree = SopTree(
-                    document_id=document_id,
-                    scenario_name=tree_result.tree.name,
-                    tree_json=tree_result.tree.model_dump(),
-                    leaf_count=tree_leaf_count,
-                    total_node_count=total_node_count,
-                    validation_status=tree_validation_status,
-                    validation_issues=validation_issues,
+                await session.execute(
+                    text(
+                        """
+                        UPDATE sop_document
+                        SET tree_json              = CAST(:tree_json AS jsonb),
+                            tree_schema_version    = :schema_version,
+                            tree_scenario_name     = :scenario_name,
+                            tree_leaf_count        = :leaf_count,
+                            tree_total_node_count  = :total_nodes,
+                            tree_validation_status = :validation_status,
+                            tree_validation_issues = CAST(:validation_issues AS jsonb),
+                            tree_generated_at      = :generated_at,
+                            tree_generator_version = :generator_version,
+                            updated_at             = :updated_at
+                        WHERE id = :document_id
+                        """
+                    ),
+                    {
+                        "document_id": document_id,
+                        "tree_json": json.dumps(parse_result.tree.model_dump(), ensure_ascii=False),
+                        "schema_version": "sop-tree-v1",
+                        "scenario_name": parse_result.tree.name,
+                        "leaf_count": tree_leaf_count,
+                        "total_nodes": total_node_count,
+                        "validation_status": tree_validation_status,
+                        "validation_issues": json.dumps([w.model_dump() for w in parse_result.warnings], ensure_ascii=False)
+                        if parse_result.warnings
+                        else None,
+                        "generated_at": now,
+                        "generator_version": "sop-parser-v1",
+                        "updated_at": now,
+                    },
                 )
-                session.add(sop_tree)
                 logger.info(
-                    event="sop_tree_created",
+                    event="sop_tree_written",
                     document_id=document_id,
-                    scenario_name=tree_result.tree.name,
+                    scenario_name=parse_result.tree.name,
                     leaf_count=tree_leaf_count,
                     total_nodes=total_node_count,
                 )
@@ -963,8 +875,6 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         event="sop_approved",
         document_id=document_id,
         reviewer_id=body.reviewer_id,
-        chunks_embedded=chunks_embedded,
-        total_chunks=len(chunk_rows) if chunk_rows else 0,
         tree_generated=tree_generated,
     )
 
@@ -972,7 +882,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         success=True,
         document_id=document_id,
         status="published",
-        chunks_embedded=chunks_embedded,
+        chunks_embedded=0,
         tree_generated=tree_generated,
         tree_leaf_count=tree_leaf_count if tree_generated else None,
         tree_validation_status=tree_validation_status if tree_generated else None,
@@ -1001,7 +911,7 @@ async def get_sop_document(request: Request, document_id: int):
                         """
                 SELECT id, source_id, category_id, title, content_md, status,
                        reviewer_id, reviewed_at, published_at, created_at, updated_at,
-                       (SELECT COUNT(*) FROM sop_chunk WHERE document_id = sop_document.id) AS chunk_count
+                       tree_leaf_count, (tree_json IS NOT NULL) AS has_tree
                 FROM sop_document WHERE id = :id
                 """
                     ),
@@ -1022,7 +932,8 @@ async def get_sop_document(request: Request, document_id: int):
         "title": row["title"],
         "content_md": row["content_md"],
         "status": row["status"],
-        "chunk_count": row["chunk_count"],
+        "tree_leaf_count": row["tree_leaf_count"],
+        "has_tree": row["has_tree"],
         "reviewer_id": row["reviewer_id"],
         "reviewed_at": row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
         "published_at": row["published_at"].isoformat() if row["published_at"] else None,
@@ -1079,7 +990,7 @@ async def list_sop_documents(
             f"""
             SELECT id, source_id, category_id, title, status,
                    reviewer_id, reviewed_at, published_at, created_at, updated_at, hit_count,
-                   (SELECT COUNT(*) FROM sop_chunk WHERE document_id = sop_document.id) AS chunk_count
+                   tree_leaf_count, (tree_json IS NOT NULL) AS has_tree
             FROM sop_document
             {where_sql}
             ORDER BY created_at DESC
@@ -1096,7 +1007,8 @@ async def list_sop_documents(
             "category_id": row["category_id"],
             "title": row["title"],
             "status": row["status"],
-            "chunk_count": row["chunk_count"],
+            "tree_leaf_count": row["tree_leaf_count"],
+            "has_tree": row["has_tree"],
             "reviewer_id": row["reviewer_id"],
             "reviewed_at": row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
             "published_at": row["published_at"].isoformat() if row["published_at"] else None,
@@ -1147,7 +1059,6 @@ async def update_sop_status(request: Request, document_id: int, body: SopStatusU
         raise HTTPException(status_code=400, detail="至少需要提供一个更新字段")
 
     rechunked = False
-    new_chunk_count = 0
     downgraded_to_draft = False
 
     async with _db_manager.async_session_factory() as session:
@@ -1166,24 +1077,12 @@ async def update_sop_status(request: Request, document_id: int, body: SopStatusU
 
         if body.content_md is not None:
             sop_doc.content_md = body.content_md
-            # 删除旧分块，重新按新内容创建
-            await session.execute(
-                text("DELETE FROM sop_chunk WHERE document_id = :id"),
-                {"id": document_id},
-            )
-            chapters = _split_md_chapters(body.content_md)
-            for idx, (chapter_title, chapter_content) in enumerate(chapters):
-                session.add(
-                    SopChunk(
-                        document_id=document_id,
-                        chunk_index=idx,
-                        chapter_title=chapter_title[:200] if chapter_title else None,
-                        content=chapter_content,
-                    )
-                )
-            new_chunk_count = len(chapters)
+            # 内容变更后清空决策树（需重新发布生成）
+            sop_doc.tree_json = None
+            sop_doc.tree_generated_at = None
+            sop_doc.tree_validation_status = None
             rechunked = True
-            # 内容变更后若已发布则降级为草稿（embedding 已失效）
+            # 内容变更后若已发布则降级为草稿
             if sop_doc.status == "published" and body.status is None:
                 sop_doc.status = "draft"
                 downgraded_to_draft = True
@@ -1195,15 +1094,12 @@ async def update_sop_status(request: Request, document_id: int, body: SopStatusU
         document_id=document_id,
         new_status=sop_doc.status,
         new_title=body.title,
-        rechunked=rechunked,
-        new_chunk_count=new_chunk_count if rechunked else None,
+        content_updated=rechunked,
         downgraded=downgraded_to_draft,
     )
     resp = {"success": True, "document_id": document_id, "status": sop_doc.status}
-    if rechunked:
-        resp["chunks_updated"] = new_chunk_count
     if downgraded_to_draft:
-        resp["message"] = "内容已更新并重新分块，文档已降级为草稿，请重新发布"
+        resp["message"] = "内容已更新，决策树已清空，文档已降级为草稿，请重新发布"
     return resp
 
 
@@ -1213,33 +1109,120 @@ async def update_sop_status(request: Request, document_id: int, body: SopStatusU
 
 
 class KbdUpdateRequest(BaseModel):
-    """KBD 条目内容编辑请求"""
+    """KBD 条目内容编辑请求
+
+    支持编辑标题、8 大章节字段、steps_json 和分类。
+    编辑章节字段后，content_md 自动由章节重建（不含视觉描述）。
+    若明确传入 content_md，则优先使用传入的值。
+    """
 
     title: str | None = Field(None, max_length=500, description="新标题（可选）")
-    content_md: str | None = Field(None, description="新 Markdown 内容（可选）")
+    # 8 大章节字段
+    problem_description: str | None = Field(None, description="问题描述章节")
+    alert_info: str | None = Field(None, description="告警信息章节")
+    steps_text: str | None = Field(None, description="有效排查步骤（自然语言 Markdown）")
+    root_cause: str | None = Field(None, description="根因章节")
+    solution: str | None = Field(None, description="解决方案章节")
+    operational_impact: str | None = Field(None, description="操作影响范围章节")
+    is_temporary: str | None = Field(None, description="是否是临时解决方案章节")
+    recommendations: str | None = Field(None, description="建议与总结章节")
+    # 结构化工具步骤（agent 可执行）
+    steps_json: list[dict] | None = Field(
+        None,
+        description="结构化工具步骤（[{tool_name, tool_args_template, expected_pattern}]）",
+    )
+    # 聚合渲染（可选，不传则自动由章节重建）
+    content_md: str | None = Field(None, description="聚合 Markdown（优先用传入的值；不传则自动由章节重建）")
     category_id: str | None = Field(None, description="新分类 ID（可选）")
 
 
 @kbd_router.patch("/{kbd_id}")
 async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest):
-    """编辑 KBD 条目的标题、内容或分类"""
+    """编辑 KBD 条目的标题、章节字段、steps_json 或分类。
+
+    处理逻辑：
+    1. 章节字段任意一个被修改时，如果没有明确提供 content_md，则自动先从数据库读取当前章节状态并重建 content_md
+    2. 如果明确提供了 content_md，则用传入的值（优先）
+    """
     _check_auth(request)
 
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
-    # 至少需要一个字段
-    if body.title is None and body.content_md is None and body.category_id is None:
+    # 所有可更新字段
+    section_fields = (
+        "problem_description", "alert_info", "steps_text", "root_cause",
+        "solution", "operational_impact", "is_temporary", "recommendations",
+    )
+    any_section_changed = any(getattr(body, f) is not None for f in section_fields)
+    has_any_field = (
+        body.title is not None
+        or any_section_changed
+        or body.steps_json is not None
+        or body.content_md is not None
+        or body.category_id is not None
+    )
+    if not has_any_field:
         raise HTTPException(status_code=400, detail="至少需要提供一个可更新字段")
 
     set_clauses = []
     params: dict = {"id": kbd_id}
+
     if body.title is not None:
         set_clauses.append("title = :title")
         params["title"] = body.title
+
+    for field in section_fields:
+        val = getattr(body, field)
+        if val is not None:
+            set_clauses.append(f"{field} = :{field}")
+            params[field] = val
+
+    if body.steps_json is not None:
+        set_clauses.append("steps_json = :steps_json::jsonb")
+        params["steps_json"] = json.dumps(body.steps_json, ensure_ascii=False)
+
+    # content_md 处理：明确传入则用传入的值；有章节更改则需先读库并重建
     if body.content_md is not None:
+        # 明确传入了 content_md，优先使用
         set_clauses.append("content_md = :content_md")
         params["content_md"] = body.content_md
+    elif any_section_changed:
+        # 章节有变更且未传入 content_md：读库 + 应用 patch + 重建
+        async with _db_manager.async_session_factory() as session:
+            cur_result = await session.execute(
+                text(
+                    "SELECT problem_description, alert_info, steps_text, root_cause, "
+                    "solution, operational_impact, is_temporary, recommendations "
+                    "FROM kbd_entry WHERE id = :id"
+                ),
+                {"id": kbd_id},
+            )
+            cur_row = cur_result.mappings().first()
+            if not cur_row:
+                raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+
+        # 合并：优先用 body 中的新值，其次用库中现有值
+        section_map = {
+            "problem_description": "问题描述",
+            "alert_info": "告警信息",
+            "steps_text": "有效排查步骤",
+            "root_cause": "根因",
+            "solution": "解决方案",
+            "operational_impact": "操作影响范围",
+            "is_temporary": "是否是临时解决方案",
+            "recommendations": "建议与总结",
+        }
+        merged_parts = []
+        for field, heading in section_map.items():
+            # body 中有新值用新值，否则用库中现有值
+            text_val = (getattr(body, field) if getattr(body, field) is not None else cur_row[field] or "").strip()
+            if text_val:
+                merged_parts.append(f"## {heading}\n\n{text_val}")
+        rebuilt_content_md = "\n\n".join(merged_parts)
+        set_clauses.append("content_md = :content_md")
+        params["content_md"] = rebuilt_content_md
+
     if body.category_id is not None:
         set_clauses.append("category_id = :category_id")
         params["category_id"] = body.category_id
@@ -1538,14 +1521,10 @@ async def upload_sop_document(
         existing = await session.execute(sa_select(SopDocument).where(SopDocument.docx_hash == docx_hash))
         existing_doc = existing.scalar_one_or_none()
         if existing_doc:
-            chunk_count_result = await session.execute(
-                sa_select(SopChunk).where(SopChunk.document_id == existing_doc.id)
-            )
-            chunks_n = len(chunk_count_result.scalars().all())
             return {
                 "success": True,
                 "document_id": existing_doc.id,
-                "chunks_created": chunks_n,
+                "chunks_created": 0,
                 "status": existing_doc.status,
                 "duplicate": True,
                 "message": f"文件已导入（document_id={existing_doc.id}），跳过重复入库",
@@ -1563,33 +1542,20 @@ async def upload_sop_document(
         session.add(sop_doc)
         await session.flush()
 
-        # 分块写入 sop_chunk
-        chapters = _split_md_chapters(content_md)
-        for idx, (chapter_title, chapter_content) in enumerate(chapters):
-            chunk = SopChunk(
-                document_id=sop_doc.id,
-                chunk_index=idx,
-                chapter_title=chapter_title[:200] if chapter_title else None,
-                content=chapter_content,
-            )
-            session.add(chunk)
-
         await session.commit()
 
         document_id = sop_doc.id
-        chunks_created = len(chapters)
 
     logger.info(
         event="sop_upload_completed",
         document_id=document_id,
         title=doc_title[:50],
         filename=filename,
-        chunks_created=chunks_created,
     )
     return {
         "success": True,
         "document_id": document_id,
-        "chunks_created": chunks_created,
+        "chunks_created": 0,
         "status": "draft",
         "duplicate": False,
         "title": doc_title,

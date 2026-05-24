@@ -782,6 +782,20 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     support_id varchar(20) NOT NULL UNIQUE,
     support_url text,
     title text NOT NULL,
+    -- 8 大标准章节（结构化存储，来源：data-pipeline Stage3 提取 + admin 人工编辑）
+    -- 叙述字段：由 pipeline 从案例 HTML 自动提取，Markdown 格式
+    problem_description text NOT NULL DEFAULT '',  -- 问题描述（必填）
+    alert_info text NOT NULL DEFAULT '',           -- 告警信息（可选）
+    steps_text text NOT NULL DEFAULT '',           -- 有效排查步骤（自然语言，pipeline 提取）
+    root_cause text NOT NULL DEFAULT '',           -- 根因（必填）
+    solution text NOT NULL DEFAULT '',             -- 解决方案（必填）
+    operational_impact text NOT NULL DEFAULT '',   -- 操作影响范围（可选）
+    is_temporary text NOT NULL DEFAULT '',         -- 是否是临时解决方案（可选）
+    recommendations text NOT NULL DEFAULT '',      -- 建议与总结（可选）
+    -- 结构化工具步骤（供 agent 执行，需人工编辑或 AI 生成，默认为空）
+    -- 格式：[{"tool_name": "acli_vm_config", "tool_args_template": {...}, "expected_pattern": "..."}]
+    steps_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+    -- 渲染聚合（由 pipeline 生成或从章节字段重建，含截图说明等视觉信息）
     content_md text,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     category_id varchar(32),
@@ -808,7 +822,16 @@ COMMENT ON COLUMN kbd_entry.id IS '知识条目主键，自增';
 COMMENT ON COLUMN kbd_entry.support_id IS '深信服案例 ID（幂等键）';
 COMMENT ON COLUMN kbd_entry.support_url IS '深信服案例 URL';
 COMMENT ON COLUMN kbd_entry.title IS '知识条目标题';
-COMMENT ON COLUMN kbd_entry.content_md IS '全段结构化 Markdown 内容';
+COMMENT ON COLUMN kbd_entry.problem_description IS '问题描述（8 大章节之一，pipeline 自动提取 Markdown，admin 可编辑）';
+COMMENT ON COLUMN kbd_entry.alert_info IS '告警信息（8 大章节之一，pipeline 自动提取，admin 可编辑）';
+COMMENT ON COLUMN kbd_entry.steps_text IS '有效排查步骤（自然语言 Markdown，pipeline 自动提取，admin 可编辑）；与 steps_json 互补：steps_text 供人阅读，steps_json 供 agent 执行';
+COMMENT ON COLUMN kbd_entry.root_cause IS '根因（8 大章节之一，pipeline 自动提取 Markdown，admin 可编辑）';
+COMMENT ON COLUMN kbd_entry.solution IS '解决方案（8 大章节之一，pipeline 自动提取 Markdown，admin 可编辑）';
+COMMENT ON COLUMN kbd_entry.operational_impact IS '操作影响范围（8 大章节之一，admin 可编辑）';
+COMMENT ON COLUMN kbd_entry.is_temporary IS '是否是临时解决方案（8 大章节之一，admin 可编辑）';
+COMMENT ON COLUMN kbd_entry.recommendations IS '建议与总结（8 大章节之一，admin 可编辑）';
+COMMENT ON COLUMN kbd_entry.steps_json IS '结构化工具步骤（供 agent 执行）；格式：[{tool_name, tool_args_template, expected_pattern}]；默认为空，需 admin 人工编辑或 AI 提取后填充；非空时 kbd_entry 才对 InvestigationAgent 可见';
+COMMENT ON COLUMN kbd_entry.content_md IS '聚合渲染 Markdown（含截图视觉描述）；由 pipeline 生成，admin 编辑章节后自动重建；供展示和 LLM 上下文注入使用';
 COMMENT ON COLUMN kbd_entry.metadata IS '扩展元数据（如案例类型、适用版本、标签等）';
 COMMENT ON COLUMN kbd_entry.category_id IS '人工确认的分类编码，关联 kb_category.code';
 COMMENT ON COLUMN kbd_entry.ai_category_id IS 'AI 分类建议编码';
@@ -838,6 +861,11 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_published ON kbd_entry (published_at DE
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv ON kbd_entry USING GIN (tsv);
 -- JSONB 内容检索
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_metadata ON kbd_entry USING GIN (metadata);
+-- steps_json 结构查询（如查找使用特定 tool_name 的 KBD）
+CREATE INDEX IF NOT EXISTS idx_kbd_entry_steps_json ON kbd_entry USING GIN (steps_json);
+-- agent 可用条目快速过滤（steps_json 非空 + published，InvestigationAgent 专用索引）
+CREATE INDEX IF NOT EXISTS idx_kbd_entry_agent_usable ON kbd_entry (category_id, published_at DESC)
+    WHERE status = 'published' AND steps_json != '[]'::jsonb;
 -- D-002: 向量相似度检索索引（知识库语义检索，仅已发布条目）
 -- 部分索引：只对 status='published' 的条目建索引，减少写入/存储开销，与业务查询路径吻合。
 -- ⚠️  同 kb_category：数据量不足 1000 时效果有限，建议批量导入后执行：ANALYZE kbd_entry;
@@ -861,8 +889,9 @@ ALTER TABLE conversation
 
 -- ------------------------------------------------------------
 -- 表: sop_document  [模块: kb-service]
--- 说明: SOP 文档表 — SOP 排障手册文档存储，完整 Markdown，按章节拆分为 sop_chunk
--- 用途: 存储 SOP 排障手册文档（~20,000 字/个），按章节拆分为 sop_chunk 进行检索
+-- 说明: SOP 文档表 — SOP 排障手册文档存储，完整 Markdown + tree_json 决策树（合并自原 sop_tree 表）
+-- 用途: 存储 SOP 排障手册文档（~20,000 字/个）；content_md 供 LLM 注入，tree_json 供 Agent 决策树遍历
+-- 设计: sop_chunk（分块 RAG）为死代码已废弃；sop_tree 1:1 合入本表（参照 kbd_entry.steps_json 模式）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sop_document (
     id serial NOT NULL,
@@ -879,11 +908,21 @@ CREATE TABLE IF NOT EXISTS sop_document (
     created_at timestamptz DEFAULT now(),
     updated_at timestamptz DEFAULT now(),
     hit_count integer NOT NULL DEFAULT 0,
+    -- 决策树字段（原 sop_tree 表，1:1 关系，approve 时写入，NULL = 未生成）
+    tree_json               jsonb,
+    tree_schema_version     varchar(20)      DEFAULT 'sop-tree-v1',
+    tree_scenario_name      varchar(500),
+    tree_leaf_count         integer          NOT NULL DEFAULT 0,
+    tree_total_node_count   integer          NOT NULL DEFAULT 0,
+    tree_validation_status  varchar(20),
+    tree_validation_issues  jsonb,
+    tree_generated_at       timestamptz,
+    tree_generator_version  varchar(50)      DEFAULT 'sop-parser-v1',
     CONSTRAINT fk_sop_document_category_id FOREIGN KEY (category_id) REFERENCES kb_category (code) ON DELETE NO ACTION,
     CONSTRAINT sop_document_pkey PRIMARY KEY (id)
 );
 
-COMMENT ON TABLE sop_document IS 'SOP 文档表 — SOP 排障手册文档存储，完整 Markdown，按章节拆分为 sop_chunk';
+COMMENT ON TABLE sop_document IS 'SOP 文档表 — SOP 排障手册文档存储，完整 Markdown + tree_json 决策树（sop_tree 1:1 合入）';
 COMMENT ON COLUMN sop_document.id IS '文档主键，自增';
 COMMENT ON COLUMN sop_document.source_id IS '来源标识（如 sop-vm-start-failure），幂等键';
 COMMENT ON COLUMN sop_document.category_id IS '关联分类编码，用于 S1+ 阶段按 category_id 直接查 SOP';
@@ -898,110 +937,28 @@ COMMENT ON COLUMN sop_document.published_at IS '发布时间';
 COMMENT ON COLUMN sop_document.created_at IS '创建时间';
 COMMENT ON COLUMN sop_document.updated_at IS '最后更新时间';
 COMMENT ON COLUMN sop_document.hit_count IS '命中计数：有多少个唯一 case_id 的 conversation.sop_document_id = 此文档。物化列，写入 conversation.sop_document_id 时原子 +1（case 级去重）。校验 SQL：SELECT COUNT(DISTINCT case_id) FROM conversation WHERE sop_document_id = id';
+COMMENT ON COLUMN sop_document.tree_json IS 'SOPNode 根节点完整 JSON（含所有子树）；NULL = 决策树尚未生成（draft 或解析失败）';
+COMMENT ON COLUMN sop_document.tree_schema_version IS '树结构 schema 版本（如 sop-tree-v1）';
+COMMENT ON COLUMN sop_document.tree_scenario_name IS '冗余：根节点 name（场景名），方便按名称检索';
+COMMENT ON COLUMN sop_document.tree_leaf_count IS '叶节点（案例节点）数量';
+COMMENT ON COLUMN sop_document.tree_total_node_count IS '总节点数（含路由节点和叶节点）';
+COMMENT ON COLUMN sop_document.tree_validation_status IS 'valid=完全合规; warnings=有警告但已入库; error=解析失败; NULL=未生成';
+COMMENT ON COLUMN sop_document.tree_validation_issues IS 'ValidationIssue 列表 JSON（warnings/errors）';
+COMMENT ON COLUMN sop_document.tree_generated_at IS '树首次生成时间';
+COMMENT ON COLUMN sop_document.tree_generator_version IS '解析器版本，用于判断是否需要重新解析';
 
 -- 建立 conversation.sop_document_id → sop_document.id 的外键约束（conversation 先于 sop_document 创建，延后添加）
 ALTER TABLE conversation
     ADD CONSTRAINT fk_conversation_sop_document_id
     FOREIGN KEY (sop_document_id) REFERENCES sop_document (id) ON DELETE SET NULL;
 
--- ------------------------------------------------------------
--- 表: sop_chunk  [模块: kb-service]
--- 说明: SOP 分块检索表 — SOP 分块 + 向量检索
--- 用途: SOP 按章节拆分，每个章节生成一个 chunk，支持 BM25(tsv) + 向量(embedding) RRF 融合检索
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS sop_chunk (
-    id serial NOT NULL,
-    document_id integer NOT NULL,
-    chunk_index smallint NOT NULL,
-    chapter_title varchar(200),
-    content text,
-    embedding vector(1536),
-    tsv tsvector,
-    created_at timestamptz DEFAULT now(),
-    CONSTRAINT fk_sop_chunk_document_id FOREIGN KEY (document_id) REFERENCES sop_document (id) ON DELETE CASCADE,
-    CONSTRAINT sop_chunk_pkey PRIMARY KEY (id)
-);
-
-COMMENT ON TABLE sop_chunk IS 'SOP 分块检索表 — SOP 分块 + 向量检索';
-COMMENT ON COLUMN sop_chunk.id IS '分块主键，自增';
-COMMENT ON COLUMN sop_chunk.document_id IS '关联文档 ID，ON DELETE CASCADE';
-COMMENT ON COLUMN sop_chunk.chunk_index IS '分块索引（从 0 开始）';
-COMMENT ON COLUMN sop_chunk.chapter_title IS '章节标题';
-COMMENT ON COLUMN sop_chunk.content IS '章节内容';
-COMMENT ON COLUMN sop_chunk.embedding IS '章节语义向量（1536 维）';
-COMMENT ON COLUMN sop_chunk.tsv IS 'BM25 全文检索向量';
-COMMENT ON COLUMN sop_chunk.created_at IS '创建时间';
-
 -- 索引: sop_document
--- D-002: SOP 文档向量索引（通过 sop_chunk 实现，见下方）
 -- P2-2: 补全 updated_at 触发器（字段有 updated_at 但原先无触发器）
 -- 分类统计查询索引：支持 WHERE category_id = ? AND status = 'published'
 -- 使用部分索引减少索引体积（仅索引 published 状态）
 CREATE INDEX IF NOT EXISTS idx_sop_document_category_published ON sop_document (category_id) WHERE status = 'published';
-
--- 索引: sop_chunk
--- chunk 顺序检索（按文档 + 分块序号）
-CREATE INDEX IF NOT EXISTS idx_sop_chunk_document ON sop_chunk (document_id, chunk_index);
--- 全文检索
-CREATE INDEX IF NOT EXISTS idx_sop_chunk_tsv ON sop_chunk USING GIN (tsv);
--- D-002: 向量相似度检索索引（SOP 竨节语义检索，S1+ 阶段使用）
--- ⚠️  注意：IVFFlat 需数据量 > 1000 行且执行 ANALYZE 后才能正常发挥效果。
---    建议在批量导入 SOP 内容后执行：ANALYZE sop_chunk;
-CREATE INDEX IF NOT EXISTS idx_sop_chunk_embedding ON sop_chunk
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
-
-
--- ------------------------------------------------------------
--- 表: sop_tree  [模块: kb-service]
--- 说明: SOP 多叉决策树结构表 — 存储 docx 解析后的结构化 JSON 决策树
--- 用途: AI Agent（ReAct）遍历决策树执行排障；支持 markdown ↔ JSON 双向同步
--- 与 sop_document 的关系: 1:1，document 删除时 tree 级联删除
--- 版本: v7.x 新增（2026-05-xx）
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS sop_tree (
-    id                  SERIAL          NOT NULL,
-    document_id         INTEGER         NOT NULL,               -- 1:1 关联 sop_document.id
-    schema_version      VARCHAR(20)     NOT NULL DEFAULT 'sop-tree-v1',  -- 结构版本，解析器升级时更新
-    scenario_name       VARCHAR(500)    NOT NULL,               -- 冗余根节点名，方便按名称检索
-    tree_json           JSONB           NOT NULL,               -- SOPNode 根节点 model_dump() 输出
-    leaf_count          INTEGER         NOT NULL DEFAULT 0,     -- 叶节点（案例）数量
-    total_node_count    INTEGER         NOT NULL DEFAULT 0,     -- 总节点数（含路由节点）
-    validation_status   VARCHAR(20)     NOT NULL DEFAULT 'valid',  -- valid / warnings / error
-    validation_issues   JSONB                    DEFAULT NULL,  -- ValidationIssue[] JSON（可为空）
-    generated_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(), -- 首次解析生成时间
-    generator_version   VARCHAR(50)              DEFAULT 'sop-parser-v1',  -- 解析器版本
-    created_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    CONSTRAINT sop_tree_pkey           PRIMARY KEY (id),
-    CONSTRAINT sop_tree_document_uniq  UNIQUE (document_id),
-    CONSTRAINT fk_sop_tree_document    FOREIGN KEY (document_id)
-        REFERENCES sop_document (id) ON DELETE CASCADE
-);
-
-COMMENT ON TABLE sop_tree IS 'SOP 多叉决策树表 — SOP 的结构化 JSON 表示，供 AI Agent 遍历';
-COMMENT ON COLUMN sop_tree.id IS '主键，自增';
-COMMENT ON COLUMN sop_tree.document_id IS '1:1 关联 sop_document.id，CASCADE DELETE';
-COMMENT ON COLUMN sop_tree.schema_version IS '树结构 schema 版本（如 sop-tree-v1）';
-COMMENT ON COLUMN sop_tree.scenario_name IS '冗余：根节点 name（场景名），方便按名称查找';
-COMMENT ON COLUMN sop_tree.tree_json IS 'SOPNode 根节点完整 JSON（含所有子树）';
-COMMENT ON COLUMN sop_tree.leaf_count IS '叶节点（案例节点）数量';
-COMMENT ON COLUMN sop_tree.total_node_count IS '总节点数（含路由节点和叶节点）';
-COMMENT ON COLUMN sop_tree.validation_status IS 'valid=完全合规; warnings=有警告但已入库; error=解析失败';
-COMMENT ON COLUMN sop_tree.validation_issues IS 'ValidationIssue 列表 JSON（warnings/errors）';
-COMMENT ON COLUMN sop_tree.generated_at IS '树首次生成时间';
-COMMENT ON COLUMN sop_tree.generator_version IS '解析器版本，用于判断是否需要重新解析';
-COMMENT ON COLUMN sop_tree.created_at IS '记录创建时间';
-COMMENT ON COLUMN sop_tree.updated_at IS '记录最后更新时间（markdown 或 JSON 重新同步时更新）';
-
--- 索引: sop_tree
--- 通过 document_id 快查（unique 约束已含索引，此处补充 GIN 索引支持 JSONB 查询）
-CREATE INDEX IF NOT EXISTS idx_sop_tree_document ON sop_tree (document_id);
 -- GIN 索引：支持 tree_json @> '{"name": "..."}' 等 JSONB 条件检索
-CREATE INDEX IF NOT EXISTS idx_sop_tree_json ON sop_tree USING GIN (tree_json);
--- 场景名称前缀检索
-CREATE INDEX IF NOT EXISTS idx_sop_tree_scenario ON sop_tree (scenario_name);
-
-
+CREATE INDEX IF NOT EXISTS idx_sop_document_tree_json ON sop_document USING GIN (tree_json) WHERE tree_json IS NOT NULL;
 
 
 -- ------------------------------------------------------------

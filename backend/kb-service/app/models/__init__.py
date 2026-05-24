@@ -4,7 +4,6 @@ from .chunk import KBChunk
 from .document import KBDocument
 from .kb_category import KbCategory
 from .kbd_entry import KbdEntry
-from .sop_chunk import SopChunk
 from .sop_document import SopDocument
 from .sop_node import KBSopNode
 
@@ -15,5 +14,4 @@ __all__ = [
     "KBSopNode",
     "KbdEntry",
     "SopDocument",
-    "SopChunk",
 ]

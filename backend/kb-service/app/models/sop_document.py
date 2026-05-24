@@ -3,12 +3,14 @@ KB Service SQLAlchemy 模型 — sop_document
 
 对应数据库表：sop_document（SOP 排障手册文档）
 生命周期：draft → published → archived
+tree_json：审核通过时写入（NULL = 未生成），原 sop_tree 1:1 合并入本表
 """
 
 from datetime import UTC, datetime
 
 from shared.database.postgres import Base
 from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 
@@ -17,6 +19,7 @@ class SopDocument(Base):
 
     状态机：draft → published → archived
     source_id：幂等键，格式如 sop-vm-start-failure（对应 SOP 文档内部标识）
+    tree_json：审核通过后由 sop_parser 生成，NULL 表示未生成或解析失败
     """
 
     __tablename__ = "sop_document"
@@ -34,6 +37,17 @@ class SopDocument(Base):
     # 命中统计（case 级去重，物化列）
     hit_count = Column(Integer, nullable=False, default=0)                 # 有多少个唯一 case 命中此 SOP（S1 命中时 +1）
 
+    # 决策树（原 sop_tree 表 1:1 合并，approve 时写入，NULL = 未生成）
+    tree_json = Column(JSONB, nullable=True, default=None)
+    tree_schema_version = Column(String(20), nullable=True, default="sop-tree-v1")
+    tree_scenario_name = Column(String(500), nullable=True)
+    tree_leaf_count = Column(Integer, nullable=False, default=0)
+    tree_total_node_count = Column(Integer, nullable=False, default=0)
+    tree_validation_status = Column(String(20), nullable=True)
+    tree_validation_issues = Column(JSONB, nullable=True)
+    tree_generated_at = Column(DateTime(timezone=True), nullable=True)
+    tree_generator_version = Column(String(50), nullable=True, default="sop-parser-v1")
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(
         DateTime(timezone=True),
@@ -41,10 +55,6 @@ class SopDocument(Base):
         onupdate=lambda: datetime.now(UTC),
         nullable=False,
     )
-
-    # 关联（级联删除 chunks 和决策树）
-    chunks = relationship("SopChunk", back_populates="document", cascade="all, delete-orphan", lazy="select")
-    tree = relationship("SopTree", back_populates="document", cascade="all, delete-orphan", uselist=False, lazy="select")
 
     # 合法状态集合
     VALID_STATUSES = frozenset({"draft", "published", "archived"})
