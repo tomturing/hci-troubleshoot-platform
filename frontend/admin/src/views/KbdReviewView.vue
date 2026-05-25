@@ -195,8 +195,9 @@ async function fetchCategories() {
     const resp = await fetch('/api/kb/categories?grouped=true', { headers: authHeader })
     if (!resp.ok) return
     // API 返回 { "domains": { domain: [category, ...] }, "total_domains": N }
-    const data: { domains: Record<string, CategoryOption[]> } = await resp.json()
-    categoryOptions.value = Object.values(data.domains).flat().sort((a, b) => a.code.localeCompare(b.code))
+    const data: { domains?: Record<string, CategoryOption[]> } = await resp.json()
+    const domains = data.domains ?? {}
+    categoryOptions.value = Object.values(domains).flat().sort((a, b) => a.code.localeCompare(b.code))
   } catch { /* 分类加载失败时仍允许手动输入 */ } finally {
     categoriesLoading.value = false
   }

@@ -231,9 +231,19 @@ def _compress_image_if_needed(image_path: Path) -> tuple[bytes, str]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Prompt 从外部文件加载，方便独立维护（见 prompt/image_proc_vision_v3.txt）
-_VISION_PROMPT_V3: str = (
-    Path(__file__).parent / "prompt" / "image_proc_vision_v3.txt"
-).read_text(encoding="utf-8")
+_VISION_PROMPT_V3_PATH = Path(__file__).parent / "prompt" / "image_proc_vision_v3.txt"
+if not _VISION_PROMPT_V3_PATH.exists():
+    raise RuntimeError(
+        f"Vision prompt 文件不存在: {_VISION_PROMPT_V3_PATH}。"
+        "请确认部署/打包流程已包含 data-pipeline/kbd/prompt/ 目录，"
+        "且运行环境中的代码目录结构未发生变化。"
+    )
+try:
+    _VISION_PROMPT_V3: str = _VISION_PROMPT_V3_PATH.read_text(encoding="utf-8")
+except OSError as exc:
+    raise RuntimeError(
+        f"读取 Vision prompt 文件失败: {_VISION_PROMPT_V3_PATH}，原因: {exc}"
+    ) from exc
 
 
 async def _vision_analyze(
