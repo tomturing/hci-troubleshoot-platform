@@ -53,7 +53,7 @@ owner: team
 │                                                                             │
 │   消费侧                                                   │
 │   ┌──────────────────────────────────────────────────────────────────┐      │
-│   │ HTP-agent: KnowledgeRetriever 注入 Markdown 到 System Prompt    │      │
+│   │ HTP-agent: InvestigationAgent 通过 KBClient 注入 SOP Markdown    │      │
 │   │ PAI-agent: get_sop_tree() Tool 按需获取结构化树                  │      │
 │   └──────────────────────────────────────────────────────────────────┘      │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -259,7 +259,7 @@ POST /api/admin/sop/{document_id}/approve
 
 ### 3.1 HTP-agent 消费方式
 
-**特点**：知识前置注入，调用 LLM 前已将 SOP Markdown 注入 System Prompt。
+**特点**：知识前置注入，`InvestigationAgent` 调用 LLM 前通过 `KBClient.route_by_category()` 获取 SOP/KBD 路由结果，并将命中的 SOP Markdown 注入诊断 Prompt。
 
 **流程**：
 
@@ -267,29 +267,30 @@ POST /api/admin/sop/{document_id}/approve
 用户消息
     │
     ▼
+TriageAgent（S0）
+    │ 确认 category_id
+    ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ KnowledgeRetriever.retrieve()                               │
+│ InvestigationAgent（S1+）                                   │
 │                                                             │
-│ S0 阶段：禁止 KB/SOP 检索（避免过早锁定）                    │
-│ S1+ 阶段：                                                   │
-│   1. classify_intent(query) → category_id                  │
-│   2. route_by_category(category_id) → SOP/KBD/降级         │
-│   3. 若 SOP 命中：注入 SEGMENT_SOP_REFERENCE                │
+│ 1. KBClient.route_by_category(category_id) → SOP/KBD/降级   │
+│ 2. 若 SOP 命中：读取 sop_document.content_md                │
+│ 3. 若 KBD 命中：调用 search_cases_with_steps() 进入 CDD      │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 5段式 System Prompt                                         │
+│ 诊断 Prompt                                                  │
 │                                                             │
-│ Segment 1: 专家身份定义                                     │
-│ Segment 2: 诊断方法论（随阶段变化）                          │
-│ Segment 3: HCI 机制知识                                     │
-│ Segment 4: SOP Markdown 文本 ← 从 sop_document.content_md  │
-│ Segment 5: 工单上下文                                       │
+│ Segment 1: 专家身份定义                                      │
+│ Segment 2: 诊断方法论                                        │
+│ Segment 3: HCI 机制知识                                      │
+│ Segment 4: SOP Markdown 文本 ← 从 sop_document.content_md   │
+│ Segment 5: 工单上下文                                        │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
-LLM 推理 → 文本流输出
+LLM 推理 → AgentEvent 流式输出
 ```
 
 **Segment 4 SOP 注入格式**：
@@ -383,9 +384,9 @@ AgentTextChunk → 前端 SSE
 | 维度 | HTP-agent | PAI-agent |
 |------|-----------|-----------|
 | **SOP 获取时机** | 调用前预注入 System Prompt | 运行时 Tool 按需调用 |
-| **获取方式** | `KnowledgeRetriever.route_by_category()` | `get_sop_tree(document_id)` |
+| **获取方式** | `KBClient.route_by_category()` | `get_sop_tree(document_id)` |
 | **数据格式** | Markdown 文本（注入 Prompt） | 结构化 SOPNode 树 |
-| **执行方式** | LLM 自行解读文本 | Agent 程序遍历树节点 |
+| **执行方式** | InvestigationAgent 结合 ReAct/工具执行 | Agent 程序遍历树节点 |
 | **交互模式** | 单轮文本生成 | 多轮 Tool 调用 + 验证 |
 | **适用场景** | 标准故障（已有 SOP 匹配） | 未知故障探索、需要实时数据 |
 | **Token 消耗** | 较高（全文注入） | 较低（按需获取） |

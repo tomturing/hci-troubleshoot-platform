@@ -40,17 +40,19 @@ owner: team
          ↑ 实现
 ┌──────────────────────────────────────────────────────┐
 │              adapters/agents/                        │
-│  ├── htp/           ← 手写 ReAct 引擎（GLM）         │
-│  │   ├── intent_agent.py     ← 分诊（S0，待重构）    │
-│  │   ├── diagnostic_agent.py ← 调查+修复（S1-S5，待重构）│
-│  │   ├── react_engine.py     ← ReAct 循环引擎        │
-│  │   ├── tool_registry.py    ← 工具注册表            │
-│  │   └── confirm_service.py  ← 人工确认服务          │
-│  ├── ops/           ← ops-agent（ACP 协议）          │
+│  ├── htp/           ← HTP Agent 分层实现（GLM）      │
+│  │   ├── triage_agent.py       ← 分诊（S0）          │
+│  │   ├── investigation_agent.py← 调查（S1-S4）       │
+│  │   ├── remediation_agent.py  ← 修复确认（S5）      │
+│  │   ├── kbd_differential.py   ← CDD 案例差异诊断    │
+│  │   ├── react_engine.py       ← ReAct 流式执行引擎  │
+│  │   ├── tool_registry.py      ← 工具注册表          │
+│  │   └── confirm_service.py    ← 人工确认服务        │
+│  ├── ops/           ← OPS Agent 的 ops-agent ACP REST 适配器     │
 │  │   └── ops_agent_adapter.py                        │
-│  ├── pai/           ← pydantic-ai                   │
+│  ├── pai/           ← PAI Agent 的 pydantic-ai 适配器          │
 │  │   └── pai_agent_adapter.py                        │
-│  └── agent_router.py         ← 大脑路由器            │
+│  └── agent_router.py         ← Agent 路由器            │
 │              adapters/clients/                       │
 │  ├── scp_client.py  ← HCI 平台 REST API             │
 │  └── acli_client.py ← SSH/acli 命令执行              │
@@ -107,7 +109,7 @@ class BaseAgent(ABC):
 | **Remediation（修复）** | S5 | 执行修复步骤（强制人工确认） | ✅ ReAct + 确认 |
 | **Closure（闭环）** | S6 | 验证解决并关闭 | ❌ 轻量 |
 
-**S1-S4 合并依据**：当前所有阶段共用同一个 `DiagnosticAgent.process()`，`diagnostic_stage` 参数**仅影响 Prompt 里的一行描述文字**，无任何代码分支差异——S1-S4 在行为上属于同一类，只是 Prompt 变体。
+**S1-S4 合并依据**：重构后 `InvestigationAgent` 负责 S1-S4 的统一调查循环。S1/S2/S3/S4 仍作为对外进度和数据库状态保留，用于表达"定位 → 假设 → 验证 → 根因"的调查成熟度梯度；但执行模型不再拆成四个独立 Agent，而是在同一 ReAct/CDD 调查循环中推进。
 
 > **代码现状**：代码和数据库中仍使用 S0-S6 常量（`DiagnosticStage.S0_INTENT` 等）。  
 > 语义命名是设计层面的共识，代码层重命名作为独立迭代任务跟踪。
@@ -220,9 +222,9 @@ raise RuntimeError 超步数保护
 
 ---
 
-## 六、ops-agent 与 pydantic-ai 实现
+## 六、OPS Agent 与 PAI Agent 实现
 
-### 6.1 OpsAgentAdapter（ACP 协议）
+### 6.1 OPS Agent（ACP 协议）
 
 通过 ACP REST 协议调用外部 ops-agent 服务：
 
@@ -239,7 +241,7 @@ session_new(conv_id)
 
 设计文档：[2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md](./events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md)
 
-### 6.2 PaiAgentAdapter（pydantic-ai）
+### 6.2 PAI Agent（pydantic-ai）
 
 使用 pydantic-ai 框架封装，暂为实验性实现，API 与 `AgentPort` 对齐。
 
@@ -280,9 +282,9 @@ class AgentPort(Protocol):
 ```python
 class AgentRouter:
     def route(self, assistant_type: str) -> AgentPort:
-        # "htp-agent" → HTPAgentAdapter（分诊+调查+修复）
-        # "ops-agent"  → OpsAgentAdapter（不可达降级到 htp）
-        # "pai-agent"  → PaiAgentAdapter
+        # "htp-agent" → HTP Agent（分诊+调查+修复）
+        # "ops-agent"  → OPS Agent（实现类 OpsAgentAdapter，不可达降级到 HTP）
+        # "pai-agent"  → PAI Agent（实现类 PaiAgentAdapter）
 ```
 
 `AgentRouter` 是唯一知道"有哪些 Agent 实现"的地方；`ConversationService` 只见 `AgentPort`，不依赖具体实现类。
@@ -354,8 +356,10 @@ backend/agent-service/app/
 ├── adapters/
 │   ├── agents/
 │   │   ├── htp/
-│   │   │   ├── intent_agent.py        ← 现状：意图识别（待重构为 TriageAgent）
-│   │   │   ├── diagnostic_agent.py    ← 现状：S1-S6（待重构为 Investigation + Remediation）
+│   │   │   ├── triage_agent.py        ← 分诊 Agent（S0）
+│   │   │   ├── investigation_agent.py ← 调查 Agent（S1-S4）
+│   │   │   ├── remediation_agent.py   ← 修复确认 Agent（S5）
+│   │   │   ├── kbd_differential.py    ← 案例差异诊断（CDD）
 │   │   │   ├── react_engine.py        ← 共享流式执行引擎（Investigation + Remediation 共用）
 │   │   │   ├── tool_registry.py       ← 工具注册表
 │   │   │   └── confirm_service.py     ← 人工确认服务
@@ -363,7 +367,7 @@ backend/agent-service/app/
 │   │   │   └── ops_agent_adapter.py   ← ACP 协议客户端
 │   │   ├── pai/
 │   │   │   └── pai_agent_adapter.py   ← pydantic-ai 实现
-│   │   └── agent_router.py            ← 大脑路由器
+│   │   └── agent_router.py            ← Agent 路由器
 │   └── clients/
 │       ├── scp_client.py              ← HCI 平台 REST API 客户端
 │       └── acli_client.py             ← SSH/acli 执行客户端
@@ -381,9 +385,10 @@ backend/agent-service/app/
 |------|------|------|
 | BaseAgent ABC 创建 | ✅ 已完成 | `domain/base_agent.py` |
 | agent基类设计.md | ✅ 已完成 | 详细设计推导文档 |
-| TriageAgent 重构 | ⏳ 待做 | `intent_agent.py` → `triage_agent.py`，继承 BaseAgent |
-| InvestigationAgent 重构 | ⏳ 待做 | `diagnostic_agent.py`（S1-S4）→ `investigation_agent.py` |
-| RemediationAgent 重构 | ⏳ 待做 | `diagnostic_agent.py`（S5）→ `remediation_agent.py` |
+| TriageAgent 重构 | ✅ 已完成 | `triage_agent.py`，负责 S0 分诊 |
+| InvestigationAgent 重构 | ✅ 已完成 | `investigation_agent.py`，负责 S1-S4 调查 |
+| RemediationAgent 重构 | ✅ 已完成 | `remediation_agent.py`，负责 S5 修复确认 |
+| CDD 案例差异诊断 | ✅ 已完成 | `kbd_differential.py`，基于 `search_cases_with_steps()` |
 | 代码层语义命名 | ⏳ 待做 | `DiagnosticStage.S0_INTENT` → `DiagnosticStage.TRIAGE` 等 |
 
 ---
