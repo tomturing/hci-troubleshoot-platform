@@ -1,19 +1,19 @@
 """
-AgentRouter：大脑路由器（v4.0）
+AgentRouter：大脑路由器（v4.1）
 
 路由逻辑：
   1. assistant_type=ops-agent → OpsAgentAdapter
   2. assistant_type=pai-agent → PaiAgentAdapter
   3. assistant_type=htp-agent / 其他：
-     - stage=S0          → TriageAgent（意图识别）
-     - stage=S1/S2/S3/S4 → InvestigationAgent（CDD 诊断）
+     - stage=S0          → IntentAgent（意图识别）
+     - stage=S1/S2/S3/S4 → DiagnosticAgent（CDD 诊断）
      - stage=S5          → RemediationAgent（修复执行）
 
 设计说明：
   - AgentRouter 是 ConversationService 的成员，不是独立微服务
   - 降级逻辑：
-    - ops-agent 未启用时降级到 InvestigationAgent
-    - pai-agent 不可达时降级到 InvestigationAgent
+    - ops-agent 未启用时降级到 DiagnosticAgent
+    - pai-agent 不可达时降级到 DiagnosticAgent
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ from typing import TYPE_CHECKING, Any
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
-from app.adapters.agents.htp.investigation_agent import InvestigationAgent
+from app.adapters.agents.htp.diagnostic_agent import DiagnosticAgent
 from app.adapters.agents.htp.kbd_model import KBD
 from app.adapters.agents.htp.remediation_agent import RemediationAgent
-from app.adapters.agents.htp.triage_agent import TriageAgent
+from app.adapters.agents.htp.intent_agent import IntentAgent
 from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
 from app.domain.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
 
@@ -64,15 +64,15 @@ class AgentRouter:
 
     def __init__(
         self,
-        triage_agent: TriageAgent,
-        investigation_agent: InvestigationAgent,
+        intent_agent: IntentAgent,
+        diagnostic_agent: DiagnosticAgent,
         remediation_agent: RemediationAgent | None = None,
         ops_agent_adapter: OpsAgentAdapter | None = None,
         pai_adapter: PaiAgentAdapter | None = None,
         ai_registry: AIAssistantRegistry | None = None,
     ) -> None:
-        self._triage_agent = triage_agent
-        self._investigation_agent = investigation_agent
+        self._intent_agent = intent_agent
+        self._diagnostic_agent = diagnostic_agent
         self._remediation_agent = remediation_agent
         self._ops_agent = ops_agent_adapter
         self._pai = pai_adapter
@@ -126,11 +126,11 @@ class AgentRouter:
             if self._ops_agent is None:
                 logger.warning(
                     event="ops_agent_disabled",
-                    message="ops-agent 未启用，降级到 InvestigationAgent",
+                    message="ops-agent 未启用，降级到 DiagnosticAgent",
                     session_id=session_id,
                 )
                 yield AgentTextChunk(content=_OPS_AGENT_DISABLED_NOTICE)
-                async for event in self._investigation_agent.process(
+                async for event in self._diagnostic_agent.process(
                     session_id=session_id,
                     messages=messages,
                     category_id=category_id or "",
@@ -154,11 +154,11 @@ class AgentRouter:
                 except AgentUnavailableError as exc:
                     logger.warning(
                         event="ops_agent_unavailable",
-                        message=f"ops-agent 不可达，降级到 InvestigationAgent: {exc.reason}",
+                        message=f"ops-agent 不可达，降级到 DiagnosticAgent: {exc.reason}",
                         session_id=session_id,
                     )
                     yield AgentTextChunk(content=_FALLBACK_NOTICE)
-                    async for event in self._investigation_agent.process(
+                    async for event in self._diagnostic_agent.process(
                         session_id=session_id,
                         messages=messages,
                         category_id=category_id or "",
@@ -176,7 +176,7 @@ class AgentRouter:
             if self._pai is None:
                 logger.warning(
                     event="pai_agent_disabled",
-                    message="pai-agent 未启用，降级到 InvestigationAgent",
+                    message="pai-agent 未启用，降级到 DiagnosticAgent",
                     session_id=session_id,
                 )
                 yield AgentTextChunk(content=_FALLBACK_NOTICE)
@@ -185,7 +185,7 @@ class AgentRouter:
                     if self._ai_registry is not None
                     else settings.OPS_AGENT_FALLBACK_ASSISTANT_TYPE
                 )
-                async for event in self._investigation_agent.process(
+                async for event in self._diagnostic_agent.process(
                     session_id=session_id,
                     messages=messages,
                     category_id=category_id or "",
@@ -208,11 +208,11 @@ class AgentRouter:
                 except AgentUnavailableError as exc:
                     logger.warning(
                         event="pai_agent_unavailable",
-                        message=f"pai-agent 不可达，降级到 InvestigationAgent: {exc.reason}",
+                        message=f"pai-agent 不可达，降级到 DiagnosticAgent: {exc.reason}",
                         session_id=session_id,
                     )
                     yield AgentTextChunk(content=_FALLBACK_NOTICE)
-                    async for event in self._investigation_agent.process(
+                    async for event in self._diagnostic_agent.process(
                         session_id=session_id,
                         messages=messages,
                         category_id=category_id or "",
@@ -229,11 +229,11 @@ class AgentRouter:
         if diagnostic_stage in _TRIAGE_STAGES:
             # S0：意图识别
             logger.info(
-                event="route_triage_agent",
-                message=f"路由到 TriageAgent: stage=S0, assistant_type={assistant_type}",
+                event="route_intent_agent",
+                message=f"路由到 IntentAgent: stage=S0, assistant_type={assistant_type}",
                 session_id=session_id,
             )
-            async for event in self._triage_agent.process(
+            async for event in self._intent_agent.process(
                 session_id=session_id,
                 messages=messages,
                 env_context=env_context,
@@ -248,7 +248,7 @@ class AgentRouter:
             if self._remediation_agent is None:
                 logger.warning(
                     event="route_remediation_missing",
-                    message="RemediationAgent 未注入，降级到 InvestigationAgent",
+                    message="RemediationAgent 未注入，降级到 DiagnosticAgent",
                     session_id=session_id,
                 )
                 yield AgentTextChunk(content="[提示] 修复执行模块暂不可用，请根据诊断报告手动操作。")
@@ -288,11 +288,11 @@ class AgentRouter:
                 return
 
             logger.info(
-                event="route_investigation_agent",
-                message=f"路由到 InvestigationAgent: stage={diagnostic_stage}, category_id={category_id}",
+                event="route_diagnostic_agent",
+                message=f"路由到 DiagnosticAgent: stage={diagnostic_stage}, category_id={category_id}",
                 session_id=session_id,
             )
-            async for event in self._investigation_agent.process(
+            async for event in self._diagnostic_agent.process(
                 session_id=session_id,
                 messages=messages,
                 category_id=category_id,
