@@ -202,7 +202,7 @@ class DiagnosticAgent:
         # 4. 执行推理
         if execution_mode == "react" and self._react_engine:
             # ReAct 模式（工具调用）
-            for event in self._react_engine.execute(
+            async for event in self._react_engine.execute(
                 session_id=session_id,
                 system_prompt=system_prompt,
                 messages=messages,
@@ -220,7 +220,7 @@ class DiagnosticAgent:
                     reason=f"未找到助手类型 '{assistant_type}'",
                 )
 
-            for chunk in ai_client.chat_completion_stream(
+            async for chunk in ai_client.chat_completion_stream(
                 messages=[{"role": "system", "content": system_prompt}] + messages,
                 user_id=user_id or f"case-{case_id}",
             ):
