@@ -25,9 +25,9 @@ from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
 from app.adapters.agents.htp.diagnostic_agent import DiagnosticAgent
+from app.adapters.agents.htp.intent_agent import IntentAgent
 from app.adapters.agents.htp.kbd_model import KBD
 from app.adapters.agents.htp.remediation_agent import RemediationAgent
-from app.adapters.agents.htp.intent_agent import IntentAgent
 from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
 from app.domain.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
 
@@ -47,8 +47,8 @@ _FALLBACK_NOTICE = "\n\n> [系统提示] ops-agent 暂时不可用，已自动�
 _OPS_AGENT_DISABLED_NOTICE = "\n\n> [系统提示] ops-agent 服务未启用，已自动切换到备用助手继续为您服务。\n\n"
 
 # 阶段分组常量
-_TRIAGE_STAGES = {"S0"}
-_INVESTIGATION_STAGES = {"S1", "S2", "S3", "S4"}
+_INTENT_STAGES = {"S0"}
+_DIAGNOSTIC_STAGES = {"S1", "S2", "S3", "S4"}
 _REMEDIATION_STAGES = {"S5"}
 
 
@@ -226,10 +226,11 @@ class AgentRouter:
             return
 
         # 3. HTP Agent 路由（按 stage 分流）
-        if diagnostic_stage in _TRIAGE_STAGES:
+        if diagnostic_stage in _INTENT_STAGES:
             # S0：意图识别
             logger.info(
                 event="route_intent_agent",
+                legacy_event="route_triage_agent",
                 message=f"路由到 IntentAgent: stage=S0, assistant_type={assistant_type}",
                 session_id=session_id,
             )
@@ -289,6 +290,7 @@ class AgentRouter:
 
             logger.info(
                 event="route_diagnostic_agent",
+                legacy_event="route_investigation_agent",
                 message=f"路由到 DiagnosticAgent: stage={diagnostic_stage}, category_id={category_id}",
                 session_id=session_id,
             )
