@@ -24,6 +24,7 @@ from app.domain.agent_port import (
     AgentInteractiveRequest,
     AgentStageUpdate,
     AgentTextChunk,
+    ToolResultEvent,
 )
 
 logger = get_logger("react-engine")
@@ -193,21 +194,24 @@ class ReactEngine:
                 tool_call_dict = {"id": tc.id, "name": tc.name, "args": tc.arguments}
 
                 # require_all_confirm 覆盖：将只读工具也升级为需确认
+                tool_result = None
                 async for event in self._execute_tool_call(
                     tool_call=tool_call_dict,
                     session_id=session_id,
                     step=step_count,
                     require_all_confirm=require_all_confirm,
                 ):
+                    # 捕获工具执行结果
+                    if isinstance(event, ToolResultEvent):
+                        tool_result = event.result
                     # 跳过 AgentTextChunk（工具结果不直接推流，加入历史后继续循环）
-                    if not isinstance(event, AgentTextChunk):
+                    elif not isinstance(event, AgentTextChunk):
                         yield event
                     elif event.content.startswith("工具") and "失败" in event.content:
                         # 工具执行失败时告知用户
                         yield event
 
-                # 获取工具执行结果并追加 tool 消息
-                tool_result = await self._get_tool_result(tc.name, tc.arguments)
+                # 将工具结果追加到消息历史
                 work_messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -216,18 +220,6 @@ class ReactEngine:
 
         # 超出步数限制
         yield AgentTextChunk(content="⚠️ 诊断步骤已达上限，请联系人工支持。")
-
-    async def _get_tool_result(self, tool_name: str, tool_args: dict) -> Any:
-        """执行工具并返回原始结果（不含授权检查，仅用于循环内部获取结果）。"""
-        try:
-            return await self._tool_executor.execute(tool_name, tool_args)
-        except Exception as exc:
-            logger.warning(
-                event="react_tool_result_error",
-                tool_name=tool_name,
-                error=str(exc),
-            )
-            return f"工具执行失败: {exc}"
 
     def _get_tools_for_llm(self) -> list[dict]:
         """返回 OpenAI function calling 格式的工具列表（排除高危工具）"""
@@ -357,3 +349,6 @@ class ReactEngine:
                     )
                 except Exception as audit_err:
                     logger.error(f"审计日志写入失败: {audit_err}")
+
+        # 返回工具执行结果给主循环（避免重复执行）
+        yield ToolResultEvent(result=result, tool_name=tool_name, error=error)
