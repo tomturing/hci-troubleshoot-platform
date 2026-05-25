@@ -40,6 +40,10 @@
 - **KBD 管理页面 UI 优化**（PR #330）：
   - 导入时间改用 `updated_at`（反映 override 重跑后的更新时间）
   - 分类筛选改为下拉选择框，支持搜索/清空，复用 `categoryOptions`
+- **KBD 管理页面排序优化**（PR #331）：
+  - KBD 列表排序改为 `updated_at DESC, id DESC`，最新更新的数据排在前面
+  - Vision LLM prompt 强化表格/告警截图规则，增加正确/错误示例
+  - 修复 `image_proc.py` 解析正则，支持带装饰线的新输出格式，告警截图每行合并为 `值1 | 值2 | ...`
 
 ---
 

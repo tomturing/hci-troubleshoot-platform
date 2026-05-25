@@ -310,7 +310,7 @@ async def list_kbd_entries(
                    hit_count, created_at, updated_at
             FROM kbd_entry
             WHERE {where_sql}
-            ORDER BY created_at DESC
+            ORDER BY updated_at DESC, id DESC
             LIMIT :limit OFFSET :offset
             """
         )
@@ -997,7 +997,7 @@ async def list_sop_documents(
                    tree_leaf_count, (tree_json IS NOT NULL) AS has_tree
             FROM sop_document
             {where_sql}
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT :limit OFFSET :offset
             """
         )

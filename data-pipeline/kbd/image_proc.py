@@ -317,19 +317,25 @@ async def _vision_analyze(
     return full_text, description
 
 
-_RE_FULL_TEXT_SECTION = re.compile(r"FULL_TEXT:\s*\n((?:^-\s.+\n?)+)", re.MULTILINE)
-_RE_DESCRIPTION_SECTION = re.compile(r"DESCRIPTION:\s*\n(.+?)(?=\n[A-Z_]+:|$)", re.MULTILINE | re.DOTALL)
+_RE_FULL_TEXT_SECTION = re.compile(r"FULL_TEXT[:\s]*\n(?:══+\n)?((?:^-\s.+\n?)+)", re.MULTILINE)
+_RE_DESCRIPTION_SECTION = re.compile(r"DESCRIPTION[:\s]*\n(?:══+\n)?(.+?)(?=\n[A-Z_]+:|══+|$)", re.MULTILINE | re.DOTALL)
 _RE_BULLET = re.compile(r"^-\s+(.+)$", re.MULTILINE)
 
 
 def _parse_full_text(raw: str) -> list[str]:
-    """从 LLM 输出中解析 FULL_TEXT section 的 bullet 行。"""
+    """从 LLM 输出中解析 FULL_TEXT section 的 bullet 行。
+
+    支持两种格式：
+    - FULL_TEXT:\n- ...（旧格式）
+    - FULL_TEXT\n═══\n- ...（新格式，带装饰线）
+    """
     m = _RE_FULL_TEXT_SECTION.search(raw)
     if m:
         items = _RE_BULLET.findall(m.group(1))
     else:
-        ft_start = raw.find("FULL_TEXT:")
-        desc_start = raw.find("DESCRIPTION:")
+        # Fallback: 直接查找 bullet 行
+        ft_start = raw.find("FULL_TEXT")
+        desc_start = raw.find("DESCRIPTION")
         if ft_start == -1:
             return []
         end = desc_start if desc_start > ft_start else len(raw)
