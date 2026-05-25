@@ -16,6 +16,7 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 
 from app.adapters.agents.agent_router import AgentRouter
+from app.adapters.agents.htp.confirm_service import ConfirmService
 from app.domain.agent_port import (
     AgentEscalation,
     AgentInteractiveRequest,
@@ -29,12 +30,20 @@ logger = get_logger("agent-service")
 
 # 全局 AgentRouter，由 main.py lifespan 注入
 _agent_router: AgentRouter | None = None
+# 全局 ConfirmService，由 main.py lifespan 注入（用于 ReAct 确认回路）
+_confirm_service: ConfirmService | None = None
 
 
 def set_agent_router(router_instance: AgentRouter) -> None:
     """在应用启动时注入 AgentRouter（lifespan 调用）"""
     global _agent_router
     _agent_router = router_instance
+
+
+def set_confirm_service(confirm_service: ConfirmService | None) -> None:
+    """在应用启动时注入 ConfirmService（lifespan 调用）"""
+    global _confirm_service
+    _confirm_service = confirm_service
 
 
 # ── 请求/响应 Schema ──────────────────────────────────────────────────────────
@@ -274,3 +283,68 @@ async def resume_ops_agent_stream(session_id: str) -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ── ReAct 工具确认端点（T-AGT-03）──────────────────────────────────────────────────
+
+
+class ReactConfirmRequest(BaseModel):
+    """ReAct 工具确认请求体"""
+
+    session_id: str
+    confirmed: bool
+    authorized_by: str = "user"
+
+
+@router.post("/v1/agent/react-confirm")
+async def react_confirm(body: ReactConfirmRequest) -> dict:
+    """
+    ReAct 工具确认端点
+
+    当 ReactEngine 对 risk_level>=2 的工具调用暂停并等待用户确认时，
+    前端收到 interactive_request SSE（kind=tool_confirm），用户点击确认后，
+    前端 POST conversation-service /interactive-response，
+    conversation-service 按 kind 分叉路由到此端点。
+
+    此端点调用 ConfirmService.submit_confirm() 向 Redis LPUSH 确认结果，
+    解除 ReactEngine.request_confirm() 的 BRPOP 等待，工具继续执行。
+
+    Args:
+        body: ReactConfirmRequest
+            - session_id: 会话 ID（对应 conversation_id）
+            - confirmed: True=用户确认执行，False=用户取消
+            - authorized_by: 操作人标识（默认"user"）
+
+    Returns:
+        {"ok": True} 确认成功
+        {"ok": False, "reason": "..."} ConfirmService 未注入
+    """
+    if _confirm_service is None:
+        logger.warning(
+            event="react_confirm_service_unavailable",
+            message="ConfirmService 未注入，ReAct 确认功能不可用",
+            session_id=body.session_id,
+        )
+        return {"ok": False, "reason": "ConfirmService 未注入"}
+
+    try:
+        await _confirm_service.submit_confirm(
+            session_id=body.session_id,
+            confirmed=body.confirmed,
+            authorized_by=body.authorized_by,
+        )
+        logger.info(
+            event="react_confirm_submitted",
+            message="ReAct 工具确认已提交",
+            session_id=body.session_id,
+            confirmed=body.confirmed,
+            authorized_by=body.authorized_by,
+        )
+        return {"ok": True}
+    except Exception as exc:
+        logger.error(
+            event="react_confirm_error",
+            message=f"submit_confirm 失败: {exc}",
+            session_id=body.session_id,
+        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

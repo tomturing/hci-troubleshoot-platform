@@ -199,3 +199,46 @@ class AgentClient:
                 message=f"resume_stream 异常: {exc}",
                 session_id=session_id,
             )
+
+    async def react_confirm(
+        self,
+        session_id: str,
+        confirmed: bool,
+        authorized_by: str = "user",
+    ) -> bool:
+        """
+        调用 agent-service POST /v1/agent/react-confirm，
+        提交 ReAct 工具确认结果。
+
+        当 ReactEngine 对 risk_level>=2 的工具调用暂停等待用户确认时，
+        前端通过 conversation-service 路由到此方法。
+
+        Args:
+            session_id: 会话 ID（对应 conversation_id）
+            confirmed: True=用户确认执行，False=用户取消
+            authorized_by: 操作人标识（默认"user"）
+
+        Returns:
+            True = 提交成功；False = ConfirmService 未注入或请求失败
+        """
+        url = f"{self._base_url}/v1/agent/react-confirm"
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    url,
+                    json={
+                        "session_id": session_id,
+                        "confirmed": confirmed,
+                        "authorized_by": authorized_by,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return bool(data.get("ok", False))
+        except Exception as exc:
+            logger.error(
+                event="agent_client_react_confirm_error",
+                message=f"react_confirm 失败: {exc}",
+                session_id=session_id,
+            )
+            return False

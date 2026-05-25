@@ -1586,56 +1586,94 @@ class ConversationService:
     async def submit_interactive_response(
         self,
         conversation_id: uuid.UUID,
+        kind: str,
         request_id: str,
         acp_session_id: str,
         outcome: dict,
     ) -> bool:
-        """T-E6: 将用户对交互卡片的响应回传给 ops-agent ACP 会话。
+        """T-E6 + T-AGT-03: 将用户对交互卡片的响应回传给 agent-service。
 
-        由 POST /api/conversations/{id}/interactive-response 调用。
-        仅在 AgentRouter 已注入且 OpsAgentAdapter 可用时生效。
+        按 kind 字段分叉路由：
+        - kind=tool_confirm → 调用 agent-service /v1/agent/react-confirm（ReAct 确认回路）
+        - 其他 kind（ACP 类型）→ 调用 agent-service /v1/agent/interactive-response（ops-agent ACP）
 
         Args:
             conversation_id: 对话 ID（用于日志追踪）。
+            kind:            交互类型（tool_confirm / sop_step / info_confirm 等）。
             request_id:      ACP request_id（来自 AgentInteractiveRequest.request_id）。
             acp_session_id:  ops-agent ACP session_id（来自 AgentInteractiveRequest.acp_session_id）。
             outcome:         提交结果，格式 {"outcome": "selected", "optionId": "A"}
-                             或 {"outcome": "free_text", "text": "..."}。
+                             或 {"outcome": "free_text", "text": "..."}
+                             或 {"confirmed": true, "authorized_by": "user"}（tool_confirm）。
 
         Returns:
-            True  = 提交成功；False = OpsAgentAdapter 不可用（ops-agent 未启用）。
+            True  = 提交成功；False = AgentClient 未注入或请求失败。
         """
         if self._agent_client is None:
             logger.warning(
                 event="interactive_response_no_client",
                 message="submit_interactive_response: AgentClient 未注入，跳过",
                 conversation_id=str(conversation_id),
+                kind=kind,
                 request_id=request_id,
             )
             return False
 
-        try:
-            success = await self._agent_client.submit_interactive_response(
+        session_id = str(conversation_id)
+
+        # 按 kind 分叉路由
+        if kind == "tool_confirm":
+            # ── ReAct 确认回路（T-AGT-03）────────────────────────────────────────────
+            confirmed = bool(outcome.get("confirmed", False))
+            authorized_by = outcome.get("authorized_by", "user")
+            try:
+                success = await self._agent_client.react_confirm(
+                    session_id=session_id,
+                    confirmed=confirmed,
+                    authorized_by=authorized_by,
+                )
+            except Exception as exc:
+                logger.warning(
+                    event="react_confirm_error",
+                    message=f"react_confirm 异常: {exc}",
+                    conversation_id=str(conversation_id),
+                    session_id=session_id,
+                )
+                return False
+            logger.info(
+                event="react_confirm_submitted",
+                message="ReAct 工具确认已提交",
+                conversation_id=str(conversation_id),
+                session_id=session_id,
+                confirmed=confirmed,
+                authorized_by=authorized_by,
+                success=success,
+            )
+        else:
+            # ── ACP 路径（ops-agent SOP/信息确认卡）──────────────────────────────────
+            try:
+                success = await self._agent_client.submit_interactive_response(
+                    acp_session_id=acp_session_id,
+                    request_id=request_id,
+                    outcome=outcome,
+                )
+            except Exception as exc:
+                logger.warning(
+                    event="interactive_response_error",
+                    message=f"submit_interactive_response 异常: {exc}",
+                    conversation_id=str(conversation_id),
+                    request_id=request_id,
+                )
+                return False
+            logger.info(
+                event="interactive_response_submitted",
+                message="ops-agent 交互响应已回传",
+                conversation_id=str(conversation_id),
                 acp_session_id=acp_session_id,
                 request_id=request_id,
-                outcome=outcome,
+                success=success,
             )
-        except Exception as exc:
-            logger.warning(
-                event="interactive_response_error",
-                message=f"submit_interactive_response 异常: {exc}",
-                conversation_id=str(conversation_id),
-                request_id=request_id,
-            )
-            return False
-        logger.info(
-            event="interactive_response_submitted",
-            message="ops-agent 交互响应已回传",
-            conversation_id=str(conversation_id),
-            acp_session_id=acp_session_id,
-            request_id=request_id,
-            success=success,
-        )
+
         # 将用户的弹框选择/输入以 user 角色落库，供历史记录查看
         try:
             conv = await self.repository.get_conversation(conversation_id)
@@ -1648,6 +1686,7 @@ class ConversationService:
                     trace_id=get_current_trace_id(),
                     metadata={
                         "kind": "interactive_response",
+                        "interactive_kind": kind,
                         "requestId": request_id,
                         "acpSessionId": acp_session_id,
                         "outcome": outcome,

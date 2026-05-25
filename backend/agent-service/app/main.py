@@ -40,7 +40,7 @@ from app.adapters.agents.htp.react_engine import ReactEngine
 from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
 from app.config import settings
 from app.routes.agent import router as agent_router_route
-from app.routes.agent import set_agent_router
+from app.routes.agent import set_agent_router, set_confirm_service
 
 if TYPE_CHECKING:
     from app.adapters.clients.acli_client import AcliClient
@@ -195,6 +195,8 @@ async def lifespan(app: FastAPI):
 
     # 注入路由模块
     set_agent_router(agent_router)
+    # 注入 ConfirmService（用于 ReAct 确认回路）
+    set_confirm_service(confirm_service)
 
     logger.info(
         event="agent_router_initialized",

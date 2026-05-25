@@ -338,10 +338,13 @@ async def update_resolved_kbd(
 
 class InteractiveResponseBody(BaseModel):
     """POST /api/conversations/{id}/interactive-response 请求体。"""
-    request_id: str               # 来自前端收到的 AgentInteractiveRequest.requestId
-    acp_session_id: str           # 来自前端收到的 AgentInteractiveRequest.acpSessionId
-    outcome: dict                 # {"outcome": "selected", "optionId": "A"}
-                                  # 或 {"outcome": "free_text", "text": "..."}
+
+    kind: str = "sop_step"       # 交互类型：tool_confirm / sop_step / info_confirm 等
+    request_id: str              # 来自前端收到的 AgentInteractiveRequest.requestId
+    acp_session_id: str          # 来自前端收到的 AgentInteractiveRequest.acpSessionId
+    outcome: dict                # {"outcome": "selected", "optionId": "A"}
+                                 # 或 {"outcome": "free_text", "text": "..."}
+                                 # 或 {"confirmed": true, "authorized_by": "user"}（tool_confirm）
 
 
 @router.post("/{conversation_id}/interactive-response")
@@ -350,15 +353,20 @@ async def submit_interactive_response(
     body: InteractiveResponseBody,
     service: ConversationService = Depends(get_conversation_service),
 ):
-    """将用户对 ops-agent 交互卡片（SOP操作卡 / 信息确认卡）的响应回传给 ACP 会话。
+    """将用户对交互卡片（SOP操作卡 / 信息确认卡 / ReAct 工具确认）的响应回传给 agent-service。
 
     由前端 InteractiveRequestCard 提交按钮触发。
 
+    按 kind 字段分叉路由：
+    - kind=tool_confirm → 调用 agent-service /v1/agent/react-confirm（ReAct 确认回路）
+    - 其他 kind（ACP 类型）→ 调用 agent-service /v1/agent/interactive-response（ops-agent ACP）
+
     响应 200：{"ok": true}
-    响应 503：ops-agent 适配器不可用（ops-agent 未启用或 AgentRouter 未注入）
+    响应 503：agent-service 不可用（AgentClient 未注入）
     """
     success = await service.submit_interactive_response(
         conversation_id=conversation_id,
+        kind=body.kind,
         request_id=body.request_id,
         acp_session_id=body.acp_session_id,
         outcome=body.outcome,
@@ -366,7 +374,7 @@ async def submit_interactive_response(
     if not success:
         raise HTTPException(
             status_code=503,
-            detail="OpsAgentAdapter 不可用：ops-agent 未启用或 ACP 接口不可达",
+            detail="AgentClient 不可用：agent-service 未启用或接口不可达",
         )
     return {"ok": True}
 
