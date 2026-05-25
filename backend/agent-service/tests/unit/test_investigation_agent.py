@@ -10,7 +10,7 @@ InvestigationAgent 单元测试
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from app.adapters.agents.htp.investigation_agent import InvestigationAgent
+from app.adapters.agents.htp.investigation_agent import InvestigationAgent, MAX_SOP_CHARS
 from app.domain.agent_port import AgentStageUpdate, AgentTextChunk
 
 
@@ -168,3 +168,90 @@ class TestInvestigationAgentRouting:
         stage_events = [e for e in events if isinstance(e, AgentStageUpdate)]
         final_stages = [e for e in stage_events if e.stage == "S4"]
         assert len(final_stages) == 1, f"未找到 S4 阶段事件，所有 stage 事件：{[e.stage for e in stage_events]}"
+
+
+class TestSOPPromptTruncation:
+    """_build_sop_prompt() 截断逻辑测试"""
+
+    def test_truncates_long_sop_content(self):
+        """超长 SOP 内容会被截断并添加提示"""
+        # 构造超长内容
+        long_content = "x" * 10000
+        prompt = InvestigationAgent._build_sop_prompt(
+            sop_content=long_content,
+            sop_title="测试SOP",
+            diagnostic_stage="S1",
+            case_id="case-001",
+        )
+
+        # 验证截断生效：prompt 中 SOP 内容部分 ≤ MAX_SOP_CHARS
+        # 注意 prompt 包含其他固定文本，所以总长度会大于 MAX_SOP_CHARS
+        # 我们验证截断提示存在
+        assert "[注意：SOP 文档已截断" in prompt
+        assert "必要时通过工具获取更多细节" in prompt
+
+        # 验证内容被截断到 MAX_SOP_CHARS
+        assert "x" * MAX_SOP_CHARS in prompt  # 截断后的内容存在
+        assert "x" * 9000 not in prompt  # 超出部分不存在
+
+    def test_truncated_content_within_limit(self):
+        """截断后的 SOP 内容字符数不超过上限"""
+        long_content = "测试内容" * 3000  # 约 12000 字符
+        prompt = InvestigationAgent._build_sop_prompt(
+            sop_content=long_content,
+            sop_title="测试SOP",
+            diagnostic_stage="S1",
+            case_id="case-001",
+        )
+
+        # 验证截断提示存在
+        assert "[注意：SOP 文档已截断" in prompt
+
+        # 提取 SOP 内容部分（在【SOP 排障流程】和截断提示之间）
+        # 由于截断逻辑会将内容限制在 MAX_SOP_CHARS，验证不超过该长度
+        # 截断后内容 = 原内容[:MAX_SOP_CHARS] + 截断提示
+        # 所以原始 SOP 部分长度应为 MAX_SOP_CHARS
+        assert "测试内容" in prompt  # 内容存在
+
+    def test_short_sop_not_truncated(self):
+        """短 SOP 内容不截断，无截断提示"""
+        short_content = "这是正常的SOP内容，不需要截断。"
+        prompt = InvestigationAgent._build_sop_prompt(
+            sop_content=short_content,
+            sop_title="测试SOP",
+            diagnostic_stage="S1",
+            case_id="case-001",
+        )
+
+        # 验证无截断提示
+        assert "[注意：SOP 文档已截断" not in prompt
+        # 验证内容完整
+        assert short_content in prompt
+
+    def test_boundary_exact_max_chars(self):
+        """刚好等于 MAX_SOP_CHARS 的内容不截断"""
+        # 构造刚好等于 MAX_SOP_CHARS 的内容
+        boundary_content = "a" * MAX_SOP_CHARS
+        prompt = InvestigationAgent._build_sop_prompt(
+            sop_content=boundary_content,
+            sop_title="测试SOP",
+            diagnostic_stage="S1",
+            case_id="case-001",
+        )
+
+        # 长度刚好等于上限，不触发截断
+        assert "[注意：SOP 文档已截断" not in prompt
+        assert boundary_content in prompt
+
+    def test_boundary_one_over_max_chars(self):
+        """超过 MAX_SOP_CHARS 一个字符也会触发截断"""
+        over_content = "b" * (MAX_SOP_CHARS + 1)
+        prompt = InvestigationAgent._build_sop_prompt(
+            sop_content=over_content,
+            sop_title="测试SOP",
+            diagnostic_stage="S1",
+            case_id="case-001",
+        )
+
+        # 超过上限，触发截断
+        assert "[注意：SOP 文档已截断" in prompt

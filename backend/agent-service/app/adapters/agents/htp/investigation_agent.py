@@ -41,6 +41,9 @@ logger = get_logger("investigation-agent")
 # CDD 候选案例检索数量
 DEFAULT_TOP_K = 15
 
+# SOP 内容字符数上限（约 2000 token，为对话历史留余量）
+MAX_SOP_CHARS = 8000
+
 
 class InvestigationAgent(BaseAgent):
     """S1-S4 诊断调查 Agent（CDD 驱动）。
@@ -311,12 +314,20 @@ class InvestigationAgent(BaseAgent):
         diagnostic_stage: str,
         case_id: str,
     ) -> str:
-        """构建 SOP 模式 System Prompt。"""
+        """构建 SOP 模式 System Prompt。
+
+        对超长 SOP 内容进行截断，防止超出 LLM 上下文窗口。
+        """
         stage_desc_map = {
             "S1": "S1 - 故障定位", "S2": "S2 - 假设生成",
             "S3": "S3 - 验证执行", "S4": "S4 - 根因确认",
         }
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
+
+        # 对超长 SOP 内容进行截断
+        if len(sop_content) > MAX_SOP_CHARS:
+            sop_content = sop_content[:MAX_SOP_CHARS]
+            sop_content += "\n\n[注意：SOP 文档已截断，请基于已有信息分步推理，必要时通过工具获取更多细节]"
 
         return (
             "你是深信服超融合基础设施（HCI）智能排障专家助手。\n\n"
