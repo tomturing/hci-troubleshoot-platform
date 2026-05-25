@@ -27,6 +27,13 @@
 - 当前版本：v2.1.0（MVP 全栈可用）
 - 前端工具栏优化：工单信息 Popover（含 ID/工单号）→ 关闭工单 → SSH终端（Monitor 图标），终端历史按钮移入 TerminalPanel header-actions
 - 环境采集命令更新：`task get -s failed -l 10`（仅失败任务）；后端字段映射已支持整数 status/urgent_type 与 Unix 时间戳（PR #285）
+- **KBD 管理页面搜索增强**（PR #328）：
+  - 支持按案例 ID 精准搜索、标题关键字模糊搜索
+  - 显示顺序按导入时间倒序（新数据在前）
+  - 前端通过 `support_id` 本地拼接 URL，替代已删除的 `support_url` 字段
+- **数据库字段清理**（PR #328）：
+  - `kbd_entry` 删除 `support_url`、`archived_at`（冗余字段）
+  - `sop_document` 删除 `tree_scenario_name`、`tree_total_node_count`、`tree_generated_at`（已合并入 `tree_json`）
 
 ---
 

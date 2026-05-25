@@ -826,10 +826,6 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
             # 写入决策树（若解析成功）
             if parse_result and parse_result.is_valid and parse_result.tree:
-                validation_issues = None
-                if parse_result.warnings:
-                    validation_issues = [w.model_dump() for w in parse_result.warnings]
-
                 await session.execute(
                     text(
                         """
