@@ -34,6 +34,9 @@
 - **数据库字段清理**（PR #328）：
   - `kbd_entry` 删除 `support_url`、`archived_at`（冗余字段）
   - `sop_document` 删除 `tree_scenario_name`、`tree_total_node_count`、`tree_generated_at`（已合并入 `tree_json`）
+- **KBD 分类下拉框修复**（PR #329）：
+  - 前端 `fetchCategories()` 解析 API 响应结构修正，增加空值兜底
+  - Vision LLM prompt 抽离为独立文件，增加文件存在性检查
 
 ---
 
