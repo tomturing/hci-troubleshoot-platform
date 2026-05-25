@@ -102,19 +102,20 @@ async def route(
         top_k=top_k,
     )
 
-    # 第 1 轨：SOP 优先
+    # 第 1 轨：SOP 优先（全文检索排序）
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
             text(
                 """
-                SELECT id, title, content_md
+                SELECT id, title, content_md,
+                       ts_rank(to_tsvector('simple', content_md), plainto_tsquery('simple', :query)) AS rank
                 FROM sop_document
                 WHERE category_id = :category_id AND status = 'published'
-                ORDER BY updated_at DESC
+                ORDER BY rank DESC, updated_at DESC
                 LIMIT :top_k
                 """
             ),
-            {"category_id": category_id, "top_k": top_k},
+            {"category_id": category_id, "query": query, "top_k": top_k},
         )
         sop_rows = result.fetchall()
 
