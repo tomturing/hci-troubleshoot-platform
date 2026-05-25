@@ -203,6 +203,7 @@ class AgentRouter:
                         messages=messages,
                         env_context=env_context,
                         stream=stream,
+                        category_id=category_id,  # 传递 category_id 给 pai-agent
                     ):
                         yield event
                 except AgentUnavailableError as exc:

@@ -40,10 +40,11 @@ from app.domain.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableEr
 logger = logging.getLogger("pydantic-ai-brain")
 tracer = trace.get_tracer(__name__)
 
-# HCI AI 助手系统提示
-_HCI_SYSTEM_PROMPT = """你是 HCI（超融合基础架构）AI 助手，专注于辅助运维工程师诊断和解决 HCI 平台问题。
+# HCI AI 助手系统提示（基础模板，运行时注入 category_id）
+_HCI_SYSTEM_PROMPT_BASE = """你是 HCI（超融合基础架构）AI 助手，专注于辅助运维工程师诊断和解决 HCI 平台问题。
 
 可用工具：
+- search_sop_by_category：根据故障分类编码获取 SOP 文档 ID（优先使用此工具）
 - get_sop_tree：获取 SOP 标准操作流程决策树（用于按步骤引导故障处理）
 - get_active_alerts：查询 HCI 平台当前活跃告警
 - get_vm_list：查询虚拟机列表
@@ -51,10 +52,31 @@ _HCI_SYSTEM_PROMPT = """你是 HCI（超融合基础架构）AI 助手，专注�
 - get_cluster_detail：查询集群详情
 
 工作方式：
-1. 先查询活跃告警/失败任务，了解当前环境状态
-2. 如果能匹配到 SOP 文档，通过 get_sop_tree 获取决策树并按步骤引导
-3. 始终基于工具返回的实际数据进行分析，不要凭空假设环境状态
-4. 对话请使用中文
+1. 如果已知故障分类编码（category_code），优先调用 search_sop_by_category 获取 SOP 文档 ID
+2. 获取到 document_id 后，调用 get_sop_tree 获取决策树并按步骤引导
+3. 如果没有 SOP 文档，先查询活跃告警/失败任务，了解当前环境状态
+4. 始终基于工具返回的实际数据进行分析，不要凭空假设环境状态
+5. 对话请使用中文
+"""
+
+_HCI_SYSTEM_PROMPT_WITH_CATEGORY = """你是 HCI（超融合基础架构）AI 助手，专注于辅助运维工程师诊断和解决 HCI 平台问题。
+
+当前故障分类：{category_code}（已确认）
+
+可用工具：
+- search_sop_by_category：根据故障分类编码获取 SOP 文档 ID（使用当前分类编码）
+- get_sop_tree：获取 SOP 标准操作流程决策树（用于按步骤引导故障处理）
+- get_active_alerts：查询 HCI 平台当前活跃告警
+- get_vm_list：查询虚拟机列表
+- get_failed_tasks：查询最近失败的操作任务
+- get_cluster_detail：查询集群详情
+
+工作方式：
+1. 已确认故障分类为 {category_code}，优先调用 search_sop_by_category("{category_code}") 获取 SOP 文档
+2. 获取到 document_id 后，调用 get_sop_tree 获取决策树并按步骤引导
+3. 如果没有 SOP 文档，查询活跃告警/失败任务，了解当前环境状态
+4. 始终基于工具返回的实际数据进行分析，不要凭空假设环境状态
+5. 对话请使用中文
 """
 
 
@@ -66,18 +88,80 @@ class PydanticAIDeps:
     scp_client: SCPClient
     acli_client: AcliClient
     env_context: dict[str, Any]
+    category_id: str | None = None  # S0 确认的故障分类编码
 
 
 def _build_agent() -> Agent[PydanticAIDeps]:
     """构建 pydantic-ai Agent，注册 HCI 只读工具集"""
 
+    def dynamic_system_prompt(ctx: RunContext[PydanticAIDeps]) -> str:
+        """动态生成 system prompt，根据是否有 category_id 选择不同模板"""
+        if ctx.deps.category_id:
+            return _HCI_SYSTEM_PROMPT_WITH_CATEGORY.format(category_code=ctx.deps.category_id)
+        return _HCI_SYSTEM_PROMPT_BASE
+
     agent: Agent[PydanticAIDeps] = Agent(
         model=None,  # 运行时通过 run_stream(model=...) 传入，允许每个实例使用不同模型
-        system_prompt=_HCI_SYSTEM_PROMPT,
+        system_prompt=dynamic_system_prompt,
         deps_type=PydanticAIDeps,
         usage_limits=UsageLimits(request_limit=15),  # 防止无限 ReAct 循环
         name="hci-pydantic-ai-brain",
     )
+
+    @agent.tool
+    async def search_sop_by_category(
+        ctx: RunContext[PydanticAIDeps],
+        category_code: str,
+        query: str = "",
+    ) -> dict:
+        """根据故障分类编码获取 SOP 文档 ID。
+
+        这是获取 SOP 的第一步：先通过分类编码路由到对应的 SOP 文档。
+        返回结果包含 track（sop/kbd/human_escalation）和 results 列表。
+        如果 track 为 sop，results 中会包含 document_id。
+
+        Args:
+            category_code: 故障分类编码，如 "虚拟机-003"。如果已知当前分类，可直接使用。
+            query: 用户问题描述（可选，用于语义相关性排序）
+        """
+        if ctx.deps.kb_client is None:
+            return {"error": "KB 服务不可用，无法搜索 SOP 文档"}
+
+        # 如果未传入 category_code，尝试使用 deps 中的 category_id
+        if not category_code and ctx.deps.category_id:
+            category_code = ctx.deps.category_id
+
+        if not category_code:
+            return {"error": "缺少故障分类编码（category_code），无法搜索 SOP"}
+
+        result = await ctx.deps.kb_client.route_by_category(
+            category_code=category_code,
+            query=query,
+            top_k=5,
+        )
+        if result is None:
+            return {"error": f"分类 {category_code} 未匹配到任何知识内容"}
+
+        # 提取 SOP 文档信息
+        track = result.get("track", "")
+        results = result.get("results", [])
+
+        if track == "sop" and results:
+            # 返回 SOP 文档列表，包含 document_id
+            sop_docs = []
+            for item in results:
+                sop_docs.append({
+                    "document_id": item.get("id"),
+                    "title": item.get("title"),
+                    "content_md": item.get("content_md", "")[:200],  # 截取前 200 字符
+                })
+            return {"track": "sop", "sop_documents": sop_docs}
+        elif track == "kbd":
+            return {"track": "kbd", "message": "该分类匹配到历史案例（KBD），无 SOP 文档", "results": results[:3]}
+        elif track == "human_escalation":
+            return {"track": "human_escalation", "message": "该分类需要人工介入，无 SOP 文档"}
+        else:
+            return {"track": track, "message": "未找到相关 SOP 文档", "results": results}
 
     @agent.tool
     async def get_sop_tree(ctx: RunContext[PydanticAIDeps], document_id: int) -> dict:
@@ -282,6 +366,7 @@ class PaiAgentAdapter:
         messages: list[dict[str, Any]],
         env_context: dict[str, Any] | None = None,
         stream: bool = True,
+        category_id: str | None = None,
         **_kwargs: Any,
     ) -> AsyncGenerator[AgentEvent, None]:
         """调用 pydantic-ai Agent，流式产出 AgentTextChunk。
@@ -293,6 +378,7 @@ class PaiAgentAdapter:
             messages: OpenAI 格式的消息列表
             env_context: 环境上下文（集群 ID、告警级别等），注入工具依赖
             stream: 是否流式输出（当前实现始终流式，此参数保留用于接口兼容）
+            category_id: S0 确认的故障分类编码（如 "虚拟机-003"），用于 SOP 三轨路由
 
         Raises:
             AgentUnavailableError: 调用失败时抛出，由 AgentRouter 负责降级
@@ -312,6 +398,7 @@ class PaiAgentAdapter:
             scp_client=self._scp,
             acli_client=self._acli,
             env_context=env_context or {},
+            category_id=category_id,
         )
 
         agent = _get_agent()
@@ -320,6 +407,8 @@ class PaiAgentAdapter:
             span.set_attribute("session_id", session_id)
             span.set_attribute("user_prompt_len", len(user_prompt))
             span.set_attribute("history_len", len(message_history))
+            if category_id:
+                span.set_attribute("category_id", category_id)
 
             try:
                 async with agent.run_stream(
