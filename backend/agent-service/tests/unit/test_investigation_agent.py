@@ -66,8 +66,14 @@ class TestInvestigationAgentRouting:
 
     @pytest.mark.asyncio
     async def test_routes_to_sop_mode_when_sop_track(self):
-        """route_by_category 返回 sop 轨道时走 SOP 模式"""
-        kb = _make_kb_client(route_result={"track": "sop", "sop_document_id": 42, "sop_content": "SOP步骤内容"})
+        """route_by_category 返回 sop 轨道时走 SOP 模式，并传递 sop_document_id"""
+        # 模拟 kb-service route API 返回格式（T-AGT-07）
+        kb = _make_kb_client(
+            route_result={
+                "track": "sop",
+                "results": [{"id": 42, "title": "虚拟机启动失败 SOP", "content_md": "SOP步骤内容"}]
+            }
+        )
         registry = _make_registry_mock_with_stream(["SOP 诊断结论"])
 
         agent = InvestigationAgent(
@@ -91,6 +97,13 @@ class TestInvestigationAgentRouting:
         text_events = [e for e in events if isinstance(e, AgentTextChunk)]
         assert len(text_events) >= 1
         assert "SOP 诊断结论" in text_events[-1].content
+
+        # T-AGT-07: 验证 sop_reasoning 事件携带 sop_document_id
+        stage_events = [e for e in events if isinstance(e, AgentStageUpdate)]
+        sop_reasoning_events = [e for e in stage_events if e.stage == "sop_reasoning"]
+        assert len(sop_reasoning_events) == 1, f"未找到 sop_reasoning 事件"
+        assert sop_reasoning_events[0].metadata.get("sop_document_id") == 42, \
+            f"sop_document_id 应为 42，实际为 {sop_reasoning_events[0].metadata.get('sop_document_id')}"
 
     @pytest.mark.asyncio
     async def test_routes_to_fallback_when_no_cases(self):

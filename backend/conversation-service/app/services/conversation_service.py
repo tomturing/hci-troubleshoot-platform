@@ -312,7 +312,19 @@ class ConversationService:
                             yield _chunk
                     elif event_type == "stage_update":
                         _stage = agent_event.get("stage", "")
+                        _metadata = agent_event.get("metadata", {})
                         yield f"\x00event:stage_change:{_stage}\x00"
+                        # T-AGT-07: 处理 SOP 命中统计（sop_reasoning 事件携带 sop_document_id）
+                        if _stage == "sop_reasoning" and _metadata.get("sop_document_id"):
+                            _sop_doc_id = _metadata.get("sop_document_id")
+                            if _sop_doc_id and isinstance(_sop_doc_id, int):
+                                asyncio.create_task(
+                                    self._update_sop_usage(
+                                        conversation_id=conversation_id,
+                                        case_id=case_id,
+                                        sop_document_id=_sop_doc_id,
+                                    )
+                                )
                     elif event_type == "interactive_request":
                         _ir_payload = _json.dumps(
                             {

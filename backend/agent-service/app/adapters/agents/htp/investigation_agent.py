@@ -164,9 +164,11 @@ class InvestigationAgent(BaseAgent):
         if track == "sop" and sop_results:
             sop_content = sop_results[0].get("content_md", "")
             sop_title = sop_results[0].get("title", "SOP 排障手册")
+            sop_document_id = sop_results[0].get("id")  # T-AGT-07: 获取 SOP 文档 ID
             async for event in self._process_sop_mode(
                 sop_content=sop_content,
                 sop_title=sop_title,
+                sop_document_id=sop_document_id,
                 messages=messages,
                 category_id=category_id,
                 diagnostic_stage=diagnostic_stage,
@@ -248,6 +250,7 @@ class InvestigationAgent(BaseAgent):
         self,
         sop_content: str,
         sop_title: str,
+        sop_document_id: int | None,  # T-AGT-07: SOP 文档 ID（用于命中统计）
         messages: list[dict],
         category_id: str,
         diagnostic_stage: str,
@@ -255,7 +258,11 @@ class InvestigationAgent(BaseAgent):
         case_id: str,
         user_id: str,
     ) -> AsyncGenerator[AgentEvent, None]:
-        """SOP 轨道：注入 SOP 后直接 LLM 推理（流式输出）。"""
+        """SOP 轨道：注入 SOP 后直接 LLM 推理（流式输出）。
+
+        Args:
+            sop_document_id: SOP 文档 ID，用于命中统计（传递到 SSE metadata）
+        """
         system_prompt = self._build_sop_prompt(
             sop_content=sop_content,
             sop_title=sop_title,
@@ -264,9 +271,14 @@ class InvestigationAgent(BaseAgent):
         )
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
 
+        # T-AGT-07: 在 metadata 中携带 sop_document_id，供 conversation-service 处理
         yield AgentStageUpdate(
             stage="sop_reasoning",
-            metadata={"sop_title": sop_title, "category_id": category_id},
+            metadata={
+                "sop_title": sop_title,
+                "sop_document_id": sop_document_id,
+                "category_id": category_id,
+            },
         )
 
         async for chunk in ai_client.chat_completion_stream(
