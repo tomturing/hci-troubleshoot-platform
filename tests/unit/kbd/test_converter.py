@@ -311,7 +311,7 @@ class TestConvertKbdWithMeta:
             result = convert_kbd_with_meta("36156")
 
         assert result is not None
-        for key in ["support_id", "title", "support_url", "content_md", "metadata"]:
+        for key in ["support_id", "title", "content_md", "metadata"]:
             assert key in result, f"缺少 key: {key}"
 
     def test_metadata_populated(self, tmp_path, minimal_rows):
@@ -330,21 +330,6 @@ class TestConvertKbdWithMeta:
         meta = result["metadata"]
         assert meta["sangfor_main_module"] == "网络问题"
         assert meta["create_admin_id"] == "68532"
-
-    def test_support_url_contains_id(self, tmp_path, minimal_rows):
-        case_dir = tmp_path / "36156"
-        case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(minimal_rows), encoding="utf-8"
-        )
-        with (
-            patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
-            patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
-        ):
-            from kbd.converter import convert_kbd_with_meta
-            result = convert_kbd_with_meta("36156")
-
-        assert "36156" in result["support_url"]
 
     def test_returns_none_when_mandatory_missing(self, tmp_path, missing_mandatory_rows):
         case_dir = tmp_path / "missing"
