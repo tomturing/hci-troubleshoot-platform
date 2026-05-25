@@ -37,6 +37,9 @@
 - **KBD 分类下拉框修复**（PR #329）：
   - 前端 `fetchCategories()` 解析 API 响应结构修正，增加空值兜底
   - Vision LLM prompt 抽离为独立文件，增加文件存在性检查
+- **KBD 管理页面 UI 优化**（PR #330）：
+  - 导入时间改用 `updated_at`（反映 override 重跑后的更新时间）
+  - 分类筛选改为下拉选择框，支持搜索/清空，复用 `categoryOptions`
 
 ---
 

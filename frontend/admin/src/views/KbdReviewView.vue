@@ -859,13 +859,26 @@ onMounted(() => {
           />
         </el-col>
         <el-col :span="4">
-          <el-input
+          <el-select
             v-model="categoryFilter"
-            placeholder="按 AI 分类 ID 筛选（如 虚拟机-001）"
+            filterable
+            allow-create
             clearable
-            @clear="fetchPending"
-            @keyup.enter="fetchPending"
-          />
+            placeholder="按 AI 分类筛选"
+            style="width: 100%"
+            :loading="categoriesLoading"
+            @change="fetchPending"
+          >
+            <el-option
+              v-for="cat in categoryOptions"
+              :key="cat.code"
+              :value="cat.code"
+              :label="`${cat.code}  ${cat.name}`"
+            >
+              <span style="font-family:monospace;color:#606266;font-size:12px">{{ cat.code }}</span>
+              <span style="margin-left:8px;color:#909399;font-size:12px">{{ cat.name }}</span>
+            </el-option>
+          </el-select>
         </el-col>
         <el-col :span="4">
           <el-select v-model="statusFilter" @change="fetchPending" style="width: 100%">
@@ -945,7 +958,7 @@ onMounted(() => {
 
         <!-- 导入时间 -->
         <el-table-column label="导入时间" width="150">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </el-table-column>
 
         <!-- 操作 -->
