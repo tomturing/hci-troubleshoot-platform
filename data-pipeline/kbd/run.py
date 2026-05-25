@@ -272,7 +272,7 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
         sys.exit(1)
 
     # 检查已抓取且 Vision 完成的案例
-    from .fetcher import _is_fetched, _kbd_dir
+    from .fetcher import _kbd_dir, _is_fetched
 
     ready_ids: list[str] = []
     for support_id in kbd_ids:
@@ -281,7 +281,9 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
 
         kbd_dir = _kbd_dir(support_id)
         img_files = list(kbd_dir.glob("img_*.*"))
-        actual_images = [f for f in img_files if f.suffix not in (".failed", ".txt")]
+        # 过滤掉非图片文件（.failed/.txt/.html/.json 等都是辅助文件）
+        IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+        actual_images = [f for f in img_files if f.suffix.lower() in IMAGE_EXTENSIONS]
 
         if not actual_images:
             ready_ids.append(support_id)

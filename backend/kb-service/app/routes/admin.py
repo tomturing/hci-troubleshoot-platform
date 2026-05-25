@@ -300,7 +300,7 @@ async def list_kbd_entries(
         # 查询分页数据
         data_sql = text(  # noqa: S608
             f"""
-            SELECT id, support_id, support_url, title,
+            SELECT id, support_id, title,
                    problem_description, alert_info, steps_text, root_cause,
                    solution, operational_impact, is_temporary, recommendations,
                    steps_json, content_md,
@@ -321,9 +321,7 @@ async def list_kbd_entries(
         {
             "id": row["id"],
             "support_id": row["support_id"],
-            "support_url": row["support_url"] or "",
             "title": row["title"],
-            # 8 大章节字段（摘要列表，完整内容在 detail 接口获取）
             "problem_description": row["problem_description"] or "",
             "alert_info": row["alert_info"] or "",
             "steps_text": row["steps_text"] or "",
@@ -384,7 +382,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
             text("""
-                SELECT id, support_id, support_url, title,
+                SELECT id, support_id, title,
                        problem_description, alert_info, steps_text, root_cause,
                        solution, operational_impact, is_temporary, recommendations,
                        steps_json, content_md,
@@ -405,7 +403,6 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
     return {
         "id": row["id"],
         "support_id": row["support_id"],
-        "support_url": row["support_url"] or "",
         "title": row["title"],
         # 8 大章节字段（完整内容）
         "problem_description": row["problem_description"] or "",
@@ -829,12 +826,6 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
             # 写入决策树（若解析成功）
             if parse_result and parse_result.is_valid and parse_result.tree:
-                # 统计总节点数（递归遍历）
-                def count_nodes(node) -> int:
-                    return 1 + sum(count_nodes(c) for c in node.children)
-
-                total_node_count = count_nodes(parse_result.tree)
-
                 validation_issues = None
                 if parse_result.warnings:
                     validation_issues = [w.model_dump() for w in parse_result.warnings]
@@ -845,12 +836,9 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                         UPDATE sop_document
                         SET tree_json              = CAST(:tree_json AS jsonb),
                             tree_schema_version    = :schema_version,
-                            tree_scenario_name     = :scenario_name,
                             tree_leaf_count        = :leaf_count,
-                            tree_total_node_count  = :total_nodes,
                             tree_validation_status = :validation_status,
                             tree_validation_issues = CAST(:validation_issues AS jsonb),
-                            tree_generated_at      = :generated_at,
                             tree_generator_version = :generator_version,
                             updated_at             = :updated_at
                         WHERE id = :document_id
@@ -860,14 +848,11 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                         "document_id": document_id,
                         "tree_json": json.dumps(parse_result.tree.model_dump(), ensure_ascii=False),
                         "schema_version": "sop-tree-v1",
-                        "scenario_name": parse_result.tree.name,
                         "leaf_count": tree_leaf_count,
-                        "total_nodes": total_node_count,
                         "validation_status": tree_validation_status,
-                        "validation_issues": json.dumps(validation_issues, ensure_ascii=False)
-                        if validation_issues
+                        "validation_issues": json.dumps([w.model_dump() for w in parse_result.warnings], ensure_ascii=False)
+                        if parse_result.warnings
                         else None,
-                        "generated_at": now,
                         "generator_version": "sop-parser-v1",
                         "updated_at": now,
                     },
@@ -875,9 +860,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                 logger.info(
                     event="sop_tree_written",
                     document_id=document_id,
-                    scenario_name=parse_result.tree.name,
                     leaf_count=tree_leaf_count,
-                    total_nodes=total_node_count,
                 )
 
             await session.commit()
@@ -1104,7 +1087,6 @@ async def update_sop_status(request: Request, document_id: int, body: SopStatusU
             sop_doc.content_md = body.content_md
             # 内容变更后清空决策树（需重新发布生成）
             sop_doc.tree_json = None
-            sop_doc.tree_generated_at = None
             sop_doc.tree_validation_status = None
             rechunked = True
             # 内容变更后若已发布则降级为草稿

@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from shared.database.postgres import Base
 from sqlalchemy import Column, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import relationship
 
 
 class SopDocument(Base):

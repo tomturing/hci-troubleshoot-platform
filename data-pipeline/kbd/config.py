@@ -19,7 +19,7 @@ class KbdSettings(BaseSettings):
     """KBD 管道配置"""
 
     model_config = SettingsConfigDict(
-        env_file=_PROJECT_ROOT / "scripts" / "kbd" / ".env",
+        env_file=_PROJECT_ROOT / "data-pipeline" / "kbd" / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -51,12 +51,12 @@ class KbdSettings(BaseSettings):
     # ── 本地存储 ─────────────────────────────────────────────────────────────
     # KBD 抓取缓存目录（每个案例一个子目录 cache/{support_id}/）
     KBD_CACHE_DIR: Path = Field(
-        default=_PROJECT_ROOT / "scripts" / "kbd" / "cache",
+        default=_PROJECT_ROOT / "data-pipeline" / "kbd" / "cache",
         description="KBD 缓存根目录，结构为 {KBD_CACHE_DIR}/{support_id}/raw.json + img_N.png 等",
     )
     # KBD Pipeline logs 目录（保存 kbd_{run_id}.log 和 progress_{run_id}.json）
     KBD_LOGS_DIR: Path = Field(
-        default=_PROJECT_ROOT / "scripts" / "kbd" / "logs",
+        default=_PROJECT_ROOT / "data-pipeline" / "kbd" / "logs",
         description="KBD pipeline logs 目录，保存 kbd_{run_id}.log 和 progress_{run_id}.json",
     )
     # category_baseline.yaml 路径

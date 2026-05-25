@@ -340,10 +340,10 @@ async def import_entry(
     Returns:
         "created" | "overridden" | "skipped" | "error"
     """
-    from .converter import convert_kbd_structured
+    from .converter import convert_case_structured
 
     # 转换：从文件缓存提取结构化章节字段 + content_md + metadata
-    result = convert_kbd_structured(support_id)
+    result = convert_case_structured(support_id)
     if not result:
         # 转换失败或缺少必填 section（已写 abnormal.json）
         logger.warning("案例 %s 转换结果为空，跳过（详见 abnormal.json）", support_id)
@@ -476,7 +476,7 @@ async def import_batch(
 # ─── 旧版兼容接口 ────────────────────────────────────────────────────────────────
 
 
-async def get_pending_review_kbds(
+async def get_pending_review_cases(
     _pool: Any,
     limit: int = 50,
 ) -> list[dict]:
@@ -487,7 +487,7 @@ async def get_pending_review_kbds(
     如需使用，请调用 GET /api/admin/kb/pending 接口。
     """
     logger.warning(
-        "get_pending_review_kbds 已废弃，请改用 admin-service API: "
+        "get_pending_review_cases 已废弃，请改用 admin-service API: "
         "GET /api/admin/kb/pending"
     )
     return []
