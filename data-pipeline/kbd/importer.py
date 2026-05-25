@@ -340,10 +340,10 @@ async def import_entry(
     Returns:
         "created" | "overridden" | "skipped" | "error"
     """
-    from .converter import convert_case_structured
+    from .converter import convert_kbd_structured
 
     # 转换：从文件缓存提取结构化章节字段 + content_md + metadata
-    result = convert_case_structured(support_id)
+    result = convert_kbd_structured(support_id)
     if not result:
         # 转换失败或缺少必填 section（已写 abnormal.json）
         logger.warning("案例 %s 转换结果为空，跳过（详见 abnormal.json）", support_id)

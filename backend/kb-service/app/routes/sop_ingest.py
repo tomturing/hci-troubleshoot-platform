@@ -225,7 +225,6 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
 
                 # 清空决策树（内容变更，需重新发布生成）
                 existing_by_source.tree_json = None
-                existing_by_source.tree_generated_at = None
                 existing_by_source.tree_validation_status = None
 
                 await session.commit()

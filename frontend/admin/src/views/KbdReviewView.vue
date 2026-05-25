@@ -18,7 +18,6 @@ interface KbdMetadata {
 interface KbdEntry {
   id: number
   support_id: string
-  support_url: string
   title: string
   content_md: string
   metadata: KbdMetadata
@@ -32,6 +31,12 @@ interface KbdEntry {
   created_at: string
   updated_at: string
   ai_category_label?: string | null
+}
+
+// 生成深信服案例原始页面 URL
+const SANGFOR_BASE_URL = 'https://support.sangfor.com.cn'
+function makeSupportUrl(supportId: string): string {
+  return `${SANGFOR_BASE_URL}/cases/list?product_id=33&type=1&category_id=${supportId}&isOpen=true`
 }
 
 interface PendingKbdResponse {
@@ -279,6 +284,7 @@ function resetFilters() {
   statusFilter.value = 'draft'
   supportIdFilter.value = ''
   titleKeywordFilter.value = ''
+  page.value = 1
   fetchPending()
 }
 
@@ -885,7 +891,7 @@ onMounted(() => {
         <!-- 案例 ID -->
         <el-table-column label="案例 ID" width="100">
           <template #default="{ row }">
-            <a :href="row.support_url" target="_blank" class="support-link">
+            <a :href="makeSupportUrl(row.support_id)" target="_blank" class="support-link">
               {{ row.support_id }}
             </a>
           </template>
@@ -983,7 +989,7 @@ onMounted(() => {
         <!-- 基本信息 -->
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="案例 ID">
-            <a :href="detailEntry.support_url" target="_blank" class="support-link">
+            <a :href="makeSupportUrl(detailEntry.support_id)" target="_blank" class="support-link">
               {{ detailEntry.support_id }}
               <el-icon style="font-size: 11px; margin-left: 3px"><Link /></el-icon>
             </a>
