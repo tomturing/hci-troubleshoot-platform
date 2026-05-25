@@ -173,10 +173,13 @@ async def lifespan(app: FastAPI):
     if settings.PYDANTIC_AI_ENABLED:
         from app.adapters.agents.pai.pai_agent_adapter import PaiAgentAdapter
         from app.adapters.clients.acli_client import AcliClient
+        from app.adapters.clients.scp_client import SCPClient
 
         _acli = AcliClient.from_env()
+        # 复用 ReAct 块创建的 scp_client（如果存在），否则新建
+        _scp = scp_client if "scp_client" in dir() else SCPClient.from_env()
         pai_adapter = PaiAgentAdapter.from_env(
-            scp_client=None,
+            scp_client=_scp,
             acli_client=_acli,
             kb_client=kb_client,
         )
