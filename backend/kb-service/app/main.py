@@ -20,12 +20,12 @@ from shared.utils.exception_handlers import register_exception_handlers
 from app.config import settings
 from app.routes import (
     admin,
-    kbd_search,
     categories,
     classify,
     health,
     hits,
     ingest,
+    kbd_search,
     route,
     search,
     sop_ingest,

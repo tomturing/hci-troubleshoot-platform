@@ -848,8 +848,8 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                         "leaf_count": tree_leaf_count,
                         "total_nodes": total_node_count,
                         "validation_status": tree_validation_status,
-                        "validation_issues": json.dumps([w.model_dump() for w in parse_result.warnings], ensure_ascii=False)
-                        if parse_result.warnings
+                        "validation_issues": json.dumps(validation_issues, ensure_ascii=False)
+                        if validation_issues
                         else None,
                         "generated_at": now,
                         "generator_version": "sop-parser-v1",

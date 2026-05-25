@@ -7,7 +7,7 @@ tests/unit/kbd/test_fetcher.py — kbd/fetcher.py 单元测试
   - _make_support_url：URL 格式验证
   - _is_fetched：幂等检测（raw.json 存在且可解析）
   - _write_raw / _write_fetch_failed：文件写入（使用 tmp_path fixture）
-  - fetch_case：API 调用端到端（httpx mock + 文件系统验证）
+  - fetch_kbd：API 调用端到端（httpx mock + 文件系统验证）
 """
 from __future__ import annotations
 
@@ -210,10 +210,10 @@ class TestFileWrite:
             assert "连接超时" in data["error"]
 
 
-# ─── fetch_case（集成级 mock）────────────────────────────────────────────────
+# ─── fetch_kbd（集成级 mock）────────────────────────────────────────────────
 
 class TestFetchCase:
-    """测试 fetch_case 主流程（mock httpx，真实文件系统）"""
+    """测试 fetch_kbd 主流程（mock httpx，真实文件系统）"""
 
     @pytest.mark.asyncio
     async def test_fetch_creates_raw_json(self, tmp_path, api_payload):
@@ -236,8 +236,8 @@ class TestFetchCase:
             patch("kbd.fetcher.settings.MIN_IMAGE_SIZE", 2048),
             patch("kbd.fetcher._retry_request", AsyncMock(return_value=mock_resp)),
         ):
-            from kbd.fetcher import fetch_case
-            result = await fetch_case("36156")
+            from kbd.fetcher import fetch_kbd
+            result = await fetch_kbd("36156")
 
             assert result is not None
             assert result["support_id"] == "36156"
@@ -254,8 +254,8 @@ class TestFetchCase:
             json.dumps(minimal_rows), encoding="utf-8"
         )
         with patch("kbd.fetcher.settings.KBD_CACHE_DIR", tmp_path):
-            from kbd.fetcher import fetch_case
-            result = await fetch_case("36156")
+            from kbd.fetcher import fetch_kbd
+            result = await fetch_kbd("36156")
             assert result is not None
             assert result.get("skipped") is True
 
@@ -276,8 +276,8 @@ class TestFetchCase:
             patch("kbd.fetcher.settings.SANGFOR_MAX_RETRIES", 1),
             patch("kbd.fetcher._retry_request", AsyncMock(return_value=mock_resp)),
         ):
-            from kbd.fetcher import fetch_case
-            result = await fetch_case("99999")
+            from kbd.fetcher import fetch_kbd
+            result = await fetch_kbd("99999")
             assert result is None
             failed_path = tmp_path / "99999" / "fetch.failed"
             assert failed_path.exists()

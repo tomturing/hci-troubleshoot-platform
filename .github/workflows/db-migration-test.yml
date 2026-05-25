@@ -91,19 +91,19 @@ jobs:
           echo "✅ Schema 全量应用成功"
 
       # ── Step 3: Schema 完整性验证 ─────────────────────────────────────────
-      # 验证 17 张业务表存在，7 张废弃表未被创建
+      # 验证 16 张业务表存在，8 张废弃表未被创建
       - name: Schema 完整性检查
         run: |
           EXPECTED_TABLES=(
             "user" "customer" "case" "conversation" "message"
             "diagnostic_item" "tool_result" "audit_log" "session"
             "system_prompt" "tool_definition" "kb_category"
-            "kbd_entry" "sop_document" "sop_chunk"
+            "kbd_entry" "sop_document"
             "environment" "assistant_evaluation"
           )
           DEPRECATED_TABLES=(
             "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"
-            "raw_cases" "knowledge_atoms" "prompt_audit"
+            "raw_cases" "knowledge_atoms" "prompt_audit" "sop_chunk"
           )
 
           MISSING=0

@@ -92,3 +92,21 @@ data-pipeline/cases_raw/.fetch_progress.json
 
 .obsidian/
 docs/.claude/
+
+# 运行时生成文件（不提交）
+.understand-anything/
+evaluation/vm_test/
+evaluation/vm_test_retry/
+evaluation/eval_results.json
+evaluation/failed_records.json
+evaluation/progress.json
+
+# 测试/评估数据文件（不提交）
+15_node_sops.jsonl
+vmstart_node_sops.jsonl
+HCI-*.xlsx
+Redis_*.html
+Redis_*.yml
+SPT源数据*.xlsx
+案例*.xlsx
+【案例治理】*.xlsx

@@ -6,8 +6,8 @@ tests/unit/kbd/test_converter.py — kbd/converter.py 单元测试
   - _is_empty_content：空内容检测（空格/空标签/None）
   - _build_image_seq_map：按全局顺序建立 img URL → vision_desc 映射
   - _html_to_md：HTML 转 Markdown（img→vision块、基础格式）
-  - convert_case：主流程（文件读取 + 必填验证 + content_md 组装）
-  - convert_case_with_meta：返回完整元数据字典
+  - convert_kbd：主流程（文件读取 + 必填验证 + content_md 组装）
+  - convert_kbd_with_meta：返回完整元数据字典
 """
 from __future__ import annotations
 
@@ -126,8 +126,9 @@ class TestBuildImageSeqMap:
 
         assert len(img_map) == 2
         values = list(img_map.values())
-        assert "第一张图说明" in values
-        assert "第二张图说明" in values
+        # 返回格式已变更：{url: {"seq": int, "desc": str}}
+        assert values[0]["desc"] == "第一张图说明"
+        assert values[1]["desc"] == "第二张图说明"
 
     def test_missing_desc_file_returns_empty_string(self, tmp_path):
         """没有 desc 文件时对应 URL 的 value 为空字符串"""
@@ -138,7 +139,9 @@ class TestBuildImageSeqMap:
         ):
             from kbd.converter import _build_image_seq_map
             img_map = _build_image_seq_map(tmp_path.name, html)
-        assert list(img_map.values()) == [""]
+        # 返回格式已变更：{url: {"seq": int, "desc": str}}
+        values = list(img_map.values())
+        assert values == [{"seq": 0, "desc": ""}]
 
     def test_no_images(self, tmp_path):
         html = "<p>没有图片</p>"
@@ -176,7 +179,8 @@ class TestHtmlToMd:
     def test_img_with_desc_replaced(self):
         """有 vision_desc 的 img 应替换为引用块"""
         html = '<img src="/_static/img1.png" />'
-        image_map = {"https://support.sangfor.com.cn/_static/img1.png": "服务器面板截图"}
+        # image_map 格式已变更：{url: {"seq": int, "desc": str}}
+        image_map = {"https://support.sangfor.com.cn/_static/img1.png": {"seq": 0, "desc": "服务器面板截图"}}
         with patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"):
             md = self.fn(html, image_map)
         assert "截图说明" in md
@@ -196,10 +200,10 @@ class TestHtmlToMd:
         assert "\n\n\n" not in md
 
 
-# ─── convert_case ────────────────────────────────────────────────────────────
+# ─── convert_kbd ────────────────────────────────────────────────────────────
 
-class TestConvertCase:
-    """测试 convert_case 主流程"""
+class TestConvertKbd:
+    """测试 convert_kbd 主流程"""
 
     def test_success_returns_content_md(self, tmp_path, minimal_rows):
         """正常案例应返回非空 content_md 字符串"""
@@ -212,8 +216,8 @@ class TestConvertCase:
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
-            from kbd.converter import convert_case
-            result = convert_case("36156")
+            from kbd.converter import convert_kbd
+            result = convert_kbd("36156")
 
         assert isinstance(result, str)
         assert len(result) > 0
@@ -224,8 +228,8 @@ class TestConvertCase:
     def test_missing_raw_json_returns_none(self, tmp_path):
         """raw.json 不存在时应返回 None"""
         with patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path):
-            from kbd.converter import convert_case
-            result = convert_case("nonexistent")
+            from kbd.converter import convert_kbd
+            result = convert_kbd("nonexistent")
         assert result is None
 
     def test_missing_mandatory_section_returns_none(self, tmp_path, missing_mandatory_rows):
@@ -239,8 +243,8 @@ class TestConvertCase:
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
-            from kbd.converter import convert_case
-            result = convert_case("missing")
+            from kbd.converter import convert_kbd
+            result = convert_kbd("missing")
 
         assert result is None
         abnormal_path = tmp_path / "missing" / "abnormal.json"
@@ -259,8 +263,8 @@ class TestConvertCase:
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
-            from kbd.converter import convert_case
-            result = convert_case("36156")
+            from kbd.converter import convert_kbd
+            result = convert_kbd("36156")
 
         # 建议与总结和排查内容是空白的，不应出现
         assert "建议与总结" not in result
@@ -281,17 +285,17 @@ class TestConvertCase:
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
-            from kbd.converter import convert_case
-            result = convert_case("36156")
+            from kbd.converter import convert_kbd
+            result = convert_kbd("36156")
 
         assert "截图说明" in result
         assert "告警页面截图" in result
 
 
-# ─── convert_case_with_meta ──────────────────────────────────────────────────
+# ─── convert_kbd_with_meta ──────────────────────────────────────────────────
 
-class TestConvertCaseWithMeta:
-    """测试 convert_case_with_meta 返回结构"""
+class TestConvertKbdWithMeta:
+    """测试 convert_kbd_with_meta 返回结构"""
 
     def test_returns_expected_keys(self, tmp_path, minimal_rows):
         case_dir = tmp_path / "36156"
@@ -303,8 +307,8 @@ class TestConvertCaseWithMeta:
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
-            from kbd.converter import convert_case_with_meta
-            result = convert_case_with_meta("36156")
+            from kbd.converter import convert_kbd_with_meta
+            result = convert_kbd_with_meta("36156")
 
         assert result is not None
         for key in ["support_id", "title", "support_url", "content_md", "metadata"]:
@@ -320,8 +324,8 @@ class TestConvertCaseWithMeta:
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
-            from kbd.converter import convert_case_with_meta
-            result = convert_case_with_meta("36156")
+            from kbd.converter import convert_kbd_with_meta
+            result = convert_kbd_with_meta("36156")
 
         meta = result["metadata"]
         assert meta["sangfor_main_module"] == "网络问题"
@@ -337,8 +341,8 @@ class TestConvertCaseWithMeta:
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
-            from kbd.converter import convert_case_with_meta
-            result = convert_case_with_meta("36156")
+            from kbd.converter import convert_kbd_with_meta
+            result = convert_kbd_with_meta("36156")
 
         assert "36156" in result["support_url"]
 
@@ -352,7 +356,7 @@ class TestConvertCaseWithMeta:
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
-            from kbd.converter import convert_case_with_meta
-            result = convert_case_with_meta("missing")
+            from kbd.converter import convert_kbd_with_meta
+            result = convert_kbd_with_meta("missing")
 
         assert result is None
