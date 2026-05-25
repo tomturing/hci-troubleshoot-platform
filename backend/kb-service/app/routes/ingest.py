@@ -206,7 +206,7 @@ class KbdIngestRequest(BaseModel):
     """
 
     support_id: str = Field(..., min_length=1, max_length=20, description="深信服案例ID（幂等键）")
-    support_url: str | None = Field(None, description="原始案例 URL")
+
     title: str = Field(..., min_length=1, description="案例标题")
 
     # 8 大标准章节（叙述字段，Markdown 格式）
@@ -468,7 +468,6 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
         # 2. 创建新条目（结构化章节字段）
         new_entry = KbdEntry(
             support_id=body.support_id,
-            support_url=body.support_url,
             title=body.title,
             problem_description=body.problem_description,
             alert_info=body.alert_info,

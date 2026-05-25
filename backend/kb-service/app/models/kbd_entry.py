@@ -52,7 +52,7 @@ class KbdEntry(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     support_id = Column(String(20), unique=True, nullable=False)         # 深信服案例ID（幂等键）
-    support_url = Column(Text, nullable=True)                            # 原始案例 URL
+
     title = Column(Text, nullable=False)                                 # 案例标题
 
     # ── 8 大标准章节（结构化存储）────────────────────────────────────────────
@@ -105,7 +105,6 @@ class KbdEntry(Base):
     reviewed_at = Column(DateTime(timezone=True), nullable=True)         # 审核时间
     review_note = Column(Text, nullable=True)                            # 审核备注
     published_at = Column(DateTime(timezone=True), nullable=True)        # 发布时间
-    archived_at = Column(DateTime(timezone=True), nullable=True)         # 归档时间
 
     # ── 命中统计（case 级去重，物化列）────────────────────────────────────────
     hit_count = Column(Integer, nullable=False, default=0)               # 有多少个唯一 case 命中此条目（S4 根因确认时 +1）

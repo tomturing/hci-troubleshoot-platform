@@ -235,14 +235,18 @@ async def list_kbd_entries(
     page_size: int = 20,
     status: str = "draft",
     category_id: str | None = None,
+    support_id: str | None = None,
+    title_keyword: str | None = None,
 ):
-    """查询 KBD 条目列表（分页 + 状态/分类过滤）
+    """查询 KBD 条目列表（分页 + 状态/分类/案例ID/标题过滤）
 
     Args:
         page: 页码（从 1 开始）
         page_size: 每页条数（最大 100）
         status: 状态过滤（draft/published/rejected/archived）
         category_id: 按 AI 分类 ID 过滤（可选）
+        support_id: 按案例 ID 精准匹配（可选）
+        title_keyword: 按标题关键字模糊搜索（可选）
 
     Returns:
         { entries: [...], total, page, page_size }
@@ -263,6 +267,8 @@ async def list_kbd_entries(
         page_size=page_size,
         status=status,
         category_id=category_id,
+        support_id=support_id,
+        title_keyword=title_keyword,
     )
 
     async with _db_manager.async_session_factory() as session:
@@ -273,6 +279,16 @@ async def list_kbd_entries(
         if category_id:
             where_clauses.append("(ai_category_id = :category_id OR category_id = :category_id)")
             params["category_id"] = category_id
+
+        # 按案例 ID 精准匹配
+        if support_id:
+            where_clauses.append("support_id = :support_id")
+            params["support_id"] = support_id
+
+        # 按标题关键字模糊搜索
+        if title_keyword:
+            where_clauses.append("title ILIKE :title_keyword")
+            params["title_keyword"] = f"%{title_keyword}%"
 
         where_sql = " AND ".join(where_clauses)
 

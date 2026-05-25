@@ -185,7 +185,6 @@ def ensure_kb_service_reachable() -> bool:
 async def _call_kbd_ingest_api(
     support_id: str,
     title: str,
-    support_url: str | None,
     content_md: str | None,
     metadata: dict[str, Any],
     problem_description: str = "",
@@ -211,7 +210,6 @@ async def _call_kbd_ingest_api(
     Args:
         support_id: 案例 ID（幂等键）
         title: 案例标题
-        support_url: 原始案例 URL
         content_md: 聚合渲染 Markdown（含视觉描述）
         metadata: 补充元数据
         problem_description: 问题描述章节
@@ -244,7 +242,6 @@ async def _call_kbd_ingest_api(
     }
     payload = {
         "support_id": support_id,
-        "support_url": support_url,
         "title": title,
         # 8 大章节字段
         "problem_description": problem_description,
@@ -353,7 +350,6 @@ async def import_entry(
         return "error"
 
     title: str = result["title"]
-    support_url: str = result["support_url"]
     content_md: str = result["content_md"]
     metadata: dict[str, Any] = result["metadata"]
 
@@ -368,7 +364,6 @@ async def import_entry(
         api_result = await _call_kbd_ingest_api(
             support_id=support_id,
             title=title,
-            support_url=support_url,
             content_md=content_md,
             metadata=metadata,
             problem_description=result.get("problem_description", ""),

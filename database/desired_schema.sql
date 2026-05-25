@@ -780,7 +780,6 @@ CREATE INDEX IF NOT EXISTS idx_kb_category_embedding ON kb_category
 CREATE TABLE IF NOT EXISTS kbd_entry (
     id bigserial NOT NULL,
     support_id varchar(20) NOT NULL UNIQUE,
-    support_url text,
     title text NOT NULL,
     -- 8 大标准章节（结构化存储，来源：data-pipeline Stage3 提取 + admin 人工编辑）
     -- 叙述字段：由 pipeline 从案例 HTML 自动提取，Markdown 格式
@@ -814,7 +813,6 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     reviewed_at timestamptz,
     review_note text,
     published_at timestamptz,
-    archived_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     hit_count integer NOT NULL DEFAULT 0,
@@ -825,7 +823,6 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
 COMMENT ON TABLE kbd_entry IS 'KBD 知识条目表 — KBD 知识条目（~600 字/条），整条 embedding，无分块';
 COMMENT ON COLUMN kbd_entry.id IS '知识条目主键，自增';
 COMMENT ON COLUMN kbd_entry.support_id IS '深信服案例 ID（幂等键）';
-COMMENT ON COLUMN kbd_entry.support_url IS '深信服案例 URL';
 COMMENT ON COLUMN kbd_entry.title IS '知识条目标题';
 COMMENT ON COLUMN kbd_entry.problem_description IS '问题描述（8 大章节之一，pipeline 自动提取 Markdown，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.alert_info IS '告警信息（8 大章节之一，pipeline 自动提取，admin 可编辑）';
@@ -850,7 +847,6 @@ COMMENT ON COLUMN kbd_entry.reviewer_id IS '审核人 ID';
 COMMENT ON COLUMN kbd_entry.reviewed_at IS '审核时间';
 COMMENT ON COLUMN kbd_entry.review_note IS '审核备注';
 COMMENT ON COLUMN kbd_entry.published_at IS '发布时间';
-COMMENT ON COLUMN kbd_entry.archived_at IS '归档时间';
 COMMENT ON COLUMN kbd_entry.created_at IS '创建时间';
 COMMENT ON COLUMN kbd_entry.updated_at IS '最后更新时间';
 
@@ -865,8 +861,6 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_ai_category ON kbd_entry (ai_category_i
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_published ON kbd_entry (published_at DESC) WHERE status = 'published';
 -- 全文检索
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv ON kbd_entry USING GIN (tsv);
--- JSONB 内容检索
-CREATE INDEX IF NOT EXISTS idx_kbd_entry_metadata ON kbd_entry USING GIN (metadata);
 -- steps_json 结构查询（如查找使用特定 tool_name 的 KBD）
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_steps_json ON kbd_entry USING GIN (steps_json);
 -- images_json 结构查询（如查找含特定 section 图片的 KBD）
@@ -920,12 +914,9 @@ CREATE TABLE IF NOT EXISTS sop_document (
     -- 决策树字段（原 sop_tree 表，1:1 关系，approve 时写入，NULL = 未生成）
     tree_json               jsonb,
     tree_schema_version     varchar(20)      DEFAULT 'sop-tree-v1',
-    tree_scenario_name      varchar(500),
     tree_leaf_count         integer          NOT NULL DEFAULT 0,
-    tree_total_node_count   integer          NOT NULL DEFAULT 0,
     tree_validation_status  varchar(20),
     tree_validation_issues  jsonb,
-    tree_generated_at       timestamptz,
     tree_generator_version  varchar(50)      DEFAULT 'sop-parser-v1',
     CONSTRAINT fk_sop_document_category_id FOREIGN KEY (category_id) REFERENCES kb_category (code) ON DELETE NO ACTION,
     CONSTRAINT sop_document_pkey PRIMARY KEY (id)
@@ -948,12 +939,9 @@ COMMENT ON COLUMN sop_document.updated_at IS '最后更新时间';
 COMMENT ON COLUMN sop_document.hit_count IS '命中计数：有多少个唯一 case_id 的 conversation.sop_document_id = 此文档。物化列，写入 conversation.sop_document_id 时原子 +1（case 级去重）。校验 SQL：SELECT COUNT(DISTINCT case_id) FROM conversation WHERE sop_document_id = id';
 COMMENT ON COLUMN sop_document.tree_json IS 'SOPNode 根节点完整 JSON（含所有子树）；NULL = 决策树尚未生成（draft 或解析失败）';
 COMMENT ON COLUMN sop_document.tree_schema_version IS '树结构 schema 版本（如 sop-tree-v1）';
-COMMENT ON COLUMN sop_document.tree_scenario_name IS '冗余：根节点 name（场景名），方便按名称检索';
 COMMENT ON COLUMN sop_document.tree_leaf_count IS '叶节点（案例节点）数量';
-COMMENT ON COLUMN sop_document.tree_total_node_count IS '总节点数（含路由节点和叶节点）';
 COMMENT ON COLUMN sop_document.tree_validation_status IS 'valid=完全合规; warnings=有警告但已入库; error=解析失败; NULL=未生成';
 COMMENT ON COLUMN sop_document.tree_validation_issues IS 'ValidationIssue 列表 JSON（warnings/errors）';
-COMMENT ON COLUMN sop_document.tree_generated_at IS '树首次生成时间';
 COMMENT ON COLUMN sop_document.tree_generator_version IS '解析器版本，用于判断是否需要重新解析';
 
 -- 建立 conversation.sop_document_id → sop_document.id 的外键约束（conversation 先于 sop_document 创建，延后添加）

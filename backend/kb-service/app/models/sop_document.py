@@ -39,12 +39,9 @@ class SopDocument(Base):
     # 决策树（原 sop_tree 表 1:1 合并，approve 时写入，NULL = 未生成）
     tree_json = Column(JSONB, nullable=True, default=None)
     tree_schema_version = Column(String(20), nullable=True, default="sop-tree-v1")
-    tree_scenario_name = Column(String(500), nullable=True)
     tree_leaf_count = Column(Integer, nullable=False, default=0)
-    tree_total_node_count = Column(Integer, nullable=False, default=0)
     tree_validation_status = Column(String(20), nullable=True)
     tree_validation_issues = Column(JSONB, nullable=True)
-    tree_generated_at = Column(DateTime(timezone=True), nullable=True)
     tree_generator_version = Column(String(50), nullable=True, default="sop-parser-v1")
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)

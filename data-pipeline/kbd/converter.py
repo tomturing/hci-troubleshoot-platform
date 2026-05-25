@@ -351,7 +351,6 @@ def convert_kbd_with_meta(support_id: str) -> dict[str, Any] | None:
         {
           "support_id": str,
           "title": str,
-          "support_url": str,
           "content_md": str,
           "metadata": dict,
         }
@@ -368,11 +367,10 @@ def convert_kbd_with_meta(support_id: str) -> dict[str, Any] | None:
     if content_md is None:
         return None
 
-    from .fetcher import _extract_metadata, _make_support_url
+    from .fetcher import _extract_metadata
     return {
         "support_id": support_id,
         "title": title,
-        "support_url": _make_support_url(support_id),
         "content_md": content_md,
         "metadata": _extract_metadata(rows),
     }
@@ -525,11 +523,10 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
         logger.warning("案例 %s 所有 section 转换后均为空", support_id)
         return None
 
-    from .fetcher import _extract_metadata, _make_support_url
+    from .fetcher import _extract_metadata
     return {
         "support_id": support_id,
         "title": title,
-        "support_url": _make_support_url(support_id),
         "metadata": _extract_metadata(rows),
         # 8 大章节字段（含 ![img:N] 占位符，不含视觉描述文本）
         **structured_fields,
