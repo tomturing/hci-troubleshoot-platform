@@ -44,7 +44,7 @@ import httpx
 
 from .classifier import classify_batch
 from .config import settings
-from .fetcher import _case_dir, _is_fetched, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
+from .fetcher import _is_fetched, _kbd_dir, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
 from .image_proc import _find_images, _has_failed_vision, get_failed_vision_ids, process_images_batch
 from .importer import import_batch
 from .progress import (
@@ -82,7 +82,7 @@ async def _create_pool() -> asyncpg.Pool:
 
 
 async def run_pipeline(
-    case_ids: list[str],
+    kbd_ids: list[str],
     stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY),
     *,
     force_fetch: bool = False,
@@ -97,7 +97,7 @@ async def run_pipeline(
     执行指定 stages 的完整流水线。
 
     Args:
-        case_ids: 要处理的案例 ID 列表
+        kbd_ids: 要处理的案例 ID 列表
         stages: 要执行的阶段（默认全部）
         force_fetch: 强制重新抓取已完成的案例（仅影响 Stage 1）
         override: 强制覆盖已存在的记录（仅影响 Stage 3 导入阶段）
@@ -110,8 +110,8 @@ async def run_pipeline(
     Returns:
         (各 stage 的统计结果, 实际使用的 run_id)
     """
-    if not case_ids:
-        logger.warning("case_ids 为空，流水线退出")
+    if not kbd_ids:
+        logger.warning("kbd_ids 为空，流水线退出")
         return {}, run_id or generate_run_id()
 
     if not settings.INTERNAL_API_TOKEN:
@@ -135,7 +135,7 @@ async def run_pipeline(
             if progress:
                 # 成功加载进度，沿用旧的 run_id
                 run_id = progress.get("run_id", resume_run_id)
-                logger.info("已加载进度文件 run_id=%s cases=%d（沿用旧 run_id）", run_id, len(progress.get("cases", {})))
+                logger.info("已加载进度文件 run_id=%s kbds=%d（沿用旧 run_id）", run_id, len(progress.get("kbds", {})))
             else:
                 logger.warning("进度文件加载失败，将从头开始 run_id=%s", resume_run_id)
 
@@ -144,28 +144,28 @@ async def run_pipeline(
         if run_id is None:
             run_id = generate_run_id()
         stage_names = [s.name.lower() for s in stages]
-        progress = init_progress(run_id, case_ids, stage_names)
+        progress = init_progress(run_id, kbd_ids, stage_names)
 
     # ── 失败案例筛选 ──
     if failed_only:
         logger.info("Failed-only 模式：筛选失败案例")
-        failed_fetch = get_failed_fetch_ids(case_ids)
-        failed_vision = get_failed_vision_ids(case_ids)
+        failed_fetch = get_failed_fetch_ids(kbd_ids)
+        failed_vision = get_failed_vision_ids(kbd_ids)
         failed_ids = list(set(failed_fetch + failed_vision))
         if not failed_ids:
             logger.info("没有失败的案例需要处理")
             finish_progress(progress)
-            return {"failed_only": {"skipped": len(case_ids)}}, run_id
-        case_ids = failed_ids
+            return {"failed_only": {"skipped": len(kbd_ids)}}, run_id
+        kbd_ids = failed_ids
         logger.info("筛选出 %d 个失败案例（fetch=%d, vision=%d）",
-                    len(case_ids), len(failed_fetch), len(failed_vision))
+                    len(kbd_ids), len(failed_fetch), len(failed_vision))
         # 重新初始化进度（针对筛选后的案例）
         stage_names = [s.name.lower() for s in stages]
-        progress = init_progress(run_id, case_ids, stage_names)
+        progress = init_progress(run_id, kbd_ids, stage_names)
 
     logger.info(
         "流水线启动 案例数=%d stages=%s run_id=%s resume=%s",
-        len(case_ids),
+        len(kbd_ids),
         [s.name for s in stages],
         run_id,
         resume,
@@ -179,11 +179,11 @@ async def run_pipeline(
         if Stage.FETCH in stages:
             logger.info("─── Stage 1: 数据抓取 ───")
             # Resume 模式：跳过已完成的案例
-            fetch_ids = case_ids
+            fetch_ids = kbd_ids
             if resume and progress:
                 completed_ids = get_completed_ids_for_stage(progress, "fetch")
-                fetch_ids = [cid for cid in case_ids if cid not in completed_ids]
-                skipped = len(case_ids) - len(fetch_ids)
+                fetch_ids = [cid for cid in kbd_ids if cid not in completed_ids]
+                skipped = len(kbd_ids) - len(fetch_ids)
                 if skipped > 0:
                     logger.info("Resume 跳过 %d 个已完成的 fetch 案例", skipped)
 
@@ -201,7 +201,7 @@ async def run_pipeline(
         if Stage.VISION in stages:
             logger.info("─── Stage 2: 图片语义化 ───")
             # 仅处理已抓取完成的案例
-            done_ids = [cid for cid in case_ids if _is_fetched(cid)]
+            done_ids = [cid for cid in kbd_ids if _is_fetched(cid)]
 
             # Resume 模式：跳过已完成的案例
             vision_ids = done_ids
@@ -219,19 +219,19 @@ async def run_pipeline(
 
             # 更新进度
             for cid in vision_ids:
-                case_dir = _case_dir(cid)
-                images = _find_images(case_dir)
+                kbd_dir = _kbd_dir(cid)
+                images = _find_images(kbd_dir)
                 all_done = all(
-                    (case_dir / f"{img.stem}.desc.txt").exists()
+                    (kbd_dir / f"{img.stem}.desc.txt").exists()
                     for img in images
                 ) if images else True
-                status = "done" if all_done and not _has_failed_vision(case_dir) else "failed"
+                status = "done" if all_done and not _has_failed_vision(kbd_dir) else "failed"
                 update_stage_status(progress, "vision", cid, status)
             save_progress(run_id, progress)
 
         if Stage.IMPORT in stages:
             logger.info("─── Stage 3: MD 转换 + 入库 ───")
-            ready_ids = await _get_import_ready_ids(case_ids, pool)
+            ready_ids = await _get_import_ready_ids(kbd_ids, pool)
 
             # Resume 模式：跳过已完成的案例
             import_ids = ready_ids
@@ -266,26 +266,26 @@ async def run_pipeline(
                    WHERE support_id = ANY($1)
                      AND status = 'draft'
                      AND (ai_category_id IS NULL OR ai_category_id = '')""",
-                case_ids,
+                kbd_ids,
             )
             classify_ids_all = [r["support_id"] for r in classify_rows]
 
             # Resume 模式：跳过已完成的案例
-            classify_case_ids = classify_ids_all
+            classify_kbd_ids = classify_ids_all
             if resume and progress:
                 completed_ids = get_completed_ids_for_stage(progress, "classify")
-                classify_case_ids = [cid for cid in classify_ids_all if cid not in completed_ids]
-                skipped = len(classify_ids_all) - len(classify_case_ids)
+                classify_kbd_ids = [cid for cid in classify_ids_all if cid not in completed_ids]
+                skipped = len(classify_ids_all) - len(classify_kbd_ids)
                 if skipped > 0:
                     logger.info("Resume 跳过 %d 个已完成的 classify 案例", skipped)
 
             t0 = time.monotonic()
-            stats = await classify_batch(classify_case_ids, pool)
+            stats = await classify_batch(classify_kbd_ids, pool)
             all_stats["classify"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
             logger.info("Stage 4 完成 %s", all_stats["classify"])
 
             # 更新进度
-            for cid in classify_case_ids:
+            for cid in classify_kbd_ids:
                 row = await pool.fetchrow(
                     """SELECT ai_category_id FROM kbd_entry WHERE support_id = $1""",
                     cid,
@@ -305,7 +305,7 @@ async def run_pipeline(
     return all_stats, run_id
 
 
-async def _get_import_ready_ids(case_ids: list[str], pool: asyncpg.Pool) -> list[str]:
+async def _get_import_ready_ids(kbd_ids: list[str], pool: asyncpg.Pool) -> list[str]:
     """
     获取可导入的案例 ID 列表。
 
@@ -314,13 +314,13 @@ async def _get_import_ready_ids(case_ids: list[str], pool: asyncpg.Pool) -> list
     2. 所有图片都有 .desc.txt 文件（Vision 完成）或无图片
     """
     ready_ids: list[str] = []
-    for support_id in case_ids:
+    for support_id in kbd_ids:
         if not _is_fetched(support_id):
             continue
 
-        case_dir = _case_dir(support_id)
+        kbd_dir = _kbd_dir(support_id)
         # 检查图片是否全部处理完成
-        img_files = list(case_dir.glob("img_*.*"))
+        img_files = list(kbd_dir.glob("img_*.*"))
         # 过滤掉 .failed 文件
         actual_images = [f for f in img_files if f.suffix not in (".failed", ".txt")]
 
@@ -331,7 +331,7 @@ async def _get_import_ready_ids(case_ids: list[str], pool: asyncpg.Pool) -> list
 
         # 检查每张图片是否有对应的 .desc.txt
         all_vision_done = all(
-            (case_dir / f"{f.stem}.desc.txt").exists()
+            (kbd_dir / f"{f.stem}.desc.txt").exists()
             for f in actual_images
         )
         if all_vision_done:
@@ -353,12 +353,12 @@ async def run_from_excel(
     run_id: str | None = None,
 ) -> tuple[dict[str, dict], str]:
     """从 Excel 文件读取全量 ID 并运行流水线"""
-    case_ids = read_ids_from_excel()
+    kbd_ids = read_ids_from_excel()
     if limit:
-        case_ids = case_ids[:limit]
-    logger.info("从 Excel 读取 %d 个案例 ID（limit=%s）", len(case_ids), limit)
+        kbd_ids = kbd_ids[:limit]
+    logger.info("从 Excel 读取 %d 个案例 ID（limit=%s）", len(kbd_ids), limit)
     return await run_pipeline(
-        case_ids,
+        kbd_ids,
         stages=stages,
         force_fetch=force_fetch,
         override=override,

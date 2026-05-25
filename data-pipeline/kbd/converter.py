@@ -284,7 +284,7 @@ def _is_empty_content(html: str) -> bool:
     return not soup.find("img")
 
 
-def convert_case(support_id: str) -> str | None:
+def convert_kbd(support_id: str) -> str | None:
     """
     从文件缓存读取案例，转换为结构化 content_md 字符串。
 
@@ -343,7 +343,7 @@ def convert_case(support_id: str) -> str | None:
     return content_md
 
 
-def convert_case_with_meta(support_id: str) -> dict[str, Any] | None:
+def convert_kbd_with_meta(support_id: str) -> dict[str, Any] | None:
     """
     转换案例，同时返回元数据（供 importer.py 使用）。
 
@@ -364,7 +364,7 @@ def convert_case_with_meta(support_id: str) -> dict[str, Any] | None:
     rows: dict[str, Any] = json.loads(raw_path.read_text(encoding="utf-8"))
     title: str = rows.get("name") or rows.get("title") or f"案例 {support_id}"
 
-    content_md = convert_case(support_id)
+    content_md = convert_kbd(support_id)
     if content_md is None:
         return None
 
@@ -392,7 +392,7 @@ _MD_TITLE_TO_FIELD: dict[str, str] = {
 }
 
 
-def convert_case_structured(support_id: str) -> dict[str, Any] | None:
+def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
     """
     转换案例，返回结构化字段字典（供 importer.py 调用 /api/kb/kbd/ingest 使用）。
 

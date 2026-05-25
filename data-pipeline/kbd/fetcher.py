@@ -112,13 +112,13 @@ def _make_support_url(support_id: str) -> str:
 
 # ─── 文件存储操作 ────────────────────────────────────────────────────────────
 
-def _case_dir(support_id: str) -> Path:
+def _kbd_dir(support_id: str) -> Path:
     return settings.KBD_CACHE_DIR / support_id
 
 
 def _is_fetched(support_id: str) -> bool:
     """raw.json 存在且可解析 = 已抓取完成"""
-    raw_path = _case_dir(support_id) / "raw.json"
+    raw_path = _kbd_dir(support_id) / "raw.json"
     if not raw_path.exists():
         return False
     try:
@@ -131,20 +131,20 @@ def _is_fetched(support_id: str) -> bool:
 
 def _is_fetch_failed(support_id: str) -> bool:
     """检查是否有 fetch.failed 标记"""
-    case_dir = _case_dir(support_id)
-    return (case_dir / "fetch.failed").exists()
+    kbd_dir = _kbd_dir(support_id)
+    return (kbd_dir / "fetch.failed").exists()
 
 
 def _has_image_download_failed(support_id: str) -> bool:
     """检查是否有图片下载失败的标记（img_N.failed）"""
-    case_dir = _case_dir(support_id)
-    return any(case_dir.glob("img_*.failed"))
+    kbd_dir = _kbd_dir(support_id)
+    return any(kbd_dir.glob("img_*.failed"))
 
 
-def get_failed_fetch_ids(case_ids: list[str]) -> list[str]:
+def get_failed_fetch_ids(kbd_ids: list[str]) -> list[str]:
     """从案例列表中筛选出抓取失败的案例（有 fetch.failed 或 img_N.failed 标记）"""
     failed = []
-    for cid in case_ids:
+    for cid in kbd_ids:
         if _is_fetch_failed(cid) or _has_image_download_failed(cid):
             failed.append(cid)
     return failed
@@ -152,10 +152,10 @@ def get_failed_fetch_ids(case_ids: list[str]) -> list[str]:
 
 def _write_raw(support_id: str, rows: dict[str, Any]) -> None:
     """写入 raw.json（使用文件锁防并发冲突）"""
-    case_dir = _case_dir(support_id)
-    case_dir.mkdir(parents=True, exist_ok=True)
+    kbd_dir = _kbd_dir(support_id)
+    kbd_dir.mkdir(parents=True, exist_ok=True)
     lock_path = settings.KBD_CACHE_DIR / f"{support_id}.lock"
-    raw_path = case_dir / "raw.json"
+    raw_path = kbd_dir / "raw.json"
 
     with lock_path.open("w") as lock_f:
         fcntl.flock(lock_f, fcntl.LOCK_EX)
@@ -170,9 +170,9 @@ def _write_raw(support_id: str, rows: dict[str, Any]) -> None:
 
 def _write_fetch_failed(support_id: str, error: str) -> None:
     """写入 fetch.failed 标记"""
-    case_dir = _case_dir(support_id)
-    case_dir.mkdir(parents=True, exist_ok=True)
-    (case_dir / "fetch.failed").write_text(
+    kbd_dir = _kbd_dir(support_id)
+    kbd_dir.mkdir(parents=True, exist_ok=True)
+    (kbd_dir / "fetch.failed").write_text(
         json.dumps({"support_id": support_id, "error": error, "time": time.time()},
                    ensure_ascii=False),
         encoding="utf-8",
@@ -182,7 +182,7 @@ def _write_fetch_failed(support_id: str, error: str) -> None:
 async def _download_image(
     client: httpx.AsyncClient,
     url: str,
-    case_dir: Path,
+    kbd_dir: Path,
     seq: int,
     retry_failed: bool = False,
 ) -> tuple[str | None, str | None]:
@@ -197,7 +197,7 @@ async def _download_image(
         (local_relative_path, mime_type) 或 (None, None) 失败时
     """
     # 检查是否已下载
-    existing = list(case_dir.glob(f"img_{seq}.*"))
+    existing = list(kbd_dir.glob(f"img_{seq}.*"))
     done = [p for p in existing if p.suffix != ".failed"]
     failed = [p for p in existing if p.suffix == ".failed"]
 
@@ -218,7 +218,7 @@ async def _download_image(
         )
     except Exception as exc:
         logger.warning("图片下载失败 url=%s 原因=%s", url, exc)
-        (case_dir / f"img_{seq}.failed").write_text(
+        (kbd_dir / f"img_{seq}.failed").write_text(
             json.dumps({"url": url, "error": str(exc), "time": time.time()},
                        ensure_ascii=False),
             encoding="utf-8",
@@ -235,7 +235,7 @@ async def _download_image(
     # .jpe → .jpg 兼容处理
     if ext == ".jpe":
         ext = ".jpg"
-    save_path = case_dir / f"img_{seq}{ext}"
+    save_path = kbd_dir / f"img_{seq}{ext}"
     save_path.write_bytes(content)
     logger.debug("图片已保存 path=%s size=%d", save_path, len(content))
     return str(save_path), mime
@@ -243,7 +243,7 @@ async def _download_image(
 
 # ─── 主抓取函数 ──────────────────────────────────────────────────────────────
 
-async def fetch_case(
+async def fetch_kbd(
     support_id: str,
     *,
     force: bool = False,
@@ -305,12 +305,12 @@ async def fetch_case(
         image_urls = _extract_image_urls(content_html)
 
         if image_urls:
-            case_dir = _case_dir(support_id)
+            kbd_dir = _kbd_dir(support_id)
             sem = asyncio.Semaphore(settings.VISION_CONCURRENCY)
 
             async def _fetch_one(seq: int, url: str) -> None:
                 async with sem:
-                    await _download_image(client, url, case_dir, seq,
+                    await _download_image(client, url, kbd_dir, seq,
                                           retry_failed=retry_images)
 
             await asyncio.gather(*[_fetch_one(i, u) for i, u in enumerate(image_urls)])
@@ -349,7 +349,7 @@ async def fetch_batch(
     for idx, support_id in enumerate(support_ids, 1):
         logger.info("[%d/%d] 处理案例 %s", idx, total, support_id)
         try:
-            result = await fetch_case(support_id, force=force, retry_images=retry_images)
+            result = await fetch_kbd(support_id, force=force, retry_images=retry_images)
             if result is None:
                 stats["failed"] += 1
             elif result.get("skipped"):

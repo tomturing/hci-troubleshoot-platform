@@ -453,11 +453,11 @@ async def _process_image(
     return _format_desc_v3(background, screenshot_type, full_text, description)
 
 
-def _find_images(case_dir: Path) -> list[Path]:
+def _find_images(kbd_dir: Path) -> list[Path]:
     """扫描案例缓存目录，返回图片列表（按 seq 排序）。"""
     img_suffixes = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
     images: list[Path] = []
-    for p in case_dir.iterdir():
+    for p in kbd_dir.iterdir():
         if p.name.startswith("img_") and p.suffix.lower() in img_suffixes:
             images.append(p)
 
@@ -471,18 +471,18 @@ def _find_images(case_dir: Path) -> list[Path]:
     return images
 
 
-def _has_failed_vision(case_dir: Path) -> bool:
+def _has_failed_vision(kbd_dir: Path) -> bool:
     """
     检查是否有图片处理失败的标记：
     - .desc.failed 文件存在
     - 或 desc.txt 内容为"（无文字）"（疑似 API 限流）
     """
     # 检查是否有 .desc.failed 文件
-    if any(case_dir.glob("img_*.desc.failed")):
+    if any(kbd_dir.glob("img_*.desc.failed")):
         return True
 
     # 检查是否有识别为"无文字"的 desc.txt（疑似失败）
-    for desc_file in case_dir.glob("img_*.desc.txt"):
+    for desc_file in kbd_dir.glob("img_*.desc.txt"):
         try:
             content = desc_file.read_text(encoding="utf-8")
             if "（无文字）" in content and "DESCRIPTION:" in content:
@@ -493,20 +493,20 @@ def _has_failed_vision(case_dir: Path) -> bool:
     return False
 
 
-def get_failed_vision_ids(case_ids: list[str]) -> list[str]:
+def get_failed_vision_ids(kbd_ids: list[str]) -> list[str]:
     """从案例列表中筛选出 Vision 处理失败的案例"""
-    from .fetcher import _case_dir
+    from .fetcher import _kbd_dir
     failed = []
-    for cid in case_ids:
-        case_dir = _case_dir(cid)
-        if _has_failed_vision(case_dir):
+    for cid in kbd_ids:
+        kbd_dir = _kbd_dir(cid)
+        if _has_failed_vision(kbd_dir):
             failed.append(cid)
-    logger.debug("筛选 Vision 失败案例 total=%d failed=%d", len(case_ids), len(failed))
+    logger.debug("筛选 Vision 失败案例 total=%d failed=%d", len(kbd_ids), len(failed))
     return failed
 
 
-async def process_images_for_case(
-    case_id: str,
+async def process_images_for_kbd(
+    kbd_id: str,
     client: AsyncOpenAI,
 ) -> dict[str, int]:
     """
@@ -515,19 +515,19 @@ async def process_images_for_case(
     Returns:
         {"done": N, "failed": N, "skipped": N}
     """
-    from .fetcher import _case_dir
-    case_dir = _case_dir(case_id)
+    from .fetcher import _kbd_dir
+    kbd_dir = _kbd_dir(kbd_id)
     stats: dict[str, int] = {"done": 0, "failed": 0, "skipped": 0}
 
-    images = _find_images(case_dir)
+    images = _find_images(kbd_dir)
     if not images:
         return stats
 
     # Step 0: 解析文档，建立图片序号 → 上下文的映射
-    context_map = _load_context_map(case_dir)
+    context_map = _load_context_map(kbd_dir)
     logger.info(
-        "上下文映射构建完成 case_id=%s images=%d contexts=%d",
-        case_id, len(images), len(context_map),
+        "上下文映射构建完成 kbd_id=%s images=%d contexts=%d",
+        kbd_id, len(images), len(context_map),
     )
 
     sem = asyncio.Semaphore(settings.VISION_CONCURRENCY)
@@ -561,14 +561,14 @@ async def process_images_for_case(
     return stats
 
 
-def _load_context_map(case_dir: Path) -> dict[int, str]:
+def _load_context_map(kbd_dir: Path) -> dict[int, str]:
     """
     从 raw.json 解析文档 HTML，构建 {图片序号: 上下文文字} 映射。
     raw.json 不存在时返回空字典（所有图片上下文为空）。
     """
-    raw_path = case_dir / "raw.json"
+    raw_path = kbd_dir / "raw.json"
     if not raw_path.exists():
-        logger.warning("raw.json 不存在，图片上下文为空 case_dir=%s", case_dir)
+        logger.warning("raw.json 不存在，图片上下文为空 kbd_dir=%s", kbd_dir)
         return {}
 
     with raw_path.open(encoding="utf-8") as f:
@@ -576,23 +576,23 @@ def _load_context_map(case_dir: Path) -> dict[int, str]:
 
     html = data.get("content") or data.get("contentWeb") or ""
     if not html:
-        logger.warning("raw.json 中 content 字段为空 case_dir=%s", case_dir)
+        logger.warning("raw.json 中 content 字段为空 kbd_dir=%s", kbd_dir)
         return {}
 
     base_url = settings.SANGFOR_API_BASE
     try:
         return build_context_map(html, base_url)
     except Exception as exc:
-        logger.warning("构建上下文映射失败 case_dir=%s 原因=%s", case_dir, exc)
+        logger.warning("构建上下文映射失败 kbd_dir=%s 原因=%s", kbd_dir, exc)
         return {}
 
 
 async def process_images_batch(
-    case_ids: list[str],
+    kbd_ids: list[str],
     _pool: Any = None,
 ) -> dict[str, int]:
     """批量处理一组案例的图片（保留旧接口签名以兼容调用方）。"""
-    from .fetcher import _case_dir as _cd
+    from .fetcher import _kbd_dir as _cd
 
     client = AsyncOpenAI(
         api_key=settings.ZAI_API_KEY,
@@ -600,20 +600,20 @@ async def process_images_batch(
         timeout=settings.LLM_TIMEOUT,
     )
     total_stats: dict[str, int] = {"done": 0, "failed": 0, "skipped": 0}
-    total = len(case_ids)
+    total = len(kbd_ids)
 
-    for idx, case_id in enumerate(case_ids, 1):
-        case_dir = _cd(case_id)
+    for idx, kbd_id in enumerate(kbd_ids, 1):
+        kbd_dir = _cd(kbd_id)
         pending = [
-            p for p in _find_images(case_dir)
+            p for p in _find_images(kbd_dir)
             if not p.with_suffix(".desc.txt").exists()
         ]
         if not pending:
-            logger.debug("[%d/%d] 案例 %s 无待处理图片，跳过", idx, total, case_id)
+            logger.debug("[%d/%d] 案例 %s 无待处理图片，跳过", idx, total, kbd_id)
             continue
 
-        logger.info("[%d/%d] 处理案例 %s 共 %d 张图片", idx, total, case_id, len(pending))
-        stats = await process_images_for_case(case_id, client)
+        logger.info("[%d/%d] 处理案例 %s 共 %d 张图片", idx, total, kbd_id, len(pending))
+        stats = await process_images_for_kbd(kbd_id, client)
         for k in total_stats:
             total_stats[k] += stats.get(k, 0)
 

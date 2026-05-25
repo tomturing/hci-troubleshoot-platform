@@ -135,7 +135,7 @@ def _parse_stages(stages_str: str | None) -> list[Stage]:
     return result
 
 
-def _get_case_ids(args: argparse.Namespace) -> list[str]:
+def _get_kbd_ids(args: argparse.Namespace) -> list[str]:
     """从参数中解析案例 ID 列表"""
     if args.excel:
         ids = read_ids_from_excel()
@@ -184,10 +184,10 @@ async def _cmd_pipeline(args: argparse.Namespace, run_id: str) -> None:
             run_id=run_id,
         )
     else:
-        case_ids = _get_case_ids(args)
+        kbd_ids = _get_kbd_ids(args)
         from .pipeline import run_pipeline
         stats, actual_run_id = await run_pipeline(
-            case_ids,
+            kbd_ids,
             stages=stages,
             force_fetch=args.force_fetch,
             override=args.override,
@@ -206,20 +206,20 @@ async def _cmd_fetch(args: argparse.Namespace, run_id: str) -> None:
     """Stage 1：抓取（文件存储，不依赖数据库）"""
     from .fetcher import fetch_batch
 
-    case_ids = _get_case_ids(args)
+    kbd_ids = _get_kbd_ids(args)
 
     # --failed-only 参数：仅处理抓取失败的案例
     failed_only = getattr(args, "failed_only", False)
     if failed_only:
         from .fetcher import get_failed_fetch_ids
         logger.info("--failed-only 模式：筛选 Fetch 失败案例")
-        case_ids = get_failed_fetch_ids(case_ids)
-        if not case_ids:
+        kbd_ids = get_failed_fetch_ids(kbd_ids)
+        if not kbd_ids:
             print("没有抓取失败的案例需要处理")
             return
 
-    logger.info("Fetch 处理开始 cases=%d run_id=%s", len(case_ids), run_id)
-    stats = await fetch_batch(case_ids, force=args.force)
+    logger.info("Fetch 处理开始 kbds=%d run_id=%s", len(kbd_ids), run_id)
+    stats = await fetch_batch(kbd_ids, force=args.force)
     print(f"run_id: {run_id}")
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
@@ -230,26 +230,26 @@ async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
 
     from .image_proc import get_failed_vision_ids, process_images_batch
 
-    case_ids = _get_case_ids(args)
+    kbd_ids = _get_kbd_ids(args)
 
     # --failed-only 参数：仅处理失败的案例
     failed_only = getattr(args, "failed_only", False)
     if failed_only:
         logger.info("--failed-only 模式：筛选 Vision 失败案例")
-        case_ids = get_failed_vision_ids(case_ids)
-        if not case_ids:
+        kbd_ids = get_failed_vision_ids(kbd_ids)
+        if not kbd_ids:
             print("没有 Vision 失败的案例需要处理")
             return
 
     # 检查已抓取的案例
     from .fetcher import _is_fetched
-    ready_ids = [cid for cid in case_ids if _is_fetched(cid)]
+    ready_ids = [cid for cid in kbd_ids if _is_fetched(cid)]
 
     if not ready_ids:
         print("没有已抓取的案例需要处理")
         return
 
-    logger.info("Vision 处理开始 cases=%d run_id=%s", len(ready_ids), run_id)
+    logger.info("Vision 处理开始 kbds=%d run_id=%s", len(ready_ids), run_id)
 
     pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
     try:
@@ -264,7 +264,7 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
     """Stage 3：MD 转换 + 入库（通过 API）"""
     from .importer import import_batch
 
-    case_ids = _get_case_ids(args)
+    kbd_ids = _get_kbd_ids(args)
 
     if not settings.INTERNAL_API_TOKEN:
         print("错误：INTERNAL_API_TOKEN 未配置")
@@ -272,15 +272,15 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
         sys.exit(1)
 
     # 检查已抓取且 Vision 完成的案例
-    from .fetcher import _case_dir, _is_fetched
+    from .fetcher import _is_fetched, _kbd_dir
 
     ready_ids: list[str] = []
-    for support_id in case_ids:
+    for support_id in kbd_ids:
         if not _is_fetched(support_id):
             continue
 
-        case_dir = _case_dir(support_id)
-        img_files = list(case_dir.glob("img_*.*"))
+        kbd_dir = _kbd_dir(support_id)
+        img_files = list(kbd_dir.glob("img_*.*"))
         actual_images = [f for f in img_files if f.suffix not in (".failed", ".txt")]
 
         if not actual_images:
@@ -288,7 +288,7 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
             continue
 
         all_vision_done = all(
-            (case_dir / f"{f.stem}.desc.txt").exists()
+            (kbd_dir / f"{f.stem}.desc.txt").exists()
             for f in actual_images
         )
         if all_vision_done:
@@ -303,7 +303,7 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
     if args.override_status:
         override_status = [s.strip() for s in args.override_status.split(",")]
 
-    logger.info("Import 处理开始 cases=%d run_id=%s", len(ready_ids), run_id)
+    logger.info("Import 处理开始 kbds=%d run_id=%s", len(ready_ids), run_id)
     async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
         stats = await import_batch(
             ready_ids,
@@ -322,7 +322,7 @@ async def _cmd_classify(args: argparse.Namespace, run_id: str) -> None:
 
     from .classifier import classify_batch
 
-    case_ids = _get_case_ids(args)
+    kbd_ids = _get_kbd_ids(args)
 
     if not settings.INTERNAL_API_TOKEN:
         print("错误：INTERNAL_API_TOKEN 未配置")
@@ -337,16 +337,16 @@ async def _cmd_classify(args: argparse.Namespace, run_id: str) -> None:
                WHERE support_id = ANY($1)
                  AND status = 'draft'
                  AND (ai_category_id IS NULL OR ai_category_id = '')""",
-            case_ids,
+            kbd_ids,
         )
-        classify_case_ids = [r["support_id"] for r in classify_ids]
+        classify_kbd_ids = [r["support_id"] for r in classify_ids]
 
-        if not classify_case_ids:
+        if not classify_kbd_ids:
             print("没有需要分类的案例")
             return
 
-        logger.info("Classify 处理开始 cases=%d run_id=%s", len(classify_case_ids), run_id)
-        stats = await classify_batch(classify_case_ids, pool)
+        logger.info("Classify 处理开始 kbds=%d run_id=%s", len(classify_kbd_ids), run_id)
+        stats = await classify_batch(classify_kbd_ids, pool)
         print(f"run_id: {run_id}")
         print(json.dumps(stats, ensure_ascii=False, indent=2))
     finally:
@@ -377,7 +377,7 @@ async def _cmd_review_list(args: argparse.Namespace, run_id: str) -> None:
                 conf = item.get("ai_category_conf")
                 cat = item.get("ai_category_label") or item.get("ai_category_id") or "未分类"
                 conf_str = f"{conf:.2f}" if conf is not None else "N/A"
-                print(f"  {item.get('case_id')} | {item.get('title', '')[:40]} | {cat} (置信度: {conf_str})")
+                print(f"  {item.get('kbd_id')} | {item.get('title', '')[:40]} | {cat} (置信度: {conf_str})")
 
         except Exception as exc:
             print(f"获取待审核列表失败: {exc}")

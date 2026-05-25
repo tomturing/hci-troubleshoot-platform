@@ -18,7 +18,7 @@ data-pipeline/kbd/progress.py — KBD Pipeline 进度追踪模块
     "fetch": {"completed_ids": [], "failed_ids": [], "skipped_ids": []},
     "vision": {"completed_ids": [], "failed_ids": [], "skipped_ids": []}
   },
-  "cases": {
+  "kbds": {
     "15414": {"fetch": "done", "vision": "pending", "import": "pending", "classify": "pending"}
   }
 }
@@ -74,13 +74,13 @@ def get_log_path(run_id: str) -> Path:
     return settings.KBD_LOGS_DIR / f"kbd_{run_id}.log"
 
 
-def init_progress(run_id: str, case_ids: list[str], stages: list[str]) -> dict[str, Any]:
+def init_progress(run_id: str, kbd_ids: list[str], stages: list[str]) -> dict[str, Any]:
     """
     初始化进度结构并保存到文件。
 
     Args:
         run_id: 运行标识
-        case_ids: 要处理的案例 ID 列表
+        kbd_ids: 要处理的案例 ID 列表
         stages: 要运行的 stage 列表
 
     Returns:
@@ -90,19 +90,19 @@ def init_progress(run_id: str, case_ids: list[str], stages: list[str]) -> dict[s
         "run_id": run_id,
         "started_at": datetime.now().isoformat(),
         "finished_at": None,
-        "total_ids": len(case_ids),
+        "total_ids": len(kbd_ids),
         "stages_run": stages,
         "stages": {
             stage: {"completed_ids": [], "failed_ids": [], "skipped_ids": []}
             for stage in ALL_STAGES
         },
-        "cases": {
+        "kbds": {
             cid: {stage: "pending" for stage in ALL_STAGES}
-            for cid in case_ids
+            for cid in kbd_ids
         },
     }
     save_progress(run_id, progress)
-    logger.info("进度初始化完成 run_id=%s cases=%d stages=%s", run_id, len(case_ids), stages)
+    logger.info("进度初始化完成 run_id=%s kbds=%d stages=%s", run_id, len(kbd_ids), stages)
     return progress
 
 
@@ -140,7 +140,7 @@ def load_progress(run_id: str) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        logger.info("进度文件加载成功 run_id=%s cases=%d", run_id, len(data.get("cases", {})))
+        logger.info("进度文件加载成功 run_id=%s kbds=%d", run_id, len(data.get("kbds", {})))
         return data
     except (json.JSONDecodeError, OSError) as exc:
         # 备份损坏文件以便排查
@@ -159,16 +159,16 @@ def update_stage_status(
     """
     更新单个案例在特定 stage 的状态。
 
-    同时更新 cases 字段和 stages 统计字段。
+    同时更新 kbds 字段和 stages 统计字段。
     """
-    # 更新 cases 字段
-    if support_id in progress.get("cases", {}):
-        progress["cases"][support_id][stage] = status
+    # 更新 kbds 字段
+    if support_id in progress.get("kbds", {}):
+        progress["kbds"][support_id][stage] = status
 
     # 更新 stages 统计（使用正确的映射）
     stats_key = _STATUS_TO_STATS_KEY.get(status)
     if stats_key is None:
-        logger.debug("状态更新 case=%s stage=%s status=%s（不计入统计）", support_id, stage, status)
+        logger.debug("状态更新 kbd=%s stage=%s status=%s（不计入统计）", support_id, stage, status)
         return
 
     stages_stats = progress.get("stages", {}).get(stage, {})
@@ -182,7 +182,7 @@ def update_stage_status(
                     if support_id in stages_stats[other_key]:
                         stages_stats[other_key].remove(support_id)
 
-    logger.debug("状态更新 case=%s stage=%s status=%s", support_id, stage, status)
+    logger.debug("状态更新 kbd=%s stage=%s status=%s", support_id, stage, status)
 
 
 def finish_progress(progress: dict[str, Any]) -> None:
@@ -223,12 +223,12 @@ def get_completed_ids_for_stage(progress: dict[str, Any], stage: str) -> set[str
     return set(completed + skipped)
 
 
-def get_case_stage_status(progress: dict[str, Any], support_id: str, stage: str) -> str:
+def get_kbd_stage_status(progress: dict[str, Any], support_id: str, stage: str) -> str:
     """获取某个案例在特定 stage 的状态"""
-    return progress.get("cases", {}).get(support_id, {}).get(stage, "pending")
+    return progress.get("kbds", {}).get(support_id, {}).get(stage, "pending")
 
 
-def is_case_done_for_stage(progress: dict[str, Any], support_id: str, stage: str) -> bool:
+def is_kbd_done_for_stage(progress: dict[str, Any], support_id: str, stage: str) -> bool:
     """检查某个案例在特定 stage 是否已完成"""
-    status = get_case_stage_status(progress, support_id, stage)
+    status = get_kbd_stage_status(progress, support_id, stage)
     return status in ("done", "skipped")
