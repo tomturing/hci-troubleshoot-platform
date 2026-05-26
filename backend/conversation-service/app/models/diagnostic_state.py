@@ -10,28 +10,62 @@ from pydantic import BaseModel, Field
 # ─── 诊断阶段常量定义 ────────────────────────────────────────────────────────
 # 避免在代码中硬编码字符串，统一使用常量
 class DiagnosticStage:
-    """诊断阶段常量"""
+    """诊断阶段常量（T-AGT-13：语义命名重构）
 
-    S0_INTENT = "S0"  # 意图识别
+    新命名体系：
+    - TRIAGE：分诊阶段（意图识别、故障分类）
+    - INVESTIGATION：调查阶段（故障定位、假设生成、验证执行、根因确认）
+    - REMEDIATION：修复阶段（解决方案制定）
+    - CLOSURE：闭环阶段（验证闭环）
+
+    数据库兼容：内部值仍为 S0/S1/S2/S3/S4/S5/S6，确保现有数据兼容。
+    """
+
+    # ─── 语义命名（推荐使用）──────────────────────────────────────────────
+    TRIAGE = "S0"  # 分诊：意图识别
+    INVESTIGATION = "S1"  # 调查：故障定位（泛指 S1-S4）
+    REMEDIATION = "S5"  # 修复：解决方案
+    CLOSURE = "S6"  # 闭环：验证闭环
+
+    # ─── 细分阶段（Investigation 内部细分）──────────────────────────────────
     S1_LOCATION = "S1"  # 故障定位
     S2_HYPOTHESIS = "S2"  # 假设生成
     S3_VERIFICATION = "S3"  # 验证执行
     S4_ROOT_CAUSE = "S4"  # 根因确认
-    S5_SOLUTION = "S5"  # 解决方案
-    S6_CLOSURE = "S6"  # 验证闭环
-    S0_FAILED = "S0_FAILED"  # S0 意图识别失败
+
+    # ─── 旧命名别名（兼容过渡期，已废弃）────────────────────────────────────
+    S0_INTENT = "S0"  # 已废弃：使用 TRIAGE 替代
+    S5_SOLUTION = "S5"  # 已废弃：使用 REMEDIATION 替代
+    S0_FAILED = "S0_FAILED"  # 分诊失败
+    TRIAGE_FAILED = "S0_FAILED"  # 语义别名
+
+    # ─── 阶段分组 ─────────────────────────────────────────────────────────────
+    TRIAGE_STAGES = {"S0", "S0_FAILED"}
+    INVESTIGATION_STAGES = {"S1", "S2", "S3", "S4"}
+    REMEDIATION_STAGES = {"S5"}
+    CLOSURE_STAGES = {"S6"}
 
 
 # 阶段标签映射（用于 UI 展示）
 STAGE_LABELS: dict[str, str] = {
-    DiagnosticStage.S0_INTENT: "S0-意图识别",
+    DiagnosticStage.TRIAGE: "TRIAGE-分诊",
+    DiagnosticStage.INVESTIGATION: "INVESTIGATION-调查",
     DiagnosticStage.S1_LOCATION: "S1-故障定位",
     DiagnosticStage.S2_HYPOTHESIS: "S2-假设生成",
     DiagnosticStage.S3_VERIFICATION: "S3-验证执行",
     DiagnosticStage.S4_ROOT_CAUSE: "S4-根因确认",
-    DiagnosticStage.S5_SOLUTION: "S5-解决方案",
-    DiagnosticStage.S6_CLOSURE: "S6-验证闭环",
-    DiagnosticStage.S0_FAILED: "S0-意图识别失败",
+    DiagnosticStage.REMEDIATION: "REMEDIATION-修复",
+    DiagnosticStage.CLOSURE: "CLOSURE-闭环",
+    DiagnosticStage.TRIAGE_FAILED: "TRIAGE_FAILED-分诊失败",
+    # 旧键兼容（已废弃）
+    "S0": "TRIAGE-分诊",
+    "S1": "S1-故障定位",
+    "S2": "S2-假设生成",
+    "S3": "S3-验证执行",
+    "S4": "S4-根因确认",
+    "S5": "REMEDIATION-修复",
+    "S6": "CLOSURE-闭环",
+    "S0_FAILED": "TRIAGE_FAILED-分诊失败",
 }
 
 
