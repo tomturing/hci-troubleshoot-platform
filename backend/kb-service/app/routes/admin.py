@@ -30,7 +30,7 @@ from sqlalchemy import select, text
 
 from app.models.document import KBDocument
 from app.models.sop_document import SopDocument
-from app.services.sop_parser import parse_sop_markdown
+from app.services.sop_parser import extract_sop_variables, parse_sop_markdown
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -700,6 +700,8 @@ class SopApproveResponse(BaseModel):
     tree_generated: bool = Field(..., description="是否成功生成 SOP 决策树")
     tree_leaf_count: int | None = Field(None, description="决策树叶节点数量")
     tree_validation_status: str | None = Field(None, description="决策树校验状态（valid/warnings）")
+    variable_count: int = Field(0, description="提取的变量数量（T-AGT-24）")
+    warnings: list[str] = Field(default_factory=list, description="审核警告列表（含 orphan 变量等）")
     published_at: str | None = Field(None, description="发布时间")
 
 
@@ -753,6 +755,8 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
             if sop_doc.status == "published":
                 # 已发布，直接返回当前 tree 信息
+                # 获取 variable_schema（若存在）
+                var_schema_raw = sop_doc.variable_schema or []
                 return SopApproveResponse(
                     success=True,
                     document_id=document_id,
@@ -761,6 +765,8 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     tree_generated=sop_doc.tree_json is not None,
                     tree_leaf_count=sop_doc.tree_leaf_count if sop_doc.tree_json is not None else None,
                     tree_validation_status=sop_doc.tree_validation_status if sop_doc.tree_json is not None else None,
+                    variable_count=len(var_schema_raw),
+                    warnings=[],  # 已发布不再返回历史警告
                     published_at=sop_doc.published_at.isoformat() if sop_doc.published_at else None,
                 )
 
@@ -800,6 +806,56 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                 message="SOP 文档没有 content_md，无法生成决策树",
             )
 
+        # ── 变量提取 + 双向校验（T-AGT-24）────────────────────────────────────────
+        variable_defs: list[dict] = []
+        undeclared_errors: list[str] = []
+        orphan_warnings: list[str] = []
+        warnings: list[str] = []
+
+        if content_md:
+            # 提取变量（传入解析后的决策树，扫描节点中的变量占位符）
+            tree_for_var = parse_result.tree if (parse_result and parse_result.is_valid) else None
+            variable_defs, undeclared_errors, orphan_warnings = extract_sop_variables(
+                content_md, tree_for_var
+            )
+
+            # Undeclared = Error（阻断 approve）
+            if undeclared_errors:
+                logger.warning(
+                    event="sop_undeclared_variables",
+                    document_id=document_id,
+                    undeclared_vars=undeclared_errors,
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "undeclared_variables",
+                        "message": f"SOP 正文使用了未声明的变量：{undeclared_errors}，请在 ## 变量 章节中声明",
+                        "undeclared": undeclared_errors,
+                    },
+                )
+
+            # Orphan = Warning（写入响应）
+            for var_name in orphan_warnings:
+                warnings.append(f"变量 '{var_name}' 已在 ## 变量 章节声明但未在正文中使用")
+
+            # 合并决策树解析警告（成功时）
+            if parse_result and parse_result.is_valid and parse_result.warnings:
+                for w in parse_result.warnings:
+                    warnings.append(f"[决策树] {w.location}: {w.message}")
+
+            # 当决策树解析失败时，将错误信息追加到 warnings
+            if parse_result and not parse_result.is_valid:
+                for e in parse_result.errors:
+                    warnings.append(f"[决策树解析失败] {e.location}: {e.message}")
+
+            logger.info(
+                event="sop_variables_extracted",
+                document_id=document_id,
+                variable_count=len(variable_defs),
+                orphan_count=len(orphan_warnings),
+            )
+
         # ── 短事务2：UPDATE sop_document（状态 + tree_json）────────────────────
         async with _db_manager.async_session_factory() as session:
             # 更新状态字段
@@ -824,7 +880,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                 },
             )
 
-            # 写入决策树（若解析成功）
+            # 写入决策树 + variable_schema（若解析成功）
             if parse_result and parse_result.is_valid and parse_result.tree:
                 await session.execute(
                     text(
@@ -836,6 +892,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                             tree_validation_status = :validation_status,
                             tree_validation_issues = CAST(:validation_issues AS jsonb),
                             tree_generator_version = :generator_version,
+                            variable_schema        = CAST(:variable_schema AS jsonb),
                             updated_at             = :updated_at
                         WHERE id = :document_id
                         """
@@ -850,6 +907,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                         if parse_result.warnings
                         else None,
                         "generator_version": "sop-parser-v1",
+                        "variable_schema": json.dumps(variable_defs, ensure_ascii=False) if variable_defs else None,
                         "updated_at": now,
                     },
                 )
@@ -857,6 +915,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     event="sop_tree_written",
                     document_id=document_id,
                     leaf_count=tree_leaf_count,
+                    variable_count=len(variable_defs),
                 )
 
             await session.commit()
@@ -880,6 +939,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         document_id=document_id,
         reviewer_id=body.reviewer_id,
         tree_generated=tree_generated,
+        variable_count=len(variable_defs),
     )
 
     return SopApproveResponse(
@@ -889,7 +949,9 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         chunks_embedded=0,
         tree_generated=tree_generated,
         tree_leaf_count=tree_leaf_count if tree_generated else None,
-        tree_validation_status=tree_validation_status if tree_generated else None,
+        tree_validation_status=tree_validation_status,
+        variable_count=len(variable_defs),
+        warnings=warnings,
         published_at=now.isoformat(),
     )
 
@@ -994,7 +1056,7 @@ async def list_sop_documents(
             f"""
             SELECT id, source_id, category_id, title, status,
                    reviewer_id, reviewed_at, published_at, created_at, updated_at, hit_count,
-                   tree_leaf_count, (tree_json IS NOT NULL) AS has_tree
+                   tree_leaf_count, (tree_json IS NOT NULL) AS has_tree, tree_validation_status
             FROM sop_document
             {where_sql}
             ORDER BY created_at DESC, id DESC
@@ -1013,6 +1075,7 @@ async def list_sop_documents(
             "status": row["status"],
             "tree_leaf_count": row["tree_leaf_count"],
             "has_tree": row["has_tree"],
+            "tree_validation_status": row["tree_validation_status"],
             "reviewer_id": row["reviewer_id"],
             "reviewed_at": row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
             "published_at": row["published_at"].isoformat() if row["published_at"] else None,

@@ -13,6 +13,8 @@ interface SopDocument {
   status: string
   chunk_count: number
   content_md?: string
+  tree_validation_status: string | null // 决策树校验状态：valid/warnings/error
+  has_tree: boolean // 是否有决策树
   reviewer_id: number | null
   reviewed_at: string | null
   published_at: string | null
@@ -103,7 +105,7 @@ async function fetchDocuments() {
 async function handleApprove(doc: SopDocument) {
   try {
     await ElMessageBox.confirm(
-      `确认发布 SOP 文档？\n\n「${doc.title}」\n\n将为 ${doc.chunk_count} 个分块生成向量索引，耗时较长，请耐心等待。`,
+      `确认发布 SOP 文档？\n\n「${doc.title}」\n\n将解析决策树并生成向量索引，耗时较长，请耐心等待。`,
       '发布 SOP',
       { confirmButtonText: '确认发布', cancelButtonText: '取消', type: 'success' },
     )
@@ -122,11 +124,25 @@ async function handleApprove(doc: SopDocument) {
       throw new Error(msg)
     }
     const result = await resp.json()
-    ElMessage.success(`发布成功，生成了 ${result.chunks_embedded} 个向量`)
+
+    // 处理 warnings：如果有警告或解析失败，提示用户
+    if (result.warnings && result.warnings.length > 0) {
+      const warningMsg = result.warnings.join('\n')
+      if (result.tree_validation_status === 'error') {
+        ElMessage.error(`发布完成但决策树解析失败，请修复文档格式后重新发布：\n${warningMsg}`)
+      } else {
+        ElMessage.warning(`发布成功，但存在警告：\n${warningMsg}`)
+      }
+    } else {
+      ElMessage.success(`发布成功，决策树状态：${treeValidationLabel(result.tree_validation_status, result.tree_generated)}`)
+    }
+
     const idx = documents.value.findIndex((d) => d.id === doc.id)
     if (idx !== -1) {
       documents.value[idx].status = 'published'
       documents.value[idx].published_at = result.published_at
+      documents.value[idx].tree_validation_status = result.tree_validation_status
+      documents.value[idx].has_tree = result.tree_generated
     }
     viewDialogVisible.value = false
   } catch (e: unknown) {
@@ -340,6 +356,23 @@ function statusLabel(s: string): string {
   return map[s] || s
 }
 
+// 决策树状态徽章类型
+function treeValidationType(s: string | null): 'success' | 'warning' | 'danger' | 'info' {
+  if (s === 'valid') return 'success'
+  if (s === 'warnings') return 'warning'
+  if (s === 'error') return 'danger'
+  return 'info' // null 或其他状态
+}
+
+// 决策树状态文案
+function treeValidationLabel(s: string | null, hasTree: boolean): string {
+  if (s === 'valid') return '正常'
+  if (s === 'warnings') return '有警告'
+  if (s === 'error') return '解析失败'
+  if (hasTree) return '未校验'
+  return '无决策树'
+}
+
 onMounted(() => fetchDocuments())
 </script>
 
@@ -398,6 +431,13 @@ onMounted(() => fetchDocuments())
         <el-table-column label="状态" width="100" align="center">
           <template #default="{ row }">
             <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="决策树" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag :type="treeValidationType(row.tree_validation_status)" size="small">
+              {{ treeValidationLabel(row.tree_validation_status, row.has_tree) }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="分块数" width="90" align="center">
