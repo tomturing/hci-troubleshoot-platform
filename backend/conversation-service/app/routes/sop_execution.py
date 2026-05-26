@@ -6,6 +6,7 @@ SOP 执行路由 — SOP 执行状态管理 API
 
 设计依据：
   - docs/task/agent/events/2026-05-26-SOP执行引擎-M1数据库与M2导航工具化.md T-AGT-21
+  - docs/task/agent/events/2026-05-26-SOP执行引擎-M3变量池实现.md T-AGT-27（validation_pattern 校验）
 
 鉴权：
   - 使用 INTERNAL_API_TOKEN（内部服务调用，agent-service → conversation-service）
@@ -13,15 +14,18 @@ SOP 执行路由 — SOP 执行状态管理 API
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 
+from ..config import settings
 from ..models.sop_execution import STATUS_ACTIVE, STATUS_INTERRUPTED
 from ..repositories.sop_execution_repository import SopExecutionRepository
 
@@ -40,14 +44,82 @@ def set_dependencies(db: DatabaseManager) -> None:
 
 def _check_auth(request: Request) -> None:
     """验证内部服务 Token"""
-    from ..config import settings
-
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="缺少 Bearer Token")
     token = auth_header.split(" ", 1)[1]
     if token != settings.INTERNAL_API_TOKEN:
         raise HTTPException(status_code=401, detail="Token 无效")
+
+
+async def _get_variable_schema(sop_document_id: int) -> list[dict] | None:
+    """从 kb-service 获取 SOP 文档的 variable_schema（T-AGT-27）。
+
+    Args:
+        sop_document_id: SOP 文档 ID
+
+    Returns:
+        variable_schema 列表，不存在时返回 None
+    """
+    url = f"{settings.KB_SERVICE_URL}/api/admin/sop/{sop_document_id}"
+    headers = {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("variable_schema", [])
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        logger.warning(
+            event="get_variable_schema_error",
+            sop_document_id=sop_document_id,
+            error=str(exc),
+        )
+        return None
+
+
+def _validate_variables(
+    variables_extracted: dict[str, Any],
+    variable_schema: list[dict] | None,
+) -> tuple[bool, list[str]]:
+    """校验 variables_extracted 是否符合 variable_schema 的 validation_pattern（T-AGT-27）。
+
+    Args:
+        variables_extracted: 待写入的变量字典
+        variable_schema: 变量 Schema 定义列表
+
+    Returns:
+        (是否全部通过, 错误消息列表)
+    """
+    if not variable_schema:
+        # 无 schema 定义，跳过校验
+        return True, []
+
+    errors = []
+    schema_by_name = {v.get("name"): v for v in variable_schema}
+
+    for var_name, var_value in variables_extracted.items():
+        var_def = schema_by_name.get(var_name)
+        if var_def is None:
+            # 变量未在 schema 中定义，允许写入（LLM 自由填充）
+            continue
+
+        validation_pattern = var_def.get("validation_pattern")
+        if not validation_pattern:
+            # 无校验规则，允许写入
+            continue
+
+        # 校验值是否符合 pattern
+        var_value_str = str(var_value) if not isinstance(var_value, str) else var_value
+        if not re.match(validation_pattern, var_value_str):
+            errors.append(
+                f"变量 '{var_name}' 值 '{var_value_str}' 不符合校验规则 '{validation_pattern}'"
+            )
+
+    return len(errors) == 0, errors
 
 
 class SopCreateRequest(BaseModel):
@@ -211,6 +283,37 @@ async def sop_advance_execution(
 
     async with _db_manager.async_session_factory() as session:
         repo = SopExecutionRepository(session)
+
+        # T-AGT-27: 校验 variables_extracted
+        if body.variables_extracted:
+            # 先获取执行实例以获取 sop_document_id
+            execution_for_check = await repo.get_by_conversation(conversation_id)
+            if execution_for_check is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="SOP 执行实例不存在",
+                )
+
+            # 获取 variable_schema
+            variable_schema = await _get_variable_schema(execution_for_check.sop_document_id)
+
+            # 校验 variables_extracted
+            valid, errors = _validate_variables(body.variables_extracted, variable_schema)
+            if not valid:
+                logger.warning(
+                    event="sop_advance_validation_failed",
+                    conversation_id=str(conversation_id),
+                    errors=errors,
+                    trace_id=trace_id,
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "variable_validation_failed",
+                        "message": "变量值校验失败",
+                        "errors": errors,
+                    },
+                )
 
         # 推进执行
         execution = await repo.advance(

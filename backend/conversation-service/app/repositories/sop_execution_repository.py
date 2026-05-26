@@ -154,13 +154,13 @@ class SopExecutionRepository:
             "reasoning": reasoning,
         })
 
-        # 更新 context_variables
+        # 更新 context_variables（T-AGT-27: source 标记为 tool_result）
         context_variables = dict(execution.context_variables or {})
         if variables_extracted:
             for var_name, var_value in variables_extracted.items():
                 context_variables[var_name] = {
                     "value": var_value,
-                    "source": "llm_extracted",
+                    "source": "tool_result",
                     "resolved_at": datetime.now(UTC).isoformat(),
                     "resolved_by_tool": "sop_advance",
                 }
