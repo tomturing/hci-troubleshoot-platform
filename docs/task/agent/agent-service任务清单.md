@@ -22,6 +22,7 @@ update_trigger: agent-service 重构/修复/新功能迭代
 | 2026-05-26 | v1.1 | 阶段性收尾：完成 P0/P1/P2 部分 + M1/M2/M3 部分 |
 | 2026-05-26 | v1.2 | T-AGT-22 完成：ReactEngine 动态注入 SOP 工具核心实现，消除 `_process_sop_mode()` 双轨路径 |
 | 2026-05-26 | v1.2 | T-AGT-16 验收确认：SOP top_k 候选取 [0] 为最相关（ts_rank 排序已生效） |
+| 2026-05-26 | v1.3 | T-AGT-19 完成：补全 S2/S3/S4/S5 各阶段 diagnostic_item INSERT 路径 |
 
 ---
 
@@ -92,7 +93,7 @@ update_trigger: agent-service 重构/修复/新功能迭代
 | 任务 ID | 任务名称 | 说明 | 状态 |
 |---------|---------|------|------|
 | **T-AGT-18** | 创建 `sop_execution` 表（dbmate 迁移） | 含 UNIQUE(conversation_id)、CHECK(status IN ...)、2 个索引 | ✅ 已完成 |
-| **T-AGT-19** | 补全 `diagnostic_item` INSERT 路径（BUG-06 真正修复） | 表和 archive 路径已有，S2/S3/S4/S5 各阶段缺 INSERT | ⏳ 待做 |
+| **T-AGT-19** | 补全 `diagnostic_item` INSERT 路径（BUG-06 真正修复） | 表和 archive 路径已有，S2/S3/S4/S5 各阶段缺 INSERT | ✅ 已完成（2026-05-26）|
 
 ### 里程碑 M2：导航工具化核心引擎
 
