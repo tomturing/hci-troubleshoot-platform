@@ -1,6 +1,14 @@
 """
 IntentAgent: S0 意图识别 Agent
 
+@deprecated
+此类已被 TriageAgent 替换（继承 BaseAgent）。
+保留此文件仅用于向后兼容，新代码请使用 TriageAgent。
+迁移指南：
+  - IntentAgent.process() → TriageAgent.process()（接口兼容）
+  - IntentAgent(ai_registry, kb_client) → TriageAgent(ai_registry, kb_client)
+参见：docs/task/agent/events/2026-05-26-P1重要修复与P2重构任务.md#T-AGT-10
+
 职责：
   - 获取分类列表（KBClient）
   - 构建 S0 Prompt（注入分类 + 环境上下文）

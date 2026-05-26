@@ -90,6 +90,8 @@ class ReactEngine:
         user_id: str = "",
         max_iterations: int = MAX_STEPS,
         require_all_confirm: bool = False,
+        extra_tools: list[dict] | None = None,  # T-AGT-22: 动态注入工具（仅本次 execute 有效）
+        tool_executor: ToolExecutor | None = None,  # T-AGT-22: 可替换工具执行器（用于 SOP 工具注入上下文）
     ) -> AsyncGenerator[AgentEvent, None]:
         """ReAct 循环（Reason → Act → Observe）
 
@@ -102,6 +104,8 @@ class ReactEngine:
             user_id: 用户 ID
             max_iterations: 最大循环次数
             require_all_confirm: True 时所有工具调用（包括只读工具）均需确认
+            extra_tools: 动态注入的工具列表（OpenAI function calling 格式），仅本次 execute 有效
+            tool_executor: 可替换的工具执行器（用于 SOP 工具注入上下文），默认使用实例初始化时的执行器
 
         Yields:
             AgentStageUpdate: 推理阶段状态（thinking、executing）
@@ -121,8 +125,11 @@ class ReactEngine:
             *messages,
         ]
 
-        # 工具列表（OpenAI function calling 格式）
-        tools = self._get_tools_for_llm()
+        # 工具列表（OpenAI function calling 格式）+ 动态注入工具（T-AGT-22）
+        tools = self._get_tools_for_llm(extra_tools=extra_tools)
+
+        # T-AGT-22: 使用传入的 tool_executor 或实例默认执行器
+        active_tool_executor = tool_executor or self._tool_executor
 
         for step_count in range(1, max_iterations + 1):
 
@@ -200,6 +207,7 @@ class ReactEngine:
                     session_id=session_id,
                     step=step_count,
                     require_all_confirm=require_all_confirm,
+                    tool_executor=active_tool_executor,  # T-AGT-22: 传入执行器
                 ):
                     # 捕获工具执行结果
                     if isinstance(event, ToolResultEvent):
@@ -221,10 +229,21 @@ class ReactEngine:
         # 超出步数限制
         yield AgentTextChunk(content="⚠️ 诊断步骤已达上限，请联系人工支持。")
 
-    def _get_tools_for_llm(self) -> list[dict]:
-        """返回 OpenAI function calling 格式的工具列表（排除高危工具）"""
+    def _get_tools_for_llm(self, extra_tools: list[dict] | None = None) -> list[dict]:
+        """返回 OpenAI function calling 格式的工具列表（排除高危工具）。
+
+        Args:
+            extra_tools: 动态注入的工具列表（T-AGT-22），追加到默认工具列表末尾
+
+        Returns:
+            工具列表（OpenAI function calling 格式）
+        """
         from app.adapters.agents.htp.tool_registry import get_tools_for_llm
-        return get_tools_for_llm()
+        base_tools = get_tools_for_llm()
+        if extra_tools:
+            # 合并动态工具（追加到末尾，LLM 可选择使用）
+            return base_tools + extra_tools
+        return base_tools
 
     async def _execute_tool_call(
         self,
@@ -232,6 +251,7 @@ class ReactEngine:
         session_id: str,
         step: int,
         require_all_confirm: bool = False,
+        tool_executor: ToolExecutor | None = None,  # T-AGT-22: 可替换执行器
     ) -> AsyncGenerator[AgentEvent, None]:
         """执行单个工具调用，含授权检查和审计记录
 
@@ -240,6 +260,7 @@ class ReactEngine:
             session_id: 会话 ID
             step: 当前步骤数
             require_all_confirm: True 时只读工具也升级为需要用户确认（S5 修复模式用）
+            tool_executor: 可替换的工具执行器（T-AGT-22，用于 SOP 工具注入上下文）
 
         Yields:
             AgentStageUpdate: 工具执行状态
@@ -251,8 +272,12 @@ class ReactEngine:
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("args", {})
 
+        # T-AGT-22: 使用传入的 tool_executor 或实例默认执行器
+        active_executor = tool_executor or self._tool_executor
+
         tool_def = TOOL_REGISTRY.get(tool_name)
         if not tool_def:
+            # T-AGT-22: SOP 工具在 TOOL_REGISTRY 中已定义，此检查覆盖所有已注册工具
             yield AgentTextChunk(content=f"未知工具: {tool_name}")
             return
 
@@ -318,7 +343,8 @@ class ReactEngine:
                 span.set_attribute("tool.risk_level", tool_def.risk_level)
                 span.set_attribute("session_id", session_id)
                 try:
-                    result = await self._tool_executor.execute(tool_name, tool_args)
+                    # T-AGT-22: 使用 active_executor 执行工具
+                    result = await active_executor.execute(tool_name, tool_args)
                 except Exception as e:
                     span.record_exception(e)
                     span.set_status(trace.StatusCode.ERROR, str(e))

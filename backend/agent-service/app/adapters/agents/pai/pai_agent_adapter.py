@@ -26,8 +26,19 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from opentelemetry import trace
-from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai import Agent, CallToolsNode, ModelRequestNode
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    ToolCallPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.tools import RunContext
 from pydantic_ai.usage import UsageLimits
@@ -35,7 +46,7 @@ from shared.clients import KBClient
 
 from app.adapters.clients.acli_client import AcliClient
 from app.adapters.clients.scp_client import SCPClient
-from app.domain.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
+from app.domain.agent_port import AgentEvent, AgentStageUpdate, AgentTextChunk, AgentUnavailableError
 
 logger = logging.getLogger("pydantic-ai-brain")
 tracer = trace.get_tracer(__name__)
