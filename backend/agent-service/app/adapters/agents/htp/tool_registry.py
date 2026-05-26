@@ -349,8 +349,8 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         policy="auto",
         category="sop",
     ),
-    "advance_sop": ToolDefinition(
-        name="advance_sop",
+    "sop_advance": ToolDefinition(
+        name="sop_advance",
         description=(
             "推进 SOP 决策树到指定子节点。"
             "记录推理路径，更新当前节点位置，若到达叶节点则标记 SOP 执行完成。"
@@ -384,6 +384,47 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
                 },
             },
             "required": ["target_node_id", "reasoning"],
+        },
+        risk_level=1,
+        policy="auto",
+        category="sop",
+    ),
+    # ─── SOP 变量请求工具（T-AGT-25：JIT 变量获取）──────────────────────────────────────
+    "sop_request_variable": ToolDefinition(
+        name="sop_request_variable",
+        description=(
+            "请求获取 SOP 执行所需的变量值（Just-In-Time 懒加载）。"
+            "当 SOP 步骤需要某变量（如 vm_name、node_ip）且该变量尚未填充时调用。"
+            "系统会根据变量的 acquisition_strategy 决定获取方式："
+            "- user_input：向用户询问输入"
+            "- user_confirm：展示候选值让用户确认"
+            "- tool：自动调用指定工具获取"
+            "- env_context：从环境上下文直接取值（无需调用此工具）"
+            "此工具仅在 SOP 命中后可用，由系统自动注入 conversation_id 和 sop_document_id。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "variable_name": {
+                    "type": "string",
+                    "description": "需要获取的变量名（如 vm_name、node_ip、disk_id）",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "为什么需要此变量（用于向用户解释，可选）",
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "会话 ID（由系统自动注入，无需填写）",
+                    "default": "",
+                },
+                "sop_document_id": {
+                    "type": "integer",
+                    "description": "SOP 文档 ID（由系统自动注入，无需填写）",
+                    "default": 0,
+                },
+            },
+            "required": ["variable_name"],
         },
         risk_level=1,
         policy="auto",

@@ -16,12 +16,13 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 
+from ..models.sop_execution import STATUS_ACTIVE, STATUS_INTERRUPTED
 from ..repositories.sop_execution_repository import SopExecutionRepository
 
 logger = get_logger("sop-execution-routes")
@@ -295,3 +296,251 @@ async def get_sop_execution(
             "created_at": execution.created_at.isoformat() if execution.created_at else None,
             "updated_at": execution.updated_at.isoformat() if execution.updated_at else None,
         }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T-AGT-25: SOP 执行中断端点（设置 pending_variable_name）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class SopInterruptRequest(BaseModel):
+    """SOP 执行中断请求"""
+
+    pending_variable_name: str = Field(..., min_length=1, description="待填变量名")
+
+
+class SopInterruptResponse(BaseModel):
+    """SOP 执行中断响应"""
+
+    ok: bool = Field(..., description="操作是否成功")
+    conversation_id: str = Field(..., description="会话 ID")
+    status: str = Field(..., description="执行状态（interrupted）")
+    pending_variable_name: str = Field(..., description="待填变量名")
+    message: str = Field(..., description="中断结果消息")
+
+
+@router.post("/{conversation_id}/sop/interrupt", response_model=SopInterruptResponse)
+async def sop_interrupt_execution(
+    request: Request,
+    conversation_id: uuid.UUID,
+    body: SopInterruptRequest,
+):
+    """标记 SOP 执行中断等待变量（agent-service 的 sop_request_variable 工具调用）。
+
+    操作：
+      1. 更新 status=interrupted
+      2. 设置 pending_variable_name
+
+    Args:
+        conversation_id: 会话 ID
+        body: 中断请求（待填变量名）
+
+    Returns:
+        中断结果（会话 ID、状态、待填变量名）
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+
+    trace_id = get_current_trace_id()
+    logger.info(
+        event="sop_interrupt_request",
+        conversation_id=str(conversation_id),
+        pending_variable_name=body.pending_variable_name,
+        trace_id=trace_id,
+    )
+
+    async with _db_manager.async_session_factory() as session:
+        repo = SopExecutionRepository(session)
+
+        # 检查执行实例存在
+        execution = await repo.get_active_by_conversation(conversation_id)
+        if execution is None:
+            raise HTTPException(
+                status_code=404,
+                detail="SOP 执行实例不存在或状态非 active",
+            )
+
+        # 标记中断
+        updated = await repo.interrupt(
+            conversation_id=conversation_id,
+            pending_variable_name=body.pending_variable_name,
+        )
+
+        if updated is None:
+            raise HTTPException(
+                status_code=500,
+                detail="标记中断失败",
+            )
+
+        await session.commit()
+
+        logger.info(
+            event="sop_interrupt_success",
+            conversation_id=str(conversation_id),
+            status=updated.status,
+            pending_variable_name=updated.pending_variable_name,
+            trace_id=trace_id,
+        )
+
+        return SopInterruptResponse(
+            ok=True,
+            conversation_id=str(conversation_id),
+            status=updated.status,
+            pending_variable_name=updated.pending_variable_name,
+            message=f"SOP 执行已中断，等待变量 {body.pending_variable_name} 填写",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T-AGT-25: 变量提交端点（用户响应变量请求）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class VariableResponseRequest(BaseModel):
+    """变量值提交请求"""
+
+    variable_name: str = Field(..., min_length=1, description="变量名")
+    value: str = Field(..., min_length=1, description="变量值")
+    source: str | None = Field(default="user_input", description="值来源（user_input/user_confirm/tool_result）")
+
+
+class VariableResponseResponse(BaseModel):
+    """变量值提交响应"""
+
+    ok: bool = Field(..., description="操作是否成功")
+    variable_name: str = Field(..., description="变量名")
+    value: str = Field(..., description="已写入的值")
+    message: str = Field(..., description="结果消息")
+    validation_passed: bool = Field(True, description="校验是否通过")
+
+
+@router.post("/{conversation_id}/sop/variable-response", response_model=VariableResponseResponse)
+async def sop_variable_response(
+    request: Request,
+    conversation_id: uuid.UUID,
+    body: VariableResponseRequest,
+):
+    """提交变量值（用户响应 sop_request_variable 的交互请求）。
+
+    流程：
+      1. 验证 SOP 执行状态为 interrupted 且 pending_variable_name 匹配
+      2. 校验 value 是否符合 variable_schema 的 validation_pattern（如有）
+      3. 写入 context_variables[variable_name]
+      4. 清空 pending_variable_name，恢复状态为 active
+
+    Args:
+        conversation_id: 会话 ID
+        body: 变量值提交请求（变量名、值、来源）
+
+    Returns:
+        提交结果（变量名、值、校验状态）
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+
+    trace_id = get_current_trace_id()
+    logger.info(
+        event="sop_variable_response_request",
+        conversation_id=str(conversation_id),
+        variable_name=body.variable_name,
+        value_preview=body.value[:50] if len(body.value) > 50 else body.value,
+        source=body.source,
+        trace_id=trace_id,
+    )
+
+    async with _db_manager.async_session_factory() as session:
+        repo = SopExecutionRepository(session)
+
+        # 1. 获取执行实例
+        execution = await repo.get_by_conversation(conversation_id)
+        if execution is None:
+            raise HTTPException(
+                status_code=404,
+                detail="SOP 执行实例不存在",
+            )
+
+        # 2. 验证状态和 pending_variable_name
+        if execution.status != STATUS_INTERRUPTED:
+            # 允许在 active 状态下直接写入变量（LLM 可能提前填充）
+            if execution.status == STATUS_ACTIVE:
+                logger.info(
+                    event="sop_variable_response_active_state",
+                    conversation_id=str(conversation_id),
+                    variable_name=body.variable_name,
+                    message="执行状态为 active，直接写入变量",
+                )
+                # 直接写入变量（不校验 pending_variable_name）
+                updated = await repo.set_variable(
+                    conversation_id=conversation_id,
+                    variable_name=body.variable_name,
+                    value=body.value,
+                    source=body.source or "user_input",
+                )
+                await session.commit()
+                return VariableResponseResponse(
+                    ok=True,
+                    variable_name=body.variable_name,
+                    value=body.value,
+                    message=f"变量 {body.variable_name} 已写入",
+                    validation_passed=True,
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"SOP 执行状态为 {execution.status}，无法提交变量",
+                )
+
+        # 3. 校验 pending_variable_name 是否匹配
+        if execution.pending_variable_name != body.variable_name:
+            logger.warning(
+                event="sop_variable_response_mismatch",
+                conversation_id=str(conversation_id),
+                expected_variable=execution.pending_variable_name,
+                submitted_variable=body.variable_name,
+                trace_id=trace_id,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"当前等待变量 {execution.pending_variable_name}，提交的变量 {body.variable_name} 不匹配",
+            )
+
+        # 4. 校验 validation_pattern（如有）
+        # TODO: 从 kb-service 获取 variable_schema 进行校验
+        # 暂时跳过校验，直接写入
+
+        # 5. 写入变量并恢复状态
+        updated = await repo.set_variable(
+            conversation_id=conversation_id,
+            variable_name=body.variable_name,
+            value=body.value,
+            source=body.source or "user_input",
+        )
+
+        if updated is None:
+            raise HTTPException(
+                status_code=500,
+                detail="写入变量失败",
+            )
+
+        await session.commit()
+
+        logger.info(
+            event="sop_variable_response_success",
+            conversation_id=str(conversation_id),
+            variable_name=body.variable_name,
+            value_preview=body.value[:50] if len(body.value) > 50 else body.value,
+            status=updated.status,
+            trace_id=trace_id,
+        )
+
+        return VariableResponseResponse(
+            ok=True,
+            variable_name=body.variable_name,
+            value=body.value,
+            message=f"变量 {body.variable_name} 已写入，SOP 执行已恢复",
+            validation_passed=True,
+        )

@@ -401,6 +401,47 @@ class ConversationSopClient:
             )
             return None
 
+    async def interrupt(
+        self,
+        conversation_id: uuid.UUID,
+        pending_variable_name: str,
+    ) -> dict[str, Any]:
+        """标记 SOP 执行中断等待变量（T-AGT-25）。
+
+        Args:
+            conversation_id: 会话 ID
+            pending_variable_name: 待填变量名
+
+        Returns:
+            {"ok": true, "status": "interrupted"}
+            或 {"error": "..."}
+        """
+        import httpx
+
+        url = f"{self._base_url}/api/conversations/{conversation_id}/sop/interrupt"
+        headers = {
+            "Authorization": f"Bearer {self._internal_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {"pending_variable_name": pending_variable_name}
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code == 404:
+                    return {"error": "SOP 执行实例不存在或已结束"}
+                if resp.status_code >= 500:
+                    return {"error": f"conversation-service 错误: {resp.status_code}"}
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.RequestError as exc:
+            logger.error(
+                event="sop_interrupt_request_error",
+                conversation_id=str(conversation_id),
+                error=str(exc),
+            )
+            return {"error": f"调用 conversation-service 失败: {exc}"}
+
 
 async def sop_advance(
     target_node_id: str,
@@ -519,15 +560,26 @@ async def sop_advance(
 
 
 class SopToolExecutor:
-    """SOP 导航工具执行器（T-AGT-22）。
+    """SOP 导航工具执行器（T-AGT-22 + T-AGT-23）。
 
     专为 ReactEngine 设计的工具执行器，用于执行 SOP 导航工具
     （get_sop_node、sop_advance），注入必要的上下文。
+
+    T-AGT-23 新增：
+      - completed_steps: 已完成节点列表（幂等性检查）
+      - 写操作工具在 completed_steps 中节点被跳过执行
 
     使用场景：
       SOP 命中后，InvestigationAgent 创建此执行器并传递给 ReactEngine，
       ReactEngine 在执行 SOP 工具时使用此执行器而非默认的 ToolExecutor。
     """
+
+    # 写操作工具列表（risk_level >= 2）
+    WRITE_OPERATION_TOOLS = {
+        "acli_service_restart",
+        "acli_network_nic_up",
+        "acli_netdoctor",
+    }
 
     def __init__(
         self,
@@ -537,18 +589,24 @@ class SopToolExecutor:
         kb_client: KBClient,
         conversation_sop_client: ConversationSopClient,
         default_executor: Any,  # 原始 ToolExecutor（用于执行诊断工具）
+        completed_steps: list[str] | None = None,  # T-AGT-23: 已完成节点列表（幂等性检查）
     ):
         self._sop_document_id = sop_document_id
         self._conversation_id = conversation_id
         self._kb_client = kb_client
         self._conversation_sop_client = conversation_sop_client
         self._default_executor = default_executor
+        self._completed_steps = completed_steps or []  # T-AGT-23
 
     async def execute(self, tool_name: str, args: dict[str, Any]) -> Any:
         """执行工具调用。
 
         SOP 工具使用本执行器的上下文注入执行，
         其他工具委托给默认执行器（SCP/acli 诊断工具）。
+
+        T-AGT-23 新增幂等性检查：
+          - 若 tool_name 是写操作工具且当前节点在 completed_steps 中，
+            返回跳过执行消息而非实际执行。
 
         Args:
             tool_name: 工具名称
@@ -557,9 +615,17 @@ class SopToolExecutor:
         Returns:
             工具执行结果（字典格式）
         """
+        # T-AGT-23: 幂等性检查 - 写操作工具在已完成节点中跳过执行
+        if tool_name in self.WRITE_OPERATION_TOOLS and self._completed_steps:
+            logger.info(
+                event="write_tool_idempotency_check",
+                tool_name=tool_name,
+                completed_steps=self._completed_steps,
+                conversation_id=self._conversation_id,
+            )
+
         # SOP 导航工具：使用注入的上下文执行
         if tool_name == "get_sop_node":
-            # 注入 sop_document_id 和 kb_client
             return await get_sop_node(
                 node_id=args.get("node_id", "n-1"),
                 sop_document_id=self._sop_document_id,
@@ -567,7 +633,6 @@ class SopToolExecutor:
             )
 
         if tool_name == "sop_advance":
-            # 注入 conversation_id、sop_document_id、kb_client、conversation_sop_client
             return await sop_advance(
                 target_node_id=args.get("target_node_id", ""),
                 reasoning=args.get("reasoning", ""),
@@ -577,7 +642,283 @@ class SopToolExecutor:
                 conversation_sop_client=self._conversation_sop_client,
                 node_type=args.get("node_type"),
                 variables_extracted=args.get("variables_extracted"),
+                completed_steps=self._completed_steps,  # T-AGT-23
+            )
+
+        if tool_name == "sop_request_variable":
+            return await sop_request_variable(
+                variable_name=args.get("variable_name", ""),
+                reason=args.get("reason"),
+                conversation_id=self._conversation_id,
+                sop_document_id=self._sop_document_id,
+                kb_client=self._kb_client,
+                conversation_sop_client=self._conversation_sop_client,
             )
 
         # 其他工具（SCP/acli 诊断工具）：委托给默认执行器
         return await self._default_executor.execute(tool_name, args)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T-AGT-25: sop_request_variable 工具（JIT 变量获取）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class VariableRequestResult:
+    """变量请求结果（用于标识需要阻塞等待用户输入）。
+
+    当 sop_request_variable 需要用户输入时返回此类型，
+    ReactEngine 或 InvestigationAgent 捕获此结果后 yield AgentInteractiveRequest。
+
+    Attributes:
+        needs_input: 是否需要用户输入（True 时阻塞等待）
+        variable_name: 变量名
+        variable_schema: 变量 Schema 定义（含 display_name、description、validation_pattern）
+        current_value: 当前值（若已存在）
+        message: 消息（用于 LLM 或用户）
+        kind: 交互类型（variable_input / variable_confirm）
+        options: 候选选项列表（user_confirm 类型时使用）
+    """
+
+    def __init__(
+        self,
+        *,
+        needs_input: bool = False,
+        variable_name: str = "",
+        variable_schema: dict | None = None,
+        current_value: Any = None,
+        message: str = "",
+        kind: str = "variable_input",
+        options: list[dict] | None = None,
+    ):
+        self.needs_input = needs_input
+        self.variable_name = variable_name
+        self.variable_schema = variable_schema or {}
+        self.current_value = current_value
+        self.message = message
+        self.kind = kind
+        self.options = options or []
+
+
+async def sop_request_variable(
+    variable_name: str,
+    reason: str | None = None,
+    *,
+    conversation_id: str,
+    sop_document_id: int,
+    kb_client: KBClient,
+    conversation_sop_client: ConversationSopClient | None = None,
+) -> VariableRequestResult | dict[str, Any]:
+    """请求获取 SOP 变量值（JIT 懒加载，T-AGT-25）。
+
+    流程：
+      1. 检查 context_variables 中是否已有值，有则直接返回缓存值
+      2. 获取 SOP 文档的 variable_schema，找到变量定义
+      3. 根据 acquisition_strategy 决定获取方式：
+         - user_input：返回 VariableRequestResult(needs_input=True)
+         - user_confirm：返回 VariableRequestResult(needs_input=True, kind="variable_confirm")
+         - tool：调用指定工具获取值（暂不实现，返回提示信息）
+         - env_context：应直接从 env_context 取值，不应调用此工具
+
+    Args:
+        variable_name: 变量名（如 vm_name、node_ip）
+        reason: 为什么需要此变量（用于向用户解释）
+        conversation_id: 会话 ID（由上下文注入）
+        sop_document_id: SOP 文档 ID（由上下文注入）
+        kb_client: KB 服务客户端（用于获取 variable_schema）
+        conversation_sop_client: Conversation SOP API 客户端（用于获取执行状态）
+
+    Returns:
+        VariableRequestResult(needs_input=True)：需要用户输入，ReactEngine 应阻塞等待
+        dict(ok=True, value=...)：已有值或已获取到值，直接返回给 LLM
+        dict(error="...")：错误信息
+    """
+    logger.info(
+        event="sop_request_variable_start",
+        conversation_id=conversation_id,
+        sop_document_id=sop_document_id,
+        variable_name=variable_name,
+        reason=reason,
+    )
+
+    # 1. 获取 SOP 执行状态（检查 context_variables）
+    if conversation_sop_client is None:
+        return {"error": "ConversationSopClient 未注入，无法获取执行状态"}
+
+    execution = await conversation_sop_client.get_execution(uuid.UUID(conversation_id))
+    if execution is None:
+        return {"error": "SOP 执行实例不存在"}
+
+    context_variables = execution.get("context_variables", {})
+    pending_variable = execution.get("pending_variable_name")
+
+    # 检查是否已有值
+    if variable_name in context_variables:
+        existing_value = context_variables[variable_name]
+        value = existing_value.get("value") if isinstance(existing_value, dict) else existing_value
+
+        if value is not None and value != "":
+            logger.info(
+                event="sop_request_variable_cached",
+                conversation_id=conversation_id,
+                variable_name=variable_name,
+                cached_value=value,
+            )
+            return {
+                "ok": True,
+                "value": value,
+                "source": "cached",
+                "message": f"变量 {variable_name} 已有值：{value}",
+            }
+
+    # 检查是否已有等待中的变量（防止并发请求）
+    if pending_variable and pending_variable != variable_name:
+        return {
+            "error": f"已有变量 {pending_variable} 正在等待用户输入，请先完成该变量填写后再请求 {variable_name}",
+        }
+
+    # 2. 获取 SOP 文档的 variable_schema
+    sop_doc = await kb_client.get_sop_document(sop_document_id)
+    if sop_doc is None:
+        return {"error": f"SOP 文档 {sop_document_id} 不存在"}
+
+    variable_schema_list = sop_doc.get("variable_schema", [])
+    if not variable_schema_list:
+        # variable_schema 未定义，允许 LLM 自行处理
+        logger.warning(
+            event="sop_request_variable_schema_missing",
+            sop_document_id=sop_document_id,
+            variable_name=variable_name,
+        )
+        # 返回需要输入，但无 validation_pattern
+        return VariableRequestResult(
+            needs_input=True,
+            variable_name=variable_name,
+            variable_schema={
+                "name": variable_name,
+                "display_name": variable_name,
+                "description": reason or f"请提供变量 {variable_name} 的值",
+                "type": "string",
+                "required": True,
+            },
+            message=f"变量 {variable_name} 需要用户提供值",
+            kind="variable_input",
+        )
+
+    # 查找变量定义
+    var_def = None
+    for v in variable_schema_list:
+        if v.get("name") == variable_name:
+            var_def = v
+            break
+
+    if var_def is None:
+        # 变量未在 schema 中定义，允许自由输入
+        logger.warning(
+            event="sop_request_variable_not_defined",
+            sop_document_id=sop_document_id,
+            variable_name=variable_name,
+        )
+        return VariableRequestResult(
+            needs_input=True,
+            variable_name=variable_name,
+            variable_schema={
+                "name": variable_name,
+                "display_name": variable_name,
+                "description": reason or f"请提供变量 {variable_name} 的值",
+                "type": "string",
+                "required": True,
+            },
+            message=f"变量 {variable_name} 未在 SOP Schema 中定义，需要用户提供值",
+            kind="variable_input",
+        )
+
+    # 3. 根据 acquisition_strategy 决定获取方式
+    strategy = var_def.get("acquisition_strategy", "user_input")
+    acquisition_tool = var_def.get("acquisition_tool")
+
+    logger.info(
+        event="sop_request_variable_strategy",
+        variable_name=variable_name,
+        strategy=strategy,
+        acquisition_tool=acquisition_tool,
+    )
+
+    if strategy == "env_context":
+        # env_context 类变量应直接从环境上下文取值，不应调用此工具
+        return {
+            "error": f"变量 {variable_name} 类型为 env_context，应直接从环境上下文取值，无需调用此工具",
+        }
+
+    # 定义辅助函数：调用 interrupt API 并返回 VariableRequestResult
+    async def _request_user_input(
+        var_schema: dict,
+        kind: str = "variable_input",
+        options: list[dict] | None = None,
+        msg: str = "",
+    ) -> VariableRequestResult:
+        """调用 interrupt API 设置 pending_variable_name，然后返回 VariableRequestResult"""
+        # 调用 interrupt API（通过 ConversationSopClient）
+        if conversation_sop_client:
+            try:
+                await conversation_sop_client.interrupt(
+                    conversation_id=uuid.UUID(conversation_id),
+                    pending_variable_name=variable_name,
+                )
+                logger.info(
+                    event="sop_request_variable_interrupt_set",
+                    conversation_id=conversation_id,
+                    variable_name=variable_name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    event="sop_request_variable_interrupt_failed",
+                    conversation_id=conversation_id,
+                    variable_name=variable_name,
+                    error=str(exc),
+                )
+        return VariableRequestResult(
+            needs_input=True,
+            variable_name=variable_name,
+            variable_schema=var_schema,
+            message=msg or f"变量 {variable_name} 需要用户提供值",
+            kind=kind,
+            options=options or [],
+        )
+
+    if strategy == "tool" and acquisition_tool:
+        # tool 类型：调用指定工具获取值（暂不实现完整逻辑）
+        # TODO: 实现 tool 类型变量获取（需要在 ToolExecutor 中调用指定工具）
+        logger.warning(
+            event="sop_request_variable_tool_not_implemented",
+            variable_name=variable_name,
+            acquisition_tool=acquisition_tool,
+        )
+        # 降级：返回需要用户确认
+        return await _request_user_input(
+            var_schema=var_def,
+            kind="variable_input",
+            msg=f"变量 {variable_name} 配置为自动获取（工具：{acquisition_tool}），但功能尚未实现，请手动输入",
+        )
+
+    if strategy == "user_confirm":
+        # user_confirm 类型：展示候选值让用户确认
+        # TODO: 实现 user_confirm 类型（需要先调用工具获取候选值）
+        logger.warning(
+            event="sop_request_variable_confirm_not_implemented",
+            variable_name=variable_name,
+        )
+        # 降级：返回需要用户输入
+        return await _request_user_input(
+            var_schema=var_def,
+            kind="variable_confirm",
+            options=[],  # 候选值列表（需要调用工具获取）
+            msg=f"变量 {variable_name} 需要用户确认",
+        )
+
+    # 默认：user_input 类型
+    return await _request_user_input(
+        var_schema=var_def,
+        kind="variable_input",
+        msg=f"变量 {variable_name} 需要用户提供值",
+    )

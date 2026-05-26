@@ -19,6 +19,8 @@ from opentelemetry import trace
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
+# T-AGT-25: 导入 VariableRequestResult
+from app.adapters.agents.htp.sop_tools import VariableRequestResult
 from app.domain.agent_port import (
     AgentEvent,
     AgentInteractiveRequest,
@@ -377,6 +379,35 @@ class ReactEngine:
                     )
                 except Exception as audit_err:
                     logger.error(f"审计日志写入失败: {audit_err}")
+
+        # T-AGT-25: 处理 sop_request_variable 的 VariableRequestResult
+        if isinstance(result, VariableRequestResult) and result.needs_input:
+            # 变量请求需要用户输入，yield AgentInteractiveRequest
+            var_schema = result.variable_schema
+            yield AgentInteractiveRequest(
+                request_id=str(uuid.uuid4()),
+                acp_session_id=session_id,
+                kind=result.kind,  # "variable_input" or "variable_confirm"
+                title=f"填写变量：{var_schema.get('display_name', result.variable_name)}",
+                prompt=var_schema.get('description', f"请提供变量 {result.variable_name} 的值"),
+                options=result.options or [],
+                custom_input=True,
+                metadata={
+                    "variable_name": result.variable_name,
+                    "validation_pattern": var_schema.get('validation_pattern'),
+                    "variable_type": var_schema.get('type', 'string'),
+                    "required": var_schema.get('required', True),
+                    "sop_tool": "sop_request_variable",
+                },
+            )
+            # 返回特殊结果，告知主循环需要等待用户响应
+            # 这里不返回 ToolResultEvent，而是返回等待状态
+            yield ToolResultEvent(
+                result={"needs_input": True, "variable_name": result.variable_name, "message": result.message},
+                tool_name=tool_name,
+                error=None,
+            )
+            return
 
         # 返回工具执行结果给主循环（避免重复执行）
         yield ToolResultEvent(result=result, tool_name=tool_name, error=error)

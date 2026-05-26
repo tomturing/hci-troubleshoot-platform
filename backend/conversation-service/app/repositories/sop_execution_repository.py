@@ -4,7 +4,7 @@ SopExecution Repository - SOP 执行状态数据访问层
 提供 SOP 执行实例的 CRUD 和状态推进方法：
   - get_active_by_conversation: 查询活跃的执行实例（用于中断恢复）
   - create: 创建新的执行实例（S1 阶段命中 SOP 时）
-  - advance: 推进到下一节点（advance_sop 工具调用）
+  - advance: 推进到下一节点（sop_advance 工具调用）
   - complete: 标记执行完成（到达叶节点时）
   - interrupt: 标记中断等待变量
 """
@@ -17,10 +17,10 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.sop_execution import (
-    SopExecution,
     STATUS_ACTIVE,
     STATUS_COMPLETED,
     STATUS_INTERRUPTED,
+    SopExecution,
 )
 
 
@@ -113,7 +113,7 @@ class SopExecutionRepository:
         node_type: str | None = None,
         variables_extracted: dict[str, Any] | None = None,
     ) -> SopExecution | None:
-        """推进到下一节点（advance_sop 工具调用）
+        """推进到下一节点（sop_advance 工具调用）
 
         操作：
           1. 更新 current_node_id 为目标节点
@@ -162,7 +162,7 @@ class SopExecutionRepository:
                     "value": var_value,
                     "source": "llm_extracted",
                     "resolved_at": datetime.now(UTC).isoformat(),
-                    "resolved_by_tool": "advance_sop",
+                    "resolved_by_tool": "sop_advance",
                 }
 
         # 判断是否叶节点（solution）
@@ -251,6 +251,58 @@ class SopExecutionRepository:
             .values(
                 status=STATUS_ACTIVE,
                 pending_variable_name=None,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        await self.session.flush()
+        return await self.get_by_conversation(conversation_id)
+
+    async def set_variable(
+        self,
+        conversation_id: uuid.UUID,
+        variable_name: str,
+        value: Any,
+        source: str = "user_input",
+    ) -> SopExecution | None:
+        """写入变量值并恢复执行状态（T-AGT-25）。
+
+        操作：
+          1. 写入 context_variables[variable_name] = {value, source, resolved_at}
+          2. 清空 pending_variable_name
+          3. 恢复 status=active（如果之前是 interrupted）
+
+        Args:
+            conversation_id: 会话 ID
+            variable_name: 变量名
+            value: 变量值
+            source: 值来源（user_input/user_confirm/tool_result/env_context）
+
+        Returns:
+            更新后的 SopExecution 实例
+        """
+        execution = await self.get_by_conversation(conversation_id)
+        if execution is None:
+            return None
+
+        # 获取当前 context_variables
+        context_variables = dict(execution.context_variables or {})
+        context_variables[variable_name] = {
+            "value": value,
+            "source": source,
+            "resolved_at": datetime.now(UTC).isoformat(),
+        }
+
+        # 确定新状态：如果之前是 interrupted，恢复为 active
+        new_status = STATUS_ACTIVE if execution.status == STATUS_INTERRUPTED else execution.status
+        new_pending = None if execution.pending_variable_name == variable_name else execution.pending_variable_name
+
+        await self.session.execute(
+            update(SopExecution)
+            .where(SopExecution.conversation_id == conversation_id)
+            .values(
+                status=new_status,
+                context_variables=context_variables,
+                pending_variable_name=new_pending,
                 updated_at=datetime.now(UTC),
             )
         )
