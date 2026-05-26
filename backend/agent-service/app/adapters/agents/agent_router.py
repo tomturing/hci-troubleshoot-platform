@@ -103,6 +103,7 @@ class AgentRouter:
         solution: str = "",
         execution_mode: str = "direct",   # 保留兼容旧调用方
         system_prompt: str | None = None,  # 保留兼容旧调用方
+        sop_resume_context: dict[str, Any] | None = None,  # T-AGT-23: SOP 执行恢复上下文
     ) -> AsyncGenerator[AgentEvent, None]:
         """路由大脑请求，按 stage + assistant_type 分流。
 
@@ -121,6 +122,7 @@ class AgentRouter:
             solution: 推荐方案（S5 使用）。
             execution_mode: 兼容旧调用路径，不影响新路由逻辑。
             system_prompt: 自定义 system_prompt（可选，保留兼容）。
+            sop_resume_context: SOP 执行恢复上下文（T-AGT-23，用于断线重连恢复）。
 
         Yields:
             AgentEvent 序列（来自目标大脑或降级后的备用大脑）。
@@ -296,6 +298,7 @@ class AgentRouter:
                 event="route_investigation_agent",
                 message=f"路由到 InvestigationAgent: stage={diagnostic_stage}, category_id={category_id}",
                 session_id=session_id,
+                sop_resume=sop_resume_context is not None,
             )
             async for event in self._investigation_agent.process(
                 session_id=session_id,
@@ -306,5 +309,6 @@ class AgentRouter:
                 assistant_type=assistant_type,
                 case_id=case_id,
                 user_id=user_id,
+                sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
             ):
                 yield event

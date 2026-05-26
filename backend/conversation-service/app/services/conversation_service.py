@@ -20,6 +20,7 @@ from app.config import settings
 
 from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
+from ..repositories.sop_execution_repository import SopExecutionRepository
 from .agent_client import AgentClient
 from .conversation_manager import ConversationManager
 from .environment_client import EnvironmentClient
@@ -276,6 +277,31 @@ class ConversationService:
         for msg in selected_messages:
             history_messages.append({"role": msg.role.value, "content": msg.content})
 
+        # T-AGT-23: 检测 SOP 执行恢复状态
+        sop_resume_context: dict | None = None
+        if self.session_factory:
+            async with self.session_factory() as sop_session:
+                sop_repo = SopExecutionRepository(sop_session)
+                sop_execution = await sop_repo.get_active_by_conversation(conversation_id)
+                if sop_execution:
+                    # 存在活跃的 SOP 执行，构建恢复上下文
+                    sop_resume_context = {
+                        "sop_document_id": sop_execution.sop_document_id,
+                        "current_node_id": sop_execution.current_node_id,
+                        "completed_steps": sop_execution.completed_steps or [],
+                        "context_variables": sop_execution.context_variables or {},
+                        "execution_log": sop_execution.execution_log or [],
+                        "status": sop_execution.status,
+                    }
+                    logger.info(
+                        event="sop_execution_resume_detected",
+                        message="检测到活跃的 SOP 执行，构建恢复上下文",
+                        conversation_id=str(conversation_id),
+                        sop_document_id=sop_execution.sop_document_id,
+                        current_node_id=sop_execution.current_node_id,
+                        completed_steps_count=len(sop_execution.completed_steps or []),
+                    )
+
         # 4. 从注册表获取 AI 助手客户端
         resolved_assistant_type = await self._resolve_assistant_type(conversation_id, assistant_type)
 
@@ -303,6 +329,7 @@ class ConversationService:
                     stream=True,
                     diagnostic_stage=current_stage,
                     category_id=_confirmed_category_code,
+                    sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
                 ):
                     event_type = agent_event.get("type")
                     if event_type == "text_chunk":

@@ -49,6 +49,7 @@ class AgentClient:
         category_id: str | None = None,  # S0 确认的分类
         execution_mode: str = "direct",  # 执行模式
         system_prompt: str | None = None,  # 自定义 system_prompt
+        sop_resume_context: dict[str, Any] | None = None,  # T-AGT-23: SOP 执行恢复上下文
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         调用 agent-service POST /v1/agent/stream，以异步生成器方式 yield 事件 dict。
@@ -69,6 +70,7 @@ class AgentClient:
             "category_id": category_id,
             "execution_mode": execution_mode,
             "system_prompt": system_prompt,
+            "sop_resume_context": sop_resume_context,  # T-AGT-23
         }
 
         url = f"{self._base_url}/v1/agent/stream"

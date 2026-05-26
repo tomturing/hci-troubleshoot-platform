@@ -453,8 +453,9 @@ async def sop_advance(
     conversation_sop_client: ConversationSopClient | None = None,
     node_type: str | None = None,
     variables_extracted: dict[str, Any] | None = None,
+    completed_steps: list[str] | None = None,  # T-AGT-23: 已完成节点列表（幂等性检查）
 ) -> dict[str, Any]:
-    """推进 SOP 到指定子节点，记录推理路径（T-AGT-21）。
+    """推进 SOP 到指定子节点，记录推理路径（T-AGT-21 + T-AGT-23）。
 
     Args:
         target_node_id: 目标子节点 ID（由 LLM 决策后传入）
@@ -462,6 +463,10 @@ async def sop_advance(
         conversation_id: 会话 ID（由上下文注入）
         sop_document_id: SOP 文档 ID（由 SOP 命中时注入）
         kb_client: KB 服务客户端（用于验证节点合法性）
+        conversation_sop_client: Conversation SOP API 客户端（用于更新执行状态）
+        node_type: 目标节点类型（可选，用于判断叶节点）
+        variables_extracted: 变量池更新（可选，M3 变量池功能）
+        completed_steps: 已完成节点列表（T-AGT-23，用于幂等性检查）
         conversation_sop_client: Conversation SOP API 客户端（用于更新执行状态）
         node_type: 目标节点类型（可选，用于判断叶节点）
         variables_extracted: 变量池更新（可选，M3 变量池功能）
@@ -477,6 +482,24 @@ async def sop_advance(
         或 {"error": "..."}
     """
     try:
+        # T-AGT-23: 幂等性检查 - 目标节点已在 completed_steps 中时跳过推进
+        if completed_steps and target_node_id in completed_steps:
+            logger.info(
+                event="sop_advance_idempotent_skip",
+                conversation_id=conversation_id,
+                sop_document_id=sop_document_id,
+                target_node_id=target_node_id,
+                completed_steps=completed_steps,
+            )
+            return {
+                "ok": True,
+                "current_node_id": target_node_id,
+                "node_type": node_type or "already_completed",
+                "message": f"节点 {target_node_id} 已完成，跳过重复推进",
+                "is_leaf": True,
+                "skipped": True,  # 标记为跳过
+            }
+
         # 1. 获取 SOP 决策树，验证目标节点存在
         tree_data = await kb_client.get_sop_tree(sop_document_id)
         if tree_data is None:

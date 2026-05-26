@@ -63,6 +63,7 @@ class AgentStreamRequest(BaseModel):
     category_id: str | None = None  # S0 确认的分类编码（S1+ 阶段必须）
     execution_mode: str = "direct"  # 执行模式（direct/react）
     system_prompt: str | None = None  # 自定义 system_prompt（可选）
+    sop_resume_context: dict[str, Any] | None = None  # T-AGT-23: SOP 执行恢复上下文
 
 
 class InteractiveResponseRequest(BaseModel):
@@ -112,6 +113,7 @@ async def _event_stream(
             category_id=req.category_id,
             execution_mode=req.execution_mode,
             system_prompt=req.system_prompt,
+            sop_resume_context=req.sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
         ):
             if isinstance(event, AgentTextChunk):
                 yield _sse({"type": "text_chunk", "content": event.content})
