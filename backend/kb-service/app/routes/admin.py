@@ -699,9 +699,13 @@ class SopApproveResponse(BaseModel):
     chunks_embedded: int = Field(0, description="已废弃字段（sop_chunk 已删除），始终为 0")
     tree_generated: bool = Field(..., description="是否成功生成 SOP 决策树")
     tree_leaf_count: int | None = Field(None, description="决策树叶节点数量")
-    tree_validation_status: str | None = Field(None, description="决策树校验状态（valid/warnings）")
+    tree_validation_status: str | None = Field(None, description="决策树校验状态（valid/warnings/error）")
     variable_count: int = Field(0, description="提取的变量数量（T-AGT-24）")
-    warnings: list[str] = Field(default_factory=list, description="审核警告列表（含 orphan 变量等）")
+    warnings: list[str] = Field(default_factory=list, description="审核警告列表（兼容旧格式，含 orphan 变量等）")
+    validation_issues: list[dict] = Field(
+        default_factory=list,
+        description="决策树校验问题列表（含 line_number，供前端按行定位）",
+    )
     published_at: str | None = Field(None, description="发布时间")
 
 
@@ -966,6 +970,12 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         variable_count=len(variable_defs),
     )
 
+    # 构建 validation_issues：合并 parse_result 中的 errors + warnings（含 line_number）
+    validation_issues: list[dict] = []
+    if parse_result:
+        for issue in parse_result.errors + parse_result.warnings:
+            validation_issues.append(issue.model_dump())
+
     return SopApproveResponse(
         success=True,
         document_id=document_id,
@@ -976,6 +986,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         tree_validation_status=tree_validation_status,
         variable_count=len(variable_defs),
         warnings=warnings,
+        validation_issues=validation_issues,
         published_at=now.isoformat(),
     )
 

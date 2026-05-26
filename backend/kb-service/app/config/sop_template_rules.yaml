@@ -1,0 +1,110 @@
+# SOP 模板规则配置
+# 修改本文件后重启服务即生效，无需修改 Python 代码。
+#
+# 配置层职责：关键词列表、话术规范词、校验级别
+# Python 层职责：字段类型定义、Pydantic 模型结构（不由本文件控制）
+
+# ──────────────────────────────────────────
+# 段落关键词等效表
+# ──────────────────────────────────────────
+keywords:
+  # 触发 diagnosis 段落解析的标题关键词（任一匹配即可）
+  diagnosis:
+    - 判断方法
+    - 判断依据
+    - 排查方法
+    - 排查步骤
+    - 识别方法
+    - 确认方法
+    - 诊断方法
+
+  # 触发 solution 段落解析的标题关键词
+  solution:
+    - 解决方案
+    - 解决方法
+    - 处理方法
+    - 处理步骤
+    - 修复方法
+    - 修复步骤
+    - 解决步骤
+
+  # 触发 variables 段落解析的标题关键词
+  variables:
+    - 变量声明
+    - 变量定义
+    - 变量
+    - 参数
+    - 参数定义
+    - 环境变量
+
+  # 触发 prerequisites 段落解析的标题关键词
+  prerequisites:
+    - 前置检查
+    - 前置条件
+    - 前置步骤
+
+# ──────────────────────────────────────────
+# 标准话术（偏差时报 error）
+# ──────────────────────────────────────────
+standard_headings:
+  diagnosis: 判断方法
+  solution: 解决方案
+  variables: 变量声明
+  prerequisites: 前置检查
+
+# ──────────────────────────────────────────
+# 前置检查类型识别关键词
+# ──────────────────────────────────────────
+prerequisite_type_keywords:
+  filter:
+    - 过滤型
+    - 条件判断
+    - 不满足就不执行
+  sequence:
+    - 调序型
+    - 平台类
+    - 漏报
+    - 不满足也会检查
+
+# ──────────────────────────────────────────
+# 前置检查节点数匹配：二元条件关键词（暗示 2 个子节点）
+# ──────────────────────────────────────────
+binary_outcome_patterns:
+  - 是/否
+  - 有/无
+  - 存在/不存在
+  - 满足/不满足
+  - 成功/失败
+  - 正常/异常
+
+# ──────────────────────────────────────────
+# 校验级别配置（error=阻断入库 / warning=放行但记录）
+# ──────────────────────────────────────────
+validation_levels:
+  # 结构性问题
+  multi_root: error                       # W-7 升级：文档存在多个顶层节点
+  orphan_ds_section: error                # W-8 升级：diagnosis/solution/variables/prerequisites 出现在文档最前（无父节点）
+
+  # 话术规范（全部升级为 error）
+  non_standard_diagnosis_heading: error   # W-9 升级
+  non_standard_solution_heading: error    # W-10 升级
+  non_standard_variables_heading: error   # 新增
+  non_standard_prerequisites_heading: error # 新增
+
+  # 叶节点必填段落
+  leaf_missing_diagnosis: error           # E-4
+  leaf_missing_solution: error            # E-5
+
+  # 判断方法内容
+  diagnosis_empty_content: warning        # 段落为空
+  diagnosis_missing_page_methods: warning # 缺页面判断方法（可选字段，缺失仅警告）
+  diagnosis_missing_acli_methods: error   # 缺 acli 判断方法（必填字段）
+
+  # 解决方案内容
+  solution_empty_content: warning
+  solution_missing_valid_content: warning
+  solution_missing_thorough_fix: warning  # 缺彻底解决方案（复用时警告）
+  solution_missing_quick_recovery: warning # 缺快速恢复方案（复用时警告）
+
+  # 前置检查与子节点数量不匹配
+  prerequisite_count_mismatch: warning

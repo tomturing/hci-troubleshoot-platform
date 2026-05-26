@@ -29,6 +29,14 @@ interface SopListResponse {
   page_size: number
 }
 
+// 决策树校验问题（后端返回，含行号）
+interface ValidationIssue {
+  level: 'error' | 'warning'
+  location: string
+  line_number: number | null
+  message: string
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 响应式状态
 // ──────────────────────────────────────────────────────────────────────────────
@@ -58,6 +66,11 @@ const editOriginalContentMd = ref('')  // 用于检测正文是否变更
 const editLoadingContent = ref(false)
 const editLoading = ref(false)
 
+// 校验问题弹窗
+const validationDialogVisible = ref(false)
+const validationIssues = ref<ValidationIssue[]>([])
+const validationDocTitle = ref('')
+
 // 导入弹窗
 const importDialogVisible = ref(false)
 const importFile = ref<File | null>(null)
@@ -77,6 +90,30 @@ function extractErrorMsg(e: unknown): string {
   const err = e as { message?: string }
   if (err?.message && err.message !== '[object Object]') return err.message
   return '操作失败，请重试'
+}
+
+/** 从非 2xx 的 fetch Response 中提取可读错误消息，格式为 "HTTP <status>：<detail>" */
+async function parseHttpError(resp: Response): Promise<string> {
+  const err = await resp.json().catch(() => ({}))
+  const detail = (err as { detail?: unknown; message?: string }).detail
+  let detailMsg: string
+  if (Array.isArray(detail)) {
+    detailMsg = detail
+      .map((d: { msg?: string; loc?: string[] }) => {
+        const loc = d.loc && d.loc.length > 0 ? `[${d.loc.join('.')}] ` : ''
+        return loc + (d.msg || JSON.stringify(d))
+      })
+      .join('; ')
+  } else if (typeof detail === 'string') {
+    detailMsg = detail
+  } else if (detail != null) {
+    detailMsg = JSON.stringify(detail)
+  } else if (typeof (err as { message?: string }).message === 'string') {
+    detailMsg = (err as { message: string }).message
+  } else {
+    detailMsg = resp.statusText || '未知错误'
+  }
+  return `HTTP ${resp.status}：${detailMsg}`
 }
 
 async function fetchDocuments() {
@@ -115,26 +152,25 @@ async function handleApprove(doc: SopDocument) {
       headers: { 'Content-Type': 'application/json', ...authHeader },
       body: JSON.stringify({ reviewer_id: 1 }),
     })
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}))
-      const detail = err.detail
-      const msg = Array.isArray(detail)
-        ? detail.map((d: { msg?: string }) => d.msg || JSON.stringify(d)).join('; ')
-        : (typeof detail === 'string' ? detail : `HTTP ${resp.status}`)
-      throw new Error(msg)
-    }
+    if (!resp.ok) throw new Error(await parseHttpError(resp))
     const result = await resp.json()
 
-    // 处理 warnings：如果有警告或解析失败，提示用户
-    if (result.warnings && result.warnings.length > 0) {
-      const warningMsg = result.warnings.join('\n')
-      if (result.tree_validation_status === 'error') {
-        ElMessage.error(`发布完成但决策树解析失败，请修复文档格式后重新发布：\n${warningMsg}`)
-      } else {
-        ElMessage.warning(`发布成功，但存在警告：\n${warningMsg}`)
-      }
+    // 收集 validation_issues（含行号）
+    const issues: ValidationIssue[] = result.validation_issues || []
+
+    if (result.tree_validation_status === 'error') {
+      ElMessage.error('发布完成但决策树解析失败，请修复文档格式后重新发布')
+    } else if (issues.length > 0) {
+      ElMessage.warning(`发布成功，存在 ${issues.length} 条校验警告`)
     } else {
       ElMessage.success(`发布成功，决策树状态：${treeValidationLabel(result.tree_validation_status, result.tree_generated)}`)
+    }
+
+    // 若存在校验问题（包括 error 和 warning），弹出详情弹窗
+    if (issues.length > 0) {
+      validationIssues.value = issues
+      validationDocTitle.value = doc.title
+      validationDialogVisible.value = true
     }
 
     const idx = documents.value.findIndex((d) => d.id === doc.id)
@@ -241,10 +277,7 @@ async function submitEdit() {
       headers: { 'Content-Type': 'application/json', ...authHeader },
       body: JSON.stringify(payload),
     })
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}))
-      throw new Error(err.detail || `HTTP ${resp.status}`)
-    }
+    if (!resp.ok) throw new Error(await parseHttpError(resp))
     const result = await resp.json()
     const successMsg = result.message
       ? `保存成功：${result.message}`
@@ -310,14 +343,7 @@ async function submitImport() {
       headers: { Authorization: `Bearer ${internalToken}` },
       body: formData,
     })
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}))
-      const detail = err.detail
-      const msg = Array.isArray(detail)
-        ? detail.map((d: { msg?: string }) => d.msg || JSON.stringify(d)).join('; ')
-        : (typeof detail === 'string' ? detail : `HTTP ${resp.status}`)
-      throw new Error(msg)
-    }
+    if (!resp.ok) throw new Error(await parseHttpError(resp))
     const result = await resp.json()
     if (result.duplicate) {
       ElMessage.warning(result.message || '文件已存在，跳过导入')
@@ -527,6 +553,34 @@ onMounted(() => fetchDocuments())
       <template #footer>
         <el-button @click="editDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="editLoading" @click="submitEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ── 校验问题弹窗 ── -->
+    <el-dialog
+      v-model="validationDialogVisible"
+      :title="`校验问题：${validationDocTitle}`"
+      width="680px"
+    >
+      <el-table :data="validationIssues" border style="width:100%" max-height="480">
+        <el-table-column label="级别" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.level === 'error' ? 'danger' : 'warning'" size="small">
+              {{ row.level === 'error' ? '错误' : '警告' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="行号" width="70" align="center">
+          <template #default="{ row }">
+            <span v-if="row.line_number" style="font-family:monospace;color:#409eff">{{ row.line_number }}</span>
+            <span v-else style="color:#c0c4cc">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="位置" prop="location" width="120" show-overflow-tooltip />
+        <el-table-column label="问题描述" prop="message" show-overflow-tooltip />
+      </el-table>
+      <template #footer>
+        <el-button @click="validationDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
