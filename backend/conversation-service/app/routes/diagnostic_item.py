@@ -55,6 +55,8 @@ def _check_auth(request: Request) -> None:
 class DiagnosticItemCreate(BaseModel):
     """单个诊断条目创建请求"""
 
+    model_config = {"extra": "forbid"}  # 禁止额外字段，确保 Union 匹配正确
+
     stage: str = Field(..., description="阶段标识（S2/S3/S4/S5）")
     type: str = Field(..., description="类型（hypothesis/verification_step/root_cause/solution）")
     seq: int = Field(default=1, ge=1, description="序号（从1开始）")
@@ -66,9 +68,11 @@ class DiagnosticItemCreate(BaseModel):
 class DiagnosticItemBatchCreate(BaseModel):
     """批量创建诊断条目请求（S2 假设列表）"""
 
+    model_config = {"extra": "forbid"}  # 禁止额外字段，确保 Union 匹配正确
+
     stage: str = Field(..., description="阶段标识")
     type: str = Field(..., description="类型")
-    items: list[dict[str, Any]] = Field(..., min_items=1, description="条目数据列表")
+    items: list[dict[str, Any]] = Field(..., min_length=1, description="条目数据列表")
 
 
 class DiagnosticItemResponse(BaseModel):
