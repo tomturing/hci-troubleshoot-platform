@@ -25,7 +25,6 @@ from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
 from app.adapters.agents.htp.diagnostic_agent import DiagnosticAgent  # 降级备用
-from app.adapters.agents.htp.intent_agent import IntentAgent  # @deprecated，保留兼容
 from app.adapters.agents.htp.investigation_agent import InvestigationAgent  # T-AGT-11：主用
 from app.adapters.agents.htp.kbd_model import KBD
 from app.adapters.agents.htp.remediation_agent import RemediationAgent

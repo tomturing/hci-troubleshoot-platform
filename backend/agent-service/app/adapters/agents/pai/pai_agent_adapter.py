@@ -27,7 +27,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from opentelemetry import trace
-from pydantic_ai import Agent, CallToolsNode, ModelRequestNode
+from pydantic_ai import Agent
 from pydantic_ai.messages import (
     AgentStreamEvent,
     FunctionToolCallEvent,
@@ -35,10 +35,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    PartStartEvent,
     TextPart,
-    TextPartDelta,
-    ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
@@ -54,7 +51,6 @@ from app.domain.agent_port import (
     AgentStageUpdate,
     AgentTextChunk,
     AgentUnavailableError,
-    ToolResultEvent,
 )
 
 logger = logging.getLogger("pydantic-ai-brain")

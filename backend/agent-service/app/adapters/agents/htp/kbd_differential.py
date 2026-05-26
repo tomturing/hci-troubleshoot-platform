@@ -252,7 +252,7 @@ class KBDDiagnostic:
                         "raw_output": (raw_output or "")[:500],  # 截取前500字符
                         "error": error,
                         "match_kbd_ids": list(match_ids) if match_ids else [],
-                        "eliminated_count": before_count - len(remaining) if match_ids else 0,
+                        "eliminated_count": 0,  # 下一步过滤后计算
                     },
                     status="confirmed" if error is None else "rejected",
                 )

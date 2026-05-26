@@ -2,8 +2,8 @@
 status: active
 category: solution
 audience: developer
-last_updated: 2026-05-22
-version: v1.2
+last_updated: 2026-05-26
+version: v1.3
 owner: team
 ---
 
@@ -20,6 +20,8 @@ owner: team
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-05-26 | v1.3 | 新增 variable_schema 字段、extract_sop_variables 双向校验、merge_variable_schema 三路合并（PR #333）| — |
+| 2026-05-26 | v1.3 | route.py SOP 查询增加 ts_rank 全文检索排序优化 | — |
 | 2026-05-22 | v1.2 | 文档整理：合并 `SOP树设计.md` 内容，统一为单一设计文档 | — |
 | 2026-05-19 | v1.1 | 解析策略重构：叶优先/关键词匹配；`sop_template.py` 移除 model_validator（宽松模式）；DiagnosisDetail/SolutionDetail 新增 `source_heading` 溯源字段；§2.2 去掉 H5 固定假设；§3 模型说明更新；§5.1 解析流程更新；新增 §八 validation_issues 三层作用 | [2026-05-19-SOP解析策略与校验模式设计.md](./events/2026-05-19-SOP解析策略与校验模式设计.md) |
 | 2026-05-01 | v1.0 | 初版：多叉决策树设计，sop_tree 表，Pydantic 模型，双向同步规则 | — |
