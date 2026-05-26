@@ -48,6 +48,9 @@ logger = get_logger("investigation-agent")
 # CDD 候选案例检索数量
 DEFAULT_TOP_K = 15
 
+# SOP 内容截断上限（防止超出 LLM 上下文窗口）
+MAX_SOP_CHARS = 8000
+
 # SOP 根节点 ID（默认）
 DEFAULT_ROOT_NODE_ID = "n-1"
 

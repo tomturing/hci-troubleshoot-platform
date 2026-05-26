@@ -5,15 +5,18 @@
 - AIAssistantRegistry：AI 助手客户端注册表
 - SchedulerClient：调度服务客户端
 - KBClient：知识库服务客户端
+- DiagnosticItemClient：诊断条目客户端
 """
 
 from .ai_client import AIAssistantRegistry, create_openclaw_client
+from .diagnostic_item_client import DiagnosticItemClient
 from .kb_client import KBClient
 from .scheduler_client import SchedulerClient
 
 __all__ = [
     "AIAssistantRegistry",
     "create_openclaw_client",
+    "DiagnosticItemClient",
     "SchedulerClient",
     "KBClient",
 ]
