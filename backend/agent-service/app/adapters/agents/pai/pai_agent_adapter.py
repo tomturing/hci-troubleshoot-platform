@@ -19,6 +19,7 @@ Phase 2 扩展（写操作）：DeferredToolRequests（高危工具需要用户�
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import os
@@ -28,6 +29,7 @@ from typing import Any
 from opentelemetry import trace
 from pydantic_ai import Agent, CallToolsNode, ModelRequestNode
 from pydantic_ai.messages import (
+    AgentStreamEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelMessage,
@@ -37,6 +39,7 @@ from pydantic_ai.messages import (
     TextPart,
     TextPartDelta,
     ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models.openai import OpenAIModel
@@ -46,7 +49,13 @@ from shared.clients import KBClient
 
 from app.adapters.clients.acli_client import AcliClient
 from app.adapters.clients.scp_client import SCPClient
-from app.domain.agent_port import AgentEvent, AgentStageUpdate, AgentTextChunk, AgentUnavailableError
+from app.domain.agent_port import (
+    AgentEvent,
+    AgentStageUpdate,
+    AgentTextChunk,
+    AgentUnavailableError,
+    ToolResultEvent,
+)
 
 logger = logging.getLogger("pydantic-ai-brain")
 tracer = trace.get_tracer(__name__)
@@ -100,6 +109,10 @@ class PydanticAIDeps:
     acli_client: AcliClient
     env_context: dict[str, Any]
     category_id: str | None = None  # S0 确认的故障分类编码
+    # 工具调用事件队列（用于 T-AGT-14 可观测性）
+    tool_event_queue: asyncio.Queue[AgentStageUpdate] = dataclasses.field(
+        default_factory=lambda: asyncio.Queue()
+    )
 
 
 def _build_agent() -> Agent[PydanticAIDeps]:
@@ -264,6 +277,82 @@ def _get_agent() -> Agent[PydanticAIDeps]:
     return _AGENT
 
 
+def _create_event_stream_handler(
+    tool_event_queue: asyncio.Queue[AgentStageUpdate],
+) -> callable:
+    """创建 event_stream_handler 用于拦截工具调用事件（T-AGT-14）。
+
+    Args:
+        tool_event_queue: 工具事件队列，用于传递事件到主流程
+
+    Returns:
+        EventStreamHandler 函数，接收 RunContext 和事件流
+    """
+
+    async def handler(
+        ctx: RunContext[PydanticAIDeps],
+        events: AsyncGenerator[AgentStreamEvent, None],
+    ) -> None:
+        """事件流处理器，拦截工具调用/结果事件并写入队列。"""
+        async for event in events:
+            # 拦截工具调用开始事件
+            if isinstance(event, FunctionToolCallEvent):
+                part = event.part
+                tool_name = part.tool_name
+                args = part.args if part.args else {}
+                logger.info(
+                    "pydantic-ai brain: 工具调用开始 tool_name=%s args=%s",
+                    tool_name,
+                    args,
+                )
+                # 写入阶段更新事件（工具调用开始）
+                await tool_event_queue.put(
+                    AgentStageUpdate(
+                        stage="tool_call",
+                        metadata={
+                            "tool_name": tool_name,
+                            "tool_args": args,
+                            "tool_call_id": part.tool_call_id,
+                            "status": "pending",
+                        },
+                    )
+                )
+            # 拦截工具调用结果事件
+            elif isinstance(event, FunctionToolResultEvent):
+                result_part = event.result
+                tool_name = result_part.tool_name
+                content = result_part.content
+                # 如果是 ToolReturnPart，提取内容
+                if isinstance(result_part, ToolReturnPart):
+                    result_content = content
+                    error = None
+                else:
+                    # RetryPromptPart 表示工具执行失败，需要重试
+                    result_content = str(content)
+                    error = "工具执行失败，需要重试"
+
+                logger.info(
+                    "pydantic-ai brain: 工具调用完成 tool_name=%s result_type=%s",
+                    tool_name,
+                    type(result_part).__name__,
+                )
+                # 写入阶段更新事件（工具调用完成）
+                await tool_event_queue.put(
+                    AgentStageUpdate(
+                        stage="tool_result",
+                        metadata={
+                            "tool_name": tool_name,
+                            "tool_result": result_content,
+                            "tool_call_id": result_part.tool_call_id,
+                            "status": "completed" if error is None else "error",
+                            "error": error,
+                        },
+                    )
+                )
+
+    return handler
+
+
 def _openai_messages_to_pydantic(
     messages: list[dict[str, Any]],
 ) -> tuple[str, list[ModelMessage]]:
@@ -408,9 +497,9 @@ class PaiAgentAdapter:
         category_id: str | None = None,
         **_kwargs: Any,
     ) -> AsyncGenerator[AgentEvent, None]:
-        """调用 pydantic-ai Agent，流式产出 AgentTextChunk。
+        """调用 pydantic-ai Agent，流式产出 AgentTextChunk 和工具调用事件。
 
-        工具调用在 pydantic-ai 内部透明处理，对调用方只暴露最终文本增量流。
+        通过 event_stream_handler 拦截工具调用事件，yield AgentStageUpdate。
 
         Args:
             session_id: 会话 ID（用于链路追踪）
@@ -432,15 +521,22 @@ class PaiAgentAdapter:
             yield AgentTextChunk(content="[系统提示] 未收到有效的用户消息。")
             return
 
+        # 创建事件队列（用于收集工具调用事件）
+        tool_event_queue: asyncio.Queue[AgentStageUpdate] = asyncio.Queue()
+
         deps = PydanticAIDeps(
             kb_client=self._kb,
             scp_client=self._scp,
             acli_client=self._acli,
             env_context=env_context or {},
             category_id=category_id,
+            tool_event_queue=tool_event_queue,
         )
 
         agent = _get_agent()
+
+        # 创建 event_stream_handler 用于拦截工具调用事件
+        event_handler = _create_event_stream_handler(tool_event_queue)
 
         with tracer.start_as_current_span("pydantic-ai-brain-process") as span:
             span.set_attribute("session_id", session_id)
@@ -455,10 +551,51 @@ class PaiAgentAdapter:
                     message_history=message_history,
                     model=self._openai_model,
                     deps=deps,
+                    event_stream_handler=event_handler,
                 ) as streamed:
-                    async for text in streamed.stream_text(delta=True):
-                        if text:
-                            yield AgentTextChunk(content=text)
+                    # 同时迭代文本流和事件队列
+                    # 使用一个合并队列来统一处理两种事件源
+                    merged_queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
+
+                    async def text_stream_task():
+                        """消费文本流，写入合并队列"""
+                        async for text in streamed.stream_text(delta=True):
+                            if text:
+                                await merged_queue.put(AgentTextChunk(content=text))
+                        # 文本流结束，写入结束标记
+                        await merged_queue.put(None)
+
+                    # 启动文本流任务（后台运行）
+                    text_task = asyncio.create_task(text_stream_task())
+
+                    # 主循环：从合并队列读取并 yield
+                    # 同时检查事件队列（事件会先写入 tool_event_queue，再转移到 merged_queue）
+                    while True:
+                        # 先检查工具事件队列（非阻塞）
+                        try:
+                            event = tool_event_queue.get_nowait()
+                            await merged_queue.put(event)
+                        except asyncio.QueueEmpty:
+                            pass
+
+                        # 从合并队列读取（阻塞一小段时间）
+                        try:
+                            item = await asyncio.wait_for(merged_queue.get(), timeout=0.01)
+                            if item is None:
+                                # 文本流结束，退出主循环
+                                break
+                            yield item
+                        except asyncio.TimeoutError:
+                            # 继续轮询
+                            continue
+
+                    # 等待文本流任务完成
+                    await text_task
+
+                    # 处理剩余的工具事件
+                    while not tool_event_queue.empty():
+                        event = tool_event_queue.get_nowait()
+                        yield event
 
             except Exception as exc:
                 logger.exception(

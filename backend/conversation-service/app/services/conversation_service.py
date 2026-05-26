@@ -325,6 +325,17 @@ class ConversationService:
                                         sop_document_id=_sop_doc_id,
                                     )
                                 )
+                        # T-AGT-14: 处理 pydantic-ai 工具调用记录（tool_call / tool_result）
+                        elif _stage in ("tool_call", "tool_result"):
+                            asyncio.create_task(
+                                self._record_pai_tool_call(
+                                    conversation_id=conversation_id,
+                                    case_id=case_id,
+                                    stage=_stage,
+                                    metadata=_metadata,
+                                    resolved_assistant_type=resolved_assistant_type,
+                                )
+                            )
                     elif event_type == "interactive_request":
                         _ir_payload = _json.dumps(
                             {
@@ -1136,6 +1147,158 @@ class ConversationService:
                 message=f"SOP 使用记录更新失败：{e}",
                 conversation_id=str(conversation_id),
                 sop_document_id=sop_document_id,
+            )
+
+    async def _record_pai_tool_call(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        stage: str,
+        metadata: dict[str, Any],
+        resolved_assistant_type: str,
+    ) -> None:
+        """
+        记录 pydantic-ai (pai-agent) 工具调用到 tool_result 表（T-AGT-14）。
+
+        pai-agent 工具调用事件包含：
+          - stage="tool_call": 工具调用开始，记录 tool_name、args、status="pending"
+          - stage="tool_result": 工具调用完成，记录 tool_name、result、status="completed"/"error"
+
+        Args:
+            conversation_id: 会话 ID
+            case_id: 工单 ID
+            stage: 事件阶段（tool_call / tool_result）
+            metadata: 事件元数据（tool_name, tool_args/tool_result, status 等）
+            resolved_assistant_type: 解析后的助手类型（用于区分 pai-agent）
+        """
+        from datetime import UTC, datetime
+
+        from shared.models.audit import ToolResult
+
+        # 仅记录 pai-agent 的工具调用
+        if resolved_assistant_type != "pydantic-ai":
+            return
+
+        tool_name = metadata.get("tool_name", "")
+        if not tool_name:
+            logger.warning(
+                event="pai_tool_call_missing_name",
+                message="pai-agent 工具调用事件缺少 tool_name",
+                conversation_id=str(conversation_id),
+                stage=stage,
+            )
+            return
+
+        try:
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    # 根据阶段决定写入内容
+                    if stage == "tool_call":
+                        # 工具调用开始：创建新记录
+                        record = ToolResult(
+                            conversation_id=conversation_id,
+                            tool_name=tool_name,
+                            tool_type="scp_api",  # pai-agent 工具主要为 SCP API
+                            risk_level=1,  # 只读工具
+                            policy="auto",  # 自动执行
+                            input_json=metadata.get("tool_args", {}),
+                            output_json=None,
+                            error=None,
+                            started_at=datetime.now(UTC),
+                            completed_at=None,
+                            duration_ms=None,
+                            trace_id=get_current_trace_id(),
+                        )
+                        session.add(record)
+                        await session.commit()
+                        logger.info(
+                            event="pai_tool_call_started",
+                            message=f"pai-agent 工具调用开始：{tool_name}",
+                            conversation_id=str(conversation_id),
+                            tool_name=tool_name,
+                            tool_args=metadata.get("tool_args"),
+                        )
+
+                    elif stage == "tool_result":
+                        # 工具调用完成：查找待更新记录并填充结果
+                        from sqlalchemy import select
+                        from sqlalchemy import update as sa_update
+
+                        status = metadata.get("status", "completed")
+                        tool_result = metadata.get("tool_result")
+                        error = metadata.get("error")
+
+                        # 查找最近的 pending 记录
+                        result = await session.execute(
+                            select(ToolResult)
+                            .where(
+                                ToolResult.conversation_id == conversation_id,
+                                ToolResult.tool_name == tool_name,
+                                ToolResult.completed_at.is_(None),
+                            )
+                            .order_by(ToolResult.started_at.desc())
+                            .limit(1)
+                        )
+                        pending_record = result.scalar_one_or_none()
+
+                        if pending_record:
+                            # 更新现有记录
+                            now = datetime.now(UTC)
+                            duration_ms = int(
+                                (now - pending_record.started_at).total_seconds() * 1000
+                            )
+                            await session.execute(
+                                sa_update(ToolResult)
+                                .where(ToolResult.id == pending_record.id)
+                                .values(
+                                    output_json=tool_result,
+                                    error=error,
+                                    completed_at=now,
+                                    duration_ms=duration_ms,
+                                )
+                            )
+                            await session.commit()
+                            logger.info(
+                                event="pai_tool_call_completed",
+                                message=f"pai-agent 工具调用完成：{tool_name}",
+                                conversation_id=str(conversation_id),
+                                tool_name=tool_name,
+                                status=status,
+                                duration_ms=duration_ms,
+                            )
+                        else:
+                            # 没有找到 pending 记录，创建新的完整记录
+                            record = ToolResult(
+                                conversation_id=conversation_id,
+                                tool_name=tool_name,
+                                tool_type="scp_api",
+                                risk_level=1,
+                                policy="auto",
+                                input_json={},
+                                output_json=tool_result,
+                                error=error,
+                                started_at=datetime.now(UTC),
+                                completed_at=datetime.now(UTC),
+                                duration_ms=0,
+                                trace_id=get_current_trace_id(),
+                            )
+                            session.add(record)
+                            await session.commit()
+                            logger.info(
+                                event="pai_tool_call_record_created",
+                                message=f"pai-agent 工具调用记录创建：{tool_name}",
+                                conversation_id=str(conversation_id),
+                                tool_name=tool_name,
+                                status=status,
+                            )
+
+        except Exception as e:
+            logger.warning(
+                event="pai_tool_call_record_error",
+                message=f"pai-agent 工具调用记录失败：{e}",
+                conversation_id=str(conversation_id),
+                tool_name=tool_name,
+                stage=stage,
             )
 
     async def _update_resolved_kbd(
