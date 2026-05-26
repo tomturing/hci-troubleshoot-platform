@@ -3,7 +3,7 @@ SOP 导航工具集 — 提供 SOP 决策树遍历能力
 
 工具：
   - get_sop_node(node_id): 获取节点内容 + 子节点列表（T-AGT-20）
-  - advance_sop(target_node_id, reasoning): 推进到子节点（T-AGT-21）
+  - sop_advance(target_node_id, reasoning): 推进到子节点（T-AGT-21）
 
 设计依据：
   - docs/solution/agent/agent设计.md §12.6 推荐方案③（导航工具化）
@@ -142,7 +142,7 @@ def _build_node_response(node: dict) -> dict[str, Any]:
 
     # 确定节点类型和内容
     if is_leaf:
-        # 叶节点：优先返回诊断信息（后续可能需要 advance_sop 到 solution）
+        # 叶节点 ：优先返回诊断信息（后续可能需要 sop_advance 到 solution）
         diagnosis = node.get("diagnosis")
         solution = node.get("solution")
 
@@ -249,20 +249,74 @@ def _format_solution_content(solution: dict) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# T-AGT-21: advance_sop 工具
+# T-AGT-21: sop_advance 工具
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class ConversationSopClient:
-    """Conversation Service SOP API 客户端（用于 advance_sop 调用）
+    """Conversation Service SOP API 客户端（用于 SOP 执行状态管理）
 
-    由于 sop_execution 表在 conversation-service 管理，
-    agent-service 需通过 HTTP API 调用 conversation-service 来更新执行状态。
+    SOP 执行状态表在 conversation-service 管理，
+    agent-service 需通过 HTTP API 调用 conversation-service 来管理执行状态。
     """
 
     def __init__(self, base_url: str, internal_token: str):
         self._base_url = base_url.rstrip("/")
         self._internal_token = internal_token
+
+    async def create(
+        self,
+        conversation_id: uuid.UUID,
+        sop_document_id: int,
+        root_node_id: str = "n-1",
+    ) -> dict[str, Any]:
+        """创建 SOP 执行实例（T-AGT-22）。
+
+        Args:
+            conversation_id: 会话 ID
+            sop_document_id: SOP 文档 ID
+            root_node_id: 根节点 ID（默认 n-1）
+
+        Returns:
+            {
+                "ok": true,
+                "conversation_id": "...",
+                "sop_document_id": 123,
+                "current_node_id": "n-1",
+                "status": "active",
+                "message": "..."
+            }
+            或 {"error": "..."}
+        """
+        import httpx
+
+        url = f"{self._base_url}/api/conversations/{conversation_id}/sop/create"
+        headers = {
+            "Authorization": f"Bearer {self._internal_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "sop_document_id": sop_document_id,
+            "root_node_id": root_node_id,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code == 401:
+                    return {"error": "内部服务 Token 无效"}
+                if resp.status_code >= 500:
+                    return {"error": f"conversation-service 错误: {resp.status_code}"}
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.RequestError as exc:
+            logger.error(
+                event="sop_create_request_error",
+                conversation_id=str(conversation_id),
+                sop_document_id=sop_document_id,
+                error=str(exc),
+            )
+            return {"error": f"调用 conversation-service 失败: {exc}"}
 
     async def advance(
         self,
@@ -316,8 +370,39 @@ class ConversationSopClient:
             )
             return {"error": f"调用 conversation-service 失败: {exc}"}
 
+    async def get_execution(self, conversation_id: uuid.UUID) -> dict[str, Any] | None:
+        """获取 SOP 执行实例详情（用于恢复场景）。
 
-async def advance_sop(
+        Args:
+            conversation_id: 会话 ID
+
+        Returns:
+            执行实例详情字典，不存在时返回 None
+        """
+        import httpx
+
+        url = f"{self._base_url}/api/conversations/{conversation_id}/sop/execution"
+        headers = {
+            "Authorization": f"Bearer {self._internal_token}",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.RequestError as exc:
+            logger.error(
+                event="sop_get_execution_error",
+                conversation_id=str(conversation_id),
+                error=str(exc),
+            )
+            return None
+
+
+async def sop_advance(
     target_node_id: str,
     reasoning: str,
     *,
@@ -400,7 +485,7 @@ async def advance_sop(
 
         # 3. 构造返回消息
         logger.info(
-            event="advance_sop_success",
+            event="sop_advance_success",
             conversation_id=conversation_id,
             sop_document_id=sop_document_id,
             target_node_id=target_node_id,
@@ -419,10 +504,80 @@ async def advance_sop(
 
     except Exception as exc:
         logger.error(
-            event="advance_sop_error",
+            event="sop_advance_error",
             conversation_id=conversation_id,
             sop_document_id=sop_document_id,
             target_node_id=target_node_id,
             error=str(exc),
         )
         return {"error": f"推进 SOP 失败: {exc}"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T-AGT-22: SopToolExecutor 工具执行器
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class SopToolExecutor:
+    """SOP 导航工具执行器（T-AGT-22）。
+
+    专为 ReactEngine 设计的工具执行器，用于执行 SOP 导航工具
+    （get_sop_node、sop_advance），注入必要的上下文。
+
+    使用场景：
+      SOP 命中后，InvestigationAgent 创建此执行器并传递给 ReactEngine，
+      ReactEngine 在执行 SOP 工具时使用此执行器而非默认的 ToolExecutor。
+    """
+
+    def __init__(
+        self,
+        *,
+        sop_document_id: int,
+        conversation_id: str,
+        kb_client: KBClient,
+        conversation_sop_client: ConversationSopClient,
+        default_executor: Any,  # 原始 ToolExecutor（用于执行诊断工具）
+    ):
+        self._sop_document_id = sop_document_id
+        self._conversation_id = conversation_id
+        self._kb_client = kb_client
+        self._conversation_sop_client = conversation_sop_client
+        self._default_executor = default_executor
+
+    async def execute(self, tool_name: str, args: dict[str, Any]) -> Any:
+        """执行工具调用。
+
+        SOP 工具使用本执行器的上下文注入执行，
+        其他工具委托给默认执行器（SCP/acli 诊断工具）。
+
+        Args:
+            tool_name: 工具名称
+            args: 工具参数（由 LLM 传入）
+
+        Returns:
+            工具执行结果（字典格式）
+        """
+        # SOP 导航工具：使用注入的上下文执行
+        if tool_name == "get_sop_node":
+            # 注入 sop_document_id 和 kb_client
+            return await get_sop_node(
+                node_id=args.get("node_id", "n-1"),
+                sop_document_id=self._sop_document_id,
+                kb_client=self._kb_client,
+            )
+
+        if tool_name == "sop_advance":
+            # 注入 conversation_id、sop_document_id、kb_client、conversation_sop_client
+            return await sop_advance(
+                target_node_id=args.get("target_node_id", ""),
+                reasoning=args.get("reasoning", ""),
+                conversation_id=self._conversation_id,
+                sop_document_id=self._sop_document_id,
+                kb_client=self._kb_client,
+                conversation_sop_client=self._conversation_sop_client,
+                node_type=args.get("node_type"),
+                variables_extracted=args.get("variables_extracted"),
+            )
+
+        # 其他工具（SCP/acli 诊断工具）：委托给默认执行器
+        return await self._default_executor.execute(tool_name, args)

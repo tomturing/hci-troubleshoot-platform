@@ -2,7 +2,7 @@
 SOP 执行路由 — SOP 执行状态管理 API
 
 提供 SOP 执行实例的推进和管理接口：
-  - POST /api/conversations/{id}/sop/advance: 推进到下一节点（advance_sop 工具调用）
+  - POST /api/conversations/{id}/sop/advance: 推进到下一节点（sop_advance 工具调用）
 
 设计依据：
   - docs/task/agent/events/2026-05-26-SOP执行引擎-M1数据库与M2导航工具化.md T-AGT-21
@@ -49,6 +49,24 @@ def _check_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Token 无效")
 
 
+class SopCreateRequest(BaseModel):
+    """SOP 执行实例创建请求"""
+
+    sop_document_id: int = Field(..., description="SOP 文档 ID")
+    root_node_id: str = Field(default="n-1", description="根节点 ID（默认 n-1）")
+
+
+class SopCreateResponse(BaseModel):
+    """SOP 执行实例创建响应"""
+
+    ok: bool = Field(..., description="创建是否成功")
+    conversation_id: str = Field(..., description="会话 ID")
+    sop_document_id: int = Field(..., description="SOP 文档 ID")
+    current_node_id: str = Field(..., description="当前节点 ID（根节点）")
+    status: str = Field(..., description="执行状态（active）")
+    message: str = Field(..., description="创建结果消息")
+
+
 class SopAdvanceRequest(BaseModel):
     """SOP 推进请求"""
 
@@ -68,13 +86,100 @@ class SopAdvanceResponse(BaseModel):
     is_completed: bool = Field(False, description="SOP 是否已完成（到达叶节点）")
 
 
+@router.post("/{conversation_id}/sop/create", response_model=SopCreateResponse)
+async def sop_create_execution(
+    request: Request,
+    conversation_id: uuid.UUID,
+    body: SopCreateRequest,
+):
+    """创建 SOP 执行实例（S1 阶段命中 SOP 时）。
+
+    操作：
+      1. 创建新的 sop_execution 记录
+      2. 初始化 current_node_id 为根节点
+      3. 记录 execution_log 首条（node_entered）
+
+    Args:
+        conversation_id: 会话 ID
+        body: 创建请求（SOP 文档 ID、根节点 ID）
+
+    Returns:
+        创建结果（会话 ID、SOP 文档 ID、当前节点 ID）
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+
+    trace_id = get_current_trace_id()
+    logger.info(
+        event="sop_create_request",
+        conversation_id=str(conversation_id),
+        sop_document_id=body.sop_document_id,
+        root_node_id=body.root_node_id,
+        trace_id=trace_id,
+    )
+
+    async with _db_manager.async_session_factory() as session:
+        repo = SopExecutionRepository(session)
+
+        # 检查是否已存在活跃的执行实例（中断恢复场景）
+        existing = await repo.get_active_by_conversation(conversation_id)
+        if existing:
+            # 已存在活跃实例，返回现有记录（用于恢复）
+            logger.info(
+                event="sop_create_existing",
+                conversation_id=str(conversation_id),
+                existing_id=str(existing.id),
+                current_node_id=existing.current_node_id,
+                trace_id=trace_id,
+            )
+            await session.commit()
+            return SopCreateResponse(
+                ok=True,
+                conversation_id=str(conversation_id),
+                sop_document_id=existing.sop_document_id,
+                current_node_id=existing.current_node_id,
+                status=existing.status,
+                message="SOP 执行实例已存在，继续执行",
+            )
+
+        # 创建新的执行实例
+        execution = await repo.create(
+            conversation_id=conversation_id,
+            sop_document_id=body.sop_document_id,
+            current_node_id=body.root_node_id,
+            trace_id=trace_id,
+        )
+
+        await session.commit()
+
+        logger.info(
+            event="sop_create_success",
+            conversation_id=str(conversation_id),
+            execution_id=str(execution.id),
+            sop_document_id=body.sop_document_id,
+            current_node_id=execution.current_node_id,
+            trace_id=trace_id,
+        )
+
+        return SopCreateResponse(
+            ok=True,
+            conversation_id=str(conversation_id),
+            sop_document_id=body.sop_document_id,
+            current_node_id=execution.current_node_id,
+            status=execution.status,
+            message="SOP 执行实例已创建",
+        )
+
+
 @router.post("/{conversation_id}/sop/advance", response_model=SopAdvanceResponse)
-async def advance_sop_execution(
+async def sop_advance_execution(
     request: Request,
     conversation_id: uuid.UUID,
     body: SopAdvanceRequest,
 ):
-    """推进 SOP 执行到下一节点（agent-service 的 advance_sop 工具调用）。
+    """推进 SOP 执行到下一节点（agent-service 的 sop_advance 工具调用）。
 
     操作：
       1. 更新 current_node_id 为目标节点

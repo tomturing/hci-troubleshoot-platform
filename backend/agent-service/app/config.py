@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     KB_CONTEXT_MAX_CHARS: int = 40000
     KB_ENABLED: bool = True
 
+    # Conversation 服务配置（T-AGT-22：用于 SOP 执行状态管理）
+    CONVERSATION_SERVICE_URL: str = "http://conversation-service:8002"
+
     # Scheduler 配置（HTP 大脑调用 ProductionClaw/LearningClaw）
     SCHEDULER_SERVICE_URL: str = "http://scheduler-service:8003"
     SCHEDULER_ALLOCATE_TIMEOUT_SEC: int = 8

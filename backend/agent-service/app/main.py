@@ -182,7 +182,14 @@ async def lifespan(app: FastAPI):
         ai_registry=ai_registry,
         kb_client=kb_client,
         tool_executor=investigation_tool_executor,
+        conversation_service_url=settings.CONVERSATION_SERVICE_URL,  # T-AGT-22
+        internal_token=settings.INTERNAL_API_TOKEN,  # T-AGT-22
         top_k=15,
+    )
+    logger.info(
+        event="investigation_agent_initialized",
+        conversation_service_url=settings.CONVERSATION_SERVICE_URL,
+        message="InvestigationAgent 已初始化（S1-S4，支持 SOP ReactEngine）",
     )
 
     # ── RemediationAgent（S5 修复执行）────────────────────────────────────────────────

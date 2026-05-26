@@ -20,6 +20,7 @@ update_trigger: agent-service 重构/修复/新功能迭代
 |------|------|---------|
 | 2026-05-26 | v1.0 | 初版：基于 agent设计.md v5.2 完整梳理 |
 | 2026-05-26 | v1.1 | 阶段性收尾：完成 P0/P1/P2 部分 + M1/M2/M3 部分 |
+| 2026-05-26 | v1.2 | T-AGT-22 完成：ReactEngine 动态注入 SOP 工具核心实现，消除 `_process_sop_mode()` 双轨路径 |
 | 2026-05-26 | v1.2 | T-AGT-16 验收确认：SOP top_k 候选取 [0] 为最相关（ts_rank 排序已生效） |
 
 ---
@@ -101,7 +102,7 @@ update_trigger: agent-service 重构/修复/新功能迭代
 | ------------ | ----------------------- | ------------------------------------------------------------------ | ----------------- | ------ |
 | **T-AGT-20** | 新增 `get_sop_node` 工具    | 返回节点文字 + 子节点列表                                                     | T-AGT-18          | ✅ 已完成  |
 | **T-AGT-21** | 新增 `sop_advance` 工具     | 移动到子节点，写 `execution_log`，更新 `current_node_id`                      | T-AGT-18          | ✅ 已完成  |
-| **T-AGT-22** | ReactEngine 动态注入 SOP 工具 | SOP 命中时注册 `get_sop_node`/`sop_advance`，消除 `_process_sop_mode()` 双轨；⚠️ **脚手架已就绪**：`react_engine.execute(extra_tools=[...])` 参数已预留；**核心未完成**：`_process_sop_mode()` 仍是纯 `chat_completion_stream`（无 ReactEngine、无 SopExecution DB 操作、无窗口注入） | T-AGT-20、T-AGT-21 | 🔄 进行中（脚手架30%，核心0%） |
+| **T-AGT-22** | ReactEngine 动态注入 SOP 工具 | SOP 命中时注册 `get_sop_node`/`sop_advance`，消除 `_process_sop_mode()` 双轨，统一走 ReactEngine；`conversation-service` 新增 `/create` 接口，`investigation_agent._process_sop_mode()` 重构为 ReactEngine + SopToolExecutor，支持诊断工具和 SOP 导航工具交替调用 | T-AGT-20、T-AGT-21 | ✅ 已完成 |
 | **T-AGT-23** | 中断恢复流程                  | `sop_execution.status=active` 检测，构建恢复版 system_prompt               | T-AGT-22          | 🔒 待依赖 |
 
 ### 里程碑 M3：变量池实现
@@ -183,4 +184,4 @@ M1 数据库（T-AGT-18/19）  ←─── 无代码依赖，可并行启动
 | **BUG-T20-01** | T-AGT-20 | `get_sop_node` 当前实现为 LLM 可调工具，最终方案要求仅为服务端内部函数（结构化滑动窗口模式下 LLM 无法直接调用） | T-AGT-22 实现时移除 |
 | **BUG-T21-01** | T-AGT-21 | 函数名 `advance_sop` 已统一修正为 `sop_advance`（与 `sop_request_variable`、`sop_complete` 命名风格一致） | ✅ 已修复（BUG-21-01 本次一并处理） |
 | **BUG-T21-02** | T-AGT-21、T-AGT-25 | 当前 `sop_tools.py` 只有 `get_sop_node` 和 `sop_advance` 两个工具，缺少 `sop_request_variable`（工具2）和 `sop_complete`（工具3） | T-AGT-25 实现时补入 |
-| **BUG-T22-01** | T-AGT-22 | `investigation_agent._process_sop_mode()` 尚未替换为 ReactEngine+SOP 工具路径，仍是纯 `chat_completion_stream` | T-AGT-22 完成时解决 |
+| **BUG-T22-01** | T-AGT-22 | `investigation_agent._process_sop_mode()` 尚未替换为 ReactEngine+SOP 工具路径，仍是纯 `chat_completion_stream` | ✅ 已修复（T-AGT-22 完成） |
