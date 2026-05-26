@@ -186,3 +186,14 @@ M1 数据库（T-AGT-18/19）  ←─── 无代码依赖，可并行启动
 | **BUG-T21-01** | T-AGT-21 | 函数名 `advance_sop` 已统一修正为 `sop_advance`（与 `sop_request_variable`、`sop_complete` 命名风格一致） | ✅ 已修复（BUG-21-01 本次一并处理） |
 | **BUG-T21-02** | T-AGT-21、T-AGT-25 | 当前 `sop_tools.py` 只有 `get_sop_node` 和 `sop_advance` 两个工具，缺少 `sop_request_variable`（工具2）和 `sop_complete`（工具3） | T-AGT-25 实现时补入 |
 | **BUG-T22-01** | T-AGT-22 | `investigation_agent._process_sop_mode()` 尚未替换为 ReactEngine+SOP 工具路径，仍是纯 `chat_completion_stream` | ✅ 已修复（T-AGT-22 完成） |
+
+---
+
+## 性能与架构改进（Copilot PR #333 评论）
+
+> 来源：PR #333 Copilot 代码审查，已注释记录，待后续迭代优化。
+
+| ID | 问题 | 涉及文件 | 描述 | 建议 | 状态 |
+|----|------|---------|------|------|------|
+| **OPT-01** | tool_result 竞态条件 | `conversation_service.py` L1258 | `tool_call` 和 `tool_result` 事件通过 `asyncio.create_task()` 并发提交，可能产生重复记录或错配 | 在 metadata 中携带稳定关联键（tool_call_id/run_id），或将写入统一队列串行处理 | ⏳ 已注释记录 |
+| **OPT-02** | ts_rank 性能优化 | `kb-service/routes/route.py` L110 | 对候选行逐行计算 `to_tsvector()`，无 `@@` 过滤条件，可能全表/大范围扫描 | 添加 `WHERE to_tsvector(...) @@ plainto_tsquery(...)` 过滤，或引入存储型 tsvector 列 + GIN 索引 | ⏳ 已注释记录 |
