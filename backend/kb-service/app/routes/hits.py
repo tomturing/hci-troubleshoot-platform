@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = get_logger("kb-service-hits")
 
-sop_hit_router = APIRouter(prefix="/api/kb/sop", tags=["hits"])
+sop_hit_router = APIRouter(prefix="/api/kb/sop", tags=["hits", "sop"])
 kbd_hit_router = APIRouter(prefix="/api/kb/kbd", tags=["hits"])
 
 # 由 main.py 注入
@@ -61,6 +61,59 @@ def _check_auth(request: Request) -> None:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token 无效",
         )
+
+
+# -------- SOP 决策树查询接口 --------
+
+
+@sop_hit_router.get("/{document_id}/tree")
+async def get_sop_tree(
+    request: Request,
+    document_id: int,
+):
+    """获取 SOP 决策树 JSON（供 agent-service 的 get_sop_node 工具使用）
+
+    Args:
+        document_id: sop_document.id
+
+    Returns:
+        { id: int, title: str, tree: dict | None }
+        tree 字段为 SOPNode.model_dump() 格式，若文档不存在或未生成决策树则返回 None
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+
+    from shared.utils.trace import get_current_trace_id
+    trace_id = get_current_trace_id()
+
+    async with _db_manager.async_session_factory() as session:
+        from sqlalchemy import select
+        result = await session.execute(
+            select(SopDocument.id, SopDocument.title, SopDocument.tree_json)
+            .where(SopDocument.id == document_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            logger.warning(
+                event="sop_tree_not_found",
+                document_id=document_id,
+                trace_id=trace_id,
+            )
+            raise HTTPException(status_code=404, detail=f"SOP 文档 {document_id} 不存在")
+
+        logger.info(
+            event="sop_tree_retrieved",
+            document_id=row[0],
+            has_tree=row[2] is not None,
+            trace_id=trace_id,
+        )
+        return {
+            "id": row[0],
+            "title": row[1],
+            "tree": row[2],
+        }
 
 
 # -------- SOP 命中接口 --------
