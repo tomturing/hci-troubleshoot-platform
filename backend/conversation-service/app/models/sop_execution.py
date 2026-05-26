@@ -22,7 +22,6 @@ from shared.models.base import TraceableMixin
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-
 # status 值域常量
 STATUS_ACTIVE = "active"
 STATUS_COMPLETED = "completed"

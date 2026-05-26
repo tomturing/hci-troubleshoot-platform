@@ -13,15 +13,10 @@ T-AGT-28：管理端变量编辑 API 验收测试
 直接验证核心逻辑函数。
 """
 
-import json
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 
 # 直接导入核心依赖（避免 admin.py 的 Form 导入错误）
-from sqlalchemy import text
 
 
 class TestVariableSchemaPatchLogic:
@@ -137,7 +132,7 @@ class TestVariableSchemaPatchLogic:
                 assert True
                 return
 
-        assert False, "应抛出错误"
+        raise AssertionError("应抛出错误")
 
     def test_reject_disallowed_field(self):
         """PATCH 不允许编辑的字段应抛出错误"""
@@ -149,13 +144,13 @@ class TestVariableSchemaPatchLogic:
         current_by_name = {v["name"]: v for v in current_schema}
 
         for update_var in update_vars:
-            for field in update_var.keys():
+            for field in update_var:
                 if field != "name" and field not in allowed_fields:
                     # 应抛出错误
                     assert True
                     return
 
-        assert False, "应抛出错误"
+        raise AssertionError("应抛出错误")
 
 
 class TestVariableSchemaGetLogic:

@@ -20,12 +20,9 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.diagnostic_item import (
-    DiagnosticItem,
     STATUS_ARCHIVED,
-    STATUS_CONFIRMED,
-    STATUS_IN_PROGRESS,
     STATUS_PENDING,
-    STATUS_REJECTED,
+    DiagnosticItem,
 )
 
 

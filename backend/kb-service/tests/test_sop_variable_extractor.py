@@ -9,17 +9,15 @@ KB Service — SOP 变量提取单元测试
 5. tree_json 变量扫描
 """
 
-import pytest
 
+from app.schemas.sop_template import DiagnosisDetail, SolutionDetail, SOPNode
 from app.services.sop_parser import (
-    extract_sop_variables,
     _extract_vars_from_text,
     _extract_vars_from_tree,
     _infer_strategy,
     _parse_variable_section,
+    extract_sop_variables,
 )
-from app.schemas.sop_template import SOPNode, DiagnosisDetail, SolutionDetail
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 测试：变量名提取

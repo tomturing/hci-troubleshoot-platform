@@ -98,7 +98,7 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
-ignore = ["E501"]
+ignore = ["E501", "A002"]  # A002: type 参数名在数据库模型中常见
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["E402", "SIM117", "N806", "F841", "B007"]
@@ -106,6 +106,8 @@ ignore = ["E501"]
 "backend/**/app/routes/*.py" = ["B008", "B904"]
 "backend/**/app/dependencies.py" = ["B008"]
 "backend/**/utils/exceptions.py" = ["N818"]
+"backend/**/app/repositories/*.py" = ["N806"]  # 常量命名（如 HUMAN_FIELDS）在模块级允许
+"backend/**/app/services/*.py" = ["N806"]  # 常量命名允许
 
 [tool.uv]
 # backend 各服务和 shared 目录均作为源码目录

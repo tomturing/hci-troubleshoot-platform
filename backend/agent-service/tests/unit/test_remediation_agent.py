@@ -10,12 +10,11 @@ RemediationAgent 单元测试
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from app.adapters.agents.htp.remediation_agent import RemediationAgent
 from app.adapters.agents.htp.react_engine import ReactEngine
+from app.adapters.agents.htp.remediation_agent import RemediationAgent
 from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
 from app.domain.agent_port import AgentInteractiveRequest, AgentStageUpdate
 from shared.clients.ai_client import InvokeResult, ToolCallRequest
-
 
 # ─── Mock Helpers ─────────────────────────────────────────────────────────────
 
@@ -208,7 +207,7 @@ class TestRemediationAgentRequireAllConfirm:
 
         # 应有 "操作已取消" 或类似提示
         cancel_messages = [e for e in text_events if "取消" in e.content]
-        assert len(cancel_messages) >= 1, f"用户拒绝时应提示操作已取消"
+        assert len(cancel_messages) >= 1, "用户拒绝时应提示操作已取消"
 
 
 class TestRemediationAgentProcess:
@@ -263,11 +262,11 @@ class TestRemediationAgentProcess:
 
         # 验证 remediation_start 事件
         start_events = [e for e in events if isinstance(e, AgentStageUpdate) and e.stage == "remediation_start"]
-        assert len(start_events) >= 1, f"应有 remediation_start 事件"
+        assert len(start_events) >= 1, "应有 remediation_start 事件"
 
         # 验证 metadata 携带 require_all_confirm=True
         start_event = start_events[0]
-        assert start_event.metadata.get("require_all_confirm") == True
+        assert start_event.metadata.get("require_all_confirm")
 
     @pytest.mark.asyncio
     async def test_process_yields_s6_after_remediation(self):
@@ -317,7 +316,7 @@ class TestRemediationAgentProcess:
 
         # 验证 S6 事件
         s6_events = [e for e in events if isinstance(e, AgentStageUpdate) and e.stage == "S6"]
-        assert len(s6_events) >= 1, f"修复完成后应推进到 S6 验证闭环"
+        assert len(s6_events) >= 1, "修复完成后应推进到 S6 验证闭环"
 
 
 class TestToolRegistryRiskLevels:

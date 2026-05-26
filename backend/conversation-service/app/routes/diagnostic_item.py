@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger

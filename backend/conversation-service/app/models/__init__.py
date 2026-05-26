@@ -7,7 +7,7 @@ from shared.models.conversation import Conversation
 from .diagnostic_item import DiagnosticItem
 from .diagnostic_state import DiagnosticSession, StageTransition
 from .message import Message, MessageRole
-from .sop_execution import SopExecution, STATUS_ACTIVE, STATUS_COMPLETED, STATUS_INTERRUPTED, STATUS_ABORTED
+from .sop_execution import STATUS_ABORTED, STATUS_ACTIVE, STATUS_COMPLETED, STATUS_INTERRUPTED, SopExecution
 from .system_prompt import SystemPrompt
 from .tool_definition import ToolDefinition
 from .tool_result import ToolResult
