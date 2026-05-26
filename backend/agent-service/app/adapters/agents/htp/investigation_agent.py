@@ -505,7 +505,8 @@ class InvestigationAgent(BaseAgent):
             user_id=user_id,
             max_iterations=15,
             tool_executor=sop_tool_executor,  # 使用 SOP 工具执行器
-        ):
+                    sop_mode=True,  # DC-01: SOP 模式，注入 SOP 导航工具到 LLM tool list
+):
             yield event
 
     async def _process_sop_mode_legacy(

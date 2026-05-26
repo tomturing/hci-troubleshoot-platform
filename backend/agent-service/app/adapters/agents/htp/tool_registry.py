@@ -433,8 +433,13 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
 }
 
 
-def get_tools_for_llm() -> list[dict]:
-    """返回 OpenAI function calling 格式的工具列表（排除高危工具）"""
+def get_tools_for_llm(include_sop: bool = True) -> list[dict]:
+    """返回 OpenAI function calling 格式的工具列表（排除高危工具）
+
+    Args:
+        include_sop: 是否包含 SOP 导航工具（category="sop"）。
+                     SOP 模式传 True（默认），非 SOP 模式传 False 减少 token 消耗（DC-01）。
+    """
     return [
         {
             "type": "function",
@@ -446,4 +451,5 @@ def get_tools_for_llm() -> list[dict]:
         }
         for tool in TOOL_REGISTRY.values()
         if tool.policy != "block"
+        and (include_sop or tool.category != "sop")
     ]

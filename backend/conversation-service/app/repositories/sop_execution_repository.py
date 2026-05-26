@@ -112,6 +112,7 @@ class SopExecutionRepository:
         reasoning: str,
         node_type: str | None = None,
         variables_extracted: dict[str, Any] | None = None,
+        existing_execution: "SopExecution | None" = None,  # DC-03: 避免重复查询
     ) -> SopExecution | None:
         """推进到下一节点（sop_advance 工具调用）
 
@@ -132,8 +133,8 @@ class SopExecutionRepository:
         Returns:
             更新后的 SopExecution 实例，不存在时返回 None
         """
-        # 查询当前执行实例
-        execution = await self.get_active_by_conversation(conversation_id)
+        # 查询当前执行实例（DC-03: 若已有实例则跳过查询）
+        execution = existing_execution or await self.get_active_by_conversation(conversation_id)
         if execution is None:
             return None
 

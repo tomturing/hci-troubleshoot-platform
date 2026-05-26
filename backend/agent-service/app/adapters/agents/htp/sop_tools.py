@@ -685,6 +685,7 @@ class SopToolExecutor:
                 sop_document_id=self._sop_document_id,
                 kb_client=self._kb_client,
                 conversation_sop_client=self._conversation_sop_client,
+                tool_executor=self._default_executor,  # DC-02: 传入执行器用于 strategy=tool/user_confirm
             )
 
         # 其他工具（SCP/acli 诊断工具）：委托给默认执行器
@@ -740,6 +741,7 @@ async def sop_request_variable(
     sop_document_id: int,
     kb_client: KBClient,
     conversation_sop_client: ConversationSopClient | None = None,
+    tool_executor: Any | None = None,  # DC-02: 用于 strategy="tool" 自动调用工具获取变量值
 ) -> VariableRequestResult | dict[str, Any]:
     """请求获取 SOP 变量值（JIT 懒加载，T-AGT-25）。
 
@@ -919,32 +921,76 @@ async def sop_request_variable(
         )
 
     if strategy == "tool" and acquisition_tool:
-        # tool 类型：调用指定工具获取值（暂不实现完整逻辑）
-        # TODO: 实现 tool 类型变量获取（需要在 ToolExecutor 中调用指定工具）
-        logger.warning(
-            event="sop_request_variable_tool_not_implemented",
-            variable_name=variable_name,
-            acquisition_tool=acquisition_tool,
-        )
-        # 降级：返回需要用户确认
+        # DC-02: tool 类型：调用指定工具自动获取变量值
+        if tool_executor is not None:
+            try:
+                tool_result = await tool_executor.execute(acquisition_tool, {})
+                # 尝试从结果中提取单一值
+                acquired_value = None
+                if isinstance(tool_result, dict):
+                    acquired_value = tool_result.get("value") or tool_result.get(variable_name)
+                elif tool_result is not None and not isinstance(tool_result, (list, dict)):
+                    acquired_value = tool_result
+                if acquired_value is not None:
+                    logger.info(
+                        event="sop_request_variable_tool_acquired",
+                        variable_name=variable_name,
+                        acquisition_tool=acquisition_tool,
+                    )
+                    return {"ok": True, "value": acquired_value, "source": "tool"}
+            except Exception as exc:
+                logger.warning(
+                    event="sop_request_variable_tool_failed",
+                    variable_name=variable_name,
+                    acquisition_tool=acquisition_tool,
+                    error=str(exc),
+                )
+        else:
+            logger.warning(
+                event="sop_request_variable_tool_no_executor",
+                variable_name=variable_name,
+                acquisition_tool=acquisition_tool,
+            )
+        # 降级：工具执行失败或无执行器，请用户手动输入
         return await _request_user_input(
             var_schema=var_def,
             kind="variable_input",
-            msg=f"变量 {variable_name} 配置为自动获取（工具：{acquisition_tool}），但功能尚未实现，请手动输入",
+            msg=f"变量 {variable_name} 自动获取失败，请手动输入",
         )
 
     if strategy == "user_confirm":
-        # user_confirm 类型：展示候选值让用户确认
-        # TODO: 实现 user_confirm 类型（需要先调用工具获取候选值）
-        logger.warning(
-            event="sop_request_variable_confirm_not_implemented",
-            variable_name=variable_name,
-        )
-        # 降级：返回需要用户输入
+        # DC-02: user_confirm 类型：先调用工具获取候选值，再展示给用户确认
+        options: list[dict] = []
+        if acquisition_tool and tool_executor is not None:
+            try:
+                candidates_result = await tool_executor.execute(acquisition_tool, {})
+                if isinstance(candidates_result, list):
+                    options = [
+                        {"label": str(item), "value": item} for item in candidates_result
+                    ]
+                elif isinstance(candidates_result, dict) and "items" in candidates_result:
+                    options = [
+                        {"label": str(item), "value": item}
+                        for item in candidates_result["items"]
+                    ]
+                logger.info(
+                    event="sop_request_variable_confirm_candidates",
+                    variable_name=variable_name,
+                    acquisition_tool=acquisition_tool,
+                    candidate_count=len(options),
+                )
+            except Exception as exc:
+                logger.warning(
+                    event="sop_request_variable_confirm_fetch_failed",
+                    variable_name=variable_name,
+                    acquisition_tool=acquisition_tool,
+                    error=str(exc),
+                )
+        # 展示候选值（可能为空）让用户确认
         return await _request_user_input(
             var_schema=var_def,
             kind="variable_confirm",
-            options=[],  # 候选值列表（需要调用工具获取）
+            options=options,
             msg=f"变量 {variable_name} 需要用户确认",
         )
 

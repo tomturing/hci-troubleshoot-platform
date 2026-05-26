@@ -26,7 +26,7 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 
 from ..config import settings
-from ..models.sop_execution import STATUS_ACTIVE, STATUS_INTERRUPTED
+from ..models.sop_execution import STATUS_ACTIVE, STATUS_INTERRUPTED, SopExecution
 from ..repositories.sop_execution_repository import SopExecutionRepository
 
 logger = get_logger("sop-execution-routes")
@@ -293,20 +293,19 @@ async def sop_advance_execution(
     async with _db_manager.async_session_factory() as session:
         repo = SopExecutionRepository(session)
 
-        # T-AGT-27: 校验 variables_extracted
+        # DC-03: 提前一次性查询（仅在需要校验时），后续传入 advance() 避免重复 SELECT
+        prefetched_execution: SopExecution | None = None
         if body.variables_extracted:
-            # 先获取执行实例以获取 sop_document_id
-            execution_for_check = await repo.get_by_conversation(conversation_id)
-            if execution_for_check is None:
+            # 获取活跃执行实例（advance 也要求 active 状态）
+            prefetched_execution = await repo.get_active_by_conversation(conversation_id)
+            if prefetched_execution is None:
                 raise HTTPException(
                     status_code=404,
-                    detail="SOP 执行实例不存在",
+                    detail="SOP 执行实例不存在或状态非 active",
                 )
 
-            # 获取 variable_schema
-            variable_schema = await _get_variable_schema(execution_for_check.sop_document_id)
-
-            # 校验 variables_extracted
+            # 获取 variable_schema 并校验 variables_extracted（T-AGT-27）
+            variable_schema = await _get_variable_schema(prefetched_execution.sop_document_id)
             valid, errors = _validate_variables(body.variables_extracted, variable_schema)
             if not valid:
                 logger.warning(
@@ -324,13 +323,14 @@ async def sop_advance_execution(
                     },
                 )
 
-        # 推进执行
+        # 推进执行（DC-03: 传入预取实例，跳过 advance() 内部的重复 SELECT）
         execution = await repo.advance(
             conversation_id=conversation_id,
             target_node_id=body.target_node_id,
             reasoning=body.reasoning,
             node_type=body.node_type,
             variables_extracted=body.variables_extracted,
+            existing_execution=prefetched_execution,  # DC-03: 避免重复查询
         )
 
         if execution is None:
