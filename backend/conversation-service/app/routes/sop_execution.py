@@ -112,11 +112,20 @@ def _validate_variables(
             # 无校验规则，允许写入
             continue
 
-        # 校验值是否符合 pattern
+        # 校验值是否符合 pattern（使用 fullmatch 保证完整匹配，BUG-R02）
         var_value_str = str(var_value) if not isinstance(var_value, str) else var_value
-        if not re.match(validation_pattern, var_value_str):
-            errors.append(
-                f"变量 '{var_name}' 值 '{var_value_str}' 不符合校验规则 '{validation_pattern}'"
+        try:
+            if not re.fullmatch(validation_pattern, var_value_str):
+                errors.append(
+                    f"变量 '{var_name}' 值 '{var_value_str}' 不符合校验规则 '{validation_pattern}'"
+                )
+        except re.error as exc:
+            # BUG-R03: validation_pattern 为无效正则时，记录警告并跳过该变量校验
+            logger.warning(
+                event="validate_variables_invalid_pattern",
+                var_name=var_name,
+                validation_pattern=validation_pattern,
+                error=str(exc),
             )
 
     return len(errors) == 0, errors

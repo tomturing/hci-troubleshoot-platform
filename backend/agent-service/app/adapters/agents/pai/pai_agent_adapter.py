@@ -568,26 +568,31 @@ class PaiAgentAdapter:
                     # 启动文本流任务（后台运行）
                     text_task = asyncio.create_task(text_stream_task())
 
-                    # 主循环：从合并队列读取并 yield
-                    # 同时检查事件队列（事件会先写入 tool_event_queue，再转移到 merged_queue）
-                    while True:
-                        # 先检查工具事件队列（非阻塞）
-                        try:
-                            event = tool_event_queue.get_nowait()
+                    # 启动工具事件转移任务（BUG-R04: 替换忙等待轮询）
+                    # 使用 await 阻塞等待，避免 10ms 空转消耗 CPU
+                    async def tool_event_drain_task():
+                        """将 tool_event_queue 的事件转入 merged_queue（阻塞等待）"""
+                        while True:
+                            event = await tool_event_queue.get()
                             await merged_queue.put(event)
-                        except asyncio.QueueEmpty:
-                            pass
 
-                        # 从合并队列读取（阻塞一小段时间）
-                        try:
-                            item = await asyncio.wait_for(merged_queue.get(), timeout=0.01)
+                    drain_task = asyncio.create_task(tool_event_drain_task())
+
+                    # 主循环：从合并队列阻塞读取（无超时，不空转）
+                    try:
+                        while True:
+                            item = await merged_queue.get()
                             if item is None:
                                 # 文本流结束，退出主循环
                                 break
                             yield item
-                        except asyncio.TimeoutError:
-                            # 继续轮询
-                            continue
+                    finally:
+                        # 停止 drain 任务
+                        drain_task.cancel()
+                        try:
+                            await drain_task
+                        except asyncio.CancelledError:
+                            pass
 
                     # 等待文本流任务完成
                     await text_task

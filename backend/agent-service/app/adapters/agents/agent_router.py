@@ -145,6 +145,7 @@ class AgentRouter:
                     assistant_type=settings.OPS_AGENT_FALLBACK_ASSISTANT_TYPE,
                     case_id=case_id,
                     user_id=user_id,
+                    sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
                 ):
                     yield event
             else:
@@ -173,6 +174,7 @@ class AgentRouter:
                         assistant_type=settings.OPS_AGENT_FALLBACK_ASSISTANT_TYPE,
                         case_id=case_id,
                         user_id=user_id,
+                        sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
                     ):
                         yield event
             return
@@ -200,6 +202,7 @@ class AgentRouter:
                     assistant_type=fallback_type,
                     case_id=case_id,
                     user_id=user_id,
+                    sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
                 ):
                     yield event
             else:
@@ -228,6 +231,7 @@ class AgentRouter:
                         assistant_type=settings.OPS_AGENT_FALLBACK_ASSISTANT_TYPE,
                         case_id=case_id,
                         user_id=user_id,
+                        sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
                     ):
                         yield event
             return

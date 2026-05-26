@@ -1304,6 +1304,15 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
                         status_code=400,
                         detail=f"字段 '{field}' 不允许编辑，可编辑字段：{sorted(allowed_fields)}",
                     )
+                # DC-04: validation_pattern 需验证为合法正则，防止写入无效值导致运行时 500
+                if field == "validation_pattern" and value:
+                    try:
+                        re.compile(value)
+                    except re.error as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"变量 '{var_name}' 的 validation_pattern '{value}' 不是合法正则: {exc}",
+                        )
                 current_var[field] = value
                 updated_count += 1
 

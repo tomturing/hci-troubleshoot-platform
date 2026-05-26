@@ -638,14 +638,23 @@ class SopToolExecutor:
         Returns:
             工具执行结果（字典格式）
         """
-        # T-AGT-23: 幂等性检查 - 写操作工具在已完成节点中跳过执行
+        # T-AGT-23: 幂等性检查 - 写操作工具在 SOP 恢复模式下跳过重复执行
         if tool_name in self.WRITE_OPERATION_TOOLS and self._completed_steps:
             logger.info(
-                event="write_tool_idempotency_check",
+                event="write_tool_idempotency_skip",
                 tool_name=tool_name,
                 completed_steps=self._completed_steps,
                 conversation_id=self._conversation_id,
+                message="SOP 恢复模式：跳过写操作工具，避免重复执行",
             )
+            return {
+                "skipped": True,
+                "reason": (
+                    f"SOP 恢复模式：工具 {tool_name} 已在先前节点中执行，"
+                    "跳过重复执行以保证幂等性"
+                ),
+                "completed_steps_count": len(self._completed_steps),
+            }
 
         # SOP 导航工具：使用注入的上下文执行
         if tool_name == "get_sop_node":
