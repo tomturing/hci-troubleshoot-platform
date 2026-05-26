@@ -20,6 +20,7 @@ Phase 2 扩展（写操作）：DeferredToolRequests（高危工具需要用户�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import os
@@ -106,9 +107,7 @@ class PydanticAIDeps:
     env_context: dict[str, Any]
     category_id: str | None = None  # S0 确认的故障分类编码
     # 工具调用事件队列（用于 T-AGT-14 可观测性）
-    tool_event_queue: asyncio.Queue[AgentStageUpdate] = dataclasses.field(
-        default_factory=lambda: asyncio.Queue()
-    )
+    tool_event_queue: asyncio.Queue[AgentStageUpdate] = dataclasses.field(default_factory=lambda: asyncio.Queue())
 
 
 def _build_agent() -> Agent[PydanticAIDeps]:
@@ -170,11 +169,13 @@ def _build_agent() -> Agent[PydanticAIDeps]:
             # 返回 SOP 文档列表，包含 document_id
             sop_docs = []
             for item in results:
-                sop_docs.append({
-                    "document_id": item.get("id"),
-                    "title": item.get("title"),
-                    "content_md": item.get("content_md", "")[:200],  # 截取前 200 字符
-                })
+                sop_docs.append(
+                    {
+                        "document_id": item.get("id"),
+                        "title": item.get("title"),
+                        "content_md": item.get("content_md", "")[:200],  # 截取前 200 字符
+                    }
+                )
             return {"track": "sop", "sop_documents": sop_docs}
         elif track == "kbd":
             return {"track": "kbd", "message": "该分类匹配到历史案例（KBD），无 SOP 文档", "results": results[:3]}
@@ -585,10 +586,8 @@ class PaiAgentAdapter:
                     finally:
                         # 停止 drain 任务
                         drain_task.cancel()
-                        try:
+                        with contextlib.suppress(asyncio.CancelledError):
                             await drain_task
-                        except asyncio.CancelledError:
-                            pass
 
                     # 等待文本流任务完成
                     await text_task

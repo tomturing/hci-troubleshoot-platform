@@ -20,7 +20,7 @@ Agent Service - 主应用
 """
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI
 from fastapi.responses import Response
@@ -35,11 +35,10 @@ from shared.utils.exception_handlers import register_exception_handlers
 from app.adapters.agents.agent_router import AgentRouter
 from app.adapters.agents.htp.confirm_service import ConfirmService
 from app.adapters.agents.htp.diagnostic_agent import DiagnosticAgent
-from app.adapters.agents.htp.intent_agent import IntentAgent  # @deprecated，保留兼容
 from app.adapters.agents.htp.investigation_agent import InvestigationAgent  # T-AGT-11：主用 S1-S4
+from app.adapters.agents.htp.react_engine import ReactEngine
 from app.adapters.agents.htp.remediation_agent import RemediationAgent  # T-AGT-12：S5 修复执行
 from app.adapters.agents.htp.triage_agent import TriageAgent  # T-AGT-10：替换 IntentAgent
-from app.adapters.agents.htp.react_engine import ReactEngine
 from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
 from app.config import settings
 from app.routes.agent import router as agent_router_route
@@ -150,6 +149,7 @@ async def lifespan(app: FastAPI):
 
         # 实例化 ReactEngine
         from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
+
         react_engine = ReactEngine(
             ai_registry=ai_registry,
             tool_registry=TOOL_REGISTRY,
@@ -302,8 +302,8 @@ class CompositeToolExecutor:
 
     async def execute(self, tool_name: str, args: dict) -> Any:
         """执行工具调用，根据工具类型分发"""
-        from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
         from app.adapters.agents.htp.sop_tools import get_sop_node
+        from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
 
         tool_def = TOOL_REGISTRY.get(tool_name)
         if not tool_def:
