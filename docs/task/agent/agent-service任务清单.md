@@ -20,6 +20,7 @@ update_trigger: agent-service 重构/修复/新功能迭代
 |------|------|---------|
 | 2026-05-26 | v1.0 | 初版：基于 agent设计.md v5.2 完整梳理 |
 | 2026-05-26 | v1.1 | 阶段性收尾：完成 P0/P1/P2 部分 + M1/M2/M3 部分 |
+| 2026-05-26 | v1.2 | T-AGT-16 验收确认：SOP top_k 候选取 [0] 为最相关（ts_rank 排序已生效） |
 
 ---
 
@@ -69,11 +70,11 @@ update_trigger: agent-service 重构/修复/新功能迭代
 |---------|---------|------|------|------|
 | **T-AGT-10** | TriageAgent 重构 | `intent_agent.py` → `triage_agent.py`，继承 BaseAgent | P0 修复完成 | ✅ 已完成 |
 | **T-AGT-11** | InvestigationAgent 重构 | `diagnostic_agent.py`（S1-S4）→ `investigation_agent.py` | T-AGT-10 | ✅ 已完成 |
-| **T-AGT-12** | RemediationAgent 重构 | `diagnostic_agent.py`（S5）→ `remediation_agent.py` | T-AGT-11 | 🔄 进行中 |
+| **T-AGT-12** | RemediationAgent 重构 | `diagnostic_agent.py`（S5）→ `remediation_agent.py`；代码**完整实现**（182行，`process()` 完整流式实现，ReactEngine + `require_all_confirm=True`）；⚠️ **未接入路由**：`main.py` 无 RemediationAgent 初始化，AgentRouter 未调用；无单元测试 | T-AGT-11 | 🔄 进行中（代码完成，待接入路由+补测试） |
 | **T-AGT-13** | 代码层语义命名 | `DiagnosticStage.S0_INTENT` → `DiagnosticStage.TRIAGE` 等 | T-AGT-12 | 🔒 待依赖 |
 | **T-AGT-14** | PA3：pydantic-ai 工具调用可观测 | 拦截 `on_tool_start`/`on_tool_end` 回调，yield `AgentStageUpdate` | — | 🔄 进行中 |
 | **T-AGT-15** | PA4：system 消息静默丢弃修复 | `_openai_messages_to_pydantic()` 合并 system 消息到后续 user 消息 | — | ✅ 已完成 |
-| **T-AGT-16** | P3：SOP top_k=3 候选仅取 `[0]` 优化 | P9 修复后取最高相关候选，或多 SOP 融合 | T-AGT-09 | ⏳ 待做 |
+| **T-AGT-16** | P3：SOP top_k=3 候选仅取 `[0]` 优化 | T-AGT-09 修复后取最高相关候选，或多 SOP 融合 | T-AGT-09 | ✅ 已完成（ts_rank 排序生效，[0] 即最相关） |
 | **T-AGT-17** | P7：SOP 审核失败前端无告警 | approve 接口补充 `warnings` 字段；前端 SOP 管理页展示状态徽章 | — | ✅ 已完成 |
 
 ---
@@ -96,12 +97,12 @@ update_trigger: agent-service 重构/修复/新功能迭代
 
 > 详细规格：[events/2026-05-26-SOP执行引擎-M2导航工具化.md](./events/2026-05-26-SOP执行引擎-M2导航工具化.md)
 
-| 任务 ID | 任务名称 | 说明 | 依赖 | 状态 |
-|---------|---------|------|------|------|
-| **T-AGT-20** | 新增 `get_sop_node` 工具 | 返回节点文字 + 子节点列表 | T-AGT-18 | ✅ 已完成 |
-| **T-AGT-21** | 新增 `advance_sop` 工具 | 移动到子节点，写 `execution_log`，更新 `current_node_id` | T-AGT-18 | ✅ 已完成 |
-| **T-AGT-22** | ReactEngine 动态注入 SOP 工具 | SOP 命中时注册 `get_sop_node`/`advance_sop`，消除 `_process_sop_mode()` 双轨 | T-AGT-20、T-AGT-21 | 🔄 进行中 |
-| **T-AGT-23** | 中断恢复流程 | `sop_execution.status=active` 检测，构建恢复版 system_prompt | T-AGT-22 | 🔒 待依赖 |
+| 任务 ID        | 任务名称                    | 说明                                                                 | 依赖                | 状态     |
+| ------------ | ----------------------- | ------------------------------------------------------------------ | ----------------- | ------ |
+| **T-AGT-20** | 新增 `get_sop_node` 工具    | 返回节点文字 + 子节点列表                                                     | T-AGT-18          | ✅ 已完成  |
+| **T-AGT-21** | 新增 `sop_advance` 工具     | 移动到子节点，写 `execution_log`，更新 `current_node_id`                      | T-AGT-18          | ✅ 已完成  |
+| **T-AGT-22** | ReactEngine 动态注入 SOP 工具 | SOP 命中时注册 `get_sop_node`/`sop_advance`，消除 `_process_sop_mode()` 双轨；⚠️ **脚手架已就绪**：`react_engine.execute(extra_tools=[...])` 参数已预留；**核心未完成**：`_process_sop_mode()` 仍是纯 `chat_completion_stream`（无 ReactEngine、无 SopExecution DB 操作、无窗口注入） | T-AGT-20、T-AGT-21 | 🔄 进行中（脚手架30%，核心0%） |
+| **T-AGT-23** | 中断恢复流程                  | `sop_execution.status=active` 检测，构建恢复版 system_prompt               | T-AGT-22          | 🔒 待依赖 |
 
 ### 里程碑 M3：变量池实现
 
@@ -109,11 +110,11 @@ update_trigger: agent-service 重构/修复/新功能迭代
 
 | 任务 ID | 任务名称 | 说明 | 依赖 | 状态 |
 |---------|---------|------|------|------|
-| **T-AGT-24** | `extract_sop_variables()` + 双向校验 | approve 流程：扫描占位符 → 推断 strategy → Undeclared(Error) / Orphan(Warning) | T-AGT-18 | 🔄 进行中 |
+| **T-AGT-24** | `extract_sop_variables()` + 双向校验 | `sop_parser.py` 完整实现（`undeclared`/`orphan` 校验），`admin.py` approve 流程已调用，`test_sop_variable_extractor.py` 测试通过，**代码已提交 main 分支** | T-AGT-18 | ✅ 已完成 |
 | **T-AGT-25** | 变量 JIT 获取（`sop_request_variable` 工具） | 按节点懒加载，阻塞等待用户输入/确认 | T-AGT-24 | 🔒 待依赖 |
-| **T-AGT-26** | 三路合并（SOP 重新导入后变量池维护） | 保留人工编辑字段，新增变量 auto_generated，消失变量 deprecated | T-AGT-24 | 🔄 进行中 |
-| **T-AGT-27** | `advance_sop` 支持 `variables_extracted` 上报 | 工具参数追加，服务端按 schema 校验后写 `context_variables` | T-AGT-25 | 🔒 待依赖 |
-| **T-AGT-28** | 管理端变量编辑 API | `GET /api/admin/sop/{id}` 追加 `variable_schema`；新增 `PATCH /api/admin/sop/{id}/variable-schema` | T-AGT-24 | 🔒 待依赖 |
+| **T-AGT-26** | 三路合并（SOP 重新导入后变量池维护） | `sop_parser.py` `merge_variable_schema()` 完整实现，`admin.py` approve/ingest 流程已集成，`test_sop_variable_merge.py` 测试通过，**代码已提交 main 分支** | T-AGT-24 | ✅ 已完成 |
+| **T-AGT-27** | `sop_advance` 支持 `variables_extracted` 上报 | 工具参数追加，服务端按 schema 校验后写 `context_variables` | T-AGT-25 | 🔒 待依赖 |
+| **T-AGT-28** | 管理端变量编辑 API | `admin.py` 中 `@sop_router.patch("/{document_id}")` 已存在（L1135），需确认是否支持 `variable_schema` 手动编辑（不触发 re-approve）；若已包含则 ✅，否则需新增端点 | T-AGT-24 | ⏳ 待做（可立即启动） |
 
 ---
 
@@ -171,3 +172,15 @@ M1 数据库（T-AGT-18/19）  ←─── 无代码依赖，可并行启动
 | 文件路径 | 涉及任务 |
 |---------|---------|
 | `database/migrations/` | T-AGT-18 |
+---
+
+## 已发现 BUG
+
+> 记录代码实现与方案文档不一致的问题，待后续任务中一并修复。
+
+| BUG ID | 影响任务 | 描述 | 修复时机 |
+|--------|---------|------|--------|
+| **BUG-T20-01** | T-AGT-20 | `get_sop_node` 当前实现为 LLM 可调工具，最终方案要求仅为服务端内部函数（结构化滑动窗口模式下 LLM 无法直接调用） | T-AGT-22 实现时移除 |
+| **BUG-T21-01** | T-AGT-21 | 函数名 `advance_sop` 已统一修正为 `sop_advance`（与 `sop_request_variable`、`sop_complete` 命名风格一致） | ✅ 已修复（BUG-21-01 本次一并处理） |
+| **BUG-T21-02** | T-AGT-21、T-AGT-25 | 当前 `sop_tools.py` 只有 `get_sop_node` 和 `sop_advance` 两个工具，缺少 `sop_request_variable`（工具2）和 `sop_complete`（工具3） | T-AGT-25 实现时补入 |
+| **BUG-T22-01** | T-AGT-22 | `investigation_agent._process_sop_mode()` 尚未替换为 ReactEngine+SOP 工具路径，仍是纯 `chat_completion_stream` | T-AGT-22 完成时解决 |
