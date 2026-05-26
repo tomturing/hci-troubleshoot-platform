@@ -14,10 +14,11 @@ RemediationAgent: S5 方案输出与修复执行 Agent（继承 BaseAgent）
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from shared.clients import AIAssistantRegistry, KBClient
+from shared.clients import AIAssistantRegistry, DiagnosticItemClient, KBClient
 from shared.observability.logger import get_logger
 
 from app.adapters.agents.htp.kbd_model import KBD
@@ -72,11 +73,13 @@ class RemediationAgent(BaseAgent):
         ai_registry: AIAssistantRegistry,
         kb_client: KBClient,
         react_engine: ReactEngine,
+        diagnostic_item_client: DiagnosticItemClient | None = None,
     ) -> None:
         super().__init__(name="remediation-agent", max_steps=10)
         self._ai_registry = ai_registry
         self._kb_client = kb_client
         self._react_engine = react_engine
+        self._diagnostic_item_client = diagnostic_item_client
 
     # ─── BaseAgent 抽象方法实现 ─────────────────────────────────────────────────
 
@@ -171,6 +174,27 @@ class RemediationAgent(BaseAgent):
             require_all_confirm=True,
         ):
             yield event
+
+        # ─── S5：插入解决方案条目 ──────────────────────────────────────
+        if self._diagnostic_item_client and session_id:
+            await self._diagnostic_item_client.create_item(
+                conversation_id=uuid.UUID(session_id),
+                stage="S5",
+                type="solution",
+                seq=1,
+                content={
+                    "root_cause": root_cause,
+                    "solution": solution,
+                    "matched_kbds": [kbd.id for kbd in matched_kbds] if matched_kbds else [],
+                    "require_all_confirm": True,
+                },
+                status="confirmed",
+            )
+            logger.info(
+                event="s5_solution_inserted",
+                conversation_id=session_id,
+                root_cause=root_cause[:100],
+            )
 
         # 修复流程完成，推进到 S6 验证闭环
         yield AgentStageUpdate(

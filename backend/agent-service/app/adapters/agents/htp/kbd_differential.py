@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from collections import Counter
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -81,11 +82,15 @@ class KBDDiagnostic:
         self,
         ai_registry: AIAssistantRegistry,
         tool_executor: Any,  # 实现 ToolExecutor Protocol 的对象
+        diagnostic_item_client: Any | None = None,  # DiagnosticItemClient（可选）
+        conversation_id: str | None = None,  # 会话 ID（用于 INSERT）
         assistant_type: str = "htp-agent",
         early_stop_threshold: int = EARLY_STOP_THRESHOLD,
     ) -> None:
         self._ai_registry = ai_registry
         self._tool_executor = tool_executor
+        self._diagnostic_item_client = diagnostic_item_client
+        self._conversation_id = conversation_id
         self._assistant_type = assistant_type
         self._early_stop = early_stop_threshold
         self._result: KBDDiagResult | None = None
@@ -129,6 +134,34 @@ class KBDDiagnostic:
         remaining = list(candidates)
         steps_executed: list[StepResult] = []
         consecutive_failures = 0
+
+        # ─── S2：批量插入假设条目 ──────────────────────────────────────────
+        if self._diagnostic_item_client and self._conversation_id:
+            hypotheses_data = [
+                {
+                    "content": {
+                        "kbd_id": kbd.id,
+                        "kbd_name": kbd.name,
+                        "root_cause": kbd.root_cause,
+                        "similarity": kbd.similarity,
+                    },
+                    "probability": kbd.similarity,  # 用相似度作为初始概率
+                    "status": "pending",
+                }
+                for kbd in candidates
+            ]
+            await self._diagnostic_item_client.batch_create_items(
+                conversation_id=uuid.UUID(self._conversation_id),
+                stage="S2",
+                type="hypothesis",
+                items_data=hypotheses_data,
+            )
+            logger.info(
+                event="s2_hypotheses_inserted",
+                conversation_id=self._conversation_id,
+                count=len(hypotheses_data),
+                session_id=session_id,
+            )
 
         yield AgentStageUpdate(
             stage="kbd_diag_start",
@@ -206,6 +239,31 @@ class KBDDiagnostic:
             )
             steps_executed.append(step_result)
 
+            # ─── S3：插入验证步骤条目 ──────────────────────────────────────
+            if self._diagnostic_item_client and self._conversation_id:
+                await self._diagnostic_item_client.create_item(
+                    conversation_id=uuid.UUID(self._conversation_id),
+                    stage="S3",
+                    type="verification_step",
+                    seq=len(steps_executed),
+                    content={
+                        "tool_name": best_tool_name,
+                        "tool_args": tool_args,
+                        "raw_output": (raw_output or "")[:500],  # 截取前500字符
+                        "error": error,
+                        "match_kbd_ids": list(match_ids) if match_ids else [],
+                        "eliminated_count": before_count - len(remaining) if match_ids else 0,
+                    },
+                    status="confirmed" if error is None else "rejected",
+                )
+                logger.info(
+                    event="s3_verification_step_inserted",
+                    conversation_id=self._conversation_id,
+                    seq=len(steps_executed),
+                    tool_name=best_tool_name,
+                    session_id=session_id,
+                )
+
             # 5. 过滤：只保留匹配 KBD（执行失败时不过滤，继续下一步）
             if match_ids:
                 before_count = len(remaining)
@@ -233,6 +291,34 @@ class KBDDiagnostic:
             is_definitive=(len(remaining) == 1),
             diagnosis_report=report,
         )
+
+        # ─── S4：插入根因确认条目 ─────────────────────────────────────────
+        if self._diagnostic_item_client and self._conversation_id and remaining:
+            top_kbd = remaining[0]
+            await self._diagnostic_item_client.create_item(
+                conversation_id=uuid.UUID(self._conversation_id),
+                stage="S4",
+                type="root_cause",
+                seq=1,
+                content={
+                    "kbd_id": top_kbd.id,
+                    "kbd_name": top_kbd.name,
+                    "root_cause": top_kbd.root_cause,
+                    "solution": top_kbd.solution,
+                    "is_definitive": len(remaining) == 1,
+                    "matched_kbds_count": len(remaining),
+                    "steps_executed_count": len(steps_executed),
+                },
+                probability=top_kbd.similarity,
+                status="confirmed",
+            )
+            logger.info(
+                event="s4_root_cause_inserted",
+                conversation_id=self._conversation_id,
+                kbd_id=top_kbd.id,
+                is_definitive=len(remaining) == 1,
+                session_id=session_id,
+            )
 
         yield AgentStageUpdate(
             stage="kbd_diag_complete",

@@ -18,7 +18,7 @@ from shared.utils.exception_handlers import register_exception_handlers
 
 from app.config import settings
 from app.routes import audit as audit_route
-from app.routes import conversations, evaluate, sop_execution
+from app.routes import conversations, diagnostic_item, evaluate, sop_execution
 from app.services.agent_client import AgentClient
 from app.services.environment_client import EnvironmentClient
 
@@ -116,6 +116,7 @@ async def lifespan(app: FastAPI):
     evaluate.set_database_manager(database_manager)
     audit_route.set_audit_database_manager(database_manager)
     sop_execution.set_dependencies(database_manager)
+    diagnostic_item.set_dependencies(database_manager)
 
     yield
 
@@ -145,6 +146,7 @@ app.include_router(conversations.router)
 app.include_router(evaluate.router)
 app.include_router(audit_route.router)
 app.include_router(sop_execution.router)
+app.include_router(diagnostic_item.router)
 
 
 # 健康检查端点

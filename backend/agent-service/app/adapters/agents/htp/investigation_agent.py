@@ -228,6 +228,8 @@ class InvestigationAgent(BaseAgent):
         self._kbd_diag = KBDDiagnostic(
             ai_registry=self._ai_registry,
             tool_executor=self._tool_executor,
+            diagnostic_item_client=self._diagnostic_item_client,
+            conversation_id=session_id,  # T-AGT-19: 传入会话 ID 用于 INSERT
             assistant_type=assistant_type,
         )
 
