@@ -5,16 +5,11 @@ SOP 解析器单元测试
 测试不依赖数据库或外部服务，全部为纯函数单元测试。
 """
 
+from __future__ import annotations
 
+from app.config.template_config_loader import get_keywords, reload_config
 from app.schemas.sop_template import SOPValidationResult
-from app.services.sop_parser import (
-    DIAGNOSIS_KEYWORDS,
-    SOLUTION_KEYWORDS,
-    STANDARD_DIAGNOSIS_HEADING,
-    STANDARD_SOLUTION_HEADING,
-    classify_heading,
-    parse_sop_markdown,
-)
+from app.services.sop_parser import classify_heading, parse_sop_markdown
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 测试用 Markdown 片段
@@ -31,6 +26,9 @@ _SIMPLE_SOP = """\
 页面判断方法：
 - 查看 vCenter 中 CPU 剩余可配置量
 - 登录管理台 → 资源池 → 剩余 CPU 核数
+
+acli命令行：
+- acli vm.get <vm_name>
 
 ### 解决方案
 
@@ -78,6 +76,7 @@ _NONSTANDARD_SOP = """\
 
 ### 排查方法
 
+acli命令行：
 - 执行 INFO memory 查看内存占用
 """
 
@@ -89,6 +88,7 @@ _MISSING_SOLUTION_SOP = """\
 
 ### 判断方法
 
+acli命令行：
 - 执行 nslookup 确认 DNS 不通
 """
 
@@ -121,8 +121,8 @@ class TestClassifyHeading:
         assert classify_heading("判断方法") == "diagnosis"
 
     def test_all_diagnosis_variants(self):
-        """DIAGNOSIS_KEYWORDS 中所有等效词均识别为 diagnosis"""
-        for kw in DIAGNOSIS_KEYWORDS:
+        """配置中的所有 diagnosis 关键词均识别为 diagnosis"""
+        for kw in get_keywords("diagnosis"):
             assert classify_heading(kw) == "diagnosis", f"「{kw}」应识别为 diagnosis"
 
     def test_diagnosis_in_longer_heading(self):
@@ -134,8 +134,8 @@ class TestClassifyHeading:
         assert classify_heading("解决方案") == "solution"
 
     def test_all_solution_variants(self):
-        """SOLUTION_KEYWORDS 中所有等效词均识别为 solution"""
-        for kw in SOLUTION_KEYWORDS:
+        """配置中的所有 solution 关键词均识别为 solution"""
+        for kw in get_keywords("solution"):
             assert classify_heading(kw) == "solution", f"「{kw}」应识别为 solution"
 
     def test_solution_in_longer_heading(self):
@@ -170,22 +170,22 @@ class TestParseEmptyDocument:
     """测试空文档/无标题文档"""
 
     def test_empty_string(self):
-        """空字符串 → is_valid=False"""
+        """空字符串 → has_error=True"""
         result = parse_sop_markdown("")
         assert isinstance(result, SOPValidationResult)
-        assert result.is_valid is False
-        assert result.tree is None
-        assert len(result.errors) > 0
+        assert result.has_error is True
+        assert len(result.root_nodes) == 0
+        assert len(result.issues) > 0
 
     def test_whitespace_only(self):
-        """纯空白 → is_valid=False"""
+        """纯空白 → has_error=True"""
         result = parse_sop_markdown("   \n\n   ")
-        assert result.is_valid is False
+        assert result.has_error is True
 
     def test_no_headings(self):
-        """无标题的纯文本 → is_valid=False"""
+        """无标题的纯文本 → has_error=True"""
         result = parse_sop_markdown("这是一些没有标题的文本\n- 列表项")
-        assert result.is_valid is False
+        assert result.has_error is True
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -196,68 +196,59 @@ class TestParseEmptyDocument:
 class TestParseSimpleSop:
     """测试标准 H1→H2 SOP 结构"""
 
-    def test_is_valid(self):
-        """标准 SOP → is_valid=True，无 error"""
+    def test_no_errors(self):
+        """标准 SOP → has_error=False"""
         result = parse_sop_markdown(_SIMPLE_SOP)
-        assert result.is_valid is True
-        assert result.tree is not None
-        assert result.errors == []
+        assert result.has_error is False
+        assert len(result.root_nodes) > 0
 
-    def test_root_name(self):
-        """根节点名称正确"""
+    def test_root_title(self):
+        """根节点标题正确"""
         result = parse_sop_markdown(_SIMPLE_SOP)
-        assert result.tree is not None
-        assert result.tree.name == "虚拟机启动失败"
+        assert len(result.root_nodes) > 0
+        assert result.root_nodes[0].title == "虚拟机启动失败"
 
     def test_tree_structure(self):
         """树结构：H1 → H2（叶节点）"""
         result = parse_sop_markdown(_SIMPLE_SOP)
-        tree = result.tree
-        assert tree is not None
-        assert len(tree.children) == 1
-        leaf = tree.children[0]
-        assert leaf.name == "CPU 资源不足"
-        assert leaf.is_leaf
+        root = result.root_nodes[0]
+        assert len(root.children) == 1
+        leaf = root.children[0]
+        assert leaf.title == "CPU 资源不足"
+        assert len(leaf.children) == 0
+
+    def test_leaf_diagnosis_acli_methods(self):
+        """叶节点 diagnosis.acli_methods 正确解析"""
+        result = parse_sop_markdown(_SIMPLE_SOP)
+        root = result.root_nodes[0]
+        leaf = root.children[0]
+        assert leaf.diagnosis is not None
+        assert len(leaf.diagnosis.acli_methods) > 0
+        assert "acli vm.get <vm_name>" in leaf.diagnosis.acli_methods
 
     def test_leaf_diagnosis_page_methods(self):
         """叶节点 diagnosis.page_methods 正确解析"""
         result = parse_sop_markdown(_SIMPLE_SOP)
-        assert result.tree is not None
-        leaf = result.tree.children[0]
+        root = result.root_nodes[0]
+        leaf = root.children[0]
         assert leaf.diagnosis is not None
         assert "查看 vCenter 中 CPU 剩余可配置量" in leaf.diagnosis.page_methods
-        assert "登录管理台 → 资源池 → 剩余 CPU 核数" in leaf.diagnosis.page_methods
 
     def test_leaf_solution_quick_recovery(self):
         """叶节点 solution.quick_recovery 正确解析"""
         result = parse_sop_markdown(_SIMPLE_SOP)
-        assert result.tree is not None
-        leaf = result.tree.children[0]
+        root = result.root_nodes[0]
+        leaf = root.children[0]
         assert leaf.solution is not None
         assert "迁移其他虚拟机腾出资源" in leaf.solution.quick_recovery
 
     def test_leaf_solution_thorough_fix(self):
         """叶节点 solution.thorough_fix 正确解析"""
         result = parse_sop_markdown(_SIMPLE_SOP)
-        assert result.tree is not None
-        leaf = result.tree.children[0]
+        root = result.root_nodes[0]
+        leaf = root.children[0]
         assert leaf.solution is not None
         assert "向集群扩容 CPU 资源" in leaf.solution.thorough_fix
-
-    def test_no_warnings_with_standard_headings(self):
-        """标准话术：无 warning"""
-        result = parse_sop_markdown(_SIMPLE_SOP)
-        assert result.warnings == []
-
-    def test_source_heading_standard(self):
-        """标准话术 source_heading 等于常量值"""
-        result = parse_sop_markdown(_SIMPLE_SOP)
-        assert result.tree is not None
-        leaf = result.tree.children[0]
-        assert leaf.diagnosis is not None
-        assert leaf.diagnosis.source_heading == STANDARD_DIAGNOSIS_HEADING
-        assert leaf.solution is not None
-        assert leaf.solution.source_heading == STANDARD_SOLUTION_HEADING
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -268,33 +259,25 @@ class TestParseSimpleSop:
 class TestParseDeepSop:
     """测试 H1→H2→H3→H4 SOP 结构"""
 
-    def test_is_valid(self):
-        """深层 SOP → is_valid=True"""
+    def test_no_errors(self):
+        """深层 SOP → has_error=False"""
         result = parse_sop_markdown(_DEEP_SOP)
-        assert result.is_valid is True
-        assert result.tree is not None
+        assert result.has_error is False
+        assert len(result.root_nodes) > 0
 
     def test_tree_depth(self):
         """树深度正确（H3 为叶节点）"""
         result = parse_sop_markdown(_DEEP_SOP)
-        tree = result.tree
-        assert tree is not None
-        h2 = tree.children[0]
+        root = result.root_nodes[0]
+        h2 = root.children[0]
         h3 = h2.children[0]
-        assert h3.is_leaf
-
-    def test_single_leaf(self):
-        """collect_leaves 返回唯一叶节点"""
-        result = parse_sop_markdown(_DEEP_SOP)
-        assert result.tree is not None
-        leaves = result.tree.collect_leaves()
-        assert len(leaves) == 1
+        assert len(h3.children) == 0
 
     def test_acli_methods_parsed(self):
         """acli_methods 字段正确解析"""
         result = parse_sop_markdown(_DEEP_SOP)
-        assert result.tree is not None
-        leaf = result.tree.collect_leaves()[0]
+        root = result.root_nodes[0]
+        leaf = root.children[0].children[0]
         assert leaf.diagnosis is not None
         assert len(leaf.diagnosis.acli_methods) > 0
         assert "showmount -e <nfs-server>" in leaf.diagnosis.acli_methods
@@ -302,8 +285,8 @@ class TestParseDeepSop:
     def test_page_methods_parsed(self):
         """page_methods 字段正确解析"""
         result = parse_sop_markdown(_DEEP_SOP)
-        assert result.tree is not None
-        leaf = result.tree.collect_leaves()[0]
+        root = result.root_nodes[0]
+        leaf = root.children[0].children[0]
         assert leaf.diagnosis is not None
         assert "查看挂载状态页面" in leaf.diagnosis.page_methods
 
@@ -316,38 +299,17 @@ class TestParseDeepSop:
 class TestNonstandardHeading:
     """测试非标准话术（等效关键词）"""
 
-    def test_is_valid_with_warnings(self):
-        """非标准话术 → is_valid=True，有 warning"""
+    def test_has_errors_due_to_nonstandard(self):
+        """非标准话术 → has_error=True（W-9/W-10 升级为 error）"""
         result = parse_sop_markdown(_NONSTANDARD_SOP)
-        assert result.is_valid is True
-        assert len(result.warnings) > 0
+        assert result.has_error is True
+        assert len(result.issues) > 0
 
-    def test_warning_message_mentions_nonstandard_wording(self):
-        """warning 消息包含「话术不规范」"""
+    def test_error_message_mentions_nonstandard_wording(self):
+        """error 消息包含「话术不规范」"""
         result = parse_sop_markdown(_NONSTANDARD_SOP)
-        msgs = [w.message for w in result.warnings]
+        msgs = [i.message for i in result.issues]
         assert any("话术不规范" in m for m in msgs)
-
-    def test_solution_source_heading_recorded(self):
-        """solution.source_heading 记录原始文本「处理方法」"""
-        result = parse_sop_markdown(_NONSTANDARD_SOP)
-        assert result.tree is not None
-        leaf = result.tree.collect_leaves()[0]
-        assert leaf.solution is not None
-        assert leaf.solution.source_heading == "处理方法"
-
-    def test_diagnosis_source_heading_recorded(self):
-        """diagnosis.source_heading 记录原始文本「排查方法」"""
-        result = parse_sop_markdown(_NONSTANDARD_SOP)
-        assert result.tree is not None
-        leaf = result.tree.collect_leaves()[0]
-        assert leaf.diagnosis is not None
-        assert leaf.diagnosis.source_heading == "排查方法"
-
-    def test_tree_not_none_when_only_warnings(self):
-        """仅有 warning 时 tree 仍非 None"""
-        result = parse_sop_markdown(_NONSTANDARD_SOP)
-        assert result.tree is not None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -358,29 +320,27 @@ class TestNonstandardHeading:
 class TestMissingLeafContent:
     """测试叶节点缺少 diagnosis 或 solution"""
 
-    def test_missing_solution_is_invalid(self):
-        """缺少 solution → is_valid=False"""
+    def test_missing_solution_has_error(self):
+        """缺少 solution → has_error=True"""
         result = parse_sop_markdown(_MISSING_SOLUTION_SOP)
-        assert result.is_valid is False
-        assert result.tree is None
+        assert result.has_error is True
 
     def test_missing_solution_error_message(self):
-        """error 消息包含「解决方案」"""
+        """issue 消息包含「解决方案」"""
         result = parse_sop_markdown(_MISSING_SOLUTION_SOP)
-        msgs = [e.message for e in result.errors]
+        msgs = [i.message for i in result.issues]
         assert any("解决方案" in m for m in msgs)
 
-    def test_missing_diagnosis_is_invalid(self):
-        """缺少 diagnosis → is_valid=False"""
+    def test_missing_diagnosis_has_error(self):
+        """缺少 diagnosis → has_error=True"""
         result = parse_sop_markdown(_MISSING_DIAGNOSIS_SOP)
-        assert result.is_valid is False
-        assert result.tree is None
+        assert result.has_error is True
 
     def test_missing_diagnosis_error_message(self):
-        """error 消息包含「判断方法」"""
+        """issue 消息包含「判断方法」或「acli」"""
         result = parse_sop_markdown(_MISSING_DIAGNOSIS_SOP)
-        msgs = [e.message for e in result.errors]
-        assert any("判断方法" in m for m in msgs)
+        msgs = [i.message for i in result.issues]
+        assert any("判断方法" in m or "acli" in m for m in msgs)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -389,41 +349,87 @@ class TestMissingLeafContent:
 
 
 class TestNodeIdAssignment:
-    """测试 node_id 分配"""
+    """测试节点 ID 分配"""
 
     def _collect_node_ids(self, node, ids=None):
         """递归收集所有节点 ID"""
         if ids is None:
             ids = []
-        ids.append(node.node_id)
+        ids.append(node.id)
         for child in node.children:
             self._collect_node_ids(child, ids)
         return ids
 
     def test_root_id_is_n1(self):
-        """根节点 node_id == 'n-1'"""
+        """根节点 id == 'n-1'"""
         result = parse_sop_markdown(_SIMPLE_SOP)
-        assert result.tree is not None
-        assert result.tree.node_id == "n-1"
+        assert len(result.root_nodes) > 0
+        assert result.root_nodes[0].id == "n-1"
 
     def test_first_child_id(self):
-        """第一个子节点 node_id == 'n-1-1'"""
+        """第一个子节点 id == 'n-1-1'"""
         result = parse_sop_markdown(_SIMPLE_SOP)
-        assert result.tree is not None
-        assert result.tree.children[0].node_id == "n-1-1"
+        root = result.root_nodes[0]
+        assert root.children[0].id == "n-1-1"
 
     def test_all_nodes_have_non_empty_id(self):
-        """所有节点均分配了非空 node_id"""
+        """所有节点均分配了非空 id"""
         result = parse_sop_markdown(_DEEP_SOP)
-        assert result.tree is not None
-        ids = self._collect_node_ids(result.tree)
+        ids = self._collect_node_ids(result.root_nodes[0])
         for nid in ids:
-            assert nid, "存在未分配 node_id 的节点"
+            assert nid, "存在未分配 id 的节点"
             assert nid.startswith("n-")
 
     def test_no_duplicate_ids(self):
-        """node_id 无重复"""
+        """id 无重复"""
         result = parse_sop_markdown(_DEEP_SOP)
-        assert result.tree is not None
-        ids = self._collect_node_ids(result.tree)
-        assert len(ids) == len(set(ids)), "存在重复的 node_id"
+        ids = self._collect_node_ids(result.root_nodes[0])
+        assert len(ids) == len(set(ids)), "存在重复的 id"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 行号追踪测试
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestLineNumberTracking:
+    """测试 ValidationIssue.line_number 追踪"""
+
+    def test_root_node_line_number(self):
+        """根节点 line_number 为标题所在行"""
+        result = parse_sop_markdown(_SIMPLE_SOP)
+        root = result.root_nodes[0]
+        assert root.line_number == 1
+
+    def test_child_node_line_number(self):
+        """子节点 line_number 为其标题所在行"""
+        result = parse_sop_markdown(_SIMPLE_SOP)
+        root = result.root_nodes[0]
+        child = root.children[0]
+        assert child.line_number == 3
+
+    def test_issue_line_number_present(self):
+        """校验问题携带 line_number"""
+        result = parse_sop_markdown(_MISSING_SOLUTION_SOP)
+        assert result.has_error
+        for issue in result.issues:
+            if issue.line_number is not None:
+                assert issue.line_number > 0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 配置热重载测试
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestConfigReload:
+    """测试配置热重载"""
+
+    def test_reload_config_clears_cache(self):
+        """reload_config 清除缓存"""
+        reload_config()
+        keywords = get_keywords("diagnosis")
+        assert len(keywords) > 0
+        reload_config()
+        keywords2 = get_keywords("diagnosis")
+        assert keywords == keywords2

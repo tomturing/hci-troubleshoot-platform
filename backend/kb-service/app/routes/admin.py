@@ -30,6 +30,7 @@ from sqlalchemy import select, text
 
 from app.models.document import KBDocument
 from app.models.sop_document import SopDocument
+from app.schemas.sop_template import ValidationIssue
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
 
 if TYPE_CHECKING:
@@ -702,7 +703,7 @@ class SopApproveResponse(BaseModel):
     tree_validation_status: str | None = Field(None, description="决策树校验状态（valid/warnings/error）")
     variable_count: int = Field(0, description="提取的变量数量（T-AGT-24）")
     warnings: list[str] = Field(default_factory=list, description="审核警告列表（兼容旧格式，含 orphan 变量等）")
-    validation_issues: list[dict] = Field(
+    validation_issues: list[ValidationIssue] = Field(
         default_factory=list,
         description="决策树校验问题列表（含 line_number，供前端按行定位）",
     )

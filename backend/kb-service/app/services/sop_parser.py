@@ -34,9 +34,9 @@ from app.config.template_config_loader import (
 from app.schemas.sop_template import (
     DiagnosisDetail,
     PrerequisiteItem,
+    SolutionDetail,
     SOPNode,
     SOPValidationResult,
-    SolutionDetail,
     ValidationIssue,
     VariableDeclaration,
 )
@@ -481,7 +481,7 @@ def _parse_variable_table(
             continue
 
         # 数据行：按表头位置取字段
-        def _col(name: str, *aliases: str) -> str:
+        def _col(name: str, *aliases: str, header_cols=header_cols, cols=cols) -> str:
             for alias in (name, *aliases):
                 if alias in header_cols:
                     idx = header_cols.index(alias)
@@ -938,7 +938,7 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                     header_cols = header_lower
                 continue
             if header_cols:
-                def _col(name: str, *aliases: str) -> str:
+                def _col(name: str, *aliases: str, header_cols=header_cols, cols=cols) -> str:
                     for alias in (name, *aliases):
                         if alias in header_cols:
                             idx = header_cols.index(alias)

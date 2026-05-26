@@ -24,7 +24,8 @@ dependencies = [
     "opentelemetry-instrumentation-logging",
     "prometheus-client==0.20.0",
     "python-docx>=1.2.0",
+    "pyyaml>=6.0.0",
 ]
 
 [tool.uv]
-virtual = true
+package = false
