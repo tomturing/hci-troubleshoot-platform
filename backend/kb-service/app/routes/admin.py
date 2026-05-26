@@ -30,7 +30,7 @@ from sqlalchemy import select, text
 
 from app.models.document import KBDocument
 from app.models.sop_document import SopDocument
-from app.services.sop_parser import extract_sop_variables, parse_sop_markdown
+from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -771,6 +771,8 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                 )
 
             content_md = sop_doc.content_md
+            # 获取旧的 variable_schema（用于三路合并）
+            old_variable_schema: list[dict] = sop_doc.variable_schema or []
 
         # ── 无事务：解析 SOP 决策树（不持有 DB 连接）──────────────────────────
         now = datetime.now(UTC)
@@ -811,11 +813,12 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         undeclared_errors: list[str] = []
         orphan_warnings: list[str] = []
         warnings: list[str] = []
+        deprecated_vars: list[str] = []  # 三路合并中标记 deprecated 的变量名
 
         if content_md:
             # 提取变量（传入解析后的决策树，扫描节点中的变量占位符）
             tree_for_var = parse_result.tree if (parse_result and parse_result.is_valid) else None
-            variable_defs, undeclared_errors, orphan_warnings = extract_sop_variables(
+            new_variable_defs, undeclared_errors, orphan_warnings = extract_sop_variables(
                 content_md, tree_for_var
             )
 
@@ -839,6 +842,26 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
             for var_name in orphan_warnings:
                 warnings.append(f"变量 '{var_name}' 已在 ## 变量 章节声明但未在正文中使用")
 
+            # 三路合并（T-AGT-26）：合并新旧 variable_schema
+            if old_variable_schema:
+                variable_defs, deprecated_vars = merge_variable_schema(
+                    old_variable_schema, new_variable_defs
+                )
+                # Deprecated 变量告警（写入响应）
+                for var_name in deprecated_vars:
+                    warnings.append(f"变量 '{var_name}' 已从新版 SOP 中移除，标记为 deprecated")
+                logger.info(
+                    event="sop_variable_merge",
+                    document_id=document_id,
+                    old_count=len(old_variable_schema),
+                    new_count=len(new_variable_defs),
+                    merged_count=len(variable_defs),
+                    deprecated_count=len(deprecated_vars),
+                )
+            else:
+                # 无旧版 schema，直接使用新版
+                variable_defs = new_variable_defs
+
             # 合并决策树解析警告（成功时）
             if parse_result and parse_result.is_valid and parse_result.warnings:
                 for w in parse_result.warnings:
@@ -854,6 +877,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                 document_id=document_id,
                 variable_count=len(variable_defs),
                 orphan_count=len(orphan_warnings),
+                deprecated_count=len(deprecated_vars),
             )
 
         # ── 短事务2：UPDATE sop_document（状态 + tree_json）────────────────────

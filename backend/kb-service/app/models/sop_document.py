@@ -44,6 +44,9 @@ class SopDocument(Base):
     tree_validation_issues = Column(JSONB, nullable=True)
     tree_generator_version = Column(String(50), nullable=True, default="sop-parser-v1")
 
+    # 变量定义（T-AGT-24：approve 时自动解析生成）
+    variable_schema = Column(JSONB, nullable=True, default=list)  # 变量定义列表 JSONB 数组
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(
         DateTime(timezone=True),

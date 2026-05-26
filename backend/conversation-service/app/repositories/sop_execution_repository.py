@@ -1,0 +1,258 @@
+"""
+SopExecution Repository - SOP 执行状态数据访问层
+
+提供 SOP 执行实例的 CRUD 和状态推进方法：
+  - get_active_by_conversation: 查询活跃的执行实例（用于中断恢复）
+  - create: 创建新的执行实例（S1 阶段命中 SOP 时）
+  - advance: 推进到下一节点（advance_sop 工具调用）
+  - complete: 标记执行完成（到达叶节点时）
+  - interrupt: 标记中断等待变量
+"""
+
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models.sop_execution import (
+    SopExecution,
+    STATUS_ACTIVE,
+    STATUS_COMPLETED,
+    STATUS_INTERRUPTED,
+)
+
+
+class SopExecutionRepository:
+    """SOP 执行状态数据访问层"""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_active_by_conversation(self, conversation_id: uuid.UUID) -> SopExecution | None:
+        """查询活跃的执行实例（用于中断恢复）
+
+        Args:
+            conversation_id: 会话 ID
+
+        Returns:
+            SopExecution 实例，若不存在或状态非 active 则返回 None
+        """
+        result = await self.session.execute(
+            select(SopExecution)
+            .where(SopExecution.conversation_id == conversation_id)
+            .where(SopExecution.status == STATUS_ACTIVE)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_conversation(self, conversation_id: uuid.UUID) -> SopExecution | None:
+        """查询任意状态的执行实例
+
+        Args:
+            conversation_id: 会话 ID
+
+        Returns:
+            SopExecution 实例，不存在时返回 None
+        """
+        result = await self.session.execute(
+            select(SopExecution)
+            .where(SopExecution.conversation_id == conversation_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def create(
+        self,
+        conversation_id: uuid.UUID,
+        sop_document_id: int,
+        current_node_id: str,
+        trace_id: str | None = None,
+    ) -> SopExecution:
+        """创建新的 SOP 执行实例（S1 阶段命中 SOP 时）
+
+        Args:
+            conversation_id: 会话 ID（唯一约束，一个会话只能有一个执行实例）
+            sop_document_id: SOP 文档 ID
+            current_node_id: 当前节点 ID（通常是根节点）
+            trace_id: 请求 trace ID
+
+        Returns:
+            创建的 SopExecution 实例
+        """
+        execution = SopExecution(
+            id=uuid.uuid4(),
+            conversation_id=conversation_id,
+            sop_document_id=sop_document_id,
+            current_node_id=current_node_id,
+            status=STATUS_ACTIVE,
+            context_variables={},
+            completed_steps=[],
+            pending_variable_name=None,
+            execution_log=[
+                {
+                    "type": "node_entered",
+                    "node_id": current_node_id,
+                    "entered_at": datetime.now(UTC).isoformat(),
+                    "reasoning": "SOP 执行开始，进入根节点",
+                }
+            ],
+            trace_id=trace_id,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        self.session.add(execution)
+        await self.session.flush()
+        await self.session.refresh(execution)
+        return execution
+
+    async def advance(
+        self,
+        conversation_id: uuid.UUID,
+        target_node_id: str,
+        reasoning: str,
+        node_type: str | None = None,
+        variables_extracted: dict[str, Any] | None = None,
+    ) -> SopExecution | None:
+        """推进到下一节点（advance_sop 工具调用）
+
+        操作：
+          1. 更新 current_node_id 为目标节点
+          2. 追加 execution_log 条目（node_entered）
+          3. 追加 completed_steps（前一节点标记完成）
+          4. 若叶节点（solution）则更新 status=completed
+          5. 若有 variables_extracted 则更新 context_variables
+
+        Args:
+            conversation_id: 会话 ID
+            target_node_id: 目标节点 ID
+            reasoning: LLM 推进理由（写入 execution_log）
+            node_type: 目标节点类型（diagnosis/solution/branch），用于判断是否叶节点
+            variables_extracted: 变量池更新（可选）
+
+        Returns:
+            更新后的 SopExecution 实例，不存在时返回 None
+        """
+        # 查询当前执行实例
+        execution = await self.get_active_by_conversation(conversation_id)
+        if execution is None:
+            return None
+
+        # 记录前一节点
+        prev_node_id = execution.current_node_id
+
+        # 追加 completed_steps
+        completed_steps = list(execution.completed_steps or [])
+        if prev_node_id not in completed_steps:
+            completed_steps.append(prev_node_id)
+
+        # 追加 execution_log
+        execution_log = list(execution.execution_log or [])
+        execution_log.append({
+            "type": "node_entered",
+            "node_id": target_node_id,
+            "entered_at": datetime.now(UTC).isoformat(),
+            "reasoning": reasoning,
+        })
+
+        # 更新 context_variables
+        context_variables = dict(execution.context_variables or {})
+        if variables_extracted:
+            for var_name, var_value in variables_extracted.items():
+                context_variables[var_name] = {
+                    "value": var_value,
+                    "source": "llm_extracted",
+                    "resolved_at": datetime.now(UTC).isoformat(),
+                    "resolved_by_tool": "advance_sop",
+                }
+
+        # 判断是否叶节点（solution）
+        is_leaf = node_type == "solution"
+        new_status = STATUS_COMPLETED if is_leaf else STATUS_ACTIVE
+
+        # 执行更新
+        await self.session.execute(
+            update(SopExecution)
+            .where(SopExecution.conversation_id == conversation_id)
+            .values(
+                current_node_id=target_node_id,
+                status=new_status,
+                completed_steps=completed_steps,
+                execution_log=execution_log,
+                context_variables=context_variables,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        await self.session.flush()
+
+        # 返回更新后的实例
+        return await self.get_by_conversation(conversation_id)
+
+    async def complete(self, conversation_id: uuid.UUID) -> SopExecution | None:
+        """标记执行完成（到达叶节点时）
+
+        Args:
+            conversation_id: 会话 ID
+
+        Returns:
+            更新后的 SopExecution 实例
+        """
+        await self.session.execute(
+            update(SopExecution)
+            .where(SopExecution.conversation_id == conversation_id)
+            .where(SopExecution.status == STATUS_ACTIVE)
+            .values(
+                status=STATUS_COMPLETED,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        await self.session.flush()
+        return await self.get_by_conversation(conversation_id)
+
+    async def interrupt(
+        self,
+        conversation_id: uuid.UUID,
+        pending_variable_name: str,
+    ) -> SopExecution | None:
+        """标记中断等待变量（sop_request_variable 工具阻塞时）
+
+        Args:
+            conversation_id: 会话 ID
+            pending_variable_name: 待填变量名
+
+        Returns:
+            更新后的 SopExecution 实例
+        """
+        await self.session.execute(
+            update(SopExecution)
+            .where(SopExecution.conversation_id == conversation_id)
+            .where(SopExecution.status == STATUS_ACTIVE)
+            .values(
+                status=STATUS_INTERRUPTED,
+                pending_variable_name=pending_variable_name,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        await self.session.flush()
+        return await self.get_by_conversation(conversation_id)
+
+    async def resume(self, conversation_id: uuid.UUID) -> SopExecution | None:
+        """恢复执行（变量填充后）
+
+        Args:
+            conversation_id: 会话 ID
+
+        Returns:
+            更新后的 SopExecution 实例
+        """
+        await self.session.execute(
+            update(SopExecution)
+            .where(SopExecution.conversation_id == conversation_id)
+            .where(SopExecution.status == STATUS_INTERRUPTED)
+            .values(
+                status=STATUS_ACTIVE,
+                pending_variable_name=None,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        await self.session.flush()
+        return await self.get_by_conversation(conversation_id)

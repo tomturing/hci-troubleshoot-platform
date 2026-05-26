@@ -7,6 +7,7 @@ from shared.models.conversation import Conversation
 from .diagnostic_item import DiagnosticItem
 from .diagnostic_state import DiagnosticSession, StageTransition
 from .message import Message, MessageRole
+from .sop_execution import SopExecution, STATUS_ACTIVE, STATUS_COMPLETED, STATUS_INTERRUPTED, STATUS_ABORTED
 from .system_prompt import SystemPrompt
 from .tool_definition import ToolDefinition
 from .tool_result import ToolResult
@@ -17,6 +18,11 @@ __all__ = [
     "DiagnosticSession",
     "Message",
     "MessageRole",
+    "SopExecution",
+    "STATUS_ACTIVE",
+    "STATUS_COMPLETED",
+    "STATUS_INTERRUPTED",
+    "STATUS_ABORTED",
     "StageTransition",
     "SystemPrompt",
     "ToolDefinition",

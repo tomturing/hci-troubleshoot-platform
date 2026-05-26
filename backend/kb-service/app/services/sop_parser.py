@@ -25,6 +25,26 @@ from app.schemas.sop_template import (
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 变量名启发式规则（来自 §12.7.3）
+# ──────────────────────────────────────────────────────────────────────────────
+
+STRATEGY_HINTS: dict[str, str] = {
+    # 环境上下文类变量（自动从 case/conversation 获取）
+    r".*_ip$|^node_ip$|^cluster_ip$|^host_ip$|^server_ip$": "env_context",
+    r"^cluster_name$|^node_name$|^host_name$|^server_name$": "env_context",
+    # 工具获取类变量（需要调用诊断工具）
+    r"^vm_name$|^vm_id$": "tool:get_vm_list",
+    r"^disk_id$|^disk_name$": "tool:acli_storage_disk_list",
+    r"^nic_name$|^nic_id$": "tool:acli_network_nic_list",
+    r"^volume_id$|^volume_name$": "tool:acli_storage_volume_list",
+}
+
+# 变量章节标题关键词（等效列表）
+VARIABLE_SECTION_KEYWORDS: frozenset[str] = frozenset(
+    ["变量", "变量定义", "参数", "参数定义", "环境变量"]
+)
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 关键词等效表（解析器层唯一来源，模型层不重复）
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -607,3 +627,299 @@ def parse_sop_markdown(content_md: str) -> SOPValidationResult:
         warnings=warnings,
         tree=root if not errors else None,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 变量提取与双向校验（T-AGT-24）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _infer_strategy(var_name: str) -> dict:
+    """根据变量名推断获取策略
+
+    Args:
+        var_name: 变量名（如 node_ip, vm_name）
+
+    Returns:
+        dict: {"acquisition_strategy": str, "acquisition_tool": str | None}
+    """
+    for pattern, strategy in STRATEGY_HINTS.items():
+        if re.match(pattern, var_name):
+            if strategy.startswith("tool:"):
+                return {"acquisition_strategy": "tool", "acquisition_tool": strategy[5:]}
+            return {"acquisition_strategy": strategy, "acquisition_tool": None}
+    # 默认策略：用户手动输入
+    return {"acquisition_strategy": "user_input", "acquisition_tool": None}
+
+
+def _parse_variable_section(content_md: str) -> dict[str, dict]:
+    """解析 ## 变量 章节，提取声明变量
+
+    章节格式：
+    ## 变量
+    - node_ip：节点 IP 地址，从环境上下文获取
+    - vm_name：虚拟机名称，需要调用工具获取
+
+    Args:
+        content_md: SOP Markdown 内容
+
+    Returns:
+        dict: {变量名: {display_name, description, acquisition_strategy, ...}}
+    """
+    declared_vars: dict[str, dict] = {}
+
+    # 找到变量章节（支持等效关键词）
+    var_section_start = -1
+    var_section_end = len(content_md)
+    lines = content_md.splitlines()
+
+    for i, line in enumerate(lines):
+        heading_match = re.match(r"^#{1,6}\s+(.+)$", line)
+        if heading_match:
+            heading_text = heading_match.group(1).strip()
+            # 检查是否是变量章节标题
+            for kw in VARIABLE_SECTION_KEYWORDS:
+                if kw in heading_text:
+                    var_section_start = i
+                    break
+            # 如果已进入变量章节，遇到新标题则结束
+            if var_section_start >= 0 and i > var_section_start and heading_text not in VARIABLE_SECTION_KEYWORDS:
+                var_section_end = i
+                break
+
+    if var_section_start < 0:
+        return declared_vars  # 无变量章节
+
+    # 解析变量章节内容（列表项格式）
+    var_section_lines = lines[var_section_start + 1:var_section_end]
+
+    for line in var_section_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # 匹配列表项：- var_name：描述 或 * var_name：描述
+        list_match = re.match(r"^(?:[-*])\s+([a-z][a-z0-9_]*)[：:]\s*(.*)$", stripped)
+        if list_match:
+            var_name = list_match.group(1)
+            rest = list_match.group(2).strip()
+
+            # 尝试从描述中提取策略（如"从环境上下文获取"）
+            strategy_override = None
+            strategy_hint_patterns = [
+                (r".*环境上下文.*|.*自动获取.*|.*从 case.*", "env_context"),
+                (r".*工具.*获取.*|.*调用.*工具.*", "tool"),
+                (r".*用户.*输入.*|.*手动.*填写.*", "user_input"),
+                (r".*用户.*确认.*|.*确认.*选择.*", "user_confirm"),
+            ]
+            for pat, strat in strategy_hint_patterns:
+                if re.search(pat, rest):
+                    strategy_override = strat
+                    break
+
+            declared_vars[var_name] = {
+                "display_name": var_name,
+                "description": rest,
+                "acquisition_strategy": strategy_override or _infer_strategy(var_name)["acquisition_strategy"],
+                "acquisition_tool": _infer_strategy(var_name)["acquisition_tool"] if strategy_override == "tool" else None,
+                "type": "string",
+                "required": True,
+            }
+
+    return declared_vars
+
+
+def _extract_vars_from_text(text: str) -> set[str]:
+    """从文本中提取 {placeholder} 格式的变量名
+
+    Args:
+        text: 文本内容
+
+    Returns:
+        set: 变量名集合
+    """
+    # 匹配 {var_name} 格式，变量名规则：小写字母开头，允许小写字母、数字、下划线
+    return set(re.findall(r"\{([a-z][a-z0-9_]*)\}", text))
+
+
+def _extract_vars_from_tree(node: SOPNode) -> set[str]:
+    """从决策树节点中递归提取变量名
+
+    扫描范围：
+    - node.name（节点名称）
+    - node.prerequisites（前置条件）
+    - node.diagnosis（判断方法，包括 page_methods/acli_methods）
+    - node.solution（解决方案）
+
+    Args:
+        node: SOPNode 树节点
+
+    Returns:
+        set: 变量名集合
+    """
+    vars_set: set[str] = set()
+
+    # 节点名称
+    vars_set |= _extract_vars_from_text(node.name)
+
+    # 前置条件
+    for prereq in node.prerequisites:
+        vars_set |= _extract_vars_from_text(prereq)
+
+    # diagnosis 字段
+    if node.diagnosis:
+        vars_set |= _extract_vars_from_text(node.diagnosis.description or "")
+        vars_set |= _extract_vars_from_text(node.diagnosis.root_cause or "")
+        vars_set |= _extract_vars_from_text(node.diagnosis.notes or "")
+        for method in node.diagnosis.page_methods:
+            vars_set |= _extract_vars_from_text(method)
+        for method in node.diagnosis.acli_methods:
+            vars_set |= _extract_vars_from_text(method)
+
+    # solution 字段
+    if node.solution:
+        for step in node.solution.quick_recovery:
+            vars_set |= _extract_vars_from_text(step)
+        for step in node.solution.thorough_fix:
+            vars_set |= _extract_vars_from_text(step)
+
+    # 递归子节点
+    for child in node.children:
+        vars_set |= _extract_vars_from_tree(child)
+
+    return vars_set
+
+
+def extract_sop_variables(
+    content_md: str,
+    tree: SOPNode | None = None,
+) -> tuple[list[dict], list[str], list[str]]:
+    """提取 SOP 变量定义并进行双向校验
+
+    功能：
+    1. 解析 ## 变量 章节获取 declared_vars（变量名 → 手动描述）
+    2. 扫描全文 + tree_json 中的 {placeholder}
+    3. 双向 diff：
+       - undeclared = used_vars - declared_vars → Error（用但未声明）
+       - orphan = declared_vars - used_vars → Warning（声明但未用）
+    4. 构建 SopVariableDefinition 列表（含启发式策略推断）
+
+    Args:
+        content_md: SOP Markdown 正文
+        tree: 解析后的 SOPNode 决策树（可选）
+
+    Returns:
+        tuple: (variable_defs, undeclared_errors, orphan_warnings)
+            - variable_defs: 变量定义列表
+            - undeclared_errors: 未声明但使用的变量名列表
+            - orphan_warnings: 声明但未使用的变量名列表
+    """
+    # 1. 解析 ## 变量 章节获取声明变量
+    declared_vars = _parse_variable_section(content_md)
+
+    # 2. 扫描全文 + tree_json 中的 {placeholder}
+    used_vars = _extract_vars_from_text(content_md)
+    if tree:
+        used_vars |= _extract_vars_from_tree(tree)
+
+    # 3. 双向 diff
+    undeclared = sorted(used_vars - set(declared_vars.keys()))  # Error：用但未声明
+    orphan = sorted(set(declared_vars.keys()) - used_vars)  # Warning：声明但未用
+
+    # 4. 构建 SopVariableDefinition 列表（仅包含实际使用的变量）
+    variable_defs: list[dict] = []
+    for var_name in sorted(used_vars):
+        declared = declared_vars.get(var_name, {})
+        # 如果未声明，使用推断的策略
+        inferred = _infer_strategy(var_name)
+        strategy_info = {
+            "acquisition_strategy": declared.get("acquisition_strategy") or inferred["acquisition_strategy"],
+            "acquisition_tool": declared.get("acquisition_tool") or inferred["acquisition_tool"],
+        }
+
+        variable_defs.append({
+            "name": var_name,
+            "display_name": declared.get("display_name", var_name),
+            "description": declared.get("description", ""),
+            "type": declared.get("type", "string"),
+            "required": True,
+            **strategy_info,
+            "validation_pattern": declared.get("validation_pattern"),
+            "default_value": declared.get("default_value"),
+            "auto_generated": var_name not in declared_vars,  # 标记是否为自动推断
+        })
+
+    return variable_defs, undeclared, orphan
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 变量三路合并（T-AGT-26）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def merge_variable_schema(
+    old_schema: list[dict],
+    new_schema: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """三路合并变量 Schema（重新导入后维护人工编辑）
+
+    合并规则：
+    1. 两版都有 → 保留 old 的 description、acquisition_strategy、acquisition_tool、
+                   acquisition_prompt、validation_pattern（人工知识），更新 auto_generated=False
+    2. 仅新版有 → 直接追加，auto_generated=True
+    3. 仅旧版有 → 标记 deprecated=True，保留在列表中
+
+    Args:
+        old_schema: 旧版 variable_schema（可能含人工编辑）
+        new_schema: 新版 variable_schema（自动解析结果）
+
+    Returns:
+        tuple: (merged_schema, deprecated_names)
+            - merged_schema: 合并后的 variable_schema
+            - deprecated_names: 标记 deprecated 的变量名列表（用于告警）
+    """
+    old_by_name = {v["name"]: v for v in old_schema}
+    new_by_name = {v["name"]: v for v in new_schema}
+    deprecated: list[str] = []
+    merged: list[dict] = []
+
+    # 人工编辑字段列表（三路合并时保留）
+    HUMAN_FIELDS = [
+        "description",
+        "acquisition_strategy",
+        "acquisition_tool",
+        "acquisition_prompt",
+        "validation_pattern",
+        "default_value",
+        "display_name",
+    ]
+
+    # 新版变量（保留旧版人工字段）
+    for name, new_var in new_by_name.items():
+        if name in old_by_name:
+            old_var = old_by_name[name]
+            merged_var = {**new_var}
+            # 保留人工编辑字段（优先使用旧版值）
+            for human_field in HUMAN_FIELDS:
+                old_value = old_var.get(human_field)
+                if old_value is not None and old_value != "":
+                    merged_var[human_field] = old_value
+            # 清除 deprecated 标记（变量重新出现）
+            merged_var.pop("deprecated", None)
+            # 标记为已确认（非自动生成）
+            merged_var["auto_generated"] = False
+            merged.append(merged_var)
+        else:
+            # 新版新增变量：标记为自动生成
+            merged.append({**new_var, "auto_generated": True})
+
+    # 旧版独有（标记 deprecated）
+    for name, old_var in old_by_name.items():
+        if name not in new_by_name:
+            # 清除 auto_generated（deprecated 变量不再参与自动流程）
+            deprecated_var = {**old_var, "deprecated": True}
+            deprecated_var.pop("auto_generated", None)
+            merged.append(deprecated_var)
+            deprecated.append(name)
+
+    return merged, deprecated
