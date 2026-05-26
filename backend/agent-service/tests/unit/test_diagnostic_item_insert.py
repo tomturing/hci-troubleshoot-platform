@@ -22,7 +22,6 @@ from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
 from app.adapters.agents.htp.kbd_model import KBD
 from shared.clients.diagnostic_item_client import DiagnosticItemClient
 
-
 # ─── 测试数据构造 ───────────────────────────────────────────────────────
 
 
@@ -257,7 +256,7 @@ async def test_s4_root_cause_insert():
     call_args = history["create_item"][0]
     assert call_args["stage"] == "S4"
     assert call_args["type"] == "root_cause"
-    assert call_args["content"]["is_definitive"] == True
+    assert call_args["content"]["is_definitive"]
     assert call_args["probability"] == 0.95
 
 
@@ -298,7 +297,7 @@ async def test_s5_solution_insert():
     call_args = history["create_item"][0]
     assert call_args["stage"] == "S5"
     assert call_args["type"] == "solution"
-    assert call_args["content"]["require_all_confirm"] == True
+    assert call_args["content"]["require_all_confirm"]
 
 
 # ─── archive 路径兼容测试 ───────────────────────────────────────────────────
@@ -320,7 +319,7 @@ async def test_archive_all_compatibility():
     assert len(history["archive_all"]) == 1, "应该调用一次 archive_all"
 
     # 验证：返回结果正确
-    assert result["ok"] == True
+    assert result["ok"]
     assert result["count"] == 5, "归档了 5 条记录"
 
 

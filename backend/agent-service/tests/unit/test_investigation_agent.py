@@ -10,7 +10,7 @@ InvestigationAgent 单元测试
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from app.adapters.agents.htp.investigation_agent import InvestigationAgent, MAX_SOP_CHARS
+from app.adapters.agents.htp.investigation_agent import MAX_SOP_CHARS, InvestigationAgent
 from app.domain.agent_port import AgentStageUpdate, AgentTextChunk
 
 
@@ -101,7 +101,7 @@ class TestInvestigationAgentRouting:
         # T-AGT-07: 验证 sop_reasoning 事件携带 sop_document_id
         stage_events = [e for e in events if isinstance(e, AgentStageUpdate)]
         sop_reasoning_events = [e for e in stage_events if e.stage == "sop_reasoning"]
-        assert len(sop_reasoning_events) == 1, f"未找到 sop_reasoning 事件"
+        assert len(sop_reasoning_events) == 1, "未找到 sop_reasoning 事件"
         assert sop_reasoning_events[0].metadata.get("sop_document_id") == 42, \
             f"sop_document_id 应为 42，实际为 {sop_reasoning_events[0].metadata.get('sop_document_id')}"
 
