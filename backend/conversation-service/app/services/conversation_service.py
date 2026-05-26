@@ -1255,6 +1255,11 @@ class ConversationService:
                         tool_result = metadata.get("tool_result")
                         error = metadata.get("error")
 
+                        # ⚠️ 已知问题：并发竞态
+                        # tool_call 和 tool_result 事件通过 asyncio.create_task() 并发提交，
+                        # tool_result 可能先于 tool_call 落库，导致找不到 pending 记录。
+                        # 修复建议：在 metadata 中携带稳定关联键（tool_call_id/run_id），
+                        # 或将写入统一队列串行处理。
                         # 查找最近的 pending 记录
                         result = await session.execute(
                             select(ToolResult)

@@ -219,8 +219,8 @@ async def lifespan(app: FastAPI):
         from app.adapters.clients.scp_client import SCPClient
 
         _acli = AcliClient.from_env()
-        # 复用 ReAct 块创建的 scp_client（如果存在），否则新建
-        _scp = scp_client if "scp_client" in dir() else SCPClient.from_env()
+        # 复用 ReAct 块创建的 scp_client（如果已初始化），否则新建
+        _scp = scp_client if scp_client is not None else SCPClient.from_env()
         pai_adapter = PaiAgentAdapter.from_env(
             scp_client=_scp,
             acli_client=_acli,
@@ -300,7 +300,7 @@ class CompositeToolExecutor:
         self._acli = acli
         self._kb_client = kb_client
 
-    async def execute(self, tool_name: str, args: dict) -> any:
+    async def execute(self, tool_name: str, args: dict) -> Any:
         """执行工具调用，根据工具类型分发"""
         from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
         from app.adapters.agents.htp.sop_tools import get_sop_node

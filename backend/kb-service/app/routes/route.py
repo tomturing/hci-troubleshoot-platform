@@ -103,6 +103,8 @@ async def route(
     )
 
     # 第 1 轨：SOP 优先（全文检索排序）
+    # 性能优化建议：可添加 WHERE to_tsvector(...) @@ plainto_tsquery(...) 过滤条件，
+    # 或引入存储型 tsvector 列 + GIN 索引，避免运行时重复构建向量
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
             text(

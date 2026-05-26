@@ -139,8 +139,9 @@ class DiagnosticItemRepository:
             "updated_at": datetime.now(UTC),
         }
         if content_update:
-            # 合并内容更新（不覆盖已有字段）
-            values["content"] = content_update
+            # 合并内容更新：使用 PostgreSQL JSONB || 运算符实现部分更新
+            # 语法：content = content || :content_update，仅覆盖传入的 key
+            values["content"] = DiagnosticItem.content.op("||")(content_update)
 
         await self.session.execute(
             update(DiagnosticItem)

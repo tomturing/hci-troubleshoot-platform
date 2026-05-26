@@ -215,8 +215,8 @@ class TestParseVariableSection:
 检查 {node_ip} 状态
 """
         declared = _parse_variable_section(content)
-        assert declared == {"node_ip": pytest.approx({})}
-
+        # 应该只解析到 node_ip，且内容为空字典（无额外属性）
+        assert declared == {"node_ip": {}}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 测试：完整变量提取 + 双向校验

@@ -9,7 +9,7 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from shared.observability.logger import get_logger
@@ -27,6 +27,18 @@ from app.domain.agent_port import (
 
 router = APIRouter(tags=["agent"])
 logger = get_logger("agent-service")
+
+
+def _check_internal_auth(request: Request) -> None:
+    """验证内部服务 Token（防止越权访问）"""
+    from app.config import settings
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少 Bearer Token")
+    token = auth_header.split(" ", 1)[1]
+    if token != settings.INTERNAL_API_TOKEN:
+        raise HTTPException(status_code=401, detail="Token 无效")
 
 # 全局 AgentRouter，由 main.py lifespan 注入
 _agent_router: AgentRouter | None = None
@@ -299,7 +311,7 @@ class ReactConfirmRequest(BaseModel):
 
 
 @router.post("/v1/agent/react-confirm")
-async def react_confirm(body: ReactConfirmRequest) -> dict:
+async def react_confirm(request: Request, body: ReactConfirmRequest) -> dict:
     """
     ReAct 工具确认端点
 
@@ -312,6 +324,7 @@ async def react_confirm(body: ReactConfirmRequest) -> dict:
     解除 ReactEngine.request_confirm() 的 BRPOP 等待，工具继续执行。
 
     Args:
+        request: FastAPI Request（用于提取 Authorization header）
         body: ReactConfirmRequest
             - session_id: 会话 ID（对应 conversation_id）
             - confirmed: True=用户确认执行，False=用户取消
@@ -321,6 +334,9 @@ async def react_confirm(body: ReactConfirmRequest) -> dict:
         {"ok": True} 确认成功
         {"ok": False, "reason": "..."} ConfirmService 未注入
     """
+    # 验证内部服务 Token（防止越权确认）
+    _check_internal_auth(request)
+
     if _confirm_service is None:
         logger.warning(
             event="react_confirm_service_unavailable",
