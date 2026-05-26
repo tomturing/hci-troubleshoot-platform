@@ -37,6 +37,7 @@ from app.adapters.agents.htp.confirm_service import ConfirmService
 from app.adapters.agents.htp.diagnostic_agent import DiagnosticAgent
 from app.adapters.agents.htp.intent_agent import IntentAgent  # @deprecated，保留兼容
 from app.adapters.agents.htp.investigation_agent import InvestigationAgent  # T-AGT-11：主用 S1-S4
+from app.adapters.agents.htp.remediation_agent import RemediationAgent  # T-AGT-12：S5 修复执行
 from app.adapters.agents.htp.triage_agent import TriageAgent  # T-AGT-10：替换 IntentAgent
 from app.adapters.agents.htp.react_engine import ReactEngine
 from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
@@ -184,6 +185,20 @@ async def lifespan(app: FastAPI):
         top_k=15,
     )
 
+    # ── RemediationAgent（S5 修复执行）────────────────────────────────────────────────
+    # T-AGT-12：require_all_confirm=True，所有工具调用均需用户确认
+    remediation_agent: RemediationAgent | None = None
+    if react_engine is not None:
+        remediation_agent = RemediationAgent(
+            ai_registry=ai_registry,
+            kb_client=kb_client,
+            react_engine=react_engine,
+        )
+        logger.info(
+            event="remediation_agent_initialized",
+            message="RemediationAgent 已初始化（S5 修复执行，require_all_confirm=True）",
+        )
+
     # ── OpsAgent 适配器（可选）─────────────────────────────────────────────────────
     ops_adapter: OpsAgentAdapter | None = None
     if settings.OPS_AGENT_ENABLED:
@@ -208,10 +223,12 @@ async def lifespan(app: FastAPI):
     # ── 组装 AgentRouter ────────────────────────────────────────────────────────────
     # T-AGT-10：使用 TriageAgent
     # T-AGT-11：使用 InvestigationAgent 主用 S1-S4，DiagnosticAgent 降级备用
+    # T-AGT-12：使用 RemediationAgent 处理 S5 修复执行
     agent_router = AgentRouter(
         triage_agent=triage_agent,
         investigation_agent=investigation_agent,
         diagnostic_agent=diagnostic_agent,
+        remediation_agent=remediation_agent,  # T-AGT-12
         ops_agent_adapter=ops_adapter,
         pai_adapter=pai_adapter,
         ai_registry=ai_registry,

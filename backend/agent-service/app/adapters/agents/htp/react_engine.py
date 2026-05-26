@@ -212,11 +212,13 @@ class ReactEngine:
                     # 捕获工具执行结果
                     if isinstance(event, ToolResultEvent):
                         tool_result = event.result
-                    # 跳过 AgentTextChunk（工具结果不直接推流，加入历史后继续循环）
-                    elif not isinstance(event, AgentTextChunk):
+                    # AgentTextChunk 需要传递给外层（如"操作已取消"、"确认服务暂不可用"）
+                    elif isinstance(event, AgentTextChunk):
                         yield event
-                    elif event.content.startswith("工具") and "失败" in event.content:
-                        # 工具执行失败时告知用户
+                        # 工具执行被取消或失败时，终止循环
+                        if "取消" in event.content or "中止" in event.content or "失败" in event.content:
+                            return
+                    else:
                         yield event
 
                 # 将工具结果追加到消息历史

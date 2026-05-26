@@ -342,7 +342,7 @@ class TestToolRegistryRiskLevels:
             "acli_log_get",
             "acli_run",
             "get_sop_node",
-            "advance_sop",
+            "sop_advance",
         ]
 
         for tool_name in readonly_tools:
