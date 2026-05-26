@@ -262,7 +262,7 @@ def _openai_messages_to_pydantic(
     - 最后一条 user 消息 → user_prompt（作为 run_stream 的第一参数）
     - 之前的 user 消息 → ModelRequest(parts=[UserPromptPart(content=...)])
     - assistant 消息 → ModelResponse(parts=[TextPart(content=...)])
-    - system 消息跳过（pydantic-ai 通过 Agent.system_prompt 统一处理）
+    - system 消息：内容合并追加到下一条 user 消息尾部（格式：\\n\\n[系统上下文]\\n{content}）
 
     Returns:
         (user_prompt, message_history)
@@ -276,11 +276,21 @@ def _openai_messages_to_pydantic(
             last_user_idx = i
 
     if last_user_idx == -1:
-        # 没有 user 消息，返回空 prompt
+        # 没有 user 消息，返回空 prompt（system 消息无处合并，记录日志）
+        system_count = sum(1 for msg in messages if msg.get("role") == "system")
+        if system_count > 0:
+            logger.warning(
+                "pydantic-ai brain: 有 %d 条 system 消息但没有 user 消息可合并",
+                system_count,
+            )
         return "", []
 
     user_prompt = ""
     history: list[ModelMessage] = []
+
+    # 收集待合并的 system 消息内容（用于追加到下一条 user 消息）
+    pending_system_content: list[str] = []
+    merged_system_count = 0
 
     for i, msg in enumerate(messages):
         role = msg.get("role", "")
@@ -288,6 +298,18 @@ def _openai_messages_to_pydantic(
         # 确保 content 是字符串
         if not isinstance(content, str):
             content = str(content) if content is not None else ""
+
+        if role == "system":
+            # 收集 system 消息内容，等待合并到下一条 user 消息
+            pending_system_content.append(content)
+            continue
+
+        # 合并待处理的 system 内容到当前 user 消息
+        if role == "user" and pending_system_content:
+            merged_system_count += len(pending_system_content)
+            system_block = "\n\n[系统上下文]\n" + "\n".join(pending_system_content)
+            content = content + system_block
+            pending_system_content.clear()
 
         if i == last_user_idx:
             # 最后一条 user 消息作为 user_prompt
@@ -298,7 +320,13 @@ def _openai_messages_to_pydantic(
             history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
         elif role == "assistant":
             history.append(ModelResponse(parts=[TextPart(content=content)]))
-        # system 消息跳过
+
+    # 记录合并日志
+    if merged_system_count > 0:
+        logger.info(
+            "pydantic-ai brain: 合并了 %d 条 system 消息到 user 消息",
+            merged_system_count,
+        )
 
     return user_prompt, history
 
