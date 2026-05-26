@@ -987,7 +987,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
 @sop_router.get("/{document_id}")
 async def get_sop_document(request: Request, document_id: int):
-    """获取单个 SOP 文档详情（含 content_md 正文）"""
+    """获取单个 SOP 文档详情（含 content_md 正文和 variable_schema）"""
     _check_auth(request)
 
     if _db_manager is None:
@@ -1001,7 +1001,8 @@ async def get_sop_document(request: Request, document_id: int):
                         """
                 SELECT id, source_id, category_id, title, content_md, status,
                        reviewer_id, reviewed_at, published_at, created_at, updated_at,
-                       tree_leaf_count, (tree_json IS NOT NULL) AS has_tree
+                       tree_leaf_count, (tree_json IS NOT NULL) AS has_tree,
+                       variable_schema
                 FROM sop_document WHERE id = :id
                 """
                     ),
@@ -1024,6 +1025,7 @@ async def get_sop_document(request: Request, document_id: int):
         "status": row["status"],
         "tree_leaf_count": row["tree_leaf_count"],
         "has_tree": row["has_tree"],
+        "variable_schema": row["variable_schema"] or [],
         "reviewer_id": row["reviewer_id"],
         "reviewed_at": row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
         "published_at": row["published_at"].isoformat() if row["published_at"] else None,
@@ -1191,6 +1193,153 @@ async def update_sop_status(request: Request, document_id: int, body: SopStatusU
     if downgraded_to_draft:
         resp["message"] = "内容已更新，决策树已清空，文档已降级为草稿，请重新发布"
     return resp
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOP 变量 Schema 编辑接口（不触发 re-approve）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class SopVariableSchemaUpdateRequest(BaseModel):
+    """SOP 变量 Schema 编辑请求（T-AGT-28）
+
+    仅更新指定变量的可编辑字段，不触发 re-approve（不清空 tree_json）。
+    可编辑字段：display_name、description、acquisition_strategy、acquisition_prompt、
+                validation_pattern、acquisition_tool、default_value
+    """
+
+    variables: list[dict] = Field(
+        ...,
+        min_length=1,
+        description="需要更新的变量列表，每项必须包含 name 字段",
+    )
+
+
+@sop_router.patch("/{document_id}/variable-schema")
+async def update_sop_variable_schema(request: Request, document_id: int, body: SopVariableSchemaUpdateRequest):
+    """更新 SOP 变量 Schema 的可编辑字段（不触发 re-approve）
+
+    功能：
+    1. 仅更新指定变量的可编辑字段（display_name、description 等）
+    2. 不触发 re-approve（保持 status 和 tree_json 不变）
+    3. 三路合并兼容：下次 approve 时保留人工编辑字段
+
+    Args:
+        document_id: SOP 文档 ID
+        body.variables: 需要更新的变量列表，每项格式：
+            {
+              "name": "vm_name",                     # 必填，变量名（用于匹配）
+              "display_name": "虚拟机名称",          # 可选
+              "description": "需要操作的虚拟机",      # 可选
+              "acquisition_strategy": "user_confirm",# 可选
+              "acquisition_prompt": "请确认虚拟机",   # 可选
+              "acquisition_tool": "get_vm_list",     # 可选
+              "validation_pattern": "^[a-zA-Z0-9_-]+$", # 可选
+              "default_value": "default-vm"          # 可选
+            }
+
+    Returns:
+        { success, document_id, updated, variable_schema }
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    logger.info(event="sop_variable_schema_update_request", document_id=document_id, variables_count=len(body.variables))
+
+    async with _db_manager.async_session_factory() as session:
+        # 1. 查询当前 variable_schema
+        result = await session.execute(
+            text("SELECT id, variable_schema FROM sop_document WHERE id = :id"),
+            {"id": document_id},
+        )
+        row = result.mappings().first()
+
+        if not row:
+            raise HTTPException(status_code=404, detail=f"SOP 文档 {document_id} 不存在")
+
+        current_schema: list[dict] = row["variable_schema"] or []
+
+        if not current_schema:
+            raise HTTPException(
+                status_code=400,
+                detail=f"SOP 文档 {document_id} 无 variable_schema，请先 approve 生成",
+            )
+
+        # 2. 构建更新后的 schema（保留未更新变量）
+        current_by_name = {v["name"]: v for v in current_schema}
+        updated_count = 0
+        allowed_fields = {
+            "display_name",
+            "description",
+            "acquisition_strategy",
+            "acquisition_prompt",
+            "acquisition_tool",
+            "validation_pattern",
+            "default_value",
+        }
+
+        for update_var in body.variables:
+            var_name = update_var.get("name")
+            if not var_name:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"variables 列表中缺少 name 字段：{update_var}",
+                )
+
+            if var_name not in current_by_name:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"变量 '{var_name}' 不存在于当前 variable_schema 中",
+                )
+
+            # 更新允许的字段（仅更新传入的字段）
+            current_var = current_by_name[var_name]
+            for field, value in update_var.items():
+                if field == "name":
+                    continue  # name 用于匹配，不可修改
+                if field not in allowed_fields:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"字段 '{field}' 不允许编辑，可编辑字段：{sorted(allowed_fields)}",
+                    )
+                current_var[field] = value
+                updated_count += 1
+
+            # 标记为人工编辑（下次 approve 保留）
+            current_var["auto_generated"] = False
+
+        # 3. 写回数据库（不修改 status、tree_json）
+        await session.execute(
+            text(
+                """
+                UPDATE sop_document
+                SET variable_schema = CAST(:variable_schema AS jsonb),
+                    updated_at = :updated_at
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": document_id,
+                "variable_schema": json.dumps(current_schema, ensure_ascii=False),
+                "updated_at": datetime.now(UTC),
+            },
+        )
+        await session.commit()
+
+    logger.info(
+        event="sop_variable_schema_updated",
+        document_id=document_id,
+        updated_fields=updated_count,
+    )
+
+    return {
+        "success": True,
+        "document_id": document_id,
+        "updated": updated_count,
+        "variable_schema": current_schema,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
