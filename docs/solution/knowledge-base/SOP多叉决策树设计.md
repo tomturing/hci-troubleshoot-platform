@@ -20,6 +20,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-05-27 | v1.5 | SOP 解析器字段重构遗留 bug 修复（PR #337）：修复 sop_parser.py 中 SOPNode 字段引用（name→title, node_id→id）导致发布 HTTP 500 | — |
 | 2026-05-27 | v1.4 | SOP 模板校验体系增强：行号追踪（ValidationIssue.line_number）、配置驱动验证规则（sop_template_rules.yaml）、前端校验问题弹窗（PR #334）| — |
 | 2026-05-26 | v1.3 | 新增 variable_schema 字段、extract_sop_variables 双向校验、merge_variable_schema 三路合并（PR #333）| — |
 | 2026-05-26 | v1.3 | route.py SOP 查询增加 ts_rank 全文检索排序优化 | — |
