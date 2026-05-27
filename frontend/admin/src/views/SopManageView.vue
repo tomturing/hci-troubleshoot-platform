@@ -607,6 +607,7 @@ onMounted(() => {
                 ref="editTextareaRef"
                 v-model="editContentMd"
                 class="code-textarea"
+                wrap="off"
                 placeholder="Markdown 格式正文..."
                 @scroll="syncLineNumbersScroll"
               />
@@ -713,6 +714,7 @@ onMounted(() => {
 .code-editor-wrapper {
   display: flex;
   width: 100%;
+  height: 440px;
   border: 1px solid #dcdfe6;
   border-radius: 4px;
   overflow: hidden;
@@ -724,18 +726,23 @@ onMounted(() => {
   border-right: 1px solid #e4e7ed;
   padding: 8px 6px 8px 4px;
   text-align: right;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 13px;
   line-height: 1.6;
   color: #909399;
   user-select: none;
-  overflow: hidden;
   min-width: 42px;
   flex-shrink: 0;
 }
+.line-num::-webkit-scrollbar { width: 0; height: 0; }
+.line-numbers::-webkit-scrollbar { width: 0; }
 .line-num { height: calc(13px * 1.6); }
 .code-textarea {
   flex: 1;
+  height: 100%;
   border: none;
   outline: none;
   padding: 8px;
@@ -743,10 +750,9 @@ onMounted(() => {
   font-size: 13px;
   line-height: 1.6;
   resize: none;
-  min-height: 440px;
   color: #303133;
   background: #fff;
-  overflow-y: auto;
+  overflow: auto;
   tab-size: 2;
 }
 </style>
