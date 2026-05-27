@@ -523,12 +523,15 @@ def _parse_variable_table(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _detect_prerequisite_type(text: str) -> Literal["filter", "sequence"]:
-    """根据文本内容识别前置检查类型（从配置加载关键词）。"""
+def _detect_prerequisite_type(text: str) -> Literal["filter", "priority"]:
+    """根据文本内容识别前置检查类型（从配置加载关键词）。
+
+    返回值：filter（过滤型）或 priority（调序型）
+    """
     type_kw = get_prerequisite_type_keywords()
     for kw in type_kw.get("sequence", []):
         if kw in text:
-            return "sequence"
+            return "priority"
     # 默认过滤型
     return "filter"
 
@@ -718,7 +721,8 @@ def _validate_leaves(
     """递归校验叶节点：必须同时具有 diagnosis 和 solution。"""
     location = " > ".join(path)
 
-    if node.is_leaf:
+    # 叶节点判断：无子节点
+    if not node.children:
         if node.diagnosis is None:
             issues.append(
                 ValidationIssue(
@@ -756,7 +760,8 @@ def _validate_prerequisite_count(
     - 若前置检查包含二元结果关键词（是/否、有/无 等），期望子节点 = 2
     - 期望数与实际不符时，按配置级别报告
     """
-    if node.is_routing and node.prerequisite_items:
+    # 路由节点判断：有子节点且有前置检查
+    if node.children and node.prerequisite_items:
         binary_patterns = get_binary_outcome_patterns()
         binary_count = 0
         for item in node.prerequisite_items:
@@ -785,7 +790,7 @@ def _validate_prerequisite_count(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 内部：分配 node_id
+# 内部：分配节点 id
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -855,17 +860,14 @@ def parse_sop_markdown(content_md: str) -> SOPValidationResult:
     # 前置检查条目数与子节点数匹配校验
     _validate_prerequisite_count(root, [root.title], build_issues)
 
-    # 分配 node_id
+    # 分配节点 id
     _assign_node_ids(root, [1])
 
-    errors = [i for i in build_issues if i.level == "error"]
-    warnings = [i for i in build_issues if i.level == "warning"]
-
+    # 返回校验结果（所有问题都在 issues 中）
     return SOPValidationResult(
-        is_valid=len(errors) == 0,
-        errors=errors,
-        warnings=warnings,
-        tree=root if not errors else None,
+        root_nodes=[root] if not any(i.level == "error" for i in build_issues) else [],
+        issues=build_issues,
+        has_error=any(i.level == "error" for i in build_issues),
     )
 
 

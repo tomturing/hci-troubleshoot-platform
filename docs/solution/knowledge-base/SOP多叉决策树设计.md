@@ -226,14 +226,13 @@ sop_document (1) ──── (1) sop_tree
                                                                │
                                               ┌────────────────▼─────────────────┐
                                               │  SOPValidationResult              │
-                                              │  ├─ is_valid: bool                │
-                                              │  ├─ errors: [ValidationIssue...]  │
-                                              │  ├─ warnings: [ValidationIssue...]│
-                                              │  └─ tree: SOPNode | None          │
+                                              │  ├─ root_nodes: [SOPNode...]      │
+                                              │  ├─ issues: [ValidationIssue...]  │
+                                              │  └─ has_error: bool               │
                                               └────────────────┬─────────────────┘
                                                                │
                             ┌──────────────────────────────────┤
-                            │ errors → 返回 422（不入库）       │ success → 入库
+                            │ has_error → 返回 422（不入库）    │ success → 入库
                             ▼                                  ▼
                       ┌─────────────┐               ┌──────────────────┐
                       │  422 响应    │               │  写 sop_document  │
@@ -289,8 +288,8 @@ node_id 是树路径的编码，在双向同步时保持稳定（只要文档结
 ```python
 content_md = sop_document.content_md
 result = parse_sop_markdown(content_md)   # 返回 SOPValidationResult
-if result.is_valid or result.errors == []:
-    sop_tree.tree_json = result.tree.model_dump()
+if not result.has_error and result.root_nodes:
+    sop_tree.tree_json = result.root_nodes[0].model_dump()
     sop_tree.updated_at = now()
 ```
 
@@ -365,12 +364,10 @@ sop_document.updated_at = now()
 
 ```json
 {
-  "validation": {
-    "is_valid": false,
-    "errors": [
-      {"level": "error", "location": "服务异常 > Redis OOM > 案例1", "message": "缺少解决方案段落"}
-    ]
-  }
+  "validation_issues": [
+    {"level": "error", "location": "服务异常 > Redis OOM > 案例1", "message": "缺少解决方案段落", "line_number": 42}
+  ],
+  "has_error": true
 }
 ```
 

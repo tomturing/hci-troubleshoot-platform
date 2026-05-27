@@ -36,6 +36,7 @@ from app.services.sop_parser import extract_sop_variables, merge_variable_schema
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
 
+    from app.schemas.sop_template import SOPNode
     from app.services.embedding import EmbeddingService
 
 logger = get_logger("kb-service-admin")
@@ -787,23 +788,27 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
         if content_md:
             parse_result = parse_sop_markdown(content_md)
-            if parse_result.is_valid and parse_result.tree:
+            if not parse_result.has_error and parse_result.root_nodes:
                 tree_generated = True
-                tree_leaf_count = len(parse_result.tree.collect_leaves())
-                tree_validation_status = "warnings" if parse_result.warnings else "valid"
+                root = parse_result.root_nodes[0]
+                tree_leaf_count = len(_collect_leaves(root))
+                # 判断是否有 warning
+                has_warnings = any(i.level == "warning" for i in parse_result.issues)
+                tree_validation_status = "warnings" if has_warnings else "valid"
                 logger.info(
                     event="sop_tree_parsed",
                     document_id=document_id,
                     leaf_count=tree_leaf_count,
-                    warning_count=len(parse_result.warnings),
+                    warning_count=len([i for i in parse_result.issues if i.level == "warning"]),
                 )
             else:
                 tree_validation_status = "error"
+                error_issues = [i for i in parse_result.issues if i.level == "error"]
                 logger.warning(
                     event="sop_tree_parse_failed",
                     document_id=document_id,
-                    error_count=len(parse_result.errors),
-                    errors=[e.message for e in parse_result.errors[:3]],
+                    error_count=len(error_issues),
+                    errors=[e.message for e in error_issues[:3]],
                 )
         else:
             parse_result = None
@@ -822,7 +827,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
         if content_md:
             # 提取变量（传入解析后的决策树，扫描节点中的变量占位符）
-            tree_for_var = parse_result.tree if (parse_result and parse_result.is_valid) else None
+            tree_for_var = parse_result.root_nodes[0] if (parse_result and not parse_result.has_error and parse_result.root_nodes) else None
             new_variable_defs, undeclared_errors, orphan_warnings = extract_sop_variables(
                 content_md, tree_for_var
             )
@@ -868,14 +873,16 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                 variable_defs = new_variable_defs
 
             # 合并决策树解析警告（成功时）
-            if parse_result and parse_result.is_valid and parse_result.warnings:
-                for w in parse_result.warnings:
-                    warnings.append(f"[决策树] {w.location}: {w.message}")
+            if parse_result and not parse_result.has_error:
+                for w in parse_result.issues:
+                    if w.level == "warning":
+                        warnings.append(f"[决策树] {w.location}: {w.message}")
 
             # 当决策树解析失败时，将错误信息追加到 warnings
-            if parse_result and not parse_result.is_valid:
-                for e in parse_result.errors:
-                    warnings.append(f"[决策树解析失败] {e.location}: {e.message}")
+            if parse_result and parse_result.has_error:
+                for e in parse_result.issues:
+                    if e.level == "error":
+                        warnings.append(f"[决策树解析失败] {e.location}: {e.message}")
 
             logger.info(
                 event="sop_variables_extracted",
@@ -910,7 +917,8 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
             )
 
             # 写入决策树 + variable_schema（若解析成功）
-            if parse_result and parse_result.is_valid and parse_result.tree:
+            if parse_result and not parse_result.has_error and parse_result.root_nodes:
+                root = parse_result.root_nodes[0]
                 await session.execute(
                     text(
                         """
@@ -928,13 +936,13 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     ),
                     {
                         "document_id": document_id,
-                        "tree_json": json.dumps(parse_result.tree.model_dump(), ensure_ascii=False),
+                        "tree_json": json.dumps(root.model_dump(), ensure_ascii=False),
                         "schema_version": "sop-tree-v1",
                         "leaf_count": tree_leaf_count,
                         "validation_status": tree_validation_status,
-                        "validation_issues": json.dumps([w.model_dump() for w in parse_result.warnings], ensure_ascii=False)
-                        if parse_result.warnings
-                        else None,
+                        "validation_issues": json.dumps(
+                            [i.model_dump() for i in parse_result.issues], ensure_ascii=False
+                        ),
                         "generator_version": "sop-parser-v1",
                         "variable_schema": json.dumps(variable_defs, ensure_ascii=False) if variable_defs else None,
                         "updated_at": now,
@@ -971,10 +979,10 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         variable_count=len(variable_defs),
     )
 
-    # 构建 validation_issues：合并 parse_result 中的 errors + warnings（含 line_number）
+    # 构建 validation_issues：合并 parse_result 中的所有 issues（含 line_number）
     validation_issues: list[dict] = []
     if parse_result:
-        for issue in parse_result.errors + parse_result.warnings:
+        for issue in parse_result.issues:
             validation_issues.append(issue.model_dump())
 
     return SopApproveResponse(
@@ -1623,6 +1631,26 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
 # ─────────────────────────────────────────────────────────────────────────────
 # SOP 文档上传（docx 文件直接导入）
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _collect_leaves(node: SOPNode) -> list[SOPNode]:
+    """递归收集决策树的所有叶节点（children 为空的节点）。
+
+    Args:
+        node: SOPNode 根节点或子节点
+
+    Returns:
+        叶节点列表（按遍历顺序）
+    """
+    leaves: list[SOPNode] = []
+    if not node.children:
+        # 叶节点：无子节点
+        leaves.append(node)
+    else:
+        # 中间节点：递归遍历子节点
+        for child in node.children:
+            leaves.extend(_collect_leaves(child))
+    return leaves
 
 
 def _parse_docx_bytes(content: bytes) -> tuple[str, str, list[tuple[str, str]]]:
