@@ -326,6 +326,7 @@ def _build_diagnosis_detail(
     if not content:
         issues.append(
             ValidationIssue(
+                code="diagnosis_empty_content",
                 level=get_validation_level("diagnosis_empty_content"),
                 location=location,
                 line_number=line_number,
@@ -345,6 +346,7 @@ def _build_diagnosis_detail(
     if not acli_methods:
         issues.append(
             ValidationIssue(
+                code="diagnosis_missing_acli_methods",
                 level=get_validation_level("diagnosis_missing_acli_methods"),
                 location=location,
                 line_number=line_number,
@@ -357,6 +359,7 @@ def _build_diagnosis_detail(
     if not page_methods:
         issues.append(
             ValidationIssue(
+                code="diagnosis_missing_page_methods",
                 level=get_validation_level("diagnosis_missing_page_methods"),
                 location=location,
                 line_number=line_number,
@@ -365,13 +368,8 @@ def _build_diagnosis_detail(
         )
 
     return DiagnosisDetail(
-        prerequisites=list_r.get("prerequisites", []),
         page_methods=page_methods,
         acli_methods=acli_methods,
-        description=text_r.get("description"),
-        root_cause=text_r.get("root_cause"),
-        notes=text_r.get("notes"),
-        source_heading=source_heading,
     )
 
 
@@ -391,6 +389,7 @@ def _build_solution_detail(
     if not content:
         issues.append(
             ValidationIssue(
+                code="solution_empty_content",
                 level=get_validation_level("solution_empty_content"),
                 location=location,
                 line_number=line_number,
@@ -407,6 +406,7 @@ def _build_solution_detail(
     if not quick_recovery and not thorough_fix:
         issues.append(
             ValidationIssue(
+                code="solution_missing_valid_content",
                 level=get_validation_level("solution_missing_valid_content"),
                 location=location,
                 line_number=line_number,
@@ -418,6 +418,7 @@ def _build_solution_detail(
     if quick_recovery and not thorough_fix:
         issues.append(
             ValidationIssue(
+                code="solution_missing_thorough_fix",
                 level=get_validation_level("solution_missing_thorough_fix"),
                 location=location,
                 line_number=line_number,
@@ -428,6 +429,7 @@ def _build_solution_detail(
     elif thorough_fix and not quick_recovery:
         issues.append(
             ValidationIssue(
+                code="solution_missing_quick_recovery",
                 level=get_validation_level("solution_missing_quick_recovery"),
                 location=location,
                 line_number=line_number,
@@ -439,7 +441,6 @@ def _build_solution_detail(
     return SolutionDetail(
         quick_recovery=quick_recovery,
         thorough_fix=thorough_fix,
-        source_heading=source_heading,
     )
 
 
@@ -508,6 +509,7 @@ def _parse_variable_table(
     if not variables:
         issues.append(
             ValidationIssue(
+                code="variable_table_empty",
                 level="warning",
                 location=location,
                 line_number=line_number,
@@ -571,6 +573,7 @@ def _parse_prerequisites_content(
     if not items:
         issues.append(
             ValidationIssue(
+                code="prerequisites_empty",
                 level="warning",
                 location=location,
                 line_number=line_number,
@@ -615,6 +618,7 @@ def _build_tree(
                 else:
                     issues.append(
                         ValidationIssue(
+                            code="multi_root",
                             level=get_validation_level("multi_root"),
                             location=section.text,
                             line_number=section.line_number,
@@ -634,6 +638,7 @@ def _build_tree(
             if not stack:
                 issues.append(
                     ValidationIssue(
+                        code="orphan_ds_section",
                         level=get_validation_level("orphan_ds_section"),
                         location=section.text,
                         line_number=section.line_number,
@@ -650,6 +655,7 @@ def _build_tree(
                 if section.text != std:
                     issues.append(
                         ValidationIssue(
+                            code="non_standard_diagnosis_heading",
                             level=get_validation_level("non_standard_diagnosis_heading"),
                             location=location,
                             line_number=section.line_number,
@@ -665,6 +671,7 @@ def _build_tree(
                 if section.text != std:
                     issues.append(
                         ValidationIssue(
+                            code="non_standard_solution_heading",
                             level=get_validation_level("non_standard_solution_heading"),
                             location=location,
                             line_number=section.line_number,
@@ -680,6 +687,7 @@ def _build_tree(
                 if section.text != std:
                     issues.append(
                         ValidationIssue(
+                            code="non_standard_variables_heading",
                             level=get_validation_level("non_standard_variables_heading"),
                             location=location,
                             line_number=section.line_number,
@@ -695,6 +703,7 @@ def _build_tree(
                 if section.text != std:
                     issues.append(
                         ValidationIssue(
+                            code="non_standard_prerequisites_heading",
                             level=get_validation_level("non_standard_prerequisites_heading"),
                             location=location,
                             line_number=section.line_number,
@@ -726,6 +735,7 @@ def _validate_leaves(
         if node.diagnosis is None:
             issues.append(
                 ValidationIssue(
+                    code="leaf_missing_diagnosis",
                     level=get_validation_level("leaf_missing_diagnosis"),
                     location=location,
                     message="叶节点缺少判断方法段落（标准话术：判断方法）",
@@ -734,6 +744,7 @@ def _validate_leaves(
         if node.solution is None:
             issues.append(
                 ValidationIssue(
+                    code="leaf_missing_solution",
                     level=get_validation_level("leaf_missing_solution"),
                     location=location,
                     message="叶节点缺少解决方案段落（标准话术：解决方案）",
@@ -776,6 +787,7 @@ def _validate_prerequisite_count(
             if actual != expected:
                 issues.append(
                     ValidationIssue(
+                        code="prerequisite_count_mismatch",
                         level=get_validation_level("prerequisite_count_mismatch"),
                         location=" > ".join(path),
                         message=(
@@ -818,40 +830,48 @@ def parse_sop_markdown(content_md: str) -> SOPValidationResult:
     """
     if not content_md or not content_md.strip():
         return SOPValidationResult(
-            is_valid=False,
-            errors=[
+            root_nodes=[],
+            issues=[
                 ValidationIssue(
-                    level="error", location="文档", message="文档内容为空，无法解析"
+                    code="empty_document",
+                    level="error",
+                    location="文档",
+                    message="文档内容为空，无法解析",
                 )
             ],
+            has_error=True,
         )
 
     sections = _parse_into_sections(content_md)
 
     if not sections:
         return SOPValidationResult(
-            is_valid=False,
-            errors=[
+            root_nodes=[],
+            issues=[
                 ValidationIssue(
+                    code="no_headings",
                     level="error",
                     location="文档",
                     message="文档无法识别任何标题，请确认 Markdown 格式正确（使用 # 标题格式）",
                 )
             ],
+            has_error=True,
         )
 
     root, build_issues = _build_tree(sections)
 
     if root is None:
         return SOPValidationResult(
-            is_valid=False,
-            errors=[
+            root_nodes=[],
+            issues=[
                 ValidationIssue(
+                    code="no_root_node",
                     level="error",
                     location="文档",
                     message="无法识别根节点，请确认文档包含至少一个 H1 标题（# 标题）",
                 )
             ],
+            has_error=True,
         )
 
     # 叶节点完整性校验
