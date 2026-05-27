@@ -561,7 +561,7 @@ def _parse_prerequisites_content(
             items.append(
                 PrerequisiteItem(
                     type=_detect_prerequisite_type(condition_text),
-                    condition=condition_text,
+                    description=condition_text,
                 )
             )
 
@@ -761,7 +761,7 @@ def _validate_prerequisite_count(
         binary_count = 0
         for item in node.prerequisite_items:
             for pattern in binary_patterns:
-                if pattern in item.condition:
+                if pattern in item.description:
                     binary_count += 1
                     break
 
@@ -1000,7 +1000,7 @@ def _extract_vars_from_tree(node: SOPNode) -> set[str]:
     vars_set: set[str] = set()
     vars_set |= _extract_vars_from_text(node.title)
     for item in node.prerequisite_items:
-        vars_set |= _extract_vars_from_text(item.condition)
+        vars_set |= _extract_vars_from_text(item.description)
     if node.diagnosis:
         vars_set |= _extract_vars_from_text(node.diagnosis.description or "")
         vars_set |= _extract_vars_from_text(node.diagnosis.root_cause or "")
