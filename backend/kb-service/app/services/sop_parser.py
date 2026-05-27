@@ -604,7 +604,7 @@ def _build_tree(
             while stack and stack[-1][0] >= section.level:
                 stack.pop()
 
-            node = SOPNode(name=section.text, level=section.level)
+            node = SOPNode(id="_", title=section.text, level=section.level, line_number=section.line_number)
 
             if not stack:
                 if root is None:
@@ -640,7 +640,7 @@ def _build_tree(
                 continue
 
             owner = stack[-1][1]
-            location = " > ".join(n.name for _, n in stack)
+            location = " > ".join(n.title for _, n in stack)
 
             if section.section_type == "diagnosis":
                 std = get_standard_heading("diagnosis")
@@ -737,7 +737,7 @@ def _validate_leaves(
             )
     else:
         for child in node.children:
-            _validate_leaves(child, path + [child.name], issues)
+            _validate_leaves(child, path + [child.title], issues)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -781,7 +781,7 @@ def _validate_prerequisite_count(
                 )
 
     for child in node.children:
-        _validate_prerequisite_count(child, path + [child.name], issues)
+        _validate_prerequisite_count(child, path + [child.title], issues)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -790,8 +790,8 @@ def _validate_prerequisite_count(
 
 
 def _assign_node_ids(node: SOPNode, path: list[int]) -> None:
-    """递归分配 node_id，格式 n-1-2-3（根节点为 n-1）。"""
-    node.node_id = "n-" + "-".join(str(i) for i in path)
+    """递归分配 id，格式 n-1-2-3（根节点为 n-1）。"""
+    node.id = "n-" + "-".join(str(i) for i in path)
     for idx, child in enumerate(node.children, start=1):
         _assign_node_ids(child, path + [idx])
 
@@ -850,10 +850,10 @@ def parse_sop_markdown(content_md: str) -> SOPValidationResult:
         )
 
     # 叶节点完整性校验
-    _validate_leaves(root, [root.name], build_issues)
+    _validate_leaves(root, [root.title], build_issues)
 
     # 前置检查条目数与子节点数匹配校验
-    _validate_prerequisite_count(root, [root.name], build_issues)
+    _validate_prerequisite_count(root, [root.title], build_issues)
 
     # 分配 node_id
     _assign_node_ids(root, [1])
@@ -998,7 +998,7 @@ def _extract_vars_from_text(text: str) -> set[str]:
 def _extract_vars_from_tree(node: SOPNode) -> set[str]:
     """从决策树节点中递归提取变量名。"""
     vars_set: set[str] = set()
-    vars_set |= _extract_vars_from_text(node.name)
+    vars_set |= _extract_vars_from_text(node.title)
     for item in node.prerequisite_items:
         vars_set |= _extract_vars_from_text(item.condition)
     if node.diagnosis:
