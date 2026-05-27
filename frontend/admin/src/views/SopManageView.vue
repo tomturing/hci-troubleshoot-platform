@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -37,6 +37,12 @@ interface ValidationIssue {
   message: string
 }
 
+// 分类基线选项
+interface CategoryOption {
+  code: string
+  name: string
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 响应式状态
 // ──────────────────────────────────────────────────────────────────────────────
@@ -65,6 +71,23 @@ const editContentMd = ref('')
 const editOriginalContentMd = ref('')  // 用于检测正文是否变更
 const editLoadingContent = ref(false)
 const editLoading = ref(false)
+
+// 分类基线（用于 select）
+const categoriesLoading = ref(false)
+const categoryOptions = ref<CategoryOption[]>([])
+
+// 行号编辑器
+const editTextareaRef = ref<HTMLTextAreaElement | null>(null)
+const lineNumbersRef = ref<HTMLDivElement | null>(null)
+const editLineCount = computed(() => {
+  const lines = editContentMd.value.split('\n').length
+  return Array.from({ length: Math.max(lines, 1) }, (_, i) => i + 1)
+})
+function syncLineNumbersScroll() {
+  if (lineNumbersRef.value && editTextareaRef.value) {
+    lineNumbersRef.value.scrollTop = editTextareaRef.value.scrollTop
+  }
+}
 
 // 校验问题弹窗
 const validationDialogVisible = ref(false)
@@ -359,6 +382,21 @@ async function submitImport() {
   }
 }
 
+// ─── 分类基线 ────────────────────────────────────────────────────────────────
+async function fetchCategories() {
+  categoriesLoading.value = true
+  try {
+    const resp = await fetch('/api/kb/categories?grouped=true', { headers: authHeader })
+    if (!resp.ok) return
+    // API 返回 { "domains": { domain: [category, ...] }, "total_domains": N }
+    const data: { domains?: Record<string, CategoryOption[]> } = await resp.json()
+    const domains = data.domains ?? {}
+    categoryOptions.value = Object.values(domains).flat().sort((a, b) => a.code.localeCompare(b.code))
+  } catch { /* 分类加载失败时仍允许手动输入 */ } finally {
+    categoriesLoading.value = false
+  }
+}
+
 // ─── 通用辅助 ────────────────────────────────────────────────────────────────
 function handlePageChange(newPage: number) {
   page.value = newPage
@@ -399,7 +437,10 @@ function treeValidationLabel(s: string | null, hasTree: boolean): string {
   return '无决策树'
 }
 
-onMounted(() => fetchDocuments())
+onMounted(() => {
+  fetchDocuments()
+  fetchCategories()
+})
 </script>
 
 <template>
@@ -530,8 +571,26 @@ onMounted(() => fetchDocuments())
           <el-form-item label="标题" required>
             <el-input v-model="editTitle" placeholder="SOP 文档标题" />
           </el-form-item>
-          <el-form-item label="分类 ID">
-            <el-input v-model="editCategoryId" placeholder="如 虚拟机-003（留空则清除分类）" />
+          <el-form-item label="分类">
+            <el-select
+              v-model="editCategoryId"
+              filterable
+              clearable
+              allow-create
+              placeholder="选择或搜索分类（如 虚拟机-003）"
+              style="width: 100%"
+              :loading="categoriesLoading"
+            >
+              <el-option
+                v-for="cat in categoryOptions"
+                :key="cat.code"
+                :value="cat.code"
+                :label="`${cat.code}  ${cat.name}`"
+              >
+                <span style="font-family:monospace;color:#606266;font-size:12px">{{ cat.code }}</span>
+                <span style="margin-left:8px;color:#909399;font-size:12px">{{ cat.name }}</span>
+              </el-option>
+            </el-select>
           </el-form-item>
           <el-form-item label="正文内容">
             <el-alert
@@ -540,13 +599,18 @@ onMounted(() => fetchDocuments())
               :closable="false"
               style="margin-bottom:8px;font-size:12px"
             >修改正文后文档将变为「草稿」，需重新发布才可被 AI 搜索引用。</el-alert>
-            <el-input
-              v-model="editContentMd"
-              type="textarea"
-              :rows="22"
-              placeholder="Markdown 格式正文..."
-              style="font-family: 'SFMono-Regular', Consolas, monospace; font-size: 13px; line-height: 1.6"
-            />
+            <div class="code-editor-wrapper">
+              <div ref="lineNumbersRef" class="line-numbers">
+                <div v-for="n in editLineCount" :key="n" class="line-num">{{ n }}</div>
+              </div>
+              <textarea
+                ref="editTextareaRef"
+                v-model="editContentMd"
+                class="code-textarea"
+                placeholder="Markdown 格式正文..."
+                @scroll="syncLineNumbersScroll"
+              />
+            </div>
           </el-form-item>
         </el-form>
       </div>
@@ -595,8 +659,26 @@ onMounted(() => fetchDocuments())
           <input ref="importFileInput" type="file" accept=".docx,.md" class="file-input" @change="handleFileChange" />
           <div v-if="importFile" class="file-name-hint">已选：{{ importFile.name }}（{{ (importFile.size / 1024).toFixed(1) }} KB）</div>
         </el-form-item>
-        <el-form-item label="分类 ID">
-          <el-input v-model="importCategoryId" placeholder="如 虚拟机-003（可选，后续可编辑）" />
+        <el-form-item label="分类">
+          <el-select
+            v-model="importCategoryId"
+            filterable
+            clearable
+            allow-create
+            placeholder="选择或搜索分类（可选，后续可编辑）"
+            style="width: 100%"
+            :loading="categoriesLoading"
+          >
+            <el-option
+              v-for="cat in categoryOptions"
+              :key="cat.code"
+              :value="cat.code"
+              :label="`${cat.code}  ${cat.name}`"
+            >
+              <span style="font-family:monospace;color:#606266;font-size:12px">{{ cat.code }}</span>
+              <span style="margin-left:8px;color:#909399;font-size:12px">{{ cat.name }}</span>
+            </el-option>
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -626,4 +708,45 @@ onMounted(() => fetchDocuments())
 .pagination-wrapper { display: flex; justify-content: flex-end; margin-top: 16px; }
 .file-input { display: block; width: 100%; font-size: 14px; color: #606266; cursor: pointer; }
 .file-name-hint { margin-top: 6px; font-size: 12px; color: #409eff; }
+
+/* 行号编辑器 */
+.code-editor-wrapper {
+  display: flex;
+  width: 100%;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  overflow: hidden;
+  transition: border-color .2s;
+}
+.code-editor-wrapper:focus-within { border-color: #409eff; }
+.line-numbers {
+  background: #f5f7fa;
+  border-right: 1px solid #e4e7ed;
+  padding: 8px 6px 8px 4px;
+  text-align: right;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #909399;
+  user-select: none;
+  overflow: hidden;
+  min-width: 42px;
+  flex-shrink: 0;
+}
+.line-num { height: calc(13px * 1.6); }
+.code-textarea {
+  flex: 1;
+  border: none;
+  outline: none;
+  padding: 8px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: none;
+  min-height: 440px;
+  color: #303133;
+  background: #fff;
+  overflow-y: auto;
+  tab-size: 2;
+}
 </style>

@@ -953,8 +953,8 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         raise
     except Exception as exc:
         logger.exception(
-            "发布 SOP 文档时发生未预期异常",
             event="sop_approve_unexpected_error",
+            message="发布 SOP 文档时发生未预期异常",
             document_id=document_id,
             error_type=type(exc).__name__,
         )
