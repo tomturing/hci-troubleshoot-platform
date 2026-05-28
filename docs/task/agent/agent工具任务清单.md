@@ -893,8 +893,8 @@ class CompositeToolExecutor:
 ```
 
 **验收标准**：
-- [ ] `category="acli"` 的工具调用能到达 `BridgeRelayExecutor.execute()`
-- [ ] `BridgeRelayExecutor` 实例化参数（redis、URL、token）来自 settings/env
+- [x] `category="acli"` 的工具调用能到达 `BridgeRelayExecutor.execute()`
+- [x] `BridgeRelayExecutor` 实例化参数（redis、URL、token）来自 settings/env
 
 ---
 
