@@ -1,6 +1,10 @@
 """
 acli 命令适配器——通过 SSH 在 HCI 节点执行 acli 命令
 
+⚠️ 已废弃，请使用 BridgeRelayExecutor 替代
+    废弃原因：agent-service 部署在 K8s Pod 内，无法直接访问 HCI 节点私网 IP
+    新路径：app/adapters/agents/htp/bridge_relay.py (BridgeRelayExecutor)
+
 安全设计：
   - 所有 ID 类参数通过正则白名单校验（防命令注入）
   - 字符串参数通过 shlex.quote() 转义
@@ -20,6 +24,7 @@ import logging
 import os
 import re
 import shlex
+import warnings
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -162,6 +167,11 @@ class AcliClient:
 
     async def _run_ssh(self, host: str, command: str) -> dict:
         """通过 asyncssh 在目标节点执行命令，返回结构化结果"""
+        warnings.warn(
+            "AcliClient._run_ssh 已废弃，agent-service 无法访问 HCI 私网，请改用 BridgeRelayExecutor",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         try:
             import asyncssh  # type: ignore[import-untyped]
         except ImportError:
