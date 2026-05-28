@@ -321,7 +321,10 @@ async function submitEdit() {
       headers: { 'Content-Type': 'application/json', ...authHeader },
       body: JSON.stringify(payload),
     })
-    if (!resp.ok) throw new Error(await parseHttpError(resp))
+    if (!resp.ok) {
+      const { msg } = await parseHttpError(resp)
+      throw new Error(msg)
+    }
     const result = await resp.json()
     const successMsg = result.message
       ? `保存成功：${result.message}`
@@ -387,7 +390,10 @@ async function submitImport() {
       headers: { Authorization: `Bearer ${internalToken}` },
       body: formData,
     })
-    if (!resp.ok) throw new Error(await parseHttpError(resp))
+    if (!resp.ok) {
+      const { msg } = await parseHttpError(resp)
+      throw new Error(msg)
+    }
     const result = await resp.json()
     if (result.duplicate) {
       ElMessage.warning(result.message || '文件已存在，跳过导入')
