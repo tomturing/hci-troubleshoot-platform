@@ -146,7 +146,8 @@ async def lifespan(app: FastAPI):
     # 无论是否启用 REACT，都需要加载工具注册表（InvestigationAgent 等也依赖）
     from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY, load_tool_registry
 
-    async with db_manager.get_session() as db_session:
+    # 使用 session factory 创建 session（get_session 是 async generator，不能用 async with）
+    async with db_manager.async_session_factory() as db_session:
         loaded_registry = await load_tool_registry(db_session)
         TOOL_REGISTRY.update(loaded_registry)
 

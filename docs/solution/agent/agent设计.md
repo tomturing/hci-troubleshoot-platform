@@ -1381,6 +1381,7 @@ Agent 在 `sop_execution.context_variables` 中已有当前上下文所有变量
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-05-29 | v5.7 | 修复 `main.py` lifespan 中 `db_manager.get_session()` 错误用法：AsyncGenerator 不支持 async with，改用 `async_session_factory()` |
 | 2026-05-29 | v5.6 | 修复 `react_engine.py` 导入路径：`VariableRequestResult` 从 `sop_tools.py` 迁移至 `memory/variable_pool.py`（PR #341），修正 import 语句解决 ImportError
 | 2026-05-28 | v5.4 | 新增 `app/tools/shell/`（classifier.py + executor.py），引入 `bash_exec`（通用 Linux Shell）和 `acli_exec`（HCI 专有 CLI）工具；废弃 `AcliClient._run_ssh()` 直连路径（HCI 在客户私网，云端不可达），确立 `BridgeRelayExecutor`（terminal_bridge 中转）为唯一可行执行路径；新增架构设计文档 `docs/solution/agent/agent工具设计.md` |
 | 2026-05-29 | v5.5 | 工具架构 v2.0：`app/tools/shell/` → `app/tools/acli/`（bash_exec 归入 acli category）；移除旧 11 个结构化 acli 工具，由 `acli_exec` 统一替代；新增 4 个插件诊断工具（acli_plugin_vm_start/vm_suspend/netdoctor/asys）；`tool_definition` 数据库表确立为工具定义 SSOT，`tool_registry.py` 改为启动时 DB 加载器；详见 `agent工具设计.md` v2.0 |
