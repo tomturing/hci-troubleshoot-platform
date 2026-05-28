@@ -155,6 +155,17 @@ export const useChatStore = defineStore('chat', () => {
     timeout_seconds: number
   } | null>(null)
 
+  // T-TOOL-18：待确认的命令执行请求（agent_exec_command SSE 事件，risk=2）
+  const pendingExecConfirm = ref<{
+    execId: string
+    command: string
+    reason: string
+    riskLevel: 1 | 2 | 3
+    nodeIp: string
+    caseId: string
+    timestamp: number  // 创建时间戳（用于倒计时）
+  } | null>(null)
+
   // T-E7: ops-agent 交互请求（interactive_request SSE 事件）
   const pendingInteractive = ref<{
     requestId: string
@@ -651,68 +662,90 @@ export const useChatStore = defineStore('chat', () => {
                 console.warn('[interactive_request] 解析失败:', e)
               }
             } else if (pendingEventType === 'agent_exec_command') {
-              // T-TOOL-04: Agent 命令执行请求（SSE → WebSocket → POST 结果）
+              // T-TOOL-04 + T-TOOL-18: Agent 命令执行请求（SSE → WebSocket → POST 结果）
               try {
                 const event = JSON.parse(data)
-                const { execId, command, riskLevel, caseId, conversationId: convId } = event
+                const { execId, command, reason, riskLevel, nodeIp, caseId, conversationId: convId } = event
 
                 devLog('agent_exec_command', '收到执行请求', { execId, riskLevel, commandPreview: command.substring(0, 50) })
-
-                // 初始化执行状态
-                let execHandled = false
 
                 // risk=3：直接拒绝（高危操作）
                 if (riskLevel >= 3) {
                   devLog('agent_exec_command', '高危操作，直接拒绝', { execId })
+                  // 展示拒绝消息气泡
+                  messages.value.push({
+                    id: `exec-reject-${Date.now()}`,
+                    role: 'system',
+                    content: `⚠️ 高危命令已自动拒绝：\n\`\`\`\n${command}\n\`\`\`\n`,
+                    timestamp: new Date(),
+                    metadata: { kind: 'exec_blocked', execId, command, reason },
+                  })
                   postExecResult(convId, execId, '高危操作已自动阻止', -1, 'blocked').catch((e) => {
                     console.warn('[agent_exec_command] postExecResult 失败:', e)
                   })
-                  execHandled = true
+                  continue
                 }
 
-                // risk=2：展示确认对话框（占位实现用 window.confirm）
-                // risk=1：直接执行（安全操作）
-                if (!execHandled && riskLevel === 2) {
-                  const shouldExec = window.confirm(`确认执行命令？\n\n${command}\n\n（风险等级：${riskLevel}）`)
-                  if (!shouldExec) {
-                    devLog('agent_exec_command', '用户拒绝执行', { execId })
-                    postExecResult(convId, execId, '用户拒绝执行', -1, 'user_rejected').catch((e) => {
-                      console.warn('[agent_exec_command] postExecResult 失败:', e)
-                    })
-                    execHandled = true
-                  }
-                }
-
-                // 执行命令（risk=1 或 risk=2 用户确认后）
-                if (!execHandled) {
+                // risk=1：低风险命令，直接执行（安全操作）
+                if (riskLevel === 1) {
+                  devLog('agent_exec_command', 'risk=1 命令自动执行', { execId, command })
                   // 检查 SSH 连接状态
                   if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
                     devLog('agent_exec_command', 'SSH 未连接，无法执行', { execId })
                     postExecResult(convId, execId, 'SSH 未连接', -1, 'ssh_not_connected').catch((e) => {
                       console.warn('[agent_exec_command] postExecResult 失败:', e)
                     })
-                    execHandled = true
-                  } else {
-                    // 通过 terminal_bridge WebSocket 发送命令
-                    const wsMsg = buildAgentExecMessage(caseId, execId, command)
-                    sshWebSocket.value.send(wsMsg)
-                    devLog('agent_exec_command', '命令已发送到 Bridge', { execId })
-
-                    // 监听 exec_result（带超时 35s）- 异步执行，不阻塞 SSE 流
-                    waitForExecResult(execId, 35_000)
-                      .then((result) => {
-                        devLog('agent_exec_command', '执行完成', { execId, exitCode: result.exitCode })
-                        return postExecResult(convId, execId, result.output, result.exitCode)
-                      })
-                      .catch((timeoutErr) => {
-                        devLog('agent_exec_command', '执行超时', { execId })
-                        return postExecResult(convId, execId, 'timeout', -1, 'timeout')
-                      })
-                      .catch((e) => {
-                        console.warn('[agent_exec_command] 结果处理失败:', e)
-                      })
+                    continue
                   }
+                  // 通过 terminal_bridge WebSocket 发送命令
+                  const wsMsg = buildAgentExecMessage(caseId, execId, command)
+                  sshWebSocket.value.send(wsMsg)
+                  devLog('agent_exec_command', '命令已发送到 Bridge', { execId })
+                  // 监听 exec_result（带超时 35s）
+                  waitForExecResult(execId, 35_000)
+                    .then((result) => {
+                      devLog('agent_exec_command', '执行完成', { execId, exitCode: result.exitCode })
+                      return postExecResult(convId, execId, result.output, result.exitCode)
+                    })
+                    .catch(() => {
+                      devLog('agent_exec_command', '执行超时', { execId })
+                      return postExecResult(convId, execId, 'timeout', -1, 'timeout')
+                    })
+                  continue
                 }
+
+                // risk=2：中风险命令，展示确认卡片（气泡形式）
+                const execConfirmMsgId = `exec-confirm-${execId ?? Date.now()}`
+                messages.value.push({
+                  id: execConfirmMsgId,
+                  role: 'assistant',
+                  content: '',
+                  timestamp: new Date(),
+                  metadata: {
+                    kind: 'exec_confirm',
+                    event: {
+                      execId,
+                      command,
+                      reason,
+                      riskLevel,
+                      nodeIp,
+                      caseId,
+                      convId,
+                      timestamp: Date.now(),
+                    },
+                  },
+                })
+                pendingExecConfirm.value = {
+                  execId,
+                  command,
+                  reason,
+                  riskLevel,
+                  nodeIp,
+                  caseId,
+                  convId,
+                  timestamp: Date.now(),
+                }
+                devLog('agent_exec_command', 'risk=2 等待用户确认', { execId, command, nodeIp })
               } catch (e) {
                 console.warn('[agent_exec_command] 处理失败:', e)
               }
@@ -2486,6 +2519,9 @@ export const useChatStore = defineStore('chat', () => {
     // T-E7: ops-agent 交互请求卡片
     pendingInteractive,
     clearInteractiveRequest: () => { pendingInteractive.value = null },
+    // T-TOOL-18: 命令执行确认卡片
+    pendingExecConfirm,
+    clearExecConfirm: () => { pendingExecConfirm.value = null },
     resumeOpsAgentStream,
     initialize,
     sendMessage,

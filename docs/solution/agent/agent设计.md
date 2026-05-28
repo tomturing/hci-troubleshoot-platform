@@ -412,9 +412,24 @@ Agent 通过 `AsyncGenerator[AgentEvent, None]` 流式返回事件；conversatio
 
 ```
 backend/agent-service/app/
+├── memory/                         ← Agent 工作记忆（MemGPT 外化工作记忆）
+│   ├── __init__.py
+│   └── variable_pool.py            ← 变量池 JIT 获取引擎（T-AGT-25）
+│                                      VariableRequestResult + sop_request_variable
+├── tools/                          ← Agent 公共工具实现（LLM tool_call 调用的目标）
+│   ├── __init__.py
+│   ├── base.py                     ← ToolDefinition 基础模型（供各 agent 工具注册表复用）
+│   ├── shell/                      ← Shell 执行工具（bash_exec / acli_exec）
+│   │   ├── __init__.py             ← 导出 bash_exec, acli_exec, ShellResult
+│   │   ├── classifier.py           ← RiskClassifier（bash + acli 双模式风险分类）
+│   │   └── executor.py             ← BridgeRelayExecutor（bridge 中转唯一执行后端）
+│   └── sop/
+│       ├── __init__.py
+│       ├── client.py               ← ConversationSopClient（SOP 执行状态 HTTP 客户端）
+│       └── nav.py                  ← get_sop_node + sop_advance 工具实现
 ├── domain/
-│   ├── agent_port.py            ← 对外 Protocol + AgentEvent 联合类型
-│   └── base_agent.py            ← 对内 ABC（think / act / run）
+│   ├── agent_port.py               ← 对外 Protocol + AgentEvent 联合类型
+│   └── base_agent.py               ← 对内 ABC（think / act / run）
 ├── adapters/
 │   ├── agents/
 │   │   ├── htp/
@@ -422,9 +437,9 @@ backend/agent-service/app/
 │   │   │   ├── investigation_agent.py ← ✅ S1-S4 三轨路由（替换 diagnostic_agent.py S1-S4）
 │   │   │   ├── remediation_agent.py   ← 🔄 S5 修复执行（重构进行中）
 │   │   │   ├── react_engine.py        ← ✅ 共享流式执行引擎（Investigation + Remediation 共用）
-│   │   │   ├── tool_registry.py       ← 工具注册表（含 SOP 工具扩展中）
+│   │   │   ├── tool_registry.py       ← 工具注册表（ToolDefinition 从 tools.base 导入）
 │   │   │   ├── confirm_service.py     ← ✅ 人工确认服务（Redis BRPOP 确认回路）
-│   │   │   └── sop_tools.py           ← 🔧 SOP 导航工具（get_sop_node、sop_advance）
+│   │   │   └── sop_tools.py           ← 🔧 SopToolExecutor（执行协调层，分发到 tools.sop + memory）
 │   │   ├── ops/
 │   │   │   └── ops_agent_adapter.py   ← ACP 协议客户端
 │   │   ├── pai/
@@ -432,14 +447,16 @@ backend/agent-service/app/
 │   │   └── agent_router.py            ← 大脑路由器
 │   └── clients/
 │       ├── scp_client.py              ← HCI 平台 REST API 客户端
-│       └── acli_client.py             ← SSH/acli 执行客户端
+│       └── acli_client.py             ← ⚠️ 已废弃直连路径（asyncssh 直连 HCI）
+│                                         新路径：tools/acli/executor.py BridgeRelayExecutor
 └── routes/
     └── agent.py                       ← POST /v1/agent/stream
 ```
 
-> `core/` 和 `services/` 已删除（"不为未来设计"原则，两者原为空目录）。
-
-> **迁移说明**：`intent_agent.py` 和 `diagnostic_agent.py` 已被新文件替换，不再直接引用。AgentRouter 已切换为调用 `TriageAgent` + `InvestigationAgent`。
+> **记忆与工具分层设计**（见 `docs/solution/agent/agent记忆设计.md`）：
+> - `memory/` = 工作记忆层：`variable_pool.py` 实现 SOP 上下文变量的 JIT 获取，以 PostgreSQL `context_variables JSONB` 为外化工作记忆存储后端（MemGPT 模式）。变量赋值策略：`env_injection`（环境注入）/ `user_input`（用户输入）/ `user_confirm`（用户确认）/ `tool_call`（工具调用）/ `llm_inference`（LLM 推断）/ `agent_pass`（Agent 传递）。
+> - `tools/` = 工具实现层：存放 LLM 通过 `tool_call` 调用的工具函数实现，与工具声明（`TOOL_REGISTRY`）分离，实现声明与实现解耦。`ToolDefinition` 从 `tools.base_tool` 统一导入，供 htp/ops/pai 各 agent 的注册表复用。`tools/acli/` 包含 `bash_exec`（通用 Linux Bash，acli 不覆盖时使用）和 `acli_exec`（HCI 专有 CLI，主力工具）两个通用执行工具，统一通过 `BridgeRelayExecutor` 经由 `terminal_bridge.exe` 中转执行（见 `docs/solution/agent/agent工具设计.md`）。`TOOL_REGISTRY` 在 v2.0 改为启动时从 `tool_definition` 数据库表加载（DB 为 SSOT，废弃代码硬编码）。
+> - `adapters/clients/acli_client.py` 的 asyncssh 直连路径已废弃（HCI 在客户私网，云端不可达）。所有 acli/bash 命令执行路径为：`Agent → BridgeRelayExecutor → Redis → Conversation Service SSE → Frontend → terminal_bridge.exe → SSH → HCI`。
 
 ---
 
@@ -1070,13 +1087,13 @@ CREATE INDEX IF NOT EXISTS idx_sop_execution_active
 {
   "vm_name": {
     "value": "prod-vm-001",
-    "source": "tool_result",
+    "source": "tool_call",
     "resolved_at": "2026-05-25T10:30:00Z",
     "resolved_by_tool": "get_vm_list"
   },
   "node_ip": {
     "value": "10.0.1.5",
-    "source": "env_context",
+    "source": "env_injection",
     "resolved_at": "2026-05-25T10:28:00Z",
     "resolved_by_tool": null
   }
@@ -1141,8 +1158,8 @@ SOP 中的命令模板（如 `acli vm start {vm_name}`）含有占位符变量�
   "description": "需要操作的目标虚拟机名称",
   "type": "string",                        // string | ip | integer | enum
   "required": true,
-  "acquisition_strategy": "tool",          // tool | user_input | user_confirm | env_context | sop_default
-  "acquisition_tool": "get_vm_list",       // 从哪个工具获取（strategy=tool 时填写）
+  "acquisition_strategy": "tool_call",     // tool_call | user_input | user_confirm | env_injection | sop_default | llm_inference | agent_pass
+  "acquisition_tool": "get_vm_list",       // 从哪个工具获取（strategy=tool_call 时填写）
   "acquisition_prompt": "请通过 get_vm_list 工具查询并确认目标虚拟机名称",
   "validation_pattern": "^[a-zA-Z0-9_-]+$",
   "default_value": null
@@ -1153,7 +1170,7 @@ SOP 中的命令模板（如 `acli vm start {vm_name}`）含有占位符变量�
   "description": "目标节点的管理 IP 地址",
   "type": "ip",
   "required": true,
-  "acquisition_strategy": "env_context",   // 从会话的环境上下文直接注入（SSH 连接信息）
+  "acquisition_strategy": "env_injection", // 初始化时批量注入（从 SSH 连接信息、会话 metadata 直接取得）
   "acquisition_tool": null,
   "acquisition_prompt": null,
   "validation_pattern": "^\\d{1,3}(\\.\\d{1,3}){3}$",
@@ -1165,7 +1182,7 @@ SOP 中的命令模板（如 `acli vm start {vm_name}`）含有占位符变量�
   "description": "需要重启的系统服务名称",
   "type": "enum",
   "required": true,
-  "acquisition_strategy": "user_input",    // 无法自动获取，需用户指定
+  "acquisition_strategy": "user_input",    // 无法自动获取，需用户直接输入（完全阻塞 JIT）
   "acquisition_tool": null,
   "acquisition_prompt": "请确认需要重启的服务名称（常见值：libvirtd、exporter、ceph-osd）",
   "validation_pattern": null,
@@ -1185,11 +1202,11 @@ approve 流程（扩展后）：
      - 正则扫描全文：/{([a-z][a-z0-9_]*)}/g
      - 扫描 tree_json 中每个节点的 commands 字段
      - 基于变量名启发式推断 acquisition_strategy：
-         *_ip, node_ip → env_context
-         vm_name, vm_id → tool: get_vm_list
-         disk_id → tool: acli_storage_disk_list
-         nic_name → tool: acli_network_nic_list
-         service_name → user_input（无法自动推断）
+         *_ip, node_ip     → env_injection
+         vm_name, vm_id   → tool_call: get_vm_list
+         disk_id          → tool_call: acli_storage_disk_list
+         nic_name         → tool_call: acli_network_nic_list
+         service_name     → user_input（无法自动推断）
   ③ 写入 sop_document.variable_schema（与 tree_json 同一事务）
   ④ 响应体新增字段 variable_count: N
 ```
@@ -1208,8 +1225,8 @@ approve 流程（扩展后）：
 ```
 SOP 命中，conversation 初始化时：
   1. 加载 sop_document.variable_schema（所有变量定义）
-  2. 从 env_context 预填 acquisition_strategy=env_context 的变量
-     （node_ip、cluster_id 从连接信息直接注入）
+  2. 从连接信息预填 acquisition_strategy=env_injection 的变量
+     （node_ip、cluster_id 从 SSH 连接/conversation metadata 直接注入）
   3. 初始化 sop_execution.context_variables（已知变量写入，未知变量留空）
 
 每轮窗口注入时：
@@ -1222,7 +1239,7 @@ SOP 命中，conversation 初始化时：
 
 LLM 调用诊断工具获取变量值后，通过 sop_advance 的 variables_extracted 参数上报：
   7. 服务端按 variable_schema 中的 validation_pattern 校验值格式
-  8. 校验通过 → 写入 context_variables，source=tool_result
+  8. 校验通过 → 写入 context_variables，source=tool_call
   9. 下一轮窗口注入时该变量已被预渲染为具体值
 ```
 
@@ -1285,46 +1302,53 @@ approve 流程（双向校验版）：
 
 **`acquisition_strategy` 字段做全分类，不用 bool 标志位。**
 
-| `acquisition_strategy` | 含义 | Agent 行为 |
-|---|---|---|
-| `tool` | 工具自动调用获取 | 直接调用 `acquisition_tool` 指定的工具 |
-| `env_context` | 从连接上下文注入（节点 IP、SSH 信息等） | 初始化时直接注入，不阻塞 |
-| `user_input` | **无法自动获取，必须用户提供**（如客户的 IP 段、故障描述） | 触发 `sop_request_variable`，阻塞等待 |
-| `user_confirm` | Agent 可推断候选值，**但高危操作需用户确认** | 推断候选值 → 触发确认流程，用户可接受/修改 |
-| `sop_default` | SOP 文档中有硬编码默认值 | 直接使用，不请求用户 |
+| `acquisition_strategy` | 实体·动作 | 触发时机 | Agent 行为 |
+|---|---|---|---|
+| `env_injection` | 环境·注入 | SOP 执行初始化时批量 | 从 SSH 连接信息、conversation metadata 直接取得，无阻塞 |
+| `user_input` | 用户·输入 | JIT，完全阻塞 | **Agent 完全不知道值**，触发 `sop_request_variable`，等待用户手动填写 |
+| `user_confirm` | 用户·确认 | JIT，工具推荐候选后确认 | Agent 推断候选值 → 触发确认卡片，用户可接受/修改 |
+| `tool_call` | 工具·调用 | JIT，自动调用 `acquisition_tool` | 进入需要该变量的节点时自动触发，无需用户介入 |
+| `sop_default` | 文档·默认 | 初始化时 | SOP 文档硬编码默认值，直接使用 |
+| `llm_inference` | 模型·推理 | LLM 主动上报（被动写入） | 经 `sop_advance.variables_extracted` 参数嵌入，不走 JIT |
+| `agent_pass` | Agent·传递 | 父/兄弟 Agent 调用时（被动写入） | agent-to-agent 调用时随上下文传入，不走 JIT |
+
+> **注**：`llm_inference` 和 `agent_pass` 是**被动写入路径**，不走 JIT 主动获取流程。`context_variables` 的 `source` 字段统一记录这七种来源，方便溯源审计。
 
 **`user_input` vs `user_confirm` 的关键区别**：
 - `user_input`：Agent 完全不知道值，只能等用户提供（如：客户的故障 IP 段）
 - `user_confirm`：Agent 从工具输出可以推断候选值（如"只有一台 VM 匹配"），但因操作有破坏性，需人工确认，防止误操作
 
-SOP `## 变量` 章节写法示例（含 user_confirm）：
+SOP `## 变量` 章节写法示例（全类型覆盖）：
 
 ```markdown
 ## 变量
 
-| 变量名       | 类型   | 来源                        | 说明 |
-|-------------|--------|----------------------------|------|
-| vm_name     | string | user_confirm               | 将要操作的 VM，Agent 推断后需用户确认 |
-| node_ip     | ip     | env:ssh_context            | 节点管理 IP，从连接信息注入 |
-| disk_id     | string | tool:acli_storage_disk_list | 需修复的磁盘 ID |
-| service_name| string | user_input                 | 无法自动获取，需用户直接提供 |
+| 变量名        | 类型   | 来源                             | 说明 |
+|--------------|--------|----------------------------------|------|
+| node_ip      | ip     | env_injection                    | 节点管理 IP，初始化时从 SSH 连接信息注入 |
+| vm_name      | string | user_confirm                     | 将要操作的 VM，Agent 推断候选后需用户确认 |
+| disk_id      | string | tool_call:acli_storage_disk_list | 需修复的磁盘 ID，工具自动获取 |
+| service_name | string | user_input                       | 无法自动获取，需用户直接提供 |
+| target_vm    | string | llm_inference                    | LLM 从工具输出中提取，经 sop_advance.variables_extracted 写入 |
 ```
 
 ##### Q5：变量是开头统一获取还是按节点懒加载（JIT）？
 
-**懒加载（Just-In-Time），`env_context` 类变量除外。**
+**懒加载（Just-In-Time），`env_injection` 类变量除外。**
 
 原因：
 1. SOP 是有条件分支的树，走到分支 A 就不走分支 B，B 的变量白获取
 2. 变量间有依赖（`disk_id` 需要先有 `vm_name`），静态顺序无法满足
 3. `user_input` 变量：在真正需要时才问用户，减少无意义的打扰
 
-| 类型             | 何时获取             | 原因                               |
-| -------------- | ---------------- | -------------------------------- |
-| `env_context`  | 初始化时批量注入         | 成本接近零（读内存/conversation metadata） |
-| `tool`         | 进入需要该变量的节点前即时获取  | 依赖关系自然满足；未执行的分支不触发工具             |
-| `user_input`   | 进入需要该变量的节点时请求    | 只在真正需要时打扰用户                      |
-| `user_confirm` | Agent 推断候选值后立即请求 | 推断依赖工具输出，必须先执行工具                 |
+| 类型              | 何时获取              | 原因                                          |
+|----------------|-----------------|---------------------------------------------|
+| `env_injection` | 初始化时批量注入         | 成本接近零（读内存/conversation metadata）              |
+| `tool_call`    | 进入需要该变量的节点前即时获取 | 依赖关系自然满足；未执行的分支不触发工具                        |
+| `user_input`   | 进入需要该变量的节点时请求   | 只在真正需要时打扰用户                                 |
+| `user_confirm` | Agent 推断候选值后立即请求 | 推断依赖工具输出，必须先执行工具                            |
+| `llm_inference`| 被动写入，不走 JIT      | LLM 推理后经 sop_advance.variables_extracted 嵌入  |
+| `agent_pass`   | 被动写入，不走 JIT      | 父/兄弟 Agent agent-to-agent 调用时随上下文传入           |
 
 一旦获取，存入 `sop_execution.context_variables`，后续节点直接复用（不重复调用工具/问用户）。
 
@@ -1357,6 +1381,9 @@ Agent 在 `sop_execution.context_variables` 中已有当前上下文所有变量
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-05-28 | v5.4 | 新增 `app/tools/shell/`（classifier.py + executor.py），引入 `bash_exec`（通用 Linux Shell）和 `acli_exec`（HCI 专有 CLI）工具；废弃 `AcliClient._run_ssh()` 直连路径（HCI 在客户私网，云端不可达），确立 `BridgeRelayExecutor`（terminal_bridge 中转）为唯一可行执行路径；新增架构设计文档 `docs/solution/agent/agent工具设计.md` |
+| 2026-05-29 | v5.5 | 工具架构 v2.0：`app/tools/shell/` → `app/tools/acli/`（bash_exec 归入 acli category）；移除旧 11 个结构化 acli 工具，由 `acli_exec` 统一替代；新增 4 个插件诊断工具（acli_plugin_vm_start/vm_suspend/netdoctor/asys）；`tool_definition` 数据库表确立为工具定义 SSOT，`tool_registry.py` 改为启动时 DB 加载器；详见 `agent工具设计.md` v2.0 |
+| 2026-06-03 | v5.3 | 目录重构：新增 `app/memory/`（工作记忆层）和 `app/tools/`（工具实现层），变量池迁移到 `memory/variable_pool.py`，SOP 工具迁移到 `tools/sop/`，`sop_tools.py` 精简为 `SopToolExecutor` 执行协调层，`ToolDefinition` 统一从 `tools.base` 导入；变量赋值策略新增 `env_injection`（原 `env_context`）、`tool_call`（原 `tool`）、`llm_inference`（原 `llm_extracted`）、`agent_pass`（新增）|
 | 2026-05-26 | v5.2 | §12.7.3 扩展双向校验（undeclared/orphan）、`user_confirm` 策略；§12.7.4 变量池深度设计（存储分层、三路合并、JIT 懒加载、KBD 下游消费者模式）|
 | 2026-05-26 | v5.1 | §12.7 全面修订：sop_session_state → sop_execution（避免与 session 混淆）；移除双层 Redis 缓存；execution_log 与 tool_result 职责分离；pending_variable_name 用 VARCHAR 非 JSONB 数组；BUG-06 技术原理及 diagnostic_item 半成品告警 |
 | 2026-05-26 | v5.0 | 新增 §12.7（结构化滑动窗口确认设计细节：并发多工单支持、SopExecution 双层存储+中断恢复、变量池审核时自动解析+管理端可编辑）|

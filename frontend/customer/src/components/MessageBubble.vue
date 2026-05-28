@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import type { ChatMessage } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
 import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
@@ -457,6 +457,208 @@ async function handleInteractiveFreeText() {
     interactiveSubmitting.value = false
   }
 }
+
+// ============================================================
+// T-TOOL-18: exec_confirm 气泡渲染（命令执行确认卡片）
+// ============================================================
+
+/** 提取 exec_confirm metadata 中的 event 结构 */
+const execConfirmEvent = computed(() => {
+  if (props.message.metadata?.kind !== 'exec_confirm') return null
+  return props.message.metadata.event as {
+    execId: string
+    command: string
+    reason: string
+    riskLevel: 1 | 2 | 3
+    nodeIp: string
+    caseId: string
+    timestamp: number
+  } | null
+})
+
+/** 当前 exec_confirm 气泡之后是否已有用户响应（防止重复提交） */
+const execConfirmSubmitted = computed(() => {
+  if (!execConfirmEvent.value) return false
+  const msgIndex = chatStore.messages.findIndex(m => m.id === props.message.id)
+  if (msgIndex === -1) return false
+  return chatStore.messages.slice(msgIndex + 1).some(
+    m => m.role === 'user' && (m.metadata?.kind === 'exec_confirmed' || m.metadata?.kind === 'exec_rejected' || m.metadata?.kind === 'exec_timeout')
+  )
+})
+
+/** 已确认的执行结果（从响应消息 metadata 读取） */
+const execConfirmResult = computed<'confirmed' | 'rejected' | 'timeout' | null>(() => {
+  if (!execConfirmEvent.value) return null
+  const msgIndex = chatStore.messages.findIndex(m => m.id === props.message.id)
+  if (msgIndex === -1) return null
+  const resp = chatStore.messages.slice(msgIndex + 1).find(
+    m => m.role === 'user' && (m.metadata?.kind === 'exec_confirmed' || m.metadata?.kind === 'exec_rejected' || m.metadata?.kind === 'exec_timeout')
+  )
+  if (!resp) return null
+  return (resp.metadata?.kind as 'exec_confirmed' | 'exec_rejected' | 'exec_timeout') ?? null
+})
+
+const execConfirmSubmitting = ref(false)
+const execConfirmCountdown = ref(600) // 10 分钟 = 600 秒
+let execConfirmTimer: number | null = null
+
+/** 启动倒计时（组件挂载时） */
+function startExecConfirmTimer() {
+  if (!execConfirmEvent.value || execConfirmSubmitted.value) return
+
+  const eventTimestamp = execConfirmEvent.value.timestamp
+  const elapsedSeconds = Math.floor((Date.now() - eventTimestamp) / 1000)
+  execConfirmCountdown.value = Math.max(0, 600 - elapsedSeconds)
+
+  // 如果已经超时，自动拒绝
+  if (execConfirmCountdown.value <= 0) {
+    handleExecConfirmTimeout()
+    return
+  }
+
+  execConfirmTimer = setInterval(() => {
+    execConfirmCountdown.value--
+    if (execConfirmCountdown.value <= 0) {
+      handleExecConfirmTimeout()
+    }
+  }, 1000)
+}
+
+/** 停止倒计时 */
+function stopExecConfirmTimer() {
+  if (execConfirmTimer !== null) {
+    clearInterval(execConfirmTimer)
+    execConfirmTimer = null
+  }
+}
+
+/** 用户确认执行 */
+async function handleExecConfirmApprove() {
+  if (execConfirmSubmitting.value || execConfirmSubmitted.value) return
+  const ev = execConfirmEvent.value
+  if (!ev) return
+
+  stopExecConfirmTimer()
+  execConfirmSubmitting.value = true
+
+  try {
+    // 追加用户响应气泡
+    chatStore.messages.push({
+      id: `exec-resp-${Date.now()}`,
+      role: 'user',
+      content: `[确认执行] \`${ev.command}\``,
+      timestamp: new Date(),
+      metadata: { kind: 'exec_confirmed', execId: ev.execId, caseId: ev.caseId },
+    })
+    chatStore.clearExecConfirm()
+
+    // TODO: 通过 terminal_bridge 执行命令（T-TOOL-04）
+    // 目前仅记录用户确认，实际执行由 chat.ts 中的 SSE 监听处理
+
+    // 触发 AI 继续处理（模拟 resume）
+    chatStore.resumeOpsAgentStream()
+  } finally {
+    execConfirmSubmitting.value = false
+  }
+}
+
+/** 用户拒绝执行 */
+async function handleExecConfirmReject() {
+  if (execConfirmSubmitting.value || execConfirmSubmitted.value) return
+  const ev = execConfirmEvent.value
+  if (!ev) return
+
+  stopExecConfirmTimer()
+  execConfirmSubmitting.value = true
+
+  try {
+    const convId = chatStore.conversationId
+    if (convId) {
+      // POST 执行结果（拒绝）
+      await fetch(`/api/conversations/${convId}/exec-result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          exec_id: ev.execId,
+          output: '',
+          exit_code: -1,
+          status: 'user_rejected',
+        }),
+      })
+    }
+
+    // 追加用户响应气泡
+    chatStore.messages.push({
+      id: `exec-resp-${Date.now()}`,
+      role: 'user',
+      content: `[拒绝执行] \`${ev.command}\``,
+      timestamp: new Date(),
+      metadata: { kind: 'exec_rejected', execId: ev.execId, caseId: ev.caseId },
+    })
+    chatStore.clearExecConfirm()
+
+    // 触发 AI 继续处理
+    chatStore.resumeOpsAgentStream()
+  } finally {
+    execConfirmSubmitting.value = false
+  }
+}
+
+/** 超时自动拒绝 */
+async function handleExecConfirmTimeout() {
+  if (execConfirmSubmitted.value) return
+  const ev = execConfirmEvent.value
+  if (!ev) return
+
+  stopExecConfirmTimer()
+  execConfirmSubmitting.value = true
+
+  try {
+    const convId = chatStore.conversationId
+    if (convId) {
+      // POST 执行结果（超时）
+      await fetch(`/api/conversations/${convId}/exec-result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          exec_id: ev.execId,
+          output: '',
+          exit_code: -1,
+          status: 'timeout',
+        }),
+      })
+    }
+
+    // 追加系统响应气泡
+    chatStore.messages.push({
+      id: `exec-resp-${Date.now()}`,
+      role: 'user',
+      content: `[超时自动拒绝] \`${ev.command}\``,
+      timestamp: new Date(),
+      metadata: { kind: 'exec_timeout', execId: ev.execId, caseId: ev.caseId },
+    })
+    chatStore.clearExecConfirm()
+
+    // 触发 AI 继续处理
+    chatStore.resumeOpsAgentStream()
+  } finally {
+    execConfirmSubmitting.value = false
+  }
+}
+
+/** 组件挂载时启动倒计时 */
+watch(execConfirmEvent, (ev) => {
+  if (ev && !execConfirmSubmitted.value) {
+    startExecConfirmTimer()
+  } else {
+    stopExecConfirmTimer()
+  }
+}, { immediate: true })
+
+/** 组件卸载时清理定时器 */
+onBeforeUnmount(() => {
+  stopExecConfirmTimer()
+})
 </script>
 
 <template>
@@ -488,6 +690,9 @@ async function handleInteractiveFreeText() {
         >
           <!-- interactive_request 气泡：不渲染普通 content，下方有专用区域 -->
           <template v-if="message.metadata?.kind === 'interactive_request'" />
+
+          <!-- exec_confirm 气泡：不渲染普通 content，下方有专用区域 -->
+          <template v-if="message.metadata?.kind === 'exec_confirm'" />
 
           <!-- 阶段1：Thinking 状态（流式中且内容为空） -->
           <template v-else-if="message.isStreaming && !message.content">
@@ -610,6 +815,73 @@ async function handleInteractiveFreeText() {
             >
               提交补充信息
             </el-button>
+          </div>
+        </div>
+
+        <!-- T-TOOL-18: exec_confirm 气泡（命令执行确认卡片） -->
+        <div v-if="execConfirmEvent" class="exec-confirm-bubble">
+          <!-- 标题 -->
+          <div class="exec-confirm-title">
+            <span class="exec-confirm-icon">⚠️</span>
+            Agent 请求执行以下命令
+          </div>
+
+          <!-- 目标节点 -->
+          <div v-if="execConfirmEvent.nodeIp" class="exec-confirm-field">
+            <span class="exec-confirm-label">目标节点</span>
+            <code class="exec-confirm-node">{{ execConfirmEvent.nodeIp }}</code>
+          </div>
+
+          <!-- 执行原因 -->
+          <div v-if="execConfirmEvent.reason" class="exec-confirm-field">
+            <span class="exec-confirm-label">执行原因</span>
+            <p>{{ execConfirmEvent.reason }}</p>
+          </div>
+
+          <!-- 命令内容（代码块） -->
+          <div class="exec-confirm-command-block">
+            <pre class="exec-confirm-code"><code>{{ execConfirmEvent.command }}</code></pre>
+          </div>
+
+          <!-- 倒计时 -->
+          <div class="exec-confirm-countdown">
+            <span :class="{ 'countdown-warning': execConfirmCountdown < 60 }">
+              {{ execConfirmCountdown }}s 后自动拒绝
+            </span>
+          </div>
+
+          <!-- 操作按钮 -->
+          <div v-if="!execConfirmSubmitted" class="exec-confirm-actions">
+            <el-button
+              type="danger"
+              size="default"
+              :disabled="execConfirmSubmitting"
+              @click="handleExecConfirmReject"
+            >
+              拒绝
+            </el-button>
+            <el-button
+              type="success"
+              size="default"
+              :disabled="execConfirmSubmitting"
+              :loading="execConfirmSubmitting"
+              @click="handleExecConfirmApprove"
+            >
+              确认执行
+            </el-button>
+          </div>
+
+          <!-- 已响应状态提示 -->
+          <div v-else class="exec-confirm-result">
+            <el-tag v-if="execConfirmResult === 'confirmed'" type="success" size="small">
+              已确认
+            </el-tag>
+            <el-tag v-else-if="execConfirmResult === 'rejected'" type="danger" size="small">
+              已拒绝
+            </el-tag>
+            <el-tag v-else-if="execConfirmResult === 'timeout'" type="warning" size="small">
+              已超时
+            </el-tag>
           </div>
         </div>
 
@@ -1202,5 +1474,96 @@ async function handleInteractiveFreeText() {
 .mt-2 {
   margin-top: 6px;
   align-self: flex-start;
+}
+
+/* ===== T-TOOL-18: exec_confirm 气泡样式 ===== */
+.exec-confirm-bubble {
+  margin-top: 8px;
+  background: #fff8e6;
+  border: 1px solid #e6a23c;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+
+.exec-confirm-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #303133;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f5dab1;
+}
+
+.exec-confirm-icon {
+  margin-right: 6px;
+}
+
+.exec-confirm-field {
+  margin-bottom: 8px;
+}
+
+.exec-confirm-label {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #909399;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.exec-confirm-node {
+  display: inline-block;
+  font-size: 12px;
+  background: #ecf5ff;
+  color: #409eff;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.exec-confirm-command-block {
+  margin: 10px 0;
+  background: #1e1e1e;
+  border-radius: 6px;
+  padding: 10px 14px;
+  overflow-x: auto;
+}
+
+.exec-confirm-code {
+  color: #d4d4d4;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.exec-confirm-countdown {
+  text-align: right;
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 8px;
+}
+
+.countdown-warning {
+  color: #f56c6c;
+  font-weight: bold;
+}
+
+.exec-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #f5dab1;
+}
+
+.exec-confirm-result {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
 }
 </style>
