@@ -9,6 +9,7 @@
 
 变量赋值策略（acquisition_strategy 字段）：
   - env_injection  : 环境上下文批量注入（初始化阶段，不走 JIT 流程）
+  - sop_default    : SOP 文档预设默认值（初始化阶段直接读 variable_schema.default_value，JIT 路径也支持）
   - user_input     : 阻塞等待用户填写
   - user_confirm   : 调用工具获取候选列表后让用户确认
   - tool_call      : 自动调用指定工具获取值（DC-02），失败时降级为 user_input
@@ -86,6 +87,7 @@ async def sop_request_variable(
       1. 检查 context_variables 中是否已有值（缓存命中直接返回）
       2. 获取 SOP 文档的 variable_schema，找到变量定义
       3. 根据 acquisition_strategy 决定获取方式：
+         - sop_default  : 读取 variable_schema.default_value，立即返回，无 I/O
          - tool_call   : 调用指定工具自动获取值（DC-02），失败降级为 user_input
          - user_confirm: 调用工具获取候选列表，展示给用户确认
          - user_input  : 返回 VariableRequestResult(needs_input=True) 阻塞等待
@@ -223,6 +225,24 @@ async def sop_request_variable(
                 "应在 SOP 初始化阶段从环境上下文批量注入，无需调用此工具"
             ),
         }
+
+    if strategy == "sop_default":
+        # sop_default 类变量：直接读 variable_schema.default_value，无需用户输入或工具调用
+        default_val = var_def.get("default_value")
+        if default_val is None:
+            return {
+                "error": (
+                    f"变量 {variable_name} 的 acquisition_strategy 为 sop_default，"
+                    "但 variable_schema 未定义 default_value"
+                ),
+            }
+        value = str(default_val)
+        logger.info(
+            event="sop_request_variable_default_resolved",
+            variable_name=variable_name,
+            value=value,
+        )
+        return {"ok": True, "value": value, "source": "sop_default"}
 
     # 辅助：调用 interrupt API 并返回 VariableRequestResult（阻塞等待用户输入）
     async def _request_user_input(
