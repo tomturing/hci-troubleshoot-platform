@@ -56,6 +56,10 @@ spec:
               value: "agent-service"
             - name: SERVICE_PORT
               value: {{ .Values.agentService.port | quote }}
+            # PostgreSQL 数据库（用于 tool_registry 加载）
+            - name: DATABASE_URL
+              # 使用 Helm 渲染时 urlquery 对密码做 URL 编码，防止密码含 @ / : # 等特殊字符导致解析错误（PIT-022）
+              value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
             # GLM 模型配置
             - name: GLM_MODEL
               value: {{ .Values.agentService.glmModel | default "glm-5" | quote }}

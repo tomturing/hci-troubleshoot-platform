@@ -1381,6 +1381,7 @@ Agent 在 `sop_execution.context_variables` 中已有当前上下文所有变量
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-05-29 | v5.8 | 补齐 agent-service Helm deployment.yaml 中 DATABASE_URL 环境变量配置（此前缺失导致数据库认证失败）；统一 config.py 默认值与其他服务一致 |
 | 2026-05-29 | v5.7 | 修复 `main.py` lifespan 中 `db_manager.get_session()` 错误用法：AsyncGenerator 不支持 async with，改用 `async_session_factory()` |
 | 2026-05-29 | v5.6 | 修复 `react_engine.py` 导入路径：`VariableRequestResult` 从 `sop_tools.py` 迁移至 `memory/variable_pool.py`（PR #341），修正 import 语句解决 ImportError
 | 2026-05-28 | v5.4 | 新增 `app/tools/shell/`（classifier.py + executor.py），引入 `bash_exec`（通用 Linux Shell）和 `acli_exec`（HCI 专有 CLI）工具；废弃 `AcliClient._run_ssh()` 直连路径（HCI 在客户私网，云端不可达），确立 `BridgeRelayExecutor`（terminal_bridge 中转）为唯一可行执行路径；新增架构设计文档 `docs/solution/agent/agent工具设计.md` |

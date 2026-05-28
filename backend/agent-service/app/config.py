@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # PostgreSQL 数据库（用于 tool_registry 加载）
-    DATABASE_URL: str = "postgresql+asyncpg://hci:hci123@postgres:5432/hci"
+    DATABASE_URL: str = "postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot"
 
     # Redis（用于 confirm_service BRPOP）
     REDIS_URL: str = "redis://redis:6379/0"
