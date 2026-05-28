@@ -27,6 +27,8 @@ from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from redis.asyncio import Redis
 from shared.clients import AIAssistantRegistry, KBClient, create_openclaw_client
+from shared.database.postgres import DatabaseManager
+from shared.database.redis import RedisManager
 from shared.observability.logger import get_logger
 from shared.observability.metrics import HTTPMetricsMiddleware
 from shared.observability.otel import init_telemetry, instrument_app
@@ -48,6 +50,8 @@ if TYPE_CHECKING:
     from app.adapters.clients.acli_client import AcliClient
     from app.adapters.clients.scp_client import SCPClient
 
+from app.tools.acli.executor import BridgeRelayExecutor  # T-TOOL-16：acli category 路由
+
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
 
@@ -62,6 +66,9 @@ async def lifespan(app: FastAPI):
         message=f"Starting {settings.SERVICE_NAME}",
         port=settings.SERVICE_PORT,
     )
+
+    # ── 数据库连接（用于工具注册表加载）──────────────────────────────────────────────
+    db_manager = DatabaseManager(settings.DATABASE_URL)
 
     # ── AI 助手注册表 ──────────────────────────────────────────────────────────
     ai_registry = AIAssistantRegistry()
@@ -99,12 +106,18 @@ async def lifespan(app: FastAPI):
             kb_service_url=settings.KB_SERVICE_URL,
         )
 
-    # ── Redis（confirm_service 使用）─────────────────────────────────────────────
+    # ── Redis（confirm_service + BridgeRelayExecutor 使用）───────────────────────
     redis_client: Redis | None = None
+    redis_manager: RedisManager | None = None
     try:
         redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
         await redis_client.ping()
         logger.info(event="redis_connected", message="Redis 连接成功")
+
+        # 为 BridgeRelayExecutor 创建 RedisManager 实例
+        redis_manager = RedisManager(settings.REDIS_URL)
+        await redis_manager.connect()
+        logger.info(event="redis_manager_connected", message="RedisManager 已连接")
     except Exception as exc:
         logger.warning(
             event="redis_unavailable",
@@ -128,6 +141,14 @@ async def lifespan(app: FastAPI):
     confirm_service: ConfirmService | None = None
     audit_service = FileAuditService()
 
+    # ── 加载工具注册表（从数据库）──────────────────────────────────────────────────────
+    # 无论是否启用 REACT，都需要加载工具注册表（InvestigationAgent 等也依赖）
+    from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY, load_tool_registry
+
+    async with db_manager.get_session() as db_session:
+        loaded_registry = await load_tool_registry(db_session)
+        TOOL_REGISTRY.update(loaded_registry)
+
     if settings.REACT_ENABLED:
         # 实例化工具执行客户端
         from app.adapters.clients.acli_client import AcliClient
@@ -141,15 +162,17 @@ async def lifespan(app: FastAPI):
             confirm_service = ConfirmService(redis=redis_client)
 
         # 实例化复合工具执行器（合并 SCP、Acli 和 SOP）
+        # T-TOOL-16：添加 BridgeRelayExecutor 参数
         tool_executor = CompositeToolExecutor(
             scp=scp_client,
             acli=acli_client,
             kb_client=kb_client,
+            redis_manager=redis_manager,
+            conversation_service_url=settings.CONVERSATION_SERVICE_URL,
+            internal_token=settings.INTERNAL_API_TOKEN,
         )
 
         # 实例化 ReactEngine
-        from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
-
         react_engine = ReactEngine(
             ai_registry=ai_registry,
             tool_registry=TOOL_REGISTRY,
@@ -177,6 +200,9 @@ async def lifespan(app: FastAPI):
         scp=scp_client,
         acli=acli_client,
         kb_client=kb_client,
+        redis_manager=redis_manager,
+        conversation_service_url=settings.CONVERSATION_SERVICE_URL,
+        internal_token=settings.INTERNAL_API_TOKEN,
     )
     investigation_agent = InvestigationAgent(
         ai_registry=ai_registry,
@@ -260,6 +286,9 @@ async def lifespan(app: FastAPI):
     # ── 清理 ────────────────────────────────────────────────────────────────────────
     if redis_client:
         await redis_client.aclose()
+    if redis_manager:
+        await redis_manager.close()
+    await db_manager.close()
     logger.info(event="service_stopped", message=f"{settings.SERVICE_NAME} 已停止")
 
 
@@ -288,6 +317,8 @@ class CompositeToolExecutor:
     """复合工具执行器：合并 SCP、Acli 和 SOP 客户端
 
     实现 ToolExecutor Protocol，根据工具 category 分发到对应客户端。
+
+    T-TOOL-16：新增 acli category 路由，所有 acli/bash 工具通过 BridgeRelayExecutor 执行。
     """
 
     def __init__(
@@ -295,24 +326,78 @@ class CompositeToolExecutor:
         scp: "SCPClient",
         acli: "AcliClient",
         kb_client: KBClient | None = None,
+        redis_manager: RedisManager | None = None,
+        conversation_service_url: str | None = None,
+        internal_token: str | None = None,
+        conversation_id: str | None = None,
     ) -> None:
         self._scp = scp
         self._acli = acli
         self._kb_client = kb_client
+        self._conversation_id = conversation_id
 
-    async def execute(self, tool_name: str, args: dict) -> Any:
-        """执行工具调用，根据工具类型分发"""
+        # T-TOOL-16：实例化 BridgeRelayExecutor（用于 acli category）
+        if redis_manager and conversation_service_url and internal_token:
+            self._bridge_executor = BridgeRelayExecutor(
+                redis=redis_manager,
+                conversation_service_url=conversation_service_url,
+                internal_token=internal_token,
+            )
+        else:
+            self._bridge_executor = None
+
+    async def execute(
+        self,
+        tool_name: str,
+        args: dict,
+        *,
+        tool_def: "ToolDefinition | None" = None,
+        conversation_id: str | None = None,
+    ) -> Any:
+        """执行工具调用，根据工具类型分发
+
+        Args:
+            tool_name: 工具名称
+            args: 工具参数
+            tool_def: 工具定义（可选，如未传入则从 TOOL_REGISTRY 获取）
+            conversation_id: 会话 ID（可选，用于 acli category 的 BridgeRelayExecutor）
+
+        Returns:
+            执行结果（字符串或字典）
+        """
         from app.adapters.agents.htp.sop_tools import get_sop_node
         from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
+        from app.tools.base_tool import ToolDefinition
 
-        tool_def = TOOL_REGISTRY.get(tool_name)
+        # 如果未传入 tool_def，则从 TOOL_REGISTRY 获取
+        if tool_def is None:
+            tool_def = TOOL_REGISTRY.get(tool_name)
         if not tool_def:
             return {"error": f"未知工具: {tool_name}"}
+
+        # 如果未传入 conversation_id，则使用初始化时的值
+        effective_conversation_id = conversation_id or self._conversation_id
 
         if tool_def.category == "scp":
             return await self._scp.execute(tool_name, args)
         elif tool_def.category == "acli":
-            return await self._acli.execute(tool_name, args)
+            # T-TOOL-16：acli category 路由到 BridgeRelayExecutor
+            # bash_exec 和 acli_exec 及插件工具均走此路径
+            if self._bridge_executor is None:
+                return {"error": "BridgeRelayExecutor 未初始化，无法执行 acli 工具"}
+            if effective_conversation_id is None:
+                return {"error": "缺少 conversation_id，无法执行 acli 工具"}
+
+            result = await self._bridge_executor.execute(
+                tool_name,
+                args,
+                conversation_id=effective_conversation_id,
+                node_ip=args.get("node_ip"),
+                risk_level=tool_def.risk_level,
+                policy=tool_def.policy,
+            )
+            # 返回 stdout 或错误信息
+            return result.stdout or f"[exit_code={result.exit_code}]"
         elif tool_def.category == "sop":
             # SOP 工具需要 kb_client 和 sop_document_id
             if tool_name == "get_sop_node":
