@@ -20,7 +20,7 @@ from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
 # T-AGT-25: 导入 VariableRequestResult
-from app.adapters.agents.htp.sop_tools import VariableRequestResult
+from app.memory.variable_pool import VariableRequestResult
 from app.domain.agent_port import (
     AgentEvent,
     AgentInteractiveRequest,
