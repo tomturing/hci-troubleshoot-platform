@@ -14,7 +14,7 @@ from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_poli
 from app.tools.acli.executor import (
     BridgeRelayExecutor,
     CommandSanitizer,
-    ShellResult,
+    ExecResult,
     acli_exec,
     bash_exec,
     set_executor,
@@ -25,7 +25,7 @@ __all__ = [
     "BridgeRelayExecutor",
     "set_executor",
     # 结果数据结构
-    "ShellResult",
+    "ExecResult",
     # 命令净化器
     "CommandSanitizer",
     # 风险分类器

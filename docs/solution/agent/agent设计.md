@@ -419,8 +419,8 @@ backend/agent-service/app/
 ├── tools/                          ← Agent 公共工具实现（LLM tool_call 调用的目标）
 │   ├── __init__.py
 │   ├── base.py                     ← ToolDefinition 基础模型（供各 agent 工具注册表复用）
-│   ├── shell/                      ← Shell 执行工具（bash_exec / acli_exec）
-│   │   ├── __init__.py             ← 导出 bash_exec, acli_exec, ShellResult
+│   ├── acli/                       ← 命令执行工具（bash_exec / acli_exec）
+│   │   ├── __init__.py             ← 导出 bash_exec, acli_exec, ExecResult
 │   │   ├── classifier.py           ← RiskClassifier（bash + acli 双模式风险分类）
 │   │   └── executor.py             ← BridgeRelayExecutor（bridge 中转唯一执行后端）
 │   └── sop/
