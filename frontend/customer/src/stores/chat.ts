@@ -8,7 +8,7 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
-import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
+import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
 
 // 开发环境专用日志（生产环境自动禁用）
 const isDev = import.meta.env.DEV
@@ -137,6 +137,14 @@ export const useChatStore = defineStore('chat', () => {
   const sshOutputBuffer = ref<string>('')
   const sshCommandConsumer = ref<'terminal' | 'collection' | null>(null)
   const sshTerminalOutputEvent = ref<string>('')
+
+  // === Agent 命令执行结果等待队列 ===
+  // 用于 waitForExecResult 函数，存储 execId → resolve 回调
+  const pendingExecCallbacks = new Map<string, {
+    resolve: (result: { output: string; exitCode: number }) => void
+    reject: (error: Error) => void
+    timeoutId: number
+  }>()
 
   // Agent 模式：待确认的高风险操作（confirm_request SSE 事件）
   const pendingConfirm = ref<{
@@ -641,6 +649,72 @@ export const useChatStore = defineStore('chat', () => {
                 pendingInteractive.value = irEvent
               } catch (e) {
                 console.warn('[interactive_request] 解析失败:', e)
+              }
+            } else if (pendingEventType === 'agent_exec_command') {
+              // T-TOOL-04: Agent 命令执行请求（SSE → WebSocket → POST 结果）
+              try {
+                const event = JSON.parse(data)
+                const { execId, command, riskLevel, caseId, conversationId: convId } = event
+
+                devLog('agent_exec_command', '收到执行请求', { execId, riskLevel, commandPreview: command.substring(0, 50) })
+
+                // 初始化执行状态
+                let execHandled = false
+
+                // risk=3：直接拒绝（高危操作）
+                if (riskLevel >= 3) {
+                  devLog('agent_exec_command', '高危操作，直接拒绝', { execId })
+                  postExecResult(convId, execId, '高危操作已自动阻止', -1, 'blocked').catch((e) => {
+                    console.warn('[agent_exec_command] postExecResult 失败:', e)
+                  })
+                  execHandled = true
+                }
+
+                // risk=2：展示确认对话框（占位实现用 window.confirm）
+                // risk=1：直接执行（安全操作）
+                if (!execHandled && riskLevel === 2) {
+                  const shouldExec = window.confirm(`确认执行命令？\n\n${command}\n\n（风险等级：${riskLevel}）`)
+                  if (!shouldExec) {
+                    devLog('agent_exec_command', '用户拒绝执行', { execId })
+                    postExecResult(convId, execId, '用户拒绝执行', -1, 'user_rejected').catch((e) => {
+                      console.warn('[agent_exec_command] postExecResult 失败:', e)
+                    })
+                    execHandled = true
+                  }
+                }
+
+                // 执行命令（risk=1 或 risk=2 用户确认后）
+                if (!execHandled) {
+                  // 检查 SSH 连接状态
+                  if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
+                    devLog('agent_exec_command', 'SSH 未连接，无法执行', { execId })
+                    postExecResult(convId, execId, 'SSH 未连接', -1, 'ssh_not_connected').catch((e) => {
+                      console.warn('[agent_exec_command] postExecResult 失败:', e)
+                    })
+                    execHandled = true
+                  } else {
+                    // 通过 terminal_bridge WebSocket 发送命令
+                    const wsMsg = buildAgentExecMessage(caseId, execId, command)
+                    sshWebSocket.value.send(wsMsg)
+                    devLog('agent_exec_command', '命令已发送到 Bridge', { execId })
+
+                    // 监听 exec_result（带超时 35s）- 异步执行，不阻塞 SSE 流
+                    waitForExecResult(execId, 35_000)
+                      .then((result) => {
+                        devLog('agent_exec_command', '执行完成', { execId, exitCode: result.exitCode })
+                        return postExecResult(convId, execId, result.output, result.exitCode)
+                      })
+                      .catch((timeoutErr) => {
+                        devLog('agent_exec_command', '执行超时', { execId })
+                        return postExecResult(convId, execId, 'timeout', -1, 'timeout')
+                      })
+                      .catch((e) => {
+                        console.warn('[agent_exec_command] 结果处理失败:', e)
+                      })
+                  }
+                }
+              } catch (e) {
+                console.warn('[agent_exec_command] 处理失败:', e)
               }
             } else {
               try {
@@ -1386,6 +1460,18 @@ export const useChatStore = defineStore('chat', () => {
             sshConnectionState.value = 'disconnected'
             cleanupSshWebSocket()
           }
+        } else if (msg.type === 'exec_result') {
+          // Agent 命令执行结果回调
+          const parsed = parseAgentExecResult(msg)
+          if (parsed) {
+            devLog('SSH', '收到 exec_result', { execId: parsed.execId, exitCode: parsed.exitCode })
+            const callback = pendingExecCallbacks.get(parsed.execId)
+            if (callback) {
+              clearTimeout(callback.timeoutId)
+              pendingExecCallbacks.delete(parsed.execId)
+              callback.resolve(parsed)
+            }
+          }
         }
       }
 
@@ -1419,6 +1505,86 @@ export const useChatStore = defineStore('chat', () => {
     sshCurrentConfig.value = null
     sshOutputBuffer.value = ''
     sshCommandConsumer.value = null
+    // 清理所有待处理的 exec_result 回调
+    pendingExecCallbacks.forEach((callback) => {
+      clearTimeout(callback.timeoutId)
+      callback.reject(new Error('SSH 连接已断开'))
+    })
+    pendingExecCallbacks.clear()
+  }
+
+  /**
+   * 等待 exec_result WebSocket 消息（带超时）
+   * 用于 agent_exec_command SSE 事件处理
+   *
+   * @param execId 执行 ID
+   * @param timeoutMs 超时时间（毫秒）
+   * @returns Promise<{output, exitCode}>
+   */
+  function waitForExecResult(
+    execId: string,
+    timeoutMs: number,
+  ): Promise<{ output: string; exitCode: number }> {
+    return new Promise((resolve, reject) => {
+      // 检查 SSH 连接状态
+      if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
+        reject(new Error('SSH 未连接'))
+        return
+      }
+
+      // 设置超时
+      const timeoutId = window.setTimeout(() => {
+        pendingExecCallbacks.delete(execId)
+        reject(new Error(`等待 exec_result 超时（${timeoutMs / 1000}s）`))
+      }, timeoutMs)
+
+      // 注册回调
+      pendingExecCallbacks.set(execId, { resolve, reject, timeoutId })
+
+      devLog('SSH', '等待 exec_result', { execId, timeoutMs })
+    })
+  }
+
+  /**
+   * POST 执行结果到后端 API
+   * 用于 agent_exec_command SSE 事件处理
+   *
+   * @param convId 会话 ID
+   * @param execId 执行 ID
+   * @param output 命令输出
+   * @param exitCode 退出码
+   * @param status 执行状态（可选，用于风险拒绝场景）
+   */
+  async function postExecResult(
+    convId: string,
+    execId: string,
+    output: string,
+    exitCode: number,
+    status?: string,
+  ): Promise<void> {
+    try {
+      const response = await fetch(`/api/conversations/${convId}/exec-result`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-ID': clientId,
+        },
+        body: JSON.stringify({
+          exec_id: execId,
+          output: status ? `${status}: ${output}` : output,
+          exit_code: exitCode,
+        }),
+      })
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({ detail: '未知错误' }))
+        console.warn('[postExecResult] 回传失败:', errData.detail)
+      } else {
+        devLog('SSH', 'exec_result 已回传', { execId, exitCode })
+      }
+    } catch (e) {
+      console.warn('[postExecResult] 网络错误:', e)
+    }
   }
 
   /** 发送 SSH 命令 */
