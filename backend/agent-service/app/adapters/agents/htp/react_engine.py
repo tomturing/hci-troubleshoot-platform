@@ -272,6 +272,7 @@ class ReactEngine:
             AgentTextChunk: 工具执行结果（可选）
         """
         from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
+        from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_policy
 
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("args", {})
@@ -284,6 +285,34 @@ class ReactEngine:
             # T-AGT-22: SOP 工具在 TOOL_REGISTRY 中已定义，此检查覆盖所有已注册工具
             yield AgentTextChunk(content=f"未知工具: {tool_name}")
             return
+
+        # ─── 动态风险覆盖（仅对通用命令执行工具）───
+        # T-TOOL-15: 对 acli_exec 和 bash_exec 工具动态计算风险等级
+        if tool_name in ("acli_exec", "bash_exec"):
+            command = tool_args.get("command", "")
+            runtime_risk = (
+                classify_acli(command) if tool_name == "acli_exec"
+                else classify_bash(command)
+            )
+            # 使用 model_copy 创建副本并更新风险等级（Pydantic v2）
+            tool_def = tool_def.model_copy(update={
+                "risk_level": runtime_risk,
+                "policy": risk_to_policy(runtime_risk),
+            })
+            logger.info(
+                event="dynamic_risk_override",
+                tool_name=tool_name,
+                command=command,
+                runtime_risk=runtime_risk,
+                policy=tool_def.policy,
+            )
+            # 高危命令直接阻止执行
+            if tool_def.policy == "block":
+                yield AgentTextChunk(
+                    content=f"[blocked] 命令 {command!r} 属于高危操作（risk=3），已拒绝执行。"
+                )
+                return
+        # ─────────────────────────────────────────
 
         # 高危工具（risk_level=3 / policy=block）直接拒绝
         if tool_def.policy == "block":
