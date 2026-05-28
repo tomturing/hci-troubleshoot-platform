@@ -12,13 +12,11 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from app.tools.acli.executor import (
     BridgeRelayExecutor,
     CommandSanitizer,
     ShellResult,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CommandSanitizer 测试（验收标准 1）
@@ -201,7 +199,7 @@ class TestBridgeRelayExecutor:
                 conversation_id="conv-123",
             )
 
-            assert result.truncated == True
+            assert result.truncated is True
             assert len(result.stdout) == 4000
             assert result.stdout == "A" * 4000
             assert result.exit_code == 0
@@ -229,7 +227,7 @@ class TestBridgeRelayExecutor:
                 conversation_id="conv-123",
             )
 
-            assert result.truncated == False
+            assert not result.truncated
             assert len(result.stdout) == 3000
             assert result.exit_code == 0
 
@@ -386,7 +384,7 @@ class TestShellResult:
         assert result.command == "df -h"
         assert result.node == "192.168.1.10"
         assert result.duration_ms == 150
-        assert result.truncated == False
+        assert not result.truncated
         assert result.risk_level == 1
 
     def test_shell_result_timeout_indicator(self):
@@ -418,7 +416,7 @@ class TestShellResult:
             risk_level=1,
         )
 
-        assert result.truncated == True
+        assert result.truncated is True
         assert len(result.stdout) == 4000
 
 
@@ -450,7 +448,7 @@ class TestToolEntryFunctions:
 
     def test_set_executor(self):
         """测试 set_executor 函数"""
-        from app.tools.acli.executor import set_executor, _executor
+        from app.tools.acli.executor import set_executor
 
         mock_redis = MagicMock()
         mock_executor = BridgeRelayExecutor(

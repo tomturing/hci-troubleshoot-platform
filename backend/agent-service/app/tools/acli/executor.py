@@ -16,20 +16,17 @@ Bridge Relay 执行器 — 所有 acli/bash 工具的唯一执行后端
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from shared.database.redis import RedisManager
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.utils.internal_http import InternalHTTPClient
 
-from app.config import settings
 from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_policy
 
 logger = get_logger("bridge-relay-executor")
@@ -145,15 +142,16 @@ class CommandSanitizer:
                 )
                 raise ValueError("bash_exec 禁止执行 acli 命令，请使用 acli_exec 工具")
 
-        elif tool_name == "acli_exec":
+        elif tool_name == "acli_exec" and not (
+            cleaned.startswith("acli ") or cleaned == "acli"
+        ):
             # acli_exec 必须以 acli 开头
-            if not (cleaned.startswith("acli ") or cleaned == "acli"):
-                logger.warning(
-                    event="acli_exec_invalid_prefix",
-                    command_preview=cleaned[:50],
-                    message="acli_exec 命令必须以 'acli' 开头",
-                )
-                raise ValueError("acli_exec 命令必须以 'acli' 开头")
+            logger.warning(
+                event="acli_exec_invalid_prefix",
+                command_preview=cleaned[:50],
+                message="acli_exec 命令必须以 'acli' 开头",
+            )
+            raise ValueError("acli_exec 命令必须以 'acli' 开头")
 
         return cleaned
 

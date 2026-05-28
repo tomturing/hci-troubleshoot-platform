@@ -176,7 +176,6 @@ class AcliClient:
                 raise ValueError(f"AcliClient 未实现工具: {tool_name}")
 
     async def _run_ssh(self, host: str, command: str) -> dict:
-<<<<<<< HEAD
         """
         ⚠️ 已废弃：通过 asyncssh 直连 HCI 节点执行命令。
 
@@ -185,15 +184,9 @@ class AcliClient:
 
         保留此方法仅作历史参考，不应在任何生产代码中调用。
         """
-        import warnings
         warnings.warn(
             "_run_ssh() 已废弃：HCI 在客户私网，云端不可达。"
             "请使用 BridgeRelayExecutor（app/tools/acli/executor.py）。",
-=======
-        """通过 asyncssh 在目标节点执行命令，返回结构化结果"""
-        warnings.warn(
-            "AcliClient._run_ssh 已废弃，agent-service 无法访问 HCI 私网，请改用 BridgeRelayExecutor",
->>>>>>> worktree-agent-af29ccdd767085af4
             DeprecationWarning,
             stacklevel=2,
         )

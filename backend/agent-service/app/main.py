@@ -49,6 +49,7 @@ from app.routes.agent import set_agent_router, set_confirm_service
 if TYPE_CHECKING:
     from app.adapters.clients.acli_client import AcliClient
     from app.adapters.clients.scp_client import SCPClient
+    from app.tools.base_tool import ToolDefinition
 
 from app.tools.acli.executor import BridgeRelayExecutor  # T-TOOL-16：acli category 路由
 
@@ -367,7 +368,6 @@ class CompositeToolExecutor:
         """
         from app.adapters.agents.htp.sop_tools import get_sop_node
         from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
-        from app.tools.base_tool import ToolDefinition
 
         # 如果未传入 tool_def，则从 TOOL_REGISTRY 获取
         if tool_def is None:

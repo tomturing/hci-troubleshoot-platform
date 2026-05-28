@@ -14,12 +14,12 @@ v2.0 变更：
 
 import logging
 
+from shared.models.tool_definition import ToolDefinitionORM
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tools.acli.classifier import risk_to_policy
 from app.tools.base_tool import ToolDefinition
-from shared.models.tool_definition import ToolDefinitionORM
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ async def load_tool_registry(db: AsyncSession) -> dict[str, ToolDefinition]:
         工具名称到 ToolDefinition 的映射字典
     """
     result = await db.execute(
-        select(ToolDefinitionORM).where(ToolDefinitionORM.is_active == True)
+        select(ToolDefinitionORM).where(ToolDefinitionORM.is_active.is_(True))
     )
     registry: dict[str, ToolDefinition] = {}
     for row in result.scalars():

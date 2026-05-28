@@ -26,10 +26,11 @@ from typing import Any
 from shared.clients import KBClient
 from shared.observability.logger import get_logger
 
+from app.memory.variable_pool import sop_request_variable
+
 # 从公共模块导入（各模块的职责归属）
 from app.tools.sop.client import ConversationSopClient
 from app.tools.sop.nav import get_sop_node, sop_advance
-from app.memory.variable_pool import VariableRequestResult, sop_request_variable
 
 logger = get_logger("htp.sop-tools")
 

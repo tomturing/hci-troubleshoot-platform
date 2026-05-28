@@ -6,7 +6,6 @@ RiskClassifier：基于规则对 acli/bash 命令进行动态风险分级。
 """
 import re
 
-
 # acli 风险规则（risk 从高到低匹配，第一个命中获胜）
 # acli 命令有两种格式：acli vm start abc-123 或 acli vm abc-123 start
 _ACLI_RISK_RULES: list[tuple[int, re.Pattern]] = [
