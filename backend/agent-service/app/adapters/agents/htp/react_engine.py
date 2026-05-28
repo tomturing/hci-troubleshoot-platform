@@ -19,8 +19,6 @@ from opentelemetry import trace
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
-# T-AGT-25: 导入 VariableRequestResult
-from app.memory.variable_pool import VariableRequestResult
 from app.domain.agent_port import (
     AgentEvent,
     AgentInteractiveRequest,
@@ -28,6 +26,9 @@ from app.domain.agent_port import (
     AgentTextChunk,
     ToolResultEvent,
 )
+
+# T-AGT-25: 导入 VariableRequestResult
+from app.memory.variable_pool import VariableRequestResult
 
 logger = get_logger("react-engine")
 tracer = trace.get_tracer(__name__)
