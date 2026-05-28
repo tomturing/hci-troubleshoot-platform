@@ -15,7 +15,7 @@ import pytest
 from app.tools.acli.executor import (
     BridgeRelayExecutor,
     CommandSanitizer,
-    ShellResult,
+    ExecResult,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -359,16 +359,16 @@ class TestBridgeRelayExecutor:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ShellResult 测试
+# ExecResult 测试
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestShellResult:
-    """ShellResult 数据结构测试"""
+class TestExecResult:
+    """ExecResult 数据结构测试"""
 
-    def test_shell_result_creation(self):
-        """测试 ShellResult 创建"""
-        result = ShellResult(
+    def test_exec_result_creation(self):
+        """测试 ExecResult 创建"""
+        result = ExecResult(
             stdout="output",
             stderr="",
             exit_code=0,
@@ -387,9 +387,9 @@ class TestShellResult:
         assert not result.truncated
         assert result.risk_level == 1
 
-    def test_shell_result_timeout_indicator(self):
-        """测试 ShellResult 超时标识（exit_code=-1）"""
-        result = ShellResult(
+    def test_exec_result_timeout_indicator(self):
+        """测试 ExecResult 超时标识（exit_code=-1）"""
+        result = ExecResult(
             stdout="",
             stderr="执行超时",
             exit_code=-1,
@@ -403,9 +403,9 @@ class TestShellResult:
         assert result.exit_code == -1  # 超时标识
         assert "超时" in result.stderr
 
-    def test_shell_result_truncated_indicator(self):
-        """测试 ShellResult 截断标识"""
-        result = ShellResult(
+    def test_exec_result_truncated_indicator(self):
+        """测试 ExecResult 截断标识"""
+        result = ExecResult(
             stdout="A" * 4000,
             stderr="",
             exit_code=0,

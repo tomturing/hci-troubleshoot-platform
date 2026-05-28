@@ -551,7 +551,7 @@ BridgeRelayExecutor.execute("bash_exec", {command, reason, node_ip?})
   ④ await asyncio.wait_for(redis.blpop(f"exec_result:{exec_id}"), timeout=30)
   │
   ▼
-返回 ShellResult 给 ReactEngine 作为 tool_call 结果
+返回 ExecResult 给 ReactEngine 作为 tool_call 结果
   │
   ▼
 LLM 继续 ReAct 推理
@@ -644,7 +644,7 @@ risk=2 的确认复用 `VariableRequestResult(kind="exec_confirm")` 机制，与
 app/tools/
 ├── base_tool.py                  # ToolDefinition Pydantic model（从 DB 反序列化）
 ├── acli/
-│   ├── __init__.py               # 导出 acli_exec, bash_exec, ShellResult
+│   ├── __init__.py               # 导出 acli_exec, bash_exec, ExecResult
 │   ├── classifier.py             # RiskClassifier（acli + bash 双模式动态分级）
 │   └── executor.py               # BridgeRelayExecutor（唯一 acli/bash 执行后端）
 ├── scp/
@@ -670,7 +670,7 @@ app/adapters/clients/
 # app/tools/acli/executor.py
 
 @dataclass
-class ShellResult:
+class ExecResult:
     stdout: str           # 标准输出（截断 ≤ 4000 chars）
     stderr: str           # 错误输出（截断 ≤ 1000 chars）
     exit_code: int        # 退出码
@@ -709,7 +709,7 @@ class BridgeRelayExecutor:
         *,
         conversation_id: str,
         node_ip: str | None = None,
-    ) -> ShellResult: ...
+    ) -> ExecResult: ...
 ```
 
 ### 9.3 `tool_registry.py` 变更对比
@@ -719,7 +719,7 @@ class BridgeRelayExecutor:
 TOOL_REGISTRY = {
     "bash_exec": ToolDefinition(
         name="bash_exec",
-        description="在 HCI 节点执行通用 Linux Shell 命令...",
+        description="在 HCI 节点执行通用 Linux Bash 命令...",
         parameters={"type": "object", "properties": {...}},
         risk_level=1,
         policy="auto",

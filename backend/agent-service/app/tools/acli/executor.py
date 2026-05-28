@@ -33,14 +33,14 @@ logger = get_logger("bridge-relay-executor")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ShellResult：执行结果数据结构
+# ExecResult：执行结果数据结构
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
-class ShellResult:
+class ExecResult:
     """
-    Shell 命令执行结果
+    命令执行结果
 
     设计依据：docs/solution/agent/agent工具设计.md §九.2
 
@@ -228,7 +228,7 @@ class BridgeRelayExecutor:
         node_ip: str | None = None,
         risk_level: int | None = None,
         policy: str | None = None,
-    ) -> ShellResult:
+    ) -> ExecResult:
         """
         执行命令并返回结果。
 
@@ -241,7 +241,7 @@ class BridgeRelayExecutor:
             policy: 执行策略（可选，对插件工具使用固定值）
 
         Returns:
-            ShellResult: 执行结果
+            ExecResult: 执行结果
 
         Raises:
             ValueError: 命令净化失败
@@ -259,7 +259,7 @@ class BridgeRelayExecutor:
             cleaned_command = CommandSanitizer.sanitize(command, tool_name)
         except ValueError as e:
             # 净化失败，直接返回拒绝结果
-            return ShellResult(
+            return ExecResult(
                 stdout="",
                 stderr=str(e),
                 exit_code=-1,
@@ -291,7 +291,7 @@ class BridgeRelayExecutor:
                 risk_level=runtime_risk,
                 trace_id=trace_id,
             )
-            return ShellResult(
+            return ExecResult(
                 stdout="",
                 stderr=f"[blocked] 命令 '{cleaned_command}' 属于高危操作，已拒绝执行",
                 exit_code=-1,
@@ -326,7 +326,7 @@ class BridgeRelayExecutor:
                     error=push_result.get("message", "未知错误"),
                     trace_id=trace_id,
                 )
-                return ShellResult(
+                return ExecResult(
                     stdout="",
                     stderr=f"推送执行命令失败：{push_result.get('message', '未知错误')}",
                     exit_code=-1,
@@ -345,7 +345,7 @@ class BridgeRelayExecutor:
                 error=str(e),
                 trace_id=trace_id,
             )
-            return ShellResult(
+            return ExecResult(
                 stdout="",
                 stderr=f"HTTP 调用失败：{e}",
                 exit_code=-1,
@@ -381,7 +381,7 @@ class BridgeRelayExecutor:
                     timeout_sec=self.BLPOP_TIMEOUT,
                     trace_id=trace_id,
                 )
-                return ShellResult(
+                return ExecResult(
                     stdout="",
                     stderr=f"执行超时（{self.BLPOP_TIMEOUT}秒），可能前端未响应或 terminal_bridge 未运行",
                     exit_code=-1,
@@ -420,7 +420,7 @@ class BridgeRelayExecutor:
             # 8. 写入 tool_result 表（审计）— TODO: 后续实现
             # 当前先返回结果，tool_result 写入由 react_engine 或专门的 AuditService 处理
 
-            return ShellResult(
+            return ExecResult(
                 stdout=stdout,
                 stderr=stderr,
                 exit_code=exit_code,
@@ -439,7 +439,7 @@ class BridgeRelayExecutor:
                 error=str(e),
                 trace_id=trace_id,
             )
-            return ShellResult(
+            return ExecResult(
                 stdout="",
                 stderr=f"结果解析失败：{e}",
                 exit_code=-1,
@@ -471,7 +471,7 @@ async def acli_exec(
     reason: str,
     conversation_id: str,
     node_ip: str | None = None,
-) -> ShellResult:
+) -> ExecResult:
     """
     acli_exec 工具入口函数。
 
@@ -482,7 +482,7 @@ async def acli_exec(
         node_ip: 目标节点 IP（可选）
 
     Returns:
-        ShellResult: 执行结果
+        ExecResult: 执行结果
     """
     if _executor is None:
         raise RuntimeError("BridgeRelayExecutor 未初始化")
@@ -500,7 +500,7 @@ async def bash_exec(
     reason: str,
     conversation_id: str,
     node_ip: str | None = None,
-) -> ShellResult:
+) -> ExecResult:
     """
     bash_exec 工具入口函数。
 
@@ -511,7 +511,7 @@ async def bash_exec(
         node_ip: 目标节点 IP（可选）
 
     Returns:
-        ShellResult: 执行结果
+        ExecResult: 执行结果
     """
     if _executor is None:
         raise RuntimeError("BridgeRelayExecutor 未初始化")

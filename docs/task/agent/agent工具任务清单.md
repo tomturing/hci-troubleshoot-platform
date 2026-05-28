@@ -587,10 +587,10 @@ assert classify_bash("dd if=/dev/zero of=/dev/sda") == 3
 
 **需要实现的类和函数**：
 
-**`ShellResult` dataclass**：
+**`ExecResult` dataclass**：
 ```python
 @dataclass
-class ShellResult:
+class ExecResult:
     stdout: str          # 标准输出（截断 ≤ 4000 chars）
     stderr: str          # 错误输出（截断 ≤ 1000 chars）
     exit_code: int
@@ -632,15 +632,15 @@ class BridgeRelayExecutor:
         node_ip: str | None = None,
         risk_level: int = 1,   # 已由 react_engine 的 RiskClassifier 覆盖
         policy: str = "auto",
-    ) -> ShellResult:
+    ) -> ExecResult:
         """
         执行流程：
         1. 净化命令（CommandSanitizer）
-        2. policy="block" → 直接返回 ShellResult(exit_code=-1, stdout="[blocked]...")
+        2. policy="block" → 直接返回 ExecResult(exit_code=-1, stdout="[blocked]...")
         3. 生成 exec_id（uuid4）
         4. POST /internal/conversations/{conv_id}/agent-exec（含命令、risk_level、node_ip、case_id）
         5. await redis.blpop(f"exec_result:{exec_id}", timeout=32)
-        6. 解析结果，截断输出，构建 ShellResult
+        6. 解析结果，截断输出，构建 ExecResult
         7. 写 tool_result 表（审计）
         """
 ```
@@ -664,7 +664,7 @@ await db.execute(insert(ToolResult).values(
 
 **验收标准**：
 - [ ] `CommandSanitizer` 正确拒绝注入命令（`$(ls)`、`; rm -rf`）
-- [ ] `blpop` 超时时返回包含 "timeout" 的 ShellResult（exit_code=-1）
+- [ ] `blpop` 超时时返回包含 "timeout" 的 ExecResult（exit_code=-1）
 - [ ] `tool_result` 表有对应记录
 - [ ] stdout 超过 4000 chars 时被截断，`truncated=True`
 
@@ -686,11 +686,11 @@ app/tools/acli：HCI 节点执行工具包（acli_exec + bash_exec + 插件工�
 """
 
 from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_policy
-from app.tools.acli.executor import BridgeRelayExecutor, ShellResult
+from app.tools.acli.executor import BridgeRelayExecutor, ExecResult
 
 __all__ = [
     "BridgeRelayExecutor",
-    "ShellResult",
+    "ExecResult",
     "classify_acli",
     "classify_bash",
     "risk_to_policy",
