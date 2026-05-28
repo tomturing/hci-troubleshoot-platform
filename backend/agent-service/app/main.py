@@ -27,6 +27,7 @@ from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from redis.asyncio import Redis
 from shared.clients import AIAssistantRegistry, KBClient, create_openclaw_client
+from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
 from shared.observability.metrics import HTTPMetricsMiddleware
 from shared.observability.otel import init_telemetry, instrument_app
@@ -62,6 +63,9 @@ async def lifespan(app: FastAPI):
         message=f"Starting {settings.SERVICE_NAME}",
         port=settings.SERVICE_PORT,
     )
+
+    # ── 数据库连接（用于工具注册表加载）──────────────────────────────────────────────
+    db_manager = DatabaseManager(settings.DATABASE_URL)
 
     # ── AI 助手注册表 ──────────────────────────────────────────────────────────
     ai_registry = AIAssistantRegistry()
@@ -127,6 +131,14 @@ async def lifespan(app: FastAPI):
     tool_executor = None  # 确保变量存在，供 InvestigationAgent 使用
     confirm_service: ConfirmService | None = None
     audit_service = FileAuditService()
+
+    # ── 加载工具注册表（从数据库）──────────────────────────────────────────────────────
+    # 无论是否启用 REACT，都需要加载工具注册表（InvestigationAgent 等也依赖）
+    from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY, load_tool_registry
+
+    async with db_manager.get_session() as db_session:
+        loaded_registry = await load_tool_registry(db_session)
+        TOOL_REGISTRY.update(loaded_registry)
 
     if settings.REACT_ENABLED:
         # 实例化工具执行客户端
@@ -260,6 +272,7 @@ async def lifespan(app: FastAPI):
     # ── 清理 ────────────────────────────────────────────────────────────────────────
     if redis_client:
         await redis_client.aclose()
+    await db_manager.close()
     logger.info(event="service_stopped", message=f"{settings.SERVICE_NAME} 已停止")
 
 
