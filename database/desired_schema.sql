@@ -670,11 +670,10 @@ CREATE TABLE IF NOT EXISTS tool_definition (
     id serial NOT NULL,
     tool_name varchar(100) NOT NULL UNIQUE,
     display_name varchar(200),
-    tool_type varchar(20) NOT NULL,
-    category varchar(50),
+    category varchar(50) NOT NULL,
     description text NOT NULL,
     usage_template text,
-    parameters_schema jsonb,
+    parameters_schema jsonb NOT NULL DEFAULT '{}',
     examples jsonb,
     risk_level smallint NOT NULL DEFAULT 1,
     is_active boolean DEFAULT true,
@@ -688,23 +687,22 @@ CREATE TABLE IF NOT EXISTS tool_definition (
 
 COMMENT ON TABLE tool_definition IS '工具定义表 — AI 工具知识库，存储 LLM 可调用工具的完整描述（acli 命令 / SCP API）。Prompt 构建时动态注入，让 LLM 知道何时调用哪个工具以及如何传参';
 COMMENT ON COLUMN tool_definition.id IS '工具定义主键，自增';
-COMMENT ON COLUMN tool_definition.tool_name IS '工具唯一标识（如 acli_vm_list / scp_get_servers），tool_result.tool_name 引用此字段；命名规则：{tool_type}_{资源}_{动作}';
-COMMENT ON COLUMN tool_definition.display_name IS '工具展示名（如''获取虚拟机列表''），用于前端审计日志展示，比 tool_name 更易读';
-COMMENT ON COLUMN tool_definition.tool_type IS '工具类型：acli（Sangfor HCI CLI 工具）/ scp_api（SCP REST API 接口）';
-COMMENT ON COLUMN tool_definition.category IS '所属故障域（vm / storage / network / cluster / platform）。NULL 表示通用工具（所有故障域均注入）；非 NULL 则只在对应 category_id 的会话中注入，减少 Prompt token';
-COMMENT ON COLUMN tool_definition.description IS '工具功能描述（直接注入 Prompt，LLM 读取后知道何时应该调用此工具）。示例：''获取 HCI 集群内所有虚拟机列表，可按名称、状态、宿主机过滤''';
-COMMENT ON COLUMN tool_definition.usage_template IS '调用模板。acli 类型示例：''acli vm list [--filter <key>=<value>]''；scp_api 类型示例：''GET https://{SCP_IP}/janus/{version}/servers?page={page}&limit={limit}''';
-COMMENT ON COLUMN tool_definition.parameters_schema IS '参数 JSON Schema（OpenAPI 3.0 格式），AI 按此 Schema 输出结构化参数对象，后端按此 Schema 校验后生成实际命令/请求';
-COMMENT ON COLUMN tool_definition.examples IS '调用示例数组。acli 示例：[{"cmd": "acli vm list", "desc": "列出全部虚拟机"}, {"cmd": "acli vm list --filter name=test-vm", "desc": "按名称过滤"}]；scp_api 示例：[{"method": "GET", "path": "/janus/20240725/servers", "desc": "获取服务器列表"}]';
-COMMENT ON COLUMN tool_definition.risk_level IS '风险等级：1=只读查询（不影响生产）/ 2=写操作（修改状态/配置）/ 3=高危（删除/重启/格式化）；影响 tool_result.policy 的默认策略';
+COMMENT ON COLUMN tool_definition.tool_name IS '工具唯一标识（如 acli_exec / bash_exec / get_active_alerts），tool_result.tool_name 引用此字段；命名规则：{执行后端}_{动作}';
+COMMENT ON COLUMN tool_definition.display_name IS '工具展示名（如''执行 acli 命令''），用于前端审计日志展示，比 tool_name 更易读';
+COMMENT ON COLUMN tool_definition.category IS '工具类别（执行路由依据）：scp（SCP 平台 REST API）/ acli（HCI 节点执行，含 acli_exec/bash_exec/插件诊断）/ sop（SOP 导航工具）';
+COMMENT ON COLUMN tool_definition.description IS '工具功能描述（直接注入 Prompt，LLM 读取后知道何时应该调用此工具）。示例：''在 HCI 节点执行 acli 命令（深圳桑福 HCI 平台专有 CLI）''';
+COMMENT ON COLUMN tool_definition.usage_template IS '调用模板。acli 插件工具示例：''acli plugins vm_start vm_start''；通用工具为 NULL';
+COMMENT ON COLUMN tool_definition.parameters_schema IS '参数 JSON Schema（OpenAI function calling 格式），AI 按此 Schema 输出结构化参数对象，后端按此 Schema 校验后生成实际命令/请求';
+COMMENT ON COLUMN tool_definition.examples IS '调用示例数组。示例：[{"args": {"command": "acli vm list --formatter json", "reason": "检查虚拟机状态"}, "desc": "列出虚拟机"}]';
+COMMENT ON COLUMN tool_definition.risk_level IS '风险等级静态默认值：1=只读查询（auto）/ 2=写操作需确认（confirm）/ 3=高危拦截（block）。注意：对 acli_exec/bash_exec 通用工具，运行时 RiskClassifier 根据命令内容动态判定并覆盖此值；对插件诊断/SCP/SOP 工具，此值为固定值（不动态覆盖）';
 COMMENT ON COLUMN tool_definition.is_active IS '是否启用；is_active=false 的工具不会注入 Prompt 也不会被 AI 调用，用于临时下线某工具';
 COMMENT ON COLUMN tool_definition.version IS '工具接口版本（对应 CLI 版本或 API path 中的日期版本如 20240725）';
 COMMENT ON COLUMN tool_definition.created_at IS '创建时间';
 COMMENT ON COLUMN tool_definition.updated_at IS '最后更新时间';
 
 -- 索引: tool_definition
--- 按类型查活跃工具
-CREATE INDEX IF NOT EXISTS idx_tool_definition_type_active ON tool_definition (tool_type, is_active);
+-- 按类别查活跃工具（Prompt 构建核心查询）
+CREATE INDEX IF NOT EXISTS idx_tool_definition_category_active ON tool_definition (category, is_active);
 -- 按故障域 + 风险等级过滤注入（Prompt 构建核心查询）
 CREATE INDEX IF NOT EXISTS idx_tool_definition_category_risk ON tool_definition (category, risk_level);
 -- 风险等级统计

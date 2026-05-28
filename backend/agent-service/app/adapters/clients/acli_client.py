@@ -1,13 +1,27 @@
 """
-acli 命令适配器——通过 SSH 在 HCI 节点执行 acli 命令
+acli 命令适配器——历史遗留代码（直连路径已废弃）
 
-安全设计：
+⚠️ 架构变更说明（v5.4）：
+  本模块的 _run_ssh() 方法通过 asyncssh 直接从云端 SSH 到 HCI 节点，
+  但 HCI 节点在客户私网，云端服务器无法直连，此路径已确认不可达。
+
+  新架构（唯一可行路径）：
+    Agent → BridgeRelayExecutor → Redis → Conversation Service SSE
+         → Frontend → terminal_bridge.exe → SSH → HCI
+
+  新执行后端：app/tools/acli/executor.py BridgeRelayExecutor
+
+  本文件的 _build_command() 中的命令构建逻辑（安全校验、shlex.quote 转义、
+  白名单 _ACLI_READONLY_VERBS 等）仍有参考价值，由 BridgeRelayExecutor 的
+  RiskClassifier 继承沿用。
+
+原始安全设计：
   - 所有 ID 类参数通过正则白名单校验（防命令注入）
   - 字符串参数通过 shlex.quote() 转义
   - SSH known_hosts 建议生产环境配置（默认关闭方便开发）
   - 连接超时 30s，不重试（诊断场景需要快速反馈）
 
-环境变量：
+原始环境变量（新架构已不使用）：
   HCI_SSH_USER      SSH 用户名（默认 admin）
   HCI_SSH_KEY_PATH  SSH 私钥路径
   HCI_SSH_PASSWORD  SSH 密码（与密钥二选一）
@@ -161,7 +175,21 @@ class AcliClient:
                 raise ValueError(f"AcliClient 未实现工具: {tool_name}")
 
     async def _run_ssh(self, host: str, command: str) -> dict:
-        """通过 asyncssh 在目标节点执行命令，返回结构化结果"""
+        """
+        ⚠️ 已废弃：通过 asyncssh 直连 HCI 节点执行命令。
+
+        此方法假设云端服务器可直连 HCI，但 HCI 在客户私网，该路径不可达。
+        新路径请使用 app/tools/acli/executor.py BridgeRelayExecutor。
+
+        保留此方法仅作历史参考，不应在任何生产代码中调用。
+        """
+        import warnings
+        warnings.warn(
+            "_run_ssh() 已废弃：HCI 在客户私网，云端不可达。"
+            "请使用 BridgeRelayExecutor（app/tools/acli/executor.py）。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         try:
             import asyncssh  # type: ignore[import-untyped]
         except ImportError:
