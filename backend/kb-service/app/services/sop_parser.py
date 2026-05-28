@@ -1024,10 +1024,12 @@ def _extract_vars_from_tree(node: SOPNode) -> set[str]:
     for item in node.prerequisite_items:
         vars_set |= _extract_vars_from_text(item.description)
     if node.diagnosis:
-        vars_set |= _extract_vars_from_text(node.diagnosis.description or "")
-        vars_set |= _extract_vars_from_text(node.diagnosis.root_cause or "")
-        vars_set |= _extract_vars_from_text(node.diagnosis.notes or "")
-        for method in node.diagnosis.page_methods:
+        # DiagnosisDetail 模型字段：acli_methods, page_methods, analysis_steps, possible_causes
+        for step in node.diagnosis.analysis_steps:
+            vars_set |= _extract_vars_from_text(step)
+        for cause in node.diagnosis.possible_causes:
+            vars_set |= _extract_vars_from_text(cause)
+        for method in node.diagnosis.page_methods or []:
             vars_set |= _extract_vars_from_text(method)
         for method in node.diagnosis.acli_methods:
             vars_set |= _extract_vars_from_text(method)

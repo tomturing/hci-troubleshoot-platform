@@ -894,48 +894,36 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
         # ── 短事务2：UPDATE sop_document（状态 + tree_json）────────────────────
         async with _db_manager.async_session_factory() as session:
-            # 更新状态字段
-            await session.execute(
-                text(
-                    """
-                    UPDATE sop_document
-                    SET status = 'published',
-                        published_at = :published_at,
-                        reviewer_id = :reviewer_id,
-                        reviewed_at = :reviewed_at,
-                        review_note = COALESCE(:review_note, review_note)
-                    WHERE id = :id
-                    """
-                ),
-                {
-                    "id": document_id,
-                    "published_at": now,
-                    "reviewer_id": body.reviewer_id,
-                    "reviewed_at": now,
-                    "review_note": body.review_note,
-                },
-            )
-
-            # 写入决策树 + variable_schema（若解析成功）
+            # 决策树解析成功才设置 status = published，失败则保持 draft 并记录错误
             if parse_result and not parse_result.has_error and parse_result.root_nodes:
+                # 解析成功：更新为 published + 写入决策树
                 root = parse_result.root_nodes[0]
                 await session.execute(
                     text(
                         """
                         UPDATE sop_document
-                        SET tree_json              = CAST(:tree_json AS jsonb),
-                            tree_schema_version    = :schema_version,
-                            tree_leaf_count        = :leaf_count,
+                        SET status = 'published',
+                            published_at = :published_at,
+                            reviewer_id = :reviewer_id,
+                            reviewed_at = :reviewed_at,
+                            review_note = COALESCE(:review_note, review_note),
+                            tree_json = CAST(:tree_json AS jsonb),
+                            tree_schema_version = :schema_version,
+                            tree_leaf_count = :leaf_count,
                             tree_validation_status = :validation_status,
                             tree_validation_issues = CAST(:validation_issues AS jsonb),
                             tree_generator_version = :generator_version,
-                            variable_schema        = CAST(:variable_schema AS jsonb),
-                            updated_at             = :updated_at
-                        WHERE id = :document_id
+                            variable_schema = CAST(:variable_schema AS jsonb),
+                            updated_at = :updated_at
+                        WHERE id = :id
                         """
                     ),
                     {
-                        "document_id": document_id,
+                        "id": document_id,
+                        "published_at": now,
+                        "reviewer_id": body.reviewer_id,
+                        "reviewed_at": now,
+                        "review_note": body.review_note,
                         "tree_json": json.dumps(root.model_dump(), ensure_ascii=False),
                         "schema_version": "sop-tree-v1",
                         "leaf_count": tree_leaf_count,
@@ -953,6 +941,65 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     document_id=document_id,
                     leaf_count=tree_leaf_count,
                     variable_count=len(variable_defs),
+                )
+            elif parse_result and parse_result.has_error:
+                # 解析失败：保持 draft + 记录错误信息（不阻断，返回 422 让用户修复）
+                await session.execute(
+                    text(
+                        """
+                        UPDATE sop_document
+                        SET tree_validation_status = 'error',
+                            tree_validation_issues = CAST(:validation_issues AS jsonb),
+                            updated_at = :updated_at
+                        WHERE id = :id
+                        """
+                    ),
+                    {
+                        "id": document_id,
+                        "validation_issues": json.dumps(
+                            [i.model_dump() for i in parse_result.issues], ensure_ascii=False
+                        ),
+                        "updated_at": now,
+                    },
+                )
+                # 构建错误详情返回给前端
+                error_issues = [i for i in parse_result.issues if i.level == "error"]
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "tree_parse_failed",
+                        "message": f"SOP 决策树解析失败，共 {len(error_issues)} 个错误，请修复后重新发布",
+                        "validation_issues": [i.model_dump() for i in parse_result.issues],
+                    },
+                )
+            else:
+                # 无 content_md 或解析结果为空：保持 draft 状态，记录原因
+                await session.execute(
+                    text(
+                        """
+                        UPDATE sop_document
+                        SET review_note = COALESCE(:review_note, review_note),
+                            updated_at = :updated_at
+                        WHERE id = :id
+                        """
+                    ),
+                    {
+                        "id": document_id,
+                        "review_note": body.review_note or "无法生成决策树：文档内容为空或无有效标题",
+                        "updated_at": now,
+                    },
+                )
+                logger.warning(
+                    event="sop_approve_no_tree",
+                    document_id=document_id,
+                    message="无法生成决策树，保持 draft 状态",
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "no_tree_generated",
+                        "message": "无法生成决策树：文档内容为空或无有效标题",
+                    },
                 )
 
             await session.commit()

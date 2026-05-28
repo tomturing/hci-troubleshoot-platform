@@ -116,11 +116,20 @@ function extractErrorMsg(e: unknown): string {
 }
 
 /** 从非 2xx 的 fetch Response 中提取可读错误消息，格式为 "HTTP <status>：<detail>" */
-async function parseHttpError(resp: Response): Promise<string> {
+async function parseHttpError(resp: Response): Promise<{ msg: string; issues?: ValidationIssue[] }> {
   const err = await resp.json().catch(() => ({}))
   const detail = (err as { detail?: unknown; message?: string }).detail
   let detailMsg: string
-  if (Array.isArray(detail)) {
+  let issues: ValidationIssue[] | undefined
+
+  // 处理 SOP 解析失败的 422 错误格式
+  if (detail != null && typeof detail === 'object' && 'validation_issues' in detail) {
+    const d = detail as { message?: string; validation_issues?: unknown[] }
+    detailMsg = d.message || '决策树解析失败'
+    if (Array.isArray(d.validation_issues)) {
+      issues = d.validation_issues as ValidationIssue[]
+    }
+  } else if (Array.isArray(detail)) {
     detailMsg = detail
       .map((d: { msg?: string; loc?: string[] }) => {
         const loc = d.loc && d.loc.length > 0 ? `[${d.loc.join('.')}] ` : ''
@@ -136,7 +145,7 @@ async function parseHttpError(resp: Response): Promise<string> {
   } else {
     detailMsg = resp.statusText || '未知错误'
   }
-  return `HTTP ${resp.status}：${detailMsg}`
+  return { msg: `HTTP ${resp.status}：${detailMsg}`, issues }
 }
 
 async function fetchDocuments() {
@@ -175,7 +184,19 @@ async function handleApprove(doc: SopDocument) {
       headers: { 'Content-Type': 'application/json', ...authHeader },
       body: JSON.stringify({ reviewer_id: 1 }),
     })
-    if (!resp.ok) throw new Error(await parseHttpError(resp))
+    if (!resp.ok) {
+      // 解析错误，如果包含 validation_issues 则显示详情弹窗
+      const { msg, issues } = await parseHttpError(resp)
+      if (issues && issues.length > 0) {
+        validationIssues.value = issues
+        validationDocTitle.value = doc.title
+        validationDialogVisible.value = true
+        ElMessage.error(`发布失败：${msg}`)
+      } else {
+        throw new Error(msg)
+      }
+      return
+    }
     const result = await resp.json()
 
     // 收集 validation_issues（含行号）
