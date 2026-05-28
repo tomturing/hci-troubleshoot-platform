@@ -15,7 +15,7 @@ acli 命令适配器——历史遗留代码（直连路径已废弃）
   白名单 _ACLI_READONLY_VERBS 等）仍有参考价值，由 BridgeRelayExecutor 的
   RiskClassifier 继承沿用。
 
-原始安全设计：
+安全设计：
   - 所有 ID 类参数通过正则白名单校验（防命令注入）
   - 字符串参数通过 shlex.quote() 转义
   - SSH known_hosts 建议生产环境配置（默认关闭方便开发）
@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import shlex
+import warnings
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,7 @@ class AcliClient:
                 raise ValueError(f"AcliClient 未实现工具: {tool_name}")
 
     async def _run_ssh(self, host: str, command: str) -> dict:
+<<<<<<< HEAD
         """
         ⚠️ 已废弃：通过 asyncssh 直连 HCI 节点执行命令。
 
@@ -187,6 +189,11 @@ class AcliClient:
         warnings.warn(
             "_run_ssh() 已废弃：HCI 在客户私网，云端不可达。"
             "请使用 BridgeRelayExecutor（app/tools/acli/executor.py）。",
+=======
+        """通过 asyncssh 在目标节点执行命令，返回结构化结果"""
+        warnings.warn(
+            "AcliClient._run_ssh 已废弃，agent-service 无法访问 HCI 私网，请改用 BridgeRelayExecutor",
+>>>>>>> worktree-agent-af29ccdd767085af4
             DeprecationWarning,
             stacklevel=2,
         )
