@@ -6,7 +6,7 @@ import asyncio
 import json
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient
@@ -115,6 +115,7 @@ async def send_message(
     conversation_id: uuid.UUID,
     message: MessageCreate,
     background_tasks: BackgroundTasks,
+    request: Request,  # 用于获取 app.state
     service: ConversationService = Depends(get_conversation_service)
 ):
     """
@@ -124,34 +125,60 @@ async def send_message(
         StreamingResponse: SSE流，格式为 data: <chunk>\n\n
     """
     ai_content = []
+    # 获取 SSE 推送服务（用于接收 agent_exec_command 等外部事件）
+    sse_pusher = getattr(request.app.state, "sse_pusher", None)
+    external_event_queue: asyncio.Queue | None = None
+
+    if sse_pusher:
+        # 创建队列用于接收外部事件（agent_exec_command 等）
+        external_event_queue = asyncio.Queue()
+        sse_pusher.register_queue(str(conversation_id), external_event_queue)
 
     async def event_generator():
         try:
-            async for chunk in service.send_message_stream_only(
+            # 同时监听 AI 流和外部事件队列
+            ai_stream = service.send_message_stream_only(
                 conversation_id=conversation_id,
                 case_id=message.case_id,
                 content=message.content,
                 assistant_type=message.assistant_type  # v2.2: 支持动态切换助手
-            ):
-                if chunk:
-                    # 检测特殊内部事件标记（\x00event:<type>:<data>\x00）
-                    if chunk.startswith("\x00event:") and chunk.endswith("\x00"):
-                        # 解析内部事件并转换为 SSE 事件格式
-                        inner = chunk[7:-1]  # 去掉前缀 \x00event: 和末尾 \x00
-                        parts = inner.split(":", 1)
-                        evt_type = parts[0]
-                        evt_data = parts[1] if len(parts) > 1 else ""
-                        if evt_type == "interactive_request":
-                            # interactive_request 数据本身已是完整 JSON，直接透传，无需包装
-                            yield f"event: {evt_type}\ndata: {evt_data}\n\n"
-                        else:
-                            event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
-                            yield f"event: {evt_type}\ndata: {event_payload}\n\n"
-                        continue
-                    ai_content.append(chunk)
-                    # JSON encode chunk 以安全保留换行符，避免 SSE 多行截断
-                    encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)
-                    yield f"data: {encoded_chunk}\n\n"
+            )
+
+            while True:
+                # 优先检查外部事件队列（快速响应 agent_exec_command）
+                if external_event_queue and not external_event_queue.empty():
+                    external_event = await external_event_queue.get()
+                    yield external_event
+                    continue
+
+                # 尝试获取 AI 流的下一个 chunk
+                try:
+                    chunk = await asyncio.wait_for(ai_stream.__anext__(), timeout=0.1)
+                    if chunk:
+                        # 检测特殊内部事件标记（\x00event:<type>:<data>\x00）
+                        if chunk.startswith("\x00event:") and chunk.endswith("\x00"):
+                            # 解析内部事件并转换为 SSE 事件格式
+                            inner = chunk[7:-1]  # 去掉前缀 \x00event: 和末尾 \x00
+                            parts = inner.split(":", 1)
+                            evt_type = parts[0]
+                            evt_data = parts[1] if len(parts) > 1 else ""
+                            if evt_type == "interactive_request":
+                                # interactive_request 数据本身已是完整 JSON，直接透传，无需包装
+                                yield f"event: {evt_type}\ndata: {evt_data}\n\n"
+                            else:
+                                event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
+                                yield f"event: {evt_type}\ndata: {event_payload}\n\n"
+                            continue
+                        ai_content.append(chunk)
+                        # JSON encode chunk 以安全保留换行符，避免 SSE 多行截断
+                        encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)
+                        yield f"data: {encoded_chunk}\n\n"
+                except TimeoutError:
+                    # AI 流暂时无数据，继续检查外部事件队列
+                    continue
+                except StopAsyncIteration:
+                    # AI 流结束，退出循环
+                    break
 
             # 正常流结束后，提交后台任务保存消息
             background_tasks.add_task(
@@ -224,6 +251,10 @@ async def send_message(
                 ensure_ascii=False,
             )
             yield f"event: error\ndata: {error_data}\n\n"
+        finally:
+            # 清理：注销 SSE 队列
+            if sse_pusher and external_event_queue:
+                sse_pusher.unregister_queue(str(conversation_id))
 
     return StreamingResponse(event_generator(), media_type="text/event-stream", background=background_tasks)
 

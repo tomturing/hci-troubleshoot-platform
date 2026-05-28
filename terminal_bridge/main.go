@@ -38,25 +38,47 @@ type InMessage struct {
 	Passphrase string `json:"passphrase"`
 	Data       string `json:"data"`
 	Command    string `json:"command"`
+	ExecID     string `json:"exec_id"` // 用于 ssh_exec_command
 }
 
 type OutMessage struct {
-	Type    string `json:"type"`
-	CaseID  string `json:"case_id"`
-	Output  string `json:"output,omitempty"`
-	Message string `json:"message,omitempty"`
-	Detail  string `json:"detail,omitempty"`
+	Type     string `json:"type"`
+	CaseID   string `json:"case_id"`
+	Output   string `json:"output,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+	ExecID   string `json:"exec_id,omitempty"`   // 用于 exec_result
+	ExitCode int    `json:"exit_code,omitempty"` // 用于 exec_result
+}
+
+// ── Exec Marker 监听器 ─────────────────────────────────────────────────────────
+
+// ExecListener 用于追踪命令执行的 marker
+type ExecListener struct {
+	ExecID    string           // 执行 ID
+	StartTime time.Time        // 开始时间
+	OutputBuf *strings.Builder // 输出缓冲区
+	ResultChan chan ExecResult // 结果通道
+}
+
+// ExecResult 命令执行结果
+type ExecResult struct {
+	Output   string
+	ExitCode int
+	Timeout  bool
 }
 
 // ── SSH 会话 ──────────────────────────────────────────────────────────────────
 
 type SSHSession struct {
-	caseID  string
-	client  *ssh.Client
-	session *ssh.Session
-	stdin   io.WriteCloser
-	mu      sync.Mutex
-	closed  bool
+	caseID      string
+	client      *ssh.Client
+	session     *ssh.Session
+	stdin       io.WriteCloser
+	mu          sync.Mutex
+	closed      bool
+	listenersMu sync.Mutex
+	listeners   map[string]*ExecListener // key: execID
 }
 
 func newSSHSession(msg InMessage) (*SSHSession, error) {
@@ -96,9 +118,10 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 	}
 
 	return &SSHSession{
-		caseID:  msg.CaseID,
-		client:  client,
-		session: session,
+		caseID:    msg.CaseID,
+		client:    client,
+		session:   session,
+		listeners: make(map[string]*ExecListener),
 	}, nil
 }
 
@@ -208,6 +231,108 @@ func (s *SSHSession) injectCommand(command string) {
 	s.send(command)
 }
 
+// ── Exec Marker 监听器管理 ───────────────────────────────────────────────────
+
+// registerExecListener 注册一个 marker 监听器
+func (s *SSHSession) registerExecListener(listener *ExecListener) {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
+	s.listeners[listener.ExecID] = listener
+	log.Printf("[Bridge] 注册 exec 监听器: case=%s exec_id=%s", s.caseID, listener.ExecID)
+}
+
+// unregisterExecListener 移除 marker 监听器
+func (s *SSHSession) unregisterExecListener(execID string) {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
+	delete(s.listeners, execID)
+	log.Printf("[Bridge] 移除 exec 监听器: case=%s exec_id=%s", s.caseID, execID)
+}
+
+// appendOutput 将输出追加到所有活跃监听器的缓冲区
+func (s *SSHSession) appendOutput(chunk string) {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
+	for _, listener := range s.listeners {
+		listener.OutputBuf.WriteString(chunk)
+	}
+}
+
+// checkMarkers 检查输出中是否包含已注册的 marker
+// 返回匹配到的监听器（如有）
+func (s *SSHSession) checkMarkers(output string) (*ExecListener, int, bool) {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
+
+	for execID, listener := range s.listeners {
+		// marker 格式：__EXEC_DONE_{execId16}:{exit_code}
+		// execId16 是 execID 的前 16 位
+		if len(execID) < 16 {
+			continue
+		}
+		markerPrefix := "__EXEC_DONE_" + execID[:16] + ":"
+		if idx := strings.Index(output, markerPrefix); idx != -1 {
+			// 找到 marker，解析 exit_code
+			markerStart := idx
+			markerEnd := strings.IndexByte(output[markerStart:], '\n')
+			if markerEnd == -1 {
+				markerEnd = len(output) - markerStart
+			}
+			markerLine := output[markerStart : markerStart+markerEnd]
+
+			// 解析 exit_code
+			var exitCode int
+			if _, err := fmt.Sscanf(markerLine, markerPrefix+"%d", &exitCode); err != nil {
+				exitCode = -1
+			}
+
+			return listener, exitCode, true
+		}
+	}
+	return nil, 0, false
+}
+
+// execCommand 执行命令并注册监听器
+func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) <-chan ExecResult {
+	resultChan := make(chan ExecResult, 1)
+
+	// 创建监听器
+	listener := &ExecListener{
+		ExecID:     execID,
+		StartTime:  time.Now(),
+		OutputBuf:  &strings.Builder{},
+		ResultChan: resultChan,
+	}
+
+	// 注册监听器
+	s.registerExecListener(listener)
+
+	// 启动超时检测
+	go func() {
+		select {
+		case <-time.After(timeout):
+			// 超时，发送超时结果
+			s.listenersMu.Lock()
+			if l, ok := s.listeners[execID]; ok {
+				output := l.OutputBuf.String()
+				delete(s.listeners, execID)
+				s.listenersMu.Unlock()
+				resultChan <- ExecResult{Output: output, ExitCode: -1, Timeout: true}
+				log.Printf("[Bridge] exec 超时: case=%s exec_id=%s", s.caseID, execID)
+			} else {
+				s.listenersMu.Unlock()
+			}
+		case <-resultChan:
+			// 正常完成
+		}
+	}()
+
+	// 写入命令
+	s.send(command)
+
+	return resultChan
+}
+
 func summarizeSSHDetail(output string) string {
 	cleaned := strings.ReplaceAll(output, "\r", "")
 	cleaned = strings.TrimSpace(cleaned)
@@ -279,6 +404,43 @@ func (s *SSHSession) on_output_start(
 			if n > 0 {
 				// xterm.js 需要原始 ANSI/VT100 序列进行终端渲染，这里不再做清洗。
 				chunk := string(buf[:n])
+
+				// 追加到监听器缓冲区
+				s.appendOutput(chunk)
+
+				// 检查是否有 marker 匹配
+				if listener, exitCode, matched := s.checkMarkers(chunk); matched {
+					// 找到 marker，提取输出（不含 marker 行）
+					output := listener.OutputBuf.String()
+					// 移除 marker 行
+					if len(listener.ExecID) >= 16 {
+						markerPrefix := "__EXEC_DONE_" + listener.ExecID[:16] + ":"
+						if idx := strings.Index(output, markerPrefix); idx != -1 {
+							output = output[:idx]
+							// 移除末尾可能的空行
+							output = strings.TrimRight(output, "\r\n")
+						}
+					}
+
+					// 发送 exec_result 消息
+					sendMsg(ws, OutMessage{
+						Type:     "exec_result",
+						CaseID:   caseID,
+						ExecID:   listener.ExecID,
+						Output:   output,
+						ExitCode: exitCode,
+					})
+					log.Printf("[Bridge] exec 完成: case=%s exec_id=%s exit_code=%d", caseID, listener.ExecID, exitCode)
+
+					// 移除监听器并发送结果
+					s.unregisterExecListener(listener.ExecID)
+					select {
+					case listener.ResultChan <- ExecResult{Output: output, ExitCode: exitCode}:
+					default:
+					}
+				}
+
+				// 发送原始输出到前端
 				sendMsg(ws, OutMessage{
 					Type:   "ssh_output",
 					CaseID: caseID,
@@ -399,7 +561,7 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 			if current == owned {
 				current.close()
 				b.remove(caseID)
-				log.Printf("[Bridge] 连接断开后清理会话: case=%s\\n", caseID)
+				log.Printf("[Bridge] 连接断开后清理会话: case=%s\n", caseID)
 			}
 		}
 	}()
@@ -479,6 +641,65 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 			}
 			sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: msg.CaseID})
 			log.Printf("[Bridge] SSH 已断开: case=%s", msg.CaseID)
+
+		case "ssh_exec_command":
+			// T-TOOL-01: 执行命令并监听 marker
+			s := b.get(msg.CaseID)
+			if s == nil {
+				sendMsg(ws, OutMessage{
+					Type:     "exec_result",
+					CaseID:   msg.CaseID,
+					ExecID:   msg.ExecID,
+					Output:   "SSH 会话不存在",
+					ExitCode: -1,
+				})
+				log.Printf("[Bridge] ssh_exec_command 失败: 会话不存在 case=%s exec_id=%s", msg.CaseID, msg.ExecID)
+				continue
+			}
+
+			if msg.ExecID == "" {
+				sendMsg(ws, OutMessage{
+					Type:     "exec_result",
+					CaseID:   msg.CaseID,
+					ExecID:   msg.ExecID,
+					Output:   "缺少 exec_id 参数",
+					ExitCode: -1,
+				})
+				log.Printf("[Bridge] ssh_exec_command 失败: 缺少 exec_id case=%s", msg.CaseID)
+				continue
+			}
+
+			if msg.Command == "" {
+				sendMsg(ws, OutMessage{
+					Type:     "exec_result",
+					CaseID:   msg.CaseID,
+					ExecID:   msg.ExecID,
+					Output:   "缺少 command 参数",
+					ExitCode: -1,
+				})
+				log.Printf("[Bridge] ssh_exec_command 失败: 缺少 command case=%s exec_id=%s", msg.CaseID, msg.ExecID)
+				continue
+			}
+
+			// 执行命令（60s 超时）
+			log.Printf("[Bridge] 开始执行命令: case=%s exec_id=%s command_len=%d", msg.CaseID, msg.ExecID, len(msg.Command))
+			resultChan := s.execCommand(msg.Command, msg.ExecID, 60*time.Second)
+
+			// 异步等待结果并发送
+			go func() {
+				result := <-resultChan
+				output := result.Output
+				if result.Timeout {
+					output = "execution timeout"
+				}
+				sendMsg(ws, OutMessage{
+					Type:     "exec_result",
+					CaseID:   msg.CaseID,
+					ExecID:   msg.ExecID,
+					Output:   output,
+					ExitCode: result.ExitCode,
+				})
+			}()
 		}
 	}
 }

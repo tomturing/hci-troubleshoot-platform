@@ -83,3 +83,43 @@ class RedisManager:
             return await self.client.ping()
         except Exception:
             return False
+
+    async def lpush(self, key: str, value: str) -> int:
+        """向列表左侧插入元素（用于队列写入）
+
+        Args:
+            key: 列表键名
+            value: 元素值
+
+        Returns:
+            插入后列表长度
+        """
+        if not self.client:
+            raise RuntimeError("Redis client not connected")
+        return await self.client.lpush(key, value)
+
+    async def rpop(self, key: str) -> str | None:
+        """从列表右侧弹出元素（用于队列读取）
+
+        Args:
+            key: 列表键名
+
+        Returns:
+            弹出的元素值，列表为空时返回 None
+        """
+        if not self.client:
+            raise RuntimeError("Redis client not connected")
+        return await self.client.rpop(key)
+
+    async def llen(self, key: str) -> int:
+        """获取列表长度
+
+        Args:
+            key: 列表键名
+
+        Returns:
+            列表长度
+        """
+        if not self.client:
+            raise RuntimeError("Redis client not connected")
+        return await self.client.llen(key)

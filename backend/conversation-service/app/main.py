@@ -11,16 +11,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient, create_openclaw_client
 from shared.database.postgres import DatabaseManager
+from shared.database.redis import RedisManager
 from shared.observability.logger import get_logger
 from shared.observability.metrics import HTTPMetricsMiddleware
 from shared.observability.otel import init_telemetry, instrument_app
 from shared.utils.exception_handlers import register_exception_handlers
 
 from app.config import settings
+from app.routes import agent_exec, conversations, diagnostic_item, evaluate, sop_execution
 from app.routes import audit as audit_route
-from app.routes import conversations, diagnostic_item, evaluate, sop_execution
 from app.services.agent_client import AgentClient
 from app.services.environment_client import EnvironmentClient
+from app.services.sse_pusher import SSEPusher
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -37,6 +39,15 @@ async def lifespan(app: FastAPI):
 
     # 初始化数据库
     database_manager = DatabaseManager(settings.DATABASE_URL)
+
+    # 初始化 Redis（用于 agent_exec 状态管理）
+    redis_manager = RedisManager(settings.REDIS_URL)
+    await redis_manager.connect()
+    logger.info(event="redis_initialized", message=f"Redis 已连接: {settings.REDIS_URL}")
+
+    # 初始化 SSE 推送服务（用于 agent_exec_command 事件推送）
+    sse_pusher = SSEPusher()
+    logger.info(event="sse_pusher_initialized", message="SSE Pusher 服务已初始化")
 
     # 初始化 AI 助手注册表 (v2.0，保留 ai_registry 用于兜底直连路径)
     ai_registry = AIAssistantRegistry()
@@ -98,6 +109,8 @@ async def lifespan(app: FastAPI):
 
     # 存入 app.state
     app.state.database_manager = database_manager
+    app.state.redis_manager = redis_manager
+    app.state.sse_pusher = sse_pusher
     app.state.ai_registry = ai_registry
     app.state.scheduler_client = scheduler_client
     app.state.kb_client = kb_client
@@ -117,12 +130,16 @@ async def lifespan(app: FastAPI):
     audit_route.set_audit_database_manager(database_manager)
     sop_execution.set_dependencies(database_manager)
     diagnostic_item.set_dependencies(database_manager)
+    agent_exec.set_dependencies(database_manager, redis_manager)  # T-TOOL-05, T-TOOL-06
 
     yield
 
     logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
     if ai_registry:
         await ai_registry.close_all()
+    if redis_manager:
+        await redis_manager.close()
+        logger.info(event="redis_closed", message="Redis 连接已关闭")
     if database_manager:
         await database_manager.close()
 
@@ -147,6 +164,7 @@ app.include_router(evaluate.router)
 app.include_router(audit_route.router)
 app.include_router(sop_execution.router)
 app.include_router(diagnostic_item.router)
+app.include_router(agent_exec.router)  # T-TOOL-05, T-TOOL-06
 
 
 # 健康检查端点
