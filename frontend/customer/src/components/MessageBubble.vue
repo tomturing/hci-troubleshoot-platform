@@ -873,13 +873,13 @@ onBeforeUnmount(() => {
 
           <!-- 已响应状态提示 -->
           <div v-else class="exec-confirm-result">
-            <el-tag v-if="execConfirmResult === 'confirmed'" type="success" size="small">
+            <el-tag v-if="execConfirmResult === 'exec_confirmed'" type="success" size="small">
               已确认
             </el-tag>
-            <el-tag v-else-if="execConfirmResult === 'rejected'" type="danger" size="small">
+            <el-tag v-else-if="execConfirmResult === 'exec_rejected'" type="danger" size="small">
               已拒绝
             </el-tag>
-            <el-tag v-else-if="execConfirmResult === 'timeout'" type="warning" size="small">
+            <el-tag v-else-if="execConfirmResult === 'exec_timeout'" type="warning" size="small">
               已超时
             </el-tag>
           </div>
