@@ -31,10 +31,13 @@ export interface TerminalWsMessage {
   | 'ssh_error'
   | 'pong'
   | 'bridge_ready'
+  | 'exec_result'  // T-TOOL-01: Agent 命令执行结果
   case_id?: string
   output?: string
   message?: string
   detail?: string
+  exec_id?: string  // exec_result 消息的执行 ID
+  exit_code?: number  // exec_result 消息的退出码
 }
 
 /**

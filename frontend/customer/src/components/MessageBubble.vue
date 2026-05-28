@@ -487,7 +487,7 @@ const execConfirmSubmitted = computed(() => {
 })
 
 /** 已确认的执行结果（从响应消息 metadata 读取） */
-const execConfirmResult = computed<'confirmed' | 'rejected' | 'timeout' | null>(() => {
+const execConfirmResult = computed<'exec_confirmed' | 'exec_rejected' | 'exec_timeout' | null>(() => {
   if (!execConfirmEvent.value) return null
   const msgIndex = chatStore.messages.findIndex(m => m.id === props.message.id)
   if (msgIndex === -1) return null
@@ -500,7 +500,7 @@ const execConfirmResult = computed<'confirmed' | 'rejected' | 'timeout' | null>(
 
 const execConfirmSubmitting = ref(false)
 const execConfirmCountdown = ref(600) // 10 分钟 = 600 秒
-let execConfirmTimer: number | null = null
+let execConfirmTimer: ReturnType<typeof setInterval> | null = null
 
 /** 启动倒计时（组件挂载时） */
 function startExecConfirmTimer() {

@@ -163,6 +163,7 @@ export const useChatStore = defineStore('chat', () => {
     riskLevel: 1 | 2 | 3
     nodeIp: string
     caseId: string
+    convId: string  // conversation ID（用于 POST 结果）
     timestamp: number  // 创建时间戳（用于倒计时）
   } | null>(null)
 
