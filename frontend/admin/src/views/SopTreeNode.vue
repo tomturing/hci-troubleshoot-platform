@@ -23,7 +23,7 @@ const props = defineProps<{
     prerequisite_items?: {
       description: string
       type: 'filter' | 'priority'
-      target_node_hint: string | null
+      target_node_hint?: string
     }[]
     variables?: {
       name: string
