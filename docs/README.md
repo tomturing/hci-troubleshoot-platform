@@ -50,6 +50,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | nginx 动态 DNS 解析修复（PR #160） | ✅ 完成 | 2026-04-17 |
 | admin 分类详情页 UI 修复：标题对齐/Markdown XSS/a11y（PR #200） | ✅ 完成 | 2026-04-22 |
 | agent-service/eval-service 服务拆分与测试覆盖（PR #309, #310） | ✅ 完成 | 2026-05-21 |
+| admin SOP 文档详情弹窗决策树高保真与自适应渲染优化 (PR #350) | ✅ 完成 | 2026-05-29 |
 
 **当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；dashscope 多模型已启用（qwen3.5-plus / qwen3-max / glm-4.7 / kimi-k2.5）；agent-service/eval-service 测试覆盖已完成
 

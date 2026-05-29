@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { FullScreen } from '@element-plus/icons-vue'
+import SopTreeNode from './SopTreeNode.vue'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -61,6 +63,10 @@ const archiveLoading = ref<Record<number, boolean>>({})
 // 查看弹窗
 const viewDialogVisible = ref(false)
 const viewDoc = ref<SopDocument | null>(null)
+const treeLoading = ref(false)
+const treeData = ref<any | null>(null)
+const expandedKeys = ref<Set<string>>(new Set())
+const viewFullscreen = ref(false)
 
 // 编辑弹窗
 const editDialogVisible = ref(false)
@@ -259,10 +265,66 @@ async function handleArchive(doc: SopDocument) {
   }
 }
 
+// ─── 决策树查询与折叠逻辑 ───────────────────────────────────────────────────
+async function loadTreeData(docId: number) {
+  treeLoading.value = true
+  treeData.value = null
+  expandedKeys.value = new Set()
+  try {
+    const resp = await fetch(`/api/v1/sop/${docId}/tree`, { headers: authHeader })
+    if (resp.ok) {
+      const data = await resp.json()
+      treeData.value = data
+      // 默认全部展开
+      expandAll()
+    } else if (resp.status === 404) {
+      treeData.value = null
+    } else {
+      const { msg } = await parseHttpError(resp)
+      ElMessage.warning(`无法获取决策树：${msg}`)
+    }
+  } catch (err) {
+    console.error(err)
+    ElMessage.error('加载决策树出错')
+  } finally {
+    treeLoading.value = false
+  }
+}
+
+function handleToggleExpand(nodeId: string) {
+  if (expandedKeys.value.has(nodeId)) {
+    expandedKeys.value.delete(nodeId)
+  } else {
+    expandedKeys.value.add(nodeId)
+  }
+  expandedKeys.value = new Set(expandedKeys.value)
+}
+
+function expandAll() {
+  const keys = new Set<string>()
+  const traverse = (node: any) => {
+    if (!node) return
+    keys.add(node.id)
+    if (node.children) {
+      node.children.forEach(traverse)
+    }
+  }
+  if (treeData.value?.tree) {
+    traverse(treeData.value.tree)
+  }
+  expandedKeys.value = keys
+}
+
+function collapseAll() {
+  expandedKeys.value = new Set()
+}
+
 // ─── 查看内容 ────────────────────────────────────────────────────────────────
 function openViewDialog(doc: SopDocument) {
   viewDoc.value = doc
+  viewFullscreen.value = false
   viewDialogVisible.value = true
+  loadTreeData(doc.id)
 }
 
 // ─── 编辑 ────────────────────────────────────────────────────────────────────
@@ -566,28 +628,132 @@ onMounted(() => {
     </el-card>
 
     <!-- ── 查看弹窗 ── -->
-    <el-dialog v-model="viewDialogVisible" title="SOP 文档详情" width="760px" top="4vh">
+    <el-dialog 
+      v-model="viewDialogVisible" 
+      width="90%" 
+      class="premium-dialog"
+      :fullscreen="viewFullscreen"
+      draggable
+      align-center
+    >
+      <!-- 自定义弹窗 Header，含全屏切换按钮 -->
+      <template #header>
+        <div class="custom-dialog-header">
+          <span class="el-dialog__title">SOP 文档详情</span>
+          <el-button 
+            type="info" 
+            text 
+            circle
+            :icon="FullScreen"
+            class="fullscreen-toggle-btn"
+            @click="viewFullscreen = !viewFullscreen"
+            title="切换全屏"
+          />
+        </div>
+      </template>
+
       <template v-if="viewDoc">
-        <el-descriptions :column="3" border size="small" style="margin-bottom:16px">
-          <el-descriptions-item label="ID">#{{ viewDoc.id }}</el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <el-tag :type="statusType(viewDoc.status)" size="small">{{ statusLabel(viewDoc.status) }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="分块数">{{ viewDoc.chunk_count }}</el-descriptions-item>
-          <el-descriptions-item label="分类">{{ viewDoc.category_id || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="导入时间">{{ formatDate(viewDoc.created_at) }}</el-descriptions-item>
-          <el-descriptions-item label="发布时间">{{ formatDate(viewDoc.published_at) }}</el-descriptions-item>
-          <el-descriptions-item label="标题" :span="3"><strong>{{ viewDoc.title }}</strong></el-descriptions-item>
-        </el-descriptions>
-        <el-alert type="info" :closable="false" show-icon>
-          <template #title>内容说明</template>
-          文档共 {{ viewDoc.chunk_count }} 个章节分块，已按标题拆分存入向量数据库。如需查看原始内容，请参考导入时的源文件。
-        </el-alert>
+        <el-row :gutter="20" class="sop-detail-layout">
+          <!-- 左栏：基本元数据描述 -->
+          <el-col :span="6" class="sop-meta-col">
+            <div class="sop-meta-card">
+              <h3 class="side-panel-title">元数据信息</h3>
+              <el-descriptions :column="1" border size="small" class="sleek-descriptions">
+                <el-descriptions-item label="文档 ID">
+                  <span class="mono-id">#{{ viewDoc.id }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="发布状态">
+                  <el-tag :type="statusType(viewDoc.status)" size="small" effect="dark">{{ statusLabel(viewDoc.status) }}</el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="决策树节点数">
+                  <span v-if="treeData" class="badge-num green-glow">{{ treeData.tree_leaf_count || '—' }} 节点</span>
+                  <span v-else class="text-muted">—</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="分块数量">
+                  <span class="badge-num">{{ viewDoc.chunk_count }} 块</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="分类基线">
+                  <el-tag v-if="viewDoc.category_id" type="info" size="small" effect="plain">{{ viewDoc.category_id }}</el-tag>
+                  <span v-else class="text-muted">—</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="导入时间">
+                  <span class="date-desc">{{ formatDate(viewDoc.created_at) }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="最近发布">
+                  <span class="date-desc">{{ formatDate(viewDoc.published_at) }}</span>
+                </el-descriptions-item>
+              </el-descriptions>
+
+              <div class="sop-meta-title-box">
+                <span class="meta-label">文档标题</span>
+                <div class="meta-val">{{ viewDoc.title }}</div>
+              </div>
+
+              <!-- 贴心小指南 -->
+              <div class="guide-box">
+                <div class="guide-title">💡 交互小提示</div>
+                <ul class="guide-list">
+                  <li>右侧多叉决策树支持点击节点**头部**快速折叠/展开分支；</li>
+                  <li>支持一键**全部展开**或**全部折叠**以快速审阅结构；</li>
+                  <li>叶子节点中推荐的 `acli` 命令支持**一键复制**；</li>
+                  <li>如发现逻辑有误，可点击下方“编辑”直接调整 Markdown 内容。</li>
+                </ul>
+              </div>
+            </div>
+          </el-col>
+
+          <!-- 右栏：决策树渲染区域 -->
+          <el-col :span="18" class="sop-tree-col">
+            <div class="tree-display-panel" v-loading="treeLoading">
+              <!-- 决策树操作栏 -->
+              <div class="tree-toolbar">
+                <div class="toolbar-left">
+                  <span class="tree-section-title">决策树结构（Decision Tree Flow）</span>
+                  <el-tag 
+                    v-if="treeData" 
+                    :type="treeValidationType(treeData.tree_validation_status)" 
+                    size="small"
+                    class="validation-status-tag"
+                  >
+                    校验状态: {{ treeValidationLabel(treeData.tree_validation_status, true) }}
+                  </el-tag>
+                </div>
+                <div class="toolbar-right" v-if="treeData">
+                  <el-button-group>
+                    <el-button type="primary" size="small" plain @click="expandAll">全部展开</el-button>
+                    <el-button type="primary" size="small" plain @click="collapseAll">全部折叠</el-button>
+                  </el-button-group>
+                </div>
+              </div>
+
+              <!-- 树体内容区 -->
+              <div class="tree-scroll-container">
+                <template v-if="treeData && treeData.tree">
+                  <SopTreeNode 
+                    :node="treeData.tree" 
+                    :expanded-keys="expandedKeys" 
+                    @toggle-expand="handleToggleExpand"
+                  />
+                </template>
+                <div v-else-if="treeLoading" class="tree-empty-state">
+                  <span class="loading-text">正在加载多叉决策树数据...</span>
+                </div>
+                <div v-else class="tree-empty-state">
+                  <div class="empty-icon">📂</div>
+                  <div class="empty-title">暂无决策树结构</div>
+                  <div class="empty-desc">该文档目前无决策树 JSON。可能文档处于“草稿”状态，请点击下方“发布”按钮触发语法校验并生成决策树。</div>
+                </div>
+              </div>
+            </div>
+          </el-col>
+        </el-row>
       </template>
       <template #footer>
-        <el-button @click="viewDialogVisible = false">关闭</el-button>
-        <el-button type="primary" @click="viewDialogVisible = false; viewDoc && openEditDialog(viewDoc)">编辑</el-button>
-        <el-button v-if="viewDoc && viewDoc.status === 'draft'" type="success" :loading="viewDoc ? !!approveLoading[viewDoc.id] : false" @click="viewDoc && handleApprove(viewDoc)">发布</el-button>
+        <div class="dialog-footer-actions">
+          <el-button @click="viewDialogVisible = false">关闭</el-button>
+          <el-button type="primary" @click="viewDialogVisible = false; viewDoc && openEditDialog(viewDoc)">编辑正文</el-button>
+          <el-button v-if="viewDoc && viewDoc.status === 'draft'" type="success" :loading="viewDoc ? !!approveLoading[viewDoc.id] : false" @click="viewDoc && handleApprove(viewDoc)">发布并同步</el-button>
+        </div>
       </template>
     </el-dialog>
 
@@ -781,5 +947,232 @@ onMounted(() => {
   background: #fff;
   overflow: auto;
   tab-size: 2;
+}
+/* 高端详情弹窗样式 */
+.custom-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-right: 32px;
+}
+
+.fullscreen-toggle-btn {
+  font-size: 16px;
+  color: #606266;
+  transition: all 0.2s;
+}
+
+.fullscreen-toggle-btn:hover {
+  background: #f1f5f9;
+  color: #409eff;
+  transform: scale(1.1);
+}
+
+.sop-detail-layout {
+  min-height: 520px;
+}
+
+/* 左侧栏：元数据卡片 */
+.sop-meta-col {
+  border-right: 1px solid #e4e7ed;
+}
+
+.sop-meta-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-right: 10px;
+}
+
+.side-panel-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #303133;
+}
+
+.sleek-descriptions :deep(.el-descriptions__label) {
+  font-weight: 600;
+  color: #606266;
+  width: 100px;
+  background: #f8fafc;
+}
+
+.sleek-descriptions :deep(.el-descriptions__content) {
+  color: #303133;
+}
+
+.mono-id {
+  font-family: monospace;
+  font-weight: 700;
+  color: #909399;
+}
+
+.badge-num {
+  font-family: monospace;
+  font-weight: 700;
+  color: #606266;
+}
+
+.badge-num.green-glow {
+  color: #16a34a;
+  background: #f0fdf4;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.date-desc {
+  font-size: 12px;
+  color: #606266;
+}
+
+.sop-meta-title-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #f8fafc;
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid #f1f5f9;
+}
+
+.meta-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #909399;
+  text-transform: uppercase;
+}
+
+.meta-val {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e293b;
+  line-height: 1.5;
+}
+
+/* 提示指南框 */
+.guide-box {
+  background: #f0f7ff;
+  border: 1px solid #e0eaff;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.guide-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #1d4ed8;
+  margin-bottom: 6px;
+}
+
+.guide-list {
+  margin: 0;
+  padding-left: 14px;
+  font-size: 12px;
+  color: #4b5563;
+  line-height: 1.6;
+}
+
+.guide-list li {
+  margin-bottom: 4px;
+}
+
+/* 右侧栏：决策树渲染区域 */
+.sop-tree-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.tree-display-panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  overflow: hidden;
+  height: 100%;
+  min-height: 480px;
+}
+
+.tree-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tree-section-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.validation-status-tag {
+  font-weight: 600;
+  border-radius: 4px;
+}
+
+.tree-scroll-container {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+  max-height: 60vh;
+}
+
+/* 全屏状态下，将树体高度拉大 */
+.el-dialog.is-fullscreen .tree-scroll-container {
+  max-height: 78vh;
+}
+
+.tree-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 40px;
+  text-align: center;
+  background: #ffffff;
+  border-radius: 6px;
+  border: 1px dashed #e2e8f0;
+  margin: 10px;
+}
+
+.empty-icon {
+  font-size: 40px;
+  margin-bottom: 12px;
+}
+
+.empty-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 6px;
+}
+
+.empty-desc {
+  font-size: 13px;
+  color: #64748b;
+  max-width: 460px;
+  line-height: 1.6;
+}
+
+.loading-text {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.dialog-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 </style>
