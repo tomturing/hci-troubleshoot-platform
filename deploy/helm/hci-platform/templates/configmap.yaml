@@ -5,7 +5,7 @@ metadata:
   namespace: {{ include "hci.namespace" . }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
-{{- $defaultAssistantRegistry := "{\"htp-agent\":{\"base_url\":\"https://coding.dashscope.aliyuncs.com/v1\",\"provider_api_key\":\"{{ .Values.secrets.llmApiKey }}\",\"model\":\"glm-5\",\"warm_pool_size\":0,\"max_pool_size\":0,\"display_name\":\"HTP Agent (GLM-5)\",\"description\":\"HCI智能排障平台核心助手\",\"is_default\":true,\"enabled\":true},\"ops-agent\":{\"warm_pool_size\":0,\"max_pool_size\":0,\"base_url\":\"http://ops-agent-service:8006\",\"display_name\":\"Ops Agent (GLM-5)\",\"description\":\"基于SOP知识库的智能排障助手\",\"enabled\":true},\"pai-agent\":{\"name\":\"PydanticAI\",\"display_name\":\"PAI Agent (GLM-5)\",\"description\":\"基于pydantic-ai框架的排障助手\",\"base_url\":\"http://conversation-service:8002\",\"warm_pool_size\":0,\"max_pool_size\":0,\"enabled\":true,\"is_default\":false}}" }}
+{{- $defaultAssistantRegistry := printf "{\"htp-agent\":{\"base_url\":\"https://coding.dashscope.aliyuncs.com/v1\",\"provider_api_key\":\"%s\",\"model\":\"glm-5\",\"warm_pool_size\":0,\"max_pool_size\":0,\"display_name\":\"HTP Agent (GLM-5)\",\"description\":\"HCI智能排障平台核心助手\",\"is_default\":true,\"enabled\":true},\"ops-agent\":{\"warm_pool_size\":0,\"max_pool_size\":0,\"base_url\":\"http://ops-agent-service:8006\",\"display_name\":\"Ops Agent (GLM-5)\",\"description\":\"基于SOP知识库的智能排障助手\",\"enabled\":true},\"pai-agent\":{\"name\":\"PydanticAI\",\"display_name\":\"PAI Agent (GLM-5)\",\"description\":\"基于pydantic-ai框架的排障助手\",\"base_url\":\"http://conversation-service:8002\",\"warm_pool_size\":0,\"max_pool_size\":0,\"enabled\":true,\"is_default\":false}}" .Values.secrets.llmApiKey }}
 data:
   # 数据库（非敏感）
   POSTGRES_DB: {{ .Values.config.postgresDb | quote }}

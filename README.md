@@ -1,8 +1,12 @@
 # HCI 智能排障平台
 
-> 版本 **v2.1.1** · 2026-04-24
+> 版本 **v2.1.2** · 2026-05-29
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
+
+### v2.1.2 更新说明（2026-05-29）
+
+- **AI 空回复修复**：修复 Helm ConfigMap 中 `llmApiKey` 模板渲染 Bug。使用 `printf` 语法正确渲染默认 Assistant Registry JSON 中的 API key，解决由于 `provider_api_key` 字面量渲染引发 DashScope `400 Bad Request` 导致前端返回空聊天气泡的问题。
 
 ### v2.1.1 更新说明（2026-04-24）
 
