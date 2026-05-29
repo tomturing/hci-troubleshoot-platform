@@ -749,13 +749,14 @@ onMounted(() => {
                     </div>
                     <!-- 前置条件（路由节点） -->
                     <div v-if="data.prerequisite_items?.length" class="node-prerequisites">
-                      <span class="section-label">前置条件：</span>
                       <div class="prerequisite-list">
                         <div v-for="(p, idx) in data.prerequisite_items" :key="idx" class="prerequisite-item">
-                          <el-tag :type="p.type === 'filter' ? 'primary' : 'warning'" size="small">
-                            {{ p.type === 'filter' ? '过滤' : '优先' }}
-                          </el-tag>
-                          <span class="prerequisite-desc">{{ p.description }}</span>
+                          <div class="prerequisite-header">
+                            <el-tag :type="p.type === 'filter' ? 'primary' : 'warning'" size="small">
+                              {{ p.type === 'filter' ? '过滤' : '优先' }}
+                            </el-tag>
+                          </div>
+                          <div class="prerequisite-content">{{ p.description }}</div>
                         </div>
                       </div>
                     </div>
@@ -1092,14 +1093,24 @@ onMounted(() => {
   margin-top: 4px;
 }
 .prerequisite-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: #fff;
+  border-radius: 3px;
+  border: 1px solid #e4e7ed;
+}
+.prerequisite-item:last-child {
+  margin-bottom: 0;
+}
+.prerequisite-header {
   margin-bottom: 4px;
 }
-.prerequisite-desc {
-  color: #303133;
+.prerequisite-content {
   font-size: 13px;
+  color: #303133;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .node-diagnosis {
   margin-top: 6px;
