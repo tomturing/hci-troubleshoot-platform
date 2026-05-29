@@ -348,6 +348,15 @@ async def sop_detail_proxy(document_id: int, request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@sop_admin_router.get("/{document_id}/tree")
+async def sop_tree_proxy(document_id: int, request: Request):
+    """代理 SOP 决策树查询请求（返回 tree_json 与元数据）→ kb-service"""
+    headers = _internal_auth_headers()
+    response = await _sop_proxy("GET", f"/{document_id}/tree", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+
 @sop_admin_router.post("/{document_id}/approve")
 async def sop_approve_proxy(document_id: int, request: Request):
     """代理 SOP 文档发布（生成 embedding）→ kb-service，使用 600s 超时应对大文档"""
