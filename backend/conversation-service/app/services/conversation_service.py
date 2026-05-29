@@ -319,6 +319,7 @@ class ConversationService:
 
                 session_id = str(conversation_id)
                 _used_ops_agent_path = resolved_assistant_type == "ops-agent"
+                _agent_had_error = False
                 async for agent_event in self._agent_client.stream(
                     assistant_type=resolved_assistant_type,
                     session_id=session_id,
@@ -402,9 +403,20 @@ class ConversationService:
                         )
                         yield f"\x00event:interactive_request:{_ir_payload}\x00"
                     elif event_type == "error":
+                        _agent_had_error = True
                         yield f"\n[Agent Error: {agent_event.get('message', '未知错误')}]"
                     elif event_type == "done":
                         break
+
+                # 空响应兜底：agent-service 返回 done 但没有任何内容（且未收到 error 事件）
+                if not _full_reply_buffer and not _agent_had_error:
+                    logger.warning(
+                        event="agent_empty_response",
+                        message="agent-service 返回空响应（无 text_chunk）",
+                        conversation_id=str(conversation_id),
+                        assistant_type=resolved_assistant_type,
+                    )
+                    yield "\n[系统提示] AI 助手暂未返回内容，可能是服务暂时繁忙或配置异常。请稍后重试。\n"
             else:
                 # ── 原有路径：直接调用 ai_registry（AgentRouter 未注入时兜底）───
                 ai_client = self.ai_registry.get_client(resolved_assistant_type)
