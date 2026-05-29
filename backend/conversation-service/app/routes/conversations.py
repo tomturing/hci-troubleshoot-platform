@@ -51,17 +51,20 @@ def set_dependencies(
     globals()['agent_client'] = agent_client
 
 
-async def get_conversation_service() -> ConversationService:
+async def get_conversation_service(request: Request) -> ConversationService:
     """依赖注入: 获取Conversation Service"""
     if not database_manager or not ai_registry:
         raise HTTPException(status_code=500, detail="Service dependencies not initialized")
+
+    # 从 app.state 获取 agent_client（而不是使用模块全局变量）
+    agent_client_from_state = getattr(request.app.state, "agent_client", None)
 
     async for session in database_manager.get_session():
         repo = ConversationRepository(session)
         yield ConversationService(
             repo, ai_registry, scheduler_client, kb_client, environment_client,
             database_manager.async_session_factory,
-            agent_client=agent_client,
+            agent_client=agent_client_from_state,
         )
 
 @router.post("/", status_code=201)
