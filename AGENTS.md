@@ -50,6 +50,10 @@
   - 字段名统一：`chunk_count` → `tree_leaf_count`（节点数）
   - 决策树"有警告"状态时提供查看告警详情入口（Warning 图标）
   - 删除所有分块/chunk/embedding 相关的过期概念和文案
+- **SOP 查看弹窗优化**（PR #351）：
+  - 基础信息表格中"决策树"字段改为"节点数"，显示 `tree_leaf_count` 数值
+  - 有警告时在节点数旁显示告警标签和查看按钮，点击可查看告警详情
+  - 后端详情接口添加 `tree_validation_status` 和 `tree_validation_issues` 字段返回
 
 ---
 
