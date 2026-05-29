@@ -112,6 +112,7 @@ async def _event_stream(
         trace_id=trace_id,
     )
 
+    _has_text_chunk = False
     try:
         async for event in _agent_router.process(
             assistant_type=req.assistant_type,
@@ -128,6 +129,7 @@ async def _event_stream(
             sop_resume_context=req.sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
         ):
             if isinstance(event, AgentTextChunk):
+                _has_text_chunk = True
                 yield _sse({"type": "text_chunk", "content": event.content})
             elif isinstance(event, AgentStageUpdate):
                 yield _sse(
@@ -159,6 +161,22 @@ async def _event_stream(
                         "context": event.context,
                     }
                 )
+
+        # 空流检测：整个推理过程没有任何文本输出
+        if not _has_text_chunk:
+            logger.warning(
+                event="agent_stream_empty",
+                message="推理流结束但无任何 text_chunk 输出",
+                session_id=req.session_id,
+                case_id=req.case_id,
+                assistant_type=req.assistant_type,
+            )
+            yield _sse(
+                {
+                    "type": "error",
+                    "message": "AI 推理未返回任何内容，可能是模型服务异常或配置问题",
+                }
+            )
 
         yield _sse({"type": "done"})
         logger.info(

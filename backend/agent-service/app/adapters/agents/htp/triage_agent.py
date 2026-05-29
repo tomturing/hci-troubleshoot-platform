@@ -215,6 +215,21 @@ class TriageAgent(BaseAgent):
 
         # 5. 解析意图识别结果
         reply_text = "".join(full_reply)
+
+        # 空响应兜底：LLM 未返回任何内容时给出友好提示
+        if not reply_text.strip():
+            logger.warning(
+                event="triage_empty_response",
+                message="TriageAgent LLM 返回空响应",
+                session_id=session_id,
+                assistant_type=assistant_type,
+            )
+            yield AgentTextChunk(
+                content="\n[系统提示] AI 服务暂未返回内容，可能是服务暂时繁忙或配置异常。\n"
+                "请稍后重试，或联系管理员检查 AI 服务状态。\n"
+            )
+            return
+
         result = self._parse_intent_result(reply_text)
 
         logger.info(
