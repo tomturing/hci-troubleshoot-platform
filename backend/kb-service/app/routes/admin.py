@@ -1105,6 +1105,58 @@ async def get_sop_document(request: Request, document_id: int):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SOP 决策树查询接口（供管理前端渲染树结构）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@sop_router.get("/{document_id}/tree")
+async def get_sop_tree(request: Request, document_id: int):
+    """获取 SOP 文档的决策树 JSON（tree_json 字段）。
+
+    返回值为 SOPNode.model_dump() 格式，树根节点对象。
+    文档不存在或决策树尚未生成时返回 404。
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    text(
+                        """
+                SELECT id, title, tree_json, tree_validation_status, tree_leaf_count
+                FROM sop_document WHERE id = :id
+                """
+                    ),
+                    {"id": document_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"SOP 文档 {document_id} 不存在")
+
+    if row["tree_json"] is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"SOP 文档 {document_id} 的决策树尚未生成，请先发布文档",
+        )
+
+    return {
+        "document_id": row["id"],
+        "title": row["title"],
+        "tree_validation_status": row["tree_validation_status"],
+        "tree_leaf_count": row["tree_leaf_count"],
+        "tree": row["tree_json"],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SOP 文档列表查询接口
 # ─────────────────────────────────────────────────────────────────────────────
 

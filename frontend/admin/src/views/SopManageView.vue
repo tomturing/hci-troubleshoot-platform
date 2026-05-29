@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Warning } from '@element-plus/icons-vue'
+import { FullScreen, Warning } from '@element-plus/icons-vue'
+import SopTreeNode from './SopTreeNode.vue'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -71,6 +72,12 @@ interface SOPNode {
   solution?: SolutionDetail
 }
 
+interface TreeDataResponse {
+  tree: SOPNode
+  tree_leaf_count: number
+  tree_validation_status: string
+}
+
 // 分类基线选项
 interface CategoryOption {
   code: string
@@ -95,6 +102,10 @@ const archiveLoading = ref<Record<number, boolean>>({})
 // 查看弹窗
 const viewDialogVisible = ref(false)
 const viewDoc = ref<SopDocument | null>(null)
+const treeLoading = ref(false)
+const treeData = ref<TreeDataResponse | null>(null)
+const expandedKeys = ref<Set<string>>(new Set())
+const viewFullscreen = ref(false)
 
 // 编辑弹窗
 const editDialogVisible = ref(false)
@@ -134,17 +145,6 @@ const importFile = ref<File | null>(null)
 const importCategoryId = ref('')
 const importLoading = ref(false)
 const importFileInput = ref<HTMLInputElement | null>(null)
-
-// ─── 决策树可视化 ──────────────────────────────────────────────────────────────
-const viewTreeLoading = ref(false)
-const viewTreeData = ref<SOPNode | null>(null)
-const viewTreeExpandedKeys = ref<string[]>([])
-
-// el-tree 配置
-const treeProps = {
-  children: 'children',
-  label: 'title',
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // API
@@ -304,23 +304,58 @@ async function handleArchive(doc: SopDocument) {
   }
 }
 
-// ─── 查看内容 ────────────────────────────────────────────────────────────────
-async function openViewDialog(doc: SopDocument) {
-  viewDoc.value = doc
-  viewDialogVisible.value = true
-  // 重置决策树状态
-  viewTreeData.value = null
-  viewTreeExpandedKeys.value = []
-
-  // 获取文档详情（包含 tree_validation_issues）
-  if (doc.tree_validation_status === 'warnings' && !doc.tree_validation_issues) {
-    await fetchViewDocDetail(doc.id)
+// ─── 决策树查询与折叠逻辑 ───────────────────────────────────────────────────
+async function loadTreeData(docId: number) {
+  treeLoading.value = true
+  treeData.value = null
+  expandedKeys.value = new Set()
+  try {
+    const resp = await fetch(`/api/v1/sop/${docId}/tree`, { headers: authHeader })
+    if (resp.ok) {
+      const data = await resp.json()
+      treeData.value = data
+      // 默认全部展开
+      expandAll()
+    } else if (resp.status === 404) {
+      treeData.value = null
+    } else {
+      const { msg } = await parseHttpError(resp)
+      ElMessage.warning(`无法获取决策树：${msg}`)
+    }
+  } catch (err) {
+    console.error(err)
+    ElMessage.error('加载决策树出错')
+  } finally {
+    treeLoading.value = false
   }
+}
 
-  // 若文档有决策树，异步加载
-  if (doc.has_tree) {
-    fetchViewTree(doc.id)
+function handleToggleExpand(nodeId: string) {
+  if (expandedKeys.value.has(nodeId)) {
+    expandedKeys.value.delete(nodeId)
+  } else {
+    expandedKeys.value.add(nodeId)
   }
+  expandedKeys.value = new Set(expandedKeys.value)
+}
+
+function expandAll() {
+  const keys = new Set<string>()
+  const traverse = (node: SOPNode | undefined) => {
+    if (!node) return
+    keys.add(node.id)
+    if (node.children) {
+      node.children.forEach(traverse)
+    }
+  }
+  if (treeData.value?.tree) {
+    traverse(treeData.value.tree)
+  }
+  expandedKeys.value = keys
+}
+
+function collapseAll() {
+  expandedKeys.value = new Set()
 }
 
 // ─── 获取文档详情（含告警信息）───────────────────────────────────────────────
@@ -352,45 +387,19 @@ function fetchValidationIssues() {
   }
 }
 
-// ─── 决策树数据获取 ──────────────────────────────────────────────────────────
-async function fetchViewTree(documentId: number) {
-  viewTreeLoading.value = true
-  try {
-    const resp = await fetch(`/api/v1/sop/${documentId}/tree`, { headers: authHeader })
-    if (resp.ok) {
-      viewTreeData.value = await resp.json()
-      // 默认展开第一层节点
-      if (viewTreeData.value?.id) {
-        viewTreeExpandedKeys.value = [viewTreeData.value.id]
-      }
-    } else if (resp.status !== 404) {
-      ElMessage.warning('决策树加载失败')
-    }
-  } catch {
-    ElMessage.warning('决策树加载失败，请稍后重试')
-  } finally {
-    viewTreeLoading.value = false
+// ─── 查看内容 ────────────────────────────────────────────────────────────────
+async function openViewDialog(doc: SopDocument) {
+  viewDoc.value = doc
+  viewFullscreen.value = false
+  viewDialogVisible.value = true
+
+  // 获取文档详情（包含 tree_validation_issues）
+  if (doc.tree_validation_status === 'warnings' && !doc.tree_validation_issues) {
+    await fetchViewDocDetail(doc.id)
   }
-}
 
-// ─── 决策树展开/折叠 ──────────────────────────────────────────────────────────
-function expandAllNodes() {
-  if (!viewTreeData.value) return
-  viewTreeExpandedKeys.value = collectAllNodeIds(viewTreeData.value)
-}
-
-function collapseAllNodes() {
-  viewTreeExpandedKeys.value = []
-}
-
-function collectAllNodeIds(node: SOPNode): string[] {
-  const ids = [node.id]
-  if (node.children?.length) {
-    for (const child of node.children) {
-      ids.push(...collectAllNodeIds(child))
-    }
-  }
-  return ids
+  // 加载决策树数据
+  loadTreeData(doc.id)
 }
 
 // ─── 编辑 ────────────────────────────────────────────────────────────────────
@@ -694,126 +703,137 @@ onMounted(() => {
     </el-card>
 
     <!-- ── 查看弹窗 ── -->
-    <el-dialog v-model="viewDialogVisible" title="SOP 文档详情" width="900px" top="4vh">
-      <template v-if="viewDoc">
-        <!-- 基础信息区 -->
-        <el-descriptions :column="4" border size="small" style="margin-bottom:16px">
-          <el-descriptions-item label="ID">#{{ viewDoc.id }}</el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <el-tag :type="statusType(viewDoc.status)" size="small">{{ statusLabel(viewDoc.status) }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="节点数">
-            <span class="node-count-value">{{ viewDoc.tree_leaf_count }}</span>
-            <el-tag v-if="viewDoc.tree_validation_status === 'warnings'" type="warning" size="small" style="margin-left:8px">
-              有警告
-              <el-button type="warning" size="small" text circle @click="fetchValidationIssues" title="查看告警详情" style="margin-left:4px">
-                <el-icon><Warning /></el-icon>
-              </el-button>
-            </el-tag>
-            <el-tag v-else-if="viewDoc.tree_validation_status === 'error'" type="danger" size="small" style="margin-left:8px">解析失败</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="分类">{{ viewDoc.category_id || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="导入时间">{{ formatDate(viewDoc.created_at) }}</el-descriptions-item>
-          <el-descriptions-item label="发布时间">{{ formatDate(viewDoc.published_at) }}</el-descriptions-item>
-          <el-descriptions-item label="标题" :span="2"><strong>{{ viewDoc.title }}</strong></el-descriptions-item>
-        </el-descriptions>
-
-        <!-- 决策树可视化区 -->
-        <div v-if="viewDoc.has_tree" class="tree-section">
-          <div class="tree-header">
-            <span class="tree-title">决策树结构</span>
-            <div class="tree-actions">
-              <el-button size="small" text @click="expandAllNodes">全部展开</el-button>
-              <el-button size="small" text @click="collapseAllNodes">全部折叠</el-button>
-            </div>
-          </div>
-          <div v-loading="viewTreeLoading" class="tree-container">
-            <template v-if="viewTreeData">
-              <el-tree
-                :data="[viewTreeData]"
-                :props="treeProps"
-                node-key="id"
-                :expand-on-click-node="false"
-                :default-expanded-keys="viewTreeExpandedKeys"
-                highlight-current
-              >
-                <template #default="{ data }">
-                  <div class="tree-node-content">
-                    <!-- 节点标题行 -->
-                    <div class="node-header">
-                      <span :class="['node-level', `level-${data.level}`]">L{{ data.level }}</span>
-                      <span class="node-title">{{ data.title }}</span>
-                      <el-tag v-if="!data.children?.length" type="success" size="small" class="node-type-tag">叶节点</el-tag>
-                      <el-tag v-else type="info" size="small" class="node-type-tag">路由节点</el-tag>
-                      <span class="node-line">行 {{ data.line_number }}</span>
-                    </div>
-                    <!-- 前置条件（路由节点） -->
-                    <div v-if="data.prerequisite_items?.length" class="node-prerequisites">
-                      <div class="prerequisite-list">
-                        <div v-for="(p, idx) in data.prerequisite_items" :key="idx" class="prerequisite-item">
-                          <div class="prerequisite-header">
-                            <el-tag :type="p.type === 'filter' ? 'primary' : 'warning'" size="small">
-                              {{ p.type === 'filter' ? '过滤' : '优先' }}
-                            </el-tag>
-                          </div>
-                          <div class="prerequisite-content">{{ p.description }}</div>
-                        </div>
-                      </div>
-                    </div>
-                    <!-- 诊断方法（叶节点） -->
-                    <div v-if="data.diagnosis" class="node-diagnosis">
-                      <div class="diagnosis-section">
-                        <span class="section-label">诊断方法：</span>
-                        <ul class="method-list">
-                          <li v-for="(m, idx) in data.diagnosis.acli_methods" :key="idx">
-                            <code>{{ m }}</code>
-                          </li>
-                          <template v-if="data.diagnosis.page_methods?.length">
-                            <li v-for="(m, idx) in data.diagnosis.page_methods" :key="'page-'+idx" class="page-method">
-                              <span class="method-type">页面：</span><code>{{ m }}</code>
-                            </li>
-                          </template>
-                        </ul>
-                      </div>
-                      <div v-if="data.diagnosis.possible_causes?.length" class="causes-section">
-                        <span class="section-label">可能原因：</span>
-                        <ul class="cause-list">
-                          <li v-for="(c, idx) in data.diagnosis.possible_causes" :key="idx">{{ c }}</li>
-                        </ul>
-                      </div>
-                    </div>
-                    <!-- 解决方案（叶节点） -->
-                    <div v-if="data.solution" class="node-solution">
-                      <div v-if="data.solution.quick_recovery?.length" class="solution-section">
-                        <span class="section-label success">快速恢复：</span>
-                        <ol class="solution-steps">
-                          <li v-for="(s, idx) in data.solution.quick_recovery" :key="idx">{{ s }}</li>
-                        </ol>
-                      </div>
-                      <div v-if="data.solution.thorough_fix?.length" class="solution-section">
-                        <span class="section-label primary">彻底修复：</span>
-                        <ol class="solution-steps">
-                          <li v-for="(s, idx) in data.solution.thorough_fix" :key="idx">{{ s }}</li>
-                        </ol>
-                      </div>
-                    </div>
-                  </div>
-                </template>
-              </el-tree>
-            </template>
-            <el-empty v-else-if="!viewTreeLoading" description="决策树数据加载失败" />
-          </div>
+    <el-dialog
+      v-model="viewDialogVisible"
+      width="90%"
+      class="premium-dialog"
+      :fullscreen="viewFullscreen"
+      draggable
+      align-center
+    >
+      <!-- 自定义弹窗 Header，含全屏切换按钮 -->
+      <template #header>
+        <div class="custom-dialog-header">
+          <span class="el-dialog__title">SOP 文档详情</span>
+          <el-button
+            type="info"
+            text
+            circle
+            :icon="FullScreen"
+            class="fullscreen-toggle-btn"
+            @click="viewFullscreen = !viewFullscreen"
+            title="切换全屏"
+          />
         </div>
-        <!-- 无决策树时的提示 -->
-        <el-alert v-else type="info" :closable="false" show-icon style="margin-top:16px">
-          <template #title>决策树说明</template>
-          该文档尚未发布或决策树解析失败，请先点击「发布」按钮生成决策树。
-        </el-alert>
+      </template>
+
+      <template v-if="viewDoc">
+        <el-row :gutter="20" class="sop-detail-layout">
+          <!-- 左栏：基本元数据描述 -->
+          <el-col :span="6" class="sop-meta-col">
+            <div class="sop-meta-card">
+              <h3 class="side-panel-title">元数据信息</h3>
+              <el-descriptions :column="1" border size="small" class="sleek-descriptions">
+                <el-descriptions-item label="文档 ID">
+                  <span class="mono-id">#{{ viewDoc.id }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="发布状态">
+                  <el-tag :type="statusType(viewDoc.status)" size="small" effect="dark">{{ statusLabel(viewDoc.status) }}</el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="决策树节点数">
+                  <span v-if="treeData" class="badge-num green-glow">{{ treeData.tree_leaf_count || '—' }} 节点</span>
+                  <span v-else class="text-muted">—</span>
+                  <!-- 告警提示：有警告时显示查看按钮 -->
+                  <el-tag v-if="viewDoc.tree_validation_status === 'warnings'" type="warning" size="small" style="margin-left:8px">
+                    有警告
+                    <el-button type="warning" size="small" text circle @click="fetchValidationIssues" title="查看告警详情" style="margin-left:4px">
+                      <el-icon><Warning /></el-icon>
+                    </el-button>
+                  </el-tag>
+                  <el-tag v-else-if="viewDoc.tree_validation_status === 'error'" type="danger" size="small" style="margin-left:8px">解析失败</el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="分类基线">
+                  <el-tag v-if="viewDoc.category_id" type="info" size="small" effect="plain">{{ viewDoc.category_id }}</el-tag>
+                  <span v-else class="text-muted">—</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="导入时间">
+                  <span class="date-desc">{{ formatDate(viewDoc.created_at) }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="最近发布">
+                  <span class="date-desc">{{ formatDate(viewDoc.published_at) }}</span>
+                </el-descriptions-item>
+              </el-descriptions>
+
+              <div class="sop-meta-title-box">
+                <span class="meta-label">文档标题</span>
+                <div class="meta-val">{{ viewDoc.title }}</div>
+              </div>
+
+              <!-- 贴心小指南 -->
+              <div class="guide-box">
+                <div class="guide-title">💡 交互小提示</div>
+                <ul class="guide-list">
+                  <li>右侧多叉决策树支持点击节点**头部**快速折叠/展开分支；</li>
+                  <li>支持一键**全部展开**或**全部折叠**以快速审阅结构；</li>
+                  <li>叶子节点中推荐的 `acli` 命令支持**一键复制**；</li>
+                  <li>如发现逻辑有误，可点击下方"编辑"直接调整 Markdown 内容。</li>
+                </ul>
+              </div>
+            </div>
+          </el-col>
+
+          <!-- 右栏：决策树渲染区域 -->
+          <el-col :span="18" class="sop-tree-col">
+            <div class="tree-display-panel" v-loading="treeLoading">
+              <!-- 决策树操作栏 -->
+              <div class="tree-toolbar">
+                <div class="toolbar-left">
+                  <span class="tree-section-title">决策树结构（Decision Tree Flow）</span>
+                  <el-tag
+                    v-if="treeData"
+                    :type="treeValidationType(treeData.tree_validation_status)"
+                    size="small"
+                    class="validation-status-tag"
+                  >
+                    校验状态: {{ treeValidationLabel(treeData.tree_validation_status, true) }}
+                  </el-tag>
+                </div>
+                <div class="toolbar-right" v-if="treeData">
+                  <el-button-group>
+                    <el-button type="primary" size="small" plain @click="expandAll">全部展开</el-button>
+                    <el-button type="primary" size="small" plain @click="collapseAll">全部折叠</el-button>
+                  </el-button-group>
+                </div>
+              </div>
+
+              <!-- 树体内容区 -->
+              <div class="tree-scroll-container">
+                <template v-if="treeData && treeData.tree">
+                  <SopTreeNode
+                    :node="treeData.tree"
+                    :expanded-keys="expandedKeys"
+                    @toggle-expand="handleToggleExpand"
+                  />
+                </template>
+                <div v-else-if="treeLoading" class="tree-empty-state">
+                  <span class="loading-text">正在加载多叉决策树数据...</span>
+                </div>
+                <div v-else class="tree-empty-state">
+                  <div class="empty-icon">📂</div>
+                  <div class="empty-title">暂无决策树结构</div>
+                  <div class="empty-desc">该文档目前无决策树 JSON。可能文档处于"草稿"状态，请点击下方"发布"按钮触发语法校验并生成决策树。</div>
+                </div>
+              </div>
+            </div>
+          </el-col>
+        </el-row>
       </template>
       <template #footer>
-        <el-button @click="viewDialogVisible = false">关闭</el-button>
-        <el-button type="primary" @click="viewDialogVisible = false; viewDoc && openEditDialog(viewDoc)">编辑</el-button>
-        <el-button v-if="viewDoc && viewDoc.status === 'draft'" type="success" :loading="viewDoc ? !!approveLoading[viewDoc.id] : false" @click="viewDoc && handleApprove(viewDoc)">发布</el-button>
+        <div class="dialog-footer-actions">
+          <el-button @click="viewDialogVisible = false">关闭</el-button>
+          <el-button type="primary" @click="viewDialogVisible = false; viewDoc && openEditDialog(viewDoc)">编辑正文</el-button>
+          <el-button v-if="viewDoc && viewDoc.status === 'draft'" type="success" :loading="viewDoc ? !!approveLoading[viewDoc.id] : false" @click="viewDoc && handleApprove(viewDoc)">发布并同步</el-button>
+        </div>
       </template>
     </el-dialog>
 
@@ -1010,179 +1030,231 @@ onMounted(() => {
   tab-size: 2;
 }
 
-/* 决策树可视化 */
-.tree-section {
-  border: 1px solid #e4e7ed;
-  border-radius: 4px;
-  margin-top: 16px;
-  background: #fafafa;
-}
-.tree-header {
+/* 高端详情弹窗样式 */
+.custom-dialog-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid #e4e7ed;
-  background: #f5f7fa;
+  padding-right: 32px;
 }
-.tree-title {
-  font-size: 14px;
-  font-weight: 600;
+
+.fullscreen-toggle-btn {
+  font-size: 16px;
+  color: #606266;
+  transition: all 0.2s;
+}
+
+.fullscreen-toggle-btn:hover {
+  background: #f1f5f9;
+  color: #409eff;
+  transform: scale(1.1);
+}
+
+.sop-detail-layout {
+  min-height: 520px;
+}
+
+/* 左侧栏：元数据卡片 */
+.sop-meta-col {
+  border-right: 1px solid #e4e7ed;
+}
+
+.sop-meta-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-right: 10px;
+}
+
+.side-panel-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
   color: #303133;
 }
-.tree-actions {
-  display: flex;
-  gap: 4px;
+
+.sleek-descriptions :deep(.el-descriptions__label) {
+  font-weight: 600;
+  color: #606266;
+  width: 100px;
+  background: #f8fafc;
 }
-.tree-container {
-  max-height: 480px;
-  overflow-y: auto;
+
+.sleek-descriptions :deep(.el-descriptions__content) {
+  color: #303133;
+}
+
+.mono-id {
+  font-family: monospace;
+  font-weight: 700;
+  color: #909399;
+}
+
+.badge-num {
+  font-family: monospace;
+  font-weight: 700;
+  color: #606266;
+}
+
+.badge-num.green-glow {
+  color: #16a34a;
+  background: #f0fdf4;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.date-desc {
+  font-size: 12px;
+  color: #606266;
+}
+
+.sop-meta-title-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #f8fafc;
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid #f1f5f9;
+}
+
+.meta-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #909399;
+  text-transform: uppercase;
+}
+
+.meta-val {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e293b;
+  line-height: 1.5;
+}
+
+/* 提示指南框 */
+.guide-box {
+  background: #f0f7ff;
+  border: 1px solid #e0eaff;
+  border-radius: 6px;
   padding: 12px;
 }
-.tree-node-content {
-  padding: 8px 4px;
-  font-size: 13px;
+
+.guide-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #1d4ed8;
+  margin-bottom: 6px;
+}
+
+.guide-list {
+  margin: 0;
+  padding-left: 14px;
+  font-size: 12px;
+  color: #4b5563;
   line-height: 1.6;
 }
-.node-header {
+
+.guide-list li {
+  margin-bottom: 4px;
+}
+
+/* 右侧栏：决策树渲染区域 */
+.sop-tree-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.tree-display-panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  overflow: hidden;
+  height: 100%;
+  min-height: 480px;
+}
+
+.tree-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.toolbar-left {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: 12px;
 }
-.node-level {
-  font-family: monospace;
-  font-size: 11px;
+
+.tree-section-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.validation-status-tag {
   font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 3px;
-  background: #e6f7ff;
-  color: #1890ff;
+  border-radius: 4px;
 }
-.node-level.level-1 { background: #f6ffed; color: #52c41a; }
-.node-level.level-2 { background: #fffbe6; color: #faad14; }
-.node-level.level-3 { background: #fff1f0; color: #f5222d; }
-.node-level.level-4 { background: #f9f0ff; color: #722ed1; }
-.node-title {
-  font-weight: 500;
-  color: #303133;
+
+.tree-scroll-container {
+  padding: 16px;
+  overflow-y: auto;
   flex: 1;
+  max-height: 60vh;
 }
-.node-type-tag {
-  margin-left: 4px;
+
+/* 全屏状态下，将树体高度拉大 */
+.el-dialog.is-fullscreen .tree-scroll-container {
+  max-height: 78vh;
 }
-.node-line {
-  font-family: monospace;
-  font-size: 11px;
-  color: #909399;
-  margin-left: 8px;
+
+.tree-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 40px;
+  text-align: center;
+  background: #ffffff;
+  border-radius: 6px;
+  border: 1px dashed #e2e8f0;
+  margin: 10px;
 }
-.node-prerequisites {
-  margin-top: 6px;
-  padding: 6px 10px;
-  background: #f5f7fa;
-  border-radius: 3px;
+
+.empty-icon {
+  font-size: 40px;
+  margin-bottom: 12px;
 }
-.section-label {
-  font-size: 12px;
-  color: #606266;
-  font-weight: 500;
-  margin-right: 6px;
-}
-.prerequisite-list {
-  margin-top: 4px;
-}
-.prerequisite-item {
-  margin-bottom: 8px;
-  padding: 6px 8px;
-  background: #fff;
-  border-radius: 3px;
-  border: 1px solid #e4e7ed;
-}
-.prerequisite-item:last-child {
-  margin-bottom: 0;
-}
-.prerequisite-header {
-  margin-bottom: 4px;
-}
-.prerequisite-content {
-  font-size: 13px;
-  color: #303133;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.node-diagnosis {
-  margin-top: 6px;
-  padding: 6px 10px;
-  background: #e6f7ff;
-  border-radius: 3px;
-  border-left: 3px solid #1890ff;
-}
-.diagnosis-section {
+
+.empty-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #334155;
   margin-bottom: 6px;
 }
-.method-list {
-  margin: 4px 0 0 0;
-  padding-left: 20px;
-  list-style: disc;
+
+.empty-desc {
+  font-size: 13px;
+  color: #64748b;
+  max-width: 460px;
+  line-height: 1.6;
 }
-.method-list li {
-  margin-bottom: 2px;
+
+.loading-text {
+  font-size: 13px;
+  color: #64748b;
 }
-.method-list code {
-  font-family: 'SFMono-Regular', Consolas, monospace;
-  background: #f0f0f0;
-  padding: 1px 4px;
-  border-radius: 2px;
-  font-size: 12px;
-  color: #1890ff;
-}
-.method-list .page-method {
-  list-style: circle;
-}
-.method-type {
-  font-size: 12px;
-  color: #909399;
-  margin-right: 4px;
-}
-.causes-section {
-  margin-top: 8px;
-}
-.cause-list {
-  margin: 4px 0 0 0;
-  padding-left: 20px;
-  list-style: square;
-}
-.cause-list li {
-  margin-bottom: 2px;
-  color: #606266;
-}
-.node-solution {
-  margin-top: 6px;
-  padding: 6px 10px;
-  background: #f6ffed;
-  border-radius: 3px;
-  border-left: 3px solid #52c41a;
-}
-.solution-section {
-  margin-bottom: 8px;
-}
-.solution-section:last-child {
-  margin-bottom: 0;
-}
-.section-label.success {
-  color: #52c41a;
-}
-.section-label.primary {
-  color: #409eff;
-}
-.solution-steps {
-  margin: 4px 0 0 0;
-  padding-left: 20px;
-}
-.solution-steps li {
-  margin-bottom: 4px;
-  color: #303133;
+
+.dialog-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 </style>
