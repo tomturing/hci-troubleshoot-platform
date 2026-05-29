@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Warning } from '@element-plus/icons-vue'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -11,7 +12,8 @@ interface SopDocument {
   category_id: string | null
   title: string
   status: string
-  chunk_count: number
+  tree_leaf_count: number // 决策树叶节点数量
+  tree_validation_issues?: ValidationIssue[] // 决策树校验问题（有告警时存储）
   content_md?: string
   tree_validation_status: string | null // 决策树校验状态：valid/warnings/error
   has_tree: boolean // 是否有决策树
@@ -217,7 +219,7 @@ async function fetchDocuments() {
 async function handleApprove(doc: SopDocument) {
   try {
     await ElMessageBox.confirm(
-      `确认发布 SOP 文档？\n\n「${doc.title}」\n\n将解析决策树并生成向量索引，耗时较长，请耐心等待。`,
+      `确认发布 SOP 文档？\n\n「${doc.title}」\n\n将解析生成决策树，耗时较长，请耐心等待。`,
       '发布 SOP',
       { confirmButtonText: '确认发布', cancelButtonText: '取消', type: 'success' },
     )
@@ -489,7 +491,7 @@ async function submitImport() {
     if (result.duplicate) {
       ElMessage.warning(result.message || '文件已存在，跳过导入')
     } else {
-      ElMessage.success(`导入成功：「${result.title}」，共 ${result.chunks_created} 个分块，状态为草稿`)
+      ElMessage.success(`导入成功：「${result.title}」，状态为草稿，请发布后使用`)
     }
     importDialogVisible.value = false
     await fetchDocuments()
@@ -555,6 +557,20 @@ function treeValidationLabel(s: string | null, hasTree: boolean): string {
   return '无决策树'
 }
 
+// 打开决策树告警详情弹窗
+function openValidationDialog(doc: SopDocument) {
+  validationDocTitle.value = doc.title
+  // 如果行数据中有 tree_validation_issues，直接使用
+  if (doc.tree_validation_issues?.length) {
+    validationIssues.value = doc.tree_validation_issues
+    validationDialogVisible.value = true
+  } else {
+    // 否则提示没有告警详情数据
+    ElMessage.info('该文档的告警详情需从查看弹窗中获取')
+    openViewDialog(doc)
+  }
+}
+
 onMounted(() => {
   fetchDocuments()
   fetchCategories()
@@ -618,15 +634,28 @@ onMounted(() => {
             <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="决策树" width="100" align="center">
+        <el-table-column label="决策树" width="120" align="center">
           <template #default="{ row }">
-            <el-tag :type="treeValidationType(row.tree_validation_status)" size="small">
-              {{ treeValidationLabel(row.tree_validation_status, row.has_tree) }}
-            </el-tag>
+            <div style="display:flex;align-items:center;gap:4px;justify-content:center">
+              <el-tag :type="treeValidationType(row.tree_validation_status)" size="small">
+                {{ treeValidationLabel(row.tree_validation_status, row.has_tree) }}
+              </el-tag>
+              <el-button
+                v-if="row.tree_validation_status === 'warnings'"
+                type="warning"
+                size="small"
+                text
+                circle
+                @click.stop="openValidationDialog(row)"
+                title="查看告警详情"
+              >
+                <el-icon><Warning /></el-icon>
+              </el-button>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="分块数" width="90" align="center">
-          <template #default="{ row }"><span class="chunk-count">{{ row.chunk_count }}</span></template>
+        <el-table-column label="节点数" width="90" align="center">
+          <template #default="{ row }"><span class="node-count">{{ row.tree_leaf_count }}</span></template>
         </el-table-column>
         <el-table-column label="发布时间" width="160">
           <template #default="{ row }">
@@ -863,7 +892,7 @@ onMounted(() => {
     <el-dialog v-model="importDialogVisible" title="导入 SOP 文档" width="520px">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>导入说明</template>
-        上传 Word（.docx）或 Markdown（.md）文档，系统自动按章节标题分块。导入后状态为「草稿」，需手动点击「发布」后 AI 才可搜索引用。相同文件（SHA256）不会重复导入。
+        上传 Word（.docx）或 Markdown（.md）文档。导入后状态为「草稿」，需手动点击「发布」后生成决策树，AI 才可搜索引用。相同文件（SHA256）不会重复导入。
       </el-alert>
       <el-form label-width="90px">
         <el-form-item label="文档文件" required>
@@ -913,7 +942,7 @@ onMounted(() => {
 .doc-id { color: #909399; font-family: monospace; font-size: 13px; }
 .doc-title { color: #303133; line-height: 1.5; }
 .category-tag { font-size: 12px; color: #909399; background: #f5f7fa; padding: 2px 6px; border-radius: 3px; }
-.chunk-count { font-family: monospace; font-size: 13px; color: #606266; }
+.node-count { font-family: monospace; font-size: 13px; color: #606266; }
 .date-text { font-size: 13px; color: #606266; }
 .text-muted { color: #c0c4cc; font-size: 13px; }
 .pagination-wrapper { display: flex; justify-content: flex-end; margin-top: 16px; }
