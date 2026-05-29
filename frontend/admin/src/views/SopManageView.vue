@@ -305,15 +305,50 @@ async function handleArchive(doc: SopDocument) {
 }
 
 // ─── 查看内容 ────────────────────────────────────────────────────────────────
-function openViewDialog(doc: SopDocument) {
+async function openViewDialog(doc: SopDocument) {
   viewDoc.value = doc
   viewDialogVisible.value = true
   // 重置决策树状态
   viewTreeData.value = null
   viewTreeExpandedKeys.value = []
+
+  // 获取文档详情（包含 tree_validation_issues）
+  if (doc.tree_validation_status === 'warnings' && !doc.tree_validation_issues) {
+    await fetchViewDocDetail(doc.id)
+  }
+
   // 若文档有决策树，异步加载
   if (doc.has_tree) {
     fetchViewTree(doc.id)
+  }
+}
+
+// ─── 获取文档详情（含告警信息）───────────────────────────────────────────────
+async function fetchViewDocDetail(documentId: number) {
+  try {
+    const resp = await fetch(`/api/v1/sop/${documentId}`, { headers: authHeader })
+    if (resp.ok) {
+      const detail = await resp.json()
+      if (viewDoc.value && viewDoc.value.id === documentId) {
+        viewDoc.value.tree_validation_issues = detail.tree_validation_issues || []
+        viewDoc.value.tree_leaf_count = detail.tree_leaf_count
+      }
+    }
+  } catch {
+    // 静默失败，不影响弹窗显示
+  }
+}
+
+// ─── 显示告警详情弹窗 ─────────────────────────────────────────────────────────
+function fetchValidationIssues() {
+  if (!viewDoc.value) return
+  if (viewDoc.value.tree_validation_issues?.length) {
+    validationIssues.value = viewDoc.value.tree_validation_issues
+    validationDocTitle.value = viewDoc.value.title
+    validationDialogVisible.value = true
+  } else {
+    // 如果没有数据，提示用户
+    ElMessage.info('暂无告警详情数据')
   }
 }
 
@@ -557,20 +592,6 @@ function treeValidationLabel(s: string | null, hasTree: boolean): string {
   return '无决策树'
 }
 
-// 打开决策树告警详情弹窗
-function openValidationDialog(doc: SopDocument) {
-  validationDocTitle.value = doc.title
-  // 如果行数据中有 tree_validation_issues，直接使用
-  if (doc.tree_validation_issues?.length) {
-    validationIssues.value = doc.tree_validation_issues
-    validationDialogVisible.value = true
-  } else {
-    // 否则提示没有告警详情数据
-    ElMessage.info('该文档的告警详情需从查看弹窗中获取')
-    openViewDialog(doc)
-  }
-}
-
 onMounted(() => {
   fetchDocuments()
   fetchCategories()
@@ -634,24 +655,11 @@ onMounted(() => {
             <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="决策树" width="120" align="center">
+        <el-table-column label="决策树" width="100" align="center">
           <template #default="{ row }">
-            <div style="display:flex;align-items:center;gap:4px;justify-content:center">
-              <el-tag :type="treeValidationType(row.tree_validation_status)" size="small">
-                {{ treeValidationLabel(row.tree_validation_status, row.has_tree) }}
-              </el-tag>
-              <el-button
-                v-if="row.tree_validation_status === 'warnings'"
-                type="warning"
-                size="small"
-                text
-                circle
-                @click.stop="openValidationDialog(row)"
-                title="查看告警详情"
-              >
-                <el-icon><Warning /></el-icon>
-              </el-button>
-            </div>
+            <el-tag :type="treeValidationType(row.tree_validation_status)" size="small">
+              {{ treeValidationLabel(row.tree_validation_status, row.has_tree) }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="节点数" width="90" align="center">
@@ -694,10 +702,15 @@ onMounted(() => {
           <el-descriptions-item label="状态">
             <el-tag :type="statusType(viewDoc.status)" size="small">{{ statusLabel(viewDoc.status) }}</el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="决策树">
-            <el-tag :type="treeValidationType(viewDoc.tree_validation_status)" size="small">
-              {{ treeValidationLabel(viewDoc.tree_validation_status, viewDoc.has_tree) }}
+          <el-descriptions-item label="节点数">
+            <span class="node-count-value">{{ viewDoc.tree_leaf_count }}</span>
+            <el-tag v-if="viewDoc.tree_validation_status === 'warnings'" type="warning" size="small" style="margin-left:8px">
+              有警告
+              <el-button type="warning" size="small" text circle @click="fetchValidationIssues" title="查看告警详情" style="margin-left:4px">
+                <el-icon><Warning /></el-icon>
+              </el-button>
             </el-tag>
+            <el-tag v-else-if="viewDoc.tree_validation_status === 'error'" type="danger" size="small" style="margin-left:8px">解析失败</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="分类">{{ viewDoc.category_id || '—' }}</el-descriptions-item>
           <el-descriptions-item label="导入时间">{{ formatDate(viewDoc.created_at) }}</el-descriptions-item>
@@ -943,6 +956,7 @@ onMounted(() => {
 .doc-title { color: #303133; line-height: 1.5; }
 .category-tag { font-size: 12px; color: #909399; background: #f5f7fa; padding: 2px 6px; border-radius: 3px; }
 .node-count { font-family: monospace; font-size: 13px; color: #606266; }
+.node-count-value { font-family: monospace; font-size: 14px; color: #303133; font-weight: 500; }
 .date-text { font-size: 13px; color: #606266; }
 .text-muted { color: #c0c4cc; font-size: 13px; }
 .pagination-wrapper { display: flex; justify-content: flex-end; margin-top: 16px; }

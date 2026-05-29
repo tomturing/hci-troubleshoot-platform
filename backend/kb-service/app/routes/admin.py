@@ -1069,6 +1069,7 @@ async def get_sop_document(request: Request, document_id: int):
                 SELECT id, source_id, category_id, title, content_md, status,
                        reviewer_id, reviewed_at, published_at, created_at, updated_at,
                        tree_leaf_count, (tree_json IS NOT NULL) AS has_tree,
+                       tree_validation_status, tree_validation_issues,
                        variable_schema
                 FROM sop_document WHERE id = :id
                 """
@@ -1092,6 +1093,8 @@ async def get_sop_document(request: Request, document_id: int):
         "status": row["status"],
         "tree_leaf_count": row["tree_leaf_count"],
         "has_tree": row["has_tree"],
+        "tree_validation_status": row["tree_validation_status"],
+        "tree_validation_issues": row["tree_validation_issues"] or [],
         "variable_schema": row["variable_schema"] or [],
         "reviewer_id": row["reviewer_id"],
         "reviewed_at": row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
