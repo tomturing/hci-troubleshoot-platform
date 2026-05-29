@@ -207,9 +207,17 @@ class OpenClawAssistant:
                             data = json.loads(data_str)
                             delta = data.get("choices", [{}])[0].get("delta", {})
                             content = delta.get("content", "")
+                            # GLM-5 等 reasoning 模型会先输出 reasoning_content（思维链），
+                            # 此时 content 为空。需要同时检测 reasoning_content，
+                            # 避免误判为"空流"而触发 fallback/错误。
+                            reasoning_content = delta.get("reasoning_content", "")
                             if content:
                                 got_first_token = True
                                 yield content
+                            elif reasoning_content:
+                                # 思维链 token：标记已收到首个 token（防止空流误判），
+                                # 但不 yield 给调用方（调用方只需要最终回答内容）
+                                got_first_token = True
                         except json.JSONDecodeError:
                             continue
 

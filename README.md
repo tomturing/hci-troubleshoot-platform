@@ -7,6 +7,7 @@ HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态
 ### v2.1.2 更新说明（2026-05-29）
 
 - **AI 空回复修复**：修复 Helm ConfigMap 中 `llmApiKey` 模板渲染 Bug。使用 `printf` 语法正确渲染默认 Assistant Registry JSON 中的 API key，解决由于 `provider_api_key` 字面量渲染引发 DashScope `400 Bad Request` 导致前端返回空聊天气泡的问题。
+- **GLM-5 流式解析修复**：`ai_client.py` 流式 SSE 解析新增对 `reasoning_content` 字段的处理。GLM-5 等 reasoning 模型在流式输出时，思维链阶段 `delta.content` 始终为空，只有 `delta.reasoning_content` 有内容，导致 `got_first_token` 永不置位，误触发"空流"错误。修复后正确识别思维链 token，防止误判为空流而中断。
 
 ### v2.1.1 更新说明（2026-04-24）
 
