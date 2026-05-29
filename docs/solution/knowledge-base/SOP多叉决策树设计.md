@@ -126,12 +126,22 @@ class SolutionDetail(BaseModel):
     source_heading: str | None = None    # 溯源：docx 原始标题文本（如"处理方法"），仅审计用
 
 
+class PrerequisiteItem(BaseModel):
+    """前置检查条目"""
+    description: str                     # 前置检查描述或命令正文
+    type: Literal["filter", "priority"] = "filter"  # 过滤型 / 调序型
+    content_type: Literal["text", "command"] = "text"  # 普通文本 / 命令
+    target_node_hint: str | None = None  # 目标节点提示（可选）
+
+
 class SOPNode(BaseModel):
     """统一决策树节点（中间节点和叶节点共用，宽松模式：残缺节点可构建）"""
-    node_id: str = ""                    # 自动生成，格式 n-1-2-3（路径编码）
-    name: str                            # 节点名称（来自 Heading 文本）
+    id: str = ""                         # 自动生成，格式 n-1-2-3（路径编码）
+    title: str                           # 节点名称（来自 Heading 文本）
     level: int = 1                       # 来自 Heading 级别，仅元数据
-    prerequisites: list[str] = []       # 边：进入此节点的前置检查条件
+    line_number: int                     # Markdown 源标题行号
+    prerequisite_items: list[PrerequisiteItem] = []  # 边：进入此节点的前置检查条件
+    prerequisites: list[str] = []        # 向后兼容：由 prerequisite_items.description 生成
     diagnosis: DiagnosisDetail | None = None   # 叶节点期望有，缺失由校验层记 error
     solution: SolutionDetail | None = None     # 叶节点期望有，缺失由校验层记 error
     children: list[SOPNode] = []         # 子节点列表（空 = 叶节点）
@@ -160,7 +170,31 @@ class SOPNode(BaseModel):
 
 ### 3.3 前置检查（prerequisites）
 
-所有层级的 `prerequisites` 类型统一为 `list[str]`，不区分 filter/sequence 类型。
+所有层级的前置检查以 `prerequisite_items` 存储，每条包含：
+
+- `description`：条件描述或命令正文。
+- `type`：`filter` 表示过滤型条件，用于筛选匹配分支；`priority` 表示调序型条件，用于调整检查优先级。
+- `content_type`：`text` 表示普通描述；`command` 表示从 Markdown fenced code block 解析出的命令。
+
+`prerequisites: list[str]` 仅保留为向后兼容字段，由 `prerequisite_items[].description` 自动生成。
+
+解析器会识别 Markdown fenced code block，并去掉 ```bash / ``` 围栏。例如：
+
+````markdown
+```bash
+lsblk | grep boot
+```
+````
+
+会生成单条前置检查项：
+
+```json
+{
+  "description": "lsblk | grep boot",
+  "type": "filter",
+  "content_type": "command"
+}
+```
 
 AI Agent 在遍历时自行决定如何使用这些条件（通常：当前情境满足所有 prerequisites 时才进入该节点）。
 

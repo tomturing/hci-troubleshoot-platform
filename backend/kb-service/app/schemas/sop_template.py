@@ -94,6 +94,7 @@ class PrerequisiteItem(BaseModel):
 
     description: str = Field(..., min_length=1, description="前置检查描述")
     type: Literal["filter", "priority"] = Field("filter", description="类型：过滤型 / 调序型")
+    content_type: Literal["text", "command"] = Field("text", description="内容类型：普通文本 / 命令")
     target_node_hint: str | None = Field(None, description="目标节点提示（可选）")
 
 

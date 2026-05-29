@@ -41,6 +41,14 @@ from app.schemas.sop_template import (
     VariableDeclaration,
 )
 
+
+@dataclass(frozen=True)
+class _NormalizedLine:
+    """归一化后的内容行，标记是否来自 Markdown 代码块。"""
+
+    text: str
+    is_command: bool = False
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 变量名启发式规则（来自 §12.7.3）
 # ──────────────────────────────────────────────────────────────────────────────
@@ -269,7 +277,12 @@ def _parse_content_lines(
     cur_list_field = default_list_field
     cur_text_field: str | None = None
 
-    for line in content:
+    for normalized in _normalize_markdown_code_blocks(content):
+        line = normalized.text
+        if normalized.is_command:
+            list_result[cur_list_field].append(line)
+            continue
+
         label_m = _LABEL_RE.match(line)
         if label_m:
             label = label_m.group(1).strip()
@@ -304,6 +317,44 @@ def _parse_content_lines(
                 list_result[cur_list_field].append(line)
 
     return list_result, text_result
+
+
+def _normalize_markdown_code_blocks(content: list[str]) -> list[_NormalizedLine]:
+    """合并 Markdown fenced code block，去掉围栏行。
+
+    例如 ```bash / lsblk | grep boot / ``` 会变成一条命令行，避免后续解析
+    把围栏和命令拆成 3 个普通条目。
+    """
+    lines: list[_NormalizedLine] = []
+    in_fence = False
+    fence_buffer: list[str] = []
+
+    for line in content:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_fence:
+                command = "\n".join(part for part in fence_buffer if part.strip()).strip()
+                if command:
+                    lines.append(_NormalizedLine(command, is_command=True))
+                fence_buffer = []
+                in_fence = False
+            else:
+                in_fence = True
+                fence_buffer = []
+            continue
+
+        if in_fence:
+            fence_buffer.append(line)
+        else:
+            lines.append(_NormalizedLine(line))
+
+    # 未闭合代码块也尽量保留内容，避免丢失人工录入的命令。
+    if in_fence:
+        command = "\n".join(part for part in fence_buffer if part.strip()).strip()
+        if command:
+            lines.append(_NormalizedLine(command, is_command=True))
+
+    return lines
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -550,9 +601,10 @@ def _parse_prerequisites_content(
     """
     items: list[PrerequisiteItem] = []
 
-    for line in content:
-        numbered_m = _PREREQ_NUMBERED_RE.match(line)
-        list_m = _LIST_ITEM_RE.match(line)
+    for normalized in _normalize_markdown_code_blocks(content):
+        line = normalized.text
+        numbered_m = None if normalized.is_command else _PREREQ_NUMBERED_RE.match(line)
+        list_m = None if normalized.is_command else _LIST_ITEM_RE.match(line)
 
         condition_text = ""
         if numbered_m:
@@ -566,6 +618,7 @@ def _parse_prerequisites_content(
             items.append(
                 PrerequisiteItem(
                     type=_detect_prerequisite_type(condition_text),
+                    content_type="command" if normalized.is_command else "text",
                     description=condition_text,
                 )
             )

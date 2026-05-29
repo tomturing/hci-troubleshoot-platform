@@ -46,6 +46,7 @@ interface ValidationIssue {
 interface PrerequisiteItem {
   description: string
   type: 'filter' | 'priority'
+  content_type?: 'text' | 'command'
   target_node_hint?: string
 }
 

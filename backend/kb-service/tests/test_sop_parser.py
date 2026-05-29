@@ -107,6 +107,36 @@ _MISSING_DIAGNOSIS_SOP = """\
 - 更换高速磁盘
 """
 
+# 带 Markdown 代码块的前置检查和命令字段
+_CODE_BLOCK_SOP = """\
+# 磁盘寿命异常
+
+## 系统盘寿命异常
+
+### 前置检查
+
+忽略版本直接执行以下指令进入容器：
+```bash
+container_exec -n vs-cp-manager
+```
+若返回包含 `sdX`，则盘符为 `sd`。
+
+### 判断方法
+
+acli命令行：
+```bash
+lsblk | grep boot
+```
+
+### 解决方案
+
+快速恢复：
+- 更换异常磁盘
+
+彻底解决方案：
+- 联系硬件售后更换磁盘并观察告警恢复
+"""
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # classify_heading 测试
@@ -249,6 +279,28 @@ class TestParseSimpleSop:
         leaf = root.children[0]
         assert leaf.solution is not None
         assert "向集群扩容 CPU 资源" in leaf.solution.thorough_fix
+
+
+class TestParseCodeBlock:
+    """测试 Markdown 代码块按单条命令解析"""
+
+    def test_prerequisite_code_block_is_single_command_item(self):
+        """前置检查代码块去掉围栏，并标记为 command。"""
+        result = parse_sop_markdown(_CODE_BLOCK_SOP)
+        assert result.has_error is False
+        leaf = result.root_nodes[0].children[0]
+        assert leaf.prerequisite_items[1].description == "container_exec -n vs-cp-manager"
+        assert leaf.prerequisite_items[1].content_type == "command"
+        descriptions = [item.description for item in leaf.prerequisite_items]
+        assert "```bash" not in descriptions
+        assert "```" not in descriptions
+
+    def test_diagnosis_code_block_is_single_acli_method(self):
+        """判断方法代码块去掉围栏，并保持为单条 acli 命令。"""
+        result = parse_sop_markdown(_CODE_BLOCK_SOP)
+        leaf = result.root_nodes[0].children[0]
+        assert leaf.diagnosis is not None
+        assert leaf.diagnosis.acli_methods == ["lsblk | grep boot"]
 
 
 # ──────────────────────────────────────────────────────────────────────────────

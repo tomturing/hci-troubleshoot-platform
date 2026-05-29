@@ -23,6 +23,7 @@ const props = defineProps<{
     prerequisite_items?: {
       description: string
       type: 'filter' | 'priority'
+      content_type?: 'text' | 'command'
       target_node_hint?: string
     }[]
     variables?: {
@@ -70,6 +71,10 @@ async function copyText(text: string) {
     ElMessage.error('复制失败，请手动选取')
   }
 }
+
+function isCommandPrerequisite(item: { content_type?: string; description: string }) {
+  return item.content_type === 'command'
+}
 </script>
 
 <template>
@@ -113,11 +118,22 @@ async function copyText(text: string) {
             <div v-for="(item, idx) in node.prerequisite_items" :key="idx" class="prereq-item-row">
               <span 
                 class="prereq-badge" 
-                :class="item.type === 'filter' ? 'is-filter' : 'is-priority'"
+                :class="isCommandPrerequisite(item) ? 'is-command' : item.type === 'filter' ? 'is-filter' : 'is-priority'"
               >
-                {{ item.type === 'filter' ? '过滤' : '优先' }}
+                {{ isCommandPrerequisite(item) ? '命令' : item.type === 'filter' ? '过滤' : '优先' }}
               </span>
-              <span class="prereq-description">{{ item.description }}</span>
+              <span v-if="isCommandPrerequisite(item)" class="prereq-command">
+                <code>{{ item.description }}</code>
+                <el-button
+                  size="small"
+                  class="prereq-command-copy"
+                  :icon="CopyDocument"
+                  circle
+                  @click.stop="copyText(item.description)"
+                  title="复制命令"
+                />
+              </span>
+              <span v-else class="prereq-description">{{ item.description }}</span>
               <span v-if="item.target_node_hint" class="prereq-node-hint">
                 <span class="arrow">→</span> {{ item.target_node_hint }}
               </span>
@@ -492,8 +508,49 @@ async function copyText(text: string) {
   background: hsl(38, 92%, 95%);
 }
 
+.prereq-badge.is-command {
+  color: #047857;
+  background: #ecfdf5;
+}
+
 .prereq-description {
   font-weight: 500;
+}
+
+.prereq-command {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 5px;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.25);
+}
+
+.prereq-command code {
+  min-width: 0;
+  color: #d1fae5;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.prereq-command-copy {
+  flex: 0 0 auto;
+  background: transparent !important;
+  border: none !important;
+  color: #94a3b8 !important;
+  height: 20px !important;
+  width: 20px !important;
+}
+
+.prereq-command-copy:hover {
+  color: #34d399 !important;
 }
 
 .prereq-node-hint {
