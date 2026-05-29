@@ -37,6 +37,38 @@ interface ValidationIssue {
   message: string
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// SOP 决策树类型定义
+// ──────────────────────────────────────────────────────────────────────────────
+interface PrerequisiteItem {
+  description: string
+  type: 'filter' | 'priority'
+  target_node_hint?: string
+}
+
+interface DiagnosisDetail {
+  acli_methods: string[]
+  page_methods?: string[]
+  analysis_steps?: string[]
+  possible_causes?: string[]
+}
+
+interface SolutionDetail {
+  quick_recovery: string[]
+  thorough_fix: string[]
+}
+
+interface SOPNode {
+  id: string
+  title: string
+  level: number
+  line_number: number
+  children: SOPNode[]
+  prerequisite_items: PrerequisiteItem[]
+  diagnosis?: DiagnosisDetail
+  solution?: SolutionDetail
+}
+
 // 分类基线选项
 interface CategoryOption {
   code: string
@@ -100,6 +132,17 @@ const importFile = ref<File | null>(null)
 const importCategoryId = ref('')
 const importLoading = ref(false)
 const importFileInput = ref<HTMLInputElement | null>(null)
+
+// ─── 决策树可视化 ──────────────────────────────────────────────────────────────
+const viewTreeLoading = ref(false)
+const viewTreeData = ref<SOPNode | null>(null)
+const viewTreeExpandedKeys = ref<string[]>([])
+
+// el-tree 配置
+const treeProps = {
+  children: 'children',
+  label: 'title',
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // API
@@ -263,6 +306,54 @@ async function handleArchive(doc: SopDocument) {
 function openViewDialog(doc: SopDocument) {
   viewDoc.value = doc
   viewDialogVisible.value = true
+  // 重置决策树状态
+  viewTreeData.value = null
+  viewTreeExpandedKeys.value = []
+  // 若文档有决策树，异步加载
+  if (doc.has_tree) {
+    fetchViewTree(doc.id)
+  }
+}
+
+// ─── 决策树数据获取 ──────────────────────────────────────────────────────────
+async function fetchViewTree(documentId: number) {
+  viewTreeLoading.value = true
+  try {
+    const resp = await fetch(`/api/v1/sop/${documentId}/tree`, { headers: authHeader })
+    if (resp.ok) {
+      viewTreeData.value = await resp.json()
+      // 默认展开第一层节点
+      if (viewTreeData.value?.id) {
+        viewTreeExpandedKeys.value = [viewTreeData.value.id]
+      }
+    } else if (resp.status !== 404) {
+      ElMessage.warning('决策树加载失败')
+    }
+  } catch {
+    ElMessage.warning('决策树加载失败，请稍后重试')
+  } finally {
+    viewTreeLoading.value = false
+  }
+}
+
+// ─── 决策树展开/折叠 ──────────────────────────────────────────────────────────
+function expandAllNodes() {
+  if (!viewTreeData.value) return
+  viewTreeExpandedKeys.value = collectAllNodeIds(viewTreeData.value)
+}
+
+function collapseAllNodes() {
+  viewTreeExpandedKeys.value = []
+}
+
+function collectAllNodeIds(node: SOPNode): string[] {
+  const ids = [node.id]
+  if (node.children?.length) {
+    for (const child of node.children) {
+      ids.push(...collectAllNodeIds(child))
+    }
+  }
+  return ids
 }
 
 // ─── 编辑 ────────────────────────────────────────────────────────────────────
@@ -566,22 +657,114 @@ onMounted(() => {
     </el-card>
 
     <!-- ── 查看弹窗 ── -->
-    <el-dialog v-model="viewDialogVisible" title="SOP 文档详情" width="760px" top="4vh">
+    <el-dialog v-model="viewDialogVisible" title="SOP 文档详情" width="900px" top="4vh">
       <template v-if="viewDoc">
-        <el-descriptions :column="3" border size="small" style="margin-bottom:16px">
+        <!-- 基础信息区 -->
+        <el-descriptions :column="4" border size="small" style="margin-bottom:16px">
           <el-descriptions-item label="ID">#{{ viewDoc.id }}</el-descriptions-item>
           <el-descriptions-item label="状态">
             <el-tag :type="statusType(viewDoc.status)" size="small">{{ statusLabel(viewDoc.status) }}</el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="分块数">{{ viewDoc.chunk_count }}</el-descriptions-item>
+          <el-descriptions-item label="决策树">
+            <el-tag :type="treeValidationType(viewDoc.tree_validation_status)" size="small">
+              {{ treeValidationLabel(viewDoc.tree_validation_status, viewDoc.has_tree) }}
+            </el-tag>
+          </el-descriptions-item>
           <el-descriptions-item label="分类">{{ viewDoc.category_id || '—' }}</el-descriptions-item>
           <el-descriptions-item label="导入时间">{{ formatDate(viewDoc.created_at) }}</el-descriptions-item>
           <el-descriptions-item label="发布时间">{{ formatDate(viewDoc.published_at) }}</el-descriptions-item>
-          <el-descriptions-item label="标题" :span="3"><strong>{{ viewDoc.title }}</strong></el-descriptions-item>
+          <el-descriptions-item label="标题" :span="2"><strong>{{ viewDoc.title }}</strong></el-descriptions-item>
         </el-descriptions>
-        <el-alert type="info" :closable="false" show-icon>
-          <template #title>内容说明</template>
-          文档共 {{ viewDoc.chunk_count }} 个章节分块，已按标题拆分存入向量数据库。如需查看原始内容，请参考导入时的源文件。
+
+        <!-- 决策树可视化区 -->
+        <div v-if="viewDoc.has_tree" class="tree-section">
+          <div class="tree-header">
+            <span class="tree-title">决策树结构</span>
+            <div class="tree-actions">
+              <el-button size="small" text @click="expandAllNodes">全部展开</el-button>
+              <el-button size="small" text @click="collapseAllNodes">全部折叠</el-button>
+            </div>
+          </div>
+          <div v-loading="viewTreeLoading" class="tree-container">
+            <template v-if="viewTreeData">
+              <el-tree
+                :data="[viewTreeData]"
+                :props="treeProps"
+                node-key="id"
+                :expand-on-click-node="false"
+                :default-expanded-keys="viewTreeExpandedKeys"
+                highlight-current
+              >
+                <template #default="{ data }">
+                  <div class="tree-node-content">
+                    <!-- 节点标题行 -->
+                    <div class="node-header">
+                      <span :class="['node-level', `level-${data.level}`]">L{{ data.level }}</span>
+                      <span class="node-title">{{ data.title }}</span>
+                      <el-tag v-if="!data.children?.length" type="success" size="small" class="node-type-tag">叶节点</el-tag>
+                      <el-tag v-else type="info" size="small" class="node-type-tag">路由节点</el-tag>
+                      <span class="node-line">行 {{ data.line_number }}</span>
+                    </div>
+                    <!-- 前置条件（路由节点） -->
+                    <div v-if="data.prerequisite_items?.length" class="node-prerequisites">
+                      <span class="section-label">前置条件：</span>
+                      <div class="prerequisite-list">
+                        <div v-for="(p, idx) in data.prerequisite_items" :key="idx" class="prerequisite-item">
+                          <el-tag :type="p.type === 'filter' ? 'primary' : 'warning'" size="small">
+                            {{ p.type === 'filter' ? '过滤' : '优先' }}
+                          </el-tag>
+                          <span class="prerequisite-desc">{{ p.description }}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <!-- 诊断方法（叶节点） -->
+                    <div v-if="data.diagnosis" class="node-diagnosis">
+                      <div class="diagnosis-section">
+                        <span class="section-label">诊断方法：</span>
+                        <ul class="method-list">
+                          <li v-for="(m, idx) in data.diagnosis.acli_methods" :key="idx">
+                            <code>{{ m }}</code>
+                          </li>
+                          <template v-if="data.diagnosis.page_methods?.length">
+                            <li v-for="(m, idx) in data.diagnosis.page_methods" :key="'page-'+idx" class="page-method">
+                              <span class="method-type">页面：</span><code>{{ m }}</code>
+                            </li>
+                          </template>
+                        </ul>
+                      </div>
+                      <div v-if="data.diagnosis.possible_causes?.length" class="causes-section">
+                        <span class="section-label">可能原因：</span>
+                        <ul class="cause-list">
+                          <li v-for="(c, idx) in data.diagnosis.possible_causes" :key="idx">{{ c }}</li>
+                        </ul>
+                      </div>
+                    </div>
+                    <!-- 解决方案（叶节点） -->
+                    <div v-if="data.solution" class="node-solution">
+                      <div v-if="data.solution.quick_recovery?.length" class="solution-section">
+                        <span class="section-label success">快速恢复：</span>
+                        <ol class="solution-steps">
+                          <li v-for="(s, idx) in data.solution.quick_recovery" :key="idx">{{ s }}</li>
+                        </ol>
+                      </div>
+                      <div v-if="data.solution.thorough_fix?.length" class="solution-section">
+                        <span class="section-label primary">彻底修复：</span>
+                        <ol class="solution-steps">
+                          <li v-for="(s, idx) in data.solution.thorough_fix" :key="idx">{{ s }}</li>
+                        </ol>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </el-tree>
+            </template>
+            <el-empty v-else-if="!viewTreeLoading" description="决策树数据加载失败" />
+          </div>
+        </div>
+        <!-- 无决策树时的提示 -->
+        <el-alert v-else type="info" :closable="false" show-icon style="margin-top:16px">
+          <template #title>决策树说明</template>
+          该文档尚未发布或决策树解析失败，请先点击「发布」按钮生成决策树。
         </el-alert>
       </template>
       <template #footer>
@@ -781,5 +964,171 @@ onMounted(() => {
   background: #fff;
   overflow: auto;
   tab-size: 2;
+}
+
+/* 决策树可视化 */
+.tree-section {
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  margin-top: 16px;
+  background: #fafafa;
+}
+.tree-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e4e7ed;
+  background: #f5f7fa;
+}
+.tree-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+.tree-actions {
+  display: flex;
+  gap: 4px;
+}
+.tree-container {
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 12px;
+}
+.tree-node-content {
+  padding: 8px 4px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.node-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.node-level {
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #e6f7ff;
+  color: #1890ff;
+}
+.node-level.level-1 { background: #f6ffed; color: #52c41a; }
+.node-level.level-2 { background: #fffbe6; color: #faad14; }
+.node-level.level-3 { background: #fff1f0; color: #f5222d; }
+.node-level.level-4 { background: #f9f0ff; color: #722ed1; }
+.node-title {
+  font-weight: 500;
+  color: #303133;
+  flex: 1;
+}
+.node-type-tag {
+  margin-left: 4px;
+}
+.node-line {
+  font-family: monospace;
+  font-size: 11px;
+  color: #909399;
+  margin-left: 8px;
+}
+.node-prerequisites {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: #f5f7fa;
+  border-radius: 3px;
+}
+.section-label {
+  font-size: 12px;
+  color: #606266;
+  font-weight: 500;
+  margin-right: 6px;
+}
+.prerequisite-list {
+  margin-top: 4px;
+}
+.prerequisite-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.prerequisite-desc {
+  color: #303133;
+  font-size: 13px;
+}
+.node-diagnosis {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: #e6f7ff;
+  border-radius: 3px;
+  border-left: 3px solid #1890ff;
+}
+.diagnosis-section {
+  margin-bottom: 6px;
+}
+.method-list {
+  margin: 4px 0 0 0;
+  padding-left: 20px;
+  list-style: disc;
+}
+.method-list li {
+  margin-bottom: 2px;
+}
+.method-list code {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  background: #f0f0f0;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-size: 12px;
+  color: #1890ff;
+}
+.method-list .page-method {
+  list-style: circle;
+}
+.method-type {
+  font-size: 12px;
+  color: #909399;
+  margin-right: 4px;
+}
+.causes-section {
+  margin-top: 8px;
+}
+.cause-list {
+  margin: 4px 0 0 0;
+  padding-left: 20px;
+  list-style: square;
+}
+.cause-list li {
+  margin-bottom: 2px;
+  color: #606266;
+}
+.node-solution {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: #f6ffed;
+  border-radius: 3px;
+  border-left: 3px solid #52c41a;
+}
+.solution-section {
+  margin-bottom: 8px;
+}
+.solution-section:last-child {
+  margin-bottom: 0;
+}
+.section-label.success {
+  color: #52c41a;
+}
+.section-label.primary {
+  color: #409eff;
+}
+.solution-steps {
+  margin: 4px 0 0 0;
+  padding-left: 20px;
+}
+.solution-steps li {
+  margin-bottom: 4px;
+  color: #303133;
 }
 </style>

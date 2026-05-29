@@ -292,6 +292,7 @@ async def kbd_republish_proxy(kbd_id: int, request: Request):
 # ============ SOP 管理代理（前端使用 /api/v1/sop 前缀） ============
 
 SOP_ADMIN_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/sop"
+SOP_TREE_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/sop"  # 决策树端点（非 admin 路由）
 sop_admin_router = APIRouter(prefix="/api/v1/sop", tags=["sop-admin"])
 
 
@@ -388,4 +389,21 @@ async def sop_upload_proxy(request: Request):
             return JSONResponse(content=resp.json(), status_code=resp.status_code)
         except httpx.RequestError as exc:
             logger.error(f"KB Service SOP 上传请求失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+
+
+@sop_admin_router.get("/{document_id}/tree")
+async def sop_tree_proxy(document_id: int):
+    """代理 SOP 决策树查询 → kb-service
+
+    返回 SOPNode JSON 结构，404 表示决策树尚未生成。
+    """
+    headers = _internal_auth_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            url = f"{SOP_TREE_SERVICE_URL}/{document_id}/tree"
+            resp = await client.get(url, headers=headers)
+            return JSONResponse(content=resp.json(), status_code=resp.status_code)
+        except httpx.RequestError as exc:
+            logger.error(f"KB Service SOP 决策树查询失败: document_id={document_id}")
             raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
