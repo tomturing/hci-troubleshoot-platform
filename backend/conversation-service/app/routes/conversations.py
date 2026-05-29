@@ -138,6 +138,35 @@ async def send_message(
         sse_pusher.register_queue(str(conversation_id), external_event_queue)
 
     async def event_generator():
+        merge_queue = asyncio.Queue()
+        ai_task = None
+        external_task = None
+
+        async def ai_producer():
+            try:
+                # 消费 ai_stream
+                async for chunk in ai_stream:
+                    await merge_queue.put(("ai", chunk))
+                await merge_queue.put(("done", None))
+            except Exception as e:
+                await merge_queue.put(("error", e))
+
+        async def external_producer():
+            if not external_event_queue:
+                return
+            try:
+                while True:
+                    evt = await external_event_queue.get()
+                    await merge_queue.put(("external", evt))
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(
+                    event="external_producer_error",
+                    message="外部事件生产者发生未捕获异常",
+                    error=str(e),
+                )
+
         try:
             # 同时监听 AI 流和外部事件队列
             ai_stream = service.send_message_stream_only(
@@ -147,16 +176,22 @@ async def send_message(
                 assistant_type=message.assistant_type  # v2.2: 支持动态切换助手
             )
 
-            while True:
-                # 优先检查外部事件队列（快速响应 agent_exec_command）
-                if external_event_queue and not external_event_queue.empty():
-                    external_event = await external_event_queue.get()
-                    yield external_event
-                    continue
+            # 启动两个后台并发生产者任务，绝不取消正在进行的 network stream
+            ai_task = asyncio.create_task(ai_producer())
+            if external_event_queue:
+                external_task = asyncio.create_task(external_producer())
 
-                # 尝试获取 AI 流的下一个 chunk
-                try:
-                    chunk = await asyncio.wait_for(ai_stream.__anext__(), timeout=0.1)
+            while True:
+                # 从合并队列中读取一个事件，此处是非阻塞挂起，零 CPU 占用，极速 TTFT 传递！
+                source, data = await merge_queue.get()
+
+                if source == "done":
+                    break
+                elif source == "error":
+                    # 向上抛出 AI 生成器在读取过程中引发的异常，由外层 catch 并处理
+                    raise data
+                elif source == "ai":
+                    chunk = data
                     if chunk:
                         # 检测特殊内部事件标记（\x00event:<type>:<data>\x00）
                         if chunk.startswith("\x00event:") and chunk.endswith("\x00"):
@@ -176,12 +211,9 @@ async def send_message(
                         # JSON encode chunk 以安全保留换行符，避免 SSE 多行截断
                         encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)
                         yield f"data: {encoded_chunk}\n\n"
-                except TimeoutError:
-                    # AI 流暂时无数据，继续检查外部事件队列
-                    continue
-                except StopAsyncIteration:
-                    # AI 流结束，退出循环
-                    break
+                elif source == "external":
+                    # 直接透传接收到的外部事件（例如 agent_exec_command）
+                    yield data
 
             # 正常流结束后，提交后台任务保存消息
             background_tasks.add_task(
@@ -255,6 +287,19 @@ async def send_message(
             )
             yield f"event: error\ndata: {error_data}\n\n"
         finally:
+            # 安全地终止并清理后台生产者任务，彻底杜绝悬空协程和内存泄露
+            if ai_task and not ai_task.done():
+                ai_task.cancel()
+            if external_task and not external_task.done():
+                external_task.cancel()
+
+            # 等待后台生产者任务完全回收
+            if ai_task or external_task:
+                await asyncio.gather(
+                    *[t for t in (ai_task, external_task) if t],
+                    return_exceptions=True
+                )
+
             # 清理：注销 SSE 队列
             if sse_pusher and external_event_queue:
                 sse_pusher.unregister_queue(str(conversation_id))
