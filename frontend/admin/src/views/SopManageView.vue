@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FullScreen } from '@element-plus/icons-vue'
+import { FullScreen, Warning } from '@element-plus/icons-vue'
 import SopTreeNode from './SopTreeNode.vue'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -13,7 +13,8 @@ interface SopDocument {
   category_id: string | null
   title: string
   status: string
-  chunk_count: number
+  tree_leaf_count: number // 决策树叶节点数量
+  tree_validation_issues?: ValidationIssue[] // 决策树校验问题（有告警时存储）
   content_md?: string
   tree_validation_status: string | null // 决策树校验状态：valid/warnings/error
   has_tree: boolean // 是否有决策树
@@ -37,6 +38,44 @@ interface ValidationIssue {
   location: string
   line_number: number | null
   message: string
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SOP 决策树类型定义
+// ──────────────────────────────────────────────────────────────────────────────
+interface PrerequisiteItem {
+  description: string
+  type: 'filter' | 'priority'
+  target_node_hint?: string
+}
+
+interface DiagnosisDetail {
+  acli_methods: string[]
+  page_methods?: string[]
+  analysis_steps?: string[]
+  possible_causes?: string[]
+}
+
+interface SolutionDetail {
+  quick_recovery: string[]
+  thorough_fix: string[]
+}
+
+interface SOPNode {
+  id: string
+  title: string
+  level: number
+  line_number: number
+  children: SOPNode[]
+  prerequisite_items: PrerequisiteItem[]
+  diagnosis?: DiagnosisDetail
+  solution?: SolutionDetail
+}
+
+interface TreeDataResponse {
+  tree: SOPNode
+  tree_leaf_count: number
+  tree_validation_status: string
 }
 
 // 分类基线选项
@@ -64,7 +103,7 @@ const archiveLoading = ref<Record<number, boolean>>({})
 const viewDialogVisible = ref(false)
 const viewDoc = ref<SopDocument | null>(null)
 const treeLoading = ref(false)
-const treeData = ref<any | null>(null)
+const treeData = ref<TreeDataResponse | null>(null)
 const expandedKeys = ref<Set<string>>(new Set())
 const viewFullscreen = ref(false)
 
@@ -180,7 +219,7 @@ async function fetchDocuments() {
 async function handleApprove(doc: SopDocument) {
   try {
     await ElMessageBox.confirm(
-      `确认发布 SOP 文档？\n\n「${doc.title}」\n\n将解析决策树并生成向量索引，耗时较长，请耐心等待。`,
+      `确认发布 SOP 文档？\n\n「${doc.title}」\n\n将解析生成决策树，耗时较长，请耐心等待。`,
       '发布 SOP',
       { confirmButtonText: '确认发布', cancelButtonText: '取消', type: 'success' },
     )
@@ -302,7 +341,7 @@ function handleToggleExpand(nodeId: string) {
 
 function expandAll() {
   const keys = new Set<string>()
-  const traverse = (node: any) => {
+  const traverse = (node: SOPNode | undefined) => {
     if (!node) return
     keys.add(node.id)
     if (node.children) {
@@ -319,11 +358,47 @@ function collapseAll() {
   expandedKeys.value = new Set()
 }
 
+// ─── 获取文档详情（含告警信息）───────────────────────────────────────────────
+async function fetchViewDocDetail(documentId: number) {
+  try {
+    const resp = await fetch(`/api/v1/sop/${documentId}`, { headers: authHeader })
+    if (resp.ok) {
+      const detail = await resp.json()
+      if (viewDoc.value && viewDoc.value.id === documentId) {
+        viewDoc.value.tree_validation_issues = detail.tree_validation_issues || []
+        viewDoc.value.tree_leaf_count = detail.tree_leaf_count
+      }
+    }
+  } catch {
+    // 静默失败，不影响弹窗显示
+  }
+}
+
+// ─── 显示告警详情弹窗 ─────────────────────────────────────────────────────────
+function fetchValidationIssues() {
+  if (!viewDoc.value) return
+  if (viewDoc.value.tree_validation_issues?.length) {
+    validationIssues.value = viewDoc.value.tree_validation_issues
+    validationDocTitle.value = viewDoc.value.title
+    validationDialogVisible.value = true
+  } else {
+    // 如果没有数据，提示用户
+    ElMessage.info('暂无告警详情数据')
+  }
+}
+
 // ─── 查看内容 ────────────────────────────────────────────────────────────────
-function openViewDialog(doc: SopDocument) {
+async function openViewDialog(doc: SopDocument) {
   viewDoc.value = doc
   viewFullscreen.value = false
   viewDialogVisible.value = true
+
+  // 获取文档详情（包含 tree_validation_issues）
+  if (doc.tree_validation_status === 'warnings' && !doc.tree_validation_issues) {
+    await fetchViewDocDetail(doc.id)
+  }
+
+  // 加载决策树数据
   loadTreeData(doc.id)
 }
 
@@ -460,7 +535,7 @@ async function submitImport() {
     if (result.duplicate) {
       ElMessage.warning(result.message || '文件已存在，跳过导入')
     } else {
-      ElMessage.success(`导入成功：「${result.title}」，共 ${result.chunks_created} 个分块，状态为草稿`)
+      ElMessage.success(`导入成功：「${result.title}」，状态为草稿，请发布后使用`)
     }
     importDialogVisible.value = false
     await fetchDocuments()
@@ -596,8 +671,8 @@ onMounted(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="分块数" width="90" align="center">
-          <template #default="{ row }"><span class="chunk-count">{{ row.chunk_count }}</span></template>
+        <el-table-column label="节点数" width="90" align="center">
+          <template #default="{ row }"><span class="node-count">{{ row.tree_leaf_count }}</span></template>
         </el-table-column>
         <el-table-column label="发布时间" width="160">
           <template #default="{ row }">
@@ -628,9 +703,9 @@ onMounted(() => {
     </el-card>
 
     <!-- ── 查看弹窗 ── -->
-    <el-dialog 
-      v-model="viewDialogVisible" 
-      width="90%" 
+    <el-dialog
+      v-model="viewDialogVisible"
+      width="90%"
       class="premium-dialog"
       :fullscreen="viewFullscreen"
       draggable
@@ -640,9 +715,9 @@ onMounted(() => {
       <template #header>
         <div class="custom-dialog-header">
           <span class="el-dialog__title">SOP 文档详情</span>
-          <el-button 
-            type="info" 
-            text 
+          <el-button
+            type="info"
+            text
             circle
             :icon="FullScreen"
             class="fullscreen-toggle-btn"
@@ -668,9 +743,14 @@ onMounted(() => {
                 <el-descriptions-item label="决策树节点数">
                   <span v-if="treeData" class="badge-num green-glow">{{ treeData.tree_leaf_count || '—' }} 节点</span>
                   <span v-else class="text-muted">—</span>
-                </el-descriptions-item>
-                <el-descriptions-item label="分块数量">
-                  <span class="badge-num">{{ viewDoc.chunk_count }} 块</span>
+                  <!-- 告警提示：有警告时显示查看按钮 -->
+                  <el-tag v-if="viewDoc.tree_validation_status === 'warnings'" type="warning" size="small" style="margin-left:8px">
+                    有警告
+                    <el-button type="warning" size="small" text circle @click="fetchValidationIssues" title="查看告警详情" style="margin-left:4px">
+                      <el-icon><Warning /></el-icon>
+                    </el-button>
+                  </el-tag>
+                  <el-tag v-else-if="viewDoc.tree_validation_status === 'error'" type="danger" size="small" style="margin-left:8px">解析失败</el-tag>
                 </el-descriptions-item>
                 <el-descriptions-item label="分类基线">
                   <el-tag v-if="viewDoc.category_id" type="info" size="small" effect="plain">{{ viewDoc.category_id }}</el-tag>
@@ -696,7 +776,7 @@ onMounted(() => {
                   <li>右侧多叉决策树支持点击节点**头部**快速折叠/展开分支；</li>
                   <li>支持一键**全部展开**或**全部折叠**以快速审阅结构；</li>
                   <li>叶子节点中推荐的 `acli` 命令支持**一键复制**；</li>
-                  <li>如发现逻辑有误，可点击下方“编辑”直接调整 Markdown 内容。</li>
+                  <li>如发现逻辑有误，可点击下方"编辑"直接调整 Markdown 内容。</li>
                 </ul>
               </div>
             </div>
@@ -709,9 +789,9 @@ onMounted(() => {
               <div class="tree-toolbar">
                 <div class="toolbar-left">
                   <span class="tree-section-title">决策树结构（Decision Tree Flow）</span>
-                  <el-tag 
-                    v-if="treeData" 
-                    :type="treeValidationType(treeData.tree_validation_status)" 
+                  <el-tag
+                    v-if="treeData"
+                    :type="treeValidationType(treeData.tree_validation_status)"
                     size="small"
                     class="validation-status-tag"
                   >
@@ -729,9 +809,9 @@ onMounted(() => {
               <!-- 树体内容区 -->
               <div class="tree-scroll-container">
                 <template v-if="treeData && treeData.tree">
-                  <SopTreeNode 
-                    :node="treeData.tree" 
-                    :expanded-keys="expandedKeys" 
+                  <SopTreeNode
+                    :node="treeData.tree"
+                    :expanded-keys="expandedKeys"
                     @toggle-expand="handleToggleExpand"
                   />
                 </template>
@@ -741,7 +821,7 @@ onMounted(() => {
                 <div v-else class="tree-empty-state">
                   <div class="empty-icon">📂</div>
                   <div class="empty-title">暂无决策树结构</div>
-                  <div class="empty-desc">该文档目前无决策树 JSON。可能文档处于“草稿”状态，请点击下方“发布”按钮触发语法校验并生成决策树。</div>
+                  <div class="empty-desc">该文档目前无决策树 JSON。可能文档处于"草稿"状态，请点击下方"发布"按钮触发语法校验并生成决策树。</div>
                 </div>
               </div>
             </div>
@@ -846,7 +926,7 @@ onMounted(() => {
     <el-dialog v-model="importDialogVisible" title="导入 SOP 文档" width="520px">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>导入说明</template>
-        上传 Word（.docx）或 Markdown（.md）文档，系统自动按章节标题分块。导入后状态为「草稿」，需手动点击「发布」后 AI 才可搜索引用。相同文件（SHA256）不会重复导入。
+        上传 Word（.docx）或 Markdown（.md）文档。导入后状态为「草稿」，需手动点击「发布」后生成决策树，AI 才可搜索引用。相同文件（SHA256）不会重复导入。
       </el-alert>
       <el-form label-width="90px">
         <el-form-item label="文档文件" required>
@@ -896,7 +976,8 @@ onMounted(() => {
 .doc-id { color: #909399; font-family: monospace; font-size: 13px; }
 .doc-title { color: #303133; line-height: 1.5; }
 .category-tag { font-size: 12px; color: #909399; background: #f5f7fa; padding: 2px 6px; border-radius: 3px; }
-.chunk-count { font-family: monospace; font-size: 13px; color: #606266; }
+.node-count { font-family: monospace; font-size: 13px; color: #606266; }
+.node-count-value { font-family: monospace; font-size: 14px; color: #303133; font-weight: 500; }
 .date-text { font-size: 13px; color: #606266; }
 .text-muted { color: #c0c4cc; font-size: 13px; }
 .pagination-wrapper { display: flex; justify-content: flex-end; margin-top: 16px; }
@@ -948,6 +1029,7 @@ onMounted(() => {
   overflow: auto;
   tab-size: 2;
 }
+
 /* 高端详情弹窗样式 */
 .custom-dialog-header {
   display: flex;
