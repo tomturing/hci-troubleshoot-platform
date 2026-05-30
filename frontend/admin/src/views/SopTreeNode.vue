@@ -194,11 +194,11 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
 
       <!-- 卡片主内容区 -->
       <div class="card-content-area">
-        <!-- 1. 前置检查条件 -->
+        <!-- 1. 前置检查 -->
         <div v-if="normalizedPrerequisiteItems.length" class="node-section">
           <div class="section-label-row">
             <span class="section-indicator"></span>
-            <span class="section-label">前置检查条件（Prerequisites）</span>
+            <span class="section-label">前置检查（Prerequisites）</span>
           </div>
           <div class="prereq-list">
             <div v-for="(item, idx) in normalizedPrerequisiteItems" :key="idx" class="prereq-item-row">
@@ -260,17 +260,17 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
         <!-- 3. 叶子场景专用：诊断详情与解决方案 -->
         <div v-if="isLeaf" class="leaf-row-details">
           <el-row :gutter="16">
-            <!-- 诊断逻辑 -->
+            <!-- 判断方法 -->
             <el-col :span="12">
               <div class="sub-detail-panel is-diagnosis">
                 <div class="panel-header">
                   <el-icon class="panel-icon header-blue"><Search /></el-icon>
-                  <span class="panel-title">诊断逻辑（Diagnosis）</span>
+                  <span class="panel-title">判断方法（Diagnosis）</span>
                 </div>
                 <div class="panel-body">
                   <!-- acli 命令列表 -->
                   <div v-if="normalizedAcliMethods.length" class="leaf-subsection">
-                    <span class="subsection-title">推荐 acli 检查命令</span>
+                    <span class="subsection-title">acli 判断方法</span>
                     <div v-for="(cmd, cIdx) in normalizedAcliMethods" :key="cIdx" class="terminal-cmd-box">
                       <div class="terminal-header">
                         <span class="terminal-dot red"></span>
@@ -292,7 +292,7 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
 
                   <!-- 页面检查方法 -->
                   <div v-if="node.diagnosis?.page_methods && node.diagnosis.page_methods.length" class="leaf-subsection">
-                    <span class="subsection-title">页面检查步骤</span>
+                    <span class="subsection-title">页面判断方法</span>
                     <ol class="sleek-numeric-list">
                       <li v-for="(step, sIdx) in node.diagnosis.page_methods" :key="sIdx">
                         <span class="step-num">{{ sIdx + 1 }}</span>
@@ -334,11 +334,11 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
                   <span class="panel-title">解决方案（Solutions）</span>
                 </div>
                 <div class="panel-body">
-                  <!-- 快速恢复步骤 -->
+                  <!-- 快速恢复方案 -->
                   <div v-if="node.solution?.quick_recovery && node.solution.quick_recovery.length" class="leaf-subsection">
                     <span class="subsection-title is-amber">
                       <el-icon class="inline-sec-icon text-amber"><Warning /></el-icon>
-                      快速恢复步骤（临时规避方案）
+                      快速恢复方案
                     </span>
                     <div class="solution-step-wrapper is-amber">
                       <ol class="solution-step-ol">
@@ -350,11 +350,11 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
                     </div>
                   </div>
 
-                  <!-- 彻底修复步骤 -->
+                  <!-- 彻底解决方案 -->
                   <div v-if="node.solution?.thorough_fix && node.solution.thorough_fix.length" class="leaf-subsection">
                     <span class="subsection-title is-emerald">
                       <el-icon class="inline-sec-icon text-emerald"><Tools /></el-icon>
-                      彻底修复步骤（根治技术方案）
+                      彻底解决方案
                     </span>
                     <div class="solution-step-wrapper is-emerald">
                       <ol class="solution-step-ol">
@@ -556,7 +556,7 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
   letter-spacing: 0.5px;
 }
 
-/* 前置检查条件排版 */
+/* 前置检查排版 */
 .prereq-list {
   display: flex;
   flex-direction: column;
