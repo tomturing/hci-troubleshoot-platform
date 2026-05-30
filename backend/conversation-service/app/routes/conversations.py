@@ -173,7 +173,8 @@ async def send_message(
                 conversation_id=conversation_id,
                 case_id=message.case_id,
                 content=message.content,
-                assistant_type=message.assistant_type  # v2.2: 支持动态切换助手
+                assistant_type=message.assistant_type,  # v2.2: 支持动态切换助手
+                metadata=message.metadata,  # 传递 metadata
             )
 
             # 启动两个后台并发生产者任务，绝不取消正在进行的 network stream
