@@ -12,7 +12,7 @@ from pydantic_settings import BaseSettings
 DEFAULT_ASSISTANT_REGISTRY = {
     "htp-agent": {
         "name": "HTPAgent",
-        "display_name": "HTP Agent (GLM-5)",
+        "display_name": "HTP Agent",
         "description": "HCI智能排障平台核心助手",
         "base_url": "https://coding.dashscope.aliyuncs.com/v1",
         "model": "glm-5",
@@ -24,7 +24,7 @@ DEFAULT_ASSISTANT_REGISTRY = {
     },
     "ops-agent": {
         "name": "OpsAgent",
-        "display_name": "Ops Agent (GLM-5)",
+        "display_name": "OPS Agent",
         "description": "基于SOP知识库的智能排障助手",
         "base_url": "http://ops-agent-service:8006",
         "warm_pool_size": 0,
@@ -35,7 +35,7 @@ DEFAULT_ASSISTANT_REGISTRY = {
     },
     "pai-agent": {
         "name": "PydanticAI",
-        "display_name": "PAI Agent (GLM-5)",
+        "display_name": "PAI Agent",
         "description": "基于pydantic-ai框架的排障助手",
         "base_url": "http://conversation-service:8002",
         "warm_pool_size": 0,

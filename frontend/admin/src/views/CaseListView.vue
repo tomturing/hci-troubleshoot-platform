@@ -133,9 +133,9 @@ const priorityOptions = [
 ]
 
 const assistantOptions = [
-  { label: 'HTP 排障助手 (htp-agent)', value: 'htp-agent' },
-  { label: 'OPS 运维助手 (ops-agent)', value: 'ops-agent' },
-  { label: 'Triage 导医助手 (triage-agent)', value: 'triage-agent' },
+  { label: 'HTP Agent', value: 'htp-agent' },
+  { label: 'OPS Agent', value: 'ops-agent' },
+  { label: 'PAI Agent', value: 'pai-agent' },
 ]
 
 function openEditDialog(row: CaseResponse) {
@@ -322,8 +322,8 @@ onMounted(loadData)
         <el-form-item label="工单分类">
           <el-input v-model="editForm.category" placeholder="选填，如: vm / storage / network" clearable />
         </el-form-item>
-        <el-form-item label="AI助手类型" required>
-          <el-select v-model="editForm.assistant_type" placeholder="选择分配的 AI 助手" style="width: 100%">
+        <el-form-item label="助手类型" required>
+          <el-select v-model="editForm.assistant_type" placeholder="选择分配的助手" style="width: 100%">
             <el-option
               v-for="opt in assistantOptions"
               :key="opt.value"
