@@ -10,6 +10,13 @@ import {
   CopyDocument
 } from '@element-plus/icons-vue'
 
+type PrerequisiteItem = {
+  description: string
+  type: 'filter' | 'priority'
+  content_type?: 'text' | 'command'
+  target_node_hint?: string
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Props & Emits
 // ──────────────────────────────────────────────────────────────────────────────
@@ -20,12 +27,7 @@ const props = defineProps<{
     level: number
     line_number: number
     children?: any[]
-    prerequisite_items?: {
-      description: string
-      type: 'filter' | 'priority'
-      content_type?: 'text' | 'command'
-      target_node_hint?: string
-    }[]
+    prerequisite_items?: PrerequisiteItem[]
     variables?: {
       name: string
       type: string
@@ -55,6 +57,8 @@ defineEmits<{
 // ──────────────────────────────────────────────────────────────────────────────
 const isLeaf = computed(() => !props.node.children || props.node.children.length === 0)
 const isExpanded = computed(() => props.expandedKeys.has(props.node.id))
+const normalizedPrerequisiteItems = computed(() => normalizePrerequisiteItems(props.node.prerequisite_items || []))
+const normalizedAcliMethods = computed(() => normalizeFencedCodeStrings(props.node.diagnosis?.acli_methods || []))
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 交互操作
@@ -74,6 +78,88 @@ async function copyText(text: string) {
 
 function isCommandPrerequisite(item: { content_type?: string; description: string }) {
   return item.content_type === 'command'
+}
+
+function isFenceLine(text: string) {
+  return text.trim().startsWith('```')
+}
+
+function normalizeFencedCodeStrings(items: string[]) {
+  const normalized: string[] = []
+  let inFence = false
+  let buffer: string[] = []
+
+  for (const item of items) {
+    if (isFenceLine(item)) {
+      if (inFence) {
+        const command = buffer.filter((line) => line.trim()).join('\n').trim()
+        if (command) normalized.push(command)
+        buffer = []
+        inFence = false
+      } else {
+        inFence = true
+        buffer = []
+      }
+      continue
+    }
+
+    if (inFence) {
+      buffer.push(item)
+    } else {
+      normalized.push(item)
+    }
+  }
+
+  if (inFence) {
+    const command = buffer.filter((line) => line.trim()).join('\n').trim()
+    if (command) normalized.push(command)
+  }
+
+  return normalized
+}
+
+function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
+  const normalized: PrerequisiteItem[] = []
+  let inFence = false
+  let fenceBase: PrerequisiteItem | null = null
+  let buffer: string[] = []
+
+  for (const item of items) {
+    if (item.content_type === 'command') {
+      normalized.push(item)
+      continue
+    }
+
+    if (isFenceLine(item.description)) {
+      if (inFence) {
+        const command = buffer.filter((line) => line.trim()).join('\n').trim()
+        if (command && fenceBase) {
+          normalized.push({ ...fenceBase, description: command, content_type: 'command' })
+        }
+        fenceBase = null
+        buffer = []
+        inFence = false
+      } else {
+        fenceBase = item
+        buffer = []
+        inFence = true
+      }
+      continue
+    }
+
+    if (inFence) {
+      buffer.push(item.description)
+    } else {
+      normalized.push(item)
+    }
+  }
+
+  if (inFence && fenceBase) {
+    const command = buffer.filter((line) => line.trim()).join('\n').trim()
+    if (command) normalized.push({ ...fenceBase, description: command, content_type: 'command' })
+  }
+
+  return normalized
 }
 </script>
 
@@ -109,13 +195,13 @@ function isCommandPrerequisite(item: { content_type?: string; description: strin
       <!-- 卡片主内容区 -->
       <div class="card-content-area">
         <!-- 1. 前置检查条件 -->
-        <div v-if="node.prerequisite_items && node.prerequisite_items.length" class="node-section">
+        <div v-if="normalizedPrerequisiteItems.length" class="node-section">
           <div class="section-label-row">
             <span class="section-indicator"></span>
             <span class="section-label">前置检查条件（Prerequisites）</span>
           </div>
           <div class="prereq-list">
-            <div v-for="(item, idx) in node.prerequisite_items" :key="idx" class="prereq-item-row">
+            <div v-for="(item, idx) in normalizedPrerequisiteItems" :key="idx" class="prereq-item-row">
               <span 
                 class="prereq-badge" 
                 :class="isCommandPrerequisite(item) ? 'is-command' : item.type === 'filter' ? 'is-filter' : 'is-priority'"
@@ -183,9 +269,9 @@ function isCommandPrerequisite(item: { content_type?: string; description: strin
                 </div>
                 <div class="panel-body">
                   <!-- acli 命令列表 -->
-                  <div v-if="node.diagnosis?.acli_methods && node.diagnosis.acli_methods.length" class="leaf-subsection">
+                  <div v-if="normalizedAcliMethods.length" class="leaf-subsection">
                     <span class="subsection-title">推荐 acli 检查命令</span>
-                    <div v-for="(cmd, cIdx) in node.diagnosis.acli_methods" :key="cIdx" class="terminal-cmd-box">
+                    <div v-for="(cmd, cIdx) in normalizedAcliMethods" :key="cIdx" class="terminal-cmd-box">
                       <div class="terminal-header">
                         <span class="terminal-dot red"></span>
                         <span class="terminal-dot yellow"></span>
