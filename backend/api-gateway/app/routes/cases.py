@@ -128,3 +128,35 @@ async def close_case(case_id: str, request: Request):
             POD_RELEASE_FAILURES_TOTAL.labels(reason=type(e).__name__).inc()
 
     return JSONResponse(content=response.json(), status_code=response.status_code)
+
+@router.put("/{case_id}")
+async def update_case(case_id: str, request: Request):
+    """[Admin] 编辑工单"""
+    payload = await request.json()
+    response = await proxy_request("PUT", f"/{case_id}", payload)
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    # 如果工单被更新为“已关闭”，则同步释放关联的 Pod 资源，防止后台热备池资源泄露
+    if response.status_code == 200 and payload.get("status") == "closed":
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                release_resp = await client.post(
+                    f"{settings.SCHEDULER_SERVICE_URL}/api/scheduler/pods/release",
+                    json={"case_id": case_id}
+                )
+                if release_resp.status_code == 200:
+                    logger.info(f"Released pod for updated closed case {case_id}")
+                else:
+                    logger.warning(f"Pod release returned {release_resp.status_code} for updated case {case_id}")
+        except Exception as e:
+            logger.warning(
+                event="pod_release_failed_on_update",
+                message=f"编辑工单为关闭状态时 Pod 释放失败，case_id={case_id}",
+                case_id=case_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            POD_RELEASE_FAILURES_TOTAL.labels(reason=type(e).__name__).inc()
+
+    return JSONResponse(content=response.json(), status_code=response.status_code)

@@ -239,3 +239,97 @@ class TestCaseStatusTransitions:
         result = await service.confirm_case("Q99999999999")
 
         assert result is None
+
+
+@pytest.mark.asyncio
+class TestCaseAdminOperations:
+    """工单管理员操作测试"""
+
+    async def test_list_all_cases_with_search(self):
+        """测试获取所有工单列表包含高级检索参数"""
+        mock_repo = Mock()
+        mock_cases = [
+            Case(case_id="Q20260215001", user_id="test-user-id", client_id="test-client", title="Case 1", status=CaseStatus.created, created_at=datetime.utcnow(), updated_at=datetime.utcnow())
+        ]
+        mock_repo.get_all = AsyncMock(return_value=(mock_cases, 1))
+
+        service = CaseService(mock_repo)
+        res = await service.list_all_cases(
+            skip=0,
+            limit=10,
+            status="created",
+            client_id="test-",
+            case_id="Q2026",
+            title="Case",
+        )
+
+        assert res.total == 1
+        assert len(res.items) == 1
+        assert res.items[0].case_id == "Q20260215001"
+        mock_repo.get_all.assert_called_once_with(
+            skip=0,
+            limit=10,
+            status="created",
+            client_id="test-",
+            case_id="Q2026",
+            title="Case",
+            start_time=None,
+            end_time=None,
+        )
+
+    async def test_update_case_success(self):
+        """测试成功更新工单字段"""
+        mock_repo = Mock()
+        mock_case = Case(
+            case_id="Q20260215001",
+            user_id="test-user-id",
+            client_id="test-client",
+            title="Updated Title",
+            description="Updated Desc",
+            status=CaseStatus.confirmed,
+            priority="high",
+            category="vm",
+            assistant_type="ops-agent",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        mock_repo.update = AsyncMock(return_value=mock_case)
+
+        service = CaseService(mock_repo)
+        from shared.models.schemas import CaseUpdate
+        update_data = CaseUpdate(
+            title="Updated Title",
+            description="Updated Desc",
+            status=CaseStatus.confirmed,
+            priority="high",
+            category="vm",
+            assistant_type="ops-agent",
+        )
+        res = await service.update_case("Q20260215001", update_data)
+
+        assert res is not None
+        assert res.title == "Updated Title"
+        assert res.priority == "high"
+        assert res.category == "vm"
+        mock_repo.update.assert_called_once_with(
+            "Q20260215001",
+            {
+                "title": "Updated Title",
+                "description": "Updated Desc",
+                "status": CaseStatus.confirmed,
+                "priority": "high",
+                "category": "vm",
+                "assistant_type": "ops-agent",
+            }
+        )
+
+    async def test_update_case_not_found(self):
+        """测试更新不存在的工单"""
+        mock_repo = Mock()
+        mock_repo.update = AsyncMock(return_value=None)
+
+        service = CaseService(mock_repo)
+        from shared.models.schemas import CaseUpdate
+        res = await service.update_case("Q99999999999", CaseUpdate(title="Non-existent"))
+
+        assert res is None

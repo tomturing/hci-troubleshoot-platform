@@ -9,6 +9,7 @@ from shared.models.schemas import (
     CaseListResponse,
     CaseResponse,
     CaseStatsResponse,
+    CaseUpdate,
     ClientInfo,
     ClientListResponse,
 )
@@ -177,6 +178,8 @@ class CaseService:
         limit: int = 20,
         status: str | None = None,
         client_id: str | None = None,
+        case_id: str | None = None,
+        title: str | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
     ) -> CaseListResponse:
@@ -184,6 +187,7 @@ class CaseService:
         items, total = await self.repository.get_all(
             skip=skip, limit=limit,
             status=status, client_id=client_id,
+            case_id=case_id, title=title,
             start_time=start_time, end_time=end_time,
         )
         return CaseListResponse(
@@ -192,6 +196,28 @@ class CaseService:
             skip=skip,
             limit=limit,
         )
+
+    async def update_case(
+        self,
+        case_id: str,
+        case_update: CaseUpdate,
+    ) -> CaseResponse | None:
+        """更新工单信息（Admin）"""
+        updates = case_update.model_dump(exclude_unset=True)
+        if not updates:
+            return await self.get_case(case_id)
+
+        updated_case = await self.repository.update(case_id, updates)
+        if not updated_case:
+            return None
+
+        logger.info(
+            event="case_updated_by_admin",
+            message=f"Admin updated case {case_id}",
+            case_id=case_id,
+            updates=list(updates.keys()),
+        )
+        return CaseResponse.model_validate(updated_case)
 
     async def get_case_stats(self) -> CaseStatsResponse:
         """获取工单统计（Admin）"""

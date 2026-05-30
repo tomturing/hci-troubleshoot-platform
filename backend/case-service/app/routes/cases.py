@@ -11,6 +11,7 @@ from shared.models.schemas import (
     CaseListResponse,
     CaseResponse,
     CaseStatsResponse,
+    CaseUpdate,
     ClientListResponse,
 )
 
@@ -43,6 +44,8 @@ async def list_all_cases(
     limit: int = Query(20, ge=1, le=100, description="每页数量"),
     status: str | None = Query(None, description="按状态筛选"),
     client_id: str | None = Query(None, description="按客户端筛选"),
+    case_id: str | None = Query(None, description="按工单号模糊筛选"),
+    title: str | None = Query(None, description="按工单标题模糊筛选"),
     start_time: datetime | None = Query(None, description="开始时间"),
     end_time: datetime | None = Query(None, description="结束时间"),
     service: CaseService = Depends(get_case_service),
@@ -51,6 +54,7 @@ async def list_all_cases(
     return await service.list_all_cases(
         skip=skip, limit=limit,
         status=status, client_id=client_id,
+        case_id=case_id, title=title,
         start_time=start_time, end_time=end_time,
     )
 
@@ -115,6 +119,18 @@ async def close_case(
 ):
     """关闭工单"""
     case = await service.close_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return case
+
+@router.put("/{case_id}", response_model=CaseResponse)
+async def update_case(
+    case_id: str,
+    case_update: CaseUpdate,
+    service: CaseService = Depends(get_case_service),
+):
+    """[Admin] 编辑工单信息"""
+    case = await service.update_case(case_id, case_update)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     return case

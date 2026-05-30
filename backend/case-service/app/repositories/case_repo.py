@@ -97,6 +97,24 @@ class CaseRepository:
         await self.session.refresh(case)
         return case
 
+    async def update(self, case_id: str, updates: dict) -> Case | None:
+        """更新工单信息"""
+        case = await self.get_by_id(case_id)
+        if not case:
+            return None
+
+        for key, value in updates.items():
+            if hasattr(case, key):
+                setattr(case, key, value)
+
+        # 状态联动处理：如果变更为已关闭，自动更新 closed_at 字段
+        if updates.get("status") == CaseStatus.closed:
+            case.closed_at = datetime.now(UTC)
+
+        await self.session.flush()
+        await self.session.refresh(case)
+        return case
+
     async def delete(self, case_id: str) -> bool:
         """删除工单"""
         case = await self.get_by_id(case_id)
@@ -113,6 +131,8 @@ class CaseRepository:
         limit: int = 20,
         status: str | None = None,
         client_id: str | None = None,
+        case_id: str | None = None,
+        title: str | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
     ) -> tuple[list[Case], int]:
@@ -125,8 +145,14 @@ class CaseRepository:
             query = query.where(Case.status == status)
             count_query = count_query.where(Case.status == status)
         if client_id:
-            query = query.where(Case.client_id == client_id)
-            count_query = count_query.where(Case.client_id == client_id)
+            query = query.where(Case.client_id.ilike(f"%{client_id}%"))
+            count_query = count_query.where(Case.client_id.ilike(f"%{client_id}%"))
+        if case_id:
+            query = query.where(Case.case_id.ilike(f"%{case_id}%"))
+            count_query = count_query.where(Case.case_id.ilike(f"%{case_id}%"))
+        if title:
+            query = query.where(Case.title.ilike(f"%{title}%"))
+            count_query = count_query.where(Case.title.ilike(f"%{title}%"))
         if start_time:
             query = query.where(Case.created_at >= start_time)
             count_query = count_query.where(Case.created_at >= start_time)

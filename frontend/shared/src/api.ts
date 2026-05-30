@@ -20,6 +20,7 @@ import type {
   EnvironmentResponse,
   EnvironmentListResponse,
   EnvironmentContextResponse,
+  CaseUpdate,
 } from './types'
 
 /** 创建带通用拦截器的 Axios 实例 */
@@ -81,8 +82,22 @@ export function createCaseApi(client: AxiosInstance) {
     // ---- Admin ----
 
     /** [Admin] 所有工单列表 */
-    listAll(params?: { skip?: number; limit?: number; status?: string; client_id?: string }) {
+    listAll(params?: {
+      skip?: number
+      limit?: number
+      status?: string
+      client_id?: string
+      case_id?: string
+      title?: string
+      start_time?: string
+      end_time?: string
+    }) {
       return client.get<CaseListResponse>('/cases/all', { params })
+    },
+
+    /** [Admin] 编辑工单 */
+    update(caseId: string, data: CaseUpdate) {
+      return client.put<CaseResponse>(`/cases/${caseId}`, data)
     },
 
     /** [Admin] 工单统计 */

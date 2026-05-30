@@ -53,6 +53,17 @@ class CaseCloseRequest(BaseModel):
     close_reason: CloseReason | None = Field(None, description="关闭原因：user_command/timeout/abandon/admin_close")
 
 
+class CaseUpdate(BaseModel):
+    """更新工单请求"""
+
+    title: str | None = Field(None, max_length=200, description="工单标题")
+    description: str | None = Field(None, description="工单描述")
+    status: CaseStatus | None = Field(None, description="工单状态")
+    priority: str | None = Field(None, description="优先级")
+    category: str | None = Field(None, description="分类")
+    assistant_type: str | None = Field(None, description="AI助手类型")
+
+
 class CaseResponse(BaseModel):
     """工单响应"""
 
@@ -62,6 +73,8 @@ class CaseResponse(BaseModel):
     title: str
     description: str | None
     assistant_type: str | None = "htp-agent"
+    priority: str | None = "medium"
+    category: str | None = None
     created_at: datetime
     updated_at: datetime
     closed_at: datetime | None

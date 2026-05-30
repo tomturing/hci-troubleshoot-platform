@@ -23,6 +23,8 @@ export interface CaseResponse {
   updated_at: string
   closed_at: string | null
   trace_id: string | null
+  priority?: string
+  category?: string | null
 }
 
 /** 创建工单请求 */
@@ -31,6 +33,16 @@ export interface CaseCreate {
   title: string
   description?: string
   assistant_type?: string  // v2.0: 可选，不传则系统自动分配
+}
+
+/** 编辑工单请求 */
+export interface CaseUpdate {
+  title?: string
+  description?: string | null
+  status?: CaseStatus
+  priority?: string
+  category?: string | null
+  assistant_type?: string
 }
 
 /** AI 助手信息（v2.1 扩展）*/
