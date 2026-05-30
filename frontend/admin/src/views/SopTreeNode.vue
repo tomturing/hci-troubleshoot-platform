@@ -17,6 +17,11 @@ type PrerequisiteItem = {
   target_node_hint?: string
 }
 
+type AcliMethodItem = {
+  content: string
+  kind: 'command' | 'text'
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Props & Emits
 // ──────────────────────────────────────────────────────────────────────────────
@@ -58,7 +63,12 @@ defineEmits<{
 const isLeaf = computed(() => !props.node.children || props.node.children.length === 0)
 const isExpanded = computed(() => props.expandedKeys.has(props.node.id))
 const normalizedPrerequisiteItems = computed(() => normalizePrerequisiteItems(props.node.prerequisite_items || []))
-const normalizedAcliMethods = computed(() => normalizeFencedCodeStrings(props.node.diagnosis?.acli_methods || []))
+const normalizedAcliMethodItems = computed(() => normalizeAcliMethodItems(props.node.diagnosis?.acli_methods || []))
+const normalizedPageMethods = computed(() => normalizeDisplayList(props.node.diagnosis?.page_methods || []))
+const normalizedAnalysisSteps = computed(() => normalizeDisplayList(props.node.diagnosis?.analysis_steps || []))
+const normalizedPossibleCauses = computed(() => normalizeDisplayList(props.node.diagnosis?.possible_causes || []))
+const normalizedQuickRecovery = computed(() => normalizeDisplayList(props.node.solution?.quick_recovery || []))
+const normalizedThoroughFix = computed(() => normalizeDisplayList(props.node.solution?.thorough_fix || []))
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 交互操作
@@ -82,6 +92,14 @@ function isCommandPrerequisite(item: { content_type?: string; description: strin
 
 function isFenceLine(text: string) {
   return text.trim().startsWith('```')
+}
+
+function stripLeadingListMarker(text: string) {
+  return text.replace(/^\s*(?:[-*]\s+|[（(]?\d+[）)]\s*|[一二三四五六七八九十]+[、.．]\s*|\d+[、.．)]\s*)/, '')
+}
+
+function normalizeDisplayList(items: string[]) {
+  return items.map(stripLeadingListMarker).filter((item) => item.trim())
 }
 
 function normalizeFencedCodeStrings(items: string[]) {
@@ -116,6 +134,28 @@ function normalizeFencedCodeStrings(items: string[]) {
   }
 
   return normalized
+}
+
+function isLikelyShellCommand(text: string) {
+  const value = stripLeadingListMarker(text).trim()
+  if (!value) return false
+
+  const firstToken = value.split(/\s+/)[0].replace(/^sudo$/, '')
+  const commandPattern = /^(?:sudo\s+)?(?:container_exec|kubectl|docker|crictl|ctr|lsblk|grep|egrep|fgrep|awk|sed|cat|tail|head|less|more|find|xargs|sort|uniq|wc|df|du|mount|umount|blkid|fdisk|parted|mdadm|smartctl|smartctl\.real|nvme|sg_|lsscsi|dmesg|journalctl|systemctl|ps|top|free|ip|ss|netstat|ping|curl|wget|ssh|scp|rsync|mysql|psql|redis-cli|python|python3|bash|sh|tar|gzip|gunzip|chmod|chown|mkdir|rm|mv|cp)\b/
+  const startsWithCommandToken = /^[A-Za-z0-9_./-]+(?:\s|$)/.test(value) && !/[\u4e00-\u9fa5]/.test(firstToken)
+  const hasShellSyntax = /(?:\s[|&]{1,2}\s|[;$()`]|\s-\w|\s\/[\w./-]+|^\.\/|^\/)/.test(value)
+
+  return commandPattern.test(value) || (startsWithCommandToken && hasShellSyntax)
+}
+
+function normalizeAcliMethodItems(items: string[]): AcliMethodItem[] {
+  return normalizeFencedCodeStrings(items)
+    .map((item) => stripLeadingListMarker(item).trim())
+    .filter(Boolean)
+    .map((content) => ({
+      content,
+      kind: isLikelyShellCommand(content) ? 'command' : 'text',
+    }))
 }
 
 function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
@@ -269,32 +309,39 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
                 </div>
                 <div class="panel-body">
                   <!-- acli 命令列表 -->
-                  <div v-if="normalizedAcliMethods.length" class="leaf-subsection">
+                  <div v-if="normalizedAcliMethodItems.length" class="leaf-subsection">
                     <span class="subsection-title">acli 判断方法</span>
-                    <div v-for="(cmd, cIdx) in normalizedAcliMethods" :key="cIdx" class="terminal-cmd-box">
-                      <div class="terminal-header">
-                        <span class="terminal-dot red"></span>
-                        <span class="terminal-dot yellow"></span>
-                        <span class="terminal-dot green"></span>
-                        <span class="terminal-title">SSH Terminal</span>
-                        <el-button 
-                          size="small" 
-                          class="terminal-copy-action"
-                          :icon="CopyDocument"
-                          circle
-                          @click="copyText(cmd)"
-                          title="复制命令"
-                        />
-                      </div>
-                      <pre class="terminal-pre"><code>{{ cmd }}</code></pre>
+                    <div class="method-item-list">
+                      <template v-for="(item, cIdx) in normalizedAcliMethodItems" :key="cIdx">
+                        <div v-if="item.kind === 'command'" class="terminal-cmd-box">
+                          <div class="terminal-header">
+                            <span class="terminal-dot red"></span>
+                            <span class="terminal-dot yellow"></span>
+                            <span class="terminal-dot green"></span>
+                            <span class="terminal-title">SSH Terminal</span>
+                            <el-button
+                              size="small"
+                              class="terminal-copy-action"
+                              :icon="CopyDocument"
+                              circle
+                              @click="copyText(item.content)"
+                              title="复制命令"
+                            />
+                          </div>
+                          <pre class="terminal-pre"><code>{{ item.content }}</code></pre>
+                        </div>
+                        <div v-else class="method-text-row">
+                          {{ item.content }}
+                        </div>
+                      </template>
                     </div>
                   </div>
 
                   <!-- 页面检查方法 -->
-                  <div v-if="node.diagnosis?.page_methods && node.diagnosis.page_methods.length" class="leaf-subsection">
+                  <div v-if="normalizedPageMethods.length" class="leaf-subsection">
                     <span class="subsection-title">页面判断方法</span>
                     <ol class="sleek-numeric-list">
-                      <li v-for="(step, sIdx) in node.diagnosis.page_methods" :key="sIdx">
+                      <li v-for="(step, sIdx) in normalizedPageMethods" :key="sIdx">
                         <span class="step-num">{{ sIdx + 1 }}</span>
                         <span class="step-text">{{ step }}</span>
                       </li>
@@ -302,10 +349,10 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
                   </div>
 
                   <!-- 分析步骤 -->
-                  <div v-if="node.diagnosis?.analysis_steps && node.diagnosis.analysis_steps.length" class="leaf-subsection">
+                  <div v-if="normalizedAnalysisSteps.length" class="leaf-subsection">
                     <span class="subsection-title">分析步骤</span>
                     <ul class="sleek-bullet-list">
-                      <li v-for="(step, aIdx) in node.diagnosis.analysis_steps" :key="aIdx">
+                      <li v-for="(step, aIdx) in normalizedAnalysisSteps" :key="aIdx">
                         <span class="bullet-dot"></span>
                         <span class="step-text">{{ step }}</span>
                       </li>
@@ -313,10 +360,10 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
                   </div>
 
                   <!-- 可能原因 -->
-                  <div v-if="node.diagnosis?.possible_causes && node.diagnosis.possible_causes.length" class="leaf-subsection">
+                  <div v-if="normalizedPossibleCauses.length" class="leaf-subsection">
                     <span class="subsection-title is-warning">可能原因分析</span>
                     <ul class="sleek-bullet-list is-warning">
-                      <li v-for="(cause, pIdx) in node.diagnosis.possible_causes" :key="pIdx">
+                      <li v-for="(cause, pIdx) in normalizedPossibleCauses" :key="pIdx">
                         <span class="bullet-dot warning"></span>
                         <span class="step-text">{{ cause }}</span>
                       </li>
@@ -335,14 +382,14 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
                 </div>
                 <div class="panel-body">
                   <!-- 快速恢复方案 -->
-                  <div v-if="node.solution?.quick_recovery && node.solution.quick_recovery.length" class="leaf-subsection">
+                  <div v-if="normalizedQuickRecovery.length" class="leaf-subsection">
                     <span class="subsection-title is-amber">
                       <el-icon class="inline-sec-icon text-amber"><Warning /></el-icon>
                       快速恢复方案
                     </span>
                     <div class="solution-step-wrapper is-amber">
                       <ol class="solution-step-ol">
-                        <li v-for="(step, qrIdx) in node.solution.quick_recovery" :key="qrIdx">
+                        <li v-for="(step, qrIdx) in normalizedQuickRecovery" :key="qrIdx">
                           <span class="step-number-pill is-amber">{{ qrIdx + 1 }}</span>
                           <span class="step-content">{{ step }}</span>
                         </li>
@@ -351,14 +398,14 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
                   </div>
 
                   <!-- 彻底解决方案 -->
-                  <div v-if="node.solution?.thorough_fix && node.solution.thorough_fix.length" class="leaf-subsection">
+                  <div v-if="normalizedThoroughFix.length" class="leaf-subsection">
                     <span class="subsection-title is-emerald">
                       <el-icon class="inline-sec-icon text-emerald"><Tools /></el-icon>
                       彻底解决方案
                     </span>
                     <div class="solution-step-wrapper is-emerald">
                       <ol class="solution-step-ol">
-                        <li v-for="(step, tfIdx) in node.solution.thorough_fix" :key="tfIdx">
+                        <li v-for="(step, tfIdx) in normalizedThoroughFix" :key="tfIdx">
                           <span class="step-number-pill is-emerald">{{ tfIdx + 1 }}</span>
                           <span class="step-content">{{ step }}</span>
                         </li>
@@ -747,6 +794,24 @@ function normalizePrerequisiteItems(items: PrerequisiteItem[]) {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.method-item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.method-text-row {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-left: 3px solid #94a3b8;
+  border-radius: 6px;
+  padding: 8px 10px;
+  word-break: break-word;
 }
 
 .subsection-title {
