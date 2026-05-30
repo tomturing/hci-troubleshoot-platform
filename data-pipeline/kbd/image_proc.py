@@ -364,10 +364,12 @@ def _parse_description(raw: str) -> str:
 
 # 终端命令特征正则
 _TERMINAL_CMD_PATTERN = r"\$\s|#\s|sudo |grep |chmod |cat |ls |\-rn |sfvt_|lh |du |vim |vi |nano |tail |head |find |ps |kill |top |htop |netstat |ifconfig |ip |ping |ssh |scp |rsync |wget |curl |tar |zip |unzip |mkdir |rm |cp |mv |echo |printf |sed |awk |sort |uniq |wc |diff |cmp |touch |ln |chown |chgrp |chmod |umask |env |export |set |unset |alias |unalias |source |\.\/|bash |sh |zsh |python |perl |ruby |go |java |gcc |g\+\+ |make |cmake |npm |pip |uv |docker |kubectl |helm |git |gh "
-# 日志级别正则
-_LOG_LEVEL_PATTERN = r"\b(ERROR|WARN|error|warn|INFO|DEBUG|FATAL|info|debug|fatal|notice|warning|critical|alert|emergency)\b"
-# 时间格式正则：支持 YYYY-MM-DD HH:MM:SS 或 YYYY-MM-DDTHH:MM:SS
-_TIME_PATTERN = r"\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}"
+# 日志级别正则（包含大小写：ERROR/err/error/WARN/warn/warning/INFO/info/DEBUG/debug/FATAL/fatal 等）
+_LOG_LEVEL_PATTERN = r"\b(ERROR|err|error|WARN|warn|warning|INFO|info|DEBUG|debug|FATAL|fatal|notice|NOTICE|critical|CRITICAL|alert|ALERT|emergency|EMERGENCY)\b"
+# 简短时间格式正则：HH:MM:SS（用于日志截图判断）
+_LOG_TIME_PATTERN = r"\d{2}:\d{2}:\d{2}"
+# 完整时间格式正则：YYYY-MM-DD HH:MM:SS 或 YYYY-MM-DDTHH:MM:SS（用于告警/任务截图判断）
+_FULL_TIME_PATTERN = r"\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}"
 # 英文单词正则（匹配连续字母）
 _ENGLISH_WORD_PATTERN = r"[a-zA-Z]{2,}"
 
@@ -401,10 +403,10 @@ def classify_type(background: str, full_text: list[str]) -> str:
     基于背景色 + 文字内容，用正则规则本地判断截图类型。
 
     分类策略：
-      终端截图 │ 黑色/其他背景 + 命令特征 或 英文单词占比≥50%
-      日志截图 │ 黑色/其他背景 + 时间格式 或 日志级别
-      告警截图 │ 白色背景 + 告警关键字 + 时间
-      任务截图 │ 白色背景 + 任务状态关键字 + 时间
+      终端截图 │ 黑色/其他背景（排除白色） + 命令特征 或 英文单词占比≥50%
+      日志截图 │ 黑色/其他背景（排除白色） + 时间格式(HH:MM:SS) 或 日志级别
+      告警截图 │ 白色背景 + 告警关键字 + 完整时间(YYYY-MM-DD HH:MM:SS)
+      任务截图 │ 白色背景 + 任务状态关键字 + 完整时间(YYYY-MM-DD HH:MM:SS)
       其他截图 │ 兜底
 
     Returns:
@@ -412,7 +414,7 @@ def classify_type(background: str, full_text: list[str]) -> str:
     """
     text = " ".join(full_text)
 
-    # ─── 终端截图判断（黑色或深色背景）────────────────────────────────────
+    # ─── 终端截图判断（黑色或其他背景，排除白色）────────────────────────────
     if background in ("黑色", "其他"):
         # 条件1：包含终端命令特征
         if re.search(_TERMINAL_CMD_PATTERN, text):
@@ -422,12 +424,12 @@ def classify_type(background: str, full_text: list[str]) -> str:
         if _calculate_english_ratio(text) >= 0.5:
             return "终端截图"
 
-        # ─── 日志截图判断（黑色或深色背景）────────────────────────────────────
-        # 条件1：包含时间格式
-        if re.search(_TIME_PATTERN, text):
+        # ─── 日志截图判断（黑色或其他背景，排除白色）────────────────────────────
+        # 条件1：包含简短时间格式 HH:MM:SS
+        if re.search(_LOG_TIME_PATTERN, text):
             return "日志截图"
 
-        # 条件2：包含日志级别关键字
+        # 条件2：包含日志级别关键字（大小写均匹配）
         if re.search(_LOG_LEVEL_PATTERN, text):
             return "日志截图"
 
@@ -437,11 +439,11 @@ def classify_type(background: str, full_text: list[str]) -> str:
 
     # ─── 白色背景判断（告警/任务截图）──────────────────────────────────────
     if background == "白色":
-        # 告警截图：白色背景 + 告警关键字 + 时间
-        if re.search(r"紧急|严重|告警|未处理|已触发", text) and re.search(_TIME_PATTERN, text):
+        # 告警截图：白色背景 + 告警关键字 + 完整时间格式
+        if re.search(r"紧急|严重|告警|未处理|已触发", text) and re.search(_FULL_TIME_PATTERN, text):
             return "告警截图"
-        # 任务截图：白色背景 + 任务状态关键字 + 时间
-        if re.search(r"失败|完成|进行中|操作人|HA恢复|修复.*快照|新建.*快照", text) and re.search(_TIME_PATTERN, text):
+        # 任务截图：白色背景 + 任务状态关键字 + 完整时间格式
+        if re.search(r"失败|完成|进行中|操作人|HA恢复|修复.*快照|新建.*快照", text) and re.search(_FULL_TIME_PATTERN, text):
             return "任务截图"
 
     return "其他截图"
