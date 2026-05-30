@@ -435,7 +435,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function sendMessage(content: string) {
+  async function sendMessage(content: string, metadata?: any) {
     if (!content.trim() || isStreaming.value) return
 
     if (content.startsWith('/close')) {
@@ -459,13 +459,13 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    addUserMessage(content)
+    addUserMessage(content, metadata)
 
     if (!conversationId.value) {
       await createConversation()
     }
 
-    await streamAIResponse(content)
+    await streamAIResponse(content, metadata)
   }
 
   async function confirmCreateCase(template: CaseTemplate) {
@@ -518,7 +518,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function streamAIResponse(content: string) {
+  async function streamAIResponse(content: string, metadata?: any) {
     if (!conversationId.value || !currentCase.value) {
       const errorMsg = !conversationId.value ? 'conversationId 为空' : 'currentCase 为空'
       console.error('[streamAIResponse]', errorMsg, '无法发送消息')
@@ -551,6 +551,7 @@ export const useChatStore = defineStore('chat', () => {
           content,
           // 修复：优先使用用户当前选择的助手类型，允许切换助手生效
           assistant_type: selectedAssistant.value || currentCase.value.assistant_type,
+          metadata: metadata || undefined,  // 传递 metadata
         }),
       })
 
@@ -1008,12 +1009,13 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function addUserMessage(content: string) {
+  function addUserMessage(content: string, metadata?: any) {
     messages.value.push({
       id: `user-${Date.now()}`,
       role: 'user',
       content,
       timestamp: new Date(),
+      metadata,
     })
   }
 

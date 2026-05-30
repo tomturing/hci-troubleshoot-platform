@@ -128,7 +128,12 @@ class ConversationService:
         return await self.repository.get_messages(conversation_id)
 
     async def send_message_stream_only(
-        self, conversation_id: uuid.UUID, case_id: str, content: str, assistant_type: str | None = None
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        content: str,
+        assistant_type: str | None = None,
+        metadata: dict | None = None,  # 接收 metadata
     ) -> AsyncGenerator[str, None]:
         """
         发送消息并获取流式回复 (v2.1: 4-Tier Prompt + KB 上下文注入)
@@ -151,6 +156,7 @@ class ConversationService:
                     role=MessageRole.user,
                     content=content,
                     trace_id=trace_id,
+                    metadata=metadata or {},  # 保存 metadata
                 )
                 await independent_session.commit()
         else:
@@ -160,6 +166,7 @@ class ConversationService:
                 role=MessageRole.user,
                 content=content,
                 trace_id=trace_id,
+                metadata=metadata or {},  # 保存 metadata
             )
 
         # 1.5 重复提问检测（使用后台任务，避免阻塞主流程）

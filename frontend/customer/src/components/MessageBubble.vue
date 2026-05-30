@@ -386,6 +386,22 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
   if (interactiveSubmitting.value || interactiveSubmitted.value) return
   const ev = interactiveEvent.value
   if (!ev) return
+
+  // ── 如果是 triage-agent 意图分类卡片（S0） ─────────────────────────
+  if (ev.kind === 'intent_selection') {
+    // 映射为圆圈数字：1 -> ①, 2 -> ②, 3 -> ③ 等
+    const idx = parseInt(optionId)
+    const label = CIRCLED_DIGITS[idx - 1] || optionId
+    
+    // 直接发送圆圈数字，并带上 interactive_response 类型的 metadata，满足卡片已选高亮逻辑
+    await chatStore.sendMessage(label, {
+      kind: 'interactive_response',
+      selectedOptionId: optionId,
+    })
+    return
+  }
+
+  // ── 以下为 ops-agent 原有逻辑 ──
   interactiveSubmitting.value = true
   try {
     const convId = chatStore.conversationId
