@@ -7,6 +7,7 @@ REST API：
 - PUT  /api/kb/categories/{code}    — 更新分类属性
 - POST /api/kb/categories/{code}/hit — 增加 hit_count
 - POST /api/kb/categories/import    — 导入 YAML（两阶段）
+- GET  /api/kb/categories/export    — 导出 YAML
 
 鉴权：
 - 使用 INTERNAL_API_TOKEN（内部服务调用）
@@ -14,9 +15,12 @@ REST API：
 
 from __future__ import annotations
 
+import io
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 
@@ -331,6 +335,83 @@ async def import_categories(
         )
 
     return result
+
+
+@router.get("/export")
+async def export_categories(request: Request):
+    """导出分类数据为 YAML 文件
+
+    Returns:
+        StreamingResponse: YAML 文件流，文件名格式为 category_baseline_YYYY-MM-DD.yaml
+    """
+    _check_auth(request)
+
+    if _category_service is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+
+    logger.info(event="export_categories_request")
+
+    # 获取所有分类（包含禁用的）
+    categories = await _category_service.get_all()
+
+    # 生成 YAML 内容
+    yaml_content = _generate_export_yaml(categories)
+
+    # 返回文件流
+    filename = f"category_baseline_{datetime.now(UTC).strftime('%Y-%m-%d')}.yaml"
+    return StreamingResponse(
+        io.BytesIO(yaml_content.encode("utf-8")),
+        media_type="application/yaml",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+def _generate_export_yaml(categories: list) -> str:
+    """生成导出 YAML 内容
+
+    Args:
+        categories: KbCategory 列表
+
+    Returns:
+        YAML 字符串
+    """
+    import yaml  # noqa: PLC0415
+
+    # 构建头部注释
+    header_lines = [
+        "# HCI 云平台故障分类基准",
+        "# 来源: kb_category 表导出",
+        f"# 导出日期: {datetime.now(UTC).strftime('%Y-%m-%d')}",
+        "# 用途: 分类管理导出备份",
+        "",
+        "version: \"1.0\"",
+        "source: kb_category_export",
+        f"generated: \"{datetime.now(UTC).strftime('%Y-%m-%d')}\"",
+        f"total: {len(categories)}",
+        "",
+        "categories:",
+    ]
+
+    # 构建分类列表
+    category_items = []
+    for cat in categories:
+        if not cat.code:
+            # 无业务编码的分类跳过（通常是 L1 域节点）
+            continue
+        item = {
+            "id": cat.code,
+            "domain": cat.domain or "未分类",
+            "label": cat.name,
+            "path": cat.path_labels or [cat.domain or "未分类", cat.name],
+        }
+        category_items.append(item)
+
+    # 使用 yaml.dump 生成 YAML 内容（不包含 categories 键，因为我们已经手动添加了）
+    yaml_body = yaml.dump(category_items, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+    # 组合完整 YAML
+    full_yaml = "\n".join(header_lines) + "\n" + yaml_body
+    return full_yaml
 
 
 @router.post("")
