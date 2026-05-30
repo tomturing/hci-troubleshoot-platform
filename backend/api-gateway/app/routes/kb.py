@@ -169,6 +169,38 @@ async def update_category_proxy(code: str, request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@categories_router.post("")
+async def create_category_proxy(request: Request):
+    """代理分类创建请求 → kb-service"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await proxy_request(
+        "POST", "/categories", payload=body, headers=headers
+    )
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@categories_router.delete("/{code}")
+async def delete_category_proxy(code: str, request: Request):
+    """代理分类删除请求 → kb-service"""
+    headers = _internal_auth_headers()
+    response = await proxy_request(
+        "DELETE", f"/categories/{code}", headers=headers
+    )
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@categories_router.put("/{code}/parent")
+async def update_category_parent_proxy(code: str, request: Request):
+    """代理级联更新父分类层次请求 → kb-service"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await proxy_request(
+        "PUT", f"/categories/{code}/parent", payload=body, headers=headers
+    )
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @categories_router.post("/{code}/hit")
 async def category_hit_proxy(code: str, request: Request):
     """代理命中计数请求 → kb-service"""

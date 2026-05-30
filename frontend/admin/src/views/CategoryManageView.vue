@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Histogram, Upload, Download, WarningFilled } from '@element-plus/icons-vue'
+import { Histogram, Upload, Download, WarningFilled, Plus, Edit, Delete, VideoPlay, VideoPause, RefreshRight } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import DOMPurify, { type Config as DOMPurifyConfig } from 'dompurify'
 import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
@@ -175,12 +175,392 @@ const domainStats = computed<Record<string, { sop: number; kbd: number }>>(() =>
 })
 
 // ──────────────────────────────────────────────────────────────────────────────
+// 树级拓扑与可视化编辑核心逻辑
+// ──────────────────────────────────────────────────────────────────────────────
+
+// 新建分类的 Dialog 状态
+const createDialogVisible = ref(false)
+const createLoading = ref(false)
+const createForm = reactive({
+  name: '',
+  code: '',
+  parent_id_in_db: null as number | null,
+  parent_code: '',
+  parent_name: '',
+  domain: '',
+  keywordsString: '',
+})
+
+// 编辑分类的 Dialog 状态
+const editDialogVisible = ref(false)
+const editingCategory = ref<any>(null)
+const editCategoryForm = reactive({
+  name: '',
+  code: '',
+  keywordsString: '',
+})
+
+// 树状数据结构的计算属性：将平铺列表转化为无环森林
+const globalCategoryTree = computed(() => {
+  const allCats = domainGroups.value.flatMap(g => g.categories)
+  if (!allCats.length) return []
+
+  const map: Record<string | number, any> = {}
+  const roots: any[] = []
+
+  // 1. 初始化节点映射，同时确保 parent_id 与 id_in_db 的关联关系
+  allCats.forEach(cat => {
+    map[cat.id_in_db ?? cat.id] = {
+      ...cat,
+      id_in_db: cat.id_in_db ?? cat.id,
+      children: []
+    }
+  })
+
+  // 2. 关联 parent_id 并找出根节点
+  allCats.forEach(cat => {
+    const key = cat.id_in_db ?? cat.id
+    const node = map[key]
+    const pid = cat.parent_id
+    if (pid && map[pid]) {
+      map[pid].children.push(node)
+    } else if (cat.level === 1) {
+      roots.push(node)
+    }
+  })
+
+  // 3. 对节点排序（按 level 升序，code/name 字典序）
+  const sortTreeNodes = (nodes: any[]) => {
+    nodes.sort((a, b) => {
+      if (a.level !== b.level) return a.level - b.level
+      return (a.code || '').localeCompare(b.code || '')
+    })
+    nodes.forEach(n => {
+      if (n.children && n.children.length) {
+        sortTreeNodes(n.children)
+      }
+    })
+  }
+  sortTreeNodes(roots)
+
+  return roots
+})
+
+// 选中分类时的关联子树
+const selectedSubtree = computed(() => {
+  if (!selectedCategory.value) return []
+  const allRoots = globalCategoryTree.value
+  const targetCode = selectedCategory.value.code
+  const targetId = selectedCategory.value.id_in_db ?? selectedCategory.value.id
+
+  const hasNode = (node: any, code: string, dbId: number | string): boolean => {
+    if (node.code === code || node.id_in_db === dbId) return true
+    if (node.children && node.children.length) {
+      return node.children.some((child: any) => hasNode(child, code, dbId))
+    }
+    return false
+  }
+
+  // 查找包含当前选中节点的那个 L1 大分类树作为其子树展示，这样不仅有子分类还有全景关联
+  const matchedRoot = allRoots.find(root => hasNode(root, targetCode, targetId))
+  return matchedRoot ? [matchedRoot] : []
+})
+
+// 树节点拖拽和拖放规则验证
+function handleAllowDrag(node: any) {
+  // L1 技术域大类作为分类基线根目录，不允许拖拽
+  return node.data.level > 1
+}
+
+// 递归获取子树的最大深度 (深度验证 L4 限制)
+function getSubtreeMaxLevel(node: any): number {
+  if (!node.children || !node.children.length) {
+    return node.level
+  }
+  return Math.max(...node.children.map((c: any) => getSubtreeMaxLevel(c)))
+}
+
+function handleAllowDrop(draggingNode: any, dropNode: any, type: string) {
+  // 1. 不能拖放到 L1 技术域的 before 或 after（L1 大类是全局固定的根）
+  if (dropNode.data.level === 1 && type !== 'inner') {
+    return false
+  }
+
+  // 2. 被拖拽子树如果成为新父节点的子节点，深度不能超出 L4
+  if (type === 'inner') {
+    const draggingMaxLevel = getSubtreeMaxLevel(draggingNode.data)
+    const draggingSubtreeHeight = draggingMaxLevel - draggingNode.data.level
+    const targetParentLevel = dropNode.data.level
+    if (targetParentLevel + 1 + draggingSubtreeHeight > 4) {
+      return false
+    }
+  } else {
+    // 作为 sibling 拖拽时，其新 level 会与 dropNode 保持一致
+    const draggingMaxLevel = getSubtreeMaxLevel(draggingNode.data)
+    const draggingSubtreeHeight = draggingMaxLevel - draggingNode.data.level
+    const targetParentLevel = dropNode.parent ? dropNode.parent.data.level : 1
+    if (targetParentLevel + 1 + draggingSubtreeHeight > 4) {
+      return false
+    }
+  }
+
+  return true
+}
+
+// 拖拽释放后，异步与后端级联通信
+async function handleNodeDrop(draggingNode: any, dropNode: any, dropType: string) {
+  loading.value = true
+  let newParentId: number | null = null
+
+  if (dropType === 'inner') {
+    newParentId = dropNode.data.id_in_db ?? dropNode.data.id
+  } else {
+    // 'before' or 'after' -> 和目标节点平级，采用目标节点的 parent_id
+    newParentId = dropNode.data.parent_id
+  }
+
+  try {
+    const resp = await fetch(`/api/kb/categories/${encodeURIComponent(draggingNode.data.code)}/parent`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeader,
+      },
+      body: JSON.stringify({ parent_id: newParentId })
+    })
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+
+    ElMessage.success('拖拽调整成功，级联层级已同步更新')
+    await fetchCategories()
+    
+    // 如果当前选中的分类恰好是被拖拽的分类，同步更新其在详情中的显示
+    if (selectedCategory.value && selectedCategory.value.code === draggingNode.data.code) {
+      const updated = domainGroups.value
+        .flatMap(g => g.categories)
+        .find(c => c.code === draggingNode.data.code)
+      if (updated) {
+        selectedCategory.value = updated
+      }
+    }
+  } catch (e: any) {
+    ElMessage.error(`拖拽调整失败: ${e.message}`)
+    await fetchCategories()
+  } finally {
+    loading.value = false
+  }
+}
+
+// 树节点直接点击查看详情
+function handleNodeClick(data: any) {
+  selectCategory(data)
+}
+
+// 可视化编辑：打开新增子分类 Modal
+function openAddDialog(parentData: any) {
+  createForm.name = ''
+  createForm.code = ''
+  createForm.parent_id_in_db = parentData.id_in_db ?? parentData.id
+  createForm.parent_code = parentData.code
+  createForm.parent_name = parentData.name
+  createForm.domain = parentData.domain
+  createForm.keywordsString = ''
+  createDialogVisible.value = true
+}
+
+// 保存新增分类
+async function handleCreateCategory() {
+  if (!createForm.name.trim()) {
+    ElMessage.warning('请输入分类名称')
+    return
+  }
+  createLoading.value = true
+  try {
+    const keywords = createForm.keywordsString
+      .split(/[,，\n]/)
+      .map(k => k.trim())
+      .filter(Boolean)
+
+    const resp = await fetch('/api/kb/categories', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeader,
+      },
+      body: JSON.stringify({
+        name: createForm.name.trim(),
+        domain: createForm.domain,
+        parent_id: createForm.parent_id_in_db,
+        code: createForm.code.trim() || undefined,
+        keywords,
+      })
+    })
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+
+    ElMessage.success('新增分类成功')
+    createDialogVisible.value = false
+    await fetchCategories()
+  } catch (e: any) {
+    ElMessage.error(`新增分类失败: ${e.message}`)
+  } finally {
+    createLoading.value = false
+  }
+}
+
+// 可视化编辑：打开编辑分类 Modal
+function openEditDialog(data: any) {
+  editingCategory.value = data
+  editCategoryForm.name = data.name
+  editCategoryForm.code = data.code
+  editCategoryForm.keywordsString = (data.keywords || []).join(', ')
+  editDialogVisible.value = true
+}
+
+// 保存编辑分类
+async function handleSaveEditCategory() {
+  if (!editCategoryForm.name.trim()) {
+    ElMessage.warning('分类名称不能为空')
+    return
+  }
+  loading.value = true
+  try {
+    const keywords = editCategoryForm.keywordsString
+      .split(/[,，\n]/)
+      .map(k => k.trim())
+      .filter(Boolean)
+
+    const resp = await fetch(`/api/kb/categories/${encodeURIComponent(editCategoryForm.code)}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeader,
+      },
+      body: JSON.stringify({
+        name: editCategoryForm.name.trim(),
+        keywords,
+      })
+    })
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+
+    ElMessage.success('编辑分类成功')
+    editDialogVisible.value = false
+    await fetchCategories()
+
+    if (selectedCategory.value && selectedCategory.value.code === editCategoryForm.code) {
+      const updated = domainGroups.value
+        .flatMap(g => g.categories)
+        .find(c => c.code === editCategoryForm.code)
+      if (updated) {
+        selectedCategory.value = updated
+      }
+    }
+  } catch (e: any) {
+    ElMessage.error(`编辑分类失败: ${e.message}`)
+  } finally {
+    loading.value = false
+  }
+}
+
+// 快速切换启用/禁用状态
+async function toggleActiveStatus(data: any) {
+  loading.value = true
+  try {
+    const newStatus = !data.is_active
+    const resp = await fetch(`/api/kb/categories/${encodeURIComponent(data.code)}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeader,
+      },
+      body: JSON.stringify({
+        is_active: newStatus
+      })
+    })
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+
+    ElMessage.success(`${newStatus ? '启用' : '禁用'}分类成功`)
+    await fetchCategories()
+
+    if (selectedCategory.value && selectedCategory.value.code === data.code) {
+      const updated = domainGroups.value
+        .flatMap(g => g.categories)
+        .find(c => c.code === data.code)
+      if (updated) {
+        selectedCategory.value = updated
+        editForm.is_active = newStatus
+      }
+    }
+  } catch (e: any) {
+    ElMessage.error(`操作失败: ${e.message}`)
+  } finally {
+    loading.value = false
+  }
+}
+
+// 物理删除分类
+async function handleDelete(data: any) {
+  try {
+    const confirmMsg = `此操作将永久删除分类「${data.name}」(${data.code})，若是中间层节点也会阻断。是否继续？`
+    await ElMessage.box.confirm(confirmMsg, '危险提示', {
+      confirmButtonText: '确定删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger'
+    })
+  } catch {
+    return // 用户取消
+  }
+
+  loading.value = true
+  try {
+    const resp = await fetch(`/api/kb/categories/${encodeURIComponent(data.code)}`, {
+      method: 'DELETE',
+      headers: authHeader,
+    })
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+
+    ElMessage.success('分类删除成功')
+    if (selectedCategory.value && selectedCategory.value.code === data.code) {
+      selectedCategory.value = null
+    }
+    await fetchCategories()
+  } catch (e: any) {
+    ElMessage.error(`删除失败: ${e.message}`)
+  } finally {
+    loading.value = false
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 数据加载
+// ──────────────────────────────────────────────────────────────────────────────
+
+// ──────────────────────────────────────────────────────────────────────────────
 // 数据加载
 // ──────────────────────────────────────────────────────────────────────────────
 async function fetchCategories() {
   loading.value = true
   try {
-    const resp = await fetch('/api/kb/categories?grouped=true', {
+    const resp = await fetch('/api/kb/categories?grouped=true&include_inactive=true', {
       headers: authHeader,
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
@@ -598,9 +978,83 @@ onMounted(fetchCategories)
 
       <!-- 右侧：详情编辑 -->
       <div class="right-panel">
-        <div v-if="!selectedCategory" class="empty-state">
-          请从左侧选择一个分类查看详情
+        <!-- 未选择任何分类时，展示整棵全局分类基线树 -->
+        <div v-if="!selectedCategory" class="global-tree-container">
+          <div class="global-tree-header">
+            <h3 class="panel-title-text">
+              <el-icon><RefreshRight /></el-icon>
+              全局分类基线树 (包含 {{ domainGroups.length }} 大域，共 {{ totalCategories }} 个节点)
+            </h3>
+            <span class="view-tip">提示：您可以直接在下方树结构中进行节点拖拽重组，或使用节点右侧的悬浮操作按钮增删分类。</span>
+          </div>
+          
+          <div class="tree-scroll-wrapper">
+            <el-tree
+              :data="globalCategoryTree"
+              node-key="code"
+              :props="{ label: 'name', children: 'children' }"
+              default-expand-all
+              highlight-current
+              draggable
+              :allow-drag="handleAllowDrag"
+              :allow-drop="handleAllowDrop"
+              @node-drop="handleNodeDrop"
+              @node-click="handleNodeClick"
+            >
+              <template #default="{ node, data }">
+                <div class="custom-tree-node" :class="{ 'is-selected': selectedCategory?.code === data.code }">
+                  <span class="level-pill" :class="`level-l${data.level}`">L{{ data.level }}</span>
+                  <code class="node-code">{{ data.code }}</code>
+                  <span class="node-name" :class="{ 'is-inactive-name': !data.is_active }">{{ data.name }}</span>
+                  
+                  <span class="stats-pills">
+                    <span class="count-tag" v-if="data.published_sop_count > 0">[SOP:{{ data.published_sop_count }}]</span>
+                    <span class="count-tag" v-if="data.published_kbd_count > 0">[KBD:{{ data.published_kbd_count }}]</span>
+                    <span v-if="data.hit_count > 0" class="hit-count-pill">{{ data.hit_count }} 次命中</span>
+                    <span v-if="!data.is_active" class="inactive-badge">已禁用</span>
+                  </span>
+
+                  <span class="node-actions" @click.stop>
+                    <el-button
+                      v-if="data.level < 4"
+                      size="small"
+                      link
+                      type="primary"
+                      :icon="Plus"
+                      @click="openAddDialog(data)"
+                      title="新增子分类"
+                    />
+                    <el-button
+                      size="small"
+                      link
+                      type="primary"
+                      :icon="Edit"
+                      @click="openEditDialog(data)"
+                      title="编辑分类"
+                    />
+                    <el-button
+                      size="small"
+                      link
+                      :type="data.is_active ? 'warning' : 'success'"
+                      :icon="data.is_active ? VideoPause : VideoPlay"
+                      @click="toggleActiveStatus(data)"
+                      :title="data.is_active ? '禁用分类' : '启用分类'"
+                    />
+                    <el-button
+                      size="small"
+                      link
+                      type="danger"
+                      :icon="Delete"
+                      @click="handleDelete(data)"
+                      title="删除分类"
+                    />
+                  </span>
+                </div>
+              </template>
+            </el-tree>
+          </div>
         </div>
+
         <div v-else class="detail-form">
           <!-- 标题行：分类详情 + 状态开关 + 保存按钮 -->
           <div class="detail-header">
@@ -614,6 +1068,9 @@ onMounted(fetchCategories)
             <div class="detail-actions">
               <el-button type="primary" size="small" :loading="editSaving" @click="saveEdit">
                 保存修改
+              </el-button>
+              <el-button size="small" @click="selectedCategory = null" style="margin-left: 8px">
+                返回全局树
               </el-button>
             </div>
           </div>
@@ -696,6 +1153,77 @@ onMounted(fetchCategories)
           <div class="empty-section" v-if="selectedCategory.published_sop_count === 0 && selectedCategory.published_kbd_count === 0 && !listLoading && !listLoadError">
             <span class="empty-text">暂无已发布的 SOP/KBD</span>
           </div>
+
+          <!-- ── 分类详情下方的关联分类分支子树 ── -->
+          <div class="subtree-section">
+            <h4 class="section-title">「{{ selectedCategory.name }}」相关的分类分支树</h4>
+            <div class="tree-scroll-wrapper is-subtree">
+              <el-tree
+                :data="selectedSubtree"
+                node-key="code"
+                :props="{ label: 'name', children: 'children' }"
+                default-expand-all
+                highlight-current
+                draggable
+                :allow-drag="handleAllowDrag"
+                :allow-drop="handleAllowDrop"
+                @node-drop="handleNodeDrop"
+                @node-click="handleNodeClick"
+                :current-node-key="selectedCategory.code"
+              >
+                <template #default="{ node, data }">
+                  <div class="custom-tree-node" :class="{ 'is-selected': selectedCategory?.code === data.code }">
+                    <span class="level-pill" :class="`level-l${data.level}`">L{{ data.level }}</span>
+                    <code class="node-code">{{ data.code }}</code>
+                    <span class="node-name" :class="{ 'is-inactive-name': !data.is_active }">{{ data.name }}</span>
+                    
+                    <span class="stats-pills">
+                      <span class="count-tag" v-if="data.published_sop_count > 0">[SOP:{{ data.published_sop_count }}]</span>
+                      <span class="count-tag" v-if="data.published_kbd_count > 0">[KBD:{{ data.published_kbd_count }}]</span>
+                      <span v-if="data.hit_count > 0" class="hit-count-pill">{{ data.hit_count }} 次命中</span>
+                      <span v-if="!data.is_active" class="inactive-badge">已禁用</span>
+                    </span>
+
+                    <span class="node-actions" @click.stop>
+                      <el-button
+                        v-if="data.level < 4"
+                        size="small"
+                        link
+                        type="primary"
+                        :icon="Plus"
+                        @click="openAddDialog(data)"
+                        title="新增子分类"
+                      />
+                      <el-button
+                        size="small"
+                        link
+                        type="primary"
+                        :icon="Edit"
+                        @click="openEditDialog(data)"
+                        title="编辑分类"
+                      />
+                      <el-button
+                        size="small"
+                        link
+                        :type="data.is_active ? 'warning' : 'success'"
+                        :icon="data.is_active ? VideoPause : VideoPlay"
+                        @click="toggleActiveStatus(data)"
+                        :title="data.is_active ? '禁用分类' : '启用分类'"
+                      />
+                      <el-button
+                        size="small"
+                        link
+                        type="danger"
+                        :icon="Delete"
+                        @click="handleDelete(data)"
+                        title="删除分类"
+                      />
+                    </span>
+                  </div>
+                </template>
+              </el-tree>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -764,6 +1292,60 @@ onMounted(fetchCategories)
         >
           确认导入
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ── 新增分类 Dialog ── -->
+    <el-dialog v-model="createDialogVisible" title="新增子分类" width="540px" destroy-on-close>
+      <el-form :model="createForm" label-width="100px" label-position="left">
+        <el-form-item label="所属父分类">
+          <el-input :model-value="`${createForm.parent_name} (${createForm.parent_code})`" disabled />
+        </el-form-item>
+        <el-form-item label="所属技术域">
+          <el-input v-model="createForm.domain" disabled />
+        </el-form-item>
+        <el-form-item label="分类名称" required>
+          <el-input v-model="createForm.name" placeholder="请输入子分类名称，如: 重装系统" />
+        </el-form-item>
+        <el-form-item label="业务编码">
+          <el-input v-model="createForm.code" placeholder="选填，若留空则自动生成 (建议自动生成)" />
+        </el-form-item>
+        <el-form-item label="触发关键字">
+          <el-input
+            v-model="createForm.keywordsString"
+            type="textarea"
+            :rows="2"
+            placeholder="选填，多个关键字用逗号或换行分隔，如: 蓝屏, 慢, 系统重装"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="createLoading" @click="handleCreateCategory">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ── 编辑分类 Dialog ── -->
+    <el-dialog v-model="editDialogVisible" title="编辑分类基线" width="540px" destroy-on-close>
+      <el-form :model="editCategoryForm" label-width="100px" label-position="left">
+        <el-form-item label="业务编码">
+          <el-input v-model="editCategoryForm.code" disabled />
+        </el-form-item>
+        <el-form-item label="分类名称" required>
+          <el-input v-model="editCategoryForm.name" placeholder="请输入分类名称" />
+        </el-form-item>
+        <el-form-item label="触发关键字">
+          <el-input
+            v-model="editCategoryForm.keywordsString"
+            type="textarea"
+            :rows="3"
+            placeholder="多个关键字以中文/英文逗号或换行分隔"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveEditCategory">保存</el-button>
       </template>
     </el-dialog>
 
@@ -1275,5 +1857,170 @@ onMounted(fetchCategories)
   margin: 0;
   padding-left: 20px;
   font-size: 13px;
+}
+
+/* ── 新增：分类基线管理可视化树状及分支树编辑样式 ── */
+.global-tree-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #ffffff;
+  border-radius: 8px;
+  border: 1px solid #e4e7ed;
+  overflow: hidden;
+}
+
+.global-tree-header {
+  padding: 16px 20px;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  border-bottom: 1px solid #e4e7ed;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.panel-title-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.view-tip {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.tree-scroll-wrapper {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  background: #fafbfe;
+}
+
+.tree-scroll-wrapper.is-subtree {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  max-height: 480px;
+  padding: 12px 16px;
+  background: #ffffff;
+}
+
+.subtree-section {
+  margin-top: 24px;
+  border-top: 1px dashed #e2e8f0;
+  padding-top: 16px;
+}
+
+/* 自定义树节点高保真渲染 */
+.custom-tree-node {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  height: 36px;
+  font-size: 13px;
+  gap: 10px;
+  padding-right: 8px;
+  min-width: 0;
+}
+
+/* 等高卡片悬浮及选中背景高亮 */
+.custom-tree-node.is-selected {
+  color: #409eff;
+  font-weight: 600;
+}
+
+.node-code {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 11px;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid #e2e8f0;
+}
+
+.node-name {
+  color: #334155;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.is-inactive-name {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+.stats-pills {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hit-count-pill {
+  font-size: 11px;
+  color: #409eff;
+  background: #ecf5ff;
+  border: 1px solid #d9ecff;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+/* 层级精美 Badges */
+.level-pill {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  line-height: 1.2;
+}
+
+.level-l1 { color: hsl(220, 90%, 56%); background: hsl(220, 90%, 95%); border: 1px solid hsl(220, 90%, 90%); }
+.level-l2 { color: hsl(170, 80%, 35%); background: hsl(170, 80%, 95%); border: 1px solid hsl(170, 80%, 90%); }
+.level-l3 { color: hsl(38, 92%, 40%); background: hsl(38, 92%, 95%); border: 1px solid hsl(38, 92%, 90%); }
+.level-l4 { color: hsl(142, 70%, 40%); background: hsl(142, 70%, 95%); border: 1px solid hsl(142, 70%, 90%); }
+
+/* Hover 时淡入操作按钮 */
+.node-actions {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding-left: 10px;
+}
+
+.custom-tree-node:hover .node-actions {
+  display: inline-flex;
+}
+
+.node-actions .el-button {
+  padding: 4px;
+  height: 24px;
+  font-size: 14px;
+}
+
+.node-actions .el-button:hover {
+  transform: scale(1.1);
+  transition: transform 0.15s ease;
+}
+
+/* 拖拽指示线与高亮定制 */
+:deep(.el-tree-node__content:hover) {
+  background-color: #f1f5f9;
+  border-radius: 4px;
+}
+
+:deep(.el-tree-node.is-current > .el-tree-node__content) {
+  background-color: #ecf5ff;
+  border-radius: 4px;
+  border-left: 3px solid #409eff;
 }
 </style>

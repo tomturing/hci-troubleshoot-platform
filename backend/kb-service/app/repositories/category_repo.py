@@ -682,3 +682,231 @@ class CategoryRepository:
                 "total_hits": total_hits,
                 "domains": domain_stats,
             }
+
+    async def create(
+        self,
+        name: str,
+        domain: str,
+        parent_id: int | None = None,
+        code: str | None = None,
+        keywords: list[str] | None = None,
+    ) -> KbCategory:
+        """创建单条分类节点"""
+        trace_id = get_current_trace_id()
+        async with self._db.async_session_factory() as session:
+            # 1. 确定 level, domain, path_labels
+            if parent_id is not None:
+                # 获取父节点
+                parent_result = await session.execute(
+                    select(KbCategory).where(KbCategory.id == parent_id)
+                )
+                parent = parent_result.scalar_one_or_none()
+                if not parent:
+                    raise ValueError("父分类不存在")
+                level = parent.level + 1
+                domain = parent.domain
+                path_labels = (parent.path_labels or []) + [name]
+            else:
+                level = 1
+                domain = domain or name
+                path_labels = [name]
+
+            # 2. 防御性 level 范围限制
+            if level > 4:
+                raise ValueError("分类深度超出最大限制 (L4)")
+
+            # 3. 确定 code (自动生成或使用用户输入)
+            if not code:
+                # 按照 <domain>-L<level>-<seq> 规则生成，防止重名
+                seq = 1
+                while True:
+                    candidate = f"{domain}-L{level}-{seq:03d}"
+                    conflict_result = await session.execute(
+                        select(KbCategory.id).where(KbCategory.code == candidate)
+                    )
+                    if conflict_result.scalar_one_or_none() is None:
+                        code = candidate
+                        break
+                    seq += 1
+            else:
+                # 检查用户输入的 code 是否冲突
+                conflict_result = await session.execute(
+                    select(KbCategory.id).where(KbCategory.code == code)
+                )
+                if conflict_result.scalar_one_or_none() is not None:
+                    raise ValueError(f"分类编码 '{code}' 已存在")
+
+            # 4. 创建分类对象并落库
+            category = KbCategory(
+                code=code,
+                name=name,
+                level=level,
+                domain=domain,
+                parent_id=parent_id,
+                path_labels=path_labels,
+                keywords=keywords or [],
+                source="manual",
+                version="1.0",
+                is_active=True,
+                hit_count=0,
+            )
+            session.add(category)
+            await session.commit()
+            await session.refresh(category)
+
+            logger.info(
+                event="repo_create_category_success",
+                code=code,
+                name=name,
+                category_level=level,
+                domain=domain,
+                trace_id=trace_id,
+            )
+            return category
+
+    async def delete(self, code: str) -> bool:
+        """删除分类节点（当有子分类或已发布 SOP/KBD 引用时阻止）"""
+        from app.models.kbd_entry import KbdEntry
+        from app.models.sop_document import SopDocument
+
+        trace_id = get_current_trace_id()
+        async with self._db.async_session_factory() as session:
+            # 1. 查找分类
+            result = await session.execute(
+                select(KbCategory).where(KbCategory.code == code)
+            )
+            category = result.scalar_one_or_none()
+            if not category:
+                raise ValueError("分类不存在")
+
+            # 2. 检查是否有子分类
+            child_result = await session.execute(
+                select(KbCategory.id).where(KbCategory.parent_id == category.id)
+            )
+            if child_result.first() is not None:
+                raise ValueError("无法删除该分类：该分类下包含子分类，请先删除或转移子分类。")
+
+            # 3. 检查是否有引用的已发布 SOP
+            sop_result = await session.execute(
+                select(SopDocument.id)
+                .where(SopDocument.category_id == code)
+                .where(SopDocument.status == "published")
+            )
+            if sop_result.first() is not None:
+                raise ValueError("无法删除该分类：该分类已被已发布的 SOP 引用。")
+
+            # 4. 检查是否有引用的已发布 KBD
+            kbd_result = await session.execute(
+                select(KbdEntry.id)
+                .where(KbdEntry.category_id == code)
+                .where(KbdEntry.status == "published")
+            )
+            if kbd_result.first() is not None:
+                raise ValueError("无法删除该分类：该分类已被已发布的 KBD 案例引用。")
+
+            # 5. 执行物理删除
+            await session.delete(category)
+            await session.commit()
+
+            logger.info(
+                event="repo_delete_category_success",
+                code=code,
+                trace_id=trace_id,
+            )
+            return True
+
+    async def update_parent_recursive(
+        self,
+        code: str,
+        new_parent_id: int | None,
+    ) -> KbCategory | None:
+        """级联更新父节点关系（包含防环校验、level、domain、path_labels 自动重组）"""
+        trace_id = get_current_trace_id()
+        async with self._db.async_session_factory() as session:
+            # 1. 查询当前节点
+            result = await session.execute(
+                select(KbCategory).where(KbCategory.code == code)
+            )
+            category = result.scalar_one_or_none()
+            if not category:
+                raise ValueError("分类不存在")
+
+            # 2. 防环校验 (避免拖入自身或自身的子孙节点中)
+            if new_parent_id is not None:
+                if new_parent_id == category.id:
+                    raise ValueError("无法将节点拖拽到其自身下")
+
+                curr_parent_id = new_parent_id
+                visited = set()
+                while curr_parent_id is not None:
+                    if curr_parent_id in visited:
+                        raise ValueError("分类层级存在循环引用")
+                    visited.add(curr_parent_id)
+
+                    if curr_parent_id == category.id:
+                        raise ValueError("无法将节点拖拽到其自身的子分类下")
+
+                    parent_parent_res = await session.execute(
+                        select(KbCategory.parent_id).where(KbCategory.id == curr_parent_id)
+                    )
+                    curr_parent_id = parent_parent_res.scalar_one_or_none()
+
+            # 3. 计算新的 level, domain, path_labels
+            if new_parent_id is not None:
+                parent_result = await session.execute(
+                    select(KbCategory).where(KbCategory.id == new_parent_id)
+                )
+                parent = parent_result.scalar_one_or_none()
+                if not parent:
+                    raise ValueError("指定的新父节点不存在")
+
+                new_level = parent.level + 1
+                new_domain = parent.domain
+                new_path_labels = (parent.path_labels or []) + [category.name]
+            else:
+                new_level = 1
+                new_domain = category.domain or category.name
+                new_path_labels = [category.name]
+
+            if new_level > 4:
+                raise ValueError("拖拽后分类深度超出最大限制 (L4)")
+
+            # 4. 更新当前节点
+            category.parent_id = new_parent_id
+            category.level = new_level
+            category.domain = new_domain
+            category.path_labels = new_path_labels
+
+            # 5. 递归查询并级联更新所有子孙节点
+            all_res = await session.execute(select(KbCategory))
+            all_cats = all_res.scalars().all()
+
+            from collections import defaultdict
+            children_map = defaultdict(list)
+            for cat in all_cats:
+                if cat.parent_id is not None:
+                    children_map[cat.parent_id].append(cat)
+
+            def recurse_update(parent_cat: KbCategory):
+                for child in children_map[parent_cat.id]:
+                    child.level = parent_cat.level + 1
+                    child.domain = parent_cat.domain
+                    child.path_labels = (parent_cat.path_labels or []) + [child.name]
+                    if child.level > 4:
+                        raise ValueError(f"子分类 '{child.name}' 级联层级深度超出最大限制 (L4)")
+                    recurse_update(child)
+
+            recurse_update(category)
+
+            await session.commit()
+            await session.refresh(category)
+
+            logger.info(
+                event="repo_update_parent_recursive_success",
+                code=code,
+                new_parent_id=new_parent_id,
+                category_level=new_level,
+                domain=new_domain,
+                trace_id=trace_id,
+            )
+            return category

@@ -75,6 +75,22 @@ class CategoryHitRequest(BaseModel):
     trace_id: str | None = Field(None, description="调用链 ID（用于溯源）")
 
 
+class CategoryCreateRequest(BaseModel):
+    """分类创建请求"""
+
+    name: str = Field(..., max_length=100, description="分类名称")
+    domain: str = Field(..., max_length=50, description="一级技术域")
+    parent_id: int | None = Field(None, description="父分类 ID")
+    code: str | None = Field(None, max_length=32, description="业务编码")
+    keywords: list[str] | None = Field(None, description="触发关键字列表")
+
+
+class CategoryParentUpdateRequest(BaseModel):
+    """分类父节点及层级更新请求"""
+
+    parent_id: int | None = Field(..., description="新父分类 ID，传入 None 表示作为根节点")
+
+
 # ---- 路由 ----
 
 
@@ -83,12 +99,14 @@ async def list_categories(
     request: Request,
     grouped: bool = True,
     force_refresh: bool = False,
+    include_inactive: bool = False,
 ):
     """获取分类列表（含 KBD/SOP 统计）
 
     Args:
         grouped: True=按域分组返回，False=平铺列表
         force_refresh: 强制刷新缓存
+        include_inactive: 是否包含禁用的分类
 
     Returns:
         grouped=True: { domains: { domain: [category, ...] } }
@@ -103,11 +121,13 @@ async def list_categories(
         event="list_categories_request",
         grouped=grouped,
         force_refresh=force_refresh,
+        include_inactive=include_inactive,
     )
 
     if grouped:
         grouped_data = await _category_service.get_grouped_by_domain(
-            force_refresh=force_refresh
+            force_refresh=force_refresh,
+            include_inactive=include_inactive,
         )
         return {
             "domains": {
@@ -116,6 +136,7 @@ async def list_categories(
                         **cat.to_dict(),
                         "id": cat.code,   # 覆盖 DB 整型主键，prompt_builder 期望业务编码如 '虚拟机-003'
                         "label": cat.name,  # 兼容 conversation-service prompt_builder 的期望字段
+                        "id_in_db": cat.id,  # 保留 DB 整型主键供编辑器 parent_id 关联
                     }
                     for cat in cats
                 ]
@@ -124,9 +145,14 @@ async def list_categories(
             "total_domains": len(grouped_data),
         }
     else:
-        categories = await _category_service.get_all_active(
-            force_refresh=force_refresh
-        )
+        if include_inactive:
+            categories = await _category_service.get_all(
+                force_refresh=force_refresh
+            )
+        else:
+            categories = await _category_service.get_all_active(
+                force_refresh=force_refresh
+            )
         return {
             "categories": [cat.to_dict() for cat in categories],
             "total": len(categories),
@@ -305,3 +331,103 @@ async def import_categories(
         )
 
     return result
+
+
+@router.post("")
+async def create_category(
+    request: Request,
+    body: CategoryCreateRequest,
+):
+    """新增单个分类节点"""
+    _check_auth(request)
+
+    if _category_service is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+
+    logger.info(
+        event="create_category_route",
+        name=body.name,
+        domain=body.domain,
+        parent_id=body.parent_id,
+        code=body.code,
+    )
+
+    try:
+        category = await _category_service.create(
+            name=body.name,
+            domain=body.domain,
+            parent_id=body.parent_id,
+            code=body.code,
+            keywords=body.keywords,
+        )
+        return {
+            "success": True,
+            "category": category.to_dict(),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(event="create_category_route_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="创建分类失败，请重试")
+
+
+@router.delete("/{code}")
+async def delete_category(
+    request: Request,
+    code: str,
+):
+    """删除分类节点"""
+    _check_auth(request)
+
+    if _category_service is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+
+    logger.info(event="delete_category_route", code=code)
+
+    try:
+        success = await _category_service.delete(code)
+        return {
+            "success": success,
+            "code": code,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(event="delete_category_route_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="删除分类失败，请重试")
+
+
+@router.put("/{code}/parent")
+async def update_category_parent(
+    request: Request,
+    code: str,
+    body: CategoryParentUpdateRequest,
+):
+    """更新分类父子关系及层级（用于拖拽重组）"""
+    _check_auth(request)
+
+    if _category_service is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+
+    logger.info(
+        event="update_category_parent_route",
+        code=code,
+        new_parent_id=body.parent_id,
+    )
+
+    try:
+        category = await _category_service.update_parent_recursive(
+            code=code,
+            new_parent_id=body.parent_id,
+        )
+        if not category:
+            raise HTTPException(status_code=404, detail=f"分类 {code} 不存在")
+        return {
+            "success": True,
+            "category": category.to_dict(),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(event="update_category_parent_route_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="级联更新分类层次失败，请重试")

@@ -56,8 +56,8 @@ class CategoryService:
         trace_id = get_current_trace_id()
         t_start = time.monotonic()
 
-        # 从数据库加载活跃分类
-        categories = await self._repo.get_all_active()
+        # 从数据库加载所有分类（包括禁用的，保证管理页面完整性）
+        categories = await self._repo.get_all()
         self._cache = categories
         self._cache_timestamp = time.monotonic()
 
@@ -93,19 +93,32 @@ class CategoryService:
         if force_refresh or not self._is_cache_valid():
             await self._refresh_cache()
 
+        active_cats = [c for c in (self._cache or []) if c.is_active]
+
         logger.info(
             event="service_get_all_active",
-            count=len(self._cache or []),
+            count=len(active_cats),
             cache_valid=self._is_cache_valid(),
             trace_id=trace_id,
         )
+        return active_cats
+
+    async def get_all(self, force_refresh: bool = False) -> list[KbCategory]:
+        """获取所有分类（包含禁用的）"""
+        if force_refresh or not self._is_cache_valid():
+            await self._refresh_cache()
         return self._cache or []
 
-    async def get_grouped_by_domain(self, force_refresh: bool = False) -> dict[str, list[KbCategory]]:
+    async def get_grouped_by_domain(
+        self,
+        force_refresh: bool = False,
+        include_inactive: bool = False,
+    ) -> dict[str, list[KbCategory]]:
         """按一级技术域分组获取分类
 
         Args:
             force_refresh: 强制刷新缓存
+            include_inactive: 是否包含被禁用的分类
 
         Returns:
             { domain: [KbCategory, ...] } 字典
@@ -115,12 +128,21 @@ class CategoryService:
         if force_refresh or not self._is_cache_valid():
             await self._refresh_cache()
 
+        # 动态过滤
+        result = defaultdict(list)
+        for cat in (self._cache or []):
+            if not include_inactive and not cat.is_active:
+                continue
+            domain = cat.domain or "未分类"
+            result[domain].append(cat)
+
         logger.info(
             event="service_get_grouped_by_domain",
-            domains=len(self._cache_by_domain),
+            domains=len(result),
+            include_inactive=include_inactive,
             trace_id=trace_id,
         )
-        return dict(self._cache_by_domain)
+        return dict(result)
 
     async def get_by_code(self, code: str) -> KbCategory | None:
         """根据业务键获取分类（优先使用缓存）"""
@@ -313,3 +335,43 @@ class CategoryService:
             event="cache_invalidated",
             trace_id=trace_id,
         )
+
+    async def create(
+        self,
+        name: str,
+        domain: str,
+        parent_id: int | None = None,
+        code: str | None = None,
+        keywords: list[str] | None = None,
+    ) -> KbCategory:
+        """新建分类，并强制刷新内存缓存"""
+        category = await self._repo.create(
+            name=name,
+            domain=domain,
+            parent_id=parent_id,
+            code=code,
+            keywords=keywords,
+        )
+        await self._refresh_cache()
+        return category
+
+    async def delete(self, code: str) -> bool:
+        """删除分类，并强制刷新内存缓存"""
+        res = await self._repo.delete(code)
+        if res:
+            await self._refresh_cache()
+        return res
+
+    async def update_parent_recursive(
+        self,
+        code: str,
+        new_parent_id: int | None,
+    ) -> KbCategory | None:
+        """级联更新分类节点层次，并强制刷新内存缓存"""
+        category = await self._repo.update_parent_recursive(
+            code=code,
+            new_parent_id=new_parent_id,
+        )
+        if category:
+            await self._refresh_cache()
+        return category
