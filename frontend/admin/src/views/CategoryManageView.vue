@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Histogram, Upload, Download, WarningFilled, Plus, Edit, Delete, VideoPlay, VideoPause, RefreshRight, Branch } from '@element-plus/icons-vue'
+import { Histogram, Upload, Download, WarningFilled, Plus, Edit, Delete, VideoPlay, VideoPause, RefreshRight, Share } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import DOMPurify, { type Config as DOMPurifyConfig } from 'dompurify'
 import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
@@ -984,7 +984,7 @@ onMounted(fetchCategories)
         <div v-if="!selectedCategory" class="global-tree-container">
           <div class="global-tree-header">
             <h3 class="panel-title-text">
-              <el-icon><Branch /></el-icon>
+              <el-icon><Share /></el-icon>
               全局分类基线树 (包含 {{ domainGroups.length }} 大域，共 {{ totalCategories }} 个节点)
             </h3>
             <span class="view-tip">提示：您可以直接在下方树结构中进行节点拖拽重组，或使用节点右侧的悬浮操作按钮增删分类。</span>

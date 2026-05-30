@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-04-05
+last_updated: 2026-05-31
 owner: team
 update_trigger: AI 助手层功能新增/重构/问题修复任务
 ---
@@ -15,6 +15,7 @@ update_trigger: AI 助手层功能新增/重构/问题修复任务
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-05-31 | v1.1 | 助手类型命名统一（PR #369）：scheduler-service config.py 助手 display_name 改为 HTP/OPS/PAI Agent（移除 GLM-5 后缀），与 Helm configmap.yaml 同步 | — |
 | 2026-04-05 | v1.0 | 初版 | [2026-04-02-S0意图识别与分类基线重构方案](../solution/events/2026-04-02-S0意图识别与分类基线重构方案.md) |
 
 ---
