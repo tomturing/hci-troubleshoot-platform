@@ -20,6 +20,7 @@ interface KbdEntry {
   support_id: string
   title: string
   content_md: string
+  images_json: ImageJsonItem[]  // 图片描述列表（权威数据源）
   metadata: KbdMetadata
   category_id: string | null
   ai_category_id: string | null
@@ -31,6 +32,13 @@ interface KbdEntry {
   created_at: string
   updated_at: string
   ai_category_label?: string | null
+}
+
+// 图片描述项（images_json 数组元素）
+interface ImageJsonItem {
+  seq: number           // 图片序号
+  section: string       // 所属章节字段
+  desc: string          // desc.txt v3 内容
 }
 
 // 生成深信服案例原始页面 URL
@@ -133,6 +141,19 @@ const editingContent = ref(false)
 const inlineContent = ref('')
 const inlineEditLoading = ref(false)
 const parsedSegments = ref<ContentSegment[]>([])
+
+// 解析后的 images_json 图片列表
+interface ParsedImageJson {
+  seq: number
+  section: string
+  background: string
+  typeInfo: ScreenshotTypeInfo
+  fullText: string[]
+  visibleContent: string[]
+  description: string
+  expanded: boolean
+}
+const parsedImagesJson = ref<ParsedImageJson[]>([])
 
 // 拒绝弹窗
 const rejectDialogVisible = ref(false)
@@ -273,6 +294,7 @@ function openDetailDialog(entry: KbdEntry) {
   editingContent.value = false
   inlineContent.value = entry.content_md || ''
   parsedSegments.value = parseContentMd(entry.content_md || '')
+  parsedImagesJson.value = parseImagesJson(entry.images_json || [])
   detailDialogVisible.value = true
 }
 
@@ -815,6 +837,54 @@ function metaLabel(key: keyof KbdMetadata): string {
   return map[key] || key
 }
 
+// 解析 images_json 图片描述
+function parseImagesJson(images: ImageJsonItem[]): ParsedImageJson[] {
+  return images.map((img) => {
+    const desc = img.desc || ''
+
+    // 解析 BACKGROUND
+    const bgMatch = desc.match(/BACKGROUND:\s*(\S+)/)
+    const background = bgMatch ? bgMatch[1] : '其他'
+
+    // 解析 TYPE
+    const typeMatch = desc.match(/TYPE:\s*(.+)/)
+    const typeName = typeMatch ? typeMatch[1].trim() : '其他截图'
+    const typeInfo = typeNameToInfo(typeName)
+
+    // 解析 FULL_TEXT
+    const fullTextMatch = desc.match(/FULL_TEXT:\s*\n((?:^-\s.+\n?)+)/m)
+    let fullText: string[] = []
+    if (fullTextMatch) {
+      fullText = fullTextMatch[1]
+        .split('\n')
+        .map((line) => line.replace(/^-\s*/, '').trim())
+        .filter((line) => line && line !== '（无文字）')
+    }
+
+    // 可见内容：根据截图类型决定截断方向
+    const maxVisible = 12
+    const isEndFirst = /终端截图|日志截图/.test(typeName)
+    const visibleContent = isEndFirst
+      ? fullText.slice(-maxVisible)
+      : fullText.slice(0, maxVisible)
+
+    // 解析 DESCRIPTION
+    const descMatch = desc.match(/DESCRIPTION:\s*\n(.+?)(?=\n[A-Z_]+:|$)/s)
+    const description = descMatch ? descMatch[1].trim() : ''
+
+    return {
+      seq: img.seq,
+      section: img.section,
+      background,
+      typeInfo,
+      fullText,
+      visibleContent,
+      description: description || '（无描述）',
+      expanded: false,
+    }
+  }).sort((a, b) => a.seq - b.seq)
+}
+
 const metaKeys: (keyof KbdMetadata)[] = [
   'sangfor_main_module', 'sangfor_sub_module', 'suite_version',
   'sangfor_updated_at', 'sangfor_created_at',
@@ -1170,6 +1240,67 @@ onMounted(() => {
           </template>
         </div>
 
+        <!-- 图片列表（从 images_json 渲染，权威数据源） -->
+        <div v-if="detailEntry?.images_json?.length" class="section-block">
+          <h4 class="section-title">图片列表 ({{ detailEntry.images_json.length }} 张)</h4>
+          <div class="images-json-container">
+            <template v-for="(img, imgIdx) in parsedImagesJson" :key="imgIdx">
+              <div
+                class="screenshot-card"
+                :style="{ borderLeftColor: img.typeInfo.color }"
+              >
+                <!-- 收起状态：序号 + 类型标签 -->
+                <div
+                  class="screenshot-header"
+                  :style="{ backgroundColor: img.typeInfo.bgColor }"
+                  @click="img.expanded = !img.expanded"
+                >
+                  <span class="screenshot-badge" :style="{ color: img.typeInfo.color, borderColor: img.typeInfo.color }">
+                    {{ img.typeInfo.icon }} img_{{ img.seq }}: {{ img.typeInfo.label }}
+                  </span>
+                  <span class="screenshot-intro-preview">
+                    {{ img.section }}
+                  </span>
+                  <span class="toggle-arrow">{{ img.expanded ? '▲' : '▼' }}</span>
+                </div>
+
+                <!-- 展开内容 -->
+                <div v-if="img.expanded" class="screenshot-body">
+                  <!-- 1. 背景颜色 -->
+                  <div class="ss-field">
+                    <div class="ss-field-label">背景颜色</div>
+                    <span>{{ img.background }}</span>
+                  </div>
+                  <!-- 2. 截图类型 -->
+                  <div class="ss-field">
+                    <div class="ss-field-label">截图类型</div>
+                    <span :style="{ color: img.typeInfo.color }">{{ img.typeInfo.label }}</span>
+                  </div>
+                  <!-- 3. 可见内容 -->
+                  <div class="ss-field">
+                    <div class="ss-field-label">
+                      可见内容
+                      <span v-if="img.fullText.length > img.visibleContent.length" class="ss-truncate-hint">
+                        （显示 {{ img.visibleContent.length }} / 共 {{ img.fullText.length }} 行）
+                      </span>
+                    </div>
+                    <ul v-if="img.visibleContent.length" class="ss-field-list">
+                      <li v-for="(item, j) in img.visibleContent" :key="j">{{ item }}</li>
+                    </ul>
+                    <span v-else class="ss-empty">无</span>
+                  </div>
+                  <!-- 4. 语义描述 -->
+                  <div class="ss-field">
+                    <div class="ss-field-label">语义描述</div>
+                    <p v-if="img.description" class="ss-description">{{ img.description }}</p>
+                    <span v-else class="ss-empty">无</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
         <!-- 审核备注 -->
         <div class="section-block">
           <h4 class="section-title">审核备注</h4>
@@ -1448,6 +1579,11 @@ onMounted(() => {
 .section-actions {
   display: flex;
   gap: 4px;
+}
+
+/* 图片列表容器（images_json 渲染） */
+.images-json-container {
+  margin-top: 8px;
 }
 
 /* 截图说明 accordion 卡片 */
