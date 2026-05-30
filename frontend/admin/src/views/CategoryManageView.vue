@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Histogram, Upload, Download, WarningFilled, Plus, Edit, Delete, VideoPlay, VideoPause, RefreshRight } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import DOMPurify, { type Config as DOMPurifyConfig } from 'dompurify'
@@ -10,18 +10,20 @@ import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
 // 类型定义（适配 kb_category 表结构）
 // ──────────────────────────────────────────────────────────────────────────────
 interface KbCategory {
-  id: number
-  code: string                  // 业务键，如 "虚拟机-003"
-  name: string                  // 分类名称
-  domain: string                // 一级技术域
-  level: number                 // 层级 1-4
-  parent_id: number | null
-  path_labels: string[]         // 完整路径
-  hit_count: number             // S0 命中次数
-  is_active: boolean            // 启用状态
+  id: number                     // 数据库主键
+  id_in_db?: number              // 别名：数据库主键（树形组件兼容）
+  code: string                   // 业务键，如 "虚拟机-003"
+  name: string                   // 分类名称
+  domain: string                 // 一级技术域
+  level: number                  // 层级 1-4
+  parent_id: number | null       // 父节点数据库主键
+  path_labels: string[]          // 完整路径
+  hit_count: number              // S0 命中次数
+  is_active: boolean             // 启用状态
+  children?: KbCategory[]        // 子节点（树形结构）
   // 统计字段（后端子查询返回）
-  published_kbd_count: number   // 已发布 KBD 数量
-  published_sop_count: number   // 已发布 SOP 数量
+  published_kbd_count: number    // 已发布 KBD 数量
+  published_sop_count: number    // 已发布 SOP 数量
 }
 
 interface DomainGroup {
@@ -201,12 +203,12 @@ const editCategoryForm = reactive({
 })
 
 // 树状数据结构的计算属性：将平铺列表转化为无环森林
-const globalCategoryTree = computed(() => {
+const globalCategoryTree = computed<KbCategory[]>(() => {
   const allCats = domainGroups.value.flatMap(g => g.categories)
   if (!allCats.length) return []
 
-  const map: Record<string | number, any> = {}
-  const roots: any[] = []
+  const map: Record<string | number, KbCategory> = {}
+  const roots: KbCategory[] = []
 
   // 1. 初始化节点映射，同时确保 parent_id 与 id_in_db 的关联关系
   allCats.forEach(cat => {
@@ -214,7 +216,7 @@ const globalCategoryTree = computed(() => {
       ...cat,
       id_in_db: cat.id_in_db ?? cat.id,
       children: []
-    }
+    } as KbCategory
   })
 
   // 2. 关联 parent_id 并找出根节点
@@ -223,14 +225,14 @@ const globalCategoryTree = computed(() => {
     const node = map[key]
     const pid = cat.parent_id
     if (pid && map[pid]) {
-      map[pid].children.push(node)
+      (map[pid].children as KbCategory[]).push(node)
     } else if (cat.level === 1) {
       roots.push(node)
     }
   })
 
   // 3. 对节点排序（按 level 升序，code/name 字典序）
-  const sortTreeNodes = (nodes: any[]) => {
+  const sortTreeNodes = (nodes: KbCategory[]) => {
     nodes.sort((a, b) => {
       if (a.level !== b.level) return a.level - b.level
       return (a.code || '').localeCompare(b.code || '')
@@ -513,10 +515,10 @@ async function toggleActiveStatus(data: any) {
 }
 
 // 物理删除分类
-async function handleDelete(data: any) {
+async function handleDelete(data: KbCategory) {
   try {
     const confirmMsg = `此操作将永久删除分类「${data.name}」(${data.code})，若是中间层节点也会阻断。是否继续？`
-    await ElMessage.box.confirm(confirmMsg, '危险提示', {
+    await ElMessageBox.confirm(confirmMsg, '危险提示', {
       confirmButtonText: '确定删除',
       cancelButtonText: '取消',
       type: 'warning',
@@ -1001,7 +1003,7 @@ onMounted(fetchCategories)
               @node-drop="handleNodeDrop"
               @node-click="handleNodeClick"
             >
-              <template #default="{ node, data }">
+              <template #default="{ node, data }: { node: any; data: any }">
                 <div class="custom-tree-node" :class="{ 'is-selected': selectedCategory?.code === data.code }">
                   <span class="level-pill" :class="`level-l${data.level}`">L{{ data.level }}</span>
                   <code class="node-code">{{ data.code }}</code>
@@ -1171,7 +1173,7 @@ onMounted(fetchCategories)
                 @node-click="handleNodeClick"
                 :current-node-key="selectedCategory.code"
               >
-                <template #default="{ node, data }">
+                <template #default="{ node, data }: { node: any; data: any }">
                   <div class="custom-tree-node" :class="{ 'is-selected': selectedCategory?.code === data.code }">
                     <span class="level-pill" :class="`level-l${data.level}`">L{{ data.level }}</span>
                     <code class="node-code">{{ data.code }}</code>

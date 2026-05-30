@@ -331,7 +331,11 @@ CLASSIFY_PROMPT_TEMPLATE = """你是 HCI 超融合平台的故障分类专家。
 1. category_id 必须是上述分类列表中的合法编码
 2. score 从高到低排列，最高为推荐分类
 3. reason 简洁说明匹配依据（50字以内）
-4. 如果案例不属于任何分类，top3 第一项 score 设为 0.1
+4. **关键约束：category_id 对应的 label 必须与 reason 中描述的故障现象严格匹配**
+   - 如果 reason 提到"开机失败"，category_id 必须选择 label 包含"开机失败"的分类
+   - 如果 reason 提到"创建失败"，category_id 必须选择 label 包含"创建失败"的分类
+   - 输出前请自检：确认 category_id 的 label 与 reason 中的关键词语义一致
+5. 如果案例不属于任何分类，top3 第一项 score 设为 0.1
 """
 
 
