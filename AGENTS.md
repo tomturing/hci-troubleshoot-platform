@@ -61,6 +61,11 @@
   - TriageAgent 增加 LLM 空内容检测，返回友好提示而非空白气泡
   - agent-service `_event_stream` 增加空流检测，无内容时返回结构化 error 事件
   - conversation-service 增加空响应兜底，避免前端渲染空白消息
+- **KBD 图片列表渲染优化**（PR #364）：
+  - 前端从 `images_json`（权威数据源）渲染图片列表，而非从 `content_md` 解析
+  - 添加 `parseImagesJson` 函数解析 desc.txt v3 格式（BACKGROUND/TYPE/FULL_TEXT/DESCRIPTION）
+  - 图片按序号排序，accordion 卡片展示，解决部分案例多张截图只显示一张的问题
+  - 后端 API 返回 `images_json` 字段，包含每张图片的完整描述信息
 
 ---
 
