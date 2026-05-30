@@ -371,19 +371,24 @@ def classify_type(background: str, full_text: list[str]) -> str:
     """
     text = " ".join(full_text)
 
+    # 时间格式正则：支持 YYYY-MM-DD HH:MM:SS 或 YYYY-MM-DDTHH:MM:SS
+    _TIME_PATTERN = r"\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}"
+
     if background == "黑色":
         if re.search(r"\$\s|#\s|sudo |grep |chmod |cat |ls |\-rn |sfvt_", text):
             return "终端截图"
-        if re.search(r"\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}", text) or re.search(
+        if re.search(_TIME_PATTERN, text) or re.search(
             r"\b(ERROR|WARN|error|warn|INFO|DEBUG|FATAL)\b", text
         ):
             return "日志截图"
         return "终端截图"
 
     if background == "白色":
-        if re.search(r"紧急|严重|告警|未处理|已触发", text):
+        # 告警截图：白色背景 + 告警关键字 + 时间
+        if re.search(r"紧急|严重|告警|未处理|已触发", text) and re.search(_TIME_PATTERN, text):
             return "告警截图"
-        if re.search(r"失败|完成|进行中|操作人|HA恢复|修复.*快照|新建.*快照", text):
+        # 任务截图：白色背景 + 任务状态关键字 + 时间
+        if re.search(r"失败|完成|进行中|操作人|HA恢复|修复.*快照|新建.*快照", text) and re.search(_TIME_PATTERN, text):
             return "任务截图"
 
     return "其他截图"
