@@ -8,7 +8,7 @@ import json
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from shared.observability.logger import get_logger
 
 from app.config import settings
@@ -240,6 +240,33 @@ async def category_import_proxy(request: Request):
             return JSONResponse(content=resp.json(), status_code=resp.status_code)
         except httpx.RequestError as exc:
             logger.error(f"KB Service 分类导入请求失败: {exc.request.url!r}")
+            raise HTTPException(
+                status_code=503, detail="KB Service unavailable"
+            ) from exc
+
+
+@categories_router.get("/export")
+async def category_export_proxy(request: Request):
+    """代理 YAML 导出请求 → kb-service（返回文件流）
+
+    kb-service 返回 StreamingResponse YAML 文件，
+    api-gateway 透传文件流和 Content-Disposition 头。
+    """
+    headers = _internal_auth_headers()
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            url = f"{KB_SERVICE_URL}/categories/export"
+            resp = await client.get(url, headers=headers)
+            # 透传响应头
+            content_disposition = resp.headers.get("content-disposition", "")
+            return Response(
+                content=resp.content,
+                media_type="application/yaml",
+                headers={"Content-Disposition": content_disposition} if content_disposition else {},
+            )
+        except httpx.RequestError as exc:
+            logger.error(f"KB Service 分类导出请求失败: {exc.request.url!r}")
             raise HTTPException(
                 status_code=503, detail="KB Service unavailable"
             ) from exc
