@@ -402,11 +402,11 @@ def classify_type(background: str, full_text: list[str]) -> str:
     """
     基于背景色 + 文字内容，用正则规则本地判断截图类型。
 
-    分类策略：
-      终端截图 │ 黑色/其他背景（排除白色） + 命令特征 或 英文单词占比≥50%
-      日志截图 │ 黑色/其他背景（排除白色） + 时间格式(HH:MM:SS) 或 日志级别
-      告警截图 │ 白色背景 + 告警关键字 + 完整时间(YYYY-MM-DD HH:MM:SS)
-      任务截图 │ 白色背景 + 任务状态关键字 + 完整时间(YYYY-MM-DD HH:MM:SS)
+    分类策略（最终版）：
+      日志截图 │ 黑色/其他背景（排除白色） + 时间格式(HH:MM:SS) AND 日志级别
+      终端截图 │ 黑色/其他背景（排除白色） + 命令特征 OR 英文单词占比≥50%
+      告警截图 │ 白色背景 + 告警关键字(级别/紧急/普通/告警/事件/确认/未确认/批量确认) + 完整时间
+      任务截图 │ 白色背景 + 任务关键字(状态/失败/完成/进行中/行为/开始时间/结束时间/操作人) + 完整时间
       其他截图 │ 兜底
 
     Returns:
@@ -414,36 +414,37 @@ def classify_type(background: str, full_text: list[str]) -> str:
     """
     text = " ".join(full_text)
 
-    # ─── 终端截图判断（黑色或其他背景，排除白色）────────────────────────────
+    # ─── 黑色/其他背景（排除白色）：终端/日志判断 ────────────────────────────
     if background in ("黑色", "其他"):
-        # 条件1：包含终端命令特征
+        # 步骤2: 日志截图判断（最高优先级，时间格式 AND 日志级别）
+        if re.search(_LOG_TIME_PATTERN, text) and re.search(_LOG_LEVEL_PATTERN, text):
+            return "日志截图"
+
+        # 步骤3: 终端截图判断 - 命令特征
         if re.search(_TERMINAL_CMD_PATTERN, text):
             return "终端截图"
 
-        # 条件2：英文单词占比 ≥ 50%（典型的终端输出特征）
+        # 步骤4: 终端截图判断 - 英文占比 ≥ 50%
         if _calculate_english_ratio(text) >= 0.5:
             return "终端截图"
 
-        # ─── 日志截图判断（黑色或其他背景，排除白色）────────────────────────────
-        # 条件1：包含简短时间格式 HH:MM:SS
+        # 步骤5: 日志截图判断 - 单条件兜底
         if re.search(_LOG_TIME_PATTERN, text):
             return "日志截图"
-
-        # 条件2：包含日志级别关键字（大小写均匹配）
         if re.search(_LOG_LEVEL_PATTERN, text):
             return "日志截图"
 
-        # 黑色背景无匹配时默认终端截图（其他背景则继续判断）
+        # 步骤6: 黑色背景兜底
         if background == "黑色":
             return "终端截图"
 
-    # ─── 白色背景判断（告警/任务截图）──────────────────────────────────────
+    # ─── 白色背景：告警/任务判断 ───────────────────────────────────────────────
     if background == "白色":
         # 告警截图：白色背景 + 告警关键字 + 完整时间格式
-        if re.search(r"紧急|严重|告警|未处理|已触发", text) and re.search(_FULL_TIME_PATTERN, text):
+        if re.search(r"级别|紧急|普通|告警|事件|确认|未确认|批量确认", text) and re.search(_FULL_TIME_PATTERN, text):
             return "告警截图"
-        # 任务截图：白色背景 + 任务状态关键字 + 完整时间格式
-        if re.search(r"失败|完成|进行中|操作人|HA恢复|修复.*快照|新建.*快照", text) and re.search(_FULL_TIME_PATTERN, text):
+        # 任务截图：白色背景 + 任务关键字 + 完整时间格式
+        if re.search(r"状态|失败|完成|进行中|行为|开始时间|结束时间|操作人", text) and re.search(_FULL_TIME_PATTERN, text):
             return "任务截图"
 
     return "其他截图"
