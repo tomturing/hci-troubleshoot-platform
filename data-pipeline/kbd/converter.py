@@ -305,14 +305,10 @@ def _html_to_md_with_placeholder(html: str, image_map: dict[str, dict]) -> str:
 def _parse_sections(content_html: str) -> dict[str, str]:
     """
     从 rows.content HTML 解析 9 个 section 的 HTML 内容。
+    支持鲁棒的容错机制：当发现某些内容节点（如步骤 2、3 及其图片）由于 DOM 损坏溢出到 mceNonEditable 容器之外时，
+    自动将其向前归属于最近的一个合法板块，确保排障文本及截图不丢失。
 
     返回 {md_title: content_html_str}（未出现的 section key 不在结果中）
-
-    DOM 结构：
-      div.mceNonEditable
-        input[value="*问题描述"]（section 标题）
-        a（锚点，忽略）
-        div（content，取最后一个直接子 div）
     """
     soup = BeautifulSoup(content_html, "lxml")
 
@@ -322,23 +318,32 @@ def _parse_sections(content_html: str) -> dict[str, str]:
     }
 
     result: dict[str, str] = {}
+    current_section: str | None = None
 
-    for wrapper_div in soup.find_all("div", class_="mceNonEditable"):
-        inp = wrapper_div.find("input")
-        if not inp:
-            continue
-        api_val = (inp.get("value") or "").strip()
-        md_title = value_to_md.get(api_val)
-        if not md_title:
-            continue  # 未知 section，跳过
+    # 用 soup.find("body") or soup 兼容 lxml 自动补充 <html><body> 容器后的子节点列表
+    root_node = soup.find("body") or soup
 
-        # 取最后一个直接子 div 作为内容区
-        content_divs = wrapper_div.find_all("div", recursive=False)
-        if not content_divs:
-            result[md_title] = ""
-            continue
-        content_div = content_divs[-1]
-        result[md_title] = str(content_div)
+    for node in root_node.contents:
+        if isinstance(node, Tag):
+            # 检查是否是板块容器
+            if node.name == "div" and "mceNonEditable" in node.get("class", []):
+                inp = node.find("input")
+                if inp:
+                    api_val = (inp.get("value") or "").strip()
+                    md_title = value_to_md.get(api_val)
+                    if md_title:
+                        current_section = md_title
+                        # 提取容器内部的内容
+                        content_divs = node.find_all("div", recursive=False)
+                        if content_divs:
+                            result[current_section] = str(content_divs[-1])
+                        else:
+                            result[current_section] = ""
+                        continue
+            
+            # 如果是其他顶层游离节点，且当前已有活跃的板块，则将该节点追加到该板块中
+            if current_section is not None:
+                result[current_section] += str(node)
 
     return result
 

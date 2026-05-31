@@ -701,30 +701,12 @@ function parseContentMd(md: string): ContentSegment[] {
 
     if (inScreenshot) {
       const trimmed = line.trim()
-      // 截图块内的行：空行、bullet、字段行（v1 数字字段 或 v2/v3 关键词 section）
-      const isFieldLine = /^\d+[.、]\s+\*\*/.test(trimmed)
-        || /^(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(trimmed)
-        || /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(trimmed)
-      const isBulletLine = /^-\s/.test(trimmed) || /^\s{2,}-\s/.test(line)
-        || /^>\s*-\s/.test(line)  // v2 格式："> - item"
       const isBlank = trimmed === ''
 
-      // 检测进入 DESCRIPTION section
-      if (/^>\s*DESCRIPTION:$/.test(trimmed) || /^DESCRIPTION:$/.test(trimmed)) {
-        inDescription = true
-      }
-      // DESCRIPTION section 结束：遇到下一个 section 关键词
-      if (inDescription && /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS):/.test(trimmed)) {
-        inDescription = false
-      }
+      // 检测截图块结束：只要是一行非空且不以 '>' 开头（且不是下一个 section 的标题 ##），
+      // 那么它必然是普通排障正文，代表截图块已经结束
+      const isEndLine = !isBlank && !line.startsWith('>') && !trimmed.startsWith('##')
 
-      // v3: DESCRIPTION section 内的纯文字行属于截图块
-      const isDescriptionText = inDescription && !isBlank && !isFieldLine && !isBulletLine && !trimmed.startsWith('>')
-
-      // 检测截图块结束：有内容的非截图行（且不在 DESCRIPTION section）
-      const isEndLine = !isBlank && !isFieldLine && !isBulletLine && !/^\d+\.\s+\*\*/.test(trimmed) && !isDescriptionText && !inDescription
-
-      // 截图块结束条件：遇到下一个 section 标题（##）
       if (trimmed.startsWith('## ') || isEndLine && screenshotLines.length > 1) {
         flushScreenshot()
         inScreenshot = false
@@ -732,6 +714,14 @@ function parseContentMd(md: string): ContentSegment[] {
         normalLines.push(line)
       } else {
         screenshotLines.push(line)
+
+        // 顺便更新 DESCRIPTION 状态跟踪
+        if (/^>\s*DESCRIPTION:$/.test(trimmed) || /^DESCRIPTION:$/.test(trimmed)) {
+          inDescription = true
+        }
+        if (inDescription && /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS):/.test(trimmed)) {
+          inDescription = false
+        }
       }
     } else {
       normalLines.push(line)
