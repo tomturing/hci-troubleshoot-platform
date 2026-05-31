@@ -76,6 +76,7 @@
 - **KBD 溢出 DOM 兼容与前端贪婪解析修复** (PR #375):
   - 升级 `data-pipeline/kbd/converter.py` 板块解析器，使用平铺子节点动态遍历合并机制，自动提取并合入溢出在容器外的排障正文和截图，完美向后兼容。
   - 修复 `KbdReviewView.vue` 中由 `inDescription` 状态导致的 Markdown “贪婪吸入”解析 Bug，严格限定非空且非 `>` 开头的行为卡片结束标志，防止游离排障步骤被误吞进折叠面板内。
+  - 修复 `KbdReviewView.vue` 内 `inlineRender` 转义星号渲染冲突，使用占位符 `&#42;` 巧妙隔离字面量星号与 Markdown 正则标记匹配，完美修复分割线及排障步骤中的反斜杠裂变与星号吞噬 Bug。
 
 ---
 

@@ -430,11 +430,17 @@ function renderMarkdown(md: string): string {
 }
 
 function inlineRender(text: string): string {
-  return escapeHtml(text)
-    .replace(/\\_/g, '_')  // 处理 Markdown 转义下划线
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  let s = escapeHtml(text)
+  // 1. 将字面量转义的星号 \* 替换为标准的 HTML 实体占位符 &#42;
+  // 这样既能在网页中正确渲染星号，又可以彻底避开后续 Markdown 加粗/倾斜正则的错乱解析
+  s = s.replace(/\\\*/g, '&#42;')
+  // 2. 处理 Markdown 转义下划线
+  s = s.replace(/\\_/g, '_')
+  // 3. 执行常规的 Markdown 行内标记替换
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>')
+       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+       .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  return s
 }
 
 function escapeHtml(s: string): string {
