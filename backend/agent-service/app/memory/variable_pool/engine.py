@@ -1,24 +1,7 @@
 """
-变量池 — Agent 工作记忆的变量 JIT 获取引擎（T-AGT-25）
+变量池 — 策略决策内核（Control Plane）
 
-理论基础（见 docs/solution/agent/agent记忆设计.md §3, §5）：
-  变量池是 SOP 执行上下文的工作记忆层。
-  Schema 层（variable_schema JSONB）是程序性记忆，记录变量定义和获取策略；
-  值层（context_variables JSONB）是工作记忆，存储当前执行状态中已获取的变量值。
-  每轮 LLM 调用前，context_variables 被渲染注入上下文窗口（MemGPT 外化工作记忆模式）。
-
-变量赋值策略（acquisition_strategy 字段）：
-  - env_injection  : 环境上下文批量注入（初始化阶段，不走 JIT 流程）
-  - sop_default    : SOP 文档预设默认值（初始化阶段直接读 variable_schema.default_value，JIT 路径也支持）
-  - user_input     : 阻塞等待用户填写
-  - user_confirm   : 调用工具获取候选列表后让用户确认
-  - tool_call      : 自动调用指定工具获取值（DC-02），失败时降级为 user_input
-  - llm_inference  : LLM 从对话推断得出（通过 sop_advance.variables_extracted 被动写入）
-  - agent_pass     : Agent 初始化或编程方式写入（不走 JIT 流程）
-
-导出：
-  - VariableRequestResult: 需要用户交互时的返回结果
-  - sop_request_variable: JIT 变量获取函数（LLM 可调用工具）
+负责 JIT 变量获取流程的决策与协调，本身无状态，通过外部注入的执行器（tool_executor）与客户端执行具体动作。
 """
 
 from __future__ import annotations
@@ -28,44 +11,9 @@ from typing import Any
 
 from shared.clients import KBClient
 from shared.observability.logger import get_logger
+from app.memory.variable_pool.pool import VariableRequestResult
 
 logger = get_logger("memory.variable-pool")
-
-
-class VariableRequestResult:
-    """变量请求结果（用于标识需要阻塞等待用户输入）。
-
-    当 sop_request_variable 需要用户输入时返回此类型，
-    ReactEngine 或 InvestigationAgent 捕获此结果后 yield AgentInteractiveRequest。
-
-    Attributes:
-        needs_input: 是否需要用户输入（True 时阻塞等待）
-        variable_name: 变量名
-        variable_schema: 变量 Schema 定义（含 display_name、description、validation_pattern）
-        current_value: 当前值（若已存在）
-        message: 消息（用于 LLM 或用户）
-        kind: 交互类型（variable_input / variable_confirm）
-        options: 候选选项列表（user_confirm 类型时使用）
-    """
-
-    def __init__(
-        self,
-        *,
-        needs_input: bool = False,
-        variable_name: str = "",
-        variable_schema: dict | None = None,
-        current_value: Any = None,
-        message: str = "",
-        kind: str = "variable_input",
-        options: list[dict] | None = None,
-    ):
-        self.needs_input = needs_input
-        self.variable_name = variable_name
-        self.variable_schema = variable_schema or {}
-        self.current_value = current_value
-        self.message = message
-        self.kind = kind
-        self.options = options or []
 
 
 async def sop_request_variable(
