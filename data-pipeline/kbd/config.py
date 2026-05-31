@@ -91,8 +91,8 @@ class KbdSettings(BaseSettings):
     )
     # LLM 请求超时（秒）
     LLM_TIMEOUT: float = Field(default=60.0)
-    # Vision 输出最大 token 数（DashScope qwen3.5-plus 支持 2048；BigModel glm-4v-flash 上限 1024）
-    VISION_MAX_TOKENS: int = Field(default=2048, ge=128, le=8192)
+    # Vision 输出最大 token 数（日志截图 FULL_TEXT 较长，需要足够空间）
+    VISION_MAX_TOKENS: int = Field(default=4096, ge=128, le=8192)
     # Vision 并发数（控制每个案例的图片并行处理数）
     VISION_CONCURRENCY: int = Field(default=3, ge=1, le=10)
 

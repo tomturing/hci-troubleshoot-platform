@@ -222,10 +222,25 @@ def _parse_full_text(raw: str) -> list[str]:
 
 def _parse_description(raw: str) -> str:
     """解析 DESCRIPTION 字段。"""
-    m = re.search(r"DESCRIPTION[:\s]+(.+?)(?=\n[A-Z_]+:|$)", raw, re.DOTALL)
-    if m:
-        return m.group(1).strip()
-    return ""
+    # 找到 DESCRIPTION 开始位置
+    desc_start = raw.find("DESCRIPTION:")
+    if desc_start == -1:
+        return ""
+
+    # 找到结束位置：下一个大写字母字段、装饰线或文件末尾
+    rest = raw[desc_start + 12:]
+
+    # 结束标志：下一行以 TYPE/BACKGROUND/FULL_TEXT/═══ 开头
+    end_pos = len(rest)
+    for pattern in ["\nTYPE:", "\nBACKGROUND:", "\nFULL_TEXT:", "\n═══"]:
+        idx = rest.find(pattern)
+        if idx != -1 and idx < end_pos:
+            end_pos = idx
+
+    desc = rest[:end_pos].strip()
+    # 清理末尾装饰线
+    desc = re.sub(r"═══.*$", "", desc).strip()
+    return desc if desc and desc not in ("（无描述）", "(无描述)") else ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
