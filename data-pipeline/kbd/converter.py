@@ -58,6 +58,100 @@ _MANDATORY_TITLES: frozenset[str] = frozenset(
 )
 
 
+# ─── FULL_TEXT 截断策略 ───────────────────────────────────────────────────────
+
+# 截断行数限制（入库展示用）
+_MAX_FULL_TEXT_LINES = 10
+
+# 截断保留策略：
+# - 日志/终端截图（TYPE: 日志截图/终端截图）：保留最后 N 行（重要信息在末尾）
+# - 其他截图（告警/任务/配置等）：保留前 N 行（重要信息在前面）
+_TRUNCATE_KEEP_LAST_TYPES = frozenset(["日志截图", "终端截图"])
+
+
+def _truncate_full_text_for_display(desc: str) -> str:
+    """
+    对 desc.txt 内容进行 FULL_TEXT 截断处理（仅用于入库展示）。
+
+    截断策略：
+    - 日志截图/终端截图：保留最后 10 行
+    - 其他截图：保留前 10 行
+
+    原始 desc.txt 文件保持完整（不做修改），此函数仅处理入库展示版本。
+
+    Args:
+        desc: 原始 desc.txt 内容
+
+    Returns:
+        截断后的 desc 内容（用于 images_json 入库）
+    """
+    if not desc or "FULL_TEXT:" not in desc:
+        return desc
+
+    lines = desc.split("\n")
+
+    # 解析 TYPE
+    screenshot_type = ""
+    for line in lines:
+        if line.startswith("TYPE:"):
+            screenshot_type = line.split(":", 1)[1].strip()
+            break
+
+    # 找到 FULL_TEXT 区域
+    ft_start = -1
+    ft_end = -1
+    for i, line in enumerate(lines):
+        if line.startswith("FULL_TEXT:"):
+            ft_start = i + 1  # 跳过 FULL_TEXT: 行本身
+        elif ft_start != -1 and (line.startswith("DESCRIPTION:") or line.startswith("═══")):
+            ft_end = i
+            break
+
+    if ft_start == -1:
+        return desc
+
+    # 收集 bullet 行
+    bullet_lines = []
+    for i in range(ft_start, ft_end if ft_end != -1 else len(lines)):
+        line = lines[i]
+        if line.startswith("- "):
+            bullet_lines.append(line)
+
+    # 不需要截断
+    if len(bullet_lines) <= _MAX_FULL_TEXT_LINES:
+        return desc
+
+    # 截断处理
+    keep_last = screenshot_type in _TRUNCATE_KEEP_LAST_TYPES
+    if keep_last:
+        # 保留最后 N 行
+        kept_bullets = bullet_lines[-_MAX_FULL_TEXT_LINES:]
+        truncation_note = f"> （截断：原 {len(bullet_lines)} 行，保留最后 {_MAX_FULL_TEXT_LINES} 行）"
+    else:
+        # 保留前 N 行
+        kept_bullets = bullet_lines[:_MAX_FULL_TEXT_LINES]
+        truncation_note = f"> （截断：原 {len(bullet_lines)} 行，保留前 {_MAX_FULL_TEXT_LINES} 行）"
+
+    # 重建 desc
+    result_lines = []
+    for line in lines:
+        if line.startswith("FULL_TEXT:"):
+            result_lines.append(line)
+            for bullet in kept_bullets:
+                result_lines.append(bullet)
+            result_lines.append(truncation_note)
+            # 跳过原始 bullet 行
+            continue
+        if ft_start != -1 and ft_end != -1:
+            # 检查是否在原始 FULL_TEXT 区域的 bullet 行
+            idx = lines.index(line)
+            if ft_start <= idx < ft_end and line.startswith("- "):
+                continue
+        result_lines.append(line)
+
+    return "\n".join(result_lines)
+
+
 # ─── HTML → Markdown 转换器 ──────────────────────────────────────────────────
 
 def _desc_to_screenshot_block(desc: str) -> str:
@@ -486,11 +580,6 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
             section_mds_full["排查内容"] = chacha_full
 
     # ── 构建 images_json（图片视觉描述结构化列表） ──────────────────────────
-    # 按 seq 排序，记录每张图属于哪个章节字段
-    # 通过扫描章节占位符文本来确定归属
-    images_json: list[dict[str, Any]] = []
-    # 构建 seq → section field 的反向映射
-    # ── 构建 images_json（图片视觉描述结构化列表） ──────────────────────────
     # 通过扫描章节占位符文本确定每张图的归属章节字段
     seq_to_section: dict[int, str] = {}
     for md_title, field_name in _MD_TITLE_TO_FIELD.items():
@@ -504,10 +593,12 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
 
     images_json: list[dict[str, Any]] = []
     for entry in image_map.values():
+        # 入库展示时对 FULL_TEXT 进行截断处理（原始 desc.txt 保持完整）
+        truncated_desc = _truncate_full_text_for_display(entry["desc"])
         images_json.append({
             "seq": entry["seq"],
             "section": seq_to_section.get(entry["seq"], "unknown"),
-            "desc": entry["desc"],
+            "desc": truncated_desc,
         })
     images_json.sort(key=lambda x: x["seq"])
 
