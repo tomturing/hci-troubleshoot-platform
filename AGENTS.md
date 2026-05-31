@@ -66,6 +66,11 @@
   - 添加 `parseImagesJson` 函数解析 desc.txt v3 格式（BACKGROUND/TYPE/FULL_TEXT/DESCRIPTION）
   - 图片按序号排序，accordion 卡片展示，解决部分案例多张截图只显示一张的问题
   - 后端 API 返回 `images_json` 字段，包含每张图片的完整描述信息
+- **工单管理分类选择框与 S0 Triage 4+1 交互体验优化** (PR #370):
+  - 前端工单编辑「工单分类」由输入框升级为 `el-select` 下拉检索框，实现与 SOP 分类编辑的一致样式与体验
+  - 提取公共 `useCategories` composable，在工单管理、KBD 审查、SOP 管理页面中统一引用该公共分类函数加载逻辑
+  - 修复 S0 阶段流式推理和 ACP 卡片的重复显示（Bug a）和由于落库时差导致的页面刷新乱序（Bug b）
+  - 统一 S0 交互样式为 `4+1` 模式，提供 4 个高置信度选项与一个带症状补全的“以上都不是”选项，彻底解决点击“以上都不是”时的 LLM 异常报错（Bug c）
 
 ---
 
