@@ -385,7 +385,7 @@ class ConversationService:
                                 "options": agent_event.get("options")
                             }
                             _message_metadata.update(_intent_metadata)
-                            
+
                             _payload = _json.dumps(_intent_metadata, ensure_ascii=False)
                             yield f"\x00event:metadata:{_payload}\x00"
                             continue

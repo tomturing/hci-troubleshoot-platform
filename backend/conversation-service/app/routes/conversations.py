@@ -3,6 +3,7 @@ Conversation Routes - 对话API路由 (v2.0 多类型AI助手)
 """
 
 import asyncio
+import contextlib
 import json
 import uuid
 
@@ -206,10 +207,8 @@ async def send_message(
                                 # 透传完整 JSON，无需包装
                                 yield f"event: {evt_type}\ndata: {evt_data}\n\n"
                                 if evt_type == "metadata":
-                                    try:
+                                    with contextlib.suppress(Exception):
                                         _message_metadata.update(json.loads(evt_data))
-                                    except Exception:
-                                        pass
                             else:
                                 event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
                                 yield f"event: {evt_type}\ndata: {event_payload}\n\n"
