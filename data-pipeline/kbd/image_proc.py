@@ -41,7 +41,7 @@ logger = logging.getLogger("kbd.image_proc")
 _MIN_CONTEXT_CHARS = 80   # 低于此字数时向上扩展
 _SHORT_WINDOW = 300       # 优先取图片前净文字字数
 _LONG_WINDOW = 800        # 不足时扩展到此字数
-_MAX_VISION_IMAGE_SIZE = 500 * 1024  # 500KB，超过需压缩
+_MAX_VISION_IMAGE_SIZE = 1024 * 1024  # 1MB，超过需压缩（文字截图需要清晰度）
 
 # 截图类型（LLM 输出标准）
 SCREENSHOT_TYPES = ("终端截图", "日志截图", "告警截图", "任务截图", "配置截图", "其他截图")
