@@ -8,7 +8,7 @@
 本模块遵循“控制与执行解耦的微内核架构（Microkernel Architecture）”：
 - 物理层保持高稳定性：保留原有的 tools/acli/ 和 tools/sop/ 等技术分类包。
 - 逻辑外观层（Facade）实现 100% 理想微内核语义对齐：
-  本引擎在决策和执行获取策略时，只涉及 app.tools 暴露的 SystemTools (对应 tool_call) 
+  本引擎在决策和执行获取策略时，只涉及 app.tools 暴露的 SystemTools (对应 tool_call)
   和 InteractiveTools (对应 user_confirm/user_input) 逻辑命名空间，
   彻底与具体的物理文件名/子目录名脱耦。
 - 后续迭代：所有新工具与交互组件应优先在 `app.tools` Facade 中映射为逻辑工具组，
@@ -23,6 +23,7 @@ from typing import Any
 
 from shared.clients import KBClient
 from shared.observability.logger import get_logger
+
 from app.memory.variable_pool.pool import VariableRequestResult
 
 logger = get_logger("memory.variable-pool")

@@ -6,7 +6,7 @@
 - engine.py: 策略决策内核（Control Plane）
 """
 
-from app.memory.variable_pool.pool import VariableRequestResult
 from app.memory.variable_pool.engine import sop_request_variable
+from app.memory.variable_pool.pool import VariableRequestResult
 
 __all__ = ["VariableRequestResult", "sop_request_variable"]
