@@ -1,31 +1,20 @@
 """
-data-pipeline/kbd/image_proc.py — 图片语义化（Vision LLM 单次调用 + 文档上下文注入）
+data-pipeline/kbd/image_proc.py — 图片语义化（Vision LLM v5）
 
-流水线（v3）：
+流水线（v5，彻底简化）：
   Step 0  解析文档 HTML，提取每张图片的上下文文字（纯 Python，无 LLM）
-  Step 1  Pillow 背景色采样 → BACKGROUND（本地，无网络）
-  Step 2  Vision LLM 单次调用（图片 + context + Prompt v3）
-            → FULL_TEXT（文字原文照录，供人工审核）
-            → DESCRIPTION（结合上下文的语义段落，供 RAG 召回）
-  Step 3  规则引擎 → TYPE（本地，基于 FULL_TEXT + BACKGROUND，无 LLM）
-  Step 4  组装 desc.txt v3 写入文件系统（幂等：已存在则跳过）
-
-desc.txt v3 格式：
-  BACKGROUND: 白色
-  TYPE: 任务截图
-  FULL_TEXT:
-  - 失败
-  - HA恢复虚拟机
-  - ...（全量，不截断）
-  DESCRIPTION:
-  该截图为任务列表，展示了...（语义段落）
+  Step 1  Vision LLM 单次调用（图片 + context + Prompt v5）
+            → TYPE（截图类型：终端/日志/告警/任务/配置/其他）
+            → BACKGROUND（背景颜色：白色/黑色/灰色/彩色/其他）
+            → FULL_TEXT（文字原文照录）
+            → DESCRIPTION（语义描述）
+  Step 2  组装 desc.txt 写入文件系统（幂等）
 
 设计原则：
-  - LLM 调用从 2 次/图 减少到 1 次/图
-  - FULL_TEXT 全量存储，截断只在前端展示层按 TYPE + 阈值完成
-  - TYPE 由本地规则引擎判断，不消耗 LLM token
-  - 失败时写 img_N.desc.failed，不中断整体流程
-  - 幂等：img_N.desc.txt 已存在则跳过
+  - 所有判断（TYPE + BACKGROUND）由 Vision LLM 完成，无需本地规则引擎
+  - 代码极简：移除 Pillow 背景色检测、移除正则规则引擎
+  - 单次 LLM 调用，效率最大化
+  - 幂等：已存在则跳过
 """
 from __future__ import annotations
 
@@ -46,15 +35,24 @@ from .html_utils import extract_image_urls_with_positions as _extract_image_urls
 logger = logging.getLogger("kbd.image_proc")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 上下文提取常量
+# 常量配置
 # ──────────────────────────────────────────────────────────────────────────────
 
-# 低于此字数时向上扩展取文
-_MIN_CONTEXT_CHARS = 80
-# 优先取图片前净文字字数
-_SHORT_WINDOW = 300
-# 不足时扩展到此字数
-_LONG_WINDOW = 800
+_MIN_CONTEXT_CHARS = 80   # 低于此字数时向上扩展
+_SHORT_WINDOW = 300       # 优先取图片前净文字字数
+_LONG_WINDOW = 800        # 不足时扩展到此字数
+_MAX_VISION_IMAGE_SIZE = 500 * 1024  # 500KB，超过需压缩
+
+# 截图类型（LLM 输出标准）
+SCREENSHOT_TYPES = ("终端截图", "日志截图", "告警截图", "任务截图", "配置截图", "其他截图")
+# 背景颜色（LLM 输出标准）
+BACKGROUND_COLORS = ("白色", "黑色", "灰色", "彩色", "其他")
+
+# Prompt 文件路径（v5）
+_PROMPT_PATH = Path(__file__).parent / "prompt" / "image_proc_vision_v4.txt"
+if not _PROMPT_PATH.exists():
+    raise RuntimeError(f"Vision Prompt 文件不存在: {_PROMPT_PATH}")
+_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -62,7 +60,7 @@ _LONG_WINDOW = 800
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _strip_html(html: str) -> str:
-    """去除 HTML 标签、&nbsp;、多余空白，返回净文字。"""
+    """去除 HTML 标签、&nbsp;、多余空白。"""
     text = re.sub(r"<[^>]+>", " ", html)
     text = re.sub(r"&nbsp;", " ", text)
     text = re.sub(r"\s+", " ", text)
@@ -70,410 +68,183 @@ def _strip_html(html: str) -> str:
 
 
 def _extract_context(html: str, img_pos: int) -> str:
-    """
-    提取图片上文，优先短窗口（300字），不足则扩展到长窗口（800字）。
-
-    Args:
-        html:    原始 HTML 字符串
-        img_pos: 图片标签在 HTML 中的字符位置
-
-    Returns:
-        净文字上下文（不含 HTML 标签）
-    """
+    """提取图片上文（300字，不足则扩展到800字）。"""
     short_raw = html[max(0, img_pos - _SHORT_WINDOW):img_pos]
     short_text = _strip_html(short_raw).strip()
     if len(short_text) >= _MIN_CONTEXT_CHARS:
         return short_text[-_SHORT_WINDOW:]
-
     long_raw = html[max(0, img_pos - _LONG_WINDOW):img_pos]
     long_text = _strip_html(long_raw).strip()
     return long_text[-_LONG_WINDOW:]
 
 
 def build_context_map(html: str, base_url: str) -> dict[int, str]:
-    """
-    解析文档 HTML，返回 {图片序号: 上下文文字} 的映射。
-
-    图片序号与 fetcher._extract_image_urls() 去重保序逻辑一致，
-    因此与 cache 目录里的 img_N 文件名对应。
-
-    Returns:
-        {0: "上下文1", 1: "上下文2", ...}
-    """
+    """解析文档 HTML，返回 {图片序号: 上下文文字}。"""
     img_positions = _extract_image_urls_with_positions(html, base_url)
     return {seq: _extract_context(html, pos) for seq, (_, pos) in enumerate(img_positions)}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 1：背景色检测（Pillow）
+# 图片压缩（避免大图超时）
 # ──────────────────────────────────────────────────────────────────────────────
-
-def _detect_background(image_path: Path) -> str:
-    """通过采样四角像素判断背景颜色，返回 黑色/白色/其他。"""
-    try:
-        from PIL import Image  # type: ignore[import-untyped]
-    except ImportError:
-        logger.warning("Pillow 未安装，背景色返回'其他'。安装：uv pip install pillow")
-        return "其他"
-
-    try:
-        img = Image.open(image_path).convert("RGB")
-        w, h = img.size
-        sample_size = min(30, w // 4, h // 4)
-        if sample_size < 5:
-            return "其他"
-        regions = [
-            img.crop((0, 0, sample_size, sample_size)),
-            img.crop((w - sample_size, 0, w, sample_size)),
-            img.crop((0, h - sample_size, sample_size, h)),
-            img.crop((w - sample_size, h - sample_size, w, h)),
-        ]
-        total_pixels = 0
-        total_brightness = 0
-        for region in regions:
-            for r, g, b in region.getdata():  # type: ignore[misc]
-                total_brightness += (r + g + b) / 3
-                total_pixels += 1
-        if total_pixels == 0:
-            return "其他"
-        avg = total_brightness / total_pixels
-        if avg < 80:
-            return "黑色"
-        elif avg > 200:
-            return "白色"
-        return "其他"
-    except Exception as exc:
-        logger.warning("背景色检测失败 path=%s 原因=%s", image_path.name, exc)
-        return "其他"
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 图片压缩预处理（避免大图片超时）
-# ──────────────────────────────────────────────────────────────────────────────
-
-_MAX_VISION_IMAGE_SIZE = 500 * 1024  # 500KB，超过此大小需要压缩
-
 
 def _compress_image_if_needed(image_path: Path) -> tuple[bytes, str]:
-    """
-    如果图片超过 MAX_VISION_IMAGE_SIZE，压缩到合适大小。
-
-    Returns:
-        (image_bytes, mime_type)
-    """
+    """超过 500KB 时压缩图片。返回 (bytes, mime_type)。"""
     try:
-        from PIL import Image  # type: ignore[import-untyped]
+        from PIL import Image
     except ImportError:
-        logger.warning("Pillow 未安装，无法压缩图片，直接使用原图")
-        return image_path.read_bytes(), mimetypes.guess_type(str(image_path))[0] or "image/png"
+        return image_path.read_bytes(), "image/png"
 
     original_size = image_path.stat().st_size
     mime_type = mimetypes.guess_type(str(image_path))[0] or "image/png"
 
     if original_size <= _MAX_VISION_IMAGE_SIZE:
-        logger.debug("图片大小合适，无需压缩 path=%s size=%dKB", image_path.name, original_size // 1024)
         return image_path.read_bytes(), mime_type
-
-    logger.info(
-        "图片过大，开始压缩 path=%s original_size=%dKB max_size=%dKB",
-        image_path.name,
-        original_size // 1024,
-        _MAX_VISION_IMAGE_SIZE // 1024,
-    )
 
     try:
         img = Image.open(image_path)
-
-        # 转换为 RGB（去除 alpha 通道以减小大小）
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
-
-        # 缩放图片：保持宽高比，宽度限制为 2000px
-        max_width = 2000
-        if img.width > max_width:
-            ratio = max_width / img.width
-            new_height = int(img.height * ratio)
-            img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
-            logger.debug(
-                "图片缩放完成 path=%s 从 (%d, %d) 到 (%d, %d)",
-                image_path.name,
-                img.width,
-                img.height,
-                max_width,
-                new_height,
-            )
-
-        # 保存为 JPEG（比 PNG 更小）
+        if img.width > 2000:
+            ratio = 2000 / img.width
+            img = img.resize((2000, int(img.height * ratio)), Image.Resampling.LANCZOS)
         import io
         buffer = io.BytesIO()
-        quality = 85
-        img.save(buffer, format="JPEG", quality=quality)
-        compressed_data = buffer.getvalue()
-
-        compressed_size = len(compressed_data)
-        compression_ratio = (1 - compressed_size / original_size) * 100
-        logger.info(
-            "图片压缩完成 path=%s original=%dKB compressed=%dKB ratio=%.1f%%",
-            image_path.name,
-            original_size // 1024,
-            compressed_size // 1024,
-            compression_ratio,
-        )
-
-        return compressed_data, "image/jpeg"
+        img.save(buffer, format="JPEG", quality=85)
+        logger.info("图片压缩 path=%s %dKB→%dKB", image_path.name, original_size // 1024, len(buffer.getvalue()) // 1024)
+        return buffer.getvalue(), "image/jpeg"
     except Exception as exc:
-        logger.warning("图片压缩失败 path=%s 原因=%s，使用原图", image_path.name, exc)
+        logger.warning("压缩失败 path=%s %s，使用原图", image_path.name, exc)
         return image_path.read_bytes(), mime_type
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 2：Vision LLM 单次调用（文字照录 + 语义描述）
+# Step 1：Vision LLM 单次调用
 # ──────────────────────────────────────────────────────────────────────────────
-
-# Prompt 从外部文件加载，方便独立维护（见 prompt/image_proc_vision_v3.txt）
-_VISION_PROMPT_V3_PATH = Path(__file__).parent / "prompt" / "image_proc_vision_v3.txt"
-if not _VISION_PROMPT_V3_PATH.exists():
-    raise RuntimeError(
-        f"Vision prompt 文件不存在: {_VISION_PROMPT_V3_PATH}。"
-        "请确认部署/打包流程已包含 data-pipeline/kbd/prompt/ 目录，"
-        "且运行环境中的代码目录结构未发生变化。"
-    )
-try:
-    _VISION_PROMPT_V3: str = _VISION_PROMPT_V3_PATH.read_text(encoding="utf-8")
-except OSError as exc:
-    raise RuntimeError(
-        f"读取 Vision prompt 文件失败: {_VISION_PROMPT_V3_PATH}，原因: {exc}"
-    ) from exc
-
 
 async def _vision_analyze(
     client: AsyncOpenAI,
     image_path: Path,
-    mime_type: str,
     context: str,
-) -> tuple[list[str], str]:
+) -> tuple[str, str, list[str], str]:
     """
-    单次 Vision LLM 调用，同时输出 FULL_TEXT 和 DESCRIPTION。
-    图片超过 500KB 时自动压缩以避免超时。
+    Vision LLM 单次调用，输出 TYPE + BACKGROUND + FULL_TEXT + DESCRIPTION。
 
     Returns:
-        (full_text_lines, description_paragraph)
-        失败时返回 ([], "")
+        (type, background, full_text_lines, description)
+        失败时返回 ("其他截图", "其他", [], "")
     """
-    # 压缩预处理（大图片需要压缩以避免超时）
-    image_data, actual_mime = _compress_image_if_needed(image_path)
+    image_data, mime_type = _compress_image_if_needed(image_path)
     b64 = base64.b64encode(image_data).decode("utf-8")
-    data_uri = f"data:{actual_mime};base64,{b64}"
-    prompt = _VISION_PROMPT_V3.format(context=context or "（无上下文）")
+    data_uri = f"data:{mime_type};base64,{b64}"
+    prompt = _PROMPT.format(context=context or "（无上下文）")
 
-    logger.info(
-        "Vision LLM 开始 path=%s size=%dKB model=%s timeout=%ds",
-        image_path.name, len(image_data) // 1024, settings.VISION_MODEL, settings.LLM_TIMEOUT,
-    )
+    logger.info("Vision LLM 开始 path=%s size=%dKB", image_path.name, len(image_data) // 1024)
 
     try:
         response = await client.chat.completions.create(
             model=settings.VISION_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": data_uri}},
-                    ],
-                }
-            ],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ],
+            }],
             max_tokens=settings.VISION_MAX_TOKENS,
             temperature=0.0,
             timeout=settings.LLM_TIMEOUT,
         )
-        # 详细日志：响应信息
+        raw = (response.choices[0].message.content or "").strip()
         tokens = response.usage.total_tokens if response.usage else 0
-        logger.debug(
-            "Vision LLM 分析成功 path=%s tokens=%d finish_reason=%s",
-            image_path.name,
-            tokens,
-            response.choices[0].finish_reason if response.choices else "N/A",
-        )
+        logger.debug("Vision LLM 响应 tokens=%d", tokens)
     except Exception as exc:
-        exc_type = type(exc).__name__
-        if "Timeout" in exc_type or "timeout" in str(exc).lower():
-            logger.error(
-                "Vision LLM 超时 path=%s size=%dKB timeout=%ds 原因=%s",
-                image_path.name, len(image_data) // 1024, settings.LLM_TIMEOUT, exc,
-            )
-        else:
-            logger.error("Vision LLM 失败 path=%s 原因=%s: %s", image_path.name, exc_type, exc)
-        return [], ""
+        logger.error("Vision LLM 失败 path=%s %s", image_path.name, exc)
+        return "其他截图", "其他", [], ""
 
-    raw = (response.choices[0].message.content or "").strip()
-    logger.debug("Vision LLM 原始输出（前300字）：%s", raw[:300])
-
+    # 解析四个字段
+    screenshot_type = _parse_type(raw)
+    background = _parse_background(raw)
     full_text = _parse_full_text(raw)
     description = _parse_description(raw)
 
-    tokens = response.usage.total_tokens if response.usage else 0
-    logger.info("Vision LLM 完成 path=%s lines=%d tokens=%d", image_path.name, len(full_text), tokens)
-    return full_text, description
+    logger.info("Vision LLM 完成 path=%s type=%s bg=%s lines=%d", image_path.name, screenshot_type, background, len(full_text))
+    return screenshot_type, background, full_text, description
 
 
-_RE_FULL_TEXT_SECTION = re.compile(r"FULL_TEXT[:\s]*\n(?:══+\n)?((?:^-\s.+\n?)+)", re.MULTILINE)
-_RE_DESCRIPTION_SECTION = re.compile(r"DESCRIPTION[:\s]*\n(?:══+\n)?(.+?)(?=\n[A-Z_]+:|══+|$)", re.MULTILINE | re.DOTALL)
-_RE_BULLET = re.compile(r"^-\s+(.+)$", re.MULTILINE)
+# ──────────────────────────────────────────────────────────────────────────────
+# 输出解析（正则）
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _parse_type(raw: str) -> str:
+    """解析 TYPE 字段。"""
+    m = re.search(r"TYPE[:\s]+(终端截图|日志截图|告警截图|任务截图|配置截图|其他截图)", raw)
+    if m:
+        return m.group(1)
+    return "其他截图"
+
+
+def _parse_background(raw: str) -> str:
+    """解析 BACKGROUND 字段。"""
+    m = re.search(r"BACKGROUND[:\s]+(白色|黑色|灰色|彩色|其他)", raw)
+    if m:
+        return m.group(1)
+    return "其他"
 
 
 def _parse_full_text(raw: str) -> list[str]:
-    """从 LLM 输出中解析 FULL_TEXT section 的 bullet 行。
-
-    支持两种格式：
-    - FULL_TEXT:\n- ...（旧格式）
-    - FULL_TEXT\n═══\n- ...（新格式，带装饰线）
-    """
-    m = _RE_FULL_TEXT_SECTION.search(raw)
-    if m:
-        items = _RE_BULLET.findall(m.group(1))
-    else:
-        # Fallback: 直接查找 bullet 行
-        ft_start = raw.find("FULL_TEXT")
-        desc_start = raw.find("DESCRIPTION")
-        if ft_start == -1:
-            return []
-        end = desc_start if desc_start > ft_start else len(raw)
-        items = _RE_BULLET.findall(raw[ft_start:end])
-
-    lines = [item.strip() for item in items if item.strip()]
-    if lines in (["（无文字）"], ["(无文字)"]):
+    """解析 FULL_TEXT section 的 bullet 行。"""
+    # 找到 FULL_TEXT 区域
+    ft_start = raw.find("FULL_TEXT:")
+    if ft_start == -1:
         return []
+
+    # 找到下一个分隔符或 DESCRIPTION
+    next_section = raw.find("DESCRIPTION:", ft_start)
+    if next_section == -1:
+        next_section = raw.find("════════", ft_start)
+    if next_section == -1:
+        next_section = len(raw)
+
+    ft_section = raw[ft_start:next_section]
+
+    # 提取所有 bullet 行
+    lines = []
+    for line in ft_section.split("\n"):
+        line = line.strip()
+        if line.startswith("- "):
+            content = line[2:].strip()
+            if content and content not in ("（无文字）", "(无文字)"):
+                lines.append(content)
+
     return lines
 
 
 def _parse_description(raw: str) -> str:
-    """从 LLM 输出中解析 DESCRIPTION section 的段落文字。"""
-    m = _RE_DESCRIPTION_SECTION.search(raw)
+    """解析 DESCRIPTION 字段。"""
+    m = re.search(r"DESCRIPTION[:\s]+(.+?)(?=\n[A-Z_]+:|$)", raw, re.DOTALL)
     if m:
         return m.group(1).strip()
-    desc_start = raw.find("DESCRIPTION:")
-    if desc_start == -1:
-        return ""
-    return raw[desc_start + len("DESCRIPTION:"):].strip()
+    return ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 3：TYPE 规则引擎（本地，无 LLM）
+# Step 2：组装 desc.txt
 # ──────────────────────────────────────────────────────────────────────────────
 
-# 终端命令特征正则
-_TERMINAL_CMD_PATTERN = r"\$\s|#\s|sudo |grep |chmod |cat |ls |\-rn |sfvt_|lh |du |vim |vi |nano |tail |head |find |ps |kill |top |htop |netstat |ifconfig |ip |ping |ssh |scp |rsync |wget |curl |tar |zip |unzip |mkdir |rm |cp |mv |echo |printf |sed |awk |sort |uniq |wc |diff |cmp |touch |ln |chown |chgrp |chmod |umask |env |export |set |unset |alias |unalias |source |\.\/|bash |sh |zsh |python |perl |ruby |go |java |gcc |g\+\+ |make |cmake |npm |pip |uv |docker |kubectl |helm |git |gh "
-# 日志级别正则（包含大小写：ERROR/err/error/WARN/warn/warning/INFO/info/DEBUG/debug/FATAL/fatal 等）
-_LOG_LEVEL_PATTERN = r"\b(ERROR|err|error|WARN|warn|warning|INFO|info|DEBUG|debug|FATAL|fatal|notice|NOTICE|critical|CRITICAL|alert|ALERT|emergency|EMERGENCY)\b"
-# 简短时间格式正则：HH:MM:SS（用于日志截图判断）
-_LOG_TIME_PATTERN = r"\d{2}:\d{2}:\d{2}"
-# 完整时间格式正则：YYYY-MM-DD HH:MM:SS 或 YYYY-MM-DDTHH:MM:SS（用于告警/任务截图判断）
-_FULL_TIME_PATTERN = r"\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}"
-# 英文单词正则（匹配连续字母）
-_ENGLISH_WORD_PATTERN = r"[a-zA-Z]{2,}"
-
-
-def _calculate_english_ratio(text: str) -> float:
-    """
-    计算文本中英文单词的占比（字符数 / 总字符数）。
-
-    Args:
-        text: 待分析的文本
-
-    Returns:
-        英文单词字符占比（0.0 - 1.0）
-    """
-    if not text:
-        return 0.0
-
-    # 统计英文单词字符数
-    english_chars = sum(len(m.group()) for m in re.finditer(_ENGLISH_WORD_PATTERN, text))
-    # 统计总字符数（去除空格和标点）
-    total_chars = len(re.sub(r"[^\w]", "", text))
-
-    if total_chars == 0:
-        return 0.0
-
-    return english_chars / total_chars
-
-
-def classify_type(background: str, full_text: list[str]) -> str:
-    """
-    基于背景色 + 文字内容，用正则规则本地判断截图类型。
-
-    分类策略（最终版）：
-      日志截图 │ 黑色/其他背景（排除白色） + 时间格式(HH:MM:SS) AND 日志级别
-      终端截图 │ 黑色/其他背景（排除白色） + 命令特征 OR 英文单词占比≥50%
-      告警截图 │ 白色背景 + 告警关键字(级别/紧急/普通/告警/事件/确认/未确认/批量确认) + 完整时间
-      任务截图 │ 白色背景 + 任务关键字(状态/失败/完成/进行中/行为/开始时间/结束时间/操作人) + 完整时间
-      其他截图 │ 兜底
-
-    Returns:
-        "终端截图" | "日志截图" | "告警截图" | "任务截图" | "其他截图"
-    """
-    text = " ".join(full_text)
-
-    # ─── 黑色/其他背景（排除白色）：终端/日志判断 ────────────────────────────
-    if background in ("黑色", "其他"):
-        # 步骤2: 日志截图判断（最高优先级，时间格式 AND 日志级别）
-        if re.search(_LOG_TIME_PATTERN, text) and re.search(_LOG_LEVEL_PATTERN, text):
-            return "日志截图"
-
-        # 步骤3: 终端截图判断 - 命令特征
-        if re.search(_TERMINAL_CMD_PATTERN, text):
-            return "终端截图"
-
-        # 步骤4: 终端截图判断 - 英文占比 ≥ 50%
-        if _calculate_english_ratio(text) >= 0.5:
-            return "终端截图"
-
-        # 步骤5: 日志截图判断 - 单条件兜底
-        if re.search(_LOG_TIME_PATTERN, text):
-            return "日志截图"
-        if re.search(_LOG_LEVEL_PATTERN, text):
-            return "日志截图"
-
-        # 步骤6: 黑色背景兜底
-        if background == "黑色":
-            return "终端截图"
-
-    # ─── 白色背景：告警/任务判断 ───────────────────────────────────────────────
-    if background == "白色":
-        # 告警截图：白色背景 + 告警关键字 + 完整时间格式
-        if re.search(r"级别|紧急|普通|告警|事件|确认|未确认|批量确认", text) and re.search(_FULL_TIME_PATTERN, text):
-            return "告警截图"
-        # 任务截图：白色背景 + 任务关键字 + 完整时间格式
-        if re.search(r"状态|失败|完成|进行中|行为|开始时间|结束时间|操作人", text) and re.search(_FULL_TIME_PATTERN, text):
-            return "任务截图"
-
-    return "其他截图"
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Step 4：desc.txt v3 组装
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _format_desc_v3(
-    background: str,
-    screenshot_type: str,
-    full_text: list[str],
-    description: str,
-) -> str:
-    """组装 v3 格式 desc.txt 字符串。"""
+def _format_desc(screenshot_type: str, background: str, full_text: list[str], description: str) -> str:
+    """组装 desc.txt 格式。"""
     lines = [
-        f"BACKGROUND: {background}",
         f"TYPE: {screenshot_type}",
+        f"BACKGROUND: {background}",
         "FULL_TEXT:",
     ]
     for line in full_text:
         lines.append(f"- {line}")
     if not full_text:
         lines.append("- （无文字）")
-
     lines.append("DESCRIPTION:")
     lines.append(description if description else "（无描述）")
-
     return "\n".join(lines)
 
 
@@ -481,136 +252,66 @@ def _format_desc_v3(
 # 核心处理函数
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def _process_image(
-    client: AsyncOpenAI,
-    image_path: Path,
-    mime_type: str,
-    context: str = "",
-) -> str:
-    """
-    对单张图片执行完整 v3 流水线，返回 desc.txt 文本。
-
-    Args:
-        client:     AsyncOpenAI 客户端
-        image_path: 图片路径
-        mime_type:  图片 MIME 类型
-        context:    从文档 HTML 提取的上下文净文字
-    """
-    # Step 1: 背景色（本地）
-    background = await asyncio.to_thread(_detect_background, image_path)
-    logger.debug("背景色 path=%s 结果=%s", image_path.name, background)
-
-    # Step 2: Vision LLM 单次调用
-    full_text, description = await _vision_analyze(client, image_path, mime_type, context)
-
-    # Step 3: 规则引擎分类
-    screenshot_type = classify_type(background, full_text)
-
-    # Step 4: 组装 v3
-    return _format_desc_v3(background, screenshot_type, full_text, description)
+async def _process_image(client: AsyncOpenAI, image_path: Path, context: str = "") -> str:
+    """处理单张图片，返回 desc.txt 内容。"""
+    screenshot_type, background, full_text, description = await _vision_analyze(client, image_path, context)
+    return _format_desc(screenshot_type, background, full_text, description)
 
 
 def _find_images(kbd_dir: Path) -> list[Path]:
-    """扫描案例缓存目录，返回图片列表（按 seq 排序）。"""
+    """扫描案例缓存目录，返回图片列表（按序号排序）。"""
     img_suffixes = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
-    images: list[Path] = []
-    for p in kbd_dir.iterdir():
-        if p.name.startswith("img_") and p.suffix.lower() in img_suffixes:
-            images.append(p)
-
-    def _seq(p: Path) -> int:
-        try:
-            return int(p.stem.split("_", 1)[1])
-        except (IndexError, ValueError):
-            return 0
-
-    images.sort(key=_seq)
+    images = [p for p in kbd_dir.iterdir() if p.name.startswith("img_") and p.suffix.lower() in img_suffixes]
+    images.sort(key=lambda p: int(p.stem.split("_")[1]) if p.stem.split("_")[1].isdigit() else 0)
     return images
 
 
-def _has_failed_vision(kbd_dir: Path) -> bool:
-    """
-    检查是否有图片处理失败的标记：
-    - .desc.failed 文件存在
-    - 或 desc.txt 内容为"（无文字）"（疑似 API 限流）
-    """
-    # 检查是否有 .desc.failed 文件
-    if any(kbd_dir.glob("img_*.desc.failed")):
-        return True
-
-    # 检查是否有识别为"无文字"的 desc.txt（疑似失败）
-    for desc_file in kbd_dir.glob("img_*.desc.txt"):
-        try:
-            content = desc_file.read_text(encoding="utf-8")
-            if "（无文字）" in content and "DESCRIPTION:" in content:
-                return True
-        except OSError:
-            continue
-
-    return False
+def _load_context_map(kbd_dir: Path) -> dict[int, str]:
+    """从 raw.json 构建图片上下文映射。"""
+    raw_path = kbd_dir / "raw.json"
+    if not raw_path.exists():
+        return {}
+    try:
+        data = json.loads(raw_path.read_text(encoding="utf-8"))
+        html = data.get("content") or data.get("contentWeb") or ""
+        if not html:
+            return {}
+        return build_context_map(html, settings.SANGFOR_API_BASE)
+    except Exception as exc:
+        logger.warning("构建上下文失败 kbd_dir=%s %s", kbd_dir, exc)
+        return {}
 
 
-def get_failed_vision_ids(kbd_ids: list[str]) -> list[str]:
-    """从案例列表中筛选出 Vision 处理失败的案例"""
-    from .fetcher import _kbd_dir
-    failed = []
-    for cid in kbd_ids:
-        kbd_dir = _kbd_dir(cid)
-        if _has_failed_vision(kbd_dir):
-            failed.append(cid)
-    logger.debug("筛选 Vision 失败案例 total=%d failed=%d", len(kbd_ids), len(failed))
-    return failed
-
-
-async def process_images_for_kbd(
-    kbd_id: str,
-    client: AsyncOpenAI,
-) -> dict[str, int]:
-    """
-    处理单个案例的所有图片，将 v3 格式描述写入 img_N.desc.txt。
-
-    Returns:
-        {"done": N, "failed": N, "skipped": N}
-    """
+async def process_images_for_kbd(kbd_id: str, client: AsyncOpenAI) -> dict[str, int]:
+    """处理单个案例的所有图片。返回 {"done": N, "failed": N, "skipped": N}。"""
     from .fetcher import _kbd_dir
     kbd_dir = _kbd_dir(kbd_id)
-    stats: dict[str, int] = {"done": 0, "failed": 0, "skipped": 0}
+    stats = {"done": 0, "failed": 0, "skipped": 0}
 
     images = _find_images(kbd_dir)
     if not images:
         return stats
 
-    # Step 0: 解析文档，建立图片序号 → 上下文的映射
     context_map = _load_context_map(kbd_dir)
-    logger.info(
-        "上下文映射构建完成 kbd_id=%s images=%d contexts=%d",
-        kbd_id, len(images), len(context_map),
-    )
-
     sem = asyncio.Semaphore(settings.VISION_CONCURRENCY)
 
-    async def _process_one(img_path: Path) -> None:
+    async def _process_one(img_path: Path):
         desc_path = img_path.with_suffix(".desc.txt")
         if desc_path.exists():
             stats["skipped"] += 1
             return
 
-        try:
-            seq = int(img_path.stem.split("_", 1)[1])
-        except (IndexError, ValueError):
-            seq = -1
+        seq = int(img_path.stem.split("_")[1]) if img_path.stem.split("_")[1].isdigit() else -1
         context = context_map.get(seq, "")
 
-        mime = mimetypes.guess_type(str(img_path))[0] or "image/jpeg"
         async with sem:
             try:
-                desc = await _process_image(client, img_path, mime, context)
+                desc = await _process_image(client, img_path, context)
                 desc_path.write_text(desc, encoding="utf-8")
                 stats["done"] += 1
-                type_line = next((ln for ln in desc.split("\n") if ln.startswith("TYPE:")), "TYPE: ?")
-                logger.info("图片处理完成 path=%s %s", img_path.name, type_line)
+                logger.info("完成 path=%s TYPE=%s", img_path.name, desc.split("\n")[0])
             except Exception as exc:
-                logger.error("图片处理失败 path=%s 原因=%s", img_path.name, exc)
+                logger.error("失败 path=%s %s", img_path.name, exc)
                 img_path.with_suffix(".desc.failed").write_text(str(exc), encoding="utf-8")
                 stats["failed"] += 1
 
@@ -618,64 +319,38 @@ async def process_images_for_kbd(
     return stats
 
 
-def _load_context_map(kbd_dir: Path) -> dict[int, str]:
-    """
-    从 raw.json 解析文档 HTML，构建 {图片序号: 上下文文字} 映射。
-    raw.json 不存在时返回空字典（所有图片上下文为空）。
-    """
-    raw_path = kbd_dir / "raw.json"
-    if not raw_path.exists():
-        logger.warning("raw.json 不存在，图片上下文为空 kbd_dir=%s", kbd_dir)
-        return {}
-
-    with raw_path.open(encoding="utf-8") as f:
-        data = json.load(f)
-
-    html = data.get("content") or data.get("contentWeb") or ""
-    if not html:
-        logger.warning("raw.json 中 content 字段为空 kbd_dir=%s", kbd_dir)
-        return {}
-
-    base_url = settings.SANGFOR_API_BASE
-    try:
-        return build_context_map(html, base_url)
-    except Exception as exc:
-        logger.warning("构建上下文映射失败 kbd_dir=%s 原因=%s", kbd_dir, exc)
-        return {}
-
-
-async def process_images_batch(
-    kbd_ids: list[str],
-    _pool: Any = None,
-) -> dict[str, int]:
-    """批量处理一组案例的图片（保留旧接口签名以兼容调用方）。"""
+async def process_images_batch(kbd_ids: list[str], _pool: Any = None) -> dict[str, int]:
+    """批量处理图片。"""
     from .fetcher import _kbd_dir as _cd
 
-    client = AsyncOpenAI(
-        api_key=settings.ZAI_API_KEY,
-        base_url=settings.ZAI_BASE_URL,
-        timeout=settings.LLM_TIMEOUT,
-    )
-    total_stats: dict[str, int] = {"done": 0, "failed": 0, "skipped": 0}
-    total = len(kbd_ids)
+    client = AsyncOpenAI(api_key=settings.ZAI_API_KEY, base_url=settings.ZAI_BASE_URL, timeout=settings.LLM_TIMEOUT)
+    total_stats = {"done": 0, "failed": 0, "skipped": 0}
 
     for idx, kbd_id in enumerate(kbd_ids, 1):
         kbd_dir = _cd(kbd_id)
-        pending = [
-            p for p in _find_images(kbd_dir)
-            if not p.with_suffix(".desc.txt").exists()
-        ]
+        pending = [p for p in _find_images(kbd_dir) if not p.with_suffix(".desc.txt").exists()]
         if not pending:
-            logger.debug("[%d/%d] 案例 %s 无待处理图片，跳过", idx, total, kbd_id)
             continue
-
-        logger.info("[%d/%d] 处理案例 %s 共 %d 张图片", idx, total, kbd_id, len(pending))
+        logger.info("[%d/%d] 处理 %s 共 %d 张", idx, len(kbd_ids), kbd_id, len(pending))
         stats = await process_images_for_kbd(kbd_id, client)
         for k in total_stats:
-            total_stats[k] += stats.get(k, 0)
+            total_stats[k] += stats[k]
 
-    logger.info(
-        "图片处理完成 done=%d failed=%d skipped=%d",
-        total_stats["done"], total_stats["failed"], total_stats["skipped"],
-    )
+    logger.info("批量完成 done=%d failed=%d skipped=%d", total_stats["done"], total_stats["failed"], total_stats["skipped"])
     return total_stats
+
+
+def get_failed_vision_ids(kbd_ids: list[str]) -> list[str]:
+    """筛选 Vision 处理失败的案例。"""
+    from .fetcher import _kbd_dir
+    failed = []
+    for cid in kbd_ids:
+        kbd_dir = _kbd_dir(cid)
+        if _has_failed_vision(kbd_dir):
+            failed.append(cid)
+    return failed
+
+
+def _has_failed_vision(kbd_dir: Path) -> bool:
+    """检查是否有图片处理失败的标记。"""
+    return any(kbd_dir.glob("img_*.desc.failed"))
