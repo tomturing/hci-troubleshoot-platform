@@ -595,9 +595,11 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
     for entry in image_map.values():
         # 入库展示时对 FULL_TEXT 进行截断处理（原始 desc.txt 保持完整）
         truncated_desc = _truncate_full_text_for_display(entry["desc"])
+        # 章节外图片默认归属 steps_text（排查内容/有效排查步骤）
+        section = seq_to_section.get(entry["seq"], "steps_text")
         images_json.append({
             "seq": entry["seq"],
-            "section": seq_to_section.get(entry["seq"], "unknown"),
+            "section": section,
             "desc": truncated_desc,
         })
     images_json.sort(key=lambda x: x["seq"])
