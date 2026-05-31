@@ -260,8 +260,8 @@ const choiceOptions = computed<ChoiceItem[]>(() => {
   // 至少需要2个选项才渲染按钮（排除普通列表干扰）
   if (choices.length < 2) return []
 
-  // 消息必须包含交互引导语（"请回复"/"请选择"/"请确认"）
-  const hasGuide = /请回复|请选择|请确认|请输入|请告知/.test(content)
+  // 消息必须包含交互引导语（"请回复"/"请选择"/"请确认"/"请输入"/"请告知"/"请补充"/"请问"）
+  const hasGuide = /请回复|请选择|请确认|请输入|请告知|请补充|请问/.test(content)
   if (!hasGuide) return []
 
   return choices
