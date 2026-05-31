@@ -319,6 +319,7 @@ class ConversationService:
         _full_reply_buffer: list[str] = []
         # N-4 修复：记录是否走了 ops-agent 路径（跳过 htp 状态机后验检测）
         _used_ops_agent_path = False
+        _message_metadata: dict = {}
         try:
             if self._agent_client is not None:
                 # ── 新路径：委托 agent-service（HTTP SSE）────────────────────
@@ -372,13 +373,21 @@ class ConversationService:
                                 )
                             )
                     elif event_type == "interactive_request":
-                        # S0 意图识别的 interactive_request 不作为独立消息落库和推送，完全通过 text_chunk 的文本选项在前端原生渲染
+                        # S0 意图识别的 interactive_request：将其转换为消息元数据并发送至前端渲染
                         if agent_event.get("kind") == "intent_selection":
                             logger.info(
-                                event="skip_intent_selection_interactive_request",
-                                message="S0 意图识别跳过 interactive_request 消息落库和推送，完全通过文本选项在前端原生渲染",
+                                event="intent_selection_interactive_request_metadata",
+                                message="S0 意图识别转换为消息的 metadata，通过 SSE 发送给前端并传导至后台落库",
                                 conversation_id=str(conversation_id),
                             )
+                            _intent_metadata = {
+                                "kind": "choice_options",
+                                "options": agent_event.get("options")
+                            }
+                            _message_metadata.update(_intent_metadata)
+                            
+                            _payload = _json.dumps(_intent_metadata, ensure_ascii=False)
+                            yield f"\x00event:metadata:{_payload}\x00"
                             continue
                         _ir_payload = _json.dumps(
                             {
@@ -526,7 +535,13 @@ class ConversationService:
             )
             raise
 
-    async def save_assistant_message(self, conversation_id: uuid.UUID, case_id: str, content: str) -> None:
+    async def save_assistant_message(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        content: str,
+        metadata: dict | None = None,
+    ) -> None:
         """保存 AI 返回的完整消息 (后台执行)
 
         注意：此方法由 BackgroundTasks 在响应完成后调用，届时请求作用域的
@@ -547,6 +562,7 @@ class ConversationService:
                         role=MessageRole.assistant,
                         content=content,
                         trace_id=trace_id,
+                        metadata=metadata,
                     )
                     await independent_session.commit()
             else:
@@ -556,6 +572,7 @@ class ConversationService:
                     role=MessageRole.assistant,
                     content=content,
                     trace_id=trace_id,
+                    metadata=metadata,
                 )
             logger.info(
                 event="conversation_reply",
@@ -571,7 +588,12 @@ class ConversationService:
                 error=str(e),
             )
 
-    async def save_assistant_message_for_resume(self, conversation_id: uuid.UUID, content: str) -> None:
+    async def save_assistant_message_for_resume(
+        self,
+        conversation_id: uuid.UUID,
+        content: str,
+        metadata: dict | None = None,
+    ) -> None:
         """resume-stream 场景下保存 AI 续写回复（自动从 DB 查 case_id）。
 
         由 BackgroundTasks 在 resume-stream 响应完成后调用。
@@ -599,7 +621,7 @@ class ConversationService:
                 conversation_id=str(conversation_id),
             )
             return
-        await self.save_assistant_message(conversation_id, conv.case_id, content)
+        await self.save_assistant_message(conversation_id, conv.case_id, content, metadata)
 
     @staticmethod
     def _format_interactive_request_content(event: Any) -> str:

@@ -634,6 +634,20 @@ export const useChatStore = defineStore('chat', () => {
               } catch (e) {
                 console.warn('[stage_change] 解析失败:', e)
               }
+            } else if (pendingEventType === 'metadata') {
+              // 消息元数据流式同步：直接更新 AI 消息中的元数据
+              try {
+                const event = JSON.parse(data)
+                const idx2 = getAiMsgIndex()
+                if (idx2 !== -1) {
+                  messages.value[idx2].metadata = {
+                    ...(messages.value[idx2].metadata || {}),
+                    ...event,
+                  }
+                }
+              } catch (e) {
+                console.warn('[metadata] 解析失败:', e)
+              }
             } else if (pendingEventType === 'interactive_request') {
               // T-E7: ops-agent 交互请求（SOP 操作卡 / 信息确认卡）
               // 改为对话气泡展示，不再弹窗

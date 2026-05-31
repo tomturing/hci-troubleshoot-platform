@@ -228,43 +228,22 @@ interface ChoiceItem {
   title: string   // 候选项首行简短标题
 }
 
-/**
- * 从 AI 消息内容中提取可点击选项列表。
- *
- * 识别规则：消息中出现至少两个圆圈数字（①②③...）开头的行，
- * 且消息末尾包含类似"请回复"/"请选择"/"请确认"/"请回复"的交互引导语。
- * 仅对尚未流式输出完成的消息静默跳过，避免中途渲染。
- */
 const choiceOptions = computed<ChoiceItem[]>(() => {
-  if (!props.message.content || props.message.isStreaming) return []
-  if (props.message.role !== 'assistant') return []
-
-  const content = props.message.content
-  const lines = content.split('\n')
-
-  // 提取以圆圈数字开头的行
-  const choices: ChoiceItem[] = []
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    const digit = CIRCLED_DIGITS.find(d => trimmed.startsWith(d))
-    if (digit) {
-      // 取首行作为标题：去掉开头的圆圈数字和多余空白
-      const title = trimmed.slice(digit.length).trim()
-      // 取第一个句子（到句号/换行为止），最多50字
-      const shortTitle = title.split(/[。！？\n]/)[0].slice(0, 50)
-      choices.push({ label: digit, title: shortTitle || digit })
-    }
+  const metadata = props.message.metadata as any
+  if (metadata?.kind === 'choice_options') {
+    return (metadata.options || []).map((opt: any) => {
+      const id = String(opt.optionId)
+      const labelMap: Record<string, string> = {
+        '1': '①', '2': '②', '3': '③', '4': '④', '5': '⑤',
+        '6': '⑥', '7': '⑦', '8': '⑧', '9': '⑨'
+      }
+      return {
+        label: labelMap[id] || id,
+        title: opt.name,
+      }
+    })
   }
-
-  // 至少需要2个选项才渲染按钮（排除普通列表干扰）
-  if (choices.length < 2) return []
-
-  // 消息必须包含交互引导语（"请回复"/"请选择"/"请确认"/"请输入"/"请告知"/"请补充"/"请问"）
-  const hasGuide = /请回复|请选择|请确认|请输入|请告知|请补充|请问/.test(content)
-  if (!hasGuide) return []
-
-  return choices
+  return []
 })
 
 /** 已选选项（防止重复发送） */

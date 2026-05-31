@@ -167,6 +167,7 @@ async def send_message(
                     error=str(e),
                 )
 
+        _message_metadata = {}
         try:
             # 同时监听 AI 流和外部事件队列
             ai_stream = service.send_message_stream_only(
@@ -201,9 +202,14 @@ async def send_message(
                             parts = inner.split(":", 1)
                             evt_type = parts[0]
                             evt_data = parts[1] if len(parts) > 1 else ""
-                            if evt_type == "interactive_request":
-                                # interactive_request 数据本身已是完整 JSON，直接透传，无需包装
+                            if evt_type in ("interactive_request", "metadata"):
+                                # 透传完整 JSON，无需包装
                                 yield f"event: {evt_type}\ndata: {evt_data}\n\n"
+                                if evt_type == "metadata":
+                                    try:
+                                        _message_metadata.update(json.loads(evt_data))
+                                    except Exception:
+                                        pass
                             else:
                                 event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
                                 yield f"event: {evt_type}\ndata: {event_payload}\n\n"
@@ -222,6 +228,7 @@ async def send_message(
                 conversation_id=conversation_id,
                 case_id=message.case_id,
                 content="".join(ai_content),
+                metadata=_message_metadata,
             )
 
             yield "data: [DONE]\n\n"
@@ -234,6 +241,7 @@ async def send_message(
                     conversation_id=conversation_id,
                     case_id=message.case_id,
                     content="".join(ai_content),
+                    metadata=_message_metadata,
                 )
             raise
         except AIStreamError as e:
@@ -244,6 +252,7 @@ async def send_message(
                     conversation_id=conversation_id,
                     case_id=message.case_id,
                     content="".join(ai_content),
+                    metadata=_message_metadata,
                 )
             yield f"event: error\ndata: {e.to_sse_data()}\n\n"
         except ExternalServiceError as e:
@@ -254,6 +263,7 @@ async def send_message(
                     conversation_id=conversation_id,
                     case_id=message.case_id,
                     content="".join(ai_content),
+                    metadata=_message_metadata,
                 )
             error_data = json.dumps(
                 {"code": e.code.value, "message": e.message, "detail": e.detail},
@@ -275,6 +285,7 @@ async def send_message(
                     conversation_id=conversation_id,
                     case_id=message.case_id,
                     content="".join(ai_content),
+                    metadata=_message_metadata,
                 )
             # 透传真实错误信息，让用户了解问题根因
             error_message = str(e)[:200] if str(e) else f"{type(e).__name__}（无详细信息）"
