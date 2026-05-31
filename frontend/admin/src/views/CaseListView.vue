@@ -5,6 +5,7 @@ import { createApiClient, createCaseApi, STATUS_LABELS } from '@hci/shared'
 import type { CaseResponse, CaseListResponse } from '@hci/shared'
 import { Search, Edit, RefreshLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { useCategories } from '../composables/useCategories'
 
 const router = useRouter()
 const apiClient = createApiClient('/api')
@@ -177,7 +178,12 @@ async function handleSaveEdit() {
   }
 }
 
-onMounted(loadData)
+const { categoryOptions, categoriesLoading, fetchCategories } = useCategories()
+
+onMounted(() => {
+  loadData()
+  fetchCategories()
+})
 </script>
 
 <template>
@@ -320,7 +326,25 @@ onMounted(loadData)
           </el-select>
         </el-form-item>
         <el-form-item label="工单分类">
-          <el-input v-model="editForm.category" placeholder="选填，如: vm / storage / network" clearable />
+          <el-select
+            v-model="editForm.category"
+            filterable
+            clearable
+            allow-create
+            placeholder="选择或搜索分类（可选）"
+            style="width: 100%"
+            :loading="categoriesLoading"
+          >
+            <el-option
+              v-for="cat in categoryOptions"
+              :key="cat.code"
+              :value="cat.code"
+              :label="`${cat.code}  ${cat.name}`"
+            >
+              <span style="font-family:monospace;color:#606266;font-size:12px">{{ cat.code }}</span>
+              <span style="margin-left:8px;color:#909399;font-size:12px">{{ cat.name }}</span>
+            </el-option>
+          </el-select>
         </el-form-item>
         <el-form-item label="助手类型" required>
           <el-select v-model="editForm.assistant_type" placeholder="选择分配的助手" style="width: 100%">

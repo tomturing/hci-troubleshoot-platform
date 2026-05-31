@@ -89,9 +89,9 @@ _CATEGORY_CONFIRM_PATTERN = re.compile(
 # T8: S4 根因确认中 AI 输出「关联案例：KBD-{id}」的提取正则
 _KBD_RELATED_PATTERN = re.compile(r"关联案例[:：]\s*KBD-(\d+)")
 
-# S0 阶段候选选择正则：匹配用户输入 ①②③ 或 1/2/3（带可选后缀）
+# S0 阶段候选选择正则：匹配用户输入 ①②③④⑤ 或 1-5（带可选后缀）
 _CANDIDATE_SELECT_PATTERN = re.compile(
-    r"^[\s\u3000]*([①②③]|[1-3](?:[\.、\s]|$))"
+    r"^[\s\u3000]*([①②③④⑤]|[1-5](?:[\.、\s]|$))"
 )
 
 # S0 候选确认轮数上限（超过后触发兜底）
@@ -267,16 +267,16 @@ class ConversationManager:
         解析用户在 S0 候选选项中的选择。
 
         支持格式：
-          ① ② ③（圆圈数字）
-          1 / 2 / 3（阿拉伯数字 + 可选标点/空格/行尾）
+          ① ② ③ ④ ⑤（圆圈数字）
+          1 / 2 / 3 / 4 / 5（阿拉伯数字 + 可选标点/空格/行尾）
 
         Args:
             user_reply: 用户的回复文本（逐行扫描取第一个匹配）
 
         Returns:
-            int 1 / 2 / 3，或 None（未匹配，视为自然语言补充描述）
+            int 1 / 2 / 3 / 4 / 5，或 None（未匹配，视为自然语言补充描述）
         """
-        _circle_map = {"①": 1, "②": 2, "③": 3}
+        _circle_map = {"①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5}
         for line in user_reply.splitlines():
             line = line.strip()
             m = _CANDIDATE_SELECT_PATTERN.match(line)
@@ -288,7 +288,7 @@ class ConversationManager:
                 digit = token.rstrip(".、 \t")
                 if digit.isdigit():
                     n = int(digit)
-                    if 1 <= n <= 3:
+                    if 1 <= n <= 5:
                         return n
         return None
 
@@ -298,27 +298,29 @@ class ConversationManager:
         candidates: list[dict[str, str]],
     ) -> dict[str, str] | None:
         """
-        将用户选择序号（1/2）映射到对应的 category_info。
+        将用户选择序号（1/2/3/4）映射到对应的 category_info。
 
-        选择 3（"以上都不是"）返回 None，由调用方决定是否继续追问或触发失败兜底。
+        选择 5（"以上都不是"）返回 None，由调用方决定是否继续追问或触发失败兜底。
 
         Args:
-            selection: parse_candidate_selection() 返回的序号（1/2/3）
+            selection: parse_candidate_selection() 返回的序号（1/2/3/4/5）
             candidates: 当前轮次 LLM 给出的候选列表，
                         格式：[{"code": "虚拟机-003", "name": "虚拟机开机失败"}, ...]
 
         Returns:
             dict {"code": ..., "name": ...} 或 None
         """
-        if selection == 3:
-            logger.info(event="s0_candidate_none", message="用户选 ③：以上都不是")
+        candidates_slice = candidates[:4]
+        none_selection = len(candidates_slice) + 1
+        if selection == none_selection or selection > len(candidates_slice):
+            logger.info(event="s0_candidate_none", message=f"用户选 {selection}：以上都不是")
             return None
         idx = selection - 1  # 0-based
-        if 0 <= idx < len(candidates):
-            chosen = candidates[idx]
+        if 0 <= idx < len(candidates_slice):
+            chosen = candidates_slice[idx]
             logger.info(
                 event="s0_candidate_selected",
-                message=f"用户选 {'①②'[idx]}：{chosen.get('code')} {chosen.get('name')}",
+                message=f"用户选 {'①②③④'[idx]}：{chosen.get('code')} {chosen.get('name')}",
                 code=chosen.get("code"),
                 name=chosen.get("name"),
             )

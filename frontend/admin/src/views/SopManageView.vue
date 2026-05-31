@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { FullScreen, Warning } from '@element-plus/icons-vue'
 import SopTreeNode from './SopTreeNode.vue'
+import { useCategories } from '../composables/useCategories'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -79,15 +80,9 @@ interface TreeDataResponse {
   tree_validation_status: string
 }
 
-// 分类基线选项
-interface CategoryOption {
-  code: string
-  name: string
-}
+const { categoryOptions, categoriesLoading, fetchCategories } = useCategories()
 
-// ──────────────────────────────────────────────────────────────────────────────
-// 响应式状态
-// ──────────────────────────────────────────────────────────────────────────────
+// ─── 响应式状态 ───
 const loading = ref(false)
 const documents = ref<SopDocument[]>([])
 const total = ref(0)
@@ -117,10 +112,6 @@ const editContentMd = ref('')
 const editOriginalContentMd = ref('')  // 用于检测正文是否变更
 const editLoadingContent = ref(false)
 const editLoading = ref(false)
-
-// 分类基线（用于 select）
-const categoriesLoading = ref(false)
-const categoryOptions = ref<CategoryOption[]>([])
 
 // 行号编辑器
 const editTextareaRef = ref<HTMLTextAreaElement | null>(null)
@@ -547,20 +538,7 @@ async function submitImport() {
   }
 }
 
-// ─── 分类基线 ────────────────────────────────────────────────────────────────
-async function fetchCategories() {
-  categoriesLoading.value = true
-  try {
-    const resp = await fetch('/api/kb/categories?grouped=true', { headers: authHeader })
-    if (!resp.ok) return
-    // API 返回 { "domains": { domain: [category, ...] }, "total_domains": N }
-    const data: { domains?: Record<string, CategoryOption[]> } = await resp.json()
-    const domains = data.domains ?? {}
-    categoryOptions.value = Object.values(domains).flat().sort((a, b) => a.code.localeCompare(b.code))
-  } catch { /* 分类加载失败时仍允许手动输入 */ } finally {
-    categoriesLoading.value = false
-  }
-}
+
 
 // ─── 通用辅助 ────────────────────────────────────────────────────────────────
 function handlePageChange(newPage: number) {

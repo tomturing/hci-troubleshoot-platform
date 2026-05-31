@@ -79,7 +79,7 @@ SEGMENT_REASONING_MODE = """【知识使用规范】
 规则：
   - 不要主动诊断或推理根因（等到分类确认后再诊断）
   - 若特征明确，直接输出确认分类
-  - 若特征模糊，提出 1 个澄清问题，并给出 2 个候选分类供用户选择
+  - 若特征模糊，提出 1 个澄清问题，并给出最多 4 个候选分类供用户选择
   - 严禁捏造分类编码（只能使用分类列表中的编码）"""
 
 SEGMENT_S0_CONTEXT = """【环境上下文】
@@ -100,9 +100,12 @@ SEGMENT_S0_CATEGORIES = """【故障分类列表】
 2. 如需澄清，最多提 1 个问题
 3. 有足够信息时，**必须**在末尾输出（独立一行）：
    「已确认故障分类：{{code}} {{name}}」
-4. 或者输出候选列表供用户选择（独立两行）：
+4. 或者输出候选列表供用户选择，并引导用户进行选择（包含最多 4 个推荐选项和 1 个“以上都不是”选项，独立五行）：
    ① {{code1}} {{name1}}
    ② {{code2}} {{name2}}
+   ③ {{code3}} {{name3}}
+   ④ {{code4}} {{name4}}
+   ⑤ 以上都不是（请补充症状描述）
 5. 确认分类之前，不做诊断推理，不引用 SOP"""
 
 SEGMENT_CONTEXT_TEMPLATE = "---\n当前工单 ID：{case_id}"
@@ -255,9 +258,9 @@ class TriageAgent(BaseAgent):
             # 输出候选列表，等待用户选择
             options = [
                 {"optionId": str(i + 1), "name": f"{c['code']} {c['name']}"}
-                for i, c in enumerate(result.candidates[:2])
+                for i, c in enumerate(result.candidates[:4])
             ]
-            options.append({"optionId": "3", "name": "以上都不是"})
+            options.append({"optionId": str(len(options) + 1), "name": "以上都不是（请补充症状描述）"})
             yield AgentInteractiveRequest(
                 request_id=f"triage-{session_id}",
                 acp_session_id=session_id,
@@ -277,20 +280,22 @@ class TriageAgent(BaseAgent):
         """用户从候选列表选择后，返回最终分类结果。
 
         Args:
-            selection: 用户选择的序号（1/2/3）
+            selection: 用户选择的序号（1/2/3/4/5）
             candidates: 候选列表
 
         Returns:
             IntentResult，category_id=None 表示"以上都不是"
         """
-        if selection == 3 or selection > len(candidates):
+        candidates_slice = candidates[:4]
+        none_selection = len(candidates_slice) + 1
+        if selection == none_selection or selection > len(candidates_slice):
             return IntentResult(
                 category_id=None,
                 category_name=None,
                 candidates=[],
                 needs_confirmation=False,
             )
-        chosen = candidates[selection - 1]
+        chosen = candidates_slice[selection - 1]
         return IntentResult(
             category_id=chosen["code"],
             category_name=chosen["name"],
@@ -392,8 +397,8 @@ class TriageAgent(BaseAgent):
                 needs_confirmation=False,
             )
 
-        # 2. 候选列表模式（① ②）
-        candidate_pattern = re.compile(r'[①②]\s*([一-龥A-Za-z]+-\d+)\s+([^\n]+)')
+        # 2. 候选列表模式（① ② ③ ④ ⑤）
+        candidate_pattern = re.compile(r'[①②③④⑤]\s*([一-龥A-Za-z]+-\d+)\s+([^\n]+)')
         candidates = [
             {"code": m.group(1).strip(), "name": m.group(2).strip()}
             for m in candidate_pattern.finditer(reply)
@@ -402,7 +407,7 @@ class TriageAgent(BaseAgent):
             return IntentResult(
                 category_id=None,
                 category_name=None,
-                candidates=candidates[:3],
+                candidates=candidates[:4],
                 needs_confirmation=True,
             )
 

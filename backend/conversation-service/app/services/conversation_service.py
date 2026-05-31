@@ -372,6 +372,14 @@ class ConversationService:
                                 )
                             )
                     elif event_type == "interactive_request":
+                        # S0 意图识别的 interactive_request 不作为独立消息落库和推送，完全通过 text_chunk 的文本选项在前端原生渲染
+                        if agent_event.get("kind") == "intent_selection":
+                            logger.info(
+                                event="skip_intent_selection_interactive_request",
+                                message="S0 意图识别跳过 interactive_request 消息落库和推送，完全通过文本选项在前端原生渲染",
+                                conversation_id=str(conversation_id),
+                            )
+                            continue
                         _ir_payload = _json.dumps(
                             {
                                 "requestId": agent_event.get("request_id"),
@@ -1467,7 +1475,7 @@ class ConversationService:
         from ..models.message import Message as MessageModel
 
         _candidate_item_pattern = re.compile(
-            r"[①②]\s*([\u4e00-\u9fa5A-Za-z]+-\d+)\s+([\u4e00-\u9fa5A-Za-z0-9\s]+?)(?:\n|$)"
+            r"[①②③④⑤]\s*([\u4e00-\u9fa5A-Za-z]+-\d+)\s+([\u4e00-\u9fa5A-Za-z0-9\s]+?)(?:\n|$)"
         )
         try:
             # 取最近一条 assistant 消息

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useCategories } from '../composables/useCategories'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -54,13 +55,7 @@ interface PendingKbdResponse {
   page_size: number
 }
 
-// 分类基线选项
-interface CategoryOption {
-  code: string          // "虚拟机-001"
-  name: string          // "虚拟机创建失败"
-  domain: string        // "虚拟机"
-  path_labels: string[]
-}
+
 
 // 截图说明解析类型
 interface ScreenshotTypeInfo {
@@ -126,9 +121,7 @@ const statusFilter = ref('draft')
 const supportIdFilter = ref('')
 const titleKeywordFilter = ref('')
 
-// 分类基线（用于 select）
-const categoriesLoading = ref(false)
-const categoryOptions = ref<CategoryOption[]>([])
+const { categoryOptions, categoriesLoading, fetchCategories } = useCategories()
 
 // 详情弹窗
 const detailDialogVisible = ref(false)
@@ -209,20 +202,7 @@ async function fetchPending() {
   }
 }
 
-// 加载分类基线（用于 select 选项）
-async function fetchCategories() {
-  categoriesLoading.value = true
-  try {
-    const resp = await fetch('/api/kb/categories?grouped=true', { headers: authHeader })
-    if (!resp.ok) return
-    // API 返回 { "domains": { domain: [category, ...] }, "total_domains": N }
-    const data: { domains?: Record<string, CategoryOption[]> } = await resp.json()
-    const domains = data.domains ?? {}
-    categoryOptions.value = Object.values(domains).flat().sort((a, b) => a.code.localeCompare(b.code))
-  } catch { /* 分类加载失败时仍允许手动输入 */ } finally {
-    categoriesLoading.value = false
-  }
-}
+
 
 async function handleApprove(entry: KbdEntry) {
   try {

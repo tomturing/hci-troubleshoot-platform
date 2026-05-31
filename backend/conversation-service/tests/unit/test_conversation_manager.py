@@ -164,3 +164,61 @@ class TestExtractResolvedKbd:
         """标记出现在段落中间也能正确提取"""
         reply = "综合以上分析，关联案例：KBD-999，建议按以下方案处理。"
         assert manager.extract_resolved_kbd(reply) == 999
+
+
+class TestCandidateSelection:
+    """S0 候选确认与解析单元测试 (4+1 模式)"""
+
+    def test_parse_candidate_selection_circles(self, manager: ConversationManager):
+        """圆圈数字 ① - ⑤ 能够正确解析"""
+        assert manager.parse_candidate_selection("①") == 1
+        assert manager.parse_candidate_selection("② 虚拟机网络异常") == 2
+        assert manager.parse_candidate_selection("  ③ 虚拟机开机失败") == 3
+        assert manager.parse_candidate_selection("④") == 4
+        assert manager.parse_candidate_selection("⑤ 以上都不是") == 5
+
+    def test_parse_candidate_selection_numbers(self, manager: ConversationManager):
+        """阿拉伯数字 1 - 5 能够正确解析"""
+        assert manager.parse_candidate_selection("1") == 1
+        assert manager.parse_candidate_selection("2. 虚拟机网络异常") == 2
+        assert manager.parse_candidate_selection("3、虚拟机开机失败") == 3
+        assert manager.parse_candidate_selection("4 ") == 4
+        assert manager.parse_candidate_selection("5. 以上都不是") == 5
+
+    def test_parse_candidate_selection_invalid(self, manager: ConversationManager):
+        """非法数字或无关文本返回 None"""
+        assert manager.parse_candidate_selection("6") is None
+        assert manager.parse_candidate_selection("⑥") is None
+        assert manager.parse_candidate_selection("虚拟机创建失败") is None
+
+    def test_resolve_candidate_category_valid(self, manager: ConversationManager):
+        """1-4 的有效选择映射到对应的候选"""
+        candidates = [
+            {"code": "虚拟机-001", "name": "虚拟机网络异常"},
+            {"code": "虚拟机-002", "name": "虚拟机开机失败"},
+            {"code": "虚拟机-003", "name": "虚拟机删除失败"},
+            {"code": "虚拟机-004", "name": "虚拟机创建失败"},
+        ]
+        assert manager.resolve_candidate_category(1, candidates) == {"code": "虚拟机-001", "name": "虚拟机网络异常"}
+        assert manager.resolve_candidate_category(2, candidates) == {"code": "虚拟机-002", "name": "虚拟机开机失败"}
+        assert manager.resolve_candidate_category(3, candidates) == {"code": "虚拟机-003", "name": "虚拟机删除失败"}
+        assert manager.resolve_candidate_category(4, candidates) == {"code": "虚拟机-004", "name": "虚拟机创建失败"}
+
+    def test_resolve_candidate_category_none(self, manager: ConversationManager):
+        """选择 5 (以上都不是) 映射为 None"""
+        candidates = [
+            {"code": "虚拟机-001", "name": "虚拟机网络异常"},
+            {"code": "虚拟机-002", "name": "虚拟机开机失败"},
+            {"code": "虚拟机-003", "name": "虚拟机删除失败"},
+            {"code": "虚拟机-004", "name": "虚拟机创建失败"},
+        ]
+        assert manager.resolve_candidate_category(5, candidates) is None
+
+    def test_resolve_candidate_category_out_of_range(self, manager: ConversationManager):
+        """超出有效选择范围映射为 None"""
+        candidates = [
+            {"code": "虚拟机-001", "name": "虚拟机网络异常"},
+        ]
+        # 此时 candidates 只有 1 个，2 即为 "以上都不是"，3 及以上为越界
+        assert manager.resolve_candidate_category(2, candidates) is None
+        assert manager.resolve_candidate_category(3, candidates) is None
