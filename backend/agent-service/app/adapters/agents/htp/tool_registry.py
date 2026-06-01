@@ -13,6 +13,7 @@ v2.0 变更：
 """
 
 import logging
+import sys
 
 from shared.models.tool_definition import ToolDefinitionORM
 from sqlalchemy import select
@@ -27,7 +28,6 @@ logger = logging.getLogger(__name__)
 TOOL_REGISTRY: dict[str, ToolDefinition] = {}
 
 # 单元测试环境下自动预填充，保障不连接数据库时单元测试也能成功运行
-import sys
 if "pytest" in sys.modules or "unittest" in sys.modules:
     _test_tools = [
         # 只读工具（risk_level=1）
