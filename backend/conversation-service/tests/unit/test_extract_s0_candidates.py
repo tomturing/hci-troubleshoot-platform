@@ -12,6 +12,9 @@ ConversationService._extract_s0_candidates 单元测试
    - 包含括号等特殊字符
    - 多级分类前缀
    - 无匹配内容
+3. S0 候选轮次管理
+   - _get_s0_candidate_rounds
+   - _increment_s0_candidate_rounds
 """
 
 import uuid
@@ -306,3 +309,136 @@ class TestGetLastAssistantMessage:
         result = await mock_service._get_last_assistant_message(conversation_id)
 
         assert result == (None, None)
+
+
+class TestS0CandidateRounds:
+    """S0 候选轮次管理方法测试"""
+
+    @pytest.fixture
+    def conversation_id(self) -> uuid.UUID:
+        return uuid.UUID("00000000-0000-0000-0000-000000000003")
+
+    @pytest.fixture
+    def mock_service(self):
+        from app.services.conversation_service import ConversationService
+
+        mock_repo = MagicMock()
+        mock_ai_registry = MagicMock()
+        mock_session_factory = MagicMock()
+
+        service = ConversationService(
+            repository=mock_repo,
+            ai_registry=mock_ai_registry,
+            session_factory=mock_session_factory,
+        )
+        return service
+
+    @pytest.mark.asyncio
+    async def test_get_s0_candidate_rounds_default(
+        self, mock_service, conversation_id
+    ):
+        """获取轮次数：默认返回 0"""
+        mock_service.session_factory = None
+        mock_conv = MagicMock()
+        mock_conv.metadata_ = None
+        mock_service.repository.get_conversation = AsyncMock(return_value=mock_conv)
+
+        result = await mock_service._get_s0_candidate_rounds(conversation_id)
+
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_get_s0_candidate_rounds_existing(
+        self, mock_service, conversation_id
+    ):
+        """获取轮次数：返回已有值"""
+        mock_service.session_factory = None
+        mock_conv = MagicMock()
+        mock_conv.metadata_ = {"s0_candidate_rounds": 2}
+        mock_service.repository.get_conversation = AsyncMock(return_value=mock_conv)
+
+        result = await mock_service._get_s0_candidate_rounds(conversation_id)
+
+        assert result == 2
+
+    @pytest.mark.asyncio
+    async def test_get_s0_candidate_rounds_no_conversation(
+        self, mock_service, conversation_id
+    ):
+        """获取轮次数：无对话记录时返回 0"""
+        mock_service.session_factory = None
+        mock_service.repository.get_conversation = AsyncMock(return_value=None)
+
+        result = await mock_service._get_s0_candidate_rounds(conversation_id)
+
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_get_s0_candidate_rounds_exception(
+        self, mock_service, conversation_id
+    ):
+        """获取轮次数：异常时返回 0"""
+        mock_service.session_factory = None
+        mock_service.repository.get_conversation = AsyncMock(
+            side_effect=Exception("DB error")
+        )
+
+        result = await mock_service._get_s0_candidate_rounds(conversation_id)
+
+        assert result == 0
+
+
+class TestConversationManagerResolveCandidate:
+    """ConversationManager.resolve_candidate_category 方法测试"""
+
+    @pytest.fixture
+    def manager(self):
+        from app.services.conversation_manager import ConversationManager
+        return ConversationManager()
+
+    def test_resolve_candidate_selection_1(self, manager):
+        """用户选择 ①"""
+        candidates = [
+            {"code": "虚拟机-003", "name": "虚拟机开机失败"},
+            {"code": "存储-017", "name": "磁盘异常"},
+        ]
+        result = manager.resolve_candidate_category(1, candidates)
+
+        assert result is not None
+        assert result["code"] == "虚拟机-003"
+
+    def test_resolve_candidate_selection_2(self, manager):
+        """用户选择 ②"""
+        candidates = [
+            {"code": "虚拟机-003", "name": "虚拟机开机失败"},
+            {"code": "存储-017", "name": "磁盘异常"},
+        ]
+        result = manager.resolve_candidate_category(2, candidates)
+
+        assert result is not None
+        assert result["code"] == "存储-017"
+
+    def test_resolve_candidate_selection_3_none(self, manager):
+        """用户选择 ③「以上都不是」"""
+        candidates = [
+            {"code": "虚拟机-003", "name": "虚拟机开机失败"},
+            {"code": "存储-017", "name": "磁盘异常"},
+        ]
+        result = manager.resolve_candidate_category(3, candidates)
+
+        assert result is None
+
+    def test_resolve_candidate_out_of_range(self, manager):
+        """用户选择超出范围"""
+        candidates = [
+            {"code": "虚拟机-003", "name": "虚拟机开机失败"},
+        ]
+        result = manager.resolve_candidate_category(5, candidates)
+
+        assert result is None
+
+    def test_resolve_candidate_empty_list(self, manager):
+        """候选列表为空"""
+        result = manager.resolve_candidate_category(1, [])
+
+        assert result is None
