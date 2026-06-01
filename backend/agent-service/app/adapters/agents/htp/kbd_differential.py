@@ -488,7 +488,8 @@ class KBDDiagnostic:
             result = await ai_client.invoke(
                 messages=[{"role": "user", "content": judge_prompt}],
                 response_format={"type": "json_object"},
-                user_id=self._conversation_id,
+                user_id=self._conversation_id or user_id,
+                case_id=self._conversation_id or "",
             )
             if result.content:
                 data = json.loads(result.content)
@@ -545,7 +546,8 @@ class KBDDiagnostic:
         try:
             result = await ai_client.invoke(
                 messages=[{"role": "user", "content": prompt}],
-                user_id=self._conversation_id,
+                user_id=self._conversation_id or user_id,
+                case_id=self._conversation_id or "",
             )
             return result.content or self._fallback_report(matched_kbds, steps_executed)
         except Exception as exc:

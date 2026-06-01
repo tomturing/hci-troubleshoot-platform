@@ -108,7 +108,7 @@ class OpenClawAssistant:
         return self.provider_api_key or self.api_key
 
     async def chat_completion_stream(
-        self, messages: list[dict[str, str]], user_id: str, pod_endpoint: str | None = None, model: str = ""
+        self, messages: list[dict[str, str]], user_id: str, pod_endpoint: str | None = None, model: str = "", case_id: str = ""
     ) -> AsyncGenerator[str, None]:
         """
         调用OpenClaw Chat Completions API (流式)
@@ -131,9 +131,10 @@ class OpenClawAssistant:
             import asyncio
             asyncio.create_task(
                 self.prompt_audit_callback(
-                    conversation_id=user_id.replace("case-", "") if user_id else "",
+                    conversation_id=user_id,
                     assistant_type=self.assistant_type,
                     messages=messages,
+                    case_id=case_id,
                 )
             )
 
@@ -444,10 +445,11 @@ class OpenClawAssistant:
         user_id: str = "",
         model: str = "",
         response_format: dict | None = None,
+        case_id: str = "",
     ) -> InvokeResult:
         """非流式 LLM 调用，支持工具调用（function calling）和结构化 JSON 输出。
 
-        工具调用轮次使用非流式（stream=False），因为：
+        工具调用轮次使用 non-stream (stream=False)，因为：
           - tool_calls 字段只在完整响应中出现，流式下需拼接 delta 容易出 bug
           - 用户看不到工具调用的中间推理，无需流式体验
 
@@ -457,6 +459,7 @@ class OpenClawAssistant:
             user_id: 用户 ID
             model: 模型名称（留空使用默认）
             response_format: 如 {"type": "json_object"} 强制 JSON 输出
+            case_id: 工单 ID
 
         Returns:
             InvokeResult:
@@ -481,9 +484,10 @@ class OpenClawAssistant:
             import asyncio
             asyncio.create_task(
                 self.prompt_audit_callback(
-                    conversation_id=user_id.replace("case-", "") if user_id else "",
+                    conversation_id=user_id,
                     assistant_type=self.assistant_type,
                     messages=messages,
+                    case_id=case_id,
                 )
             )
         if tools:

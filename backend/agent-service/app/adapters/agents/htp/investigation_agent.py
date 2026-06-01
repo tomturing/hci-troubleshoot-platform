@@ -551,6 +551,7 @@ class InvestigationAgent(BaseAgent):
         async for chunk in ai_client.chat_completion_stream(
             messages=full_messages,
             user_id=session_id,
+            case_id=case_id,
         ):
             if chunk:
                 yield AgentTextChunk(content=chunk)
@@ -581,6 +582,7 @@ class InvestigationAgent(BaseAgent):
         async for chunk in ai_client.chat_completion_stream(
             messages=full_messages,
             user_id=session_id,
+            case_id=case_id,
         ):
             if chunk:
                 yield AgentTextChunk(content=chunk)
