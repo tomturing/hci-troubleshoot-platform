@@ -1500,7 +1500,7 @@ class ConversationService:
         from ..models.message import Message as MessageModel
 
         _candidate_item_pattern = re.compile(
-            r"[①②③④⑤]\s*([\u4e00-\u9fa5A-Za-z]+-\d+)\s+([\u4e00-\u9fa5A-Za-z0-9\s]+?)(?:\n|$)"
+            r"[①②③④⑤]\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+?)(?:\r?\n|$)"
         )
         try:
             # 取最近一条 assistant 消息

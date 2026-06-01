@@ -83,7 +83,7 @@ _RESET_KEYWORDS: list[str] = [
 
 # S0 阶段分类确认标记的正则模式
 _CATEGORY_CONFIRM_PATTERN = re.compile(
-    r"已确认故障分类[:：]\s*([\u4e00-\u9fa5]+-\d+)\s+([\u4e00-\u9fa5A-Za-z0-9\u4e00-\u9fa5]+)"
+    r"已确认故障分类[:：]\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+)"
 )
 
 # T8: S4 根因确认中 AI 输出「关联案例：KBD-{id}」的提取正则
