@@ -25,8 +25,7 @@ class ToolDefinition(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tool_name = Column(String(100), nullable=False, unique=True)          # 工具唯一标识（如 acli_vm_list）
     display_name = Column(String(200), nullable=False)                    # 展示名（如'获取虚拟机列表'）
-    tool_type = Column(String(20), nullable=False)                        # acli / scp_api
-    category = Column(String(50), nullable=True, index=True)             # 故障域: vm/storage/network/cluster/platform; NULL=通用
+    category = Column(String(50), nullable=False, index=True)             # 故障域: vm/storage/network/cluster/platform; NULL=通用
     description = Column(Text, nullable=False)                            # 工具功能描述（直接注入 Prompt 供 LLM 理解）
     usage_template = Column(Text, nullable=True)                          # 调用模板
     parameters_schema = Column(JSONB, nullable=False, default=dict)      # OpenAPI 3.0 格式参数 Schema

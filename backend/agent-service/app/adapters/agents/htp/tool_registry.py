@@ -48,7 +48,7 @@ async def load_tool_registry(db: AsyncSession) -> dict[str, ToolDefinition]:
             parameters=row.parameters_schema,
             risk_level=row.risk_level,
             policy=risk_to_policy(row.risk_level),
-            category=row.category or row.tool_type,  # category 优先，fallback 到 tool_type
+            category=row.category,  # 执行路由: scp | acli | sop
         )
     logger.info(f"已加载工具注册表：{len(registry)} 个工具")
     return registry

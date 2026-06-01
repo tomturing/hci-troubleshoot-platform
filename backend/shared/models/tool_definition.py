@@ -27,8 +27,7 @@ class ToolDefinitionORM(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tool_name = Column(String(100), nullable=False, unique=True)  # 工具唯一标识（如 acli_exec）
     display_name = Column(String(200), nullable=False)  # 展示名（如'执行 acli 命令'）
-    tool_type = Column(String(20), nullable=False)  # acli / scp_api / sop
-    category = Column(String(50), nullable=True, index=True)  # 执行路由: scp | acli | sop
+    category = Column(String(50), nullable=False, index=True)  # 执行路由: scp | acli | sop
     description = Column(Text, nullable=False)  # 工具功能描述（注入 Prompt 供 LLM 理解）
     usage_template = Column(Text, nullable=True)  # 调用模板（acli 插件工具使用）
     parameters_schema = Column(JSONB, nullable=False, default=dict)  # OpenAI function call schema
