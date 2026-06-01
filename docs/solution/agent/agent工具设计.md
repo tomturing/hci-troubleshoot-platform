@@ -806,3 +806,4 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 |------|------|------|
 | 2026-05-28 | v1.0 | 初版。确立 bridge-relay-only 架构，废弃 AcliClient 直连路径；新增 bash_exec/acli_exec 工具设计；定义 BridgeRelayExecutor 执行机制和 terminal_bridge 协议扩展 |
 | 2026-05-29 | v2.0 | 重大架构调整。三大决策：D1 目录结构变更（shell→acli）、D2 DB 作为 SSOT（废弃代码硬编码，tool_registry.py 变为 DB 加载器）、D3 混合暴露方案（acli_exec 通用 + 4 个插件工具独立封装，删除旧 11 个结构化 acli 工具）。新增 §三~§六（决策记录、插件工具详设、tool_definition SSOT 设计、RiskClassifier 实现）；更新 §九 代码模块归属（shell→acli）；重写 §十 开发任务（含 T8~T10、T14~T15 新增 DB 迁移和 registry 重构任务）|
+| 2026-06-01 | v2.0.1 | 紧急修复。ORM 模型同步迁移 20260528000000：移除 `tool_type` 列，修复 agent-service CrashLoopBackOff（`UndefinedColumnError: column tool_definition.tool_type does not exist`）|
