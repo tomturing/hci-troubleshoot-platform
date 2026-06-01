@@ -412,26 +412,8 @@ MemGPT（Packer et al., 2023）提出"外化工作记忆"的动机与本项目�
 
 ### 7.3 Q3: `OpenClawAssistant` 仍被频繁调用且保留，后续会一直不处理吗？
 * **现状分析**：
-  * 虽然在 HTP Agent 的 S1-S5 重构中引进了更高级的 `ReactEngine` 并宣布在该功能链上弃用了纯 SSE 文本流，但在 S0 triage（意图结构化解析）、think（诊断报告非流式生成）以及 `test_ai_client.py`、`test_remediation_agent.py` 等 10 多个测试类中，`AIAssistantRegistry` 注册 of 底层通讯实体仍是 `OpenClawAssistant`。它依然在底层负责处理 API 鉴权、网关切换和流瞬时重试。
+  * 虽然在 HTP Agent 的 S1-S5 重构中引进了更高级的 `ReactEngine` 并宣布在该功能链上弃用了纯 SSE 文本流，但在 S0 triage（意图结构化解析）、think（诊断报告非流式生成）以及 `test_ai_client.py`、`test_remediation_agent.py` 等 10 多个测试类中，`AIAssistantRegistry` 注册的底层通讯实体仍是 `OpenClawAssistant`。它依然在底层负责处理 API 鉴权、网关切换和流瞬时重试。
 * **重构演进路线图 (Consolidation Roadmap)**：
   * **当前共存阶段**：将其作为底层的通用 **LLM Gateway Adapter（模型网关适配器）** 保留。
   * **重构中立化计划 (v5.0)**：在后续的架构升级中，将其从底层的 HTP 业务概念中完全剥离，统一重构重命名为 `LLMGatewayClient` 或 `OpenAIChatClient`，使底层网关逻辑纯净化，彻底清偿“大模型网关层与应用层掺杂”的技术债务。
-
-
-### 7.4 Q4: 为什么 PR379 合入后审计日志依然可能显示 "无效的 conversation_id UUID 格式" 从而丢失？
-* **第一性原理深度剖析**：
-  * **底层的直接诱因**：在 `OpenClawAssistant` 进行底层大模型拦截时，拦截回调（`prompt_audit_callback`）所接收的 `conversation_id` 参数取自 `user_id.replace("case-", "")`。但在 S0（TriageAgent）、S1-S4 降级轨道（InvestigationAgent）与 ReAct 循环（ReactEngine）调用 LLM 客户端时，原先的 `user_id` 实参会被写为 `'user'` 或是 `f"case-{case_id}"`。这导致拦截出来的 `conversation_id` 为 `'user'` 或是工单号（如 `Q2026060149813`），它们均不满足 UUID 的严格格式校验。因此，审计落库 ORM 在进行 `uuid.UUID` 的物理强制转换时抛出 `ValueError`，被异常拦截日志拦截，从而默默丢弃，导致 `audit_log` 毫无数据。
-  * **两层彻底根治方案**：
-    1. **会话 ID 变量规范化传入（治本）**：在 triage、investigation、react-engine 全量 HTP-Agent 代码中，大模型调用的 `user_id` 全面改写为传入高层本来就天然持有的、100% 标准 UUID 格式的 **`session_id`**（即 `conversation_id`）。这使得大模型供应商接收到的 user 属性不再包含明文工单与用户标识（极大加固了敏感数据脱敏隐私安全），且让拦截器直接拿到完美合法的 UUID 字符串，100% 畅通无阻地直接落库。
-    2. **物理列命名空间 UUID 强力派生兜底（治标）**：为了彻底防范任何遗留模块、未来演进或测试脚本对 UUID 参数的类型踩坑，在 `PromptAuditService` 底层写入时设计了**极致防御兜底**——若 `conversation_id` 抛出 `ValueError`，直接通过基于 MD5 的 `uuid.uuid5(uuid.NAMESPACE_DNS, str(conversation_id))`，无损且确定性地将其映射派生为唯一的、标准的命名空间 UUID 并强力写入。两层安全防线的紧密合围，保证了 100% 完美的历史数据与未来全量审计的不丢。
-
-
-### 7.5 Q5: 为什么用户点击 "① 硬件-024 硬盘寿命到期" 去确认时，会无限卡在 S0 并反复循环确认？
-* **第一性原理深度剖析**：
-  * **底层的直接诱因**：后端在接收到用户的序号回复（如 `"①"` 或者是 `"1"`）时，拦截逻辑会扫描上一条 AI 消息并使用正则表达式去提取对应的故障分类以进行映射流转。然而，`conversation_service.py` 里的 `_candidate_item_pattern` 和 `conversation_manager.py` 里的 `_CATEGORY_CONFIRM_PATTERN` 这两处核心正则的匹配限制过于狭窄（如 code 不支持带中划线和英文字母的多级前缀，name 的字符集也不包含各种中英文括号、引号及标点）。大模型在实际生成分类时，分类名称中极易包含像 `存储-017 磁盘服务异常（直接对应告警类型...）` 这样的括号或丰富注释，导致这两处核心正则进行模式匹配时直接彻底失败。
-  * **失效引发的无限循环**：正则匹配失败导致提取候选或还原真实分类直接返回 `None`。拦截机制判定没有成功还原出所选的分类信息，因此**无法将 `diagnostic_stage` 推进到 `S1` 并写入 `category_id`**，导致系统当做普通对话消息投喂给大模型。大模型在上下文中接收到用户的 `①`，因为没有在系统级完成流转，只能继续进行本轮 S0 澄清与确认，从而再次输出一套 S0 分类确认卡片。用户继续点击，拦截继续失败，从而彻底卡在死循环中。
-  * **彻底根治方案**：
-    将两个正则的名称匹配字符集全部升级为极宽容的 **`([^\n]+?)`** 以支持匹配行尾前的任何标点符号、中文/英文括号，并将 code 匹配放宽为 **`([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)`** 以完全支持包含英文字母/数字的多级分类前缀，100% 保证各种复杂文字格式下的精确候选提取与 S0 $\rightarrow$ S1 阶段完美推进。
-
-
 

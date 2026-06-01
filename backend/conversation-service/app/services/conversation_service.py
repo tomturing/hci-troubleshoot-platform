@@ -1530,8 +1530,8 @@ class ConversationService:
                 # 兼容 "event" 内的 metadata
                 event_data = last_ai_metadata.get("event") or {}
                 candidates_from_meta = (
-                    last_ai_metadata.get("candidates") or 
-                    event_data.get("metadata", {}).get("candidates")
+                    last_ai_metadata.get("candidates")
+                    or event_data.get("metadata", {}).get("candidates")
                 )
                 if candidates_from_meta and isinstance(candidates_from_meta, list):
                     logger.info(
