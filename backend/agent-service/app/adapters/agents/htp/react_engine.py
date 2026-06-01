@@ -147,7 +147,7 @@ class ReactEngine:
                 invoke_result: InvokeResult = await ai_client.invoke(
                     messages=work_messages,
                     tools=tools,
-                    user_id=user_id or f"case-{case_id}",
+                    user_id=session_id,
                 )
             except Exception as exc:
                 logger.error(
@@ -164,7 +164,7 @@ class ReactEngine:
                 # 流式输出最终文字回复
                 async for chunk in ai_client.chat_completion_stream(
                     messages=work_messages,
-                    user_id=user_id or f"case-{case_id}",
+                    user_id=session_id,
                 ):
                     if chunk:
                         yield AgentTextChunk(content=chunk)

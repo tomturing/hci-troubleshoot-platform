@@ -209,6 +209,7 @@ class InvestigationAgent(BaseAgent):
         if not raw_cases:
             # 无案例 → 机制推理降级
             async for event in self._process_fallback_mode(
+                session_id=session_id,
                 messages=messages,
                 category_id=category_id,
                 diagnostic_stage=diagnostic_stage,
@@ -315,6 +316,7 @@ class InvestigationAgent(BaseAgent):
             )
             # 降级到旧路径（纯 chat_completion_stream）
             async for event in self._process_sop_mode_legacy(
+                session_id=session_id,
                 sop_content=sop_content,
                 sop_title=sop_title,
                 sop_document_id=sop_document_id,
@@ -414,6 +416,7 @@ class InvestigationAgent(BaseAgent):
                 )
                 # 创建失败时降级到旧路径
                 async for event in self._process_sop_mode_legacy(
+                    session_id=session_id,
                     sop_content=sop_content,
                     sop_title=sop_title,
                     sop_document_id=sop_document_id,
@@ -511,6 +514,7 @@ class InvestigationAgent(BaseAgent):
 
     async def _process_sop_mode_legacy(
         self,
+        session_id: str,
         sop_content: str,
         sop_title: str,
         sop_document_id: int | None,
@@ -546,13 +550,14 @@ class InvestigationAgent(BaseAgent):
 
         async for chunk in ai_client.chat_completion_stream(
             messages=full_messages,
-            user_id=user_id or f"case-{case_id}",
+            user_id=session_id,
         ):
             if chunk:
                 yield AgentTextChunk(content=chunk)
 
     async def _process_fallback_mode(
         self,
+        session_id: str,
         messages: list[dict],
         category_id: str,
         diagnostic_stage: str,
@@ -575,7 +580,7 @@ class InvestigationAgent(BaseAgent):
 
         async for chunk in ai_client.chat_completion_stream(
             messages=full_messages,
-            user_id=user_id or f"case-{case_id}",
+            user_id=session_id,
         ):
             if chunk:
                 yield AgentTextChunk(content=chunk)

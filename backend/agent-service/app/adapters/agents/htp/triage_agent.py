@@ -209,7 +209,7 @@ class TriageAgent(BaseAgent):
 
         async for chunk in ai_client.chat_completion_stream(
             messages=full_messages,
-            user_id=user_id or f"case-{case_id}",
+            user_id=session_id,
         ):
             if chunk:
                 full_reply.append(chunk)
