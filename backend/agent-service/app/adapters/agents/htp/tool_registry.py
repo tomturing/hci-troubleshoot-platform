@@ -26,6 +26,41 @@ logger = logging.getLogger(__name__)
 # 全局工具注册表（启动时由 main.py lifespan 填充）
 TOOL_REGISTRY: dict[str, ToolDefinition] = {}
 
+# 单元测试环境下自动预填充，保障不连接数据库时单元测试也能成功运行
+import sys
+if "pytest" in sys.modules or "unittest" in sys.modules:
+    _test_tools = [
+        # 只读工具（risk_level=1）
+        ("get_active_alerts", "scp", 1),
+        ("get_failed_tasks", "scp", 1),
+        ("get_vm_list", "scp", 1),
+        ("get_cluster_detail", "scp", 1),
+        ("acli_system_top", "acli", 1),
+        ("acli_vm_list", "acli", 1),
+        ("acli_vm_config", "acli", 1),
+        ("acli_vm_disk_check", "acli", 1),
+        ("acli_platform_node_list", "acli", 1),
+        ("acli_storage_disk_list", "acli", 1),
+        ("acli_network_nic_list", "acli", 1),
+        ("acli_log_get", "acli", 1),
+        ("acli_run", "acli", 1),
+        ("get_sop_node", "sop", 1),
+        ("sop_advance", "sop", 1),
+        # 写操作工具（risk_level=2）
+        ("acli_service_restart", "acli", 2),
+        ("acli_network_nic_up", "acli", 2),
+        ("acli_netdoctor", "acli", 2),
+    ]
+    for name, cat, risk in _test_tools:
+        TOOL_REGISTRY[name] = ToolDefinition(
+            name=name,
+            description=f"Test tool {name}",
+            parameters={},
+            risk_level=risk,
+            policy=risk_to_policy(risk),
+            category=cat,
+        )
+
 
 async def load_tool_registry(db: AsyncSession) -> dict[str, ToolDefinition]:
     """

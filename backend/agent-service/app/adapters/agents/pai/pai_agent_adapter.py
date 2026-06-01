@@ -508,6 +508,16 @@ class PaiAgentAdapter:
         Raises:
             AgentUnavailableError: 调用失败时抛出，由 AgentRouter 负责降级
         """
+        # 写入 100% 全量原始 Prompt 审计
+        from app.services.prompt_audit import PromptAuditService
+        asyncio.create_task(
+            PromptAuditService.write_prompt_audit(
+                conversation_id=session_id,
+                assistant_type="pydantic-ai",
+                messages=messages,
+            )
+        )
+
         user_prompt, message_history = _openai_messages_to_pydantic(messages)
 
         if not user_prompt:

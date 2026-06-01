@@ -91,6 +91,17 @@ class OpsAgentAdapter:
         Raises:
             AgentUnavailableError: ops-agent 服务不可达或返回非 2xx 状态码。
         """
+        # 写入 100% 全量原始 Prompt 审计
+        import asyncio
+        from app.services.prompt_audit import PromptAuditService
+        asyncio.create_task(
+            PromptAuditService.write_prompt_audit(
+                conversation_id=session_id,
+                assistant_type="ops-agent",
+                messages=messages,
+            )
+        )
+
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"

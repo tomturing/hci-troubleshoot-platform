@@ -191,6 +191,13 @@ class TestCandidateSelection:
         assert manager.parse_candidate_selection("⑥") is None
         assert manager.parse_candidate_selection("虚拟机创建失败") is None
 
+    def test_parse_candidate_selection_with_prefixes(self, manager: ConversationManager):
+        """带系统操作前缀的圆圈和阿拉伯数字能够正确解析"""
+        assert manager.parse_candidate_selection("[操作选择] ① 硬件-024 硬盘寿命到期") == 1
+        assert manager.parse_candidate_selection("[交互响应] ② 虚拟机网络异常") == 2
+        assert manager.parse_candidate_selection("  [操作选择] 3. 虚拟机网络异常") == 3
+        assert manager.parse_candidate_selection("[交互响应] 4. 以上都不是") == 4
+
     def test_resolve_candidate_category_valid(self, manager: ConversationManager):
         """1-4 的有效选择映射到对应的候选"""
         candidates = [

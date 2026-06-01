@@ -92,7 +92,7 @@ class KBClient(InternalHTTPClient):
     async def route_by_category(
         self,
         category_code: str,
-        query: str,
+        query: str = "",
         top_k: int = 5,
     ) -> dict | None:
         """

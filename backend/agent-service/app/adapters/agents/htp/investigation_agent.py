@@ -823,8 +823,23 @@ class InvestigationAgent(BaseAgent):
         """截断超长 SOP 内容（降级路径使用）。"""
         if len(sop_content) > max_chars:
             sop_content = sop_content[:max_chars]
-            sop_content += "\n\n[注意：SOP 文档已截断，请基于已有信息分步推理]"
+            sop_content += "\n\n[注意：SOP 文档已截断，请基于已有信息分步推理。必要时通过工具获取更多细节]"
         return sop_content
+
+    @staticmethod
+    def _build_sop_prompt(
+        sop_content: str,
+        sop_title: str,
+        diagnostic_stage: str,
+        case_id: str,
+    ) -> str:
+        """单元测试兼容性静态方法，映射到 _build_sop_prompt_legacy"""
+        return InvestigationAgent._build_sop_prompt_legacy(
+            sop_content=sop_content,
+            sop_title=sop_title,
+            diagnostic_stage=diagnostic_stage,
+            case_id=case_id,
+        )
 
     @staticmethod
     def _build_sop_prompt_legacy(

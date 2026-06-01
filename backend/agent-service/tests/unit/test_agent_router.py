@@ -111,9 +111,6 @@ def investigation_agent():  # T-AGT-11：新增 fixture
 
 
 @pytest.fixture
-
-
-@pytest.fixture
 def remediation_agent():
     return MockRemediationAgent()
 

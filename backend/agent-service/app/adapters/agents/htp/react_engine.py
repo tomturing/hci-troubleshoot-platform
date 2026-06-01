@@ -386,7 +386,6 @@ class ReactEngine:
         except Exception as e:
             error = str(e)
             result = f"工具执行失败: {error}"
-            yield AgentTextChunk(content=f"工具 {tool_name} 执行失败: {error}")
         finally:
             completed_at = datetime.now(UTC)
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)

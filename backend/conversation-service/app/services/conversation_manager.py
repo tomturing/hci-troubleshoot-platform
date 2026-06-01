@@ -278,7 +278,7 @@ class ConversationManager:
         """
         _circle_map = {"①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5}
         for line in user_reply.splitlines():
-            line = line.strip()
+            line = line.strip().replace("[操作选择] ", "").replace("[交互响应] ", "")
             m = _CANDIDATE_SELECT_PATTERN.match(line)
             if m:
                 token = m.group(1).strip()

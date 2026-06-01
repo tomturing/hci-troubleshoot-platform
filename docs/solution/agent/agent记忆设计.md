@@ -388,3 +388,32 @@ MemGPT（Packer et al., 2023）提出"外化工作记忆"的动机与本项目�
 - **Voyager**：Wang et al., *An Open-Ended Embodied Agent with LLMs*, 2023
 - **LangChain Memory**：ConversationBuffer / Summary / VectorStore / EntityMemory
 - **本项目实现**：[agent设计.md §12.7](agent设计.md) — 结构化滑动窗口与变量池详细设计
+
+---
+
+## 七、架构设计决策与技术答疑 (ADR)
+
+### 7.1 Q1: `prompt_audit.py` 为什么放在 `services/` 目录，而不是底层 `observability/` 或 `memory/`？
+* **与 `memory/` 的边界隔离（读写语义与单一职责原则 SRP）**：
+  * **原则与范式**：**单一职责原则（SRP）**要求一个模块仅有一个引起它变化的原因。**在线工作记忆（Working Memory）** 范式规定，memory 是推理决策的主动输入端，其状态修改会即时回馈并重新拼装 prompt（例如从变量池中提取变量替换模板命令），直接决定 LLM 推理控制流的流向。
+  * **设计决策**：相比之下，`prompt_audit` 属于**旁路可观测性（Bypass Observability）**范式，是纯粹的非功能性数据沉淀。它是**只写不读**的，数据一旦落地即成历史，绝对不会被重新调入 LLM 参与交互决策。它的写入被设计为**异步非阻塞、可容错的 Fire-and-Forget 模式**——即使写库发生瞬时异常，也必须在 Service 内部完成安全吞吐与隔离，绝对不能让“旁路监控”的报错阻断核心排障流转。
+* **与底层 `observability/` 的边界隔离（依赖倒置原则 DIP）**：
+  * **原则与范式**：**依赖倒置原则（DIP）**要求高层模块不应该依赖低层模块，两者都应该依赖抽象；基础设施层（如 Trace、Metrics、Logger）应当是**绝对无状态、无具体业务感知的公共 Utility 泛式库**。
+  * **设计决策**：DIP 原则禁止底层通用库反向依赖高层的强业务实体。由于 `PromptAuditService` 在执行日志写入时，必须导入具体的 `AuditLog` ORM 模型、知晓数据库 Session 事务，且需要业务化地解析 `assistant_type`、动态推断 `has_sop`（是否包含 SOP 树引用）等強业务属性，因此它是一个标准的**业务应用层服务（Application Service）**，而不属于纯粹的基础设施 Utility。将其放置在 `services/` 目录下，保证了清晰优雅的依赖流向（Controller -> Application Service -> Database ORM / Infrastructure Utility），彻底避免了底层循环依赖引发的工程灾难。
+
+
+### 7.2 Q2: 现在的 `message` 表是如何处理的？是只作记录，还是组装给 LLM 作上下文？
+* **消息流转定位**：
+  * `message` 物理表扮演**“外化工作记忆（Externalized Working Memory）”**的角色，既防范刷新页面或连接断开，又作为原始轨迹数据沉淀。
+  * **但它不再是粗暴地 100% 全量塞给 LLM**。在进入大模型前，系统会实施**“结构化滑动窗口与变量池替换”**：
+    * 仅有最近 3-5 轮的用户消息及最新工具结果保留原始文本细节，用作瞬时环境感知（Sensory/Working Memory）。
+    * 更早的历史节点对话会被剔除庞大的工具 raw JSON，且其中已被提取的实体和状态变量（如 vm_name）在 system_prompt 中由 `context_variables` 服务端物理预渲染直接注入。
+    * 这既对抗了 Token 爆炸，又彻底杜绝了模型因上下文过长而“遗忘或遗漏”关键运维变量的隐患。
+
+### 7.3 Q3: `OpenClawAssistant` 仍被频繁调用且保留，后续会一直不处理吗？
+* **现状分析**：
+  * 虽然在 HTP Agent 的 S1-S5 重构中引进了更高级的 `ReactEngine` 并宣布在该功能链上弃用了纯 SSE 文本流，但在 S0 triage（意图结构化解析）、think（诊断报告非流式生成）以及 `test_ai_client.py`、`test_remediation_agent.py` 等 10 多个测试类中，`AIAssistantRegistry` 注册的底层通讯实体仍是 `OpenClawAssistant`。它依然在底层负责处理 API 鉴权、网关切换和流瞬时重试。
+* **重构演进路线图 (Consolidation Roadmap)**：
+  * **当前共存阶段**：将其作为底层的通用 **LLM Gateway Adapter（模型网关适配器）** 保留。
+  * **重构中立化计划 (v5.0)**：在后续的架构升级中，将其从底层的 HTP 业务概念中完全剥离，统一重构重命名为 `LLMGatewayClient` 或 `OpenAIChatClient`，使底层网关逻辑纯净化，彻底清偿“大模型网关层与应用层掺杂”的技术债务。
+

@@ -72,6 +72,16 @@ async def lifespan(app: FastAPI):
     db_manager = DatabaseManager(settings.DATABASE_URL)
 
     # ── AI 助手注册表 ──────────────────────────────────────────────────────────
+    from app.services.prompt_audit import PromptAuditService
+    PromptAuditService.initialize(db_manager.async_session_factory)
+
+    async def prompt_audit_cb(conversation_id: str, assistant_type: str, messages: list[dict[str, Any]]) -> None:
+        await PromptAuditService.write_prompt_audit(
+            conversation_id=conversation_id,
+            assistant_type=assistant_type,
+            messages=messages,
+        )
+
     ai_registry = AIAssistantRegistry()
     for assistant_type, cfg in settings.assistant_registry.items():
         if not cfg.get("enabled", True):
@@ -86,6 +96,8 @@ async def lifespan(app: FastAPI):
             default_model=model,
             assistant_type=assistant_type,
         )
+        # 注入全量原始 prompt 审计回调
+        client.prompt_audit_callback = prompt_audit_cb
         is_default = bool(cfg.get("is_default", False))
         ai_registry.register(assistant_type, client, is_default=is_default)
 

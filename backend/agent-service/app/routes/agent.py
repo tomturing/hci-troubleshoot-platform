@@ -83,7 +83,7 @@ class InteractiveResponseRequest(BaseModel):
 
     acp_session_id: str
     request_id: str
-    outcome: dict  # 修复：与 conversation-service 发送的 dict 类型一致，例如 {"outcome": "selected", "optionId": "1"}
+    outcome: Any  # 兼容 dict / str 等各类交互响应结构
 
 
 # ── SSE 序列化辅助 ────────────────────────────────────────────────────────────

@@ -405,7 +405,7 @@ class TriageAgent(BaseAgent):
                 ]
                 if valid_items:
                     lines.append(f"### {domain}域（{len(valid_items)}个）")
-                    for item in valid_items[:20]:  # 每域最多 20 个，避免 Prompt 过长
+                    for item in valid_items:  # 免除截断限制，向大模型呈现全部叶子分类
                         code = item.get("code", "")
                         name = item.get("name", "")
                         if code and name:

@@ -80,6 +80,8 @@ class OpenClawAssistant:
         self.provider_api_key = provider_api_key or os.environ.get("LLM_API_KEY") or api_key
         self.default_model = default_model
         self.assistant_type = assistant_type
+        self.gateway_token = api_key
+        self.prompt_audit_callback = None
         # 流式 LLM 响应可能较慢，读超时通过环境变量 AI_CLIENT_READ_TIMEOUT_SEC 调整（默认 120s）
         _read_timeout = float(os.environ.get("AI_CLIENT_READ_TIMEOUT_SEC", "120.0"))
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=_read_timeout, write=10.0, pool=10.0))
@@ -124,6 +126,16 @@ class OpenClawAssistant:
         }
 
         payload = {"model": model or self.default_model, "messages": messages, "stream": True, "user": user_id}
+
+        if getattr(self, "prompt_audit_callback", None):
+            import asyncio
+            asyncio.create_task(
+                self.prompt_audit_callback(
+                    conversation_id=user_id.replace("case-", "") if user_id else "",
+                    assistant_type=self.assistant_type,
+                    messages=messages,
+                )
+            )
 
         # 先尝试 scheduler 分配的实例端点，若在首 token 前发生可恢复断流，再回退到稳定 base_url 重试一次。
         endpoints_to_try: list[str] = []
@@ -464,6 +476,16 @@ class OpenClawAssistant:
             "stream": False,
             "user": user_id,
         }
+
+        if getattr(self, "prompt_audit_callback", None):
+            import asyncio
+            asyncio.create_task(
+                self.prompt_audit_callback(
+                    conversation_id=user_id.replace("case-", "") if user_id else "",
+                    assistant_type=self.assistant_type,
+                    messages=messages,
+                )
+            )
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
