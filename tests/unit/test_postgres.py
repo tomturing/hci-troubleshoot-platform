@@ -4,6 +4,7 @@ postgres 数据库管理器单元测试
 覆盖 DatabaseManager.health_check, get_session 和 close 方法
 """
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -41,10 +42,8 @@ class TestDatabaseManager:
             assert session is mock_session
 
             # 模拟正常退出（触发 commit）
-            try:
+            with contextlib.suppress(StopAsyncIteration):
                 await gen.__anext__()
-            except StopAsyncIteration:
-                pass
 
             mock_session.commit.assert_called_once()
             mock_session.close.assert_called_once()
