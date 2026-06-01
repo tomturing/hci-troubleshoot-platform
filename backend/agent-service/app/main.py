@@ -3,8 +3,9 @@ Agent Service - 主应用
 
 负责 AI 推理引擎的独立微服务：
 - AgentRouter（大脑路由器）
-- IntentAgent（S0 意图识别）
-- DiagnosticAgent（S1+ 诊断推理）
+- TriageAgent（S0 意图识别）
+- InvestigationAgent（S1-S4 诊断调查）
+- RemediationAgent（S5 修复执行）
 - OpsAgentAdapter（ops-agent B 大脑，ACP 协议）
 - PaiAgentAdapter（pydantic-ai C 大脑，原生 Agent）
 - HTTP SSE 端点：POST /v1/agent/stream
@@ -14,9 +15,9 @@ Agent Service - 主应用
   agent-service         = AI 推理引擎 + 知识检索
 
 架构设计（v3.0）：
-  - S0（意图识别）→ IntentAgent（注入分类列表 + 环境上下文）
-  - S1+（诊断推理）→ DiagnosticAgent（三轨路由：SOP/KBD/机制推理）
-  - ReactEngine → 工具调用循环（可选，execution_mode=react）
+  - S0（意图识别）→ TriageAgent（继承 BaseAgent）
+  - S1-S4（诊断调查）→ InvestigationAgent（继承 BaseAgent）
+  - S5（修复执行）→ RemediationAgent（继承 BaseAgent）
 """
 
 from contextlib import asynccontextmanager
@@ -36,11 +37,10 @@ from shared.utils.exception_handlers import register_exception_handlers
 
 from app.adapters.agents.agent_router import AgentRouter
 from app.adapters.agents.htp.confirm_service import ConfirmService
-from app.adapters.agents.htp.diagnostic_agent import DiagnosticAgent
 from app.adapters.agents.htp.investigation_agent import InvestigationAgent  # T-AGT-11：主用 S1-S4
 from app.adapters.agents.htp.react_engine import ReactEngine
 from app.adapters.agents.htp.remediation_agent import RemediationAgent  # T-AGT-12：S5 修复执行
-from app.adapters.agents.htp.triage_agent import TriageAgent  # T-AGT-10：替换 IntentAgent
+from app.adapters.agents.htp.triage_agent import TriageAgent  # T-AGT-10：S0 意图识别
 from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
 from app.config import settings
 from app.routes.agent import router as agent_router_route
@@ -94,7 +94,7 @@ async def lifespan(app: FastAPI):
         message=f"Registered AI assistants: {ai_registry.list_types()}",
     )
 
-    # ── KB 客户端（IntentAgent + DiagnosticAgent 使用）──────────────────────────
+    # ── KB 客户端（TriageAgent + InvestigationAgent 使用）──────────────────────────
     kb_client: KBClient | None = None
     if settings.KB_ENABLED:
         kb_client = KBClient(
@@ -133,7 +133,7 @@ async def lifespan(app: FastAPI):
         kb_client=kb_client,
     )
 
-    # ── DiagnosticAgent（S1+ 诊断推理）─────────────────────────────────────────────
+    # ── 工具执行器（S1-S5 阶段共用）─────────────────────────────────────────────
     # 先实例化 ReactEngine（可选）
     react_engine: ReactEngine | None = None
     scp_client = None  # 确保变量存在，供 InvestigationAgent 使用
@@ -187,13 +187,6 @@ async def lifespan(app: FastAPI):
             event="react_engine_initialized",
             message="ReAct 引擎已初始化",
         )
-
-    # 实例化 DiagnosticAgent（降级备用）
-    diagnostic_agent = DiagnosticAgent(
-        ai_registry=ai_registry,
-        kb_client=kb_client,
-        react_engine=react_engine,
-    )
 
     # ── InvestigationAgent（S1-S4 诊断调查）──────────────────────────────────────────────
     # T-AGT-11：主用 S1-S4 阶段，继承 BaseAgent
@@ -256,14 +249,13 @@ async def lifespan(app: FastAPI):
         )
 
     # ── 组装 AgentRouter ────────────────────────────────────────────────────────────
-    # T-AGT-10：使用 TriageAgent
-    # T-AGT-11：使用 InvestigationAgent 主用 S1-S4，DiagnosticAgent 降级备用
-    # T-AGT-12：使用 RemediationAgent 处理 S5 修复执行
+    # T-AGT-10：TriageAgent 处理 S0 意图识别
+    # T-AGT-11：InvestigationAgent 处理 S1-S4 诊断调查
+    # T-AGT-12：RemediationAgent 处理 S5 修复执行
     agent_router = AgentRouter(
         triage_agent=triage_agent,
         investigation_agent=investigation_agent,
-        diagnostic_agent=diagnostic_agent,
-        remediation_agent=remediation_agent,  # T-AGT-12
+        remediation_agent=remediation_agent,
         ops_agent_adapter=ops_adapter,
         pai_adapter=pai_adapter,
         ai_registry=ai_registry,
@@ -422,7 +414,7 @@ class CompositeToolExecutor:
 
 app = FastAPI(
     title="HCI Agent Service",
-    description="AI 推理引擎微服务（v3.0：IntentAgent + DiagnosticAgent）",
+    description="AI 推理引擎微服务（v4.3：TriageAgent + InvestigationAgent + RemediationAgent）",
     version="3.0.0",
     lifespan=lifespan,
 )

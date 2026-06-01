@@ -1,5 +1,5 @@
 """
-AgentRouter：大脑路由器（v4.2）
+AgentRouter：大脑路由器（v4.3）
 
 路由逻辑：
   1. assistant_type=ops-agent → OpsAgentAdapter
@@ -14,6 +14,7 @@ AgentRouter：大脑路由器（v4.2）
   - 降级逻辑：
     - ops-agent 未启用时降级到 InvestigationAgent
     - pai-agent 不可达时降级到 InvestigationAgent
+  - v4.3：移除 DiagnosticAgent（僵尸组件，从未被调用）
 """
 
 from __future__ import annotations
@@ -24,11 +25,10 @@ from typing import TYPE_CHECKING, Any
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
-from app.adapters.agents.htp.diagnostic_agent import DiagnosticAgent  # 降级备用
-from app.adapters.agents.htp.investigation_agent import InvestigationAgent  # T-AGT-11：主用
+from app.adapters.agents.htp.investigation_agent import InvestigationAgent  # T-AGT-11：S1-S4
 from app.adapters.agents.htp.kbd_model import KBD
 from app.adapters.agents.htp.remediation_agent import RemediationAgent
-from app.adapters.agents.htp.triage_agent import TriageAgent  # T-AGT-10：替换 IntentAgent
+from app.adapters.agents.htp.triage_agent import TriageAgent  # T-AGT-10：S0
 from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
 from app.domain.agent_port import AgentEvent, AgentTextChunk, AgentUnavailableError
 
@@ -65,17 +65,15 @@ class AgentRouter:
 
     def __init__(
         self,
-        triage_agent: TriageAgent,  # T-AGT-10：TriageAgent 替换 IntentAgent
-        investigation_agent: InvestigationAgent,  # T-AGT-11：主用 S1-S4
-        diagnostic_agent: DiagnosticAgent,  # 降级备用
+        triage_agent: TriageAgent,  # T-AGT-10：S0 意图识别
+        investigation_agent: InvestigationAgent,  # T-AGT-11：S1-S4 诊断调查
         remediation_agent: RemediationAgent | None = None,
         ops_agent_adapter: OpsAgentAdapter | None = None,
         pai_adapter: PaiAgentAdapter | None = None,
         ai_registry: AIAssistantRegistry | None = None,
     ) -> None:
-        self._triage_agent = triage_agent  # T-AGT-10：使用 TriageAgent
-        self._investigation_agent = investigation_agent  # T-AGT-11：主用
-        self._diagnostic_agent = diagnostic_agent  # 降级备用
+        self._triage_agent = triage_agent
+        self._investigation_agent = investigation_agent
         self._remediation_agent = remediation_agent
         self._ops_agent = ops_agent_adapter
         self._pai = pai_adapter
@@ -258,7 +256,7 @@ class AgentRouter:
             if self._remediation_agent is None:
                 logger.warning(
                     event="route_remediation_missing",
-                    message="RemediationAgent 未注入，降级到 DiagnosticAgent",
+                    message="RemediationAgent 未注入，无法执行修复操作",
                     session_id=session_id,
                 )
                 yield AgentTextChunk(content="[提示] 修复执行模块暂不可用，请根据诊断报告手动操作。")

@@ -34,7 +34,6 @@ from shared.observability.logger import get_logger
 from app.domain.agent_port import (
     AgentEvent,
     AgentInteractiveRequest,
-    AgentStageUpdate,
     AgentTextChunk,
     AgentUnavailableError,
 )

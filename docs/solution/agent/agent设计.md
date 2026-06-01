@@ -1381,6 +1381,8 @@ Agent 在 `sop_execution.context_variables` 中已有当前上下文所有变量
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-06-01 | v6.0 | 清理僵尸组件：删除 IntentAgent（@deprecated）和 DiagnosticAgent（零调用），更新 AgentRouter v4.3 架构（S0→TriageAgent, S1-S4→InvestigationAgent, S5→RemediationAgent） | — |
+| 2026-06-01 | v5.9 | TriageAgent S0 意图识别三缺陷修复：① 废除直接确认路径，所有情况统一走 AgentInteractiveRequest（缺陷二）；② 增加解析失败兜底，提示用户重新描述（缺陷三）；③ `_format_categories()` 增加 code 格式校验过滤中间节点；④ `_parse_intent_result()` 正则修复（Unicode 转义+半角冒号兼容） | [./events/2026-06-01-S0意图识别三大缺陷根因与改进方案.md](./events/2026-06-01-S0意图识别三大缺陷根因与改进方案.md) |
 | 2026-05-29 | v5.8 | 补齐 agent-service Helm deployment.yaml 中 DATABASE_URL 环境变量配置（此前缺失导致数据库认证失败）；统一 config.py 默认值与其他服务一致 |
 | 2026-05-29 | v5.7 | 修复 `main.py` lifespan 中 `db_manager.get_session()` 错误用法：AsyncGenerator 不支持 async with，改用 `async_session_factory()` |
 | 2026-05-29 | v5.6 | 修复 `react_engine.py` 导入路径：`VariableRequestResult` 从 `sop_tools.py` 迁移至 `memory/variable_pool.py`（PR #341），修正 import 语句解决 ImportError

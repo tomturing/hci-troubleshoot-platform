@@ -7,7 +7,7 @@ ReactEngine: ReAct 循环执行引擎
   - 工具结果处理
   - 流式输出推理过程
 
-被 DiagnosticAgent 内部使用（execution_mode=react 时）
+被 InvestigationAgent 内部使用（execution_mode=react 时）
 """
 
 import uuid
