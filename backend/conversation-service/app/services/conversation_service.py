@@ -1503,11 +1503,12 @@ class ConversationService:
             r"[①②③④⑤]\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+?)(?:\r?\n|$)"
         )
         try:
-            # 取最近一条 assistant 消息
+            # 1. 优先从最后一条 assistant 消息的 metadata 结构化元数据中直接读取（方案1）
+            last_ai_metadata = None
             if self.session_factory:
                 async with self.session_factory() as session:
                     result = await session.execute(
-                        select(MessageModel.content)
+                        select(MessageModel.content, MessageModel.metadata)
                         .where(
                             MessageModel.conversation_id == conversation_id,
                             MessageModel.role == "assistant",
@@ -1515,12 +1516,32 @@ class ConversationService:
                         .order_by(MessageModel.created_at.desc())
                         .limit(1)
                     )
-                    last_ai_content = result.scalar_one_or_none()
+                    row = result.fetchone()
+                    last_ai_content = row[0] if row else None
+                    last_ai_metadata = row[1] if row else None
             else:
                 msgs = await self.repository.get_messages(conversation_id)
                 ai_msgs = [m for m in msgs if m.role.value == "assistant"]
                 last_ai_content = ai_msgs[-1].content if ai_msgs else None
+                last_ai_metadata = ai_msgs[-1].metadata if ai_msgs else None
 
+            # 方案1核心：如果有 metadata 且包含了结构化的候选列表，直接返回！(100%精准，0正则)
+            if last_ai_metadata and isinstance(last_ai_metadata, dict):
+                # 兼容 "event" 内的 metadata
+                event_data = last_ai_metadata.get("event") or {}
+                candidates_from_meta = (
+                    last_ai_metadata.get("candidates") or 
+                    event_data.get("metadata", {}).get("candidates")
+                )
+                if candidates_from_meta and isinstance(candidates_from_meta, list):
+                    logger.info(
+                        event="extract_s0_candidates_from_metadata_success",
+                        message=f"已成功通过 metadata 结构化元数据精准提取 {len(candidates_from_meta)} 个候选分类",
+                        conversation_id=str(conversation_id),
+                    )
+                    return [{"code": c.get("code", ""), "name": c.get("name", "")} for c in candidates_from_meta if c]
+
+            # 2. 方案2兜底：如果 metadata 为空（如历史消息），退避到超级正则解析
             if not last_ai_content:
                 return []
 
