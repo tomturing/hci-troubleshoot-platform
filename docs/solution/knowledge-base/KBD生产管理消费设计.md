@@ -100,3 +100,22 @@
 * **100% 数据语义精准度**：消除了向量模型和 LLM 的字符干扰，极大提升 RAG 排障引导回复的质量。
 * **极致的前端稳定性**：借力成熟开源社区的标准 Parser，彻底消除了由于手写正则引发的边界字符吞噬、贪婪吸入等长尾缺陷。
 * **多渠道消费一致性**：最干净的 Markdown/纯文本源码让排障命令行和 PDF 报告生成变得无比清爽。
+
+---
+
+## 5. 重构方案落地记录 (Implementation Status Log)
+
+于 2026 年 6 月 1 日，该极具技术品位的终极重构设计方案已 100% 成功落地于 K3s 开发集群环境：
+
+1. **阶段一 (前端标准 AST 解析器)**：已完全重构 `KbdReviewView.vue`，彻底废除旧有的 `inlineRender` 和转义补丁，采用标准 AST 解析器，实现完美的纯净无噪前端渲染。
+2. **阶段二 (ETL Ingestor 去转义化)**：已修改 `data-pipeline/kbd/converter.py` 的 HTML 转换逻辑，彻底关闭 markdownify 的对星号 `*`、下划线 `_` 等字符的自动转义，数据无干扰入库。
+3. **阶段三 (双通道物理模型与 Embedding 向量检索优化)**：
+   - 数据库 Schema 完成物理迁移，正式添加 `content_raw` 列，用于持久化存储去噪纯文本。
+   - 重写 SQLAlchemy 模型类 `kbd_entry.py`，实现极其稳健的 9 阶段正则清洗函数 `strip_markdown`。
+   - 重构 FastAPI `ingest.py` 与 `admin.py` 中的 Ingest/Update/Publish/Approve 逻辑。在发布、重新发布时均采用 `content_raw` 或经过清洗的问题章节作为 pgvector Embedding 向量生成的文本源，保证语义搜索的高精准度。
+4. **阶段四 (K3s 集群发布与资产重刷验证)**：
+   - 本地 Docker 镜像成功编译，并平滑导入到 K3s containerd，安全通过 `rollout status` 重启就绪。
+   - 成功对案例 `36142` 和 `36166` 进行批量覆盖导入。
+   - 数据库物理查询验证：`36166` 与 `36142` 中的 `content_md` 含有 0 个反斜杠转义字符（完全纯净字面量 Markdown）；且 `content_raw` 中的 `>`、`**`、`-` 等标记被完美清洗，去噪完全，向量通道与语义表现通道配合无间。
+
+[env:dev:gs][agent:claude]

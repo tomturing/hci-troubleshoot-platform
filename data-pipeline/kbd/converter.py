@@ -259,6 +259,9 @@ def _html_to_md(html: str, image_map: dict[str, dict]) -> str:
         heading_style=markdownify.ATX,
         bullets="-",
         strip=["script", "style", "input", "a"],
+        escape_asterisks=False,
+        escape_underscores=False,
+        escape_misc=False,
     ).convert(str(soup))
 
     # 规范化多余空行
@@ -293,6 +296,9 @@ def _html_to_md_with_placeholder(html: str, image_map: dict[str, dict]) -> str:
         heading_style=markdownify.ATX,
         bullets="-",
         strip=["script", "style", "input", "a"],
+        escape_asterisks=False,
+        escape_underscores=False,
+        escape_misc=False,
     ).convert(str(soup))
 
     # 规范化多余空行

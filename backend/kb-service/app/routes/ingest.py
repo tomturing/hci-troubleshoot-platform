@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from sqlalchemy import select
 
-from app.models.kbd_entry import KbdEntry
+from app.models.kbd_entry import KbdEntry, strip_markdown
 from app.services.ingestor import IngestorService
 
 if TYPE_CHECKING:
@@ -241,6 +241,7 @@ class KbdIngestRequest(BaseModel):
 
     # 聚合渲染（含视觉描述，pipeline 写入；admin 编辑章节后服务端自动重建）
     content_md: str | None = Field(None, description="聚合渲染 Markdown（含截图视觉描述）；不传时由章节字段自动组装")
+    content_raw: str | None = Field(None, description="聚合纯文本（不含 Markdown 格式与截图说明）；不传时由 content_md 自动提取")
 
     metadata: dict = Field(default_factory=dict, description="JSONB 补充字段（来源元信息等）")
     ai_category_id: str | None = Field(None, max_length=32, description="AI 分类建议 ID")
@@ -407,6 +408,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                     existing_entry.images_json = body.images_json
                     # content_md：优先用传入值（含视觉描述），否则从章节重建
                     existing_entry.content_md = body.content_md or existing_entry.rebuild_content_md()
+                    existing_entry.content_raw = body.content_raw or strip_markdown(existing_entry.content_md)
                     existing_entry.entry_metadata = body.metadata
                     if body.ai_category_id:
                         existing_entry.ai_category_id = body.ai_category_id
@@ -466,6 +468,22 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                 )
 
         # 2. 创建新条目（结构化章节字段）
+        temp_content_md = body.content_md
+        if not temp_content_md:
+            # 临时生成一个 kbd 实例用于重建 content_md
+            temp_entry = KbdEntry(
+                problem_description=body.problem_description,
+                alert_info=body.alert_info,
+                steps_text=body.steps_text,
+                root_cause=body.root_cause,
+                solution=body.solution,
+                operational_impact=body.operational_impact,
+                is_temporary=body.is_temporary,
+                recommendations=body.recommendations,
+                images_json=body.images_json,
+            )
+            temp_content_md = temp_entry.rebuild_content_md()
+
         new_entry = KbdEntry(
             support_id=body.support_id,
             title=body.title,
@@ -480,7 +498,8 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
             steps_json=body.steps_json,
             images_json=body.images_json,
             # content_md：优先用传入值（含视觉描述），否则从章节重建
-            content_md=body.content_md,
+            content_md=temp_content_md,
+            content_raw=body.content_raw or strip_markdown(temp_content_md),
             entry_metadata=body.metadata,
             ai_category_id=body.ai_category_id,
             ai_category_conf=body.ai_category_conf,

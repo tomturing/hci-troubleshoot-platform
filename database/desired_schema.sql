@@ -799,6 +799,7 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     -- 渲染聚合（由 pipeline 生成或从章节字段重建，含截图说明等视觉信息）
     -- 供 LLM 上下文注入使用；rebuild_content_md() 会将章节字段的 ![img:N] 展开为 images_json 中的描述
     content_md text,
+    content_raw text,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     category_id varchar(32),
     ai_category_id varchar(32),
@@ -833,6 +834,7 @@ COMMENT ON COLUMN kbd_entry.recommendations IS '建议与总结（8 大章节之
 COMMENT ON COLUMN kbd_entry.steps_json IS '结构化工具步骤（供 agent 执行）；格式：[{tool_name, tool_args_template, expected_pattern}]；默认为空，需 admin 人工编辑或 AI 提取后填充；非空时 kbd_entry 才对 InvestigationAgent 可见';
 COMMENT ON COLUMN kbd_entry.images_json IS '图片视觉描述（pipeline Vision LLM 生成）；格式：[{"seq": N, "section": "field_name", "desc": "..."}]；章节字段中以 ![img:N] 标记位置，rebuild_content_md() 展开为 > **【截图说明】** 块；独立存储确保 admin 编辑章节字段后视觉信息不丢失';
 COMMENT ON COLUMN kbd_entry.content_md IS '聚合渲染 Markdown（含截图视觉描述）；由 pipeline 生成或 rebuild_content_md() 从章节字段+images_json 重建；供 LLM 上下文注入；embedding 不使用此字段（使用问题侧字段 title+problem_description+alert_info+root_cause）';
+COMMENT ON COLUMN kbd_entry.content_raw IS '纯文本内容（剔除 Markdown 格式标记和图片占位符），专供 LLM 和 RAG 检索/Embedding 使用';
 COMMENT ON COLUMN kbd_entry.metadata IS '扩展元数据（如案例类型、适用版本、标签等）';
 COMMENT ON COLUMN kbd_entry.category_id IS '人工确认的分类编码，关联 kb_category.code';
 COMMENT ON COLUMN kbd_entry.ai_category_id IS 'AI 分类建议编码';
