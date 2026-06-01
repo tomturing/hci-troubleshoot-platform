@@ -1,7 +1,7 @@
 """
 postgres 数据库管理器单元测试
 
-覆盖 DatabaseManager.health_check 和 close 方法
+覆盖 DatabaseManager.health_check, get_session 和 close 方法
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,6 +23,31 @@ class TestDatabaseManager:
         """验证 Base 是 declarative_base"""
         assert Base is not None
         assert hasattr(Base, "registry")
+
+    @pytest.mark.asyncio
+    async def test_get_session_commit_success(self, db_manager):
+        """get_session 正常提交路径"""
+        mock_session = AsyncMock()
+        mock_session.commit = AsyncMock()
+        mock_session.close = AsyncMock()
+
+        with patch.object(db_manager, "async_session_factory") as mock_factory:
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock()
+
+            # 模拟生成器消费
+            gen = db_manager.get_session()
+            session = await gen.__anext__()
+            assert session is mock_session
+
+            # 模拟正常退出（触发 commit）
+            try:
+                await gen.__anext__()
+            except StopAsyncIteration:
+                pass
+
+            mock_session.commit.assert_called_once()
+            mock_session.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_health_check_success(self, db_manager):
