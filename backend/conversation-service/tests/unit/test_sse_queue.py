@@ -5,12 +5,11 @@ sse_queue 模块单元测试
 """
 
 import asyncio
-import logging
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from app.services.sse_queue import QueueSSEEmitter, LogAuditService
 import app.services.sse_queue as sse_queue_module
+import pytest
+from app.services.sse_queue import LogAuditService, QueueSSEEmitter
 
 
 class TestQueueSSEEmitter:
