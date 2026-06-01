@@ -384,8 +384,9 @@ class TriageAgent(BaseAgent):
 
         return "\n\n".join(sections)
 
-    # 叶子节点 code 格式正则：前缀-纯数字（如 虚拟机-003）
-    _LEAF_CODE_RE = re.compile(r'^[^-]+-\d+$')
+    # 叶子节点 code 格式正则：允许多级前缀（如 虚拟机-L2-001、硬件-003）
+    # Unicode 转义避免 encoding 风险
+    _LEAF_CODE_RE = re.compile(r'^[一-鿿A-Za-z0-9-]+-\d+$')
 
     @staticmethod
     def _format_categories(categories: dict[str, list[dict]]) -> str:
@@ -420,11 +421,12 @@ class TriageAgent(BaseAgent):
           2. ①②③④⑤候选列表 — 需要用户选择
           3. 未匹配 — 无法识别
 
-        正则使用 Unicode 转义 [一-龥] 避免 encoding 乱码风险。
+        正则使用 Unicode 转义 [一-鿿] 避免 encoding 乱码风险。
+        code 格式允许多级前缀（如 虚拟机-L2-001）。
         """
-        # 1. 直接确认模式（Unicode 转义 + 兼容半角冒号）
+        # 1. 直接确认模式（Unicode 转义 + 兼容半角冒号 + 多级前缀）
         confirmed_pattern = re.compile(
-            r'已确认故障分类[：:]\s*([一-龥A-Za-z0-9]+-\d+)\s+([^\n]+)'
+            r'已确认故障分类[：:]\s*([一-鿿A-Za-z0-9-]+-\d+)\s+([^\n]+)'
         )
         m = confirmed_pattern.search(reply)
         if m:
@@ -435,9 +437,9 @@ class TriageAgent(BaseAgent):
                 needs_confirmation=True,  # 改为 True，所有情况需用户确认
             )
 
-        # 2. 候选列表模式（① ② ③ ④ ⑤）（Unicode 转义）
+        # 2. 候选列表模式（① ② ③ ④ ⑤）（Unicode 转义 + 多级前缀）
         candidate_pattern = re.compile(
-            r'[①②③④⑤]\s*([一-龥A-Za-z0-9]+-\d+)\s+([^\n]+)'
+            r'[①②③④⑤]\s*([一-鿿A-Za-z0-9-]+-\d+)\s+([^\n]+)'
         )
         candidates = [
             {"code": m.group(1).strip(), "name": m.group(2).strip()}

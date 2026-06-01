@@ -28,7 +28,7 @@ class TestParseIntentResult:
         result = self.triage._parse_intent_result(reply)
 
         assert result is not None
-        assert result.needs_confirmation is False
+        assert result.needs_confirmation is True  # v3 改为全部需确认
         assert result.category_id == "虚拟机-003"
         assert "虚拟机开机失败" in result.category_name
 
@@ -64,6 +64,47 @@ class TestParseIntentResult:
 
         assert result is not None
         assert result.category_id == "存储-007"
+
+    def test_confirmed_with_multi_level_prefix(self):
+        """能识别多级前缀分类编码（如 虚拟机-L2-001）"""
+        reply = "已确认故障分类：虚拟机-L2-001 虚拟机高级故障"
+        result = self.triage._parse_intent_result(reply)
+
+        assert result is not None
+        assert result.category_id == "虚拟机-L2-001"
+        assert result.category_name == "虚拟机高级故障"
+
+    def test_candidates_with_multi_level_prefix(self):
+        """候选列表中的编码也能匹配多级前缀"""
+        reply = (
+            "可能是以下故障之一：\n"
+            "① 硬件-L2-001 硬件高级故障\n"
+            "② 存储-L3-002 存储三级故障\n"
+        )
+        result = self.triage._parse_intent_result(reply)
+
+        assert result is not None
+        assert len(result.candidates) == 2
+        assert result.candidates[0]["code"] == "硬件-L2-001"
+        assert result.candidates[1]["code"] == "存储-L3-002"
+
+    def test_leaf_code_regex_validation(self):
+        """叶子节点 code 格式正则能匹配各种合法编码"""
+        import re
+        # 使用 TriageAgent 内部正则
+        leaf_re = re.compile(r'^[一-鿿A-Za-z0-9-]+-\d+$')
+
+        # 合法叶子节点编码（应匹配）
+        assert leaf_re.match("虚拟机-003") is not None
+        assert leaf_re.match("虚拟机-L2-001") is not None
+        assert leaf_re.match("硬件-L3-002") is not None
+        assert leaf_re.match("存储-001") is not None
+        assert leaf_re.match("VM-005") is not None  # 英文前缀
+
+        # 非叶子节点编码（应不匹配）
+        assert leaf_re.match("虚拟机-L1") is None  # 无数字后缀
+        assert leaf_re.match("虚拟机") is None     # 无后缀
+        assert leaf_re.match("-003") is None       # 无前缀
 
 
 # ─── resolve_candidate_selection 测试 ───────────────────────────────────────
@@ -123,8 +164,8 @@ class TestTriageAgentProcess:
     """process()：mock LLM 后的流程验证"""
 
     @pytest.mark.asyncio
-    async def test_process_confirmed_intent_yields_stage_s1(self):
-        """LLM 直接确认意图时，应 yield AgentStageUpdate(stage='S1')"""
+    async def test_process_confirmed_intent_yields_interactive_request(self):
+        """LLM 直接确认意图时，应 yield AgentInteractiveRequest（v3 改为全部需用户确认）"""
         mock_registry = MagicMock()
         mock_client = MagicMock()
 
@@ -158,11 +199,12 @@ class TestTriageAgentProcess:
             user_id="user-001",
         )]
 
-        # 最后一个事件应是 AgentStageUpdate(stage="S1")
-        stage_events = [e for e in events if isinstance(e, AgentStageUpdate)]
-        assert len(stage_events) >= 1
-        assert stage_events[-1].stage == "S1"
-        assert stage_events[-1].metadata.get("category_id") == "虚拟机-003"
+        # v3 改为 yield AgentInteractiveRequest（单候选确认卡）
+        interactive_events = [e for e in events if isinstance(e, AgentInteractiveRequest)]
+        assert len(interactive_events) == 1
+        assert interactive_events[0].kind == "intent_selection"
+        assert interactive_events[0].metadata.get("category_id") == "虚拟机-003"
+        assert interactive_events[0].metadata.get("single_candidate") is True
 
     @pytest.mark.asyncio
     async def test_process_candidates_yields_interactive_request(self):

@@ -195,3 +195,79 @@ async def test_delete_constraints_active_references_blocked():
     repo = CategoryRepository(mock_db)
     with pytest.raises(ValueError, match="无法删除该分类：该分类下包含子分类"):
         await repo.delete(code="存储-001")
+
+
+@pytest.mark.anyio
+async def test_get_all_leaf_only_filter():
+    """测试 leaf_only 参数过滤，仅返回叶子节点（无子分类的节点）"""
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_db.async_session_factory.return_value = mock_session
+
+    # 构造测试数据：
+    # - 虚拟机-L1 (id=1, parent_id=None) → 中间节点，有子分类
+    # - 虚拟机-001 (id=2, parent_id=1) → 叶子节点
+    # - 虚拟机-002 (id=3, parent_id=1) → 叶子节点
+    # - 存储-L1 (id=4, parent_id=None) → 中间节点，有子分类
+    # - 存储-001 (id=5, parent_id=4) → 叶子节点
+    parent_cat = mock_category(1, "虚拟机-L1", "虚拟机", 1, None, "虚拟机", ["虚拟机"])
+    leaf_cat1 = mock_category(2, "虚拟机-001", "虚拟机开机失败", 2, 1, "虚拟机", ["虚拟机", "虚拟机开机失败"])
+    leaf_cat2 = mock_category(3, "虚拟机-002", "虚拟机无法迁移", 2, 1, "虚拟机", ["虚拟机", "虚拟机无法迁移"])
+    parent_cat2 = mock_category(4, "存储-L1", "存储", 1, None, "存储", ["存储"])
+    leaf_cat3 = mock_category(5, "存储-001", "存储添加失败", 2, 4, "存储", ["存储", "存储添加失败"])
+
+    all_cats = [parent_cat, leaf_cat1, leaf_cat2, parent_cat2, leaf_cat3]
+    leaf_cats = [leaf_cat1, leaf_cat2, leaf_cat3]  # 仅叶子节点
+
+    # Mock 返回 RowProxy mappings（模拟 text() SQL 查询结果）
+    def make_row_proxy(cat):
+        """将 KbCategory 对象转换为 row mapping 格式"""
+        return {
+            "id": cat.id,
+            "code": cat.code,
+            "name": cat.name,
+            "domain": cat.domain,
+            "level": cat.level,
+            "parent_id": cat.parent_id,
+            "path_labels": cat.path_labels,
+            "hit_count": cat.hit_count,
+            "is_active": cat.is_active,
+            "keywords": [],
+            "source": "manual",
+            "version": "1.0",
+            "created_at": None,
+            "published_kbd_count": 0,
+            "published_sop_count": 0,
+        }
+
+    # Mock 全量查询结果（leaf_only=False）
+    mock_all_result = MagicMock()
+    mock_all_result.mappings.return_value.all.return_value = [make_row_proxy(c) for c in all_cats]
+
+    # Mock 叶子查询结果（leaf_only=True）
+    mock_leaf_result = MagicMock()
+    mock_leaf_result.mappings.return_value.all.return_value = [make_row_proxy(c) for c in leaf_cats]
+
+    # 根据查询是否包含 NOT EXISTS 返回不同结果
+    async def execute_side_effect(query, *args):
+        query_str = str(query) if hasattr(query, 'text') else ""
+        # leaf_only=True 时查询包含 "NOT EXISTS"
+        if "NOT EXISTS" in query_str:
+            return mock_leaf_result
+        return mock_all_result
+
+    mock_session.execute = execute_side_effect
+
+    repo = CategoryRepository(mock_db)
+
+    # 测试 leaf_only=False（返回全部）
+    all_result = await repo.get_all(leaf_only=False)
+    assert len(all_result) == 5
+    assert any(c.code == "虚拟机-L1" for c in all_result)  # 包含中间节点
+
+    # 测试 leaf_only=True（仅返回叶子）
+    leaf_result = await repo.get_all(leaf_only=True)
+    assert len(leaf_result) == 3
+    assert all("-L" not in c.code for c in leaf_result)  # 无中间节点编码
+    assert all(c.code in ("虚拟机-001", "虚拟机-002", "存储-001") for c in leaf_result)

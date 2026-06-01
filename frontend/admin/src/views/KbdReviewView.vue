@@ -878,7 +878,7 @@ onMounted(() => {
         <!-- 案例 ID -->
         <el-table-column label="案例 ID" width="100">
           <template #default="{ row }">
-            <a :href="makeSupportUrl(row.support_id)" target="_blank" class="support-link">
+            <a :href="makeSupportUrl(row.support_id)" target="_blank" rel="noopener noreferrer" class="support-link">
               {{ row.support_id }}
             </a>
           </template>
@@ -976,7 +976,7 @@ onMounted(() => {
         <!-- 基本信息 -->
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="案例 ID">
-            <a :href="makeSupportUrl(detailEntry.support_id)" target="_blank" class="support-link">
+            <a :href="makeSupportUrl(detailEntry.support_id)" target="_blank" rel="noopener noreferrer" class="support-link">
               {{ detailEntry.support_id }}
               <el-icon style="font-size: 11px; margin-left: 3px"><Link /></el-icon>
             </a>
