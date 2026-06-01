@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.adapters.agents.htp.triage_agent import TriageAgent
-from app.domain.agent_port import AgentInteractiveRequest, AgentStageUpdate
+from app.domain.agent_port import AgentInteractiveRequest
 
 # ─── _parse_intent_result 测试 ────────────────────────────────────────────────
 
