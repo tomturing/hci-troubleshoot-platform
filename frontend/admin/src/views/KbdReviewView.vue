@@ -156,8 +156,8 @@ const rejectingEntry = ref<KbdEntry | null>(null)
 const rejectNote = ref('')
 const rejectLoading = ref(false)
 
-// 审核人 ID（实际项目中应来自登录态）
-const currentUser = ref('admin')
+// 审核人 ID（实际项目中应来自登录态，当前临时使用 1）
+const currentUser = ref(1)
 
 // 编辑弹窗
 const editDialogVisible = ref(false)
