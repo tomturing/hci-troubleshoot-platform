@@ -1476,35 +1476,26 @@ class ConversationService:
                 kbd_entry_id=kbd_entry_id,
             )
 
-    # ─── S0 候选辅助方法 (T3-c) ─────────────────────────────────────────────
+# ─── S0 候选辅助方法 (T3-c) ─────────────────────────────────────────────
 
-    async def _extract_s0_candidates(
+    async def _get_last_assistant_message(
         self,
         conversation_id: uuid.UUID,
-    ) -> list[dict[str, str]]:
+    ) -> tuple[str | None, dict | None]:
         """
-        从上一条 assistant 消息中提取 S0 给出的候选分类列表。
+        获取最后一条 assistant 消息的内容和 metadata（统一入口）。
 
-        扫描最近一条 AI 消息，用正则提取 ① ② 对应的 {code, name}。
-        格式示例：
-          ① 虚拟机-003 虚拟机开机失败
-          ② 存储-005 存储卷挂载异常
+        Args:
+            conversation_id: 对话 ID
 
         Returns:
-            list[dict]，每项格式 {"code": "...", "name": "..."}；
-            无匹配时返回 []
+            tuple (content, metadata)：内容字符串和 metadata 字典，无消息时返回 (None, None)
         """
-
         from sqlalchemy import select
 
         from ..models.message import Message as MessageModel
 
-        _candidate_item_pattern = re.compile(
-            r"[①②③④⑤]\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+?)(?:\r?\n|$)"
-        )
         try:
-            # 1. 优先从最后一条 assistant 消息的 metadata 结构化元数据中直接读取（方案1）
-            last_ai_metadata = None
             if self.session_factory:
                 async with self.session_factory() as session:
                     result = await session.execute(
@@ -1517,45 +1508,108 @@ class ConversationService:
                         .limit(1)
                     )
                     row = result.fetchone()
-                    last_ai_content = row[0] if row else None
-                    last_ai_metadata = row[1] if row else None
+                    return (row[0] if row else None, row[1] if row else None)
             else:
                 msgs = await self.repository.get_messages(conversation_id)
                 ai_msgs = [m for m in msgs if m.role.value == "assistant"]
-                last_ai_content = ai_msgs[-1].content if ai_msgs else None
-                last_ai_metadata = ai_msgs[-1].metadata if ai_msgs else None
-
-            # 方案1核心：如果有 metadata 且包含了结构化的候选列表，直接返回！(100%精准，0正则)
-            if last_ai_metadata and isinstance(last_ai_metadata, dict):
-                # 兼容 "event" 内的 metadata
-                event_data = last_ai_metadata.get("event") or {}
-                candidates_from_meta = (
-                    last_ai_metadata.get("candidates")
-                    or event_data.get("metadata", {}).get("candidates")
-                )
-                if candidates_from_meta and isinstance(candidates_from_meta, list):
-                    logger.info(
-                        event="extract_s0_candidates_from_metadata_success",
-                        message=f"已成功通过 metadata 结构化元数据精准提取 {len(candidates_from_meta)} 个候选分类",
-                        conversation_id=str(conversation_id),
-                    )
-                    return [{"code": c.get("code", ""), "name": c.get("name", "")} for c in candidates_from_meta if c]
-
-            # 2. 方案2兜底：如果 metadata 为空（如历史消息），退避到超级正则解析
-            if not last_ai_content:
-                return []
-
-            candidates: list[dict[str, str]] = []
-            for m in _candidate_item_pattern.finditer(last_ai_content):
-                candidates.append({"code": m.group(1).strip(), "name": m.group(2).strip()})
-            return candidates
+                if not ai_msgs:
+                    return (None, None)
+                last_msg = ai_msgs[-1]
+                return (last_msg.content, last_msg.metadata)
         except Exception as e:
             logger.warning(
-                event="extract_s0_candidates_error",
-                message=f"提取 S0 候选分类失败：{e}",
+                event="get_last_assistant_message_error",
+                message=f"获取最后一条 AI 消息失败：{e}",
+                conversation_id=str(conversation_id),
+            )
+            return (None, None)
+
+    async def _extract_s0_candidates(
+        self,
+        conversation_id: uuid.UUID,
+    ) -> list[dict[str, str]]:
+        """
+        从上一条 assistant 消息中提取 S0 给出的候选分类列表。
+
+        优先级：
+          1. 从 metadata 结构化元数据提取（100% 精准，0 正则）
+          2. 从消息内容正则提取（兜底，支持历史消息）
+
+        Args:
+            conversation_id: 对话 ID
+
+        Returns:
+            list[dict]，每项格式 {"code": "...", "name": "..."}；
+            无匹配时返回 []
+        """
+        # 正则：支持多级分类前缀和包含括号等特殊字符的名称
+        _candidate_item_pattern = re.compile(
+            r"[①②③④⑤]\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+?)(?:\r?\n|$)"
+        )
+
+        # 统一入口：获取最后一条 assistant 消息
+        last_ai_content, last_ai_metadata = await self._get_last_assistant_message(conversation_id)
+
+        # 1. 优先从 metadata 结构化元数据提取（方案1）
+        if last_ai_metadata and isinstance(last_ai_metadata, dict):
+            # 兼容两种 metadata 结构：
+            #   - 直接 candidates 字段
+            #   - event.metadata.candidates 嵌套结构
+            event_data = last_ai_metadata.get("event") or {}
+            candidates_from_meta = (
+                last_ai_metadata.get("candidates")
+                or event_data.get("metadata", {}).get("candidates")
+            )
+            if candidates_from_meta and isinstance(candidates_from_meta, list):
+                extracted = [
+                    {"code": c.get("code", ""), "name": c.get("name", "")}
+                    for c in candidates_from_meta
+                    if c and c.get("code") and c.get("name")
+                ]
+                logger.info(
+                    event="extract_s0_candidates_metadata_success",
+                    message=f"通过 metadata 结构化提取 {len(extracted)} 个候选分类",
+                    conversation_id=str(conversation_id),
+                    candidate_count=len(extracted),
+                    source="metadata",
+                )
+                return extracted
+            else:
+                logger.debug(
+                    event="extract_s0_candidates_metadata_empty",
+                    message="metadata 中无候选列表，退避到正则提取",
+                    conversation_id=str(conversation_id),
+                )
+
+        # 2. 兜底：从消息内容正则提取
+        if not last_ai_content:
+            logger.debug(
+                event="extract_s0_candidates_no_message",
+                message="无最后一条 AI 消息",
                 conversation_id=str(conversation_id),
             )
             return []
+
+        candidates: list[dict[str, str]] = []
+        for m in _candidate_item_pattern.finditer(last_ai_content):
+            candidates.append({"code": m.group(1).strip(), "name": m.group(2).strip()})
+
+        if candidates:
+            logger.info(
+                event="extract_s0_candidates_regex_success",
+                message=f"通过正则提取 {len(candidates)} 个候选分类",
+                conversation_id=str(conversation_id),
+                candidate_count=len(candidates),
+                source="regex",
+            )
+        else:
+            logger.debug(
+                event="extract_s0_candidates_regex_empty",
+                message="正则提取未匹配到候选分类",
+                conversation_id=str(conversation_id),
+            )
+
+        return candidates
 
     async def _get_s0_candidate_rounds(self, conversation_id: uuid.UUID) -> int:
         """
