@@ -6,7 +6,6 @@ Prompt 审计落库服务（下沉至 agent-service）
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from typing import Any
 
