@@ -4,10 +4,11 @@ postgres 数据库管理器单元测试
 覆盖 DatabaseManager.health_check 和 close 方法
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from backend.shared.database.postgres import DatabaseManager, Base
+import pytest
+
+from backend.shared.database.postgres import Base, DatabaseManager
 
 
 class TestDatabaseManager:
