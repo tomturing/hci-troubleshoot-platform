@@ -477,6 +477,32 @@ class ConversationService:
 
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
 
+            # 审计日志写入（后台任务，失败不影响主流程）
+            # v6.2 修复：补充 _write_prompt_audit 调用，修复审计日志失效问题
+            asyncio.create_task(
+                self._write_prompt_audit(
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    assistant_type=resolved_assistant_type,
+                    trace_id=trace_id,
+                    message_count=len(history_messages),
+                    audit_meta={
+                        "has_sop": False,  # 后续可从 sop_resume_context 判断
+                        "kb_chunks_count": 0,  # 后续可从 KB 检索结果获取
+                        "kb_top_score": None,
+                        "context_breakdown": {
+                            "stage": current_stage,
+                            "env_context": bool(context_info),
+                            "sop_resume": bool(sop_resume_context),
+                        },
+                        "total_chars": sum(
+                            len(m.get("content", "")) for m in history_messages
+                        ),
+                    },
+                    sample_payload=history_messages,  # 完整消息历史
+                )
+            )
+
             # 流式完成后，检测诊断阶段转换并持久化（fire-and-forget）
             full_reply = "".join(_full_reply_buffer)
             if full_reply and not _used_ops_agent_path:

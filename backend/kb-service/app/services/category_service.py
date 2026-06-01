@@ -113,18 +113,49 @@ class CategoryService:
         self,
         force_refresh: bool = False,
         include_inactive: bool = False,
+        leaf_only: bool = False,
     ) -> dict[str, list[KbCategory]]:
         """按一级技术域分组获取分类
 
         Args:
-            force_refresh: 强制刷新缓存
+            force_refresh: 强制刷新缓存（仅当 leaf_only=False 时有效）
             include_inactive: 是否包含被禁用的分类
+            leaf_only: True=仅返回叶子节点（无子分类的节点），False=返回所有节点
 
         Returns:
             { domain: [KbCategory, ...] } 字典
+
+        注意：
+            leaf_only=True 时绕过缓存，直接调用 repo.get_all_active(leaf_only=True)。
+            因为 TriageAgent 已有自己的 5 分钟缓存，服务层缓存可省略。
         """
         trace_id = get_current_trace_id()
 
+        # 叶子节点查询：绕过服务层缓存，直接从 repo 获取（TriageAgent 有独立缓存）
+        if leaf_only:
+            if include_inactive:
+                categories = await self._repo.get_all(leaf_only=True)
+            else:
+                categories = await self._repo.get_all_active(leaf_only=True)
+
+            # 按域分组
+            result = defaultdict(list)
+            for cat in categories:
+                if not include_inactive and not cat.is_active:
+                    continue
+                domain = cat.domain or "未分类"
+                result[domain].append(cat)
+
+            logger.info(
+                event="service_get_grouped_by_domain_leaf_only",
+                domains=len(result),
+                total=len(categories),
+                include_inactive=include_inactive,
+                trace_id=trace_id,
+            )
+            return dict(result)
+
+        # 非叶子节点查询：使用服务层缓存
         if force_refresh or not self._is_cache_valid():
             await self._refresh_cache()
 

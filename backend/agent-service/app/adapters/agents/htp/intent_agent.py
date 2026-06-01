@@ -310,11 +310,11 @@ class IntentAgent:
 
     def _parse_intent_result(self, reply: str) -> IntentResult:
         """解析 AI 输出，提取分类信息"""
-        # 匹配「已确认故障分类：虚拟机-003 虚拟机开机失败」
-        confirmed_pattern = re.compile(r'已确认故障分类：([一-龥A-Za-z]+-\d+)\s+([^\n]+)')
+        # 匹配「已确认故障分类：虚拟机-003 虚拟机开机失败」（Unicode 转义 + 兼容半角冒号）
+        confirmed_pattern = re.compile(r'已确认故障分类[：:]\s*([一-龥A-Za-z0-9]+-\d+)\s+([^\n]+)')
 
-        # 匹配候选 ①②③
-        candidate_pattern = re.compile(r'[①②]\s*([一-龥A-Za-z]+-\d+)\s+([^\n]+)')
+        # 匹配候选 ①②③④⑤（Unicode 转义）
+        candidate_pattern = re.compile(r'[①②③④⑤]\s*([一-龥A-Za-z0-9]+-\d+)\s+([^\n]+)')
 
         # 先尝试匹配直接确认
         confirmed_match = confirmed_pattern.search(reply)

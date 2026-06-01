@@ -104,13 +104,15 @@ async def list_categories(
     grouped: bool = True,
     force_refresh: bool = False,
     include_inactive: bool = False,
+    leaf_only: bool = False,
 ):
     """获取分类列表（含 KBD/SOP 统计）
 
     Args:
         grouped: True=按域分组返回，False=平铺列表
-        force_refresh: 强制刷新缓存
+        force_refresh: 强制刷新缓存（仅当 leaf_only=False 时有效）
         include_inactive: 是否包含禁用的分类
+        leaf_only: True=仅返回叶子节点（无子分类的节点），用于 S0 意图识别
 
     Returns:
         grouped=True: { domains: { domain: [category, ...] } }
@@ -126,12 +128,14 @@ async def list_categories(
         grouped=grouped,
         force_refresh=force_refresh,
         include_inactive=include_inactive,
+        leaf_only=leaf_only,
     )
 
     if grouped:
         grouped_data = await _category_service.get_grouped_by_domain(
             force_refresh=force_refresh,
             include_inactive=include_inactive,
+            leaf_only=leaf_only,
         )
         return {
             "domains": {
@@ -157,6 +161,14 @@ async def list_categories(
             categories = await _category_service.get_all_active(
                 force_refresh=force_refresh
             )
+        # leaf_only 过滤（非 grouped 模式）
+        if leaf_only:
+            # 叶子节点过滤：无子分类的节点
+            # 需要在服务层处理，这里简单过滤（效率较低，建议用 grouped=True）
+            all_ids = {c.id for c in categories}
+            parent_ids = {c.parent_id for c in categories if c.parent_id}
+            leaf_ids = all_ids - parent_ids
+            categories = [c for c in categories if c.id in leaf_ids]
         return {
             "categories": [cat.to_dict() for cat in categories],
             "total": len(categories),

@@ -38,13 +38,29 @@ class CategoryRepository:
     def __init__(self, db_manager: DatabaseManager):
         self._db = db_manager
 
-    async def get_all(self) -> list[KbCategory]:
-        """获取所有分类（按 level + domain 排序），含 KBD/SOP 统计"""
+    async def get_all(self, *, leaf_only: bool = False) -> list[KbCategory]:
+        """获取所有分类（按 level + domain 排序），含 KBD/SOP 统计
+
+        Args:
+            leaf_only: True=仅返回叶子节点（无子分类的节点），False=返回所有节点
+
+        叶子节点判断规则：NOT EXISTS (SELECT 1 FROM kb_category c2 WHERE c2.parent_id = c.id)
+        不依赖 level 值（部分叶子节点 level=2，如单层域下的叶节点）。
+        """
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
+            # 叶子节点过滤子查询（NOT EXISTS）
+            leaf_filter = ""
+            if leaf_only:
+                leaf_filter = """
+                    AND NOT EXISTS (
+                        SELECT 1 FROM kb_category c2 WHERE c2.parent_id = c.id
+                    )
+                """
+
             # 使用 LEFT JOIN + 聚合避免 per-row SubPlan（Issue 6 性能优化）
             result = await session.execute(
-                text("""
+                text(f"""
                     SELECT
                       c.id, c.code, c.name, c.domain, c.level, c.parent_id,
                       c.path_labels, c.hit_count, c.is_active, c.keywords,
@@ -64,6 +80,7 @@ class CategoryRepository:
                       WHERE status = 'published'
                       GROUP BY category_id
                     ) sop_stats ON sop_stats.category_id = c.code
+                    WHERE 1=1 {leaf_filter}
                     ORDER BY c.level, c.domain,
                       SPLIT_PART(c.code, '-', 1),
                       LPAD(COALESCE(NULLIF(SPLIT_PART(c.code, '-', 2), ''), '0'), 10, '0'),
@@ -95,17 +112,31 @@ class CategoryRepository:
             logger.info(
                 event="repo_get_all",
                 count=len(categories),
+                leaf_only=leaf_only,
                 trace_id=trace_id,
             )
             return list(categories)
 
-    async def get_all_active(self) -> list[KbCategory]:
-        """获取所有活跃分类（is_active=True），含 KBD/SOP 统计"""
+    async def get_all_active(self, *, leaf_only: bool = False) -> list[KbCategory]:
+        """获取所有活跃分类（is_active=True），含 KBD/SOP 统计
+
+        Args:
+            leaf_only: True=仅返回叶子节点，False=返回所有活跃节点
+        """
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
+            # 叶子节点过滤子查询（NOT EXISTS）
+            leaf_filter = ""
+            if leaf_only:
+                leaf_filter = """
+                    AND NOT EXISTS (
+                        SELECT 1 FROM kb_category c2 WHERE c2.parent_id = c.id
+                    )
+                """
+
             # 使用 LEFT JOIN + 聚合避免 per-row SubPlan（Issue 6 性能优化）
             result = await session.execute(
-                text("""
+                text(f"""
                     SELECT
                       c.id, c.code, c.name, c.domain, c.level, c.parent_id,
                       c.path_labels, c.hit_count, c.is_active, c.keywords,
@@ -125,7 +156,7 @@ class CategoryRepository:
                       WHERE status = 'published'
                       GROUP BY category_id
                     ) sop_stats ON sop_stats.category_id = c.code
-                    WHERE c.is_active = TRUE
+                    WHERE c.is_active = TRUE {leaf_filter}
                     ORDER BY c.level, c.domain,
                       SPLIT_PART(c.code, '-', 1),
                       LPAD(COALESCE(NULLIF(SPLIT_PART(c.code, '-', 2), ''), '0'), 10, '0'),
@@ -156,6 +187,7 @@ class CategoryRepository:
             logger.info(
                 event="repo_get_all_active",
                 count=len(categories),
+                leaf_only=leaf_only,
                 trace_id=trace_id,
             )
             return list(categories)

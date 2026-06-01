@@ -207,11 +207,16 @@ class KBClient(InternalHTTPClient):
             )
             return None
 
-    async def get_categories_grouped(self) -> dict[str, list[dict]]:
+    async def get_categories_grouped(self, leaf_only: bool = True) -> dict[str, list[dict]]:
         """
         获取分类列表（按域分组）
 
-        用于 S0 意图识别阶段，将 198 个分类注入 Prompt。
+        用于 S0 意图识别阶段，将叶子分类注入 Prompt。
+
+        Args:
+            leaf_only: True=仅返回叶子节点（无子分类的节点），防止 LLM 命中中间节点；
+                       False=返回所有节点（仅用于管理页面，不推荐用于 S0）
+
         返回格式：
         {
             "虚拟机": [{"id": "虚拟机-001", "label": "虚拟机创建失败"}, ...],
@@ -223,21 +228,27 @@ class KBClient(InternalHTTPClient):
         """
         try:
             # grouped=true 是查询参数，不是路径段（/categories?grouped=true）
-            # kb-service GET /api/kb/categories 接受 ?grouped=bool 参数
+            # kb-service GET /api/kb/categories 接受 ?grouped=bool&leaf_only=bool 参数
             # 响应字段名为 "domains"（非 "categories_by_domain"）
             resp = await self._client.get(
                 f"{self._api_prefix}/categories",
-                params={"grouped": True},
+                params={"grouped": True, "leaf_only": leaf_only},
                 timeout=_CATEGORY_TIMEOUT,
             )
             resp.raise_for_status()
             data = resp.json()
+            logger.info(
+                event="kb_categories_loaded",
+                domains=len(data.get("domains", {})),
+                leaf_only=leaf_only,
+            )
             return data.get("domains", {})
         except httpx.HTTPStatusError as exc:
             logger.warning(
                 event="kb_categories_http_error",
                 message=f"KB categories returned HTTP {exc.response.status_code}",
                 status_code=exc.response.status_code,
+                leaf_only=leaf_only,
             )
             return {}
         except httpx.RequestError as exc:

@@ -244,18 +244,28 @@ class TriageAgent(BaseAgent):
         )
 
         # 6. 输出结果事件
-        if result.category_id and not result.needs_confirmation:
-            # 直接确认分类，推进阶段
-            yield AgentStageUpdate(
-                stage="S1",
+        # 缺陷二修复：废除直接确认路径，所有情况统一走 AgentInteractiveRequest
+        if result.category_id:
+            # 单一候选：以确认卡形式呈现，让用户明确确认
+            yield AgentInteractiveRequest(
+                request_id=f"triage-confirm-{session_id}",
+                acp_session_id=session_id,
+                kind="intent_selection",
+                title="请确认故障分类",
+                prompt="根据您的描述，AI 判断故障分类如下，请确认：",
+                options=[
+                    {"optionId": "1", "name": f"{result.category_id} {result.category_name}"},
+                    {"optionId": "2", "name": "以上不是，重新描述"},
+                ],
+                custom_input=False,
                 metadata={
                     "category_id": result.category_id,
                     "category_name": result.category_name,
-                    "confirmed": True,
+                    "single_candidate": True,
                 },
             )
         elif result.candidates:
-            # 输出候选列表，等待用户选择
+            # 多候选：让用户从列表选择
             options = [
                 {"optionId": str(i + 1), "name": f"{c['code']} {c['name']}"}
                 for i, c in enumerate(result.candidates[:4])
@@ -270,6 +280,18 @@ class TriageAgent(BaseAgent):
                 options=options,
                 custom_input=False,
                 metadata={"candidates": result.candidates},
+            )
+        else:
+            # 缺陷三修复：解析失败兜底，提示用户重新描述
+            yield AgentTextChunk(
+                content="\n\n抱歉，暂时无法识别您的故障类型。"
+                        "请尝试更具体地描述问题现象，例如：'虚拟机无法开机，界面显示XXX错误'。"
+            )
+            logger.warning(
+                event="intent_parse_failed",
+                message="S0 意图识别解析失败，无候选也无确认",
+                session_id=session_id,
+                reply_preview=reply_text[:200],
             )
 
     async def resolve_candidate_selection(
@@ -363,18 +385,31 @@ class TriageAgent(BaseAgent):
 
         return "\n\n".join(sections)
 
+    # 叶子节点 code 格式正则：前缀-纯数字（如 虚拟机-003）
+    _LEAF_CODE_RE = re.compile(r'^[^-]+-\d+$')
+
     @staticmethod
     def _format_categories(categories: dict[str, list[dict]]) -> str:
-        """将分类字典格式化为 Prompt 中的文本块。"""
+        """将分类字典格式化为 Prompt 中的文本块。
+
+        防御性过滤：仅保留符合叶子节点 code 格式的分类（前缀-纯数字）。
+        排除中间节点（如 硬件-L2-硬盘），防止 LLM 命中非叶子分类。
+        """
         lines: list[str] = []
         for domain, items in categories.items():
             if items:
-                lines.append(f"### {domain}域（{len(items)}个）")
-                for item in items[:20]:  # 每域最多 20 个，避免 Prompt 过长
-                    code = item.get("code", "")
-                    name = item.get("name", "")
-                    if code and name:
-                        lines.append(f"- {code} {name}")
+                # 过滤出叶子节点（code 格式为 前缀-纯数字）
+                valid_items = [
+                    item for item in items
+                    if TriageAgent._LEAF_CODE_RE.match(item.get("code", ""))
+                ]
+                if valid_items:
+                    lines.append(f"### {domain}域（{len(valid_items)}个）")
+                    for item in valid_items[:20]:  # 每域最多 20 个，避免 Prompt 过长
+                        code = item.get("code", "")
+                        name = item.get("name", "")
+                        if code and name:
+                            lines.append(f"- {code} {name}")
         return "\n".join(lines)
 
     @staticmethod
@@ -382,23 +417,29 @@ class TriageAgent(BaseAgent):
         """从 LLM 输出中解析意图识别结果。
 
         匹配优先级：
-          1. 「已确认故障分类：{code} {name}」— 直接确认
-          2. ①②③候选列表 — 需要用户选择
+          1. 「已确认故障分类：{code} {name}」— 直接确认（需用户二次确认）
+          2. ①②③④⑤候选列表 — 需要用户选择
           3. 未匹配 — 无法识别
+
+        正则使用 Unicode 转义 [一-龥] 避免 encoding 乱码风险。
         """
-        # 1. 直接确认模式
-        confirmed_pattern = re.compile(r'已确认故障分类：([一-龥A-Za-z]+-\d+)\s+([^\n]+)')
+        # 1. 直接确认模式（Unicode 转义 + 兼容半角冒号）
+        confirmed_pattern = re.compile(
+            r'已确认故障分类[：:]\s*([一-龥A-Za-z0-9]+-\d+)\s+([^\n]+)'
+        )
         m = confirmed_pattern.search(reply)
         if m:
             return IntentResult(
                 category_id=m.group(1).strip(),
                 category_name=m.group(2).strip(),
                 candidates=[],
-                needs_confirmation=False,
+                needs_confirmation=True,  # 改为 True，所有情况需用户确认
             )
 
-        # 2. 候选列表模式（① ② ③ ④ ⑤）
-        candidate_pattern = re.compile(r'[①②③④⑤]\s*([一-龥A-Za-z]+-\d+)\s+([^\n]+)')
+        # 2. 候选列表模式（① ② ③ ④ ⑤）（Unicode 转义）
+        candidate_pattern = re.compile(
+            r'[①②③④⑤]\s*([一-龥A-Za-z0-9]+-\d+)\s+([^\n]+)'
+        )
         candidates = [
             {"code": m.group(1).strip(), "name": m.group(2).strip()}
             for m in candidate_pattern.finditer(reply)
