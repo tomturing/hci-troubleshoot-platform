@@ -477,7 +477,8 @@ class ConversationService:
 
             AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
 
-            # 审计日志写入已完全下沉至 agent-service，在发起 LLM 调用的瞬间捕获 100% 原始全量 Prompt 并安全记录，此处废除重复双写。
+            # 审计日志写入已完全下沉至 agent-service：在发起 LLM 调用的瞬间捕获 100% 原始全量 Prompt 并安全记录。
+            # 此处废除重复双写。
 
             # 流式完成后，检测诊断阶段转换并持久化（fire-and-forget）
             full_reply = "".join(_full_reply_buffer)
