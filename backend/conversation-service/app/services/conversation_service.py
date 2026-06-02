@@ -1552,9 +1552,33 @@ class ConversationService:
 
         # 1. 优先从 metadata 结构化元数据提取（方案1）
         if last_ai_metadata and isinstance(last_ai_metadata, dict):
-            # 兼容两种 metadata 结构：
+            # 兼容三种 metadata 结构：
+            #   - options 列表（落库的实际前端交互渲染结构）
             #   - 直接 candidates 字段
             #   - event.metadata.candidates 嵌套结构
+            options = last_ai_metadata.get("options")
+            if options and isinstance(options, list):
+                extracted = []
+                for opt in options:
+                    name_str = opt.get("name", "")
+                    if "以上不是" in name_str or "以上都不是" in name_str:
+                        continue
+                    m = re.match(r"^([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+(.+)$", name_str.strip())
+                    if m:
+                        extracted.append({
+                            "code": m.group(1).strip(),
+                            "name": m.group(2).strip()
+                        })
+                if extracted:
+                    logger.info(
+                        event="extract_s0_candidates_metadata_success",
+                        message=f"通过 metadata.options 结构化提取 {len(extracted)} 个候选分类",
+                        conversation_id=str(conversation_id),
+                        candidate_count=len(extracted),
+                        source="metadata_options",
+                    )
+                    return extracted
+
             event_data = last_ai_metadata.get("event") or {}
             candidates_from_meta = (
                 last_ai_metadata.get("candidates")

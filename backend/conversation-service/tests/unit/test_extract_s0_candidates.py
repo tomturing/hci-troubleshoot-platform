@@ -232,6 +232,59 @@ class TestExtractS0Candidates:
         # 注意：⑤ 可能不会被正则匹配（因为格式不同），但④应该匹配
         assert len(result) >= 4
 
+    @pytest.mark.asyncio
+    async def test_extract_from_metadata_options_single_candidate(
+        self, mock_service, conversation_id
+    ):
+        """通过 metadata.options 结构化提取单候选成功"""
+        metadata = {
+            "kind": "choice_options",
+            "options": [
+                {"name": "硬件-024 硬盘寿命到期", "optionId": "1"},
+                {"name": "以上不是，重新描述", "optionId": "2"}
+            ]
+        }
+
+        with patch.object(
+            mock_service,
+            "_get_last_assistant_message",
+            new_callable=AsyncMock,
+            return_value=("AI 消息内容", metadata),
+        ):
+            result = await mock_service._extract_s0_candidates(conversation_id)
+
+        assert len(result) == 1
+        assert result[0]["code"] == "硬件-024"
+        assert result[0]["name"] == "硬盘寿命到期"
+
+    @pytest.mark.asyncio
+    async def test_extract_from_metadata_options_multi_candidates(
+        self, mock_service, conversation_id
+    ):
+        """通过 metadata.options 结构化提取多候选成功"""
+        metadata = {
+            "kind": "choice_options",
+            "options": [
+                {"name": "虚拟机-003 虚拟机开机失败", "optionId": "1"},
+                {"name": "存储-017 磁盘异常", "optionId": "2"},
+                {"name": "以上都不是（请补充症状描述）", "optionId": "3"}
+            ]
+        }
+
+        with patch.object(
+            mock_service,
+            "_get_last_assistant_message",
+            new_callable=AsyncMock,
+            return_value=("AI 消息内容", metadata),
+        ):
+            result = await mock_service._extract_s0_candidates(conversation_id)
+
+        assert len(result) == 2
+        assert result[0]["code"] == "虚拟机-003"
+        assert result[0]["name"] == "虚拟机开机失败"
+        assert result[1]["code"] == "存储-017"
+        assert result[1]["name"] == "磁盘异常"
+
 
 class TestGetLastAssistantMessage:
     """_get_last_assistant_message 方法测试"""
