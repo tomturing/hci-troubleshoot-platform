@@ -76,7 +76,7 @@ def get_pr_changed_docs() -> list[Path]:
     """获取 PR 中变更的 docs/*.md 文件列表"""
     base = os.environ.get("BASE_SHA", "")
     head = os.environ.get("HEAD_SHA", "")
-    cmd = ["git", "-c", "core.quotepath=false", "diff", "--name-only"]
+    cmd = ["git", "-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=d"]
     if base and head:
         cmd += [base, head]
     else:
