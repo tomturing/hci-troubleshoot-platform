@@ -1499,7 +1499,7 @@ class ConversationService:
             if self.session_factory:
                 async with self.session_factory() as session:
                     result = await session.execute(
-                        select(MessageModel.content, MessageModel.metadata)
+                        select(MessageModel.content, MessageModel.metadata_)
                         .where(
                             MessageModel.conversation_id == conversation_id,
                             MessageModel.role == "assistant",

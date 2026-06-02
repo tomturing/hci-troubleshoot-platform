@@ -259,23 +259,23 @@ class TestGetLastAssistantMessage:
     async def test_get_message_with_session_factory(
         self, mock_service, conversation_id
     ):
-        """使用 session_factory 获取消息（简化测试：通过 repository 路径验证）"""
-        # 由于 session_factory mock 比较复杂，此处通过验证 repository 路径来测试逻辑
-        # session_factory 路径与 repository 路径逻辑相同，只是数据获取方式不同
-        mock_service.session_factory = None
+        """使用 session_factory 获取消息"""
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_row = ("AI content in session", {"test_session": "data_session"})
+        mock_result.fetchone.return_value = mock_row
+        mock_session.execute.return_value = mock_result
 
-        mock_msg = MagicMock()
-        mock_msg.content = "AI content"
-        mock_msg.metadata = {"test": "data"}
-        mock_msg.role = MagicMock()
-        mock_msg.role.value = "assistant"
-
-        mock_service.repository.get_messages = AsyncMock(return_value=[mock_msg])
+        # Create an async context manager mock for session_factory
+        mock_session_ctx = MagicMock()
+        mock_session_ctx.__aenter__.return_value = mock_session
+        mock_service.session_factory = MagicMock(return_value=mock_session_ctx)
 
         result = await mock_service._get_last_assistant_message(conversation_id)
 
-        assert result[0] == "AI content"
-        assert result[1] == {"test": "data"}
+        assert result[0] == "AI content in session"
+        assert result[1] == {"test_session": "data_session"}
+        mock_session.execute.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_get_message_without_session_factory(
