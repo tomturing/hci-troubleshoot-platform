@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.13.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.12.0...v2.13.0) (2026-06-02)
+
+
+### ✨ 新功能
+
+* 重构并解决意图分类免截断、下沉全量原始审计与状态流转SOP加载故障 ([#379](https://github.com/tomturing/hci-troubleshoot-platform/issues/379)) ([ae64fa1](https://github.com/tomturing/hci-troubleshoot-platform/commit/ae64fa1d66a87b7d8e00e3ae49bbd662f05f164a))
+
+
+### 🐛 Bug 修复
+
+* 修复 KBD 审核 reviewer_id 类型不匹配导致操作失败 ([#380](https://github.com/tomturing/hci-troubleshoot-platform/issues/380)) ([9b92012](https://github.com/tomturing/hci-troubleshoot-platform/commit/9b9201217035da414132220f68c50e5cc707058b))
+* 修复 S0 意图识别三大缺陷与审计日志失效问题 ([#377](https://github.com/tomturing/hci-troubleshoot-platform/issues/377)) ([9467e1a](https://github.com/tomturing/hci-troubleshoot-platform/commit/9467e1ae93bcef7f0795d909625574216cb3132e))
+* 彻底根治 S0/S1 大模型调用 UUID 审计丢失与 UUID 强壮性兜底 ([#381](https://github.com/tomturing/hci-troubleshoot-platform/issues/381)) ([4a3e5a3](https://github.com/tomturing/hci-troubleshoot-platform/commit/4a3e5a3a934c29e4bf3ee73e7fe5bbb33464da12))
+* 移除 ORM 模型中已废弃的 tool_type 列，同步数据库迁移 ([#378](https://github.com/tomturing/hci-troubleshoot-platform/issues/378)) ([2762291](https://github.com/tomturing/hci-troubleshoot-platform/commit/2762291d4d36baf253c53ad04ee6b43bb510e181))
+
+
+### ♻️ 代码重构
+
+* 智能体变量池微内核重构与KBD分析截断修复联合提交 ([#375](https://github.com/tomturing/hci-troubleshoot-platform/issues/375)) ([e8bb411](https://github.com/tomturing/hci-troubleshoot-platform/commit/e8bb41135416317b04727306377ea839fb05fef0))
+
 ## [2.12.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.11.0...v2.12.0) (2026-05-31)
 
 
