@@ -10,8 +10,9 @@ audit_log.system_prompt_id 记录每次使用的模板版本，
 
 from datetime import UTC, datetime
 
-from shared.database.postgres import Base
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
+
+from ..database.postgres import Base
 
 
 class SystemPrompt(Base):
