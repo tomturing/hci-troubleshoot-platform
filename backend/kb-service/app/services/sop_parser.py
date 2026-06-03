@@ -197,7 +197,7 @@ def _parse_into_sections(content_md: str) -> list[_SectionEntry]:
     ds_depth: int | None = None
 
     for line_no, line in enumerate(content_md.splitlines(), start=1):
-        heading_m = re.match(r"^(#{1,10})\s+(.+)$", line)
+        heading_m = re.match(r"^\\?(#{1,10})\s+(.+)$", line)
         if heading_m:
             h_level = len(heading_m.group(1))
             h_text = heading_m.group(2).strip()
@@ -528,7 +528,7 @@ def _parse_variable_table(
         # 识别表头行
         if not header_cols:
             header_lower = [c.lower() for c in cols]
-            if any(c in header_lower for c in ["变量名", "name"]):
+            if any(c in header_lower for c in ["变量名", "name", "变量"]):
                 header_cols = header_lower
             continue
 
@@ -540,7 +540,7 @@ def _parse_variable_table(
                     return cols[idx] if idx < len(cols) else ""
             return ""
 
-        var_name = _col("变量名", "name")
+        var_name = _col("变量名", "name", "变量")
         var_type = _col("类型", "type") or "string"
         var_source = _col("来源", "source")
         var_desc = _col("说明", "description") or None
@@ -548,12 +548,17 @@ def _parse_variable_table(
         if not var_name or not var_source:
             continue
 
+        var_name_clean = var_name.replace("\\", "").strip()
+        var_source_clean = var_source.replace("\\", "").strip()
+        var_type_clean = var_type.replace("\\", "").strip()
+        var_desc_clean = var_desc.replace("\\", "").strip() if var_desc else None
+
         variables.append(
             VariableDeclaration(
-                name=var_name,
-                type=var_type,
-                source=var_source,
-                description=var_desc,
+                name=var_name_clean,
+                type=var_type_clean,
+                source=var_source_clean,
+                description=var_desc_clean,
             )
         )
 
@@ -960,114 +965,126 @@ def _infer_strategy(var_name: str) -> dict:
 
 
 def _parse_variable_section(content_md: str) -> dict[str, dict]:
-    """解析变量章节，提取声明变量（兼容新版表格格式和旧版列表格式）。
-
-    新版表格格式：
-    ## 变量声明
-    | 变量名 | 类型 | 来源 | 说明 |
-    |--------|------|------|------|
-    | vm_name | string | user_confirm | ... |
-
-    旧版列表格式（向后兼容）：
-    ## 变量
-    - node_ip：节点 IP 地址，从环境上下文获取
-    """
+    """解析整个 Markdown 文档中的所有变量章节（支持全局和本地表格，兼容旧版列表格式）。"""
     declared_vars: dict[str, dict] = {}
-
-    var_section_start = -1
-    var_section_end_line: int = -1
     lines = content_md.splitlines()
-
     all_var_kw = get_keywords("variables") | VARIABLE_SECTION_KEYWORDS
 
+    sections: list[tuple[int, int]] = []
+    current_start = -1
+
     for i, line in enumerate(lines):
-        heading_match = re.match(r"^#{1,6}\s+(.+)$", line)
+        heading_match = re.match(r"^\\?#{1,10}\s+(.+)$", line)
         if heading_match:
+            if current_start >= 0:
+                sections.append((current_start, i))
+                current_start = -1
             heading_text = heading_match.group(1).strip()
-            if var_section_start < 0:
-                for kw in all_var_kw:
-                    if kw in heading_text:
-                        var_section_start = i
-                        break
-            elif i > var_section_start:
-                var_section_end_line = i
-                break
+            is_var_sec = False
+            for kw in all_var_kw:
+                if kw in heading_text:
+                    is_var_sec = True
+                    break
+            if is_var_sec:
+                current_start = i
 
-    if var_section_start < 0:
-        return declared_vars
+    if current_start >= 0:
+        sections.append((current_start, len(lines)))
 
-    end = var_section_end_line if var_section_end_line > 0 else len(lines)
-    section_lines = lines[var_section_start + 1 : end]
-
-    # 尝试识别表格格式
-    header_cols: list[str] = []
-    for line in section_lines:
-        if _TABLE_SEP_RE.match(line.strip()):
-            continue
-        row_m = _TABLE_ROW_RE.match(line.strip())
-        if row_m:
-            cols = [c.strip() for c in row_m.group(1).split("|")]
-            if not header_cols:
-                header_lower = [c.lower() for c in cols]
-                if any(c in header_lower for c in ["变量名", "name"]):
-                    header_cols = header_lower
+    for start, end in sections:
+        section_lines = lines[start + 1 : end]
+        header_cols: list[str] = []
+        for line in section_lines:
+            stripped = line.strip()
+            if not stripped:
                 continue
-            if header_cols:
-                def _col(name: str, *aliases: str, header_cols=header_cols, cols=cols) -> str:
-                    for alias in (name, *aliases):
-                        if alias in header_cols:
-                            idx = header_cols.index(alias)
-                            return cols[idx] if idx < len(cols) else ""
-                    return ""
-                var_name = _col("变量名", "name")
-                var_source = _col("来源", "source")
-                var_type = _col("类型", "type") or "string"
-                var_desc = _col("说明", "description") or ""
-                if var_name and var_source:
-                    if var_source.startswith("tool:"):
-                        strategy = "tool"
-                        tool = var_source[5:]
-                    elif var_source.startswith("env:"):
-                        strategy = "env_context"
-                        tool = None
-                    elif var_source == "user_confirm":
-                        strategy = "user_confirm"
-                        tool = None
-                    else:
-                        strategy = "user_input"
-                        tool = None
-                    declared_vars[var_name] = {
-                        "display_name": var_name,
-                        "description": var_desc,
-                        "type": var_type,
-                        "acquisition_strategy": strategy,
-                        "acquisition_tool": tool,
-                        "required": True,
-                    }
-            continue
+            if _TABLE_SEP_RE.match(stripped):
+                continue
+            row_m = _TABLE_ROW_RE.match(stripped)
+            if row_m:
+                cols = [c.strip() for c in row_m.group(1).split("|")]
+                if not header_cols:
+                    header_lower = [c.lower() for c in cols]
+                    if any(c in header_lower for c in ["变量名", "name", "变量"]):
+                        header_cols = header_lower
+                    continue
+                if header_cols:
+                    def _col(name: str, *aliases: str, header_cols=header_cols, cols=cols) -> str:
+                        for alias in (name, *aliases):
+                            if alias in header_cols:
+                                idx = header_cols.index(alias)
+                                return cols[idx] if idx < len(cols) else ""
+                        return ""
+                    var_name = _col("变量名", "name", "变量")
+                    var_source = _col("来源", "source")
+                    var_type = _col("类型", "type") or "string"
+                    var_desc = _col("说明", "description") or ""
+                    default_val = _col("默认值", "default", "default_value") or None
+                    val_pattern = _col("校验规则", "pattern", "validation_pattern") or None
 
-        # 旧版列表格式（fallback）
-        stripped = line.strip()
-        list_match = re.match(r"^(?:[-*])\s+([a-z][a-z0-9_]*)[：:]\s*(.*)$", stripped)
-        if list_match:
-            var_name = list_match.group(1)
-            rest = list_match.group(2).strip()
-            inferred = _infer_strategy(var_name)
-            declared_vars[var_name] = {
-                "display_name": var_name,
-                "description": rest,
-                "acquisition_strategy": inferred["acquisition_strategy"],
-                "acquisition_tool": inferred["acquisition_tool"],
-                "type": "string",
-                "required": True,
-            }
+                    if var_name and var_source:
+                        var_name_clean = var_name.replace("\\", "").strip()
+                        var_source_clean = var_source.replace("\\", "").strip()
+                        var_type_clean = var_type.replace("\\", "").strip()
+                        var_desc_clean = var_desc.replace("\\", "").strip()
+                        default_val_clean = default_val.replace("\\", "").strip() if default_val else None
+                        val_pattern_clean = val_pattern.replace("\\", "").strip() if val_pattern else None
+
+                        if var_source_clean.startswith("tool:"):
+                            strategy = "tool_call"
+                            tool = var_source_clean[5:]
+                        elif var_source_clean.startswith("env:") or var_source_clean in ("env_injection", "env_context"):
+                            strategy = "env_injection"
+                            tool = None
+                        elif var_source_clean in ("tool_call", "tool"):
+                            strategy = "tool_call"
+                            tool = None
+                        elif var_source_clean == "sop_default":
+                            strategy = "sop_default"
+                            tool = None
+                        elif var_source_clean == "user_confirm":
+                            strategy = "user_confirm"
+                            tool = None
+                        else:
+                            strategy = "user_input"
+                            tool = None
+
+                        if strategy == "sop_default" and not default_val_clean:
+                            default_val_clean = var_desc_clean
+
+                        declared_vars[var_name_clean] = {
+                            "display_name": var_name_clean,
+                            "description": var_desc_clean,
+                            "type": var_type_clean,
+                            "acquisition_strategy": strategy,
+                            "acquisition_tool": tool,
+                            "required": True,
+                            "default_value": default_val_clean,
+                            "validation_pattern": val_pattern_clean,
+                        }
+                continue
+
+            list_match = re.match(r"^(?:[-*])\s+([a-z][a-z0-9_]*)[：:]\s*(.*)$", stripped)
+            if list_match:
+                var_name = list_match.group(1)
+                rest = list_match.group(2).strip()
+                inferred = _infer_strategy(var_name)
+                declared_vars[var_name] = {
+                    "display_name": var_name,
+                    "description": rest,
+                    "acquisition_strategy": inferred["acquisition_strategy"],
+                    "acquisition_tool": inferred["acquisition_tool"],
+                    "type": "string",
+                    "required": True,
+                }
 
     return declared_vars
 
 
 def _extract_vars_from_text(text: str) -> set[str]:
-    """从文本中提取 {placeholder} 格式的变量名。"""
-    return set(re.findall(r"\{([a-z][a-z0-9_]*)\}", text))
+    """从文本中提取 {placeholder} 格式的变量名（排除 {{double_braces}} 格式，支持可选的 $ 前缀和反斜杠）。"""
+    raw_matches = re.findall(r"(?<!\{)\$?\{([a-z][a-z0-9_\\\\]*)\}(?!\})", text)
+    return {name.replace("\\", "") for name in raw_matches if name}
 
 
 def _extract_vars_from_tree(node: SOPNode) -> set[str]:
@@ -1077,7 +1094,6 @@ def _extract_vars_from_tree(node: SOPNode) -> set[str]:
     for item in node.prerequisite_items:
         vars_set |= _extract_vars_from_text(item.description)
     if node.diagnosis:
-        # DiagnosisDetail 模型字段：acli_methods, page_methods, analysis_steps, possible_causes
         for step in node.diagnosis.analysis_steps:
             vars_set |= _extract_vars_from_text(step)
         for cause in node.diagnosis.possible_causes:
@@ -1106,12 +1122,58 @@ def extract_sop_variables(
         (variable_defs, undeclared_errors, orphan_warnings)
     """
     declared_vars = _parse_variable_section(content_md)
+    global_declared = set(declared_vars.keys())
+
+    def _find_hierarchical_undeclared(
+        node: SOPNode,
+        ancestor_declared: set[str],
+        undeclared_set: set[str],
+    ) -> None:
+        local_declared = {v.name for v in node.variables}
+        current_declared = global_declared | ancestor_declared | local_declared
+
+        # 提取当前节点使用的所有变量（不递归子节点）
+        node_used = set()
+        node_used |= _extract_vars_from_text(node.title)
+        for item in node.prerequisite_items:
+            node_used |= _extract_vars_from_text(item.description)
+        if node.diagnosis:
+            for step in node.diagnosis.analysis_steps:
+                node_used |= _extract_vars_from_text(step)
+            for cause in node.diagnosis.possible_causes:
+                node_used |= _extract_vars_from_text(cause)
+            for method in node.diagnosis.page_methods or []:
+                node_used |= _extract_vars_from_text(method)
+            for method in node.diagnosis.acli_methods:
+                node_used |= _extract_vars_from_text(method)
+        if node.solution:
+            for step in node.solution.quick_recovery:
+                node_used |= _extract_vars_from_text(step)
+            for step in node.solution.thorough_fix:
+                node_used |= _extract_vars_from_text(step)
+
+        # 检查是否未声明
+        for var in node_used:
+            if var not in current_declared:
+                undeclared_set.add(var)
+
+        # 递归子节点
+        for child in node.children:
+            _find_hierarchical_undeclared(child, current_declared, undeclared_set)
+
+    # 收集全部使用的变量（用于全局合并和 orphan 校验）
     used_vars = _extract_vars_from_text(content_md)
     if tree:
         used_vars |= _extract_vars_from_tree(tree)
 
-    undeclared = sorted(used_vars - set(declared_vars.keys()))
-    orphan = sorted(set(declared_vars.keys()) - used_vars)
+    if tree:
+        undeclared_set: set[str] = set()
+        _find_hierarchical_undeclared(tree, set(), undeclared_set)
+        undeclared = sorted(undeclared_set)
+    else:
+        undeclared = sorted(used_vars - global_declared)
+
+    orphan = sorted(global_declared - used_vars)
 
     variable_defs: list[dict] = []
     for var_name in sorted(used_vars):
@@ -1130,15 +1192,10 @@ def extract_sop_variables(
             **strategy_info,
             "validation_pattern": declared.get("validation_pattern"),
             "default_value": declared.get("default_value"),
-            "auto_generated": var_name not in declared_vars,
+            "auto_generated": var_name not in global_declared,
         })
 
     return variable_defs, undeclared, orphan
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 变量三路合并（T-AGT-26）
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 def merge_variable_schema(
@@ -1160,10 +1217,18 @@ def merge_variable_schema(
         if name in old_by_name:
             old_var = old_by_name[name]
             merged_var = {**new_var}
+            strategy_overridden = (
+                "acquisition_strategy" in old_var
+                and old_var["acquisition_strategy"] is not None
+                and old_var["acquisition_strategy"] != ""
+            )
             for human_field in HUMAN_FIELDS:
-                old_value = old_var.get(human_field)
-                if old_value is not None and old_value != "":
-                    merged_var[human_field] = old_value
+                if human_field == "acquisition_tool" and strategy_overridden:
+                    merged_var[human_field] = old_var.get("acquisition_tool")
+                else:
+                    old_value = old_var.get(human_field)
+                    if old_value is not None and old_value != "":
+                        merged_var[human_field] = old_value
             merged_var.pop("deprecated", None)
             merged_var["auto_generated"] = False
             merged.append(merged_var)

@@ -85,7 +85,7 @@ class TestSopHit:
         db = _make_db_manager(row=(42, 5))
         set_dependencies(db)
 
-        with patch("shared.utils.trace.get_current_trace_id", return_value="trace-001"):
+        with patch("shared.observability.otel.get_current_trace_id", return_value="trace-001"):
             resp = client.post("/api/kb/sop/42/hit", headers=_AUTH_HEADER)
 
         assert resp.status_code == 200
@@ -99,7 +99,7 @@ class TestSopHit:
         db = _make_db_manager(row=None)
         set_dependencies(db)
 
-        with patch("shared.utils.trace.get_current_trace_id", return_value="trace-002"):
+        with patch("shared.observability.otel.get_current_trace_id", return_value="trace-002"):
             resp = client.post("/api/kb/sop/999/hit", headers=_AUTH_HEADER)
 
         assert resp.status_code == 404
@@ -120,7 +120,7 @@ class TestKbdHit:
         db = _make_db_manager(row=(7, 3))
         set_dependencies(db)
 
-        with patch("shared.utils.trace.get_current_trace_id", return_value="trace-003"):
+        with patch("shared.observability.otel.get_current_trace_id", return_value="trace-003"):
             resp = client.post("/api/kb/kbd/7/hit", headers=_AUTH_HEADER)
 
         assert resp.status_code == 200
@@ -134,7 +134,7 @@ class TestKbdHit:
         db = _make_db_manager(row=None)
         set_dependencies(db)
 
-        with patch("shared.utils.trace.get_current_trace_id", return_value="trace-004"):
+        with patch("shared.observability.otel.get_current_trace_id", return_value="trace-004"):
             resp = client.post("/api/kb/kbd/888/hit", headers=_AUTH_HEADER)
 
         assert resp.status_code == 404
@@ -155,7 +155,7 @@ class TestKbdHitDecrement:
         db = _make_db_manager(row=(7, 0))  # hit_count 已被 GREATEST 处理为 0
         set_dependencies(db)
 
-        with patch("shared.utils.trace.get_current_trace_id", return_value="trace-005"):
+        with patch("shared.observability.otel.get_current_trace_id", return_value="trace-005"):
             resp = client.post("/api/kb/kbd/7/hit/decrement", headers=_AUTH_HEADER)
 
         assert resp.status_code == 200
@@ -169,7 +169,7 @@ class TestKbdHitDecrement:
         db = _make_db_manager(row=(10, 4))
         set_dependencies(db)
 
-        with patch("shared.utils.trace.get_current_trace_id", return_value="trace-006"):
+        with patch("shared.observability.otel.get_current_trace_id", return_value="trace-006"):
             resp = client.post("/api/kb/kbd/10/hit/decrement", headers=_AUTH_HEADER)
 
         assert resp.status_code == 200
@@ -180,7 +180,7 @@ class TestKbdHitDecrement:
         db = _make_db_manager(row=None)
         set_dependencies(db)
 
-        with patch("shared.utils.trace.get_current_trace_id", return_value="trace-007"):
+        with patch("shared.observability.otel.get_current_trace_id", return_value="trace-007"):
             resp = client.post("/api/kb/kbd/777/hit/decrement", headers=_AUTH_HEADER)
 
         assert resp.status_code == 404

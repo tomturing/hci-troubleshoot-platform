@@ -128,7 +128,7 @@ async def lifespan(app: FastAPI):
     )
     evaluate.set_database_manager(database_manager)
     audit_route.set_audit_database_manager(database_manager)
-    sop_execution.set_dependencies(database_manager)
+    sop_execution.set_dependencies(database_manager, kb_client, environment_client)
     diagnostic_item.set_dependencies(database_manager)
     agent_exec.set_dependencies(database_manager, redis_manager)  # T-TOOL-05, T-TOOL-06
 

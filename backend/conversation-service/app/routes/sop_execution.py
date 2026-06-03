@@ -34,12 +34,20 @@ router = APIRouter(prefix="/api/conversations", tags=["sop-execution"])
 
 # 由 main.py 注入
 _db_manager: DatabaseManager | None = None
+_kb_client: Any | None = None
+_environment_client: Any | None = None
 
 
-def set_dependencies(db: DatabaseManager) -> None:
-    """注入数据库依赖"""
-    global _db_manager
+def set_dependencies(
+    db: DatabaseManager,
+    kb_client: Any | None = None,
+    env_client: Any | None = None,
+) -> None:
+    """注入依赖"""
+    global _db_manager, _kb_client, _environment_client
     _db_manager = db
+    _kb_client = kb_client
+    _environment_client = env_client
 
 
 def _check_auth(request: Request) -> None:
@@ -52,15 +60,30 @@ def _check_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Token 无效")
 
 
-async def _get_variable_schema(sop_document_id: int) -> list[dict] | None:
-    """从 kb-service 获取 SOP 文档的 variable_schema（T-AGT-27）。
+async def _get_sop_document(sop_document_id: int) -> dict | None:
+    """从 kb-service 获取 SOP 文档的详细信息（包含 title 和 variable_schema 等）。
 
     Args:
         sop_document_id: SOP 文档 ID
 
     Returns:
-        variable_schema 列表，不存在时返回 None
+        SOP 文档字典，不存在时返回 None
     """
+    if _kb_client is not None:
+        try:
+            sop_doc = await _kb_client.get_sop_document(sop_document_id)
+            if sop_doc:
+                return sop_doc
+            return None
+        except Exception as exc:
+            logger.warning(
+                event="get_sop_document_client_error",
+                sop_document_id=sop_document_id,
+                error=str(exc),
+            )
+            return None
+
+    # 降级到直接 HTTP 请求
     url = f"{settings.KB_SERVICE_URL}/api/admin/sop/{sop_document_id}"
     headers = {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
 
@@ -70,15 +93,27 @@ async def _get_variable_schema(sop_document_id: int) -> list[dict] | None:
             if resp.status_code == 404:
                 return None
             resp.raise_for_status()
-            data = resp.json()
-            return data.get("variable_schema", [])
+            return resp.json()
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         logger.warning(
-            event="get_variable_schema_error",
+            event="get_sop_document_error",
             sop_document_id=sop_document_id,
             error=str(exc),
         )
         return None
+
+
+async def _get_variable_schema(sop_document_id: int) -> list[dict] | None:
+    """从 kb-service 获取 SOP 文档的 variable_schema（T-AGT-27）。
+
+    Args:
+        sop_document_id: SOP 文档 ID
+
+    Returns:
+        variable_schema 列表，不存在时返回 None
+    """
+    doc = await _get_sop_document(sop_document_id)
+    return doc.get("variable_schema", []) if doc else None
 
 
 def _validate_variables(
@@ -168,6 +203,210 @@ class SopAdvanceResponse(BaseModel):
     is_completed: bool = Field(False, description="SOP 是否已完成（到达叶节点）")
 
 
+def _get_filter_keywords(
+    category_l2: str | None,
+    category_l1: str | None,
+    sop_title: str | None,
+) -> list[str]:
+    """根据分类和 SOP 标题提取用于过滤相关告警和任务日志的关键字（中英文）。
+
+    Args:
+        category_l2: 二级分类
+        category_l1: 一级分类
+        sop_title: SOP 标题
+
+    Returns:
+        提取到的关键字列表
+    """
+    keywords = set()
+    texts = []
+    if category_l2:
+        texts.append(category_l2)
+    if category_l1:
+        texts.append(category_l1)
+    if sop_title:
+        texts.append(sop_title)
+
+    # 常见运维技术词汇的映射（自动丰富关联关键字）
+    domain_keywords_map = {
+        "磁盘": ["disk", "磁盘", "硬盘", "smart", "sn", "drive", "sata", "ssd", "nvme"],
+        "硬盘": ["disk", "磁盘", "硬盘", "smart", "sn", "drive", "sata", "ssd", "nvme"],
+        "虚拟机": ["vm", "虚拟机", "vms", "qemu", "kvm"],
+        "开机": ["power", "boot", "start", "开机", "启动"],
+        "启动": ["power", "boot", "start", "开机", "启动"],
+        "失败": ["fail", "failed", "error", "失败", "故障", "异常"],
+        "异常": ["fail", "failed", "error", "失败", "故障", "异常"],
+        "故障": ["fail", "failed", "error", "失败", "故障", "异常"],
+        "网络": ["network", "net", "网络", "ping", "delay", "latency", "延迟", "丢包", "网卡", "ip"],
+        "延迟": ["network", "net", "网络", "ping", "delay", "latency", "延迟", "丢包"],
+        "内存": ["memory", "ram", "内存", "ecc", "dimm"],
+        "cpu": ["cpu", "processor", "core", "处理器"],
+        "处理器": ["cpu", "processor", "core", "处理器"],
+        "存储": ["storage", "pool", "存储", "ceph", "cluster"],
+        "备份": ["backup", "备份", "restore"],
+    }
+
+    for text in texts:
+        text_lower = text.lower()
+        # 1. 匹配映射
+        for term, words in domain_keywords_map.items():
+            if term in text_lower:
+                keywords.update(words)
+
+        # 2. 提取所有英文字符/数字组合（长度 >= 2）
+        eng_words = re.findall(r"[a-zA-Z0-9_-]{2,}", text_lower)
+        keywords.update(eng_words)
+
+        # 3. 按照常见标点和空格分割文本
+        parts = re.split(r"[\s\-_\/,，+]+", text_lower)
+        for part in parts:
+            if part and len(part) >= 2:
+                keywords.add(part)
+
+        # 4. 对于中文文本，提取所有连续中文字符串，并生成长度为 2-4 的所有子串作为关键字
+        chinese_runs = re.findall(r"[\u4e00-\u9fa5]+", text_lower)
+        for run in chinese_runs:
+            n = len(run)
+            for length in (2, 3, 4):
+                if n >= length:
+                    for i in range(n - length + 1):
+                        keywords.add(run[i : i + length])
+
+    return list(keywords)
+
+
+def _filter_logs_by_keywords(logs: list[dict], keywords: list[str]) -> list[dict]:
+    """递归遍历日志的所有字段值，计算与关键字的匹配得分对日志进行排序和过滤。
+
+    Args:
+        logs: 原始日志列表
+        keywords: 关键字列表
+
+    Returns:
+        过滤并按匹配得分降序排序后的日志列表（只包含得分 > 0 的日志）
+    """
+    if not keywords:
+        return logs
+
+    scored_logs = []
+    for log in logs:
+        log_text_parts = []
+
+        def extract_strings(val, target_list):
+            if isinstance(val, str):
+                target_list.append(val.lower())
+            elif isinstance(val, dict):
+                for v in val.values():
+                    extract_strings(v, target_list)
+            elif isinstance(val, list):
+                for v in val:
+                    extract_strings(v, target_list)
+
+        extract_strings(log, log_text_parts)
+        log_text = " ".join(log_text_parts)
+
+        # 计算匹配的关键字个数作为得分
+        score = 0
+        for kw in keywords:
+            if kw.isalnum() and kw.isascii():
+                # 英文/数字关键字使用正则单词边界进行匹配，防止子串重复计数（例如 fail 匹配 failed）
+                pattern = rf"\b{re.escape(kw)}\b"
+                if re.search(pattern, log_text):
+                    score += 1
+            else:
+                if kw.lower() in log_text:
+                    score += 1
+
+        if score > 0:
+            scored_logs.append((score, log))
+
+    # 按得分降序排序
+    scored_logs.sort(key=lambda x: x[0], reverse=True)
+    return [item[1] for item in scored_logs]
+
+
+def _resolve_env_variable(
+    var_name: str,
+    var_def: dict,
+    env_context: Any,
+    category_l1: str | None = None,
+    category_l2: str | None = None,
+    sop_title: str | None = None,
+) -> Any | None:
+    """根据变量定义，从环境数据集中提取并注入变量值。
+
+    1. 优先在 env_info (基本信息，如 hci_version) 中匹配。
+    2. 如果是主机/告警相关变量，进行关键字过滤后再锚定到第一个告警（无匹配则 fallback 到 alert_logs[0]）。
+       - node_ip / ip / host / object_name / description / target
+       - disk_sn: 尝试从匹配的告警中的 description 或 target 提取 serial number。
+    3. 如果是任务相关变量，进行关键字过滤后再锚定到第一个任务（无匹配则 fallback 到 task_logs[0]）。
+    """
+    env_info = env_context.env_info or {}
+
+    # 支持大小写及下划线不敏感匹配
+    def lookup_dict(d: dict, target_key: str) -> Any | None:
+        target_norm = target_key.lower().replace("_", "").replace("-", "")
+        for k, v in d.items():
+            k_norm = k.lower().replace("_", "").replace("-", "")
+            if k_norm == target_norm:
+                return v
+        return None
+
+    # 1. 尝试从 env_info 查找
+    val = lookup_dict(env_info, var_name)
+    if val is not None:
+        return val
+
+    # 获取过滤关键字
+    keywords = _get_filter_keywords(category_l2, category_l1, sop_title)
+
+    # 2. 检查告警日志
+    alert_logs = env_context.alert_logs or []
+    if alert_logs:
+        filtered_alerts = _filter_logs_by_keywords(alert_logs, keywords)
+        alert = filtered_alerts[0] if filtered_alerts else alert_logs[0]
+        # 如果是硬盘 SN
+        if var_name in ("disk_sn", "sn", "serial_number", "device_sn"):
+            val = lookup_dict(alert, var_name) or lookup_dict(alert, "sn") or lookup_dict(alert, "serial_number")
+            if val is not None:
+                return str(val)
+            desc = alert.get("description") or ""
+            target = alert.get("target") or ""
+            for text in (desc, target):
+                m = re.search(r"(?i)sn\s*[：:]\s*([A-Z0-9\-]{8,20})", text)
+                if m:
+                    return m.group(1)
+                m = re.search(r"(?i)\[\s*sn\s*[：:]\s*([A-Z0-9\-]{8,20})\s*\]", text)
+                if m:
+                    return m.group(1)
+                m = re.search(r"\b([A-Z0-9]{8,20})\b", text)
+                if m:
+                    return m.group(1)
+        else:
+            if var_name == "node_ip":
+                val = (
+                    lookup_dict(alert, "node_ip")
+                    or lookup_dict(alert, "host")
+                    or lookup_dict(alert, "ip")
+                    or lookup_dict(alert, "target")
+                )
+            else:
+                val = lookup_dict(alert, var_name)
+            if val is not None:
+                return val
+
+    # 3. 检查任务日志
+    task_logs = env_context.task_logs or []
+    if task_logs:
+        filtered_tasks = _filter_logs_by_keywords(task_logs, keywords)
+        task = filtered_tasks[0] if filtered_tasks else task_logs[0]
+        val = lookup_dict(task, var_name)
+        if val is not None:
+            return val
+
+    return None
+
+
 @router.post("/{conversation_id}/sop/create", response_model=SopCreateResponse)
 async def sop_create_execution(
     request: Request,
@@ -226,12 +465,52 @@ async def sop_create_execution(
                 message="SOP 执行实例已存在，继续执行",
             )
 
+        # 查询 Conversation 获取 case_id
+        from shared.models.conversation import Conversation
+        from sqlalchemy import select
+        conversation_result = await session.execute(
+            select(Conversation).where(Conversation.conversation_id == conversation_id)
+        )
+        conversation = conversation_result.scalar_one_or_none()
+        if not conversation:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        case_id = conversation.case_id
+
+        # 获取环境上下文
+        env_context = None
+        if _environment_client and case_id:
+            env_context = await _environment_client.get_context_info(case_id)
+
+        # 获取 SOP 详细信息
+        sop_doc = await _get_sop_document(body.sop_document_id)
+        variable_schema = sop_doc.get("variable_schema", []) if sop_doc else None
+        sop_title = sop_doc.get("title") if sop_doc else None
+
+        # 解析并注入 env_injection 变量
+        initial_variables = {}
+        if variable_schema and env_context:
+            for var_def in variable_schema:
+                strategy = var_def.get("acquisition_strategy")
+                if strategy in ("env_injection", "env_context") or (strategy and strategy.startswith("env:")):
+                    var_name = var_def.get("name")
+                    val = _resolve_env_variable(
+                        var_name,
+                        var_def,
+                        env_context,
+                        category_l1=conversation.category_l1,
+                        category_l2=conversation.category_l2,
+                        sop_title=sop_title,
+                    )
+                    if val is not None:
+                        initial_variables[var_name] = val
+
         # 创建新的执行实例
         execution = await repo.create(
             conversation_id=conversation_id,
             sop_document_id=body.sop_document_id,
             current_node_id=body.root_node_id,
             trace_id=trace_id,
+            initial_variables=initial_variables,
         )
 
         await session.commit()

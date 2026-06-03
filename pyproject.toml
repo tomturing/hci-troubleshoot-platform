@@ -53,6 +53,7 @@ dependencies = [
     # === 图片处理 ===
     # Pillow 用于截图背景色采样（KBD pipeline）
     "pillow>=10.0.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

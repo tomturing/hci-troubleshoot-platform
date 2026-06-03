@@ -178,14 +178,16 @@ async def sop_request_variable(
         acquisition_tool=acquisition_tool,
     )
 
-    if strategy == "env_injection":
-        # env_injection 类变量应在初始化阶段批量注入，不走 JIT 流程
-        return {
-            "error": (
-                f"变量 {variable_name} 类型为 env_injection，"
-                "应在 SOP 初始化阶段从环境上下文批量注入，无需调用此工具"
-            ),
-        }
+    if strategy in ("env_injection", "env_context"):
+        # env_injection 类变量应在初始化阶段批量注入，如果不小心漏掉了或解析失败，
+        # 我们在此处记录 warning 并降级为 user_input 策略，避免系统崩溃。
+        logger.warning(
+            event="sop_request_variable_env_injection_missing",
+            message=f"变量 {variable_name} 策略为 {strategy} 但在 context_variables 中未找到值，降级为 user_input",
+            variable_name=variable_name,
+            conversation_id=conversation_id,
+        )
+        strategy = "user_input"
 
     if strategy == "sop_default":
         # sop_default 类变量：直接读 variable_schema.default_value，无需用户输入或工具调用

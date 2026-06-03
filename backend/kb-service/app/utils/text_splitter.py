@@ -118,6 +118,9 @@ class TextSplitter:
         # 预处理：清理多余空行
         text = re.sub(r"\n{3,}", "\n\n", text.strip())
 
+        if _estimate_tokens(text) <= self.chunk_size:
+            return [text]
+
         # 递归分块
         raw_chunks = _split_text_recursive(text, _SEPARATORS, self.chunk_size)
 

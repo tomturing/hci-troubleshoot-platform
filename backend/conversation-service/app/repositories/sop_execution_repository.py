@@ -67,6 +67,7 @@ class SopExecutionRepository:
         sop_document_id: int,
         current_node_id: str,
         trace_id: str | None = None,
+        initial_variables: dict[str, Any] | None = None,
     ) -> SopExecution:
         """创建新的 SOP 执行实例（S1 阶段命中 SOP 时）
 
@@ -75,17 +76,27 @@ class SopExecutionRepository:
             sop_document_id: SOP 文档 ID
             current_node_id: 当前节点 ID（通常是根节点）
             trace_id: 请求 trace ID
+            initial_variables: 初始环境注入的变量（可选）
 
         Returns:
             创建的 SopExecution 实例
         """
+        context_vars = {}
+        if initial_variables:
+            for var_name, var_value in initial_variables.items():
+                context_vars[var_name] = {
+                    "value": var_value,
+                    "source": "env_context",
+                    "resolved_at": datetime.now(UTC).isoformat(),
+                }
+
         execution = SopExecution(
             id=uuid.uuid4(),
             conversation_id=conversation_id,
             sop_document_id=sop_document_id,
             current_node_id=current_node_id,
             status=STATUS_ACTIVE,
-            context_variables={},
+            context_variables=context_vars,
             completed_steps=[],
             pending_variable_name=None,
             execution_log=[
