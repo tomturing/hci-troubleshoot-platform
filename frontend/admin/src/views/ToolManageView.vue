@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Edit, Delete } from '@element-plus/icons-vue'
 
 interface ToolDefinition {
   id: number
@@ -434,7 +435,7 @@ onMounted(() => {
 
       <template #footer>
         <div class="dialog-footer">
-          <el-button @click="dialogVisible.value = false">取消</el-button>
+          <el-button @click="dialogVisible = false">取消</el-button>
           <el-button type="primary" class="gradient-btn" @click="submitForm">保存</el-button>
         </div>
       </template>
