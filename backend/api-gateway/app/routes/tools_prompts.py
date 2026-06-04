@@ -78,3 +78,19 @@ async def proxy_prompts(path: str, request: Request):
     response = await proxy_request(method, upstream_path, payload=payload, params=params, headers=headers)
 
     return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.api_route("/skills/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def proxy_skills(path: str, request: Request):
+    """透传技能管理请求"""
+    method = request.method
+    params = dict(request.query_params)
+    payload = None
+    if method in ["POST", "PUT"]:
+        payload = await request.json()
+    headers = {k.lower(): v for k, v in request.headers.items()}
+
+    upstream_path = f"/api/v1/skills/{path}" if path else "/api/v1/skills"
+    response = await proxy_request(method, upstream_path, payload=payload, params=params, headers=headers)
+
+    return JSONResponse(content=response.json(), status_code=response.status_code)

@@ -709,6 +709,40 @@ CREATE INDEX IF NOT EXISTS idx_tool_definition_category_risk ON tool_definition 
 CREATE INDEX IF NOT EXISTS idx_tool_definition_risk_level ON tool_definition (risk_level);
 
 -- ------------------------------------------------------------
+-- 表: skill_definition  [模块: conversation-service]
+-- 说明: 技能定义表 — AI 技能/方法库，存储平台通用的、可复用的分析与判断技能（如硬盘厂商识别与寿命判断、内存状态分析等）
+-- 用途: 解决 SOP / AI 在执行过程中需要调用复杂通用分析逻辑的问题：变量源声明为 `skill:skill_name`，由变量池引擎 (engine.py) 解析并执行对应的技能。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS skill_definition (
+    id serial NOT NULL,
+    skill_name varchar(100) NOT NULL UNIQUE,
+    display_name varchar(200) NOT NULL,
+    description text NOT NULL,
+    parameters_schema jsonb NOT NULL DEFAULT '{}',
+    output_schema jsonb NOT NULL DEFAULT '{}',
+    is_active boolean DEFAULT true,
+    version varchar(20) DEFAULT '1.0',
+    created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT skill_definition_pkey PRIMARY KEY (id)
+);
+
+COMMENT ON TABLE skill_definition IS '技能定义表 — AI 技能/方法库，存储平台通用的、可复用的分析与判断技能（如硬盘厂商识别与寿命判断、内存状态分析等）';
+COMMENT ON COLUMN skill_definition.id IS '技能定义主键，自增';
+COMMENT ON COLUMN skill_definition.skill_name IS '技能唯一标识（如 disk_vendor_lifetime），SOP 变量源引用此字段（格式如 skill:disk_vendor_lifetime）';
+COMMENT ON COLUMN skill_definition.display_name IS '技能展示名，用于前端管理页面和审计展示';
+COMMENT ON COLUMN skill_definition.description IS '技能功能描述';
+COMMENT ON COLUMN skill_definition.parameters_schema IS '输入参数 JSON Schema';
+COMMENT ON COLUMN skill_definition.output_schema IS '输出参数 JSON Schema';
+COMMENT ON COLUMN skill_definition.is_active IS '是否启用；is_active=false 的技能被调用时会报错或退化';
+COMMENT ON COLUMN skill_definition.version IS '技能版本（如 1.0）';
+COMMENT ON COLUMN skill_definition.created_at IS '创建时间';
+COMMENT ON COLUMN skill_definition.updated_at IS '最后更新时间';
+
+-- 索引: skill_definition
+CREATE INDEX IF NOT EXISTS idx_skill_definition_active ON skill_definition (is_active);
+
+-- ------------------------------------------------------------
 -- 表: kb_category  [模块: kb-service]
 -- 说明: 分类树表 — 全局分类枢纽（198 节点），意图识别锚点
 -- 用途: 存储 198 个 HCI 故障分类，覆盖虚拟机/网络/存储/硬件/平台五个域。S0 意图识别阶段注入分类列表，引导 LLM 输出确认的故障分类

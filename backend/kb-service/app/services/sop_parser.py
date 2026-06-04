@@ -1033,6 +1033,9 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                         if var_source_clean.startswith("tool:"):
                             strategy = "tool_call"
                             tool = var_source_clean[5:]
+                        elif var_source_clean.startswith("skill:"):
+                            strategy = "skill_call"
+                            tool = var_source_clean[6:]
                         elif var_source_clean.startswith("env:") or var_source_clean in ("env_injection", "env_context"):
                             strategy = "env_injection"
                             tool = None

@@ -23,6 +23,7 @@ from app.routes import (
     conversations,
     diagnostic_item,
     evaluate,
+    skill_definition,
     sop_execution,
     system_prompt,
     tool_definition,
@@ -141,6 +142,7 @@ async def lifespan(app: FastAPI):
     agent_exec.set_dependencies(database_manager, redis_manager)  # T-TOOL-05, T-TOOL-06
     tool_definition.set_tool_database_manager(database_manager)
     system_prompt.set_prompt_database_manager(database_manager)
+    skill_definition.set_skill_database_manager(database_manager)
 
     yield
 
@@ -177,6 +179,7 @@ app.include_router(diagnostic_item.router)
 app.include_router(agent_exec.router)  # T-TOOL-05, T-TOOL-06
 app.include_router(tool_definition.router)
 app.include_router(system_prompt.router)
+app.include_router(skill_definition.router)
 
 
 # 健康检查端点

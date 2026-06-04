@@ -25,6 +25,7 @@ from shared.clients import KBClient
 from shared.observability.logger import get_logger
 
 from app.memory.variable_pool.pool import VariableRequestResult
+from app.skills.registry import execute_skill
 
 logger = get_logger("memory.variable-pool")
 
@@ -278,6 +279,32 @@ async def sop_request_variable(
             var_schema=var_def,
             kind="variable_input",
             msg=f"变量 {variable_name} 自动获取失败，请手动输入",
+        )
+
+    if strategy == "skill_call" and acquisition_tool:
+        # skill_call 策略：执行内置通用分析技能计算变量值
+        try:
+            skill_result = await execute_skill(acquisition_tool, context_variables)
+            if skill_result is not None:
+                logger.info(
+                    event="sop_request_variable_skill_executed",
+                    variable_name=variable_name,
+                    acquisition_skill=acquisition_tool,
+                    result=skill_result,
+                )
+                return {"ok": True, "value": skill_result, "source": "skill_call"}
+        except Exception as exc:
+            logger.warning(
+                event="sop_request_variable_skill_failed",
+                variable_name=variable_name,
+                acquisition_skill=acquisition_tool,
+                error=str(exc),
+            )
+        # 降级：技能执行失败，请用户手动输入
+        return await _request_user_input(
+            var_schema=var_def,
+            kind="variable_input",
+            msg=f"变量 {variable_name} 自动分析失败，请手动输入",
         )
 
     if strategy == "user_confirm":

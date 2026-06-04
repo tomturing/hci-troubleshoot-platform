@@ -422,3 +422,16 @@ acli判断方法：
         assert "check_meth" in declared
         assert declared["check_meth"]["acquisition_strategy"] == "sop_default"
         assert declared["check_meth"]["default_value"] == "硬盘返修判断方法"
+
+    def test_skill_call_strategy(self):
+        """测试 skill_call 策略的解析"""
+        content = """
+## 变量声明
+| 变量名 | 类型 | 来源 | 说明 |
+|---|---|---|---|
+| check_meth | string | skill:disk_vendor_lifetime | 硬盘返修判断方法 |
+"""
+        declared = _parse_variable_section(content)
+        assert "check_meth" in declared
+        assert declared["check_meth"]["acquisition_strategy"] == "skill_call"
+        assert declared["check_meth"]["acquisition_tool"] == "disk_vendor_lifetime"

@@ -63,10 +63,16 @@ const router = createRouter({
       meta: { title: '工具管理', icon: 'Setting', order: 7 },
     },
     {
+      path: '/skills',
+      name: 'SkillManage',
+      component: () => import('@/views/SkillManageView.vue'),
+      meta: { title: '技能管理', icon: 'Briefcase', order: 8 },
+    },
+    {
       path: '/prompts',
       name: 'PromptManage',
       component: () => import('@/views/PromptManageView.vue'),
-      meta: { title: 'Prompt管理', icon: 'Cpu', order: 8 },
+      meta: { title: 'Prompt管理', icon: 'Cpu', order: 9 },
     },
   ],
 })
