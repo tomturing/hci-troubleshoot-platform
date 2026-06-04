@@ -216,34 +216,41 @@ onMounted(() => {
 
 <template>
   <div class="skill-manage-container">
-    <el-card class="box-card main-card">
-      <template #header>
-        <div class="card-header">
-          <div class="header-left">
-            <span class="title">AI 技能注册表 ({{ filteredSkills.length }})</span>
-            <span class="subtitle">管理平台内置的、通用的诊断与分析 Skill 算法定义</span>
-          </div>
-          <el-button type="primary" class="gradient-btn" @click="openCreateDialog">
-            <el-icon class="el-icon--left"><Plus /></el-icon> 新建技能定义
-          </el-button>
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <div class="header-row">
+        <div>
+          <h2 class="page-title">技能注册表</h2>
+          <p class="page-desc">管理平台内置的、通用的诊断与分析 Skill 算法定义</p>
         </div>
-      </template>
-
-      <!-- 过滤栏 -->
-      <div class="filter-bar">
-        <el-input
-          v-model="searchQuery"
-          placeholder="搜索技能标识、展示名称、描述..."
-          class="search-input"
-          clearable
-        >
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
-        </el-input>
+        <el-button type="primary" @click="openCreateDialog">
+          <el-icon class="el-icon--left"><Plus /></el-icon> 新建技能定义
+        </el-button>
       </div>
+    </div>
 
-      <!-- 数据表 -->
+    <!-- 过滤栏 -->
+    <el-card class="filter-card" shadow="never" style="margin-bottom: 16px;">
+      <el-row :gutter="16" align="middle">
+        <el-col :span="8">
+          <el-input
+            v-model="searchQuery"
+            placeholder="搜索技能标识、展示名称、描述..."
+            clearable
+          >
+            <template #prefix>
+              <el-icon><Search /></el-icon>
+            </template>
+          </el-input>
+        </el-col>
+        <el-col :span="16" class="total-info" style="text-align: right; color: #909399; font-size: 14px;">
+          共 <strong>{{ filteredSkills.length }}</strong> 个技能
+        </el-col>
+      </el-row>
+    </el-card>
+
+    <!-- 数据表 -->
+    <el-card shadow="never" class="table-card">
       <el-table
         v-loading="loading"
         :data="filteredSkills"
@@ -280,10 +287,8 @@ onMounted(() => {
 
         <el-table-column label="操作" width="150" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button-group>
-              <el-button type="primary" size="small" :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
-              <el-button type="danger" size="small" :icon="Delete" @click="handleDelete(row)">删除</el-button>
-            </el-button-group>
+            <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
+            <el-button type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -367,7 +372,7 @@ onMounted(() => {
       <template #footer>
         <div class="dialog-footer">
           <el-button @click="dialogVisible = false">取消</el-button>
-          <el-button type="primary" class="gradient-btn" @click="submitForm">保存</el-button>
+          <el-button type="primary" @click="submitForm">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -376,60 +381,43 @@ onMounted(() => {
 
 <style scoped>
 .skill-manage-container {
-  max-width: 1200px;
-  margin: 0 auto;
+  padding: 20px;
 }
 
-.main-card {
-  border-radius: 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
-  background: #fff;
-  border: none;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header-left {
-  display: flex;
-  flex-direction: column;
-}
-
-.title {
-  font-size: 18px;
-  font-weight: 600;
-  color: #2c3e50;
-}
-
-.subtitle {
-  font-size: 13px;
-  color: #7f8c8d;
-  margin-top: 4px;
-}
-
-.gradient-btn {
-  background: linear-gradient(135deg, #3498db, #2980b9);
-  border: none;
-  color: white;
-  transition: all 0.3s ease;
-}
-
-.gradient-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(41, 128, 185, 0.4);
-}
-
-.filter-bar {
-  display: flex;
-  gap: 15px;
+.page-header {
   margin-bottom: 20px;
 }
 
-.search-input {
-  max-width: 360px;
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.page-title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  color: #303133;
+}
+
+.page-desc {
+  margin: 0;
+  color: #666;
+  font-size: 14px;
+}
+
+.filter-card {
+  margin-bottom: 16px;
+}
+
+.total-info {
+  text-align: right;
+  color: #909399;
+  font-size: 14px;
+}
+
+.table-card {
+  min-height: 400px;
 }
 
 .code-badge {
@@ -475,7 +463,7 @@ onMounted(() => {
 }
 
 .custom-dialog :deep(.el-dialog) {
-  border-radius: 12px;
+  border-radius: 4px;
   overflow: hidden;
 }
 

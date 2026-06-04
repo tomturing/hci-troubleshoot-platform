@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete } from '@element-plus/icons-vue'
+import { Plus, Search, Edit, Delete } from '@element-plus/icons-vue'
 
 interface ToolDefinition {
   id: number
@@ -238,40 +238,48 @@ onMounted(() => {
 
 <template>
   <div class="tool-manage-container">
-    <el-card class="box-card main-card">
-      <template #header>
-        <div class="card-header">
-          <div class="header-left">
-            <span class="title">AI 工具注册表 ({{ filteredTools.length }})</span>
-            <span class="subtitle">管理 ReAct 引擎可调用的 HCI 诊断插件及 API 接口</span>
-          </div>
-          <el-button type="primary" class="gradient-btn" @click="openCreateDialog">
-            <el-icon class="el-icon--left"><Plus /></el-icon> 新建工具定义
-          </el-button>
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <div class="header-row">
+        <div>
+          <h2 class="page-title">工具注册表</h2>
+          <p class="page-desc">管理 ReAct 引擎可调用的 HCI 诊断插件及 API 接口</p>
         </div>
-      </template>
-
-      <!-- 过滤栏 -->
-      <div class="filter-bar">
-        <el-input
-          v-model="searchQuery"
-          placeholder="搜索工具标识、展示名称、描述..."
-          class="search-input"
-          clearable
-        >
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
-        </el-input>
-
-        <el-select v-model="categoryFilter" placeholder="执行后端分类" clearable class="category-select">
-          <el-option label="ACLI 节点执行 (acli)" value="acli" />
-          <el-option label="SCP 平台 API (scp)" value="scp" />
-          <el-option label="SOP 导航引擎 (sop)" value="sop" />
-        </el-select>
+        <el-button type="primary" @click="openCreateDialog">
+          <el-icon class="el-icon--left"><Plus /></el-icon> 新建工具定义
+        </el-button>
       </div>
+    </div>
 
-      <!-- 数据表 -->
+    <!-- 过滤栏 -->
+    <el-card class="filter-card" shadow="never" style="margin-bottom: 16px;">
+      <el-row :gutter="16" align="middle">
+        <el-col :span="8">
+          <el-input
+            v-model="searchQuery"
+            placeholder="搜索工具标识、展示名称、描述..."
+            clearable
+          >
+            <template #prefix>
+              <el-icon><Search /></el-icon>
+            </template>
+          </el-input>
+        </el-col>
+        <el-col :span="6">
+          <el-select v-model="categoryFilter" placeholder="执行后端分类" clearable style="width: 100%">
+            <el-option label="ACLI 节点执行 (acli)" value="acli" />
+            <el-option label="SCP 平台 API (scp)" value="scp" />
+            <el-option label="SOP 导航引擎 (sop)" value="sop" />
+          </el-select>
+        </el-col>
+        <el-col :span="10" class="total-info" style="text-align: right; color: #909399; font-size: 14px;">
+          共 <strong>{{ filteredTools.length }}</strong> 个工具
+        </el-col>
+      </el-row>
+    </el-card>
+
+    <!-- 数据表 -->
+    <el-card shadow="never" class="table-card">
       <el-table
         v-loading="loading"
         :data="filteredTools"
@@ -324,10 +332,8 @@ onMounted(() => {
 
         <el-table-column label="操作" width="150" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button-group>
-              <el-button type="primary" size="small" :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
-              <el-button type="danger" size="small" :icon="Delete" @click="handleDelete(row)">删除</el-button>
-            </el-button-group>
+            <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
+            <el-button type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -436,7 +442,7 @@ onMounted(() => {
       <template #footer>
         <div class="dialog-footer">
           <el-button @click="dialogVisible = false">取消</el-button>
-          <el-button type="primary" class="gradient-btn" @click="submitForm">保存</el-button>
+          <el-button type="primary" @click="submitForm">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -445,64 +451,43 @@ onMounted(() => {
 
 <style scoped>
 .tool-manage-container {
-  max-width: 1200px;
-  margin: 0 auto;
+  padding: 20px;
 }
 
-.main-card {
-  border-radius: 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
-  background: #fff;
-  border: none;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header-left {
-  display: flex;
-  flex-direction: column;
-}
-
-.title {
-  font-size: 18px;
-  font-weight: 600;
-  color: #2c3e50;
-}
-
-.subtitle {
-  font-size: 13px;
-  color: #7f8c8d;
-  margin-top: 4px;
-}
-
-.gradient-btn {
-  background: linear-gradient(135deg, #3498db, #2980b9);
-  border: none;
-  color: white;
-  transition: all 0.3s ease;
-}
-
-.gradient-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(41, 128, 185, 0.4);
-}
-
-.filter-bar {
-  display: flex;
-  gap: 15px;
+.page-header {
   margin-bottom: 20px;
 }
 
-.search-input {
-  max-width: 360px;
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
 }
 
-.category-select {
-  width: 200px;
+.page-title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  color: #303133;
+}
+
+.page-desc {
+  margin: 0;
+  color: #666;
+  font-size: 14px;
+}
+
+.filter-card {
+  margin-bottom: 16px;
+}
+
+.total-info {
+  text-align: right;
+  color: #909399;
+  font-size: 14px;
+}
+
+.table-card {
+  min-height: 400px;
 }
 
 .code-badge {
@@ -565,7 +550,7 @@ onMounted(() => {
 }
 
 .custom-dialog :deep(.el-dialog) {
-  border-radius: 12px;
+  border-radius: 4px;
   overflow: hidden;
 }
 
