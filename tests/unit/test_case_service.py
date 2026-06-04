@@ -13,6 +13,11 @@ if _expect != _actual:
     for _k in list(sys.modules):
         if _k == "app" or _k.startswith("app."):
             del sys.modules[_k]
+    try:
+        from shared.database.postgres import Base
+        Base.metadata.clear()
+    except ImportError:
+        pass
     if _svc in sys.path:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)

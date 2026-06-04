@@ -3,6 +3,10 @@ Unit Tests for SkillDefinition ORM model and routes
 """
 
 import sys
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # 隔离 conversation-service app 命名空间（backend/ 已通过 pyproject.toml pythonpath 全局配置）
 _svc = "/mnt/d/aihci/hci-troubleshoot-platform/backend/conversation-service"
@@ -65,11 +69,241 @@ class TestSkillDefinitionORM:
         assert "display_name='硬盘厂商识别与寿命判定'" in repr_str
 
 
+@pytest.fixture
+def mock_session():
+    """创建模拟数据库会话"""
+    return AsyncMock(spec=AsyncSession)
+
+
 class TestSkillDefinitionRoutes:
-    """测试 skill_definition CRUD 路由"""
+    """测试 skill_definition CRUD 路由与依赖注入"""
 
     def test_router_prefix(self):
         """router 使用正确前缀"""
         from app.routes.skill_definition import router
 
         assert router.prefix == "/api/v1/skills"
+
+    @pytest.mark.asyncio
+    async def test_get_db_uninitialized(self):
+        """数据库管理器未初始化时 get_db 报错"""
+        from app.routes.skill_definition import get_db, set_skill_database_manager
+        from fastapi import HTTPException
+
+        set_skill_database_manager(None)
+
+        with pytest.raises(HTTPException) as exc_info:
+            async for _ in get_db():
+                pass
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_get_db_success(self):
+        """数据库管理器正常初始化时 get_db 成功产生会话"""
+        from app.routes.skill_definition import get_db, set_skill_database_manager
+
+        mock_db = MagicMock()
+        mock_sess = AsyncMock()
+
+        async def mock_get_session():
+            yield mock_sess
+
+        mock_db.get_session = mock_get_session
+        set_skill_database_manager(mock_db)
+
+        sessions = []
+        async for session in get_db():
+            sessions.append(session)
+
+        assert len(sessions) == 1
+        assert sessions[0] == mock_sess
+
+    @pytest.mark.asyncio
+    async def test_list_skills(self, mock_session):
+        """测试获取技能定义列表（支持 is_active 过滤）"""
+        from app.routes.skill_definition import list_skills
+
+        mock_skill = MagicMock()
+        mock_skill.id = 1
+        mock_skill.skill_name = "test_skill"
+        mock_skill.display_name = "Test"
+        mock_skill.description = "Desc"
+        mock_skill.parameters_schema = {}
+        mock_skill.output_schema = {}
+        mock_skill.is_active = True
+        mock_skill.version = "1.0"
+        mock_skill.created_at = None
+        mock_skill.updated_at = None
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [mock_skill]
+        mock_session.execute.return_value = mock_result
+
+        result = await list_skills(is_active=True, db=mock_session)
+        assert len(result) == 1
+        assert result[0]["skill_name"] == "test_skill"
+
+    @pytest.mark.asyncio
+    async def test_get_skill_success(self, mock_session):
+        """测试获取特定技能定义详情成功"""
+        from app.routes.skill_definition import get_skill
+
+        mock_skill = MagicMock()
+        mock_skill.id = 1
+        mock_skill.skill_name = "test_skill"
+        mock_skill.display_name = "Test"
+        mock_skill.description = "Desc"
+        mock_skill.parameters_schema = {}
+        mock_skill.output_schema = {}
+        mock_skill.is_active = True
+        mock_skill.version = "1.0"
+        mock_skill.created_at = None
+        mock_skill.updated_at = None
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_skill
+        mock_session.execute.return_value = mock_result
+
+        result = await get_skill(skill_id=1, db=mock_session)
+        assert result["skill_name"] == "test_skill"
+
+    @pytest.mark.asyncio
+    async def test_get_skill_not_found(self, mock_session):
+        """测试获取不存在的技能定义返回 404"""
+        from app.routes.skill_definition import get_skill
+        from fastapi import HTTPException
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_skill(skill_id=999, db=mock_session)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_create_skill_success(self, mock_session):
+        """测试成功创建新技能定义"""
+        from app.routes.skill_definition import create_skill
+
+        mock_check_result = MagicMock()
+        mock_check_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_check_result
+
+        payload = {
+            "skill_name": "new_skill",
+            "display_name": "New Skill",
+            "description": "Desc",
+            "parameters_schema": {},
+            "output_schema": {},
+            "is_active": True,
+            "version": "1.0",
+        }
+
+        result = await create_skill(payload=payload, db=mock_session)
+        assert result["status"] == "success"
+        mock_session.add.assert_called_once()
+        mock_session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_create_skill_missing_name(self, mock_session):
+        """测试创建新技能定义缺少 skill_name 报错"""
+        from app.routes.skill_definition import create_skill
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc_info:
+            await create_skill(payload={}, db=mock_session)
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_create_skill_name_conflict(self, mock_session):
+        """测试创建新技能定义标识重名报错"""
+        from app.routes.skill_definition import create_skill
+        from fastapi import HTTPException
+
+        mock_check_result = MagicMock()
+        mock_check_result.scalar_one_or_none.return_value = MagicMock()
+        mock_session.execute.return_value = mock_check_result
+
+        with pytest.raises(HTTPException) as exc_info:
+            await create_skill(payload={"skill_name": "conflict"}, db=mock_session)
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_update_skill_success(self, mock_session):
+        """测试更新技能定义字段成功"""
+        from app.routes.skill_definition import update_skill
+
+        mock_skill = MagicMock()
+        mock_skill.id = 1
+        mock_skill.skill_name = "old_name"
+
+        mock_get_result = MagicMock()
+        mock_get_result.scalar_one_or_none.return_value = mock_skill
+
+        mock_conflict_result = MagicMock()
+        mock_conflict_result.scalar_one_or_none.return_value = None
+
+        mock_session.execute.side_effect = [mock_get_result, mock_conflict_result]
+
+        payload = {
+            "skill_name": "new_name",
+            "display_name": "New Name",
+            "description": "New Desc",
+            "parameters_schema": {"a": 1},
+            "output_schema": {"b": 2},
+            "is_active": False,
+            "version": "2.0",
+        }
+
+        result = await update_skill(skill_id=1, payload=payload, db=mock_session)
+        assert result["status"] == "success"
+        assert mock_skill.skill_name == "new_name"
+        assert mock_skill.display_name == "New Name"
+        assert mock_skill.description == "New Desc"
+        assert mock_skill.parameters_schema == {"a": 1}
+        assert mock_skill.output_schema == {"b": 2}
+        assert mock_skill.is_active is False
+        assert mock_skill.version == "2.0"
+        mock_session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_update_skill_not_found(self, mock_session):
+        """测试更新不存在的技能定义返回 404"""
+        from app.routes.skill_definition import update_skill
+        from fastapi import HTTPException
+
+        mock_get_result = MagicMock()
+        mock_get_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_get_result
+
+        with pytest.raises(HTTPException) as exc_info:
+            await update_skill(skill_id=999, payload={}, db=mock_session)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_skill_success(self, mock_session):
+        """测试删除技能定义成功"""
+        from app.routes.skill_definition import delete_skill
+
+        mock_delete_result = MagicMock()
+        mock_delete_result.rowcount = 1
+        mock_session.execute.return_value = mock_delete_result
+
+        result = await delete_skill(skill_id=1, db=mock_session)
+        assert result["status"] == "success"
+        mock_session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_skill_not_found(self, mock_session):
+        """测试删除不存在的技能定义返回 404"""
+        from app.routes.skill_definition import delete_skill
+        from fastapi import HTTPException
+
+        mock_delete_result = MagicMock()
+        mock_delete_result.rowcount = 0
+        mock_session.execute.return_value = mock_delete_result
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_skill(skill_id=999, db=mock_session)
+        assert exc_info.value.status_code == 404

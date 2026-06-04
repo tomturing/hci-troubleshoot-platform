@@ -15,6 +15,11 @@ def _activate_service(service_name: str) -> None:
         for key in list(sys.modules):
             if key == "app" or key.startswith("app."):
                 del sys.modules[key]
+        try:
+            from shared.database.postgres import Base
+            Base.metadata.clear()
+        except ImportError:
+            pass
         if svc_root in sys.path:
             sys.path.remove(svc_root)
         sys.path.insert(0, svc_root)
