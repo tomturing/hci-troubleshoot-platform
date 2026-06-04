@@ -244,35 +244,29 @@ onMounted(() => {
 
 <template>
   <div class="prompt-manage-container">
-    <el-row :gutter="20">
-      <!-- 左侧阶段侧边栏 -->
-      <el-col :span="6">
-        <div class="stage-sidebar">
-          <div
-            v-for="stage in stages"
-            :key="stage.value"
-            class="stage-item"
-            :class="{ active: activeTab === stage.value }"
-            @click="activeTab = stage.value"
-          >
-            <div class="stage-badge" :class="`badge-${stage.value.toLowerCase()}`">{{ stage.value }}</div>
-            <span class="stage-label">{{ stage.label }}</span>
-          </div>
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <div class="header-row">
+        <div>
+          <h2 class="page-title">Prompt 管理</h2>
+          <p class="page-desc">管理各诊断阶段的 System Prompt 模板版本，激活的模板将在运行时被 AI 评阅使用</p>
         </div>
-      </el-col>
+        <el-button type="primary" @click="openCreateDialog">
+          <el-icon class="el-icon--left"><Plus /></el-icon> 新增版本
+        </el-button>
+      </div>
+    </div>
 
-      <!-- 右侧 Prompt 列表 -->
+    <el-row :gutter="20">
+      <!-- 左侧 Prompt 列表 -->
       <el-col :span="18">
-        <el-card class="box-card main-card">
+        <el-card class="box-card main-card" shadow="never">
           <template #header>
             <div class="card-header">
               <div class="header-left">
-                <span class="title">模板版本列表 ({{ currentPrompts.length }})</span>
-                <span class="subtitle">管理该诊断阶段的 Prompt 拼接方案</span>
+                <span class="card-title">模板版本列表 ({{ currentPrompts.length }})</span>
+                <span class="card-sub">当前阶段: <strong>{{ stages.find(s => s.value === activeTab)?.label }}</strong></span>
               </div>
-              <el-button type="primary" class="gradient-btn" @click="openCreateDialog">
-                <el-icon class="el-icon--left"><Plus /></el-icon> 新增版本
-              </el-button>
             </div>
           </template>
 
@@ -336,10 +330,11 @@ onMounted(() => {
               </div>
 
               <div class="prompt-card-actions">
-                <el-button type="primary" size="small" :icon="Edit" @click="openEditDialog(item)">编辑修改</el-button>
+                <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(item)">编辑修改</el-button>
                 <el-button
                   type="danger"
                   size="small"
+                  text
                   :icon="Delete"
                   :disabled="item.is_active"
                   @click="handleDelete(item)"
@@ -350,6 +345,22 @@ onMounted(() => {
             </div>
           </div>
         </el-card>
+      </el-col>
+
+      <!-- 右侧阶段导航 -->
+      <el-col :span="6">
+        <div class="stage-sidebar">
+          <div
+            v-for="stage in stages"
+            :key="stage.value"
+            class="stage-item"
+            :class="{ active: activeTab === stage.value }"
+            @click="activeTab = stage.value"
+          >
+            <div class="stage-badge" :class="`badge-${stage.value.toLowerCase()}`">{{ stage.value }}</div>
+            <span class="stage-label">{{ stage.label }}</span>
+          </div>
+        </div>
       </el-col>
     </el-row>
 
@@ -415,7 +426,7 @@ onMounted(() => {
       <template #footer>
         <div class="dialog-footer">
           <el-button @click="dialogVisible = false">取消</el-button>
-          <el-button type="primary" class="gradient-btn" @click="submitForm">保存</el-button>
+          <el-button type="primary" @click="submitForm">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -424,8 +435,54 @@ onMounted(() => {
 
 <style scoped>
 .prompt-manage-container {
-  max-width: 1250px;
-  margin: 0 auto;
+  padding: 0;
+}
+
+/* 页面头部 — 与 SopManageView 保持一致 */
+.page-header {
+  margin-bottom: 16px;
+}
+
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.page-title {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.page-desc {
+  margin: 0;
+  font-size: 13px;
+  color: #909399;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-left {
+  display: flex;
+  flex-direction: column;
+}
+
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.card-sub {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 3px;
 }
 
 .stage-sidebar {
@@ -485,48 +542,6 @@ onMounted(() => {
 .stage-item.active .stage-label {
   color: #2980b9;
   font-weight: 600;
-}
-
-.main-card {
-  border-radius: 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
-  background: #fff;
-  border: none;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header-left {
-  display: flex;
-  flex-direction: column;
-}
-
-.title {
-  font-size: 18px;
-  font-weight: 600;
-  color: #2c3e50;
-}
-
-.subtitle {
-  font-size: 13px;
-  color: #7f8c8d;
-  margin-top: 4px;
-}
-
-.gradient-btn {
-  background: linear-gradient(135deg, #3498db, #2980b9);
-  border: none;
-  color: white;
-  transition: all 0.3s ease;
-}
-
-.gradient-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(41, 128, 185, 0.4);
 }
 
 .placeholder-tip-box {

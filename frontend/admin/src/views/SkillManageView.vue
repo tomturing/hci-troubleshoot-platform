@@ -216,40 +216,44 @@ onMounted(() => {
 
 <template>
   <div class="skill-manage-container">
-    <el-card class="box-card main-card">
-      <template #header>
-        <div class="card-header">
-          <div class="header-left">
-            <span class="title">AI 技能注册表 ({{ filteredSkills.length }})</span>
-            <span class="subtitle">管理平台内置的、通用的诊断与分析 Skill 算法定义</span>
-          </div>
-          <el-button type="primary" class="gradient-btn" @click="openCreateDialog">
-            <el-icon class="el-icon--left"><Plus /></el-icon> 新建技能定义
-          </el-button>
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <div class="header-row">
+        <div>
+          <h2 class="page-title">技能注册表</h2>
+          <p class="page-desc">管理平台内置的诊断与分析 Skill 算法定义（共 {{ filteredSkills.length }} 项）</p>
         </div>
-      </template>
-
-      <!-- 过滤栏 -->
-      <div class="filter-bar">
-        <el-input
-          v-model="searchQuery"
-          placeholder="搜索技能标识、展示名称、描述..."
-          class="search-input"
-          clearable
-        >
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
-        </el-input>
+        <el-button type="primary" @click="openCreateDialog">
+          <el-icon class="el-icon--left"><Plus /></el-icon> 新建技能定义
+        </el-button>
       </div>
+    </div>
 
-      <!-- 数据表 -->
+    <!-- 过滤卡片 -->
+    <el-card class="filter-card" shadow="never">
+      <el-row :gutter="16" align="middle">
+        <el-col :span="14">
+          <el-input
+            v-model="searchQuery"
+            placeholder="搜索技能标识、展示名称、描述..."
+            clearable
+          >
+            <template #prefix>
+              <el-icon><Search /></el-icon>
+            </template>
+          </el-input>
+        </el-col>
+        <el-col :span="10" class="total-info">共 <strong>{{ filteredSkills.length }}</strong> 个技能定义</el-col>
+      </el-row>
+    </el-card>
+
+    <!-- 数据表 -->
+    <el-card v-loading="loading" shadow="never" class="table-card">
+
       <el-table
-        v-loading="loading"
         :data="filteredSkills"
         stripe
         style="width: 100%"
-        class="custom-table"
       >
         <el-table-column prop="skill_name" label="技能标识名 (skill_name)" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
@@ -280,10 +284,8 @@ onMounted(() => {
 
         <el-table-column label="操作" width="150" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button-group>
-              <el-button type="primary" size="small" :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
-              <el-button type="danger" size="small" :icon="Delete" @click="handleDelete(row)">删除</el-button>
-            </el-button-group>
+            <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
+            <el-button type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -376,60 +378,45 @@ onMounted(() => {
 
 <style scoped>
 .skill-manage-container {
-  max-width: 1200px;
-  margin: 0 auto;
+  padding: 0;
 }
 
-.main-card {
-  border-radius: 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
-  background: #fff;
-  border: none;
+/* 页面头部 — 与 SopManageView 保持一致 */
+.page-header {
+  margin-bottom: 16px;
 }
 
-.card-header {
+.header-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
 
-.header-left {
-  display: flex;
-  flex-direction: column;
-}
-
-.title {
-  font-size: 18px;
+.page-title {
+  margin: 0 0 4px;
+  font-size: 20px;
   font-weight: 600;
-  color: #2c3e50;
+  color: #303133;
 }
 
-.subtitle {
+.page-desc {
+  margin: 0;
   font-size: 13px;
-  color: #7f8c8d;
-  margin-top: 4px;
+  color: #909399;
 }
 
-.gradient-btn {
-  background: linear-gradient(135deg, #3498db, #2980b9);
-  border: none;
-  color: white;
-  transition: all 0.3s ease;
+.filter-card {
+  margin-bottom: 16px;
 }
 
-.gradient-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(41, 128, 185, 0.4);
+.total-info {
+  text-align: right;
+  font-size: 13px;
+  color: #606266;
 }
 
-.filter-bar {
-  display: flex;
-  gap: 15px;
-  margin-bottom: 20px;
-}
-
-.search-input {
-  max-width: 360px;
+.table-card {
+  /* 撑满容器宽度 */
 }
 
 .code-badge {
