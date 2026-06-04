@@ -1,0 +1,723 @@
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+
+interface SystemPrompt {
+  id: number
+  stage: string
+  name: string
+  description: string | null
+  content_template: string
+  version: string
+  is_active: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+const prompts = ref<SystemPrompt[]>([])
+const loading = ref(false)
+const activeTab = ref('BASE') // 当前选中的 Stage Tab
+
+// 获取 internalToken
+const internalToken = import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
+const authHeader = { Authorization: `Bearer ${internalToken}` }
+
+// 定义各个诊断阶段的可用占位符说明
+const placeholdersMap: Record<string, string[]> = {
+  BASE: ['{tool_list}'],
+  S0: ['{category_list}', '{case_title}', '{case_description}'],
+  S1: ['{category_name}'],
+  S2: ['{category_name}', '{kbd_context}', '{sop_content}'],
+  S3: ['{hypotheses}', '{verification_steps}'],
+  S4: ['{hypotheses}'],
+  S5: ['{root_cause}'],
+  S6: []
+}
+
+// 诊断阶段列表及其中文名
+const stages = [
+  { value: 'BASE', label: 'BASE 全局角色定义' },
+  { value: 'S0', label: 'S0 故障意图识别' },
+  { value: 'S1', label: 'S1 诊断信息采集' },
+  { value: 'S2', label: 'S2 根因假设生成' },
+  { value: 'S3', label: 'S3 假设证据验证' },
+  { value: 'S4', label: 'S4 根因确认报告' },
+  { value: 'S5', label: 'S5 解决方案输出' }
+]
+
+// 过滤出当前选定 Stage 的 Prompts
+const currentPrompts = computed(() => {
+  return prompts.value.filter(p => p.stage === activeTab.value)
+})
+
+// 加载 Prompt 列表
+async function fetchPrompts() {
+  loading.value = true
+  try {
+    const res = await fetch('/api/v1/prompts', { headers: authHeader })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    prompts.value = await res.json()
+  } catch (e) {
+    console.error('加载 Prompt 列表失败:', e)
+    ElMessage.error('加载 Prompt 列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+// 切换激活状态（同一个 stage 仅有一个 true 激活）
+async function handleActiveChange(row: SystemPrompt) {
+  if (!row.is_active) {
+    // 强制保证每个 stage 至少有一个被激活
+    // 如果用户尝试直接把唯一的激活关掉，给予提示并恢复
+    ElMessage.warning('每个阶段必须保持至少一个激活版本！请直接启用其他版本进行切换。')
+    row.is_active = true
+    return
+  }
+
+  try {
+    const res = await fetch(`/api/v1/prompts/${row.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({
+        stage: row.stage,
+        name: row.name,
+        description: row.description,
+        content_template: row.content_template,
+        version: row.version,
+        is_active: true // 触发将该版本设为启用，后台自动修改其他
+      })
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    ElMessage.success(`阶段 ${row.stage} 激活版本已成功切换为 [${row.name}]`)
+    fetchPrompts() // 重新获取以刷新同 stage 其他的 is_active
+  } catch (e) {
+    console.error('切换激活 Prompt 失败:', e)
+    row.is_active = false
+    ElMessage.error('切换激活 Prompt 失败')
+  }
+}
+
+// 弹框表单
+const dialogVisible = ref(false)
+const isEdit = ref(false)
+const dialogTitle = computed(() => isEdit.value ? '编辑 Prompt 模板' : '新建 Prompt 模板')
+
+const formModel = ref({
+  id: 0,
+  stage: 'S0',
+  name: '',
+  description: '',
+  content_template: '',
+  version: '1.0',
+  is_active: true
+})
+
+// 打开新建
+function openCreateDialog() {
+  isEdit.value = false
+  formModel.value = {
+    id: 0,
+    stage: activeTab.value,
+    name: '',
+    description: '',
+    content_template: '',
+    version: '1.0',
+    is_active: true
+  }
+  dialogVisible.value = true
+}
+
+// 打开编辑
+function openEditDialog(row: SystemPrompt) {
+  isEdit.value = true
+  formModel.value = {
+    id: row.id,
+    stage: row.stage,
+    name: row.name,
+    description: row.description || '',
+    content_template: row.content_template,
+    version: row.version,
+    is_active: row.is_active
+  }
+  dialogVisible.value = true
+}
+
+// 提交表单
+async function submitForm() {
+  if (!formModel.value.name.trim()) {
+    ElMessage.warning('请输入 Prompt 模板唯一标识名称')
+    return
+  }
+  if (!formModel.value.content_template.trim()) {
+    ElMessage.warning('请输入 Prompt 模板正文内容')
+    return
+  }
+
+  const payload = {
+    stage: formModel.value.stage,
+    name: formModel.value.name.trim(),
+    description: formModel.value.description.trim(),
+    content_template: formModel.value.content_template,
+    version: formModel.value.version.trim() || '1.0',
+    is_active: formModel.value.is_active
+  }
+
+  try {
+    const url = isEdit.value ? `/api/v1/prompts/${formModel.value.id}` : '/api/v1/prompts'
+    const method = isEdit.value ? 'PUT' : 'POST'
+
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify(payload)
+    })
+    
+    if (!res.ok) {
+      const err = await res.json()
+      throw new Error(err.detail || `HTTP ${res.status}`)
+    }
+
+    ElMessage.success(`${dialogTitle.value}成功`)
+    dialogVisible.value = false
+    fetchPrompts()
+  } catch (e: any) {
+    console.error('提交 Prompt 模板失败:', e)
+    ElMessage.error(e.message || '操作失败')
+  }
+}
+
+// 删除 Prompt 模板
+async function handleDelete(row: SystemPrompt) {
+  if (row.is_active) {
+    ElMessage.warning('当前版本正在激活使用中，请先激活其他版本后再行删除！')
+    return
+  }
+
+  ElMessageBox.confirm(
+    `确认删除 Prompt 模板 "${row.name}" (v${row.version}) 吗？此操作无法撤销。`,
+    '高危警示',
+    {
+      confirmButtonText: '极其确认',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger'
+    }
+  ).then(async () => {
+    try {
+      const res = await fetch(`/api/v1/prompts/${row.id}`, {
+        method: 'DELETE',
+        headers: authHeader
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      ElMessage.success('Prompt 模板已成功删除')
+      fetchPrompts()
+    } catch (e) {
+      console.error('删除 Prompt 模板失败:', e)
+      ElMessage.error('删除失败')
+    }
+  }).catch(() => {})
+}
+
+// 导入 SQL 初始种子数据
+async function importSeedData() {
+  loading.value = true
+  try {
+    const res = await fetch('/api/v1/prompts/import-seed-legacy', {
+      method: 'POST',
+      headers: authHeader
+    })
+    // 如果没有这个特化的 API 也可以做降级提示，我们通过执行 SQL 后直接刷新 fetch 即可
+    fetchPrompts()
+  } catch (e) {
+    console.error('种子同步失败:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchPrompts()
+})
+</script>
+
+<template>
+  <div class="prompt-manage-container">
+    <el-row :gutter="20">
+      <!-- 左侧阶段侧边栏 -->
+      <el-col :span="6">
+        <div class="stage-sidebar">
+          <div
+            v-for="stage in stages"
+            :key="stage.value"
+            class="stage-item"
+            :class="{ active: activeTab === stage.value }"
+            @click="activeTab = stage.value"
+          >
+            <div class="stage-badge" :class="`badge-${stage.value.toLowerCase()}`">{{ stage.value }}</div>
+            <span class="stage-label">{{ stage.label }}</span>
+          </div>
+        </div>
+      </el-col>
+
+      <!-- 右侧 Prompt 列表 -->
+      <el-col :span="18">
+        <el-card class="box-card main-card">
+          <template #header>
+            <div class="card-header">
+              <div class="header-left">
+                <span class="title">模板版本列表 ({{ currentPrompts.length }})</span>
+                <span class="subtitle">管理该诊断阶段的 Prompt 拼接方案</span>
+              </div>
+              <el-button type="primary" class="gradient-btn" @click="openCreateDialog">
+                <el-icon class="el-icon--left"><Plus /></el-icon> 新增版本
+              </el-button>
+            </div>
+          </template>
+
+          <!-- 该阶段可用占位符说明 -->
+          <div class="placeholder-tip-box" v-if="placeholdersMap[activeTab] && placeholdersMap[activeTab].length > 0">
+            <span class="tip-title"><el-icon><InfoFilled /></el-icon> 该阶段可用的系统上下文占位符：</span>
+            <div class="placeholders-tags">
+              <el-tag
+                v-for="p in placeholdersMap[activeTab]"
+                :key="p"
+                size="small"
+                type="info"
+                effect="dark"
+                class="ph-tag"
+              >
+                {{ p }}
+              </el-tag>
+            </div>
+            <span class="tip-desc">提示: 系统会在组装 Prompt 时自动使用运行时提取的数据替换这些占位符。</span>
+          </div>
+
+          <!-- 无数据占位 -->
+          <el-empty v-if="currentPrompts.length === 0" description="该阶段下暂无任何 Prompt 模板版本">
+            <span class="text-secondary" style="display:block;margin-bottom:15px">
+              检测到 system_prompt 表目前在数据库中为空。你可以执行 SQL 导入种子数据：
+              <br/>
+              <code>database/seeds/02_system_prompts.sql</code>
+            </span>
+          </el-empty>
+
+          <!-- 列表卡片 -->
+          <div class="prompt-card-list" v-loading="loading">
+            <div
+              v-for="item in currentPrompts"
+              :key="item.id"
+              class="prompt-card"
+              :class="{ active: item.is_active }"
+            >
+              <div class="prompt-card-header">
+                <div class="p-header-left">
+                  <span class="p-name">{{ item.name }}</span>
+                  <el-tag size="small" class="version-tag">v{{ item.version }}</el-tag>
+                </div>
+                <div class="p-header-right">
+                  <span class="active-label">{{ item.is_active ? '正在使用' : '未激活' }}</span>
+                  <el-switch
+                    v-model="item.is_active"
+                    active-color="#13ce66"
+                    inactive-color="#c0ccda"
+                    @change="handleActiveChange(item)"
+                  />
+                </div>
+              </div>
+
+              <div class="prompt-description" v-if="item.description">
+                <strong>模板用途说明：</strong> {{ item.description }}
+              </div>
+
+              <div class="prompt-template-preview">
+                <pre class="template-pre"><code>{{ item.content_template }}</code></pre>
+              </div>
+
+              <div class="prompt-card-actions">
+                <el-button type="primary" size="small" :icon="Edit" @click="openEditDialog(item)">编辑修改</el-button>
+                <el-button
+                  type="danger"
+                  size="small"
+                  :icon="Delete"
+                  :disabled="item.is_active"
+                  @click="handleDelete(item)"
+                >
+                  删除模板
+                </el-button>
+              </div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <!-- 新建/编辑 Prompt 模板 Dialog -->
+    <el-dialog
+      v-model="dialogVisible"
+      :title="dialogTitle"
+      width="780px"
+      destroy-on-close
+      class="custom-dialog"
+    >
+      <el-form :model="formModel" label-width="120px" class="dialog-form">
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="诊断阶段 (Stage)" required>
+              <el-select v-model="formModel.stage" style="width:100%" :disabled="isEdit">
+                <el-option v-for="s in stages" :key="s.value" :label="s.label" :value="s.value" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="版本号">
+              <el-input v-model="formModel.version" placeholder="1.0" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="模板唯一标识名" required>
+              <el-input v-model="formModel.name" placeholder="例如: s0_intent_recognition_v2" :disabled="isEdit" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="启用状态">
+              <el-switch v-model="formModel.is_active" active-text="激活本版" inactive-text="暂存备用" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-form-item label="模板用途说明">
+          <el-input v-model="formModel.description" type="textarea" :rows="2" placeholder="说明本版 Prompt 相比于其他版本做出了什么优化，便于追溯和对比" />
+        </el-form-item>
+
+        <el-form-item label="Prompt 模板正文" required>
+          <div class="template-editor-wrapper">
+            <div class="editor-header">
+              <span class="placeholder-tip">
+                支持占位符: <code v-for="p in placeholdersMap[formModel.stage]" :key="p" class="code-ph">{{ p }} </code>
+              </span>
+            </div>
+            <el-input
+              v-model="formModel.content_template"
+              type="textarea"
+              :rows="14"
+              class="code-textarea"
+              placeholder="请输入系统提示词内容模板..."
+            />
+          </div>
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="dialogVisible = false">取消</el-button>
+          <el-button type="primary" class="gradient-btn" @click="submitForm">保存</el-button>
+        </div>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<style scoped>
+.prompt-manage-container {
+  max-width: 1250px;
+  margin: 0 auto;
+}
+
+.stage-sidebar {
+  background: white;
+  border-radius: 12px;
+  padding: 10px 0;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.stage-item {
+  display: flex;
+  align-items: center;
+  padding: 12px 20px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border-left: 4px solid transparent;
+}
+
+.stage-item:hover {
+  background: #f8fafc;
+  transform: translateX(3px);
+}
+
+.stage-item.active {
+  background: #eef6ff;
+  border-left-color: #3498db;
+}
+
+.stage-badge {
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  font-weight: bold;
+  padding: 3px 6px;
+  border-radius: 4px;
+  margin-right: 12px;
+  min-width: 42px;
+  text-align: center;
+}
+
+.badge-base { background: #95a5a6; color: white; }
+.badge-s0 { background: #3498db; color: white; }
+.badge-s1 { background: #2ecc71; color: white; }
+.badge-s2 { background: #9b59b6; color: white; }
+.badge-s3 { background: #e67e22; color: white; }
+.badge-s4 { background: #e74c3c; color: white; }
+.badge-s5 { background: #f1c40f; color: #34495e; }
+
+.stage-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #34495e;
+}
+
+.stage-item.active .stage-label {
+  color: #2980b9;
+  font-weight: 600;
+}
+
+.main-card {
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+  background: #fff;
+  border: none;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-left {
+  display: flex;
+  flex-direction: column;
+}
+
+.title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.subtitle {
+  font-size: 13px;
+  color: #7f8c8d;
+  margin-top: 4px;
+}
+
+.gradient-btn {
+  background: linear-gradient(135deg, #3498db, #2980b9);
+  border: none;
+  color: white;
+  transition: all 0.3s ease;
+}
+
+.gradient-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(41, 128, 185, 0.4);
+}
+
+.placeholder-tip-box {
+  background-color: #f7f9fa;
+  border-left: 4px solid #95a5a6;
+  padding: 15px 20px;
+  border-radius: 0 8px 8px 0;
+  margin-bottom: 25px;
+}
+
+.tip-title {
+  font-size: 13px;
+  font-weight: bold;
+  color: #555;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.placeholders-tags {
+  margin: 10px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ph-tag {
+  font-family: Consolas, monospace;
+}
+
+.tip-desc {
+  font-size: 12px;
+  color: #7f8c8d;
+  display: block;
+}
+
+.prompt-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.prompt-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 20px;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.prompt-card:hover {
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+}
+
+.prompt-card.active {
+  border-color: #3498db;
+  background-color: #f9fbfd;
+}
+
+.prompt-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.p-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.p-name {
+  font-size: 16px;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.version-tag {
+  font-family: Consolas, monospace;
+}
+
+.p-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.active-label {
+  font-size: 12px;
+  color: #7f8c8d;
+}
+
+.prompt-card.active .active-label {
+  color: #2ecc71;
+  font-weight: bold;
+}
+
+.prompt-description {
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 12px;
+  background: #f1f5f9;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+.prompt-template-preview {
+  background-color: #1e293b;
+  border-radius: 6px;
+  padding: 15px;
+  margin-bottom: 15px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.template-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.template-pre code {
+  color: #e2e8f0;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.prompt-card-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.template-editor-wrapper {
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.editor-header {
+  background-color: #f5f7fa;
+  border-bottom: 1px solid #dcdfe6;
+  padding: 8px 15px;
+}
+
+.placeholder-tip {
+  font-size: 12px;
+  color: #606266;
+}
+
+.code-ph {
+  background: #eef1f6;
+  color: #e83e8c;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: Consolas, monospace;
+  margin-right: 5px;
+}
+
+.code-textarea :deep(.el-textarea__inner) {
+  font-family: Consolas, Monaco, monospace;
+  font-size: 13px;
+  border: none;
+  border-radius: 0;
+  background-color: #fafbfc;
+}
+
+.custom-dialog :deep(.el-dialog) {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.custom-dialog :deep(.el-dialog__header) {
+  background-color: #f8f9fa;
+  margin-right: 0;
+  padding: 20px;
+  border-bottom: 1px solid #eee;
+}
+
+.custom-dialog :deep(.el-dialog__title) {
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.custom-dialog :deep(.el-dialog__body) {
+  padding: 20px 30px;
+}
+
+.custom-dialog :deep(.el-dialog__footer) {
+  padding: 15px 30px;
+  border-top: 1px solid #eee;
+}
+</style>

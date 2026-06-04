@@ -56,6 +56,18 @@ const router = createRouter({
       component: () => import('@/views/MonitoringView.vue'),
       meta: { title: '系统监控', icon: 'Monitor', order: 6 },
     },
+    {
+      path: '/tools',
+      name: 'ToolManage',
+      component: () => import('@/views/ToolManageView.vue'),
+      meta: { title: '工具管理', icon: 'Setting', order: 7 },
+    },
+    {
+      path: '/prompts',
+      name: 'PromptManage',
+      component: () => import('@/views/PromptManageView.vue'),
+      meta: { title: 'Prompt管理', icon: 'Cpu', order: 8 },
+    },
   ],
 })
 
