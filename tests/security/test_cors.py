@@ -13,6 +13,7 @@ CORS 安全测试
 import os
 import sys
 
+
 def setup_api_gateway_namespace():
     # 将 api-gateway 加入路径
     _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "api-gateway"))
