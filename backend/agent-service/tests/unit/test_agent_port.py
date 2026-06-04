@@ -46,10 +46,7 @@ class TestAgentStageUpdate:
 
     def test_stage_update_with_metadata(self):
         """测试带元数据的阶段更新"""
-        update = AgentStageUpdate(
-            stage="S2",
-            metadata={"confidence": 0.9, "trigger": "llm_output"}
-        )
+        update = AgentStageUpdate(stage="S2", metadata={"confidence": 0.9, "trigger": "llm_output"})
         assert update.stage == "S2"
         assert update.metadata["confidence"] == 0.9
         assert update.metadata["trigger"] == "llm_output"
@@ -72,10 +69,7 @@ class TestAgentEscalation:
 
     def test_escalation_with_context(self):
         """测试带上下文的升级请求"""
-        escalation = AgentEscalation(
-            reason="需要人工介入",
-            context={"case_id": "CASE001", "attempts": 3}
-        )
+        escalation = AgentEscalation(reason="需要人工介入", context={"case_id": "CASE001", "attempts": 3})
         assert escalation.reason == "需要人工介入"
         assert escalation.context["case_id"] == "CASE001"
 
@@ -90,7 +84,7 @@ class TestAgentInteractiveRequest:
             acp_session_id="session-001",
             kind="info_request",
             title="请提供VM ID",
-            prompt="请告诉我你的虚拟机ID以便进一步排查"
+            prompt="请告诉我你的虚拟机ID以便进一步排查",
         )
         assert request.request_id == "req-001"
         assert request.acp_session_id == "session-001"
@@ -103,10 +97,7 @@ class TestAgentInteractiveRequest:
 
     def test_interactive_request_with_options(self):
         """测试带选项的交互请求"""
-        options = [
-            {"optionId": "yes", "name": "是"},
-            {"optionId": "no", "name": "否"}
-        ]
+        options = [{"optionId": "yes", "name": "是"}, {"optionId": "no", "name": "否"}]
         request = AgentInteractiveRequest(
             request_id="req-002",
             acp_session_id="session-001",
@@ -114,7 +105,7 @@ class TestAgentInteractiveRequest:
             title="确认操作",
             prompt="请确认是否执行此操作",
             options=options,
-            custom_input=False
+            custom_input=False,
         )
         assert len(request.options) == 2
         assert request.options[0]["optionId"] == "yes"

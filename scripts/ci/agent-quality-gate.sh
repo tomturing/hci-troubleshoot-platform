@@ -30,7 +30,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # ---- 项目根目录 ----
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 # ---- 计数器 ----
@@ -258,15 +258,15 @@ detect_changes() {
         changed+=$(git diff --name-only --cached 2>/dev/null || true)
     fi
 
-    while IFS= read -r f; do
+    while IFS= read -r f || [ -n "$f" ]; do
         [[ -z "$f" ]] && continue
-        [[ "$f" == *.py ]] && HAS_PYTHON_CHANGES=true
+        [[ "$f" == *.py ]] && HAS_PYTHON_CHANGES=true || true
         [[ "$f" == frontend/* || "$f" == *.ts || "$f" == *.vue || "$f" == *.tsx || "$f" == *.jsx ]] \
-            && HAS_FRONTEND_CHANGES=true
+            && HAS_FRONTEND_CHANGES=true || true
         [[ "$f" == *.js || "$f" == *.ts || "$f" == *.tsx || "$f" == *.jsx || "$f" == package.json ]] \
-            && HAS_NODEJS_CHANGES=true
-        [[ "$f" == *.go || "$f" == go.mod || "$f" == go.sum ]] && HAS_GO_CHANGES=true
-        [[ "$f" == *.rs || "$f" == Cargo.toml || "$f" == Cargo.lock ]] && HAS_RUST_CHANGES=true
+            && HAS_NODEJS_CHANGES=true || true
+        [[ "$f" == *.go || "$f" == go.mod || "$f" == go.sum ]] && HAS_GO_CHANGES=true || true
+        [[ "$f" == *.rs || "$f" == Cargo.toml || "$f" == Cargo.lock ]] && HAS_RUST_CHANGES=true || true
     done <<< "$changed"
 }
 

@@ -73,9 +73,12 @@ async def lifespan(app: FastAPI):
 
     # ── AI 助手注册表 ──────────────────────────────────────────────────────────
     from app.services.prompt_audit import PromptAuditService
+
     PromptAuditService.initialize(db_manager.async_session_factory)
 
-    async def prompt_audit_cb(conversation_id: str, assistant_type: str, messages: list[dict[str, Any]], case_id: str = "") -> None:
+    async def prompt_audit_cb(
+        conversation_id: str, assistant_type: str, messages: list[dict[str, Any]], case_id: str = ""
+    ) -> None:
         await PromptAuditService.write_prompt_audit(
             conversation_id=conversation_id,
             assistant_type=assistant_type,

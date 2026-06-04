@@ -114,12 +114,8 @@ class SearchEngine:
         t_start = time.monotonic()
 
         # 并发执行 BM25 和向量检索
-        bm25_task = asyncio.create_task(
-            self._bm25_search(query, category_l1=category_l1, category_l2=category_l2)
-        )
-        vector_task = asyncio.create_task(
-            self._vector_search(query, category_l1=category_l1, category_l2=category_l2)
-        )
+        bm25_task = asyncio.create_task(self._bm25_search(query, category_l1=category_l1, category_l2=category_l2))
+        vector_task = asyncio.create_task(self._vector_search(query, category_l1=category_l1, category_l2=category_l2))
 
         bm25_results, vector_results = await asyncio.gather(bm25_task, vector_task, return_exceptions=True)
 
@@ -164,7 +160,7 @@ class SearchEngine:
         if not tokens:
             return []
         # PostgreSQL tsquery: token1 & token2 & ...
-        tsquery_str = " & ".join(tokens[:10])   # 限制 10 个词，避免过长
+        tsquery_str = " & ".join(tokens[:10])  # 限制 10 个词，避免过长
 
         async with self._db.async_session_factory() as session:
             # 构建 SQL：tsvector @@ tsquery，按 ts_rank 排序
@@ -250,7 +246,7 @@ class SearchEngine:
         同一 chunk_id 在两路结果中均出现时，分数叠加，自然提升排名。
         """
         scores: dict[int, float] = defaultdict(float)
-        metadata: dict[int, tuple] = {}   # chunk_id → (content, document_id, chunk_index, title, cat_l1, cat_l2)
+        metadata: dict[int, tuple] = {}  # chunk_id → (content, document_id, chunk_index, title, cat_l1, cat_l2)
 
         # BM25 贡献分
         for rank, row in enumerate(bm25_results):

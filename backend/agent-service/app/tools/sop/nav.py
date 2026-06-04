@@ -136,10 +136,7 @@ def _build_node_response(node: dict) -> dict[str, Any]:
     is_leaf = not children
 
     # 提取子节点概览（仅 node_id + title）
-    children_summary = [
-        {"node_id": child.get("node_id", ""), "title": child.get("name", "")}
-        for child in children
-    ]
+    children_summary = [{"node_id": child.get("node_id", ""), "title": child.get("name", "")} for child in children]
 
     if is_leaf:
         diagnosis = node.get("diagnosis")

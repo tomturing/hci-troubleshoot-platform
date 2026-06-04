@@ -27,8 +27,8 @@ logger = get_logger("ai-client")
 class ToolCallRequest:
     """LLM 请求执行的工具调用（OpenAI function calling 协议）"""
 
-    id: str           # call_xxxx，工具结果回传时用于关联
-    name: str         # 工具名称
+    id: str  # call_xxxx，工具结果回传时用于关联
+    name: str  # 工具名称
     arguments: dict[str, Any] = field(default_factory=dict)  # JSON parse 后的参数
 
 
@@ -36,7 +36,7 @@ class ToolCallRequest:
 class InvokeResult:
     """invoke() 的返回值：工具调用或文字终止，二者互斥。"""
 
-    content: str | None = None                            # 文字终止时非空（finish_reason=stop）
+    content: str | None = None  # 文字终止时非空（finish_reason=stop）
     tool_calls: list[ToolCallRequest] = field(default_factory=list)  # 需要调用工具时非空
 
 
@@ -108,7 +108,12 @@ class OpenClawAssistant:
         return self.provider_api_key or self.api_key
 
     async def chat_completion_stream(
-        self, messages: list[dict[str, str]], user_id: str, pod_endpoint: str | None = None, model: str = "", case_id: str = ""
+        self,
+        messages: list[dict[str, str]],
+        user_id: str,
+        pod_endpoint: str | None = None,
+        model: str = "",
+        case_id: str = "",
     ) -> AsyncGenerator[str, None]:
         """
         调用OpenClaw Chat Completions API (流式)
@@ -129,6 +134,7 @@ class OpenClawAssistant:
 
         if getattr(self, "prompt_audit_callback", None):
             import asyncio
+
             asyncio.create_task(
                 self.prompt_audit_callback(
                     conversation_id=user_id,
@@ -482,6 +488,7 @@ class OpenClawAssistant:
 
         if getattr(self, "prompt_audit_callback", None):
             import asyncio
+
             asyncio.create_task(
                 self.prompt_audit_callback(
                     conversation_id=user_id,
@@ -534,11 +541,13 @@ class OpenClawAssistant:
                         args = json.loads(fn.get("arguments", "{}"))
                     except json.JSONDecodeError:
                         args = {}
-                    parsed.append(ToolCallRequest(
-                        id=tc.get("id", ""),
-                        name=fn.get("name", ""),
-                        arguments=args,
-                    ))
+                    parsed.append(
+                        ToolCallRequest(
+                            id=tc.get("id", ""),
+                            name=fn.get("name", ""),
+                            arguments=args,
+                        )
+                    )
                 return InvokeResult(content=None, tool_calls=parsed)
 
             # 文字终止分支（finish_reason="stop"）

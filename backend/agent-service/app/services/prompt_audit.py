@@ -50,7 +50,9 @@ class PromptAuditService:
 
         try:
             # 转换与校验 UUID
-            conv_uuid = uuid.UUID(str(conversation_id)) if not isinstance(conversation_id, uuid.UUID) else conversation_id
+            conv_uuid = (
+                uuid.UUID(str(conversation_id)) if not isinstance(conversation_id, uuid.UUID) else conversation_id
+            )
         except ValueError:
             # 强壮性兜底：对非标准格式（如'user'或'Qxxxx'）进行 UUID 命名空间派生，确保 100% 成功落库
             conv_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, str(conversation_id))

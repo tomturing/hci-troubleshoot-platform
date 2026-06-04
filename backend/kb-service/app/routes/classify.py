@@ -58,7 +58,6 @@ def set_dependencies(db: DatabaseManager) -> None:
     _db_manager = db
 
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # POST /api/kb/classify/intent — 意图识别接口（供 conversation-service 使用）
 # ─────────────────────────────────────────────────────────────────────────────
@@ -202,7 +201,7 @@ async def classify_intent(request: Request, body: IntentClassifyRequest) -> Inte
         raise HTTPException(status_code=500, detail="LLM 未返回分类结果")
 
     # 5. 批量查询所有需要的 category_id（修复 N+1 查询问题）
-    needed_codes = [item.get("category_id", "") for item in top_results[:body.top_n]]
+    needed_codes = [item.get("category_id", "") for item in top_results[: body.top_n]]
     needed_codes = [c for c in needed_codes if c in valid_codes]  # 过滤有效 code
 
     code_to_db_id: dict[str, int] = {}
@@ -219,7 +218,7 @@ async def classify_intent(request: Request, body: IntentClassifyRequest) -> Inte
     intent_items: list[IntentCategoryItem] = []
     needs_review = True  # 默认需要审核
 
-    for item in top_results[:body.top_n]:
+    for item in top_results[: body.top_n]:
         category_code = item.get("category_id", "")
         if category_code in valid_codes:
             cat_info = code_to_category.get(category_code, {})

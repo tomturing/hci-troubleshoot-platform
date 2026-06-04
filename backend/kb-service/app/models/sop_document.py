@@ -24,17 +24,17 @@ class SopDocument(Base):
     __tablename__ = "sop_document"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    source_id = Column(String(100), unique=True, nullable=True)            # 幂等键，如 sop-vm-start-failure
-    category_id = Column(String(32), nullable=True)                        # 关联 KB 分类（kb_category.code）
-    title = Column(String(500), nullable=False)                            # SOP 标题
-    content_md = Column(Text, nullable=False)                              # 完整 SOP Markdown
-    docx_hash = Column(String(64), nullable=True)                          # 源文件哈希（幂等去重）
-    status = Column(String(20), default="draft", nullable=False)           # draft/published/archived
-    reviewer_id = Column(Integer, nullable=True)                           # 审核人 ID
-    reviewed_at = Column(DateTime(timezone=True), nullable=True)           # 审核时间
-    published_at = Column(DateTime(timezone=True), nullable=True)          # 发布时间
+    source_id = Column(String(100), unique=True, nullable=True)  # 幂等键，如 sop-vm-start-failure
+    category_id = Column(String(32), nullable=True)  # 关联 KB 分类（kb_category.code）
+    title = Column(String(500), nullable=False)  # SOP 标题
+    content_md = Column(Text, nullable=False)  # 完整 SOP Markdown
+    docx_hash = Column(String(64), nullable=True)  # 源文件哈希（幂等去重）
+    status = Column(String(20), default="draft", nullable=False)  # draft/published/archived
+    reviewer_id = Column(Integer, nullable=True)  # 审核人 ID
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)  # 审核时间
+    published_at = Column(DateTime(timezone=True), nullable=True)  # 发布时间
     # 命中统计（case 级去重，物化列）
-    hit_count = Column(Integer, nullable=False, default=0)                 # 有多少个唯一 case 命中此 SOP（S1 命中时 +1）
+    hit_count = Column(Integer, nullable=False, default=0)  # 有多少个唯一 case 命中此 SOP（S1 命中时 +1）
 
     # 决策树（原 sop_tree 表 1:1 合并，approve 时写入，NULL = 未生成）
     tree_json = Column(JSONB, nullable=True, default=None)

@@ -92,25 +92,25 @@ from app.memory.variable_pool.engine import sop_request_variable
 async def test_sop_request_variable_skill_call():
     # Mock KBClient
     kb_client = MagicMock()
-    kb_client.get_sop_document = AsyncMock(return_value={
-        "id": 2,
-        "variable_schema": [
-            {
-                "name": "check_meth",
-                "acquisition_strategy": "skill_call",
-                "acquisition_tool": "disk_vendor_lifetime"
-            }
-        ]
-    })
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {"name": "check_meth", "acquisition_strategy": "skill_call", "acquisition_tool": "disk_vendor_lifetime"}
+            ],
+        }
+    )
 
     # Mock ConversationSopClient
     conversation_sop_client = MagicMock()
-    conversation_sop_client.get_execution = AsyncMock(return_value={
-        "context_variables": {
-            "smart_info": "Device Model: SAMSUNG MZ7LM240\n177 Wear_Leveling_Count 0x0013 008 008 000 Old_age Always - 8"
-        },
-        "pending_variable_name": None
-    })
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={
+            "context_variables": {
+                "smart_info": "Device Model: SAMSUNG MZ7LM240\n177 Wear_Leveling_Count 0x0013 008 008 000 Old_age Always - 8"
+            },
+            "pending_variable_name": None,
+        }
+    )
 
     # Execute
     res = await sop_request_variable(
@@ -118,7 +118,7 @@ async def test_sop_request_variable_skill_call():
         conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
         sop_document_id=2,
         kb_client=kb_client,
-        conversation_sop_client=conversation_sop_client
+        conversation_sop_client=conversation_sop_client,
     )
 
     # Validate

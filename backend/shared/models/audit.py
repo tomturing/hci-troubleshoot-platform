@@ -39,26 +39,26 @@ class ToolResult(Base):
     )
 
     # 工具信息
-    tool_name = Column(String(100), nullable=False, index=True)   # 工具标识，对应 tool_definition.tool_name
-    tool_type = Column(String(20), nullable=False)                # acli / scp_api
+    tool_name = Column(String(100), nullable=False, index=True)  # 工具标识，对应 tool_definition.tool_name
+    tool_type = Column(String(20), nullable=False)  # acli / scp_api
 
     # BUG-03 修复：步骤编号，对应 diagnostic_item 中 type=verification_step 的 seq
     step_no = Column(SmallInteger, nullable=True)
 
     # 风险控制
     risk_level = Column(SmallInteger, nullable=False, default=1)  # 1=只读 2=写操作 3=高危
-    policy = Column(String(20), nullable=False)                   # auto|notify|confirm|block
-    authorized_by = Column(String(100), nullable=True)            # policy=confirm 时的授权用户标识
+    policy = Column(String(20), nullable=False)  # auto|notify|confirm|block
+    authorized_by = Column(String(100), nullable=True)  # policy=confirm 时的授权用户标识
 
     # 执行结果
-    input_json = Column(JSONB, nullable=False, default=dict)      # 工具调用输入参数
-    output_json = Column(JSONB, nullable=True)                    # 工具执行结果
-    error = Column(Text, nullable=True)                           # 执行异常信息
+    input_json = Column(JSONB, nullable=False, default=dict)  # 工具调用输入参数
+    output_json = Column(JSONB, nullable=True)  # 工具执行结果
+    error = Column(Text, nullable=True)  # 执行异常信息
 
     # 时间统计
     started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     completed_at = Column(DateTime(timezone=True), nullable=True)
-    duration_ms = Column(Integer, nullable=True)                  # 执行耗时（毫秒）
+    duration_ms = Column(Integer, nullable=True)  # 执行耗时（毫秒）
 
     # 链路追踪
     trace_id = Column(String(64), nullable=True, index=True)
@@ -91,7 +91,7 @@ class AuditLog(Base):
         nullable=False,
         index=True,
     )
-    turn_index = Column(SmallInteger, nullable=True)                   # 对话轮次索引
+    turn_index = Column(SmallInteger, nullable=True)  # 对话轮次索引
 
     # Prompt 模板关联（v6.2 新增）
     system_prompt_id = Column(
@@ -101,7 +101,7 @@ class AuditLog(Base):
     )
 
     # 类型专属字段（存入 payload JSONB）
-    payload = Column(JSONB, nullable=False, default=dict)              # {case_id, model, messages, token_count, ...}
+    payload = Column(JSONB, nullable=False, default=dict)  # {case_id, model, messages, token_count, ...}
 
     # 执行状态
     error = Column(Text, nullable=True)

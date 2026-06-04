@@ -106,9 +106,7 @@ class TestPickBestStep:
         candidates = [
             make_kbd("k1", [("tool_a", ""), ("tool_b", "")]),
         ]
-        best = self.diag._pick_best_step(
-            candidates, executed_tools={"tool_a", "tool_b"}
-        )
+        best = self.diag._pick_best_step(candidates, executed_tools={"tool_a", "tool_b"})
         assert best is None
 
     def test_returns_none_for_empty_candidates(self):
@@ -125,16 +123,12 @@ class TestResolveArgs:
 
     def test_replaces_single_placeholder(self):
         template = {"vm_name": "{{vm_name}}"}
-        result = KBDDiagnostic._resolve_args(
-            template, {"vm_name": "vm-001"}
-        )
+        result = KBDDiagnostic._resolve_args(template, {"vm_name": "vm-001"})
         assert result == {"vm_name": "vm-001"}
 
     def test_replaces_multiple_placeholders(self):
         template = {"vm": "{{vm_name}}", "host": "{{host_id}}"}
-        result = KBDDiagnostic._resolve_args(
-            template, {"vm_name": "vm-001", "host_id": "host-01"}
-        )
+        result = KBDDiagnostic._resolve_args(template, {"vm_name": "vm-001", "host_id": "host-01"})
         assert result == {"vm": "vm-001", "host": "host-01"}
 
     def test_leaves_non_string_values_unchanged(self):
@@ -263,11 +257,14 @@ class TestDiagnoseLoop:
             tool_executor=MagicMock(),
         )
 
-        events = [event async for event in diag.diagnose(
-            candidates=[],
-            env_context={},
-            session_id="test-001",
-        )]
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=[],
+                env_context={},
+                session_id="test-001",
+            )
+        ]
 
         assert diag.get_result() is not None
         assert diag.get_result().matched_kbds == []
@@ -289,11 +286,14 @@ class TestDiagnoseLoop:
             make_kbd("k2", [("tool_a", "__CONTAINS__:output")]),
         ]
 
-        events = [event async for event in diag.diagnose(
-            candidates=candidates,
-            env_context={},
-            session_id="test-002",
-        )]
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=candidates,
+                env_context={},
+                session_id="test-002",
+            )
+        ]
 
         result = diag.get_result()
         assert result is not None
@@ -320,11 +320,14 @@ class TestDiagnoseLoop:
             early_stop_threshold=1,
         )
 
-        events = [event async for event in diag.diagnose(
-            candidates=candidates,
-            env_context={},
-            session_id="test-003",
-        )]
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=candidates,
+                env_context={},
+                session_id="test-003",
+            )
+        ]
 
         result = diag.get_result()
         assert result is not None
@@ -337,10 +340,12 @@ class TestDiagnoseLoop:
     @pytest.mark.asyncio
     async def test_definitive_match_sets_is_definitive_true(self):
         """精确锁定到 1 个 KBD 时 is_definitive=True"""
-        tool_executor = make_tool_executor({
-            "tool_a": "memory_error",
-            "tool_b": "node01 only",
-        })
+        tool_executor = make_tool_executor(
+            {
+                "tool_a": "memory_error",
+                "tool_b": "node01 only",
+            }
+        )
 
         candidates = [
             make_kbd("k1", [("tool_a", "__CONTAINS__:memory_error"), ("tool_b", "__CONTAINS__:node01")]),
@@ -353,11 +358,14 @@ class TestDiagnoseLoop:
             early_stop_threshold=1,
         )
 
-        events = [event async for event in diag.diagnose(
-            candidates=candidates,
-            env_context={},
-            session_id="test-004",
-        )]
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=candidates,
+                env_context={},
+                session_id="test-004",
+            )
+        ]
 
         result = diag.get_result()
         assert result is not None
@@ -390,11 +398,14 @@ class TestDiagnoseLoop:
         )
 
         # 不应抛出异常
-        events = [event async for event in diag.diagnose(
-            candidates=candidates,
-            env_context={},
-            session_id="test-005",
-        )]
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=candidates,
+                env_context={},
+                session_id="test-005",
+            )
+        ]
 
         result = diag.get_result()
         assert result is not None  # 正常完成
@@ -417,11 +428,13 @@ class TestDiagnoseLoop:
             name="KBD k1",
             category_id="虚拟机-003",
             problem_description="测试问题描述",
-            steps=[KBDStep(
-                tool_name="acli_vm_config",
-                tool_args_template={"vm_name": "{{vm_name}}"},
-                expected_pattern="__CONTAINS__:ok",
-            )],
+            steps=[
+                KBDStep(
+                    tool_name="acli_vm_config",
+                    tool_args_template={"vm_name": "{{vm_name}}"},
+                    expected_pattern="__CONTAINS__:ok",
+                )
+            ],
             root_cause="测试",
             solution="测试",
         )
@@ -432,11 +445,14 @@ class TestDiagnoseLoop:
             early_stop_threshold=0,  # 强制执行所有步骤
         )
 
-        events = [event async for event in diag.diagnose(
-            candidates=[kbd],
-            env_context={"vm_name": "test-vm-001"},
-            session_id="test-006",
-        )]
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=[kbd],
+                env_context={"vm_name": "test-vm-001"},
+                session_id="test-006",
+            )
+        ]
 
         # 验证 vm_name 占位符已被替换
         assert captured_args.get("vm_name") == "test-vm-001"
@@ -459,16 +475,36 @@ class TestKBDDiagEffectiveness:
         # 构建 10 个 KBD，每个有独特的期望模式
         # 真实故障：k5（Redis 服务异常导致虚拟机开机失败）
         candidates = [
-            make_kbd("k1",  [("get_active_alerts", "__CONTAINS__:network"), ("acli_vm_config", "__CONTAINS__:vlan")]),
-            make_kbd("k2",  [("get_active_alerts", "__CONTAINS__:storage"), ("acli_vm_disk_check", "__CONTAINS__:error")]),
-            make_kbd("k3",  [("acli_vm_config", "__CONTAINS__:cpu_overcommit"), ("acli_system_top", "__CONTAINS__:cpu_load")]),
-            make_kbd("k4",  [("get_active_alerts", "__CONTAINS__:memory"), ("acli_vm_config", "__CONTAINS__:memory_mb")]),
-            make_kbd("k5",  [("get_failed_tasks", "__CONTAINS__:redis"), ("acli_platform_node_list", "__CONTAINS__:degraded")]),
-            make_kbd("k6",  [("get_active_alerts", "__CONTAINS__:network"), ("acli_vm_config", "__CONTAINS__:mac_address")]),
-            make_kbd("k7",  [("get_failed_tasks", "__CONTAINS__:timeout"), ("acli_system_top", "__CONTAINS__:io_wait")]),
-            make_kbd("k8",  [("acli_vm_config", "__CONTAINS__:disk"), ("acli_vm_disk_check", "__CONTAINS__:bad_sector")]),
-            make_kbd("k9",  [("get_failed_tasks", "__CONTAINS__:permission"), ("acli_platform_node_list", "__CONTAINS__:node_count")]),
-            make_kbd("k10", [("get_active_alerts", "__CONTAINS__:cluster"), ("acli_vm_list", "__CONTAINS__:powered_off")]),
+            make_kbd("k1", [("get_active_alerts", "__CONTAINS__:network"), ("acli_vm_config", "__CONTAINS__:vlan")]),
+            make_kbd(
+                "k2", [("get_active_alerts", "__CONTAINS__:storage"), ("acli_vm_disk_check", "__CONTAINS__:error")]
+            ),
+            make_kbd(
+                "k3", [("acli_vm_config", "__CONTAINS__:cpu_overcommit"), ("acli_system_top", "__CONTAINS__:cpu_load")]
+            ),
+            make_kbd(
+                "k4", [("get_active_alerts", "__CONTAINS__:memory"), ("acli_vm_config", "__CONTAINS__:memory_mb")]
+            ),
+            make_kbd(
+                "k5", [("get_failed_tasks", "__CONTAINS__:redis"), ("acli_platform_node_list", "__CONTAINS__:degraded")]
+            ),
+            make_kbd(
+                "k6", [("get_active_alerts", "__CONTAINS__:network"), ("acli_vm_config", "__CONTAINS__:mac_address")]
+            ),
+            make_kbd("k7", [("get_failed_tasks", "__CONTAINS__:timeout"), ("acli_system_top", "__CONTAINS__:io_wait")]),
+            make_kbd(
+                "k8", [("acli_vm_config", "__CONTAINS__:disk"), ("acli_vm_disk_check", "__CONTAINS__:bad_sector")]
+            ),
+            make_kbd(
+                "k9",
+                [
+                    ("get_failed_tasks", "__CONTAINS__:permission"),
+                    ("acli_platform_node_list", "__CONTAINS__:node_count"),
+                ],
+            ),
+            make_kbd(
+                "k10", [("get_active_alerts", "__CONTAINS__:cluster"), ("acli_vm_list", "__CONTAINS__:powered_off")]
+            ),
         ]
 
         # 模拟真实系统输出（k5 的特征：redis 失败，节点降级）
@@ -490,27 +526,24 @@ class TestKBDDiagEffectiveness:
             early_stop_threshold=2,
         )
 
-        events = [event async for event in diag.diagnose(
-            candidates=candidates,
-            env_context={"vm_name": "vm-001"},
-            session_id="effectiveness-test",
-        )]
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=candidates,
+                env_context={"vm_name": "vm-001"},
+                session_id="effectiveness-test",
+            )
+        ]
 
         result = diag.get_result()
         assert result is not None
 
         # 验收标准 1：步骤数 ≤ 8
-        assert len(result.steps_executed) <= 8, (
-            f"步骤数 {len(result.steps_executed)} 超过预期上限 8 步"
-        )
+        assert len(result.steps_executed) <= 8, f"步骤数 {len(result.steps_executed)} 超过预期上限 8 步"
 
         # 验收标准 2：真实 KBD k5 在匹配列表中
         matched_ids = {kbd.id for kbd in result.matched_kbds}
-        assert "k5" in matched_ids, (
-            f"真实 KBD k5 未出现在匹配列表中，当前匹配：{matched_ids}"
-        )
+        assert "k5" in matched_ids, f"真实 KBD k5 未出现在匹配列表中，当前匹配：{matched_ids}"
 
         # 验收标准 3：最终候选数量缩减（从 10 减少到 ≤ 6）
-        assert len(result.matched_kbds) <= 6, (
-            f"候选 KBD 数量 {len(result.matched_kbds)} 未有效缩减"
-        )
+        assert len(result.matched_kbds) <= 6, f"候选 KBD 数量 {len(result.matched_kbds)} 未有效缩减"

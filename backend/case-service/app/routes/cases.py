@@ -23,9 +23,11 @@ router = APIRouter(prefix="/api/cases", tags=["cases"])
 # 这里需要在main.py中注入database_manager
 database_manager: DatabaseManager | None = None
 
+
 def set_database_manager(db_manager: DatabaseManager):
     global database_manager
     database_manager = db_manager
+
 
 async def get_case_service() -> CaseService:
     """依赖注入: 获取Case Service"""
@@ -36,7 +38,9 @@ async def get_case_service() -> CaseService:
         repo = CaseRepository(session)
         yield CaseService(repo)
 
+
 # ============ Admin 路由（静态路径，优先于 {case_id}）============
+
 
 @router.get("/all", response_model=CaseListResponse)
 async def list_all_cases(
@@ -52,11 +56,16 @@ async def list_all_cases(
 ):
     """[Admin] 获取所有工单列表（分页 + 筛选）"""
     return await service.list_all_cases(
-        skip=skip, limit=limit,
-        status=status, client_id=client_id,
-        case_id=case_id, title=title,
-        start_time=start_time, end_time=end_time,
+        skip=skip,
+        limit=limit,
+        status=status,
+        client_id=client_id,
+        case_id=case_id,
+        title=title,
+        start_time=start_time,
+        end_time=end_time,
     )
+
 
 @router.get("/stats", response_model=CaseStatsResponse)
 async def get_case_stats(
@@ -65,6 +74,7 @@ async def get_case_stats(
     """[Admin] 获取工单统计"""
     return await service.get_case_stats()
 
+
 @router.get("/clients", response_model=ClientListResponse)
 async def get_client_list(
     service: CaseService = Depends(get_case_service),
@@ -72,56 +82,48 @@ async def get_client_list(
     """[Admin] 获取客户端列表"""
     return await service.get_client_list()
 
+
 # ============ 客户端路由 ============
 
+
 @router.post("/", response_model=CaseResponse, status_code=201)
-async def create_case(
-    case_create: CaseCreate,
-    service: CaseService = Depends(get_case_service)
-):
+async def create_case(case_create: CaseCreate, service: CaseService = Depends(get_case_service)):
     """创建新工单"""
     return await service.create_case(case_create)
 
+
 @router.get("/{case_id}", response_model=CaseResponse)
-async def get_case(
-    case_id: str,
-    service: CaseService = Depends(get_case_service)
-):
+async def get_case(case_id: str, service: CaseService = Depends(get_case_service)):
     """获取工单详情"""
     case = await service.get_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     return case
 
+
 @router.get("/", response_model=list[CaseResponse])
-async def list_cases(
-    client_id: str,
-    service: CaseService = Depends(get_case_service)
-):
+async def list_cases(client_id: str, service: CaseService = Depends(get_case_service)):
     """查询工单列表"""
     return await service.list_cases(client_id)
 
+
 @router.put("/{case_id}/confirm", response_model=CaseResponse)
-async def confirm_case(
-    case_id: str,
-    service: CaseService = Depends(get_case_service)
-):
+async def confirm_case(case_id: str, service: CaseService = Depends(get_case_service)):
     """确认工单"""
     case = await service.confirm_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     return case
 
+
 @router.put("/{case_id}/close", response_model=CaseResponse)
-async def close_case(
-    case_id: str,
-    service: CaseService = Depends(get_case_service)
-):
+async def close_case(case_id: str, service: CaseService = Depends(get_case_service)):
     """关闭工单"""
     case = await service.close_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     return case
+
 
 @router.put("/{case_id}", response_model=CaseResponse)
 async def update_case(

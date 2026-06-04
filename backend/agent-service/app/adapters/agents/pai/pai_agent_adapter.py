@@ -510,6 +510,7 @@ class PaiAgentAdapter:
         """
         # 写入 100% 全量原始 Prompt 审计
         from app.services.prompt_audit import PromptAuditService
+
         asyncio.create_task(
             PromptAuditService.write_prompt_audit(
                 conversation_id=session_id,

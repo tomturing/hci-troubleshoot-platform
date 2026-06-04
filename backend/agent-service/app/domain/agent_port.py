@@ -17,6 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 
 # ── 事件类型定义 ────────────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class AgentTextChunk:
     """大脑输出的文本流块（用户可见内容）。
@@ -62,13 +63,13 @@ class AgentInteractiveRequest:
     对应 ACP 协议的 _ops/request_input 事件。
     """
 
-    request_id: str              # ACP request_id，用于 submit_response 关联
-    acp_session_id: str          # ops-agent ACP session_id
-    kind: str                    # "sop_step" | "info_request"
-    title: str                   # 卡片标题（operation_goal 或 question）
-    prompt: str                  # 向用户呈现的引导文本
+    request_id: str  # ACP request_id，用于 submit_response 关联
+    acp_session_id: str  # ops-agent ACP session_id
+    kind: str  # "sop_step" | "info_request"
+    title: str  # 卡片标题（operation_goal 或 question）
+    prompt: str  # 向用户呈现的引导文本
     options: list[dict[str, Any]] = field(default_factory=list)  # [{optionId, name}, ...]
-    custom_input: bool = True    # 是否允许自定义文本输入
+    custom_input: bool = True  # 是否允许自定义文本输入
     metadata: dict[str, Any] = field(default_factory=dict)  # 额外元数据（route, risk 等）
 
 
@@ -82,9 +83,9 @@ class ToolResultEvent:
     此事件不对外暴露，仅用于 ReactEngine 内部流程。
     """
 
-    result: Any                  # 工具执行的原始结果
-    tool_name: str = ""          # 工具名称（用于日志）
-    error: str | None = None    # 错误信息（如有）
+    result: Any  # 工具执行的原始结果
+    tool_name: str = ""  # 工具名称（用于日志）
+    error: str | None = None  # 错误信息（如有）
 
 
 # AgentEvent = 大脑可以产出的所有事件类型（用于 IDE 类型提示）
@@ -92,6 +93,7 @@ AgentEvent = AgentTextChunk | AgentStageUpdate | AgentEscalation | AgentInteract
 
 
 # ── 错误类型 ────────────────────────────────────────────────────────────────────
+
 
 class AgentUnavailableError(Exception):
     """目标大脑不可达（服务宕机、网络超时等）。
@@ -107,6 +109,7 @@ class AgentUnavailableError(Exception):
 
 
 # ── 核心 Port 接口 ──────────────────────────────────────────────────────────────
+
 
 @runtime_checkable
 class AgentPort(Protocol):

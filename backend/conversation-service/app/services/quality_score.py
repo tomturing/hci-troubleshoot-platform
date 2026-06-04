@@ -18,10 +18,10 @@ logger = get_logger("quality_score")
 # 关闭原因评分映射（与 case-service/quality_score.py 保持严格一致，避免重算时分值漂移）
 CLOSE_REASON_SCORE = {
     "user_command": 100,  # 用户主动解决：最高分
-    "timeout": 50,        # 超时：中性基础分
-    "admin_close": 50,    # 人工干预：略高于中性
-    "abandon": 10,        # 放弃：最低分
-    None: 50,             # 未知：中性
+    "timeout": 50,  # 超时：中性基础分
+    "admin_close": 50,  # 人工干预：略高于中性
+    "abandon": 10,  # 放弃：最低分
+    None: 50,  # 未知：中性
 }
 
 # 基础权重配置（归一化前）
@@ -578,17 +578,19 @@ class QualityStatsService:
 
         cases = []
         for row in result.fetchall():
-            cases.append({
-                "case_id": row[0],
-                "conversation_id": str(row[1]) if row[1] else None,
-                "user_rating": row[2],
-                "composite_score": row[3],
-                "close_reason": row[4],
-                "score_breakdown": row[5],
-                "evaluated_at": row[6].isoformat() if row[6] else None,
-                "case_title": row[7],
-                "case_status": row[8],
-            })
+            cases.append(
+                {
+                    "case_id": row[0],
+                    "conversation_id": str(row[1]) if row[1] else None,
+                    "user_rating": row[2],
+                    "composite_score": row[3],
+                    "close_reason": row[4],
+                    "score_breakdown": row[5],
+                    "evaluated_at": row[6].isoformat() if row[6] else None,
+                    "case_title": row[7],
+                    "case_status": row[8],
+                }
+            )
 
         # 查询总数
         count_result = await self.session.execute(

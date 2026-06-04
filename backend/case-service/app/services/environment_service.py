@@ -53,7 +53,9 @@ class EnvironmentService:
 
         return EnvironmentResponse.model_validate(created_env)
 
-    async def upsert_environment(self, case_id: str, env_type: EnvType, env_data: dict, collected_at=None) -> EnvironmentResponse:
+    async def upsert_environment(
+        self, case_id: str, env_type: EnvType, env_data: dict, collected_at=None
+    ) -> EnvironmentResponse:
         """幂等 upsert 环境数据（有则更新，无则创建）"""
         trace_id = get_current_trace_id()
 
@@ -150,8 +152,8 @@ class EnvironmentService:
         """
         return {
             "hci_version": env_data.get("hci_version", "未知"),
-            "cluster_name": env_data.get("name", "未知"),       # [cluster] name= 字段
-            "host_count": env_data.get("host_count", "未知"),   # 当前采集命令不含此字段
+            "cluster_name": env_data.get("name", "未知"),  # [cluster] name= 字段
+            "host_count": env_data.get("host_count", "未知"),  # 当前采集命令不含此字段
             "storage_type": env_data.get("storage_type", "未知"),
             "network_config": env_data.get("mcastaddr", "未知"),  # 组播地址体现网络配置
         }
@@ -163,6 +165,7 @@ class EnvironmentService:
             return ""
         try:
             from datetime import UTC, datetime
+
             return datetime.fromtimestamp(int(ts), tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             return str(ts)

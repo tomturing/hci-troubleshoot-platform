@@ -23,10 +23,10 @@ class CaseStatus(StrEnum):
 class CloseReason(StrEnum):
     """工单关闭原因"""
 
-    USER_COMMAND = "user_command"   # 用户主动输入命令关闭
-    TIMEOUT = "timeout"             # 超时自动关闭
-    ABANDON = "abandon"             # 用户放弃/断开连接
-    ADMIN_CLOSE = "admin_close"     # 管理员强制关闭
+    USER_COMMAND = "user_command"  # 用户主动输入命令关闭
+    TIMEOUT = "timeout"  # 超时自动关闭
+    ABANDON = "abandon"  # 用户放弃/断开连接
+    ADMIN_CLOSE = "admin_close"  # 管理员强制关闭
 
 
 class MessageRole(StrEnum):
@@ -93,6 +93,7 @@ class MessageCreate(BaseModel):
     content: str
     metadata: dict | None = None
     assistant_type: str | None = Field(None, description="AI助手类型，用于动态切换助手")
+
 
 class MessageResponse(BaseModel):
     """消息响应"""
@@ -164,9 +165,7 @@ class KBIngestPayload(BaseModel):
     title: str = Field(..., description="文档标题")
     content_md: str = Field(..., description="Markdown 格式正文")
     source_id: str | None = Field(None, description="来源 ID，如工单 ID")
-    source_type: Literal["kb", "sop", "realtime"] = Field(
-        "realtime", description="数据来源类型"
-    )
+    source_type: Literal["kb", "sop", "realtime"] = Field("realtime", description="数据来源类型")
     yaml_meta: dict = Field(default_factory=dict, description="附加元数据（YAML 格式解析后）")
 
 
@@ -233,12 +232,12 @@ class PoolStatusResponse(BaseModel):
 class EnvType(StrEnum):
     """环境数据类型枚举"""
 
-    CLUSTER = "cluster"      # 集群基本信息
-    HOST = "host"            # 主机配置列表
-    VM = "vm"                # 虚拟机列表
-    NETWORK = "network"      # 网络拓扑
-    ALERT = "alert"          # 告警列表（用于 S0 Prompt）
-    TASK = "task"            # 任务状态列表（用于 S0 Prompt）
+    CLUSTER = "cluster"  # 集群基本信息
+    HOST = "host"  # 主机配置列表
+    VM = "vm"  # 虚拟机列表
+    NETWORK = "network"  # 网络拓扑
+    ALERT = "alert"  # 告警列表（用于 S0 Prompt）
+    TASK = "task"  # 任务状态列表（用于 S0 Prompt）
 
 
 class EnvironmentCreate(BaseModel):

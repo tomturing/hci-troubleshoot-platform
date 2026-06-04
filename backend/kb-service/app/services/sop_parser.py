@@ -49,6 +49,7 @@ class _NormalizedLine:
     text: str
     is_command: bool = False
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 变量名启发式规则（来自 §12.7.3）
 # ──────────────────────────────────────────────────────────────────────────────
@@ -63,9 +64,7 @@ STRATEGY_HINTS: dict[str, str] = {
 }
 
 # 变量章节标题关键词（旧版兼容）
-VARIABLE_SECTION_KEYWORDS: frozenset[str] = frozenset(
-    ["变量", "变量定义", "参数", "参数定义", "环境变量"]
-)
+VARIABLE_SECTION_KEYWORDS: frozenset[str] = frozenset(["变量", "变量定义", "参数", "参数定义", "环境变量"])
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 内容行解析辅助正则
@@ -115,9 +114,7 @@ _SOLUTION_LIST_MAP: dict[str, str] = {
 }
 
 # 不识别为 diagnosis/solution 的后缀词
-_STRUCTURAL_SUFFIXES: frozenset[str] = frozenset(
-    ["概述", "汇总", "总览", "简介", "概要", "目录"]
-)
+_STRUCTURAL_SUFFIXES: frozenset[str] = frozenset(["概述", "汇总", "总览", "简介", "概要", "目录"])
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -270,9 +267,7 @@ def _parse_content_lines(
     if default_list_field not in list_result:
         list_result[default_list_field] = []
 
-    text_result: dict[str, str | None] = {
-        fname: None for fname in set(text_field_map.values())
-    }
+    text_result: dict[str, str | None] = {fname: None for fname in set(text_field_map.values())}
 
     cur_list_field = default_list_field
     cur_text_field: str | None = None
@@ -386,9 +381,7 @@ def _build_diagnosis_detail(
         )
         return None
 
-    list_r, text_r = _parse_content_lines(
-        content, _DIAGNOSIS_LIST_MAP, _DIAGNOSIS_TEXT_MAP, "page_methods"
-    )
+    list_r, text_r = _parse_content_lines(content, _DIAGNOSIS_LIST_MAP, _DIAGNOSIS_TEXT_MAP, "page_methods")
 
     acli_methods = list_r.get("acli_methods", [])
     page_methods = list_r.get("page_methods", [])
@@ -752,9 +745,7 @@ def _build_tree(
                             message=f"话术不规范：「{section.text}」应改为「{std}」",
                         )
                     )
-                owner.variables = _parse_variable_table(
-                    section.content, location, section.line_number, issues
-                )
+                owner.variables = _parse_variable_table(section.content, location, section.line_number, issues)
 
             elif section.section_type == "prerequisites":
                 std = get_standard_heading("prerequisites")
@@ -1009,12 +1000,14 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                         header_cols = header_lower
                     continue
                 if header_cols:
+
                     def _col(name: str, *aliases: str, header_cols=header_cols, cols=cols) -> str:
                         for alias in (name, *aliases):
                             if alias in header_cols:
                                 idx = header_cols.index(alias)
                                 return cols[idx] if idx < len(cols) else ""
                         return ""
+
                     var_name = _col("变量名", "name", "变量")
                     var_source = _col("来源", "source")
                     var_type = _col("类型", "type") or "string"
@@ -1036,7 +1029,10 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                         elif var_source_clean.startswith("skill:"):
                             strategy = "skill_call"
                             tool = var_source_clean[6:]
-                        elif var_source_clean.startswith("env:") or var_source_clean in ("env_injection", "env_context"):
+                        elif var_source_clean.startswith("env:") or var_source_clean in (
+                            "env_injection",
+                            "env_context",
+                        ):
                             strategy = "env_injection"
                             tool = None
                         elif var_source_clean in ("tool_call", "tool"):
@@ -1186,17 +1182,19 @@ def extract_sop_variables(
             "acquisition_strategy": declared.get("acquisition_strategy") or inferred["acquisition_strategy"],
             "acquisition_tool": declared.get("acquisition_tool") or inferred["acquisition_tool"],
         }
-        variable_defs.append({
-            "name": var_name,
-            "display_name": declared.get("display_name", var_name),
-            "description": declared.get("description", ""),
-            "type": declared.get("type", "string"),
-            "required": True,
-            **strategy_info,
-            "validation_pattern": declared.get("validation_pattern"),
-            "default_value": declared.get("default_value"),
-            "auto_generated": var_name not in global_declared,
-        })
+        variable_defs.append(
+            {
+                "name": var_name,
+                "display_name": declared.get("display_name", var_name),
+                "description": declared.get("description", ""),
+                "type": declared.get("type", "string"),
+                "required": True,
+                **strategy_info,
+                "validation_pattern": declared.get("validation_pattern"),
+                "default_value": declared.get("default_value"),
+                "auto_generated": var_name not in global_declared,
+            }
+        )
 
     return variable_defs, undeclared, orphan
 
@@ -1212,8 +1210,13 @@ def merge_variable_schema(
     merged: list[dict] = []
 
     HUMAN_FIELDS = [
-        "description", "acquisition_strategy", "acquisition_tool",
-        "acquisition_prompt", "validation_pattern", "default_value", "display_name",
+        "description",
+        "acquisition_strategy",
+        "acquisition_tool",
+        "acquisition_prompt",
+        "validation_pattern",
+        "default_value",
+        "display_name",
     ]
 
     for name, new_var in new_by_name.items():

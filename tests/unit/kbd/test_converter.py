@@ -9,6 +9,7 @@ tests/unit/kbd/test_converter.py — kbd/converter.py 单元测试
   - convert_kbd：主流程（文件读取 + 必填验证 + content_md 组装）
   - convert_kbd_with_meta：返回完整元数据字典
 """
+
 from __future__ import annotations
 
 import json
@@ -16,9 +17,7 @@ import os
 import sys
 from unittest.mock import patch
 
-_scripts_root = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts")
-)
+_scripts_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))
 if _scripts_root not in sys.path:
     sys.path.insert(0, _scripts_root)
 
@@ -29,20 +28,28 @@ from tests.unit.kbd.conftest import (
 
 # ─── _parse_sections ─────────────────────────────────────────────────────────
 
+
 class TestParseSections:
     """测试 HTML → section dict 解析"""
 
     def setup_method(self):
         from kbd.converter import _parse_sections
+
         self.fn = _parse_sections
 
     def test_parses_all_9_sections(self):
         """完整 HTML 中能解析出全部 9 个 section"""
         result = self.fn(MINIMAL_9_SECTION_HTML)
         expected_titles = [
-            "问题描述", "告警信息", "有效排查步骤", "根因",
-            "解决方案", "操作影响范围", "是否是临时解决方案",
-            "建议与总结", "排查内容",
+            "问题描述",
+            "告警信息",
+            "有效排查步骤",
+            "根因",
+            "解决方案",
+            "操作影响范围",
+            "是否是临时解决方案",
+            "建议与总结",
+            "排查内容",
         ]
         for title in expected_titles:
             assert title in result, f"缺少 section: {title}"
@@ -52,6 +59,7 @@ class TestParseSections:
         result = self.fn(MINIMAL_9_SECTION_HTML)
         for mandatory in ["问题描述", "有效排查步骤", "解决方案"]:
             from bs4 import BeautifulSoup
+
             text = BeautifulSoup(result[mandatory], "lxml").get_text(strip=True)
             assert text, f"必填 section '{mandatory}' 内容为空"
 
@@ -73,11 +81,13 @@ class TestParseSections:
 
 # ─── _is_empty_content ───────────────────────────────────────────────────────
 
+
 class TestIsEmptyContent:
     """测试空内容识别"""
 
     def setup_method(self):
         from kbd.converter import _is_empty_content
+
         self.fn = _is_empty_content
 
     def test_none_is_empty(self):
@@ -106,6 +116,7 @@ class TestIsEmptyContent:
 
 # ─── _build_image_seq_map ────────────────────────────────────────────────────
 
+
 class TestBuildImageSeqMap:
     """测试全局图片序号到 vision_desc 的映射"""
 
@@ -122,6 +133,7 @@ class TestBuildImageSeqMap:
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
             from kbd.converter import _build_image_seq_map
+
             img_map = _build_image_seq_map(tmp_path.name, html)
 
         assert len(img_map) == 2
@@ -138,6 +150,7 @@ class TestBuildImageSeqMap:
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
             from kbd.converter import _build_image_seq_map
+
             img_map = _build_image_seq_map(tmp_path.name, html)
         # 返回格式已变更：{url: {"seq": int, "desc": str}}
         values = list(img_map.values())
@@ -150,16 +163,19 @@ class TestBuildImageSeqMap:
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
             from kbd.converter import _build_image_seq_map
+
             assert _build_image_seq_map(tmp_path.name, html) == {}
 
 
 # ─── _html_to_md ─────────────────────────────────────────────────────────────
+
 
 class TestHtmlToMd:
     """测试 HTML → Markdown 转换"""
 
     def setup_method(self):
         from kbd.converter import _html_to_md
+
         self.fn = _html_to_md
 
     def test_basic_text(self):
@@ -202,6 +218,7 @@ class TestHtmlToMd:
 
 # ─── convert_kbd ────────────────────────────────────────────────────────────
 
+
 class TestConvertKbd:
     """测试 convert_kbd 主流程"""
 
@@ -209,14 +226,13 @@ class TestConvertKbd:
         """正常案例应返回非空 content_md 字符串"""
         case_dir = tmp_path / "36156"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(minimal_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(minimal_rows), encoding="utf-8")
         with (
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
             from kbd.converter import convert_kbd
+
             result = convert_kbd("36156")
 
         assert isinstance(result, str)
@@ -229,6 +245,7 @@ class TestConvertKbd:
         """raw.json 不存在时应返回 None"""
         with patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path):
             from kbd.converter import convert_kbd
+
             result = convert_kbd("nonexistent")
         assert result is None
 
@@ -236,14 +253,13 @@ class TestConvertKbd:
         """必填 section 缺失时应返回 None 并写 abnormal.json"""
         case_dir = tmp_path / "missing"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(missing_mandatory_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(missing_mandatory_rows), encoding="utf-8")
         with (
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
             from kbd.converter import convert_kbd
+
             result = convert_kbd("missing")
 
         assert result is None
@@ -256,14 +272,13 @@ class TestConvertKbd:
         """内容为空白的可选 section（如建议与总结）不出现在 content_md 中"""
         case_dir = tmp_path / "36156"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(minimal_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(minimal_rows), encoding="utf-8")
         with (
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
             from kbd.converter import convert_kbd
+
             result = convert_kbd("36156")
 
         # 建议与总结和排查内容是空白的，不应出现
@@ -274,18 +289,15 @@ class TestConvertKbd:
         """有 vision desc 文件时，content_md 应包含视觉描述"""
         case_dir = tmp_path / "36156"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(minimal_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(minimal_rows), encoding="utf-8")
         # 为第 0 张图写描述（告警信息 section 的第一张图）
-        (case_dir / "img_0.desc.txt").write_text(
-            "告警页面截图，显示红色网口闪断告警", encoding="utf-8"
-        )
+        (case_dir / "img_0.desc.txt").write_text("告警页面截图，显示红色网口闪断告警", encoding="utf-8")
         with (
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
             from kbd.converter import convert_kbd
+
             result = convert_kbd("36156")
 
         assert "截图说明" in result
@@ -294,20 +306,20 @@ class TestConvertKbd:
 
 # ─── convert_kbd_with_meta ──────────────────────────────────────────────────
 
+
 class TestConvertKbdWithMeta:
     """测试 convert_kbd_with_meta 返回结构"""
 
     def test_returns_expected_keys(self, tmp_path, minimal_rows):
         case_dir = tmp_path / "36156"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(minimal_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(minimal_rows), encoding="utf-8")
         with (
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
             from kbd.converter import convert_kbd_with_meta
+
             result = convert_kbd_with_meta("36156")
 
         assert result is not None
@@ -317,14 +329,13 @@ class TestConvertKbdWithMeta:
     def test_metadata_populated(self, tmp_path, minimal_rows):
         case_dir = tmp_path / "36156"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(minimal_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(minimal_rows), encoding="utf-8")
         with (
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
             from kbd.converter import convert_kbd_with_meta
+
             result = convert_kbd_with_meta("36156")
 
         meta = result["metadata"]
@@ -334,14 +345,13 @@ class TestConvertKbdWithMeta:
     def test_returns_none_when_mandatory_missing(self, tmp_path, missing_mandatory_rows):
         case_dir = tmp_path / "missing"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(missing_mandatory_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(missing_mandatory_rows), encoding="utf-8")
         with (
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
             patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"),
         ):
             from kbd.converter import convert_kbd_with_meta
+
             result = convert_kbd_with_meta("missing")
 
         assert result is None

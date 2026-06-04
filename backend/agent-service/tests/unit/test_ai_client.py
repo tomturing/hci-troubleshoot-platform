@@ -12,10 +12,7 @@ class TestOpenClawAssistant:
     def test_create_client(self):
         """测试创建客户端"""
         client = OpenClawAssistant(
-            base_url="http://localhost:8000",
-            api_key="test-key",
-            default_model="glm-5",
-            assistant_type="glm-5"
+            base_url="http://localhost:8000", api_key="test-key", default_model="glm-5", assistant_type="glm-5"
         )
         assert client.base_url == "http://localhost:8000"
         assert client.gateway_token == "test-key"
@@ -40,9 +37,7 @@ class TestOpenClawAssistant:
     def test_resolve_auth_token(self):
         """测试认证 token 解析"""
         client = OpenClawAssistant(
-            base_url="http://localhost:8000",
-            api_key="gateway-token",
-            provider_api_key="provider-key"
+            base_url="http://localhost:8000", api_key="gateway-token", provider_api_key="provider-key"
         )
         # 内部端点使用 gateway token
         assert client._resolve_auth_token("http://localhost:8000") == "gateway-token"
@@ -113,11 +108,13 @@ class TestAIAssistantRegistry:
     @pytest.fixture
     def mock_client_factory(self, mocker):
         """创建独立 mock 客户端的工厂"""
+
         def _create(healthy=True):
             client = mocker.Mock()
             client.check_health = mocker.AsyncMock(return_value=healthy)
             client.close = mocker.AsyncMock()
             return client
+
         return _create
 
     @pytest.mark.asyncio
@@ -147,10 +144,7 @@ class TestCreateOpenClawClient:
     def test_create_openclaw_client(self):
         """测试创建 OpenClaw 客户端"""
         client = create_openclaw_client(
-            base_url="http://localhost:8000",
-            api_key="test-key",
-            default_model="glm-5",
-            assistant_type="glm-5"
+            base_url="http://localhost:8000", api_key="test-key", default_model="glm-5", assistant_type="glm-5"
         )
         assert isinstance(client, OpenClawAssistant)
         assert client.base_url == "http://localhost:8000"

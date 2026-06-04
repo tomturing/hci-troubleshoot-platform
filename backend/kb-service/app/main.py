@@ -102,7 +102,7 @@ app.include_router(health.router)
 app.include_router(search.router)
 app.include_router(route.router)
 app.include_router(ingest.router)
-app.include_router(kbd_search.router)    # KBD 语义检索（agent-service 专用）
+app.include_router(kbd_search.router)  # KBD 语义检索（agent-service 专用）
 app.include_router(admin.router)
 app.include_router(admin.kbd_router)  # KBD 审核路由
 app.include_router(admin.sop_router)  # SOP 审核路由

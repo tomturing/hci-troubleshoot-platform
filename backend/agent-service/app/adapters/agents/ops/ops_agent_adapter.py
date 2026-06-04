@@ -63,12 +63,8 @@ class OpsAgentAdapter:
         _read_timeout = float(os.environ.get("OPS_AGENT_READ_TIMEOUT_SEC", "300.0"))
         # per-session trajectory 根目录：ops-agent 将各 session 的 LLM 消息历史写入其中
         # 挂载持久化存储（PVC / hostPath）到此路径，确保 ops-agent 重启后可恢复上下文
-        self._trajectory_base_dir = os.environ.get(
-            "OPS_AGENT_TRAJECTORY_DIR", "/data/ops-agent-trajectories"
-        )
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10.0, read=_read_timeout, write=10.0, pool=10.0)
-        )
+        self._trajectory_base_dir = os.environ.get("OPS_AGENT_TRAJECTORY_DIR", "/data/ops-agent-trajectories")
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=_read_timeout, write=10.0, pool=10.0))
 
     async def process(
         self,
@@ -133,26 +129,18 @@ class OpsAgentAdapter:
             async for agent_event in self._consume_events(session_id, headers):
                 if isinstance(agent_event, AgentTextChunk) and not ttft_logged:
                     ttft_ms = int((time.monotonic() - stream_start) * 1000)
-                    logger.info(
-                        "OpsAgentAdapter TTFT: %dms session_id=%s", ttft_ms, session_id
-                    )
+                    logger.info("OpsAgentAdapter TTFT: %dms session_id=%s", ttft_ms, session_id)
                     ttft_logged = True
                 yield agent_event
 
         except AgentUnavailableError:
             raise
         except httpx.TimeoutException as exc:
-            logger.warning(
-                "OpsAgentAdapter: 超时 session_id=%s error=%s", session_id, exc
-            )
+            logger.warning("OpsAgentAdapter: 超时 session_id=%s error=%s", session_id, exc)
             raise AgentUnavailableError(agent_name="ops-agent", reason=f"请求超时: {exc}") from exc
         except httpx.ConnectError as exc:
-            logger.warning(
-                "OpsAgentAdapter: 连接失败 session_id=%s error=%s", session_id, exc
-            )
-            raise AgentUnavailableError(
-                agent_name="ops-agent", reason=f"无法连接: {exc}"
-            ) from exc
+            logger.warning("OpsAgentAdapter: 连接失败 session_id=%s error=%s", session_id, exc)
+            raise AgentUnavailableError(agent_name="ops-agent", reason=f"无法连接: {exc}") from exc
         except Exception as exc:
             logger.error(
                 "OpsAgentAdapter: 意外错误 session_id=%s type=%s error=%s",
@@ -160,9 +148,7 @@ class OpsAgentAdapter:
                 type(exc).__name__,
                 exc,
             )
-            raise AgentUnavailableError(
-                agent_name="ops-agent", reason=f"{type(exc).__name__}: {exc}"
-            ) from exc
+            raise AgentUnavailableError(agent_name="ops-agent", reason=f"{type(exc).__name__}: {exc}") from exc
 
     async def submit_acp_response(
         self,
@@ -200,9 +186,7 @@ class OpsAgentAdapter:
         except AgentUnavailableError:
             raise
         except Exception as exc:
-            raise AgentUnavailableError(
-                agent_name="ops-agent", reason=f"submit_response 失败: {exc}"
-            ) from exc
+            raise AgentUnavailableError(agent_name="ops-agent", reason=f"submit_response 失败: {exc}") from exc
         return True
 
     async def resume_event_stream(
@@ -249,7 +233,8 @@ class OpsAgentAdapter:
         except Exception as exc:
             logger.warning(
                 "OpsAgentAdapter.resume_event_stream: 检查状态失败，跳过 session_id=%s error=%s",
-                session_id, exc,
+                session_id,
+                exc,
             )
             return
 
@@ -303,9 +288,7 @@ class OpsAgentAdapter:
             resp = await self._client.request(
                 "DELETE",
                 url,
-                content=json.dumps(
-                    {"reason": "客户端恢复对话请求，取消挂起的 prompt", "wait_timeout": 5.0}
-                ).encode(),
+                content=json.dumps({"reason": "客户端恢复对话请求，取消挂起的 prompt", "wait_timeout": 5.0}).encode(),
                 headers={**headers, "Content-Type": "application/json"},
             )
             if resp.status_code == 404:
@@ -338,9 +321,7 @@ class OpsAgentAdapter:
                 exc,
             )
 
-    async def _submit_prompt(
-        self, session_id: str, prompt: list[dict], headers: dict
-    ) -> None:
+    async def _submit_prompt(self, session_id: str, prompt: list[dict], headers: dict) -> None:
         """向 ACP 会话提交 prompt（立即返回 202，Agent 后台执行）。
 
         若收到 409（session 有旧 prompt 在运行），自动执行 terminate+retry：
@@ -372,9 +353,7 @@ class OpsAgentAdapter:
                 reason=f"submit_prompt HTTP {resp.status_code}: {resp.text[:200]}",
             )
 
-    async def _consume_events(
-        self, session_id: str, headers: dict
-    ) -> AsyncGenerator[AgentEvent, None]:
+    async def _consume_events(self, session_id: str, headers: dict) -> AsyncGenerator[AgentEvent, None]:
         """消费 GET /acp/sessions/{id}/events SSE 流，翻译为 AgentEvent。
 
         若 session/done 到达时未产出任何文本内容，抛出 AgentUnavailableError 以触发 HTP fallback，

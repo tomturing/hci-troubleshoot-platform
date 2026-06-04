@@ -45,6 +45,7 @@ def set_dependencies(db: DatabaseManager, embedding: EmbeddingService) -> None:
 
 # ── 响应模型 ──────────────────────────────────────────────────────────────────
 
+
 def _entry_to_case_dict(entry: KbdEntry, similarity: float) -> dict[str, Any]:
     """将 KbdEntry ORM 对象转换为 cases/search 响应格式。
 
@@ -55,7 +56,7 @@ def _entry_to_case_dict(entry: KbdEntry, similarity: float) -> dict[str, Any]:
     """
     return {
         "id": str(entry.id),
-        "name": entry.title,                              # kbd_from_dict 期望 "name"
+        "name": entry.title,  # kbd_from_dict 期望 "name"
         "category_id": entry.category_id or "",
         "similarity": round(similarity, 4),
         # 8 大章节字段（叙述类，供 LLM 上下文注入）
@@ -68,11 +69,12 @@ def _entry_to_case_dict(entry: KbdEntry, similarity: float) -> dict[str, Any]:
         "is_temporary": entry.is_temporary,
         "recommendations": entry.recommendations,
         # 结构化工具步骤（供 InvestigationAgent 执行）
-        "steps": entry.steps_json,                        # kbd_from_dict 期望 "steps"
+        "steps": entry.steps_json,  # kbd_from_dict 期望 "steps"
     }
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
+
 
 @router.get("/cases/search")
 async def search_cases_with_steps(

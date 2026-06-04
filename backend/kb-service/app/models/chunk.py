@@ -33,12 +33,12 @@ class KBChunk(Base):
         nullable=False,
         index=True,
     )
-    chunk_index = Column(SmallInteger, nullable=False)                    # 块序号（0-based）
-    content = Column(Text, nullable=False)                                # 块文本（~512 tokens）
-    embedding = Column(Vector(settings.EMBEDDING_DIM), nullable=True)     # 向量维度由配置决定（默认 512）
-    token_count = Column(SmallInteger, nullable=True)                     # token 数
-    chunk_meta = Column("metadata", JSONB, nullable=True)                 # 块级元数据（标题层级等），DB列名为 metadata
-    tsv = Column(TSVECTOR, nullable=True)                                 # BM25 全文索引
+    chunk_index = Column(SmallInteger, nullable=False)  # 块序号（0-based）
+    content = Column(Text, nullable=False)  # 块文本（~512 tokens）
+    embedding = Column(Vector(settings.EMBEDDING_DIM), nullable=True)  # 向量维度由配置决定（默认 512）
+    token_count = Column(SmallInteger, nullable=True)  # token 数
+    chunk_meta = Column("metadata", JSONB, nullable=True)  # 块级元数据（标题层级等），DB列名为 metadata
+    tsv = Column(TSVECTOR, nullable=True)  # BM25 全文索引
     trace_id = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 

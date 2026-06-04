@@ -1,6 +1,7 @@
 """
 tests/unit/kbd/conftest.py — KBD 管道单元测试公共 fixtures
 """
+
 from __future__ import annotations
 
 import os
@@ -9,9 +10,7 @@ import sys
 import pytest
 
 # 将 data-pipeline/ 目录加入路径，使 `from kbd.xxx import ...` 可用
-_data_pipeline_root = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "data-pipeline")
-)
+_data_pipeline_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "data-pipeline"))
 if _data_pipeline_root not in sys.path:
     sys.path.insert(0, _data_pipeline_root)
 

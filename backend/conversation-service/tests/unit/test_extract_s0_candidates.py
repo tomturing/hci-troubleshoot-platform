@@ -52,9 +52,7 @@ class TestExtractS0Candidates:
     # ─── metadata 结构化提取测试 ────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_extract_from_metadata_direct_candidates(
-        self, mock_service, conversation_id
-    ):
+    async def test_extract_from_metadata_direct_candidates(self, mock_service, conversation_id):
         """从 metadata 直接 candidates 字段提取成功"""
         # 准备测试数据
         candidates_in_meta = [
@@ -79,9 +77,7 @@ class TestExtractS0Candidates:
         assert result[1]["name"] == "磁盘服务异常（直接对应告警类型）"
 
     @pytest.mark.asyncio
-    async def test_extract_from_metadata_nested_candidates(
-        self, mock_service, conversation_id
-    ):
+    async def test_extract_from_metadata_nested_candidates(self, mock_service, conversation_id):
         """从 event.metadata.candidates 嵌套结构提取成功"""
         candidates_in_meta = [
             {"code": "硬件-024", "name": "硬盘寿命到期"},
@@ -107,9 +103,7 @@ class TestExtractS0Candidates:
         assert result[0]["code"] == "硬件-024"
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_empty_fallback_to_regex(
-        self, mock_service, conversation_id
-    ):
+    async def test_extract_metadata_empty_fallback_to_regex(self, mock_service, conversation_id):
         """metadata 为空时退避到正则提取"""
         ai_content = "① 虚拟机-003 虚拟机开机失败\n② 存储-017 磁盘异常"
 
@@ -125,9 +119,7 @@ class TestExtractS0Candidates:
         assert result[0]["code"] == "虚拟机-003"
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_missing_candidates_field(
-        self, mock_service, conversation_id
-    ):
+    async def test_extract_metadata_missing_candidates_field(self, mock_service, conversation_id):
         """metadata 缺失 candidates 字段时退避到正则"""
         ai_content = "① 硬件-024 硬盘寿命到期"
 
@@ -160,9 +152,7 @@ class TestExtractS0Candidates:
         assert "磁盘服务异常（直接对应告警类型）" in result[0]["name"]
 
     @pytest.mark.asyncio
-    async def test_extract_regex_multi_level_prefix(
-        self, mock_service, conversation_id
-    ):
+    async def test_extract_regex_multi_level_prefix(self, mock_service, conversation_id):
         """正则提取：多级分类前缀（含英文字母和数字）"""
         ai_content = "① 虚拟机-L2-001 虚拟机状态异常\n② 存储-L3-005 存储卷挂载失败"
 
@@ -194,9 +184,7 @@ class TestExtractS0Candidates:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_extract_no_assistant_message(
-        self, mock_service, conversation_id
-    ):
+    async def test_extract_no_assistant_message(self, mock_service, conversation_id):
         """无最后一条 assistant 消息"""
         with patch.object(
             mock_service,
@@ -209,9 +197,7 @@ class TestExtractS0Candidates:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_extract_regex_five_candidates(
-        self, mock_service, conversation_id
-    ):
+    async def test_extract_regex_five_candidates(self, mock_service, conversation_id):
         """正则提取：5 个候选（包含④⑤）"""
         ai_content = (
             "① 虚拟机-001 虚拟机开机失败\n"
@@ -233,16 +219,14 @@ class TestExtractS0Candidates:
         assert len(result) >= 4
 
     @pytest.mark.asyncio
-    async def test_extract_from_metadata_options_single_candidate(
-        self, mock_service, conversation_id
-    ):
+    async def test_extract_from_metadata_options_single_candidate(self, mock_service, conversation_id):
         """通过 metadata.options 结构化提取单候选成功"""
         metadata = {
             "kind": "choice_options",
             "options": [
                 {"name": "硬件-024 硬盘寿命到期", "optionId": "1"},
-                {"name": "以上不是，重新描述", "optionId": "2"}
-            ]
+                {"name": "以上不是，重新描述", "optionId": "2"},
+            ],
         }
 
         with patch.object(
@@ -258,17 +242,15 @@ class TestExtractS0Candidates:
         assert result[0]["name"] == "硬盘寿命到期"
 
     @pytest.mark.asyncio
-    async def test_extract_from_metadata_options_multi_candidates(
-        self, mock_service, conversation_id
-    ):
+    async def test_extract_from_metadata_options_multi_candidates(self, mock_service, conversation_id):
         """通过 metadata.options 结构化提取多候选成功"""
         metadata = {
             "kind": "choice_options",
             "options": [
                 {"name": "虚拟机-003 虚拟机开机失败", "optionId": "1"},
                 {"name": "存储-017 磁盘异常", "optionId": "2"},
-                {"name": "以上都不是（请补充症状描述）", "optionId": "3"}
-            ]
+                {"name": "以上都不是（请补充症状描述）", "optionId": "3"},
+            ],
         }
 
         with patch.object(
@@ -309,9 +291,7 @@ class TestGetLastAssistantMessage:
         return service
 
     @pytest.mark.asyncio
-    async def test_get_message_with_session_factory(
-        self, mock_service, conversation_id
-    ):
+    async def test_get_message_with_session_factory(self, mock_service, conversation_id):
         """使用 session_factory 获取消息"""
         mock_session = AsyncMock()
         mock_result = MagicMock()
@@ -331,9 +311,7 @@ class TestGetLastAssistantMessage:
         mock_session.execute.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_get_message_without_session_factory(
-        self, mock_service, conversation_id
-    ):
+    async def test_get_message_without_session_factory(self, mock_service, conversation_id):
         """使用 repository 获取消息"""
         mock_service.session_factory = None
 
@@ -352,9 +330,7 @@ class TestGetLastAssistantMessage:
         assert result[1] == {"meta": "value"}
 
     @pytest.mark.asyncio
-    async def test_get_message_no_messages(
-        self, mock_service, conversation_id
-    ):
+    async def test_get_message_no_messages(self, mock_service, conversation_id):
         """无 assistant 消息时返回 (None, None)"""
         mock_service.session_factory = None
         mock_service.repository.get_messages = AsyncMock(return_value=[])
@@ -387,9 +363,7 @@ class TestS0CandidateRounds:
         return service
 
     @pytest.mark.asyncio
-    async def test_get_s0_candidate_rounds_default(
-        self, mock_service, conversation_id
-    ):
+    async def test_get_s0_candidate_rounds_default(self, mock_service, conversation_id):
         """获取轮次数：默认返回 0"""
         mock_service.session_factory = None
         mock_conv = MagicMock()
@@ -401,9 +375,7 @@ class TestS0CandidateRounds:
         assert result == 0
 
     @pytest.mark.asyncio
-    async def test_get_s0_candidate_rounds_existing(
-        self, mock_service, conversation_id
-    ):
+    async def test_get_s0_candidate_rounds_existing(self, mock_service, conversation_id):
         """获取轮次数：返回已有值"""
         mock_service.session_factory = None
         mock_conv = MagicMock()
@@ -415,9 +387,7 @@ class TestS0CandidateRounds:
         assert result == 2
 
     @pytest.mark.asyncio
-    async def test_get_s0_candidate_rounds_no_conversation(
-        self, mock_service, conversation_id
-    ):
+    async def test_get_s0_candidate_rounds_no_conversation(self, mock_service, conversation_id):
         """获取轮次数：无对话记录时返回 0"""
         mock_service.session_factory = None
         mock_service.repository.get_conversation = AsyncMock(return_value=None)
@@ -427,14 +397,10 @@ class TestS0CandidateRounds:
         assert result == 0
 
     @pytest.mark.asyncio
-    async def test_get_s0_candidate_rounds_exception(
-        self, mock_service, conversation_id
-    ):
+    async def test_get_s0_candidate_rounds_exception(self, mock_service, conversation_id):
         """获取轮次数：异常时返回 0"""
         mock_service.session_factory = None
-        mock_service.repository.get_conversation = AsyncMock(
-            side_effect=Exception("DB error")
-        )
+        mock_service.repository.get_conversation = AsyncMock(side_effect=Exception("DB error"))
 
         result = await mock_service._get_s0_candidate_rounds(conversation_id)
 
@@ -447,6 +413,7 @@ class TestConversationManagerResolveCandidate:
     @pytest.fixture
     def manager(self):
         from app.services.conversation_manager import ConversationManager
+
         return ConversationManager()
 
     def test_resolve_candidate_selection_1(self, manager):

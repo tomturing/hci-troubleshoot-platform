@@ -435,6 +435,7 @@ class TestToolEntryFunctions:
         # 未初始化时抛 RuntimeError
         with pytest.raises(RuntimeError, match="未初始化"):
             import asyncio
+
             asyncio.run(acli_exec("acli vm list", "测试", "conv-123"))
 
     def test_bash_exec_requires_executor_initialized(self):
@@ -444,6 +445,7 @@ class TestToolEntryFunctions:
         # 未初始化时抛 RuntimeError
         with pytest.raises(RuntimeError, match="未初始化"):
             import asyncio
+
             asyncio.run(bash_exec("df -h", "测试", "conv-123"))
 
     def test_set_executor(self):
@@ -461,4 +463,5 @@ class TestToolEntryFunctions:
 
         # 验证全局执行器已设置
         import app.tools.acli.executor as executor_module
+
         assert executor_module._executor is mock_executor

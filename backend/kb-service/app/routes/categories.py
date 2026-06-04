@@ -142,7 +142,7 @@ async def list_categories(
                 domain: [
                     {
                         **cat.to_dict(),
-                        "id": cat.code,   # 覆盖 DB 整型主键，prompt_builder 期望业务编码如 '虚拟机-003'
+                        "id": cat.code,  # 覆盖 DB 整型主键，prompt_builder 期望业务编码如 '虚拟机-003'
                         "label": cat.name,  # 兼容 conversation-service prompt_builder 的期望字段
                         "id_in_db": cat.id,  # 保留 DB 整型主键供编辑器 parent_id 关联
                     }
@@ -154,13 +154,9 @@ async def list_categories(
         }
     else:
         if include_inactive:
-            categories = await _category_service.get_all(
-                force_refresh=force_refresh
-            )
+            categories = await _category_service.get_all(force_refresh=force_refresh)
         else:
-            categories = await _category_service.get_all_active(
-                force_refresh=force_refresh
-            )
+            categories = await _category_service.get_all_active(force_refresh=force_refresh)
         # leaf_only 过滤（非 grouped 模式）
         if leaf_only:
             # 叶子节点过滤：无子分类的节点
@@ -396,9 +392,9 @@ def _generate_export_yaml(categories: list) -> str:
         f"# 导出日期: {datetime.now(UTC).strftime('%Y-%m-%d')}",
         "# 用途: 分类管理导出备份",
         "",
-        "version: \"1.0\"",
+        'version: "1.0"',
         "source: kb_category_export",
-        f"generated: \"{datetime.now(UTC).strftime('%Y-%m-%d')}\"",
+        f'generated: "{datetime.now(UTC).strftime("%Y-%m-%d")}"',
         f"total: {len(categories)}",
         "",
         "categories:",

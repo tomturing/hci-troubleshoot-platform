@@ -55,6 +55,7 @@ def _make_kbd_diag_mock(stage_s4=True):
     async def fake_diagnose(candidates, env_context, session_id):
         if stage_s4:
             from app.domain.agent_port import AgentStageUpdate
+
             yield AgentStageUpdate(stage="kbd_diag_complete", metadata={})
 
     mock.diagnose = fake_diagnose
@@ -71,7 +72,7 @@ class TestInvestigationAgentRouting:
         kb = _make_kb_client(
             route_result={
                 "track": "sop",
-                "results": [{"id": 42, "title": "虚拟机启动失败 SOP", "content_md": "SOP步骤内容"}]
+                "results": [{"id": 42, "title": "虚拟机启动失败 SOP", "content_md": "SOP步骤内容"}],
             }
         )
         registry = _make_registry_mock_with_stream(["SOP 诊断结论"])
@@ -82,16 +83,19 @@ class TestInvestigationAgentRouting:
             tool_executor=MagicMock(),
         )
 
-        events = [event async for event in agent.process(
-            session_id="test-001",
-            messages=[{"role": "user", "content": "虚拟机无法启动"}],
-            category_id="虚拟机-003",
-            diagnostic_stage="S1",
-            env_context={},
-            assistant_type="htp-agent",
-            case_id=None,
-            user_id="user-001",
-        )]
+        events = [
+            event
+            async for event in agent.process(
+                session_id="test-001",
+                messages=[{"role": "user", "content": "虚拟机无法启动"}],
+                category_id="虚拟机-003",
+                diagnostic_stage="S1",
+                env_context={},
+                assistant_type="htp-agent",
+                case_id=None,
+                user_id="user-001",
+            )
+        ]
 
         # 应有文本输出（来自 SOP 模式流式回复）
         text_events = [e for e in events if isinstance(e, AgentTextChunk)]
@@ -102,8 +106,9 @@ class TestInvestigationAgentRouting:
         stage_events = [e for e in events if isinstance(e, AgentStageUpdate)]
         sop_reasoning_events = [e for e in stage_events if e.stage == "sop_reasoning"]
         assert len(sop_reasoning_events) == 1, "未找到 sop_reasoning 事件"
-        assert sop_reasoning_events[0].metadata.get("sop_document_id") == 42, \
+        assert sop_reasoning_events[0].metadata.get("sop_document_id") == 42, (
             f"sop_document_id 应为 42，实际为 {sop_reasoning_events[0].metadata.get('sop_document_id')}"
+        )
 
     @pytest.mark.asyncio
     async def test_routes_to_fallback_when_no_cases(self):
@@ -120,16 +125,19 @@ class TestInvestigationAgentRouting:
             tool_executor=MagicMock(),
         )
 
-        events = [event async for event in agent.process(
-            session_id="test-002",
-            messages=[{"role": "user", "content": "虚拟机无法启动"}],
-            category_id="虚拟机-003",
-            diagnostic_stage="S1",
-            env_context={},
-            assistant_type="htp-agent",
-            case_id=None,
-            user_id="user-001",
-        )]
+        events = [
+            event
+            async for event in agent.process(
+                session_id="test-002",
+                messages=[{"role": "user", "content": "虚拟机无法启动"}],
+                category_id="虚拟机-003",
+                diagnostic_stage="S1",
+                env_context={},
+                assistant_type="htp-agent",
+                case_id=None,
+                user_id="user-001",
+            )
+        ]
 
         text_events = [e for e in events if isinstance(e, AgentTextChunk)]
         assert len(text_events) >= 1
@@ -145,7 +153,11 @@ class TestInvestigationAgentRouting:
                     "name": "案例c1",
                     "category_id": "虚拟机-003",
                     "steps": [
-                        {"tool_name": "get_failed_tasks", "tool_args_template": {}, "expected_pattern": "__CONTAINS__:redis"}
+                        {
+                            "tool_name": "get_failed_tasks",
+                            "tool_args_template": {},
+                            "expected_pattern": "__CONTAINS__:redis",
+                        }
                     ],
                     "root_cause": "redis 异常",
                     "solution": "重启 redis",
@@ -157,8 +169,10 @@ class TestInvestigationAgentRouting:
 
         # 工具执行器返回匹配输出
         mock_executor = MagicMock()
+
         async def execute(tool_name, args):
             return "redis service failed"
+
         mock_executor.execute = execute
 
         agent = InvestigationAgent(
@@ -167,16 +181,19 @@ class TestInvestigationAgentRouting:
             tool_executor=mock_executor,
         )
 
-        events = [event async for event in agent.process(
-            session_id="test-003",
-            messages=[{"role": "user", "content": "虚拟机无法启动"}],
-            category_id="虚拟机-003",
-            diagnostic_stage="S1",
-            env_context={"vm_name": "vm-001"},
-            assistant_type="htp-agent",
-            case_id=None,
-            user_id="user-001",
-        )]
+        events = [
+            event
+            async for event in agent.process(
+                session_id="test-003",
+                messages=[{"role": "user", "content": "虚拟机无法启动"}],
+                category_id="虚拟机-003",
+                diagnostic_stage="S1",
+                env_context={"vm_name": "vm-001"},
+                assistant_type="htp-agent",
+                case_id=None,
+                user_id="user-001",
+            )
+        ]
 
         stage_events = [e for e in events if isinstance(e, AgentStageUpdate)]
         final_stages = [e for e in stage_events if e.stage == "S4"]

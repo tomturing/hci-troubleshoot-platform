@@ -51,8 +51,8 @@ class StepResult:
 
     tool_name: str
     tool_args: dict
-    raw_output: str | None          # 工具执行的原始输出字符串
-    error: str | None               # 执行错误（非 None 时此步骤无法判断）
+    raw_output: str | None  # 工具执行的原始输出字符串
+    error: str | None  # 执行错误（非 None 时此步骤无法判断）
     match_kbd_ids: set[str] = field(default_factory=set)  # 判断后匹配的 KBD ID 集合
 
 
@@ -60,10 +60,10 @@ class StepResult:
 class KBDDiagResult:
     """KBD 差异诊断最终结果。"""
 
-    matched_kbds: list[KBD]           # 最终候选 KBD（按匹配度排序）
+    matched_kbds: list[KBD]  # 最终候选 KBD（按匹配度排序）
     steps_executed: list[StepResult]  # 已执行步骤序列
-    is_definitive: bool               # True = 恰好锁定 1 个 KBD
-    diagnosis_report: str             # LLM 生成的结构化诊断报告
+    is_definitive: bool  # True = 恰好锁定 1 个 KBD
+    diagnosis_report: str  # LLM 生成的结构化诊断报告
 
 
 class KBDDiagnostic:
@@ -393,7 +393,7 @@ class KBDDiagnostic:
           - 自然语言 → LLM 批量判断
         """
         rule_results: dict[str, bool] = {}  # kbd_id → 规则判断结果
-        llm_kbds: list[KBD] = []            # 需要 LLM 判断的 KBD
+        llm_kbds: list[KBD] = []  # 需要 LLM 判断的 KBD
 
         for kbd in kbds:
             pattern = kbd.get_expected_pattern(tool_name)
@@ -403,7 +403,7 @@ class KBDDiagnostic:
                 continue
 
             if pattern.startswith(PATTERN_REGEX_PREFIX):
-                regex_str = pattern[len(PATTERN_REGEX_PREFIX):]
+                regex_str = pattern[len(PATTERN_REGEX_PREFIX) :]
                 try:
                     matched = bool(re.search(regex_str, actual_output, re.IGNORECASE | re.DOTALL))
                 except re.error:
@@ -411,7 +411,7 @@ class KBDDiagnostic:
                 rule_results[kbd.id] = matched
 
             elif pattern.startswith(PATTERN_CONTAINS_PREFIX):
-                keyword = pattern[len(PATTERN_CONTAINS_PREFIX):]
+                keyword = pattern[len(PATTERN_CONTAINS_PREFIX) :]
                 rule_results[kbd.id] = keyword.lower() in actual_output.lower()
 
             else:
@@ -517,11 +517,7 @@ class KBDDiagnostic:
             "- 步骤 {idx}：`{name}` {status}".format(
                 idx=i + 1,
                 name=s.tool_name,
-                status=(
-                    f"✓ 输出：{(s.raw_output or '')[:200]}"
-                    if s.error is None
-                    else f"✗ 失败：{s.error}"
-                ),
+                status=(f"✓ 输出：{(s.raw_output or '')[:200]}" if s.error is None else f"✗ 失败：{s.error}"),
             )
             for i, s in enumerate(steps_executed)
         )

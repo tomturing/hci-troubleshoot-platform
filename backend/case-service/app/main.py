@@ -24,15 +24,12 @@ init_telemetry(settings.SERVICE_NAME)
 
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动
-    logger.info(
-        event="service_starting",
-        message=f"Starting {settings.SERVICE_NAME}",
-        port=settings.SERVICE_PORT
-    )
+    logger.info(event="service_starting", message=f"Starting {settings.SERVICE_NAME}", port=settings.SERVICE_PORT)
 
     database_manager = DatabaseManager(settings.DATABASE_URL)
 
@@ -46,18 +43,11 @@ async def lifespan(app: FastAPI):
     yield
 
     # 关闭
-    logger.info(
-        event="service_stopping",
-        message=f"Stopping {settings.SERVICE_NAME}"
-    )
+    logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
     await database_manager.close()
 
-app = FastAPI(
-    title="HCI Troubleshoot - Case Service",
-    description="工单管理服务",
-    version="1.0.0",
-    lifespan=lifespan
-)
+
+app = FastAPI(title="HCI Troubleshoot - Case Service", description="工单管理服务", version="1.0.0", lifespan=lifespan)
 
 # 注入 OpenTelemetry 中间件到 app 实例
 instrument_app(app)
@@ -101,11 +91,8 @@ async def health_ready():
     """Readiness 探针：服务就绪时才加入流量"""
     return {"status": "ready"}
 
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=settings.SERVICE_PORT,
-        reload=True
-    )
+
+    uvicorn.run("main:app", host="0.0.0.0", port=settings.SERVICE_PORT, reload=True)

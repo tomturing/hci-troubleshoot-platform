@@ -161,7 +161,7 @@ class CategoryService:
 
         # 动态过滤
         result = defaultdict(list)
-        for cat in (self._cache or []):
+        for cat in self._cache or []:
             if not include_inactive and not cat.is_active:
                 continue
             domain = cat.domain or "未分类"

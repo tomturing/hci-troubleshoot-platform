@@ -46,9 +46,7 @@ _IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 
 # 只读 acli 动词白名单（与 conversation_service._ACLI_READONLY_VERBS 保持一致，防御性重复校验）
-_ACLI_READONLY_VERBS = frozenset(
-    {"get", "list", "show", "describe", "status", "info", "check", "query", "fetch"}
-)
+_ACLI_READONLY_VERBS = frozenset({"get", "list", "show", "describe", "status", "info", "check", "query", "fetch"})
 
 
 def _validate_ip(ip: str) -> str:
@@ -185,8 +183,7 @@ class AcliClient:
         保留此方法仅作历史参考，不应在任何生产代码中调用。
         """
         warnings.warn(
-            "_run_ssh() 已废弃：HCI 在客户私网，云端不可达。"
-            "请使用 BridgeRelayExecutor（app/tools/acli/executor.py）。",
+            "_run_ssh() 已废弃：HCI 在客户私网，云端不可达。请使用 BridgeRelayExecutor（app/tools/acli/executor.py）。",
             DeprecationWarning,
             stacklevel=2,
         )

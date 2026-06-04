@@ -39,15 +39,18 @@ MAX_STEPS = 15
 
 # ─── Protocol 定义────────────────────
 
+
 @runtime_checkable
 class ToolExecutor(Protocol):
     """工具执行后端协议（SCPClient、AcliClient 等实现此协议）"""
+
     async def execute(self, tool_name: str, args: dict) -> Any: ...
 
 
 @runtime_checkable
 class ConfirmServiceProtocol(Protocol):
     """人工确认服务协议"""
+
     async def request_confirm(
         self,
         session_id: str,
@@ -60,9 +63,8 @@ class ConfirmServiceProtocol(Protocol):
 @runtime_checkable
 class AuditServiceProtocol(Protocol):
     """审计日志服务协议"""
+
     async def write(self, audit_id: str, **kwargs) -> None: ...
-
-
 
 
 class ReactEngine:
@@ -135,7 +137,6 @@ class ReactEngine:
         active_tool_executor = tool_executor or self._tool_executor
 
         for step_count in range(1, max_iterations + 1):
-
             # ── 推理阶段 ──────────────────────────────────────────────────────
             yield AgentStageUpdate(
                 stage="thinking",
@@ -227,11 +228,13 @@ class ReactEngine:
                         yield event
 
                 # 将工具结果追加到消息历史
-                work_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": str(tool_result),
-                })
+                work_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": str(tool_result),
+                    }
+                )
 
         # 超出步数限制
         yield AgentTextChunk(content="⚠️ 诊断步骤已达上限，请联系人工支持。")
@@ -246,6 +249,7 @@ class ReactEngine:
             工具列表（OpenAI function calling 格式）
         """
         from app.adapters.agents.htp.tool_registry import get_tools_for_llm
+
         base_tools = get_tools_for_llm()
         if extra_tools:
             # 合并动态工具（追加到末尾，LLM 可选择使用）
@@ -293,15 +297,14 @@ class ReactEngine:
         # T-TOOL-15: 对 acli_exec 和 bash_exec 工具动态计算风险等级
         if tool_name in ("acli_exec", "bash_exec"):
             command = tool_args.get("command", "")
-            runtime_risk = (
-                classify_acli(command) if tool_name == "acli_exec"
-                else classify_bash(command)
-            )
+            runtime_risk = classify_acli(command) if tool_name == "acli_exec" else classify_bash(command)
             # 使用 model_copy 创建副本并更新风险等级（Pydantic v2）
-            tool_def = tool_def.model_copy(update={
-                "risk_level": runtime_risk,
-                "policy": risk_to_policy(runtime_risk),
-            })
+            tool_def = tool_def.model_copy(
+                update={
+                    "risk_level": runtime_risk,
+                    "policy": risk_to_policy(runtime_risk),
+                }
+            )
             logger.info(
                 event="dynamic_risk_override",
                 tool_name=tool_name,
@@ -311,9 +314,7 @@ class ReactEngine:
             )
             # 高危命令直接阻止执行
             if tool_def.policy == "block":
-                yield AgentTextChunk(
-                    content=f"[blocked] 命令 {command!r} 属于高危操作（risk=3），已拒绝执行。"
-                )
+                yield AgentTextChunk(content=f"[blocked] 命令 {command!r} 属于高危操作（risk=3），已拒绝执行。")
                 return
         # ─────────────────────────────────────────
 
@@ -363,8 +364,7 @@ class ReactEngine:
         # 只读且 policy=notify：执行前通知前端
         if tool_def.policy == "notify":
             yield AgentStageUpdate(
-                stage="executing",
-                metadata={"tool": tool_name, "args": tool_args, "message": "正在获取日志..."}
+                stage="executing", metadata={"tool": tool_name, "args": tool_args, "message": "正在获取日志..."}
             )
 
         # 执行工具，记录耗时
@@ -420,14 +420,14 @@ class ReactEngine:
                 acp_session_id=session_id,
                 kind=result.kind,  # "variable_input" or "variable_confirm"
                 title=f"填写变量：{var_schema.get('display_name', result.variable_name)}",
-                prompt=var_schema.get('description', f"请提供变量 {result.variable_name} 的值"),
+                prompt=var_schema.get("description", f"请提供变量 {result.variable_name} 的值"),
                 options=result.options or [],
                 custom_input=True,
                 metadata={
                     "variable_name": result.variable_name,
-                    "validation_pattern": var_schema.get('validation_pattern'),
-                    "variable_type": var_schema.get('type', 'string'),
-                    "required": var_schema.get('required', True),
+                    "validation_pattern": var_schema.get("validation_pattern"),
+                    "variable_type": var_schema.get("type", "string"),
+                    "required": var_schema.get("required", True),
                     "sop_tool": "sop_request_variable",
                 },
             )

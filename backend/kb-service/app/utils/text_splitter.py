@@ -15,16 +15,16 @@ import re
 
 # Markdown 分隔符优先级（从粗到细）
 _SEPARATORS = [
-    "\n## ",     # H2 标题（最粗粒度）
-    "\n### ",    # H3 标题
-    "\n#### ",   # H4 标题
-    "\n\n",      # 段落
-    "\n",        # 换行
-    "。",        # 中文句号
-    "；",        # 中文分号
-    ". ",        # 英文句号
-    " ",         # 空格
-    "",          # 字符级（最后手段）
+    "\n## ",  # H2 标题（最粗粒度）
+    "\n### ",  # H3 标题
+    "\n#### ",  # H4 标题
+    "\n\n",  # 段落
+    "\n",  # 换行
+    "。",  # 中文句号
+    "；",  # 中文分号
+    ". ",  # 英文句号
+    " ",  # 空格
+    "",  # 字符级（最后手段）
 ]
 
 
@@ -53,12 +53,12 @@ def _split_text_recursive(text: str, separators: list[str], chunk_size: int) -> 
     for i, sep in enumerate(separators):
         if sep == "" or sep in text:
             separator = sep
-            new_separators = separators[i + 1:]
+            new_separators = separators[i + 1 :]
             break
 
     if not separator:
         # 没有有效分隔符，按字符切
-        return [text[i: i + chunk_size * 2] for i in range(0, len(text), chunk_size * 2)]
+        return [text[i : i + chunk_size * 2] for i in range(0, len(text), chunk_size * 2)]
 
     # 按分隔符切割
     if separator:

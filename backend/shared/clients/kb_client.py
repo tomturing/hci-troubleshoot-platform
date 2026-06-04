@@ -33,6 +33,7 @@ class KBClient(InternalHTTPClient):
 
     def __init__(self, kb_service_url: str, internal_token: str):
         import os
+
         # 优先使用传入的 internal_token（兼容现有初始化方式），
         # InternalHTTPClient 从 INTERNAL_API_TOKEN 环境变量读取；
         # 若 token 已通过参数传入，暂时注入环境变量供基类读取。

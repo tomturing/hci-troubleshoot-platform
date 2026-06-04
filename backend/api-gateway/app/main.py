@@ -22,7 +22,7 @@ from shared.observability.otel import init_telemetry, instrument_app
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.routes import assistants, cases, conversations, environments, health, kb, terminal, tools_prompts, websocket
+from app.routes import assistants, capabilities, cases, conversations, environments, health, kb, terminal, websocket
 from app.services.session import SessionManager
 from app.services.terminal import TerminalService
 
@@ -122,7 +122,7 @@ app.include_router(kb.kbd_router)
 app.include_router(kb.sop_admin_router)
 app.include_router(terminal.router)
 app.include_router(health.router)
-app.include_router(tools_prompts.router)
+app.include_router(capabilities.router)
 
 
 @app.get("/metrics")

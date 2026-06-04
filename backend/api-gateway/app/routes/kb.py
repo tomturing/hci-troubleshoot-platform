@@ -144,9 +144,7 @@ categories_router = APIRouter(prefix="/api/kb/categories", tags=["kb-categories"
 async def list_categories_proxy(request: Request):
     """代理分类列表请求 → kb-service"""
     headers = _internal_auth_headers()
-    response = await proxy_request(
-        "GET", "/categories", params=dict(request.query_params), headers=headers
-    )
+    response = await proxy_request("GET", "/categories", params=dict(request.query_params), headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
@@ -163,9 +161,7 @@ async def update_category_proxy(code: str, request: Request):
     """代理分类更新请求 → kb-service"""
     body = await request.json()
     headers = _internal_auth_headers()
-    response = await proxy_request(
-        "PUT", f"/categories/{code}", payload=body, headers=headers
-    )
+    response = await proxy_request("PUT", f"/categories/{code}", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
@@ -174,9 +170,7 @@ async def create_category_proxy(request: Request):
     """代理分类创建请求 → kb-service"""
     body = await request.json()
     headers = _internal_auth_headers()
-    response = await proxy_request(
-        "POST", "/categories", payload=body, headers=headers
-    )
+    response = await proxy_request("POST", "/categories", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
@@ -184,9 +178,7 @@ async def create_category_proxy(request: Request):
 async def delete_category_proxy(code: str, request: Request):
     """代理分类删除请求 → kb-service"""
     headers = _internal_auth_headers()
-    response = await proxy_request(
-        "DELETE", f"/categories/{code}", headers=headers
-    )
+    response = await proxy_request("DELETE", f"/categories/{code}", headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
@@ -195,9 +187,7 @@ async def update_category_parent_proxy(code: str, request: Request):
     """代理级联更新父分类层次请求 → kb-service"""
     body = await request.json()
     headers = _internal_auth_headers()
-    response = await proxy_request(
-        "PUT", f"/categories/{code}/parent", payload=body, headers=headers
-    )
+    response = await proxy_request("PUT", f"/categories/{code}/parent", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
@@ -206,9 +196,7 @@ async def category_hit_proxy(code: str, request: Request):
     """代理命中计数请求 → kb-service"""
     body = await request.json()
     headers = _internal_auth_headers()
-    response = await proxy_request(
-        "POST", f"/categories/{code}/hit", payload=body, headers=headers
-    )
+    response = await proxy_request("POST", f"/categories/{code}/hit", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
@@ -240,9 +228,7 @@ async def category_import_proxy(request: Request):
             return JSONResponse(content=resp.json(), status_code=resp.status_code)
         except httpx.RequestError as exc:
             logger.error(f"KB Service 分类导入请求失败: {exc.request.url!r}")
-            raise HTTPException(
-                status_code=503, detail="KB Service unavailable"
-            ) from exc
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
 
 
 @categories_router.get("/export")
@@ -267,9 +253,7 @@ async def category_export_proxy(request: Request):
             )
         except httpx.RequestError as exc:
             logger.error(f"KB Service 分类导出请求失败: {exc.request.url!r}")
-            raise HTTPException(
-                status_code=503, detail="KB Service unavailable"
-            ) from exc
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
 
 
 # ============ KBD 审核代理（前端使用 /api/v1/kbd 前缀） ============
@@ -415,7 +399,6 @@ async def sop_tree_proxy(document_id: int, request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
-
 @sop_admin_router.post("/{document_id}/approve")
 async def sop_approve_proxy(document_id: int, request: Request):
     """代理 SOP 文档发布（生成 embedding）→ kb-service，使用 600s 超时应对大文档"""
@@ -458,4 +441,3 @@ async def sop_upload_proxy(request: Request):
         except httpx.RequestError as exc:
             logger.error(f"KB Service SOP 上传请求失败: {exc.request.url!r}")
             raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
-

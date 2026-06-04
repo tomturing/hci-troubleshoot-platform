@@ -71,6 +71,7 @@ class TestAgentStreamEndpoint:
         """测试 Agent 未就绪时返回 503"""
         # Mock _agent_router 为 None
         import app.routes.agent as agent_routes
+
         original_router = agent_routes._agent_router
         agent_routes._agent_router = None
 
@@ -82,7 +83,7 @@ class TestAgentStreamEndpoint:
                 "session_id": "test-session",
                 "case_id": "TEST001",
                 "user_id": "test-user",
-                "messages": [{"role": "user", "content": "test"}]
+                "messages": [{"role": "user", "content": "test"}],
             }
             response = client.post("/v1/agent/stream", json=request)
             # 当 _agent_router 为 None 时，应该返回 503
@@ -93,15 +94,12 @@ class TestAgentStreamEndpoint:
     def test_interactive_response_not_ready(self, client):
         """测试交互响应未就绪时返回 503"""
         import app.routes.agent as agent_routes
+
         original_router = agent_routes._agent_router
         agent_routes._agent_router = None
 
         try:
-            request = {
-                "acp_session_id": "test-session",
-                "request_id": "test-request",
-                "outcome": "test-outcome"
-            }
+            request = {"acp_session_id": "test-session", "request_id": "test-request", "outcome": "test-outcome"}
             response = client.post("/v1/agent/interactive-response", json=request)
             assert response.status_code == 503
         finally:

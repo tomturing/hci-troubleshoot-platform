@@ -20,13 +20,13 @@ class KBSopNode(Base):
     __tablename__ = "kb_sop_node"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    skill_id = Column(String(100), nullable=False)                        # 技能 ID（如 vm_boot_failure）
-    node_name = Column(String(200), nullable=False)                       # 节点名称（如 CPU不足）
+    skill_id = Column(String(100), nullable=False)  # 技能 ID（如 vm_boot_failure）
+    node_name = Column(String(200), nullable=False)  # 节点名称（如 CPU不足）
     parent_id = Column(Integer, ForeignKey("kb_sop_node.id"), nullable=True)
-    keywords = Column(ARRAY(Text), nullable=False)                        # 触发关键字列表
-    file_path = Column(String(500), nullable=True)                        # 对应 MD 文件路径
-    content = Column(Text, nullable=True)                                 # 章节全文
-    level = Column(SmallInteger, default=1)                               # 层级（1=主章节, 2=子章节）
+    keywords = Column(ARRAY(Text), nullable=False)  # 触发关键字列表
+    file_path = Column(String(500), nullable=True)  # 对应 MD 文件路径
+    content = Column(Text, nullable=True)  # 章节全文
+    level = Column(SmallInteger, default=1)  # 层级（1=主章节, 2=子章节）
     sort_order = Column(SmallInteger, default=0)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 

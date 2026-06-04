@@ -124,12 +124,36 @@ class TestBuildContextInfo:
         # alerts 字段名与 acli --formatter json alert list 实际输出一致
         # urgent_type: 1=紧急→CRITICAL, 0=普通→WARNING（整数）
         # end: Unix 时间戳
-        alert_env.env_data = {"alerts": [{"urgent_type": 1, "end": 1746000000, "type": "disk_io_high", "description": "磁盘异常", "target": "node-1", "host": "host-01"}]}
+        alert_env.env_data = {
+            "alerts": [
+                {
+                    "urgent_type": 1,
+                    "end": 1746000000,
+                    "type": "disk_io_high",
+                    "description": "磁盘异常",
+                    "target": "node-1",
+                    "host": "host-01",
+                }
+            ]
+        }
 
         task_env = MagicMock()
         # tasks 字段名与 acli --formatter json task list 实际输出一致
         # status: 3=失败, 2=完成（整数）；end: Unix 时间戳
-        task_env.env_data = {"tasks": [{"status": 3, "end": 1746000000, "type": "Migration", "description": "存储不足", "target": "vm-01", "host": "host-01", "errcode_tracing": "", "request_id": ""}]}
+        task_env.env_data = {
+            "tasks": [
+                {
+                    "status": 3,
+                    "end": 1746000000,
+                    "type": "Migration",
+                    "description": "存储不足",
+                    "target": "vm-01",
+                    "host": "host-01",
+                    "errcode_tracing": "",
+                    "request_id": "",
+                }
+            ]
+        }
 
         mock_repository.get_by_case_and_type.side_effect = [cluster_env, alert_env, task_env]
 
@@ -186,24 +210,41 @@ class TestBuildContextInfo:
         """任务列表字段映射：整数 status 转中文、Unix end 时间戳转可读字符串"""
         task_env = MagicMock()
         # 模拟 acli 返回的真实字段格式：status 为整数，end 为 Unix 时间戳
-        task_env.env_data = {"tasks": [
-            {
-                "status": 3, "type": "启动虚拟机", "end": 1747353600,
-                "host": "node-1", "target": "vm-001", "description": "磁盘 IO 超时",
-                "errcode_tracing": "0x0CFFFFFF", "request_id": "trace-abc",
-            },
-            {
-                "status": 2, "type": "登录", "end": 1747350000,
-                "host": "node-2", "target": "user-root", "description": "",
-                "errcode_tracing": "", "request_id": "trace-xyz",
-            },
-            {
-                # 无 status 字段，回退到 process 字段（历史数据格式）
-                "process": "执行中", "type": "系统备份", "end": 0,
-                "host": "node-1", "target": "", "description": "",
-                "errcode_tracing": "", "request_id": "",
-            },
-        ]}
+        task_env.env_data = {
+            "tasks": [
+                {
+                    "status": 3,
+                    "type": "启动虚拟机",
+                    "end": 1747353600,
+                    "host": "node-1",
+                    "target": "vm-001",
+                    "description": "磁盘 IO 超时",
+                    "errcode_tracing": "0x0CFFFFFF",
+                    "request_id": "trace-abc",
+                },
+                {
+                    "status": 2,
+                    "type": "登录",
+                    "end": 1747350000,
+                    "host": "node-2",
+                    "target": "user-root",
+                    "description": "",
+                    "errcode_tracing": "",
+                    "request_id": "trace-xyz",
+                },
+                {
+                    # 无 status 字段，回退到 process 字段（历史数据格式）
+                    "process": "执行中",
+                    "type": "系统备份",
+                    "end": 0,
+                    "host": "node-1",
+                    "target": "",
+                    "description": "",
+                    "errcode_tracing": "",
+                    "request_id": "",
+                },
+            ]
+        }
 
         mock_repository.get_by_case_and_type.side_effect = [None, None, task_env]
 
@@ -229,22 +270,36 @@ class TestBuildContextInfo:
     async def test_alert_logs_field_mapping(self, service, mock_repository):
         """告警列表字段映射：整数 urgent_type 和字符串中文值均支持"""
         alert_env = MagicMock()
-        alert_env.env_data = {"alerts": [
-            {
-                "urgent_type": 1, "end": 1747353600, "target": "cluster",
-                "type": "存储故障", "description": "磁盘 SMART 告警", "host": "node-1",
-            },
-            {
-                "urgent_type": 0, "end": 1747350000, "target": "vm-001",
-                "type": "内存告警", "description": "内存使用率超 90%", "host": "node-2",
-                "vm": "vm-centos-01",
-            },
-            {
-                # 兼容历史中文值
-                "urgent_type": "紧急", "end": 1747340000, "target": "node-3",
-                "type": "网络", "description": "链路断开", "host": "node-3",
-            },
-        ]}
+        alert_env.env_data = {
+            "alerts": [
+                {
+                    "urgent_type": 1,
+                    "end": 1747353600,
+                    "target": "cluster",
+                    "type": "存储故障",
+                    "description": "磁盘 SMART 告警",
+                    "host": "node-1",
+                },
+                {
+                    "urgent_type": 0,
+                    "end": 1747350000,
+                    "target": "vm-001",
+                    "type": "内存告警",
+                    "description": "内存使用率超 90%",
+                    "host": "node-2",
+                    "vm": "vm-centos-01",
+                },
+                {
+                    # 兼容历史中文值
+                    "urgent_type": "紧急",
+                    "end": 1747340000,
+                    "target": "node-3",
+                    "type": "网络",
+                    "description": "链路断开",
+                    "host": "node-3",
+                },
+            ]
+        }
 
         mock_repository.get_by_case_and_type.side_effect = [None, alert_env, None]
 

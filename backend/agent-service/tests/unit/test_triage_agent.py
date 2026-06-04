@@ -76,11 +76,7 @@ class TestParseIntentResult:
 
     def test_candidates_with_multi_level_prefix(self):
         """候选列表中的编码也能匹配多级前缀"""
-        reply = (
-            "可能是以下故障之一：\n"
-            "① 硬件-L2-001 硬件高级故障\n"
-            "② 存储-L3-002 存储三级故障\n"
-        )
+        reply = "可能是以下故障之一：\n① 硬件-L2-001 硬件高级故障\n② 存储-L3-002 存储三级故障\n"
         result = self.triage._parse_intent_result(reply)
 
         assert result is not None
@@ -91,8 +87,9 @@ class TestParseIntentResult:
     def test_leaf_code_regex_validation(self):
         """叶子节点 code 格式正则能匹配各种合法编码"""
         import re
+
         # 使用 TriageAgent 内部正则
-        leaf_re = re.compile(r'^[一-鿿A-Za-z0-9-]+-\d+$')
+        leaf_re = re.compile(r"^[一-鿿A-Za-z0-9-]+-\d+$")
 
         # 合法叶子节点编码（应匹配）
         assert leaf_re.match("虚拟机-003") is not None
@@ -103,8 +100,8 @@ class TestParseIntentResult:
 
         # 非叶子节点编码（应不匹配）
         assert leaf_re.match("虚拟机-L1") is None  # 无数字后缀
-        assert leaf_re.match("虚拟机") is None     # 无后缀
-        assert leaf_re.match("-003") is None       # 无前缀
+        assert leaf_re.match("虚拟机") is None  # 无后缀
+        assert leaf_re.match("-003") is None  # 无前缀
 
 
 # ─── resolve_candidate_selection 测试 ───────────────────────────────────────
@@ -154,6 +151,7 @@ class TestResolveCandidateSelection:
 
 def _make_stream_mock(text: str):
     """构建模拟流式 LLM 响应的 AsyncGenerator"""
+
     async def _gen():
         yield text
 
@@ -171,9 +169,7 @@ class TestTriageAgentProcess:
 
         # 模拟分类缓存
         mock_kb = MagicMock()
-        mock_kb.get_categories = AsyncMock(return_value=[
-            {"code": "虚拟机-003", "name": "虚拟机开机失败"}
-        ])
+        mock_kb.get_categories = AsyncMock(return_value=[{"code": "虚拟机-003", "name": "虚拟机开机失败"}])
 
         # 模拟 chat_completion_stream 返回确认文本
         async def fake_stream(messages, system=None, **kwargs):
@@ -184,20 +180,22 @@ class TestTriageAgentProcess:
 
         triage = TriageAgent(ai_registry=mock_registry, kb_client=mock_kb)
         # 直接注入分类缓存，跳过异步加载
-        triage._categories_cache = {
-            "虚拟机": [{"code": "虚拟机-003", "name": "虚拟机开机失败"}]
-        }
+        triage._categories_cache = {"虚拟机": [{"code": "虚拟机-003", "name": "虚拟机开机失败"}]}
         import time
+
         triage._categories_cache_time = time.time()
 
-        events = [event async for event in triage.process(
-            session_id="test-001",
-            messages=[{"role": "user", "content": "我的虚拟机启动失败了"}],
-            env_context={},
-            assistant_type="htp-agent",
-            case_id=None,
-            user_id="user-001",
-        )]
+        events = [
+            event
+            async for event in triage.process(
+                session_id="test-001",
+                messages=[{"role": "user", "content": "我的虚拟机启动失败了"}],
+                env_context={},
+                assistant_type="htp-agent",
+                case_id=None,
+                user_id="user-001",
+            )
+        ]
 
         # v3 改为 yield AgentInteractiveRequest（单候选确认卡）
         interactive_events = [e for e in events if isinstance(e, AgentInteractiveRequest)]
@@ -213,10 +211,12 @@ class TestTriageAgentProcess:
         mock_client = MagicMock()
 
         mock_kb = MagicMock()
-        mock_kb.get_categories = AsyncMock(return_value=[
-            {"code": "虚拟机-001", "name": "虚拟机网络异常"},
-            {"code": "虚拟机-003", "name": "虚拟机开机失败"},
-        ])
+        mock_kb.get_categories = AsyncMock(
+            return_value=[
+                {"code": "虚拟机-001", "name": "虚拟机网络异常"},
+                {"code": "虚拟机-003", "name": "虚拟机开机失败"},
+            ]
+        )
 
         async def fake_stream(messages, system=None, **kwargs):
             yield "可能是以下故障之一：\n① 虚拟机-001 虚拟机网络异常\n② 虚拟机-003 虚拟机开机失败\n请确认"
@@ -233,16 +233,20 @@ class TestTriageAgentProcess:
             ]
         }
         import time
+
         triage._categories_cache_time = time.time()
 
-        events = [event async for event in triage.process(
-            session_id="test-002",
-            messages=[{"role": "user", "content": "网络或启动问题"}],
-            env_context={},
-            assistant_type="htp-agent",
-            case_id=None,
-            user_id="user-001",
-        )]
+        events = [
+            event
+            async for event in triage.process(
+                session_id="test-002",
+                messages=[{"role": "user", "content": "网络或启动问题"}],
+                env_context={},
+                assistant_type="htp-agent",
+                case_id=None,
+                user_id="user-001",
+            )
+        ]
 
         interactive_events = [e for e in events if isinstance(e, AgentInteractiveRequest)]
         assert len(interactive_events) == 1

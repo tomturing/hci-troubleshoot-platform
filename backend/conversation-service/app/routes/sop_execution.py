@@ -151,9 +151,7 @@ def _validate_variables(
         var_value_str = str(var_value) if not isinstance(var_value, str) else var_value
         try:
             if not re.fullmatch(validation_pattern, var_value_str):
-                errors.append(
-                    f"变量 '{var_name}' 值 '{var_value_str}' 不符合校验规则 '{validation_pattern}'"
-                )
+                errors.append(f"变量 '{var_name}' 值 '{var_value_str}' 不符合校验规则 '{validation_pattern}'")
         except re.error as exc:
             # BUG-R03: validation_pattern 为无效正则时，记录警告并跳过该变量校验
             logger.warning(
@@ -468,6 +466,7 @@ async def sop_create_execution(
         # 查询 Conversation 获取 case_id
         from shared.models.conversation import Conversation
         from sqlalchemy import select
+
         conversation_result = await session.execute(
             select(Conversation).where(Conversation.conversation_id == conversation_id)
         )

@@ -21,12 +21,12 @@ class SystemPrompt(Base):
     __tablename__ = "system_prompt"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    stage = Column(String(5), nullable=False, index=True)              # S0/S1/S2/S3/S4/S5/S6/BASE
-    name = Column(String(100), nullable=False, unique=True)            # 唯一名称，如 s0_intent_recognition_v2
-    description = Column(Text, nullable=True)                          # 模板说明：用途、设计思路
-    content_template = Column(Text, nullable=False)                    # Prompt 模板，使用 {placeholder} 占位符
+    stage = Column(String(5), nullable=False, index=True)  # S0/S1/S2/S3/S4/S5/S6/BASE
+    name = Column(String(100), nullable=False, unique=True)  # 唯一名称，如 s0_intent_recognition_v2
+    description = Column(Text, nullable=True)  # 模板说明：用途、设计思路
+    content_template = Column(Text, nullable=False)  # Prompt 模板，使用 {placeholder} 占位符
     version = Column(String(20), nullable=False, default="1.0")
-    is_active = Column(Boolean, nullable=False, default=True)          # true=当前激活版本；同 stage 只能有一个 true
+    is_active = Column(Boolean, nullable=False, default=True)  # true=当前激活版本；同 stage 只能有一个 true
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(
         DateTime(timezone=True),

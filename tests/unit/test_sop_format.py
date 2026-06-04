@@ -30,6 +30,7 @@ from fix_sop_format import (
 # _fix_doubled_bullet 测试
 # --------------------------------------------------------------------------- #
 
+
 class TestFixDoubledBullet:
     """测试列表项双重文本修复。"""
 
@@ -92,6 +93,7 @@ class TestFixDoubledBullet:
 # _last_bullet_text 测试
 # --------------------------------------------------------------------------- #
 
+
 class TestLastBulletText:
     def test_finds_last_bullet(self):
         lines = ["### 标题\n", "- 查看存储状态\n", "  \n"]
@@ -109,12 +111,13 @@ class TestLastBulletText:
 # _remove_standalone_duplicates 测试
 # --------------------------------------------------------------------------- #
 
+
 class TestRemoveStandaloneDuplicates:
     def test_removes_duplicate_bare_line_before_code_block(self):
         """裸命令行与上方 bullet 重复且后跟代码块时，应被删除。"""
         lines = [
             "- acli vm list\n",
-            "acli vm list\n",        # ← 应被删除
+            "acli vm list\n",  # ← 应被删除
             "```bash\n",
             "acli vm list\n",
             "```\n",
@@ -132,7 +135,7 @@ class TestRemoveStandaloneDuplicates:
         """裸命令行内容与上方 bullet 不同时，保留。"""
         lines = [
             "- 查看虚拟机列表\n",
-            "acli vm status get\n",   # 内容不同于 bullet
+            "acli vm status get\n",  # 内容不同于 bullet
             "```bash\n",
             "acli vm status get\n",
             "```\n",
@@ -155,6 +158,7 @@ class TestRemoveStandaloneDuplicates:
 # --------------------------------------------------------------------------- #
 # fix_file 端到端测试
 # --------------------------------------------------------------------------- #
+
 
 class TestFixFile:
     def test_fixes_real_doubled_content(self, tmp_path: Path):

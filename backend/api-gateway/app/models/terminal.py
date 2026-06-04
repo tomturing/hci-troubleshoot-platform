@@ -124,8 +124,10 @@ class TerminalStatusMessage(BaseModel):
 # 终端操作录制相关模型 (Task 42)
 # ============================================================
 
+
 class OperationDirection(StrEnum):
     """操作方向"""
+
     INPUT = "input"
     OUTPUT = "output"
 

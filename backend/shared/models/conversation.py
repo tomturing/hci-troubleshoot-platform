@@ -39,7 +39,9 @@ class Conversation(Base, TraceableMixin):
     category_id = Column(String(32), nullable=True, comment="分类 ID，关联 kb_category.code")
     # [v6.2 已移除] hypothesis: 原 JSONB blob，BUG-06 根因，改为 diagnostic_item 子实体表
     # [v6.2 已移除] react_state: ReAct 推理草稿，正确设计是内存存活（AgentState），无需持久化
-    pending_confirm = Column(JSONB, nullable=True, comment="待确认工具调用快照（S3/S5 高危工具等待授权），断线重连恢复锚点")
+    pending_confirm = Column(
+        JSONB, nullable=True, comment="待确认工具调用快照（S3/S5 高危工具等待授权），断线重连恢复锚点"
+    )
     # v6.3 新增：S6 完成后等待用户意图选择的快照
     # 格式：{"stage":"S6","sent_at":"...","options":["A","B","C"]}
     # 选 A(已解决) → case.status=resolved；选 B(未解决) → 回退S1；选 C(升级人工) → in_progress

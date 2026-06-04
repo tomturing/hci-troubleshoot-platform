@@ -49,7 +49,7 @@ def set_dependencies(
     kb_client = kb
     environment_client = env_client
     # 修复：agent_client 参数名与模块级变量同名导致 global 声明失效，需用 globals() 显式赋值
-    globals()['agent_client'] = agent_client
+    globals()["agent_client"] = agent_client
 
 
 async def get_conversation_service(request: Request) -> ConversationService:
@@ -63,10 +63,15 @@ async def get_conversation_service(request: Request) -> ConversationService:
     async for session in database_manager.get_session():
         repo = ConversationRepository(session)
         yield ConversationService(
-            repo, ai_registry, scheduler_client, kb_client, environment_client,
+            repo,
+            ai_registry,
+            scheduler_client,
+            kb_client,
+            environment_client,
             database_manager.async_session_factory,
             agent_client=agent_client_from_state,
         )
+
 
 @router.post("/", status_code=201)
 async def create_conversation(
@@ -86,10 +91,10 @@ async def create_conversation(
     )
     return {"conversation_id": conversation.conversation_id, "case_id": conversation.case_id}
 
+
 @router.get("/{conversation_id}")
 async def get_conversation(
-    conversation_id: uuid.UUID,
-    service: ConversationService = Depends(get_conversation_service)
+    conversation_id: uuid.UUID, service: ConversationService = Depends(get_conversation_service)
 ):
     """获取对话详情"""
     conversation = await service.get_conversation(conversation_id)
@@ -97,22 +102,19 @@ async def get_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conversation
 
+
 @router.get("/case/{case_id}")
-async def get_conversations_by_case(
-    case_id: str,
-    service: ConversationService = Depends(get_conversation_service)
-):
+async def get_conversations_by_case(case_id: str, service: ConversationService = Depends(get_conversation_service)):
     """获取工单的所有对话"""
     return await service.repository.get_conversations_by_case(case_id)
 
+
 @router.get("/{conversation_id}/messages", response_model=list[MessageResponse])
-async def get_messages(
-    conversation_id: uuid.UUID,
-    service: ConversationService = Depends(get_conversation_service)
-):
+async def get_messages(conversation_id: uuid.UUID, service: ConversationService = Depends(get_conversation_service)):
     """获取对话消息历史"""
     messages = await service.get_messages(conversation_id)
     return [MessageResponse.model_validate(msg) for msg in messages]
+
 
 @router.post("/{conversation_id}/message")
 async def send_message(
@@ -120,7 +122,7 @@ async def send_message(
     message: MessageCreate,
     background_tasks: BackgroundTasks,
     request: Request,  # 用于获取 app.state
-    service: ConversationService = Depends(get_conversation_service)
+    service: ConversationService = Depends(get_conversation_service),
 ):
     """
     发送消息并获取SSE流式响应
@@ -306,10 +308,7 @@ async def send_message(
 
             # 等待后台生产者任务完全回收
             if ai_task or external_task:
-                await asyncio.gather(
-                    *[t for t in (ai_task, external_task) if t],
-                    return_exceptions=True
-                )
+                await asyncio.gather(*[t for t in (ai_task, external_task) if t], return_exceptions=True)
 
             # 清理：注销 SSE 队列
             if sse_pusher and external_event_queue:
@@ -321,6 +320,7 @@ async def send_message(
 # ─────────────────────────────────────────────────────────────────────────────
 # Admin 接口：修正工单关联的根因 KBD 条目
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class ResolvedKbdUpdateRequest(BaseModel):
     """管理员修正根因 KBD 关联请求"""
@@ -429,12 +429,12 @@ async def update_resolved_kbd(
 class InteractiveResponseBody(BaseModel):
     """POST /api/conversations/{id}/interactive-response 请求体。"""
 
-    kind: str = "sop_step"       # 交互类型：tool_confirm / sop_step / info_confirm 等
-    request_id: str              # 来自前端收到的 AgentInteractiveRequest.requestId
-    acp_session_id: str          # 来自前端收到的 AgentInteractiveRequest.acpSessionId
-    outcome: dict                # {"outcome": "selected", "optionId": "A"}
-                                 # 或 {"outcome": "free_text", "text": "..."}
-                                 # 或 {"confirmed": true, "authorized_by": "user"}（tool_confirm）
+    kind: str = "sop_step"  # 交互类型：tool_confirm / sop_step / info_confirm 等
+    request_id: str  # 来自前端收到的 AgentInteractiveRequest.requestId
+    acp_session_id: str  # 来自前端收到的 AgentInteractiveRequest.acpSessionId
+    outcome: dict  # {"outcome": "selected", "optionId": "A"}
+    # 或 {"outcome": "free_text", "text": "..."}
+    # 或 {"confirmed": true, "authorized_by": "user"}（tool_confirm）
 
 
 @router.post("/{conversation_id}/interactive-response")
@@ -470,6 +470,7 @@ async def submit_interactive_response(
 
 
 # ── 恢复 ops-agent 事件流（不提交新 prompt）──────────────────────────────────
+
 
 @router.get("/{conversation_id}/resume-stream")
 async def resume_ops_agent_stream(

@@ -32,6 +32,4 @@ def mock_settings(mocker):
 @pytest.fixture
 def sample_messages():
     """示例消息列表"""
-    return [
-        {"role": "user", "content": "我的虚拟机无法启动"}
-    ]
+    return [{"role": "user", "content": "我的虚拟机无法启动"}]

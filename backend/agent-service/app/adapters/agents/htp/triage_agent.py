@@ -48,7 +48,7 @@ class IntentResult:
 
     category_id: str | None
     category_name: str | None
-    candidates: list[dict]   # [{"code": "虚拟机-003", "name": "虚拟机开机失败"}]
+    candidates: list[dict]  # [{"code": "虚拟机-003", "name": "虚拟机开机失败"}]
     needs_confirmation: bool
 
 
@@ -285,7 +285,7 @@ class TriageAgent(BaseAgent):
             # 缺陷三修复：解析失败兜底，提示用户重新描述
             yield AgentTextChunk(
                 content="\n\n抱歉，暂时无法识别您的故障类型。"
-                        "请尝试更具体地描述问题现象，例如：'虚拟机无法开机，界面显示XXX错误'。"
+                "请尝试更具体地描述问题现象，例如：'虚拟机无法开机，界面显示XXX错误'。"
             )
             logger.warning(
                 event="intent_parse_failed",
@@ -387,7 +387,7 @@ class TriageAgent(BaseAgent):
 
     # 叶子节点 code 格式正则：允许多级前缀（如 虚拟机-L2-001、硬件-003）
     # Unicode 转义避免 encoding 风险
-    _LEAF_CODE_RE = re.compile(r'^[一-鿿A-Za-z0-9-]+-\d+$')
+    _LEAF_CODE_RE = re.compile(r"^[一-鿿A-Za-z0-9-]+-\d+$")
 
     @staticmethod
     def _format_categories(categories: dict[str, list[dict]]) -> str:
@@ -400,10 +400,7 @@ class TriageAgent(BaseAgent):
         for domain, items in categories.items():
             if items:
                 # 过滤出叶子节点（code 格式为 前缀-纯数字）
-                valid_items = [
-                    item for item in items
-                    if TriageAgent._LEAF_CODE_RE.match(item.get("code", ""))
-                ]
+                valid_items = [item for item in items if TriageAgent._LEAF_CODE_RE.match(item.get("code", ""))]
                 if valid_items:
                     lines.append(f"### {domain}域（{len(valid_items)}个）")
                     for item in valid_items:  # 免除截断限制，向大模型呈现全部叶子分类
@@ -426,9 +423,7 @@ class TriageAgent(BaseAgent):
         code 格式允许多级前缀（如 虚拟机-L2-001）。
         """
         # 1. 直接确认模式（Unicode 转义 + 兼容半角冒号 + 多级前缀）
-        confirmed_pattern = re.compile(
-            r'已确认故障分类[：:]\s*([一-鿿A-Za-z0-9-]+-\d+)\s+([^\n]+)'
-        )
+        confirmed_pattern = re.compile(r"已确认故障分类[：:]\s*([一-鿿A-Za-z0-9-]+-\d+)\s+([^\n]+)")
         m = confirmed_pattern.search(reply)
         if m:
             return IntentResult(
@@ -439,12 +434,9 @@ class TriageAgent(BaseAgent):
             )
 
         # 2. 候选列表模式（① ② ③ ④ ⑤）（Unicode 转义 + 多级前缀）
-        candidate_pattern = re.compile(
-            r'[①②③④⑤]\s*([一-鿿A-Za-z0-9-]+-\d+)\s+([^\n]+)'
-        )
+        candidate_pattern = re.compile(r"[①②③④⑤]\s*([一-鿿A-Za-z0-9-]+-\d+)\s+([^\n]+)")
         candidates = [
-            {"code": m.group(1).strip(), "name": m.group(2).strip()}
-            for m in candidate_pattern.finditer(reply)
+            {"code": m.group(1).strip(), "name": m.group(2).strip()} for m in candidate_pattern.finditer(reply)
         ]
         if candidates:
             return IntentResult(

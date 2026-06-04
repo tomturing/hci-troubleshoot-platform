@@ -50,6 +50,7 @@ def set_dependencies(db: DatabaseManager, embedding: EmbeddingService) -> None:
 
 # ---- 请求/响应模型 ----
 
+
 class IngestRequest(BaseModel):
     """文档入库请求"""
 
@@ -99,6 +100,7 @@ def _check_auth(request: Request) -> None:
 
 
 # ---- 路由 ----
+
 
 @router.post("/ingest", status_code=status.HTTP_201_CREATED)
 async def ingest_document(request: Request, body: IngestRequest):
@@ -154,7 +156,6 @@ async def import_sop_nodes(request: Request, body: SopImportRequest):
 
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
-
 
     from app.models.sop_node import KBSopNode
 
@@ -241,7 +242,9 @@ class KbdIngestRequest(BaseModel):
 
     # 聚合渲染（含视觉描述，pipeline 写入；admin 编辑章节后服务端自动重建）
     content_md: str | None = Field(None, description="聚合渲染 Markdown（含截图视觉描述）；不传时由章节字段自动组装")
-    content_raw: str | None = Field(None, description="聚合纯文本（不含 Markdown 格式与截图说明）；不传时由 content_md 自动提取")
+    content_raw: str | None = Field(
+        None, description="聚合纯文本（不含 Markdown 格式与截图说明）；不传时由 content_md 自动提取"
+    )
 
     metadata: dict = Field(default_factory=dict, description="JSONB 补充字段（来源元信息等）")
     ai_category_id: str | None = Field(None, max_length=32, description="AI 分类建议 ID")
@@ -255,10 +258,7 @@ class KbdIngestRequest(BaseModel):
     )
     override_status: list[str] | None = Field(
         None,
-        description=(
-            "仅覆盖指定状态的记录。"
-            "不传=默认['draft']；['all']=所有状态；['draft','published']=仅指定状态"
-        ),
+        description=("仅覆盖指定状态的记录。不传=默认['draft']；['all']=所有状态；['draft','published']=仅指定状态"),
     )
 
     # 向后兼容（deprecated）
@@ -377,9 +377,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
 
     async with _db_manager.async_session_factory() as session:
         # 1. 幂等性校验：检查 support_id 是否已存在
-        existing_result = await session.execute(
-            select(KbdEntry).where(KbdEntry.support_id == body.support_id)
-        )
+        existing_result = await session.execute(select(KbdEntry).where(KbdEntry.support_id == body.support_id))
         existing_entry = existing_result.scalar_one_or_none()
 
         if existing_entry:

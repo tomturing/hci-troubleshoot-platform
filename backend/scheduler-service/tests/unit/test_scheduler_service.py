@@ -88,10 +88,7 @@ class TestSchedulerAllocatePod:
 
     async def test_allocate_pod_reuse_existing(self, service, mock_k8s, mock_redis):
         """测试复用已有的 Pod（同类型且存活）"""
-        mock_redis.hget.return_value = json.dumps({
-            "pod_name": "openclaw-pool-existing",
-            "assistant_type": "htp-agent"
-        })
+        mock_redis.hget.return_value = json.dumps({"pod_name": "openclaw-pool-existing", "assistant_type": "htp-agent"})
         mock_k8s.get_pod_status.return_value = "Running"
 
         result = await service.allocate_pod("case-001", "htp-agent")
@@ -102,10 +99,7 @@ class TestSchedulerAllocatePod:
 
     async def test_allocate_pod_type_mismatch(self, service, mock_k8s, mock_redis):
         """测试助手类型不匹配时清理旧分配"""
-        mock_redis.hget.return_value = json.dumps({
-            "pod_name": "openclaw-pool-old",
-            "assistant_type": "htp-agent"
-        })
+        mock_redis.hget.return_value = json.dumps({"pod_name": "openclaw-pool-old", "assistant_type": "htp-agent"})
         pool = MagicMock()
         pool.acquire_pod = AsyncMock(return_value="nabobot-pool-new123")
         service.pool_manager.get_pool = MagicMock(return_value=pool)
@@ -132,10 +126,7 @@ class TestSchedulerReleasePod:
 
     async def test_release_pod_success(self, service, mock_redis):
         """测试成功释放 Pod"""
-        mock_redis.hget.return_value = json.dumps({
-            "pod_name": "openclaw-pool-abc",
-            "assistant_type": "htp-agent"
-        })
+        mock_redis.hget.return_value = json.dumps({"pod_name": "openclaw-pool-abc", "assistant_type": "htp-agent"})
         pool = MagicMock()
         pool.release_pod = AsyncMock()
         service.pool_manager.get_pool = MagicMock(return_value=pool)
@@ -173,10 +164,7 @@ class TestSchedulerStatus:
 
     async def test_get_allocation_info(self, service, mock_redis):
         """测试查询分配详情"""
-        mock_redis.hget.return_value = json.dumps({
-            "pod_name": "openclaw-pool-xyz",
-            "assistant_type": "htp-agent"
-        })
+        mock_redis.hget.return_value = json.dumps({"pod_name": "openclaw-pool-xyz", "assistant_type": "htp-agent"})
 
         info = await service.get_allocation_info("case-001")
 

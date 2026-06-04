@@ -541,7 +541,9 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
     # 1. 查询 kbd_entry（短事务，快速释放连接）
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
-            text("SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status, published_at, embedding FROM kbd_entry WHERE id = :id"),
+            text(
+                "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status, published_at, embedding FROM kbd_entry WHERE id = :id"
+            ),
             {"id": kbd_id},
         )
         row = result.mappings().first()
@@ -567,12 +569,17 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 detail=f"KBD 条目 {kbd_id} 缺少 content_md，无法生成 embedding",
             )
         # 构建 embedding 输入（问题侧字段，避免答案侧污染向量空间）
-        embedding_text = "\n\n".join(filter(None, [
-            row["title"],
-            row["problem_description"],
-            row["alert_info"],
-            row["root_cause"],
-        ]))
+        embedding_text = "\n\n".join(
+            filter(
+                None,
+                [
+                    row["title"],
+                    row["problem_description"],
+                    row["alert_info"],
+                    row["root_cause"],
+                ],
+            )
+        )
         if not embedding_text.strip():
             embedding_text = row["content_raw"] or content_md  # 降级：章节字段均空时用 content_md
 
@@ -840,10 +847,12 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
         if content_md:
             # 提取变量（传入解析后的决策树，扫描节点中的变量占位符）
-            tree_for_var = parse_result.root_nodes[0] if (parse_result and not parse_result.has_error and parse_result.root_nodes) else None
-            new_variable_defs, undeclared_errors, orphan_warnings = extract_sop_variables(
-                content_md, tree_for_var
+            tree_for_var = (
+                parse_result.root_nodes[0]
+                if (parse_result and not parse_result.has_error and parse_result.root_nodes)
+                else None
             )
+            new_variable_defs, undeclared_errors, orphan_warnings = extract_sop_variables(content_md, tree_for_var)
 
             # Undeclared = Error（阻断 approve）
             if undeclared_errors:
@@ -867,9 +876,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
             # 三路合并（T-AGT-26）：合并新旧 variable_schema
             if old_variable_schema:
-                variable_defs, deprecated_vars = merge_variable_schema(
-                    old_variable_schema, new_variable_defs
-                )
+                variable_defs, deprecated_vars = merge_variable_schema(old_variable_schema, new_variable_defs)
                 # Deprecated 变量告警（写入响应）
                 for var_name in deprecated_vars:
                     warnings.append(f"变量 '{var_name}' 已从新版 SOP 中移除，标记为 deprecated")
@@ -1381,7 +1388,9 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
-    logger.info(event="sop_variable_schema_update_request", document_id=document_id, variables_count=len(body.variables))
+    logger.info(
+        event="sop_variable_schema_update_request", document_id=document_id, variables_count=len(body.variables)
+    )
 
     async with _db_manager.async_session_factory() as session:
         # 1. 查询当前 variable_schema
@@ -1535,8 +1544,14 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
 
     # 所有可更新字段
     section_fields = (
-        "problem_description", "alert_info", "steps_text", "root_cause",
-        "solution", "operational_impact", "is_temporary", "recommendations",
+        "problem_description",
+        "alert_info",
+        "steps_text",
+        "root_cause",
+        "solution",
+        "operational_impact",
+        "is_temporary",
+        "recommendations",
     )
     any_section_changed = any(getattr(body, f) is not None for f in section_fields)
     has_any_field = (
@@ -1653,7 +1668,9 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
     # 查询条目（允许 rejected 或 draft 状态）
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
-            text("SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status FROM kbd_entry WHERE id = :id"),
+            text(
+                "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status FROM kbd_entry WHERE id = :id"
+            ),
             {"id": kbd_id},
         )
         row = result.mappings().first()
@@ -1668,12 +1685,17 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         if not content_md:
             raise HTTPException(status_code=400, detail=f"KBD 条目 {kbd_id} 缺少 content_md")
         # 构建 embedding 输入（问题侧字段，避免答案侧污染向量空间）
-        embedding_text = "\n\n".join(filter(None, [
-            row["title"],
-            row["problem_description"],
-            row["alert_info"],
-            row["root_cause"],
-        ]))
+        embedding_text = "\n\n".join(
+            filter(
+                None,
+                [
+                    row["title"],
+                    row["problem_description"],
+                    row["alert_info"],
+                    row["root_cause"],
+                ],
+            )
+        )
         if not embedding_text.strip():
             embedding_text = row["content_raw"] or content_md
 

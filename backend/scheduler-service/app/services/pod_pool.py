@@ -33,21 +33,14 @@ def _task_done_callback(task: asyncio.Task):
     exc = task.exception()
     if exc:
         logger.error(
-            event="background_task_error",
-            message=f"Background task '{task.get_name()}' failed: {exc}",
-            error=str(exc)
+            event="background_task_error", message=f"Background task '{task.get_name()}' failed: {exc}", error=str(exc)
         )
 
 
 class PodPool:
     """单类型Pod池管理器"""
 
-    def __init__(
-        self,
-        k8s_client: K8sClient,
-        assistant_type: str,
-        assistant_config: dict[str, Any]
-    ):
+    def __init__(self, k8s_client: K8sClient, assistant_type: str, assistant_config: dict[str, Any]):
         self.k8s = k8s_client
         self.assistant_type = assistant_type
         self.config = assistant_config
@@ -95,7 +88,7 @@ class PodPool:
             logger.warning(
                 event="pool_init_skipped",
                 message=f"Could not scan existing pods for '{self.assistant_type}': {e}",
-                error=str(e)
+                error=str(e),
             )
         finally:
             # 初始化后同步一次 Gauge，无论成功或跳过都反映当前实际状态
@@ -112,20 +105,14 @@ class PodPool:
                     needed = self.max_pool_size - current_count
 
                 if needed > 0:
-                    logger.info(
-                        f"Warming up {self.assistant_type} pool: creating {needed} new pods"
-                    )
+                    logger.info(f"Warming up {self.assistant_type} pool: creating {needed} new pods")
                     for _ in range(needed):
                         await self._create_warm_pod()
 
     async def _create_warm_pod(self):
         """创建一个新的热备Pod"""
         pod_name = f"{self.assistant_type}-pool-{uuid.uuid4().hex[:8]}"
-        if self.k8s.create_pod(
-            pod_name=pod_name,
-            assistant_type=self.assistant_type,
-            assistant_config=self.config
-        ):
+        if self.k8s.create_pod(pod_name=pod_name, assistant_type=self.assistant_type, assistant_config=self.config):
             self.idle_pods.append(pod_name)
             logger.info(f"Added warm pod {pod_name} to {self.assistant_type} pool")
 
@@ -140,7 +127,7 @@ class PodPool:
                         pod_name=pod_name,
                         case_id=case_id,
                         assistant_type=self.assistant_type,
-                        assistant_config=self.config
+                        assistant_config=self.config,
                     ):
                         self.active_pods.add(pod_name)
                         self._update_metrics()  # on-demand 创建后同步 Gauge
@@ -179,7 +166,7 @@ class PodPool:
             "active": len(self.active_pods),
             "total": len(self.idle_pods) + len(self.active_pods),
             "warm_pool_size": self.warm_pool_size,
-            "max_pool_size": self.max_pool_size
+            "max_pool_size": self.max_pool_size,
         }
 
     def _update_metrics(self) -> None:
@@ -202,9 +189,7 @@ class PodPoolManager:
         for assistant_type, config in assistant_registry.items():
             if config.get("enabled", True):
                 self.pools[assistant_type] = PodPool(
-                    k8s_client=k8s_client,
-                    assistant_type=assistant_type,
-                    assistant_config=config
+                    k8s_client=k8s_client, assistant_type=assistant_type, assistant_config=config
                 )
                 logger.info(f"Initialized pod pool for assistant type: {assistant_type}")
 
@@ -224,10 +209,7 @@ class PodPoolManager:
 
     def get_all_stats(self) -> dict[str, Any]:
         """获取所有池的统计信息"""
-        return {
-            atype: pool.get_stats()
-            for atype, pool in self.pools.items()
-        }
+        return {atype: pool.get_stats() for atype, pool in self.pools.items()}
 
     def list_assistant_types(self) -> list:
         """列出所有已注册的助手类型"""

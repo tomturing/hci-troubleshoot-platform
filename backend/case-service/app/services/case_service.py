@@ -60,27 +60,22 @@ class CaseService:
         """生成工单ID: Q + YYYYMMDD + 5位序号"""
         import random
         from datetime import datetime
+
         date_str = datetime.utcnow().strftime("%Y%m%d")
         seq = str(random.randint(0, 99999)).zfill(5)
         return f"Q{date_str}{seq}"
 
-    async def create_case(
-        self,
-        case_create: CaseCreate
-    ) -> CaseResponse:
+    async def create_case(self, case_create: CaseCreate) -> CaseResponse:
         """创建新工单"""
         case_id = self._generate_case_id()
         trace_id = get_current_trace_id()
 
         # 获取或创建用户
         from shared.models.user import User
+
         user = await self.repository.get_user_by_client_id(case_create.client_id)
         if not user:
-            user = User(
-                client_id=case_create.client_id,
-                user_type="temporary",
-                trace_id=trace_id
-            )
+            user = User(client_id=case_create.client_id, user_type="temporary", trace_id=trace_id)
             user = await self.repository.create_user(user)
             logger.info(f"Created new user for client_id: {case_create.client_id}")
 
@@ -103,7 +98,7 @@ class CaseService:
             status=CaseStatus.created,
             assistant_type=case_create.assistant_type or "htp-agent",
             category=category,
-            trace_id=trace_id
+            trace_id=trace_id,
         )
 
         created_case = await self.repository.create(case)
@@ -130,43 +125,23 @@ class CaseService:
         cases = await self.repository.get_by_client_id(client_id)
         return [CaseResponse.model_validate(case) for case in cases]
 
-    async def confirm_case(
-        self,
-        case_id: str
-    ) -> CaseResponse | None:
+    async def confirm_case(self, case_id: str) -> CaseResponse | None:
         """确认工单"""
-        case = await self.repository.update_status(
-            case_id,
-            CaseStatus.confirmed
-        )
+        case = await self.repository.update_status(case_id, CaseStatus.confirmed)
         if not case:
             return None
 
-        logger.info(
-            event="case_confirmed",
-            message=f"Confirmed case {case_id}",
-            case_id=case_id
-        )
+        logger.info(event="case_confirmed", message=f"Confirmed case {case_id}", case_id=case_id)
 
         return CaseResponse.model_validate(case)
 
-    async def close_case(
-        self,
-        case_id: str
-    ) -> CaseResponse | None:
+    async def close_case(self, case_id: str) -> CaseResponse | None:
         """关闭工单"""
-        case = await self.repository.update_status(
-            case_id,
-            CaseStatus.closed
-        )
+        case = await self.repository.update_status(case_id, CaseStatus.closed)
         if not case:
             return None
 
-        logger.info(
-            event="case_closed",
-            message=f"Closed case {case_id}",
-            case_id=case_id
-        )
+        logger.info(event="case_closed", message=f"Closed case {case_id}", case_id=case_id)
 
         return CaseResponse.model_validate(case)
 
@@ -185,10 +160,14 @@ class CaseService:
     ) -> CaseListResponse:
         """获取所有工单（Admin: 分页 + 筛选）"""
         items, total = await self.repository.get_all(
-            skip=skip, limit=limit,
-            status=status, client_id=client_id,
-            case_id=case_id, title=title,
-            start_time=start_time, end_time=end_time,
+            skip=skip,
+            limit=limit,
+            status=status,
+            client_id=client_id,
+            case_id=case_id,
+            title=title,
+            start_time=start_time,
+            end_time=end_time,
         )
         return CaseListResponse(
             items=[CaseResponse.model_validate(c) for c in items],

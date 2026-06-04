@@ -72,9 +72,7 @@ async def load_tool_registry(db: AsyncSession) -> dict[str, ToolDefinition]:
     Returns:
         工具名称到 ToolDefinition 的映射字典
     """
-    result = await db.execute(
-        select(ToolDefinitionORM).where(ToolDefinitionORM.is_active.is_(True))
-    )
+    result = await db.execute(select(ToolDefinitionORM).where(ToolDefinitionORM.is_active.is_(True)))
     registry: dict[str, ToolDefinition] = {}
     for row in result.scalars():
         registry[row.tool_name] = ToolDefinition(
@@ -110,6 +108,5 @@ def get_tools_for_llm(include_sop: bool = True) -> list[dict]:
             },
         }
         for tool in TOOL_REGISTRY.values()
-        if tool.policy != "block"
-        and (include_sop or tool.category != "sop")
+        if tool.policy != "block" and (include_sop or tool.category != "sop")
     ]

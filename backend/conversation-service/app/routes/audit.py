@@ -34,6 +34,7 @@ async def get_db() -> AsyncSession:
     """依赖项：获取数据库会话"""
     if not database_manager:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=500, detail="数据库未初始化")
     async for session in database_manager.get_session():
         yield session
@@ -69,7 +70,7 @@ async def list_audit_logs(
     logs = result.scalars().all()
 
     return {
-        "total": len(logs),    # 当前页数量（精确分页需另行 COUNT 查询）
+        "total": len(logs),  # 当前页数量（精确分页需另行 COUNT 查询）
         "limit": limit,
         "offset": offset,
         "items": [

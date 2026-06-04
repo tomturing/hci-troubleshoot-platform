@@ -196,9 +196,7 @@ class CategoryRepository:
         """根据业务键 code 获取分类"""
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
-            result = await session.execute(
-                select(KbCategory).where(KbCategory.code == code)
-            )
+            result = await session.execute(select(KbCategory).where(KbCategory.code == code))
             category = result.scalar_one_or_none()
             logger.info(
                 event="repo_get_by_code",
@@ -211,9 +209,7 @@ class CategoryRepository:
     async def get_by_id(self, category_id: int) -> KbCategory | None:
         """根据主键 id 获取分类"""
         async with self._db.async_session_factory() as session:
-            result = await session.execute(
-                select(KbCategory).where(KbCategory.id == category_id)
-            )
+            result = await session.execute(select(KbCategory).where(KbCategory.id == category_id))
             return result.scalar_one_or_none()
 
     async def update(
@@ -227,9 +223,7 @@ class CategoryRepository:
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
             # 先查询是否存在
-            result = await session.execute(
-                select(KbCategory).where(KbCategory.code == code)
-            )
+            result = await session.execute(select(KbCategory).where(KbCategory.code == code))
             category = result.scalar_one_or_none()
             if not category:
                 logger.warning(
@@ -358,9 +352,7 @@ class CategoryRepository:
         for idx, cat in enumerate(categories_data):
             path = cat.get("path", [])
             if not isinstance(path, list):
-                parse_errors.append(
-                    f"第 {idx + 1} 条记录 path 字段非 list 类型（实际: {type(path).__name__}）"
-                )
+                parse_errors.append(f"第 {idx + 1} 条记录 path 字段非 list 类型（实际: {type(path).__name__}）")
                 continue
             code = cat.get("id", "")
             name = cat.get("label") or cat.get("name", "")  # 兼容旧格式
@@ -372,14 +364,16 @@ class CategoryRepository:
                 parse_errors.append(f"第 {idx + 1} 条记录（{code}）缺少 label/name 字段")
                 continue
             level = len(path)
-            leaf_records.append({
-                "code": code,
-                "name": name,
-                "domain": domain,
-                "path_labels": path,
-                "level": level,
-                "source": "baseline_yaml",
-            })
+            leaf_records.append(
+                {
+                    "code": code,
+                    "name": name,
+                    "domain": domain,
+                    "path_labels": path,
+                    "level": level,
+                    "source": "baseline_yaml",
+                }
+            )
 
         # ── Phase 4: 合并并按 level 排序（父节点先于子节点写入）──────────────
         all_records = list(domains.values()) + list(intermediate.values()) + leaf_records
@@ -486,9 +480,7 @@ class CategoryRepository:
         async with self._db.async_session_factory() as session:
             # 查询已存在的 code → id 映射
             existing_result = await session.execute(select(KbCategory.code, KbCategory.id))
-            code_to_id: dict[str, int] = {
-                row[0]: row[1] for row in existing_result.fetchall() if row[0]
-            }
+            code_to_id: dict[str, int] = {row[0]: row[1] for row in existing_result.fetchall() if row[0]}
 
             # ── Phase 1: 全量 upsert（parent_id=NULL，先建立所有节点）────────
             for idx, rec in enumerate(all_records):
@@ -502,59 +494,70 @@ class CategoryRepository:
                 # 验证 level 合法性（防御性校验）
                 if level not in KbCategory.VALID_LEVELS:
                     errors.append(f"节点 {code} level={level} 非法（应为 1-4）")
-                    details.append({
-                        "index": idx + 1,
-                        "code": code,
-                        "status": "error",
-                        "reason": f"level={level} 超出合法范围 1-4",
-                    })
+                    details.append(
+                        {
+                            "index": idx + 1,
+                            "code": code,
+                            "status": "error",
+                            "reason": f"level={level} 超出合法范围 1-4",
+                        }
+                    )
                     continue
 
                 if dry_run:
                     # 仅验证，不写入
                     if code in code_to_id:
-                        details.append({
-                            "index": idx + 1,
-                            "code": code,
-                            "status": "would_update",
-                            "name": name,
-                            "level": level,
-                        })
+                        details.append(
+                            {
+                                "index": idx + 1,
+                                "code": code,
+                                "status": "would_update",
+                                "name": name,
+                                "level": level,
+                            }
+                        )
                         updated += 1
                     else:
-                        details.append({
-                            "index": idx + 1,
-                            "code": code,
-                            "status": "would_create",
-                            "name": name,
-                            "level": level,
-                        })
+                        details.append(
+                            {
+                                "index": idx + 1,
+                                "code": code,
+                                "status": "would_create",
+                                "name": name,
+                                "level": level,
+                            }
+                        )
                         created += 1
                 else:
                     try:
-                        stmt = insert(KbCategory).values(
-                            code=code,
-                            name=name,
-                            level=level,
-                            domain=domain,
-                            parent_id=None,  # Phase 1 统一置 NULL，Phase 2 再更新
-                            path_labels=path_labels,
-                            keywords=[],
-                            source=source,
-                            version="1.0",
-                            is_active=True,
-                            hit_count=0,
-                        ).on_conflict_do_update(
-                            index_elements=["code"],
-                            set_={
-                                "name": name,
-                                "level": level,
-                                "domain": domain,
-                                "path_labels": path_labels,
-                                "source": source,
-                                "version": "1.0",
-                            },
-                        ).returning(KbCategory.id, KbCategory.code)
+                        stmt = (
+                            insert(KbCategory)
+                            .values(
+                                code=code,
+                                name=name,
+                                level=level,
+                                domain=domain,
+                                parent_id=None,  # Phase 1 统一置 NULL，Phase 2 再更新
+                                path_labels=path_labels,
+                                keywords=[],
+                                source=source,
+                                version="1.0",
+                                is_active=True,
+                                hit_count=0,
+                            )
+                            .on_conflict_do_update(
+                                index_elements=["code"],
+                                set_={
+                                    "name": name,
+                                    "level": level,
+                                    "domain": domain,
+                                    "path_labels": path_labels,
+                                    "source": source,
+                                    "version": "1.0",
+                                },
+                            )
+                            .returning(KbCategory.id, KbCategory.code)
+                        )
 
                         result = await session.execute(stmt)
                         row = result.fetchone()
@@ -563,39 +566,44 @@ class CategoryRepository:
                             # 判断是新建（ON CONFLICT 前）
                             if code not in code_to_id:
                                 created += 1
-                                details.append({
-                                    "index": idx + 1,
-                                    "code": code,
-                                    "status": "created",
-                                    "name": name,
-                                    "level": level,
-                                })
+                                details.append(
+                                    {
+                                        "index": idx + 1,
+                                        "code": code,
+                                        "status": "created",
+                                        "name": name,
+                                        "level": level,
+                                    }
+                                )
                                 code_to_id[code] = new_id
                             else:
                                 updated += 1
-                                details.append({
-                                    "index": idx + 1,
-                                    "code": code,
-                                    "status": "updated",
-                                    "name": name,
-                                    "level": level,
-                                })
+                                details.append(
+                                    {
+                                        "index": idx + 1,
+                                        "code": code,
+                                        "status": "updated",
+                                        "name": name,
+                                        "level": level,
+                                    }
+                                )
                     except Exception as e:
                         errors.append(f"节点 {code} 写入失败：{str(e)}")
-                        details.append({
-                            "index": idx + 1,
-                            "code": code,
-                            "status": "error",
-                            "reason": str(e),
-                        })
+                        details.append(
+                            {
+                                "index": idx + 1,
+                                "code": code,
+                                "status": "error",
+                                "reason": str(e),
+                            }
+                        )
 
             # ── Phase 2: 批量 UPDATE parent_id（建立树形关系）────────────────
             # 策略：子节点的 parent path = path_labels[:-1]，从 code_to_id 通过 path 反查
             if not dry_run and not errors:
                 # 构建 path_labels(JSON) → id 的映射
                 path_result = await session.execute(
-                    select(KbCategory.id, KbCategory.path_labels)
-                    .where(KbCategory.path_labels.is_not(None))
+                    select(KbCategory.id, KbCategory.path_labels).where(KbCategory.path_labels.is_not(None))
                 )
                 path_to_id: dict[str, int] = {}
                 for id_val, path_val in path_result.fetchall():
@@ -626,9 +634,7 @@ class CategoryRepository:
                     node_id = code_to_id.get(rec["code"])
                     if node_id:
                         await session.execute(
-                            update(KbCategory)
-                            .where(KbCategory.id == node_id)
-                            .values(parent_id=parent_id)
+                            update(KbCategory).where(KbCategory.id == node_id).values(parent_id=parent_id)
                         )
 
                 logger.info(
@@ -671,21 +677,16 @@ class CategoryRepository:
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
             # 总数
-            total_result = await session.execute(
-                select(KbCategory.id)
-            )
+            total_result = await session.execute(select(KbCategory.id))
             total = len(total_result.fetchall())
 
             # 活跃数
-            active_result = await session.execute(
-                select(KbCategory.id).where(KbCategory.is_active.is_(True))
-            )
+            active_result = await session.execute(select(KbCategory.id).where(KbCategory.is_active.is_(True)))
             active = len(active_result.fetchall())
 
             # 按域分组统计
             domain_result = await session.execute(
-                select(KbCategory.domain, KbCategory.hit_count)
-                .where(KbCategory.is_active.is_(True))
+                select(KbCategory.domain, KbCategory.hit_count).where(KbCategory.is_active.is_(True))
             )
             domain_stats: dict[str, dict] = {}
             total_hits = 0
@@ -729,9 +730,7 @@ class CategoryRepository:
             # 1. 确定 level, domain, path_labels
             if parent_id is not None:
                 # 获取父节点
-                parent_result = await session.execute(
-                    select(KbCategory).where(KbCategory.id == parent_id)
-                )
+                parent_result = await session.execute(select(KbCategory).where(KbCategory.id == parent_id))
                 parent = parent_result.scalar_one_or_none()
                 if not parent:
                     raise ValueError("父分类不存在")
@@ -753,18 +752,14 @@ class CategoryRepository:
                 seq = 1
                 while True:
                     candidate = f"{domain}-L{level}-{seq:03d}"
-                    conflict_result = await session.execute(
-                        select(KbCategory.id).where(KbCategory.code == candidate)
-                    )
+                    conflict_result = await session.execute(select(KbCategory.id).where(KbCategory.code == candidate))
                     if conflict_result.scalar_one_or_none() is None:
                         code = candidate
                         break
                     seq += 1
             else:
                 # 检查用户输入的 code 是否冲突
-                conflict_result = await session.execute(
-                    select(KbCategory.id).where(KbCategory.code == code)
-                )
+                conflict_result = await session.execute(select(KbCategory.id).where(KbCategory.code == code))
                 if conflict_result.scalar_one_or_none() is not None:
                     raise ValueError(f"分类编码 '{code}' 已存在")
 
@@ -804,34 +799,26 @@ class CategoryRepository:
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
             # 1. 查找分类
-            result = await session.execute(
-                select(KbCategory).where(KbCategory.code == code)
-            )
+            result = await session.execute(select(KbCategory).where(KbCategory.code == code))
             category = result.scalar_one_or_none()
             if not category:
                 raise ValueError("分类不存在")
 
             # 2. 检查是否有子分类
-            child_result = await session.execute(
-                select(KbCategory.id).where(KbCategory.parent_id == category.id)
-            )
+            child_result = await session.execute(select(KbCategory.id).where(KbCategory.parent_id == category.id))
             if child_result.first() is not None:
                 raise ValueError("无法删除该分类：该分类下包含子分类，请先删除或转移子分类。")
 
             # 3. 检查是否有引用的已发布 SOP
             sop_result = await session.execute(
-                select(SopDocument.id)
-                .where(SopDocument.category_id == code)
-                .where(SopDocument.status == "published")
+                select(SopDocument.id).where(SopDocument.category_id == code).where(SopDocument.status == "published")
             )
             if sop_result.first() is not None:
                 raise ValueError("无法删除该分类：该分类已被已发布的 SOP 引用。")
 
             # 4. 检查是否有引用的已发布 KBD
             kbd_result = await session.execute(
-                select(KbdEntry.id)
-                .where(KbdEntry.category_id == code)
-                .where(KbdEntry.status == "published")
+                select(KbdEntry.id).where(KbdEntry.category_id == code).where(KbdEntry.status == "published")
             )
             if kbd_result.first() is not None:
                 raise ValueError("无法删除该分类：该分类已被已发布的 KBD 案例引用。")
@@ -856,9 +843,7 @@ class CategoryRepository:
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
             # 1. 查询当前节点
-            result = await session.execute(
-                select(KbCategory).where(KbCategory.code == code)
-            )
+            result = await session.execute(select(KbCategory).where(KbCategory.code == code))
             category = result.scalar_one_or_none()
             if not category:
                 raise ValueError("分类不存在")
@@ -885,9 +870,7 @@ class CategoryRepository:
 
             # 3. 计算新的 level, domain, path_labels
             if new_parent_id is not None:
-                parent_result = await session.execute(
-                    select(KbCategory).where(KbCategory.id == new_parent_id)
-                )
+                parent_result = await session.execute(select(KbCategory).where(KbCategory.id == new_parent_id))
                 parent = parent_result.scalar_one_or_none()
                 if not parent:
                     raise ValueError("指定的新父节点不存在")
@@ -914,6 +897,7 @@ class CategoryRepository:
             all_cats = all_res.scalars().all()
 
             from collections import defaultdict
+
             children_map = defaultdict(list)
             for cat in all_cats:
                 if cat.parent_id is not None:

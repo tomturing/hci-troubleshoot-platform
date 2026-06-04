@@ -158,9 +158,7 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
     async with _db_manager.async_session_factory() as session:
         # 1. 幂等检查：docx_hash 去重
         if body.docx_hash:
-            result = await session.execute(
-                select(SopDocument).where(SopDocument.docx_hash == body.docx_hash)
-            )
+            result = await session.execute(select(SopDocument).where(SopDocument.docx_hash == body.docx_hash))
             existing_doc = result.scalar_one_or_none()
             if existing_doc:
                 # 若调用方传入了新的 category_id，且与现有分类不同，则更新
@@ -192,9 +190,7 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
 
         # 2. source_id 幂等检查（如果提供）
         if body.source_id:
-            result = await session.execute(
-                select(SopDocument).where(SopDocument.source_id == body.source_id)
-            )
+            result = await session.execute(select(SopDocument).where(SopDocument.source_id == body.source_id))
             existing_by_source = result.scalar_one_or_none()
             if existing_by_source:
                 # 若 hash 相同：完全幂等，直接返回

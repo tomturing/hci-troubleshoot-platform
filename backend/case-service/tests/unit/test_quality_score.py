@@ -2,7 +2,6 @@
 QualityScoreService 单元测试
 """
 
-
 # 激活 case-service 的 app 命名空间
 from app.services.quality_score import QualitySignals, compute_quality_score
 

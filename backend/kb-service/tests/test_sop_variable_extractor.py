@@ -137,9 +137,7 @@ class TestExtractVarsFromTree:
             title="虚拟机故障",
             level=2,
             line_number=1,
-            prerequisite_items=[
-                PrerequisiteItem(description="确认 {node_ip} 是否可达", type="filter")
-            ],
+            prerequisite_items=[PrerequisiteItem(description="确认 {node_ip} 是否可达", type="filter")],
             children=[
                 SOPNode(id="n-1-1", title="VM 启动失败", level=3, line_number=2),
             ],
@@ -154,9 +152,7 @@ class TestExtractVarsFromTree:
             title="服务组件异常",
             level=1,
             line_number=1,
-            prerequisite_items=[
-                PrerequisiteItem(description="检查 {cluster_ip} 的健康状态", type="filter")
-            ],
+            prerequisite_items=[PrerequisiteItem(description="检查 {cluster_ip} 的健康状态", type="filter")],
             children=[
                 SOPNode(
                     id="n-1-1",

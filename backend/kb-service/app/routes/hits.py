@@ -86,13 +86,14 @@ async def get_sop_tree(
         raise HTTPException(status_code=503, detail="服务未就绪")
 
     from shared.observability.otel import get_current_trace_id
+
     trace_id = get_current_trace_id()
 
     async with _db_manager.async_session_factory() as session:
         from sqlalchemy import select
+
         result = await session.execute(
-            select(SopDocument.id, SopDocument.title, SopDocument.tree_json)
-            .where(SopDocument.id == document_id)
+            select(SopDocument.id, SopDocument.title, SopDocument.tree_json).where(SopDocument.id == document_id)
         )
         row = result.one_or_none()
         if row is None:
@@ -138,6 +139,7 @@ async def increment_sop_hit(
         raise HTTPException(status_code=503, detail="服务未就绪")
 
     from shared.observability.otel import get_current_trace_id
+
     trace_id = get_current_trace_id()
 
     async with _db_manager.async_session_factory() as session:
@@ -192,6 +194,7 @@ async def increment_kbd_hit(
         raise HTTPException(status_code=503, detail="服务未就绪")
 
     from shared.observability.otel import get_current_trace_id
+
     trace_id = get_current_trace_id()
 
     async with _db_manager.async_session_factory() as session:
@@ -246,6 +249,7 @@ async def decrement_kbd_hit(
 
     from shared.observability.otel import get_current_trace_id
     from sqlalchemy import func
+
     trace_id = get_current_trace_id()
 
     async with _db_manager.async_session_factory() as session:

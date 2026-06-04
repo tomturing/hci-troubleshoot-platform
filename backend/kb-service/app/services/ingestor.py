@@ -46,7 +46,7 @@ class IngestResult:
     def __init__(self, document_id: int, chunks_created: int, skipped: bool = False):
         self.document_id = document_id
         self.chunks_created = chunks_created
-        self.skipped = skipped          # True 表示文档未变更，跳过入库
+        self.skipped = skipped  # True 表示文档未变更，跳过入库
 
     def to_dict(self) -> dict:
         return {
@@ -126,13 +126,13 @@ class IngestorService:
                 judgment_logic=judgment_logic,
                 yaml_meta=yaml_meta or {},
                 difficulty=difficulty,
-                status="published",         # API 主动入库直接发布
+                status="published",  # API 主动入库直接发布
                 source_type=source_type,
                 verified_version=verified_version,
                 trace_id=trace_id,
             )
             session.add(document)
-            await session.flush()   # 获取 document.id（SERIAL）
+            await session.flush()  # 获取 document.id（SERIAL）
 
             logger.info(
                 event="document_created",
@@ -173,7 +173,7 @@ class IngestorService:
                     chunk_index=idx,
                     content=chunk_text,
                     embedding=embedding,
-                    token_count=len(chunk_text) // 2,   # 粗略估算
+                    token_count=len(chunk_text) // 2,  # 粗略估算
                     chunk_meta={"chunk_index": idx, "total_chunks": len(chunks_text)},
                     trace_id=trace_id,
                 )
@@ -181,9 +181,7 @@ class IngestorService:
                 # tsv 字段通过 SQL 函数设置（需在 flush 后用 UPDATE 设置，或直接在 INSERT 时用 text()）
                 await session.flush()
                 # 使用原生 SQL 更新 tsv（to_tsvector 是 DB 函数，SQLAlchemy 不直接支持）
-                await session.execute(
-                    func.set_config("search_path", "public", True).select()
-                )
+                await session.execute(func.set_config("search_path", "public", True).select())
                 await session.execute(
                     KBChunk.__table__.update()
                     .where(KBChunk.id == chunk.id)
@@ -212,9 +210,7 @@ class IngestorService:
         """查找已存在的文档（按 source_id 或 content_hash）"""
         # 优先用 source_id（语义唯一性更强）
         if source_id:
-            result = await session.execute(
-                select(KBDocument).where(KBDocument.source_id == source_id)
-            )
+            result = await session.execute(select(KBDocument).where(KBDocument.source_id == source_id))
             existing = result.scalar_one_or_none()
             if existing:
                 # 检查内容是否有变化（content_hash 不同说明需要重新入库）
@@ -226,7 +222,5 @@ class IngestorService:
                 return None
 
         # 按 content_hash 查找（无 source_id 时）
-        result = await session.execute(
-            select(KBDocument).where(KBDocument.content_hash == content_hash)
-        )
+        result = await session.execute(select(KBDocument).where(KBDocument.content_hash == content_hash))
         return result.scalar_one_or_none()

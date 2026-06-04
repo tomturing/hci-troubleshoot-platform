@@ -13,8 +13,7 @@ import os
 import sys
 
 # 确保 app 指向 conversation-service
-_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
-                                     "backend", "conversation-service"))
+_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "conversation-service"))
 if _svc not in sys.path:
     sys.path.insert(0, _svc)
 
@@ -23,6 +22,7 @@ import pytest
 try:
     import httpx
     import respx
+
     HAS_RESPX = True
 except ImportError:
     HAS_RESPX = False
@@ -33,29 +33,39 @@ pytestmark = pytest.mark.skipif(not HAS_RESPX, reason="需要安装 respx: uv ad
 @pytest.fixture
 def scp():
     from app.adapters.scp_adapter import SCPAdapter
+
     return SCPAdapter(base_url="http://scp.test", api_key="test-token")
 
 
 class TestGetActiveAlerts:
-
     @pytest.mark.asyncio
     async def test_normal_response_is_parsed(self, scp):
         mock_data = {
             "code": 0,
             "data": {
                 "data": [
-                    {"id": "a1", "name": "CPU过高", "level": "major", "status": "active",
-                     "message": "CPU 使用率超过 90%", "created_at": "2026-03-23T10:00:00Z"},
-                    {"id": "a2", "name": "内存不足", "level": "critical", "status": "active",
-                     "message": "可用内存低于 10%", "created_at": "2026-03-23T09:00:00Z"},
+                    {
+                        "id": "a1",
+                        "name": "CPU过高",
+                        "level": "major",
+                        "status": "active",
+                        "message": "CPU 使用率超过 90%",
+                        "created_at": "2026-03-23T10:00:00Z",
+                    },
+                    {
+                        "id": "a2",
+                        "name": "内存不足",
+                        "level": "critical",
+                        "status": "active",
+                        "message": "可用内存低于 10%",
+                        "created_at": "2026-03-23T09:00:00Z",
+                    },
                 ],
                 "total": 2,
             },
         }
         with respx.mock:
-            respx.get("http://scp.test/janus/20180725/alarms").mock(
-                return_value=httpx.Response(200, json=mock_data)
-            )
+            respx.get("http://scp.test/janus/20180725/alarms").mock(return_value=httpx.Response(200, json=mock_data))
             result = await scp.get_active_alerts(limit=10)
 
         assert result["total"] == 2
@@ -66,9 +76,7 @@ class TestGetActiveAlerts:
     @pytest.mark.asyncio
     async def test_connect_timeout_returns_degraded_response(self, scp):
         with respx.mock:
-            respx.get("http://scp.test/janus/20180725/alarms").mock(
-                side_effect=httpx.ConnectError("连接超时")
-            )
+            respx.get("http://scp.test/janus/20180725/alarms").mock(side_effect=httpx.ConnectError("连接超时"))
             result = await scp.get_active_alerts()
 
         assert result.get("_degraded") is True
@@ -87,16 +95,13 @@ class TestGetActiveAlerts:
             }
         }
         with respx.mock:
-            respx.get("http://scp.test/janus/20180725/alarms").mock(
-                return_value=httpx.Response(200, json=mock_data)
-            )
+            respx.get("http://scp.test/janus/20180725/alarms").mock(return_value=httpx.Response(200, json=mock_data))
             result = await scp.get_active_alerts(limit=1)
 
         assert len(result["alarms"]) == 1
 
 
 class TestGetVMList:
-
     @pytest.mark.asyncio
     async def test_name_filter_filters_vms(self, scp):
         mock_data = {
@@ -109,9 +114,7 @@ class TestGetVMList:
             }
         }
         with respx.mock:
-            respx.get("http://scp.test/janus/20240725/servers").mock(
-                return_value=httpx.Response(200, json=mock_data)
-            )
+            respx.get("http://scp.test/janus/20240725/servers").mock(return_value=httpx.Response(200, json=mock_data))
             result = await scp.get_vm_list(name_filter="prod")
 
         assert result["total"] == 2
@@ -131,9 +134,7 @@ class TestGetVMList:
             }
         }
         with respx.mock:
-            respx.get("http://scp.test/janus/20240725/servers").mock(
-                return_value=httpx.Response(200, json=mock_data)
-            )
+            respx.get("http://scp.test/janus/20240725/servers").mock(return_value=httpx.Response(200, json=mock_data))
             result = await scp.get_vm_list()
 
         assert result["total"] == 2
@@ -141,16 +142,13 @@ class TestGetVMList:
     @pytest.mark.asyncio
     async def test_timeout_returns_degraded(self, scp):
         with respx.mock:
-            respx.get("http://scp.test/janus/20240725/servers").mock(
-                side_effect=httpx.TimeoutException("超时")
-            )
+            respx.get("http://scp.test/janus/20240725/servers").mock(side_effect=httpx.TimeoutException("超时"))
             result = await scp.get_vm_list()
 
         assert result.get("_degraded") is True
 
 
 class TestGetFailedTasks:
-
     @pytest.mark.asyncio
     async def test_filters_failed_task_status(self, scp):
         mock_data = {
@@ -163,9 +161,7 @@ class TestGetFailedTasks:
             }
         }
         with respx.mock:
-            respx.get("http://scp.test/janus/20180725/tasks").mock(
-                return_value=httpx.Response(200, json=mock_data)
-            )
+            respx.get("http://scp.test/janus/20180725/tasks").mock(return_value=httpx.Response(200, json=mock_data))
             result = await scp.get_failed_tasks()
 
         assert result["total_failed"] == 2
@@ -173,7 +169,6 @@ class TestGetFailedTasks:
 
 
 class TestExecuteDispatch:
-
     @pytest.mark.asyncio
     async def test_unknown_tool_returns_error(self, scp):
         result = await scp.execute("unknown_tool", {})

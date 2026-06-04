@@ -54,7 +54,6 @@ def _make_write_kwargs(**overrides):
 
 
 class TestAuditServiceWrite:
-
     @pytest.mark.asyncio
     async def test_write_calls_db_add_and_commit(self, service, mock_db):
         """正常情况下，write() 调用 db.add 和 db.commit"""
@@ -71,12 +70,12 @@ class TestAuditServiceWrite:
 
         # 不应抛出任何异常
         with patch("app.services.audit_service.ToolAuditLog"):
-            await service.write(**_make_write_kwargs())   # 应静默失败
+            await service.write(**_make_write_kwargs())  # 应静默失败
 
     @pytest.mark.asyncio
     async def test_result_truncated_to_max_chars(self, service, mock_db):
         """超长 result 应被截断到 RESULT_MAX_CHARS"""
-        long_result = "x" * 5000   # 5000 字符，超过 2000
+        long_result = "x" * 5000  # 5000 字符，超过 2000
 
         captured_log = None
 
@@ -119,6 +118,6 @@ class TestAuditServiceWrite:
                 captured_log = kwargs
 
         with patch("app.services.audit_service.ToolAuditLog", CaptureMock):
-            await service.write(**_make_write_kwargs())   # 不传 trace_id
+            await service.write(**_make_write_kwargs())  # 不传 trace_id
 
         assert captured_log["trace_id"] is None

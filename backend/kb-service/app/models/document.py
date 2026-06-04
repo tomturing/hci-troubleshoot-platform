@@ -24,23 +24,23 @@ class KBDocument(Base):
     __tablename__ = "kb_document"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    source_id = Column(String(50), unique=True, nullable=True)            # 原始案例 ID
+    source_id = Column(String(50), unique=True, nullable=True)  # 原始案例 ID
     title = Column(String(500), nullable=False)
     product = Column(String(100), default="超融合HCI")
-    content_md = Column(Text, nullable=False)                             # MD 全文
-    content_hash = Column(String(64), nullable=True)                      # SHA256，变更检测
-    yaml_meta = Column(JSONB, nullable=True)                              # LLM 增强的结构化元数据
-    category_l1 = Column(String(100), nullable=True)                      # 一级分类
-    category_l2 = Column(String(100), nullable=True)                      # 二级分类
-    tags = Column(ARRAY(Text), nullable=True)                             # 标签数组
-    judgment_logic = Column(Text, nullable=True)                          # 排查逻辑（中文）
-    summary = Column(Text, nullable=True)                                 # 摘要（中文）
-    difficulty = Column(SmallInteger, default=3)                          # 难度 1-5
-    status = Column(String(20), default="draft", nullable=False)          # 状态机
-    review_note = Column(Text, nullable=True)                             # 审核批注
-    reviewer = Column(String(100), nullable=True)                         # 审核人
+    content_md = Column(Text, nullable=False)  # MD 全文
+    content_hash = Column(String(64), nullable=True)  # SHA256，变更检测
+    yaml_meta = Column(JSONB, nullable=True)  # LLM 增强的结构化元数据
+    category_l1 = Column(String(100), nullable=True)  # 一级分类
+    category_l2 = Column(String(100), nullable=True)  # 二级分类
+    tags = Column(ARRAY(Text), nullable=True)  # 标签数组
+    judgment_logic = Column(Text, nullable=True)  # 排查逻辑（中文）
+    summary = Column(Text, nullable=True)  # 摘要（中文）
+    difficulty = Column(SmallInteger, default=3)  # 难度 1-5
+    status = Column(String(20), default="draft", nullable=False)  # 状态机
+    review_note = Column(Text, nullable=True)  # 审核批注
+    reviewer = Column(String(100), nullable=True)  # 审核人
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
-    source_type = Column(String(20), default="kb", nullable=False)        # kb/sop/realtime
+    source_type = Column(String(20), default="kb", nullable=False)  # kb/sop/realtime
     has_images = Column(Boolean, default=False)
     verified_version = Column(String(50), nullable=True)
     trace_id = Column(String(64), nullable=True)

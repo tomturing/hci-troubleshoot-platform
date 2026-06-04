@@ -32,11 +32,13 @@ class SystemTools:
     @staticmethod
     def get_acli_exec():
         from app.tools.acli.executor import acli_exec
+
         return acli_exec
 
     @staticmethod
     def get_bash_exec():
         from app.tools.acli.executor import bash_exec
+
         return bash_exec
 
 
@@ -49,11 +51,13 @@ class InteractiveTools:
     @staticmethod
     def get_sop_client_class():
         from app.tools.sop.client import ConversationSopClient
+
         return ConversationSopClient
 
     @staticmethod
     def get_sop_nav_helpers():
         from app.tools.sop.nav import get_sop_node, sop_advance
+
         return get_sop_node, sop_advance
 
 

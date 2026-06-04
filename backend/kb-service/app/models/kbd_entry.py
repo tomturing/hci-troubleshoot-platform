@@ -39,32 +39,32 @@ def strip_markdown(text: str) -> str:
     if not text:
         return ""
     # 1. 移除图片占位符和图片标记 (e.g. ![img:0], ![无描述])
-    text = re.sub(r'!\[img:\d+\]', '', text)
-    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
-    text = re.sub(r'> \*\*【截图说明】\*\*.*', '', text) # 移除截图说明提示行
+    text = re.sub(r"!\[img:\d+\]", "", text)
+    text = re.sub(r"!\[.*?\]\(.*?\)", "", text)
+    text = re.sub(r"> \*\*【截图说明】\*\*.*", "", text)  # 移除截图说明提示行
     # 2. 移除普通链接格式 [text](url)，仅保留文本部分
-    text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
+    text = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", text)
     # 3. 移除 HTML 标签
-    text = re.sub(r'<[^>]*>', '', text)
+    text = re.sub(r"<[^>]*>", "", text)
     # 4. 移除粗体/斜体语法界定符（仅匹配成对的 ** __ * _，保留标识符中的字符）
     #    先处理多字符界定符（避免部分匹配问题）
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)  # **text** → text
-    text = re.sub(r'__(.+?)__', r'\1', text)      # __text__ → text
-    text = re.sub(r'\*(.+?)\*', r'\1', text)      # *text* → text（单星号斜体）
-    text = re.sub(r'_(.+?)_', r'\1', text)        # _text_ → text（单下划线斜体）
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)  # **text** → text
+    text = re.sub(r"__(.+?)__", r"\1", text)  # __text__ → text
+    text = re.sub(r"\*(.+?)\*", r"\1", text)  # *text* → text（单星号斜体）
+    text = re.sub(r"_(.+?)_", r"\1", text)  # _text_ → text（单下划线斜体）
     # 5. 移除标题标志 (e.g. ## 问题描述)
-    text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r"^#+\s+", "", text, flags=re.MULTILINE)
     # 6. 移除引用块前导符 (> )
-    text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r"^>\s*", "", text, flags=re.MULTILINE)
     # 7. 移除代码块 fence 标记，保留代码内容（```...``` → 内部代码）
-    text = re.sub(r'^```.*$', '', text, flags=re.MULTILINE)  # 移除 ``` 行
-    text = re.sub(r'`([^`]+)`', r'\1', text)       # `code` → code（保留内容）
+    text = re.sub(r"^```.*$", "", text, flags=re.MULTILINE)  # 移除 ``` 行
+    text = re.sub(r"`([^`]+)`", r"\1", text)  # `code` → code（保留内容）
     # 8. 移除无序列表和有序列表前导符 (-, *, +, \d+.)
-    text = re.sub(r'^[-*+]\s+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r"^[-*+]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\d+\.\s+", "", text, flags=re.MULTILINE)
     # 9. 规范化并清洗多余空白字符与换行
-    text = re.sub(r'\n+', '\n', text)
-    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r"\n+", "\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
 
 
@@ -89,64 +89,64 @@ class KbdEntry(Base):
     __tablename__ = "kbd_entry"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    support_id = Column(String(20), unique=True, nullable=False)         # 深信服案例ID（幂等键）
+    support_id = Column(String(20), unique=True, nullable=False)  # 深信服案例ID（幂等键）
 
-    title = Column(Text, nullable=False)                                 # 案例标题
+    title = Column(Text, nullable=False)  # 案例标题
 
     # ── 8 大标准章节（结构化存储）────────────────────────────────────────────
     # 叙述字段：由 pipeline 从案例 HTML 自动提取（Markdown 格式），admin 可编辑
-    problem_description = Column(Text, nullable=False, default="")      # 问题描述（必填）
-    alert_info = Column(Text, nullable=False, default="")               # 告警信息（可选）
-    steps_text = Column(Text, nullable=False, default="")               # 有效排查步骤（自然语言，供人阅读）
-    root_cause = Column(Text, nullable=False, default="")               # 根因（必填）
-    solution = Column(Text, nullable=False, default="")                 # 解决方案（必填）
-    operational_impact = Column(Text, nullable=False, default="")       # 操作影响范围（可选）
-    is_temporary = Column(Text, nullable=False, default="")             # 是否是临时解决方案（可选）
-    recommendations = Column(Text, nullable=False, default="")          # 建议与总结（可选）
+    problem_description = Column(Text, nullable=False, default="")  # 问题描述（必填）
+    alert_info = Column(Text, nullable=False, default="")  # 告警信息（可选）
+    steps_text = Column(Text, nullable=False, default="")  # 有效排查步骤（自然语言，供人阅读）
+    root_cause = Column(Text, nullable=False, default="")  # 根因（必填）
+    solution = Column(Text, nullable=False, default="")  # 解决方案（必填）
+    operational_impact = Column(Text, nullable=False, default="")  # 操作影响范围（可选）
+    is_temporary = Column(Text, nullable=False, default="")  # 是否是临时解决方案（可选）
+    recommendations = Column(Text, nullable=False, default="")  # 建议与总结（可选）
 
     # ── 结构化工具步骤（供 agent 执行）────────────────────────────────────────
     # 格式：[{"tool_name": "...", "tool_args_template": {...}, "expected_pattern": "..."}]
     # 默认为空，需 admin 人工编辑或 AI 提取后填充
     # 非空时 KBD 条目对 InvestigationAgent 可见（差异诊断）
-    steps_json = Column(JSONB, nullable=False, default=list)            # 结构化工具步骤
+    steps_json = Column(JSONB, nullable=False, default=list)  # 结构化工具步骤
 
     # ── 图片视觉描述（pipeline Vision LLM 生成，独立存储）───────────────────
     # 格式：[{"seq": 0, "section": "steps_text", "desc": "TYPE: 日志截图\n..."}]
     # 章节字段中对应位置以 ![img:N] 占位符标记
     # rebuild_content_md() 读取此字段将占位符展开为 > **【截图说明】** 块
     # admin 编辑章节字段后，视觉描述通过此字段保留，不会丢失
-    images_json = Column(JSONB, nullable=False, default=list)           # 图片视觉描述列表
+    images_json = Column(JSONB, nullable=False, default=list)  # 图片视觉描述列表
 
     # ── 聚合渲染（含截图视觉描述，供展示和 LLM 上下文注入）──────────────────
     # 由 pipeline 生成（含 > **【截图说明】** 等视觉信息）
     # admin 编辑章节后由 rebuild_content_md() 重建（从章节字段+images_json 生成）
     # 注意：embedding 不使用此字段，embedding 使用问题侧字段（见 SECTION_FIELDS_FOR_EMBEDDING）
-    content_md = Column(Text, nullable=True)                            # 聚合渲染 Markdown
-    content_raw = Column(Text, nullable=True)                           # 纯文本去噪内容
+    content_md = Column(Text, nullable=True)  # 聚合渲染 Markdown
+    content_raw = Column(Text, nullable=True)  # 纯文本去噪内容
 
     # 使用 entry_metadata 作为 Python 属性名，"metadata" 作为数据库列名
     # 避免 SQLAlchemy Base.metadata 保留属性冲突
     entry_metadata = Column("metadata", JSONB, nullable=False, default=dict)  # 补充元数据
 
     # ── 分类字段（双轨制）────────────────────────────────────────────────────
-    category_id = Column(String(32), nullable=True)                      # 人工确认分类
-    ai_category_id = Column(String(32), nullable=True)                   # AI 分类建议
-    ai_category_conf = Column(Float, nullable=True)                      # 分类置信度
-    ai_category_reason = Column(Text, nullable=True)                     # 分类理由
+    category_id = Column(String(32), nullable=True)  # 人工确认分类
+    ai_category_id = Column(String(32), nullable=True)  # AI 分类建议
+    ai_category_conf = Column(Float, nullable=True)  # 分类置信度
+    ai_category_reason = Column(Text, nullable=True)  # 分类理由
 
     # ── 检索字段（published 时生成）──────────────────────────────────────────
     # embedding 字段使用 pgvector，需要在数据库层面定义
     # tsv 字段使用 tsvector，需要在数据库层面定义
 
     # ── 状态机字段 ────────────────────────────────────────────────────────────
-    status = Column(String(20), nullable=False, default="draft")         # draft/published/archived/rejected
-    reviewer_id = Column(Integer, nullable=True)                         # 审核人 ID
-    reviewed_at = Column(DateTime(timezone=True), nullable=True)         # 审核时间
-    review_note = Column(Text, nullable=True)                            # 审核备注
-    published_at = Column(DateTime(timezone=True), nullable=True)        # 发布时间
+    status = Column(String(20), nullable=False, default="draft")  # draft/published/archived/rejected
+    reviewer_id = Column(Integer, nullable=True)  # 审核人 ID
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)  # 审核时间
+    review_note = Column(Text, nullable=True)  # 审核备注
+    published_at = Column(DateTime(timezone=True), nullable=True)  # 发布时间
 
     # ── 命中统计（case 级去重，物化列）────────────────────────────────────────
-    hit_count = Column(Integer, nullable=False, default=0)               # 有多少个唯一 case 命中此条目（S4 根因确认时 +1）
+    hit_count = Column(Integer, nullable=False, default=0)  # 有多少个唯一 case 命中此条目（S4 根因确认时 +1）
 
     # ── 时间戳 ───────────────────────────────────────────────────────────────
     created_at = Column(
@@ -206,7 +206,7 @@ class KbdEntry(Base):
         """
         # 构建 seq → desc 快速查找表
         img_desc: dict[int, str] = {}
-        for item in (self.images_json or []):
+        for item in self.images_json or []:
             seq = item.get("seq")
             desc = item.get("desc", "")
             if seq is not None and desc:
@@ -225,6 +225,7 @@ class KbdEntry(Base):
 
         def _expand_placeholders(text: str) -> str:
             """将 ![img:N] 占位符替换为视觉描述引用块"""
+
             def _replace(m: re.Match) -> str:
                 seq = int(m.group(1))
                 desc = img_desc.get(seq, "")
@@ -241,7 +242,7 @@ class KbdEntry(Base):
                     # v1 格式
                     return f"\n\n> **【截图说明】**：{desc.strip()}\n\n"
 
-            return re.sub(r'!\[img:(\d+)\]', _replace, text)
+            return re.sub(r"!\[img:(\d+)\]", _replace, text)
 
         parts = []
         for field, heading in section_map.items():

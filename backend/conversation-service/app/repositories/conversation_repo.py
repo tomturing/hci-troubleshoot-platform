@@ -20,11 +20,7 @@ class ConversationRepository:
         self.session = session
 
     async def create_conversation(
-        self,
-        case_id: str,
-        trace_id: str,
-        assistant_type: str = "htp-agent",
-        metadata: dict[str, Any] | None = None
+        self, case_id: str, trace_id: str, assistant_type: str = "htp-agent", metadata: dict[str, Any] | None = None
     ) -> Conversation:
         """创建新对话"""
         if metadata is None:
@@ -37,7 +33,7 @@ class ConversationRepository:
             trace_id=trace_id,
             started_at=datetime.now(UTC),
             message_count=0,
-            metadata_=metadata
+            metadata_=metadata,
         )
         self.session.add(conversation)
         await self.session.flush()
@@ -46,17 +42,13 @@ class ConversationRepository:
 
     async def get_conversation(self, conversation_id: uuid.UUID) -> Conversation | None:
         """查询对话"""
-        result = await self.session.execute(
-            select(Conversation).where(Conversation.conversation_id == conversation_id)
-        )
+        result = await self.session.execute(select(Conversation).where(Conversation.conversation_id == conversation_id))
         return result.scalar_one_or_none()
 
     async def get_conversations_by_case(self, case_id: str) -> list[Conversation]:
         """查询工单的所有对话"""
         result = await self.session.execute(
-            select(Conversation)
-            .where(Conversation.case_id == case_id)
-            .order_by(desc(Conversation.started_at))
+            select(Conversation).where(Conversation.case_id == case_id).order_by(desc(Conversation.started_at))
         )
         return list(result.scalars().all())
 
@@ -78,7 +70,7 @@ class ConversationRepository:
         trace_id: str,
         command: str | None = None,
         command_warning: str | None = None,
-        metadata: dict[str, Any] | None = None
+        metadata: dict[str, Any] | None = None,
     ) -> Message:
         """添加消息"""
         if metadata is None:
@@ -94,7 +86,7 @@ class ConversationRepository:
             command_warning=command_warning,
             trace_id=trace_id,
             created_at=datetime.now(UTC),
-            metadata_=metadata
+            metadata_=metadata,
         )
         self.session.add(message)
 
@@ -107,9 +99,7 @@ class ConversationRepository:
     async def get_messages(self, conversation_id: uuid.UUID) -> list[Message]:
         """获取对话的所有消息"""
         result = await self.session.execute(
-            select(Message)
-            .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.asc())
+            select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
         )
         return list(result.scalars().all())
 

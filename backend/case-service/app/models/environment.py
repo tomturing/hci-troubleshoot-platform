@@ -52,4 +52,6 @@ class Environment(Base, TimestampMixin, TraceableMixin):
     )
 
     def __repr__(self):
-        return f"<Environment(environment_id={self.environment_id}, case_id={self.case_id}, env_type={self.env_type!r})>"
+        return (
+            f"<Environment(environment_id={self.environment_id}, case_id={self.case_id}, env_type={self.env_type!r})>"
+        )

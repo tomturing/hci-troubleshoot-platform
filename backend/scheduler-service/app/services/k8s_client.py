@@ -109,11 +109,13 @@ class K8sClient:
         if case_id:
             env_vars.append({"name": "CASE_ID", "value": case_id})
         if case_info:
-            env_vars.extend([
-                {"name": "CASE_TITLE", "value": case_info.get("title", "")},
-                {"name": "CASE_DESCRIPTION", "value": case_info.get("description", "")},
-                {"name": "CASE_CREATED_AT", "value": case_info.get("created_at", "")},
-            ])
+            env_vars.extend(
+                [
+                    {"name": "CASE_TITLE", "value": case_info.get("title", "")},
+                    {"name": "CASE_DESCRIPTION", "value": case_info.get("description", "")},
+                    {"name": "CASE_CREATED_AT", "value": case_info.get("created_at", "")},
+                ]
+            )
 
         # 其他自定义环境变量（来自 AssistantRegistry）
         for ev in custom_env:

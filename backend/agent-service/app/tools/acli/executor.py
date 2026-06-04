@@ -142,9 +142,7 @@ class CommandSanitizer:
                 )
                 raise ValueError("bash_exec 禁止执行 acli 命令，请使用 acli_exec 工具")
 
-        elif tool_name == "acli_exec" and not (
-            cleaned.startswith("acli ") or cleaned == "acli"
-        ):
+        elif tool_name == "acli_exec" and not (cleaned.startswith("acli ") or cleaned == "acli"):
             # acli_exec 必须以 acli 开头
             logger.warning(
                 event="acli_exec_invalid_prefix",
@@ -401,7 +399,7 @@ class BridgeRelayExecutor:
 
             # 7. 截断输出
             truncated = len(output) > self.STDOUT_MAX_CHARS
-            stdout = output[:self.STDOUT_MAX_CHARS] if truncated else output
+            stdout = output[: self.STDOUT_MAX_CHARS] if truncated else output
             stderr = ""
 
             duration_ms = int((time.time() - start_time) * 1000)

@@ -7,6 +7,7 @@ tests/unit/kbd/test_importer.py — kbd/importer.py 单元测试
   - import_entry：API 返回错误时输出 "error"
   - import_batch：批量统计计数
 """
+
 from __future__ import annotations
 
 import json
@@ -17,9 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-_scripts_root = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts")
-)
+_scripts_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))
 if _scripts_root not in sys.path:
     sys.path.insert(0, _scripts_root)
 
@@ -34,6 +33,7 @@ def _make_client(response_json: dict, status_code: int = 200):
 
     if status_code >= 400:
         from httpx import HTTPStatusError, Request, Response
+
         request = Request("POST", "http://test/api")
         response.raise_for_status = MagicMock(
             side_effect=HTTPStatusError(
@@ -49,6 +49,7 @@ def _make_client(response_json: dict, status_code: int = 200):
 
 
 # ─── import_entry ────────────────────────────────────────────────────────────
+
 
 class TestImportEntry:
     """测试 import_entry API 调用逻辑"""
@@ -80,17 +81,17 @@ class TestImportEntry:
         """新案例调用 API 成功，返回 'created'"""
         case_dir = tmp_path / "36156"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(minimal_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(minimal_rows), encoding="utf-8")
 
         # API 返回成功创建
-        client = _make_client({
-            "success": True,
-            "kbd_id": 123,
-            "status": "draft",
-            "message": "创建成功",
-        })
+        client = _make_client(
+            {
+                "success": True,
+                "kbd_id": 123,
+                "status": "draft",
+                "message": "创建成功",
+            }
+        )
 
         with (
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
@@ -100,6 +101,7 @@ class TestImportEntry:
             patch("kbd.importer.settings.INTERNAL_API_TOKEN", "test-token"),
         ):
             from kbd.importer import import_entry
+
             result = await import_entry("36156", client)
 
         assert result == "created"
@@ -110,18 +112,18 @@ class TestImportEntry:
         """API 返回已存在时，返回 'skipped'"""
         case_dir = tmp_path / "36156"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(minimal_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(minimal_rows), encoding="utf-8")
 
         # API 返回已存在
-        client = _make_client({
-            "success": True,
-            "kbd_id": 123,
-            "status": "draft",
-            "action": "skipped",
-            "message": "KBD 条目已存在",
-        })
+        client = _make_client(
+            {
+                "success": True,
+                "kbd_id": 123,
+                "status": "draft",
+                "action": "skipped",
+                "message": "KBD 条目已存在",
+            }
+        )
 
         with (
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
@@ -131,6 +133,7 @@ class TestImportEntry:
             patch("kbd.importer.settings.INTERNAL_API_TOKEN", "test-token"),
         ):
             from kbd.importer import import_entry
+
             result = await import_entry("36156", client)
 
         assert result == "skipped"
@@ -150,6 +153,7 @@ class TestImportEntry:
             patch("kbd.importer.settings.INTERNAL_API_TOKEN", "test-token"),
         ):
             from kbd.importer import import_entry
+
             result = await import_entry("36156", client)
 
         assert result == "error"
@@ -159,15 +163,15 @@ class TestImportEntry:
         """API 返回失败时，返回 'error'"""
         case_dir = tmp_path / "36156"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(minimal_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(minimal_rows), encoding="utf-8")
 
         # API 返回失败
-        client = _make_client({
-            "success": False,
-            "message": "内部错误",
-        })
+        client = _make_client(
+            {
+                "success": False,
+                "message": "内部错误",
+            }
+        )
 
         with (
             patch("kbd.converter.settings.KBD_CACHE_DIR", tmp_path),
@@ -177,12 +181,14 @@ class TestImportEntry:
             patch("kbd.importer.settings.INTERNAL_API_TOKEN", "test-token"),
         ):
             from kbd.importer import import_entry
+
             result = await import_entry("36156", client)
 
         assert result == "error"
 
 
 # ─── import_batch ─────────────────────────────────────────────────────────────
+
 
 class TestImportBatch:
     """测试 import_batch 批量统计"""
@@ -225,11 +231,27 @@ class TestImportBatch:
         responses = [
             MagicMock(
                 status_code=200,
-                json=MagicMock(return_value={"success": True, "kbd_id": 1, "status": "draft", "action": "created", "message": "创建成功"})
+                json=MagicMock(
+                    return_value={
+                        "success": True,
+                        "kbd_id": 1,
+                        "status": "draft",
+                        "action": "created",
+                        "message": "创建成功",
+                    }
+                ),
             ),
             MagicMock(
                 status_code=200,
-                json=MagicMock(return_value={"success": True, "kbd_id": 2, "status": "draft", "action": "skipped", "message": "KBD 条目已存在"})
+                json=MagicMock(
+                    return_value={
+                        "success": True,
+                        "kbd_id": 2,
+                        "status": "draft",
+                        "action": "skipped",
+                        "message": "KBD 条目已存在",
+                    }
+                ),
             ),
         ]
         client.post = AsyncMock(side_effect=responses)
@@ -244,6 +266,7 @@ class TestImportBatch:
             patch("kbd.importer.ensure_kb_service_reachable", return_value=True),
         ):
             from kbd.importer import import_batch
+
             result = await import_batch(["36156", "36157"], client=client)
 
         assert result["created"] == 1
@@ -258,6 +281,7 @@ class TestImportBatch:
             patch("kbd.importer.settings.INTERNAL_API_TOKEN", "test-token"),
         ):
             from kbd.importer import import_batch
+
             result = await import_batch([], client=None)
 
         assert result == {"created": 0, "skipped": 0, "overridden": 0, "error": 0}

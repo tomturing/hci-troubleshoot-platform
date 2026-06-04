@@ -80,9 +80,7 @@ class EnvironmentRepository:
 
     async def delete_by_case_id(self, case_id: str) -> int:
         """删除工单所有环境数据（级联删除已由外键约束保证，此方法仅用于手动清理）"""
-        result = await self.session.execute(
-            select(Environment).where(Environment.case_id == case_id)
-        )
+        result = await self.session.execute(select(Environment).where(Environment.case_id == case_id))
         envs = list(result.scalars().all())
         for env in envs:
             await self.session.delete(env)

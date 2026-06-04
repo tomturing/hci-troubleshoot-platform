@@ -66,9 +66,7 @@ class TestDatabaseManager:
     async def test_health_check_failure(self, db_manager):
         """health_check 失败返回 False"""
         with patch.object(db_manager, "async_session_factory") as mock_factory:
-            mock_factory.return_value.__aenter__ = AsyncMock(
-                side_effect=Exception("Connection failed")
-            )
+            mock_factory.return_value.__aenter__ = AsyncMock(side_effect=Exception("Connection failed"))
             mock_factory.return_value.__aexit__ = AsyncMock()
 
             result = await db_manager.health_check()

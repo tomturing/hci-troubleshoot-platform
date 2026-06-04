@@ -28,9 +28,10 @@ REDIS_KEY_PREFIX = "confirm:"
 
 class ConfirmResult(StrEnum):
     """确认结果枚举，区分超时和用户拒绝"""
-    APPROVED = "approved"      # 用户确认执行
-    REJECTED = "rejected"      # 用户主动拒绝
-    TIMEOUT = "timeout"        # 等待超时，自动取消
+
+    APPROVED = "approved"  # 用户确认执行
+    REJECTED = "rejected"  # 用户主动拒绝
+    TIMEOUT = "timeout"  # 等待超时，自动取消
 
 
 class ConfirmService:

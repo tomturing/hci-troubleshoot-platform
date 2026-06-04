@@ -218,6 +218,7 @@ class KBSearchTasks(TaskSet):
 
 class CaseworkerUser(HttpUser):
     """工单处理员 — 主要执行 REST CRUD 操作"""
+
     tasks = [RestAPITasks]
     wait_time = between(WAIT_MIN, WAIT_MAX)
     weight = 7  # 70% 流量
@@ -225,6 +226,7 @@ class CaseworkerUser(HttpUser):
 
 class KBAnalystUser(HttpUser):
     """知识库分析员 — 主要执行 KB 检索操作"""
+
     tasks = [KBSearchTasks]
     wait_time = between(WAIT_MIN * 2, WAIT_MAX * 2)
     weight = 3  # 30% 流量

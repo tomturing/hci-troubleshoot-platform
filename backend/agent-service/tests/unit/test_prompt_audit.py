@@ -22,4 +22,3 @@ def test_sqlalchemy_metadata_compiles_successfully():
     # configure_mappers() 会对所有定义的 SQLAlchemy ORM 模型进行映射编译。
     # 如果有任何外键指向未注册的表（如 system_prompt），在此步骤会直接抛出 NoReferencedTableError 异常。
     configure_mappers()
-

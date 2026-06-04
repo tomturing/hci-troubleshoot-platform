@@ -68,9 +68,7 @@ class TestCaseStatusTransitions:
         mock_case.close_reason = "s0_classification_failed"
         mock_repo.update_status = AsyncMock(return_value=mock_case)
 
-        result = await service.escalate_to_human(
-            "Q20260407001", close_reason="s0_classification_failed"
-        )
+        result = await service.escalate_to_human("Q20260407001", close_reason="s0_classification_failed")
 
         assert result is not None
         mock_repo.update_status.assert_called_once_with(
@@ -92,9 +90,7 @@ class TestCaseStatusTransitions:
         # S6 选 C 升级人工
         mock_repo.reset_mock()
         await service.escalate_to_human("Q20260407001", close_reason="escalated")
-        mock_repo.update_status.assert_called_with(
-            "Q20260407001", CaseStatus.in_progress, close_reason="escalated"
-        )
+        mock_repo.update_status.assert_called_with("Q20260407001", CaseStatus.in_progress, close_reason="escalated")
 
 
 class TestCloseReasonEnum:
@@ -134,9 +130,7 @@ class TestS0FailureScenario:
         mock_case.close_reason = "s0_classification_failed"
         mock_repo.update_status = AsyncMock(return_value=mock_case)
 
-        result = await service.escalate_to_human(
-            "Q20260407001", close_reason="s0_classification_failed"
-        )
+        result = await service.escalate_to_human("Q20260407001", close_reason="s0_classification_failed")
 
         assert result is not None
         # 验证跳过 confirmed 直接进入 in_progress

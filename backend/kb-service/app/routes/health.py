@@ -46,6 +46,7 @@ async def health_ready(request: Request):
     if db:
         try:
             from sqlalchemy import text
+
             async with db() as session:
                 await session.execute(text("SELECT 1"))
             checks["database"] = "ok"

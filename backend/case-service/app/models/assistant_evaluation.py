@@ -18,7 +18,9 @@ class AssistantEvaluation(Base, TraceableMixin):
 
     evaluation_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     case_id = Column(String(20), ForeignKey("case.case_id", ondelete="CASCADE"), nullable=False)
-    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversation.conversation_id", ondelete="SET NULL"), nullable=True)
+    conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("conversation.conversation_id", ondelete="SET NULL"), nullable=True
+    )
     assistant_type = Column(String(50), nullable=False)
     score = Column(SmallInteger, nullable=True)  # 用户评分 1-5
     feedback = Column(Text, nullable=True)

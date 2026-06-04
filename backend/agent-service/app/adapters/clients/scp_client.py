@@ -70,9 +70,7 @@ class SCPClient:
         响应结构：{"code": 0, "data": {"data": [...], "total": N}}
         """
         try:
-            async with httpx.AsyncClient(
-                headers=self.headers, timeout=self.DEFAULT_TIMEOUT
-            ) as client:
+            async with httpx.AsyncClient(headers=self.headers, timeout=self.DEFAULT_TIMEOUT) as client:
                 resp = await client.get(
                     f"{self.base_url}/janus/20180725/alarms",
                     params={"page_num": 1, "page_size": min(limit, 50)},
@@ -86,7 +84,7 @@ class SCPClient:
                         {
                             "id": a.get("id"),
                             "name": a.get("name"),
-                            "level": a.get("level"),       # critical|major|minor
+                            "level": a.get("level"),  # critical|major|minor
                             "status": a.get("status"),
                             "message": a.get("message"),
                             "created_at": a.get("created_at"),
@@ -115,22 +113,18 @@ class SCPClient:
         """
         # 默认 begin_time = 24 小时内
         if not begin_time:
-            begin_time = (
-                datetime.now(UTC) - timedelta(hours=24)
-            ).strftime("%Y-%m-%d %H:%M:%S")
+            begin_time = (datetime.now(UTC) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
 
         params: dict[str, Any] = {
             "begin_time": begin_time,
-            "page_size": min(limit * 2, 50),   # 多取一些，因为要在客户端过滤失败状态
+            "page_size": min(limit * 2, 50),  # 多取一些，因为要在客户端过滤失败状态
             "page_num": 1,
         }
         if task_type:
             params["fields"] = task_type
 
         try:
-            async with httpx.AsyncClient(
-                headers=self.headers, timeout=self.DEFAULT_TIMEOUT
-            ) as client:
+            async with httpx.AsyncClient(headers=self.headers, timeout=self.DEFAULT_TIMEOUT) as client:
                 resp = await client.get(
                     f"{self.base_url}/janus/20180725/tasks",
                     params=params,
@@ -173,9 +167,7 @@ class SCPClient:
         API: GET /janus/20240725/servers
         """
         try:
-            async with httpx.AsyncClient(
-                headers=self.headers, timeout=self.DEFAULT_TIMEOUT
-            ) as client:
+            async with httpx.AsyncClient(headers=self.headers, timeout=self.DEFAULT_TIMEOUT) as client:
                 resp = await client.get(
                     f"{self.base_url}/janus/20240725/servers",
                     params={"page_size": min(limit, 50), "page_num": 1},
@@ -185,10 +177,7 @@ class SCPClient:
                 vms = data.get("data", {}).get("data", [])
                 # 客户端名称过滤（模糊匹配）
                 if name_filter:
-                    vms = [
-                        v for v in vms
-                        if name_filter.lower() in (v.get("name") or "").lower()
-                    ]
+                    vms = [v for v in vms if name_filter.lower() in (v.get("name") or "").lower()]
                 return {
                     "total": len(vms),
                     "vms": [
@@ -216,12 +205,8 @@ class SCPClient:
         API: GET /janus/20190725/clusters/{cluster_id}
         """
         try:
-            async with httpx.AsyncClient(
-                headers=self.headers, timeout=self.DEFAULT_TIMEOUT
-            ) as client:
-                resp = await client.get(
-                    f"{self.base_url}/janus/20190725/clusters/{cluster_id}"
-                )
+            async with httpx.AsyncClient(headers=self.headers, timeout=self.DEFAULT_TIMEOUT) as client:
+                resp = await client.get(f"{self.base_url}/janus/20190725/clusters/{cluster_id}")
                 resp.raise_for_status()
                 data = resp.json()
                 cluster = data.get("data", {})

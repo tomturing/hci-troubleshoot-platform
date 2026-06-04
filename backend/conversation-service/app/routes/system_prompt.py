@@ -105,11 +105,7 @@ async def create_prompt(payload: dict[str, Any], db: AsyncSession = Depends(get_
     is_active = bool(payload.get("is_active", True))
     if is_active:
         # 将同阶段的其他 prompt 设为 inactive
-        await db.execute(
-            update(SystemPrompt)
-            .where(SystemPrompt.stage == stage)
-            .values(is_active=False)
-        )
+        await db.execute(update(SystemPrompt).where(SystemPrompt.stage == stage).values(is_active=False))
 
     p = SystemPrompt(
         stage=stage,
@@ -161,11 +157,7 @@ async def update_prompt(prompt_id: int, payload: dict[str, Any], db: AsyncSessio
         is_active = bool(payload["is_active"])
         if is_active and not p.is_active:
             # 由 False 转为 True：将同阶段的其他 prompt 设为 inactive
-            await db.execute(
-                update(SystemPrompt)
-                .where(SystemPrompt.stage == stage)
-                .values(is_active=False)
-            )
+            await db.execute(update(SystemPrompt).where(SystemPrompt.stage == stage).values(is_active=False))
         p.is_active = is_active
 
     await db.commit()

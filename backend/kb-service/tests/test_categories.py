@@ -29,7 +29,9 @@ def client(app: FastAPI) -> TestClient:
     return TestClient(app, raise_server_exceptions=True)
 
 
-def mock_category(id_val: int, code: str, name: str, level: int, parent_id: int | None, domain: str, path_labels: list[str]) -> KbCategory:
+def mock_category(
+    id_val: int, code: str, name: str, level: int, parent_id: int | None, domain: str, path_labels: list[str]
+) -> KbCategory:
     cat = KbCategory()
     cat.id = id_val
     cat.code = code
@@ -46,6 +48,7 @@ def mock_category(id_val: int, code: str, name: str, level: int, parent_id: int 
 # ──────────────────────────────────────────────────────────────────────────────
 # Repository Unit Tests
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.anyio
 async def test_category_creation_with_parent():
@@ -74,7 +77,7 @@ async def test_category_creation_with_parent():
         domain="虚拟机",
         parent_id=10,
         code=None,  # 自动生成
-        keywords=["FC", "存储"]
+        keywords=["FC", "存储"],
     )
 
     # 验证自动推算的字段
@@ -125,10 +128,7 @@ async def test_update_parent_recursive_cascade():
     mock_session.execute.side_effect = [res_target, res_cycle_check, res_parent, res_all_cats]
 
     repo = CategoryRepository(mock_db)
-    updated_cat = await repo.update_parent_recursive(
-        code="存储-001",
-        new_parent_id=30
-    )
+    updated_cat = await repo.update_parent_recursive(code="存储-001", new_parent_id=30)
 
     assert updated_cat.parent_id == 30
     assert updated_cat.level == 2
@@ -166,10 +166,7 @@ async def test_update_parent_circular_dependency_prevention():
 
     repo = CategoryRepository(mock_db)
     with pytest.raises(ValueError, match="无法将节点拖拽到其自身的子分类下"):
-        await repo.update_parent_recursive(
-            code="存储-001",
-            new_parent_id=21
-        )
+        await repo.update_parent_recursive(code="存储-001", new_parent_id=21)
 
 
 @pytest.mark.anyio
@@ -251,7 +248,7 @@ async def test_get_all_leaf_only_filter():
 
     # 根据查询是否包含 NOT EXISTS 返回不同结果
     async def execute_side_effect(query, *args):
-        query_str = str(query) if hasattr(query, 'text') else ""
+        query_str = str(query) if hasattr(query, "text") else ""
         # leaf_only=True 时查询包含 "NOT EXISTS"
         if "NOT EXISTS" in query_str:
             return mock_leaf_result

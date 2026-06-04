@@ -43,7 +43,7 @@ DEFAULT_ASSISTANT_REGISTRY = {
         "enabled": True,
         "is_default": False,
         "capabilities": ["troubleshooting", "tool-calling"],
-    }
+    },
 }
 
 
@@ -67,14 +67,13 @@ class Settings(BaseSettings):
 
     # AI助手注册表 (JSON字符串，支持环境变量注入)
     ASSISTANT_REGISTRY_JSON: str = Field(
-        default=json.dumps(DEFAULT_ASSISTANT_REGISTRY),
-        description="AI助手注册表，JSON格式"
+        default=json.dumps(DEFAULT_ASSISTANT_REGISTRY), description="AI助手注册表，JSON格式"
     )
 
     # v2.1：助手选择器显示控制
     ASSISTANT_SHOW_SELECTOR: str = Field(
         default="auto",
-        description="助手选择器显示模式: auto(智能判断多于1个可用助手时显示), true(强制显示), false(强制隐藏)"
+        description="助手选择器显示模式: auto(智能判断多于1个可用助手时显示), true(强制显示), false(强制隐藏)",
     )
 
     @property

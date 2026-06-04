@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 
 try:
     from prometheus_client import Counter, Gauge, Histogram
+
     _PROMETHEUS_AVAILABLE = True
 except ImportError:
     # 基础镜像未安装 prometheus_client 时跳过指标上报
@@ -70,18 +71,18 @@ else:
 # 关闭原因评分映射
 CLOSE_REASON_SCORE = {
     "user_command": 100,  # 主动解决：最高分
-    "timeout": 50,        # 超时：中性基础分
-    "admin_close": 50,    # 人工干预：略高于中性
-    "abandon": 10,        # 放弃：最低分
+    "timeout": 50,  # 超时：中性基础分
+    "admin_close": 50,  # 人工干预：略高于中性
+    "abandon": 10,  # 放弃：最低分
 }
 
 # 各维度基础权重（归一化前）
 BASE_WEIGHTS = {
-    "user_rating": 0.30,   # 用户满意度（无评分时降为 0）
+    "user_rating": 0.30,  # 用户满意度（无评分时降为 0）
     "close_intent": 0.20,  # 关闭意图
-    "efficiency": 0.20,    # 解决效率
+    "efficiency": 0.20,  # 解决效率
     "repeat_penalty": 0.15,  # 用户重复提问（负向信号）
-    "ai_quality": 0.15,    # AI 能力质量
+    "ai_quality": 0.15,  # AI 能力质量
 }
 
 
@@ -91,23 +92,25 @@ class QualitySignals:
 
     包含计算综合质量分所需的所有信号数据
     """
+
     case_id: str
-    close_reason: str | None = None           # "user_command" | "timeout" | "abandon" | "admin_close" | None
+    close_reason: str | None = None  # "user_command" | "timeout" | "abandon" | "admin_close" | None
     session_duration_sec: int | None = None
     message_count: int | None = None
-    repeat_question_count: int = 0               # 相似重复提问次数，conversation-service 统计，始终有值
-    user_rating: int | None = None            # 1–5，用户未评分则 None
-    has_sop: bool | None = None               # 来自 prompt_audit 元数据，100% 覆盖
-    kb_chunks_count: int | None = None        # 来自 prompt_audit 元数据，100% 覆盖
-    kb_top_score: float | None = None         # 来自 prompt_audit 元数据，100% 覆盖
+    repeat_question_count: int = 0  # 相似重复提问次数，conversation-service 统计，始终有值
+    user_rating: int | None = None  # 1–5，用户未评分则 None
+    has_sop: bool | None = None  # 来自 prompt_audit 元数据，100% 覆盖
+    kb_chunks_count: int | None = None  # 来自 prompt_audit 元数据，100% 覆盖
+    kb_top_score: float | None = None  # 来自 prompt_audit 元数据，100% 覆盖
 
 
 @dataclass
 class QualityScore:
     """质量评分结果数据类"""
-    composite_score: int      # 0–100 最终综合分
-    rating_included: bool     # 是否含用户评分维度
-    breakdown: dict           # 各维度详细分解
+
+    composite_score: int  # 0–100 最终综合分
+    rating_included: bool  # 是否含用户评分维度
+    breakdown: dict  # 各维度详细分解
 
 
 def _duration_score(session_duration_sec: int | None) -> int:
@@ -170,7 +173,7 @@ def _timeout_score(session_duration_sec: int) -> int:
     - 30-60 分钟 → 55
     - < 30 分钟  → 40 (可能放弃)
     """
-    if session_duration_sec > 3600:   # > 1 小时才超时
+    if session_duration_sec > 3600:  # > 1 小时才超时
         return 70
     elif session_duration_sec > 1800:  # 30–60 分钟
         return 55
@@ -244,9 +247,7 @@ def compute_quality_score(s: QualitySignals) -> QualityScore:
 
     # 维度 5：AI 能力质量（prompt_audit 元数据，100% 覆盖；极少情况下为 None 则跳过）
     if s.has_sop is not None and s.kb_chunks_count is not None:
-        dim_scores["ai_quality"] = _ai_quality_score(
-            s.has_sop, s.kb_chunks_count, s.kb_top_score or 0.0
-        )
+        dim_scores["ai_quality"] = _ai_quality_score(s.has_sop, s.kb_chunks_count, s.kb_top_score or 0.0)
     else:
         raw_weights.pop("ai_quality")  # 无数据时权重转移到其他维度
 
@@ -408,10 +409,7 @@ class QualityScoreService:
     async def _get_latest_prompt_audit(self, case_id: str) -> PromptAudit | None:
         """获取工单关联的最新 prompt_audit 记录"""
         result = await self.session.execute(
-            select(PromptAudit)
-            .where(PromptAudit.case_id == case_id)
-            .order_by(PromptAudit.captured_at.desc())
-            .limit(1)
+            select(PromptAudit).where(PromptAudit.case_id == case_id).order_by(PromptAudit.captured_at.desc()).limit(1)
         )
         return result.scalar_one_or_none()
 

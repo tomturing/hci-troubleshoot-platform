@@ -8,6 +8,7 @@ tests/unit/kbd/test_html_utils.py — 测试 data-pipeline/kbd/html_utils.py
   - 相对路径正确解析
   - 位置计算准确
 """
+
 import sys
 from pathlib import Path
 
@@ -19,11 +20,13 @@ if _scripts_root not in sys.path:
 
 # ─── extract_image_urls_with_positions ────────────────────────────────────────
 
+
 class TestExtractImageUrlsWithPositions:
     """测试图片 URL + 位置提取"""
 
     def setup_method(self):
         from kbd.html_utils import extract_image_urls_with_positions
+
         self.fn = extract_image_urls_with_positions
         self.base_url = "https://support.sangfor.com.cn"
 
@@ -113,11 +116,13 @@ class TestExtractImageUrlsWithPositions:
 
 # ─── extract_image_urls ────────────────────────────────────────────────────────
 
+
 class TestExtractImageUrls:
     """测试纯 URL 提取（薄封装）"""
 
     def setup_method(self):
         from kbd.html_utils import extract_image_urls
+
         self.fn = extract_image_urls
         self.base_url = "https://support.sangfor.com.cn"
 
@@ -132,6 +137,7 @@ class TestExtractImageUrls:
     def test_consistent_with_positions_version(self):
         """与 with_positions 版本序号一致"""
         from kbd.html_utils import extract_image_urls_with_positions
+
         html = '<img src="/x.png" /><img src="/y.png" /><img src="/x.png" />'
         urls = self.fn(html, self.base_url)
         with_pos = extract_image_urls_with_positions(html, self.base_url)

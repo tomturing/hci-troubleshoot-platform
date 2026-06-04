@@ -140,17 +140,11 @@ class DiagnosticItemRepository:
             # 语法：content = content || :content_update，仅覆盖传入的 key
             values["content"] = DiagnosticItem.content.op("||")(content_update)
 
-        await self.session.execute(
-            update(DiagnosticItem)
-            .where(DiagnosticItem.id == item_id)
-            .values(**values)
-        )
+        await self.session.execute(update(DiagnosticItem).where(DiagnosticItem.id == item_id).values(**values))
         await self.session.flush()
 
         # 返回更新后的实例
-        result = await self.session.execute(
-            select(DiagnosticItem).where(DiagnosticItem.id == item_id)
-        )
+        result = await self.session.execute(select(DiagnosticItem).where(DiagnosticItem.id == item_id))
         return result.scalar_one_or_none()
 
     async def archive_all(
@@ -195,9 +189,7 @@ class DiagnosticItemRepository:
         Returns:
             DiagnosticItem 实例列表（按 seq 排序）
         """
-        query = select(DiagnosticItem).where(
-            DiagnosticItem.conversation_id == conversation_id
-        )
+        query = select(DiagnosticItem).where(DiagnosticItem.conversation_id == conversation_id)
 
         if stage:
             query = query.where(DiagnosticItem.stage == stage)

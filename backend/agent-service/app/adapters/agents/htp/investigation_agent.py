@@ -381,8 +381,7 @@ class InvestigationAgent(BaseAgent):
                 )
                 # 无法获取当前节点时，使用 SOP 文档内容作为 fallback
                 current_node_summary = (
-                    f"【当前节点】\n节点 ID: {current_node_id}\n"
-                    f"{self._truncate_sop_content(sop_content)}"
+                    f"【当前节点】\n节点 ID: {current_node_id}\n{self._truncate_sop_content(sop_content)}"
                 )
             else:
                 # 构建当前节点摘要
@@ -508,8 +507,8 @@ class InvestigationAgent(BaseAgent):
             user_id=user_id,
             max_iterations=15,
             tool_executor=sop_tool_executor,  # 使用 SOP 工具执行器
-                    sop_mode=True,  # DC-01: SOP 模式，注入 SOP 导航工具到 LLM tool list
-):
+            sop_mode=True,  # DC-01: SOP 模式，注入 SOP 导航工具到 LLM tool list
+        ):
             yield event
 
     async def _process_sop_mode_legacy(
@@ -611,8 +610,10 @@ class InvestigationAgent(BaseAgent):
             System Prompt 字符串
         """
         stage_desc_map = {
-            "S1": "S1 - 故障定位", "S2": "S2 - 假设生成",
-            "S3": "S3 - 验证执行", "S4": "S4 - 根因确认",
+            "S1": "S1 - 故障定位",
+            "S2": "S2 - 假设生成",
+            "S3": "S3 - 验证执行",
+            "S4": "S4 - 根因确认",
         }
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
 
@@ -794,8 +795,10 @@ class InvestigationAgent(BaseAgent):
             恢复版 System Prompt 字符串
         """
         stage_desc_map = {
-            "S1": "S1 - 故障定位", "S2": "S2 - 假设生成",
-            "S3": "S3 - 验证执行", "S4": "S4 - 根因确认",
+            "S1": "S1 - 故障定位",
+            "S2": "S2 - 假设生成",
+            "S3": "S3 - 验证执行",
+            "S4": "S4 - 根因确认",
         }
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
 
@@ -860,8 +863,10 @@ class InvestigationAgent(BaseAgent):
         对超长 SOP 内容进行截断，防止超出 LLM 上下文窗口。
         """
         stage_desc_map = {
-            "S1": "S1 - 故障定位", "S2": "S2 - 假设生成",
-            "S3": "S3 - 验证执行", "S4": "S4 - 根因确认",
+            "S1": "S1 - 故障定位",
+            "S2": "S2 - 假设生成",
+            "S3": "S3 - 验证执行",
+            "S4": "S4 - 根因确认",
         }
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
 
@@ -886,8 +891,10 @@ class InvestigationAgent(BaseAgent):
     ) -> str:
         """构建机制推理降级 System Prompt。"""
         stage_desc_map = {
-            "S1": "S1 - 故障定位", "S2": "S2 - 假设生成",
-            "S3": "S3 - 验证执行", "S4": "S4 - 根因确认",
+            "S1": "S1 - 故障定位",
+            "S2": "S2 - 假设生成",
+            "S3": "S3 - 验证执行",
+            "S4": "S4 - 根因确认",
         }
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
 
@@ -916,4 +923,4 @@ class InvestigationAgent(BaseAgent):
     @staticmethod
     def _split_text_chunks(text: str, chunk_size: int = 100) -> list[str]:
         """将长文本分割为固定大小的 chunk 列表（用于流式输出模拟）。"""
-        return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+        return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]

@@ -99,7 +99,7 @@ async def test_sop_longest_match(sop_skills_dir: Path):
 async def test_sop_empty_dir():
     """空目录不会抛出异常"""
     matcher = SopMatcher("/tmp/nonexistent_sop_dir_12345")
-    await matcher.load()   # 不应抛出异常
+    await matcher.load()  # 不应抛出异常
     assert matcher.index_size == 0
 
 

@@ -7,7 +7,6 @@ KB Service — SOP 变量三路合并单元测试（T-AGT-26）
 3. 仅旧版有 → 标记 deprecated=True，不删除
 """
 
-
 from app.services.sop_parser import merge_variable_schema
 
 

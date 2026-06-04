@@ -49,6 +49,7 @@ def set_dependencies(
 
 # ---- 请求/响应模型 ----
 
+
 class SearchRequest(BaseModel):
     """混合检索请求"""
 
@@ -66,6 +67,7 @@ class SopMatchRequest(BaseModel):
 
 
 # ---- 路由 ----
+
 
 @router.post("/search")
 async def search(request: Request, body: SearchRequest):

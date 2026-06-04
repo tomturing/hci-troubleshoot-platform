@@ -201,6 +201,7 @@ async def health_check():
     kb_client = getattr(app.state, "kb_client", None)
     if kb_client:
         import httpx
+
         try:
             async with httpx.AsyncClient(timeout=0.5) as client:
                 resp = await client.get(f"{settings.KB_SERVICE_URL}/health")
@@ -260,6 +261,7 @@ async def health_ready():
     kb_client = getattr(app.state, "kb_client", None)
     if kb_client:
         import httpx
+
         try:
             async with httpx.AsyncClient(timeout=1.0) as client:
                 resp = await client.get(f"{settings.KB_SERVICE_URL}/health")

@@ -26,15 +26,15 @@ class ToolDefinition(Base):
     __tablename__ = "tool_definition"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    tool_name = Column(String(100), nullable=False, unique=True)          # 工具唯一标识（如 acli_vm_list）
-    display_name = Column(String(200), nullable=False)                    # 展示名（如'获取虚拟机列表'）
-    category = Column(String(50), nullable=False, index=True)             # 执行路由: scp | acli | sop
-    description = Column(Text, nullable=False)                            # 工具功能描述（直接注入 Prompt 供 LLM 理解）
-    usage_template = Column(Text, nullable=True)                          # 调用模板
-    parameters_schema = Column(JSONB, nullable=False, default=dict)      # OpenAPI 3.0 格式参数 Schema
-    examples = Column(JSONB, nullable=False, default=list)               # 调用示例数组
-    risk_level = Column(SmallInteger, nullable=False, default=1)          # 1=只读 2=写操作 3=高危
-    is_active = Column(Boolean, nullable=False, default=True)             # false=临时下线，不注入 Prompt
+    tool_name = Column(String(100), nullable=False, unique=True)  # 工具唯一标识（如 acli_vm_list）
+    display_name = Column(String(200), nullable=False)  # 展示名（如'获取虚拟机列表'）
+    category = Column(String(50), nullable=False, index=True)  # 执行路由: scp | acli | sop
+    description = Column(Text, nullable=False)  # 工具功能描述（直接注入 Prompt 供 LLM 理解）
+    usage_template = Column(Text, nullable=True)  # 调用模板
+    parameters_schema = Column(JSONB, nullable=False, default=dict)  # OpenAPI 3.0 格式参数 Schema
+    examples = Column(JSONB, nullable=False, default=list)  # 调用示例数组
+    risk_level = Column(SmallInteger, nullable=False, default=1)  # 1=只读 2=写操作 3=高危
+    is_active = Column(Boolean, nullable=False, default=True)  # false=临时下线，不注入 Prompt
     version = Column(String(20), nullable=False, default="1.0")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(

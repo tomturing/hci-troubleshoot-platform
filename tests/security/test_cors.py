@@ -13,17 +13,20 @@ CORS 安全测试
 import os
 import sys
 
-# 将 api-gateway 加入路径
-_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "api-gateway"))
-_expect = os.path.normpath(os.path.join(_svc, "app"))
-_actual = os.path.normpath(getattr(sys.modules.get("app"), "__path__", [""])[0]) if "app" in sys.modules else ""
-if _expect != _actual:
-    for _k in list(sys.modules):
-        if _k == "app" or _k.startswith("app."):
-            del sys.modules[_k]
-    if _svc in sys.path:
-        sys.path.remove(_svc)
-    sys.path.insert(0, _svc)
+def setup_api_gateway_namespace():
+    # 将 api-gateway 加入路径
+    _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "api-gateway"))
+    _expect = os.path.normpath(os.path.join(_svc, "app"))
+    _actual = os.path.normpath(getattr(sys.modules.get("app"), "__path__", [""])[0]) if "app" in sys.modules else ""
+    if _expect != _actual:
+        for _k in list(sys.modules):
+            if _k == "app" or _k.startswith("app."):
+                del sys.modules[_k]
+        if _svc in sys.path:
+            sys.path.remove(_svc)
+        sys.path.insert(0, _svc)
+
+setup_api_gateway_namespace()
 
 
 import httpx
@@ -34,6 +37,7 @@ from httpx import ASGITransport
 @pytest.fixture
 def app():
     """创建不依赖真实 Redis/Downstream 的 API Gateway 应用实例"""
+    setup_api_gateway_namespace()
     from app.config import settings
 
     # 使用允许的合法来源
@@ -126,6 +130,7 @@ class TestCORSBlockedOrigins:
     async def test_wildcard_not_in_origins(self, client):
         """CORS 明细配置中不应包含通配符 *（避免 RFC 6454 违规）"""
         from app.config import settings
+
         origins = settings.cors_origins
         assert "*" not in origins, "allow_origins 不应包含 '*'（与 allow_credentials=True 不兼容）"
 
@@ -198,11 +203,11 @@ class TestCORSCredentials:
 
     def test_credentials_not_used_with_wildcard(self):
         """当 allow_credentials=True 时，cors_origins 不允许包含 '*'"""
+        setup_api_gateway_namespace()
         from app.config import settings
 
         origins = settings.cors_origins
         has_wildcard = "*" in origins or "http://*" in origins
         assert not has_wildcard, (
-            "allow_credentials=True 与 allow_origins=['*'] 同时使用违反 RFC 6454，"
-            "且现代浏览器会拒绝这类响应"
+            "allow_credentials=True 与 allow_origins=['*'] 同时使用违反 RFC 6454，且现代浏览器会拒绝这类响应"
         )

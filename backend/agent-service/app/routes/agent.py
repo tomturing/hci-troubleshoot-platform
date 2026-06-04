@@ -40,6 +40,7 @@ def _check_internal_auth(request: Request) -> None:
     if token != settings.INTERNAL_API_TOKEN:
         raise HTTPException(status_code=401, detail="Token 无效")
 
+
 # 全局 AgentRouter，由 main.py lifespan 注入
 _agent_router: AgentRouter | None = None
 # 全局 ConfirmService，由 main.py lifespan 注入（用于 ReAct 确认回路）

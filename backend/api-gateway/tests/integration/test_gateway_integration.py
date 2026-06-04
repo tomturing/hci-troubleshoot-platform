@@ -31,16 +31,17 @@ from app.main import app
 def test_app():
     return app
 
+
 class TestGatewayIntegration:
     BASE_URL = "http://testserver"
 
     @pytest.mark.asyncio
     async def test_health_check(self, test_app):
         """测试网关健康检查和TraceID中间件"""
-        async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
-            transport=ASGITransport(app=test_app),
-            base_url=self.BASE_URL
-        ) as client:
+        async with (
+            test_app.router.lifespan_context(test_app),
+            httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+        ):
             response = await client.get("/health")
             assert response.status_code == 200
             data = response.json()
@@ -53,20 +54,16 @@ class TestGatewayIntegration:
     @pytest.mark.asyncio
     async def test_case_proxy(self, test_app):
         """测试工单代理路由"""
-        with patch('app.routes.cases.proxy_request') as mock_proxy:
+        with patch("app.routes.cases.proxy_request") as mock_proxy:
             # 构造 httpx Response
             mock_response = httpx.Response(201, json={"case_id": "Q123", "status": "created"})
             mock_proxy.return_value = mock_response
 
-            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
-                transport=ASGITransport(app=test_app),
-                base_url=self.BASE_URL
-            ) as client:
-                payload = {
-                    "client_id": "test-client",
-                    "title": "Test Integration",
-                    "description": "Proxy test"
-                }
+            async with (
+                test_app.router.lifespan_context(test_app),
+                httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+            ):
+                payload = {"client_id": "test-client", "title": "Test Integration", "description": "Proxy test"}
                 response = await client.post("/api/cases/", json=payload)
 
                 assert response.status_code == 201
@@ -84,14 +81,14 @@ class TestGatewayIntegration:
     @pytest.mark.asyncio
     async def test_conversation_proxy(self, test_app):
         """测试对话代理路由"""
-        with patch('app.routes.conversations.proxy_request') as mock_proxy:
+        with patch("app.routes.conversations.proxy_request") as mock_proxy:
             mock_response = httpx.Response(200, json=[{"role": "user", "content": "hi"}])
             mock_proxy.return_value = mock_response
 
-            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
-                transport=ASGITransport(app=test_app),
-                base_url=self.BASE_URL
-            ) as client:
+            async with (
+                test_app.router.lifespan_context(test_app),
+                httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+            ):
                 conv_id = "test-conv-id"
                 response = await client.get(f"/api/conversations/{conv_id}/messages")
 
@@ -103,8 +100,10 @@ class TestGatewayIntegration:
     @pytest.mark.asyncio
     async def test_close_case_success(self, test_app):
         """测试关闭工单成功并释放 Pod"""
-        with patch('app.routes.cases.proxy_request') as mock_proxy, \
-             patch('httpx.AsyncClient.post') as mock_scheduler_post:
+        with (
+            patch("app.routes.cases.proxy_request") as mock_proxy,
+            patch("httpx.AsyncClient.post") as mock_scheduler_post,
+        ):
             # 模拟工单关闭成功
             mock_case_response = httpx.Response(200, json={"case_id": "Q123", "status": "closed"})
             mock_proxy.return_value = mock_case_response
@@ -114,10 +113,10 @@ class TestGatewayIntegration:
             mock_scheduler_resp.status_code = 200
             mock_scheduler_post.return_value = mock_scheduler_resp
 
-            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
-                transport=ASGITransport(app=test_app),
-                base_url=self.BASE_URL
-            ) as client:
+            async with (
+                test_app.router.lifespan_context(test_app),
+                httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+            ):
                 response = await client.put("/api/cases/Q123/close")
 
                 assert response.status_code == 200
@@ -137,15 +136,15 @@ class TestGatewayIntegration:
     @pytest.mark.asyncio
     async def test_close_case_not_found(self, test_app):
         """测试关闭不存在的工单"""
-        with patch('app.routes.cases.proxy_request') as mock_proxy:
+        with patch("app.routes.cases.proxy_request") as mock_proxy:
             # 模拟工单不存在
             mock_case_response = httpx.Response(404, json={"detail": "Case not found"})
             mock_proxy.return_value = mock_case_response
 
-            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
-                transport=ASGITransport(app=test_app),
-                base_url=self.BASE_URL
-            ) as client:
+            async with (
+                test_app.router.lifespan_context(test_app),
+                httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+            ):
                 response = await client.put("/api/cases/non-existent/close")
 
                 assert response.status_code == 404
@@ -153,8 +152,10 @@ class TestGatewayIntegration:
     @pytest.mark.asyncio
     async def test_close_case_scheduler_failure(self, test_app):
         """测试关闭工单成功但 scheduler 释放失败（不应阻断）"""
-        with patch('app.routes.cases.proxy_request') as mock_proxy, \
-             patch('httpx.AsyncClient.post') as mock_scheduler_post:
+        with (
+            patch("app.routes.cases.proxy_request") as mock_proxy,
+            patch("httpx.AsyncClient.post") as mock_scheduler_post,
+        ):
             # 模拟工单关闭成功
             mock_case_response = httpx.Response(200, json={"case_id": "Q123", "status": "closed"})
             mock_proxy.return_value = mock_case_response
@@ -164,10 +165,10 @@ class TestGatewayIntegration:
             mock_scheduler_resp.status_code = 500
             mock_scheduler_post.return_value = mock_scheduler_resp
 
-            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
-                transport=ASGITransport(app=test_app),
-                base_url=self.BASE_URL
-            ) as client:
+            async with (
+                test_app.router.lifespan_context(test_app),
+                httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+            ):
                 response = await client.put("/api/cases/Q123/close")
 
                 # 即使 scheduler 失败，工单关闭也应成功
@@ -182,9 +183,11 @@ class TestGatewayIntegration:
     @pytest.mark.asyncio
     async def test_close_case_scheduler_exception(self, test_app):
         """测试关闭工单成功但 scheduler 调用抛出异常（不应阻断）"""
-        with patch('app.routes.cases.proxy_request') as mock_proxy, \
-             patch('httpx.AsyncClient.post') as mock_scheduler_post, \
-             patch('app.routes.cases.POD_RELEASE_FAILURES_TOTAL.labels') as mock_metric:
+        with (
+            patch("app.routes.cases.proxy_request") as mock_proxy,
+            patch("httpx.AsyncClient.post") as mock_scheduler_post,
+            patch("app.routes.cases.POD_RELEASE_FAILURES_TOTAL.labels") as mock_metric,
+        ):
             # 模拟工单关闭成功
             mock_case_response = httpx.Response(200, json={"case_id": "Q123", "status": "closed"})
             mock_proxy.return_value = mock_case_response
@@ -196,10 +199,10 @@ class TestGatewayIntegration:
             mock_metric_instance = MagicMock()
             mock_metric.return_value = mock_metric_instance
 
-            async with test_app.router.lifespan_context(test_app), httpx.AsyncClient(
-                transport=ASGITransport(app=test_app),
-                base_url=self.BASE_URL
-            ) as client:
+            async with (
+                test_app.router.lifespan_context(test_app),
+                httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+            ):
                 response = await client.put("/api/cases/Q123/close")
 
                 # 即使 scheduler 异常，工单关闭也应成功

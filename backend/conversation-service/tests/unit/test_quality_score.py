@@ -2,7 +2,6 @@
 测试 QualityScoreService - 综合质量评分服务
 """
 
-
 from app.services.quality_score import (
     BASE_WEIGHTS,
     CLOSE_REASON_SCORE,

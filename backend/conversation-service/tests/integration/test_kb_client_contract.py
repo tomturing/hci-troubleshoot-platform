@@ -236,9 +236,7 @@ class TestKBRouteContract:
             # 验证调用端点正确
             mock_get.assert_called_once()
             call_args = mock_get.call_args
-            assert "/api/kb/route" in call_args[0][0], (
-                f"期望调用 /api/kb/route，实际调用：{call_args[0][0]}"
-            )
+            assert "/api/kb/route" in call_args[0][0], f"期望调用 /api/kb/route，实际调用：{call_args[0][0]}"
             # 验证请求参数
             assert call_args[1]["params"]["category_id"] == "虚拟机-001"
             assert call_args[1]["params"]["query"] == "虚拟机启动失败"
@@ -323,9 +321,7 @@ class TestKBSearchContract:
             # 验证调用端点正确
             mock_post.assert_called_once()
             call_args = mock_post.call_args
-            assert "/api/kb/search" in call_args[0][0], (
-                f"期望调用 /api/kb/search，实际调用：{call_args[0][0]}"
-            )
+            assert "/api/kb/search" in call_args[0][0], f"期望调用 /api/kb/search，实际调用：{call_args[0][0]}"
             # 验证请求体包含 query 字段
             assert call_args[1]["json"]["query"] == "存储报错"
             assert call_args[1]["json"]["top_n"] == 3
@@ -393,6 +389,4 @@ class TestKBSOPMatchContract:
 
             mock_post.assert_called_once()
             call_args = mock_post.call_args
-            assert "/sop/match" in call_args[0][0], (
-                f"期望调用包含 /sop/match，实际：{call_args[0][0]}"
-            )
+            assert "/sop/match" in call_args[0][0], f"期望调用包含 /sop/match，实际：{call_args[0][0]}"

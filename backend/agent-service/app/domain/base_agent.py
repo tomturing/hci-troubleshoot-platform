@@ -28,7 +28,7 @@ from typing import Any
 class Message:
     """Agent 上下文的最小单元（OpenAI message 格式对应物）"""
 
-    role: str   # "user" | "assistant" | "tool"
+    role: str  # "user" | "assistant" | "tool"
     content: Any
 
 

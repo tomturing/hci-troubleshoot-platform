@@ -29,14 +29,11 @@ init_telemetry(settings.SERVICE_NAME)
 
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    logger.info(
-        event="service_starting",
-        message=f"Starting {settings.SERVICE_NAME}",
-        port=settings.SERVICE_PORT
-    )
+    logger.info(event="service_starting", message=f"Starting {settings.SERVICE_NAME}", port=settings.SERVICE_PORT)
 
     # 初始化 Redis
     redis_manager = RedisManager(settings.REDIS_URL)
@@ -61,30 +58,26 @@ async def lifespan(app: FastAPI):
             logger.info(event="scheduler_started", message="Scheduler background initialization completed")
         except Exception as e:
             logger.error(
-                event="scheduler_start_failed",
-                message=f"Scheduler background initialization failed: {e}",
-                error=str(e)
+                event="scheduler_start_failed", message=f"Scheduler background initialization failed: {e}", error=str(e)
             )
 
     init_task = asyncio.create_task(_safe_start(), name="scheduler-init")
 
     yield
 
-    logger.info(
-        event="service_stopping",
-        message=f"Stopping {settings.SERVICE_NAME}"
-    )
+    logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
     # 取消未完成的初始化任务
     if not init_task.done():
         init_task.cancel()
     # 关闭 Redis
     await redis_manager.close()
 
+
 app = FastAPI(
     title="HCI Troubleshoot - Scheduler Service",
     description="Pod调度与生命周期管理服务",
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # 注入 OpenTelemetry 中间件到 app 实例
@@ -123,6 +116,7 @@ async def health_startup():
     scheduler_service = getattr(app.state, "scheduler_service", None)
     if scheduler_service is None:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=503, detail="scheduler 仍在初始化")
     return {"status": "started"}
 
@@ -135,16 +129,14 @@ async def health_ready():
     checks["scheduler"] = "ok" if scheduler_service else "unavailable"
     degraded = any(v != "ok" for v in checks.values())
     from fastapi.responses import JSONResponse
+
     return JSONResponse(
         status_code=503 if degraded else 200,
         content={"status": "degraded" if degraded else "ready", "checks": checks},
     )
 
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=settings.SERVICE_PORT,
-        reload=True
-    )
+
+    uvicorn.run("main:app", host="0.0.0.0", port=settings.SERVICE_PORT, reload=True)

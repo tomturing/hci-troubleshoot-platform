@@ -380,10 +380,7 @@ class ConversationService:
                                 message="S0 意图识别转换为消息的 metadata，通过 SSE 发送给前端并传导至后台落库",
                                 conversation_id=str(conversation_id),
                             )
-                            _intent_metadata = {
-                                "kind": "choice_options",
-                                "options": agent_event.get("options")
-                            }
+                            _intent_metadata = {"kind": "choice_options", "options": agent_event.get("options")}
                             _message_metadata.update(_intent_metadata)
 
                             _payload = _json.dumps(_intent_metadata, ensure_ascii=False)
@@ -1328,9 +1325,7 @@ class ConversationService:
                         if pending_record:
                             # 更新现有记录
                             now = datetime.now(UTC)
-                            duration_ms = int(
-                                (now - pending_record.started_at).total_seconds() * 1000
-                            )
+                            duration_ms = int((now - pending_record.started_at).total_seconds() * 1000)
                             await session.execute(
                                 sa_update(ToolResult)
                                 .where(ToolResult.id == pending_record.id)
@@ -1476,7 +1471,7 @@ class ConversationService:
                 kbd_entry_id=kbd_entry_id,
             )
 
-# ─── S0 候选辅助方法 (T3-c) ─────────────────────────────────────────────
+    # ─── S0 候选辅助方法 (T3-c) ─────────────────────────────────────────────
 
     async def _get_last_assistant_message(
         self,
@@ -1543,9 +1538,7 @@ class ConversationService:
             无匹配时返回 []
         """
         # 正则：支持多级分类前缀和包含括号等特殊字符的名称
-        _candidate_item_pattern = re.compile(
-            r"[①②③④⑤]\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+?)(?:\r?\n|$)"
-        )
+        _candidate_item_pattern = re.compile(r"[①②③④⑤]\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+?)(?:\r?\n|$)")
 
         # 统一入口：获取最后一条 assistant 消息
         last_ai_content, last_ai_metadata = await self._get_last_assistant_message(conversation_id)
@@ -1565,10 +1558,7 @@ class ConversationService:
                         continue
                     m = re.match(r"^([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+(.+)$", name_str.strip())
                     if m:
-                        extracted.append({
-                            "code": m.group(1).strip(),
-                            "name": m.group(2).strip()
-                        })
+                        extracted.append({"code": m.group(1).strip(), "name": m.group(2).strip()})
                 if extracted:
                     logger.info(
                         event="extract_s0_candidates_metadata_success",
@@ -1580,9 +1570,8 @@ class ConversationService:
                     return extracted
 
             event_data = last_ai_metadata.get("event") or {}
-            candidates_from_meta = (
-                last_ai_metadata.get("candidates")
-                or event_data.get("metadata", {}).get("candidates")
+            candidates_from_meta = last_ai_metadata.get("candidates") or event_data.get("metadata", {}).get(
+                "candidates"
             )
             if candidates_from_meta and isinstance(candidates_from_meta, list):
                 extracted = [

@@ -28,10 +28,7 @@ class SchedulerService:
     def __init__(self, k8s_client: K8sClient, redis_manager: RedisManager):
         self.k8s = k8s_client
         self.redis = redis_manager
-        self.pool_manager = PodPoolManager(
-            k8s_client=k8s_client,
-            assistant_registry=settings.assistant_registry
-        )
+        self.pool_manager = PodPoolManager(k8s_client=k8s_client, assistant_registry=settings.assistant_registry)
 
     async def start(self):
         """启动服务，初始化 Pod 池并开始后台维护任务"""
@@ -114,11 +111,7 @@ class SchedulerService:
 
     # ────────── 核心调度方法 ──────────
 
-    async def allocate_pod(
-        self,
-        case_id: str,
-        assistant_type: str = "htp-agent"
-    ) -> str | None:
+    async def allocate_pod(self, case_id: str, assistant_type: str = "htp-agent") -> str | None:
         """为工单分配指定类型的Pod"""
         # 检查是否已有分配
         existing = await self._get_allocation(case_id)
@@ -148,7 +141,7 @@ class SchedulerService:
                 message=f"Allocated {assistant_type} pod {pod_name} for case {case_id}",
                 case_id=case_id,
                 pod_name=pod_name,
-                assistant_type=assistant_type
+                assistant_type=assistant_type,
             )
             return pod_name
 
@@ -166,7 +159,7 @@ class SchedulerService:
                 message=f"Releasing {assistant_type} pod {pod_name} for case {case_id}",
                 case_id=case_id,
                 pod_name=pod_name,
-                assistant_type=assistant_type
+                assistant_type=assistant_type,
             )
 
             pool = self.pool_manager.get_pool(assistant_type)
@@ -203,10 +196,7 @@ class SchedulerService:
     async def get_status(self) -> dict:
         """获取服务状态"""
         all_allocs = await self._get_all_allocations()
-        return {
-            "allocated_cases": len(all_allocs),
-            "pools": self.pool_manager.get_all_stats()
-        }
+        return {"allocated_cases": len(all_allocs), "pools": self.pool_manager.get_all_stats()}
 
     def get_available_assistants(self) -> list:
         """获取可用的AI助手列表（向后兼容：返回简单列表格式）"""

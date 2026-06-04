@@ -29,9 +29,10 @@ class ToolDefinition(BaseModel):
     此类是所有 agent 工具注册表的基础数据模型，
     供 htp、ops、pai 等各 agent 的 TOOL_REGISTRY 使用。
     """
+
     name: str
     description: str
-    parameters: dict          # JSON Schema
-    risk_level: int           # 1=只读, 2=写操作需确认, 3=高危禁用
-    policy: str               # auto|notify|confirm|block
-    category: str             # scp|acli|sop|...
+    parameters: dict  # JSON Schema
+    risk_level: int  # 1=只读, 2=写操作需确认, 3=高危禁用
+    policy: str  # auto|notify|confirm|block
+    category: str  # scp|acli|sop|...

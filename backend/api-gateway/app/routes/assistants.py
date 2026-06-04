@@ -39,15 +39,19 @@ async def list_assistants():
                 for item in data.get("assistants", []):
                     if not isinstance(item, dict):
                         continue
-                    normalized_assistants.append({
-                        "type": item.get("type", "openclaw"),
-                        "display_name": item.get("display_name") or item.get("name") or item.get("type", "openclaw"),
-                        "description": item.get("description", ""),
-                        "capabilities": item.get("capabilities", []),
-                        "available": item.get("available", item.get("enabled", True)),
-                        "is_default": item.get("is_default", False),
-                        "pool_stats": item.get("pool_stats", {}),
-                    })
+                    normalized_assistants.append(
+                        {
+                            "type": item.get("type", "openclaw"),
+                            "display_name": item.get("display_name")
+                            or item.get("name")
+                            or item.get("type", "openclaw"),
+                            "description": item.get("description", ""),
+                            "capabilities": item.get("capabilities", []),
+                            "available": item.get("available", item.get("enabled", True)),
+                            "is_default": item.get("is_default", False),
+                            "pool_stats": item.get("pool_stats", {}),
+                        }
+                    )
                 return {
                     "assistants": normalized_assistants,
                     "show_selector": data.get("show_selector", False),
@@ -61,15 +65,19 @@ async def list_assistants():
                 for item in data:
                     if not isinstance(item, dict):
                         continue
-                    normalized_assistants.append({
-                        "type": item.get("type", "openclaw"),
-                        "display_name": item.get("display_name") or item.get("name") or item.get("type", "openclaw"),
-                        "description": item.get("description", ""),
-                        "capabilities": item.get("capabilities", []),
-                        "available": item.get("available", item.get("enabled", True)),
-                        "is_default": False,
-                        "pool_stats": item.get("pool_stats", {}),
-                    })
+                    normalized_assistants.append(
+                        {
+                            "type": item.get("type", "openclaw"),
+                            "display_name": item.get("display_name")
+                            or item.get("name")
+                            or item.get("type", "openclaw"),
+                            "description": item.get("description", ""),
+                            "capabilities": item.get("capabilities", []),
+                            "available": item.get("available", item.get("enabled", True)),
+                            "is_default": False,
+                            "pool_stats": item.get("pool_stats", {}),
+                        }
+                    )
                 available_count = sum(1 for a in normalized_assistants if a["available"])
                 return {
                     "assistants": normalized_assistants,
@@ -88,28 +96,26 @@ async def list_assistants():
             logger.error(
                 event="assistants_proxy_error",
                 message=f"Scheduler returned {response.status_code}",
-                status=response.status_code
+                status=response.status_code,
             )
-            raise HTTPException(
-                status_code=response.status_code,
-                detail="Failed to fetch assistants from scheduler"
-            )
+            raise HTTPException(status_code=response.status_code, detail="Failed to fetch assistants from scheduler")
     except httpx.ConnectError:
         logger.warning(
-            event="scheduler_unreachable",
-            message="Scheduler service unreachable, returning default assistants"
+            event="scheduler_unreachable", message="Scheduler service unreachable, returning default assistants"
         )
         # 降级响应：单助手，不显示选择器
         return {
-            "assistants": [{
-                "type": "openclaw",
-                "display_name": "OpenClaw",
-                "description": "通用AI排障助手，基于GLM大模型",
-                "capabilities": ["troubleshooting"],
-                "available": True,
-                "is_default": True,
-                "pool_stats": {},
-            }],
+            "assistants": [
+                {
+                    "type": "openclaw",
+                    "display_name": "OpenClaw",
+                    "description": "通用AI排障助手，基于GLM大模型",
+                    "capabilities": ["troubleshooting"],
+                    "available": True,
+                    "is_default": True,
+                    "pool_stats": {},
+                }
+            ],
             "show_selector": False,
             "default_assistant": "openclaw",
             "selector_mode": "auto",
@@ -119,8 +125,6 @@ async def list_assistants():
         raise
     except Exception as e:
         logger.error(
-            event="assistants_proxy_exception",
-            message=f"Error proxying assistants request: {e}",
-            error=str(e)
+            event="assistants_proxy_exception", message=f"Error proxying assistants request: {e}", error=str(e)
         )
         raise HTTPException(status_code=502, detail="Failed to connect to scheduler service")

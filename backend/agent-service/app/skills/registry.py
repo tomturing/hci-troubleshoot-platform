@@ -15,9 +15,11 @@ _SKILL_REGISTRY: dict[str, Callable[[dict[str, Any]], Any]] = {}
 
 def register_skill(name: str) -> Callable:
     """技能注册装饰器"""
+
     def decorator(func: Callable[[dict[str, Any]], Any]) -> Callable[[dict[str, Any]], Any]:
         _SKILL_REGISTRY[name] = func
         return func
+
     return decorator
 
 
@@ -32,6 +34,7 @@ async def execute_skill(skill_name: str, context_variables: dict[str, Any]) -> A
         # 兼容同步与异步技能执行
         if callable(func):
             import inspect
+
             if inspect.iscoroutinefunction(func):
                 result = await func(context_variables)
             else:
@@ -59,7 +62,7 @@ def match_vendor(model_name: str) -> str | None:
         "huawei": ["hwe*", "hssd*", "*huawei*"],
         "longsys": ["rsye*", "*longsys*"],
         "foresee": ["fi*", "*foresee*"],
-        "liteon_ssstc": ["liteon*", "*ssstc*"]
+        "liteon_ssstc": ["liteon*", "*ssstc*"],
     }
     for vendor, pat_list in patterns.items():
         for pat in pat_list:

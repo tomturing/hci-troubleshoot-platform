@@ -82,17 +82,13 @@ _RESET_KEYWORDS: list[str] = [
 ]
 
 # S0 阶段分类确认标记的正则模式
-_CATEGORY_CONFIRM_PATTERN = re.compile(
-    r"已确认故障分类[:：]\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+)"
-)
+_CATEGORY_CONFIRM_PATTERN = re.compile(r"已确认故障分类[:：]\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+)")
 
 # T8: S4 根因确认中 AI 输出「关联案例：KBD-{id}」的提取正则
 _KBD_RELATED_PATTERN = re.compile(r"关联案例[:：]\s*KBD-(\d+)")
 
 # S0 阶段候选选择正则：匹配用户输入 ①②③④⑤ 或 1-5（带可选后缀）
-_CANDIDATE_SELECT_PATTERN = re.compile(
-    r"^[\s\u3000]*([①②③④⑤]|[1-5](?:[\.、\s]|$))"
-)
+_CANDIDATE_SELECT_PATTERN = re.compile(r"^[\s\u3000]*([①②③④⑤]|[1-5](?:[\.、\s]|$))")
 
 # S0 候选确认轮数上限（超过后触发兜底）
 S0_MAX_CANDIDATE_ROUNDS: int = 2

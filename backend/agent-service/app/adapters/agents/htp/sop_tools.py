@@ -107,10 +107,7 @@ class SopToolExecutor:
             )
             return {
                 "skipped": True,
-                "reason": (
-                    f"SOP 恢复模式：工具 {tool_name} 已在先前节点中执行，"
-                    "跳过重复执行以保证幂等性"
-                ),
+                "reason": (f"SOP 恢复模式：工具 {tool_name} 已在先前节点中执行，跳过重复执行以保证幂等性"),
                 "completed_steps_count": len(self._completed_steps),
             }
 
@@ -148,5 +145,3 @@ class SopToolExecutor:
 
         # 其他工具（SCP/acli 诊断工具）：委托给默认执行器
         return await self._default_executor.execute(tool_name, args)
-
-

@@ -38,23 +38,23 @@ class KBDocument(Base):
     __tablename__ = "kb_document"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    source_id = Column(String(50), unique=True, nullable=True)            # 原始案例 ID
+    source_id = Column(String(50), unique=True, nullable=True)  # 原始案例 ID
     title = Column(String(500), nullable=False)
     product = Column(String(100), default="超融合HCI")
-    content_md = Column(Text, nullable=False)                             # MD 全文
-    content_hash = Column(String(64), nullable=True)                      # SHA256，变更检测
-    yaml_meta = Column(JSONB, nullable=True)                              # LLM 增强的结构化元数据
-    category_l1 = Column(String(100), nullable=True)                      # 一级分类
-    category_l2 = Column(String(100), nullable=True)                      # 二级分类
-    tags = Column(ARRAY(Text), nullable=True)                             # 标签数组
-    judgment_logic = Column(Text, nullable=True)                          # 排查逻辑（中文）
-    summary = Column(Text, nullable=True)                                 # 摘要（中文）
-    difficulty = Column(SmallInteger, default=3)                          # 难度 1-5
-    status = Column(String(20), default="draft", nullable=False)          # 状态机
-    review_note = Column(Text, nullable=True)                             # 审核批注
-    reviewer = Column(String(100), nullable=True)                         # 审核人
+    content_md = Column(Text, nullable=False)  # MD 全文
+    content_hash = Column(String(64), nullable=True)  # SHA256，变更检测
+    yaml_meta = Column(JSONB, nullable=True)  # LLM 增强的结构化元数据
+    category_l1 = Column(String(100), nullable=True)  # 一级分类
+    category_l2 = Column(String(100), nullable=True)  # 二级分类
+    tags = Column(ARRAY(Text), nullable=True)  # 标签数组
+    judgment_logic = Column(Text, nullable=True)  # 排查逻辑（中文）
+    summary = Column(Text, nullable=True)  # 摘要（中文）
+    difficulty = Column(SmallInteger, default=3)  # 难度 1-5
+    status = Column(String(20), default="draft", nullable=False)  # 状态机
+    review_note = Column(Text, nullable=True)  # 审核批注
+    reviewer = Column(String(100), nullable=True)  # 审核人
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
-    source_type = Column(String(20), default="kb", nullable=False)        # kb/sop/realtime
+    source_type = Column(String(20), default="kb", nullable=False)  # kb/sop/realtime
     has_images = Column(Boolean, default=False)
     verified_version = Column(String(50), nullable=True)
     trace_id = Column(String(64), nullable=True)
@@ -94,12 +94,12 @@ class KBChunk(Base):
         nullable=False,
         index=True,
     )
-    chunk_index = Column(SmallInteger, nullable=False)                    # 块序号（0-based）
-    content = Column(Text, nullable=False)                                # 块文本（~512 tokens）
-    embedding = Column(Vector(384), nullable=True)                        # 384 维向量
-    token_count = Column(SmallInteger, nullable=True)                     # token 数
-    chunk_metadata = Column("metadata", JSONB, nullable=True)            # 块级元数据（标题层级等）
-    tsv = Column(TSVECTOR, nullable=True)                                 # BM25 全文索引
+    chunk_index = Column(SmallInteger, nullable=False)  # 块序号（0-based）
+    content = Column(Text, nullable=False)  # 块文本（~512 tokens）
+    embedding = Column(Vector(384), nullable=True)  # 384 维向量
+    token_count = Column(SmallInteger, nullable=True)  # token 数
+    chunk_metadata = Column("metadata", JSONB, nullable=True)  # 块级元数据（标题层级等）
+    tsv = Column(TSVECTOR, nullable=True)  # BM25 全文索引
     trace_id = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 
@@ -118,13 +118,13 @@ class KBSopNode(Base):
     __tablename__ = "kb_sop_node"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    skill_id = Column(String(100), nullable=False)                        # 技能 ID（如 vm_boot_failure）
-    node_name = Column(String(200), nullable=False)                       # 节点名称（如 CPU不足）
+    skill_id = Column(String(100), nullable=False)  # 技能 ID（如 vm_boot_failure）
+    node_name = Column(String(200), nullable=False)  # 节点名称（如 CPU不足）
     parent_id = Column(Integer, ForeignKey("kb_sop_node.id"), nullable=True)
-    keywords = Column(ARRAY(Text), nullable=False)                        # 触发关键字列表
-    file_path = Column(String(500), nullable=True)                        # 对应 MD 文件路径
-    content = Column(Text, nullable=True)                                 # 章节全文
-    level = Column(SmallInteger, default=1)                               # 层级（1=主章节, 2=子章节）
+    keywords = Column(ARRAY(Text), nullable=False)  # 触发关键字列表
+    file_path = Column(String(500), nullable=True)  # 对应 MD 文件路径
+    content = Column(Text, nullable=True)  # 章节全文
+    level = Column(SmallInteger, default=1)  # 层级（1=主章节, 2=子章节）
     sort_order = Column(SmallInteger, default=0)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 
@@ -144,9 +144,9 @@ class KBCategory(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     parent_id = Column(Integer, ForeignKey("kb_category.id"), nullable=True)  # None = L1 根节点
     name = Column(String(100), nullable=False)
-    level = Column(SmallInteger, nullable=False)                          # 1=L1, 2=L2, 3=L3, 4=L4
-    keywords = Column(ARRAY(Text), nullable=True)                         # 分类触发关键字
-    source = Column(String(20), default="manual")                         # manual/auto_generated/auto_suggested
+    level = Column(SmallInteger, nullable=False)  # 1=L1, 2=L2, 3=L3, 4=L4
+    keywords = Column(ARRAY(Text), nullable=True)  # 分类触发关键字
+    source = Column(String(20), default="manual")  # manual/auto_generated/auto_suggested
     version = Column(String(20), default="1.0")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 
@@ -164,10 +164,9 @@ class KBSynonym(Base):
     __tablename__ = "kb_synonym"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    term = Column(String(100), nullable=False)                            # 缩写/别名
-    canonical = Column(String(100), nullable=False)                       # 标准名称
+    term = Column(String(100), nullable=False)  # 缩写/别名
+    canonical = Column(String(100), nullable=False)  # 标准名称
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 
     def __repr__(self) -> str:
         return f"<KBSynonym(term={self.term} → {self.canonical})>"
-

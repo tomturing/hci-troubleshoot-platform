@@ -70,8 +70,10 @@ def _make_confirm_service_mock(approved: bool = True):
 def _make_tool_executor_mock():
     """构建工具执行器 mock"""
     executor = MagicMock()
+
     async def execute(tool_name, args):
         return {"alerts": ["alert1", "alert2"]}
+
     executor.execute = execute
     return executor
 
@@ -119,8 +121,7 @@ class TestRemediationAgentRequireAllConfirm:
         # 验证：应触发 AgentInteractiveRequest（确认请求）
         confirm_requests = [e for e in events if isinstance(e, AgentInteractiveRequest)]
         assert len(confirm_requests) >= 1, (
-            f"require_all_confirm=True 时，只读工具也应触发确认请求，"
-            f"实际事件：{[type(e).__name__ for e in events]}"
+            f"require_all_confirm=True 时，只读工具也应触发确认请求，实际事件：{[type(e).__name__ for e in events]}"
         )
 
         # 验证确认请求内容
@@ -166,8 +167,7 @@ class TestRemediationAgentRequireAllConfirm:
         # 验证：写操作工具仍触发确认
         confirm_requests = [e for e in events if isinstance(e, AgentInteractiveRequest)]
         assert len(confirm_requests) >= 1, (
-            f"risk_level=2 的写操作工具应始终触发确认，"
-            f"实际事件：{[type(e).__name__ for e in events]}"
+            f"risk_level=2 的写操作工具应始终触发确认，实际事件：{[type(e).__name__ for e in events]}"
         )
 
     @pytest.mark.asyncio
@@ -203,6 +203,7 @@ class TestRemediationAgentRequireAllConfirm:
         # 注意：mock_executor.execute 是 async function，不能直接用 call_count
         # 我们通过事件流验证
         from app.domain.agent_port import AgentTextChunk
+
         text_events = [e for e in events if isinstance(e, AgentTextChunk)]
 
         # 应有 "操作已取消" 或类似提示

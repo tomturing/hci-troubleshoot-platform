@@ -53,11 +53,11 @@ class DiagnosticItem(Base, TraceableMixin):
         nullable=False,
         index=True,
     )
-    stage = Column(String(5), nullable=False)                        # S2/S3/S4/S5
-    type = Column(String(30), nullable=False)                        # hypothesis/verification_step/root_cause/solution
-    seq = Column(SmallInteger, nullable=False, default=1)            # 同会话同类型内排序序号（从1开始）
-    content = Column(JSONB, nullable=False, default=dict)            # 结构化内容，按 type 格式不同
-    probability = Column(Float, nullable=True)                       # 假设概率 0.0-1.0，仅 type=hypothesis 有值
+    stage = Column(String(5), nullable=False)  # S2/S3/S4/S5
+    type = Column(String(30), nullable=False)  # hypothesis/verification_step/root_cause/solution
+    seq = Column(SmallInteger, nullable=False, default=1)  # 同会话同类型内排序序号（从1开始）
+    content = Column(JSONB, nullable=False, default=dict)  # 结构化内容，按 type 格式不同
+    probability = Column(Float, nullable=True)  # 假设概率 0.0-1.0，仅 type=hypothesis 有值
     status = Column(String(20), nullable=False, default="pending")  # pending/in_progress/confirmed/rejected/skipped
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(

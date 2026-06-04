@@ -90,6 +90,7 @@ markers = [
     "unit: Unit tests",
     "integration: Integration tests",
     "slow: Slow running tests",
+    "e2e: End-to-end tests",
 ]
 addopts = "-v --strict-markers --tb=short"
 

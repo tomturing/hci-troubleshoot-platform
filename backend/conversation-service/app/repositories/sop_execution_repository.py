@@ -55,10 +55,7 @@ class SopExecutionRepository:
         Returns:
             SopExecution 实例，不存在时返回 None
         """
-        result = await self.session.execute(
-            select(SopExecution)
-            .where(SopExecution.conversation_id == conversation_id)
-        )
+        result = await self.session.execute(select(SopExecution).where(SopExecution.conversation_id == conversation_id))
         return result.scalar_one_or_none()
 
     async def create(
@@ -159,12 +156,14 @@ class SopExecutionRepository:
 
         # 追加 execution_log
         execution_log = list(execution.execution_log or [])
-        execution_log.append({
-            "type": "node_entered",
-            "node_id": target_node_id,
-            "entered_at": datetime.now(UTC).isoformat(),
-            "reasoning": reasoning,
-        })
+        execution_log.append(
+            {
+                "type": "node_entered",
+                "node_id": target_node_id,
+                "entered_at": datetime.now(UTC).isoformat(),
+                "reasoning": reasoning,
+            }
+        )
 
         # 更新 context_variables（T-AGT-27: source 标记为 tool_result）
         context_variables = dict(execution.context_variables or {})

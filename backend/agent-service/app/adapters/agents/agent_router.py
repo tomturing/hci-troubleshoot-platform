@@ -98,7 +98,7 @@ class AgentRouter:
         matched_kbds: list[KBD] | None = None,
         root_cause: str = "",
         solution: str = "",
-        execution_mode: str = "direct",   # 保留兼容旧调用方
+        execution_mode: str = "direct",  # 保留兼容旧调用方
         system_prompt: str | None = None,  # 保留兼容旧调用方
         sop_resume_context: dict[str, Any] | None = None,  # T-AGT-23: SOP 执行恢复上下文
     ) -> AsyncGenerator[AgentEvent, None]:

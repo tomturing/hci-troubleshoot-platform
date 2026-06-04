@@ -24,10 +24,10 @@ def _parse_grpc_endpoint(raw: str) -> tuple[str, bool]:
     Returns:
         (endpoint_without_scheme, is_insecure)
     """
-    scheme_match = re.match(r'^(https?)://', raw)
+    scheme_match = re.match(r"^(https?)://", raw)
     if scheme_match:
         scheme = scheme_match.group(1)
-        return raw[len(scheme) + 3:], scheme == "http"
+        return raw[len(scheme) + 3 :], scheme == "http"
     # 无 scheme：默认 insecure（集群内部通信）
     return raw, True
 

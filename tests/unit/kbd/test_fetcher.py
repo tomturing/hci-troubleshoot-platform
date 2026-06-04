@@ -9,6 +9,7 @@ tests/unit/kbd/test_fetcher.py — kbd/fetcher.py 单元测试
   - _write_raw / _write_fetch_failed：文件写入（使用 tmp_path fixture）
   - fetch_kbd：API 调用端到端（httpx mock + 文件系统验证）
 """
+
 from __future__ import annotations
 
 import json
@@ -19,20 +20,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # 路径注入（conftest.py 已处理，此处防御性再加一次）
-_scripts_root = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts")
-)
+_scripts_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))
 if _scripts_root not in sys.path:
     sys.path.insert(0, _scripts_root)
 
 
 # ─── _extract_image_urls ──────────────────────────────────────────────────────
 
+
 class TestExtractImageUrls:
     """测试 HTML 图片 URL 提取"""
 
     def setup_method(self):
         from kbd.fetcher import _extract_image_urls
+
         self.fn = _extract_image_urls
 
     def test_single_image(self):
@@ -76,11 +77,13 @@ class TestExtractImageUrls:
 
 # ─── _extract_metadata ───────────────────────────────────────────────────────
 
+
 class TestExtractMetadata:
     """测试 metadata 字段提取"""
 
     def setup_method(self):
         from kbd.fetcher import _extract_metadata
+
         self.fn = _extract_metadata
 
     def test_full_metadata(self, minimal_rows):
@@ -96,9 +99,13 @@ class TestExtractMetadata:
     def test_missing_fields_become_none(self):
         meta = self.fn({})
         for key in [
-            "sangfor_main_module", "sangfor_sub_module", "suite_version",
-            "sangfor_updated_at", "sangfor_created_at",
-            "create_admin_id", "update_admin_id",
+            "sangfor_main_module",
+            "sangfor_sub_module",
+            "suite_version",
+            "sangfor_updated_at",
+            "sangfor_created_at",
+            "create_admin_id",
+            "update_admin_id",
         ]:
             assert meta[key] is None
 
@@ -114,11 +121,13 @@ class TestExtractMetadata:
 
 # ─── _make_support_url ────────────────────────────────────────────────────────
 
+
 class TestMakeSupportUrl:
     """测试 support_url 生成"""
 
     def setup_method(self):
         from kbd.fetcher import _make_support_url
+
         self.fn = _make_support_url
 
     def test_url_format(self):
@@ -138,27 +147,29 @@ class TestMakeSupportUrl:
 
 # ─── _is_fetched ─────────────────────────────────────────────────────────────
 
+
 class TestIsFetched:
     """测试文件幂等检测"""
 
     def test_no_directory(self, tmp_path):
         from unittest.mock import patch
+
         with patch("kbd.fetcher.settings") as mock_s:
             mock_s.KBD_CACHE_DIR = tmp_path
             from kbd.fetcher import _is_fetched
+
             assert _is_fetched("nonexistent") is False
 
     def test_valid_raw_json(self, tmp_path):
         case_dir = tmp_path / "12345"
         case_dir.mkdir()
-        (case_dir / "raw.json").write_text(
-            json.dumps({"id": 12345, "name": "测试"}), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps({"id": 12345, "name": "测试"}), encoding="utf-8")
         with patch("kbd.fetcher.settings") as mock_s:
             mock_s.KBD_CACHE_DIR = tmp_path
             from importlib import reload
 
             import kbd.fetcher as ft
+
             reload(ft)
             # 直接调用，patch settings
             with patch("kbd.fetcher.settings.KBD_CACHE_DIR", tmp_path):
@@ -172,10 +183,12 @@ class TestIsFetched:
         (case_dir / "raw.json").write_text("not-json", encoding="utf-8")
         with patch("kbd.fetcher.settings.KBD_CACHE_DIR", tmp_path):
             from kbd.fetcher import _is_fetched
+
             assert _is_fetched("99") is False
 
 
 # ─── _write_raw / _write_fetch_failed ────────────────────────────────────────
+
 
 class TestFileWrite:
     """测试文件写入功能"""
@@ -183,6 +196,7 @@ class TestFileWrite:
     def test_write_raw_creates_file(self, tmp_path, minimal_rows):
         with patch("kbd.fetcher.settings.KBD_CACHE_DIR", tmp_path):
             from kbd.fetcher import _write_raw
+
             _write_raw("36156", minimal_rows)
             raw_path = tmp_path / "36156" / "raw.json"
             assert raw_path.exists()
@@ -193,6 +207,7 @@ class TestFileWrite:
     def test_write_raw_is_valid_json(self, tmp_path, minimal_rows):
         with patch("kbd.fetcher.settings.KBD_CACHE_DIR", tmp_path):
             from kbd.fetcher import _write_raw
+
             _write_raw("abc", minimal_rows)
             content = (tmp_path / "abc" / "raw.json").read_text(encoding="utf-8")
             # 确认可解析
@@ -202,6 +217,7 @@ class TestFileWrite:
     def test_write_fetch_failed(self, tmp_path):
         with patch("kbd.fetcher.settings.KBD_CACHE_DIR", tmp_path):
             from kbd.fetcher import _write_fetch_failed
+
             _write_fetch_failed("789", "连接超时")
             failed_path = tmp_path / "789" / "fetch.failed"
             assert failed_path.exists()
@@ -211,6 +227,7 @@ class TestFileWrite:
 
 
 # ─── fetch_kbd（集成级 mock）────────────────────────────────────────────────
+
 
 class TestFetchCase:
     """测试 fetch_kbd 主流程（mock httpx，真实文件系统）"""
@@ -237,6 +254,7 @@ class TestFetchCase:
             patch("kbd.fetcher._retry_request", AsyncMock(return_value=mock_resp)),
         ):
             from kbd.fetcher import fetch_kbd
+
             result = await fetch_kbd("36156")
 
             assert result is not None
@@ -250,11 +268,10 @@ class TestFetchCase:
         """raw.json 已存在时应直接返回 skipped=True"""
         case_dir = tmp_path / "36156"
         case_dir.mkdir(parents=True)
-        (case_dir / "raw.json").write_text(
-            json.dumps(minimal_rows), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(minimal_rows), encoding="utf-8")
         with patch("kbd.fetcher.settings.KBD_CACHE_DIR", tmp_path):
             from kbd.fetcher import fetch_kbd
+
             result = await fetch_kbd("36156")
             assert result is not None
             assert result.get("skipped") is True
@@ -277,6 +294,7 @@ class TestFetchCase:
             patch("kbd.fetcher._retry_request", AsyncMock(return_value=mock_resp)),
         ):
             from kbd.fetcher import fetch_kbd
+
             result = await fetch_kbd("99999")
             assert result is None
             failed_path = tmp_path / "99999" / "fetch.failed"

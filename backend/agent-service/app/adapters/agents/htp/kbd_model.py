@@ -27,9 +27,9 @@ class KBDStep:
     其 tool_name 相同，便于 CDD 算法计算步骤覆盖频率。
     """
 
-    tool_name: str               # 工具名称（对应 tool_registry 中的 ToolDefinition.name）
-    tool_args_template: dict     # 参数模板（含 {{占位符}}，执行时由 env_context 填充）
-    expected_pattern: str        # 期望输出特征（__REGEX__:/ __CONTAINS__:/ 自然语言）
+    tool_name: str  # 工具名称（对应 tool_registry 中的 ToolDefinition.name）
+    tool_args_template: dict  # 参数模板（含 {{占位符}}，执行时由 env_context 填充）
+    expected_pattern: str  # 期望输出特征（__REGEX__:/ __CONTAINS__:/ 自然语言）
 
 
 @dataclass
@@ -53,21 +53,21 @@ class KBD:
     """
 
     # ── 基础标识 ──────────────────────────────────────────────
-    id: str              # KBD 唯一 ID
-    name: str            # KBD 名称（简短描述）
-    category_id: str     # 所属故障分类编码，如 "虚拟机-003"
+    id: str  # KBD 唯一 ID
+    name: str  # KBD 名称（简短描述）
+    category_id: str  # 所属故障分类编码，如 "虚拟机-003"
 
     # ── 核心内容（4 大章节，必填）────────────────────────────
     problem_description: str  # 问题描述：描述该 KBD 对应的故障现象
-    steps: list[KBDStep]      # 有效排查步骤
-    root_cause: str           # 根因
-    solution: str             # 解决方案
+    steps: list[KBDStep]  # 有效排查步骤
+    root_cause: str  # 根因
+    solution: str  # 解决方案
 
     # ── 补充内容（4 个章节，可选）────────────────────────────
-    alert_info: str = ""         # 告警信息（原始告警文本）
-    operational_impact: str = "" # 操作影响范围
-    is_temporary: str = ""       # 是否是临时解决方案
-    recommendations: str = ""    # 建议与总结
+    alert_info: str = ""  # 告警信息（原始告警文本）
+    operational_impact: str = ""  # 操作影响范围
+    is_temporary: str = ""  # 是否是临时解决方案
+    recommendations: str = ""  # 建议与总结
 
     # ── 检索元数据 ────────────────────────────────────────────
     similarity: float = 0.0  # 与用户查询的相似度评分（来自 KB 检索）

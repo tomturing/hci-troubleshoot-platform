@@ -46,8 +46,8 @@ class EmbeddingService:
     def __init__(self, settings: Settings):
         self._settings = settings
         self._consecutive_failures = 0
-        self._local_mode_until: float = 0.0           # Unix timestamp：本地模式截止时间
-        self._local_model = None                       # 懒加载本地模型
+        self._local_mode_until: float = 0.0  # Unix timestamp：本地模式截止时间
+        self._local_model = None  # 懒加载本地模型
 
     async def embed_single(self, text: str) -> list[float]:
         """获取单条文本的 embedding 向量"""
@@ -75,7 +75,7 @@ class EmbeddingService:
         if not use_local:
             try:
                 result = await self._embed_via_zai(texts)
-                self._consecutive_failures = 0   # 成功后重置计数
+                self._consecutive_failures = 0  # 成功后重置计数
                 logger.info(
                     event="embedding_zai_success",
                     count=len(texts),
@@ -175,9 +175,7 @@ class EmbeddingService:
 
                 if os.path.exists(model_path):
                     loop = asyncio.get_event_loop()
-                    self._local_model = await loop.run_in_executor(
-                        None, lambda: SentenceTransformer(model_path)
-                    )
+                    self._local_model = await loop.run_in_executor(None, lambda: SentenceTransformer(model_path))
                     logger.info(event="local_model_loaded", model_path=model_path, backend="sentence_transformers")
                     return self._local_model
             except ImportError:

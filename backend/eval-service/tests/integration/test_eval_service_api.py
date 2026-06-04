@@ -70,16 +70,14 @@ class TestEvalServiceEndpoints:
 
     def test_admin_stats_wrong_token(self, client):
         """测试管理员接口使用错误的 token"""
-        response = client.get(
-            "/api/admin/quality/stats",
-            headers={"Authorization": "Bearer wrong-token"}
-        )
+        response = client.get("/api/admin/quality/stats", headers={"Authorization": "Bearer wrong-token"})
         # 错误 token 应该返回 403，不应出现 500
         assert response.status_code == 403
 
     def test_get_evaluation_db_not_initialized(self, client):
         """测试数据库未初始化时返回 500"""
         import app.routes.evaluate as eval_routes
+
         original_db = eval_routes.database_manager
         eval_routes.database_manager = None
 
@@ -118,24 +116,15 @@ class TestEvalServiceEndpoints:
             fake_conv_id = str(uuid.uuid4())
 
             # 无效评分（大于 5）应该返回 422
-            response = client.post(
-                f"/api/conversations/{fake_conv_id}/evaluate",
-                json={"score": 10}
-            )
+            response = client.post(f"/api/conversations/{fake_conv_id}/evaluate", json={"score": 10})
             assert response.status_code == 422
 
             # 无效评分（小于 1）应该返回 422
-            response = client.post(
-                f"/api/conversations/{fake_conv_id}/evaluate",
-                json={"score": 0}
-            )
+            response = client.post(f"/api/conversations/{fake_conv_id}/evaluate", json={"score": 0})
             assert response.status_code == 422
 
             # 缺少评分字段应该返回 422
-            response = client.post(
-                f"/api/conversations/{fake_conv_id}/evaluate",
-                json={}
-            )
+            response = client.post(f"/api/conversations/{fake_conv_id}/evaluate", json={})
             assert response.status_code == 422
         finally:
             # 清理 dependency override

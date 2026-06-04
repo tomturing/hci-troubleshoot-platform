@@ -3,6 +3,7 @@ RiskClassifier 单元测试。
 
 测试 classifier.py 中的 classify_acli / classify_bash / risk_to_policy 函数。
 """
+
 from app.tools.acli.classifier import (
     classify_acli,
     classify_bash,

@@ -63,6 +63,7 @@ class TestBuildPendingResolution:
     def test_multiple_calls_have_different_sent_at(self, manager: ConversationManager):
         """多次调用产生不同的时间戳（幂等性测试）"""
         import time
+
         r1 = manager.build_pending_resolution()
         time.sleep(0.01)
         r2 = manager.build_pending_resolution()
@@ -225,9 +226,7 @@ class TestConstraints:
         assert manager.handle_resolution_choice("B")["new_stage"] == "S1"
         assert manager.handle_resolution_choice("C")["new_stage"] is None
 
-    def test_pending_resolution_snapshot_is_immutable_per_call(
-        self, manager: ConversationManager
-    ):
+    def test_pending_resolution_snapshot_is_immutable_per_call(self, manager: ConversationManager):
         """
         每次调用 build_pending_resolution 都返回新快照（不共享引用），
         避免调用方修改快照后影响其他地方。
@@ -262,9 +261,7 @@ class TestS6BackwardCompatibility:
         result = manager.detect_stage_transition("S5", reply, "")
         assert result == "S6"
 
-    def test_new_methods_dont_affect_extract_category(
-        self, manager: ConversationManager
-    ):
+    def test_new_methods_dont_affect_extract_category(self, manager: ConversationManager):
         """新增方法不影响 extract_category 的正常工作"""
         reply = "已确认故障分类：虚拟机-003 虚拟机开机失败"
         result = manager.extract_category(reply)
