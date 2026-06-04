@@ -12,6 +12,7 @@
     "dev:admin": "npm -w admin run dev",
     "build:customer": "npm -w customer run build",
     "build:admin": "npm -w admin run build",
-    "build": "npm -w customer run build && npm -w admin run build"
+    "build": "npm -w customer run build && npm -w admin run build",
+    "prepare": "git config core.hooksPath \"$(git rev-parse --show-toplevel)/scripts/git-hooks\" || true"
   }
 }

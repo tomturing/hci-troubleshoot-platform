@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down test lint clean vk vk-stop vk-restart quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill db-sync db-check local-deploy local-deploy-import
+.PHONY: help install dev-up dev-down test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill db-sync db-check local-deploy local-deploy-import
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -15,7 +15,6 @@ help:
 	@echo "  make clean          - 清理临时文件"
 	@echo ""
 	@echo "  多Agent工作流命令:"
-	@echo "  make vk             - 启动 Vibe Kanban（任务编排中枢）"
 	@echo "  make quality-gate   - 运行质量门禁（lint + test）"
 	@echo "  make conflict-check - Worktree 冲突预检"
 	@echo "  make post-merge     - 合并后集成验证"
@@ -78,23 +77,6 @@ clean:
 # ============================================================================
 # 多Agent工作流命令
 # ============================================================================
-
-# VK 固定端口（避免每次重启端口变化导致 MCP 需要 Reload Window）
-VK_PORT ?= 9527
-
-vk:
-	@echo "启动 Vibe Kanban（端口 $(VK_PORT)）..."
-	PORT=$(VK_PORT) npx vibe-kanban
-
-vk-stop:
-	@echo "停止 Vibe Kanban..."
-	@pkill -f "vibe-kanban" 2>/dev/null && echo "✓ VK 已停止" || echo "VK 未在运行"
-
-vk-restart:
-	@echo "重启 Vibe Kanban..."
-	@pkill -f "vibe-kanban" 2>/dev/null || true
-	@sleep 1
-	PORT=$(VK_PORT) npx vibe-kanban
 
 quality-gate:
 	@echo "运行质量门禁..."

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Git Pre-commit Hook to automatically archive Gemini/Claude artifacts
+set -euo pipefail
+
+# Run archiving script
+if [ -f "scripts/archive_artifacts.sh" ]; then
+    echo "Running auto-archival for implementation plans, tasks, and walkthroughs..."
+    bash scripts/archive_artifacts.sh
+    # Auto-stage the archived files so they are included in the current commit
+    git add docs/solution/events/ docs/task/events/ docs/verify/events/
+fi

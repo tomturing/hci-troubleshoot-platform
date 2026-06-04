@@ -38,14 +38,8 @@ PASS=0
 FAIL=0
 SKIP=0
 
-# ---- 加载 VK 工作流钩子 ----
-VK_HOOKS="${PROJECT_ROOT}/scripts/vk-hooks.sh"
-if [ -f "$VK_HOOKS" ]; then
-    source "$VK_HOOKS"
-fi
-
 # ---- 报告文件 ----
-REPORT_DIR="${PROJECT_ROOT}/.vk/reports"
+REPORT_DIR="${PROJECT_ROOT}/build/reports"
 mkdir -p "$REPORT_DIR"
 REPORT_FILE="${REPORT_DIR}/quality-gate-$(date +%Y%m%d-%H%M%S).txt"
 
@@ -724,11 +718,13 @@ main() {
 
     if [ $FAIL -gt 0 ]; then
         echo -e "\n  ${RED}质量门禁未通过！${NC}"
-        type vk_on_cleanup_failure &>/dev/null && vk_on_cleanup_failure
         exit 1
     else
         echo -e "\n  ${GREEN}质量门禁全部通过 ✓${NC}"
-        type vk_on_cleanup_success &>/dev/null && vk_on_cleanup_success
+        if [ -f "scripts/archive_artifacts.sh" ]; then
+            log_header "自动归档 Gemini/Claude 规划与任务文档"
+            bash scripts/archive_artifacts.sh
+        fi
         exit 0
     fi
 }
