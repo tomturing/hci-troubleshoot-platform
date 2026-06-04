@@ -45,8 +45,9 @@ async def proxy_request(
             raise HTTPException(status_code=503, detail="Upstream service unavailable")
 
 
+@router.api_route("/tools", methods=["GET", "POST", "PUT", "DELETE"])
 @router.api_route("/tools/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def proxy_tools(path: str, request: Request):
+async def proxy_tools(request: Request, path: str = ""):
     """透传工具管理请求"""
     method = request.method
     params = dict(request.query_params)
@@ -62,8 +63,9 @@ async def proxy_tools(path: str, request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@router.api_route("/prompts", methods=["GET", "POST", "PUT", "DELETE"])
 @router.api_route("/prompts/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def proxy_prompts(path: str, request: Request):
+async def proxy_prompts(request: Request, path: str = ""):
     """透传 Prompt 管理请求"""
     method = request.method
     params = dict(request.query_params)
@@ -78,8 +80,9 @@ async def proxy_prompts(path: str, request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@router.api_route("/skills", methods=["GET", "POST", "PUT", "DELETE"])
 @router.api_route("/skills/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def proxy_skills(path: str, request: Request):
+async def proxy_skills(request: Request, path: str = ""):
     """透传技能管理请求"""
     method = request.method
     params = dict(request.query_params)

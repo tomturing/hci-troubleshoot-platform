@@ -244,33 +244,27 @@ onMounted(() => {
 
 <template>
   <div class="prompt-manage-container">
-    <el-row :gutter="20">
-      <!-- 左侧阶段侧边栏 -->
-      <el-col :span="6">
-        <div class="stage-sidebar">
-          <div
-            v-for="stage in stages"
-            :key="stage.value"
-            class="stage-item"
-            :class="{ active: activeTab === stage.value }"
-            @click="activeTab = stage.value"
-          >
-            <div class="stage-badge" :class="`badge-${stage.value.toLowerCase()}`">{{ stage.value }}</div>
-            <span class="stage-label">{{ stage.label }}</span>
-          </div>
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <div class="header-row">
+        <div>
+          <h2 class="page-title">Prompt 管理</h2>
+          <p class="page-desc">配置智能排障助手在各个阶段所使用的 System Prompt 提示词内容</p>
         </div>
-      </el-col>
+      </div>
+    </div>
 
-      <!-- 右侧 Prompt 列表 -->
+    <el-row :gutter="20">
+      <!-- 左侧 Prompt 列表 (占 18 列) -->
       <el-col :span="18">
-        <el-card class="box-card main-card">
+        <el-card class="box-card main-card" shadow="never">
           <template #header>
             <div class="card-header">
               <div class="header-left">
                 <span class="title">模板版本列表 ({{ currentPrompts.length }})</span>
                 <span class="subtitle">管理该诊断阶段的 Prompt 拼接方案</span>
               </div>
-              <el-button type="primary" class="gradient-btn" @click="openCreateDialog">
+              <el-button type="primary" @click="openCreateDialog">
                 <el-icon class="el-icon--left"><Plus /></el-icon> 新增版本
               </el-button>
             </div>
@@ -336,11 +330,11 @@ onMounted(() => {
               </div>
 
               <div class="prompt-card-actions">
-                <el-button type="primary" size="small" :icon="Edit" @click="openEditDialog(item)">编辑修改</el-button>
+                <el-button type="primary" size="small" text @click="openEditDialog(item)">编辑修改</el-button>
                 <el-button
                   type="danger"
                   size="small"
-                  :icon="Delete"
+                  text
                   :disabled="item.is_active"
                   @click="handleDelete(item)"
                 >
@@ -350,6 +344,22 @@ onMounted(() => {
             </div>
           </div>
         </el-card>
+      </el-col>
+
+      <!-- 右侧阶段侧边栏 (占 6 列) -->
+      <el-col :span="6">
+        <div class="stage-sidebar">
+          <div
+            v-for="stage in stages"
+            :key="stage.value"
+            class="stage-item"
+            :class="{ active: activeTab === stage.value }"
+            @click="activeTab = stage.value"
+          >
+            <div class="stage-badge" :class="`badge-${stage.value.toLowerCase()}`">{{ stage.value }}</div>
+            <span class="stage-label">{{ stage.label }}</span>
+          </div>
+        </div>
       </el-col>
     </el-row>
 
@@ -415,7 +425,7 @@ onMounted(() => {
       <template #footer>
         <div class="dialog-footer">
           <el-button @click="dialogVisible = false">取消</el-button>
-          <el-button type="primary" class="gradient-btn" @click="submitForm">保存</el-button>
+          <el-button type="primary" @click="submitForm">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -424,15 +434,36 @@ onMounted(() => {
 
 <style scoped>
 .prompt-manage-container {
-  max-width: 1250px;
-  margin: 0 auto;
+  padding: 20px;
+}
+
+.page-header {
+  margin-bottom: 20px;
+}
+
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.page-title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  color: #303133;
+}
+
+.page-desc {
+  margin: 0;
+  color: #666;
+  font-size: 14px;
 }
 
 .stage-sidebar {
   background: white;
-  border-radius: 12px;
+  border-radius: 4px;
   padding: 10px 0;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+  border: 1px solid #e4e7ed;
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -488,10 +519,7 @@ onMounted(() => {
 }
 
 .main-card {
-  border-radius: 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
   background: #fff;
-  border: none;
 }
 
 .card-header {
@@ -517,23 +545,11 @@ onMounted(() => {
   margin-top: 4px;
 }
 
-.gradient-btn {
-  background: linear-gradient(135deg, #3498db, #2980b9);
-  border: none;
-  color: white;
-  transition: all 0.3s ease;
-}
-
-.gradient-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(41, 128, 185, 0.4);
-}
-
 .placeholder-tip-box {
   background-color: #f7f9fa;
   border-left: 4px solid #95a5a6;
   padding: 15px 20px;
-  border-radius: 0 8px 8px 0;
+  border-radius: 0 4px 4px 0;
   margin-bottom: 25px;
 }
 
@@ -571,7 +587,7 @@ onMounted(() => {
 
 .prompt-card {
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 20px;
   transition: all 0.3s ease;
   position: relative;
@@ -631,12 +647,12 @@ onMounted(() => {
   margin-bottom: 12px;
   background: #f1f5f9;
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: 4px;
 }
 
 .prompt-template-preview {
   background-color: #1e293b;
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 15px;
   margin-bottom: 15px;
   max-height: 250px;
@@ -664,7 +680,7 @@ onMounted(() => {
 
 .template-editor-wrapper {
   border: 1px solid #dcdfe6;
-  border-radius: 6px;
+  border-radius: 4px;
   overflow: hidden;
 }
 
@@ -697,7 +713,7 @@ onMounted(() => {
 }
 
 .custom-dialog :deep(.el-dialog) {
-  border-radius: 12px;
+  border-radius: 4px;
   overflow: hidden;
 }
 
