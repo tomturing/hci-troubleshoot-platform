@@ -39,6 +39,12 @@ spec:
               value: "Admin"
             - name: GF_AUTH_ANONYMOUS_ORG_NAME
               value: "Main Org."
+            # 禁用登录表单，防止匿名请求被重定向到 /login 页面
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "true"
+            # 解决现代浏览器对 iframe 跨域 Cookie 的 SameSite 拦截问题
+            - name: GF_SECURITY_COOKIE_SAMESITE
+              value: "none"
             {{- if eq .Values.global.routingMode "subdomain" }}
             {{- /* 子域名路由模式：grafana.<domain>，需 DNS 通配符 */}}
             - name: GF_SERVER_DOMAIN
@@ -77,12 +83,24 @@ spec:
           resources:
             {{- toYaml .Values.observability.grafana.resources | nindent 12 }}
           volumeMounts:
-            - name: grafana-provisioning
+            - name: grafana-datasources
               mountPath: /etc/grafana/provisioning/datasources
+            # Dashboard Provisioning 配置
+            - name: grafana-dashboards-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            # Dashboard JSON 文件
+            - name: grafana-dashboards
+              mountPath: /etc/grafana/provisioning/dashboards/hci
       volumes:
-        - name: grafana-provisioning
+        - name: grafana-datasources
           configMap:
             name: grafana-datasources
+        - name: grafana-dashboards-provider
+          configMap:
+            name: grafana-dashboards-provider
+        - name: grafana-dashboards
+          configMap:
+            name: grafana-dashboards
 ---
 apiVersion: v1
 kind: Service
