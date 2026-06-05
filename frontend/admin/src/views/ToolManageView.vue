@@ -246,7 +246,7 @@ onMounted(() => {
       <div class="header-row">
         <div>
           <h2 class="page-title">工具注册表</h2>
-          <p class="page-desc">管理 ReAct 引擎可调用的 HCI 诊断插件及 API 接口</p>
+          <p class="page-desc">管理 ReAct 引擎可调用的 HCI 诊断插件及 API 接口。</p>
         </div>
         <el-button type="primary" @click="openCreateDialog">
           <el-icon class="el-icon--left"><Plus /></el-icon> 新建工具定义

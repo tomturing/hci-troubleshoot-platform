@@ -252,7 +252,7 @@ onMounted(() => {
       <div class="header-row">
         <div>
           <h2 class="page-title">Prompt 管理</h2>
-          <p class="page-desc">配置智能排障助手在各个阶段所使用的 System Prompt 提示词内容</p>
+          <p class="page-desc">配置智能排障助手在各个阶段所使用的 System Prompt 提示词内容。</p>
         </div>
         <el-button type="primary" @click="openCreateDialog">
           <el-icon class="el-icon--left"><Plus /></el-icon> 新增版本

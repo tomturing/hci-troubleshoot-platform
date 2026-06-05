@@ -377,7 +377,7 @@ onMounted(() => {
           <h2 class="page-title">技能注册表</h2>
           <p class="page-desc">
             基于 <a href="https://agentskills.io" target="_blank" class="standard-link">Agent Skills Open Standard</a>
-            的领域专业知识包管理 — 每个 Skill 是"过程性知识 + 诊断流程"，而非函数接口
+            的领域专业知识包管理 — 每个 Skill 是"过程性知识 + 诊断流程"，而非函数接口。
           </p>
         </div>
         <el-button type="primary" :icon="Plus" @click="openCreateDialog">新建技能</el-button>
@@ -784,7 +784,7 @@ onMounted(() => {
 .page-desc {
   margin: 0;
   color: #666;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .standard-link {

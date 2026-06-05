@@ -21,21 +21,26 @@ async function detectGrafana() {
   const protocol = window.location.protocol
   const port = window.location.port ? `:${window.location.port}` : ''
 
+  let baseUrl = ''
   if (hostname.startsWith('admin.')) {
     const grafanaHost = hostname.replace('admin.', 'grafana.')
-    grafanaUrl.value = `${protocol}//${grafanaHost}`
+    baseUrl = `${protocol}//${grafanaHost}`
   } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    grafanaUrl.value = 'http://localhost:3000'
+    baseUrl = 'http://localhost:3000'
   } else {
-    grafanaUrl.value = `${protocol}//${hostname}${port}/grafana`
+    baseUrl = `${protocol}//${hostname}${port}/grafana`
   }
 
+  // 拼接特定 Dashboard UID 路径，并使用 kiosk 模式隐藏 Grafana 的导航和 Sign In 布局，实现免登录嵌入体验
+  grafanaUrl.value = `${baseUrl}/d/hci-overview?orgId=1&kiosk`
   grafanaReady.value = true
   monitorLoading.value = false
 }
 
 function openGrafana() {
-  window.open(grafanaUrl.value, '_blank')
+  // 新窗口打开时去掉 kiosk 模式，方便用户正常交互
+  const fullUrl = grafanaUrl.value.replace('&kiosk', '')
+  window.open(fullUrl, '_blank')
 }
 
 // ==========================================
@@ -168,7 +173,8 @@ watch(activeTab, (tab) => {
 
 <template>
   <div class="observability-container">
-    <el-tabs v-model="activeTab" class="observability-tabs" type="border-card">
+    <el-card class="observability-card">
+      <el-tabs v-model="activeTab" class="observability-tabs">
       <!-- ===== Tab 1: 监控面板 ===== -->
       <el-tab-pane name="monitor">
         <template #label>
@@ -293,6 +299,7 @@ watch(activeTab, (tab) => {
         </div>
       </el-tab-pane>
     </el-tabs>
+    </el-card>
 
     <!-- ===== 详情侧拉抽屉 ===== -->
     <el-drawer
@@ -382,7 +389,21 @@ watch(activeTab, (tab) => {
 
 <style scoped>
 .observability-container {
-  padding: 8px;
+  padding: 20px;
+}
+
+.observability-card {
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  border: 1px solid #ebeef5;
+}
+
+.observability-card :deep(.el-card__body) {
+  padding: 20px;
+}
+
+.observability-tabs :deep(.el-tabs__content) {
+  padding-top: 16px;
 }
 
 .tab-label {
@@ -418,7 +439,7 @@ watch(activeTab, (tab) => {
 
 .iframe-wrapper {
   width: 100%;
-  height: calc(100vh - 275px);
+  height: calc(100vh - 310px);
   min-height: 520px;
   border: 1px solid #dcdfe6;
   border-radius: 6px;
