@@ -173,7 +173,46 @@ system_prompt = _S5_SYSTEM_PROMPT_TEMPLATE.format(
 
 ---
 
-## 三、 Agent 阶段 Prompt 渲染数据大图
+## 三、 数据库化管理 Prompt（base_core_v1 等）的现状与断代解析
+
+用户在 **Prompt管理后台** 界面以及数据库种子文件 `database/seeds/02_system_prompts.sql` 中会看到如下预置 Prompt 模板：
+*   `base_core_v1` (BASE)
+*   `s0_intent_recognition_v1` (S0)
+*   `s1_info_gathering_v1` (S1)
+*   `s2_hypothesis_generation_v1` (S2)
+*   `s3_verification_v1` (S3)
+*   `s4_root_cause_v1` (S4)
+*   `s5_solution_v1` (S5)
+
+针对这套配置化 Prompt，其在系统中的真实使用与加载情况分析如下：
+
+### 1. 核心事实：数据库中的 Prompt 模板未被 `htp-agent` 正常消费
+在目前的系统架构中，**这几个在 Prompt 管理后台展示并存储于数据库 `system_prompt` 表中的模板，完全没有被 `htp-agent`（包括 `TriageAgent`、`InvestigationAgent`、`RemediationAgent`）所使用**。它们处于**“断联/空置”**状态。
+
+### 2. 这套配置化 Prompt 的生命周期流向
+1.  **数据落库**：由 `database/seeds/02_system_prompts.sql` 初始化，写入到数据库 `system_prompt` 中。
+2.  **API 接口**：`conversation-service` 提供了 `routes/system_prompt.py` 下的 `/api/v1/prompts` 端点，实现对 `system_prompt` 表的 CRUD 操作。
+3.  **管理后台渲染**：`api-gateway` 的 `capabilities.py` 路由将请求代理给 `conversation-service`，前端 `PromptManageView.vue` 通过 `/api/v1/prompts` 接口拉取并显示在 UI 界面中，支持编辑与修改。
+4.  **Agent 推理消费**：在实际推理阶段，`agent-service` 发起 LLM 聊天或 ReAct 决策时，**没有任何代码逻辑**从 `system_prompt` 表中读取或查询这些模板。所有的 System Prompt 均是直接使用上一章所述的**代码内硬编码常量及方法动态生成**。
+
+### 3. 参数赋值与最终上下文的真实真相
+
+由于 `htp-agent` 实际上是在代码中直接生成 Prompt，因而数据库模板中声明的占位符（如 `{category_list}`、`{tool_list}` 等）在实际执行流中**并未以数据库模板为载体进行赋值**。
+
+以下是两套机制的对照关系与最终完整上下文的组装真实现状：
+
+| 阶段 | 数据库种子模板 (未生效) | 真实使用的 Prompt 代码源 (已生效) | 真实参数赋值逻辑 & 最终完整上下文组成 |
+| :--- | :--- | :--- | :--- |
+| **S0** | `s0_intent_recognition_v1` | `triage_agent.py` 中的 `SEGMENT_IDENTITY` 等常量拼接 | 通过 `_build_s0_prompt()` 拼接 `IDENTITY` + `METHODOLOGY` + `REASONING_MODE` + 叶子分类列表 + 实时 `env_context` (env_info, alert_logs, task_logs) + case_id |
+| **S1-S4** | `s1_info_gathering_v1` 至 `s4_root_cause_v1` | `investigation_agent.py` 中的 `_build_sop_react_prompt` 等方法 | 根据路由决策：<br>1. **SOP React 模式**：拼接 SOP 根节点摘要、获取/推进 SOP 工具说明、已知变量池。<br>2. **SOP Resume 模式**：拼接已完成进度摘要、当前停留节点明细、**幂等性限制声明**。<br>3. **Fallback 模式**：拼接限制输出前缀为 `【机制推理】` 的引导语。 |
+| **S5** | `s5_solution_v1` | `remediation_agent.py` 中的 `_S5_SYSTEM_PROMPT_TEMPLATE` | 传入 S4 确认的 `root_cause` 与 KBD 获取的 `solution` 进行 `.format()` 格式化。 |
+
+### 4. 产生此断代现象的架构原因
+在早期的 MVP（最小可行性产品）版本中，系统设计了 `system_prompt` 数据库表与管理后台以支持模板热更新。但在后期的排障 Agent 重构阶段（如引入 SOP 多叉决策树导航、变量池自动注入、断线恢复及写操作幂等性硬性约束时），由于业务逻辑极为复杂，Agent 系统选择**直接在代码中通过方法控制 System Prompt 的组装和生成**。这一重构未能与前期的数据库 `system_prompt` 表结构进行重构兼容，导致数据库种子模板被空置。
+
+---
+
+## 四、 Agent 阶段 Prompt 渲染数据大图
 
 各 Agent 接收外部数据，构建 Prompt，并转化为 LLM 统一上下文的数据流如下图所示：
 
