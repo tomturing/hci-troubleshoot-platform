@@ -36,7 +36,9 @@ spec:
             - name: GF_AUTH_ANONYMOUS_ENABLED
               value: "true"
             - name: GF_AUTH_ANONYMOUS_ORG_ROLE
-              value: "Viewer"
+              value: "Admin"
+            - name: GF_AUTH_ANONYMOUS_ORG_NAME
+              value: "Main Org."
             {{- if eq .Values.global.routingMode "subdomain" }}
             {{- /* 子域名路由模式：grafana.<domain>，需 DNS 通配符 */}}
             - name: GF_SERVER_DOMAIN

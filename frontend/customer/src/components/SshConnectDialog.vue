@@ -99,7 +99,9 @@ async function handleConnect() {
 
 // ===== 取消 =====
 async function handleCancel() {
-  chatStore.disconnectSSH()
+  if (viewState.value !== 'success') {
+    chatStore.disconnectSSH()
+  }
   await chatStore.closeSshFlowDialog()
 }
 

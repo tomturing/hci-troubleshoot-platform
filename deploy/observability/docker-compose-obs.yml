@@ -85,7 +85,8 @@ services:
       - GF_SECURITY_ALLOW_EMBEDDING=true
       # 开启匿名访问，免密自动登录，对齐生产环境
       - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_ANONYMOUS_ORG_NAME=Main Org.
     env_file:
       - path: ../env/obs.env
         required: false   # 文件不存在时不报错，环境变量由 shell export 注入
