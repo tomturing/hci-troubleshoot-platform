@@ -231,7 +231,7 @@ class TestInvestigationAgentRouting:
                     "sop_document_id": 100,
                     "current_node_id": "n-1-2",
                     "completed_steps": ["n-1"],
-                }
+                },
             )
         ]
 

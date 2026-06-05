@@ -189,11 +189,13 @@ class InvestigationAgent(BaseAgent):
                 doc = await self._kb_client.get_sop_document(resume_doc_id)
                 if doc:
                     track = "sop"
-                    sop_results = [{
-                        "id": doc.get("id"),
-                        "title": doc.get("title"),
-                        "content_md": doc.get("content_md"),
-                    }]
+                    sop_results = [
+                        {
+                            "id": doc.get("id"),
+                            "title": doc.get("title"),
+                            "content_md": doc.get("content_md"),
+                        }
+                    ]
             except Exception as e:
                 logger.error(
                     event="sop_resume_fetch_document_failed",
