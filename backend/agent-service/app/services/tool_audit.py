@@ -68,6 +68,7 @@ class ToolAuditService:
         """
         if not trace_id:
             from shared.observability.otel import get_current_trace_id
+
             trace_id = get_current_trace_id()
 
         if not cls._session_factory:
@@ -76,9 +77,7 @@ class ToolAuditService:
 
         try:
             # 校验并解析 UUID，支持派生
-            conv_uuid = (
-                uuid.UUID(str(session_id)) if not isinstance(session_id, uuid.UUID) else session_id
-            )
+            conv_uuid = uuid.UUID(str(session_id)) if not isinstance(session_id, uuid.UUID) else session_id
         except ValueError:
             conv_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, str(session_id))
             logger.info(

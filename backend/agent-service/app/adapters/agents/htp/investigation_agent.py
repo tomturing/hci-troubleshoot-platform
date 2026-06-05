@@ -90,13 +90,13 @@ class InvestigationAgent(BaseAgent):
         self._audit_service = audit_service
         if db_session_factory is None:
             from shared.utils.prompt_loader import create_mock_session_factory
+
             self._db_session_factory = create_mock_session_factory()
         else:
             self._db_session_factory = db_session_factory
 
         # KBD 差异诊断引擎（每次 process() 调用时重新创建，保证状态隔离）
         self._kbd_diag: KBDDiagnostic | None = None
-
 
     # ─── BaseAgent 抽象方法实现 ─────────────────────────────────────────────────
 
@@ -390,7 +390,14 @@ class InvestigationAgent(BaseAgent):
                 current_node_id=current_node_id,
                 completed_steps=completed_steps,
                 context_variables=context_variables,
-                current_node=current_node_result if "error" not in current_node_result else {"node_id": current_node_id, "title": "未知节点", "type": "branch", "content": f"无法获取当前节点时，使用 SOP 文档内容作为 fallback\n{self._truncate_sop_content(sop_content)}"},
+                current_node=current_node_result
+                if "error" not in current_node_result
+                else {
+                    "node_id": current_node_id,
+                    "title": "未知节点",
+                    "type": "branch",
+                    "content": f"无法获取当前节点时，使用 SOP 文档内容作为 fallback\n{self._truncate_sop_content(sop_content)}",
+                },
                 diagnostic_stage=diagnostic_stage,
                 case_id=case_id,
             )
@@ -452,7 +459,13 @@ class InvestigationAgent(BaseAgent):
             context_variables = create_result.get("context_variables", {})
             system_prompt = await self._build_sop_react_prompt(
                 sop_title=sop_title,
-                root_node=root_node_result if "error" not in root_node_result else {"title": sop_title, "type": "branch", "content": f"无法获取根节点时，使用 SOP 文档内容作为 fallback\n{self._truncate_sop_content(sop_content)}"},
+                root_node=root_node_result
+                if "error" not in root_node_result
+                else {
+                    "title": sop_title,
+                    "type": "branch",
+                    "content": f"无法获取根节点时，使用 SOP 文档内容作为 fallback\n{self._truncate_sop_content(sop_content)}",
+                },
                 diagnostic_stage=diagnostic_stage,
                 case_id=case_id,
                 context_variables=context_variables,
@@ -625,20 +638,25 @@ class InvestigationAgent(BaseAgent):
         root_node_branches = "\n".join(branches_list)
 
         from shared.utils.prompt_loader import StrictPromptLoader
+
         async with self._db_session_factory() as session:
-            base_identity = await StrictPromptLoader.load_and_validate(
-                session, "base_identity_v1", []
-            )
+            base_identity = await StrictPromptLoader.load_and_validate(session, "base_identity_v1", [])
             base_methodology = await StrictPromptLoader.load_and_validate(
                 session, "base_methodology_v1", ["stage_desc"]
             )
             react_template = await StrictPromptLoader.load_and_validate(
-                session, "s1_sop_react_new_v1",
-                ["sop_title", "root_node_title", "root_node_type", "root_node_content", "root_node_branches", "known_variables"]
+                session,
+                "s1_sop_react_new_v1",
+                [
+                    "sop_title",
+                    "root_node_title",
+                    "root_node_type",
+                    "root_node_content",
+                    "root_node_branches",
+                    "known_variables",
+                ],
             )
-            base_context = await StrictPromptLoader.load_and_validate(
-                session, "base_case_context_v1", ["case_id"]
-            )
+            base_context = await StrictPromptLoader.load_and_validate(session, "base_case_context_v1", ["case_id"])
 
         formatted_methodology = base_methodology.format(stage_desc=stage_desc)
         formatted_react = react_template.format(
@@ -652,7 +670,6 @@ class InvestigationAgent(BaseAgent):
         formatted_context = base_context.format(case_id=case_id)
 
         return "\n\n".join([base_identity, formatted_methodology, formatted_react, formatted_context])
-
 
     @staticmethod
     def _build_root_node_summary(sop_title: str, root_node: dict) -> str:
@@ -836,20 +853,28 @@ class InvestigationAgent(BaseAgent):
         current_node_branches = "\n".join(branches_list)
 
         from shared.utils.prompt_loader import StrictPromptLoader
+
         async with self._db_session_factory() as session:
-            base_identity = await StrictPromptLoader.load_and_validate(
-                session, "base_identity_v1", []
-            )
+            base_identity = await StrictPromptLoader.load_and_validate(session, "base_identity_v1", [])
             base_methodology = await StrictPromptLoader.load_and_validate(
                 session, "base_methodology_v1", ["stage_desc"]
             )
             resume_template = await StrictPromptLoader.load_and_validate(
-                session, "s2_sop_react_resume_v1",
-                ["sop_title", "completed_steps_count", "current_node_id", "known_variables", "current_node_title", "current_node_type", "current_node_content", "current_node_branches", "completed_nodes_str"]
+                session,
+                "s2_sop_react_resume_v1",
+                [
+                    "sop_title",
+                    "completed_steps_count",
+                    "current_node_id",
+                    "known_variables",
+                    "current_node_title",
+                    "current_node_type",
+                    "current_node_content",
+                    "current_node_branches",
+                    "completed_nodes_str",
+                ],
             )
-            base_context = await StrictPromptLoader.load_and_validate(
-                session, "base_case_context_v1", ["case_id"]
-            )
+            base_context = await StrictPromptLoader.load_and_validate(session, "base_case_context_v1", ["case_id"])
 
         formatted_methodology = base_methodology.format(stage_desc=stage_desc)
         formatted_resume = resume_template.format(
@@ -866,7 +891,6 @@ class InvestigationAgent(BaseAgent):
         formatted_context = base_context.format(case_id=case_id)
 
         return "\n\n".join([base_identity, formatted_methodology, formatted_resume, formatted_context])
-
 
     @staticmethod
     def _truncate_sop_content(sop_content: str, max_chars: int = 8000) -> str:
@@ -907,7 +931,6 @@ class InvestigationAgent(BaseAgent):
 
         return "\n\n".join([base_identity, formatted_methodology, formatted_legacy, formatted_context])
 
-
     async def _build_sop_prompt_legacy(
         self,
         sop_content: str,
@@ -926,19 +949,16 @@ class InvestigationAgent(BaseAgent):
         truncated_content = self._truncate_sop_content(sop_content)
 
         from shared.utils.prompt_loader import StrictPromptLoader
+
         async with self._db_session_factory() as session:
-            base_identity = await StrictPromptLoader.load_and_validate(
-                session, "base_identity_v1", []
-            )
+            base_identity = await StrictPromptLoader.load_and_validate(session, "base_identity_v1", [])
             base_methodology = await StrictPromptLoader.load_and_validate(
                 session, "base_methodology_v1", ["stage_desc"]
             )
             legacy_template = await StrictPromptLoader.load_and_validate(
                 session, "s3_sop_legacy_v1", ["sop_title", "sop_content"]
             )
-            base_context = await StrictPromptLoader.load_and_validate(
-                session, "base_case_context_v1", ["case_id"]
-            )
+            base_context = await StrictPromptLoader.load_and_validate(session, "base_case_context_v1", ["case_id"])
 
         formatted_methodology = base_methodology.format(stage_desc=stage_desc)
         formatted_legacy = legacy_template.format(
@@ -948,7 +968,6 @@ class InvestigationAgent(BaseAgent):
         formatted_context = base_context.format(case_id=case_id)
 
         return "\n\n".join([base_identity, formatted_methodology, formatted_legacy, formatted_context])
-
 
     async def _build_fallback_prompt(
         self,
@@ -966,26 +985,20 @@ class InvestigationAgent(BaseAgent):
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
 
         from shared.utils.prompt_loader import StrictPromptLoader
+
         async with self._db_session_factory() as session:
-            base_identity = await StrictPromptLoader.load_and_validate(
-                session, "base_identity_v1", []
-            )
+            base_identity = await StrictPromptLoader.load_and_validate(session, "base_identity_v1", [])
             base_methodology = await StrictPromptLoader.load_and_validate(
                 session, "base_methodology_v1", ["stage_desc"]
             )
-            fallback_template = await StrictPromptLoader.load_and_validate(
-                session, "s4_fallback_v1", ["category_id"]
-            )
-            base_context = await StrictPromptLoader.load_and_validate(
-                session, "base_case_context_v1", ["case_id"]
-            )
+            fallback_template = await StrictPromptLoader.load_and_validate(session, "s4_fallback_v1", ["category_id"])
+            base_context = await StrictPromptLoader.load_and_validate(session, "base_case_context_v1", ["case_id"])
 
         formatted_methodology = base_methodology.format(stage_desc=stage_desc)
         formatted_fallback = fallback_template.format(category_id=category_id)
         formatted_context = base_context.format(case_id=case_id)
 
         return "\n\n".join([base_identity, formatted_methodology, formatted_fallback, formatted_context])
-
 
     # ─── 工具方法（内部）──────────────────────────────────────────────────────
 

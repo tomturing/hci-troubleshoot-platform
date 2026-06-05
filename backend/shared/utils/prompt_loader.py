@@ -14,11 +14,13 @@ logger = get_logger("prompt-loader")
 
 class PromptLoadError(Exception):
     """Prompt 从数据库加载失败异常"""
+
     pass
 
 
 class PromptValidationError(Exception):
     """Prompt 模板占位符校验不匹配异常"""
+
     pass
 
 
@@ -35,10 +37,7 @@ class StrictPromptLoader:
 
     @classmethod
     async def load_and_validate(
-        cls,
-        db_session: AsyncSession,
-        prompt_name: str,
-        expected_placeholders: list[str]
+        cls, db_session: AsyncSession, prompt_name: str, expected_placeholders: list[str]
     ) -> str:
         """
         从数据库加载 Prompt 并强行进行占位符契约验证。
@@ -47,21 +46,16 @@ class StrictPromptLoader:
         # 1. 数据库检索
         try:
             stmt = select(SystemPrompt.content_template).where(
-                SystemPrompt.name == prompt_name,
-                SystemPrompt.is_active.is_(True)
+                SystemPrompt.name == prompt_name, SystemPrompt.is_active.is_(True)
             )
             result = await db_session.execute(stmt)
             content_template = result.scalar_one_or_none()
         except Exception as exc:
             # 数据库访问异常，直接抛出，阻断逻辑
-            raise PromptLoadError(
-                f"数据库查询异常，无法加载 Prompt 模板 '{prompt_name}': {exc}"
-            ) from exc
+            raise PromptLoadError(f"数据库查询异常，无法加载 Prompt 模板 '{prompt_name}': {exc}") from exc
 
         if not content_template:
-            raise PromptLoadError(
-                f"在 system_prompt 表中未找到处于激活状态且名称为 '{prompt_name}' 的 Prompt 模板"
-            )
+            raise PromptLoadError(f"在 system_prompt 表中未找到处于激活状态且名称为 '{prompt_name}' 的 Prompt 模板")
 
         # 2. 占位符比对校验
         actual_placeholders = cls.get_template_placeholders(content_template)
@@ -79,8 +73,7 @@ class StrictPromptLoader:
         redundant_placeholders = actual_placeholders - expected_set
         if redundant_placeholders:
             raise PromptValidationError(
-                f"Prompt 模板 '{prompt_name}' 校验不通过！"
-                f"包含运行时无法识别的非法占位符: {redundant_placeholders}。"
+                f"Prompt 模板 '{prompt_name}' 校验不通过！包含运行时无法识别的非法占位符: {redundant_placeholders}。"
             )
 
         return content_template
@@ -88,6 +81,7 @@ class StrictPromptLoader:
 
 class MockSession:
     """单元测试中模拟的 SQLAlchemy Session"""
+
     def __init__(self, templates: dict[str, str]):
         self.templates = templates
 
@@ -103,6 +97,7 @@ class MockSession:
         class MockResult:
             def __init__(self, val):
                 self.val = val
+
             def scalar_one_or_none(self):
                 return self.val
 
@@ -126,7 +121,7 @@ def create_mock_session_factory(custom_templates: dict[str, str] = None):
         "s2_sop_react_resume_v1": "【SOP 排障流程恢复模式】\n正在执行 SOP：《{sop_title}》\n已完成步骤 {completed_steps_count} 步，当前位置节点：{current_node_id}\n{known_variables}\n\n【当前节点：{current_node_title}】\n类型：{current_node_type}\n内容摘要：\n{current_node_content}\n\n【可选分支】\n{current_node_branches}\n\n【工具使用指引】\n1. 使用 get_sop_node(node_id) 获取当前节点或子节点的详细内容\n2. 根据节点判断结果，使用 sop_advance(target_node_id, reasoning) 推进到子节点\n3. 可同时使用诊断工具（acli、SCP 工具）收集证据\n4. 到达 solution 节点时，总结解决方案并完成排障\n\n【幂等性约束 - 重要】\n已完成节点：{completed_nodes_str}\n- 已在 completed_steps 中的节点，不重复执行写操作工具（如 acli_service_restart）\n- 只读工具（如 acli_vm_list、acli_system_top）可正常调用\n- 若需要重新执行写操作，请先向用户说明原因并获取明确授权\n\n【注意事项】\n- 从当前节点继续执行，不要从头开始\n- 在 reasoning 中解释为何选择此分支\n- 可自由使用诊断工具辅助判断",
         "s3_sop_legacy_v1": "【知识使用规范】\n你有 SOP 排障流程可用，请严格按其步骤顺序执行，在每个判断节点收集证据后再做决策。\n\n【SOP 排障流程 | 来源：{sop_title}】\n{sop_content}",
         "s4_fallback_v1": "【机制推理模式】\n当前知识库中暂未找到与分类 {category_id} 高度匹配 of SOP 或历史案例。\n请基于 HCI 平台架构机制知识进行推理：\n  - 所有推断必须标注【机制推理】\n  - 在回复末尾追加：「如能提供更具体的报错信息，我可以尝试匹配更精确的排障流程」",
-        "s5_solution_v1": "【修复操作规范】\n1. 先解释修复原理，让工程师理解每步操作的目的\n2. 每个修复步骤执行前会弹出确认对话框，工程师确认后才执行\n3. 区分「临时修复」和「永久解决方案」，明确标注\n4. 执行后验证：每个修复步骤完成后，立即执行验证命令确认效果\n5. 若修复失败，停止操作并给出人工介入建议\n\n【已确认根因】\n{root_cause}\n\n【推荐修复方案】\n{solution}\n\n⚠️ 重要提示：以下所有操作步骤均需工程师逐步确认后才会执行。"
+        "s5_solution_v1": "【修复操作规范】\n1. 先解释修复原理，让工程师理解每步操作的目的\n2. 每个修复步骤执行前会弹出确认对话框，工程师确认后才执行\n3. 区分「临时修复」和「永久解决方案」，明确标注\n4. 执行后验证：每个修复步骤完成后，立即执行验证命令确认效果\n5. 若修复失败，停止操作并给出人工介入建议\n\n【已确认根因】\n{root_cause}\n\n【推荐修复方案】\n{solution}\n\n⚠️ 重要提示：以下所有操作步骤均需工程师逐步确认后才会执行。",
     }
     if custom_templates:
         templates.update(custom_templates)

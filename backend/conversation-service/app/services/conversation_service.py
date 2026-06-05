@@ -108,9 +108,9 @@ class ConversationService:
         case_trace_id = None
         try:
             from sqlalchemy import text
+
             res = await self.repository.session.execute(
-                text('SELECT trace_id FROM "case" WHERE case_id = :case_id'),
-                {"case_id": case_id}
+                text('SELECT trace_id FROM "case" WHERE case_id = :case_id'), {"case_id": case_id}
             )
             case_row = res.fetchone()
             if case_row:
@@ -192,16 +192,12 @@ class ConversationService:
                     trace_id=int(target_trace_id, 16),
                     span_id=trace.generate_span_id(),
                     is_remote=True,
-                    trace_flags=TraceFlags(0x01)
+                    trace_flags=TraceFlags(0x01),
                 )
                 parent_span = NonRecordingSpan(span_context)
                 ctx = trace.set_span_in_context(parent_span)
             except Exception as e:
-                logger.warning(
-                    event="failed_to_build_otel_span_context",
-                    target_trace_id=target_trace_id,
-                    error=str(e)
-                )
+                logger.warning(event="failed_to_build_otel_span_context", target_trace_id=target_trace_id, error=str(e))
 
         token = None
         if ctx:
@@ -507,7 +503,9 @@ class ConversationService:
                     ai_client = self.ai_registry.get_client(resolved_assistant_type)
                     if not ai_client:
                         error_msg = f"未找到类型为 '{resolved_assistant_type}' 的 AI 助手"
-                        logger.error(event="ai_client_not_found", message=error_msg, assistant_type=resolved_assistant_type)
+                        logger.error(
+                            event="ai_client_not_found", message=error_msg, assistant_type=resolved_assistant_type
+                        )
                         yield f"\n[System Error: {error_msg}]"
                         return
 
@@ -531,7 +529,9 @@ class ConversationService:
                                     conversation_id=str(conversation_id),
                                 )
                                 # 记录首 Token 延迟到 Prometheus histogram
-                                AI_TTFT_SECONDS.labels(assistant_type=resolved_assistant_type).observe(_ttft_ms / 1000.0)
+                                AI_TTFT_SECONDS.labels(assistant_type=resolved_assistant_type).observe(
+                                    _ttft_ms / 1000.0
+                                )
                                 _ttft_logged = True
                             _full_reply_buffer.append(chunk)
                             yield chunk

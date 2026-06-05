@@ -87,13 +87,13 @@ class AgentClient:
         # 强行注入 traceparent 头以避免 Starlette streaming 异步迭代器中 ContextVars 丢失导致 Trace 分叉
         active_trace_id = get_current_trace_id() or secrets.token_hex(16)
         span_id = secrets.token_hex(8)
-        headers = {
-            "traceparent": f"00-{active_trace_id}-{span_id}-01",
-            "Content-Type": "application/json"
-        }
+        headers = {"traceparent": f"00-{active_trace_id}-{span_id}-01", "Content-Type": "application/json"}
 
         try:
-            async with httpx.AsyncClient(timeout=None) as client, client.stream("POST", url, json=payload, headers=headers) as resp:
+            async with (
+                httpx.AsyncClient(timeout=None) as client,
+                client.stream("POST", url, json=payload, headers=headers) as resp,
+            ):
                 if resp.status_code != 200:
                     body = await resp.aread()
                     logger.error(

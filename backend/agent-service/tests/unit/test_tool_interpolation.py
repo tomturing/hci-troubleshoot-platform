@@ -15,6 +15,7 @@ def test_successful_interpolation():
     command = TemplateInterpolator.interpolate(template, args)
     assert command == "acli plugins vm_start vm_start --vm-id vm-12345"
 
+
 def test_shell_injection_protection():
     # 测试注入攻击逃逸保护
     template = "acli plugins vm_start vm_start --vm-id {vm_id}"
@@ -22,6 +23,7 @@ def test_shell_injection_protection():
     command = TemplateInterpolator.interpolate(template, args)
     expected = f"acli plugins vm_start vm_start --vm-id {shlex.quote('vm-12345; rm -rf /')}"
     assert command == expected
+
 
 def test_missing_parameter_raises_error():
     # 测试必填参数缺失报错

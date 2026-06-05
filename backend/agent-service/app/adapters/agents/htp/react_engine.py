@@ -403,6 +403,7 @@ class ReactEngine:
             if self._audit:
                 try:
                     from shared.observability.otel import get_current_trace_id
+
                     await self._audit.write(
                         audit_id=audit_id,
                         session_id=session_id,

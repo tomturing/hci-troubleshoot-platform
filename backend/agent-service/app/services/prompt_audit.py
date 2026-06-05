@@ -46,6 +46,7 @@ class PromptAuditService:
         """
         if not trace_id:
             from shared.observability.otel import get_current_trace_id
+
             trace_id = get_current_trace_id()
 
         if not cls._session_factory:
@@ -77,10 +78,10 @@ class PromptAuditService:
         has_sop = False
         try:
             from sqlalchemy import text
+
             async with cls._session_factory() as session:
                 res = await session.execute(
-                    text("SELECT 1 FROM sop_execution WHERE conversation_id = :conv_id LIMIT 1"),
-                    {"conv_id": conv_uuid}
+                    text("SELECT 1 FROM sop_execution WHERE conversation_id = :conv_id LIMIT 1"), {"conv_id": conv_uuid}
                 )
                 has_sop = res.fetchone() is not None
         except Exception as e:

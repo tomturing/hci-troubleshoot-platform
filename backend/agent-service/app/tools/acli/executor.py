@@ -162,7 +162,6 @@ class CommandSanitizer:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-
 class TemplateInterpolator:
     """ACLI 插件命令安全插值引擎"""
 
@@ -210,7 +209,6 @@ class TemplateInterpolator:
 
 
 class BridgeRelayExecutor:
-
     """
     Bridge 中转执行器：所有 acli/bash 工具的唯一执行后端。
 
@@ -321,7 +319,6 @@ class BridgeRelayExecutor:
             command = args.get("command", "")
 
         reason = args.get("reason", "未提供原因")
-
 
         # 2. 命令净化
         try:

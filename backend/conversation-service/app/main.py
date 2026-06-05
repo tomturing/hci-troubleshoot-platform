@@ -47,6 +47,7 @@ async def lifespan(app: FastAPI):
         from shared.models.audit import AuditLog  # noqa: F401
         from shared.models.system_prompt import SystemPrompt  # noqa: F401
         from sqlalchemy.orm import configure_mappers
+
         configure_mappers()
         logger.info("SQLAlchemy mappers 编译配置成功，外键检查通过")
     except Exception as e:

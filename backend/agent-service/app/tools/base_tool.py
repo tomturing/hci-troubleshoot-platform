@@ -37,4 +37,3 @@ class ToolDefinition(BaseModel):
     policy: str  # auto|notify|confirm|block
     category: str  # scp|acli|sop|...
     usage_template: str | None = None  # ACLI 插件工具命令模板（可为空）
-

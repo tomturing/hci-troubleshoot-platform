@@ -33,9 +33,6 @@ from app.domain.base_agent import BaseAgent, Message, Observation, Step, ToolCal
 logger = get_logger("remediation-agent")
 
 
-
-
-
 class RemediationAgent(BaseAgent):
     """S5 方案输出与修复执行 Agent（继承 BaseAgent）。
 
@@ -60,10 +57,10 @@ class RemediationAgent(BaseAgent):
         self._diagnostic_item_client = diagnostic_item_client
         if db_session_factory is None:
             from shared.utils.prompt_loader import create_mock_session_factory
+
             self._db_session_factory = create_mock_session_factory()
         else:
             self._db_session_factory = db_session_factory
-
 
     # ─── BaseAgent 抽象方法实现 ─────────────────────────────────────────────────
 
@@ -125,19 +122,16 @@ class RemediationAgent(BaseAgent):
         solution = solution or "请根据诊断结果制定修复方案"
 
         from shared.utils.prompt_loader import StrictPromptLoader
+
         async with self._db_session_factory() as session:
-            base_identity = await StrictPromptLoader.load_and_validate(
-                session, "base_identity_v1", []
-            )
+            base_identity = await StrictPromptLoader.load_and_validate(session, "base_identity_v1", [])
             base_methodology = await StrictPromptLoader.load_and_validate(
                 session, "base_methodology_v1", ["stage_desc"]
             )
             s5_template = await StrictPromptLoader.load_and_validate(
                 session, "s5_solution_v1", ["root_cause", "solution"]
             )
-            base_context = await StrictPromptLoader.load_and_validate(
-                session, "base_case_context_v1", ["case_id"]
-            )
+            base_context = await StrictPromptLoader.load_and_validate(session, "base_case_context_v1", ["case_id"])
 
         formatted_methodology = base_methodology.format(stage_desc="S5 - 方案输出与修复执行")
         formatted_s5 = s5_template.format(

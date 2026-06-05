@@ -135,9 +135,7 @@ async def test_sop_request_variable_env_strategy():
     kb_client.get_sop_document = AsyncMock(
         return_value={
             "id": 2,
-            "variable_schema": [
-                {"name": "node_ip", "acquisition_strategy": "env:node_ip"}
-            ],
+            "variable_schema": [{"name": "node_ip", "acquisition_strategy": "env:node_ip"}],
         }
     )
 
@@ -145,9 +143,7 @@ async def test_sop_request_variable_env_strategy():
     conversation_sop_client = MagicMock()
     conversation_sop_client.get_execution = AsyncMock(
         return_value={
-            "context_variables": {
-                "node_ip": {"value": "192.168.1.100", "source": "env_context"}
-            },
+            "context_variables": {"node_ip": {"value": "192.168.1.100", "source": "env_context"}},
             "pending_variable_name": None,
         }
     )
@@ -183,8 +179,8 @@ async def test_sop_request_variable_env_strategy():
     )
     # 应该被识别为 env:node_ip，并因为缺失降级为需要用户输入（needs_input=True）
     from app.memory.variable_pool.pool import VariableRequestResult
+
     assert isinstance(res_missing, VariableRequestResult)
     assert res_missing.needs_input is True
     assert res_missing.variable_name == "node_ip"
     assert res_missing.kind == "variable_input"
-

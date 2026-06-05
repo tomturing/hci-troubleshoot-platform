@@ -142,10 +142,10 @@ async def create_skill(payload: dict[str, Any], db: AsyncSession = Depends(get_d
 
     # 基础格式校验（kebab-case）
     import re
-    if not re.match(r'^[a-z0-9]([a-z0-9-]*[a-z0-9])?$', skill_name) or '--' in skill_name:
+
+    if not re.match(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", skill_name) or "--" in skill_name:
         raise HTTPException(
-            status_code=400,
-            detail="skill_name 必须为 kebab-case：小写字母/数字/单连字符，不以连字符开头或结尾"
+            status_code=400, detail="skill_name 必须为 kebab-case：小写字母/数字/单连字符，不以连字符开头或结尾"
         )
     if len(skill_name) > 64:
         raise HTTPException(status_code=400, detail="skill_name 最长 64 字符")

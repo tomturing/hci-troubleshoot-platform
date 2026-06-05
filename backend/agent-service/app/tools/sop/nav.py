@@ -152,7 +152,7 @@ def _build_node_response(node: dict) -> dict[str, Any]:
     children_summary = [
         {
             "node_id": child.get("node_id") or child.get("id") or "",
-            "title": child.get("name") or child.get("title") or ""
+            "title": child.get("name") or child.get("title") or "",
         }
         for child in children
     ]

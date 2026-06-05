@@ -40,8 +40,7 @@ def verify_tool_contract(tool: ToolDefinition) -> None:
     for p in placeholders:
         if p not in schema_properties:
             raise ValueError(
-                f"工具契约损坏: {tool.name} 的命令模板中包含占位符 '{p}'，"
-                f"但在 Schema 参数定义中未找到对应属性。"
+                f"工具契约损坏: {tool.name} 的命令模板中包含占位符 '{p}'，但在 Schema 参数定义中未找到对应属性。"
             )
 
 
@@ -110,7 +109,6 @@ async def load_tool_registry(db: AsyncSession) -> dict[str, ToolDefinition]:
         registry[row.tool_name] = tool
     logger.info(f"已加载工具注册表：{len(registry)} 个工具")
     return registry
-
 
 
 def get_tools_for_llm(include_sop: bool = True) -> list[dict]:

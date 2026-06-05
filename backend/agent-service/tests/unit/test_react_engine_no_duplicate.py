@@ -404,4 +404,3 @@ async def test_react_engine_sop_mode_filtering(mock_tool_executor, mock_audit_se
     tools_passed_sop = second_call_args.kwargs.get("tools", [])
     sop_tools_present = [t for t in tools_passed_sop if t["function"]["name"] in ("get_sop_node", "sop_advance")]
     assert len(sop_tools_present) > 0, "SOP 模式必须包含 SOP 导航工具"
-
