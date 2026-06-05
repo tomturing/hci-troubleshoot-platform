@@ -11,7 +11,7 @@ const props = defineProps<{
 }>()
 
 /** 阶段标签映射 */
-const stageLabels = ['问题收集', '信息确认', '初步诊断', '故障假设', '验证假设', '方案确认', '执行修复']
+const stageLabels = ['意图识别', '故障定位', '假设生成', '验证步骤', '根因分析', '解决方案', '验证闭环']
 
 /** 获取阶段索引 (0-6) */
 const stageIndex = computed(() => {

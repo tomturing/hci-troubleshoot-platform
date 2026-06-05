@@ -1,19 +1,11 @@
-"""
-工具调用审计日志查询路由（只读）
-
-注意：
-  - 只有 GET 路由，无 DELETE（审计记录不可删除）
-  - 支持按 session_id / tool_name / risk_level 过滤
-  - 支持分页（limit + offset）
-"""
-
 import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from shared.database.postgres import DatabaseManager
-from shared.models.audit import ToolAuditLog
-from sqlalchemy import select
+from shared.models.audit import AuditLog, ToolAuditLog
+from shared.models.conversation import Conversation
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -90,5 +82,64 @@ async def list_audit_logs(
                 "trace_id": log.trace_id,
             }
             for log in logs
+        ],
+    }
+
+
+@router.get("/prompts", summary="查询Prompt审计日志（只读）")
+async def list_prompt_audit_logs(
+    case_id: str | None = Query(None, description="按工单 ID 过滤"),
+    conversation_id: str | None = Query(None, description="按会话 ID 过滤"),
+    trace_id: str | None = Query(None, description="按 Trace ID 过滤"),
+    limit: int = Query(50, ge=1, le=200, description="每页条数"),
+    offset: int = Query(0, ge=0, description="分页偏移量"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    查询 Prompt 审计日志，支持按 case_id, conversation_id, trace_id 过滤。
+    """
+    stmt = select(AuditLog, Conversation.case_id).join(
+        Conversation, AuditLog.conversation_id == Conversation.conversation_id
+    )
+
+    # 动态过滤条件
+    if case_id:
+        stmt = stmt.where(Conversation.case_id == case_id)
+    if conversation_id:
+        stmt = stmt.where(AuditLog.conversation_id == conversation_id)
+    if trace_id:
+        stmt = stmt.where(AuditLog.trace_id == trace_id)
+
+    # 精确总数统计
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    count_result = await db.execute(count_stmt)
+    total = count_result.scalar_one()
+
+    # 添加排序和分页
+    stmt = stmt.order_by(AuditLog.started_at.desc())
+    paginated_stmt = stmt.limit(limit).offset(offset)
+    result = await db.execute(paginated_stmt)
+    rows = result.all()
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [
+            {
+                "id": log.id,
+                "audit_type": log.audit_type,
+                "conversation_id": str(log.conversation_id),
+                "case_id": case_id_val,
+                "turn_index": log.turn_index,
+                "system_prompt_id": log.system_prompt_id,
+                "payload": log.payload,
+                "error": log.error,
+                "duration_ms": log.duration_ms,
+                "started_at": log.started_at.isoformat() if log.started_at else None,
+                "completed_at": log.completed_at.isoformat() if log.completed_at else None,
+                "trace_id": log.trace_id,
+            }
+            for log, case_id_val in rows
         ],
     }

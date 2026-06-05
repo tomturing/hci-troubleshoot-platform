@@ -15,10 +15,10 @@ const router = createRouter({
       meta: { title: '仪表盘', icon: 'Odometer', order: 1 },
     },
     {
-      path: '/monitoring',
-      name: 'Monitoring',
-      component: () => import('@/views/MonitoringView.vue'),
-      meta: { title: '系统监控', icon: 'Monitor', order: 2 },
+      path: '/observability',
+      name: 'Observability',
+      component: () => import('@/views/ObservabilityView.vue'),
+      meta: { title: '可观测性', icon: 'Monitor', order: 2 },
     },
     {
       path: '/clients',

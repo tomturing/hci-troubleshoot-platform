@@ -38,24 +38,69 @@ const sshForm = reactive({
 })
 const authType = ref<TerminalAuthType>('password')
 
-// ===== 临时 WebSocket =====
-let tempSocket: WebSocket | null = null
-let authTimer: ReturnType<typeof setTimeout> | null = null
-const AUTH_TIMEOUT = 15000
+// ===== SSH 连接（terminal-only 模式）=====
+async function handleConnect() {
+  // 验证表单
+  if (!sshForm.host.trim()) {
+    ElMessage.warning('请填写主机地址')
+    return
+  }
+  if (!sshForm.username.trim()) {
+    ElMessage.warning('请填写用户名')
+    return
+  }
+  if (authType.value === 'password' && !sshForm.password) {
+    ElMessage.warning('请填写密码')
+    return
+  }
+  if (authType.value === 'key' && !sshForm.privateKey) {
+    ElMessage.warning('请填写私钥')
+    return
+  }
 
-function closeTempSocket() {
-  if (authTimer) {
-    clearTimeout(authTimer)
-    authTimer = null
+  viewState.value = 'progress'
+  errorMessage.value = ''
+
+  try {
+    await chatStore.connectSSH({
+      host: sshForm.host.trim(),
+      port: Number(sshForm.port) || 22,
+      username: sshForm.username.trim(),
+      authType: authType.value,
+      password: sshForm.password,
+      privateKey: sshForm.privateKey,
+      passphrase: sshForm.passphrase,
+      caseId: chatStore.sshFlowDialogCaseId || 'terminal-only',
+    })
+
+    // 保存 SSH 配置到 localStorage（不含密码）
+    localStorage.setItem('hci_last_ssh_config', JSON.stringify({
+      host: sshForm.host.trim(),
+      port: sshForm.port,
+      username: sshForm.username.trim(),
+      lastSuccessAt: new Date().toISOString(),
+    }))
+
+    viewState.value = 'success'
+
+    // 打开终端侧边栏
+    chatStore.openTerminalSidebar()
+
+    // 关闭弹框
+    setTimeout(() => {
+      chatStore.sshFlowDialogVisible = false
+    }, 1500)
+
+  } catch (e: any) {
+    errorMessage.value = e.message || 'SSH 连接失败'
+    viewState.value = 'error'
   }
-  if (tempSocket) {
-    tempSocket.onopen = null
-    tempSocket.onmessage = null
-    tempSocket.onerror = null
-    tempSocket.onclose = null
-    tempSocket.close()
-    tempSocket = null
-  }
+}
+
+// ===== 取消 =====
+async function handleCancel() {
+  chatStore.disconnectSSH()
+  await chatStore.closeSshFlowDialog()
 }
 
 // ===== Bridge 引导 =====
@@ -85,126 +130,6 @@ function handleDownloadBridge() {
   setTimeout(() => document.body.removeChild(a), 200)
 }
 
-// ===== SSH 连接（terminal-only 模式）=====
-async function handleConnect() {
-  // 验证表单
-  if (!sshForm.host.trim()) {
-    ElMessage.warning('请填写主机地址')
-    return
-  }
-  if (!sshForm.username.trim()) {
-    ElMessage.warning('请填写用户名')
-    return
-  }
-  if (authType.value === 'password' && !sshForm.password) {
-    ElMessage.warning('请填写密码')
-    return
-  }
-  if (authType.value === 'key' && !sshForm.privateKey) {
-    ElMessage.warning('请填写私钥')
-    return
-  }
-
-  viewState.value = 'progress'
-  errorMessage.value = ''
-
-  try {
-    const socket = createBridgeSocket()
-    tempSocket = socket
-
-    await new Promise<void>((resolve, reject) => {
-      authTimer = setTimeout(() => {
-        closeTempSocket()
-        reject(new Error('SSH 认证超时（15秒）'))
-      }, AUTH_TIMEOUT)
-
-      socket.onopen = () => {
-        const options: SshConnectOptions = {
-          host: sshForm.host.trim(),
-          port: Number(sshForm.port) || 22,
-          username: sshForm.username.trim(),
-          auth_type: authType.value,
-          password: sshForm.password,
-          private_key: sshForm.privateKey,
-          passphrase: sshForm.passphrase,
-          case_id: chatStore.sshFlowDialogCaseId || 'terminal-only',
-        }
-        socket.send(buildConnectMessage(options))
-      }
-
-      socket.onmessage = (e) => {
-        let msg: TerminalWsMessage
-        try {
-          msg = JSON.parse(String(e.data || ''))
-        } catch {
-          return
-        }
-
-        if (msg.type === 'ssh_connected') {
-          clearTimeout(authTimer!)
-          authTimer = null
-
-          // 保存 SSH 配置到 localStorage（不含密码）
-          localStorage.setItem('hci_last_ssh_config', JSON.stringify({
-            host: sshForm.host.trim(),
-            port: sshForm.port,
-            username: sshForm.username.trim(),
-            lastSuccessAt: new Date().toISOString(),
-          }))
-
-          resolve()
-        } else if (msg.type === 'ssh_error') {
-          clearTimeout(authTimer!)
-          authTimer = null
-          errorMessage.value = msg.message || 'SSH 认证失败'
-          reject(new Error(errorMessage.value))
-        }
-      }
-
-      socket.onerror = () => {
-        clearTimeout(authTimer!)
-        authTimer = null
-        reject(new Error('WebSocket 连接失败'))
-      }
-    })
-
-    // 连接成功，关闭临时 socket，建立全局连接
-    closeTempSocket()
-
-    await chatStore.connectSSH({
-      host: sshForm.host.trim(),
-      port: Number(sshForm.port) || 22,
-      username: sshForm.username.trim(),
-      authType: authType.value,
-      password: sshForm.password,
-      privateKey: sshForm.privateKey,
-      passphrase: sshForm.passphrase,
-      caseId: chatStore.sshFlowDialogCaseId || 'terminal-only',
-    })
-
-    viewState.value = 'success'
-
-    // 打开终端侧边栏
-    chatStore.openTerminalSidebar()
-
-    // 关闭弹框
-    setTimeout(() => {
-      chatStore.sshFlowDialogVisible = false
-    }, 1500)
-
-  } catch (e: any) {
-    closeTempSocket()
-    errorMessage.value = e.message || 'SSH 连接失败'
-    viewState.value = 'error'
-  }
-}
-
-// ===== 取消 =====
-async function handleCancel() {
-  closeTempSocket()
-  await chatStore.closeSshFlowDialog()
-}
-
 // ===== 重试 =====
 function handleRetry() {
   viewState.value = 'form'
@@ -231,7 +156,7 @@ const dialogTitle = computed(() =>
 
 // ===== 生命周期 =====
 onBeforeUnmount(() => {
-  closeTempSocket()
+  // 无需操作
 })
 </script>
 

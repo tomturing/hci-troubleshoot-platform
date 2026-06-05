@@ -1506,7 +1506,11 @@ export const useChatStore = defineStore('chat', () => {
         } else if (msg.type === 'ssh_disconnected') {
           devLog('SSH', '连接断开')
           clearSshAuthTimer()
-          if (sshConnectionState.value === 'connected') {
+          if (sshConnectionState.value === 'connecting') {
+            sshConnectionState.value = 'error'
+            cleanupSshWebSocket()
+            reject(new Error(msg.message || 'SSH 连接被断开'))
+          } else if (sshConnectionState.value === 'connected') {
             sshConnectionState.value = 'disconnected'
             cleanupSshWebSocket()
           }
@@ -1537,7 +1541,10 @@ export const useChatStore = defineStore('chat', () => {
       socket.onclose = () => {
         devLog('SSH', 'WebSocket 关闭')
         clearSshAuthTimer()
-        if (sshConnectionState.value !== 'error') {
+        if (sshConnectionState.value === 'connecting') {
+          sshConnectionState.value = 'error'
+          reject(new Error('连接被关闭'))
+        } else if (sshConnectionState.value !== 'error') {
           sshConnectionState.value = 'disconnected'
         }
       }
