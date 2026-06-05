@@ -2,6 +2,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Edit, Delete, FullScreen, Document } from '@element-plus/icons-vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
 // ===== 类型定义（遵循 Agent Skills Open Standard）=====
 interface SkillDefinition {
@@ -131,16 +133,11 @@ const formModel = ref({
 // Markdown 预览（使用 marked + DOMPurify，与项目其他地方保持一致）
 const mdPreview = computed(() => {
   try {
-    // @ts-ignore
-    if (window.marked && window.DOMPurify) {
-      // @ts-ignore
-      return window.DOMPurify.sanitize(window.marked.parse(formModel.value.instructions_md || ''))
-    }
-    return formModel.value.instructions_md
-      .replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>')
-  } catch {
-    return formModel.value.instructions_md
+    const rawMd = formModel.value.instructions_md || ''
+    return DOMPurify.sanitize(marked.parse(rawMd) as string)
+  } catch (e) {
+    console.error('解析 Markdown 失败:', e)
+    return formModel.value.instructions_md || ''
   }
 })
 
