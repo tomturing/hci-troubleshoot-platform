@@ -711,6 +711,7 @@ onMounted(() => {
   border: 1px solid #dcdfe6;
   border-radius: 4px;
   overflow: hidden;
+  width: 100%;
 }
 
 .editor-header {
@@ -761,6 +762,10 @@ onMounted(() => {
 }
 
 .dialog-form {
+  width: 100%;
+}
+
+.dialog-form :deep(.el-form-item) {
   width: 100%;
 }
 
