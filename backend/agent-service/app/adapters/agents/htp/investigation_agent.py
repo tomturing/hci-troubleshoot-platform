@@ -461,11 +461,13 @@ class InvestigationAgent(BaseAgent):
                 )
 
             # 构建新建版 system prompt
+            context_variables = create_result.get("context_variables", {})
             system_prompt = self._build_sop_react_prompt(
                 sop_title=sop_title,
                 root_node_summary=root_node_summary,
                 diagnostic_stage=diagnostic_stage,
                 case_id=case_id,
+                context_variables=context_variables,
             )
 
         # 发送 SOP 模式启动事件（携带 sop_document_id 和恢复标记）
@@ -594,6 +596,7 @@ class InvestigationAgent(BaseAgent):
         root_node_summary: str,
         diagnostic_stage: str,
         case_id: str,
+        context_variables: dict | None = None,
     ) -> str:
         """构建 SOP ReactEngine 模式 System Prompt（T-AGT-22）。
 
@@ -605,6 +608,7 @@ class InvestigationAgent(BaseAgent):
             root_node_summary: 根节点摘要（由 _build_root_node_summary 生成）
             diagnostic_stage: 当前诊断阶段
             case_id: 工单 ID
+            context_variables: 运行时变量池（T-AGT-25）
 
         Returns:
             System Prompt 字符串
@@ -617,12 +621,25 @@ class InvestigationAgent(BaseAgent):
         }
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
 
+        # 已知变量（从 context_variables 提取值）
+        var_summary = ""
+        if context_variables:
+            var_parts = []
+            for var_name, var_info in context_variables.items():
+                if isinstance(var_info, dict) and "value" in var_info:
+                    var_parts.append(f"{var_name}={var_info['value']}")
+                elif isinstance(var_info, (str, int, float)):
+                    var_parts.append(f"{var_name}={var_info}")
+            if var_parts:
+                var_summary = f"【已知变量】\n{', '.join(var_parts)}\n\n"
+
         return (
             "你是深信服超融合基础设施（HCI）智能排障专家助手。\n\n"
             f"【工作方法论】当前诊断阶段：{stage_desc}\n\n"
             "【SOP 排障流程导航模式】\n"
             f"当前执行 SOP：《{sop_title}》\n\n"
             f"{root_node_summary}\n\n"
+            f"{var_summary}"
             "【工具使用指引】\n"
             "1. 使用 get_sop_node(node_id) 获取节点的详细内容和子节点列表\n"
             "2. 根据节点判断结果，使用 sop_advance(target_node_id, reasoning) 推进到子节点\n"

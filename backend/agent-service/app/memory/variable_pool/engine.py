@@ -179,7 +179,7 @@ async def sop_request_variable(
         acquisition_tool=acquisition_tool,
     )
 
-    if strategy in ("env_injection", "env_context"):
+    if strategy in ("env_injection", "env_context") or (isinstance(strategy, str) and strategy.startswith("env:")):
         # env_injection 类变量应在初始化阶段批量注入，如果不小心漏掉了或解析失败，
         # 我们在此处记录 warning 并降级为 user_input 策略，避免系统崩溃。
         logger.warning(

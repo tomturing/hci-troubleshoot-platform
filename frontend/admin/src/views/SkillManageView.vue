@@ -1090,6 +1090,23 @@ onMounted(() => {
   background: #f8f9fa;
 }
 
+.md-preview-content :deep(ul) {
+  padding-left: 24px;
+  list-style-type: disc;
+  margin: 8px 0;
+}
+
+.md-preview-content :deep(ol) {
+  padding-left: 24px;
+  list-style-type: decimal;
+  margin: 8px 0;
+}
+
+.md-preview-content :deep(li) {
+  margin: 4px 0;
+  line-height: 1.6;
+}
+
 /* 资源文件区域 */
 .resource-section {
   margin-bottom: 20px;

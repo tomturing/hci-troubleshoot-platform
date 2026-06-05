@@ -126,3 +126,65 @@ async def test_sop_request_variable_skill_call():
     assert res.get("ok") is True
     assert res.get("value") == "返修"
     assert res.get("source") == "skill_call"
+
+
+@pytest.mark.asyncio
+async def test_sop_request_variable_env_strategy():
+    # 模拟 env:xxx 获取策略
+    kb_client = MagicMock()
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {"name": "node_ip", "acquisition_strategy": "env:node_ip"}
+            ],
+        }
+    )
+
+    # 1. 测试变量已经在 context_variables 中存在的情况（缓存命中）
+    conversation_sop_client = MagicMock()
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={
+            "context_variables": {
+                "node_ip": {"value": "192.168.1.100", "source": "env_context"}
+            },
+            "pending_variable_name": None,
+        }
+    )
+
+    res = await sop_request_variable(
+        variable_name="node_ip",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+    )
+    assert isinstance(res, dict)
+    assert res.get("ok") is True
+    assert res.get("value") == "192.168.1.100"
+    assert res.get("source") == "cached"
+
+    # 2. 测试变量在 context_variables 中不存在的情况（应该落入策略解析并因缺失降级为 user_input）
+    conversation_sop_client_missing = MagicMock()
+    conversation_sop_client_missing.get_execution = AsyncMock(
+        return_value={
+            "context_variables": {},
+            "pending_variable_name": None,
+        }
+    )
+    conversation_sop_client_missing.interrupt = AsyncMock(return_value={"ok": True})
+
+    res_missing = await sop_request_variable(
+        variable_name="node_ip",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client_missing,
+    )
+    # 应该被识别为 env:node_ip，并因为缺失降级为需要用户输入（needs_input=True）
+    from app.memory.variable_pool.pool import VariableRequestResult
+    assert isinstance(res_missing, VariableRequestResult)
+    assert res_missing.needs_input is True
+    assert res_missing.variable_name == "node_ip"
+    assert res_missing.kind == "variable_input"
+

@@ -85,6 +85,11 @@
   - 优化技能管理列表中的“Skill 标识”和“操作”按钮排版，防止折行，保持单行显示
 - **技能编辑 Markdown 预览修复** (PR #393):
   - 修复技能编辑弹框中右侧“预览”由于未引入 marked 和 dompurify 模块导致的 Markdown 原文未解析 Bug
+- **技能预览列表缩进与 SOP 环境变量自动注入优化**:
+  - 修复技能管理页面 Markdown 预览中由于全局样式 reset 导致的列表（ul/ol/li）无前缀符号及缩进丢失问题。
+  - 优化 SOP 执行实例创建接口 `sop_create_execution` 响应，使其包含并返回已解析的环境变量。
+  - 优化排障 Agent `investigation_agent` 的系统提示词构建，在新执行实例的系统提示词中注入 `【已知变量】`，避免 AI 仍向用户手动询问已收集的信息。
+  - 修复变量池 `sop_request_variable` 获取策略判定逻辑，支持并正确识别 `env:xxx` 格式的环境变量注入策略。
 
 ---
 

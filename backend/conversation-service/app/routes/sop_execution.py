@@ -180,6 +180,7 @@ class SopCreateResponse(BaseModel):
     current_node_id: str = Field(..., description="当前节点 ID（根节点）")
     status: str = Field(..., description="执行状态（active）")
     message: str = Field(..., description="创建结果消息")
+    context_variables: dict[str, Any] | None = Field(default=None, description="运行时变量池状态")
 
 
 class SopAdvanceRequest(BaseModel):
@@ -461,6 +462,7 @@ async def sop_create_execution(
                 current_node_id=existing.current_node_id,
                 status=existing.status,
                 message="SOP 执行实例已存在，继续执行",
+                context_variables=existing.context_variables,
             )
 
         # 查询 Conversation 获取 case_id
@@ -530,6 +532,7 @@ async def sop_create_execution(
             current_node_id=execution.current_node_id,
             status=execution.status,
             message="SOP 执行实例已创建",
+            context_variables=execution.context_variables,
         )
 
 
