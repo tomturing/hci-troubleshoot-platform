@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, InfoFilled, Edit, Delete } from '@element-plus/icons-vue'
+import { Plus, InfoFilled, Edit, Delete, FullScreen } from '@element-plus/icons-vue'
 
 interface SystemPrompt {
   id: number
@@ -102,6 +102,7 @@ async function handleActiveChange(row: SystemPrompt) {
 // 弹框表单
 const dialogVisible = ref(false)
 const isEdit = ref(false)
+const isFullscreen = ref(false)
 const dialogTitle = computed(() => isEdit.value ? '编辑 Prompt 模板' : '新建 Prompt 模板')
 
 const formModel = ref({
@@ -117,6 +118,7 @@ const formModel = ref({
 // 打开新建
 function openCreateDialog() {
   isEdit.value = false
+  isFullscreen.value = false
   formModel.value = {
     id: 0,
     stage: activeTab.value,
@@ -132,6 +134,7 @@ function openCreateDialog() {
 // 打开编辑
 function openEditDialog(row: SystemPrompt) {
   isEdit.value = true
+  isFullscreen.value = false
   formModel.value = {
     id: row.id,
     stage: row.stage,
@@ -367,60 +370,76 @@ onMounted(() => {
     <!-- 新建/编辑 Prompt 模板 Dialog -->
     <el-dialog
       v-model="dialogVisible"
-      :title="dialogTitle"
-      width="780px"
+      width="90%"
+      class="premium-dialog"
+      :fullscreen="isFullscreen"
+      draggable
+      align-center
       destroy-on-close
-      class="custom-dialog"
     >
-      <el-form :model="formModel" label-width="120px" class="dialog-form">
-        <el-row :gutter="20">
-          <el-col :span="12">
+      <template #header>
+        <div class="custom-dialog-header">
+          <span class="el-dialog__title">{{ dialogTitle }}</span>
+          <el-button
+            type="info"
+            text
+            circle
+            :icon="FullScreen"
+            class="fullscreen-toggle-btn"
+            @click="isFullscreen = !isFullscreen"
+            title="切换全屏"
+          />
+        </div>
+      </template>
+
+      <el-form :model="formModel" label-position="top" class="dialog-form">
+        <el-row :gutter="24">
+          <!-- 左栏：基本元数据 -->
+          <el-col :span="8" class="form-meta-col" style="border-right: 1px solid #e4e7ed; padding-right: 20px;">
             <el-form-item label="诊断阶段 (Stage)" required>
               <el-select v-model="formModel.stage" style="width:100%" :disabled="isEdit">
                 <el-option v-for="s in stages" :key="s.value" :label="s.label" :value="s.value" />
               </el-select>
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
             <el-form-item label="版本号">
               <el-input v-model="formModel.version" placeholder="1.0" />
             </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="20">
-          <el-col :span="12">
             <el-form-item label="模板唯一标识名" required>
               <el-input v-model="formModel.name" placeholder="例如: s0_intent_recognition_v2" :disabled="isEdit" />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
             <el-form-item label="启用状态">
               <el-switch v-model="formModel.is_active" active-text="激活本版" inactive-text="暂存备用" />
             </el-form-item>
+            <el-form-item label="模板用途说明">
+              <el-input
+                v-model="formModel.description"
+                type="textarea"
+                :rows="4"
+                placeholder="说明本版 Prompt 相比于其他版本做出了什么优化，便于追溯和对比"
+              />
+            </el-form-item>
+          </el-col>
+
+          <!-- 右栏：代码/Prompt 模板大编辑器 -->
+          <el-col :span="16" style="padding-left: 20px;">
+            <el-form-item label="Prompt 模板正文" required>
+              <div class="template-editor-wrapper">
+                <div class="editor-header">
+                  <span class="placeholder-tip">
+                    支持占位符: <code v-for="p in placeholdersMap[formModel.stage]" :key="p" class="code-ph">{{ p }} </code>
+                  </span>
+                </div>
+                <el-input
+                  v-model="formModel.content_template"
+                  type="textarea"
+                  :rows="20"
+                  class="code-textarea"
+                  placeholder="请输入系统提示词内容模板..."
+                />
+              </div>
+            </el-form-item>
           </el-col>
         </el-row>
-
-        <el-form-item label="模板用途说明">
-          <el-input v-model="formModel.description" type="textarea" :rows="2" placeholder="说明本版 Prompt 相比于其他版本做出了什么优化，便于追溯和对比" />
-        </el-form-item>
-
-        <el-form-item label="Prompt 模板正文" required>
-          <div class="template-editor-wrapper">
-            <div class="editor-header">
-              <span class="placeholder-tip">
-                支持占位符: <code v-for="p in placeholdersMap[formModel.stage]" :key="p" class="code-ph">{{ p }} </code>
-              </span>
-            </div>
-            <el-input
-              v-model="formModel.content_template"
-              type="textarea"
-              :rows="14"
-              class="code-textarea"
-              placeholder="请输入系统提示词内容模板..."
-            />
-          </div>
-        </el-form-item>
       </el-form>
 
       <template #footer>
@@ -716,6 +735,25 @@ onMounted(() => {
 .custom-dialog :deep(.el-dialog) {
   border-radius: 4px;
   overflow: hidden;
+}
+
+.custom-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-right: 32px;
+}
+
+.fullscreen-toggle-btn {
+  font-size: 16px;
+  color: #606266;
+  transition: all 0.2s;
+}
+
+.fullscreen-toggle-btn:hover {
+  background: #f1f5f9;
+  color: #409eff;
+  transform: scale(1.1);
 }
 
 .custom-dialog :deep(.el-dialog__header) {

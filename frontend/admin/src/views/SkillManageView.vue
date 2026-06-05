@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, Edit, Delete } from '@element-plus/icons-vue'
+import { Plus, Search, Edit, Delete, FullScreen } from '@element-plus/icons-vue'
 
 interface SkillDefinition {
   id: number
@@ -78,6 +78,7 @@ async function handleStatusChange(row: SkillDefinition) {
 // 弹窗表单状态
 const dialogVisible = ref(false)
 const isEdit = ref(false)
+const isFullscreen = ref(false)
 const dialogTitle = computed(() => isEdit.value ? '编辑技能定义' : '新建技能定义')
 
 const formModel = ref({
@@ -94,6 +95,7 @@ const formModel = ref({
 // 打开新建弹窗
 function openCreateDialog() {
   isEdit.value = false
+  isFullscreen.value = false
   formModel.value = {
     id: 0,
     skill_name: '',
@@ -110,6 +112,7 @@ function openCreateDialog() {
 // 打开编辑弹窗
 function openEditDialog(row: SkillDefinition) {
   isEdit.value = true
+  isFullscreen.value = false
   formModel.value = {
     id: row.id,
     skill_name: row.skill_name,
@@ -285,7 +288,7 @@ onMounted(() => {
 
         <el-table-column label="功能描述" min-width="260" prop="description" show-overflow-tooltip />
 
-        <el-table-column label="操作" width="150" fixed="right" align="center">
+        <el-table-column label="操作" width="180" fixed="right" align="center">
           <template #default="{ row }">
             <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
             <el-button type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">删除</el-button>
@@ -297,76 +300,86 @@ onMounted(() => {
     <!-- 新建/编辑技能表单 Dialog -->
     <el-dialog
       v-model="dialogVisible"
-      :title="dialogTitle"
-      width="720px"
+      width="90%"
+      class="premium-dialog"
+      :fullscreen="isFullscreen"
+      draggable
+      align-center
       destroy-on-close
-      class="custom-dialog"
     >
-      <el-form :model="formModel" label-width="120px" class="dialog-form">
-        <el-row :gutter="20">
-          <el-col :span="12">
+      <template #header>
+        <div class="custom-dialog-header">
+          <span class="el-dialog__title">{{ dialogTitle }}</span>
+          <el-button
+            type="info"
+            text
+            circle
+            :icon="FullScreen"
+            class="fullscreen-toggle-btn"
+            @click="isFullscreen = !isFullscreen"
+            title="切换全屏"
+          />
+        </div>
+      </template>
+
+      <el-form :model="formModel" label-position="top" class="dialog-form">
+        <el-row :gutter="24">
+          <!-- 左栏：基本元数据 -->
+          <el-col :span="8" class="form-meta-col" style="border-right: 1px solid #e4e7ed; padding-right: 20px;">
             <el-form-item label="技能唯一标识" required>
               <el-input v-model="formModel.skill_name" placeholder="例如: disk_vendor_lifetime" :disabled="isEdit" />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
             <el-form-item label="展示名称" required>
               <el-input v-model="formModel.display_name" placeholder="例如: 硬盘厂商识别与寿命判定" />
             </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="20">
-          <el-col :span="12">
             <el-form-item label="接口版本">
               <el-input v-model="formModel.version" placeholder="1.0" />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
             <el-form-item label="状态">
               <el-switch v-model="formModel.is_active" active-text="启用" inactive-text="下线" />
             </el-form-item>
+            <el-form-item label="功能描述" required>
+              <el-input
+                v-model="formModel.description"
+                type="textarea"
+                :rows="4"
+                placeholder="说明技能的具体功能、实现原理以及在 SOP 中是如何被调用的。"
+              />
+            </el-form-item>
+          </el-col>
+
+          <!-- 右栏：代码/JSON 大编辑器 -->
+          <el-col :span="16" style="padding-left: 20px;">
+            <el-form-item label="输入参数 Schema" required>
+              <div class="json-editor-wrapper">
+                <el-input
+                  v-model="formModel.parameters_schema_str"
+                  type="textarea"
+                  :rows="12"
+                  class="code-textarea"
+                  placeholder='{"type": "object", "properties": {}}'
+                />
+                <span class="json-validator-indicator" :class="isValidJson(formModel.parameters_schema_str) ? 'valid' : 'invalid'">
+                  {{ isValidJson(formModel.parameters_schema_str) ? '✓ JSON 格式正确' : '✗ 格式错误：请输入合法 JSON' }}
+                </span>
+              </div>
+            </el-form-item>
+            <el-form-item label="输出结果 Schema" required>
+              <div class="json-editor-wrapper">
+                <el-input
+                  v-model="formModel.output_schema_str"
+                  type="textarea"
+                  :rows="12"
+                  class="code-textarea"
+                  placeholder='{"type": "object", "properties": {}}'
+                />
+                <span class="json-validator-indicator" :class="isValidJson(formModel.output_schema_str) ? 'valid' : 'invalid'">
+                  {{ isValidJson(formModel.output_schema_str) ? '✓ JSON 格式正确' : '✗ 格式错误：请输入合法 JSON' }}
+                </span>
+              </div>
+            </el-form-item>
           </el-col>
         </el-row>
-
-        <el-form-item label="功能描述" required>
-          <el-input
-            v-model="formModel.description"
-            type="textarea"
-            :rows="3"
-            placeholder="说明技能的具体功能、实现原理以及在 SOP 中是如何被调用的。"
-          />
-        </el-form-item>
-
-        <el-form-item label="输入参数 Schema" required>
-          <div class="json-editor-wrapper">
-            <el-input
-              v-model="formModel.parameters_schema_str"
-              type="textarea"
-              :rows="6"
-              class="code-textarea"
-              placeholder='{"type": "object", "properties": {}}'
-            />
-            <span class="json-validator-indicator" :class="isValidJson(formModel.parameters_schema_str) ? 'valid' : 'invalid'">
-              {{ isValidJson(formModel.parameters_schema_str) ? '✓ JSON 格式正确' : '✗ 格式错误：请输入合法 JSON' }}
-            </span>
-          </div>
-        </el-form-item>
-
-        <el-form-item label="输出结果 Schema" required>
-          <div class="json-editor-wrapper">
-            <el-input
-              v-model="formModel.output_schema_str"
-              type="textarea"
-              :rows="6"
-              class="code-textarea"
-              placeholder='{"type": "object", "properties": {}}'
-            />
-            <span class="json-validator-indicator" :class="isValidJson(formModel.output_schema_str) ? 'valid' : 'invalid'">
-              {{ isValidJson(formModel.output_schema_str) ? '✓ JSON 格式正确' : '✗ 格式错误：请输入合法 JSON' }}
-            </span>
-          </div>
-        </el-form-item>
       </el-form>
 
       <template #footer>
@@ -465,6 +478,25 @@ onMounted(() => {
 .custom-dialog :deep(.el-dialog) {
   border-radius: 4px;
   overflow: hidden;
+}
+
+.custom-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-right: 32px;
+}
+
+.fullscreen-toggle-btn {
+  font-size: 16px;
+  color: #606266;
+  transition: all 0.2s;
+}
+
+.fullscreen-toggle-btn:hover {
+  background: #f1f5f9;
+  color: #409eff;
+  transform: scale(1.1);
 }
 
 .custom-dialog :deep(.el-dialog__header) {

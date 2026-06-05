@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, Edit, Delete } from '@element-plus/icons-vue'
+import { Plus, Search, Edit, Delete, FullScreen } from '@element-plus/icons-vue'
 
 interface ToolDefinition {
   id: number
@@ -87,6 +87,7 @@ async function handleStatusChange(row: ToolDefinition) {
 // 弹窗表单状态
 const dialogVisible = ref(false)
 const isEdit = ref(false)
+const isFullscreen = ref(false)
 const dialogTitle = computed(() => isEdit.value ? '编辑工具定义' : '新建工具定义')
 
 const formModel = ref({
@@ -106,6 +107,7 @@ const formModel = ref({
 // 打开新建弹窗
 function openCreateDialog() {
   isEdit.value = false
+  isFullscreen.value = false
   formModel.value = {
     id: 0,
     tool_name: '',
@@ -125,6 +127,7 @@ function openCreateDialog() {
 // 打开编辑弹窗
 function openEditDialog(row: ToolDefinition) {
   isEdit.value = true
+  isFullscreen.value = false
   formModel.value = {
     id: row.id,
     tool_name: row.tool_name,
@@ -330,7 +333,7 @@ onMounted(() => {
 
         <el-table-column label="说明" min-width="220" prop="description" show-overflow-tooltip />
 
-        <el-table-column label="操作" width="150" fixed="right" align="center">
+        <el-table-column label="操作" width="180" fixed="right" align="center">
           <template #default="{ row }">
             <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
             <el-button type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">删除</el-button>
@@ -342,27 +345,38 @@ onMounted(() => {
     <!-- 新建/编辑工具表单 Dialog -->
     <el-dialog
       v-model="dialogVisible"
-      :title="dialogTitle"
-      width="720px"
+      width="90%"
+      class="premium-dialog"
+      :fullscreen="isFullscreen"
+      draggable
+      align-center
       destroy-on-close
-      class="custom-dialog"
     >
-      <el-form :model="formModel" label-width="120px" class="dialog-form">
-        <el-row :gutter="20">
-          <el-col :span="12">
+      <template #header>
+        <div class="custom-dialog-header">
+          <span class="el-dialog__title">{{ dialogTitle }}</span>
+          <el-button
+            type="info"
+            text
+            circle
+            :icon="FullScreen"
+            class="fullscreen-toggle-btn"
+            @click="isFullscreen = !isFullscreen"
+            title="切换全屏"
+          />
+        </div>
+      </template>
+
+      <el-form :model="formModel" label-position="top" class="dialog-form">
+        <el-row :gutter="24">
+          <!-- 左栏：基本元数据 -->
+          <el-col :span="8" class="form-meta-col" style="border-right: 1px solid #e4e7ed; padding-right: 20px;">
             <el-form-item label="工具唯一标识" required>
               <el-input v-model="formModel.tool_name" placeholder="例如: acli_vm_list" :disabled="isEdit" />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
             <el-form-item label="展示名称" required>
               <el-input v-model="formModel.display_name" placeholder="例如: 查询虚拟机列表" />
             </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="20">
-          <el-col :span="12">
             <el-form-item label="执行分类" required>
               <el-select v-model="formModel.category" style="width:100%">
                 <el-option label="ACLI 节点执行 (acli)" value="acli" />
@@ -370,73 +384,64 @@ onMounted(() => {
                 <el-option label="SOP 导航引擎 (sop)" value="sop" />
               </el-select>
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
             <el-form-item label="风险等级">
-              <el-radio-group v-model="formModel.risk_level">
+              <el-radio-group v-model="formModel.risk_level" style="width:100%">
                 <el-radio-button :value="1">只读 (1)</el-radio-button>
                 <el-radio-button :value="2">写操作 (2)</el-radio-button>
                 <el-radio-button :value="3">高危 (3)</el-radio-button>
               </el-radio-group>
             </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="20">
-          <el-col :span="12">
             <el-form-item label="接口版本">
               <el-input v-model="formModel.version" placeholder="1.0" />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
             <el-form-item label="状态">
               <el-switch v-model="formModel.is_active" active-text="启用" inactive-text="下线" />
             </el-form-item>
+            <el-form-item label="使用命令模板">
+              <el-input v-model="formModel.usage_template" placeholder="例如: acli vm list --formatter json (ACLI 插件可填，其余可为空)" />
+            </el-form-item>
+            <el-form-item label="功能描述" required>
+              <el-input
+                v-model="formModel.description"
+                type="textarea"
+                :rows="4"
+                placeholder="说明工具的详细作用和场景，供大模型 ReAct 思路理解。例如: 查询 HCI 平台当前虚拟机列表，用于确认虚机状态..."
+              />
+            </el-form-item>
+          </el-col>
+
+          <!-- 右栏：代码/JSON 大编辑器 -->
+          <el-col :span="16" style="padding-left: 20px;">
+            <el-form-item label="参数 Schema (JSON)" required>
+              <div class="json-editor-wrapper">
+                <el-input
+                  v-model="formModel.parameters_schema_str"
+                  type="textarea"
+                  :rows="12"
+                  class="code-textarea"
+                  placeholder='{"type": "object", "properties": {}}'
+                />
+                <span class="json-validator-indicator" :class="isValidJson(formModel.parameters_schema_str) ? 'valid' : 'invalid'">
+                  {{ isValidJson(formModel.parameters_schema_str) ? '✓ JSON 格式正确' : '✗ 格式错误：请输入合法 JSON' }}
+                </span>
+              </div>
+            </el-form-item>
+            <el-form-item label="调用示例 (JSON 数组)">
+              <div class="json-editor-wrapper">
+                <el-input
+                  v-model="formModel.examples_str"
+                  type="textarea"
+                  :rows="8"
+                  class="code-textarea"
+                  placeholder='[{"cmd": "acli vm list", "desc": "列出虚拟机"}]'
+                />
+                <span class="json-validator-indicator" :class="isValidJson(formModel.examples_str) ? 'valid' : 'invalid'">
+                  {{ isValidJson(formModel.examples_str) ? '✓ JSON 格式正确' : '✗ 格式错误：请输入合法 JSON 数组' }}
+                </span>
+              </div>
+            </el-form-item>
           </el-col>
         </el-row>
-
-        <el-form-item label="使用命令模板">
-          <el-input v-model="formModel.usage_template" placeholder="例如: acli vm list --formatter json (ACLI 插件可填，其余可为空)" />
-        </el-form-item>
-
-        <el-form-item label="功能描述" required>
-          <el-input
-            v-model="formModel.description"
-            type="textarea"
-            :rows="3"
-            placeholder="说明工具的详细作用和场景，供大模型 ReAct 思路理解。例如: 查询 HCI 平台当前虚拟机列表，用于确认虚机状态..."
-          />
-        </el-form-item>
-
-        <el-form-item label="参数 Schema (JSON)" required>
-          <div class="json-editor-wrapper">
-            <el-input
-              v-model="formModel.parameters_schema_str"
-              type="textarea"
-              :rows="6"
-              class="code-textarea"
-              placeholder='{"type": "object", "properties": {}}'
-            />
-            <span class="json-validator-indicator" :class="isValidJson(formModel.parameters_schema_str) ? 'valid' : 'invalid'">
-              {{ isValidJson(formModel.parameters_schema_str) ? '✓ JSON 格式正确' : '✗ 格式错误：请输入合法 JSON' }}
-            </span>
-          </div>
-        </el-form-item>
-
-        <el-form-item label="调用示例 (JSON 数组)">
-          <div class="json-editor-wrapper">
-            <el-input
-              v-model="formModel.examples_str"
-              type="textarea"
-              :rows="4"
-              class="code-textarea"
-              placeholder='[{"cmd": "acli vm list", "desc": "列出虚拟机"}]'
-            />
-            <span class="json-validator-indicator" :class="isValidJson(formModel.examples_str) ? 'valid' : 'invalid'">
-              {{ isValidJson(formModel.examples_str) ? '✓ JSON 格式正确' : '✗ 格式错误：请输入合法 JSON 数组' }}
-            </span>
-          </div>
-        </el-form-item>
       </el-form>
 
       <template #footer>
@@ -552,6 +557,25 @@ onMounted(() => {
 .custom-dialog :deep(.el-dialog) {
   border-radius: 4px;
   overflow: hidden;
+}
+
+.custom-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-right: 32px;
+}
+
+.fullscreen-toggle-btn {
+  font-size: 16px;
+  color: #606266;
+  transition: all 0.2s;
+}
+
+.fullscreen-toggle-btn:hover {
+  background: #f1f5f9;
+  color: #409eff;
+  transform: scale(1.1);
 }
 
 .custom-dialog :deep(.el-dialog__header) {
