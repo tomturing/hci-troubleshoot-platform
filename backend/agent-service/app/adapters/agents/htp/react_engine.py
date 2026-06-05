@@ -10,6 +10,7 @@ ReactEngine: ReAct 循环执行引擎
 被 InvestigationAgent 内部使用（execution_mode=react 时）
 """
 
+import json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -196,7 +197,10 @@ class ReactEngine:
                         "type": "function",
                         "function": {
                             "name": tc.name,
-                            "arguments": str(tc.arguments),
+                            # BUG-FIX(DC-02): 必须用 json.dumps() 而非 str()。
+                            # str(dict) 产生 Python 单引号格式（非法 JSON），会导致
+                            # Volcengine/OpenAI 等严格 Schema 校验的上游返回 400 BadRequest。
+                            "arguments": json.dumps(tc.arguments or {}),
                         },
                     }
                     for tc in invoke_result.tool_calls
