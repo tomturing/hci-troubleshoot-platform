@@ -33,30 +33,7 @@ from app.domain.base_agent import BaseAgent, Message, Observation, Step, ToolCal
 logger = get_logger("remediation-agent")
 
 
-# S5 专用 Prompt
-_S5_SYSTEM_PROMPT_TEMPLATE = """\
-你是深信服超融合基础设施（HCI）智能排障专家助手。
 
-【工作方法论】当前诊断阶段：S5 - 方案输出与修复执行
-
-【修复操作规范】
-1. 先解释修复原理，让工程师理解每步操作的目的
-2. 每个修复步骤执行前会弹出确认对话框，工程师确认后才执行
-3. 区分「临时修复」和「永久解决方案」，明确标注
-4. 执行后验证：每个修复步骤完成后，立即执行验证命令确认效果
-5. 若修复失败，停止操作并给出人工介入建议
-
-【已确认根因】
-{root_cause}
-
-【推荐修复方案】
-{solution}
-
-⚠️ 重要提示：以下所有操作步骤均需工程师逐步确认后才会执行。
-
----
-当前工单 ID：{case_id}\
-"""
 
 
 class RemediationAgent(BaseAgent):
@@ -74,12 +51,19 @@ class RemediationAgent(BaseAgent):
         kb_client: KBClient,
         react_engine: ReactEngine,
         diagnostic_item_client: DiagnosticItemClient | None = None,
+        db_session_factory: Any = None,
     ) -> None:
         super().__init__(name="remediation-agent", max_steps=10)
         self._ai_registry = ai_registry
         self._kb_client = kb_client
         self._react_engine = react_engine
         self._diagnostic_item_client = diagnostic_item_client
+        if db_session_factory is None:
+            from shared.utils.prompt_loader import create_mock_session_factory
+            self._db_session_factory = create_mock_session_factory()
+        else:
+            self._db_session_factory = db_session_factory
+
 
     # ─── BaseAgent 抽象方法实现 ─────────────────────────────────────────────────
 
@@ -140,11 +124,29 @@ class RemediationAgent(BaseAgent):
         root_cause = root_cause or "根因待确认"
         solution = solution or "请根据诊断结果制定修复方案"
 
-        system_prompt = _S5_SYSTEM_PROMPT_TEMPLATE.format(
+        from shared.utils.prompt_loader import StrictPromptLoader
+        async with self._db_session_factory() as session:
+            base_identity = await StrictPromptLoader.load_and_validate(
+                session, "base_identity_v1", []
+            )
+            base_methodology = await StrictPromptLoader.load_and_validate(
+                session, "base_methodology_v1", ["stage_desc"]
+            )
+            s5_template = await StrictPromptLoader.load_and_validate(
+                session, "s5_solution_v1", ["root_cause", "solution"]
+            )
+            base_context = await StrictPromptLoader.load_and_validate(
+                session, "base_case_context_v1", ["case_id"]
+            )
+
+        formatted_methodology = base_methodology.format(stage_desc="S5 - 方案输出与修复执行")
+        formatted_s5 = s5_template.format(
             root_cause=root_cause,
             solution=solution,
-            case_id=case_id,
         )
+        formatted_context = base_context.format(case_id=case_id)
+
+        system_prompt = "\n\n".join([base_identity, formatted_methodology, formatted_s5, formatted_context])
 
         yield AgentStageUpdate(
             stage="remediation_start",

@@ -52,62 +52,8 @@ class IntentResult:
     needs_confirmation: bool
 
 
-# ─── Prompt 常量（与 intent_agent.py 保持一致，从注释来看共享即可）─────────────
+# ─── Prompt 数据库化收敛已就绪 ──────────────────────────────────────────────
 
-SEGMENT_IDENTITY = """你是深信服超融合基础设施（HCI）智能排障专家助手。
-你拥有完整的 HCI 平台工作原理知识：虚拟机生命周期、分布式存储、vxlan网络、
-IPMI硬件管理、acli诊断工具集的完整用法。
-你的目标是协助现场工程师快速定位和解决 HCI 平台故障。"""
-
-SEGMENT_METHODOLOGY = """【工作方法论】
-当前诊断阶段：{stage_desc}
-
-标准诊断流程：
-S0 意图识别：从客户描述提取关键实体（虚拟机名/集群/时间点），同时查看告警日志和操作日志，确认客户真实问题
-S1 故障定位：向客户提出 1-3 个精准确认问题，定位到最小故障分类
-S2 假设生成：列出 2-3 个最可能的根因假设，按概率排序
-S3 验证执行：逐一执行诊断命令，收集系统状态证据
-S4 根因确认：根据证据确定根因
-S5 方案输出：提供明确可执行的修复步骤
-S6 验证闭环：确认问题已解决，记录知识"""
-
-SEGMENT_REASONING_MODE = """【知识使用规范】
-在意图识别阶段（S0），你的唯一目标是：
-  从用户描述中提取故障特征，在分类列表中选出最匹配的 1 个分类。
-
-规则：
-  - 不要主动诊断或推理根因（等到分类确认后再诊断）
-  - 若特征明确，直接输出确认分类
-  - 若特征模糊，提出 1 个澄清问题，并给出最多 4 个候选分类供用户选择
-  - 严禁捏造分类编码（只能使用分类列表中的编码）"""
-
-SEGMENT_S0_CONTEXT = """【环境上下文】
-## 当前环境信息
-{env_info}
-## 最新告警
-{alert_logs}
-## 近期任务日志
-{task_logs}"""
-
-SEGMENT_S0_CATEGORIES = """【故障分类列表】
-请从以下 {total_count} 个分类中选择最匹配的故障分类：
-
-{categories_text}
-
-输出格式要求：
-1. 先用自然语言解释判断依据（1-2 句）
-2. 如需澄清，最多提 1 个问题
-3. 有足够信息时，**必须**在末尾输出（独立一行）：
-   「已确认故障分类：{{code}} {{name}}」
-4. 或者输出候选列表供用户选择，并引导用户进行选择（包含最多 4 个推荐选项和 1 个“以上都不是”选项，独立五行）：
-   ① {{code1}} {{name1}}
-   ② {{code2}} {{name2}}
-   ③ {{code3}} {{name3}}
-   ④ {{code4}} {{name4}}
-   ⑤ 以上都不是（请补充症状描述）
-5. 确认分类之前，不做诊断推理，不引用 SOP"""
-
-SEGMENT_CONTEXT_TEMPLATE = "---\n当前工单 ID：{case_id}"
 
 
 class TriageAgent(BaseAgent):
@@ -127,10 +73,18 @@ class TriageAgent(BaseAgent):
         self,
         ai_registry: AIAssistantRegistry,
         kb_client: KBClient,
+        db_session_factory: Any = None,
     ) -> None:
         super().__init__(name="triage-agent", max_steps=1)
         self._ai_registry = ai_registry
         self._kb_client = kb_client
+        if db_session_factory is None:
+            from shared.utils.prompt_loader import create_mock_session_factory
+            self._db_session_factory = create_mock_session_factory()
+        else:
+            self._db_session_factory = db_session_factory
+
+
 
     # ─── BaseAgent 抽象方法实现 ─────────────────────────────────────────────────
 
@@ -189,11 +143,12 @@ class TriageAgent(BaseAgent):
         await self._ensure_categories_loaded()
 
         # 2. 构建 S0 Prompt
-        system_prompt = self._build_s0_prompt(
+        system_prompt = await self._build_s0_prompt(
             categories=self._categories_cache or {},
             env_context=env_context,
             case_id=case_id,
         )
+
 
         # 3. 获取 LLM 客户端
         ai_client = self._ai_registry.get_client(assistant_type)
@@ -348,42 +303,52 @@ class TriageAgent(BaseAgent):
                 if TriageAgent._categories_cache is None:
                     TriageAgent._categories_cache = {}
 
-    def _build_s0_prompt(
+    async def _build_s0_prompt(
         self,
         categories: dict[str, list[dict]],
         env_context: dict | None,
         case_id: str,
     ) -> str:
-        """构建 S0 意图识别 System Prompt（5 段式）。"""
-        sections: list[str] = [
-            SEGMENT_IDENTITY,
-            SEGMENT_METHODOLOGY.format(stage_desc="S0 - 意图识别"),
-            SEGMENT_REASONING_MODE,
-        ]
+        """构建 S0 意图识别 System Prompt（数据库化）。"""
+        from shared.utils.prompt_loader import StrictPromptLoader
 
-        # 环境上下文
-        if env_context:
-            sections.append(
-                SEGMENT_S0_CONTEXT.format(
-                    env_info=env_context.get("env_info", ""),
-                    alert_logs=env_context.get("alert_logs", ""),
-                    task_logs=env_context.get("task_logs", ""),
-                )
+        async with self._db_session_factory() as session:
+            base_identity = await StrictPromptLoader.load_and_validate(
+                session, "base_identity_v1", []
+            )
+            base_methodology = await StrictPromptLoader.load_and_validate(
+                session, "base_methodology_v1", ["stage_desc"]
+            )
+            s0_rules = await StrictPromptLoader.load_and_validate(
+                session, "s0_intent_recognition_v1",
+                ["env_info", "alert_logs", "task_logs", "total_count", "categories_text"]
+            )
+            base_context = await StrictPromptLoader.load_and_validate(
+                session, "base_case_context_v1", ["case_id"]
             )
 
-        # 分类列表
+        formatted_methodology = base_methodology.format(stage_desc="S0 - 意图识别")
+
         total_count = sum(len(c) for c in categories.values()) if categories else 0
         categories_text = self._format_categories(categories)
-        sections.append(
-            SEGMENT_S0_CATEGORIES.format(
-                total_count=total_count,
-                categories_text=categories_text,
-            )
+
+        formatted_s0_rules = s0_rules.format(
+            env_info=env_context.get("env_info", "") if env_context else "",
+            alert_logs=env_context.get("alert_logs", "") if env_context else "",
+            task_logs=env_context.get("task_logs", "") if env_context else "",
+            total_count=total_count,
+            categories_text=categories_text
         )
 
-        sections.append(SEGMENT_CONTEXT_TEMPLATE.format(case_id=case_id))
+        formatted_context = base_context.format(case_id=case_id)
 
-        return "\n\n".join(sections)
+        return "\n\n".join([
+            base_identity,
+            formatted_methodology,
+            formatted_s0_rules,
+            formatted_context
+        ])
+
 
     # 叶子节点 code 格式正则：允许多级前缀（如 虚拟机-L2-001、硬件-003）
     # Unicode 转义避免 encoding 风险

@@ -13,6 +13,7 @@ v2.0 变更：
 """
 
 import logging
+import string
 import sys
 
 from shared.models.tool_definition import ToolDefinitionORM
@@ -23,6 +24,26 @@ from app.tools.acli.classifier import risk_to_policy
 from app.tools.base_tool import ToolDefinition
 
 logger = logging.getLogger(__name__)
+
+
+def verify_tool_contract(tool: ToolDefinition) -> None:
+    """静态校验工具参数 Schema 与模板占位符契约是否完备"""
+    if not tool.usage_template:
+        return
+    try:
+        formatter = string.Formatter()
+        placeholders = {f for _, f, _, _ in formatter.parse(tool.usage_template) if f is not None}
+    except Exception as exc:
+        raise ValueError(f"工具 '{tool.name}' 的使用模板解析失败: {exc}") from exc
+
+    schema_properties = tool.parameters.get("properties", {}) if tool.parameters else {}
+    for p in placeholders:
+        if p not in schema_properties:
+            raise ValueError(
+                f"工具契约损坏: {tool.name} 的命令模板中包含占位符 '{p}'，"
+                f"但在 Schema 参数定义中未找到对应属性。"
+            )
+
 
 # 全局工具注册表（启动时由 main.py lifespan 填充）
 TOOL_REGISTRY: dict[str, ToolDefinition] = {}
@@ -75,16 +96,21 @@ async def load_tool_registry(db: AsyncSession) -> dict[str, ToolDefinition]:
     result = await db.execute(select(ToolDefinitionORM).where(ToolDefinitionORM.is_active.is_(True)))
     registry: dict[str, ToolDefinition] = {}
     for row in result.scalars():
-        registry[row.tool_name] = ToolDefinition(
+        tool = ToolDefinition(
             name=row.tool_name,
             description=row.description,
             parameters=row.parameters_schema,
             risk_level=row.risk_level,
             policy=risk_to_policy(row.risk_level),
             category=row.category,  # 执行路由: scp | acli | sop
+            usage_template=row.usage_template,
         )
+        # 静态契约校验，如有不一致立刻 Fail-Fast 阻断启动
+        verify_tool_contract(tool)
+        registry[row.tool_name] = tool
     logger.info(f"已加载工具注册表：{len(registry)} 个工具")
     return registry
+
 
 
 def get_tools_for_llm(include_sop: bool = True) -> list[dict]:

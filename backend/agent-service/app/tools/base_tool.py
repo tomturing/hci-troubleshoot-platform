@@ -36,3 +36,5 @@ class ToolDefinition(BaseModel):
     risk_level: int  # 1=只读, 2=写操作需确认, 3=高危禁用
     policy: str  # auto|notify|confirm|block
     category: str  # scp|acli|sop|...
+    usage_template: str | None = None  # ACLI 插件工具命令模板（可为空）
+

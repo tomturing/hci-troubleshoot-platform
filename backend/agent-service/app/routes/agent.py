@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.utils.prompt_loader import PromptLoadError, PromptValidationError
 
 from app.adapters.agents.agent_router import AgentRouter
 from app.adapters.agents.htp.confirm_service import ConfirmService
@@ -187,6 +188,13 @@ async def _event_stream(
             case_id=req.case_id,
         )
 
+    except (PromptLoadError, PromptValidationError) as exc:
+        logger.error(
+            event="agent_prompt_error",
+            message=str(exc),
+            session_id=req.session_id,
+        )
+        yield _sse({"type": "error", "message": f"[Prompt配置错误] {str(exc)}"})
     except AgentUnavailableError as exc:
         logger.error(
             event="agent_unavailable",
@@ -202,6 +210,7 @@ async def _event_stream(
             session_id=req.session_id,
         )
         yield _sse({"type": "error", "message": f"推理异常: {exc!s}"})
+
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────

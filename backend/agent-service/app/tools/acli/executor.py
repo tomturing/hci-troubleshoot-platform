@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+import string
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from shared.database.redis import RedisManager
 from shared.observability.logger import get_logger
@@ -155,11 +158,59 @@ class CommandSanitizer:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TemplateInterpolator：命令模板安全插值引擎
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+
+class TemplateInterpolator:
+    """ACLI 插件命令安全插值引擎"""
+
+    @classmethod
+    def interpolate(cls, template: str, args: dict[str, Any]) -> str:
+        """
+        根据传入参数和模板生成净化后的 Bash 命令行
+
+        Args:
+            template: 命令模板，如 "acli plugins vm_start vm_start --vm-id {vm_id}"
+            args: 大模型传入的实参，如 {"vm_id": "test-123"}
+
+        Raises:
+            ValueError: 缺少必要参数或插值计算失败
+        """
+        if not template:
+            return ""
+
+        # 1. 解析模板中所有的占位符
+        formatter = string.Formatter()
+        placeholders = {field_name for _, field_name, _, _ in formatter.parse(template) if field_name is not None}
+
+        # 2. 检查占位符的参数是否在 args 中提供
+        safe_args = {}
+        for placeholder in placeholders:
+            if placeholder not in args:
+                raise ValueError(f"命令模板插值失败：模板中要求的参数 '{placeholder}' 在 Function Call 参数中缺失")
+
+            val = args[placeholder]
+            # 对参数值进行严格防注入处理：强转 string 并通过 shlex.quote 进行 Shell 转义
+            safe_args[placeholder] = shlex.quote(str(val))
+
+        # 3. 渲染模板
+        try:
+            interpolated_command = template.format(**safe_args)
+        except Exception as e:
+            raise ValueError(f"格式化命令模板出错: {str(e)}") from e
+
+        return interpolated_command.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # BridgeRelayExecutor：Bridge 中转执行器
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class BridgeRelayExecutor:
+
     """
     Bridge 中转执行器：所有 acli/bash 工具的唯一执行后端。
 
@@ -226,6 +277,7 @@ class BridgeRelayExecutor:
         node_ip: str | None = None,
         risk_level: int | None = None,
         policy: str | None = None,
+        usage_template: str | None = None,
     ) -> ExecResult:
         """
         执行命令并返回结果。
@@ -237,6 +289,7 @@ class BridgeRelayExecutor:
             node_ip: 目标节点 IP（可选，从 context_variables 中读取）
             risk_level: 风险等级（可选，对插件工具使用固定值）
             policy: 执行策略（可选，对插件工具使用固定值）
+            usage_template: 插件工具的命令模板（可选）
 
         Returns:
             ExecResult: 执行结果
@@ -249,8 +302,26 @@ class BridgeRelayExecutor:
         exec_id = str(uuid.uuid4())
 
         # 1. 提取命令和原因
-        command = args.get("command", "")
+        if usage_template:
+            try:
+                command = TemplateInterpolator.interpolate(usage_template, args)
+            except ValueError as e:
+                logger.error(f"插件工具插值失败: {str(e)}", exc_info=True)
+                return ExecResult(
+                    stdout="",
+                    stderr=f"[error] 参数校验与插值失败: {str(e)}",
+                    exit_code=-1,
+                    command=usage_template,
+                    node=node_ip or "unknown",
+                    duration_ms=0,
+                    truncated=False,
+                    risk_level=risk_level or 3,
+                )
+        else:
+            command = args.get("command", "")
+
         reason = args.get("reason", "未提供原因")
+
 
         # 2. 命令净化
         try:

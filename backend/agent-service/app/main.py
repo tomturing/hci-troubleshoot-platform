@@ -158,6 +158,7 @@ async def lifespan(app: FastAPI):
     triage_agent = TriageAgent(
         ai_registry=ai_registry,
         kb_client=kb_client,
+        db_session_factory=db_manager.async_session_factory,
     )
 
     # ── 工具执行器（S1-S5 阶段共用）─────────────────────────────────────────────
@@ -237,6 +238,7 @@ async def lifespan(app: FastAPI):
         top_k=15,
         confirm_service=confirm_service,
         audit_service=audit_service,
+        db_session_factory=db_manager.async_session_factory,
     )
     logger.info(
         event="investigation_agent_initialized",
@@ -252,6 +254,7 @@ async def lifespan(app: FastAPI):
             ai_registry=ai_registry,
             kb_client=kb_client,
             react_engine=react_engine,
+            db_session_factory=db_manager.async_session_factory,
         )
         logger.info(
             event="remediation_agent_initialized",
@@ -419,7 +422,9 @@ class CompositeToolExecutor:
                 node_ip=args.get("node_ip"),
                 risk_level=tool_def.risk_level,
                 policy=tool_def.policy,
+                usage_template=tool_def.usage_template,
             )
+
             # 返回 stdout 或错误信息
             return result.stdout or f"[exit_code={result.exit_code}]"
         elif tool_def.category == "sop":
