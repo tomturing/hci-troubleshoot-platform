@@ -188,7 +188,7 @@ data:
           "targets": [
             {
               "expr": "sum by (job) (rate(http_requests_total[5m]))",
-              "legendFormat": "{{job}}"
+              "legendFormat": "{{ "{{job}}" }}"
             }
           ],
           "fieldConfig": {
@@ -207,7 +207,7 @@ data:
           "targets": [
             {
               "expr": "sum by (job) (rate(http_requests_total{status=~\"5..\"}[5m])) / sum by (job) (rate(http_requests_total[5m]))",
-              "legendFormat": "{{job}} 错误率"
+              "legendFormat": "{{ "{{job}}" }} 错误率"
             }
           ],
           "fieldConfig": {
@@ -232,7 +232,7 @@ data:
           "targets": [
             {
               "expr": "histogram_quantile(0.95, sum by (le, job) (rate(http_request_duration_seconds_bucket[5m])))",
-              "legendFormat": "{{job}} P95"
+              "legendFormat": "{{ "{{job}}" }} P95"
             }
           ],
           "fieldConfig": {
@@ -286,11 +286,11 @@ data:
           "targets": [
             {
               "expr": "sum by (assistant_type) (hci_pod_pool_idle)",
-              "legendFormat": "空闲 {{assistant_type}}"
+              "legendFormat": "空闲 {{ "{{assistant_type}}" }}"
             },
             {
               "expr": "sum by (assistant_type) (hci_pod_pool_active)",
-              "legendFormat": "活跃 {{assistant_type}}"
+              "legendFormat": "活跃 {{ "{{assistant_type}}" }}"
             }
           ],
           "fieldConfig": {
