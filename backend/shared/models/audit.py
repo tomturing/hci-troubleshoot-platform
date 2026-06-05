@@ -14,6 +14,7 @@ from sqlalchemy import Column, DateTime, ForeignKey, Integer, SmallInteger, Stri
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from ..database.postgres import Base
+from .conversation import Conversation  # noqa: F401
 from .system_prompt import SystemPrompt  # noqa: F401
 
 

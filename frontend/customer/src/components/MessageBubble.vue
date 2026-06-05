@@ -740,7 +740,7 @@ onBeforeUnmount(() => {
         <div v-if="interactiveEvent" class="interactive-bubble">
           <!-- 标题 -->
           <div class="interactive-title">
-            {{ interactiveEvent.kind === 'sop_step' ? '📋 SOP 操作步骤确认' : '❓ 信息确认' }}
+            {{ interactiveEvent.title || (interactiveEvent.kind === 'sop_step' ? '📋 SOP 操作步骤确认' : '❓ 信息确认') }}
           </div>
 
           <!-- SOP 卡：展示路径/目标/预期/操作指引 -->
@@ -769,6 +769,14 @@ onBeforeUnmount(() => {
             </div>
           </template>
 
+          <!-- 变量输入卡：变量描述 -->
+          <template v-else-if="['variable_input', 'variable_confirm'].includes(interactiveEvent.kind)">
+            <div class="ir-field">
+              <span class="ir-label">变量描述</span>
+              <p class="ir-question">{{ interactiveEvent.prompt }}</p>
+            </div>
+          </template>
+
           <!-- 信息确认卡：核心问题 + 背景说明 -->
           <template v-else>
             <div class="ir-field">
@@ -793,12 +801,14 @@ onBeforeUnmount(() => {
 
           <!-- 自由文本输入（提交后隐藏） -->
           <div v-if="interactiveEvent.customInput && !interactiveSubmitted" class="ir-free-input">
-            <span class="ir-label">补充信息（可选）</span>
+            <span class="ir-label">
+              {{ ['variable_input', 'variable_confirm'].includes(interactiveEvent.kind) ? (interactiveEvent.metadata?.required ? '请输入（必填）' : '请输入（选填）') : '补充信息（可选）' }}
+            </span>
             <el-input
               v-model="interactiveFreeText"
               type="textarea"
               :rows="2"
-              placeholder="输入更准确的现场信息或执行结果。"
+              :placeholder="['variable_input', 'variable_confirm'].includes(interactiveEvent.kind) ? (interactiveEvent.metadata?.validation_pattern ? '格式要求: ' + interactiveEvent.metadata.validation_pattern : '请输入对应的值。') : '输入更准确的现场信息或执行结果。'"
               :disabled="interactiveSubmitting"
             />
             <el-button
@@ -808,7 +818,7 @@ onBeforeUnmount(() => {
               :loading="interactiveSubmitting"
               @click="handleInteractiveFreeText"
             >
-              提交补充信息
+              {{ ['variable_input', 'variable_confirm'].includes(interactiveEvent.kind) ? '提交变量值' : '提交补充信息' }}
             </el-button>
           </div>
         </div>

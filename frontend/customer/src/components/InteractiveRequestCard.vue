@@ -47,6 +47,14 @@
       />
     </template>
 
+    <!-- 变量输入卡：变量描述 -->
+    <template v-else-if="['variable_input', 'variable_confirm'].includes(props.event.kind)">
+      <div class="field-block question-block">
+        <span class="field-label">变量描述</span>
+        <p class="question-text">{{ props.event.prompt }}</p>
+      </div>
+    </template>
+
     <!-- 信息确认卡：展示核心问题 + 背景说明 -->
     <template v-else>
       <div class="field-block question-block">
@@ -80,12 +88,14 @@
 
     <!-- 自由文本输入 -->
     <div v-if="props.event.customInput" class="custom-input-section">
-      <span class="field-label">补充信息（可选）</span>
+      <span class="field-label">
+        {{ ['variable_input', 'variable_confirm'].includes(props.event.kind) ? (meta.required ? '请输入（必填）' : '请输入（选填）') : '补充信息（可选）' }}
+      </span>
       <el-input
         v-model="customText"
         type="textarea"
         :rows="3"
-        placeholder="输入更准确的现场信息或执行结果。"
+        :placeholder="['variable_input', 'variable_confirm'].includes(props.event.kind) ? (meta.validation_pattern ? '格式要求: ' + meta.validation_pattern : '请输入对应的值。') : '输入更准确的现场信息或执行结果。'"
         :disabled="submitting"
       />
       <el-button
@@ -94,7 +104,7 @@
         :loading="submitting"
         @click="submitFreeText"
       >
-        提交补充信息
+        {{ ['variable_input', 'variable_confirm'].includes(props.event.kind) ? '提交变量值' : '提交补充信息' }}
       </el-button>
     </div>
   </el-dialog>
@@ -144,7 +154,7 @@ const selectedOptionId = ref<string | null>(null)
 const meta = computed(() => props.event.metadata ?? {})
 
 const cardTitle = computed(() =>
-  props.event.kind === 'sop_step' ? '📋 SOP 操作步骤确认' : '❓ 信息确认'
+  props.event.title || (props.event.kind === 'sop_step' ? '📋 SOP 操作步骤确认' : '❓ 信息确认')
 )
 
 /** SOP 卡的用户反馈引导文本：优先取 metadata.feedbackRequest，其次 prompt */
