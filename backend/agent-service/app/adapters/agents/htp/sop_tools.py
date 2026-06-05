@@ -79,7 +79,7 @@ class SopToolExecutor:
         self._default_executor = default_executor
         self._completed_steps = completed_steps or []  # T-AGT-23
 
-    async def execute(self, tool_name: str, args: dict[str, Any]) -> Any:
+    async def execute(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> Any:
         """执行工具调用。
 
         SOP 工具使用本执行器的上下文注入执行，
