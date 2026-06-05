@@ -1,67 +1,74 @@
 # HCI 智能排障平台 — Prompt 数据库化收敛与动态热生效技术方案
 
-本方案旨在解决 HCI 智能排障平台中 Prompt 模版断代、硬编码残留以及无法通过 Admin 后台即时热更新生效的问题。通过第一性原理，设计一套**无硬编码、全库收敛、即时生效且具备安全降级能力**的 Prompt 架构体系。
+本方案基于**第一性原理**与**代码结构主导原则**，重新设计平台 Prompt 的数据库化收敛及热生效机制。本设计将**运行中且已验证的 Python 代码 Prompts 作为唯一的“真理源”**，以此重构数据库种子，并实现严密的占位符静态验证与“喧闹式报错”（Loud Failing）机制，彻底消除开发与调试中的配置吞噬与隐藏缺陷。
 
 ---
 
-## 一、 设计背景与核心目标
+## 一、 设计原则
 
-### 1. 当前痛点
-*   **配置断联**：数据库中的 `base_core_v1` 等种子 Prompt 仅在 Admin 页面展示，底层 `htp-agent` 推理时实际使用的是写死在 Python 代码中的常量与模板，导致管理页面形同虚设。
-*   **硬编码残留**：S0 意图识别、S1-S4 诊断导航（新建、恢复、降级、机制推理）、S5 方案修复的 System Prompt 全量硬编码在 Python 代码中，维护成本高。
-*   **无热生效能力**：运维工程师在 Admin 页面调整 Prompt 后，必须重启服务或修改代码才能影响 AI 推理结果。
+### 1. 代码结构主导原则 (Code-Driven Database Schema)
+不为了适配原有的不合理数据库 Prompt 而强行修改代码。相反，**将代码中正在生效、且已在生产中被验证的 Prompt 硬编码作为“第一真理源”，按此结构重构数据库中的模板库**。
 
-### 2. 核心目标
-1.  **完全对齐**：删除废弃/不一致的数据库种子 Prompts，建立全新的、与代码推理强契合的 7 大核心模板，实现 UI 管理页与代码消费端的 1对1 对齐。
-2.  **全量数据库化收敛**：代码中不再保留完整的 System Prompt 模板，所有的 System Prompt 动态从 `system_prompt` 表中加载。
-3.  **动态即时生效（热加载）**：管理员在后台点击保存后，下一轮推理请求将立即应用最新版 Prompt 模板，实现 0 延迟热生效。
-4.  **鲁棒性防护（安全降级）**：若数据库因高负载、网络中断或在没有完整数据库的测试环境中运行时，Agent 必须能够自动降级回退到代码中的默认常量，确保排障核心链路不会因 Prompt 加载异常而中断。
+### 2. UI 界面 1对1 映射原则
+排障流中的 S1-S4 属于 `InvestigationAgent` 控制的诊断调查阶段，其实质包含 4 种不同的底层决策模式（SOP React模式、SOP恢复模式、SOP降级模式、机制推理模式）。本设计将这 4 种决策模式的 Prompt 分别映射到 Admin 后台的 S1, S2, S3, S4 标签页中，从而使 UI 管理页面与底层代码的逻辑结构形成严密的 1对1 契合。
+
+### 3. “强校验与喧闹报错”原则 (Loud Failing & Zero Silent recovery)
+在调试与热更新生效阶段，**禁止任何隐式回退（Silent Fallback）或错误掩盖**：
+*   **格式安全校验**：模板加载时需通过语法解析器静态提取其中的占位符，必须与代码运行时注入的参数（如 `{categories_text}` 等）完全契合。如果管理员修改时误删、误加、拼错占位符，系统必须**直接阻断并抛出详细的格式错误**。
+*   **热加载报错传导**：若数据库拉取失败或版本解析出错，AI 推理流必须即时中断，并直接将底层堆栈异常抛出到前端 SSE 错误气泡或控制台，防止因静默回退到旧版代码常量而导致“管理员修改后台却没有任何感知”的情况。
 
 ---
 
-## 二、 数据库种子数据重构设计 (`02_system_prompts.sql` 对齐)
+## 二、 数据库模板重构设计 (Seeds SQL 重构)
 
-为了与 Admin 页面上的 7 大标签页（BASE, S0, S1, S2, S3, S4, S5）完美对齐，我们需要重构并重新插入 `system_prompt` 表，将 `htp-agent` 消费的 7 种不同形态的 Prompt 进行归类存放：
+基于以上原则，将原有 `seeds/02_system_prompts.sql` 全量推倒重来。模板内容直接提取自 Python 源代码，并按代码决策模式分布在 7 个标签页：
 
 ```
-Admin UI 标签页       数据库 system_prompt 记录 (name)       实际消费端
-[BASE] ----------->  base_core_v1 (全局角色定义) ------------> 全阶段前置注入
-[S0] ------------->  s0_intent_recognition_v1 --------------> TriageAgent (S0 阶段)
-[S1] ------------->  s1_sop_react_new_v1 (SOP React 新建) ----> InvestigationAgent
-[S2] ------------->  s2_sop_react_resume_v1 (SOP React 恢复) -> InvestigationAgent
-[S3] ------------->  s3_sop_legacy_v1 (SOP 降级只读) ----------> InvestigationAgent
-[S4] ------------->  s4_fallback_v1 (机制推理) --------------> InvestigationAgent
-[S5] ------------->  s5_solution_v1 (修复执行) --------------> RemediationAgent
+Admin 标签页      数据库 system_prompt (name)                参数占位符要求
+[BASE] --------> base_identity_v1 (专家身份定义) ----------- 无
+                 base_methodology_v1 (标准方法论) --------- {stage_desc}
+                 base_case_context_v1 (工单页脚) ----------- {case_id}
+[S0] ----------> s0_intent_recognition_v1 (意图识别) -------- {env_info}, {alert_logs}, {task_logs}, {total_count}, {categories_text}
+[S1] ----------> s1_sop_react_new_v1 (SOP React 新运行) ---- {sop_title}, {root_node_title}, {root_node_type}, {root_node_content}, {root_node_branches}, {known_variables}
+[S2] ----------> s2_sop_react_resume_v1 (SOP React 恢复) --- {sop_title}, {completed_steps_count}, {current_node_id}, {known_variables}, {current_node_title}, {current_node_type}, {current_node_content}, {current_node_branches}, {completed_nodes_str}
+[S3] ----------> s3_sop_legacy_v1 (SOP 文本降级) ----------- {sop_title}, {sop_content}
+[S4] ----------> s4_fallback_v1 (Fallback 机制推理) -------- {category_id}
+[S5] ----------> s5_solution_v1 (S5 修复执行) -------------- {root_cause}, {solution}
 ```
 
-### 1. BASE：全局角色定义 (`base_core_v1`)
-*   **用途**：定义助手角色定位与可用工具列表。
-*   **模板内容**：
+### 1. BASE 分类（全局定义对齐）
+包含三个核心组件，由底层 Agent 拼装到所有的 System Prompt 头尾部：
+*   **`base_identity_v1`**：
     ```markdown
-    你是「智能排障助手」，专门协助用户诊断和解决深信服 HCI（超融合基础设施）平台的技术故障。
+    你是深信服超融合基础设施（HCI）智能排障专家助手。
+    你拥有完整的 HCI 平台工作原理知识：虚拟机生命周期、分布式存储、vxlan网络、
+    IPMI硬件管理、acli诊断工具集的完整用法。
+    你的目标是协助现场工程师快速定位和解决 HCI 平台故障。
+    ```
+*   **`base_methodology_v1`**：
+    ```markdown
+    【工作方法论】
+    当前诊断阶段：{stage_desc}
     
-    ## 角色定位
-    - 你是一位经验丰富的 HCI 平台技术专家
-    - 你具备系统化的故障诊断能力（假设驱动、逐步验证、数据支撑）
-    - 你的目标是在最短时间内帮助用户定位并解决问题
-    
-    ## 行为准则
-    1. **数据驱动**：基于工具返回的实际数据分析，不凭经验臆断
-    2. **风险优先**：高危工具操作必须向用户说明风险，等待确认后执行
-    3. **步骤清晰**：每次响应说明当前在做什么、为什么这样做
-    4. **诚实透明**：不确定时明说，避免提供误导性建议
-    
-    ## 可用工具
-    {tool_list}
+    标准诊断流程：
+    S0 意图识别：从客户描述提取关键实体（虚拟机名/集群/时间点），同时查看告警日志和操作日志，确认客户真实问题
+    S1 故障定位：向客户提出 1-3 个精准确认问题，定位到最小故障分类
+    S2 假设生成：列出 2-3 个最可能的根因假设，按概率排序
+    S3 验证执行：逐一执行诊断命令，收集系统状态证据
+    S4 根因确认：根据证据确定根因
+    S5 方案输出：提供明确可执行的修复步骤
+    S6 验证闭环：确认问题已解决，记录知识
+    ```
+*   **`base_case_context_v1`**：
+    ```markdown
+    ---
+    当前工单 ID：{case_id}
     ```
 
-### 2. S0：意图识别 (`s0_intent_recognition_v1`)
-*   **用途**：约束 S0 推理和输出 4+1 格式。
-*   **模板内容**：
+### 2. S0 分类（意图识别对齐）
+*   **`s0_intent_recognition_v1`**：
     ```markdown
-    ## 当前阶段：S0 — 故障意图识别
-    
-    【意图识别推理规范】
+    【知识使用规范】
     在意图识别阶段（S0），你的唯一目标是：
       从用户描述中提取故障特征，在分类列表中选出最匹配的 1 个分类。
     
@@ -98,12 +105,9 @@ Admin UI 标签页       数据库 system_prompt 记录 (name)       实际消�
     5. 确认分类之前，不做诊断推理，不引用 SOP
     ```
 
-### 3. S1：SOP React 新建模式 (`s1_sop_react_new_v1`)
-*   **用途**：S1-S4 诊断初始阶段。
-*   **模板内容**：
+### 3. S1 分类（SOP React 新建模式）
+*   **`s1_sop_react_new_v1`**：
     ```markdown
-    【工作方法论】当前诊断阶段：{stage_desc}
-    
     【SOP 排障流程导航模式】
     当前执行 SOP：《{sop_title}》
     
@@ -129,12 +133,9 @@ Admin UI 标签页       数据库 system_prompt 记录 (name)       实际消�
     - 可自由使用诊断工具辅助判断，工具调用和 SOP 导航可交替进行
     ```
 
-### 4. S2：SOP React 恢复模式 (`s2_sop_react_resume_v1`)
-*   **用途**：S1-S4 诊断因中断重连恢复时的执行说明。
-*   **模板内容**
+### 4. S2 分类（SOP React 恢复模式）
+*   **`s2_sop_react_resume_v1`**：
     ```markdown
-    【工作方法论】当前诊断阶段：{stage_desc}
-    
     【SOP 排障流程恢复模式】
     正在执行 SOP：《{sop_title}》
     已完成步骤 {completed_steps_count} 步，当前位置节点：{current_node_id}
@@ -166,12 +167,9 @@ Admin UI 标签页       数据库 system_prompt 记录 (name)       实际消�
     - 可自由使用诊断工具辅助判断
     ```
 
-### 5. S3：SOP 降级只读模式 (`s3_sop_legacy_v1`)
-*   **用途**：通信故障时退回到将 SOP 文本合并入上下文的单次交互推理。
-*   **模板内容**：
+### 5. S3 分类（SOP 降级只读模式）
+*   **`s3_sop_legacy_v1`**：
     ```markdown
-    【工作方法论】当前诊断阶段：{stage_desc}
-    
     【知识使用规范】
     你有 SOP 排障流程可用，请严格按其步骤顺序执行，在每个判断节点收集证据后再做决策。
     
@@ -179,12 +177,9 @@ Admin UI 标签页       数据库 system_prompt 记录 (name)       实际消�
     {sop_content}
     ```
 
-### 6. S4：机制推理模式 (`s4_fallback_v1`)
-*   **用途**：无知识库匹配时根据原理诊断。
-*   **模板内容**：
+### 6. S4 分类（机制推理降级模式）
+*   **`s4_fallback_v1`**：
     ```markdown
-    【工作方法论】当前诊断阶段：{stage_desc}
-    
     【机制推理模式】
     当前知识库中暂未找到与分类 {category_id} 高度匹配的 SOP 或历史案例。
     请基于 HCI 平台架构机制知识进行推理：
@@ -192,9 +187,8 @@ Admin UI 标签页       数据库 system_prompt 记录 (name)       实际消�
       - 在回复末尾追加：「如能提供更具体的报错信息，我可以尝试匹配更精确的排障流程」
     ```
 
-### 7. S5：修复方案执行 (`s5_solution_v1`)
-*   **用途**：方案修复执行说明及二次确认。
-*   **模板内容**：
+### 7. S5 分类（S5 修复方案与执行说明）
+*   **`s5_solution_v1`**：
     ```markdown
     【修复操作规范】
     1. 先解释修复原理，让工程师理解每步操作的目的
@@ -214,31 +208,18 @@ Admin UI 标签页       数据库 system_prompt 记录 (name)       实际消�
 
 ---
 
-## 三、 Agent 推理端动态加载与生效逻辑
+## 三、 强验证热加载引擎实现设计
 
-### 1. 动态加载架构设计
+为了确保管理员在 UI 界面修改完 Prompt 后**能即时生效且有错必报**，底层加载组件必须在查询 DB 模板后，先运行严格的**静态占位符安全比对**。
 
-为了实现“即时生效”，`agent-service` 发起任何大模型推理请求（`process`）时，**必须在请求的生命周期起始阶段拉取最新的 active 模板**：
+### 1. 强验证模板加载器实现
 
-*   **数据库接入**：由于 `agent-service` 在 `lifespan` 阶段已经通过 `DatabaseManager` 建立了数据库连接池，因此我们可以直接向 Agent 类中注入 `async_session_factory`，由 Agent 在执行推理前独立查询模板表。
-*   **解耦性能设计**：每次消息交互（Message Stream）只对数据库发起一次模板查询，读取本阶段依赖的 2-3 个 Prompt（BASE 模板 + 当前阶段模板），单次查询延迟 < 5ms，保证高响应度的同时杜绝高频拉取导致的 DB 瓶颈。
-
-```
-[Web UI (Admin)] 
-     | 
-     +---> (修改 Prompt 模板内容并保存) ---> [PostgreSQL (system_prompt)]
-                                                    ^
-                                                    | (流式推理开始时异步拉取)
-[User Chat Input] --> [conversation-service] -> [agent-service] -> [LLM]
-```
-
-### 2. 数据库拉取与安全回退逻辑实现
-
-编写一个公共的 Prompt 加载组件，内置在数据库会话上下文中：
+设计 `StrictPromptLoader` 类，利用 Python 的 `string.Formatter` 分析模板中的占位符，发现不匹配直接向外抛出异常，阻止 AI 推理：
 
 ```python
-# backend/shared/utils/prompt_loader.py (或者置于 agent-service 共享目录下)
+# backend/shared/utils/prompt_loader.py
 
+import string
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from shared.models.system_prompt import SystemPrompt
@@ -246,159 +227,227 @@ from shared.observability.logger import get_logger
 
 logger = get_logger("prompt-loader")
 
-async def get_active_prompt_template(
-    db_session: AsyncSession, 
-    prompt_name: str, 
-    fallback_content: str
-) -> str:
-    """从数据库获取处于激活状态的 Prompt 模板。如果失败，回退至代码硬编码常量。"""
-    try:
-        stmt = select(SystemPrompt.content_template).where(
-            SystemPrompt.name == prompt_name,
-            SystemPrompt.is_active == True
-        )
-        result = await db_session.execute(stmt)
-        template = result.scalar_one_or_none()
-        if template:
-            return template
-    except Exception as exc:
-        logger.warning(
-            event="db_prompt_load_failed",
-            message=f"无法从数据库加载 Prompt '{prompt_name}'，使用代码硬编码降级回退",
-            error=str(exc)
-        )
-    return fallback_content
+class PromptLoadError(Exception):
+    """Prompt 从数据库加载失败异常"""
+    pass
+
+class PromptValidationError(Exception):
+    """Prompt 模板占位符校验不匹配异常"""
+    pass
+
+class StrictPromptLoader:
+    
+    @staticmethod
+    def get_template_placeholders(template_str: str) -> set[str]:
+        """提取模板中所有的 {placeholder} 占位符名称"""
+        try:
+            return {name for _, name, _, _ in string.Formatter().parse(template_str) if name is not None}
+        except ValueError as exc:
+            raise PromptValidationError(f"Prompt 模板解析错误，存在无效的占位符括号语法: {exc}")
+
+    @classmethod
+    async def load_and_validate(
+        cls, 
+        db_session: AsyncSession, 
+        prompt_name: str, 
+        expected_placeholders: list[str]
+    ) -> str:
+        """
+        从数据库加载 Prompt 并强行进行占位符契约验证。
+        若有任何异常，绝不静默降级，直接报错。
+        """
+        # 1. 数据库检索
+        try:
+            stmt = select(SystemPrompt.content_template).where(
+                SystemPrompt.name == prompt_name,
+                SystemPrompt.is_active == True
+            )
+            result = await db_session.execute(stmt)
+            content_template = result.scalar_one_or_none()
+        except Exception as exc:
+            # 数据库访问异常，直接抛出，阻断逻辑
+            raise PromptLoadError(
+                f"数据库查询异常，无法加载 Prompt 模板 '{prompt_name}': {exc}"
+            ) from exc
+
+        if not content_template:
+            raise PromptLoadError(
+                f"在 system_prompt 表中未找到处于激活状态且名称为 '{prompt_name}' 的 Prompt 模板"
+            )
+
+        # 2. 占位符比对校验
+        actual_placeholders = cls.get_template_placeholders(content_template)
+        expected_set = set(expected_placeholders)
+        
+        # 校验：检查是否有代码运行时必填的参数，在数据库模板中缺失
+        missing_placeholders = expected_set - actual_placeholders
+        if missing_placeholders:
+            raise PromptValidationError(
+                f"Prompt 模板 '{prompt_name}' 校验不通过！"
+                f"缺少运行时必需的占位符: {missing_placeholders}。请检查并修改数据库配置。"
+            )
+
+        # 校验：检查模板里是否有代码运行时无法提供赋值的非法占位符（避免 .format 报 KeyError）
+        redundant_placeholders = actual_placeholders - expected_set
+        if redundant_placeholders:
+            raise PromptValidationError(
+                f"Prompt 模板 '{prompt_name}' 校验不通过！"
+                f"包含运行时无法识别的非法占位符: {redundant_placeholders}。"
+            )
+
+        return content_template
 ```
+
+### 2. 微服务间错误冒泡与前端提示路径
+在 `agent-service` 侧发生 `PromptLoadError` 或 `PromptValidationError` 时，系统应当做如下处理：
+1.  **停止生成流**：终止 LLM 管道，阻止生成请求。
+2.  **SSE 管道输出错误事件**：
+    在 `app/routes/agent.py` 的 `_event_stream` 中捕获此类异常，并以 `type: "error"` 序列化为标准的 SSE 事件投递给 `conversation-service`：
+    ```python
+    except (PromptLoadError, PromptValidationError) as exc:
+        logger.error(event="prompt_engine_failure", message=str(exc))
+        yield _sse({"type": "error", "message": f"[Prompt配置错误] {str(exc)}"})
+        return
+    ```
+3.  **前端直接弹框拦截**：
+    `conversation-service` 接收到 `error` 事件后，会传给前端对话卡片。前端对话卡片会弹窗提示：
+    > **[AI 系统异常]**  
+    > 数据库模板 `s0_intent_recognition_v1` 校验不通过：缺少运行时必需的占位符 `{categories_text}`。请联系管理员进入“Prompt管理后台”修复。
+
+这使得 Prompt 设计不仅能在修改后秒级热生效，而且配置错误时能第一时间在会话流中以清晰的界面错误暴露出来，极易调试。
 
 ---
 
-## 四、 具体 Agent 类重构伪代码
+## 四、 具体 Agent 类加载流重构伪代码
 
 ### 1. TriageAgent 改造
-消灭 `triage_agent.py` 中的完整字符串拼接常量，将其重构为动态参数化：
-
 ```python
 # backend/agent-service/app/adapters/agents/htp/triage_agent.py
+from shared.utils.prompt_loader import StrictPromptLoader
 
 class TriageAgent(BaseAgent):
-    def __init__(
-        self,
-        ai_registry: AIAssistantRegistry,
-        kb_client: KBClient,
-        db_session_factory,  # 注入 session_factory
-    ) -> None:
+    def __init__(self, ai_registry, kb_client, db_session_factory):
         super().__init__(name="triage-agent", max_steps=1)
         self._ai_registry = ai_registry
         self._kb_client = kb_client
         self._db_session_factory = db_session_factory
 
-    async def _load_and_build_prompt(self, env_context: dict | None, case_id: str, categories: dict) -> str:
-        # 在一次请求周期内，动态获取 DB 模板
+    async def process(self, session_id, messages, env_context, case_id, ...) -> AsyncGenerator:
+        await self._ensure_categories_loaded()
+        
+        # 1. 动态获取会话级别的 AsyncSession
         async with self._db_session_factory() as session:
-            # 1. 动态加载全局 BASE 定义
-            base_template = await get_active_prompt_template(
-                session, "base_core_v1", fallback_content=FALLBACK_BASE_CORE
+            # 2. 强校验并加载各个模板片段（缺少或多余占位符直接抛出异常，流中断报错）
+            base_identity = await StrictPromptLoader.load_and_validate(
+                session, "base_identity_v1", expected_placeholders=[]
             )
-            # 2. 动态加载 S0 阶段模板
-            s0_template = await get_active_prompt_template(
-                session, "s0_intent_recognition_v1", fallback_content=FALLBACK_S0_INTENT
+            base_methodology = await StrictPromptLoader.load_and_validate(
+                session, "base_methodology_v1", expected_placeholders=["stage_desc"]
+            )
+            s0_rules = await StrictPromptLoader.load_and_validate(
+                session, "s0_intent_recognition_v1", 
+                expected_placeholders=["env_info", "alert_logs", "task_logs", "total_count", "categories_text"]
+            )
+            base_context = await StrictPromptLoader.load_and_validate(
+                session, "base_case_context_v1", expected_placeholders=["case_id"]
             )
 
-        # 3. 动态组装与格式化参数
-        # 格式化 BASE (目前 base 仅需注入 {tool_list})
-        formatted_base = base_template.format(tool_list="[acli, scp]") 
+        # 3. 参数格式化装配
+        formatted_methodology = base_methodology.format(stage_desc="S0 - 意图识别")
         
-        # 格式化 S0
-        categories_text = self._format_categories(categories)
-        total_count = sum(len(c) for c in categories.values())
+        total_count = sum(len(c) for c in self._categories_cache.values())
+        categories_text = self._format_categories(self._categories_cache)
         
-        formatted_s0 = s0_template.format(
+        formatted_s0_rules = s0_rules.format(
             env_info=env_context.get("env_info", "") if env_context else "",
             alert_logs=env_context.get("alert_logs", "") if env_context else "",
             task_logs=env_context.get("task_logs", "") if env_context else "",
             total_count=total_count,
-            categories_text=categories_text,
-            case_title="...", # 视接口传入决定
-            case_description="...",
+            categories_text=categories_text
         )
         
-        # 4. 拼接最终上下文
-        return f"{formatted_base}\n\n{formatted_s0}\n\n---\n当前工单 ID：{case_id}"
+        formatted_context = base_context.format(case_id=case_id)
+        
+        # 4. 最终 System Prompt 渲染
+        system_prompt = "\n\n".join([
+            base_identity,
+            formatted_methodology,
+            formatted_s0_rules,
+            formatted_context
+        ])
+
+        # 5. 调用 LLM
+        full_messages = [{"role": "system", "content": system_prompt}, *messages]
+        # streaming ...
 ```
 
 ### 2. InvestigationAgent 改造
-根据路由到的具体分支（React, Resume, Legacy, Fallback），加载不同的模板。
-
 ```python
 # backend/agent-service/app/adapters/agents/htp/investigation_agent.py
+from shared.utils.prompt_loader import StrictPromptLoader
 
 class InvestigationAgent(BaseAgent):
     def __init__(self, ..., db_session_factory):
         # ...
         self._db_session_factory = db_session_factory
 
-    async def _build_sop_react_prompt(self, sop_title: str, root_node_summary: str, diagnostic_stage: str, context_variables: dict, case_id: str) -> str:
-        stage_desc = self._get_stage_desc(diagnostic_stage)
-        
-        async with self._db_session_factory() as session:
-            base_template = await get_active_prompt_template(session, "base_core_v1", FALLBACK_BASE)
-            react_template = await get_active_prompt_template(session, "s1_sop_react_new_v1", FALLBACK_SOP_REACT)
+    async def _build_sop_react_prompt(
+        self, 
+        sop_title: str, 
+        root_node: dict, 
+        diagnostic_stage: str, 
+        context_variables: dict, 
+        case_id: str
+    ) -> str:
+        stage_desc_map = {"S1": "S1 - 故障定位", "S2": "S2 - 假设生成", "S3": "S3 - 证据验证", "S4": "S4 - 根因确认"}
+        stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
 
-        # 变量格式化
+        # 获取根节点数据摘要参数
+        root_node_title = root_node.get("title", sop_title)
+        root_node_type = root_node.get("type", "branch")
+        root_node_content = root_node.get("content", "")[:500]
+        root_node_branches = "\n".join([f"- {c['node_id']}: {c['title']}" for c in root_node.get("children", [])[:5]])
         var_summary = self._format_variables(context_variables)
-        
-        # 注入参数
+
+        # 强加载 DB 模板
+        async with self._db_session_factory() as session:
+            base_identity = await StrictPromptLoader.load_and_validate(
+                session, "base_identity_v1", []
+            )
+            base_methodology = await StrictPromptLoader.load_and_validate(
+                session, "base_methodology_v1", ["stage_desc"]
+            )
+            react_template = await StrictPromptLoader.load_and_validate(
+                session, "s1_sop_react_new_v1",
+                ["sop_title", "root_node_title", "root_node_type", "root_node_content", "root_node_branches", "known_variables"]
+            )
+            base_context = await StrictPromptLoader.load_and_validate(
+                session, "base_case_context_v1", ["case_id"]
+            )
+
+        # 格式化组装
+        formatted_methodology = base_methodology.format(stage_desc=stage_desc)
         formatted_react = react_template.format(
-            stage_desc=stage_desc,
             sop_title=sop_title,
-            root_node_title="...", # 来自 root_node_summary 提取
-            root_node_type="...",
-            root_node_content="...",
-            root_node_branches="...",
+            root_node_title=root_node_title,
+            root_node_type=root_node_type,
+            root_node_content=root_node_content,
+            root_node_branches=root_node_branches,
             known_variables=var_summary
         )
-        
-        return f"{base_template}\n\n{formatted_react}\n\n---\n当前工单 ID：{case_id}"
-```
+        formatted_context = base_context.format(case_id=case_id)
 
-*注：Resume 状态下加载 `s2_sop_react_resume_v1`，Legacy 状态下加载 `s3_sop_legacy_v1`，Fallback 状态下加载 `s4_fallback_v1`。*
-
-### 3. RemediationAgent 改造
-```python
-# backend/agent-service/app/adapters/agents/htp/remediation_agent.py
-
-class RemediationAgent(BaseAgent):
-    def __init__(self, ..., db_session_factory):
-        # ...
-        self._db_session_factory = db_session_factory
-
-    async def process(self, ..., root_cause, solution, case_id) -> AsyncGenerator:
-        # 1. 动态加载 S5 模板
-        async with self._db_session_factory() as session:
-            base_template = await get_active_prompt_template(session, "base_core_v1", FALLBACK_BASE)
-            s5_template = await get_active_prompt_template(session, "s5_solution_v1", FALLBACK_S5)
-
-        # 2. 注入动态诊断结论
-        formatted_s5 = s5_template.format(
-            root_cause=root_cause,
-            solution=solution
-        )
-        
-        system_prompt = f"{base_template}\n\n{formatted_s5}\n\n---\n当前工单 ID：{case_id}"
-        # 3. 运行 React 修复流...
+        return "\n\n".join([base_identity, formatted_methodology, formatted_react, formatted_context])
 ```
 
 ---
 
-## 五、 热生效保障与上线验证方案
+## 五、 本地与上线调试验证方案
 
-### 1. 热生效即时验证测试路径
-为了验证“修改完立马生效”：
-1.  **后台修改**：在 HCI Admin 界面的 **Prompt管理** 页面选择 S0 故障意图识别（`s0_intent_recognition_v1`），在输出格式要求中额外添加一行字，如：“【特例测试：请使用四川方言进行最终结论确认】”。保存并应用该版本。
-2.  **前台发起会话**：在用户排障对话框中发送任意信息（触发 S0 意图识别）。
-3.  **结果比对**：大模型若在流式输出中立即使用方言进行最终结论确认，表明数据库修改已经即时无损传导至推理层，热生效验证通过。
+### 1. 模板校验错时即时验证（防掩盖验证）
+*   **测试动作**：修改后台数据库中 `base_methodology_v1` 的模板内容，故意把 `{stage_desc}` 改为拼错的 `{stage_desc_error}`，点击保存生效。
+*   **期望结果**：在前台发送消息后，排障对话立即报错，大模型不进行响应，控制台/前端明确弹出：`[Prompt配置错误] Prompt 模板 'base_methodology_v1' 校验不通过！缺少运行时必需的占位符: {'stage_desc'}。包含运行时无法识别的非法占位符: {'stage_desc_error'}`。确认配置异常无法被掩盖。
 
-### 2. 降级鲁棒性验证测试路径
-1.  **停止数据库**：临时切断 `agent-service` 的 PostgreSQL 连接通道（或通过单元测试 Mock 抛出 `OperationalError`）。
-2.  **发起推理请求**：再次向 `agent-service` 发起 stream 提问。
-3.  **结果比对**：服务不崩溃，日志中打印 `db_prompt_load_failed` 警示，同时大模型降级使用代码中自带的硬编码 Python 默认值正常完成意图识别及排障诊断，安全降级验证通过。
+### 2. 热加载秒级热生效验证
+*   **测试动作**：在 Admin UI 的 S4（无SOP机制推理）的 `s4_fallback_v1` 中修改文案，将末尾要求追加的文案变更为：“如能提供更具体的 HCI 报错信息，我能立刻帮您诊断”。
+*   **期望结果**：保存后，立即发起一个无 SOP 匹配的故障排障会话，大模型的输出末尾立刻完美呈现刚刚修改的这行中文文案，无需重启 `agent-service`，热加载生效。
