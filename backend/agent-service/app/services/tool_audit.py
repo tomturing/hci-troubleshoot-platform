@@ -66,6 +66,10 @@ class ToolAuditService:
             trace_id: 链路追踪 ID
             step_no: 诊断步骤序列号 (SOP 模式下为节点顺序)
         """
+        if not trace_id:
+            from shared.observability.otel import get_current_trace_id
+            trace_id = get_current_trace_id()
+
         if not cls._session_factory:
             logger.warning("ToolAuditService 未初始化，跳过审计写入")
             return

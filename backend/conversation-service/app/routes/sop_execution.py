@@ -510,7 +510,7 @@ async def sop_create_execution(
             conversation_id=conversation_id,
             sop_document_id=body.sop_document_id,
             current_node_id=body.root_node_id,
-            trace_id=trace_id,
+            trace_id=conversation.trace_id if conversation else trace_id,
             initial_variables=initial_variables,
         )
 

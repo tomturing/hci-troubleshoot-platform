@@ -60,8 +60,8 @@ async def get_sop_node(
         {"error": "节点 n-999 不存在", "node_id": "n-999"}
     """
     # 获取完整决策树
-    tree_json = await kb_client.get_sop_tree(sop_document_id)
-    if tree_json is None:
+    tree_data = await kb_client.get_sop_tree(sop_document_id)
+    if tree_data is None:
         logger.warning(
             event="sop_tree_not_found",
             sop_document_id=sop_document_id,
@@ -69,6 +69,18 @@ async def get_sop_node(
         )
         return {
             "error": f"SOP 文档 {sop_document_id} 的决策树不存在或未发布",
+            "sop_document_id": sop_document_id,
+        }
+
+    tree_json = tree_data.get("tree")
+    if tree_json is None:
+        logger.warning(
+            event="sop_tree_empty",
+            sop_document_id=sop_document_id,
+            node_id=node_id,
+        )
+        return {
+            "error": f"SOP 文档 {sop_document_id} 决策树未生成",
             "sop_document_id": sop_document_id,
         }
 

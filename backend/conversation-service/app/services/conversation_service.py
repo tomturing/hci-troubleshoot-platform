@@ -144,13 +144,69 @@ class ConversationService:
         4. 从注册表获取对应 AI 客户端
         5. 流式返回响应
         """
-        trace_id = get_current_trace_id()
+        # 0. 获取并激活对齐的 OTel Trace ID 追踪上下文 (一案一链第一性原理)
+        target_trace_id = None
+        try:
+            if self.session_factory:
+                async with self.session_factory() as lookup_session:
+                    _conv = await ConversationRepository(lookup_session).get_conversation(conversation_id)
+                    if _conv and _conv.trace_id:
+                        target_trace_id = _conv.trace_id
+            else:
+                _conv = await self.repository.get_conversation(conversation_id)
+                if _conv and _conv.trace_id:
+                    target_trace_id = _conv.trace_id
+        except Exception as e:
+            logger.warning(
+                event="failed_to_lookup_conversation_trace_id",
+                conversation_id=str(conversation_id),
+                error=str(e),
+            )
 
-        # 1. 保存用户消息（独立事务，确保 AI 报错不会导致用户消息回滚）
-        user_message: Message | None = None
-        if self.session_factory:
-            async with self.session_factory() as independent_session:
-                user_message = await ConversationRepository(independent_session).add_message(
+        # 构造并激活 OTEL Context
+        from opentelemetry import trace
+        from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
+
+        ctx = None
+        if target_trace_id and len(target_trace_id) == 32:
+            try:
+                span_context = SpanContext(
+                    trace_id=int(target_trace_id, 16),
+                    span_id=trace.generate_span_id(),
+                    is_remote=True,
+                    trace_flags=TraceFlags(0x01)
+                )
+                parent_span = NonRecordingSpan(span_context)
+                ctx = trace.set_span_in_context(parent_span)
+            except Exception as e:
+                logger.warning(
+                    event="failed_to_build_otel_span_context",
+                    target_trace_id=target_trace_id,
+                    error=str(e)
+                )
+
+        token = None
+        if ctx:
+            token = trace.attach(ctx)
+
+        try:
+            trace_id = get_current_trace_id()
+
+            # 1. 保存用户消息（独立事务，确保 AI 报错不会导致用户消息回滚）
+            user_message: Message | None = None
+            if self.session_factory:
+                async with self.session_factory() as independent_session:
+                    user_message = await ConversationRepository(independent_session).add_message(
+                        conversation_id=conversation_id,
+                        case_id=case_id,
+                        role=MessageRole.user,
+                        content=content,
+                        trace_id=trace_id,
+                        metadata=metadata or {},  # 保存 metadata
+                    )
+                    await independent_session.commit()
+            else:
+                user_message = await self.repository.add_message(
                     conversation_id=conversation_id,
                     case_id=case_id,
                     role=MessageRole.user,
@@ -158,382 +214,376 @@ class ConversationService:
                     trace_id=trace_id,
                     metadata=metadata or {},  # 保存 metadata
                 )
-                await independent_session.commit()
-        else:
-            user_message = await self.repository.add_message(
-                conversation_id=conversation_id,
-                case_id=case_id,
-                role=MessageRole.user,
-                content=content,
-                trace_id=trace_id,
-                metadata=metadata or {},  # 保存 metadata
-            )
 
-        # 1.5 重复提问检测（使用后台任务，避免阻塞主流程）
-        if user_message:
-            if self.session_factory:
-                asyncio.create_task(
-                    self._check_repeat_question_with_independent_session(
+            # 1.5 重复提问检测（使用后台任务，避免阻塞主流程）
+            if user_message:
+                if self.session_factory:
+                    asyncio.create_task(
+                        self._check_repeat_question_with_independent_session(
+                            conversation_id=conversation_id,
+                            case_id=case_id,
+                            content=content,
+                            current_message_id=user_message.message_id,
+                        )
+                    )
+                else:
+                    await self._check_repeat_question(
                         conversation_id=conversation_id,
                         case_id=case_id,
                         content=content,
                         current_message_id=user_message.message_id,
                     )
-                )
-            else:
-                await self._check_repeat_question(
-                    conversation_id=conversation_id,
-                    case_id=case_id,
-                    content=content,
-                    current_message_id=user_message.message_id,
-                )
 
-        # 2. 读取当前诊断阶段并构建 System Prompt（并发 SOP + 向量检索）
-        current_stage = "S0"
-        _confirmed_category_code: str | None = None  # N-2：S0 确认的分类编码
-        if self.session_factory:
-            async with self.session_factory() as stage_session:
-                _conv = await ConversationRepository(stage_session).get_conversation(conversation_id)
+            # 2. 读取当前诊断阶段并构建 System Prompt（并发 SOP + 向量检索）
+            current_stage = "S0"
+            _confirmed_category_code: str | None = None  # N-2：S0 确认的分类编码
+            if self.session_factory:
+                async with self.session_factory() as stage_session:
+                    _conv = await ConversationRepository(stage_session).get_conversation(conversation_id)
+                    if _conv and _conv.diagnostic_stage:
+                        current_stage = _conv.diagnostic_stage
+                    if _conv and getattr(_conv, "category_id", None):
+                        _confirmed_category_code = _conv.category_id  # session 关闭前捕获
+            else:
+                _conv = await self.repository.get_conversation(conversation_id)
                 if _conv and _conv.diagnostic_stage:
                     current_stage = _conv.diagnostic_stage
                 if _conv and getattr(_conv, "category_id", None):
-                    _confirmed_category_code = _conv.category_id  # session 关闭前捕获
-        else:
-            _conv = await self.repository.get_conversation(conversation_id)
-            if _conv and _conv.diagnostic_stage:
-                current_stage = _conv.diagnostic_stage
-            if _conv and getattr(_conv, "category_id", None):
-                _confirmed_category_code = _conv.category_id
+                    _confirmed_category_code = _conv.category_id
 
-        # 2.5 S0 候选预处理（T3-c）：在调用 AI 之前拦截用户的 ①②③ 选择
-        # 若用户回复的是序号，直接写库 + 推进/兜底，不走 AI 本轮
-        if current_stage == "S0":
-            _selection = self._conversation_manager.parse_candidate_selection(content)
-            if _selection is not None:
-                # 用户输入了 ①②③ 序号
-                _candidates = await self._extract_s0_candidates(conversation_id)
-                if _candidates:
-                    _chosen = self._conversation_manager.resolve_candidate_category(_selection, _candidates)
-                    if _chosen:
-                        # 用户确认有效分类 → 写库、强制推进 S1，继续调用 AI 开始 S1 分析
+            # 2.5 S0 候选预处理（T3-c）：在调用 AI 之前拦截用户的 ①②③ 选择
+            # 若用户回复的是序号，直接写库 + 推进/兜底，不走 AI 本轮
+            if current_stage == "S0":
+                _selection = self._conversation_manager.parse_candidate_selection(content)
+                if _selection is not None:
+                    # 用户输入了 ①②③ 序号
+                    _candidates = await self._extract_s0_candidates(conversation_id)
+                    if _candidates:
+                        _chosen = self._conversation_manager.resolve_candidate_category(_selection, _candidates)
+                        if _chosen:
+                            # 用户确认有效分类 → 写库、强制推进 S1，继续调用 AI 开始 S1 分析
+                            asyncio.create_task(
+                                self._update_conversation_category(
+                                    conversation_id=conversation_id,
+                                    case_id=case_id,
+                                    category_info=_chosen,
+                                    trigger_confirm=True,
+                                )
+                            )
+                            asyncio.create_task(
+                                self._update_diagnostic_stage(
+                                    conversation_id=conversation_id,
+                                    new_stage="S1",
+                                    old_stage="S0",
+                                )
+                            )
+                            yield (
+                                f"好的，确认故障分类为【{_chosen['code']} {_chosen['name']}】。\n"
+                                "开始故障定位分析，请稍候…\n\n"
+                            )
+                            # 发出阶段切换事件通知前端，并继续以 S1 身份调用 AI
+                            yield "\x00event:stage_change:S1\x00"
+                            current_stage = "S1"
+                            # N-2 修复：同步更新本次请求的确认分类，使 retrieve() 跳过 classify_intent
+                            _confirmed_category_code = _chosen["code"]
+                        else:
+                            # 用户选 ③"以上都不是"
+                            _s0_rounds = await self._get_s0_candidate_rounds(conversation_id)
+                            if ConversationManager.should_trigger_s0_failure(_s0_rounds):
+                                _failure_msg = await self.handle_s0_failure(conversation_id, case_id)
+                                yield _failure_msg
+                                return
+                            asyncio.create_task(self._increment_s0_candidate_rounds(conversation_id))
+                            # 轮次未满：继续调用 AI，让其基于"以上都不是"重新给出候选
+                    # 若提取不到历史候选（AI 尚未给出 ① ② 时直接回了序号），交 AI 处理
+
+            # 2.6 【修复】获取环境上下文信息（Segment 4 数据）
+            context_info: dict | None = None
+            if current_stage == "S0" and self.environment_client:
+                env_context = await self.environment_client.get_context_info(case_id)
+                if env_context:
+                    context_info = {
+                        "env_info": env_context.env_info,
+                        "alert_logs": env_context.alert_logs,
+                        "task_logs": env_context.task_logs,
+                    }
+                    logger.info(
+                        event="s0_context_info_loaded",
+                        message="S0 环境上下文已加载",
+                        case_id=case_id,
+                        alert_count=len(env_context.alert_logs),
+                        task_count=len(env_context.task_logs),
+                    )
+
+            # 3. 获取历史上下文 (最近 20 条)
+            # 注意：必须使用独立 session，避免请求作用域 session 在流式传输期间长期持有事务锁
+            # 导致后续 INSERT（包括 save_assistant_message 背景任务）等待锁无法落库
+            if self.session_factory:
+                async with self.session_factory() as msg_session:
+                    all_messages = await ConversationRepository(msg_session).get_messages(conversation_id)
+            else:
+                all_messages = await self.repository.get_messages(conversation_id)
+
+            # 构建消息历史（不再加入 system_prompt，由 agent-service 自己构建）
+            history_messages: list[dict] = []
+            selected_messages = all_messages[-20:] if len(all_messages) > 20 else all_messages
+            for msg in selected_messages:
+                history_messages.append({"role": msg.role.value, "content": msg.content})
+
+            # T-AGT-23: 检测 SOP 执行恢复状态
+            sop_resume_context: dict | None = None
+            if self.session_factory:
+                async with self.session_factory() as sop_session:
+                    sop_repo = SopExecutionRepository(sop_session)
+                    sop_execution = await sop_repo.get_active_by_conversation(conversation_id)
+                    if sop_execution:
+                        # 存在活跃的 SOP 执行，构建恢复上下文
+                        sop_resume_context = {
+                            "sop_document_id": sop_execution.sop_document_id,
+                            "current_node_id": sop_execution.current_node_id,
+                            "completed_steps": sop_execution.completed_steps or [],
+                            "context_variables": sop_execution.context_variables or {},
+                            "execution_log": sop_execution.execution_log or [],
+                            "status": sop_execution.status,
+                        }
+                        logger.info(
+                            event="sop_execution_resume_detected",
+                            message="检测到活跃的 SOP 执行，构建恢复上下文",
+                            conversation_id=str(conversation_id),
+                            sop_document_id=sop_execution.sop_document_id,
+                            current_node_id=sop_execution.current_node_id,
+                            completed_steps_count=len(sop_execution.completed_steps or []),
+                        )
+
+            # 4. 从注册表获取 AI 助手客户端
+            resolved_assistant_type = await self._resolve_assistant_type(conversation_id, assistant_type)
+
+            # 5. 调用大脑并流式返回
+            # T1-6: 若已注入 AgentRouter，走新大脑可选路径；否则保持原有 ai_registry 路径（向后兼容）
+            import time
+
+            _full_reply_buffer: list[str] = []
+            # N-4 修复：记录是否走了 ops-agent 路径（跳过 htp 状态机后验检测）
+            _used_ops_agent_path = False
+            _message_metadata: dict = {}
+            try:
+                if self._agent_client is not None:
+                    # ── 新路径：委托 agent-service（HTTP SSE）────────────────────
+                    import json as _json
+
+                    session_id = str(conversation_id)
+                    _used_ops_agent_path = resolved_assistant_type == "ops-agent"
+                    _agent_had_error = False
+                    async for agent_event in self._agent_client.stream(
+                        assistant_type=resolved_assistant_type,
+                        session_id=session_id,
+                        case_id=case_id,
+                        user_id=f"case-{case_id}",
+                        messages=history_messages,
+                        env_context=context_info,
+                        stream=True,
+                        diagnostic_stage=current_stage,
+                        category_id=_confirmed_category_code,
+                        sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
+                    ):
+                        event_type = agent_event.get("type")
+                        if event_type == "text_chunk":
+                            _chunk = agent_event.get("content", "")
+                            if _chunk:
+                                _full_reply_buffer.append(_chunk)
+                                yield _chunk
+                        elif event_type == "stage_update":
+                            _stage = agent_event.get("stage", "")
+                            _metadata = agent_event.get("metadata", {})
+                            yield f"\x00event:stage_change:{_stage}\x00"
+                            # T-AGT-07: 处理 SOP 命中统计（sop_reasoning 事件携带 sop_document_id）
+                            if _stage == "sop_reasoning" and _metadata.get("sop_document_id"):
+                                _sop_doc_id = _metadata.get("sop_document_id")
+                                if _sop_doc_id and isinstance(_sop_doc_id, int):
+                                    asyncio.create_task(
+                                        self._update_sop_usage(
+                                            conversation_id=conversation_id,
+                                            case_id=case_id,
+                                            sop_document_id=_sop_doc_id,
+                                        )
+                                    )
+                            # T-AGT-14: 处理 pydantic-ai 工具调用记录（tool_call / tool_result）
+                            elif _stage in ("tool_call", "tool_result"):
+                                asyncio.create_task(
+                                    self._record_pai_tool_call(
+                                        conversation_id=conversation_id,
+                                        case_id=case_id,
+                                        stage=_stage,
+                                        metadata=_metadata,
+                                        resolved_assistant_type=resolved_assistant_type,
+                                    )
+                                )
+                        elif event_type == "interactive_request":
+                            # S0 意图识别的 interactive_request：将其转换为消息元数据并发送至前端渲染
+                            if agent_event.get("kind") == "intent_selection":
+                                logger.info(
+                                    event="intent_selection_interactive_request_metadata",
+                                    message="S0 意图识别转换为消息的 metadata，通过 SSE 发送给前端并传导至后台落库",
+                                    conversation_id=str(conversation_id),
+                                )
+                                _intent_metadata = {"kind": "choice_options", "options": agent_event.get("options")}
+                                _message_metadata.update(_intent_metadata)
+
+                                _payload = _json.dumps(_intent_metadata, ensure_ascii=False)
+                                yield f"\x00event:metadata:{_payload}\x00"
+                                continue
+                            _ir_payload = _json.dumps(
+                                {
+                                    "requestId": agent_event.get("request_id"),
+                                    "acpSessionId": agent_event.get("acp_session_id"),
+                                    "kind": agent_event.get("kind"),
+                                    "title": agent_event.get("title"),
+                                    "prompt": agent_event.get("prompt"),
+                                    "options": agent_event.get("options"),
+                                    "customInput": agent_event.get("custom_input"),
+                                    "metadata": agent_event.get("metadata"),
+                                },
+                                ensure_ascii=False,
+                            )
+                            # Bug2 修复保持：先落库再 yield
+                            _ir_content = self._format_interactive_request_content_dict(agent_event)
+                            asyncio.create_task(
+                                self._save_message_bg(
+                                    conversation_id=conversation_id,
+                                    case_id=case_id,
+                                    role=MessageRole.assistant,
+                                    content=_ir_content,
+                                    metadata={
+                                        "kind": "interactive_request",
+                                        "event": {
+                                            "requestId": agent_event.get("request_id"),
+                                            "acpSessionId": agent_event.get("acp_session_id"),
+                                            "kind": agent_event.get("kind"),
+                                            "title": agent_event.get("title"),
+                                            "prompt": agent_event.get("prompt"),
+                                            "options": agent_event.get("options"),
+                                            "customInput": agent_event.get("custom_input"),
+                                            "metadata": agent_event.get("metadata"),
+                                        },
+                                    },
+                                )
+                            )
+                            yield f"\x00event:interactive_request:{_ir_payload}\x00"
+                        elif event_type == "error":
+                            _agent_had_error = True
+                            yield f"\n[Agent Error: {agent_event.get('message', '未知错误')}]"
+                        elif event_type == "done":
+                            break
+
+                    # 空响应兜底：agent-service 返回 done 但没有任何内容（且未收到 error 事件）
+                    if not _full_reply_buffer and not _agent_had_error:
+                        logger.warning(
+                            event="agent_empty_response",
+                            message="agent-service 返回空响应（无 text_chunk）",
+                            conversation_id=str(conversation_id),
+                            assistant_type=resolved_assistant_type,
+                        )
+                        yield "\n[系统提示] AI 助手暂未返回内容，可能是服务暂时繁忙或配置异常。请稍后重试。\n"
+                else:
+                    # ── 原有路径：直接调用 ai_registry（AgentRouter 未注入时兜底）───
+                    ai_client = self.ai_registry.get_client(resolved_assistant_type)
+                    if not ai_client:
+                        error_msg = f"未找到类型为 '{resolved_assistant_type}' 的 AI 助手"
+                        logger.error(event="ai_client_not_found", message=error_msg, assistant_type=resolved_assistant_type)
+                        yield f"\n[System Error: {error_msg}]"
+                        return
+
+                    pod_endpoint = await self._resolve_pod_endpoint(case_id, resolved_assistant_type)
+                    _stream_start = time.monotonic()
+                    _ttft_logged = False
+                    async for chunk in ai_client.chat_completion_stream(
+                        messages=history_messages,
+                        user_id=f"case-{case_id}",
+                        pod_endpoint=pod_endpoint,
+                    ):
+                        if chunk:
+                            if not _ttft_logged:
+                                _ttft_ms = int((time.monotonic() - _stream_start) * 1000)
+                                logger.info(
+                                    event="ai_ttft",
+                                    message="First token received",
+                                    ttft_ms=_ttft_ms,
+                                    assistant_type=resolved_assistant_type,
+                                    case_id=case_id,
+                                    conversation_id=str(conversation_id),
+                                )
+                                # 记录首 Token 延迟到 Prometheus histogram
+                                AI_TTFT_SECONDS.labels(assistant_type=resolved_assistant_type).observe(_ttft_ms / 1000.0)
+                                _ttft_logged = True
+                            _full_reply_buffer.append(chunk)
+                            yield chunk
+
+                AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
+
+                # 审计日志写入已完全下沉至 agent-service：在发起 LLM 调用的瞬间捕获 100% 原始全量 Prompt 并安全记录。
+                # 此处废除重复双写。
+
+                # 流式完成后，检测诊断阶段转换并持久化（fire-and-forget）
+                full_reply = "".join(_full_reply_buffer)
+                if full_reply and not _used_ops_agent_path:
+                    # N-4 修复：ops-agent 路径由其自身状态机管理阶段，跳过 htp 后验正则检测
+                    # 使用增强的阶段转换检测方法，同时提取分类信息
+                    new_stage, category_info = self._conversation_manager.detect_stage_transition_with_category(
+                        current_stage=current_stage,
+                        assistant_reply=full_reply,
+                        user_message=content,
+                    )
+                    if new_stage:
+                        asyncio.create_task(
+                            self._update_diagnostic_stage(
+                                conversation_id=conversation_id,
+                                new_stage=new_stage,
+                                old_stage=current_stage,
+                            )
+                        )
+                        # S3→S4 转换（实为 AI 输出根因时）：提取关联 KBD，写 resolved_kbd_entry_id
+                        if new_stage == "S4" and current_stage == "S3":
+                            kbd_entry_id = self._conversation_manager.extract_resolved_kbd(full_reply)
+                            asyncio.create_task(
+                                self._update_resolved_kbd(
+                                    conversation_id=conversation_id,
+                                    case_id=case_id,
+                                    kbd_entry_id=kbd_entry_id,
+                                )
+                            )
+                    # S0 阶段 category 写入与阶段转换解耦：只要 AI 输出了分类信息就写入
+                    if current_stage == "S0" and category_info:
                         asyncio.create_task(
                             self._update_conversation_category(
                                 conversation_id=conversation_id,
                                 case_id=case_id,
-                                category_info=_chosen,
-                                trigger_confirm=True,
+                                category_info=category_info,
                             )
                         )
-                        asyncio.create_task(
-                            self._update_diagnostic_stage(
-                                conversation_id=conversation_id,
-                                new_stage="S1",
-                                old_stage="S0",
-                            )
-                        )
-                        yield (
-                            f"好的，确认故障分类为【{_chosen['code']} {_chosen['name']}】。\n"
-                            "开始故障定位分析，请稍候…\n\n"
-                        )
-                        # 发出阶段切换事件通知前端，并继续以 S1 身份调用 AI
-                        yield "\x00event:stage_change:S1\x00"
-                        current_stage = "S1"
-                        # N-2 修复：同步更新本次请求的确认分类，使 retrieve() 跳过 classify_intent
-                        _confirmed_category_code = _chosen["code"]
-                    else:
-                        # 用户选 ③"以上都不是"
-                        _s0_rounds = await self._get_s0_candidate_rounds(conversation_id)
-                        if ConversationManager.should_trigger_s0_failure(_s0_rounds):
-                            _failure_msg = await self.handle_s0_failure(conversation_id, case_id)
-                            yield _failure_msg
-                            return
-                        asyncio.create_task(self._increment_s0_candidate_rounds(conversation_id))
-                        # 轮次未满：继续调用 AI，让其基于"以上都不是"重新给出候选
-                # 若提取不到历史候选（AI 尚未给出 ① ② 时直接回了序号），交 AI 处理
-
-        # 2.6 【修复】获取环境上下文信息（Segment 4 数据）
-        context_info: dict | None = None
-        if current_stage == "S0" and self.environment_client:
-            env_context = await self.environment_client.get_context_info(case_id)
-            if env_context:
-                context_info = {
-                    "env_info": env_context.env_info,
-                    "alert_logs": env_context.alert_logs,
-                    "task_logs": env_context.task_logs,
-                }
-                logger.info(
-                    event="s0_context_info_loaded",
-                    message="S0 环境上下文已加载",
-                    case_id=case_id,
-                    alert_count=len(env_context.alert_logs),
-                    task_count=len(env_context.task_logs),
-                )
-
-        # 3. 获取历史上下文 (最近 20 条)
-        # 注意：必须使用独立 session，避免请求作用域 session 在流式传输期间长期持有事务锁
-        # 导致后续 INSERT（包括 save_assistant_message 背景任务）等待锁无法落库
-        if self.session_factory:
-            async with self.session_factory() as msg_session:
-                all_messages = await ConversationRepository(msg_session).get_messages(conversation_id)
-        else:
-            all_messages = await self.repository.get_messages(conversation_id)
-
-        # 构建消息历史（不再加入 system_prompt，由 agent-service 自己构建）
-        history_messages: list[dict] = []
-        selected_messages = all_messages[-20:] if len(all_messages) > 20 else all_messages
-        for msg in selected_messages:
-            history_messages.append({"role": msg.role.value, "content": msg.content})
-
-        # T-AGT-23: 检测 SOP 执行恢复状态
-        sop_resume_context: dict | None = None
-        if self.session_factory:
-            async with self.session_factory() as sop_session:
-                sop_repo = SopExecutionRepository(sop_session)
-                sop_execution = await sop_repo.get_active_by_conversation(conversation_id)
-                if sop_execution:
-                    # 存在活跃的 SOP 执行，构建恢复上下文
-                    sop_resume_context = {
-                        "sop_document_id": sop_execution.sop_document_id,
-                        "current_node_id": sop_execution.current_node_id,
-                        "completed_steps": sop_execution.completed_steps or [],
-                        "context_variables": sop_execution.context_variables or {},
-                        "execution_log": sop_execution.execution_log or [],
-                        "status": sop_execution.status,
-                    }
-                    logger.info(
-                        event="sop_execution_resume_detected",
-                        message="检测到活跃的 SOP 执行，构建恢复上下文",
+                elif full_reply and _used_ops_agent_path:
+                    logger.debug(
+                        event="ops_agent_stage_detection_skipped",
+                        message="ops-agent 路径跳过 htp 状态机后验检测",
                         conversation_id=str(conversation_id),
-                        sop_document_id=sop_execution.sop_document_id,
-                        current_node_id=sop_execution.current_node_id,
-                        completed_steps_count=len(sop_execution.completed_steps or []),
+                        current_stage=current_stage,
                     )
-
-        # 4. 从注册表获取 AI 助手客户端
-        resolved_assistant_type = await self._resolve_assistant_type(conversation_id, assistant_type)
-
-        # 5. 调用大脑并流式返回
-        # T1-6: 若已注入 AgentRouter，走新大脑可选路径；否则保持原有 ai_registry 路径（向后兼容）
-        import time
-
-        _full_reply_buffer: list[str] = []
-        # N-4 修复：记录是否走了 ops-agent 路径（跳过 htp 状态机后验检测）
-        _used_ops_agent_path = False
-        _message_metadata: dict = {}
-        try:
-            if self._agent_client is not None:
-                # ── 新路径：委托 agent-service（HTTP SSE）────────────────────
-                import json as _json
-
-                session_id = str(conversation_id)
-                _used_ops_agent_path = resolved_assistant_type == "ops-agent"
-                _agent_had_error = False
-                async for agent_event in self._agent_client.stream(
-                    assistant_type=resolved_assistant_type,
-                    session_id=session_id,
-                    case_id=case_id,
-                    user_id=f"case-{case_id}",
-                    messages=history_messages,
-                    env_context=context_info,
-                    stream=True,
-                    diagnostic_stage=current_stage,
-                    category_id=_confirmed_category_code,
-                    sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
-                ):
-                    event_type = agent_event.get("type")
-                    if event_type == "text_chunk":
-                        _chunk = agent_event.get("content", "")
-                        if _chunk:
-                            _full_reply_buffer.append(_chunk)
-                            yield _chunk
-                    elif event_type == "stage_update":
-                        _stage = agent_event.get("stage", "")
-                        _metadata = agent_event.get("metadata", {})
-                        yield f"\x00event:stage_change:{_stage}\x00"
-                        # T-AGT-07: 处理 SOP 命中统计（sop_reasoning 事件携带 sop_document_id）
-                        if _stage == "sop_reasoning" and _metadata.get("sop_document_id"):
-                            _sop_doc_id = _metadata.get("sop_document_id")
-                            if _sop_doc_id and isinstance(_sop_doc_id, int):
-                                asyncio.create_task(
-                                    self._update_sop_usage(
-                                        conversation_id=conversation_id,
-                                        case_id=case_id,
-                                        sop_document_id=_sop_doc_id,
-                                    )
-                                )
-                        # T-AGT-14: 处理 pydantic-ai 工具调用记录（tool_call / tool_result）
-                        elif _stage in ("tool_call", "tool_result"):
-                            asyncio.create_task(
-                                self._record_pai_tool_call(
-                                    conversation_id=conversation_id,
-                                    case_id=case_id,
-                                    stage=_stage,
-                                    metadata=_metadata,
-                                    resolved_assistant_type=resolved_assistant_type,
-                                )
-                            )
-                    elif event_type == "interactive_request":
-                        # S0 意图识别的 interactive_request：将其转换为消息元数据并发送至前端渲染
-                        if agent_event.get("kind") == "intent_selection":
-                            logger.info(
-                                event="intent_selection_interactive_request_metadata",
-                                message="S0 意图识别转换为消息的 metadata，通过 SSE 发送给前端并传导至后台落库",
-                                conversation_id=str(conversation_id),
-                            )
-                            _intent_metadata = {"kind": "choice_options", "options": agent_event.get("options")}
-                            _message_metadata.update(_intent_metadata)
-
-                            _payload = _json.dumps(_intent_metadata, ensure_ascii=False)
-                            yield f"\x00event:metadata:{_payload}\x00"
-                            continue
-                        _ir_payload = _json.dumps(
-                            {
-                                "requestId": agent_event.get("request_id"),
-                                "acpSessionId": agent_event.get("acp_session_id"),
-                                "kind": agent_event.get("kind"),
-                                "title": agent_event.get("title"),
-                                "prompt": agent_event.get("prompt"),
-                                "options": agent_event.get("options"),
-                                "customInput": agent_event.get("custom_input"),
-                                "metadata": agent_event.get("metadata"),
-                            },
-                            ensure_ascii=False,
-                        )
-                        # Bug2 修复保持：先落库再 yield
-                        _ir_content = self._format_interactive_request_content_dict(agent_event)
-                        asyncio.create_task(
-                            self._save_message_bg(
-                                conversation_id=conversation_id,
-                                case_id=case_id,
-                                role=MessageRole.assistant,
-                                content=_ir_content,
-                                metadata={
-                                    "kind": "interactive_request",
-                                    "event": {
-                                        "requestId": agent_event.get("request_id"),
-                                        "acpSessionId": agent_event.get("acp_session_id"),
-                                        "kind": agent_event.get("kind"),
-                                        "title": agent_event.get("title"),
-                                        "prompt": agent_event.get("prompt"),
-                                        "options": agent_event.get("options"),
-                                        "customInput": agent_event.get("custom_input"),
-                                        "metadata": agent_event.get("metadata"),
-                                    },
-                                },
-                            )
-                        )
-                        yield f"\x00event:interactive_request:{_ir_payload}\x00"
-                    elif event_type == "error":
-                        _agent_had_error = True
-                        yield f"\n[Agent Error: {agent_event.get('message', '未知错误')}]"
-                    elif event_type == "done":
-                        break
-
-                # 空响应兜底：agent-service 返回 done 但没有任何内容（且未收到 error 事件）
-                if not _full_reply_buffer and not _agent_had_error:
-                    logger.warning(
-                        event="agent_empty_response",
-                        message="agent-service 返回空响应（无 text_chunk）",
-                        conversation_id=str(conversation_id),
-                        assistant_type=resolved_assistant_type,
-                    )
-                    yield "\n[系统提示] AI 助手暂未返回内容，可能是服务暂时繁忙或配置异常。请稍后重试。\n"
-            else:
-                # ── 原有路径：直接调用 ai_registry（AgentRouter 未注入时兜底）───
-                ai_client = self.ai_registry.get_client(resolved_assistant_type)
-                if not ai_client:
-                    error_msg = f"未找到类型为 '{resolved_assistant_type}' 的 AI 助手"
-                    logger.error(event="ai_client_not_found", message=error_msg, assistant_type=resolved_assistant_type)
-                    yield f"\n[System Error: {error_msg}]"
+            except Exception as e:
+                AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="error").inc()
+                if isinstance(e, asyncio.CancelledError):
+                    logger.info(event="stream_cancelled", message="Stream was cancelled by client")
                     return
-
-                pod_endpoint = await self._resolve_pod_endpoint(case_id, resolved_assistant_type)
-                _stream_start = time.monotonic()
-                _ttft_logged = False
-                async for chunk in ai_client.chat_completion_stream(
-                    messages=history_messages,
-                    user_id=f"case-{case_id}",
-                    pod_endpoint=pod_endpoint,
-                ):
-                    if chunk:
-                        if not _ttft_logged:
-                            _ttft_ms = int((time.monotonic() - _stream_start) * 1000)
-                            logger.info(
-                                event="ai_ttft",
-                                message="First token received",
-                                ttft_ms=_ttft_ms,
-                                assistant_type=resolved_assistant_type,
-                                case_id=case_id,
-                                conversation_id=str(conversation_id),
-                            )
-                            # 记录首 Token 延迟到 Prometheus histogram
-                            AI_TTFT_SECONDS.labels(assistant_type=resolved_assistant_type).observe(_ttft_ms / 1000.0)
-                            _ttft_logged = True
-                        _full_reply_buffer.append(chunk)
-                        yield chunk
-
-            AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
-
-            # 审计日志写入已完全下沉至 agent-service：在发起 LLM 调用的瞬间捕获 100% 原始全量 Prompt 并安全记录。
-            # 此处废除重复双写。
-
-            # 流式完成后，检测诊断阶段转换并持久化（fire-and-forget）
-            full_reply = "".join(_full_reply_buffer)
-            if full_reply and not _used_ops_agent_path:
-                # N-4 修复：ops-agent 路径由其自身状态机管理阶段，跳过 htp 后验正则检测
-                # 使用增强的阶段转换检测方法，同时提取分类信息
-                new_stage, category_info = self._conversation_manager.detect_stage_transition_with_category(
-                    current_stage=current_stage,
-                    assistant_reply=full_reply,
-                    user_message=content,
-                )
-                if new_stage:
-                    asyncio.create_task(
-                        self._update_diagnostic_stage(
-                            conversation_id=conversation_id,
-                            new_stage=new_stage,
-                            old_stage=current_stage,
-                        )
-                    )
-                    # S3→S4 转换（实为 AI 输出根因时）：提取关联 KBD，写 resolved_kbd_entry_id
-                    if new_stage == "S4" and current_stage == "S3":
-                        kbd_entry_id = self._conversation_manager.extract_resolved_kbd(full_reply)
-                        asyncio.create_task(
-                            self._update_resolved_kbd(
-                                conversation_id=conversation_id,
-                                case_id=case_id,
-                                kbd_entry_id=kbd_entry_id,
-                            )
-                        )
-                # S0 阶段 category 写入与阶段转换解耦：只要 AI 输出了分类信息就写入
-                if current_stage == "S0" and category_info:
-                    asyncio.create_task(
-                        self._update_conversation_category(
-                            conversation_id=conversation_id,
-                            case_id=case_id,
-                            category_info=category_info,
-                        )
-                    )
-            elif full_reply and _used_ops_agent_path:
-                logger.debug(
-                    event="ops_agent_stage_detection_skipped",
-                    message="ops-agent 路径跳过 htp 状态机后验检测",
+                logger.error(
+                    event="conversation_error",
+                    message="Error during AI generation",
                     conversation_id=str(conversation_id),
-                    current_stage=current_stage,
+                    assistant_type=resolved_assistant_type,
+                    error=str(e),
                 )
-        except Exception as e:
-            AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="error").inc()
-            if isinstance(e, asyncio.CancelledError):
-                logger.info(event="stream_cancelled", message="Stream was cancelled by client")
-                return
-            logger.error(
-                event="conversation_error",
-                message="Error during AI generation",
-                conversation_id=str(conversation_id),
-                assistant_type=resolved_assistant_type,
-                error=str(e),
-            )
-            raise
+                raise
+
+        finally:
+            if token:
+                trace.detach(token)
 
     async def save_assistant_message(
         self,

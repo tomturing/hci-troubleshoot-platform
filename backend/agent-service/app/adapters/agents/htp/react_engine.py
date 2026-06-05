@@ -402,6 +402,7 @@ class ReactEngine:
             # 审计记录
             if self._audit:
                 try:
+                    from shared.observability.otel import get_current_trace_id
                     await self._audit.write(
                         audit_id=audit_id,
                         session_id=session_id,
@@ -414,6 +415,7 @@ class ReactEngine:
                         started_at=started_at,
                         completed_at=completed_at,
                         duration_ms=duration_ms,
+                        trace_id=get_current_trace_id(),
                     )
                 except Exception as audit_err:
                     logger.error(f"审计日志写入失败: {audit_err}")

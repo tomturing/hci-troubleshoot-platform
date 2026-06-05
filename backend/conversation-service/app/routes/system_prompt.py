@@ -2,12 +2,12 @@
 Prompt 模板管理路由 — 提供对 system_prompt 表的增删改查接口
 """
 
-from shared.observability.logger import get_logger
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from shared.database.postgres import DatabaseManager
 from shared.models.system_prompt import SystemPrompt
+from shared.observability.logger import get_logger
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 

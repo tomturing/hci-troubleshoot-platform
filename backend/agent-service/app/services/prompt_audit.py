@@ -44,6 +44,10 @@ class PromptAuditService:
             case_id: 工单 ID
             trace_id: 链路追踪 ID
         """
+        if not trace_id:
+            from shared.observability.otel import get_current_trace_id
+            trace_id = get_current_trace_id()
+
         if not cls._session_factory:
             logger.warning("PromptAuditService 未初始化，跳过审计写入")
             return
