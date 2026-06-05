@@ -1,5 +1,8 @@
 """
-SkillDefinition Model - 技能定义表
+SkillDefinition Model - 技能定义表（conversation-service 本地 ORM）
+
+遵循 Agent Skills Open Standard (https://agentskills.io)
+详细说明见 backend/shared/models/skill_definition.py
 """
 
 from datetime import UTC, datetime
@@ -10,18 +13,28 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 
 class SkillDefinition(Base):
-    """技能定义表"""
+    """技能定义表（Agent Skills Open Standard 合规版本）"""
 
     __tablename__ = "skill_definition"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    skill_name = Column(String(100), nullable=False, unique=True)  # 技能唯一标识（如 disk_vendor_lifetime）
-    display_name = Column(String(200), nullable=False)  # 展示名（如'硬盘厂商识别与寿命判定'）
-    description = Column(Text, nullable=False)  # 技能描述
-    parameters_schema = Column(JSONB, nullable=False, default=dict)  # 输入参数 Schema
-    output_schema = Column(JSONB, nullable=False, default=dict)  # 输出参数 Schema
-    is_active = Column(Boolean, nullable=False, default=True)  # 是否启用
-    version = Column(String(20), nullable=False, default="1.0")
+
+    # ===== 标准规范字段 =====
+    skill_name = Column(String(64), nullable=False, unique=True)          # 对应标准 name 字段
+    description = Column(String(1024), nullable=False)                     # 发现阶段使用
+    instructions_md = Column(Text, nullable=False, default="")             # SKILL.md 正文
+    compatibility = Column(String(500), nullable=True)                     # 环境依赖说明
+    license = Column(String(100), nullable=True)                           # 许可证
+    allowed_tools = Column(Text, nullable=True)                            # 预批准工具列表
+    metadata_json = Column(JSONB, nullable=False, default=dict)            # 扩展元数据
+
+    # ===== 平台扩展字段 =====
+    display_name = Column(String(200), nullable=True)                      # 中文展示名
+    is_active = Column(Boolean, nullable=False, default=True)              # 启用开关
+    assets_json = Column(JSONB, nullable=False, default=list)              # 资源文件内联
+    references_json = Column(JSONB, nullable=False, default=list)          # 参考文档内联
+    trace_id = Column(String(64), nullable=True)
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(
         DateTime(timezone=True),

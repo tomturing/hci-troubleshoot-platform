@@ -32,12 +32,17 @@ class TestSkillDefinitionORM:
         expected = {
             "id",
             "skill_name",
-            "display_name",
             "description",
-            "parameters_schema",
-            "output_schema",
+            "instructions_md",
+            "compatibility",
+            "license",
+            "allowed_tools",
+            "metadata_json",
+            "display_name",
             "is_active",
-            "version",
+            "assets_json",
+            "references_json",
+            "trace_id",
             "created_at",
             "updated_at",
         }
@@ -56,16 +61,14 @@ class TestSkillDefinitionORM:
 
         inst = SkillDefinition(
             id=1,
-            skill_name="disk_vendor_lifetime",
+            skill_name="disk-vendor-lifetime",
             display_name="硬盘厂商识别与寿命判定",
             description="根据 SMART 信息判断硬盘厂商和寿命",
-            parameters_schema={},
-            output_schema={},
+            instructions_md="# Title",
             is_active=True,
-            version="1.0",
         )
         repr_str = repr(inst)
-        assert "skill_name='disk_vendor_lifetime'" in repr_str
+        assert "skill_name='disk-vendor-lifetime'" in repr_str
         assert "display_name='硬盘厂商识别与寿命判定'" in repr_str
 
 
@@ -125,13 +128,16 @@ class TestSkillDefinitionRoutes:
 
         mock_skill = MagicMock()
         mock_skill.id = 1
-        mock_skill.skill_name = "test_skill"
+        mock_skill.skill_name = "test-skill"
         mock_skill.display_name = "Test"
         mock_skill.description = "Desc"
-        mock_skill.parameters_schema = {}
-        mock_skill.output_schema = {}
+        mock_skill.compatibility = "Compat"
+        mock_skill.license = "MIT"
+        mock_skill.allowed_tools = "tool1 tool2"
+        mock_skill.metadata_json = {"category": "test"}
         mock_skill.is_active = True
-        mock_skill.version = "1.0"
+        mock_skill.assets_json = []
+        mock_skill.references_json = []
         mock_skill.created_at = None
         mock_skill.updated_at = None
 
@@ -141,7 +147,7 @@ class TestSkillDefinitionRoutes:
 
         result = await list_skills(is_active=True, db=mock_session)
         assert len(result) == 1
-        assert result[0]["skill_name"] == "test_skill"
+        assert result[0]["skill_name"] == "test-skill"
 
     @pytest.mark.asyncio
     async def test_get_skill_success(self, mock_session):
@@ -150,13 +156,17 @@ class TestSkillDefinitionRoutes:
 
         mock_skill = MagicMock()
         mock_skill.id = 1
-        mock_skill.skill_name = "test_skill"
+        mock_skill.skill_name = "test-skill"
         mock_skill.display_name = "Test"
         mock_skill.description = "Desc"
-        mock_skill.parameters_schema = {}
-        mock_skill.output_schema = {}
+        mock_skill.instructions_md = "# Step 1"
+        mock_skill.compatibility = "Compat"
+        mock_skill.license = "MIT"
+        mock_skill.allowed_tools = "tool1 tool2"
+        mock_skill.metadata_json = {"category": "test"}
         mock_skill.is_active = True
-        mock_skill.version = "1.0"
+        mock_skill.assets_json = []
+        mock_skill.references_json = []
         mock_skill.created_at = None
         mock_skill.updated_at = None
 
@@ -165,7 +175,8 @@ class TestSkillDefinitionRoutes:
         mock_session.execute.return_value = mock_result
 
         result = await get_skill(skill_id=1, db=mock_session)
-        assert result["skill_name"] == "test_skill"
+        assert result["skill_name"] == "test-skill"
+        assert result["instructions_md"] == "# Step 1"
 
     @pytest.mark.asyncio
     async def test_get_skill_not_found(self, mock_session):
@@ -191,13 +202,11 @@ class TestSkillDefinitionRoutes:
         mock_session.execute.return_value = mock_check_result
 
         payload = {
-            "skill_name": "new_skill",
+            "skill_name": "new-skill",
             "display_name": "New Skill",
-            "description": "Desc",
-            "parameters_schema": {},
-            "output_schema": {},
+            "description": "Desc description of the skill trigger",
+            "instructions_md": "# Step 1",
             "is_active": True,
-            "version": "1.0",
         }
 
         result = await create_skill(payload=payload, db=mock_session)
@@ -226,7 +235,7 @@ class TestSkillDefinitionRoutes:
         mock_session.execute.return_value = mock_check_result
 
         with pytest.raises(HTTPException) as exc_info:
-            await create_skill(payload={"skill_name": "conflict"}, db=mock_session)
+            await create_skill(payload={"skill_name": "conflict-name", "description": "some trigger description"}, db=mock_session)
         assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
@@ -236,7 +245,7 @@ class TestSkillDefinitionRoutes:
 
         mock_skill = MagicMock()
         mock_skill.id = 1
-        mock_skill.skill_name = "old_name"
+        mock_skill.skill_name = "old-name"
 
         mock_get_result = MagicMock()
         mock_get_result.scalar_one_or_none.return_value = mock_skill
@@ -247,24 +256,18 @@ class TestSkillDefinitionRoutes:
         mock_session.execute.side_effect = [mock_get_result, mock_conflict_result]
 
         payload = {
-            "skill_name": "new_name",
             "display_name": "New Name",
-            "description": "New Desc",
-            "parameters_schema": {"a": 1},
-            "output_schema": {"b": 2},
+            "description": "New Desc description of trigger",
+            "instructions_md": "# Step 2",
             "is_active": False,
-            "version": "2.0",
         }
 
         result = await update_skill(skill_id=1, payload=payload, db=mock_session)
         assert result["status"] == "success"
-        assert mock_skill.skill_name == "new_name"
         assert mock_skill.display_name == "New Name"
-        assert mock_skill.description == "New Desc"
-        assert mock_skill.parameters_schema == {"a": 1}
-        assert mock_skill.output_schema == {"b": 2}
+        assert mock_skill.description == "New Desc description of trigger"
+        assert mock_skill.instructions_md == "# Step 2"
         assert mock_skill.is_active is False
-        assert mock_skill.version == "2.0"
         mock_session.commit.assert_called_once()
 
     @pytest.mark.asyncio
@@ -280,6 +283,26 @@ class TestSkillDefinitionRoutes:
         with pytest.raises(HTTPException) as exc_info:
             await update_skill(skill_id=999, payload={}, db=mock_session)
         assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_toggle_skill_status(self, mock_session):
+        """测试快速切换启用状态"""
+        from app.routes.skill_definition import toggle_skill_status
+
+        mock_skill = MagicMock()
+        mock_skill.id = 1
+        mock_skill.skill_name = "toggle-skill"
+        mock_skill.is_active = True
+
+        mock_get_result = MagicMock()
+        mock_get_result.scalar_one_or_none.return_value = mock_skill
+        mock_session.execute.return_value = mock_get_result
+
+        result = await toggle_skill_status(skill_id=1, db=mock_session)
+        assert result["status"] == "success"
+        assert result["is_active"] is False
+        assert mock_skill.is_active is False
+        mock_session.commit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_delete_skill_success(self, mock_session):
