@@ -428,7 +428,7 @@ onMounted(() => {
         row-key="id"
       >
         <!-- Skill 标识 + 展示名 -->
-        <el-table-column label="Skill 标识" min-width="220">
+        <el-table-column label="Skill 标识" min-width="360">
           <template #default="{ row }">
             <div class="skill-name-cell">
               <code class="code-badge">{{ row.skill_name }}</code>
@@ -481,10 +481,12 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 操作列（固定宽度，确保两个按钮始终同行） -->
-        <el-table-column label="操作" width="150" fixed="right" align="center">
+        <el-table-column label="操作" width="180" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
-            <el-button type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">删除</el-button>
+            <div class="actions-cell">
+              <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
+              <el-button type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">删除</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -808,13 +810,21 @@ onMounted(() => {
 /* Skill 标识单元格 */
 .skill-name-cell {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
 }
 
 .display-name-sub {
   font-size: 12px;
-  color: #909399;
+  color: #606266;
+}
+
+.actions-cell {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
 }
 
 /* code badge */
