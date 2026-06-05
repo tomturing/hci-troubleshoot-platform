@@ -16,6 +16,7 @@ if _expect != _actual:
             del sys.modules[_k]
     try:
         from shared.database.postgres import Base
+
         Base.metadata.clear()
     except ImportError:
         pass

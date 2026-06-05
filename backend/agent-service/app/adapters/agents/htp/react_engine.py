@@ -290,6 +290,7 @@ class ReactEngine:
 
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("args", {})
+        exec_id = str(uuid.uuid4())
 
         # T-AGT-22: 使用传入的 tool_executor 或实例默认执行器
         active_executor = tool_executor or self._tool_executor
@@ -321,20 +322,53 @@ class ReactEngine:
             )
             # 高危命令直接阻止执行
             if tool_def.policy == "block":
+                yield AgentStageUpdate(
+                    stage="tool_call",
+                    metadata={
+                        "exec_id": exec_id,
+                        "tool_name": tool_name,
+                        "args": tool_args,
+                        "risk_level": tool_def.risk_level,
+                        "status": "blocked",
+                    },
+                )
                 yield AgentTextChunk(content=f"[blocked] 命令 {command!r} 属于高危操作（risk=3），已拒绝执行。")
                 return
         # ─────────────────────────────────────────
 
         # 高危工具（risk_level=3 / policy=block）直接拒绝
         if tool_def.policy == "block":
+            yield AgentStageUpdate(
+                stage="tool_call",
+                metadata={
+                    "exec_id": exec_id,
+                    "tool_name": tool_name,
+                    "args": tool_args,
+                    "risk_level": tool_def.risk_level,
+                    "status": "blocked",
+                },
+            )
             yield AgentTextChunk(content=f"工具 {tool_name} 风险等级过高，已阻止执行")
             return
 
         # 确认条件：写操作(risk_level>=2) 或 require_all_confirm=True（修复模式下所有操作均需确认）
         needs_confirm = (tool_def.risk_level >= 2 or require_all_confirm) and self._confirm_service
         if needs_confirm:
+            # 1. 广播 tool_call 挂起确认事件
+            yield AgentStageUpdate(
+                stage="tool_call",
+                metadata={
+                    "exec_id": exec_id,
+                    "tool_name": tool_name,
+                    "args": tool_args,
+                    "risk_level": tool_def.risk_level,
+                    "status": "pending",
+                },
+            )
+
+            # 2. 广播确认卡片
             yield AgentInteractiveRequest(
-                request_id=str(uuid.uuid4()),
+                request_id=exec_id,  # request_id 与 exec_id 保持一致
                 acp_session_id=session_id,
                 kind="tool_confirm",
                 title=f"确认执行：{tool_name}",
@@ -361,12 +395,44 @@ class ReactEngine:
                 )
             except Exception as e:
                 logger.error(f"确认服务异常: {e}")
+                yield AgentStageUpdate(
+                    stage="tool_call",
+                    metadata={
+                        "exec_id": exec_id,
+                        "tool_name": tool_name,
+                        "args": tool_args,
+                        "risk_level": tool_def.risk_level,
+                        "status": "failed",
+                    },
+                )
                 yield AgentTextChunk(content=f"确认服务暂不可用，操作 {tool_name} 已中止")
                 return
 
             if confirm_result.value != "approved":
+                yield AgentStageUpdate(
+                    stage="tool_call",
+                    metadata={
+                        "exec_id": exec_id,
+                        "tool_name": tool_name,
+                        "args": tool_args,
+                        "risk_level": tool_def.risk_level,
+                        "status": "cancelled",
+                    },
+                )
                 yield AgentTextChunk(content="操作已取消")
                 return
+
+        # 广播 tool_call 开始运行事件
+        yield AgentStageUpdate(
+            stage="tool_call",
+            metadata={
+                "exec_id": exec_id,
+                "tool_name": tool_name,
+                "args": tool_args,
+                "risk_level": tool_def.risk_level,
+                "status": "running",
+            },
+        )
 
         # 只读且 policy=notify：执行前通知前端
         if tool_def.policy == "notify":
@@ -386,8 +452,10 @@ class ReactEngine:
                 span.set_attribute("tool.risk_level", tool_def.risk_level)
                 span.set_attribute("session_id", session_id)
                 try:
-                    # T-AGT-22: 使用 active_executor 执行工具，显式传递 conversation_id
-                    result = await active_executor.execute(tool_name, tool_args, conversation_id=session_id)
+                    # T-AGT-22: 使用 active_executor 执行工具，显式传递 conversation_id 和 exec_id
+                    result = await active_executor.execute(
+                        tool_name, tool_args, conversation_id=session_id, exec_id=exec_id
+                    )
                 except Exception as e:
                     span.record_exception(e)
                     span.set_status(trace.StatusCode.ERROR, str(e))
@@ -423,7 +491,19 @@ class ReactEngine:
 
         # T-AGT-25: 处理 sop_request_variable 的 VariableRequestResult
         if isinstance(result, VariableRequestResult) and result.needs_input:
-            # 变量请求需要用户输入，yield AgentInteractiveRequest
+            # 变量请求需要用户输入，yield AgentStageUpdate 和 AgentInteractiveRequest
+            yield AgentStageUpdate(
+                stage="tool_result",
+                metadata={
+                    "exec_id": exec_id,
+                    "tool_name": tool_name,
+                    "status": "success",
+                    "result": {"needs_input": True, "variable_name": result.variable_name, "message": result.message},
+                    "error": None,
+                    "duration_ms": duration_ms,
+                },
+            )
+
             var_schema = result.variable_schema
             yield AgentInteractiveRequest(
                 request_id=str(uuid.uuid4()),
@@ -439,6 +519,7 @@ class ReactEngine:
                     "variable_type": var_schema.get("type", "string"),
                     "required": var_schema.get("required", True),
                     "sop_tool": "sop_request_variable",
+                    "current_value": result.current_value,  # 注入当前推断的默认/建议值
                 },
             )
             # 返回特殊结果，告知主循环需要等待用户响应
@@ -449,6 +530,19 @@ class ReactEngine:
                 error=None,
             )
             return
+
+        # 广播 tool_result 结果事件
+        yield AgentStageUpdate(
+            stage="tool_result",
+            metadata={
+                "exec_id": exec_id,
+                "tool_name": tool_name,
+                "status": "success" if error is None else "failed",
+                "result": str(result),
+                "error": error,
+                "duration_ms": duration_ms,
+            },
+        )
 
         # 返回工具执行结果给主循环（避免重复执行）
         yield ToolResultEvent(result=result, tool_name=tool_name, error=error)

@@ -25,12 +25,14 @@ def setup_api_gateway_namespace():
                 del sys.modules[_k]
         try:
             from shared.database.postgres import Base
+
             Base.metadata.clear()
         except ImportError:
             pass
         if _svc in sys.path:
             sys.path.remove(_svc)
         sys.path.insert(0, _svc)
+
 
 setup_api_gateway_namespace()
 

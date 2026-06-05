@@ -75,12 +75,11 @@ class AgentInteractiveRequest:
 
 @dataclass(frozen=True)
 class ToolResultEvent:
-    """工具执行结果事件（ReactEngine 内部使用）。
+    """工具执行结果事件。
 
     用于将工具执行结果从 _execute_tool_call() 传递回主循环，
-    避免重复调用工具执行器。
-
-    此事件不对外暴露，仅用于 ReactEngine 内部流程。
+    避免重复调用工具执行器。同时允许通过 AgentStageUpdate 结构将详细的
+    执行状态（tool_call / tool_result）向外 yield 以便前端呈现。
     """
 
     result: Any  # 工具执行的原始结果

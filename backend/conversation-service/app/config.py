@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     # Case Service 配置（用于获取环境上下文）
     CASE_SERVICE_URL: str = "http://case-service:8001"
     ENVIRONMENT_CONTEXT_TIMEOUT_SEC: float = 5.0
+    USE_RAW_ENVIRONMENT_CONTEXT: bool = True
 
     # 多助手注册表（可选覆盖）
     # JSON 格式：

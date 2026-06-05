@@ -340,7 +340,70 @@ def _resolve_env_variable(
        - disk_sn: 尝试从匹配的告警中的 description 或 target 提取 serial number。
     3. 如果是任务相关变量，进行关键字过滤后再锚定到第一个任务（无匹配则 fallback 到 task_logs[0]）。
     """
-    env_info = env_context.env_info or {}
+    if isinstance(env_context, dict):
+        is_raw = env_context.get("is_raw", False)
+        env_info = env_context.get("env_info") or {}
+        alert_logs = env_context.get("alert_logs") or []
+        task_logs = env_context.get("task_logs") or []
+    else:
+        is_raw = False
+        env_info = env_context.env_info or {}
+        alert_logs = env_context.alert_logs or []
+        task_logs = env_context.task_logs or []
+
+    def fmt_ts(ts) -> str:
+        if not ts:
+            return ""
+        try:
+            from datetime import UTC, datetime
+
+            return datetime.fromtimestamp(int(ts), tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return str(ts)
+
+    def map_level(urgent_type) -> str:
+        if urgent_type in (1, "1", "紧急"):
+            return "CRITICAL"
+        if urgent_type in (0, "0", "普通"):
+            return "WARNING"
+        return "WARNING"
+
+    def map_status(status, process=None) -> str:
+        mapping = {3: "失败", "3": "失败", 2: "完成", "2": "完成"}
+        if status in mapping:
+            return mapping[status]
+        if process and isinstance(process, str):
+            return process
+        return "未知"
+
+    if is_raw:
+        env_info = dict(env_info)
+        if "cluster_name" not in env_info and "name" in env_info:
+            env_info["cluster_name"] = env_info["name"]
+        if "network_config" not in env_info and "mcastaddr" in env_info:
+            env_info["network_config"] = env_info["mcastaddr"]
+
+        mapped_alerts = []
+        for a in alert_logs:
+            item = dict(a)
+            if "level" not in item:
+                item["level"] = map_level(item.get("urgent_type"))
+            if "time" not in item:
+                item["time"] = fmt_ts(item.get("end"))
+            mapped_alerts.append(item)
+        alert_logs = mapped_alerts
+
+        mapped_tasks = []
+        for t in task_logs:
+            item = dict(t)
+            raw_status = item.get("status")
+            item["status"] = map_status(raw_status, item.get("process"))
+            if "time" not in item:
+                item["time"] = fmt_ts(item.get("end"))
+            if "trace_id" not in item and "request_id" in item:
+                item["trace_id"] = item["request_id"]
+            mapped_tasks.append(item)
+        task_logs = mapped_tasks
 
     # 支持大小写及下划线不敏感匹配
     def lookup_dict(d: dict, target_key: str) -> Any | None:
@@ -360,7 +423,6 @@ def _resolve_env_variable(
     keywords = _get_filter_keywords(category_l2, category_l1, sop_title)
 
     # 2. 检查告警日志
-    alert_logs = env_context.alert_logs or []
     if alert_logs:
         filtered_alerts = _filter_logs_by_keywords(alert_logs, keywords)
         alert = filtered_alerts[0] if filtered_alerts else alert_logs[0]
@@ -395,7 +457,6 @@ def _resolve_env_variable(
                 return val
 
     # 3. 检查任务日志
-    task_logs = env_context.task_logs or []
     if task_logs:
         filtered_tasks = _filter_logs_by_keywords(task_logs, keywords)
         task = filtered_tasks[0] if filtered_tasks else task_logs[0]
@@ -480,7 +541,17 @@ async def sop_create_execution(
         # 获取环境上下文
         env_context = None
         if _environment_client and case_id:
-            env_context = await _environment_client.get_context_info(case_id)
+            if settings.USE_RAW_ENVIRONMENT_CONTEXT:
+                raw_envs = await _environment_client.get_raw_environments(case_id)
+                if raw_envs:
+                    env_context = {
+                        "is_raw": True,
+                        "env_info": raw_envs.get("cluster", {}),
+                        "alert_logs": raw_envs.get("alert", {}).get("alerts", []),
+                        "task_logs": raw_envs.get("task", {}).get("tasks", []),
+                    }
+            else:
+                env_context = await _environment_client.get_context_info(case_id)
 
         # 获取 SOP 详细信息
         sop_doc = await _get_sop_document(body.sop_document_id)

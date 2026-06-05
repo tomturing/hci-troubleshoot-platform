@@ -22,6 +22,7 @@ TriageAgent: S0 意图识别 Agent（继承 BaseAgent）
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections.abc import AsyncGenerator
@@ -326,10 +327,19 @@ class TriageAgent(BaseAgent):
         total_count = sum(len(c) for c in categories.values()) if categories else 0
         categories_text = self._format_categories(categories)
 
+        if env_context and env_context.get("is_raw"):
+            env_info_val = json.dumps(env_context.get("env_info", {}), ensure_ascii=False, indent=2)
+            alert_logs_val = json.dumps(env_context.get("alert_logs", []), ensure_ascii=False, indent=2)
+            task_logs_val = json.dumps(env_context.get("task_logs", []), ensure_ascii=False, indent=2)
+        else:
+            env_info_val = env_context.get("env_info", "") if env_context else ""
+            alert_logs_val = env_context.get("alert_logs", "") if env_context else ""
+            task_logs_val = env_context.get("task_logs", "") if env_context else ""
+
         formatted_s0_rules = s0_rules.format(
-            env_info=env_context.get("env_info", "") if env_context else "",
-            alert_logs=env_context.get("alert_logs", "") if env_context else "",
-            task_logs=env_context.get("task_logs", "") if env_context else "",
+            env_info=env_info_val,
+            alert_logs=alert_logs_val,
+            task_logs=task_logs_val,
             total_count=total_count,
             categories_text=categories_text,
         )

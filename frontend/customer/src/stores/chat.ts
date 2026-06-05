@@ -677,6 +677,95 @@ export const useChatStore = defineStore('chat', () => {
               } catch (e) {
                 console.warn('[interactive_request] 解析失败:', e)
               }
+            } else if (pendingEventType === 'tool_call') {
+              try {
+                const event = JSON.parse(data)
+                const existingIdx = messages.value.findIndex(m => {
+                  const meta = m.metadata as any
+                  return meta?.kind === 'tool_call' && meta?.event?.exec_id === event.exec_id
+                })
+                if (existingIdx !== -1) {
+                  const meta = messages.value[existingIdx].metadata as any
+                  if (meta) {
+                    meta.event = {
+                      ...meta.event,
+                      ...event
+                    }
+                  }
+                } else {
+                  messages.value.push({
+                    id: `tc-${event.exec_id || Date.now()}`,
+                    role: 'assistant',
+                    content: '',
+                    timestamp: new Date(),
+                    metadata: {
+                      kind: 'tool_call',
+                      event: event
+                    }
+                  })
+                }
+
+                if (event.status === 'pending') {
+                  const risk = event.risk_level ?? 1
+                  let autoRun = false
+                  if (autoExecuteMode.value === 'aggressive' && risk <= 2) {
+                    autoRun = true
+                  } else if (autoExecuteMode.value === 'safe-only' && risk <= 1) {
+                    autoRun = true
+                  }
+                  if (autoRun) {
+                    devLog('tool_call', '符合自动执行条件，静默执行中...', { exec_id: event.exec_id, risk_level: risk })
+                    fetch(`/api/conversations/${conversationId.value}/interactive-response`, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'X-Client-ID': clientId,
+                      },
+                      body: JSON.stringify({
+                        kind: 'tool_confirm',
+                        request_id: event.exec_id,
+                        acp_session_id: conversationId.value,
+                        outcome: {
+                          confirmed: true,
+                          authorized_by: 'user'
+                        }
+                      })
+                    }).catch(e => console.warn('自动执行工具确认失败:', e))
+                  }
+                }
+              } catch (e) {
+                console.warn('[tool_call] 解析/处理失败:', e)
+              }
+            } else if (pendingEventType === 'tool_result') {
+              try {
+                const event = JSON.parse(data)
+                const existingIdx = messages.value.findIndex(m => {
+                  const meta = m.metadata as any
+                  return meta?.kind === 'tool_call' && meta?.event?.exec_id === event.exec_id
+                })
+                if (existingIdx !== -1) {
+                  const meta = messages.value[existingIdx].metadata as any
+                  if (meta) {
+                    meta.event = {
+                      ...meta.event,
+                      ...event
+                    }
+                  }
+                } else {
+                  messages.value.push({
+                    id: `tr-${event.exec_id || Date.now()}`,
+                    role: 'assistant',
+                    content: '',
+                    timestamp: new Date(),
+                    metadata: {
+                      kind: 'tool_call',
+                      event: event
+                    }
+                  })
+                }
+              } catch (e) {
+                console.warn('[tool_result] 解析/处理失败:', e)
+              }
             } else if (pendingEventType === 'agent_exec_command') {
               // T-TOOL-04 + T-TOOL-18: Agent 命令执行请求（SSE → WebSocket → POST 结果）
               try {

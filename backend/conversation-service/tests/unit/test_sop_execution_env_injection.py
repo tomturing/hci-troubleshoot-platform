@@ -173,3 +173,56 @@ def test_resolve_env_variable_semantic_routing_fallback():
         "node_ip", {}, env_context, category_l1="其他", category_l2="未知分类", sop_title="无"
     )
     assert node_ip == "10.0.0.1"
+
+
+def test_resolve_env_variable_raw():
+    # 测试原始数据注入模式
+    env_context = {
+        "is_raw": True,
+        "env_info": {
+            "hci_version": "6.8.0_R2",
+            "name": "raw-cluster-name",
+            "mcastaddr": "239.0.0.1",
+        },
+        "alert_logs": [
+            {
+                "urgent_type": 1,
+                "end": 1780000000,
+                "target": "raw-target",
+                "type": "disk_failed",
+                "description": "磁盘异常 [sn: RAW-SN-123]",
+            }
+        ],
+        "task_logs": [
+            {
+                "status": 3,
+                "end": 1780000100,
+                "type": "start_vm",
+                "request_id": "req-raw-456",
+            }
+        ],
+    }
+
+    # 1. 验证 env_info 字段映射
+    version = _resolve_env_variable("hci_version", {}, env_context)
+    assert version == "6.8.0_R2"
+
+    cluster_name = _resolve_env_variable("cluster_name", {}, env_context)
+    assert cluster_name == "raw-cluster-name"
+
+    network_config = _resolve_env_variable("network_config", {}, env_context)
+    assert network_config == "239.0.0.1"
+
+    # 2. 验证 alert 字段映射
+    level = _resolve_env_variable("level", {}, env_context)
+    assert level == "CRITICAL"
+
+    disk_sn = _resolve_env_variable("disk_sn", {}, env_context)
+    assert disk_sn == "RAW-SN-123"
+
+    # 3. 验证 task 字段映射
+    status = _resolve_env_variable("status", {}, env_context)
+    assert status == "失败"
+
+    trace_id = _resolve_env_variable("trace_id", {}, env_context)
+    assert trace_id == "req-raw-456"

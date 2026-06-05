@@ -384,6 +384,7 @@ class CompositeToolExecutor:
         *,
         tool_def: "ToolDefinition | None" = None,
         conversation_id: str | None = None,
+        **kwargs: Any,
     ) -> Any:
         """执行工具调用，根据工具类型分发
 
@@ -391,7 +392,8 @@ class CompositeToolExecutor:
             tool_name: 工具名称
             args: 工具参数
             tool_def: 工具定义（可选，如未传入则从 TOOL_REGISTRY 获取）
-            conversation_id: 会话 ID（可选，用于 acli category 的 BridgeRelayExecutor）
+            conversation_id: 会话 ID (可选)
+            **kwargs: 额外透传参数（如 exec_id）
 
         Returns:
             执行结果（字符串或字典）
@@ -426,6 +428,7 @@ class CompositeToolExecutor:
                 risk_level=tool_def.risk_level,
                 policy=tool_def.policy,
                 usage_template=tool_def.usage_template,
+                **kwargs,
             )
 
             # 返回 stdout 或错误信息

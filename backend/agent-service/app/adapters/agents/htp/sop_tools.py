@@ -144,4 +144,4 @@ class SopToolExecutor:
             )
 
         # 其他工具（SCP/acli 诊断工具）：委托给默认执行器，传递 conversation_id
-        return await self._default_executor.execute(tool_name, args, conversation_id=self._conversation_id)
+        return await self._default_executor.execute(tool_name, args, conversation_id=self._conversation_id, **kwargs)

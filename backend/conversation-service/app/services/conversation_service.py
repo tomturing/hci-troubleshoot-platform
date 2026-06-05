@@ -314,20 +314,37 @@ class ConversationService:
             # 2.6 【修复】获取环境上下文信息（Segment 4 数据）
             context_info: dict | None = None
             if current_stage == "S0" and self.environment_client:
-                env_context = await self.environment_client.get_context_info(case_id)
-                if env_context:
-                    context_info = {
-                        "env_info": env_context.env_info,
-                        "alert_logs": env_context.alert_logs,
-                        "task_logs": env_context.task_logs,
-                    }
-                    logger.info(
-                        event="s0_context_info_loaded",
-                        message="S0 环境上下文已加载",
-                        case_id=case_id,
-                        alert_count=len(env_context.alert_logs),
-                        task_count=len(env_context.task_logs),
-                    )
+                if settings.USE_RAW_ENVIRONMENT_CONTEXT:
+                    raw_envs = await self.environment_client.get_raw_environments(case_id)
+                    if raw_envs:
+                        context_info = {
+                            "is_raw": True,
+                            "env_info": raw_envs.get("cluster", {}),
+                            "alert_logs": raw_envs.get("alert", {}).get("alerts", []),
+                            "task_logs": raw_envs.get("task", {}).get("tasks", []),
+                        }
+                        logger.info(
+                            event="s0_raw_context_info_loaded",
+                            message="S0 原始环境上下文已加载",
+                            case_id=case_id,
+                            alert_count=len(context_info["alert_logs"]),
+                            task_count=len(context_info["task_logs"]),
+                        )
+                else:
+                    env_context = await self.environment_client.get_context_info(case_id)
+                    if env_context:
+                        context_info = {
+                            "env_info": env_context.env_info,
+                            "alert_logs": env_context.alert_logs,
+                            "task_logs": env_context.task_logs,
+                        }
+                        logger.info(
+                            event="s0_context_info_loaded",
+                            message="S0 环境上下文已加载",
+                            case_id=case_id,
+                            alert_count=len(env_context.alert_logs),
+                            task_count=len(env_context.task_logs),
+                        )
 
             # 3. 获取历史上下文 (最近 20 条)
             # 注意：必须使用独立 session，避免请求作用域 session 在流式传输期间长期持有事务锁
@@ -410,6 +427,9 @@ class ConversationService:
                             _stage = agent_event.get("stage", "")
                             _metadata = agent_event.get("metadata", {})
                             yield f"\x00event:stage_change:{_stage}\x00"
+                            if _stage in ("tool_call", "tool_result"):
+                                _payload = _json.dumps(_metadata, ensure_ascii=False)
+                                yield f"\x00event:{_stage}:{_payload}\x00"
                             # T-AGT-07: 处理 SOP 命中统计（sop_reasoning 事件携带 sop_document_id）
                             if _stage == "sop_reasoning" and _metadata.get("sop_document_id"):
                                 _sop_doc_id = _metadata.get("sop_document_id")
@@ -2281,6 +2301,10 @@ class ConversationService:
                     )
             elif event_type == "stage_update":
                 _stage = agent_event.get("stage", "")
+                _metadata = agent_event.get("metadata", {})
                 yield f"\x00event:stage_change:{_stage}\x00"
+                if _stage in ("tool_call", "tool_result"):
+                    _payload = _json.dumps(_metadata, ensure_ascii=False)
+                    yield f"\x00event:{_stage}:{_payload}\x00"
             elif event_type == "done":
                 break

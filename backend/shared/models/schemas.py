@@ -93,6 +93,7 @@ class MessageCreate(BaseModel):
     content: str
     metadata: dict | None = None
     assistant_type: str | None = Field(None, description="AI助手类型，用于动态切换助手")
+    auto_execute: bool | None = Field(None, description="是否开启工具自动执行")
 
 
 class MessageResponse(BaseModel):

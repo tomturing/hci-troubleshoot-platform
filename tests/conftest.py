@@ -17,6 +17,7 @@ def _activate_service(service_name: str) -> None:
                 del sys.modules[key]
         try:
             from shared.database.postgres import Base
+
             Base.metadata.clear()
         except ImportError:
             pass

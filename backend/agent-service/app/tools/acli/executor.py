@@ -276,6 +276,7 @@ class BridgeRelayExecutor:
         risk_level: int | None = None,
         policy: str | None = None,
         usage_template: str | None = None,
+        exec_id: str | None = None,
     ) -> ExecResult:
         """
         执行命令并返回结果。
@@ -288,6 +289,7 @@ class BridgeRelayExecutor:
             risk_level: 风险等级（可选，对插件工具使用固定值）
             policy: 执行策略（可选，对插件工具使用固定值）
             usage_template: 插件工具的命令模板（可选）
+            exec_id: 统一的工具执行流水号（可选）
 
         Returns:
             ExecResult: 执行结果
@@ -297,7 +299,7 @@ class BridgeRelayExecutor:
         """
         trace_id = get_current_trace_id()
         start_time = time.time()
-        exec_id = str(uuid.uuid4())
+        exec_id = exec_id or str(uuid.uuid4())
 
         # 1. 提取命令和原因
         if usage_template:
