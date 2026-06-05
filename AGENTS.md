@@ -77,6 +77,10 @@
   - 升级 `data-pipeline/kbd/converter.py` 板块解析器，使用平铺子节点动态遍历合并机制，自动提取并合入溢出在容器外的排障正文和截图，完美向后兼容。
   - 修复 `KbdReviewView.vue` 中由 `inDescription` 状态导致的 Markdown “贪婪吸入”解析 Bug，严格限定非空且非 `>` 开头的行为卡片结束标志，防止游离排障步骤被误吞进折叠面板内。
   - 修复 `KbdReviewView.vue` 内 `renderMarkdown` 转义星号渲染冲突，使用 DOMPurify + marked AST 解析替代手写正则，完美修复分割线及排障步骤中的反斜杠裂变与星号吞噬 Bug。
+- **Prompt/工具/技能管理页面 UI 优化与 Bug 修复** (PR #376):
+  - 修复 Prompt/工具/技能 Dialog 中 teleported 弹窗 scoped 样式失效及 full screen 模式下按钮定位异常的 Bug
+  - 优化 Prompt 管理页面主卡片最小高度及 Prompt 预览最大高度，杜绝列表下方的无效留白
+  - 将工具管理中“功能描述”字段调整到右栏上方，均衡左右高度并拓宽编辑体验
 
 ---
 

@@ -715,32 +715,42 @@ CREATE INDEX IF NOT EXISTS idx_tool_definition_risk_level ON tool_definition (ri
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS skill_definition (
     id serial NOT NULL,
-    skill_name varchar(100) NOT NULL UNIQUE,
-    display_name varchar(200) NOT NULL,
-    description text NOT NULL,
-    parameters_schema jsonb NOT NULL DEFAULT '{}',
-    output_schema jsonb NOT NULL DEFAULT '{}',
+    skill_name varchar(64) NOT NULL UNIQUE,
+    description varchar(1024) NOT NULL,
+    instructions_md text NOT NULL DEFAULT '',
+    compatibility varchar(500),
+    license varchar(100),
+    allowed_tools text,
+    metadata_json jsonb NOT NULL DEFAULT '{}',
+    display_name varchar(200),
     is_active boolean DEFAULT true,
-    version varchar(20) DEFAULT '1.0',
+    assets_json jsonb NOT NULL DEFAULT '[]',
+    references_json jsonb NOT NULL DEFAULT '[]',
+    trace_id varchar(64),
     created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT skill_definition_pkey PRIMARY KEY (id)
 );
 
-COMMENT ON TABLE skill_definition IS '技能定义表 — AI 技能/方法库，存储平台通用的、可复用的分析与判断技能（如硬盘厂商识别与寿命判断、内存状态分析等）';
+COMMENT ON TABLE skill_definition IS '技能定义表 — 遵循 Agent Skills Open Standard (agentskills.io)，以 Markdown 知识包形式存储领域专业知识和标准操作流程';
 COMMENT ON COLUMN skill_definition.id IS '技能定义主键，自增';
-COMMENT ON COLUMN skill_definition.skill_name IS '技能唯一标识（如 disk_vendor_lifetime），SOP 变量源引用此字段（格式如 skill:disk_vendor_lifetime）';
-COMMENT ON COLUMN skill_definition.display_name IS '技能展示名，用于前端管理页面和审计展示';
-COMMENT ON COLUMN skill_definition.description IS '技能功能描述';
-COMMENT ON COLUMN skill_definition.parameters_schema IS '输入参数 JSON Schema';
-COMMENT ON COLUMN skill_definition.output_schema IS '输出参数 JSON Schema';
-COMMENT ON COLUMN skill_definition.is_active IS '是否启用；is_active=false 的技能被调用时会报错或退化';
-COMMENT ON COLUMN skill_definition.version IS '技能版本（如 1.0）';
+COMMENT ON COLUMN skill_definition.skill_name IS 'Skill 唯一标识，kebab-case，对应标准 name 字段。SOP 变量源引用格式：skill:skill-name';
+COMMENT ON COLUMN skill_definition.description IS '供 Agent 发现阶段使用（~100 tokens），描述"做什么"和"何时触发"';
+COMMENT ON COLUMN skill_definition.instructions_md IS 'SKILL.md 正文 Markdown，供 Agent 激活阶段加载';
+COMMENT ON COLUMN skill_definition.compatibility IS '环境兼容性说明（可选），描述系统版本、工具依赖、网络权限等';
+COMMENT ON COLUMN skill_definition.license IS '许可证（可选）';
+COMMENT ON COLUMN skill_definition.allowed_tools IS '预批准工具列表，空格分隔（实验性字段）';
+COMMENT ON COLUMN skill_definition.metadata_json IS '扩展元数据 key-value，建议包含 author、category、tags';
+COMMENT ON COLUMN skill_definition.display_name IS '中文展示名，管理控制台使用（平台扩展字段）';
+COMMENT ON COLUMN skill_definition.is_active IS '启用状态；false 时 Agent 不会激活此 Skill（平台扩展字段）';
+COMMENT ON COLUMN skill_definition.assets_json IS '资源文件内联存储，模拟标准 assets/ 目录（平台扩展字段）';
+COMMENT ON COLUMN skill_definition.references_json IS '参考文档内联存储，模拟标准 references/ 目录（平台扩展字段）';
 COMMENT ON COLUMN skill_definition.created_at IS '创建时间';
 COMMENT ON COLUMN skill_definition.updated_at IS '最后更新时间';
 
 -- 索引: skill_definition
 CREATE INDEX IF NOT EXISTS idx_skill_definition_active ON skill_definition (is_active);
+CREATE INDEX IF NOT EXISTS idx_skill_definition_metadata ON skill_definition USING GIN (metadata_json);
 
 -- ------------------------------------------------------------
 -- 表: kb_category  [模块: kb-service]

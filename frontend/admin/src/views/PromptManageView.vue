@@ -540,6 +540,15 @@ onMounted(() => {
 
 .main-card {
   background: #fff;
+  min-height: calc(100vh - 170px);
+  display: flex;
+  flex-direction: column;
+}
+
+.main-card :deep(.el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .card-header {
@@ -675,7 +684,7 @@ onMounted(() => {
   border-radius: 4px;
   padding: 15px;
   margin-bottom: 15px;
-  max-height: 250px;
+  max-height: 500px;
   overflow-y: auto;
 }
 
@@ -732,11 +741,6 @@ onMounted(() => {
   background-color: #fafbfc;
 }
 
-.custom-dialog :deep(.el-dialog) {
-  border-radius: 4px;
-  overflow: hidden;
-}
-
 .custom-dialog-header {
   display: flex;
   justify-content: space-between;
@@ -756,24 +760,61 @@ onMounted(() => {
   transform: scale(1.1);
 }
 
-.custom-dialog :deep(.el-dialog__header) {
+.dialog-form {
+  width: 100%;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* 统一 premium-dialog 高端弹窗样式 */
+:global(.premium-dialog) {
+  display: flex;
+  flex-direction: column;
+}
+
+:global(.premium-dialog .el-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.1) !important;
+}
+
+:global(.premium-dialog.is-fullscreen .el-dialog) {
+  max-height: 100vh;
+  height: 100vh;
+  border-radius: 0;
+}
+
+:global(.premium-dialog .el-dialog__header) {
   background-color: #f8f9fa;
   margin-right: 0;
-  padding: 20px;
+  padding: 16px 24px;
   border-bottom: 1px solid #eee;
+  flex-shrink: 0;
 }
 
-.custom-dialog :deep(.el-dialog__title) {
+:global(.premium-dialog .el-dialog__title) {
   font-weight: 600;
   color: #2c3e50;
+  font-size: 16px;
 }
 
-.custom-dialog :deep(.el-dialog__body) {
-  padding: 20px 30px;
+:global(.premium-dialog .el-dialog__body) {
+  padding: 24px;
+  flex: 1;
+  overflow-y: auto;
 }
 
-.custom-dialog :deep(.el-dialog__footer) {
-  padding: 15px 30px;
+:global(.premium-dialog .el-dialog__footer) {
+  padding: 12px 24px;
   border-top: 1px solid #eee;
+  background-color: #f8f9fa;
+  flex-shrink: 0;
 }
 </style>

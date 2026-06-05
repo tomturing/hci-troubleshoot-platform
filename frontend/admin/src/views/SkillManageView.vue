@@ -850,27 +850,45 @@ onMounted(() => {
 }
 
 /* 弹窗 */
-.skill-detail-dialog :deep(.el-dialog) {
-  border-radius: 4px;
-  overflow: hidden;
+:global(.skill-detail-dialog) {
+  display: flex;
+  flex-direction: column;
 }
 
-.skill-detail-dialog :deep(.el-dialog__header) {
+:global(.skill-detail-dialog .el-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.1) !important;
+}
+
+:global(.skill-detail-dialog.is-fullscreen .el-dialog) {
+  max-height: 100vh;
+  height: 100vh;
+  border-radius: 0;
+}
+
+:global(.skill-detail-dialog .el-dialog__header) {
   background-color: #f8f9fa;
   margin-right: 0;
   padding: 16px 20px;
   border-bottom: 1px solid #eee;
+  flex-shrink: 0;
 }
 
-.skill-detail-dialog :deep(.el-dialog__body) {
+:global(.skill-detail-dialog .el-dialog__body) {
   padding: 0;
-  height: calc(100vh - 130px);
+  flex: 1;
   overflow: hidden;
 }
 
-.skill-detail-dialog :deep(.el-dialog__footer) {
+:global(.skill-detail-dialog .el-dialog__footer) {
   padding: 12px 24px;
   border-top: 1px solid #eee;
+  background-color: #f8f9fa;
+  flex-shrink: 0;
 }
 
 .custom-dialog-header {
@@ -905,6 +923,7 @@ onMounted(() => {
 
 /* 表单 */
 .dialog-form {
+  width: 100%;
   max-width: 900px;
 }
 
