@@ -74,6 +74,8 @@ class InvestigationAgent(BaseAgent):
         conversation_service_url: str = "",  # T-AGT-22: 用于创建/推进 SOP 执行
         internal_token: str = "",  # T-AGT-22: 内部服务认证 Token
         top_k: int = DEFAULT_TOP_K,
+        confirm_service: Any = None,
+        audit_service: Any = None,
     ) -> None:
         super().__init__(name="investigation-agent", max_steps=20)
         self._ai_registry = ai_registry
@@ -83,6 +85,8 @@ class InvestigationAgent(BaseAgent):
         self._conversation_service_url = conversation_service_url
         self._internal_token = internal_token
         self._top_k = top_k
+        self._confirm_service = confirm_service
+        self._audit_service = audit_service
         # KBD 差异诊断引擎（每次 process() 调用时重新创建，保证状态隔离）
         self._kbd_diag: KBDDiagnostic | None = None
 
@@ -497,6 +501,8 @@ class InvestigationAgent(BaseAgent):
             ai_registry=self._ai_registry,
             tool_registry={},  # tool_registry 在 ReactEngine 内部通过 get_tools_for_llm() 获取
             tool_executor=self._tool_executor,
+            confirm_service=self._confirm_service,
+            audit_service=self._audit_service,
         )
 
         # 调用 ReactEngine.execute()，动态注入 SOP 工具

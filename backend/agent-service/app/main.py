@@ -62,6 +62,17 @@ logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    # ── 编译 SQLAlchemy 所有模型，拦截任何 NoReferencedTableError 外键元数据配置错误 ────
+    try:
+        from shared.models.system_prompt import SystemPrompt
+        from shared.models.audit import AuditLog
+        from sqlalchemy.orm import configure_mappers
+        configure_mappers()
+        logger.info("SQLAlchemy mappers 编译配置成功，外键检查通过")
+    except Exception as e:
+        logger.critical(f"SQLAlchemy mappers 编译失败，发现外键或元数据配置错误: {e}", exc_info=True)
+        raise e
+
     logger.info(
         event="service_starting",
         message=f"Starting {settings.SERVICE_NAME}",
@@ -156,7 +167,9 @@ async def lifespan(app: FastAPI):
     acli_client = None  # 确保变量存在，供 InvestigationAgent 使用
     tool_executor = None  # 确保变量存在，供 InvestigationAgent 使用
     confirm_service: ConfirmService | None = None
-    audit_service = FileAuditService()
+    from app.services.tool_audit import ToolAuditService, DbAuditService
+    ToolAuditService.initialize(db_manager.async_session_factory)
+    audit_service = DbAuditService()
 
     # ── 加载工具注册表（从数据库）──────────────────────────────────────────────────────
     # 无论是否启用 REACT，都需要加载工具注册表（InvestigationAgent 等也依赖）
@@ -222,6 +235,8 @@ async def lifespan(app: FastAPI):
         conversation_service_url=settings.CONVERSATION_SERVICE_URL,  # T-AGT-22
         internal_token=settings.INTERNAL_API_TOKEN,  # T-AGT-22
         top_k=15,
+        confirm_service=confirm_service,
+        audit_service=audit_service,
     )
     logger.info(
         event="investigation_agent_initialized",
