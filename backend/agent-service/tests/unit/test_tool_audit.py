@@ -1,9 +1,9 @@
-import pytest
 import uuid
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
-from app.services.tool_audit import ToolAuditService, DbAuditService
+import pytest
+from app.services.tool_audit import DbAuditService, ToolAuditService
 from shared.database.postgres import Base
 from shared.models.audit import ToolResult
 from sqlalchemy.orm import configure_mappers

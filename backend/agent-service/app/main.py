@@ -64,8 +64,8 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # ── 编译 SQLAlchemy 所有模型，拦截任何 NoReferencedTableError 外键元数据配置错误 ────
     try:
-        from shared.models.system_prompt import SystemPrompt
-        from shared.models.audit import AuditLog
+        from shared.models.audit import AuditLog  # noqa: F401
+        from shared.models.system_prompt import SystemPrompt  # noqa: F401
         from sqlalchemy.orm import configure_mappers
         configure_mappers()
         logger.info("SQLAlchemy mappers 编译配置成功，外键检查通过")
@@ -167,7 +167,7 @@ async def lifespan(app: FastAPI):
     acli_client = None  # 确保变量存在，供 InvestigationAgent 使用
     tool_executor = None  # 确保变量存在，供 InvestigationAgent 使用
     confirm_service: ConfirmService | None = None
-    from app.services.tool_audit import ToolAuditService, DbAuditService
+    from app.services.tool_audit import DbAuditService, ToolAuditService
     ToolAuditService.initialize(db_manager.async_session_factory)
     audit_service = DbAuditService()
 
