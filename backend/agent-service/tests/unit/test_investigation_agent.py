@@ -199,6 +199,52 @@ class TestInvestigationAgentRouting:
         final_stages = [e for e in stage_events if e.stage == "S4"]
         assert len(final_stages) == 1, f"未找到 S4 阶段事件，所有 stage 事件：{[e.stage for e in stage_events]}"
 
+    @pytest.mark.asyncio
+    async def test_sop_mode_bypasses_route_when_resume(self):
+        """当传入 sop_resume_context 时，应绕过 route_by_category，直接从 kb_client 查询 SOP 文档详情"""
+        # mock kb_client
+        kb = MagicMock()
+        doc_details = {"id": 100, "title": "恢复SOP标题", "content_md": "恢复SOP内容"}
+        kb.get_sop_document = AsyncMock(return_value=doc_details)
+        kb.route_by_category = AsyncMock()
+
+        registry = _make_registry_mock_with_stream(["恢复SOP诊断结论"])
+
+        agent = InvestigationAgent(
+            ai_registry=registry,
+            kb_client=kb,
+            tool_executor=MagicMock(),
+        )
+
+        events = [
+            event
+            async for event in agent.process(
+                session_id="test-resume-001",
+                messages=[{"role": "user", "content": "继续"}],
+                category_id="虚拟机-003",
+                diagnostic_stage="S1",
+                env_context={},
+                assistant_type="htp-agent",
+                case_id=None,
+                user_id="user-001",
+                sop_resume_context={
+                    "sop_document_id": 100,
+                    "current_node_id": "n-1-2",
+                    "completed_steps": ["n-1"],
+                }
+            )
+        ]
+
+        # 校验：route_by_category 从未被调用
+        kb.route_by_category.assert_not_called()
+        # 校验：get_sop_document 成功被调用以获取文档详情
+        kb.get_sop_document.assert_awaited_once_with(100)
+
+        # 校验：最终应该有文本输出
+        text_events = [e for e in events if isinstance(e, AgentTextChunk)]
+        assert len(text_events) >= 1
+        assert "恢复SOP诊断结论" in text_events[-1].content
+
 
 class TestSOPPromptTruncation:
     """_build_sop_prompt() 截断逻辑测试"""

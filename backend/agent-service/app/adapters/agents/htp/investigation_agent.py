@@ -173,14 +173,43 @@ class InvestigationAgent(BaseAgent):
         )
 
         # 1. 尝试三轨路由（优先 SOP）
-        route_result = await self._kb_client.route_by_category(
-            category_code=category_id,
-            query=user_query,
-            top_k=3,
-        )
+        track = ""
+        sop_results = []
 
-        track = (route_result or {}).get("track", "")
-        sop_results = (route_result or {}).get("results", [])
+        # T-AGT-23: 如果存在活跃的 SOP 恢复上下文，直接使用已有的 SOP 路由，不再重新计算路由，防止输入内容变化导致路由漂移
+        if sop_resume_context and sop_resume_context.get("sop_document_id"):
+            resume_doc_id = sop_resume_context.get("sop_document_id")
+            logger.info(
+                event="sop_resume_bypass_route",
+                message="检测到活跃的 SOP 恢复上下文，跳过三轨路由，直接使用原 SOP",
+                session_id=session_id,
+                sop_document_id=resume_doc_id,
+            )
+            try:
+                doc = await self._kb_client.get_sop_document(resume_doc_id)
+                if doc:
+                    track = "sop"
+                    sop_results = [{
+                        "id": doc.get("id"),
+                        "title": doc.get("title"),
+                        "content_md": doc.get("content_md"),
+                    }]
+            except Exception as e:
+                logger.error(
+                    event="sop_resume_fetch_document_failed",
+                    message=f"恢复 SOP 时获取文档 {resume_doc_id} 失败，将尝试重新路由",
+                    error=str(e),
+                    session_id=session_id,
+                )
+
+        if not track:
+            route_result = await self._kb_client.route_by_category(
+                category_code=category_id,
+                query=user_query,
+                top_k=3,
+            )
+            track = (route_result or {}).get("track", "")
+            sop_results = (route_result or {}).get("results", [])
 
         logger.info(
             event="investigation_route",
