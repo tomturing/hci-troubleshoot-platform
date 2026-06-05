@@ -804,6 +804,79 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 
 | 日期 | 版本 | 摘要 |
 |------|------|------|
-| 2026-05-28 | v1.0 | 初版。确立 bridge-relay-only 架构，废弃 AcliClient 直连路径；新增 bash_exec/acli_exec 工具设计；定义 BridgeRelayExecutor 执行机制和 terminal_bridge 协议扩展 |
+| 2026-05-28 | v1.0 | 初版。确立 bridge-relay-only 架构，废弃 AcliClient 直连路径；新增 bash_exec/acli_exec 工具设计；定义 BridgeRelayExecutor 执行机制 and terminal_bridge 协议扩展 |
 | 2026-05-29 | v2.0 | 重大架构调整。三大决策：D1 目录结构变更（shell→acli）、D2 DB 作为 SSOT（废弃代码硬编码，tool_registry.py 变为 DB 加载器）、D3 混合暴露方案（acli_exec 通用 + 4 个插件工具独立封装，删除旧 11 个结构化 acli 工具）。新增 §三~§六（决策记录、插件工具详设、tool_definition SSOT 设计、RiskClassifier 实现）；更新 §九 代码模块归属（shell→acli）；重写 §十 开发任务（含 T8~T10、T14~T15 新增 DB 迁移和 registry 重构任务）|
 | 2026-06-01 | v2.0.1 | 紧急修复。ORM 模型同步迁移 20260528000000：移除 `tool_type` 列，修复 agent-service CrashLoopBackOff（`UndefinedColumnError: column tool_definition.tool_type does not exist`）|
+| 2026-06-05 | v2.1 | 补充深度分析。阐明声明式定义与底层代码配合机制，剖析"参数 Schema"修改的影响以及"使用命令模板（usage_template）"完全未被消费的实现漏洞。 |
+
+---
+
+## 十二、 工具声明 (DB) 与底层执行代码配合机制及漏洞剖析
+
+### 12.1 声明式与命令式的配合关系
+
+在超融合基础设施排障平台的设计中，工具子系统由两层架构组成，用以在“LLM 的开放式自然语言理解”与“底层的命令式安全执行”之间建立桥梁：
+
+1. **声明层（Database - `tool_definition` 表）**：
+   - 担任系统的“契约（Contract）”。向大语言模型暴露可调用的 Function Schema，定义工具的功能描述、输入参数的强类型约束以及基础风险等级。
+   - 数据会在服务启动（或通过热更触发）时，被反序列化并载入内存全局变量 `TOOL_REGISTRY` 中。
+2. **执行层（Backend Code - `CompositeToolExecutor` 与 `BridgeRelayExecutor`）**：
+   - 负责承接大模型输出的 Function Call 并将参数转化为底层物理执行指令，同时实施强安全沙箱机制（`CommandSanitizer` 与 `RiskClassifier`）。
+
+**全链路交互配合流程：**
+```mermaid
+sequenceDiagram
+    autonumber
+    participant LLM as 大模型 (Agent)
+    participant CE as CompositeToolExecutor
+    participant BE as BridgeRelayExecutor
+    participant DB as tool_definition (DB)
+    
+    Note over CE,DB: 1. 启动/热更时加载契约
+    DB->>CE: 加载 TOOL_REGISTRY (Schema & 元数据)
+    Note over LLM,CE: 2. 运行时决策与分发
+    LLM->>CE: 调用工具 (tool_name, args)
+    rect rgb(240, 240, 250)
+        Note over CE: 3. 分发路由逻辑 (category)
+        alt category == "acli"
+            CE->>BE: 委托执行 (args, node_ip, risk, policy)
+        else category == "sop" / "scp"
+            CE->>CE: 本地处理 / 路由到 SCPClient
+        end
+    end
+    Note over BE: 4. 参数插值与命令执行
+    BE->>BE: 绑定参数 -> 净化(Sanitizer) -> 触发Bridge通道
+    BE-->>LLM: 返回结构化执行结果 (ShellResult)
+```
+
+### 12.2 修改“参数 Schema (JSON)”的影响与漏洞
+
+管理员在“工具管理页面”中可以自由地编辑每个工具的“参数 Schema (JSON)”数据。但这在目前的底层实现中隐藏着一个**严重的契约断裂漏洞**：
+
+* **底层硬编码提取依赖**：
+  在底层执行器中，针对某些关键参数采用了隐式的硬编码提取方式。例如在 `CompositeToolExecutor.execute()` 中强行读取了 `args.get("sop_document_id")`，在 `BridgeRelayExecutor` 中强行读取了 `args.get("node_ip")` 以及 `args.get("command")`。
+* **修改后的级联崩溃风险**：
+  如果管理员在 UI 界面上将 `node_ip` 字段名称修改为 `target_host_ip`，LLM 确实会接收到修改后的 Schema，并在 Function Call 中输出类似 `{"target_host_ip": "10.0.0.1"}` 的参数。然而，底层代码仍然试图从 `args.get("node_ip")` 取值，最终得到 `None`。这会导致：
+  1. 命令分发机制无法获取目标 IP，触发“缺少 node_ip”错误；
+  2. 若缺乏严格的断言校验，甚至可能默认将指令发往未知的主机或全部广播，从而引发严重的主机安全灾难。
+
+因此，修改“参数 Schema”并不是纯粹的声明式变更，它与底层解析代码强绑定。**如果修改了 Schema 键名，必须同步更新底层执行代码的读取键，否则会导致系统级不可用。**
+
+### 12.3 修改“使用命令模板 (usage_template)”的完全失效漏洞
+
+在系统的 `tool_definition` 表中，插件式诊断工具（例如 `acli_plugin_vm_start`）具有声明好的 `usage_template`（如 `acli plugins vm_start vm_start`）。然而在目前的 v2.0 实现中，**该字段完全沦为摆设，根本没有被底层消费：**
+
+1. **反序列化字段丢失**：
+   在 `app/tools/base_tool.py` 的 Pydantic 模型 `ToolDefinition` 中，**根本没有声明 `usage_template` 字段**。
+2. **加载映射忽略**：
+   在 `app/adapters/agents/htp/tool_registry.py` 的加载函数中，由于 Pydantic 模型缺乏对应的字段，该数据从 ORM 对象读取时即被丢弃，未载入内存注册表。
+3. **插件执行空命令灾难**：
+   在 `BridgeRelayExecutor.execute` 的实现中，获取命令的逻辑直接硬编码为：
+   ```python
+   command = args.get("command", "")
+   ```
+   因为插件工具（如 `acli_plugin_vm_start`）面向 LLM 的 Schema 只定义了 `node_ip` 参数，而**没有定义且不需要 LLM 传入 `command` 字段**。导致的结果是，大模型调用这些插件工具时，`args.get("command")` 返回空字符串 `""`。最终，Bridge 发送到远端 HCI 节点执行的实际命令为 `""`。
+4. **漏洞结论与重设计方案**：
+   当前环境下，即使在工具管理页面修改了“使用命令模板”，底层的插件工具也会永远执行空命令，这使得所有的插件诊断工具当前全部处于瘫痪状态。必须进行机制层面的重新设计和修复。
+   
+   针对该问题，完整的重构与安全插值引擎设计方案已在 [acli插件工具命令模板机制重新设计方案.md](file:///aihci/hci-troubleshoot-platform/docs/solution/agent/acli%E6%8F%92%E4%BB%B6%E5%B7%A5%E5%85%B7%E5%91%BD%E4%BD%A4%E6%A8%A1%E6%9D%BF%E6%9C%BA%E5%88%B6%E9%87%8D%E6%96%B0%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.md) 中详细阐明，包括数据模型扩容、安全插值引擎（基于 `shlex.quote` 转义）及 Fail-Fast 校验机制的具体实现逻辑。
