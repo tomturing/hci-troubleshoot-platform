@@ -104,7 +104,25 @@ class ConversationService:
         metadata: dict[str, Any] | None = None,
     ) -> Conversation:
         """创建新对话"""
-        trace_id = get_current_trace_id()
+        # 查询 Case 的 trace_id，确保一案一链继承机制
+        case_trace_id = None
+        try:
+            from sqlalchemy import text
+            res = await self.repository.session.execute(
+                text('SELECT trace_id FROM "case" WHERE case_id = :case_id'),
+                {"case_id": case_id}
+            )
+            case_row = res.fetchone()
+            if case_row:
+                case_trace_id = case_row[0]
+        except Exception as e:
+            logger.warning(
+                event="failed_to_lookup_case_trace_id",
+                case_id=case_id,
+                error=str(e),
+            )
+
+        trace_id = case_trace_id or get_current_trace_id()
         conversation = await self.repository.create_conversation(
             case_id=case_id, trace_id=trace_id, assistant_type=assistant_type, metadata=metadata
         )

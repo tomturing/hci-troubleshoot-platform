@@ -386,8 +386,8 @@ class ReactEngine:
                 span.set_attribute("tool.risk_level", tool_def.risk_level)
                 span.set_attribute("session_id", session_id)
                 try:
-                    # T-AGT-22: 使用 active_executor 执行工具
-                    result = await active_executor.execute(tool_name, tool_args)
+                    # T-AGT-22: 使用 active_executor 执行工具，显式传递 conversation_id
+                    result = await active_executor.execute(tool_name, tool_args, conversation_id=session_id)
                 except Exception as e:
                     span.record_exception(e)
                     span.set_status(trace.StatusCode.ERROR, str(e))
