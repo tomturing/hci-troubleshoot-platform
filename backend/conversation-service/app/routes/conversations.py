@@ -435,6 +435,7 @@ class InteractiveResponseBody(BaseModel):
     outcome: dict  # {"outcome": "selected", "optionId": "A"}
     # 或 {"outcome": "free_text", "text": "..."}
     # 或 {"confirmed": true, "authorized_by": "user"}（tool_confirm）
+    metadata: dict | None = None
 
 
 @router.post("/{conversation_id}/interactive-response")
@@ -460,6 +461,7 @@ async def submit_interactive_response(
         request_id=body.request_id,
         acp_session_id=body.acp_session_id,
         outcome=body.outcome,
+        metadata=body.metadata,
     )
     if not success:
         raise HTTPException(

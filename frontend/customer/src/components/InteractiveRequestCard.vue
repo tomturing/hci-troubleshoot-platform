@@ -187,9 +187,11 @@ async function doSubmit(outcome: Record<string, string>, _visibleReply: string):
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        kind: props.event.kind,
         request_id: props.event.requestId,
         acp_session_id: props.event.acpSessionId,
         outcome,
+        metadata: props.event.metadata,
       }),
     })
     if (!resp.ok) {

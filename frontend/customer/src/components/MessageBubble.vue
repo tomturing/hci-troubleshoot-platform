@@ -380,7 +380,9 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
     return
   }
 
-  // ── 以下为 ops-agent 原有逻辑 ──
+  const isVariable = ['variable_input', 'variable_confirm'].includes(ev.kind)
+
+  // ── 以下为 ops-agent 原有逻辑 / 变量确认逻辑 ──
   interactiveSubmitting.value = true
   try {
     const convId = chatStore.conversationId
@@ -389,23 +391,33 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        kind: ev.kind,
         request_id: ev.requestId,
         acp_session_id: ev.acpSessionId,
         outcome: { outcome: 'selected', optionId, optionLabel: optionName },
+        metadata: ev.metadata,
       }),
     })
     if (resp.ok) {
-      // 追加用户响应气泡（selectedOptionId 用于恢复已选高亮）
-      chatStore.messages.push({
-        id: `ir-resp-${Date.now()}`,
-        role: 'user',
-        content: `[操作选择] ${optionName}`,
-        timestamp: new Date(),
-        metadata: { kind: 'interactive_response', selectedOptionId: optionId },
-      })
       chatStore.clearInteractiveRequest()
-      // 立即接收 ops-agent 对该 interactive_response 的续写内容
-      chatStore.resumeOpsAgentStream()
+      if (isVariable) {
+        // 对于 SOP 变量输入，提交变量库后，发送一条用户消息触发后续诊断
+        await chatStore.sendMessage(optionName, {
+          kind: 'interactive_response',
+          selectedOptionId: optionId,
+        })
+      } else {
+        // 追加用户响应气泡（selectedOptionId 用于恢复已选高亮）
+        chatStore.messages.push({
+          id: `ir-resp-${Date.now()}`,
+          role: 'user',
+          content: `[操作选择] ${optionName}`,
+          timestamp: new Date(),
+          metadata: { kind: 'interactive_response', selectedOptionId: optionId },
+        })
+        // 立即接收 ops-agent 对该 interactive_response 的续写内容
+        chatStore.resumeOpsAgentStream()
+      }
     } else {
       console.warn('[interactive] 提交失败:', resp.status)
     }
@@ -420,6 +432,9 @@ async function handleInteractiveFreeText() {
   if (!text || interactiveSubmitting.value || interactiveSubmitted.value) return
   const ev = interactiveEvent.value
   if (!ev) return
+
+  const isVariable = ['variable_input', 'variable_confirm'].includes(ev.kind)
+
   interactiveSubmitting.value = true
   try {
     const convId = chatStore.conversationId
@@ -428,23 +443,32 @@ async function handleInteractiveFreeText() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        kind: ev.kind,
         request_id: ev.requestId,
         acp_session_id: ev.acpSessionId,
         outcome: { outcome: 'free_text', text },
+        metadata: ev.metadata,
       }),
     })
     if (resp.ok) {
-      chatStore.messages.push({
-        id: `ir-resp-${Date.now()}`,
-        role: 'user',
-        content: `[补充输入] ${text}`,
-        timestamp: new Date(),
-        metadata: { kind: 'interactive_response' },
-      })
       interactiveFreeText.value = ''
       chatStore.clearInteractiveRequest()
-      // 立即接收 ops-agent 对该 interactive_response 的续写内容
-      chatStore.resumeOpsAgentStream()
+      if (isVariable) {
+        // 对于 SOP 变量输入，提交变量库后，发送一条用户消息触发后续诊断
+        await chatStore.sendMessage(text, {
+          kind: 'interactive_response',
+        })
+      } else {
+        chatStore.messages.push({
+          id: `ir-resp-${Date.now()}`,
+          role: 'user',
+          content: `[补充输入] ${text}`,
+          timestamp: new Date(),
+          metadata: { kind: 'interactive_response' },
+        })
+        // 立即接收 ops-agent 对该 interactive_response 的续写内容
+        chatStore.resumeOpsAgentStream()
+      }
     } else {
       console.warn('[interactive] 自由文本提交失败:', resp.status)
     }

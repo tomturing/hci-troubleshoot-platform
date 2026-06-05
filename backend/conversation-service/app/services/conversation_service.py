@@ -2005,21 +2005,24 @@ class ConversationService:
         request_id: str,
         acp_session_id: str,
         outcome: dict,
+        metadata: dict | None = None,
     ) -> bool:
         """T-E6 + T-AGT-03: 将用户对交互卡片的响应回传给 agent-service。
 
         按 kind 字段分叉路由：
         - kind=tool_confirm → 调用 agent-service /v1/agent/react-confirm（ReAct 确认回路）
+        - kind=variable_input/variable_confirm → 写入 SOP 变量池（HTP 排障）
         - 其他 kind（ACP 类型）→ 调用 agent-service /v1/agent/interactive-response（ops-agent ACP）
 
         Args:
             conversation_id: 对话 ID（用于日志追踪）。
-            kind:            交互类型（tool_confirm / sop_step / info_confirm 等）。
+            kind:            交互类型（tool_confirm / sop_step / info_confirm / variable_input 等）。
             request_id:      ACP request_id（来自 AgentInteractiveRequest.request_id）。
             acp_session_id:  ops-agent ACP session_id（来自 AgentInteractiveRequest.acp_session_id）。
             outcome:         提交结果，格式 {"outcome": "selected", "optionId": "A"}
                              或 {"outcome": "free_text", "text": "..."}
                              或 {"confirmed": true, "authorized_by": "user"}（tool_confirm）。
+            metadata:        可选元数据（包含变量名等）。
 
         Returns:
             True  = 提交成功；False = AgentClient 未注入或请求失败。
@@ -2037,7 +2040,89 @@ class ConversationService:
         session_id = str(conversation_id)
 
         # 按 kind 分叉路由
-        if kind == "tool_confirm":
+        if kind in ("variable_input", "variable_confirm"):
+            # ── SOP 变量输入/确认路径 ──
+            if not metadata or "variable_name" not in metadata:
+                logger.warning(
+                    event="sop_variable_response_missing_metadata",
+                    message="SOP 变量提交缺少 metadata 或 variable_name",
+                    conversation_id=str(conversation_id),
+                    kind=kind,
+                )
+                return False
+
+            variable_name = metadata["variable_name"]
+            value = None
+            if outcome.get("outcome") == "free_text":
+                value = outcome.get("text")
+            elif outcome.get("outcome") == "selected":
+                value = outcome.get("optionLabel") or outcome.get("optionId")
+            else:
+                value = outcome.get("value") or outcome.get("text")
+
+            if value is None:
+                logger.warning(
+                    event="sop_variable_response_missing_value",
+                    message="SOP 变量提交缺少值",
+                    conversation_id=str(conversation_id),
+                    variable_name=variable_name,
+                )
+                return False
+
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    repo = SopExecutionRepository(session)
+                    updated = await repo.set_variable(
+                        conversation_id=conversation_id,
+                        variable_name=variable_name,
+                        value=str(value),
+                        source="user_input",
+                    )
+                    if updated:
+                        await session.commit()
+                        logger.info(
+                            event="sop_variable_submitted_via_interactive",
+                            message="SOP 变量已通过交互卡片写入",
+                            conversation_id=str(conversation_id),
+                            variable_name=variable_name,
+                            value=value,
+                        )
+                        # 将用户的弹框选择/输入以 user 角色落库，供历史记录查看
+                        try:
+                            conv = await self.repository.get_conversation(conversation_id)
+                            if conv:
+                                await self.repository.add_message(
+                                    conversation_id=conversation_id,
+                                    case_id=conv.case_id,
+                                    role=MessageRole.user,
+                                    content=self._format_interactive_response_content(outcome),
+                                    metadata={
+                                        "kind": "interactive_response",
+                                        "selectedOptionId": outcome.get("optionId")
+                                        if outcome.get("outcome") == "selected"
+                                        else None,
+                                    },
+                                )
+                        except Exception as msg_err:
+                            logger.warning(f"SOP 变量提交写入 user 消息失败: {msg_err}")
+                        return True
+                    else:
+                        logger.warning(
+                            event="sop_variable_submit_no_execution",
+                            message="SOP 变量提交失败：未找到对应的 SOP 执行实例",
+                            conversation_id=str(conversation_id),
+                            variable_name=variable_name,
+                        )
+                        return False
+            else:
+                logger.warning(
+                    event="sop_variable_submit_no_session_factory",
+                    message="SOP 变量提交失败：session_factory 未注入",
+                    conversation_id=str(conversation_id),
+                )
+                return False
+
+        elif kind == "tool_confirm":
             # ── ReAct 确认回路（T-AGT-03）────────────────────────────────────────────
             confirmed = bool(outcome.get("confirmed", False))
             authorized_by = outcome.get("authorized_by", "user")
