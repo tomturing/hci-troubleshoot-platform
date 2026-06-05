@@ -97,6 +97,7 @@ class ReactEngine:
         require_all_confirm: bool = False,
         extra_tools: list[dict] | None = None,  # T-AGT-22: 动态注入工具（仅本次 execute 有效）
         tool_executor: ToolExecutor | None = None,  # T-AGT-22: 可替换工具执行器（用于 SOP 工具注入上下文）
+        sop_mode: bool = False,  # DC-01: SOP 模式，用于注入 SOP 导航工具到 LLM tool list
     ) -> AsyncGenerator[AgentEvent, None]:
         """ReAct 循环（Reason → Act → Observe）
 
@@ -111,6 +112,7 @@ class ReactEngine:
             require_all_confirm: True 时所有工具调用（包括只读工具）均需确认
             extra_tools: 动态注入的工具列表（OpenAI function calling 格式），仅本次 execute 有效
             tool_executor: 可替换的工具执行器（用于 SOP 工具注入上下文），默认使用实例初始化时的执行器
+            sop_mode: 是否是 SOP 模式
 
         Yields:
             AgentStageUpdate: 推理阶段状态（thinking、executing）
@@ -131,7 +133,7 @@ class ReactEngine:
         ]
 
         # 工具列表（OpenAI function calling 格式）+ 动态注入工具（T-AGT-22）
-        tools = self._get_tools_for_llm(extra_tools=extra_tools)
+        tools = self._get_tools_for_llm(extra_tools=extra_tools, sop_mode=sop_mode)
 
         # T-AGT-22: 使用传入的 tool_executor 或实例默认执行器
         active_tool_executor = tool_executor or self._tool_executor
@@ -239,18 +241,19 @@ class ReactEngine:
         # 超出步数限制
         yield AgentTextChunk(content="⚠️ 诊断步骤已达上限，请联系人工支持。")
 
-    def _get_tools_for_llm(self, extra_tools: list[dict] | None = None) -> list[dict]:
-        """返回 OpenAI function calling 格式的工具列表（排除高危工具）。
+    def _get_tools_for_llm(self, extra_tools: list[dict] | None = None, sop_mode: bool = False) -> list[dict]:
+        """返回 OpenAI function calling 格式 of 工具列表（排除高危工具）。
 
         Args:
             extra_tools: 动态注入的工具列表（T-AGT-22），追加到默认工具列表末尾
+            sop_mode: 是否是 SOP 模式，如果是 SOP 模式则包含 SOP 导航工具
 
         Returns:
             工具列表（OpenAI function calling 格式）
         """
         from app.adapters.agents.htp.tool_registry import get_tools_for_llm
 
-        base_tools = get_tools_for_llm()
+        base_tools = get_tools_for_llm(include_sop=sop_mode)
         if extra_tools:
             # 合并动态工具（追加到末尾，LLM 可选择使用）
             return base_tools + extra_tools
