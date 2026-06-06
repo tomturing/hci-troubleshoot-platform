@@ -1,5 +1,5 @@
 """
-单元测试：SOP 变量提分布尔值自动归一化校验
+单元测试：SOP 变量提分布尔值交互选项确认逻辑
 """
 
 import uuid
@@ -10,8 +10,8 @@ from app.routes.sop_execution import VariableResponseRequest, sop_variable_respo
 from app.services.conversation_service import ConversationService
 
 
-class TestSopBooleanCoercion:
-    """测试 SOP 布尔类型变量的输入归一化"""
+class TestSopBooleanConfirm:
+    """测试 SOP 布尔类型变量的确认与提交"""
 
     @pytest.fixture
     def conversation_id(self) -> uuid.UUID:
@@ -37,32 +37,22 @@ class TestSopBooleanCoercion:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "user_input, expected_coerced",
+        "option_id, expected_written",
         [
-            ("是", "true"),
-            ("yes", "true"),
             ("true", "true"),
-            ("1", "true"),
-            ("对", "true"),
-            ("否", "false"),
-            ("no", "false"),
             ("false", "false"),
-            ("0", "false"),
-            ("错", "false"),
-            ("other", "other"),  # 不在布尔列表中的保持原样
         ],
     )
-    async def test_submit_interactive_response_boolean_coercion(
-        self, mock_service, conversation_id, user_input, expected_coerced
+    async def test_submit_interactive_response_boolean_selected(
+        self, mock_service, conversation_id, option_id, expected_written
     ):
-        """测试 submit_interactive_response 布尔值归一化"""
+        """测试 submit_interactive_response 提交选项按钮"""
         # Mock SOP document schema
         mock_service.kb_client.get_sop_document = AsyncMock(
             return_value={
                 "id": 2,
                 "variable_schema": [
                     {"name": "is_sys_disk", "type": "boolean"},
-                    {"name": "other_str", "type": "string"},
                 ],
             }
         )
@@ -89,25 +79,25 @@ class TestSopBooleanCoercion:
         with patch("app.services.conversation_service.SopExecutionRepository", return_value=mock_repo_instance):
             success = await mock_service.submit_interactive_response(
                 conversation_id=conversation_id,
-                kind="variable_input",
+                kind="variable_confirm",
                 request_id="req-123",
                 acp_session_id="acp-123",
-                outcome={"outcome": "free_text", "text": user_input},
+                outcome={"outcome": "selected", "optionId": option_id},
                 metadata={"variable_name": "is_sys_disk"},
             )
 
         assert success is True
-        # 验证写入的值是否正确归一化
+        # 验证写入的值是否为正确传来的 optionId
         mock_repo_instance.set_variable.assert_called_once_with(
             conversation_id=conversation_id,
             variable_name="is_sys_disk",
-            value=expected_coerced,
+            value=expected_written,
             source="user_input",
         )
 
     @pytest.mark.asyncio
-    async def test_submit_interactive_response_string_no_coercion(self, mock_service, conversation_id):
-        """测试 string 类型变量不进行布尔归一化"""
+    async def test_submit_interactive_response_string_selected(self, mock_service, conversation_id):
+        """测试 string 类型变量选择提交"""
         mock_service.kb_client.get_sop_document = AsyncMock(
             return_value={
                 "id": 2,
@@ -123,6 +113,7 @@ class TestSopBooleanCoercion:
         )
         mock_repo_instance.set_variable = AsyncMock(return_value=MagicMock())
 
+        # Mock sqlalchemy Session
         mock_session = AsyncMock()
         mock_session_ctx = MagicMock()
         mock_session_ctx.__aenter__.return_value = mock_session
@@ -136,26 +127,25 @@ class TestSopBooleanCoercion:
         with patch("app.services.conversation_service.SopExecutionRepository", return_value=mock_repo_instance):
             success = await mock_service.submit_interactive_response(
                 conversation_id=conversation_id,
-                kind="variable_input",
+                kind="variable_confirm",
                 request_id="req-123",
                 acp_session_id="acp-123",
-                outcome={"outcome": "free_text", "text": "是"},
+                outcome={"outcome": "selected", "optionId": "192.168.1.100"},
                 metadata={"variable_name": "other_str"},
             )
 
         assert success is True
-        # string 类型的 "是" 应该原样写入，不被强制转为 "true"
         mock_repo_instance.set_variable.assert_called_once_with(
             conversation_id=conversation_id,
             variable_name="other_str",
-            value="是",
+            value="192.168.1.100",
             source="user_input",
         )
 
 
 @pytest.mark.asyncio
-async def test_sop_variable_response_route_coercion():
-    """测试 sop_variable_response 路由处理函数的布尔值归一化"""
+async def test_sop_variable_response_route_boolean():
+    """测试 sop_variable_response 路由处理函数的布尔值设置"""
     conversation_id = uuid.UUID("00000000-0000-0000-0000-000000000200")
     request = MagicMock()
 
@@ -177,7 +167,7 @@ async def test_sop_variable_response_route_coercion():
 
     body = VariableResponseRequest(
         variable_name="is_sys_disk",
-        value="是",
+        value="true",
         source="user_input",
     )
 
@@ -185,14 +175,14 @@ async def test_sop_variable_response_route_coercion():
          patch("app.routes.sop_execution._check_auth"), \
          patch("app.routes.sop_execution._get_variable_schema", AsyncMock(return_value=mock_schema)), \
          patch("app.routes.sop_execution.SopExecutionRepository", return_value=mock_repo):
-        
+
         response = await sop_variable_response(
             request=request,
             conversation_id=conversation_id,
             body=body,
         )
 
-    # 验证返回值中是否已成功归一化为 "true"
+    # 验证返回值中是否已成功设置为 "true"
     assert response.ok is True
     assert response.value == "true"
     mock_repo.set_variable.assert_called_once_with(
