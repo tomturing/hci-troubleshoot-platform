@@ -166,8 +166,23 @@ async def lifespan(app: FastAPI):
     # ── 工具执行器（S1-S5 阶段共用）─────────────────────────────────────────────
     # 先实例化 ReactEngine（可选）
     react_engine: ReactEngine | None = None
-    scp_client = None  # 确保变量存在，供 InvestigationAgent 使用
-    acli_client = None  # 确保变量存在，供 InvestigationAgent 使用
+    # ── 实例化工具执行客户端（优先从环境变量加载，无论是否启用 REACT，保证 S1-S4 诊断可用） ────
+    from app.adapters.clients.acli_client import AcliClient
+    from app.adapters.clients.scp_client import SCPClient
+
+    try:
+        scp_client = SCPClient.from_env()
+        logger.info("SCP 客户端从环境变量初始化成功")
+    except Exception as e:
+        logger.warning(f"SCP 客户端初始化跳过或失败 (可能是缺少 SCP_BASE_URL 环境变量): {e}")
+        scp_client = None
+
+    try:
+        acli_client = AcliClient.from_env()
+        logger.info("Acli 客户端从环境变量初始化成功")
+    except Exception as e:
+        logger.warning(f"Acli 客户端初始化失败: {e}")
+        acli_client = None
     tool_executor = None  # 确保变量存在，供 InvestigationAgent 使用
     confirm_service: ConfirmService | None = None
     from app.services.tool_audit import DbAuditService, ToolAuditService
@@ -185,13 +200,6 @@ async def lifespan(app: FastAPI):
         TOOL_REGISTRY.update(loaded_registry)
 
     if settings.REACT_ENABLED:
-        # 实例化工具执行客户端
-        from app.adapters.clients.acli_client import AcliClient
-        from app.adapters.clients.scp_client import SCPClient
-
-        scp_client = SCPClient.from_env()
-        acli_client = AcliClient.from_env()
-
         # 实例化确认服务（依赖 Redis）
         if redis_client is not None:
             confirm_service = ConfirmService(redis=redis_client)
@@ -411,6 +419,8 @@ class CompositeToolExecutor:
         effective_conversation_id = conversation_id or self._conversation_id
 
         if tool_def.category == "scp":
+            if self._scp is None:
+                return {"error": "SCPClient 客户端未初始化，请检查 SCP_BASE_URL 环境变量是否已正确配置"}
             return await self._scp.execute(tool_name, args)
         elif tool_def.category == "acli":
             # T-TOOL-16：acli category 路由到 BridgeRelayExecutor

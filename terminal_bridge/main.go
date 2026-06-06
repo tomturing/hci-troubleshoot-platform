@@ -283,6 +283,10 @@ func (s *SSHSession) checkMarkers(output string) (*ExecListener, int, bool) {
 			// 解析 exit_code
 			var exitCode int
 			if _, err := fmt.Sscanf(markerLine, markerPrefix+"%d", &exitCode); err != nil {
+				// 如果解析失败，判断是否为命令行回显（Echo）。回显行包含 "%s" 或 "$status" 特征，应忽略并继续等待真实输出
+				if strings.Contains(markerLine, "%s") || strings.Contains(markerLine, "$status") {
+					continue
+				}
 				exitCode = -1
 			}
 
