@@ -773,7 +773,7 @@ onMounted(() => {
 }
 
 .page-title {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   font-size: 22px;
   color: #303133;
 }
@@ -782,8 +782,6 @@ onMounted(() => {
   margin: 0;
   color: #666;
   font-size: 14px;
-  font-family: inherit;
-  font-weight: normal;
 }
 
 

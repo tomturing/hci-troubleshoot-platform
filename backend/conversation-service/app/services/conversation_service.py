@@ -2076,7 +2076,7 @@ class ConversationService:
             if outcome.get("outcome") == "free_text":
                 value = outcome.get("text")
             elif outcome.get("outcome") == "selected":
-                value = outcome.get("optionLabel") or outcome.get("optionId")
+                value = outcome.get("optionId") or outcome.get("optionLabel")
             else:
                 value = outcome.get("value") or outcome.get("text")
 

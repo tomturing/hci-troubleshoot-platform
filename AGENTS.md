@@ -103,6 +103,9 @@
   - **工具调用可视化与自动执行**：后端 `react_engine.py` 在工具执行生命周期中（执行前中后）广播 `tool_call` 与 `tool_result` 阶段事件并透传统一 `exec_id`。前端支持全局“自动执行”模式选择（Off / Safe-only / Aggressive），在满足风险级别时自动回复确认。对话流中新增工具卡片，以黑底 Terminal Console 折叠渲染命令执行日志与耗时。
   - **变量输入/确认交互重构**：将 `variable_input` 升级为行内表单，对 `validation_pattern` 正则及必填项进行失焦与实时校验，不合法时红框报错并禁用提交按钮。将 `variable_confirm` 升级为左右双栏对比，左栏一键快捷确认系统推荐值，右栏支持微调修改与实时校验。
   - **原始环境注入与向下兼容**：后端在开启 `USE_RAW_ENVIRONMENT_CONTEXT` 时直接将数据库的原始字典/JSON 喂给 LLM 提升推理准确率。在 `sop_execution.py` 中增加 is_raw 兼容层，自动将 Unix 时间戳、状态整型、紧急度等映射为 SOP 规则可识别的语义值。
+- **SOP 工具执行器参数冲突与布尔变量归一化修复**：
+  - 修复 `SopToolExecutor.execute` 在委派调用默认执行器时，由于 `**kwargs` 携带 `conversation_id` 造成的多值传递错误 `got multiple values for keyword argument 'conversation_id'`。
+  - 在 `submit_interactive_response` 接口与 `sop_variable_response` 路由中，对 `boolean` 类型的变量提交值进行强制归一化（Truthful 词汇转为 `"true"`，Falsy 词汇转为 `"false"`），彻底解决大模型由于布尔值字符串（如“是”/“否”）不符合条件表达式规则而无法推进决策树节点的缺陷。
 
 ---
 

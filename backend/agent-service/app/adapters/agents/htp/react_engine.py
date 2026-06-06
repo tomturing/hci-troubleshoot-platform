@@ -512,7 +512,7 @@ class ReactEngine:
                 title=f"填写变量：{var_schema.get('display_name', result.variable_name)}",
                 prompt=var_schema.get("description", f"请提供变量 {result.variable_name} 的值"),
                 options=result.options or [],
-                custom_input=True,
+                custom_input=not result.options,
                 metadata={
                     "variable_name": result.variable_name,
                     "validation_pattern": var_schema.get("validation_pattern"),

@@ -958,47 +958,60 @@ async function handleToolCallReject() {
               <p class="ir-question">{{ interactiveEvent.prompt }}</p>
             </div>
 
-            <div v-if="!interactiveSubmitted" class="variable-split-panel">
-              <!-- 左半部分：推荐值一键确认 -->
-              <div class="split-col recommend-col">
-                <div class="col-title">系统推荐值</div>
-                <div class="recommend-value-box">
-                  <code>{{ interactiveEvent.metadata?.current_value || '空' }}</code>
-                </div>
-                <el-button
-                  type="success"
-                  class="recommend-btn mt-2"
-                  :disabled="interactiveSubmitting"
-                  :loading="interactiveSubmitting"
-                  @click="handleConfirmRecommendValue"
-                >
-                  一键确认推荐值
-                </el-button>
-              </div>
-
-              <!-- 右半部分：微调修改区 -->
-              <div class="split-col manual-col">
-                <div class="col-title">修改或手动输入</div>
-                <el-input
-                  v-model="interactiveFreeText"
-                  placeholder="修改推荐值"
-                  :class="{ 'input-error': isTouched && !isInputValid }"
-                  @blur="isTouched = true"
-                  @input="isTouched = true"
-                  :disabled="interactiveSubmitting"
+            <div v-if="!interactiveSubmitted">
+              <!-- 如果有候选选项，展示选项按钮，不展示分栏对比 -->
+              <div v-if="interactiveEvent.options?.length" class="ir-options-wrapper">
+                <InteractiveOptions
+                  :options="interactiveEvent.options"
+                  :selected-option-id="selectedInteractiveOptionId"
+                  :force-disabled="interactiveSubmitted"
+                  :submitting="interactiveSubmitting"
+                  @select="handleInteractiveOption"
                 />
-                <div v-if="isTouched && !isInputValid" class="input-error-msg">
-                  {{ interactiveEvent.metadata?.validation_pattern ? '格式不满足要求（匹配: ' + interactiveEvent.metadata.validation_pattern + '）' : '请输入值（必填）' }}
+              </div>
+              <!-- 否则，展示左右分栏对比 -->
+              <div v-else class="variable-split-panel">
+                <!-- 左半部分：推荐值一键确认 -->
+                <div class="split-col recommend-col">
+                  <div class="col-title">系统推荐值</div>
+                  <div class="recommend-value-box">
+                    <code>{{ interactiveEvent.metadata?.current_value || '空' }}</code>
+                  </div>
+                  <el-button
+                    type="success"
+                    class="recommend-btn mt-2"
+                    :disabled="interactiveSubmitting"
+                    :loading="interactiveSubmitting"
+                    @click="handleConfirmRecommendValue"
+                  >
+                    一键确认推荐值
+                  </el-button>
                 </div>
-                <el-button
-                  type="primary"
-                  class="manual-btn mt-2"
-                  :disabled="!isInputValid || interactiveSubmitting"
-                  :loading="interactiveSubmitting"
-                  @click="handleInteractiveFreeText"
-                >
-                  提交修改值
-                </el-button>
+
+                <!-- 右半部分：微调修改区 -->
+                <div class="split-col manual-col">
+                  <div class="col-title">修改或手动输入</div>
+                  <el-input
+                    v-model="interactiveFreeText"
+                    placeholder="修改推荐值"
+                    :class="{ 'input-error': isTouched && !isInputValid }"
+                    @blur="isTouched = true"
+                    @input="isTouched = true"
+                    :disabled="interactiveSubmitting"
+                  />
+                  <div v-if="isTouched && !isInputValid" class="input-error-msg">
+                    {{ interactiveEvent.metadata?.validation_pattern ? '格式不满足要求（匹配: ' + interactiveEvent.metadata.validation_pattern + '）' : '请输入值（必填）' }}
+                  </div>
+                  <el-button
+                    type="primary"
+                    class="manual-btn mt-2"
+                    :disabled="!isInputValid || interactiveSubmitting"
+                    :loading="interactiveSubmitting"
+                    @click="handleInteractiveFreeText"
+                  >
+                    提交修改值
+                  </el-button>
+                </div>
               </div>
             </div>
             <div v-else class="variable-confirmed-status">
