@@ -180,7 +180,7 @@ CREATE INDEX idx_skill_definition_metadata ON skill_definition USING GIN(metadat
 **决策：当前预置 1 个 HCI 存储类 Skill（硬盘厂商识别与寿命判定）**
 
 **依据**：
-- 该 Skill 有完整的原始材料（`硬盘厂商识别与寿命判断.md`），可直接转化为标准格式
+- 该 Skill 有完整的原始材料（`skills/硬盘厂商识别与寿命判断.md`），可直接转化为标准格式
 - 其他 Skill 需要领域专家知识支撑，后续由运维团队通过管理控制台自行添加
 - Seed 数据以 SQL 文件形式维护，便于在新环境中幂等重建
 
@@ -287,7 +287,7 @@ description: >
 
 | skill_name | display_name | category | 来源 |
 |-----------|--------------|----------|------|
-| `hci-disk-vendor-lifetime` | 硬盘厂商识别与寿命判定 | storage | `硬盘厂商识别与寿命判断.md` |
+| `hci-disk-vendor-lifetime` | 硬盘厂商识别与寿命判定 | storage | `skills/硬盘厂商识别与寿命判断.md` |
 
 后续由运维团队通过管理控制台自行添加更多 Skill。
 

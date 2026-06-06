@@ -47,8 +47,6 @@ class Settings(BaseSettings):
     # LearningClaw/ProductionClaw 调用 KB Service 时携带此 Token
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
 
-    # ---- SOP Skills 文件路径 ----
-    SOP_SKILLS_DIR: str = "/data/sop_skills"  # 容器内 SOP 文件挂载路径
 
     class Config:
         env_file = ".env"

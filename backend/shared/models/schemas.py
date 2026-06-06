@@ -178,13 +178,6 @@ class KBSearchResponse(BaseModel):
     query_time_ms: float = Field(0.0, description="查询耗时（ms）")
 
 
-class KBSOPMatchResponse(BaseModel):
-    """KB SOP 精确匹配响应"""
-
-    matched: bool = Field(..., description="是否命中")
-    title: str | None = Field(None, description="SOP 标题")
-    content: str | None = Field(None, description="SOP 正文")
-    node_id: str | None = Field(None, description="SOP 节点 ID")
 
 
 # ──────────────────────────────────────────────

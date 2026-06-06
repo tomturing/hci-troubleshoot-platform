@@ -24,7 +24,7 @@ KB Client 消费者契约测试（G-2）
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from shared.models.schemas import KBSearchResponse, KBSOPMatchResponse
+from shared.models.schemas import KBSearchResponse
 
 # ──────────────────────────────────────────────
 # 契约：KB Classify Intent 接口（新接口）
@@ -327,66 +327,4 @@ class TestKBSearchContract:
             assert call_args[1]["json"]["top_n"] == 3
 
 
-# ──────────────────────────────────────────────
-# 契约：KB SOP Match 接口（已废弃，保留向后兼容）
-# 协议：POST /api/kb/sop/match
-# 请求体：{"query": str}
-# 响应体：{"matched": bool, "title": str|null, "content": str|null, "node_id": str|null}
-# ──────────────────────────────────────────────
 
-
-class TestKBSOPMatchContract:
-    """KB SOP 精确匹配接口契约断言（已废弃）"""
-
-    def test_sop_match_hit_response_schema(self):
-        """契约：命中时必须包含 matched=True 且 title/content 非 null"""
-        hit_response = {
-            "matched": True,
-            "title": "存储控制器故障处理 SOP",
-            "content": "步骤一：检查控制器指示灯...",
-            "node_id": "node-001",
-        }
-        result = KBSOPMatchResponse.model_validate(hit_response)
-        assert result.matched is True
-        assert result.title is not None  # 调用方强依赖，不允许 null
-        assert result.content is not None
-
-    def test_sop_match_miss_response_schema(self):
-        """契约：未命中时 matched=False，title/content/node_id 可为 null"""
-        miss_response = {
-            "matched": False,
-            "title": None,
-            "content": None,
-            "node_id": None,
-        }
-        result = KBSOPMatchResponse.model_validate(miss_response)
-        assert result.matched is False
-        assert result.title is None
-
-    @pytest.mark.asyncio
-    async def test_kb_client_sop_match_calls_correct_endpoint(self):
-        """契约：KBClient.sop_match() 必须 POST 到 /api/kb/sop/match"""
-        import os
-        import sys
-
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../shared"))
-
-        from shared.clients import KBClient
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "matched": True,
-            "title": "SOP 标题",
-            "content": "SOP 正文",
-            "node_id": "node-001",
-        }
-        mock_response.raise_for_status = MagicMock()
-
-        with patch.object(KBClient, "post", new_callable=AsyncMock) as mock_post:
-            mock_post.return_value = mock_response
-            client = KBClient("http://kb-service:8004", "test-token")
-            result = await client.sop_match("存储报错")
-
-            mock_post.assert_called_once()
-            call_args = mock_post.call_args
-            assert "/sop/match" in call_args[0][0], f"期望调用包含 /sop/match，实际：{call_args[0][0]}"

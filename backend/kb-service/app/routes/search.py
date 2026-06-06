@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
 
     from app.services.embedding import EmbeddingService
-    from app.services.sop_matcher import SopMatcher
 
 logger = get_logger("kb-service-search")
 router = APIRouter(prefix="/api/kb", tags=["search"])
@@ -33,18 +32,15 @@ router = APIRouter(prefix="/api/kb", tags=["search"])
 # 由 main.py 的 set_dependencies 注入
 _db_manager: DatabaseManager | None = None
 _embedding_service: EmbeddingService | None = None
-_sop_matcher: SopMatcher | None = None
 
 
 def set_dependencies(
     db: DatabaseManager,
     embedding: EmbeddingService,
-    sop: SopMatcher,
 ) -> None:
-    global _db_manager, _embedding_service, _sop_matcher
+    global _db_manager, _embedding_service
     _db_manager = db
     _embedding_service = embedding
-    _sop_matcher = sop
 
 
 # ---- 请求/响应模型 ----
@@ -60,10 +56,7 @@ class SearchRequest(BaseModel):
     include_sop: bool = Field(True, description="是否优先尝试 SOP 精确匹配")
 
 
-class SopMatchRequest(BaseModel):
-    """SOP 精确匹配请求"""
 
-    query: str = Field(..., min_length=1, max_length=500)
 
 
 # ---- 路由 ----
@@ -94,10 +87,6 @@ async def search(request: Request, body: SearchRequest):
 
     # 1. SOP 精确匹配
     sop_match = None
-    if body.include_sop and _sop_matcher:
-        sop_result = _sop_matcher.match(body.query)
-        if sop_result:
-            sop_match = sop_result.to_dict()
 
     # 2. 向量 + BM25 混合检索
     engine = SearchEngine(
@@ -119,17 +108,4 @@ async def search(request: Request, body: SearchRequest):
     }
 
 
-@router.post("/sop/match")
-async def sop_match(request: Request, body: SopMatchRequest):
-    """仅执行 SOP 关键字精确匹配（不走向量检索）
 
-    用于 Conversation Service 快速判断是否有 SOP 可用。
-    返回匹配到的 SOP 节点，或 { "matched": false }。
-    """
-    if _sop_matcher is None:
-        raise HTTPException(status_code=503, detail="SOP 匹配器未就绪")
-
-    result = _sop_matcher.match(body.query)
-    if result:
-        return {"matched": True, **result.to_dict()}
-    return {"matched": False}

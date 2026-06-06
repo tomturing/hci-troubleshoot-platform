@@ -250,9 +250,6 @@ kbService:
   embeddingDim: 1536
   embeddingTimeoutSec: "60.0"
   bgeModelHostPath: /home/node/models/bge-small-zh-v1.5
-  # SOP 技能目录挂载
-  sopSkillsDir: /data/sop_skills
-  sopSkillsHostPath: /aihci/hci-troubleshoot-platform/backend/kb-service/data/sop_skills
 
 # ======================== Customer UI =======================================
 customerUI:
