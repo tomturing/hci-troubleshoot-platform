@@ -37,6 +37,14 @@ const sshForm = reactive({
   passphrase: '',
 })
 const authType = ref<TerminalAuthType>('password')
+let autoCloseTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearAutoCloseTimer() {
+  if (autoCloseTimer) {
+    clearTimeout(autoCloseTimer)
+    autoCloseTimer = null
+  }
+}
 
 // ===== SSH 连接（terminal-only 模式）=====
 async function handleConnect() {
@@ -87,7 +95,8 @@ async function handleConnect() {
     chatStore.openTerminalSidebar()
 
     // 关闭弹框
-    setTimeout(() => {
+    clearAutoCloseTimer()
+    autoCloseTimer = setTimeout(() => {
       chatStore.sshFlowDialogVisible = false
     }, 1500)
 
@@ -134,6 +143,7 @@ function handleDownloadBridge() {
 
 // ===== 重试 =====
 function handleRetry() {
+  clearAutoCloseTimer()
   viewState.value = 'form'
   errorMessage.value = ''
 }
@@ -151,6 +161,17 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => chatStore.sshConnectionState,
+  (state) => {
+    if (viewState.value !== 'success') return
+    if (state === 'connected') return
+    clearAutoCloseTimer()
+    errorMessage.value = chatStore.sshErrorMessage || 'SSH 连接建立后立即断开，请检查 Bridge 或远端 Shell'
+    viewState.value = 'error'
+  },
+)
+
 // ===== 弹框标题 =====
 const dialogTitle = computed(() =>
   chatStore.sshFlowDialogMode === 'create-case' ? '连接 SSH 并采集环境数据' : '连接 SSH 终端'
@@ -158,7 +179,7 @@ const dialogTitle = computed(() =>
 
 // ===== 生命周期 =====
 onBeforeUnmount(() => {
-  // 无需操作
+  clearAutoCloseTimer()
 })
 </script>
 

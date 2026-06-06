@@ -1471,6 +1471,8 @@ export const useChatStore = defineStore('chat', () => {
   /** 认证超时定时器 */
   let sshAuthTimer: number | null = null
   const SSH_AUTH_TIMEOUT = 15000
+  /** SSH 连接稳定判定窗口：避免远端 Shell 启动后立即退出时误报成功 */
+  const SSH_STABILITY_DELAY = 800
 
   /** 清除认证超时定时器 */
   function clearSshAuthTimer() {
@@ -1513,6 +1515,38 @@ export const useChatStore = defineStore('chat', () => {
     })
 
     return new Promise((resolve, reject) => {
+      let settled = false
+      let stabilityTimer: number | null = null
+      let socket: WebSocket
+
+      function clearStabilityTimer() {
+        if (stabilityTimer !== null) {
+          window.clearTimeout(stabilityTimer)
+          stabilityTimer = null
+        }
+      }
+
+      function failConnect(error: Error, state: 'error' | 'disconnected' = 'error') {
+        if (settled) {
+          sshConnectionState.value = state
+          cleanupSshWebSocket()
+          return
+        }
+        settled = true
+        clearStabilityTimer()
+        sshConnectionState.value = state
+        cleanupSshWebSocket()
+        reject(error)
+      }
+
+      function markConnected() {
+        if (settled || sshWebSocket.value !== socket || socket.readyState !== WebSocket.OPEN) return
+        settled = true
+        clearStabilityTimer()
+        sshConnectionState.value = 'connected'
+        resolve()
+      }
+
       // 清理旧连接
       cleanupSshWebSocket()
       sshOutputBuffer.value = ''
@@ -1527,7 +1561,7 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       // 创建 WebSocket
-      const socket = createBridgeSocket()
+      socket = createBridgeSocket()
       sshWebSocket.value = socket
 
       socket.onopen = () => {
@@ -1539,9 +1573,7 @@ export const useChatStore = defineStore('chat', () => {
           if (sshConnectionState.value === 'connecting') {
             devLog('SSH', 'ERROR: 认证超时')
             sshErrorMessage.value = 'SSH 认证超时（15秒）'
-            sshConnectionState.value = 'error'
-            cleanupSshWebSocket()
-            reject(new Error('SSH 认证超时'))
+            failConnect(new Error('SSH 认证超时'))
           }
         }, SSH_AUTH_TIMEOUT)
 
@@ -1575,12 +1607,17 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         if (msg.type === 'ssh_connected') {
-          devLog('SSH', '远程会话已建立')
+          devLog('SSH', '远程会话已建立，等待稳定确认')
           clearSshAuthTimer()
-          sshConnectionState.value = 'connected'
-          resolve()
+          clearStabilityTimer()
+          stabilityTimer = window.setTimeout(() => {
+            markConnected()
+          }, SSH_STABILITY_DELAY)
         } else if (msg.type === 'ssh_output' && msg.output) {
           sshOutputBuffer.value += msg.output
+          if (sshConnectionState.value === 'connecting') {
+            markConnected()
+          }
           // 如果有消费者，触发输出事件
           if (sshCommandConsumer.value) {
             sshTerminalOutputEvent.value = msg.output
@@ -1589,16 +1626,13 @@ export const useChatStore = defineStore('chat', () => {
           devLog('SSH', 'ERROR: 收到错误', { message: msg.message })
           clearSshAuthTimer()
           sshErrorMessage.value = msg.message || 'SSH 连接出错'
-          sshConnectionState.value = 'error'
-          cleanupSshWebSocket()
-          reject(new Error(msg.message || 'SSH 连接出错'))
+          failConnect(new Error(msg.message || 'SSH 连接出错'))
         } else if (msg.type === 'ssh_disconnected') {
           devLog('SSH', '连接断开')
           clearSshAuthTimer()
           if (sshConnectionState.value === 'connecting') {
-            sshConnectionState.value = 'error'
-            cleanupSshWebSocket()
-            reject(new Error(msg.message || 'SSH 连接被断开'))
+            sshErrorMessage.value = msg.message || 'SSH 连接建立后立即断开，请检查远端 Shell 或 Bridge 日志'
+            failConnect(new Error(sshErrorMessage.value))
           } else if (sshConnectionState.value === 'connected') {
             sshConnectionState.value = 'disconnected'
             cleanupSshWebSocket()
@@ -1622,17 +1656,16 @@ export const useChatStore = defineStore('chat', () => {
         devLog('SSH', 'ERROR: WebSocket 错误')
         clearSshAuthTimer()
         sshErrorMessage.value = 'SSH Bridge 未运行（ws://localhost:9999）'
-        sshConnectionState.value = 'error'
-        cleanupSshWebSocket()
-        reject(new Error('SSH Bridge 未运行'))
+        failConnect(new Error('SSH Bridge 未运行'))
       }
 
       socket.onclose = () => {
         devLog('SSH', 'WebSocket 关闭')
         clearSshAuthTimer()
+        clearStabilityTimer()
         if (sshConnectionState.value === 'connecting') {
-          sshConnectionState.value = 'error'
-          reject(new Error('连接被关闭'))
+          sshErrorMessage.value = 'SSH 连接建立后立即关闭，请检查 terminal_bridge 或远端 Shell'
+          failConnect(new Error(sshErrorMessage.value))
         } else if (sshConnectionState.value !== 'error') {
           sshConnectionState.value = 'disconnected'
         }
