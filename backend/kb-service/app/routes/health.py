@@ -2,7 +2,7 @@
 KB Service — 健康检查路由
 """
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/health", tags=["health"])
