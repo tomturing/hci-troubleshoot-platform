@@ -106,6 +106,12 @@
 - **SOP 工具执行器参数冲突与布尔变量归一化修复**：
   - 修复 `SopToolExecutor.execute` 在委派调用默认执行器时，由于 `**kwargs` 携带 `conversation_id` 造成的多值传递错误 `got multiple values for keyword argument 'conversation_id'`。
   - 在 `submit_interactive_response` 接口与 `sop_variable_response` 路由中，对 `boolean` 类型的变量提交值进行强制归一化（Truthful 词汇转为 `"true"`，Falsy 词汇转为 `"false"`），彻底解决大模型由于布尔值字符串（如“是”/“否”）不符合条件表达式规则而无法推进决策树节点的缺陷。
+- **废弃技能数据与临时文件清理**（PR #411）：
+  - 物理删除 `backend/kb-service/data/` 技能文件目录和 `sop_matcher` 废弃匹配器逻辑。
+  - 修复 `health.py` 中数据库检查的探针变量拼写 Bug（修正 `db` 为 `database_manager`）。
+  - 在 `kb-service` 和 `conversation-service` 契约验证中彻底下线 `/sop/match` 废弃路由。
+  - 移除 Docker Compose 和 Helm 模板中对技能数据卷挂载及 `SOP_SKILLS_DIR` 环境变量的声明。
+  - 清理误提交的 `.kb-service-portforward.pid` 与 Word 临时所有者文件，并在 `data-pipeline/kbd/.gitignore` 中新增 `*.pid` 过滤规则。
 
 ---
 
