@@ -2,17 +2,17 @@
 工具定义管理路由 — 提供对 tool_definition 表的增删改查接口
 """
 
-import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from shared.database.postgres import DatabaseManager
+from shared.observability.logger import get_logger
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tool_definition import ToolDefinition
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
 
 # 由 main.py 注入数据库管理器
