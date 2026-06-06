@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.14.1](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.14.0...v2.14.1) (2026-06-06)
+
+
+### 🐛 Bug 修复
+
+* 修复 SSH 连接成功态误判 ([#409](https://github.com/tomturing/hci-troubleshoot-platform/issues/409)) ([c3ade3f](https://github.com/tomturing/hci-troubleshoot-platform/commit/c3ade3f37ff8bcda1441636c9363881fb4ec8112))
+
 ## [2.14.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.13.0...v2.14.0) (2026-06-06)
 
 
