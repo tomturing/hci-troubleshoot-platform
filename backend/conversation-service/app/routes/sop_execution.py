@@ -976,11 +976,36 @@ async def sop_variable_response(
         # TODO: 从 kb-service 获取 variable_schema 进行校验
         # 暂时跳过校验，直接写入
 
+        # 检查变量是否为布尔类型，若是则进行归一化
+        is_boolean = False
+        try:
+            variable_schema = await _get_variable_schema(execution.sop_document_id)
+            if variable_schema:
+                for v in variable_schema:
+                    if v.get("name") == body.variable_name and v.get("type") == "boolean":
+                        is_boolean = True
+                        break
+        except Exception as ex:
+            logger.warning(
+                event="get_variable_schema_for_coercion_failed_route",
+                message=f"路由获取 SOP 变量 schema 校验类型失败: {ex}",
+                conversation_id=str(conversation_id),
+                variable_name=body.variable_name,
+            )
+
+        val_to_write = body.value
+        if is_boolean:
+            val_lower = str(body.value).strip().lower()
+            if val_lower in ("是", "yes", "y", "true", "1", "对", "correct", "t"):
+                val_to_write = "true"
+            elif val_lower in ("否", "no", "n", "false", "0", "错", "incorrect", "f"):
+                val_to_write = "false"
+
         # 5. 写入变量并恢复状态
         updated = await repo.set_variable(
             conversation_id=conversation_id,
             variable_name=body.variable_name,
-            value=body.value,
+            value=val_to_write,
             source=body.source or "user_input",
         )
 
@@ -996,7 +1021,7 @@ async def sop_variable_response(
             event="sop_variable_response_success",
             conversation_id=str(conversation_id),
             variable_name=body.variable_name,
-            value_preview=body.value[:50] if len(body.value) > 50 else body.value,
+            value_preview=val_to_write[:50] if len(val_to_write) > 50 else val_to_write,
             status=updated.status,
             trace_id=trace_id,
         )
@@ -1004,7 +1029,7 @@ async def sop_variable_response(
         return VariableResponseResponse(
             ok=True,
             variable_name=body.variable_name,
-            value=body.value,
+            value=val_to_write,
             message=f"变量 {body.variable_name} 已写入，SOP 执行已恢复",
             validation_passed=True,
         )

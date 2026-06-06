@@ -2092,10 +2092,38 @@ class ConversationService:
             if self.session_factory:
                 async with self.session_factory() as session:
                     repo = SopExecutionRepository(session)
+                    # 检查变量是否为布尔类型，若是则进行归一化
+                    is_boolean = False
+                    if self.kb_client:
+                        try:
+                            execution = await repo.get_by_conversation(conversation_id)
+                            if execution:
+                                sop_doc = await self.kb_client.get_sop_document(execution.sop_document_id)
+                                if sop_doc and "variable_schema" in sop_doc:
+                                    for v in sop_doc["variable_schema"]:
+                                        if v.get("name") == variable_name and v.get("type") == "boolean":
+                                            is_boolean = True
+                                            break
+                        except Exception as ex:
+                            logger.warning(
+                                event="get_variable_schema_for_coercion_failed",
+                                message=f"获取 SOP 变量 schema 校验类型失败: {ex}",
+                                conversation_id=str(conversation_id),
+                                variable_name=variable_name,
+                            )
+
+                    val_to_write = value
+                    if is_boolean:
+                        val_lower = str(value).strip().lower()
+                        if val_lower in ("是", "yes", "y", "true", "1", "对", "correct", "t"):
+                            val_to_write = "true"
+                        elif val_lower in ("否", "no", "n", "false", "0", "错", "incorrect", "f"):
+                            val_to_write = "false"
+
                     updated = await repo.set_variable(
                         conversation_id=conversation_id,
                         variable_name=variable_name,
-                        value=str(value),
+                        value=str(val_to_write),
                         source="user_input",
                     )
                     if updated:
@@ -2105,7 +2133,7 @@ class ConversationService:
                             message="SOP 变量已通过交互卡片写入",
                             conversation_id=str(conversation_id),
                             variable_name=variable_name,
-                            value=value,
+                            value=val_to_write,
                         )
                         # 将用户的弹框选择/输入以 user 角色落库，供历史记录查看
                         try:

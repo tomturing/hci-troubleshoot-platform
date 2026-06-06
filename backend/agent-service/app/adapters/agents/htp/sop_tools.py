@@ -79,7 +79,14 @@ class SopToolExecutor:
         self._default_executor = default_executor
         self._completed_steps = completed_steps or []  # T-AGT-23
 
-    async def execute(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> Any:
+    async def execute(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        conversation_id: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
         """执行工具调用。
 
         SOP 工具使用本执行器的上下文注入执行，
@@ -111,6 +118,8 @@ class SopToolExecutor:
                 "completed_steps_count": len(self._completed_steps),
             }
 
+        effective_conversation_id = conversation_id or self._conversation_id
+
         # SOP 导航工具：使用注入的上下文执行
         if tool_name == "get_sop_node":
             return await get_sop_node(
@@ -123,7 +132,7 @@ class SopToolExecutor:
             return await sop_advance(
                 target_node_id=args.get("target_node_id", ""),
                 reasoning=args.get("reasoning", ""),
-                conversation_id=self._conversation_id,
+                conversation_id=effective_conversation_id,
                 sop_document_id=self._sop_document_id,
                 kb_client=self._kb_client,
                 conversation_sop_client=self._conversation_sop_client,
@@ -136,7 +145,7 @@ class SopToolExecutor:
             return await sop_request_variable(
                 variable_name=args.get("variable_name", ""),
                 reason=args.get("reason"),
-                conversation_id=self._conversation_id,
+                conversation_id=effective_conversation_id,
                 sop_document_id=self._sop_document_id,
                 kb_client=self._kb_client,
                 conversation_sop_client=self._conversation_sop_client,
@@ -144,4 +153,9 @@ class SopToolExecutor:
             )
 
         # 其他工具（SCP/acli 诊断工具）：委托给默认执行器，传递 conversation_id
-        return await self._default_executor.execute(tool_name, args, conversation_id=self._conversation_id, **kwargs)
+        return await self._default_executor.execute(
+            tool_name,
+            args,
+            conversation_id=effective_conversation_id,
+            **kwargs
+        )
