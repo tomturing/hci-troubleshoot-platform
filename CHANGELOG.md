@@ -1,5 +1,43 @@
 # Changelog
 
+## [2.14.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.13.0...v2.14.0) (2026-06-06)
+
+
+### ✨ 新功能
+
+* 实现Prompt数据库化收敛与热生效及ACLI插件工具安全插值 ([#398](https://github.com/tomturing/hci-troubleshoot-platform/issues/398)) ([5fd3c6f](https://github.com/tomturing/hci-troubleshoot-platform/commit/5fd3c6fcab9012a47267da6d9a122a8fa1af1a29))
+* 按照 Agent Skills 开放标准重新设计 Skill 及相关模型 ([#390](https://github.com/tomturing/hci-troubleshoot-platform/issues/390)) ([dba4049](https://github.com/tomturing/hci-troubleshoot-platform/commit/dba404972a49284128e48e480805e3b82d31da96))
+* 环境注入变量的精准语义过滤路由与日志锚定 ([#386](https://github.com/tomturing/hci-troubleshoot-platform/issues/386)) ([d892f7f](https://github.com/tomturing/hci-troubleshoot-platform/commit/d892f7fa41113bb82154fa5a313856b94adbcf37))
+
+
+### 🐛 Bug 修复
+
+* **agent-service:** 修复 ReactEngine 工具参数 JSON 序列化缺陷（DC-02） ([#397](https://github.com/tomturing/hci-troubleshoot-platform/issues/397)) ([eec756a](https://github.com/tomturing/hci-troubleshoot-platform/commit/eec756a0ca51f0f496a36af776c30b2bc57d14f9))
+* 修复 Grafana iframe 免登录嵌入权限报错及技能管理副标题字体不一致问题 ([#404](https://github.com/tomturing/hci-troubleshoot-platform/issues/404)) ([223c2cb](https://github.com/tomturing/hci-troubleshoot-platform/commit/223c2cb19da5e123f4d1ef19f554f6fc53cf8794))
+* 修复 MessageModel.metadata 保留字冲突导致的 S0 确认分类死循环 ([#382](https://github.com/tomturing/hci-troubleshoot-platform/issues/382)) ([4e279cf](https://github.com/tomturing/hci-troubleshoot-platform/commit/4e279cf566a25b0d331aff1b877fb0889cc4ba4b))
+* 修复 SopToolExecutor.execute 签名参数不匹配导致的 TypeError 异常 ([#403](https://github.com/tomturing/hci-troubleshoot-platform/issues/403)) ([d99f2a9](https://github.com/tomturing/hci-troubleshoot-platform/commit/d99f2a9b498cc68b7b2ebeb85e9157b43dfcd0a1))
+* 修复SOP决策树字段兼容性、Trace ID链路分叉、工具参数缺失及has_sop审计问题 ([#400](https://github.com/tomturing/hci-troubleshoot-platform/issues/400)) ([734f31f](https://github.com/tomturing/hci-troubleshoot-platform/commit/734f31f025eac251049a417ad5db7e70a7102873))
+* 修复SOP执行过程中调用工具的参数冲突以及布尔变量提报归一化逻辑 ([#406](https://github.com/tomturing/hci-troubleshoot-platform/issues/406)) ([40fce83](https://github.com/tomturing/hci-troubleshoot-platform/commit/40fce837e6d77a9b5bfd2421af4d65fcb6ca83d0))
+* 修复可观测性布局与SSH自动关闭断开连接及密码保存失效等UI问题 [env:dev:sz][agent:gemini] ([#402](https://github.com/tomturing/hci-troubleshoot-platform/issues/402)) ([26c5b79](https://github.com/tomturing/hci-troubleshoot-platform/commit/26c5b79ac8cda617b1ff1d7f2c8c4afeecc6549a))
+* 修复大模型审计日志与SOP模式下工具审计日志丢失问题 ([#395](https://github.com/tomturing/hci-troubleshoot-platform/issues/395)) ([c4a6f3f](https://github.com/tomturing/hci-troubleshoot-platform/commit/c4a6f3f046041749655c6d6def5526e94883ee5a))
+* 修复工单Q2026060669426排障系列四个典型缺陷 ([#408](https://github.com/tomturing/hci-troubleshoot-platform/issues/408)) ([645842f](https://github.com/tomturing/hci-troubleshoot-platform/commit/645842fdbf1d1f2ad72fa69a3b841c3273107edb))
+* 修复技能编辑弹框中右侧 Markdown 预览未解析的问题 ([#393](https://github.com/tomturing/hci-troubleshoot-platform/issues/393)) ([789961a](https://github.com/tomturing/hci-troubleshoot-platform/commit/789961ad5c831257cd2cc7b6e4da1bd7fc4230f2))
+* 技能注册表页头标题与描述对齐样式修正 ([#407](https://github.com/tomturing/hci-troubleshoot-platform/issues/407)) ([9b2b571](https://github.com/tomturing/hci-troubleshoot-platform/commit/9b2b57100cf5a8612e2987712e9be7cec3ec9795))
+* 支持从落库的 options 属性提取 S0 候选以修复单/多候选确认死循环 ([#384](https://github.com/tomturing/hci-troubleshoot-platform/issues/384)) ([68c57fd](https://github.com/tomturing/hci-troubleshoot-platform/commit/68c57fd41d86a3ce294577f1874341934112f0dc))
+* 整合能力管理页加载修复与布局统一 ([#389](https://github.com/tomturing/hci-troubleshoot-platform/issues/389)) ([b150315](https://github.com/tomturing/hci-troubleshoot-platform/commit/b150315fb60b13090aa84844809543ea92160e13))
+* 解决 ReactEngine.execute() 缺失 sop_mode 参数导致的运行时异常 ([#396](https://github.com/tomturing/hci-troubleshoot-platform/issues/396)) ([63f45cc](https://github.com/tomturing/hci-troubleshoot-platform/commit/63f45ccdb9a86a0203bbb4d69c051f6afeb83479))
+
+
+### ♻️ 代码重构
+
+* 下沉 SystemPrompt 至 shared 并引入依赖以解决 SQLAlchemy 外键编译冲突 ([#385](https://github.com/tomturing/hci-troubleshoot-platform/issues/385)) ([a06f6ba](https://github.com/tomturing/hci-troubleshoot-platform/commit/a06f6ba53489c4fd3d08988a8142577566244f94))
+
+
+### 📝 文档
+
+* 将 2026-06-03 大模型审计日志不落库的 ImplementationPlan 规划文档重命名为纯中文并正确归档 ([#405](https://github.com/tomturing/hci-troubleshoot-platform/issues/405)) ([bd7973c](https://github.com/tomturing/hci-troubleshoot-platform/commit/bd7973c20e05e01e534b5239964b78fb12e73402))
+* 新增智能体单步交互与单步命令执行控制方案 ([#399](https://github.com/tomturing/hci-troubleshoot-platform/issues/399)) ([8f3194d](https://github.com/tomturing/hci-troubleshoot-platform/commit/8f3194d9457cc2bd663da3ac9c01270128e384d9))
+
 ## [2.13.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.12.0...v2.13.0) (2026-06-02)
 
 
