@@ -206,8 +206,13 @@ async def lifespan(app: FastAPI):
 
     if settings.REACT_ENABLED:
         # 实例化确认服务（依赖 Redis）
+        # T1-1：注入 AuthorizationService，使每次 approve/deny 决策同步落库
         if redis_client is not None:
-            confirm_service = ConfirmService(redis=redis_client)
+            from app.services.authorization_service import AuthorizationService
+            authorization_service = AuthorizationService(
+                session_factory=db_manager.async_session_factory,
+            )
+            confirm_service = ConfirmService(redis=redis_client, authorization_service=authorization_service)
 
         # 实例化复合工具执行器（合并 SCP、Acli 和 SOP）
         # T-TOOL-16：添加 BridgeRelayExecutor 参数
@@ -447,8 +452,10 @@ class CompositeToolExecutor:
                 **kwargs,
             )
 
-            # 返回 stdout 或错误信息
-            return result.stdout or f"[exit_code={result.exit_code}]"
+            # T0-3 修复：直接返回 ExecResult 对象（dataclass），让上游 ToolResultEnvelope.from_raw_result
+            # 通过 hasattr 检测拿到全字段（exit_code / stderr / exit_code_meaning / duration_ms 等），
+            # 不再降级为字符串导致 LLM 丢失 timeout / permission_denied / command_not_found 等真实语义。
+            return result
         elif tool_def.category == "sop":
             # SOP 工具需要 kb_client 和 sop_document_id
             if tool_name == "get_sop_node":

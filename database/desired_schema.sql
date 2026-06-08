@@ -544,6 +544,7 @@ CREATE TABLE IF NOT EXISTS tool_result (
     authorization_id varchar(36),
     idempotency_key varchar(100),
     case_id varchar(20),
+    retry_count smallint NOT NULL DEFAULT 0,
     updated_at timestamptz DEFAULT now(),
     CONSTRAINT fk_tool_result_conversation_id FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE CASCADE,
     CONSTRAINT fk_tool_result_authorization_id FOREIGN KEY (authorization_id) REFERENCES "authorization" (auth_id) ON DELETE SET NULL,
@@ -573,6 +574,7 @@ COMMENT ON COLUMN tool_result.input_hash IS '工具调用输入参数的哈希�
 COMMENT ON COLUMN tool_result.authorization_id IS '关联高危授权表记录ID';
 COMMENT ON COLUMN tool_result.idempotency_key IS '用于防重幂等校验的键';
 COMMENT ON COLUMN tool_result.case_id IS '关联工单 ID，方便直接过滤';
+COMMENT ON COLUMN tool_result.retry_count IS '工具执行重试次数（T1-4），0 表示一次成功，N 表示经过 N 次重试';
 COMMENT ON COLUMN tool_result.updated_at IS '记录更新时间';
 
 -- 索引: tool_result

@@ -21,6 +21,7 @@ owner: team
 | 2026-06-08 | v1.1 | 阶段零已全部合并；完成阶段一「工具事务化地基」开发并通过全量单元测试 |
 | 2026-06-08 | v1.2 | 全面核查：阶段零~二全部完成；阶段三 T3-1~T3-2、T3-4~T3-5 已完成，T3-3 未实现；阶段四 T4-1~T4-3 已完成，T4-4 未实现；整体 20/22 |
 | 2026-06-08 | v1.3 | 第一性原理深度审查：T1-2 实际未完成（前端 `chat.ts` 提交 interactive-response 时未回传 `exec_id`，`confirm:{exec_id}` 等待形同虚设），子项与阶段一总验收相应回退；其余任务 happy path 已落地，但仍存在审查记录在案的边缘缺陷（详见附录） |
+| 2026-06-08 | v1.4 | **PR-1 工具事务执行链修复**：T0-3 修复 Composite 执行器降级 string 导致 exit_code_meaning 丢失；T1-1 ConfirmService 同步落 `authorization` 表（exec_id/actor/decision/tool_input_hash/expires_at）；T1-2 前端 `chat.ts handleConfirmResult` 改为命中 `/interactive-response` 并回传 exec_id+input_hash；T1-3 ConfirmService 缺失时 risk≥2 工具按 fail-closed 拒绝执行（旧实现 fail-open）；T1-4 `tool_result` 新增 `retry_count` 字段并由 ReactEngine 落库审计；附 6 个新增单测全部通过 |
 
 ---
 
@@ -28,7 +29,7 @@ owner: team
 
 ```
 阶段零（止血）     ██████████  已完成
-阶段一（工具事务） █████████░  4.5/5（T1-2 前端 exec_id 回传未实现）
+阶段一（工具事务） ██████████  已完成（PR-1 已修复 T0-3/T1-1/T1-2/T1-3/T1-4 全部审查项）
 阶段二（事实体系） ██████████  已完成
 阶段三（推理约束） ████░░░░░░  4/5（待完成：T3-3 CoT强制外显）
 阶段四（评测闭环） ███░░░░░░░  3/4（待完成：T4-4 CI回归评测门禁）

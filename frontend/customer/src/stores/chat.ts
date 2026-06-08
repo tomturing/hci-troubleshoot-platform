@@ -147,12 +147,15 @@ export const useChatStore = defineStore('chat', () => {
   }>()
 
   // Agent 模式：待确认的高风险操作（confirm_request SSE 事件）
+  // T1-2：必须包含 exec_id 与 input_hash，提交确认时回传给后端进行幂等与防篡改校验
   const pendingConfirm = ref<{
     tool_name: string
     tool_args: Record<string, unknown>
     risk_level: 2 | 3
     risk_description: string
     timeout_seconds: number
+    exec_id: string
+    input_hash: string
   } | null>(null)
 
   // T-TOOL-18：待确认的命令执行请求（agent_exec_command SSE 事件，risk=2）
@@ -605,6 +608,9 @@ export const useChatStore = defineStore('chat', () => {
                   risk_level: event.risk_level,
                   risk_description: event.risk_description,
                   timeout_seconds: event.timeout_seconds ?? 120,
+                  // T1-2：捕获后端下发的 exec_id 与 input_hash，作为后续提交的事务标识
+                  exec_id: event.exec_id || event.request_id || '',
+                  input_hash: event.input_hash || '',
                 }
               } catch { }
             } else if (pendingEventType === 'tool_executing') {
@@ -1336,16 +1342,32 @@ export const useChatStore = defineStore('chat', () => {
       pendingConfirm.value = null
       return
     }
+    // T1-2：旧实现误用 `/confirm` 路由（后端不存在）且未回传 exec_id/input_hash，
+    // 导致 ConfirmDialog 弹窗确认完全无效。改为命中 `interactive-response` 并附带
+    // request_id=exec_id + input_hash，与 MessageBubble 的工具卡片确认路径保持一致。
+    const { exec_id, input_hash } = pendingConfirm.value
+    if (!exec_id) {
+      console.warn('提交确认失败：缺少 exec_id，无法定位 ReAct 待确认事务')
+      pendingConfirm.value = null
+      return
+    }
     try {
-      await fetch(`/api/conversations/${conversationId.value}/confirm`, {
+      await fetch(`/api/conversations/${conversationId.value}/interactive-response`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Client-ID': clientId,
         },
         body: JSON.stringify({
-          confirmed: authorized,
-          authorized_by: clientId,
+          kind: 'tool_confirm',
+          request_id: exec_id,
+          acp_session_id: conversationId.value,
+          outcome: {
+            confirmed: authorized,
+            authorized_by: clientId,
+            input_hash,
+          },
+          metadata: { input_hash },
         }),
       })
     } catch (e) {

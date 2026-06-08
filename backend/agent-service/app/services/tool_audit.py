@@ -52,6 +52,7 @@ class ToolAuditService:
         authorization_id: str | None = None,
         idempotency_key: str | None = None,
         case_id: str | None = None,
+        retry_count: int | None = None,
     ) -> None:
         """异步地将工具执行审计日志写入或更新到数据库
 
@@ -140,6 +141,7 @@ class ToolAuditService:
                         authorization_id=authorization_id,
                         idempotency_key=idempotency_key,
                         case_id=case_id,
+                        retry_count=retry_count if retry_count is not None else 0,
                     )
                     session.add(log)
                 else:
@@ -179,6 +181,8 @@ class ToolAuditService:
                         log.idempotency_key = idempotency_key
                     if case_id:
                         log.case_id = case_id
+                    if retry_count is not None:
+                        log.retry_count = retry_count
 
                 await session.commit()
             logger.info(
@@ -221,4 +225,5 @@ class DbAuditService:
             authorization_id=kwargs.get("authorization_id"),
             idempotency_key=kwargs.get("idempotency_key"),
             case_id=kwargs.get("case_id"),
+            retry_count=kwargs.get("retry_count"),
         )

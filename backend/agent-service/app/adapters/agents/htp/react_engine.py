@@ -888,12 +888,60 @@ class ReactEngine:
         # T1-3: 调用服务端安全策略进行评估，限制高危命令的自动执行条件
         from app.services.policy_service import PolicyService
         policy_service = PolicyService()
-        needs_confirm = policy_service.evaluate_needs_confirm(
+        # T1-3 修复：将「策略判定」与「确认服务可用性」解耦。
+        # 旧实现 `needs_confirm = ... and self._confirm_service` 会在 confirm_service 缺失时
+        # 把 needs_confirm 降为 False，导致 risk≥2 的高危工具被直接执行（fail-open）。
+        # 新实现：先单独计算策略判定，再在策略要求确认但 service 不可用时 fail-closed 拒绝执行。
+        policy_requires_confirm = policy_service.evaluate_needs_confirm(
             tool_name=tool_name,
             risk_level=tool_def.risk_level,
             require_all_confirm=require_all_confirm,
             execution_mode=execution_mode,
-        ) and self._confirm_service
+        )
+        if policy_requires_confirm and not self._confirm_service:
+            logger.error(
+                event="confirm_service_unavailable_fail_closed",
+                message=f"风险等级 {tool_def.risk_level} 的工具 {tool_name} 需用户确认，但 ConfirmService 不可用，按 fail-closed 策略拒绝执行",
+                exec_id=exec_id,
+                session_id=session_id,
+                tool_name=tool_name,
+                risk_level=tool_def.risk_level,
+            )
+            if self._audit:
+                try:
+                    await self._audit.write(
+                        audit_id=exec_id,
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        risk_level=tool_def.risk_level,
+                        policy=tool_def.policy,
+                        status="failed",
+                        error="confirm_service_unavailable",
+                    )
+                except Exception as e:
+                    logger.error(f"写入 fail-closed 审计失败: {e}")
+            envelope = ToolResultEnvelope(
+                tool_name=tool_name,
+                exec_id=exec_id,
+                success=False,
+                exit_code=-1,
+                stdout="",
+                stderr="ConfirmService 不可用，已按 fail-closed 安全策略拒绝执行高危工具",
+                exit_code_meaning="confirm_service_unavailable",
+                interpretation="服务端确认服务不可用，无法获得用户对高危操作的授权",
+                suggested_next_action="请联系运维确认 Redis 与 ConfirmService 是否正常；或改用 risk_level<=1 的只读工具继续诊断",
+            )
+            # 在 _execute_tool_call 协程中只通过 yield ToolResultEvent 上抛工具结果，
+            # 由上游 _stream_with_tools 负责将其追加到 work_messages 并回填给 LLM。
+            yield ToolResultEvent(
+                tool_name=tool_name,
+                exec_id=exec_id,
+                result=envelope.to_llm_message(),
+                error="confirm_service_unavailable",
+            )
+            return
+        needs_confirm = policy_requires_confirm and self._confirm_service is not None
         if needs_confirm:
             import hashlib
             from datetime import timedelta
@@ -1109,6 +1157,7 @@ class ReactEngine:
 
         max_retries = 2
         retry_delay = 1.0
+        retry_count = 0  # T1-4：实际重试次数（0 表示首次即成功）
 
         for attempt in range(max_retries + 1):
             try:
@@ -1156,6 +1205,7 @@ class ReactEngine:
                             "tool_retry",
                             f"工具 {tool_name} 执行失败(可重试): {error}. 将在 {retry_delay:.1f}s 后进行第 {attempt + 1} 次重试"
                         )
+                        retry_count = attempt + 1  # T1-4：进入下一次重试前累加
                         await asyncio.sleep(retry_delay)
                         retry_delay *= 2.0
                         continue
@@ -1201,6 +1251,7 @@ class ReactEngine:
                     duration_ms=duration_ms,
                     trace_id=get_current_trace_id(),
                     status="failed" if error else "committed",
+                    retry_count=retry_count,  # T1-4：落库重试次数
                 )
             except Exception as audit_err:
                 logger.error(f"审计日志写入失败: {audit_err}")
