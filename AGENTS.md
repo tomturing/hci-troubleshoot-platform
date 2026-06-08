@@ -112,6 +112,8 @@
   - 在 `kb-service` 和 `conversation-service` 契约验证中彻底下线 `/sop/match` 废弃路由。
   - 移除 Docker Compose 和 Helm 模板中对技能数据卷挂载及 `SOP_SKILLS_DIR` 环境变量的声明。
   - 清理误提交的 `.kb-service-portforward.pid` 与 Word 临时所有者文件，并在 `data-pipeline/kbd/.gitignore` 中新增 `*.pid` 过滤规则。
+- **部署策略优化**：
+  - GitHub 提交 PR 后仅自动同步 dev 环境，staging 和 prod 环境均转为手动同步更新，增强发版安全性。
 
 ---
 

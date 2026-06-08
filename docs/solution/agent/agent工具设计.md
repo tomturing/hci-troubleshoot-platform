@@ -181,13 +181,13 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 {
   "tool_name": "acli_exec",
   "category": "acli",
-  "description": "在 HCI 节点执行 acli 命令（深圳桑福 HCI 平台专有 CLI，命令格式：acli [全局参数] {命名空间}+ {命令} [命令参数]）。\n\n可用命名空间：\n  vm        虚拟机：list / config get / status get / start / shutdown / disk list/check 等\n  storage   存储：asan volume list / disk list / fc host list 等\n  network   网络：nic list/up/down / bond list / anet vrouter list 等\n  system    系统：top / free / df / ps / netstat / ping / iostat 等\n  service   服务：<subsystem> <service> start/stop/restart/status\n  alert     告警：get / list\n  task      任务：get / list\n  log       日志：get（--lines N）\n  platform  平台：node list / version get / info get\n  hardware  硬件：cpu info / gpu config list\n  plugins   诊断插件：vm_start / vm_suspend / netdoctor / asys / performance_tools\n\n使用约定：\n  1. 不确定命令时，先执行 acli {namespace} --help 探索\n  2. 不确定参数时，先执行 acli {namespace} {cmd} --help\n  3. 优先使用 --formatter json 获得结构化输出\n  4. 集群级操作使用 --cluster 参数\n  5. 根据执行结果（成功/错误）判断下一步（ReAct 自探索）",
+  "description": "在 HCI 节点执行 acli 命令（深圳桑福 HCI 平台专有 CLI，命令格式：acli [全局参数] {命名空间}+ {命令} [命令参数]）。\n\n可用全局参数：\n  --formatter          用于命令的格式化参数。枚举值：xml、csv、keyvalue、json（注：必须紧跟 acli 后面，例如 acli --formatter json vm list）\n  --cluster            用于遍历集群主机执行 acli 命令\n  --timeout            用于设置命令的超时时间（秒）\n  --force              强制模式：忽略交互确认，直接执行操作\n\n可用命名空间：\n  vm        虚拟机：list / config get / status get / start / shutdown / disk list/check 等\n  storage   存储：asan volume list / asan disk list / fc host list 等（注：不可省略 asan 等二级命名空间，例如 storage asan disk list 是正确的，而 storage disk list 是错误的）\n  network   网络：nic list/up/down / bond list / anet vrouter list 等\n  system    系统：top / free / df / ps / netstat / ping / iostat 等\n  service   服务：<subsystem> <service> start/stop/restart/status\n  alert     告警：get / list\n  task      任务：get / list\n  log       日志：get（--lines N）\n  platform  平台：node list / version get / info get\n  hardware  硬件：cpu info / gpu config list\n  plugins   诊断插件：vm_start / vm_suspend / netdoctor / asys / performance_tools\n\n使用约定与纠错逻辑：\n  1. 不确定命令时，先执行 acli {namespace} --help 探索\n  2. 不确定参数时，先执行 acli {namespace} {cmd} --help\n  3. 优先在 acli 后面紧跟全局参数 --formatter json 获得结构化输出。格式：acli --formatter json <命名空间> <命令>\n     注意：全局参数（如 --formatter json）绝对不能放在子命令的末尾（例如：acli vm list --formatter json 是错误的，会报无效参数错误；正确为 acli --formatter json vm list）。\n  4. 纠错技巧：若执行 acli 命令报错 “未知的命令或者命名空间”（例如 acli storage disk list），这说明缺少了某个层级的命名空间或命令拼写错误。此时，可以通过减少末尾的一个参数/子命令（例如缩短为 acli storage）去执行，即可获取上一级命名空间的帮助信息以及该级别下所有可用的子命名空间与命令列表。\n  5. 兜底方案：通过执行 acli acli command list 命令可以获取当前 acli 支持的全部可用命令列表。不在该列表中的命令即代表不支持。\n  6. 集群级操作使用 --cluster 参数。\n  7. 根据执行结果（成功/错误）判断下一步（ReAct 自探索）",
   "parameters_schema": {
     "type": "object",
     "properties": {
       "command": {
         "type": "string",
-        "description": "完整 acli 命令，必须以 'acli' 开头，例如 'acli vm list --formatter json'"
+        "description": "完整 acli 命令，必须以 'acli' 开头，例如 'acli --formatter json vm list'"
       },
       "node_ip": {
         "type": "string",
@@ -209,7 +209,7 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 
 | risk | 规则（命令关键词） | policy | 示例 |
 |------|---------|--------|------|
-| 1 | `list`、`get`、`show`、`status`、`info`、`check`、`describe`、`fetch`、`--help` | auto | `acli vm list --formatter json`、`acli platform info get` |
+| 1 | `list`、`get`、`show`、`status`、`info`、`check`、`describe`、`fetch`、`--help` | auto | `acli --formatter json vm list`、`acli platform info get` |
 | 2 | `restart`、`start`、`stop`、`up`、`down`、`repair`、`set`（部分） | confirm | `acli service asv redis restart`、`acli network nic up eth0` |
 | 3 | `delete`、`remove`、`wipe`、`destroy`、`format`、`vm delete`、`storage umount` | block | `acli vm delete {id}` |
 
@@ -305,12 +305,12 @@ acli_plugin_asys           主机系统全面健康检查                       
 移除工具                  等效 acli_exec 调用
 ─────────────────────────────────────────────────────────────
 acli_system_top          acli_exec("acli system top")
-acli_vm_list             acli_exec("acli vm list --formatter json")
-acli_vm_config           acli_exec("acli vm config get {vm_id} --formatter json")
+acli_vm_list             acli_exec("acli --formatter json vm list")
+acli_vm_config           acli_exec("acli --formatter json vm config get {vm_id}")
 acli_vm_disk_check       acli_exec("acli vm disk check {vm_id}")
-acli_platform_node_list  acli_exec("acli platform node list --formatter json")
-acli_storage_disk_list   acli_exec("acli storage asan disk list --formatter json")
-acli_network_nic_list    acli_exec("acli network nic list --formatter json")
+acli_platform_node_list  acli_exec("acli --formatter json platform node list")
+acli_storage_disk_list   acli_exec("acli --formatter json storage asan disk list")
+acli_network_nic_list    acli_exec("acli --formatter json network nic list")
 acli_log_get             acli_exec("acli log get --lines 100")
 acli_service_restart     acli_exec("acli service asv {name} restart")  ← RiskClassifier 识别 risk=2
 acli_network_nic_up      acli_exec("acli network nic up {nic}")         ← RiskClassifier 识别 risk=2

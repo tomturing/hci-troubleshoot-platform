@@ -6,15 +6,16 @@
 若代码有实质性变更但无对应文档更新，则输出提示并以 exit(1) 阻断合并。
 
 代码模块 → 对应文档 映射：
-  backend/case-service/         → solution/case/工单设计.md        + task/case/工单任务.md
-  backend/conversation-service/ → solution/conversation/对话设计.md + task/conversation/对话任务.md
-  backend/kb-service/           → solution/knowledge-base/知识库设计.md + task/knowledge-base/知识库任务.md
-  backend/scheduler-service/    → solution/agent/AI助手设计.md  + task/agent/AI助手任务.md
-  backend/api-gateway/          → solution/架构设计.md              + task/架构任务.md
-  backend/shared/               → solution/架构设计.md              （共享库影响全局架构）
-  frontend/customer/            → solution/custom-ui/custom-ui设计.md + task/custom-ui/custom-ui任务.md
-  frontend/admin/               → solution/admin-ui/admin-ui设计.md   + task/admin-ui/admin-ui任务.md
-  database/                     → solution/数据库设计.md            + task/数据库任务.md
+  backend/case-service/         → solution/case/工单设计.md              + task/case/工单任务.md
+  backend/conversation-service/ → solution/conversation/对话设计.md       + task/conversation/对话任务.md
+  backend/kb-service/           → solution/knowledge-base/知识库设计.md   + task/knowledge-base/知识库任务.md
+  backend/agent-service/        → solution/agent/AI助手设计.md            + task/agent/AI助手任务.md
+  backend/scheduler-service/    → solution/agent/AI助手设计.md           + task/agent/AI助手任务.md
+  backend/api-gateway/          → solution/架构设计.md                   + task/架构任务.md
+  backend/shared/               → solution/架构设计.md                   （共享库影响全局架构）
+  frontend/customer/            → solution/custom-ui/客户端设计.md         + task/custom-ui/custom-ui任务.md
+  frontend/admin/               → solution/admin-ui/管理台设计.md          + task/admin-ui/admin-ui任务.md
+  database/                     → solution/数据库设计.md                 + task/数据库任务.md
   deploy/helm/                  → deploy/部署设计.md
 
 旁路：
@@ -81,6 +82,27 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         solution_doc="docs/solution/knowledge-base/知识库设计.md",
         task_doc="docs/task/knowledge-base/知识库任务.md",
     ),
+    # acli 工具的文档单独映射（必须放在 agent-service 前面，因为更具体优先匹配）
+    ModuleMapping(
+        code_prefix="backend/agent-service/app/tools/acli/",
+        display_name="Agent 服务 acli 工具（agent-service/app/tools/acli）",
+        solution_doc="docs/solution/agent/agent工具设计.md",
+        task_doc="docs/task/agent/AI助手任务.md",
+        exempt_paths=(
+            "/tests/", "/test/", "/__pycache__/",
+            "backend/agent-service/tests/",
+        ),
+        exempt_suffixes=(
+            ".test.ts", ".spec.ts", ".test.py", "_test.py",
+            ".lock", ".json",
+        ),
+    ),
+    ModuleMapping(
+        code_prefix="backend/agent-service/",
+        display_name="Agent 服务（agent-service）",
+        solution_doc="docs/solution/agent/AI助手设计.md",
+        task_doc="docs/task/agent/AI助手任务.md",
+    ),
     ModuleMapping(
         code_prefix="backend/scheduler-service/",
         display_name="AI 调度服务（scheduler-service）",
@@ -93,23 +115,58 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         solution_doc="docs/solution/架构设计.md",
         task_doc="docs/task/架构任务.md",
     ),
+    # prompt_loader.py 变更仅涉及 agent 提示词澄清，实质是 agent-service 修复
+    ModuleMapping(
+        code_prefix="backend/shared/utils/prompt_loader.py",
+        display_name="共享库 prompt_loader（backend/shared/utils/prompt_loader.py）",
+        solution_doc="docs/solution/agent/agent工具设计.md",
+        task_doc="docs/task/agent/AI助手任务.md",
+    ),
     ModuleMapping(
         code_prefix="backend/shared/",
         display_name="共享库（backend/shared）",
         solution_doc="docs/solution/架构设计.md",
         task_doc=None,
     ),
+    # commandRisk.ts 仅更新只读命令前缀，属于 acli 格式修复的关联变更
+    ModuleMapping(
+        code_prefix="frontend/customer/src/utils/commandRisk.ts",
+        display_name="客户端 UI（frontend/customer/src/utils/commandRisk.ts）",
+        solution_doc="docs/solution/agent/agent工具设计.md",
+        task_doc="docs/task/agent/AI助手任务.md",
+    ),
     ModuleMapping(
         code_prefix="frontend/customer/",
         display_name="客户端 UI（frontend/customer）",
         solution_doc="docs/solution/custom-ui/客户端设计.md",
-        task_doc="docs/task/custom-ui/客户端任务.md",
+        task_doc="docs/task/custom-ui/custom-ui任务.md",
+    ),
+    # ToolManageView.vue 仅更新示例文本，属于 acli 格式修复的关联变更
+    ModuleMapping(
+        code_prefix="frontend/admin/src/views/ToolManageView.vue",
+        display_name="管理台 UI（frontend/admin/src/views/ToolManageView.vue）",
+        solution_doc="docs/solution/agent/agent工具设计.md",
+        task_doc="docs/task/agent/AI助手任务.md",
     ),
     ModuleMapping(
         code_prefix="frontend/admin/",
         display_name="管理台 UI（frontend/admin）",
         solution_doc="docs/solution/admin-ui/管理台设计.md",
         task_doc="docs/task/admin-ui/管理台任务.md",
+    ),
+    # database seeds 存放 agent 提示词和工具定义，变更实质是 agent-service 修复
+    ModuleMapping(
+        code_prefix="database/seeds/",
+        display_name="数据库种子数据（database/seeds/）",
+        solution_doc="docs/solution/agent/agent工具设计.md",
+        task_doc="docs/task/agent/AI助手任务.md",
+    ),
+    # desired_schema.sql 的 COMMENT 注释更新属于 acli 格式修复的关联变更
+    ModuleMapping(
+        code_prefix="database/desired_schema.sql",
+        display_name="数据库 schema（database/desired_schema.sql）",
+        solution_doc="docs/solution/agent/agent工具设计.md",
+        task_doc="docs/task/agent/AI助手任务.md",
     ),
     ModuleMapping(
         code_prefix="database/",
@@ -165,12 +222,12 @@ def check_bypass() -> bool:
     """检查是否命中任一旁路条件"""
     # 标签旁路（CI 注入 DOC_SYNC_BYPASS=1）
     if os.environ.get("DOC_SYNC_BYPASS") == "1":
-        print("ℹ️  检测到 doc-update-exempt 标签，跳过模块文档同步检查")
+        print("检测到 doc-update-exempt 标签，跳过模块文档同步检查")
         return True
     # PR body 内联旁路
     pr_body = os.environ.get("PR_BODY", "")
     if "[skip doc-sync]" in pr_body:
-        print("ℹ️  PR 描述包含 [skip doc-sync]，跳过模块文档同步检查")
+        print("PR 描述包含 [skip doc-sync]，跳过模块文档同步检查")
         return True
     return False
 
@@ -200,7 +257,7 @@ def main() -> None:
                 break
 
     if not touched:
-        print("✅ 未检测到需要文档同步的模块改动（仅测试/配置变更）")
+        print("未检测到需要文档同步的模块改动（仅测试/配置变更）")
         sys.exit(0)
 
     # 检查各模块对应的文档是否也有更新（solution 或 task doc 更新其一即通过）
@@ -212,17 +269,17 @@ def main() -> None:
             failures.append((mapping, code_files, expected_docs))
 
     if not failures:
-        print("✅ 所有模块的对应文档均已更新")
+        print("所有模块的对应文档均已更新")
         sys.exit(0)
 
     # 输出失败报告
     print()
     print("=" * 65)
-    print("📋 模块文档同步检查 — 以下模块代码有变更但对应文档未更新：")
+    print("模块文档同步检查 - 以下模块代码有变更但对应文档未更新：")
     print("=" * 65)
 
     for mapping, code_files, expected_docs in failures:
-        print(f"\n🔸 模块：{mapping.display_name}")
+        print(f"\n模块：{mapping.display_name}")
         print("   修改的代码文件：")
         for f in code_files[:6]:
             print(f"     - {f}")
@@ -230,17 +287,17 @@ def main() -> None:
             print(f"     ... 还有 {len(code_files) - 6} 个文件")
         print("   需要更新的文档（更新其中至少一项）：")
         for doc in expected_docs:
-            exists_marker = "✓ 存在" if Path(doc).exists() else "✗ 不存在"
-            print(f"     - {doc}  [{exists_marker}]")
+            exists_marker = "[存在]" if Path(doc).exists() else "[不存在]"
+            print(f"     - {doc}  {exists_marker}")
 
     print()
-    print("─" * 65)
+    print("-" * 65)
     print("修复方式：")
     print("  1. 更新上方列出的对应文档后重新推送")
     print("  2. 若改动仅为 typo/格式/测试调整，无需文档更新时：")
     print("     在 PR 描述中添加  [skip doc-sync]")
     print("     或在 PR 添加 'doc-update-exempt' 标签")
-    print("─" * 65)
+    print("-" * 65)
     sys.exit(1)
 
 

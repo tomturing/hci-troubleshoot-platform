@@ -37,7 +37,7 @@ _BASH_RISK_RULES: list[tuple[int, re.Pattern]] = [
     (2, re.compile(r"\bsystemctl\s+(start|stop|restart|reload|disable|enable)\b")),
     (2, re.compile(r"\b(kill|killall|pkill)\b")),
     (2, re.compile(r"\bchmod\s+[0-7]*7[0-7]{2}\b")),  # chmod 777 类
-    (2, re.compile(r"(>>|>\s*/[a-z]|\btee\b|\bsed\s+-i\b|echo\s+.*>\s*[^>])")),
+    (2, re.compile(r"(>>|>\s*/(?!dev/null)[a-zA-Z]|\btee\b|\bsed\s+-i\b|echo\s+.*>\s*[^>])")),
     # risk=1：默认，无需规则
 ]
 
@@ -53,7 +53,7 @@ def classify_acli(command: str | None) -> int:
         1 (auto) | 2 (confirm) | 3 (block)
 
     Examples:
-        >>> classify_acli("acli vm list --formatter json")
+        >>> classify_acli("acli --formatter json vm list")
         1
         >>> classify_acli("acli service asv redis restart")
         2
