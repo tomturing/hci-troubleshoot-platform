@@ -205,6 +205,35 @@ describe('chat store — interactive_request 气泡行为', () => {
             vi.unstubAllGlobals()
         })
 
+        it('tool_confirm interactive_request 保留 execId、inputHash 和 expiresAt', async () => {
+            const { useChatStore } = await import('../chat')
+            const store = useChatStore()
+
+            store.currentCase = makeCase() as any
+            store.conversationId = 'conv-ir-1'
+
+            const eventPayload = makeInteractiveEvent({
+                kind: 'tool_confirm',
+                requestId: 'exec-frontend-001',
+                execId: 'exec-frontend-001',
+                inputHash: 'hash-frontend',
+                expiresAt: '2026-06-09T12:00:00+08:00',
+            })
+            vi.stubGlobal('fetch', makeInteractiveFetchMock(eventPayload))
+
+            await store.sendMessage('需要执行高风险工具')
+
+            const irMsg = store.messages.find(m => m.metadata?.kind === 'interactive_request')
+            const ev = irMsg?.metadata?.event as any
+            expect(ev.execId).toBe('exec-frontend-001')
+            expect(ev.inputHash).toBe('hash-frontend')
+            expect(ev.expiresAt).toBe('2026-06-09T12:00:00+08:00')
+            expect(store.pendingInteractive?.execId).toBe('exec-frontend-001')
+            expect(store.pendingInteractive?.inputHash).toBe('hash-frontend')
+
+            vi.unstubAllGlobals()
+        })
+
         it('interactive_request 气泡的 id 包含 requestId（格式：ir-<requestId>）', async () => {
             const { useChatStore } = await import('../chat')
             const store = useChatStore()

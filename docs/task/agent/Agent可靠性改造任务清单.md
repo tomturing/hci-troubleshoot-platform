@@ -21,6 +21,7 @@ owner: team
 | 2026-06-08 | v1.1 | 阶段零已全部合并；完成阶段一「工具事务化地基」开发并通过全量单元测试 |
 | 2026-06-08 | v1.2 | 全面核查：阶段零~二全部完成；阶段三 T3-1~T3-2、T3-4~T3-5 已完成，T3-3 未实现；阶段四 T4-1~T4-3 已完成，T4-4 未实现；整体 20/22 |
 | 2026-06-08 | v1.3 | 第一性原理深度审查：T1-2 实际未完成（前端 `chat.ts` 提交 interactive-response 时未回传 `exec_id`，`confirm:{exec_id}` 等待形同虚设），子项与阶段一总验收相应回退；其余任务 happy path 已落地，但仍存在审查记录在案的边缘缺陷（详见附录） |
+| 2026-06-09 | v1.4 | 完成 T1-2/T3-3/T4-4 整改：补齐 `exec_id/input_hash/expires_at` 端到端透传、确认路由 fail-closed 校验与授权审计、禁止前端静默确认高风险 pending 工具、实现可展示推理摘要折叠展示与 CI 回归评测门禁 |
 
 ---
 
@@ -28,11 +29,24 @@ owner: team
 
 ```
 阶段零（止血）     ██████████  已完成
-阶段一（工具事务） █████████░  4.5/5（T1-2 前端 exec_id 回传未实现）
+阶段一（工具事务） ██████████  已完成
 阶段二（事实体系） ██████████  已完成
-阶段三（推理约束） ████░░░░░░  4/5（待完成：T3-3 CoT强制外显）
-阶段四（评测闭环） ███░░░░░░░  3/4（待完成：T4-4 CI回归评测门禁）
+阶段三（推理约束） ██████████  已完成
+阶段四（评测闭环） ██████████  已完成
 ```
+
+## 第一性原理审查结论
+
+整体任务安排合理：先修工具结果语义、截断、Schema 与确认链路，再建设事实体系、结构化推理和评测闭环，符合“先稳定动作，再约束事实，再校验结论”的生产级 Agent 演进顺序。
+
+本次审查确认并优化以下边界：
+
+1. **高风险确认必须以服务端为权威**：前端自动执行模式只能作为偏好，不得对服务端已经判定为 `pending` 的高风险工具静默确认。
+2. **确认事务必须绑定 `exec_id + input_hash`**：conversation-service 在解锁 agent-service Redis 确认队列前，必须先校验 `tool_result` 记录，hash 不匹配、记录缺失或审计失败均 fail-closed。
+3. **授权必须可审计**：用户确认/拒绝都写入 `authorization`，并回填 `tool_result.authorization_id`，形成可追溯链路。
+4. **不鼓励暴露完整隐藏思维链**：T3-3 保留 `<reasoning>` 折叠展示，但内容定义为“可展示推理摘要”，只呈现证据、假设、置信度和下一步动作。
+5. **CI 门禁必须做回归对比**：仅固定阈值不足以发现退化，T4-4 增加与 `evaluation/report.json` 基线的 10% 劣化对比。
+6. **Agent 单测必须纳入根级门禁**：根级 pytest 与 CI 单测列表必须包含 `backend/agent-service/tests`，否则可靠性测试会在主门禁外漂移。
 
 ---
 
@@ -151,8 +165,9 @@ owner: team
 - **任务**：
   - [x] `AgentInteractiveRequest`（`tool_confirm` 类型）增加 `exec_id`、`input_hash`、`expires_at` 字段
   - [x] `ConfirmService.wait_for_confirm()` 改为按 `exec_id` 级别隔离 Redis key（`confirm:{exec_id}`）
-  - [ ] 前端 `tool_confirm` 响应携带 `exec_id` 回传
-  - [ ] conversation-service `submit_interactive_response` 路由验证 `exec_id` + `input_hash` 一致性
+  - [x] 前端 `tool_confirm` 响应携带 `exec_id` 回传
+  - [x] conversation-service `submit_interactive_response` 路由验证 `exec_id` + `input_hash` 一致性
+  - [x] conversation-service 写入 `authorization` 记录并回填 `tool_result.authorization_id`
 - **验收**：同一 session 并发两个工具确认请求，两者互不干扰，各自正确解除阻塞
 
 ---
@@ -204,7 +219,7 @@ owner: team
 **阶段一验收标准**
 
 - [x] 刷新页面后 pending 工具状态可从 `tool_result` 恢复
-- [ ] 同一 session 并发两个确认不会串线
+- [x] 同一 session 并发两个确认不会串线
 - [x] `risk_level >= 2` 的命令不可被自动执行
 - [x] 每次工具执行可通过 `trace_id + exec_id` 查全链路
 - [x] `gcm`/`gpr` 脚本提交自动应用 `gemini` 身份标识，且项目规范完成升级说明
@@ -323,13 +338,13 @@ owner: team
 
 ---
 
-### T3-3 CoT 强制外显 【P2】
+### T3-3 可展示推理摘要外显 【P2】
 
 - **文件**：`backend/agent-service/app/adapters/agents/htp/investigation_agent.py`（system prompt）
 - **任务**：
-  - [ ] 在 Investigation Agent system prompt 中加入 CoT 强制模板：要求 LLM 在输出结论前先按格式整理推理（已收集证据、假设支撑/反对、置信度评估、下一步行动）
-  - [ ] `<reasoning>` 标签内容在前端以折叠方式展示（非主要内容，可选查看）
-- **验收**：LLM 输出包含 `<reasoning>` 结构化推理过程的比例 ≥ 90%
+  - [x] 在 ReAct/Investigation Agent system prompt 中加入 `<reasoning>` 强制模板：要求 LLM 在输出结论前先按格式整理可展示推理摘要（已收集证据、假设支撑/反对、置信度评估、下一步行动）
+  - [x] `<reasoning>` 标签内容在前端以折叠方式展示（非主要内容，可选查看）
+- **验收**：LLM 输出包含 `<reasoning>` 结构化推理摘要的比例 ≥ 90%
 
 ---
 
@@ -368,7 +383,7 @@ owner: team
 - [x] 幻觉检测器识别率 ≥ 70%（构造测试集）
 - [x] 无证据根因无法进入最终报告（Claim Verifier 规则引擎拦截）
 - [x] 修复行动后必须执行验证，不可跳过
-- [ ] CoT `<reasoning>` 标签强制外显（T3-3 未实现）
+- [x] `<reasoning>` 可展示推理摘要强制外显
 
 ---
 
@@ -422,8 +437,9 @@ owner: team
 
 - **文件**：`.github/workflows/`
 - **任务**：
-  - [ ] 新增 CI job `agent-reliability-regression`：任何修改 `react_engine.py`、工具 schema、system prompt 的 PR，自动触发 Replay Runner 跑黄金工单评测集
-  - [ ] 对比指标：幻觉率、工具成功率、路径偏差率，任一指标劣化 ≥ 10% 则阻断合并
+  - [x] 新增 CI job `agent-reliability-regression`：任何修改 `react_engine.py`、工具 schema、system prompt 的 PR，自动触发 Replay Runner 跑黄金工单评测集
+  - [x] 对比指标：幻觉率、工具成功率、路径偏差率，任一指标劣化 ≥ 10% 则阻断合并
+  - [x] 评测报告上传为 artifact，并在 PR 评论中展示汇总指标
 - **验收**：CI job 可在 10 分钟内完成 30 个测试用例回归，结果报告在 PR 评论中展示
 
 ---
@@ -432,8 +448,8 @@ owner: team
 
 - [x] 黄金工单评测集 ≥ 30 条，覆盖主要故障类别
 - [x] Grafana 看板展示实时工具成功率、幻觉检测趋势
-- [ ] CI 回归评测可拦截明显降低可靠性的变更（T4-4 未实现）
-- [ ] 每次 Agent 改动能看到幻觉率、工具成功率、平均解决步数变化（依赖 T4-4）
+- [x] CI 回归评测可拦截明显降低可靠性的变更
+- [x] 每次 Agent 核心改动能看到幻觉率、工具成功率、路径偏差率变化
 
 ---
 

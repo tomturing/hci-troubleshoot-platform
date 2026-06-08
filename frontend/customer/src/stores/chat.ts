@@ -177,6 +177,9 @@ export const useChatStore = defineStore('chat', () => {
     options: Array<{ optionId: string; name: string }>
     customInput: boolean
     metadata: Record<string, unknown>
+    execId?: string
+    inputHash?: string
+    expiresAt?: string
   } | null>(null)
 
   // Bridge 运行状态
@@ -662,6 +665,9 @@ export const useChatStore = defineStore('chat', () => {
                   options: event.options ?? [],
                   customInput: event.customInput ?? true,
                   metadata: event.metadata ?? {},
+                  execId: event.execId,
+                  inputHash: event.inputHash,
+                  expiresAt: event.expiresAt,
                 }
                 // 将 interactive_request 作为 assistant 气泡追加到消息列表
                 const irMsgId = `ir-${event.requestId ?? Date.now()}`
@@ -706,32 +712,11 @@ export const useChatStore = defineStore('chat', () => {
                 }
 
                 if (event.status === 'pending') {
-                  const risk = event.risk_level ?? 1
-                  let autoRun = false
-                  if (autoExecuteMode.value === 'aggressive' && risk <= 2) {
-                    autoRun = true
-                  } else if (autoExecuteMode.value === 'safe-only' && risk <= 1) {
-                    autoRun = true
-                  }
-                  if (autoRun) {
-                    devLog('tool_call', '符合自动执行条件，静默执行中...', { exec_id: event.exec_id, risk_level: risk })
-                    fetch(`/api/conversations/${conversationId.value}/interactive-response`, {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'X-Client-ID': clientId,
-                      },
-                      body: JSON.stringify({
-                        kind: 'tool_confirm',
-                        request_id: event.exec_id,
-                        acp_session_id: conversationId.value,
-                        outcome: {
-                          confirmed: true,
-                          authorized_by: 'user'
-                        }
-                      })
-                    }).catch(e => console.warn('自动执行工具确认失败:', e))
-                  }
+                  devLog('tool_call', '服务端要求人工确认，等待用户操作', {
+                    exec_id: event.exec_id,
+                    risk_level: event.risk_level,
+                    auto_execute_mode: autoExecuteMode.value,
+                  })
                 }
               } catch (e) {
                 console.warn('[tool_call] 解析/处理失败:', e)
@@ -956,6 +941,9 @@ export const useChatStore = defineStore('chat', () => {
                   options: event.options ?? [],
                   customInput: event.customInput ?? true,
                   metadata: event.metadata ?? {},
+                  execId: event.execId,
+                  inputHash: event.inputHash,
+                  expiresAt: event.expiresAt,
                 }
                 const irMsgId = `ir-${event.requestId ?? Date.now()}`
                 messages.value.push({

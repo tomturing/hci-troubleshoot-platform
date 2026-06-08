@@ -366,6 +366,9 @@ const interactiveEvent = computed(() => {
     options: Array<{ optionId: string; name: string }>
     customInput: boolean
     metadata: Record<string, unknown>
+    execId?: string
+    inputHash?: string
+    expiresAt?: string
   } | null
 })
 
@@ -410,6 +413,45 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
       kind: 'interactive_response',
       selectedOptionId: optionId,
     })
+    return
+  }
+
+  if (ev.kind === 'tool_confirm') {
+    const confirmed = optionId === 'approved'
+    interactiveSubmitting.value = true
+    try {
+      const convId = chatStore.conversationId
+      if (!convId) return
+      const resp = await fetch(`/api/conversations/${convId}/interactive-response`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'tool_confirm',
+          request_id: ev.execId || ev.requestId,
+          acp_session_id: ev.acpSessionId || convId,
+          outcome: {
+            confirmed,
+            authorized_by: 'user',
+            input_hash: ev.inputHash || (ev.metadata?.input_hash as string | undefined),
+          },
+          metadata: ev.metadata,
+        }),
+      })
+      if (resp.ok) {
+        chatStore.clearInteractiveRequest()
+        chatStore.messages.push({
+          id: `ir-resp-${Date.now()}`,
+          role: 'user',
+          content: confirmed ? '[工具授权] 确认执行' : '[工具授权] 取消执行',
+          timestamp: new Date(),
+          metadata: { kind: 'interactive_response', selectedOptionId: optionId },
+        })
+      } else {
+        console.warn('[interactive] 工具确认提交失败:', resp.status)
+      }
+    } finally {
+      interactiveSubmitting.value = false
+    }
     return
   }
 
@@ -909,8 +951,8 @@ async function handleToolCallReject() {
                 <el-collapse-item name="reasoning">
                   <template #title>
                     <div class="reasoning-title-bar">
-                      <span class="reasoning-icon">🧠</span>
-                      <span class="reasoning-label">思考过程 (Chain-of-Thought)</span>
+                      <span class="reasoning-icon">ⓘ</span>
+                      <span class="reasoning-label">诊断依据摘要</span>
                     </div>
                   </template>
                   <div class="reasoning-details-content" v-html="renderTextSegment(reasoningContent)" />

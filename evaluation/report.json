@@ -3,6 +3,7 @@
   "avg_category_accuracy": 0.9666666666666667,
   "tool_success_rate": 1.0,
   "hallucination_rate": 0.03333333333333333,
+  "path_deviation_rate": 0.0,
   "details": [
     {
       "case_id": "case-001",
@@ -14,6 +15,7 @@
         "acli_vm_list",
         "acli_disk_show"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -33,6 +35,7 @@
         "acli_network_check",
         "acli_port_status"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -52,6 +55,7 @@
         "acli_storage_list",
         "acli_vm_list"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -71,6 +75,7 @@
         "acli_cluster_status",
         "acli_network_check"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -90,6 +95,7 @@
         "task_get_logs",
         "acli_vm_list"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -109,6 +115,7 @@
         "acli_node_logs",
         "acli_cluster_status"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -128,6 +135,7 @@
         "acli_vm_list",
         "acli_node_top"
       ],
+      "path_deviated": false,
       "has_hallucination": true,
       "hallucination_details": {
         "has_hallucination": true,
@@ -150,6 +158,7 @@
       "tools_executed": [
         "acli_network_check"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -169,6 +178,7 @@
         "acli_disk_show",
         "acli_storage_list"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -187,6 +197,7 @@
       "tools_executed": [
         "acli_cluster_status"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -205,6 +216,7 @@
       "tools_executed": [
         "acli_network_check"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -223,6 +235,7 @@
       "tools_executed": [
         "acli_storage_list"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -242,6 +255,7 @@
         "acli_vm_list",
         "acli_network_check"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -260,6 +274,7 @@
       "tools_executed": [
         "task_get_logs"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -278,6 +293,7 @@
       "tools_executed": [
         "acli_node_logs"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -297,6 +313,7 @@
         "acli_vm_list",
         "acli_disk_show"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -316,6 +333,7 @@
         "acli_node_logs",
         "acli_node_top"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -335,6 +353,7 @@
         "acli_storage_list",
         "acli_disk_show"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -354,6 +373,7 @@
         "acli_cluster_status",
         "acli_vm_list"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -372,6 +392,7 @@
       "tools_executed": [
         "acli_vm_list"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -391,6 +412,7 @@
         "acli_cluster_status",
         "acli_network_check"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -409,6 +431,7 @@
       "tools_executed": [
         "acli_vm_list"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -427,6 +450,7 @@
       "tools_executed": [
         "acli_network_check"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -446,6 +470,7 @@
         "task_get_logs",
         "acli_network_check"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -464,6 +489,7 @@
       "tools_executed": [
         "acli_storage_list"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -482,6 +508,7 @@
       "tools_executed": [
         "acli_cluster_status"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -500,6 +527,7 @@
       "tools_executed": [
         "acli_node_logs"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -518,6 +546,7 @@
       "tools_executed": [
         "acli_vm_list"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -537,6 +566,7 @@
         "acli_disk_show",
         "acli_storage_list"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -555,6 +585,7 @@
       "tools_executed": [
         "acli_network_check"
       ],
+      "path_deviated": false,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,

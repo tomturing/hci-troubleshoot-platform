@@ -485,6 +485,9 @@ class ConversationService:
                                     "options": agent_event.get("options"),
                                     "customInput": agent_event.get("custom_input"),
                                     "metadata": agent_event.get("metadata"),
+                                    "execId": agent_event.get("exec_id"),
+                                    "inputHash": agent_event.get("input_hash"),
+                                    "expiresAt": agent_event.get("expires_at"),
                                 },
                                 ensure_ascii=False,
                             )
@@ -507,6 +510,9 @@ class ConversationService:
                                             "options": agent_event.get("options"),
                                             "customInput": agent_event.get("custom_input"),
                                             "metadata": agent_event.get("metadata"),
+                                            "execId": agent_event.get("exec_id"),
+                                            "inputHash": agent_event.get("input_hash"),
+                                            "expiresAt": agent_event.get("expires_at"),
                                         },
                                     },
                                 )
@@ -2165,38 +2171,62 @@ class ConversationService:
                 )
                 return False
 
-            if self.session_factory:
-                from shared.models.audit import ToolResult
-                from sqlalchemy import select
-                try:
-                    async with self.session_factory() as session:
-                        stmt = select(ToolResult).where(ToolResult.id == request_id)
-                        res = await session.execute(stmt)
-                        tool_res = res.scalar_one_or_none()
+            if not self.session_factory:
+                logger.error(
+                    event="react_confirm_no_session_factory",
+                    message="工具确认缺少数据库 session_factory，无法校验 exec_id/input_hash，已拒绝继续提交确认",
+                    conversation_id=str(conversation_id),
+                )
+                return False
 
-                        if not tool_res:
-                            logger.warning(
-                                event="react_confirm_record_not_found",
-                                message=f"未找到对应的 tool_result 记录, request_id={request_id}",
-                                conversation_id=str(conversation_id),
-                            )
-                            return False
+            from datetime import UTC, datetime, timedelta
 
-                        if tool_res.input_hash and (not input_hash or tool_res.input_hash != input_hash):
-                            logger.error(
-                                event="react_confirm_hash_mismatch",
-                                message="工具确认参数 hash 不匹配，防篡改校验未通过！",
-                                conversation_id=str(conversation_id),
-                                db_hash=tool_res.input_hash,
-                                client_hash=input_hash,
-                            )
-                            return False
-                except Exception as db_exc:
-                    logger.warning(
-                        event="react_confirm_db_error",
-                        message=f"查询 tool_result 校验参数失败: {db_exc}",
-                        conversation_id=str(conversation_id),
+            from shared.models.audit import Authorization, ToolResult
+            from sqlalchemy import select
+            try:
+                async with self.session_factory() as session:
+                    stmt = select(ToolResult).where(ToolResult.id == request_id)
+                    res = await session.execute(stmt)
+                    tool_res = res.scalar_one_or_none()
+
+                    if not tool_res:
+                        logger.warning(
+                            event="react_confirm_record_not_found",
+                            message=f"未找到对应的 tool_result 记录, request_id={request_id}",
+                            conversation_id=str(conversation_id),
+                        )
+                        return False
+
+                    if tool_res.input_hash and (not input_hash or tool_res.input_hash != input_hash):
+                        logger.error(
+                            event="react_confirm_hash_mismatch",
+                            message="工具确认参数 hash 不匹配，防篡改校验未通过！",
+                            conversation_id=str(conversation_id),
+                            db_hash=tool_res.input_hash,
+                            client_hash=input_hash,
+                        )
+                        return False
+
+                    auth_id = str(uuid.uuid4())
+                    auth = Authorization(
+                        auth_id=auth_id,
+                        exec_id=request_id,
+                        actor=authorized_by,
+                        decision="approve" if confirmed else "deny",
+                        tool_input_hash=input_hash or tool_res.input_hash or "",
+                        expires_at=datetime.now(UTC) + timedelta(seconds=120),
                     )
+                    session.add(auth)
+                    tool_res.authorization_id = auth_id
+                    tool_res.authorized_by = authorized_by
+                    await session.commit()
+            except Exception as db_exc:
+                logger.error(
+                    event="react_confirm_db_error",
+                    message=f"工具确认审计/校验失败，已拒绝继续提交确认: {db_exc}",
+                    conversation_id=str(conversation_id),
+                )
+                return False
 
             try:
                 success = await self._agent_client.react_confirm(
@@ -2325,6 +2355,9 @@ class ConversationService:
                         "options": agent_event.get("options"),
                         "customInput": agent_event.get("custom_input"),
                         "metadata": agent_event.get("metadata"),
+                        "execId": agent_event.get("exec_id"),
+                        "inputHash": agent_event.get("input_hash"),
+                        "expiresAt": agent_event.get("expires_at"),
                     },
                     ensure_ascii=False,
                 )
@@ -2348,6 +2381,9 @@ class ConversationService:
                                     "options": agent_event.get("options"),
                                     "customInput": agent_event.get("custom_input"),
                                     "metadata": agent_event.get("metadata"),
+                                    "execId": agent_event.get("exec_id"),
+                                    "inputHash": agent_event.get("input_hash"),
+                                    "expiresAt": agent_event.get("expires_at"),
                                 },
                             },
                         )
