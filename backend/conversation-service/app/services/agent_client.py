@@ -217,6 +217,7 @@ class AgentClient:
         session_id: str,
         confirmed: bool,
         authorized_by: str = "user",
+        exec_id: str | None = None,
     ) -> bool:
         """
         调用 agent-service POST /v1/agent/react-confirm，
@@ -229,6 +230,7 @@ class AgentClient:
             session_id: 会话 ID（对应 conversation_id）
             confirmed: True=用户确认执行，False=用户取消
             authorized_by: 操作人标识（默认"user"）
+            exec_id: 工具执行记录 ID
 
         Returns:
             True = 提交成功；False = ConfirmService 未注入或请求失败
@@ -242,6 +244,7 @@ class AgentClient:
                         "session_id": session_id,
                         "confirmed": confirmed,
                         "authorized_by": authorized_by,
+                        "exec_id": exec_id,
                     },
                 )
                 resp.raise_for_status()
@@ -252,5 +255,6 @@ class AgentClient:
                 event="agent_client_react_confirm_error",
                 message=f"react_confirm 失败: {exc}",
                 session_id=session_id,
+                exec_id=exec_id,
             )
             return False

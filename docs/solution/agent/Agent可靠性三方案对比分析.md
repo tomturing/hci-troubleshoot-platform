@@ -159,7 +159,7 @@ ToolRetryPolicy + CircuitBreaker 解决了网络层的不稳定，但没有解�
 
 **3. 工具事务化设计最完备**
 
-`ToolExecution` 表的状态机：`proposed → schema_validated → policy_checked → authorized → leased → executing → observed → verified → committed | failed | cancelled`——与数据库 ACID 事务、Saga 模式的思想一致。`exec_id` 级别的授权绑定、幂等键、结果快照，真正解决了"断线恢复"和"不重复执行"的问题。
+`ToolExecution` 表的状态机：`proposed → schema_validated → policy_checked → authorized → leased → executing → observed → verified → committed | failed | cancelled`——与数据库 ACID 事务、Saga 模式的思想一致。`exec_id` 级别的授权绑定、幂等键、结果快照，真正解决了"断线恢复"和"不重复执行"的问题。（注：为遵守服务间 API 变更规范 (G-4) 和破坏性变更禁令，阶段一实施中已放弃新建 `ToolExecution` 表，转而通过对 `tool_result` 表进行增量字段升级与状态扩展来达成该设计目标）。
 
 **4. Policy & HITL Plane 的服务端授权模型正确**
 
@@ -262,6 +262,9 @@ Fact Store、AgentEvent v2、ToolExecution 表、ClaimVerifier——每一个都
 | Fact Store 是否需要全量持久化？ | 阶段一/二先用 Redis TTL，阶段三再持久化 |
 | 结构化输出失败时如何降级？ | 必须有 graceful fallback：schema 解析失败 → 降级到纯文本 + 禁止执行写操作 |
 | 如何防止过渡期新旧系统割裂？ | 旧接口保留，新机制并行引入，逐步迁移（见方案 C §13 兼容策略） |
+| 如何平衡工具事务化与 G-4 服务契约规范的冲突？ | 放弃引入全新的 `ToolExecution` 表，直接在现有 `tool_result` 表上增量补充可空或带默认值字段，既实现事务状态管理也向下兼容旧契约。 |
+| 如何防止提交与 PR 中 agent 标识被误判？ | 优化本地提交脚本 `gcm` / `gpr`，动态识别 `ANTIGRAVITY_AGENT` 变量自动标记 `gemini`，同步更新 `AGENTS.md` 规范。 |
+
 
 ---
 

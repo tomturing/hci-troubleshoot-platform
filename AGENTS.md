@@ -1,7 +1,7 @@
 # HCI 智能排障平台 — 项目规范
 
-> **本文件是所有 AI Agent（Claude Code / Codex CLI / Gemini CLI）的项目层规范文件。**
-> `./CLAUDE.md` 是本文件的符号链接，确保 Claude Code 读到相同内容。
+> **本文件是所有 AI Agent（Claude Code / Codex CLI / Gemini CLI / Antigravity IDE）的项目层规范文件。**
+> `./CLAUDE.md` 是本文件的符号链接，确保 Claude Code / Antigravity IDE 读到相同内容。
 > `./CLAUDE.local.md` 存放个人本地配置（不提交 git）。
 > 全局编码规范见 `~/.claude/CLAUDE.md`，全局避坑指南见 `~/.claude/pitfalls/`。
 
@@ -233,13 +233,19 @@ fix: 修复 ArgoCD 升级脚本
   ```bash
   hostname | tr '[:upper:]' '[:lower:]'
   ```
-- **工具**：`claude` 或 `copilot`
+- **工具**：`claude`、`gemini` 或 `copilot`（当运行于 Antigravity IDE 且存在环境变量 `ANTIGRAVITY_AGENT=1` 时，脚本会自动识别并默认设定为 `gemini`）
 
 **实现方式**：使用 `gcm` 和 `gpr` 函数（已配置在 `~/.my_custom_configs`）：
 
 ```bash
-# Claude Code 提交 commit
+# Claude Code 提交 commit（默认路径）
 gcm "fix: 修复问题"
+
+# Gemini (Antigravity IDE) 提交 commit
+# 在 Antigravity 终端中执行 gcm 即可（已基于环境变量自适应），或显式指定：
+gcm-g "fix: 修复问题"
+# 或者：
+AGENT=gemini gcm "fix: 修复问题"
 
 # GitHub Copilot 提交 commit
 AGENT=copilot gcm "feat: 新功能"
@@ -247,12 +253,16 @@ AGENT=copilot gcm "feat: 新功能"
 # Claude Code 创建 PR（自动添加 labels）
 gpr "fix: 修复问题"
 
+# Gemini (Antigravity IDE) 创建 PR
+# 在 Antigravity 终端中直接执行 gpr 即可，或显式指定：
+gpr-g "fix: 修复问题"
+
 # GitHub Copilot 创建 PR
 AGENT=copilot gpr "feat: 新功能"
 ```
 
 > ⚠️ **注意（GitHub Copilot 执行时）**：
-> 1. `gpr` 默认 `AGENT=claude`，**Copilot 必须显式加 `AGENT=copilot` 前缀**，否则标签打错
+> 1. `gpr` 在无自适应变量的环境下默认 `AGENT=claude`，**Copilot 必须显式加 `AGENT=copilot` 前缀**，否则标签打错
 > 2. `gpr` 生成的 body 是硬编码占位符，**创建 PR 后必须立即用以下模板补写完整描述**：
 >    ```
 >    ## 问题

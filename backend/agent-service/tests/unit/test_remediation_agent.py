@@ -60,11 +60,13 @@ def _make_confirm_service_mock(approved: bool = True):
     mock = MagicMock()
 
     # 返回真正的 ConfirmResult 枚举值
-    async def request_confirm(session_id, tool_name, tool_args, risk_level):
+    # **kwargs 兼容阶段一新增的 exec_id 参数
+    async def request_confirm(session_id, tool_name, tool_args, risk_level, **kwargs):
         return ConfirmResult.APPROVED if approved else ConfirmResult.REJECTED
 
     mock.request_confirm = request_confirm
     return mock
+
 
 
 def _make_tool_executor_mock():

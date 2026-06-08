@@ -61,14 +61,44 @@ class ToolResult(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
     duration_ms = Column(Integer, nullable=True)  # 执行耗时（毫秒）
 
+    # 事务状态机控制
+    status = Column(String(30), nullable=False, default="committed")  # proposed/executing/committed/failed/cancelled等
+    input_hash = Column(String(64), nullable=True)  # 工具调用参数哈希，防篡改
+    authorization_id = Column(String(36), ForeignKey("authorization.auth_id", ondelete="SET NULL"), nullable=True)  # 关联授权表 ID
+    idempotency_key = Column(String(100), nullable=True)  # 防重幂等键
+    case_id = Column(String(20), nullable=True)  # 关联工单号，便于快速过滤
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
+
     # 链路追踪
     trace_id = Column(String(64), nullable=True, index=True)
 
     def __repr__(self) -> str:
         return (
             f"<ToolResult(id={self.id}, tool={self.tool_name!r}, "
-            f"conversation={self.conversation_id}, risk={self.risk_level}, step={self.step_no})>"
+            f"conversation={self.conversation_id}, status={self.status}, risk={self.risk_level}, step={self.step_no})>"
         )
+
+
+class Authorization(Base):
+    """
+    高危操作人工授权审计模型
+
+    对应数据库表：authorization
+    记录每次高危操作/命令人工确认的决策人、决策结果、哈希与失效时间。
+    """
+
+    __tablename__ = "authorization"
+
+    auth_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    exec_id = Column(String(36), nullable=False)
+    actor = Column(String(100), nullable=False)
+    decision = Column(String(20), nullable=False)  # approve/deny
+    tool_input_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<Authorization(auth_id={self.auth_id}, exec_id={self.exec_id}, actor={self.actor}, decision={self.decision})>"
 
 
 class AuditLog(Base):

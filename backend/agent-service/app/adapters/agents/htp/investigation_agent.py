@@ -133,6 +133,7 @@ class InvestigationAgent(BaseAgent):
         assistant_type: str = "htp-agent",
         case_id: str = "",
         user_id: str = "",
+        execution_mode: str = "safe-only",
         sop_resume_context: dict[str, Any] | None = None,  # T-AGT-23: SOP 执行恢复上下文
     ) -> AsyncGenerator[AgentEvent, None]:
         """S1-S4 诊断调查完整流程（流式）。
@@ -237,6 +238,7 @@ class InvestigationAgent(BaseAgent):
                 case_id=case_id,
                 user_id=user_id,
                 session_id=session_id,  # T-AGT-22: 传递 session_id 用于创建 SopExecution
+                execution_mode=execution_mode,
                 sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
             ):
                 yield event
@@ -324,6 +326,7 @@ class InvestigationAgent(BaseAgent):
         case_id: str,
         user_id: str,
         session_id: str,  # T-AGT-22: 新增参数，用于创建 SopExecution
+        execution_mode: str = "safe-only",
         sop_resume_context: dict[str, Any] | None = None,  # T-AGT-23: SOP 执行恢复上下文
     ) -> AsyncGenerator[AgentEvent, None]:
         """SOP 轨道：ReactEngine + SOP 导航工具动态注入（T-AGT-22）。
@@ -542,6 +545,7 @@ class InvestigationAgent(BaseAgent):
             case_id=case_id,
             user_id=user_id,
             max_iterations=15,
+            execution_mode=execution_mode,
             tool_executor=sop_tool_executor,  # 使用 SOP 工具执行器
             sop_mode=True,  # DC-01: SOP 模式，注入 SOP 导航工具到 LLM tool list
         ):

@@ -152,9 +152,9 @@ async def test_tool_executed_only_once(mock_tool_executor, mock_audit_service):
         f"工具执行器应只调用 1 次，实际调用 {mock_tool_executor.execute.call_count} 次"
     )
 
-    # 验证审计日志只写入一次
-    assert mock_audit_service.write.call_count == 1, (
-        f"审计日志应只写入 1 次，实际写入 {mock_audit_service.write.call_count} 次"
+    # 验证审计日志写入（阶段一引入多状态审计链: proposed → committed，至少 1 次）
+    assert mock_audit_service.write.call_count >= 1, (
+        f"审计日志至少写入 1 次，实际 {mock_audit_service.write.call_count} 次"
     )
 
 
@@ -279,10 +279,11 @@ async def test_tool_execution_error_handled_once():
     # 工具执行器只调用一次（即使失败）
     assert mock_executor.execute.call_count == 1
 
-    # 审计日志记录错误（调用一次）
-    assert mock_audit.write.call_count == 1
-    write_call = mock_audit.write.call_args
-    assert write_call.kwargs.get("error") is not None
+    # 审计日志记录错误（阶段一引入多状态审计链: proposed → failed，至少 1 次）
+    assert mock_audit.write.call_count >= 1
+    # 验证至少有一次审计包含错误信息
+    all_errors = [c.kwargs.get("error") for c in mock_audit.write.call_args_list]
+    assert any(e is not None for e in all_errors), "应有至少一次审计写入包含错误信息"
 
     # ToolResultEvent 不对外 yield（是内部事件）
     tool_result_events = [e for e in events if isinstance(e, ToolResultEvent)]

@@ -22,7 +22,6 @@ TriageAgent: S0 意图识别 Agent（继承 BaseAgent）
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from collections.abc import AsyncGenerator
@@ -30,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from shared.clients import AIAssistantRegistry, KBClient
+from shared.models.information import EvidenceBundle
 from shared.observability.logger import get_logger
 
 from app.domain.agent_port import (
@@ -39,6 +39,7 @@ from app.domain.agent_port import (
     AgentUnavailableError,
 )
 from app.domain.base_agent import BaseAgent, Message, Observation, Step, ToolCall
+from app.services.evidence_builder import EvidenceBuilder
 
 logger = get_logger("triage-agent")
 
@@ -74,6 +75,7 @@ class TriageAgent(BaseAgent):
         ai_registry: AIAssistantRegistry,
         kb_client: KBClient,
         db_session_factory: Any = None,
+        fact_store: Any = None,  # FactStore 实例（可选，不注入则降级为无状态模式）
     ) -> None:
         super().__init__(name="triage-agent", max_steps=1)
         self._ai_registry = ai_registry
@@ -84,6 +86,8 @@ class TriageAgent(BaseAgent):
             self._db_session_factory = create_mock_session_factory()
         else:
             self._db_session_factory = db_session_factory
+        # EvidenceBuilder：有 FactStore 时从 Redis 加载事实，否则仅基于 env_context 构建
+        self._evidence_builder = EvidenceBuilder(fact_store=fact_store)
 
     # ─── BaseAgent 抽象方法实现 ─────────────────────────────────────────────────
 
@@ -146,6 +150,7 @@ class TriageAgent(BaseAgent):
             categories=self._categories_cache or {},
             env_context=env_context,
             case_id=case_id,
+            session_id=session_id,
         )
 
         # 3. 获取 LLM 客户端
@@ -306,8 +311,13 @@ class TriageAgent(BaseAgent):
         categories: dict[str, list[dict]],
         env_context: dict | None,
         case_id: str,
+        session_id: str = "",
     ) -> str:
-        """构建 S0 意图识别 System Prompt（数据库化）。"""
+        """构建 S0 意图识别 System Prompt（EvidenceBundle 结构化注入版）。
+
+        替代原有的 json.dumps 原始字典拼接，改为通过 EvidenceBuilder 构建
+        带来源标注、新鲜度标注和冲突标注的结构化事实章节，减少 Prompt 噪声。
+        """
         from shared.utils.prompt_loader import StrictPromptLoader
 
         async with self._db_session_factory() as session:
@@ -327,14 +337,23 @@ class TriageAgent(BaseAgent):
         total_count = sum(len(c) for c in categories.values()) if categories else 0
         categories_text = self._format_categories(categories)
 
-        if env_context and env_context.get("is_raw"):
-            env_info_val = json.dumps(env_context.get("env_info", {}), ensure_ascii=False, indent=2)
-            alert_logs_val = json.dumps(env_context.get("alert_logs", []), ensure_ascii=False, indent=2)
-            task_logs_val = json.dumps(env_context.get("task_logs", []), ensure_ascii=False, indent=2)
-        else:
-            env_info_val = env_context.get("env_info", "") if env_context else ""
-            alert_logs_val = env_context.get("alert_logs", "") if env_context else ""
-            task_logs_val = env_context.get("task_logs", "") if env_context else ""
+        # ── 阶段二改造：使用 EvidenceBundle 替代原始 json.dumps 拼接 ──────────
+        bundle = await self._evidence_builder.build_for_intent_classification(
+            session_id=session_id,
+            env_context=env_context,
+        )
+        evidence_section = bundle.to_prompt_section()
+
+        # 从 Bundle 中提取 S0 模板所需的三个占位符变量（向后兼容 Prompt 模板）
+        env_info_val = self._extract_fact_value(bundle, "env_info") or (
+            str(env_context.get("env_info", "")) if env_context else ""
+        )
+        alert_logs_val = self._extract_fact_value(bundle, "alert_logs") or (
+            str(env_context.get("alert_logs", "")) if env_context else ""
+        )
+        task_logs_val = self._extract_fact_value(bundle, "task_logs") or (
+            str(env_context.get("task_logs", "")) if env_context else ""
+        )
 
         formatted_s0_rules = s0_rules.format(
             env_info=env_info_val,
@@ -346,7 +365,19 @@ class TriageAgent(BaseAgent):
 
         formatted_context = base_context.format(case_id=case_id)
 
-        return "\n\n".join([base_identity, formatted_methodology, formatted_s0_rules, formatted_context])
+        # 将 EvidenceBundle 章节追加在规则段之后，供 LLM 参考
+        return "\n\n".join([base_identity, formatted_methodology, formatted_s0_rules, evidence_section, formatted_context])
+
+    @staticmethod
+    def _extract_fact_value(bundle: EvidenceBundle, key: str) -> str:
+        """从 EvidenceBundle 的 facts 列表中提取指定 key 的字符串化展示值。
+
+        用于将 EvidenceBundle 中的字段回填到 Prompt 模板占位符（向后兼容）。
+        """
+        for fact in bundle.facts:
+            if fact.get("key") == key:
+                return str(fact.get("value", ""))
+        return ""
 
     # 叶子节点 code 格式正则：允许多级前缀（如 虚拟机-L2-001、硬件-003）
     # Unicode 转义避免 encoding 风险

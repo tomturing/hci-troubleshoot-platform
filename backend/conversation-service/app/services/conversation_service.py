@@ -405,6 +405,14 @@ class ConversationService:
                     session_id = str(conversation_id)
                     _used_ops_agent_path = resolved_assistant_type == "ops-agent"
                     _agent_had_error = False
+
+                    # 提取自动执行偏好
+                    exec_mode = "safe-only"
+                    if metadata and "auto_execute_mode" in metadata:
+                        exec_mode = metadata["auto_execute_mode"]
+                    elif metadata and "execution_mode" in metadata:
+                        exec_mode = metadata["execution_mode"]
+
                     async for agent_event in self._agent_client.stream(
                         assistant_type=resolved_assistant_type,
                         session_id=session_id,
@@ -415,6 +423,7 @@ class ConversationService:
                         stream=True,
                         diagnostic_stage=current_stage,
                         category_id=_confirmed_category_code,
+                        execution_mode=exec_mode,  # 传递自动执行模式
                         sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
                     ):
                         event_type = agent_event.get("type")
@@ -2146,11 +2155,56 @@ class ConversationService:
             # ── ReAct 确认回路（T-AGT-03）────────────────────────────────────────────
             confirmed = bool(outcome.get("confirmed", False))
             authorized_by = outcome.get("authorized_by", "user")
+            input_hash = outcome.get("input_hash") or (metadata.get("input_hash") if metadata else None)
+
+            if not request_id:
+                logger.warning(
+                    event="react_confirm_missing_request_id",
+                    message="ReAct 工具确认提交缺失 request_id (exec_id)",
+                    conversation_id=str(conversation_id),
+                )
+                return False
+
+            if self.session_factory:
+                from shared.models.audit import ToolResult
+                from sqlalchemy import select
+                try:
+                    async with self.session_factory() as session:
+                        stmt = select(ToolResult).where(ToolResult.id == request_id)
+                        res = await session.execute(stmt)
+                        tool_res = res.scalar_one_or_none()
+
+                        if not tool_res:
+                            logger.warning(
+                                event="react_confirm_record_not_found",
+                                message=f"未找到对应的 tool_result 记录, request_id={request_id}",
+                                conversation_id=str(conversation_id),
+                            )
+                            return False
+
+                        if tool_res.input_hash:
+                            if not input_hash or tool_res.input_hash != input_hash:
+                                logger.error(
+                                    event="react_confirm_hash_mismatch",
+                                    message="工具确认参数 hash 不匹配，防篡改校验未通过！",
+                                    conversation_id=str(conversation_id),
+                                    db_hash=tool_res.input_hash,
+                                    client_hash=input_hash,
+                                )
+                                return False
+                except Exception as db_exc:
+                    logger.warning(
+                        event="react_confirm_db_error",
+                        message=f"查询 tool_result 校验参数失败: {db_exc}",
+                        conversation_id=str(conversation_id),
+                    )
+
             try:
                 success = await self._agent_client.react_confirm(
                     session_id=session_id,
                     confirmed=confirmed,
                     authorized_by=authorized_by,
+                    exec_id=request_id,
                 )
             except Exception as exc:
                 logger.warning(

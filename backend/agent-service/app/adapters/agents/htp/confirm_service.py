@@ -46,6 +46,7 @@ class ConfirmService:
         tool_name: str,
         tool_args: dict,
         risk_level: int,
+        exec_id: str | None = None,
     ) -> ConfirmResult:
         """请求用户确认，阻塞等待直到用户响应或超时（120s）。
 
@@ -54,14 +55,15 @@ class ConfirmService:
           REJECTED = 用户点击"取消"
           TIMEOUT  = 等待超时，自动取消
         """
-        key = f"{REDIS_KEY_PREFIX}{session_id}"
+        target_id = exec_id if exec_id else session_id
+        key = f"{REDIS_KEY_PREFIX}{target_id}"
 
         # 清空可能残留的上一次确认结果（保证幂等）
         await self.redis.delete(key)
 
         logger.info(
             event="confirm_waiting",
-            message=f"等待用户确认 [session={session_id}] 工具={tool_name} risk_level={risk_level}",
+            message=f"等待用户确认 [session={session_id}, exec_id={exec_id}] 工具={tool_name} risk_level={risk_level}",
             timeout_seconds=CONFIRM_TIMEOUT,
         )
 
@@ -71,7 +73,7 @@ class ConfirmService:
         if result is None:
             logger.warning(
                 event="confirm_timeout",
-                message=f"用户确认超时 [session={session_id}] 工具={tool_name}",
+                message=f"用户确认超时 [session={session_id}, exec_id={exec_id}] 工具={tool_name}",
             )
             return ConfirmResult.TIMEOUT
 
@@ -82,13 +84,13 @@ class ConfirmService:
             result_type = ConfirmResult.APPROVED if confirmed else ConfirmResult.REJECTED
             logger.info(
                 event="confirm_result",
-                message=f"用户确认结果 [session={session_id}] 工具={tool_name}: {result_type.value}",
+                message=f"用户确认结果 [session={session_id}, exec_id={exec_id}] 工具={tool_name}: {result_type.value}",
             )
             return result_type
         except Exception as e:
             logger.error(
                 event="confirm_parse_error",
-                message=f"解析确认结果失败 [session={session_id}]: {e}",
+                message=f"解析确认结果失败 [session={session_id}, exec_id={exec_id}]: {e}",
             )
             return ConfirmResult.REJECTED
 
@@ -97,18 +99,20 @@ class ConfirmService:
         session_id: str,
         confirmed: bool,
         authorized_by: str,
+        exec_id: str | None = None,
     ) -> None:
         """提交用户确认结果（由 POST /confirm 路由调用）。
 
-        向 Redis 的 confirm:{session_id} key LPUSH 确认结果，
+        向 Redis 的 confirm:{target_id} key LPUSH 确认结果，
         解除 request_confirm() 的 BRPOP 等待。
         """
-        key = f"{REDIS_KEY_PREFIX}{session_id}"
+        target_id = exec_id if exec_id else session_id
+        key = f"{REDIS_KEY_PREFIX}{target_id}"
         value = json.dumps({"confirmed": confirmed, "authorized_by": authorized_by})
         await self.redis.lpush(key, value)
-        # 设置过期防止遗留数据堆积（5 分钟）
+        # 设置过期防止遗留数据堆现（5 分钟）
         await self.redis.expire(key, 300)
         logger.info(
             event="confirm_submitted",
-            message=f"已提交确认结果 [session={session_id}] confirmed={confirmed} by={authorized_by}",
+            message=f"已提交确认结果 [session={session_id}, exec_id={exec_id}] confirmed={confirmed} by={authorized_by}",
         )

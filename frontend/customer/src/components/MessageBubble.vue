@@ -699,6 +699,7 @@ const toolCallEvent = computed(() => {
     result?: string | Record<string, any>
     error?: string
     duration_ms?: number
+    input_hash?: string
   } | null
 })
 
@@ -784,7 +785,7 @@ async function handleToolCallApprove() {
         kind: 'tool_confirm',
         request_id: ev.exec_id,
         acp_session_id: convId,
-        outcome: { confirmed: true, authorized_by: 'user' },
+        outcome: { confirmed: true, authorized_by: 'user', input_hash: ev.input_hash },
       }),
     })
     if (!resp.ok) {
@@ -809,7 +810,7 @@ async function handleToolCallReject() {
         kind: 'tool_confirm',
         request_id: ev.exec_id,
         acp_session_id: convId,
-        outcome: { confirmed: false, authorized_by: 'user' },
+        outcome: { confirmed: false, authorized_by: 'user', input_hash: ev.input_hash },
       }),
     })
     if (!resp.ok) {

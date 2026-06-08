@@ -47,11 +47,16 @@ class ToolAuditService:
         authorized_by: str | None = None,
         trace_id: str | None = None,
         step_no: int | None = None,
+        status: str | None = None,
+        input_hash: str | None = None,
+        authorization_id: str | None = None,
+        idempotency_key: str | None = None,
+        case_id: str | None = None,
     ) -> None:
-        """异步非阻塞地将工具执行审计日志写入数据库
+        """异步地将工具执行审计日志写入或更新到数据库
 
         Args:
-            audit_id: 审计流水号 (UUID 字符串)
+            audit_id: 审计流水号 (UUID 字符串，对应 ToolResult.id)
             session_id: 会话 ID
             tool_name: 工具名称
             tool_args: 工具执行输入参数
@@ -65,6 +70,11 @@ class ToolAuditService:
             authorized_by: 确认授权人 (仅 policy=confirm 时有效)
             trace_id: 链路追踪 ID
             step_no: 诊断步骤序列号 (SOP 模式下为节点顺序)
+            status: 工具执行状态 (proposed/executing/committed/failed/cancelled等)
+            input_hash: 参数哈希值
+            authorization_id: 关联授权记录 ID
+            idempotency_key: 幂等防重键
+            case_id: 关联工单号
         """
         if not trace_id:
             from shared.observability.otel import get_current_trace_id
@@ -89,47 +99,98 @@ class ToolAuditService:
         output_str = str(result) if result is not None else ""
         if len(output_str) > RESULT_MAX_CHARS:
             output_str = output_str[:RESULT_MAX_CHARS] + "... [已截断]"
-        output_json = {"data": output_str}
+        output_json = {"data": output_str} if result is not None else None
 
         # 自动推断 tool_type
-        if tool_name.startswith("acli_") or tool_name == "bash_exec":
-            tool_type = "acli"
-        elif tool_name in ("get_sop_node", "sop_advance", "sop_request_variable"):
-            tool_type = "sop"
-        else:
-            tool_type = "scp"
+        tool_type = "scp"
+        if tool_name:
+            if tool_name.startswith("acli_") or tool_name == "bash_exec":
+                tool_type = "acli"
+            elif tool_name in ("get_sop_node", "sop_advance", "sop_request_variable"):
+                tool_type = "sop"
 
         try:
             async with cls._session_factory() as session:
-                log = ToolResult(
-                    id=audit_id or str(uuid.uuid4()),
-                    conversation_id=conv_uuid,
-                    tool_name=tool_name,
-                    tool_type=tool_type,
-                    step_no=step_no,
-                    risk_level=risk_level,
-                    policy=policy,
-                    authorized_by=authorized_by,
-                    input_json=tool_args or {},
-                    output_json=output_json,
-                    error=error,
-                    started_at=started_at.astimezone(UTC) if started_at.tzinfo else started_at,
-                    completed_at=completed_at.astimezone(UTC) if completed_at.tzinfo else completed_at,
-                    duration_ms=duration_ms,
-                    trace_id=trace_id,
-                )
-                session.add(log)
+                from sqlalchemy import select
+                # 基于 exec_id (audit_id) 查询现有记录，实现增量更新状态
+                stmt = select(ToolResult).where(ToolResult.id == audit_id)
+                res = await session.execute(stmt)
+                log = res.scalar_one_or_none()
+
+                if log is None:
+                    # 记录不存在，执行 INSERT
+                    log = ToolResult(
+                        id=audit_id or str(uuid.uuid4()),
+                        conversation_id=conv_uuid,
+                        tool_name=tool_name,
+                        tool_type=tool_type,
+                        step_no=step_no,
+                        risk_level=risk_level if risk_level is not None else 1,
+                        policy=policy,
+                        authorized_by=authorized_by,
+                        input_json=tool_args or {},
+                        output_json=output_json,
+                        error=error,
+                        started_at=(started_at.astimezone(UTC) if started_at.tzinfo else started_at) if started_at else datetime.now(UTC),
+                        completed_at=(completed_at.astimezone(UTC) if completed_at.tzinfo else completed_at) if completed_at else None,
+                        duration_ms=duration_ms,
+                        trace_id=trace_id,
+                        status=status or "committed",
+                        input_hash=input_hash,
+                        authorization_id=authorization_id,
+                        idempotency_key=idempotency_key,
+                        case_id=case_id,
+                    )
+                    session.add(log)
+                else:
+                    # 记录存在，执行 UPDATE，仅更新传入的非空字段
+                    if tool_name:
+                        log.tool_name = tool_name
+                        log.tool_type = tool_type
+                    if step_no is not None:
+                        log.step_no = step_no
+                    if risk_level is not None:
+                        log.risk_level = risk_level
+                    if policy:
+                        log.policy = policy
+                    if authorized_by:
+                        log.authorized_by = authorized_by
+                    if tool_args is not None:
+                        log.input_json = tool_args
+                    if output_json is not None:
+                        log.output_json = output_json
+                    if error is not None:
+                        log.error = error
+                    if started_at:
+                        log.started_at = started_at.astimezone(UTC) if started_at.tzinfo else started_at
+                    if completed_at:
+                        log.completed_at = completed_at.astimezone(UTC) if completed_at.tzinfo else completed_at
+                    if duration_ms is not None:
+                        log.duration_ms = duration_ms
+                    if trace_id:
+                        log.trace_id = trace_id
+                    if status:
+                        log.status = status
+                    if input_hash:
+                        log.input_hash = input_hash
+                    if authorization_id:
+                        log.authorization_id = authorization_id
+                    if idempotency_key:
+                        log.idempotency_key = idempotency_key
+                    if case_id:
+                        log.case_id = case_id
+
                 await session.commit()
             logger.info(
                 event="agent_tool_audit_success",
-                message=f"已成功捕获并记录工具审计: tool={tool_name}, duration={duration_ms}ms",
+                message=f"已成功捕获并记录/更新工具审计: tool={tool_name}, status={status or (log.status if log else 'unknown')}, duration={duration_ms}ms",
                 conversation_id=str(conv_uuid),
             )
         except Exception as e:
             # 审计日志落库失败绝不能阻断主流转，静默捕获并记录日志
             logger.error(
                 event="agent_tool_audit_error",
-                message=f"工具审计写入失败（已自行隔离）: {e}",
+                message=f"工具审计写入/更新失败（已自行隔离）: {e}",
                 conversation_id=str(conv_uuid),
                 exc_info=True,
             )
@@ -155,4 +216,9 @@ class DbAuditService:
             authorized_by=kwargs.get("authorized_by"),
             trace_id=kwargs.get("trace_id"),
             step_no=kwargs.get("step"),
+            status=kwargs.get("status"),
+            input_hash=kwargs.get("input_hash"),
+            authorization_id=kwargs.get("authorization_id"),
+            idempotency_key=kwargs.get("idempotency_key"),
+            case_id=kwargs.get("case_id"),
         )

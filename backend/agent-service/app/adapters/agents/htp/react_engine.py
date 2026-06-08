@@ -250,6 +250,7 @@ class ConfirmServiceProtocol(Protocol):
         tool_name: str,
         tool_args: dict,
         risk_level: int,
+        exec_id: str | None = None,
     ): ...
 
 
@@ -288,6 +289,7 @@ class ReactEngine:
         user_id: str = "",
         max_iterations: int = MAX_STEPS,
         require_all_confirm: bool = False,
+        execution_mode: str = "safe-only",
         extra_tools: list[dict] | None = None,  # T-AGT-22: 动态注入工具（仅本次 execute 有效）
         tool_executor: ToolExecutor | None = None,  # T-AGT-22: 可替换工具执行器（用于 SOP 工具注入上下文）
         sop_mode: bool = False,  # DC-01: SOP 模式，用于注入 SOP 导航工具到 LLM tool list
@@ -413,6 +415,7 @@ class ReactEngine:
                     step=step_count,
                     require_all_confirm=require_all_confirm,
                     tool_executor=active_tool_executor,  # T-AGT-22: 传入执行器
+                    execution_mode=execution_mode,       # T1-3: 传入执行模式
                 ):
                     # 捕获工具执行结果
                     if isinstance(event, ToolResultEvent):
@@ -471,6 +474,7 @@ class ReactEngine:
         step: int,
         require_all_confirm: bool = False,
         tool_executor: ToolExecutor | None = None,  # T-AGT-22: 可替换执行器
+        execution_mode: str = "safe-only",           # T1-3: 执行模式（off/safe-only/aggressive）
     ) -> AsyncGenerator[AgentEvent, None]:
         """执行单个工具调用，含授权检查和审计记录
 
@@ -496,6 +500,39 @@ class ReactEngine:
         # T-AGT-22: 使用传入的 tool_executor 或实例默认执行器
         active_executor = tool_executor or self._tool_executor
 
+        # T1-4: 写入初始 proposed 状态审计记录（用于挂载 exec_id 事务基准）
+        if self._audit:
+            try:
+                import hashlib
+                from shared.observability.otel import get_current_trace_id
+
+                input_str = json.dumps(tool_args, sort_keys=True, ensure_ascii=False)
+                input_hash = hashlib.sha256(input_str.encode("utf-8")).hexdigest()
+
+                temp_tool_def = TOOL_REGISTRY.get(tool_name)
+                temp_risk = temp_tool_def.risk_level if temp_tool_def else 1
+                temp_policy = temp_tool_def.policy if temp_tool_def else "auto"
+
+                await self._audit.write(
+                    audit_id=exec_id,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    risk_level=temp_risk,
+                    policy=temp_policy,
+                    result=None,
+                    error=None,
+                    started_at=datetime.now(UTC),
+                    completed_at=None,
+                    duration_ms=None,
+                    trace_id=get_current_trace_id(),
+                    step=step,
+                    status="proposed",
+                    input_hash=input_hash,
+                )
+            except Exception as e:
+                logger.error(f"写入 proposed 状态审计失败: {e}")
+
         tool_def = TOOL_REGISTRY.get(tool_name)
         if not tool_def:
             # T-AGT-22: SOP 工具在 TOOL_REGISTRY 中已定义，此检查覆盖所有已注册工具
@@ -511,6 +548,23 @@ class ReactEngine:
                 args=tool_args,
                 error=err_msg,
             )
+            # T1-4: 更新为 failed 状态
+            if self._audit:
+                try:
+                    await self._audit.write(
+                        audit_id=exec_id,
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        risk_level=tool_def.risk_level,
+                        policy=tool_def.policy,
+                        result=None,
+                        error=err_msg,
+                        status="failed",
+                    )
+                except Exception as e:
+                    logger.error(f"更新 failed 状态审计失败: {e}")
+
             yield AgentStageUpdate(
                 stage="tool_call",
                 metadata={
@@ -551,6 +605,23 @@ class ReactEngine:
             )
             # 高危命令直接阻止执行
             if tool_def.policy == "block":
+                # T1-4: 更新状态为 cancelled
+                if self._audit:
+                    try:
+                        await self._audit.write(
+                            audit_id=exec_id,
+                            session_id=session_id,
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            risk_level=tool_def.risk_level,
+                            policy=tool_def.policy,
+                            result=None,
+                            error=f"[blocked] 命令 {command!r} 属于高危操作（risk=3），已拒绝执行。",
+                            status="cancelled",
+                        )
+                    except Exception as e:
+                        logger.error(f"更新 cancelled 状态审计失败: {e}")
+
                 yield AgentStageUpdate(
                     stage="tool_call",
                     metadata={
@@ -567,6 +638,23 @@ class ReactEngine:
 
         # 高危工具（risk_level=3 / policy=block）直接拒绝
         if tool_def.policy == "block":
+            # T1-4: 更新状态为 cancelled
+            if self._audit:
+                try:
+                    await self._audit.write(
+                        audit_id=exec_id,
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        risk_level=tool_def.risk_level,
+                        policy=tool_def.policy,
+                        result=None,
+                        error=f"工具 {tool_name} 风险等级过高（risk=3），已阻止执行。",
+                        status="cancelled",
+                    )
+                except Exception as e:
+                    logger.error(f"更新 cancelled 状态审计失败: {e}")
+
             yield AgentStageUpdate(
                 stage="tool_call",
                 metadata={
@@ -580,9 +668,41 @@ class ReactEngine:
             yield AgentTextChunk(content=f"工具 {tool_name} 风险等级过高，已阻止执行")
             return
 
-        # 确认条件：写操作(risk_level>=2) 或 require_all_confirm=True（修复模式下所有操作均需确认）
-        needs_confirm = (tool_def.risk_level >= 2 or require_all_confirm) and self._confirm_service
+        # T1-3: 调用服务端安全策略进行评估，限制高危命令的自动执行条件
+        from app.services.policy_service import PolicyService
+        policy_service = PolicyService()
+        needs_confirm = policy_service.evaluate_needs_confirm(
+            tool_name=tool_name,
+            risk_level=tool_def.risk_level,
+            require_all_confirm=require_all_confirm,
+            execution_mode=execution_mode,
+        ) and self._confirm_service
         if needs_confirm:
+            import hashlib
+            from datetime import timedelta
+
+            # 计算参数哈希，用于幂等和篡改验证
+            input_str = json.dumps(tool_args, sort_keys=True, ensure_ascii=False)
+            input_hash = hashlib.sha256(input_str.encode("utf-8")).hexdigest()
+
+            # 120 秒后授权决策失效
+            expires_at = (datetime.now(UTC) + timedelta(seconds=120)).isoformat()
+
+            # T1-4: 挂起确认时，将 status 更新为 confirm
+            if self._audit:
+                try:
+                    await self._audit.write(
+                        audit_id=exec_id,
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        risk_level=tool_def.risk_level,
+                        policy=tool_def.policy,
+                        status="confirm",
+                    )
+                except Exception as e:
+                    logger.error(f"更新 confirm 状态审计失败: {e}")
+
             # 1. 广播 tool_call 挂起确认事件
             yield AgentStageUpdate(
                 stage="tool_call",
@@ -592,6 +712,7 @@ class ReactEngine:
                     "args": tool_args,
                     "risk_level": tool_def.risk_level,
                     "status": "pending",
+                    "input_hash": input_hash,
                 },
             )
 
@@ -613,6 +734,9 @@ class ReactEngine:
                     "risk_level": tool_def.risk_level,
                     "step": step,
                 },
+                exec_id=exec_id,
+                input_hash=input_hash,
+                expires_at=expires_at,
             )
 
             try:
@@ -621,9 +745,26 @@ class ReactEngine:
                     tool_name=tool_name,
                     tool_args=tool_args,
                     risk_level=tool_def.risk_level,
+                    exec_id=exec_id,
                 )
             except Exception as e:
                 logger.error(f"确认服务异常: {e}")
+                # T1-4: 确认异常，更新为 failed 状态
+                if self._audit:
+                    try:
+                        await self._audit.write(
+                            audit_id=exec_id,
+                            session_id=session_id,
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            risk_level=tool_def.risk_level,
+                            policy=tool_def.policy,
+                            error=str(e),
+                            status="failed",
+                        )
+                    except Exception as audit_err:
+                        logger.error(f"更新 failed 状态审计失败: {audit_err}")
+
                 yield AgentStageUpdate(
                     stage="tool_call",
                     metadata={
@@ -638,6 +779,24 @@ class ReactEngine:
                 return
 
             if confirm_result.value != "approved":
+                status_val = "cancelled" if confirm_result.value == "rejected" else "failed"
+                err_val = "用户取消执行" if confirm_result.value == "rejected" else "等待授权确认超时"
+                # T1-4: 用户取消或超时，更新状态为 cancelled 或 failed
+                if self._audit:
+                    try:
+                        await self._audit.write(
+                            audit_id=exec_id,
+                            session_id=session_id,
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            risk_level=tool_def.risk_level,
+                            policy=tool_def.policy,
+                            error=err_val,
+                            status=status_val,
+                        )
+                    except Exception as audit_err:
+                        logger.error(f"更新 {status_val} 状态审计失败: {audit_err}")
+
                 yield AgentStageUpdate(
                     stage="tool_call",
                     metadata={
@@ -650,6 +809,21 @@ class ReactEngine:
                 )
                 yield AgentTextChunk(content="操作已取消")
                 return
+
+        # T1-4: 工具开始运行，更新状态为 executing
+        if self._audit:
+            try:
+                await self._audit.write(
+                    audit_id=exec_id,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    risk_level=tool_def.risk_level,
+                    policy=tool_def.policy,
+                    status="executing",
+                )
+            except Exception as e:
+                logger.error(f"更新 executing 状态审计失败: {e}")
 
         # 广播 tool_call 开始运行事件
         yield AgentStageUpdate(
@@ -669,54 +843,140 @@ class ReactEngine:
                 stage="executing", metadata={"tool": tool_name, "args": tool_args, "message": "正在获取日志..."}
             )
 
-        # 执行工具，记录耗时
-        started_at = datetime.now(UTC)
-        audit_id = str(uuid.uuid4())
-        result = None
-        error: str | None = None
-
-        try:
-            with tracer.start_as_current_span("tool.execute") as span:
-                span.set_attribute("tool.name", tool_name)
-                span.set_attribute("tool.risk_level", tool_def.risk_level)
-                span.set_attribute("session_id", session_id)
-                try:
-                    # T-AGT-22: 使用 active_executor 执行工具，显式传递 conversation_id 和 exec_id
-                    result = await active_executor.execute(
-                        tool_name, tool_args, conversation_id=session_id, exec_id=exec_id
-                    )
-                except Exception as e:
-                    span.record_exception(e)
-                    span.set_status(trace.StatusCode.ERROR, str(e))
-                    raise
-        except Exception as e:
-            error = str(e)
+        # 1. 检查熔断器状态
+        from app.services.tool_reliability import ToolCircuitBreaker, ToolRetryPolicy
+        breaker = ToolCircuitBreaker(tool_name)
+        if not breaker.allow_execution():
+            logger.error(f"工具 {tool_name} 处于熔断状态，拒绝执行")
+            error = f"[circuit_breaker] 工具 {tool_name} 近期频繁失败，已被服务端临时熔断隔离，请 60 秒后再试。"
             result = f"工具执行失败: {error}"
-        finally:
-            completed_at = datetime.now(UTC)
-            duration_ms = int((completed_at - started_at).total_seconds() * 1000)
-
-            # 审计记录
+            
             if self._audit:
                 try:
-                    from shared.observability.otel import get_current_trace_id
-
                     await self._audit.write(
-                        audit_id=audit_id,
+                        audit_id=exec_id,
                         session_id=session_id,
                         tool_name=tool_name,
                         tool_args=tool_args,
                         risk_level=tool_def.risk_level,
                         policy=tool_def.policy,
-                        result=result,
                         error=error,
-                        started_at=started_at,
-                        completed_at=completed_at,
-                        duration_ms=duration_ms,
-                        trace_id=get_current_trace_id(),
+                        status="failed",
                     )
                 except Exception as audit_err:
-                    logger.error(f"审计日志写入失败: {audit_err}")
+                    logger.error(f"熔断写审计失败: {audit_err}")
+            
+            yield ToolResultEvent(result=result, tool_name=tool_name, error=error, exec_id=exec_id)
+            return
+
+        # 2. 更新状态为 executing
+        if self._audit:
+            try:
+                await self._audit.write(
+                    audit_id=exec_id,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    risk_level=tool_def.risk_level,
+                    policy=tool_def.policy,
+                    status="executing",
+                )
+            except Exception as e:
+                logger.error(f"更新 executing 状态审计失败: {e}")
+
+        # 执行工具，记录耗时，支持重试
+        started_at = datetime.now(UTC)
+        audit_id = exec_id  # 关联到已生成的 exec_id，用于状态更新与全链路追溯
+        result = None
+        error: str | None = None
+
+        max_retries = 2
+        retry_delay = 1.0
+
+        for attempt in range(max_retries + 1):
+            try:
+                with tracer.start_as_current_span("tool.execute") as span:
+                    span.set_attribute("tool.name", tool_name)
+                    span.set_attribute("tool.risk_level", tool_def.risk_level)
+                    span.set_attribute("session_id", session_id)
+                    span.set_attribute("attempt", attempt)
+                    try:
+                        # T-AGT-22: 使用 active_executor 执行工具，显式传递 conversation_id 和 exec_id
+                        result = await active_executor.execute(
+                            tool_name, tool_args, conversation_id=session_id, exec_id=exec_id
+                        )
+                        
+                        # 检查结果是否是超时，若超时则主动抛错重试
+                        exit_code_meaning = None
+                        if result:
+                            if hasattr(result, "exit_code_meaning"):
+                                exit_code_meaning = result.exit_code_meaning
+                            elif isinstance(result, dict):
+                                exit_code_meaning = result.get("exit_code_meaning")
+                        
+                        if ToolRetryPolicy.is_retriable(exit_code_meaning, None):
+                            raise Exception(f"工具执行返回超时状态: {exit_code_meaning}")
+                        
+                        error = None
+                        break
+                    except Exception as e:
+                        span.record_exception(e)
+                        span.set_status(trace.StatusCode.ERROR, str(e))
+                        raise
+            except Exception as e:
+                error = str(e)
+                if attempt < max_retries:
+                    # 检查异常或返回值是否可重试
+                    exit_code_meaning = None
+                    if result:
+                        if hasattr(result, "exit_code_meaning"):
+                            exit_code_meaning = result.exit_code_meaning
+                        elif isinstance(result, dict):
+                            exit_code_meaning = result.get("exit_code_meaning")
+                    
+                    if ToolRetryPolicy.is_retriable(exit_code_meaning, error):
+                        logger.warning(
+                            "工具 %s 执行失败(可重试): %s. 将在 %.1fs 后进行第 %d 次重试",
+                            tool_name, error, retry_delay, attempt + 1
+                        )
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2.0
+                        continue
+                result = f"工具执行失败: {error}"
+                break
+
+        # 3. 更新熔断状态
+        if error:
+            breaker.record_failure()
+        else:
+            breaker.record_success()
+
+        # 4. 最终结果落库审计
+        completed_at = datetime.now(UTC)
+        duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+
+        # 审计记录
+        if self._audit:
+            try:
+                from shared.observability.otel import get_current_trace_id
+
+                await self._audit.write(
+                    audit_id=audit_id,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    risk_level=tool_def.risk_level,
+                    policy=tool_def.policy,
+                    result=result,
+                    error=error,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    duration_ms=duration_ms,
+                    trace_id=get_current_trace_id(),
+                    status="failed" if error else "committed",
+                )
+            except Exception as audit_err:
+                logger.error(f"审计日志写入失败: {audit_err}")
 
         # T-AGT-25: 处理 sop_request_variable 的 VariableRequestResult
         if isinstance(result, VariableRequestResult) and result.needs_input:

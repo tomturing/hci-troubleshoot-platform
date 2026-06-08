@@ -11,6 +11,7 @@ from .skill_definition import SkillDefinition
 from .sop_execution import STATUS_ABORTED, STATUS_ACTIVE, STATUS_COMPLETED, STATUS_INTERRUPTED, SopExecution
 from .tool_definition import ToolDefinition
 from .tool_result import ToolResult
+from .authorization import Authorization
 
 __all__ = [
     "Conversation",
@@ -26,4 +27,5 @@ __all__ = [
     "ToolDefinition",
     "ToolResult",
     "SkillDefinition",
+    "Authorization",
 ]

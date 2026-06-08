@@ -494,6 +494,31 @@ CREATE INDEX IF NOT EXISTS idx_diagnostic_item_status ON diagnostic_item ("type"
 --   * 与 message 表完全同构的子实体模式：INSERT-only 用于生成，UPDATE 用于状态变更
 
 -- ------------------------------------------------------------
+-- 表: authorization  [模块: conversation-service]
+-- 说明: 高危操作人工授权审计表 — 记录每次高危工具调用的人工确认结果
+-- 用途: 记录高危/人工确认步骤的决策详情，与 tool_result 形成关联
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS "authorization" (
+    auth_id varchar(36) NOT NULL,
+    exec_id varchar(36) NOT NULL,
+    actor varchar(100) NOT NULL,
+    decision varchar(20) NOT NULL, -- approve/deny
+    tool_input_hash varchar(64) NOT NULL,
+    expires_at timestamptz,
+    created_at timestamptz DEFAULT now(),
+    CONSTRAINT authorization_pkey PRIMARY KEY (auth_id)
+);
+
+COMMENT ON TABLE "authorization" IS '高危操作人工授权审计表 — 记录每次高危工具调用的人工确认结果';
+COMMENT ON COLUMN "authorization".auth_id IS '授权记录 ID，UUID 格式';
+COMMENT ON COLUMN "authorization".exec_id IS '关联工具执行记录 ID (对应 tool_result.id)';
+COMMENT ON COLUMN "authorization".actor IS '执行授权确认操作的用户名';
+COMMENT ON COLUMN "authorization".decision IS '授权决策：approve=批准执行 / deny=拒绝执行';
+COMMENT ON COLUMN "authorization".tool_input_hash IS '被授权工具调用输入参数的哈希值，防篡改校验';
+COMMENT ON COLUMN "authorization".expires_at IS '授权过期时间，超期未执行则失效';
+COMMENT ON COLUMN "authorization".created_at IS '授权创建时间';
+
+-- ------------------------------------------------------------
 -- 表: tool_result  [模块: conversation-service]
 -- 说明: 工具执行结果表 — 记录每次 AI 调用工具（acli/scp_api）的请求参数、执行结果、风险等级和授权信息。从旧 audit_log.audit_type='tool_call' 分离，修复 BUG-03（step_no 字段缺失）
 -- 用途: AI 调用工具时写入一条记录，包含工具名、参数、执行结果、耗时、风险等级；用于 CP-02 工具审计验证、高危操作追溯、工具性能 SLA 统计
@@ -514,7 +539,14 @@ CREATE TABLE IF NOT EXISTS tool_result (
     started_at timestamptz NOT NULL DEFAULT now(),
     completed_at timestamptz,
     trace_id varchar(64),
+    status varchar(30) NOT NULL DEFAULT 'committed',
+    input_hash varchar(64),
+    authorization_id varchar(36),
+    idempotency_key varchar(100),
+    case_id varchar(20),
+    updated_at timestamptz DEFAULT now(),
     CONSTRAINT fk_tool_result_conversation_id FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE CASCADE,
+    CONSTRAINT fk_tool_result_authorization_id FOREIGN KEY (authorization_id) REFERENCES "authorization" (auth_id) ON DELETE SET NULL,
     -- D-006: 风险等级只允许 1（只读）/ 2（需确认）/ 3（高危），NOT NULL DEFAULT 1
     CONSTRAINT chk_tool_result_risk_level CHECK (risk_level >= 1 AND risk_level <= 3),
     CONSTRAINT tool_result_pkey PRIMARY KEY (id)
@@ -536,6 +568,12 @@ COMMENT ON COLUMN tool_result.duration_ms IS '执行耗时（毫秒），complet
 COMMENT ON COLUMN tool_result.started_at IS '工具调用开始时间';
 COMMENT ON COLUMN tool_result.completed_at IS '工具调用完成时间（含失败场景）';
 COMMENT ON COLUMN tool_result.trace_id IS '请求 trace ID';
+COMMENT ON COLUMN tool_result.status IS '工具执行状态：proposed/executing/committed/failed/cancelled等';
+COMMENT ON COLUMN tool_result.input_hash IS '工具调用输入参数的哈希值';
+COMMENT ON COLUMN tool_result.authorization_id IS '关联高危授权表记录ID';
+COMMENT ON COLUMN tool_result.idempotency_key IS '用于防重幂等校验的键';
+COMMENT ON COLUMN tool_result.case_id IS '关联工单 ID，方便直接过滤';
+COMMENT ON COLUMN tool_result.updated_at IS '记录更新时间';
 
 -- 索引: tool_result
 -- 会话工具调用查询（CP-02 验证）

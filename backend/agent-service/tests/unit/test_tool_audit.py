@@ -23,6 +23,11 @@ async def test_tool_audit_service_write_success():
     mock_session.__aenter__.return_value = mock_session
     mock_session_factory = MagicMock(return_value=mock_session)
 
+    # 正确设置 execute 返回局：模拟无历史记录时走 INSERT 路径
+    mock_execute_result = MagicMock()
+    mock_execute_result.scalar_one_or_none.return_value = None
+    mock_session.execute.return_value = mock_execute_result
+
     # 初始化服务
     ToolAuditService.initialize(mock_session_factory)
 
@@ -82,6 +87,11 @@ async def test_db_audit_service_adapter():
     mock_session = AsyncMock()
     mock_session.__aenter__.return_value = mock_session
     mock_session_factory = MagicMock(return_value=mock_session)
+
+    # 正确设置 execute 返回局：模拟无历史记录，走 INSERT 路径
+    mock_execute_result = MagicMock()
+    mock_execute_result.scalar_one_or_none.return_value = None
+    mock_session.execute.return_value = mock_execute_result
 
     # 初始化服务
     ToolAuditService.initialize(mock_session_factory)
