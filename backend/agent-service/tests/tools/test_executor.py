@@ -200,8 +200,8 @@ class TestBridgeRelayExecutor:
             )
 
             assert result.truncated is True
-            assert len(result.stdout) == 4000
-            assert result.stdout == "A" * 4000
+            assert len(result.stdout) <= 4000
+            assert "此处截断" in result.stdout
             assert result.exit_code == 0
 
     @pytest.mark.asyncio

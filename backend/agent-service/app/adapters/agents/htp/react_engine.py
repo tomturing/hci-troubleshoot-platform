@@ -10,9 +10,13 @@ ReactEngine: ReAct 循环执行引擎
 被 InvestigationAgent 内部使用（execution_mode=react 时）
 """
 
+from __future__ import annotations
+
 import json
+import re
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -33,6 +37,194 @@ from app.memory.variable_pool import VariableRequestResult
 
 logger = get_logger("react-engine")
 tracer = trace.get_tracer(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ToolCallValidator 和 ToolResultEnvelope 数据结构与校验器定义
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ToolCallValidator:
+    """
+    轻量级无依赖的 JSON Schema 与参数有效性校验器
+    """
+    @staticmethod
+    def validate(tool_name: str, args: dict[str, Any], parameters_schema: dict[str, Any]) -> tuple[bool, str | None]:
+        if not parameters_schema:
+            return True, None
+
+        required = parameters_schema.get("required", [])
+        properties = parameters_schema.get("properties", {})
+
+        # 1. 必填参数校验
+        for req_field in required:
+            if req_field not in args:
+                return False, f"缺少必填参数: '{req_field}'"
+
+        # 2. 类型及正则格式校验
+        for name, value in args.items():
+            if name not in properties:
+                # 允许传入额外的不在 schema 中的参数而不报错
+                continue
+
+            prop_def = properties[name]
+            expected_type = prop_def.get("type")
+
+            # 类型校验
+            if expected_type == "string":
+                if not isinstance(value, str):
+                    return False, f"参数 '{name}' 类型错误: 期望 string，实际为 {type(value).__name__}"
+
+                # 正则 pattern 校验
+                pattern = prop_def.get("pattern")
+                if pattern:
+                    try:
+                        if not re.match(pattern, value):
+                            return False, f"参数 '{name}' 格式不正确: 必须符合正则 '{pattern}'"
+                    except Exception:
+                        pass
+
+                # IP 字段/格式的强制 IPv4 校验
+                if "ip" in name.lower() or prop_def.get("format") == "ipv4":
+                    ip_regex = r"^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
+                    if not re.match(ip_regex, value):
+                        return False, f"参数 '{name}' 格式错误: '{value}' 不是有效的 IPv4 地址"
+
+            elif expected_type == "integer":
+                if not isinstance(value, int) or isinstance(value, bool):
+                    return False, f"参数 '{name}' 类型错误: 期望 integer，实际为 {type(value).__name__}"
+
+            elif expected_type == "number":
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    return False, f"参数 '{name}' 类型错误: 期望 number，实际为 {type(value).__name__}"
+
+            elif expected_type == "boolean":
+                if not isinstance(value, bool):
+                    return False, f"参数 '{name}' 类型错误: 期望 boolean，实际为 {type(value).__name__}"
+
+        return True, None
+
+
+@dataclass
+class ToolResultEnvelope:
+    tool_name: str
+    exec_id: str
+    success: bool
+    exit_code: int
+    stdout: str
+    stderr: str
+    exit_code_meaning: str | None = None
+    truncated: bool = False
+    interpretation: str | None = None
+    suggested_next_action: str | None = None
+
+    def to_llm_message(self) -> str:
+        status_emoji = "✅" if self.success else "❌"
+        status_text = "SUCCESS" if self.success else "FAILED"
+
+        parts = [
+            f"🛠️ [Tool: {self.tool_name}] (Execution ID: {self.exec_id})",
+            f"📊 Status: {status_emoji} {status_text} | Exit Code: {self.exit_code}",
+        ]
+
+        if self.exit_code_meaning:
+            parts.append(f"🔍 Exit Code Meaning: {self.exit_code_meaning}")
+
+        if self.stdout:
+            parts.append(f"📝 [Stdout]:\n{self.stdout.strip()}")
+
+        if self.stderr:
+            parts.append(f"⚠️ [Stderr]:\n{self.stderr.strip()}")
+
+        if self.truncated:
+            parts.append("⚠️ Note: Output has been truncated to avoid token overload.")
+
+        if self.interpretation:
+            parts.append(f"💡 Interpretation: {self.interpretation}")
+
+        if self.suggested_next_action:
+            parts.append(f"👉 Suggested Next Action: {self.suggested_next_action}")
+
+        return "\n".join(parts)
+
+    @classmethod
+    def from_raw_result(
+        cls,
+        tool_name: str,
+        exec_id: str,
+        result: Any,
+        error: str | None = None,
+    ) -> ToolResultEnvelope:
+        if isinstance(result, cls):
+            return result
+
+        # 检查是否为 ExecResult
+        if hasattr(result, "exit_code") and hasattr(result, "stdout") and hasattr(result, "stderr"):
+            exit_code = result.exit_code
+            stdout = result.stdout
+            stderr = result.stderr
+            truncated = getattr(result, "truncated", False)
+            exit_code_meaning = getattr(result, "exit_code_meaning", None)
+
+            interpretation = None
+            suggested_next_action = None
+            if exit_code_meaning == "timeout":
+                interpretation = "命令超时，可能节点负载过高或 terminal_bridge 未连接"
+                suggested_next_action = "请检查目标节点的可达性，或尝试执行低负载命令/查看日志"
+            elif exit_code != 0:
+                interpretation = f"命令执行失败 (退出码: {exit_code})"
+                if exit_code_meaning == "command_not_found":
+                    interpretation += ": 找不到指定的命令/可执行文件"
+                    suggested_next_action = "请检查命令拼写或该节点上是否安装了相应工具"
+                elif exit_code_meaning == "permission_denied":
+                    interpretation += ": 权限被拒绝，无法执行此操作"
+                    suggested_next_action = "请检查执行用户的权限或使用 sudo"
+                else:
+                    suggested_next_action = "请根据错误日志提示修正命令参数，或重试"
+
+            return cls(
+                tool_name=tool_name,
+                exec_id=exec_id,
+                success=(exit_code == 0 and error is None),
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                exit_code_meaning=exit_code_meaning,
+                truncated=truncated,
+                interpretation=interpretation,
+                suggested_next_action=suggested_next_action,
+            )
+
+        if isinstance(result, dict):
+            # SOP / variable request dict
+            success = error is None and not result.get("error")
+            exit_code = 0 if success else -1
+            stdout = json.dumps(result, ensure_ascii=False)
+            stderr = error or result.get("error", "")
+            return cls(
+                tool_name=tool_name,
+                exec_id=exec_id,
+                success=success,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                truncated=False,
+            )
+
+        success = error is None
+        exit_code = 0 if success else -1
+        stdout = str(result) if result is not None else ""
+        stderr = error or ""
+        return cls(
+            tool_name=tool_name,
+            exec_id=exec_id,
+            success=success,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            truncated=False,
+        )
+
 
 # 硬限制：最大推理步骤数，防止无限循环
 MAX_STEPS = 15
@@ -214,6 +406,7 @@ class ReactEngine:
 
                 # require_all_confirm 覆盖：将只读工具也升级为需确认
                 tool_result = None
+                tool_exec_id = tc.id
                 async for event in self._execute_tool_call(
                     tool_call=tool_call_dict,
                     session_id=session_id,
@@ -224,6 +417,8 @@ class ReactEngine:
                     # 捕获工具执行结果
                     if isinstance(event, ToolResultEvent):
                         tool_result = event.result
+                        if event.exec_id:
+                            tool_exec_id = event.exec_id
                     # AgentTextChunk 需要传递给外层（如"操作已取消"、"确认服务暂不可用"）
                     elif isinstance(event, AgentTextChunk):
                         yield event
@@ -233,14 +428,20 @@ class ReactEngine:
                     else:
                         yield event
 
-                # 将工具结果追加到消息历史
+                # 将工具结果以 ToolResultEnvelope 的结构化形式追加到消息历史 (T0-1)
+                envelope = ToolResultEnvelope.from_raw_result(
+                    tool_name=tc.name,
+                    exec_id=tool_exec_id,
+                    result=tool_result,
+                )
                 work_messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": str(tool_result),
+                        "content": envelope.to_llm_message(),
                     }
                 )
+
 
         # 超出步数限制
         yield AgentTextChunk(content="⚠️ 诊断步骤已达上限，请联系人工支持。")
@@ -299,6 +500,34 @@ class ReactEngine:
         if not tool_def:
             # T-AGT-22: SOP 工具在 TOOL_REGISTRY 中已定义，此检查覆盖所有已注册工具
             yield AgentTextChunk(content=f"未知工具: {tool_name}")
+            return
+
+        # T0-5: ToolCallValidator 参数前置校验
+        is_valid, err_msg = ToolCallValidator.validate(tool_name, tool_args, tool_def.parameters)
+        if not is_valid:
+            logger.warning(
+                event="tool_call_validation_failed",
+                tool_name=tool_name,
+                args=tool_args,
+                error=err_msg,
+            )
+            yield AgentStageUpdate(
+                stage="tool_call",
+                metadata={
+                    "exec_id": exec_id,
+                    "tool_name": tool_name,
+                    "args": tool_args,
+                    "risk_level": tool_def.risk_level,
+                    "status": "failed",
+                },
+            )
+            # 返回校验失败的错误结果给 LLM
+            yield ToolResultEvent(
+                result=f"[error] 参数校验失败：{err_msg}。请修正参数后重新尝试调用该工具。",
+                tool_name=tool_name,
+                error=err_msg,
+                exec_id=exec_id,
+            )
             return
 
         # ─── 动态风险覆盖（仅对通用命令执行工具）───
@@ -528,6 +757,7 @@ class ReactEngine:
                 result={"needs_input": True, "variable_name": result.variable_name, "message": result.message},
                 tool_name=tool_name,
                 error=None,
+                exec_id=exec_id,
             )
             return
 
@@ -545,4 +775,5 @@ class ReactEngine:
         )
 
         # 返回工具执行结果给主循环（避免重复执行）
-        yield ToolResultEvent(result=result, tool_name=tool_name, error=error)
+        yield ToolResultEvent(result=result, tool_name=tool_name, error=error, exec_id=exec_id)
+

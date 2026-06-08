@@ -1,0 +1,448 @@
+---
+status: active
+category: task
+audience: developer
+last_updated: 2026-06-08
+owner: team
+---
+
+# Agent 可靠性改造任务清单
+
+> **关联方案** → [Agent可靠性三方案对比分析](../../solution/agent/Agent可靠性三方案对比分析.md)
+>
+> **执行策略**："方案 C 为魂，方案 B 为骨，方案 A 为理"融合落地。
+> 方案 C 的领域模型是目标终态，方案 B 的渐进路线是执行手册，方案 A 的第一性原理是决策防偏指南。
+
+## 变更历史
+
+| 日期 | 版本 | 变更内容 |
+|------|------|---------|
+| 2026-06-08 | v1.0 | 初版：四阶段任务分解，含验收标准 |
+
+---
+
+## 整体进度
+
+```
+阶段零（止血）     ░░░░░░░░░░  未开始
+阶段一（工具事务） ░░░░░░░░░░  未开始
+阶段二（事实体系） ░░░░░░░░░░  未开始
+阶段三（推理约束） ░░░░░░░░░░  未开始
+阶段四（评测闭环） ░░░░░░░░░░  未开始
+```
+
+---
+
+## 阶段零：止血（预估 1 周，立即可开始）
+
+> **目标**：修复现有代码中已确认的高危缺陷，零架构风险，全部在单文件内完成，1 周内可合并上线。
+>
+> **依据**：方案 B Phase 1 P0 项。
+
+### T0-1 `ToolResultEnvelope` 替换 `str(tool_result)` 【P0】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/react_engine.py`
+- **问题**：`work_messages.append({"content": str(tool_result)})` 将工具返回字典强制转字符串，破坏结构信息，LLM 在下一轮推理时需"猜测"结果语义
+- **任务**：
+  - [ ] 新增 `ToolResultEnvelope` 数据类（`tool_name`、`exec_id`、`success`、`exit_code`、`stdout`、`stderr`、`exit_code_meaning`、`truncated`、`interpretation`、`suggested_next_action`）
+  - [ ] 实现 `to_llm_message()` 序列化方法，输出带 emoji 标注、结构清晰的 LLM 友好消息
+  - [ ] 替换 `react_engine.py` 中所有 `str(tool_result)` 调用点
+- **验收**：工具调用成功/超时/失败三种场景下，LLM 收到的消息格式正确，无歧义
+
+---
+
+### T0-2 智能截断替换固定截断 【P0】
+
+- **文件**：`backend/agent-service/app/adapters/executors/executor.py`、`backend/agent-service/app/adapters/agents/htp/kbd_differential.py`
+- **问题**：`STDOUT_MAX_CHARS = 4000` 固定截断，可能截掉末尾最关键的报错信息
+- **任务**：
+  - [ ] 实现 `smart_truncate(output, max_chars)` 函数：
+    - 优先保留含 `error/fail/exception/critical/fatal/panic` 的行
+    - 保留首尾各 20% 作为上下文
+    - 中间部分压缩并注明截断说明
+  - [ ] 替换 `executor.py` 的 `STDOUT_MAX_CHARS` 截断逻辑
+  - [ ] 替换 `kbd_differential.py` 的 `truncated_output = actual_output[:2000]` 截断逻辑
+- **验收**：超长输出场景下，错误行（含 error 关键字）被优先保留在截断结果中
+
+---
+
+### T0-3 exit_code 语义分类 【P0】
+
+- **文件**：`backend/agent-service/app/adapters/executors/executor.py`
+- **问题**：超时和真实失败都返回 `exit_code=-1`，LLM 无法区分，可能做出错误决策
+- **任务**：
+  - [ ] 定义 `ExitCodeMeaning` 枚举：`success / timeout / permission_denied / command_not_found / connection_refused / unknown_error`
+  - [ ] 修改超时返回路径：`exit_code=-1` 同时附加 `exit_code_meaning="timeout"` 字段
+  - [ ] 修改 `ToolResultEnvelope.interpretation` 自动生成逻辑：超时时给出"命令超时，可能节点负载过高或 terminal_bridge 未连接"的提示
+- **验收**：超时场景下 LLM 收到的错误描述明确包含"timeout"语义，不与命令本身失败混淆
+
+---
+
+### T0-4 证据锚定 Prompt 规则注入 【P1】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/investigation_agent.py`（或对应 Prompt DB 记录）
+- **问题**：LLM 当前无约束，可在没有工具证据的情况下直接给出根因结论
+- **任务**：
+  - [ ] 在所有 Agent 的 system prompt 中追加「证据锚定规则」（5 条强制规则，含正确/错误示例）：
+    - 禁止凭空声明，每个结论必须明确引用工具输出
+    - 不确定时必须声明不确定性
+    - 禁止跳步推理
+    - 区分观察与结论
+    - 生成结论前幻觉自查
+  - [ ] 在 `fallback_mode` 中追加「降级模式警告」：所有建议标注"需要执行验证"，禁止给出"已确认根因"
+- **验收**：新 Prompt 规则在 5 个典型幻觉测试用例下，无证据声明率下降 ≥ 50%
+
+---
+
+### T0-5 `ToolCallValidator` 参数前置校验 【P1】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/react_engine.py`
+- **问题**：LLM 生成的工具参数在执行前无格式/语义校验，低质量调用直接到达执行器
+- **任务**：
+  - [ ] 实现 `ToolCallValidator`：JSON Schema 校验 + IP 格式正则 + 必填项检查
+  - [ ] 在 `react_engine._execute_tool_call()` 前插入校验步骤
+  - [ ] 校验失败时向 LLM 返回结构化错误消息（含错误路径和修正提示），不抛出系统异常
+- **验收**：传入非法 IP 格式、缺少必填参数时，LLM 收到错误提示并在下一轮自动修正，不导致执行器抛错
+
+---
+
+**阶段零验收标准**
+
+- [ ] 所有 P0 任务合并上线
+- [ ] 工具结果语义丢失问题消除（Code Review 验证）
+- [ ] 关键错误信息截断问题消除（日志验证）
+- [ ] exit_code 超时与失败可区分（手动测试验证）
+
+---
+
+## 阶段一：工具事务化地基（预估第 2-4 周）
+
+> **目标**：让工具调用从"一次临时动作"升级为"平台管理的可恢复事务"。
+>
+> **依据**：方案 C Tool Plane 最小子集 + 方案 C §阶段一验收标准。
+
+### T1-1 新增 `tool_execution` 数据模型 【P1】
+
+- **文件**：`backend/shared/models/`（新增）、`database/` 迁移脚本
+- **任务**：
+  - [ ] 定义 `ToolExecution` SQLAlchemy 模型，核心字段：
+    ```
+    exec_id (UUID PK)
+    case_id, conversation_id
+    tool_name, input_hash, input_snapshot (JSONB)
+    status (proposed/schema_validated/policy_checked/authorized/leased/executing/observed/verified/committed/failed/cancelled)
+    risk_level, authorization_id
+    result_snapshot (JSONB), error
+    idempotency_key, trace_id
+    created_at, updated_at
+    ```
+  - [ ] 新增 `authorization` 模型：`auth_id`、`exec_id`、`actor`、`decision`、`tool_input_hash`、`expires_at`
+  - [ ] 编写数据库迁移脚本（Atlas migration 或 Alembic）
+  - [ ] 更新 `backend/shared/models/__init__.py`，导出新模型
+- **验收**：迁移脚本可在本地环境无报错执行
+
+---
+
+### T1-2 工具确认请求携带 `exec_id` 【P1】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/react_engine.py`、`backend/conversation-service/`
+- **问题**：现有 `tool_confirm` 请求仅携带 session_id，无法唯一标识一次工具执行
+- **任务**：
+  - [ ] `AgentInteractiveRequest`（`tool_confirm` 类型）增加 `exec_id`、`input_hash`、`expires_at` 字段
+  - [ ] `ConfirmService.wait_for_confirm()` 改为按 `exec_id` 级别隔离 Redis key（`confirm:{exec_id}`）
+  - [ ] 前端 `tool_confirm` 响应携带 `exec_id` 回传
+  - [ ] conversation-service `submit_interactive_response` 路由验证 `exec_id` + `input_hash` 一致性
+- **验收**：同一 session 并发两个工具确认请求，两者互不干扰，各自正确解除阻塞
+
+---
+
+### T1-3 自动执行从前端开关升级为服务端策略 【P1】
+
+- **文件**：`backend/agent-service/app/services/` 或新增 `policy_service.py`
+- **问题**：前端 aggressive 模式可代替用户点击确认高风险工具，存在安全漏洞
+- **任务**：
+  - [ ] 新增 `PolicyService.evaluate(tool_name, risk_level, user_id, session_id)` 方法
+  - [ ] 自动执行仅允许满足**所有**条件的工具：
+    - `risk_level <= 1`
+    - `side_effect = none`
+    - input schema 校验通过
+    - 服务端策略允许当前用户/工单
+    - 未触发熔断（`CircuitBreaker` 未开启）
+  - [ ] `risk_level = 2` 的工具无论前端模式如何，必须进入服务端策略评估并记录授权
+  - [ ] 前端自动执行模式（Off/Safe-only/Aggressive）转为"用户偏好提示"，实际执行由后端决定
+- **验收**：前端设为 Aggressive，发送 `risk_level=2` 的工具确认，后端仍要求人工授权并记录 `authorization` 记录
+
+---
+
+### T1-4 工具执行结果落库 【P2】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/react_engine.py`、工具执行器
+- **任务**：
+  - [ ] 工具执行完成后，将 `result_snapshot` 写入 `tool_execution` 表，更新 `status=committed/failed`
+  - [ ] 执行失败时记录 `error` 字段（含 exit_code 和 stderr 摘要）
+  - [ ] 实现 `ToolRetryPolicy`：区分可重试错误（超时）和不可重试错误（命令语法错误/权限拒绝），最大重试 2 次，指数退避
+  - [ ] 实现 `ToolCircuitBreaker`：单节点 3 次连续失败后熔断 60 秒，半开后自动探测恢复
+- **验收**：
+  - [ ] 刷新页面后，pending/running 状态的工具执行可从 `tool_execution` 表恢复显示
+  - [ ] 每次工具执行可通过 `trace_id + exec_id` 查询全链路记录
+  - [ ] 节点连续失败 3 次后，后续调用该节点的请求直接返回熔断错误，不再等待 30 秒超时
+
+---
+
+**阶段一验收标准**
+
+- [ ] 刷新页面后 pending 工具状态可恢复
+- [ ] 同一 session 并发两个确认不会串线
+- [ ] `risk_level >= 2` 的命令不可被自动执行
+- [ ] 每次工具执行可通过 `trace_id + exec_id` 查全链路
+
+---
+
+## 阶段二：轻量事实体系（预估第 5-8 周）
+
+> **目标**：解决信息不准确和 Prompt 噪声问题。从"文本上下文驱动"转为"事实证据驱动"的第一步。
+>
+> **依据**：方案 C Evidence Plane 最小子集 + 方案 B 的 `InformationPacket`/`StaleDataGuard` 作为轻量替代。
+
+### T2-1 定义 `InformationPacket` 数据结构 【P1】
+
+- **文件**：`backend/agent-service/app/models/` 或 `backend/shared/models/`（新增 `information.py`）
+- **任务**：
+  - [ ] 定义 `InformationPacket` 数据类：
+    ```python
+    value: Any
+    source: str   # user_input / tool_exec / kb_search / llm_inference / env_inject
+    freshness_ts: float
+    confidence: float   # 0.0-1.0
+    raw_evidence: str | None
+    verified: bool
+    ```
+  - [ ] 定义 `StaleDataGuard`：各类数据的过期阈值（进程状态 60s、VM 状态 30s 等）
+  - [ ] 定义 `EvidenceBundle`：按目的（`intent_classification / hypothesis_verification / remediation`）检索事实的集合
+- **验收**：数据结构定义完整，单元测试覆盖 `StaleDataGuard.is_stale()` 各阈值边界
+
+---
+
+### T2-2 环境采集结果写入轻量 Fact Store（Redis） 【P1】
+
+- **文件**：`backend/agent-service/`（环境数据采集流程）
+- **任务**：
+  - [ ] 环境采集完成后，将结果封装为 `InformationPacket` 存入 Redis（key：`fact:{session_id}:{fact_type}`，TTL 按 `StaleDataGuard` 阈值设定）
+  - [ ] 存储时同时保留 `raw_ref`（原始数据）和 `normalized_value`（标准化后的数据）
+  - [ ] 多来源冲突时，不覆盖旧值，而是追加 `conflict` 标记，并在 EvidenceBundle 中显式标注
+- **验收**：
+  - [ ] 每个自动注入的变量可以追踪到事实来源（`source` + `freshness_ts`）
+  - [ ] 同一字段多来源冲突时，两个值均保留并带 `conflict=true` 标记，不静默覆盖
+
+---
+
+### T2-3 S0 分类 Prompt 改为消费 EvidenceBundle 【P1】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/investigation_agent.py`（S0 阶段）
+- **问题**：S0 Prompt 直接注入大段原始 `env_context` 字典，噪声多，LLM 注意力分散
+- **任务**：
+  - [ ] 实现 `EvidenceBuilder.build_for_intent_classification(session_id)` 方法，从 Fact Store 检索 S0 分类需要的核心事实（工单描述、环境基本信息、历史故障标签）
+  - [ ] 替换 S0 Prompt 的上下文注入：从原始字典拼接改为 EvidenceBundle 结构化注入
+  - [ ] Prompt 中对过期事实（`freshness=stale`）和冲突事实（`conflict=true`）显式标注
+- **验收**：
+  - [ ] S0 Prompt 长度减少 ≥ 30%（对比修改前）
+  - [ ] S0 Prompt 中包含事实来源标注（用例：环境数据显示 `[采集于 2 分钟前，来源: 工具执行]`）
+
+---
+
+### T2-4 `InformationPacket` 置信度检查与用户澄清请求 【P2】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/investigation_agent.py`（诊断开始前）
+- **任务**：
+  - [ ] 实现 `_check_information_quality(session_id)` 方法：
+    - 检查 env_context 是否为空或不完整
+    - 检查工单创建时间是否超过 24 小时（可能过期）
+    - 检查关键事实置信度是否低于阈值（`CONFIDENCE_THRESHOLD = 0.75`）
+  - [ ] 低置信度时生成 `AgentInteractiveRequest`（`kind=information_clarification`），向用户寻求确认，不基于低质量信息继续推理
+- **验收**：env_context 为空时，Agent 发起信息确认请求而非直接开始推理
+
+---
+
+**阶段二验收标准**
+
+- [ ] 每个自动注入变量可以追踪到事实来源
+- [ ] 同一字段多来源冲突不会被静默覆盖
+- [ ] S0 Prompt 长度受控且包含关键事实来源标注
+- [ ] 环境数据缺失时触发用户澄清而非直接推理
+
+---
+
+## 阶段三：结构化推理与反幻觉（预估第 9-12 周）
+
+> **目标**：让模型输出可校验，从"模型直接回答"变成"模型提出可验证假设"。
+>
+> **依据**：方案 C Reasoning Plane + 方案 A 滑动窗口 + 方案 B HallucinationDetector + CoT 外显。
+
+### T3-1 SOP 决策树滑动窗口上下文裁剪 【P2】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/`（SOP 相关模块）
+- **问题**：全量注入大型 SOP Markdown 造成"Attention Lost in the Middle"效应，Token 消耗巨大
+- **任务**：
+  - [ ] 实现 SOP 节点局部注入：Agent 处于决策树节点 Nk 时，仅将当前节点诊断指南 + 子节点分支前置条件注入 Prompt（目标窗口 ≤ 500 token）
+  - [ ] 实现 `get_sop_node(node_id)` 工具：返回指定节点的核心诊断指南
+  - [ ] 实现 `sop_advance(node_id, direction, reasoning)` 工具：推进决策树节点并记录状态转移证据
+  - [ ] 将 SOP 导航逻辑从硬编码双轨路由迁移为 ReactEngine 动态工具注入
+- **验收**：
+  - [ ] 单次 SOP 相关推理的 Token 消耗 ≤ 修改前的 10%（滑动窗口 vs 全量注入）
+  - [ ] LLM 通过调用 `get_sop_node` 而非从全文推断来获取诊断指引
+
+---
+
+### T3-2 关键节点输出 Schema 化 【P2】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/investigation_agent.py`、各 Agent 模块
+- **任务**：
+  - [ ] 定义 `ReasoningOutput` 结构化输出 schema：
+    ```
+    summary, hypotheses[], evidence_needed[], tool_requests[], unsupported_claims[], user_questions[], next_state
+    ```
+  - [ ] 定义 `Hypothesis` schema：`hypothesis_id`、`statement`、`confidence`、`supporting_fact_ids[]`、`contradicting_fact_ids[]`、`verification_plan[]`
+  - [ ] S3 假设生成阶段输出改为 `ReasoningOutput` 结构化 JSON
+  - [ ] S4 验证阶段输出改为 `ClaimVerification` 结构化 JSON
+  - [ ] Schema 解析失败时的降级策略：降级到纯文本响应 + 禁止执行 `risk_level >= 2` 的写操作
+- **验收**：S3/S4 阶段 LLM 输出可被 Pydantic 解析，schema 解析成功率 ≥ 95%
+
+---
+
+### T3-3 CoT 强制外显 【P2】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/investigation_agent.py`（system prompt）
+- **任务**：
+  - [ ] 在 Investigation Agent system prompt 中加入 CoT 强制模板：要求 LLM 在输出结论前先按格式整理推理（已收集证据、假设支撑/反对、置信度评估、下一步行动）
+  - [ ] `<reasoning>` 标签内容在前端以折叠方式展示（非主要内容，可选查看）
+- **验收**：LLM 输出包含 `<reasoning>` 结构化推理过程的比例 ≥ 90%
+
+---
+
+### T3-4 轻量版 `HallucinationDetector` 规则引擎 【P2】
+
+- **文件**：`backend/agent-service/app/adapters/agents/htp/`（新增 `hallucination_detector.py`）
+- **注意**：**不引入第二个 LLM 调用**（Claim Verifier 先用规则引擎实现，避免元递归风险）
+- **任务**：
+  - [ ] 实现 `HallucinationDetector`，检测规则：
+    - 检查 LLM 输出是否引用了未执行的工具（`phantom_tool_reference`）
+    - 检查是否包含强事实声明但缺乏不确定性修饰词（`overconfident_claim`）
+    - 检查数字事实（百分比、GB、ms）是否在工具输出中可找到来源（`ungrounded_number`）
+  - [ ] 检测到高风险幻觉时，在输出末尾追加系统提示标注（不删除内容，但标注"待验证"）
+  - [ ] 最终诊断报告生成前，运行 `HallucinationDetector`，高风险结论需要 Agent 重新生成
+- **验收**：
+  - [ ] 幻觉检测器在 10 个构造的幻觉测试用例中，识别率 ≥ 70%
+  - [ ] 检测耗时 < 100ms（纯规则引擎，无 LLM 调用）
+
+---
+
+### T3-5 验证节点强制绑定（"校验优先"闭环） 【P3】
+
+- **文件**：SOP 定义层 + `react_engine.py`
+- **任务**：
+  - [ ] 在 SOP 结构中，所有修复行动节点（Remediation）必须强绑定验证节点（Verification）
+  - [ ] `react_engine` 检测 Agent 宣称"修复完成"时，强制要求先调用对应的验证工具（如 `check_service_status`）
+  - [ ] 跳过验证直接宣布 Closure 的行为被拦截，向 LLM 返回"你还未执行验证步骤"的系统提示
+- **验收**：Agent 执行服务重启后，在未调用状态检查工具前，无法生成"已恢复"的最终报告
+
+---
+
+**阶段三验收标准**
+
+- [ ] SOP 推理 Token 消耗降低 ≥ 90%
+- [ ] S3/S4 结构化输出 schema 解析成功率 ≥ 95%
+- [ ] 幻觉检测器识别率 ≥ 70%（构造测试集）
+- [ ] 无证据根因无法进入最终报告（Claim Verifier 规则引擎拦截）
+- [ ] 修复行动后必须执行验证，不可跳过
+
+---
+
+## 阶段四：评测闭环（预估第 13-16 周）
+
+> **目标**：把可靠性从主观体验变成可量化指标，建立持续改进机制。
+>
+> **依据**：方案 C Observability Plane + 方案 B DiagnosisQualityEvaluator。
+
+### T4-1 黄金工单评测集 【P2】
+
+- **文件**：`evaluation/`（新建目录）
+- **任务**：
+  - [ ] 建立黄金工单评测集（初始目标：30 个典型 HCI 故障场景，覆盖磁盘、网络、VM、存储各类别）
+  - [ ] 每条评测集记录包含：用户原始描述、环境事实、期望分类、期望工具调用序列、允许的根因集合、禁止出现的幻觉结论、期望最终报告结构
+  - [ ] 实现离线 `AgentReplayRunner`：加载历史工单，模拟 Agent 执行，记录执行轨迹
+- **验收**：评测集覆盖 ≥ 30 个典型场景，Replay Runner 可在 CI 环境无 GUI 运行
+
+---
+
+### T4-2 核心可靠性指标接入 Prometheus + Grafana 【P2】
+
+- **文件**：`backend/agent-service/`（新增 `metrics.py`）、`deploy/` 可观测性配置
+- **任务**：
+  - [ ] 实现 `AgentReliabilityMetrics`，暴露以下 Prometheus 指标：
+    - `agent_tool_call_success_rate`（工具执行成功率）
+    - `agent_tool_timeout_rate`（超时率）
+    - `agent_hallucination_detected_total`（幻觉检测计数，按 severity 分标签）
+    - `agent_information_confidence_avg`（平均信息置信度）
+    - `agent_unsupported_claim_rate`（无证据结论率，来自离线评测）
+    - `agent_mean_steps_to_resolution`（平均解决步数）
+  - [ ] 在 Grafana 新增"Agent 可靠性"看板，包含上述指标的时序图和告警规则
+- **验收**：Grafana 看板可显示最近 24h 的工具成功率和幻觉检测趋势图
+
+---
+
+### T4-3 Fact Store 从 Redis 迁移到 PostgreSQL 【P3】
+
+- **文件**：`backend/shared/models/`、`database/` 迁移脚本
+- **前提**：阶段二的 Redis Fact Store 已稳定运行 ≥ 2 周
+- **任务**：
+  - [ ] 新增 `fact` 表（见方案 C §12.1 数据模型）
+  - [ ] 新增 `claim_evidence_link` 表（见方案 C §12.3 数据模型）
+  - [ ] 迁移 EvidenceBuilder 的数据源从 Redis 改为 PostgreSQL
+  - [ ] 保留 Redis 作为热数据缓存（TTL 5 分钟），PostgreSQL 作为持久化存储
+- **验收**：工单关闭后 30 天内，仍可通过 `fact_id` 追溯任一诊断结论的证据来源
+
+---
+
+### T4-4 CI 回归评测门禁 【P3】
+
+- **文件**：`.github/workflows/`
+- **任务**：
+  - [ ] 新增 CI job `agent-reliability-regression`：任何修改 `react_engine.py`、工具 schema、system prompt 的 PR，自动触发 Replay Runner 跑黄金工单评测集
+  - [ ] 对比指标：幻觉率、工具成功率、路径偏差率，任一指标劣化 ≥ 10% 则阻断合并
+- **验收**：CI job 可在 10 分钟内完成 30 个测试用例回归，结果报告在 PR 评论中展示
+
+---
+
+**阶段四验收标准**
+
+- [ ] 黄金工单评测集 ≥ 30 条，覆盖主要故障类别
+- [ ] Grafana 看板展示实时工具成功率、幻觉检测趋势
+- [ ] CI 回归评测可拦截明显降低可靠性的变更
+- [ ] 每次 Agent 改动能看到幻觉率、工具成功率、平均解决步数变化
+
+---
+
+## 跨阶段关联约束
+
+| 任务 | 前置依赖 | 说明 |
+|------|---------|------|
+| T1-4 工具执行结果落库 | T0-1 ToolResultEnvelope | 需要结构化结果才能落库 |
+| T2-2 事实写入 Redis | T0-1 ToolResultEnvelope | 工具输出成为 Fact 的 raw_ref |
+| T2-3 EvidenceBundle 注入 S0 | T2-1 InformationPacket 定义 | 数据结构必须先定义 |
+| T3-1 SOP 滑动窗口 | T1-2 exec_id 确认机制 | SOP 导航工具调用需要可追踪的 exec_id |
+| T3-2 输出 Schema 化 | T2-1 InformationPacket | Hypothesis 的 `supporting_fact_ids` 需引用 Fact |
+| T3-4 HallucinationDetector | T2-2 事实写入 | 需要 tool_results 用于数字事实来源核查 |
+| T4-3 Fact Store 持久化 | T2-2 Redis Fact Store 稳定运行 2 周 | 先验证 Redis 方案，再迁移 PG |
+| T4-4 CI 回归门禁 | T4-1 黄金工单评测集 | 需要评测集才能运行回归 |
+
+---
+
+## 文档关联
+
+- **方案分析** → [Agent可靠性三方案对比分析](../../solution/agent/Agent可靠性三方案对比分析.md)
+- **三份原始方案草稿**：
+  - [agent_problems_solution.md](../../solution/agent/agent_problems_solution.md)（方案 A）
+  - [agent_reliability_solution.md](../../solution/agent/agent_reliability_solution.md)（方案 B）
+  - [排障Agent可靠性整体解决方案.md](../../solution/agent/排障Agent可靠性整体解决方案.md)（方案 C）
+- **现行 Agent 设计** → [agent设计.md](../../solution/agent/agent设计.md)
+- **工具设计** → [agent工具设计.md](../../solution/agent/agent工具设计.md)

@@ -23,6 +23,7 @@ import string
 import time
 import uuid
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from shared.database.redis import RedisManager
@@ -30,14 +31,27 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.utils.internal_http import InternalHTTPClient
 
+from app.core.utils import smart_truncate
 from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_policy
 
 logger = get_logger("bridge-relay-executor")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ExecResult：执行结果数据结构
+# ExitCodeMeaning 和 ExecResult：执行结果数据结构与退出码定义
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class ExitCodeMeaning(StrEnum):
+    """
+    命令执行退出码语义定义
+    """
+    SUCCESS = "success"
+    TIMEOUT = "timeout"
+    PERMISSION_DENIED = "permission_denied"
+    COMMAND_NOT_FOUND = "command_not_found"
+    CONNECTION_REFUSED = "connection_refused"
+    UNKNOWN_ERROR = "unknown_error"
 
 
 @dataclass
@@ -48,7 +62,7 @@ class ExecResult:
     设计依据：docs/solution/agent/agent工具设计.md §九.2
 
     字段说明：
-      stdout: 标准输出（截断 ≤ 4000 chars）
+      stdout: 标准输出（智能截断 ≤ 4000 chars）
       stderr: 错误输出（截断 ≤ 1000 chars）
       exit_code: 退出码（0=成功，-1=超时/净化拒绝）
       command: 实际执行的命令（净化后）
@@ -56,6 +70,7 @@ class ExecResult:
       duration_ms: 执行耗时（毫秒）
       truncated: stdout 是否被截断
       risk_level: 本次执行的风险等级（RiskClassifier 判定值）
+      exit_code_meaning: 退出码的语义分类
     """
 
     stdout: str
@@ -66,6 +81,8 @@ class ExecResult:
     duration_ms: int
     truncated: bool
     risk_level: int
+    exit_code_meaning: str | None = None
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -458,6 +475,7 @@ class BridgeRelayExecutor:
                     duration_ms=int((time.time() - start_time) * 1000),
                     truncated=False,
                     risk_level=runtime_risk,
+                    exit_code_meaning=ExitCodeMeaning.TIMEOUT,
                 )
 
             # 解析结果 JSON
@@ -467,10 +485,23 @@ class BridgeRelayExecutor:
             output = result_data.get("output", "")
             exit_code = result_data.get("exit_code", 0)
 
-            # 7. 截断输出
+            # 7. 智能截断输出
             truncated = len(output) > self.STDOUT_MAX_CHARS
-            stdout = output[: self.STDOUT_MAX_CHARS] if truncated else output
+            stdout = smart_truncate(output, self.STDOUT_MAX_CHARS) if truncated else output
             stderr = ""
+
+            # 退出码语义判定
+            meaning = ExitCodeMeaning.SUCCESS
+            if exit_code != 0:
+                meaning = ExitCodeMeaning.UNKNOWN_ERROR
+                # 尝试从 stdout / stderr 识别更具体的语义
+                check_text = output.lower()
+                if exit_code == 127 or "command not found" in check_text:
+                    meaning = ExitCodeMeaning.COMMAND_NOT_FOUND
+                elif exit_code == 126 or "permission denied" in check_text:
+                    meaning = ExitCodeMeaning.PERMISSION_DENIED
+                elif "connection refused" in check_text:
+                    meaning = ExitCodeMeaning.CONNECTION_REFUSED
 
             duration_ms = int((time.time() - start_time) * 1000)
 
@@ -497,6 +528,7 @@ class BridgeRelayExecutor:
                 duration_ms=duration_ms,
                 truncated=truncated,
                 risk_level=runtime_risk,
+                exit_code_meaning=meaning,
             )
 
         except Exception as e:
@@ -516,6 +548,7 @@ class BridgeRelayExecutor:
                 duration_ms=int((time.time() - start_time) * 1000),
                 truncated=False,
                 risk_level=runtime_risk,
+                exit_code_meaning=ExitCodeMeaning.UNKNOWN_ERROR,
             )
 
 

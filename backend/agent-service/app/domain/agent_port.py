@@ -85,6 +85,8 @@ class ToolResultEvent:
     result: Any  # 工具执行的原始结果
     tool_name: str = ""  # 工具名称（用于日志）
     error: str | None = None  # 错误信息（如有）
+    exec_id: str = ""  # 工具执行的唯一标识 ID
+
 
 
 # AgentEvent = 大脑可以产出的所有事件类型（用于 IDE 类型提示）
