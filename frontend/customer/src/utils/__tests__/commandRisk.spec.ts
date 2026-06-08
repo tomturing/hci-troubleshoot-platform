@@ -67,6 +67,12 @@ describe('inferRiskLevel', () => {
     it('acli --formatter json vm', () => {
       expect(inferRiskLevel('acli --formatter json vm')).toBe('readonly')
     })
+    it('acli storage asan disk list', () => {
+      expect(inferRiskLevel('acli storage asan disk list')).toBe('readonly')
+    })
+    it('acli storage asan volume list', () => {
+      expect(inferRiskLevel('acli storage asan volume list')).toBe('readonly')
+    })
     it('cat 文件查看', () => {
       expect(inferRiskLevel('cat /etc/passwd')).toBe('readonly')
     })

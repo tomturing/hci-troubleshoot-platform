@@ -157,8 +157,8 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 
 【幂等性约束 - 重要】
 已完成节点：{completed_nodes_str}
-- 已在 completed_steps 中的节点，不重复执行写操作工具（如 acli_service_restart）
-- 只读工具（如 acli_vm_list、acli_system_top）可正常调用
+- 已在 completed_steps 中的节点，不重复执行写操作命令（如 acli_exec 执行 restart/start/stop 等有副作用的命令）
+- 只读命令（如 acli_exec 执行 acli --formatter json vm list 或 acli --formatter json platform info get 等只读命令）可正常调用
 - 若需要重新执行写操作，请先向用户说明原因并获取明确授权
 
 【注意事项】

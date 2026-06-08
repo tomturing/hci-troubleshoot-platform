@@ -149,9 +149,15 @@ INSERT INTO tool_definition (
     'acli',
     '在 HCI 节点执行 acli 命令（深圳桑福 HCI 平台专有 CLI，命令格式：acli [全局参数] {命名空间}+ {命令} [命令参数]）。
 
+可用全局参数：
+  --formatter          用于命令的格式化参数。枚举值：xml、csv、keyvalue、json（注：必须紧跟 acli 后面，例如 acli --formatter json vm list）
+  --cluster            用于遍历集群主机执行 acli 命令
+  --timeout            用于设置命令的超时时间（秒）
+  --force              强制模式：忽略交互确认，直接执行操作
+
 可用命名空间：
   vm        虚拟机：list / config get / status get / start / shutdown / disk list/check 等
-  storage   存储：asan volume list / disk list / fc host list 等
+  storage   存储：asan volume list / asan disk list / fc host list 等（注：不可省略 asan 等二级命名空间，例如 storage asan disk list 是正确的，而 storage disk list 是错误的）
   network   网络：nic list/up/down / bond list / anet vrouter list 等
   system    系统：top / free / df / ps / netstat / ping / iostat 等
   service   服务：<subsystem> <service> start/stop/restart/status
@@ -162,18 +168,21 @@ INSERT INTO tool_definition (
   hardware  硬件：cpu info / gpu config list
   plugins   诊断插件：vm_start / vm_suspend / netdoctor / asys / performance_tools
 
-使用约定：
+使用约定与纠错逻辑：
   1. 不确定命令时，先执行 acli {namespace} --help 探索
   2. 不确定参数时，先执行 acli {namespace} {cmd} --help
-  3. 优先使用 --formatter json 获得结构化输出
-  4. 集群级操作使用 --cluster 参数
-  5. 根据执行结果（成功/错误）判断下一步（ReAct 自探索）',
+  3. 优先在 acli 后面紧跟全局参数 --formatter json 获得结构化输出。格式：acli --formatter json <命名空间> <命令>
+     注意：全局参数（如 --formatter json）绝对不能放在子命令的末尾（例如：acli vm list --formatter json 是错误的，会报无效参数错误；正确为 acli --formatter json vm list）。
+  4. 纠错技巧：若执行 acli 命令报错 “未知的命令或者命名空间”（例如 acli storage disk list），这说明缺少了某个层级的命名空间或命令拼写错误。此时，可以通过减少末尾的一个参数/子命令（例如缩短为 acli storage）去执行，即可获取上一级命名空间的帮助信息以及该级别下所有可用的子命名空间与命令列表。
+  5. 兜底方案：通过执行 acli acli command list 命令可以获取当前 acli 支持的全部可用命令列表。不在该列表中的命令即代表不支持。
+  6. 集群级操作使用 --cluster 参数。
+  7. 根据执行结果（成功/错误）判断下一步（ReAct 自探索）',
     '{
         "type": "object",
         "properties": {
             "command": {
                 "type": "string",
-                "description": "完整 acli 命令，必须以 ''acli'' 开头，例如 ''acli vm list --formatter json''"
+                "description": "完整 acli 命令，必须以 ''acli'' 开头，例如 ''acli --formatter json vm list''"
             },
             "node_ip": {
                 "type": "string",

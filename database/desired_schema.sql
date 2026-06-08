@@ -412,7 +412,7 @@ COMMENT ON COLUMN message.conversation_id IS '关联会话，ON DELETE CASCADE';
 COMMENT ON COLUMN message.case_id IS '冗余字段，复制自 conversation.case_id，用于无 JOIN 快速查询''某工单的所有消息''';
 COMMENT ON COLUMN message."role" IS '消息角色枚举：user（用户消息）/ assistant（AI 回复）/ system（系统提示）/ command（命令建议）';
 COMMENT ON COLUMN message.content IS '消息内容，纯文本或 Markdown 格式';
-COMMENT ON COLUMN message.command IS 'AI 建议执行的命令（如 acli vm.start --vm-id xxx），仅 role=command 时填写';
+COMMENT ON COLUMN message.command IS 'AI 建议执行的命令（如 acli --formatter json vm start），仅 role=command 时填写';
 COMMENT ON COLUMN message.command_warning IS '命令执行风险提示，仅 role=command 时填写';
 COMMENT ON COLUMN message.metadata IS '扩展字段，如消息来源、token 统计等';
 COMMENT ON COLUMN message.created_at IS '消息创建时间';
@@ -693,7 +693,7 @@ COMMENT ON COLUMN tool_definition.category IS '工具类别（执行路由依据
 COMMENT ON COLUMN tool_definition.description IS '工具功能描述（直接注入 Prompt，LLM 读取后知道何时应该调用此工具）。示例：''在 HCI 节点执行 acli 命令（深圳桑福 HCI 平台专有 CLI）''';
 COMMENT ON COLUMN tool_definition.usage_template IS '调用模板。acli 插件工具示例：''acli plugins vm_start vm_start''；通用工具为 NULL';
 COMMENT ON COLUMN tool_definition.parameters_schema IS '参数 JSON Schema（OpenAI function calling 格式），AI 按此 Schema 输出结构化参数对象，后端按此 Schema 校验后生成实际命令/请求';
-COMMENT ON COLUMN tool_definition.examples IS '调用示例数组。示例：[{"args": {"command": "acli vm list --formatter json", "reason": "检查虚拟机状态"}, "desc": "列出虚拟机"}]';
+COMMENT ON COLUMN tool_definition.examples IS '调用示例数组。示例：[{"args": {"command": "acli --formatter json vm list", "reason": "检查虚拟机状态"}, "desc": "列出虚拟机"}]';
 COMMENT ON COLUMN tool_definition.risk_level IS '风险等级静态默认值：1=只读查询（auto）/ 2=写操作需确认（confirm）/ 3=高危拦截（block）。注意：对 acli_exec/bash_exec 通用工具，运行时 RiskClassifier 根据命令内容动态判定并覆盖此值；对插件诊断/SCP/SOP 工具，此值为固定值（不动态覆盖）';
 COMMENT ON COLUMN tool_definition.is_active IS '是否启用；is_active=false 的工具不会注入 Prompt 也不会被 AI 调用，用于临时下线某工具';
 COMMENT ON COLUMN tool_definition.version IS '工具接口版本（对应 CLI 版本或 API path 中的日期版本如 20240725）';

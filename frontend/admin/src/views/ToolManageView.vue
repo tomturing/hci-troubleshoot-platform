@@ -398,7 +398,7 @@ onMounted(() => {
               <el-switch v-model="formModel.is_active" active-text="启用" inactive-text="下线" />
             </el-form-item>
             <el-form-item label="使用命令模板">
-              <el-input v-model="formModel.usage_template" placeholder="例如: acli vm list --formatter json (ACLI 插件可填，其余可为空)" />
+              <el-input v-model="formModel.usage_template" placeholder="例如: acli --formatter json vm list (ACLI 插件可填，其余可为空)" />
             </el-form-item>
           </el-col>
 

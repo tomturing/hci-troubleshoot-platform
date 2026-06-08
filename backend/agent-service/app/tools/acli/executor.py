@@ -318,7 +318,7 @@ class BridgeRelayExecutor:
                     risk_level=risk_level or 3,
                 )
         else:
-            command = args.get("command", "")
+            command = args.get("command", "") or args.get("acli", "")
 
         reason = args.get("reason", "未提供原因")
 
