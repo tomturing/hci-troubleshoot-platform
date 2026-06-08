@@ -148,11 +148,12 @@ def _build_node_response(node: dict) -> dict[str, Any]:
     children = node.get("children", [])
     is_leaf = not children
 
-    # 提取子节点概览（仅 node_id + title），兼容 node_id/id 和 name/title
+    # 提取子节点概览，兼容 node_id/id 和 name/title，同时包含前置条件以便在 Prompt 中外显
     children_summary = [
         {
             "node_id": child.get("node_id") or child.get("id") or "",
             "title": child.get("name") or child.get("title") or "",
+            "prerequisites": child.get("prerequisites", []),
         }
         for child in children
     ]

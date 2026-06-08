@@ -81,6 +81,13 @@ class EvidenceBuilder:
         # 2. 将 env_context 转换为 InformationPacket（旧路径兼容）
         env_packets = self._env_context_to_packets(env_context or {})
 
+        # T2-2: 将新采集的 env_context 写入 FactStore
+        if self._fact_store and env_packets:
+            for packet in env_packets:
+                from app.services.fact_store import _KEY_TO_FACT_TYPE
+                fact_type = _KEY_TO_FACT_TYPE.get(packet.key, "default")
+                await self._fact_store.write(session_id, packet, fact_type=fact_type)
+
         # 3. 合并：FactStore 优先，env_context 补充缺失字段
         all_packets = self._merge_packets(stored_packets, env_packets)
 

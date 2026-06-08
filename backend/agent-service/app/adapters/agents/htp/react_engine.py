@@ -271,12 +271,17 @@ class ReactEngine:
         tool_executor: ToolExecutor,
         confirm_service: ConfirmServiceProtocol | None = None,
         audit_service: AuditServiceProtocol | None = None,
+        fact_store: Any = None,
     ) -> None:
         self._ai_registry = ai_registry
         self._tool_registry = tool_registry
         self._tool_executor = tool_executor
         self._confirm_service = confirm_service
         self._audit = audit_service
+        self._fact_store = fact_store
+        self.schema_validation_failed = False
+        self.has_write_operation = False
+        self.has_verification_after_write = False
 
     async def execute(
         self,
@@ -293,6 +298,7 @@ class ReactEngine:
         extra_tools: list[dict] | None = None,  # T-AGT-22: 动态注入工具（仅本次 execute 有效）
         tool_executor: ToolExecutor | None = None,  # T-AGT-22: 可替换工具执行器（用于 SOP 工具注入上下文）
         sop_mode: bool = False,  # DC-01: SOP 模式，用于注入 SOP 导航工具到 LLM tool list
+        response_schema: type[BaseModel] | None = None,  # T3-2: 结构化输出 Schema
     ) -> AsyncGenerator[AgentEvent, None]:
         """ReAct 循环（Reason → Act → Observe）
 
@@ -308,6 +314,7 @@ class ReactEngine:
             extra_tools: 动态注入的工具列表（OpenAI function calling 格式），仅本次 execute 有效
             tool_executor: 可替换的工具执行器（用于 SOP 工具注入上下文），默认使用实例初始化时的执行器
             sop_mode: 是否是 SOP 模式
+            response_schema: 结构化输出 Schema (Pydantic BaseModel)
 
         Yields:
             AgentStageUpdate: 推理阶段状态（thinking、executing）
@@ -315,17 +322,59 @@ class ReactEngine:
             AgentTextChunk: 最终文本回复
         """
         from shared.clients.ai_client import InvokeResult
+        from pydantic import BaseModel
 
         ai_client = self._ai_registry.get_client(assistant_type)
         if not ai_client:
             yield AgentTextChunk(content="[错误] 未找到 AI 客户端")
             return
 
+        # T3-3: CoT 强制外显说明
+        system_prompt += (
+            "\n\n【思考过程 CoT 强制要求】\n"
+            "在你输出最终回答或调用工具之前，你必须使用 `<reasoning>` 标签包裹你的推理和分析过程。推理过程必须包含：\n"
+            "1. 已收集证据；\n"
+            "2. 假设支撑与反对情况；\n"
+            "3. 置信度评估；\n"
+            "4. 下一步行动说明。\n"
+            "例如：\n"
+            "<reasoning>\n"
+            "1. 已收集证据：...\n"
+            "2. 假设支撑：...\n"
+            "3. 置信度评估：...\n"
+            "4. 下一步行动：...\n"
+            "</reasoning>\n"
+            "请确保 `<reasoning>` 标签放在你输出的最开头。"
+        )
+
+        if response_schema:
+            schema_json = json.dumps(response_schema.model_json_schema(), ensure_ascii=False)
+            system_prompt += (
+                f"\n\n【结构化输出强制要求】\n"
+                f"你必须输出符合以下 JSON Schema 的结构化 JSON：\n"
+                f"{schema_json}\n"
+                f"确保你的最终文本回复必须是合法的 JSON（位于 <reasoning> 之外），不要在 JSON 外包裹任何 markdown 以外的标签或自然语言解释。"
+            )
+
         # 工作消息列表（在循环中动态追加）
         work_messages: list[dict] = [
             {"role": "system", "content": system_prompt},
             *messages,
         ]
+
+        def extract_json(text: str) -> str:
+            text_clean = re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=re.DOTALL | re.IGNORECASE)
+            match = re.search(r"```json\s*(.*?)\s*```", text_clean, re.DOTALL | re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+            match = re.search(r"```\s*(.*?)\s*```", text_clean, re.DOTALL)
+            if match:
+                return match.group(1).strip()
+            start = text_clean.find('{')
+            end = text_clean.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                return text_clean[start:end+1].strip()
+            return text_clean.strip()
 
         # 工具列表（OpenAI function calling 格式）+ 动态注入工具（T-AGT-22）
         tools = self._get_tools_for_llm(extra_tools=extra_tools, sop_mode=sop_mode)
@@ -360,14 +409,155 @@ class ReactEngine:
 
             # ── 终止条件：LLM 给出文字回复 ─────────────────────────────────
             if invoke_result.content is not None:
+                # T3-5: 校验优先强绑定约束检测
+                if self.has_write_operation and not self.has_verification_after_write:
+                    closure_keywords = ["已恢复", "已解决", "修复", "成功", "搞定", "完成", "正常", "恢复正常", "排障结束", "closure", "resolved", "fixed", "success"]
+                    if any(kw in invoke_result.content for kw in closure_keywords):
+                        logger.warning("校验优先闭环拦截: 宣称完成但未验证")
+                        try:
+                            from app.services.metrics import AGENT_VERIFICATION_BLOCKED_TOTAL
+                            AGENT_VERIFICATION_BLOCKED_TOTAL.inc()
+                        except Exception as met_err:
+                            logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
+                        block_msg = {
+                            "role": "system",
+                            "content": (
+                                "【校验优先闭环强制拦截】\n"
+                                "你刚刚执行了修复性写操作命令，但在宣称修复完成/定位结束前，你必须先执行验证状态工具（例如 get_active_alerts，虚拟机状态检查，或者 status 检查等）"
+                                "来验证系统当前状态，证实问题确实已解决。严禁跳过验证直接给出排障报告。"
+                            )
+                        }
+                        work_messages.append(block_msg)
+                        continue
+
+                # T3-4: 运行轻量级幻觉检测器并支持 Re-run 一次
+                from app.services.hallucination_detector import HallucinationDetector
+                detector = HallucinationDetector(tool_registry=self._tool_registry)
+                
+                tool_results_list = []
+                executed_tool_names = []
+                for msg in work_messages:
+                    if msg.get("role") == "tool":
+                        tool_results_list.append(msg.get("content", ""))
+                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                        for tc in msg["tool_calls"]:
+                            fn = tc.get("function", {})
+                            if fn.get("name"):
+                                executed_tool_names.append(fn["name"])
+
+                detection_report = detector.detect(
+                    llm_text=invoke_result.content,
+                    executed_tools=executed_tool_names,
+                    tool_outputs=tool_results_list
+                )
+
+                if detection_report.get("has_hallucination"):
+                    logger.warning("hallucination_detected_before_report", "最终报告生成前检测到幻觉，尝试重新生成一次 (Re-run)...")
+                    try:
+                        temp_messages = work_messages + [
+                            {"role": "assistant", "content": invoke_result.content},
+                            {"role": "system", "content": "【反幻觉自我检查指令】你的上一次回答中包含未实际执行的工具引用，或者未在工具输出中找到数据来源的数值/百分比。请进行一步自我检查，修正这些幻觉，仅引用实际执行过的工具及对应的结果。请重新输出你的回答。"}
+                        ]
+                        new_invoke_result = await ai_client.invoke(
+                            messages=temp_messages,
+                            tools=tools,
+                            user_id=session_id,
+                            case_id=case_id,
+                        )
+                        if new_invoke_result.content is not None:
+                            logger.info("rerun_success", "Re-run 重新生成成功")
+                            invoke_result = new_invoke_result
+                    except Exception as re_exc:
+                        logger.warning("rerun_failed", f"Re-run 失败: {re_exc}")
+
+                # T3-2: 校验 Schema
+                if response_schema:
+                    cleaned_json = extract_json(invoke_result.content)
+                    try:
+                        parsed = response_schema.model_validate_json(cleaned_json)
+                        logger.info("schema_validation_success", f"结构化输出校验成功: schema={response_schema.__name__}")
+                        try:
+                            from app.services.metrics import AGENT_SCHEMA_VALIDATION_TOTAL
+                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(schema_name=response_schema.__name__, status="success").inc()
+                        except Exception as met_err:
+                            logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
+                        if response_schema.__name__ == "ClaimVerification" and self._fact_store:
+                            await self._fact_store.write_claim_verification(session_id, parsed)
+                    except Exception as e:
+                        logger.warning("schema_validation_failed", f"结构化输出校验失败: schema={response_schema.__name__}, error={e}, raw={invoke_result.content}")
+                        self.schema_validation_failed = True
+                        try:
+                            from app.services.metrics import AGENT_SCHEMA_VALIDATION_TOTAL
+                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(schema_name=response_schema.__name__, status="failed").inc()
+                        except Exception as met_err:
+                            logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
+
                 # 流式输出最终文字回复
+                full_stream_text = ""
                 async for chunk in ai_client.chat_completion_stream(
                     messages=work_messages,
                     user_id=session_id,
                     case_id=case_id,
                 ):
                     if chunk:
+                        full_stream_text += chunk
                         yield AgentTextChunk(content=chunk)
+
+                # 流式输出后校验 (如果是重新生成文本的话)
+                if response_schema and not self.schema_validation_failed:
+                    cleaned_json = extract_json(full_stream_text)
+                    try:
+                        parsed = response_schema.model_validate_json(cleaned_json)
+                        try:
+                            from app.services.metrics import AGENT_SCHEMA_VALIDATION_TOTAL
+                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(schema_name=response_schema.__name__, status="success").inc()
+                        except Exception as met_err:
+                            logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
+                        if response_schema.__name__ == "ClaimVerification" and self._fact_store:
+                            await self._fact_store.write_claim_verification(session_id, parsed)
+                    except Exception as e:
+                        logger.warning("stream_schema_validation_failed", f"流式结构化输出校验失败: {e}, raw={full_stream_text}")
+                        self.schema_validation_failed = True
+                        try:
+                            from app.services.metrics import AGENT_SCHEMA_VALIDATION_TOTAL
+                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(schema_name=response_schema.__name__, status="failed").inc()
+                        except Exception as met_err:
+                            logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
+
+                # T3-4: 运行轻量级幻觉检测器
+                from app.services.hallucination_detector import HallucinationDetector
+                detector = HallucinationDetector(tool_registry=self._tool_registry)
+                
+                tool_results_list = []
+                executed_tool_names = []
+                for msg in work_messages:
+                    if msg.get("role") == "tool":
+                        tool_results_list.append(msg.get("content", ""))
+                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                        for tc in msg["tool_calls"]:
+                            fn = tc.get("function", {})
+                            if fn.get("name"):
+                                executed_tool_names.append(fn["name"])
+
+                final_text = full_stream_text or invoke_result.content or ""
+                detection_report = detector.detect(
+                    llm_text=final_text,
+                    executed_tools=executed_tool_names,
+                    tool_outputs=tool_results_list
+                )
+
+                if detection_report.get("has_hallucination"):
+                    reasons = detection_report.get("reasons", [])
+                    warning_msg = f"\n\n*(注：本回复中部分内容存在高风险幻觉（如：{', '.join(reasons)}），已标注为\"待验证\"，请工程师注意确认)*"
+                    yield AgentTextChunk(content=warning_msg)
+                    try:
+                        from app.services.metrics import AGENT_HALLUCINATION_DETECTED_TOTAL
+                        for htype, hkey in [("phantom_tools", "phantom_tool"), ("overconfident_claims", "overconfident"), ("ungrounded_numbers", "ungrounded_number")]:
+                            if detection_report.get(htype):
+                                AGENT_HALLUCINATION_DETECTED_TOTAL.labels(hallucination_type=hkey).inc()
+                    except Exception as met_err:
+                        logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
+
                 return
 
             # ── 工具调用轮次 ──────────────────────────────────────────────────
@@ -405,6 +595,20 @@ class ReactEngine:
             # 逐个执行工具调用
             for tc in invoke_result.tool_calls:
                 tool_call_dict = {"id": tc.id, "name": tc.name, "args": tc.arguments}
+
+                # T3-5: 更新验证追踪标记
+                temp_tool_def = self._tool_registry.get(tc.name)
+                if not temp_tool_def:
+                    from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
+                    temp_tool_def = TOOL_REGISTRY.get(tc.name)
+                temp_risk = temp_tool_def.risk_level if temp_tool_def else 1
+                if temp_risk >= 2:
+                    self.has_write_operation = True
+                    self.has_verification_after_write = False
+                else:
+                    if self.has_write_operation:
+                        if tc.name not in ("get_sop_node", "sop_advance", "sop_request_variable"):
+                            self.has_verification_after_write = True
 
                 # require_all_confirm 覆盖：将只读工具也升级为需确认
                 tool_result = None
@@ -496,6 +700,19 @@ class ReactEngine:
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("args", {})
         exec_id = str(uuid.uuid4())
+
+        # T3-2: 降级拦截 - 如果前序推理格式校验失败，禁止执行高风险写操作工具
+        if getattr(self, "schema_validation_failed", False):
+            tool_def = TOOL_REGISTRY.get(tool_name)
+            risk = tool_def.risk_level if tool_def else 1
+            if risk >= 2:
+                logger.warning("schema_validation_block_write", f"降级拦截: Schema 校验失败，禁止执行高风险写操作工具: {tool_name}")
+                yield ToolResultEvent(
+                    tool_name=tool_name,
+                    exec_id=exec_id,
+                    result={"error": f"由于前序推理格式校验失败，已降级拦截高风险写操作工具 {tool_name} 的执行。"},
+                )
+                return
 
         # T-AGT-22: 使用传入的 tool_executor 或实例默认执行器
         active_executor = tool_executor or self._tool_executor
@@ -936,8 +1153,8 @@ class ReactEngine:
                     
                     if ToolRetryPolicy.is_retriable(exit_code_meaning, error):
                         logger.warning(
-                            "工具 %s 执行失败(可重试): %s. 将在 %.1fs 后进行第 %d 次重试",
-                            tool_name, error, retry_delay, attempt + 1
+                            "tool_retry",
+                            f"工具 {tool_name} 执行失败(可重试): {error}. 将在 {retry_delay:.1f}s 后进行第 {attempt + 1} 次重试"
                         )
                         await asyncio.sleep(retry_delay)
                         retry_delay *= 2.0
@@ -950,6 +1167,16 @@ class ReactEngine:
             breaker.record_failure()
         else:
             breaker.record_success()
+
+        # T4-2: 统计工具调用成功率 metrics
+        try:
+            from app.services.metrics import AGENT_TOOL_CALL_TOTAL
+            AGENT_TOOL_CALL_TOTAL.labels(
+                tool_name=tool_name,
+                status="success" if error is None else "failed"
+            ).inc()
+        except Exception as met_err:
+            logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
 
         # 4. 最终结果落库审计
         completed_at = datetime.now(UTC)

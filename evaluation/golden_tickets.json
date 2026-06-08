@@ -1,0 +1,242 @@
+[
+  {
+    "case_id": "case-001",
+    "title": "虚拟机启动失败，提示IO超时",
+    "description": "虚拟机 vm-win-01 在启动时报错，进度条卡在 50% 处，最终提示磁盘 IO 超时，无法完成引导。",
+    "expected_category": "vm",
+    "expected_tools": ["acli_vm_list", "acli_disk_show"],
+    "expected_claims": ["io_timeout"]
+  },
+  {
+    "case_id": "case-002",
+    "title": "物理网卡故障，节点网络中断",
+    "description": "物理节点 node-01 上的网卡 eth2 状态显示为 down，导致关联的虚拟机网络访问全部中断。",
+    "expected_category": "network",
+    "expected_tools": ["acli_network_check", "acli_port_status"],
+    "expected_claims": ["port_down"]
+  },
+  {
+    "case_id": "case-003",
+    "title": "存储卷可用空间不足导致虚拟机暂停",
+    "description": "由于虚拟机快照过多，导致底层存储卷 storage-pool-01 空间耗尽（使用率99%），部分虚拟机被系统自动暂停。",
+    "expected_category": "storage",
+    "expected_tools": ["acli_storage_list", "acli_vm_list"],
+    "expected_claims": ["out_of_space"]
+  },
+  {
+    "case_id": "case-004",
+    "title": "集群脑裂，部分节点失联",
+    "description": "由于心跳网交换机故障，集群 node-02 发生失联，出现双脑症状，虚拟机发生HA二次脑裂启动故障。",
+    "expected_category": "cluster",
+    "expected_tools": ["acli_cluster_status", "acli_network_check"],
+    "expected_claims": ["split_brain"]
+  },
+  {
+    "case_id": "case-005",
+    "title": "虚拟机备份任务因快照合并失败超时",
+    "description": "每天凌晨的备份任务备份失败，报错提示备份任务超时，原因可能是快照合并失败耗时太久导致任务锁过期。",
+    "expected_category": "backup",
+    "expected_tools": ["task_get_logs", "acli_vm_list"],
+    "expected_claims": ["snapshot_merge_failed"]
+  },
+  {
+    "case_id": "case-006",
+    "title": "物理节点内存溢出触发 OOM 崩溃",
+    "description": "物理机 node-03 突然失联崩溃，重启后查看系统日志发现是因为内存耗尽触发了内核 OOM-Killer 杀掉了核心虚拟化进程。",
+    "expected_category": "host",
+    "expected_tools": ["acli_node_logs", "acli_cluster_status"],
+    "expected_claims": ["oom_killed"]
+  },
+  {
+    "case_id": "case-007",
+    "title": "虚拟机CPU使用率持续 100% 卡死",
+    "description": "监控显示 vm-linux-02 CPU 占用率持续高水位 100%，系统无响应，无法通过 RDP/SSH 连接。",
+    "expected_category": "vm",
+    "expected_tools": ["acli_vm_list", "acli_node_top"],
+    "expected_claims": ["cpu_spike"]
+  },
+  {
+    "case_id": "case-008",
+    "title": "虚拟网络交换机 vSwitch-01 配置冲突",
+    "description": "新建虚拟机加入 vSwitch-01 后网络无法互通，怀疑虚拟交换机 VLAN 配置与上行物理交换机不匹配。",
+    "expected_category": "network",
+    "expected_tools": ["acli_network_check"],
+    "expected_claims": ["vlan_mismatch"]
+  },
+  {
+    "case_id": "case-009",
+    "title": "物理硬盘读写速率异常降低，S.M.A.R.T 告警",
+    "description": "存储池读写性能急剧下降，底层硬盘 sda 报警提示 S.M.A.R.T 介质错误率超标，需紧急更换。",
+    "expected_category": "storage",
+    "expected_tools": ["acli_disk_show", "acli_storage_list"],
+    "expected_claims": ["disk_bad_sectors"]
+  },
+  {
+    "case_id": "case-010",
+    "title": "集群 NTP 时间不同步导致认证服务失效",
+    "description": "集群各节点时间漂移超过 30 秒，导致虚拟机加入域控失败或 AD 域认证过期报错。",
+    "expected_category": "cluster",
+    "expected_tools": ["acli_cluster_status"],
+    "expected_claims": ["ntp_drift"]
+  },
+  {
+    "case_id": "case-011",
+    "title": "虚拟机网卡 MTU 配置不一致导致大文件传输超时",
+    "description": "虚拟机在大文件传输时偶尔超时断连，小文件正常，检查发现网卡 MTU 设置与物理网卡 Jumbo Frame 冲突。",
+    "expected_category": "network",
+    "expected_tools": ["acli_network_check"],
+    "expected_claims": ["mtu_mismatch"]
+  },
+  {
+    "case_id": "case-012",
+    "title": "存储控制器单活路径中断，IO 路径切换抖动",
+    "description": "SAN 存储控制器 A 离线，导致 IO 切换到控制器 B。期间虚拟机出现几秒钟的 IO 挂起抖动，部分敏感业务报错。",
+    "expected_category": "storage",
+    "expected_tools": ["acli_storage_list"],
+    "expected_claims": ["path_failover"]
+  },
+  {
+    "case_id": "case-013",
+    "title": "虚拟机网卡 MAC 地址冲突导致偶发性断连",
+    "description": "克隆出来的虚拟机启动后，原虚拟机与新虚拟机出现偶发性交替断连，经查两虚拟机配置了相同的网卡 MAC 地址。",
+    "expected_category": "vm",
+    "expected_tools": ["acli_vm_list", "acli_network_check"],
+    "expected_claims": ["mac_conflict"]
+  },
+  {
+    "case_id": "case-014",
+    "title": "备份存储介质连接超时导致任务未启动",
+    "description": "每天的全量备份失败，报错 NFS 备份目录无法挂载，尝试手动挂载超时，确认是备份服务器 NFS 服务已挂死。",
+    "expected_category": "backup",
+    "expected_tools": ["task_get_logs"],
+    "expected_claims": ["nfs_mount_failed"]
+  },
+  {
+    "case_id": "case-015",
+    "title": "物理节点电源模块故障，单电源运行告警",
+    "description": "node-04 报警电源模块 A 失电，当前仅依靠电源 B 单路供电运行，有随时宕机风险，需要更换电源。",
+    "expected_category": "host",
+    "expected_tools": ["acli_node_logs"],
+    "expected_claims": ["power_loss"]
+  },
+  {
+    "case_id": "case-016",
+    "title": "虚拟机快照文件损坏导致无法开机",
+    "description": "虚拟机在删除快照后再次开机失败，提示快照链描述文件描述不符或父快照文件不存在。",
+    "expected_category": "vm",
+    "expected_tools": ["acli_vm_list", "acli_disk_show"],
+    "expected_claims": ["snapshot_chain_broken"]
+  },
+  {
+    "case_id": "case-017",
+    "title": "由于物理网卡中断风暴导致节点 CPU 软锁死",
+    "description": "网卡驱动异常导致 node-01 节点软中断比例占 CPU 90% 以上，系统卡死，虚拟机无响应并大面积漂移。",
+    "expected_category": "host",
+    "expected_tools": ["acli_node_logs", "acli_node_top"],
+    "expected_claims": ["interrupt_storm"]
+  },
+  {
+    "case_id": "case-018",
+    "title": "存储聚合卷中固态硬盘 SSD 寿命耗尽告警",
+    "description": "分层存储卷中的 SSD 缓存盘指示寿命已低于 5%，无法继续担任写入缓存加速，读写性能下降严重。",
+    "expected_category": "storage",
+    "expected_tools": ["acli_storage_list", "acli_disk_show"],
+    "expected_claims": ["ssd_wearout"]
+  },
+  {
+    "case_id": "case-019",
+    "title": "DRS 动态资源调度频繁发生虚拟机迁移震荡",
+    "description": "由于调度敏感度设置过高，导致几台大内存虚拟机在 node-01 和 node-02 之间每隔几分钟就来回迁移，产生大量网络流量。",
+    "expected_category": "cluster",
+    "expected_tools": ["acli_cluster_status", "acli_vm_list"],
+    "expected_claims": ["drs_oscillation"]
+  },
+  {
+    "case_id": "case-020",
+    "title": "虚拟机 VNC 远程终端画面黑屏",
+    "description": "通过控制台连接虚拟机正常，但显示画面一片漆黑，没有任何输出，检查虚拟机服务和虚拟显示驱动是否正常。",
+    "expected_category": "vm",
+    "expected_tools": ["acli_vm_list"],
+    "expected_claims": ["vnc_black_screen"]
+  },
+  {
+    "case_id": "case-021",
+    "title": "物理节点间心跳链路延迟超标",
+    "description": "集群发出黄色告警，心跳网络接口 eth3 节点间往返延迟超过 50ms，系统有发生集群脑裂隔离的潜在威胁。",
+    "expected_category": "cluster",
+    "expected_tools": ["acli_cluster_status", "acli_network_check"],
+    "expected_claims": ["heartbeat_latency"]
+  },
+  {
+    "case_id": "case-022",
+    "title": "虚拟机挂载了已失效的 ISO 镜像文件导致热迁移失败",
+    "description": "尝试将 vm-win-server 迁移至其他节点时报错，提示虚拟光驱引用的共享目录已不存在，导致目标节点无法访问挂载点。",
+    "expected_category": "vm",
+    "expected_tools": ["acli_vm_list"],
+    "expected_claims": ["iso_missing"]
+  },
+  {
+    "case_id": "case-023",
+    "title": "虚拟机网络安全策略组规则配置冲突",
+    "description": "虚拟机内服务无法被外部访问，但是可以 ping 通外部，确认是虚拟防火墙网络组中误添加了全端口拒绝规则。",
+    "expected_category": "network",
+    "expected_tools": ["acli_network_check"],
+    "expected_claims": ["firewall_blocked"]
+  },
+  {
+    "case_id": "case-024",
+    "title": "备份任务占满局域网宽带导致集群通信异常",
+    "description": "夜间备份任务启动后，由于没有做限速配置，网络大流量占满了百兆管理和业务网络，引起集群节点离线误报警。",
+    "expected_category": "backup",
+    "expected_tools": ["task_get_logs", "acli_network_check"],
+    "expected_claims": ["backup_bandwidth_exhausted"]
+  },
+  {
+    "case_id": "case-025",
+    "title": "存储元数据损坏只读挂载",
+    "description": "存储池突然变为只读状态，任何虚拟机无法写入，查看日志为存储系统内部分布式元数据日志发生扇区校验损坏。",
+    "expected_category": "storage",
+    "expected_tools": ["acli_storage_list"],
+    "expected_claims": ["metadata_corruption"]
+  },
+  {
+    "case_id": "case-026",
+    "title": "主节点崩溃，备用管理节点未自动接管",
+    "description": "集群主管理节点崩溃后，备用管理服务未能在 3 分钟内拉起接管，导致管理控制台网页 502 报错打不开。",
+    "expected_category": "cluster",
+    "expected_tools": ["acli_cluster_status"],
+    "expected_claims": ["failover_failed"]
+  },
+  {
+    "case_id": "case-027",
+    "title": "物理机风扇转速异常，CPU 过热降频",
+    "description": "node-02 上的虚拟机运行极为缓慢，后台日志显示该节点物理 CPU 温度超过 95℃ 触发硬件保护降频运行，疑似风扇坏死。",
+    "expected_category": "host",
+    "expected_tools": ["acli_node_logs"],
+    "expected_claims": ["cpu_throttling"]
+  },
+  {
+    "case_id": "case-028",
+    "title": "由于虚拟网卡驱动崩溃导致系统死机蓝屏",
+    "description": "Windows 虚拟机在并发网络高流量下突然发生蓝屏死机（BSOD），报错指向虚拟网卡驱动 vmxnet3 发生空指针访问崩溃。",
+    "expected_category": "vm",
+    "expected_tools": ["acli_vm_list"],
+    "expected_claims": ["bsod_driver_crash"]
+  },
+  {
+    "case_id": "case-029",
+    "title": "备份快照文件残留过多未清理",
+    "description": "虚拟机目录下有上百个临时快照数据文件，占用上百 GB 空间且没有在备份完成后自动清理，拖慢磁盘 IO 速度。",
+    "expected_category": "storage",
+    "expected_tools": ["acli_disk_show", "acli_storage_list"],
+    "expected_claims": ["snapshot_leak"]
+  },
+  {
+    "case_id": "case-030",
+    "title": "虚拟机虚拟网卡处于混杂模式导致性能骤降",
+    "description": "由于安全检测软件开启了混杂嗅探模式，虚拟网卡处理了大量不属于本机的以太网广播包，造成 CPU 软中断过载丢包。",
+    "expected_category": "network",
+    "expected_tools": ["acli_network_check"],
+    "expected_claims": ["promiscuous_mode_overhead"]
+  }
+]

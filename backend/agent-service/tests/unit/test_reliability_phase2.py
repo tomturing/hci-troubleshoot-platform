@@ -486,3 +486,93 @@ class TestEnvContextToPackets:
         result = self._call({"vm_name": "vm-01"})
         for p in result:
             assert p.source == FactSource.ENV_INJECT
+
+
+# ─── InvestigationAgent 信息质量检查测试 ──────────────────────────────────────────
+
+class TestInvestigationAgentQualityCheck:
+    """测试 InvestigationAgent 在 process() 诊断开始时的信息质量检查拦截"""
+
+    @pytest.mark.asyncio
+    async def test_quality_check_passes_and_continues(self):
+        """当环境上下文完整时，信息质量检查通过，不拦截并正常继续"""
+        from app.adapters.agents.htp.investigation_agent import InvestigationAgent
+        from app.domain.agent_port import AgentInteractiveRequest
+
+        kb = MagicMock()
+        kb.route_by_category = AsyncMock(return_value={"track": "kbd", "results": []})
+        kb.search_cases_with_steps = AsyncMock(return_value=[])
+        
+        registry = MagicMock()
+        mock_client = MagicMock()
+        async def fake_stream(*args, **kwargs):
+            yield "诊断报告块"
+        mock_client.chat_completion_stream = fake_stream
+        registry.get_client.return_value = mock_client
+
+        agent = InvestigationAgent(
+            ai_registry=registry,
+            kb_client=kb,
+            tool_executor=MagicMock(),
+        )
+
+        env_context = {
+            "env_info": "cluster-a",
+            "alert_logs": [{"id": 1, "msg": "high load"}],
+            "task_logs": [{"id": 2, "status": "failed"}],
+        }
+
+        events = []
+        async for event in agent.process(
+            session_id="sess-q-01",
+            messages=[{"role": "user", "content": "vm failure"}],
+            category_id="虚拟机-003",
+            diagnostic_stage="S1",
+            env_context=env_context,
+            assistant_type="htp-agent",
+        ):
+            events.append(event)
+
+        # 检查是否正常继续，没有 yield clarifying interactive request
+        interactive_requests = [e for e in events if isinstance(e, AgentInteractiveRequest)]
+        assert len(interactive_requests) == 0
+        assert len(events) > 0
+
+    @pytest.mark.asyncio
+    async def test_quality_check_fails_and_yields_clarification(self):
+        """当环境上下文缺失关键字段时，触发 clarification 交互拦截并提前返回"""
+        from app.adapters.agents.htp.investigation_agent import InvestigationAgent
+        from app.domain.agent_port import AgentInteractiveRequest
+
+        kb = MagicMock()
+        agent = InvestigationAgent(
+            ai_registry=MagicMock(),
+            kb_client=kb,
+            tool_executor=MagicMock(),
+        )
+
+        # 空环境上下文
+        env_context = {}
+
+        events = []
+        async for event in agent.process(
+            session_id="sess-q-02",
+            messages=[{"role": "user", "content": "vm failure"}],
+            category_id="虚拟机-003",
+            diagnostic_stage="S1",
+            env_context=env_context,
+            assistant_type="htp-agent",
+        ):
+            events.append(event)
+
+        # 必须仅 yield 了一个 interactive request 并且 kind="information_clarification"
+        interactive_requests = [e for e in events if isinstance(e, AgentInteractiveRequest)]
+        assert len(interactive_requests) == 1
+        req = interactive_requests[0]
+        assert req.kind == "information_clarification"
+        assert "clarify-" in req.request_id
+        assert len(req.options) > 0
+
+        # 并且流程应该提前返回（不继续执行后续的路由和检索）
+        # 验证 route_by_category 未被调用
+        kb.route_by_category.assert_not_called()

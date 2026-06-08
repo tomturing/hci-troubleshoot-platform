@@ -155,12 +155,17 @@ async def lifespan(app: FastAPI):
         )
         redis_client = None
 
+    # ── FactStore（轻量事实存储） ────────────────────────────────────────────────
+    from app.services.fact_store import FactStore
+    fact_store = FactStore(redis=redis_client, db_session_factory=db_manager.async_session_factory)
+
     # ── TriageAgent（S0 意图识别）──────────────────────────────────────────────────
     # T-AGT-10：TriageAgent 替换 IntentAgent（继承 BaseAgent）
     triage_agent = TriageAgent(
         ai_registry=ai_registry,
         kb_client=kb_client,
         db_session_factory=db_manager.async_session_factory,
+        fact_store=fact_store,
     )
 
     # ── 工具执行器（S1-S5 阶段共用）─────────────────────────────────────────────
@@ -250,6 +255,7 @@ async def lifespan(app: FastAPI):
         confirm_service=confirm_service,
         audit_service=audit_service,
         db_session_factory=db_manager.async_session_factory,
+        fact_store=fact_store,
     )
     logger.info(
         event="investigation_agent_initialized",

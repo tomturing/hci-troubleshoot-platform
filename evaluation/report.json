@@ -1,0 +1,568 @@
+{
+  "total_cases": 30,
+  "avg_category_accuracy": 0.9666666666666667,
+  "tool_success_rate": 1.0,
+  "hallucination_rate": 0.03333333333333333,
+  "details": [
+    {
+      "case_id": "case-001",
+      "title": "虚拟机启动失败，提示IO超时",
+      "category_matched": true,
+      "expected_category": "vm",
+      "actual_category": "vm",
+      "tools_executed": [
+        "acli_vm_list",
+        "acli_disk_show"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-002",
+      "title": "物理网卡故障，节点网络中断",
+      "category_matched": true,
+      "expected_category": "network",
+      "actual_category": "network",
+      "tools_executed": [
+        "acli_network_check",
+        "acli_port_status"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-003",
+      "title": "存储卷可用空间不足导致虚拟机暂停",
+      "category_matched": true,
+      "expected_category": "storage",
+      "actual_category": "storage",
+      "tools_executed": [
+        "acli_storage_list",
+        "acli_vm_list"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-004",
+      "title": "集群脑裂，部分节点失联",
+      "category_matched": true,
+      "expected_category": "cluster",
+      "actual_category": "cluster",
+      "tools_executed": [
+        "acli_cluster_status",
+        "acli_network_check"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-005",
+      "title": "虚拟机备份任务因快照合并失败超时",
+      "category_matched": true,
+      "expected_category": "backup",
+      "actual_category": "backup",
+      "tools_executed": [
+        "task_get_logs",
+        "acli_vm_list"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-006",
+      "title": "物理节点内存溢出触发 OOM 崩溃",
+      "category_matched": true,
+      "expected_category": "host",
+      "actual_category": "host",
+      "tools_executed": [
+        "acli_node_logs",
+        "acli_cluster_status"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-007",
+      "title": "虚拟机CPU使用率持续 100% 卡死",
+      "category_matched": true,
+      "expected_category": "vm",
+      "actual_category": "vm",
+      "tools_executed": [
+        "acli_vm_list",
+        "acli_node_top"
+      ],
+      "has_hallucination": true,
+      "hallucination_details": {
+        "has_hallucination": true,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [
+          "100%"
+        ],
+        "reasons": [
+          "未找到数据来源的数字/百分比: 100%"
+        ]
+      }
+    },
+    {
+      "case_id": "case-008",
+      "title": "虚拟网络交换机 vSwitch-01 配置冲突",
+      "category_matched": true,
+      "expected_category": "network",
+      "actual_category": "network",
+      "tools_executed": [
+        "acli_network_check"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-009",
+      "title": "物理硬盘读写速率异常降低，S.M.A.R.T 告警",
+      "category_matched": true,
+      "expected_category": "storage",
+      "actual_category": "storage",
+      "tools_executed": [
+        "acli_disk_show",
+        "acli_storage_list"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-010",
+      "title": "集群 NTP 时间不同步导致认证服务失效",
+      "category_matched": true,
+      "expected_category": "cluster",
+      "actual_category": "cluster",
+      "tools_executed": [
+        "acli_cluster_status"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-011",
+      "title": "虚拟机网卡 MTU 配置不一致导致大文件传输超时",
+      "category_matched": true,
+      "expected_category": "network",
+      "actual_category": "network",
+      "tools_executed": [
+        "acli_network_check"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-012",
+      "title": "存储控制器单活路径中断，IO 路径切换抖动",
+      "category_matched": true,
+      "expected_category": "storage",
+      "actual_category": "storage",
+      "tools_executed": [
+        "acli_storage_list"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-013",
+      "title": "虚拟机网卡 MAC 地址冲突导致偶发性断连",
+      "category_matched": true,
+      "expected_category": "vm",
+      "actual_category": "vm",
+      "tools_executed": [
+        "acli_vm_list",
+        "acli_network_check"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-014",
+      "title": "备份存储介质连接超时导致任务未启动",
+      "category_matched": true,
+      "expected_category": "backup",
+      "actual_category": "backup",
+      "tools_executed": [
+        "task_get_logs"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-015",
+      "title": "物理节点电源模块故障，单电源运行告警",
+      "category_matched": true,
+      "expected_category": "host",
+      "actual_category": "host",
+      "tools_executed": [
+        "acli_node_logs"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-016",
+      "title": "虚拟机快照文件损坏导致无法开机",
+      "category_matched": true,
+      "expected_category": "vm",
+      "actual_category": "vm",
+      "tools_executed": [
+        "acli_vm_list",
+        "acli_disk_show"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-017",
+      "title": "由于物理网卡中断风暴导致节点 CPU 软锁死",
+      "category_matched": true,
+      "expected_category": "host",
+      "actual_category": "host",
+      "tools_executed": [
+        "acli_node_logs",
+        "acli_node_top"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-018",
+      "title": "存储聚合卷中固态硬盘 SSD 寿命耗尽告警",
+      "category_matched": true,
+      "expected_category": "storage",
+      "actual_category": "storage",
+      "tools_executed": [
+        "acli_storage_list",
+        "acli_disk_show"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-019",
+      "title": "DRS 动态资源调度频繁发生虚拟机迁移震荡",
+      "category_matched": true,
+      "expected_category": "cluster",
+      "actual_category": "cluster",
+      "tools_executed": [
+        "acli_cluster_status",
+        "acli_vm_list"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-020",
+      "title": "虚拟机 VNC 远程终端画面黑屏",
+      "category_matched": true,
+      "expected_category": "vm",
+      "actual_category": "vm",
+      "tools_executed": [
+        "acli_vm_list"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-021",
+      "title": "物理节点间心跳链路延迟超标",
+      "category_matched": true,
+      "expected_category": "cluster",
+      "actual_category": "cluster",
+      "tools_executed": [
+        "acli_cluster_status",
+        "acli_network_check"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-022",
+      "title": "虚拟机挂载了已失效的 ISO 镜像文件导致热迁移失败",
+      "category_matched": true,
+      "expected_category": "vm",
+      "actual_category": "vm",
+      "tools_executed": [
+        "acli_vm_list"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-023",
+      "title": "虚拟机网络安全策略组规则配置冲突",
+      "category_matched": true,
+      "expected_category": "network",
+      "actual_category": "network",
+      "tools_executed": [
+        "acli_network_check"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-024",
+      "title": "备份任务占满局域网宽带导致集群通信异常",
+      "category_matched": false,
+      "expected_category": "backup",
+      "actual_category": "unknown",
+      "tools_executed": [
+        "task_get_logs",
+        "acli_network_check"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-025",
+      "title": "存储元数据损坏只读挂载",
+      "category_matched": true,
+      "expected_category": "storage",
+      "actual_category": "storage",
+      "tools_executed": [
+        "acli_storage_list"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-026",
+      "title": "主节点崩溃，备用管理节点未自动接管",
+      "category_matched": true,
+      "expected_category": "cluster",
+      "actual_category": "cluster",
+      "tools_executed": [
+        "acli_cluster_status"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-027",
+      "title": "物理机风扇转速异常，CPU 过热降频",
+      "category_matched": true,
+      "expected_category": "host",
+      "actual_category": "host",
+      "tools_executed": [
+        "acli_node_logs"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-028",
+      "title": "由于虚拟网卡驱动崩溃导致系统死机蓝屏",
+      "category_matched": true,
+      "expected_category": "vm",
+      "actual_category": "vm",
+      "tools_executed": [
+        "acli_vm_list"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-029",
+      "title": "备份快照文件残留过多未清理",
+      "category_matched": true,
+      "expected_category": "storage",
+      "actual_category": "storage",
+      "tools_executed": [
+        "acli_disk_show",
+        "acli_storage_list"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    },
+    {
+      "case_id": "case-030",
+      "title": "虚拟机虚拟网卡处于混杂模式导致性能骤降",
+      "category_matched": true,
+      "expected_category": "network",
+      "actual_category": "network",
+      "tools_executed": [
+        "acli_network_check"
+      ],
+      "has_hallucination": false,
+      "hallucination_details": {
+        "has_hallucination": false,
+        "phantom_tools": [],
+        "overconfident_claims": [],
+        "ungrounded_numbers": [],
+        "reasons": []
+      }
+    }
+  ]
+}

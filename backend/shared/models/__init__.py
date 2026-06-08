@@ -5,8 +5,10 @@
 from .audit import AuditLog, Authorization, ToolResult
 from .base import TimestampMixin, TraceableMixin
 from .conversation import Conversation
+from .fact import ClaimEvidenceLink, Fact
 from .information import EvidenceBundle, FactSource, InformationPacket, StaleDataGuard
 from .kb import KBChunk, KBCategory, KBDocument, KBSopNode, KBSynonym
+from .reliability import Claim, ClaimVerification, Hypothesis, ReasoningOutput
 from .skill_definition import SkillDefinitionORM
 from .system_prompt import SystemPrompt
 from .user import User
@@ -31,4 +33,12 @@ __all__ = [
     "InformationPacket",
     "StaleDataGuard",
     "EvidenceBundle",
+    # 阶段三：推理约束与反幻觉
+    "Hypothesis",
+    "ReasoningOutput",
+    "Claim",
+    "ClaimVerification",
+    # 阶段四：事实持久化与评估
+    "Fact",
+    "ClaimEvidenceLink",
 ]

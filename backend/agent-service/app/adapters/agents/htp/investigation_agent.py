@@ -40,6 +40,7 @@ from app.domain.agent_port import (
     AgentStageUpdate,
     AgentTextChunk,
     AgentUnavailableError,
+    AgentInteractiveRequest,
 )
 from app.domain.base_agent import BaseAgent, Message, Observation, Step, ToolCall
 
@@ -77,6 +78,7 @@ class InvestigationAgent(BaseAgent):
         confirm_service: Any = None,
         audit_service: Any = None,
         db_session_factory: Any = None,
+        fact_store: Any = None,
     ) -> None:
         super().__init__(name="investigation-agent", max_steps=20)
         self._ai_registry = ai_registry
@@ -94,6 +96,10 @@ class InvestigationAgent(BaseAgent):
             self._db_session_factory = create_mock_session_factory()
         else:
             self._db_session_factory = db_session_factory
+
+        from app.services.evidence_builder import EvidenceBuilder
+        self._evidence_builder = EvidenceBuilder(fact_store=fact_store)
+        self._fact_store = fact_store
 
         # KBD 差异诊断引擎（每次 process() 调用时重新创建，保证状态隔离）
         self._kbd_diag: KBDDiagnostic | None = None
@@ -161,6 +167,39 @@ class InvestigationAgent(BaseAgent):
                 agent_name="investigation-agent",
                 reason=f"未找到助手类型 '{assistant_type}'",
             )
+
+        # T2-4: 信息质量检查与澄清拦截（仅在非 SOP 恢复场景下触发）
+        if not sop_resume_context:
+            quality_report = await self._evidence_builder.check_information_quality(
+                session_id=session_id,
+                env_context=env_context,
+            )
+            if quality_report.needs_clarification:
+                logger.warning(
+                    event="information_quality_low",
+                    message="环境数据质量不足，发起用户澄清",
+                    session_id=session_id,
+                    score=quality_report.quality_score,
+                    missing=quality_report.missing_keys,
+                )
+                yield AgentInteractiveRequest(
+                    request_id=f"clarify-{session_id}",
+                    acp_session_id=session_id,
+                    kind="information_clarification",
+                    title="需要补充环境信息",
+                    prompt=quality_report.to_clarification_prompt(),
+                    options=[
+                        {"optionId": "retry", "name": "已补充，重新检查"},
+                        {"optionId": "skip", "name": "忽略，继续诊断"},
+                    ],
+                    custom_input=True,
+                    metadata={
+                        "missing_keys": quality_report.missing_keys,
+                        "stale_keys": quality_report.stale_keys,
+                        "low_confidence_keys": quality_report.low_confidence_keys,
+                    },
+                )
+                return
 
         user_query = self._extract_user_query(messages)
 
@@ -534,7 +573,16 @@ class InvestigationAgent(BaseAgent):
             tool_executor=self._tool_executor,
             confirm_service=self._confirm_service,
             audit_service=self._audit_service,
+            fact_store=self._fact_store,
         )
+
+        # T3-2: 绑定诊断阶段结构化 Schema
+        from shared.models import ReasoningOutput, ClaimVerification
+        response_schema = None
+        if diagnostic_stage in ("S2", "S3"):
+            response_schema = ReasoningOutput
+        elif diagnostic_stage == "S4":
+            response_schema = ClaimVerification
 
         # 调用 ReactEngine.execute()，动态注入 SOP 工具
         async for event in react_engine.execute(
@@ -548,6 +596,7 @@ class InvestigationAgent(BaseAgent):
             execution_mode=execution_mode,
             tool_executor=sop_tool_executor,  # 使用 SOP 工具执行器
             sop_mode=True,  # DC-01: SOP 模式，注入 SOP 导航工具到 LLM tool list
+            response_schema=response_schema,
         ):
             yield event
 
@@ -667,7 +716,9 @@ class InvestigationAgent(BaseAgent):
         children = root_node.get("children", [])
         branches_list = []
         for child in children[:5]:
-            branches_list.append(f"- {child.get('node_id', '')}: {child.get('title', '')}")
+            prereqs = child.get("prerequisites", [])
+            prereq_str = f" (前置条件: {', '.join(prereqs)})" if prereqs else ""
+            branches_list.append(f"- {child.get('node_id', '')}: {child.get('title', '')}{prereq_str}")
         if len(children) > 5:
             branches_list.append(f"... 还有 {len(children) - 5} 个分支")
         root_node_branches = "\n".join(branches_list)
@@ -882,7 +933,9 @@ class InvestigationAgent(BaseAgent):
         children = current_node.get("children", [])
         branches_list = []
         for child in children[:5]:
-            branches_list.append(f"- {child.get('node_id', '')}: {child.get('title', '')}")
+            prereqs = child.get("prerequisites", [])
+            prereq_str = f" (前置条件: {', '.join(prereqs)})" if prereqs else ""
+            branches_list.append(f"- {child.get('node_id', '')}: {child.get('title', '')}{prereq_str}")
         if len(children) > 5:
             branches_list.append(f"... 还有 {len(children) - 5} 个分支")
         current_node_branches = "\n".join(branches_list)

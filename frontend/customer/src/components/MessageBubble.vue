@@ -82,11 +82,44 @@ interface ContentSegment {
 
 import { marked } from 'marked'
 
+const reasoningContent = computed(() => {
+  const content = props.message.content
+  if (!content) return ''
+  const startTag = '<reasoning>'
+  const endTag = '</reasoning>'
+  const startIndex = content.indexOf(startTag)
+  const endIndex = content.indexOf(endTag)
+  if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+    return content.substring(startIndex + startTag.length, endIndex).trim()
+  }
+  if (startIndex !== -1 && endIndex === -1) {
+    return content.substring(startIndex + startTag.length).trim()
+  }
+  return ''
+})
+
+const cleanContent = computed(() => {
+  const content = props.message.content
+  if (!content) return ''
+  const startTag = '<reasoning>'
+  const endTag = '</reasoning>'
+  const startIndex = content.indexOf(startTag)
+  const endIndex = content.indexOf(endTag)
+  if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+    return (content.substring(0, startIndex) + content.substring(endIndex + endTag.length)).trim()
+  }
+  if (startIndex !== -1 && endIndex === -1) {
+    return content.substring(0, startIndex).trim()
+  }
+  return content
+})
+
 const contentSegments = computed<ContentSegment[]>(() => {
-  if (!props.message.content) return []
+  const text = cleanContent.value
+  if (!text) return []
 
   // 使用成熟的 Markdown Lexer 提取 AST（完美处理未闭合标签或代码块等情况）
-  const tokens = marked.lexer(props.message.content)
+  const tokens = marked.lexer(text)
   const segments: ContentSegment[] = []
   
   let textBuffer = ''
@@ -870,6 +903,20 @@ async function handleToolCallReject() {
 
           <!-- 阶段2+3：统一渲染管道。流式与完成态完全共享相同的 DOM 结构与拆分策略 -->
           <template v-else-if="message.content">
+            <!-- CoT 思考过程折叠展示 (T3-3) -->
+            <div v-if="reasoningContent" class="reasoning-collapse-container mb-3 stage3-item">
+              <el-collapse>
+                <el-collapse-item name="reasoning">
+                  <template #title>
+                    <div class="reasoning-title-bar">
+                      <span class="reasoning-icon">🧠</span>
+                      <span class="reasoning-label">思考过程 (Chain-of-Thought)</span>
+                    </div>
+                  </template>
+                  <div class="reasoning-details-content" v-html="renderTextSegment(reasoningContent)" />
+                </el-collapse-item>
+              </el-collapse>
+            </div>
             <div
               v-for="segment in contentSegments"
               :key="segment.id"
@@ -2208,5 +2255,59 @@ async function handleToolCallReject() {
 
 .manual-btn {
   width: 100%;
+}
+
+/* T3-3: CoT 思考过程折叠样式 */
+.reasoning-collapse-container {
+  margin-top: 8px;
+  background: #f9f9fb;
+  border-radius: 6px;
+  border: 1px solid #e4e7ed;
+  overflow: hidden;
+}
+
+.reasoning-collapse-container :deep(.el-collapse) {
+  border: none;
+}
+
+.reasoning-collapse-container :deep(.el-collapse-item__header) {
+  background: #f4f5f7;
+  padding: 0 12px;
+  font-size: 13px;
+  color: #606266;
+  border-bottom: 1px solid #e4e7ed;
+  height: 38px;
+  line-height: 38px;
+}
+
+.reasoning-collapse-container :deep(.el-collapse-item__wrap) {
+  background: #f9f9fb;
+  border-bottom: none;
+}
+
+.reasoning-collapse-container :deep(.el-collapse-item__content) {
+  padding: 12px;
+  font-size: 13px;
+  color: #555;
+  line-height: 1.6;
+}
+
+.reasoning-title-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reasoning-icon {
+  font-size: 14px;
+}
+
+.reasoning-label {
+  font-weight: 500;
+}
+
+.reasoning-details-content {
+  word-break: break-all;
+  white-space: pre-wrap;
 }
 </style>

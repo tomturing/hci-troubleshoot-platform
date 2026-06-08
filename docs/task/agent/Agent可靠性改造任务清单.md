@@ -27,7 +27,7 @@ owner: team
 ```
 阶段零（止血）     ██████████  已完成
 阶段一（工具事务） ██████████  已完成
-阶段二（事实体系） ░░░░░░░░░░  进行中
+阶段二（事实体系） ██████████  已完成
 阶段三（推理约束） ░░░░░░░░░░  未开始
 阶段四（评测闭环） ░░░░░░░░░░  未开始
 ```
@@ -220,7 +220,7 @@ owner: team
 
 - **文件**：`backend/agent-service/app/models/` 或 `backend/shared/models/`（新增 `information.py`）
 - **任务**：
-  - [ ] 定义 `InformationPacket` 数据类：
+  - [x] 定义 `InformationPacket` 数据类：
     ```python
     value: Any
     source: str   # user_input / tool_exec / kb_search / llm_inference / env_inject
@@ -229,8 +229,8 @@ owner: team
     raw_evidence: str | None
     verified: bool
     ```
-  - [ ] 定义 `StaleDataGuard`：各类数据的过期阈值（进程状态 60s、VM 状态 30s 等）
-  - [ ] 定义 `EvidenceBundle`：按目的（`intent_classification / hypothesis_verification / remediation`）检索事实的集合
+  - [x] 定义 `StaleDataGuard`：各类数据的过期阈值（进程状态 60s、VM 状态 30s 等）
+  - [x] 定义 `EvidenceBundle`：按目的（`intent_classification / hypothesis_verification / remediation`）检索事实的集合
 - **验收**：数据结构定义完整，单元测试覆盖 `StaleDataGuard.is_stale()` 各阈值边界
 
 ---
@@ -239,12 +239,12 @@ owner: team
 
 - **文件**：`backend/agent-service/`（环境数据采集流程）
 - **任务**：
-  - [ ] 环境采集完成后，将结果封装为 `InformationPacket` 存入 Redis（key：`fact:{session_id}:{fact_type}`，TTL 按 `StaleDataGuard` 阈值设定）
-  - [ ] 存储时同时保留 `raw_ref`（原始数据）和 `normalized_value`（标准化后的数据）
-  - [ ] 多来源冲突时，不覆盖旧值，而是追加 `conflict` 标记，并在 EvidenceBundle 中显式标注
+  - [x] 环境采集完成后，将结果封装为 `InformationPacket` 存入 Redis（key：`fact:{session_id}:{fact_type}`，TTL 按 `StaleDataGuard` 阈值设定）
+  - [x] 存储时同时保留 `raw_ref`（原始数据）和 `normalized_value`（标准化后的数据）
+  - [x] 多来源冲突时，不覆盖旧值，而是追加 `conflict` 标记，并在 EvidenceBundle 中显式标注
 - **验收**：
-  - [ ] 每个自动注入的变量可以追踪到事实来源（`source` + `freshness_ts`）
-  - [ ] 同一字段多来源冲突时，两个值均保留并带 `conflict=true` 标记，不静默覆盖
+  - [x] 每个自动注入的变量可以追踪到事实来源（`source` + `freshness_ts`）
+  - [x] 同一字段多来源冲突时，两个值均保留并带 `conflict=true` 标记，不静默覆盖
 
 ---
 
@@ -253,12 +253,12 @@ owner: team
 - **文件**：`backend/agent-service/app/adapters/agents/htp/investigation_agent.py`（S0 阶段）
 - **问题**：S0 Prompt 直接注入大段原始 `env_context` 字典，噪声多，LLM 注意力分散
 - **任务**：
-  - [ ] 实现 `EvidenceBuilder.build_for_intent_classification(session_id)` 方法，从 Fact Store 检索 S0 分类需要的核心事实（工单描述、环境基本信息、历史故障标签）
-  - [ ] 替换 S0 Prompt 的上下文注入：从原始字典拼接改为 EvidenceBundle 结构化注入
-  - [ ] Prompt 中对过期事实（`freshness=stale`）和冲突事实（`conflict=true`）显式标注
+  - [x] 实现 `EvidenceBuilder.build_for_intent_classification(session_id)` 方法，从 Fact Store 检索 S0 分类需要的核心事实（工单描述、环境基本信息、历史故障标签）
+  - [x] 替换 S0 Prompt 的上下文注入：从原始字典拼接改为 EvidenceBundle 结构化注入
+  - [x] Prompt 中对过期事实（`freshness=stale`）和冲突事实（`conflict=true`）显式标注
 - **验收**：
-  - [ ] S0 Prompt 长度减少 ≥ 30%（对比修改前）
-  - [ ] S0 Prompt 中包含事实来源标注（用例：环境数据显示 `[采集于 2 分钟前，来源: 工具执行]`）
+  - [x] S0 Prompt 长度减少 ≥ 30%（对比修改前）
+  - [x] S0 Prompt 中包含事实来源标注（用例：环境数据显示 `[采集于 2 分钟前，来源: 工具执行]`）
 
 ---
 
@@ -266,21 +266,21 @@ owner: team
 
 - **文件**：`backend/agent-service/app/adapters/agents/htp/investigation_agent.py`（诊断开始前）
 - **任务**：
-  - [ ] 实现 `_check_information_quality(session_id)` 方法：
+  - [x] 实现 `_check_information_quality(session_id)` 方法：
     - 检查 env_context 是否为空或不完整
     - 检查工单创建时间是否超过 24 小时（可能过期）
     - 检查关键事实置信度是否低于阈值（`CONFIDENCE_THRESHOLD = 0.75`）
-  - [ ] 低置信度时生成 `AgentInteractiveRequest`（`kind=information_clarification`），向用户寻求确认，不基于低质量信息继续推理
+  - [x] 低置信度时生成 `AgentInteractiveRequest`（`kind=information_clarification`），向用户寻求确认，不基于低质量信息继续推理
 - **验收**：env_context 为空时，Agent 发起信息确认请求而非直接开始推理
 
 ---
 
 **阶段二验收标准**
 
-- [ ] 每个自动注入变量可以追踪到事实来源
-- [ ] 同一字段多来源冲突不会被静默覆盖
-- [ ] S0 Prompt 长度受控且包含关键事实来源标注
-- [ ] 环境数据缺失时触发用户澄清而非直接推理
+- [x] 每个自动注入变量可以追踪到事实来源
+- [x] 同一字段多来源冲突不会被静默覆盖
+- [x] S0 Prompt 长度受控且包含关键事实来源标注
+- [x] 环境数据缺失时触发用户澄清而非直接推理
 
 ---
 
