@@ -7,7 +7,7 @@ from .base import TimestampMixin, TraceableMixin
 from .conversation import Conversation
 from .fact import ClaimEvidenceLink, Fact
 from .information import EvidenceBundle, FactSource, InformationPacket, StaleDataGuard
-from .kb import KBChunk, KBCategory, KBDocument, KBSopNode, KBSynonym
+from .kb import KBCategory, KBChunk, KBDocument, KBSopNode, KBSynonym
 from .reliability import Claim, ClaimVerification, Hypothesis, ReasoningOutput
 from .skill_definition import SkillDefinitionORM
 from .system_prompt import SystemPrompt

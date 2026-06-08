@@ -37,10 +37,10 @@ from app.adapters.agents.htp.sop_tools import (
 )
 from app.domain.agent_port import (
     AgentEvent,
+    AgentInteractiveRequest,
     AgentStageUpdate,
     AgentTextChunk,
     AgentUnavailableError,
-    AgentInteractiveRequest,
 )
 from app.domain.base_agent import BaseAgent, Message, Observation, Step, ToolCall
 
@@ -577,7 +577,7 @@ class InvestigationAgent(BaseAgent):
         )
 
         # T3-2: 绑定诊断阶段结构化 Schema
-        from shared.models import ReasoningOutput, ClaimVerification
+        from shared.models import ClaimVerification, ReasoningOutput
         response_schema = None
         if diagnostic_stage in ("S2", "S3"):
             response_schema = ReasoningOutput

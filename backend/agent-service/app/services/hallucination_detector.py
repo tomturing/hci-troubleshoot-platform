@@ -10,8 +10,8 @@ HallucinationDetector: 轻量级反幻觉规则引擎 (T3-4)
 
 from __future__ import annotations
 
-import re
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger("hallucination-detector")
@@ -115,10 +115,8 @@ class HallucinationDetector:
 
         for pat in assertion_patterns:
             matches = re.findall(pat, text)
-            if matches:
-                # 检查整个文本中是否完全缺乏不确定性词汇
-                if not any(word in text for word in uncertainty_words):
-                    claims.extend(matches)
+            if matches and not any(word in text for word in uncertainty_words):
+                claims.extend(matches)
 
         return list(set(claims))
 

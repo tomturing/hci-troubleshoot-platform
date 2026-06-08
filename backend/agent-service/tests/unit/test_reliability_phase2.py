@@ -13,12 +13,10 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from shared.models.information import EvidenceBundle, FactSource, InformationPacket, StaleDataGuard
-
 
 # ─── InformationPacket 测试 ─────────────────────────────────────────────────
 
@@ -502,7 +500,7 @@ class TestInvestigationAgentQualityCheck:
         kb = MagicMock()
         kb.route_by_category = AsyncMock(return_value={"track": "kbd", "results": []})
         kb.search_cases_with_steps = AsyncMock(return_value=[])
-        
+
         registry = MagicMock()
         mock_client = MagicMock()
         async def fake_stream(*args, **kwargs):

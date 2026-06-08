@@ -12,6 +12,7 @@ ReactEngine: ReAct 循环执行引擎
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -21,6 +22,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from opentelemetry import trace
+from pydantic import BaseModel
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
@@ -322,7 +324,6 @@ class ReactEngine:
             AgentTextChunk: 最终文本回复
         """
         from shared.clients.ai_client import InvokeResult
-        from pydantic import BaseModel
 
         ai_client = self._ai_registry.get_client(assistant_type)
         if not ai_client:
@@ -433,7 +434,7 @@ class ReactEngine:
                 # T3-4: 运行轻量级幻觉检测器并支持 Re-run 一次
                 from app.services.hallucination_detector import HallucinationDetector
                 detector = HallucinationDetector(tool_registry=self._tool_registry)
-                
+
                 tool_results_list = []
                 executed_tool_names = []
                 for msg in work_messages:
@@ -527,7 +528,7 @@ class ReactEngine:
                 # T3-4: 运行轻量级幻觉检测器
                 from app.services.hallucination_detector import HallucinationDetector
                 detector = HallucinationDetector(tool_registry=self._tool_registry)
-                
+
                 tool_results_list = []
                 executed_tool_names = []
                 for msg in work_messages:
@@ -605,10 +606,8 @@ class ReactEngine:
                 if temp_risk >= 2:
                     self.has_write_operation = True
                     self.has_verification_after_write = False
-                else:
-                    if self.has_write_operation:
-                        if tc.name not in ("get_sop_node", "sop_advance", "sop_request_variable"):
-                            self.has_verification_after_write = True
+                elif self.has_write_operation and tc.name not in ("get_sop_node", "sop_advance", "sop_request_variable"):
+                    self.has_verification_after_write = True
 
                 # require_all_confirm 覆盖：将只读工具也升级为需确认
                 tool_result = None
@@ -721,6 +720,7 @@ class ReactEngine:
         if self._audit:
             try:
                 import hashlib
+
                 from shared.observability.otel import get_current_trace_id
 
                 input_str = json.dumps(tool_args, sort_keys=True, ensure_ascii=False)
@@ -1067,7 +1067,7 @@ class ReactEngine:
             logger.error(f"工具 {tool_name} 处于熔断状态，拒绝执行")
             error = f"[circuit_breaker] 工具 {tool_name} 近期频繁失败，已被服务端临时熔断隔离，请 60 秒后再试。"
             result = f"工具执行失败: {error}"
-            
+
             if self._audit:
                 try:
                     await self._audit.write(
@@ -1082,7 +1082,7 @@ class ReactEngine:
                     )
                 except Exception as audit_err:
                     logger.error(f"熔断写审计失败: {audit_err}")
-            
+
             yield ToolResultEvent(result=result, tool_name=tool_name, error=error, exec_id=exec_id)
             return
 
@@ -1122,7 +1122,7 @@ class ReactEngine:
                         result = await active_executor.execute(
                             tool_name, tool_args, conversation_id=session_id, exec_id=exec_id
                         )
-                        
+
                         # 检查结果是否是超时，若超时则主动抛错重试
                         exit_code_meaning = None
                         if result:
@@ -1130,10 +1130,10 @@ class ReactEngine:
                                 exit_code_meaning = result.exit_code_meaning
                             elif isinstance(result, dict):
                                 exit_code_meaning = result.get("exit_code_meaning")
-                        
+
                         if ToolRetryPolicy.is_retriable(exit_code_meaning, None):
                             raise Exception(f"工具执行返回超时状态: {exit_code_meaning}")
-                        
+
                         error = None
                         break
                     except Exception as e:
@@ -1150,7 +1150,7 @@ class ReactEngine:
                             exit_code_meaning = result.exit_code_meaning
                         elif isinstance(result, dict):
                             exit_code_meaning = result.get("exit_code_meaning")
-                    
+
                     if ToolRetryPolicy.is_retriable(exit_code_meaning, error):
                         logger.warning(
                             "tool_retry",

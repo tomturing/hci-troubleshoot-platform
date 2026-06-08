@@ -9,8 +9,8 @@
   backend/case-service/         → solution/case/工单设计.md              + task/case/工单任务.md
   backend/conversation-service/ → solution/conversation/对话设计.md       + task/conversation/对话任务.md
   backend/kb-service/           → solution/knowledge-base/知识库设计.md   + task/knowledge-base/知识库任务.md
-  backend/agent-service/        → solution/agent/AI助手设计.md            + task/agent/AI助手任务.md
-  backend/scheduler-service/    → solution/agent/AI助手设计.md           + task/agent/AI助手任务.md
+  backend/agent-service/        → solution/agent/AI助手设计.md            + task/agent/agent任务.md
+  backend/scheduler-service/    → solution/agent/AI助手设计.md           + task/agent/agent任务.md
   backend/api-gateway/          → solution/架构设计.md                   + task/架构任务.md
   backend/shared/               → solution/架构设计.md                   （共享库影响全局架构）
   frontend/customer/            → solution/custom-ui/客户端设计.md         + task/custom-ui/custom-ui任务.md
@@ -87,7 +87,7 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         code_prefix="backend/agent-service/app/tools/acli/",
         display_name="Agent 服务 acli 工具（agent-service/app/tools/acli）",
         solution_doc="docs/solution/agent/agent工具设计.md",
-        task_doc="docs/task/agent/AI助手任务.md",
+        task_doc="docs/task/agent/agent任务.md",
         exempt_paths=(
             "/tests/", "/test/", "/__pycache__/",
             "backend/agent-service/tests/",
@@ -101,13 +101,13 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         code_prefix="backend/agent-service/",
         display_name="Agent 服务（agent-service）",
         solution_doc="docs/solution/agent/AI助手设计.md",
-        task_doc="docs/task/agent/AI助手任务.md",
+        task_doc="docs/task/agent/agent任务.md",
     ),
     ModuleMapping(
         code_prefix="backend/scheduler-service/",
         display_name="AI 调度服务（scheduler-service）",
         solution_doc="docs/solution/agent/AI助手设计.md",
-        task_doc="docs/task/agent/AI助手任务.md",
+        task_doc="docs/task/agent/agent任务.md",
     ),
     ModuleMapping(
         code_prefix="backend/api-gateway/",
@@ -120,7 +120,7 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         code_prefix="backend/shared/utils/prompt_loader.py",
         display_name="共享库 prompt_loader（backend/shared/utils/prompt_loader.py）",
         solution_doc="docs/solution/agent/agent工具设计.md",
-        task_doc="docs/task/agent/AI助手任务.md",
+        task_doc="docs/task/agent/agent任务.md",
     ),
     ModuleMapping(
         code_prefix="backend/shared/",
@@ -133,7 +133,7 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         code_prefix="frontend/customer/src/utils/commandRisk.ts",
         display_name="客户端 UI（frontend/customer/src/utils/commandRisk.ts）",
         solution_doc="docs/solution/agent/agent工具设计.md",
-        task_doc="docs/task/agent/AI助手任务.md",
+        task_doc="docs/task/agent/agent任务.md",
     ),
     ModuleMapping(
         code_prefix="frontend/customer/",
@@ -146,7 +146,7 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         code_prefix="frontend/admin/src/views/ToolManageView.vue",
         display_name="管理台 UI（frontend/admin/src/views/ToolManageView.vue）",
         solution_doc="docs/solution/agent/agent工具设计.md",
-        task_doc="docs/task/agent/AI助手任务.md",
+        task_doc="docs/task/agent/agent任务.md",
     ),
     ModuleMapping(
         code_prefix="frontend/admin/",
@@ -159,14 +159,14 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         code_prefix="database/seeds/",
         display_name="数据库种子数据（database/seeds/）",
         solution_doc="docs/solution/agent/agent工具设计.md",
-        task_doc="docs/task/agent/AI助手任务.md",
+        task_doc="docs/task/agent/agent任务.md",
     ),
     # desired_schema.sql 的 COMMENT 注释更新属于 acli 格式修复的关联变更
     ModuleMapping(
         code_prefix="database/desired_schema.sql",
         display_name="数据库 schema（database/desired_schema.sql）",
         solution_doc="docs/solution/agent/agent工具设计.md",
-        task_doc="docs/task/agent/AI助手任务.md",
+        task_doc="docs/task/agent/agent任务.md",
     ),
     ModuleMapping(
         code_prefix="database/",

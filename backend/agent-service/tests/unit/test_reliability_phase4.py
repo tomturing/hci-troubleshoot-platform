@@ -1,15 +1,16 @@
-import pytest
 import time
 from unittest.mock import AsyncMock, MagicMock
-from shared.models.information import FactSource, InformationPacket
-from shared.models.reliability import Claim, ClaimVerification
+
+import pytest
 from app.services.fact_store import FactStore
 from app.services.metrics import (
-    AGENT_TOOL_CALL_TOTAL,
-    AGENT_SCHEMA_VALIDATION_TOTAL,
     AGENT_HALLUCINATION_DETECTED_TOTAL,
-    AGENT_VERIFICATION_BLOCKED_TOTAL
+    AGENT_SCHEMA_VALIDATION_TOTAL,
+    AGENT_TOOL_CALL_TOTAL,
+    AGENT_VERIFICATION_BLOCKED_TOTAL,
 )
+from shared.models.information import FactSource, InformationPacket
+from shared.models.reliability import Claim, ClaimVerification
 
 # ─── 1. FactStore PostgreSQL + Redis Tests ──────────────────────────────────
 
@@ -21,7 +22,7 @@ async def test_fact_store_postgres_write():
     mock_result = MagicMock()
     mock_result.scalar.return_value = None
     mock_db_session.execute.return_value = mock_result
-    
+
     mock_session_factory = MagicMock()
     mock_session_factory.return_value = mock_db_session
 
@@ -29,11 +30,11 @@ async def test_fact_store_postgres_write():
     mock_redis.get.return_value = None
 
     store = FactStore(redis=mock_redis, db_session_factory=mock_session_factory)
-    
+
     packet = InformationPacket(key="vm_status", value="running", source=FactSource.ENV_INJECT)
-    
+
     res = await store.write("sess-1", packet, fact_type="vm_status")
-    
+
     assert res is True
     # Assert database add and commit called
     mock_db_session.add.assert_called_once()
@@ -59,9 +60,9 @@ async def test_fact_store_postgres_read_cache_hit():
     mock_redis.get.return_value = json.dumps(data).encode()
 
     store = FactStore(redis=mock_redis, db_session_factory=mock_session_factory)
-    
+
     packet = await store.read("sess-1", "vm_status", "vm_status")
-    
+
     assert packet is not None
     assert packet.value == "running"
     # Postgres shouldn't be touched because of cache hit
@@ -89,14 +90,14 @@ async def test_fact_store_postgres_read_cache_miss_db_hit():
     mock_result = MagicMock()
     mock_result.scalar.return_value = mock_db_fact
     mock_db_session.execute.return_value = mock_result
-    
+
     mock_session_factory = MagicMock()
     mock_session_factory.return_value = mock_db_session
 
     store = FactStore(redis=mock_redis, db_session_factory=mock_session_factory)
-    
+
     packet = await store.read("sess-1", "vm_status", "vm_status")
-    
+
     assert packet is not None
     assert packet.value == "running"
     # Postgres should be queried
@@ -114,12 +115,12 @@ async def test_fact_store_write_claim_verification():
     # Second, third, fourth calls to execute() in _resolve_fact_db_id: scalar returns "fact-uuid"
     mock_result.scalar.side_effect = ["case-1", "fact-uuid", "fact-uuid"]
     mock_db_session.execute.return_value = mock_result
-    
+
     mock_session_factory = MagicMock()
     mock_session_factory.return_value = mock_db_session
 
     store = FactStore(redis=None, db_session_factory=mock_session_factory)
-    
+
     verification = ClaimVerification(claims=[
         Claim(
             claim_id="claim-1",
@@ -129,9 +130,9 @@ async def test_fact_store_write_claim_verification():
             contradicting_fact_ids=["vm_status"]
         )
     ])
-    
+
     await store.write_claim_verification("sess-1", verification)
-    
+
     # Assert delete existing and add new links called
     assert mock_db_session.add.call_count == 2
     mock_db_session.commit.assert_called_once()
@@ -142,9 +143,9 @@ async def test_fact_store_write_claim_verification():
 def test_prometheus_metrics_increment():
     # Verify we can record metrics without raising exceptions
     before_call_count = AGENT_TOOL_CALL_TOTAL.labels(tool_name="test_tool", status="success")._value.get()
-    
+
     AGENT_TOOL_CALL_TOTAL.labels(tool_name="test_tool", status="success").inc()
-    
+
     after_call_count = AGENT_TOOL_CALL_TOTAL.labels(tool_name="test_tool", status="success")._value.get()
     assert after_call_count == before_call_count + 1
 

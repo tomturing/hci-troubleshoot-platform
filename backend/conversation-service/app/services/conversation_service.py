@@ -2182,16 +2182,15 @@ class ConversationService:
                             )
                             return False
 
-                        if tool_res.input_hash:
-                            if not input_hash or tool_res.input_hash != input_hash:
-                                logger.error(
-                                    event="react_confirm_hash_mismatch",
-                                    message="工具确认参数 hash 不匹配，防篡改校验未通过！",
-                                    conversation_id=str(conversation_id),
-                                    db_hash=tool_res.input_hash,
-                                    client_hash=input_hash,
-                                )
-                                return False
+                        if tool_res.input_hash and (not input_hash or tool_res.input_hash != input_hash):
+                            logger.error(
+                                event="react_confirm_hash_mismatch",
+                                message="工具确认参数 hash 不匹配，防篡改校验未通过！",
+                                conversation_id=str(conversation_id),
+                                db_hash=tool_res.input_hash,
+                                client_hash=input_hash,
+                            )
+                            return False
                 except Exception as db_exc:
                     logger.warning(
                         event="react_confirm_db_error",

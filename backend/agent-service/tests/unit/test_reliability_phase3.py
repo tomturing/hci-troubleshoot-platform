@@ -1,11 +1,10 @@
-import pytest
-from pydantic import BaseModel, Field
-from shared.models import ReasoningOutput, ClaimVerification
-from app.services.hallucination_detector import HallucinationDetector
-from app.adapters.agents.htp.react_engine import ReactEngine
-from app.domain.agent_port import AgentTextChunk, ToolResultEvent
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from app.adapters.agents.htp.react_engine import ReactEngine
+from app.domain.agent_port import AgentTextChunk, ToolResultEvent
+from app.services.hallucination_detector import HallucinationDetector
+from pydantic import BaseModel, Field
 
 # ─── 1. HallucinationDetector Tests ─────────────────────────────────────────
 
@@ -14,7 +13,7 @@ def test_hallucination_detector_phantom_tool():
         "acli_vm_list": MagicMock(),
         "acli_service_restart": MagicMock()
     })
-    
+
     # Mentioned VM list, but never executed
     text = "根据 acli_vm_list 的输出，我们发现虚拟机正常。"
     report = detector.detect(
@@ -28,7 +27,7 @@ def test_hallucination_detector_phantom_tool():
 
 def test_hallucination_detector_overconfident():
     detector = HallucinationDetector()
-    
+
     # Overconfident claim with no uncertainty words
     text = "已确认是虚拟机网络配置文件损坏导致的故障。"
     report = detector.detect(
@@ -51,7 +50,7 @@ def test_hallucination_detector_overconfident():
 
 def test_hallucination_detector_ungrounded_number():
     detector = HallucinationDetector()
-    
+
     # Contains a percentage/decimal not in tool outputs
     text = "当前磁盘空间错误率为 98.5%，需要立即扩容。"
     report = detector.detect(
@@ -86,7 +85,7 @@ async def test_react_engine_schema_validation_success():
         content='{"name": "vm-1", "status": "running"}',
         tool_calls=[]
     ))
-    
+
     async def mock_stream(*args, **kwargs):
         yield '{"name": "vm-1", "status": "running"}'
     ai_client.chat_completion_stream = mock_stream
@@ -108,7 +107,7 @@ async def test_react_engine_schema_validation_success():
         response_schema=SimpleSchema
     ):
         events.append(event)
-    
+
     assert engine.schema_validation_failed is False
     # Verified that text is streamed
     text_chunks = [e.content for e in events if isinstance(e, AgentTextChunk)]
@@ -124,7 +123,7 @@ async def test_react_engine_schema_validation_failure_blocks_write():
         content='{"name": "vm-1", invalid_json}',
         tool_calls=[]
     ))
-    
+
     async def mock_stream(*args, **kwargs):
         yield '{"name": "vm-1", invalid_json}'
     ai_client.chat_completion_stream = mock_stream
@@ -179,7 +178,7 @@ async def test_react_engine_verification_priority_blocks_closure():
         MagicMock(content="问题已解决，虚拟机服务已恢复正常运行。", tool_calls=[]),
         MagicMock(content="验证结束，已正常。", tool_calls=[])  # Second invoke
     ]
-    
+
     async def mock_stream(*args, **kwargs):
         yield "验证结束，已正常。"
     ai_client.chat_completion_stream = mock_stream

@@ -14,7 +14,7 @@ class PolicyService:
     ) -> bool:
         """
         评估当前工具执行是否需要用户确认。
-        
+
         规则：
         1. 风险等级为 3 (Block) 的工具直接拦截（这在 react_engine.py 中独立处理，但这里做备用判定）。
         2. 风险等级 >= 2 的高危/写操作工具，无论前端是什么模式（哪怕是 aggressive），必须返回 True 强制用户授权确认。
@@ -46,6 +46,6 @@ class PolicyService:
         elif execution_mode in ("safe-only", "aggressive"):
             # safe-only / aggressive 均允许自动执行低风险工具
             return False
-        
+
         # 兼容旧默认值（如 direct / react），默认强制需要确认
         return True

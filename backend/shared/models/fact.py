@@ -5,12 +5,12 @@ Fact and ClaimEvidenceLink Database Models
 
 import uuid
 from datetime import UTC, datetime
-from sqlalchemy import Column, DateTime, String, Text, Numeric, ForeignKey, Boolean
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import relationship
 
 from shared.database.postgres import Base
 from shared.models.base import TraceableMixin
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import relationship
 
 
 class Fact(Base, TraceableMixin):

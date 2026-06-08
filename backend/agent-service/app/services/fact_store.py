@@ -12,17 +12,15 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from redis.asyncio import Redis
-from sqlalchemy import select, delete
-from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import UTC, datetime
-
 from shared.models.information import EvidenceBundle, FactSource, InformationPacket, StaleDataGuard
 from shared.models.reliability import ClaimVerification
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("fact-store")
 
@@ -81,7 +79,7 @@ class FactStore:
             existing_value = None
             key_str = self._build_key(session_id, fact_type, packet.key)
             redis_failed = False
-            
+
             # 1. 优先尝试 Redis
             if self._redis:
                 try:
@@ -209,11 +207,11 @@ class FactStore:
             async with self._db_session_factory() as db_session:
                 case_id = await self._resolve_case_id(session_id, db_session)
                 from shared.models.fact import ClaimEvidenceLink
-                
+
                 # 为该 session_id/case_id 清理旧的 evidence links
                 stmt_del = delete(ClaimEvidenceLink).where(ClaimEvidenceLink.case_id == case_id)
                 await db_session.execute(stmt_del)
-                
+
                 # 插入新的 links
                 for claim in verification.claims:
                     # supporting facts
@@ -255,7 +253,7 @@ class FactStore:
     ) -> InformationPacket | None:
         """读取指定 key 的 InformationPacket。未命中或过期返回 None。"""
         redis_key = self._build_key(session_id, fact_type, key)
-        
+
         # 1. 尝试从 Redis 缓存读取
         if self._redis:
             try:
@@ -309,7 +307,7 @@ class FactStore:
     ) -> list[InformationPacket]:
         """读取指定 fact_type 下的所有 InformationPacket。"""
         index_key = self._build_index_key(session_id, fact_type)
-        
+
         # 1. 尝试从 Redis 读取
         if self._redis:
             try:
@@ -337,7 +335,7 @@ class FactStore:
                     )
                     res = await db_session.execute(stmt)
                     db_facts = res.scalars().all()
-                    
+
                     packets = []
                     for db_fact in db_facts:
                         packet = InformationPacket(
