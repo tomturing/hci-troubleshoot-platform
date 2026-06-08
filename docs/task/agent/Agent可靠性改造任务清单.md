@@ -18,15 +18,16 @@ owner: team
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
 | 2026-06-08 | v1.0 | 初版：四阶段任务分解，含验收标准 |
+| 2026-06-08 | v1.1 | 阶段零已全部合并；完成阶段一「工具事务化地基」开发并通过全量单元测试 |
 
 ---
 
 ## 整体进度
 
 ```
-阶段零（止血）     ░░░░░░░░░░  未开始
-阶段一（工具事务） ░░░░░░░░░░  未开始
-阶段二（事实体系） ░░░░░░░░░░  未开始
+阶段零（止血）     ██████████  已完成
+阶段一（工具事务） ██████████  已完成
+阶段二（事实体系） ░░░░░░░░░░  进行中
 阶段三（推理约束） ░░░░░░░░░░  未开始
 阶段四（评测闭环） ░░░░░░░░░░  未开始
 ```
@@ -119,27 +120,25 @@ owner: team
 
 > **目标**：让工具调用从"一次临时动作"升级为"平台管理的可恢复事务"。
 >
-> **依据**：方案 C Tool Plane 最小子集 + 方案 C §阶段一验收标准。
+> **依据**：方案 C Tool Plane 最小子集 + 方案 C §阶段一验收标准（因服务间 API 变更规范 (G-4) 和 8.2 破坏性变更禁令限制，放弃引入全新的 `tool_execution` 表，直接对 `tool_result` 表进行增量字段升级与状态扩展）。
 
-### T1-1 新增 `tool_execution` 数据模型 【P1】
+### T1-1 增量升级 `tool_result` 数据模型 【P1】
 
-- **文件**：`backend/shared/models/`（新增）、`database/` 迁移脚本
+- **文件**：`backend/shared/models/audit.py`、`database/` 迁移脚本
 - **任务**：
-  - [ ] 定义 `ToolExecution` SQLAlchemy 模型，核心字段：
+  - [x] 增量更新 `ToolResult` SQLAlchemy 模型，在现有 `tool_result` 表中追加列：
     ```
-    exec_id (UUID PK)
-    case_id, conversation_id
-    tool_name, input_hash, input_snapshot (JSONB)
-    status (proposed/schema_validated/policy_checked/authorized/leased/executing/observed/verified/committed/failed/cancelled)
-    risk_level, authorization_id
-    result_snapshot (JSONB), error
-    idempotency_key, trace_id
-    created_at, updated_at
+    status (String(30), 默认 'committed' 以向下兼容历史记录)
+    input_hash (String(64), nullable=True)
+    authorization_id (String(36), nullable=True)
+    idempotency_key (String(100), nullable=True)
+    case_id (String(20), nullable=True)
+    updated_at (DateTime(timezone=True), 自动更新)
     ```
-  - [ ] 新增 `authorization` 模型：`auth_id`、`exec_id`、`actor`、`decision`、`tool_input_hash`、`expires_at`
-  - [ ] 编写数据库迁移脚本（Atlas migration 或 Alembic）
-  - [ ] 更新 `backend/shared/models/__init__.py`，导出新模型
-- **验收**：迁移脚本可在本地环境无报错执行
+  - [x] 新增 `Authorization` 授权模型并创建 `authorization` 表：`auth_id`、`exec_id`、`actor`、`decision`、`tool_input_hash`、`expires_at`
+  - [x] 编写数据库增量迁移脚本 `20260608000000_optimize_tool_result_for_transaction.sql` 并执行
+  - [x] 更新 `backend/shared/models/__init__.py` 和 `conversation-service` 导出新模型
+- **验收**：Atlas 迁移脚本可在本地环境无报错执行（UP / DOWN 路径均成功）
 
 ---
 
@@ -148,10 +147,10 @@ owner: team
 - **文件**：`backend/agent-service/app/adapters/agents/htp/react_engine.py`、`backend/conversation-service/`
 - **问题**：现有 `tool_confirm` 请求仅携带 session_id，无法唯一标识一次工具执行
 - **任务**：
-  - [ ] `AgentInteractiveRequest`（`tool_confirm` 类型）增加 `exec_id`、`input_hash`、`expires_at` 字段
-  - [ ] `ConfirmService.wait_for_confirm()` 改为按 `exec_id` 级别隔离 Redis key（`confirm:{exec_id}`）
-  - [ ] 前端 `tool_confirm` 响应携带 `exec_id` 回传
-  - [ ] conversation-service `submit_interactive_response` 路由验证 `exec_id` + `input_hash` 一致性
+  - [x] `AgentInteractiveRequest`（`tool_confirm` 类型）增加 `exec_id`、`input_hash`、`expires_at` 字段
+  - [x] `ConfirmService.wait_for_confirm()` 改为按 `exec_id` 级别隔离 Redis key（`confirm:{exec_id}`）
+  - [x] 前端 `tool_confirm` 响应携带 `exec_id` 回传
+  - [x] conversation-service `submit_interactive_response` 路由验证 `exec_id` + `input_hash` 一致性
 - **验收**：同一 session 并发两个工具确认请求，两者互不干扰，各自正确解除阻塞
 
 ---
@@ -161,40 +160,53 @@ owner: team
 - **文件**：`backend/agent-service/app/services/` 或新增 `policy_service.py`
 - **问题**：前端 aggressive 模式可代替用户点击确认高风险工具，存在安全漏洞
 - **任务**：
-  - [ ] 新增 `PolicyService.evaluate(tool_name, risk_level, user_id, session_id)` 方法
-  - [ ] 自动执行仅允许满足**所有**条件的工具：
+  - [x] 新增 `PolicyService.evaluate(tool_name, risk_level, user_id, session_id)` 方法
+  - [x] 自动执行仅允许满足**所有**条件的工具：
     - `risk_level <= 1`
     - `side_effect = none`
     - input schema 校验通过
     - 服务端策略允许当前用户/工单
     - 未触发熔断（`CircuitBreaker` 未开启）
-  - [ ] `risk_level = 2` 的工具无论前端模式如何，必须进入服务端策略评估并记录授权
-  - [ ] 前端自动执行模式（Off/Safe-only/Aggressive）转为"用户偏好提示"，实际执行由后端决定
+  - [x] `risk_level = 2` 的工具无论前端模式如何，必须进入服务端策略评估并记录授权
+  - [x] 前端自动执行模式（Off/Safe-only/Aggressive）转为"用户偏好提示"，实际执行由后端决定
 - **验收**：前端设为 Aggressive，发送 `risk_level=2` 的工具确认，后端仍要求人工授权并记录 `authorization` 记录
 
 ---
 
-### T1-4 工具执行结果落库 【P2】
+### T1-4 工具执行结果落库与状态机 【P2】
 
-- **文件**：`backend/agent-service/app/adapters/agents/htp/react_engine.py`、工具执行器
+- **文件**：`backend/agent-service/app/adapters/agents/htp/react_engine.py`、`backend/agent-service/app/services/tool_audit.py`
 - **任务**：
-  - [ ] 工具执行完成后，将 `result_snapshot` 写入 `tool_execution` 表，更新 `status=committed/failed`
-  - [ ] 执行失败时记录 `error` 字段（含 exit_code 和 stderr 摘要）
-  - [ ] 实现 `ToolRetryPolicy`：区分可重试错误（超时）和不可重试错误（命令语法错误/权限拒绝），最大重试 2 次，指数退避
-  - [ ] 实现 `ToolCircuitBreaker`：单节点 3 次连续失败后熔断 60 秒，半开后自动探测恢复
+  - [x] 改造 `react_engine` 和 `ToolAuditService`，工具执行的各关键阶段对 `tool_result` 记录执行状态更新（`proposed` -> `executing` -> `committed` / `failed` / `cancelled`）
+  - [x] 执行失败时记录 `error` 字段（含 exit_code 和 stderr 摘要）
+  - [x] 实现 `ToolRetryPolicy`：区分可重试错误（超时）和不可重试错误（命令语法错误/权限拒绝），最大重试 2 次，指数退避
+  - [x] 实现 `ToolCircuitBreaker`：单节点 3 次连续失败后熔断 60 秒，半开后自动探测恢复
 - **验收**：
-  - [ ] 刷新页面后，pending/running 状态的工具执行可从 `tool_execution` 表恢复显示
-  - [ ] 每次工具执行可通过 `trace_id + exec_id` 查询全链路记录
-  - [ ] 节点连续失败 3 次后，后续调用该节点的请求直接返回熔断错误，不再等待 30 秒超时
+  - [x] 刷新页面后，pending/running 状态的工具执行可从 `tool_result` 表恢复显示
+  - [x] 每次工具执行可通过 `trace_id + exec_id` 查询全链路记录
+  - [x] 节点连续失败 3 次后，后续调用该节点的请求直接返回熔断错误，不再等待 30 秒超时
+
+---
+
+### T1-5 修复 Git 提交工具标识为 `gemini` 并升级项目规范 【P1】
+
+- **文件**：`~/.my_custom_configs`、`AGENTS.md` (或 `CLAUDE.md`)
+- **任务**：
+  - [x] 优化配置文件 `~/.my_custom_configs` 中 `gcm` 与 `gpr` 的 `AGENT` 变量提取。若未指定且存在环境变量 `ANTIGRAVITY_AGENT=1`，则默认标识设定为 `gemini`，避免在 Antigravity-IDE 环境中默认采用 `claude`
+  - [x] 在 `~/.my_custom_configs` 中定义快捷别名 `gcm-g` 和 `gpr-g` 显式以 `AGENT=gemini` 运行提交
+  - [x] 升级规范文件 `AGENTS.md` 的前言和 `Git Commit/PR 标识规则` 章节，添加对 `gemini` 标识的说明和使用规范
+- **验收**：在 Antigravity 终端中执行 `gcm` / `gpr` 提交和 PR 自动适配为 `[agent:gemini]` 后缀
 
 ---
 
 **阶段一验收标准**
 
-- [ ] 刷新页面后 pending 工具状态可恢复
-- [ ] 同一 session 并发两个确认不会串线
-- [ ] `risk_level >= 2` 的命令不可被自动执行
-- [ ] 每次工具执行可通过 `trace_id + exec_id` 查全链路
+- [x] 刷新页面后 pending 工具状态可从 `tool_result` 恢复
+- [x] 同一 session 并发两个确认不会串线
+- [x] `risk_level >= 2` 的命令不可被自动执行
+- [x] 每次工具执行可通过 `trace_id + exec_id` 查全链路
+- [x] `gcm`/`gpr` 脚本提交自动应用 `gemini` 身份标识，且项目规范完成升级说明
+
 
 ---
 
