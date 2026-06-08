@@ -36,9 +36,6 @@ spec:
       jsonPointers:
         - /spec/volumeClaimTemplates
   syncPolicy:
-    automated:
-      prune: false      # 禁止自动删除数据层资源，PVC 安全第一
-      selfHeal: true
     syncOptions:
       - CreateNamespace=true
       - RespectIgnoreDifferences=true
