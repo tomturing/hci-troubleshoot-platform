@@ -430,7 +430,7 @@ class TriageAgent(BaseAgent):
         # 1. 提取所有形如 [中文/字母/数字]-[数字] 的场景编码及其后随的名称描述
         # 匹配规则：匹配分类编码，并且捕获该行中编码之后的所有非换行、非编号字符
         pattern = re.compile(r"([一-鿿A-Za-z0-9-]+-\d+)(?:\s+([^\n①②③④⑤]+))?")
-        
+
         matches = pattern.findall(reply)
         if not matches:
             return IntentResult(
@@ -442,20 +442,20 @@ class TriageAgent(BaseAgent):
 
         # 获取缓存的 active categories 映射（若有）
         cat_map = TriageAgent._get_active_categories_map()
-        
+
         # 提取并过滤有效匹配
         parsed_items = []
         seen_codes = set()
-        
+
         for code, raw_name in matches:
             code = code.strip()
             if code in seen_codes:
                 continue
-                
+
             # 校验是否是系统支持的合法叶子节点编码
             if not TriageAgent._LEAF_CODE_RE.match(code):
                 continue
-                
+
             # 优先从分类字典获取准确名称，避免 LLM 输出中的噪音干扰；如果不存在，则从文本中解析并清洗
             if cat_map and code in cat_map:
                 name = cat_map[code]
@@ -468,7 +468,7 @@ class TriageAgent(BaseAgent):
                 # 剔除可能存在的逗号及之后的内容
                 name = re.sub(r"\s*，\s*.*$", "", name)
                 name = name.strip()
-                
+
             seen_codes.add(code)
             parsed_items.append({"code": code, "name": name})
 
@@ -489,7 +489,7 @@ class TriageAgent(BaseAgent):
                 candidates=[],
                 needs_confirmation=True,
             )
-            
+
         # 如果提取到多个编码，判定为多候选（以选项列表呈现）
         return IntentResult(
             category_id=None,
