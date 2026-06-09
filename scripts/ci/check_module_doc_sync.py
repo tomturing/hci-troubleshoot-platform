@@ -70,11 +70,12 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         solution_doc="docs/solution/case/工单设计.md",
         task_doc="docs/task/case/工单任务.md",
     ),
+    # conversation-service 的 exec_id/authorization 改造属于 agent 可靠性整改闭环
     ModuleMapping(
         code_prefix="backend/conversation-service/",
         display_name="对话服务（conversation-service）",
         solution_doc="docs/solution/conversation/对话设计.md",
-        task_doc="docs/task/conversation/对话任务.md",
+        task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
     ModuleMapping(
         code_prefix="backend/kb-service/",
@@ -101,13 +102,13 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         code_prefix="backend/agent-service/",
         display_name="Agent 服务（agent-service）",
         solution_doc="docs/solution/agent/AI助手设计.md",
-        task_doc="docs/task/agent/agent任务.md",
+        task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
     ModuleMapping(
         code_prefix="backend/scheduler-service/",
         display_name="AI 调度服务（scheduler-service）",
         solution_doc="docs/solution/agent/AI助手设计.md",
-        task_doc="docs/task/agent/agent任务.md",
+        task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
     ModuleMapping(
         code_prefix="backend/api-gateway/",
@@ -120,7 +121,7 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         code_prefix="backend/shared/utils/prompt_loader.py",
         display_name="共享库 prompt_loader（backend/shared/utils/prompt_loader.py）",
         solution_doc="docs/solution/agent/agent工具设计.md",
-        task_doc="docs/task/agent/agent任务.md",
+        task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
     ModuleMapping(
         code_prefix="backend/shared/",
@@ -133,13 +134,38 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         code_prefix="frontend/customer/src/utils/commandRisk.ts",
         display_name="客户端 UI（frontend/customer/src/utils/commandRisk.ts）",
         solution_doc="docs/solution/agent/agent工具设计.md",
-        task_doc="docs/task/agent/agent任务.md",
+        task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
+    ),
+    # frontend/customer 的 interactive-request/exec_id 改造属于 agent 可靠性整改闭环
+    ModuleMapping(
+        code_prefix="frontend/customer/src/components/InteractiveRequestCard.vue",
+        display_name="客户端 UI InteractiveRequestCard（frontend/customer/src/components/InteractiveRequestCard.vue）",
+        solution_doc="docs/solution/agent/agent工具设计.md",
+        task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
+        exempt_paths=(
+            "/tests/", "/test/", "/__pycache__/",
+        ),
     ),
     ModuleMapping(
-        code_prefix="frontend/customer/",
-        display_name="客户端 UI（frontend/customer）",
-        solution_doc="docs/solution/custom-ui/客户端设计.md",
-        task_doc="docs/task/custom-ui/custom-ui任务.md",
+        code_prefix="frontend/customer/src/components/MessageBubble.vue",
+        display_name="客户端 UI MessageBubble（frontend/customer/src/components/MessageBubble.vue）",
+        solution_doc="docs/solution/agent/agent工具设计.md",
+        task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
+        exempt_paths=(
+            "/tests/", "/test/", "/__pycache__/",
+        ),
+    ),
+    ModuleMapping(
+        code_prefix="frontend/customer/src/stores/",
+        display_name="客户端 UI stores（frontend/customer/src/stores/）",
+        solution_doc="docs/solution/agent/agent工具设计.md",
+        task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
+        exempt_paths=(
+            "/tests/", "/test/", "/__pycache__/",
+        ),
+        exempt_suffixes=(
+            ".test.ts", ".spec.ts",
+        ),
     ),
     # ToolManageView.vue 仅更新示例文本，属于 acli 格式修复的关联变更
     ModuleMapping(
