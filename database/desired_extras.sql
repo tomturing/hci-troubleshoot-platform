@@ -141,3 +141,25 @@ DO $$ BEGIN
         FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
   END IF;
 END $$;
+
+-- ═══════════════════════════════════════════════════════════════
+-- 存量环境热修复：system_prompt.name UNIQUE 约束
+--
+-- 背景：desired_schema.sql 初始未声明 UNIQUE(name)，但种子文件
+-- 02_system_prompts.sql 使用 ON CONFLICT (name) DO NOTHING，
+-- 导致 db-seed PostSync Hook 持续失败，阻塞 ArgoCD 同步（PIT-044 类似问题）。
+--
+-- 修复：幂等添加约束（新环境由 desired_schema.sql 创建时自带，存量环境由此补齐）
+-- ═══════════════════════════════════════════════════════════════
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='system_prompt') THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+      WHERE conname = 'system_prompt_name_key'
+        AND conrelid = 'system_prompt'::regclass
+    ) THEN
+      ALTER TABLE system_prompt ADD CONSTRAINT system_prompt_name_key UNIQUE (name);
+    END IF;
+  END IF;
+END $$;
+
