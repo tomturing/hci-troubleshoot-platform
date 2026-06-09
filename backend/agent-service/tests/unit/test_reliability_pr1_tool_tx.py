@@ -77,7 +77,7 @@ def test_t0_3_exec_result_timeout_passthrough():
 
 @pytest.mark.asyncio
 async def test_t1_1_submit_confirm_calls_authorization_service():
-    """submit_confirm 在用户 approve 时，应写入 authorization 记录。"""
+    """submit_confirm 只负责 Redis LPUSH 解除阻塞，Authorization 由 conversation-service 唯一写入。"""
     redis = AsyncMock()
     auth_service = MagicMock()
     auth_service.record_decision = AsyncMock(return_value="auth-uuid-123")
@@ -90,21 +90,22 @@ async def test_t1_1_submit_confirm_calls_authorization_service():
         exec_id="exec-789",
     )
 
-    auth_service.record_decision.assert_awaited_once_with(
-        exec_id="exec-789",
-        actor="alice",
-        decision="approve",
-    )
-    # Redis lpush 也必须被调用，且 value 中应包含 auth_id
+    # T1-1 授权去重：confirm_service 不再调用 record_decision
+    auth_service.record_decision.assert_not_awaited()
+    # Redis lpush 必须被调用，value 中包含 confirmed 和 authorized_by
     redis.lpush.assert_awaited_once()
     args, _ = redis.lpush.call_args
     assert args[0] == "confirm:exec-789"
-    assert "auth-uuid-123" in args[1]
+    import json
+    payload = json.loads(args[1])
+    assert payload["confirmed"] is True
+    assert payload["authorized_by"] == "alice"
+    assert payload["exec_id"] == "exec-789"
 
 
 @pytest.mark.asyncio
 async def test_t1_1_submit_confirm_deny_decision():
-    """用户 deny 时，decision 应记录为 deny。"""
+    """用户 deny 时，Redis payload 中 confirmed=False，Authorization 仍不写入。"""
     redis = AsyncMock()
     auth_service = MagicMock()
     auth_service.record_decision = AsyncMock(return_value="auth-deny-1")
@@ -116,11 +117,13 @@ async def test_t1_1_submit_confirm_deny_decision():
         authorized_by="bob",
         exec_id="exec-abc",
     )
-    auth_service.record_decision.assert_awaited_once_with(
-        exec_id="exec-abc",
-        actor="bob",
-        decision="deny",
-    )
+    # T1-1 授权去重：confirm_service 不再调用 record_decision
+    auth_service.record_decision.assert_not_awaited()
+    redis.lpush.assert_awaited_once()
+    import json
+    args, _ = redis.lpush.call_args
+    payload = json.loads(args[1])
+    assert payload["confirmed"] is False
 
 
 @pytest.mark.asyncio

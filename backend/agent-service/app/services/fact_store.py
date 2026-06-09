@@ -178,6 +178,14 @@ class FactStore:
             if not pg_written and not redis_written:
                 return False
 
+            # T4-2: 记录信息置信度指标
+            try:
+                from app.services.metrics import AGENT_INFORMATION_CONFIDENCE_SUM, AGENT_INFORMATION_PACKET_COUNT
+                AGENT_INFORMATION_CONFIDENCE_SUM.labels(session_id=session_id).inc(packet.confidence)
+                AGENT_INFORMATION_PACKET_COUNT.labels(session_id=session_id).inc()
+            except Exception:
+                pass  # 指标写入不阻塞主流程
+
             logger.debug("FactStore 写入成功: session=%s, type=%s, key=%s", session_id, fact_type, packet.key)
             return True
 

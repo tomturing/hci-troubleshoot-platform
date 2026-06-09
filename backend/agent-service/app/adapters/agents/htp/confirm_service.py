@@ -43,7 +43,8 @@ class ConfirmService:
 
     def __init__(self, redis: Redis, authorization_service: "AuthorizationService | None" = None):
         self.redis = redis
-        # T1-1：注入 AuthorizationService，用于在用户决策时落库审计
+        # 保留参数兼容历史调用方；实际授权写入由 conversation-service 统一负责，
+        # 此处不再调用 record_decision，避免与 conversation-service 产生重复授权记录。
         self._authorization_service = authorization_service
 
     async def request_confirm(
@@ -112,29 +113,18 @@ class ConfirmService:
         向 Redis 的 confirm:{target_id} key LPUSH 确认结果，
         解除 request_confirm() 的 BRPOP 等待。
 
-        T1-1：在用户做出 approve/deny 决策时同步落 Authorization 表，
-        构建 exec_id → auth_id 的可追溯审计链路。
+        注意：Authorization 授权记录由 conversation-service 的 submit_interactive_response
+        路由作为唯一可信边界写入，confirm_service 只负责解除 Redis 阻塞，不重复写授权记录。
         """
         target_id = exec_id if exec_id else session_id
         key = f"{REDIS_KEY_PREFIX}{target_id}"
 
-        # T1-1：先落授权记录，再 LPUSH 解除等待。
-        # 顺序原因：authorization 行先落库可保证即便后续 Redis 解除失败、
-        # 工具执行链路恢复时仍能查到决策依据；落库失败时仅 warning，不阻塞主流程。
-        auth_id: str | None = None
-        if self._authorization_service is not None and exec_id:
-            decision = "approve" if confirmed else "deny"
-            auth_id = await self._authorization_service.record_decision(
-                exec_id=exec_id,
-                actor=authorized_by,
-                decision=decision,
-            )
-
-        value = json.dumps({"confirmed": confirmed, "authorized_by": authorized_by, "auth_id": auth_id})
+        # 只解除 Redis 等待，Authorization 由 conversation-service 唯一写入
+        value = json.dumps({"confirmed": confirmed, "authorized_by": authorized_by, "exec_id": exec_id})
         await self.redis.lpush(key, value)
         # 设置过期防止遗留数据堆现（5 分钟）
         await self.redis.expire(key, 300)
         logger.info(
             event="confirm_submitted",
-            message=f"已提交确认结果 [session={session_id}, exec_id={exec_id}] confirmed={confirmed} by={authorized_by} auth_id={auth_id}",
+            message=f"已提交确认结果 [session={session_id}, exec_id={exec_id}] confirmed={confirmed} by={authorized_by}",
         )

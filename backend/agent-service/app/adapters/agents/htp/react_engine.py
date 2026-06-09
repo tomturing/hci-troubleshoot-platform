@@ -530,6 +530,21 @@ class ReactEngine:
                             logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
                         if response_schema.__name__ == "ClaimVerification" and self._fact_store:
                             await self._fact_store.write_claim_verification(session_id, parsed)
+                        # T4-2: ReasoningOutput 置信度与无证据结论指标
+                        if response_schema.__name__ == "ReasoningOutput":
+                            try:
+                                from app.services.metrics import (
+                                    AGENT_REASONING_CONFIDENCE,
+                                    AGENT_UNSUPPORTED_CLAIM_TOTAL,
+                                )
+                                if hasattr(parsed, "hypotheses") and parsed.hypotheses:
+                                    avg_conf = sum(h.confidence for h in parsed.hypotheses) / len(parsed.hypotheses)
+                                    AGENT_REASONING_CONFIDENCE.set(avg_conf)
+                                if hasattr(parsed, "unsupported_claims") and parsed.unsupported_claims:
+                                    for _claim in parsed.unsupported_claims:
+                                        AGENT_UNSUPPORTED_CLAIM_TOTAL.labels(claim_type="reasoning_output").inc()
+                            except Exception as met_err:
+                                logger.warning("metrics_record_failed", f"记录 ReasoningOutput metrics 失败: {met_err}")
                     except Exception as e:
                         logger.warning("schema_validation_failed", f"结构化输出校验失败: schema={response_schema.__name__}, error={e}, raw={invoke_result.content}")
                         self.schema_validation_failed = True
@@ -562,6 +577,21 @@ class ReactEngine:
                             logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
                         if response_schema.__name__ == "ClaimVerification" and self._fact_store:
                             await self._fact_store.write_claim_verification(session_id, parsed)
+                        # T4-2: ReasoningOutput 置信度与无证据结论指标（流式路径）
+                        if response_schema.__name__ == "ReasoningOutput":
+                            try:
+                                from app.services.metrics import (
+                                    AGENT_REASONING_CONFIDENCE,
+                                    AGENT_UNSUPPORTED_CLAIM_TOTAL,
+                                )
+                                if hasattr(parsed, "hypotheses") and parsed.hypotheses:
+                                    avg_conf = sum(h.confidence for h in parsed.hypotheses) / len(parsed.hypotheses)
+                                    AGENT_REASONING_CONFIDENCE.set(avg_conf)
+                                if hasattr(parsed, "unsupported_claims") and parsed.unsupported_claims:
+                                    for _claim in parsed.unsupported_claims:
+                                        AGENT_UNSUPPORTED_CLAIM_TOTAL.labels(claim_type="reasoning_output").inc()
+                            except Exception as met_err:
+                                logger.warning("metrics_record_failed", f"记录 ReasoningOutput 流式 metrics 失败: {met_err}")
                     except Exception as e:
                         logger.warning("stream_schema_validation_failed", f"流式结构化输出校验失败: {e}, raw={full_stream_text}")
                         self.schema_validation_failed = True
@@ -598,10 +628,18 @@ class ReactEngine:
                     warning_msg = f"\n\n*(注：本回复中部分内容存在高风险幻觉（如：{', '.join(reasons)}），已标注为\"待验证\"，请工程师注意确认)*"
                     yield AgentTextChunk(content=warning_msg)
                     try:
-                        from app.services.metrics import AGENT_HALLUCINATION_DETECTED_TOTAL
+                        from app.services.metrics import (
+                            AGENT_HALLUCINATION_DETECTED_TOTAL,
+                            AGENT_UNSUPPORTED_CLAIM_TOTAL,
+                        )
                         for htype, hkey in [("phantom_tools", "phantom_tool"), ("overconfident_claims", "overconfident"), ("ungrounded_numbers", "ungrounded_number")]:
                             if detection_report.get(htype):
                                 AGENT_HALLUCINATION_DETECTED_TOTAL.labels(hallucination_type=hkey).inc()
+                        # T4-2: 同时记录无证据结论指标（用于 agent_unsupported_claim_total 面板）
+                        if detection_report.get("overconfident_claims"):
+                            AGENT_UNSUPPORTED_CLAIM_TOTAL.labels(claim_type="overconfident").inc(len(detection_report["overconfident_claims"]))
+                        if detection_report.get("ungrounded_numbers"):
+                            AGENT_UNSUPPORTED_CLAIM_TOTAL.labels(claim_type="ungrounded_number").inc(len(detection_report["ungrounded_numbers"]))
                     except Exception as met_err:
                         logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
 
@@ -909,17 +947,27 @@ class ReactEngine:
                     except Exception as e:
                         logger.error(f"更新 cancelled 状态审计失败: {e}")
 
-                yield AgentStageUpdate(
-                    stage="tool_call",
-                    metadata={
-                        "exec_id": exec_id,
-                        "tool_name": tool_name,
-                        "args": tool_args,
-                        "risk_level": tool_def.risk_level,
-                        "status": "blocked",
-                    },
+                # T0-1：动态策略拦截路径统一走 ToolResultEnvelope，让 LLM 能拿到结构化错误
+                envelope = ToolResultEnvelope(
+                    tool_name=tool_name,
+                    exec_id=exec_id,
+                    success=False,
+                    exit_code=-1,
+                    stdout="",
+                    stderr=f"[blocked] 命令 {command!r} 属于高危操作（risk=3），已拒绝执行。",
+                    exit_code_meaning="blocked_by_policy",
+                    truncated=False,
+                    interpretation="该工具被动态策略评估为高危操作（risk=3），系统已自动拦截",
+                    suggested_next_action="如确需执行，请联系管理员调整工具 policy 配置，或改用低风险替代方案",
                 )
-                yield AgentTextChunk(content=f"[blocked] 命令 {command!r} 属于高危操作（risk=3），已拒绝执行。")
+                yield ToolResultEvent(
+                    result=envelope,
+                    exec_id=exec_id,
+                    tool_name=tool_name,
+                    args=tool_args,
+                    risk_level=tool_def.risk_level,
+                    duration_ms=0,
+                )
                 return
         # ─────────────────────────────────────────
 
@@ -1305,19 +1353,24 @@ class ReactEngine:
         else:
             breaker.record_success()
 
-        # T4-2: 统计工具调用成功率 metrics
-        try:
-            from app.services.metrics import AGENT_TOOL_CALL_TOTAL
-            AGENT_TOOL_CALL_TOTAL.labels(
-                tool_name=tool_name,
-                status="success" if error is None else "failed"
-            ).inc()
-        except Exception as met_err:
-            logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
-
         # 4. 最终结果落库审计
         completed_at = datetime.now(UTC)
         duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+
+        # T4-2: 统计工具调用成功率与耗时分布 metrics
+        try:
+            from app.services.metrics import AGENT_TOOL_CALL_TOTAL, AGENT_TOOL_EXECUTION_DURATION
+            status_str = "success" if error is None else "failed"
+            AGENT_TOOL_CALL_TOTAL.labels(
+                tool_name=tool_name,
+                status=status_str
+            ).inc()
+            AGENT_TOOL_EXECUTION_DURATION.labels(
+                tool_name=tool_name,
+                status=status_str
+            ).observe((completed_at - started_at).total_seconds())
+        except Exception as met_err:
+            logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
 
         # 审计记录
         if self._audit:
