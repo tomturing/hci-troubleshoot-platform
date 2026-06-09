@@ -605,7 +605,7 @@ class TestInvestigationAgentQualityCheck:
         import app.routes.agent as agent_routes
 
         mock_router = MagicMock()
-        
+
         async def fake_process(*args, **kwargs):
             yield AgentInteractiveRequest(
                 request_id="test-req",
@@ -615,11 +615,11 @@ class TestInvestigationAgentQualityCheck:
                 prompt="test-prompt",
                 options=[],
             )
-        
+
         mock_router.process = fake_process
         original_router = agent_routes._agent_router
         agent_routes._agent_router = mock_router
-        
+
         try:
             req = AgentStreamRequest(
                 session_id="sess-01",
@@ -628,11 +628,11 @@ class TestInvestigationAgentQualityCheck:
                 assistant_type="htp-agent",
                 messages=[{"role": "user", "content": "hello"}],
             )
-            
+
             events = []
             async for sse_event in _event_stream(req):
                 events.append(sse_event)
-                
+
             # 校验输出的 SSE 事件中包含 interactive_request，但不包含 type="error"
             import json
             event_types = []
@@ -640,7 +640,7 @@ class TestInvestigationAgentQualityCheck:
                 if ev.startswith("data: "):
                     data = json.loads(ev[6:].strip())
                     event_types.append(data.get("type"))
-            
+
             assert "interactive_request" in event_types
             assert "error" not in event_types
             assert "done" in event_types
