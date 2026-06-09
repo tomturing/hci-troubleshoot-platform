@@ -91,7 +91,7 @@ def main():
     failed_count = 0
     no_match_count = 0
 
-    for i, row in df.iterrows():
+    for _i, row in df.iterrows():
         problem_id = str(row['问题编号'])
 
         if problem_id in problem_results:

@@ -149,8 +149,17 @@ class EvidenceBuilder:
         """
         report = InformationQualityReport(session_id=session_id)
 
-        # 检查 1：env_context 为空
-        if not env_context:
+        # 检查 1：env_context 为空且 FactStore 中没有历史事实
+        has_stored_facts = False
+        if self._fact_store:
+            stored_packets = await self._fact_store.read_all_types(
+                session_id,
+                fact_types=["vm_status", "host_status", "alert_status", "task_status", "env_inject"],
+            )
+            if stored_packets:
+                has_stored_facts = True
+
+        if not env_context and not has_stored_facts:
             report.missing_keys.extend(list(S0_REQUIRED_KEYS))
             report.quality_score = 0.0
             report.needs_clarification = True

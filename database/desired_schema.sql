@@ -1144,3 +1144,70 @@ CREATE INDEX IF NOT EXISTS idx_terminal_operation_case_seq ON terminal_operation
 CREATE INDEX IF NOT EXISTS idx_terminal_operation_case_time ON terminal_operation (case_id, created_at);
 -- 全文搜索（关键词检索）
 CREATE INDEX IF NOT EXISTS idx_terminal_operation_content_search ON terminal_operation USING GIN (to_tsvector('simple', content_clean));
+
+-- ------------------------------------------------------------
+-- 表: fact  [模块: agent-service]
+-- 说明: 事实表 — 存储大模型诊断推理过程中采集到的客观事实数据 (T4-3)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS fact (
+    id varchar(36) NOT NULL,
+    case_id varchar(20) NOT NULL,
+    fact_type varchar(50) NOT NULL,
+    key varchar(100) NOT NULL,
+    source varchar(50) NOT NULL,
+    raw_ref text,
+    normalized_value jsonb NOT NULL,
+    confidence numeric(4,3) NOT NULL DEFAULT 1.000,
+    freshness varchar(30) NOT NULL DEFAULT 'unknown',
+    conflict boolean NOT NULL DEFAULT false,
+    collected_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fact_pkey PRIMARY KEY (id)
+);
+
+COMMENT ON TABLE fact IS '事实表 — 存储大模型诊断推理过程中采集到的客观事实数据 (T4-3)';
+COMMENT ON COLUMN fact.id IS '事实主键 UUID 字符串';
+COMMENT ON COLUMN fact.case_id IS '关联工单 ID';
+COMMENT ON COLUMN fact.fact_type IS '事实类型';
+COMMENT ON COLUMN fact.key IS '事实键名';
+COMMENT ON COLUMN fact.source IS '事实数据来源';
+COMMENT ON COLUMN fact.raw_ref IS '原始引用 ID';
+COMMENT ON COLUMN fact.normalized_value IS '标准化 JSON 数据';
+COMMENT ON COLUMN fact.confidence IS '置信度';
+COMMENT ON COLUMN fact.freshness IS '时效性';
+COMMENT ON COLUMN fact.conflict IS '是否存在冲突';
+COMMENT ON COLUMN fact.collected_at IS '数据实际采集时间';
+COMMENT ON COLUMN fact.created_at IS '记录创建时间';
+
+CREATE INDEX IF NOT EXISTS idx_fact_case_id ON fact (case_id);
+CREATE INDEX IF NOT EXISTS idx_fact_fact_type ON fact (fact_type);
+CREATE INDEX IF NOT EXISTS idx_fact_key ON fact (key);
+
+-- ------------------------------------------------------------
+-- 表: claim_evidence_link  [模块: agent-service]
+-- 说明: 结论与事实证据链关联表 — 关联大模型生成的诊断断言与事实 (T4-3)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS claim_evidence_link (
+    id varchar(36) NOT NULL,
+    case_id varchar(20) NOT NULL,
+    claim_id varchar(50) NOT NULL,
+    fact_id varchar(36) NOT NULL,
+    relation varchar(30) NOT NULL,
+    confidence numeric(4,3) NOT NULL DEFAULT 1.000,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_claim_evidence_link_fact_id FOREIGN KEY (fact_id) REFERENCES fact (id) ON DELETE CASCADE,
+    CONSTRAINT claim_evidence_link_pkey PRIMARY KEY (id)
+);
+
+COMMENT ON TABLE claim_evidence_link IS '结论与事实证据链关联表 — 关联大模型生成的诊断断言与事实 (T4-3)';
+COMMENT ON COLUMN claim_evidence_link.id IS '关联主键 UUID 字符串';
+COMMENT ON COLUMN claim_evidence_link.case_id IS '关联工单 ID';
+COMMENT ON COLUMN claim_evidence_link.claim_id IS '断言/结论 ID';
+COMMENT ON COLUMN claim_evidence_link.fact_id IS '关联事实 ID';
+COMMENT ON COLUMN claim_evidence_link.relation IS '关联关系: supporting/contradicting';
+COMMENT ON COLUMN claim_evidence_link.confidence IS '相关置信度';
+COMMENT ON COLUMN claim_evidence_link.created_at IS '记录创建时间';
+
+CREATE INDEX IF NOT EXISTS idx_claim_evidence_link_case_id ON claim_evidence_link (case_id);
+CREATE INDEX IF NOT EXISTS idx_claim_evidence_link_claim_id ON claim_evidence_link (claim_id);
+CREATE INDEX IF NOT EXISTS idx_claim_evidence_link_fact_id ON claim_evidence_link (fact_id);

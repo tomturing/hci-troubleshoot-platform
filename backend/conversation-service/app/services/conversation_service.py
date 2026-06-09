@@ -313,7 +313,7 @@ class ConversationService:
 
             # 2.6 【修复】获取环境上下文信息（Segment 4 数据）
             context_info: dict | None = None
-            if current_stage == "S0" and self.environment_client:
+            if current_stage in ("S0", "S1", "S2", "S3", "S4") and self.environment_client:
                 if settings.USE_RAW_ENVIRONMENT_CONTEXT:
                     raw_envs = await self.environment_client.get_raw_environments(case_id)
                     if raw_envs:
@@ -324,8 +324,8 @@ class ConversationService:
                             "task_logs": raw_envs.get("task", {}).get("tasks", []),
                         }
                         logger.info(
-                            event="s0_raw_context_info_loaded",
-                            message="S0 原始环境上下文已加载",
+                            event="env_context_raw_info_loaded",
+                            message=f"诊断阶段 {current_stage} 原始环境上下文已加载",
                             case_id=case_id,
                             alert_count=len(context_info["alert_logs"]),
                             task_count=len(context_info["task_logs"]),
@@ -339,8 +339,8 @@ class ConversationService:
                             "task_logs": env_context.task_logs,
                         }
                         logger.info(
-                            event="s0_context_info_loaded",
-                            message="S0 环境上下文已加载",
+                            event="env_context_info_loaded",
+                            message=f"诊断阶段 {current_stage} 环境上下文已加载",
                             case_id=case_id,
                             alert_count=len(env_context.alert_logs),
                             task_count=len(env_context.task_logs),
