@@ -60,8 +60,8 @@ async def get_sop_node(
         {"error": "节点 n-999 不存在", "node_id": "n-999"}
     """
     # 获取完整决策树
-    tree_json = await kb_client.get_sop_tree(sop_document_id)
-    if tree_json is None:
+    tree_data = await kb_client.get_sop_tree(sop_document_id)
+    if tree_data is None:
         logger.warning(
             event="sop_tree_not_found",
             sop_document_id=sop_document_id,
@@ -69,6 +69,18 @@ async def get_sop_node(
         )
         return {
             "error": f"SOP 文档 {sop_document_id} 的决策树不存在或未发布",
+            "sop_document_id": sop_document_id,
+        }
+
+    tree_json = tree_data.get("tree")
+    if tree_json is None:
+        logger.warning(
+            event="sop_tree_empty",
+            sop_document_id=sop_document_id,
+            node_id=node_id,
+        )
+        return {
+            "error": f"SOP 文档 {sop_document_id} 决策树未生成",
             "sop_document_id": sop_document_id,
         }
 
@@ -109,7 +121,8 @@ def _find_node_in_tree(tree_json: dict, node_id: str) -> dict | None:
     Returns:
         找到的节点 dict，未找到返回 None
     """
-    if tree_json.get("node_id") == node_id:
+    node_key = tree_json.get("node_id") or tree_json.get("id")
+    if node_key == node_id:
         return tree_json
 
     for child in tree_json.get("children", []):
@@ -135,8 +148,18 @@ def _build_node_response(node: dict) -> dict[str, Any]:
     children = node.get("children", [])
     is_leaf = not children
 
-    # 提取子节点概览（仅 node_id + title）
-    children_summary = [{"node_id": child.get("node_id", ""), "title": child.get("name", "")} for child in children]
+    # 提取子节点概览，兼容 node_id/id 和 name/title，同时包含前置条件以便在 Prompt 中外显
+    children_summary = [
+        {
+            "node_id": child.get("node_id") or child.get("id") or "",
+            "title": child.get("name") or child.get("title") or "",
+            "prerequisites": child.get("prerequisites", []),
+        }
+        for child in children
+    ]
+
+    node_id_val = node.get("node_id") or node.get("id") or ""
+    node_name_val = node.get("name") or node.get("title") or ""
 
     if is_leaf:
         diagnosis = node.get("diagnosis")
@@ -144,9 +167,9 @@ def _build_node_response(node: dict) -> dict[str, Any]:
 
         if diagnosis:
             return {
-                "node_id": node.get("node_id", ""),
+                "node_id": node_id_val,
                 "type": "diagnosis",
-                "title": node.get("name", ""),
+                "title": node_name_val,
                 "content": _format_diagnosis_content(diagnosis),
                 "commands": diagnosis.get("acli_methods", []),
                 "children": [],
@@ -154,18 +177,18 @@ def _build_node_response(node: dict) -> dict[str, Any]:
             }
         elif solution:
             return {
-                "node_id": node.get("node_id", ""),
+                "node_id": node_id_val,
                 "type": "solution",
-                "title": node.get("name", ""),
+                "title": node_name_val,
                 "content": _format_solution_content(solution),
                 "commands": [],
                 "children": [],
             }
         else:
             return {
-                "node_id": node.get("node_id", ""),
+                "node_id": node_id_val,
                 "type": "leaf",
-                "title": node.get("name", ""),
+                "title": node_name_val,
                 "content": "（此叶节点缺少诊断和解决方案内容）",
                 "commands": [],
                 "children": [],
@@ -178,9 +201,9 @@ def _build_node_response(node: dict) -> dict[str, Any]:
             content_parts.extend(f"- {p}" for p in prerequisites)
 
         return {
-            "node_id": node.get("node_id", ""),
+            "node_id": node_id_val,
             "type": "branch",
-            "title": node.get("name", ""),
+            "title": node_name_val,
             "content": "\n".join(content_parts) if content_parts else "",
             "commands": [],
             "children": children_summary,
@@ -316,7 +339,7 @@ async def sop_advance(
             else:
                 actual_node_type = "branch"
 
-        node_title = target_node.get("name", "")
+        node_title = target_node.get("name") or target_node.get("title") or ""
 
         # 调用 conversation-service 更新执行状态
         if conversation_sop_client is None:

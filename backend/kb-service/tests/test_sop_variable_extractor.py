@@ -285,8 +285,9 @@ class TestExtractSopVariables:
 检查 {node_ip} 的状态
 """
         defs, undeclared, orphan = extract_sop_variables(content)
-        assert len(defs) == 1  # 只提取实际使用的变量
+        assert len(defs) == 2  # 提取实际使用的和已声明的变量
         assert defs[0]["name"] == "node_ip"
+        assert defs[1]["name"] == "unused_var"
         assert undeclared == []
         assert orphan == ["unused_var"]
 
@@ -363,9 +364,10 @@ class TestExtractSopVariables:
 检查 {node_ip} 的状态
 """
         defs, undeclared, orphan = extract_sop_variables(content)
-        # 只有 node_ip 被使用，所以 defs 只有 1 个
-        assert len(defs) == 1
+        # 实际使用的与已声明的都应在 defs 中
+        assert len(defs) == 2
         assert defs[0]["name"] == "node_ip"
+        assert defs[1]["name"] == "vm_name"
         assert orphan == ["vm_name"]
 
     def test_local_variables_table_and_hierarchical_validation(self):

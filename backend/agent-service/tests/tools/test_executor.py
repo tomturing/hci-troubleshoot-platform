@@ -99,8 +99,8 @@ class TestCommandSanitizer:
 
     def test_acli_exec_accept_valid_prefix(self):
         """acli_exec 接受合法命令"""
-        result = CommandSanitizer.sanitize("acli vm list --formatter json", "acli_exec")
-        assert result == "acli vm list --formatter json"
+        result = CommandSanitizer.sanitize("acli --formatter json vm list", "acli_exec")
+        assert result == "acli --formatter json vm list"
 
     # ── 测试允许的合法命令 ───────────────────────────────────────────────────
 
@@ -200,8 +200,8 @@ class TestBridgeRelayExecutor:
             )
 
             assert result.truncated is True
-            assert len(result.stdout) == 4000
-            assert result.stdout == "A" * 4000
+            assert len(result.stdout) <= 4000
+            assert "此处截断" in result.stdout
             assert result.exit_code == 0
 
     @pytest.mark.asyncio
@@ -284,7 +284,7 @@ class TestBridgeRelayExecutor:
 
             result = await executor.execute(
                 tool_name="acli_exec",
-                args={"command": "acli vm list --formatter json", "reason": "测试"},
+                args={"command": "acli --formatter json vm list", "reason": "测试"},
                 conversation_id="conv-123",
             )
 

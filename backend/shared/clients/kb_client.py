@@ -162,51 +162,6 @@ class KBClient(InternalHTTPClient):
             )
             return []
 
-    async def sop_match(self, query: str) -> dict | None:
-        """
-        SOP 关键词精确匹配
-
-        [已废弃] 改用 classify_intent + route_by_category 进行意图识别和知识检索
-
-        返回命中节点的完整内容，未命中返回 None：
-          - node_id, title, content, category, keywords
-
-        注意：此方法基于 kb_sop_node 关键字路由，是"已知最差的触发机制"。
-        请改用新的意图识别流程：
-          1. classify_intent(query) → 获取 category_id
-          2. route_by_category(category_code, query) → 获取知识内容
-        """
-        logger.warning(
-            event="deprecated_sop_match_called",
-            message="sop_match 已废弃，请改用 classify_intent + route_by_category",
-            query=query[:80],
-        )
-        try:
-            resp = await self.post(
-                f"{self._api_prefix}/sop/match",
-                json={"query": query},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            # 未命中时 matched=false
-            if not data.get("matched"):
-                return None
-            return data
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                event="kb_sop_http_error",
-                message=f"KB SOP match returned HTTP {exc.response.status_code}",
-                query=query[:80],
-                status_code=exc.response.status_code,
-            )
-            return None
-        except httpx.RequestError as exc:
-            logger.warning(
-                event="kb_sop_unavailable",
-                message=f"KB service unreachable: {exc}",
-                query=query[:80],
-            )
-            return None
 
     async def get_categories_grouped(self, leaf_only: bool = True) -> dict[str, list[dict]]:
         """

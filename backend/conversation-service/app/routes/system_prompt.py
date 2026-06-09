@@ -2,16 +2,16 @@
 Prompt 模板管理路由 — 提供对 system_prompt 表的增删改查接口
 """
 
-import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from shared.database.postgres import DatabaseManager
 from shared.models.system_prompt import SystemPrompt
+from shared.observability.logger import get_logger
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-logger = logging.getLogger(__name__)
+logger = get_logger("prompts-routes")
 router = APIRouter(prefix="/api/v1/prompts", tags=["prompts"])
 
 # 由 main.py 注入数据库管理器

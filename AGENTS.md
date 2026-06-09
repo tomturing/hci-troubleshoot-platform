@@ -1,7 +1,7 @@
 # HCI 智能排障平台 — 项目规范
 
-> **本文件是所有 AI Agent（Claude Code / Codex CLI / Gemini CLI）的项目层规范文件。**
-> `./CLAUDE.md` 是本文件的符号链接，确保 Claude Code 读到相同内容。
+> **本文件是所有 AI Agent（Claude Code / Codex CLI / Gemini CLI / Antigravity IDE）的项目层规范文件。**
+> `./CLAUDE.md` 是本文件的符号链接，确保 Claude Code / Antigravity IDE 读到相同内容。
 > `./CLAUDE.local.md` 存放个人本地配置（不提交 git）。
 > 全局编码规范见 `~/.claude/CLAUDE.md`，全局避坑指南见 `~/.claude/pitfalls/`。
 
@@ -77,6 +77,43 @@
   - 升级 `data-pipeline/kbd/converter.py` 板块解析器，使用平铺子节点动态遍历合并机制，自动提取并合入溢出在容器外的排障正文和截图，完美向后兼容。
   - 修复 `KbdReviewView.vue` 中由 `inDescription` 状态导致的 Markdown “贪婪吸入”解析 Bug，严格限定非空且非 `>` 开头的行为卡片结束标志，防止游离排障步骤被误吞进折叠面板内。
   - 修复 `KbdReviewView.vue` 内 `renderMarkdown` 转义星号渲染冲突，使用 DOMPurify + marked AST 解析替代手写正则，完美修复分割线及排障步骤中的反斜杠裂变与星号吞噬 Bug。
+- **Prompt/工具/技能管理页面 Dialog 和布局样式优化** (PR #391):
+  - 修复 Prompt/工具/技能 Dialog 中 teleported 弹窗 scoped 样式失效及 full screen 模式下按钮定位异常的 Bug
+  - 优化 Prompt 管理页面主卡片最小高度及 Prompt 预览最大高度，杜绝列表下方的无效留白
+  - 将工具管理中”功能描述”字段调整到右栏上方，均衡左右高度并拓宽编辑体验
+- **技能管理列表排版优化** (PR #392):
+  - 优化技能管理列表中的“Skill 标识”和“操作”按钮排版，防止折行，保持单行显示
+- **技能编辑 Markdown 预览修复** (PR #393):
+  - 修复技能编辑弹框中右侧“预览”由于未引入 marked 和 dompurify 模块导致的 Markdown 原文未解析 Bug
+- **技能预览列表缩进与 SOP 环境变量自动注入优化**:
+  - 修复技能管理页面 Markdown 预览中由于全局样式 reset 导致的列表（ul/ol/li）无前缀符号及缩进丢失问题。
+  - 优化 SOP 执行实例创建接口 `sop_create_execution` 响应，使其包含并返回已解析的环境变量。
+  - 优化排障 Agent `investigation_agent` 的系统提示词构建，在新执行实例的系统提示词中注入 `【已知变量】`，避免 AI 仍向用户手动询问已收集的信息。
+  - 修复变量池 `sop_request_variable` 获取策略判定逻辑，支持并正确识别 `env:xxx` 格式的环境变量注入策略。
+- **SOP 工具执行器参数适配修复**：
+  - 修复 `SopToolExecutor.execute` 签名缺少 `**kwargs` 导致在 ReAct 循环中被调用时抛出 `TypeError: got an unexpected keyword argument 'conversation_id'`，彻底解决工具调用通道报错阻断的问题。
+- **SOP 交互变量值提交失效问题修复**：
+  - 修复前端 `MessageBubble.vue` 和 `InteractiveRequestCard.vue` 提交 `interactive-response` 时缺失 `kind` 和 `metadata` 导致路由错误的问题。
+  - 在后端 `submit_interactive_response` 增加针对 `variable_input`/`variable_confirm` 的处理，直接将变量写入 SOP 变量库中，并恢复执行状态为 `active`。
+  - 前端接收到变量提交流程成功后，自动调用 `sendMessage` 重新发送变量值，触发后端 HTP Agent 的 ReAct 推理循环从中断位置恢复继续运行。
+- **SOP 执行路由漂移与恢复稳定性修复**：
+  - 修复排障 Agent 在多轮对话中，由于用户发送的“继续”或命令回显数据与 SOP 文档内容在语义匹配上发生偏差，导致 `route_by_category` 三轨路由发生漂移、误判为非 SOP 轨道而回退到 fallback 推理模式的缺陷。
+  - 优化：当检测到活跃的 `sop_resume_context`（正在执行的 SOP）时，直接绕过三轨路由匹配，通过 document_id 获取 SOP 详情，确保 Agent 在会话周期内牢牢锁定在 SOP 导航模式中。
+- **工具调用可视化、变量交互重构与原始环境注入**：
+  - **工具调用可视化与自动执行**：后端 `react_engine.py` 在工具执行生命周期中（执行前中后）广播 `tool_call` 与 `tool_result` 阶段事件并透传统一 `exec_id`。前端支持全局“自动执行”模式选择（Off / Safe-only / Aggressive），在满足风险级别时自动回复确认。对话流中新增工具卡片，以黑底 Terminal Console 折叠渲染命令执行日志与耗时。
+  - **变量输入/确认交互重构**：将 `variable_input` 升级为行内表单，对 `validation_pattern` 正则及必填项进行失焦与实时校验，不合法时红框报错并禁用提交按钮。将 `variable_confirm` 升级为左右双栏对比，左栏一键快捷确认系统推荐值，右栏支持微调修改与实时校验。
+  - **原始环境注入与向下兼容**：后端在开启 `USE_RAW_ENVIRONMENT_CONTEXT` 时直接将数据库的原始字典/JSON 喂给 LLM 提升推理准确率。在 `sop_execution.py` 中增加 is_raw 兼容层，自动将 Unix 时间戳、状态整型、紧急度等映射为 SOP 规则可识别的语义值。
+- **SOP 工具执行器参数冲突与布尔变量归一化修复**：
+  - 修复 `SopToolExecutor.execute` 在委派调用默认执行器时，由于 `**kwargs` 携带 `conversation_id` 造成的多值传递错误 `got multiple values for keyword argument 'conversation_id'`。
+  - 在 `submit_interactive_response` 接口与 `sop_variable_response` 路由中，对 `boolean` 类型的变量提交值进行强制归一化（Truthful 词汇转为 `"true"`，Falsy 词汇转为 `"false"`），彻底解决大模型由于布尔值字符串（如“是”/“否”）不符合条件表达式规则而无法推进决策树节点的缺陷。
+- **废弃技能数据与临时文件清理**（PR #411）：
+  - 物理删除 `backend/kb-service/data/` 技能文件目录和 `sop_matcher` 废弃匹配器逻辑。
+  - 修复 `health.py` 中数据库检查的探针变量拼写 Bug（修正 `db` 为 `database_manager`）。
+  - 在 `kb-service` 和 `conversation-service` 契约验证中彻底下线 `/sop/match` 废弃路由。
+  - 移除 Docker Compose 和 Helm 模板中对技能数据卷挂载及 `SOP_SKILLS_DIR` 环境变量的声明。
+  - 清理误提交的 `.kb-service-portforward.pid` 与 Word 临时所有者文件，并在 `data-pipeline/kbd/.gitignore` 中新增 `*.pid` 过滤规则。
+- **部署策略优化**：
+  - GitHub 提交 PR 后仅自动同步 dev 环境，staging 和 prod 环境均转为手动同步更新，增强发版安全性。
 
 ---
 
@@ -198,13 +235,19 @@ fix: 修复 ArgoCD 升级脚本
   ```bash
   hostname | tr '[:upper:]' '[:lower:]'
   ```
-- **工具**：`claude` 或 `copilot`
+- **工具**：`claude`、`gemini` 或 `copilot`（当运行于 Antigravity IDE 且存在环境变量 `ANTIGRAVITY_AGENT=1` 时，脚本会自动识别并默认设定为 `gemini`）
 
 **实现方式**：使用 `gcm` 和 `gpr` 函数（已配置在 `~/.my_custom_configs`）：
 
 ```bash
-# Claude Code 提交 commit
+# Claude Code 提交 commit（默认路径）
 gcm "fix: 修复问题"
+
+# Gemini (Antigravity IDE) 提交 commit
+# 在 Antigravity 终端中执行 gcm 即可（已基于环境变量自适应），或显式指定：
+gcm-g "fix: 修复问题"
+# 或者：
+AGENT=gemini gcm "fix: 修复问题"
 
 # GitHub Copilot 提交 commit
 AGENT=copilot gcm "feat: 新功能"
@@ -212,12 +255,16 @@ AGENT=copilot gcm "feat: 新功能"
 # Claude Code 创建 PR（自动添加 labels）
 gpr "fix: 修复问题"
 
+# Gemini (Antigravity IDE) 创建 PR
+# 在 Antigravity 终端中直接执行 gpr 即可，或显式指定：
+gpr-g "fix: 修复问题"
+
 # GitHub Copilot 创建 PR
 AGENT=copilot gpr "feat: 新功能"
 ```
 
 > ⚠️ **注意（GitHub Copilot 执行时）**：
-> 1. `gpr` 默认 `AGENT=claude`，**Copilot 必须显式加 `AGENT=copilot` 前缀**，否则标签打错
+> 1. `gpr` 在无自适应变量的环境下默认 `AGENT=claude`，**Copilot 必须显式加 `AGENT=copilot` 前缀**，否则标签打错
 > 2. `gpr` 生成的 body 是硬编码占位符，**创建 PR 后必须立即用以下模板补写完整描述**：
 >    ```
 >    ## 问题

@@ -63,7 +63,7 @@ ALLOWED_EXTRAS = {
 BRANCH_APPROVED_STEMS: dict[str, list[str]] = {
     "case":           ["工单"],
     "conversation":   ["对话"],
-    "agent":          ["AI助手", "agent", "agent基类", "agent记忆", "agent技能"],  # 2026-05-20 由 ai-assistant 重命名，2026-05-24 新增基类设计，2026-06-04 新增记忆专题，2026-06-05 新增技能专题
+    "agent":          ["AI助手", "agent", "agent基类", "agent记忆", "agent技能", "agent工具"],  # 2026-05-20 由 ai-assistant 重命名，2026-05-24 新增基类设计，2026-06-04 新增记忆专题，2026-06-05 新增技能专题，2026-06-05 新增工具专题
     "knowledge-base": ["知识库", "SOP树"],
     "custom-ui":      ["客户端"],
     "admin-ui":       ["管理台"],

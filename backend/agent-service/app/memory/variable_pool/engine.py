@@ -179,7 +179,7 @@ async def sop_request_variable(
         acquisition_tool=acquisition_tool,
     )
 
-    if strategy in ("env_injection", "env_context"):
+    if strategy in ("env_injection", "env_context") or (isinstance(strategy, str) and strategy.startswith("env:")):
         # env_injection 类变量应在初始化阶段批量注入，如果不小心漏掉了或解析失败，
         # 我们在此处记录 warning 并降级为 user_input 策略，避免系统崩溃。
         logger.warning(
@@ -216,6 +216,14 @@ async def sop_request_variable(
         msg: str = "",
     ) -> VariableRequestResult:
         """标记执行中断，等待用户提供变量值"""
+        if var_schema.get("type") == "boolean":
+            kind = "variable_confirm"
+            if not options:
+                options = [
+                    {"optionId": "true", "name": "是 (true)"},
+                    {"optionId": "false", "name": "否 (false)"},
+                ]
+
         if conversation_sop_client:
             try:
                 await conversation_sop_client.interrupt(
@@ -314,9 +322,9 @@ async def sop_request_variable(
             try:
                 candidates_result = await tool_executor.execute(acquisition_tool, {})
                 if isinstance(candidates_result, list):
-                    options = [{"label": str(item), "value": item} for item in candidates_result]
+                    options = [{"optionId": str(item), "name": str(item)} for item in candidates_result]
                 elif isinstance(candidates_result, dict) and "items" in candidates_result:
-                    options = [{"label": str(item), "value": item} for item in candidates_result["items"]]
+                    options = [{"optionId": str(item), "name": str(item)} for item in candidates_result["items"]]
                 logger.info(
                     event="sop_request_variable_confirm_candidates",
                     variable_name=variable_name,

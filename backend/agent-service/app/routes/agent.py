@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.utils.prompt_loader import PromptLoadError, PromptValidationError
 
 from app.adapters.agents.agent_router import AgentRouter
 from app.adapters.agents.htp.confirm_service import ConfirmService
@@ -152,6 +153,9 @@ async def _event_stream(
                         "options": event.options,
                         "custom_input": event.custom_input,
                         "metadata": event.metadata,
+                        "exec_id": event.exec_id,
+                        "input_hash": event.input_hash,
+                        "expires_at": event.expires_at,
                     }
                 )
             elif isinstance(event, AgentEscalation):
@@ -187,6 +191,13 @@ async def _event_stream(
             case_id=req.case_id,
         )
 
+    except (PromptLoadError, PromptValidationError) as exc:
+        logger.error(
+            event="agent_prompt_error",
+            message=str(exc),
+            session_id=req.session_id,
+        )
+        yield _sse({"type": "error", "message": f"[Prompt配置错误] {str(exc)}"})
     except AgentUnavailableError as exc:
         logger.error(
             event="agent_unavailable",
@@ -305,6 +316,9 @@ async def resume_ops_agent_stream(session_id: str) -> StreamingResponse:
                         "options": event.options,
                         "custom_input": event.custom_input,
                         "metadata": event.metadata,
+                        "exec_id": event.exec_id,
+                        "input_hash": event.input_hash,
+                        "expires_at": event.expires_at,
                     }
                 )
             elif isinstance(event, AgentStageUpdate):
@@ -327,6 +341,7 @@ class ReactConfirmRequest(BaseModel):
     session_id: str
     confirmed: bool
     authorized_by: str = "user"
+    exec_id: str | None = None
 
 
 @router.post("/v1/agent/react-confirm")
@@ -348,6 +363,7 @@ async def react_confirm(request: Request, body: ReactConfirmRequest) -> dict:
             - session_id: 会话 ID（对应 conversation_id）
             - confirmed: True=用户确认执行，False=用户取消
             - authorized_by: 操作人标识（默认"user"）
+            - exec_id: 工具执行记录 ID
 
     Returns:
         {"ok": True} 确认成功
@@ -369,6 +385,7 @@ async def react_confirm(request: Request, body: ReactConfirmRequest) -> dict:
             session_id=body.session_id,
             confirmed=body.confirmed,
             authorized_by=body.authorized_by,
+            exec_id=body.exec_id,
         )
         logger.info(
             event="react_confirm_submitted",

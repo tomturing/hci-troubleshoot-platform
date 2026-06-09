@@ -235,7 +235,9 @@ class TestSkillDefinitionRoutes:
         mock_session.execute.return_value = mock_check_result
 
         with pytest.raises(HTTPException) as exc_info:
-            await create_skill(payload={"skill_name": "conflict-name", "description": "some trigger description"}, db=mock_session)
+            await create_skill(
+                payload={"skill_name": "conflict-name", "description": "some trigger description"}, db=mock_session
+            )
         assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio

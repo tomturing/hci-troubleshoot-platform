@@ -62,6 +62,19 @@ logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    # ── 编译 SQLAlchemy 所有模型，拦截任何 NoReferencedTableError 外键元数据配置错误 ────
+    try:
+        from shared.models.audit import AuditLog  # noqa: F401
+        from shared.models.conversation import Conversation  # noqa: F401
+        from shared.models.system_prompt import SystemPrompt  # noqa: F401
+        from sqlalchemy.orm import configure_mappers
+
+        configure_mappers()
+        logger.info("SQLAlchemy mappers 编译配置成功，外键检查通过")
+    except Exception as e:
+        logger.critical(f"SQLAlchemy mappers 编译失败，发现外键或元数据配置错误: {e}", exc_info=True)
+        raise e
+
     logger.info(
         event="service_starting",
         message=f"Starting {settings.SERVICE_NAME}",
@@ -142,21 +155,45 @@ async def lifespan(app: FastAPI):
         )
         redis_client = None
 
+    # ── FactStore（轻量事实存储） ────────────────────────────────────────────────
+    from app.services.fact_store import FactStore
+    fact_store = FactStore(redis=redis_client, db_session_factory=db_manager.async_session_factory)
+
     # ── TriageAgent（S0 意图识别）──────────────────────────────────────────────────
     # T-AGT-10：TriageAgent 替换 IntentAgent（继承 BaseAgent）
     triage_agent = TriageAgent(
         ai_registry=ai_registry,
         kb_client=kb_client,
+        db_session_factory=db_manager.async_session_factory,
+        fact_store=fact_store,
     )
 
     # ── 工具执行器（S1-S5 阶段共用）─────────────────────────────────────────────
     # 先实例化 ReactEngine（可选）
     react_engine: ReactEngine | None = None
-    scp_client = None  # 确保变量存在，供 InvestigationAgent 使用
-    acli_client = None  # 确保变量存在，供 InvestigationAgent 使用
+    # ── 实例化工具执行客户端（优先从环境变量加载，无论是否启用 REACT，保证 S1-S4 诊断可用） ────
+    from app.adapters.clients.acli_client import AcliClient
+    from app.adapters.clients.scp_client import SCPClient
+
+    try:
+        scp_client = SCPClient.from_env()
+        logger.info("SCP 客户端从环境变量初始化成功")
+    except Exception as e:
+        logger.warning(f"SCP 客户端初始化跳过或失败 (可能是缺少 SCP_BASE_URL 环境变量): {e}")
+        scp_client = None
+
+    try:
+        acli_client = AcliClient.from_env()
+        logger.info("Acli 客户端从环境变量初始化成功")
+    except Exception as e:
+        logger.warning(f"Acli 客户端初始化失败: {e}")
+        acli_client = None
     tool_executor = None  # 确保变量存在，供 InvestigationAgent 使用
     confirm_service: ConfirmService | None = None
-    audit_service = FileAuditService()
+    from app.services.tool_audit import DbAuditService, ToolAuditService
+
+    ToolAuditService.initialize(db_manager.async_session_factory)
+    audit_service = DbAuditService()
 
     # ── 加载工具注册表（从数据库）──────────────────────────────────────────────────────
     # 无论是否启用 REACT，都需要加载工具注册表（InvestigationAgent 等也依赖）
@@ -168,16 +205,14 @@ async def lifespan(app: FastAPI):
         TOOL_REGISTRY.update(loaded_registry)
 
     if settings.REACT_ENABLED:
-        # 实例化工具执行客户端
-        from app.adapters.clients.acli_client import AcliClient
-        from app.adapters.clients.scp_client import SCPClient
-
-        scp_client = SCPClient.from_env()
-        acli_client = AcliClient.from_env()
-
         # 实例化确认服务（依赖 Redis）
+        # T1-1：注入 AuthorizationService，使每次 approve/deny 决策同步落库
         if redis_client is not None:
-            confirm_service = ConfirmService(redis=redis_client)
+            from app.services.authorization_service import AuthorizationService
+            authorization_service = AuthorizationService(
+                session_factory=db_manager.async_session_factory,
+            )
+            confirm_service = ConfirmService(redis=redis_client, authorization_service=authorization_service)
 
         # 实例化复合工具执行器（合并 SCP、Acli 和 SOP）
         # T-TOOL-16：添加 BridgeRelayExecutor 参数
@@ -222,6 +257,10 @@ async def lifespan(app: FastAPI):
         conversation_service_url=settings.CONVERSATION_SERVICE_URL,  # T-AGT-22
         internal_token=settings.INTERNAL_API_TOKEN,  # T-AGT-22
         top_k=15,
+        confirm_service=confirm_service,
+        audit_service=audit_service,
+        db_session_factory=db_manager.async_session_factory,
+        fact_store=fact_store,
     )
     logger.info(
         event="investigation_agent_initialized",
@@ -237,6 +276,7 @@ async def lifespan(app: FastAPI):
             ai_registry=ai_registry,
             kb_client=kb_client,
             react_engine=react_engine,
+            db_session_factory=db_manager.async_session_factory,
         )
         logger.info(
             event="remediation_agent_initialized",
@@ -363,6 +403,7 @@ class CompositeToolExecutor:
         *,
         tool_def: "ToolDefinition | None" = None,
         conversation_id: str | None = None,
+        **kwargs: Any,
     ) -> Any:
         """执行工具调用，根据工具类型分发
 
@@ -370,7 +411,8 @@ class CompositeToolExecutor:
             tool_name: 工具名称
             args: 工具参数
             tool_def: 工具定义（可选，如未传入则从 TOOL_REGISTRY 获取）
-            conversation_id: 会话 ID（可选，用于 acli category 的 BridgeRelayExecutor）
+            conversation_id: 会话 ID (可选)
+            **kwargs: 额外透传参数（如 exec_id）
 
         Returns:
             执行结果（字符串或字典）
@@ -388,6 +430,8 @@ class CompositeToolExecutor:
         effective_conversation_id = conversation_id or self._conversation_id
 
         if tool_def.category == "scp":
+            if self._scp is None:
+                return {"error": "SCPClient 客户端未初始化，请检查 SCP_BASE_URL 环境变量是否已正确配置"}
             return await self._scp.execute(tool_name, args)
         elif tool_def.category == "acli":
             # T-TOOL-16：acli category 路由到 BridgeRelayExecutor
@@ -404,9 +448,14 @@ class CompositeToolExecutor:
                 node_ip=args.get("node_ip"),
                 risk_level=tool_def.risk_level,
                 policy=tool_def.policy,
+                usage_template=tool_def.usage_template,
+                **kwargs,
             )
-            # 返回 stdout 或错误信息
-            return result.stdout or f"[exit_code={result.exit_code}]"
+
+            # T0-3 修复：直接返回 ExecResult 对象（dataclass），让上游 ToolResultEnvelope.from_raw_result
+            # 通过 hasattr 检测拿到全字段（exit_code / stderr / exit_code_meaning / duration_ms 等），
+            # 不再降级为字符串导致 LLM 丢失 timeout / permission_denied / command_not_found 等真实语义。
+            return result
         elif tool_def.category == "sop":
             # SOP 工具需要 kb_client 和 sop_document_id
             if tool_name == "get_sop_node":

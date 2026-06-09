@@ -246,7 +246,7 @@ onMounted(() => {
       <div class="header-row">
         <div>
           <h2 class="page-title">工具注册表</h2>
-          <p class="page-desc">管理 ReAct 引擎可调用的 HCI 诊断插件及 API 接口</p>
+          <p class="page-desc">管理 ReAct 引擎可调用的 HCI 诊断插件及 API 接口。</p>
         </div>
         <el-button type="primary" @click="openCreateDialog">
           <el-icon class="el-icon--left"><Plus /></el-icon> 新建工具定义
@@ -398,20 +398,20 @@ onMounted(() => {
               <el-switch v-model="formModel.is_active" active-text="启用" inactive-text="下线" />
             </el-form-item>
             <el-form-item label="使用命令模板">
-              <el-input v-model="formModel.usage_template" placeholder="例如: acli vm list --formatter json (ACLI 插件可填，其余可为空)" />
-            </el-form-item>
-            <el-form-item label="功能描述" required>
-              <el-input
-                v-model="formModel.description"
-                type="textarea"
-                :rows="4"
-                placeholder="说明工具的详细作用和场景，供大模型 ReAct 思路理解。例如: 查询 HCI 平台当前虚拟机列表，用于确认虚机状态..."
-              />
+              <el-input v-model="formModel.usage_template" placeholder="例如: acli --formatter json vm list (ACLI 插件可填，其余可为空)" />
             </el-form-item>
           </el-col>
 
           <!-- 右栏：代码/JSON 大编辑器 -->
           <el-col :span="16" style="padding-left: 20px;">
+            <el-form-item label="功能描述" required>
+              <el-input
+                v-model="formModel.description"
+                type="textarea"
+                :rows="3"
+                placeholder="说明工具的详细作用和场景，供大模型 ReAct 思路理解。例如: 查询 HCI 平台当前虚拟机列表，用于确认虚机状态..."
+              />
+            </el-form-item>
             <el-form-item label="参数 Schema (JSON)" required>
               <div class="json-editor-wrapper">
                 <el-input
@@ -554,11 +554,6 @@ onMounted(() => {
   color: #e74c3c;
 }
 
-.custom-dialog :deep(.el-dialog) {
-  border-radius: 4px;
-  overflow: hidden;
-}
-
 .custom-dialog-header {
   display: flex;
   justify-content: space-between;
@@ -578,28 +573,65 @@ onMounted(() => {
   transform: scale(1.1);
 }
 
-.custom-dialog :deep(.el-dialog__header) {
-  background-color: #f8f9fa;
-  margin-right: 0;
-  padding: 20px;
-  border-bottom: 1px solid #eee;
-}
-
-.custom-dialog :deep(.el-dialog__title) {
-  font-weight: 600;
-  color: #2c3e50;
-}
-
-.custom-dialog :deep(.el-dialog__body) {
-  padding: 25px 30px;
-}
-
-.custom-dialog :deep(.el-dialog__footer) {
-  padding: 15px 30px;
-  border-top: 1px solid #eee;
+.dialog-form {
+  width: 100%;
 }
 
 .dialog-form :deep(.el-form-item) {
   margin-bottom: 20px;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* 统一 premium-dialog 高端弹窗样式 */
+:global(.premium-dialog) {
+  display: flex;
+  flex-direction: column;
+}
+
+:global(.premium-dialog .el-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.1) !important;
+}
+
+:global(.premium-dialog.is-fullscreen .el-dialog) {
+  max-height: 100vh;
+  height: 100vh;
+  border-radius: 0;
+}
+
+:global(.premium-dialog .el-dialog__header) {
+  background-color: #f8f9fa;
+  margin-right: 0;
+  padding: 16px 24px;
+  border-bottom: 1px solid #eee;
+  flex-shrink: 0;
+}
+
+:global(.premium-dialog .el-dialog__title) {
+  font-weight: 600;
+  color: #2c3e50;
+  font-size: 16px;
+}
+
+:global(.premium-dialog .el-dialog__body) {
+  padding: 24px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+:global(.premium-dialog .el-dialog__footer) {
+  padding: 12px 24px;
+  border-top: 1px solid #eee;
+  background-color: #f8f9fa;
+  flex-shrink: 0;
 }
 </style>

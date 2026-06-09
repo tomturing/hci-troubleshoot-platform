@@ -21,7 +21,7 @@ INSERT INTO skill_definition (
 ) VALUES (
     -- =========================================================
     -- Skill: hci-disk-vendor-lifetime
-    -- 对应原始材料：硬盘厂商识别与寿命判断.md
+    -- 对应原始材料：skills/硬盘厂商识别与寿命判断.md
     -- =========================================================
     'hci-disk-vendor-lifetime',
 

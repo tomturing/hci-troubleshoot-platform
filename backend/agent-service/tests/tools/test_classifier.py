@@ -16,7 +16,7 @@ class TestClassifyAcli:
 
     # risk=1：只读操作
     def test_read_only_list(self):
-        assert classify_acli("acli vm list --formatter json") == 1
+        assert classify_acli("acli --formatter json vm list") == 1
 
     def test_read_only_get(self):
         assert classify_acli("acli platform info get") == 1
@@ -116,7 +116,7 @@ class TestClassifyAcli:
         assert classify_acli("ls -la") == 1
 
     def test_long_command(self):
-        long_cmd = "acli vm list --formatter json --cluster cluster-1 --limit 1000 --offset 0 --filter 'name==test*'"
+        long_cmd = "acli --formatter json vm list --cluster cluster-1 --limit 1000 --offset 0 --filter 'name==test*'"
         assert classify_acli(long_cmd) == 1
 
 

@@ -2,6 +2,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Edit, Delete, FullScreen, Document } from '@element-plus/icons-vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
 // ===== 类型定义（遵循 Agent Skills Open Standard）=====
 interface SkillDefinition {
@@ -131,16 +133,11 @@ const formModel = ref({
 // Markdown 预览（使用 marked + DOMPurify，与项目其他地方保持一致）
 const mdPreview = computed(() => {
   try {
-    // @ts-ignore
-    if (window.marked && window.DOMPurify) {
-      // @ts-ignore
-      return window.DOMPurify.sanitize(window.marked.parse(formModel.value.instructions_md || ''))
-    }
-    return formModel.value.instructions_md
-      .replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>')
-  } catch {
-    return formModel.value.instructions_md
+    const rawMd = formModel.value.instructions_md || ''
+    return DOMPurify.sanitize(marked.parse(rawMd) as string)
+  } catch (e) {
+    console.error('解析 Markdown 失败:', e)
+    return formModel.value.instructions_md || ''
   }
 })
 
@@ -378,10 +375,7 @@ onMounted(() => {
       <div class="header-row">
         <div>
           <h2 class="page-title">技能注册表</h2>
-          <p class="page-desc">
-            基于 <a href="https://agentskills.io" target="_blank" class="standard-link">Agent Skills Open Standard</a>
-            的领域专业知识包管理 — 每个 Skill 是"过程性知识 + 诊断流程"，而非函数接口
-          </p>
+          <p class="page-desc">基于 Agent Skills Open Standard 的领域专业知识包管理，每个 Skill 是过程性知识与诊断流程的封装，而非函数接口。</p>
         </div>
         <el-button type="primary" :icon="Plus" @click="openCreateDialog">新建技能</el-button>
       </div>
@@ -428,7 +422,7 @@ onMounted(() => {
         row-key="id"
       >
         <!-- Skill 标识 + 展示名 -->
-        <el-table-column label="Skill 标识" min-width="220">
+        <el-table-column label="Skill 标识" min-width="360">
           <template #default="{ row }">
             <div class="skill-name-cell">
               <code class="code-badge">{{ row.skill_name }}</code>
@@ -481,10 +475,12 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 操作列（固定宽度，确保两个按钮始终同行） -->
-        <el-table-column label="操作" width="150" fixed="right" align="center">
+        <el-table-column label="操作" width="180" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
-            <el-button type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">删除</el-button>
+            <div class="actions-cell">
+              <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
+              <el-button type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">删除</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -777,7 +773,7 @@ onMounted(() => {
 }
 
 .page-title {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   font-size: 22px;
   color: #303133;
 }
@@ -785,17 +781,9 @@ onMounted(() => {
 .page-desc {
   margin: 0;
   color: #666;
-  font-size: 13px;
+  font-size: 14px;
 }
 
-.standard-link {
-  color: #409eff;
-  text-decoration: none;
-}
-
-.standard-link:hover {
-  text-decoration: underline;
-}
 
 .filter-card {
   margin-bottom: 16px;
@@ -808,13 +796,21 @@ onMounted(() => {
 /* Skill 标识单元格 */
 .skill-name-cell {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
 }
 
 .display-name-sub {
   font-size: 12px;
-  color: #909399;
+  color: #606266;
+}
+
+.actions-cell {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
 }
 
 /* code badge */
@@ -850,27 +846,45 @@ onMounted(() => {
 }
 
 /* 弹窗 */
-.skill-detail-dialog :deep(.el-dialog) {
-  border-radius: 4px;
-  overflow: hidden;
+:global(.skill-detail-dialog) {
+  display: flex;
+  flex-direction: column;
 }
 
-.skill-detail-dialog :deep(.el-dialog__header) {
+:global(.skill-detail-dialog .el-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.1) !important;
+}
+
+:global(.skill-detail-dialog.is-fullscreen .el-dialog) {
+  max-height: 100vh;
+  height: 100vh;
+  border-radius: 0;
+}
+
+:global(.skill-detail-dialog .el-dialog__header) {
   background-color: #f8f9fa;
   margin-right: 0;
   padding: 16px 20px;
   border-bottom: 1px solid #eee;
+  flex-shrink: 0;
 }
 
-.skill-detail-dialog :deep(.el-dialog__body) {
+:global(.skill-detail-dialog .el-dialog__body) {
   padding: 0;
-  height: calc(100vh - 130px);
+  flex: 1;
   overflow: hidden;
 }
 
-.skill-detail-dialog :deep(.el-dialog__footer) {
+:global(.skill-detail-dialog .el-dialog__footer) {
   padding: 12px 24px;
   border-top: 1px solid #eee;
+  background-color: #f8f9fa;
+  flex-shrink: 0;
 }
 
 .custom-dialog-header {
@@ -905,6 +919,7 @@ onMounted(() => {
 
 /* 表单 */
 .dialog-form {
+  width: 100%;
   max-width: 900px;
 }
 
@@ -1062,6 +1077,23 @@ onMounted(() => {
 
 .md-preview-content :deep(th) {
   background: #f8f9fa;
+}
+
+.md-preview-content :deep(ul) {
+  padding-left: 24px;
+  list-style-type: disc;
+  margin: 8px 0;
+}
+
+.md-preview-content :deep(ol) {
+  padding-left: 24px;
+  list-style-type: decimal;
+  margin: 8px 0;
+}
+
+.md-preview-content :deep(li) {
+  margin: 4px 0;
+  line-height: 1.6;
 }
 
 /* 资源文件区域 */

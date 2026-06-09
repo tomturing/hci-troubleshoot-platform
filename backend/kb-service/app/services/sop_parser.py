@@ -1174,8 +1174,12 @@ def extract_sop_variables(
 
     orphan = sorted(global_declared - used_vars)
 
+    # BUGFIX: Export all variables (both used in text and declared in ## 变量声明 table)
+    # This prevents declared but unused variables (e.g. node_ip, hci_version) from being discarded as orphans.
+    all_vars = used_vars | global_declared
+
     variable_defs: list[dict] = []
-    for var_name in sorted(used_vars):
+    for var_name in sorted(all_vars):
         declared = declared_vars.get(var_name, {})
         inferred = _infer_strategy(var_name)
         strategy_info = {
@@ -1227,10 +1231,18 @@ def merge_variable_schema(
                 "acquisition_strategy" in old_var
                 and old_var["acquisition_strategy"] is not None
                 and old_var["acquisition_strategy"] != ""
+                # BUGFIX: Only allow old strategy to override the new one if the new strategy is generic "user_input",
+                # or if the new strategy is inferred (auto_generated=True), or if the old strategy was a specific custom one.
+                and (
+                    old_var["acquisition_strategy"] != "user_input"
+                    or new_var.get("acquisition_strategy") == "user_input"
+                    or new_var.get("auto_generated", False)
+                )
             )
             for human_field in HUMAN_FIELDS:
-                if human_field == "acquisition_tool" and strategy_overridden:
-                    merged_var[human_field] = old_var.get("acquisition_tool")
+                if human_field in ("acquisition_strategy", "acquisition_tool"):
+                    if strategy_overridden:
+                        merged_var[human_field] = old_var.get(human_field)
                 else:
                     old_value = old_var.get(human_field)
                     if old_value is not None and old_value != "":

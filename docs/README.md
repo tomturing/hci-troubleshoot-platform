@@ -111,7 +111,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | [task/数据库任务.md](task/数据库任务.md) | 数据库任务（含迁移） |
 | [task/case/工单任务.md](task/case/工单任务.md) | 工单模块任务 |
 | [task/conversation/对话任务.md](task/conversation/对话任务.md) | 对话模块任务 |
-| [task/agent/AI助手任务.md](task/agent/AI助手任务.md) | AI 助手层任务 |
+| [task/agent/agent任务.md](task/agent/agent任务.md) | AI 助手层任务 |
 | [task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md) | 知识库 RAG 任务（当前重点） |
 | [task/custom-ui/客户端任务.md](task/custom-ui/客户端任务.md) | 客户端任务 |
 | [task/events/](task/events/) | 历史任务事件记录 |

@@ -152,9 +152,9 @@ async def test_tool_executed_only_once(mock_tool_executor, mock_audit_service):
         f"工具执行器应只调用 1 次，实际调用 {mock_tool_executor.execute.call_count} 次"
     )
 
-    # 验证审计日志只写入一次
-    assert mock_audit_service.write.call_count == 1, (
-        f"审计日志应只写入 1 次，实际写入 {mock_audit_service.write.call_count} 次"
+    # 验证审计日志写入（阶段一引入多状态审计链: proposed → committed，至少 1 次）
+    assert mock_audit_service.write.call_count >= 1, (
+        f"审计日志至少写入 1 次，实际 {mock_audit_service.write.call_count} 次"
     )
 
 
@@ -279,10 +279,11 @@ async def test_tool_execution_error_handled_once():
     # 工具执行器只调用一次（即使失败）
     assert mock_executor.execute.call_count == 1
 
-    # 审计日志记录错误（调用一次）
-    assert mock_audit.write.call_count == 1
-    write_call = mock_audit.write.call_args
-    assert write_call.kwargs.get("error") is not None
+    # 审计日志记录错误（阶段一引入多状态审计链: proposed → failed，至少 1 次）
+    assert mock_audit.write.call_count >= 1
+    # 验证至少有一次审计包含错误信息
+    all_errors = [c.kwargs.get("error") for c in mock_audit.write.call_args_list]
+    assert any(e is not None for e in all_errors), "应有至少一次审计写入包含错误信息"
 
     # ToolResultEvent 不对外 yield（是内部事件）
     tool_result_events = [e for e in events if isinstance(e, ToolResultEvent)]
@@ -345,3 +346,62 @@ async def test_no_tool_result_event_for_text_response(mock_tool_executor, mock_a
 
     # 无审计日志
     assert mock_audit_service.write.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_react_engine_sop_mode_filtering(mock_tool_executor, mock_audit_service):
+    """
+    验证 sop_mode=True 时包含 category='sop' 的工具，sop_mode=False 时过滤掉
+    """
+    mock_client = MagicMock()
+    invoke_result = InvokeResult(content="直接回复", tool_calls=[])
+    mock_client.invoke = AsyncMock(return_value=invoke_result)
+
+    async def fake_stream(messages, user_id, **kwargs):
+        yield "直接回复"
+
+    mock_client.chat_completion_stream = fake_stream
+
+    mock_registry = MagicMock(spec=AIAssistantRegistry)
+    mock_registry.get_client = MagicMock(return_value=mock_client)
+
+    engine = ReactEngine(
+        ai_registry=mock_registry,
+        tool_registry=TOOL_REGISTRY,
+        tool_executor=mock_tool_executor,
+        confirm_service=None,
+        audit_service=mock_audit_service,
+    )
+
+    # 1. 测试 sop_mode=False (默认情况)
+    async for _ in engine.execute(
+        session_id="test-session-1",
+        system_prompt="test",
+        messages=[{"role": "user", "content": "测试"}],
+        max_iterations=1,
+        sop_mode=False,
+    ):
+        pass
+
+    # 检查传给 invoke 的 tools，应不包含 sop 分类的工具
+    first_call_args = mock_client.invoke.call_args_list[0]
+    tools_passed = first_call_args.kwargs.get("tools", [])
+    sop_tools = [t for t in tools_passed if t["function"]["name"] in ("get_sop_node", "sop_advance")]
+    assert len(sop_tools) == 0, f"非 SOP 模式不应包含 SOP 工具，但发现了：{sop_tools}"
+
+    # 2. 测试 sop_mode=True
+    mock_client.invoke.reset_mock()
+    async for _ in engine.execute(
+        session_id="test-session-2",
+        system_prompt="test",
+        messages=[{"role": "user", "content": "测试"}],
+        max_iterations=1,
+        sop_mode=True,
+    ):
+        pass
+
+    # 检查传给 invoke 的 tools，应包含 sop 分类的工具
+    second_call_args = mock_client.invoke.call_args_list[0]
+    tools_passed_sop = second_call_args.kwargs.get("tools", [])
+    sop_tools_present = [t for t in tools_passed_sop if t["function"]["name"] in ("get_sop_node", "sop_advance")]
+    assert len(sop_tools_present) > 0, "SOP 模式必须包含 SOP 导航工具"

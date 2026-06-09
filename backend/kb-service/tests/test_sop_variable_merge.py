@@ -68,12 +68,14 @@ class TestMergeVariableSchema:
                 "description": "",  # 新版自动解析无描述
                 "acquisition_strategy": "env_context",  # 自动推断
                 "validation_pattern": None,  # 新版无校验规则
+                "auto_generated": True,
             },
             {
                 "name": "vm_name",
                 "description": "",
                 "acquisition_strategy": "tool",  # 自动推断为 tool
                 "acquisition_tool": "get_vm_list",
+                "auto_generated": True,
             },
         ]
 

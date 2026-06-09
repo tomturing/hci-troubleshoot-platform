@@ -147,12 +147,15 @@ export const useChatStore = defineStore('chat', () => {
   }>()
 
   // Agent 模式：待确认的高风险操作（confirm_request SSE 事件）
+  // T1-2：必须包含 exec_id 与 input_hash，提交确认时回传给后端进行幂等与防篡改校验
   const pendingConfirm = ref<{
     tool_name: string
     tool_args: Record<string, unknown>
     risk_level: 2 | 3
     risk_description: string
     timeout_seconds: number
+    exec_id: string
+    input_hash: string
   } | null>(null)
 
   // T-TOOL-18：待确认的命令执行请求（agent_exec_command SSE 事件，risk=2）
@@ -177,6 +180,9 @@ export const useChatStore = defineStore('chat', () => {
     options: Array<{ optionId: string; name: string }>
     customInput: boolean
     metadata: Record<string, unknown>
+    execId?: string
+    inputHash?: string
+    expiresAt?: string
   } | null>(null)
 
   // Bridge 运行状态
@@ -605,6 +611,9 @@ export const useChatStore = defineStore('chat', () => {
                   risk_level: event.risk_level,
                   risk_description: event.risk_description,
                   timeout_seconds: event.timeout_seconds ?? 120,
+                  // T1-2：捕获后端下发的 exec_id 与 input_hash，作为后续提交的事务标识
+                  exec_id: event.exec_id || event.request_id || '',
+                  input_hash: event.input_hash || '',
                 }
               } catch { }
             } else if (pendingEventType === 'tool_executing') {
@@ -662,6 +671,9 @@ export const useChatStore = defineStore('chat', () => {
                   options: event.options ?? [],
                   customInput: event.customInput ?? true,
                   metadata: event.metadata ?? {},
+                  execId: event.execId,
+                  inputHash: event.inputHash,
+                  expiresAt: event.expiresAt,
                 }
                 // 将 interactive_request 作为 assistant 气泡追加到消息列表
                 const irMsgId = `ir-${event.requestId ?? Date.now()}`
@@ -676,6 +688,74 @@ export const useChatStore = defineStore('chat', () => {
                 pendingInteractive.value = irEvent
               } catch (e) {
                 console.warn('[interactive_request] 解析失败:', e)
+              }
+            } else if (pendingEventType === 'tool_call') {
+              try {
+                const event = JSON.parse(data)
+                const existingIdx = messages.value.findIndex(m => {
+                  const meta = m.metadata as any
+                  return meta?.kind === 'tool_call' && meta?.event?.exec_id === event.exec_id
+                })
+                if (existingIdx !== -1) {
+                  const meta = messages.value[existingIdx].metadata as any
+                  if (meta) {
+                    meta.event = {
+                      ...meta.event,
+                      ...event
+                    }
+                  }
+                } else {
+                  messages.value.push({
+                    id: `tc-${event.exec_id || Date.now()}`,
+                    role: 'assistant',
+                    content: '',
+                    timestamp: new Date(),
+                    metadata: {
+                      kind: 'tool_call',
+                      event: event
+                    }
+                  })
+                }
+
+                if (event.status === 'pending') {
+                  devLog('tool_call', '服务端要求人工确认，等待用户操作', {
+                    exec_id: event.exec_id,
+                    risk_level: event.risk_level,
+                    auto_execute_mode: autoExecuteMode.value,
+                  })
+                }
+              } catch (e) {
+                console.warn('[tool_call] 解析/处理失败:', e)
+              }
+            } else if (pendingEventType === 'tool_result') {
+              try {
+                const event = JSON.parse(data)
+                const existingIdx = messages.value.findIndex(m => {
+                  const meta = m.metadata as any
+                  return meta?.kind === 'tool_call' && meta?.event?.exec_id === event.exec_id
+                })
+                if (existingIdx !== -1) {
+                  const meta = messages.value[existingIdx].metadata as any
+                  if (meta) {
+                    meta.event = {
+                      ...meta.event,
+                      ...event
+                    }
+                  }
+                } else {
+                  messages.value.push({
+                    id: `tr-${event.exec_id || Date.now()}`,
+                    role: 'assistant',
+                    content: '',
+                    timestamp: new Date(),
+                    metadata: {
+                      kind: 'tool_call',
+                      event: event
+                    }
+                  })
+                }
+              } catch (e) {
+                console.warn('[tool_result] 解析/处理失败:', e)
               }
             } else if (pendingEventType === 'agent_exec_command') {
               // T-TOOL-04 + T-TOOL-18: Agent 命令执行请求（SSE → WebSocket → POST 结果）
@@ -867,6 +947,9 @@ export const useChatStore = defineStore('chat', () => {
                   options: event.options ?? [],
                   customInput: event.customInput ?? true,
                   metadata: event.metadata ?? {},
+                  execId: event.execId,
+                  inputHash: event.inputHash,
+                  expiresAt: event.expiresAt,
                 }
                 const irMsgId = `ir-${event.requestId ?? Date.now()}`
                 messages.value.push({
@@ -1247,16 +1330,32 @@ export const useChatStore = defineStore('chat', () => {
       pendingConfirm.value = null
       return
     }
+    // T1-2：旧实现误用 `/confirm` 路由（后端不存在）且未回传 exec_id/input_hash，
+    // 导致 ConfirmDialog 弹窗确认完全无效。改为命中 `interactive-response` 并附带
+    // request_id=exec_id + input_hash，与 MessageBubble 的工具卡片确认路径保持一致。
+    const { exec_id, input_hash } = pendingConfirm.value
+    if (!exec_id) {
+      console.warn('提交确认失败：缺少 exec_id，无法定位 ReAct 待确认事务')
+      pendingConfirm.value = null
+      return
+    }
     try {
-      await fetch(`/api/conversations/${conversationId.value}/confirm`, {
+      await fetch(`/api/conversations/${conversationId.value}/interactive-response`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Client-ID': clientId,
         },
         body: JSON.stringify({
-          confirmed: authorized,
-          authorized_by: clientId,
+          kind: 'tool_confirm',
+          request_id: exec_id,
+          acp_session_id: conversationId.value,
+          outcome: {
+            confirmed: authorized,
+            authorized_by: clientId,
+            input_hash,
+          },
+          metadata: { input_hash },
         }),
       })
     } catch (e) {
@@ -1382,6 +1481,8 @@ export const useChatStore = defineStore('chat', () => {
   /** 认证超时定时器 */
   let sshAuthTimer: number | null = null
   const SSH_AUTH_TIMEOUT = 15000
+  /** SSH 连接稳定判定窗口：避免远端 Shell 启动后立即退出时误报成功 */
+  const SSH_STABILITY_DELAY = 800
 
   /** 清除认证超时定时器 */
   function clearSshAuthTimer() {
@@ -1424,6 +1525,38 @@ export const useChatStore = defineStore('chat', () => {
     })
 
     return new Promise((resolve, reject) => {
+      let settled = false
+      let stabilityTimer: number | null = null
+      let socket: WebSocket
+
+      function clearStabilityTimer() {
+        if (stabilityTimer !== null) {
+          window.clearTimeout(stabilityTimer)
+          stabilityTimer = null
+        }
+      }
+
+      function failConnect(error: Error, state: 'error' | 'disconnected' = 'error') {
+        if (settled) {
+          sshConnectionState.value = state
+          cleanupSshWebSocket()
+          return
+        }
+        settled = true
+        clearStabilityTimer()
+        sshConnectionState.value = state
+        cleanupSshWebSocket()
+        reject(error)
+      }
+
+      function markConnected() {
+        if (settled || sshWebSocket.value !== socket || socket.readyState !== WebSocket.OPEN) return
+        settled = true
+        clearStabilityTimer()
+        sshConnectionState.value = 'connected'
+        resolve()
+      }
+
       // 清理旧连接
       cleanupSshWebSocket()
       sshOutputBuffer.value = ''
@@ -1438,7 +1571,7 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       // 创建 WebSocket
-      const socket = createBridgeSocket()
+      socket = createBridgeSocket()
       sshWebSocket.value = socket
 
       socket.onopen = () => {
@@ -1450,9 +1583,7 @@ export const useChatStore = defineStore('chat', () => {
           if (sshConnectionState.value === 'connecting') {
             devLog('SSH', 'ERROR: 认证超时')
             sshErrorMessage.value = 'SSH 认证超时（15秒）'
-            sshConnectionState.value = 'error'
-            cleanupSshWebSocket()
-            reject(new Error('SSH 认证超时'))
+            failConnect(new Error('SSH 认证超时'))
           }
         }, SSH_AUTH_TIMEOUT)
 
@@ -1486,12 +1617,17 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         if (msg.type === 'ssh_connected') {
-          devLog('SSH', '远程会话已建立')
+          devLog('SSH', '远程会话已建立，等待稳定确认')
           clearSshAuthTimer()
-          sshConnectionState.value = 'connected'
-          resolve()
+          clearStabilityTimer()
+          stabilityTimer = window.setTimeout(() => {
+            markConnected()
+          }, SSH_STABILITY_DELAY)
         } else if (msg.type === 'ssh_output' && msg.output) {
           sshOutputBuffer.value += msg.output
+          if (sshConnectionState.value === 'connecting') {
+            markConnected()
+          }
           // 如果有消费者，触发输出事件
           if (sshCommandConsumer.value) {
             sshTerminalOutputEvent.value = msg.output
@@ -1500,13 +1636,14 @@ export const useChatStore = defineStore('chat', () => {
           devLog('SSH', 'ERROR: 收到错误', { message: msg.message })
           clearSshAuthTimer()
           sshErrorMessage.value = msg.message || 'SSH 连接出错'
-          sshConnectionState.value = 'error'
-          cleanupSshWebSocket()
-          reject(new Error(msg.message || 'SSH 连接出错'))
+          failConnect(new Error(msg.message || 'SSH 连接出错'))
         } else if (msg.type === 'ssh_disconnected') {
           devLog('SSH', '连接断开')
           clearSshAuthTimer()
-          if (sshConnectionState.value === 'connected') {
+          if (sshConnectionState.value === 'connecting') {
+            sshErrorMessage.value = msg.message || 'SSH 连接建立后立即断开，请检查远端 Shell 或 Bridge 日志'
+            failConnect(new Error(sshErrorMessage.value))
+          } else if (sshConnectionState.value === 'connected') {
             sshConnectionState.value = 'disconnected'
             cleanupSshWebSocket()
           }
@@ -1529,15 +1666,17 @@ export const useChatStore = defineStore('chat', () => {
         devLog('SSH', 'ERROR: WebSocket 错误')
         clearSshAuthTimer()
         sshErrorMessage.value = 'SSH Bridge 未运行（ws://localhost:9999）'
-        sshConnectionState.value = 'error'
-        cleanupSshWebSocket()
-        reject(new Error('SSH Bridge 未运行'))
+        failConnect(new Error('SSH Bridge 未运行'))
       }
 
       socket.onclose = () => {
         devLog('SSH', 'WebSocket 关闭')
         clearSshAuthTimer()
-        if (sshConnectionState.value !== 'error') {
+        clearStabilityTimer()
+        if (sshConnectionState.value === 'connecting') {
+          sshErrorMessage.value = 'SSH 连接建立后立即关闭，请检查 terminal_bridge 或远端 Shell'
+          failConnect(new Error(sshErrorMessage.value))
+        } else if (sshConnectionState.value !== 'error') {
           sshConnectionState.value = 'disconnected'
         }
       }

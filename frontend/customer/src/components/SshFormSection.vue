@@ -79,7 +79,7 @@ loadSavedSshConfig()
       <!-- 主机地址 + 端口 -->
       <div class="form-row">
         <el-form-item label="主机地址" class="form-host">
-          <el-input v-model="localForm.host" placeholder="192.168.1.100" />
+          <el-input v-model="localForm.host" name="host" autocomplete="on" placeholder="192.168.1.100" />
         </el-form-item>
         <el-form-item label="端口" class="form-port">
           <el-input v-model="localForm.port" placeholder="22" />
@@ -89,7 +89,7 @@ loadSavedSshConfig()
       <!-- 用户名 -->
       <div class="form-row">
         <el-form-item label="用户名" class="form-half">
-          <el-input v-model="localForm.username" placeholder="root" />
+          <el-input v-model="localForm.username" name="username" autocomplete="username" placeholder="root" />
         </el-form-item>
       </div>
 
@@ -106,6 +106,8 @@ loadSavedSshConfig()
         <el-form-item label="密码" class="form-full">
           <el-input
             v-model="localForm.password"
+            name="password"
+            autocomplete="current-password"
             type="password"
             placeholder="请输入密码"
             show-password

@@ -71,21 +71,25 @@ class AgentInteractiveRequest:
     options: list[dict[str, Any]] = field(default_factory=list)  # [{optionId, name}, ...]
     custom_input: bool = True  # 是否允许自定义文本输入
     metadata: dict[str, Any] = field(default_factory=dict)  # 额外元数据（route, risk 等）
+    exec_id: str | None = None  # 关联工具执行记录 ID
+    input_hash: str | None = None  # 关联工具调用参数哈希，防篡改
+    expires_at: str | None = None  # 授权决策过期时间 (ISO 8601 或 Unix 格式)
 
 
 @dataclass(frozen=True)
 class ToolResultEvent:
-    """工具执行结果事件（ReactEngine 内部使用）。
+    """工具执行结果事件。
 
     用于将工具执行结果从 _execute_tool_call() 传递回主循环，
-    避免重复调用工具执行器。
-
-    此事件不对外暴露，仅用于 ReactEngine 内部流程。
+    避免重复调用工具执行器。同时允许通过 AgentStageUpdate 结构将详细的
+    执行状态（tool_call / tool_result）向外 yield 以便前端呈现。
     """
 
     result: Any  # 工具执行的原始结果
     tool_name: str = ""  # 工具名称（用于日志）
     error: str | None = None  # 错误信息（如有）
+    exec_id: str = ""  # 工具执行的唯一标识 ID
+
 
 
 # AgentEvent = 大脑可以产出的所有事件类型（用于 IDE 类型提示）

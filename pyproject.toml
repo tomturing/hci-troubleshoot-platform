@@ -1,6 +1,6 @@
 [project]
 name = "hci-troubleshoot-platform"
-version = "2.13.0"
+version = "2.14.0"
 description = "HCI 智能排障平台 — 多助手 AI 排障微服务系统"
 requires-python = ">=3.12"
 
@@ -78,6 +78,7 @@ dev = [
 testpaths = [
     "tests",
     "backend/api-gateway/tests",
+    "backend/agent-service/tests",
     "backend/case-service/tests",
     "backend/conversation-service/tests",
     "backend/scheduler-service/tests",

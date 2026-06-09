@@ -32,7 +32,7 @@ owner: team
 
 ## 相关目录
 
-- `../` - agent 主干文档（AI助手任务.md）
+- `../` - agent 主干文档（agent任务.md）
 - `../../solution/agent/events/` - 方案事件文档
 
 ---

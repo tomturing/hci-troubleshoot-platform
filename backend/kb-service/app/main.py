@@ -31,7 +31,6 @@ from app.routes import (
     sop_ingest,
 )
 from app.services.embedding import EmbeddingService
-from app.services.sop_matcher import SopMatcher
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -56,18 +55,13 @@ async def lifespan(app: FastAPI):
     # 初始化 Embedding 服务（z.ai 主力 + bge-small 降级）
     embedding_service = EmbeddingService(settings)
 
-    # 初始化 SOP Matcher（从 sop_skills/ 目录加载 keywords_map.json）
-    sop_matcher = SopMatcher(settings.SOP_SKILLS_DIR)
-    await sop_matcher.load()
-
     # 存入 app.state，供路由通过 request.app.state 访问
     app.state.database_manager = database_manager
     app.state.embedding_service = embedding_service
-    app.state.sop_matcher = sop_matcher
 
     # 注入依赖到路由模块（兼容 Depends 模式）
     ingest.set_dependencies(database_manager, embedding_service)
-    search.set_dependencies(database_manager, embedding_service, sop_matcher)
+    search.set_dependencies(database_manager, embedding_service)
     kbd_search.set_dependencies(database_manager, embedding_service)  # KBD 语义检索（agent 专用）
     admin.set_dependencies(database_manager, embedding_service)  # 注入 embedding 服务
     route.set_dependencies(database_manager)

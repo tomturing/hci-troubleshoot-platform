@@ -44,6 +44,11 @@ class PromptAuditService:
             case_id: 工单 ID
             trace_id: 链路追踪 ID
         """
+        if not trace_id:
+            from shared.observability.otel import get_current_trace_id
+
+            trace_id = get_current_trace_id()
+
         if not cls._session_factory:
             logger.warning("PromptAuditService 未初始化，跳过审计写入")
             return
@@ -63,14 +68,32 @@ class PromptAuditService:
 
         # 统计总字符数并检测是否含有 SOP 引用以自动推断 has_sop 标志
         total_chars = 0
-        has_sop = False
         for msg in messages:
             content = msg.get("content", "") or ""
             if not isinstance(content, str):
                 content = str(content)
             total_chars += len(content)
-            if "SOP" in content or "sop" in content:
-                has_sop = True
+
+        # 数据库精准检测：根据是否已存在对应的 active/interrupted/completed 的 sop_execution 记录来判定 has_sop
+        has_sop = False
+        try:
+            from sqlalchemy import text
+
+            async with cls._session_factory() as session:
+                res = await session.execute(
+                    text("SELECT 1 FROM sop_execution WHERE conversation_id = :conv_id LIMIT 1"), {"conv_id": conv_uuid}
+                )
+                has_sop = res.fetchone() is not None
+        except Exception as e:
+            # 强壮性兜底：若数据库查询异常，回退到字符串搜索
+            logger.warning(f"SOP 状态查询失败（采用正则兜底）: {e}")
+            for msg in messages:
+                content = msg.get("content", "") or ""
+                if not isinstance(content, str):
+                    content = str(content)
+                if "SOP" in content or "sop" in content:
+                    has_sop = True
+                    break
 
         try:
             async with cls._session_factory() as session:

@@ -42,7 +42,7 @@ class SopExecution(Base, TraceableMixin):
         unique=True,
         index=True,
     )
-    sop_document_id = Column(Integer, ForeignKey("sop_document.id"), nullable=False)
+    sop_document_id = Column(Integer, nullable=False)
     current_node_id = Column(String(64), nullable=False)
     status = Column(String(16), nullable=False, default=STATUS_ACTIVE)
     context_variables = Column(JSONB, nullable=False, default=dict)

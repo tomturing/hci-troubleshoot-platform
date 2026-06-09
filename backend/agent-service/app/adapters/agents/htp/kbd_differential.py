@@ -34,6 +34,7 @@ from app.adapters.agents.htp.kbd_model import (
     PATTERN_REGEX_PREFIX,
     KBDStep,
 )
+from app.core.utils import smart_truncate
 from app.domain.agent_port import AgentEvent, AgentStageUpdate, AgentTextChunk
 
 logger = get_logger("kbd-differential")
@@ -452,11 +453,8 @@ class KBDDiagnostic:
                 message="LLM 客户端不可用，保守地保留所有候选 KBD",
             )
             return {kbd.id: True for kbd in kbds}
-
-        # 截取输出防止 prompt 过长（2000 字符足以包含关键特征）
-        truncated_output = actual_output[:2000]
-        if len(actual_output) > 2000:
-            truncated_output += f"\n... （已截取，共 {len(actual_output)} 字符）"
+        # 智能截取输出防止 prompt 过长（2000 字符以智能保留关键特征）
+        truncated_output = smart_truncate(actual_output, 2000)
 
         kbd_expectations = [
             {

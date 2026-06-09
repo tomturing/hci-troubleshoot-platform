@@ -87,7 +87,7 @@ def test_acli_vm_delete():
 
 def test_acli_vm_list():
     """验收标准 2：acli vm list 不触发确认（risk=1）"""
-    command = "acli vm list --formatter json"
+    command = "acli --formatter json vm list"
     risk = classify_acli(command)
     policy = risk_to_policy(risk)
     print(f"✓ 测试命令: {command}")

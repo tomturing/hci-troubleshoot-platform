@@ -18,23 +18,40 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+import string
 import time
 import uuid
 from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
 
 from shared.database.redis import RedisManager
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.utils.internal_http import InternalHTTPClient
 
+from app.core.utils import smart_truncate
 from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_policy
 
 logger = get_logger("bridge-relay-executor")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ExecResult：执行结果数据结构
+# ExitCodeMeaning 和 ExecResult：执行结果数据结构与退出码定义
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class ExitCodeMeaning(StrEnum):
+    """
+    命令执行退出码语义定义
+    """
+    SUCCESS = "success"
+    TIMEOUT = "timeout"
+    PERMISSION_DENIED = "permission_denied"
+    COMMAND_NOT_FOUND = "command_not_found"
+    CONNECTION_REFUSED = "connection_refused"
+    UNKNOWN_ERROR = "unknown_error"
 
 
 @dataclass
@@ -45,7 +62,7 @@ class ExecResult:
     设计依据：docs/solution/agent/agent工具设计.md §九.2
 
     字段说明：
-      stdout: 标准输出（截断 ≤ 4000 chars）
+      stdout: 标准输出（智能截断 ≤ 4000 chars）
       stderr: 错误输出（截断 ≤ 1000 chars）
       exit_code: 退出码（0=成功，-1=超时/净化拒绝）
       command: 实际执行的命令（净化后）
@@ -53,6 +70,7 @@ class ExecResult:
       duration_ms: 执行耗时（毫秒）
       truncated: stdout 是否被截断
       risk_level: 本次执行的风险等级（RiskClassifier 判定值）
+      exit_code_meaning: 退出码的语义分类
     """
 
     stdout: str
@@ -63,6 +81,8 @@ class ExecResult:
     duration_ms: int
     truncated: bool
     risk_level: int
+    exit_code_meaning: str | None = None
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -155,6 +175,52 @@ class CommandSanitizer:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TemplateInterpolator：命令模板安全插值引擎
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TemplateInterpolator:
+    """ACLI 插件命令安全插值引擎"""
+
+    @classmethod
+    def interpolate(cls, template: str, args: dict[str, Any]) -> str:
+        """
+        根据传入参数和模板生成净化后的 Bash 命令行
+
+        Args:
+            template: 命令模板，如 "acli plugins vm_start vm_start --vm-id {vm_id}"
+            args: 大模型传入的实参，如 {"vm_id": "test-123"}
+
+        Raises:
+            ValueError: 缺少必要参数或插值计算失败
+        """
+        if not template:
+            return ""
+
+        # 1. 解析模板中所有的占位符
+        formatter = string.Formatter()
+        placeholders = {field_name for _, field_name, _, _ in formatter.parse(template) if field_name is not None}
+
+        # 2. 检查占位符的参数是否在 args 中提供
+        safe_args = {}
+        for placeholder in placeholders:
+            if placeholder not in args:
+                raise ValueError(f"命令模板插值失败：模板中要求的参数 '{placeholder}' 在 Function Call 参数中缺失")
+
+            val = args[placeholder]
+            # 对参数值进行严格防注入处理：强转 string 并通过 shlex.quote 进行 Shell 转义
+            safe_args[placeholder] = shlex.quote(str(val))
+
+        # 3. 渲染模板
+        try:
+            interpolated_command = template.format(**safe_args)
+        except Exception as e:
+            raise ValueError(f"格式化命令模板出错: {str(e)}") from e
+
+        return interpolated_command.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # BridgeRelayExecutor：Bridge 中转执行器
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -226,6 +292,8 @@ class BridgeRelayExecutor:
         node_ip: str | None = None,
         risk_level: int | None = None,
         policy: str | None = None,
+        usage_template: str | None = None,
+        exec_id: str | None = None,
     ) -> ExecResult:
         """
         执行命令并返回结果。
@@ -237,6 +305,8 @@ class BridgeRelayExecutor:
             node_ip: 目标节点 IP（可选，从 context_variables 中读取）
             risk_level: 风险等级（可选，对插件工具使用固定值）
             policy: 执行策略（可选，对插件工具使用固定值）
+            usage_template: 插件工具的命令模板（可选）
+            exec_id: 统一的工具执行流水号（可选）
 
         Returns:
             ExecResult: 执行结果
@@ -246,10 +316,27 @@ class BridgeRelayExecutor:
         """
         trace_id = get_current_trace_id()
         start_time = time.time()
-        exec_id = str(uuid.uuid4())
+        exec_id = exec_id or str(uuid.uuid4())
 
         # 1. 提取命令和原因
-        command = args.get("command", "")
+        if usage_template:
+            try:
+                command = TemplateInterpolator.interpolate(usage_template, args)
+            except ValueError as e:
+                logger.error(f"插件工具插值失败: {str(e)}", exc_info=True)
+                return ExecResult(
+                    stdout="",
+                    stderr=f"[error] 参数校验与插值失败: {str(e)}",
+                    exit_code=-1,
+                    command=usage_template,
+                    node=node_ip or "unknown",
+                    duration_ms=0,
+                    truncated=False,
+                    risk_level=risk_level or 3,
+                )
+        else:
+            command = args.get("command", "") or args.get("acli", "")
+
         reason = args.get("reason", "未提供原因")
 
         # 2. 命令净化
@@ -388,6 +475,7 @@ class BridgeRelayExecutor:
                     duration_ms=int((time.time() - start_time) * 1000),
                     truncated=False,
                     risk_level=runtime_risk,
+                    exit_code_meaning=ExitCodeMeaning.TIMEOUT,
                 )
 
             # 解析结果 JSON
@@ -397,10 +485,23 @@ class BridgeRelayExecutor:
             output = result_data.get("output", "")
             exit_code = result_data.get("exit_code", 0)
 
-            # 7. 截断输出
+            # 7. 智能截断输出
             truncated = len(output) > self.STDOUT_MAX_CHARS
-            stdout = output[: self.STDOUT_MAX_CHARS] if truncated else output
+            stdout = smart_truncate(output, self.STDOUT_MAX_CHARS) if truncated else output
             stderr = ""
+
+            # 退出码语义判定
+            meaning = ExitCodeMeaning.SUCCESS
+            if exit_code != 0:
+                meaning = ExitCodeMeaning.UNKNOWN_ERROR
+                # 尝试从 stdout / stderr 识别更具体的语义
+                check_text = output.lower()
+                if exit_code == 127 or "command not found" in check_text:
+                    meaning = ExitCodeMeaning.COMMAND_NOT_FOUND
+                elif exit_code == 126 or "permission denied" in check_text:
+                    meaning = ExitCodeMeaning.PERMISSION_DENIED
+                elif "connection refused" in check_text:
+                    meaning = ExitCodeMeaning.CONNECTION_REFUSED
 
             duration_ms = int((time.time() - start_time) * 1000)
 
@@ -427,6 +528,7 @@ class BridgeRelayExecutor:
                 duration_ms=duration_ms,
                 truncated=truncated,
                 risk_level=runtime_risk,
+                exit_code_meaning=meaning,
             )
 
         except Exception as e:
@@ -446,6 +548,7 @@ class BridgeRelayExecutor:
                 duration_ms=int((time.time() - start_time) * 1000),
                 truncated=False,
                 risk_level=runtime_risk,
+                exit_code_meaning=ExitCodeMeaning.UNKNOWN_ERROR,
             )
 
 

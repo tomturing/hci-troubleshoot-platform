@@ -412,7 +412,7 @@ COMMENT ON COLUMN message.conversation_id IS '关联会话，ON DELETE CASCADE';
 COMMENT ON COLUMN message.case_id IS '冗余字段，复制自 conversation.case_id，用于无 JOIN 快速查询''某工单的所有消息''';
 COMMENT ON COLUMN message."role" IS '消息角色枚举：user（用户消息）/ assistant（AI 回复）/ system（系统提示）/ command（命令建议）';
 COMMENT ON COLUMN message.content IS '消息内容，纯文本或 Markdown 格式';
-COMMENT ON COLUMN message.command IS 'AI 建议执行的命令（如 acli vm.start --vm-id xxx），仅 role=command 时填写';
+COMMENT ON COLUMN message.command IS 'AI 建议执行的命令（如 acli --formatter json vm start），仅 role=command 时填写';
 COMMENT ON COLUMN message.command_warning IS '命令执行风险提示，仅 role=command 时填写';
 COMMENT ON COLUMN message.metadata IS '扩展字段，如消息来源、token 统计等';
 COMMENT ON COLUMN message.created_at IS '消息创建时间';
@@ -494,6 +494,31 @@ CREATE INDEX IF NOT EXISTS idx_diagnostic_item_status ON diagnostic_item ("type"
 --   * 与 message 表完全同构的子实体模式：INSERT-only 用于生成，UPDATE 用于状态变更
 
 -- ------------------------------------------------------------
+-- 表: authorization  [模块: conversation-service]
+-- 说明: 高危操作人工授权审计表 — 记录每次高危工具调用的人工确认结果
+-- 用途: 记录高危/人工确认步骤的决策详情，与 tool_result 形成关联
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS "authorization" (
+    auth_id varchar(36) NOT NULL,
+    exec_id varchar(36) NOT NULL,
+    actor varchar(100) NOT NULL,
+    decision varchar(20) NOT NULL, -- approve/deny
+    tool_input_hash varchar(64) NOT NULL,
+    expires_at timestamptz,
+    created_at timestamptz DEFAULT now(),
+    CONSTRAINT authorization_pkey PRIMARY KEY (auth_id)
+);
+
+COMMENT ON TABLE "authorization" IS '高危操作人工授权审计表 — 记录每次高危工具调用的人工确认结果';
+COMMENT ON COLUMN "authorization".auth_id IS '授权记录 ID，UUID 格式';
+COMMENT ON COLUMN "authorization".exec_id IS '关联工具执行记录 ID (对应 tool_result.id)';
+COMMENT ON COLUMN "authorization".actor IS '执行授权确认操作的用户名';
+COMMENT ON COLUMN "authorization".decision IS '授权决策：approve=批准执行 / deny=拒绝执行';
+COMMENT ON COLUMN "authorization".tool_input_hash IS '被授权工具调用输入参数的哈希值，防篡改校验';
+COMMENT ON COLUMN "authorization".expires_at IS '授权过期时间，超期未执行则失效';
+COMMENT ON COLUMN "authorization".created_at IS '授权创建时间';
+
+-- ------------------------------------------------------------
 -- 表: tool_result  [模块: conversation-service]
 -- 说明: 工具执行结果表 — 记录每次 AI 调用工具（acli/scp_api）的请求参数、执行结果、风险等级和授权信息。从旧 audit_log.audit_type='tool_call' 分离，修复 BUG-03（step_no 字段缺失）
 -- 用途: AI 调用工具时写入一条记录，包含工具名、参数、执行结果、耗时、风险等级；用于 CP-02 工具审计验证、高危操作追溯、工具性能 SLA 统计
@@ -514,7 +539,15 @@ CREATE TABLE IF NOT EXISTS tool_result (
     started_at timestamptz NOT NULL DEFAULT now(),
     completed_at timestamptz,
     trace_id varchar(64),
+    status varchar(30) NOT NULL DEFAULT 'committed',
+    input_hash varchar(64),
+    authorization_id varchar(36),
+    idempotency_key varchar(100),
+    case_id varchar(20),
+    retry_count smallint NOT NULL DEFAULT 0,
+    updated_at timestamptz DEFAULT now(),
     CONSTRAINT fk_tool_result_conversation_id FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE CASCADE,
+    CONSTRAINT fk_tool_result_authorization_id FOREIGN KEY (authorization_id) REFERENCES "authorization" (auth_id) ON DELETE SET NULL,
     -- D-006: 风险等级只允许 1（只读）/ 2（需确认）/ 3（高危），NOT NULL DEFAULT 1
     CONSTRAINT chk_tool_result_risk_level CHECK (risk_level >= 1 AND risk_level <= 3),
     CONSTRAINT tool_result_pkey PRIMARY KEY (id)
@@ -536,6 +569,13 @@ COMMENT ON COLUMN tool_result.duration_ms IS '执行耗时（毫秒），complet
 COMMENT ON COLUMN tool_result.started_at IS '工具调用开始时间';
 COMMENT ON COLUMN tool_result.completed_at IS '工具调用完成时间（含失败场景）';
 COMMENT ON COLUMN tool_result.trace_id IS '请求 trace ID';
+COMMENT ON COLUMN tool_result.status IS '工具执行状态：proposed/executing/committed/failed/cancelled等';
+COMMENT ON COLUMN tool_result.input_hash IS '工具调用输入参数的哈希值';
+COMMENT ON COLUMN tool_result.authorization_id IS '关联高危授权表记录ID';
+COMMENT ON COLUMN tool_result.idempotency_key IS '用于防重幂等校验的键';
+COMMENT ON COLUMN tool_result.case_id IS '关联工单 ID，方便直接过滤';
+COMMENT ON COLUMN tool_result.retry_count IS '工具执行重试次数（T1-4），0 表示一次成功，N 表示经过 N 次重试';
+COMMENT ON COLUMN tool_result.updated_at IS '记录更新时间';
 
 -- 索引: tool_result
 -- 会话工具调用查询（CP-02 验证）
@@ -693,7 +733,7 @@ COMMENT ON COLUMN tool_definition.category IS '工具类别（执行路由依据
 COMMENT ON COLUMN tool_definition.description IS '工具功能描述（直接注入 Prompt，LLM 读取后知道何时应该调用此工具）。示例：''在 HCI 节点执行 acli 命令（深圳桑福 HCI 平台专有 CLI）''';
 COMMENT ON COLUMN tool_definition.usage_template IS '调用模板。acli 插件工具示例：''acli plugins vm_start vm_start''；通用工具为 NULL';
 COMMENT ON COLUMN tool_definition.parameters_schema IS '参数 JSON Schema（OpenAI function calling 格式），AI 按此 Schema 输出结构化参数对象，后端按此 Schema 校验后生成实际命令/请求';
-COMMENT ON COLUMN tool_definition.examples IS '调用示例数组。示例：[{"args": {"command": "acli vm list --formatter json", "reason": "检查虚拟机状态"}, "desc": "列出虚拟机"}]';
+COMMENT ON COLUMN tool_definition.examples IS '调用示例数组。示例：[{"args": {"command": "acli --formatter json vm list", "reason": "检查虚拟机状态"}, "desc": "列出虚拟机"}]';
 COMMENT ON COLUMN tool_definition.risk_level IS '风险等级静态默认值：1=只读查询（auto）/ 2=写操作需确认（confirm）/ 3=高危拦截（block）。注意：对 acli_exec/bash_exec 通用工具，运行时 RiskClassifier 根据命令内容动态判定并覆盖此值；对插件诊断/SCP/SOP 工具，此值为固定值（不动态覆盖）';
 COMMENT ON COLUMN tool_definition.is_active IS '是否启用；is_active=false 的工具不会注入 Prompt 也不会被 AI 调用，用于临时下线某工具';
 COMMENT ON COLUMN tool_definition.version IS '工具接口版本（对应 CLI 版本或 API path 中的日期版本如 20240725）';
@@ -715,32 +755,42 @@ CREATE INDEX IF NOT EXISTS idx_tool_definition_risk_level ON tool_definition (ri
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS skill_definition (
     id serial NOT NULL,
-    skill_name varchar(100) NOT NULL UNIQUE,
-    display_name varchar(200) NOT NULL,
-    description text NOT NULL,
-    parameters_schema jsonb NOT NULL DEFAULT '{}',
-    output_schema jsonb NOT NULL DEFAULT '{}',
+    skill_name varchar(64) NOT NULL UNIQUE,
+    description varchar(1024) NOT NULL,
+    instructions_md text NOT NULL DEFAULT '',
+    compatibility varchar(500),
+    license varchar(100),
+    allowed_tools text,
+    metadata_json jsonb NOT NULL DEFAULT '{}',
+    display_name varchar(200),
     is_active boolean DEFAULT true,
-    version varchar(20) DEFAULT '1.0',
+    assets_json jsonb NOT NULL DEFAULT '[]',
+    references_json jsonb NOT NULL DEFAULT '[]',
+    trace_id varchar(64),
     created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT skill_definition_pkey PRIMARY KEY (id)
 );
 
-COMMENT ON TABLE skill_definition IS '技能定义表 — AI 技能/方法库，存储平台通用的、可复用的分析与判断技能（如硬盘厂商识别与寿命判断、内存状态分析等）';
+COMMENT ON TABLE skill_definition IS '技能定义表 — 遵循 Agent Skills Open Standard (agentskills.io)，以 Markdown 知识包形式存储领域专业知识和标准操作流程';
 COMMENT ON COLUMN skill_definition.id IS '技能定义主键，自增';
-COMMENT ON COLUMN skill_definition.skill_name IS '技能唯一标识（如 disk_vendor_lifetime），SOP 变量源引用此字段（格式如 skill:disk_vendor_lifetime）';
-COMMENT ON COLUMN skill_definition.display_name IS '技能展示名，用于前端管理页面和审计展示';
-COMMENT ON COLUMN skill_definition.description IS '技能功能描述';
-COMMENT ON COLUMN skill_definition.parameters_schema IS '输入参数 JSON Schema';
-COMMENT ON COLUMN skill_definition.output_schema IS '输出参数 JSON Schema';
-COMMENT ON COLUMN skill_definition.is_active IS '是否启用；is_active=false 的技能被调用时会报错或退化';
-COMMENT ON COLUMN skill_definition.version IS '技能版本（如 1.0）';
+COMMENT ON COLUMN skill_definition.skill_name IS 'Skill 唯一标识，kebab-case，对应标准 name 字段。SOP 变量源引用格式：skill:skill-name';
+COMMENT ON COLUMN skill_definition.description IS '供 Agent 发现阶段使用（~100 tokens），描述"做什么"和"何时触发"';
+COMMENT ON COLUMN skill_definition.instructions_md IS 'SKILL.md 正文 Markdown，供 Agent 激活阶段加载';
+COMMENT ON COLUMN skill_definition.compatibility IS '环境兼容性说明（可选），描述系统版本、工具依赖、网络权限等';
+COMMENT ON COLUMN skill_definition.license IS '许可证（可选）';
+COMMENT ON COLUMN skill_definition.allowed_tools IS '预批准工具列表，空格分隔（实验性字段）';
+COMMENT ON COLUMN skill_definition.metadata_json IS '扩展元数据 key-value，建议包含 author、category、tags';
+COMMENT ON COLUMN skill_definition.display_name IS '中文展示名，管理控制台使用（平台扩展字段）';
+COMMENT ON COLUMN skill_definition.is_active IS '启用状态；false 时 Agent 不会激活此 Skill（平台扩展字段）';
+COMMENT ON COLUMN skill_definition.assets_json IS '资源文件内联存储，模拟标准 assets/ 目录（平台扩展字段）';
+COMMENT ON COLUMN skill_definition.references_json IS '参考文档内联存储，模拟标准 references/ 目录（平台扩展字段）';
 COMMENT ON COLUMN skill_definition.created_at IS '创建时间';
 COMMENT ON COLUMN skill_definition.updated_at IS '最后更新时间';
 
 -- 索引: skill_definition
 CREATE INDEX IF NOT EXISTS idx_skill_definition_active ON skill_definition (is_active);
+CREATE INDEX IF NOT EXISTS idx_skill_definition_metadata ON skill_definition USING GIN (metadata_json);
 
 -- ------------------------------------------------------------
 -- 表: kb_category  [模块: kb-service]

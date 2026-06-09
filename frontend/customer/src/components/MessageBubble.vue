@@ -82,11 +82,44 @@ interface ContentSegment {
 
 import { marked } from 'marked'
 
+const reasoningContent = computed(() => {
+  const content = props.message.content
+  if (!content) return ''
+  const startTag = '<reasoning>'
+  const endTag = '</reasoning>'
+  const startIndex = content.indexOf(startTag)
+  const endIndex = content.indexOf(endTag)
+  if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+    return content.substring(startIndex + startTag.length, endIndex).trim()
+  }
+  if (startIndex !== -1 && endIndex === -1) {
+    return content.substring(startIndex + startTag.length).trim()
+  }
+  return ''
+})
+
+const cleanContent = computed(() => {
+  const content = props.message.content
+  if (!content) return ''
+  const startTag = '<reasoning>'
+  const endTag = '</reasoning>'
+  const startIndex = content.indexOf(startTag)
+  const endIndex = content.indexOf(endTag)
+  if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+    return (content.substring(0, startIndex) + content.substring(endIndex + endTag.length)).trim()
+  }
+  if (startIndex !== -1 && endIndex === -1) {
+    return content.substring(0, startIndex).trim()
+  }
+  return content
+})
+
 const contentSegments = computed<ContentSegment[]>(() => {
-  if (!props.message.content) return []
+  const text = cleanContent.value
+  if (!text) return []
 
   // 使用成熟的 Markdown Lexer 提取 AST（完美处理未闭合标签或代码块等情况）
-  const tokens = marked.lexer(props.message.content)
+  const tokens = marked.lexer(text)
   const segments: ContentSegment[] = []
   
   let textBuffer = ''
@@ -333,6 +366,9 @@ const interactiveEvent = computed(() => {
     options: Array<{ optionId: string; name: string }>
     customInput: boolean
     metadata: Record<string, unknown>
+    execId?: string
+    inputHash?: string
+    expiresAt?: string
   } | null
 })
 
@@ -380,7 +416,48 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
     return
   }
 
-  // ── 以下为 ops-agent 原有逻辑 ──
+  if (ev.kind === 'tool_confirm') {
+    const confirmed = optionId === 'approved'
+    interactiveSubmitting.value = true
+    try {
+      const convId = chatStore.conversationId
+      if (!convId) return
+      const resp = await fetch(`/api/conversations/${convId}/interactive-response`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'tool_confirm',
+          request_id: ev.execId || ev.requestId,
+          acp_session_id: ev.acpSessionId || convId,
+          outcome: {
+            confirmed,
+            authorized_by: 'user',
+            input_hash: ev.inputHash || (ev.metadata?.input_hash as string | undefined),
+          },
+          metadata: ev.metadata,
+        }),
+      })
+      if (resp.ok) {
+        chatStore.clearInteractiveRequest()
+        chatStore.messages.push({
+          id: `ir-resp-${Date.now()}`,
+          role: 'user',
+          content: confirmed ? '[工具授权] 确认执行' : '[工具授权] 取消执行',
+          timestamp: new Date(),
+          metadata: { kind: 'interactive_response', selectedOptionId: optionId },
+        })
+      } else {
+        console.warn('[interactive] 工具确认提交失败:', resp.status)
+      }
+    } finally {
+      interactiveSubmitting.value = false
+    }
+    return
+  }
+
+  const isVariable = ['variable_input', 'variable_confirm'].includes(ev.kind)
+
+  // ── 以下为 ops-agent 原有逻辑 / 变量确认逻辑 ──
   interactiveSubmitting.value = true
   try {
     const convId = chatStore.conversationId
@@ -389,23 +466,33 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        kind: ev.kind,
         request_id: ev.requestId,
         acp_session_id: ev.acpSessionId,
         outcome: { outcome: 'selected', optionId, optionLabel: optionName },
+        metadata: ev.metadata,
       }),
     })
     if (resp.ok) {
-      // 追加用户响应气泡（selectedOptionId 用于恢复已选高亮）
-      chatStore.messages.push({
-        id: `ir-resp-${Date.now()}`,
-        role: 'user',
-        content: `[操作选择] ${optionName}`,
-        timestamp: new Date(),
-        metadata: { kind: 'interactive_response', selectedOptionId: optionId },
-      })
       chatStore.clearInteractiveRequest()
-      // 立即接收 ops-agent 对该 interactive_response 的续写内容
-      chatStore.resumeOpsAgentStream()
+      if (isVariable) {
+        // 对于 SOP 变量输入，提交变量库后，发送一条用户消息触发后续诊断
+        await chatStore.sendMessage(optionName, {
+          kind: 'interactive_response',
+          selectedOptionId: optionId,
+        })
+      } else {
+        // 追加用户响应气泡（selectedOptionId 用于恢复已选高亮）
+        chatStore.messages.push({
+          id: `ir-resp-${Date.now()}`,
+          role: 'user',
+          content: `[操作选择] ${optionName}`,
+          timestamp: new Date(),
+          metadata: { kind: 'interactive_response', selectedOptionId: optionId },
+        })
+        // 立即接收 ops-agent 对该 interactive_response 的续写内容
+        chatStore.resumeOpsAgentStream()
+      }
     } else {
       console.warn('[interactive] 提交失败:', resp.status)
     }
@@ -420,6 +507,9 @@ async function handleInteractiveFreeText() {
   if (!text || interactiveSubmitting.value || interactiveSubmitted.value) return
   const ev = interactiveEvent.value
   if (!ev) return
+
+  const isVariable = ['variable_input', 'variable_confirm'].includes(ev.kind)
+
   interactiveSubmitting.value = true
   try {
     const convId = chatStore.conversationId
@@ -428,23 +518,32 @@ async function handleInteractiveFreeText() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        kind: ev.kind,
         request_id: ev.requestId,
         acp_session_id: ev.acpSessionId,
         outcome: { outcome: 'free_text', text },
+        metadata: ev.metadata,
       }),
     })
     if (resp.ok) {
-      chatStore.messages.push({
-        id: `ir-resp-${Date.now()}`,
-        role: 'user',
-        content: `[补充输入] ${text}`,
-        timestamp: new Date(),
-        metadata: { kind: 'interactive_response' },
-      })
       interactiveFreeText.value = ''
       chatStore.clearInteractiveRequest()
-      // 立即接收 ops-agent 对该 interactive_response 的续写内容
-      chatStore.resumeOpsAgentStream()
+      if (isVariable) {
+        // 对于 SOP 变量输入，提交变量库后，发送一条用户消息触发后续诊断
+        await chatStore.sendMessage(text, {
+          kind: 'interactive_response',
+        })
+      } else {
+        chatStore.messages.push({
+          id: `ir-resp-${Date.now()}`,
+          role: 'user',
+          content: `[补充输入] ${text}`,
+          timestamp: new Date(),
+          metadata: { kind: 'interactive_response' },
+        })
+        // 立即接收 ops-agent 对该 interactive_response 的续写内容
+        chatStore.resumeOpsAgentStream()
+      }
     } else {
       console.warn('[interactive] 自由文本提交失败:', resp.status)
     }
@@ -654,6 +753,148 @@ watch(execConfirmEvent, (ev) => {
 onBeforeUnmount(() => {
   stopExecConfirmTimer()
 })
+
+// ============================================================
+// Tool Call & Variable validation / confirm logic
+// ============================================================
+
+const isTerminalCollapsed = ref(false)
+const isParamsCollapsed = ref(true)
+const isTouched = ref(false)
+const toolCallSubmitting = ref(false)
+
+const toolCallEvent = computed(() => {
+  if (props.message.metadata?.kind !== 'tool_call') return null
+  return props.message.metadata.event as {
+    exec_id: string
+    tool_name: string
+    args: Record<string, any>
+    risk_level: number
+    status: 'pending' | 'running' | 'success' | 'failed' | 'cancelled' | 'blocked'
+    result?: string | Record<string, any>
+    error?: string
+    duration_ms?: number
+    input_hash?: string
+  } | null
+})
+
+const isInputValid = computed(() => {
+  const text = interactiveFreeText.value.trim()
+  const ev = interactiveEvent.value
+  if (!ev) return true
+  
+  // Required check
+  const required = ev.metadata?.required !== false
+  if (required && !text) return false
+  if (!required && !text) return true
+  
+  // Regex check
+  const pattern = ev.metadata?.validation_pattern as string | undefined
+  if (pattern) {
+    try {
+      const regex = new RegExp(pattern)
+      return regex.test(text)
+    } catch (e) {
+      console.warn('Invalid regex pattern:', pattern)
+      return true
+    }
+  }
+  return true
+})
+
+// Initialize interactiveFreeText when event changes for variable_confirm
+watch(() => interactiveEvent.value, (newEv) => {
+  if (newEv && newEv.kind === 'variable_confirm') {
+    interactiveFreeText.value = (newEv.metadata?.current_value as string) || ''
+    isTouched.value = false
+  } else if (newEv && newEv.kind === 'variable_input') {
+    interactiveFreeText.value = ''
+    isTouched.value = false
+  }
+}, { immediate: true })
+
+async function handleConfirmRecommendValue() {
+  if (interactiveSubmitting.value || interactiveSubmitted.value) return
+  const ev = interactiveEvent.value
+  if (!ev) return
+  const val = (ev.metadata?.current_value as string) || ''
+  interactiveSubmitting.value = true
+  try {
+    const convId = chatStore.conversationId
+    if (!convId) return
+    const resp = await fetch(`/api/conversations/${convId}/interactive-response`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: ev.kind,
+        request_id: ev.requestId,
+        acp_session_id: ev.acpSessionId,
+        outcome: { outcome: 'free_text', text: val },
+        metadata: ev.metadata,
+      }),
+    })
+    if (resp.ok) {
+      chatStore.clearInteractiveRequest()
+      await chatStore.sendMessage(val, {
+        kind: 'interactive_response',
+      })
+    } else {
+      console.warn('[interactive] 推荐值确认提交失败:', resp.status)
+    }
+  } finally {
+    interactiveSubmitting.value = false
+  }
+}
+
+async function handleToolCallApprove() {
+  const ev = toolCallEvent.value
+  if (!ev || toolCallSubmitting.value) return
+  toolCallSubmitting.value = true
+  try {
+    const convId = chatStore.conversationId
+    if (!convId) return
+    const resp = await fetch(`/api/conversations/${convId}/interactive-response`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'tool_confirm',
+        request_id: ev.exec_id,
+        acp_session_id: convId,
+        outcome: { confirmed: true, authorized_by: 'user', input_hash: ev.input_hash },
+      }),
+    })
+    if (!resp.ok) {
+      console.warn('[tool_call] 提交确认执行失败:', resp.status)
+    }
+  } finally {
+    toolCallSubmitting.value = false
+  }
+}
+
+async function handleToolCallReject() {
+  const ev = toolCallEvent.value
+  if (!ev || toolCallSubmitting.value) return
+  toolCallSubmitting.value = true
+  try {
+    const convId = chatStore.conversationId
+    if (!convId) return
+    const resp = await fetch(`/api/conversations/${convId}/interactive-response`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'tool_confirm',
+        request_id: ev.exec_id,
+        acp_session_id: convId,
+        outcome: { confirmed: false, authorized_by: 'user', input_hash: ev.input_hash },
+      }),
+    })
+    if (!resp.ok) {
+      console.warn('[tool_call] 提交拒绝执行失败:', resp.status)
+    }
+  } finally {
+    toolCallSubmitting.value = false
+  }
+}
 </script>
 
 <template>
@@ -689,6 +930,9 @@ onBeforeUnmount(() => {
           <!-- exec_confirm 气泡：不渲染普通 content，下方有专用区域 -->
           <template v-if="message.metadata?.kind === 'exec_confirm'" />
 
+          <!-- tool_call 气泡：不渲染普通 content，下方有专用区域 -->
+          <template v-if="message.metadata?.kind === 'tool_call'" />
+
           <!-- 阶段1：Thinking 状态（流式中且内容为空） -->
           <template v-else-if="message.isStreaming && !message.content">
             <div class="thinking-indicator">
@@ -701,6 +945,20 @@ onBeforeUnmount(() => {
 
           <!-- 阶段2+3：统一渲染管道。流式与完成态完全共享相同的 DOM 结构与拆分策略 -->
           <template v-else-if="message.content">
+            <!-- CoT 思考过程折叠展示 (T3-3) -->
+            <div v-if="reasoningContent" class="reasoning-collapse-container mb-3 stage3-item">
+              <el-collapse>
+                <el-collapse-item name="reasoning">
+                  <template #title>
+                    <div class="reasoning-title-bar">
+                      <span class="reasoning-icon">ⓘ</span>
+                      <span class="reasoning-label">诊断依据摘要</span>
+                    </div>
+                  </template>
+                  <div class="reasoning-details-content" v-html="renderTextSegment(reasoningContent)" />
+                </el-collapse-item>
+              </el-collapse>
+            </div>
             <div
               v-for="segment in contentSegments"
               :key="segment.id"
@@ -738,78 +996,279 @@ onBeforeUnmount(() => {
 
         <!-- interactive_request 气泡（ops-agent SOP 操作卡 / 信息确认卡） -->
         <div v-if="interactiveEvent" class="interactive-bubble">
-          <!-- 标题 -->
-          <div class="interactive-title">
-            {{ interactiveEvent.kind === 'sop_step' ? '📋 SOP 操作步骤确认' : '❓ 信息确认' }}
+          <!-- Branch 1: variable_input -->
+          <template v-if="interactiveEvent.kind === 'variable_input'">
+            <div class="interactive-title">📋 请输入变量值</div>
+            <div class="ir-field">
+              <span class="ir-label">变量名称</span>
+              <code class="ir-route">{{ interactiveEvent.metadata?.variable_name }}</code>
+            </div>
+            <div class="ir-field">
+              <span class="ir-label">变量描述</span>
+              <p class="ir-question">{{ interactiveEvent.prompt }}</p>
+            </div>
+            
+            <div v-if="!interactiveSubmitted" class="variable-input-form">
+              <el-input
+                v-model="interactiveFreeText"
+                placeholder="请输入变量值"
+                :class="{ 'input-error': isTouched && !isInputValid }"
+                @blur="isTouched = true"
+                @input="isTouched = true"
+                :disabled="interactiveSubmitting"
+              />
+              <div v-if="isTouched && !isInputValid" class="input-error-msg">
+                {{ interactiveEvent.metadata?.validation_pattern ? '格式不满足要求（匹配: ' + interactiveEvent.metadata.validation_pattern + '）' : '请输入值（必填）' }}
+              </div>
+              <el-button
+                type="primary"
+                size="default"
+                class="mt-2"
+                :disabled="!isInputValid || interactiveSubmitting"
+                :loading="interactiveSubmitting"
+                @click="handleInteractiveFreeText"
+              >
+                提交变量值
+              </el-button>
+            </div>
+            <div v-else class="variable-confirmed-status">
+              <el-tag type="success" size="small">已提交</el-tag>
+            </div>
+          </template>
+
+          <!-- Branch 2: variable_confirm -->
+          <template v-else-if="interactiveEvent.kind === 'variable_confirm'">
+            <div class="interactive-title">📋 请确认变量值</div>
+            <div class="ir-field">
+              <span class="ir-label">变量名称</span>
+              <code class="ir-route">{{ interactiveEvent.metadata?.variable_name }}</code>
+            </div>
+            <div class="ir-field">
+              <span class="ir-label">变量描述</span>
+              <p class="ir-question">{{ interactiveEvent.prompt }}</p>
+            </div>
+
+            <div v-if="!interactiveSubmitted">
+              <!-- 如果有候选选项，展示选项按钮，不展示分栏对比 -->
+              <div v-if="interactiveEvent.options?.length" class="ir-options-wrapper">
+                <InteractiveOptions
+                  :options="interactiveEvent.options"
+                  :selected-option-id="selectedInteractiveOptionId"
+                  :force-disabled="interactiveSubmitted"
+                  :submitting="interactiveSubmitting"
+                  @select="handleInteractiveOption"
+                />
+              </div>
+              <!-- 否则，展示左右分栏对比 -->
+              <div v-else class="variable-split-panel">
+                <!-- 左半部分：推荐值一键确认 -->
+                <div class="split-col recommend-col">
+                  <div class="col-title">系统推荐值</div>
+                  <div class="recommend-value-box">
+                    <code>{{ interactiveEvent.metadata?.current_value || '空' }}</code>
+                  </div>
+                  <el-button
+                    type="success"
+                    class="recommend-btn mt-2"
+                    :disabled="interactiveSubmitting"
+                    :loading="interactiveSubmitting"
+                    @click="handleConfirmRecommendValue"
+                  >
+                    一键确认推荐值
+                  </el-button>
+                </div>
+
+                <!-- 右半部分：微调修改区 -->
+                <div class="split-col manual-col">
+                  <div class="col-title">修改或手动输入</div>
+                  <el-input
+                    v-model="interactiveFreeText"
+                    placeholder="修改推荐值"
+                    :class="{ 'input-error': isTouched && !isInputValid }"
+                    @blur="isTouched = true"
+                    @input="isTouched = true"
+                    :disabled="interactiveSubmitting"
+                  />
+                  <div v-if="isTouched && !isInputValid" class="input-error-msg">
+                    {{ interactiveEvent.metadata?.validation_pattern ? '格式不满足要求（匹配: ' + interactiveEvent.metadata.validation_pattern + '）' : '请输入值（必填）' }}
+                  </div>
+                  <el-button
+                    type="primary"
+                    class="manual-btn mt-2"
+                    :disabled="!isInputValid || interactiveSubmitting"
+                    :loading="interactiveSubmitting"
+                    @click="handleInteractiveFreeText"
+                  >
+                    提交修改值
+                  </el-button>
+                </div>
+              </div>
+            </div>
+            <div v-else class="variable-confirmed-status">
+              <el-tag type="success" size="small">已确认并提交</el-tag>
+            </div>
+          </template>
+
+          <!-- Branch 3: default info_request/sop_step cards -->
+          <template v-else>
+            <!-- 标题 -->
+            <div class="interactive-title">
+              {{ interactiveEvent.title || (interactiveEvent.kind === 'sop_step' ? '📋 SOP 操作步骤确认' : '❓ 信息确认') }}
+            </div>
+
+            <!-- SOP 卡：展示路径/目标/预期/操作指引 -->
+            <template v-if="interactiveEvent.kind === 'sop_step'">
+              <div v-if="interactiveEvent.metadata?.route" class="ir-field">
+                <span class="ir-label">当前路径</span>
+                <code class="ir-route">{{ interactiveEvent.metadata.route }}</code>
+              </div>
+              <div class="ir-grid">
+                <div v-if="interactiveEvent.metadata?.operationGoal" class="ir-field">
+                  <span class="ir-label">操作目标</span>
+                  <p>{{ interactiveEvent.metadata.operationGoal }}</p>
+                </div>
+                <div v-if="interactiveEvent.metadata?.expectedResult" class="ir-field">
+                  <span class="ir-label">预期结果</span>
+                  <p>{{ interactiveEvent.metadata.expectedResult }}</p>
+                </div>
+              </div>
+              <div v-if="interactiveEvent.metadata?.executionGuidance" class="ir-field">
+                <span class="ir-label">操作指引</span>
+                <p>{{ interactiveEvent.metadata.executionGuidance }}</p>
+              </div>
+              <div v-if="interactiveEvent.metadata?.feedbackRequest || interactiveEvent.prompt" class="ir-field">
+                <span class="ir-label">请反馈</span>
+                <p>{{ interactiveEvent.metadata?.feedbackRequest || interactiveEvent.prompt }}</p>
+              </div>
+            </template>
+
+            <!-- 其他信息确认卡 -->
+            <template v-else>
+              <div class="ir-field">
+                <span class="ir-label">核心问题</span>
+                <p class="ir-question">{{ (interactiveEvent.metadata?.question as string) || interactiveEvent.prompt }}</p>
+              </div>
+              <div v-if="interactiveEvent.metadata?.context" class="ir-field">
+                <span class="ir-label">背景说明</span>
+                <p>{{ interactiveEvent.metadata.context }}</p>
+              </div>
+            </template>
+
+            <!-- 选项按钮 -->
+            <InteractiveOptions
+              v-if="interactiveEvent.options?.length"
+              :options="interactiveEvent.options"
+              :selected-option-id="selectedInteractiveOptionId"
+              :force-disabled="interactiveSubmitted"
+              :submitting="interactiveSubmitting"
+              @select="handleInteractiveOption"
+            />
+
+            <!-- 自由文本输入 -->
+            <div v-if="interactiveEvent.customInput && !interactiveSubmitted" class="ir-free-input">
+              <span class="ir-label">补充信息（可选）</span>
+              <el-input
+                v-model="interactiveFreeText"
+                type="textarea"
+                :rows="2"
+                placeholder="输入更准确的现场信息或执行结果。"
+                :disabled="interactiveSubmitting"
+              />
+              <el-button
+                class="mt-2"
+                size="small"
+                :disabled="!interactiveFreeText.trim() || interactiveSubmitting"
+                :loading="interactiveSubmitting"
+                @click="handleInteractiveFreeText"
+              >
+                提交补充信息
+              </el-button>
+            </div>
+          </template>
+        </div>
+
+        <!-- Tool Call 气泡 (工具调用与执行反馈) -->
+        <div v-if="toolCallEvent" class="tool-call-bubble">
+          <!-- Card Header -->
+          <div class="tool-call-header">
+            <div class="tool-call-header-title">
+              <span class="tool-call-icon">⚙️</span>
+              <span class="tool-name">{{ toolCallEvent.tool_name }}</span>
+              <span class="exec-id-label">({{ toolCallEvent.exec_id.substring(0, 8) }})</span>
+            </div>
+            <div class="tool-call-status-tag">
+              <span v-if="toolCallEvent.status === 'pending'" class="status-badge pending">等待授权</span>
+              <span v-else-if="toolCallEvent.status === 'running'" class="status-badge running">执行中</span>
+              <span v-else-if="toolCallEvent.status === 'success'" class="status-badge success">执行成功</span>
+              <span v-else-if="toolCallEvent.status === 'failed'" class="status-badge failed">执行失败</span>
+              <span v-else-if="toolCallEvent.status === 'cancelled'" class="status-badge cancelled">已取消</span>
+              <span v-else-if="toolCallEvent.status === 'blocked'" class="status-badge blocked">已拦截</span>
+            </div>
           </div>
 
-          <!-- SOP 卡：展示路径/目标/预期/操作指引 -->
-          <template v-if="interactiveEvent.kind === 'sop_step'">
-            <div v-if="interactiveEvent.metadata?.route" class="ir-field">
-              <span class="ir-label">当前路径</span>
-              <code class="ir-route">{{ interactiveEvent.metadata.route }}</code>
-            </div>
-            <div class="ir-grid">
-              <div v-if="interactiveEvent.metadata?.operationGoal" class="ir-field">
-                <span class="ir-label">操作目标</span>
-                <p>{{ interactiveEvent.metadata.operationGoal }}</p>
+          <!-- Card Body -->
+          <div class="tool-call-body">
+            <!-- Reasoning / Command preview if applicable -->
+            <div class="tool-meta-info" v-if="toolCallEvent.args?.command || toolCallEvent.args?.reason">
+              <div v-if="toolCallEvent.args.reason" class="meta-item">
+                <span class="meta-label">原因:</span>
+                <span class="meta-value">{{ toolCallEvent.args.reason }}</span>
               </div>
-              <div v-if="interactiveEvent.metadata?.expectedResult" class="ir-field">
-                <span class="ir-label">预期结果</span>
-                <p>{{ interactiveEvent.metadata.expectedResult }}</p>
+              <div v-if="toolCallEvent.args.command" class="meta-item command-preview">
+                <span class="meta-label">命令:</span>
+                <code class="meta-value">{{ toolCallEvent.args.command }}</code>
               </div>
             </div>
-            <div v-if="interactiveEvent.metadata?.executionGuidance" class="ir-field">
-              <span class="ir-label">操作指引</span>
-              <p>{{ interactiveEvent.metadata.executionGuidance }}</p>
-            </div>
-            <div v-if="interactiveEvent.metadata?.feedbackRequest || interactiveEvent.prompt" class="ir-field">
-              <span class="ir-label">请反馈</span>
-              <p>{{ interactiveEvent.metadata?.feedbackRequest || interactiveEvent.prompt }}</p>
-            </div>
-          </template>
 
-          <!-- 信息确认卡：核心问题 + 背景说明 -->
-          <template v-else>
-            <div class="ir-field">
-              <span class="ir-label">核心问题</span>
-              <p class="ir-question">{{ (interactiveEvent.metadata?.question as string) || interactiveEvent.prompt }}</p>
+            <!-- Parameters Collapsible Panel -->
+            <div class="collapsible-section">
+              <div class="collapsible-header" @click="isParamsCollapsed = !isParamsCollapsed">
+                <span>🔧 参数列表</span>
+                <span class="collapse-arrow">{{ isParamsCollapsed ? '▶' : '▼' }}</span>
+              </div>
+              <div v-show="!isParamsCollapsed" class="collapsible-content params-json">
+                <pre><code>{{ JSON.stringify(toolCallEvent.args, null, 2) }}</code></pre>
+              </div>
             </div>
-            <div v-if="interactiveEvent.metadata?.context" class="ir-field">
-              <span class="ir-label">背景说明</span>
-              <p>{{ interactiveEvent.metadata.context }}</p>
+
+            <!-- Terminal Output Panel (Only show if running, success, or failed) -->
+            <div class="collapsible-section" v-if="['running', 'success', 'failed'].includes(toolCallEvent.status)">
+              <div class="collapsible-header" @click="isTerminalCollapsed = !isTerminalCollapsed">
+                <span>🖥️ 执行日志 / 终端回显</span>
+                <span class="collapse-arrow">{{ isTerminalCollapsed ? '▶' : '▼' }}</span>
+              </div>
+              <div v-show="!isTerminalCollapsed" class="collapsible-content terminal-console">
+                <pre v-if="toolCallEvent.result"><code>{{ typeof toolCallEvent.result === 'object' ? JSON.stringify(toolCallEvent.result, null, 2) : toolCallEvent.result }}</code></pre>
+                <pre v-else-if="toolCallEvent.error" class="terminal-error"><code>{{ toolCallEvent.error }}</code></pre>
+                <pre v-else class="terminal-running"><code>正在等待输出...</code></pre>
+              </div>
             </div>
-          </template>
 
-          <!-- 选项按钮（共用 InteractiveOptions 组件：提交后保留显示，已选蓝色，其余置灰） -->
-          <InteractiveOptions
-            v-if="interactiveEvent.options?.length"
-            :options="interactiveEvent.options"
-            :selected-option-id="selectedInteractiveOptionId"
-            :force-disabled="interactiveSubmitted"
-            :submitting="interactiveSubmitting"
-            @select="handleInteractiveOption"
-          />
+            <!-- Duration display if success/failed -->
+            <div class="tool-duration" v-if="toolCallEvent.duration_ms !== undefined">
+              耗时: <code>{{ (toolCallEvent.duration_ms / 1000).toFixed(2) }}s</code>
+            </div>
 
-          <!-- 自由文本输入（提交后隐藏） -->
-          <div v-if="interactiveEvent.customInput && !interactiveSubmitted" class="ir-free-input">
-            <span class="ir-label">补充信息（可选）</span>
-            <el-input
-              v-model="interactiveFreeText"
-              type="textarea"
-              :rows="2"
-              placeholder="输入更准确的现场信息或执行结果。"
-              :disabled="interactiveSubmitting"
-            />
-            <el-button
-              class="mt-2"
-              size="small"
-              :disabled="!interactiveFreeText.trim() || interactiveSubmitting"
-              :loading="interactiveSubmitting"
-              @click="handleInteractiveFreeText"
-            >
-              提交补充信息
-            </el-button>
+            <!-- Action buttons if pending -->
+            <div class="tool-call-actions" v-if="toolCallEvent.status === 'pending'">
+              <el-button
+                type="danger"
+                size="small"
+                :disabled="toolCallSubmitting"
+                @click="handleToolCallReject"
+              >
+                拒绝执行
+              </el-button>
+              <el-button
+                type="success"
+                size="small"
+                :disabled="toolCallSubmitting"
+                :loading="toolCallSubmitting"
+                @click="handleToolCallApprove"
+              >
+                确认执行
+              </el-button>
+            </div>
           </div>
         </div>
 
@@ -1560,5 +2019,337 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: flex-end;
   margin-top: 10px;
+}
+
+/* ===== Tool Call & Variables Validation Styles ===== */
+.tool-call-bubble {
+  margin-top: 8px;
+  background: #fdfdfd;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 13px;
+  box-shadow: 0 2px 12px 0 rgba(0,0,0,0.05);
+}
+
+.tool-call-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.tool-call-header-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-call-icon {
+  font-size: 14px;
+}
+
+.tool-name {
+  font-weight: 600;
+  color: #303133;
+}
+
+.exec-id-label {
+  font-size: 11px;
+  color: #909399;
+}
+
+.status-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.status-badge.pending {
+  background: #fdf6ec;
+  color: #e6a23c;
+  border: 1px solid #f5dab1;
+}
+
+.status-badge.running {
+  background: #ecf5ff;
+  color: #409eff;
+  border: 1px solid #d9ecff;
+  animation: running-pulse 1.5s infinite;
+}
+
+@keyframes running-pulse {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+.status-badge.success {
+  background: #f0f9eb;
+  color: #67c23a;
+  border: 1px solid #e1f3d8;
+}
+
+.status-badge.failed {
+  background: #fef0f0;
+  color: #f56c6c;
+  border: 1px solid #fde2e2;
+}
+
+.status-badge.cancelled {
+  background: #f4f4f5;
+  color: #909399;
+  border: 1px solid #e9e9eb;
+}
+
+.status-badge.blocked {
+  background: #fef0f0;
+  color: #f56c6c;
+  border: 1px solid #fde2e2;
+  font-weight: bold;
+}
+
+.tool-meta-info {
+  background: #f4f4f5;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+
+.meta-item {
+  margin-bottom: 4px;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.meta-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #909399;
+  white-space: nowrap;
+}
+
+.meta-value {
+  color: #303133;
+}
+
+.command-preview code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: monospace;
+}
+
+.collapsible-section {
+  margin-bottom: 8px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.collapsible-header {
+  background: #f5f7fa;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #606266;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  user-select: none;
+}
+
+.collapsible-header:hover {
+  background: #eef1f6;
+}
+
+.collapsible-content {
+  padding: 10px;
+  background: #fff;
+  border-top: 1px solid #ebeef5;
+}
+
+.params-json pre {
+  margin: 0;
+  font-size: 12px;
+  background: #fafafa;
+  padding: 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.terminal-console {
+  background: #1e1e1e !important;
+  color: #d4d4d4;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  padding: 12px !important;
+  border-top: none !important;
+}
+
+.terminal-console pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+}
+
+.terminal-error {
+  color: #f56c6c;
+}
+
+.terminal-running {
+  color: #409eff;
+  animation: running-pulse 1.5s infinite;
+}
+
+.tool-duration {
+  font-size: 11px;
+  color: #909399;
+  text-align: right;
+  margin-top: 6px;
+}
+
+.tool-call-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #ebeef5;
+}
+
+/* 变量表单样式 */
+.variable-input-form {
+  margin-top: 10px;
+}
+
+.input-error :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px #f56c6c inset !important;
+}
+
+.input-error-msg {
+  color: #f56c6c;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.variable-confirmed-status {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.variable-split-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.split-col {
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.recommend-col {
+  background: #f0f9eb;
+  border-color: #c2e7b0;
+}
+
+.manual-col {
+  background: #f4f4f5;
+  border-color: #e4e7ed;
+}
+
+.col-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #909399;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.recommend-value-box {
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  padding: 8px;
+  flex-grow: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: bold;
+  color: #67c23a;
+  word-break: break-all;
+}
+
+.recommend-btn {
+  width: 100%;
+}
+
+.manual-btn {
+  width: 100%;
+}
+
+/* T3-3: CoT 思考过程折叠样式 */
+.reasoning-collapse-container {
+  margin-top: 8px;
+  background: #f9f9fb;
+  border-radius: 6px;
+  border: 1px solid #e4e7ed;
+  overflow: hidden;
+}
+
+.reasoning-collapse-container :deep(.el-collapse) {
+  border: none;
+}
+
+.reasoning-collapse-container :deep(.el-collapse-item__header) {
+  background: #f4f5f7;
+  padding: 0 12px;
+  font-size: 13px;
+  color: #606266;
+  border-bottom: 1px solid #e4e7ed;
+  height: 38px;
+  line-height: 38px;
+}
+
+.reasoning-collapse-container :deep(.el-collapse-item__wrap) {
+  background: #f9f9fb;
+  border-bottom: none;
+}
+
+.reasoning-collapse-container :deep(.el-collapse-item__content) {
+  padding: 12px;
+  font-size: 13px;
+  color: #555;
+  line-height: 1.6;
+}
+
+.reasoning-title-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reasoning-icon {
+  font-size: 14px;
+}
+
+.reasoning-label {
+  font-weight: 500;
+}
+
+.reasoning-details-content {
+  word-break: break-all;
+  white-space: pre-wrap;
 }
 </style>

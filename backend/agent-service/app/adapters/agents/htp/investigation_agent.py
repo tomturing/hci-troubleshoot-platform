@@ -37,6 +37,7 @@ from app.adapters.agents.htp.sop_tools import (
 )
 from app.domain.agent_port import (
     AgentEvent,
+    AgentInteractiveRequest,
     AgentStageUpdate,
     AgentTextChunk,
     AgentUnavailableError,
@@ -74,6 +75,10 @@ class InvestigationAgent(BaseAgent):
         conversation_service_url: str = "",  # T-AGT-22: 用于创建/推进 SOP 执行
         internal_token: str = "",  # T-AGT-22: 内部服务认证 Token
         top_k: int = DEFAULT_TOP_K,
+        confirm_service: Any = None,
+        audit_service: Any = None,
+        db_session_factory: Any = None,
+        fact_store: Any = None,
     ) -> None:
         super().__init__(name="investigation-agent", max_steps=20)
         self._ai_registry = ai_registry
@@ -83,6 +88,19 @@ class InvestigationAgent(BaseAgent):
         self._conversation_service_url = conversation_service_url
         self._internal_token = internal_token
         self._top_k = top_k
+        self._confirm_service = confirm_service
+        self._audit_service = audit_service
+        if db_session_factory is None:
+            from shared.utils.prompt_loader import create_mock_session_factory
+
+            self._db_session_factory = create_mock_session_factory()
+        else:
+            self._db_session_factory = db_session_factory
+
+        from app.services.evidence_builder import EvidenceBuilder
+        self._evidence_builder = EvidenceBuilder(fact_store=fact_store)
+        self._fact_store = fact_store
+
         # KBD 差异诊断引擎（每次 process() 调用时重新创建，保证状态隔离）
         self._kbd_diag: KBDDiagnostic | None = None
 
@@ -121,6 +139,7 @@ class InvestigationAgent(BaseAgent):
         assistant_type: str = "htp-agent",
         case_id: str = "",
         user_id: str = "",
+        execution_mode: str = "safe-only",
         sop_resume_context: dict[str, Any] | None = None,  # T-AGT-23: SOP 执行恢复上下文
     ) -> AsyncGenerator[AgentEvent, None]:
         """S1-S4 诊断调查完整流程（流式）。
@@ -149,6 +168,39 @@ class InvestigationAgent(BaseAgent):
                 reason=f"未找到助手类型 '{assistant_type}'",
             )
 
+        # T2-4: 信息质量检查与澄清拦截（仅在非 SOP 恢复场景下触发）
+        if not sop_resume_context:
+            quality_report = await self._evidence_builder.check_information_quality(
+                session_id=session_id,
+                env_context=env_context,
+            )
+            if quality_report.needs_clarification:
+                logger.warning(
+                    event="information_quality_low",
+                    message="环境数据质量不足，发起用户澄清",
+                    session_id=session_id,
+                    score=quality_report.quality_score,
+                    missing=quality_report.missing_keys,
+                )
+                yield AgentInteractiveRequest(
+                    request_id=f"clarify-{session_id}",
+                    acp_session_id=session_id,
+                    kind="information_clarification",
+                    title="需要补充环境信息",
+                    prompt=quality_report.to_clarification_prompt(),
+                    options=[
+                        {"optionId": "retry", "name": "已补充，重新检查"},
+                        {"optionId": "skip", "name": "忽略，继续诊断"},
+                    ],
+                    custom_input=True,
+                    metadata={
+                        "missing_keys": quality_report.missing_keys,
+                        "stale_keys": quality_report.stale_keys,
+                        "low_confidence_keys": quality_report.low_confidence_keys,
+                    },
+                )
+                return
+
         user_query = self._extract_user_query(messages)
 
         yield AgentStageUpdate(
@@ -161,14 +213,45 @@ class InvestigationAgent(BaseAgent):
         )
 
         # 1. 尝试三轨路由（优先 SOP）
-        route_result = await self._kb_client.route_by_category(
-            category_code=category_id,
-            query=user_query,
-            top_k=3,
-        )
+        track = ""
+        sop_results = []
 
-        track = (route_result or {}).get("track", "")
-        sop_results = (route_result or {}).get("results", [])
+        # T-AGT-23: 如果存在活跃的 SOP 恢复上下文，直接使用已有的 SOP 路由，不再重新计算路由，防止输入内容变化导致路由漂移
+        if sop_resume_context and sop_resume_context.get("sop_document_id"):
+            resume_doc_id = sop_resume_context.get("sop_document_id")
+            logger.info(
+                event="sop_resume_bypass_route",
+                message="检测到活跃的 SOP 恢复上下文，跳过三轨路由，直接使用原 SOP",
+                session_id=session_id,
+                sop_document_id=resume_doc_id,
+            )
+            try:
+                doc = await self._kb_client.get_sop_document(resume_doc_id)
+                if doc:
+                    track = "sop"
+                    sop_results = [
+                        {
+                            "id": doc.get("id"),
+                            "title": doc.get("title"),
+                            "content_md": doc.get("content_md"),
+                        }
+                    ]
+            except Exception as e:
+                logger.error(
+                    event="sop_resume_fetch_document_failed",
+                    message=f"恢复 SOP 时获取文档 {resume_doc_id} 失败，将尝试重新路由",
+                    error=str(e),
+                    session_id=session_id,
+                )
+
+        if not track:
+            route_result = await self._kb_client.route_by_category(
+                category_code=category_id,
+                query=user_query,
+                top_k=3,
+            )
+            track = (route_result or {}).get("track", "")
+            sop_results = (route_result or {}).get("results", [])
 
         logger.info(
             event="investigation_route",
@@ -194,6 +277,7 @@ class InvestigationAgent(BaseAgent):
                 case_id=case_id,
                 user_id=user_id,
                 session_id=session_id,  # T-AGT-22: 传递 session_id 用于创建 SopExecution
+                execution_mode=execution_mode,
                 sop_resume_context=sop_resume_context,  # T-AGT-23: SOP 执行恢复上下文
             ):
                 yield event
@@ -281,6 +365,7 @@ class InvestigationAgent(BaseAgent):
         case_id: str,
         user_id: str,
         session_id: str,  # T-AGT-22: 新增参数，用于创建 SopExecution
+        execution_mode: str = "safe-only",
         sop_resume_context: dict[str, Any] | None = None,  # T-AGT-23: SOP 执行恢复上下文
     ) -> AsyncGenerator[AgentEvent, None]:
         """SOP 轨道：ReactEngine + SOP 导航工具动态注入（T-AGT-22）。
@@ -357,14 +442,6 @@ class InvestigationAgent(BaseAgent):
                 is_resume=True,
             )
 
-            # 构建恢复版 system prompt
-            resume_summary = self._build_sop_resume_summary(
-                sop_title=sop_title,
-                current_node_id=current_node_id,
-                completed_steps=completed_steps,
-                context_variables=context_variables,
-            )
-
             # 获取当前节点内容（而非根节点）
             current_node_result = await get_sop_node(
                 node_id=current_node_id,
@@ -379,24 +456,23 @@ class InvestigationAgent(BaseAgent):
                     current_node_id=current_node_id,
                     error=current_node_result.get("error"),
                 )
-                # 无法获取当前节点时，使用 SOP 文档内容作为 fallback
-                current_node_summary = (
-                    f"【当前节点】\n节点 ID: {current_node_id}\n{self._truncate_sop_content(sop_content)}"
-                )
-            else:
-                # 构建当前节点摘要
-                current_node_summary = self._build_current_node_summary(
-                    current_node=current_node_result,
-                )
 
             # 构建恢复版 system prompt
-            system_prompt = self._build_sop_resume_prompt(
+            system_prompt = await self._build_sop_resume_prompt(
                 sop_title=sop_title,
-                resume_summary=resume_summary,
-                current_node_summary=current_node_summary,
+                current_node_id=current_node_id,
+                completed_steps=completed_steps,
+                context_variables=context_variables,
+                current_node=current_node_result
+                if "error" not in current_node_result
+                else {
+                    "node_id": current_node_id,
+                    "title": "未知节点",
+                    "type": "branch",
+                    "content": f"无法获取当前节点时，使用 SOP 文档内容作为 fallback\n{self._truncate_sop_content(sop_content)}",
+                },
                 diagnostic_stage=diagnostic_stage,
                 case_id=case_id,
-                completed_steps=completed_steps,
             )
         else:
             # 新建场景：创建 SopExecution 记录
@@ -451,21 +527,21 @@ class InvestigationAgent(BaseAgent):
                     sop_document_id=sop_document_id,
                     error=root_node_result.get("error"),
                 )
-                # 无法获取根节点时，使用 SOP 文档内容作为 fallback
-                root_node_summary = f"【SOP 排障流程】\n{self._truncate_sop_content(sop_content)}"
-            else:
-                # 构建根节点摘要（标题 + 子节点列表）
-                root_node_summary = self._build_root_node_summary(
-                    sop_title=sop_title,
-                    root_node=root_node_result,
-                )
 
             # 构建新建版 system prompt
-            system_prompt = self._build_sop_react_prompt(
+            context_variables = create_result.get("context_variables", {})
+            system_prompt = await self._build_sop_react_prompt(
                 sop_title=sop_title,
-                root_node_summary=root_node_summary,
+                root_node=root_node_result
+                if "error" not in root_node_result
+                else {
+                    "title": sop_title,
+                    "type": "branch",
+                    "content": f"无法获取根节点时，使用 SOP 文档内容作为 fallback\n{self._truncate_sop_content(sop_content)}",
+                },
                 diagnostic_stage=diagnostic_stage,
                 case_id=case_id,
+                context_variables=context_variables,
             )
 
         # 发送 SOP 模式启动事件（携带 sop_document_id 和恢复标记）
@@ -495,7 +571,18 @@ class InvestigationAgent(BaseAgent):
             ai_registry=self._ai_registry,
             tool_registry={},  # tool_registry 在 ReactEngine 内部通过 get_tools_for_llm() 获取
             tool_executor=self._tool_executor,
+            confirm_service=self._confirm_service,
+            audit_service=self._audit_service,
+            fact_store=self._fact_store,
         )
+
+        # T3-2: 绑定诊断阶段结构化 Schema
+        from shared.models import ClaimVerification, ReasoningOutput
+        response_schema = None
+        if diagnostic_stage in ("S2", "S3"):
+            response_schema = ReasoningOutput
+        elif diagnostic_stage == "S4":
+            response_schema = ClaimVerification
 
         # 调用 ReactEngine.execute()，动态注入 SOP 工具
         async for event in react_engine.execute(
@@ -506,8 +593,10 @@ class InvestigationAgent(BaseAgent):
             case_id=case_id,
             user_id=user_id,
             max_iterations=15,
+            execution_mode=execution_mode,
             tool_executor=sop_tool_executor,  # 使用 SOP 工具执行器
             sop_mode=True,  # DC-01: SOP 模式，注入 SOP 导航工具到 LLM tool list
+            response_schema=response_schema,
         ):
             yield event
 
@@ -529,7 +618,7 @@ class InvestigationAgent(BaseAgent):
         注意：此方法为降级路径，不创建 SopExecution 记录，
         无法支持中断恢复和 SOP 导航工具。
         """
-        system_prompt = self._build_sop_prompt_legacy(
+        system_prompt = await self._build_sop_prompt_legacy(
             sop_content=sop_content,
             sop_title=sop_title,
             diagnostic_stage=diagnostic_stage,
@@ -566,7 +655,7 @@ class InvestigationAgent(BaseAgent):
         user_id: str,
     ) -> AsyncGenerator[AgentEvent, None]:
         """无知识库匹配时：机制推理降级模式（流式输出）。"""
-        system_prompt = self._build_fallback_prompt(
+        system_prompt = await self._build_fallback_prompt(
             category_id=category_id,
             diagnostic_stage=diagnostic_stage,
             case_id=case_id,
@@ -588,52 +677,85 @@ class InvestigationAgent(BaseAgent):
 
     # ─── Prompt 构建（内部）──────────────────────────────────────────────────
 
-    @staticmethod
-    def _build_sop_react_prompt(
+    async def _build_sop_react_prompt(
+        self,
         sop_title: str,
-        root_node_summary: str,
+        root_node: dict,
         diagnostic_stage: str,
         case_id: str,
+        context_variables: dict | None = None,
     ) -> str:
-        """构建 SOP ReactEngine 模式 System Prompt（T-AGT-22）。
-
-        只包含 SOP 标题 + 根节点摘要 + 使用工具指引，
-        LLM 通过 get_sop_node/sop_advance 工具动态获取更多节点内容。
-
-        Args:
-            sop_title: SOP 文档标题
-            root_node_summary: 根节点摘要（由 _build_root_node_summary 生成）
-            diagnostic_stage: 当前诊断阶段
-            case_id: 工单 ID
-
-        Returns:
-            System Prompt 字符串
-        """
+        """构建 SOP ReactEngine 模式 System Prompt（数据库化）。"""
         stage_desc_map = {
             "S1": "S1 - 故障定位",
             "S2": "S2 - 假设生成",
-            "S3": "S3 - 验证执行",
+            "S3": "S3 - 证据验证",
             "S4": "S4 - 根因确认",
         }
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
 
-        return (
-            "你是深信服超融合基础设施（HCI）智能排障专家助手。\n\n"
-            f"【工作方法论】当前诊断阶段：{stage_desc}\n\n"
-            "【SOP 排障流程导航模式】\n"
-            f"当前执行 SOP：《{sop_title}》\n\n"
-            f"{root_node_summary}\n\n"
-            "【工具使用指引】\n"
-            "1. 使用 get_sop_node(node_id) 获取节点的详细内容和子节点列表\n"
-            "2. 根据节点判断结果，使用 sop_advance(target_node_id, reasoning) 推进到子节点\n"
-            "3. 可同时使用诊断工具（acli、SCP 工具）收集证据\n"
-            "4. 到达 solution 节点时，总结解决方案并完成排障\n\n"
-            "【注意事项】\n"
-            "- 每次推进前请先获取节点内容，确保理解判断条件\n"
-            "- 在 reasoning 中解释为何选择此分支（记录推理路径）\n"
-            "- 可自由使用诊断工具辅助判断，工具调用和 SOP 导航可交替进行\n\n"
-            f"---\n当前工单 ID：{case_id}"
+        # 已知变量（从 context_variables 提取值）
+        var_summary = ""
+        if context_variables:
+            var_parts = []
+            for var_name, var_info in context_variables.items():
+                if isinstance(var_info, dict) and "value" in var_info:
+                    var_parts.append(f"{var_name}={var_info['value']}")
+                elif isinstance(var_info, (str, int, float)):
+                    var_parts.append(f"{var_name}={var_info}")
+            if var_parts:
+                var_summary = f"【已知变量】\n{', '.join(var_parts)}\n\n"
+
+        # 解析 root_node 各字段
+        root_node_title = root_node.get("title", sop_title)
+        root_node_type = root_node.get("type", "branch")
+        root_node_content = root_node.get("content", "")
+        if len(root_node_content) > 500:
+            root_node_content = root_node_content[:500]
+
+        children = root_node.get("children", [])
+        branches_list = []
+        for child in children[:5]:
+            prereqs = child.get("prerequisites", [])
+            prereq_str = f" (前置条件: {', '.join(prereqs)})" if prereqs else ""
+            branches_list.append(f"- {child.get('node_id', '')}: {child.get('title', '')}{prereq_str}")
+        if len(children) > 5:
+            branches_list.append(f"... 还有 {len(children) - 5} 个分支")
+        root_node_branches = "\n".join(branches_list)
+
+        from shared.utils.prompt_loader import StrictPromptLoader
+
+        async with self._db_session_factory() as session:
+            base_identity = await StrictPromptLoader.load_and_validate(session, "base_identity_v1", [])
+            base_methodology = await StrictPromptLoader.load_and_validate(
+                session, "base_methodology_v1", ["stage_desc"]
+            )
+            react_template = await StrictPromptLoader.load_and_validate(
+                session,
+                "s1_sop_react_new_v1",
+                [
+                    "sop_title",
+                    "root_node_title",
+                    "root_node_type",
+                    "root_node_content",
+                    "root_node_branches",
+                    "known_variables",
+                ],
+            )
+            base_context = await StrictPromptLoader.load_and_validate(session, "base_case_context_v1", ["case_id"])
+
+        formatted_methodology = base_methodology.format(stage_desc=stage_desc)
+        formatted_react = react_template.format(
+            sop_title=sop_title,
+            root_node_title=root_node_title,
+            root_node_type=root_node_type,
+            root_node_content=root_node_content,
+            root_node_branches=root_node_branches,
+            known_variables=var_summary,
         )
+        formatted_context = base_context.format(case_id=case_id)
+
+        return "\n\n".join([base_identity, formatted_methodology, formatted_react, formatted_context])
 
     @staticmethod
     def _build_root_node_summary(sop_title: str, root_node: dict) -> str:
@@ -766,67 +888,97 @@ class InvestigationAgent(BaseAgent):
 
         return "\n".join(parts)
 
-    @staticmethod
-    def _build_sop_resume_prompt(
+    async def _build_sop_resume_prompt(
+        self,
         sop_title: str,
-        resume_summary: str,
-        current_node_summary: str,
+        current_node_id: str,
+        completed_steps: list[str],
+        context_variables: dict,
+        current_node: dict,
         diagnostic_stage: str,
         case_id: str,
-        completed_steps: list[str],
     ) -> str:
-        """构建 SOP 恢复版 System Prompt（T-AGT-23）。
-
-        格式（参考任务文档）：
-          [身份+方法论]
-          [SOP 恢复说明]
-          [当前节点窗口]
-          [工具使用指引 + 幂等性约束]
-
-        Args:
-            sop_title: SOP 文档标题
-            resume_summary: 恢复摘要（由 _build_sop_resume_summary 生成）
-            current_node_summary: 当前节点摘要（由 _build_current_node_summary 生成）
-            diagnostic_stage: 当前诊断阶段
-            case_id: 工单 ID
-            completed_steps: 已完成节点 ID 列表（用于幂等性约束）
-
-        Returns:
-            恢复版 System Prompt 字符串
-        """
+        """构建 SOP 恢复版 System Prompt（数据库化）。"""
         stage_desc_map = {
             "S1": "S1 - 故障定位",
             "S2": "S2 - 假设生成",
-            "S3": "S3 - 验证执行",
+            "S3": "S3 - 证据验证",
             "S4": "S4 - 根因确认",
         }
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
 
-        # 幂等性约束：已完成节点不再执行写操作
+        # 幂等性约束
         completed_nodes_str = ", ".join(completed_steps) if completed_steps else "无"
+        completed_steps_count = len(completed_steps)
 
-        return (
-            "你是深信服超融合基础设施（HCI）智能排障专家助手。\n\n"
-            f"【工作方法论】当前诊断阶段：{stage_desc}\n\n"
-            "【SOP 排障流程恢复模式】\n"
-            f"{resume_summary}\n\n"
-            f"{current_node_summary}\n\n"
-            "【工具使用指引】\n"
-            "1. 使用 get_sop_node(node_id) 获取当前节点或子节点的详细内容\n"
-            "2. 根据节点判断结果，使用 sop_advance(target_node_id, reasoning) 推进到子节点\n"
-            "3. 可同时使用诊断工具（acli、SCP 工具）收集证据\n"
-            "4. 到达 solution 节点时，总结解决方案并完成排障\n\n"
-            "【幂等性约束 - 重要】\n"
-            f"已完成节点：{completed_nodes_str}\n"
-            "- 已在 completed_steps 中的节点，不重复执行写操作工具（如 acli_service_restart）\n"
-            "- 只读工具（如 acli_vm_list、acli_system_top）可正常调用\n"
-            "- 若需要重新执行写操作，请先向用户说明原因并获取明确授权\n\n"
-            "【注意事项】\n"
-            "- 从当前节点继续执行，不要从头开始\n"
-            "- 在 reasoning 中解释为何选择此分支\n"
-            "- 可自由使用诊断工具辅助判断\n\n"
-            f"---\n当前工单 ID：{case_id}"
+        # 已知变量
+        var_parts = []
+        if context_variables:
+            for var_name, var_info in context_variables.items():
+                if isinstance(var_info, dict) and "value" in var_info:
+                    var_parts.append(f"{var_name}={var_info['value']}")
+                elif isinstance(var_info, str):
+                    var_parts.append(f"{var_name}={var_info}")
+        known_variables = ", ".join(var_parts[:5])
+        if len(var_parts) > 5:
+            known_variables += f" ... 还有 {len(var_parts) - 5} 个变量"
+
+        # 解析当前节点
+        current_node_title = current_node.get("title", "未知节点")
+        current_node_type = current_node.get("type", "branch")
+        current_node_content = current_node.get("content", "")
+        if len(current_node_content) > 500:
+            current_node_content = current_node_content[:500]
+
+        children = current_node.get("children", [])
+        branches_list = []
+        for child in children[:5]:
+            prereqs = child.get("prerequisites", [])
+            prereq_str = f" (前置条件: {', '.join(prereqs)})" if prereqs else ""
+            branches_list.append(f"- {child.get('node_id', '')}: {child.get('title', '')}{prereq_str}")
+        if len(children) > 5:
+            branches_list.append(f"... 还有 {len(children) - 5} 个分支")
+        current_node_branches = "\n".join(branches_list)
+
+        from shared.utils.prompt_loader import StrictPromptLoader
+
+        async with self._db_session_factory() as session:
+            base_identity = await StrictPromptLoader.load_and_validate(session, "base_identity_v1", [])
+            base_methodology = await StrictPromptLoader.load_and_validate(
+                session, "base_methodology_v1", ["stage_desc"]
+            )
+            resume_template = await StrictPromptLoader.load_and_validate(
+                session,
+                "s2_sop_react_resume_v1",
+                [
+                    "sop_title",
+                    "completed_steps_count",
+                    "current_node_id",
+                    "known_variables",
+                    "current_node_title",
+                    "current_node_type",
+                    "current_node_content",
+                    "current_node_branches",
+                    "completed_nodes_str",
+                ],
+            )
+            base_context = await StrictPromptLoader.load_and_validate(session, "base_case_context_v1", ["case_id"])
+
+        formatted_methodology = base_methodology.format(stage_desc=stage_desc)
+        formatted_resume = resume_template.format(
+            sop_title=sop_title,
+            completed_steps_count=completed_steps_count,
+            current_node_id=current_node_id,
+            known_variables=known_variables,
+            current_node_title=current_node_title,
+            current_node_type=current_node_type,
+            current_node_content=current_node_content,
+            current_node_branches=current_node_branches,
+            completed_nodes_str=completed_nodes_str,
         )
+        formatted_context = base_context.format(case_id=case_id)
+
+        return "\n\n".join([base_identity, formatted_methodology, formatted_resume, formatted_context])
 
     @staticmethod
     def _truncate_sop_content(sop_content: str, max_chars: int = 8000) -> str:
@@ -843,71 +995,98 @@ class InvestigationAgent(BaseAgent):
         diagnostic_stage: str,
         case_id: str,
     ) -> str:
-        """单元测试兼容性静态方法，映射到 _build_sop_prompt_legacy"""
-        return InvestigationAgent._build_sop_prompt_legacy(
-            sop_content=sop_content,
-            sop_title=sop_title,
-            diagnostic_stage=diagnostic_stage,
-            case_id=case_id,
-        )
+        """单元测试兼容性静态方法，不查询数据库，直接格式化默认模板（专门为测试服务）"""
+        stage_desc_map = {
+            "S1": "S1 - 故障定位",
+            "S2": "S2 - 假设生成",
+            "S3": "S3 - 证据验证",
+            "S4": "S4 - 根因确认",
+        }
+        stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
+        truncated_content = InvestigationAgent._truncate_sop_content(sop_content)
 
-    @staticmethod
-    def _build_sop_prompt_legacy(
+        base_identity = "你是深信服超融合基础设施（HCI）智能排障专家助手。\n你拥有完整的 HCI 平台工作原理知识：虚拟机生命周期、分布式存储、vxlan网络、\nIPMI硬件管理、acli诊断工具集的完整用法。\n你的目标是协助现场工程师快速定位 and 解决 HCI 平台故障。"
+        base_methodology = "【工作方法论】\n当前诊断阶段：{stage_desc}\n\n标准诊断流程：\nS0 意图识别：从客户描述提取关键实体（虚拟机名/集群/时间点），同时查看告警日志和操作日志，确认客户真实问题\nS1 故障定位：向客户提出 1-3 个精准确认问题，定位到最小故障分类\nS2 假设生成：列出 2-3 个最可能的根因假设，按概率排序\nS3 验证执行：逐一执行诊断命令，收集系统状态证据\nS4 根因确认：根据证据确定根因\nS5 方案输出：提供明确可执行的修复步骤\nS6 验证闭环：确认问题已解决，记录知识"
+        legacy_template = "【知识使用规范】\n你有 SOP 排障流程可用，请严格按其步骤顺序执行，在每个判断节点收集证据后再做决策。\n\n【SOP 排障流程 | 来源：{sop_title}】\n{sop_content}"
+        base_context = "---\n当前工单 ID：{case_id}"
+
+        formatted_methodology = base_methodology.format(stage_desc=stage_desc)
+        formatted_legacy = legacy_template.format(
+            sop_title=sop_title,
+            sop_content=truncated_content,
+        )
+        formatted_context = base_context.format(case_id=case_id)
+
+        return "\n\n".join([base_identity, formatted_methodology, formatted_legacy, formatted_context])
+
+    async def _build_sop_prompt_legacy(
+        self,
         sop_content: str,
         sop_title: str,
         diagnostic_stage: str,
         case_id: str,
     ) -> str:
-        """构建 SOP 模式 System Prompt（降级路径）。
-
-        对超长 SOP 内容进行截断，防止超出 LLM 上下文窗口。
-        """
+        """构建 SOP 模式 System Prompt（数据库化，降级文本路径）。"""
         stage_desc_map = {
             "S1": "S1 - 故障定位",
             "S2": "S2 - 假设生成",
-            "S3": "S3 - 验证执行",
+            "S3": "S3 - 证据验证",
             "S4": "S4 - 根因确认",
         }
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
+        truncated_content = self._truncate_sop_content(sop_content)
 
-        # 对超长 SOP 内容进行截断
-        truncated_content = InvestigationAgent._truncate_sop_content(sop_content)
+        from shared.utils.prompt_loader import StrictPromptLoader
 
-        return (
-            "你是深信服超融合基础设施（HCI）智能排障专家助手。\n\n"
-            f"【工作方法论】当前诊断阶段：{stage_desc}\n\n"
-            "【知识使用规范】\n"
-            "你有 SOP 排障流程可用，请严格按其步骤顺序执行，在每个判断节点收集证据后再做决策。\n\n"
-            f"【SOP 排障流程 | 来源：{sop_title}】\n"
-            f"{truncated_content}\n\n"
-            f"---\n当前工单 ID：{case_id}"
+        async with self._db_session_factory() as session:
+            base_identity = await StrictPromptLoader.load_and_validate(session, "base_identity_v1", [])
+            base_methodology = await StrictPromptLoader.load_and_validate(
+                session, "base_methodology_v1", ["stage_desc"]
+            )
+            legacy_template = await StrictPromptLoader.load_and_validate(
+                session, "s3_sop_legacy_v1", ["sop_title", "sop_content"]
+            )
+            base_context = await StrictPromptLoader.load_and_validate(session, "base_case_context_v1", ["case_id"])
+
+        formatted_methodology = base_methodology.format(stage_desc=stage_desc)
+        formatted_legacy = legacy_template.format(
+            sop_title=sop_title,
+            sop_content=truncated_content,
         )
+        formatted_context = base_context.format(case_id=case_id)
 
-    @staticmethod
-    def _build_fallback_prompt(
+        return "\n\n".join([base_identity, formatted_methodology, formatted_legacy, formatted_context])
+
+    async def _build_fallback_prompt(
+        self,
         category_id: str,
         diagnostic_stage: str,
         case_id: str,
     ) -> str:
-        """构建机制推理降级 System Prompt。"""
+        """构建机制推理降级 System Prompt（数据库化）。"""
         stage_desc_map = {
             "S1": "S1 - 故障定位",
             "S2": "S2 - 假设生成",
-            "S3": "S3 - 验证执行",
+            "S3": "S3 - 证据验证",
             "S4": "S4 - 根因确认",
         }
         stage_desc = stage_desc_map.get(diagnostic_stage, diagnostic_stage)
 
-        return (
-            "你是深信服超融合基础设施（HCI）智能排障专家助手。\n\n"
-            f"【工作方法论】当前诊断阶段：{stage_desc}\n\n"
-            "【机制推理模式】\n"
-            f"当前知识库中暂未找到与分类 {category_id} 高度匹配的 SOP 或历史案例。\n"
-            "请基于 HCI 平台架构机制知识进行推理：\n"
-            "  - 所有推断必须标注【机制推理】\n"
-            "  - 在回复末尾追加：「如能提供更具体的报错信息，我可以尝试匹配更精确的排障流程」\n\n"
-            f"---\n当前工单 ID：{case_id}"
-        )
+        from shared.utils.prompt_loader import StrictPromptLoader
+
+        async with self._db_session_factory() as session:
+            base_identity = await StrictPromptLoader.load_and_validate(session, "base_identity_v1", [])
+            base_methodology = await StrictPromptLoader.load_and_validate(
+                session, "base_methodology_v1", ["stage_desc"]
+            )
+            fallback_template = await StrictPromptLoader.load_and_validate(session, "s4_fallback_v1", ["category_id"])
+            base_context = await StrictPromptLoader.load_and_validate(session, "base_case_context_v1", ["case_id"])
+
+        formatted_methodology = base_methodology.format(stage_desc=stage_desc)
+        formatted_fallback = fallback_template.format(category_id=category_id)
+        formatted_context = base_context.format(case_id=case_id)
+
+        return "\n\n".join([base_identity, formatted_methodology, formatted_fallback, formatted_context])
 
     # ─── 工具方法（内部）──────────────────────────────────────────────────────
 

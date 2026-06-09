@@ -205,7 +205,7 @@ async def send_message(
                             parts = inner.split(":", 1)
                             evt_type = parts[0]
                             evt_data = parts[1] if len(parts) > 1 else ""
-                            if evt_type in ("interactive_request", "metadata"):
+                            if evt_type in ("interactive_request", "metadata", "tool_call", "tool_result"):
                                 # 透传完整 JSON，无需包装
                                 yield f"event: {evt_type}\ndata: {evt_data}\n\n"
                                 if evt_type == "metadata":
@@ -435,6 +435,7 @@ class InteractiveResponseBody(BaseModel):
     outcome: dict  # {"outcome": "selected", "optionId": "A"}
     # 或 {"outcome": "free_text", "text": "..."}
     # 或 {"confirmed": true, "authorized_by": "user"}（tool_confirm）
+    metadata: dict | None = None
 
 
 @router.post("/{conversation_id}/interactive-response")
@@ -460,6 +461,7 @@ async def submit_interactive_response(
         request_id=body.request_id,
         acp_session_id=body.acp_session_id,
         outcome=body.outcome,
+        metadata=body.metadata,
     )
     if not success:
         raise HTTPException(
@@ -501,7 +503,7 @@ async def resume_ops_agent_stream(
                         parts = inner.split(":", 1)
                         evt_type = parts[0]
                         evt_data = parts[1] if len(parts) > 1 else ""
-                        if evt_type == "interactive_request":
+                        if evt_type in ("interactive_request", "tool_call", "tool_result"):
                             yield f"event: {evt_type}\ndata: {evt_data}\n\n"
                         else:
                             event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
