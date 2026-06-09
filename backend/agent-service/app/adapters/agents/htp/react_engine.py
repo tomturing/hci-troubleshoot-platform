@@ -1396,6 +1396,43 @@ class ReactEngine:
             except Exception as audit_err:
                 logger.error(f"审计日志写入失败: {audit_err}")
 
+        # T2-2: 工具执行结果写入 FactStore（形成 Evidence 闭环）
+        if error is None and self._fact_store:
+            try:
+                import time
+
+                from shared.models.information import FactSource, InformationPacket
+                # 将工具结果封装为 InformationPacket
+                result_value = result
+                if hasattr(result, "stdout"):
+                    # ExecResult dataclass 或类似结构
+                    result_value = {
+                        "stdout": result.stdout if hasattr(result, "stdout") else str(result),
+                        "stderr": result.stderr if hasattr(result, "stderr") else "",
+                        "exit_code": result.exit_code if hasattr(result, "exit_code") else 0,
+                    }
+                elif isinstance(result, dict):
+                    result_value = result
+                else:
+                    result_value = {"output": str(result)}
+                packet = InformationPacket(
+                    key=f"tool_exec:{tool_name}:{exec_id}",
+                    value=result_value,
+                    source=FactSource.TOOL_EXEC,
+                    freshness_ts=time.time(),
+                    confidence=1.0,  # 工具执行结果置信度最高
+                    tags=[tool_name, "tool_exec"],
+                )
+                await self._fact_store.write(session_id, packet, fact_type="tool_exec")
+                logger.debug(
+                    event="tool_result_written_to_factstore",
+                    tool_name=tool_name,
+                    exec_id=exec_id,
+                    session_id=session_id,
+                )
+            except Exception as fact_err:
+                logger.warning(f"工具结果写入 FactStore 失败: {fact_err}")
+
         # T-AGT-25: 处理 sop_request_variable 的 VariableRequestResult
         if isinstance(result, VariableRequestResult) and result.needs_input:
             # 变量请求需要用户输入，yield AgentStageUpdate 和 AgentInteractiveRequest
