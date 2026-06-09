@@ -45,19 +45,29 @@ async def test_fact_store_postgres_write():
 
 @pytest.mark.asyncio
 async def test_fact_store_postgres_read_cache_hit():
+    """T2-3: PG-first 逻辑 — PG 返回数据后回写 Redis 缓存"""
     mock_db_session = AsyncMock()
     mock_db_session.__aenter__.return_value = mock_db_session
     mock_session_factory = MagicMock()
     mock_session_factory.return_value = mock_db_session
 
-    import json
-    data = {
-        "key": "vm_status", "value": "running", "source": "env_inject",
-        "freshness_ts": time.time(), "confidence": 1.0,
-        "raw_evidence": None, "verified": True, "conflict": False, "tags": []
-    }
+    # Mock PG 返回数据
+    mock_db_fact = MagicMock()
+    mock_db_fact.key = "vm_status"
+    mock_db_fact.normalized_value = "running"
+    mock_db_fact.source = "env_inject"
+    mock_db_fact.confidence = 1.0
+    mock_db_fact.raw_ref = None
+    mock_db_fact.conflict = False
+    mock_db_fact.collected_at = MagicMock()
+    mock_db_fact.collected_at.timestamp.return_value = time.time()
+
+    mock_result = MagicMock()
+    mock_result.scalar.return_value = mock_db_fact
+    mock_db_session.execute.return_value = mock_result
+
     mock_redis = AsyncMock()
-    mock_redis.get.return_value = json.dumps(data).encode()
+    mock_redis.lrange.return_value = []
 
     store = FactStore(redis=mock_redis, db_session_factory=mock_session_factory)
 
@@ -65,8 +75,10 @@ async def test_fact_store_postgres_read_cache_hit():
 
     assert packet is not None
     assert packet.value == "running"
-    # Postgres shouldn't be touched because of cache hit
-    assert mock_db_session.execute.call_count == 0
+    # PG 应被查询（PG-first）
+    assert mock_db_session.execute.call_count >= 1
+    # Redis 缓存应被回写
+    assert mock_redis.set.call_count >= 1
 
 
 @pytest.mark.asyncio
