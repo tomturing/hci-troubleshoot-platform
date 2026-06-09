@@ -117,16 +117,16 @@ class TestStaleDataGuard:
                                 freshness_ts=time.time() - 59)
         assert StaleDataGuard.is_stale(pkt, "task_status") is False
 
-    def test_vm_status_stale_after_180s(self):
-        """vm_status 180 秒后过期"""
+    def test_vm_status_stale_after_30s(self):
+        """vm_status 30 秒后过期（T2-1：阈值从 180s 改为 30s）"""
         pkt = InformationPacket(key="vm_status", value="running", source=FactSource.ENV_INJECT,
-                                freshness_ts=time.time() - 181)
+                                freshness_ts=time.time() - 31)
         assert StaleDataGuard.is_stale(pkt, "vm_status") is True
 
-    def test_vm_status_fresh_at_179s(self):
-        """vm_status 179 秒不过期"""
+    def test_vm_status_fresh_at_29s(self):
+        """vm_status 29 秒不过期"""
         pkt = InformationPacket(key="vm_status", value="running", source=FactSource.ENV_INJECT,
-                                freshness_ts=time.time() - 179)
+                                freshness_ts=time.time() - 29)
         assert StaleDataGuard.is_stale(pkt, "vm_status") is False
 
     def test_disk_health_stale_after_600s(self):
