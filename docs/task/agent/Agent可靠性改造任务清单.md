@@ -31,6 +31,7 @@ owner: team
 | 2026-06-09 | v2.0 | **可靠性闭环加固优化**：全局 ReactEngine 注入 FactStore，覆盖 S5 修复工具事实写入；FactStore 收紧 PG 权威语义，PG 可用但未命中不再 fallback Redis，PG 写失败不再 Redis-only 成功；Replay Runner 改为离线 dispatcher 产出分类/工具路径，Fake LLM 不再直接读取 golden answer；CI 回归基线改为读取 PR base 分支 report |
 | 2026-06-10 | v2.1 | **诊断阶段环境数据丢失修复**：① evidence_builder.py 增加 FactStore 历史事实检查，env_context 为空时不再直接判定缺失，而是先查询已存储事实；② conversation_service.py 环境上下文获取从仅 S0 扩展到 S0-S4 全阶段；③ desired_schema.sql 新增 `fact` 表（T4-3 事实持久化） |
 | 2026-06-10 | v2.2 | **S0 意图识别解析逻辑优化**：triage_agent.py `_parse_intent_result` 改用宽松正则 + 动态字典交叉校验模式，支持管理员调优 Prompt 改变输出格式时仍能正确识别分类；新增 test_custom_prompt_output 单测验证解析稳健性 |
+| 2026-06-10 | v2.3 | **终端 bridge 超时与诊断阶段显示修复**：① terminal_bridge execID 解析剔除连字符；② chat.ts 切换工单时还原诊断阶段；③ evidence_builder.py 信息质量检查 if 分支合并（SIM114） |
 
 ---
 

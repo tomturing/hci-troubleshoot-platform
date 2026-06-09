@@ -172,9 +172,7 @@ class EvidenceBuilder:
                 val = env_context.get(required_key)
                 # 对于 list 类型的字段（如 alert_logs 和 task_logs），空列表 [] 是合法空态（表示无告警或无任务），不应视为缺失；
                 # 只有当字段为 None 或为占位符字符串时才视为缺失。
-                if val is None or val in ("", "N/A", "暂无数据"):
-                    report.missing_keys.append(required_key)
-                elif required_key == "env_info" and val == {}:
+                if val is None or val in ("", "N/A", "暂无数据") or (required_key == "env_info" and val == {}):
                     report.missing_keys.append(required_key)
 
         # 检查 3：从 FactStore 读取置信度
