@@ -267,10 +267,11 @@ func (s *SSHSession) checkMarkers(output string) (*ExecListener, int, bool) {
 	for execID, listener := range s.listeners {
 		// marker 格式：__EXEC_DONE_{execId16}:{exit_code}
 		// execId16 是 execID 的前 16 位
-		if len(execID) < 16 {
+		normalizedExecID := strings.ReplaceAll(execID, "-", "")
+		if len(normalizedExecID) < 16 {
 			continue
 		}
-		markerPrefix := "__EXEC_DONE_" + execID[:16] + ":"
+		markerPrefix := "__EXEC_DONE_" + normalizedExecID[:16] + ":"
 		if idx := strings.Index(output, markerPrefix); idx != -1 {
 			// 找到 marker，解析 exit_code
 			markerStart := idx
@@ -417,8 +418,9 @@ func (s *SSHSession) on_output_start(
 					// 找到 marker，提取输出（不含 marker 行）
 					output := listener.OutputBuf.String()
 					// 移除 marker 行
-					if len(listener.ExecID) >= 16 {
-						markerPrefix := "__EXEC_DONE_" + listener.ExecID[:16] + ":"
+					normalizedExecID := strings.ReplaceAll(listener.ExecID, "-", "")
+					if len(normalizedExecID) >= 16 {
+						markerPrefix := "__EXEC_DONE_" + normalizedExecID[:16] + ":"
 						if idx := strings.Index(output, markerPrefix); idx != -1 {
 							output = output[:idx]
 							// 移除末尾可能的空行

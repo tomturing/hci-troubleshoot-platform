@@ -350,6 +350,7 @@ export const useChatStore = defineStore('chat', () => {
       if (conversations.length > 0) {
         const conv = conversations[0]
         conversationId.value = conv.conversation_id
+        diagnosticStage.value = conv.diagnostic_stage || 'S0'
         const msgRes = await conversationApi.getMessages(conv.conversation_id)
         const history: MessageResponse[] = msgRes.data
         messages.value = history.map((m) => {
