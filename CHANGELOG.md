@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.15.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.14.0...v2.15.0) (2026-06-09)
+
+
+### ✨ 新功能
+
+* Agent 可靠性 Prometheus 指标完善与 Grafana Dashboard (T4-2) ([#421](https://github.com/tomturing/hci-troubleshoot-platform/issues/421)) ([58f82c3](https://github.com/tomturing/hci-troubleshoot-platform/commit/58f82c398c95975b5cdafdb736e2d85a265deaa4))
+* P2 可靠性闭环补充改造（T3-1 Composite executor / T2-2 FactStore / T4-1 FaithfulFakeLLM） ([#423](https://github.com/tomturing/hci-troubleshoot-platform/issues/423)) ([501be9e](https://github.com/tomturing/hci-troubleshoot-platform/commit/501be9e8a3b52a16096a21e722adb8a2b8dd9a21))
+* 排障Agent可靠性改造阶段零（止血）与阶段一（工具事务化地基） ([#416](https://github.com/tomturing/hci-troubleshoot-platform/issues/416)) ([b52ac28](https://github.com/tomturing/hci-troubleshoot-platform/commit/b52ac2898101428012aaf776896c120be3f74f2f))
+
+
+### 🐛 Bug 修复
+
+* P1 可靠性闭环关键缺口修复（T0-1 动态 block envelope / T1-1 授权去重 / T4-2 指标写入点） ([#422](https://github.com/tomturing/hci-troubleshoot-platform/issues/422)) ([f007274](https://github.com/tomturing/hci-troubleshoot-platform/commit/f00727468798b373269b77f812c4a25b3b16d783))
+* PR-2 工具反馈完整性修复（T0-1/T0-2/T0-5/T2-1/T3-1） ([#420](https://github.com/tomturing/hci-troubleshoot-platform/issues/420)) ([10ec334](https://github.com/tomturing/hci-troubleshoot-platform/commit/10ec334d19314a5fd41f92073e75e68417c768d7))
+* 修复 acli --formatter json 参数格式和 LLM 引导提示词 ([#415](https://github.com/tomturing/hci-troubleshoot-platform/issues/415)) ([3c35c85](https://github.com/tomturing/hci-troubleshoot-platform/commit/3c35c8541cb42fae92ee642814f3e8c4bf6f7c61))
+* 修复 pgvector 依赖缺失导致的镜像启动失败 ([#425](https://github.com/tomturing/hci-troubleshoot-platform/issues/425)) ([3e67c36](https://github.com/tomturing/hci-troubleshoot-platform/commit/3e67c36827334dd2701cc22ab93e65d5bc3ab076))
+* 修复 SSH 连接成功态误判 ([#409](https://github.com/tomturing/hci-troubleshoot-platform/issues/409)) ([c3ade3f](https://github.com/tomturing/hci-troubleshoot-platform/commit/c3ade3f37ff8bcda1441636c9363881fb4ec8112))
+* 加固 Agent 可靠性闭环 ([#426](https://github.com/tomturing/hci-troubleshoot-platform/issues/426)) ([b195ef2](https://github.com/tomturing/hci-troubleshoot-platform/commit/b195ef278704499fac988cc96841223027408dec))
+* 排障Agent可靠性改造 PR-1 工具事务执行链修复（T0-3/T1-1~T1-4） ([#417](https://github.com/tomturing/hci-troubleshoot-platform/issues/417)) ([7a7ef43](https://github.com/tomturing/hci-troubleshoot-platform/commit/7a7ef4349bc6e2f6af60ee34e89384249f4f1541))
+
+
+### ♻️ 代码重构
+
+* 新增顶级 llm 配置节，Helm 模板自动生成 assistantRegistryJson ([#419](https://github.com/tomturing/hci-troubleshoot-platform/issues/419)) ([f84c213](https://github.com/tomturing/hci-troubleshoot-platform/commit/f84c213811a787a7390703e3923c1e6156157479))
+* 清理已废弃的 kb-service 技能数据与临时 PID 文件 ([#411](https://github.com/tomturing/hci-troubleshoot-platform/issues/411)) ([50efe4f](https://github.com/tomturing/hci-troubleshoot-platform/commit/50efe4f07a6a023bff4c91808520c1db1bc636f8))
+
 ## [2.14.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.13.0...v2.14.0) (2026-06-06)
 
 
