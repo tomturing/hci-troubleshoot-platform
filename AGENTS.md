@@ -114,6 +114,10 @@
   - 清理误提交的 `.kb-service-portforward.pid` 与 Word 临时所有者文件，并在 `data-pipeline/kbd/.gitignore` 中新增 `*.pid` 过滤规则。
 - **部署策略优化**：
   - GitHub 提交 PR 后仅自动同步 dev 环境，staging 和 prod 环境均转为手动同步更新，增强发版安全性。
+- **db-seed PostSync Hook UNIQUE 约束修复**（hotfix/db-seed-system-prompt-unique-constraint）：
+  - `desired_schema.sql` 补齐 `system_prompt.name` 字段的 `CONSTRAINT system_prompt_name_key UNIQUE (name)` 声明，使 `ON CONFLICT (name)` 种子 SQL 可正常执行。
+  - `desired_extras.sql` 新增幂等 `DO $$` 块，存量环境（未包含该约束的旧部署）在下次 ArgoCD deploy 时自动补齐约束，无需人工干预。
+  - staging 环境已直接热修复数据库约束并重命名为 `system_prompt_name_key`，db-seed Job 下次重建后可正常完成。
 
 ---
 
