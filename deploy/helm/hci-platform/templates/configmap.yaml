@@ -5,7 +5,6 @@ metadata:
   namespace: {{ include "hci.namespace" . }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
-{{- $defaultAssistantRegistry := printf "{\"htp-agent\":{\"base_url\":\"https://coding.dashscope.aliyuncs.com/v1\",\"provider_api_key\":\"%s\",\"model\":\"glm-5\",\"warm_pool_size\":0,\"max_pool_size\":0,\"display_name\":\"HTP Agent\",\"description\":\"HCI智能排障平台核心助手\",\"is_default\":true,\"enabled\":true},\"ops-agent\":{\"warm_pool_size\":0,\"max_pool_size\":0,\"base_url\":\"http://ops-agent-service:8006\",\"display_name\":\"OPS Agent\",\"description\":\"基于SOP知识库的智能排障助手\",\"enabled\":true},\"pai-agent\":{\"name\":\"PydanticAI\",\"display_name\":\"PAI Agent\",\"description\":\"基于pydantic-ai框架的排障助手\",\"base_url\":\"http://conversation-service:8002\",\"warm_pool_size\":0,\"max_pool_size\":0,\"enabled\":true,\"is_default\":false}}" .Values.secrets.llmApiKey }}
 data:
   # 数据库（非敏感）
   POSTGRES_DB: {{ .Values.config.postgresDb | quote }}
@@ -16,11 +15,11 @@ data:
   CASE_SERVICE_URL: "http://case-service:{{ .Values.caseService.port }}"
   CONVERSATION_SERVICE_URL: "http://conversation-service:{{ .Values.conversationService.port }}"
   SCHEDULER_SERVICE_URL: "http://scheduler-service:{{ .Values.schedulerService.port }}"
-  # LLM 配置（统一使用 dashscope 网关）
-  LLM_BASE_URL: {{ .Values.config.llmBaseUrl | default "https://coding.dashscope.aliyuncs.com/v1" | quote }}
-  LLM_DEFAULT_MODEL: {{ .Values.config.llmDefaultModel | default "glm-5" | quote }}
-  GLM_MODEL: {{ .Values.config.llmDefaultModel | default "glm-5" | quote }}
-  AI_COMPLETIONS_PATH: {{ .Values.config.aiCompletionsPath | default "/chat/completions" | quote }}
+  # LLM 配置（从顶级 llm.* 配置读取，assistantRegistryJson 由模板自动生成）
+  LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
+  LLM_DEFAULT_MODEL: {{ .Values.llm.model | quote }}
+  GLM_MODEL: {{ .Values.llm.model | quote }}
+  AI_COMPLETIONS_PATH: {{ .Values.llm.apiCompletionsPath | quote }}
   # 可观测性
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
@@ -38,11 +37,11 @@ data:
   POD_IDLE_TIMEOUT: {{ .Values.config.podIdleTimeout | quote }}
   {{- end }}
   # AI 客户端超时（秒）
-  AI_CLIENT_READ_TIMEOUT_SEC: {{ .Values.config.aiClientReadTimeoutSec | default "120.0" | quote }}
+  AI_CLIENT_READ_TIMEOUT_SEC: {{ .Values.llm.readTimeoutSec | quote }}
   # 服务地址
   KB_SERVICE_URL: {{ .Values.config.kbServiceUrl | default "http://kb-service:8004" | quote }}
   KB_ENABLED: {{ .Values.kbService.enabled | toString | quote }}
   # 多助手注册表（3 个助手：htp-agent、ops-agent、pai-agent）
-  ASSISTANT_REGISTRY_JSON: {{ (.Values.config.assistantRegistryJson | default $defaultAssistantRegistry) | quote }}
+  ASSISTANT_REGISTRY_JSON: {{ include "hci.assistantRegistry" . | quote }}
   # 助手选择器显示控制（auto/true/false）
   ASSISTANT_SHOW_SELECTOR: {{ .Values.config.assistantShowSelector | default "auto" | quote }}

@@ -244,8 +244,7 @@ kbService:
     limits:
       cpu: "1000m"
       memory: "512Mi"
-  # Embedding 配置
-  llmBaseUrl: "https://coding.dashscope.aliyuncs.com/v1"
+  # Embedding 配置（LLM 调用使用顶级 llm.baseUrl 配置）
   llmEmbeddingModel: "embedding-3"
   embeddingDim: 1536
   embeddingTimeoutSec: "60.0"
@@ -306,6 +305,15 @@ ingress:
   annotations: {}
   grafanaRouterPriority: "2000"
 
+# ======================== LLM Provider 配置（单一配置源）=========================
+# 所有服务统一使用此处的 LLM 配置，由 hci.assistantRegistry 模板自动生成 assistantRegistryJson
+# 切换模型时只需修改 llm.baseUrl 和 llm.model，无需手动维护 JSON 字符串
+llm:
+  baseUrl: "https://coding.dashscope.aliyuncs.com/v1"
+  model: "glm-5"
+  apiCompletionsPath: "/chat/completions"
+  readTimeoutSec: 120.0
+
 # ======================== 应用配置（非敏感 → ConfigMap）=====================
 config:
   postgresHost: postgres
@@ -319,15 +327,7 @@ config:
   kbServiceUrl: "http://kb-service:8004"
   caseServiceUrl: "http://case-service:8001"
   conversationServiceUrl: "http://conversation-service:8002"
-  # AI 客户端读超时（秒）
-  aiClientReadTimeoutSec: "120.0"
-  # ======================== LLM 配置（统一使用 dashscope 网关）================
-  llmBaseUrl: "https://coding.dashscope.aliyuncs.com/v1"
-  llmDefaultModel: "glm-5"
-  aiCompletionsPath: "/chat/completions"
-  # 助手注册表：3 个助手（htp-agent、ops-agent、pai-agent）
-  # 留空时使用默认配置，环境仓库可覆盖
-  assistantRegistryJson: ""
+  # assistantRegistryJson 由 hci.assistantRegistry 模板自动生成，无需手动配置
   # 助手选择器显示控制：auto（智能判断）、true（强制显示）、false（强制隐藏）
   assistantShowSelector: "auto"
 

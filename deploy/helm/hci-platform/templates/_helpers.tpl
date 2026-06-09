@@ -172,3 +172,43 @@ securityContext:
     drop:
       - ALL
 {{- end }}
+
+{{/*
+抽象助手注册表 JSON（hci.assistantRegistry）
+从顶级 llm.* 配置动态生成，确保 htp-agent 的 base_url / model 与 llm 配置一致。
+ops-agent 和 pai-agent 为内部服务，base_url 固定不变。
+用法: {{ include "hci.assistantRegistry" . | quote }}
+*/}}
+{{- define "hci.assistantRegistry" -}}
+{
+  "htp-agent": {
+    "base_url": "{{ .Values.llm.baseUrl }}",
+    "provider_api_key": "{{ .Values.secrets.llmApiKey }}",
+    "model": "{{ .Values.llm.model }}",
+    "warm_pool_size": 0,
+    "max_pool_size": 0,
+    "display_name": "HTP Agent",
+    "description": "HCI智能排障平台核心助手",
+    "is_default": true,
+    "enabled": true
+  },
+  "ops-agent": {
+    "warm_pool_size": 0,
+    "max_pool_size": 0,
+    "base_url": "http://ops-agent-service:8006",
+    "display_name": "OPS Agent",
+    "description": "基于SOP知识库的智能排障助手",
+    "enabled": true
+  },
+  "pai-agent": {
+    "base_url": "http://conversation-service:8002",
+    "warm_pool_size": 0,
+    "max_pool_size": 0,
+    "display_name": "PAI Agent",
+    "description": "基于pydantic-ai框架的排障助手",
+    "enabled": true,
+    "is_default": false,
+    "capabilities": ["troubleshooting", "tool-calling"]
+  }
+}
+{{- end -}}
