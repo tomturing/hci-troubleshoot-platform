@@ -78,6 +78,7 @@ dev = [
 testpaths = [
     "tests",
     "backend/api-gateway/tests",
+    "backend/agent-service/tests",
     "backend/case-service/tests",
     "backend/conversation-service/tests",
     "backend/scheduler-service/tests",

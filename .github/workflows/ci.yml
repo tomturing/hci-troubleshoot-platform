@@ -154,6 +154,92 @@ jobs:
       - name: 运行前端单元测试
         run: pnpm --filter @hci/customer test
 
+  agent-reliability-regression:
+    name: agent-reliability-regression
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 检测是否需要运行 Agent 可靠性回归
+        id: changes
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          CHANGED_FILES="$(git -c core.quotepath=false diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+
+          echo "本次 PR 改动文件:"
+          echo "$CHANGED_FILES"
+
+          WATCHED_REGEX='^(backend/agent-service/app/adapters/agents/htp/(react_engine|investigation_agent|tool_registry)\.py|backend/agent-service/app/services/hallucination_detector\.py|backend/shared/utils/prompt_loader\.py|database/seeds/(02_system_prompts|tool_definition_v2)\.sql|evaluation/(golden_tickets\.json|replay_runner\.py))$'
+          if echo "$CHANGED_FILES" | grep -Eq "$WATCHED_REGEX"; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "未修改 Agent 核心、工具 Schema 或 Prompt，跳过可靠性回归"
+          fi
+
+      - name: 安装 uv
+        if: steps.changes.outputs.should_run == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: 安装依赖
+        if: steps.changes.outputs.should_run == 'true'
+        run: uv sync --group dev
+
+      - name: 运行黄金工单回归评测
+        if: steps.changes.outputs.should_run == 'true'
+        run: uv run python evaluation/replay_runner.py --baseline evaluation/report.json --max-regression 0.10
+
+      - name: 上传 Agent 可靠性评测报告
+        if: always() && steps.changes.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-reliability-report
+          path: evaluation/report.json
+
+      - name: 评论 PR 可靠性评测结果
+        if: always() && github.event_name == 'pull_request' && steps.changes.outputs.should_run == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs')
+            const report = JSON.parse(fs.readFileSync('evaluation/report.json', 'utf8'))
+            const body = [
+              '## Agent 可靠性回归评测',
+              '',
+              `- 黄金工单数：${report.total_cases}`,
+              `- 故障分类准确率：${(report.avg_category_accuracy * 100).toFixed(2)}%`,
+              `- 工具调用成功率：${(report.tool_success_rate * 100).toFixed(2)}%`,
+              `- 幻觉检出率：${(report.hallucination_rate * 100).toFixed(2)}%`,
+              `- 路径偏差率：${(report.path_deviation_rate * 100).toFixed(2)}%`,
+              '',
+              '门禁规则：分类准确率/工具成功率劣化不得 ≥ 10%，幻觉检出率/路径偏差率升高不得 ≥ 10%。'
+            ].join('\n')
+            const marker = '## Agent 可靠性回归评测'
+            const { owner, repo } = context.repo
+            const issue_number = context.issue.number
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 })
+            const existing = comments.find(comment => comment.user.type === 'Bot' && comment.body.includes(marker))
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body })
+            }
+
   helm-validate:
     name: Helm 模板校验
     runs-on: ubuntu-latest
@@ -269,6 +355,10 @@ jobs:
             --cov=backend --cov-report=xml --cov-report=term-missing \
             -m "not integration and not slow"
           uv run pytest backend/api-gateway/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -m "not integration and not slow"
+          uv run pytest backend/agent-service/tests/unit/ \
             -x -q \
             --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
             -m "not integration and not slow"

@@ -132,6 +132,9 @@ export interface InteractiveRequestEvent {
   options: Array<{ optionId: string; name: string }>
   customInput: boolean
   metadata: InteractiveRequestMetadata
+  execId?: string
+  inputHash?: string
+  expiresAt?: string
 }
 
 const props = defineProps<{
@@ -183,14 +186,23 @@ async function submitFreeText() {
 async function doSubmit(outcome: Record<string, string>, _visibleReply: string): Promise<boolean> {
   submitting.value = true
   try {
+    const isToolConfirm = props.event.kind === 'tool_confirm'
+    const requestId = isToolConfirm ? (props.event.execId || props.event.requestId) : props.event.requestId
+    const normalizedOutcome = isToolConfirm
+      ? {
+          confirmed: outcome.optionId === 'approved',
+          authorized_by: 'user',
+          input_hash: props.event.inputHash || (props.event.metadata?.input_hash as string | undefined),
+        }
+      : outcome
     const resp = await fetch(`/api/conversations/${props.conversationId}/interactive-response`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         kind: props.event.kind,
-        request_id: props.event.requestId,
+        request_id: requestId,
         acp_session_id: props.event.acpSessionId,
-        outcome,
+        outcome: normalizedOutcome,
         metadata: props.event.metadata,
       }),
     })

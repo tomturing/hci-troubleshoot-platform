@@ -2,6 +2,7 @@
 Agent Replay Runner — Offline Evaluation Framework (T4-1)
 """
 
+import argparse
 import json
 import os
 import random
@@ -20,13 +21,49 @@ os.environ["INTERNAL_API_TOKEN"] = "mock"
 from app.services.hallucination_detector import HallucinationDetector
 
 
-def run_evaluation():
+def _load_baseline(path: str | None) -> dict | None:
+    """读取回归评测基线报告。"""
+    if not path:
+        return None
+    if not os.path.exists(path):
+        print(f"警告: 基线报告不存在，跳过回归对比: {path}")
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _check_metric_regression(current: dict, baseline: dict | None, max_regression: float) -> list[str]:
+    """对比当前报告与基线，返回劣化超过阈值的指标说明。"""
+    if not baseline:
+        return []
+
+    failures: list[str] = []
+    lower_is_worse = ("avg_category_accuracy", "tool_success_rate")
+    higher_is_worse = ("hallucination_rate", "path_deviation_rate")
+
+    for metric in lower_is_worse:
+        base_value = float(baseline.get(metric, 0.0))
+        current_value = float(current.get(metric, 0.0))
+        if base_value - current_value >= max_regression:
+            failures.append(f"{metric}: {base_value:.2%} -> {current_value:.2%}")
+
+    for metric in higher_is_worse:
+        base_value = float(baseline.get(metric, 0.0))
+        current_value = float(current.get(metric, 0.0))
+        if current_value - base_value >= max_regression:
+            failures.append(f"{metric}: {base_value:.2%} -> {current_value:.2%}")
+
+    return failures
+
+
+def run_evaluation(baseline_path: str | None = None, max_regression: float = 0.10):
+    baseline = _load_baseline(baseline_path)
     tickets_path = os.path.join(os.path.dirname(__file__), "golden_tickets.json")
     if not os.path.exists(tickets_path):
         print(f"Error: Golden tickets file not found at {tickets_path}")
         sys.exit(1)
 
-    with open(tickets_path, "r", encoding="utf-8") as f:
+    with open(tickets_path, encoding="utf-8") as f:
         cases = json.load(f)
 
     results = []
@@ -34,13 +71,13 @@ def run_evaluation():
     successful_tools_called = 0
     hallucination_count = 0
     category_matches = 0
+    path_deviation_count = 0
 
     print(f"开始离线回放评估 {len(cases)} 个黄金工单...")
 
     for case in cases:
         case_id = case["case_id"]
         title = case["title"]
-        description = case["description"]
         expected_cat = case["expected_category"]
         expected_tools = case.get("expected_tools", [])
         expected_claims = case.get("expected_claims", [])
@@ -66,6 +103,12 @@ def run_evaluation():
                 tool_outputs.append(f"Tool {tool} output: status ok. {', '.join(expected_claims)}")
             else:
                 tool_outputs.append(f"Tool {tool} execution failed: timeout/conn error")
+
+        expected_tool_set = set(expected_tools)
+        called_tool_set = set(called_tools)
+        path_deviated = expected_tool_set != called_tool_set
+        if path_deviated:
+            path_deviation_count += 1
 
         # 3. 模拟大模型最终输出文本
         llm_text = f"分析报告：已对事件 {title} 进行排障分析。"
@@ -105,6 +148,7 @@ def run_evaluation():
             "expected_category": expected_cat,
             "actual_category": actual_cat,
             "tools_executed": called_tools,
+            "path_deviated": path_deviated,
             "has_hallucination": report["has_hallucination"],
             "hallucination_details": report
         })
@@ -113,12 +157,14 @@ def run_evaluation():
     avg_accuracy = category_matches / len(cases)
     tool_success_rate = successful_tools_called / total_tools_called if total_tools_called > 0 else 1.0
     hallucination_rate = hallucination_count / len(cases)
+    path_deviation_rate = path_deviation_count / len(cases)
 
     report_data = {
         "total_cases": len(cases),
         "avg_category_accuracy": avg_accuracy,
         "tool_success_rate": tool_success_rate,
         "hallucination_rate": hallucination_rate,
+        "path_deviation_rate": path_deviation_rate,
         "details": results
     }
 
@@ -131,6 +177,7 @@ def run_evaluation():
     print(f"故障分类准确率       : {avg_accuracy:.2%}")
     print(f"工具调用成功率       : {tool_success_rate:.2%}")
     print(f"幻觉检出率          : {hallucination_rate:.2%}")
+    print(f"路径偏差率          : {path_deviation_rate:.2%}")
     print("==================================================")
     print(f"详细评测报告已保存至: {report_path}")
 
@@ -144,10 +191,24 @@ def run_evaluation():
     if hallucination_rate > 0.35:
         print("错误: 幻觉检出率高于门禁上限 (35%)")
         sys.exit(1)
+    if path_deviation_rate > 0.20:
+        print("错误: 路径偏差率高于门禁上限 (20%)")
+        sys.exit(1)
+
+    regression_failures = _check_metric_regression(report_data, baseline, max_regression)
+    if regression_failures:
+        print(f"错误: 可靠性指标较基线劣化超过 {max_regression:.0%}:")
+        for item in regression_failures:
+            print(f"  - {item}")
+        sys.exit(1)
 
     print("所有评测指标满足门禁要求，通过！")
     sys.exit(0)
 
 
 if __name__ == "__main__":
-    run_evaluation()
+    parser = argparse.ArgumentParser(description="运行 Agent 可靠性离线回归评测")
+    parser.add_argument("--baseline", default=os.path.join(os.path.dirname(__file__), "report.json"), help="基线报告路径")
+    parser.add_argument("--max-regression", type=float, default=0.10, help="允许的最大劣化比例")
+    args = parser.parse_args()
+    run_evaluation(baseline_path=args.baseline, max_regression=args.max_regression)
