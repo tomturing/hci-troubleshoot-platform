@@ -37,7 +37,7 @@ async def test_sse():
                     chunk = json.loads(data)
                     if "content" in chunk:
                         ai_content.append(chunk["content"])
-                except:
+                except (json.JSONDecodeError, KeyError):
                     pass
             elif line.startswith("event:"):
                 print(f"事件: {line}")

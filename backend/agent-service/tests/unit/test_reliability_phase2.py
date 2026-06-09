@@ -288,7 +288,6 @@ class TestFactStore:
 
         T2-3: 冲突检测基于 PG 权威值，需要 mock db_session_factory 返回旧值
         """
-        import json
         store, mock_redis, mock_db_session = self._make_store(with_db=True)
         # 模拟 PG 中已有旧值（用于冲突检测）
         mock_result = MagicMock()
