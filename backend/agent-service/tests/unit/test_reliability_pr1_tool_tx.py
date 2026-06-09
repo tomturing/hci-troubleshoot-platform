@@ -3,7 +3,7 @@ PR-1 工具事务执行链修复 — 单元测试
 
 覆盖：
   T0-3 ExecResult 透传：Composite 执行器不再降级为 string，ToolResultEnvelope 能拿到 exit_code_meaning
-  T1-1 Authorization 落库：ConfirmService.submit_confirm 在用户决策时记录到 authorization 表
+  T1-1 Authorization 去重：ConfirmService.submit_confirm 只解除 Redis 阻塞，不重复写 authorization 表
   T1-2 前端 exec_id 回传：（前端 TS 修改，由 ChatWindow 集成测试覆盖，本文件仅校验 schema）
   T1-3 fail-closed 策略：confirm_service 缺失时高危工具应被拒绝，不能 fail-open
   T1-4 retry_count 落库：ToolAuditService.write_tool_audit 接受 retry_count 参数
@@ -97,6 +97,7 @@ async def test_t1_1_submit_confirm_calls_authorization_service():
     args, _ = redis.lpush.call_args
     assert args[0] == "confirm:exec-789"
     import json
+
     payload = json.loads(args[1])
     assert payload["confirmed"] is True
     assert payload["authorized_by"] == "alice"
@@ -121,6 +122,7 @@ async def test_t1_1_submit_confirm_deny_decision():
     auth_service.record_decision.assert_not_awaited()
     redis.lpush.assert_awaited_once()
     import json
+
     args, _ = redis.lpush.call_args
     payload = json.loads(args[1])
     assert payload["confirmed"] is False

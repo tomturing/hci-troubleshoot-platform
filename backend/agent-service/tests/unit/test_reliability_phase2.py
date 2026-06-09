@@ -261,6 +261,7 @@ class TestFactStore:
             mock_result.scalar.return_value = None
             mock_result.scalars.return_value.all.return_value = []
             mock_db_session.execute.return_value = mock_result
+            mock_db_session.add = MagicMock()
             mock_session_factory = MagicMock()
             mock_session_factory.return_value = mock_db_session
             store = FactStore(redis=mock_redis, db_session_factory=mock_session_factory)

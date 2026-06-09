@@ -1,9 +1,9 @@
 {
   "total_cases": 30,
-  "avg_category_accuracy": 0.9666666666666667,
+  "avg_category_accuracy": 1.0,
   "tool_success_rate": 1.0,
   "hallucination_rate": 0.03333333333333333,
-  "path_deviation_rate": 0.0,
+  "path_deviation_rate": 0.03333333333333333,
   "details": [
     {
       "case_id": "case-001",
@@ -214,9 +214,10 @@
       "expected_category": "network",
       "actual_category": "network",
       "tools_executed": [
-        "acli_network_check"
+        "acli_network_check",
+        "acli_port_status"
       ],
-      "path_deviated": false,
+      "path_deviated": true,
       "has_hallucination": false,
       "hallucination_details": {
         "has_hallucination": false,
@@ -350,8 +351,8 @@
       "expected_category": "storage",
       "actual_category": "storage",
       "tools_executed": [
-        "acli_storage_list",
-        "acli_disk_show"
+        "acli_disk_show",
+        "acli_storage_list"
       ],
       "path_deviated": false,
       "has_hallucination": false,
@@ -463,9 +464,9 @@
     {
       "case_id": "case-024",
       "title": "备份任务占满局域网宽带导致集群通信异常",
-      "category_matched": false,
+      "category_matched": true,
       "expected_category": "backup",
-      "actual_category": "unknown",
+      "actual_category": "backup",
       "tools_executed": [
         "task_get_logs",
         "acli_network_check"

@@ -17,23 +17,17 @@ from prometheus_client import Counter, Gauge, Histogram
 
 # 工具调用总数（按工具名称和状态分类）
 AGENT_TOOL_CALL_TOTAL = Counter(
-    "agent_tool_call_total",
-    "Total number of tool calls by the Agent",
-    labelnames=["tool_name", "status"]
+    "agent_tool_call_total", "Total number of tool calls by the Agent", labelnames=["tool_name", "status"]
 )
 
 # 工具执行超时计数（T4-2: agent_tool_timeout_rate）
 AGENT_TOOL_TIMEOUT_TOTAL = Counter(
-    "agent_tool_timeout_total",
-    "Total number of tool execution timeouts",
-    labelnames=["tool_name"]
+    "agent_tool_timeout_total", "Total number of tool execution timeouts", labelnames=["tool_name"]
 )
 
 # 工具执行耗时分布（用于计算成功率趋势）
 AGENT_TOOL_EXECUTION_DURATION = Histogram(
-    "agent_tool_execution_duration_seconds",
-    "Tool execution duration in seconds",
-    labelnames=["tool_name", "status"]
+    "agent_tool_execution_duration_seconds", "Tool execution duration in seconds", labelnames=["tool_name", "status"]
 )
 
 # ─── 2. 幻觉检测统计 ───────────────────────────────────────────────────────
@@ -42,14 +36,14 @@ AGENT_TOOL_EXECUTION_DURATION = Histogram(
 AGENT_HALLUCINATION_DETECTED_TOTAL = Counter(
     "agent_hallucination_detected_total",
     "Total number of hallucinations detected in Agent output",
-    labelnames=["hallucination_type"]
+    labelnames=["hallucination_type"],
 )
 
 # 无证据结论计数（T4-2: agent_unsupported_claim_rate）
 AGENT_UNSUPPORTED_CLAIM_TOTAL = Counter(
     "agent_unsupported_claim_total",
     "Total number of unsupported claims detected in Agent final report",
-    labelnames=["claim_type"]
+    labelnames=["claim_type"],
 )
 
 # ─── 3. 结构化输出校验统计 ─────────────────────────────────────────────────
@@ -58,36 +52,32 @@ AGENT_UNSUPPORTED_CLAIM_TOTAL = Counter(
 AGENT_SCHEMA_VALIDATION_TOTAL = Counter(
     "agent_schema_validation_total",
     "Total number of schema validation checks on Agent output",
-    labelnames=["schema_name", "status"]
+    labelnames=["schema_name", "status"],
 )
 
 # ─── 4. 验证优先闭环拦截统计 ───────────────────────────────────────────────
 
 # 验证节点拦截计数
 AGENT_VERIFICATION_BLOCKED_TOTAL = Counter(
-    "agent_verification_blocked_total",
-    "Total number of premature agent closures blocked by verification gate"
+    "agent_verification_blocked_total", "Total number of premature agent closures blocked by verification gate"
 )
 
 # ─── 5. 信息置信度统计 ─────────────────────────────────────────────────────
 
 # 推理假设置信度（实时 Gauge）
-AGENT_REASONING_CONFIDENCE = Gauge(
-    "agent_reasoning_confidence",
-    "LLM reasoning hypothesis confidence score"
-)
+AGENT_REASONING_CONFIDENCE = Gauge("agent_reasoning_confidence", "LLM reasoning hypothesis confidence score")
 
 # 平均信息置信度（T4-2: agent_information_confidence_avg）
 AGENT_INFORMATION_CONFIDENCE_SUM = Counter(
     "agent_information_confidence_sum",
     "Sum of information packet confidence values (for average calculation)",
-    labelnames=["session_id"]
+    labelnames=["fact_type", "source"],
 )
 
 AGENT_INFORMATION_PACKET_COUNT = Counter(
     "agent_information_packet_count",
     "Count of information packets (for average confidence calculation)",
-    labelnames=["session_id"]
+    labelnames=["fact_type", "source"],
 )
 
 # ─── 6. 解决效率统计 ───────────────────────────────────────────────────────
@@ -96,12 +86,10 @@ AGENT_INFORMATION_PACKET_COUNT = Counter(
 AGENT_REASONING_STEPS_TOTAL = Counter(
     "agent_reasoning_steps_total",
     "Total reasoning steps taken to reach diagnosis conclusion",
-    labelnames=["session_id", "case_id"]
+    labelnames=["session_id", "case_id"],
 )
 
 # 工单解决步数（用于计算平均步数）
 AGENT_RESOLUTION_STEPS = Histogram(
-    "agent_resolution_steps",
-    "Number of steps taken to resolve a case",
-    buckets=[5, 10, 15, 20, 30, 50, 100]
+    "agent_resolution_steps", "Number of steps taken to resolve a case", buckets=[5, 10, 15, 20, 30, 50, 100]
 )

@@ -49,6 +49,7 @@ class FactStore:
         try:
             val = uuid.UUID(session_id)
             from shared.models.conversation import Conversation
+
             stmt = select(Conversation.case_id).where(Conversation.conversation_id == val)
             res = await db_session.execute(stmt)
             case_id = res.scalar()
@@ -61,10 +62,8 @@ class FactStore:
     async def _resolve_fact_db_id(self, case_id: str, ref: str, db_session: AsyncSession) -> str | None:
         """根据 fact_id (UUID) 或 fact_key (字符串) 解析真实的 fact.id。"""
         from shared.models.fact import Fact
-        stmt = select(Fact.id).where(
-            Fact.case_id == case_id,
-            (Fact.id == ref) | (Fact.key == ref)
-        )
+
+        stmt = select(Fact.id).where(Fact.case_id == case_id, (Fact.id == ref) | (Fact.key == ref))
         res = await db_session.execute(stmt)
         return res.scalar()
 
@@ -90,15 +89,15 @@ class FactStore:
                     async with self._db_session_factory() as db_session:
                         case_id = await self._resolve_case_id(session_id, db_session)
                         from shared.models.fact import Fact
+
                         stmt = select(Fact.normalized_value).where(
-                            Fact.case_id == case_id,
-                            Fact.fact_type == fact_type,
-                            Fact.key == packet.key
+                            Fact.case_id == case_id, Fact.fact_type == fact_type, Fact.key == packet.key
                         )
                         res = await db_session.execute(stmt)
                         existing_value = res.scalar()
                 except Exception as exc:
                     logger.warning("FactStore PG 冲突检测读取失败: %s", exc)
+                    return False
 
             # 2. 冲突判定（基于 PG 权威值）
             if existing_value is not None and existing_value != packet.value:
@@ -118,15 +117,18 @@ class FactStore:
                     async with self._db_session_factory() as db_session:
                         case_id = await self._resolve_case_id(session_id, db_session)
                         from shared.models.fact import Fact
+
                         stmt = select(Fact).where(
-                            Fact.case_id == case_id,
-                            Fact.fact_type == fact_type,
-                            Fact.key == packet.key
+                            Fact.case_id == case_id, Fact.fact_type == fact_type, Fact.key == packet.key
                         )
                         res = await db_session.execute(stmt)
                         db_fact = res.scalar()
 
-                        collected_at_dt = datetime.fromtimestamp(packet.freshness_ts, UTC) if packet.freshness_ts else datetime.now(UTC)
+                        collected_at_dt = (
+                            datetime.fromtimestamp(packet.freshness_ts, UTC)
+                            if packet.freshness_ts
+                            else datetime.now(UTC)
+                        )
 
                         if db_fact:
                             db_fact.source = packet.source.value
@@ -147,17 +149,18 @@ class FactStore:
                                 confidence=packet.confidence,
                                 freshness="stale" if StaleDataGuard.is_stale(packet, fact_type) else "current",
                                 conflict=packet.conflict,
-                                collected_at=collected_at_dt
+                                collected_at=collected_at_dt,
                             )
                             db_session.add(db_fact)
                         await db_session.commit()
                         pg_written = True
                 except Exception as exc:
                     logger.warning("FactStore PG 写入失败: %s", exc)
+                    return False
 
             # 4. 写入 Redis Cache (5分钟 TTL 300秒)
             redis_written = False
-            if self._redis:
+            if self._redis and (pg_written or not self._db_session_factory):
                 try:
                     payload = self._serialize(packet)
                     await self._redis.set(key_str, json.dumps(payload, ensure_ascii=False), ex=300)
@@ -167,14 +170,19 @@ class FactStore:
                 except Exception as exc:
                     logger.warning("FactStore Redis 写入失败: %s", exc)
 
-            if not pg_written and not redis_written:
+            if self._db_session_factory and not pg_written:
+                return False
+            if not self._db_session_factory and not redis_written:
                 return False
 
             # T4-2: 记录信息置信度指标
             try:
                 from app.services.metrics import AGENT_INFORMATION_CONFIDENCE_SUM, AGENT_INFORMATION_PACKET_COUNT
-                AGENT_INFORMATION_CONFIDENCE_SUM.labels(session_id=session_id).inc(packet.confidence)
-                AGENT_INFORMATION_PACKET_COUNT.labels(session_id=session_id).inc()
+
+                AGENT_INFORMATION_CONFIDENCE_SUM.labels(fact_type=fact_type, source=packet.source.value).inc(
+                    packet.confidence
+                )
+                AGENT_INFORMATION_PACKET_COUNT.labels(fact_type=fact_type, source=packet.source.value).inc()
             except Exception:
                 pass  # 指标写入不阻塞主流程
 
@@ -223,7 +231,7 @@ class FactStore:
                                 claim_id=claim.claim_id,
                                 fact_id=fact_db_id,
                                 relation="supporting",
-                                confidence=1.0
+                                confidence=1.0,
                             )
                             db_session.add(link)
                     # contradicting facts
@@ -235,7 +243,7 @@ class FactStore:
                                 claim_id=claim.claim_id,
                                 fact_id=fact_db_id,
                                 relation="contradicting",
-                                confidence=1.0
+                                confidence=1.0,
                             )
                             db_session.add(link)
                 await db_session.commit()
@@ -264,39 +272,37 @@ class FactStore:
                 async with self._db_session_factory() as db_session:
                     case_id = await self._resolve_case_id(session_id, db_session)
                     from shared.models.fact import Fact
-                    stmt = select(Fact).where(
-                        Fact.case_id == case_id,
-                        Fact.fact_type == fact_type,
-                        Fact.key == key
-                    )
+
+                    stmt = select(Fact).where(Fact.case_id == case_id, Fact.fact_type == fact_type, Fact.key == key)
                     res = await db_session.execute(stmt)
                     db_fact = res.scalar()
-                    if db_fact:
-                        packet = InformationPacket(
-                            key=db_fact.key,
-                            value=db_fact.normalized_value,
-                            source=FactSource(db_fact.source),
-                            freshness_ts=db_fact.collected_at.timestamp() if db_fact.collected_at else 0.0,
-                            confidence=float(db_fact.confidence),
-                            raw_evidence=db_fact.raw_ref,
-                            verified=not db_fact.conflict,
-                            conflict=db_fact.conflict,
-                            tags=[]
-                        )
-                        # 回写 Redis 缓存
-                        if self._redis:
-                            try:
-                                payload = self._serialize(packet)
-                                await self._redis.set(redis_key, json.dumps(payload, ensure_ascii=False), ex=300)
-                                index_key = self._build_index_key(session_id, fact_type)
-                                await self._ensure_in_index(index_key, key, 300)
-                            except Exception as cache_err:
-                                logger.warning("FactStore Redis 缓存回写失败: %s", cache_err)
-                        return packet
+                    if not db_fact:
+                        return None
+                    packet = InformationPacket(
+                        key=db_fact.key,
+                        value=db_fact.normalized_value,
+                        source=FactSource(db_fact.source),
+                        freshness_ts=db_fact.collected_at.timestamp() if db_fact.collected_at else 0.0,
+                        confidence=float(db_fact.confidence),
+                        raw_evidence=db_fact.raw_ref,
+                        verified=not db_fact.conflict,
+                        conflict=db_fact.conflict,
+                        tags=[],
+                    )
+                    # 回写 Redis 缓存
+                    if self._redis:
+                        try:
+                            payload = self._serialize(packet)
+                            await self._redis.set(redis_key, json.dumps(payload, ensure_ascii=False), ex=300)
+                            index_key = self._build_index_key(session_id, fact_type)
+                            await self._ensure_in_index(index_key, key, 300)
+                        except Exception as cache_err:
+                            logger.warning("FactStore Redis 缓存回写失败: %s", cache_err)
+                    return packet
             except Exception as exc:
                 logger.warning("FactStore PG 读取失败，fallback 到 Redis: %s", exc)
 
-        # 2. PG 不可用或未命中时，fallback 到 Redis 缓存
+        # 2. PG 不可用时，fallback 到 Redis 缓存。PG 可用但未命中时已在上方返回 None。
         if self._redis:
             try:
                 raw = await self._redis.get(redis_key)
@@ -324,10 +330,8 @@ class FactStore:
                 async with self._db_session_factory() as db_session:
                     case_id = await self._resolve_case_id(session_id, db_session)
                     from shared.models.fact import Fact
-                    stmt = select(Fact).where(
-                        Fact.case_id == case_id,
-                        Fact.fact_type == fact_type
-                    )
+
+                    stmt = select(Fact).where(Fact.case_id == case_id, Fact.fact_type == fact_type)
                     res = await db_session.execute(stmt)
                     db_facts = res.scalars().all()
 
@@ -342,7 +346,7 @@ class FactStore:
                             raw_evidence=db_fact.raw_ref,
                             verified=not db_fact.conflict,
                             conflict=db_fact.conflict,
-                            tags=[]
+                            tags=[],
                         )
                         packets.append(packet)
                         # 回写 Redis 缓存
@@ -430,9 +434,7 @@ class FactStore:
         """确保 key 在索引列表中（去重）。"""
         existing = await self._redis.lrange(index_key, 0, -1)
         key_bytes = key.encode() if isinstance(key, str) else key
-        if key_bytes not in existing and key not in [
-            k.decode() if isinstance(k, bytes) else k for k in existing
-        ]:
+        if key_bytes not in existing and key not in [k.decode() if isinstance(k, bytes) else k for k in existing]:
             await self._redis.rpush(index_key, key)
             await self._redis.expire(index_key, ttl)
 

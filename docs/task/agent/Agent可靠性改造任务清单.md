@@ -28,6 +28,7 @@ owner: team
 | 2026-06-09 | v1.7 | **P1 可靠性闭环关键缺口修复**：T0-1 动态 block ToolResultEnvelope；T1-1 Authorization 去重（confirm_service 停止写 authorization，conversation-service 为唯一写入方）；T4-2 补齐指标写入点（tool_execution_duration、reasoning_confidence、unsupported_claim、information_confidence） |
 | 2026-06-09 | v1.8 | **P2 可靠性闭环补充改造**：T3-1 CompositeToolExecutor 真正执行 sop 工具；T2-2 工具结果写入 FactStore；T4-1 FaithfulFakeLLM 替换 random classification |
 | 2026-06-09 | v1.9 | **P2 遗漏项补齐**：T2-3 FactStore PG-first；T3-5 验证闭环确认已实现；S0 env_context fallback 清理 |
+| 2026-06-09 | v2.0 | **可靠性闭环加固优化**：全局 ReactEngine 注入 FactStore，覆盖 S5 修复工具事实写入；FactStore 收紧 PG 权威语义，PG 可用但未命中不再 fallback Redis，PG 写失败不再 Redis-only 成功；Replay Runner 改为离线 dispatcher 产出分类/工具路径，Fake LLM 不再直接读取 golden answer；CI 回归基线改为读取 PR base 分支 report |
 
 ---
 
@@ -51,8 +52,10 @@ owner: team
 2. **确认事务必须绑定 `exec_id + input_hash`**：conversation-service 在解锁 agent-service Redis 确认队列前，必须先校验 `tool_result` 记录，hash 不匹配、记录缺失或审计失败均 fail-closed。
 3. **授权必须可审计**：用户确认/拒绝都写入 `authorization`，并回填 `tool_result.authorization_id`，形成可追溯链路。
 4. **不鼓励暴露完整隐藏思维链**：T3-3 保留 `<reasoning>` 折叠展示，但内容定义为“可展示推理摘要”，只呈现证据、假设、置信度和下一步动作。
-5. **CI 门禁必须做回归对比**：仅固定阈值不足以发现退化，T4-4 增加与 `evaluation/report.json` 基线的 10% 劣化对比。
+5. **CI 门禁必须做真实回归对比**：仅固定阈值不足以发现退化，T4-4 从 PR base SHA 读取 `evaluation/report.json` 作为基线，避免当前分支自比。
 6. **Agent 单测必须纳入根级门禁**：根级 pytest 与 CI 单测列表必须包含 `backend/agent-service/tests`，否则可靠性测试会在主门禁外漂移。
+7. **事实权威源必须单向收敛**：PG 可用时 Redis 只能作为 read-through 热缓存，不能在 PG 未命中或写失败时反向成为权威。
+8. **离线评测不得复读 golden answer**：Fake LLM 只替代 LLM 文本生成，分类与工具路径必须由被评测的 dispatcher/离线适配层产出。
 
 ---
 

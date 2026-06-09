@@ -157,6 +157,7 @@ async def lifespan(app: FastAPI):
 
     # ── FactStore（轻量事实存储） ────────────────────────────────────────────────
     from app.services.fact_store import FactStore
+
     fact_store = FactStore(redis=redis_client, db_session_factory=db_manager.async_session_factory)
 
     # ── TriageAgent（S0 意图识别）──────────────────────────────────────────────────
@@ -209,6 +210,7 @@ async def lifespan(app: FastAPI):
         # T1-1：注入 AuthorizationService，使每次 approve/deny 决策同步落库
         if redis_client is not None:
             from app.services.authorization_service import AuthorizationService
+
             authorization_service = AuthorizationService(
                 session_factory=db_manager.async_session_factory,
             )
@@ -232,6 +234,7 @@ async def lifespan(app: FastAPI):
             tool_executor=tool_executor,
             confirm_service=confirm_service,
             audit_service=audit_service,
+            fact_store=fact_store,
         )
 
         logger.info(
@@ -486,6 +489,7 @@ class CompositeToolExecutor:
                         return {"error": f"SOP 工具 {tool_name} 需要 conversation_id 上下文"}
                     # 导入执行函数
                     from app.adapters.agents.htp.sop_tools import sop_advance, sop_request_variable
+
                     if tool_name == "sop_advance":
                         return await sop_advance(
                             target_node_id=args.get("target_node_id", ""),
@@ -516,7 +520,9 @@ class CompositeToolExecutor:
                         missing.append("conversation_sop_client")
                     if not self._kb_client:
                         missing.append("kb_client")
-                    return {"error": f"SOP 工具 {tool_name} 缺少必要上下文（{', '.join(missing)}），请通过 InvestigationAgent SOP 模式调用"}
+                    return {
+                        "error": f"SOP 工具 {tool_name} 缺少必要上下文（{', '.join(missing)}），请通过 InvestigationAgent SOP 模式调用"
+                    }
             else:
                 return {"error": f"SOP 工具 {tool_name} 未实现"}
         else:
