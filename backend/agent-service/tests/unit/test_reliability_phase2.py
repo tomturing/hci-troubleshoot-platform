@@ -600,9 +600,9 @@ class TestInvestigationAgentQualityCheck:
     @pytest.mark.asyncio
     async def test_event_stream_with_interactive_request_no_error(self, mocker):
         """测试 _event_stream 当收到 AgentInteractiveRequest 时，不触发空流错误"""
-        from app.routes.agent import _event_stream, AgentStreamRequest
-        from app.domain.agent_port import AgentInteractiveRequest
         import app.routes.agent as agent_routes
+        from app.domain.agent_port import AgentInteractiveRequest
+        from app.routes.agent import AgentStreamRequest, _event_stream
 
         mock_router = MagicMock()
 
