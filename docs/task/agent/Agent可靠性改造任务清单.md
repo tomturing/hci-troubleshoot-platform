@@ -29,6 +29,7 @@ owner: team
 | 2026-06-09 | v1.8 | **P2 可靠性闭环补充改造**：T3-1 CompositeToolExecutor 真正执行 sop 工具；T2-2 工具结果写入 FactStore；T4-1 FaithfulFakeLLM 替换 random classification |
 | 2026-06-09 | v1.9 | **P2 遗漏项补齐**：T2-3 FactStore PG-first；T3-5 验证闭环确认已实现；S0 env_context fallback 清理 |
 | 2026-06-09 | v2.0 | **可靠性闭环加固优化**：全局 ReactEngine 注入 FactStore，覆盖 S5 修复工具事实写入；FactStore 收紧 PG 权威语义，PG 可用但未命中不再 fallback Redis，PG 写失败不再 Redis-only 成功；Replay Runner 改为离线 dispatcher 产出分类/工具路径，Fake LLM 不再直接读取 golden answer；CI 回归基线改为读取 PR base 分支 report |
+| 2026-06-10 | v2.1 | **诊断阶段环境数据丢失修复**：① evidence_builder.py 增加 FactStore 历史事实检查，env_context 为空时不再直接判定缺失，而是先查询已存储事实；② conversation_service.py 环境上下文获取从仅 S0 扩展到 S0-S4 全阶段；③ desired_schema.sql 新增 `fact` 表（T4-3 事实持久化） |
 
 ---
 
