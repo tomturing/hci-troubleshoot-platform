@@ -7,12 +7,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 
 # 安装依赖（使用 uv pip，pyproject.toml 为唯一依赖声明源）
-COPY api-gateway/pyproject.toml .
+COPY backend/api-gateway/pyproject.toml .
 RUN uv pip compile pyproject.toml --no-annotate --no-header -q -o requirements.txt \
     && uv pip install --system --no-cache -r requirements.txt
 
-COPY shared /app/shared
-COPY api-gateway /app
+COPY backend/shared /app/shared
+COPY backend/api-gateway /app
 
 EXPOSE 8000
 

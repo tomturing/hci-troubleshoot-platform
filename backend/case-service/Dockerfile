@@ -6,13 +6,13 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 
 # 安装依赖（使用 uv pip，pyproject.toml 为唯一依赖声明源）
-COPY case-service/pyproject.toml .
+COPY backend/case-service/pyproject.toml .
 RUN uv pip compile pyproject.toml --no-annotate --no-header -q -o requirements.txt \
     && uv pip install --system --no-cache -r requirements.txt
 
 # 复制代码
-COPY shared /app/shared
-COPY case-service /app
+COPY backend/shared /app/shared
+COPY backend/case-service /app
 
 # 暴露端口
 EXPOSE 8001

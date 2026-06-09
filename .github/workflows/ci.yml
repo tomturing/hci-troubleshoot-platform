@@ -506,25 +506,25 @@ jobs:
       matrix:
         include:
           - service: api-gateway
-            context: backend
+            context: .
             dockerfile: backend/api-gateway/Dockerfile
           - service: case-service
-            context: backend
+            context: .
             dockerfile: backend/case-service/Dockerfile
           - service: conversation-service
-            context: backend
+            context: .
             dockerfile: backend/conversation-service/Dockerfile
           - service: agent-service
-            context: backend
+            context: .
             dockerfile: backend/agent-service/Dockerfile
           - service: eval-service
-            context: backend
+            context: .
             dockerfile: backend/eval-service/Dockerfile
           - service: scheduler-service
-            context: backend
+            context: .
             dockerfile: backend/scheduler-service/Dockerfile
           - service: kb-service
-            context: backend
+            context: .
             dockerfile: backend/kb-service/Dockerfile
           - service: customer-ui
             context: frontend
