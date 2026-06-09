@@ -103,6 +103,21 @@ class TestParseIntentResult:
         assert leaf_re.match("虚拟机") is None  # 无后缀
         assert leaf_re.match("-003") is None  # 无前缀
 
+    def test_custom_prompt_output(self):
+        """能识别人工设置调优后输出的自定义高置信度格式（如 故障分类：硬件-024 硬盘寿命到期 95，高置信度）"""
+        reply = (
+            "监控到主机 SVR_aCloud_670 上的 SSD 磁盘寿命即将耗尽，触发紧急告警。\n\n"
+            "故障分类：硬件-024 硬盘寿命到期 95，高置信度"
+        )
+        result = self.triage._parse_intent_result(reply)
+
+        assert result is not None
+        assert result.category_id == "硬件-024"
+        assert result.category_name == "硬盘寿命到期"
+        assert result.needs_confirmation is True
+        assert len(result.candidates) == 0
+
+
 
 # ─── resolve_candidate_selection 测试 ───────────────────────────────────────
 

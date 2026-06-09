@@ -407,46 +407,93 @@ class TriageAgent(BaseAgent):
                             lines.append(f"- {code} {name}")
         return "\n".join(lines)
 
+    @classmethod
+    def _get_active_categories_map(cls) -> dict[str, str]:
+        """从缓存中获取所有激活分类的 code -> name 映射。"""
+        if not cls._categories_cache:
+            return {}
+        cat_map = {}
+        for items in cls._categories_cache.values():
+            for item in items:
+                code = item.get("code")
+                name = item.get("name")
+                if code and name:
+                    cat_map[code] = name
+        return cat_map
+
     @staticmethod
     def _parse_intent_result(reply: str) -> IntentResult:
-        """从 LLM 输出中解析意图识别结果。
+        """从 LLM 输出中解析意图识别结果（宽松正则 + 字典验证混合模式）。
 
-        匹配优先级：
-          1. 「已确认故障分类：{code} {name}」— 直接确认（需用户二次确认）
-          2. ①②③④⑤候选列表 — 需要用户选择
-          3. 未匹配 — 无法识别
-
-        正则使用 Unicode 转义 [一-鿿] 避免 encoding 乱码风险。
-        code 格式允许多级前缀（如 虚拟机-L2-001）。
+        支持任何自定义 Prompt，只要回复中包含合法的叶子节点编码即可进行场景确认或候选提供。
         """
-        # 1. 直接确认模式（Unicode 转义 + 兼容半角冒号 + 多级前缀）
-        confirmed_pattern = re.compile(r"已确认故障分类[：:]\s*([一-鿿A-Za-z0-9-]+-\d+)\s+([^\n]+)")
-        m = confirmed_pattern.search(reply)
-        if m:
-            return IntentResult(
-                category_id=m.group(1).strip(),
-                category_name=m.group(2).strip(),
-                candidates=[],
-                needs_confirmation=True,  # 改为 True，所有情况需用户确认
-            )
-
-        # 2. 候选列表模式（① ② ③ ④ ⑤）（Unicode 转义 + 多级前缀）
-        candidate_pattern = re.compile(r"[①②③④⑤]\s*([一-鿿A-Za-z0-9-]+-\d+)\s+([^\n]+)")
-        candidates = [
-            {"code": m.group(1).strip(), "name": m.group(2).strip()} for m in candidate_pattern.finditer(reply)
-        ]
-        if candidates:
+        # 1. 提取所有形如 [中文/字母/数字]-[数字] 的场景编码及其后随的名称描述
+        # 匹配规则：匹配分类编码，并且捕获该行中编码之后的所有非换行、非编号字符
+        pattern = re.compile(r"([一-鿿A-Za-z0-9-]+-\d+)(?:\s+([^\n①②③④⑤]+))?")
+        
+        matches = pattern.findall(reply)
+        if not matches:
             return IntentResult(
                 category_id=None,
                 category_name=None,
-                candidates=candidates[:4],
-                needs_confirmation=True,
+                candidates=[],
+                needs_confirmation=False,
             )
 
-        # 3. 未识别
+        # 获取缓存的 active categories 映射（若有）
+        cat_map = TriageAgent._get_active_categories_map()
+        
+        # 提取并过滤有效匹配
+        parsed_items = []
+        seen_codes = set()
+        
+        for code, raw_name in matches:
+            code = code.strip()
+            if code in seen_codes:
+                continue
+                
+            # 校验是否是系统支持的合法叶子节点编码
+            if not TriageAgent._LEAF_CODE_RE.match(code):
+                continue
+                
+            # 优先从分类字典获取准确名称，避免 LLM 输出中的噪音干扰；如果不存在，则从文本中解析并清洗
+            if cat_map and code in cat_map:
+                name = cat_map[code]
+            else:
+                # 清洗提取出来的名称
+                name = raw_name.strip() if raw_name else ""
+                # 去除类似于 "95，高置信度" / "，高置信度" / " 95" 等后缀噪音
+                name = re.sub(r"\s*\d+\s*(，|,)\s*高置信度.*$", "", name)
+                name = re.sub(r"\s*(，|,)?\s*高置信度.*$", "", name)
+                # 剔除可能存在的逗号及之后的内容
+                name = re.sub(r"\s*，\s*.*$", "", name)
+                name = name.strip()
+                
+            seen_codes.add(code)
+            parsed_items.append({"code": code, "name": name})
+
+        if not parsed_items:
+            return IntentResult(
+                category_id=None,
+                category_name=None,
+                candidates=[],
+                needs_confirmation=False,
+            )
+
+        # 如果提取到单一编码，直接判定为确认分类（以确认卡呈现）
+        if len(parsed_items) == 1:
+            item = parsed_items[0]
+            return IntentResult(
+                category_id=item["code"],
+                category_name=item["name"],
+                candidates=[],
+                needs_confirmation=True,
+            )
+            
+        # 如果提取到多个编码，判定为多候选（以选项列表呈现）
         return IntentResult(
             category_id=None,
             category_name=None,
-            candidates=[],
-            needs_confirmation=False,
+            candidates=parsed_items[:4],
+            needs_confirmation=True,
         )
