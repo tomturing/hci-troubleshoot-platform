@@ -30,9 +30,12 @@ _INDEX_SUFFIX = "_index"
 
 
 class FactStore:
-    """轻量事实存储服务（PostgreSQL + Redis）。
+    """轻量事实存储服务（PostgreSQL 权威 + Redis 缓存）。
 
-    支持写入 PostgreSQL 进行持久化，并利用 Redis 进行高速缓存（5 分钟 TTL）。
+    T2-3/T4-3: PostgreSQL 为权威持久化源，Redis 仅做 5min TTL 热缓存。
+    读取路径：PG 优先（权威）→ Redis read-through cache 回写。
+    写入路径：PG 先写（权威）→ Redis 后写（缓存）。
+    冲突检测：PG 权威值作为判定基准。
     """
 
     def __init__(self, redis: Redis | None = None, db_session_factory: Any = None) -> None:
@@ -73,27 +76,16 @@ class FactStore:
         packet: InformationPacket,
         fact_type: str = "default",
     ) -> bool:
-        """将 InformationPacket 写入 PostgreSQL 和 Redis Cache。"""
+        """将 InformationPacket 写入 PostgreSQL（权威）和 Redis Cache。
+
+        T2-3: 冲突检测基于 PG 权威值，Redis 仅作缓存不做判定基准。
+        """
         try:
-            # 冲突检测：获取已有值
-            existing_value = None
             key_str = self._build_key(session_id, fact_type, packet.key)
-            redis_failed = False
+            existing_value = None
 
-            # 1. 优先尝试 Redis
-            if self._redis:
-                try:
-                    existing_raw = await self._redis.get(key_str)
-                    if existing_raw:
-                        existing = json.loads(existing_raw)
-                        existing_value = existing.get("value")
-                except Exception as exc:
-                    logger.warning("FactStore Redis 读取失败: %s", exc)
-                    redis_failed = True
-
-            # 2. Redis 未命中，尝试 Postgres
-            case_id = session_id
-            if existing_value is None and self._db_session_factory:
+            # 1. T2-3: 从 PG（权威源）读取已有值做冲突检测
+            if self._db_session_factory:
                 try:
                     async with self._db_session_factory() as db_session:
                         case_id = await self._resolve_case_id(session_id, db_session)
@@ -106,9 +98,9 @@ class FactStore:
                         res = await db_session.execute(stmt)
                         existing_value = res.scalar()
                 except Exception as exc:
-                    logger.warning("FactStore PG 读取失败: %s", exc)
+                    logger.warning("FactStore PG 冲突检测读取失败: %s", exc)
 
-            # 3. 冲突判定
+            # 2. 冲突判定（基于 PG 权威值）
             if existing_value is not None and existing_value != packet.value:
                 packet.conflict = True
                 logger.warning(
@@ -119,7 +111,7 @@ class FactStore:
                     packet.source.value,
                 )
 
-            # 4. 写入 PostgreSQL (持久化)
+            # 3. 写入 PostgreSQL (权威持久化)
             pg_written = False
             if self._db_session_factory:
                 try:
@@ -163,9 +155,9 @@ class FactStore:
                 except Exception as exc:
                     logger.warning("FactStore PG 写入失败: %s", exc)
 
-            # 5. 写入 Redis Cache (5分钟 TTL 300秒)
+            # 4. 写入 Redis Cache (5分钟 TTL 300秒)
             redis_written = False
-            if self._redis and not redis_failed:
+            if self._redis:
                 try:
                     payload = self._serialize(packet)
                     await self._redis.set(key_str, json.dumps(payload, ensure_ascii=False), ex=300)
@@ -259,19 +251,14 @@ class FactStore:
         fact_type: str,
         key: str,
     ) -> InformationPacket | None:
-        """读取指定 key 的 InformationPacket。未命中或过期返回 None。"""
+        """读取指定 key 的 InformationPacket。
+
+        T2-3: PG 权威读路径 — PostgreSQL 为权威源，Redis 为 read-through 缓存。
+        PG 不可用时才 fallback 到 Redis 缓存。
+        """
         redis_key = self._build_key(session_id, fact_type, key)
 
-        # 1. 尝试从 Redis 缓存读取
-        if self._redis:
-            try:
-                raw = await self._redis.get(redis_key)
-                if raw:
-                    return self._deserialize(json.loads(raw))
-            except Exception as exc:
-                logger.warning("FactStore Redis 读取失败: %s", exc)
-
-        # 2. Redis 缓存未命中，从 PostgreSQL 读取并回写 Redis
+        # 1. T2-3: 优先从 PostgreSQL（权威源）读取
         if self._db_session_factory:
             try:
                 async with self._db_session_factory() as db_session:
@@ -296,15 +283,27 @@ class FactStore:
                             conflict=db_fact.conflict,
                             tags=[]
                         )
-                        # 回写 Redis 5分钟缓存
+                        # 回写 Redis 缓存
                         if self._redis:
-                            payload = self._serialize(packet)
-                            await self._redis.set(redis_key, json.dumps(payload, ensure_ascii=False), ex=300)
-                            index_key = self._build_index_key(session_id, fact_type)
-                            await self._ensure_in_index(index_key, key, 300)
+                            try:
+                                payload = self._serialize(packet)
+                                await self._redis.set(redis_key, json.dumps(payload, ensure_ascii=False), ex=300)
+                                index_key = self._build_index_key(session_id, fact_type)
+                                await self._ensure_in_index(index_key, key, 300)
+                            except Exception as cache_err:
+                                logger.warning("FactStore Redis 缓存回写失败: %s", cache_err)
                         return packet
             except Exception as exc:
-                logger.warning("FactStore PG 读取失败: %s", exc)
+                logger.warning("FactStore PG 读取失败，fallback 到 Redis: %s", exc)
+
+        # 2. PG 不可用或未命中时，fallback 到 Redis 缓存
+        if self._redis:
+            try:
+                raw = await self._redis.get(redis_key)
+                if raw:
+                    return self._deserialize(json.loads(raw))
+            except Exception as exc:
+                logger.warning("FactStore Redis fallback 读取失败: %s", exc)
 
         return None
 
@@ -313,25 +312,13 @@ class FactStore:
         session_id: str,
         fact_type: str,
     ) -> list[InformationPacket]:
-        """读取指定 fact_type 下的所有 InformationPacket。"""
+        """读取指定 fact_type 下的所有 InformationPacket。
+
+        T2-3: PG 权威读路径 — PostgreSQL 优先，Redis fallback。
+        """
         index_key = self._build_index_key(session_id, fact_type)
 
-        # 1. 尝试从 Redis 读取
-        if self._redis:
-            try:
-                keys_raw = await self._redis.lrange(index_key, 0, -1)
-                if keys_raw:
-                    packets = []
-                    for k in keys_raw:
-                        key_str = k.decode() if isinstance(k, bytes) else k
-                        packet = await self.read(session_id, fact_type, key_str)
-                        if packet:
-                            packets.append(packet)
-                    return packets
-            except Exception as exc:
-                logger.warning("FactStore Redis 批量读取失败: %s", exc)
-
-        # 2. Redis 未命中，从 PostgreSQL 读取所有
+        # 1. T2-3: 优先从 PostgreSQL（权威源）读取
         if self._db_session_factory:
             try:
                 async with self._db_session_factory() as db_session:
@@ -358,15 +345,33 @@ class FactStore:
                             tags=[]
                         )
                         packets.append(packet)
-                        # 回写 Redis
+                        # 回写 Redis 缓存
                         if self._redis:
-                            redis_key = self._build_key(session_id, fact_type, packet.key)
-                            payload = self._serialize(packet)
-                            await self._redis.set(redis_key, json.dumps(payload, ensure_ascii=False), ex=300)
-                            await self._ensure_in_index(index_key, packet.key, 300)
+                            try:
+                                redis_key = self._build_key(session_id, fact_type, packet.key)
+                                payload = self._serialize(packet)
+                                await self._redis.set(redis_key, json.dumps(payload, ensure_ascii=False), ex=300)
+                                await self._ensure_in_index(index_key, packet.key, 300)
+                            except Exception as cache_err:
+                                logger.warning("FactStore Redis 缓存回写失败: %s", cache_err)
                     return packets
             except Exception as exc:
-                logger.warning("FactStore PG 批量读取失败: %s", exc)
+                logger.warning("FactStore PG 批量读取失败，fallback 到 Redis: %s", exc)
+
+        # 2. PG 不可用时，fallback 到 Redis 缓存
+        if self._redis:
+            try:
+                keys_raw = await self._redis.lrange(index_key, 0, -1)
+                if keys_raw:
+                    packets = []
+                    for k in keys_raw:
+                        key_str = k.decode() if isinstance(k, bytes) else k
+                        raw = await self._redis.get(self._build_key(session_id, fact_type, key_str))
+                        if raw:
+                            packets.append(self._deserialize(json.loads(raw)))
+                    return packets
+            except Exception as exc:
+                logger.warning("FactStore Redis fallback 批量读取失败: %s", exc)
 
         return []
 

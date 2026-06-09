@@ -1,11 +1,15 @@
 """
 Agent Replay Runner — Offline Evaluation Framework (T4-1)
+
+T4-1 改造：使用 Faithful Fake LLM 替换 Random Classification
+  - 分类判断：根据 expected_category 直接返回（确定性）
+  - 工具执行：根据 expected_tools 执行，成功率由 golden ticket 定义或默认 100%
+  - 幻觉检测：不再 random 注入，而是根据 expected_claims 生成输出
 """
 
 import argparse
 import json
 import os
-import random
 import sys
 from unittest.mock import MagicMock
 
@@ -19,6 +23,57 @@ os.environ["LLM_API_KEY"] = "mock"
 os.environ["INTERNAL_API_TOKEN"] = "mock"
 
 from app.services.hallucination_detector import HallucinationDetector
+
+
+class FaithfulFakeLLM:
+    """T4-1: 忠实的 Fake LLM，根据黄金工单定义的预期行为产生确定性输出。
+
+    与 Random Classification 不同，Fake LLM:
+      - 总是返回 expected_category（除非 golden ticket 定义了 error_case）
+      - 按顺序执行 expected_tools，成功/失败由 golden ticket 定义
+      - 根据 expected_claims 生成最终输出，不注入幻觉
+    """
+
+    def __init__(self, golden_ticket: dict):
+        self._ticket = golden_ticket
+
+    def classify(self) -> tuple[str, bool]:
+        """返回分类结果和是否匹配预期。"""
+        expected_cat = self._ticket["expected_category"]
+        # 如果 golden ticket 定义了 classification_error，返回错误分类
+        if self._ticket.get("classification_error"):
+            return self._ticket["classification_error"], False
+        return expected_cat, True
+
+    def execute_tools(self) -> list[tuple[str, bool, str]]:
+        """执行工具序列，返回 (tool_name, success, output) 列表。"""
+        expected_tools = self._ticket.get("expected_tools", [])
+        tool_errors = self._ticket.get("tool_errors", {})  # {"acli_exec": "timeout"}
+        results = []
+        for tool in expected_tools:
+            if tool in tool_errors:
+                # golden ticket 定义了该工具的预期错误
+                results.append((tool, False, f"Tool {tool} failed: {tool_errors[tool]}"))
+            else:
+                # 默认成功
+                claims = self._ticket.get("expected_claims", [])
+                output = f"Tool {tool} output: status ok. {', '.join(claims)}"
+                results.append((tool, True, output))
+        return results
+
+    def generate_report(self, executed_tools: list[str]) -> str:
+        """生成最终报告文本（无幻觉）。"""
+        title = self._ticket["title"]
+        claims = self._ticket.get("expected_claims", [])
+        text = f"分析报告：已对事件 {title} 进行排障分析。"
+        for tool in executed_tools:
+            text += f" 执行了 {tool} 工具。"
+        # 根据 expected_claims 生成结论（无幻觉）
+        if claims:
+            text += f" 判定结果为正常，符合预期证据：{', '.join(claims)}。"
+        else:
+            text += " 判定结果为正常。"
+        return text
 
 
 def _load_baseline(path: str | None) -> dict | None:
@@ -80,29 +135,27 @@ def run_evaluation(baseline_path: str | None = None, max_regression: float = 0.1
         title = case["title"]
         expected_cat = case["expected_category"]
         expected_tools = case.get("expected_tools", [])
-        expected_claims = case.get("expected_claims", [])
 
-        # 使用随机数种子保证结果幂等/确定性
-        random.seed(case_id)
+        # T4-1: 使用 FaithfulFakeLLM 替换 random 模拟
+        fake_llm = FaithfulFakeLLM(golden_ticket=case)
 
-        # 1. 模拟分类判断（93% 成功率）
-        is_cat_match = random.random() < 0.93
-        actual_cat = expected_cat if is_cat_match else "unknown"
+        # 1. 分类判断（确定性，基于 golden ticket）
+        actual_cat, is_cat_match = fake_llm.classify()
         if is_cat_match:
             category_matches += 1
 
-        # 2. 模拟工具调用序列执行（95% 成功率）
+        # 2. 工具调用序列执行（确定性，基于 golden ticket）
+        tool_results = fake_llm.execute_tools()
         called_tools = []
         tool_outputs = []
-        for tool in expected_tools:
-            called_tools.append(tool)
+        for tool_name, success, output in tool_results:
+            called_tools.append(tool_name)
             total_tools_called += 1
-            is_success = random.random() < 0.95
-            if is_success:
+            if success:
                 successful_tools_called += 1
-                tool_outputs.append(f"Tool {tool} output: status ok. {', '.join(expected_claims)}")
+                tool_outputs.append(output)
             else:
-                tool_outputs.append(f"Tool {tool} execution failed: timeout/conn error")
+                tool_outputs.append(output)
 
         expected_tool_set = set(expected_tools)
         called_tool_set = set(called_tools)
@@ -110,27 +163,10 @@ def run_evaluation(baseline_path: str | None = None, max_regression: float = 0.1
         if path_deviated:
             path_deviation_count += 1
 
-        # 3. 模拟大模型最终输出文本
-        llm_text = f"分析报告：已对事件 {title} 进行排障分析。"
-        for tool in called_tools:
-            llm_text += f" 执行了 {tool} 工具。"
+        # 3. 生成最终报告（无幻觉，基于 expected_claims）
+        llm_text = fake_llm.generate_report(executed_tools=called_tools)
 
-        # 4. 模拟按特定概率注入幻觉以验证幻觉检测器规则
-        rand_val = random.random()
-        if rand_val < 0.08:
-            # 幻觉工具
-            llm_text += " 另外参考了未实际执行的工具 acli_invalid_command 结果。"
-        elif rand_val < 0.16:
-            # 过度自信，缺乏修饰词
-            llm_text += " 已确认故障肯定是由于系统网络接口损坏导致。"
-        elif rand_val < 0.24:
-            # 数据无来源幻觉
-            llm_text += " 现场网卡数据包错误率达到 99.8%。"
-        else:
-            # 正常无幻觉
-            llm_text += f" 判定结果为正常，符合预期证据：{', '.join(expected_claims)}。"
-
-        # 5. 实例化真实规则的幻觉检测器并进行扫描
+        # 4. 幻觉检测（使用真实检测器）
         detector = HallucinationDetector(tool_registry={t: MagicMock() for t in expected_tools})
         report = detector.detect(
             llm_text=llm_text,

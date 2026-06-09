@@ -26,6 +26,8 @@ owner: team
 | 2026-06-09 | v1.5 | **PR-2 工具反馈完整性修复**：T0-1 未知工具/risk=3 block 路径统一走 ToolResultEnvelope；T0-2 kbd_differential 固定截断替换为 smart_truncate；T0-5 ToolCallValidator 扩展 enum/array/oneOf；T2-1 VM 阈值从 180s 改为 30s；T3-1 Composite 执行器 sop 路由标注 |
 | 2026-06-09 | v1.6 | **PR-3 Prometheus 指标完善与 Grafana Dashboard**：T4-2 补充完整指标（agent_tool_timeout_total、agent_resolution_steps 等）；ReactEngine 接入超时和步数指标；新增 Grafana Agent 可靠性看板（agent-reliability.json） |
 | 2026-06-09 | v1.7 | **P1 可靠性闭环关键缺口修复**：T0-1 动态 block ToolResultEnvelope；T1-1 Authorization 去重（confirm_service 停止写 authorization，conversation-service 为唯一写入方）；T4-2 补齐指标写入点（tool_execution_duration、reasoning_confidence、unsupported_claim、information_confidence） |
+| 2026-06-09 | v1.8 | **P2 可靠性闭环补充改造**：T3-1 CompositeToolExecutor 真正执行 sop 工具；T2-2 工具结果写入 FactStore；T4-1 FaithfulFakeLLM 替换 random classification |
+| 2026-06-09 | v1.9 | **P2 遗漏项补齐**：T2-3 FactStore PG-first；T3-5 验证闭环确认已实现；S0 env_context fallback 清理 |
 
 ---
 

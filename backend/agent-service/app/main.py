@@ -380,11 +380,17 @@ class CompositeToolExecutor:
         conversation_service_url: str | None = None,
         internal_token: str | None = None,
         conversation_id: str | None = None,
+        # T3-1: SOP 工具上下文注入（可选）
+        sop_document_id: int | None = None,
+        conversation_sop_client: Any | None = None,
     ) -> None:
         self._scp = scp
         self._acli = acli
         self._kb_client = kb_client
         self._conversation_id = conversation_id
+        # T3-1: SOP 工具上下文
+        self._sop_document_id = sop_document_id
+        self._conversation_sop_client = conversation_sop_client
 
         # T-TOOL-16：实例化 BridgeRelayExecutor（用于 acli category）
         if redis_manager and conversation_service_url and internal_token:
@@ -472,10 +478,45 @@ class CompositeToolExecutor:
                     kb_client=self._kb_client,
                 )
             elif tool_name in ("sop_advance", "sop_request_variable"):
-                # T3-1：这些工具需要 conversation_id + sop_document_id + kb_client 上下文
-                # Composite 执行器缺少 sop_document_id，应由 SopToolExecutor 处理
-                # 返回结构化错误，让 ReactEngine 切换执行器
-                return {"error": f"SOP 工具 {tool_name} 需要 SopToolExecutor 上下文（sop_document_id），请通过 InvestigationAgent SOP 模式调用"}
+                # T3-1：支持真正执行 sop_advance / sop_request_variable
+                # 需要 sop_document_id + conversation_sop_client + kb_client 上下文
+                if self._sop_document_id and self._conversation_sop_client and self._kb_client:
+                    effective_conv_id = effective_conversation_id or self._conversation_id
+                    if not effective_conv_id:
+                        return {"error": f"SOP 工具 {tool_name} 需要 conversation_id 上下文"}
+                    # 导入执行函数
+                    from app.adapters.agents.htp.sop_tools import sop_advance, sop_request_variable
+                    if tool_name == "sop_advance":
+                        return await sop_advance(
+                            target_node_id=args.get("target_node_id", ""),
+                            reasoning=args.get("reasoning", ""),
+                            conversation_id=effective_conv_id,
+                            sop_document_id=self._sop_document_id,
+                            kb_client=self._kb_client,
+                            conversation_sop_client=self._conversation_sop_client,
+                            node_type=args.get("node_type"),
+                            variables_extracted=args.get("variables_extracted"),
+                        )
+                    else:  # sop_request_variable
+                        return await sop_request_variable(
+                            variable_name=args.get("variable_name", ""),
+                            reason=args.get("reason"),
+                            conversation_id=effective_conv_id,
+                            sop_document_id=self._sop_document_id,
+                            kb_client=self._kb_client,
+                            conversation_sop_client=self._conversation_sop_client,
+                            tool_executor=self._bridge_executor,  # 用于 strategy=tool/user_confirm
+                        )
+                else:
+                    # 缺少上下文时返回结构化错误
+                    missing = []
+                    if not self._sop_document_id:
+                        missing.append("sop_document_id")
+                    if not self._conversation_sop_client:
+                        missing.append("conversation_sop_client")
+                    if not self._kb_client:
+                        missing.append("kb_client")
+                    return {"error": f"SOP 工具 {tool_name} 缺少必要上下文（{', '.join(missing)}），请通过 InvestigationAgent SOP 模式调用"}
             else:
                 return {"error": f"SOP 工具 {tool_name} 未实现"}
         else:

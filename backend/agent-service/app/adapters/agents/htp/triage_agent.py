@@ -344,16 +344,19 @@ class TriageAgent(BaseAgent):
         )
         evidence_section = bundle.to_prompt_section()
 
-        # 从 Bundle 中提取 S0 模板所需的三个占位符变量（向后兼容 Prompt 模板）
-        env_info_val = self._extract_fact_value(bundle, "env_info") or (
-            str(env_context.get("env_info", "")) if env_context else ""
-        )
-        alert_logs_val = self._extract_fact_value(bundle, "alert_logs") or (
-            str(env_context.get("alert_logs", "")) if env_context else ""
-        )
-        task_logs_val = self._extract_fact_value(bundle, "task_logs") or (
-            str(env_context.get("task_logs", "")) if env_context else ""
-        )
+        # T2-3: 完全依赖 EvidenceBundle，移除 env_context fallback
+        # 从 Bundle 中提取 S0 模板所需的三个占位符变量
+        env_info_val = self._extract_fact_value(bundle, "env_info")
+        alert_logs_val = self._extract_fact_value(bundle, "alert_logs")
+        task_logs_val = self._extract_fact_value(bundle, "task_logs")
+
+        # 如果 EvidenceBundle 中缺少必要字段，记录警告但不 fallback 到 env_context
+        if not env_info_val:
+            logger.warning("S0 EvidenceBundle 缺少 env_info 字段")
+        if not alert_logs_val:
+            logger.warning("S0 EvidenceBundle 缺少 alert_logs 字段")
+        if not task_logs_val:
+            logger.warning("S0 EvidenceBundle 缺少 task_logs 字段")
 
         formatted_s0_rules = s0_rules.format(
             env_info=env_info_val,

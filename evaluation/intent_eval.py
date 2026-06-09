@@ -11,11 +11,11 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-# 强制刷新输出
-print = functools.partial(print, flush=True)
-
 import httpx
 import pandas as pd
+
+# 强制刷新输出（必须在 import 后）
+_flush_print = functools.partial(print, flush=True)
 
 # 全局标志：是否收到中断信号
 _interrupted = False
@@ -257,7 +257,7 @@ def cmd_run(args):
 
     try:
         with httpx.Client() as client:
-            resp = client.get(f"{api_base_url}/api/cases/all?limit=1", timeout=5.0)
+            client.get(f"{api_base_url}/api/cases/all?limit=1", timeout=5.0)
             print("✅ API 服务正常")
     except Exception as e:
         print(f"❌ API 不可达: {e}")

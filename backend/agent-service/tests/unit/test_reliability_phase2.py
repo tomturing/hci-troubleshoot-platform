@@ -245,17 +245,34 @@ class TestEvidenceBundle:
 class TestFactStore:
     """测试 FactStore Redis 读写和冲突检测"""
 
-    def _make_store(self) -> tuple:
-        """创建带 Mock Redis 的 FactStore"""
+    def _make_store(self, with_db: bool = False) -> tuple:
+        """创建带 Mock Redis 和可选 Mock PG 的 FactStore
+
+        T2-3: PG-first 逻辑需要 mock db_session_factory
+        """
         from app.services.fact_store import FactStore
         mock_redis = AsyncMock()
-        store = FactStore(redis=mock_redis)
-        return store, mock_redis
+        mock_redis.lrange.return_value = []
+
+        if with_db:
+            mock_db_session = AsyncMock()
+            mock_db_session.__aenter__.return_value = mock_db_session
+            mock_result = MagicMock()
+            mock_result.scalar.return_value = None
+            mock_result.scalars.return_value.all.return_value = []
+            mock_db_session.execute.return_value = mock_result
+            mock_session_factory = MagicMock()
+            mock_session_factory.return_value = mock_db_session
+            store = FactStore(redis=mock_redis, db_session_factory=mock_session_factory)
+            return store, mock_redis, mock_db_session
+        else:
+            store = FactStore(redis=mock_redis)
+            return store, mock_redis, None
 
     @pytest.mark.asyncio
     async def test_write_success(self):
         """write() 成功写入且调用 redis.set"""
-        store, mock_redis = self._make_store()
+        store, mock_redis, _ = self._make_store(with_db=False)
         mock_redis.get.return_value = None  # 无旧值
         mock_redis.lrange.return_value = []
 
@@ -267,15 +284,15 @@ class TestFactStore:
 
     @pytest.mark.asyncio
     async def test_write_conflict_detection(self):
-        """同一 key 不同值时检测冲突并置 conflict=True"""
-        import json
-        store, mock_redis = self._make_store()
-        # 模拟 Redis 中已有旧值
-        existing = {"key": "vm_name", "value": "vm-01", "source": "env_inject",
-                    "freshness_ts": time.time(), "confidence": 0.9, "raw_evidence": None,
-                    "verified": False, "conflict": False, "tags": []}
-        mock_redis.get.return_value = json.dumps(existing).encode()
-        mock_redis.lrange.return_value = []
+        """同一 key 不同值时检测冲突并置 conflict=True
+
+        T2-3: 冲突检测基于 PG 权威值，需要 mock db_session_factory 返回旧值
+        """
+        store, mock_redis, mock_db_session = self._make_store(with_db=True)
+        # 模拟 PG 中已有旧值（用于冲突检测）
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = "vm-01"  # PG 返回旧值
+        mock_db_session.execute.return_value = mock_result
 
         pkt = InformationPacket(key="vm_name", value="vm-02", source=FactSource.TOOL_EXEC)
         await store.write("sess-001", pkt, fact_type="vm_status")
@@ -285,18 +302,22 @@ class TestFactStore:
 
     @pytest.mark.asyncio
     async def test_write_redis_error_graceful(self):
-        """Redis 不可用时 write() 返回 False 而非抛出异常"""
-        store, mock_redis = self._make_store()
-        mock_redis.get.side_effect = Exception("Redis connection refused")
+        """Redis 不可用但 PG 可用时 write() 成功写入 PG。
+
+        T2-3: PG-first 逻辑，Redis 错误不阻塞主流程。
+        """
+        store, mock_redis, mock_db_session = self._make_store(with_db=True)
+        mock_redis.set.side_effect = Exception("Redis connection refused")
 
         pkt = InformationPacket(key="x", value=1, source=FactSource.ENV_INJECT)
         result = await store.write("sess-001", pkt, fact_type="default")
-        assert result is False
+        # PG 写入成功，Redis 错误不影响返回值
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_read_not_found(self):
         """read() key 不存在时返回 None"""
-        store, mock_redis = self._make_store()
+        store, mock_redis, _ = self._make_store(with_db=False)
         mock_redis.get.return_value = None
 
         result = await store.read("sess-001", "vm_status", "vm_name")
@@ -306,7 +327,7 @@ class TestFactStore:
     async def test_read_deserialize(self):
         """read() 正确反序列化存储的 JSON"""
         import json
-        store, mock_redis = self._make_store()
+        store, mock_redis, _ = self._make_store(with_db=False)
         data = {
             "key": "vm_name", "value": "vm-prod-01", "source": "env_inject",
             "freshness_ts": time.time(), "confidence": 0.9,
@@ -323,7 +344,7 @@ class TestFactStore:
     @pytest.mark.asyncio
     async def test_write_many_returns_count(self):
         """write_many() 返回成功写入的数量"""
-        store, mock_redis = self._make_store()
+        store, mock_redis, _ = self._make_store(with_db=False)
         mock_redis.get.return_value = None
         mock_redis.lrange.return_value = []
 
