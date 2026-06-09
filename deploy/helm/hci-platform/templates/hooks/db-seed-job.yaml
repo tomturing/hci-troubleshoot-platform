@@ -1,0 +1,94 @@
+{{- if .Values.dbSeed.enabled }}
+# 种子数据加载 Job — ArgoCD PostSync / Helm post-install,post-upgrade Hook
+#
+# 执行时机：
+#   - hook-weight: 0  →  在 db-migrate (hook-weight: -5) 之后执行
+#   - 即先做 schema 迁移，再加载种子数据，确保表结构就绪
+#
+# 幂等性保证（由种子 SQL 自身实现）：
+#   - 01_tool_definitions.sql  → ON CONFLICT (tool_name) DO UPDATE  代码强约束，每次升级强制对齐
+#   - 02_system_prompts.sql    → ON CONFLICT (name) DO NOTHING       保护用户在 admin-ui 中的修改
+#   - 03_skill_definitions.sql → ON CONFLICT (skill_name) DO NOTHING 保护用户在 admin-ui 中的修改
+#
+# 失败处理：
+#   - backoffLimit: 1（仅重试 1 次，避免脏数据重复加载）
+#   - 失败的 Job 会阻断 helm upgrade（exit 1），运维需排查 psql 报错
+apiVersion: batch/v1
+kind: Job
+metadata:
+  {{- $chartVer := .Chart.Version | lower | replace "." "" }}
+  name: db-seed-{{ $chartVer }}
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-seed
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: db-seed
+        {{- include "hci.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- if .Values.global.imagePullSecretName }}
+      imagePullSecrets:
+        - name: {{ .Values.global.imagePullSecretName }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: db-seed
+          image: {{ .Values.dbSeed.image | default "postgres:15-alpine" | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "==== 开始加载种子数据 ===="
+              # 按文件名顺序执行（01_ 工具，02_ Prompt，03_ 技能）
+              for sql_file in $(ls /seeds/*.sql | sort); do
+                echo "→ 执行: $sql_file"
+                psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$sql_file"
+                echo "✓ 完成: $sql_file"
+              done
+              echo "==== 种子数据加载完成 ===="
+              # 输出关键计数，便于在 Job 日志中快速验证
+              psql "$DATABASE_URL" -c "
+                SELECT 'tool_definition' AS table, COUNT(*) AS rows FROM tool_definition
+                UNION ALL SELECT 'system_prompt',  COUNT(*) FROM system_prompt
+                UNION ALL SELECT 'skill_definition', COUNT(*) FROM skill_definition;
+              "
+          env:
+            - name: DATABASE_URL
+              value: {{ printf "postgres://%s:%s@%s:5432/%s?sslmode=disable" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+          volumeMounts:
+            - name: seed-sql
+              mountPath: /seeds
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: seed-sql
+          configMap:
+            name: db-seed-sql
+{{- end }}

@@ -1,0 +1,20 @@
+{{- if .Values.dbSeed.enabled }}
+# 种子数据 ConfigMap — 由 db-seed-job 挂载执行
+# 三个种子文件由 Helm chart 在打包时通过 .Files.Glob 注入，
+# 与 database/seeds/*.sql 保持同步（修改源文件后重新 helm upgrade 即可生效）。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-seed-sql
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-seed
+  annotations:
+    # 与 Job 同生命周期：在 Job 之前创建、Job 完成后由 hook-delete-policy 接管
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+{{ (.Files.Glob "seeds/*.sql").AsConfig | indent 2 }}
+{{- end }}

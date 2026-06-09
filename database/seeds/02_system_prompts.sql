@@ -1,17 +1,20 @@
 -- ===========================================================================
 -- database/seeds/02_system_prompts.sql — System Instructions 模板初始种子数据
 -- ===========================================================================
--- 用途：重置并初始化 system_prompt 表，预置全局 BASE 及 S0-S5 诊断阶段核心模板
--- 执行时机：服务初始化时或管理员重置模板时
+-- 用途：初始化 system_prompt 表，预置全局 BASE 及 S0-S5 诊断阶段核心模板
+-- 执行时机：服务初始化时由 Helm Hook 自动加载，或管理员手动重置时
+-- 幂等性：ON CONFLICT (name) DO NOTHING — 重复执行不覆盖用户在 admin-ui 中的自定义
 -- 执行方法：
 --   psql "$DATABASE_URL" -f database/seeds/02_system_prompts.sql
 -- ===========================================================================
 
--- 1. 清空旧数据（废弃/空置的冗余模板，实现彻底收敛）
-TRUNCATE TABLE system_prompt CASCADE;
+-- 注：原先的 TRUNCATE TABLE 已移除，避免覆盖用户在管理后台中编辑的模板。
+-- 如需要彻底重置模板（仅开发/调试场景），请手动执行：
+--   psql "$DATABASE_URL" -c "TRUNCATE TABLE system_prompt CASCADE;"
+-- 然后再执行本种子文件即可。
 
 
--- 2. 插入最新对齐代码的 9 大核心模板
+-- 插入最新对齐代码的 9 大核心模板（已存在 name 时跳过）
 INSERT INTO system_prompt (stage, name, description, content_template, version, is_active)
 VALUES
 
@@ -237,7 +240,8 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 ⚠️ 重要提示：以下所有操作步骤均需工程师逐步确认后才会执行。$TEMPLATE$,
     '1.0',
     TRUE
-);
+)
+ON CONFLICT (name) DO NOTHING;
 
 -- ─── 验证展示 ──────────────────────────────────────────────────────────────────
 SELECT

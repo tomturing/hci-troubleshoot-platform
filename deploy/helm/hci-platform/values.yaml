@@ -400,6 +400,13 @@ dbMigrate:
     repository: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate"
     tag: "latest"
 
+# ======================== DB Seed（ArgoCD PostSync / Helm post-upgrade）===
+# 自动加载 database/seeds/*.sql 到 PostgreSQL，确保 admin-ui 中工具/Prompt/技能页面有初始数据
+# 幂等：tool DO UPDATE（与代码对齐）；prompt/skill DO NOTHING（保护用户改动）
+dbSeed:
+  enabled: true
+  image: "postgres:15-alpine"
+
 # ======================== Smoke Test（ArgoCD PostSync）=====================
 smokeTest:
   enabled: true

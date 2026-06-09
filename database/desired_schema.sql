@@ -602,7 +602,9 @@ CREATE TABLE IF NOT EXISTS system_prompt (
     is_active boolean DEFAULT true,
     created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT system_prompt_pkey PRIMARY KEY (id)
+    CONSTRAINT system_prompt_pkey PRIMARY KEY (id),
+    -- name 字段天然唯一（如 base_identity_v1、s0_intent_recognition_v1），加唯一约束以支持种子幂等加载
+    CONSTRAINT system_prompt_name_key UNIQUE (name)
 );
 
 COMMENT ON TABLE system_prompt IS 'System Instructions 模板表 — 存储 S0-S6 各诊断阶段的 Prompt 模板，支持版本管理和阶段级 A/B 测试';

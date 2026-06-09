@@ -5,7 +5,7 @@
 --       预置 HCI 平台领域专业 Skill
 -- 执行时机：
 --   1. 首次建库后（迁移 20260605000000 执行完毕）
---   2. ON CONFLICT DO UPDATE，可重复执行（幂等）
+--   2. ON CONFLICT (skill_name) DO NOTHING — 已存在同名技能时跳过，保护用户在 admin-ui 中的修改
 -- 执行方法：
 --   psql "$DATABASE_URL" -f database/seeds/03_skill_definitions.sql
 -- ===========================================================================
@@ -184,12 +184,5 @@ $SKILL$,
     -- is_active
     true
 )
-ON CONFLICT (skill_name)
-DO UPDATE SET
-    description     = EXCLUDED.description,
-    instructions_md = EXCLUDED.instructions_md,
-    compatibility   = EXCLUDED.compatibility,
-    metadata_json   = EXCLUDED.metadata_json,
-    display_name    = EXCLUDED.display_name,
-    is_active       = EXCLUDED.is_active,
-    updated_at      = CURRENT_TIMESTAMP;
+-- 幂等保护：已存在同名技能时跳过，避免覆盖用户在 admin-ui 中的自定义内容
+ON CONFLICT (skill_name) DO NOTHING;
