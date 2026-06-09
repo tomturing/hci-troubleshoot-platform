@@ -6,12 +6,12 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 
 # 安装依赖（使用 uv pip，pyproject.toml 为唯一依赖声明源）
-COPY kb-service/pyproject.toml .
+COPY backend/kb-service/pyproject.toml .
 RUN uv pip compile pyproject.toml --no-annotate --no-header -q -o requirements.txt \
     && uv pip install --system --no-cache -r requirements.txt
 
-COPY shared /app/shared
-COPY kb-service /app
+COPY backend/shared /app/shared
+COPY backend/kb-service /app
 
 EXPOSE 8004
 

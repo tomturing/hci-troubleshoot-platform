@@ -4,12 +4,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY eval-service/pyproject.toml .
+COPY backend/eval-service/pyproject.toml .
 RUN uv pip compile pyproject.toml --no-annotate --no-header -q -o requirements.txt \
     && uv pip install --system --no-cache -r requirements.txt
 
-COPY shared /app/shared
-COPY eval-service /app
+COPY backend/shared /app/shared
+COPY backend/eval-service /app
 
 EXPOSE 8007
 
