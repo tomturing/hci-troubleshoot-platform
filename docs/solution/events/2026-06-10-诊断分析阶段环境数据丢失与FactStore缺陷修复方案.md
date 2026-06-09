@@ -104,3 +104,7 @@ if not env_context and not has_stored_facts:
 ### 4.2 前端工单切换/刷新丢失诊断阶段 Bug
 - **原因**：在前端 `chat.ts` 中，切换工单或页面初始化时调用 `loadConversationHistory` 只加载了对话消息，没有将从数据库获取的最新诊断阶段 `conv.diagnostic_stage` 恢复给前端 `diagnosticStage.value` 响应式变量，导致前台界面重新加载时回退到默认的 `S0`。
 - **修复**：修改 `loadConversationHistory` 方法，在获取会话详情后，将 `conv.diagnostic_stage` 同步还原给 `diagnosticStage.value`。
+
+### 4.3 意图质量校验空列表拦截 Bug
+- **原因**：在 `evidence_builder.py` 的 `check_information_quality` 中，检查必填字段时，逻辑为 `if not val or val in ("", "N/A", "暂无数据", [], {}):`。当某些没有对应活跃任务或告警的工单数据被注入时，其 `task_logs` 或 `alert_logs` 表现为合法的空列表 `[]`。原逻辑会将 `[]` 误判为缺失字段，导致触发澄清拦截，提示“以下环境信息缺失：任务日志”。
+- **修复**：修改必填校验，仅当 `val` 为 `None`，或属于特定占位符字符串时视为缺失；空列表 `[]` 不再被视为缺失状态。
