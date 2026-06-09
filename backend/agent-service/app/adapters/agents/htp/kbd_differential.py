@@ -250,7 +250,8 @@ class KBDDiagnostic:
                     content={
                         "tool_name": best_tool_name,
                         "tool_args": tool_args,
-                        "raw_output": (raw_output or "")[:500],  # 截取前500字符
+                        # T0-2：替换固定截断为 smart_truncate，优先保留错误关键字行
+                        "raw_output": smart_truncate(raw_output or "", max_chars=500),
                         "error": error,
                         "match_kbd_ids": list(match_ids) if match_ids else [],
                         "eliminated_count": 0,  # 下一步过滤后计算
@@ -515,7 +516,7 @@ class KBDDiagnostic:
             "- 步骤 {idx}：`{name}` {status}".format(
                 idx=i + 1,
                 name=s.tool_name,
-                status=(f"✓ 输出：{(s.raw_output or '')[:200]}" if s.error is None else f"✗ 失败：{s.error}"),
+                status=(f"✓ 输出：{smart_truncate(s.raw_output or '', max_chars=200)}" if s.error is None else f"✗ 失败：{s.error}"),
             )
             for i, s in enumerate(steps_executed)
         )

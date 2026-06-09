@@ -48,7 +48,7 @@ tracer = trace.get_tracer(__name__)
 
 class ToolCallValidator:
     """
-    轻量级无依赖的 JSON Schema 与参数有效性校验器
+    轻量级无依赖的 JSON Schema 与参数有效性校验器（T0-5 扩展 enum/array/oneOf）
     """
     @staticmethod
     def validate(tool_name: str, args: dict[str, Any], parameters_schema: dict[str, Any]) -> tuple[bool, str | None]:
@@ -63,7 +63,7 @@ class ToolCallValidator:
             if req_field not in args:
                 return False, f"缺少必填参数: '{req_field}'"
 
-        # 2. 类型及正则格式校验
+        # 2. 类型及格式校验
         for name, value in args.items():
             if name not in properties:
                 # 允许传入额外的不在 schema 中的参数而不报错
@@ -71,6 +71,13 @@ class ToolCallValidator:
 
             prop_def = properties[name]
             expected_type = prop_def.get("type")
+
+            # T0-5: enum 校验（优先于 type 校验）
+            enum_values = prop_def.get("enum")
+            if enum_values is not None:
+                if value not in enum_values:
+                    return False, f"参数 '{name}' 值 '{value}' 不在允许的枚举值中: {enum_values}"
+                continue  # enum 校验通过后跳过后续类型检查
 
             # 类型校验
             if expected_type == "string":
@@ -103,6 +110,41 @@ class ToolCallValidator:
             elif expected_type == "boolean":
                 if not isinstance(value, bool):
                     return False, f"参数 '{name}' 类型错误: 期望 boolean，实际为 {type(value).__name__}"
+
+            # T0-5: array 校验
+            elif expected_type == "array":
+                if not isinstance(value, list):
+                    return False, f"参数 '{name}' 类型错误: 期望 array，实际为 {type(value).__name__}"
+                # items 校验（仅支持简单类型的 items）
+                items_def = prop_def.get("items")
+                if items_def and isinstance(items_def, dict):
+                    item_type = items_def.get("type")
+                    item_enum = items_def.get("enum")
+                    for i, item in enumerate(value):
+                        if item_enum and item not in item_enum:
+                            return False, f"参数 '{name}' 第 {i+1} 个元素 '{item}' 不在允许枚举值中: {item_enum}"
+                        elif item_type == "string" and not isinstance(item, str):
+                            return False, f"参数 '{name}' 第 {i+1} 个元素类型错误: 期望 string"
+                        elif item_type == "integer" and (not isinstance(item, int) or isinstance(item, bool)):
+                            return False, f"参数 '{name}' 第 {i+1} 个元素类型错误: 期望 integer"
+
+        # T0-5: oneOf 校验（仅支持简单 oneOf，值必须匹配其中一种 schema）
+        # oneOf 通常在根 schema 或单个属性定义中出现
+        root_one_of = parameters_schema.get("oneOf")
+        if root_one_of:
+            matched_any = False
+            for schema_option in root_one_of:
+                # 递归校验（简化版：仅校验 required 匹配）
+                option_required = schema_option.get("required", [])
+                # 检查是否满足此 schema 的 required
+                if all(r in args for r in option_required):
+                    # 检查属性类型是否匹配
+                    inner_valid, _ = ToolCallValidator.validate(tool_name, args, schema_option)
+                    if inner_valid:
+                        matched_any = True
+                        break
+            if not matched_any:
+                return False, "参数组合不满足 any oneOf schema 定义"
 
         return True, None
 
@@ -753,8 +795,24 @@ class ReactEngine:
 
         tool_def = TOOL_REGISTRY.get(tool_name)
         if not tool_def:
-            # T-AGT-22: SOP 工具在 TOOL_REGISTRY 中已定义，此检查覆盖所有已注册工具
-            yield AgentTextChunk(content=f"未知工具: {tool_name}")
+            # T0-1：未知工具路径统一走 ToolResultEnvelope，让 LLM 能拿到结构化错误并自我纠正
+            envelope = ToolResultEnvelope(
+                tool_name=tool_name,
+                exec_id=exec_id,
+                success=False,
+                exit_code=-1,
+                stdout="",
+                stderr=f"未知工具: {tool_name}，请检查工具名称是否正确，或联系管理员添加工具定义",
+                exit_code_meaning="unknown_tool",
+                interpretation="请求的工具未在 TOOL_REGISTRY 中定义，LLM 需检查拼写或调整策略",
+                suggested_next_action="请检查工具名称拼写，或改用已知工具继续诊断",
+            )
+            yield ToolResultEvent(
+                tool_name=tool_name,
+                exec_id=exec_id,
+                result=envelope.to_llm_message(),
+                error="unknown_tool",
+            )
             return
 
         # T0-5: ToolCallValidator 参数前置校验
@@ -883,7 +941,24 @@ class ReactEngine:
                     "status": "blocked",
                 },
             )
-            yield AgentTextChunk(content=f"工具 {tool_name} 风险等级过高，已阻止执行")
+            # T0-1：risk=3 block 路径统一走 ToolResultEnvelope，让 LLM 能拿到结构化错误
+            envelope = ToolResultEnvelope(
+                tool_name=tool_name,
+                exec_id=exec_id,
+                success=False,
+                exit_code=-1,
+                stdout="",
+                stderr=f"工具 {tool_name} 风险等级过高（risk=3），已按安全策略阻止执行",
+                exit_code_meaning="blocked_by_policy",
+                interpretation="该工具被标记为高危操作（policy=block），系统已自动拦截",
+                suggested_next_action="如确需执行，请联系管理员调整工具 policy 配置，或改用低风险替代方案",
+            )
+            yield ToolResultEvent(
+                tool_name=tool_name,
+                exec_id=exec_id,
+                result=envelope.to_llm_message(),
+                error="blocked_by_policy",
+            )
             return
 
         # T1-3: 调用服务端安全策略进行评估，限制高危命令的自动执行条件

@@ -123,8 +123,8 @@ class StaleDataGuard:
         "task_status": 60.0,
         "process_status": 60.0,
         "service_status": 60.0,
-        # 中频变化类（VM 状态、主机状态）
-        "vm_status": 180.0,
+        # 中频变化类（VM 状态、主机状态）— T2-1：VM 阈值改为 30s（与清单一致）
+        "vm_status": 30.0,
         "host_status": 180.0,
         "alert_status": 120.0,
         # 低频变化类（配置、存储、网络拓扑）

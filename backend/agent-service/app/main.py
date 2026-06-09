@@ -458,6 +458,8 @@ class CompositeToolExecutor:
             return result
         elif tool_def.category == "sop":
             # SOP 工具需要 kb_client 和 sop_document_id
+            # T3-1：Composite 执行器仅支持 get_sop_node（有 kb_client）
+            # sop_advance / sop_request_variable 需要 SopToolExecutor 上下文注入
             if tool_name == "get_sop_node":
                 if self._kb_client is None:
                     return {"error": "KB 客户端未初始化，无法执行 SOP 工具"}
@@ -469,6 +471,11 @@ class CompositeToolExecutor:
                     sop_document_id=int(sop_document_id),
                     kb_client=self._kb_client,
                 )
+            elif tool_name in ("sop_advance", "sop_request_variable"):
+                # T3-1：这些工具需要 conversation_id + sop_document_id + kb_client 上下文
+                # Composite 执行器缺少 sop_document_id，应由 SopToolExecutor 处理
+                # 返回结构化错误，让 ReactEngine 切换执行器
+                return {"error": f"SOP 工具 {tool_name} 需要 SopToolExecutor 上下文（sop_document_id），请通过 InvestigationAgent SOP 模式调用"}
             else:
                 return {"error": f"SOP 工具 {tool_name} 未实现"}
         else:
