@@ -1,0 +1,249 @@
+{
+  "title": "Agent 可靠性监控",
+  "uid": "agent-reliability",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["hci", "agent", "reliability"],
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "工具执行成功率",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (tool_name) (rate(agent_tool_call_total{status=\"success\"}[5m])) / sum by (tool_name) (rate(agent_tool_call_total[5m]))",
+          "legendFormat": "{{tool_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "steps": [
+              { "value": 0, "color": "red" },
+              { "value": 0.8, "color": "yellow" },
+              { "value": 0.95, "color": "green" }
+            ]
+          }
+        }
+      },
+      "description": "各工具的成功执行率（T4-2: agent_tool_call_success_rate）"
+    },
+    {
+      "id": 2,
+      "title": "工具执行超时率",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (tool_name) (rate(agent_tool_timeout_total[5m])) / sum by (tool_name) (rate(agent_tool_call_total[5m]))",
+          "legendFormat": "{{tool_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "steps": [
+              { "value": 0, "color": "green" },
+              { "value": 0.05, "color": "yellow" },
+              { "value": 0.1, "color": "red" }
+            ]
+          }
+        }
+      },
+      "description": "各工具的超时率（T4-2: agent_tool_timeout_rate）"
+    },
+    {
+      "id": 3,
+      "title": "幻觉检测趋势",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (hallucination_type) (rate(agent_hallucination_detected_total[5m]))",
+          "legendFormat": "{{hallucination_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "thresholds": {
+            "steps": [
+              { "value": 0, "color": "green" },
+              { "value": 0.1, "color": "yellow" },
+              { "value": 0.5, "color": "red" }
+            ]
+          }
+        }
+      },
+      "description": "幻觉类型分布（phantom_tool / overconfident / ungrounded_number）"
+    },
+    {
+      "id": 4,
+      "title": "Schema 校验成功率",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (schema_name) (rate(agent_schema_validation_total{status=\"success\"}[5m])) / sum by (schema_name) (rate(agent_schema_validation_total[5m]))",
+          "legendFormat": "{{schema_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "steps": [
+              { "value": 0, "color": "red" },
+              { "value": 0.9, "color": "yellow" },
+              { "value": 0.95, "color": "green" }
+            ]
+          }
+        }
+      },
+      "description": "结构化输出 Schema 校验成功率（目标 ≥ 95%）"
+    },
+    {
+      "id": 5,
+      "title": "验证闭环拦截计数",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 16, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(agent_verification_blocked_total)",
+          "legendFormat": "拦截次数"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "steps": [
+              { "value": 0, "color": "green" },
+              { "value": 1, "color": "yellow" },
+              { "value": 10, "color": "red" }
+            ]
+          }
+        }
+      },
+      "description": "修复后未验证的拦截次数（T3-5 验证优先闭环）"
+    },
+    {
+      "id": 6,
+      "title": "推理步数分布",
+      "type": "histogram",
+      "gridPos": { "x": 6, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(agent_resolution_steps_bucket[5m])) by (le)",
+          "legendFormat": "{{le}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "description": "工单解决步数分布（T4-2: agent_mean_steps_to_resolution）"
+    },
+    {
+      "id": 7,
+      "title": "推理置信度",
+      "type": "gauge",
+      "gridPos": { "x": 18, "y": 16, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "agent_reasoning_confidence",
+          "legendFormat": "置信度"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "steps": [
+              { "value": 0, "color": "red" },
+              { "value": 0.5, "color": "yellow" },
+              { "value": 0.75, "color": "green" }
+            ]
+          }
+        }
+      },
+      "description": "当前推理假设置信度"
+    },
+    {
+      "id": 8,
+      "title": "无证据结论计数",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (claim_type) (rate(agent_unsupported_claim_total[5m]))",
+          "legendFormat": "{{claim_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "thresholds": {
+            "steps": [
+              { "value": 0, "color": "green" },
+              { "value": 0.1, "color": "red" }
+            ]
+          }
+        }
+      },
+      "description": "无证据结论计数（T4-2: agent_unsupported_claim_rate）"
+    },
+    {
+      "id": 9,
+      "title": "工具执行耗时分布",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, tool_name) (rate(agent_tool_execution_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{tool_name}} P50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, tool_name) (rate(agent_tool_execution_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{tool_name}} P95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "steps": [
+              { "value": 0, "color": "green" },
+              { "value": 10, "color": "yellow" },
+              { "value": 30, "color": "red" }
+            ]
+          }
+        }
+      },
+      "description": "工具执行耗时分布"
+    }
+  ]
+}

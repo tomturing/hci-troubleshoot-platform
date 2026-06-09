@@ -215,6 +215,9 @@ class ToolResultEnvelope:
             if exit_code_meaning == "timeout":
                 interpretation = "命令超时，可能节点负载过高或 terminal_bridge 未连接"
                 suggested_next_action = "请检查目标节点的可达性，或尝试执行低负载命令/查看日志"
+                # T4-2: 记录超时计数
+                from app.services.metrics import AGENT_TOOL_TIMEOUT_TOTAL
+                AGENT_TOOL_TIMEOUT_TOTAL.labels(tool_name=tool_name).inc()
             elif exit_code != 0:
                 interpretation = f"命令执行失败 (退出码: {exit_code})"
                 if exit_code_meaning == "command_not_found":
@@ -601,6 +604,14 @@ class ReactEngine:
                                 AGENT_HALLUCINATION_DETECTED_TOTAL.labels(hallucination_type=hkey).inc()
                     except Exception as met_err:
                         logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
+
+                # T4-2: 记录推理步数（成功完成）
+                try:
+                    from app.services.metrics import AGENT_REASONING_STEPS_TOTAL, AGENT_RESOLUTION_STEPS
+                    AGENT_REASONING_STEPS_TOTAL.labels(session_id=session_id, case_id=case_id or "unknown").inc(step_count)
+                    AGENT_RESOLUTION_STEPS.observe(step_count)
+                except Exception as met_err:
+                    logger.warning("metrics_record_failed", f"记录步数 metrics 失败: {met_err}")
 
                 return
 
