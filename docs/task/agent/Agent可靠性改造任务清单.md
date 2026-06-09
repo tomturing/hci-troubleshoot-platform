@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-06-08
+last_updated: 2026-06-09
 owner: team
 ---
 
@@ -24,6 +24,7 @@ owner: team
 | 2026-06-08 | v1.4 | **PR-1 工具事务执行链修复**：T0-3 修复 Composite 执行器降级 string 导致 exit_code_meaning 丢失；T1-1 ConfirmService 同步落 `authorization` 表（exec_id/actor/decision/tool_input_hash/expires_at）；T1-2 前端 `chat.ts handleConfirmResult` 改为命中 `/interactive-response` 并回传 exec_id+input_hash；T1-3 ConfirmService 缺失时 risk≥2 工具按 fail-closed 拒绝执行（旧实现 fail-open）；T1-4 `tool_result` 新增 `retry_count` 字段并由 ReactEngine 落库审计；附 6 个新增单测全部通过 |
 | 2026-06-09 | v1.4 | 完成 T1-2/T3-3/T4-4 整改：补齐 `exec_id/input_hash/expires_at` 端到端透传、确认路由 fail-closed 校验与授权审计、禁止前端静默确认高风险 pending 工具、实现可展示推理摘要折叠展示与 CI 回归评测门禁 |
 | 2026-06-09 | v1.5 | **PR-2 工具反馈完整性修复**：T0-1 未知工具/risk=3 block 路径统一走 ToolResultEnvelope；T0-2 kbd_differential 固定截断替换为 smart_truncate；T0-5 ToolCallValidator 扩展 enum/array/oneOf；T2-1 VM 阈值从 180s 改为 30s；T3-1 Composite 执行器 sop 路由标注 |
+| 2026-06-09 | v1.6 | **PR-3 Prometheus 指标完善与 Grafana Dashboard**：T4-2 补充完整指标（agent_tool_timeout_total、agent_resolution_steps 等）；ReactEngine 接入超时和步数指标；新增 Grafana Agent 可靠性看板（agent-reliability.json） |
 
 ---
 
