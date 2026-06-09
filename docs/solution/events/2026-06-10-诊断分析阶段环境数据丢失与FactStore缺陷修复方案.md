@@ -108,3 +108,7 @@ if not env_context and not has_stored_facts:
 ### 4.3 意图质量校验空列表拦截 Bug
 - **原因**：在 `evidence_builder.py` 的 `check_information_quality` 中，检查必填字段时，逻辑为 `if not val or val in ("", "N/A", "暂无数据", [], {}):`。当某些没有对应活跃任务或告警的工单数据被注入时，其 `task_logs` 或 `alert_logs` 表现为合法的空列表 `[]`。原逻辑会将 `[]` 误判为缺失字段，导致触发澄清拦截，提示“以下环境信息缺失：任务日志”。
 - **修复**：修改必填校验，仅当 `val` 为 `None`，或属于特定占位符字符串时视为缺失；空列表 `[]` 不再被视为缺失状态。
+
+### 4.4 澄清请求空流错误拦截 Bug
+- **原因**：在 `agent.py` 的 `_event_stream` 流式处理中，程序仅根据 `_has_text_chunk` 这一单一标识符来判定是否输出过内容。当触发质量检查并向用户发起澄清交互请求时，程序只 yield 了 `AgentInteractiveRequest` 这一有效交互事件并提前返回，而没有产生任何 `AgentTextChunk`。这导致 `_has_text_chunk` 保持为 `False`，使得末尾的空流防护守卫逻辑误判本次推理为“空流”，进而错误地向前端输出了 `[Agent Error: AI 推理未返回任何内容...]`。
+- **修复**：在 `_event_stream` 中引入 `_has_interactive_request` 和 `_has_escalation` 两个状态位，当事件类型为 `AgentInteractiveRequest` 或 `AgentEscalation` 时分别置位；空流守卫的判定条件修正为 `if not _has_text_chunk and not _has_interactive_request and not _has_escalation:`，避免合法交互/升级事件被误判为推理错误。

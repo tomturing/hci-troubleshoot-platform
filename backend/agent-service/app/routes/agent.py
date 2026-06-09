@@ -115,6 +115,8 @@ async def _event_stream(
     )
 
     _has_text_chunk = False
+    _has_interactive_request = False
+    _has_escalation = False
     try:
         async for event in _agent_router.process(
             assistant_type=req.assistant_type,
@@ -142,6 +144,7 @@ async def _event_stream(
                     }
                 )
             elif isinstance(event, AgentInteractiveRequest):
+                _has_interactive_request = True
                 yield _sse(
                     {
                         "type": "interactive_request",
@@ -159,6 +162,7 @@ async def _event_stream(
                     }
                 )
             elif isinstance(event, AgentEscalation):
+                _has_escalation = True
                 yield _sse(
                     {
                         "type": "escalation",
@@ -167,11 +171,11 @@ async def _event_stream(
                     }
                 )
 
-        # 空流检测：整个推理过程没有任何文本输出
-        if not _has_text_chunk:
+        # 空流检测：整个推理过程没有任何有效输出
+        if not _has_text_chunk and not _has_interactive_request and not _has_escalation:
             logger.warning(
                 event="agent_stream_empty",
-                message="推理流结束但无任何 text_chunk 输出",
+                message="推理流结束但无任何有效响应输出",
                 session_id=req.session_id,
                 case_id=req.case_id,
                 assistant_type=req.assistant_type,

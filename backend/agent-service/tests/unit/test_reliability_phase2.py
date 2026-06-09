@@ -596,3 +596,53 @@ class TestInvestigationAgentQualityCheck:
         # 并且流程应该提前返回（不继续执行后续的路由和检索）
         # 验证 route_by_category 未被调用
         kb.route_by_category.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_event_stream_with_interactive_request_no_error(self, mocker):
+        """测试 _event_stream 当收到 AgentInteractiveRequest 时，不触发空流错误"""
+        from app.routes.agent import _event_stream, AgentStreamRequest
+        from app.domain.agent_port import AgentInteractiveRequest
+        import app.routes.agent as agent_routes
+
+        mock_router = MagicMock()
+        
+        async def fake_process(*args, **kwargs):
+            yield AgentInteractiveRequest(
+                request_id="test-req",
+                acp_session_id="sess-01",
+                kind="test-kind",
+                title="test-title",
+                prompt="test-prompt",
+                options=[],
+            )
+        
+        mock_router.process = fake_process
+        original_router = agent_routes._agent_router
+        agent_routes._agent_router = mock_router
+        
+        try:
+            req = AgentStreamRequest(
+                session_id="sess-01",
+                case_id="case-01",
+                user_id="user-01",
+                assistant_type="htp-agent",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+            
+            events = []
+            async for sse_event in _event_stream(req):
+                events.append(sse_event)
+                
+            # 校验输出的 SSE 事件中包含 interactive_request，但不包含 type="error"
+            import json
+            event_types = []
+            for ev in events:
+                if ev.startswith("data: "):
+                    data = json.loads(ev[6:].strip())
+                    event_types.append(data.get("type"))
+            
+            assert "interactive_request" in event_types
+            assert "error" not in event_types
+            assert "done" in event_types
+        finally:
+            agent_routes._agent_router = original_router
