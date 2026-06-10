@@ -1161,6 +1161,7 @@ CREATE TABLE IF NOT EXISTS fact (
     freshness varchar(30) NOT NULL DEFAULT 'unknown',
     conflict boolean NOT NULL DEFAULT false,
     collected_at timestamptz,
+    trace_id varchar(64),
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fact_pkey PRIMARY KEY (id)
 );
@@ -1177,11 +1178,13 @@ COMMENT ON COLUMN fact.confidence IS '置信度';
 COMMENT ON COLUMN fact.freshness IS '时效性';
 COMMENT ON COLUMN fact.conflict IS '是否存在冲突';
 COMMENT ON COLUMN fact.collected_at IS '数据实际采集时间';
+COMMENT ON COLUMN fact.trace_id IS '链路追踪 ID';
 COMMENT ON COLUMN fact.created_at IS '记录创建时间';
 
 CREATE INDEX IF NOT EXISTS idx_fact_case_id ON fact (case_id);
 CREATE INDEX IF NOT EXISTS idx_fact_fact_type ON fact (fact_type);
 CREATE INDEX IF NOT EXISTS idx_fact_key ON fact (key);
+CREATE INDEX IF NOT EXISTS idx_fact_trace_id ON fact (trace_id);
 
 -- ------------------------------------------------------------
 -- 表: claim_evidence_link  [模块: agent-service]

@@ -25,6 +25,10 @@
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
 - 当前版本：v2.1.0（MVP 全栈可用）
+- **工单 Q2026061002370 诊断执行失败修复**：
+  - 数据库：`database/desired_schema.sql` 补齐 `fact.trace_id` 字段及索引，解决 `FactStore` 写入时因字段缺失导致 SQL 报错
+  - Helm：`agent-service` 注入 `SCP_BASE_URL` 与 `SCP_API_KEY` 环境变量；`secret.yaml` 中渲染 `SCP_API_KEY`；在 `values.yaml` 中定义二者默认值为空以保证环境兼容性
+  - 环境：开启 `agentService.externalDns` 以解决大模型调用时的 DNS 解析超时问题
 - 前端工具栏优化：工单信息 Popover（含 ID/工单号）→ 关闭工单 → SSH终端（Monitor 图标），终端历史按钮移入 TerminalPanel header-actions
 - 环境采集命令更新：`task get -s failed -l 10`（仅失败任务）；后端字段映射已支持整数 status/urgent_type 与 Unix 时间戳（PR #285）
 - **KBD 管理页面搜索增强**（PR #328）：

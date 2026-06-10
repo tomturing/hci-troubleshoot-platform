@@ -65,6 +65,15 @@ spec:
               value: {{ .Values.agentService.glmModel | default "glm-5" | quote }}
             - name: REACT_ENABLED
               value: {{ .Values.agentService.reactEnabled | default "false" | quote }}
+            {{- if .Values.scpBaseUrl }}
+            - name: SCP_BASE_URL
+              value: {{ .Values.scpBaseUrl | quote }}
+            - name: SCP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: SCP_API_KEY
+            {{- end }}
             # ops-agent 集成
             - name: OPS_AGENT_BASE_URL
               value: {{ (.Values.opsAgent | default dict).baseUrl | default "http://ops-agent-service:8006" | quote }}
