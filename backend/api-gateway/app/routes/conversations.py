@@ -163,17 +163,6 @@ async def resume_stream(conversation_id: str, request: Request):
     return await proxy_request_stream("GET", f"/{conversation_id}/resume-stream", payload=None, headers={})
 
 
-@router.post("/{conversation_id}/exec-result")
-async def submit_exec_result(conversation_id: str, request: Request):
-    """回传执行结果"""
-    payload = await request.json()
-    headers = {}
-    auth_header = request.headers.get("Authorization")
-    if auth_header:
-        headers["Authorization"] = auth_header
-    response = await proxy_request("POST", f"/{conversation_id}/exec-result", payload=payload, headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
-
 
 @router.post("/{conversation_id}/evaluate")
 async def submit_evaluation(conversation_id: str, request: Request):
