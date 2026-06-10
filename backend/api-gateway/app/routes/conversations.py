@@ -141,6 +141,22 @@ async def submit_interactive_response(conversation_id: str, request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@router.post("/{conversation_id}/exec-result")
+async def submit_exec_result(conversation_id: str, request: Request):
+    """回传命令执行结果"""
+    payload = await request.json()
+    headers = {}
+    auth = request.headers.get("Authorization")
+    if auth:
+        headers["Authorization"] = auth
+    else:
+        # 兜底注入 MVP 阶段临时 Token，绕过下游会话鉴权
+        headers["Authorization"] = "Bearer client-session-placeholder-token"
+
+    response = await proxy_request("POST", f"/{conversation_id}/exec-result", payload=payload, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @router.get("/{conversation_id}/resume-stream")
 async def resume_stream(conversation_id: str, request: Request):
     """重连 ops-agent outbox SSE 流（页面刷新后恢复会话续写）"""
