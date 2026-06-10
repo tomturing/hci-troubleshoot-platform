@@ -255,7 +255,7 @@ class BridgeRelayExecutor:
     STDERR_MAX_CHARS = 1000
 
     # Redis blpop 超时（秒）
-    BLPOP_TIMEOUT = 32
+    BLPOP_TIMEOUT = 10
 
     def __init__(
         self,
@@ -276,7 +276,7 @@ class BridgeRelayExecutor:
         self._internal_token = internal_token
         self._http_client = InternalHTTPClient(
             base_url=self._conversation_service_url,
-            timeout=35.0,  # 略大于 BLPOP_TIMEOUT，确保 HTTP 不先超时
+            timeout=12.0,  # 略大于 BLPOP_TIMEOUT，确保 HTTP 不先超时
         )
 
     async def aclose(self) -> None:
@@ -294,6 +294,8 @@ class BridgeRelayExecutor:
         policy: str | None = None,
         usage_template: str | None = None,
         exec_id: str | None = None,
+        case_id: str = "",
+        **kwargs,
     ) -> ExecResult:
         """
         执行命令并返回结果。
@@ -307,6 +309,7 @@ class BridgeRelayExecutor:
             policy: 执行策略（可选，对插件工具使用固定值）
             usage_template: 插件工具的命令模板（可选）
             exec_id: 统一的工具执行流水号（可选）
+            case_id: 工单 ID（可选）
 
         Returns:
             ExecResult: 执行结果
@@ -397,7 +400,7 @@ class BridgeRelayExecutor:
                     "reason": reason,
                     "risk_level": runtime_risk,
                     "node_ip": node_ip,
-                    "case_id": args.get("case_id", ""),  # 可选，部分插件工具需要
+                    "case_id": case_id or args.get("case_id", ""),  # 优先使用显式传入的 case_id
                 },
             )
             resp.raise_for_status()

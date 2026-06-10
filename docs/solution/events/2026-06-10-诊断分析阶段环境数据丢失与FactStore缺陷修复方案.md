@@ -112,3 +112,11 @@ if not env_context and not has_stored_facts:
 ### 4.4 澄清请求空流错误拦截 Bug
 - **原因**：在 `agent.py` 的 `_event_stream` 流式处理中，程序仅根据 `_has_text_chunk` 这一单一标识符来判定是否输出过内容。当触发质量检查并向用户发起澄清交互请求时，程序只 yield 了 `AgentInteractiveRequest` 这一有效交互事件并提前返回，而没有产生任何 `AgentTextChunk`。这导致 `_has_text_chunk` 保持为 `False`，使得末尾的空流防护守卫逻辑误判本次推理为“空流”，进而错误地向前端输出了 `[Agent Error: AI 推理未返回任何内容...]`。
 - **修复**：在 `_event_stream` 中引入 `_has_interactive_request` 和 `_has_escalation` 两个状态位，当事件类型为 `AgentInteractiveRequest` 或 `AgentEscalation` 时分别置位；空流守卫的判定条件修正为 `if not _has_text_chunk and not _has_interactive_request and not _has_escalation:`，避免合法交互/升级事件被误判为推理错误。
+
+### 4.5 命令行工具执行缺少 case_id 与超时时间过长修复
+- **原因一（缺少 case_id）**：`BridgeRelayExecutor` 发送执行请求 `/internal/conversations/{conversation_id}/agent-exec` 时，其 `"case_id"` 键仅尝试从 `args.get("case_id", "")` 读取，但 `args` 作为 LLM 的入参字典并不携带此系统级上下文，导致 `"case_id"` 总是为空。前端在收到事件后传递 `"case_id": ""` 至 terminal_bridge，致使 terminal_bridge 因无法根据空 case 寻找到已注册的 SSH 实例而报错 `会话不存在`，阻断命令执行。
+- **原因二（超时过长）**：原有命令执行等待超时设置在 `agent-service` 端为 `BLPOP_TIMEOUT = 32`，而在前端为 `35_000`（35秒）。对于故障命令，这个等待时间过长，不利于用户快速得到失败回显。
+- **修复**：
+  1. 在 `BridgeRelayExecutor.execute` 和 `ReactEngine._execute_tool_call` 的参数中支持显式传递 `case_id`，从而能够将正确的工单 ID 发送到 backend 并流式推送到前端。
+  2. 将 `BridgeRelayExecutor` 的 `BLPOP_TIMEOUT` 缩短为 `10` 秒，HTTP Client 连接超时缩短为 `12.0` 秒。
+  3. 将前端 `chat.ts` 中 `waitForExecResult` 的等待超时从 `35_000` 缩短为 `10_000`（10秒），实现故障命令的快速报错返回。

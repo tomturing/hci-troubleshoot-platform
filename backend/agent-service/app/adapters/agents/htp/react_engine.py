@@ -711,6 +711,7 @@ class ReactEngine:
                     require_all_confirm=require_all_confirm,
                     tool_executor=active_tool_executor,  # T-AGT-22: 传入执行器
                     execution_mode=execution_mode,       # T1-3: 传入执行模式
+                    case_id=case_id,
                 ):
                     # 捕获工具执行结果
                     if isinstance(event, ToolResultEvent):
@@ -770,6 +771,7 @@ class ReactEngine:
         require_all_confirm: bool = False,
         tool_executor: ToolExecutor | None = None,  # T-AGT-22: 可替换执行器
         execution_mode: str = "safe-only",           # T1-3: 执行模式（off/safe-only/aggressive）
+        case_id: str = "",
     ) -> AsyncGenerator[AgentEvent, None]:
         """执行单个工具调用，含授权检查和审计记录
 
@@ -1304,7 +1306,7 @@ class ReactEngine:
                     try:
                         # T-AGT-22: 使用 active_executor 执行工具，显式传递 conversation_id 和 exec_id
                         result = await active_executor.execute(
-                            tool_name, tool_args, conversation_id=session_id, exec_id=exec_id
+                            tool_name, tool_args, conversation_id=session_id, exec_id=exec_id, case_id=case_id
                         )
 
                         # 检查结果是否是超时，若超时则主动抛错重试
