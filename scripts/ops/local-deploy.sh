@@ -83,11 +83,11 @@ echo ""
 # ── 服务定义（service名 → Helm key / context / dockerfile）──────────────────
 # 格式: "service名:helm_key:build_context:dockerfile"
 ALL_SERVICES=(
-  "api-gateway:apiGateway:backend:api-gateway/Dockerfile"
-  "case-service:caseService:backend:case-service/Dockerfile"
-  "conversation-service:conversationService:backend:conversation-service/Dockerfile"
-  "scheduler-service:schedulerService:backend:scheduler-service/Dockerfile"
-  "kb-service:kbService:backend:kb-service/Dockerfile"
+  "api-gateway:apiGateway:.:backend/api-gateway/Dockerfile"
+  "case-service:caseService:.:backend/case-service/Dockerfile"
+  "conversation-service:conversationService:.:backend/conversation-service/Dockerfile"
+  "scheduler-service:schedulerService:.:backend/scheduler-service/Dockerfile"
+  "kb-service:kbService:.:backend/kb-service/Dockerfile"
   "customer-ui:customerUI:frontend:customer/Dockerfile"
   "admin-ui:adminUI:frontend:admin/Dockerfile"
   "agent-service:agentService:backend:agent-service/Dockerfile"
@@ -227,11 +227,11 @@ else  # import 模式
   info "── Phase 2: 导入镜像到 K3s containerd ─────────────────────────────────"
   echo ""
 
-  K3S_CTR="sudo -n k3s ctr"
+  K3S_CTR="sudo -n k3s ctr -n k8s.io"
   if ! ${K3S_CTR} version &>/dev/null 2>&1; then
-    K3S_CTR="k3s ctr"
+    K3S_CTR="k3s ctr -n k8s.io"
     if ! ${K3S_CTR} version &>/dev/null 2>&1; then
-      error "无法访问 k3s ctr，请确认 K3s 正在运行且有权限"
+      error "无法访问 k3s ctr, 请确认 K3s 正在运行且有权限"
       error "尝试: sudo -v 然后重跑"
       exit 1
     fi
