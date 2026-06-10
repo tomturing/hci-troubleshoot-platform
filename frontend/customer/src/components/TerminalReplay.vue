@@ -590,11 +590,11 @@ watch(() => props.caseId, () => {
   border: 1px solid #333;
   border-radius: 6px;
   overflow: hidden;
+  padding: 8px;
 }
 
 .terminal-canvas :deep(.xterm) {
   height: 100%;
-  padding: 8px;
 }
 
 .terminal-canvas :deep(.xterm-cursor),

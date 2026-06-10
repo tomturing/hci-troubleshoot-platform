@@ -145,3 +145,30 @@ async def submit_interactive_response(conversation_id: str, request: Request):
 async def resume_stream(conversation_id: str, request: Request):
     """重连 ops-agent outbox SSE 流（页面刷新后恢复会话续写）"""
     return await proxy_request_stream("GET", f"/{conversation_id}/resume-stream", payload=None, headers={})
+
+
+@router.post("/{conversation_id}/exec-result")
+async def submit_exec_result(conversation_id: str, request: Request):
+    """回传执行结果"""
+    payload = await request.json()
+    headers = {}
+    auth_header = request.headers.get("Authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    response = await proxy_request("POST", f"/{conversation_id}/exec-result", payload=payload, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.post("/{conversation_id}/evaluate")
+async def submit_evaluation(conversation_id: str, request: Request):
+    """提交用户评分"""
+    payload = await request.json()
+    response = await proxy_request("POST", f"/{conversation_id}/evaluate", payload=payload)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.get("/{conversation_id}/evaluation")
+async def get_evaluation(conversation_id: str, request: Request):
+    """获取对话的评分信息"""
+    response = await proxy_request("GET", f"/{conversation_id}/evaluation")
+    return JSONResponse(content=response.json(), status_code=response.status_code)
