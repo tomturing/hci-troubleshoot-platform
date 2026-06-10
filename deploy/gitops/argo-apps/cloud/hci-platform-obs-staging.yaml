@@ -45,6 +45,9 @@ spec:
         - /spec/volumeMode
         - /spec/accessModes
   syncPolicy:
+    automated:
+      prune: false      # 禁止自动删除，保护 Loki + Tempo PVC 观测数据
+      selfHeal: true
     syncOptions:
       - CreateNamespace=true
       - RespectIgnoreDifferences=true
