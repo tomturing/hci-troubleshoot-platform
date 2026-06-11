@@ -33,7 +33,11 @@ echo [Build] Compiling terminal_bridge.exe ...
 set GOOS=windows
 set GOARCH=amd64
 set CGO_ENABLED=0
-go build -trimpath -ldflags="-s -w -buildid=" -o terminal_bridge.exe .
+
+set GIT_VER=v2.15.0-dev
+for /f "delims=" %%i in ('git describe --tags --always --dirty 2>nul') do set GIT_VER=%%i
+
+go build -trimpath -ldflags="-s -w -buildid= -X main.Version=%GIT_VER%" -o terminal_bridge.exe .
 
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Compilation failed.

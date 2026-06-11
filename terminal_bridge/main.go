@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"runtime/debug"
+
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
 )
@@ -966,16 +968,55 @@ func corsWebSocketHandler(wsHandler websocket.Handler) http.Handler {
 	})
 }
 
-const (
-	Version = "v2.3.0-PR443-dual-channel"
+var (
+	Version = "v2.15.0-dev"
 )
+
+func getVersion() string {
+	// If Version has been overridden at build time (e.g. by -ldflags "-X main.Version=..."),
+	// and it doesn't end with "-dev", we return it directly.
+	if !strings.HasSuffix(Version, "-dev") {
+		return Version
+	}
+
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return Version
+	}
+
+	var revision string
+	var modified bool
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+
+	if revision == "" {
+		return Version
+	}
+
+	if len(revision) > 8 {
+		revision = revision[:8]
+	}
+
+	dirty := ""
+	if modified {
+		dirty = "-dirty"
+	}
+
+	return fmt.Sprintf("%s-g%s%s", Version, revision, dirty)
+}
 
 func main() {
 	bridge := newBridge()
 	http.Handle("/", corsWebSocketHandler(websocket.Handler(bridge.handle)))
 
 	addr := fmt.Sprintf("localhost:%d", wsPort)
-	log.Printf("[Bridge] HCI SSH Bridge 已启动 (版本: %s), 监听 ws://%s", Version, addr)
+	log.Printf("[Bridge] HCI SSH Bridge 已启动 (版本: %s), 监听 ws://%s", getVersion(), addr)
 	log.Printf("[Bridge] CORS 已启用，支持从公网域名访问")
 
 	if err := http.ListenAndServe(addr, nil); err != nil {
