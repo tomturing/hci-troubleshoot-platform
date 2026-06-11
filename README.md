@@ -1,8 +1,14 @@
 # HCI 智能排障平台
 
-> 版本 **v2.1.3** · 2026-05-30
+> 版本 **v2.1.4** · 2026-06-11
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
+
+### v2.1.4 更新说明（2026-06-11）
+
+- **前置查询工具类别迁移**：将 `get_active_alerts`、`get_failed_tasks`、`get_vm_list`、`get_cluster_detail` 四个工具从 `scp` 类别迁移至 `acli` 类别，绑定 `usage_template` 指向 acli 原生命令，通过 bridge relay 执行 `acli --formatter json` 命令获取数据，不再依赖直接调用 SCP REST API。
+- **`get_failed_tasks` 动态参数构建**：`executor.py` 中针对 `get_failed_tasks` 工具实现动态命令参数拼装，支持 keyword、code、vm_id、time、host、upid、limit 等过滤参数，根据用户传入的实参动态拼接 `acli task get -s failed` 命令行。
+- **参数 Schema 补全**：四个工具的 `parameters_schema` 全面对齐 acli 命令行参数定义，移除冗余旧参数，补充可选 `node_ip` 等通用参数。
 
 ### v2.1.3 更新说明（2026-05-30）
 
