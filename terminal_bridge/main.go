@@ -586,9 +586,14 @@ func (s *SSHSession) on_output_start(
 							log.Printf("[Bridge] on_output_start: 检测到命令回显占位符, 位置: %d. 开始剥离...", echoIdx)
 							remaining := output[echoIdx:]
 							if nl1 := strings.Index(remaining, "\n"); nl1 != -1 {
-								// 剥离回显占位符所在行（可能是命令输入的那一行或者是回显的那一行）
-								output = remaining[nl1+1:]
-								log.Printf("[Bridge] on_output_start: 成功剥离回显行. 剩余长度: %d", len(output))
+								remaining2 := remaining[nl1+1:]
+								if nl2 := strings.Index(remaining2, "\n"); nl2 != -1 {
+									output = remaining2[nl2+1:]
+									log.Printf("[Bridge] on_output_start: 成功剥离回显 (跳过2行回显). 剩余长度: %d", len(output))
+								} else {
+									output = remaining2
+									log.Printf("[Bridge] on_output_start: 成功剥离回显 (仅有1行回显). 剩余长度: %d", len(output))
+								}
 							}
 						} else {
 							log.Printf("[Bridge] on_output_start: 未检测到回显占位符")
