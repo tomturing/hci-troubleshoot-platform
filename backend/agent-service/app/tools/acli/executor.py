@@ -503,19 +503,27 @@ class BridgeRelayExecutor:
             _, result_json = raw_result
             result_data = json.loads(result_json)
 
-            output = result_data.get("output", "")
             exit_code = result_data.get("exit_code", 0)
 
-            # 7. 智能截断输出
-            truncated = len(output) > self.STDOUT_MAX_CHARS
-            
-            # 当退出码不为0时，认为输出为错误内容，填充到 stderr；stdout 留空（或当 exit_code == 0 时反之）
-            if exit_code != 0:
-                stderr = smart_truncate(output, self.STDERR_MAX_CHARS)
-                stdout = ""
+            # 7. 智能截断输出并提取标准物理流 (Scheme B)
+            if "stdout" in result_data or "stderr" in result_data:
+                raw_stdout = result_data.get("stdout") or ""
+                raw_stderr = result_data.get("stderr") or ""
+                truncated = len(raw_stdout) > self.STDOUT_MAX_CHARS
+                stdout = smart_truncate(raw_stdout, self.STDOUT_MAX_CHARS) if truncated else raw_stdout
+                stderr = smart_truncate(raw_stderr, self.STDERR_MAX_CHARS)
             else:
-                stderr = ""
-                stdout = smart_truncate(output, self.STDOUT_MAX_CHARS) if truncated else output
+                # 兼容原有单物理通道合并输出逻辑
+                output = result_data.get("output", "")
+                truncated = len(output) > self.STDOUT_MAX_CHARS
+                
+                # 当退出码不为0时，认为输出为错误内容，填充到 stderr；stdout 留空（或当 exit_code == 0 时反之）
+                if exit_code != 0:
+                    stderr = smart_truncate(output, self.STDERR_MAX_CHARS)
+                    stdout = ""
+                else:
+                    stderr = ""
+                    stdout = smart_truncate(output, self.STDOUT_MAX_CHARS) if truncated else output
 
             # 退出码语义判定
             meaning = ExitCodeMeaning.SUCCESS

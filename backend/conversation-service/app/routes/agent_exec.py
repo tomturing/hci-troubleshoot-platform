@@ -201,6 +201,8 @@ class ExecResultRequest(BaseModel):
     exec_id: str = Field(..., description="执行 ID（UUID）")
     output: str = Field(..., description="命令输出")
     exit_code: int = Field(..., description="退出码（0=成功）")
+    stdout: str | None = Field(default=None, description="标准输出")
+    stderr: str | None = Field(default=None, description="标准错误")
 
 
 class ExecResultResponse(BaseModel):
@@ -274,6 +276,8 @@ async def submit_exec_result(
         "exec_id": body.exec_id,
         "output": body.output,
         "exit_code": body.exit_code,
+        "stdout": body.stdout,
+        "stderr": body.stderr,
         "conversation_id": str(conversation_id),
         "user_id": user_id,
         "trace_id": trace_id,

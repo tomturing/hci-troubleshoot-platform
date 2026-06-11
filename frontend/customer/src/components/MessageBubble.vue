@@ -1238,7 +1238,14 @@ async function handleToolCallReject() {
                 <span class="collapse-arrow">{{ isTerminalCollapsed ? '▶' : '▼' }}</span>
               </div>
               <div v-show="!isTerminalCollapsed" class="collapsible-content terminal-console">
-                <pre v-if="toolCallEvent.result"><code>{{ typeof toolCallEvent.result === 'object' ? JSON.stringify(toolCallEvent.result, null, 2) : toolCallEvent.result }}</code></pre>
+                <template v-if="toolCallEvent.result">
+                  <template v-if="typeof toolCallEvent.result === 'object' && ('stdout' in toolCallEvent.result || 'stderr' in toolCallEvent.result)">
+                    <pre v-if="toolCallEvent.result.stdout" class="terminal-stdout"><code>{{ toolCallEvent.result.stdout }}</code></pre>
+                    <pre v-if="toolCallEvent.result.stderr" class="terminal-stderr"><code>{{ toolCallEvent.result.stderr }}</code></pre>
+                    <pre v-if="!toolCallEvent.result.stdout && !toolCallEvent.result.stderr && toolCallEvent.result.exit_code !== 0" class="terminal-stderr"><code>exit code: {{ toolCallEvent.result.exit_code }}</code></pre>
+                  </template>
+                  <pre v-else><code>{{ typeof toolCallEvent.result === 'object' ? JSON.stringify(toolCallEvent.result, null, 2) : toolCallEvent.result }}</code></pre>
+                </template>
                 <pre v-else-if="toolCallEvent.error" class="terminal-error"><code>{{ toolCallEvent.error }}</code></pre>
                 <pre v-else class="terminal-running"><code>正在等待输出...</code></pre>
               </div>
@@ -2198,6 +2205,10 @@ async function handleToolCallReject() {
 }
 
 .terminal-error {
+  color: #f56c6c;
+}
+
+.terminal-stderr {
   color: #f56c6c;
 }
 

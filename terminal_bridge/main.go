@@ -39,7 +39,7 @@ type InMessage struct {
 	Passphrase string `json:"passphrase"`
 	Data       string `json:"data"`
 	Command    string `json:"command"`
-	ExecID     string `json:"exec_id"` // 用于 ssh_exec_command
+	ExecID     string `json:"exec_id"` // 用于 ssh_exec_command 和 ssh_exec_process
 }
 
 type OutMessage struct {
@@ -50,6 +50,8 @@ type OutMessage struct {
 	Detail   string `json:"detail,omitempty"`
 	ExecID   string `json:"exec_id,omitempty"`   // 用于 exec_result
 	ExitCode int    `json:"exit_code,omitempty"` // 用于 exec_result
+	Stdout   string `json:"stdout,omitempty"`    // 双通道物理隔离输出 (Scheme B)
+	Stderr   string `json:"stderr,omitempty"`    // 双通道物理隔离输出 (Scheme B)
 }
 
 // ── Exec Marker 监听器 ─────────────────────────────────────────────────────────
@@ -342,6 +344,141 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 	s.send(command)
 
 	return resultChan
+}
+
+// execCommandIsolated 独立建立 SSH Session 执行命令 (双通道 - 事务执行设计)
+func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID string) {
+	log.Printf("[Bridge] [ExecChannel] 开始隔离执行命令: case=%s exec_id=%s command=%q", s.caseID, execID, command)
+
+	// 1. 建立全新独立 SSH Session (不绑定 PTY)
+	session, err := s.client.NewSession()
+	if err != nil {
+		log.Printf("[Bridge] [ExecChannel] 创建隔离 Session 失败: case=%s exec_id=%s err=%v", s.caseID, execID, err)
+		sendMsg(ws, OutMessage{
+			Type:     "exec_result",
+			CaseID:   s.caseID,
+			ExecID:   execID,
+			Stderr:   fmt.Sprintf("创建隔离 SSH 会话失败: %v", err),
+			ExitCode: -1,
+		})
+		return
+	}
+	defer session.Close()
+
+	// 2. 获取独立的 Stdout 和 Stderr 物理管道
+	stdoutPipe, err := session.StdoutPipe()
+	if err != nil {
+		log.Printf("[Bridge] [ExecChannel] 获取 StdoutPipe 失败: case=%s exec_id=%s err=%v", s.caseID, execID, err)
+		sendMsg(ws, OutMessage{
+			Type:     "exec_result",
+			CaseID:   s.caseID,
+			ExecID:   execID,
+			Stderr:   fmt.Sprintf("获取 StdoutPipe 失败: %v", err),
+			ExitCode: -1,
+		})
+		return
+	}
+	stderrPipe, err := session.StderrPipe()
+	if err != nil {
+		log.Printf("[Bridge] [ExecChannel] 获取 StderrPipe 失败: case=%s exec_id=%s err=%v", s.caseID, execID, err)
+		sendMsg(ws, OutMessage{
+			Type:     "exec_result",
+			CaseID:   s.caseID,
+			ExecID:   execID,
+			Stderr:   fmt.Sprintf("获取 StderrPipe 失败: %v", err),
+			ExitCode: -1,
+		})
+		return
+	}
+
+	// 3. 异步启动命令 (Start 是非阻塞的，底层协议开始交互)
+	if err := session.Start(command); err != nil {
+		log.Printf("[Bridge] [ExecChannel] 启动隔离命令失败: case=%s exec_id=%s err=%v", s.caseID, execID, err)
+		sendMsg(ws, OutMessage{
+			Type:     "exec_result",
+			CaseID:   s.caseID,
+			ExecID:   execID,
+			Stderr:   fmt.Sprintf("启动命令失败: %v", err),
+			ExitCode: -1,
+		})
+		return
+	}
+
+	// 4. 双通道缓冲推送
+	var stdoutBuf strings.Builder
+	var stderrBuf strings.Builder
+	var wg sync.WaitGroup
+
+	wg.Add(2)
+	// 读取 stdout
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, rerr := stdoutPipe.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				stdoutBuf.WriteString(chunk)
+				sendMsg(ws, OutMessage{
+					Type:   "exec_stdout",
+					CaseID: s.caseID,
+					ExecID: execID,
+					Stdout: chunk,
+				})
+			}
+			if rerr != nil {
+				break
+			}
+		}
+	}()
+
+	// 读取 stderr
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, rerr := stderrPipe.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				stderrBuf.WriteString(chunk)
+				sendMsg(ws, OutMessage{
+					Type:   "exec_stderr",
+					CaseID: s.caseID,
+					ExecID: execID,
+					Stderr: chunk,
+				})
+			}
+			if rerr != nil {
+				break
+			}
+		}
+	}()
+
+	// 5. 等待双物理流数据读取完成
+	wg.Wait()
+
+	// 6. 获取带外退出状态并回收
+	exitCode := 0
+	if werr := session.Wait(); werr != nil {
+		if exitErr, ok := werr.(*ssh.ExitError); ok {
+			exitCode = exitErr.ExitStatus()
+			log.Printf("[Bridge] [ExecChannel] 命令退出, exit_code=%d, case=%s", exitCode, s.caseID)
+		} else {
+			exitCode = -1
+			log.Printf("[Bridge] [ExecChannel] 等待命令退出失败: case=%s err=%v", s.caseID, werr)
+		}
+	}
+
+	// 7. 发送最终完整结果包
+	sendMsg(ws, OutMessage{
+		Type:     "exec_result",
+		CaseID:   s.caseID,
+		ExecID:   execID,
+		Stdout:   stdoutBuf.String(),
+		Stderr:   stderrBuf.String(),
+		ExitCode: exitCode,
+	})
+	log.Printf("[Bridge] [ExecChannel] 命令隔离执行结束: case=%s exec_id=%s exit_code=%d", s.caseID, execID, exitCode)
 }
 
 func summarizeSSHDetail(output string) string {
@@ -743,6 +880,48 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 					ExitCode: result.ExitCode,
 				})
 			}()
+
+		case "ssh_exec_process":
+			// 双通道设计：隔离的 SSH Session 执行 (Scheme B)
+			s := b.get(msg.CaseID)
+			if s == nil {
+				sendMsg(ws, OutMessage{
+					Type:     "exec_result",
+					CaseID:   msg.CaseID,
+					ExecID:   msg.ExecID,
+					Stderr:   "SSH 会话不存在",
+					ExitCode: -1,
+				})
+				log.Printf("[Bridge] ssh_exec_process 失败: 会话不存在 case=%s exec_id=%s", msg.CaseID, msg.ExecID)
+				continue
+			}
+
+			if msg.ExecID == "" {
+				sendMsg(ws, OutMessage{
+					Type:     "exec_result",
+					CaseID:   msg.CaseID,
+					ExecID:   msg.ExecID,
+					Stderr:   "缺少 exec_id 参数",
+					ExitCode: -1,
+				})
+				log.Printf("[Bridge] ssh_exec_process 失败: 缺少 exec_id case=%s", msg.CaseID)
+				continue
+			}
+
+			if msg.Command == "" {
+				sendMsg(ws, OutMessage{
+					Type:     "exec_result",
+					CaseID:   msg.CaseID,
+					ExecID:   msg.ExecID,
+					Stderr:   "缺少 command 参数",
+					ExitCode: -1,
+				})
+				log.Printf("[Bridge] ssh_exec_process 失败: 缺少 command case=%s exec_id=%s", msg.CaseID, msg.ExecID)
+				continue
+			}
+
+			// 异步执行隔离的进程
+			go s.execCommandIsolated(ws, msg.Command, msg.ExecID)
 		}
 	}
 }

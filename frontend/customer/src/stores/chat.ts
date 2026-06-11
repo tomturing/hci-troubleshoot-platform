@@ -8,7 +8,7 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
-import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
+import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
 
 // 开发环境专用日志（生产环境自动禁用）
 const isDev = import.meta.env.DEV
@@ -141,10 +141,13 @@ export const useChatStore = defineStore('chat', () => {
   // === Agent 命令执行结果等待队列 ===
   // 用于 waitForExecResult 函数，存储 execId → resolve 回调
   const pendingExecCallbacks = new Map<string, {
-    resolve: (result: { output: string; exitCode: number }) => void
+    resolve: (result: { output: string; exitCode: number; stdout?: string; stderr?: string }) => void
     reject: (error: Error) => void
     timeoutId: number
   }>()
+
+  // 双通道流式缓冲 (Scheme B)
+  const execBuffers = new Map<string, { stdout: string; stderr: string }>()
 
   // Agent 模式：待确认的高风险操作（confirm_request SSE 事件）
   // T1-2：必须包含 exec_id 与 input_hash，提交确认时回传给后端进行幂等与防篡改校验
@@ -794,15 +797,15 @@ export const useChatStore = defineStore('chat', () => {
                     })
                     continue
                   }
-                  // 通过 terminal_bridge WebSocket 发送命令
-                  const wsMsg = buildAgentExecMessage(caseId, execId, command)
+                  // 通过 terminal_bridge WebSocket 发送命令 (双通道：隔离执行)
+                  const wsMsg = buildAgentExecProcessMessage(caseId, execId, command)
                   sshWebSocket.value.send(wsMsg)
                   devLog('agent_exec_command', '命令已发送到 Bridge', { execId })
                   // 监听 exec_result（带超时 30s）
                   waitForExecResult(execId, 30_000)
                     .then((result) => {
                       devLog('agent_exec_command', '执行完成', { execId, exitCode: result.exitCode })
-                      return postExecResult(convId, execId, result.output, result.exitCode)
+                      return postExecResult(convId, execId, result.output, result.exitCode, undefined, result.stdout, result.stderr)
                     })
                     .catch(() => {
                       devLog('agent_exec_command', '执行超时', { execId })
@@ -1648,10 +1651,24 @@ export const useChatStore = defineStore('chat', () => {
             sshConnectionState.value = 'disconnected'
             cleanupSshWebSocket()
           }
+        } else if (msg.type === 'exec_stdout' && msg.exec_id && msg.stdout) {
+          const buf = execBuffers.get(msg.exec_id) || { stdout: '', stderr: '' }
+          buf.stdout += msg.stdout
+          execBuffers.set(msg.exec_id, buf)
+        } else if (msg.type === 'exec_stderr' && msg.exec_id && msg.stderr) {
+          const buf = execBuffers.get(msg.exec_id) || { stdout: '', stderr: '' }
+          buf.stderr += msg.stderr
+          execBuffers.set(msg.exec_id, buf)
         } else if (msg.type === 'exec_result') {
           // Agent 命令执行结果回调
           const parsed = parseAgentExecResult(msg)
           if (parsed) {
+            const accumulated = execBuffers.get(parsed.execId)
+            if (accumulated) {
+              if (parsed.stdout === undefined) parsed.stdout = accumulated.stdout
+              if (parsed.stderr === undefined) parsed.stderr = accumulated.stderr
+              execBuffers.delete(parsed.execId)
+            }
             devLog('SSH', '收到 exec_result', { execId: parsed.execId, exitCode: parsed.exitCode })
             const callback = pendingExecCallbacks.get(parsed.execId)
             if (callback) {
@@ -1714,7 +1731,7 @@ export const useChatStore = defineStore('chat', () => {
   function waitForExecResult(
     execId: string,
     timeoutMs: number,
-  ): Promise<{ output: string; exitCode: number }> {
+  ): Promise<{ output: string; exitCode: number; stdout?: string; stderr?: string }> {
     return new Promise((resolve, reject) => {
       // 检查 SSH 连接状态
       if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
@@ -1751,6 +1768,8 @@ export const useChatStore = defineStore('chat', () => {
     output: string,
     exitCode: number,
     status?: string,
+    stdout?: string,
+    stderr?: string,
   ): Promise<void> {
     try {
       const response = await fetch(`/api/conversations/${convId}/exec-result`, {
@@ -1763,6 +1782,8 @@ export const useChatStore = defineStore('chat', () => {
           exec_id: execId,
           output: status ? `${status}: ${output}` : output,
           exit_code: exitCode,
+          stdout: stdout || undefined,
+          stderr: stderr || undefined,
         }),
       })
 
