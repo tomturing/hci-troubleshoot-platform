@@ -516,7 +516,7 @@ class BridgeRelayExecutor:
                 # 兼容原有单物理通道合并输出逻辑
                 output = result_data.get("output", "")
                 truncated = len(output) > self.STDOUT_MAX_CHARS
-                
+
                 # 当退出码不为0时，认为输出为错误内容，填充到 stderr；stdout 留空（或当 exit_code == 0 时反之）
                 if exit_code != 0:
                     stderr = smart_truncate(output, self.STDERR_MAX_CHARS)

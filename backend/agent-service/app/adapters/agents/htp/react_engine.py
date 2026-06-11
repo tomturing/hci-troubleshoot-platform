@@ -1507,9 +1507,8 @@ class ReactEngine:
             if exit_code != 0:
                 is_success = False
         else:
-            if isinstance(result, dict):
-                if result.get("exit_code", 0) != 0 or result.get("error"):
-                    is_success = False
+            if isinstance(result, dict) and (result.get("exit_code", 0) != 0 or result.get("error")):
+                is_success = False
             res_val = str(result) if result is not None else ""
 
         yield AgentStageUpdate(
