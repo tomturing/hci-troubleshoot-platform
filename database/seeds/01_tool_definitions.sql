@@ -7,22 +7,23 @@
 -- ============================================================
 
 -- ─── SCP 工具（4个，云端直接调用 SCP REST API）────────────────────────────
+-- ─── 前置信息查询工具（4个，通过 bridge relay 执行 acli 命令）─────────────
 
 INSERT INTO tool_definition (
     tool_name, display_name, category, description,
-    parameters_schema, risk_level, is_active
+    usage_template, parameters_schema, risk_level, is_active
 ) VALUES (
     'get_active_alerts',
     '查询活跃告警',
-    'scp',
-    '查询 HCI 平台当前活跃告警列表。用于了解平台当前是否有告警事件，是意图识别阶段（S0）的必要信息收集步骤。',
+    'acli',
+    '查询 HCI 平台当前活跃告警列表（通过 acli --formatter json alert list）。不需要任何参数。',
+    'acli --formatter json alert list',
     '{
         "type": "object",
         "properties": {
-            "limit": {
-                "type": "integer",
-                "description": "返回告警数量，默认 10，最大 50",
-                "default": 10
+            "node_ip": {
+                "type": "string",
+                "description": "目标节点 IP（可选）"
             }
         },
         "required": []
@@ -33,6 +34,7 @@ INSERT INTO tool_definition (
     display_name = EXCLUDED.display_name,
     category = EXCLUDED.category,
     description = EXCLUDED.description,
+    usage_template = EXCLUDED.usage_template,
     parameters_schema = EXCLUDED.parameters_schema,
     risk_level = EXCLUDED.risk_level,
     is_active = EXCLUDED.is_active,
@@ -40,26 +42,48 @@ INSERT INTO tool_definition (
 
 INSERT INTO tool_definition (
     tool_name, display_name, category, description,
-    parameters_schema, risk_level, is_active
+    usage_template, parameters_schema, risk_level, is_active
 ) VALUES (
     'get_failed_tasks',
     '查询失败任务',
-    'scp',
-    '查询 HCI 平台最近的失败操作任务。包含虚拟机开关机失败、存储操作失败等，是定位故障原因的关键信息来源。',
+    'acli',
+    '查询 HCI 平台操作任务。主要过滤获取失败任务，支持通过关键字、错误码、VM ID、时间、主机等过滤查询。必选状态参数已固定为 failed。',
+    'acli --formatter json task get -s failed',
     '{
         "type": "object",
         "properties": {
-            "task_type": {
+            "keyword": {
                 "type": "string",
-                "description": "任务类型关键词，如''启动虚拟机''、''关闭虚拟机''"
+                "description": "搜索行为、主机、对象和描述，例如：登录"
             },
-            "begin_time": {
+            "code": {
                 "type": "string",
-                "description": "开始时间，格式 YYYY-MM-DD HH:MM:SS，默认 24 小时内"
+                "description": "错误码，例如：0x01002BB5"
+            },
+            "vm_id": {
+                "type": "string",
+                "description": "虚拟机 ID，例如：123240430216"
+            },
+            "time": {
+                "type": "string",
+                "description": "指定时间，格式：''YYYY-MM-DD HH:MM:SS'' 或 ''YYYY-MM-DD HH''"
+            },
+            "host": {
+                "type": "string",
+                "description": "指定主机，例如：host-005056b234ca"
+            },
+            "upid": {
+                "type": "string",
+                "description": "异步任务 UPID"
             },
             "limit": {
                 "type": "integer",
-                "default": 10
+                "description": "指定展示记录的数目，默认值 50",
+                "default": 50
+            },
+            "node_ip": {
+                "type": "string",
+                "description": "目标节点 IP（可选）"
             }
         },
         "required": []
@@ -70,6 +94,7 @@ INSERT INTO tool_definition (
     display_name = EXCLUDED.display_name,
     category = EXCLUDED.category,
     description = EXCLUDED.description,
+    usage_template = EXCLUDED.usage_template,
     parameters_schema = EXCLUDED.parameters_schema,
     risk_level = EXCLUDED.risk_level,
     is_active = EXCLUDED.is_active,
@@ -77,22 +102,19 @@ INSERT INTO tool_definition (
 
 INSERT INTO tool_definition (
     tool_name, display_name, category, description,
-    parameters_schema, risk_level, is_active
+    usage_template, parameters_schema, risk_level, is_active
 ) VALUES (
     'get_vm_list',
     '查询虚拟机列表',
-    'scp',
-    '查询 HCI 平台上的虚拟机列表，可按名称过滤。用于确认虚拟机是否存在、当前状态和所在节点。',
+    'acli',
+    '查询 HCI 平台上的虚拟机列表。通过 acli --formatter json vm list 执行，不需要任何参数。',
+    'acli --formatter json vm list',
     '{
         "type": "object",
         "properties": {
-            "name_filter": {
+            "node_ip": {
                 "type": "string",
-                "description": "虚拟机名称关键词（支持模糊匹配）"
-            },
-            "limit": {
-                "type": "integer",
-                "default": 20
+                "description": "目标节点 IP（可选）"
             }
         },
         "required": []
@@ -103,6 +125,7 @@ INSERT INTO tool_definition (
     display_name = EXCLUDED.display_name,
     category = EXCLUDED.category,
     description = EXCLUDED.description,
+    usage_template = EXCLUDED.usage_template,
     parameters_schema = EXCLUDED.parameters_schema,
     risk_level = EXCLUDED.risk_level,
     is_active = EXCLUDED.is_active,
@@ -110,21 +133,22 @@ INSERT INTO tool_definition (
 
 INSERT INTO tool_definition (
     tool_name, display_name, category, description,
-    parameters_schema, risk_level, is_active
+    usage_template, parameters_schema, risk_level, is_active
 ) VALUES (
     'get_cluster_detail',
     '查询集群详情',
-    'scp',
-    '查询指定集群的详细信息，包括架构类型、许可模式、可用区等。',
+    'acli',
+    '查询集群的详细信息，包括系统版本、软硬件状态。通过 acli --formatter json platform info get 执行，不需要参数。',
+    'acli --formatter json platform info get',
     '{
         "type": "object",
         "properties": {
-            "cluster_id": {
+            "node_ip": {
                 "type": "string",
-                "description": "集群 ID"
+                "description": "目标节点 IP（可选）"
             }
         },
-        "required": ["cluster_id"]
+        "required": []
     }',
     1,
     true
@@ -132,6 +156,7 @@ INSERT INTO tool_definition (
     display_name = EXCLUDED.display_name,
     category = EXCLUDED.category,
     description = EXCLUDED.description,
+    usage_template = EXCLUDED.usage_template,
     parameters_schema = EXCLUDED.parameters_schema,
     risk_level = EXCLUDED.risk_level,
     is_active = EXCLUDED.is_active,

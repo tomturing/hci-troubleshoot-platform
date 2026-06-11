@@ -322,7 +322,24 @@ class BridgeRelayExecutor:
         exec_id = exec_id or str(uuid.uuid4())
 
         # 1. 提取命令和原因
-        if usage_template:
+        if tool_name == "get_failed_tasks":
+            cmd_parts = ["acli", "--formatter", "json", "task", "get", "-s", "failed"]
+            if args.get("keyword"):
+                cmd_parts.extend(["-k", shlex.quote(str(args["keyword"]))])
+            if args.get("code"):
+                cmd_parts.extend(["-c", shlex.quote(str(args["code"]))])
+            if args.get("vm_id"):
+                cmd_parts.extend(["-v", shlex.quote(str(args["vm_id"]))])
+            if args.get("time"):
+                cmd_parts.extend(["-t", shlex.quote(str(args["time"]))])
+            if args.get("host"):
+                cmd_parts.extend(["-H", shlex.quote(str(args["host"]))])
+            if args.get("upid"):
+                cmd_parts.extend(["-u", shlex.quote(str(args["upid"]))])
+            if args.get("limit"):
+                cmd_parts.extend(["-l", shlex.quote(str(args["limit"]))])
+            command = " ".join(cmd_parts)
+        elif usage_template:
             try:
                 command = TemplateInterpolator.interpolate(usage_template, args)
             except ValueError as e:
