@@ -35,6 +35,7 @@ owner: team
 | 2026-06-10 | v2.4 | **澄清请求交互事件空流误判修复**：① `agent.py` `_event_stream` 引入 `_has_interactive_request` 和 `_has_escalation` 状态位；② 存在合法交互/升级事件时跳过空流错误判断；③ 修复澄清请求（`AgentInteractiveRequest`）和升级事件（`AgentEscalation`）被误判为推理错误并输出 `[Agent Error: AI 推理未返回任何内容]` 的问题 |
 | 2026-06-10 | v2.3 | **终端 bridge 超时与诊断阶段显示修复**：① terminal_bridge execID 解析剔除连字符；② chat.ts 切换工单时还原诊断阶段；③ evidence_builder.py 信息质量检查 if 分支合并（SIM114） |
 | 2026-06-11 | v2.6 | **前置查询工具类别迁移**：① `get_active_alerts`、`get_failed_tasks`、`get_vm_list`、`get_cluster_detail` 从 `scp` 类别迁移至 `acli` 类别，移除对 SCP REST API 的直接依赖；② `database/seeds/01_tool_definitions.sql` 中新增 `usage_template` 绑定 acli 命令；③ `executor.py` 中实现 `get_failed_tasks` 动态参数拼装，支持 keyword/code/vm_id/time/host/upid/limit 等过滤参数 |
+| 2026-06-11 | v2.7 | **IP 参数校验放宽与工具结果截断修复（PR #442）**：① `react_engine.py` 参数前置校验放宽 `node_ip`/含 `ip` 参数，在未显式声明 `format: ipv4` 时同时兼容主机名/节点名（如 `SVR_aCloud_670`），消除主机名输入直接报错；② `react_engine.py` 在参数校验失败时补齐 `tool_result` failed 事件广播，终止前端控制台「正在等待输出...」悬挂；③ `terminal_bridge/main.go` 使用正则定位带 exitCode 的真实 Marker 并动态剥离命令回显，修复 `ssh.ECHO` 导致 `__EXEC_DONE_` 在 TTY 回显中被提前截断的 Bug，并注入完整的可观测调试日志；④ `executor.py` BLPOP_TIMEOUT 调整为 30s，对应 `frontend/customer/src/stores/chat.ts` `waitForExecResult` 超时同步为 30s |
 
 ---
 
