@@ -95,3 +95,45 @@ CI 流程自动执行：
 
 > **历史说明**：`schema_migrations` 表为旧 dbmate 工具表（已废弃）。Atlas 使用 `atlas_schema_revisions` 表跟踪版本。
 
+---
+
+## 业务种子数据说明（Seeds）
+
+业务种子数据存放在 `database/seeds/` 目录中，用于在 Admin UI 中初始化工具管理、Prompt管理和技能管理页面。通过 Helm 部署时，`db-seed-job` 会作为 PostSync Hook 在数据库迁移完成后自动加载这些 SQL 文件。
+
+### 1. 幂等性与覆盖策略
+
+为保护不同环境及用户在管理页面的自定义配置，种子文件遵循以下差异化幂等设计：
+
+| 种子数据文件 | 表名称 | 冲突处理策略 | 覆盖行为说明 |
+| :--- | :--- | :--- | :--- |
+| `01_tool_definitions.sql` | `tool_definition` | `ON CONFLICT (tool_name) DO UPDATE` | **会被强行覆盖**。工具定义参数与后端 Python 代码严格绑定，必须强制保持一致。 |
+| `02_system_prompts.sql` | `system_prompt` | `ON CONFLICT (name) DO NOTHING` | **不会覆盖已有修改**。保护用户在界面微调或自定义的 Prompt 不被冲掉。 |
+| `03_skill_definitions.sql` | `skill_definition` | `ON CONFLICT (name) DO NOTHING` | **不会覆盖已有修改**。保护用户自定义技能规则不被重置。 |
+
+### 2. 手动全量强制更新方法
+
+如果需要丢弃本地或 Staging 环境的已有自定义数据，强制将数据库中的工具、技能和 Prompt 刷新为与最新代码种子文件一致的版本，可使用以下步骤：
+
+1. **清空旧数据**（注意：这会删除所有自定义修改及审计日志）：
+   ```bash
+   # 在 Kubernetes 中执行
+   kubectl exec -i -n hci-dev postgres-0 -- psql -U hci_admin -d hci_troubleshoot -c "TRUNCATE TABLE tool_definition, skill_definition, system_prompt CASCADE;"
+   ```
+2. **重新导入种子数据**：
+   ```bash
+   kubectl exec -i -n hci-dev postgres-0 -- psql -U hci_admin -d hci_troubleshoot < database/seeds/01_tool_definitions.sql
+   kubectl exec -i -n hci-dev postgres-0 -- psql -U hci_admin -d hci_troubleshoot < database/seeds/02_system_prompts.sql
+   kubectl exec -i -n hci-dev postgres-0 -- psql -U hci_admin -d hci_troubleshoot < database/seeds/03_skill_definitions.sql
+   ```
+
+### 3. Prompt 模板演进历史（断代说明）
+
+*   **`base_core_v1` 被废弃/拆分的原因**：
+    在早期 MVP 阶段，`base_core_v1` 承载了过多的职责（定义 AI 角色、能力边界、行为准则，并静态注入 `{tool_list}`），导致模板臃肿且职责不单一。
+    在 PR #398（Prompt 数据库化收敛）重构中，`base_core_v1` 被物理删除，并解耦拆分为三个职责更为单一的 BASE 公共模板：
+    1. `base_identity_v1`：定义排障专家身份，新增“证据锚定”和“幻觉自查”等严格的行为边界约束。
+    2. `base_methodology_v1`：定义 S0-S6 的标准故障排障方法论。
+    3. `base_case_context_v1`：注入当前工单的上下文（`case_id`）。
+    此外，工具列表 `{tool_list}` 也不再通过全局 Prompt 静态拼接，而是改由 React 引擎运行时根据执行阶段动态生成与注入，从而提高了推理效率和安全性。
+

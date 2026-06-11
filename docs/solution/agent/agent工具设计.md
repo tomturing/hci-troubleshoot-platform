@@ -25,13 +25,19 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 工具分类（tool_definition.category）
 │
 ├── scp     SCP 平台 REST API（云端直接调用，不涉及 HCI SSH）
-│             get_active_alerts / get_failed_tasks / get_vm_list / get_cluster_detail
+│             （v2.1.4 已移除 4 个查询工具，迁移至 acli 类别）
 │
 ├── acli    HCI 节点执行（通过 bridge relay 中转，含 acli 和 bash 两种命令格式）
 │   │
 │   ├── 通用执行工具（主力）
 │   │     acli_exec   ─ HCI 专有 CLI，LLM 自行构造 acli 命令，RiskClassifier 动态拦截
 │   │     bash_exec   ─ 通用 Linux Bash，acli 不覆盖时使用，同一 BridgeRelayExecutor
+│   │
+│   ├── 前置查询工具（v2.1.4 从 scp 迁移，原 scp_client 直调改为 acli 命令）
+│   │     get_active_alerts   ─ acli --formatter json alert list
+│   │     get_failed_tasks    ─ acli --formatter json task get -s failed（含动态参数拼装）
+│   │     get_vm_list         ─ acli --formatter json vm list
+│   │     get_cluster_detail  ─ acli --formatter json platform info get
 │   │
 │   └── 插件诊断工具（保留独立封装，原因：有专属参数 + 一键复杂诊断）
 │         acli_plugin_vm_start    ─ acli plugins vm_start vm_start
@@ -47,6 +53,11 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 > - `bash` 不再是独立 category，`bash_exec` 归入 `acli` category（执行后端相同，均走 `BridgeRelayExecutor`）
 > - 原有 11 个独立 acli 结构化工具（`acli_vm_list`、`acli_system_top` 等）**全部移除**，由 `acli_exec` 通用工具替代
 > - 新增 4 个 acli 插件诊断工具（独立封装，原因见 §三.3）
+>
+> **v2.1.4 变更说明**：
+> - `get_active_alerts`、`get_failed_tasks`、`get_vm_list`、`get_cluster_detail` 从 `scp` 类别迁移至 `acli` 类别
+> - 移除 SCP REST API 直接调用，改为通过 bridge relay 执行 `acli --formatter json` 命令获取数据
+> - `get_failed_tasks` 实现动态参数拼装，支持 keyword/code/vm_id/time/host/upid/limit 等过滤参数
 
 ---
 
@@ -285,9 +296,9 @@ acli_plugin_asys           主机系统全面健康检查                       
 
 ---
 
-### 4.4 SCP 工具（不变）
+### 4.4 SCP 工具（v2.1.4 已变更）
 
-4 个 SCP API 工具（`get_active_alerts`、`get_failed_tasks`、`get_vm_list`、`get_cluster_detail`）保持不变，通过 `scp_client` 直接调用 SCP REST API。
+> ⚠️ **v2.1.4 迁移说明**：原 4 个 SCP API 工具（`get_active_alerts`、`get_failed_tasks`、`get_vm_list`、`get_cluster_detail`）已从 `scp` 类别迁移至 `acli` 类别，不再通过 `scp_client` 调用 SCP REST API，改为通过 bridge relay 执行 `acli --formatter json` 命令。详见 §1.2 分类体系中的"前置查询工具"小节。
 
 ---
 
