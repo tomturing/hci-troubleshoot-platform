@@ -508,8 +508,14 @@ class BridgeRelayExecutor:
 
             # 7. 智能截断输出
             truncated = len(output) > self.STDOUT_MAX_CHARS
-            stdout = smart_truncate(output, self.STDOUT_MAX_CHARS) if truncated else output
-            stderr = ""
+            
+            # 当退出码不为0时，认为输出为错误内容，填充到 stderr；stdout 留空（或当 exit_code == 0 时反之）
+            if exit_code != 0:
+                stderr = smart_truncate(output, self.STDERR_MAX_CHARS)
+                stdout = ""
+            else:
+                stderr = ""
+                stdout = smart_truncate(output, self.STDOUT_MAX_CHARS) if truncated else output
 
             # 退出码语义判定
             meaning = ExitCodeMeaning.SUCCESS

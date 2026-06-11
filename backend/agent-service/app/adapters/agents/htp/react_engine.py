@@ -1495,15 +1495,31 @@ class ReactEngine:
             )
             return
 
-        # 广播 tool_result 结果事件
+        res_val = result
+        is_success = error is None
+        if hasattr(result, "stdout") and hasattr(result, "stderr"):
+            exit_code = getattr(result, "exit_code", 0)
+            res_val = {
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": exit_code,
+            }
+            if exit_code != 0:
+                is_success = False
+        else:
+            if isinstance(result, dict):
+                if result.get("exit_code", 0) != 0 or result.get("error"):
+                    is_success = False
+            res_val = str(result) if result is not None else ""
+
         yield AgentStageUpdate(
             stage="tool_result",
             metadata={
                 "exec_id": exec_id,
                 "tool_name": tool_name,
-                "status": "success" if error is None else "failed",
-                "result": str(result),
-                "error": error,
+                "status": "success" if is_success else "failed",
+                "result": res_val,
+                "error": error or (res_val.get("stderr") if isinstance(res_val, dict) else None),
                 "duration_ms": duration_ms,
             },
         )
