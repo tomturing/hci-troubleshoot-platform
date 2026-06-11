@@ -255,7 +255,7 @@ class BridgeRelayExecutor:
     STDERR_MAX_CHARS = 1000
 
     # Redis blpop 超时（秒）
-    BLPOP_TIMEOUT = 10
+    BLPOP_TIMEOUT = 30
 
     def __init__(
         self,
@@ -267,7 +267,7 @@ class BridgeRelayExecutor:
         初始化 Bridge Relay 执行器。
 
         Args:
-            redis: Redis 管理器（用于 pending 状态和结果等待）
+            redis: Redis 管理器（用于 pending 状态 and 结果等待）
             conversation_service_url: conversation-service 内部 API 地址
             internal_token: 内部服务认证 Token
         """
@@ -276,8 +276,9 @@ class BridgeRelayExecutor:
         self._internal_token = internal_token
         self._http_client = InternalHTTPClient(
             base_url=self._conversation_service_url,
-            timeout=12.0,  # 略大于 BLPOP_TIMEOUT，确保 HTTP 不先超时
+            timeout=32.0,  # 略大于 BLPOP_TIMEOUT，确保 HTTP 不先超时
         )
+
 
     async def aclose(self) -> None:
         """关闭 HTTP 客户端连接池"""

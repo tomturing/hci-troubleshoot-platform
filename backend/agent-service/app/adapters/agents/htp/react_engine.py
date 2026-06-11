@@ -93,11 +93,16 @@ class ToolCallValidator:
                     except Exception:
                         pass
 
-                # IP 字段/格式的强制 IPv4 校验
-                if "ip" in name.lower() or prop_def.get("format") == "ipv4":
+                # IP 字段/格式的强制 IPv4/主机名校验
+                if prop_def.get("format") == "ipv4":
                     ip_regex = r"^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
                     if not re.match(ip_regex, value):
                         return False, f"参数 '{name}' 格式错误: '{value}' 不是有效的 IPv4 地址"
+                elif "ip" in name.lower():
+                    ip_regex = r"^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
+                    hostname_regex = r"^[a-zA-Z0-9_.-]+$"
+                    if not (re.match(ip_regex, value) or re.match(hostname_regex, value)):
+                        return False, f"参数 '{name}' 格式错误: '{value}' 不是有效的 IPv4 地址或主机名"
 
             elif expected_type == "integer":
                 if not isinstance(value, int) or isinstance(value, bool):
@@ -900,6 +905,18 @@ class ReactEngine:
                     "args": tool_args,
                     "risk_level": tool_def.risk_level,
                     "status": "failed",
+                },
+            )
+            # 广播 tool_result 结果事件，防止前端卡在"正在等待输出..."
+            yield AgentStageUpdate(
+                stage="tool_result",
+                metadata={
+                    "exec_id": exec_id,
+                    "tool_name": tool_name,
+                    "status": "failed",
+                    "result": None,
+                    "error": err_msg,
+                    "duration_ms": 0,
                 },
             )
             # 返回校验失败的错误结果给 LLM

@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -273,6 +274,7 @@ func (s *SSHSession) checkMarkers(output string) (*ExecListener, int, bool) {
 		}
 		markerPrefix := "__EXEC_DONE_" + normalizedExecID[:16] + ":"
 		if idx := strings.Index(output, markerPrefix); idx != -1 {
+			log.Printf("[Bridge] checkMarkers: 匹配到前缀 %q, 位置: %d", markerPrefix, idx)
 			// 找到 marker，解析 exit_code
 			markerStart := idx
 			markerEnd := strings.IndexByte(output[markerStart:], '\n')
@@ -280,17 +282,21 @@ func (s *SSHSession) checkMarkers(output string) (*ExecListener, int, bool) {
 				markerEnd = len(output) - markerStart
 			}
 			markerLine := output[markerStart : markerStart+markerEnd]
+			log.Printf("[Bridge] checkMarkers: 待解析行: %q", markerLine)
 
 			// 解析 exit_code
 			var exitCode int
 			if _, err := fmt.Sscanf(markerLine, markerPrefix+"%d", &exitCode); err != nil {
 				// 如果解析失败，判断是否为命令行回显（Echo）。回显行包含 "%s" 或 "$status" 特征，应忽略并继续等待真实输出
 				if strings.Contains(markerLine, "%s") || strings.Contains(markerLine, "$status") {
+					log.Printf("[Bridge] checkMarkers: 忽略回显行 %q", markerLine)
 					continue
 				}
+				log.Printf("[Bridge] checkMarkers: 解析失败 (%v), 默认设退出码为 -1", err)
 				exitCode = -1
 			}
 
+			log.Printf("[Bridge] checkMarkers: 成功匹配并解析退出码: %d", exitCode)
 			return listener, exitCode, true
 		}
 	}
@@ -417,15 +423,51 @@ func (s *SSHSession) on_output_start(
 				if listener, exitCode, matched := s.checkMarkers(chunk); matched {
 					// 找到 marker，提取输出（不含 marker 行）
 					output := listener.OutputBuf.String()
-					// 移除 marker 行
+					log.Printf("[Bridge] on_output_start: 检测到 Marker 匹配成功! 原始累积输出长度: %d", len(output))
 					normalizedExecID := strings.ReplaceAll(listener.ExecID, "-", "")
 					if len(normalizedExecID) >= 16 {
 						markerPrefix := "__EXEC_DONE_" + normalizedExecID[:16] + ":"
-						if idx := strings.Index(output, markerPrefix); idx != -1 {
-							output = output[:idx]
-							// 移除末尾可能的空行
-							output = strings.TrimRight(output, "\r\n")
+						
+						// 使用正则定位真正的 marker 结束标记（必须是数字，避免匹配到含有 %s 的 Echo 命令行）
+						re := regexp.MustCompile(regexp.QuoteMeta(markerPrefix) + `(-?\d+)`)
+						loc := re.FindStringIndex(output)
+						if loc != nil {
+							log.Printf("[Bridge] on_output_start: 正则成功匹配到真实退出码 Marker, 位置 [%d:%d], 匹配文本: %q", loc[0], loc[1], output[loc[0]:loc[1]])
+							output = output[:loc[0]]
+						} else {
+							log.Printf("[Bridge] on_output_start: 正则未能匹配到真实退出码 Marker，尝试 strings.Index 兜底")
+							if idx := strings.Index(output, markerPrefix); idx != -1 {
+								log.Printf("[Bridge] on_output_start: 兜底匹配成功, 定位到前缀位置: %d", idx)
+								output = output[:idx]
+							}
 						}
+						
+						// 过滤掉命令回显本身，防止 Echo 的命令前缀污染真实输出
+						echoPlaceholder := markerPrefix + "%s"
+						log.Printf("[Bridge] on_output_start: 检查回显占位符: %q", echoPlaceholder)
+						if echoIdx := strings.Index(output, echoPlaceholder); echoIdx != -1 {
+							log.Printf("[Bridge] on_output_start: 检测到命令回显占位符, 位置: %d. 开始剥离...", echoIdx)
+							remaining := output[echoIdx:]
+							if nl1 := strings.Index(remaining, "\n"); nl1 != -1 {
+								remaining2 := remaining[nl1+1:]
+								if nl2 := strings.Index(remaining2, "\n"); nl2 != -1 {
+									output = remaining2[nl2+1:]
+									log.Printf("[Bridge] on_output_start: 成功剥离回显 (跳过2行回显). 剩余长度: %d", len(output))
+								} else {
+									output = remaining2
+									log.Printf("[Bridge] on_output_start: 成功剥离回显 (仅有1行回显). 剩余长度: %d", len(output))
+								}
+							}
+						} else {
+							log.Printf("[Bridge] on_output_start: 未检测到回显占位符")
+						}
+						
+						output = strings.TrimSpace(output)
+						previewLen := len(output)
+						if previewLen > 200 {
+							previewLen = 200
+						}
+						log.Printf("[Bridge] on_output_start: 最终裁剪结果 (前200字符): %q", output[:previewLen])
 					}
 
 					// 发送 exec_result 消息

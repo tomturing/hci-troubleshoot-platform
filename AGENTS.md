@@ -125,6 +125,10 @@
 - **API 网关命令反馈 `exec-result` 路由与鉴权修复**：
   - 修复 API 网关 (`api-gateway`) 缺少 `/api/conversations/{conversation_id}/exec-result` 代理路由，导致前端命令执行结果无法回传的问题。
   - 支持对不携带 Bearer 鉴权头的客户侧匿名请求，在网关层自动填充 `Bearer client-session-placeholder-token` 进行安全绕过，契合 `conversation-service` 端 MVP 阶段的临时鉴权需求。
+- **IP 格式校验放宽与工具执行结果截断修复**：
+  - 修复 `react_engine.py` 参数前置校验，对包含 `ip` 的参数（如 `node_ip`）在没有显式声明 `format: ipv4` 时同时兼容主机名/节点名（如 `SVR_aCloud_670`），解决部分命令因主机名校验失败而报错的问题。
+  - 修复 `react_engine.py` 在参数校验失败时未向前端发送 `tool_result` 事件导致控制台悬挂卡在“正在等待输出...”的 Bug。
+  - 修复 `terminal_bridge` 命令行输出裁剪逻辑，使用正则 `(-?\d+)` 精确匹配最终数字退出码标记，并剥离 SSH PTY 命令行回显前缀，彻底解决命令结果被提前截断的缺陷；同时新增了完整的可观测性调试日志系统，极大方便后续的问题排查。
 
 ---
 

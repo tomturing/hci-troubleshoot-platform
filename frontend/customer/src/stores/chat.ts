@@ -798,8 +798,8 @@ export const useChatStore = defineStore('chat', () => {
                   const wsMsg = buildAgentExecMessage(caseId, execId, command)
                   sshWebSocket.value.send(wsMsg)
                   devLog('agent_exec_command', '命令已发送到 Bridge', { execId })
-                  // 监听 exec_result（带超时 10s）
-                  waitForExecResult(execId, 10_000)
+                  // 监听 exec_result（带超时 30s）
+                  waitForExecResult(execId, 30_000)
                     .then((result) => {
                       devLog('agent_exec_command', '执行完成', { execId, exitCode: result.exitCode })
                       return postExecResult(convId, execId, result.output, result.exitCode)
