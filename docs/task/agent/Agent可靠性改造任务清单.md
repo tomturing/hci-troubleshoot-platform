@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-06-09
+last_updated: 2026-06-11
 owner: team
 ---
 
@@ -34,6 +34,7 @@ owner: team
 | 2026-06-10 | v2.5 | **命令执行 case_id 传递与超时优化**：① `BridgeRelayExecutor.execute` 和 `ReactEngine._execute_tool_call` 扩展方法签名，显式从上下文传递真正的 `case_id`，解决 terminal_bridge 会话池找不到会话的问题；② 后端 blpop 等待超时从 32s 缩短为 10s（HTTP client 12.0s）；③ 前端 `chat.ts waitForExecResult` 超时从 35s 缩短为 10s |
 | 2026-06-10 | v2.4 | **澄清请求交互事件空流误判修复**：① `agent.py` `_event_stream` 引入 `_has_interactive_request` 和 `_has_escalation` 状态位；② 存在合法交互/升级事件时跳过空流错误判断；③ 修复澄清请求（`AgentInteractiveRequest`）和升级事件（`AgentEscalation`）被误判为推理错误并输出 `[Agent Error: AI 推理未返回任何内容]` 的问题 |
 | 2026-06-10 | v2.3 | **终端 bridge 超时与诊断阶段显示修复**：① terminal_bridge execID 解析剔除连字符；② chat.ts 切换工单时还原诊断阶段；③ evidence_builder.py 信息质量检查 if 分支合并（SIM114） |
+| 2026-06-11 | v2.6 | **前置查询工具类别迁移**：① `get_active_alerts`、`get_failed_tasks`、`get_vm_list`、`get_cluster_detail` 从 `scp` 类别迁移至 `acli` 类别，移除对 SCP REST API 的直接依赖；② `database/seeds/01_tool_definitions.sql` 中新增 `usage_template` 绑定 acli 命令；③ `executor.py` 中实现 `get_failed_tasks` 动态参数拼装，支持 keyword/code/vm_id/time/host/upid/limit 等过滤参数 |
 
 ---
 
