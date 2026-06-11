@@ -967,7 +967,7 @@ func corsWebSocketHandler(wsHandler websocket.Handler) http.Handler {
 }
 
 const (
-	Version = "v2.2.0-PR442-hotfix"
+	Version = "v2.3.0-PR443-dual-channel"
 )
 
 func main() {
