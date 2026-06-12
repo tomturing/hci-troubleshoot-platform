@@ -81,6 +81,13 @@ spec:
                 name: langfuse-server
                 port:
                   number: 3000
+          - path: /api/trpc
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
     {{- end }}
   {{- if and .Values.ingress.tls (eq .Values.global.routingMode "subdomain") }}
   tls:
