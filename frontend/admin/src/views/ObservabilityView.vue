@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, watch } from 'vue'
-import { Monitor, Document, Search, Refresh, CopyDocument, CircleCheck, Warning } from '@element-plus/icons-vue'
+import { Monitor, Document, Search, Refresh, CopyDocument, CircleCheck, Warning, Cpu } from '@element-plus/icons-vue'
 import { createApiClient } from '@hci/shared'
 import { ElMessage } from 'element-plus'
 
 const apiClient = createApiClient('/api')
 
 // ===== 视图选项卡 =====
-const activeTab = ref('monitor')
+const activeTab = ref('grafana')
 
 // ==========================================
-// 1. 监控面板 (Grafana iframe)
+// 1. Grafana 监控面板 (Grafana iframe)
 // ==========================================
 const grafanaUrl = ref('')
 const grafanaReady = ref(false)
@@ -41,6 +41,37 @@ function openGrafana() {
   // 新窗口打开时去掉 kiosk 模式，方便用户正常交互
   const fullUrl = grafanaUrl.value.replace('&kiosk', '')
   window.open(fullUrl, '_blank')
+}
+
+// ==========================================
+// 1.5. Langfuse 控制台 (Langfuse iframe)
+// ==========================================
+const langfuseUrl = ref('')
+const langfuseReady = ref(false)
+const langfuseLoading = ref(true)
+
+async function detectLangfuse() {
+  const hostname = window.location.hostname
+  const protocol = window.location.protocol
+  const port = window.location.port ? `:${window.location.port}` : ''
+
+  let baseUrl = ''
+  if (hostname.startsWith('admin.')) {
+    const langfuseHost = hostname.replace('admin.', 'langfuse.')
+    baseUrl = `${protocol}//${langfuseHost}`
+  } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    baseUrl = 'http://localhost:13000'
+  } else {
+    baseUrl = `${protocol}//${hostname}${port}/langfuse`
+  }
+
+  langfuseUrl.value = baseUrl
+  langfuseReady.value = true
+  langfuseLoading.value = false
+}
+
+function openLangfuse() {
+  window.open(langfuseUrl.value, '_blank')
 }
 
 // ==========================================
@@ -161,6 +192,7 @@ function formatDate(dateStr: string) {
 
 onMounted(() => {
   detectGrafana()
+  detectLangfuse()
   fetchAuditLogs()
 })
 
@@ -175,12 +207,12 @@ watch(activeTab, (tab) => {
   <div class="observability-container">
     <el-card class="observability-card">
       <el-tabs v-model="activeTab" class="observability-tabs">
-      <!-- ===== Tab 1: 监控面板 ===== -->
-      <el-tab-pane name="monitor">
+      <!-- ===== Tab 1: Grafana ===== -->
+      <el-tab-pane name="grafana">
         <template #label>
           <span class="tab-label">
             <el-icon><Monitor /></el-icon>
-            监控面板
+            Grafana
           </span>
         </template>
         <div v-loading="monitorLoading" class="monitor-tab-content">
@@ -205,7 +237,42 @@ watch(activeTab, (tab) => {
             type="info"
             :closable="false"
             class="monitor-alert"
-            description="如果监控面板加载失败，请确保本地 observability 容器组已启动，且已开启匿名访问支持。"
+            description="如果 Grafana 监控面板加载失败，请确保本地 observability 容器组已启动，且已开启匿名访问支持。"
+          />
+        </div>
+      </el-tab-pane>
+
+      <!-- ===== Tab 1.5: Langfuse ===== -->
+      <el-tab-pane name="langfuse">
+        <template #label>
+          <span class="tab-label">
+            <el-icon><Cpu /></el-icon>
+            Langfuse
+          </span>
+        </template>
+        <div v-loading="langfuseLoading" class="monitor-tab-content">
+          <div class="monitor-actions-bar" style="border-left-color: #67c23a;">
+            <span class="monitor-info-text">嵌入式 Langfuse LLM 可观测性控制台</span>
+            <el-button type="success" size="small" @click="openLangfuse">
+              <el-icon style="margin-right: 4px"><Cpu /></el-icon>
+              在新窗口打开 Langfuse
+            </el-button>
+          </div>
+          <div class="iframe-wrapper">
+            <iframe
+              v-if="langfuseReady"
+              :src="langfuseUrl"
+              width="100%"
+              height="100%"
+              frameborder="0"
+              allowfullscreen
+            />
+          </div>
+          <el-alert
+            type="info"
+            :closable="false"
+            class="monitor-alert"
+            description="如果 Langfuse 控制台加载失败，请确保本地 observability 容器组已启动并正常运行。"
           />
         </div>
       </el-tab-pane>

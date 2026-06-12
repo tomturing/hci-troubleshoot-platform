@@ -58,6 +58,7 @@ AI 层（Pod Pool）：
   Tempo ← OTLP ← 各服务 OTel SDK
   Loki  ← Promtail ← Container stdout（含 TTFT 首 Token 延迟）
   Grafana → Trace↔Log 双向钻取 · AlertManager 告警（4 组 10 条）
+  Langfuse → LLM 运行指标监测与 Prompt 执行追踪
 ```
 
 ### 诊断状态机（v6.3）
@@ -122,7 +123,7 @@ Helm Chart 分四层，**按顺序部署**：
 |-------|------|------------|
 | `hci-platform-infra` | StorageClass · ClusterRole（集群级，仅首次）| `local/hci-platform-infra-dev.yaml` |
 | `hci-platform-data` | PostgreSQL · Redis（prune:false 保护 PVC）| `local/hci-platform-data-{dev,staging,prod}.yaml` |
-| `hci-platform-obs` | Loki · Tempo · Grafana · Prometheus | `local/hci-platform-obs-{dev,staging,prod}.yaml` |
+| `hci-platform-obs` | Loki · Tempo · Grafana · Prometheus · Langfuse | `local/hci-platform-obs-{dev,staging,prod}.yaml` |
 | `hci-platform` | 业务微服务 + 前端 | `local/hci-platform-{dev,staging,prod}.yaml` |
 
 ```bash

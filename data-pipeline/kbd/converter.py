@@ -346,7 +346,7 @@ def _parse_sections(content_html: str) -> dict[str, str]:
                         else:
                             result[current_section] = ""
                         continue
-            
+
             # 如果是其他顶层游离节点，且当前已有活跃的板块，则将该节点追加到该板块中
             if current_section is not None:
                 result[current_section] += str(node)

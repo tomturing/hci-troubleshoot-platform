@@ -120,3 +120,48 @@ limitRange:
     cpu: "4"
     memory: "4Gi"
 
+# ======================== Langfuse v3 ========================================
+langfuse:
+  enabled: true
+  server:
+    image: langfuse/langfuse:3
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+  worker:
+    image: langfuse/langfuse-worker:3
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+  clickhouse:
+    image: clickhouse/clickhouse-server:24
+    storage: 2Gi
+    storageClass: local-path
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+  minio:
+    image: minio/minio:latest
+    storage: 2Gi
+    storageClass: local-path
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+

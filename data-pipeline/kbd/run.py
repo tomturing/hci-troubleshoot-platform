@@ -272,7 +272,7 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
         sys.exit(1)
 
     # 检查已抓取且 Vision 完成的案例
-    from .fetcher import _kbd_dir, _is_fetched
+    from .fetcher import _is_fetched, _kbd_dir
 
     # 图片文件扩展名（用于过滤辅助文件）
     IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}

@@ -14,8 +14,8 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import httpx
-from shared.observability.logger import get_logger
 from shared.observability.langfuse import end_generation, observe_invoke, observe_stream_start
+from shared.observability.logger import get_logger
 from shared.utils.exceptions import AIStreamError, ErrorCode
 
 logger = get_logger("ai-client")
