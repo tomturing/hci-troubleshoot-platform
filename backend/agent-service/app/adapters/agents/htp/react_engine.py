@@ -708,6 +708,7 @@ class ReactEngine:
 
                 # require_all_confirm 覆盖：将只读工具也升级为需确认
                 tool_result = None
+                tool_error = None
                 tool_exec_id = tc.id
                 async for event in self._execute_tool_call(
                     tool_call=tool_call_dict,
@@ -721,6 +722,7 @@ class ReactEngine:
                     # 捕获工具执行结果
                     if isinstance(event, ToolResultEvent):
                         tool_result = event.result
+                        tool_error = event.error
                         if event.exec_id:
                             tool_exec_id = event.exec_id
                     # AgentTextChunk 需要传递给外层（如"操作已取消"、"确认服务暂不可用"）
@@ -737,6 +739,7 @@ class ReactEngine:
                     tool_name=tc.name,
                     exec_id=tool_exec_id,
                     result=tool_result,
+                    error=tool_error,
                 )
                 work_messages.append(
                     {
@@ -794,6 +797,9 @@ class ReactEngine:
         """
         from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
         from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_policy
+        from app.tools.acli.semantic_validator import ToolSemanticValidator
+
+        active_tool_registry = self._tool_registry or TOOL_REGISTRY
 
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("args", {})
@@ -801,7 +807,7 @@ class ReactEngine:
 
         # T3-2: 降级拦截 - 如果前序推理格式校验失败，禁止执行高风险写操作工具
         if getattr(self, "schema_validation_failed", False):
-            tool_def = TOOL_REGISTRY.get(tool_name)
+            tool_def = active_tool_registry.get(tool_name)
             risk = tool_def.risk_level if tool_def else 1
             if risk >= 2:
                 logger.warning("schema_validation_block_write", f"降级拦截: Schema 校验失败，禁止执行高风险写操作工具: {tool_name}")
@@ -825,7 +831,7 @@ class ReactEngine:
                 input_str = json.dumps(tool_args, sort_keys=True, ensure_ascii=False)
                 input_hash = hashlib.sha256(input_str.encode("utf-8")).hexdigest()
 
-                temp_tool_def = TOOL_REGISTRY.get(tool_name)
+                temp_tool_def = active_tool_registry.get(tool_name)
                 temp_risk = temp_tool_def.risk_level if temp_tool_def else 1
                 temp_policy = temp_tool_def.policy if temp_tool_def else "auto"
 
@@ -849,7 +855,7 @@ class ReactEngine:
             except Exception as e:
                 logger.error(f"写入 proposed 状态审计失败: {e}")
 
-        tool_def = TOOL_REGISTRY.get(tool_name)
+        tool_def = active_tool_registry.get(tool_name)
         if not tool_def:
             # T0-1：未知工具路径统一走 ToolResultEnvelope，让 LLM 能拿到结构化错误并自我纠正
             envelope = ToolResultEnvelope(
@@ -924,6 +930,68 @@ class ReactEngine:
                 result=f"[error] 参数校验失败：{err_msg}。请修正参数后重新尝试调用该工具。",
                 tool_name=tool_name,
                 error=err_msg,
+                exec_id=exec_id,
+            )
+            return
+
+        semantic_result = ToolSemanticValidator.validate(tool_name, tool_args, tool_def)
+        if not semantic_result.ok:
+            err_msg = semantic_result.to_feedback(tool_name)
+            validation_codes = [issue.code for issue in semantic_result.issues]
+            try:
+                from app.services.metrics import AGENT_TOOL_SEMANTIC_VALIDATION_TOTAL
+                for validation_code in validation_codes:
+                    AGENT_TOOL_SEMANTIC_VALIDATION_TOTAL.labels(
+                        tool_name=tool_name,
+                        validation_code=validation_code,
+                    ).inc()
+            except Exception as met_err:
+                logger.warning("metrics_record_failed", f"记录工具语义校验指标失败: {met_err}")
+            try:
+                from shared.observability.otel import get_current_trace_id
+                trace_id = get_current_trace_id() or "unknown"
+            except Exception:
+                trace_id = "unknown"
+            logger.warning(
+                event="tool_call_semantic_validation_failed",
+                exec_id=exec_id,
+                session_id=session_id,
+                tool_name=tool_name,
+                args=tool_args,
+                validation_codes=validation_codes,
+                trace_id=trace_id,
+            )
+            if self._audit:
+                try:
+                    await self._audit.write(
+                        audit_id=exec_id,
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        risk_level=tool_def.risk_level,
+                        policy=tool_def.policy,
+                        result=None,
+                        error=err_msg,
+                        status="failed",
+                    )
+                except Exception as e:
+                    logger.error(f"更新 failed 状态审计失败: {e}")
+
+            yield AgentStageUpdate(
+                stage="tool_result",
+                metadata={
+                    "exec_id": exec_id,
+                    "tool_name": tool_name,
+                    "status": "validation_failed",
+                    "result": None,
+                    "error": err_msg,
+                    "duration_ms": 0,
+                },
+            )
+            yield ToolResultEvent(
+                result=err_msg,
+                tool_name=tool_name,
+                error="semantic_validation_failed",
                 exec_id=exec_id,
             )
             return

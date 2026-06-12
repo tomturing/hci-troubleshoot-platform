@@ -25,12 +25,113 @@ def set_tool_database_manager(db: DatabaseManager) -> None:
     database_manager = db
 
 
+def _make_issue(level: str, location: str, message: str, code: str) -> dict[str, str]:
+    return {"level": level, "location": location, "message": message, "code": code}
+
+
+def validate_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """校验工具定义契约，供保存前和独立校验接口复用。"""
+    issues: list[dict[str, str]] = []
+    tool_name = payload.get("tool_name")
+    schema = payload.get("parameters_schema") or {}
+    usage_template = payload.get("usage_template") or ""
+
+    if not isinstance(schema, dict):
+        issues.append(_make_issue("error", "parameters_schema", "parameters_schema 必须是 JSON Object", "SCHEMA_NOT_OBJECT"))
+        schema = {}
+
+    properties = schema.get("properties") if isinstance(schema, dict) else {}
+    required = schema.get("required") if isinstance(schema, dict) else []
+    if properties is not None and not isinstance(properties, dict):
+        issues.append(_make_issue("error", "parameters_schema.properties", "properties 必须是对象", "SCHEMA_PROPERTIES_INVALID"))
+        properties = {}
+    if required is not None and not isinstance(required, list):
+        issues.append(_make_issue("error", "parameters_schema.required", "required 必须是数组", "SCHEMA_REQUIRED_INVALID"))
+        required = []
+
+    if tool_name == "bash_exec":
+        container = (properties or {}).get("container")
+        if not container:
+            issues.append(
+                _make_issue("error", "parameters_schema.properties.container", "bash_exec 必须定义 container 参数", "BASH_CONTAINER_MISSING")
+            )
+        else:
+            enum_values = container.get("enum") if isinstance(container, dict) else None
+            expected = {"asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
+            if set(enum_values or []) != expected:
+                issues.append(
+                    _make_issue("error", "parameters_schema.properties.container.enum", "bash_exec container enum 不完整", "BASH_CONTAINER_ENUM_INVALID")
+                )
+        if "container" not in (required or []):
+            issues.append(
+                _make_issue("error", "parameters_schema.required", "bash_exec 必须要求 container 为必填字段", "BASH_CONTAINER_REQUIRED")
+            )
+
+    if tool_name == "acli_exec":
+        for field_name in ("command", "reason"):
+            if field_name not in (required or []):
+                issues.append(
+                    _make_issue("error", "parameters_schema.required", f"acli_exec 必须要求 {field_name} 为必填字段", "ACLI_REQUIRED_FIELD_MISSING")
+                )
+
+    if usage_template:
+        import string
+
+        try:
+            placeholders = {f for _, f, _, _ in string.Formatter().parse(usage_template) if f is not None}
+            for placeholder in placeholders:
+                if placeholder not in (properties or {}):
+                    issues.append(
+                        _make_issue(
+                            "error",
+                            "usage_template",
+                            f"usage_template 占位符 {placeholder} 在 parameters_schema.properties 中不存在",
+                            "USAGE_TEMPLATE_PLACEHOLDER_MISSING",
+                        )
+                    )
+        except Exception as exc:
+            issues.append(_make_issue("error", "usage_template", f"usage_template 解析失败：{exc}", "USAGE_TEMPLATE_PARSE_FAILED"))
+
+    status = "error" if any(issue["level"] == "error" for issue in issues) else "warning" if issues else "ok"
+    return {"status": status, "validation_issues": issues}
+
+
+def _raise_if_invalid_tool_payload(payload: dict[str, Any]) -> None:
+    """保存工具定义前强制执行契约校验。"""
+    validation = validate_tool_payload(payload)
+    if validation["status"] == "error":
+        raise HTTPException(status_code=400, detail=validation)
+
+
 async def get_db() -> AsyncSession:
     """获取数据库会话"""
     if not database_manager:
         raise HTTPException(status_code=500, detail="数据库管理器未初始化")
     async for session in database_manager.get_session():
         yield session
+
+
+@router.post("/validate", summary="校验工具定义")
+async def validate_tool_definition(payload: dict[str, Any]) -> dict[str, Any]:
+    """校验未保存的工具定义 payload。"""
+    return validate_tool_payload(payload)
+
+
+@router.post("/{tool_id}/validate", summary="校验已有工具定义")
+async def validate_existing_tool(tool_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """校验数据库中的已有工具定义。"""
+    stmt = select(ToolDefinition).where(ToolDefinition.id == tool_id)
+    result = await db.execute(stmt)
+    t = result.scalar_one_or_none()
+    if not t:
+        raise HTTPException(status_code=404, detail="工具定义不存在")
+    return validate_tool_payload(
+        {
+            "tool_name": t.tool_name,
+            "parameters_schema": t.parameters_schema,
+            "usage_template": t.usage_template,
+        }
+    )
 
 
 @router.get("", summary="获取工具定义列表")
@@ -101,6 +202,7 @@ async def create_tool(payload: dict[str, Any], db: AsyncSession = Depends(get_db
     tool_name = payload.get("tool_name")
     if not tool_name:
         raise HTTPException(status_code=400, detail="工具标识名 (tool_name) 必填")
+    _raise_if_invalid_tool_payload(payload)
 
     # 检查是否重名
     stmt = select(ToolDefinition).where(ToolDefinition.tool_name == tool_name)
@@ -136,6 +238,13 @@ async def update_tool(tool_id: int, payload: dict[str, Any], db: AsyncSession = 
     t = result.scalar_one_or_none()
     if not t:
         raise HTTPException(status_code=404, detail="工具定义不存在")
+
+    merged_payload = {
+        "tool_name": payload.get("tool_name", t.tool_name),
+        "parameters_schema": payload.get("parameters_schema", t.parameters_schema),
+        "usage_template": payload.get("usage_template", t.usage_template),
+    }
+    _raise_if_invalid_tool_payload(merged_payload)
 
     tool_name = payload.get("tool_name")
     if tool_name and tool_name != t.tool_name:

@@ -30,6 +30,13 @@ AGENT_TOOL_EXECUTION_DURATION = Histogram(
     "agent_tool_execution_duration_seconds", "Tool execution duration in seconds", labelnames=["tool_name", "status"]
 )
 
+# 工具语义校验失败计数，覆盖 bash_exec 容器契约和 aCLI catalog 校验。
+AGENT_TOOL_SEMANTIC_VALIDATION_TOTAL = Counter(
+    "agent_tool_semantic_validation_total",
+    "Total number of semantic validation results before tool execution",
+    labelnames=["tool_name", "validation_code"],
+)
+
 # ─── 2. 幻觉检测统计 ───────────────────────────────────────────────────────
 
 # 幻觉检测总数（按幻觉类型分类）

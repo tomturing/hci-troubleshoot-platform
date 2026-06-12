@@ -103,7 +103,7 @@ async function handleStatusChange(row: SkillDefinition) {
 // ===== 弹窗表单 =====
 const dialogVisible = ref(false)
 const isEdit = ref(false)
-const isFullscreen = ref(true) // 默认全屏，与 SOP 详情弹窗一致
+const isFullscreen = ref(false) // 默认非全屏，与工具管理弹窗一致
 const activeTab = ref('basic')
 const dialogTitle = computed(() => isEdit.value ? '编辑技能定义' : '新建技能定义')
 
@@ -147,7 +147,7 @@ const descCharCount = computed(() => formModel.value.description.length)
 // ===== 打开新建弹窗 =====
 function openCreateDialog() {
   isEdit.value = false
-  isFullscreen.value = true
+  isFullscreen.value = false
   activeTab.value = 'basic'
   formModel.value = {
     id: 0,
@@ -173,7 +173,7 @@ function openCreateDialog() {
 // ===== 打开编辑弹窗 =====
 async function openEditDialog(row: SkillDefinition) {
   isEdit.value = true
-  isFullscreen.value = true
+  isFullscreen.value = false
   activeTab.value = 'basic'
   dialogVisible.value = true
   loading.value = true
@@ -490,6 +490,7 @@ onMounted(() => {
     <el-dialog
       v-model="dialogVisible"
       :fullscreen="isFullscreen"
+      width="90%"
       class="skill-detail-dialog"
       draggable
       align-center

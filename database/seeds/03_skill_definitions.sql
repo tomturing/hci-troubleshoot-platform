@@ -205,7 +205,7 @@ INSERT INTO skill_definition (
     'hci-alert-parsing',
 
     -- description（发现阶段使用，描述"做什么"和"何时触发"）
-    '解析 HCI 平台告警事件（acli alert get / zabbix 导出的 JSON 告警记录）中的关键字段，识别告警对象、告警主机 IP、告警类型和告警时间，为后续排障提供结构化上下文。当用户提供告警 JSON 数据、描述告警事件、询问某个告警的含义，或需要定位告警对应的节点 IP 时触发。',
+    '解析 HCI 平台告警事件（acli alert get 导出的 JSON 告警记录）中的关键字段，识别告警对象、告警主机 IP、告警类型和告警时间，为后续排障提供结构化上下文。当用户提供告警 JSON 数据、描述告警事件、询问某个告警的含义，或需要定位告警对应的节点 IP 时触发。',
 
     -- instructions_md（Skill 正文，激活阶段加载）
     $SKILL$
@@ -277,7 +277,7 @@ acli --formatter json platform node list
 
 1. **`{alert}` 中可能有多个 IP**：`host`、`description` 变量、`target` 均可能含有 IP 地址，只有通过 `{nodes}` 列表反查才能确认哪个是真正负责的节点 IP。
 
-2. **`host` 字段不可直接使用**：该字段在部分版本中存储的是 Zabbix 主机名（非节点 IP），直接使用会导致排障执行命令连接到错误主机。
+2. **`host` 字段不可直接使用**：该字段在部分版本中存储的是 HCI 平台主机名（非节点 IP），直接使用会导致排障执行命令连接到错误主机。
 
 3. **每条告警都必须明确 `node_ip`**：错误的 `node_ip` 会导致后续排障命令在错误节点上执行，是排障失败最常见的原因之一。
 
@@ -337,7 +337,7 @@ INSERT INTO skill_definition (
     'hci-task-parsing',
 
     -- description（发现阶段使用，描述"做什么"和"何时触发"）
-    '解析 HCI 平台任务日志（task get 命令输出的 JSON 任务记录）中的关键字段，识别任务类型、操作目标、失败错误码、调用链 ID 以及执行节点 IP，为后续排障提供结构化上下文。当用户提供任务 JSON 数据、询问任务执行情况、描述操作失败场景（如虚机开关机失败、迁移失败、存储操作失败），或需要通过任务日志定位故障节点时触发。',
+    '解析 HCI 平台任务日志（acli task get 命令输出的 JSON 任务记录）中的关键字段，识别任务类型、操作目标、失败错误码、调用链 ID 以及执行节点 IP，为后续排障提供结构化上下文。当用户提供任务 JSON 数据、询问任务执行情况、描述操作失败场景（如虚机开关机失败、迁移失败、存储操作失败），或需要通过任务日志定位故障节点时触发。',
 
     -- instructions_md（Skill 正文，激活阶段加载）
     $SKILL$
@@ -351,7 +351,7 @@ INSERT INTO skill_definition (
 
 ## 前置条件
 
-- 已提供任务记录 `{task}`，格式为 JSON（来自 `task get` 或 `task get -s failed` 命令输出）
+- 已提供任务记录 `{task}`，格式为 JSON（来自 `acli task get` 或 `acli task get -s failed` 命令输出）
 - 若已知集群节点列表，可直接提供 `{nodes}` 跳过命令采集步骤
 
 ---

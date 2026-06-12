@@ -33,6 +33,7 @@ from shared.utils.internal_http import InternalHTTPClient
 
 from app.core.utils import smart_truncate
 from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_policy
+from app.tools.acli.semantic_validator import ToolSemanticValidator, build_container_command
 
 logger = get_logger("bridge-relay-executor")
 
@@ -318,7 +319,7 @@ class BridgeRelayExecutor:
         Raises:
             ValueError: 命令净化失败
         """
-        trace_id = get_current_trace_id()
+        trace_id = get_current_trace_id() or "unknown"
         start_time = time.time()
         exec_id = exec_id or str(uuid.uuid4())
 
@@ -360,6 +361,40 @@ class BridgeRelayExecutor:
 
         reason = args.get("reason", "未提供原因")
 
+        semantic_result = ToolSemanticValidator.validate(tool_name, args)
+        if not semantic_result.ok:
+            feedback = semantic_result.to_feedback(tool_name)
+            validation_codes = [issue.code for issue in semantic_result.issues]
+            try:
+                from app.services.metrics import AGENT_TOOL_SEMANTIC_VALIDATION_TOTAL
+                for validation_code in validation_codes:
+                    AGENT_TOOL_SEMANTIC_VALIDATION_TOTAL.labels(
+                        tool_name=tool_name,
+                        validation_code=validation_code,
+                    ).inc()
+            except Exception as met_err:
+                logger.warning("metrics_record_failed", f"记录工具语义校验指标失败: {met_err}")
+            logger.warning(
+                event="tool_call_semantic_validation_failed",
+                exec_id=exec_id,
+                tool_name=tool_name,
+                validation_codes=validation_codes,
+                trace_id=trace_id,
+            )
+            return ExecResult(
+                stdout="",
+                stderr=feedback,
+                exit_code=-1,
+                command=command,
+                node=node_ip or "unknown",
+                duration_ms=0,
+                truncated=False,
+                risk_level=3,
+                exit_code_meaning=ExitCodeMeaning.UNKNOWN_ERROR,
+            )
+
+        original_command = command
+
         # 2. 命令净化
         try:
             cleaned_command = CommandSanitizer.sanitize(command, tool_name)
@@ -376,12 +411,15 @@ class BridgeRelayExecutor:
                 risk_level=3,  # 净化拒绝视为高危
             )
 
+        if tool_name == "bash_exec":
+            cleaned_command = build_container_command(str(args["container"]), cleaned_command)
+
         # 3. 风险分类（动态工具）
         if tool_name in ("acli_exec", "bash_exec"):
             if tool_name == "acli_exec":
                 runtime_risk = classify_acli(cleaned_command)
             else:
-                runtime_risk = classify_bash(cleaned_command)
+                runtime_risk = classify_bash(original_command)
             runtime_policy = risk_to_policy(runtime_risk)
         else:
             # 插件工具使用传入或默认值
@@ -512,10 +550,12 @@ class BridgeRelayExecutor:
                 truncated = len(raw_stdout) > self.STDOUT_MAX_CHARS
                 stdout = smart_truncate(raw_stdout, self.STDOUT_MAX_CHARS) if truncated else raw_stdout
                 stderr = smart_truncate(raw_stderr, self.STDERR_MAX_CHARS)
+                check_text = f"{raw_stdout}\n{raw_stderr}".lower()
             else:
                 # 兼容原有单物理通道合并输出逻辑
                 output = result_data.get("output", "")
                 truncated = len(output) > self.STDOUT_MAX_CHARS
+                check_text = output.lower()
 
                 # 当退出码不为0时，认为输出为错误内容，填充到 stderr；stdout 留空（或当 exit_code == 0 时反之）
                 if exit_code != 0:
@@ -530,7 +570,6 @@ class BridgeRelayExecutor:
             if exit_code != 0:
                 meaning = ExitCodeMeaning.UNKNOWN_ERROR
                 # 尝试从 stdout / stderr 识别更具体的语义
-                check_text = output.lower()
                 if exit_code == 127 or "command not found" in check_text:
                     meaning = ExitCodeMeaning.COMMAND_NOT_FOUND
                 elif exit_code == 126 or "permission denied" in check_text:
@@ -632,6 +671,7 @@ async def acli_exec(
 
 
 async def bash_exec(
+    container: str,
     command: str,
     reason: str,
     conversation_id: str,
@@ -641,6 +681,7 @@ async def bash_exec(
     bash_exec 工具入口函数。
 
     Args:
+        container: 目标容器（asv-con/vn-con/vn-agent/vs-cp-manager）
         command: bash 命令
         reason: 执行原因（审计必填）
         conversation_id: 会话 ID
@@ -654,7 +695,7 @@ async def bash_exec(
 
     return await _executor.execute(
         tool_name="bash_exec",
-        args={"command": command, "reason": reason},
+        args={"container": container, "command": command, "reason": reason},
         conversation_id=conversation_id,
         node_ip=node_ip,
     )

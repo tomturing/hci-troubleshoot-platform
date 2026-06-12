@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { FullScreen } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -127,6 +128,7 @@ const { categoryOptions, categoriesLoading, fetchCategories } = useCategories()
 
 // 详情弹窗
 const detailDialogVisible = ref(false)
+const detailFullscreen = ref(false)
 const detailEntry = ref<KbdEntry | null>(null)
 const reviewNote = ref('')
 const editableCategoryId = ref('')
@@ -161,6 +163,7 @@ const currentUser = ref(1)
 
 // 编辑弹窗
 const editDialogVisible = ref(false)
+const editFullscreen = ref(false)
 const editingEntry = ref<KbdEntry | null>(null)
 const editTitle = ref('')
 const editContent = ref('')
@@ -277,6 +280,7 @@ function openDetailDialog(entry: KbdEntry) {
   inlineContent.value = entry.content_md || ''
   parsedSegments.value = parseContentMd(entry.content_md || '')
   parsedImagesJson.value = parseImagesJson(entry.images_json || [])
+  detailFullscreen.value = false
   detailDialogVisible.value = true
 }
 
@@ -299,6 +303,7 @@ function openEditDialog(entry: KbdEntry) {
   editTitle.value = entry.title
   editContent.value = entry.content_md || ''
   editCategoryId.value = entry.category_id || entry.ai_category_id || ''
+  editFullscreen.value = false
   editDialogVisible.value = true
 }
 
@@ -967,11 +972,27 @@ onMounted(() => {
     <!-- 详情弹窗 -->
     <el-dialog
       v-model="detailDialogVisible"
-      title="KBD 条目详情"
-      width="860px"
-      top="4vh"
+      width="90%"
+      class="premium-dialog"
+      :fullscreen="detailFullscreen"
+      draggable
+      align-center
       :close-on-click-modal="false"
     >
+      <template #header>
+        <div class="custom-dialog-header">
+          <span class="el-dialog__title">KBD 条目详情</span>
+          <el-button
+            type="info"
+            text
+            circle
+            :icon="FullScreen"
+            class="fullscreen-toggle-btn"
+            @click="detailFullscreen = !detailFullscreen"
+            title="切换全屏"
+          />
+        </div>
+      </template>
       <template v-if="detailEntry">
         <!-- 基本信息 -->
         <el-descriptions :column="2" border size="small">
@@ -1255,11 +1276,27 @@ onMounted(() => {
     <!-- 编辑弹窗 -->
     <el-dialog
       v-model="editDialogVisible"
-      title="编辑 KBD 条目"
-      width="800px"
-      top="4vh"
+      width="90%"
+      class="premium-dialog"
+      :fullscreen="editFullscreen"
+      draggable
+      align-center
       :close-on-click-modal="false"
     >
+      <template #header>
+        <div class="custom-dialog-header">
+          <span class="el-dialog__title">编辑 KBD 条目</span>
+          <el-button
+            type="info"
+            text
+            circle
+            :icon="FullScreen"
+            class="fullscreen-toggle-btn"
+            @click="editFullscreen = !editFullscreen"
+            title="切换全屏"
+          />
+        </div>
+      </template>
       <el-form label-width="80px">
         <el-form-item label="标题">
           <el-input v-model="editTitle" placeholder="条目标题" />
