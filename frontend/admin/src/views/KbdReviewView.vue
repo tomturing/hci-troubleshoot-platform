@@ -980,7 +980,7 @@ onMounted(() => {
       :close-on-click-modal="false"
     >
       <template #header>
-        <div class="custom-dialog-header">
+        <div class="custom-dialog-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; padding-right: 32px; box-sizing: border-box;">
           <span class="el-dialog__title">KBD 条目详情</span>
           <el-button
             type="info"
@@ -1284,7 +1284,7 @@ onMounted(() => {
       :close-on-click-modal="false"
     >
       <template #header>
-        <div class="custom-dialog-header">
+        <div class="custom-dialog-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; padding-right: 32px; box-sizing: border-box;">
           <span class="el-dialog__title">编辑 KBD 条目</span>
           <el-button
             type="info"
@@ -1297,7 +1297,7 @@ onMounted(() => {
           />
         </div>
       </template>
-      <el-form label-width="80px">
+      <el-form label-width="80px" class="premium-form">
         <el-form-item label="标题">
           <el-input v-model="editTitle" placeholder="条目标题" />
         </el-form-item>
@@ -1321,13 +1321,14 @@ onMounted(() => {
             </el-option>
           </el-select>
         </el-form-item>
-        <el-form-item label="内容">
+        <el-form-item label="内容" class="flex-form-item">
           <el-input
             v-model="editContent"
             type="textarea"
             :rows="18"
             placeholder="Markdown 格式内容"
             style="font-family: monospace; font-size: 13px"
+            class="editor-textarea"
           />
         </el-form-item>
       </el-form>

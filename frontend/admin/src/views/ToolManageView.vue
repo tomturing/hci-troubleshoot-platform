@@ -550,7 +550,7 @@ onMounted(() => {
       destroy-on-close
     >
       <template #header>
-        <div class="custom-dialog-header">
+        <div class="custom-dialog-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; padding-right: 32px; box-sizing: border-box;">
           <span class="el-dialog__title">{{ dialogTitle }}</span>
           <el-button
             type="info"
@@ -609,7 +609,7 @@ onMounted(() => {
                 placeholder="说明工具的详细作用和场景，供大模型 ReAct 思路理解。例如: 查询 HCI 平台当前虚拟机列表，用于确认虚机状态..."
               />
             </el-form-item>
-            <el-form-item label="参数 Schema (JSON)" required>
+            <el-form-item label="参数 Schema (JSON)" required class="flex-form-item">
               <div class="json-editor-wrapper">
                 <el-input
                   v-model="formModel.parameters_schema_str"
@@ -623,7 +623,7 @@ onMounted(() => {
                 </span>
               </div>
             </el-form-item>
-            <el-form-item label="调用示例 (JSON 数组)">
+            <el-form-item label="调用示例 (JSON 数组)" class="flex-form-item">
               <div class="json-editor-wrapper">
                 <el-input
                   v-model="formModel.examples_str"
@@ -966,5 +966,75 @@ onMounted(() => {
   border-top: 1px solid #eee;
   background-color: #f8f9fa;
   flex-shrink: 0;
+}
+
+/* 全屏自适应，防止下方大面积留白 */
+:global(.premium-dialog.is-fullscreen .el-dialog__body) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+:global(.premium-dialog.is-fullscreen .el-form),
+:global(.premium-dialog.is-fullscreen .premium-form),
+:global(.premium-dialog.is-fullscreen .premium-form-wrapper) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+:global(.premium-dialog.is-fullscreen .flex-form-item) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-bottom: 12px;
+}
+
+:global(.premium-dialog.is-fullscreen .flex-form-item .el-form-item__content) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+:global(.premium-dialog.is-fullscreen .editor-textarea),
+:global(.premium-dialog.is-fullscreen .code-editor-wrapper),
+:global(.premium-dialog.is-fullscreen .json-editor-wrapper) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100% !important;
+}
+
+:global(.premium-dialog.is-fullscreen .editor-textarea .el-textarea__inner),
+:global(.premium-dialog.is-fullscreen .json-editor-wrapper .el-textarea__inner) {
+  flex: 1;
+  height: 100% !important;
+  resize: none;
+}
+
+:global(.premium-dialog.is-fullscreen .code-textarea) {
+  flex: 1;
+  height: 100% !important;
+}
+
+:global(.premium-dialog.is-fullscreen .el-row) {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+:global(.premium-dialog.is-fullscreen .el-col) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+:global(.premium-dialog.is-fullscreen .form-meta-col) {
+  overflow-y: auto;
 }
 </style>
