@@ -19,6 +19,31 @@ interface ToolDefinition {
   updated_at?: string
 }
 
+interface ToolPayload {
+  tool_name: string
+  display_name: string
+  category: string
+  description: string
+  usage_template: string | null
+  parameters_schema: Record<string, any>
+  examples: any[]
+  risk_level: number
+  is_active: boolean
+  version: string
+}
+
+interface ToolValidationIssue {
+  level: string
+  location: string
+  message: string
+  code?: string
+}
+
+interface ToolValidationResult {
+  status: 'ok' | 'warning' | 'error'
+  validation_issues: ToolValidationIssue[]
+}
+
 const tools = ref<ToolDefinition[]>([])
 const loading = ref(false)
 const searchQuery = ref('')
@@ -88,6 +113,10 @@ async function handleStatusChange(row: ToolDefinition) {
 const dialogVisible = ref(false)
 const isEdit = ref(false)
 const isFullscreen = ref(false)
+const submitting = ref(false)
+const validationLoading = ref(false)
+const validationResult = ref<ToolValidationResult | null>(null)
+const lastValidatedSignature = ref('')
 const dialogTitle = computed(() => isEdit.value ? '编辑工具定义' : '新建工具定义')
 
 const formModel = ref({
@@ -104,10 +133,27 @@ const formModel = ref({
   version: '1.0'
 })
 
+const validationStatusText = computed(() => {
+  if (!validationResult.value) return ''
+  if (validationResult.value.status === 'ok') return '校验通过'
+  if (validationResult.value.status === 'warning') return '存在警告'
+  return '校验失败'
+})
+
+const isValidationStale = computed(() => {
+  return Boolean(validationResult.value && lastValidatedSignature.value !== getValidationSignature())
+})
+
+function resetValidationResult() {
+  validationResult.value = null
+  lastValidatedSignature.value = ''
+}
+
 // 打开新建弹窗
 function openCreateDialog() {
   isEdit.value = false
   isFullscreen.value = false
+  resetValidationResult()
   formModel.value = {
     id: 0,
     tool_name: '',
@@ -128,6 +174,7 @@ function openCreateDialog() {
 function openEditDialog(row: ToolDefinition) {
   isEdit.value = true
   isFullscreen.value = false
+  resetValidationResult()
   formModel.value = {
     id: row.id,
     tool_name: row.tool_name,
@@ -154,35 +201,177 @@ function isValidJson(str: string) {
   }
 }
 
+function getValidationSignature() {
+  return JSON.stringify({
+    tool_name: formModel.value.tool_name.trim(),
+    usage_template: formModel.value.usage_template.trim(),
+    parameters_schema_str: formModel.value.parameters_schema_str,
+  })
+}
+
+function normalizeValidationResult(raw: any): ToolValidationResult {
+  const rawIssues = Array.isArray(raw?.validation_issues) ? raw.validation_issues : []
+  const validationIssues = rawIssues.map((issue: any) => ({
+    level: typeof issue?.level === 'string' ? issue.level : 'error',
+    location: typeof issue?.location === 'string' ? issue.location : 'tool_definition',
+    message: typeof issue?.message === 'string' ? issue.message : '工具定义校验失败',
+    code: typeof issue?.code === 'string' ? issue.code : undefined,
+  }))
+  const status = raw?.status === 'error' || raw?.status === 'warning' || raw?.status === 'ok'
+    ? raw.status
+    : validationIssues.some((issue: ToolValidationIssue) => issue.level === 'error')
+      ? 'error'
+      : validationIssues.length > 0
+        ? 'warning'
+        : 'ok'
+  return {
+    status,
+    validation_issues: validationIssues,
+  }
+}
+
+function buildToolPayload(): { payload?: ToolPayload; error?: ToolValidationIssue } {
+  const toolName = formModel.value.tool_name.trim()
+  if (!toolName) {
+    return {
+      error: {
+        level: 'error',
+        location: 'tool_name',
+        message: '请输入工具标识名称',
+        code: 'TOOL_NAME_REQUIRED',
+      },
+    }
+  }
+
+  let parametersSchema: Record<string, any>
+  try {
+    parametersSchema = JSON.parse(formModel.value.parameters_schema_str)
+  } catch {
+    return {
+      error: {
+        level: 'error',
+        location: 'parameters_schema',
+        message: '参数 Schema 格式不符合 JSON 规范',
+        code: 'SCHEMA_JSON_INVALID',
+      },
+    }
+  }
+
+  let examples: any[]
+  try {
+    const parsedExamples = JSON.parse(formModel.value.examples_str)
+    if (!Array.isArray(parsedExamples)) {
+      return {
+        error: {
+          level: 'error',
+          location: 'examples',
+          message: '调用示例必须是 JSON 数组',
+          code: 'EXAMPLES_NOT_ARRAY',
+        },
+      }
+    }
+    examples = parsedExamples
+  } catch {
+    return {
+      error: {
+        level: 'error',
+        location: 'examples',
+        message: '调用示例格式不符合 JSON 数组规范',
+        code: 'EXAMPLES_JSON_INVALID',
+      },
+    }
+  }
+
+  return {
+    payload: {
+      tool_name: toolName,
+      display_name: formModel.value.display_name.trim() || toolName,
+      category: formModel.value.category,
+      description: formModel.value.description.trim(),
+      usage_template: formModel.value.usage_template.trim() || null,
+      parameters_schema: parametersSchema,
+      examples,
+      risk_level: formModel.value.risk_level,
+      is_active: formModel.value.is_active,
+      version: formModel.value.version,
+    },
+  }
+}
+
+async function validateCurrentToolDefinition(options: { silent?: boolean } = {}) {
+  const built = buildToolPayload()
+  if (built.error) {
+    validationResult.value = {
+      status: 'error',
+      validation_issues: [built.error],
+    }
+    lastValidatedSignature.value = getValidationSignature()
+    if (!options.silent) {
+      ElMessage.error(built.error.message)
+    }
+    return null
+  }
+
+  validationLoading.value = true
+  try {
+    const res = await fetch('/api/v1/tools/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify(built.payload),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      throw new Error(typeof body?.detail === 'string' ? body.detail : `HTTP ${res.status}`)
+    }
+
+    const normalized = normalizeValidationResult(body)
+    validationResult.value = normalized
+    lastValidatedSignature.value = getValidationSignature()
+
+    if (!options.silent) {
+      if (normalized.status === 'ok') {
+        ElMessage.success('工具定义校验通过')
+      } else if (normalized.status === 'warning') {
+        ElMessage.warning('工具定义存在警告，请确认后再保存')
+      } else {
+        ElMessage.error('工具定义校验失败，请修复错误后再保存')
+      }
+    }
+    return normalized
+  } catch (e: any) {
+    console.error('校验工具定义失败:', e)
+    if (!options.silent) {
+      ElMessage.error(e.message || '校验工具定义失败')
+    }
+    return null
+  } finally {
+    validationLoading.value = false
+  }
+}
+
 // 提交表单
 async function submitForm() {
-  // 基础校验
-  if (!formModel.value.tool_name.trim()) {
-    ElMessage.warning('请输入工具标识名称')
-    return
-  }
-  if (!isValidJson(formModel.value.parameters_schema_str)) {
-    ElMessage.error('参数 Schema 格式不符合 JSON 规范')
-    return
-  }
-  if (!isValidJson(formModel.value.examples_str)) {
-    ElMessage.error('调用示例格式不符合 JSON 数组规范')
+  const built = buildToolPayload()
+  if (built.error) {
+    validationResult.value = {
+      status: 'error',
+      validation_issues: [built.error],
+    }
+    lastValidatedSignature.value = getValidationSignature()
+    ElMessage.error(built.error.message)
     return
   }
 
-  const payload = {
-    tool_name: formModel.value.tool_name.trim(),
-    display_name: formModel.value.display_name.trim() || formModel.value.tool_name.trim(),
-    category: formModel.value.category,
-    description: formModel.value.description.trim(),
-    usage_template: formModel.value.usage_template.trim() || null,
-    parameters_schema: JSON.parse(formModel.value.parameters_schema_str),
-    examples: JSON.parse(formModel.value.examples_str),
-    risk_level: formModel.value.risk_level,
-    is_active: formModel.value.is_active,
-    version: formModel.value.version
+  const validation = await validateCurrentToolDefinition({ silent: true })
+  if (!validation) {
+    return
+  }
+  if (validation.status === 'error') {
+    ElMessage.error('工具定义校验未通过，请先修复错误')
+    return
   }
 
+  submitting.value = true
   try {
     const url = isEdit.value ? `/api/v1/tools/${formModel.value.id}` : '/api/v1/tools'
     const method = isEdit.value ? 'PUT' : 'POST'
@@ -190,20 +379,28 @@ async function submitForm() {
     const res = await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json', ...authHeader },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(built.payload)
     })
     
     if (!res.ok) {
-      const err = await res.json()
+      const err = await res.json().catch(() => ({}))
+      if (err?.detail && typeof err.detail === 'object') {
+        validationResult.value = normalizeValidationResult(err.detail)
+        lastValidatedSignature.value = getValidationSignature()
+        throw new Error('工具定义校验未通过，请先修复错误')
+      }
       throw new Error(err.detail || `HTTP ${res.status}`)
     }
 
     ElMessage.success(`${dialogTitle.value}成功`)
     dialogVisible.value = false
+    resetValidationResult()
     fetchTools()
   } catch (e: any) {
     console.error('提交工具定义失败:', e)
     ElMessage.error(e.message || '操作失败')
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -440,14 +637,63 @@ onMounted(() => {
                 </span>
               </div>
             </el-form-item>
+            <div
+              v-if="validationResult"
+              class="validation-panel"
+              :class="[`is-${validationResult.status}`, { 'is-stale': isValidationStale }]"
+            >
+              <div class="validation-panel__header">
+                <div class="validation-panel__title">
+                  <span>{{ validationStatusText }}</span>
+                  <el-tag
+                    size="small"
+                    effect="plain"
+                    :type="validationResult.status === 'ok' ? 'success' : validationResult.status === 'warning' ? 'warning' : 'danger'"
+                  >
+                    {{ validationResult.status }}
+                  </el-tag>
+                </div>
+                <span v-if="isValidationStale" class="validation-stale">表单已修改</span>
+              </div>
+
+              <el-empty
+                v-if="validationResult.validation_issues.length === 0"
+                :image-size="48"
+                description="未发现契约问题"
+              />
+              <ul v-else class="validation-list">
+                <li
+                  v-for="(issue, index) in validationResult.validation_issues"
+                  :key="`${issue.code || issue.location}-${index}`"
+                  class="validation-item"
+                  :class="`is-${issue.level}`"
+                >
+                  <el-tag
+                    size="small"
+                    effect="dark"
+                    :type="issue.level === 'error' ? 'danger' : issue.level === 'warning' ? 'warning' : 'info'"
+                  >
+                    {{ issue.level }}
+                  </el-tag>
+                  <code v-if="issue.code" class="validation-code">{{ issue.code }}</code>
+                  <span class="validation-location">{{ issue.location }}</span>
+                  <span class="validation-message">{{ issue.message }}</span>
+                </li>
+              </ul>
+            </div>
           </el-col>
         </el-row>
       </el-form>
 
       <template #footer>
         <div class="dialog-footer">
-          <el-button @click="dialogVisible = false">取消</el-button>
-          <el-button type="primary" @click="submitForm">保存</el-button>
+          <el-button :disabled="submitting || validationLoading" @click="dialogVisible = false">取消</el-button>
+          <el-button :icon="Search" :loading="validationLoading" @click="validateCurrentToolDefinition()">
+            校验工具定义
+          </el-button>
+          <el-button type="primary" :loading="submitting" :disabled="validationLoading" @click="submitForm">
+            保存
+          </el-button>
         </div>
       </template>
     </el-dialog>
@@ -585,6 +831,93 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+
+.validation-panel {
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  padding: 12px;
+  background: #fff;
+}
+
+.validation-panel.is-ok {
+  border-color: #b3e19d;
+  background: #f0f9eb;
+}
+
+.validation-panel.is-warning {
+  border-color: #f3d19e;
+  background: #fdf6ec;
+}
+
+.validation-panel.is-error {
+  border-color: #fab6b6;
+  background: #fef0f0;
+}
+
+.validation-panel.is-stale {
+  border-style: dashed;
+}
+
+.validation-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.validation-panel__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.validation-stale {
+  color: #909399;
+  font-size: 12px;
+}
+
+.validation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.validation-item {
+  display: grid;
+  grid-template-columns: auto minmax(120px, auto) minmax(120px, 180px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  color: #303133;
+}
+
+.validation-code {
+  color: #606266;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(220, 223, 230, 0.88);
+  border-radius: 4px;
+  padding: 2px 6px;
+  overflow-wrap: anywhere;
+}
+
+.validation-location {
+  color: #606266;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.validation-message {
+  color: #303133;
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 /* 统一 premium-dialog 高端弹窗样式 */
