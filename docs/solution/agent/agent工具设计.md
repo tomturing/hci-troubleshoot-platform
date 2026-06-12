@@ -1,7 +1,8 @@
 # Agent 工具设计
 
-> 权威来源：本文件（v2.0）。  
+> 权威来源：本文件（v2.4，核心执行契约已落地，工具管理 UI 与 SOP 发布联动仍按任务清单推进）。
 > 关联文档：[agent设计.md](./agent设计.md) §十（目录结构）、[agent记忆设计.md](./agent记忆设计.md)
+> 最新事件方案：[bash_exec 容器化契约与工具调用前置校验方案](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验方案.md)
 
 ---
 
@@ -58,6 +59,12 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 > - `get_active_alerts`、`get_failed_tasks`、`get_vm_list`、`get_cluster_detail` 从 `scp` 类别迁移至 `acli` 类别
 > - 移除 SCP REST API 直接调用，改为通过 bridge relay 执行 `acli --formatter json` 命令获取数据
 > - `get_failed_tasks` 实现动态参数拼装，支持 keyword/code/vm_id/time/host/upid/limit 等过滤参数
+>
+> **v2.4 变更说明**：
+> - `bash_exec` 已从自由文本命令工具升级为 `bash_exec(container, command, reason, node_ip?)`，`container` 必填且枚举为 `asv-con`、`vn-con`、`vn-agent`、`vs-cp-manager`
+> - 新增 `ToolSemanticValidator`，在真实 SSH 执行前校验工具语义，校验失败时不下发 terminal_bridge，而是触发 LLM 重新规划
+> - `acli_exec` 基于 aCLI catalog 本地快照校验命令路径是否受支持
+> - 双通道 stderr 解析缺陷已修复，避免真实 stderr 被解析异常覆盖
 
 ---
 
@@ -233,6 +240,8 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 **所属类别**：`category="acli"`，与 `acli_exec` 共用同一 `BridgeRelayExecutor`  
 **所属模块**：`app/tools/acli/`（与 `acli_exec` 同目录）
 
+> **v2.4 约束**：`bash_exec` 必须显式指定目标容器。容器是执行边界，不是命令字符串的一部分。LLM 不允许在 `command` 中手写 `docker exec`、`kubectl exec`、`nsenter` 或 `acli` 前缀；服务端必须根据结构化 `container` 参数拼装实际执行命令。
+
 **tool_definition 记录**（DB SSOT）：
 
 ```json
@@ -243,9 +252,14 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
   "parameters_schema": {
     "type": "object",
     "properties": {
+      "container": {
+        "type": "string",
+        "enum": ["asv-con", "vn-con", "vn-agent", "vs-cp-manager"],
+        "description": "目标容器，必须显式指定"
+      },
       "command": {
         "type": "string",
-        "description": "bash 命令，例如 'grep ERROR /sf/log/vtpdaemon.log | tail -50'"
+        "description": "容器内执行的 Bash 命令，例如 'grep ERROR /sf/log/vtpdaemon.log | tail -50'；禁止包含 docker exec/kubectl exec/nsenter/acli 前缀"
       },
       "node_ip": {
         "type": "string",
@@ -256,12 +270,15 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
         "description": "执行该命令的诊断原因（审计必填）"
       }
     },
-    "required": ["command", "reason"]
+    "required": ["container", "command", "reason"],
+    "additionalProperties": false
   },
   "risk_level": 1,
   "is_active": true
 }
 ```
+
+**兼容说明**：当前线上版本仍可能存在旧 schema（仅 `command/reason` 必填）。v2.4 实施时必须先更新 seed 和运行时校验，再切换 LLM 工具契约，避免旧前端/旧 Agent 产生缺容器调用。
 
 **风险分级（RiskClassifier 动态判定）**：
 
@@ -513,21 +530,75 @@ def risk_to_policy(risk: int) -> str:
 
 ---
 
-## 七、Bridge Relay 执行机制
+## 七、执行前语义校验（v2.4）
 
-### 4.1 完整数据流
+### 7.1 职责边界
+
+`ToolCallValidator` 负责 JSON Schema 形状校验；`ToolSemanticValidator` 负责工具领域语义校验。两者都必须发生在真实执行前。
+
+| 校验器 | 输入 | 职责 | 失败后行为 |
+|--------|------|------|------------|
+| `ToolCallValidator` | `tool_name,args,parameters_schema` | 必填、类型、enum、pattern、oneOf | 不执行，返回参数错误 |
+| `ToolSemanticValidator` | `tool_name,args,tool_def,context` | 容器边界、aCLI catalog、全局参数位置、工具专属约束 | 不执行，注入 ReAct 规划反馈 |
+| `RiskClassifier` | 归一化后的命令 | auto/confirm/block | block 拒绝，confirm 走授权 |
+
+### 7.2 `bash_exec` 语义规则
+
+- `container` 必填，合法值为 `asv-con`、`vn-con`、`vn-agent`、`vs-cp-manager`
+- `command` 不允许包含容器进入命令：`docker exec`、`kubectl exec`、`nsenter`
+- `command` 不允许以 `acli` 开头，aCLI 命令必须使用 `acli_exec`
+- 服务端记录 `original_command` 与 `built_command`，审计时同时落库
+- 无法确认容器运行时或无法安全拼装时 fail-closed
+
+### 7.3 `acli_exec` catalog 规则
+
+aCLI 命令列表以官方文档为来源，运行时使用本地快照：
+
+- 官方入口：`http://acli.sangfor.com.cn:6888/commandList`
+- 首页 `acli --help` 已声明 `--container` 仅对 `system` 下命令生效，枚举值与 `bash_exec.container` 一致
+- 本地快照建议路径：`backend/agent-service/app/tools/acli/catalog/acli_command_catalog.json`
+- 同步脚本建议路径：`scripts/tools/sync_acli_catalog.py`
+
+校验策略：
+
+- 去除全局参数后，命令路径必须命中 catalog
+- `acli ... --help` 和 `acli acli command list` 作为探索命令允许
+- 未命中 catalog 时不下发 terminal_bridge，而是要求 LLM 重新规划
+
+### 7.4 ReAct 自修正反馈
+
+校验失败不代表远端执行失败，而是工具规划失败。ReactEngine 应把失败原因追加为系统反馈，继续下一轮推理：
+
+```text
+【工具调用未通过执行前校验】
+工具：bash_exec
+错误：缺少必填 container。
+要求：bash_exec 必须指定 asv-con/vn-con/vn-agent/vs-cp-manager 之一。
+请重新思考并生成合法 tool_call；不要向用户报告为真实命令执行失败。
+```
+
+---
+
+## 八、Bridge Relay 执行机制
+
+### 8.1 完整数据流
 
 ```
 ReactEngine
   │
-  │ tool_call: bash_exec(command="df -h /", reason="检查磁盘")
+  │ tool_call: bash_exec(container="asv-con", command="df -h /", reason="检查磁盘")
   ▼
-BridgeRelayExecutor.execute("bash_exec", {command, reason, node_ip?})
+ToolCallValidator + ToolSemanticValidator
+  │
+  ├─ 校验失败：不下发执行，注入 ReAct 规划反馈
+  │
+  ▼
+BridgeRelayExecutor.execute("bash_exec", {container, command, reason, node_ip?})
   │
   ├─① exec_id = uuid()
   ├─② Redis SETEX exec:{exec_id} 60 "pending"
   ├─③ POST /internal/conversations/{conv_id}/agent-exec
-  │       {exec_id, command, reason, risk_level, node_ip}
+  │       {exec_id, tool_name, container, command, built_command, reason, risk_level, node_ip}
   │
   │                  Conversation Service
   │                    │ 接收 agent-exec 请求
@@ -544,20 +615,20 @@ BridgeRelayExecutor.execute("bash_exec", {command, reason, node_ip?})
   │                    └─ [risk=3] 显示拒绝通知，终止
   │
   │                  terminal_bridge.exe
-  │                    │ 接收 ssh_exec_command 消息
-  │                    │ 追加 marker + \n 自动执行
-  │                    │ 等待 marker 出现在输出中
-  │                    │ 发回 exec_result 消息
+  │                    │ 接收 ssh_exec_process 消息
+  │                    │ 使用独立 SSH Session 禁用 PTY 执行
+  │                    │ 物理分流 stdout/stderr
+  │                    │ 发回 exec_stdout / exec_stderr / exec_result 消息
   │
   │                  Frontend
   │                    │ 接收 exec_result
-  │                    │ 解析 output + exit_code
+  │                    │ 汇总 stdout + stderr + exit_code
   │                    ▼
   │                  POST /api/conversations/{id}/exec-result
-  │                       {exec_id, output, exit_code}
+  │                       {exec_id, stdout, stderr, exit_code}
   │
   │                  Conversation Service
-  │                    │ Redis LPUSH exec_result:{exec_id} {output, exit_code}
+  │                    │ Redis LPUSH exec_result:{exec_id} {stdout, stderr, exit_code}
   │
   ④ await asyncio.wait_for(redis.blpop(f"exec_result:{exec_id}"), timeout=30)
   │
@@ -568,36 +639,37 @@ BridgeRelayExecutor.execute("bash_exec", {command, reason, node_ip?})
 LLM 继续 ReAct 推理
 ```
 
-### 4.2 Terminal Bridge 协议扩展
+### 8.2 Terminal Bridge 协议扩展
 
-在现有消息类型基础上，新增：
+当前推荐使用双通道隔离执行协议：
 
 **入站消息（Frontend → Bridge）**：
 ```json
 {
-  "type": "ssh_exec_command",
+  "type": "ssh_exec_process",
   "case_id": "case-123",
   "exec_id": "550e8400-e29b-41d4-a716-446655440000",
-  "command": "df -h /; status=$?; printf '\\n__EXEC_DONE_550e8400:%s\\n' \"$status\"\n"
+  "command": "df -h /"
 }
 ```
 
-Bridge 接收后：直接通过 `s.send(command)` 写入 SSH stdin（命令已包含 marker 和 `\n`，自动执行）。
+Bridge 接收后：创建独立 SSH Session，禁用 PTY，分别读取 `stdoutPipe` 与 `stderrPipe`，再将三类事件回传前端。
 
-**出站消息（Bridge → Frontend）**：
+**出站消息（Bridge → Frontend，简化示意）**：
 ```json
 {
   "type": "exec_result",
   "case_id": "case-123",
   "exec_id": "550e8400-e29b-41d4-a716-446655440000",
-  "output": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        50G   15G   35G  30% /",
+  "stdout": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        50G   15G   35G  30% /",
+  "stderr": "",
   "exit_code": 0
 }
 ```
 
-Bridge 侧：在 `on_output_start` goroutine 中扫描输出 buffer，检测到 marker 后拼装 `exec_result` 发回。
+旧的 marker 单通道协议仅作为向下兼容路径保留。双通道路径不得依赖旧变量 `output` 判断失败语义。
 
-### 4.3 Marker 协议（复用现有 terminal.ts 实现）
+### 8.3 Marker 协议（向下兼容）
 
 已有基础设施（`terminal.ts`）：
 - `buildBridgeMarker(caseId, name, index)` → `__HCI_DONE_{caseId}_{name}_{idx}_{ts}__`
@@ -606,7 +678,7 @@ Bridge 侧：在 `on_output_start` goroutine 中扫描输出 buffer，检测到 
 
 `bash_exec`/`acli_exec` 使用 exec_id 作为 marker，格式：`__EXEC_DONE_{execId16}__`（取 exec_id 前16位）。
 
-### 4.4 超时与降级策略
+### 8.4 超时与降级策略
 
 | 场景 | 超时 | 处理 |
 |------|------|------|
@@ -617,7 +689,7 @@ Bridge 侧：在 `on_output_start` goroutine 中扫描输出 buffer，检测到 
 
 ---
 
-## 八、安全模型（3 层防御）
+## 九、安全模型（3 层防御）
 
 ### 层1：命令语法净化（Sanitizer）
 
@@ -647,9 +719,9 @@ risk=2 的确认复用 `VariableRequestResult(kind="exec_confirm")` 机制，与
 
 ---
 
-## 九、代码模块归属（v2.0）
+## 十、代码模块归属（v2.0）
 
-### 9.1 目录结构
+### 10.1 目录结构
 
 ```
 app/tools/
@@ -675,7 +747,7 @@ app/adapters/clients/
 
 > **v2.0 变更**：`app/tools/shell/` → `app/tools/acli/`；`app/tools/base.py` → `app/tools/base_tool.py`
 
-### 9.2 核心类设计
+### 10.2 核心类设计
 
 ```python
 # app/tools/acli/executor.py
@@ -723,7 +795,7 @@ class BridgeRelayExecutor:
     ) -> ExecResult: ...
 ```
 
-### 9.3 `tool_registry.py` 变更对比
+### 10.3 `tool_registry.py` 变更对比
 
 ```python
 # ────────── Before（v1.x，约 430 行） ──────────
@@ -751,7 +823,7 @@ async def load_tool_registry(db: AsyncSession) -> dict[str, ToolDefinition]:
     }
 ```
 
-### 9.4 `react_engine.py` 变更
+### 10.4 `react_engine.py` 变更
 
 `_execute_tool_call()` 新增 RiskClassifier 动态覆盖逻辑：
 
@@ -782,7 +854,9 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 
 ---
 
-## 十、全链路待开发任务（v2.0）
+## 十一、全链路待开发任务（v2.0）
+
+> **历史任务说明**：本节保留 v2.0 建设期任务用于追溯。PR #443 已将旧的 `ssh_exec_command` 单通道 marker 执行升级为 `ssh_exec_process` 双通道隔离执行；后续新增工作以 T-EXEC 系列任务和 §七/§八的 v2.4 约束为准。
 
 | # | 组件 | 任务 | 优先级 |
 |---|------|------|--------|
@@ -811,7 +885,7 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 
 ---
 
-## 十一、变更历史
+## 十二、变更历史
 
 | 日期 | 版本 | 摘要 |
 |------|------|------|
@@ -821,12 +895,13 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 | 2026-06-05 | v2.1 | 补充深度分析。阐明声明式定义与底层代码配合机制，剖析"参数 Schema"修改的影响以及"使用命令模板（usage_template）"完全未被消费的实现漏洞。 |
 | 2026-06-10 | v2.2 | **FactStore 事实持久化表（PR #430）**：`desired_schema.sql` 新增 `fact` 表（T4-3），存储诊断推理过程中采集的客观事实数据；配合 `evidence_builder.py` 增加历史事实检查，解决 env_context 为空时的判定逻辑 |
 | 2026-06-11 | v2.3 | **SSH终端代理双通道隔离执行（PR #443）**：① `terminal_bridge/main.go` 新增 `ssh_exec_process` 命令分支，使用独立 SSH Session（禁用 PTY）执行命令，通过 `stdoutPipe`/`stderrPipe` 物理分流并实时推送 `exec_stdout`/`exec_stderr` 帧；② `frontend/customer/src/api/terminal.ts` 支持 `buildAgentExecProcessMessage` 消息发送；③ `frontend/customer/src/stores/chat.ts` 设立流式缓冲区 `execBuffers`，在 `postExecResult` 时传入物理隔离的标准流；④ `frontend/customer/src/components/MessageBubble.vue` 物理隔离渲染 stdout 与 stderr 纯文本区域；⑤ `backend/agent-service/app/tools/acli/executor.py` 重构输出解析提取器，优先读取双通道物理隔离输出且向下兼容单通道合并输出逻辑 |
+| 2026-06-11 | v2.4 | **工具执行契约与前置校验增强**：`bash_exec` 改为必须指定容器；新增执行前 `ToolSemanticValidator`；`acli_exec` 基于 aCLI catalog 本地快照做命令路径校验；修复双通道 `stderr` 在 `exit_code != 0` 时被 `output` 未定义异常覆盖的问题。工具管理 UI 与 SOP 发布联动仍按 T-EXEC-10/T-EXEC-11 推进。详见 [方案事件文档](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验方案.md) |
 
 ---
 
-## 十二、 工具声明 (DB) 与底层执行代码配合机制及漏洞剖析
+## 十三、工具声明 (DB) 与底层执行代码配合机制及漏洞剖析
 
-### 12.1 声明式与命令式的配合关系
+### 13.1 声明式与命令式的配合关系
 
 在超融合基础设施排障平台的设计中，工具子系统由两层架构组成，用以在“LLM 的开放式自然语言理解”与“底层的命令式安全执行”之间建立桥梁：
 
@@ -862,7 +937,7 @@ sequenceDiagram
     BE-->>LLM: 返回结构化执行结果 (ShellResult)
 ```
 
-### 12.2 修改“参数 Schema (JSON)”的影响与漏洞
+### 13.2 修改“参数 Schema (JSON)”的影响与漏洞
 
 管理员在“工具管理页面”中可以自由地编辑每个工具的“参数 Schema (JSON)”数据。但这在目前的底层实现中隐藏着一个**严重的契约断裂漏洞**：
 
@@ -875,7 +950,7 @@ sequenceDiagram
 
 因此，修改“参数 Schema”并不是纯粹的声明式变更，它与底层解析代码强绑定。**如果修改了 Schema 键名，必须同步更新底层执行代码的读取键，否则会导致系统级不可用。**
 
-### 12.3 修改“使用命令模板 (usage_template)”的完全失效漏洞
+### 13.3 修改“使用命令模板 (usage_template)”的完全失效漏洞
 
 在系统的 `tool_definition` 表中，插件式诊断工具（例如 `acli_plugin_vm_start`）具有声明好的 `usage_template`（如 `acli plugins vm_start vm_start`）。然而在目前的 v2.0 实现中，**该字段完全沦为摆设，根本没有被底层消费：**
 

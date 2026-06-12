@@ -10,6 +10,7 @@ update_trigger: agent工具设计 v2.0 落地实现（T-TOOL-05/06/07 已完成�
 # 任务清单：Agent 工具体系 v2.0
 
 > 关联方案：[agent工具设计.md](../../solution/agent/agent工具设计.md)（**必读，理解决策背景后再开发**）  
+> 最新任务事件：[bash_exec 容器化契约与工具调用前置校验任务](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验任务.md)
 > 关联方案：[agent设计.md](../../solution/agent/agent设计.md) §十（目录结构）  
 > 项目根目录：`/mnt/d/aihci/hci-troubleshoot-platform/`
 
@@ -19,6 +20,7 @@ update_trigger: agent工具设计 v2.0 落地实现（T-TOOL-05/06/07 已完成�
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-06-11 | v1.2 | 新增 T-EXEC 系列任务入口：stderr 修复、bash_exec 容器化契约、执行前语义校验、aCLI catalog、工具管理与 SOP 联动校验 |
 | 2026-05-28 | v1.1 | 完成 T-TOOL-05/06/07：conversation-service 内部 API + SSE 推送机制 |
 | 2026-05-29 | v1.0 | 初版：基于 agent工具设计.md v2.0 完整梳理，20 个任务 |
 
@@ -53,6 +55,28 @@ P2 阶段（清理）
   T17                    acli_client.py（已完成，确认即可）
   T18                    前端确认卡片
 ```
+
+## 最新迭代：T-EXEC 工具执行契约与前置校验
+
+> 详细任务清单见 [2026-06-11-bash_exec容器化契约与工具调用前置校验任务](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验任务.md)。本节仅保留现行全量入口。
+
+| 任务 | 优先级 | 状态 | 摘要 |
+|------|--------|------|------|
+| T-EXEC-01 | P0 | 已完成 | 修复双通道 `stderr` 解析异常，避免 `output` 未定义覆盖真实错误 |
+| T-EXEC-02 | P0 | 已完成 | 补充双通道失败单元测试 |
+| T-EXEC-03 | P0 | 已完成 | 更新 `bash_exec` schema，要求 `container` 必填 |
+| T-EXEC-04 | P0 | 已完成 | 实现 `ToolSemanticValidator` 基础语义校验 |
+| T-EXEC-05 | P1 | 部分完成 | 实现服务端容器执行命令构造器；当前已完成最小 `docker exec` 拼装，正式 `ContainerExecAdapter` 后续增强 |
+| T-EXEC-06 | P1 | 已完成 | 新增 aCLI catalog 同步脚本与本地快照 |
+| T-EXEC-07 | P1 | 已完成 | `acli_exec` 基于 catalog 校验命令路径 |
+| T-EXEC-08 | P1 | 已完成 | ReactEngine 校验失败自修正，不触发真实执行 |
+| T-EXEC-09 | P2 | 已完成 | 工具管理校验 API |
+| T-EXEC-10 | P2 | 待实施 | 工具管理 UI 展示校验结果 |
+| T-EXEC-11 | P2 | 待实施 | SOP 发布联动工具契约校验 |
+| T-EXEC-12 | P1 | 已完成 | 新增校验指标与结构化日志 |
+| T-EXEC-13 | P1 | 已完成 | 更新测试与质量门禁 |
+
+**当前优先级**：前置执行链路已完成，后续优先补 T-EXEC-10/T-EXEC-11，让管理页保存和 SOP 发布也进入同一套校验闭环。
 
 ---
 

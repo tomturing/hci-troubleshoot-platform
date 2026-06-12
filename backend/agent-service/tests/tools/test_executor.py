@@ -16,6 +16,7 @@ from app.tools.acli.executor import (
     BridgeRelayExecutor,
     CommandSanitizer,
     ExecResult,
+    ExitCodeMeaning,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,7 +167,7 @@ class TestBridgeRelayExecutor:
 
             result = await executor.execute(
                 tool_name="bash_exec",
-                args={"command": "df -h", "reason": "测试超时"},
+                args={"container": "asv-con", "command": "df -h", "reason": "测试超时"},
                 conversation_id="conv-123",
             )
 
@@ -195,7 +196,7 @@ class TestBridgeRelayExecutor:
 
             result = await executor.execute(
                 tool_name="bash_exec",
-                args={"command": "cat /var/log/big.log", "reason": "测试截断"},
+                args={"container": "asv-con", "command": "cat /var/log/big.log", "reason": "测试截断"},
                 conversation_id="conv-123",
             )
 
@@ -223,13 +224,39 @@ class TestBridgeRelayExecutor:
 
             result = await executor.execute(
                 tool_name="bash_exec",
-                args={"command": "df -h", "reason": "测试"},
+                args={"container": "asv-con", "command": "df -h", "reason": "测试"},
                 conversation_id="conv-123",
             )
 
             assert not result.truncated
             assert len(result.stdout) == 3000
             assert result.exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_dual_channel_stderr_preserved_on_nonzero_exit(self, executor, mock_redis):
+        """双通道失败时保留真实 stderr，不再被 output 未定义异常覆盖"""
+        with patch.object(executor._http_client, "post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"ok": True, "exec_id": "test-exec-id"}
+            mock_response.raise_for_status = MagicMock()
+            mock_post.return_value = mock_response
+
+            mock_redis.client.blpop.return_value = (
+                "exec_result:test-exec-id",
+                json.dumps({"stdout": "", "stderr": "invalid option", "exit_code": 2}),
+            )
+
+            result = await executor.execute(
+                tool_name="bash_exec",
+                args={"container": "asv-con", "command": "ps --bad-option", "reason": "测试 stderr"},
+                conversation_id="conv-123",
+            )
+
+            assert result.exit_code == 2
+            assert result.stdout == ""
+            assert "invalid option" in result.stderr
+            assert "cannot access local variable 'output'" not in result.stderr
+            assert result.exit_code_meaning == ExitCodeMeaning.UNKNOWN_ERROR
 
     # ── 测试命令净化失败返回拒绝 ───────────────────────────────────────────────
 
@@ -238,7 +265,7 @@ class TestBridgeRelayExecutor:
         """命令净化失败返回拒绝结果"""
         result = await executor.execute(
             tool_name="bash_exec",
-            args={"command": "ls && rm -rf", "reason": "测试净化拒绝"},
+            args={"container": "asv-con", "command": "ls && rm -rf", "reason": "测试净化拒绝"},
             conversation_id="conv-123",
         )
 
@@ -308,7 +335,7 @@ class TestBridgeRelayExecutor:
 
             result = await executor.execute(
                 tool_name="acli_exec",
-                args={"command": "acli vm abc-123 restart", "reason": "测试"},
+                args={"command": "acli service asv vtpdaemon restart", "reason": "测试"},
                 conversation_id="conv-123",
             )
 
@@ -324,7 +351,7 @@ class TestBridgeRelayExecutor:
 
             result = await executor.execute(
                 tool_name="bash_exec",
-                args={"command": "df -h", "reason": "测试 HTTP 失败"},
+                args={"container": "asv-con", "command": "df -h", "reason": "测试 HTTP 失败"},
                 conversation_id="conv-123",
             )
 
@@ -350,7 +377,7 @@ class TestBridgeRelayExecutor:
 
             result = await executor.execute(
                 tool_name="bash_exec",
-                args={"command": "df -h", "reason": "测试解析失败"},
+                args={"container": "asv-con", "command": "df -h", "reason": "测试解析失败"},
                 conversation_id="conv-123",
             )
 
@@ -446,7 +473,7 @@ class TestToolEntryFunctions:
         with pytest.raises(RuntimeError, match="未初始化"):
             import asyncio
 
-            asyncio.run(bash_exec("df -h", "测试", "conv-123"))
+            asyncio.run(bash_exec("asv-con", "df -h", "测试", "conv-123"))
 
     def test_set_executor(self):
         """测试 set_executor 函数"""

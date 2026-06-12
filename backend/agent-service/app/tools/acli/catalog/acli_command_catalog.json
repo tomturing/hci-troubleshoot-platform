@@ -1,0 +1,1352 @@
+{
+  "source_url": "http://acli.sangfor.com.cn:6888/commandList",
+  "source_updated_at": "2026-05-20",
+  "generated_at": "2026-06-11T16:34:12.689839+00:00",
+  "hash": "e5009671d0df8ace6aaa359b0eecd30fd1946b488ad62e0b5cad27a73ab481d7",
+  "commands": [
+    {
+      "command": "acli acli command list",
+      "summary": "展示所有的acli命令"
+    },
+    {
+      "command": "acli acli log get",
+      "summary": "展示acli工具自身的日志"
+    },
+    {
+      "command": "acli acli sync",
+      "summary": "同步acli命令到其他节点"
+    },
+    {
+      "command": "acli alert get",
+      "summary": "查询告警信息"
+    },
+    {
+      "command": "acli alert list",
+      "summary": "展示当天去重的告警"
+    },
+    {
+      "command": "acli hardware cpu microcode file list",
+      "summary": "查看cpu微码文件"
+    },
+    {
+      "command": "acli hardware gpu config get",
+      "summary": "获取GPU配置信息"
+    },
+    {
+      "command": "acli hardware gpu config list",
+      "summary": "展示GPU配置信息列表"
+    },
+    {
+      "command": "acli hardware hostcli hostcli",
+      "summary": "管理和监控主机硬件相关命令"
+    },
+    {
+      "command": "acli log cgroup parse",
+      "summary": "解析cgroup黑盒日志"
+    },
+    {
+      "command": "acli log get",
+      "summary": "获取平台日志"
+    },
+    {
+      "command": "acli log switch",
+      "summary": "日志轮转命令"
+    },
+    {
+      "command": "acli network anet config configchannel get",
+      "summary": "获取网络配置通道检测模块配置"
+    },
+    {
+      "command": "acli network anet config configchannel serviceinfo list",
+      "summary": "获取网络配置通道各服务当前健康状态"
+    },
+    {
+      "command": "acli network anet config configchannel set",
+      "summary": "设置网络配置通道检测模块配置"
+    },
+    {
+      "command": "acli network anet config fullsync",
+      "summary": "执行全同步任务"
+    },
+    {
+      "command": "acli network anet config mac get",
+      "summary": "查看mac表容量"
+    },
+    {
+      "command": "acli network anet config mac set",
+      "summary": "调整mac表容量"
+    },
+    {
+      "command": "acli network anet config nat get",
+      "summary": "查看nat表项限制"
+    },
+    {
+      "command": "acli network anet config nat set",
+      "summary": "调整nat表项限制"
+    },
+    {
+      "command": "acli network anet forwarding get",
+      "summary": "查看转发核"
+    },
+    {
+      "command": "acli network anet forwarding set",
+      "summary": "调整转发核"
+    },
+    {
+      "command": "acli network anet mirror delete",
+      "summary": "删除流量镜像"
+    },
+    {
+      "command": "acli network anet mirror get",
+      "summary": "查看流量镜像信息"
+    },
+    {
+      "command": "acli network anet mirror list",
+      "summary": "查看流量镜像列表"
+    },
+    {
+      "command": "acli network anet session get",
+      "summary": "查看数据面session信息"
+    },
+    {
+      "command": "acli network anet vrouter get",
+      "summary": "查看虚拟路由器信息"
+    },
+    {
+      "command": "acli network anet vrouter list",
+      "summary": "查看虚拟路由器列表"
+    },
+    {
+      "command": "acli network anet vrouter migrate",
+      "summary": "迁移虚拟路由器"
+    },
+    {
+      "command": "acli network anet vrouter vrrp get",
+      "summary": "查看数据面vrrp信息"
+    },
+    {
+      "command": "acli network bond arp_interval get",
+      "summary": "获得聚合口arp活性探测频率"
+    },
+    {
+      "command": "acli network bond delete",
+      "summary": "删除聚合口"
+    },
+    {
+      "command": "acli network bond get",
+      "summary": "查看聚合口信息"
+    },
+    {
+      "command": "acli network bond list",
+      "summary": "查看聚合口列表"
+    },
+    {
+      "command": "acli network bond mode get",
+      "summary": "查看聚合口组网模式"
+    },
+    {
+      "command": "acli network bond set",
+      "summary": "更新聚合口"
+    },
+    {
+      "command": "acli network mgmt switch",
+      "summary": "切换管理口角色到指定网口"
+    },
+    {
+      "command": "acli network nic down",
+      "summary": "禁用主机网口"
+    },
+    {
+      "command": "acli network nic get",
+      "summary": "查看主机网口信息"
+    },
+    {
+      "command": "acli network nic irqcpu list",
+      "summary": "展示网口中断核信息列表"
+    },
+    {
+      "command": "acli network nic list",
+      "summary": "查看主机网口列表"
+    },
+    {
+      "command": "acli network nic lldp disable",
+      "summary": "禁用网口lldp"
+    },
+    {
+      "command": "acli network nic lldp enable",
+      "summary": "启用网口lldp"
+    },
+    {
+      "command": "acli network nic lldp get",
+      "summary": "查看网口lldp"
+    },
+    {
+      "command": "acli network nic mtu get",
+      "summary": "查看网口mtu"
+    },
+    {
+      "command": "acli network nic mtu set",
+      "summary": "设置网口mtu"
+    },
+    {
+      "command": "acli network nic queue get",
+      "summary": "查看网口队列数"
+    },
+    {
+      "command": "acli network nic queue set",
+      "summary": "设置网口队列数"
+    },
+    {
+      "command": "acli network nic rdma disable",
+      "summary": "关闭指定厂商的指定ib网卡设备的rdma功能"
+    },
+    {
+      "command": "acli network nic rdma enable",
+      "summary": "开启指定厂商的指定ib网卡设备的rdma功能"
+    },
+    {
+      "command": "acli network nic rdma get",
+      "summary": "获取指定厂商的指定ib网卡设备的信息"
+    },
+    {
+      "command": "acli network nic rdma list",
+      "summary": "获取指定厂商的所有ib网卡设备"
+    },
+    {
+      "command": "acli network nic reorder",
+      "summary": "调整网口顺序"
+    },
+    {
+      "command": "acli network nic ring get",
+      "summary": "查看当前网口环形缓冲区参数"
+    },
+    {
+      "command": "acli network nic ring set",
+      "summary": "设置当前网口环形缓冲区参数"
+    },
+    {
+      "command": "acli network nic set",
+      "summary": "设置主机网口"
+    },
+    {
+      "command": "acli network nic up",
+      "summary": "启用主机网口"
+    },
+    {
+      "command": "acli network port check",
+      "summary": "检查网络端口状态"
+    },
+    {
+      "command": "acli network sfd_bytools",
+      "summary": "数据面sfd_byTools.sh脚本"
+    },
+    {
+      "command": "acli network vlink check",
+      "summary": "检查vlink配置状态"
+    },
+    {
+      "command": "acli network vxlan list",
+      "summary": "查询集群vxlan信息列表"
+    },
+    {
+      "command": "acli network vxlan set",
+      "summary": "更新集群VXLAN配置"
+    },
+    {
+      "command": "acli platform backup bcfg get",
+      "summary": "查看备份点配置文件{$vmid}.conf.bcfg内容"
+    },
+    {
+      "command": "acli platform backup cbt file cbtinfo get",
+      "summary": "显示虚拟机目录下所有磁盘的CBT信息"
+    },
+    {
+      "command": "acli platform backup cbt file dump",
+      "summary": "以十六进制格式展示CBT文件内容"
+    },
+    {
+      "command": "acli platform backup cbt file verify",
+      "summary": "验证CBT文件的完整性和一致性"
+    },
+    {
+      "command": "acli platform backup config get",
+      "summary": "查询备份相关配置"
+    },
+    {
+      "command": "acli platform backup config set",
+      "summary": "设置备份任务配置文件backup.json的内容"
+    },
+    {
+      "command": "acli platform backup datamover config get",
+      "summary": "获取datamover配置文件内容"
+    },
+    {
+      "command": "acli platform backup datamover config set",
+      "summary": "设置datamover配置文件内容"
+    },
+    {
+      "command": "acli platform backup datamover performancedetect set",
+      "summary": "开启或关闭datamover性能瓶颈探测"
+    },
+    {
+      "command": "acli platform backup datamover performanceindicator get",
+      "summary": "查询datamover运行过程中的性能指标项和运行状态"
+    },
+    {
+      "command": "acli platform backup datamover performancereport get",
+      "summary": "获取datamover运行过程中的性能瓶颈探测报告"
+    },
+    {
+      "command": "acli platform backup mergedata config get",
+      "summary": "查询数据合并任务配置文件merge_data.json内容"
+    },
+    {
+      "command": "acli platform backup mergedata config set",
+      "summary": "设置数据合并任务配置文件merge_data.json内容"
+    },
+    {
+      "command": "acli platform backup region config set",
+      "summary": "设置区域快照的运行时参数配置"
+    },
+    {
+      "command": "acli platform cfs status",
+      "summary": "验证/cfs目录写入能力"
+    },
+    {
+      "command": "acli platform info get",
+      "summary": "获得系统信息"
+    },
+    {
+      "command": "acli platform mysql config get",
+      "summary": "获取MySQL配置"
+    },
+    {
+      "command": "acli platform mysql-manager-cli",
+      "summary": "平台mysql-manager-cli工具"
+    },
+    {
+      "command": "acli platform node cert get",
+      "summary": "获取证书的md5值"
+    },
+    {
+      "command": "acli platform node cert list",
+      "summary": "列出节点证书"
+    },
+    {
+      "command": "acli platform node get",
+      "summary": "查看节点信息"
+    },
+    {
+      "command": "acli platform node list",
+      "summary": "查看节点列表"
+    },
+    {
+      "command": "acli platform redis redis-cli",
+      "summary": "平台redis-cli工具"
+    },
+    {
+      "command": "acli platform scheduler quota get",
+      "summary": "查询调度器配额"
+    },
+    {
+      "command": "acli platform scheduler quota set",
+      "summary": "修改调度器配额"
+    },
+    {
+      "command": "acli platform snapshot mysql get",
+      "summary": "快照数据库信息查询"
+    },
+    {
+      "command": "acli platform version get",
+      "summary": "获取平台版本"
+    },
+    {
+      "command": "acli platform zookeeper zkcli",
+      "summary": "平台zkcli-c工具"
+    },
+    {
+      "command": "acli plugin cleanup",
+      "summary": "对指定插件进行清理目录和kill相关进程"
+    },
+    {
+      "command": "acli plugin info",
+      "summary": "获取指定插件信息"
+    },
+    {
+      "command": "acli plugin install",
+      "summary": "插件安装/更新"
+    },
+    {
+      "command": "acli plugin list",
+      "summary": "获取已安装的插件列表"
+    },
+    {
+      "command": "acli plugin sync",
+      "summary": "将已安装的所有插件及配置同步到指定集群节点"
+    },
+    {
+      "command": "acli plugin uninstall",
+      "summary": "插件卸载"
+    },
+    {
+      "command": "acli plugins asan_ops asan_ops",
+      "summary": "执行虚拟存储检测工具"
+    },
+    {
+      "command": "acli plugins asys asys",
+      "summary": "执行系统检查工具对主机进行检测"
+    },
+    {
+      "command": "acli plugins log_collect cancel",
+      "summary": "取消日志收集任务"
+    },
+    {
+      "command": "acli plugins log_collect create",
+      "summary": "创建日志收集任务"
+    },
+    {
+      "command": "acli plugins log_collect progress",
+      "summary": "查看日志采集任务的进度"
+    },
+    {
+      "command": "acli plugins netdoctor netdoctor",
+      "summary": "进行网络相关问题的排障，支持诊断箱（多场景排障）和工具箱（快速工具）两种模式。"
+    },
+    {
+      "command": "acli plugins performance_tools analyze",
+      "summary": "分析日志数据，找出系统、虚拟机大致瓶颈"
+    },
+    {
+      "command": "acli plugins performance_tools check_host",
+      "summary": "检查宿主机环境信息：CPU、内存、超线程等"
+    },
+    {
+      "command": "acli plugins performance_tools check_vm",
+      "summary": "检查虚拟机的状态（虚拟机配置文件、IO、MEM、CPU），同时自动检测虚拟机运行主机，必须输入虚拟机ID"
+    },
+    {
+      "command": "acli plugins performance_tools check_vm_model",
+      "summary": "检测虚拟机业务模型"
+    },
+    {
+      "command": "acli plugins performance_tools collect_log",
+      "summary": "收集主机性能相关日志、配置、命令运行结果"
+    },
+    {
+      "command": "acli plugins performance_tools combined collect_log",
+      "summary": "以虚拟机为单位，自动监控虚拟机，自动检测虚拟机和所在主机，并将相关日志进行打包"
+    },
+    {
+      "command": "acli plugins performance_tools isolate list",
+      "summary": "查看 CPU 的隔离状态"
+    },
+    {
+      "command": "acli plugins performance_tools isolate only_pcpu",
+      "summary": "指定 CPU 核心隔离"
+    },
+    {
+      "command": "acli plugins performance_tools isolate vs_network_irq",
+      "summary": "自动找到存储通信口网卡中断隔离"
+    },
+    {
+      "command": "acli plugins performance_tools monitor clean",
+      "summary": "删除上次产生的监控数据"
+    },
+    {
+      "command": "acli plugins performance_tools monitor start",
+      "summary": "监控（磁盘 IO、VS IO、虚拟机 IO、pidstat、网络）信息存储文件中"
+    },
+    {
+      "command": "acli plugins performance_tools monitor status",
+      "summary": "获取监控数据状态"
+    },
+    {
+      "command": "acli plugins performance_tools monitor stop",
+      "summary": "退出监控程序"
+    },
+    {
+      "command": "acli plugins performance_tools shell",
+      "summary": "程序内置了一些脚本文件，当环境中不存在时可执行"
+    },
+    {
+      "command": "acli plugins performance_tools unisolate",
+      "summary": "取消 CPU 隔离，还原设置；取消虚拟机隔离"
+    },
+    {
+      "command": "acli plugins performance_tools update",
+      "summary": "更新程序"
+    },
+    {
+      "command": "acli plugins performance_tools version",
+      "summary": "版本信息"
+    },
+    {
+      "command": "acli plugins vm_start vm_start",
+      "summary": "虚拟机开机失败检测"
+    },
+    {
+      "command": "acli plugins vm_suspend vm_suspend",
+      "summary": "虚拟机挂起检测"
+    },
+    {
+      "command": "acli service anet vn-cluster-service-api rps disable",
+      "summary": "禁用主机负载均衡RPS"
+    },
+    {
+      "command": "acli service anet vn-cluster-service-api rps enable",
+      "summary": "启用主机负载均衡RPS"
+    },
+    {
+      "command": "acli service anet vn-cluster-service-api rps status",
+      "summary": "获取主机负载均衡RPS启用状态"
+    },
+    {
+      "command": "acli service anet vn-manager-service-api restart",
+      "summary": "重启vn-manager-service-api服务"
+    },
+    {
+      "command": "acli service anet vn-manager-service-api start",
+      "summary": "启动vn-manager-service-api服务"
+    },
+    {
+      "command": "acli service anet vn-manager-service-api status",
+      "summary": "查看vn-manager-service-api服务状态"
+    },
+    {
+      "command": "acli service anet vn-manager-service-api stop",
+      "summary": "停止vn-manager-service-api服务"
+    },
+    {
+      "command": "acli service anet vn-node-agent-api restart",
+      "summary": "重启vn-node-agent-api服务"
+    },
+    {
+      "command": "acli service anet vn-node-agent-api start",
+      "summary": "启动vn-node-agent-api服务"
+    },
+    {
+      "command": "acli service anet vn-node-agent-api status",
+      "summary": "查看vn-node-agent-api服务状态"
+    },
+    {
+      "command": "acli service anet vn-node-agent-api stop",
+      "summary": "停止vn-node-agent-api服务"
+    },
+    {
+      "command": "acli service asv apache2 restart",
+      "summary": "重启apache2服务"
+    },
+    {
+      "command": "acli service asv apache2 start",
+      "summary": "启动apache2服务"
+    },
+    {
+      "command": "acli service asv apache2 status",
+      "summary": "查看apache2服务状态"
+    },
+    {
+      "command": "acli service asv apache2 stop",
+      "summary": "停止apache2服务"
+    },
+    {
+      "command": "acli service asv authorize_client restart",
+      "summary": "重启authorize_client服务"
+    },
+    {
+      "command": "acli service asv authorize_client start",
+      "summary": "启动authorize_client服务"
+    },
+    {
+      "command": "acli service asv authorize_client status",
+      "summary": "查看authorize_client服务状态"
+    },
+    {
+      "command": "acli service asv authorize_client stop",
+      "summary": "停止authorize_client服务"
+    },
+    {
+      "command": "acli service asv authorize_server restart",
+      "summary": "重启authorize_server服务"
+    },
+    {
+      "command": "acli service asv authorize_server start",
+      "summary": "启动authorize_server服务"
+    },
+    {
+      "command": "acli service asv authorize_server status",
+      "summary": "查看authorize_server服务状态"
+    },
+    {
+      "command": "acli service asv authorize_server stop",
+      "summary": "停止authorize_server服务"
+    },
+    {
+      "command": "acli service asv corosync restart",
+      "summary": "重启corosync服务"
+    },
+    {
+      "command": "acli service asv corosync start",
+      "summary": "启动corosync服务"
+    },
+    {
+      "command": "acli service asv corosync status",
+      "summary": "查看corosync服务状态"
+    },
+    {
+      "command": "acli service asv corosync stop",
+      "summary": "停止corosync服务"
+    },
+    {
+      "command": "acli service asv exporter restart",
+      "summary": "重启exporter服务"
+    },
+    {
+      "command": "acli service asv exporter start",
+      "summary": "启动exporter服务"
+    },
+    {
+      "command": "acli service asv exporter status",
+      "summary": "查看exporter服务状态"
+    },
+    {
+      "command": "acli service asv exporter stop",
+      "summary": "停止exporter服务"
+    },
+    {
+      "command": "acli service asv loadman config get",
+      "summary": "获取loadman服务配置"
+    },
+    {
+      "command": "acli service asv loadman config set",
+      "summary": "更新loadman服务配置"
+    },
+    {
+      "command": "acli service asv loadman maintenance get",
+      "summary": "获取过载保护功能相关维护信息"
+    },
+    {
+      "command": "acli service asv loadman maintenance set",
+      "summary": "过载保护功能相关维护操作"
+    },
+    {
+      "command": "acli service asv loadman restart",
+      "summary": "重启loadman服务"
+    },
+    {
+      "command": "acli service asv loadman start",
+      "summary": "启动loadman服务"
+    },
+    {
+      "command": "acli service asv loadman status",
+      "summary": "查询loadman服务状态"
+    },
+    {
+      "command": "acli service asv loadman stop",
+      "summary": "停止loadman服务"
+    },
+    {
+      "command": "acli service asv mgmt-node-agent-api get",
+      "summary": "请求mgmt-node-agent-api获取接口数据"
+    },
+    {
+      "command": "acli service asv mgmt-node-agent-api restart",
+      "summary": "重启mgmt-node-agent-api服务"
+    },
+    {
+      "command": "acli service asv mgmt-node-agent-api start",
+      "summary": "启动mgmt-node-agent-api服务"
+    },
+    {
+      "command": "acli service asv mgmt-node-agent-api status",
+      "summary": "查看mgmt-node-agent-api服务运行状态"
+    },
+    {
+      "command": "acli service asv mgmt-node-agent-api stop",
+      "summary": "停止mgmt-node-agent-api服务"
+    },
+    {
+      "command": "acli service asv mgmt-node-agent-periodic restart",
+      "summary": "重启mgmt-node-agent-periodic服务"
+    },
+    {
+      "command": "acli service asv mgmt-node-agent-periodic start",
+      "summary": "启动mgmt-node-agent-periodic服务"
+    },
+    {
+      "command": "acli service asv mgmt-node-agent-periodic status",
+      "summary": "查看mgmt-node-agent-periodic服务运行状态"
+    },
+    {
+      "command": "acli service asv mgmt-node-agent-periodic stop",
+      "summary": "停止mgmt-node-agent-periodic服务"
+    },
+    {
+      "command": "acli service asv mysql restart",
+      "summary": "重启mysql服务"
+    },
+    {
+      "command": "acli service asv mysql start",
+      "summary": "启动mysql服务"
+    },
+    {
+      "command": "acli service asv mysql status",
+      "summary": "查看mysql服务状态"
+    },
+    {
+      "command": "acli service asv mysql stop",
+      "summary": "停止mysql服务"
+    },
+    {
+      "command": "acli service asv mysql-managerd restart",
+      "summary": "重启mysql-managerd服务"
+    },
+    {
+      "command": "acli service asv mysql-managerd start",
+      "summary": "启动mysql-managerd服务"
+    },
+    {
+      "command": "acli service asv mysql-managerd status",
+      "summary": "查看mysql-managerd服务状态"
+    },
+    {
+      "command": "acli service asv mysql-managerd stop",
+      "summary": "停止mysql-managerd服务"
+    },
+    {
+      "command": "acli service asv perl-services restart",
+      "summary": "重启基础的perl相关的服务"
+    },
+    {
+      "command": "acli service asv pmxcfs restart",
+      "summary": "重启pmxcfs服务"
+    },
+    {
+      "command": "acli service asv pmxcfs start",
+      "summary": "启动pmxcfs服务"
+    },
+    {
+      "command": "acli service asv pmxcfs status",
+      "summary": "查看pmxcfs服务状态"
+    },
+    {
+      "command": "acli service asv pmxcfs stop",
+      "summary": "停止pmxcfs服务"
+    },
+    {
+      "command": "acli service asv redis restart",
+      "summary": "重启redis服务"
+    },
+    {
+      "command": "acli service asv redis start",
+      "summary": "启动redis服务"
+    },
+    {
+      "command": "acli service asv redis status",
+      "summary": "查看redis服务状态"
+    },
+    {
+      "command": "acli service asv redis stop",
+      "summary": "停止redis服务"
+    },
+    {
+      "command": "acli service asv rrdcached restart",
+      "summary": "重启rrdcached服务"
+    },
+    {
+      "command": "acli service asv rrdcached start",
+      "summary": "启动rrdcached服务"
+    },
+    {
+      "command": "acli service asv rrdcached status",
+      "summary": "查看rrdcached服务状态"
+    },
+    {
+      "command": "acli service asv rrdcached stop",
+      "summary": "停止rrdcached服务"
+    },
+    {
+      "command": "acli service asv rsyncd restart",
+      "summary": "重启rsyncd服务"
+    },
+    {
+      "command": "acli service asv rsyncd start",
+      "summary": "启动rsyncd服务"
+    },
+    {
+      "command": "acli service asv rsyncd status",
+      "summary": "查看rsyncd服务状态"
+    },
+    {
+      "command": "acli service asv rsyncd stop",
+      "summary": "停止rsyncd服务"
+    },
+    {
+      "command": "acli service asv sangfor_waf restart",
+      "summary": "重启sangfor_waf服务"
+    },
+    {
+      "command": "acli service asv sangfor_waf start",
+      "summary": "启动sangfor_waf服务"
+    },
+    {
+      "command": "acli service asv sangfor_waf status",
+      "summary": "查看sangfor_waf服务状态"
+    },
+    {
+      "command": "acli service asv sangfor_waf stop",
+      "summary": "停止sangfor_waf服务"
+    },
+    {
+      "command": "acli service asv vtpalertd restart",
+      "summary": "重启vtpalertd服务"
+    },
+    {
+      "command": "acli service asv vtpalertd start",
+      "summary": "启动vtpalertd服务"
+    },
+    {
+      "command": "acli service asv vtpalertd status",
+      "summary": "查看vtpalertd服务状态"
+    },
+    {
+      "command": "acli service asv vtpalertd stop",
+      "summary": "停止vtpalertd服务"
+    },
+    {
+      "command": "acli service asv vtpcron restart",
+      "summary": "重启vtpcron服务"
+    },
+    {
+      "command": "acli service asv vtpcron start",
+      "summary": "启动vtpcron服务"
+    },
+    {
+      "command": "acli service asv vtpcron status",
+      "summary": "查看vtpcron服务状态"
+    },
+    {
+      "command": "acli service asv vtpcron stop",
+      "summary": "停止vtpcron服务"
+    },
+    {
+      "command": "acli service asv vtpdaemon opqueue config get",
+      "summary": "获取进程操作队列配置"
+    },
+    {
+      "command": "acli service asv vtpdaemon opqueue config set",
+      "summary": "设置进程操作队列配置"
+    },
+    {
+      "command": "acli service asv vtpdaemon restart",
+      "summary": "重启vtpdaemon服务"
+    },
+    {
+      "command": "acli service asv vtpdaemon start",
+      "summary": "启动vtpdaemon服务"
+    },
+    {
+      "command": "acli service asv vtpdaemon status",
+      "summary": "查看vtpdaemon服务状态"
+    },
+    {
+      "command": "acli service asv vtpdaemon stop",
+      "summary": "停止vtpdaemon服务"
+    },
+    {
+      "command": "acli service asv vtplogd restart",
+      "summary": "重启vtplogd服务"
+    },
+    {
+      "command": "acli service asv vtplogd start",
+      "summary": "启动vtplogd服务"
+    },
+    {
+      "command": "acli service asv vtplogd status",
+      "summary": "查看vtplogd服务状态"
+    },
+    {
+      "command": "acli service asv vtplogd stop",
+      "summary": "停止vtplogd服务"
+    },
+    {
+      "command": "acli service asv vtpperlproxy restart",
+      "summary": "重启vtpperlproxy服务"
+    },
+    {
+      "command": "acli service asv vtpperlproxy start",
+      "summary": "启动vtpperlproxy服务"
+    },
+    {
+      "command": "acli service asv vtpperlproxy status",
+      "summary": "查看vtpperlproxy服务状态"
+    },
+    {
+      "command": "acli service asv vtpperlproxy stop",
+      "summary": "停止vtpperlproxy服务"
+    },
+    {
+      "command": "acli service asv vtpstatd restart",
+      "summary": "重启vtpstatd服务"
+    },
+    {
+      "command": "acli service asv vtpstatd start",
+      "summary": "启动vtpstatd服务"
+    },
+    {
+      "command": "acli service asv vtpstatd status",
+      "summary": "查看vtpstatd服务状态"
+    },
+    {
+      "command": "acli service asv vtpstatd stop",
+      "summary": "停止vtpstatd服务"
+    },
+    {
+      "command": "acli service asv zk restart",
+      "summary": "重启zk服务"
+    },
+    {
+      "command": "acli service asv zk start",
+      "summary": "启动zk服务"
+    },
+    {
+      "command": "acli service asv zk status",
+      "summary": "查看zk服务状态"
+    },
+    {
+      "command": "acli service asv zk stop",
+      "summary": "停止zk服务"
+    },
+    {
+      "command": "acli service host hostd restart",
+      "summary": "重启hostd服务"
+    },
+    {
+      "command": "acli service host hostd start",
+      "summary": "启动hostd服务"
+    },
+    {
+      "command": "acli service host hostd status",
+      "summary": "查看hostd服务状态"
+    },
+    {
+      "command": "acli service host hostd stop",
+      "summary": "停止hostd服务"
+    },
+    {
+      "command": "acli service host lsud restart",
+      "summary": "重启lsud服务"
+    },
+    {
+      "command": "acli service host lsud start",
+      "summary": "启动lsud服务"
+    },
+    {
+      "command": "acli service host lsud status",
+      "summary": "查看lsud服务状态"
+    },
+    {
+      "command": "acli service host lsud stop",
+      "summary": "停止lsud服务"
+    },
+    {
+      "command": "acli storage asan brick iostat",
+      "summary": "查看brick的iostat"
+    },
+    {
+      "command": "acli storage asan disk list",
+      "summary": "展示虚拟存储卷的磁盘信息列表"
+    },
+    {
+      "command": "acli storage asan disk residual clean",
+      "summary": "清理磁盘残留信息"
+    },
+    {
+      "command": "acli storage asan version get",
+      "summary": "获取VS版本号"
+    },
+    {
+      "command": "acli storage asan volume iostat",
+      "summary": "获取虚拟存储卷iostat信息"
+    },
+    {
+      "command": "acli storage asan volume list",
+      "summary": "获取虚拟存储卷信息列表"
+    },
+    {
+      "command": "acli storage asan vs_disk_scan",
+      "summary": "disk_scan.sh命令"
+    },
+    {
+      "command": "acli storage asan vs_hotplug",
+      "summary": "vs_hotplug.sh命令"
+    },
+    {
+      "command": "acli storage asan vs_json_rw",
+      "summary": "vs_json_rw.py命令"
+    },
+    {
+      "command": "acli storage asan vs_rpc_tool",
+      "summary": "vs_rpc_tool命令"
+    },
+    {
+      "command": "acli storage asan vs_tier",
+      "summary": "vs_tier_cli.py命令"
+    },
+    {
+      "command": "acli storage asan vs_update_nfs",
+      "summary": "vs_update_nfs.sh命令"
+    },
+    {
+      "command": "acli storage asan vs_vginfo",
+      "summary": "vs_vginfo.sh命令"
+    },
+    {
+      "command": "acli storage fc host list",
+      "summary": "FC存储HBA设备列表信息"
+    },
+    {
+      "command": "acli storage fc host statistics get",
+      "summary": "FC存储HBA设备相关统计信息"
+    },
+    {
+      "command": "acli storage mount",
+      "summary": "查看指定存储ID的挂载信息"
+    },
+    {
+      "command": "acli storage other list",
+      "summary": "展示除虚拟存储以外的其他存储信息列表"
+    },
+    {
+      "command": "acli storage sffsck",
+      "summary": "sffsck命令"
+    },
+    {
+      "command": "acli storage umount",
+      "summary": "卸载指定存储的挂载点"
+    },
+    {
+      "command": "acli system cgroup cpu list",
+      "summary": "列出所有cgroup目录下和cpu相关的文件"
+    },
+    {
+      "command": "acli system cgroup cpu tree",
+      "summary": "显示cpu cgroup子系统的子组结构"
+    },
+    {
+      "command": "acli system cgroup get",
+      "summary": "显示指定cgroup的所有参数信息"
+    },
+    {
+      "command": "acli system cgroup memory tree",
+      "summary": "显示内存cgroup子系统的子组结构"
+    },
+    {
+      "command": "acli system chping",
+      "summary": "chping命令"
+    },
+    {
+      "command": "acli system cpu info",
+      "summary": "系统CPU信息"
+    },
+    {
+      "command": "acli system date",
+      "summary": "date命令，获取当前系统时间"
+    },
+    {
+      "command": "acli system df",
+      "summary": "df命令"
+    },
+    {
+      "command": "acli system dmidecode",
+      "summary": "dmidecode命令"
+    },
+    {
+      "command": "acli system du",
+      "summary": "du命令"
+    },
+    {
+      "command": "acli system ethtool",
+      "summary": "ethtool命令"
+    },
+    {
+      "command": "acli system fio",
+      "summary": "fio命令"
+    },
+    {
+      "command": "acli system free",
+      "summary": "free命令"
+    },
+    {
+      "command": "acli system hosts get",
+      "summary": "获取系统主机信息"
+    },
+    {
+      "command": "acli system iostat",
+      "summary": "iostat命令"
+    },
+    {
+      "command": "acli system ipmitool",
+      "summary": "ipmitool命令"
+    },
+    {
+      "command": "acli system kill",
+      "summary": "kill命令"
+    },
+    {
+      "command": "acli system lldptool",
+      "summary": "lldptool命令"
+    },
+    {
+      "command": "acli system ls",
+      "summary": "ls命令，限制查看特定目录下的文件"
+    },
+    {
+      "command": "acli system lsblk",
+      "summary": "lsblk命令"
+    },
+    {
+      "command": "acli system lsmod",
+      "summary": "lsmod命令，用于查看内核模块"
+    },
+    {
+      "command": "acli system lsof",
+      "summary": "lsof命令"
+    },
+    {
+      "command": "acli system memory ce_count get",
+      "summary": "获取内存的ce_count数据"
+    },
+    {
+      "command": "acli system memory dump",
+      "summary": "系统内存占用情况"
+    },
+    {
+      "command": "acli system memory ecc_data get",
+      "summary": "获取系统内存ECC数据"
+    },
+    {
+      "command": "acli system memory info",
+      "summary": "查看系统内存详细信息"
+    },
+    {
+      "command": "acli system memory usage get",
+      "summary": "sfd_ps_mem.py命令"
+    },
+    {
+      "command": "acli system mounts get",
+      "summary": "查看系统mounts信息"
+    },
+    {
+      "command": "acli system mpstat",
+      "summary": "mpstat命令"
+    },
+    {
+      "command": "acli system multipath",
+      "summary": "multipath命令"
+    },
+    {
+      "command": "acli system netstat",
+      "summary": "netstat命令"
+    },
+    {
+      "command": "acli system perf",
+      "summary": "perf命令"
+    },
+    {
+      "command": "acli system pidstat",
+      "summary": "pidstat命令，用于查看系统进程资源"
+    },
+    {
+      "command": "acli system ping",
+      "summary": "ping命令"
+    },
+    {
+      "command": "acli system proc cgroup get",
+      "summary": "获取指定进程的cgroup信息"
+    },
+    {
+      "command": "acli system proc stack get",
+      "summary": "获取进程的栈信息"
+    },
+    {
+      "command": "acli system ps",
+      "summary": "ps命令"
+    },
+    {
+      "command": "acli system realethtool",
+      "summary": "realethtool命令"
+    },
+    {
+      "command": "acli system rm",
+      "summary": "rm命令，限制删除特定目录下的文件"
+    },
+    {
+      "command": "acli system sensors",
+      "summary": "sensors命令，用于查看传感器收集的信息"
+    },
+    {
+      "command": "acli system smartctl",
+      "summary": "smartctl命令"
+    },
+    {
+      "command": "acli system smartpqi version get",
+      "summary": "获得smartpqi的版本信息"
+    },
+    {
+      "command": "acli system stat",
+      "summary": "stat命令"
+    },
+    {
+      "command": "acli system tcpdump",
+      "summary": "tcpdump命令"
+    },
+    {
+      "command": "acli system top",
+      "summary": "top命令，用于查看进程实时信息"
+    },
+    {
+      "command": "acli system uname",
+      "summary": "uname命令"
+    },
+    {
+      "command": "acli task get",
+      "summary": "查询操作任务信息"
+    },
+    {
+      "command": "acli task list",
+      "summary": "展示当天的操作任务"
+    },
+    {
+      "command": "acli vm config get",
+      "summary": "获取虚拟机配置信息"
+    },
+    {
+      "command": "acli vm config pending delete",
+      "summary": "删除虚拟机未生效配置"
+    },
+    {
+      "command": "acli vm config pending get",
+      "summary": "查询虚拟机未生效配置"
+    },
+    {
+      "command": "acli vm delete",
+      "summary": "删除虚拟机"
+    },
+    {
+      "command": "acli vm disk aio get",
+      "summary": "查看虚拟机指定磁盘的aio信息"
+    },
+    {
+      "command": "acli vm disk check",
+      "summary": "使用qcow2-dump工具检查磁盘镜像是否损坏"
+    },
+    {
+      "command": "acli vm disk io_uring get",
+      "summary": "查看虚拟机io_uring的状态"
+    },
+    {
+      "command": "acli vm disk list",
+      "summary": "展示目标虚拟机的磁盘镜像列表"
+    },
+    {
+      "command": "acli vm disk path get",
+      "summary": "获取虚拟机磁盘路径"
+    },
+    {
+      "command": "acli vm int3",
+      "summary": "int3的方式dump虚拟机内存"
+    },
+    {
+      "command": "acli vm list",
+      "summary": "获取所有虚拟机信息"
+    },
+    {
+      "command": "acli vm lock list",
+      "summary": "展示虚拟机锁列表"
+    },
+    {
+      "command": "acli vm memory dump cancel",
+      "summary": "取消dump虚拟机内存任务"
+    },
+    {
+      "command": "acli vm memory dump create",
+      "summary": "创建dump虚拟机内存任务"
+    },
+    {
+      "command": "acli vm memory dump progress",
+      "summary": "查询dump虚拟机内存任务的进度"
+    },
+    {
+      "command": "acli vm nic queuecount get",
+      "summary": "获取虚拟机网卡队列数"
+    },
+    {
+      "command": "acli vm nic queuecount set",
+      "summary": "更新虚拟机网卡队列数"
+    },
+    {
+      "command": "acli vm sagaflow branch rollback skip",
+      "summary": "跳过sagaflow分支回滚"
+    },
+    {
+      "command": "acli vm sagaflow get",
+      "summary": "查询sagaflow信息"
+    },
+    {
+      "command": "acli vm sagaflow workflow rollback list",
+      "summary": "获取sagaflow工作流回滚列表"
+    },
+    {
+      "command": "acli vm sagaflow workflow rollback set",
+      "summary": "设置sagaflow工作流回滚"
+    },
+    {
+      "command": "acli vm shareddisk repair",
+      "summary": "修复共享盘扩容异常"
+    },
+    {
+      "command": "acli vm shutdown",
+      "summary": "关闭虚拟机"
+    },
+    {
+      "command": "acli vm start",
+      "summary": "开启虚拟机"
+    },
+    {
+      "command": "acli vm status get",
+      "summary": "获取虚拟机状态"
+    },
+    {
+      "command": "acli vm status set",
+      "summary": "设置虚拟机状态"
+    },
+    {
+      "command": "acli vm vnc all disable",
+      "summary": "禁用所有虚拟机控制台的访问权限"
+    },
+    {
+      "command": "acli vm vnc all enable",
+      "summary": "启用所有虚拟机控制台的访问权限"
+    },
+    {
+      "command": "acli vm vnc clean close",
+      "summary": "关闭虚拟机控制台访问权限回收的功能"
+    },
+    {
+      "command": "acli vm vnc clean open",
+      "summary": "开启虚拟机控制台访问权限每日回收的功能"
+    },
+    {
+      "command": "acli vm vnc disable",
+      "summary": "禁用虚拟机控制台的访问权限"
+    },
+    {
+      "command": "acli vm vnc enable",
+      "summary": "启用虚拟机控制台的访问权限"
+    },
+    {
+      "command": "acli vm vnc get",
+      "summary": "获取虚拟机控制台的配置"
+    }
+  ]
+}
