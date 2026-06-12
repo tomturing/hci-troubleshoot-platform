@@ -24,6 +24,7 @@ from typing import Any, Protocol, runtime_checkable
 from opentelemetry import trace
 from pydantic import BaseModel
 from shared.clients import AIAssistantRegistry
+from shared.observability.langfuse import observe_tool
 from shared.observability.logger import get_logger
 
 from app.domain.agent_port import (
@@ -1383,16 +1384,22 @@ class ReactEngine:
 
         for attempt in range(max_retries + 1):
             try:
-                with tracer.start_as_current_span("tool.execute") as span:
-                    span.set_attribute("tool.name", tool_name)
-                    span.set_attribute("tool.risk_level", tool_def.risk_level)
-                    span.set_attribute("session_id", session_id)
-                    span.set_attribute("attempt", attempt)
+                with observe_tool(
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    exec_id=exec_id,
+                    session_id=session_id,
+                    risk_level=tool_def.risk_level,
+                ) as tool_obs:
                     try:
                         # T-AGT-22: 使用 active_executor 执行工具，显式传递 conversation_id 和 exec_id
                         result = await active_executor.execute(
                             tool_name, tool_args, conversation_id=session_id, exec_id=exec_id, case_id=case_id
                         )
+
+                        if tool_obs is not None:
+                            output = str(result)[:10000] if result else ""
+                            tool_obs.update(output=output)
 
                         # 检查结果是否是超时，若超时则主动抛错重试
                         exit_code_meaning = None
@@ -1408,8 +1415,8 @@ class ReactEngine:
                         error = None
                         break
                     except Exception as e:
-                        span.record_exception(e)
-                        span.set_status(trace.StatusCode.ERROR, str(e))
+                        if tool_obs is not None:
+                            tool_obs.update(status_message=str(e)[:1000])
                         raise
             except Exception as e:
                 error = str(e)

@@ -54,6 +54,9 @@ dependencies = [
     # Pillow 用于截图背景色采样（KBD pipeline）
     "pillow>=10.0.0",
     "python-multipart>=0.0.9",
+
+    # === LLM 可观测性（Langfuse）===  # 与 langfuse/langfuse:3 server 兼容
+    "langfuse>=3.0,<4.0",
 ]
 
 [project.optional-dependencies]

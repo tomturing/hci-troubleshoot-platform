@@ -21,6 +21,7 @@ dependencies = [
     "opentelemetry-instrumentation-sqlalchemy",
     "opentelemetry-instrumentation-logging",
     "prometheus-client>=0.19.0",
+    "langfuse>=3.0,<4.0",
 ]
 
 [tool.uv]
