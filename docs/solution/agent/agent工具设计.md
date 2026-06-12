@@ -1,6 +1,6 @@
 # Agent 工具设计
 
-> 权威来源：本文件（v2.6，核心执行契约、工具管理 UI 校验、SOP 发布联动、容器执行适配器均已落地）。
+> 权威来源：本文件（v2.7，核心执行契约、工具管理 UI 校验、SOP 发布联动、容器执行适配器、SOP Markdown 命令归一化与变量门禁均已落地）。
 > 关联文档：[agent设计.md](./agent设计.md) §十（目录结构）、[agent记忆设计.md](./agent记忆设计.md)
 > 最新事件方案：[bash_exec 容器化契约与工具调用前置校验方案](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验方案.md)
 
@@ -61,15 +61,20 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 > - `get_failed_tasks` 实现动态参数拼装，支持 keyword/code/vm_id/time/host/upid/limit 等过滤参数
 >
 > **v2.4 变更说明**：
-> - `bash_exec` 已从自由文本命令工具升级为 `bash_exec(container, command, reason, node_ip?)`，`container` 必填且枚举为 `asv-con`、`vn-con`、`vn-agent`、`vs-cp-manager`
+> - `bash_exec` 已从自由文本命令工具升级为 `bash_exec(container, command, reason, node_ip?)`，`container` 必填且枚举为 `host`、`asv-con`、`vn-con`、`vn-agent`、`vs-cp-manager`；`host` 表示在 HCI 物理机直接执行
 > - 新增 `ToolSemanticValidator`，在真实 SSH 执行前校验工具语义，校验失败时不下发 terminal_bridge，而是触发 LLM 重新规划
 > - `acli_exec` 基于 aCLI catalog 本地快照校验命令路径是否受支持
 > - 双通道 stderr 解析缺陷已修复，避免真实 stderr 被解析异常覆盖
 >
 > **v2.6 变更说明**：
 > - 新增 `ContainerExecAdapter` 与 `ContainerCommandBuilder`，`bash_exec` 不再直接固定拼接 `docker exec`
-> - 服务端生成远端 wrapper，在 SSH 目标节点探测 `docker/crictl/ctr`，探测失败时返回明确 stderr 并 `exit 127`
+> - 服务端生成远端 wrapper，在 SSH 目标节点优先探测 HCI 推荐入口 `container_exec`，再 fallback 到 `nerdctl/docker/crictl/ctr`，探测失败时返回明确 stderr 并 `exit 127`
 > - 执行事件和事实库保留 `container/original_command/built_command`，满足结构化审计要求
+>
+> **v2.7 变更说明**：
+> - SOP Markdown 中的现场命令不要求作者改写为 JSON tool_call；运行期由 `app/tools/sop/command_intent.py` 归一化为 `acli_exec` 或 `bash_exec`
+> - `get_sop_node` 返回 `commands` 原文的同时返回结构化 `tool_calls`，LLM 必须优先消费 `tool_calls`，避免从自然语言命令中猜测工具参数
+> - `get_sop_node` 和 Prompt 摘要外显 `required_variables`；`sop_advance` 在进入节点前阻断缺失的 `user_input/user_confirm/env_*` 变量，并返回 `next_tool_call=sop_request_variable`
 
 ---
 
@@ -245,7 +250,7 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 **所属类别**：`category="acli"`，与 `acli_exec` 共用同一 `BridgeRelayExecutor`  
 **所属模块**：`app/tools/acli/`（与 `acli_exec` 同目录）
 
-> **v2.4 约束**：`bash_exec` 必须显式指定目标容器。容器是执行边界，不是命令字符串的一部分。LLM 不允许在 `command` 中手写 `docker exec`、`kubectl exec`、`nsenter` 或 `acli` 前缀；服务端必须根据结构化 `container` 参数拼装实际执行命令。
+> **v2.7 约束**：`bash_exec` 必须显式指定执行边界。`container=host` 表示在 HCI 物理机直接执行；其他枚举值表示进入指定容器执行。执行边界不是命令字符串的一部分。LLM 不允许在 `command` 中手写 `docker exec`、`kubectl exec`、`nsenter` 或 `acli` 前缀；服务端必须根据结构化 `container` 参数拼装实际执行命令。
 
 **tool_definition 记录**（DB SSOT）：
 
@@ -253,18 +258,18 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 {
   "tool_name": "bash_exec",
   "category": "acli",
-  "description": "在 HCI 节点执行通用 Linux Bash 命令并返回输出。\n优先使用 acli_exec；仅当 acli 无法满足时使用本工具（如分析特定日志文件、检查底层进程、读取内核参数等）。\n注意：禁止执行 acli 命令（请使用 acli_exec）；执行路径限于 /sf/、/var/log/、/etc/（只读）等安全目录。",
+  "description": "在 HCI 节点执行通用 Linux Bash 命令并返回输出。\n优先使用 acli_exec；仅当 acli 无法满足时使用本工具（如分析特定日志文件、检查底层进程、读取内核参数等）。\n注意：必须显式指定 container；container=host 表示在物理机上直接执行；禁止执行 acli 命令（请使用 acli_exec）；执行路径限于 /sf/、/var/log/、/etc/（只读）等安全目录。",
   "parameters_schema": {
     "type": "object",
     "properties": {
       "container": {
         "type": "string",
-        "enum": ["asv-con", "vn-con", "vn-agent", "vs-cp-manager"],
-        "description": "目标容器，必须显式指定"
+        "enum": ["host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"],
+        "description": "执行边界，必须显式指定；host 表示在物理机上直接执行"
       },
       "command": {
         "type": "string",
-        "description": "容器内执行的 Bash 命令，例如 'grep ERROR /sf/log/vtpdaemon.log | tail -50'；禁止包含 docker exec/kubectl exec/nsenter/acli 前缀"
+        "description": "执行的 Bash 命令，例如 'grep ERROR /sf/log/vtpdaemon.log | tail -50'；container=host 时在物理机执行，其他值在目标容器内执行；禁止包含 docker exec/kubectl exec/nsenter/acli 前缀"
       },
       "node_ip": {
         "type": "string",
@@ -283,7 +288,16 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 }
 ```
 
-**兼容说明**：当前线上版本仍可能存在旧 schema（仅 `command/reason` 必填）。v2.4 实施时必须先更新 seed 和运行时校验，再切换 LLM 工具契约，避免旧前端/旧 Agent 产生缺容器调用。
+**兼容说明**：当前线上版本仍可能存在旧 schema（仅 `command/reason` 必填）。v2.7 以后必须先更新 seed 和运行时校验，再切换 LLM 工具契约，避免旧前端/旧 Agent 产生缺边界调用。SOP Markdown 中裸 bash 命令由归一化层默认映射为 `container=host`，不要求 SOP 作者写 JSON tool_call。
+
+**SOP Markdown 归一化规则**：
+
+| Markdown 命令 | 结构化工具调用 |
+|---------------|----------------|
+| `acli ...` | `acli_exec(command=原命令)` |
+| `container_exec -n vs-cp-manager -c "smartctl -a /dev/sda"` | `bash_exec(container="vs-cp-manager", command="smartctl -a /dev/sda")` |
+| `host_exec -c "ls -h"` | `bash_exec(container="host", command="ls -h")` |
+| `ls -h` | `bash_exec(container="host", command="ls -h")` |
 
 **风险分级（RiskClassifier 动态判定）**：
 

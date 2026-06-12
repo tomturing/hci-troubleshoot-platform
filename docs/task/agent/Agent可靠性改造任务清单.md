@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-06-11
+last_updated: 2026-06-12
 owner: team
 ---
 
@@ -41,6 +41,7 @@ owner: team
 | 2026-06-12 | v3.0 | **工具管理 UI 校验闭环（PR-B）**：① 工具管理编辑弹窗新增“校验工具定义”按钮，直接展示后端 `validation_issues`；② 保存前自动调用同一校验接口，`error` 阻断保存，`warning` 可保存但页面保留提示；③ 本地 JSON/数组解析错误也归一为同一套校验结果面板，避免只弹 toast 后丢失定位信息 |
 | 2026-06-12 | v3.1 | **SOP 发布联动工具契约校验（PR-C）**：① `kb-service` 发布 SOP 时静态校验 `acli_methods` 与命令型前置检查；② 不支持 aCLI catalog 的命令、bash 命令缺容器边界统一写入 `ValidationIssue` warning；③ 同步脚本同时更新 agent-service/kb-service catalog；④ CI unit-tests 纳入 `backend/kb-service/tests/` |
 | 2026-06-12 | v3.2 | **容器执行适配器（PR-D）**：① `bash_exec` 从固定 `docker exec` 升级为远端 wrapper 自动探测 docker/crictl/ctr；② 执行事件与 FactStore 保留 `container/original_command/built_command`；③ 不支持运行时 fail-closed，返回明确 stderr 与 `exit 127` |
+| 2026-06-12 | v3.3 | **SOP Markdown 命令归一化与变量来源门禁（PR #450）**：① `bash_exec.container` 支持 `host`，host 表示物理机直接执行；② SOP Markdown 中 `acli`、`container_exec`、`host_exec` 与裸 bash 自动归一化为结构化 `tool_calls`；③ `get_sop_node` 外显节点/分支 `required_variables`；④ `sop_advance` 阻断缺失的 `user_input/user_confirm/env_*` 变量并提示先调用 `sop_request_variable` |
 
 ---
 
@@ -337,9 +338,13 @@ owner: team
   - [x] 实现 `get_sop_node(node_id)` 工具：返回指定节点的核心诊断指南
   - [x] 实现 `sop_advance(node_id, direction, reasoning)` 工具：推进决策树节点并记录状态转移证据
   - [x] 将 SOP 导航逻辑从硬编码双轨路由迁移为 ReactEngine 动态工具注入
+  - [x] 在 `get_sop_node` 返回中补充 `tool_calls`，将 SOP Markdown 现场命令归一化为 `acli_exec`/`bash_exec`
+  - [x] 在 `get_sop_node` 返回中补充 `required_variables`，并在 `sop_advance` 前校验 `user_input/user_confirm/env_*` 变量是否就绪
 - **验收**：
   - [x] 单次 SOP 相关推理的 Token 消耗 ≤ 修改前的 10%（滑动窗口 vs 全量注入）
   - [x] LLM 通过调用 `get_sop_node` 而非从全文推断来获取诊断指引
+  - [x] `container_exec -n vs-cp-manager -c "smartctl -a /dev/sda"` 自动映射为 `bash_exec(container="vs-cp-manager", command="smartctl -a /dev/sda")`
+  - [x] `is_sys_disk` 等 `user_input/user_confirm` 变量未就绪时，`sop_advance` 不推进节点并返回 `next_tool_call=sop_request_variable`
 
 ---
 
