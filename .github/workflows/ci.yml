@@ -226,28 +226,32 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs')
-            const report = JSON.parse(fs.readFileSync('evaluation/report.json', 'utf8'))
-            const body = [
-              '## Agent 可靠性回归评测',
-              '',
-              `- 黄金工单数：${report.total_cases}`,
-              `- 故障分类准确率：${(report.avg_category_accuracy * 100).toFixed(2)}%`,
-              `- 工具调用成功率：${(report.tool_success_rate * 100).toFixed(2)}%`,
-              `- 幻觉检出率：${(report.hallucination_rate * 100).toFixed(2)}%`,
-              `- 路径偏差率：${(report.path_deviation_rate * 100).toFixed(2)}%`,
-              '',
-              '门禁规则：分类准确率/工具成功率劣化不得 ≥ 10%，幻觉检出率/路径偏差率升高不得 ≥ 10%。'
-            ].join('\n')
-            const marker = '## Agent 可靠性回归评测'
-            const { owner, repo } = context.repo
-            const issue_number = context.issue.number
-            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 })
-            const existing = comments.find(comment => comment.user.type === 'Bot' && comment.body.includes(marker))
-            if (existing) {
-              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
-            } else {
-              await github.rest.issues.createComment({ owner, repo, issue_number, body })
+            try {
+              const fs = require('fs')
+              const report = JSON.parse(fs.readFileSync('evaluation/report.json', 'utf8'))
+              const body = [
+                '## Agent 可靠性回归评测',
+                '',
+                `- 黄金工单数：${report.total_cases}`,
+                `- 故障分类准确率：${(report.avg_category_accuracy * 100).toFixed(2)}%`,
+                `- 工具调用成功率：${(report.tool_success_rate * 100).toFixed(2)}%`,
+                `- 幻觉检出率：${(report.hallucination_rate * 100).toFixed(2)}%`,
+                `- 路径偏差率：${(report.path_deviation_rate * 100).toFixed(2)}%`,
+                '',
+                '门禁规则：分类准确率/工具成功率劣化不得 ≥ 10%，幻觉检出率/路径偏差率升高不得 ≥ 10%。'
+              ].join('\n')
+              const marker = '## Agent 可靠性回归评测'
+              const { owner, repo } = context.repo
+              const issue_number = context.issue.number
+              const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 })
+              const existing = comments.find(comment => comment.user.type === 'Bot' && comment.body.includes(marker))
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number, body })
+              }
+            } catch (error) {
+              console.log("无法写入 PR 可靠性评测结果评论（可能为 fork PR 权限限制）：", error)
             }
 
   helm-validate:

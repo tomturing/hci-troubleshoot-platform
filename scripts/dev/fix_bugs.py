@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """一次性修复脚本: BUG-R01, BUG-R05, BUG-R02+R03, BUG-R04, DC-04"""
-import re as _re
 
 ROOT = "/mnt/d/aihci/hci-troubleshoot-platform"
 

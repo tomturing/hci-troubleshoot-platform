@@ -1,0 +1,413 @@
+{{- if .Values.langfuse.enabled }}
+---
+# 1. ClickHouse Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse-clickhouse
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "langfuse-clickhouse" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "langfuse-clickhouse" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "langfuse-clickhouse" "Release" .Release "Chart" .Chart) | nindent 8 }}
+    spec:
+      containers:
+        - name: clickhouse
+          image: {{ .Values.langfuse.clickhouse.image }}
+          ports:
+            - containerPort: 8123
+              name: http
+            - containerPort: 9000
+              name: tcp
+          environment:
+            - name: CLICKHOUSE_DB
+              value: "default"
+            - name: CLICKHOUSE_USER
+              value: "clickhouse"
+            - name: CLICKHOUSE_PASSWORD
+              value: "clickhouse"
+          resources:
+            {{- toYaml .Values.langfuse.clickhouse.resources | nindent 12 }}
+          volumeMounts:
+            - name: clickhouse-data
+              mountPath: /var/lib/clickhouse
+          healthcheck:
+            # We can map healthcheck to probes in Kubernetes
+            # However, since standard clickhouse image is stable, we configure standard liveness/readiness probes
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: clickhouse-data
+          persistentVolumeClaim:
+            claimName: langfuse-clickhouse-data
+
+---
+# ClickHouse PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: langfuse-clickhouse-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.langfuse.clickhouse.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.langfuse.clickhouse.storage }}
+
+---
+# ClickHouse Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: langfuse-clickhouse
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "langfuse-clickhouse" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  ports:
+    - port: 8123
+      targetPort: 8123
+      protocol: TCP
+      name: http
+    - port: 9000
+      targetPort: 9000
+      protocol: TCP
+      name: tcp
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "langfuse-clickhouse" "Release" .Release) | nindent 4 }}
+
+---
+# 2. MinIO Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse-minio
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "langfuse-minio" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "langfuse-minio" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "langfuse-minio" "Release" .Release "Chart" .Chart) | nindent 8 }}
+    spec:
+      containers:
+        - name: minio
+          image: {{ .Values.langfuse.minio.image }}
+          entrypoint: ["sh"]
+          args: ["-c", "mkdir -p /data/langfuse && minio server --address ':9000' --console-address ':9001' /data"]
+          ports:
+            - containerPort: 9000
+              name: s3
+            - containerPort: 9001
+              name: console
+          env:
+            - name: MINIO_ROOT_USER
+              value: "minioadmin"
+            - name: MINIO_ROOT_PASSWORD
+              value: "minioadmin"
+          resources:
+            {{- toYaml .Values.langfuse.minio.resources | nindent 12 }}
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: minio-data
+          persistentVolumeClaim:
+            claimName: langfuse-minio-data
+
+---
+# MinIO PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: langfuse-minio-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.langfuse.minio.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.langfuse.minio.storage }}
+
+---
+# MinIO Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: langfuse-minio
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "langfuse-minio" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  ports:
+    - port: 9000
+      targetPort: 9000
+      protocol: TCP
+      name: s3
+    - port: 9001
+      targetPort: 9001
+      protocol: TCP
+      name: console
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "langfuse-minio" "Release" .Release) | nindent 4 }}
+
+---
+# 3. Langfuse Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse-server
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "langfuse-server" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "langfuse-server" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "langfuse-server" "Release" .Release "Chart" .Chart) | nindent 8 }}
+    spec:
+      initContainers:
+        - name: init-db
+          image: postgres:15-alpine
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for postgres to be ready..."
+              until pg_isready -h "postgres.{{ .Values.global.namespace }}.svc.cluster.local" -U "hci_admin"; do
+                sleep 2
+              done
+              echo "Checking if database langfuse exists..."
+              export PGPASSWORD="{{ .Values.secrets.postgresPassword }}"
+              psql -h "postgres.{{ .Values.global.namespace }}.svc.cluster.local" -U "hci_admin" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = 'langfuse'" | grep -q 1
+              if [ $? -ne 0 ]; then
+                echo "Database langfuse does not exist. Creating..."
+                psql -h "postgres.{{ .Values.global.namespace }}.svc.cluster.local" -U "hci_admin" -d postgres -c "CREATE DATABASE langfuse"
+              else
+                echo "Database langfuse already exists."
+              fi
+      containers:
+        - name: langfuse-server
+          image: {{ .Values.langfuse.server.image }}
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: DATABASE_URL
+              value: {{ printf "postgresql://hci_admin:%s@postgres.%s.svc.cluster.local:5432/langfuse" (.Values.secrets.postgresPassword | urlquery) .Values.global.namespace | quote }}
+            - name: DIRECT_URL
+              value: {{ printf "postgresql://hci_admin:%s@postgres.%s.svc.cluster.local:5432/langfuse" (.Values.secrets.postgresPassword | urlquery) .Values.global.namespace | quote }}
+            - name: SALT
+              value: "langfuse-dev-salt-change-in-production"
+            - name: ENCRYPTION_KEY
+              value: "0000000000000000000000000000000000000000000000000000000000000000"
+            - name: CLICKHOUSE_MIGRATION_URL
+              value: "clickhouse://clickhouse:clickhouse@langfuse-clickhouse:9000"
+            - name: CLICKHOUSE_URL
+              value: "http://langfuse-clickhouse:8123"
+            - name: CLICKHOUSE_USER
+              value: "clickhouse"
+            - name: CLICKHOUSE_PASSWORD
+              value: "clickhouse"
+            - name: CLICKHOUSE_CLUSTER_ENABLED
+              value: "false"
+            - name: REDIS_HOST
+              value: {{ printf "redis.%s.svc.cluster.local" .Values.global.namespace | quote }}
+            - name: REDIS_PORT
+              value: "6379"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_BUCKET
+              value: "langfuse"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_REGION
+              value: "auto"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID
+              value: "minioadmin"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY
+              value: "minioadmin"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT
+              value: "http://langfuse-minio:9000"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE
+              value: "true"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_PREFIX
+              value: "events/"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_BUCKET
+              value: "langfuse"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_REGION
+              value: "auto"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID
+              value: "minioadmin"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY
+              value: "minioadmin"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT
+              value: "http://langfuse-minio:9000"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE
+              value: "true"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_PREFIX
+              value: "media/"
+            - name: NEXTAUTH_URL
+              {{- if eq .Values.global.routingMode "subdomain" }}
+              value: {{ printf "http://langfuse.%s/" .Values.global.domain | quote }}
+              {{- else }}
+              {{- if .Values.global.publicUrl }}
+              value: {{ printf "%s/langfuse" .Values.global.publicUrl | quote }}
+              {{- else }}
+              value: "http://localhost:13000"
+              {{- end }}
+              {{- end }}
+            - name: NEXTAUTH_SECRET
+              value: "langfuse-dev-secret-change-in-production"
+          resources:
+            {{- toYaml .Values.langfuse.server.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /api/public/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /api/public/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+
+---
+# Langfuse Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: langfuse-server
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "langfuse-server" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  ports:
+    - port: 3000
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "langfuse-server" "Release" .Release) | nindent 4 }}
+
+---
+# 4. Langfuse Worker Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse-worker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "langfuse-worker" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "langfuse-worker" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "langfuse-worker" "Release" .Release "Chart" .Chart) | nindent 8 }}
+    spec:
+      containers:
+        - name: langfuse-worker
+          image: {{ .Values.langfuse.worker.image }}
+          env:
+            - name: DATABASE_URL
+              value: {{ printf "postgresql://hci_admin:%s@postgres.%s.svc.cluster.local:5432/langfuse" (.Values.secrets.postgresPassword | urlquery) .Values.global.namespace | quote }}
+            - name: DIRECT_URL
+              value: {{ printf "postgresql://hci_admin:%s@postgres.%s.svc.cluster.local:5432/langfuse" (.Values.secrets.postgresPassword | urlquery) .Values.global.namespace | quote }}
+            - name: SALT
+              value: "langfuse-dev-salt-change-in-production"
+            - name: ENCRYPTION_KEY
+              value: "0000000000000000000000000000000000000000000000000000000000000000"
+            - name: CLICKHOUSE_MIGRATION_URL
+              value: "clickhouse://clickhouse:clickhouse@langfuse-clickhouse:9000"
+            - name: CLICKHOUSE_URL
+              value: "http://langfuse-clickhouse:8123"
+            - name: CLICKHOUSE_USER
+              value: "clickhouse"
+            - name: CLICKHOUSE_PASSWORD
+              value: "clickhouse"
+            - name: CLICKHOUSE_CLUSTER_ENABLED
+              value: "false"
+            - name: REDIS_HOST
+              value: {{ printf "redis.%s.svc.cluster.local" .Values.global.namespace | quote }}
+            - name: REDIS_PORT
+              value: "6379"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_BUCKET
+              value: "langfuse"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_REGION
+              value: "auto"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID
+              value: "minioadmin"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY
+              value: "minioadmin"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT
+              value: "http://langfuse-minio:9000"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE
+              value: "true"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_PREFIX
+              value: "events/"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_BUCKET
+              value: "langfuse"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_REGION
+              value: "auto"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID
+              value: "minioadmin"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY
+              value: "minioadmin"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT
+              value: "http://langfuse-minio:9000"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE
+              value: "true"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_PREFIX
+              value: "media/"
+          resources:
+            {{- toYaml .Values.langfuse.worker.resources | nindent 12 }}
+{{- end }}

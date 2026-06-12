@@ -38,6 +38,18 @@ spec:
                 name: grafana
                 port:
                   number: 3000
+    {{- if .Values.langfuse.enabled }}
+    - host: "langfuse.{{ .Values.global.domain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
+    {{- end }}
     {{- else }}
     {{- /* 路径路由模式（默认）：优先绑定主 Host，避免与 / 回退路由冲突 */}}
     {{- $host := "" }}
@@ -56,5 +68,15 @@ spec:
                 name: grafana
                 port:
                   number: 3000
+          {{- if .Values.langfuse.enabled }}
+          - path: /langfuse
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
+          {{- end }}
     {{- end }}
 {{- end }}
+

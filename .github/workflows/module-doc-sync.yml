@@ -64,50 +64,54 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const body = [
-              '## ⚠️ 模块文档同步检查失败',
-              '',
-              '检测到代码模块有变更，但对应的设计文档或任务文档未同步更新。',
-              '具体缺失的文档请查看上方 Actions 日志。',
-              '',
-              '**修复方式（二选一）：**',
-              '',
-              '**方式 1 — 更新文档（推荐）**',
-              '按日志提示更新对应文档后重新推送，CI 将自动重新验证。',
-              '',
-              '**方式 2 — 豁免（仅 typo/格式/测试等无功能变更时适用）**',
-              '在 PR 描述中添加：`[skip doc-sync]`',
-              '或在 PR 添加 `doc-update-exempt` 标签并说明原因。',
-              '',
-              '---',
-              '*文档同步规则详见 [docs/文档管理规范.md](docs/文档管理规范.md)*',
-            ].join('\n');
+            try {
+              const body = [
+                '## ⚠️ 模块文档同步检查失败',
+                '',
+                '检测到代码模块有变更，但对应的设计文档或任务文档未同步更新。',
+                '具体缺失的文档请查看上方 Actions 日志。',
+                '',
+                '**修复方式（二选一）：**',
+                '',
+                '**方式 1 — 更新文档（推荐）**',
+                '按日志提示更新对应文档后重新推送，CI 将自动重新验证。',
+                '',
+                '**方式 2 — 豁免（仅 typo/格式/测试等无功能变更时适用）**',
+                '在 PR 描述中添加：`[skip doc-sync]`',
+                '或在 PR 添加 `doc-update-exempt` 标签并说明原因。',
+                '',
+                '---',
+                '*文档同步规则详见 [docs/文档管理规范.md](docs/文档管理规范.md)*',
+              ].join('\n');
 
-            // 查找是否已有此评论，避免重复
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const existing = comments.find(c =>
-              c.user.login === 'github-actions[bot]' &&
-              c.body.includes('模块文档同步检查失败')
-            );
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
+              // 查找是否已有此评论，避免重复
+              const { data: comments } = await github.rest.issues.listComments({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body,
               });
+              const existing = comments.find(c =>
+                c.user.login === 'github-actions[bot]' &&
+                c.body.includes('模块文档同步检查失败')
+              );
+
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body,
+                });
+              }
+            } catch (err) {
+              console.log("无法写入 PR 评论（可能为 fork PR 权限限制）：", err);
             }
 
       # 旁路时写说明评论
@@ -116,17 +120,21 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: [
-                '## ℹ️ 模块文档同步检查已豁免',
-                '',
-                '本 PR 含 `doc-update-exempt` 标签，跳过模块文档同步自动检查。',
-                '',
-                '**请在合并前人工确认：**',
-                '- 此次代码改动是否真的不影响模块文档内容？',
-                '- PR 描述中是否已说明豁免原因？',
-              ].join('\n')
-            });
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: [
+                  '## ℹ️ 模块文档同步检查已豁免',
+                  '',
+                  '本 PR 含 `doc-update-exempt` 标签，跳过模块文档同步自动检查。',
+                  '',
+                  '**请在合并前人工确认：**',
+                  '- 此次代码改动是否真的不影响模块文档内容？',
+                  '- PR 描述中是否已说明豁免原因？',
+                ].join('\n')
+              });
+            } catch (err) {
+              console.log("无法写入 PR 豁免评论（可能为 fork PR 权限限制）：", err);
+            }

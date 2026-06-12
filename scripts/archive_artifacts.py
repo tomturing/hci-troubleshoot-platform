@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-import os
-import shutil
-import re
 import datetime
+import os
+import re
+import shutil
 
 # 定义历史归档映射（人工校验确认的四次对话主题与日期）
 HISTORICAL_MAP = {
@@ -45,7 +45,7 @@ def get_file_info(conv_dir, conv_id):
     plan_path = os.path.join(conv_dir, "implementation_plan.md")
     if not os.path.exists(plan_path):
         return None, None
-    
+
     # 1. 优先获取日期
     if conv_id in HISTORICAL_MAP:
         date_str = HISTORICAL_MAP[conv_id]["date"]
@@ -53,21 +53,21 @@ def get_file_info(conv_dir, conv_id):
         # 获取文件修改时间作为日期
         mtime = os.path.getmtime(plan_path)
         date_str = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
-    
+
     # 2. 获取标题
     if conv_id in HISTORICAL_MAP:
         title_str = HISTORICAL_MAP[conv_id]["title"]
     else:
         title_str = "未命名方案"
         try:
-            with open(plan_path, 'r', encoding='utf-8') as f:
+            with open(plan_path, encoding='utf-8') as f:
                 for line in f:
                     if line.startswith('#'):
                         title_str = clean_title(line)
                         break
         except Exception as e:
             print(f"读取标题失败: {e}")
-            
+
     return date_str, title_str
 
 def main():
@@ -89,20 +89,20 @@ def main():
         conv_dir = os.path.join(BRAIN_DIR, conv_id)
         if not os.path.isdir(conv_dir):
             continue
-            
+
         date_str, title_str = get_file_info(conv_dir, conv_id)
         if not date_str or not title_str:
             continue
-            
+
         filename = f"{date_str}-{title_str}.md"
-        
+
         # 映射文件
         mapping = {
             "implementation_plan.md": ("plan", filename),
             "task.md": ("task", filename),
             "walkthrough.md": ("verify", filename)
         }
-        
+
         for src_name, (target_key, dest_name) in mapping.items():
             src_path = os.path.join(conv_dir, src_name)
             if os.path.exists(src_path):
@@ -110,7 +110,7 @@ def main():
                 print(f"正在归档: {src_path} -> {dest_path}")
                 shutil.copy2(src_path, dest_path)
                 copied_count += 1
-                
+
     print(f"归档完成，共复制/更新了 {copied_count} 个文件。")
 
 if __name__ == "__main__":

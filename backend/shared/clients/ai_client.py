@@ -14,6 +14,7 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import httpx
+from shared.observability.langfuse import end_generation, observe_invoke, observe_stream_start
 from shared.observability.logger import get_logger
 from shared.utils.exceptions import AIStreamError, ErrorCode
 
@@ -144,6 +145,16 @@ class OpenClawAssistant:
                 )
             )
 
+        # Langfuse: 创建流式 generation（在首次请求前，覆盖所有 endpoint 重试）
+        langfuse_gen, _, lf_start = await observe_stream_start(
+            model=model or self.default_model,
+            assistant_type=self.assistant_type,
+            user_id=user_id,
+            case_id=case_id,
+            messages=messages,
+        )
+        full_text = ""  # 累积完整输出，流结束后写入 Langfuse
+
         # 先尝试 scheduler 分配的实例端点，若在首 token 前发生可恢复断流，再回退到稳定 base_url 重试一次。
         endpoints_to_try: list[str] = []
         first_endpoint = (pod_endpoint or self.base_url).rstrip("/")
@@ -197,6 +208,7 @@ class OpenClawAssistant:
 
                         # 解析错误详情并抛出结构化异常
                         error_detail = self._parse_ai_error(response.status_code, error_text)
+                        end_generation(langfuse_gen, error=error_detail.get("message", f"HTTP {response.status_code}"), start_time=lf_start)
                         raise AIStreamError(
                             code=error_detail["code"],
                             message=error_detail["message"],
@@ -220,7 +232,9 @@ class OpenClawAssistant:
                                 # 空响应：跳出 SSE 循环，让代码进入流结束检查
                                 # （流结束检查会尝试 fallback endpoint 或抛出错误）
                                 break
-                            return  # 正常结束，有内容
+                            # 正常结束，有内容 → 写入 Langfuse
+                            end_generation(langfuse_gen, output=full_text, start_time=lf_start)
+                            return
 
                         try:
                             data = json.loads(data_str)
@@ -232,6 +246,7 @@ class OpenClawAssistant:
                             reasoning_content = delta.get("reasoning_content", "")
                             if content:
                                 got_first_token = True
+                                full_text += content
                                 yield content
                             elif reasoning_content:
                                 # 思维链 token：标记已收到首个 token（防止空流误判），
@@ -251,12 +266,15 @@ class OpenClawAssistant:
                     if idx < len(endpoints_to_try):
                         continue  # 尝试 fallback endpoint（endpoint 循环的下一个迭代）
                     else:
+                        end_generation(langfuse_gen, error="AI 服务返回空响应", start_time=lf_start)
                         raise AIStreamError(
                             code=ErrorCode.AI_RATE_LIMITED,
                             message="AI 服务返回空响应，可能是请求频率超限或账户余额不足",
                             detail="status=200, stream ended without content",
                         )
 
+                # 成功获取内容 → 写入 Langfuse
+                end_generation(langfuse_gen, output=full_text, start_time=lf_start)
                 return  # 成功获取内容，退出 endpoint 循环
             except AIStreamError:
                 # AIStreamError 直接透传，不包装
@@ -280,6 +298,7 @@ class OpenClawAssistant:
                     continue
                 # 将未捕获的异常转换为结构化错误
                 error_detail = self._parse_generic_error(e)
+                end_generation(langfuse_gen, error=error_detail.get("message", str(e)), start_time=lf_start)
                 raise AIStreamError(
                     code=error_detail["code"],
                     message=error_detail["message"],
@@ -289,6 +308,7 @@ class OpenClawAssistant:
         if last_error:
             # 所有端点都失败，抛出结构化错误
             error_detail = self._parse_generic_error(last_error)
+            end_generation(langfuse_gen, error=error_detail.get("message", str(last_error)), start_time=lf_start)
             raise AIStreamError(
                 code=error_detail["code"],
                 message=error_detail["message"],
@@ -518,9 +538,23 @@ class OpenClawAssistant:
         )
 
         try:
+            langfuse_gen, _, lf_start = await observe_invoke(
+                model=model or self.default_model,
+                assistant_type=self.assistant_type,
+                user_id=user_id,
+                case_id=case_id,
+                messages=messages,
+                tools=tools,
+            )
+
             response = await self.client.post(url, json=payload, headers=headers)
             if response.status_code != 200:
                 error_detail = self._parse_ai_error(response.status_code, response.text)
+                end_generation(
+                    langfuse_gen,
+                    error=error_detail.get("message", f"HTTP {response.status_code}"),
+                    start_time=lf_start,
+                )
                 raise AIStreamError(
                     code=error_detail["code"],
                     message=error_detail["message"],
@@ -530,6 +564,12 @@ class OpenClawAssistant:
             data = response.json()
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
+
+            # 提取 token 用量
+            usage = data.get("usage") or {}
+            prompt_tokens = usage.get("prompt_tokens") or 0
+            completion_tokens = usage.get("completion_tokens") or 0
+            total_tokens = usage.get("total_tokens") or 0
 
             # 工具调用分支（finish_reason="tool_calls"）
             raw_tool_calls: list[dict] = message.get("tool_calls") or []
@@ -548,10 +588,26 @@ class OpenClawAssistant:
                             arguments=args,
                         )
                     )
+                end_generation(
+                    langfuse_gen,
+                    tool_calls=[{"name": t.name, "arguments": t.arguments} for t in parsed],
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    start_time=lf_start,
+                )
                 return InvokeResult(content=None, tool_calls=parsed)
 
             # 文字终止分支（finish_reason="stop"）
             content = message.get("content") or ""
+            end_generation(
+                langfuse_gen,
+                output=content,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                start_time=lf_start,
+            )
             return InvokeResult(content=content, tool_calls=[])
 
         except AIStreamError:
@@ -577,7 +633,7 @@ class AIAssistantRegistry:
 
     def __init__(self):
         self._clients: dict[str, AIAssistantClient] = {}
-        self._default_type: str = "openclaw"
+        self._default_type: str = os.environ.get("AI_DEFAULT_ASSISTANT_TYPE", "openclaw")
 
     def register(self, assistant_type: str, client: AIAssistantClient, *, is_default: bool = False) -> None:
         """注册AI助手客户端。is_default=True 时将其设为降级首选助手。"""
