@@ -1497,6 +1497,9 @@ class ReactEngine:
                         "stdout": result.stdout if hasattr(result, "stdout") else str(result),
                         "stderr": result.stderr if hasattr(result, "stderr") else "",
                         "exit_code": result.exit_code if hasattr(result, "exit_code") else 0,
+                        "container": getattr(result, "container", None),
+                        "original_command": getattr(result, "original_command", None),
+                        "built_command": getattr(result, "built_command", None),
                     }
                 elif isinstance(result, dict):
                     result_value = result

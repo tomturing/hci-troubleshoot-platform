@@ -33,7 +33,8 @@ from shared.utils.internal_http import InternalHTTPClient
 
 from app.core.utils import smart_truncate
 from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_policy
-from app.tools.acli.semantic_validator import ToolSemanticValidator, build_container_command
+from app.tools.acli.container_exec import BuiltCommand, ContainerCommandBuilder, ContainerExecBuildError
+from app.tools.acli.semantic_validator import ToolSemanticValidator
 
 logger = get_logger("bridge-relay-executor")
 
@@ -72,6 +73,9 @@ class ExecResult:
       truncated: stdout 是否被截断
       risk_level: 本次执行的风险等级（RiskClassifier 判定值）
       exit_code_meaning: 退出码的语义分类
+      container: bash_exec 的结构化目标容器
+      original_command: LLM 提供的容器内原始命令
+      built_command: 服务端拼装后下发给 terminal_bridge 的实际命令
     """
 
     stdout: str
@@ -83,6 +87,9 @@ class ExecResult:
     truncated: bool
     risk_level: int
     exit_code_meaning: str | None = None
+    container: str | None = None
+    original_command: str | None = None
+    built_command: str | None = None
 
 
 
@@ -391,9 +398,12 @@ class BridgeRelayExecutor:
                 truncated=False,
                 risk_level=3,
                 exit_code_meaning=ExitCodeMeaning.UNKNOWN_ERROR,
+                container=str(args.get("container") or "") if tool_name == "bash_exec" else None,
+                original_command=command,
             )
 
         original_command = command
+        built: BuiltCommand | None = None
 
         # 2. 命令净化
         try:
@@ -409,10 +419,39 @@ class BridgeRelayExecutor:
                 duration_ms=0,
                 truncated=False,
                 risk_level=3,  # 净化拒绝视为高危
+                container=str(args.get("container") or "") if tool_name == "bash_exec" else None,
+                original_command=original_command,
             )
 
         if tool_name == "bash_exec":
-            cleaned_command = build_container_command(str(args["container"]), cleaned_command)
+            try:
+                built = ContainerCommandBuilder.build(
+                    str(args["container"]),
+                    cleaned_command,
+                    args.get("node_context") if isinstance(args.get("node_context"), dict) else None,
+                )
+                cleaned_command = built.built_command
+            except ContainerExecBuildError as e:
+                logger.warning(
+                    event="container_exec_build_failed",
+                    exec_id=exec_id,
+                    container=args.get("container"),
+                    error=str(e),
+                    trace_id=trace_id,
+                )
+                return ExecResult(
+                    stdout="",
+                    stderr=f"[container_exec] {e}",
+                    exit_code=-1,
+                    command=command,
+                    node=node_ip or "unknown",
+                    duration_ms=0,
+                    truncated=False,
+                    risk_level=3,
+                    exit_code_meaning=ExitCodeMeaning.UNKNOWN_ERROR,
+                    container=str(args.get("container") or ""),
+                    original_command=original_command,
+                )
 
         # 3. 风险分类（动态工具）
         if tool_name in ("acli_exec", "bash_exec"):
@@ -444,6 +483,9 @@ class BridgeRelayExecutor:
                 duration_ms=0,
                 truncated=False,
                 risk_level=runtime_risk,
+                container=built.container if built else None,
+                original_command=built.original_command if built else original_command,
+                built_command=built.built_command if built else cleaned_command,
             )
 
         # 5. 推送执行命令到 conversation-service
@@ -452,7 +494,11 @@ class BridgeRelayExecutor:
                 f"/internal/conversations/{conversation_id}/agent-exec",
                 json={
                     "exec_id": exec_id,
+                    "tool_name": tool_name,
                     "command": cleaned_command,
+                    "container": built.container if built else None,
+                    "original_command": built.original_command if built else original_command,
+                    "built_command": built.built_command if built else cleaned_command,
                     "reason": reason,
                     "risk_level": runtime_risk,
                     "node_ip": node_ip,
@@ -479,6 +525,9 @@ class BridgeRelayExecutor:
                     duration_ms=int((time.time() - start_time) * 1000),
                     truncated=False,
                     risk_level=runtime_risk,
+                    container=built.container if built else None,
+                    original_command=built.original_command if built else original_command,
+                    built_command=built.built_command if built else cleaned_command,
                 )
 
         except Exception as e:
@@ -498,6 +547,9 @@ class BridgeRelayExecutor:
                 duration_ms=int((time.time() - start_time) * 1000),
                 truncated=False,
                 risk_level=runtime_risk,
+                container=built.container if built else None,
+                original_command=built.original_command if built else original_command,
+                built_command=built.built_command if built else cleaned_command,
             )
 
         logger.info(
@@ -505,6 +557,8 @@ class BridgeRelayExecutor:
             exec_id=exec_id,
             conversation_id=conversation_id,
             command_preview=cleaned_command[:50],
+            container=built.container if built else None,
+            original_command_preview=(built.original_command if built else original_command)[:80],
             risk_level=runtime_risk,
             policy=runtime_policy,
             trace_id=trace_id,
@@ -535,6 +589,9 @@ class BridgeRelayExecutor:
                     truncated=False,
                     risk_level=runtime_risk,
                     exit_code_meaning=ExitCodeMeaning.TIMEOUT,
+                    container=built.container if built else None,
+                    original_command=built.original_command if built else original_command,
+                    built_command=built.built_command if built else cleaned_command,
                 )
 
             # 解析结果 JSON
@@ -603,6 +660,9 @@ class BridgeRelayExecutor:
                 truncated=truncated,
                 risk_level=runtime_risk,
                 exit_code_meaning=meaning,
+                container=built.container if built else None,
+                original_command=built.original_command if built else original_command,
+                built_command=built.built_command if built else cleaned_command,
             )
 
         except Exception as e:
@@ -623,6 +683,9 @@ class BridgeRelayExecutor:
                 truncated=False,
                 risk_level=runtime_risk,
                 exit_code_meaning=ExitCodeMeaning.UNKNOWN_ERROR,
+                container=built.container if built else None,
+                original_command=built.original_command if built else original_command,
+                built_command=built.built_command if built else cleaned_command,
             )
 
 

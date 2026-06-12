@@ -1,6 +1,6 @@
 # Agent 工具设计
 
-> 权威来源：本文件（v2.5，核心执行契约和工具管理 UI 校验闭环已落地，SOP 发布联动仍按任务清单推进）。
+> 权威来源：本文件（v2.6，核心执行契约、工具管理 UI 校验、SOP 发布联动、容器执行适配器均已落地）。
 > 关联文档：[agent设计.md](./agent设计.md) §十（目录结构）、[agent记忆设计.md](./agent记忆设计.md)
 > 最新事件方案：[bash_exec 容器化契约与工具调用前置校验方案](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验方案.md)
 
@@ -65,6 +65,11 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 > - 新增 `ToolSemanticValidator`，在真实 SSH 执行前校验工具语义，校验失败时不下发 terminal_bridge，而是触发 LLM 重新规划
 > - `acli_exec` 基于 aCLI catalog 本地快照校验命令路径是否受支持
 > - 双通道 stderr 解析缺陷已修复，避免真实 stderr 被解析异常覆盖
+>
+> **v2.6 变更说明**：
+> - 新增 `ContainerExecAdapter` 与 `ContainerCommandBuilder`，`bash_exec` 不再直接固定拼接 `docker exec`
+> - 服务端生成远端 wrapper，在 SSH 目标节点探测 `docker/crictl/ctr`，探测失败时返回明确 stderr 并 `exit 127`
+> - 执行事件和事实库保留 `container/original_command/built_command`，满足结构化审计要求
 
 ---
 
@@ -550,6 +555,19 @@ def risk_to_policy(risk: int) -> str:
 - 服务端记录 `original_command` 与 `built_command`，审计时同时落库
 - 无法确认容器运行时或无法安全拼装时 fail-closed
 
+### 7.2.1 容器执行命令构造
+
+`ContainerCommandBuilder.build(container, command, node_context) -> BuiltCommand` 是 `bash_exec` 的唯一拼装入口。当前实现通过 `ContainerExecAdapter` 生成远端 shell wrapper：
+
+1. 设置 `HCI_CONTAINER/HCI_CTR_NS/HCI_USER_COMMAND` 并 export。
+2. 在远端 SSH 节点只读探测 `docker`、`crictl`、`ctr`。
+3. 探测到 docker 时执行 `docker exec "$HCI_CONTAINER" sh -lc "$HCI_USER_COMMAND"`。
+4. 探测到 crictl 时先按容器名查 `crictl ps --name`，再执行 `crictl exec`。
+5. 探测到 ctr 时在 `k8s.io` namespace 查 task，再执行 `ctr tasks exec`。
+6. 三者均不可用或目标容器不可访问时，stderr 输出 `[container_exec] unsupported container runtime or inaccessible container: <container>` 并 `exit 127`。
+
+该设计保持 Bridge Relay-only 约束：Agent 服务不直接连客户节点，运行时探测发生在 terminal_bridge 已连接的远端 SSH 节点上。
+
 ### 7.3 `acli_exec` catalog 规则
 
 aCLI 命令列表以官方文档为来源，运行时使用本地快照：
@@ -895,6 +913,7 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 | 2026-06-05 | v2.1 | 补充深度分析。阐明声明式定义与底层代码配合机制，剖析"参数 Schema"修改的影响以及"使用命令模板（usage_template）"完全未被消费的实现漏洞。 |
 | 2026-06-10 | v2.2 | **FactStore 事实持久化表（PR #430）**：`desired_schema.sql` 新增 `fact` 表（T4-3），存储诊断推理过程中采集的客观事实数据；配合 `evidence_builder.py` 增加历史事实检查，解决 env_context 为空时的判定逻辑 |
 | 2026-06-11 | v2.3 | **SSH终端代理双通道隔离执行（PR #443）**：① `terminal_bridge/main.go` 新增 `ssh_exec_process` 命令分支，使用独立 SSH Session（禁用 PTY）执行命令，通过 `stdoutPipe`/`stderrPipe` 物理分流并实时推送 `exec_stdout`/`exec_stderr` 帧；② `frontend/customer/src/api/terminal.ts` 支持 `buildAgentExecProcessMessage` 消息发送；③ `frontend/customer/src/stores/chat.ts` 设立流式缓冲区 `execBuffers`，在 `postExecResult` 时传入物理隔离的标准流；④ `frontend/customer/src/components/MessageBubble.vue` 物理隔离渲染 stdout 与 stderr 纯文本区域；⑤ `backend/agent-service/app/tools/acli/executor.py` 重构输出解析提取器，优先读取双通道物理隔离输出且向下兼容单通道合并输出逻辑 |
+| 2026-06-12 | v2.6 | **容器执行适配器（PR-D）**：新增 `container_exec.py`，实现 `BuiltCommand`、`ContainerCommandBuilder` 与 `ContainerExecAdapter`；`bash_exec` 由固定 `docker exec` 改为远端 wrapper 探测 docker/crictl/ctr；conversation-service `agent_exec_command` 透传 `tool_name/container/original_command/built_command`；FactStore 保留结构化审计字段 |
 | 2026-06-12 | v2.5 | **工具管理 UI 校验闭环（PR-B）**：管理端工具编辑弹窗新增“校验工具定义”按钮，保存前自动调用 `/api/v1/tools/validate`，统一展示 error/warning 列表；`error` 阻断保存，`warning` 可保存但必须在页面可见。SOP 发布联动仍按 T-EXEC-11 推进。 |
 | 2026-06-11 | v2.4 | **工具执行契约与前置校验增强**：`bash_exec` 改为必须指定容器；新增执行前 `ToolSemanticValidator`；`acli_exec` 基于 aCLI catalog 本地快照做命令路径校验；修复双通道 `stderr` 在 `exit_code != 0` 时被 `output` 未定义异常覆盖的问题。工具管理 UI 与 SOP 发布联动仍按 T-EXEC-10/T-EXEC-11 推进。详见 [方案事件文档](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验方案.md) |
 

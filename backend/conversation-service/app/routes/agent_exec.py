@@ -85,7 +85,11 @@ class AgentExecRequest(BaseModel):
     """Agent 执行命令推送请求"""
 
     exec_id: str = Field(..., description="执行 ID（UUID）")
+    tool_name: str | None = Field(None, description="工具名称")
     command: str = Field(..., min_length=1, description="待执行命令")
+    container: str | None = Field(None, description="目标容器")
+    original_command: str | None = Field(None, description="工具调用原始命令")
+    built_command: str | None = Field(None, description="服务端拼装后的实际执行命令")
     reason: str = Field(..., min_length=1, description="执行原因")
     risk_level: int = Field(..., ge=1, le=3, description="风险等级（1-3）")
     node_ip: str | None = Field(None, description="目标节点 IP")
@@ -135,6 +139,8 @@ async def push_agent_exec_command(
         event="agent_exec_push_request",
         conversation_id=str(conversation_id),
         exec_id=body.exec_id,
+        tool_name=body.tool_name,
+        container=body.container,
         command_preview=body.command[:50],
         risk_level=body.risk_level,
         trace_id=trace_id,
@@ -152,7 +158,11 @@ async def push_agent_exec_command(
 
     event_data = {
         "execId": body.exec_id,
+        "toolName": body.tool_name,
         "command": body.command,
+        "container": body.container,
+        "originalCommand": body.original_command,
+        "builtCommand": body.built_command or body.command,
         "reason": body.reason,
         "riskLevel": body.risk_level,
         "nodeIp": body.node_ip,

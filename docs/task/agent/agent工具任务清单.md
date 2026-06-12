@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer-agent
-last_updated: 2026-05-28
+last_updated: 2026-06-12
 owner: team
 update_trigger: agent工具设计 v2.0 落地实现（T-TOOL-05/06/07 已完成）
 ---
@@ -20,6 +20,7 @@ update_trigger: agent工具设计 v2.0 落地实现（T-TOOL-05/06/07 已完成�
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-06-12 | v1.3 | 完成 T-EXEC-05：新增 `ContainerExecAdapter/ContainerCommandBuilder`，远端 wrapper 自动探测 docker/crictl/ctr，执行事件透传 `container/original_command/built_command` |
 | 2026-06-11 | v1.2 | 新增 T-EXEC 系列任务入口：stderr 修复、bash_exec 容器化契约、执行前语义校验、aCLI catalog、工具管理与 SOP 联动校验 |
 | 2026-05-28 | v1.1 | 完成 T-TOOL-05/06/07：conversation-service 内部 API + SSE 推送机制 |
 | 2026-05-29 | v1.0 | 初版：基于 agent工具设计.md v2.0 完整梳理，20 个任务 |
@@ -66,7 +67,7 @@ P2 阶段（清理）
 | T-EXEC-02 | P0 | 已完成 | 补充双通道失败单元测试 |
 | T-EXEC-03 | P0 | 已完成 | 更新 `bash_exec` schema，要求 `container` 必填 |
 | T-EXEC-04 | P0 | 已完成 | 实现 `ToolSemanticValidator` 基础语义校验 |
-| T-EXEC-05 | P1 | 部分完成 | 实现服务端容器执行命令构造器；当前已完成最小 `docker exec` 拼装，正式 `ContainerExecAdapter` 后续增强 |
+| T-EXEC-05 | P1 | 已完成 | 实现服务端容器执行命令构造器；`ContainerExecAdapter` 在远端探测 docker/crictl/ctr，保留结构化审计字段 |
 | T-EXEC-06 | P1 | 已完成 | 新增 aCLI catalog 同步脚本与本地快照 |
 | T-EXEC-07 | P1 | 已完成 | `acli_exec` 基于 catalog 校验命令路径 |
 | T-EXEC-08 | P1 | 已完成 | ReactEngine 校验失败自修正，不触发真实执行 |
@@ -76,7 +77,7 @@ P2 阶段（清理）
 | T-EXEC-12 | P1 | 已完成 | 新增校验指标与结构化日志 |
 | T-EXEC-13 | P1 | 已完成 | 更新测试与质量门禁 |
 
-**当前优先级**：前置执行链路、工具管理校验闭环、SOP 发布联动校验均已完成；后续优先补 T-EXEC-05 剩余的正式 `ContainerExecAdapter` 与运行时探测。
+**当前优先级**：T-EXEC 工具执行契约闭环已完成；后续如需继续增强，应单独处理前端 risk=2 确认卡片的真实执行路径与人工联调验证。
 
 ---
 

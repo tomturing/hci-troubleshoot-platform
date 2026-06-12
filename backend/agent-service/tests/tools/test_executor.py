@@ -174,6 +174,17 @@ class TestBridgeRelayExecutor:
             assert result.exit_code == -1
             assert "超时" in result.stderr
             assert result.risk_level == 1  # df -h 是只读命令
+            assert result.container == "asv-con"
+            assert result.original_command == "df -h"
+            assert result.built_command
+            assert result.built_command.startswith("HCI_CONTAINER=asv-con;")
+
+            payload = mock_post.call_args.kwargs["json"]
+            assert payload["tool_name"] == "bash_exec"
+            assert payload["container"] == "asv-con"
+            assert payload["original_command"] == "df -h"
+            assert payload["built_command"] == payload["command"]
+            assert payload["command"].startswith("HCI_CONTAINER=asv-con;")
 
     # ── 测试验收标准 4：stdout 超 4000 chars 被截断 ───────────────────────────
 

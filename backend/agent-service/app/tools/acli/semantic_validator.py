@@ -15,7 +15,17 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-ALLOWED_BASH_CONTAINERS = {"asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
+from app.tools.acli.container_exec import ALLOWED_BASH_CONTAINERS, build_container_command
+
+__all__ = [
+    "ALLOWED_BASH_CONTAINERS",
+    "ToolSemanticValidator",
+    "ValidationIssue",
+    "ValidationResult",
+    "build_container_command",
+    "get_acli_catalog_commands",
+]
+
 CATALOG_PATH = Path(__file__).with_name("catalog") / "acli_command_catalog.json"
 _BASH_FORBIDDEN_PREFIX_RE = re.compile(r"(^|\s)(docker\s+exec|kubectl\s+exec|nsenter)\b", re.IGNORECASE)
 
@@ -127,11 +137,6 @@ def _catalog_matches(path_tokens: list[str], catalog_commands: frozenset[str]) -
         if len(path_tokens) >= len(catalog_tokens) and path_tokens[: len(catalog_tokens)] == catalog_tokens:
             return True
     return False
-
-
-def build_container_command(container: str, command: str) -> str:
-    """把结构化容器边界转换为受控的实际执行命令。"""
-    return f"docker exec {shlex.quote(container)} sh -lc {shlex.quote(command)}"
 
 
 class ToolSemanticValidator:

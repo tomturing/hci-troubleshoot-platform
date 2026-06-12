@@ -40,7 +40,9 @@ def test_bash_exec_accepts_valid_command():
 
 def test_build_container_command_quotes_user_command():
     built = build_container_command("asv-con", "grep ERROR /sf/log/vtpdaemon.log | tail -50")
-    assert built.startswith("docker exec asv-con sh -lc ")
+    assert built.startswith("HCI_CONTAINER=asv-con;")
+    assert "HCI_RUNTIME=$(sh -lc" in built
+    assert "docker exec \"$HCI_CONTAINER\"" in built
     assert "grep ERROR" in built
 
 
