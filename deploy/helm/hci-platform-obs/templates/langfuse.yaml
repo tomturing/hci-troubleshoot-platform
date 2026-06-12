@@ -301,6 +301,8 @@ spec:
               {{- end }}
             - name: NEXTAUTH_SECRET
               value: "langfuse-dev-secret-change-in-production"
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=1536"
           resources:
             {{- toYaml .Values.langfuse.server.resources | nindent 12 }}
           readinessProbe:
@@ -408,6 +410,8 @@ spec:
               value: "true"
             - name: LANGFUSE_S3_MEDIA_UPLOAD_PREFIX
               value: "media/"
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=1536"
           resources:
             {{- toYaml .Values.langfuse.worker.resources | nindent 12 }}
 {{- end }}
