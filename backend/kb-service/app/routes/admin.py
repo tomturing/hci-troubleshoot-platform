@@ -33,6 +33,7 @@ from app.models.kbd_entry import strip_markdown
 from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
+from app.services.sop_tool_contract_validator import validate_sop_tool_contract
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -805,6 +806,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         tree_generated = False
         tree_leaf_count = 0
         tree_validation_status: str | None = None
+        tool_contract_issues: list[ValidationIssue] = []
 
         if content_md:
             parse_result = parse_sop_markdown(content_md)
@@ -812,6 +814,8 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                 tree_generated = True
                 root = parse_result.root_nodes[0]
                 tree_leaf_count = len(_collect_leaves(root))
+                tool_contract_issues = validate_sop_tool_contract(root)
+                parse_result.issues.extend(tool_contract_issues)
                 # 判断是否有 warning
                 has_warnings = any(i.level == "warning" for i in parse_result.issues)
                 tree_validation_status = "warnings" if has_warnings else "valid"
@@ -820,6 +824,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     document_id=document_id,
                     leaf_count=tree_leaf_count,
                     warning_count=len([i for i in parse_result.issues if i.level == "warning"]),
+                    tool_contract_warning_count=len(tool_contract_issues),
                 )
             else:
                 tree_validation_status = "error"
@@ -1044,6 +1049,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         reviewer_id=body.reviewer_id,
         tree_generated=tree_generated,
         variable_count=len(variable_defs),
+        tool_contract_warning_count=len(tool_contract_issues),
     )
 
     # 构建 validation_issues：合并 parse_result 中的所有 issues（含 line_number）

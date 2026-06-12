@@ -380,6 +380,10 @@ jobs:
             -x -q \
             --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
             -m "not integration and not slow"
+          uv run pytest backend/kb-service/tests/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -m "not integration and not slow"
           # 最后一批：合并所有覆盖率后统一检查基线（≥60%），避免分批检查造成误报
           uv run pytest backend/scheduler-service/tests/unit/ \
             -x -q \

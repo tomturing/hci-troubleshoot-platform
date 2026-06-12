@@ -39,6 +39,7 @@ owner: team
 | 2026-06-11 | v2.8 | **SSH终端代理双通道隔离执行与渲染优化（PR #443）**：① `terminal_bridge/main.go` 新增 `ssh_exec_process` 命令分支，使用独立 SSH Session 执行禁用 PTY 申请，通过物理分流 stdout/stderr 实时推送 `exec_stdout`/`exec_stderr` 帧；② `frontend/customer/src/api/terminal.ts` 支持 `buildAgentExecProcessMessage` 消息发送与物理流解析；③ `frontend/customer/src/stores/chat.ts` 设立流式缓冲区 `execBuffers`，在 `postExecResult` 时传入物理隔离的标准流；④ `frontend/customer/src/components/MessageBubble.vue` 物理隔离渲染 stdout 与 stderr 纯文本区域，杜绝 JSON 二次转义；⑤ `backend/conversation-service/app/routes/agent_exec.py` 扩展 `/exec-result` 支持 stdout/stderr 分离回传；⑥ `backend/agent-service/app/tools/acli/executor.py` 重构输出解析提取器，优先读取双通道物理隔离输出且向下兼容 |
 | 2026-06-12 | v2.9 | **工具执行契约前置校验（PR-A）**：① `bash_exec` 增加必填 `container` 契约并在 ReAct 真实执行前执行 `ToolSemanticValidator`；② `executor.py` 修复双通道 `stderr` 被 `output` 未定义异常覆盖的问题；③ `acli_exec` 基于本地 aCLI catalog 快照拦截不支持的命令路径；④ 新增 `agent_tool_semantic_validation_total` 指标和结构化日志字段，校验失败不下发 terminal_bridge，而是反馈给 LLM 重新规划 |
 | 2026-06-12 | v3.0 | **工具管理 UI 校验闭环（PR-B）**：① 工具管理编辑弹窗新增“校验工具定义”按钮，直接展示后端 `validation_issues`；② 保存前自动调用同一校验接口，`error` 阻断保存，`warning` 可保存但页面保留提示；③ 本地 JSON/数组解析错误也归一为同一套校验结果面板，避免只弹 toast 后丢失定位信息 |
+| 2026-06-12 | v3.1 | **SOP 发布联动工具契约校验（PR-C）**：① `kb-service` 发布 SOP 时静态校验 `acli_methods` 与命令型前置检查；② 不支持 aCLI catalog 的命令、bash 命令缺容器边界统一写入 `ValidationIssue` warning；③ 同步脚本同时更新 agent-service/kb-service catalog；④ CI unit-tests 纳入 `backend/kb-service/tests/` |
 
 ---
 
