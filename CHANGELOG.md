@@ -1,5 +1,45 @@
 # Changelog
 
+## [2.16.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.15.0...v2.16.0) (2026-06-12)
+
+
+### ✨ 新功能
+
+* 优化 4 个查询工具定义为 acli 类别并实现动态参数构建 ([#441](https://github.com/tomturing/hci-troubleshoot-platform/issues/441)) ([1dfb22d](https://github.com/tomturing/hci-troubleshoot-platform/commit/1dfb22db6571aff1febaf1d4dc68003a938615b4))
+* 增强 bash_exec 容器运行时适配 ([#448](https://github.com/tomturing/hci-troubleshoot-platform/issues/448)) ([bd04dbb](https://github.com/tomturing/hci-troubleshoot-platform/commit/bd04dbb3920cc2606708bb27cd21a97acd8a3eaa))
+* 增强 SOP 发布工具契约校验 ([#447](https://github.com/tomturing/hci-troubleshoot-platform/issues/447)) ([f236a20](https://github.com/tomturing/hci-troubleshoot-platform/commit/f236a2036251cffff6e976ce1c03bdd6cb6c1a23))
+* 增强工具执行契约前置校验 ([#445](https://github.com/tomturing/hci-troubleshoot-platform/issues/445)) ([a1e517c](https://github.com/tomturing/hci-troubleshoot-platform/commit/a1e517c43d0a32645185df34a9bab47de8c3d994))
+* 增强工具管理契约校验展示 ([#446](https://github.com/tomturing/hci-troubleshoot-platform/issues/446)) ([d6e61c7](https://github.com/tomturing/hci-troubleshoot-platform/commit/d6e61c72d991528118c487e6a5b5a5155c764b84))
+* 实现 SSH终端代理(terminal_bridge) 方案 B 双通道隔离执行与渲染优化 ([#443](https://github.com/tomturing/hci-troubleshoot-platform/issues/443)) ([ecf04bb](https://github.com/tomturing/hci-troubleshoot-platform/commit/ecf04bb1b4c749a049c2e867484460b59af16b2a))
+* 技能优化与管理台对话框一致性优化 ([#453](https://github.com/tomturing/hci-troubleshoot-platform/issues/453)) ([efc7c1d](https://github.com/tomturing/hci-troubleshoot-platform/commit/efc7c1dc4caee1988d29af1a7bc262ed6b5faa81))
+* 支持 SOP Markdown 命令归一化与变量来源门禁 ([#450](https://github.com/tomturing/hci-troubleshoot-platform/issues/450)) ([2a51d62](https://github.com/tomturing/hci-troubleshoot-platform/commit/2a51d6220ee6a83bb25a6f3852362ef35df9a693))
+* 添加 Helm Hook Job 自动加载数据库种子数据 ([#427](https://github.com/tomturing/hci-troubleshoot-platform/issues/427)) ([16b7b2e](https://github.com/tomturing/hci-troubleshoot-platform/commit/16b7b2e85a814bf6377232bc0acb5794d4fd91b9))
+* 集成 Langfuse 可观测性追踪到 AI 客户端与 ReAct 引擎 ([#449](https://github.com/tomturing/hci-troubleshoot-platform/issues/449)) ([9e57244](https://github.com/tomturing/hci-troubleshoot-platform/commit/9e57244d95d7fb92e69ed0cdd8d4b303cf4676b9))
+
+
+### 🐛 Bug 修复
+
+* 优化 terminal_bridge 版本机制为动态获取与构建注入 ([#444](https://github.com/tomturing/hci-troubleshoot-platform/issues/444)) ([a451b16](https://github.com/tomturing/hci-troubleshoot-platform/commit/a451b1609df9a8d3da1b04347b2dc697a231349f))
+* 优化S0意图识别解析逻辑以支持自定义Prompt ([#431](https://github.com/tomturing/hci-troubleshoot-platform/issues/431)) ([12ea729](https://github.com/tomturing/hci-troubleshoot-platform/commit/12ea729121f147475f16e11c47f362eb210e0356))
+* 修复 API 网关缺失 exec-result 路由及鉴权问题 ([#439](https://github.com/tomturing/hci-troubleshoot-platform/issues/439)) ([c576085](https://github.com/tomturing/hci-troubleshoot-platform/commit/c57608582bfe91ec43e874a36cff793cbd1ee6da))
+* 修复 db-seed PostSync Hook 因 system_prompt.name 缺少 UNIQUE 约束导致持续失败 ([#435](https://github.com/tomturing/hci-troubleshoot-platform/issues/435)) ([3403f1b](https://github.com/tomturing/hci-troubleshoot-platform/commit/3403f1b6f710ba5cba5aad98ae3b8c2ea75d1d45))
+* 修复 Helm 模板中 MinIO entrypoint 与 ClickHouse environment 字段错误 ([#455](https://github.com/tomturing/hci-troubleshoot-platform/issues/455)) ([9c658c2](https://github.com/tomturing/hci-troubleshoot-platform/commit/9c658c2cb5439987c52b312fef648c19c9f22723))
+* 修复 IP 参数校验放宽与工具执行结果截断问题（含 Bridge 日志增强） ([#442](https://github.com/tomturing/hci-troubleshoot-platform/issues/442)) ([a4f23a4](https://github.com/tomturing/hci-troubleshoot-platform/commit/a4f23a4c44c01653cbb1993f9a680376702d3fdc))
+* 修复API网关会话执行和评估接口404与终端面板布局间隙 ([#438](https://github.com/tomturing/hci-troubleshoot-platform/issues/438)) ([25d0242](https://github.com/tomturing/hci-troubleshoot-platform/commit/25d0242a1e569057eab79415c37c350f38220f13))
+* 修复命令行工具执行缺少 case_id 导致连接失败与超时时间过长问题 ([#436](https://github.com/tomturing/hci-troubleshoot-platform/issues/436)) ([20eaade](https://github.com/tomturing/hci-troubleshoot-platform/commit/20eaade3080921788c2fad6655dbc6c4c5e82452))
+* 修复工单Q2026061002370诊断执行故障，补齐数据库字段并注入SCP环境变量 ([#440](https://github.com/tomturing/hci-troubleshoot-platform/issues/440)) ([09bdbe1](https://github.com/tomturing/hci-troubleshoot-platform/commit/09bdbe1308b1a14af207a152f9de44975fd47b01))
+* 修复澄清请求交互事件导致空流检测误判为推理错误的Bug ([#434](https://github.com/tomturing/hci-troubleshoot-platform/issues/434)) ([cafac76](https://github.com/tomturing/hci-troubleshoot-platform/commit/cafac7648efd8eac0078cf8e82ece20f65ab9c90))
+* 修复终端bridge命令执行超时与前端工单诊断阶段显示还原问题 ([#433](https://github.com/tomturing/hci-troubleshoot-platform/issues/433)) ([4b3de38](https://github.com/tomturing/hci-troubleshoot-platform/commit/4b3de38260fa002c9975c5d75dbb0cc5d5366a13))
+* 修复诊断分析阶段环境数据丢失与FactStore缺陷 [env:dev:sz][agent:gemini] ([#430](https://github.com/tomturing/hci-troubleshoot-platform/issues/430)) ([5620de9](https://github.com/tomturing/hci-troubleshoot-platform/commit/5620de924c325c55251c28e7e0bf65b4859c47aa))
+* 补强 SOP 变量来源运行时门禁 ([#451](https://github.com/tomturing/hci-troubleshoot-platform/issues/451)) ([5e397f7](https://github.com/tomturing/hci-troubleshoot-platform/commit/5e397f7a7d45edcce9de796b7e7c55ea34b9adf6))
+* 解决内嵌 Langfuse iframe 拒绝连接及相关文档记录 [env:staging:aihci][agent:gemini] ([#457](https://github.com/tomturing/hci-troubleshoot-platform/issues/457)) ([246ea1d](https://github.com/tomturing/hci-troubleshoot-platform/commit/246ea1d4e408d1a82d59f9b37be5a4af83c308bd))
+
+
+### 📝 文档
+
+* 补充 db-seed Hook 文档 + 修复 docker-compose 路径 ([#429](https://github.com/tomturing/hci-troubleshoot-platform/issues/429)) ([234befb](https://github.com/tomturing/hci-troubleshoot-platform/commit/234befb61fab2deb891dc06fb732e939b6d11c38))
+* 补充 PR [#430](https://github.com/tomturing/hci-troubleshoot-platform/issues/430) 文档以满足模块文档同步检查 ([#432](https://github.com/tomturing/hci-troubleshoot-platform/issues/432)) ([0d4e2f7](https://github.com/tomturing/hci-troubleshoot-platform/commit/0d4e2f7328c91bdc242c374e567f716bf8e558c3))
+
 ## [2.15.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.14.0...v2.15.0) (2026-06-09)
 
 
