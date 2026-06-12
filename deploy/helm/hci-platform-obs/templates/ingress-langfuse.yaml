@@ -14,8 +14,8 @@ metadata:
     {{- end }}
     # Priority needs to be higher than default to prevent global / rules from swallowing assets
     traefik.ingress.kubernetes.io/router.priority: "3000"
-    # Attach the stripPrefix middleware to this ingress
-    traefik.ingress.kubernetes.io/router.middlewares: {{ .Values.namespace }}-langfuse-stripprefix@kubernetescrd
+    # Attach the stripPrefix and headers middlewares to this ingress
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Values.namespace }}-langfuse-stripprefix@kubernetescrd,{{ .Values.namespace }}-langfuse-headers@kubernetescrd
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

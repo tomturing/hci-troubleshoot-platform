@@ -8,4 +8,15 @@ spec:
   stripPrefix:
     prefixes:
       - /langfuse
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: langfuse-headers
+  namespace: {{ .Values.namespace }}
+spec:
+  headers:
+    customResponseHeaders:
+      X-Frame-Options: ""
+      Content-Security-Policy: ""
 {{- end }}
