@@ -787,6 +787,25 @@ class InvestigationAgent(BaseAgent):
             truncated_content = content[:500] if len(content) > 500 else content
             parts.append(f"内容摘要：\n{truncated_content}")
 
+        required_variables = root_node.get("required_variables", [])
+        if required_variables:
+            parts.append("【本节点依赖变量】")
+            for variable in required_variables[:8]:
+                parts.append(
+                    "- {name}: 来源={strategy}, 类型={type}".format(
+                        name=variable.get("name", ""),
+                        strategy=variable.get("acquisition_strategy", "user_input"),
+                        type=variable.get("type", "string"),
+                    )
+                )
+
+        tool_calls = root_node.get("tool_calls", [])
+        if tool_calls:
+            parts.append("【建议工具调用】")
+            for tool_call in tool_calls[:5]:
+                args = tool_call.get("args", {})
+                parts.append(f"- {tool_call.get('tool_name')}: {args}")
+
         # 子节点列表
         children = root_node.get("children", [])
         if children:
@@ -794,7 +813,14 @@ class InvestigationAgent(BaseAgent):
             for child in children[:5]:  # 最多显示 5 个子节点
                 child_id = child.get("node_id", "")
                 child_title = child.get("title", "")
-                parts.append(f"- {child_id}: {child_title}")
+                child_line = f"- {child_id}: {child_title}"
+                child_required = child.get("required_variables") or []
+                if child_required:
+                    child_line += "；依赖变量=" + ", ".join(
+                        f"{v.get('name')}({v.get('acquisition_strategy', 'user_input')})"
+                        for v in child_required[:5]
+                    )
+                parts.append(child_line)
             if len(children) > 5:
                 parts.append(f"... 还有 {len(children) - 5} 个分支")
 
@@ -875,6 +901,25 @@ class InvestigationAgent(BaseAgent):
             truncated_content = content[:500] if len(content) > 500 else content
             parts.append(f"内容摘要：\n{truncated_content}")
 
+        required_variables = current_node.get("required_variables", [])
+        if required_variables:
+            parts.append("【本节点依赖变量】")
+            for variable in required_variables[:8]:
+                parts.append(
+                    "- {name}: 来源={strategy}, 类型={type}".format(
+                        name=variable.get("name", ""),
+                        strategy=variable.get("acquisition_strategy", "user_input"),
+                        type=variable.get("type", "string"),
+                    )
+                )
+
+        tool_calls = current_node.get("tool_calls", [])
+        if tool_calls:
+            parts.append("【建议工具调用】")
+            for tool_call in tool_calls[:5]:
+                args = tool_call.get("args", {})
+                parts.append(f"- {tool_call.get('tool_name')}: {args}")
+
         # 子节点列表（若为 branch 类型）
         children = current_node.get("children", [])
         if children:
@@ -882,7 +927,14 @@ class InvestigationAgent(BaseAgent):
             for child in children[:5]:
                 child_id = child.get("node_id", "")
                 child_title = child.get("title", "")
-                parts.append(f"- {child_id}: {child_title}")
+                child_line = f"- {child_id}: {child_title}"
+                child_required = child.get("required_variables") or []
+                if child_required:
+                    child_line += "；依赖变量=" + ", ".join(
+                        f"{v.get('name')}({v.get('acquisition_strategy', 'user_input')})"
+                        for v in child_required[:5]
+                    )
+                parts.append(child_line)
             if len(children) > 5:
                 parts.append(f"... 还有 {len(children) - 5} 个分支")
 

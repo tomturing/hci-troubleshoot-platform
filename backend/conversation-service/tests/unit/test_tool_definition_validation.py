@@ -54,7 +54,7 @@ def test_validate_valid_bash_exec():
                 "properties": {
                     "container": {
                         "type": "string",
-                        "enum": ["asv-con", "vn-con", "vn-agent", "vs-cp-manager"],
+                        "enum": ["host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"],
                     },
                     "command": {"type": "string"},
                     "reason": {"type": "string"},

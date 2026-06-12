@@ -246,3 +246,28 @@ class TestMergeVariableSchema:
         disk_id_var = next(v for v in merged if v["name"] == "disk_id")
         assert disk_id_var["deprecated"] is True
         assert disk_id_var["description"] == "磁盘ID"
+
+    def test_markdown_specific_strategy_overrides_old_generic_user_input(self):
+        """测试 Markdown 新声明的具体来源能修正历史误落的 user_input"""
+        old_schema = [
+            {
+                "name": "disk_dev",
+                "description": "磁盘盘符",
+                "acquisition_strategy": "user_input",
+                "acquisition_tool": None,
+            }
+        ]
+        new_schema = [
+            {
+                "name": "disk_dev",
+                "description": "磁盘盘符",
+                "acquisition_strategy": "llm_inference",
+                "acquisition_tool": None,
+                "auto_generated": False,
+            }
+        ]
+
+        merged, deprecated = merge_variable_schema(old_schema, new_schema)
+
+        assert deprecated == []
+        assert merged[0]["acquisition_strategy"] == "llm_inference"

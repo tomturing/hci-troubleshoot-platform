@@ -66,6 +66,18 @@ STRATEGY_HINTS: dict[str, str] = {
 # 变量章节标题关键词（旧版兼容）
 VARIABLE_SECTION_KEYWORDS: frozenset[str] = frozenset(["变量", "变量定义", "参数", "参数定义", "环境变量"])
 
+_DIRECT_ACQUISITION_STRATEGIES: frozenset[str] = frozenset(
+    [
+        "user_input",
+        "user_confirm",
+        "sop_default",
+        "llm_inference",
+        "agent_pass",
+        "env_injection",
+        "env_context",
+    ]
+)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 内容行解析辅助正则
 # ──────────────────────────────────────────────────────────────────────────────
@@ -955,6 +967,22 @@ def _infer_strategy(var_name: str) -> dict:
     return {"acquisition_strategy": "user_input", "acquisition_tool": None}
 
 
+def _parse_acquisition_source(source: str) -> tuple[str, str | None]:
+    """解析变量声明表中的“来源”字段。"""
+    normalized = source.strip()
+    if normalized.startswith("tool:"):
+        return "tool_call", normalized[5:]
+    if normalized.startswith("skill:"):
+        return "skill_call", normalized[6:]
+    if normalized.startswith("env:"):
+        return "env_injection", normalized
+    if normalized in ("tool_call", "tool"):
+        return "tool_call", None
+    if normalized in _DIRECT_ACQUISITION_STRATEGIES:
+        return normalized, None
+    return "user_input", None
+
+
 def _parse_variable_section(content_md: str) -> dict[str, dict]:
     """解析整个 Markdown 文档中的所有变量章节（支持全局和本地表格，兼容旧版列表格式）。"""
     declared_vars: dict[str, dict] = {}
@@ -1023,30 +1051,7 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                         default_val_clean = default_val.replace("\\", "").strip() if default_val else None
                         val_pattern_clean = val_pattern.replace("\\", "").strip() if val_pattern else None
 
-                        if var_source_clean.startswith("tool:"):
-                            strategy = "tool_call"
-                            tool = var_source_clean[5:]
-                        elif var_source_clean.startswith("skill:"):
-                            strategy = "skill_call"
-                            tool = var_source_clean[6:]
-                        elif var_source_clean.startswith("env:") or var_source_clean in (
-                            "env_injection",
-                            "env_context",
-                        ):
-                            strategy = "env_injection"
-                            tool = None
-                        elif var_source_clean in ("tool_call", "tool"):
-                            strategy = "tool_call"
-                            tool = None
-                        elif var_source_clean == "sop_default":
-                            strategy = "sop_default"
-                            tool = None
-                        elif var_source_clean == "user_confirm":
-                            strategy = "user_confirm"
-                            tool = None
-                        else:
-                            strategy = "user_input"
-                            tool = None
+                        strategy, tool = _parse_acquisition_source(var_source_clean)
 
                         if strategy == "sop_default" and not default_val_clean:
                             default_val_clean = var_desc_clean

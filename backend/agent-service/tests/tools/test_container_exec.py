@@ -20,10 +20,23 @@ def test_build_auto_runtime_wrapper_preserves_contract_fields():
     assert built.runtime == ContainerRuntime.AUTO
     assert "HCI_RUNTIME=$(sh -lc" in built.built_command
     assert "export HCI_CONTAINER HCI_CTR_NS HCI_USER_COMMAND" in built.built_command
+    assert "container_exec -n \"$HCI_CONTAINER\" -c \"$HCI_USER_COMMAND\" -d" in built.built_command
+    assert "nerdctl -n \"$HCI_CTR_NS\" exec \"$HCI_CONTAINER\"" in built.built_command
     assert "docker exec \"$HCI_CONTAINER\" sh -lc \"$HCI_USER_COMMAND\"" in built.built_command
     assert "crictl exec \"$HCI_CID\" sh -lc \"$HCI_USER_COMMAND\"" in built.built_command
     assert "ctr -n \"$HCI_CTR_NS\" tasks exec" in built.built_command
     assert "unsupported container runtime" in built.built_command
+
+
+def test_build_host_returns_original_command_without_wrapper():
+    built = ContainerCommandBuilder.build("host", "ls -h")
+
+    assert built.container == "host"
+    assert built.original_command == "ls -h"
+    assert built.built_command == "ls -h"
+    assert built.runtime == ContainerRuntime.HOST
+    assert built.probe_command == ""
+    assert built.metadata["execution_boundary"] == "host"
 
 
 def test_build_with_explicit_docker_runtime_skips_auto_probe_branches():
@@ -53,3 +66,7 @@ def test_compat_build_container_command_returns_built_command():
 
     assert command.startswith("HCI_CONTAINER=vs-cp-manager;")
     assert "df -h" in command
+
+
+def test_compat_build_host_command_returns_original_command():
+    assert build_container_command("host", "ls -h") == "ls -h"

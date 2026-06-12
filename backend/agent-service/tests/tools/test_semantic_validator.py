@@ -38,12 +38,22 @@ def test_bash_exec_accepts_valid_command():
     assert result.ok
 
 
+def test_bash_exec_accepts_host_command():
+    result = _validate("bash_exec", {"container": "host", "command": "ls -h", "reason": "检查物理机目录"})
+    assert result.ok
+
+
 def test_build_container_command_quotes_user_command():
     built = build_container_command("asv-con", "grep ERROR /sf/log/vtpdaemon.log | tail -50")
     assert built.startswith("HCI_CONTAINER=asv-con;")
     assert "HCI_RUNTIME=$(sh -lc" in built
+    assert "container_exec -n \"$HCI_CONTAINER\" -c \"$HCI_USER_COMMAND\" -d" in built
     assert "docker exec \"$HCI_CONTAINER\"" in built
     assert "grep ERROR" in built
+
+
+def test_build_host_command_does_not_wrap():
+    assert build_container_command("host", "ls -h") == "ls -h"
 
 
 def test_acli_exec_catalog_accepts_supported_command_with_global_option():
