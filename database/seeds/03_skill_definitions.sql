@@ -230,14 +230,15 @@ INSERT INTO skill_definition (
 
 | 字段 | 含义 |
 |------|------|
-| `alert_type` | 告警对象类型（如 Host / VM / Disk） |
-| `type` | 告警事件名称（如 memory_usage / cpu_high） |
-| `description` | 告警详细描述（常含括号变量，如 `(192.168.1.10)`） |
-| `end` | 告警发生时间（可能是时间戳或已格式化时间） |
+| `alert_type` | 告警类型（如 vs_disk_warn / iface_down / host_bond） |
+| `description` | 描述（常含括号变量，如 `（192.168.1.10）`） |
+| `end` | 时间（可能是时间戳或已格式化时间） |
 | `host` | 主机名或 IP（告警来源，可能不准确） |
 | `hostid` | 主机 ID（用于在节点列表中匹配） |
-| `target` | 告警对象名称（VM 名、节点名等） |
-| `vm` | 关联虚拟机名称（如无则为空） |
+| `object_type` | 对象类型（如 存储 / 主机 / 集群） |
+| `target` | 告警对象（节点名、虚机名等） |
+| `type` | 事件（如 磁盘状态异常 / 网口掉线告警） |
+| `vm` | 虚拟机 ID（如无则为空） |
 
 以 Key-Value 格式输出原始提取结果。
 
@@ -290,13 +291,14 @@ acli --formatter json platform node list
 ## 输出格式
 
 ```
-告警时间：2026-06-12 10:30:00
-对象类型：Host
-告警对象：node-192-168-1-10
-告警事件：memory_usage_high
-告警描述：节点内存使用率超过阈值 (192.168.1.10)
-告警主机：192.168.1.10
-告警虚机：（无）
+告警类型（`alert_type`）：vs_disk_warn
+时间（`end`）：2026-06-12 10:30:00
+对象类型（`object_type`）：存储
+告警对象（`target`）：SVR_aCloud_670
+事件（`type`）：磁盘状态异常
+描述（`description`）：主机（SVR_aCloud_670）SSD寿命告警（1号盘），告警盘槽位（1），剩余寿命3%！建议：请购买新的SSD，并联系深信服科技更换SSD！
+告警主机（`node_id`）：172.28.24.4
+告警虚拟机（`vm`）：（无）
 ```
 
 若 `node_ip` 未能从节点列表匹配，在"告警主机"行注明"待确认（匹配失败，原始 host 字段：xxx）"。
@@ -306,7 +308,7 @@ $SKILL$,
     '适用于 HCI 5.x.x 及以上环境；需要能执行 acli 命令（获取节点列表），或已预先提供 {nodes} 变量',
 
     -- metadata_json
-    '{"author": "hci-team", "category": "monitoring", "tags": ["alert", "monitoring", "node-ip", "event", "hci"]}'::jsonb,
+    '{"author": "hci-team", "category": "platform", "tags": ["alert", "platform", "node-ip", "event", "hci"]}'::jsonb,
 
     -- allowed_tools（声明本 Skill 可能调用的工具类型）
     'bash',
@@ -362,15 +364,15 @@ INSERT INTO skill_definition (
 
 | 字段 | 含义 |
 |------|------|
-| `type` | 任务类型/行为（如 VmCreate / VmPowerOn / VmMigrate） |
-| `description` | 任务详细描述（常含括号变量，如 `(VM名)`, `(192.168.1.10)`） |
+| `description` | 任务详细描述（常含括号变量，如 `（VM名）`, `（172.28.24.4）`） |
 | `end` | 任务结束时间（可能是时间戳或已格式化时间） |
+| `errcode_tracing` | 错误码追踪链（如 `0x0C000005`，多个时用逗号分隔） |
 | `host` | 主机名或 IP（任务执行主机，可能不准确） |
 | `hostid` | 主机 ID（用于在节点列表中匹配） |
+| `request_id` | 调用链 ID（用于关联日志，格式如 `,a2c2056eaff140d09dd85e55999b69a1`） |
 | `target` | 操作目标名称（VM 名、存储卷名等） |
-| `vm` | 关联虚拟机名称（如无则为空） |
-| `errcode_tracing` | 错误码追踪链（如 `0x0CFFFFFF`，多个时用逗号分隔） |
-| `request_id` | 调用链 ID（用于关联日志，格式如 `,abc123def456`） |
+| `type` | 任务类型/行为（如 登录 / 启动虚拟机 / 编辑网卡连接） |
+| `vm` | 虚拟机 ID（如无则为空） |
 
 以 Key-Value 格式输出原始提取结果。
 
@@ -381,7 +383,7 @@ INSERT INTO skill_definition (
 **2.1 解析 `description`**
 
 从 `description` 字段提取括号 `（）` 或 `()` 内的变量值，并根据上下文说明变量含义。
-示例：`虚拟机开机失败 (vm-test-01) on (node-01)` → VM名 `vm-test-01`，目标节点 `node-01`。
+示例：`虚拟机开机失败（MEM）主机（SVR_aCloud_668）` → VM名 `MEM`，目标节点 `SVR_aCloud_668`。
 
 **2.2 转换 `end` 为可读时间**
 
@@ -389,7 +391,7 @@ INSERT INTO skill_definition (
 
 **2.3 清理 `request_id`**
 
-`request_id` 字段值通常以 `,` 开头（如 `,abc123`），需去掉前导逗号，仅保留纯 ID 字符串，用于日志检索。
+`request_id` 字段值通常以 `,` 开头（如 `,a2c2056eaff140d09dd85e55999b69a1`），需去掉前导逗号，仅保留纯 ID 字符串，用于日志检索。
 
 **2.4 确认 `node_ip`（核心步骤）**
 
@@ -418,7 +420,7 @@ acli --formatter json platform node list
 
 3. **每条任务都必须明确 `node_ip`**：错误的 `node_ip` 会导致后续排障命令在错误节点上执行，是排障失败最常见的原因之一。
 
-4. **`request_id` 前导逗号**：HCI 5.x 部分版本的任务 API 返回的 `request_id` 有前导 `,`，必须去除才能用于日志检索（如 grep 或 loki 查询）。
+4. **`request_id` 前导逗号**：HCI 5.x 部分版本的任务 API 返回的 `request_id` 有前导 `,`，必须去除才能用于日志检索（如 `grep` 或 loki 查询）。
 
 5. **`errcode_tracing` 为空时**：表示任务未产生可追踪的错误码（任务可能因超时或外部信号终止），此时重点关注 `description` 和 `request_id` 进行日志追踪。
 
@@ -431,14 +433,14 @@ acli --formatter json platform node list
 ## 输出格式
 
 ```
-行为：VmPowerOn
-结束时间：2026-06-12 10:30:00
-主机：192.168.1.10
-虚机：vm-test-01
-对象：node-01
-描述：虚拟机开机失败 (vm-test-01) on (node-01)
-错误码：0x0CFFFFFF
-调用链：abc123def456
+行为（`type`）：启动虚拟机
+结束时间（`end`）：2026-06-12 10:30:00
+主机（`node_ip）：172.28.24.4
+虚拟机（`vm`）：451922388030
+对象（`target`）：MEM
+描述（`description`）：没有主机能够启动这台虚拟机，具体原因如下：\n主机（SVR_aCloud_668）：此主机计算内存不足，可请关闭主机上其它未使用的虚拟机或虚拟设备释放计算内存！\n主机（SVR_aCloud_669）：此主机计算内存不足，可用计算内存上其它未使用的虚拟机或虚拟设备释放计算内存！\n主机（SVR_aCloud_670）：此主机计算内存不足，可用计算内存 54.11 GB用的虚拟机或虚拟设备释放计算内存！\n
+错误码（`errcode_tracing`）：0x0C000005
+调用链（`request_id`）：a2c2056eaff140d09dd85e55999b69a1
 ```
 
 若 `node_ip` 未能从节点列表匹配，在"主机"行注明"待确认（匹配失败，原始 host 字段：xxx）"。
@@ -449,7 +451,7 @@ $SKILL$,
     '适用于 HCI 5.x.x 及以上环境；需要能执行 acli 命令（获取节点列表），或已预先提供 {nodes} 变量',
 
     -- metadata_json
-    '{"author": "hci-team", "category": "monitoring", "tags": ["task", "log", "node-ip", "error-code", "request-id", "hci"]}'::jsonb,
+    '{"author": "hci-team", "category": "platform", "tags": ["task", "log", "node-ip", "error-code", "request-id", "hci", "platform"]}'::jsonb,
 
     -- allowed_tools（声明本 Skill 可能调用的工具类型）
     'bash',
