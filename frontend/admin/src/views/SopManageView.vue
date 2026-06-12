@@ -712,7 +712,7 @@ onMounted(() => {
     >
       <!-- 自定义弹窗 Header，含全屏切换按钮 -->
       <template #header>
-        <div class="custom-dialog-header">
+        <div class="custom-dialog-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; padding-right: 32px; box-sizing: border-box;">
           <span class="el-dialog__title">SOP 文档详情</span>
           <el-button
             type="info"
@@ -847,7 +847,7 @@ onMounted(() => {
       :close-on-click-modal="false"
     >
       <template #header>
-        <div class="custom-dialog-header">
+        <div class="custom-dialog-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; padding-right: 32px; box-sizing: border-box;">
           <span class="el-dialog__title">编辑 SOP 文档</span>
           <el-button
             type="info"
@@ -860,8 +860,8 @@ onMounted(() => {
           />
         </div>
       </template>
-      <div v-loading="editLoadingContent" style="min-height:80px">
-        <el-form label-width="80px">
+      <div v-loading="editLoadingContent" style="min-height:80px" class="premium-form-wrapper">
+        <el-form label-width="80px" class="premium-form">
           <el-form-item label="标题" required>
             <el-input v-model="editTitle" placeholder="SOP 文档标题" />
           </el-form-item>
@@ -886,7 +886,7 @@ onMounted(() => {
               </el-option>
             </el-select>
           </el-form-item>
-          <el-form-item label="正文内容">
+          <el-form-item label="正文内容" class="flex-form-item">
             <el-alert
               v-if="editDoc?.status === 'published'"
               type="warning"

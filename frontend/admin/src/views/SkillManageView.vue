@@ -593,23 +593,17 @@ onMounted(() => {
               <template #label>
                 <span>扩展元数据 <code class="field-label-code">metadata</code></span>
               </template>
-              <el-row :gutter="12">
-                <el-col :span="8">
-                  <el-input v-model="formModel.meta_author" placeholder="author（作者）" />
-                </el-col>
-                <el-col :span="8">
-                  <el-select v-model="formModel.meta_category" placeholder="category（分类）" allow-create filterable style="width: 100%">
-                    <el-option label="storage（存储）" value="storage" />
-                    <el-option label="network（网络）" value="network" />
-                    <el-option label="compute（计算）" value="compute" />
-                    <el-option label="monitoring（监控）" value="monitoring" />
-                    <el-option label="security（安全）" value="security" />
-                  </el-select>
-                </el-col>
-                <el-col :span="8">
-                  <el-input v-model="formModel.meta_tags" placeholder="tags（逗号分隔，如 disk,smart）" />
-                </el-col>
-              </el-row>
+              <div class="metadata-row">
+                <el-input v-model="formModel.meta_author" placeholder="author（作者）" />
+                <el-select v-model="formModel.meta_category" placeholder="category（分类）" allow-create filterable style="width: 100%">
+                  <el-option label="storage（存储）" value="storage" />
+                  <el-option label="network（网络）" value="network" />
+                  <el-option label="vm（虚拟机）" value="vm" />
+                  <el-option label="platform（平台）" value="platform" />
+                  <el-option label="hardware（硬件）" value="hardware" />
+                </el-select>
+                <el-input v-model="formModel.meta_tags" placeholder="tags（逗号分隔，如 disk,smart）" />
+              </div>
             </el-form-item>
           </el-form>
         </el-tab-pane>
@@ -1144,5 +1138,16 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.metadata-row {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+
+.metadata-row > * {
+  flex: 1;
+  min-width: 0;
 }
 </style>

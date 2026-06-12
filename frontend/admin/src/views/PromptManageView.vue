@@ -378,7 +378,7 @@ onMounted(() => {
       destroy-on-close
     >
       <template #header>
-        <div class="custom-dialog-header">
+        <div class="custom-dialog-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; padding-right: 32px; box-sizing: border-box;">
           <span class="el-dialog__title">{{ dialogTitle }}</span>
           <el-button
             type="info"
