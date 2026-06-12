@@ -112,6 +112,7 @@ const editContentMd = ref('')
 const editOriginalContentMd = ref('')  // 用于检测正文是否变更
 const editLoadingContent = ref(false)
 const editLoading = ref(false)
+const editFullscreen = ref(false)
 
 // 行号编辑器
 const editTextareaRef = ref<HTMLTextAreaElement | null>(null)
@@ -401,6 +402,7 @@ async function openEditDialog(doc: SopDocument) {
   editCategoryId.value = doc.category_id || ''
   editContentMd.value = doc.content_md || ''
   editOriginalContentMd.value = doc.content_md || ''
+  editFullscreen.value = false
   editDialogVisible.value = true
 
   // 列表接口不返回 content_md，需单独请求
@@ -611,7 +613,25 @@ onMounted(() => {
           </el-select>
         </el-col>
         <el-col :span="6">
-          <el-input v-model="categoryFilter" placeholder="按分类 ID 筛选（如 虚拟机-003）" clearable @clear="fetchDocuments" @keyup.enter="fetchDocuments" />
+          <el-select
+            v-model="categoryFilter"
+            filterable
+            clearable
+            placeholder="按分类筛选"
+            style="width: 100%"
+            :loading="categoriesLoading"
+            @change="fetchDocuments"
+          >
+            <el-option
+              v-for="cat in categoryOptions"
+              :key="cat.code"
+              :value="cat.code"
+              :label="`${cat.code}  ${cat.name}`"
+            >
+              <span style="font-family:monospace;color:#606266;font-size:12px">{{ cat.code }}</span>
+              <span style="margin-left:8px;color:#909399;font-size:12px">{{ cat.name }}</span>
+            </el-option>
+          </el-select>
         </el-col>
         <el-col :span="4">
           <div class="filter-btn-group">
@@ -817,7 +837,29 @@ onMounted(() => {
     </el-dialog>
 
     <!-- ── 编辑弹窗 ── -->
-    <el-dialog v-model="editDialogVisible" title="编辑 SOP 文档" width="900px" :close-on-click-modal="false">
+    <el-dialog
+      v-model="editDialogVisible"
+      width="90%"
+      class="premium-dialog"
+      :fullscreen="editFullscreen"
+      draggable
+      align-center
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="custom-dialog-header">
+          <span class="el-dialog__title">编辑 SOP 文档</span>
+          <el-button
+            type="info"
+            text
+            circle
+            :icon="FullScreen"
+            class="fullscreen-toggle-btn"
+            @click="editFullscreen = !editFullscreen"
+            title="切换全屏"
+          />
+        </div>
+      </template>
       <div v-loading="editLoadingContent" style="min-height:80px">
         <el-form label-width="80px">
           <el-form-item label="标题" required>
