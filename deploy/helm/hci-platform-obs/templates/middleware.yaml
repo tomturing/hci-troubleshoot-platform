@@ -1,0 +1,11 @@
+{{- if and .Values.ingress.enabled .Values.langfuse.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: langfuse-stripprefix
+  namespace: {{ .Values.namespace }}
+spec:
+  stripPrefix:
+    prefixes:
+      - /langfuse
+{{- end }}

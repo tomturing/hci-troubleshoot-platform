@@ -68,15 +68,6 @@ spec:
                 name: grafana
                 port:
                   number: 3000
-          {{- if .Values.langfuse.enabled }}
-          - path: /langfuse
-            pathType: Prefix
-            backend:
-              service:
-                name: langfuse-server
-                port:
-                  number: 3000
-          {{- end }}
     {{- end }}
 {{- end }}
 

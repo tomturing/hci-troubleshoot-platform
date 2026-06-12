@@ -27,7 +27,7 @@ spec:
               name: http
             - containerPort: 9000
               name: tcp
-          environment:
+          env:
             - name: CLICKHOUSE_DB
               value: "default"
             - name: CLICKHOUSE_USER
@@ -120,7 +120,7 @@ spec:
       containers:
         - name: minio
           image: {{ .Values.langfuse.minio.image }}
-          entrypoint: ["sh"]
+          command: ["sh"]
           args: ["-c", "mkdir -p /data/langfuse && minio server --address ':9000' --console-address ':9001' /data"]
           ports:
             - containerPort: 9000
@@ -301,6 +301,8 @@ spec:
               {{- end }}
             - name: NEXTAUTH_SECRET
               value: "langfuse-dev-secret-change-in-production"
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=1536"
           resources:
             {{- toYaml .Values.langfuse.server.resources | nindent 12 }}
           readinessProbe:
@@ -408,6 +410,8 @@ spec:
               value: "true"
             - name: LANGFUSE_S3_MEDIA_UPLOAD_PREFIX
               value: "media/"
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=1536"
           resources:
             {{- toYaml .Values.langfuse.worker.resources | nindent 12 }}
 {{- end }}

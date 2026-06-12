@@ -1,0 +1,91 @@
+{{- if and .Values.ingress.enabled .Values.langfuse.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: langfuse-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.ingress.tls }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    {{- else }}
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    {{- end }}
+    # Priority needs to be higher than default to prevent global / rules from swallowing assets
+    traefik.ingress.kubernetes.io/router.priority: "3000"
+    # Attach the stripPrefix middleware to this ingress
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Values.namespace }}-langfuse-stripprefix@kubernetescrd
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    {{- if eq .Values.global.routingMode "subdomain" }}
+    - host: "langfuse.{{ .Values.global.domain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
+    {{- else }}
+    {{- $host := "" }}
+    {{- if .Values.global.publicUrl }}
+      {{- $host = .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/:]+" }}
+    {{- end }}
+    - {{- if $host }} host: {{ $host | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: /langfuse
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
+          # Next.js static files and other assets
+          - path: /_next
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
+          - path: /static
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
+          # Internal Langfuse auth/public endpoints under /api
+          - path: /api/auth
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
+          - path: /api/public
+            pathType: Prefix
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
+    {{- end }}
+  {{- if and .Values.ingress.tls (eq .Values.global.routingMode "subdomain") }}
+  tls:
+    - hosts:
+        - "langfuse.{{ .Values.global.domain }}"
+      secretName: {{ printf "%s-tls" (replace "." "-" .Values.global.domain) }}
+  {{- end }}
+{{- end }}
