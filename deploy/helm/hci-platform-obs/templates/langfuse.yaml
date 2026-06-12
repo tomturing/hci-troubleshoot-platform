@@ -27,7 +27,7 @@ spec:
               name: http
             - containerPort: 9000
               name: tcp
-          environment:
+          env:
             - name: CLICKHOUSE_DB
               value: "default"
             - name: CLICKHOUSE_USER
@@ -120,7 +120,7 @@ spec:
       containers:
         - name: minio
           image: {{ .Values.langfuse.minio.image }}
-          entrypoint: ["sh"]
+          command: ["sh"]
           args: ["-c", "mkdir -p /data/langfuse && minio server --address ':9000' --console-address ':9001' /data"]
           ports:
             - containerPort: 9000
