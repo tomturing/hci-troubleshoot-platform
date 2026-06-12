@@ -17,6 +17,7 @@ SOP 导航工具实现（T-AGT-20、T-AGT-21）
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -24,6 +25,7 @@ from shared.clients import KBClient
 from shared.observability.logger import get_logger
 
 from app.tools.sop.client import ConversationSopClient
+from app.tools.sop.command_intent import normalize_sop_commands
 
 logger = get_logger("tools.sop.nav")
 
@@ -97,8 +99,21 @@ async def get_sop_node(
             "node_id": node_id,
         }
 
+    variable_schema: list[dict[str, Any]] = []
+    try:
+        sop_doc = await kb_client.get_sop_document(sop_document_id)
+        if sop_doc and isinstance(sop_doc.get("variable_schema"), list):
+            variable_schema = sop_doc.get("variable_schema") or []
+    except Exception as exc:
+        logger.warning(
+            event="sop_variable_schema_load_failed",
+            sop_document_id=sop_document_id,
+            node_id=node_id,
+            error=str(exc),
+        )
+
     # 构建返回结果
-    result = _build_node_response(target_node)
+    result = _build_node_response(target_node, variable_schema=variable_schema)
 
     logger.info(
         event="sop_node_retrieved",
@@ -133,7 +148,7 @@ def _find_node_in_tree(tree_json: dict, node_id: str) -> dict | None:
     return None
 
 
-def _build_node_response(node: dict) -> dict[str, Any]:
+def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """构建节点响应（符合任务文档规格）。
 
     Args:
@@ -148,35 +163,41 @@ def _build_node_response(node: dict) -> dict[str, Any]:
     children = node.get("children", [])
     is_leaf = not children
 
-    # 提取子节点概览，兼容 node_id/id 和 name/title，同时包含前置条件以便在 Prompt 中外显
+    node_id_val = node.get("node_id") or node.get("id") or ""
+    node_name_val = node.get("name") or node.get("title") or ""
+    variable_schema = variable_schema or []
+
+    # 提取子节点概览，兼容 node_id/id 和 name/title，同时外显分支条件依赖的变量。
     children_summary = [
         {
             "node_id": child.get("node_id") or child.get("id") or "",
             "title": child.get("name") or child.get("title") or "",
             "prerequisites": child.get("prerequisites", []),
+            "required_variables": _build_required_variables(child, variable_schema),
         }
         for child in children
     ]
-
-    node_id_val = node.get("node_id") or node.get("id") or ""
-    node_name_val = node.get("name") or node.get("title") or ""
 
     if is_leaf:
         diagnosis = node.get("diagnosis")
         solution = node.get("solution")
 
         if diagnosis:
-            return {
+            commands = diagnosis.get("acli_methods", [])
+            response = {
                 "node_id": node_id_val,
                 "type": "diagnosis",
                 "title": node_name_val,
                 "content": _format_diagnosis_content(diagnosis),
-                "commands": diagnosis.get("acli_methods", []),
+                "commands": commands,
+                "tool_calls": normalize_sop_commands(commands, reason=f"执行 SOP 节点「{node_name_val}」的诊断命令"),
                 "children": [],
                 "has_solution": solution is not None,
             }
+            response["required_variables"] = _build_required_variables(node, variable_schema)
+            return response
         elif solution:
-            return {
+            response = {
                 "node_id": node_id_val,
                 "type": "solution",
                 "title": node_name_val,
@@ -184,8 +205,10 @@ def _build_node_response(node: dict) -> dict[str, Any]:
                 "commands": [],
                 "children": [],
             }
+            response["required_variables"] = _build_required_variables(node, variable_schema)
+            return response
         else:
-            return {
+            response = {
                 "node_id": node_id_val,
                 "type": "leaf",
                 "title": node_name_val,
@@ -193,21 +216,114 @@ def _build_node_response(node: dict) -> dict[str, Any]:
                 "commands": [],
                 "children": [],
             }
+            response["required_variables"] = _build_required_variables(node, variable_schema)
+            return response
     else:
         prerequisites = node.get("prerequisites", [])
+        prerequisite_items = node.get("prerequisite_items", [])
+        commands = [
+            item.get("description", "")
+            for item in prerequisite_items
+            if isinstance(item, dict) and item.get("content_type") == "command" and item.get("description")
+        ]
         content_parts = []
         if prerequisites:
             content_parts.append("【进入条件】")
             content_parts.extend(f"- {p}" for p in prerequisites)
 
-        return {
+        response = {
             "node_id": node_id_val,
             "type": "branch",
             "title": node_name_val,
             "content": "\n".join(content_parts) if content_parts else "",
-            "commands": [],
+            "commands": commands,
+            "tool_calls": normalize_sop_commands(commands, reason=f"执行 SOP 节点「{node_name_val}」的前置检查命令"),
             "children": children_summary,
         }
+        response["required_variables"] = _build_required_variables(node, variable_schema)
+        return response
+
+
+def _build_required_variables(node: dict, variable_schema: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """返回当前节点文本直接引用的变量定义。"""
+    names = _extract_node_variable_names(node)
+    if not names:
+        return []
+    schema_by_name = {item.get("name"): item for item in variable_schema if isinstance(item, dict)}
+    required: list[dict[str, Any]] = []
+    for name in sorted(names):
+        schema = schema_by_name.get(name) or {"name": name, "acquisition_strategy": "user_input", "type": "string"}
+        required.append(
+            {
+                "name": name,
+                "type": schema.get("type", "string"),
+                "description": schema.get("description", ""),
+                "acquisition_strategy": schema.get("acquisition_strategy", "user_input"),
+                "acquisition_tool": schema.get("acquisition_tool"),
+            }
+        )
+    return required
+
+
+def _extract_node_variable_names(node: dict) -> set[str]:
+    texts: list[str] = []
+    texts.append(str(node.get("title") or ""))
+    for prerequisite in node.get("prerequisites", []) or []:
+        texts.append(str(prerequisite))
+    for item in node.get("prerequisite_items", []) or []:
+        if isinstance(item, dict):
+            texts.append(str(item.get("description") or ""))
+    diagnosis = node.get("diagnosis") or {}
+    if isinstance(diagnosis, dict):
+        for key in ("acli_methods", "page_methods", "analysis_steps", "possible_causes"):
+            for value in diagnosis.get(key, []) or []:
+                texts.append(str(value))
+    solution = node.get("solution") or {}
+    if isinstance(solution, dict):
+        for key in ("quick_recovery", "thorough_fix"):
+            for value in solution.get(key, []) or []:
+                texts.append(str(value))
+    joined = "\n".join(texts)
+    return {match.replace("\\", "") for match in re.findall(r"(?<!\{)\$?\{([a-z][a-z0-9_\\]*)\}(?!\})", joined)}
+
+
+def _has_variable_value(context_variables: dict[str, Any], variable_name: str) -> bool:
+    """判断运行时变量池是否已有有效值。"""
+    if variable_name not in context_variables:
+        return False
+    raw_value = context_variables.get(variable_name)
+    value = raw_value.get("value") if isinstance(raw_value, dict) else raw_value
+    return value is not None and value != ""
+
+
+def _merge_extracted_variables(
+    context_variables: dict[str, Any],
+    variables_extracted: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """把本次 sop_advance 携带的变量抽取结果纳入门禁判断。"""
+    merged = dict(context_variables or {})
+    for name, value in (variables_extracted or {}).items():
+        merged[name] = {"value": value, "source": "pending_sop_advance"}
+    return merged
+
+
+def _find_missing_guarded_variables(
+    required_variables: list[dict[str, Any]],
+    context_variables: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """找出进入节点前必须先按来源策略获取的缺失变量。"""
+    guarded_strategies = {"user_input", "user_confirm", "env_injection", "env_context"}
+    missing: list[dict[str, Any]] = []
+    for variable in required_variables:
+        name = variable.get("name")
+        strategy = str(variable.get("acquisition_strategy") or "user_input")
+        if not name:
+            continue
+        if strategy not in guarded_strategies and not strategy.startswith("env:"):
+            continue
+        if not _has_variable_value(context_variables, name):
+            missing.append(variable)
+    return missing
 
 
 def _format_diagnosis_content(diagnosis: dict) -> str:
@@ -339,12 +455,62 @@ async def sop_advance(
             else:
                 actual_node_type = "branch"
 
-        node_title = target_node.get("name") or target_node.get("title") or ""
-
-        # 调用 conversation-service 更新执行状态
         if conversation_sop_client is None:
             return {"error": "ConversationSopClient 未注入，无法推进 SOP 执行"}
 
+        variable_schema: list[dict[str, Any]] = []
+        try:
+            sop_doc = await kb_client.get_sop_document(sop_document_id)
+            if sop_doc and isinstance(sop_doc.get("variable_schema"), list):
+                variable_schema = sop_doc.get("variable_schema") or []
+        except Exception as exc:
+            logger.warning(
+                event="sop_advance_variable_schema_load_failed",
+                conversation_id=conversation_id,
+                sop_document_id=sop_document_id,
+                target_node_id=target_node_id,
+                error=str(exc),
+            )
+
+        required_variables = _build_required_variables(target_node, variable_schema)
+        if required_variables:
+            execution = await conversation_sop_client.get_execution(uuid.UUID(conversation_id))
+            context_variables = (execution or {}).get("context_variables", {}) or {}
+            effective_variables = _merge_extracted_variables(context_variables, variables_extracted)
+            missing_variables = _find_missing_guarded_variables(required_variables, effective_variables)
+            if missing_variables:
+                logger.info(
+                    event="sop_advance_blocked_by_missing_variables",
+                    conversation_id=conversation_id,
+                    sop_document_id=sop_document_id,
+                    target_node_id=target_node_id,
+                    missing_variables=[v.get("name") for v in missing_variables],
+                )
+                first_missing = missing_variables[0]
+                return {
+                    "ok": False,
+                    "error": "missing_required_variables",
+                    "message": (
+                        f"目标节点 {target_node_id} 依赖变量 {first_missing.get('name')}，"
+                        "且该变量尚未按 SOP 声明的来源策略获取。请先调用 sop_request_variable。"
+                    ),
+                    "target_node_id": target_node_id,
+                    "missing_variables": missing_variables,
+                    "next_tool_call": {
+                        "tool_name": "sop_request_variable",
+                        "args": {
+                            "variable_name": first_missing.get("name"),
+                            "reason": (
+                                first_missing.get("description")
+                                or f"进入 SOP 节点 {target_node_id} 前需要该变量"
+                            ),
+                        },
+                    },
+                }
+
+        node_title = target_node.get("name") or target_node.get("title") or ""
+
+        # 调用 conversation-service 更新执行状态
         result = await conversation_sop_client.advance(
             conversation_id=uuid.UUID(conversation_id),
             target_node_id=target_node_id,

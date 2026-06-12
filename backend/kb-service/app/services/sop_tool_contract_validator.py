@@ -15,13 +15,10 @@ from functools import lru_cache
 from pathlib import Path
 
 from app.schemas.sop_template import SOPNode, ValidationIssue
+from app.services.sop_command_intent import ALLOWED_SOP_BASH_CONTAINERS, normalize_sop_command
 
-ALLOWED_BASH_CONTAINERS = {"asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
+ALLOWED_BASH_CONTAINERS = ALLOWED_SOP_BASH_CONTAINERS
 _BASH_FORBIDDEN_PREFIX_RE = re.compile(r"(^|\s)(docker\s+exec|kubectl\s+exec|nsenter)\b", re.IGNORECASE)
-_BASH_CONTAINER_HINT_RE = re.compile(
-    r"\b(?:container|container_exec|容器|进入容器)\b.*\b(asv-con|vn-con|vn-agent|vs-cp-manager)\b",
-    re.IGNORECASE,
-)
 _ACLI_CATALOG_PATH = Path(__file__).resolve().parent / "catalog" / "acli_command_catalog.json"
 
 
@@ -143,13 +140,12 @@ def _validate_bash_command(command: str, location: str, line_number: int | None)
     if tokens and tokens[0] == "acli":
         return []
 
-    # 只有解析器已明确标记为 command 的前置检查/代码块才按 bash_exec 草案处理。
-    # 旧 SOP 常把命令写成自然语言，本阶段先 warning 暴露质量问题，不阻断发布。
-    if not _BASH_CONTAINER_HINT_RE.search(stripped):
+    intent = normalize_sop_command(stripped)
+    if intent and intent.get("parse_status") == "error":
         return [
             _make_issue(
-                "sop_tool_bash_container_missing",
-                "SOP 中的 bash 命令缺少明确容器边界；后续映射为 bash_exec 时必须指定 asv-con/vn-con/vn-agent/vs-cp-manager。",
+                "sop_tool_command_parse_failed",
+                f"SOP 命令无法归一化为工具调用：{intent.get('error')}",
                 location,
                 line_number,
             )

@@ -136,14 +136,17 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 
 【工具使用指引】
 1. 使用 get_sop_node(node_id) 获取节点的详细内容和子节点列表
-2. 根据节点判断结果，使用 sop_advance(target_node_id, reasoning) 推进到子节点
-3. 可同时使用诊断工具（acli、SCP 工具）收集证据
-4. 到达 solution 节点时，总结解决方案并完成排障
+2. get_sop_node 返回 tool_calls 时，优先按 tool_calls 中的 tool_name/args 调用工具，不要从 commands 原文重新猜测工具参数
+3. 若节点或分支依赖变量且变量未出现在【已知变量】中，必须先调用 sop_request_variable(variable_name, reason)
+4. 变量来源为 user_input/user_confirm 时，禁止用命令自行替代用户输入或确认
+5. 根据节点判断结果，使用 sop_advance(target_node_id, reasoning) 推进到子节点
+6. 可同时使用诊断工具（acli、SCP 工具）收集证据
+7. 到达 solution 节点时，总结解决方案并完成排障
 
 【注意事项】
 - 每次推进前请先获取节点内容，确保理解判断条件
 - 在 reasoning 中解释为何选择此分支（记录推理路径）
-- 可自由使用诊断工具辅助判断，工具调用和 SOP 导航可交替进行$TEMPLATE$,
+- 诊断工具只能补充证据，不得覆盖 SOP 变量声明中的来源策略$TEMPLATE$,
     '1.0',
     TRUE
 ),

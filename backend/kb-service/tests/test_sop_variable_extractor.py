@@ -433,3 +433,28 @@ acli判断方法：
         assert "check_meth" in declared
         assert declared["check_meth"]["acquisition_strategy"] == "skill_call"
         assert declared["check_meth"]["acquisition_tool"] == "disk_vendor_lifetime"
+
+    def test_llm_inference_and_agent_pass_strategy(self):
+        """测试 llm_inference/agent_pass 策略不会被降级为 user_input"""
+        content = """
+## 变量声明
+| 变量名 | 类型 | 来源 | 说明 |
+|---|---|---|---|
+| disk_dev | string | llm_inference | 磁盘盘符 |
+| check_meth | string | agent_pass | 诊断方法 |
+"""
+        declared = _parse_variable_section(content)
+        assert declared["disk_dev"]["acquisition_strategy"] == "llm_inference"
+        assert declared["check_meth"]["acquisition_strategy"] == "agent_pass"
+
+    def test_env_key_strategy_keeps_source_key_as_tool_metadata(self):
+        """测试 env:xxx 来源保留原始环境键名"""
+        content = """
+## 变量声明
+| 变量名 | 类型 | 来源 | 说明 |
+|---|---|---|---|
+| node_ip | string | env:node_ip | 节点 IP |
+"""
+        declared = _parse_variable_section(content)
+        assert declared["node_ip"]["acquisition_strategy"] == "env_injection"
+        assert declared["node_ip"]["acquisition_tool"] == "env:node_ip"

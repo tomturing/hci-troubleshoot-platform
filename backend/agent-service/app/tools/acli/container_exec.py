@@ -2,7 +2,7 @@
 容器执行命令构造器。
 
 Agent 服务无法直连客户 HCI 节点，真正的命令仍通过 terminal_bridge 在远端 SSH 上执行。
-本模块只生成一段受控 shell wrapper：先在远端只读探测可用运行时，再进入目标容器执行用户命令。
+本模块只生成一段受控 shell wrapper：先在远端只读探测可用执行入口，再进入目标容器执行用户命令。
 """
 
 from __future__ import annotations
@@ -16,12 +16,15 @@ from shared.observability.logger import get_logger
 
 logger = get_logger("container-exec-adapter")
 
-ALLOWED_BASH_CONTAINERS = {"asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
+ALLOWED_BASH_CONTAINERS = {"host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
 
 
 class ContainerRuntime(StrEnum):
     """远端容器运行时类型。"""
 
+    HOST = "host"
+    CONTAINER_EXEC = "container_exec"
+    NERDCTL = "nerdctl"
     DOCKER = "docker"
     CRICTL = "crictl"
     CTR = "ctr"
@@ -76,7 +79,11 @@ class ContainerExecAdapter:
     """把结构化容器边界转换为远端可执行 shell wrapper。"""
 
     _RUNTIME_PROBE = (
-        "if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq \"$HCI_CONTAINER\"; then "
+        "if command -v container_exec >/dev/null 2>&1; then "
+        "printf container_exec; "
+        "elif command -v nerdctl >/dev/null 2>&1 && nerdctl -n \"$HCI_CTR_NS\" ps --format '{{.Names}}' 2>/dev/null | grep -Fxq \"$HCI_CONTAINER\"; then "
+        "printf nerdctl; "
+        "elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq \"$HCI_CONTAINER\"; then "
         "printf docker; "
         "elif command -v crictl >/dev/null 2>&1 && crictl ps --name \"$HCI_CONTAINER\" -q | head -n1 | grep -q .; then "
         "printf crictl; "
@@ -102,7 +109,21 @@ class ContainerExecAdapter:
         if clean_container not in ALLOWED_BASH_CONTAINERS:
             raise ContainerExecBuildError(f"不支持的目标容器：{clean_container}")
         if not clean_command:
-            raise ContainerExecBuildError("容器内执行命令不能为空")
+            raise ContainerExecBuildError("执行命令不能为空")
+
+        if clean_container == ContainerRuntime.HOST:
+            logger.info(
+                event="host_exec_command_built",
+                command_preview=clean_command[:80],
+            )
+            return BuiltCommand(
+                container=clean_container,
+                original_command=clean_command,
+                built_command=clean_command,
+                runtime=ContainerRuntime.HOST,
+                probe_command="",
+                metadata={"execution_boundary": "host"},
+            )
 
         if isinstance(node_context, NodeRuntimeContext):
             context = node_context
@@ -136,6 +157,10 @@ class ContainerExecAdapter:
     def _runtime_probe_for(cls, runtime: ContainerRuntime) -> str:
         if runtime == ContainerRuntime.AUTO:
             return cls._RUNTIME_PROBE
+        if runtime == ContainerRuntime.CONTAINER_EXEC:
+            return "if command -v container_exec >/dev/null 2>&1; then printf container_exec; else printf unsupported; fi"
+        if runtime == ContainerRuntime.NERDCTL:
+            return "if command -v nerdctl >/dev/null 2>&1; then printf nerdctl; else printf unsupported; fi"
         if runtime == ContainerRuntime.DOCKER:
             return "if command -v docker >/dev/null 2>&1; then printf docker; else printf unsupported; fi"
         if runtime == ContainerRuntime.CRICTL:
@@ -158,6 +183,8 @@ class ContainerExecAdapter:
             "export HCI_CONTAINER HCI_CTR_NS HCI_USER_COMMAND; "
             f"HCI_RUNTIME=$(sh -lc {quoted_runtime_probe}); "
             "case \"$HCI_RUNTIME\" in "
+            "container_exec) exec container_exec -n \"$HCI_CONTAINER\" -c \"$HCI_USER_COMMAND\" -d ;; "
+            "nerdctl) exec nerdctl -n \"$HCI_CTR_NS\" exec \"$HCI_CONTAINER\" sh -lc \"$HCI_USER_COMMAND\" ;; "
             "docker) exec docker exec \"$HCI_CONTAINER\" sh -lc \"$HCI_USER_COMMAND\" ;; "
             "crictl) HCI_CID=$(crictl ps --name \"$HCI_CONTAINER\" -q | head -n1); "
             "if [ -z \"$HCI_CID\" ]; then echo \"[container_exec] container not found: $HCI_CONTAINER\" >&2; exit 127; fi; "

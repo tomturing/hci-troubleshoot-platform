@@ -166,7 +166,7 @@ class ToolSemanticValidator:
                 "BASH_CONTAINER_REQUIRED",
                 "bash_exec 必须指定目标容器",
                 field="container",
-                suggested_fix="选择 asv-con、vn-con、vn-agent、vs-cp-manager 之一",
+                suggested_fix="选择 host、asv-con、vn-con、vn-agent、vs-cp-manager 之一；host 表示物理机执行",
             )
         if container not in ALLOWED_BASH_CONTAINERS:
             return ValidationResult.error(

@@ -241,18 +241,18 @@ INSERT INTO tool_definition (
     'acli',
     '在 HCI 节点执行通用 Linux Bash 命令并返回输出。
 优先使用 acli_exec；仅当 acli 无法满足时使用本工具（如分析特定日志文件、检查底层进程、读取内核参数等）。
-注意：必须显式指定 container；禁止执行 acli 命令（请使用 acli_exec）；执行路径限于 /sf/、/var/log/、/etc/（只读）等安全目录。',
+注意：必须显式指定 container；container=host 表示在物理机上直接执行；禁止执行 acli 命令（请使用 acli_exec）；执行路径限于 /sf/、/var/log/、/etc/（只读）等安全目录。',
     '{
         "type": "object",
         "properties": {
             "container": {
                 "type": "string",
-                "enum": ["asv-con", "vn-con", "vn-agent", "vs-cp-manager"],
-                "description": "目标容器，必须显式指定"
+                "enum": ["host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"],
+                "description": "执行边界，必须显式指定；host 表示在物理机上直接执行"
             },
             "command": {
                 "type": "string",
-                "description": "容器内执行的 Bash 命令，例如 ''grep ERROR /sf/log/vtpdaemon.log | tail -50''；禁止包含 docker exec/kubectl exec/nsenter/acli 前缀"
+                "description": "执行的 Bash 命令，例如 ''grep ERROR /sf/log/vtpdaemon.log | tail -50''；container=host 时在物理机执行，其他值在目标容器内执行；禁止包含 docker exec/kubectl exec/nsenter/acli 前缀"
             },
             "node_ip": {
                 "type": "string",

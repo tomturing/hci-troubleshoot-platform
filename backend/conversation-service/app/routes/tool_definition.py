@@ -57,7 +57,7 @@ def validate_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             enum_values = container.get("enum") if isinstance(container, dict) else None
-            expected = {"asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
+            expected = {"host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
             if set(enum_values or []) != expected:
                 issues.append(
                     _make_issue("error", "parameters_schema.properties.container.enum", "bash_exec container enum 不完整", "BASH_CONTAINER_ENUM_INVALID")
