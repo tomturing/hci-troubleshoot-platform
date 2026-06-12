@@ -21,6 +21,7 @@ SOP 工具执行协调层（HTP Agent 专用）
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from shared.clients import KBClient
@@ -30,7 +31,12 @@ from app.memory.variable_pool import sop_request_variable
 
 # 从公共模块导入（各模块的职责归属）
 from app.tools.sop.client import ConversationSopClient
-from app.tools.sop.nav import get_sop_node, sop_advance
+from app.tools.sop.nav import (
+    find_missing_guarded_variables_for_node_window,
+    find_node_in_tree,
+    get_sop_node,
+    sop_advance,
+)
 
 logger = get_logger("htp.sop-tools")
 
@@ -61,6 +67,7 @@ class SopToolExecutor:
         "acli_network_nic_up",
         "acli_netdoctor",
     }
+    SOP_NAVIGATION_TOOLS = {"get_sop_node", "sop_advance", "sop_request_variable"}
 
     def __init__(
         self,
@@ -152,6 +159,13 @@ class SopToolExecutor:
                 tool_executor=self._default_executor,  # DC-02: 传入执行器用于 strategy=tool/user_confirm
             )
 
+        variable_gate_result = await self._check_variable_source_gate(
+            tool_name=tool_name,
+            conversation_id=effective_conversation_id,
+        )
+        if variable_gate_result is not None:
+            return variable_gate_result
+
         # 其他工具（SCP/acli 诊断工具）：委托给默认执行器，传递 conversation_id
         return await self._default_executor.execute(
             tool_name,
@@ -159,3 +173,98 @@ class SopToolExecutor:
             conversation_id=effective_conversation_id,
             **kwargs
         )
+
+    async def _check_variable_source_gate(
+        self,
+        *,
+        tool_name: str,
+        conversation_id: str,
+    ) -> dict[str, Any] | None:
+        """在真实诊断工具执行前强制检查 SOP 变量来源契约。
+
+        SOP 作者在 Markdown「变量声明」中定义的 user_input/user_confirm/env_* 来源，
+        是控制面契约。LLM 不能先调用 bash_exec/acli_exec 自行替代这些来源。
+        """
+        if tool_name in self.SOP_NAVIGATION_TOOLS:
+            return None
+
+        try:
+            execution = await self._conversation_sop_client.get_execution(uuid.UUID(conversation_id))
+        except Exception as exc:
+            logger.warning(
+                event="sop_variable_gate_execution_load_failed",
+                tool_name=tool_name,
+                conversation_id=conversation_id,
+                error=str(exc),
+            )
+            return None
+
+        if not execution:
+            return None
+
+        current_node_id = execution.get("current_node_id") or "n-1"
+        context_variables = execution.get("context_variables") or {}
+
+        try:
+            tree_data = await self._kb_client.get_sop_tree(self._sop_document_id)
+            tree_json = (tree_data or {}).get("tree") if isinstance(tree_data, dict) else None
+            sop_doc = await self._kb_client.get_sop_document(self._sop_document_id)
+        except Exception as exc:
+            logger.warning(
+                event="sop_variable_gate_sop_load_failed",
+                tool_name=tool_name,
+                conversation_id=conversation_id,
+                sop_document_id=self._sop_document_id,
+                error=str(exc),
+            )
+            return None
+
+        if not isinstance(tree_json, dict):
+            return None
+
+        variable_schema = []
+        if isinstance(sop_doc, dict) and isinstance(sop_doc.get("variable_schema"), list):
+            variable_schema = sop_doc.get("variable_schema") or []
+
+        current_node = find_node_in_tree(tree_json, current_node_id)
+        if current_node is None:
+            return None
+
+        missing_variables = find_missing_guarded_variables_for_node_window(
+            current_node=current_node,
+            variable_schema=variable_schema,
+            context_variables=context_variables,
+        )
+        if not missing_variables:
+            return None
+
+        first_missing = missing_variables[0]
+        logger.info(
+            event="sop_variable_gate_blocked_tool_call",
+            tool_name=tool_name,
+            conversation_id=conversation_id,
+            sop_document_id=self._sop_document_id,
+            current_node_id=current_node_id,
+            missing_variables=[v.get("name") for v in missing_variables],
+        )
+        reason = first_missing.get("description") or (
+            f"SOP 当前节点 {current_node_id} 需要变量 {first_missing.get('name')}"
+        )
+        return {
+            "ok": False,
+            "error": "sop_variable_gate_blocked",
+            "message": (
+                f"SOP 当前节点依赖变量 {first_missing.get('name')}，"
+                "且该变量尚未按声明来源获取。请先调用 sop_request_variable。"
+            ),
+            "tool_name": tool_name,
+            "current_node_id": current_node_id,
+            "missing_variables": missing_variables,
+            "next_tool_call": {
+                "tool_name": "sop_request_variable",
+                "args": {
+                    "variable_name": first_missing.get("name"),
+                    "reason": reason,
+                },
+            },
+        }

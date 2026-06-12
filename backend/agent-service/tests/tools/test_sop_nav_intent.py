@@ -8,7 +8,7 @@ import uuid
 from unittest.mock import AsyncMock
 
 import pytest
-from app.tools.sop.nav import get_sop_node, sop_advance
+from app.tools.sop.nav import find_missing_guarded_variables_for_node_window, get_sop_node, sop_advance
 
 
 def _tree() -> dict:
@@ -125,3 +125,37 @@ async def test_sop_advance_allows_when_required_variable_exists():
 
     assert result["ok"] is True
     conversation_sop_client.advance.assert_awaited_once()
+
+
+def test_variable_gate_window_does_not_scan_deep_future_branch():
+    current_node = {
+        "node_id": "n-1",
+        "title": "根节点",
+        "children": [
+            {
+                "node_id": "n-1-1",
+                "title": "直接分支",
+                "prerequisites": ["{is_sys_disk} == true"],
+                "children": [
+                    {
+                        "node_id": "n-1-1-1",
+                        "title": "未来深层分支",
+                        "prerequisites": ["{future_confirm} == true"],
+                        "children": [],
+                    }
+                ],
+            }
+        ],
+    }
+    variable_schema = [
+        {"name": "is_sys_disk", "type": "boolean", "acquisition_strategy": "user_input"},
+        {"name": "future_confirm", "type": "boolean", "acquisition_strategy": "user_confirm"},
+    ]
+
+    missing = find_missing_guarded_variables_for_node_window(
+        current_node=current_node,
+        variable_schema=variable_schema,
+        context_variables={},
+    )
+
+    assert [item["name"] for item in missing] == ["is_sys_disk"]

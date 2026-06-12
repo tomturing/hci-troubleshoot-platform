@@ -1,6 +1,6 @@
 # Agent 工具设计
 
-> 权威来源：本文件（v2.7，核心执行契约、工具管理 UI 校验、SOP 发布联动、容器执行适配器、SOP Markdown 命令归一化与变量门禁均已落地）。
+> 权威来源：本文件（v2.8，核心执行契约、工具管理 UI 校验、SOP 发布联动、容器执行适配器、SOP Markdown 命令归一化与运行时变量来源门禁均已落地）。
 > 关联文档：[agent设计.md](./agent设计.md) §十（目录结构）、[agent记忆设计.md](./agent记忆设计.md)
 > 最新事件方案：[bash_exec 容器化契约与工具调用前置校验方案](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验方案.md)
 
@@ -75,6 +75,11 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 > - SOP Markdown 中的现场命令不要求作者改写为 JSON tool_call；运行期由 `app/tools/sop/command_intent.py` 归一化为 `acli_exec` 或 `bash_exec`
 > - `get_sop_node` 返回 `commands` 原文的同时返回结构化 `tool_calls`，LLM 必须优先消费 `tool_calls`，避免从自然语言命令中猜测工具参数
 > - `get_sop_node` 和 Prompt 摘要外显 `required_variables`；`sop_advance` 在进入节点前阻断缺失的 `user_input/user_confirm/env_*` 变量，并返回 `next_tool_call=sop_request_variable`
+>
+> **v2.8 变更说明**：
+> - `SopToolExecutor` 在 SOP 模式下对真实诊断工具增加 before-tool-call 变量来源门禁
+> - 当前节点或候选子节点依赖 `user_input/user_confirm/env_*` 变量且未就绪时，`bash_exec/acli_exec` 不下发真实执行，而是返回 `sop_variable_gate_blocked` 和 `next_tool_call=sop_request_variable`
+> - SOP 导航工具 `get_sop_node/sop_request_variable/sop_advance` 不受该门禁阻断，保证 LLM 可先获取节点、请求变量、再推进
 
 ---
 
@@ -338,9 +343,37 @@ acli_plugin_asys           主机系统全面健康检查                       
 
 ---
 
-### 4.5 SOP 导航工具（不变）
+### 4.5 SOP 导航工具
 
-`get_sop_node`、`sop_advance`、`sop_request_variable` 保持不变，本地执行，无 SSH。
+`get_sop_node`、`sop_advance`、`sop_request_variable` 本地执行，无 SSH。
+
+在 SOP 模式下，`SopToolExecutor` 是真实工具调用的运行时边界：
+
+- 放行 SOP 导航工具：`get_sop_node`、`sop_request_variable`、`sop_advance`
+- 拦截其他真实诊断工具：`acli_exec`、`bash_exec`、插件工具等
+- 若当前节点或候选子节点依赖 `user_input/user_confirm/env_*` 变量且变量池未就绪，返回结构化阻断结果：
+
+```json
+{
+  "ok": false,
+  "error": "sop_variable_gate_blocked",
+  "missing_variables": [
+    {
+      "name": "is_sys_disk",
+      "acquisition_strategy": "user_input"
+    }
+  ],
+  "next_tool_call": {
+    "tool_name": "sop_request_variable",
+    "args": {
+      "variable_name": "is_sys_disk",
+      "reason": "是否是系统盘"
+    }
+  }
+}
+```
+
+该门禁解决的是 `sop_advance` 之前的绕过路径：LLM 不能用 `bash_exec/acli_exec` 自行替代 SOP `【变量声明】` 中要求由用户输入或确认的变量来源。
 
 ---
 

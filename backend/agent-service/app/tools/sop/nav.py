@@ -148,6 +148,11 @@ def _find_node_in_tree(tree_json: dict, node_id: str) -> dict | None:
     return None
 
 
+def find_node_in_tree(tree_json: dict, node_id: str) -> dict | None:
+    """公共包装：按 node_id 从 SOP 决策树中查找节点。"""
+    return _find_node_in_tree(tree_json, node_id)
+
+
 def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """构建节点响应（符合任务文档规格）。
 
@@ -324,6 +329,29 @@ def _find_missing_guarded_variables(
         if not _has_variable_value(context_variables, name):
             missing.append(variable)
     return missing
+
+
+def find_missing_guarded_variables_for_node_window(
+    *,
+    current_node: dict[str, Any],
+    variable_schema: list[dict[str, Any]],
+    context_variables: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """检查当前节点和直接子节点缺失的受控来源变量。
+
+    运行时 before-tool-call 门禁使用该窗口，避免把未来深层分支变量提前阻断。
+    """
+    candidates = [current_node]
+    candidates.extend(child for child in current_node.get("children", []) or [] if isinstance(child, dict))
+
+    missing_by_name: dict[str, dict[str, Any]] = {}
+    for node in candidates:
+        required = _build_required_variables(node, variable_schema)
+        for variable in _find_missing_guarded_variables(required, context_variables):
+            name = variable.get("name")
+            if name and name not in missing_by_name:
+                missing_by_name[name] = variable
+    return list(missing_by_name.values())
 
 
 def _format_diagnosis_content(diagnosis: dict) -> str:
