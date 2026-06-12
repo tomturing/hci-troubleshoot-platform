@@ -44,6 +44,7 @@ owner: team
 | 2026-06-12 | v3.3 | **SOP Markdown 命令归一化与变量来源门禁（PR #450）**：① `bash_exec.container` 支持 `host`，host 表示物理机直接执行；② SOP Markdown 中 `acli`、`container_exec`、`host_exec` 与裸 bash 自动归一化为结构化 `tool_calls`；③ `get_sop_node` 外显节点/分支 `required_variables`；④ `sop_advance` 阻断缺失的 `user_input/user_confirm/env_*` 变量并提示先调用 `sop_request_variable` |
 | 2026-06-12 | v3.4 | **SOP 变量来源运行时门禁补强**：① `SopToolExecutor` 对 SOP 模式下的真实诊断工具增加 before-tool-call 门禁；② 当前节点或候选子节点依赖 `user_input/user_confirm/env_*` 变量且未就绪时，不下发 `bash_exec/acli_exec`，返回 `sop_variable_gate_blocked`；③ 结果包含 `next_tool_call=sop_request_variable`，引导 LLM 先按变量来源获取值 |
 | 2026-06-12 | v3.5 | **集成 Langfuse 可观测性**：① 引入 `langfuse.py` 实现大模型及工具执行调用全链路追踪；② 将 Langfuse 容器发布至 K3s；③ admin-ui 嵌入 Langfuse 分析面板 |
+| 2026-06-13 | v3.6 | **告警与任务解析技能分类调整（PR #454）**：① `hci-alert-parsing` 和 `hci-task-parsing` 的 metadata.category 从 `monitoring` 调整为 `platform`（更准确的语义定位）；② 同步更新 `skills/告警解析.md` 和 `skills/任务解析.md` 源文件分类；③ `database/seeds/03_skill_definitions.sql` 同步更新种子数据 |
 
 ---
 
