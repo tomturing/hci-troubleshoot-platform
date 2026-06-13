@@ -33,9 +33,9 @@ def test_resolve_env_variable_alert_anchoring_node_ip():
         ],
         task_logs=[],
     )
-    # node_ip 映射到 alert_logs[0] 中的 host
+    # node_ip 优先映射到 alert_logs[0] 中的 target (故障目标节点)
     val = _resolve_env_variable("node_ip", {}, env_context)
-    assert val == "10.0.1.10"
+    assert val == "node-1"
 
 
 def test_resolve_env_variable_alert_anchoring_disk_sn():

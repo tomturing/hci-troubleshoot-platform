@@ -1233,24 +1233,19 @@ def merge_variable_schema(
             old_var = old_by_name[name]
             merged_var = {**new_var}
             strategy_overridden = (
-                "acquisition_strategy" in old_var
-                and old_var["acquisition_strategy"] is not None
-                and old_var["acquisition_strategy"] != ""
-                # BUGFIX: Only allow old strategy to override the new one if the new strategy is generic "user_input",
-                # or if the new strategy is inferred (auto_generated=True), or if the old strategy was a specific custom one.
-                and (
-                    old_var["acquisition_strategy"] != "user_input"
-                    or new_var.get("acquisition_strategy") == "user_input"
-                    or new_var.get("auto_generated", False)
-                )
+                old_var.get("acquisition_strategy")
+                and old_var["acquisition_strategy"] not in ("", "user_input", None)
+                and new_var.get("acquisition_strategy") in ("user_input", None, "")
             )
             for human_field in HUMAN_FIELDS:
                 if human_field in ("acquisition_strategy", "acquisition_tool"):
                     if strategy_overridden:
                         merged_var[human_field] = old_var.get(human_field)
                 else:
+                    new_value = new_var.get(human_field)
                     old_value = old_var.get(human_field)
-                    if old_value is not None and old_value != "":
+                    # 只有当新解析出来的字段值为空（None或空字符串），且旧值存在时，才继承旧值进行保护
+                    if (new_value is None or new_value == "") and old_value is not None and old_value != "":
                         merged_var[human_field] = old_value
             merged_var.pop("deprecated", None)
             merged_var["auto_generated"] = False

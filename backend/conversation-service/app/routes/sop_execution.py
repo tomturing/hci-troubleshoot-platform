@@ -444,12 +444,12 @@ def _resolve_env_variable(
                 if m:
                     return m.group(1)
         else:
-            if var_name == "node_ip":
+            if var_name in ("node_ip", "host_ip") or var_def.get("type") == "ip":
                 val = (
                     lookup_dict(alert, "node_ip")
+                    or lookup_dict(alert, "target")
                     or lookup_dict(alert, "host")
                     or lookup_dict(alert, "ip")
-                    or lookup_dict(alert, "target")
                 )
             else:
                 val = lookup_dict(alert, var_name)
