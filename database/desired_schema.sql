@@ -666,6 +666,128 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_trace_id ON audit_log (trace_id) WHERE 
 CREATE INDEX IF NOT EXISTS idx_audit_log_system_prompt_id ON audit_log (system_prompt_id) WHERE system_prompt_id IS NOT NULL;
 
 -- ------------------------------------------------------------
+-- 表: dynamic_resource_revision  [模块: shared]
+-- 说明: 五大动态资源不可变 revision 快照，覆盖 KBD/SOP/Tool/Skill/Prompt
+-- 用途: 发布或启用动态资源时生成运行时快照，Agent 执行时按 revision 审计，避免管理表被编辑后历史执行不可追溯
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dynamic_resource_revision (
+    id serial NOT NULL,
+    resource_type varchar(32) NOT NULL,
+    resource_name varchar(128) NOT NULL,
+    version varchar(64) NOT NULL DEFAULT '1.0',
+    revision integer NOT NULL,
+    status varchar(16) NOT NULL DEFAULT 'published',
+    content_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    contract_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    dependency_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+    checksum varchar(128) NOT NULL,
+    trace_id varchar(64),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    published_at timestamptz,
+    CONSTRAINT dynamic_resource_revision_pkey PRIMARY KEY (id),
+    CONSTRAINT uq_dynamic_resource_revision UNIQUE (resource_type, resource_name, revision),
+    CONSTRAINT uq_dynamic_resource_checksum UNIQUE (resource_type, resource_name, checksum)
+);
+
+COMMENT ON TABLE dynamic_resource_revision IS '动态资源不可变 revision 快照表 — KBD/SOP/Tool/Skill/Prompt 共享运行时版本模型';
+COMMENT ON COLUMN dynamic_resource_revision.resource_type IS '资源类型：kbd/sop/tool/skill/prompt/prompt_slot';
+COMMENT ON COLUMN dynamic_resource_revision.resource_name IS '资源唯一名称，如 tool_name、skill_name、prompt name、sop id';
+COMMENT ON COLUMN dynamic_resource_revision.revision IS '同一资源内单调递增 revision';
+COMMENT ON COLUMN dynamic_resource_revision.content_json IS '资源内容快照，来自业务事实源表';
+COMMENT ON COLUMN dynamic_resource_revision.contract_json IS '资源契约快照，如参数 schema、占位符、权限边界';
+COMMENT ON COLUMN dynamic_resource_revision.dependency_json IS '资源依赖图，如 SOP 变量引用 Skill、Skill allowed_tools 引用 Tool';
+COMMENT ON COLUMN dynamic_resource_revision.checksum IS 'version/status/content/contract/dependency 的稳定哈希，用于避免重复发布相同 revision';
+COMMENT ON COLUMN dynamic_resource_revision.trace_id IS '发布链路追踪 ID';
+
+CREATE INDEX IF NOT EXISTS idx_dynamic_resource_revision_type_name ON dynamic_resource_revision (resource_type, resource_name);
+CREATE INDEX IF NOT EXISTS idx_dynamic_resource_revision_trace_id ON dynamic_resource_revision (trace_id) WHERE trace_id IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 表: dynamic_resource_active  [模块: shared]
+-- 说明: 动态资源当前激活 revision 指针
+-- 用途: 运行时通过 resource_type + resource_name 找到当前 active revision，支持热生效和快速回滚
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dynamic_resource_active (
+    resource_type varchar(32) NOT NULL,
+    resource_name varchar(128) NOT NULL,
+    active_revision integer NOT NULL,
+    checksum varchar(128) NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    trace_id varchar(64),
+    CONSTRAINT dynamic_resource_active_pkey PRIMARY KEY (resource_type, resource_name)
+);
+
+COMMENT ON TABLE dynamic_resource_active IS '动态资源 active 指针表 — 指向每个资源当前生效 revision';
+COMMENT ON COLUMN dynamic_resource_active.active_revision IS '当前激活 revision，对应 dynamic_resource_revision.revision';
+COMMENT ON COLUMN dynamic_resource_active.checksum IS '当前激活快照 checksum，用于运行时比对变化';
+COMMENT ON COLUMN dynamic_resource_active.trace_id IS '最近一次切换 active 指针的链路追踪 ID';
+
+CREATE INDEX IF NOT EXISTS idx_dynamic_resource_active_trace_id ON dynamic_resource_active (trace_id) WHERE trace_id IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 表: dynamic_resource_usage_audit  [模块: shared]
+-- 说明: 动态资源使用审计表
+-- 用途: 记录每轮 Agent 使用的 KBD/SOP/Tool/Skill/Prompt revision、输入输出摘要和执行状态
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dynamic_resource_usage_audit (
+    id serial NOT NULL,
+    resource_type varchar(32) NOT NULL,
+    resource_name varchar(128) NOT NULL,
+    revision integer NOT NULL,
+    consumer varchar(128) NOT NULL,
+    conversation_id varchar(64),
+    case_id varchar(64),
+    trace_id varchar(64),
+    exec_id varchar(64),
+    input_hash varchar(128),
+    output_hash varchar(128),
+    status varchar(32) NOT NULL,
+    error text,
+    metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT dynamic_resource_usage_audit_pkey PRIMARY KEY (id)
+);
+
+COMMENT ON TABLE dynamic_resource_usage_audit IS '动态资源使用审计表 — 追踪 Agent 每次使用的资源 revision';
+COMMENT ON COLUMN dynamic_resource_usage_audit.consumer IS '资源消费者，如 agent-service.react_engine、agent-service.skill_runner';
+COMMENT ON COLUMN dynamic_resource_usage_audit.input_hash IS '资源使用输入摘要哈希，避免审计表存储敏感明文';
+COMMENT ON COLUMN dynamic_resource_usage_audit.output_hash IS '资源使用输出摘要哈希，避免审计表存储敏感明文';
+COMMENT ON COLUMN dynamic_resource_usage_audit.metadata_json IS '附加审计元数据，如 exec_id、工具策略、变量名';
+
+CREATE INDEX IF NOT EXISTS idx_dynamic_resource_usage_resource ON dynamic_resource_usage_audit (resource_type, resource_name, revision);
+CREATE INDEX IF NOT EXISTS idx_dynamic_resource_usage_conversation ON dynamic_resource_usage_audit (conversation_id, created_at DESC) WHERE conversation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dynamic_resource_usage_case ON dynamic_resource_usage_audit (case_id, created_at DESC) WHERE case_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dynamic_resource_usage_trace_id ON dynamic_resource_usage_audit (trace_id) WHERE trace_id IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 表: prompt_slot  [模块: conversation-service]
+-- 说明: Prompt 编排槽位表
+-- 用途: 代码引用逻辑 slot，slot 指向当前 active prompt name，实现 Prompt 编排热生效
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS prompt_slot (
+    slot_name varchar(100) NOT NULL,
+    active_prompt_name varchar(100) NOT NULL,
+    expected_placeholders jsonb NOT NULL DEFAULT '[]'::jsonb,
+    consumer varchar(128) NOT NULL DEFAULT 'agent-service',
+    is_active boolean NOT NULL DEFAULT true,
+    trace_id varchar(64),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT prompt_slot_pkey PRIMARY KEY (slot_name),
+    CONSTRAINT fk_prompt_slot_active_prompt_name FOREIGN KEY (active_prompt_name) REFERENCES system_prompt (name) ON DELETE RESTRICT
+);
+
+COMMENT ON TABLE prompt_slot IS 'Prompt 编排槽位表 — 解耦代码中的逻辑槽位和具体 system_prompt.name';
+COMMENT ON COLUMN prompt_slot.slot_name IS '逻辑槽位名，如 s1_sop_react_new';
+COMMENT ON COLUMN prompt_slot.active_prompt_name IS '当前槽位指向的 system_prompt.name';
+COMMENT ON COLUMN prompt_slot.expected_placeholders IS '槽位期望占位符列表，发布和加载时强校验';
+COMMENT ON COLUMN prompt_slot.consumer IS '消费方，如 agent-service.triage_agent';
+COMMENT ON COLUMN prompt_slot.trace_id IS '槽位变更链路追踪 ID';
+
+CREATE INDEX IF NOT EXISTS idx_prompt_slot_active ON prompt_slot (is_active);
+CREATE INDEX IF NOT EXISTS idx_prompt_slot_prompt_name ON prompt_slot (active_prompt_name);
+
+-- ------------------------------------------------------------
 -- 表: session  [模块: conversation-service]
 -- 说明: 用户会话 Token 表 — 存储 SSE 长连接会话凭证，关联工单与用户
 -- 用途: 用户打开工单时创建 session，SSE 连接建立时校验有效性；expires_at 控制超时
@@ -1057,6 +1179,7 @@ CREATE TABLE IF NOT EXISTS sop_execution (
     id uuid NOT NULL DEFAULT gen_random_uuid(),
     conversation_id uuid NOT NULL,
     sop_document_id integer NOT NULL,
+    sop_revision integer,
     current_node_id varchar(64) NOT NULL,
     status varchar(16) NOT NULL DEFAULT 'active',
     context_variables jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -1081,6 +1204,7 @@ COMMENT ON TABLE sop_execution IS 'SOP 执行状态表 — SOP 执行引擎状�
 COMMENT ON COLUMN sop_execution.id IS '执行实例主键，UUID 格式';
 COMMENT ON COLUMN sop_execution.conversation_id IS '关联会话，ON DELETE CASCADE；唯一约束确保一个 conversation 只有一个活跃执行实例';
 COMMENT ON COLUMN sop_execution.sop_document_id IS '关联 SOP 文档 ID，FK → sop_document.id';
+COMMENT ON COLUMN sop_execution.sop_revision IS '创建执行实例时绑定的 SOP 动态资源 revision，防止执行过程中 SOP 被编辑导致语义漂移';
 COMMENT ON COLUMN sop_execution.current_node_id IS '当前决策树节点 ID（对应 tree_json 中的节点标识）';
 COMMENT ON COLUMN sop_execution.status IS '执行状态：active（执行中）/ completed（已完成）/ interrupted（中断等待变量）/ aborted（已中止）';
 COMMENT ON COLUMN sop_execution.context_variables IS '执行上下文变量池，JSONB 格式；存储决策树遍历过程中收集的环境变量、用户输入等';

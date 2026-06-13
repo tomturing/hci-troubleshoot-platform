@@ -24,6 +24,9 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
+from shared.dynamic_resource.adapters import kbd_resource_payload, sop_resource_payload
+from shared.dynamic_resource.loader import snapshot_revision_metadata
+from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from sqlalchemy import select, text
@@ -71,6 +74,28 @@ def _check_auth(request: Request) -> None:
     token = auth_header.split(" ", 1)[1]
     if token != settings.INTERNAL_API_TOKEN:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token 无效")
+
+
+async def _publish_kbd_revision(session, kbd_id: int, trace_id: str | None) -> dict | None:
+    """将 KBD 条目发布为动态资源 revision。"""
+    from app.models.kbd_entry import KbdEntry
+
+    result = await session.execute(select(KbdEntry).where(KbdEntry.id == kbd_id))
+    kbd = result.scalar_one_or_none()
+    if kbd is None:
+        return None
+    snapshot = await DynamicResourcePublisher(session).ensure_published(**kbd_resource_payload(kbd), trace_id=trace_id)
+    return snapshot_revision_metadata(snapshot)
+
+
+async def _publish_sop_revision(session, document_id: int, trace_id: str | None) -> dict | None:
+    """将 SOP 文档发布为动态资源 revision。"""
+    result = await session.execute(select(SopDocument).where(SopDocument.id == document_id))
+    sop = result.scalar_one_or_none()
+    if sop is None:
+        return None
+    snapshot = await DynamicResourcePublisher(session).ensure_published(**sop_resource_payload(sop), trace_id=trace_id)
+    return snapshot_revision_metadata(snapshot)
 
 
 class DocumentUpdateRequest(BaseModel):
@@ -504,6 +529,7 @@ class KbdApproveResponse(BaseModel):
     status: str = Field(..., description="当前状态")
     embedding_generated: bool = Field(..., description="是否成功生成 embedding")
     published_at: str | None = Field(None, description="发布时间")
+    resource_revision: dict | None = Field(default=None, description="动态资源 revision 元数据")
 
 
 @kbd_router.post("/{kbd_id}/approve", response_model=KbdApproveResponse)
@@ -554,6 +580,8 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
 
         current_status = row["status"]
         if current_status == "published":
+            resource_revision = await _publish_kbd_revision(session, kbd_id, get_current_trace_id())
+            await session.commit()
             # 已发布，无需重复处理
             return KbdApproveResponse(
                 success=True,
@@ -561,6 +589,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 status="published",
                 embedding_generated=row["embedding"] is not None,
                 published_at=row["published_at"].isoformat() if row["published_at"] else None,
+                resource_revision=resource_revision,
             )
 
         content_md = row["content_md"]
@@ -683,6 +712,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
         if not updated:
             raise HTTPException(status_code=500, detail=f"KBD 条目 {kbd_id} 更新失败")
 
+        resource_revision = await _publish_kbd_revision(session, kbd_id, get_current_trace_id())
         await session.commit()
 
     logger.info(
@@ -698,6 +728,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
         status=updated["status"],
         embedding_generated=updated["embedding"] is not None,
         published_at=updated["published_at"].isoformat() if updated["published_at"] else None,
+        resource_revision=resource_revision,
     )
 
 
@@ -730,6 +761,7 @@ class SopApproveResponse(BaseModel):
         description="决策树校验问题列表（含 line_number，供前端按行定位）",
     )
     published_at: str | None = Field(None, description="发布时间")
+    resource_revision: dict | None = Field(default=None, description="动态资源 revision 元数据")
 
 
 @sop_router.post("/{document_id}/approve", response_model=SopApproveResponse)
@@ -784,6 +816,8 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                 # 已发布，直接返回当前 tree 信息
                 # 获取 variable_schema（若存在）
                 var_schema_raw = sop_doc.variable_schema or []
+                resource_revision = await _publish_sop_revision(session, document_id, get_current_trace_id())
+                await session.commit()
                 return SopApproveResponse(
                     success=True,
                     document_id=document_id,
@@ -795,6 +829,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     variable_count=len(var_schema_raw),
                     warnings=[],  # 已发布不再返回历史警告
                     published_at=sop_doc.published_at.isoformat() if sop_doc.published_at else None,
+                    resource_revision=resource_revision,
                 )
 
             content_md = sop_doc.content_md
@@ -1027,6 +1062,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     },
                 )
 
+            resource_revision = await _publish_sop_revision(session, document_id, get_current_trace_id())
             await session.commit()
 
     except HTTPException:
@@ -1070,6 +1106,7 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         warnings=warnings,
         validation_issues=validation_issues,
         published_at=now.isoformat(),
+        resource_revision=resource_revision,
     )
 
 
@@ -1401,7 +1438,7 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
     async with _db_manager.async_session_factory() as session:
         # 1. 查询当前 variable_schema
         result = await session.execute(
-            text("SELECT id, variable_schema FROM sop_document WHERE id = :id"),
+            text("SELECT id, status, variable_schema FROM sop_document WHERE id = :id"),
             {"id": document_id},
         )
         row = result.mappings().first()
@@ -1485,6 +1522,9 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
                 "updated_at": datetime.now(UTC),
             },
         )
+        resource_revision = None
+        if row["status"] == "published":
+            resource_revision = await _publish_sop_revision(session, document_id, get_current_trace_id())
         await session.commit()
 
     logger.info(
@@ -1498,6 +1538,7 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
         "document_id": document_id,
         "updated": updated_count,
         "variable_schema": current_schema,
+        "resource_revision": resource_revision,
     }
 
 
@@ -1650,10 +1691,13 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
         updated = result.mappings().first()
         if not updated:
             raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+        resource_revision = None
+        if updated["status"] == "published":
+            resource_revision = await _publish_kbd_revision(session, kbd_id, get_current_trace_id())
         await session.commit()
 
     logger.info(event="kbd_updated", kbd_id=kbd_id, fields=list(params.keys()))
-    return {"success": True, "kbd_id": kbd_id}
+    return {"success": True, "kbd_id": kbd_id, "resource_revision": resource_revision}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1776,6 +1820,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         updated = result.mappings().first()
         if not updated:
             raise HTTPException(status_code=500, detail=f"KBD 条目 {kbd_id} 更新失败")
+        resource_revision = await _publish_kbd_revision(session, kbd_id, get_current_trace_id())
         await session.commit()
 
     logger.info(event="kbd_republished", kbd_id=kbd_id, reviewer_id=body.reviewer_id)
@@ -1785,6 +1830,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         status="published",
         embedding_generated=embedding_generated,
         published_at=updated["published_at"].isoformat() if updated["published_at"] else None,
+        resource_revision=resource_revision,
     )
 
 

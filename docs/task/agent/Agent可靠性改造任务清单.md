@@ -46,6 +46,7 @@ owner: team
 | 2026-06-12 | v3.5 | **集成 Langfuse 可观测性**：① 引入 `langfuse.py` 实现大模型及工具执行调用全链路追踪；② 将 Langfuse 容器发布至 K3s；③ admin-ui 嵌入 Langfuse 分析面板 |
 | 2026-06-13 | v3.6 | **告警与任务解析技能分类调整（PR #454）**：① `hci-alert-parsing` 和 `hci-task-parsing` 的 metadata.category 从 `monitoring` 调整为 `platform`（更准确的语义定位）；② 同步更新 `skills/告警解析.md` 和 `skills/任务解析.md` 源文件分类；③ `database/seeds/03_skill_definitions.sql` 同步更新种子数据 |
 | 2026-06-13 | v3.7 | **平台内置/硬编码治理（PR #462）**：① `sop_request_variable` 改为通过 `DynamicSkillRunner` 按次读取 `skill_definition` active 记录，移除 Python 内置业务技能执行链；② 工具注册表改为短 TTL 热刷新，ReAct 工具列表、风险判定、执行前校验和 Composite 执行统一消费运行时 registry；③ `bash_exec.container` 从 `tool_definition.parameters_schema.properties.container.enum` 读取，`get_failed_tasks` 改为声明式 `usage_template`；④ conversation-service 环境变量注入收敛为显式 `env_info` / `env:<field>`，不再从告警日志硬编码猜测 `node_ip/disk_sn/request_id`；⑤ 幻觉检测仅使用当前工具 registry 快照，registry 缺失时跳过 phantom tool 检测并记录 warning |
+| 2026-06-13 | v3.8 | **五大动态资源统一运行时（PR2）**：① 新增 `backend/shared/dynamic_resource/` 公共模块，统一 revision 发布、active 加载、TTL cache、基础校验、usage audit 和业务表适配；② 新增 `dynamic_resource_revision`、`dynamic_resource_active`、`dynamic_resource_usage_audit`、`prompt_slot`，并为 `sop_execution` 增加 `sop_revision`；③ KBD/SOP/Tool/Skill/Prompt 主发布或主运行路径接入 `resource_revision`，Agent/KBD/SOP/Prompt/Skill/Tool 使用写入统一审计；④ Skill 保存/启用/执行前校验 `allowed_tools`，Prompt loader 支持 slot 解析与占位符契约；⑤ 主动 pub/sub 刷新、完整 VariableProvider 拓扑、HTTP ToolRunner 和跨资源循环依赖全图校验留给后续增强 |
 
 ---
 

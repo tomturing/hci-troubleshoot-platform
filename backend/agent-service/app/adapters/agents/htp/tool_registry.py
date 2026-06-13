@@ -18,6 +18,9 @@ import sys
 import time
 from typing import Any
 
+from shared.dynamic_resource.adapters import tool_resource_payload
+from shared.dynamic_resource.loader import snapshot_revision_metadata
+from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.models.tool_definition import ToolDefinitionORM
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -111,6 +114,8 @@ async def load_tool_registry(db: AsyncSession) -> dict[str, ToolDefinition]:
         )
         # 静态契约校验，如有不一致立刻 Fail-Fast 阻断启动
         verify_tool_contract(tool)
+        snapshot = await DynamicResourcePublisher(db).ensure_published(**tool_resource_payload(row))
+        tool.resource_revision = snapshot_revision_metadata(snapshot)
         registry[row.tool_name] = tool
     logger.info(f"已加载工具注册表：{len(registry)} 个工具")
     return registry
@@ -128,6 +133,7 @@ class ToolRegistryManager:
         """强制从数据库刷新 active 工具定义。"""
         async with self._db_session_factory() as session:
             loaded = await load_tool_registry(session)
+            await session.commit()
         TOOL_REGISTRY.clear()
         TOOL_REGISTRY.update(loaded)
         self._last_refresh_monotonic = time.monotonic()

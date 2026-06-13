@@ -37,3 +37,4 @@ class ToolDefinition(BaseModel):
     policy: str  # auto|notify|confirm|block
     category: str  # scp|acli|sop|...
     usage_template: str | None = None  # ACLI 插件工具命令模板（可为空）
+    resource_revision: dict | None = None  # 动态资源 revision 元数据

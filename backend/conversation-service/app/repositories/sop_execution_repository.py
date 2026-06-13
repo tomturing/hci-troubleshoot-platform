@@ -64,6 +64,7 @@ class SopExecutionRepository:
         sop_document_id: int,
         current_node_id: str,
         trace_id: str | None = None,
+        sop_revision: int | None = None,
         initial_variables: dict[str, Any] | None = None,
         initial_variable_sources: dict[str, str] | None = None,
     ) -> SopExecution:
@@ -93,6 +94,7 @@ class SopExecutionRepository:
             id=uuid.uuid4(),
             conversation_id=conversation_id,
             sop_document_id=sop_document_id,
+            sop_revision=sop_revision,
             current_node_id=current_node_id,
             status=STATUS_ACTIVE,
             context_variables=context_vars,

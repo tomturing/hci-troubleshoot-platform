@@ -6,6 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from shared.database.postgres import DatabaseManager
+from shared.dynamic_resource.adapters import prompt_resource_payload
+from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.models.system_prompt import SystemPrompt
 from shared.observability.logger import get_logger
 from sqlalchemy import delete, select, update
@@ -30,6 +32,18 @@ async def get_db() -> AsyncSession:
         raise HTTPException(status_code=500, detail="数据库管理器未初始化")
     async for session in database_manager.get_session():
         yield session
+
+
+async def _publish_prompt_resource(db: AsyncSession, prompt: SystemPrompt) -> dict[str, Any]:
+    """将 Prompt 模板同步为动态资源 revision。"""
+    payload = prompt_resource_payload(prompt)
+    snapshot = await DynamicResourcePublisher(db).ensure_published(**payload)
+    return {
+        "resource_type": snapshot.resource_type,
+        "resource_name": snapshot.resource_name,
+        "revision": snapshot.revision,
+        "checksum": snapshot.checksum,
+    }
 
 
 @router.get("", summary="获取 Prompt 模板列表")
@@ -116,11 +130,13 @@ async def create_prompt(payload: dict[str, Any], db: AsyncSession = Depends(get_
         is_active=is_active,
     )
     db.add(p)
-    await db.commit()
+    await db.flush()
     await db.refresh(p)
+    resource_revision = await _publish_prompt_resource(db, p)
+    await db.commit()
 
-    logger.info(event="prompt_created", prompt_name=p.name, prompt_id=p.id, message="创建了新的 Prompt 模板")
-    return {"status": "success", "id": p.id}
+    logger.info(event="prompt_created", prompt_name=p.name, prompt_id=p.id, resource_revision=resource_revision, message="创建了新的 Prompt 模板")
+    return {"status": "success", "id": p.id, "resource_revision": resource_revision}
 
 
 @router.put("/{prompt_id}", summary="修改 Prompt 模板")
@@ -160,9 +176,12 @@ async def update_prompt(prompt_id: int, payload: dict[str, Any], db: AsyncSessio
             await db.execute(update(SystemPrompt).where(SystemPrompt.stage == stage).values(is_active=False))
         p.is_active = is_active
 
+    await db.flush()
+    await db.refresh(p)
+    resource_revision = await _publish_prompt_resource(db, p)
     await db.commit()
-    logger.info(event="prompt_updated", prompt_name=p.name, prompt_id=p.id, message="更新了 Prompt 模板")
-    return {"status": "success"}
+    logger.info(event="prompt_updated", prompt_name=p.name, prompt_id=p.id, resource_revision=resource_revision, message="更新了 Prompt 模板")
+    return {"status": "success", "resource_revision": resource_revision}
 
 
 @router.delete("/{prompt_id}", summary="删除 Prompt 模板")

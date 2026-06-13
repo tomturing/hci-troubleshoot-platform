@@ -325,6 +325,7 @@ class ReactEngine:
         confirm_service: ConfirmServiceProtocol | None = None,
         audit_service: AuditServiceProtocol | None = None,
         fact_store: Any = None,
+        db_session_factory: Any = None,
     ) -> None:
         self._ai_registry = ai_registry
         self._tool_registry = tool_registry
@@ -332,6 +333,7 @@ class ReactEngine:
         self._confirm_service = confirm_service
         self._audit = audit_service
         self._fact_store = fact_store
+        self._db_session_factory = db_session_factory
         self.schema_validation_failed = False
         self.has_write_operation = False
         self.has_verification_after_write = False
@@ -1511,6 +1513,18 @@ class ReactEngine:
             except Exception as audit_err:
                 logger.error(f"审计日志写入失败: {audit_err}")
 
+        await self._audit_tool_resource_usage(
+            tool_def=tool_def,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            result=result,
+            error=error,
+            session_id=session_id,
+            case_id=case_id,
+            exec_id=exec_id,
+            status="failed" if error else "success",
+        )
+
         # T2-2: 工具执行结果写入 FactStore（形成 Evidence 闭环）
         if error is None and self._fact_store:
             try:
@@ -1624,3 +1638,53 @@ class ReactEngine:
 
         # 返回工具执行结果给主循环（避免重复执行）
         yield ToolResultEvent(result=result, tool_name=tool_name, error=error, exec_id=exec_id)
+
+    async def _audit_tool_resource_usage(
+        self,
+        *,
+        tool_def: Any,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        result: Any,
+        error: str | None,
+        session_id: str,
+        case_id: str,
+        exec_id: str,
+        status: str,
+    ) -> None:
+        """写入工具动态资源使用审计。"""
+        if self._db_session_factory is None:
+            return
+        try:
+            from shared.dynamic_resource.loader import DynamicResourceLoader
+            from shared.dynamic_resource.models import UsageRecord
+            from shared.observability.otel import get_current_trace_id
+
+            async with self._db_session_factory() as session:
+                snapshot = await DynamicResourceLoader(session).get_active("tool", tool_name)
+                await DynamicResourceLoader(session).audit_usage(
+                    snapshot,
+                    UsageRecord(
+                        consumer="agent-service.react_engine",
+                        status=status,
+                        conversation_id=session_id,
+                        case_id=case_id,
+                        trace_id=get_current_trace_id(),
+                        exec_id=exec_id,
+                        input_payload=tool_args,
+                        output_payload=result,
+                        error=error,
+                        metadata={
+                            "risk_level": getattr(tool_def, "risk_level", None),
+                            "policy": getattr(tool_def, "policy", None),
+                        },
+                    ),
+                )
+                await session.commit()
+        except Exception as audit_err:
+            logger.warning(
+                event="dynamic_resource_tool_audit_failed",
+                tool_name=tool_name,
+                exec_id=exec_id,
+                error=str(audit_err),
+            )

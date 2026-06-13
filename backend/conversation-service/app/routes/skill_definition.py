@@ -16,10 +16,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from shared.database.postgres import DatabaseManager
+from shared.dynamic_resource.adapters import skill_resource_payload
+from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.skill_definition import SkillDefinition
+from app.models.tool_definition import ToolDefinition
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/skills", tags=["skills"])
@@ -66,6 +69,56 @@ def _serialize_skill_detail(s: SkillDefinition) -> dict[str, Any]:
     result = _serialize_skill_list(s)
     result["instructions_md"] = s.instructions_md or ""
     return result
+
+
+def _split_allowed_tools(value: str | None) -> list[str]:
+    """解析 Skill allowed_tools 字段。"""
+    if not value:
+        return []
+    normalized = value.replace(",", " ")
+    return [item.strip() for item in normalized.split() if item.strip()]
+
+
+async def _validate_allowed_tools(db: AsyncSession, allowed_tools: str | None) -> None:
+    """Skill 保存/发布前校验 allowed_tools 引用存在且启用。"""
+    tool_names = _split_allowed_tools(allowed_tools)
+    if not tool_names:
+        return
+    result = await db.execute(
+        select(ToolDefinition.tool_name).where(
+            ToolDefinition.tool_name.in_(tool_names),
+            ToolDefinition.is_active.is_(True),
+        )
+    )
+    existing = set(result.scalars().all())
+    missing = sorted(set(tool_names) - existing)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "error",
+                "validation_issues": [
+                    {
+                        "level": "error",
+                        "location": "allowed_tools",
+                        "message": f"allowed_tools 引用了不存在或未启用的工具: {', '.join(missing)}",
+                        "code": "SKILL_ALLOWED_TOOL_NOT_FOUND",
+                    }
+                ],
+            },
+        )
+
+
+async def _publish_skill_resource(db: AsyncSession, skill: SkillDefinition) -> dict[str, Any]:
+    """将 Skill 定义同步为动态资源 revision。"""
+    payload = skill_resource_payload(skill)
+    snapshot = await DynamicResourcePublisher(db).ensure_published(**payload)
+    return {
+        "resource_type": snapshot.resource_type,
+        "resource_name": snapshot.resource_name,
+        "revision": snapshot.revision,
+        "checksum": snapshot.checksum,
+    }
 
 
 @router.get("", summary="获取技能定义列表")
@@ -161,6 +214,7 @@ async def create_skill(payload: dict[str, Any], db: AsyncSession = Depends(get_d
     res = await db.execute(stmt)
     if res.scalar_one_or_none():
         raise HTTPException(status_code=400, detail=f"技能名 '{skill_name}' 已存在")
+    await _validate_allowed_tools(db, payload.get("allowed_tools"))
 
     s = SkillDefinition(
         skill_name=skill_name,
@@ -176,11 +230,13 @@ async def create_skill(payload: dict[str, Any], db: AsyncSession = Depends(get_d
         references_json=payload.get("references_json") or [],
     )
     db.add(s)
-    await db.commit()
+    await db.flush()
     await db.refresh(s)
+    resource_revision = await _publish_skill_resource(db, s)
+    await db.commit()
 
-    logger.info(f"创建了新的技能定义: skill_name={s.skill_name}, id={s.id}")
-    return {"status": "success", "id": s.id}
+    logger.info(f"创建了新的技能定义: skill_name={s.skill_name}, id={s.id}, resource_revision={resource_revision}")
+    return {"status": "success", "id": s.id, "resource_revision": resource_revision}
 
 
 @router.put("/{skill_id}", summary="修改技能定义")
@@ -205,6 +261,7 @@ async def update_skill(skill_id: int, payload: dict[str, Any], db: AsyncSession 
     if "license" in payload:
         s.license = payload["license"]
     if "allowed_tools" in payload:
+        await _validate_allowed_tools(db, payload["allowed_tools"])
         s.allowed_tools = payload["allowed_tools"]
     if "metadata_json" in payload:
         s.metadata_json = payload["metadata_json"] or {}
@@ -217,9 +274,12 @@ async def update_skill(skill_id: int, payload: dict[str, Any], db: AsyncSession 
     if "references_json" in payload:
         s.references_json = payload["references_json"] or []
 
+    await db.flush()
+    await db.refresh(s)
+    resource_revision = await _publish_skill_resource(db, s)
     await db.commit()
-    logger.info(f"更新了技能定义: skill_name={s.skill_name}, id={s.id}")
-    return {"status": "success"}
+    logger.info(f"更新了技能定义: skill_name={s.skill_name}, id={s.id}, resource_revision={resource_revision}")
+    return {"status": "success", "resource_revision": resource_revision}
 
 
 @router.put("/{skill_id}/toggle", summary="快速切换启用状态")
@@ -232,9 +292,14 @@ async def toggle_skill_status(skill_id: int, db: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="技能定义不存在")
 
     s.is_active = not s.is_active
+    if s.is_active:
+        await _validate_allowed_tools(db, s.allowed_tools)
+    await db.flush()
+    await db.refresh(s)
+    resource_revision = await _publish_skill_resource(db, s)
     await db.commit()
-    logger.info(f"切换技能状态: skill_name={s.skill_name}, is_active={s.is_active}")
-    return {"status": "success", "is_active": s.is_active}
+    logger.info(f"切换技能状态: skill_name={s.skill_name}, is_active={s.is_active}, resource_revision={resource_revision}")
+    return {"status": "success", "is_active": s.is_active, "resource_revision": resource_revision}
 
 
 @router.delete("/{skill_id}", summary="删除技能定义")

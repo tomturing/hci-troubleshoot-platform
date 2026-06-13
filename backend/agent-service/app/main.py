@@ -66,6 +66,7 @@ async def lifespan(app: FastAPI):
     try:
         from shared.models.audit import AuditLog  # noqa: F401
         from shared.models.conversation import Conversation  # noqa: F401
+        from shared.models.dynamic_resource import DynamicResourceRevision  # noqa: F401
         from shared.models.system_prompt import SystemPrompt  # noqa: F401
         from sqlalchemy.orm import configure_mappers
 
@@ -244,6 +245,7 @@ async def lifespan(app: FastAPI):
             confirm_service=confirm_service,
             audit_service=audit_service,
             fact_store=fact_store,
+            db_session_factory=db_manager.async_session_factory,
         )
 
         logger.info(

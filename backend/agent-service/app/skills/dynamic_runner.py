@@ -12,7 +12,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from shared.clients import AIAssistantRegistry
+from shared.dynamic_resource.adapters import skill_resource_payload
+from shared.dynamic_resource.loader import DynamicResourceLoader, snapshot_revision_metadata
+from shared.dynamic_resource.models import UsageRecord
+from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.models.skill_definition import SkillDefinitionORM
+from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from sqlalchemy import select
@@ -39,6 +44,7 @@ class SkillSnapshot:
     instructions_md: str
     allowed_tools: str | None
     updated_at: str | None = None
+    resource_revision: dict[str, Any] | None = None
 
 
 def build_skill_name_candidates(skill_name: str) -> list[str]:
@@ -122,20 +128,42 @@ class DynamicSkillRunner:
             )
             rows = list(result.scalars().all())
 
-        by_name = {row.skill_name: row for row in rows}
-        row = next((by_name[name] for name in candidates if name in by_name), None)
-        if row is None:
-            raise SkillNotFoundError(f"动态 Skill 不存在或未启用: {skill_name}")
+            by_name = {row.skill_name: row for row in rows}
+            row = next((by_name[name] for name in candidates if name in by_name), None)
+            if row is None:
+                raise SkillNotFoundError(f"动态 Skill 不存在或未启用: {skill_name}")
+            await self._validate_allowed_tools(session, row.allowed_tools)
+            snapshot = await DynamicResourcePublisher(session).ensure_published(**skill_resource_payload(row))
+            await session.commit()
 
-        return SkillSnapshot(
-            id=int(row.id),
-            skill_name=str(row.skill_name),
-            display_name=row.display_name,
-            description=row.description,
-            instructions_md=row.instructions_md or "",
-            allowed_tools=row.allowed_tools,
-            updated_at=row.updated_at.isoformat() if row.updated_at else None,
+            return SkillSnapshot(
+                id=int(row.id),
+                skill_name=str(row.skill_name),
+                display_name=row.display_name,
+                description=row.description,
+                instructions_md=row.instructions_md or "",
+                allowed_tools=row.allowed_tools,
+                updated_at=row.updated_at.isoformat() if row.updated_at else None,
+                resource_revision=snapshot_revision_metadata(snapshot),
+            )
+
+    async def _validate_allowed_tools(self, session: Any, allowed_tools: str | None) -> None:
+        """执行前校验 Skill allowed_tools 引用仍然存在且启用。"""
+        if not allowed_tools:
+            return
+        tool_names = [item.strip() for item in allowed_tools.replace(",", " ").split() if item.strip()]
+        if not tool_names:
+            return
+        result = await session.execute(
+            select(ToolDefinitionORM.tool_name).where(
+                ToolDefinitionORM.tool_name.in_(tool_names),
+                ToolDefinitionORM.is_active.is_(True),
+            )
         )
+        existing = set(result.scalars().all())
+        missing = sorted(set(tool_names) - existing)
+        if missing:
+            raise DynamicSkillError(f"动态 Skill allowed_tools 引用了不存在或未启用的工具: {', '.join(missing)}")
 
     async def execute(
         self,
@@ -222,6 +250,17 @@ class DynamicSkillRunner:
                 f"动态 Skill {snapshot.skill_name} 未返回变量 {variable_name or output_path or '<unknown>'} 的可用值"
             )
 
+        await self._audit_skill_usage(
+            snapshot,
+            status="success",
+            context_variables=context_variables,
+            output_payload=parsed,
+            variable_name=variable_name,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            trace_id=trace_id,
+        )
+
         logger.info(
             event="dynamic_skill_execute_success",
             skill_name=snapshot.skill_name,
@@ -236,4 +275,38 @@ class DynamicSkillRunner:
             "skill_name": snapshot.skill_name,
             "skill_id": snapshot.id,
             "skill_updated_at": snapshot.updated_at,
+            "resource_revision": snapshot.resource_revision,
         }
+
+    async def _audit_skill_usage(
+        self,
+        snapshot: SkillSnapshot,
+        *,
+        status: str,
+        context_variables: dict[str, Any],
+        output_payload: Any | None,
+        variable_name: str | None,
+        conversation_id: str,
+        case_id: str,
+        trace_id: str,
+        error: str | None = None,
+    ) -> None:
+        """写入 Skill 动态资源使用审计。"""
+        if not snapshot.resource_revision:
+            return
+        async with self._db_session_factory() as session:
+            resource_snapshot = await DynamicResourceLoader(session).get_active("skill", snapshot.skill_name)
+            await DynamicResourceLoader(session).audit_usage(
+                resource_snapshot,
+                UsageRecord(
+                    consumer="agent-service.dynamic_skill_runner",
+                    status=status,
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    trace_id=trace_id,
+                    input_payload={"variable_name": variable_name, "context_variables": context_variables},
+                    output_payload=output_payload,
+                    error=error,
+                ),
+            )
+            await session.commit()

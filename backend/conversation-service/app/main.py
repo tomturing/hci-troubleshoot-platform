@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
     # ── 编译 SQLAlchemy 所有模型，拦截 any NoReferencedTableError 外键元数据配置错误 ────
     try:
         from shared.models.audit import AuditLog  # noqa: F401
+        from shared.models.dynamic_resource import DynamicResourceRevision  # noqa: F401
         from shared.models.system_prompt import SystemPrompt  # noqa: F401
         from sqlalchemy.orm import configure_mappers
 

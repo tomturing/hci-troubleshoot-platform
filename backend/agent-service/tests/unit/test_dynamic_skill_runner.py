@@ -23,8 +23,10 @@ def test_extract_output_value_with_path_and_variable_name():
 
 
 @pytest.mark.asyncio
-async def test_dynamic_skill_runner_executes_active_db_skill():
+async def test_dynamic_skill_runner_executes_active_db_skill(monkeypatch):
+    from app.skills import dynamic_runner
     from app.skills.dynamic_runner import DynamicSkillRunner
+    from shared.dynamic_resource.models import ResourceSnapshot
 
     skill_row = SimpleNamespace(
         id=7,
@@ -32,7 +34,13 @@ async def test_dynamic_skill_runner_executes_active_db_skill():
         display_name="告警解析",
         description="解析告警",
         instructions_md="请输出 node_ip",
+        compatibility=None,
+        license=None,
         allowed_tools="",
+        metadata_json={},
+        assets_json=[],
+        references_json=[],
+        is_active=True,
         updated_at=None,
     )
     scalars = MagicMock()
@@ -52,6 +60,27 @@ async def test_dynamic_skill_runner_executes_active_db_skill():
     ai_registry = MagicMock()
     ai_registry.get_client.return_value = ai_client
 
+    async def fake_ensure_published(self, **kwargs):
+        return ResourceSnapshot(
+            resource_type=kwargs["resource_type"],
+            resource_name=kwargs["resource_name"],
+            revision=9,
+            version=kwargs["version"],
+            status=kwargs["status"],
+            content=kwargs["content"],
+            contract=kwargs["contract"],
+            dependencies=kwargs["dependencies"],
+            checksum="skill-checksum",
+        )
+
+    audit_calls = []
+
+    async def fake_audit_skill_usage(self, snapshot, **kwargs):
+        audit_calls.append((snapshot, kwargs))
+
+    monkeypatch.setattr(dynamic_runner.DynamicResourcePublisher, "ensure_published", fake_ensure_published)
+    monkeypatch.setattr(DynamicSkillRunner, "_audit_skill_usage", fake_audit_skill_usage)
+
     runner = DynamicSkillRunner(db_session_factory=session_factory, ai_registry=ai_registry)
     output = await runner.execute(
         "alert-parsing",
@@ -63,4 +92,6 @@ async def test_dynamic_skill_runner_executes_active_db_skill():
     assert output["ok"] is True
     assert output["value"] == "172.28.24.4"
     assert output["skill_name"] == "hci-alert-parsing"
+    assert output["resource_revision"]["revision"] == 9
+    assert audit_calls[0][1]["variable_name"] == "node_ip"
     ai_client.invoke.assert_awaited_once()

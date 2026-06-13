@@ -18,7 +18,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from shared.dynamic_resource.adapters import kbd_resource_payload
+from shared.dynamic_resource.loader import DynamicResourceLoader, snapshot_revision_metadata
+from shared.dynamic_resource.models import UsageRecord
+from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 from sqlalchemy import and_, select, text
 
 from app.models.kbd_entry import KbdEntry
@@ -71,6 +76,35 @@ def _entry_to_case_dict(entry: KbdEntry, similarity: float) -> dict[str, Any]:
         # 结构化工具步骤（供 InvestigationAgent 执行）
         "steps": entry.steps_json,  # kbd_from_dict 期望 "steps"
     }
+
+
+async def _entry_to_case_with_revision(
+    session: Any,
+    entry: KbdEntry,
+    similarity: float,
+    *,
+    category_id: str,
+    query: str,
+    top_k: int,
+    used_vector: bool,
+) -> dict[str, Any]:
+    """返回 KBD 候选并记录其动态资源 revision 使用审计。"""
+    trace_id = get_current_trace_id()
+    snapshot = await DynamicResourcePublisher(session).ensure_published(**kbd_resource_payload(entry), trace_id=trace_id)
+    await DynamicResourceLoader(session).audit_usage(
+        snapshot,
+        UsageRecord(
+            consumer="kb-service.kbd_search",
+            status="matched",
+            trace_id=trace_id,
+            input_payload={"category_id": category_id, "query": query, "top_k": top_k},
+            output_payload={"similarity": round(similarity, 4)},
+            metadata={"used_vector": used_vector},
+        ),
+    )
+    case = _entry_to_case_dict(entry, similarity)
+    case["resource_revision"] = snapshot_revision_metadata(snapshot)
+    return case
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
@@ -138,7 +172,7 @@ async def search_kbds(
             fallback="published_at_desc",
         )
 
-    async with _db_manager.session() as session:
+    async with _db_manager.async_session_factory() as session:
         if query_vector is not None:
             # 向量语义排序（pgvector cosine distance，ASC = 越小越相似）
             # 同时过滤 status + steps_json + category_id
@@ -161,7 +195,18 @@ async def search_kbds(
             )
             results = await session.execute(stmt)
             rows = results.all()
-            cases = [_entry_to_case_dict(row[0], float(row[1])) for row in rows]
+            cases = [
+                await _entry_to_case_with_revision(
+                    session,
+                    row[0],
+                    float(row[1]),
+                    category_id=category_id,
+                    query=query,
+                    top_k=top_k,
+                    used_vector=True,
+                )
+                for row in rows
+            ]
         else:
             # 降级：无向量时按 published_at DESC
             stmt_fallback = (
@@ -178,7 +223,20 @@ async def search_kbds(
             )
             results_fallback = await session.execute(stmt_fallback)
             entries = results_fallback.scalars().all()
-            cases = [_entry_to_case_dict(entry, 0.0) for entry in entries]
+            cases = [
+                await _entry_to_case_with_revision(
+                    session,
+                    entry,
+                    0.0,
+                    category_id=category_id,
+                    query=query,
+                    top_k=top_k,
+                    used_vector=False,
+                )
+                for entry in entries
+            ]
+
+        await session.commit()
 
     logger.info(
         event="kbd_search_done",

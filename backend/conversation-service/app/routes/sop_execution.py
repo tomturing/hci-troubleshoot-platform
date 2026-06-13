@@ -22,6 +22,10 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from shared.database.postgres import DatabaseManager
+from shared.dynamic_resource.adapters import sop_resource_payload
+from shared.dynamic_resource.loader import DynamicResourceLoader
+from shared.dynamic_resource.models import UsageRecord
+from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 
@@ -177,6 +181,7 @@ class SopCreateResponse(BaseModel):
     ok: bool = Field(..., description="创建是否成功")
     conversation_id: str = Field(..., description="会话 ID")
     sop_document_id: int = Field(..., description="SOP 文档 ID")
+    sop_revision: int | None = Field(default=None, description="SOP 动态资源 revision")
     current_node_id: str = Field(..., description="当前节点 ID（根节点）")
     status: str = Field(..., description="执行状态（active）")
     message: str = Field(..., description="创建结果消息")
@@ -332,6 +337,7 @@ async def sop_create_execution(
                 ok=True,
                 conversation_id=str(conversation_id),
                 sop_document_id=existing.sop_document_id,
+                sop_revision=existing.sop_revision,
                 current_node_id=existing.current_node_id,
                 status=existing.status,
                 message="SOP 执行实例已存在，继续执行",
@@ -369,6 +375,25 @@ async def sop_create_execution(
         sop_doc = await _get_sop_document(body.sop_document_id)
         variable_schema = sop_doc.get("variable_schema", []) if sop_doc else None
         sop_title = sop_doc.get("title") if sop_doc else None
+        sop_revision: int | None = None
+        if sop_doc:
+            sop_snapshot = await DynamicResourcePublisher(session).ensure_published(
+                **sop_resource_payload(sop_doc),
+                trace_id=conversation.trace_id if conversation else trace_id,
+            )
+            sop_revision = sop_snapshot.revision
+            await DynamicResourceLoader(session).audit_usage(
+                sop_snapshot,
+                UsageRecord(
+                    consumer="conversation-service.sop_create_execution",
+                    status="success",
+                    conversation_id=str(conversation_id),
+                    case_id=case_id,
+                    trace_id=conversation.trace_id if conversation else trace_id,
+                    input_payload={"sop_document_id": body.sop_document_id, "root_node_id": body.root_node_id},
+                    output_payload={"sop_revision": sop_revision},
+                ),
+            )
 
         # 解析并注入 env_injection 变量
         initial_variables = {}
@@ -413,6 +438,7 @@ async def sop_create_execution(
             sop_document_id=body.sop_document_id,
             current_node_id=body.root_node_id,
             trace_id=conversation.trace_id if conversation else trace_id,
+            sop_revision=sop_revision,
             initial_variables=initial_variables,
             initial_variable_sources=initial_variable_sources,
         )
@@ -432,6 +458,7 @@ async def sop_create_execution(
             ok=True,
             conversation_id=str(conversation_id),
             sop_document_id=body.sop_document_id,
+            sop_revision=execution.sop_revision,
             current_node_id=execution.current_node_id,
             status=execution.status,
             message="SOP 执行实例已创建",
@@ -583,6 +610,7 @@ async def get_sop_execution(
             "id": str(execution.id),
             "conversation_id": str(execution.conversation_id),
             "sop_document_id": execution.sop_document_id,
+            "sop_revision": execution.sop_revision,
             "current_node_id": execution.current_node_id,
             "status": execution.status,
             "context_variables": execution.context_variables,

@@ -5,6 +5,7 @@
 from .audit import AuditLog, Authorization, ToolResult
 from .base import TimestampMixin, TraceableMixin
 from .conversation import Conversation
+from .dynamic_resource import DynamicResourceActive, DynamicResourceRevision, DynamicResourceUsageAudit, PromptSlot
 from .fact import ClaimEvidenceLink, Fact
 from .information import EvidenceBundle, FactSource, InformationPacket, StaleDataGuard
 from .kb import KBCategory, KBChunk, KBDocument, KBSopNode, KBSynonym
@@ -16,7 +17,11 @@ from .user import User
 __all__ = [
     "User",
     "Conversation",
+    "DynamicResourceActive",
+    "DynamicResourceRevision",
+    "DynamicResourceUsageAudit",
     "SystemPrompt",
+    "PromptSlot",
     "AuditLog",
     "Authorization",
     "ToolResult",

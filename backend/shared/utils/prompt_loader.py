@@ -3,7 +3,14 @@ StrictPromptLoader - Prompt 强验证热加载引擎
 """
 
 import string
+from inspect import isawaitable
 
+from shared.dynamic_resource.adapters import prompt_resource_payload, prompt_slot_resource_payload
+from shared.dynamic_resource.loader import DynamicResourceLoader
+from shared.dynamic_resource.models import UsageRecord
+from shared.dynamic_resource.publisher import DynamicResourcePublisher
+from shared.dynamic_resource.validator import DynamicResourceValidator
+from shared.models.dynamic_resource import PromptSlot
 from shared.models.system_prompt import SystemPrompt
 from shared.observability.logger import get_logger
 from sqlalchemy import select
@@ -37,44 +44,102 @@ class StrictPromptLoader:
 
     @classmethod
     async def load_and_validate(
-        cls, db_session: AsyncSession, prompt_name: str, expected_placeholders: list[str]
+        cls,
+        db_session: AsyncSession,
+        prompt_name: str,
+        expected_placeholders: list[str],
+        *,
+        consumer: str = "agent-service.prompt_loader",
+        conversation_id: str | None = None,
+        case_id: str | None = None,
+        trace_id: str | None = None,
     ) -> str:
         """
         从数据库加载 Prompt 并强行进行占位符契约验证。
         若有任何异常，绝不静默降级，直接抛出，阻断推理进行。
         """
-        # 1. 数据库检索
+        # 1. Slot 解析：prompt_name 可以是逻辑槽位，也可以是具体 system_prompt.name。
+        effective_prompt_name = prompt_name
+        effective_expected = list(expected_placeholders)
+        slot_snapshot = None
         try:
-            stmt = select(SystemPrompt.content_template).where(
-                SystemPrompt.name == prompt_name, SystemPrompt.is_active.is_(True)
+            slot_result = await db_session.execute(
+                select(PromptSlot).where(PromptSlot.slot_name == prompt_name, PromptSlot.is_active.is_(True))
+            )
+            slot = slot_result.scalar_one_or_none()
+            if slot is not None and hasattr(slot, "active_prompt_name"):
+                effective_prompt_name = slot.active_prompt_name
+                slot_expected = slot.expected_placeholders or []
+                if slot_expected:
+                    effective_expected = [str(item) for item in slot_expected]
+                slot_payload = prompt_slot_resource_payload(
+                    slot.slot_name,
+                    slot.active_prompt_name,
+                    effective_expected,
+                    slot.consumer,
+                )
+                slot_snapshot = await DynamicResourcePublisher(db_session).ensure_published(**slot_payload)
+
+            stmt = select(SystemPrompt).where(
+                SystemPrompt.name == effective_prompt_name, SystemPrompt.is_active.is_(True)
             )
             result = await db_session.execute(stmt)
-            content_template = result.scalar_one_or_none()
+            prompt = result.scalar_one_or_none()
         except Exception as exc:
             # 数据库访问异常，直接抛出，阻断逻辑
             raise PromptLoadError(f"数据库查询异常，无法加载 Prompt 模板 '{prompt_name}': {exc}") from exc
 
-        if not content_template:
-            raise PromptLoadError(f"在 system_prompt 表中未找到处于激活状态且名称为 '{prompt_name}' 的 Prompt 模板")
+        if not prompt:
+            raise PromptLoadError(f"在 system_prompt 表中未找到处于激活状态且名称为 '{effective_prompt_name}' 的 Prompt 模板")
 
         # 2. 占位符比对校验
+        content_template = prompt.content_template if hasattr(prompt, "content_template") else str(prompt)
         actual_placeholders = cls.get_template_placeholders(content_template)
-        expected_set = set(expected_placeholders)
-
-        # 校验：检查是否有代码运行时必填的参数，在数据库模板中缺失
-        missing_placeholders = expected_set - actual_placeholders
-        if missing_placeholders:
+        expected_set = set(effective_expected)
+        validation = DynamicResourceValidator.validate_prompt_placeholders(
+            actual_placeholders,
+            expected_set,
+            resource_name=effective_prompt_name,
+        )
+        if validation.status == "error":
+            issue_text = "; ".join(issue.message for issue in validation.issues)
             raise PromptValidationError(
-                f"Prompt 模板 '{prompt_name}' 校验不通过！"
-                f"缺少运行时必需的占位符: {missing_placeholders}。请检查并修改数据库配置。"
+                f"Prompt 模板 '{effective_prompt_name}' 校验不通过！{issue_text}。请检查并修改数据库配置。"
             )
 
-        # 校验：检查模板里是否有代码运行时无法提供赋值的非法占位符（避免 .format 报 KeyError）
-        redundant_placeholders = actual_placeholders - expected_set
-        if redundant_placeholders:
-            raise PromptValidationError(
-                f"Prompt 模板 '{prompt_name}' 校验不通过！包含运行时无法识别的非法占位符: {redundant_placeholders}。"
+        if hasattr(prompt, "name"):
+            prompt_snapshot = await DynamicResourcePublisher(db_session).ensure_published(**prompt_resource_payload(prompt))
+            loader = DynamicResourceLoader(db_session)
+            if slot_snapshot is not None:
+                await loader.audit_usage(
+                    slot_snapshot,
+                    UsageRecord(
+                        consumer=consumer,
+                        status="success",
+                        conversation_id=conversation_id,
+                        case_id=case_id,
+                        trace_id=trace_id,
+                        input_payload={"requested_prompt": prompt_name, "expected_placeholders": effective_expected},
+                        output_payload={"active_prompt_name": effective_prompt_name},
+                    ),
+                )
+            await loader.audit_usage(
+                prompt_snapshot,
+                UsageRecord(
+                    consumer=consumer,
+                    status="success",
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    trace_id=trace_id,
+                    input_payload={"expected_placeholders": effective_expected},
+                    output_payload={"placeholder_count": len(actual_placeholders)},
+                    metadata={"requested_prompt": prompt_name},
+                ),
             )
+            if hasattr(db_session, "commit"):
+                maybe_commit = db_session.commit()
+                if isawaitable(maybe_commit):
+                    await maybe_commit
 
         return content_template
 
@@ -87,6 +152,12 @@ class MockSession:
 
     async def execute(self, stmt):
         compiled = stmt.compile()
+        if "prompt_slot" in str(compiled):
+            class EmptyResult:
+                def scalar_one_or_none(self):
+                    return None
+
+            return EmptyResult()
         prompt_name = compiled.params.get("name_1")
         if not prompt_name:
             for val in compiled.params.values():

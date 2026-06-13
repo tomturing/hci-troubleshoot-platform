@@ -6,6 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from shared.database.postgres import DatabaseManager
+from shared.dynamic_resource.adapters import tool_resource_payload
+from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.observability.logger import get_logger
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,6 +116,18 @@ def _raise_if_invalid_tool_payload(payload: dict[str, Any]) -> None:
     validation = validate_tool_payload(payload)
     if validation["status"] == "error":
         raise HTTPException(status_code=400, detail=validation)
+
+
+async def _publish_tool_resource(db: AsyncSession, tool: ToolDefinition) -> dict[str, Any]:
+    """将工具定义同步为动态资源 revision。"""
+    payload = tool_resource_payload(tool)
+    snapshot = await DynamicResourcePublisher(db).ensure_published(**payload)
+    return {
+        "resource_type": snapshot.resource_type,
+        "resource_name": snapshot.resource_name,
+        "revision": snapshot.revision,
+        "checksum": snapshot.checksum,
+    }
 
 
 async def get_db() -> AsyncSession:
@@ -236,11 +250,13 @@ async def create_tool(payload: dict[str, Any], db: AsyncSession = Depends(get_db
         version=payload.get("version") or "1.0",
     )
     db.add(t)
-    await db.commit()
+    await db.flush()
     await db.refresh(t)
+    resource_revision = await _publish_tool_resource(db, t)
+    await db.commit()
 
-    logger.info(event="tool_created", tool_name=t.tool_name, tool_id=t.id, message="创建了新的工具定义")
-    return {"status": "success", "id": t.id}
+    logger.info(event="tool_created", tool_name=t.tool_name, tool_id=t.id, resource_revision=resource_revision, message="创建了新的工具定义")
+    return {"status": "success", "id": t.id, "resource_revision": resource_revision}
 
 
 @router.put("/{tool_id}", summary="修改工具定义")
@@ -287,9 +303,12 @@ async def update_tool(tool_id: int, payload: dict[str, Any], db: AsyncSession = 
     if "version" in payload:
         t.version = payload["version"]
 
+    await db.flush()
+    await db.refresh(t)
+    resource_revision = await _publish_tool_resource(db, t)
     await db.commit()
-    logger.info(event="tool_updated", tool_name=t.tool_name, tool_id=t.id, message="更新了工具定义")
-    return {"status": "success"}
+    logger.info(event="tool_updated", tool_name=t.tool_name, tool_id=t.id, resource_revision=resource_revision, message="更新了工具定义")
+    return {"status": "success", "resource_revision": resource_revision}
 
 
 @router.delete("/{tool_id}", summary="删除工具定义")

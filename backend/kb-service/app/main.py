@@ -41,6 +41,17 @@ logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    try:
+        from shared.models.dynamic_resource import DynamicResourceRevision  # noqa: F401
+        from shared.models.system_prompt import SystemPrompt  # noqa: F401
+        from sqlalchemy.orm import configure_mappers
+
+        configure_mappers()
+        logger.info("SQLAlchemy mappers 编译配置成功，动态资源模型检查通过")
+    except Exception as exc:
+        logger.critical(f"SQLAlchemy mappers 编译失败，发现外键或元数据配置错误: {exc}", exc_info=True)
+        raise
+
     logger.info(
         event="service_starting",
         message=f"Starting {settings.SERVICE_NAME} v3.0",

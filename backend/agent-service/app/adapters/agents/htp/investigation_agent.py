@@ -577,6 +577,7 @@ class InvestigationAgent(BaseAgent):
             confirm_service=self._confirm_service,
             audit_service=self._audit_service,
             fact_store=self._fact_store,
+            db_session_factory=self._db_session_factory,
         )
 
         # T3-2: 绑定诊断阶段结构化 Schema
