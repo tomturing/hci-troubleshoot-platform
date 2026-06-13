@@ -642,8 +642,10 @@ export const useChatStore = defineStore('chat', () => {
               // 诊断阶段切换：更新前端进度条状态
               try {
                 const event = JSON.parse(data)
-                diagnosticStage.value = event.to ?? 'S0'
-                devLog('stage_change', '诊断阶段切换', { from: event.from, to: event.to, label: event.label })
+                if (event.to && /^S\d$/.test(event.to)) {
+                  diagnosticStage.value = event.to
+                  devLog('stage_change', '诊断阶段切换', { from: event.from, to: event.to, label: event.label })
+                }
               } catch (e) {
                 console.warn('[stage_change] 解析失败:', e)
               }
@@ -970,7 +972,9 @@ export const useChatStore = defineStore('chat', () => {
             } else if (pendingEventType === 'stage_change') {
               try {
                 const event = JSON.parse(data)
-                diagnosticStage.value = event.to ?? diagnosticStage.value
+                if (event.to && /^S\d$/.test(event.to)) {
+                  diagnosticStage.value = event.to
+                }
               } catch { }
             } else {
               try {
