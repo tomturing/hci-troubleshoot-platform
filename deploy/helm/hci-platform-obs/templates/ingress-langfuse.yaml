@@ -88,6 +88,13 @@ spec:
                 name: langfuse-server
                 port:
                   number: 3000
+          - path: /icon.svg
+            pathType: Exact
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
     {{- end }}
   {{- if and .Values.ingress.tls (eq .Values.global.routingMode "subdomain") }}
   tls:
