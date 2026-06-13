@@ -3,13 +3,14 @@ Unit Tests for SkillDefinition ORM model and routes
 """
 
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 隔离 conversation-service app 命名空间（backend/ 已通过 pyproject.toml pythonpath 全局配置）
-_svc = "/mnt/d/aihci/hci-troubleshoot-platform/backend/conversation-service"
+_svc = str(Path(__file__).resolve().parents[2])
 
 if _svc not in sys.path:
     sys.path.insert(0, _svc)
@@ -195,6 +196,7 @@ class TestSkillDefinitionRoutes:
     @pytest.mark.asyncio
     async def test_create_skill_success(self, mock_session):
         """测试成功创建新技能定义"""
+        from app.models.skill_definition import SkillDefinition
         from app.routes.skill_definition import create_skill
 
         mock_check_result = MagicMock()
@@ -211,7 +213,16 @@ class TestSkillDefinitionRoutes:
 
         result = await create_skill(payload=payload, db=mock_session)
         assert result["status"] == "success"
-        mock_session.add.assert_called_once()
+        added_rows = [call.args[0] for call in mock_session.add.call_args_list]
+        assert any(isinstance(row, SkillDefinition) for row in added_rows)
+        assert any(
+            row.__class__.__name__ == "DynamicResourceRevision"
+            and getattr(row, "resource_type", None) == "skill"
+            and getattr(row, "resource_name", None) == "new-skill"
+            for row in added_rows
+        )
+        assert result["resource_revision"]["resource_type"] == "skill"
+        assert result["resource_revision"]["resource_name"] == "new-skill"
         mock_session.commit.assert_called_once()
 
     @pytest.mark.asyncio
@@ -243,19 +254,34 @@ class TestSkillDefinitionRoutes:
     @pytest.mark.asyncio
     async def test_update_skill_success(self, mock_session):
         """测试更新技能定义字段成功"""
+        from app.models.skill_definition import SkillDefinition
         from app.routes.skill_definition import update_skill
 
-        mock_skill = MagicMock()
-        mock_skill.id = 1
-        mock_skill.skill_name = "old-name"
+        mock_skill = SkillDefinition(
+            id=1,
+            skill_name="old-name",
+            description="Old Desc description of trigger",
+            instructions_md="# Step 1",
+            compatibility=None,
+            license=None,
+            allowed_tools=None,
+            metadata_json={},
+            display_name="Old Name",
+            is_active=True,
+            assets_json=[],
+            references_json=[],
+        )
 
         mock_get_result = MagicMock()
         mock_get_result.scalar_one_or_none.return_value = mock_skill
 
-        mock_conflict_result = MagicMock()
-        mock_conflict_result.scalar_one_or_none.return_value = None
+        mock_revision_result = MagicMock()
+        mock_revision_result.scalar_one_or_none.return_value = None
 
-        mock_session.execute.side_effect = [mock_get_result, mock_conflict_result]
+        mock_next_revision_result = MagicMock()
+        mock_next_revision_result.scalar_one.return_value = 1
+
+        mock_session.execute.side_effect = [mock_get_result, MagicMock(), mock_revision_result, mock_next_revision_result]
 
         payload = {
             "display_name": "New Name",
@@ -289,16 +315,34 @@ class TestSkillDefinitionRoutes:
     @pytest.mark.asyncio
     async def test_toggle_skill_status(self, mock_session):
         """测试快速切换启用状态"""
+        from app.models.skill_definition import SkillDefinition
         from app.routes.skill_definition import toggle_skill_status
 
-        mock_skill = MagicMock()
-        mock_skill.id = 1
-        mock_skill.skill_name = "toggle-skill"
-        mock_skill.is_active = True
+        mock_skill = SkillDefinition(
+            id=1,
+            skill_name="toggle-skill",
+            description="Toggle skill trigger description",
+            instructions_md="# Step 1",
+            compatibility=None,
+            license=None,
+            allowed_tools=None,
+            metadata_json={},
+            display_name="Toggle Skill",
+            is_active=True,
+            assets_json=[],
+            references_json=[],
+        )
 
         mock_get_result = MagicMock()
         mock_get_result.scalar_one_or_none.return_value = mock_skill
-        mock_session.execute.return_value = mock_get_result
+
+        mock_revision_result = MagicMock()
+        mock_revision_result.scalar_one_or_none.return_value = None
+
+        mock_next_revision_result = MagicMock()
+        mock_next_revision_result.scalar_one.return_value = 1
+
+        mock_session.execute.side_effect = [mock_get_result, MagicMock(), mock_revision_result, mock_next_revision_result]
 
         result = await toggle_skill_status(skill_id=1, db=mock_session)
         assert result["status"] == "success"
