@@ -1,7 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from app.memory.variable_pool.engine import sop_request_variable
 
 

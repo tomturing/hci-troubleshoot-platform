@@ -1260,13 +1260,7 @@ def merge_variable_schema(
             is_explicit_markdown_decl = new_var.get("auto_generated") is False
 
             def _has_value(value: object) -> bool:
-                if value is None:
-                    return False
-                if value == "":
-                    return False
-                if value == []:
-                    return False
-                return True
+                return value is not None and value != "" and value != []
 
             for human_field in HUMAN_FIELDS:
                 old_value = old_var.get(human_field)
@@ -1274,9 +1268,7 @@ def merge_variable_schema(
 
                 if is_explicit_markdown_decl and _has_value(new_value):
                     continue
-                if not is_explicit_markdown_decl and human_field in old_var:
-                    merged_var[human_field] = old_value
-                elif _has_value(old_value):
+                if (not is_explicit_markdown_decl and human_field in old_var) or _has_value(old_value):
                     merged_var[human_field] = old_value
             merged_var.pop("deprecated", None)
             merged_var["auto_generated"] = False

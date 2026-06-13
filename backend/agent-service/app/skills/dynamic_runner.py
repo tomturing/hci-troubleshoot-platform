@@ -11,12 +11,11 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
-
 from shared.clients import AIAssistantRegistry
 from shared.models.skill_definition import SkillDefinitionORM
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from sqlalchemy import select
 
 logger = get_logger("skills.dynamic-runner")
 

@@ -2,7 +2,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from app.skills.dynamic_runner import build_skill_name_candidates, extract_output_value
 
 

@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-06-12
+last_updated: 2026-06-13
 owner: team
 ---
 
@@ -45,6 +45,7 @@ owner: team
 | 2026-06-12 | v3.4 | **SOP 变量来源运行时门禁补强**：① `SopToolExecutor` 对 SOP 模式下的真实诊断工具增加 before-tool-call 门禁；② 当前节点或候选子节点依赖 `user_input/user_confirm/env_*` 变量且未就绪时，不下发 `bash_exec/acli_exec`，返回 `sop_variable_gate_blocked`；③ 结果包含 `next_tool_call=sop_request_variable`，引导 LLM 先按变量来源获取值 |
 | 2026-06-12 | v3.5 | **集成 Langfuse 可观测性**：① 引入 `langfuse.py` 实现大模型及工具执行调用全链路追踪；② 将 Langfuse 容器发布至 K3s；③ admin-ui 嵌入 Langfuse 分析面板 |
 | 2026-06-13 | v3.6 | **告警与任务解析技能分类调整（PR #454）**：① `hci-alert-parsing` 和 `hci-task-parsing` 的 metadata.category 从 `monitoring` 调整为 `platform`（更准确的语义定位）；② 同步更新 `skills/告警解析.md` 和 `skills/任务解析.md` 源文件分类；③ `database/seeds/03_skill_definitions.sql` 同步更新种子数据 |
+| 2026-06-13 | v3.7 | **平台内置/硬编码治理（PR #462）**：① `sop_request_variable` 改为通过 `DynamicSkillRunner` 按次读取 `skill_definition` active 记录，移除 Python 内置业务技能执行链；② 工具注册表改为短 TTL 热刷新，ReAct 工具列表、风险判定、执行前校验和 Composite 执行统一消费运行时 registry；③ `bash_exec.container` 从 `tool_definition.parameters_schema.properties.container.enum` 读取，`get_failed_tasks` 改为声明式 `usage_template`；④ conversation-service 环境变量注入收敛为显式 `env_info` / `env:<field>`，不再从告警日志硬编码猜测 `node_ip/disk_sn/request_id`；⑤ 幻觉检测仅使用当前工具 registry 快照，registry 缺失时跳过 phantom tool 检测并记录 warning |
 
 ---
 

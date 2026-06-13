@@ -1,6 +1,6 @@
 # Agent 工具设计
 
-> 权威来源：本文件（v2.8，核心执行契约、工具管理 UI 校验、SOP 发布联动、容器执行适配器、SOP Markdown 命令归一化与运行时变量来源门禁均已落地）。
+> 权威来源：本文件（v3.0，核心执行契约、工具管理 UI 校验、SOP 发布联动、容器执行适配器、SOP Markdown 命令归一化、运行时变量来源门禁、工具注册表热刷新与工具定义数据驱动边界均已落地）。
 > 关联文档：[agent设计.md](./agent设计.md) §十（目录结构）、[agent记忆设计.md](./agent记忆设计.md)
 > 最新事件方案：[bash_exec 容器化契约与工具调用前置校验方案](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验方案.md)
 
@@ -964,6 +964,7 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 | 2026-06-12 | v2.5 | **工具管理 UI 校验闭环（PR-B）**：管理端工具编辑弹窗新增“校验工具定义”按钮，保存前自动调用 `/api/v1/tools/validate`，统一展示 error/warning 列表；`error` 阻断保存，`warning` 可保存但必须在页面可见。SOP 发布联动仍按 T-EXEC-11 推进。 |
 | 2026-06-12 | v2.9 | **新增告警解析与任务解析技能（PR #453）**：`database/seeds/03_skill_definitions.sql` 新增 `hci-alert-parsing` 和 `hci-task-parsing` 两个 Markdown Prompt-based Skill，用于解析 HCI 平台告警事件和任务日志。特性：① 触发语义精确化（描述含具体故障场景如"虚机开关机失败"、"迁移失败"）；② `allowed_tools: bash` 声明执行权限；③ metadata tags 扩展（增加 `node-ip`、`error-code`、`request-id` 等场景标签）；④ node_ip 匹配规则改为优先级表格；⑤ Gotchas 条目从 2 条扩展至 5/7 条，覆盖时间戳毫秒级处理、request_id 前导逗号清理等高频陷阱。详见 [告警与任务解析技能优化报告.md](../events/2026-06-12-告警与任务解析技能优化报告.md) |
 | 2026-06-11 | v2.4 | **工具执行契约与前置校验增强**：`bash_exec` 改为必须指定容器；新增执行前 `ToolSemanticValidator`；`acli_exec` 基于 aCLI catalog 本地快照做命令路径校验；修复双通道 `stderr` 在 `exit_code != 0` 时被 `output` 未定义异常覆盖的问题。工具管理 UI 与 SOP 发布联动仍按 T-EXEC-10/T-EXEC-11 推进。详见 [方案事件文档](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验方案.md) |
+| 2026-06-13 | v3.0 | **平台内置/硬编码治理（PR #462）**：① `ToolRegistryManager` 支持短 TTL 热刷新，ReAct 工具列表、风险判断、执行前校验和 Composite 执行统一消费当前 `tool_definition` 快照；② `bash_exec.container` 合法范围从 `parameters_schema.properties.container.enum` 读取，conversation-service 工具定义校验只要求 enum 存在且包含 `host`，不再在代码中固化具体容器名；③ `database/seeds/01_tool_definitions.sql` 中 `get_failed_tasks` 使用 `usage_template` 声明 acli 命令，`TemplateInterpolator` 支持 `[[...]]` 可选片段，删除执行器内的工具名特判；④ `HallucinationDetector` 不再维护内置默认工具清单，只基于运行时 registry 做 phantom tool 检测 |
 
 ---
 

@@ -698,7 +698,10 @@ class ReactEngine:
                 # T3-5: 更新验证追踪标记
                 temp_tool_def = self._tool_registry.get(tc.name)
                 if not temp_tool_def:
-                    from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY_MANAGER, refresh_tool_registry_if_needed
+                    from app.adapters.agents.htp.tool_registry import (
+                        TOOL_REGISTRY_MANAGER,
+                        refresh_tool_registry_if_needed,
+                    )
 
                     runtime_registry = (
                         await refresh_tool_registry_if_needed() if TOOL_REGISTRY_MANAGER is not None else self._tool_registry
