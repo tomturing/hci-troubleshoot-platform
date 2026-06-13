@@ -95,6 +95,27 @@ spec:
                 name: langfuse-server
                 port:
                   number: 3000
+          - path: /wordart-black.svg
+            pathType: Exact
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
+          - path: /wordart-white.svg
+            pathType: Exact
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
+          - path: /favicon.ico
+            pathType: Exact
+            backend:
+              service:
+                name: langfuse-server
+                port:
+                  number: 3000
     {{- end }}
   {{- if and .Values.ingress.tls (eq .Values.global.routingMode "subdomain") }}
   tls:
