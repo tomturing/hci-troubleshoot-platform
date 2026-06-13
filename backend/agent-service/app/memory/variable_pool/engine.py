@@ -168,6 +168,28 @@ async def sop_request_variable(
             kind="variable_input",
         )
 
+    # 2.5 检查前置依赖（Depends On）
+    depends_on = var_def.get("depends_on") or []
+    if depends_on:
+        missing_deps = []
+        for dep in depends_on:
+            dep_val = context_variables.get(dep)
+            # 如果是字典结构
+            if isinstance(dep_val, dict):
+                dep_val = dep_val.get("value")
+            if dep_val is None or dep_val == "":
+                missing_deps.append(dep)
+        if missing_deps:
+            logger.warning(
+                event="sop_request_variable_depends_on_missing",
+                variable_name=variable_name,
+                missing_dependencies=missing_deps,
+                sop_document_id=sop_document_id,
+            )
+            return {
+                "error": f"变量 {variable_name} 依赖的前置变量 {missing_deps} 尚未就绪，请先调用 sop_request_variable 获取它们"
+            }
+
     # 3. 根据 acquisition_strategy 决定获取方式
     strategy = var_def.get("acquisition_strategy", "user_input")
     acquisition_tool = var_def.get("acquisition_tool")

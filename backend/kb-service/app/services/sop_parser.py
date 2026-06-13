@@ -1042,6 +1042,7 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                     var_desc = _col("说明", "description") or ""
                     default_val = _col("默认值", "default", "default_value") or None
                     val_pattern = _col("校验规则", "pattern", "validation_pattern") or None
+                    var_depends = _col("依赖变量", "depends_on", "depends") or None
 
                     if var_name and var_source:
                         var_name_clean = var_name.replace("\\", "").strip()
@@ -1050,6 +1051,7 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                         var_desc_clean = var_desc.replace("\\", "").strip()
                         default_val_clean = default_val.replace("\\", "").strip() if default_val else None
                         val_pattern_clean = val_pattern.replace("\\", "").strip() if val_pattern else None
+                        var_depends_list = [v.strip() for v in var_depends.replace("\\", "").split(",") if v.strip()] if var_depends else []
 
                         strategy, tool = _parse_acquisition_source(var_source_clean)
 
@@ -1065,6 +1067,7 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                             "required": True,
                             "default_value": default_val_clean,
                             "validation_pattern": val_pattern_clean,
+                            "depends_on": var_depends_list,
                         }
                 continue
 
@@ -1201,6 +1204,7 @@ def extract_sop_variables(
                 **strategy_info,
                 "validation_pattern": declared.get("validation_pattern"),
                 "default_value": declared.get("default_value"),
+                "depends_on": declared.get("depends_on") or [],
                 "auto_generated": var_name not in global_declared,
             }
         )
@@ -1226,16 +1230,19 @@ def merge_variable_schema(
         "validation_pattern",
         "default_value",
         "display_name",
+        "depends_on",
     ]
 
     for name, new_var in new_by_name.items():
         if name in old_by_name:
             old_var = old_by_name[name]
             merged_var = {**new_var}
+            
+            is_auto_generated = new_var.get("auto_generated", True)
             strategy_overridden = (
                 old_var.get("acquisition_strategy")
-                and old_var["acquisition_strategy"] not in ("", "user_input", None)
-                and new_var.get("acquisition_strategy") in ("user_input", None, "")
+                and old_var["acquisition_strategy"] not in ("", None)
+                and is_auto_generated
             )
             for human_field in HUMAN_FIELDS:
                 if human_field in ("acquisition_strategy", "acquisition_tool"):
@@ -1244,8 +1251,10 @@ def merge_variable_schema(
                 else:
                     new_value = new_var.get(human_field)
                     old_value = old_var.get(human_field)
-                    # 只有当新解析出来的字段值为空（None或空字符串），且旧值存在时，才继承旧值进行保护
-                    if (new_value is None or new_value == "") and old_value is not None and old_value != "":
+                    is_new_empty = new_value is None or new_value == "" or new_value == []
+                    # 只有在新解析的字段为空，或者新变量是自动生成的默认占位（未在Markdown中明确指定修改），
+                    # 且旧版有人工保存的配置时，才予以保留。
+                    if (is_new_empty or is_auto_generated) and old_value is not None and old_value != "" and old_value != []:
                         merged_var[human_field] = old_value
             merged_var.pop("deprecated", None)
             merged_var["auto_generated"] = False

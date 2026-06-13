@@ -132,8 +132,11 @@
 - **SOP 变量合并逻辑与 `node_ip` 提取优先级修复**：
   - 修复 `merge_variable_schema` 中的三路合并逻辑，当 Markdown 中声明了明确的新获取策略时，不再被数据库中的旧策略强行覆盖，使得 Markdown 更新可以正确同步到 `variable_schema`。
   - 优化 `node_ip` 环境变量的提取逻辑，对 IP/主机名类变量，在告警上下文提取中优先匹配 `target`（实际发生故障的节点）而非 `host`（发起告警的监控节点）。
-  - 直接修复数据库中 SOP `id=2`（磁盘寿命到期）的 `variable_schema`，将 `disk_sn` 的 `acquisition_strategy` 修正为 `llm_inference`，彻底解决 `disk_sn` 由于 `env_injection` 策略在告警中无源而导致排障流被阻断的问题。
   - 修复 `merge_variable_schema` 中 `description` 等其他人工编辑字段的三路合并逻辑，只有当新值为空或该字段为系统默认自动推断（非 Markdown 明确指定）时才使用旧值覆盖，防止在 Markdown 中显式修改的描述由于三路合并而被旧值强制保护覆盖而失效的问题。
+- **SOP 变量依赖关系（Depends On）与内置判定技能（is_sys_disk）中长期优化**：
+  - 升级 Markdown 变量解析与三路合并算法，全面支持提取、维护与合并 `depends_on` 依赖关系列表。
+  - 在 `sop_request_variable` JIT 懒加载流程中增加 `depends_on` 前置校验，在依赖前置变量未就绪时拦截报错，规避 AI 无数据源瞎猜的问题。
+  - 在内置技能库中实现并注册了 `is_sys_disk` 分析技能，支持通过告警上下文自动检测判定系统盘/数据盘，消除 LLM 推理幻觉。
 
 ---
 

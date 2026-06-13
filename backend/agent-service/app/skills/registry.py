@@ -168,3 +168,19 @@ def disk_vendor_lifetime(context_variables: dict[str, Any]) -> str:
             return "返修"
 
     return "正常"
+
+
+@register_skill("is_sys_disk")
+def is_sys_disk(context_variables: dict[str, Any]) -> str:
+    """判定是否是系统盘。SOP 规则：若 alert_type 包含 'vs'，则 is_sys_disk 为 false"""
+    alert_type = context_variables.get("alert_type")
+    if alert_type and "vs" in str(alert_type).lower():
+        return "false"
+    
+    # 兼容告警描述等字段判断
+    for k, v in context_variables.items():
+        if k.lower() in ("alert_type", "type", "description"):
+            if "vs" in str(v).lower():
+                return "false"
+                
+    return "false"
