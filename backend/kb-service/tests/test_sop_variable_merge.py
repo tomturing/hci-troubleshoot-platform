@@ -288,7 +288,7 @@ class TestMergeVariableSchema:
                 "description": "告警硬盘所在主机",
                 "acquisition_strategy": "skill_call",
                 "acquisition_tool": "hci-alert-parsing",
-                "output_path": "node_ip",
+                "output_path": "values.node_ip",
                 "depends_on": ["alert_logs"],
                 "auto_generated": False,
             }
@@ -299,5 +299,52 @@ class TestMergeVariableSchema:
         assert deprecated == []
         assert merged[0]["acquisition_strategy"] == "skill_call"
         assert merged[0]["acquisition_tool"] == "hci-alert-parsing"
-        assert merged[0]["output_path"] == "node_ip"
+        assert merged[0]["output_path"] == "values.node_ip"
         assert merged[0]["depends_on"] == ["alert_logs"]
+
+    def test_merge_preserves_explicit_args_template_and_expression(self):
+        """测试 Markdown 明确声明的参数模板和派生表达式会写入 schema"""
+        old_schema = [
+            {
+                "name": "smart_info",
+                "description": "旧描述",
+                "acquisition_strategy": "llm_inference",
+            },
+            {
+                "name": "is_sys_disk",
+                "description": "旧描述",
+                "acquisition_strategy": "llm_inference",
+            },
+        ]
+        new_schema = [
+            {
+                "name": "smart_info",
+                "description": "SMART 原始回显",
+                "acquisition_strategy": "tool_call",
+                "acquisition_tool": "bash_exec",
+                "acquisition_args_template": {
+                    "container": "vs-cp-manager",
+                    "command": "smartctl -a /dev/{disk_dev}",
+                    "node_ip": "{node_ip}",
+                },
+                "depends_on": ["disk_dev", "node_ip"],
+                "auto_generated": False,
+            },
+            {
+                "name": "is_sys_disk",
+                "description": "是否系统盘",
+                "acquisition_strategy": "derived",
+                "expression": "contains(alert_type, 'vs') ? false : unknown",
+                "depends_on": ["alert_type"],
+                "auto_generated": False,
+            },
+        ]
+
+        merged, deprecated = merge_variable_schema(old_schema, new_schema)
+
+        assert deprecated == []
+        by_name = {item["name"]: item for item in merged}
+        assert by_name["smart_info"]["acquisition_strategy"] == "tool_call"
+        assert by_name["smart_info"]["acquisition_args_template"]["container"] == "vs-cp-manager"
+        assert by_name["is_sys_disk"]["acquisition_strategy"] == "derived"
+        assert by_name["is_sys_disk"]["expression"] == "contains(alert_type, 'vs') ? false : unknown"

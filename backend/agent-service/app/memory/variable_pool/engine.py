@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -28,6 +29,9 @@ from app.memory.variable_pool.pool import VariableRequestResult
 
 logger = get_logger("memory.variable-pool")
 
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"(?<!\{)\{([a-z][a-z0-9_]*(?:\.[a-zA-Z0-9_]+)*)\}(?!\})")
+_EXACT_TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\{([a-z][a-z0-9_]*(?:\.[a-zA-Z0-9_]+)*)\}$")
+
 
 def _should_fallback_to_user_input(var_def: dict[str, Any]) -> bool:
     """仅在变量声明显式允许时，自动来源失败才转人工输入。"""
@@ -35,33 +39,48 @@ def _should_fallback_to_user_input(var_def: dict[str, Any]) -> bool:
     return fallback in ("user_input", "manual", "ask_user")
 
 
+def _read_path(payload: Any, path: str) -> Any:
+    """按点分路径从 dict/list/dataclass 对象中读取值。"""
+    current: Any = payload
+    for part in path.split("."):
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list) and part.isdigit():
+            idx = int(part)
+            current = current[idx] if 0 <= idx < len(current) else None
+        elif hasattr(current, part):
+            current = getattr(current, part)
+        else:
+            return None
+        if current is None:
+            return None
+    return current
+
+
 def _extract_value(payload: Any, variable_name: str, output_path: str | None = None) -> Any:
     """从 Tool/Skill 输出中提取变量值。"""
     if payload is None:
         return None
-    if not isinstance(payload, dict):
-        return payload
 
     if output_path:
-        current: Any = payload
-        for part in output_path.split("."):
-            if isinstance(current, dict):
-                current = current.get(part)
-            elif isinstance(current, list) and part.isdigit():
-                idx = int(part)
-                current = current[idx] if 0 <= idx < len(current) else None
-            else:
-                return None
-            if current is None:
-                return None
-        return current
+        return _read_path(payload, output_path)
+
+    # 通用命令执行器返回 ExecResult/dataclass 时，变量值默认绑定 stdout。
+    if hasattr(payload, "stdout"):
+        return payload.stdout
+
+    if not isinstance(payload, dict):
+        return payload
 
     if variable_name in payload:
         return payload.get(variable_name)
     values = payload.get("values")
     if isinstance(values, dict) and variable_name in values:
         return values.get(variable_name)
-    return payload.get("value") or payload.get("result") or payload.get("output")
+    for key in ("value", "result", "output"):
+        if key in payload:
+            return payload.get(key)
+    return None
 
 
 def _unwrap_context_variables(context_variables: dict[str, Any]) -> dict[str, Any]:
@@ -73,6 +92,170 @@ def _unwrap_context_variables(context_variables: dict[str, Any]) -> dict[str, An
         else:
             unwrapped[name] = payload
     return unwrapped
+
+
+def _render_args_template(template: Any, context_variables: dict[str, Any]) -> Any:
+    """渲染 Tool 参数模板，支持 dict/list/string 递归替换 `{var}` 占位符。"""
+    context = _unwrap_context_variables(context_variables)
+
+    def resolve(path: str) -> Any:
+        value = _read_path(context, path)
+        if value is None:
+            raise ValueError(f"参数模板引用的变量 {path} 尚未就绪")
+        return value
+
+    def render(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: render(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [render(item) for item in value]
+        if not isinstance(value, str):
+            return value
+
+        exact_match = _EXACT_TEMPLATE_PLACEHOLDER_RE.match(value)
+        if exact_match:
+            return resolve(exact_match.group(1))
+
+        def replace(match: re.Match[str]) -> str:
+            return str(resolve(match.group(1)))
+
+        return _TEMPLATE_PLACEHOLDER_RE.sub(replace, value)
+
+    return render(template)
+
+
+def _split_args(text: str) -> list[str]:
+    """拆分函数参数，兼容简单引号和嵌套括号。"""
+    args: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    depth = 0
+    for char in text:
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+            current.append(char)
+            continue
+        if char == "(":
+            depth += 1
+            current.append(char)
+            continue
+        if char == ")":
+            depth -= 1
+            current.append(char)
+            continue
+        if char == "," and depth == 0:
+            args.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    if current:
+        args.append("".join(current).strip())
+    return args
+
+
+def _split_ternary(expression: str) -> tuple[str, str, str] | None:
+    """拆分 `condition ? true_expr : false_expr`，不支持任意代码执行。"""
+    quote: str | None = None
+    depth = 0
+    question_idx: int | None = None
+    for idx, char in enumerate(expression):
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+            continue
+        if char == "(":
+            depth += 1
+            continue
+        if char == ")":
+            depth -= 1
+            continue
+        if char == "?" and depth == 0:
+            question_idx = idx
+            break
+    if question_idx is None:
+        return None
+
+    quote = None
+    depth = 0
+    for idx in range(question_idx + 1, len(expression)):
+        char = expression[idx]
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+            continue
+        if char == "(":
+            depth += 1
+            continue
+        if char == ")":
+            depth -= 1
+            continue
+        if char == ":" and depth == 0:
+            return (
+                expression[:question_idx].strip(),
+                expression[question_idx + 1 : idx].strip(),
+                expression[idx + 1 :].strip(),
+            )
+    return None
+
+
+def _evaluate_derived_expression(expression: str, context_variables: dict[str, Any]) -> Any:
+    """执行派生变量白名单表达式。"""
+    context = _unwrap_context_variables(context_variables)
+
+    def eval_atom(expr: str) -> Any:
+        expr = expr.strip()
+        ternary = _split_ternary(expr)
+        if ternary:
+            condition_expr, truthy_expr, falsy_expr = ternary
+            return eval_atom(truthy_expr if bool(eval_atom(condition_expr)) else falsy_expr)
+
+        lowered = expr.lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+        if lowered in ("unknown", "null", "none"):
+            return None
+        if (expr.startswith("'") and expr.endswith("'")) or (expr.startswith('"') and expr.endswith('"')):
+            return expr[1:-1]
+        if re.fullmatch(r"-?\d+", expr):
+            return int(expr)
+        if re.fullmatch(r"-?\d+\.\d+", expr):
+            return float(expr)
+
+        function_match = re.fullmatch(r"([a-z_][a-z0-9_]*)\((.*)\)", expr)
+        if function_match:
+            function_name = function_match.group(1)
+            args = [eval_atom(arg) for arg in _split_args(function_match.group(2))]
+            if function_name == "contains" and len(args) == 2:
+                return str(args[1]) in str(args[0] or "")
+            if function_name == "equals" and len(args) == 2:
+                return args[0] == args[1]
+            if function_name == "starts_with" and len(args) == 2:
+                return str(args[0] or "").startswith(str(args[1]))
+            if function_name == "ends_with" and len(args) == 2:
+                return str(args[0] or "").endswith(str(args[1]))
+            if function_name == "not" and len(args) == 1:
+                return not bool(args[0])
+            raise ValueError(f"不支持的 derived 函数或参数数量: {function_name}")
+
+        value = _read_path(context, expr)
+        if value is None:
+            raise ValueError(f"derived 表达式引用的变量 {expr} 尚未就绪")
+        return value
+
+    return eval_atom(expression)
 
 
 async def sop_request_variable(
@@ -335,11 +518,49 @@ async def sop_request_variable(
         )
         return {"ok": True, "value": value, "source": "sop_default"}
 
+    if strategy == "derived":
+        expression = var_def.get("expression") or var_def.get("derived_expression")
+        if not expression:
+            return {
+                "error": "sop_derived_expression_missing",
+                "message": f"变量 {variable_name} 声明为 derived，但未配置 expression",
+                "variable_name": variable_name,
+            }
+        try:
+            derived_value = _evaluate_derived_expression(str(expression), context_variables)
+            if derived_value is not None:
+                logger.info(
+                    event="sop_request_variable_derived_resolved",
+                    variable_name=variable_name,
+                    expression=str(expression),
+                )
+                return {"ok": True, "value": derived_value, "source": "derived"}
+        except Exception as exc:
+            logger.error(
+                event="sop_request_variable_derived_failed",
+                variable_name=variable_name,
+                expression=str(expression),
+                error=str(exc),
+            )
+        if _should_fallback_to_user_input(var_def):
+            return await _request_user_input(
+                var_schema=var_def,
+                kind="variable_input",
+                msg=f"变量 {variable_name} 派生计算失败，请手动输入",
+            )
+        return {
+            "error": "sop_derived_variable_acquire_failed",
+            "message": f"变量 {variable_name} 声明由 derived 表达式计算，但表达式无法产出确定值",
+            "variable_name": variable_name,
+            "expression": str(expression),
+        }
+
     if strategy == "tool_call" and acquisition_tool:
         # DC-02: tool_call 策略：调用指定工具自动获取变量值
         if tool_executor is not None:
             try:
                 tool_args = var_def.get("acquisition_args") or var_def.get("acquisition_args_template") or {}
+                tool_args = _render_args_template(tool_args, context_variables)
                 tool_result = await tool_executor.execute(acquisition_tool, tool_args)
                 acquired_value = _extract_value(tool_result, variable_name, output_path)
                 if acquired_value is not None:
@@ -347,6 +568,7 @@ async def sop_request_variable(
                         event="sop_request_variable_tool_acquired",
                         variable_name=variable_name,
                         acquisition_tool=acquisition_tool,
+                        rendered_arg_keys=sorted(tool_args.keys()) if isinstance(tool_args, dict) else None,
                     )
                     return {"ok": True, "value": acquired_value, "source": "tool_call"}
             except Exception as exc:
@@ -467,6 +689,7 @@ async def sop_request_variable(
         if tool_executor is not None:
             try:
                 tool_args = var_def.get("acquisition_args") or var_def.get("acquisition_args_template") or {}
+                tool_args = _render_args_template(tool_args, context_variables)
                 tool_result = await tool_executor.execute(acquisition_tool, tool_args)
                 acquired_value = _extract_value(tool_result, variable_name, output_path)
                 if acquired_value is not None:

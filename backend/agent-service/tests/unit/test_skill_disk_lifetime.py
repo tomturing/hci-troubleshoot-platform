@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -224,3 +225,188 @@ async def test_sop_request_variable_skill_call_uses_unwrapped_fact_sources():
     assert res["ok"] is True
     skill_runner.execute.assert_awaited_once()
     assert skill_runner.execute.await_args.args[1]["alert_logs"] == alert_logs
+
+
+@pytest.mark.asyncio
+async def test_sop_request_variable_tool_call_renders_args_template_and_extracts_stdout():
+    kb_client = MagicMock()
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {
+                    "name": "smart_info",
+                    "acquisition_strategy": "tool_call",
+                    "acquisition_tool": "bash_exec",
+                    "acquisition_args_template": {
+                        "container": "vs-cp-manager",
+                        "command": "smartctl -a /dev/{disk_dev}",
+                        "node_ip": "{node_ip}",
+                        "reason": "采集 {disk_dev} SMART 原始信息",
+                    },
+                    "depends_on": ["disk_dev", "node_ip"],
+                }
+            ],
+        }
+    )
+    conversation_sop_client = MagicMock()
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={
+            "context_variables": {
+                "disk_dev": {"value": "sda", "source": "llm_inference"},
+                "node_ip": {"value": "SVR_aCloud_670", "source": "skill_call"},
+            },
+            "pending_variable_name": None,
+        }
+    )
+    tool_executor = MagicMock()
+    tool_executor.execute = AsyncMock(
+        return_value=SimpleNamespace(stdout="Device Model: SAMSUNG\n177 Wear_Leveling_Count ... 8", stderr="")
+    )
+
+    res = await sop_request_variable(
+        variable_name="smart_info",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+        tool_executor=tool_executor,
+    )
+
+    assert isinstance(res, dict)
+    assert res["ok"] is True
+    assert res["value"].startswith("Device Model")
+    tool_executor.execute.assert_awaited_once_with(
+        "bash_exec",
+        {
+            "container": "vs-cp-manager",
+            "command": "smartctl -a /dev/sda",
+            "node_ip": "SVR_aCloud_670",
+            "reason": "采集 sda SMART 原始信息",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_sop_request_variable_tool_call_preserves_false_value():
+    kb_client = MagicMock()
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {
+                    "name": "is_sys_disk",
+                    "type": "boolean",
+                    "acquisition_strategy": "tool_call",
+                    "acquisition_tool": "disk_role_check",
+                    "depends_on": ["disk_dev"],
+                    "acquisition_args_template": {"disk_dev": "{disk_dev}"},
+                }
+            ],
+        }
+    )
+    conversation_sop_client = MagicMock()
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={
+            "context_variables": {
+                "disk_dev": {"value": "sda", "source": "llm_inference"},
+            },
+            "pending_variable_name": None,
+        }
+    )
+    tool_executor = MagicMock()
+    tool_executor.execute = AsyncMock(return_value={"value": False})
+
+    res = await sop_request_variable(
+        variable_name="is_sys_disk",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+        tool_executor=tool_executor,
+    )
+
+    assert isinstance(res, dict)
+    assert res["ok"] is True
+    assert res["value"] is False
+    assert res["source"] == "tool_call"
+
+
+@pytest.mark.asyncio
+async def test_sop_request_variable_derived_expression():
+    kb_client = MagicMock()
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {
+                    "name": "is_sys_disk",
+                    "type": "boolean",
+                    "acquisition_strategy": "derived",
+                    "expression": "contains(alert_type, 'vs') ? false : unknown",
+                    "depends_on": ["alert_type"],
+                }
+            ],
+        }
+    )
+    conversation_sop_client = MagicMock()
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={
+            "context_variables": {
+                "alert_type": {"value": "vs_disk_warn", "source": "skill_call"},
+            },
+            "pending_variable_name": None,
+        }
+    )
+
+    res = await sop_request_variable(
+        variable_name="is_sys_disk",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+    )
+
+    assert isinstance(res, dict)
+    assert res["ok"] is True
+    assert res["value"] is False
+    assert res["source"] == "derived"
+
+
+@pytest.mark.asyncio
+async def test_sop_request_variable_derived_unknown_fails_loud():
+    kb_client = MagicMock()
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {
+                    "name": "is_sys_disk",
+                    "type": "boolean",
+                    "acquisition_strategy": "derived",
+                    "expression": "contains(alert_type, 'vs') ? false : unknown",
+                    "depends_on": ["alert_type"],
+                }
+            ],
+        }
+    )
+    conversation_sop_client = MagicMock()
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={
+            "context_variables": {
+                "alert_type": {"value": "host_disk_warn", "source": "skill_call"},
+            },
+            "pending_variable_name": None,
+        }
+    )
+
+    res = await sop_request_variable(
+        variable_name="is_sys_disk",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+    )
+
+    assert isinstance(res, dict)
+    assert res["error"] == "sop_derived_variable_acquire_failed"

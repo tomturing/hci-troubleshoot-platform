@@ -20,6 +20,7 @@ v2 改动摘要：
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Literal
@@ -73,6 +74,7 @@ _DIRECT_ACQUISITION_STRATEGIES: frozenset[str] = frozenset(
         "sop_default",
         "llm_inference",
         "agent_pass",
+        "derived",
         "env_injection",
         "env_context",
     ]
@@ -983,6 +985,21 @@ def _parse_acquisition_source(source: str) -> tuple[str, str | None]:
     return "user_input", None
 
 
+def _parse_variable_args_template(value: str | None) -> object | None:
+    """解析变量声明中的工具参数模板列。"""
+    if not value:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped[0] in ("{", "["):
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            return stripped
+    return stripped
+
+
 def _parse_variable_section(content_md: str) -> dict[str, dict]:
     """解析整个 Markdown 文档中的所有变量章节（支持全局和本地表格，兼容旧版列表格式）。"""
     declared_vars: dict[str, dict] = {}
@@ -1045,6 +1062,11 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                     depends_on = _col("依赖", "depends_on", "depends on", "前置变量") or None
                     output_path = _col("输出路径", "output_path", "output path") or None
                     fallback_strategy = _col("失败兜底", "fallback", "fallback_strategy") or None
+                    acquisition_args_template = (
+                        _col("参数模板", "acquisition_args_template", "args_template", "工具参数", "tool_args")
+                        or None
+                    )
+                    expression = _col("表达式", "expression", "derived_expression", "派生表达式") or None
 
                     if var_name and var_source:
                         var_name_clean = var_name.replace("\\", "").strip()
@@ -1058,6 +1080,12 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                         fallback_strategy_clean = (
                             fallback_strategy.replace("\\", "").strip() if fallback_strategy else None
                         )
+                        args_template_clean = (
+                            acquisition_args_template.replace("\\", "").strip()
+                            if acquisition_args_template
+                            else None
+                        )
+                        expression_clean = expression.replace("\\", "").strip() if expression else None
                         depends_on_list = (
                             [item.strip() for item in re.split(r"[,，\s]+", depends_on_clean) if item.strip()]
                             if depends_on_clean
@@ -1081,6 +1109,8 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                             "depends_on": depends_on_list,
                             "output_path": output_path_clean,
                             "fallback_strategy": fallback_strategy_clean,
+                            "acquisition_args_template": _parse_variable_args_template(args_template_clean),
+                            "expression": expression_clean,
                         }
                 continue
 
@@ -1220,6 +1250,8 @@ def extract_sop_variables(
                 "depends_on": declared.get("depends_on") or [],
                 "output_path": declared.get("output_path"),
                 "fallback_strategy": declared.get("fallback_strategy"),
+                "acquisition_args_template": declared.get("acquisition_args_template"),
+                "expression": declared.get("expression"),
                 "auto_generated": var_name not in global_declared,
             }
         )
@@ -1247,6 +1279,8 @@ def merge_variable_schema(
         "depends_on",
         "output_path",
         "fallback_strategy",
+        "acquisition_args_template",
+        "expression",
         "display_name",
     ]
 

@@ -9,13 +9,10 @@
 
 ## 启动时必读文件
 
-**在开始任何工作前，请依次读取以下文件：**
+**在开始任何工作前，请优先读取本仓库内的规范文件：**
 
-1. `.vk/workflow.md` — 通用多 Agent 并行开发工作流规范（角色、交叉审查、分支命名）
-2. `~/Workflow/multi-agent-workflow/CLAUDE.md` — 调度器开发规范（含踩坑历史）
-3. `~/Workflow/multi-agent-workflow/docs/04_VK_MCP手册.md` — VK MCP Server API 完整参考
-
-> 如以上路径不可访问（在容器/CI 环境中），请查阅 `.vk/workflow.md`（已复制到本仓库）。
+1. `AGENTS.md` — 项目层规范。本文件是 Claude Code / Codex / Gemini / Copilot 等 Agent 的统一入口。
+2. `docs/deploy/pitfalls/_index.md` 或 `docs/verify/pitfalls/_index.md` — 按任务场景读取对应避坑指南索引，再读取具体指南。
 
 ---
 
@@ -24,7 +21,7 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
-- 当前版本：v2.1.0（MVP 全栈可用）
+- 当前版本：v2.16.0（以 `pyproject.toml` 为准）
 - **工单 Q2026061002370 诊断执行失败修复**：
   - 数据库：`database/desired_schema.sql` 补齐 `fact.trace_id` 字段及索引，解决 `FactStore` 写入时因字段缺失导致 SQL 报错
   - Helm：`agent-service` 注入 `SCP_BASE_URL` 与 `SCP_API_KEY` 环境变量；`secret.yaml` 中渲染 `SCP_API_KEY`；在 `values.yaml` 中定义二者默认值为空以保证环境兼容性
@@ -129,6 +126,14 @@
   - 修复 `react_engine.py` 参数前置校验，对包含 `ip` 的参数（如 `node_ip`）在没有显式声明 `format: ipv4` 时同时兼容主机名/节点名（如 `SVR_aCloud_670`），解决部分命令因主机名校验失败而报错的问题。
   - 修复 `react_engine.py` 在参数校验失败时未向前端发送 `tool_result` 事件导致控制台悬挂卡在“正在等待输出...”的 Bug。
   - 修复 `terminal_bridge` 命令行输出裁剪逻辑，使用正则 `(-?\d+)` 精确匹配最终数字退出码标记，并剥离 SSH PTY 命令行回显前缀，彻底解决命令结果被提前截断的缺陷；同时新增了完整的可观测性调试日志系统，极大方便后续的问题排查。
+- **SOP 变量合并逻辑与 `node_ip` 提取优先级修复**：
+  - 修复 `merge_variable_schema` 中的三路合并逻辑，当 Markdown 中声明了明确的新获取策略时，不再被数据库中的旧策略强行覆盖，使得 Markdown 更新可以正确同步到 `variable_schema`。
+  - 优化 `node_ip` 环境变量的提取逻辑，对 IP/主机名类变量，在告警上下文提取中优先匹配 `target`（实际发生故障的节点）而非 `host`（发起告警的监控节点）。
+  - 修复 `merge_variable_schema` 中 `description` 等其他人工编辑字段的三路合并逻辑，只有当新值为空或该字段为系统默认自动推断（非 Markdown 明确指定）时才使用旧值覆盖，防止在 Markdown 中显式修改的描述由于三路合并而被旧值强制保护覆盖而失效的问题。
+- **SOP 变量依赖关系（Depends On）与内置判定技能回归 LLM 优化**：
+  - 升级 Markdown 变量解析与三路合并算法，全面支持提取、维护与合并 `depends_on` 依赖关系列表。
+  - 在 `sop_request_variable` JIT 懒加载流程中增加 `depends_on` 前置校验，在依赖前置变量未就绪时拦截报错，规避 AI 无数据源瞎猜的问题。
+  - 彻底移除了原先硬编码在内置技能库中的 `is_sys_disk` 技能，通过将其获取策略配置为 `llm_inference` 且 `depends_on = ["alert_type"]`，完全回归大模型通用推理自推导以保证方案通用性，解决业务逻辑污染微服务微内核的问题。
 
 ---
 
@@ -160,16 +165,13 @@ hci-troubleshoot-platform/
 │   ├── admin/                # 管理控制台                    [独立 Workspace]
 │   └── shared/               # 共享类型 + API 客户端          [⚠️ 需最先完成]
 ├── adapters/                 # CLI→OpenAI 适配器
-├── database/                 # init_schema.sql
+├── database/                 # desired_schema.sql / desired_extras.sql / seeds
 ├── deploy/                   # Docker + Helm + 可观测性
 ├── scripts/                  # 自动化脚本
 ├── tests/                    # 根级测试
 ├── docs/                     # 设计文档
-├── .vk/
-│   ├── workflow.md           # 通用工作流规范（引用）
-│   └── prompts/              # Agent 提示词模板
-├── CLAUDE.md                 # 本文件（项目规范，提交 git）
-├── AGENTS.md                 # → CLAUDE.md（符号链接）
+├── AGENTS.md                 # 本文件（项目规范，提交 git）
+├── CLAUDE.md                 # → AGENTS.md（符号链接）
 └── CLAUDE.local.md           # 个人本地配置（不提交 git）
 ```
 
@@ -178,7 +180,7 @@ hci-troubleshoot-platform/
 - `shared/` 模块修改需最高优先级完成，其他模块依赖它
 - 每个微服务（`backend/xxx-service/`）是独立的 Workspace 单元
 - 前端双应用（`customer/` + `admin/`）可并行，但共享类型变更需先完成
-- `database/init_schema.sql` 修改必须附带迁移说明
+- `database/desired_schema.sql` 或 `database/desired_extras.sql` 修改必须附带迁移说明
 
 ---
 
@@ -238,7 +240,7 @@ gh pr list --state open
 ```
 fix: 修复 ArgoCD 升级脚本
 
-[env:dev:gs][agent:claude]
+[env:dev:gs][agent:codex]
 ```
 
 **数据来源**：
@@ -250,37 +252,39 @@ fix: 修复 ArgoCD 升级脚本
   ```bash
   hostname | tr '[:upper:]' '[:lower:]'
   ```
-- **工具**：`claude`、`gemini` 或 `copilot`（当运行于 Antigravity IDE 且存在环境变量 `ANTIGRAVITY_AGENT=1` 时，脚本会自动识别并默认设定为 `gemini`）
+- **工具**：必须按实际执行工具填写，当前允许值包括 `codex`、`claude`、`gemini`、`copilot`、`gpt`。
+  - Codex / Codex Desktop / Codex CLI：必须使用 `codex`
+  - Claude Code：使用 `claude`
+  - Gemini / Antigravity IDE：使用 `gemini`
+  - GitHub Copilot：使用 `copilot`
+  - 直接通过 GPT/Claude API 自动化提交：使用 `gpt`
 
 **实现方式**：使用 `gcm` 和 `gpr` 函数（已配置在 `~/.my_custom_configs`）：
 
 ```bash
-# Claude Code 提交 commit（默认路径）
-gcm "fix: 修复问题"
+# Codex 提交 commit / 创建 PR
+AGENT=codex gcm "fix: 修复问题"
+AGENT=codex gpr "fix: 修复问题"
+
+# Claude Code 提交 commit / 创建 PR
+AGENT=claude gcm "fix: 修复问题"
+AGENT=claude gpr "fix: 修复问题"
 
 # Gemini (Antigravity IDE) 提交 commit
 # 在 Antigravity 终端中执行 gcm 即可（已基于环境变量自适应），或显式指定：
 gcm-g "fix: 修复问题"
 # 或者：
 AGENT=gemini gcm "fix: 修复问题"
+AGENT=gemini gpr "fix: 修复问题"
 
-# GitHub Copilot 提交 commit
+# GitHub Copilot 提交 commit / 创建 PR
 AGENT=copilot gcm "feat: 新功能"
-
-# Claude Code 创建 PR（自动添加 labels）
-gpr "fix: 修复问题"
-
-# Gemini (Antigravity IDE) 创建 PR
-# 在 Antigravity 终端中直接执行 gpr 即可，或显式指定：
-gpr-g "fix: 修复问题"
-
-# GitHub Copilot 创建 PR
 AGENT=copilot gpr "feat: 新功能"
 ```
 
-> ⚠️ **注意（GitHub Copilot 执行时）**：
-> 1. `gpr` 在无自适应变量的环境下默认 `AGENT=claude`，**Copilot 必须显式加 `AGENT=copilot` 前缀**，否则标签打错
-> 2. `gpr` 生成的 body 是硬编码占位符，**创建 PR 后必须立即用以下模板补写完整描述**：
+> ⚠️ **注意**：
+> 1. `gcm` / `gpr` 在部分本地环境中可能默认 `AGENT=claude`。Codex、Copilot、Gemini 等非 Claude 工具必须显式加 `AGENT=<工具>` 前缀，防止 commit footer 和 PR label 打错。
+> 2. `gpr` 生成的 body 可能是硬编码占位符，**创建 PR 后必须立即用以下模板补写完整描述**：
 >    ```
 >    ## 问题
 >    （描述触发原因、影响范围、复现路径）
@@ -288,7 +292,7 @@ AGENT=copilot gpr "feat: 新功能"
 >    （按子任务分节列出具体改动）
 >    ## 影响文件
 >    （表格：文件 | 变更类型 | 说明）
->    [env:dev:sz][agent:copilot]
+>    [env:dev:gs][agent:codex]
 >    ```
 >    补写命令：`gh api --method PATCH /repos/{owner}/{repo}/pulls/{num} -f body="$(cat /tmp/pr_body.md)"`
 
@@ -316,16 +320,7 @@ make quality-gate         # 完整质量门禁
 make conflict-check       # worktree 冲突检测
 make post-merge           # 合并后集成验证
 
-# Vibe Kanban
-make vk                   # 启动 Vibe Kanban
 ```
-
-### VK 仓库脚本配置
-
-- **Setup Script**: `uv sync && cd frontend && pnpm install`
-- **数据库初始化**（新环境）: `psql -f database/desired_extras.sql && atlas schema apply --env local --auto-approve`
-- **Cleanup Script**: `bash scripts/ci/agent-quality-gate.sh`
-- **Dev Server**: `make dev-up`
 
 ---
 
@@ -334,7 +329,7 @@ make vk                   # 启动 Vibe Kanban
 | 禁止操作 | 原因 |
 |---------|------|
 | 删除 `backend/shared/` 下的模型定义 | 多个服务依赖 |
-| 直接修改 `database/init_schema.sql` 而不提供迁移脚本 | 生产数据安全 |
+| 直接修改 `database/desired_schema.sql` 或 `database/desired_extras.sql` 而不提供迁移说明 | 生产数据安全 |
 | 修改 `deploy/helm/` 中的 Secret 值 | 安全敏感 |
 | 在代码中硬编码 API Key / Token | 安全规范 |
 | 修改 `pyproject.toml` 的 Python 版本要求 | 全局影响 |

@@ -476,3 +476,27 @@ acli判断方法：
         assert declared["node_ip"]["output_path"] == "values.node_ip"
         assert declared["check_meth"]["depends_on"] == ["smart_info", "node_ip"]
         assert declared["check_meth"]["fallback_strategy"] == "user_input"
+
+    def test_tool_args_template_and_derived_expression_parsing(self):
+        """测试工具参数模板和派生表达式解析"""
+        content = """
+## 变量声明
+| 变量名 | 类型 | 来源 | 说明 | 依赖 | 输出路径 | 失败兜底 | 参数模板 | 表达式 |
+|---|---|---|---|---|---|---|---|---|
+| smart_info | string | tool:bash_exec | SMART原始回显 | disk_dev,node_ip | stdout | | {"container":"vs-cp-manager","command":"smartctl -a /dev/{disk_dev}","node_ip":"{node_ip}","reason":"采集SMART"} | |
+| is_sys_disk | boolean | derived | 是否系统盘 | alert_type | | | | contains(alert_type, 'vs') ? false : unknown |
+"""
+        declared = _parse_variable_section(content)
+
+        assert declared["smart_info"]["acquisition_strategy"] == "tool_call"
+        assert declared["smart_info"]["acquisition_tool"] == "bash_exec"
+        assert declared["smart_info"]["depends_on"] == ["disk_dev", "node_ip"]
+        assert declared["smart_info"]["output_path"] == "stdout"
+        assert declared["smart_info"]["acquisition_args_template"] == {
+            "container": "vs-cp-manager",
+            "command": "smartctl -a /dev/{disk_dev}",
+            "node_ip": "{node_ip}",
+            "reason": "采集SMART",
+        }
+        assert declared["is_sys_disk"]["acquisition_strategy"] == "derived"
+        assert declared["is_sys_disk"]["expression"] == "contains(alert_type, 'vs') ? false : unknown"

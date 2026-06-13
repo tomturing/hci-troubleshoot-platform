@@ -1390,7 +1390,8 @@ class SopVariableSchemaUpdateRequest(BaseModel):
 
     仅更新指定变量的可编辑字段，不触发 re-approve（不清空 tree_json）。
     可编辑字段：display_name、description、acquisition_strategy、acquisition_prompt、
-                validation_pattern、acquisition_tool、default_value
+                validation_pattern、acquisition_tool、default_value、depends_on、
+                output_path、fallback_strategy、acquisition_args_template、expression
     """
 
     variables: list[dict] = Field(
@@ -1420,7 +1421,12 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
               "acquisition_prompt": "请确认虚拟机",   # 可选
               "acquisition_tool": "get_vm_list",     # 可选
               "validation_pattern": "^[a-zA-Z0-9_-]+$", # 可选
-              "default_value": "default-vm"          # 可选
+              "default_value": "default-vm",         # 可选
+              "depends_on": ["node_ip"],             # 可选
+              "output_path": "stdout",               # 可选
+              "fallback_strategy": "user_input",     # 可选
+              "acquisition_args_template": {},       # 可选
+              "expression": "contains(alert_type, 'vs') ? false : unknown" # 可选
             }
 
     Returns:
@@ -1465,6 +1471,12 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
             "acquisition_tool",
             "validation_pattern",
             "default_value",
+            "depends_on",
+            "output_path",
+            "fallback_strategy",
+            "acquisition_args",
+            "acquisition_args_template",
+            "expression",
         }
 
         for update_var in body.variables:

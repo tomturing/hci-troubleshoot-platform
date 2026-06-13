@@ -60,6 +60,12 @@ class TestVariableSchemaPatchLogic:
             "acquisition_tool",
             "validation_pattern",
             "default_value",
+            "depends_on",
+            "output_path",
+            "fallback_strategy",
+            "acquisition_args",
+            "acquisition_args_template",
+            "expression",
         }
 
         current_by_name = {v["name"]: v for v in current_schema}
@@ -87,6 +93,74 @@ class TestVariableSchemaPatchLogic:
 
         # 验收标准 4：标记为人工编辑
         assert current_schema[0]["auto_generated"] is False
+
+    def test_update_variable_schema_allows_runtime_contract_fields(self):
+        """PATCH 允许编辑变量运行时契约字段"""
+        current_schema = [
+            {
+                "name": "smart_info",
+                "display_name": "SMART 信息",
+                "acquisition_strategy": "llm_inference",
+                "auto_generated": True,
+            },
+            {
+                "name": "is_sys_disk",
+                "display_name": "是否系统盘",
+                "acquisition_strategy": "llm_inference",
+                "auto_generated": True,
+            },
+        ]
+        update_vars = [
+            {
+                "name": "smart_info",
+                "acquisition_strategy": "tool_call",
+                "acquisition_tool": "bash_exec",
+                "depends_on": ["disk_dev", "node_ip"],
+                "output_path": "stdout",
+                "fallback_strategy": "user_input",
+                "acquisition_args_template": {
+                    "container": "vs-cp-manager",
+                    "command": "smartctl -a /dev/{disk_dev}",
+                    "node_ip": "{node_ip}",
+                },
+            },
+            {
+                "name": "is_sys_disk",
+                "acquisition_strategy": "derived",
+                "depends_on": ["alert_type"],
+                "expression": "contains(alert_type, 'vs') ? false : unknown",
+            },
+        ]
+        allowed_fields = {
+            "display_name",
+            "description",
+            "acquisition_strategy",
+            "acquisition_prompt",
+            "acquisition_tool",
+            "validation_pattern",
+            "default_value",
+            "depends_on",
+            "output_path",
+            "fallback_strategy",
+            "acquisition_args",
+            "acquisition_args_template",
+            "expression",
+        }
+
+        current_by_name = {v["name"]: v for v in current_schema}
+        for update_var in update_vars:
+            current_var = current_by_name[update_var["name"]]
+            for field, value in update_var.items():
+                if field == "name":
+                    continue
+                assert field in allowed_fields
+                current_var[field] = value
+            current_var["auto_generated"] = False
+
+        assert current_by_name["smart_info"]["acquisition_strategy"] == "tool_call"
+        assert current_by_name["smart_info"]["acquisition_args_template"]["container"] == "vs-cp-manager"
+        assert current_by_name["is_sys_disk"]["acquisition_strategy"] == "derived"
+        assert current_by_name["is_sys_disk"]["expression"].startswith("contains")
 
     def test_only_update_specified_variable(self):
         """验收标准 3：只更新指定字段"""
