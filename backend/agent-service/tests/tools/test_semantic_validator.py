@@ -3,10 +3,30 @@
 """
 
 from app.tools.acli.semantic_validator import ToolSemanticValidator, build_container_command
+from app.tools.base_tool import ToolDefinition
 
 
 def _validate(tool_name: str, args: dict):
     return ToolSemanticValidator.validate(tool_name, args)
+
+
+def _bash_tool_with_containers(containers: list[str]) -> ToolDefinition:
+    return ToolDefinition(
+        name="bash_exec",
+        description="执行 Bash 命令",
+        parameters={
+            "type": "object",
+            "properties": {
+                "container": {"type": "string", "enum": containers},
+                "command": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["container", "command", "reason"],
+        },
+        risk_level=1,
+        policy="auto",
+        category="acli",
+    )
 
 
 def test_bash_exec_requires_container():
@@ -36,6 +56,25 @@ def test_bash_exec_rejects_acli_command():
 def test_bash_exec_accepts_valid_command():
     result = _validate("bash_exec", {"container": "asv-con", "command": "ps aux", "reason": "检查进程"})
     assert result.ok
+
+
+def test_bash_exec_container_enum_comes_from_tool_definition():
+    tool_def = _bash_tool_with_containers(["host", "vs-cp-manager", "custom-con"])
+
+    accepted = ToolSemanticValidator.validate(
+        "bash_exec",
+        {"container": "custom-con", "command": "ps aux", "reason": "检查进程"},
+        tool_def=tool_def,
+    )
+    rejected = ToolSemanticValidator.validate(
+        "bash_exec",
+        {"container": "asv-con", "command": "ps aux", "reason": "检查进程"},
+        tool_def=tool_def,
+    )
+
+    assert accepted.ok
+    assert not rejected.ok
+    assert rejected.issues[0].code == "BASH_CONTAINER_INVALID"
 
 
 def test_bash_exec_accepts_host_command():

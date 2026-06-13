@@ -79,6 +79,7 @@ class InvestigationAgent(BaseAgent):
         audit_service: Any = None,
         db_session_factory: Any = None,
         fact_store: Any = None,
+        skill_runner: Any | None = None,
     ) -> None:
         super().__init__(name="investigation-agent", max_steps=20)
         self._ai_registry = ai_registry
@@ -100,6 +101,7 @@ class InvestigationAgent(BaseAgent):
         from app.services.evidence_builder import EvidenceBuilder
         self._evidence_builder = EvidenceBuilder(fact_store=fact_store)
         self._fact_store = fact_store
+        self._skill_runner = skill_runner
 
         # KBD 差异诊断引擎（每次 process() 调用时重新创建，保证状态隔离）
         self._kbd_diag: KBDDiagnostic | None = None
@@ -564,6 +566,7 @@ class InvestigationAgent(BaseAgent):
             kb_client=self._kb_client,
             conversation_sop_client=conversation_sop_client,
             default_executor=self._tool_executor,
+            skill_runner=self._skill_runner,
             completed_steps=completed_steps,  # T-AGT-23: 已完成节点列表（幂等性检查）
         )
 

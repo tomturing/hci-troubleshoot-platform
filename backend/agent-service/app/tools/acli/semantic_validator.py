@@ -15,14 +15,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from app.tools.acli.container_exec import ALLOWED_BASH_CONTAINERS, build_container_command
+from app.tools.acli.container_exec import DEFAULT_BASH_CONTAINERS, build_container_command
 
 __all__ = [
-    "ALLOWED_BASH_CONTAINERS",
+    "DEFAULT_BASH_CONTAINERS",
     "ToolSemanticValidator",
     "ValidationIssue",
     "ValidationResult",
     "build_container_command",
+    "get_allowed_bash_containers",
     "get_acli_catalog_commands",
 ]
 
@@ -139,6 +140,29 @@ def _catalog_matches(path_tokens: list[str], catalog_commands: frozenset[str]) -
     return False
 
 
+def get_allowed_bash_containers(tool_def: Any | None) -> set[str]:
+    """从数据库工具定义的 JSON Schema 中读取 bash_exec 允许容器。"""
+    if tool_def is None:
+        return set(DEFAULT_BASH_CONTAINERS)
+
+    parameters = getattr(tool_def, "parameters", None)
+    if not isinstance(parameters, dict):
+        return set(DEFAULT_BASH_CONTAINERS)
+
+    properties = parameters.get("properties")
+    if not isinstance(properties, dict):
+        return set(DEFAULT_BASH_CONTAINERS)
+
+    container_schema = properties.get("container")
+    if not isinstance(container_schema, dict):
+        return set(DEFAULT_BASH_CONTAINERS)
+
+    enum_values = container_schema.get("enum")
+    if isinstance(enum_values, list) and enum_values:
+        return {str(item) for item in enum_values if str(item)}
+    return set(DEFAULT_BASH_CONTAINERS)
+
+
 class ToolSemanticValidator:
     """工具领域语义校验器。"""
 
@@ -151,13 +175,13 @@ class ToolSemanticValidator:
         context: dict[str, Any] | None = None,
     ) -> ValidationResult:
         if tool_name == "bash_exec":
-            return cls._validate_bash_exec(args)
+            return cls._validate_bash_exec(args, allowed_containers=get_allowed_bash_containers(tool_def))
         if tool_name == "acli_exec":
             return cls._validate_acli_exec(args)
         return ValidationResult.ok_result()
 
     @staticmethod
-    def _validate_bash_exec(args: dict[str, Any]) -> ValidationResult:
+    def _validate_bash_exec(args: dict[str, Any], *, allowed_containers: set[str]) -> ValidationResult:
         container = args.get("container")
         command = str(args.get("command") or "").strip()
 
@@ -166,12 +190,12 @@ class ToolSemanticValidator:
                 "BASH_CONTAINER_REQUIRED",
                 "bash_exec 必须指定目标容器",
                 field="container",
-                suggested_fix="选择 host、asv-con、vn-con、vn-agent、vs-cp-manager 之一；host 表示物理机执行",
+                suggested_fix=f"选择工具定义允许的容器之一：{sorted(allowed_containers)}；host 表示物理机执行",
             )
-        if container not in ALLOWED_BASH_CONTAINERS:
+        if container not in allowed_containers:
             return ValidationResult.error(
                 "BASH_CONTAINER_INVALID",
-                f"bash_exec container 只能是 {sorted(ALLOWED_BASH_CONTAINERS)}",
+                f"bash_exec container 只能是工具定义允许的值：{sorted(allowed_containers)}",
                 field="container",
             )
         if not command:

@@ -202,128 +202,6 @@ class SopAdvanceResponse(BaseModel):
     is_completed: bool = Field(False, description="SOP 是否已完成（到达叶节点）")
 
 
-def _get_filter_keywords(
-    category_l2: str | None,
-    category_l1: str | None,
-    sop_title: str | None,
-) -> list[str]:
-    """根据分类和 SOP 标题提取用于过滤相关告警和任务日志的关键字（中英文）。
-
-    Args:
-        category_l2: 二级分类
-        category_l1: 一级分类
-        sop_title: SOP 标题
-
-    Returns:
-        提取到的关键字列表
-    """
-    keywords = set()
-    texts = []
-    if category_l2:
-        texts.append(category_l2)
-    if category_l1:
-        texts.append(category_l1)
-    if sop_title:
-        texts.append(sop_title)
-
-    # 常见运维技术词汇的映射（自动丰富关联关键字）
-    domain_keywords_map = {
-        "磁盘": ["disk", "磁盘", "硬盘", "smart", "sn", "drive", "sata", "ssd", "nvme"],
-        "硬盘": ["disk", "磁盘", "硬盘", "smart", "sn", "drive", "sata", "ssd", "nvme"],
-        "虚拟机": ["vm", "虚拟机", "vms", "qemu", "kvm"],
-        "开机": ["power", "boot", "start", "开机", "启动"],
-        "启动": ["power", "boot", "start", "开机", "启动"],
-        "失败": ["fail", "failed", "error", "失败", "故障", "异常"],
-        "异常": ["fail", "failed", "error", "失败", "故障", "异常"],
-        "故障": ["fail", "failed", "error", "失败", "故障", "异常"],
-        "网络": ["network", "net", "网络", "ping", "delay", "latency", "延迟", "丢包", "网卡", "ip"],
-        "延迟": ["network", "net", "网络", "ping", "delay", "latency", "延迟", "丢包"],
-        "内存": ["memory", "ram", "内存", "ecc", "dimm"],
-        "cpu": ["cpu", "processor", "core", "处理器"],
-        "处理器": ["cpu", "processor", "core", "处理器"],
-        "存储": ["storage", "pool", "存储", "ceph", "cluster"],
-        "备份": ["backup", "备份", "restore"],
-    }
-
-    for text in texts:
-        text_lower = text.lower()
-        # 1. 匹配映射
-        for term, words in domain_keywords_map.items():
-            if term in text_lower:
-                keywords.update(words)
-
-        # 2. 提取所有英文字符/数字组合（长度 >= 2）
-        eng_words = re.findall(r"[a-zA-Z0-9_-]{2,}", text_lower)
-        keywords.update(eng_words)
-
-        # 3. 按照常见标点和空格分割文本
-        parts = re.split(r"[\s\-_\/,，+]+", text_lower)
-        for part in parts:
-            if part and len(part) >= 2:
-                keywords.add(part)
-
-        # 4. 对于中文文本，提取所有连续中文字符串，并生成长度为 2-4 的所有子串作为关键字
-        chinese_runs = re.findall(r"[\u4e00-\u9fa5]+", text_lower)
-        for run in chinese_runs:
-            n = len(run)
-            for length in (2, 3, 4):
-                if n >= length:
-                    for i in range(n - length + 1):
-                        keywords.add(run[i : i + length])
-
-    return list(keywords)
-
-
-def _filter_logs_by_keywords(logs: list[dict], keywords: list[str]) -> list[dict]:
-    """递归遍历日志的所有字段值，计算与关键字的匹配得分对日志进行排序和过滤。
-
-    Args:
-        logs: 原始日志列表
-        keywords: 关键字列表
-
-    Returns:
-        过滤并按匹配得分降序排序后的日志列表（只包含得分 > 0 的日志）
-    """
-    if not keywords:
-        return logs
-
-    scored_logs = []
-    for log in logs:
-        log_text_parts = []
-
-        def extract_strings(val, target_list):
-            if isinstance(val, str):
-                target_list.append(val.lower())
-            elif isinstance(val, dict):
-                for v in val.values():
-                    extract_strings(v, target_list)
-            elif isinstance(val, list):
-                for v in val:
-                    extract_strings(v, target_list)
-
-        extract_strings(log, log_text_parts)
-        log_text = " ".join(log_text_parts)
-
-        # 计算匹配的关键字个数作为得分
-        score = 0
-        for kw in keywords:
-            if kw.isalnum() and kw.isascii():
-                # 英文/数字关键字使用正则单词边界进行匹配，防止子串重复计数（例如 fail 匹配 failed）
-                pattern = rf"\b{re.escape(kw)}\b"
-                if re.search(pattern, log_text):
-                    score += 1
-            else:
-                if kw.lower() in log_text:
-                    score += 1
-
-        if score > 0:
-            scored_logs.append((score, log))
-
-    # 按得分降序排序
-    scored_logs.sort(key=lambda x: x[0], reverse=True)
-    return [item[1] for item in scored_logs]
-
-
 def _resolve_env_variable(
     var_name: str,
     var_def: dict,
@@ -332,49 +210,17 @@ def _resolve_env_variable(
     category_l2: str | None = None,
     sop_title: str | None = None,
 ) -> Any | None:
-    """根据变量定义，从环境数据集中提取并注入变量值。
+    """根据变量定义，从确定性环境字段中提取变量值。
 
-    1. 优先在 env_info (基本信息，如 hci_version) 中匹配。
-    2. 如果是主机/告警相关变量，进行关键字过滤后再锚定到第一个告警（无匹配则 fallback 到 alert_logs[0]）。
-       - node_ip / ip / host / object_name / description / target
-       - disk_sn: 尝试从匹配的告警中的 description 或 target 提取 serial number。
-    3. 如果是任务相关变量，进行关键字过滤后再锚定到第一个任务（无匹配则 fallback 到 task_logs[0]）。
+    env_injection 只做无歧义字段直取，不能在告警/任务列表中做语义锚定。
+    复杂的 node_ip、disk_sn、request_id 等解析必须通过动态 Skill 或 Tool 获取。
     """
     if isinstance(env_context, dict):
         is_raw = env_context.get("is_raw", False)
         env_info = env_context.get("env_info") or {}
-        alert_logs = env_context.get("alert_logs") or []
-        task_logs = env_context.get("task_logs") or []
     else:
         is_raw = False
         env_info = env_context.env_info or {}
-        alert_logs = env_context.alert_logs or []
-        task_logs = env_context.task_logs or []
-
-    def fmt_ts(ts) -> str:
-        if not ts:
-            return ""
-        try:
-            from datetime import UTC, datetime
-
-            return datetime.fromtimestamp(int(ts), tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return str(ts)
-
-    def map_level(urgent_type) -> str:
-        if urgent_type in (1, "1", "紧急"):
-            return "CRITICAL"
-        if urgent_type in (0, "0", "普通"):
-            return "WARNING"
-        return "WARNING"
-
-    def map_status(status, process=None) -> str:
-        mapping = {3: "失败", "3": "失败", 2: "完成", "2": "完成"}
-        if status in mapping:
-            return mapping[status]
-        if process and isinstance(process, str):
-            return process
-        return "未知"
 
     if is_raw:
         env_info = dict(env_info)
@@ -382,28 +228,6 @@ def _resolve_env_variable(
             env_info["cluster_name"] = env_info["name"]
         if "network_config" not in env_info and "mcastaddr" in env_info:
             env_info["network_config"] = env_info["mcastaddr"]
-
-        mapped_alerts = []
-        for a in alert_logs:
-            item = dict(a)
-            if "level" not in item:
-                item["level"] = map_level(item.get("urgent_type"))
-            if "time" not in item:
-                item["time"] = fmt_ts(item.get("end"))
-            mapped_alerts.append(item)
-        alert_logs = mapped_alerts
-
-        mapped_tasks = []
-        for t in task_logs:
-            item = dict(t)
-            raw_status = item.get("status")
-            item["status"] = map_status(raw_status, item.get("process"))
-            if "time" not in item:
-                item["time"] = fmt_ts(item.get("end"))
-            if "trace_id" not in item and "request_id" in item:
-                item["trace_id"] = item["request_id"]
-            mapped_tasks.append(item)
-        task_logs = mapped_tasks
 
     # 支持大小写及下划线不敏感匹配
     def lookup_dict(d: dict, target_key: str) -> Any | None:
@@ -414,57 +238,45 @@ def _resolve_env_variable(
                 return v
         return None
 
-    # 1. 尝试从 env_info 查找
-    val = lookup_dict(env_info, var_name)
+    strategy = str(var_def.get("acquisition_strategy") or "")
+    acquisition_tool = str(var_def.get("acquisition_tool") or "")
+    source_key = ""
+    for source in (strategy, acquisition_tool):
+        if source.startswith("env:"):
+            source_key = source[4:]
+            break
+    lookup_key = source_key or var_name
+
+    # 只从 env_info 查找。alert_logs/task_logs 是列表型事实源，必须交给 Skill/Tool 显式解析。
+    val = lookup_dict(env_info, lookup_key)
     if val is not None:
         return val
 
-    # 获取过滤关键字
-    keywords = _get_filter_keywords(category_l2, category_l1, sop_title)
-
-    # 2. 检查告警日志
-    if alert_logs:
-        filtered_alerts = _filter_logs_by_keywords(alert_logs, keywords)
-        alert = filtered_alerts[0] if filtered_alerts else alert_logs[0]
-        # 如果是硬盘 SN
-        if var_name in ("disk_sn", "sn", "serial_number", "device_sn"):
-            val = lookup_dict(alert, var_name) or lookup_dict(alert, "sn") or lookup_dict(alert, "serial_number")
-            if val is not None:
-                return str(val)
-            desc = alert.get("description") or ""
-            target = alert.get("target") or ""
-            for text in (desc, target):
-                m = re.search(r"(?i)sn\s*[：:]\s*([A-Z0-9\-]{8,20})", text)
-                if m:
-                    return m.group(1)
-                m = re.search(r"(?i)\[\s*sn\s*[：:]\s*([A-Z0-9\-]{8,20})\s*\]", text)
-                if m:
-                    return m.group(1)
-                m = re.search(r"\b([A-Z0-9]{8,20})\b", text)
-                if m:
-                    return m.group(1)
-        else:
-            if var_name == "node_ip":
-                val = (
-                    lookup_dict(alert, "node_ip")
-                    or lookup_dict(alert, "host")
-                    or lookup_dict(alert, "ip")
-                    or lookup_dict(alert, "target")
-                )
-            else:
-                val = lookup_dict(alert, var_name)
-            if val is not None:
-                return val
-
-    # 3. 检查任务日志
-    if task_logs:
-        filtered_tasks = _filter_logs_by_keywords(task_logs, keywords)
-        task = filtered_tasks[0] if filtered_tasks else task_logs[0]
-        val = lookup_dict(task, var_name)
-        if val is not None:
-            return val
-
     return None
+
+
+def _extract_environment_fact_sources(env_context: Any) -> dict[str, Any]:
+    """提取原始环境事实源，供动态 Skill/Tool 显式依赖消费。"""
+    if not env_context:
+        return {}
+
+    if isinstance(env_context, dict):
+        env_info = env_context.get("env_info")
+        alert_logs = env_context.get("alert_logs")
+        task_logs = env_context.get("task_logs")
+    else:
+        env_info = getattr(env_context, "env_info", None)
+        alert_logs = getattr(env_context, "alert_logs", None)
+        task_logs = getattr(env_context, "task_logs", None)
+
+    facts: dict[str, Any] = {}
+    if env_info:
+        facts["env_info"] = env_info
+    if alert_logs:
+        facts["alert_logs"] = alert_logs
+    if task_logs:
+        facts["task_logs"] = task_logs
+    return facts
 
 
 @router.post("/{conversation_id}/sop/create", response_model=SopCreateResponse)
@@ -560,6 +372,24 @@ async def sop_create_execution(
 
         # 解析并注入 env_injection 变量
         initial_variables = {}
+        initial_variable_sources: dict[str, str] = {}
+        if env_context:
+            required_fact_sources: set[str] = set()
+            for var_def in variable_schema or []:
+                var_name = var_def.get("name")
+                if isinstance(var_name, str):
+                    required_fact_sources.add(var_name)
+                depends_on = var_def.get("depends_on") or []
+                if isinstance(depends_on, str):
+                    depends_on = [item.strip() for item in depends_on.split(",") if item.strip()]
+                if isinstance(depends_on, list):
+                    required_fact_sources.update(item for item in depends_on if isinstance(item, str))
+
+            for fact_name, fact_value in _extract_environment_fact_sources(env_context).items():
+                if fact_name in required_fact_sources:
+                    initial_variables[fact_name] = fact_value
+                    initial_variable_sources[fact_name] = "environment_context"
+
         if variable_schema and env_context:
             for var_def in variable_schema:
                 strategy = var_def.get("acquisition_strategy")
@@ -575,6 +405,7 @@ async def sop_create_execution(
                     )
                     if val is not None:
                         initial_variables[var_name] = val
+                        initial_variable_sources[var_name] = "env_context"
 
         # 创建新的执行实例
         execution = await repo.create(
@@ -583,6 +414,7 @@ async def sop_create_execution(
             current_node_id=body.root_node_id,
             trace_id=conversation.trace_id if conversation else trace_id,
             initial_variables=initial_variables,
+            initial_variable_sources=initial_variable_sources,
         )
 
         await session.commit()

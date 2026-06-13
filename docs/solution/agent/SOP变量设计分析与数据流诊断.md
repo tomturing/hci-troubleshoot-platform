@@ -5,6 +5,8 @@
 > **分析时间**：2026-06-13
 > **分析方法**：第一性原理 + 实际数据库数据验证 + 代码路径追踪
 
+> **PR1 更新**：平台内置/硬编码治理已完成第一批实现。动态 `skill_call` 已接入 `skill_definition`，Python 内置业务 Skill 已移除；`env_injection` 已收敛为确定性 `env_info` 字段直取；`depends_on`、`output_path`、`fallback_strategy` 已可解析、合并并参与变量池运行时决策。本文件保留事故现场数据，用于说明问题来源，同时标注 PR1 后的当前状态和 PR3 剩余优化。
+
 ---
 
 ## 一、现场真实数据
@@ -70,6 +72,12 @@
 
 `disk_sn` **未被注入**，执行实例状态为 `interrupted`。
 
+PR1 后新建执行实例的语义变化：
+
+- `env_injection` 不再从 `alert_logs/task_logs` 猜测 `node_ip/disk_sn/request_id`。
+- `alert_logs/task_logs/env_info` 只在 `variable_schema` 显式声明变量名或 `depends_on` 引用时进入变量池，`source=environment_context`。
+- 若 `node_ip` 声明为 `skill_call + depends_on=["alert_logs"]`，变量池会把原始 `alert_logs` 解包传给动态 Skill，而不是在 conversation-service 里做业务解析。
+
 ---
 
 ## 二、问题 a：为什么更新了 Markdown，`variable_schema` 还是旧的？
@@ -93,7 +101,7 @@ kb-service admin.py 接收请求
   5. 将合并结果写入 sop_document.variable_schema
 ```
 
-### 2.2 三路合并（`merge_variable_schema`）的保护逻辑——为什么旧值被保留
+### 2.2 三路合并（`merge_variable_schema`）的旧问题与 PR1 修复
 
 核心逻辑在 `sop_parser.py:1211-1268`：
 
@@ -122,7 +130,16 @@ if strategy_overridden:
 | 你再次编辑 Markdown | 将 `disk_sn` 来源改回 `llm_inference` → 解析出 new_schema 中 `disk_sn.acquisition_strategy = llm_inference` |
 | **合并时** | old_schema 中 `disk_sn.acquisition_strategy = env_injection`（不是 `user_input`，不为空）→ `strategy_overridden = True` → **旧的 `env_injection` 覆盖了你刚改的 `llm_inference`** |
 
-**结论：三路合并的"保护人工编辑"逻辑，在这里反向产生了副作用——它把数据库里的旧 `env_injection` 当成"人工编辑的权威值"保护了起来，让 Markdown 里的更新永远无法生效。**
+**旧结论：三路合并的“保护人工编辑”逻辑，在这里反向产生了副作用——它把数据库里的旧 `env_injection` 当成“人工编辑的权威值”保护了起来，让 Markdown 里的更新无法生效。**
+
+PR1 已修复该类问题：
+
+- `merge_variable_schema` 支持 `depends_on`、`output_path`、`fallback_strategy` 三个字段。
+- Markdown 明确声明且新值非空时，以 Markdown 新声明为准。
+- 旧 schema 中人工维护的空值（例如 `acquisition_tool=None`）仍能被保留，避免自动推断工具名反向覆盖管理员配置。
+- 历史缺少 `auto_generated` 标记的新 schema 按自动推断处理，防止重新导入时误覆盖人工字段。
+
+这解决的是“用户在 SOP 管理页面改了变量声明，但 Agent 仍按旧变量声明执行”的根因之一。历史数据库里已经错落的 `variable_schema` 仍需要重新发布 SOP 或通过变量管理接口修正一次。
 
 ### 2.3 当前真实的 `content_md` vs `variable_schema` 差异对比
 
@@ -211,7 +228,16 @@ val = (
 }
 ```
 
-当前 `skill:alert-parsing` 没有生效，不是因为这个方向错误，而是因为平台的动态 Skill 运行时没有打通：SOP 变量池的 `skill_call` 仍调用 Python 内置注册表，没有查询数据库 `skill_definition` 表中的 `hci-alert-parsing`。此外，Markdown 中的 `alert-parsing` 与数据库技能名 `hci-alert-parsing` 不一致，也缺少发布时校验。
+旧实现中 `skill:alert-parsing` 没有生效，不是因为这个方向错误，而是因为平台的动态 Skill 运行时没有打通：SOP 变量池的 `skill_call` 调用 Python 内置注册表，没有查询数据库 `skill_definition` 表中的 `hci-alert-parsing`。
+
+PR1 已完成运行时打通：
+
+- `sop_request_variable` 的 `skill_call` 通过 `DynamicSkillRunner` 执行数据库 active Skill。
+- Skill 名称支持历史 snake_case、kebab-case 和 `hci-` 前缀候选，例如 `alert-parsing` 可匹配 `hci-alert-parsing`。
+- `output_path` 可从 Skill JSON 输出中提取变量值。
+- `depends_on=["alert_logs"]` 会先检查环境事实源是否已进入变量池，缺失时 fail-loud 并提示先获取依赖。
+
+仍需 PR2/PR3 完成的是发布时引用校验和具体 `hci-alert-parsing` Skill 的业务指令/输出契约验收。
 
 ### 3.3 `smart_info`：应来自真实命令输出，不能用 `llm_inference`
 
@@ -259,7 +285,7 @@ SOP 正文中其实已经给出了判断规则：若 `alert_type` 包含 `vs`，
 
 ### 3.5 整体缺失：变量依赖图（DAG）
 
-当前 `variable_schema` 是扁平列表，没有 `depends_on` 字段。正确的执行拓扑应为：
+旧 `variable_schema` 是扁平列表，没有 `depends_on` 字段。PR1 已支持字段解析、合并和运行时前置依赖拦截，但还没有实现自动拓扑调度。正确的目标拓扑仍应为：
 
 ```
 env_injection（并行）: hci_version, alert_logs
@@ -279,7 +305,7 @@ llm_inference: disk_dev（从 asan_disks 中找 disk_sn 对应的 dev）
 skill_call: check_meth（disk_vendor_lifetime）
 ```
 
-缺少 DAG 声明导致引擎无法保证执行顺序，可能在 `asan_disks` 未就绪时就请求 `disk_sn`。当前 PR 增加的是前置依赖拦截，而不是自动拓扑调度；也就是说，引擎会阻止乱序获取，但仍需要 ReAct 下一轮按提示先获取依赖变量。
+缺少 DAG 声明会导致引擎无法保证执行顺序，可能在 `asan_disks` 未就绪时就请求 `disk_sn`。PR1 增加的是前置依赖拦截，而不是自动拓扑调度；也就是说，引擎会阻止乱序获取，但仍需要 ReAct 下一轮按提示先获取依赖变量。自动拓扑调度应放入 PR2/PR3。
 
 ---
 
@@ -287,8 +313,9 @@ skill_call: check_meth（disk_vendor_lifetime）
 
 ### 4.1 短期止血与长期修复边界
 
-因为 `merge_variable_schema` 的保护逻辑会保留旧值，单纯更新 Markdown 无效。
-短期止血可以通过 **`PATCH /api/admin/sop/{id}/variables`** 接口直接更新 `variable_schema` 字段，但这只能纠正历史错误数据，不能替代动态 Skill 运行时修复：
+PR1 后，重新发布 SOP 时 Markdown 明确声明的新策略可以同步到 `variable_schema`；对于已经错落在数据库中的历史执行数据，仍可以通过 **`PATCH /api/admin/sop/{id}/variables`** 接口直接修正一次。
+
+建议 PR3 在 PR1/PR2 基础上把磁盘寿命 SOP 的目标变量声明收敛为：
 
 ```json
 [
@@ -305,7 +332,7 @@ skill_call: check_meth（disk_vendor_lifetime）
 ]
 ```
 
-> 注意：上述 JSON 是目标形态，需要第二个 PR 先实现动态 Skill、`output_path`、`acquisition_args_template` 和 `derived` 能力。当前 PR 不应继续提交临时脚本或回滚脚本。
+> 注意：PR1 已实现动态 Skill、`output_path` 和 `depends_on` 的基础运行链路；`acquisition_args_template`、`derived`、发布期引用校验和自动拓扑调度仍属 PR2/PR3 范围。当前分支不应提交 `revert_*.sql` 类临时脚本。
 
 ### 4.2 `node_ip` 修复不应停留在 `target > host`
 
@@ -332,21 +359,15 @@ skill:hci-alert-parsing(alert_logs, sop_title, category, user_query)
 
 **文件**：`backend/kb-service/app/services/sop_parser.py:1239-1245`
 
-当前问题：只要 old_schema 中有非 `user_input` 的策略，就永远覆盖新值，即使用户明确在 Markdown 中修改了来源字段。
+PR1 修复后的原则：
 
-```python
-# 修复：仅当新解析出的策略与旧策略相同（说明用户没改），才保留旧值
-# 如果新值与旧值不同，说明用户在 Markdown 中做了修改，应以新值为准
-strategy_overridden = (
-    old_var.get("acquisition_strategy")
-    and old_var["acquisition_strategy"] not in ("", "user_input", None)
-    and new_var.get("acquisition_strategy") in ("user_input", None, "")  # 新值是兜底/未识别
-)
-```
+- Markdown 明确声明的新值非空时，新值优先。
+- 新值来自自动推断或未声明时，保留旧人工字段。
+- `None` 也可以是人工字段，例如 `acquisition_tool=None`，不能被自动推断工具名覆盖。
 
-### 4.4 `variable_schema` 增加 `depends_on` 字段（中期改进）
+### 4.4 `variable_schema` 增加 `depends_on` 字段（PR1 已实现基础能力）
 
-在 schema 数据结构中增加 `depends_on: list[str]`，在引擎层实现前置依赖拦截：
+PR1 已在 schema 数据结构中增加 `depends_on: list[str]`，并在引擎层实现前置依赖拦截：
 
 ```python
 # engine.py: sop_request_variable 中增加依赖检查
@@ -357,6 +378,8 @@ if missing_deps:
         "error": f"变量 {variable_name} 的前置依赖 {missing_deps} 尚未就绪，请先获取这些变量"
     }
 ```
+
+PR2/PR3 需要继续补齐自动拓扑执行和循环依赖发布校验。
 
 ---
 
@@ -369,7 +392,9 @@ if missing_deps:
 | 3 | `node_ip` 用 `env_injection` 做复杂告警锚定 | **架构错误** | 多告警场景可能 SSH 到错误节点 | P0 |
 | 4 | `smart_info` 用 `llm_inference` 无法获取真实数据 | **策略错误** | SMART 检测结论不可信 | P1 |
 | 5 | `is_sys_disk` 需要派生变量/动态 Skill，不应成为 Python 内置函数 | **硬编码风险** | 特定 SOP 业务规则污染平台微内核 | P1 |
-| 6 | 变量间缺乏 `depends_on` 依赖声明 | **架构缺失** | 引擎无法保证执行顺序 | P2 |
+| 6 | 变量间缺乏自动拓扑调度 | **架构缺失** | PR1 已能拦截乱序，但仍需 ReAct 下一轮手动按依赖推进 | P2 |
+
+PR1 已完成：#2 的合并逻辑修复，#3 的 env 复杂解析移除和动态 Skill 通道打通，#5 的 Python 内置业务 Skill 移除，#6 的基础依赖拦截。#1/#4/#5 的具体 SOP 变量最终形态需在 PR3 完成。
 
 ---
 
@@ -381,13 +406,13 @@ if missing_deps:
 |---|---|---|
 | `tool:acli_storage_disk_list` | `tool_call` | `acli_storage_disk_list` |
 | `skill:disk_vendor_lifetime` | `skill_call` | `disk_vendor_lifetime` |
-| `skill:alert-parsing` | `skill_call` | `alert-parsing`（名称与数据库 `hci-alert-parsing` 不一致，且当前运行时未接数据库 Skill） |
+| `skill:alert-parsing` | `skill_call` | `alert-parsing`（PR1 运行时会生成候选名并可匹配 `hci-alert-parsing`） |
 | `env:hci_version` | `env_injection` | `env:hci_version` |
 | `llm_inference` | `llm_inference` | null |
 | `user_confirm` | `user_confirm` | null |
 | `user_input` | `user_input` | null |
 
-**注意**：`skill:` 方向本身是正确的，但当前实现把 `skill_call` 接到了 Python 内置注册表，而不是数据库 `skill_definition`。这违反了平台“技能管理可插拔、热生效”的设计目标，是后续第一个/第二个 PR 必须优先修复的核心缺口。
+**PR1 后状态**：`skill:` 方向已经接入数据库 `skill_definition`，Python 内置注册表不再作为生产变量池的业务 Skill 执行源。
 
 ---
 
@@ -395,6 +420,6 @@ if missing_deps:
 
 | PR | 目标 | 范围 |
 |---|---|---|
-| PR-1 | 内置/硬编码治理 | 清理业务规则进入 Python 内核的问题，输出硬编码清单和治理边界；不再继续提交 `revert_*.sql` 类临时脚本 |
+| PR-1 | 内置/硬编码治理 | 已完成动态 Skill 基础运行、工具 registry TTL 热刷新、env 复杂解析移除、变量 `depends_on/output_path/fallback_strategy` 基础能力、错误回滚脚本不带入 |
 | PR-2 | 五大动态资源统一运行时 | KBD、SOP、工具、技能、Prompt 统一走资源发布、校验、热加载、版本审计和执行接口 |
-| PR-3 | SOP 变量方案重审与优化 | 在 PR-1/PR-2 基础上重新实现 `node_ip`、`smart_info`、`is_sys_disk`、`depends_on`、派生变量和工具输出绑定 |
+| PR-3 | SOP 变量方案重审与优化 | 在 PR1/PR2 基础上重新确认 `node_ip`、`smart_info`、`is_sys_disk`、`disk_sn/disk_dev` 的最终变量声明、动态 Skill 和工具输出绑定 |

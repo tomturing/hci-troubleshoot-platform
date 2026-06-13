@@ -77,6 +77,7 @@ class SopToolExecutor:
         kb_client: KBClient,
         conversation_sop_client: ConversationSopClient,
         default_executor: Any,  # 原始 ToolExecutor（用于执行诊断工具）
+        skill_runner: Any | None = None,
         completed_steps: list[str] | None = None,  # T-AGT-23: 已完成节点列表（幂等性检查）
     ):
         self._sop_document_id = sop_document_id
@@ -84,6 +85,7 @@ class SopToolExecutor:
         self._kb_client = kb_client
         self._conversation_sop_client = conversation_sop_client
         self._default_executor = default_executor
+        self._skill_runner = skill_runner
         self._completed_steps = completed_steps or []  # T-AGT-23
 
     async def execute(
@@ -157,6 +159,7 @@ class SopToolExecutor:
                 kb_client=self._kb_client,
                 conversation_sop_client=self._conversation_sop_client,
                 tool_executor=self._default_executor,  # DC-02: 传入执行器用于 strategy=tool/user_confirm
+                skill_runner=self._skill_runner,
             )
 
         variable_gate_result = await self._check_variable_source_gate(

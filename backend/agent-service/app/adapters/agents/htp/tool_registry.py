@@ -15,6 +15,8 @@ v2.0 变更：
 import logging
 import string
 import sys
+import time
+from typing import Any
 
 from shared.models.tool_definition import ToolDefinitionORM
 from sqlalchemy import select
@@ -31,8 +33,11 @@ def verify_tool_contract(tool: ToolDefinition) -> None:
     if not tool.usage_template:
         return
     try:
+        from app.tools.acli.executor import TemplateInterpolator
+
+        template = TemplateInterpolator._OPTIONAL_SEGMENT_RE.sub(lambda m: m.group(1), tool.usage_template)
         formatter = string.Formatter()
-        placeholders = {f for _, f, _, _ in formatter.parse(tool.usage_template) if f is not None}
+        placeholders = {f for _, f, _, _ in formatter.parse(template) if f is not None}
     except Exception as exc:
         raise ValueError(f"工具 '{tool.name}' 的使用模板解析失败: {exc}") from exc
 
@@ -52,7 +57,7 @@ if "pytest" in sys.modules or "unittest" in sys.modules:
     _test_tools = [
         # 只读工具（risk_level=1）
         ("get_active_alerts", "scp", 1),
-        ("get_failed_tasks", "scp", 1),
+        ("get_failed_tasks", "acli", 1),
         ("get_vm_list", "scp", 1),
         ("get_cluster_detail", "scp", 1),
         ("acli_system_top", "acli", 1),
@@ -111,7 +116,51 @@ async def load_tool_registry(db: AsyncSession) -> dict[str, ToolDefinition]:
     return registry
 
 
-def get_tools_for_llm(include_sop: bool = True) -> list[dict]:
+class ToolRegistryManager:
+    """工具注册表运行时管理器，支持短 TTL 热刷新。"""
+
+    def __init__(self, *, db_session_factory: Any, ttl_seconds: float = 30.0) -> None:
+        self._db_session_factory = db_session_factory
+        self._ttl_seconds = ttl_seconds
+        self._last_refresh_monotonic = 0.0
+
+    async def refresh(self) -> dict[str, ToolDefinition]:
+        """强制从数据库刷新 active 工具定义。"""
+        async with self._db_session_factory() as session:
+            loaded = await load_tool_registry(session)
+        TOOL_REGISTRY.clear()
+        TOOL_REGISTRY.update(loaded)
+        self._last_refresh_monotonic = time.monotonic()
+        logger.info("工具注册表已刷新：%s 个工具", len(TOOL_REGISTRY))
+        return TOOL_REGISTRY
+
+    async def refresh_if_needed(self) -> dict[str, ToolDefinition]:
+        """TTL 到期后刷新，未到期直接返回当前快照。"""
+        if time.monotonic() - self._last_refresh_monotonic >= self._ttl_seconds:
+            return await self.refresh()
+        return TOOL_REGISTRY
+
+
+TOOL_REGISTRY_MANAGER: ToolRegistryManager | None = None
+
+
+def set_tool_registry_manager(manager: ToolRegistryManager) -> None:
+    """由应用启动时注入工具注册表管理器。"""
+    global TOOL_REGISTRY_MANAGER
+    TOOL_REGISTRY_MANAGER = manager
+
+
+async def refresh_tool_registry_if_needed() -> dict[str, ToolDefinition]:
+    """刷新工具注册表；测试或未初始化时返回当前快照。"""
+    if TOOL_REGISTRY_MANAGER is None:
+        return TOOL_REGISTRY
+    return await TOOL_REGISTRY_MANAGER.refresh_if_needed()
+
+
+def get_tools_for_llm_from_registry(
+    registry: dict[str, ToolDefinition],
+    include_sop: bool = True,
+) -> list[dict]:
     """
     返回 OpenAI function calling 格式的工具列表（排除高危工具）
 
@@ -131,6 +180,11 @@ def get_tools_for_llm(include_sop: bool = True) -> list[dict]:
                 "parameters": tool.parameters,
             },
         }
-        for tool in TOOL_REGISTRY.values()
+        for tool in registry.values()
         if tool.policy != "block" and (include_sop or tool.category != "sop")
     ]
+
+
+def get_tools_for_llm(include_sop: bool = True) -> list[dict]:
+    """兼容同步调用：基于当前内存快照返回工具列表。"""
+    return get_tools_for_llm_from_registry(TOOL_REGISTRY, include_sop=include_sop)

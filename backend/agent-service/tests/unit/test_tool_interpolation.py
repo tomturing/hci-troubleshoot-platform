@@ -32,3 +32,24 @@ def test_missing_parameter_raises_error():
     with pytest.raises(ValueError) as excinfo:
         TemplateInterpolator.interpolate(template, args)
     assert "disk_id" in str(excinfo.value)
+
+
+def test_optional_segment_interpolation():
+    # 测试可选片段仅在参数有值时渲染，支撑 get_failed_tasks 等声明式模板
+    template = "acli --formatter json task get -s failed [[-k {keyword}]] [[-c {code}]] [[-l {limit}]]"
+    args = {"keyword": "登录", "limit": 10}
+
+    command = TemplateInterpolator.interpolate(template, args)
+
+    assert command == f"acli --formatter json task get -s failed -k {shlex.quote('登录')} -l 10"
+    assert "-c" not in command
+
+
+def test_optional_segment_injection_protection():
+    # 可选片段里的参数同样必须 shell quote
+    template = "acli --formatter json task get -s failed [[-k {keyword}]]"
+    args = {"keyword": "redis; rm -rf /"}
+
+    command = TemplateInterpolator.interpolate(template, args)
+
+    assert command == f"acli --formatter json task get -s failed -k {shlex.quote('redis; rm -rf /')}"

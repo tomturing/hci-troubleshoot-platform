@@ -18,6 +18,7 @@ from app.tools.acli.executor import (
     ExecResult,
     ExitCodeMeaning,
 )
+from app.tools.base_tool import ToolDefinition
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CommandSanitizer 测试（验收标准 1）
@@ -150,6 +151,25 @@ class TestBridgeRelayExecutor:
             internal_token="test-token",
         )
 
+    @staticmethod
+    def _bash_tool_with_containers(containers: list[str]) -> ToolDefinition:
+        return ToolDefinition(
+            name="bash_exec",
+            description="执行 Bash 命令",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "container": {"type": "string", "enum": containers},
+                    "command": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["container", "command", "reason"],
+            },
+            risk_level=1,
+            policy="auto",
+            category="acli",
+        )
+
     # ── 测试验收标准 2：blpop 超时返回 exit_code=-1 ───────────────────────────
 
     @pytest.mark.asyncio
@@ -185,6 +205,32 @@ class TestBridgeRelayExecutor:
             assert payload["original_command"] == "df -h"
             assert payload["built_command"] == payload["command"]
             assert payload["command"].startswith("HCI_CONTAINER=asv-con;")
+
+    @pytest.mark.asyncio
+    async def test_bash_exec_uses_tool_schema_container_enum(self, executor, mock_redis):
+        """bash_exec 允许容器来自工具定义 schema，不再写死在执行器里。"""
+        with patch.object(executor._http_client, "post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"ok": True, "exec_id": "test-exec-id"}
+            mock_response.raise_for_status = MagicMock()
+            mock_post.return_value = mock_response
+            mock_redis.client.blpop.return_value = (
+                "exec_result:test-exec-id",
+                json.dumps({"output": "ok", "exit_code": 0}),
+            )
+
+            result = await executor.execute(
+                tool_name="bash_exec",
+                args={"container": "custom-con", "command": "ps aux", "reason": "检查自定义容器"},
+                conversation_id="conv-123",
+                tool_def=self._bash_tool_with_containers(["host", "custom-con"]),
+            )
+
+            assert result.exit_code == 0
+            assert result.container == "custom-con"
+            payload = mock_post.call_args.kwargs["json"]
+            assert payload["container"] == "custom-con"
+            assert payload["command"].startswith("HCI_CONTAINER=custom-con;")
 
     # ── 测试验收标准 4：stdout 超 4000 chars 被截断 ───────────────────────────
 
@@ -368,6 +414,32 @@ class TestBridgeRelayExecutor:
 
             assert result.exit_code == -1
             assert "Connection refused" in result.stderr
+
+    @pytest.mark.asyncio
+    async def test_get_failed_tasks_uses_usage_template(self, executor, mock_redis):
+        """get_failed_tasks 不再按工具名特判拼命令，而是消费 usage_template。"""
+        with patch.object(executor._http_client, "post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"ok": True, "exec_id": "test-exec-id"}
+            mock_response.raise_for_status = MagicMock()
+            mock_post.return_value = mock_response
+            mock_redis.client.blpop.return_value = (
+                "exec_result:test-exec-id",
+                json.dumps({"stdout": "[]", "stderr": "", "exit_code": 0}),
+            )
+
+            result = await executor.execute(
+                tool_name="get_failed_tasks",
+                args={"keyword": "登录", "limit": 10, "reason": "查询失败任务"},
+                conversation_id="conv-123",
+                usage_template=(
+                    "acli --formatter json task get -s failed [[-k {keyword}]] [[-c {code}]] [[-l {limit}]]"
+                ),
+            )
+
+            assert result.exit_code == 0
+            payload = mock_post.call_args.kwargs["json"]
+            assert payload["command"] == "acli --formatter json task get -s failed -k '登录' -l 10"
 
     # ── 测试结果解析失败 ───────────────────────────────────────────────────────
 

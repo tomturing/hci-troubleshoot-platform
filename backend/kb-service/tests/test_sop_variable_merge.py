@@ -271,3 +271,33 @@ class TestMergeVariableSchema:
 
         assert deprecated == []
         assert merged[0]["acquisition_strategy"] == "llm_inference"
+
+    def test_markdown_specific_strategy_overrides_old_specific_strategy(self):
+        """测试 Markdown 明确声明的新来源能修正旧的具体来源"""
+        old_schema = [
+            {
+                "name": "node_ip",
+                "description": "旧描述",
+                "acquisition_strategy": "env_injection",
+                "acquisition_tool": "env:node_ip",
+            }
+        ]
+        new_schema = [
+            {
+                "name": "node_ip",
+                "description": "告警硬盘所在主机",
+                "acquisition_strategy": "skill_call",
+                "acquisition_tool": "hci-alert-parsing",
+                "output_path": "node_ip",
+                "depends_on": ["alert_logs"],
+                "auto_generated": False,
+            }
+        ]
+
+        merged, deprecated = merge_variable_schema(old_schema, new_schema)
+
+        assert deprecated == []
+        assert merged[0]["acquisition_strategy"] == "skill_call"
+        assert merged[0]["acquisition_tool"] == "hci-alert-parsing"
+        assert merged[0]["output_path"] == "node_ip"
+        assert merged[0]["depends_on"] == ["alert_logs"]

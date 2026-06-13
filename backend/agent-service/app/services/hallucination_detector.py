@@ -21,17 +21,8 @@ class HallucinationDetector:
     """轻量级幻觉检测器"""
 
     def __init__(self, tool_registry: dict[str, Any] | None = None) -> None:
-        # 默认支持的所有注册工具名称
+        # 工具名称必须来自当前运行时 registry 快照；registry 缺失时跳过工具引用检测，避免内置清单漂移。
         self._registered_tools = set(tool_registry.keys()) if tool_registry else set()
-        # 补充常见默认工具，以防 registry 为空
-        if not self._registered_tools:
-            self._registered_tools = {
-                "get_active_alerts", "get_failed_tasks", "get_vm_list", "get_cluster_detail",
-                "acli_system_top", "acli_vm_list", "acli_vm_config", "acli_vm_disk_check",
-                "acli_platform_node_list", "acli_storage_disk_list", "acli_network_nic_list",
-                "acli_log_get", "acli_run", "get_sop_node", "sop_advance", "sop_request_variable",
-                "acli_service_restart", "acli_network_nic_up", "acli_netdoctor", "acli_exec", "bash_exec"
-            }
 
     def detect(
         self,
@@ -80,6 +71,10 @@ class HallucinationDetector:
 
     def _check_phantom_tools(self, text: str, executed_tools: list[str]) -> list[str]:
         """检查未执行工具的虚假引用"""
+        if not self._registered_tools:
+            logger.warning("工具 registry 为空，跳过 phantom_tool_reference 检测")
+            return []
+
         phantom = []
         executed_set = set(executed_tools)
 

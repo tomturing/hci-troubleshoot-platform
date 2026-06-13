@@ -34,7 +34,7 @@ from shared.utils.internal_http import InternalHTTPClient
 from app.core.utils import smart_truncate
 from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_policy
 from app.tools.acli.container_exec import BuiltCommand, ContainerCommandBuilder, ContainerExecBuildError
-from app.tools.acli.semantic_validator import ToolSemanticValidator
+from app.tools.acli.semantic_validator import ToolSemanticValidator, get_allowed_bash_containers
 
 logger = get_logger("bridge-relay-executor")
 
@@ -190,6 +190,8 @@ class CommandSanitizer:
 class TemplateInterpolator:
     """ACLI 插件命令安全插值引擎"""
 
+    _OPTIONAL_SEGMENT_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
+
     @classmethod
     def interpolate(cls, template: str, args: dict[str, Any]) -> str:
         """
@@ -204,6 +206,16 @@ class TemplateInterpolator:
         """
         if not template:
             return ""
+
+        def render_optional_segment(match: re.Match[str]) -> str:
+            segment = match.group(1)
+            formatter = string.Formatter()
+            placeholders = {field_name for _, field_name, _, _ in formatter.parse(segment) if field_name is not None}
+            if any(args.get(placeholder) in (None, "") for placeholder in placeholders):
+                return ""
+            return segment
+
+        template = cls._OPTIONAL_SEGMENT_RE.sub(render_optional_segment, template)
 
         # 1. 解析模板中所有的占位符
         formatter = string.Formatter()
@@ -225,7 +237,7 @@ class TemplateInterpolator:
         except Exception as e:
             raise ValueError(f"格式化命令模板出错: {str(e)}") from e
 
-        return interpolated_command.strip()
+        return " ".join(interpolated_command.strip().split())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -304,6 +316,7 @@ class BridgeRelayExecutor:
         usage_template: str | None = None,
         exec_id: str | None = None,
         case_id: str = "",
+        tool_def: Any | None = None,
         **kwargs,
     ) -> ExecResult:
         """
@@ -330,25 +343,8 @@ class BridgeRelayExecutor:
         start_time = time.time()
         exec_id = exec_id or str(uuid.uuid4())
 
-        # 1. 提取命令和原因
-        if tool_name == "get_failed_tasks":
-            cmd_parts = ["acli", "--formatter", "json", "task", "get", "-s", "failed"]
-            if args.get("keyword"):
-                cmd_parts.extend(["-k", shlex.quote(str(args["keyword"]))])
-            if args.get("code"):
-                cmd_parts.extend(["-c", shlex.quote(str(args["code"]))])
-            if args.get("vm_id"):
-                cmd_parts.extend(["-v", shlex.quote(str(args["vm_id"]))])
-            if args.get("time"):
-                cmd_parts.extend(["-t", shlex.quote(str(args["time"]))])
-            if args.get("host"):
-                cmd_parts.extend(["-H", shlex.quote(str(args["host"]))])
-            if args.get("upid"):
-                cmd_parts.extend(["-u", shlex.quote(str(args["upid"]))])
-            if args.get("limit"):
-                cmd_parts.extend(["-l", shlex.quote(str(args["limit"]))])
-            command = " ".join(cmd_parts)
-        elif usage_template:
+        # 1. 提取命令和原因。具体工具命令必须来自 usage_template 或通用 command 参数。
+        if usage_template:
             try:
                 command = TemplateInterpolator.interpolate(usage_template, args)
             except ValueError as e:
@@ -368,7 +364,7 @@ class BridgeRelayExecutor:
 
         reason = args.get("reason", "未提供原因")
 
-        semantic_result = ToolSemanticValidator.validate(tool_name, args)
+        semantic_result = ToolSemanticValidator.validate(tool_name, args, tool_def=tool_def)
         if not semantic_result.ok:
             feedback = semantic_result.to_feedback(tool_name)
             validation_codes = [issue.code for issue in semantic_result.issues]
@@ -429,6 +425,7 @@ class BridgeRelayExecutor:
                     str(args["container"]),
                     cleaned_command,
                     args.get("node_context") if isinstance(args.get("node_context"), dict) else None,
+                    allowed_containers=get_allowed_bash_containers(tool_def),
                 )
                 cleaned_command = built.built_command
             except ContainerExecBuildError as e:

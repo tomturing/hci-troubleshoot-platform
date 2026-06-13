@@ -25,9 +25,54 @@ from shared.clients import KBClient
 from shared.observability.logger import get_logger
 
 from app.memory.variable_pool.pool import VariableRequestResult
-from app.skills.registry import execute_skill
 
 logger = get_logger("memory.variable-pool")
+
+
+def _should_fallback_to_user_input(var_def: dict[str, Any]) -> bool:
+    """仅在变量声明显式允许时，自动来源失败才转人工输入。"""
+    fallback = var_def.get("fallback_strategy") or var_def.get("fallback")
+    return fallback in ("user_input", "manual", "ask_user")
+
+
+def _extract_value(payload: Any, variable_name: str, output_path: str | None = None) -> Any:
+    """从 Tool/Skill 输出中提取变量值。"""
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        return payload
+
+    if output_path:
+        current: Any = payload
+        for part in output_path.split("."):
+            if isinstance(current, dict):
+                current = current.get(part)
+            elif isinstance(current, list) and part.isdigit():
+                idx = int(part)
+                current = current[idx] if 0 <= idx < len(current) else None
+            else:
+                return None
+            if current is None:
+                return None
+        return current
+
+    if variable_name in payload:
+        return payload.get(variable_name)
+    values = payload.get("values")
+    if isinstance(values, dict) and variable_name in values:
+        return values.get(variable_name)
+    return payload.get("value") or payload.get("result") or payload.get("output")
+
+
+def _unwrap_context_variables(context_variables: dict[str, Any]) -> dict[str, Any]:
+    """把变量池记录解包为 Skill/Tool 可直接消费的上下文字典。"""
+    unwrapped: dict[str, Any] = {}
+    for name, payload in context_variables.items():
+        if isinstance(payload, dict) and "value" in payload:
+            unwrapped[name] = payload.get("value")
+        else:
+            unwrapped[name] = payload
+    return unwrapped
 
 
 async def sop_request_variable(
@@ -39,6 +84,7 @@ async def sop_request_variable(
     kb_client: KBClient,
     conversation_sop_client: Any | None = None,  # ConversationSopClient，避免循环导入用 Any
     tool_executor: Any | None = None,  # DC-02: 用于 strategy="tool_call" 自动调用工具获取变量值
+    skill_runner: Any | None = None,  # DynamicSkillRunner，避免循环导入用 Any
 ) -> VariableRequestResult | dict[str, Any]:
     """请求获取 SOP 变量值（JIT 懒加载，T-AGT-25）。
 
@@ -168,46 +214,6 @@ async def sop_request_variable(
             kind="variable_input",
         )
 
-    # 3. 根据 acquisition_strategy 决定获取方式
-    strategy = var_def.get("acquisition_strategy", "user_input")
-    acquisition_tool = var_def.get("acquisition_tool")
-
-    logger.info(
-        event="sop_request_variable_strategy",
-        variable_name=variable_name,
-        strategy=strategy,
-        acquisition_tool=acquisition_tool,
-    )
-
-    if strategy in ("env_injection", "env_context") or (isinstance(strategy, str) and strategy.startswith("env:")):
-        # env_injection 类变量应在初始化阶段批量注入，如果不小心漏掉了或解析失败，
-        # 我们在此处记录 warning 并降级为 user_input 策略，避免系统崩溃。
-        logger.warning(
-            event="sop_request_variable_env_injection_missing",
-            message=f"变量 {variable_name} 策略为 {strategy} 但在 context_variables 中未找到值，降级为 user_input",
-            variable_name=variable_name,
-            conversation_id=conversation_id,
-        )
-        strategy = "user_input"
-
-    if strategy == "sop_default":
-        # sop_default 类变量：直接读 variable_schema.default_value，无需用户输入或工具调用
-        default_val = var_def.get("default_value")
-        if default_val is None:
-            return {
-                "error": (
-                    f"变量 {variable_name} 的 acquisition_strategy 为 sop_default，"
-                    "但 variable_schema 未定义 default_value"
-                ),
-            }
-        value = str(default_val)
-        logger.info(
-            event="sop_request_variable_default_resolved",
-            variable_name=variable_name,
-            value=value,
-        )
-        return {"ok": True, "value": value, "source": "sop_default"}
-
     # 辅助：调用 interrupt API 并返回 VariableRequestResult（阻塞等待用户输入）
     async def _request_user_input(
         var_schema: dict,
@@ -251,17 +257,91 @@ async def sop_request_variable(
             options=options or [],
         )
 
+    # 3. 根据 acquisition_strategy 决定获取方式
+    strategy = var_def.get("acquisition_strategy", "user_input")
+    acquisition_tool = var_def.get("acquisition_tool")
+    output_path = var_def.get("output_path")
+    depends_on = var_def.get("depends_on") or []
+    if isinstance(depends_on, str):
+        depends_on = [item.strip() for item in depends_on.split(",") if item.strip()]
+
+    logger.info(
+        event="sop_request_variable_strategy",
+        variable_name=variable_name,
+        strategy=strategy,
+        acquisition_tool=acquisition_tool,
+        depends_on=depends_on,
+    )
+
+    missing_deps = []
+    for dep in depends_on:
+        dep_value = context_variables.get(dep)
+        dep_payload = dep_value.get("value") if isinstance(dep_value, dict) else dep_value
+        if dep_payload is None or dep_payload == "":
+            missing_deps.append(dep)
+    if missing_deps:
+        return {
+            "error": "sop_variable_dependency_missing",
+            "message": f"变量 {variable_name} 依赖 {', '.join(missing_deps)}，请先获取依赖变量",
+            "variable_name": variable_name,
+            "missing_dependencies": missing_deps,
+            "next_tool_call": {
+                "tool_name": "sop_request_variable",
+                "args": {
+                    "variable_name": missing_deps[0],
+                    "reason": f"变量 {variable_name} 的前置依赖",
+                },
+            },
+        }
+
+    if strategy in ("env_injection", "env_context") or (isinstance(strategy, str) and strategy.startswith("env:")):
+        logger.error(
+            event="sop_request_variable_env_injection_missing",
+            message=f"变量 {variable_name} 策略为 {strategy} 但在 context_variables 中未找到值",
+            variable_name=variable_name,
+            conversation_id=conversation_id,
+        )
+        if _should_fallback_to_user_input(var_def):
+            return await _request_user_input(
+                var_schema=var_def,
+                kind="variable_input",
+                msg=f"变量 {variable_name} 未能从环境上下文获取，请手动输入",
+            )
+        return {
+            "error": "sop_env_variable_missing",
+            "message": (
+                f"变量 {variable_name} 声明为 {strategy}，但 SOP 初始化阶段未注入。"
+                "请检查环境采集、变量声明或动态 Skill/Tool 配置。"
+            ),
+            "variable_name": variable_name,
+            "strategy": strategy,
+        }
+
+    if strategy == "sop_default":
+        # sop_default 类变量：直接读 variable_schema.default_value，无需用户输入或工具调用
+        default_val = var_def.get("default_value")
+        if default_val is None:
+            return {
+                "error": (
+                    f"变量 {variable_name} 的 acquisition_strategy 为 sop_default，"
+                    "但 variable_schema 未定义 default_value"
+                ),
+            }
+        value = str(default_val)
+        logger.info(
+            event="sop_request_variable_default_resolved",
+            variable_name=variable_name,
+            value=value,
+        )
+        return {"ok": True, "value": value, "source": "sop_default"}
+
     if strategy == "tool_call" and acquisition_tool:
         # DC-02: tool_call 策略：调用指定工具自动获取变量值
         if tool_executor is not None:
             try:
-                tool_result = await tool_executor.execute(acquisition_tool, {})
-                # 尝试从结果中提取单一值
-                acquired_value = None
-                if isinstance(tool_result, dict):
-                    acquired_value = tool_result.get("value") or tool_result.get(variable_name)
-                elif tool_result is not None and not isinstance(tool_result, (list, dict)):
-                    acquired_value = tool_result
+                tool_args = var_def.get("acquisition_args") or var_def.get("acquisition_args_template") or {}
+                tool_result = await tool_executor.execute(acquisition_tool, tool_args)
+                acquired_value = _extract_value(tool_result, variable_name, output_path)
                 if acquired_value is not None:
                     logger.info(
                         event="sop_request_variable_tool_acquired",
@@ -270,50 +350,86 @@ async def sop_request_variable(
                     )
                     return {"ok": True, "value": acquired_value, "source": "tool_call"}
             except Exception as exc:
-                logger.warning(
+                logger.error(
                     event="sop_request_variable_tool_failed",
                     variable_name=variable_name,
                     acquisition_tool=acquisition_tool,
                     error=str(exc),
                 )
         else:
-            logger.warning(
+            logger.error(
                 event="sop_request_variable_tool_no_executor",
                 variable_name=variable_name,
                 acquisition_tool=acquisition_tool,
             )
-        # 降级：工具执行失败或无执行器，请用户手动输入
-        return await _request_user_input(
-            var_schema=var_def,
-            kind="variable_input",
-            msg=f"变量 {variable_name} 自动获取失败，请手动输入",
-        )
+        if _should_fallback_to_user_input(var_def):
+            return await _request_user_input(
+                var_schema=var_def,
+                kind="variable_input",
+                msg=f"变量 {variable_name} 自动获取失败，请手动输入",
+            )
+        return {
+            "error": "sop_tool_variable_acquire_failed",
+            "message": f"变量 {variable_name} 声明由工具 {acquisition_tool} 自动获取，但工具执行或取值失败",
+            "variable_name": variable_name,
+            "acquisition_tool": acquisition_tool,
+        }
 
     if strategy == "skill_call" and acquisition_tool:
-        # skill_call 策略：执行内置通用分析技能计算变量值
+        # skill_call 策略：执行数据库动态 Skill 计算变量值
+        if skill_runner is None:
+            return {
+                "error": "sop_dynamic_skill_runner_missing",
+                "message": (
+                    f"变量 {variable_name} 声明由 Skill {acquisition_tool} 获取，"
+                    "但运行时未注入 DynamicSkillRunner"
+                ),
+                "variable_name": variable_name,
+                "acquisition_skill": acquisition_tool,
+            }
         try:
-            skill_result = await execute_skill(acquisition_tool, context_variables)
-            if skill_result is not None:
+            skill_context = _unwrap_context_variables(context_variables)
+            skill_result = await skill_runner.execute(
+                acquisition_tool,
+                skill_context,
+                variable_name=variable_name,
+                output_path=output_path,
+                reason=reason,
+                conversation_id=conversation_id,
+            )
+            acquired_value = _extract_value(skill_result, variable_name, "value")
+            if acquired_value is not None:
                 logger.info(
                     event="sop_request_variable_skill_executed",
                     variable_name=variable_name,
                     acquisition_skill=acquisition_tool,
-                    result=skill_result,
                 )
-                return {"ok": True, "value": skill_result, "source": "skill_call"}
+                return {
+                    "ok": True,
+                    "value": acquired_value,
+                    "source": "skill_call",
+                    "skill_name": skill_result.get("skill_name") if isinstance(skill_result, dict) else acquisition_tool,
+                }
         except Exception as exc:
-            logger.warning(
+            logger.error(
                 event="sop_request_variable_skill_failed",
                 variable_name=variable_name,
                 acquisition_skill=acquisition_tool,
                 error=str(exc),
             )
-        # 降级：技能执行失败，请用户手动输入
-        return await _request_user_input(
-            var_schema=var_def,
-            kind="variable_input",
-            msg=f"变量 {variable_name} 自动分析失败，请手动输入",
-        )
+        if _should_fallback_to_user_input(var_def):
+            return await _request_user_input(
+                var_schema=var_def,
+                kind="variable_input",
+                msg=f"变量 {variable_name} 自动分析失败，请手动输入",
+            )
+        return {
+            "error": "sop_skill_variable_acquire_failed",
+            "message": f"变量 {variable_name} 声明由 Skill {acquisition_tool} 自动获取，但 Skill 不存在、未启用或输出不可用",
+            "variable_name": variable_name,
+            "acquisition_skill": acquisition_tool,
+            "output_path": output_path,
+        }
 
     if strategy == "user_confirm":
         # user_confirm 策略：先调用工具获取候选值，再展示给用户确认
@@ -350,26 +466,30 @@ async def sop_request_variable(
     if strategy == "tool" and acquisition_tool:
         if tool_executor is not None:
             try:
-                tool_result = await tool_executor.execute(acquisition_tool, {})
-                acquired_value = None
-                if isinstance(tool_result, dict):
-                    acquired_value = tool_result.get("value") or tool_result.get(variable_name)
-                elif tool_result is not None and not isinstance(tool_result, (list, dict)):
-                    acquired_value = tool_result
+                tool_args = var_def.get("acquisition_args") or var_def.get("acquisition_args_template") or {}
+                tool_result = await tool_executor.execute(acquisition_tool, tool_args)
+                acquired_value = _extract_value(tool_result, variable_name, output_path)
                 if acquired_value is not None:
                     return {"ok": True, "value": acquired_value, "source": "tool_call"}
             except Exception as exc:
-                logger.warning(
+                logger.error(
                     event="sop_request_variable_tool_compat_failed",
                     variable_name=variable_name,
                     acquisition_tool=acquisition_tool,
                     error=str(exc),
                 )
-        return await _request_user_input(
-            var_schema=var_def,
-            kind="variable_input",
-            msg=f"变量 {variable_name} 自动获取失败，请手动输入",
-        )
+        if _should_fallback_to_user_input(var_def):
+            return await _request_user_input(
+                var_schema=var_def,
+                kind="variable_input",
+                msg=f"变量 {variable_name} 自动获取失败，请手动输入",
+            )
+        return {
+            "error": "sop_tool_variable_acquire_failed",
+            "message": f"变量 {variable_name} 声明由工具 {acquisition_tool} 自动获取，但工具执行或取值失败",
+            "variable_name": variable_name,
+            "acquisition_tool": acquisition_tool,
+        }
 
     # 兼容旧策略名 "env_context"（向后兼容，等同于 env_injection）
     if strategy == "env_context":

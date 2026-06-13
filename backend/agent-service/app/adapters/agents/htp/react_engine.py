@@ -430,7 +430,7 @@ class ReactEngine:
             return text_clean.strip()
 
         # 工具列表（OpenAI function calling 格式）+ 动态注入工具（T-AGT-22）
-        tools = self._get_tools_for_llm(extra_tools=extra_tools, sop_mode=sop_mode)
+        tools = await self._get_tools_for_llm(extra_tools=extra_tools, sop_mode=sop_mode)
 
         # T-AGT-22: 使用传入的 tool_executor 或实例默认执行器
         active_tool_executor = tool_executor or self._tool_executor
@@ -698,8 +698,12 @@ class ReactEngine:
                 # T3-5: 更新验证追踪标记
                 temp_tool_def = self._tool_registry.get(tc.name)
                 if not temp_tool_def:
-                    from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
-                    temp_tool_def = TOOL_REGISTRY.get(tc.name)
+                    from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY_MANAGER, refresh_tool_registry_if_needed
+
+                    runtime_registry = (
+                        await refresh_tool_registry_if_needed() if TOOL_REGISTRY_MANAGER is not None else self._tool_registry
+                    )
+                    temp_tool_def = runtime_registry.get(tc.name)
                 temp_risk = temp_tool_def.risk_level if temp_tool_def else 1
                 if temp_risk >= 2:
                     self.has_write_operation = True
@@ -754,7 +758,7 @@ class ReactEngine:
         # 超出步数限制
         yield AgentTextChunk(content="⚠️ 诊断步骤已达上限，请联系人工支持。")
 
-    def _get_tools_for_llm(self, extra_tools: list[dict] | None = None, sop_mode: bool = False) -> list[dict]:
+    async def _get_tools_for_llm(self, extra_tools: list[dict] | None = None, sop_mode: bool = False) -> list[dict]:
         """返回 OpenAI function calling 格式 of 工具列表（排除高危工具）。
 
         Args:
@@ -764,9 +768,15 @@ class ReactEngine:
         Returns:
             工具列表（OpenAI function calling 格式）
         """
-        from app.adapters.agents.htp.tool_registry import get_tools_for_llm
+        from app.adapters.agents.htp.tool_registry import (
+            TOOL_REGISTRY_MANAGER,
+            get_tools_for_llm_from_registry,
+            refresh_tool_registry_if_needed,
+        )
 
-        base_tools = get_tools_for_llm(include_sop=sop_mode)
+        registry = await refresh_tool_registry_if_needed() if TOOL_REGISTRY_MANAGER is not None else self._tool_registry
+        self._tool_registry = registry
+        base_tools = get_tools_for_llm_from_registry(registry, include_sop=sop_mode)
         if extra_tools:
             # 合并动态工具（追加到末尾，LLM 可选择使用）
             return base_tools + extra_tools
@@ -796,11 +806,14 @@ class ReactEngine:
             AgentInteractiveRequest: 确认请求（如需要）
             AgentTextChunk: 工具执行结果（可选）
         """
-        from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
+        from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY_MANAGER, refresh_tool_registry_if_needed
         from app.tools.acli.classifier import classify_acli, classify_bash, risk_to_policy
         from app.tools.acli.semantic_validator import ToolSemanticValidator
 
-        active_tool_registry = self._tool_registry or TOOL_REGISTRY
+        active_tool_registry = (
+            await refresh_tool_registry_if_needed() if TOOL_REGISTRY_MANAGER is not None else self._tool_registry
+        )
+        self._tool_registry = active_tool_registry
 
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("args", {})
@@ -1394,7 +1407,12 @@ class ReactEngine:
                     try:
                         # T-AGT-22: 使用 active_executor 执行工具，显式传递 conversation_id 和 exec_id
                         result = await active_executor.execute(
-                            tool_name, tool_args, conversation_id=session_id, exec_id=exec_id, case_id=case_id
+                            tool_name,
+                            tool_args,
+                            conversation_id=session_id,
+                            exec_id=exec_id,
+                            case_id=case_id,
+                            tool_def=tool_def,
                         )
 
                         if tool_obs is not None:

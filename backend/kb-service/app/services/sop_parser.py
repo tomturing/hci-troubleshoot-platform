@@ -1042,6 +1042,9 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                     var_desc = _col("说明", "description") or ""
                     default_val = _col("默认值", "default", "default_value") or None
                     val_pattern = _col("校验规则", "pattern", "validation_pattern") or None
+                    depends_on = _col("依赖", "depends_on", "depends on", "前置变量") or None
+                    output_path = _col("输出路径", "output_path", "output path") or None
+                    fallback_strategy = _col("失败兜底", "fallback", "fallback_strategy") or None
 
                     if var_name and var_source:
                         var_name_clean = var_name.replace("\\", "").strip()
@@ -1050,6 +1053,16 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                         var_desc_clean = var_desc.replace("\\", "").strip()
                         default_val_clean = default_val.replace("\\", "").strip() if default_val else None
                         val_pattern_clean = val_pattern.replace("\\", "").strip() if val_pattern else None
+                        depends_on_clean = depends_on.replace("\\", "").strip() if depends_on else None
+                        output_path_clean = output_path.replace("\\", "").strip() if output_path else None
+                        fallback_strategy_clean = (
+                            fallback_strategy.replace("\\", "").strip() if fallback_strategy else None
+                        )
+                        depends_on_list = (
+                            [item.strip() for item in re.split(r"[,，\s]+", depends_on_clean) if item.strip()]
+                            if depends_on_clean
+                            else []
+                        )
 
                         strategy, tool = _parse_acquisition_source(var_source_clean)
 
@@ -1065,6 +1078,9 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                             "required": True,
                             "default_value": default_val_clean,
                             "validation_pattern": val_pattern_clean,
+                            "depends_on": depends_on_list,
+                            "output_path": output_path_clean,
+                            "fallback_strategy": fallback_strategy_clean,
                         }
                 continue
 
@@ -1201,6 +1217,9 @@ def extract_sop_variables(
                 **strategy_info,
                 "validation_pattern": declared.get("validation_pattern"),
                 "default_value": declared.get("default_value"),
+                "depends_on": declared.get("depends_on") or [],
+                "output_path": declared.get("output_path"),
+                "fallback_strategy": declared.get("fallback_strategy"),
                 "auto_generated": var_name not in global_declared,
             }
         )
@@ -1225,6 +1244,9 @@ def merge_variable_schema(
         "acquisition_prompt",
         "validation_pattern",
         "default_value",
+        "depends_on",
+        "output_path",
+        "fallback_strategy",
         "display_name",
     ]
 
@@ -1232,26 +1254,30 @@ def merge_variable_schema(
         if name in old_by_name:
             old_var = old_by_name[name]
             merged_var = {**new_var}
-            strategy_overridden = (
-                "acquisition_strategy" in old_var
-                and old_var["acquisition_strategy"] is not None
-                and old_var["acquisition_strategy"] != ""
-                # BUGFIX: Only allow old strategy to override the new one if the new strategy is generic "user_input",
-                # or if the new strategy is inferred (auto_generated=True), or if the old strategy was a specific custom one.
-                and (
-                    old_var["acquisition_strategy"] != "user_input"
-                    or new_var.get("acquisition_strategy") == "user_input"
-                    or new_var.get("auto_generated", False)
-                )
-            )
+
+            # 历史 variable_schema 可能没有 auto_generated 标记。缺省按自动推断处理，
+            # 避免重新导入时用启发式策略覆盖管理员在页面维护的人工字段。
+            is_explicit_markdown_decl = new_var.get("auto_generated") is False
+
+            def _has_value(value: object) -> bool:
+                if value is None:
+                    return False
+                if value == "":
+                    return False
+                if value == []:
+                    return False
+                return True
+
             for human_field in HUMAN_FIELDS:
-                if human_field in ("acquisition_strategy", "acquisition_tool"):
-                    if strategy_overridden:
-                        merged_var[human_field] = old_var.get(human_field)
-                else:
-                    old_value = old_var.get(human_field)
-                    if old_value is not None and old_value != "":
-                        merged_var[human_field] = old_value
+                old_value = old_var.get(human_field)
+                new_value = new_var.get(human_field)
+
+                if is_explicit_markdown_decl and _has_value(new_value):
+                    continue
+                if not is_explicit_markdown_decl and human_field in old_var:
+                    merged_var[human_field] = old_value
+                elif _has_value(old_value):
+                    merged_var[human_field] = old_value
             merged_var.pop("deprecated", None)
             merged_var["auto_generated"] = False
             merged.append(merged_var)

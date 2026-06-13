@@ -1,89 +1,6 @@
-import pytest
-from app.skills.registry import disk_vendor_lifetime
-
-
-def test_disk_vendor_lifetime_kioxia():
-    # Kioxia / Toshiba: SMART 173 < 100 -> 返修
-    smart_info_fail = """
-Device Model:     Kioxia KCD61LUL960G
-173 Unknown_Attribute       0x0032   099   099   000    Old_age   Always       -       123
-"""
-    assert disk_vendor_lifetime({"smart_info": smart_info_fail}) == "返修"
-
-    smart_info_ok = """
-Device Model:     Kioxia KCD61LUL960G
-173 Unknown_Attribute       0x0032   100   100   000    Old_age   Always       -       123
-"""
-    assert disk_vendor_lifetime({"smart_info": smart_info_ok}) == "正常"
-
-
-def test_disk_vendor_lifetime_intel():
-    # Intel: SMART 233 <= 10 -> 返修
-    smart_info_fail = """
-Model Number:     INTEL SSDSC2KB240G8
-233 Media_Wearout_Indicator 0x0032   010   010   000    Old_age   Always       -       10
-"""
-    assert disk_vendor_lifetime({"smart_info": smart_info_fail}) == "返修"
-
-    smart_info_ok = """
-Model Number:     INTEL SSDSC2KB240G8
-233 Media_Wearout_Indicator 0x0032   011   011   000    Old_age   Always       -       11
-"""
-    assert disk_vendor_lifetime({"smart_info": smart_info_ok}) == "正常"
-
-
-def test_disk_vendor_lifetime_samsung():
-    # Samsung: SMART 177 <= 10 -> 返修
-    smart_info_fail = """
-Device Model:     SAMSUNG MZ7LM240HCGR-00003
-177 Wear_Leveling_Count     0x0013   008   008   000    Old_age   Always       -       8
-"""
-    assert disk_vendor_lifetime({"smart_info": smart_info_fail}) == "返修"
-
-    smart_info_ok = """
-Device Model:     SAMSUNG MZ7LM240HCGR-00003
-177 Wear_Leveling_Count     0x0013   011   011   000    Old_age   Always       -       11
-"""
-    assert disk_vendor_lifetime({"smart_info": smart_info_ok}) == "正常"
-
-
-def test_disk_vendor_lifetime_liteon():
-    # Liteon: SMART 202 <= 10 -> 返修; otherwise 177 <= 10 -> 返修
-    smart_info_202_fail = """
-Device Model:     LITEON CV3-8D128
-202 Unknown_Attribute       0x0032   010   010   000    Old_age   Always       -       10
-"""
-    assert disk_vendor_lifetime({"smart_info": smart_info_202_fail}) == "返修"
-
-    smart_info_177_fail = """
-Device Model:     LITEON CV3-8D128
-177 Wear_Leveling_Count     0x0013   009   009   000    Old_age   Always       -       9
-"""
-    assert disk_vendor_lifetime({"smart_info": smart_info_177_fail}) == "返修"
-
-    smart_info_ok = """
-Device Model:     LITEON CV3-8D128
-202 Unknown_Attribute       0x0032   100   100   000    Old_age   Always       -       0
-177 Wear_Leveling_Count     0x0013   100   100   000    Old_age   Always       -       0
-"""
-    assert disk_vendor_lifetime({"smart_info": smart_info_ok}) == "正常"
-
-
-def test_disk_vendor_lifetime_unrecognized():
-    smart_info = """
-Device Model:     MyCustomUnrecognizedSSD 123
-177 Wear_Leveling_Count     0x0013   001   001   000    Old_age   Always       -       1
-"""
-    # Unrecognized model should fallback to returning "正常"
-    assert disk_vendor_lifetime({"smart_info": smart_info}) == "正常"
-
-
-def test_disk_vendor_lifetime_missing_smart_info():
-    with pytest.raises(ValueError, match="缺少或空的 'smart_info' 变量"):
-        disk_vendor_lifetime({})
-
-
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.memory.variable_pool.engine import sop_request_variable
 
@@ -96,7 +13,11 @@ async def test_sop_request_variable_skill_call():
         return_value={
             "id": 2,
             "variable_schema": [
-                {"name": "check_meth", "acquisition_strategy": "skill_call", "acquisition_tool": "disk_vendor_lifetime"}
+                {
+                    "name": "check_meth",
+                    "acquisition_strategy": "skill_call",
+                    "acquisition_tool": "disk_vendor_lifetime",
+                }
             ],
         }
     )
@@ -111,6 +32,15 @@ async def test_sop_request_variable_skill_call():
             "pending_variable_name": None,
         }
     )
+    skill_runner = MagicMock()
+    skill_runner.execute = AsyncMock(
+        return_value={
+            "ok": True,
+            "value": "返修",
+            "source": "dynamic_skill",
+            "skill_name": "hci-disk-vendor-lifetime",
+        }
+    )
 
     # Execute
     res = await sop_request_variable(
@@ -119,6 +49,7 @@ async def test_sop_request_variable_skill_call():
         sop_document_id=2,
         kb_client=kb_client,
         conversation_sop_client=conversation_sop_client,
+        skill_runner=skill_runner,
     )
 
     # Validate
@@ -126,6 +57,33 @@ async def test_sop_request_variable_skill_call():
     assert res.get("ok") is True
     assert res.get("value") == "返修"
     assert res.get("source") == "skill_call"
+    skill_runner.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sop_request_variable_skill_call_requires_dynamic_runner():
+    kb_client = MagicMock()
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {"name": "node_ip", "acquisition_strategy": "skill_call", "acquisition_tool": "hci-alert-parsing"}
+            ],
+        }
+    )
+    conversation_sop_client = MagicMock()
+    conversation_sop_client.get_execution = AsyncMock(return_value={"context_variables": {}, "pending_variable_name": None})
+
+    res = await sop_request_variable(
+        variable_name="node_ip",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+    )
+
+    assert isinstance(res, dict)
+    assert res["error"] == "sop_dynamic_skill_runner_missing"
 
 
 @pytest.mark.asyncio
@@ -160,7 +118,7 @@ async def test_sop_request_variable_env_strategy():
     assert res.get("value") == "192.168.1.100"
     assert res.get("source") == "cached"
 
-    # 2. 测试变量在 context_variables 中不存在的情况（应该落入策略解析并因缺失降级为 user_input）
+    # 2. 测试变量在 context_variables 中不存在的情况（自动来源应显式失败）
     conversation_sop_client_missing = MagicMock()
     conversation_sop_client_missing.get_execution = AsyncMock(
         return_value={
@@ -177,10 +135,93 @@ async def test_sop_request_variable_env_strategy():
         kb_client=kb_client,
         conversation_sop_client=conversation_sop_client_missing,
     )
-    # 应该被识别为 env:node_ip，并因为缺失降级为需要用户输入（needs_input=True）
-    from app.memory.variable_pool.pool import VariableRequestResult
 
-    assert isinstance(res_missing, VariableRequestResult)
-    assert res_missing.needs_input is True
-    assert res_missing.variable_name == "node_ip"
-    assert res_missing.kind == "variable_input"
+    assert isinstance(res_missing, dict)
+    assert res_missing["error"] == "sop_env_variable_missing"
+
+
+@pytest.mark.asyncio
+async def test_sop_request_variable_dependency_missing():
+    kb_client = MagicMock()
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {
+                    "name": "check_meth",
+                    "acquisition_strategy": "skill_call",
+                    "acquisition_tool": "hci-disk-vendor-lifetime",
+                    "depends_on": ["smart_info"],
+                }
+            ],
+        }
+    )
+    conversation_sop_client = MagicMock()
+    conversation_sop_client.get_execution = AsyncMock(return_value={"context_variables": {}, "pending_variable_name": None})
+
+    res = await sop_request_variable(
+        variable_name="check_meth",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+    )
+
+    assert isinstance(res, dict)
+    assert res["error"] == "sop_variable_dependency_missing"
+    assert res["missing_dependencies"] == ["smart_info"]
+
+
+@pytest.mark.asyncio
+async def test_sop_request_variable_skill_call_uses_unwrapped_fact_sources():
+    kb_client = MagicMock()
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {
+                    "name": "node_ip",
+                    "acquisition_strategy": "skill_call",
+                    "acquisition_tool": "hci-alert-parsing",
+                    "depends_on": ["alert_logs"],
+                    "output_path": "values.node_ip",
+                }
+            ],
+        }
+    )
+    alert_logs = [{"target": "SVR_aCloud_670", "description": "磁盘寿命异常"}]
+    conversation_sop_client = MagicMock()
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={
+            "context_variables": {
+                "alert_logs": {
+                    "value": alert_logs,
+                    "source": "environment_context",
+                }
+            },
+            "pending_variable_name": None,
+        }
+    )
+    skill_runner = MagicMock()
+    skill_runner.execute = AsyncMock(
+        return_value={
+            "ok": True,
+            "value": "SVR_aCloud_670",
+            "source": "dynamic_skill",
+            "skill_name": "hci-alert-parsing",
+        }
+    )
+
+    res = await sop_request_variable(
+        variable_name="node_ip",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+        skill_runner=skill_runner,
+    )
+
+    assert isinstance(res, dict)
+    assert res["ok"] is True
+    skill_runner.execute.assert_awaited_once()
+    assert skill_runner.execute.await_args.args[1]["alert_logs"] == alert_logs

@@ -48,7 +48,7 @@ INSERT INTO tool_definition (
     '查询失败任务',
     'acli',
     '查询 HCI 平台操作任务。主要过滤获取失败任务，支持通过关键字、错误码、VM ID、时间、主机等过滤查询。必选状态参数已固定为 failed。',
-    'acli --formatter json task get -s failed',
+    'acli --formatter json task get -s failed [[-k {keyword}]] [[-c {code}]] [[-v {vm_id}]] [[-t {time}]] [[-H {host}]] [[-u {upid}]] [[-l {limit}]]',
     '{
         "type": "object",
         "properties": {

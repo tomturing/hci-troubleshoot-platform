@@ -67,6 +67,51 @@ def test_validate_valid_bash_exec():
     assert result == {"status": "ok", "validation_issues": []}
 
 
+def test_validate_bash_exec_container_enum_is_data_driven():
+    result = validate_tool_payload(
+        {
+            "tool_name": "bash_exec",
+            "parameters_schema": {
+                "type": "object",
+                "properties": {
+                    "container": {
+                        "type": "string",
+                        "enum": ["host", "custom-con"],
+                    },
+                    "command": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["container", "command", "reason"],
+            },
+        }
+    )
+
+    assert result == {"status": "ok", "validation_issues": []}
+
+
+def test_validate_bash_exec_container_enum_requires_host_boundary():
+    result = validate_tool_payload(
+        {
+            "tool_name": "bash_exec",
+            "parameters_schema": {
+                "type": "object",
+                "properties": {
+                    "container": {
+                        "type": "string",
+                        "enum": ["custom-con"],
+                    },
+                    "command": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["container", "command", "reason"],
+            },
+        }
+    )
+
+    assert result["status"] == "error"
+    assert result["validation_issues"][0]["code"] == "BASH_CONTAINER_HOST_MISSING"
+
+
 def test_save_guard_rejects_invalid_tool_payload():
     with pytest.raises(HTTPException) as exc_info:
         _raise_if_invalid_tool_payload(

@@ -196,14 +196,22 @@ async def lifespan(app: FastAPI):
     ToolAuditService.initialize(db_manager.async_session_factory)
     audit_service = DbAuditService()
 
+    # ── 动态 Skill 运行器：skill_definition 表为唯一事实源 ─────────────────────────────
+    from app.skills import DynamicSkillRunner
+
+    skill_runner = DynamicSkillRunner(
+        db_session_factory=db_manager.async_session_factory,
+        ai_registry=ai_registry,
+        assistant_type="htp-agent",
+    )
+
     # ── 加载工具注册表（从数据库）──────────────────────────────────────────────────────
     # 无论是否启用 REACT，都需要加载工具注册表（InvestigationAgent 等也依赖）
-    from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY, load_tool_registry
+    from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY, ToolRegistryManager, set_tool_registry_manager
 
-    # 使用 session factory 创建 session（get_session 是 async generator，不能用 async with）
-    async with db_manager.async_session_factory() as db_session:
-        loaded_registry = await load_tool_registry(db_session)
-        TOOL_REGISTRY.update(loaded_registry)
+    tool_registry_manager = ToolRegistryManager(db_session_factory=db_manager.async_session_factory, ttl_seconds=15.0)
+    set_tool_registry_manager(tool_registry_manager)
+    await tool_registry_manager.refresh()
 
     if settings.REACT_ENABLED:
         # 实例化确认服务（依赖 Redis）
@@ -225,6 +233,7 @@ async def lifespan(app: FastAPI):
             redis_manager=redis_manager,
             conversation_service_url=settings.CONVERSATION_SERVICE_URL,
             internal_token=settings.INTERNAL_API_TOKEN,
+            skill_runner=skill_runner,
         )
 
         # 实例化 ReactEngine
@@ -252,6 +261,7 @@ async def lifespan(app: FastAPI):
         redis_manager=redis_manager,
         conversation_service_url=settings.CONVERSATION_SERVICE_URL,
         internal_token=settings.INTERNAL_API_TOKEN,
+        skill_runner=skill_runner,
     )
     investigation_agent = InvestigationAgent(
         ai_registry=ai_registry,
@@ -264,6 +274,7 @@ async def lifespan(app: FastAPI):
         audit_service=audit_service,
         db_session_factory=db_manager.async_session_factory,
         fact_store=fact_store,
+        skill_runner=skill_runner,
     )
     logger.info(
         event="investigation_agent_initialized",
@@ -386,6 +397,7 @@ class CompositeToolExecutor:
         # T3-1: SOP 工具上下文注入（可选）
         sop_document_id: int | None = None,
         conversation_sop_client: Any | None = None,
+        skill_runner: Any | None = None,
     ) -> None:
         self._scp = scp
         self._acli = acli
@@ -394,6 +406,7 @@ class CompositeToolExecutor:
         # T3-1: SOP 工具上下文
         self._sop_document_id = sop_document_id
         self._conversation_sop_client = conversation_sop_client
+        self._skill_runner = skill_runner
 
         # T-TOOL-16：实例化 BridgeRelayExecutor（用于 acli category）
         if redis_manager and conversation_service_url and internal_token:
@@ -427,11 +440,11 @@ class CompositeToolExecutor:
             执行结果（字符串或字典）
         """
         from app.adapters.agents.htp.sop_tools import get_sop_node
-        from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
+        from app.adapters.agents.htp.tool_registry import refresh_tool_registry_if_needed
 
         # 如果未传入 tool_def，则从 TOOL_REGISTRY 获取
         if tool_def is None:
-            tool_def = TOOL_REGISTRY.get(tool_name)
+            tool_def = (await refresh_tool_registry_if_needed()).get(tool_name)
         if not tool_def:
             return {"error": f"未知工具: {tool_name}"}
 
@@ -458,6 +471,7 @@ class CompositeToolExecutor:
                 risk_level=tool_def.risk_level,
                 policy=tool_def.policy,
                 usage_template=tool_def.usage_template,
+                tool_def=tool_def,
                 **kwargs,
             )
 
@@ -510,6 +524,7 @@ class CompositeToolExecutor:
                             kb_client=self._kb_client,
                             conversation_sop_client=self._conversation_sop_client,
                             tool_executor=self._bridge_executor,  # 用于 strategy=tool/user_confirm
+                            skill_runner=self._skill_runner,
                         )
                 else:
                     # 缺少上下文时返回结构化错误

@@ -1,13 +1,12 @@
-"""
-Unit Tests for skill registry
-"""
+"""迁移期本地 Skill 注册表单元测试。"""
 
 import sys
+from pathlib import Path
 
 import pytest
 
 # 隔离 agent-service app 命名空间
-_svc = "/mnt/d/aihci/hci-troubleshoot-platform/backend/agent-service"
+_svc = str(Path(__file__).resolve().parents[2])
 if _svc not in sys.path:
     sys.path.insert(0, _svc)
 
@@ -71,32 +70,3 @@ async def test_execute_skill_propagates_exception():
     with pytest.raises(RuntimeError, match="skill failed"):
         await execute_skill("failing_skill", {})
     del registry._SKILL_REGISTRY["failing_skill"]
-
-
-def test_match_vendor_kioxia():
-    """Kioxia 型号匹配"""
-    from app.skills.registry import match_vendor
-
-    assert match_vendor("Kioxia KCD61LUL960G") == "kioxia_toshiba"
-    assert match_vendor("Toshiba KCM6") == "kioxia_toshiba"
-
-
-def test_match_vendor_intel():
-    """Intel 型号匹配"""
-    from app.skills.registry import match_vendor
-
-    assert match_vendor("INTEL SSDSC2KB240G8") == "intel"
-
-
-def test_match_vendor_samsung():
-    """Samsung 型号匹配"""
-    from app.skills.registry import match_vendor
-
-    assert match_vendor("SAMSUNG MZ7LM240HCGR") == "samsung"
-
-
-def test_match_vendor_unknown():
-    """未知型号返回 None"""
-    from app.skills.registry import match_vendor
-
-    assert match_vendor("UNKNOWN_BRAND XYZ123") is None

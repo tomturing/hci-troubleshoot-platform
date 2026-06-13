@@ -16,7 +16,7 @@ from shared.observability.logger import get_logger
 
 logger = get_logger("container-exec-adapter")
 
-ALLOWED_BASH_CONTAINERS = {"host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
+DEFAULT_BASH_CONTAINERS = {"host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
 
 
 class ContainerRuntime(StrEnum):
@@ -99,14 +99,16 @@ class ContainerExecAdapter:
         container: str,
         command: str,
         node_context: dict[str, Any] | NodeRuntimeContext | None = None,
+        allowed_containers: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> BuiltCommand:
         """构造远端执行命令。
 
         失败语义采用 fail-closed：运行时未知或容器不存在时 wrapper 直接 exit 127，不执行用户命令。
         """
+        allowed = set(allowed_containers or DEFAULT_BASH_CONTAINERS)
         clean_container = str(container or "").strip()
         clean_command = str(command or "").strip()
-        if clean_container not in ALLOWED_BASH_CONTAINERS:
+        if clean_container not in allowed:
             raise ContainerExecBuildError(f"不支持的目标容器：{clean_container}")
         if not clean_command:
             raise ContainerExecBuildError("执行命令不能为空")
@@ -205,8 +207,14 @@ class ContainerCommandBuilder:
         container: str,
         command: str,
         node_context: dict[str, Any] | NodeRuntimeContext | None = None,
+        allowed_containers: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> BuiltCommand:
-        return ContainerExecAdapter.build(container=container, command=command, node_context=node_context)
+        return ContainerExecAdapter.build(
+            container=container,
+            command=command,
+            node_context=node_context,
+            allowed_containers=allowed_containers,
+        )
 
 
 def build_container_command(container: str, command: str) -> str:

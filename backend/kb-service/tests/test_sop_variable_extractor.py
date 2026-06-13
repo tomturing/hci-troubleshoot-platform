@@ -458,3 +458,21 @@ acli判断方法：
         declared = _parse_variable_section(content)
         assert declared["node_ip"]["acquisition_strategy"] == "env_injection"
         assert declared["node_ip"]["acquisition_tool"] == "env:node_ip"
+
+    def test_skill_output_path_and_depends_on_parsing(self):
+        """测试动态 Skill 输出绑定和变量依赖解析"""
+        content = """
+## 变量声明
+| 变量名 | 类型 | 来源 | 说明 | 依赖 | 输出路径 | 失败兜底 |
+|---|---|---|---|---|---|---|
+| node_ip | string | skill:hci-alert-parsing | 告警节点 | alert_logs | values.node_ip | |
+| check_meth | string | skill:hci-disk-vendor-lifetime | 寿命判断 | smart_info,node_ip | value | user_input |
+"""
+        declared = _parse_variable_section(content)
+
+        assert declared["node_ip"]["acquisition_strategy"] == "skill_call"
+        assert declared["node_ip"]["acquisition_tool"] == "hci-alert-parsing"
+        assert declared["node_ip"]["depends_on"] == ["alert_logs"]
+        assert declared["node_ip"]["output_path"] == "values.node_ip"
+        assert declared["check_meth"]["depends_on"] == ["smart_info", "node_ip"]
+        assert declared["check_meth"]["fallback_strategy"] == "user_input"
