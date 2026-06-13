@@ -277,7 +277,14 @@ async def sop_request_variable(
         # DC-02: tool_call 策略：调用指定工具自动获取变量值
         if tool_executor is not None:
             try:
-                tool_result = await tool_executor.execute(acquisition_tool, {})
+                # 提取扁平化的 context_variables 作为工具实参，以支持带模板占位符的 JIT 自动工具调用
+                tool_args = {}
+                for k, v in context_variables.items():
+                    if isinstance(v, dict) and "value" in v:
+                        tool_args[k] = v["value"]
+                    else:
+                        tool_args[k] = v
+                tool_result = await tool_executor.execute(acquisition_tool, tool_args)
                 # 尝试从结果中提取单一值
                 acquired_value = None
                 if isinstance(tool_result, dict):

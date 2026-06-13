@@ -529,9 +529,44 @@ INSERT INTO tool_definition (
     is_active = EXCLUDED.is_active,
     updated_at = NOW();
 
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    usage_template, parameters_schema, risk_level, is_active
+) VALUES (
+    'acli_system_smartctl',
+    '获取磁盘SMART信息',
+    'acli',
+    '获取指定磁盘的SMART原始回显信息。系统自动从上下文获取 disk_dev 和 node_ip 变量。',
+    'acli system smartctl -a /dev/{disk_dev}',
+    '{
+        "type": "object",
+        "properties": {
+            "disk_dev": {
+                "type": "string",
+                "description": "磁盘设备，如 sda"
+            },
+            "node_ip": {
+                "type": "string",
+                "description": "目标节点 IP"
+            }
+        },
+        "required": ["disk_dev"]
+    }',
+    1,
+    true
+) ON CONFLICT (tool_name) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    usage_template = EXCLUDED.usage_template,
+    parameters_schema = EXCLUDED.parameters_schema,
+    risk_level = EXCLUDED.risk_level,
+    is_active = EXCLUDED.is_active,
+    updated_at = NOW();
+
 -- ============================================================
 -- 说明：
--- 1. 共 13 条工具定义：SCP 4个 / acli 6个 / SOP 3个
+-- 1. 共 14 条工具定义：SCP 4个 / acli 7个 / SOP 3个
 -- 2. 幂等键为 tool_name（ON CONFLICT DO UPDATE），支持重复执行
 -- 3. risk_level 说明：
 --    - 1 = 只读查询（auto），自动执行

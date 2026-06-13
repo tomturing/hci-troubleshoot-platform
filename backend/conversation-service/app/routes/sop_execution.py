@@ -414,10 +414,19 @@ def _resolve_env_variable(
                 return v
         return None
 
+    # 构建高优先级匹配 keys，解析 env:xxx 来源以支持精准注入
+    lookup_keys = [var_name]
+    acq_tool = var_def.get("acquisition_tool")
+    if acq_tool and isinstance(acq_tool, str) and acq_tool.startswith("env:"):
+        env_key = acq_tool[4:].strip()
+        if env_key:
+            lookup_keys.insert(0, env_key)
+
     # 1. 尝试从 env_info 查找
-    val = lookup_dict(env_info, var_name)
-    if val is not None:
-        return val
+    for k in lookup_keys:
+        val = lookup_dict(env_info, k)
+        if val is not None:
+            return val
 
     # 获取过滤关键字
     keywords = _get_filter_keywords(category_l2, category_l1, sop_title)
@@ -428,7 +437,13 @@ def _resolve_env_variable(
         alert = filtered_alerts[0] if filtered_alerts else alert_logs[0]
         # 如果是硬盘 SN
         if var_name in ("disk_sn", "sn", "serial_number", "device_sn"):
-            val = lookup_dict(alert, var_name) or lookup_dict(alert, "sn") or lookup_dict(alert, "serial_number")
+            val = None
+            for k in lookup_keys:
+                val = lookup_dict(alert, k)
+                if val is not None:
+                    break
+            if val is None:
+                val = lookup_dict(alert, "sn") or lookup_dict(alert, "serial_number")
             if val is not None:
                 return str(val)
             desc = alert.get("description") or ""
@@ -452,7 +467,10 @@ def _resolve_env_variable(
                     or lookup_dict(alert, "ip")
                 )
             else:
-                val = lookup_dict(alert, var_name)
+                for k in lookup_keys:
+                    val = lookup_dict(alert, k)
+                    if val is not None:
+                        break
             if val is not None:
                 return val
 
@@ -460,9 +478,10 @@ def _resolve_env_variable(
     if task_logs:
         filtered_tasks = _filter_logs_by_keywords(task_logs, keywords)
         task = filtered_tasks[0] if filtered_tasks else task_logs[0]
-        val = lookup_dict(task, var_name)
-        if val is not None:
-            return val
+        for k in lookup_keys:
+            val = lookup_dict(task, k)
+            if val is not None:
+                return val
 
     return None
 

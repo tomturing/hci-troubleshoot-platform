@@ -226,3 +226,14 @@ def test_resolve_env_variable_raw():
 
     trace_id = _resolve_env_variable("trace_id", {}, env_context)
     assert trace_id == "req-raw-456"
+
+
+def test_resolve_env_variable_precision_env_key():
+    # 测试利用 var_def.acquisition_tool = "env:xxx" 进行精准匹配（即便变量名不同）
+    env_context = EnvironmentContextResponse(
+        env_info={"real_cluster_name": "prod-cluster-01"}, alert_logs=[], task_logs=[]
+    )
+    # 变量名为 custom_cluster_name，但定义了来源为 env:real_cluster_name
+    var_def = {"acquisition_tool": "env:real_cluster_name"}
+    val = _resolve_env_variable("custom_cluster_name", var_def, env_context)
+    assert val == "prod-cluster-01"

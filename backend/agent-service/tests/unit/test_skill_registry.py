@@ -94,7 +94,6 @@ def test_match_vendor_samsung():
 
     assert match_vendor("SAMSUNG MZ7LM240HCGR") == "samsung"
 
-
 def test_match_vendor_unknown():
     """未知型号返回 None"""
     from app.skills.registry import match_vendor
