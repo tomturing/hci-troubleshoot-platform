@@ -86,7 +86,7 @@ class HallucinationDetector:
                 patterns = [
                     f"根据\\s*{tool}",
                     f"{tool}\\s*(?:的结果|输出|显示|表明)",
-                    f"(?:执行|运行|调用|使用)\\s*{tool}"
+                    f"(?:执行|运行|调用|使用)\\s*{tool}",
                 ]
                 if any(re.search(pat, text) for pat in patterns):
                     phantom.append(tool)
@@ -102,7 +102,7 @@ class HallucinationDetector:
             r"故障原因就是[a-zA-Z0-9_\u4e00-\u9fa5]+",
             r"绝对是[a-zA-Z0-9_\u4e00-\u9fa5]+",
             r"必然是[a-zA-Z0-9_\u4e00-\u9fa5]+",
-            r"已定位到根因"
+            r"已定位到根因",
         ]
 
         # 不确定性修饰词
@@ -122,9 +122,9 @@ class HallucinationDetector:
         combined_outputs = "\n".join(tool_outputs)
 
         # 提取百分比和带单位的数值，例如: 95.5%, 10GB, 250ms, 12.5MB/s, 5秒
-        unit_pattern = re.compile(r'(\d+(?:\.\d+)?)\s*(%|GB|MB|ms|KB|s|sec|秒|字节|MB/s)', re.IGNORECASE)
+        unit_pattern = re.compile(r"(\d+(?:\.\d+)?)\s*(%|GB|MB|ms|KB|s|sec|秒|字节|MB/s)", re.IGNORECASE)
         # 提取高精度的浮点数（如 0.95, 12.34）
-        decimal_pattern = re.compile(r'\b(\d+\.\d+)\b')
+        decimal_pattern = re.compile(r"\b(\d+\.\d+)\b")
 
         found_patterns: set[str] = set()
 

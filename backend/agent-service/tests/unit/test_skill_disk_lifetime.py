@@ -72,7 +72,9 @@ async def test_sop_request_variable_skill_call_requires_dynamic_runner():
         }
     )
     conversation_sop_client = MagicMock()
-    conversation_sop_client.get_execution = AsyncMock(return_value={"context_variables": {}, "pending_variable_name": None})
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={"context_variables": {}, "pending_variable_name": None}
+    )
 
     res = await sop_request_variable(
         variable_name="node_ip",
@@ -157,7 +159,9 @@ async def test_sop_request_variable_dependency_missing():
         }
     )
     conversation_sop_client = MagicMock()
-    conversation_sop_client.get_execution = AsyncMock(return_value={"context_variables": {}, "pending_variable_name": None})
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={"context_variables": {}, "pending_variable_name": None}
+    )
 
     res = await sop_request_variable(
         variable_name="check_meth",
@@ -410,3 +414,117 @@ async def test_sop_request_variable_derived_unknown_fails_loud():
 
     assert isinstance(res, dict)
     assert res["error"] == "sop_derived_variable_acquire_failed"
+
+
+@pytest.mark.asyncio
+async def test_sop_request_variable_json_extract_success_with_cache():
+    kb_client = MagicMock()
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {
+                    "name": "disk_sn",
+                    "type": "string",
+                    "acquisition_strategy": "json_extract",
+                    "depends_on": ["asan_disks"],
+                    "expression": "$.data.disks[?(@.host_name == '{node_hostname}' & @.disk_name == '{disk_name}')].disk_sn",
+                }
+            ],
+        }
+    )
+
+    conversation_sop_client = MagicMock()
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={
+            "context_variables": {
+                "node_hostname": {"value": "host-1", "source": "llm_inference"},
+                "disk_name": {"value": "1号盘", "source": "user_input"},
+                "asan_disks": {
+                    "value": "[truncated...]",
+                    "exec_id": "exec-abc-123",
+                    "source": "tool_call",
+                },
+            },
+            "pending_variable_name": None,
+        }
+    )
+
+    # Mock Redis client
+    mock_redis = MagicMock()
+    mock_redis.client.get = AsyncMock(
+        return_value=b'{"data": {"disks": [{"host_name": "host-1", "disk_name": "\xe4\xb8\x80\xe5\x8f\xb7\xe7\x9b\xb8", "disk_sn": "SN-REDIS-001"}, {"host_name": "host-1", "disk_name": "1\xe5\x8f\xb7\xe7\x9b\xb8", "disk_sn": "SN-REDIS-001"}, {"host_name": "host-1", "disk_name": "1\xe5\x8f\xb7\xe7\x9b\x94", "disk_sn": "SN-REDIS-001"}, {"host_name": "host-1", "disk_name": "1\xe5\x8f\xb7\xe7\x9b\x98", "disk_sn": "SN-REDIS-001"}]}}'
+    )
+    tool_executor = MagicMock()
+    tool_executor._redis = mock_redis
+
+    res = await sop_request_variable(
+        variable_name="disk_sn",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+        tool_executor=tool_executor,
+    )
+
+    assert isinstance(res, dict)
+    assert res.get("ok") is True
+    assert res.get("value") == "SN-REDIS-001"
+    assert res.get("source") == "json_extract"
+    mock_redis.client.get.assert_awaited_once_with("cmd_cache:exec-abc-123")
+
+
+@pytest.mark.asyncio
+async def test_sop_request_variable_json_extract_fallback_to_value():
+    kb_client = MagicMock()
+    kb_client.get_sop_document = AsyncMock(
+        return_value={
+            "id": 2,
+            "variable_schema": [
+                {
+                    "name": "disk_sn",
+                    "type": "string",
+                    "acquisition_strategy": "json_extract",
+                    "depends_on": ["asan_disks"],
+                    "expression": "$.data.disks[?(@.host_name == '{node_hostname}' & @.disk_name == '{disk_name}')].disk_sn",
+                }
+            ],
+        }
+    )
+
+    conversation_sop_client = MagicMock()
+    conversation_sop_client.get_execution = AsyncMock(
+        return_value={
+            "context_variables": {
+                "node_hostname": {"value": "host-1", "source": "llm_inference"},
+                "disk_name": {"value": "1号盘", "source": "user_input"},
+                "asan_disks": {
+                    "value": '{"data": {"disks": [{"host_name": "host-1", "disk_name": "1号盘", "disk_sn": "SN-FALLBACK-002"}]}}',
+                    "exec_id": "exec-expired-999",
+                    "source": "tool_call",
+                },
+            },
+            "pending_variable_name": None,
+        }
+    )
+
+    # Redis returns None (cache expired)
+    mock_redis = MagicMock()
+    mock_redis.client.get = AsyncMock(return_value=None)
+    tool_executor = MagicMock()
+    tool_executor._redis = mock_redis
+
+    res = await sop_request_variable(
+        variable_name="disk_sn",
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+        tool_executor=tool_executor,
+    )
+
+    assert isinstance(res, dict)
+    assert res.get("ok") is True
+    assert res.get("value") == "SN-FALLBACK-002"
+    assert res.get("source") == "json_extract"
+    mock_redis.client.get.assert_awaited_once_with("cmd_cache:exec-expired-999")

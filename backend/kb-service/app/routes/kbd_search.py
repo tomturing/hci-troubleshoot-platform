@@ -90,7 +90,9 @@ async def _entry_to_case_with_revision(
 ) -> dict[str, Any]:
     """返回 KBD 候选并记录其动态资源 revision 使用审计。"""
     trace_id = get_current_trace_id()
-    snapshot = await DynamicResourcePublisher(session).ensure_published(**kbd_resource_payload(entry), trace_id=trace_id)
+    snapshot = await DynamicResourcePublisher(session).ensure_published(
+        **kbd_resource_payload(entry), trace_id=trace_id
+    )
     await DynamicResourceLoader(session).audit_usage(
         snapshot,
         UsageRecord(

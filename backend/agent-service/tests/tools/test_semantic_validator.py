@@ -86,8 +86,8 @@ def test_build_container_command_quotes_user_command():
     built = build_container_command("asv-con", "grep ERROR /sf/log/vtpdaemon.log | tail -50")
     assert built.startswith("HCI_CONTAINER=asv-con;")
     assert "HCI_RUNTIME=$(sh -lc" in built
-    assert "container_exec -n \"$HCI_CONTAINER\" -c \"$HCI_USER_COMMAND\" -d" in built
-    assert "docker exec \"$HCI_CONTAINER\"" in built
+    assert 'container_exec -n "$HCI_CONTAINER" -c "$HCI_USER_COMMAND" -d' in built
+    assert 'docker exec "$HCI_CONTAINER"' in built
     assert "grep ERROR" in built
 
 

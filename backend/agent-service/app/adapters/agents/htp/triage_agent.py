@@ -369,7 +369,9 @@ class TriageAgent(BaseAgent):
         formatted_context = base_context.format(case_id=case_id)
 
         # 将 EvidenceBundle 章节追加在规则段之后，供 LLM 参考
-        return "\n\n".join([base_identity, formatted_methodology, formatted_s0_rules, evidence_section, formatted_context])
+        return "\n\n".join(
+            [base_identity, formatted_methodology, formatted_s0_rules, evidence_section, formatted_context]
+        )
 
     @staticmethod
     def _extract_fact_value(bundle: EvidenceBundle, key: str) -> str:

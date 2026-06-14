@@ -201,7 +201,13 @@ INSERT INTO tool_definition (
   4. 纠错技巧：若执行 acli 命令报错 “未知的命令或者命名空间”（例如 acli storage disk list），这说明缺少了某个层级的命名空间或命令拼写错误。此时，可以通过减少末尾的一个参数/子命令（例如缩短为 acli storage）去执行，即可获取上一级命名空间的帮助信息以及该级别下所有可用的子命名空间与命令列表。
   5. 兜底方案：通过执行 acli acli command list 命令可以获取当前 acli 支持的全部可用命令列表。不在该列表中的命令即代表不支持。
   6. 集群级操作使用 --cluster 参数。
-  7. 根据执行结果（成功/错误）判断下一步（ReAct 自探索）',
+  7. 根据执行结果（成功/错误）判断下一步（ReAct 自探索）
+
+⚠️ 命令行生成重要约束（必须严格遵守）：
+  - 【禁用 Python】：目标 HCI 物理宿主机为极简裁剪内核，【没有安装 python / python3】。严禁生成任何带有 python/python3 关键字的管道过滤命令，否则会报错 Command Not Found。
+  - 【输出截断】：平台会对命令的 stdout 强行执行 4000 字符的智能截断。为了防止大输出（如 storage asan disk list 等列表命令）的核心诊断信息被截断丢失，【必须】使用管道在节点端过滤后再返回。
+  - 【JSON 过滤】：JSON 格式大输出过滤必须优先使用 jq 工具。例：acli --formatter json storage asan disk list | jq ''.data.disks[] | select(.host_name == "目标节点名" and .disk_name == "1号盘")''
+  - 【文本与日志】：对于长文本/日志，使用 grep -B10 -A10 进行上下文关键字过滤。',
     '{
         "type": "object",
         "properties": {
@@ -241,7 +247,11 @@ INSERT INTO tool_definition (
     'acli',
     '在 HCI 节点执行通用 Linux Bash 命令并返回输出。
 优先使用 acli_exec；仅当 acli 无法满足时使用本工具（如分析特定日志文件、检查底层进程、读取内核参数等）。
-注意：必须显式指定 container；container=host 表示在物理机上直接执行；禁止执行 acli 命令（请使用 acli_exec）；执行路径限于 /sf/、/var/log/、/etc/（只读）等安全目录。',
+注意：必须显式指定 container；container=host 表示在物理机上直接执行；禁止执行 acli 命令（请使用 acli_exec）；执行路径限于 /sf/、/var/log/、/etc/（只读）等安全目录。
+
+⚠️ 命令行生成重要约束（必须严格遵守）：
+  - 【禁用 Python】：当 container=host（在物理宿主机直接执行）时，目标宿主机为极简裁剪内核，【没有安装 python / python3】。严禁生成任何含有 python/python3 关键字的管道过滤命令，否则报错 Command Not Found。
+  - 【输出截断】：平台会对命令的 stdout 强行执行 4000 字符的智能截断。建议使用管道进行节点端数据过滤后再返回（推荐使用 jq/grep）。',
     '{
         "type": "object",
         "properties": {

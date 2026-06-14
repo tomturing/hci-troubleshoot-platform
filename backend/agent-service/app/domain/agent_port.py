@@ -91,7 +91,6 @@ class ToolResultEvent:
     exec_id: str = ""  # 工具执行的唯一标识 ID
 
 
-
 # AgentEvent = 大脑可以产出的所有事件类型（用于 IDE 类型提示）
 AgentEvent = AgentTextChunk | AgentStageUpdate | AgentEscalation | AgentInteractiveRequest | ToolResultEvent
 

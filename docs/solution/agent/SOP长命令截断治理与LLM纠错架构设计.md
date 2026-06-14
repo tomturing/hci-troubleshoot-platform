@@ -444,45 +444,66 @@ if strategy == "json_extract":
 
 ---
 
-## 5. SOP 变量命名规范化与告警技能调用修正
+## 5. SOP 变量获取策略规范化与公共解析层设计
 
-### 5.1 核心问题：`skill:xxx` 是错误的策略写法
+为了彻底避免各微服务中对 `acquisition_strategy` 策略名及冒号参数重复编写、难以维护的乱象，我们根据第一性原理将变量获取策略的定义、简写和解析完全归一化。
 
-**当前 engine.py 实际支持的技能调用策略格式（代码校验）**：
+### 5.1 统一规范："实体_动作" 格式与冒号参数简写
+
+所有的变量获取策略统一归一化为标准的 **`实体_动作` (Entity_Action)** 形式，同时支持携带冒号 `:` 的简写形式。冒号右侧作为策略参数（可存入 `acquisition_tool`、参数名或默认值中）。
+
+| 规范策略名 (Entity_Action) | 允许的简写形式 | 冒号带参示例 (规范名) | 冒号带参示例 (简写名) | 参数语义说明 |
+|:---|:---|:---|:---|:---|
+| **`sop_default`** | `sop` | `sop_default:default_val` | `sop:default_val` | 变量默认值 |
+| **`env_injection`** | `env` | `env_injection:VAR_NAME` | `env:VAR_NAME` | 环境变量名 |
+| **`user_input`** | `user` | - | - | 无参，直接请求用户输入 |
+| **`user_confirm`** | `confirm` | - | - | 无参，待推荐值就绪后用户确认 |
+| **`tool_call`** | `tool` | `tool_call:acli_exec` | `tool:acli_exec` | 绑定的命令/工具名 |
+| **`skill_call`** | `skill` | `skill_call:hci-alert-parsing`| `skill:hci-alert-parsing` | 绑定的诊断技能名 |
+| **`llm_inference`** | `llm` | `llm_inference:hint_text` | `llm:hint_text` | LLM 推理提示词 |
+| **`agent_pass`** | `agent` | `agent_pass:key_name` | `agent:key_name` | 上一阶段透传的键名 |
+| **`derived`** | - | - | - | 无参，配合 expression 表达式 |
+| **`json_extract`** | - | - | - | 无参，配合 expression 表达式 |
+
+### 5.2 SOP Markdown 变量声明的极简语法
+
+通过统一的公共解析逻辑，SOP Markdown 文档中的变量表格可以直接支持极简的冒号参数写法，**不需要**在下方使用多行甚至多列表格来声明复杂的 `acquisition_tool` 键值。
+
+*   **Markdown 中的写法（推荐的极简写法）：**
+    ```markdown
+    | 变量名 | 类型 | 来源 | 说明 |
+    |---|---|---|---|
+    | node_ip | string | env:node_ip | 故障节点 IP |
+    | disk_name | string | env:disk_name | 故障磁盘名称 |
+    | alert_ip | string | skill:hci-alert-parsing | 告警硬盘所在主机 IP |
+    | disk_dev | string | json_extract | 磁盘设备路径 |
+    ```
+
+*   在 `kb-service` 解析 SOP Markdown 时，`_parse_variable_section` 内部委托给公共解析层，自动将 `env:node_ip` 映射为 `acquisition_strategy = "env_injection"` 且 `acquisition_tool = "node_ip"`; 将 `skill:hci-alert-parsing` 映射为 `acquisition_strategy = "skill_call"` 且 `acquisition_tool = "hci-alert-parsing"`。
+
+### 5.3 公共解析层 `shared.utils.acquisition_strategy` 实现
+
+我们在 `backend/shared/utils/acquisition_strategy.py` 中实现了统一的解析与校验逻辑，向后兼容旧版的 `env_context` 和 `tool`，并供 `kb-service` 的 parser、`agent-service` 的变量引擎等多个模块共同引用：
 
 ```python
-# engine.py L600（实际代码）
-if strategy == "skill_call" and acquisition_tool:
-    # skill_call 策略：执行数据库动态 Skill 计算变量值
+# 核心结构体
+@dataclass(frozen=True)
+class ParsedStrategy:
+    strategy: str           # 规范化策略名，如 "skill_call"
+    parameter: str | None   # 冒号右侧的参数，如 "hci-alert-parsing"
+    raw: str
+
+    @property
+    def acquisition_tool(self) -> str | None:
+        # 仅对 tool_call / skill_call / agent_pass 抛出 parameter
+        if self.strategy in (STRATEGY_TOOL_CALL, STRATEGY_SKILL_CALL, STRATEGY_AGENT_PASS):
+            return self.parameter
+        return None
 ```
 
-正确的 SOP Markdown 变量声明方式：
+### 5.4 `hci-alert-parsing` 技能的前置依赖注入
 
-```markdown
-<!-- 错误写法 -->
-| node_ip | ip | skill:alert-parsing | 告警硬盘所在主机 |
-
-<!-- 正确写法 -->
-| node_ip | ip | skill_call | 告警硬盘所在主机 |
-| acquisition_tool: hci-alert-parsing | | | |
-```
-
-或者在 `variable_schema` JSON 中：
-
-```json
-{
-  "name": "node_ip",
-  "type": "string",
-  "acquisition_strategy": "skill_call",
-  "acquisition_tool": "hci-alert-parsing",
-  "depends_on": ["alert_logs"],
-  "description": "告警硬盘所在主机 IP"
-}
-```
-
-### 5.2 `hci-alert-parsing` 技能的前置依赖
-
-`hci-alert-parsing` 技能需要 `alert_logs` 作为输入数据源。`conversation-service` 的 `sop_create_execution` 接口应在初始化 SOP 执行实例时，从 `case.metadata` 中将告警原始数据以 `alert_logs` 注入变量池，确保技能冷启动时有事实依据。
+`hci-alert-parsing` 技能在 JIT 执行时，需要 `alert_logs` 作为原始数据输入。我们在 SOP 初始化阶段自动将 `case.metadata` 中的告警原始数据注入变量池，作为 `alert_logs` 以便技能可以无缝调用。
 
 **改造文件**：`backend/conversation-service/app/routes/sop_execution.py` 的 `sop_create_execution` 接口，在构建 `context_variables` 的初始值时增加：
 

@@ -39,23 +39,34 @@ def validate_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
     usage_template = payload.get("usage_template") or ""
 
     if not isinstance(schema, dict):
-        issues.append(_make_issue("error", "parameters_schema", "parameters_schema 必须是 JSON Object", "SCHEMA_NOT_OBJECT"))
+        issues.append(
+            _make_issue("error", "parameters_schema", "parameters_schema 必须是 JSON Object", "SCHEMA_NOT_OBJECT")
+        )
         schema = {}
 
     properties = schema.get("properties") if isinstance(schema, dict) else {}
     required = schema.get("required") if isinstance(schema, dict) else []
     if properties is not None and not isinstance(properties, dict):
-        issues.append(_make_issue("error", "parameters_schema.properties", "properties 必须是对象", "SCHEMA_PROPERTIES_INVALID"))
+        issues.append(
+            _make_issue("error", "parameters_schema.properties", "properties 必须是对象", "SCHEMA_PROPERTIES_INVALID")
+        )
         properties = {}
     if required is not None and not isinstance(required, list):
-        issues.append(_make_issue("error", "parameters_schema.required", "required 必须是数组", "SCHEMA_REQUIRED_INVALID"))
+        issues.append(
+            _make_issue("error", "parameters_schema.required", "required 必须是数组", "SCHEMA_REQUIRED_INVALID")
+        )
         required = []
 
     if tool_name == "bash_exec":
         container = (properties or {}).get("container")
         if not container:
             issues.append(
-                _make_issue("error", "parameters_schema.properties.container", "bash_exec 必须定义 container 参数", "BASH_CONTAINER_MISSING")
+                _make_issue(
+                    "error",
+                    "parameters_schema.properties.container",
+                    "bash_exec 必须定义 container 参数",
+                    "BASH_CONTAINER_MISSING",
+                )
             )
         else:
             enum_values = container.get("enum") if isinstance(container, dict) else None
@@ -79,14 +90,24 @@ def validate_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 )
         if "container" not in (required or []):
             issues.append(
-                _make_issue("error", "parameters_schema.required", "bash_exec 必须要求 container 为必填字段", "BASH_CONTAINER_REQUIRED")
+                _make_issue(
+                    "error",
+                    "parameters_schema.required",
+                    "bash_exec 必须要求 container 为必填字段",
+                    "BASH_CONTAINER_REQUIRED",
+                )
             )
 
     if tool_name == "acli_exec":
         for field_name in ("command", "reason"):
             if field_name not in (required or []):
                 issues.append(
-                    _make_issue("error", "parameters_schema.required", f"acli_exec 必须要求 {field_name} 为必填字段", "ACLI_REQUIRED_FIELD_MISSING")
+                    _make_issue(
+                        "error",
+                        "parameters_schema.required",
+                        f"acli_exec 必须要求 {field_name} 为必填字段",
+                        "ACLI_REQUIRED_FIELD_MISSING",
+                    )
                 )
 
     if usage_template:
@@ -105,7 +126,9 @@ def validate_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
                         )
                     )
         except Exception as exc:
-            issues.append(_make_issue("error", "usage_template", f"usage_template 解析失败：{exc}", "USAGE_TEMPLATE_PARSE_FAILED"))
+            issues.append(
+                _make_issue("error", "usage_template", f"usage_template 解析失败：{exc}", "USAGE_TEMPLATE_PARSE_FAILED")
+            )
 
     status = "error" if any(issue["level"] == "error" for issue in issues) else "warning" if issues else "ok"
     return {"status": status, "validation_issues": issues}
@@ -255,7 +278,13 @@ async def create_tool(payload: dict[str, Any], db: AsyncSession = Depends(get_db
     resource_revision = await _publish_tool_resource(db, t)
     await db.commit()
 
-    logger.info(event="tool_created", tool_name=t.tool_name, tool_id=t.id, resource_revision=resource_revision, message="创建了新的工具定义")
+    logger.info(
+        event="tool_created",
+        tool_name=t.tool_name,
+        tool_id=t.id,
+        resource_revision=resource_revision,
+        message="创建了新的工具定义",
+    )
     return {"status": "success", "id": t.id, "resource_revision": resource_revision}
 
 
@@ -307,7 +336,13 @@ async def update_tool(tool_id: int, payload: dict[str, Any], db: AsyncSession = 
     await db.refresh(t)
     resource_revision = await _publish_tool_resource(db, t)
     await db.commit()
-    logger.info(event="tool_updated", tool_name=t.tool_name, tool_id=t.id, resource_revision=resource_revision, message="更新了工具定义")
+    logger.info(
+        event="tool_updated",
+        tool_name=t.tool_name,
+        tool_id=t.id,
+        resource_revision=resource_revision,
+        message="更新了工具定义",
+    )
     return {"status": "success", "resource_revision": resource_revision}
 
 

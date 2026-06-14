@@ -59,9 +59,7 @@ class TestSopBooleanConfirm:
 
         # Mock SopExecutionRepository
         mock_repo_instance = MagicMock()
-        mock_repo_instance.get_by_conversation = AsyncMock(
-            return_value=MagicMock(sop_document_id=2)
-        )
+        mock_repo_instance.get_by_conversation = AsyncMock(return_value=MagicMock(sop_document_id=2))
         mock_repo_instance.set_variable = AsyncMock(return_value=MagicMock())
 
         # Mock sqlalchemy Session
@@ -71,9 +69,7 @@ class TestSopBooleanConfirm:
         mock_service.session_factory = MagicMock(return_value=mock_session_ctx)
 
         # Mock get_conversation
-        mock_service.repository.get_conversation = AsyncMock(
-            return_value=MagicMock(case_id="Q123")
-        )
+        mock_service.repository.get_conversation = AsyncMock(return_value=MagicMock(case_id="Q123"))
         mock_service.repository.add_message = AsyncMock()
 
         with patch("app.services.conversation_service.SopExecutionRepository", return_value=mock_repo_instance):
@@ -108,9 +104,7 @@ class TestSopBooleanConfirm:
         )
 
         mock_repo_instance = MagicMock()
-        mock_repo_instance.get_by_conversation = AsyncMock(
-            return_value=MagicMock(sop_document_id=2)
-        )
+        mock_repo_instance.get_by_conversation = AsyncMock(return_value=MagicMock(sop_document_id=2))
         mock_repo_instance.set_variable = AsyncMock(return_value=MagicMock())
 
         # Mock sqlalchemy Session
@@ -119,9 +113,7 @@ class TestSopBooleanConfirm:
         mock_session_ctx.__aenter__.return_value = mock_session
         mock_service.session_factory = MagicMock(return_value=mock_session_ctx)
 
-        mock_service.repository.get_conversation = AsyncMock(
-            return_value=MagicMock(case_id="Q123")
-        )
+        mock_service.repository.get_conversation = AsyncMock(return_value=MagicMock(case_id="Q123"))
         mock_service.repository.add_message = AsyncMock()
 
         with patch("app.services.conversation_service.SopExecutionRepository", return_value=mock_repo_instance):
@@ -171,11 +163,12 @@ async def test_sop_variable_response_route_boolean():
         source="user_input",
     )
 
-    with patch("app.routes.sop_execution._db_manager", mock_db_manager), \
-         patch("app.routes.sop_execution._check_auth"), \
-         patch("app.routes.sop_execution._get_variable_schema", AsyncMock(return_value=mock_schema)), \
-         patch("app.routes.sop_execution.SopExecutionRepository", return_value=mock_repo):
-
+    with (
+        patch("app.routes.sop_execution._db_manager", mock_db_manager),
+        patch("app.routes.sop_execution._check_auth"),
+        patch("app.routes.sop_execution._get_variable_schema", AsyncMock(return_value=mock_schema)),
+        patch("app.routes.sop_execution.SopExecutionRepository", return_value=mock_repo),
+    ):
         response = await sop_variable_response(
             request=request,
             conversation_id=conversation_id,

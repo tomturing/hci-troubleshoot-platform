@@ -200,7 +200,7 @@ class DynamicSkillRunner:
                     "你是 HCI 排障平台的动态 Skill 运行器。"
                     "你必须严格按照给定 Skill 指令处理输入上下文。"
                     "只能输出 JSON 对象，不要输出 Markdown。"
-                    "若无法确定结果，返回 {\"ok\": false, \"error\": \"...\"}。"
+                    '若无法确定结果，返回 {"ok": false, "error": "..."}。'
                 ),
             },
             {

@@ -12,25 +12,19 @@ dependencies = [
     "websockets>=12.0,<13.0",
     "pydantic>=2.5.3,<3.0",
     "pydantic-settings>=2.1.0,<3.0",
-
     # === 数据库 ===
     "sqlalchemy>=2.0.25,<3.0",
     "asyncpg>=0.29.0,<1.0",
     "pgvector>=0.2.0,<1.0",
     "redis>=5.0.1,<6.0",
-
     # === HTTP 客户端 ===
     "httpx>=0.26.0,<1.0",
-
     # === LLM SDK ===
     "openai>=1.14.0,<2.0",
-
     # === SSH 客户端 ===
     "asyncssh>=2.17.0,<3.0",
-
     # === K8s ===
     "kubernetes>=29.0.0,<31.0",
-
     # === 可观测性 (OpenTelemetry) ===
     "opentelemetry-api",
     "opentelemetry-sdk",
@@ -39,24 +33,21 @@ dependencies = [
     "opentelemetry-instrumentation-httpx",
     "opentelemetry-instrumentation-sqlalchemy",
     "opentelemetry-instrumentation-logging",
-
     # === Prometheus 指标 ===
     "prometheus-client>=0.19.0",
-
     # === ETL 数据管道 ===
     "beautifulsoup4>=4.12.0",
     "markdownify>=0.11.6",
     "tqdm>=4.66.0",
     "lxml>=5.0.0",
     "pyyaml>=6.0.0",
-
     # === 图片处理 ===
     # Pillow 用于截图背景色采样（KBD pipeline）
     "pillow>=10.0.0",
     "python-multipart>=0.0.9",
-
     # === LLM 可观测性（Langfuse）===  # 与 langfuse/langfuse:3 server 兼容
     "langfuse>=3.0,<4.0",
+    "jsonpath-ng>=1.8.0",
 ]
 
 [project.optional-dependencies]

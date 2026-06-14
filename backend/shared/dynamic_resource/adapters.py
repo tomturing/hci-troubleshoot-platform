@@ -83,7 +83,9 @@ def prompt_resource_payload(prompt: Any) -> dict[str, Any]:
     }
 
 
-def prompt_slot_resource_payload(slot_name: str, active_prompt_name: str, expected_placeholders: list[str], consumer: str) -> dict[str, Any]:
+def prompt_slot_resource_payload(
+    slot_name: str, active_prompt_name: str, expected_placeholders: list[str], consumer: str
+) -> dict[str, Any]:
     """将 prompt slot 转换为动态资源 payload。"""
     return {
         "resource_type": "prompt_slot",

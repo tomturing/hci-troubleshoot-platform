@@ -281,7 +281,12 @@ class TestSkillDefinitionRoutes:
         mock_next_revision_result = MagicMock()
         mock_next_revision_result.scalar_one.return_value = 1
 
-        mock_session.execute.side_effect = [mock_get_result, MagicMock(), mock_revision_result, mock_next_revision_result]
+        mock_session.execute.side_effect = [
+            mock_get_result,
+            MagicMock(),
+            mock_revision_result,
+            mock_next_revision_result,
+        ]
 
         payload = {
             "display_name": "New Name",
@@ -342,7 +347,12 @@ class TestSkillDefinitionRoutes:
         mock_next_revision_result = MagicMock()
         mock_next_revision_result.scalar_one.return_value = 1
 
-        mock_session.execute.side_effect = [mock_get_result, MagicMock(), mock_revision_result, mock_next_revision_result]
+        mock_session.execute.side_effect = [
+            mock_get_result,
+            MagicMock(),
+            mock_revision_result,
+            mock_next_revision_result,
+        ]
 
         result = await toggle_skill_status(skill_id=1, db=mock_session)
         assert result["status"] == "success"

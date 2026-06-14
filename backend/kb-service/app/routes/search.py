@@ -56,9 +56,6 @@ class SearchRequest(BaseModel):
     include_sop: bool = Field(True, description="是否优先尝试 SOP 精确匹配")
 
 
-
-
-
 # ---- 路由 ----
 
 
@@ -106,6 +103,3 @@ async def search(request: Request, body: SearchRequest):
         "chunks": [c.to_dict() for c in chunks],
         "total": len(chunks),
     }
-
-
-

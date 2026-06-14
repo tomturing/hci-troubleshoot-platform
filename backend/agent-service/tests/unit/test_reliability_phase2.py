@@ -20,6 +20,7 @@ from shared.models.information import EvidenceBundle, FactSource, InformationPac
 
 # ─── InformationPacket 测试 ─────────────────────────────────────────────────
 
+
 class TestInformationPacket:
     """测试 InformationPacket 数据结构"""
 
@@ -32,10 +33,7 @@ class TestInformationPacket:
 
     def test_age_seconds(self):
         """age_seconds 返回正确的秒数"""
-        pkt = InformationPacket(
-            key="x", value=1, source=FactSource.TOOL_EXEC,
-            freshness_ts=time.time() - 100
-        )
+        pkt = InformationPacket(key="x", value=1, source=FactSource.TOOL_EXEC, freshness_ts=time.time() - 100)
         assert 99 < pkt.age_seconds() < 102
 
     def test_confidence_label_high(self):
@@ -55,22 +53,19 @@ class TestInformationPacket:
 
     def test_freshness_label_seconds(self):
         """60 秒内的新鲜度标签包含「秒前」"""
-        pkt = InformationPacket(key="x", value=1, source=FactSource.TOOL_EXEC,
-                                freshness_ts=time.time() - 30)
+        pkt = InformationPacket(key="x", value=1, source=FactSource.TOOL_EXEC, freshness_ts=time.time() - 30)
         label = pkt._freshness_label()
         assert "秒前" in label
 
     def test_freshness_label_minutes(self):
         """60~3600 秒的新鲜度标签包含「分钟前」"""
-        pkt = InformationPacket(key="x", value=1, source=FactSource.TOOL_EXEC,
-                                freshness_ts=time.time() - 180)
+        pkt = InformationPacket(key="x", value=1, source=FactSource.TOOL_EXEC, freshness_ts=time.time() - 180)
         label = pkt._freshness_label()
         assert "分钟前" in label
 
     def test_freshness_label_hours(self):
         """超过 3600 秒的新鲜度标签包含「小时前」"""
-        pkt = InformationPacket(key="x", value=1, source=FactSource.TOOL_EXEC,
-                                freshness_ts=time.time() - 7200)
+        pkt = InformationPacket(key="x", value=1, source=FactSource.TOOL_EXEC, freshness_ts=time.time() - 7200)
         label = pkt._freshness_label()
         assert "小时前" in label
 
@@ -97,6 +92,7 @@ class TestInformationPacket:
 
 # ─── StaleDataGuard 测试 ──────────────────────────────────────────────────
 
+
 class TestStaleDataGuard:
     """测试 StaleDataGuard 过期阈值守卫"""
 
@@ -107,56 +103,64 @@ class TestStaleDataGuard:
 
     def test_task_status_stale_after_60s(self):
         """task_status 60 秒后过期"""
-        pkt = InformationPacket(key="task_status", value="ok", source=FactSource.ENV_INJECT,
-                                freshness_ts=time.time() - 61)
+        pkt = InformationPacket(
+            key="task_status", value="ok", source=FactSource.ENV_INJECT, freshness_ts=time.time() - 61
+        )
         assert StaleDataGuard.is_stale(pkt, "task_status") is True
 
     def test_task_status_fresh_at_59s(self):
         """task_status 59 秒时不过期"""
-        pkt = InformationPacket(key="task_status", value="ok", source=FactSource.ENV_INJECT,
-                                freshness_ts=time.time() - 59)
+        pkt = InformationPacket(
+            key="task_status", value="ok", source=FactSource.ENV_INJECT, freshness_ts=time.time() - 59
+        )
         assert StaleDataGuard.is_stale(pkt, "task_status") is False
 
     def test_vm_status_stale_after_30s(self):
         """vm_status 30 秒后过期（T2-1：阈值从 180s 改为 30s）"""
-        pkt = InformationPacket(key="vm_status", value="running", source=FactSource.ENV_INJECT,
-                                freshness_ts=time.time() - 31)
+        pkt = InformationPacket(
+            key="vm_status", value="running", source=FactSource.ENV_INJECT, freshness_ts=time.time() - 31
+        )
         assert StaleDataGuard.is_stale(pkt, "vm_status") is True
 
     def test_vm_status_fresh_at_29s(self):
         """vm_status 29 秒不过期"""
-        pkt = InformationPacket(key="vm_status", value="running", source=FactSource.ENV_INJECT,
-                                freshness_ts=time.time() - 29)
+        pkt = InformationPacket(
+            key="vm_status", value="running", source=FactSource.ENV_INJECT, freshness_ts=time.time() - 29
+        )
         assert StaleDataGuard.is_stale(pkt, "vm_status") is False
 
     def test_disk_health_stale_after_600s(self):
         """disk_health 600 秒后过期"""
-        pkt = InformationPacket(key="disk_health", value="OK", source=FactSource.TOOL_EXEC,
-                                freshness_ts=time.time() - 601)
+        pkt = InformationPacket(
+            key="disk_health", value="OK", source=FactSource.TOOL_EXEC, freshness_ts=time.time() - 601
+        )
         assert StaleDataGuard.is_stale(pkt, "disk_health") is True
 
     def test_case_description_never_stale(self):
         """case_description 类型永不过期"""
-        pkt = InformationPacket(key="case_description", value="磁盘故障", source=FactSource.USER_INPUT,
-                                freshness_ts=time.time() - 86400 * 30)  # 30 天前
+        pkt = InformationPacket(
+            key="case_description",
+            value="磁盘故障",
+            source=FactSource.USER_INPUT,
+            freshness_ts=time.time() - 86400 * 30,
+        )  # 30 天前
         assert StaleDataGuard.is_stale(pkt, "case_description") is False
 
     def test_user_input_never_stale(self):
         """user_input 类型永不过期"""
-        pkt = InformationPacket(key="x", value="y", source=FactSource.USER_INPUT,
-                                freshness_ts=time.time() - 86400)  # 1 天前
+        pkt = InformationPacket(
+            key="x", value="y", source=FactSource.USER_INPUT, freshness_ts=time.time() - 86400
+        )  # 1 天前
         assert StaleDataGuard.is_stale(pkt, "user_input") is False
 
     def test_unknown_type_uses_default_300s(self):
         """未知类型使用默认 300 秒阈值"""
-        pkt = InformationPacket(key="x", value=1, source=FactSource.ENV_INJECT,
-                                freshness_ts=time.time() - 301)
+        pkt = InformationPacket(key="x", value=1, source=FactSource.ENV_INJECT, freshness_ts=time.time() - 301)
         assert StaleDataGuard.is_stale(pkt, "unknown_type") is True
 
     def test_annotate_staleness_stale(self):
         """过期 packet 的注解包含「已过期」"""
-        pkt = InformationPacket(key="x", value=1, source=FactSource.ENV_INJECT,
-                                freshness_ts=time.time() - 400)
+        pkt = InformationPacket(key="x", value=1, source=FactSource.ENV_INJECT, freshness_ts=time.time() - 400)
         annotation = StaleDataGuard.annotate_staleness(pkt, "default")
         assert "已过期" in annotation
 
@@ -169,6 +173,7 @@ class TestStaleDataGuard:
 
 
 # ─── EvidenceBundle 测试 ──────────────────────────────────────────────────
+
 
 class TestEvidenceBundle:
     """测试 EvidenceBundle 事实集合"""
@@ -183,8 +188,9 @@ class TestEvidenceBundle:
     def test_add_stale_packet_marks_stale(self):
         """过期的 packet 被记入 stale_keys"""
         bundle = EvidenceBundle(intent="intent_classification")
-        pkt = InformationPacket(key="task_status", value="ok", source=FactSource.ENV_INJECT,
-                                freshness_ts=time.time() - 200)
+        pkt = InformationPacket(
+            key="task_status", value="ok", source=FactSource.ENV_INJECT, freshness_ts=time.time() - 200
+        )
         bundle.add_packet(pkt, fact_type="task_status")
         assert "task_status" in bundle.stale_keys
 
@@ -213,8 +219,9 @@ class TestEvidenceBundle:
     def test_to_prompt_section_stale_warning(self):
         """过期字段的 section 包含过期警告"""
         bundle = EvidenceBundle(intent="intent_classification")
-        pkt = InformationPacket(key="task_status", value="running", source=FactSource.ENV_INJECT,
-                                freshness_ts=time.time() - 200)
+        pkt = InformationPacket(
+            key="task_status", value="running", source=FactSource.ENV_INJECT, freshness_ts=time.time() - 200
+        )
         bundle.add_packet(pkt, fact_type="task_status")
         section = bundle.to_prompt_section()
         assert "过期" in section
@@ -242,6 +249,7 @@ class TestEvidenceBundle:
 
 # ─── FactStore 测试（Mock Redis）──────────────────────────────────────────
 
+
 class TestFactStore:
     """测试 FactStore Redis 读写和冲突检测"""
 
@@ -251,6 +259,7 @@ class TestFactStore:
         T2-3: PG-first 逻辑需要 mock db_session_factory
         """
         from app.services.fact_store import FactStore
+
         mock_redis = AsyncMock()
         mock_redis.lrange.return_value = []
 
@@ -328,11 +337,18 @@ class TestFactStore:
     async def test_read_deserialize(self):
         """read() 正确反序列化存储的 JSON"""
         import json
+
         store, mock_redis, _ = self._make_store(with_db=False)
         data = {
-            "key": "vm_name", "value": "vm-prod-01", "source": "env_inject",
-            "freshness_ts": time.time(), "confidence": 0.9,
-            "raw_evidence": None, "verified": False, "conflict": False, "tags": [],
+            "key": "vm_name",
+            "value": "vm-prod-01",
+            "source": "env_inject",
+            "freshness_ts": time.time(),
+            "confidence": 0.9,
+            "raw_evidence": None,
+            "verified": False,
+            "conflict": False,
+            "tags": [],
         }
         mock_redis.get.return_value = json.dumps(data).encode()
 
@@ -349,15 +365,13 @@ class TestFactStore:
         mock_redis.get.return_value = None
         mock_redis.lrange.return_value = []
 
-        packets = [
-            InformationPacket(key=f"key_{i}", value=i, source=FactSource.ENV_INJECT)
-            for i in range(3)
-        ]
+        packets = [InformationPacket(key=f"key_{i}", value=i, source=FactSource.ENV_INJECT) for i in range(3)]
         count = await store.write_many("sess-001", packets, fact_type="default")
         assert count == 3
 
 
 # ─── EvidenceBuilder 测试 ────────────────────────────────────────────────
+
 
 class TestEvidenceBuilder:
     """测试 EvidenceBuilder 事实构建和质量检查"""
@@ -365,6 +379,7 @@ class TestEvidenceBuilder:
     def _make_builder(self, stored_packets: list[InformationPacket] | None = None):
         """创建带 Mock FactStore 的 EvidenceBuilder"""
         from app.services.evidence_builder import EvidenceBuilder
+
         mock_store = AsyncMock()
         mock_store.read_all_types.return_value = stored_packets or []
         mock_store.read_all.return_value = stored_packets or []
@@ -407,9 +422,7 @@ class TestEvidenceBuilder:
     @pytest.mark.asyncio
     async def test_stored_facts_merged_with_env_context(self):
         """FactStore 中的事实与 env_context 合并（FactStore 字段不重复）"""
-        stored = [
-            InformationPacket(key="vm_name", value="vm-stored", source=FactSource.TOOL_EXEC)
-        ]
+        stored = [InformationPacket(key="vm_name", value="vm-stored", source=FactSource.TOOL_EXEC)]
         builder = self._make_builder(stored_packets=stored)
         env_context = {"host_id": "host-new"}  # 不同 key
         bundle = await builder.build_for_intent_classification("sess-001", env_context=env_context)
@@ -451,11 +464,13 @@ class TestEvidenceBuilder:
 
 # ─── env_context 转 InformationPacket 兼容性测试 ─────────────────────────
 
+
 class TestEnvContextToPackets:
     """测试 env_context → InformationPacket 的向后兼容转换"""
 
     def _call(self, env_context: dict) -> list[InformationPacket]:
         from app.services.evidence_builder import EvidenceBuilder
+
         return EvidenceBuilder._env_context_to_packets(env_context)
 
     def test_empty_dict(self):
@@ -480,24 +495,28 @@ class TestEnvContextToPackets:
 
     def test_raw_format_extracts_env_info_dict(self):
         """is_raw=True + env_info 为字典时，展开每个 key 为独立 packet"""
-        result = self._call({
-            "is_raw": True,
-            "env_info": {"vm_name": "vm-01", "cpu_cores": 8},
-            "alert_logs": [],
-            "task_logs": [],
-        })
+        result = self._call(
+            {
+                "is_raw": True,
+                "env_info": {"vm_name": "vm-01", "cpu_cores": 8},
+                "alert_logs": [],
+                "task_logs": [],
+            }
+        )
         keys = {p.key for p in result}
         assert "vm_name" in keys
         assert "cpu_cores" in keys
 
     def test_raw_format_extracts_alert_logs(self):
         """is_raw=True + alert_logs 非空时，生成 alert_logs packet"""
-        result = self._call({
-            "is_raw": True,
-            "env_info": {},
-            "alert_logs": [{"id": 1, "msg": "disk fail"}],
-            "task_logs": [],
-        })
+        result = self._call(
+            {
+                "is_raw": True,
+                "env_info": {},
+                "alert_logs": [{"id": 1, "msg": "disk fail"}],
+                "task_logs": [],
+            }
+        )
         keys = {p.key for p in result}
         assert "alert_logs" in keys
 
@@ -509,6 +528,7 @@ class TestEnvContextToPackets:
 
 
 # ─── InvestigationAgent 信息质量检查测试 ──────────────────────────────────────────
+
 
 class TestInvestigationAgentQualityCheck:
     """测试 InvestigationAgent 在 process() 诊断开始时的信息质量检查拦截"""
@@ -525,8 +545,10 @@ class TestInvestigationAgentQualityCheck:
 
         registry = MagicMock()
         mock_client = MagicMock()
+
         async def fake_stream(*args, **kwargs):
             yield "诊断报告块"
+
         mock_client.chat_completion_stream = fake_stream
         registry.get_client.return_value = mock_client
 
@@ -635,6 +657,7 @@ class TestInvestigationAgentQualityCheck:
 
             # 校验输出的 SSE 事件中包含 interactive_request，但不包含 type="error"
             import json
+
             event_types = []
             for ev in events:
                 if ev.startswith("data: "):

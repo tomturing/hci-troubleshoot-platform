@@ -4,7 +4,7 @@ KB Service — SOP 变量提取单元测试
 测试覆盖：
 1. 变量占位符解析（{placeholder} 格式）
 2. ## 变量 章节解析
-3. 启发式策略推断（node_ip → env_context, vm_name → tool）
+3. 启发式策略推断（node_ip → env_injection, vm_name → tool_call）
 4. 双向校验：Undeclared = Error, Orphan = Warning
 5. tree_json 变量扫描
 6. 本地变量声明表格与层级校验
@@ -74,26 +74,26 @@ class TestInferStrategy:
     """测试变量名启发式策略推断"""
 
     def test_ip_suffix_env_context(self):
-        """*_ip 后缀推断为 env_context"""
+        """*_ip 后缀推断为 env_injection（规范名，旧名为 env_context）"""
         result = _infer_strategy("node_ip")
-        assert result["acquisition_strategy"] == "env_context"
+        assert result["acquisition_strategy"] == "env_injection"
         assert result["acquisition_tool"] is None
 
     def test_cluster_ip_env_context(self):
-        """cluster_ip 推断为 env_context"""
+        """cluster_ip 推断为 env_injection（规范名，旧名为 env_context）"""
         result = _infer_strategy("cluster_ip")
-        assert result["acquisition_strategy"] == "env_context"
+        assert result["acquisition_strategy"] == "env_injection"
 
     def test_vm_name_tool(self):
-        """vm_name 推断为 tool:get_vm_list"""
+        """vm_name 推断为 tool_call:get_vm_list（规范名，旧名为 tool）"""
         result = _infer_strategy("vm_name")
-        assert result["acquisition_strategy"] == "tool"
+        assert result["acquisition_strategy"] == "tool_call"
         assert result["acquisition_tool"] == "get_vm_list"
 
     def test_disk_id_tool(self):
-        """disk_id 推断为 tool:acli_storage_disk_list"""
+        """disk_id 推断为 tool_call:acli_storage_disk_list（规范名，旧名为 tool）"""
         result = _infer_strategy("disk_id")
-        assert result["acquisition_strategy"] == "tool"
+        assert result["acquisition_strategy"] == "tool_call"
         assert result["acquisition_tool"] == "acli_storage_disk_list"
 
     def test_unknown_var_user_input(self):
@@ -194,8 +194,8 @@ class TestParseVariableSection:
         assert "node_ip" in declared
         assert "vm_name" in declared
         assert declared["node_ip"]["description"] == "节点 IP 地址，从环境上下文获取"
-        assert declared["node_ip"]["acquisition_strategy"] == "env_context"
-        assert declared["vm_name"]["acquisition_strategy"] == "tool"
+        assert declared["node_ip"]["acquisition_strategy"] == "env_injection"  # 规范名（旧名为 env_context）
+        assert declared["vm_name"]["acquisition_strategy"] == "tool_call"  # 规范名（旧名为 tool）
 
     def test_no_variable_section(self):
         """无变量章节返回空字典"""
@@ -338,8 +338,8 @@ class TestExtractSopVariables:
         node_ip_def = next(d for d in defs if d["name"] == "node_ip")
         vm_name_def = next(d for d in defs if d["name"] == "vm_name")
 
-        assert node_ip_def["acquisition_strategy"] == "env_context"
-        assert vm_name_def["acquisition_strategy"] == "tool"
+        assert node_ip_def["acquisition_strategy"] == "env_injection"  # 规范名（旧名为 env_context）
+        assert vm_name_def["acquisition_strategy"] == "tool_call"  # 规范名（旧名为 tool）
         assert vm_name_def["acquisition_tool"] == "get_vm_list"
         assert node_ip_def["auto_generated"] is True
         assert vm_name_def["auto_generated"] is True
@@ -448,7 +448,7 @@ acli判断方法：
         assert declared["check_meth"]["acquisition_strategy"] == "agent_pass"
 
     def test_env_key_strategy_keeps_source_key_as_tool_metadata(self):
-        """测试 env:xxx 来源保留原始环境键名"""
+        """测试 env:xxx 来源解析为 env_injection，环境变量名存储在 acquisition_tool 字段（language-level parameter）"""
         content = """
 ## 变量声明
 | 变量名 | 类型 | 来源 | 说明 |
@@ -457,7 +457,8 @@ acli判断方法：
 """
         declared = _parse_variable_section(content)
         assert declared["node_ip"]["acquisition_strategy"] == "env_injection"
-        assert declared["node_ip"]["acquisition_tool"] == "env:node_ip"
+        # env:xxx 的参数（环境变量名）存储在 acquisition_tool 字段，方便引擎查找具体的环境变量 key
+        assert declared["node_ip"]["acquisition_tool"] == "node_ip"
 
     def test_skill_output_path_and_depends_on_parsing(self):
         """测试动态 Skill 输出绑定和变量依赖解析"""

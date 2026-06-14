@@ -85,6 +85,7 @@ class EvidenceBuilder:
         if self._fact_store and env_packets:
             for packet in env_packets:
                 from app.services.fact_store import _KEY_TO_FACT_TYPE
+
                 fact_type = _KEY_TO_FACT_TYPE.get(packet.key, "default")
                 await self._fact_store.write(session_id, packet, fact_type=fact_type)
 
@@ -94,6 +95,7 @@ class EvidenceBuilder:
         # 4. 添加到 Bundle（含新鲜度/冲突标注）
         for packet in all_packets:
             from app.services.fact_store import _KEY_TO_FACT_TYPE
+
             fact_type = _KEY_TO_FACT_TYPE.get(packet.key, "default")
             bundle.add_packet(packet, fact_type=fact_type)
 
@@ -125,6 +127,7 @@ class EvidenceBuilder:
         )
         for packet in packets:
             from app.services.fact_store import _KEY_TO_FACT_TYPE
+
             fact_type = _KEY_TO_FACT_TYPE.get(packet.key, "default")
             bundle.add_packet(packet, fact_type=fact_type)
 
@@ -185,6 +188,7 @@ class EvidenceBuilder:
                     if packet.confidence < CONFIDENCE_THRESHOLD:
                         low_confidence_keys.append(packet.key)
                     from app.services.fact_store import _KEY_TO_FACT_TYPE
+
                     ft = _KEY_TO_FACT_TYPE.get(packet.key, "default")
                     if StaleDataGuard.is_stale(packet, ft):
                         stale_keys.append(packet.key)
@@ -208,8 +212,7 @@ class EvidenceBuilder:
         elif report.quality_score < 0.5:
             report.needs_clarification = True
             report.clarification_reason = (
-                f"环境数据质量偏低（评分 {report.quality_score:.0%}），"
-                "部分关键信息置信度不足或已过期，是否重新采集？"
+                f"环境数据质量偏低（评分 {report.quality_score:.0%}），部分关键信息置信度不足或已过期，是否重新采集？"
             )
 
         logger.info(
@@ -243,55 +246,65 @@ class EvidenceBuilder:
             raw_env_info = env_context.get("env_info", {})
             if isinstance(raw_env_info, dict):
                 for k, v in raw_env_info.items():
-                    packets.append(InformationPacket(
-                        key=k,
-                        value=v,
+                    packets.append(
+                        InformationPacket(
+                            key=k,
+                            value=v,
+                            source=FactSource.ENV_INJECT,
+                            freshness_ts=now,
+                            confidence=0.9,
+                            tags=["env_info"],
+                        )
+                    )
+            elif isinstance(raw_env_info, str) and raw_env_info:
+                packets.append(
+                    InformationPacket(
+                        key="env_info",
+                        value=raw_env_info,
                         source=FactSource.ENV_INJECT,
                         freshness_ts=now,
                         confidence=0.9,
-                        tags=["env_info"],
-                    ))
-            elif isinstance(raw_env_info, str) and raw_env_info:
-                packets.append(InformationPacket(
-                    key="env_info",
-                    value=raw_env_info,
-                    source=FactSource.ENV_INJECT,
-                    freshness_ts=now,
-                    confidence=0.9,
-                ))
+                    )
+                )
 
             alert_logs = env_context.get("alert_logs", [])
             if alert_logs:
-                packets.append(InformationPacket(
-                    key="alert_logs",
-                    value=alert_logs,
-                    source=FactSource.ENV_INJECT,
-                    freshness_ts=now,
-                    confidence=0.95,
-                    tags=["alert_status"],
-                ))
+                packets.append(
+                    InformationPacket(
+                        key="alert_logs",
+                        value=alert_logs,
+                        source=FactSource.ENV_INJECT,
+                        freshness_ts=now,
+                        confidence=0.95,
+                        tags=["alert_status"],
+                    )
+                )
 
             task_logs = env_context.get("task_logs", [])
             if task_logs:
-                packets.append(InformationPacket(
-                    key="task_logs",
-                    value=task_logs,
-                    source=FactSource.ENV_INJECT,
-                    freshness_ts=now,
-                    confidence=0.95,
-                    tags=["task_status"],
-                ))
+                packets.append(
+                    InformationPacket(
+                        key="task_logs",
+                        value=task_logs,
+                        source=FactSource.ENV_INJECT,
+                        freshness_ts=now,
+                        confidence=0.95,
+                        tags=["task_status"],
+                    )
+                )
         else:
             # 普通格式：直接遍历顶层键值
             for k, v in env_context.items():
                 if v not in (None, "", [], {}):
-                    packets.append(InformationPacket(
-                        key=k,
-                        value=v,
-                        source=FactSource.ENV_INJECT,
-                        freshness_ts=now,
-                        confidence=0.85,
-                    ))
+                    packets.append(
+                        InformationPacket(
+                            key=k,
+                            value=v,
+                            source=FactSource.ENV_INJECT,
+                            freshness_ts=now,
+                            confidence=0.85,
+                        )
+                    )
 
         return packets
 
@@ -321,9 +334,9 @@ class InformationQualityReport:
     """信息质量检查结果报告。"""
 
     session_id: str
-    quality_score: float = 1.0          # [0.0, 1.0]，低于 0.5 触发澄清
-    needs_clarification: bool = False   # True 时应向用户发起澄清请求
-    clarification_reason: str = ""      # 向用户展示的澄清原因
+    quality_score: float = 1.0  # [0.0, 1.0]，低于 0.5 触发澄清
+    needs_clarification: bool = False  # True 时应向用户发起澄清请求
+    clarification_reason: str = ""  # 向用户展示的澄清原因
     missing_keys: list[str] = field(default_factory=list)
     low_confidence_keys: list[str] = field(default_factory=list)
     stale_keys: list[str] = field(default_factory=list)

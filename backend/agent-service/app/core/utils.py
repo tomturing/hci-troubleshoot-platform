@@ -2,6 +2,7 @@
 Agent Service 核心公共工具函数
 """
 
+
 def smart_truncate(output: str, max_chars: int) -> str:
     """
     智能截断长文本，优先保留包含关键错误信息的行。
@@ -49,7 +50,7 @@ def smart_truncate(output: str, max_chars: int) -> str:
 
     # 3. 在中间未包含在首尾上下文的行中，筛选包含错误关键字的行
     error_patterns = ["error", "fail", "exception", "critical", "fatal", "panic"]
-    middle_lines = lines[head_idx:tail_idx + 1]
+    middle_lines = lines[head_idx : tail_idx + 1]
 
     error_lines = []
     current_middle_len = 0

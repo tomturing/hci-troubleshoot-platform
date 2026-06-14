@@ -208,7 +208,11 @@ class OpenClawAssistant:
 
                         # 解析错误详情并抛出结构化异常
                         error_detail = self._parse_ai_error(response.status_code, error_text)
-                        end_generation(langfuse_gen, error=error_detail.get("message", f"HTTP {response.status_code}"), start_time=lf_start)
+                        end_generation(
+                            langfuse_gen,
+                            error=error_detail.get("message", f"HTTP {response.status_code}"),
+                            start_time=lf_start,
+                        )
                         raise AIStreamError(
                             code=error_detail["code"],
                             message=error_detail["message"],

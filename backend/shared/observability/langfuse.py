@@ -97,6 +97,7 @@ async def observe_invoke(
 
     try:
         from shared.observability.otel import get_current_trace_id as _get_otel_trace_id
+
         otel_trace_id = _get_otel_trace_id()
     except Exception:
         otel_trace_id = ""
@@ -148,6 +149,7 @@ async def observe_stream_start(
 
     try:
         from shared.observability.otel import get_current_trace_id as _get_otel_trace_id
+
         otel_trace_id = _get_otel_trace_id()
     except Exception:
         otel_trace_id = ""

@@ -325,6 +325,3 @@ class TestKBSearchContract:
             # 验证请求体包含 query 字段
             assert call_args[1]["json"]["query"] == "存储报错"
             assert call_args[1]["json"]["top_n"] == 3
-
-
-

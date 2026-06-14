@@ -99,6 +99,7 @@ class InvestigationAgent(BaseAgent):
             self._db_session_factory = db_session_factory
 
         from app.services.evidence_builder import EvidenceBuilder
+
         self._evidence_builder = EvidenceBuilder(fact_store=fact_store)
         self._fact_store = fact_store
         self._skill_runner = skill_runner
@@ -582,6 +583,7 @@ class InvestigationAgent(BaseAgent):
 
         # T3-2: 绑定诊断阶段结构化 Schema
         from shared.models import ClaimVerification, ReasoningOutput
+
         response_schema = None
         if diagnostic_stage in ("S2", "S3"):
             response_schema = ReasoningOutput
@@ -821,8 +823,7 @@ class InvestigationAgent(BaseAgent):
                 child_required = child.get("required_variables") or []
                 if child_required:
                     child_line += "；依赖变量=" + ", ".join(
-                        f"{v.get('name')}({v.get('acquisition_strategy', 'user_input')})"
-                        for v in child_required[:5]
+                        f"{v.get('name')}({v.get('acquisition_strategy', 'user_input')})" for v in child_required[:5]
                     )
                 parts.append(child_line)
             if len(children) > 5:
@@ -935,8 +936,7 @@ class InvestigationAgent(BaseAgent):
                 child_required = child.get("required_variables") or []
                 if child_required:
                     child_line += "；依赖变量=" + ", ".join(
-                        f"{v.get('name')}({v.get('acquisition_strategy', 'user_input')})"
-                        for v in child_required[:5]
+                        f"{v.get('name')}({v.get('acquisition_strategy', 'user_input')})" for v in child_required[:5]
                     )
                 parts.append(child_line)
             if len(children) > 5:

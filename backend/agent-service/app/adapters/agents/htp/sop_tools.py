@@ -171,10 +171,7 @@ class SopToolExecutor:
 
         # 其他工具（SCP/acli 诊断工具）：委托给默认执行器，传递 conversation_id
         return await self._default_executor.execute(
-            tool_name,
-            args,
-            conversation_id=effective_conversation_id,
-            **kwargs
+            tool_name, args, conversation_id=effective_conversation_id, **kwargs
         )
 
     async def _check_variable_source_gate(

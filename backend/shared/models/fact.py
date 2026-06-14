@@ -29,7 +29,9 @@ class Fact(Base, TraceableMixin):
     freshness = Column(String(30), nullable=False, default="unknown", comment="时效性")
     conflict = Column(Boolean, nullable=False, default=False, comment="是否存在冲突")
     collected_at = Column(DateTime(timezone=True), nullable=True, comment="数据实际采集时间")
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, comment="记录创建时间")
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, comment="记录创建时间"
+    )
 
     # 建立与 EvidenceLink 的关系
     evidence_links = relationship("ClaimEvidenceLink", back_populates="fact", cascade="all, delete-orphan")
@@ -46,10 +48,14 @@ class ClaimEvidenceLink(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     case_id = Column(String(20), nullable=False, index=True, comment="关联工单 ID")
     claim_id = Column(String(50), nullable=False, index=True, comment="断言/结论 ID")
-    fact_id = Column(String(36), ForeignKey("fact.id", ondelete="CASCADE"), nullable=False, index=True, comment="关联事实 ID")
+    fact_id = Column(
+        String(36), ForeignKey("fact.id", ondelete="CASCADE"), nullable=False, index=True, comment="关联事实 ID"
+    )
     relation = Column(String(30), nullable=False, comment="关联关系: supporting/contradicting")
     confidence = Column(Numeric(4, 3), nullable=False, default=1.0, comment="相关置信度")
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, comment="记录创建时间")
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, comment="记录创建时间"
+    )
 
     # 建立与 Fact 的关系
     fact = relationship("Fact", back_populates="evidence_links")

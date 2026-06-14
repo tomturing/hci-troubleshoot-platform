@@ -90,7 +90,9 @@ class StrictPromptLoader:
             raise PromptLoadError(f"数据库查询异常，无法加载 Prompt 模板 '{prompt_name}': {exc}") from exc
 
         if not prompt:
-            raise PromptLoadError(f"在 system_prompt 表中未找到处于激活状态且名称为 '{effective_prompt_name}' 的 Prompt 模板")
+            raise PromptLoadError(
+                f"在 system_prompt 表中未找到处于激活状态且名称为 '{effective_prompt_name}' 的 Prompt 模板"
+            )
 
         # 2. 占位符比对校验
         content_template = prompt.content_template if hasattr(prompt, "content_template") else str(prompt)
@@ -108,7 +110,9 @@ class StrictPromptLoader:
             )
 
         if hasattr(prompt, "name"):
-            prompt_snapshot = await DynamicResourcePublisher(db_session).ensure_published(**prompt_resource_payload(prompt))
+            prompt_snapshot = await DynamicResourcePublisher(db_session).ensure_published(
+                **prompt_resource_payload(prompt)
+            )
             loader = DynamicResourceLoader(db_session)
             if slot_snapshot is not None:
                 await loader.audit_usage(
@@ -153,6 +157,7 @@ class MockSession:
     async def execute(self, stmt):
         compiled = stmt.compile()
         if "prompt_slot" in str(compiled):
+
             class EmptyResult:
                 def scalar_one_or_none(self):
                     return None
@@ -184,7 +189,7 @@ class MockSession:
 def create_mock_session_factory(custom_templates: dict[str, str] = None):
     """创建一个模拟的 DB Session Factory 用于单元测试"""
     templates = {
-        "base_identity_v1": "你是深信服超融合基础设施（HCI）智能排障专家助手。\n你拥有完整的 HCI 平台工作原理知识：虚拟机生命周期、分布式存储、vxlan网络、\nIPMI硬件管理、acli诊断工具集的完整用法。\n你的目标是协助现场工程师快速定位和解决 HCI 平台故障。\n\n【证据锚定规则】\n1. 禁止凭空声明：你的所有排障结论、猜测和分析，必须有明确的工具输出（如 acli_exec/bash_exec 的返回结果）作为直接证据。严禁在无证据支持的情况下直接给出确定性的根因结论。\n2. 声明不确定性：当证据不足或工具执行未返回预期数据时，必须明确向用户声明当前结论的「不确定性」，并指出需要补充哪些维度的证据。\n3. 禁止跳步推理：每次推理必须循序渐进，不允许在未进行前置检查的情况下直接跳跃到后续修复或深层结论。\n4. 区分观察与结论：在回复中，必须清晰区分「观察到的原始事实」（工具输出）与「你的推断/结论」。\n5. 幻觉自查：在生成最终诊断结论前，进行一步幻觉自查（检查引用的命令是否真实执行过，引用的数字、状态是否与实际输出完全一致）。\n\n[正确示例]\n观察：工具 acli_vm_list 输出显示 VM \"prod-vm\" 状态为 \"stopped\"。\n结论：该 VM 目前处于停止状态，可能是由于管理员手动关闭或底层宿主机异常关机。\n\n[错误示例]\n结论：VM \"prod-vm\" 已经崩溃，因为存储连接断开了。（在未执行存储检查工具的情况下凭空猜测结论）",
+        "base_identity_v1": '你是深信服超融合基础设施（HCI）智能排障专家助手。\n你拥有完整的 HCI 平台工作原理知识：虚拟机生命周期、分布式存储、vxlan网络、\nIPMI硬件管理、acli诊断工具集的完整用法。\n你的目标是协助现场工程师快速定位和解决 HCI 平台故障。\n\n【证据锚定规则】\n1. 禁止凭空声明：你的所有排障结论、猜测和分析，必须有明确的工具输出（如 acli_exec/bash_exec 的返回结果）作为直接证据。严禁在无证据支持的情况下直接给出确定性的根因结论。\n2. 声明不确定性：当证据不足或工具执行未返回预期数据时，必须明确向用户声明当前结论的「不确定性」，并指出需要补充哪些维度的证据。\n3. 禁止跳步推理：每次推理必须循序渐进，不允许在未进行前置检查的情况下直接跳跃到后续修复或深层结论。\n4. 区分观察与结论：在回复中，必须清晰区分「观察到的原始事实」（工具输出）与「你的推断/结论」。\n5. 幻觉自查：在生成最终诊断结论前，进行一步幻觉自查（检查引用的命令是否真实执行过，引用的数字、状态是否与实际输出完全一致）。\n\n[正确示例]\n观察：工具 acli_vm_list 输出显示 VM "prod-vm" 状态为 "stopped"。\n结论：该 VM 目前处于停止状态，可能是由于管理员手动关闭或底层宿主机异常关机。\n\n[错误示例]\n结论：VM "prod-vm" 已经崩溃，因为存储连接断开了。（在未执行存储检查工具的情况下凭空猜测结论）',
         "base_methodology_v1": "【工作方法论】\n当前诊断阶段：{stage_desc}\n\n标准诊断流程：\nS0 意图识别：从客户描述提取关键实体（虚拟机名/集群/时间点），同时查看告警日志和操作日志，确认客户真实问题\nS1 故障定位：向客户提出 1-3 个精准确认问题，定位到最小故障分类\nS2 假设生成：列出 2-3 个最可能的根因假设，按概率排序\nS3 验证执行：逐一执行诊断命令，收集系统状态证据\nS4 根因确认：根据证据确定根因\nS5 方案输出：提供明确可执行的修复步骤\nS6 验证闭环：确认问题已解决，记录知识",
         "base_case_context_v1": "---\n当前工单 ID：{case_id}",
         "s0_intent_recognition_v1": "【知识使用规范】\n在意图识别阶段（S0），你的唯一目标是：\n  从用户描述中提取故障特征，在分类列表中选出最匹配的 1 个分类。\n\n规则：\n  - 不要主动诊断或推理根因（等到分类确认后再诊断）\n  - 若特征明确，直接输出确认分类\n  - 若特征模糊，提出 1 个澄清问题，并给出最多 4 个候选分类供用户选择\n  - 严禁捏造分类编码（只能使用分类列表中的编码）\n\n【环境上下文】\n## 当前环境信息\n{env_info}\n## 最新告警\n{alert_logs}\n## 近期任务日志\n{task_logs}\n\n【故障分类列表】\n请从以下 {total_count} 个分类中选择最匹配的故障分类：\n\n{categories_text}\n\n输出格式要求：\n1. 先用自然语言解释判断依据（1-2 句）\n2. 如需澄清，最多提 1 个问题\n3. 有足够信息时，**必须**在末尾输出（独立一行）：\n   「已确认故障分类：{{code}} {{name}}」\n4. 或者输出候选列表供用户选择，并引导用户进行选择（包含最多 4 个推荐选项和 1 个“以上都不是”选项，独立五行）：\n   ① {{code1}} {{name1}}\n   ② {{code2}} {{name2}}\n   ③ {{code3}} {{name3}}\n   ④ {{code4}} {{name4}}\n   ⑤ 以上都不是（请补充症状描述）\n5. 确认分类之前，不做诊断推理，不引用 SOP",

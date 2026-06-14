@@ -162,7 +162,6 @@ class KBClient(InternalHTTPClient):
             )
             return []
 
-
     async def get_categories_grouped(self, leaf_only: bool = True) -> dict[str, list[dict]]:
         """
         获取分类列表（按域分组）

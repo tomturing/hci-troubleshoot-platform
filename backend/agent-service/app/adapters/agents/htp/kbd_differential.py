@@ -516,7 +516,11 @@ class KBDDiagnostic:
             "- 步骤 {idx}：`{name}` {status}".format(
                 idx=i + 1,
                 name=s.tool_name,
-                status=(f"✓ 输出：{smart_truncate(s.raw_output or '', max_chars=200)}" if s.error is None else f"✗ 失败：{s.error}"),
+                status=(
+                    f"✓ 输出：{smart_truncate(s.raw_output or '', max_chars=200)}"
+                    if s.error is None
+                    else f"✗ 失败：{s.error}"
+                ),
             )
             for i, s in enumerate(steps_executed)
         )

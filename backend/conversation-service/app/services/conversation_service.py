@@ -2183,6 +2183,7 @@ class ConversationService:
 
             from shared.models.audit import Authorization, ToolResult
             from sqlalchemy import select
+
             try:
                 async with self.session_factory() as session:
                     stmt = select(ToolResult).where(ToolResult.id == request_id)

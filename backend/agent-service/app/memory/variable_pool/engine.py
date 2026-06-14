@@ -24,6 +24,16 @@ from typing import Any
 
 from shared.clients import KBClient
 from shared.observability.logger import get_logger
+from shared.utils.acquisition_strategy import (
+    STRATEGY_DERIVED,
+    STRATEGY_ENV_INJECTION,
+    STRATEGY_JSON_EXTRACT,
+    STRATEGY_SKILL_CALL,
+    STRATEGY_SOP_DEFAULT,
+    STRATEGY_TOOL_CALL,
+    STRATEGY_USER_CONFIRM,
+    parse_strategy,
+)
 
 from app.memory.variable_pool.pool import VariableRequestResult
 
@@ -441,8 +451,11 @@ async def sop_request_variable(
         )
 
     # 3. 根据 acquisition_strategy 决定获取方式
-    strategy = var_def.get("acquisition_strategy", "user_input")
-    acquisition_tool = var_def.get("acquisition_tool")
+    # 使用公共解析模块，支持全名/简写/冒号参数三种格式（如 "skill:hci-alert-parsing"）
+    _parsed = parse_strategy(var_def.get("acquisition_strategy"))
+    strategy = _parsed.strategy
+    # 冒号参数（如 skill:hci-alert-parsing 中的 hci-alert-parsing）优先于独立 acquisition_tool 字段
+    acquisition_tool = _parsed.parameter or var_def.get("acquisition_tool")
     output_path = var_def.get("output_path")
     depends_on = var_def.get("depends_on") or []
     if isinstance(depends_on, str):
@@ -452,6 +465,7 @@ async def sop_request_variable(
         event="sop_request_variable_strategy",
         variable_name=variable_name,
         strategy=strategy,
+        raw_strategy=var_def.get("acquisition_strategy"),
         acquisition_tool=acquisition_tool,
         depends_on=depends_on,
     )
@@ -477,10 +491,11 @@ async def sop_request_variable(
             },
         }
 
-    if strategy in ("env_injection", "env_context") or (isinstance(strategy, str) and strategy.startswith("env:")):
+    if strategy == STRATEGY_ENV_INJECTION:
+        # env_injection 类变量（含 env:xxx 冒号格式）应在 SOP 初始化阶段批量注入，不走 JIT
         logger.error(
             event="sop_request_variable_env_injection_missing",
-            message=f"变量 {variable_name} 策略为 {strategy} 但在 context_variables 中未找到值",
+            message=f"变量 {variable_name} 策略为 {var_def.get('acquisition_strategy')} 但在 context_variables 中未找到值",
             variable_name=variable_name,
             conversation_id=conversation_id,
         )
@@ -493,16 +508,16 @@ async def sop_request_variable(
         return {
             "error": "sop_env_variable_missing",
             "message": (
-                f"变量 {variable_name} 声明为 {strategy}，但 SOP 初始化阶段未注入。"
+                f"变量 {variable_name} 声明为 {var_def.get('acquisition_strategy')}，但 SOP 初始化阶段未注入。"
                 "请检查环境采集、变量声明或动态 Skill/Tool 配置。"
             ),
             "variable_name": variable_name,
             "strategy": strategy,
         }
 
-    if strategy == "sop_default":
-        # sop_default 类变量：直接读 variable_schema.default_value，无需用户输入或工具调用
-        default_val = var_def.get("default_value")
+    if strategy == STRATEGY_SOP_DEFAULT:
+        # sop_default 类变量：直接读 variable_schema.default_value 或冒号参数（如 sop:NONE）
+        default_val = var_def.get("default_value") or (_parsed.parameter if _parsed.parameter else None)
         if default_val is None:
             return {
                 "error": (
@@ -518,7 +533,7 @@ async def sop_request_variable(
         )
         return {"ok": True, "value": value, "source": "sop_default"}
 
-    if strategy == "derived":
+    if strategy == STRATEGY_DERIVED:
         expression = var_def.get("expression") or var_def.get("derived_expression")
         if not expression:
             return {
@@ -555,8 +570,8 @@ async def sop_request_variable(
             "expression": str(expression),
         }
 
-    if strategy == "tool_call" and acquisition_tool:
-        # DC-02: tool_call 策略：调用指定工具自动获取变量值
+    if strategy == STRATEGY_TOOL_CALL and acquisition_tool:
+        # tool_call 策略（含 tool:xxx 冒号简写）：自动调用指定工具获取变量值（DC-02）
         if tool_executor is not None:
             try:
                 tool_args = var_def.get("acquisition_args") or var_def.get("acquisition_args_template") or {}
@@ -597,14 +612,13 @@ async def sop_request_variable(
             "acquisition_tool": acquisition_tool,
         }
 
-    if strategy == "skill_call" and acquisition_tool:
-        # skill_call 策略：执行数据库动态 Skill 计算变量值
+    if strategy == STRATEGY_SKILL_CALL and acquisition_tool:
+        # skill_call 策略（含 skill:xxx 冒号简写）：执行数据库动态 Skill 计算变量值
         if skill_runner is None:
             return {
                 "error": "sop_dynamic_skill_runner_missing",
                 "message": (
-                    f"变量 {variable_name} 声明由 Skill {acquisition_tool} 获取，"
-                    "但运行时未注入 DynamicSkillRunner"
+                    f"变量 {variable_name} 声明由 Skill {acquisition_tool} 获取，但运行时未注入 DynamicSkillRunner"
                 ),
                 "variable_name": variable_name,
                 "acquisition_skill": acquisition_tool,
@@ -630,7 +644,9 @@ async def sop_request_variable(
                     "ok": True,
                     "value": acquired_value,
                     "source": "skill_call",
-                    "skill_name": skill_result.get("skill_name") if isinstance(skill_result, dict) else acquisition_tool,
+                    "skill_name": skill_result.get("skill_name")
+                    if isinstance(skill_result, dict)
+                    else acquisition_tool,
                 }
         except Exception as exc:
             logger.error(
@@ -653,7 +669,117 @@ async def sop_request_variable(
             "output_path": output_path,
         }
 
-    if strategy == "user_confirm":
+    if strategy == STRATEGY_JSON_EXTRACT:
+        import json
+
+        try:
+            from jsonpath_ng.ext import parse as jsonpath_parse
+        except ImportError:
+            return {
+                "error": "json_extract_dependency_missing",
+                "message": "json_extract 策略需要 jsonpath-ng 依赖，请在 pyproject.toml 中添加 jsonpath-ng>=1.6",
+            }
+
+        # 1. 检验 depends_on 前置依赖
+        if not depends_on:
+            return {"error": f"变量 {variable_name} 的策略为 json_extract，必须声明 depends_on 依赖的父变量名"}
+
+        dependency_name = depends_on[0]
+        dependency_payload = context_variables.get(dependency_name)
+        if not dependency_payload:
+            return {
+                "error": "sop_variable_dependency_missing",
+                "message": f"变量 {variable_name} 的 json_extract 前置依赖 {dependency_name} 尚未就绪，请先调用 sop_request_variable(variable_name='{dependency_name}')",
+                "variable_name": variable_name,
+                "missing_dependencies": [dependency_name],
+            }
+
+        # 2. 提取 exec_id，尝试从 Redis 取完整原始数据
+        exec_id_for_cache = dependency_payload.get("exec_id") if isinstance(dependency_payload, dict) else None
+
+        raw_data_str: str | None = None
+
+        if exec_id_for_cache:
+            try:
+                redis_client = getattr(tool_executor, "_redis", None)
+                if redis_client:
+                    cache_key = f"cmd_cache:{exec_id_for_cache}"
+                    cached_bytes = await redis_client.client.get(cache_key)
+                    if cached_bytes:
+                        raw_data_str = cached_bytes.decode("utf-8") if isinstance(cached_bytes, bytes) else cached_bytes
+                        logger.info(
+                            event="json_extract_cache_hit",
+                            variable_name=variable_name,
+                            exec_id=exec_id_for_cache,
+                            raw_size=len(raw_data_str),
+                        )
+            except Exception as redis_err:
+                logger.warning(
+                    event="json_extract_redis_failed",
+                    variable_name=variable_name,
+                    error=str(redis_err),
+                )
+
+        # 3. 缓存穿透兜底：Redis 无数据时退化使用已截断的 value
+        if not raw_data_str:
+            raw_data_str = (
+                dependency_payload.get("value") if isinstance(dependency_payload, dict) else str(dependency_payload)
+            )
+            logger.warning(
+                event="json_extract_cache_miss_fallback",
+                variable_name=variable_name,
+                note="Redis 缓存已失效，使用已截断数据降级提取，结果可能不完整",
+            )
+
+        if not raw_data_str:
+            return {"error": f"前置依赖 {dependency_name} 的数据内容为空，json_extract 失败"}
+
+        # 4. 解析 JSON
+        try:
+            json_data = json.loads(raw_data_str)
+        except json.JSONDecodeError as je:
+            return {"error": f"依赖变量 {dependency_name} 的输出非合法 JSON: {str(je)}"}
+
+        # 5. 渲染 expression 中的变量占位符
+        expression_str = var_def.get("expression", "")
+        if not expression_str:
+            return {"error": f"变量 {variable_name} 的 json_extract 策略必须指定 expression（JSONPath）"}
+
+        unwrapped_ctx = _unwrap_context_variables(context_variables)
+        try:
+            expression_str = expression_str.format(**unwrapped_ctx)
+        except KeyError as ke:
+            return {"error": f"expression 占位符 {ke} 对应的上下文变量未就绪"}
+
+        # 6. JSONPath 匹配
+        try:
+            jsonpath_expr = jsonpath_parse(expression_str)
+        except Exception as parse_err:
+            return {"error": f"JSONPath 表达式语法错误: {expression_str} — {str(parse_err)}"}
+
+        matches = [m.value for m in jsonpath_expr.find(json_data)]
+
+        if not matches:
+            return {
+                "error": "json_extract_no_match",
+                "message": (
+                    f"在 {dependency_name} 的{'完整' if exec_id_for_cache else '截断'}数据中，"
+                    f"使用 JSONPath `{expression_str}` 未匹配到任何结果。"
+                    "请检查 node_hostname/disk_name 等过滤变量是否与数据中字段名完全一致。"
+                ),
+                "expression": expression_str,
+            }
+
+        extracted_value = matches[0]
+        logger.info(
+            event="json_extract_success",
+            variable_name=variable_name,
+            expression=expression_str,
+            extracted_value=str(extracted_value)[:100],
+        )
+        return {"ok": True, "value": extracted_value, "source": "json_extract"}
+
+    if strategy == STRATEGY_USER_CONFIRM:
         # user_confirm 策略：先调用工具获取候选值，再展示给用户确认
         options: list[dict] = []
         if acquisition_tool and tool_executor is not None:
@@ -684,44 +810,8 @@ async def sop_request_variable(
             msg=f"变量 {variable_name} 需要用户确认",
         )
 
-    # 兼容旧策略名 "tool"（向后兼容，等同于 tool_call）
-    if strategy == "tool" and acquisition_tool:
-        if tool_executor is not None:
-            try:
-                tool_args = var_def.get("acquisition_args") or var_def.get("acquisition_args_template") or {}
-                tool_args = _render_args_template(tool_args, context_variables)
-                tool_result = await tool_executor.execute(acquisition_tool, tool_args)
-                acquired_value = _extract_value(tool_result, variable_name, output_path)
-                if acquired_value is not None:
-                    return {"ok": True, "value": acquired_value, "source": "tool_call"}
-            except Exception as exc:
-                logger.error(
-                    event="sop_request_variable_tool_compat_failed",
-                    variable_name=variable_name,
-                    acquisition_tool=acquisition_tool,
-                    error=str(exc),
-                )
-        if _should_fallback_to_user_input(var_def):
-            return await _request_user_input(
-                var_schema=var_def,
-                kind="variable_input",
-                msg=f"变量 {variable_name} 自动获取失败，请手动输入",
-            )
-        return {
-            "error": "sop_tool_variable_acquire_failed",
-            "message": f"变量 {variable_name} 声明由工具 {acquisition_tool} 自动获取，但工具执行或取值失败",
-            "variable_name": variable_name,
-            "acquisition_tool": acquisition_tool,
-        }
-
-    # 兼容旧策略名 "env_context"（向后兼容，等同于 env_injection）
-    if strategy == "env_context":
-        return {
-            "error": (
-                f"变量 {variable_name} 类型为 env_context/env_injection，"
-                "应在 SOP 初始化阶段从环境上下文批量注入，无需调用此工具"
-            ),
-        }
+    # 注意：旧策略别名（"tool"、"env_context" 等）已在 parse_strategy() 中统一归一，
+    # 不再需要此处的单独兼容分支。
 
     # 默认：user_input 策略
     return await _request_user_input(

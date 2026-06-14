@@ -47,7 +47,6 @@ class Settings(BaseSettings):
     # LearningClaw/ProductionClaw 调用 KB Service 时携带此 Token
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
 
-
     class Config:
         env_file = ".env"
         case_sensitive = True

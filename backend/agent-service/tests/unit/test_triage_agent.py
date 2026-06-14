@@ -118,7 +118,6 @@ class TestParseIntentResult:
         assert len(result.candidates) == 0
 
 
-
 # ─── resolve_candidate_selection 测试 ───────────────────────────────────────
 
 

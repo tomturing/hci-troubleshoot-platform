@@ -298,7 +298,9 @@ async def toggle_skill_status(skill_id: int, db: AsyncSession = Depends(get_db))
     await db.refresh(s)
     resource_revision = await _publish_skill_resource(db, s)
     await db.commit()
-    logger.info(f"切换技能状态: skill_name={s.skill_name}, is_active={s.is_active}, resource_revision={resource_revision}")
+    logger.info(
+        f"切换技能状态: skill_name={s.skill_name}, is_active={s.is_active}, resource_revision={resource_revision}"
+    )
     return {"status": "success", "is_active": s.is_active, "resource_revision": resource_revision}
 
 

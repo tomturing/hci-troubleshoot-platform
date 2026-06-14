@@ -23,6 +23,7 @@ from typing import Any
 
 from shared.clients import KBClient
 from shared.observability.logger import get_logger
+from shared.utils.acquisition_strategy import parse_strategy
 
 from app.tools.sop.client import ConversationSopClient
 from app.tools.sop.command_intent import normalize_sop_commands
@@ -316,15 +317,19 @@ def _find_missing_guarded_variables(
     required_variables: list[dict[str, Any]],
     context_variables: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """找出进入节点前必须先按来源策略获取的缺失变量。"""
-    guarded_strategies = {"user_input", "user_confirm", "env_injection", "env_context"}
+    """找出进入节点前必须先按来源策略获取的缺失变量。
+
+    受守护策略（guarded）= 需要阻断推进直到变量就绪：env_injection / user_input / user_confirm。
+    自动策略（auto）= 无需预先阻断：tool_call / skill_call / llm_inference / derived 等。
+    """
     missing: list[dict[str, Any]] = []
     for variable in required_variables:
         name = variable.get("name")
-        strategy = str(variable.get("acquisition_strategy") or "user_input")
+        raw_strategy = str(variable.get("acquisition_strategy") or "user_input")
         if not name:
             continue
-        if strategy not in guarded_strategies and not strategy.startswith("env:"):
+        # 统一使用公共解析器判断是否受守护
+        if not parse_strategy(raw_strategy).is_guarded:
             continue
         if not _has_variable_value(context_variables, name):
             missing.append(variable)
@@ -529,8 +534,7 @@ async def sop_advance(
                         "args": {
                             "variable_name": first_missing.get("name"),
                             "reason": (
-                                first_missing.get("description")
-                                or f"进入 SOP 节点 {target_node_id} 前需要该变量"
+                                first_missing.get("description") or f"进入 SOP 节点 {target_node_id} 前需要该变量"
                             ),
                         },
                     },

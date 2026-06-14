@@ -24,7 +24,12 @@ def normalize_sop_command(command: str) -> dict[str, Any] | None:
         return _bash_intent("host", stripped, stripped)
 
     if tokens[0] == "acli":
-        return {"tool_name": "acli_exec", "args": {"command": stripped}, "source_command": stripped, "parse_status": "ok"}
+        return {
+            "tool_name": "acli_exec",
+            "args": {"command": stripped},
+            "source_command": stripped,
+            "parse_status": "ok",
+        }
 
     if tokens[0] == "container_exec":
         parsed = _parse_container_exec(tokens)

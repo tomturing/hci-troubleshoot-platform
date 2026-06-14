@@ -163,7 +163,6 @@ async def resume_stream(conversation_id: str, request: Request):
     return await proxy_request_stream("GET", f"/{conversation_id}/resume-stream", payload=None, headers={})
 
 
-
 @router.post("/{conversation_id}/evaluate")
 async def submit_evaluation(conversation_id: str, request: Request):
     """提交用户评分"""

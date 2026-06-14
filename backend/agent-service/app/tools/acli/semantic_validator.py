@@ -62,7 +62,9 @@ class ValidationResult:
         field: str | None = None,
         suggested_fix: str | None = None,
     ) -> ValidationResult:
-        return cls(ok=False, issues=[ValidationIssue(code=code, message=message, field=field, suggested_fix=suggested_fix)])
+        return cls(
+            ok=False, issues=[ValidationIssue(code=code, message=message, field=field, suggested_fix=suggested_fix)]
+        )
 
     def to_feedback(self, tool_name: str) -> str:
         """生成给 LLM 的规划反馈。"""

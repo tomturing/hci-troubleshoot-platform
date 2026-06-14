@@ -64,11 +64,15 @@ class ToolResult(Base):
     # 事务状态机控制
     status = Column(String(30), nullable=False, default="committed")  # proposed/executing/committed/failed/cancelled等
     input_hash = Column(String(64), nullable=True)  # 工具调用参数哈希，防篡改
-    authorization_id = Column(String(36), ForeignKey("authorization.auth_id", ondelete="SET NULL"), nullable=True)  # 关联授权表 ID
+    authorization_id = Column(
+        String(36), ForeignKey("authorization.auth_id", ondelete="SET NULL"), nullable=True
+    )  # 关联授权表 ID
     idempotency_key = Column(String(100), nullable=True)  # 防重幂等键
     case_id = Column(String(20), nullable=True)  # 关联工单号，便于快速过滤
     retry_count = Column(SmallInteger, nullable=False, default=0)  # T1-4：工具执行重试次数（0=一次成功）
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False
+    )
 
     # 链路追踪
     trace_id = Column(String(64), nullable=True, index=True)

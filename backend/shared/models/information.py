@@ -23,17 +23,19 @@ from typing import Any
 
 # ─── 数据来源枚举 ─────────────────────────────────────────────────────────────
 
+
 class FactSource(StrEnum):
     """事实来源类型枚举。置信度参考：tool_exec > env_inject > kb_search > user_input > llm_inference"""
 
-    USER_INPUT = "user_input"       # 用户在对话中主动提供
-    TOOL_EXEC = "tool_exec"         # 工具执行输出（命令运行结果）
-    KB_SEARCH = "kb_search"         # 知识库检索结果
-    LLM_INFERENCE = "llm_inference" # LLM 推理/总结（需标注"待验证"）
-    ENV_INJECT = "env_inject"       # 工单创建时自动注入的环境数据
+    USER_INPUT = "user_input"  # 用户在对话中主动提供
+    TOOL_EXEC = "tool_exec"  # 工具执行输出（命令运行结果）
+    KB_SEARCH = "kb_search"  # 知识库检索结果
+    LLM_INFERENCE = "llm_inference"  # LLM 推理/总结（需标注"待验证"）
+    ENV_INJECT = "env_inject"  # 工单创建时自动注入的环境数据
 
 
 # ─── 信息包（InformationPacket） ─────────────────────────────────────────────
+
 
 @dataclass
 class InformationPacket:
@@ -107,6 +109,7 @@ class InformationPacket:
 
 # ─── 过期阈值守卫（StaleDataGuard） ──────────────────────────────────────────
 
+
 class StaleDataGuard:
     """定义各类数据的过期阈值（秒），用于 is_stale() 判断。
 
@@ -168,6 +171,7 @@ class StaleDataGuard:
 
 
 # ─── 事实集合（EvidenceBundle） ───────────────────────────────────────────────
+
 
 @dataclass
 class EvidenceBundle:
@@ -238,8 +242,5 @@ class EvidenceBundle:
     def has_sufficient_facts(self, min_count: int = 1) -> bool:
         """判断 Bundle 中是否有足够的事实用于推理。"""
         # 排除过期且低置信度的事实
-        valid_facts = [
-            f for f in self.facts
-            if f.get("key") not in self.stale_keys or f.get("confidence") == "高"
-        ]
+        valid_facts = [f for f in self.facts if f.get("key") not in self.stale_keys or f.get("confidence") == "高"]
         return len(valid_facts) >= min_count

@@ -51,6 +51,7 @@ class ToolCallValidator:
     """
     轻量级无依赖的 JSON Schema 与参数有效性校验器（T0-5 扩展 enum/array/oneOf）
     """
+
     @staticmethod
     def validate(tool_name: str, args: dict[str, Any], parameters_schema: dict[str, Any]) -> tuple[bool, str | None]:
         if not parameters_schema:
@@ -128,11 +129,11 @@ class ToolCallValidator:
                     item_enum = items_def.get("enum")
                     for i, item in enumerate(value):
                         if item_enum and item not in item_enum:
-                            return False, f"参数 '{name}' 第 {i+1} 个元素 '{item}' 不在允许枚举值中: {item_enum}"
+                            return False, f"参数 '{name}' 第 {i + 1} 个元素 '{item}' 不在允许枚举值中: {item_enum}"
                         elif item_type == "string" and not isinstance(item, str):
-                            return False, f"参数 '{name}' 第 {i+1} 个元素类型错误: 期望 string"
+                            return False, f"参数 '{name}' 第 {i + 1} 个元素类型错误: 期望 string"
                         elif item_type == "integer" and (not isinstance(item, int) or isinstance(item, bool)):
-                            return False, f"参数 '{name}' 第 {i+1} 个元素类型错误: 期望 integer"
+                            return False, f"参数 '{name}' 第 {i + 1} 个元素类型错误: 期望 integer"
 
         # T0-5: oneOf 校验（仅支持简单 oneOf，值必须匹配其中一种 schema）
         # oneOf 通常在根 schema 或单个属性定义中出现
@@ -223,6 +224,7 @@ class ToolResultEnvelope:
                 suggested_next_action = "请检查目标节点的可达性，或尝试执行低负载命令/查看日志"
                 # T4-2: 记录超时计数
                 from app.services.metrics import AGENT_TOOL_TIMEOUT_TOTAL
+
                 AGENT_TOOL_TIMEOUT_TOTAL.labels(tool_name=tool_name).inc()
             elif exit_code != 0:
                 interpretation = f"命令执行失败 (退出码: {exit_code})"
@@ -425,10 +427,10 @@ class ReactEngine:
             match = re.search(r"```\s*(.*?)\s*```", text_clean, re.DOTALL)
             if match:
                 return match.group(1).strip()
-            start = text_clean.find('{')
-            end = text_clean.rfind('}')
+            start = text_clean.find("{")
+            end = text_clean.rfind("}")
             if start != -1 and end != -1 and end > start:
-                return text_clean[start:end+1].strip()
+                return text_clean[start : end + 1].strip()
             return text_clean.strip()
 
         # 工具列表（OpenAI function calling 格式）+ 动态注入工具（T-AGT-22）
@@ -466,11 +468,26 @@ class ReactEngine:
             if invoke_result.content is not None:
                 # T3-5: 校验优先强绑定约束检测
                 if self.has_write_operation and not self.has_verification_after_write:
-                    closure_keywords = ["已恢复", "已解决", "修复", "成功", "搞定", "完成", "正常", "恢复正常", "排障结束", "closure", "resolved", "fixed", "success"]
+                    closure_keywords = [
+                        "已恢复",
+                        "已解决",
+                        "修复",
+                        "成功",
+                        "搞定",
+                        "完成",
+                        "正常",
+                        "恢复正常",
+                        "排障结束",
+                        "closure",
+                        "resolved",
+                        "fixed",
+                        "success",
+                    ]
                     if any(kw in invoke_result.content for kw in closure_keywords):
                         logger.warning("校验优先闭环拦截: 宣称完成但未验证")
                         try:
                             from app.services.metrics import AGENT_VERIFICATION_BLOCKED_TOTAL
+
                             AGENT_VERIFICATION_BLOCKED_TOTAL.inc()
                         except Exception as met_err:
                             logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
@@ -480,13 +497,14 @@ class ReactEngine:
                                 "【校验优先闭环强制拦截】\n"
                                 "你刚刚执行了修复性写操作命令，但在宣称修复完成/定位结束前，你必须先执行验证状态工具（例如 get_active_alerts，虚拟机状态检查，或者 status 检查等）"
                                 "来验证系统当前状态，证实问题确实已解决。严禁跳过验证直接给出排障报告。"
-                            )
+                            ),
                         }
                         work_messages.append(block_msg)
                         continue
 
                 # T3-4: 运行轻量级幻觉检测器并支持 Re-run 一次
                 from app.services.hallucination_detector import HallucinationDetector
+
                 detector = HallucinationDetector(tool_registry=self._tool_registry)
 
                 tool_results_list = []
@@ -501,17 +519,20 @@ class ReactEngine:
                                 executed_tool_names.append(fn["name"])
 
                 detection_report = detector.detect(
-                    llm_text=invoke_result.content,
-                    executed_tools=executed_tool_names,
-                    tool_outputs=tool_results_list
+                    llm_text=invoke_result.content, executed_tools=executed_tool_names, tool_outputs=tool_results_list
                 )
 
                 if detection_report.get("has_hallucination"):
-                    logger.warning("hallucination_detected_before_report", "最终报告生成前检测到幻觉，尝试重新生成一次 (Re-run)...")
+                    logger.warning(
+                        "hallucination_detected_before_report", "最终报告生成前检测到幻觉，尝试重新生成一次 (Re-run)..."
+                    )
                     try:
                         temp_messages = work_messages + [
                             {"role": "assistant", "content": invoke_result.content},
-                            {"role": "system", "content": "【反幻觉自我检查指令】你的上一次回答中包含未实际执行的工具引用，或者未在工具输出中找到数据来源的数值/百分比。请进行一步自我检查，修正这些幻觉，仅引用实际执行过的工具及对应的结果。请重新输出你的回答。"}
+                            {
+                                "role": "system",
+                                "content": "【反幻觉自我检查指令】你的上一次回答中包含未实际执行的工具引用，或者未在工具输出中找到数据来源的数值/百分比。请进行一步自我检查，修正这些幻觉，仅引用实际执行过的工具及对应的结果。请重新输出你的回答。",
+                            },
                         ]
                         new_invoke_result = await ai_client.invoke(
                             messages=temp_messages,
@@ -530,10 +551,15 @@ class ReactEngine:
                     cleaned_json = extract_json(invoke_result.content)
                     try:
                         parsed = response_schema.model_validate_json(cleaned_json)
-                        logger.info("schema_validation_success", f"结构化输出校验成功: schema={response_schema.__name__}")
+                        logger.info(
+                            "schema_validation_success", f"结构化输出校验成功: schema={response_schema.__name__}"
+                        )
                         try:
                             from app.services.metrics import AGENT_SCHEMA_VALIDATION_TOTAL
-                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(schema_name=response_schema.__name__, status="success").inc()
+
+                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(
+                                schema_name=response_schema.__name__, status="success"
+                            ).inc()
                         except Exception as met_err:
                             logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
                         if response_schema.__name__ == "ClaimVerification" and self._fact_store:
@@ -545,6 +571,7 @@ class ReactEngine:
                                     AGENT_REASONING_CONFIDENCE,
                                     AGENT_UNSUPPORTED_CLAIM_TOTAL,
                                 )
+
                                 if hasattr(parsed, "hypotheses") and parsed.hypotheses:
                                     avg_conf = sum(h.confidence for h in parsed.hypotheses) / len(parsed.hypotheses)
                                     AGENT_REASONING_CONFIDENCE.set(avg_conf)
@@ -554,11 +581,17 @@ class ReactEngine:
                             except Exception as met_err:
                                 logger.warning("metrics_record_failed", f"记录 ReasoningOutput metrics 失败: {met_err}")
                     except Exception as e:
-                        logger.warning("schema_validation_failed", f"结构化输出校验失败: schema={response_schema.__name__}, error={e}, raw={invoke_result.content}")
+                        logger.warning(
+                            "schema_validation_failed",
+                            f"结构化输出校验失败: schema={response_schema.__name__}, error={e}, raw={invoke_result.content}",
+                        )
                         self.schema_validation_failed = True
                         try:
                             from app.services.metrics import AGENT_SCHEMA_VALIDATION_TOTAL
-                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(schema_name=response_schema.__name__, status="failed").inc()
+
+                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(
+                                schema_name=response_schema.__name__, status="failed"
+                            ).inc()
                         except Exception as met_err:
                             logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
 
@@ -580,7 +613,10 @@ class ReactEngine:
                         parsed = response_schema.model_validate_json(cleaned_json)
                         try:
                             from app.services.metrics import AGENT_SCHEMA_VALIDATION_TOTAL
-                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(schema_name=response_schema.__name__, status="success").inc()
+
+                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(
+                                schema_name=response_schema.__name__, status="success"
+                            ).inc()
                         except Exception as met_err:
                             logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
                         if response_schema.__name__ == "ClaimVerification" and self._fact_store:
@@ -592,6 +628,7 @@ class ReactEngine:
                                     AGENT_REASONING_CONFIDENCE,
                                     AGENT_UNSUPPORTED_CLAIM_TOTAL,
                                 )
+
                                 if hasattr(parsed, "hypotheses") and parsed.hypotheses:
                                     avg_conf = sum(h.confidence for h in parsed.hypotheses) / len(parsed.hypotheses)
                                     AGENT_REASONING_CONFIDENCE.set(avg_conf)
@@ -599,18 +636,26 @@ class ReactEngine:
                                     for _claim in parsed.unsupported_claims:
                                         AGENT_UNSUPPORTED_CLAIM_TOTAL.labels(claim_type="reasoning_output").inc()
                             except Exception as met_err:
-                                logger.warning("metrics_record_failed", f"记录 ReasoningOutput 流式 metrics 失败: {met_err}")
+                                logger.warning(
+                                    "metrics_record_failed", f"记录 ReasoningOutput 流式 metrics 失败: {met_err}"
+                                )
                     except Exception as e:
-                        logger.warning("stream_schema_validation_failed", f"流式结构化输出校验失败: {e}, raw={full_stream_text}")
+                        logger.warning(
+                            "stream_schema_validation_failed", f"流式结构化输出校验失败: {e}, raw={full_stream_text}"
+                        )
                         self.schema_validation_failed = True
                         try:
                             from app.services.metrics import AGENT_SCHEMA_VALIDATION_TOTAL
-                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(schema_name=response_schema.__name__, status="failed").inc()
+
+                            AGENT_SCHEMA_VALIDATION_TOTAL.labels(
+                                schema_name=response_schema.__name__, status="failed"
+                            ).inc()
                         except Exception as met_err:
                             logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
 
                 # T3-4: 运行轻量级幻觉检测器
                 from app.services.hallucination_detector import HallucinationDetector
+
                 detector = HallucinationDetector(tool_registry=self._tool_registry)
 
                 tool_results_list = []
@@ -626,35 +671,45 @@ class ReactEngine:
 
                 final_text = full_stream_text or invoke_result.content or ""
                 detection_report = detector.detect(
-                    llm_text=final_text,
-                    executed_tools=executed_tool_names,
-                    tool_outputs=tool_results_list
+                    llm_text=final_text, executed_tools=executed_tool_names, tool_outputs=tool_results_list
                 )
 
                 if detection_report.get("has_hallucination"):
                     reasons = detection_report.get("reasons", [])
-                    warning_msg = f"\n\n*(注：本回复中部分内容存在高风险幻觉（如：{', '.join(reasons)}），已标注为\"待验证\"，请工程师注意确认)*"
+                    warning_msg = f'\n\n*(注：本回复中部分内容存在高风险幻觉（如：{", ".join(reasons)}），已标注为"待验证"，请工程师注意确认)*'
                     yield AgentTextChunk(content=warning_msg)
                     try:
                         from app.services.metrics import (
                             AGENT_HALLUCINATION_DETECTED_TOTAL,
                             AGENT_UNSUPPORTED_CLAIM_TOTAL,
                         )
-                        for htype, hkey in [("phantom_tools", "phantom_tool"), ("overconfident_claims", "overconfident"), ("ungrounded_numbers", "ungrounded_number")]:
+
+                        for htype, hkey in [
+                            ("phantom_tools", "phantom_tool"),
+                            ("overconfident_claims", "overconfident"),
+                            ("ungrounded_numbers", "ungrounded_number"),
+                        ]:
                             if detection_report.get(htype):
                                 AGENT_HALLUCINATION_DETECTED_TOTAL.labels(hallucination_type=hkey).inc()
                         # T4-2: 同时记录无证据结论指标（用于 agent_unsupported_claim_total 面板）
                         if detection_report.get("overconfident_claims"):
-                            AGENT_UNSUPPORTED_CLAIM_TOTAL.labels(claim_type="overconfident").inc(len(detection_report["overconfident_claims"]))
+                            AGENT_UNSUPPORTED_CLAIM_TOTAL.labels(claim_type="overconfident").inc(
+                                len(detection_report["overconfident_claims"])
+                            )
                         if detection_report.get("ungrounded_numbers"):
-                            AGENT_UNSUPPORTED_CLAIM_TOTAL.labels(claim_type="ungrounded_number").inc(len(detection_report["ungrounded_numbers"]))
+                            AGENT_UNSUPPORTED_CLAIM_TOTAL.labels(claim_type="ungrounded_number").inc(
+                                len(detection_report["ungrounded_numbers"])
+                            )
                     except Exception as met_err:
                         logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
 
                 # T4-2: 记录推理步数（成功完成）
                 try:
                     from app.services.metrics import AGENT_REASONING_STEPS_TOTAL, AGENT_RESOLUTION_STEPS
-                    AGENT_REASONING_STEPS_TOTAL.labels(session_id=session_id, case_id=case_id or "unknown").inc(step_count)
+
+                    AGENT_REASONING_STEPS_TOTAL.labels(session_id=session_id, case_id=case_id or "unknown").inc(
+                        step_count
+                    )
                     AGENT_RESOLUTION_STEPS.observe(step_count)
                 except Exception as met_err:
                     logger.warning("metrics_record_failed", f"记录步数 metrics 失败: {met_err}")
@@ -706,14 +761,20 @@ class ReactEngine:
                     )
 
                     runtime_registry = (
-                        await refresh_tool_registry_if_needed() if TOOL_REGISTRY_MANAGER is not None else self._tool_registry
+                        await refresh_tool_registry_if_needed()
+                        if TOOL_REGISTRY_MANAGER is not None
+                        else self._tool_registry
                     )
                     temp_tool_def = runtime_registry.get(tc.name)
                 temp_risk = temp_tool_def.risk_level if temp_tool_def else 1
                 if temp_risk >= 2:
                     self.has_write_operation = True
                     self.has_verification_after_write = False
-                elif self.has_write_operation and tc.name not in ("get_sop_node", "sop_advance", "sop_request_variable"):
+                elif self.has_write_operation and tc.name not in (
+                    "get_sop_node",
+                    "sop_advance",
+                    "sop_request_variable",
+                ):
                     self.has_verification_after_write = True
 
                 # require_all_confirm 覆盖：将只读工具也升级为需确认
@@ -726,7 +787,7 @@ class ReactEngine:
                     step=step_count,
                     require_all_confirm=require_all_confirm,
                     tool_executor=active_tool_executor,  # T-AGT-22: 传入执行器
-                    execution_mode=execution_mode,       # T1-3: 传入执行模式
+                    execution_mode=execution_mode,  # T1-3: 传入执行模式
                     case_id=case_id,
                 ):
                     # 捕获工具执行结果
@@ -758,7 +819,6 @@ class ReactEngine:
                         "content": envelope.to_llm_message(),
                     }
                 )
-
 
         # 超出步数限制
         yield AgentTextChunk(content="⚠️ 诊断步骤已达上限，请联系人工支持。")
@@ -794,7 +854,7 @@ class ReactEngine:
         step: int,
         require_all_confirm: bool = False,
         tool_executor: ToolExecutor | None = None,  # T-AGT-22: 可替换执行器
-        execution_mode: str = "safe-only",           # T1-3: 执行模式（off/safe-only/aggressive）
+        execution_mode: str = "safe-only",  # T1-3: 执行模式（off/safe-only/aggressive）
         case_id: str = "",
     ) -> AsyncGenerator[AgentEvent, None]:
         """执行单个工具调用，含授权检查和审计记录
@@ -829,7 +889,9 @@ class ReactEngine:
             tool_def = active_tool_registry.get(tool_name)
             risk = tool_def.risk_level if tool_def else 1
             if risk >= 2:
-                logger.warning("schema_validation_block_write", f"降级拦截: Schema 校验失败，禁止执行高风险写操作工具: {tool_name}")
+                logger.warning(
+                    "schema_validation_block_write", f"降级拦截: Schema 校验失败，禁止执行高风险写操作工具: {tool_name}"
+                )
                 yield ToolResultEvent(
                     tool_name=tool_name,
                     exec_id=exec_id,
@@ -959,6 +1021,7 @@ class ReactEngine:
             validation_codes = [issue.code for issue in semantic_result.issues]
             try:
                 from app.services.metrics import AGENT_TOOL_SEMANTIC_VALIDATION_TOTAL
+
                 for validation_code in validation_codes:
                     AGENT_TOOL_SEMANTIC_VALIDATION_TOTAL.labels(
                         tool_name=tool_name,
@@ -968,6 +1031,7 @@ class ReactEngine:
                 logger.warning("metrics_record_failed", f"记录工具语义校验指标失败: {met_err}")
             try:
                 from shared.observability.otel import get_current_trace_id
+
                 trace_id = get_current_trace_id() or "unknown"
             except Exception:
                 trace_id = "unknown"
@@ -1128,6 +1192,7 @@ class ReactEngine:
 
         # T1-3: 调用服务端安全策略进行评估，限制高危命令的自动执行条件
         from app.services.policy_service import PolicyService
+
         policy_service = PolicyService()
         # T1-3 修复：将「策略判定」与「确认服务可用性」解耦。
         # 旧实现 `needs_confirm = ... and self._confirm_service` 会在 confirm_service 缺失时
@@ -1351,6 +1416,7 @@ class ReactEngine:
 
         # 1. 检查熔断器状态
         from app.services.tool_reliability import ToolCircuitBreaker, ToolRetryPolicy
+
         breaker = ToolCircuitBreaker(tool_name)
         if not breaker.allow_execution():
             logger.error(f"工具 {tool_name} 处于熔断状态，拒绝执行")
@@ -1455,7 +1521,7 @@ class ReactEngine:
                     if ToolRetryPolicy.is_retriable(exit_code_meaning, error):
                         logger.warning(
                             "tool_retry",
-                            f"工具 {tool_name} 执行失败(可重试): {error}. 将在 {retry_delay:.1f}s 后进行第 {attempt + 1} 次重试"
+                            f"工具 {tool_name} 执行失败(可重试): {error}. 将在 {retry_delay:.1f}s 后进行第 {attempt + 1} 次重试",
                         )
                         retry_count = attempt + 1  # T1-4：进入下一次重试前累加
                         await asyncio.sleep(retry_delay)
@@ -1477,15 +1543,12 @@ class ReactEngine:
         # T4-2: 统计工具调用成功率与耗时分布 metrics
         try:
             from app.services.metrics import AGENT_TOOL_CALL_TOTAL, AGENT_TOOL_EXECUTION_DURATION
+
             status_str = "success" if error is None else "failed"
-            AGENT_TOOL_CALL_TOTAL.labels(
-                tool_name=tool_name,
-                status=status_str
-            ).inc()
-            AGENT_TOOL_EXECUTION_DURATION.labels(
-                tool_name=tool_name,
-                status=status_str
-            ).observe((completed_at - started_at).total_seconds())
+            AGENT_TOOL_CALL_TOTAL.labels(tool_name=tool_name, status=status_str).inc()
+            AGENT_TOOL_EXECUTION_DURATION.labels(tool_name=tool_name, status=status_str).observe(
+                (completed_at - started_at).total_seconds()
+            )
         except Exception as met_err:
             logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
 
@@ -1531,6 +1594,7 @@ class ReactEngine:
                 import time
 
                 from shared.models.information import FactSource, InformationPacket
+
                 # 将工具结果封装为 InformationPacket
                 result_value = result
                 if hasattr(result, "stdout"):

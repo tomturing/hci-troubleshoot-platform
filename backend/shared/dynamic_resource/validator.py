@@ -17,17 +17,19 @@ class DynamicResourceValidator:
         for idx, dep in enumerate(dependencies):
             location = f"dependency_json[{idx}]"
             if not isinstance(dep, dict):
-                issues.append(
-                    ValidationIssue("error", location, "依赖项必须是对象", "DEPENDENCY_NOT_OBJECT")
-                )
+                issues.append(ValidationIssue("error", location, "依赖项必须是对象", "DEPENDENCY_NOT_OBJECT"))
                 continue
             if not dep.get("resource_type"):
                 issues.append(
-                    ValidationIssue("error", f"{location}.resource_type", "依赖缺少 resource_type", "DEPENDENCY_TYPE_MISSING")
+                    ValidationIssue(
+                        "error", f"{location}.resource_type", "依赖缺少 resource_type", "DEPENDENCY_TYPE_MISSING"
+                    )
                 )
             if not dep.get("resource_name"):
                 issues.append(
-                    ValidationIssue("error", f"{location}.resource_name", "依赖缺少 resource_name", "DEPENDENCY_NAME_MISSING")
+                    ValidationIssue(
+                        "error", f"{location}.resource_name", "依赖缺少 resource_name", "DEPENDENCY_NAME_MISSING"
+                    )
                 )
 
         if any(issue.level == "error" for issue in issues):

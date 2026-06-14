@@ -113,6 +113,7 @@ class ToolAuditService:
         try:
             async with cls._session_factory() as session:
                 from sqlalchemy import select
+
                 # 基于 exec_id (audit_id) 查询现有记录，实现增量更新状态
                 stmt = select(ToolResult).where(ToolResult.id == audit_id)
                 res = await session.execute(stmt)
@@ -132,8 +133,12 @@ class ToolAuditService:
                         input_json=tool_args or {},
                         output_json=output_json,
                         error=error,
-                        started_at=(started_at.astimezone(UTC) if started_at.tzinfo else started_at) if started_at else datetime.now(UTC),
-                        completed_at=(completed_at.astimezone(UTC) if completed_at.tzinfo else completed_at) if completed_at else None,
+                        started_at=(started_at.astimezone(UTC) if started_at.tzinfo else started_at)
+                        if started_at
+                        else datetime.now(UTC),
+                        completed_at=(completed_at.astimezone(UTC) if completed_at.tzinfo else completed_at)
+                        if completed_at
+                        else None,
                         duration_ms=duration_ms,
                         trace_id=trace_id,
                         status=status or "committed",

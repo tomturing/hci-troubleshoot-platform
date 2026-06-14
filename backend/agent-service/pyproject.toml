@@ -24,6 +24,7 @@ dependencies = [
     "pgvector==0.2.4",
     "langfuse>=3.0,<4.0",
     "opentelemetry-instrumentation-sqlalchemy",
+    "jsonpath-ng>=1.8.0",
 ]
 
 [dependency-groups]

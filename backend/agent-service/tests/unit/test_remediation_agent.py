@@ -68,7 +68,6 @@ def _make_confirm_service_mock(approved: bool = True):
     return mock
 
 
-
 def _make_tool_executor_mock():
     """构建工具执行器 mock"""
     executor = MagicMock()

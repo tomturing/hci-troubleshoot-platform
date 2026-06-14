@@ -81,13 +81,13 @@ class ContainerExecAdapter:
     _RUNTIME_PROBE = (
         "if command -v container_exec >/dev/null 2>&1; then "
         "printf container_exec; "
-        "elif command -v nerdctl >/dev/null 2>&1 && nerdctl -n \"$HCI_CTR_NS\" ps --format '{{.Names}}' 2>/dev/null | grep -Fxq \"$HCI_CONTAINER\"; then "
+        'elif command -v nerdctl >/dev/null 2>&1 && nerdctl -n "$HCI_CTR_NS" ps --format \'{{.Names}}\' 2>/dev/null | grep -Fxq "$HCI_CONTAINER"; then '
         "printf nerdctl; "
         "elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq \"$HCI_CONTAINER\"; then "
         "printf docker; "
-        "elif command -v crictl >/dev/null 2>&1 && crictl ps --name \"$HCI_CONTAINER\" -q | head -n1 | grep -q .; then "
+        'elif command -v crictl >/dev/null 2>&1 && crictl ps --name "$HCI_CONTAINER" -q | head -n1 | grep -q .; then '
         "printf crictl; "
-        "elif command -v ctr >/dev/null 2>&1 && ctr -n \"$HCI_CTR_NS\" tasks ls 2>/dev/null | awk '{print $1}' | grep -Fxq \"$HCI_CONTAINER\"; then "
+        'elif command -v ctr >/dev/null 2>&1 && ctr -n "$HCI_CTR_NS" tasks ls 2>/dev/null | awk \'{print $1}\' | grep -Fxq "$HCI_CONTAINER"; then '
         "printf ctr; "
         "else printf unsupported; fi"
     )
@@ -160,7 +160,9 @@ class ContainerExecAdapter:
         if runtime == ContainerRuntime.AUTO:
             return cls._RUNTIME_PROBE
         if runtime == ContainerRuntime.CONTAINER_EXEC:
-            return "if command -v container_exec >/dev/null 2>&1; then printf container_exec; else printf unsupported; fi"
+            return (
+                "if command -v container_exec >/dev/null 2>&1; then printf container_exec; else printf unsupported; fi"
+            )
         if runtime == ContainerRuntime.NERDCTL:
             return "if command -v nerdctl >/dev/null 2>&1; then printf nerdctl; else printf unsupported; fi"
         if runtime == ContainerRuntime.DOCKER:
@@ -184,17 +186,17 @@ class ContainerExecAdapter:
             f"HCI_USER_COMMAND={quoted_user_command}; "
             "export HCI_CONTAINER HCI_CTR_NS HCI_USER_COMMAND; "
             f"HCI_RUNTIME=$(sh -lc {quoted_runtime_probe}); "
-            "case \"$HCI_RUNTIME\" in "
-            "container_exec) exec container_exec -n \"$HCI_CONTAINER\" -c \"$HCI_USER_COMMAND\" -d ;; "
-            "nerdctl) exec nerdctl -n \"$HCI_CTR_NS\" exec \"$HCI_CONTAINER\" sh -lc \"$HCI_USER_COMMAND\" ;; "
-            "docker) exec docker exec \"$HCI_CONTAINER\" sh -lc \"$HCI_USER_COMMAND\" ;; "
-            "crictl) HCI_CID=$(crictl ps --name \"$HCI_CONTAINER\" -q | head -n1); "
-            "if [ -z \"$HCI_CID\" ]; then echo \"[container_exec] container not found: $HCI_CONTAINER\" >&2; exit 127; fi; "
-            "exec crictl exec \"$HCI_CID\" sh -lc \"$HCI_USER_COMMAND\" ;; "
-            "ctr) if ! ctr -n \"$HCI_CTR_NS\" tasks ls 2>/dev/null | awk '{print $1}' | grep -Fxq \"$HCI_CONTAINER\"; then "
-            "echo \"[container_exec] container task not found: $HCI_CONTAINER\" >&2; exit 127; fi; "
-            "exec ctr -n \"$HCI_CTR_NS\" tasks exec --exec-id \"hci-$RANDOM-$$\" \"$HCI_CONTAINER\" sh -lc \"$HCI_USER_COMMAND\" ;; "
-            "*) echo \"[container_exec] unsupported container runtime or inaccessible container: $HCI_CONTAINER\" >&2; exit 127 ;; "
+            'case "$HCI_RUNTIME" in '
+            'container_exec) exec container_exec -n "$HCI_CONTAINER" -c "$HCI_USER_COMMAND" -d ;; '
+            'nerdctl) exec nerdctl -n "$HCI_CTR_NS" exec "$HCI_CONTAINER" sh -lc "$HCI_USER_COMMAND" ;; '
+            'docker) exec docker exec "$HCI_CONTAINER" sh -lc "$HCI_USER_COMMAND" ;; '
+            'crictl) HCI_CID=$(crictl ps --name "$HCI_CONTAINER" -q | head -n1); '
+            'if [ -z "$HCI_CID" ]; then echo "[container_exec] container not found: $HCI_CONTAINER" >&2; exit 127; fi; '
+            'exec crictl exec "$HCI_CID" sh -lc "$HCI_USER_COMMAND" ;; '
+            'ctr) if ! ctr -n "$HCI_CTR_NS" tasks ls 2>/dev/null | awk \'{print $1}\' | grep -Fxq "$HCI_CONTAINER"; then '
+            'echo "[container_exec] container task not found: $HCI_CONTAINER" >&2; exit 127; fi; '
+            'exec ctr -n "$HCI_CTR_NS" tasks exec --exec-id "hci-$RANDOM-$$" "$HCI_CONTAINER" sh -lc "$HCI_USER_COMMAND" ;; '
+            '*) echo "[container_exec] unsupported container runtime or inaccessible container: $HCI_CONTAINER" >&2; exit 127 ;; '
             "esac"
         )
 

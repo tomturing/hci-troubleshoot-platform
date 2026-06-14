@@ -6,6 +6,7 @@ from app.tools.acli.executor import ExitCodeMeaning
 
 logger = logging.getLogger("agent.reliability")
 
+
 class ToolCircuitBreaker:
     """单个工具的内存熔断器"""
 
@@ -26,7 +27,7 @@ class ToolCircuitBreaker:
             ToolCircuitBreaker._states[tool_name] = {
                 "status": "closed",
                 "fail_count": 0,
-                "last_state_change": time.time()
+                "last_state_change": time.time(),
             }
 
     @property
@@ -74,7 +75,9 @@ class ToolCircuitBreaker:
             logger.warning(f"工具 {self.tool_name} 在 Half-Open 状态下再次失败，重新进入 Open 熔断状态")
             state["status"] = "open"
         elif state["status"] == "closed" and state["fail_count"] >= self.failure_threshold:
-            logger.warning(f"工具 {self.tool_name} 连续失败 {state['fail_count']} 次，熔断器进入 Open 状态，开始 60s 隔离")
+            logger.warning(
+                f"工具 {self.tool_name} 连续失败 {state['fail_count']} 次，熔断器进入 Open 状态，开始 60s 隔离"
+            )
             state["status"] = "open"
 
 
@@ -98,7 +101,7 @@ class ToolRetryPolicy:
                 "broken pipe",
                 "temporary failure",
                 "network unreachable",
-                "connection refused"
+                "connection refused",
             ]
             if any(kw in err_lower for kw in retriable_keywords):
                 return True

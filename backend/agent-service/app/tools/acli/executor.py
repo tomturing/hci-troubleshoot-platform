@@ -48,6 +48,7 @@ class ExitCodeMeaning(StrEnum):
     """
     命令执行退出码语义定义
     """
+
     SUCCESS = "success"
     TIMEOUT = "timeout"
     PERMISSION_DENIED = "permission_denied"
@@ -90,7 +91,7 @@ class ExecResult:
     container: str | None = None
     original_command: str | None = None
     built_command: str | None = None
-
+    exec_id: str | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,7 +300,6 @@ class BridgeRelayExecutor:
             timeout=32.0,  # 略大于 BLPOP_TIMEOUT，确保 HTTP 不先超时
         )
 
-
     async def aclose(self) -> None:
         """关闭 HTTP 客户端连接池"""
         await self._http_client.aclose()
@@ -370,6 +370,7 @@ class BridgeRelayExecutor:
             validation_codes = [issue.code for issue in semantic_result.issues]
             try:
                 from app.services.metrics import AGENT_TOOL_SEMANTIC_VALIDATION_TOTAL
+
                 for validation_code in validation_codes:
                     AGENT_TOOL_SEMANTIC_VALIDATION_TOTAL.labels(
                         tool_name=tool_name,
@@ -598,6 +599,7 @@ class BridgeRelayExecutor:
             exit_code = result_data.get("exit_code", 0)
 
             # 7. 智能截断输出并提取标准物理流 (Scheme B)
+            raw_to_cache = ""
             if "stdout" in result_data or "stderr" in result_data:
                 raw_stdout = result_data.get("stdout") or ""
                 raw_stderr = result_data.get("stderr") or ""
@@ -605,11 +607,13 @@ class BridgeRelayExecutor:
                 stdout = smart_truncate(raw_stdout, self.STDOUT_MAX_CHARS) if truncated else raw_stdout
                 stderr = smart_truncate(raw_stderr, self.STDERR_MAX_CHARS)
                 check_text = f"{raw_stdout}\n{raw_stderr}".lower()
+                raw_to_cache = raw_stdout
             else:
                 # 兼容原有单物理通道合并输出逻辑
                 output = result_data.get("output", "")
                 truncated = len(output) > self.STDOUT_MAX_CHARS
                 check_text = output.lower()
+                raw_to_cache = output
 
                 # 当退出码不为0时，认为输出为错误内容，填充到 stderr；stdout 留空（或当 exit_code == 0 时反之）
                 if exit_code != 0:
@@ -619,6 +623,25 @@ class BridgeRelayExecutor:
                     stderr = ""
                     stdout = smart_truncate(output, self.STDOUT_MAX_CHARS) if truncated else output
 
+            # ✅ 新增：大输出缓存到 Redis，供变量池 JIT JSONPath 提取使用
+            if truncated and raw_to_cache:
+                cache_key = f"cmd_cache:{exec_id}"
+                try:
+                    await self._redis.client.setex(cache_key, 1800, raw_to_cache.encode("utf-8"))
+                    logger.info(
+                        event="cmd_output_cached",
+                        exec_id=exec_id,
+                        cache_key=cache_key,
+                        raw_size=len(raw_to_cache),
+                        truncated_size=self.STDOUT_MAX_CHARS,
+                    )
+                except Exception as cache_err:
+                    logger.warning(
+                        event="cmd_output_cache_failed",
+                        exec_id=exec_id,
+                        error=str(cache_err),
+                    )
+
             # 退出码语义判定
             meaning = ExitCodeMeaning.SUCCESS
             if exit_code != 0:
@@ -626,6 +649,16 @@ class BridgeRelayExecutor:
                 # 尝试从 stdout / stderr 识别更具体的语义
                 if exit_code == 127 or "command not found" in check_text:
                     meaning = ExitCodeMeaning.COMMAND_NOT_FOUND
+                    # ✅ 新增：针对 Python 命令不存在时的专项纠错引导
+                    if "python" in cleaned_command.lower() and "command not found" in check_text:
+                        stderr = (
+                            "[Error 127] bash: python3: command not found.\n"
+                            "⚠️ 自纠错提示：目标 HCI 物理宿主机【没有 Python 运行环境】。\n"
+                            "请立即放弃 python 管道过滤策略，改用以下方案：\n"
+                            "  - JSON 过滤：使用 jq。例：acli --formatter json storage asan disk list | jq '.data.disks[] | select(.host_name == \"目标节点名\")'\n"
+                            "  - 文本过滤：使用 grep -B10 -A10。\n"
+                            "重新生成命令后再次执行。"
+                        )
                 elif exit_code == 126 or "permission denied" in check_text:
                     meaning = ExitCodeMeaning.PERMISSION_DENIED
                 elif "connection refused" in check_text:
@@ -645,7 +678,7 @@ class BridgeRelayExecutor:
             )
 
             # 8. 写入 tool_result 表（审计）— TODO: 后续实现
-            # 当前先返回结果，tool_result 写入由 react_engine 或专门的 AuditService 处理
+            # 当前先返回结果，tool_result 写入由 react_engine 或专门 of AuditService 处理
 
             return ExecResult(
                 stdout=stdout,
@@ -660,6 +693,7 @@ class BridgeRelayExecutor:
                 container=built.container if built else None,
                 original_command=built.original_command if built else original_command,
                 built_command=built.built_command if built else cleaned_command,
+                exec_id=exec_id,
             )
 
         except Exception as e:
@@ -683,6 +717,7 @@ class BridgeRelayExecutor:
                 container=built.container if built else None,
                 original_command=built.original_command if built else original_command,
                 built_command=built.built_command if built else cleaned_command,
+                exec_id=exec_id,
             )
 
 

@@ -135,7 +135,13 @@ async def create_prompt(payload: dict[str, Any], db: AsyncSession = Depends(get_
     resource_revision = await _publish_prompt_resource(db, p)
     await db.commit()
 
-    logger.info(event="prompt_created", prompt_name=p.name, prompt_id=p.id, resource_revision=resource_revision, message="创建了新的 Prompt 模板")
+    logger.info(
+        event="prompt_created",
+        prompt_name=p.name,
+        prompt_id=p.id,
+        resource_revision=resource_revision,
+        message="创建了新的 Prompt 模板",
+    )
     return {"status": "success", "id": p.id, "resource_revision": resource_revision}
 
 
@@ -180,7 +186,13 @@ async def update_prompt(prompt_id: int, payload: dict[str, Any], db: AsyncSessio
     await db.refresh(p)
     resource_revision = await _publish_prompt_resource(db, p)
     await db.commit()
-    logger.info(event="prompt_updated", prompt_name=p.name, prompt_id=p.id, resource_revision=resource_revision, message="更新了 Prompt 模板")
+    logger.info(
+        event="prompt_updated",
+        prompt_name=p.name,
+        prompt_id=p.id,
+        resource_revision=resource_revision,
+        message="更新了 Prompt 模板",
+    )
     return {"status": "success", "resource_revision": resource_revision}
 
 

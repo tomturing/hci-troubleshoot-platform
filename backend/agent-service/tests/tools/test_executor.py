@@ -467,6 +467,62 @@ class TestBridgeRelayExecutor:
             assert result.exit_code == -1
             assert "解析失败" in result.stderr
 
+    @pytest.mark.asyncio
+    async def test_stdout_truncated_saved_to_redis(self, executor, mock_redis):
+        """测试截断时将完整 stdout 缓存到 Redis"""
+        with patch.object(executor._http_client, "post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"ok": True, "exec_id": "test-exec-id"}
+            mock_response.raise_for_status = MagicMock()
+            mock_post.return_value = mock_response
+
+            # Mock Redis blpop 返回超长输出
+            long_output = "A" * 5000
+            mock_redis.client.blpop.return_value = (
+                "exec_result:test-exec-id",
+                json.dumps({"stdout": long_output, "stderr": "", "exit_code": 0}),
+            )
+            mock_redis.client.setex = AsyncMock()
+
+            result = await executor.execute(
+                tool_name="bash_exec",
+                args={"container": "asv-con", "command": "cat big.log", "reason": "测试缓存"},
+                conversation_id="conv-123",
+            )
+
+            assert result.truncated is True
+            assert result.exec_id is not None
+            mock_redis.client.setex.assert_awaited_once_with(
+                f"cmd_cache:{result.exec_id}", 1800, long_output.encode("utf-8")
+            )
+
+    @pytest.mark.asyncio
+    async def test_python_command_not_found_self_correction(self, executor, mock_redis):
+        """测试 python 命令不存在时的自纠错 stderr 重写"""
+        with patch.object(executor._http_client, "post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"ok": True, "exec_id": "test-exec-id"}
+            mock_response.raise_for_status = MagicMock()
+            mock_post.return_value = mock_response
+
+            # Mock Redis blpop 返回 python not found 错误
+            mock_redis.client.blpop.return_value = (
+                "exec_result:test-exec-id",
+                json.dumps({"stdout": "", "stderr": "bash: python3: command not found", "exit_code": 127}),
+            )
+
+            result = await executor.execute(
+                tool_name="bash_exec",
+                args={"container": "asv-con", "command": "python3 -c 'import sys'", "reason": "测试自纠错"},
+                conversation_id="conv-123",
+            )
+
+            assert result.exit_code == 127
+            assert result.exit_code_meaning == ExitCodeMeaning.COMMAND_NOT_FOUND
+            assert "自纠错提示" in result.stderr
+            assert "没有 Python 运行环境" in result.stderr
+            assert "jq" in result.stderr
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ExecResult 测试

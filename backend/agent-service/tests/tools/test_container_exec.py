@@ -20,11 +20,11 @@ def test_build_auto_runtime_wrapper_preserves_contract_fields():
     assert built.runtime == ContainerRuntime.AUTO
     assert "HCI_RUNTIME=$(sh -lc" in built.built_command
     assert "export HCI_CONTAINER HCI_CTR_NS HCI_USER_COMMAND" in built.built_command
-    assert "container_exec -n \"$HCI_CONTAINER\" -c \"$HCI_USER_COMMAND\" -d" in built.built_command
-    assert "nerdctl -n \"$HCI_CTR_NS\" exec \"$HCI_CONTAINER\"" in built.built_command
-    assert "docker exec \"$HCI_CONTAINER\" sh -lc \"$HCI_USER_COMMAND\"" in built.built_command
-    assert "crictl exec \"$HCI_CID\" sh -lc \"$HCI_USER_COMMAND\"" in built.built_command
-    assert "ctr -n \"$HCI_CTR_NS\" tasks exec" in built.built_command
+    assert 'container_exec -n "$HCI_CONTAINER" -c "$HCI_USER_COMMAND" -d' in built.built_command
+    assert 'nerdctl -n "$HCI_CTR_NS" exec "$HCI_CONTAINER"' in built.built_command
+    assert 'docker exec "$HCI_CONTAINER" sh -lc "$HCI_USER_COMMAND"' in built.built_command
+    assert 'crictl exec "$HCI_CID" sh -lc "$HCI_USER_COMMAND"' in built.built_command
+    assert 'ctr -n "$HCI_CTR_NS" tasks exec' in built.built_command
     assert "unsupported container runtime" in built.built_command
 
 

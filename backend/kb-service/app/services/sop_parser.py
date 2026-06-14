@@ -25,6 +25,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from shared.utils.acquisition_strategy import parse_strategy
+
 from app.config.template_config_loader import (
     get_binary_outcome_patterns,
     get_keywords,
@@ -56,8 +58,8 @@ class _NormalizedLine:
 # ──────────────────────────────────────────────────────────────────────────────
 
 STRATEGY_HINTS: dict[str, str] = {
-    r".*_ip$|^node_ip$|^cluster_ip$|^host_ip$|^server_ip$": "env_context",
-    r"^cluster_name$|^node_name$|^host_name$|^server_name$": "env_context",
+    r".*_ip$|^node_ip$|^cluster_ip$|^host_ip$|^server_ip$": "env_injection",  # 统一为 env_injection
+    r"^cluster_name$|^node_name$|^host_name$|^server_name$": "env_injection",  # 统一为 env_injection
     r"^vm_name$|^vm_id$": "tool:get_vm_list",
     r"^disk_id$|^disk_name$": "tool:acli_storage_disk_list",
     r"^nic_name$|^nic_id$": "tool:acli_network_nic_list",
@@ -67,6 +69,8 @@ STRATEGY_HINTS: dict[str, str] = {
 # 变量章节标题关键词（旧版兼容）
 VARIABLE_SECTION_KEYWORDS: frozenset[str] = frozenset(["变量", "变量定义", "参数", "参数定义", "环境变量"])
 
+# 可直接声明的策略名（已在公共模块 acquisition_strategy 中维护）
+# 保留为安全网，有效保证未识别的策略名不会静默通过
 _DIRECT_ACQUISITION_STRATEGIES: frozenset[str] = frozenset(
     [
         "user_input",
@@ -76,7 +80,7 @@ _DIRECT_ACQUISITION_STRATEGIES: frozenset[str] = frozenset(
         "agent_pass",
         "derived",
         "env_injection",
-        "env_context",
+        "env_context",  # 向后兼容旧名
     ]
 )
 
@@ -960,29 +964,24 @@ def parse_sop_markdown(content_md: str) -> SOPValidationResult:
 
 
 def _infer_strategy(var_name: str) -> dict:
-    """根据变量名推断获取策略。"""
-    for pattern, strategy in STRATEGY_HINTS.items():
+    """根据变量名推断获取策略，返回已解析并归一化的策略字典。"""
+    for pattern, strategy_hint in STRATEGY_HINTS.items():
         if re.match(pattern, var_name):
-            if strategy.startswith("tool:"):
-                return {"acquisition_strategy": "tool", "acquisition_tool": strategy[5:]}
-            return {"acquisition_strategy": strategy, "acquisition_tool": None}
+            parsed = parse_strategy(strategy_hint)
+            return {
+                "acquisition_strategy": parsed.strategy,
+                "acquisition_tool": parsed.parameter,
+            }
     return {"acquisition_strategy": "user_input", "acquisition_tool": None}
 
 
 def _parse_acquisition_source(source: str) -> tuple[str, str | None]:
-    """解析变量声明表中的“来源”字段。"""
-    normalized = source.strip()
-    if normalized.startswith("tool:"):
-        return "tool_call", normalized[5:]
-    if normalized.startswith("skill:"):
-        return "skill_call", normalized[6:]
-    if normalized.startswith("env:"):
-        return "env_injection", normalized
-    if normalized in ("tool_call", "tool"):
-        return "tool_call", None
-    if normalized in _DIRECT_ACQUISITION_STRATEGIES:
-        return normalized, None
-    return "user_input", None
+    """解析变量声明表中的“来源”字段。
+
+    支持全名、简写、冒号参数三种格式，委托公共解析模块 parse_strategy 实现。
+    """
+    parsed = parse_strategy(source)
+    return parsed.strategy, parsed.parameter
 
 
 def _parse_variable_args_template(value: str | None) -> object | None:
@@ -1063,8 +1062,7 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                     output_path = _col("输出路径", "output_path", "output path") or None
                     fallback_strategy = _col("失败兜底", "fallback", "fallback_strategy") or None
                     acquisition_args_template = (
-                        _col("参数模板", "acquisition_args_template", "args_template", "工具参数", "tool_args")
-                        or None
+                        _col("参数模板", "acquisition_args_template", "args_template", "工具参数", "tool_args") or None
                     )
                     expression = _col("表达式", "expression", "derived_expression", "派生表达式") or None
 
@@ -1081,9 +1079,7 @@ def _parse_variable_section(content_md: str) -> dict[str, dict]:
                             fallback_strategy.replace("\\", "").strip() if fallback_strategy else None
                         )
                         args_template_clean = (
-                            acquisition_args_template.replace("\\", "").strip()
-                            if acquisition_args_template
-                            else None
+                            acquisition_args_template.replace("\\", "").strip() if acquisition_args_template else None
                         )
                         expression_clean = expression.replace("\\", "").strip() if expression else None
                         depends_on_list = (

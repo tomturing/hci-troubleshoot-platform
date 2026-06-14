@@ -178,8 +178,6 @@ class KBSearchResponse(BaseModel):
     query_time_ms: float = Field(0.0, description="查询耗时（ms）")
 
 
-
-
 # ──────────────────────────────────────────────
 # Scheduler 服务契约模型（G-1）
 # ──────────────────────────────────────────────
