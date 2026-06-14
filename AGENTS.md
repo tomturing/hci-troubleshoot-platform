@@ -134,6 +134,10 @@
   - 升级 Markdown 变量解析与三路合并算法，全面支持提取、维护与合并 `depends_on` 依赖关系列表。
   - 在 `sop_request_variable` JIT 懒加载流程中增加 `depends_on` 前置校验，在依赖前置变量未就绪时拦截报错，规避 AI 无数据源瞎猜的问题。
   - 彻底移除了原先硬编码在内置技能库中的 `is_sys_disk` 技能，通过将其获取策略配置为 `llm_inference` 且 `depends_on = ["alert_type"]`，完全回归大模型通用推理自推导以保证方案通用性，解决业务逻辑污染微服务微内核的问题。
+- **shared/models/__init__.py ORM 注册副作用消除**：
+  - 根因：SQLAlchemy ORM 类定义会在 import 时把表注册到 `Base.metadata`，kb-service 导入 `shared.models.dynamic_resource` 时触发了 KB ORM 副作用，与 kb-service 内部 `KBChunk` 定义冲突导致 CrashLoopBackOff。
+  - 修复：使用 Python 3.7+ `__getattr__` 实现延迟导入，包根导入 `from shared.models import X` 只加载对应模块，不再自动触发所有子模块的 ORM 注册。
+  - 影响：kb-service 导入 `dynamic_resource` 不触发 KB ORM 副作用；agent-service 包根导入 `ClaimVerification`/`ReasoningOutput` 正常工作；其他服务直接导入模式不受影响。
 
 ---
 
