@@ -470,3 +470,31 @@ with urllib.request.urlopen(req, timeout=15) as resp:
 - AI 相关服务 Pod 可配置 `dnsPolicy: None` + 公共 DNS，完全绕开 Clash（见 PIT-034）
 
 **参见：** PIT-034（Pod bypass 规则导致 fake-ip 不通）、PIT-027（OpenClaw LLM 超时）
+
+---
+
+### D-009（PIT-050）：readiness probe 外部网络请求导致 DNS/网络超时，导致 Pod 被下线产生 503 Service Unavailable
+
+**触发场景：** 前端或网关在请求 `conversation-service` 时，偶尔或频繁报错 `创建对话失败: Service unavailable` 或 `503 Service Unavailable`。而在 `conversation-service` 中完全查不到对应的请求日志，但 Gateway 日志显示连接 `conversation-service` 失败（`httpx.RequestError`）。
+
+**现象特征：**
+- `kubectl get pod -n hci-staging` 看到 `conversation-service` 的 `RESTARTS` 为 0，但 `kubectl describe pod <conversation-service-pod>` 里面有大量 warning：
+  ```
+  Warning  Unhealthy  ...  kubelet  Readiness probe failed: Get "http://10.42.0.188:8002/health/ready": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+  ```
+- 探测超时时间一般为 3s（`timeout=3s`）。
+
+**根因：**
+`conversation-service` 里的就绪探针 `/health/ready` 原本会调用 `ai_registry.health_check_all()`，即对所有注册的 AI 助手客户端执行健康检查。这包含向外部 AI API（如 `https://api.ai-native-x.site/v1` 等）发送测试 POST 请求。
+当外部网络出现抖动、DNS 解析变慢或 Clash TUN 代理变慢时，这个外部请求的响应时间会超过 3 秒，从而导致整个 K8s readiness probe 发生超时（`context deadline exceeded`）。
+一旦就绪探针连续失败 3 次，K8s 就会将该 Pod 从 Service endpoints 中移除。这导致 API Gateway 请求 `conversation-service` 时由于无可用 endpoints，立即返回 `503 Service Unavailable`。
+
+**修复方案：**
+从 `/health/ready`（就绪探针）中移除对外部 AI 服务（`ai_registry`）的健康检查。就绪探针只应检查本地关键依赖（如数据库 DB 和本地配置等），避免因第三方 API 网络波动导致本服务不可用。
+同时，修复 `/health` 诊断端点中的比较逻辑，把：
+`all_ok = db_ok and (not ai_status or any(v == "ok" for v in ai_status.values()))`
+修改为：
+`all_ok = db_ok and (not ai_status or any(v is True for v in ai_status.values()))`
+（因为 `ai_status` 的值类型是布尔 `True` / `False`，而不是字符串 `"ok"`）。
+
+**参见：** PIT-034（Pod DNS/网络劫持）、D-008（Clash 热重载不一致）

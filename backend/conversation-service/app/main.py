@@ -222,7 +222,7 @@ async def health_check():
         except Exception:
             kb_ok = "unavailable"
 
-    all_ok = db_ok and (not ai_status or any(v == "ok" for v in ai_status.values()))
+    all_ok = db_ok and (not ai_status or any(v is True for v in ai_status.values()))
     return {
         "status": "healthy" if all_ok else "degraded",
         "service": settings.SERVICE_NAME,
@@ -252,7 +252,7 @@ async def health_startup():
 
 @app.get("/health/ready")
 async def health_ready():
-    """就绪探针：验证所有依赖服务"""
+    """就绪探针：验证所有依赖服务 (不包含外部 AI 接口，避免网络超时导致服务不可用)"""
     checks: dict = {}
     all_ok = True
 
@@ -260,15 +260,6 @@ async def health_ready():
     if db_manager:
         checks["database"] = "ok" if await db_manager.health_check() else "unavailable"
         if checks["database"] != "ok":
-            all_ok = False
-
-    registry = getattr(app.state, "ai_registry", None)
-    if registry:
-        try:
-            ai_status = await registry.health_check_all()
-            checks["ai_assistants"] = ai_status
-        except Exception as e:
-            checks["ai_assistants"] = {"error": str(e)}
             all_ok = False
 
     kb_client = getattr(app.state, "kb_client", None)
