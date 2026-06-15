@@ -50,10 +50,11 @@ def _executor(
     *,
     conversation_id: str,
     context_variables: dict | None = None,
+    current_node_id: str = "n-1",
 ) -> tuple[SopToolExecutor, AsyncMock, AsyncMock]:
     conversation_sop_client = AsyncMock()
     conversation_sop_client.get_execution.return_value = {
-        "current_node_id": "n-1",
+        "current_node_id": current_node_id,
         "context_variables": context_variables or {},
         "pending_variable_name": None,
     }
@@ -72,7 +73,8 @@ def _executor(
 @pytest.mark.asyncio
 async def test_blocks_real_tool_when_user_input_variable_missing():
     conversation_id = str(uuid.uuid4())
-    executor, _, default_executor = _executor(conversation_id=conversation_id)
+    # 将当前节点设为叶子节点 n-1-1，触发缺失变量 is_sys_disk 的校验阻断
+    executor, _, default_executor = _executor(conversation_id=conversation_id, current_node_id="n-1-1")
 
     result = await executor.execute(
         "bash_exec",
@@ -90,9 +92,11 @@ async def test_blocks_real_tool_when_user_input_variable_missing():
 @pytest.mark.asyncio
 async def test_allows_real_tool_when_required_variable_exists():
     conversation_id = str(uuid.uuid4())
+    # 将当前节点设为叶子节点 n-1-1，但提供了所需变量，校验通过允许执行
     executor, _, default_executor = _executor(
         conversation_id=conversation_id,
         context_variables={"is_sys_disk": {"value": "true", "source": "user_input"}},
+        current_node_id="n-1-1",
     )
 
     result = await executor.execute(

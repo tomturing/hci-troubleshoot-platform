@@ -37,6 +37,9 @@ from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
 from app.services.sop_tool_contract_validator import validate_sop_tool_contract
+from shared.utils.acquisition_strategy import parse_strategy
+from shared.models.tool_definition import ToolDefinitionORM
+from shared.models.skill_definition import SkillDefinitionORM
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -764,6 +767,83 @@ class SopApproveResponse(BaseModel):
     resource_revision: dict | None = Field(default=None, description="动态资源 revision 元数据")
 
 
+async def validate_variable_schema_dependencies(session, variable_schema: list[dict]) -> None:
+    """验证变量 Schema 中声明的工具/技能可用性。
+
+    如果存在未启用或未注册的工具/技能，抛出 422 错误。
+    """
+    required_tools = set()
+    required_skills = set()
+    for var in variable_schema:
+        strat_raw = var.get("acquisition_strategy")
+        if not strat_raw:
+            continue
+        parsed = parse_strategy(strat_raw)
+        tool_name = var.get("acquisition_tool") or parsed.acquisition_tool
+        if parsed.strategy == "tool_call" and tool_name:
+            required_tools.add(tool_name)
+        elif parsed.strategy == "skill_call" and tool_name:
+            required_skills.add(tool_name)
+
+    missing_tools = set()
+    if required_tools:
+        stmt = select(ToolDefinitionORM.tool_name).where(
+            ToolDefinitionORM.tool_name.in_(list(required_tools)),
+            ToolDefinitionORM.is_active == True,
+        )
+        res = await session.execute(stmt)
+        active_tools = set(res.scalars().all())
+        missing_tools = required_tools - active_tools
+
+    missing_skills = set()
+    if required_skills:
+        stmt = select(SkillDefinitionORM.skill_name).where(
+            SkillDefinitionORM.skill_name.in_(list(required_skills)),
+            SkillDefinitionORM.is_active == True,
+        )
+        res = await session.execute(stmt)
+        active_skills = set(res.scalars().all())
+        missing_skills = required_skills - active_skills
+
+    if missing_tools or missing_skills:
+        missing_details = []
+        issues = []
+        if missing_tools:
+            missing_details.append(f"工具：{', '.join(sorted(missing_tools))}")
+            for t in sorted(missing_tools):
+                issues.append(
+                    {
+                        "level": "error",
+                        "location": "变量声明",
+                        "line_number": None,
+                        "message": f"依赖了未注册或未启用的工具：'{t}'，请先创建或启用它。",
+                    }
+                )
+        if missing_skills:
+            missing_details.append(f"技能：{', '.join(sorted(missing_skills))}")
+            for s in sorted(missing_skills):
+                issues.append(
+                    {
+                        "level": "error",
+                        "location": "变量声明",
+                        "line_number": None,
+                        "message": f"依赖了未注册或未启用的技能：'{s}'，请先创建或启用它。",
+                    }
+                )
+
+        detail_msg = "、".join(missing_details)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "missing_dependencies",
+                "message": f"SOP 依赖了未注册或未启用的 {detail_msg}，请先创建或启用它们。",
+                "missing_tools": list(missing_tools),
+                "missing_skills": list(missing_skills),
+                "validation_issues": issues,
+            },
+        )
+
+
 @sop_router.post("/{document_id}/approve", response_model=SopApproveResponse)
 async def approve_sop_document(request: Request, document_id: int, body: SopApproveRequest):
     """审核通过 SOP 文档
@@ -954,6 +1034,10 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
         # ── 短事务2：UPDATE sop_document（状态 + tree_json）────────────────────
         async with _db_manager.async_session_factory() as session:
+            # 校验工具与技能依赖（T-AGT-28）
+            if parse_result and not parse_result.has_error and parse_result.root_nodes:
+                await validate_variable_schema_dependencies(session, variable_defs)
+
             # 决策树解析成功才设置 status = published，失败则保持 draft 并记录错误
             if parse_result and not parse_result.has_error and parse_result.root_nodes:
                 # 解析成功：更新为 published + 写入决策树
@@ -1517,6 +1601,9 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
 
             # 标记为人工编辑（下次 approve 保留）
             current_var["auto_generated"] = False
+
+        # 校验修改后的整个 schema 依赖
+        await validate_variable_schema_dependencies(session, current_schema)
 
         # 3. 写回数据库（不修改 status、tree_json）
         await session.execute(

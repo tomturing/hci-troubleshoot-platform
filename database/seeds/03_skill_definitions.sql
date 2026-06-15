@@ -311,7 +311,7 @@ $SKILL$,
     '{"author": "hci-team", "category": "platform", "tags": ["alert", "platform", "node-ip", "event", "hci"]}'::jsonb,
 
     -- allowed_tools（声明本 Skill 可能调用的工具类型）
-    'bash',
+    'bash_exec',
 
     -- display_name
     '告警解析',
@@ -454,7 +454,7 @@ $SKILL$,
     '{"author": "hci-team", "category": "platform", "tags": ["task", "log", "node-ip", "error-code", "request-id", "hci", "platform"]}'::jsonb,
 
     -- allowed_tools（声明本 Skill 可能调用的工具类型）
-    'bash',
+    'bash_exec',
 
     -- display_name
     '任务解析',

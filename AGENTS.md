@@ -138,6 +138,12 @@
   - 根因：SQLAlchemy ORM 类定义会在 import 时把表注册到 `Base.metadata`，kb-service 导入 `shared.models.dynamic_resource` 时触发了 KB ORM 副作用，与 kb-service 内部 `KBChunk` 定义冲突导致 CrashLoopBackOff。
   - 修复：使用 Python 3.7+ `__getattr__` 实现延迟导入，包根导入 `from shared.models import X` 只加载对应模块，不再自动触发所有子模块的 ORM 注册。
   - 影响：kb-service 导入 `dynamic_resource` 不触发 KB ORM 副作用；agent-service 包根导入 `ClaimVerification`/`ReasoningOutput` 正常工作；其他服务直接导入模式不受影响。
+- **SOP 技能 allowed_tools 修正与变量门禁范围优化**：
+  - 修正了 `hci-alert-parsing` 和 `hci-task-parsing` 技能的 `allowed_tools` 绑定值为 `'bash_exec'`，解决 Staging 环境中执行器因工具名不匹配导致校验失败的问题。
+  - 优化了 `find_missing_guarded_variables_for_node_window` 逻辑，在当前节点为非叶子节点时，只检测当前节点本身所需的受控变量，不合并子分支的前置变量进行提前阻断，从而避免 Agent 在根节点执行 acli_exec 或 get_active_alerts 等工具时被提前阻断。
+- **SOP 发布与变量 Schema 更新依赖校验**：
+  - 在 `kb-service` 引入了工具与技能的可用性校验，当发布 SOP（`POST /api/admin/sop/{id}/approve`）或修改变量 Schema（`PATCH /api/admin/sop/{id}/variable-schema`）时，会自动分析其变量策略，确保所有被依赖的 `tool_call` 工具或 `skill_call` 技能都在数据库（`tool_definition` / `skill_definition`）中注册且处于启用状态。
+  - 如果检测到未注册或未启用的依赖，抛出 `422` 异常阻断流程，错误详情直接映射为 `ValidationIssue` 格式，与前端现有的校验报告弹框无缝对接。
 
 ---
 

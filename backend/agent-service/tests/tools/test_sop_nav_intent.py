@@ -136,26 +136,27 @@ def test_variable_gate_window_does_not_scan_deep_future_branch():
                 "node_id": "n-1-1",
                 "title": "直接分支",
                 "prerequisites": ["{is_sys_disk} == true"],
-                "children": [
-                    {
-                        "node_id": "n-1-1-1",
-                        "title": "未来深层分支",
-                        "prerequisites": ["{future_confirm} == true"],
-                        "children": [],
-                    }
-                ],
+                "children": [],
             }
         ],
     }
     variable_schema = [
         {"name": "is_sys_disk", "type": "boolean", "acquisition_strategy": "user_input"},
-        {"name": "future_confirm", "type": "boolean", "acquisition_strategy": "user_confirm"},
     ]
 
+    # 非叶子节点不应把子分支的前置变量合并进来提前阻断
     missing = find_missing_guarded_variables_for_node_window(
         current_node=current_node,
         variable_schema=variable_schema,
         context_variables={},
     )
+    assert missing == []
 
-    assert [item["name"] for item in missing] == ["is_sys_disk"]
+    # 叶子节点本身所需的变量正常校验
+    leaf_node = current_node["children"][0]
+    missing_leaf = find_missing_guarded_variables_for_node_window(
+        current_node=leaf_node,
+        variable_schema=variable_schema,
+        context_variables={},
+    )
+    assert [item["name"] for item in missing_leaf] == ["is_sys_disk"]

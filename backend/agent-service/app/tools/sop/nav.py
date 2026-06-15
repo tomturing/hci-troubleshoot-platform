@@ -347,7 +347,10 @@ def find_missing_guarded_variables_for_node_window(
     运行时 before-tool-call 门禁使用该窗口，避免把未来深层分支变量提前阻断。
     """
     candidates = [current_node]
-    candidates.extend(child for child in current_node.get("children", []) or [] if isinstance(child, dict))
+    # 若当前节点为非叶子节点，只检测当前节点本身所需的受控变量，不应把子分支的前置变量合并进来提前阻断
+    is_leaf = not (current_node.get("children", []) or [])
+    if is_leaf:
+        candidates.extend(child for child in current_node.get("children", []) or [] if isinstance(child, dict))
 
     missing_by_name: dict[str, dict[str, Any]] = {}
     for node in candidates:
