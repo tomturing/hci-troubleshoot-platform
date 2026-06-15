@@ -39,9 +39,6 @@ spec:
           volumeMounts:
             - name: clickhouse-data
               mountPath: /var/lib/clickhouse
-          healthcheck:
-            # We can map healthcheck to probes in Kubernetes
-            # However, since standard clickhouse image is stable, we configure standard liveness/readiness probes
           readinessProbe:
             httpGet:
               path: /ping
