@@ -27,8 +27,11 @@ from pydantic import BaseModel, Field
 from shared.dynamic_resource.adapters import kbd_resource_payload, sop_resource_payload
 from shared.dynamic_resource.loader import snapshot_revision_metadata
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
+from shared.models.skill_definition import SkillDefinitionORM
+from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
 from app.models.document import KBDocument
@@ -37,9 +40,6 @@ from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
 from app.services.sop_tool_contract_validator import validate_sop_tool_contract
-from shared.utils.acquisition_strategy import parse_strategy
-from shared.models.tool_definition import ToolDefinitionORM
-from shared.models.skill_definition import SkillDefinitionORM
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -789,7 +789,7 @@ async def validate_variable_schema_dependencies(session, variable_schema: list[d
     if required_tools:
         stmt = select(ToolDefinitionORM.tool_name).where(
             ToolDefinitionORM.tool_name.in_(list(required_tools)),
-            ToolDefinitionORM.is_active == True,
+            ToolDefinitionORM.is_active.is_(True),
         )
         res = await session.execute(stmt)
         active_tools = set(res.scalars().all())
@@ -799,7 +799,7 @@ async def validate_variable_schema_dependencies(session, variable_schema: list[d
     if required_skills:
         stmt = select(SkillDefinitionORM.skill_name).where(
             SkillDefinitionORM.skill_name.in_(list(required_skills)),
-            SkillDefinitionORM.is_active == True,
+            SkillDefinitionORM.is_active.is_(True),
         )
         res = await session.execute(stmt)
         active_skills = set(res.scalars().all())
