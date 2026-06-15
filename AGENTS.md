@@ -26,6 +26,10 @@
   - 数据库：`database/desired_schema.sql` 补齐 `fact.trace_id` 字段及索引，解决 `FactStore` 写入时因字段缺失导致 SQL 报错
   - Helm：`agent-service` 注入 `SCP_BASE_URL` 与 `SCP_API_KEY` 环境变量；`secret.yaml` 中渲染 `SCP_API_KEY`；在 `values.yaml` 中定义二者默认值为空以保证环境兼容性
   - 环境：开启 `agentService.externalDns` 以解决大模型调用时的 DNS 解析超时问题
+- **工单 Q2026061511158 自动诊断停顿与推理步数限制优化**：
+  - 对话历史对齐：在 `conversation-service` 拦截用户 S0 选择时，将产生的确认话术同步追加至 `history_messages` 列表中，避免大模型重复回复文本导致 ReAct 循环终止停顿，实现 100% 自动导航推进。
+  - 推理步骤上限提升：在 `agent-service` 将 ReAct 推理循环的硬性最高步骤数限制 `MAX_STEPS` 和 `InvestigationAgent` 调用时传入的 `max_iterations` 从 `15` 步调高至 `40` 步，解决复杂排障或重连重新执行命令时步骤极易超限问题。
+
 - 前端工具栏优化：工单信息 Popover（含 ID/工单号）→ 关闭工单 → SSH终端（Monitor 图标），终端历史按钮移入 TerminalPanel header-actions
 - 环境采集命令更新：`task get -s failed -l 10`（仅失败任务）；后端字段映射已支持整数 status/urgent_type 与 Unix 时间戳（PR #285）
 - **KBD 管理页面搜索增强**（PR #328）：

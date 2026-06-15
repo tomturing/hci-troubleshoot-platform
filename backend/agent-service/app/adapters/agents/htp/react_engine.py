@@ -282,7 +282,7 @@ class ToolResultEnvelope:
 
 
 # 硬限制：最大推理步骤数，防止无限循环
-MAX_STEPS = 15
+MAX_STEPS = 40
 
 
 # ─── Protocol 定义────────────────────

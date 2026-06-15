@@ -598,7 +598,7 @@ class InvestigationAgent(BaseAgent):
             assistant_type="htp-agent",
             case_id=case_id,
             user_id=user_id,
-            max_iterations=15,
+            max_iterations=40,
             execution_mode=execution_mode,
             tool_executor=sop_tool_executor,  # 使用 SOP 工具执行器
             sop_mode=True,  # DC-01: SOP 模式，注入 SOP 导航工具到 LLM tool list

@@ -251,6 +251,7 @@ class ConversationService:
             # 2. 读取当前诊断阶段并构建 System Prompt（并发 SOP + 向量检索）
             current_stage = "S0"
             _confirmed_category_code: str | None = None  # N-2：S0 确认的分类编码
+            intercepted_confirmation: str | None = None  # 记录拦截 S0 分类时产生的确认文本
             if self.session_factory:
                 async with self.session_factory() as stage_session:
                     _conv = await ConversationRepository(stage_session).get_conversation(conversation_id)
@@ -291,9 +292,9 @@ class ConversationService:
                                     old_stage="S0",
                                 )
                             )
+                            intercepted_confirmation = f"好的，确认故障分类为【{_chosen['code']} {_chosen['name']}】。\n开始故障定位分析，请稍候…"
                             yield (
-                                f"好的，确认故障分类为【{_chosen['code']} {_chosen['name']}】。\n"
-                                "开始故障定位分析，请稍候…\n\n"
+                                intercepted_confirmation + "\n\n"
                             )
                             # 发出阶段切换事件通知前端，并继续以 S1 身份调用 AI
                             yield "\x00event:stage_change:S1\x00"
@@ -360,6 +361,9 @@ class ConversationService:
             selected_messages = all_messages[-20:] if len(all_messages) > 20 else all_messages
             for msg in selected_messages:
                 history_messages.append({"role": msg.role.value, "content": msg.content})
+
+            if intercepted_confirmation:
+                history_messages.append({"role": "assistant", "content": intercepted_confirmation})
 
             # T-AGT-23: 检测 SOP 执行恢复状态
             sop_resume_context: dict | None = None
