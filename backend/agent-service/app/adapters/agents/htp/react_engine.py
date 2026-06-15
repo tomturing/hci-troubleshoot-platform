@@ -328,6 +328,8 @@ class ReactEngine:
         audit_service: AuditServiceProtocol | None = None,
         fact_store: Any = None,
         db_session_factory: Any = None,
+        conversation_service_url: str = "",  # conversation-service 内部 URL，用于工具历史持久化
+        internal_token: str = "",  # 内部服务认证 Token
     ) -> None:
         self._ai_registry = ai_registry
         self._tool_registry = tool_registry
@@ -336,6 +338,8 @@ class ReactEngine:
         self._audit = audit_service
         self._fact_store = fact_store
         self._db_session_factory = db_session_factory
+        self._conversation_service_url = conversation_service_url
+        self._internal_token = internal_token
         self.schema_validation_failed = False
         self.has_write_operation = False
         self.has_verification_after_write = False
@@ -812,13 +816,27 @@ class ReactEngine:
                     result=tool_result,
                     error=tool_error,
                 )
-                work_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": envelope.to_llm_message(),
-                    }
-                )
+                tool_result_content = envelope.to_llm_message()
+                tool_result_dict = {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": tool_result_content,
+                }
+                work_messages.append(tool_result_dict)
+
+                # ReAct 工具调用历史跨轮次持久化（fire-and-forget）
+                # 将 assistant tool_calls 消息和 tool result 消息持久化到 conversation-service，
+                # 当用户点击"继续"时大模型可通过完整的 messages[] 无缝续接 ReAct 推理链。
+                if self._conversation_service_url and session_id and case_id:
+                    asyncio.create_task(
+                        self._persist_tool_turn(
+                            session_id=session_id,
+                            case_id=case_id,
+                            tool_calls_msg=assistant_msg,  # 含 tool_calls 数组的 assistant 消息
+                            tool_result_msg=tool_result_dict,  # tool result 消息
+                            exec_id=tool_exec_id,
+                        )
+                    )
 
         # 超出步数限制
         yield AgentTextChunk(content="⚠️ 诊断步骤已达上限，请联系人工支持。")
@@ -1751,4 +1769,73 @@ class ReactEngine:
                 tool_name=tool_name,
                 exec_id=exec_id,
                 error=str(audit_err),
+            )
+
+    async def _persist_tool_turn(
+        self,
+        *,
+        session_id: str,
+        case_id: str,
+        tool_calls_msg: dict,
+        tool_result_msg: dict,
+        exec_id: str | None = None,
+    ) -> None:
+        """将 ReAct 工具调用轮次持久化到 conversation-service（fire-and-forget）。
+
+        实现原理（第一性原理）：
+          LLM 的上下文窗口是其唯一工作内存。OpenAI Function Calling 规范要求
+          tool_calls（assistant 消息）和 tool_result（tool 消息）必须成对出现
+          在 messages[] 中，否则 LLM 无法知道自己已执行过哪些工具，会重复调用。
+
+          本方法等价于 LangGraph Checkpointer 的 ReAct state 持久化：
+          每步工具执行后保存检查点，中断恢复时从检查点加载完整上下文。
+
+        Args:
+            session_id: 会话 ID（conversation_id）
+            case_id: 工单 ID
+            tool_calls_msg: OpenAI assistant message（含 tool_calls 数组）
+            tool_result_msg: OpenAI tool message（含 tool_call_id + content）
+            exec_id: 工具执行 ID（供审计追踪）
+        """
+        if not self._conversation_service_url:
+            return
+
+        import httpx
+
+        url = f"{self._conversation_service_url.rstrip('/')}/api/conversations/{session_id}/tool-turn"
+        payload = {
+            "case_id": case_id,
+            "tool_calls_msg": tool_calls_msg,
+            "tool_result_msg": tool_result_msg,
+            "exec_id": exec_id,
+        }
+        headers = {}
+        if self._internal_token:
+            headers["Authorization"] = f"Bearer {self._internal_token}"
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                if resp.status_code not in (200, 201):
+                    logger.warning(
+                        event="tool_turn_persist_failed",
+                        message=f"工具调用轮次持久化失败，HTTP {resp.status_code}",
+                        session_id=session_id,
+                        exec_id=exec_id,
+                        status_code=resp.status_code,
+                    )
+                else:
+                    logger.debug(
+                        event="tool_turn_persist_ok",
+                        message="工具调用轮次已持久化",
+                        session_id=session_id,
+                        exec_id=exec_id,
+                    )
+        except Exception as e:
+            # 持久化失败不阻断主流程，仅记录警告
+            logger.warning(
+                event="tool_turn_persist_error",
+                message=f"工具调用轮次持久化异常（非阻塞）: {e}",
+                session_id=session_id,
+                exec_id=exec_id,
             )

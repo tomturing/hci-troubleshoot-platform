@@ -20,6 +20,9 @@ class MessageRole(enum.StrEnum):
     assistant = "assistant"
     system = "system"
     command = "command"
+    # ReAct 工具调用轮次角色（用于跨轮次持久化 ReAct 历史）
+    tool_call = "tool_call"    # AI 发起的工具调用请求（含 tool_calls JSON）
+    tool_result = "tool_result"  # 工具执行结果（通过 tool_call_id 关联对应的 tool_call 消息）
 
 
 class Message(Base, TraceableMixin):
@@ -38,6 +41,8 @@ class Message(Base, TraceableMixin):
     command_warning = Column(Text, nullable=True)
     metadata_ = Column("metadata", JSONB, default=dict)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+    # ReAct 工具调用关联字段：role=tool_result 时关联对应的 tool_call 请求 ID
+    tool_call_id = Column(Text, nullable=True)
 
     def __repr__(self):
         return f"<Message(message_id={self.message_id}, role={self.role}, case_id={self.case_id})>"

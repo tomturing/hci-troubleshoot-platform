@@ -471,7 +471,50 @@ async def submit_interactive_response(
     return {"ok": True}
 
 
-# ── 恢复 ops-agent 事件流（不提交新 prompt）──────────────────────────────────
+# ── ReAct 工具调用历史跨轮次持久化 ──────────────────────────────────────────
+
+
+class ToolTurnPersistRequest(BaseModel):
+    """POST /api/conversations/{id}/tool-turn 请求体。
+
+    agent-service 在每次工具执行完毕后，通过此接口将工具调用轮次
+    （assistant tool_calls 消息 + tool result 消息）持久化到 message 表，
+    确保大模型在中断恢复时能完整还原 ReAct 推理上下文。
+    """
+
+    case_id: str  # 工单 ID（冗余字段，避免额外查询）
+    tool_calls_msg: dict  # OpenAI assistant message（role=assistant，含 tool_calls 数组）
+    tool_result_msg: dict  # OpenAI tool message（role=tool，含 tool_call_id + content）
+    exec_id: str | None = None  # 工具执行 ID（供审计追踪）
+
+
+@router.post("/{conversation_id}/tool-turn", status_code=201)
+async def persist_tool_turn(
+    conversation_id: uuid.UUID,
+    body: ToolTurnPersistRequest,
+    service: ConversationService = Depends(get_conversation_service),
+):
+    """[内部接口] 持久化 ReAct 工具调用轮次到 message 表。
+
+    由 agent-service 在每次工具执行完毕后 fire-and-forget 调用。
+
+    写入两条 message 记录：
+    - role=tool_call：序列化的 OpenAI assistant 消息（含 tool_calls JSON）
+    - role=tool_result：工具执行输出文本，通过 tool_call_id 关联上方记录
+
+    这遵循 OpenAI Function Calling 规范，确保下次加载 history_messages
+    时工具历史可被原样注入 LLM，完整恢复 ReAct 推理状态。
+    """
+    await service.save_tool_turn(
+        conversation_id=conversation_id,
+        case_id=body.case_id,
+        tool_calls_msg=body.tool_calls_msg,
+        tool_result_msg=body.tool_result_msg,
+        exec_id=body.exec_id,
+    )
+    return {"ok": True}
+
+
 
 
 @router.get("/{conversation_id}/resume-stream")

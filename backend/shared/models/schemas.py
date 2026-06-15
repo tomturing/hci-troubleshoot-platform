@@ -36,6 +36,9 @@ class MessageRole(StrEnum):
     ASSISTANT = "assistant"
     SYSTEM = "system"
     COMMAND = "command"
+    # ReAct 工具调用轮次角色（用于跨轮次持久化 ReAct 历史，见 OpenAI Function Calling 规范）
+    TOOL_CALL = "tool_call"    # AI 发起的工具调用请求（含 tool_calls JSON）
+    TOOL_RESULT = "tool_result"  # 工具执行结果（通过 tool_call_id 关联对应的 tool_call 消息）
 
 
 class CaseCreate(BaseModel):

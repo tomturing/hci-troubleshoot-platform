@@ -579,6 +579,9 @@ class InvestigationAgent(BaseAgent):
             audit_service=self._audit_service,
             fact_store=self._fact_store,
             db_session_factory=self._db_session_factory,
+            # 工具调用历史跨轮次持久化（SOP 模式同样适用）
+            conversation_service_url=self._conversation_service_url,
+            internal_token=self._internal_token,
         )
 
         # T3-2: 绑定诊断阶段结构化 Schema

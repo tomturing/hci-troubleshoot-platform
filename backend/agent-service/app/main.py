@@ -246,6 +246,9 @@ async def lifespan(app: FastAPI):
             audit_service=audit_service,
             fact_store=fact_store,
             db_session_factory=db_manager.async_session_factory,
+            # 工具调用历史跨轮次持久化：每次工具执行后 fire-and-forget 写入 conversation-service message 表
+            conversation_service_url=settings.CONVERSATION_SERVICE_URL,
+            internal_token=settings.INTERNAL_API_TOKEN,
         )
 
         logger.info(
