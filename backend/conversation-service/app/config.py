@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = "https://coding.dashscope.aliyuncs.com/v1"
     LLM_API_KEY: str = ""  # 从 hci-secrets 注入
     LLM_DEFAULT_MODEL: str = "glm-5"
+    # LLM 推理参数
+    LLM_TEMPERATURE: float = 0.1       # 默认温度
+    LLM_TEMPERATURE_S0: float = 0.3    # S0 意图识别 / 通用对话
 
     # KB 服务配置
     KB_SERVICE_URL: str = "http://kb-service:8004"

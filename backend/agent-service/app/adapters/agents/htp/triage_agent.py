@@ -32,6 +32,7 @@ from shared.clients import AIAssistantRegistry, KBClient
 from shared.models.information import EvidenceBundle
 from shared.observability.logger import get_logger
 
+from app.config import settings
 from app.domain.agent_port import (
     AgentEvent,
     AgentInteractiveRequest,
@@ -104,7 +105,9 @@ class TriageAgent(BaseAgent):
         # 将 Message 列表转换为 OpenAI 格式
         messages = [{"role": m.role, "content": m.content} for m in context]
 
-        result = await ai_client.invoke(messages=messages, user_id="triage")
+        result = await ai_client.invoke(
+            messages=messages, user_id="triage", temperature=settings.LLM_TEMPERATURE_S0
+        )
         if result.content:
             parsed = self._parse_intent_result(result.content)
             if parsed.category_id:
@@ -169,6 +172,7 @@ class TriageAgent(BaseAgent):
             messages=full_messages,
             user_id=session_id,
             case_id=case_id,
+            temperature=settings.LLM_TEMPERATURE_S0,
         ):
             if chunk:
                 full_reply.append(chunk)

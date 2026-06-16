@@ -113,6 +113,10 @@ async def lifespan(app: FastAPI):
             provider_api_key=None,
             default_model=model,
             assistant_type=assistant_type,
+            temperature=settings.LLM_TEMPERATURE,
+            top_p=settings.LLM_TOP_P,
+            logprobs=settings.LLM_LOGPROBS,
+            top_logprobs=settings.LLM_TOP_LOGPROBS,
         )
         # 注入全量原始 prompt 审计回调
         client.prompt_audit_callback = prompt_audit_cb

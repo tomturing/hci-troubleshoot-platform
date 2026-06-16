@@ -70,7 +70,7 @@ class BaseAgent(ABC):
     不属于基类的职责。基类越薄，扩展性越强。
     """
 
-    def __init__(self, name: str, max_steps: int = 15) -> None:
+    def __init__(self, name: str, max_steps: int = 30) -> None:
         self.name = name
         self.max_steps = max_steps
 

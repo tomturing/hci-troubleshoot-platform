@@ -210,6 +210,7 @@ def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | 
                 "content": _format_solution_content(solution),
                 "commands": [],
                 "children": [],
+                "no_tool_execution": True,  # 修复方案仅供用户参考，Agent 严禁执行其中命令
             }
             response["required_variables"] = _build_required_variables(node, variable_schema)
             return response
@@ -290,7 +291,9 @@ def _extract_node_variable_names(node: dict) -> set[str]:
             for value in solution.get(key, []) or []:
                 texts.append(str(value))
     joined = "\n".join(texts)
-    return {match.replace("\\", "") for match in re.findall(r"(?<!\{)\$?\{([a-z][a-z0-9_\\]*)\}(?!\})", joined)}
+    # 匹配 {var_name} 格式的 SOP 变量（小写开头），排除 ${ENV_VAR} 和 ${shell_var} 及大写环境变量
+    raw_matches = re.findall(r"(?<!\{)\{([a-z][a-z0-9_]*)\}(?!\})", joined)
+    return {m.replace("\\", "") for m in raw_matches}
 
 
 def _has_variable_value(context_variables: dict[str, Any], variable_name: str) -> bool:
@@ -398,14 +401,14 @@ def _format_solution_content(solution: dict) -> str:
     quick_recovery = solution.get("quick_recovery", [])
     if quick_recovery:
         parts.append("【快速恢复】")
-        parts.extend(f"- {s}" for s in quick_recovery)
+        parts.append("\n".join(f"- {s}" for s in quick_recovery))
 
     thorough_fix = solution.get("thorough_fix", [])
     if thorough_fix:
         parts.append("【彻底解决】")
-        parts.extend(f"- {s}" for s in thorough_fix)
+        parts.append("\n".join(f"- {s}" for s in thorough_fix))
 
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 async def sop_advance(

@@ -12,6 +12,8 @@ from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
+_otel_provider: TracerProvider | None = None
+
 
 def _parse_grpc_endpoint(raw: str) -> tuple[str, bool]:
     """
@@ -60,20 +62,28 @@ def init_telemetry(service_name: str):
     provider = TracerProvider(resource=resource)
     processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=is_insecure))
     provider.add_span_processor(processor)
-    trace.set_tracer_provider(provider)
+
+    # 不设置全局 TracerProvider。Langfuse v3 SDK 会在 get_client() 时将自己设为全局，
+    # 若此处设为全局，Langfuse 会复用此 Provider 并附加自己的 exporter，
+    # 导致所有 otel span（包括 HTTP 层 connect/GET/POST/http send）同时流向 Langfuse，
+    # 产生 96%+ 噪音。以下所有 instrument 都显式绑定本 provider，发往 Tempo。
+    # trace.set_tracer_provider(provider)
+
+    global _otel_provider
+    _otel_provider = provider
 
     # --- 自动仪表化（不含 FastAPI，需通过 instrument_app 单独注入） ---
     try:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
-        HTTPXClientInstrumentor().instrument()
+        HTTPXClientInstrumentor().instrument(tracer_provider=provider)
     except ImportError:
         pass  # 非网关服务可能不需要 httpx 仪表化
 
     try:
         from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
-        SQLAlchemyInstrumentor().instrument()
+        SQLAlchemyInstrumentor().instrument(tracer_provider=provider)
     except ImportError:
         pass  # 部分服务可能不使用 SQLAlchemy
 
@@ -85,7 +95,7 @@ def init_telemetry(service_name: str):
         # 业务代码使用 StructuredLogger（shared/utils/logger.py），
         # 后者已直接从 OTel Span Context 读取 trace_id/span_id，
         # 不依赖 LoggingInstrumentor，且 propagate=False 阻止了重复输出。
-        LoggingInstrumentor().instrument(set_logging_format=True)
+        LoggingInstrumentor().instrument(set_logging_format=True, tracer_provider=provider)
     except ImportError:
         pass
 
@@ -101,7 +111,16 @@ def instrument_app(app):
     """
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-    FastAPIInstrumentor().instrument_app(app)
+    provider = get_otel_provider()
+    if provider:
+        FastAPIInstrumentor().instrument_app(app, tracer_provider=provider)
+    else:
+        FastAPIInstrumentor().instrument_app(app)
+
+
+def get_otel_provider() -> TracerProvider | None:
+    """返回 otel.py 创建的 TracerProvider，供 langfuse 初始化后重装 httpx instrumentation 使用。"""
+    return _otel_provider
 
 
 def get_current_trace_id() -> str:

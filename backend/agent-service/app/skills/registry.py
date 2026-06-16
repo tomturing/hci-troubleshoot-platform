@@ -1,7 +1,7 @@
-"""迁移期本地 Skill 注册表。
+"""迁移期本地 Skill 注册表 — DEPRECATED。
 
-生产运行时的 Skill 权威来源是数据库 skill_definition 表。
-本模块只保留通用注册表能力，供极少数测试或迁移期适配使用。
+生产运行时的 Skill 权威来源是数据库 skill_definition 表，通过 DynamicSkillRunner 加载。
+本模块为遗留代码，仅供极少数测试使用，计划在 v3.0 移除。
 """
 
 import logging

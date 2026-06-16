@@ -555,6 +555,7 @@ class ConversationService:
                         messages=history_messages,
                         user_id=f"case-{case_id}",
                         pod_endpoint=pod_endpoint,
+                        temperature=settings.LLM_TEMPERATURE_S0,
                     ):
                         if chunk:
                             if not _ttft_logged:

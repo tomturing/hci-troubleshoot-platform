@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     # GLM 模型（ReAct 引擎，从 configmap 注入）
     GLM_MODEL: str = "glm-5"
 
+    # LLM 推理参数（SOP + ReAct 排障场景推荐低温度以保证工具调用确定性）
+    LLM_TEMPERATURE: float = 0.1       # 默认温度（fallback / 降级路径）
+    LLM_TEMPERATURE_S0: float = 0.3    # S0 意图识别 / 通用对话
+    LLM_TEMPERATURE_REACT: float = 0.0 # S1-S5 ReAct 工具调用（需极高确定性）
+    LLM_TOP_P: float = 0.3
+    # logprobs=True 时 API 返回每个 token 的对数概率，用于调试模型置信度
+    LLM_LOGPROBS: bool = False
+    # top_logprobs 仅在 logprobs=True 时有意义，返回每个位置概率最高的 N 个 token
+    LLM_TOP_LOGPROBS: int = 0
+
     # KB 服务配置
     KB_SERVICE_URL: str = "http://kb-service:8004"
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"

@@ -90,6 +90,7 @@ async def lifespan(app: FastAPI):
             provider_api_key=None,
             default_model=model,
             assistant_type=assistant_type,
+            temperature=settings.LLM_TEMPERATURE_S0,
         )
         is_default = bool(cfg.get("is_default", False))
         ai_registry.register(assistant_type, client, is_default=is_default)

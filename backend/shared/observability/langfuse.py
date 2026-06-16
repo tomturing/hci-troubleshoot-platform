@@ -61,6 +61,44 @@ def get_langfuse():
         from langfuse import get_client
 
         _langfuse_client = get_client()
+
+        # Langfuse v3 的 get_client() 会创建 TracerProvider 并注册
+        # LangfuseSpanProcessor（继承 BatchSpanProcessor，内含 OTLP HTTP exporter
+        # 指向 {LANGFUSE_HOST}/api/public/otel/v1/traces）。
+        # 若 langfuse-server 不可达，会持续报 Connection refused。
+        # 我们的 OTel span 由 otel.py 独立发往 Tempo，不需要 Langfuse 转发。
+        # 此处遍历 tracer provider 的 span processors，关停 Langfuse 注入的 exporter。
+        try:
+            from opentelemetry import trace as otel_trace
+
+            provider = otel_trace.get_tracer_provider()
+            active_sp = getattr(provider, "_active_span_processor", None)
+            if active_sp:
+                for sp in list(getattr(active_sp, "_span_processors", [])):
+                    if type(sp).__name__ == "LangfuseSpanProcessor":
+                        active_sp._span_processors.remove(sp)
+                        sp.shutdown()
+                        logger.info(event="langfuse_otel_exporter_removed")
+        except Exception:
+            pass
+
+        # Langfuse v3 SDK 的 get_client() 会自动安装 httpx OTel instrumentation，
+        # 导致所有 HTTP 调用产生 span 并进入 Langfuse trace（96%+ 噪音）。
+        # 卸载后重新绑定到 otel.py 的私有 provider（发往 Tempo），
+        # 确保 Langfuse trace 只有 agent 层 observation，OTel 分布式追踪不受影响。
+        try:
+            from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+            from shared.observability.otel import get_otel_provider
+
+            HTTPXClientInstrumentor().uninstrument()
+            otel_provider = get_otel_provider()
+            if otel_provider:
+                HTTPXClientInstrumentor().instrument(tracer_provider=otel_provider)
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(event="langfuse_httpx_rebind_error", error=str(e))
+
         logger.info(
             event="langfuse_initialized",
             host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),
@@ -205,7 +243,9 @@ def end_generation(
 
         if tool_calls:
             update_kwargs["output"] = tool_calls
-        elif output:
+        elif output is not None:
+            # 空字符串 "" 也是合法的输出（如 LLM 返回空回复），
+            # 避免因 falsy 检查跳过导致 Langfuse observation 完全没有 output 字段
             update_kwargs["output"] = output
 
         if total_tokens > 0:
@@ -225,6 +265,61 @@ def end_generation(
         root.end()
     except Exception as e:
         logger.warning(event="langfuse_end_error", error=str(e))
+
+
+def start_agent_observation(
+    *,
+    user_id: str = "",
+    case_id: str = "",
+    assistant_type: str = "",
+    execution_mode: str = "",
+    sop_mode: bool = False,
+    max_iterations: int = 15,
+) -> tuple[Any, Any]:
+    """创建 Agent 执行顶层 observation，串联所有子 LLM 调用和工具执行。
+
+    在 react_engine.execute() 入口调用，返回 (observation, context_manager)。
+    用 try/finally 模式包裹整个 ReAct 循环，finally 中调用 ctx.__exit__(None, None, None)。
+
+    此 observation 创建后，所有 observe_invoke / observe_stream_start / observe_tool
+    调用都会通过 Langfuse v3 SDK 的 OpenTelemetry context 自动嵌套为子 observation。
+
+    Returns:
+        (observation, context_manager) — Langfuse 未配置时返回 (None, None)
+    """
+    lf = get_langfuse()
+    if lf is None:
+        return None, None
+
+    try:
+        from shared.observability.otel import get_current_trace_id as _get_otel_trace_id
+
+        otel_trace_id = _get_otel_trace_id()
+    except Exception:
+        otel_trace_id = ""
+
+    try:
+        ctx = lf.start_as_current_observation(
+            as_type="span",
+            name="agent-execution",
+            metadata={
+                "assistant_type": assistant_type,
+                "case_id": case_id,
+                "otel_trace_id": otel_trace_id,
+                "execution_mode": execution_mode,
+                "sop_mode": sop_mode,
+                "max_iterations": max_iterations,
+            },
+        )
+        obs = ctx.__enter__()
+        obs.update_trace(
+            user_id=user_id or "unknown",
+            session_id=case_id or user_id,
+        )
+        return obs, ctx
+    except Exception as e:
+        logger.warning(event="langfuse_agent_start_error", error=str(e))
+        return None, None
 
 
 @contextmanager
