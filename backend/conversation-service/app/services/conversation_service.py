@@ -402,10 +402,9 @@ class ConversationService:
                 elif msg.role.value == "tool_result":
                     # tool_result 消息按滑动窗口策略决定是否压缩
                     result_content = msg.content
-                    if cutoff_step > 0 and tool_step_idx <= cutoff_step:
-                        # 早期工具输出：截断为摘要
-                        if len(result_content) > TOOL_RESULT_SUMMARY_LEN:
-                            result_content = result_content[:TOOL_RESULT_SUMMARY_LEN] + "…（已截断，详情见工具执行日志）"
+                    # 早期工具输出（步骤 <= cutoff_step）且内容过长时截断为摘要
+                    if cutoff_step > 0 and tool_step_idx <= cutoff_step and len(result_content) > TOOL_RESULT_SUMMARY_LEN:
+                        result_content = result_content[:TOOL_RESULT_SUMMARY_LEN] + "…（已截断，详情见工具执行日志）"
                     reconstructed_tool_messages.append({
                         "role": "tool",
                         "tool_call_id": msg.tool_call_id or "",
@@ -419,7 +418,6 @@ class ConversationService:
                 key=lambda x: x[0].created_at,
             )
             history_messages: list[dict] = []
-            tool_idx_map: dict[str, int] = {}  # message_id → reconstructed_tool_messages 中的索引
             tool_msg_iter = iter(reconstructed_tool_messages)
             for msg, msg_type in combined_messages:
                 if msg_type == "text":

@@ -170,23 +170,29 @@ END $$;
 -- 表，使大模型在中断恢复后能完整还原推理上下文（OpenAI 规范要求）。
 -- 新环境由 desired_schema.sql 的 ENUM 定义直接携带这两个值。
 -- 存量环境需通过幂等 ALTER TYPE 补齐。
+--
+-- 注意：本文件在 Atlas apply desired_schema.sql 之前执行（函数定义阶段），
+-- 此时 message_role 类型可能不存在，需先检查类型存在性再检查枚举值。
 -- ═══════════════════════════════════════════════════════════════
 DO $$ BEGIN
-  -- 补齐 tool_call 角色（ReAct 工具调用请求，含 tool_calls JSON）
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_enum
-    WHERE enumtypid = 'message_role'::regtype
-      AND enumlabel = 'tool_call'
-  ) THEN
-    ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'tool_call';
-  END IF;
-  -- 补齐 tool_result 角色（工具执行结果，通过 tool_call_id 关联 tool_call）
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_enum
-    WHERE enumtypid = 'message_role'::regtype
-      AND enumlabel = 'tool_result'
-  ) THEN
-    ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'tool_result';
+  -- 先检查 message_role 类型是否存在（Atlas apply 后才有）
+  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'message_role') THEN
+    -- 补齐 tool_call 角色（ReAct 工具调用请求，含 tool_calls JSON）
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_enum
+      WHERE enumtypid = 'message_role'::regtype
+        AND enumlabel = 'tool_call'
+    ) THEN
+      ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'tool_call';
+    END IF;
+    -- 补齐 tool_result 角色（工具执行结果，通过 tool_call_id 关联 tool_call）
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_enum
+      WHERE enumtypid = 'message_role'::regtype
+        AND enumlabel = 'tool_result'
+    ) THEN
+      ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'tool_result';
+    END IF;
   END IF;
 END $$;
 
