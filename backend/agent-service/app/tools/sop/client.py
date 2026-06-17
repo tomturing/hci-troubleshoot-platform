@@ -209,3 +209,42 @@ class ConversationSopClient:
                 error=str(exc),
             )
             return {"error": f"调用 conversation-service 失败: {exc}"}
+
+    async def set_variable(
+        self,
+        conversation_id: uuid.UUID,
+        variable_name: str,
+        value: str,
+        source: str = "jit_auto_acquire",
+    ) -> dict[str, Any]:
+        """JIT 自动获取变量后写回 context_variables（DC-07）。
+
+        调用 sop/variable-response 端点，该端点已支持 ACTIVE 状态直写变量。
+        """
+        import httpx
+
+        url = f"{self._base_url}/api/conversations/{conversation_id}/sop/variable-response"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._internal_token}",
+        }
+        payload = {
+            "variable_name": variable_name,
+            "value": str(value),
+            "source": source,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code >= 500:
+                    return {"error": f"conversation-service 错误: {resp.status_code}"}
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.RequestError as exc:
+            logger.error(
+                event="sop_set_variable_error",
+                conversation_id=str(conversation_id),
+                variable_name=variable_name,
+                error=str(exc),
+            )
+            return {"error": f"调用 conversation-service 失败: {exc}"}

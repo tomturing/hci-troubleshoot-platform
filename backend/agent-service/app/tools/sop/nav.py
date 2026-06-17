@@ -238,6 +238,11 @@ def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | 
             content_parts.append("【进入条件】")
             content_parts.extend(f"- {p}" for p in prerequisites)
 
+        # branch 节点也可能有 solution（完成本节点诊断后的判定/处理方案），
+        # 必须返回让 LLM 看到，避免 LLM 跳过 solution 直接探索子分支
+        solution = node.get("solution")
+        has_solution = bool(solution)
+
         response = {
             "node_id": node_id_val,
             "type": "branch",
@@ -246,7 +251,10 @@ def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | 
             "commands": commands,
             "tool_calls": normalize_sop_commands(commands, reason=f"执行 SOP 节点「{node_name_val}」的前置检查命令"),
             "children": children_summary,
+            "has_solution": has_solution,
         }
+        if has_solution:
+            response["solution"] = _format_solution_content(solution)
         response["required_variables"] = _build_required_variables(node, variable_schema)
         return response
 

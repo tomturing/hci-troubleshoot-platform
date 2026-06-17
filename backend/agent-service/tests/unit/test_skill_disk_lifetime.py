@@ -171,7 +171,8 @@ async def test_sop_request_variable_dependency_missing():
         conversation_sop_client=conversation_sop_client,
     )
 
-    assert isinstance(res, dict)
+    # 依赖 smart_info 不在 variable_schema 中 → 无法自动解析，返回缺失错误
+    assert isinstance(res, dict), f"expected dict, got {type(res).__name__}: {res}"
     assert res["error"] == "sop_variable_dependency_missing"
     assert res["missing_dependencies"] == ["smart_info"]
 

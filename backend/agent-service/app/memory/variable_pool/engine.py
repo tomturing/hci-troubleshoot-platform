@@ -268,6 +268,41 @@ def _evaluate_derived_expression(expression: str, context_variables: dict[str, A
     return eval_atom(expression)
 
 
+def _find_var_def(name: str, variable_schema: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """在 variable_schema 列表中查找变量定义。"""
+    for v in variable_schema:
+        if isinstance(v, dict) and v.get("name") == name:
+            return v
+    return None
+
+
+async def _persist_variable(
+    client: Any | None,
+    conversation_id: str,
+    variable_name: str,
+    value: Any,
+) -> None:
+    """JIT 获取到变量值后写回 conversation-service 的 context_variables。
+
+    这样后续依赖链上的变量可直接从池中读取，避免重复获取或 LLM 手动回溯。
+    """
+    if client is None or not hasattr(client, "set_variable"):
+        return
+    try:
+        str_value = str(value) if not isinstance(value, str) else value
+        # 截断过长的值（如 SMART 原始输出），避免 HTTP 请求体过大
+        if len(str_value) > 50000:
+            str_value = str_value[:50000] + "\n...(truncated)"
+        await client.set_variable(
+            uuid.UUID(conversation_id),
+            variable_name,
+            str_value,
+            source="jit_auto_acquire",
+        )
+    except Exception:
+        pass  # 写回失败不影响主流程（变量值已返回给 LLM）
+
+
 async def sop_request_variable(
     variable_name: str,
     reason: str | None = None,
@@ -470,26 +505,84 @@ async def sop_request_variable(
         depends_on=depends_on,
     )
 
+    # 递归解析依赖链：缺失的前置变量自动触发 JIT 获取，避免 LLM 手动逐步回溯
+    _resolve_stack = getattr(sop_request_variable, '_resolve_stack', None)
+    if _resolve_stack is None:
+        _resolve_stack = set()
+        sop_request_variable._resolve_stack = _resolve_stack  # type: ignore[attr-defined]
+
+    if variable_name in _resolve_stack:
+        return {
+            "error": "sop_variable_circular_dependency",
+            "message": f"变量 {variable_name} 存在循环依赖，解析栈: {list(_resolve_stack)}",
+            "variable_name": variable_name,
+        }
+
     missing_deps = []
     for dep in depends_on:
         dep_value = context_variables.get(dep)
         dep_payload = dep_value.get("value") if isinstance(dep_value, dict) else dep_value
         if dep_payload is None or dep_payload == "":
             missing_deps.append(dep)
+
     if missing_deps:
-        return {
-            "error": "sop_variable_dependency_missing",
-            "message": f"变量 {variable_name} 依赖 {', '.join(missing_deps)}，请先获取依赖变量",
-            "variable_name": variable_name,
-            "missing_dependencies": missing_deps,
-            "next_tool_call": {
-                "tool_name": "sop_request_variable",
-                "args": {
-                    "variable_name": missing_deps[0],
-                    "reason": f"变量 {variable_name} 的前置依赖",
+        # 仅自动解析在 variable_schema 中有声明的依赖；未声明的仍返回 missing 错误
+        resolvable_deps = [d for d in missing_deps if _find_var_def(d, variable_schema_list)]
+        unresolvable_deps = [d for d in missing_deps if not _find_var_def(d, variable_schema_list)]
+        if unresolvable_deps and not resolvable_deps:
+            return {
+                "error": "sop_variable_dependency_missing",
+                "message": f"变量 {variable_name} 依赖 {', '.join(missing_deps)}，请先获取依赖变量",
+                "variable_name": variable_name,
+                "missing_dependencies": missing_deps,
+                "next_tool_call": {
+                    "tool_name": "sop_request_variable",
+                    "args": {
+                        "variable_name": missing_deps[0],
+                        "reason": f"变量 {variable_name} 的前置依赖",
+                    },
                 },
-            },
-        }
+            }
+
+        _resolve_stack.add(variable_name)
+        try:
+            for dep in resolvable_deps:
+                logger.info(
+                    event="sop_request_variable_resolve_dependency",
+                    variable_name=variable_name,
+                    dependency=dep,
+                )
+                dep_result = await sop_request_variable(
+                    variable_name=dep,
+                    reason=f"变量 {variable_name} 的前置依赖",
+                    conversation_id=conversation_id,
+                    sop_document_id=sop_document_id,
+                    kb_client=kb_client,
+                    conversation_sop_client=conversation_sop_client,
+                    tool_executor=tool_executor,
+                    skill_runner=skill_runner,
+                )
+                if isinstance(dep_result, VariableRequestResult):
+                    # 依赖需要用户输入 → 向上传播
+                    return dep_result
+                if isinstance(dep_result, dict) and "error" in dep_result:
+                    # 依赖获取失败 → 向上传播错误
+                    return {
+                        "error": "sop_variable_dependency_failed",
+                        "message": (
+                            f"无法获取变量 {variable_name} 的前置依赖 {dep}: "
+                            f"{dep_result.get('message', dep_result.get('error', ''))}"
+                        ),
+                        "variable_name": variable_name,
+                        "failed_dependency": dep,
+                        "dependency_error": dep_result,
+                    }
+                # 依赖获取成功，刷新 context_variables
+                if conversation_sop_client is not None:
+                    execution = await conversation_sop_client.get_execution(uuid.UUID(conversation_id))
+                    context_variables = (execution or {}).get("context_variables", {}) or {}
+        finally:
+            _resolve_stack.discard(variable_name)
 
     if strategy == STRATEGY_ENV_INJECTION:
         # env_injection 类变量（含 env:xxx 冒号格式）应在 SOP 初始化阶段批量注入，不走 JIT
@@ -585,6 +678,8 @@ async def sop_request_variable(
                         acquisition_tool=acquisition_tool,
                         rendered_arg_keys=sorted(tool_args.keys()) if isinstance(tool_args, dict) else None,
                     )
+                    # 写回变量池，后续依赖变量可直接从池中读取
+                    await _persist_variable(conversation_sop_client, conversation_id, variable_name, acquired_value)
                     return {"ok": True, "value": acquired_value, "source": "tool_call"}
             except Exception as exc:
                 logger.error(
@@ -640,6 +735,7 @@ async def sop_request_variable(
                     variable_name=variable_name,
                     acquisition_skill=acquisition_tool,
                 )
+                await _persist_variable(conversation_sop_client, conversation_id, variable_name, acquired_value)
                 return {
                     "ok": True,
                     "value": acquired_value,
