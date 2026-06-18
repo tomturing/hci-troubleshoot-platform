@@ -35,7 +35,9 @@
 -- ============================================================
 CREATE TYPE case_status AS ENUM ('created', 'confirmed', 'in_progress', 'resolved', 'closed', 'cancelled');
 
-CREATE TYPE message_role AS ENUM ('user', 'assistant', 'system', 'command');
+CREATE TYPE message_role AS ENUM ('user', 'assistant', 'system', 'command', 'tool_call', 'tool_result');
+-- tool_call: AI 发起的工具调用请求（含 tool_calls JSON）
+-- tool_result: 工具执行结果（通过 tool_call_id 关联对应的 tool_call 消息）
 
 
 
@@ -402,6 +404,7 @@ CREATE TABLE IF NOT EXISTS message (
     metadata jsonb DEFAULT '{}'::jsonb,
     created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     trace_id varchar(64),
+    tool_call_id text,  -- role=tool_result 时关联对应的 tool_call 请求 ID（OpenAI tool_call_id 格式）
     CONSTRAINT fk_message_conversation_id FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE CASCADE,
     CONSTRAINT message_pkey PRIMARY KEY (message_id)
 );
@@ -417,6 +420,7 @@ COMMENT ON COLUMN message.command_warning IS '命令执行风险提示，仅 rol
 COMMENT ON COLUMN message.metadata IS '扩展字段，如消息来源、token 统计等';
 COMMENT ON COLUMN message.created_at IS '消息创建时间';
 COMMENT ON COLUMN message.trace_id IS '创建消息的请求 trace ID';
+COMMENT ON COLUMN message.tool_call_id IS 'role=tool_result 时填写，关联 role=tool_call 消息中的 tool_call_id（OpenAI format），用于在恢复 ReAct 上下文时成对重建工具调用历史';
 
 -- 索引: message
 -- 会话消息查询

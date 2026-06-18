@@ -357,10 +357,77 @@ class ConversationService:
                 all_messages = await self.repository.get_messages(conversation_id)
 
             # 构建消息历史（不再加入 system_prompt，由 agent-service 自己构建）
+            # ReAct 工具调用恢复：将 tool_call/tool_result 消息还原为 OpenAI function calling 格式，
+            # 使大模型在中断（步数限制/超时）后能完整续接 ReAct 推理链，无需从头重推。
+            # 滑动窗口压缩策略：
+            #   - 最近 TOOL_TURN_FULL_WINDOW 步（10步）的工具调用完整保留
+            #   - 更早的工具调用输出截断为 200 字符摘要，节省 token 预算
+            TOOL_TURN_FULL_WINDOW = 10  # 完整保留的最近工具调用步数
+            TOOL_RESULT_SUMMARY_LEN = 200  # 早期工具结果摘要最大字符数
+            MAX_TEXT_MESSAGES = 20  # 文本消息（user/assistant）最多保留条数
+
+            # 第一步：分离文本消息和工具调用消息
+            text_messages = [m for m in all_messages if m.role.value in ("user", "assistant", "system", "command")]
+            tool_messages = [m for m in all_messages if m.role.value in ("tool_call", "tool_result")]
+
+            # 第二步：文本消息按原有逻辑取最近 MAX_TEXT_MESSAGES 条
+            selected_text = text_messages[-MAX_TEXT_MESSAGES:] if len(text_messages) > MAX_TEXT_MESSAGES else text_messages
+
+            # 第三步：工具消息重组为 OpenAI messages 格式
+            # tool_call 消息的 content 字段存储的是 JSON 序列化的 assistant message（含 tool_calls 数组）
+            # tool_result 消息的 content 字段存储工具输出文本，tool_call_id 字段存储对应的 tool_call_id
+            # 统计工具调用步数用于滑动窗口判定
+            tool_call_messages = [m for m in tool_messages if m.role.value == "tool_call"]
+            total_tool_steps = len(tool_call_messages)
+            cutoff_step = total_tool_steps - TOOL_TURN_FULL_WINDOW  # 超过此步骤的工具输出需要摘要化
+
+            import json as _json
+            tool_step_idx = 0  # 当前 tool_call 的步骤序号
+            reconstructed_tool_messages: list[dict] = []
+            for msg in tool_messages:
+                if msg.role.value == "tool_call":
+                    tool_step_idx += 1
+                    # tool_call 消息的 content 是 JSON 序列化的 OpenAI assistant message
+                    try:
+                        assistant_msg = _json.loads(msg.content)
+                        reconstructed_tool_messages.append(assistant_msg)
+                    except Exception:
+                        # 解析失败则跳过（保证健壮性）
+                        logger.warning(
+                            event="tool_call_msg_parse_error",
+                            message="tool_call 消息反序列化失败，已跳过",
+                            conversation_id=str(conversation_id),
+                            message_id=str(msg.message_id),
+                        )
+                elif msg.role.value == "tool_result":
+                    # tool_result 消息按滑动窗口策略决定是否压缩
+                    result_content = msg.content
+                    # 早期工具输出（步骤 <= cutoff_step）且内容过长时截断为摘要
+                    if cutoff_step > 0 and tool_step_idx <= cutoff_step and len(result_content) > TOOL_RESULT_SUMMARY_LEN:
+                        result_content = result_content[:TOOL_RESULT_SUMMARY_LEN] + "…（已截断，详情见工具执行日志）"
+                    reconstructed_tool_messages.append({
+                        "role": "tool",
+                        "tool_call_id": msg.tool_call_id or "",
+                        "content": result_content,
+                    })
+
+            # 第四步：将文本消息和工具消息按时间顺序合并
+            # 通过 created_at 排序合并，确保正确的 ReAct 时序
+            combined_messages = sorted(
+                [(m, "text") for m in selected_text] + [(m, "tool") for m in tool_messages if m.role.value in ("tool_call", "tool_result")],
+                key=lambda x: x[0].created_at,
+            )
             history_messages: list[dict] = []
-            selected_messages = all_messages[-20:] if len(all_messages) > 20 else all_messages
-            for msg in selected_messages:
-                history_messages.append({"role": msg.role.value, "content": msg.content})
+            tool_msg_iter = iter(reconstructed_tool_messages)
+            for msg, msg_type in combined_messages:
+                if msg_type == "text":
+                    history_messages.append({"role": msg.role.value, "content": msg.content})
+                else:
+                    # 工具消息按迭代器顺序插入
+                    try:
+                        history_messages.append(next(tool_msg_iter))
+                    except StopIteration:
+                        break
 
             if intercepted_confirmation:
                 history_messages.append({"role": "assistant", "content": intercepted_confirmation})
@@ -815,6 +882,7 @@ class ConversationService:
         role: "MessageRole",
         content: str,
         metadata: dict | None = None,
+        tool_call_id: str | None = None,
     ) -> None:
         """在独立 session 中后台保存消息（供 asyncio.create_task 调用）。"""
         if not content:
@@ -830,6 +898,7 @@ class ConversationService:
                         content=content,
                         trace_id=trace_id,
                         metadata=metadata or {},
+                        tool_call_id=tool_call_id,
                     )
                     await independent_session.commit()
             else:
@@ -840,6 +909,7 @@ class ConversationService:
                     content=content,
                     trace_id=trace_id,
                     metadata=metadata or {},
+                    tool_call_id=tool_call_id,
                 )
         except Exception as e:
             logger.error(
@@ -847,6 +917,80 @@ class ConversationService:
                 message="后台保存消息失败",
                 conversation_id=str(conversation_id),
                 role=str(role),
+                error=str(e),
+            )
+
+    async def save_tool_turn(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        tool_calls_msg: dict,
+        tool_result_msg: dict,
+        exec_id: str | None = None,
+    ) -> None:
+        """将 ReAct 工具调用轮次（assistant tool_calls + tool result）持久化到 message 表。
+
+        这是实现工具调用历史跨轮次恢复的核心方法（第一性原理方案）。
+        大模型的上下文窗口是其唯一工作内存：将工具调用轮次持久化，
+        等价于 LangGraph Checkpointer 的 ReAct messages 持久化，
+        使大模型在步数限制/超时中断后能通过完整的 messages[] 无缝续接。
+
+        Args:
+            conversation_id: 会话 ID
+            case_id: 工单 ID
+            tool_calls_msg: OpenAI assistant message（含 tool_calls 数组）
+            tool_result_msg: OpenAI tool message（role=tool，含 tool_call_id 和 content）
+            exec_id: 工具执行 ID（可选，写入 metadata 供审计追踪）
+        """
+        import json as _json
+
+        trace_id = get_current_trace_id()
+        # 提取 tool_call_id 用于 tool_result 行的关联
+        tool_call_id = tool_result_msg.get("tool_call_id", "")
+
+        try:
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    repo = ConversationRepository(session)
+                    # 1. 写入 tool_call 行（存储序列化后的 assistant message JSON）
+                    await repo.add_message(
+                        conversation_id=conversation_id,
+                        case_id=case_id,
+                        role=MessageRole.tool_call,
+                        content=_json.dumps(tool_calls_msg, ensure_ascii=False),
+                        trace_id=trace_id,
+                        metadata={"exec_id": exec_id} if exec_id else {},
+                    )
+                    # 2. 写入 tool_result 行（存储工具输出文本，关联 tool_call_id）
+                    await repo.add_message(
+                        conversation_id=conversation_id,
+                        case_id=case_id,
+                        role=MessageRole.tool_result,
+                        content=tool_result_msg.get("content", ""),
+                        trace_id=trace_id,
+                        tool_call_id=tool_call_id,
+                        metadata={"exec_id": exec_id} if exec_id else {},
+                    )
+                    await session.commit()
+                    logger.debug(
+                        event="tool_turn_persisted",
+                        message="工具调用轮次已持久化到 message 表",
+                        conversation_id=str(conversation_id),
+                        tool_call_id=tool_call_id,
+                        exec_id=exec_id,
+                    )
+            else:
+                logger.warning(
+                    event="tool_turn_persist_skipped",
+                    message="session_factory 未注入，跳过工具调用轮次持久化",
+                    conversation_id=str(conversation_id),
+                )
+        except Exception as e:
+            logger.error(
+                event="save_tool_turn_error",
+                message="工具调用轮次持久化失败（非阻塞，不影响主流程）",
+                conversation_id=str(conversation_id),
+                tool_call_id=tool_call_id,
                 error=str(e),
             )
 

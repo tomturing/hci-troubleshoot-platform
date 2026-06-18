@@ -71,8 +71,9 @@ class ConversationRepository:
         command: str | None = None,
         command_warning: str | None = None,
         metadata: dict[str, Any] | None = None,
+        tool_call_id: str | None = None,  # role=tool_result 时关联 tool_call 的 ID
     ) -> Message:
-        """添加消息"""
+        """添加消息（支持 tool_call/tool_result 角色）"""
         if metadata is None:
             metadata = {}
 
@@ -87,6 +88,7 @@ class ConversationRepository:
             trace_id=trace_id,
             created_at=datetime.now(UTC),
             metadata_=metadata,
+            tool_call_id=tool_call_id,
         )
         self.session.add(message)
 
@@ -102,6 +104,18 @@ class ConversationRepository:
             select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
         )
         return list(result.scalars().all())
+
+    async def get_tool_turns_count(self, conversation_id: uuid.UUID) -> int:
+        """统计会话中工具调用轮次数量（用于计算滑动窗口）"""
+        from sqlalchemy import func
+
+        result = await self.session.execute(
+            select(func.count(Message.message_id)).where(
+                Message.conversation_id == conversation_id,
+                Message.role == MessageRole.tool_call,
+            )
+        )
+        return result.scalar() or 0
 
     async def get_recent_user_messages(
         self,

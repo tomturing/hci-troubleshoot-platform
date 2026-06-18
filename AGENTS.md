@@ -29,6 +29,13 @@
 - **工单 Q2026061511158 自动诊断停顿与推理步数限制优化**：
   - 对话历史对齐：在 `conversation-service` 拦截用户 S0 选择时，将产生的确认话术同步追加至 `history_messages` 列表中，避免大模型重复回复文本导致 ReAct 循环终止停顿，实现 100% 自动导航推进。
   - 推理步骤上限提升：在 `agent-service` 将 ReAct 推理循环的硬性最高步骤数限制 `MAX_STEPS` 和 `InvestigationAgent` 调用时传入的 `max_iterations` 从 `15` 步调高至 `40` 步，解决复杂排障或重连重新执行命令时步骤极易超限问题。
+- **ReAct 工具调用历史跨轮次持久化**（第一性原理方案）：
+  - **根因**：LLM 的上下文窗口是其唯一工作内存。工具调用轮次（`tool_calls` + `tool_result` 消息对）是 ReAct 推理链的关键 Observation 节点，但原有实现中这些消息仅存在于 `react_engine` 的内存 `work_messages` 中，会话结束即丢失，用户点击"继续"时大模型从零开始推理，重复执行已完成的工具。
+  - **方案**：遵循 OpenAI Function Calling 规范和 LangGraph Checkpointer 范式，将工具调用轮次作为一等公民持久化到 `message` 表：
+    - DB Schema：`message_role` ENUM 增加 `tool_call` 和 `tool_result` 两个角色；`message` 表增加 `tool_call_id` 字段关联 tool result 到对应 tool call。
+    - agent-service：`react_engine.py` 新增 `_persist_tool_turn()` 方法，每次工具执行完毕后 fire-and-forget 调用 `conversation-service` 的 `/tool-turn` 接口写入记录。
+    - conversation-service：新增 `POST /api/conversations/{id}/tool-turn` 接口；修改 `history_messages` 构建逻辑，加载时包含 `tool_call/tool_result` 角色消息并正确还原为 OpenAI messages 格式；实现**滑动窗口压缩**策略（最近 10 步完整保留，更早的工具输出截断为 200 字符摘要，防止 token 爆炸）。
+    - 存量环境：`desired_extras.sql` 幂等 `ALTER TYPE` 和 `ALTER TABLE` 自动补齐旧部署。
 
 - 前端工具栏优化：工单信息 Popover（含 ID/工单号）→ 关闭工单 → SSH终端（Monitor 图标），终端历史按钮移入 TerminalPanel header-actions
 - 环境采集命令更新：`task get -s failed -l 10`（仅失败任务）；后端字段映射已支持整数 status/urgent_type 与 Unix 时间戳（PR #285）

@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-06-13
+last_updated: 2026-06-17
 owner: team
 ---
 
@@ -17,6 +17,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-06-17 | v3.10 | **ReAct 工具调用历史跨轮次持久化（PR #472）**：① `message_role` ENUM 增加 `tool_call`/`tool_result` 角色；② `message` 表新增 `tool_call_id` 字段；③ agent-service `_persist_tool_turn()` 每次工具执行后持久化；④ conversation-service `/tool-turn` 接口接收写入；⑤ `history_messages` 重建逻辑重写，还原 OpenAI messages 格式 + 滑动窗口压缩（最近 10 步完整保留） | [../../solution/agent/events/2026-06-17-ReAct工具调用历史跨轮次持久化.md](../../solution/agent/events/2026-06-17-ReAct工具调用历史跨轮次持久化.md) |
 | 2026-06-08 | v1.0 | 初版：四阶段任务分解，含验收标准 |
 | 2026-06-08 | v1.1 | 阶段零已全部合并；完成阶段一「工具事务化地基」开发并通过全量单元测试 |
 | 2026-06-08 | v1.2 | 全面核查：阶段零~二全部完成；阶段三 T3-1~T3-2、T3-4~T3-5 已完成，T3-3 未实现；阶段四 T4-1~T4-3 已完成，T4-4 未实现；整体 20/22 |

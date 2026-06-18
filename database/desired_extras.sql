@@ -163,3 +163,49 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- ═══════════════════════════════════════════════════════════════
+-- ReAct 工具调用历史跨轮次持久化：扩展 message_role ENUM
+--
+-- 背景：将 ReAct 工具调用轮次（tool_call/tool_result）持久化到 message
+-- 表，使大模型在中断恢复后能完整还原推理上下文（OpenAI 规范要求）。
+-- 新环境由 desired_schema.sql 的 ENUM 定义直接携带这两个值。
+-- 存量环境需通过幂等 ALTER TYPE 补齐。
+--
+-- 注意：本文件在 Atlas apply desired_schema.sql 之前执行（函数定义阶段），
+-- 此时 message_role 类型可能不存在，需先检查类型存在性再检查枚举值。
+-- ═══════════════════════════════════════════════════════════════
+DO $$ BEGIN
+  -- 先检查 message_role 类型是否存在（Atlas apply 后才有）
+  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'message_role') THEN
+    -- 补齐 tool_call 角色（ReAct 工具调用请求，含 tool_calls JSON）
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_enum
+      WHERE enumtypid = 'message_role'::regtype
+        AND enumlabel = 'tool_call'
+    ) THEN
+      ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'tool_call';
+    END IF;
+    -- 补齐 tool_result 角色（工具执行结果，通过 tool_call_id 关联 tool_call）
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_enum
+      WHERE enumtypid = 'message_role'::regtype
+        AND enumlabel = 'tool_result'
+    ) THEN
+      ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'tool_result';
+    END IF;
+  END IF;
+END $$;
+
+-- 补齐 message 表 tool_call_id 字段（存量环境未包含此字段时自动补齐）
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='message') THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'message' AND column_name = 'tool_call_id'
+    ) THEN
+      ALTER TABLE message ADD COLUMN tool_call_id text;
+      COMMENT ON COLUMN message.tool_call_id IS
+        'role=tool_result 时填写，关联 role=tool_call 消息中的 tool_call_id（OpenAI format），用于在恢复 ReAct 上下文时成对重建工具调用历史';
+    END IF;
+  END IF;
+END $$;
