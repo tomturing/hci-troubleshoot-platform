@@ -20,6 +20,7 @@ Agent Service - 主应用
   - S5（修复执行）→ RemediationAgent（继承 BaseAgent）
 """
 
+import uuid
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -469,11 +470,31 @@ class CompositeToolExecutor:
             if effective_conversation_id is None:
                 return {"error": "缺少 conversation_id，无法执行 acli 工具"}
 
+            # node_ip 优先读 LLM 参数，其次从 SOP context_variables 注入，
+            # 避免 LLM 忘记传 node_ip 导致命令在错误节点执行
+            effective_node_ip = args.get("node_ip")
+            if not effective_node_ip:
+                try:
+                    # 从 SOP 执行的 context_variables 中查找 node_ip
+                    if self._conversation_sop_client:
+                        exec_state = await self._conversation_sop_client.get_execution(
+                            uuid.UUID(str(effective_conversation_id))
+                        )
+                        if exec_state:
+                            ctx_vars = exec_state.get("context_variables", {}) or {}
+                            node_ip_payload = ctx_vars.get("node_ip", {}) if isinstance(ctx_vars, dict) else {}
+                            if isinstance(node_ip_payload, dict):
+                                effective_node_ip = node_ip_payload.get("value")
+                            if not effective_node_ip:
+                                effective_node_ip = node_ip_payload if isinstance(node_ip_payload, str) else None
+                except Exception:
+                    pass  # 非 SOP 模式或无 context_variables 时静默跳过
+
             result = await self._bridge_executor.execute(
                 tool_name,
                 args,
                 conversation_id=effective_conversation_id,
-                node_ip=args.get("node_ip"),
+                node_ip=effective_node_ip,
                 risk_level=tool_def.risk_level,
                 policy=tool_def.policy,
                 usage_template=tool_def.usage_template,

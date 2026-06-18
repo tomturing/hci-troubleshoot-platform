@@ -253,13 +253,17 @@ export function buildAgentExecMessage(
 export function buildAgentExecProcessMessage(
   caseId: string,
   execId: string,
-  rawCommand: string
+  rawCommand: string,
+  nodeIp?: string | null,
+  container?: string | null,
 ): string {
   return JSON.stringify({
     type: 'ssh_exec_process',
     case_id: caseId,
     exec_id: execId,
     command: rawCommand,
+    node_ip: nodeIp || undefined,
+    container: container || undefined,
   })
 }
 

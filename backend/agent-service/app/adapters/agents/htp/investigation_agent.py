@@ -171,39 +171,6 @@ class InvestigationAgent(BaseAgent):
                 reason=f"未找到助手类型 '{assistant_type}'",
             )
 
-        # T2-4: 信息质量检查与澄清拦截（仅在非 SOP 恢复场景下触发）
-        if not sop_resume_context:
-            quality_report = await self._evidence_builder.check_information_quality(
-                session_id=session_id,
-                env_context=env_context,
-            )
-            if quality_report.needs_clarification:
-                logger.warning(
-                    event="information_quality_low",
-                    message="环境数据质量不足，发起用户澄清",
-                    session_id=session_id,
-                    score=quality_report.quality_score,
-                    missing=quality_report.missing_keys,
-                )
-                yield AgentInteractiveRequest(
-                    request_id=f"clarify-{session_id}",
-                    acp_session_id=session_id,
-                    kind="information_clarification",
-                    title="需要补充环境信息",
-                    prompt=quality_report.to_clarification_prompt(),
-                    options=[
-                        {"optionId": "retry", "name": "已补充，重新检查"},
-                        {"optionId": "skip", "name": "忽略，继续诊断"},
-                    ],
-                    custom_input=True,
-                    metadata={
-                        "missing_keys": quality_report.missing_keys,
-                        "stale_keys": quality_report.stale_keys,
-                        "low_confidence_keys": quality_report.low_confidence_keys,
-                    },
-                )
-                return
-
         user_query = self._extract_user_query(messages)
 
         yield AgentStageUpdate(
@@ -263,6 +230,48 @@ class InvestigationAgent(BaseAgent):
             category_id=category_id,
             session_id=session_id,
         )
+
+        # T2-4: 信息质量检查（SOP 命中时跳过 — 变量管道自动收集数据）
+        if not sop_resume_context:
+            quality_report = await self._evidence_builder.check_information_quality(
+                session_id=session_id,
+                env_context=env_context,
+            )
+            has_sop = track == "sop" and sop_results
+            if quality_report.needs_clarification and not has_sop:
+                logger.warning(
+                    event="information_quality_low",
+                    message="环境数据质量不足，发起用户澄清",
+                    session_id=session_id,
+                    score=quality_report.quality_score,
+                    missing=quality_report.missing_keys,
+                )
+                yield AgentInteractiveRequest(
+                    request_id=f"clarify-{session_id}",
+                    acp_session_id=session_id,
+                    kind="information_clarification",
+                    title="需要补充环境信息",
+                    prompt=quality_report.to_clarification_prompt(),
+                    options=[
+                        {"optionId": "retry", "name": "已补充，重新检查"},
+                        {"optionId": "skip", "name": "忽略，继续诊断"},
+                    ],
+                    custom_input=True,
+                    metadata={
+                        "missing_keys": quality_report.missing_keys,
+                        "stale_keys": quality_report.stale_keys,
+                        "low_confidence_keys": quality_report.low_confidence_keys,
+                    },
+                )
+                return
+            if quality_report.needs_clarification and has_sop:
+                logger.info(
+                    event="information_quality_skip_for_sop",
+                    message="SOP 命中，跳过澄清拦截",
+                    session_id=session_id,
+                    sop_document_id=sop_results[0].get("id") if sop_results else None,
+                    missing=quality_report.missing_keys,
+                )
 
         # 2. SOP 轨道 → ReactEngine + SOP 导航工具（T-AGT-22）
         if track == "sop" and sop_results:

@@ -41,7 +41,9 @@ type InMessage struct {
 	Passphrase string `json:"passphrase"`
 	Data       string `json:"data"`
 	Command    string `json:"command"`
-	ExecID     string `json:"exec_id"` // 用于 ssh_exec_command 和 ssh_exec_process
+	ExecID     string `json:"exec_id"`   // 用于 ssh_exec_command 和 ssh_exec_process
+	NodeIP     string `json:"node_ip"`   // 目标节点 IP（多节点路由）
+	Container  string `json:"container"` // 目标容器名（空或"host"=物理机直连）
 }
 
 type OutMessage struct {
@@ -60,10 +62,10 @@ type OutMessage struct {
 
 // ExecListener 用于追踪命令执行的 marker
 type ExecListener struct {
-	ExecID    string           // 执行 ID
-	StartTime time.Time        // 开始时间
-	OutputBuf *strings.Builder // 输出缓冲区
-	ResultChan chan ExecResult // 结果通道
+	ExecID     string           // 执行 ID
+	StartTime  time.Time        // 开始时间
+	OutputBuf  *strings.Builder // 输出缓冲区
+	ResultChan chan ExecResult  // 结果通道
 }
 
 // ExecResult 命令执行结果
@@ -238,23 +240,18 @@ func (s *SSHSession) injectCommand(command string) {
 
 // ── Exec Marker 监听器管理 ───────────────────────────────────────────────────
 
-// registerExecListener 注册一个 marker 监听器
 func (s *SSHSession) registerExecListener(listener *ExecListener) {
 	s.listenersMu.Lock()
 	defer s.listenersMu.Unlock()
 	s.listeners[listener.ExecID] = listener
-	log.Printf("[Bridge] 注册 exec 监听器: case=%s exec_id=%s", s.caseID, listener.ExecID)
 }
 
-// unregisterExecListener 移除 marker 监听器
 func (s *SSHSession) unregisterExecListener(execID string) {
 	s.listenersMu.Lock()
 	defer s.listenersMu.Unlock()
 	delete(s.listeners, execID)
-	log.Printf("[Bridge] 移除 exec 监听器: case=%s exec_id=%s", s.caseID, execID)
 }
 
-// appendOutput 将输出追加到所有活跃监听器的缓冲区
 func (s *SSHSession) appendOutput(chunk string) {
 	s.listenersMu.Lock()
 	defer s.listenersMu.Unlock()
@@ -263,55 +260,40 @@ func (s *SSHSession) appendOutput(chunk string) {
 	}
 }
 
-// checkMarkers 检查输出中是否包含已注册的 marker
-// 返回匹配到的监听器（如有）
 func (s *SSHSession) checkMarkers(output string) (*ExecListener, int, bool) {
 	s.listenersMu.Lock()
 	defer s.listenersMu.Unlock()
 
 	for execID, listener := range s.listeners {
-		// marker 格式：__EXEC_DONE_{execId16}:{exit_code}
-		// execId16 是 execID 的前 16 位
 		normalizedExecID := strings.ReplaceAll(execID, "-", "")
 		if len(normalizedExecID) < 16 {
 			continue
 		}
 		markerPrefix := "__EXEC_DONE_" + normalizedExecID[:16] + ":"
 		if idx := strings.Index(output, markerPrefix); idx != -1 {
-			log.Printf("[Bridge] checkMarkers: 匹配到前缀 %q, 位置: %d", markerPrefix, idx)
-			// 找到 marker，解析 exit_code
 			markerStart := idx
 			markerEnd := strings.IndexByte(output[markerStart:], '\n')
 			if markerEnd == -1 {
 				markerEnd = len(output) - markerStart
 			}
 			markerLine := output[markerStart : markerStart+markerEnd]
-			log.Printf("[Bridge] checkMarkers: 待解析行: %q", markerLine)
 
-			// 解析 exit_code
 			var exitCode int
 			if _, err := fmt.Sscanf(markerLine, markerPrefix+"%d", &exitCode); err != nil {
-				// 如果解析失败，判断是否为命令行回显（Echo）。回显行包含 "%s" 或 "$status" 特征，应忽略并继续等待真实输出
 				if strings.Contains(markerLine, "%s") || strings.Contains(markerLine, "$status") {
-					log.Printf("[Bridge] checkMarkers: 忽略回显行 %q", markerLine)
 					continue
 				}
-				log.Printf("[Bridge] checkMarkers: 解析失败 (%v), 默认设退出码为 -1", err)
 				exitCode = -1
 			}
-
-			log.Printf("[Bridge] checkMarkers: 成功匹配并解析退出码: %d", exitCode)
 			return listener, exitCode, true
 		}
 	}
 	return nil, 0, false
 }
 
-// execCommand 执行命令并注册监听器
 func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) <-chan ExecResult {
 	resultChan := make(chan ExecResult, 1)
 
-	// 创建监听器
 	listener := &ExecListener{
 		ExecID:     execID,
 		StartTime:  time.Now(),
@@ -319,30 +301,24 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 		ResultChan: resultChan,
 	}
 
-	// 注册监听器
 	s.registerExecListener(listener)
 
-	// 启动超时检测
 	go func() {
 		select {
 		case <-time.After(timeout):
-			// 超时，发送超时结果
 			s.listenersMu.Lock()
 			if l, ok := s.listeners[execID]; ok {
 				output := l.OutputBuf.String()
 				delete(s.listeners, execID)
 				s.listenersMu.Unlock()
 				resultChan <- ExecResult{Output: output, ExitCode: -1, Timeout: true}
-				log.Printf("[Bridge] exec 超时: case=%s exec_id=%s", s.caseID, execID)
 			} else {
 				s.listenersMu.Unlock()
 			}
 		case <-resultChan:
-			// 正常完成
 		}
 	}()
 
-	// 写入命令
 	s.send(command)
 
 	return resultChan
@@ -350,69 +326,46 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 
 // execCommandIsolated 独立建立 SSH Session 执行命令 (双通道 - 事务执行设计)
 func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID string) {
-	log.Printf("[Bridge] [ExecChannel] 开始隔离执行命令: case=%s exec_id=%s command=%q", s.caseID, execID, command)
-
-	// 1. 建立全新独立 SSH Session (不绑定 PTY)
 	session, err := s.client.NewSession()
 	if err != nil {
-		log.Printf("[Bridge] [ExecChannel] 创建隔离 Session 失败: case=%s exec_id=%s err=%v", s.caseID, execID, err)
 		sendMsg(ws, OutMessage{
-			Type:     "exec_result",
-			CaseID:   s.caseID,
-			ExecID:   execID,
-			Stderr:   fmt.Sprintf("创建隔离 SSH 会话失败: %v", err),
-			ExitCode: -1,
+			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
+			Stderr: fmt.Sprintf("创建隔离 SSH 会话失败: %v", err), ExitCode: -1,
 		})
 		return
 	}
 	defer session.Close()
 
-	// 2. 获取独立的 Stdout 和 Stderr 物理管道
 	stdoutPipe, err := session.StdoutPipe()
 	if err != nil {
-		log.Printf("[Bridge] [ExecChannel] 获取 StdoutPipe 失败: case=%s exec_id=%s err=%v", s.caseID, execID, err)
 		sendMsg(ws, OutMessage{
-			Type:     "exec_result",
-			CaseID:   s.caseID,
-			ExecID:   execID,
-			Stderr:   fmt.Sprintf("获取 StdoutPipe 失败: %v", err),
-			ExitCode: -1,
+			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
+			Stderr: fmt.Sprintf("获取 StdoutPipe 失败: %v", err), ExitCode: -1,
 		})
 		return
 	}
 	stderrPipe, err := session.StderrPipe()
 	if err != nil {
-		log.Printf("[Bridge] [ExecChannel] 获取 StderrPipe 失败: case=%s exec_id=%s err=%v", s.caseID, execID, err)
 		sendMsg(ws, OutMessage{
-			Type:     "exec_result",
-			CaseID:   s.caseID,
-			ExecID:   execID,
-			Stderr:   fmt.Sprintf("获取 StderrPipe 失败: %v", err),
-			ExitCode: -1,
+			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
+			Stderr: fmt.Sprintf("获取 StderrPipe 失败: %v", err), ExitCode: -1,
 		})
 		return
 	}
 
-	// 3. 异步启动命令 (Start 是非阻塞的，底层协议开始交互)
 	if err := session.Start(command); err != nil {
-		log.Printf("[Bridge] [ExecChannel] 启动隔离命令失败: case=%s exec_id=%s err=%v", s.caseID, execID, err)
 		sendMsg(ws, OutMessage{
-			Type:     "exec_result",
-			CaseID:   s.caseID,
-			ExecID:   execID,
-			Stderr:   fmt.Sprintf("启动命令失败: %v", err),
-			ExitCode: -1,
+			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
+			Stderr: fmt.Sprintf("启动命令失败: %v", err), ExitCode: -1,
 		})
 		return
 	}
 
-	// 4. 双通道缓冲推送
 	var stdoutBuf strings.Builder
 	var stderrBuf strings.Builder
 	var wg sync.WaitGroup
 
 	wg.Add(2)
-	// 读取 stdout
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 4096)
@@ -421,12 +374,7 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 			if n > 0 {
 				chunk := string(buf[:n])
 				stdoutBuf.WriteString(chunk)
-				sendMsg(ws, OutMessage{
-					Type:   "exec_stdout",
-					CaseID: s.caseID,
-					ExecID: execID,
-					Stdout: chunk,
-				})
+				sendMsg(ws, OutMessage{Type: "exec_stdout", CaseID: s.caseID, ExecID: execID, Stdout: chunk})
 			}
 			if rerr != nil {
 				break
@@ -434,7 +382,6 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 		}
 	}()
 
-	// 读取 stderr
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 4096)
@@ -443,12 +390,7 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 			if n > 0 {
 				chunk := string(buf[:n])
 				stderrBuf.WriteString(chunk)
-				sendMsg(ws, OutMessage{
-					Type:   "exec_stderr",
-					CaseID: s.caseID,
-					ExecID: execID,
-					Stderr: chunk,
-				})
+				sendMsg(ws, OutMessage{Type: "exec_stderr", CaseID: s.caseID, ExecID: execID, Stderr: chunk})
 			}
 			if rerr != nil {
 				break
@@ -456,31 +398,21 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 		}
 	}()
 
-	// 5. 等待双物理流数据读取完成
 	wg.Wait()
 
-	// 6. 获取带外退出状态并回收
 	exitCode := 0
 	if werr := session.Wait(); werr != nil {
 		if exitErr, ok := werr.(*ssh.ExitError); ok {
 			exitCode = exitErr.ExitStatus()
-			log.Printf("[Bridge] [ExecChannel] 命令退出, exit_code=%d, case=%s", exitCode, s.caseID)
 		} else {
 			exitCode = -1
-			log.Printf("[Bridge] [ExecChannel] 等待命令退出失败: case=%s err=%v", s.caseID, werr)
 		}
 	}
 
-	// 7. 发送最终完整结果包
 	sendMsg(ws, OutMessage{
-		Type:     "exec_result",
-		CaseID:   s.caseID,
-		ExecID:   execID,
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
-		ExitCode: exitCode,
+		Type: "exec_result", CaseID: s.caseID, ExecID: execID,
+		Stdout: stdoutBuf.String(), Stderr: stderrBuf.String(), ExitCode: exitCode,
 	})
-	log.Printf("[Bridge] [ExecChannel] 命令隔离执行结束: case=%s exec_id=%s exit_code=%d", s.caseID, execID, exitCode)
 }
 
 func summarizeSSHDetail(output string) string {
@@ -489,17 +421,14 @@ func summarizeSSHDetail(output string) string {
 	if cleaned == "" {
 		return ""
 	}
-
 	lines := strings.Split(cleaned, "\n")
 	if len(lines) > 8 {
 		lines = lines[len(lines)-8:]
 	}
-
 	compact := strings.TrimSpace(strings.Join(lines, "\n"))
 	if len(compact) > 600 {
 		compact = compact[len(compact)-600:]
 	}
-
 	return compact
 }
 
@@ -536,7 +465,6 @@ func classifySSHFailure(output string) (string, string, bool) {
 			}
 		}
 	}
-
 	return "", detail, false
 }
 
@@ -548,78 +476,43 @@ func (s *SSHSession) on_output_start(
 ) {
 	go func() {
 		buf := make([]byte, 4096)
-
 		for {
 			n, err := stdout.Read(buf)
 			if n > 0 {
-				// xterm.js 需要原始 ANSI/VT100 序列进行终端渲染，这里不再做清洗。
 				chunk := string(buf[:n])
-
-				// 追加到监听器缓冲区
 				s.appendOutput(chunk)
 
-				// 检查是否有 marker 匹配
 				if listener, exitCode, matched := s.checkMarkers(chunk); matched {
-					// 找到 marker，提取输出（不含 marker 行）
 					output := listener.OutputBuf.String()
-					log.Printf("[Bridge] on_output_start: 检测到 Marker 匹配成功! 原始累积输出长度: %d", len(output))
 					normalizedExecID := strings.ReplaceAll(listener.ExecID, "-", "")
 					if len(normalizedExecID) >= 16 {
 						markerPrefix := "__EXEC_DONE_" + normalizedExecID[:16] + ":"
-						
-						// 使用正则定位真正的 marker 结束标记（必须是数字，避免匹配到含有 %s 的 Echo 命令行）
 						re := regexp.MustCompile(regexp.QuoteMeta(markerPrefix) + `(-?\d+)`)
 						loc := re.FindStringIndex(output)
 						if loc != nil {
-							log.Printf("[Bridge] on_output_start: 正则成功匹配到真实退出码 Marker, 位置 [%d:%d], 匹配文本: %q", loc[0], loc[1], output[loc[0]:loc[1]])
 							output = output[:loc[0]]
-						} else {
-							log.Printf("[Bridge] on_output_start: 正则未能匹配到真实退出码 Marker，尝试 strings.Index 兜底")
-							if idx := strings.Index(output, markerPrefix); idx != -1 {
-								log.Printf("[Bridge] on_output_start: 兜底匹配成功, 定位到前缀位置: %d", idx)
-								output = output[:idx]
-							}
+						} else if idx := strings.Index(output, markerPrefix); idx != -1 {
+							output = output[:idx]
 						}
-						
-						// 过滤掉命令回显本身，防止 Echo 的命令前缀污染真实输出
 						echoPlaceholder := markerPrefix + "%s"
-						log.Printf("[Bridge] on_output_start: 检查回显占位符: %q", echoPlaceholder)
 						if echoIdx := strings.Index(output, echoPlaceholder); echoIdx != -1 {
-							log.Printf("[Bridge] on_output_start: 检测到命令回显占位符, 位置: %d. 开始剥离...", echoIdx)
 							remaining := output[echoIdx:]
 							if nl1 := strings.Index(remaining, "\n"); nl1 != -1 {
 								remaining2 := remaining[nl1+1:]
 								if nl2 := strings.Index(remaining2, "\n"); nl2 != -1 {
 									output = remaining2[nl2+1:]
-									log.Printf("[Bridge] on_output_start: 成功剥离回显 (跳过2行回显). 剩余长度: %d", len(output))
 								} else {
 									output = remaining2
-									log.Printf("[Bridge] on_output_start: 成功剥离回显 (仅有1行回显). 剩余长度: %d", len(output))
 								}
 							}
-						} else {
-							log.Printf("[Bridge] on_output_start: 未检测到回显占位符")
 						}
-						
 						output = strings.TrimSpace(output)
-						previewLen := len(output)
-						if previewLen > 200 {
-							previewLen = 200
-						}
-						log.Printf("[Bridge] on_output_start: 最终裁剪结果 (前200字符): %q", output[:previewLen])
 					}
 
-					// 发送 exec_result 消息
 					sendMsg(ws, OutMessage{
-						Type:     "exec_result",
-						CaseID:   caseID,
-						ExecID:   listener.ExecID,
-						Output:   output,
-						ExitCode: exitCode,
+						Type: "exec_result", CaseID: caseID, ExecID: listener.ExecID,
+						Output: output, ExitCode: exitCode,
 					})
-					log.Printf("[Bridge] exec 完成: case=%s exec_id=%s exit_code=%d", caseID, listener.ExecID, exitCode)
-
-					// 移除监听器并发送结果
 					s.unregisterExecListener(listener.ExecID)
 					select {
 					case listener.ResultChan <- ExecResult{Output: output, ExitCode: exitCode}:
@@ -627,12 +520,7 @@ func (s *SSHSession) on_output_start(
 					}
 				}
 
-				// 发送原始输出到前端
-				sendMsg(ws, OutMessage{
-					Type:   "ssh_output",
-					CaseID: caseID,
-					Output: chunk,
-				})
+				sendMsg(ws, OutMessage{Type: "ssh_output", CaseID: caseID, Output: chunk})
 			}
 			if err != nil {
 				if err != io.EOF {
@@ -647,7 +535,6 @@ func (s *SSHSession) on_output_start(
 		}
 		sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
 		onExit()
-		log.Printf("[Bridge] SSH 会话已结束: case=%s", caseID)
 	}()
 }
 
@@ -701,33 +588,136 @@ func buildSSHError(err error) (string, string) {
 	return "SSH 连接失败", detail
 }
 
+// ── 容器命令包装 ─────────────────────────────────────────────────────────────
+
+// wrapContainerCommand 根据 container 类型包装命令
+// container="host" 或空 → 原样执行
+// container="vs-cp-manager" 等 → container_exec -n <container> -c "<command>"
+func wrapContainerCommand(command, container string) string {
+	container = strings.TrimSpace(container)
+	if container == "" || container == "host" {
+		return command
+	}
+	// 对命令中的单引号做转义
+	escaped := strings.ReplaceAll(command, "'", "'\\''")
+	return fmt.Sprintf("container_exec -n %s -c '%s'", container, escaped)
+}
+
 // ── WebSocket Handler ─────────────────────────────────────────────────────────
+
+// sessionKey 生成多节点会话的唯一键
+func sessionKey(caseID, nodeIP string) string {
+	if nodeIP == "" {
+		return caseID
+	}
+	return caseID + "@" + nodeIP
+}
 
 type Bridge struct {
 	mu       sync.Mutex
-	sessions map[string]*SSHSession
+	sessions map[string]*SSHSession // key: caseID@nodeIP
+	// 保存每个 caseID 最近一次 ssh_connect 的认证信息，用于自动连接新节点
+	lastAuth map[string]InMessage // key: caseID
 }
 
 func newBridge() *Bridge {
-	return &Bridge{sessions: make(map[string]*SSHSession)}
+	return &Bridge{
+		sessions: make(map[string]*SSHSession),
+		lastAuth: make(map[string]InMessage),
+	}
 }
 
-func (b *Bridge) get(id string) *SSHSession {
+func (b *Bridge) get(key string) *SSHSession {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.sessions[id]
+	return b.sessions[key]
 }
 
-func (b *Bridge) set(id string, s *SSHSession) {
+func (b *Bridge) set(key string, s *SSHSession) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.sessions[id] = s
+	b.sessions[key] = s
 }
 
-func (b *Bridge) remove(id string) {
+func (b *Bridge) remove(key string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	delete(b.sessions, id)
+	delete(b.sessions, key)
+}
+
+// resolveSession 根据 caseID + nodeIP 解析 SSH 会话
+// 有 nodeIP 时只精确匹配，不 fallback 到默认会话（避免命令在错误节点执行）
+func (b *Bridge) resolveSession(msg InMessage) (*SSHSession, string) {
+	if msg.NodeIP != "" {
+		key := sessionKey(msg.CaseID, msg.NodeIP)
+		if s := b.get(key); s != nil {
+			log.Printf("[Bridge] resolveSession: 精确匹配 key=%s", key)
+			return s, key
+		}
+		// 有 nodeIP 但找不到匹配会话 → 返回 nil，由调用方触发 autoConnect
+		log.Printf("[Bridge] resolveSession: nodeIP=%s 无匹配会话，需自动连接", msg.NodeIP)
+		return nil, ""
+	}
+
+	// 无 nodeIP → 使用默认会话
+	defaultKey := sessionKey(msg.CaseID, "")
+	if s := b.get(defaultKey); s != nil {
+		log.Printf("[Bridge] resolveSession: 使用默认会话 key=%s", defaultKey)
+		return s, defaultKey
+	}
+	return nil, ""
+}
+
+// autoConnectNode 使用已保存的认证信息自动连接新节点
+func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage) *SSHSession {
+	if msg.NodeIP == "" {
+		log.Printf("[Bridge] autoConnect: nodeIP 为空，跳过")
+		return nil
+	}
+
+	auth, ok := b.lastAuth[msg.CaseID]
+	if !ok {
+		log.Printf("[Bridge] autoConnect: case=%s 缺少认证信息 (lastAuth 中无此 caseID)", msg.CaseID)
+		sendMsg(ws, OutMessage{
+			Type: "ssh_error", CaseID: msg.CaseID,
+			Message: fmt.Sprintf("无法连接节点 %s：缺少 SSH 认证信息，请先建立 SSH 连接", msg.NodeIP),
+		})
+		return nil
+	}
+
+	connectMsg := auth
+	connectMsg.Type = "ssh_connect"
+	connectMsg.Host = msg.NodeIP
+	connectMsg.NodeIP = msg.NodeIP
+
+	log.Printf("[Bridge] autoConnect: 开始连接节点 %s (复用 case=%s 的认证 user=%s)",
+		msg.NodeIP, msg.CaseID, auth.Username)
+	session, err := newSSHSession(connectMsg)
+	if err != nil {
+		message, detail := buildSSHError(err)
+		sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
+		log.Printf("[Bridge] autoConnect: 连接失败 node=%s case=%s err=%v", msg.NodeIP, msg.CaseID, err)
+		return nil
+	}
+
+	stdout, err := session.start()
+	if err != nil {
+		session.close()
+		message, detail := buildSSHError(err)
+		sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
+		log.Printf("[Bridge] autoConnect: start 失败 node=%s case=%s err=%v", msg.NodeIP, msg.CaseID, err)
+		return nil
+	}
+
+	key := sessionKey(msg.CaseID, msg.NodeIP)
+	b.set(key, session)
+
+	go session.on_output_start(ws, stdout, msg.CaseID, func() {
+		b.remove(key)
+	})
+
+	log.Printf("[Bridge] autoConnect: 连接成功 node=%s key=%s", msg.NodeIP, key)
+	return session
 }
 
 func sendMsg(ws *websocket.Conn, msg OutMessage) {
@@ -739,18 +729,20 @@ func sendMsg(ws *websocket.Conn, msg OutMessage) {
 
 func (b *Bridge) handle(ws *websocket.Conn) {
 	log.Println("[Bridge] 浏览器已连接:", ws.RemoteAddr())
+	// ownedSessions 追踪 ssh_connect 显式创建的会话
 	ownedSessions := make(map[string]*SSHSession)
 	defer func() {
 		log.Println("[Bridge] 浏览器已断开:", ws.RemoteAddr())
-		// 仅清理当前 WebSocket 连接创建的会话，避免误杀其他连接的 SSH 会话
-		for caseID, owned := range ownedSessions {
-			current := b.get(caseID)
+		for key, owned := range ownedSessions {
+			current := b.get(key)
 			if current == owned {
 				current.close()
-				b.remove(caseID)
-				log.Printf("[Bridge] 连接断开后清理会话: case=%s\n", caseID)
+				b.remove(key)
+				log.Printf("[Bridge] 连接断开后清理会话: key=%s", key)
 			}
 		}
+		// 清理该 caseID 的认证缓存
+		// (保留，供下次连接使用)
 	}()
 
 	for {
@@ -765,21 +757,32 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 			log.Printf("[Bridge] 消息解析失败: remote=%v err=%v raw=%q", ws.RemoteAddr(), err, raw)
 			continue
 		}
-		log.Printf("[Bridge] 收到消息: type=%s case=%s remote=%v", msg.Type, msg.CaseID, ws.RemoteAddr())
+		log.Printf("[Bridge] 收到消息: type=%s case=%s node=%s container=%s",
+			msg.Type, msg.CaseID, msg.NodeIP, msg.Container)
 
 		switch msg.Type {
 
 		case "ssh_connect":
-			if old := b.get(msg.CaseID); old != nil {
+			key := sessionKey(msg.CaseID, msg.NodeIP)
+			if old := b.get(key); old != nil {
 				old.close()
-				b.remove(msg.CaseID)
-				delete(ownedSessions, msg.CaseID)
+				b.remove(key)
+				delete(ownedSessions, key)
 			}
+			// 如果没指定 nodeIP，也清理默认会话
+			if msg.NodeIP == "" {
+				defaultKey := sessionKey(msg.CaseID, "")
+				if old := b.get(defaultKey); old != nil {
+					old.close()
+					b.remove(defaultKey)
+					delete(ownedSessions, defaultKey)
+				}
+			}
+
 			session, err := newSSHSession(msg)
 			if err != nil {
 				message, detail := buildSSHError(err)
 				sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
-				log.Printf("[Bridge] SSH 认证失败: case=%s message=%s detail=%s", msg.CaseID, message, detail)
 				continue
 			}
 			stdout, err := session.start()
@@ -787,182 +790,166 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 				session.close()
 				message, detail := buildSSHError(err)
 				sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
-				log.Printf("[Bridge] SSH 认证失败: case=%s message=%s detail=%s", msg.CaseID, message, detail)
 				continue
 			}
-			b.set(msg.CaseID, session)
-			ownedSessions[msg.CaseID] = session
+			b.set(key, session)
+			ownedSessions[key] = session
+			// 保存认证信息，供后续自动连接其他节点使用
+			b.lastAuth[msg.CaseID] = msg
 			sendMsg(ws, OutMessage{Type: "ssh_connected", CaseID: msg.CaseID})
-			log.Printf("[Bridge] SSH 认证成功: %s@%s:%d (case=%s)", msg.Username, msg.Host, msg.Port, msg.CaseID)
+			log.Printf("[Bridge] SSH 认证成功: %s@%s:%d (key=%s)", msg.Username, msg.Host, msg.Port, key)
 
-			// 异步读取 SSH 输出
 			caseID := msg.CaseID
-			session.on_output_start(
-				ws,
-				stdout,
-				caseID,
-				func() {
-					b.remove(caseID)
-					delete(ownedSessions, caseID)
-				},
-			)
+			session.on_output_start(ws, stdout, caseID, func() {
+				b.remove(key)
+				delete(ownedSessions, key)
+			})
 
 		case "ssh_input":
-			if s := b.get(msg.CaseID); s != nil {
-				log.Printf("[Bridge] SSH 输入: case=%s bytes=%d", msg.CaseID, len(msg.Data))
+			// 输入默认路由到 caseID 对应的会话
+			defaultKey := sessionKey(msg.CaseID, "")
+			if s := b.get(defaultKey); s != nil {
 				s.send(msg.Data)
 			}
 
 		case "ssh_inject_command":
-			// AI 助手注入命令，不带 \n，等客户回车确认
-			if s := b.get(msg.CaseID); s != nil {
-				log.Printf("[Bridge] SSH 注入命令: case=%s bytes=%d", msg.CaseID, len(msg.Command))
+			defaultKey := sessionKey(msg.CaseID, "")
+			if s := b.get(defaultKey); s != nil {
 				s.injectCommand(msg.Command)
 			}
 
 		case "ssh_disconnect":
-			if s := b.get(msg.CaseID); s != nil {
+			key := sessionKey(msg.CaseID, msg.NodeIP)
+			if s := b.get(key); s != nil {
 				s.close()
-				b.remove(msg.CaseID)
-				delete(ownedSessions, msg.CaseID)
+				b.remove(key)
+				delete(ownedSessions, key)
+			}
+			// 同时清理默认会话
+			if msg.NodeIP == "" || msg.NodeIP != "" {
+				defaultKey := sessionKey(msg.CaseID, "")
+				if s := b.get(defaultKey); s != nil && s != b.get(key) {
+					s.close()
+					b.remove(defaultKey)
+					delete(ownedSessions, defaultKey)
+				}
 			}
 			sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: msg.CaseID})
-			log.Printf("[Bridge] SSH 已断开: case=%s", msg.CaseID)
 
 		case "ssh_exec_command":
-			// T-TOOL-01: 执行命令并监听 marker
-			s := b.get(msg.CaseID)
+			// 根据 nodeIP 路由到正确的 SSH 会话
+			s, key := b.resolveSession(msg)
+			if s == nil && msg.NodeIP != "" {
+				// 自动连接新节点
+				s = b.autoConnectNode(ws, msg)
+				key = sessionKey(msg.CaseID, msg.NodeIP)
+			}
 			if s == nil {
 				sendMsg(ws, OutMessage{
-					Type:     "exec_result",
-					CaseID:   msg.CaseID,
-					ExecID:   msg.ExecID,
-					Output:   "SSH 会话不存在",
-					ExitCode: -1,
+					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+					Output: "SSH 会话不存在（需先 ssh_connect）", ExitCode: -1,
 				})
-				log.Printf("[Bridge] ssh_exec_command 失败: 会话不存在 case=%s exec_id=%s", msg.CaseID, msg.ExecID)
 				continue
 			}
-
 			if msg.ExecID == "" {
 				sendMsg(ws, OutMessage{
-					Type:     "exec_result",
-					CaseID:   msg.CaseID,
-					ExecID:   msg.ExecID,
-					Output:   "缺少 exec_id 参数",
-					ExitCode: -1,
+					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+					Output: "缺少 exec_id 参数", ExitCode: -1,
 				})
-				log.Printf("[Bridge] ssh_exec_command 失败: 缺少 exec_id case=%s", msg.CaseID)
 				continue
 			}
-
 			if msg.Command == "" {
 				sendMsg(ws, OutMessage{
-					Type:     "exec_result",
-					CaseID:   msg.CaseID,
-					ExecID:   msg.ExecID,
-					Output:   "缺少 command 参数",
-					ExitCode: -1,
+					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+					Output: "缺少 command 参数", ExitCode: -1,
 				})
-				log.Printf("[Bridge] ssh_exec_command 失败: 缺少 command case=%s exec_id=%s", msg.CaseID, msg.ExecID)
 				continue
 			}
 
-			// 执行命令（60s 超时）
-			log.Printf("[Bridge] 开始执行命令: case=%s exec_id=%s command_len=%d", msg.CaseID, msg.ExecID, len(msg.Command))
-			resultChan := s.execCommand(msg.Command, msg.ExecID, 60*time.Second)
+			// 包装容器命令
+			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
+			log.Printf("[Bridge] EXEC_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
+				key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
+			log.Printf("[Bridge] EXEC_CMD: %q", wrappedCmd)
 
-			// 异步等待结果并发送
+			resultChan := s.execCommand(wrappedCmd, msg.ExecID, 60*time.Second)
 			go func() {
 				result := <-resultChan
 				output := result.Output
+				exitCode := result.ExitCode
 				if result.Timeout {
 					output = "execution timeout"
 				}
+				outLen := len(output)
+				exitInfo := fmt.Sprintf("exit=%d", exitCode)
+				if result.Timeout {
+					exitInfo = "exit=TIMEOUT"
+				}
+				log.Printf("[Bridge] EXEC_DONE: exec_id=%s node=%s %s output_len=%d",
+					msg.ExecID, msg.NodeIP, exitInfo, outLen)
 				sendMsg(ws, OutMessage{
-					Type:     "exec_result",
-					CaseID:   msg.CaseID,
-					ExecID:   msg.ExecID,
-					Output:   output,
-					ExitCode: result.ExitCode,
+					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+					Output: output, ExitCode: exitCode,
 				})
 			}()
 
 		case "ssh_exec_process":
-			// 双通道设计：隔离的 SSH Session 执行 (Scheme B)
-			s := b.get(msg.CaseID)
+			// 根据 nodeIP 路由到正确的 SSH 会话
+			s, key := b.resolveSession(msg)
+			if s == nil && msg.NodeIP != "" {
+				s = b.autoConnectNode(ws, msg)
+				key = sessionKey(msg.CaseID, msg.NodeIP)
+			}
 			if s == nil {
 				sendMsg(ws, OutMessage{
-					Type:     "exec_result",
-					CaseID:   msg.CaseID,
-					ExecID:   msg.ExecID,
-					Stderr:   "SSH 会话不存在",
-					ExitCode: -1,
+					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+					Stderr: "SSH 会话不存在（需先 ssh_connect）", ExitCode: -1,
 				})
-				log.Printf("[Bridge] ssh_exec_process 失败: 会话不存在 case=%s exec_id=%s", msg.CaseID, msg.ExecID)
 				continue
 			}
-
 			if msg.ExecID == "" {
 				sendMsg(ws, OutMessage{
-					Type:     "exec_result",
-					CaseID:   msg.CaseID,
-					ExecID:   msg.ExecID,
-					Stderr:   "缺少 exec_id 参数",
-					ExitCode: -1,
+					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+					Stderr: "缺少 exec_id 参数", ExitCode: -1,
 				})
-				log.Printf("[Bridge] ssh_exec_process 失败: 缺少 exec_id case=%s", msg.CaseID)
 				continue
 			}
-
 			if msg.Command == "" {
 				sendMsg(ws, OutMessage{
-					Type:     "exec_result",
-					CaseID:   msg.CaseID,
-					ExecID:   msg.ExecID,
-					Stderr:   "缺少 command 参数",
-					ExitCode: -1,
+					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+					Stderr: "缺少 command 参数", ExitCode: -1,
 				})
-				log.Printf("[Bridge] ssh_exec_process 失败: 缺少 command case=%s exec_id=%s", msg.CaseID, msg.ExecID)
 				continue
 			}
 
-			// 异步执行隔离的进程
-			go s.execCommandIsolated(ws, msg.Command, msg.ExecID)
+			// 包装容器命令
+			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
+			log.Printf("[Bridge] EXEC_ISOLATED_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
+				key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
+			log.Printf("[Bridge] EXEC_ISOLATED_CMD: %q", wrappedCmd)
+
+			go s.execCommandIsolated(ws, wrappedCmd, msg.ExecID)
 		}
 	}
 }
 
 // ── 主入口 ────────────────────────────────────────────────────────────────────
 
-// corsWebSocketHandler 包装 websocket.Handler，添加 CORS 头支持
-// 解决 Chrome Private Network Access (PNA) 限制：
-// 从公网域名访问 localhost 时，浏览器要求服务端返回特定的 CORS 头
 func corsWebSocketHandler(wsHandler websocket.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 获取请求来源，用于回填 Access-Control-Allow-Origin
-		// PNA 预检要求返回具体的 origin，不能用 "*"
 		origin := r.Header.Get("Origin")
 		if origin == "" {
 			origin = "*"
 		}
-
-		// 设置 CORS 头
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		// 关键：声明允许从公共网络访问私有网络
 		w.Header().Set("Access-Control-Allow-Private-Network", "true")
-		// 允许的请求方法和头
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-		// 记录预检请求日志，便于调试
 		if r.Method == "OPTIONS" {
 			log.Printf("[Bridge] CORS 预检请求: origin=%s path=%s", origin, r.URL.Path)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-
-		// 非 OPTIONS 请求，交给 WebSocket handler 处理
 		log.Printf("[Bridge] WebSocket 请求: origin=%s method=%s", origin, r.Method)
 		wsHandler.ServeHTTP(w, r)
 	})
@@ -973,17 +960,13 @@ var (
 )
 
 func getVersion() string {
-	// If Version has been overridden at build time (e.g. by -ldflags "-X main.Version=..."),
-	// and it doesn't end with "-dev", we return it directly.
 	if !strings.HasSuffix(Version, "-dev") {
 		return Version
 	}
-
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return Version
 	}
-
 	var revision string
 	var modified bool
 	for _, setting := range info.Settings {
@@ -994,20 +977,16 @@ func getVersion() string {
 			modified = setting.Value == "true"
 		}
 	}
-
 	if revision == "" {
 		return Version
 	}
-
 	if len(revision) > 8 {
 		revision = revision[:8]
 	}
-
 	dirty := ""
 	if modified {
 		dirty = "-dirty"
 	}
-
 	return fmt.Sprintf("%s-g%s%s", Version, revision, dirty)
 }
 
