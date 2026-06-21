@@ -155,6 +155,14 @@
 - **SOP 发布与变量 Schema 更新依赖校验**：
   - 在 `kb-service` 引入了工具与技能的可用性校验，当发布 SOP（`POST /api/admin/sop/{id}/approve`）或修改变量 Schema（`PATCH /api/admin/sop/{id}/variable-schema`）时，会自动分析其变量策略，确保所有被依赖的 `tool_call` 工具或 `skill_call` 技能都在数据库（`tool_definition` / `skill_definition`）中注册且处于启用状态。
   - 如果检测到未注册或未启用的依赖，抛出 `422` 异常阻断流程，错误详情直接映射为 `ValidationIssue` 格式，与前端现有的校验报告弹框无缝对接。
+- **Skill 调用失效根因分析与改进方案**（已实施）：
+  - **根因**：以工单 Q2026062036731 为实例，通过 `dynamic_resource_usage_audit` 审计表确认 `hci-alert-parsing` 和 `hci-disk-vendor-lifetime` 两个关键 Skill 从未被触发。根因为变量门禁（Variable Gate）的覆盖范围存在盲区：`skill_call` 类型变量不在硬门禁范围内，且 ReAct 框架下 LLM 天然选择最短路径（`bash_exec` 直接解读 SMART 数据），完全绕过 `sop_request_variable` → Skill 触发链路。
+  - **核心原则**：当前架构是 **Trust-based（信任依赖型）** 而非 **Enforce-based（强制约束型）**。任何只靠 Prompt/内容暗示建立的行为规范，都会在模型版本切换、上下文压缩、存在低阻力替代路径时失效。
+  - **分层改进方案**（按优先级）：
+    - **P0（核心）**：`sop_advance`/`get_sop_node` 返回体新增 `preferred_next_steps` 字段，当节点有未就绪的 `skill_call` 变量时，在 LLM 最近的 tool_result 上下文中嵌入显式推荐行动（Contextual Nudge 原则）。
+    - **P1（补充）**：变量门禁分层设计，新增「软推荐（Preferred）」层专门覆盖 `skill_call`/`tool_call` 类型，缺失时不阻断但附加提示。
+    - **P2（配合）**：系统提示词补充 `sop_request_variable` 使用规范段落。
+  - **详细方案**：`docs/solution/agent/skill调用失效根因分析与改进方案.md`
 
 ---
 

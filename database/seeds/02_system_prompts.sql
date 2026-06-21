@@ -146,7 +146,8 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 【注意事项】
 - 每次推进前请先获取节点内容，确保理解判断条件
 - 在 reasoning 中解释为何选择此分支（记录推理路径）
-- 诊断工具只能补充证据，不得覆盖 SOP 变量声明中的来源策略$TEMPLATE$,
+- 诊断工具只能补充证据，不得覆盖 SOP 变量声明中的来源策略
+- 【变量采集规范】当 required_variables 中包含 acquisition_strategy 为 skill_call 或 tool_call 的变量时，必须优先调用 sop_request_variable(variable_name, reason) 触发自动采集，禁止用 bash_exec/acli_exec 等通用命令手动采集这些变量。$TEMPLATE$,
     '1.0',
     TRUE
 ),
@@ -184,7 +185,8 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 【注意事项】
 - 从当前节点继续执行，不要从头开始
 - 在 reasoning 中解释为何选择此分支
-- 可自由使用诊断工具辅助判断$TEMPLATE$,
+- 可自由使用诊断工具辅助判断
+- 【变量采集规范】当 required_variables 中包含 acquisition_strategy 为 skill_call 或 tool_call 的变量时，必须优先调用 sop_request_variable(variable_name, reason) 触发自动采集，禁止用 bash_exec/acli_exec 等通用命令手动采集这些变量。$TEMPLATE$,
     '1.0',
     TRUE
 ),

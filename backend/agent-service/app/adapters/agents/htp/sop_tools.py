@@ -129,12 +129,23 @@ class SopToolExecutor:
 
         effective_conversation_id = conversation_id or self._conversation_id
 
-        # SOP 导航工具：使用注入的上下文执行
         if tool_name == "get_sop_node":
+            context_variables = {}
+            try:
+                execution = await self._conversation_sop_client.get_execution(uuid.UUID(effective_conversation_id))
+                if execution:
+                    context_variables = execution.get("context_variables") or {}
+            except Exception as exc:
+                logger.warning(
+                    event="sop_get_sop_node_execution_load_failed",
+                    conversation_id=effective_conversation_id,
+                    error=str(exc),
+                )
             return await get_sop_node(
                 node_id=args.get("node_id", "n-1"),
                 sop_document_id=self._sop_document_id,
                 kb_client=self._kb_client,
+                context_variables=context_variables,
             )
 
         if tool_name == "sop_advance":

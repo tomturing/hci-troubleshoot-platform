@@ -28,7 +28,8 @@ def _tree() -> dict:
             },
             {
                 "node_id": "n-1-2",
-                "title": "普通命令检查",
+                "title": "常规检查",
+                "prerequisites": ["{check_meth} == 'smart'"],
                 "children": [],
                 "diagnosis": {
                     "acli_methods": ["ls -h"],
@@ -49,6 +50,13 @@ def _kb_client():
                 "type": "boolean",
                 "description": "是否是系统盘",
                 "acquisition_strategy": "user_input",
+            },
+            {
+                "name": "check_meth",
+                "type": "string",
+                "description": "寿命检测手段",
+                "acquisition_strategy": "skill_call",
+                "acquisition_tool": "hci-disk-vendor-lifetime",
             }
         ]
     }
@@ -160,3 +168,45 @@ def test_variable_gate_window_does_not_scan_deep_future_branch():
         context_variables={},
     )
     assert [item["name"] for item in missing_leaf] == ["is_sys_disk"]
+
+
+@pytest.mark.asyncio
+async def test_get_sop_node_preferred_next_steps():
+    # 当 check_meth (strategy: skill_call) 未就绪时，get_sop_node 应该返回 preferred_next_steps
+    result = await get_sop_node(
+        "n-1-2",
+        sop_document_id=2,
+        kb_client=_kb_client(),
+        context_variables={},
+    )
+    assert len(result["preferred_next_steps"]) == 1
+    hint = result["preferred_next_steps"][0]
+    assert hint["tool"] == "sop_request_variable"
+    assert hint["args"]["variable_name"] == "check_meth"
+    assert hint["priority"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_sop_advance_preferred_next_steps():
+    conversation_id = str(uuid.uuid4())
+    conversation_sop_client = AsyncMock()
+    conversation_sop_client.get_execution.return_value = {
+        "context_variables": {}
+    }
+    conversation_sop_client.advance.return_value = {"ok": True}
+
+    # 推进到 n-1-2 节点，check_meth (skill_call) 未在 context_variables 中，应该返回 preferred_next_steps
+    result = await sop_advance(
+        target_node_id="n-1-2",
+        reasoning="推进到普通检查",
+        conversation_id=conversation_id,
+        sop_document_id=2,
+        kb_client=_kb_client(),
+        conversation_sop_client=conversation_sop_client,
+    )
+    assert result["ok"] is True
+    assert len(result["preferred_next_steps"]) == 1
+    hint = result["preferred_next_steps"][0]
+    assert hint["tool"] == "sop_request_variable"
+    assert hint["args"]["variable_name"] == "check_meth"
+

@@ -36,6 +36,7 @@ async def get_sop_node(
     *,
     sop_document_id: int,
     kb_client: KBClient,
+    context_variables: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """获取 SOP 决策树节点内容。
 
@@ -43,6 +44,7 @@ async def get_sop_node(
         node_id: 节点 ID，如 "n-1"、"n-3-2"（由 LLM 传入）
         sop_document_id: SOP 文档 ID（由 SOP 命中时注入，非 LLM 传入）
         kb_client: KB 服务客户端（由上下文注入）
+        context_variables: 运行时变量池上下文（可选，用于计算推荐行动）
 
     Returns:
         节点内容字典，格式：
@@ -114,7 +116,11 @@ async def get_sop_node(
         )
 
     # 构建返回结果
-    result = _build_node_response(target_node, variable_schema=variable_schema)
+    result = _build_node_response(
+        target_node,
+        variable_schema=variable_schema,
+        context_variables=context_variables,
+    )
 
     logger.info(
         event="sop_node_retrieved",
@@ -154,11 +160,50 @@ def find_node_in_tree(tree_json: dict, node_id: str) -> dict | None:
     return _find_node_in_tree(tree_json, node_id)
 
 
-def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _build_preferred_next_steps(
+    required_variables: list[dict[str, Any]],
+    context_variables: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """检测 required_variables 中未就绪的 skill_call/tool_call 变量，
+    生成推荐的下一步行动提示，嵌入到工具返回结果中。
+    """
+    hints = []
+    for var in required_variables:
+        name = var.get("name")
+        strategy = var.get("acquisition_strategy")
+        if not name or _has_variable_value(context_variables, name):
+            continue
+        if strategy in ("skill_call", "tool_call"):
+            hints.append({
+                "tool": "sop_request_variable",
+                "args": {
+                    "variable_name": name,
+                    "reason": var.get("description") or f"自动采集变量 {name}",
+                },
+                "reason": (
+                    f"变量 '{name}' 需通过专属 "
+                    f"{'Skill' if strategy == 'skill_call' else 'Tool'} "
+                    f"（{var.get('acquisition_tool', '未指定')}）自动采集，"
+                    f"建议先调用 sop_request_variable 完成采集，"
+                    f"避免手动执行命令引入解析偏差。"
+                ),
+                "priority": "high",
+            })
+    return hints
+
+
+def _build_node_response(
+    node: dict,
+    *,
+    variable_schema: list[dict[str, Any]] | None = None,
+    context_variables: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """构建节点响应（符合任务文档规格）。
 
     Args:
-        node: SOPNode.model_dump() 格式的节点 dict
+        node: SOPNode.model_dump() 格式 of 节点 dict
+        variable_schema: 变量定义列表
+        context_variables: 运行时变量池上下文
 
     Returns:
         工具返回格式：
@@ -172,6 +217,7 @@ def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | 
     node_id_val = node.get("node_id") or node.get("id") or ""
     node_name_val = node.get("name") or node.get("title") or ""
     variable_schema = variable_schema or []
+    context_variables = context_variables or {}
 
     # 提取子节点概览，兼容 node_id/id 和 name/title，同时外显分支条件依赖的变量。
     children_summary = [
@@ -183,6 +229,9 @@ def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | 
         }
         for child in children
     ]
+
+    required_vars = _build_required_variables(node, variable_schema)
+    preferred_next_steps = _build_preferred_next_steps(required_vars, context_variables)
 
     if is_leaf:
         diagnosis = node.get("diagnosis")
@@ -199,8 +248,9 @@ def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | 
                 "tool_calls": normalize_sop_commands(commands, reason=f"执行 SOP 节点「{node_name_val}」的诊断命令"),
                 "children": [],
                 "has_solution": solution is not None,
+                "required_variables": required_vars,
+                "preferred_next_steps": preferred_next_steps,
             }
-            response["required_variables"] = _build_required_variables(node, variable_schema)
             return response
         elif solution:
             response = {
@@ -210,8 +260,9 @@ def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | 
                 "content": _format_solution_content(solution),
                 "commands": [],
                 "children": [],
+                "required_variables": required_vars,
+                "preferred_next_steps": preferred_next_steps,
             }
-            response["required_variables"] = _build_required_variables(node, variable_schema)
             return response
         else:
             response = {
@@ -221,8 +272,9 @@ def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | 
                 "content": "（此叶节点缺少诊断和解决方案内容）",
                 "commands": [],
                 "children": [],
+                "required_variables": required_vars,
+                "preferred_next_steps": preferred_next_steps,
             }
-            response["required_variables"] = _build_required_variables(node, variable_schema)
             return response
     else:
         prerequisites = node.get("prerequisites", [])
@@ -245,8 +297,9 @@ def _build_node_response(node: dict, *, variable_schema: list[dict[str, Any]] | 
             "commands": commands,
             "tool_calls": normalize_sop_commands(commands, reason=f"执行 SOP 节点「{node_name_val}」的前置检查命令"),
             "children": children_summary,
+            "required_variables": required_vars,
+            "preferred_next_steps": preferred_next_steps,
         }
-        response["required_variables"] = _build_required_variables(node, variable_schema)
         return response
 
 
@@ -313,27 +366,34 @@ def _merge_extracted_variables(
     return merged
 
 
+SOFT_PREFERRED_STRATEGIES = {"skill_call", "tool_call"}
+
+
 def _find_missing_guarded_variables(
     required_variables: list[dict[str, Any]],
     context_variables: dict[str, Any],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """找出进入节点前必须先按来源策略获取的缺失变量。
 
-    受守护策略（guarded）= 需要阻断推进直到变量就绪：env_injection / user_input / user_confirm。
-    自动策略（auto）= 无需预先阻断：tool_call / skill_call / llm_inference / derived 等。
+    返回 (hard_blocked, soft_hints) 元组：
+      - hard_blocked: 需要强阻断的缺失变量（is_guarded 包含 env_injection/user_input/user_confirm）
+      - soft_hints: 属于软推荐（skill_call/tool_call）且缺失的变量
     """
-    missing: list[dict[str, Any]] = []
+    hard_blocked: list[dict[str, Any]] = []
+    soft_hints: list[dict[str, Any]] = []
     for variable in required_variables:
         name = variable.get("name")
         raw_strategy = str(variable.get("acquisition_strategy") or "user_input")
         if not name:
             continue
-        # 统一使用公共解析器判断是否受守护
-        if not parse_strategy(raw_strategy).is_guarded:
+        if _has_variable_value(context_variables, name):
             continue
-        if not _has_variable_value(context_variables, name):
-            missing.append(variable)
-    return missing
+        # 统一使用公共解析器判断是否受守护
+        if parse_strategy(raw_strategy).is_guarded:
+            hard_blocked.append(variable)
+        elif raw_strategy in SOFT_PREFERRED_STRATEGIES:
+            soft_hints.append(variable)
+    return hard_blocked, soft_hints
 
 
 def find_missing_guarded_variables_for_node_window(
@@ -355,13 +415,13 @@ def find_missing_guarded_variables_for_node_window(
     missing_by_name: dict[str, dict[str, Any]] = {}
     for node in candidates:
         required = _build_required_variables(node, variable_schema)
-        for variable in _find_missing_guarded_variables(required, context_variables):
+        # 门禁窗口仅需强阻断的变量，防止把推荐变量（如 skill_call）提前硬阻断
+        hard_blocked, _ = _find_missing_guarded_variables(required, context_variables)
+        for variable in hard_blocked:
             name = variable.get("name")
             if name and name not in missing_by_name:
                 missing_by_name[name] = variable
     return list(missing_by_name.values())
-
-
 def _format_diagnosis_content(diagnosis: dict) -> str:
     """格式化诊断内容为可读文本。"""
     parts = []
@@ -509,11 +569,12 @@ async def sop_advance(
             )
 
         required_variables = _build_required_variables(target_node, variable_schema)
+        effective_variables: dict[str, Any] = {}
         if required_variables:
             execution = await conversation_sop_client.get_execution(uuid.UUID(conversation_id))
             context_variables = (execution or {}).get("context_variables", {}) or {}
             effective_variables = _merge_extracted_variables(context_variables, variables_extracted)
-            missing_variables = _find_missing_guarded_variables(required_variables, effective_variables)
+            missing_variables, soft_hints = _find_missing_guarded_variables(required_variables, effective_variables)
             if missing_variables:
                 logger.info(
                     event="sop_advance_blocked_by_missing_variables",
@@ -567,12 +628,16 @@ async def sop_advance(
             reasoning=reasoning[:100],
         )
 
+        # 构建推进后的推荐下一步推荐动作（针对未就绪的 skill_call 或 tool_call 变量）
+        preferred_next_steps = _build_preferred_next_steps(required_variables, effective_variables)
+
         return {
             "ok": True,
             "current_node_id": target_node_id,
             "node_type": actual_node_type,
             "message": f"已推进到：{node_title}",
             "is_leaf": is_leaf_node,
+            "preferred_next_steps": preferred_next_steps,
         }
 
     except Exception as exc:
