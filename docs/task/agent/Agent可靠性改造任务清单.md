@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-06-17
+last_updated: 2026-06-21
 owner: team
 ---
 
@@ -52,6 +52,7 @@ owner: team
 | 2026-06-14 | v4.0 | **SOP长命令截断治理与LLM纠错架构（PR #466）**：① `executor.py` 大输出截断前无损暂存 Redis `cmd_cache:{exec_id}`（1800秒），`ExecResult` 追加 `exec_id`；② 退出码 127/command not found 含 python 时自动纠错重写；③ `01_tool_definitions.sql` 为 `acli_exec/bash_exec` 添加禁用 Python 与截断过滤建议提示；④ 变量池新增 `json_extract` 策略，支持 `jsonpath-ng.ext`（含 `&` AND 过滤）从缓存/截断数据提取子变量；⑤ 新增 `acquisition_strategy.py` 公共解析器，统一"实体_动作"及冒号简写规则；⑥ `sop_execution.py` 创建执行实例时自动注入原始事实源（含 `alert_logs`）到变量池。详见 [SOP长命令截断治理与LLM纠错架构设计.md](../../solution/events/2026-06-14-SOP长命令截断治理与LLM纠错架构设计.md) |
 | 2026-06-15 | v4.1 | **SOP 技能工具绑定修正与变量门禁范围优化（PR #470）**：① `database/seeds/03_skill_definitions.sql` 中 `hci-alert-parsing`/`hci-task-parsing` 的 `allowed_tools` 由 `'bash'` 修正为 `'bash_exec'`；② `nav.py` 中 `find_missing_guarded_variables_for_node_window` 优化为非叶子节点时仅检测当前节点本身受控变量，不再提前拦截子分支变量；③ kb-service 新增 `validate_variable_schema_dependencies` 校验器，在 SOP 发布及变量 schema 更新时检查依赖的工具/技能是否注册且启用，缺失时抛出 422 并返回 `ValidationIssue` 列表。详见 [SOP发布与变量更新依赖校验设计.md](../../solution/knowledge-base/sop-agent/SOP发布与变量更新依赖校验设计.md) |
 | 2026-06-15 | v4.2 | **诊断自动流转与推理步数限制优化（PR #471）**：① `conversation_service.py` 在 S0 拦截后将 Assistant 分类确认文案追加到 `history_messages`，使大模型知晓阶段已确认，避免重复寒暄输出触发 `invoke_result.content is not None` 终止规则导致流程停顿；② `react_engine.py` 常数 `MAX_STEPS` 与 `investigation_agent.py` 参数 `max_iterations` 从 15 步上调至 40 步，给予复杂 SOP 或断线重连后重复命令运行的充足步骤预算 |
+| 2026-06-21 | v4.3 | **Skill 调用失效修复（PR #475）**：① `get_sop_node`/`sop_advance` 返回体新增 `preferred_next_steps` 字段，当节点有未就绪 `skill_call/tool_call` 变量时嵌入显式推荐行动（Contextual Nudge）；② 变量门禁分层设计，新增「软推荐」层覆盖 `skill_call/tool_call` 类型；③ S0/S1 系统提示词种子数据新增「变量采集规范」，强制要求优先调用 `sop_request_variable`。详见 [skill调用失效根因分析与改进方案.md](../../solution/agent/skill调用失效根因分析与改进方案.md) |
 
 ---
 
