@@ -214,17 +214,30 @@ async def lifespan(app: FastAPI):
     set_tool_registry_manager(tool_registry_manager)
     await tool_registry_manager.refresh()
 
+    # ── ConfirmService 初始化（与 REACT_ENABLED 解耦）──────────────────────────────────
+    # 根因修复：ConfirmService 不能仅在 REACT_ENABLED=true 时初始化。
+    # InvestigationAgent SOP 轨道内嵌 ReactEngine 同样依赖 ConfirmService 对高危工具
+    # 进行用户确认。若 confirm_service=None，所有 risk>=2 的工具会被 fail-closed 拒绝，
+    # 导致 bash_exec/acli_exec 返回 Exit Code: -1，SOP 排障流程中断。
+    # 修复策略：只要 Redis 可用，无论 REACT_ENABLED 是否开启，都初始化 ConfirmService。
+    if redis_client is not None:
+        from app.services.authorization_service import AuthorizationService
+
+        authorization_service = AuthorizationService(
+            session_factory=db_manager.async_session_factory,
+        )
+        confirm_service = ConfirmService(redis=redis_client, authorization_service=authorization_service)
+        logger.info(
+            event="confirm_service_initialized",
+            message="ConfirmService 已初始化（与 REACT_ENABLED 解耦，Redis 可用即启用）",
+        )
+    else:
+        logger.warning(
+            event="confirm_service_skipped",
+            message="Redis 不可用，ConfirmService 未初始化，高危工具将被 fail-closed 拒绝执行",
+        )
+
     if settings.REACT_ENABLED:
-        # 实例化确认服务（依赖 Redis）
-        # T1-1：注入 AuthorizationService，使每次 approve/deny 决策同步落库
-        if redis_client is not None:
-            from app.services.authorization_service import AuthorizationService
-
-            authorization_service = AuthorizationService(
-                session_factory=db_manager.async_session_factory,
-            )
-            confirm_service = ConfirmService(redis=redis_client, authorization_service=authorization_service)
-
         # 实例化复合工具执行器（合并 SCP、Acli 和 SOP）
         # T-TOOL-16：添加 BridgeRelayExecutor 参数
         tool_executor = CompositeToolExecutor(
