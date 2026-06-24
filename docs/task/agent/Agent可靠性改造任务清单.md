@@ -2,7 +2,9 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-06-21
+last_updated: 2026-06-24
+related_prs:
+  - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
 ---
 
