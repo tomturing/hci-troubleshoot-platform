@@ -153,6 +153,11 @@
   - `OpenClawAssistant` 支持 temperature / top_p / logprobs 构造参数，S0/ReAct 场景分设温度
   - `invoke()` 增加瞬态网络错误重试（5xx、超时、peer closed connection）
   - `_sanitize_tool_messages` 清理对话历史中不完整的 tool_calls/tool 配对
+- **docker-compose 优化 + Helm Langfuse 配置 + SOP 导入幂等修复**：
+  - docker-compose.yml：移除暴露端口、统一网络配置
+  - Helm agent-service deployment：新增 LANGFUSE_SECRET_KEY / PUBLIC_KEY / HOST 环境变量
+  - kb-service admin.py：.md 文件导入同 .docx 生成 docx_hash 支持幂等去重
+
   - `DynamicSkillRunner` 嵌入 `observe_skill` Langfuse observation，skill 执行可独立观测
   - 诊断报告模板精简为「故障摘要 / 根因 / 修复方案」三章
   - solution 格式合并【快速恢复】【彻底解决】为统一列表
