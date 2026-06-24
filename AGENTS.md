@@ -459,3 +459,4 @@ __schema_version__ = "2.1.0"
 - 所有服务间 HTTP 调用**必须**继承 `backend/shared/utils/internal_http.py` 的 `InternalHTTPClient`
 - 调用方**必须**调用 `response.raise_for_status()`，不允许静默忽略错误响应
 - 内部认证统一使用 `INTERNAL_API_TOKEN` 环境变量（由 Helm Secret 注入）
+
