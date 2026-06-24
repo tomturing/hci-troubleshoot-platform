@@ -363,3 +363,47 @@ def observe_tool(
     except Exception as e:
         logger.warning(event="langfuse_tool_observe_error", error=str(e))
         yield None
+
+
+@contextmanager
+def observe_skill(
+    *,
+    skill_name: str,
+    variable_name: str = "",
+    context_variables: dict[str, Any] | None = None,
+    conversation_id: str = "",
+    case_id: str = "",
+) -> Generator[Any, None, None]:
+    """为动态 Skill 执行创建 Langfuse skill observation（context manager）。
+
+    在 DynamicSkillRunner.execute() 中嵌入，记录 skill 调用的 input（上下文变量）、
+    output（执行结果）和错误信息。若 Langfuse 未配置，gracefully 降级为 noop。
+
+    Usage:
+        with observe_skill(skill_name="hci-alert-parsing", variable_name="node_ip",
+                           context_variables={...}) as obs:
+            result = await runner._execute_skill(...)
+            if obs:
+                obs.update(output=result)
+    """
+    lf = get_langfuse()
+    if lf is None:
+        yield None
+        return
+
+    try:
+        with lf.start_as_current_observation(
+            as_type="span",
+            name=f"skill.{skill_name}",
+            input=context_variables,
+            metadata={
+                "skill_name": skill_name,
+                "variable_name": variable_name,
+                "conversation_id": conversation_id,
+                "case_id": case_id,
+            },
+        ) as obs:
+            yield obs
+    except Exception as e:
+        logger.warning(event="langfuse_skill_observe_error", error=str(e))
+        yield None

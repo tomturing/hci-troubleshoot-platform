@@ -258,6 +258,10 @@ def _evaluate_derived_expression(expression: str, context_variables: dict[str, A
                 return str(args[0] or "").endswith(str(args[1]))
             if function_name == "not" and len(args) == 1:
                 return not bool(args[0])
+            if function_name == "split" and len(args) == 2:
+                return str(args[0] or "").split(str(args[1]))
+            if function_name == "join" and len(args) == 2:
+                return str(args[1]).join(args[0] if isinstance(args[0], list) else [str(args[0])])
             raise ValueError(f"不支持的 derived 函数或参数数量: {function_name}")
 
         value = _read_path(context, expr)
@@ -274,6 +278,33 @@ def _find_var_def(name: str, variable_schema: list[dict[str, Any]]) -> dict[str,
         if isinstance(v, dict) and v.get("name") == name:
             return v
     return None
+
+
+def _find_similar_variables(name: str, variable_schema: list[dict[str, Any]], limit: int = 5) -> list[str]:
+    """根据 LLM 编造的变量名查找 schema 中相似的已声明变量。
+
+    相似度 = 变量名交集字符数 / 并集字符数（Jaccard 字符级）。
+    """
+    if not name or not variable_schema:
+        return []
+    name_set = set(name.lower())
+    scored: list[tuple[float, str]] = []
+    for v in variable_schema:
+        if not isinstance(v, dict):
+            continue
+        declared = v.get("name", "")
+        if not declared:
+            continue
+        declared_set = set(declared.lower())
+        intersection = len(name_set & declared_set)
+        union = len(name_set | declared_set)
+        if union == 0:
+            continue
+        similarity = intersection / union
+        if similarity > 0.2:
+            scored.append((similarity, declared))
+    scored.sort(key=lambda x: -x[0])
+    return [name for _, name in scored[:limit]]
 
 
 async def _persist_variable(
@@ -422,12 +453,27 @@ async def sop_request_variable(
             break
 
     if var_def is None:
-        # 变量未在 schema 中定义，降级为自由输入
+        # 变量未在 schema 中定义 — 搜索相似变量名提示 LLM 使用正确名称
+        suggestions = _find_similar_variables(variable_name, variable_schema_list)
         logger.warning(
             event="sop_request_variable_not_defined",
             sop_document_id=sop_document_id,
             variable_name=variable_name,
+            suggestions=suggestions,
         )
+        if suggestions:
+            # 有相似变量时返回结构化错误而非用户输入，让 LLM 自行修正
+            return {
+                "error": "sop_variable_not_defined",
+                "message": (
+                    f"变量 '{variable_name}' 未在 SOP Schema 中定义。"
+                    f"你可能想请求: {', '.join(suggestions[:5])}。"
+                    f"请使用 sop_request_variable 请求上面列出的正确变量名。"
+                ),
+                "variable_name": variable_name,
+                "suggested_variables": suggestions[:5],
+            }
+        # 无相似变量时才降级为自由输入
         return VariableRequestResult(
             needs_input=True,
             variable_name=variable_name,

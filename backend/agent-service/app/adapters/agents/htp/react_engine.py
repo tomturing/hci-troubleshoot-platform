@@ -317,6 +317,53 @@ class AuditServiceProtocol(Protocol):
     async def write(self, audit_id: str, **kwargs) -> None: ...
 
 
+def _sanitize_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """清理不完整的 tool_calls/tool 消息对。
+
+    OpenAI API 要求每个 assistant 消息中的 tool_calls 必须有对应的 tool 消息。
+    前一轮中断（如用户取消、网络错误）可能导致对话历史中残留不配对的消息。
+    """
+    if not messages:
+        return messages
+
+    clean: list[dict[str, Any]] = []
+    pending_tool_call_ids: set[str] = set()
+
+    for msg in messages:
+        role = msg.get("role", "")
+
+        if role == "assistant" and msg.get("tool_calls"):
+            # 收集当前 assistant 消息中所有 tool_call_id
+            pending_tool_call_ids = {
+                tc.get("id", "") for tc in msg.get("tool_calls", []) if tc.get("id")
+            }
+            clean.append(msg)
+
+        elif role == "tool":
+            tc_id = msg.get("tool_call_id", "")
+            if tc_id in pending_tool_call_ids:
+                pending_tool_call_ids.discard(tc_id)
+                clean.append(msg)
+            # 如果 tool_call_id 不在待处理集合中（孤立 tool 消息），跳过
+
+        else:
+            # user/system 消息：如果有未配对的 tool_calls，移除最后一条 assistant 消息
+            if pending_tool_call_ids:
+                # 回退：移除未完整配对的 assistant tool_calls 消息
+                while clean and clean[-1].get("role") == "assistant" and clean[-1].get("tool_calls"):
+                    removed = clean.pop()
+                    removed_ids = {tc.get("id", "") for tc in removed.get("tool_calls", []) if tc.get("id")}
+                    pending_tool_call_ids -= removed_ids
+                pending_tool_call_ids.clear()
+            clean.append(msg)
+
+    # 末尾残留：最后一条是带 tool_calls 的 assistant 但无后续 tool 消息
+    if pending_tool_call_ids and clean and clean[-1].get("role") == "assistant" and clean[-1].get("tool_calls"):
+        clean.pop()
+
+    return clean
+
+
 class ReactEngine:
     """ReAct 循环执行引擎"""
 
@@ -417,27 +464,28 @@ class ReactEngine:
             "\n\n【输出约束 — 强制执行】\n"
             "1. 每次回复前用 <reasoning> 简述：已收集证据 / 假设支撑与反对 / 置信度(高/中/低) / 下一步行动。\n"
             "2. 最终诊断报告严格按此模板，章节标题不得改名或增减：\n"
-            "   ## 诊断结论\n"
-            "   ### 故障摘要 （一段话概述，仅陈述工具已验证的事实）\n"
-            "   ### 证据链 （| 证据项 | 来源(工具/命令) | 结果 | 表格格式，每一行必须标注具体工具名）\n"
-            "   ### 根因 （明确判定，必须引用证据链中的具体数据，不得使用「可能」「或许」等推测词）\n"
-            "   ### 影响范围 （仅陈述工具已验证的影响，无则标注「不适用」，禁止推测）\n"
-            "   ## 修复方案 （solution 节点原文直出，不可修改、不可增删步骤）\n"
+            "   ## 故障摘要\n"
+            "   （一段话概述：什么故障、什么主机/磁盘/虚拟机、关键证据数据、根本原因）\n"
+            "   ## 根因\n"
+            "   （明确的根因判定，引用工具输出中的具体数据）\n"
+            "   ## 修复方案\n"
+            "   （solution 节点原文直出，合并快速恢复和彻底恢复为一段，不可修改、不可增删步骤）\n"
             "3. solution 节点（no_tool_execution=true）：只输出其 content 原文，**严禁调用任何工具**。\n"
             "4. 报告输出完毕后立即终止，不得追加额外步骤或工具调用。\n"
             "5. 【数据源铁律】诊断报告的每一项内容必须来自以下三类来源之一，禁止使用训练数据中的通用知识：\n"
             "   a. SOP 节点的 content/solution 原文（只能引用，不能改写）\n"
             "   b. 工具执行的实际输出（bash_exec stdout / acli_exec json，必须标注具体命令）\n"
             "   c. SOP 变量值（通过 sop_request_variable 或 skill 获取的 {variable} 值）\n"
-            "   严禁：编造具体数值（虚拟机名、时延ms、容量TB）、推测影响范围、添加 SOP 中没有的修复步骤、\n"
+            "   严禁：编造具体数值（虚拟机名、时延ms、容量TB）、添加 SOP 中没有的修复步骤、\n"
             "   使用「通常」「一般」「建议」「可能」开头且无工具输出支撑的句子。\n"
-            "   证据链表格中每一行的「来源」列必须是实际执行的工具名称，不允许出现「系统告警日志」「已知变量」等模糊描述。\n"
             "6. 【SOP决策树强制遵循】诊断必须严格按决策树节点推进，禁止自由探索：\n"
             "   a. 到达 branch 节点后先执行该节点的 commands，再根据结果选择子节点\n"
             "   b. 选择子节点必须通过 sop_advance 推进，严禁自行判断分支\n"
             "   c. 叶节点(diagnosis/solution)到达后直接输出其 content\n"
             "   d. **严禁绕过 SOP 自行调用 acli_exec/bash_exec 探索**，所有工具调用必须来自当前 SOP 节点的 commands\n"
             "   e. sop_request_variable 获取 skill 变量后必须根据结果走对应 solution，不继续探索子节点\n"
+            "   f. sop_request_variable 只能请求 SOP 节点 required_variables 中列出的变量名，**严禁自行编造变量名**\n"
+            "      （如 alert_parsed、disk_info 等）。若返回 suggested_variables，必须用建议的变量名重试。\n"
             "7. 【分支选择原则】到达 branch 节点后：\n"
             "   a. 若节点有 has_solution=true：先获取依赖变量（如 check_meth），根据 skill 输出判断是否需要深入子节点\n"
             "   b. 若节点 commands 为空且 children 非空：直接读取子节点内容，对比 evidence 选择最匹配的分支\n"
@@ -454,9 +502,12 @@ class ReactEngine:
             )
 
         # 工作消息列表（在循环中动态追加）
+        # 清理对话历史中不完整的 tool_calls/tool 配对，OpenAI API 要求每个
+        # tool_call_id 必须有对应的 tool 消息，否则返回 400 错误
+        clean_messages = _sanitize_tool_messages(messages)
         work_messages: list[dict] = [
             {"role": "system", "content": system_prompt},
-            *messages,
+            *clean_messages,
         ]
 
         # 工具列表（OpenAI function calling 格式）+ 动态注入工具（T-AGT-22）
@@ -1182,9 +1233,6 @@ class ReactEngine:
                     result=envelope,
                     exec_id=exec_id,
                     tool_name=tool_name,
-                    args=tool_args,
-                    risk_level=tool_def.risk_level,
-                    duration_ms=0,
                 )
                 return
         # ─────────────────────────────────────────

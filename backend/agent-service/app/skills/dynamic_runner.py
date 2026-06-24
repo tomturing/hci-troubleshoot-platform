@@ -221,24 +221,40 @@ class DynamicSkillRunner:
             },
         ]
 
-        invoke_result = await ai_client.invoke(
-            messages=messages,
-            tools=None,
-            user_id=conversation_id,
+        # Langfuse: 为 skill 执行创建独立 observation（与 tool 同级可观测）
+        from shared.observability.langfuse import observe_skill
+
+        with observe_skill(
+            skill_name=snapshot.skill_name,
+            variable_name=variable_name or "",
+            context_variables=context_variables,
+            conversation_id=conversation_id,
             case_id=case_id,
-            response_format={"type": "json_object"},
-        )
-        raw_content = invoke_result.content or ""
-        try:
-            parsed = json.loads(raw_content)
-        except json.JSONDecodeError as exc:
-            logger.error(
-                event="dynamic_skill_invalid_json",
-                skill_name=snapshot.skill_name,
-                raw_content=raw_content[:500],
-                trace_id=trace_id,
+        ) as skill_obs:
+            invoke_result = await ai_client.invoke(
+                messages=messages,
+                tools=None,
+                user_id=conversation_id,
+                case_id=case_id,
+                response_format={"type": "json_object"},
             )
-            raise DynamicSkillError(f"动态 Skill 输出不是合法 JSON: {exc}") from exc
+            raw_content = invoke_result.content or ""
+
+            if skill_obs is not None:
+                skill_obs.update(output=raw_content[:5000])
+
+            try:
+                parsed = json.loads(raw_content)
+            except json.JSONDecodeError as exc:
+                if skill_obs is not None:
+                    skill_obs.update(status_message=f"JSON解析失败: {exc}")
+                logger.error(
+                    event="dynamic_skill_invalid_json",
+                    skill_name=snapshot.skill_name,
+                    raw_content=raw_content[:500],
+                    trace_id=trace_id,
+                )
+                raise DynamicSkillError(f"动态 Skill 输出不是合法 JSON: {exc}") from exc
 
         if isinstance(parsed, dict) and parsed.get("ok") is False:
             error = parsed.get("error") or parsed.get("message") or "动态 Skill 返回失败"

@@ -463,20 +463,18 @@ def _format_diagnosis_content(diagnosis: dict) -> str:
 
 
 def _format_solution_content(solution: dict) -> str:
-    """格式化解决方案内容为可读文本。"""
+    """格式化解决方案内容为可读文本（合并快速恢复和彻底恢复）。"""
     parts = []
 
     quick_recovery = solution.get("quick_recovery", [])
-    if quick_recovery:
-        parts.append("【快速恢复】")
-        parts.append("\n".join(f"- {s}" for s in quick_recovery))
-
     thorough_fix = solution.get("thorough_fix", [])
-    if thorough_fix:
-        parts.append("【彻底解决】")
-        parts.append("\n".join(f"- {s}" for s in thorough_fix))
 
-    return "\n\n".join(parts)
+    if quick_recovery:
+        parts.extend(f"- {s}" for s in quick_recovery)
+    if thorough_fix:
+        parts.extend(f"- {s}" for s in thorough_fix)
+
+    return "\n".join(parts)
 
 
 async def sop_advance(

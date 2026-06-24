@@ -586,7 +586,11 @@ class TestInvestigationAgentQualityCheck:
         from app.adapters.agents.htp.investigation_agent import InvestigationAgent
         from app.domain.agent_port import AgentInteractiveRequest
 
+        from unittest.mock import AsyncMock
+
         kb = MagicMock()
+        # 质量检查现在在 SOP 路由之后，需要 route_by_category 返回非 SOP 结果
+        kb.route_by_category = AsyncMock(return_value={"track": "kbd", "results": []})
         agent = InvestigationAgent(
             ai_registry=MagicMock(),
             kb_client=kb,
@@ -607,17 +611,13 @@ class TestInvestigationAgentQualityCheck:
         ):
             events.append(event)
 
-        # 必须仅 yield 了一个 interactive request 并且 kind="information_clarification"
+        # 非 SOP 命中时仍应触发信息质量澄清
         interactive_requests = [e for e in events if isinstance(e, AgentInteractiveRequest)]
         assert len(interactive_requests) == 1
         req = interactive_requests[0]
         assert req.kind == "information_clarification"
         assert "clarify-" in req.request_id
         assert len(req.options) > 0
-
-        # 并且流程应该提前返回（不继续执行后续的路由和检索）
-        # 验证 route_by_category 未被调用
-        kb.route_by_category.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_event_stream_with_interactive_request_no_error(self, mocker):

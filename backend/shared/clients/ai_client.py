@@ -60,6 +60,27 @@ class AIAssistantClient(Protocol):
         ...
 
 
+def _is_retriable_invoke_error(exc: Exception) -> bool:
+    """判定非流式 invoke 调用的瞬态错误（可重试）。"""
+    import httpx
+
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return True
+    if isinstance(exc, httpx.ConnectError):
+        return True
+    message = str(exc).lower()
+    retriable_signatures = (
+        "incomplete chunked read",
+        "peer closed connection",
+        "read timeout",
+        "connection reset",
+        "server disconnected",
+    )
+    return any(sig in message for sig in retriable_signatures)
+
+
 class OpenClawAssistant:
     """
     OpenClaw AI助手客户端 (OpenAI兼容)
@@ -543,6 +564,7 @@ class OpenClawAssistant:
         )
         return any(sig in message for sig in retriable_signatures)
 
+
     async def check_health(self) -> bool:
         """检查OpenClaw服务健康状态"""
         _completions_path = os.environ.get("AI_COMPLETIONS_PATH", "/v1/chat/completions")
@@ -653,93 +675,119 @@ class OpenClawAssistant:
             tool_count=len(tools) if tools else 0,
         )
 
-        try:
-            langfuse_gen, _, lf_start = await observe_invoke(
-                model=model or self.default_model,
-                assistant_type=self.assistant_type,
-                user_id=user_id,
-                case_id=case_id,
-                messages=messages,
-                tools=tools,
-            )
+        # Langfuse: 创建 observation（重试循环外，避免重复创建）
+        langfuse_gen, _, lf_start = await observe_invoke(
+            model=model or self.default_model,
+            assistant_type=self.assistant_type,
+            user_id=user_id,
+            case_id=case_id,
+            messages=messages,
+            tools=tools,
+        )
 
-            response = await self.client.post(url, json=payload, headers=headers)
-            if response.status_code != 200:
-                error_detail = self._parse_ai_error(response.status_code, response.text)
+        import asyncio as _asyncio
+
+        max_retries = 2
+        last_error: Exception | None = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = await self.client.post(url, json=payload, headers=headers)
+                if response.status_code != 200:
+                    error_detail = self._parse_ai_error(response.status_code, response.text)
+                    # 5xx 服务器错误 → 可重试
+                    if response.status_code >= 500 and attempt < max_retries:
+                        logger.warning(
+                            event="ai_invoke_retry",
+                            message=f"HTTP {response.status_code} 可重试，第 {attempt + 1} 次",
+                            attempt=attempt + 1,
+                        )
+                        await _asyncio.sleep(1.0 * (attempt + 1))
+                        continue
+                    end_generation(
+                        langfuse_gen,
+                        error=error_detail.get("message", f"HTTP {response.status_code}"),
+                        start_time=lf_start,
+                    )
+                    raise AIStreamError(
+                        code=error_detail["code"],
+                        message=error_detail["message"],
+                        detail=error_detail["detail"],
+                    )
+
+                data = response.json()
+                choice = data.get("choices", [{}])[0]
+                message = choice.get("message", {})
+
+                usage = data.get("usage") or {}
+                prompt_tokens = usage.get("prompt_tokens") or 0
+                completion_tokens = usage.get("completion_tokens") or 0
+                total_tokens = usage.get("total_tokens") or 0
+
+                # 工具调用分支
+                raw_tool_calls: list[dict] = message.get("tool_calls") or []
+                if raw_tool_calls:
+                    parsed: list[ToolCallRequest] = []
+                    for tc in raw_tool_calls:
+                        fn = tc.get("function", {})
+                        try:
+                            args = json.loads(fn.get("arguments", "{}"))
+                        except json.JSONDecodeError:
+                            args = {}
+                        parsed.append(
+                            ToolCallRequest(
+                                id=tc.get("id", ""),
+                                name=fn.get("name", ""),
+                                arguments=args,
+                            )
+                        )
+                    end_generation(
+                        langfuse_gen,
+                        tool_calls=[{"name": t.name, "arguments": t.arguments} for t in parsed],
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        start_time=lf_start,
+                    )
+                    return InvokeResult(content=None, tool_calls=parsed)
+
+                # 文字终止分支
+                content = message.get("content") or ""
                 end_generation(
                     langfuse_gen,
-                    error=error_detail.get("message", f"HTTP {response.status_code}"),
+                    output=content,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    start_time=lf_start,
+                )
+                return InvokeResult(content=content, tool_calls=[])
+
+            except AIStreamError:
+                raise
+            except Exception as e:
+                last_error = e
+                retriable = _is_retriable_invoke_error(e)
+                if retriable and attempt < max_retries:
+                    logger.warning(
+                        event="ai_invoke_retry",
+                        message=f"瞬态错误可重试，第 {attempt + 1} 次",
+                        error=str(e)[:100],
+                        attempt=attempt + 1,
+                    )
+                    await _asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+                error_detail = self._parse_generic_error(e)
+                end_generation(
+                    langfuse_gen,
+                    error=error_detail.get("message", str(e)),
                     start_time=lf_start,
                 )
                 raise AIStreamError(
                     code=error_detail["code"],
                     message=error_detail["message"],
                     detail=error_detail["detail"],
-                )
-
-            data = response.json()
-            choice = data.get("choices", [{}])[0]
-            message = choice.get("message", {})
-
-            # 提取 token 用量
-            usage = data.get("usage") or {}
-            prompt_tokens = usage.get("prompt_tokens") or 0
-            completion_tokens = usage.get("completion_tokens") or 0
-            total_tokens = usage.get("total_tokens") or 0
-
-            # 工具调用分支（finish_reason="tool_calls"）
-            raw_tool_calls: list[dict] = message.get("tool_calls") or []
-            if raw_tool_calls:
-                parsed: list[ToolCallRequest] = []
-                for tc in raw_tool_calls:
-                    fn = tc.get("function", {})
-                    try:
-                        args = json.loads(fn.get("arguments", "{}"))
-                    except json.JSONDecodeError:
-                        args = {}
-                    parsed.append(
-                        ToolCallRequest(
-                            id=tc.get("id", ""),
-                            name=fn.get("name", ""),
-                            arguments=args,
-                        )
-                    )
-                end_generation(
-                    langfuse_gen,
-                    tool_calls=[{"name": t.name, "arguments": t.arguments} for t in parsed],
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                    start_time=lf_start,
-                )
-                return InvokeResult(content=None, tool_calls=parsed)
-
-            # 文字终止分支（finish_reason="stop"）
-            content = message.get("content") or ""
-            end_generation(
-                langfuse_gen,
-                output=content,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                start_time=lf_start,
-            )
-            return InvokeResult(content=content, tool_calls=[])
-
-        except AIStreamError:
-            raise
-        except Exception as e:
-            error_detail = self._parse_generic_error(e)
-            end_generation(
-                langfuse_gen,
-                error=error_detail.get("message", str(e)),
-                start_time=lf_start,
-            )
-            raise AIStreamError(
-                code=error_detail["code"],
-                message=error_detail["message"],
-                detail=error_detail["detail"],
-            ) from e
+                ) from e
 
     async def close(self):
         """关闭客户端"""
