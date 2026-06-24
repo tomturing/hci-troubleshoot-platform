@@ -153,6 +153,8 @@
   - `OpenClawAssistant` 支持 temperature / top_p / logprobs 构造参数，S0/ReAct 场景分设温度
   - `invoke()` 增加瞬态网络错误重试（5xx、超时、peer closed connection）
   - `_sanitize_tool_messages` 清理对话历史中不完整的 tool_calls/tool 配对
+- **Langfuse ingress 路径统一**：非 subdomain 模式下所有路径统一 /langfuse/xxx 前缀
+
 - **docker-compose 优化 + Helm Langfuse 配置 + SOP 导入幂等修复**：
   - docker-compose.yml：移除暴露端口、统一网络配置
   - Helm agent-service deployment：新增 LANGFUSE_SECRET_KEY / PUBLIC_KEY / HOST 环境变量
