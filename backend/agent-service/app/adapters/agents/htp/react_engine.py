@@ -17,6 +17,7 @@ import json
 import re
 import uuid
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
@@ -451,10 +452,8 @@ class ReactEngine:
         def _end_agent_obs():
             """结束 Langfuse agent execution observation。在 execute() 所有退出路径上调用。"""
             if agent_obs:
-                try:
+                with suppress(Exception):
                     agent_obs.update(metadata={"total_steps": total_steps})
-                except Exception:
-                    pass
             if agent_obs_ctx:
                 agent_obs_ctx.__exit__(None, None, None)
 

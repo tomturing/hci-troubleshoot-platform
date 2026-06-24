@@ -583,10 +583,10 @@ class TestInvestigationAgentQualityCheck:
     @pytest.mark.asyncio
     async def test_quality_check_fails_and_yields_clarification(self):
         """当环境上下文缺失关键字段时，触发 clarification 交互拦截并提前返回"""
+        from unittest.mock import AsyncMock
+
         from app.adapters.agents.htp.investigation_agent import InvestigationAgent
         from app.domain.agent_port import AgentInteractiveRequest
-
-        from unittest.mock import AsyncMock
 
         kb = MagicMock()
         # 质量检查现在在 SOP 路由之后，需要 route_by_category 返回非 SOP 结果

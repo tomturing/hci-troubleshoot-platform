@@ -688,7 +688,6 @@ class OpenClawAssistant:
         import asyncio as _asyncio
 
         max_retries = 2
-        last_error: Exception | None = None
 
         for attempt in range(max_retries + 1):
             try:
@@ -766,7 +765,6 @@ class OpenClawAssistant:
             except AIStreamError:
                 raise
             except Exception as e:
-                last_error = e
                 retriable = _is_retriable_invoke_error(e)
                 if retriable and attempt < max_retries:
                     logger.warning(
