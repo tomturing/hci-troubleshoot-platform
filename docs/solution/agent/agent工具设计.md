@@ -1,6 +1,6 @@
 # Agent 工具设计
 
-> 权威来源：本文件（v3.1，核心执行契约、工具管理 UI 校验、SOP 发布联动、容器执行适配器、SOP Markdown 命令归一化、运行时变量来源门禁、工具注册表热刷新与工具定义数据驱动边界、ReAct 工具调用历史跨轮次持久化均已落地）。
+> 权威来源：本文件（v3.2，核心执行契约、工具管理 UI 校验、SOP 发布联动、容器执行适配器、SOP Markdown 命令归一化、运行时变量来源门禁、工具注册表热刷新与工具定义数据驱动边界、ReAct 工具调用历史跨轮次持久化、preferred_next_steps 推荐机制、软推荐门禁层均已落地）。
 > 关联文档：[agent设计.md](./agent设计.md) §十（目录结构）、[agent记忆设计.md](./agent记忆设计.md)
 > 最新事件方案：[ReAct 工具调用历史跨轮次持久化设计](events/2026-06-17-ReAct工具调用历史跨轮次持久化.md)
 
@@ -80,6 +80,11 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 > - `SopToolExecutor` 在 SOP 模式下对真实诊断工具增加 before-tool-call 变量来源门禁
 > - 当前节点或候选子节点依赖 `user_input/user_confirm/env_*` 变量且未就绪时，`bash_exec/acli_exec` 不下发真实执行，而是返回 `sop_variable_gate_blocked` 和 `next_tool_call=sop_request_variable`
 > - SOP 导航工具 `get_sop_node/sop_request_variable/sop_advance` 不受该门禁阻断，保证 LLM 可先获取节点、请求变量、再推进
+
+**v2.9 变更说明**（PR #475）：
+> - `get_sop_node` 和 `sop_advance` 返回体新增 `preferred_next_steps` 字段，当节点有未就绪的 `skill_call/tool_call` 变量时，在 LLM 最近的 tool_result 上下文中嵌入显式推荐行动（Contextual Nudge 原则）
+> - 变量门禁分层设计，新增「软推荐（Preferred）」层专门覆盖 `skill_call/tool_call` 类型，缺失时不阻断但附加提示
+> - S0/S1 系统提示词种子数据新增「变量采集规范」：对 `skill_call/tool_call` 类型变量必须优先调用 `sop_request_variable`，禁止用通用命令手动采集
 
 ---
 
@@ -966,6 +971,7 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 | 2026-06-11 | v2.4 | **工具执行契约与前置校验增强**：`bash_exec` 改为必须指定容器；新增执行前 `ToolSemanticValidator`；`acli_exec` 基于 aCLI catalog 本地快照做命令路径校验；修复双通道 `stderr` 在 `exit_code != 0` 时被 `output` 未定义异常覆盖的问题。工具管理 UI 与 SOP 发布联动仍按 T-EXEC-10/T-EXEC-11 推进。详见 [方案事件文档](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验方案.md) |
 | 2026-06-13 | v3.0 | **平台内置/硬编码治理（PR #462）**：① `ToolRegistryManager` 支持短 TTL 热刷新，ReAct 工具列表、风险判断、执行前校验和 Composite 执行统一消费当前 `tool_definition` 快照；② `bash_exec.container` 合法范围从 `parameters_schema.properties.container.enum` 读取，conversation-service 工具定义校验只要求 enum 存在且包含 `host`，不再在代码中固化具体容器名；③ `database/seeds/01_tool_definitions.sql` 中 `get_failed_tasks` 使用 `usage_template` 声明 acli 命令，`TemplateInterpolator` 支持 `[[...]]` 可选片段，删除执行器内的工具名特判；④ `HallucinationDetector` 不再维护内置默认工具清单，只基于运行时 registry 做 phantom tool 检测 |
 | 2026-06-14 | v3.1 | **SOP长命令截断治理与LLM纠错架构（PR #466）**：① `executor.py` 大输出截断前无损暂存 Redis `cmd_cache:{exec_id}`（1800秒），`ExecResult` 追加 `exec_id` 用于 `json_extract` 策略回溯；② 退出码 127/command not found 含 python 时自动纠错重写；③ `01_tool_definitions.sql` 为 `acli_exec/bash_exec` 添加禁用 Python 与截断过滤建议提示；④ 新增 `json_extract` 获取策略，支持 `jsonpath-ng.ext`（含 `&` AND 过滤）从缓存/截断数据提取子变量。详见 [SOP长命令截断治理与LLM纠错架构设计.md](../events/2026-06-14-SOP长命令截断治理与LLM纠错架构设计.md) |
+| 2026-06-21 | v3.2 | **Skill 调用失效修复（PR #475）**：① `get_sop_node`/`sop_advance` 返回体新增 `preferred_next_steps` 字段，嵌入未就绪 `skill_call/tool_call` 变量的显式推荐行动；② 变量门禁分层设计，新增「软推荐」层覆盖 `skill_call/tool_call` 类型；③ S0/S1 系统提示词种子数据新增「变量采集规范」，强制要求对 `skill_call/tool_call` 类型变量优先调用 `sop_request_variable`。详见 [skill调用失效根因分析与改进方案.md](skill调用失效根因分析与改进方案.md) |
 
 ---
 
