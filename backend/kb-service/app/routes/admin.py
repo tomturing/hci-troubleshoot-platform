@@ -2114,7 +2114,7 @@ async def upload_sop_document(
         logger.error(event="sop_upload_parse_error", filename=filename, error=str(exc))
         raise HTTPException(status_code=400, detail=f"文件解析失败：{exc}") from exc
 
-    docx_hash = file_hash if file_ext == "docx" else None
+    docx_hash = file_hash  # .docx 和 .md 均生成内容哈希，支持幂等导入
 
     async with _db_manager.async_session_factory() as session:
         # 幂等：已存在相同哈希则返回已有文档
