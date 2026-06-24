@@ -52,14 +52,14 @@ spec:
                 port:
                   number: 3000
           # Next.js static files and other assets
-          - path: /langfuse/_next
+          - path: /_next
             pathType: Prefix
             backend:
               service:
                 name: langfuse-server
                 port:
                   number: 3000
-          - path: /langfuse/static
+          - path: /static
             pathType: Prefix
             backend:
               service:
@@ -67,49 +67,49 @@ spec:
                 port:
                   number: 3000
           # Internal Langfuse auth/public endpoints under /api
-          - path: /langfuse/api/auth
+          - path: /api/auth
             pathType: Prefix
             backend:
               service:
                 name: langfuse-server
                 port:
                   number: 3000
-          - path: /langfuse/api/public
+          - path: /api/public
             pathType: Prefix
             backend:
               service:
                 name: langfuse-server
                 port:
                   number: 3000
-          - path: /langfuse/api/trpc
+          - path: /api/trpc
             pathType: Prefix
             backend:
               service:
                 name: langfuse-server
                 port:
                   number: 3000
-          - path: /langfuse/icon.svg
+          - path: /icon.svg
             pathType: Exact
             backend:
               service:
                 name: langfuse-server
                 port:
                   number: 3000
-          - path: /langfuse/wordart-black.svg
+          - path: /wordart-black.svg
             pathType: Exact
             backend:
               service:
                 name: langfuse-server
                 port:
                   number: 3000
-          - path: /langfuse/wordart-white.svg
+          - path: /wordart-white.svg
             pathType: Exact
             backend:
               service:
                 name: langfuse-server
                 port:
                   number: 3000
-          - path: /langfuse/favicon.ico
+          - path: /favicon.ico
             pathType: Exact
             backend:
               service:
