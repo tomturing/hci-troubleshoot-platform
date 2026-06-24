@@ -461,6 +461,13 @@ agentService:
       cpu: "1000m"
       memory: "512Mi"
 
+# ======================== Langfuse 可观测性 ==================================
+langfuse:
+  enabled: false
+  secretKey: ""
+  publicKey: ""
+  host: "http://langfuse-web:3000"
+
 # ======================== Eval Service ======================================
 evalService:
   replicaCount: 1

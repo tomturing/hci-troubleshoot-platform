@@ -88,6 +88,29 @@ spec:
               value: {{ .Values.agentService.pydanticAiEnabled | default "false" | quote }}
             - name: CONFIRM_TIMEOUT_SEC
               value: {{ .Values.agentService.confirmTimeoutSec | default "120" | quote }}
+            # Langfuse 可观测性（v3 SDK）
+            {{- if .Values.langfuse }}
+            - name: LANGFUSE_SECRET_KEY
+            {{- if .Values.langfuse.secretKey }}
+              value: {{ .Values.langfuse.secretKey | quote }}
+            {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: LANGFUSE_SECRET_KEY
+            {{- end }}
+            - name: LANGFUSE_PUBLIC_KEY
+            {{- if .Values.langfuse.publicKey }}
+              value: {{ .Values.langfuse.publicKey | quote }}
+            {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: LANGFUSE_PUBLIC_KEY
+            {{- end }}
+            - name: LANGFUSE_HOST
+              value: {{ .Values.langfuse.host | default "http://langfuse-web:3000" | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /v1/agent/health
