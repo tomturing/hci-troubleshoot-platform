@@ -6,8 +6,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-hci_troubleshoot}
       POSTGRES_USER: ${POSTGRES_USER:-hci_admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password_123}
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../../database/desired_schema.sql:/docker-entrypoint-initdb.d/init.sql
@@ -16,13 +14,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - hci-troubleshoot-platform_default
 
   redis:
     image: redis:7
     container_name: hci-redis
     command: redis-server --appendonly yes
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -30,14 +28,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - hci-troubleshoot-platform_default
 
   api-gateway:
     build:
-      context: ./backend
-      dockerfile: api-gateway/Dockerfile
+      context: ../..
+      dockerfile: backend/api-gateway/Dockerfile
     container_name: hci-api-gateway
-    ports:
-      - "8000:8000"
     environment:
       PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
@@ -46,23 +44,24 @@ services:
       CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      - ./backend/api-gateway:/app
-      - ./backend/shared:/app/shared
+      - ../../backend/api-gateway:/app
+      - ../../backend/shared:/app/shared
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - hci-troubleshoot-platform_default
 
   case-service:
     build:
-      context: ./backend
-      dockerfile: case-service/Dockerfile
+      context: ../..
+      dockerfile: backend/case-service/Dockerfile
     container_name: hci-case-service
-    ports:
-      - "8001:8001"
     environment:
       PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
@@ -71,17 +70,17 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./backend/case-service:/app
-      - ./backend/shared:/app/shared
+      - ../../backend/case-service:/app
+      - ../../backend/shared:/app/shared
     command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    networks:
+      - hci-troubleshoot-platform_default
 
   conversation-service:
     build:
-      context: ./backend
-      dockerfile: conversation-service/Dockerfile
+      context: ../..
+      dockerfile: backend/conversation-service/Dockerfile
     container_name: hci-conversation-service
-    ports:
-      - "8002:8002"
     environment:
       PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
@@ -90,6 +89,8 @@ services:
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-hci-dev-openclaw-token}
       KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
       KB_ENABLED: ${KB_ENABLED:-true}
+      LLM_TEMPERATURE: "${LLM_TEMPERATURE:-0.1}"
+      LLM_TEMPERATURE_S0: "${LLM_TEMPERATURE_S0:-0.3}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -100,17 +101,17 @@ services:
       kb-service:
         condition: service_healthy
     volumes:
-      - ./backend/conversation-service:/app
-      - ./backend/shared:/app/shared
+      - ../../backend/conversation-service:/app
+      - ../../backend/shared:/app/shared
     command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+    networks:
+      - hci-troubleshoot-platform_default
 
   scheduler-service:
     build:
-      context: ./backend
-      dockerfile: scheduler-service/Dockerfile
+      context: ../..
+      dockerfile: backend/scheduler-service/Dockerfile
     container_name: hci-scheduler-service
-    ports:
-      - "8003:8003"
     environment:
       PYTHONPATH: /app
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
@@ -119,18 +120,18 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./backend/scheduler-service:/app
-      - ./backend/shared:/app/shared
+      - ../../backend/scheduler-service:/app
+      - ../../backend/shared:/app/shared
       - /var/run/docker.sock:/var/run/docker.sock # For local dev
     command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
+    networks:
+      - hci-troubleshoot-platform_default
 
   kb-service:
     build:
-      context: ./backend
-      dockerfile: kb-service/Dockerfile
+      context: ../..
+      dockerfile: backend/kb-service/Dockerfile
     container_name: hci-kb-service
-    ports:
-      - "8004:8004"
     environment:
       PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
@@ -143,39 +144,93 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./backend/kb-service:/app
-      - ./backend/shared:/app/shared
-      - ./backend/kb-service/config:/data/config:ro             # jieba 词典等配置（只读）
+      - ../../backend/kb-service:/app
+      - ../../backend/shared:/app/shared
+      - ../../backend/kb-service/config:/data/config:ro             # jieba 词典等配置（只读）
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
     command: uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload
+    networks:
+      - hci-troubleshoot-platform_default
+
+  agent-service:
+    build:
+      context: ../..
+      dockerfile: backend/agent-service/Dockerfile
+    container_name: hci-agent-service
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
+      CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
+      SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
+      KB_ENABLED: ${KB_ENABLED:-true}
+      REACT_ENABLED: ${REACT_ENABLED:-false}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-server:3000}
+      GLM_MODEL: ${GLM_MODEL:-deepseek-v4-flash}
+      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-deepseek-v4-flash}
+      AI_DEFAULT_ASSISTANT_TYPE: ${AI_DEFAULT_ASSISTANT_TYPE:-htp-agent}
+      LLM_TEMPERATURE: "${LLM_TEMPERATURE:-0.1}"
+      LLM_TEMPERATURE_S0: "${LLM_TEMPERATURE_S0:-0.3}"
+      LLM_TEMPERATURE_REACT: "${LLM_TEMPERATURE_REACT:-0.0}"
+      LLM_TOP_P: "${LLM_TOP_P:-0.3}"
+      LLM_LOGPROBS: "${LLM_LOGPROBS:-false}"
+      LLM_TOP_LOGPROBS: "${LLM_TOP_LOGPROBS:-0}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kb-service:
+        condition: service_healthy
+    volumes:
+      - ../../backend/agent-service:/app
+      - ../../backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8005 --reload
+    networks:
+      - hci-troubleshoot-platform_default
 
   # ============ 前端服务 ============
 
   customer-ui:
     build:
-      context: ./frontend
-      dockerfile: customer/Dockerfile
+      context: ../..
+      dockerfile: frontend/customer/Dockerfile
     container_name: hci-customer-ui
     ports:
       - "3001:80"
     depends_on:
       - api-gateway
+    networks:
+      - hci-troubleshoot-platform_default
 
   admin-ui:
     build:
-      context: ./frontend
-      dockerfile: admin/Dockerfile
+      context: ../..
+      dockerfile: frontend/admin/Dockerfile
     container_name: hci-admin-ui
     ports:
       - "3002:80"
     depends_on:
       - api-gateway
+    networks:
+      - hci-troubleshoot-platform_default
 
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  hci-troubleshoot-platform_default:
+    name: hci-troubleshoot-platform_default
+    external: true
