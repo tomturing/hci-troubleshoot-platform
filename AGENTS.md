@@ -149,6 +149,23 @@
   - 根因：SQLAlchemy ORM 类定义会在 import 时把表注册到 `Base.metadata`，kb-service 导入 `shared.models.dynamic_resource` 时触发了 KB ORM 副作用，与 kb-service 内部 `KBChunk` 定义冲突导致 CrashLoopBackOff。
   - 修复：使用 Python 3.7+ `__getattr__` 实现延迟导入，包根导入 `from shared.models import X` 只加载对应模块，不再自动触发所有子模块的 ORM 注册。
   - 影响：kb-service 导入 `dynamic_resource` 不触发 KB ORM 副作用；agent-service 包根导入 `ClaimVerification`/`ReasoningOutput` 正常工作；其他服务直接导入模式不受影响。
+- **LLM 推理参数可配置 + 工具调用可靠性修复**：
+  - `OpenClawAssistant` 支持 temperature / top_p / logprobs 构造参数，S0/ReAct 场景分设温度
+  - `invoke()` 增加瞬态网络错误重试（5xx、超时、peer closed connection）
+  - `_sanitize_tool_messages` 清理对话历史中不完整的 tool_calls/tool 配对
+  - `DynamicSkillRunner` 嵌入 `observe_skill` Langfuse observation，skill 执行可独立观测
+  - 诊断报告模板精简为「故障摘要 / 根因 / 修复方案」三章
+  - solution 格式合并【快速恢复】【彻底解决】为统一列表
+- **SOP 变量管道修复**：
+  - `sop_request_variable` 支持递归依赖解析 + 变量值写回 conversation-service
+  - `_find_similar_variables` 提示 LLM 正确变量名
+  - `ConversationSopClient` 新增 `set_variable` JIT 变量写回
+- **terminal_bridge 多节点 SSH 路由**：
+  - InMessage 新增 NodeIP / Container 字段
+  - sessionKey 改为 caseID@nodeIP，支持多节点自动连接
+  - 前端 buildAgentExecProcessMessage 传递 nodeIp/container 到 WebSocket
+- **信息质量检查跳过 SOP 模式**：SOP 命中时 quality check 不再拦截
+
 - **SOP 技能 allowed_tools 修正与变量门禁范围优化**：
   - 修正了 `hci-alert-parsing` 和 `hci-task-parsing` 技能的 `allowed_tools` 绑定值为 `'bash_exec'`，解决 Staging 环境中执行器因工具名不匹配导致校验失败的问题。
   - 优化了 `find_missing_guarded_variables_for_node_window` 逻辑，在当前节点为非叶子节点时，只检测当前节点本身所需的受控变量，不合并子分支的前置变量进行提前阻断，从而避免 Agent 在根节点执行 acli_exec 或 get_active_alerts 等工具时被提前阻断。
