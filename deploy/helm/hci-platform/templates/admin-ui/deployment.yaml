@@ -23,6 +23,8 @@ spec:
           emptyDir: {}
         - name: nginx-run
           emptyDir: {}
+        - name: nginx-conf-d
+          emptyDir: {}
       containers:
         - name: admin-ui
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.adminUI.image) }}
@@ -39,6 +41,8 @@ spec:
               mountPath: /var/cache/nginx
             - name: nginx-run
               mountPath: /run
+            - name: nginx-conf-d
+              mountPath: /etc/nginx/conf.d
           livenessProbe:
             httpGet:
               path: /
