@@ -40,9 +40,12 @@ services:
       PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
       CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
       CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
+      KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
+      AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://agent-service:8005}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
     depends_on:
@@ -66,6 +69,13 @@ services:
       PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
+      CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
+      CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
+      SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
+      KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
+      AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://agent-service:8005}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,10 +97,16 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       OPENCLAW_BASE_URL: ${OPENCLAW_BASE_URL:-http://host.docker.internal:18790}
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-hci-dev-openclaw-token}
+      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
+      CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
+      CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
+      SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
       KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
+      AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://agent-service:8005}
       KB_ENABLED: ${KB_ENABLED:-true}
       LLM_TEMPERATURE: "${LLM_TEMPERATURE:-0.1}"
       LLM_TEMPERATURE_S0: "${LLM_TEMPERATURE_S0:-0.3}"
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -116,6 +132,13 @@ services:
       PYTHONPATH: /app
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       K8S_NAMESPACE: ${K8S_NAMESPACE:-hci-troubleshoot}
+      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
+      CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
+      CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
+      SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
+      KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
+      AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://agent-service:8005}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
     depends_on:
       redis:
         condition: service_healthy
@@ -137,6 +160,12 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       ZAI_BASE_URL: ${ZAI_BASE_URL:-http://host.docker.internal:18790}
       ZAI_API_KEY: ${ZAI_API_KEY:-hci-dev-openclaw-token}
+      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
+      CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
+      CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
+      SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
+      KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
+      AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://agent-service:8005}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -168,10 +197,13 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
-      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
+      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
+      CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
       CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
+      KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
+      AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://agent-service:8005}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
       KB_ENABLED: ${KB_ENABLED:-true}
       REACT_ENABLED: ${REACT_ENABLED:-false}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
@@ -186,6 +218,7 @@ services:
       LLM_TOP_P: "${LLM_TOP_P:-0.3}"
       LLM_LOGPROBS: "${LLM_LOGPROBS:-false}"
       LLM_TOP_LOGPROBS: "${LLM_TOP_LOGPROBS:-0}"
+      ASSISTANT_REGISTRY_JSON: ${ASSISTANT_REGISTRY_JSON:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -203,6 +236,8 @@ services:
   # ============ 前端服务 ============
 
   customer-ui:
+    environment:
+      - DNS_RESOLVER=127.0.0.11
     build:
       context: ../..
       dockerfile: frontend/customer/Dockerfile
@@ -215,6 +250,8 @@ services:
       - hci-troubleshoot-platform_default
 
   admin-ui:
+    environment:
+      - DNS_RESOLVER=127.0.0.11
     build:
       context: ../..
       dockerfile: frontend/admin/Dockerfile

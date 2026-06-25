@@ -98,10 +98,10 @@ cp .env.example .env
 # 填写 ZAI_API_KEY 和 OPENCLAW_GATEWAY_TOKEN
 
 # 2. 启动业务栈（含 OpenClaw）
-docker compose -f deploy/docker/docker-compose.yml up -d --build
+docker compose --env-file .env -f deploy/docker/docker-compose.yml up -d --build
 
 # 3. 启动可观测性栈
-docker compose -f deploy/observability/docker-compose-obs.yml up -d
+docker compose --env-file .env -f deploy/observability/docker-compose-obs.yml up -d
 
 # 4. 访问服务
 #   Customer UI : http://localhost:3001
