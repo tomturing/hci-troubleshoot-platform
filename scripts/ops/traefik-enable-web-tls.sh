@@ -58,11 +58,12 @@ fi
 # 显示当前配置
 echo "当前 Traefik entrypoint 配置:"
 echo "----------------------------------------------"
-kubectl get deployment $DEPLOYMENT -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].args}' | jq -r '.[]' | grep entryPoints
+TRAEFIK_ARGS="$(kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE" -o json | jq -r '(.spec.template.spec.containers[0].args // [])[]')"
+echo "$TRAEFIK_ARGS" | grep entryPoints || true
 echo ""
 
 # 检查是否已有 TLS 配置
-CURRENT_TLS=$(kubectl get deployment $DEPLOYMENT -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].args}' | jq -r '.[]' | grep "entryPoints.web.http.tls" || true)
+CURRENT_TLS=$(echo "$TRAEFIK_ARGS" | grep "entryPoints.web.http.tls" || true)
 
 if [[ "$CURRENT_TLS" == *"--entryPoints.web.http.tls=true"* ]]; then
     echo "✅ web entrypoint 已启用 TLS，无需修改"
@@ -105,7 +106,7 @@ echo "验证结果"
 echo "=============================================="
 
 # 验证配置
-NEW_TLS=$(kubectl get deployment $DEPLOYMENT -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].args}' | jq -r '.[]' | grep "entryPoints.web.http.tls" || true)
+NEW_TLS=$(kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE" -o json | jq -r '(.spec.template.spec.containers[0].args // [])[]' | grep "entryPoints.web.http.tls" || true)
 
 if [[ "$NEW_TLS" == *"--entryPoints.web.http.tls=true"* ]]; then
     echo "✅ web entrypoint TLS 已成功启用"

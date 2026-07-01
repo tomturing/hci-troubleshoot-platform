@@ -10,17 +10,20 @@ global:
   # --------------------------------------------------------------------
   # "path"      路径路由（推荐，单 IP / 单域名场景）
   #             acli.sangfor.com.cn/         → customer-ui
-  #             acli.sangfor.com.cn/admin/   → admin-ui
   #             acli.sangfor.com.cn/api      → api-gateway
   #             acli.sangfor.com.cn/grafana  → grafana
   #             ✅ 只需一条 A 记录指向服务器 IP
+  #             ⚠️  admin-ui 已分离到独立 Ingress（内网隔离方案）
+  #                 详见: docs/deploy/admin-ui-internal-isolation.md
   #
   # "subdomain" 子域名路由（需要 DNS 通配符 *.your-domain.com）
   #             api.your-domain.com          → api-gateway
-  #             admin.your-domain.com        → admin-ui
+  #             admin.your-domain.com        → admin-ui（⚠️ 未隔离）
   #             your-domain.com              → customer-ui
   #             grafana.your-domain.com      → grafana
   #             ❌ 如果没有通配符 DNS 记录，此模式下子域名全部无法访问
+  #             ⚠️  subdomain 模式下 admin-ui 仍通过公网入口暴露
+  #                 内网隔离方案仅适用于 routingMode=path
   # --------------------------------------------------------------------
   routingMode: "path"
 

@@ -218,8 +218,13 @@ adminUI:
 
 3. 移除 Traefik web TLS 配置：
    ```bash
+   # 先定位 args 中该参数的索引（会输出一个数字，如 12）
+   IDX=$(kubectl get deployment traefik -n kube-system -o json \
+     | jq -r '.spec.template.spec.containers[0].args | to_entries[] | select(.value=="--entryPoints.web.http.tls=true") | .key')
+
+   # 按索引移除该参数
    kubectl patch deployment traefik -n kube-system --type=json \
-     -p='[{"op": "remove", "path": "/spec/template/spec/containers/0/args/-", "value": "--entryPoints.web.http.tls=true"}]'
+     -p='[{"op":"remove","path":"/spec/template/spec/containers/0/args/'"$IDX"'"}]'
    ```
 
 ---

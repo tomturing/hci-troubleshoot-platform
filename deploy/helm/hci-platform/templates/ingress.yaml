@@ -34,6 +34,9 @@ spec:
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+    {{- /* admin-ui 子域名路由：仅在未启用独立 Ingress 时渲染 */}}
+    {{- /* 若启用独立 Ingress (adminUI.ingress.enabled=true)，admin-ui 将通过专用入口访问 */}}
+    {{- if not .Values.adminUI.ingress.enabled }}
     - host: "admin.{{ .Values.global.domain }}"
       http:
         paths:
@@ -44,6 +47,7 @@ spec:
                 name: admin-ui
                 port:
                   number: {{ .Values.adminUI.port }}
+    {{- end }}
     - host: "{{ .Values.global.domain }}"
       http:
         paths:
