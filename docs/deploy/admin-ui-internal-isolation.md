@@ -18,6 +18,15 @@ acli.sangfor.com.cn:4443
 
 ---
 
+## 环境配置对比
+
+| 环境 | Traefik IP | websecure 端口 | web 端口 | Admin UI 访问地址 |
+|-----|-----------|---------------|---------|------------------|
+| **Staging** | 192.168.0.4 | 4443 | **4888** | `https://acli.sangfor.com.cn:4888/` |
+| **Prod** | 192.168.0.3 | 3443 | **3888** | `https://acli.sangfor.com.cn:3888/` |
+
+---
+
 ## 方案设计
 
 采用 **端口隔离 + 云厂商 IP 白名单** 方案：
@@ -41,9 +50,9 @@ acli.sangfor.com.cn:4443
 | 项目 | 变更 |
 |-----|------|
 | **Traefik web entrypoint** | 启用 TLS（原为 HTTP） |
-| **admin-ui Ingress** | 独立部署，使用 web entrypoint (4888) |
+| **admin-ui Ingress** | 独立部署，使用 web entrypoint（staging: 4888, prod: 3888） |
 | **主 Ingress** | 移除 `/admin` 路径 |
-| **云厂商 LB** | 新增 8443 端口映射 → 4888，配置管理员 IP 白名单 |
+| **云厂商 LB** | 新增端口映射 → web entrypoint，配置管理员 IP 白名单 |
 
 ---
 
@@ -51,12 +60,19 @@ acli.sangfor.com.cn:4443
 
 ### 1. 启用 Traefik web entrypoint TLS
 
-当前 Traefik 配置：
+**Staging 环境 Traefik 配置：**
 
 | Entrypoint | 内部端口 | Service 端口 | TLS |
 |-----------|---------|-------------|-----|
-| `web` | 8000 | 4888 | ❌ 无 |
+| `web` | 8000 | 4888 | ❌ 无 → ✅ 启用 |
 | `websecure` | 8443 | 4443 | ✅ 有 |
+
+**Prod 环境 Traefik 配置：**
+
+| Entrypoint | 内部端口 | Service 端口 | TLS |
+|-----------|---------|-------------|-----|
+| `web` | 8000 | 3888 | ❌ 无 → ✅ 启用 |
+| `websecure` | 8443 | 3443 | ✅ 有 |
 
 执行脚本启用 TLS：
 
@@ -81,47 +97,64 @@ helm -n kube-system upgrade traefik traefik/traefik \
 
 ### 2. 启用 admin-ui 独立 Ingress
 
-更新环境 values.yaml：
+**Staging 环境 values.yaml：**
 
 ```yaml
 # hci-platform-env/environments/staging/values.yaml
 adminUI:
   ingress:
     enabled: true
-    entrypoint: web  # 使用 web entrypoint (4888)
-    # TLS 配置（复用现有证书或创建新证书）
+    entrypoint: web  # 使用 web entrypoint (端口 4888)
     tls:
       - secretName: staging-tls
         hosts:
           - acli.sangfor.com.cn
 ```
 
-部署：
+**Prod 环境 values.yaml：**
 
-```bash
-# ArgoCD 自动同步，或手动触发
-kubectl apply -k environments/staging/
+```yaml
+# hci-platform-env/environments/prod/values.yaml
+adminUI:
+  ingress:
+    enabled: true
+    entrypoint: web  # 使用 web entrypoint (端口 3888)
+    tls:
+      - secretName: prod-tls
+        hosts:
+          - acli.sangfor.com.cn
 ```
 
 ### 3. 云厂商配置
 
-在云厂商负载均衡器配置：
+**Staging 环境：**
 
-1. **新增监听器**：端口 8443 (HTTPS) → 后端 192.168.0.4:4888
+1. **新增监听器**：端口 4888 (HTTPS) → 后端 192.168.0.4:4888
 2. **IP 白名单**：仅允许管理员 IP（公司出口 IP + 家里 IP）
 3. **健康检查**：TCP 或 HTTP 检查 4888 端口
 
+**Prod 环境：**
+
+1. **新增监听器**：端口 3888 (HTTPS) → 后端 192.168.0.3:3888
+2. **IP 白名单**：仅允许管理员 IP
+3. **健康检查**：TCP 或 HTTP 检查 3888 端口
+
 ### 4. 验证
 
+**Staging 环境：**
+
 ```bash
-# 检查 admin-ui Ingress
+# 在 192.168.0.4 上执行
 kubectl get ingress admin-ui-ingress -n hci-staging
+curl -sk https://127.0.0.1:4888/ -H 'Host: acli.sangfor.com.cn'
+```
 
-# 检查 Traefik 路由
-kubectl exec -n kube-system traefik-xxx -- traefik api routers
+**Prod 环境：**
 
-# 测试访问（需要管理员 IP）
-curl -k https://acli.sangfor.com.cn:8443/
+```bash
+# 在 192.168.0.3 上执行
+kubectl get ingress admin-ui-ingress -n hci-prod
+curl -sk https://127.0.0.1:3888/ -H 'Host: acli.sangfor.com.cn'
 ```
 
 ---
@@ -154,14 +187,19 @@ adminUI:
 
 ### 管理员访问 admin-ui
 
-| 原方式 | 新方式 |
-|-------|-------|
-| `https://acli.sangfor.com.cn:4443/admin` | `https://acli.sangfor.com.cn:8443/` |
-| 所有用户可达（IP 白名单过滤） | 仅管理员 IP 可达 |
+| 环境 | 原方式 | 新方式 |
+|-----|-------|-------|
+| **Staging** | `https://acli.sangfor.com.cn:4443/admin` | `https://acli.sangfor.com.cn:4888/` |
+| **Prod** | `https://acli.sangfor.com.cn:3443/admin` | `https://acli.sangfor.com.cn:3888/` |
+
+**安全效果**：原所有用户可达（仅 IP 白名单过滤），现仅管理员 IP 可达。
 
 ### 客户访问 customer-ui
 
-无变化：`https://acli.sangfor.com.cn:4443/`
+| 环境 | 访问地址 |
+|-----|---------|
+| **Staging** | `https://acli.sangfor.com.cn:4443/` |
+| **Prod** | `https://acli.sangfor.com.cn:3443/` |
 
 ---
 
