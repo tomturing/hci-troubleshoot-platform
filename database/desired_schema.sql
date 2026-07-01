@@ -894,13 +894,12 @@ CREATE TABLE IF NOT EXISTS skill_definition (
     is_active boolean DEFAULT true,
     assets_json jsonb NOT NULL DEFAULT '[]',
     references_json jsonb NOT NULL DEFAULT '[]',
-    trace_id varchar(64),
     created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT skill_definition_pkey PRIMARY KEY (id)
 );
 
-COMMENT ON TABLE skill_definition IS '技能定义表 — 遵循 Agent Skills Open Standard (agentskills.io)，以 Markdown 知识包形式存储领域专业知识和标准操作流程';
+COMMENT ON TABLE skill_definition IS '技能定义表 — 遵循 Agent Skills Open Standard (agentskills.io)，以 Markdown 知识包形式存储领域专业知识和标准操作流程。静态配置表，无 trace_id 字段';
 COMMENT ON COLUMN skill_definition.id IS '技能定义主键，自增';
 COMMENT ON COLUMN skill_definition.skill_name IS 'Skill 唯一标识，kebab-case，对应标准 name 字段。SOP 变量源引用格式：skill:skill-name';
 COMMENT ON COLUMN skill_definition.description IS '供 Agent 发现阶段使用（~100 tokens），描述"做什么"和"何时触发"';

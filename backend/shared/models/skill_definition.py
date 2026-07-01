@@ -82,7 +82,8 @@ class SkillDefinitionORM(Base):
     # 格式：[{"filename": "REFERENCE.md", "title": "...", "content": "..."}]
     references_json = Column(JSONB, nullable=False, default=list)
 
-    trace_id = Column(String(64), nullable=True)
+    # 注意：skill_definition 是静态知识定义表（类似代码文件），不需要 trace_id
+    # trace_id 仅用于运行时动态数据表（message、fact、sop_execution 等）
 
     created_at = Column(
         DateTime(timezone=True),
