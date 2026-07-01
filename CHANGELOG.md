@@ -1,5 +1,48 @@
 # Changelog
 
+## [2.17.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.16.0...v2.17.0) (2026-07-01)
+
+
+### ✨ 新功能
+
+* Admin UI 内网隔离方案 - 端口分离 + IP 白名单 ([#485](https://github.com/tomturing/hci-troubleshoot-platform/issues/485)) ([9050736](https://github.com/tomturing/hci-troubleshoot-platform/commit/9050736b16f40ab8c40a7679c63a7ecd127d035c))
+* ReAct 工具调用历史跨轮次持久化 ([#472](https://github.com/tomturing/hci-troubleshoot-platform/issues/472)) ([125651f](https://github.com/tomturing/hci-troubleshoot-platform/commit/125651f3a7cf19857ebf00a304f340f4840d15eb))
+* SOP Agent 优化 — 推理参数配置、诊断报告模板、修复方案禁令、聊天界面去工具卡片 ([#474](https://github.com/tomturing/hci-troubleshoot-platform/issues/474)) ([d8d356f](https://github.com/tomturing/hci-troubleshoot-platform/commit/d8d356f67dd0aee19f09fda467fc83dc33e0819d))
+* SOP长命令截断治理与LLM纠错架构设计实现 ([#466](https://github.com/tomturing/hci-troubleshoot-platform/issues/466)) ([8123b2a](https://github.com/tomturing/hci-troubleshoot-platform/commit/8123b2ad04f8f25d33f8f52d6a236c36d957816a))
+* 优化 SOP 变量运行时契约 ([#465](https://github.com/tomturing/hci-troubleshoot-platform/issues/465)) ([460aed1](https://github.com/tomturing/hci-troubleshoot-platform/commit/460aed1c1e0428dd0ce4cb4568361ac98ca13b1d))
+* 修复 SOP Skill 调用失效问题 ([#475](https://github.com/tomturing/hci-troubleshoot-platform/issues/475)) ([52ac3c9](https://github.com/tomturing/hci-troubleshoot-platform/commit/52ac3c92e7c16a926efbf504b3240c582d718aef))
+* 完成平台内置硬编码治理 ([#462](https://github.com/tomturing/hci-troubleshoot-platform/issues/462)) ([5a1e09b](https://github.com/tomturing/hci-troubleshoot-platform/commit/5a1e09b3c6e569d92f8b951bf92cf0bf19c99e05))
+* 实现五大动态资源统一运行时 ([#464](https://github.com/tomturing/hci-troubleshoot-platform/issues/464)) ([1751a8b](https://github.com/tomturing/hci-troubleshoot-platform/commit/1751a8bfddaecf339134c56abf462006f4344adb))
+* 添加 Langfuse 环境变量配置到 .env.example ([#473](https://github.com/tomturing/hci-troubleshoot-platform/issues/473)) ([7776c63](https://github.com/tomturing/hci-troubleshoot-platform/commit/7776c6376bda4faacbd14dfe493e3ad36cbc14f2))
+
+
+### 🐛 Bug 修复
+
+* CI frontend 构建 context + docker-compose + Helm 部署优化 ([#481](https://github.com/tomturing/hci-troubleshoot-platform/issues/481)) ([aecce55](https://github.com/tomturing/hci-troubleshoot-platform/commit/aecce55078cb02bfb7d3ba755816d290cd0a361f))
+* docker-compose volume mount 上下文 + 网络配置 ([#477](https://github.com/tomturing/hci-troubleshoot-platform/issues/477)) ([1275ead](https://github.com/tomturing/hci-troubleshoot-platform/commit/1275ead2d111a574983dbfee5e036b67e057162a))
+* Langfuse ingress 非 subdomain 模式下统一 /langfuse 前缀 ([#479](https://github.com/tomturing/hci-troubleshoot-platform/issues/479)) ([b336330](https://github.com/tomturing/hci-troubleshoot-platform/commit/b3363304fe3bfc1505e2b55527ec0cc6f900e3e1))
+* nginx conf.d emptyDir 挂载解决 K3s 下 read-only 报错 ([#483](https://github.com/tomturing/hci-troubleshoot-platform/issues/483)) ([dc8322f](https://github.com/tomturing/hci-troubleshoot-platform/commit/dc8322f9a8908f2b70cb9d1ef9713e84af4c6d70))
+* 优化SOP变量门禁范围、修正Skill工具绑定并新增发布时工具/技能可用性校验 ([#470](https://github.com/tomturing/hci-troubleshoot-platform/issues/470)) ([b8cdce7](https://github.com/tomturing/hci-troubleshoot-platform/commit/b8cdce7796c8888d4fcc11a8664d57228aa30ad5))
+* 优化工单Q2026061511158的诊断自动流转与推理步数限制 ([#471](https://github.com/tomturing/hci-troubleshoot-platform/issues/471)) ([89af04c](https://github.com/tomturing/hci-troubleshoot-platform/commit/89af04ce1ccc6d037c31ff35c492bec550884500))
+* 修复 clickhouse 容器无效的 healthcheck 导致 ArgoCD OutOfSync 的漂移问题 ([#469](https://github.com/tomturing/hci-troubleshoot-platform/issues/469)) ([d9f65ad](https://github.com/tomturing/hci-troubleshoot-platform/commit/d9f65ad5224059be9700dc251a121e13a12b8558))
+* 修复 readiness 探针中外部 AI API 检查超时导致的服务不可用 (503) ([#468](https://github.com/tomturing/hci-troubleshoot-platform/issues/468)) ([2a88ec8](https://github.com/tomturing/hci-troubleshoot-platform/commit/2a88ec8173ceb5bac39b352f2e8320b8125d7351))
+* 消除 shared/models/__init__.py ORM 注册副作用 ([#467](https://github.com/tomturing/hci-troubleshoot-platform/issues/467)) ([501edb9](https://github.com/tomturing/hci-troubleshoot-platform/commit/501edb9f542c7328fab6d49284b7bc7bae463c34))
+* 补齐 Ingress 中的 /icon.svg 静态路由规则解决 Langfuse Logo 破图显示问题 [env:staging:aihci][agent:gemini] ([#460](https://github.com/tomturing/hci-troubleshoot-platform/issues/460)) ([a914283](https://github.com/tomturing/hci-troubleshoot-platform/commit/a91428359f3285306f9b09d304bd5f3efba0bf8f))
+* 补齐 Ingress 中的 /wordart-black.svg, /wordart-white.svg 和 /favicon.ico 静态路由规则解决主界面 Logo 与标签页图标破图问题 [env:staging:aihci][agent:gemini] ([#463](https://github.com/tomturing/hci-troubleshoot-platform/issues/463)) ([b9d28ed](https://github.com/tomturing/hci-troubleshoot-platform/commit/b9d28ed741d181bbeb9736cee90dce87e0676214))
+* 解决内嵌 Langfuse iframe 拒绝连接、tRPC 路由劫持及相关文档记录 [env:staging:aihci][agent:gemini] ([#458](https://github.com/tomturing/hci-troubleshoot-platform/issues/458)) ([e6e7967](https://github.com/tomturing/hci-troubleshoot-platform/commit/e6e7967c213e6512a160a159cbb8700cd9ebc52d))
+
+
+### ♻️ 代码重构
+
+* 移除 skill_definition 表的冗余 trace_id 字段 ([#486](https://github.com/tomturing/hci-troubleshoot-platform/issues/486)) ([e23f4a8](https://github.com/tomturing/hci-troubleshoot-platform/commit/e23f4a81a63cd750fc7f68b0e4d1bb7a4fc2fd7b))
+
+
+### 📝 文档
+
+* Agent 方案文档重构——模版、能力边界、测评与 GitOps 独立成文 ([#484](https://github.com/tomturing/hci-troubleshoot-platform/issues/484)) ([4f3d765](https://github.com/tomturing/hci-troubleshoot-platform/commit/4f3d76596ac74a3309e3879d40920ff68e0344df))
+* Skill 调用失效改进后恶化分析与闭环方案 ([#476](https://github.com/tomturing/hci-troubleshoot-platform/issues/476)) ([7d29c09](https://github.com/tomturing/hci-troubleshoot-platform/commit/7d29c091b4d39c1fbbbaecc0026cc38cf152a446))
+* 同步 ingress-langfuse 路径修改 ([#478](https://github.com/tomturing/hci-troubleshoot-platform/issues/478)) ([819be69](https://github.com/tomturing/hci-troubleshoot-platform/commit/819be698b7097cfe8d1d51c74d3b3132ecc60930))
+
 ## [2.16.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.15.0...v2.16.0) (2026-06-12)
 
 
