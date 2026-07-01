@@ -43,7 +43,8 @@ class TestSkillDefinitionORM:
             "is_active",
             "assets_json",
             "references_json",
-            "trace_id",
+            # 注意：skill_definition 是静态知识定义表（类似代码文件），不需要 trace_id
+            # trace_id 仅用于运行时动态数据表（message、fact、sop_execution 等）
             "created_at",
             "updated_at",
         }
