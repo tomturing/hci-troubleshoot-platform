@@ -279,6 +279,23 @@ adminUI:
     limits:
       cpu: "100m"
       memory: "64Mi"
+  # Admin UI 独立 Ingress 配置（内网隔离方案）
+  # 使用 web entrypoint (端口 4888)，与 customer-ui (端口 4443) 端口隔离
+  # 配合云厂商安全组 IP 白名单，实现 admin-ui 仅对管理员可访问
+  ingress:
+    enabled: false
+    # entrypoint: web (HTTP 端口 4888，部署后需启用 TLS)
+    # 或使用自定义 entrypoint（需先在 Traefik 配置）
+    entrypoint: web
+    # host: 留空时无 host 匹配（端口隔离场景）
+    # 或配置内网域名如: admin.internal
+    host: ""
+    annotations: {}
+    # TLS 配置（可选）
+    # tls:
+    #   - secretName: admin-tls
+    #     hosts:
+    #       - admin.internal
 
 # ======================== NetworkPolicy =====================================
 networkPolicy:

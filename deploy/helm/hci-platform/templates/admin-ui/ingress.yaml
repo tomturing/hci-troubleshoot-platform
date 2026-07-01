@@ -1,0 +1,50 @@
+{{- if and .Values.ingress.enabled .Values.adminUI.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: admin-ui-ingress
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin-ui
+  annotations:
+    # 使用 web entrypoint (HTTP 端口 4888)
+    # 部署后需在 Traefik 中启用 TLS: --entryPoints.web.http.tls=true
+    # 或在云厂商 LB 层配置 TLS termination
+    traefik.ingress.kubernetes.io/router.entrypoints: {{ .Values.adminUI.ingress.entrypoint | default "web" }}
+    {{- with .Values.adminUI.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    {{- if .Values.adminUI.ingress.host }}
+    - host: {{ .Values.adminUI.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-ui
+                port:
+                  number: {{ .Values.adminUI.port }}
+    {{- else }}
+    # 无 host 时直接匹配所有请求（适用于端口隔离场景）
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-ui
+                port:
+                  number: {{ .Values.adminUI.port }}
+    {{- end }}
+  {{- if .Values.adminUI.ingress.tls }}
+  tls:
+    {{- toYaml .Values.adminUI.ingress.tls | nindent 4 }}
+  {{- end }}
+{{- end }}

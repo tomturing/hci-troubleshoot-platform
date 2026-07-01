@@ -22,6 +22,12 @@
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
 - 当前版本：v2.16.0（以 `pyproject.toml` 为准）
+- **Admin UI 内网隔离方案**（2026-07-01）：
+  - **背景**：admin-ui 和 customer-ui 通过同一公网入口暴露（`acli.sangfor.com.cn:4443`），admin-ui 仅依赖 IP 白名单保护，仍附着在公网入口上。
+  - **方案**：采用端口隔离 + 云厂商 IP 白名单。admin-ui 使用独立端口（Traefik `web` entrypoint，端口 4888 + TLS），customer-ui 继续使用 `websecure` entrypoint（端口 4443）。
+  - **实施**：创建 `admin-ui-ingress` 独立 Ingress；从主 Ingress 移除 `/admin` 路径；启用 Traefik `web` entrypoint TLS；云厂商 LB 新增 8443 端口映射 + 管理员 IP 白名单。
+  - **访问变更**：管理员访问 `https://acli.sangfor.com.cn:8443/`（仅管理员 IP 可达），客户访问无变化。
+  - **文档**：`docs/deploy/admin-ui-internal-isolation.md`
 - **工单 Q2026061002370 诊断执行失败修复**：
   - 数据库：`database/desired_schema.sql` 补齐 `fact.trace_id` 字段及索引，解决 `FactStore` 写入时因字段缺失导致 SQL 报错
   - Helm：`agent-service` 注入 `SCP_BASE_URL` 与 `SCP_API_KEY` 环境变量；`secret.yaml` 中渲染 `SCP_API_KEY`；在 `values.yaml` 中定义二者默认值为空以保证环境兼容性
