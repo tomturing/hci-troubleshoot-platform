@@ -18,12 +18,12 @@ spec:
     spec:
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "admin-ui") | nindent 6 }}
       # nginx 以非 root 用户（uid=1000）运行，需要 emptyDir 挂载可写目录
+      # 注意：不可再用 emptyDir 覆盖 /etc/nginx/conf.d，否则会清空镜像内 default.conf
+      # 导致 nginx 启动时无 server block，readiness/liveness probe 全部失败（详见 PIT-D-009）
       volumes:
         - name: nginx-cache
           emptyDir: {}
         - name: nginx-run
-          emptyDir: {}
-        - name: nginx-conf-d
           emptyDir: {}
       containers:
         - name: admin-ui
@@ -41,8 +41,6 @@ spec:
               mountPath: /var/cache/nginx
             - name: nginx-run
               mountPath: /run
-            - name: nginx-conf-d
-              mountPath: /etc/nginx/conf.d
           livenessProbe:
             httpGet:
               path: /

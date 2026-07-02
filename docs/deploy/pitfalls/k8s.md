@@ -1,5 +1,100 @@
 # K8s / K3s / Helm 运维避坑
 
+## D-009：Helm chart 用 emptyDir 覆盖 `/etc/nginx/conf.d` 导致 nginx 启动无 server block
+
+> **触发场景：** admin-ui / customer-ui 等基于 `nginx:alpine` 官方镜像的静态前端服务，Helm chart 升级后 Pod 反复 CrashLoopBackOff，`/health` 探针 80 端口 connection refused。
+
+**现象：**
+- Pod 处于 `CrashLoopBackOff` 或 `Running 0/1` 状态
+- 日志显示 nginx worker 正常启动（`start worker process 20-35`），但立刻收到 SIGTERM 退出
+- `kubectl describe pod` 事件：`Readiness probe failed: Get "http://10.42.x.x:80/": dial tcp 10.42.x.x:80: connect: connection refused`
+- `kubectl exec ls /etc/nginx/conf.d/` 目录**为空**（无 default.conf）
+- ArgoCD `hci-platform-prod` 整体 health 变 Degraded，Deployment 状态 Synced 但集群里所有新 Pod 都不健康
+
+**根因：**
+
+Helm chart 的 deployment 模板错误地用 emptyDir 挂载 `/etc/nginx/conf.d`：
+
+```yaml
+volumes:
+  - name: nginx-cache
+    emptyDir: {}
+  - name: nginx-run
+    emptyDir: {}
+  - name: nginx-conf-d        # ← 元凶
+    emptyDir: {}
+volumeMounts:
+  - mountPath: /etc/nginx/conf.d
+    name: nginx-conf-d       # ← 覆盖了镜像内的 default.conf
+```
+
+而 `nginx:alpine` 官方镜像**只在 `/etc/nginx/templates/default.conf.template`** 提供配置，容器启动时 `20-envsubst-on-templates.sh` 把模板 envsubst 处理后输出到 `/etc/nginx/conf.d/`。emptyDir 一挂载就把这个目录**完全替换为空目录**，nginx 启动时无任何 server block 监听 80 端口 → readiness/liveness probe 全部 connection refused → kubelet kill 容器 → CrashLoopBackOff。
+
+**判断方式：**
+
+```bash
+# 1. 进入故障 Pod 验证 conf.d 是否为空
+kubectl exec <pod> -n <ns> -- ls /etc/nginx/conf.d/
+# 输出为空（无 default.conf）即确诊
+
+# 2. 对比老版本 ReplicaSet 的 volumes 配置
+kubectl get rs <old-rs-name> -n <ns> -o jsonpath='{.spec.template.spec.volumes}' | jq '.[].name'
+# 老 RS 没有 nginx-conf-d 的话，进一步确认
+
+# 3. 查看 nginx 启动日志确认
+kubectl logs <pod> -n <ns> --previous | grep -i "worker\|exit"
+# 反复看到 "worker process exited with code 0" + kubelet "Killing"
+```
+
+**解决方案：**
+
+从 deployment 模板**完全删除** `nginx-conf-d` volume 和对应 volumeMount，让镜像自带的 `default.conf.template` 走 envsubst 正常生成配置：
+
+```yaml
+volumes:
+  - name: nginx-cache
+    emptyDir: {}
+  - name: nginx-run
+    emptyDir: {}
+  # 删除 nginx-conf-d 整段
+volumeMounts:
+  - name: nginx-cache
+    mountPath: /var/cache/nginx
+  - name: nginx-run
+    mountPath: /run
+  # 删除 mountPath: /etc/nginx/conf.d 那一行
+```
+
+nginx 官方镜像**默认会自动处理** `/etc/nginx/templates/*.template` → `/etc/nginx/conf.d/`，无需任何额外挂载即可正常启动。
+
+**为什么之前没问题？**
+
+老 ReplicaSet（升级前的 RS）使用的是修复前的 Chart，但老 Pod 还在跑（admin-ui 跑 23 天），新 RS 创建的新 Pod 才暴露问题。如果 Deployment 没有触发滚动升级，这个 bug 会一直潜伏直到下一次 chart 变更。
+
+**相关文件：**
+- `deploy/helm/hci-platform/templates/admin-ui/deployment.yaml`
+- `deploy/helm/hci-platform/templates/customer-ui/deployment.yaml`
+- `frontend/admin/Dockerfile`：`COPY nginx.conf /etc/nginx/templates/default.conf.template`（镜像内自带配置来源）
+- `frontend/customer/Dockerfile`：同上
+
+**修复后的 ArgoCD 同步流程：**
+
+1. 修改 Chart → commit → PR 合并 → ArgoCD 检测到 OutOfSync
+2. ArgoCD 自动 Sync（staging）/ 手动 Sync（prod）
+3. Deployment 滚动升级，新 Pod 启动成功，readiness probe 通过
+4. Application health 恢复 Healthy
+
+**错误判断（易踩坑）：**
+
+| 错误判断 | 实际情况 |
+|---------|---------|
+| `runAsNonRoot` 权限不够导致 nginx 启动失败 | nginx:alpine 镜像以 uid=101（nginx user）运行没问题 |
+| 镜像 tag 错误导致配置丢失 | 镜像正常，问题在 Chart 的空目录覆盖 |
+| 内存/资源不足导致 OOM | 日志看不到 OOMKilled，且老 Pod 同一镜像稳定运行 |
+| 集群节点问题 | 多副本都失败，肯定不是节点问题 |
+
+---
+
 ## D-007：公网 HTTP 页面访问 localhost 被 PNA 阻止
 
 > **触发场景：** 用户从公网域名访问系统，WebSocket 连接本地 bridge（ws://localhost:9999）失败。
