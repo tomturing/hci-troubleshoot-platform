@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.utils.exceptions import AIStreamError
 from shared.utils.prompt_loader import PromptLoadError, PromptValidationError
 
 from app.adapters.agents.agent_router import AgentRouter
@@ -213,6 +214,15 @@ async def _event_stream(
             session_id=req.session_id,
         )
         yield _sse({"type": "error", "message": f"大脑 [{exc.agent_name}] 不可达: {exc.reason}"})
+    except AIStreamError as exc:
+        logger.error(
+            event="agent_stream_error",
+            message=exc.message,
+            code=exc.code.value,
+            detail=exc.detail,
+            session_id=req.session_id,
+        )
+        yield _sse({"type": "error", "message": f"推理异常: {exc.message}"})
     except Exception as exc:
         logger.error(
             event="agent_stream_error",

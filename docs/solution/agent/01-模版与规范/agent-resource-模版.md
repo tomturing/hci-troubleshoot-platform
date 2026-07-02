@@ -929,6 +929,14 @@ SOP 源文件 = **Markdown 正文** + **HTML 注释形式的测评元数据**（
 | connection_data | object | tool:connection_tracker | 当前活跃数据库连接的详细信息（含 PID、查询内容、等待事件） | node_ip | - | `{"node_ip":"{node_ip}","filter_state":"active","min_duration_sec":5}` | - |
 | blocking_pid | int | json_extract | 从 connection_data 中提取阻塞时间最长的查询 PID | connection_data | - | - | `$.parsed.top_queries[0].pid` |
 
+## 前置检查
+
+根据故障现象匹配对应的诊断分支：
+
+- 数据库连接超时报错 + 连接池利用率高 + waiting_requests > 0（filter, text）→ **连接池饱和——慢查询阻塞**
+- 数据库连接超时报错 + 连接池利用率高 + max_connections 不足（filter, text）→ **连接池饱和——配置不足**
+- 数据库连接超时报错 + 连接池指标正常（filter, text）→ **连接池正常——应用层/网络问题**
+
 <!-- @baseline-ref: n-1-1 -->
 ## 连接池饱和——慢查询阻塞
 
@@ -937,13 +945,7 @@ SOP 源文件 = **Markdown 正文** + **HTML 注释形式的测评元数据**（
 - `{pool_saturation}` 判定为 critical 或 high，且 inferred_cause 为 slow_query_blocking（filter, text）
 - `{log_snapshot}` 中 connection timeout 或 pool exhausted 关键字命中次数 > 10（filter, command）
 
-## 诊断方法
-
-### 页面判断方法
-
-- 检查数据库监控面板的 QPS 和慢查询数量趋势图
-
-### 分析步骤
+### 判断方法
 
 <!--
   执行顺序与依赖:
@@ -956,28 +958,29 @@ SOP 源文件 = **Markdown 正文** + **HTML 注释形式的测评元数据**（
   [6] 依赖 [1][3]（综合两个数据源）
 -->
 
-1. **[可并行]** 调用 `connection_tracker` 工具（参数 `node_ip={node_ip}`, `filter_state=active`），从返回的 `{connection_data}` 中定位阻塞时间最长的查询（pid=`{blocking_pid}`），记录查询内容、等待事件和持续时间
-2. **[可并行]** 调用 `service_log_collector` 工具（参数 `node_ip={node_ip}`, `service_name={service_name}`, `keywords=['duration:', 'slow query']`），从 `{log_snapshot}` 中统计 connection timeout 的时间分布，确认故障起始时间和持续时长
-3. **[可并行]** 读 `{db_pool_status}`（已在变量池中），确认连接池饱和度：active_connections / max_connections 比值、waiting_requests 队列长度
-4. **[依赖步骤 1]** `{connection_data}` 已就绪 → `{slow_query_type}` 由 skill 自动得出。根据分类结果（全表扫描/锁等待/大事务），与 `{connection_data}` 中的实际查询内容交叉验证
-5. **[依赖步骤 4]** 对照基线，确认该查询是否为新增或近期变化
-6. **[依赖步骤 1,3]** 综合 `{connection_data}`（阻塞查询详情）和 `{db_pool_status}`（饱和度指标），评估该查询对连接池的影响占比（waiting_requests / max_connections）
+1. 检查数据库监控面板的 QPS 和慢查询数量趋势图
+2. **[可并行]** 调用 `connection_tracker` 工具（参数 `node_ip={node_ip}`, `filter_state=active`），从返回的 `{connection_data}` 中定位阻塞时间最长的查询（pid=`{blocking_pid}`），记录查询内容、等待事件和持续时间
+3. **[可并行]** 调用 `service_log_collector` 工具（参数 `node_ip={node_ip}`, `service_name={service_name}`, `keywords=['duration:', 'slow query']`），从 `{log_snapshot}` 中统计 connection timeout 的时间分布，确认故障起始时间和持续时长
+4. **[可并行]** 读 `{db_pool_status}`（已在变量池中），确认连接池饱和度：active_connections / max_connections 比值、waiting_requests 队列长度
+5. **[依赖步骤 2]** `{connection_data}` 已就绪 → `{slow_query_type}` 由 skill 自动得出。根据分类结果（全表扫描/锁等待/大事务），与 `{connection_data}` 中的实际查询内容交叉验证
+6. **[依赖步骤 5]** 对照基线，确认该查询是否为新增或近期变化
+7. **[依赖步骤 2,4]** 综合 `{connection_data}`（阻塞查询详情）和 `{db_pool_status}`（饱和度指标），评估该查询对连接池的影响占比（waiting_requests / max_connections）
 
-### 可能原因
+**可能原因**：
 
 - 新上线的功能引入了全表扫描查询
 - 统计数据过期导致优化器选择了错误的执行计划
 - 批量操作未分批执行，单事务过大阻塞其他请求
 
-## 解决方案
+### 解决方案
 
-### 快速恢复
+#### 快速恢复
 
 - 终止阻塞查询: `SELECT pg_terminate_backend({blocking_pid})`
 - 临时增加连接池 max_connections 争取排查时间
 - 重启受影响的微服务实例（仅短期缓解，问题会复现）
 
-### 彻底修复
+#### 彻底修复
 
 - 为全表扫描查询添加索引: `CREATE INDEX CONCURRENTLY ...`
 - 优化大事务为分批提交（每批 ≤ 1000 行）
@@ -992,9 +995,7 @@ SOP 源文件 = **Markdown 正文** + **HTML 注释形式的测评元数据**（
 - `{pool_saturation}` 判定 inferred_cause 为 config_insufficient（filter, text）
 - `{db_pool_status}` 中 max_connections 小于业务实际需求，且 utilization_pct > 90%（filter, text）
 
-## 诊断方法
-
-### 分析步骤
+### 判断方法
 
 <!--
   [1] connection_tracker → 各应用连接数统计
@@ -1010,20 +1011,20 @@ SOP 源文件 = **Markdown 正文** + **HTML 注释形式的测评元数据**（
 4. **[依赖步骤 3]** 若 `{db_pool_status}` 的 max_connections 已接近 PostgreSQL 全局上限，检查全局 max_connections 是否还有余量可分配
 5. **[可并行]** 确认近期是否有与 `{service_name}` 相关的服务扩容或业务量增长
 
-### 可能原因
+**可能原因**：
 
 - 服务扩容后连接池配置未同步调整
 - 业务自然增长导致连接需求超过初始配置
 - 其他服务占用过多连接配额
 
-## 解决方案
+### 解决方案
 
-### 快速恢复
+#### 快速恢复
 
 - 临时提升连接池 max_connections 至推荐值
 - 减少其他非关键服务的连接数分配
 
-### 彻底修复
+#### 彻底修复
 
 - 根据各服务实际负载调整连接池配置并写入 Helm values
 - 引入 PgBouncer 连接池中间件
@@ -1037,9 +1038,7 @@ SOP 源文件 = **Markdown 正文** + **HTML 注释形式的测评元数据**（
 - `{pool_saturation}` 判定为 normal 或 warning 且无连接池级别问题（filter, text）
 - `{db_pool_status}` 中 utilization_pct < 70% 且 waiting_requests = 0（filter, text）
 
-## 诊断方法
-
-### 分析步骤
+### 判断方法
 
 <!--
   [1] {db_pool_status} 已在变量池中，无需执行命令
@@ -1055,20 +1054,20 @@ SOP 源文件 = **Markdown 正文** + **HTML 注释形式的测评元数据**（
 5. **[可并行]** 检查 HTTP client 超时配置（connect timeout / read timeout）是否过短
 6. **[可并行]** 检查负载均衡器后端健康检查状态和 DNS 解析延迟
 
-### 可能原因
+**可能原因**：
 
 - 应用层 HTTP client 超时配置过短（connect timeout < 1s）
 - 网络链路抖动导致 TCP 连接建立超时
 - 负载均衡器后端健康检查失败导致流量分发异常
 
-## 解决方案
+### 解决方案
 
-### 快速恢复
+#### 快速恢复
 
 - 临时增加应用层超时时间至 5s
 - 从负载均衡器摘除故障节点
 
-### 彻底修复
+#### 彻底修复
 
 - 调整 HTTP client 超时配置（connect: 3s, read: 30s）
 - 排查网络链路问题（检查交换机/防火墙日志）
@@ -1079,7 +1078,10 @@ SOP 源文件 = **Markdown 正文** + **HTML 注释形式的测评元数据**（
 > - **`<!-- @sop_meta -->`**：HTML 注释形式的测评元数据，放在文件最顶部。SOP parser 忽略 HTML 注释，测评系统解析此块获取 `source_id`、`eval_type`、`stability_trials`、基线引用。不污染 Markdown 正文。
 > - **`<!-- @baseline-ref: n-1-1 -->`**：每个分支节点前的基线标记，测评时按 `node_id` 匹配对应的预期 Trace。
 > - **变量表每列必须填值**：不需要的列填 `-`，不要留空。让 reviewer 一眼看出是否遗漏配置。
+> - **`## 前置检查`**：根级路由条件，多个 `##` 同级节点时必须存在，决定进入哪个分支。
 > - **`### 前置条件` 条目标注 `(filter|priority, text|command)`**：parser 用此区分路由条件类型。
+> - **`### 判断方法`**：叶子节点诊断步骤，内容直接写步骤列表，不需要「页面判断方法」「分析步骤」等子标题。
+> - **`### 解决方案`**：叶子节点修复步骤，`#### 快速恢复` 和 `#### 彻底修复` 为四级子标题。
 > - 以上 Markdown 就是当前 Web UI 上传 `.md` 文件时的格式。
 
 ### 3.1.1 SOP 变量声明表格——列说明
@@ -1106,22 +1108,21 @@ Parser 根据 Markdown 标题层级和关键字自动构建 `tree_json`：
 | Markdown 写法 | Parser 行为 | 生成的 JSON |
 |--------------|------------|------------|
 | `# 数据库连接池耗尽排障` | 根节点（`level: 1`） | `{"id":"n-1","title":"数据库连接池耗尽排障","level":1}` |
+| `## 前置检查` | 根级路由条件，决定进入哪个 `##` 子分支 | `prerequisite_items` |
 | `## 连接池饱和——慢查询阻塞` | 子节点（`level: 2`） | `{"id":"n-1-1","title":"连接池饱和——慢查询阻塞","level":2}` |
 | `### 前置条件` | 节点的前置条件列表 | `prerequisite_items: [{description:"...", type:"filter\|priority", content_type:"text\|command"}]` |
-| `## 诊断方法` | 叶子节点标记（diagnosis） | `diagnosis: {analysis_steps:[], possible_causes:[]}` |
-| `## 解决方案` | 叶子节点标记（solution） | `solution: {quick_recovery:[], thorough_fix:[]}` |
-| `### acli 命令` | **⚠️ 当前 Parser 要求必填**（`min_length=1`）。模版建议命令内联到分析步骤中，但在 Parser 放宽约束前，诊断节点仍需至少一条 acli 命令。无实际命令时可用占位命令 `echo 'diagnosis via variable pool'` | `diagnosis.acli_methods` |
-| `### 分析步骤` | 诊断执行流程。**命令直接内联在步骤中**（如"执行 `xxx` 命令，从结果中..."）。Parser 放开 acli_methods 约束后，不再需要单独的命令节 | `diagnosis.analysis_steps` |
-| `### 页面判断方法` | 可选。UI/监控面板辅助观察 | `diagnosis.page_methods` |
-| `### 可能原因` | 诊断节点下的根因列表 | `diagnosis.possible_causes` |
-| `### 快速恢复` | 解决方案下的止血步骤 | `solution.quick_recovery` |
-| `### 彻底修复` | 解决方案下的根除步骤 | `solution.thorough_fix` |
+| `### 判断方法` | 叶子节点标记（diagnosis）。步骤和命令直接内联，不设子标题 | `diagnosis: {analysis_steps:[], possible_causes:[]}` |
+| `### 解决方案` | 叶子节点标记（solution） | `solution: {quick_recovery:[], thorough_fix:[]}` |
+| `#### 快速恢复` | 解决方案下的止血步骤 | `solution.quick_recovery` |
+| `#### 彻底修复` | 解决方案下的根除步骤 | `solution.thorough_fix` |
 
 **关键规则**：
-- 非关键字标题（不是"变量声明""诊断方法""解决方案""前置条件"）→ 识别为决策树节点
-- 有子标题的节点 → `type: branch`
-- 有 `## 诊断方法` 或 `## 解决方案` 的节点 → `type: leaf`（diagnosis / solution）
+- 非关键字标题（不是"变量声明""判断方法""解决方案""前置检查""前置条件"）→ 识别为决策树节点
+- 多个同级的 `##` 标题必须有同级的 `## 前置检查` 来决定路由到哪个分支
+- 有 `### 判断方法` 或 `### 解决方案` 的节点 → `type: leaf`
 - 前置条件中 `type: filter` 表示匹配条件，`type: priority` 表示排序条件
+- 判断方法的步骤直接写在内容中（编号列表），不需「页面判断方法」「分析步骤」「acli 命令」子标题
+- 解决方案的「快速恢复」「彻底修复」为 `####` 四级标题
 
 **分析步骤中命令的写法规范**：
 

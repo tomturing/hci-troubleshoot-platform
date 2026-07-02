@@ -260,12 +260,13 @@ class OpenClawAssistant:
                             event="ai_error",
                             message=f"OpenClaw returned status {response.status_code}",
                             status=response.status_code,
+                            url=url,
                             body=error_text,
                             attempt=idx,
                         )
 
                         # 解析错误详情并抛出结构化异常
-                        error_detail = self._parse_ai_error(response.status_code, error_text)
+                        error_detail = self._parse_ai_error(response.status_code, error_text, url)
                         end_generation(
                             langfuse_gen,
                             error=error_detail.get("message", f"HTTP {response.status_code}"),
@@ -389,10 +390,13 @@ class OpenClawAssistant:
                 retriable = self._is_retriable_stream_error(e)
                 can_retry = (not got_first_token) and retriable and idx < len(endpoints_to_try)
 
+                error_text = str(e) if str(e).strip() else repr(e)
+                request_info = self._extract_httpx_request_info(e)
                 logger.error(
                     event="ai_exception",
                     message="Error calling OpenClaw API",
-                    error=str(e),
+                    error=error_text,
+                    url=request_info if request_info else None,
                     attempt=idx,
                     retriable=retriable,
                     got_first_token=got_first_token,
@@ -420,13 +424,14 @@ class OpenClawAssistant:
                 detail=error_detail["detail"],
             )
 
-    def _parse_ai_error(self, status_code: int, error_body: str) -> dict:
+    def _parse_ai_error(self, status_code: int, error_body: str, url: str = "") -> dict:
         """
         解析 AI 服务返回的错误响应，生成用户友好的错误信息
 
         Args:
             status_code: HTTP 状态码
             error_body: 错误响应体
+            url: 请求的 API URL（用于诊断）
 
         Returns:
             dict: {code, message, detail} 用于构造 AIStreamError
@@ -442,16 +447,16 @@ class OpenClawAssistant:
 
         raw_message = error_info.get("message", "")
         error_type = error_info.get("type", "")
+        url_part = f", url={url}" if url else ""
 
         # 根据状态码和错误类型生成友好消息
         if status_code == 401:
             return {
                 "code": ErrorCode.AI_AUTH_FAILED,
                 "message": "AI 服务认证失败，请检查 API 密钥配置",
-                "detail": f"status=401, type={error_type}, message={raw_message}",
+                "detail": f"status=401, type={error_type}, message={raw_message}{url_part}",
             }
         elif status_code == 429:
-            # Rate limit - 提取具体原因
             friendly_msg = "AI 服务请求频率超限"
             if "余额不足" in raw_message or "充值" in raw_message:
                 friendly_msg = "AI 服务账户余额不足，请充值后重试"
@@ -460,32 +465,51 @@ class OpenClawAssistant:
             return {
                 "code": ErrorCode.AI_RATE_LIMITED,
                 "message": friendly_msg,
-                "detail": f"status=429, type={error_type}, message={raw_message}",
+                "detail": f"status=429, type={error_type}, message={raw_message}{url_part}",
             }
         elif status_code == 404:
             return {
                 "code": ErrorCode.AI_UNAVAILABLE,
                 "message": "AI 服务接口不存在，请检查配置",
-                "detail": f"status=404, body={error_body[:200]}",
+                "detail": f"status=404{url_part}",
             }
         elif status_code == 400:
             return {
                 "code": ErrorCode.AI_UPSTREAM_ERROR,
                 "message": f"AI 服务请求参数错误：{raw_message}",
-                "detail": f"status=400, type={error_type}, message={raw_message}",
+                "detail": f"status=400, type={error_type}, message={raw_message}{url_part}",
             }
         elif status_code >= 500:
             return {
                 "code": ErrorCode.AI_UPSTREAM_ERROR,
                 "message": "AI 上游服务故障，请稍后重试",
-                "detail": f"status={status_code}, type={error_type}, message={raw_message}",
+                "detail": f"status={status_code}, type={error_type}, message={raw_message}{url_part}",
             }
         else:
             return {
                 "code": ErrorCode.AI_UPSTREAM_ERROR,
                 "message": f"AI 服务返回错误（{status_code}）：{raw_message[:100]}",
-                "detail": f"status={status_code}, type={error_type}, message={raw_message}",
+                "detail": f"status={status_code}, type={error_type}, message={raw_message}{url_part}",
             }
+
+    @staticmethod
+    def _extract_httpx_request_info(exc: Exception) -> str:
+        """
+        从 httpx 异常中提取请求信息（URL、Method），用于错误诊断。
+
+        httpx 的 TimeoutException / ConnectError 等异常的 str() 可能为空字符串，
+        但其 .request 属性携带完整的请求上下文（URL、Method、Headers 等）。
+        """
+        req = getattr(exc, "request", None)
+        if req is None:
+            return ""
+        url = getattr(req, "url", "")
+        method = getattr(req, "method", "")
+        if url and method:
+            return f"url={method} {url}"
+        elif url:
+            return f"url={url}"
+        return ""
 
     def _parse_generic_error(self, exc: Exception) -> dict:
         """
@@ -500,39 +524,61 @@ class OpenClawAssistant:
         exc_type = type(exc).__name__
         exc_message = str(exc)
 
+        # httpx 异常的 str() 可能为空（如 ConnectTimeout），用 repr() 兜底
+        if not exc_message.strip():
+            exc_message = repr(exc)
+
+        # 提取请求 URL，帮助运维快速定位是哪个后端不可达
+        request_info = self._extract_httpx_request_info(exc)
+
         # HTTP 状态错误
         if isinstance(exc, httpx.HTTPStatusError):
-            return self._parse_ai_error(exc.response.status_code, exc.response.text)
+            req_url = str(exc.request.url) if exc.request else ""
+            return self._parse_ai_error(exc.response.status_code, exc.response.text, req_url)
 
         # 连接超时
         if isinstance(exc, httpx.TimeoutException):
+            # 区分超时阶段：connect / read / write / pool
+            phase = exc_type.replace("Timeout", "").lower() or "unknown"
+            parts = [f"phase={phase}", f"type={exc_type}", f"message={exc_message}"]
+            if request_info:
+                parts.append(request_info)
             return {
                 "code": ErrorCode.AI_TIMEOUT,
                 "message": "AI 服务响应超时，请稍后重试",
-                "detail": f"type={exc_type}, message={exc_message}",
+                "detail": ", ".join(parts),
             }
 
         # 连接错误
         if isinstance(exc, httpx.ConnectError):
+            parts = [f"type={exc_type}", f"message={exc_message}"]
+            if request_info:
+                parts.append(request_info)
             return {
                 "code": ErrorCode.AI_UNAVAILABLE,
                 "message": "无法连接到 AI 服务，请检查网络或服务状态",
-                "detail": f"type={exc_type}, message={exc_message}",
+                "detail": ", ".join(parts),
             }
 
         # 其他网络错误
         if isinstance(exc, httpx.RequestError):
+            parts = [f"type={exc_type}", f"message={exc_message}"]
+            if request_info:
+                parts.append(request_info)
             return {
                 "code": ErrorCode.AI_UNAVAILABLE,
                 "message": f"AI 服务网络错误：{exc_message[:100]}",
-                "detail": f"type={exc_type}, message={exc_message}",
+                "detail": ", ".join(parts),
             }
 
         # 未知错误
+        parts = [f"type={exc_type}", f"message={exc_message}"]
+        if request_info:
+            parts.append(request_info)
         return {
             "code": ErrorCode.INTERNAL_ERROR,
             "message": f"AI 服务内部错误：{exc_message[:100]}",
-            "detail": f"type={exc_type}, message={exc_message}",
+            "detail": ", ".join(parts),
         }
 
     @staticmethod
@@ -693,12 +739,13 @@ class OpenClawAssistant:
             try:
                 response = await self.client.post(url, json=payload, headers=headers)
                 if response.status_code != 200:
-                    error_detail = self._parse_ai_error(response.status_code, response.text)
+                    error_detail = self._parse_ai_error(response.status_code, response.text, url)
                     # 5xx 服务器错误 → 可重试
                     if response.status_code >= 500 and attempt < max_retries:
                         logger.warning(
                             event="ai_invoke_retry",
                             message=f"HTTP {response.status_code} 可重试，第 {attempt + 1} 次",
+                            url=url,
                             attempt=attempt + 1,
                         )
                         await _asyncio.sleep(1.0 * (attempt + 1))
@@ -767,10 +814,13 @@ class OpenClawAssistant:
             except Exception as e:
                 retriable = _is_retriable_invoke_error(e)
                 if retriable and attempt < max_retries:
+                    retry_error_text = str(e) if str(e).strip() else repr(e)
+                    retry_request_info = self._extract_httpx_request_info(e)
                     logger.warning(
                         event="ai_invoke_retry",
                         message=f"瞬态错误可重试，第 {attempt + 1} 次",
-                        error=str(e)[:100],
+                        error=retry_error_text[:200],
+                        url=retry_request_info if retry_request_info else None,
                         attempt=attempt + 1,
                     )
                     await _asyncio.sleep(1.0 * (attempt + 1))
