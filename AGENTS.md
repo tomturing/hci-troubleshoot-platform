@@ -177,6 +177,11 @@
   - 前端 buildAgentExecProcessMessage 传递 nodeIp/container 到 WebSocket
 - **信息质量检查跳过 SOP 模式**：SOP 命中时 quality check 不再拦截
 
+- **agent-service Langfuse Helm 条件判断修复**（PR #491）：
+  - **根因**：`deploy/helm/hci-platform/templates/agent-service/deployment.yaml` 中 Langfuse env 块的条件判断为 `{{- if .Values.langfuse }}`，仅检查 map 是否存在，未检查 `enabled` 标志。dev 环境 base values `langfuse: { enabled: false }` 使 map 存在但 enabled 为 false，模板仍渲染 `LANGFUSE_SECRET_KEY` 的 `secretKeyRef`，而 `hci-secrets` 中无此 key，导致 agent-service Pod `CreateContainerConfigError`。
+  - **修复**：条件改为 `{{- if and .Values.langfuse .Values.langfuse.enabled }}`，同时检查 map 存在且 `enabled=true`。
+  - **配套**：`hci-platform-env` dev values 显式声明 `langfuse.enabled: false`，防止 base chart 重构时再次踩坑。
+
 - **SOP 技能 allowed_tools 修正与变量门禁范围优化**：
   - 修正了 `hci-alert-parsing` 和 `hci-task-parsing` 技能的 `allowed_tools` 绑定值为 `'bash_exec'`，解决 Staging 环境中执行器因工具名不匹配导致校验失败的问题。
   - 优化了 `find_missing_guarded_variables_for_node_window` 逻辑，在当前节点为非叶子节点时，只检测当前节点本身所需的受控变量，不合并子分支的前置变量进行提前阻断，从而避免 Agent 在根节点执行 acli_exec 或 get_active_alerts 等工具时被提前阻断。
