@@ -89,7 +89,7 @@ spec:
             - name: CONFIRM_TIMEOUT_SEC
               value: {{ .Values.agentService.confirmTimeoutSec | default "120" | quote }}
             # Langfuse 可观测性（v3 SDK）
-            {{- if .Values.langfuse }}
+            {{- if and .Values.langfuse .Values.langfuse.enabled }}
             - name: LANGFUSE_SECRET_KEY
             {{- if .Values.langfuse.secretKey }}
               value: {{ .Values.langfuse.secretKey | quote }}
