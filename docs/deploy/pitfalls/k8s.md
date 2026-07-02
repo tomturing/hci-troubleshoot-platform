@@ -2,13 +2,13 @@
 
 ## D-009：Helm chart 用 emptyDir 覆盖 `/etc/nginx/conf.d` 导致 nginx 启动无 server block
 
-> **触发场景：** admin-ui / customer-ui 等基于 `nginx:alpine` 官方镜像的静态前端服务，Helm chart 升级后 Pod 反复 CrashLoopBackOff，`/health` 探针 80 端口 connection refused。
+> **触发场景：** admin-ui / customer-ui 等基于 `nginx:alpine` 的静态前端服务，Helm chart 升级后 Pod 反复 CrashLoopBackOff，`/health` 探针 80 端口 connection refused。
 
 **现象：**
 - Pod 处于 `CrashLoopBackOff` 或 `Running 0/1` 状态
 - 日志显示 nginx worker 正常启动（`start worker process 20-35`），但立刻收到 SIGTERM 退出
 - `kubectl describe pod` 事件：`Readiness probe failed: Get "http://10.42.x.x:80/": dial tcp 10.42.x.x:80: connect: connection refused`
-- `kubectl exec ls /etc/nginx/conf.d/` 目录**为空**（无 default.conf）
+- `kubectl exec <pod> -- ls /etc/nginx/conf.d/` 目录**为空**（无 default.conf）
 - ArgoCD `hci-platform-prod` 整体 health 变 Degraded，Deployment 状态 Synced 但集群里所有新 Pod 都不健康
 
 **根因：**
@@ -28,7 +28,15 @@ volumeMounts:
     name: nginx-conf-d       # ← 覆盖了镜像内的 default.conf
 ```
 
-而 `nginx:alpine` 官方镜像**只在 `/etc/nginx/templates/default.conf.template`** 提供配置，容器启动时 `20-envsubst-on-templates.sh` 把模板 envsubst 处理后输出到 `/etc/nginx/conf.d/`。emptyDir 一挂载就把这个目录**完全替换为空目录**，nginx 启动时无任何 server block 监听 80 端口 → readiness/liveness probe 全部 connection refused → kubelet kill 容器 → CrashLoopBackOff。
+`nginx:alpine` 镜像的入口脚本 `20-envsubst-on-templates.sh` 行为：
+
+1. **若 `/etc/nginx/templates/` 不存在** → `auto_envsubst` 第一行 `[ -d "$template_dir" ] || return 0` 直接跳过，**不会写 conf.d**。
+2. **若 `/etc/nginx/templates/*.template` 存在** → 会用 `envsubst` 把渲染结果写入 `/etc/nginx/conf.d/`。
+3. **conf.d 目录权限**为 `root:root 755`，**本 Chart 强制以 `runAsUser=1000` 运行**（详见 `values.yaml` `workloadDefaults.securityContext.pod`），uid=1000 对 root:root 755 的 conf.d 不可写。
+
+emptyDir 挂载 `/etc/nginx/conf.d` **完全替换**该目录为空目录，nginx 启动时无任何 server block 监听 80 端口 → readiness/liveness probe 全部 connection refused → kubelet kill 容器 → CrashLoopBackOff。
+
+> ⚠️ **关键澄清：** `nginx:alpine` 镜像**同时**提供 `/etc/nginx/conf.d/default.conf`（已渲染好的 baked-in 配置）和 `/etc/nginx/templates/default.conf.template`（运行时 envsubst 模板）——**不是**「只通过 templates 渲染」一种来源。即使镜像不 bake templates，官方基础镜像 baked-in 的 `conf.d/default.conf` 也是可用的——前提是 conf.d 目录不被 emptyDir 覆盖。
 
 **判断方式：**
 
@@ -44,11 +52,15 @@ kubectl get rs <old-rs-name> -n <ns> -o jsonpath='{.spec.template.spec.volumes}'
 # 3. 查看 nginx 启动日志确认
 kubectl logs <pod> -n <ns> --previous | grep -i "worker\|exit"
 # 反复看到 "worker process exited with code 0" + kubelet "Killing"
+
+# 4. 确认镜像内是否有 templates（区分「官方 baked 配置被覆盖」vs「模板渲染被阻断」）
+kubectl exec <pod> -n <ns> -- ls -la /etc/nginx/templates/ 2>&1
+# 本项目镜像实际不存在 templates 目录，问题归类为「baked conf.d 被覆盖」而非「envsubst 落盘失败」
 ```
 
 **解决方案：**
 
-从 deployment 模板**完全删除** `nginx-conf-d` volume 和对应 volumeMount，让镜像自带的 `default.conf.template` 走 envsubst 正常生成配置：
+从 deployment 模板**完全删除** `nginx-conf-d` volume 和对应 volumeMount，让镜像自带的 baked-in `default.conf` 正常生效：
 
 ```yaml
 volumes:
@@ -65,7 +77,7 @@ volumeMounts:
   # 删除 mountPath: /etc/nginx/conf.d 那一行
 ```
 
-nginx 官方镜像**默认会自动处理** `/etc/nginx/templates/*.template` → `/etc/nginx/conf.d/`，无需任何额外挂载即可正常启动。
+`/var/cache/nginx`（nginx cache 写入）和 `/run`（pid 文件 + temp socket）这两个 emptyDir 挂载**必须保留**——非 root uid=1000 在基础镜像里没有这两个目录的写权限，不挂载会因 `nginx.pid` 无法创建、cache 目录不可写而启动失败。
 
 **为什么之前没问题？**
 
@@ -74,7 +86,7 @@ nginx 官方镜像**默认会自动处理** `/etc/nginx/templates/*.template` �
 **相关文件：**
 - `deploy/helm/hci-platform/templates/admin-ui/deployment.yaml`
 - `deploy/helm/hci-platform/templates/customer-ui/deployment.yaml`
-- `frontend/admin/Dockerfile`：`COPY nginx.conf /etc/nginx/templates/default.conf.template`（镜像内自带配置来源）
+- `frontend/admin/Dockerfile`：`COPY frontend/admin/nginx.conf /etc/nginx/templates/default.conf.template`（构建期 envsubst 渲染后，baked 到 `conf.d/default.conf`）
 - `frontend/customer/Dockerfile`：同上
 
 **修复后的 ArgoCD 同步流程：**
@@ -88,7 +100,8 @@ nginx 官方镜像**默认会自动处理** `/etc/nginx/templates/*.template` �
 
 | 错误判断 | 实际情况 |
 |---------|---------|
-| `runAsNonRoot` 权限不够导致 nginx 启动失败 | nginx:alpine 镜像以 uid=101（nginx user）运行没问题 |
+| `runAsUser=1000` 非 root 导致 envsubst 写 conf.d 失败 → 应该把 mount 改回 emptyDir | 本项目镜像**没有 templates 目录**，20-envsubst-on-templates.sh 直接 `return 0` 跳过，根本不会触碰 conf.d。把 mount 加回去只会重新触发 emptyDir 覆盖 baked conf.d |
+| nginx:alpine 镜像以 uid=101（nginx user）运行 → 应该把 `runAsUser` 改回 101 | **不能改**。Chart 强制 `runAsUser=1000` 是 J-3 Pod 安全基线（OWASP K8s Top 10），改 101 会破坏全局安全策略；改 101 也会让 `nginx.pid` 写入 `/run` 失败（基础镜像 `/run` 权限同样限制）|
 | 镜像 tag 错误导致配置丢失 | 镜像正常，问题在 Chart 的空目录覆盖 |
 | 内存/资源不足导致 OOM | 日志看不到 OOMKilled，且老 Pod 同一镜像稳定运行 |
 | 集群节点问题 | 多副本都失败，肯定不是节点问题 |
