@@ -1,5 +1,265 @@
 # K8s / K3s / Helm 运维避坑
 
+## D-009：Helm chart 用 emptyDir 覆盖 `/etc/nginx/conf.d` 导致 nginx 启动无 server block
+
+> **触发场景（场景 A — 无 templates）：** admin-ui / customer-ui 等基于 `nginx:alpine` 的静态前端服务，Dockerfile 直接将 nginx.conf COPY 到 `conf.d/`（baked），但 Helm chart 错误地用 emptyDir 挂载 `/etc/nginx/conf.d`，清空了 baked 配置。Pod 反复 CrashLoopBackOff，80 端口 connection refused。
+
+> ⚠️ **另见 D-010**：若 Dockerfile 使用的是 templates 机制（COPY 到 `/etc/nginx/templates/`），emptyDir 挂载 conf.d **不会**导致 CrashLoopBackOff，而是白屏（项目配置未生效）。两种症状截然不同，务必先确认 Dockerfile 的 COPY 目标。
+
+**现象（场景 A）：**
+- Pod 处于 `CrashLoopBackOff` 或 `Running 0/1` 状态
+- 日志显示 nginx worker 正常启动（`start worker process 20-35`），但立刻收到 SIGTERM 退出
+- `kubectl describe pod` 事件：`Readiness probe failed: Get "http://10.42.x.x:80/": dial tcp 10.42.x.x:80: connect: connection refused`
+- `kubectl exec <pod> -- ls /etc/nginx/conf.d/` 目录**为空**（无 default.conf）
+- ArgoCD `hci-platform` 整体 health 变 Degraded，Deployment 状态 Synced 但集群里所有新 Pod 都不健康
+
+**根因（场景 A — 无 templates）：**
+
+Helm chart deployment 模板用 emptyDir 挂载 `/etc/nginx/conf.d`：
+
+```yaml
+volumes:
+  - name: nginx-conf-d        # ← 元凶（场景 A 下）
+    emptyDir: {}
+volumeMounts:
+  - mountPath: /etc/nginx/conf.d
+    name: nginx-conf-d       # ← 清空了镜像 baked 的 default.conf
+```
+
+`nginx:alpine` 入口脚本 `20-envsubst-on-templates.sh` 的行为决策树：
+
+```
+/etc/nginx/templates/ 是否存在？
+  ├── 不存在 → return 0，直接跳过，不写 conf.d  ← 场景 A
+  └── 存在 → /etc/nginx/conf.d 是否可写？
+             ├── 不可写（root:root 755 + uid=1000）→ return 0，静默跳过  ← D-010 场景
+             └── 可写（emptyDir + fsGroup=1000）→ envsubst 渲染写入  ← 正常工作
+```
+
+**场景 A 的失败路径：** emptyDir 清空 conf.d → templates 不存在 → envsubst 跳过 → conf.d 为空 → nginx 无 server block → 80 端口无监听 → probe connection refused → CrashLoopBackOff。
+
+**判断方式：**
+
+```bash
+# 第一步：快速区分 D-009 vs D-010 — 看 conf.d 是否为空
+kubectl exec <pod> -n <ns> -- ls /etc/nginx/conf.d/
+# 为空（无 default.conf）→ D-009 场景 A（无 templates + emptyDir 清空）
+# 有 default.conf 但内容是官方默认配置 → D-010（详见 D-010 条目）
+# 有 default.conf 且内容是项目配置 → 正常
+
+# 第二步：确认 Dockerfile 使用的是哪种机制
+kubectl exec <pod> -n <ns> -- ls -la /etc/nginx/templates/ 2>&1
+# templates 不存在 → Dockerfile COPY 到 conf.d（baked），是场景 A
+# templates 存在 → Dockerfile COPY 到 templates，见 D-010
+
+# 第三步：确认 conf.d 是 emptyDir 挂载
+kubectl get pod <pod> -n <ns> -o jsonpath='{.spec.volumes}' | python3 -m json.tool | grep -A3 'conf-d'
+```
+
+**解决方案（场景 A）：**
+
+删除 `nginx-conf-d` emptyDir volume 和对应 volumeMount，让镜像 baked 的 `default.conf` 正常生效：
+
+```yaml
+# 保留必要的 emptyDir（非 root 用户需要写权限）
+volumes:
+  - name: nginx-cache
+    emptyDir: {}
+  - name: nginx-run
+    emptyDir: {}
+  # ↑ 删除 nginx-conf-d 整段
+volumeMounts:
+  - name: nginx-cache
+    mountPath: /var/cache/nginx
+  - name: nginx-run
+    mountPath: /run
+  # ↑ 删除 mountPath: /etc/nginx/conf.d 那一行
+```
+
+`/var/cache/nginx` 和 `/run` 两个 emptyDir 挂载**必须保留**——uid=1000 对这两个目录无写权限，不挂载会因 `nginx.pid` 无法创建、cache 目录不可写而启动失败。
+
+**相关文件：**
+- `deploy/helm/hci-platform/templates/admin-ui/deployment.yaml`
+- `deploy/helm/hci-platform/templates/customer-ui/deployment.yaml`
+
+**错误判断（易踩坑）：**
+
+| 错误判断 | 实际情况 |
+|---------|---------|
+| `runAsUser=1000` 导致 envsubst 写 conf.d 失败 → 应该加 emptyDir 挂载 conf.d 让其可写 | 若 Dockerfile 没有 templates，envsubst 直接跳过，加 emptyDir 只会清空 baked conf.d，使 D-009 更严重 |
+| 加 emptyDir 后 envsubst 可以写入，问题应该解决 | **只有当 Dockerfile 也将 nginx.conf COPY 到 templates 时**，emptyDir + fsGroup=1000 才能让 envsubst 正常工作；两者必须配套，缺一不可 |
+| nginx:alpine 镜像以 uid=101（nginx user）运行 → 应该把 `runAsUser` 改回 101 | 不能改。Chart 强制 `runAsUser=1000` 是 J-3 Pod 安全基线（OWASP K8s Top 10）|
+| 镜像 tag 错误导致配置丢失 | 镜像正常，问题在 Chart 的空目录覆盖 |
+
+---
+
+## D-010：nginx:alpine templates 机制 + emptyDir + fsGroup 三要素缺一导致白屏
+
+> **触发场景：** admin-ui / customer-ui Pod `1/1 Running`，readiness/liveness probe 通过，但浏览器访问 `/admin/` 或 `/` 白屏或 404，nginx 加载的是官方默认配置而非项目定制配置。
+
+> ⚠️ **这是 2026-07-02 admin-ui 白屏事故的真实根因，由 PR #490 误删 PR #483 引入的关键挂载导致。详细事故时间线见「事故复盘」章节。**
+
+**现象：**
+- Pod `1/1 Running`，readiness/liveness probe HTTP 200
+- `kubectl exec <pod> -- cat /etc/nginx/conf.d/default.conf` 内容是 **nginx:alpine 官方默认配置**（含 PHP FastCGI 注释），不是项目定制配置
+- `kubectl exec <pod> -- ls /etc/nginx/templates/` 存在 `default.conf.template`，内容正确
+- 启动日志出现：`20-envsubst-on-templates.sh: ERROR: ... is not writable`（或静默跳过）
+- 访问 `/admin/` → 白屏 / 404
+
+**nginx:alpine templates 机制的完整工作原理（第一性原理）：**
+
+`nginx:alpine` 官方镜像设计了一套运行时配置渲染机制：将含有 `${VAR}` 占位符的模板放入 `/etc/nginx/templates/`，启动时由 `20-envsubst-on-templates.sh` 执行 `envsubst` 替换并写入 `/etc/nginx/conf.d/`。
+
+**该机制在 K8s non-root（runAsUser=1000）环境下正常工作，需要三个要素同时成立：**
+
+```
+要素 1：Dockerfile 将 nginx.conf COPY 到 /etc/nginx/templates/
+  COPY frontend/admin/nginx.conf /etc/nginx/templates/default.conf.template
+
+要素 2：Helm Deployment 注入环境变量（nginx.conf 中的 ${VAR} 占位符）
+  env:
+    - name: DNS_RESOLVER
+      value: "10.43.0.10"
+
+要素 3：Helm Deployment 用 emptyDir 挂载 /etc/nginx/conf.d（使 uid=1000 可写）
+  volumes:
+    - name: nginx-conf-d
+      emptyDir: {}
+  volumeMounts:
+    - name: nginx-conf-d
+      mountPath: /etc/nginx/conf.d
+```
+
+**为什么 emptyDir 能让 uid=1000 写入 conf.d？**
+
+Kubernetes 在挂载 emptyDir 时，会根据 Pod `securityContext.fsGroup` 设置目录的 GID 和 setgid bit：
+
+```
+# 挂载后 conf.d 的实际权限
+drwxrwsrwx  2  root  1000  4096  /etc/nginx/conf.d
+             ↑         ↑
+         root 拥有   gid=1000（fsGroup）
+                      ↑
+              setgid bit（s）使组成员也可写
+
+# uid=1000 属于 gid=1000 组，因此可以写入
+```
+
+**三要素缺一的后果：**
+
+| 缺少的要素 | 症状 |
+|-----------|------|
+| 缺要素 1（没有 templates）| envsubst 脚本直接跳过，conf.d 保持 baked 内容——若同时缺要素 3，baked 内容正常；若有要素 3（emptyDir），conf.d 为空 → CrashLoopBackOff（D-009 场景 A）|
+| 缺要素 2（没有 env 变量）| envsubst 运行但无法替换 `${DNS_RESOLVER}`，nginx.conf 中的变量名被当字面量写入，nginx 解析 `resolver` 指令时报错 → 启动失败 |
+| 缺要素 3（没有 emptyDir）| conf.d 权限 root:root 755，uid=1000 不可写，envsubst 被跳过，conf.d 保持 nginx:alpine baked 的官方默认配置 → 白屏 ← **这正是 PR #490 的错误** |
+
+**判断方式：**
+
+```bash
+# 快速诊断
+kubectl exec <pod> -n <ns> -- sh -c '
+  echo "=== conf.d ==="
+  ls -la /etc/nginx/conf.d/
+  echo "=== templates ==="
+  ls -la /etc/nginx/templates/ 2>&1
+  echo "=== conf.d content (first 3 lines) ==="
+  head -3 /etc/nginx/conf.d/default.conf 2>/dev/null
+'
+
+# 正常状态（三要素均满足）
+# conf.d/default.conf 由 uid=1000 在 2026-07-02 写入（不是镜像构建时间）
+# 内容是项目定制配置（location /admin/ alias 等）
+# 启动日志：「Running envsubst on .../templates/default.conf.template to .../conf.d/default.conf」
+
+# 异常：缺要素 3（白屏根因）
+# conf.d/default.conf 存在但是 nginx:alpine 官方配置（有 PHP/FastCGI 注释）
+# 启动日志：「ERROR: /etc/nginx/templates exists, but /etc/nginx/conf.d is not writable」
+```
+
+**解决方案：** 确保三要素同时成立
+
+**要素 1 — Dockerfile：**
+```dockerfile
+# templates 机制（含 ${DNS_RESOLVER} 占位符时使用）
+COPY frontend/admin/nginx.conf /etc/nginx/templates/default.conf.template
+```
+
+**要素 2 — Helm deployment env：**
+```yaml
+env:
+  - name: DNS_RESOLVER
+    value: "10.43.0.10"  # K3s CoreDNS Service IP
+```
+
+**要素 3 — Helm deployment volumes（不可缺少）：**
+```yaml
+volumes:
+  - name: nginx-cache
+    emptyDir: {}
+  - name: nginx-run
+    emptyDir: {}
+  - name: nginx-conf-d      # ← 必须有，使 conf.d 对 uid=1000 可写
+    emptyDir: {}
+volumeMounts:
+  - name: nginx-cache
+    mountPath: /var/cache/nginx
+  - name: nginx-run
+    mountPath: /run
+  - name: nginx-conf-d      # ← 必须有
+    mountPath: /etc/nginx/conf.d
+```
+
+**事故复盘（2026-07-02 admin-ui 白屏）：**
+
+| 时间 | PR | 改动 | 效果 |
+|------|----|----|------|
+| Jun 25 | #481 | Dockerfile 改为 templates 机制 + nginx.conf 加 `${DNS_RESOLVER}` | 建立要素 1+2，但**此时无要素 3**，白屏 ❌ |
+| Jun 25 | #483 | Helm 加 `nginx-conf-d` emptyDir | 补齐**要素 3**，三要素完整，修复白屏 ✅ |
+| Jul 2 | #490 | Helm 移除 `nginx-conf-d` emptyDir（误认为是 D-009 根因）| 删除**要素 3**，白屏重现 ❌ |
+| Jul 2 | #492 | Revert #490，重新加回 emptyDir | 要素 3 恢复，修复白屏 ✅ |
+
+**PR #490 的误判链：**
+
+```
+错误推理：
+  「D-009 说 emptyDir 覆盖 conf.d 是问题根源」
+       ↓
+  「admin-ui 白屏，conf.d 有问题」
+       ↓
+  「移除 emptyDir 可以修复」
+       ↓
+  ❌ 实际上移除 emptyDir 让 conf.d 恢复 root:root 755，
+     uid=1000 无法写入，envsubst 被静默跳过，官方默认配置生效 → 白屏
+
+正确推理：
+  「conf.d 内容是官方默认配置（有 PHP 注释）」
+       ↓
+  「templates/ 存在 default.conf.template → Dockerfile 用的是 templates 机制」
+       ↓
+  「启动日志：conf.d is not writable → envsubst 被跳过」
+       ↓
+  「conf.d 权限 root:root 755，uid=1000 不可写」
+       ↓
+  ✅ 解决：加 emptyDir 挂载 conf.d（要素 3），使 fsGroup=1000 生效，uid=1000 可写
+```
+
+**相关文件：**
+- `frontend/admin/Dockerfile` / `frontend/customer/Dockerfile`：要素 1
+- `deploy/helm/hci-platform/templates/admin-ui/deployment.yaml`：要素 2+3
+- `deploy/helm/hci-platform/values.yaml`：`workloadDefaults.securityContext.pod.fsGroup=1000`
+
+**错误判断（易踩坑）：**
+
+| 错误判断 | 实际情况 |
+|---------|---------|
+| D-009 说 emptyDir 覆盖 conf.d 是问题 → 移除 emptyDir 可以修复 | D-009 的前提是「无 templates」。有 templates 时，emptyDir 是**必要条件**，移除会触发白屏 |
+| emptyDir 会清空 conf.d → nginx 没有任何配置 → 会 CrashLoopBackOff | 有 templates 时，envsubst 会重新填充 conf.d。不是 CrashLoop，而是白屏 |
+| non-root 无法写 conf.d → 无论如何都跳过 | fsGroup=1000 + emptyDir 可以让 uid=1000 写入挂载目录。**原始 conf.d（root:root）不可写，挂载后的 emptyDir 可写** |
+| 回滚 emptyDir 挂载 → 会 CrashLoopBackOff | 实际会白屏（templates 存在但被跳过，官方默认配置生效），不是 CrashLoop |
+| Ingress/Traefik 路由配置错误 | Ingress 正确，问题在 Pod 内 nginx 配置 |
+
+---
+
 ## D-007：公网 HTTP 页面访问 localhost 被 PNA 阻止
 
 > **触发场景：** 用户从公网域名访问系统，WebSocket 连接本地 bridge（ws://localhost:9999）失败。

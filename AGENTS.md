@@ -177,7 +177,7 @@
   - 前端 buildAgentExecProcessMessage 传递 nodeIp/container 到 WebSocket
 - **信息质量检查跳过 SOP 模式**：SOP 命中时 quality check 不再拦截
 
-- **agent-service Langfuse Helm 条件判断修复**（PR #491）：
+- **agent-service Langfuse Helm 条件判断修复**（PR #491，v1.49）：
   - **根因**：`deploy/helm/hci-platform/templates/agent-service/deployment.yaml` 中 Langfuse env 块的条件判断为 `{{- if .Values.langfuse }}`，仅检查 map 是否存在，未检查 `enabled` 标志。dev 环境 base values `langfuse: { enabled: false }` 使 map 存在但 enabled 为 false，模板仍渲染 `LANGFUSE_SECRET_KEY` 的 `secretKeyRef`，而 `hci-secrets` 中无此 key，导致 agent-service Pod `CreateContainerConfigError`。
   - **修复**：条件改为 `{{- if and .Values.langfuse .Values.langfuse.enabled }}`，同时检查 map 存在且 `enabled=true`。
   - **配套**：`hci-platform-env` dev values 显式声明 `langfuse.enabled: false`，防止 base chart 重构时再次踩坑。
