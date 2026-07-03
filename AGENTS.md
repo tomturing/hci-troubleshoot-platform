@@ -196,6 +196,11 @@
     - **P1（补充）**：变量门禁分层设计，新增「软推荐（Preferred）」层专门覆盖 `skill_call`/`tool_call` 类型，缺失时不阻断但附加提示。
     - **P2（配合）**：系统提示词补充 `sop_request_variable` 使用规范段落。
   - **详细方案**：`docs/solution/agent/skill调用失效根因分析与改进方案.md`
+- **ArgoCD PreSync Hook Job 失败残留污染 Application Health 修复**（D-011）：
+  - **根因**：`argocd.argoproj.io/hook-delete-policy: HookSucceeded` 仅在 Hook 成功时清理 Job 资源，失败时不会触发清理，导致 Failed Job 长期残留。ArgoCD 评估 Application Health 时看到 `status.conditions[type=Failed]=True` 的 Job 会把 `status.sync.message` 标注为不健康，UI 持续显示 `Job has reached the specified backoff limit`。
+  - **复盘**：`argocd-ops` Application 在 2026-07-02 02:47 因 `argocd-repo-server-probe-patch` Job 失败 6 次达 `BackoffLimitExceeded` 后，`status.operationState.phase: Failed` 一直无法被新 sync 覆盖，必须直接 patch 清空 operationState 才能恢复（`kubectl patch application ... -p='[{"op":"remove","path":"/status/operationState"}]'`）。
+  - **修复**：`deploy/gitops/argocd-ops/argocd-repo-server-probe-patch.yaml` 升级到 v1.4，`hook-delete-policy` 改为 `HookSucceeded,HookFailed`，失败时也自动清理。
+  - **避坑指南**：D-011（docs/deploy/pitfalls/k8s.md）
 
 ---
 

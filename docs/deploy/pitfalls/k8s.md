@@ -1182,3 +1182,71 @@ spec:
 - PR#196 版本偏移修复：改用 `rancher/kubectl:v1.33.9` → **失败**（不含 shell，无法执行脚本）
 - PR#197 最终修复：改用 `bitnami/kubectl:latest`（包含 shell + kubectl）
 - 若返回超时而非正常 refs，说明网络问题，先解决再触发 Sync
+
+---
+
+## D-011：ArgoCD PreSync/PostSync Hook Job 失败后长期残留污染 Application Health
+
+**触发场景：** ArgoCD Application 使用 PreSync/PostSync Hook Job 做集群引导（patch Deployment、改 ConfigMap 等），Job 失败后 Pod 已死但 Job 对象本身长期残留在命名空间，污染 Application Health 评估。
+
+**症状：**
+- Application `kubectl get application -n argocd` 显示 `Sync=Synced Health=Healthy`，**但** `.status.sync.message` 仍有：
+  ```
+  message: one or more synchronization tasks completed unsuccessfully
+  Job has reached the specified backoff limit
+  ```
+- ArgoCD UI / `argocd app get` 同理显示历史失败 message
+- 多年反复 Sync 都无法消除该 message（因为触发它的 Job 仍然存在）
+- 与 `argocd.argoproj.io/tracking-id` 关联的资源被 ArgoCD 视为「有历史任务未完成」
+
+**根因：**
+- 默认的 `argocd.argoproj.io/hook-delete-policy: HookSucceeded` **只在 Hook 成功时**删除资源
+- Job 失败时不会触发 HookSucceeded → 失败的 Job 永久残留
+- ArgoCD Health 评估会扫描所有跟踪资源，看到 `status.conditions[type=Failed].status=True` 的 Job 就会把 `health.message` 标注为不健康
+
+**正确做法：**
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: my-presync-hook
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    # 关键：失败时也清理，避免长期残留
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,HookFailed
+```
+
+**保留策略选项（ArgoCD 官方支持组合）：**
+| 值 | 行为 |
+|----|------|
+| `HookSucceeded` | Hook 成功后删除（默认） |
+| `HookFailed` | Hook 失败后删除 |
+| `BeforeHookCreation` | 同一 Hook 下次创建前删除旧资源 |
+| 上述值可**逗号组合**，例：`HookSucceeded,HookFailed` 双向清理 |
+
+**存量环境清理命令：**
+```bash
+# 1. 找出所有失败且 status.startTime 超过 1 天的 PreSync/PostSync Hook Job
+kubectl get jobs -A -o json | jq -r '
+  .items[] | select(
+    (.metadata.annotations["argocd.argoproj.io/hook"] // "None") != "None"
+    and (.status.conditions // []) | length > 0
+    and any(.status.conditions[]; .type == "Failed" and .status == "True")
+  ) | "\(.metadata.namespace) \(.metadata.name)"
+'
+
+# 2. 手工删除（确认 Pod 已 Completed/Failed 后）
+kubectl delete job -n argocd <failed-hook-job-name>
+```
+
+**预防检查：**
+- 新建任何 PreSync/PostSync Hook Job **必须**显式设置 `hook-delete-policy: HookSucceeded,HookFailed`
+- 长期运行的 Hook（如 watch-dog）应使用 CronJob 而非 Job，避免状态污染
+- CI/CD 流程可加扫描：定期清理 `status.conditions[type=Failed]=True` 的 Hook Job
+
+**参考案例：**
+- 2026-07-03 `argocd-ops` Application 持续显示 `Job has reached the specified backoff limit` message
+- 根因：2026-06-05 失败的 `argocd-repo-server-probe-patch` PreSync Job 残留 28 天
+- 修复：`kubectl delete job argocd-repo-server-probe-patch -n argocd` 立即清空 message
+- 改进：v1.4 manifest 增加 `HookFailed` 策略，避免未来重蹈覆辙
