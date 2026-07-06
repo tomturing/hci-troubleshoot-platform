@@ -20,8 +20,9 @@
 #   2026-04-21 v1.1 修复镜像不含 kubectl 问题（PR #195 → bitnami/kubectl:1.31 无效）
 #   2026-04-21 v1.2 修复无效镜像版本（rancher/kubectl:v1.32 → v1.33 版本偏移合规）
 #   2026-04-21 v1.3 修复镜像不含 shell 问题（rancher/kubectl → bitnami/kubectl:latest）
+#   2026-07-03 v1.4 hook-delete-policy 增加 HookFailed，失败时也自动清理 Job（避坑 D-011）
 #
-# 避坑指南：D-005（docs/deploy/pitfalls/k8s.md）
+# 避坑指南：D-005（docs/deploy/pitfalls/k8s.md）、D-011（失败 Job 残留）
 # 参考：docs/deploy/events/2026-04-17-argocd-repo-server-probe-优化.md
 # =============================================================================
 apiVersion: batch/v1
@@ -31,7 +32,8 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+    # D-011：失败时也清理 Job，避免 Failed 状态长期残留污染 Application Health 评估
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,HookFailed
 spec:
   template:
     spec:

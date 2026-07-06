@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.18.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.17.0...v2.18.0) (2026-07-03)
+
+
+### ✨ 新功能
+
+* implement Raw Graph JSON to SOPNode Tree conversion ETL pipeline and archiving documents ([#494](https://github.com/tomturing/hci-troubleshoot-platform/issues/494)) ([1c699f9](https://github.com/tomturing/hci-troubleshoot-platform/commit/1c699f9e3d0c79d6ed27e2d67ae38e855cebc533))
+
+
+### 🐛 Bug 修复
+
+* AI error 日志补充请求 URL + SOP 模板修正 ([#489](https://github.com/tomturing/hci-troubleshoot-platform/issues/489)) ([adde375](https://github.com/tomturing/hci-troubleshoot-platform/commit/adde375887cbb39fc9a3faff89d2dfac9f54e677))
+* **argocd:** PreSync Hook Job 失败后 hook-delete-policy 增加 HookFailed，避免 Failed 资源长期残留污染 Application Health ([#495](https://github.com/tomturing/hci-troubleshoot-platform/issues/495)) ([03808b8](https://github.com/tomturing/hci-troubleshoot-platform/commit/03808b8919d9289887d513bea0f30cf4940b9334))
+* **helm:** 修复 agent-service Langfuse 条件判断导致 dev 环境 Pod 创建失败 ([#491](https://github.com/tomturing/hci-troubleshoot-platform/issues/491)) ([3750faf](https://github.com/tomturing/hci-troubleshoot-platform/commit/3750faf97d4db52f7d3478ea50c11ccd53fffed6))
+* **helm:** 移除 admin-ui/customer-ui 中覆盖 /etc/nginx/conf.d 的空 emptyDir 挂载 ([#490](https://github.com/tomturing/hci-troubleshoot-platform/issues/490)) ([ba5fb56](https://github.com/tomturing/hci-troubleshoot-platform/commit/ba5fb5687ccbde4d27b0cdd553dfc2ba27552c29))
+* 修复 admin-ui-ingress 缺失 /api 和 /ws 路由导致页面加载 502 问题 ([#487](https://github.com/tomturing/hci-troubleshoot-platform/issues/487)) ([0091485](https://github.com/tomturing/hci-troubleshoot-platform/commit/0091485820dc1a33ab7221b4114509ac87d7d204))
+
+
+### 📝 文档
+
+* **deploy:** 补充 Nginx 双轨配置机制说明并更新避坑指南 [env:staging:aihci][agent:gemini] ([#493](https://github.com/tomturing/hci-troubleshoot-platform/issues/493)) ([3408c4f](https://github.com/tomturing/hci-troubleshoot-platform/commit/3408c4f241d9ead57a5d5aef311a29fb20c9b01d))
+
 ## [2.17.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.16.0...v2.17.0) (2026-07-01)
 
 
