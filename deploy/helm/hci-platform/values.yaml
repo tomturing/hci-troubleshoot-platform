@@ -300,6 +300,11 @@ adminUI:
     #     hosts:
     #       - admin.internal
 
+  # 路径路由模式下的 /admin 快捷访问（仅 dev 环境开启，prod/staging 不应启用）
+  pathRoute:
+    enabled: false
+    prefix: "/admin"
+
 # ======================== NetworkPolicy =====================================
 networkPolicy:
   enabled: false

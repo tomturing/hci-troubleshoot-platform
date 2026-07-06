@@ -88,6 +88,15 @@ spec:
           # 客户端 UI（根路径）
           # 管理端 UI 已分离到独立 Ingress（admin-ui-ingress），使用 web entrypoint (端口 4888)
           # 详见: docs/deploy/admin-ui-internal-isolation.md
+          {{- if .Values.adminUI.pathRoute.enabled }}
+          - path: {{ .Values.adminUI.pathRoute.prefix | default "/admin" }}
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-ui
+                port:
+                  number: {{ .Values.adminUI.port }}
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:
