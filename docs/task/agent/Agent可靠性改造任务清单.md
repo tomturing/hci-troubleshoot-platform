@@ -56,6 +56,7 @@ owner: team
 | 2026-06-15 | v4.2 | **诊断自动流转与推理步数限制优化（PR #471）**：① `conversation_service.py` 在 S0 拦截后将 Assistant 分类确认文案追加到 `history_messages`，使大模型知晓阶段已确认，避免重复寒暄输出触发 `invoke_result.content is not None` 终止规则导致流程停顿；② `react_engine.py` 常数 `MAX_STEPS` 与 `investigation_agent.py` 参数 `max_iterations` 从 15 步上调至 40 步，给予复杂 SOP 或断线重连后重复命令运行的充足步骤预算 |
 | 2026-06-21 | v4.3 | **Skill 调用失效修复（PR #475）**：① `get_sop_node`/`sop_advance` 返回体新增 `preferred_next_steps` 字段，当节点有未就绪 `skill_call/tool_call` 变量时嵌入显式推荐行动（Contextual Nudge）；② 变量门禁分层设计，新增「软推荐」层覆盖 `skill_call/tool_call` 类型；③ S0/S1 系统提示词种子数据新增「变量采集规范」，强制要求优先调用 `sop_request_variable`。详见 [skill调用失效根因分析与改进方案.md](../../solution/agent/skill调用失效根因分析与改进方案.md) |
 | 2026-06-21 | v4.4 | **ConfirmService 初始化与 REACT_ENABLED 解耦（PR #476）**：① `main.py` 中 ConfirmService 初始化不再依赖 REACT_ENABLED 开关，只要 Redis 可用即启用；② 修复 InvestigationAgent SOP 轨道内嵌 ReactEngine 因 confirm_service=None 导致所有 risk≥2 工具被 fail-closed 拒绝执行的问题；③ 增加详细的可观测性日志（confirm_service_initialized/confirm_service_skipped）。详见 [skill调用失效改进后恶化根因与闭环方案.md](../../solution/agent/skill调用失效改进后恶化根因与闭环方案.md) |
+| 2026-07-09 | v4.5 | **QKV/QFK 双核信号架构重构（PR #498）**：① 建立 KeySignal 抽象基类，统一 FrontendSignal（前端信号/生产者）与 BackendSignal（后端信号/消费者）的架构体系；② 实现 SignalExtractor 从 KBD/SOP 自然语言文本提取结构化信号；③ 实现 VariablePool 变量池管理生产者-消费者模式，前端信号提取 host/vm/time 等变量，后端信号通过 ${variable} 占位符消费；④ 自动类型判别机制 KeySignal.from_dict() 根据信号类别路由到派生类；⑤ 彻底废弃历史命名 QKVSignal/KeySignal（后端专用），统一为语义清晰的新架构。详见 [关键信号基类设计.md](../../solution/agent/02-架构设计/关键信号基类设计.md) 和 [关键信号架构迁移指南.md](../../solution/agent/02-架构设计/关键信号架构迁移指南.md) |
 
 ---
 

@@ -9,14 +9,14 @@
 - VariablePool：变量池管理（生产者-消费者模式）
 """
 
-from app.tools.signal.base import KeySignal, SignalCategory
 from app.tools.signal.backend import (
     BackendSignal,
     BackendSignalTarget,
     BackendSignalType,
 )
+from app.tools.signal.base import KeySignal, SignalCategory
+from app.tools.signal.extractor import SignalExtractionError, SignalExtractor
 from app.tools.signal.frontend import FrontendQueryType, FrontendSignal
-from app.tools.signal.extractor import SignalExtractor, SignalExtractionError
 from app.tools.signal.variable_pool import VariablePool
 
 __all__ = [
@@ -36,3 +36,5 @@ __all__ = [
     # 变量池
     "VariablePool",
 ]
+
+

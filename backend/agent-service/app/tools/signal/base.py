@@ -100,3 +100,5 @@ class KeySignal(BaseModel, ABC):
         import json
         data = json.loads(json_str)
         return cls.from_dict(data)
+
+

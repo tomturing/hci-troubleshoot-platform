@@ -15,7 +15,7 @@ from typing import Any
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
-from app.tools.signal.base import KeySignal, SignalCategory
+from app.tools.signal.base import KeySignal
 
 logger = get_logger("signal-extractor")
 
