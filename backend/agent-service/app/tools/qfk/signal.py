@@ -1,5 +1,5 @@
 """
-QFK 关键信号结构定义
+QFK 后端信号结构定义
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class SignalType(StrEnum):
+class BackendSignalType(StrEnum):
     """
-    信号类型：定义了 QFK 执行时调用的底层指令与匹配策略
+    后端信号类型：定义了 QFK 执行时调用的底层指令与匹配策略
     """
 
     LOG_KEYWORD = "log_keyword"          # 日志关键字匹配
@@ -26,9 +26,9 @@ class SignalType(StrEnum):
     SYSTEM_METRIC = "system_metric"      # 系统指标匹配
 
 
-class KeySignalTarget(BaseModel):
+class BackendSignalTarget(BaseModel):
     """
-    关键信号目标（Q: 查什么）的定位信息
+    后端信号目标（Q: 查什么）的定位信息
     """
 
     scope: str | None = Field(default=None, description="查询范围限定，例如：主节点、备节点、所有节点或IP")
@@ -37,27 +37,27 @@ class KeySignalTarget(BaseModel):
     time_window: str | None = Field(default=None, description="时间范围，例如：今天，最近1小时，2026-07-01 10:00:00")
 
 
-class KeySignal(BaseModel):
+class BackendSignal(BaseModel):
     """
-    HCI 排障标准化关键信号数据模型
+    HCI 排障标准化后端信号数据模型
     """
 
-    signal_type: SignalType = Field(..., description="信号类型，对应具体排障场景的处理方法")
-    target: KeySignalTarget | None = Field(default=None, description="定位目标参数描述")
+    signal_type: BackendSignalType = Field(..., description="信号类型，对应具体排障场景的处理方法")
+    target: BackendSignalTarget | None = Field(default=None, description="定位目标参数描述")
     keywords: list[str] = Field(default_factory=list, description="K: 期望匹配对比的关键字列表")
     match_mode: str = Field(default="any", description="关键字对比匹配模式：any(或) / all(与)")
     expected: bool = Field(default=True, description="期望结果：True=期望出现，False=期望不出现")
-    description: str | None = Field(default=None, description="对此排查步骤关键信号的文字表述说明")
+    description: str | None = Field(default=None, description="对此排查步骤后端信号的文字表述说明")
     container: str | None = Field(default=None, description="对于 service_status 专属的容器类型 (asv/anet/host)")
     sub_command: str | None = Field(default=None, description="专属 vm/network/storage 等的 acli 子命名空间操作串")
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> KeySignal:
+    def from_dict(cls, data: dict[str, Any]) -> BackendSignal:
         """从字典构建并校验"""
         return cls.model_validate(data)
 
     @classmethod
-    def from_json(cls, json_str: str) -> KeySignal:
+    def from_json(cls, json_str: str) -> BackendSignal:
         """从 JSON 字符串反序列化并校验"""
         data = json.loads(json_str)
         return cls.from_dict(data)

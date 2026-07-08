@@ -1,6 +1,6 @@
 """
-QKV 前端元数据提取工具单元测试
-验证 QKVSignal 校验、命令拼装、返回 JSON 字段过滤清洗提取与引擎执行
+QKV 前端信号变量提取工具单元测试
+验证 FrontendSignal 校验、命令拼装、返回 JSON 字段过滤清洗提取与引擎执行
 """
 
 import os
@@ -18,21 +18,21 @@ if _backend not in sys.path:
 import pytest
 from app.tools.acli.executor import ExecResult
 from app.tools.qkv import (
-    QKVQueryType,
+    FrontendQueryType,
+    FrontendSignal,
     QKVResult,
-    QKVSignal,
     qkv_exec,
     qkv_load,
 )
-from app.tools.qkv.parser import parse_qkv_value
+from app.tools.qkv.parser import parse_frontend_value
 from pydantic import ValidationError
 
 # ─────────────────────────────────────────────────────────────────────────────
-# QKVSignal 校验测试
+# FrontendSignal 校验测试
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestQKVSignalValidation:
+class TestFrontendSignalValidation:
     """验证数据校验与加载"""
 
     def test_load_valid_signal(self):
@@ -42,7 +42,7 @@ class TestQKVSignalValidation:
             "limit": 50
         }
         sig = qkv_load(data)
-        assert sig.query == QKVQueryType.ALERT
+        assert sig.query == FrontendQueryType.ALERT
         assert sig.keyword == "配置存储服务备节点异常"
         assert sig.limit == 50
 
@@ -57,7 +57,7 @@ class TestQKVSignalValidation:
     def test_load_from_json_string(self):
         json_str = '{"query": "task", "keyword": "启动虚拟机", "is_failed": true}'
         sig = qkv_load(json_str)
-        assert sig.query == QKVQueryType.TASK
+        assert sig.query == FrontendQueryType.TASK
         assert sig.keyword == "启动虚拟机"
         assert sig.is_failed is True
 
@@ -70,7 +70,7 @@ class TestQKVSignalValidation:
 @pytest.mark.asyncio
 async def test_qkv_command_build():
     # 告警命令组装
-    sig_alert = QKVSignal(query=QKVQueryType.ALERT, keyword="备节点异常", limit=10)
+    sig_alert = FrontendSignal(query=FrontendQueryType.ALERT, keyword="备节点异常", limit=10)
     mock_executor = AsyncMock()
     mock_executor.execute.return_value = ExecResult(stdout="[]", stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1)
 
@@ -87,7 +87,7 @@ async def test_qkv_command_build():
         )
 
     # 失败任务命令组装
-    sig_task = QKVSignal(query=QKVQueryType.TASK, keyword="启动虚拟机", is_failed=True, limit=5)
+    sig_task = FrontendSignal(query=FrontendQueryType.TASK, keyword="启动虚拟机", is_failed=True, limit=5)
     mock_executor.reset_mock()
     with patch("app.tools.acli.executor._executor", mock_executor):
         await qkv_exec(sig_task, conversation_id="test")
@@ -129,7 +129,7 @@ class TestQKVParser:
           ]
         }
         """
-        vals = parse_qkv_value(QKVQueryType.ALERT, alert_json)
+        vals = parse_frontend_value(FrontendQueryType.ALERT, alert_json)
         assert len(vals) == 1
         v = vals[0]
         assert v["alert_type"] == "host_bond"
@@ -160,7 +160,7 @@ class TestQKVParser:
           ]
         }
         """
-        vals = parse_qkv_value(QKVQueryType.TASK, task_json)
+        vals = parse_frontend_value(FrontendQueryType.TASK, task_json)
         assert len(vals) == 1
         v = vals[0]
         assert v["status"] == 3
@@ -173,7 +173,7 @@ class TestQKVParser:
 
     def test_parse_dialog_raw_text(self):
         stdout = "2026-07-08 10:00 [INFO] popup: reboot confirmed\n2026-07-08 10:01 [WARN] dismiss"
-        vals = parse_qkv_value(QKVQueryType.DIALOG, stdout)
+        vals = parse_frontend_value(FrontendQueryType.DIALOG, stdout)
         assert len(vals) == 2
         assert vals[0]["line"] == "2026-07-08 10:00 [INFO] popup: reboot confirmed"
         assert vals[1]["description"] == "2026-07-08 10:01 [WARN] dismiss"

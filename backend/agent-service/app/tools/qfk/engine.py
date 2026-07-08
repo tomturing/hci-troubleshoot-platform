@@ -1,5 +1,5 @@
 """
-QFK 关键信号谓词匹配引擎
+QFK 后端信号谓词匹配引擎
 负责信号加载与解析，复用 Bridge Relay Executor 进行指令中转下发
 """
 
@@ -11,7 +11,7 @@ from typing import Any
 from shared.observability.logger import get_logger
 
 from app.tools.qfk.handlers import HandlerRegistry
-from app.tools.qfk.signal import KeySignal
+from app.tools.qfk.signal import BackendSignal
 
 logger = get_logger("qfk-engine")
 
@@ -50,33 +50,33 @@ class QFKResult:
         return "\n".join(lines)
 
 
-def qfk_load(signal_json: dict[str, Any] | str) -> KeySignal:
+def qfk_load(signal_json: dict[str, Any] | str) -> BackendSignal:
     """
-    加载并校验结构化信号对象。
+    加载并校验结构化后端信号对象。
 
     Args:
         signal_json: 信号定义字典或 JSON 字符串
 
     Returns:
-        实例化并校验通过的 KeySignal 对象
+        实例化并校验通过的 BackendSignal 对象
     """
     if isinstance(signal_json, str):
-        return KeySignal.from_json(signal_json)
-    return KeySignal.from_dict(signal_json)
+        return BackendSignal.from_json(signal_json)
+    return BackendSignal.from_dict(signal_json)
 
 
 async def qfk_exec(
-    signal: KeySignal,
+    signal: BackendSignal,
     *,
     conversation_id: str,
     node_ip: str | None = None,
     exec_id: str | None = None,
 ) -> QFKResult:
     """
-    根据给定的标准化关键信号，寻找对应 Handler 执行 acli 底层命令，并自动执行关键字逻辑评估
+    根据给定的标准化后端信号，寻找对应 Handler 执行 acli 底层命令，并自动执行关键字逻辑评估
 
     Args:
-        signal: 已经解析验证的 KeySignal 对象
+        signal: 已经解析验证的 BackendSignal 对象
         conversation_id: 会话标识（上下文变量传递）
         node_ip: 执行目标节点 IP（可指定，默认在集群主控节点）
         exec_id: 流水号跟踪

@@ -8,15 +8,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.tools.qkv.signal import QKVQueryType
+from app.tools.qkv.signal import FrontendQueryType
 
 
-def parse_qkv_value(query_type: QKVQueryType, stdout_text: str) -> list[dict[str, Any]]:
+def parse_frontend_value(query_type: FrontendQueryType, stdout_text: str) -> list[dict[str, Any]]:
     """
     根据前端信号类型解析 stdout 文本，提取所需的 Value 结构
 
     Args:
-        query_type: 信号查询类型
+        query_type: 前端信号查询类型
         stdout_text: 底层 acli 命令标准输出文本
 
     Returns:
@@ -26,7 +26,7 @@ def parse_qkv_value(query_type: QKVQueryType, stdout_text: str) -> list[dict[str
         return []
 
     # 1. 弹框/日志（dialog）：直接按行拆分，提取文本
-    if query_type == QKVQueryType.DIALOG:
+    if query_type == FrontendQueryType.DIALOG:
         lines = stdout_text.splitlines()
         return [{"line": line.strip(), "description": line.strip()} for line in lines if line.strip()]
 
@@ -56,7 +56,7 @@ def parse_qkv_value(query_type: QKVQueryType, stdout_text: str) -> list[dict[str
 
         extracted: dict[str, Any] = {}
 
-        if query_type == QKVQueryType.ALERT:
+        if query_type == FrontendQueryType.ALERT:
             # 告警提取标准：alert_type, end, target, type, description, host, vm
             # 支持对 hostname / hostid 等容错兼容映射
             extracted["alert_type"] = item.get("alert_type") or item.get("type") or ""
@@ -67,7 +67,7 @@ def parse_qkv_value(query_type: QKVQueryType, stdout_text: str) -> list[dict[str
             extracted["host"] = item.get("host") or item.get("hostname") or item.get("hostid") or ""
             extracted["vm"] = item.get("vm") or item.get("object_id") if item.get("object_type") == "虚拟机" else item.get("vm", "")
 
-        elif query_type == QKVQueryType.TASK:
+        elif query_type == FrontendQueryType.TASK:
             # 任务提取标准：status, type, end, host, vm, target, description, errcode_tracing, request_id
             extracted["status"] = item.get("status") or item.get("process") or ""
             extracted["type"] = item.get("type") or item.get("alert_type") or ""

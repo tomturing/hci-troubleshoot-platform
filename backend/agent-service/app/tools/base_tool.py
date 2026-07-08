@@ -18,8 +18,8 @@ ToolDefinition：描述单个工具的元数据模型，供工具注册表（TOO
   scp     : SCP 平台 REST API（查询告警、任务、虚拟机等）
   acli    : acli 命令行工具（节点级诊断和操作）
   sop     : SOP 导航工具（get_sop_node、sop_advance 等）
-  qkv     : QKV 前端现象变量提取工具（通过关键字查找告警/任务/弹框并提取出元数据变量）
-  qfk     : QFK 关键信号工具（处理由 KBD/SOP 提炼出来的标准化关键信号并进行 True/False 布尔判定）
+  qkv     : QKV 前端信号变量提取工具（通过关键字查找告警/任务/弹框并提取出元数据变量）
+  qfk     : QFK 后端信号谓词工具（处理由 KBD/SOP 提炼出来的标准化后端信号并进行 True/False 布尔判定）
 """
 
 from pydantic import BaseModel

@@ -43,35 +43,35 @@ class SystemTools:
 
     @staticmethod
     def get_qfk():
-        """获取 QFK 关键信号谓词工具及相关类型定义
+        """获取 QFK 后端信号谓词工具及相关类型定义
 
-        返回元组：(qfk_load, qfk_exec, KeySignal, SignalType, QFKResult)
+        返回元组：(qfk_load, qfk_exec, BackendSignal, BackendSignalType, QFKResult)
         """
         from app.tools.qfk import (
-            KeySignal,
+            BackendSignal,
+            BackendSignalType,
             QFKResult,
-            SignalType,
             qfk_exec,
             qfk_load,
         )
 
-        return qfk_load, qfk_exec, KeySignal, SignalType, QFKResult
+        return qfk_load, qfk_exec, BackendSignal, BackendSignalType, QFKResult
 
     @staticmethod
     def get_qkv():
-        """获取 QKV 前端变量提取工具定义
+        """获取 QKV 前端信号变量提取工具定义
 
-        返回元组：(qkv_load, qkv_exec, QKVSignal, QKVQueryType, QKVResult)
+        返回元组：(qkv_load, qkv_exec, FrontendSignal, FrontendQueryType, QKVResult)
         """
         from app.tools.qkv import (
-            QKVSignal,
-            QKVQueryType,
+            FrontendQueryType,
+            FrontendSignal,
             QKVResult,
             qkv_exec,
             qkv_load,
         )
 
-        return qkv_load, qkv_exec, QKVSignal, QKVQueryType, QKVResult
+        return qkv_load, qkv_exec, FrontendSignal, FrontendQueryType, QKVResult
 
 
 class InteractiveTools:

@@ -1,6 +1,6 @@
 """
-QFK 关键信号工具单元测试
-验证 KeySignal 加载验证、Handlers 命令构建及匹配、安全边界校验与引擎执行
+QFK 后端信号工具单元测试
+验证 BackendSignal 加载验证、Handlers 命令构建及匹配、安全边界校验与引擎执行
 """
 
 import os
@@ -15,9 +15,9 @@ if _svc not in sys.path:
 import pytest
 from app.tools.acli.executor import ExecResult
 from app.tools.qfk import (
-    KeySignal,
+    BackendSignal,
+    BackendSignalType,
     QFKResult,
-    SignalType,
     qfk_exec,
     qfk_load,
 )
@@ -29,12 +29,12 @@ from app.tools.qfk.handlers import (
 from pydantic import ValidationError
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KeySignal 加载与数据模型校验测试
+# BackendSignal 加载与数据模型校验测试
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestKeySignalValidation:
-    """关键信号 Pydantic 校验测试"""
+class TestBackendSignalValidation:
+    """后端信号 Pydantic 校验测试"""
 
     def test_load_valid_log_signal(self):
         data = {
@@ -50,7 +50,7 @@ class TestKeySignalValidation:
             "description": "主备传输文件系统只读"
         }
         sig = qfk_load(data)
-        assert sig.signal_type == SignalType.LOG_KEYWORD
+        assert sig.signal_type == BackendSignalType.LOG_KEYWORD
         assert sig.target.resource == "mysql-managed.log"
         assert sig.keywords == ["file system read-only"]
         assert sig.expected is True
@@ -74,7 +74,7 @@ class TestKeySignalValidation:
     def test_load_from_json_string(self):
         json_str = '{"signal_type": "service_status", "keywords": ["vs_mongo_host_state"], "expected": false}'
         sig = qfk_load(json_str)
-        assert sig.signal_type == SignalType.SERVICE_STATUS
+        assert sig.signal_type == BackendSignalType.SERVICE_STATUS
         assert sig.keywords == ["vs_mongo_host_state"]
         assert sig.expected is False
 
@@ -85,21 +85,21 @@ class TestKeySignalValidation:
 
 
 class TestHandlerRegistryAndBuilders:
-    """信号处理器路由与命令拼装测试"""
+    """后端信号处理器路由与命令拼装测试"""
 
     def test_registry_routing(self):
-        for sig_type in SignalType:
+        for sig_type in BackendSignalType:
             handler = HandlerRegistry.get(sig_type)
             assert handler is not None
 
     def test_log_keyword_builder(self):
         # 正常构建
-        sig = KeySignal(
-            signal_type=SignalType.LOG_KEYWORD,
+        sig = BackendSignal(
+            signal_type=BackendSignalType.LOG_KEYWORD,
             target={"resource": "vtpdaemon.log", "path": "/sf/log/today/", "time_window": "2026-07-01"},
             keywords=["HA state change"]
         )
-        handler = HandlerRegistry.get(SignalType.LOG_KEYWORD)
+        handler = HandlerRegistry.get(BackendSignalType.LOG_KEYWORD)
         cmds = handler.build_commands(sig)
         assert len(cmds) == 1
         assert "acli log get" in cmds[0]
@@ -110,28 +110,28 @@ class TestHandlerRegistryAndBuilders:
 
     def test_log_keyword_missing_keywords(self):
         # 没有 keywords 应报错
-        sig = KeySignal(
-            signal_type=SignalType.LOG_KEYWORD,
+        sig = BackendSignal(
+            signal_type=BackendSignalType.LOG_KEYWORD,
             target={"resource": "vtpdaemon.log"}
         )
-        handler = HandlerRegistry.get(SignalType.LOG_KEYWORD)
+        handler = HandlerRegistry.get(BackendSignalType.LOG_KEYWORD)
         with pytest.raises(CommandBuildError, match="必须提供关键字"):
             handler.build_commands(sig)
 
     def test_log_keyword_path_traversal_defense(self):
         # 校验文件名不能有 /
-        sig1 = KeySignal(
-            signal_type=SignalType.LOG_KEYWORD,
+        sig1 = BackendSignal(
+            signal_type=BackendSignalType.LOG_KEYWORD,
             target={"resource": "../etc/shadow"},
             keywords=["test"]
         )
-        handler = HandlerRegistry.get(SignalType.LOG_KEYWORD)
+        handler = HandlerRegistry.get(BackendSignalType.LOG_KEYWORD)
         with pytest.raises(CommandBuildError, match="不能包含路径"):
             handler.build_commands(sig1)
 
         # 校验路径前缀合法性
-        sig2 = KeySignal(
-            signal_type=SignalType.LOG_KEYWORD,
+        sig2 = BackendSignal(
+            signal_type=BackendSignalType.LOG_KEYWORD,
             target={"path": "/var/log/nginx/"},
             keywords=["test"]
         )
@@ -140,63 +140,63 @@ class TestHandlerRegistryAndBuilders:
 
 
     def test_service_status_builder(self):
-        sig = KeySignal(
-            signal_type=SignalType.SERVICE_STATUS,
+        sig = BackendSignal(
+            signal_type=BackendSignalType.SERVICE_STATUS,
             target={"resource": "redis"},
             container="asv"
         )
-        handler = HandlerRegistry.get(SignalType.SERVICE_STATUS)
+        handler = HandlerRegistry.get(BackendSignalType.SERVICE_STATUS)
         cmds = handler.build_commands(sig)
         assert cmds == ["acli service asv redis status"]
 
     def test_service_status_missing_name(self):
-        sig = KeySignal(signal_type=SignalType.SERVICE_STATUS)
-        handler = HandlerRegistry.get(SignalType.SERVICE_STATUS)
+        sig = BackendSignal(signal_type=BackendSignalType.SERVICE_STATUS)
+        handler = HandlerRegistry.get(BackendSignalType.SERVICE_STATUS)
         with pytest.raises(CommandBuildError, match="必须通过 target.resource"):
             handler.build_commands(sig)
 
     def test_service_status_injection_blocked(self):
         # 服务名非法字符拦截
-        sig = KeySignal(
-            signal_type=SignalType.SERVICE_STATUS,
+        sig = BackendSignal(
+            signal_type=BackendSignalType.SERVICE_STATUS,
             target={"resource": "redis; rm -rf /"}
         )
-        handler = HandlerRegistry.get(SignalType.SERVICE_STATUS)
+        handler = HandlerRegistry.get(BackendSignalType.SERVICE_STATUS)
         with pytest.raises(CommandBuildError, match="非法服务名称"):
             handler.build_commands(sig)
 
     def test_service_status_invalid_container(self):
-        sig = KeySignal(
-            signal_type=SignalType.SERVICE_STATUS,
+        sig = BackendSignal(
+            signal_type=BackendSignalType.SERVICE_STATUS,
             target={"resource": "redis"},
             container="invalid_cont"
         )
-        handler = HandlerRegistry.get(SignalType.SERVICE_STATUS)
+        handler = HandlerRegistry.get(BackendSignalType.SERVICE_STATUS)
         with pytest.raises(CommandBuildError, match="非法服务容器"):
             handler.build_commands(sig)
 
     def test_generic_sub_command_builder(self):
-        sig = KeySignal(
-            signal_type=SignalType.VM_STATE,
+        sig = BackendSignal(
+            signal_type=BackendSignalType.VM_STATE,
             sub_command="list"
         )
-        handler = HandlerRegistry.get(SignalType.VM_STATE)
+        handler = HandlerRegistry.get(BackendSignalType.VM_STATE)
         cmds = handler.build_commands(sig)
         assert cmds == ["acli vm list"]
 
     def test_generic_sub_command_missing_sub(self):
-        sig = KeySignal(signal_type=SignalType.VM_STATE)
-        handler = HandlerRegistry.get(SignalType.VM_STATE)
+        sig = BackendSignal(signal_type=BackendSignalType.VM_STATE)
+        handler = HandlerRegistry.get(BackendSignalType.VM_STATE)
         with pytest.raises(CommandBuildError, match="必须在 sub_command 属性中"):
             handler.build_commands(sig)
 
     def test_generic_sub_command_injection_blocked(self):
         # 拦截管道等非法字符
-        sig = KeySignal(
-            signal_type=SignalType.VM_STATE,
+        sig = BackendSignal(
+            signal_type=BackendSignalType.VM_STATE,
             sub_command="list | cat /etc/shadow"
         )
-        handler = HandlerRegistry.get(SignalType.VM_STATE)
+        handler = HandlerRegistry.get(BackendSignalType.VM_STATE)
         with pytest.raises(CommandBuildError, match="包含非法字符"):
             handler.build_commands(sig)
 
@@ -289,8 +289,8 @@ class TestQFKResultFormatting:
 @pytest.mark.asyncio
 async def test_qfk_engine_expected_true_matched():
     # 期望出现，且匹配到了 -> final_matched = True
-    sig = KeySignal(
-        signal_type=SignalType.SERVICE_STATUS,
+    sig = BackendSignal(
+        signal_type=BackendSignalType.SERVICE_STATUS,
         target={"resource": "redis"},
         keywords=["running"],
         expected=True
@@ -321,8 +321,8 @@ async def test_qfk_engine_expected_true_matched():
 @pytest.mark.asyncio
 async def test_qfk_engine_expected_false_matched_flip():
     # expected=False (期望不出现报错，健康指标)，匹配到了报错词 -> final_matched = False
-    sig = KeySignal(
-        signal_type=SignalType.LOG_KEYWORD,
+    sig = BackendSignal(
+        signal_type=BackendSignalType.LOG_KEYWORD,
         target={"resource": "vtpdaemon.log"},
         keywords=["OOM error"],
         expected=False

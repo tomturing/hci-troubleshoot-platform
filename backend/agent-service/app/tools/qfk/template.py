@@ -1,11 +1,11 @@
 """
-QFK 关键信号模板与 LLM 提取提示词
+QFK 后端信号模板与 LLM 提取提示词
 """
 
-KEY_SIGNAL_JSON_SCHEMA = {
+BACKEND_SIGNAL_JSON_SCHEMA = {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "KeySignal",
-    "description": "一个排查步骤对应的标准化关键信号，供 htp-agent 通过 QFK 执行",
+    "title": "BackendSignal",
+    "description": "一个排查步骤对应的标准化后端信号，供 htp-agent 通过 QFK 执行",
     "type": "object",
     "required": ["signal_type", "target", "keywords"],
     "properties": {
@@ -77,15 +77,15 @@ KEY_SIGNAL_JSON_SCHEMA = {
     },
 }
 
-KEY_SIGNAL_PROMPT_TEMPLATE = """## 任务
-你是一个 HCI 平台排障专家，需要将以下自然语言书写的“排查步骤”提炼并提取为标准格式的「关键信号」。
+BACKEND_SIGNAL_PROMPT_TEMPLATE = """## 任务
+你是一个 HCI 平台排障专家，需要将以下自然语言书写的"排查步骤"提炼并提取为标准格式的「后端信号」。
 
 ## 输入
 <investigation_step>
 {investigation_step}
 </investigation_step>
 
-## 关键信号类型说明（signal_type）
+## 后端信号类型说明（signal_type）
 - log_keyword    : 日志文件内容检索（如在 mysql-managed.log 中搜特定错误）
 - service_status : 服务运行状态检查（如 asv/redis 服务是否 running）
 - vm_state       : 检查虚拟机（acli vm ...）
@@ -97,7 +97,7 @@ KEY_SIGNAL_PROMPT_TEMPLATE = """## 任务
 
 ## 提取规范
 1. keywords 数组只包含要匹配的比对字，**千万不能**包含具体的 shell 运行命令；
-2. 对于 expected，如果步骤中表述“排查是否有报错/出现异常”，说明发现报错代表排查符合预期，expected 应设为 true；如果是“确认该服务是正常的/无报错”，则 expected 设为 false（说明检测不到关键字才说明符合健康预期）；
+2. 对于 expected，如果步骤中表述"排查是否有报错/出现异常"，说明发现报错代表排查符合预期，expected 应设为 true；如果是"确认该服务是正常的/无报错"，则 expected 设为 false（说明检测不到关键字才说明符合健康预期）；
 3. 对于 vm_state/network_check/storage_state 等类型，必须将 sub_command 提取出来（如 "asan disk list"），QFK 会自动将其与 "acli storage" 拼接成完整命令；
 4. 严格按照 JSON schema 输出，不要多余输出，并作为一个 JSON 数组包起来（因为一个步骤有时包含多个小排查子项）。
 

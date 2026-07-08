@@ -11,31 +11,31 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class QKVQueryType(StrEnum):
-    """QKV 查询前端现象类型"""
+class FrontendQueryType(StrEnum):
+    """前端信号查询类型"""
 
     ALERT = "alert"    # 告警信息
     TASK = "task"      # 操作任务
     DIALOG = "dialog"  # 对话/弹框日志
 
 
-class QKVSignal(BaseModel):
+class FrontendSignal(BaseModel):
     """
-    QKV 前端现象信号模型
+    前端信号模型（QKV 加载处理）
     """
 
-    query: QKVQueryType = Field(..., description="Q: 查什么，告警/任务/弹框")
+    query: FrontendQueryType = Field(..., description="Q: 查什么，告警/任务/弹框")
     keyword: str = Field(..., description="K: 匹配关键字")
     is_failed: bool = Field(default=False, description="是否只查失败任务 (仅在 query 为 task 时生效)")
     limit: int = Field(default=100, description="最大返回数据量限制")
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> QKVSignal:
+    def from_dict(cls, data: dict[str, Any]) -> FrontendSignal:
         """从字典构建并校验"""
         return cls.model_validate(data)
 
     @classmethod
-    def from_json(cls, json_str: str) -> QKVSignal:
+    def from_json(cls, json_str: str) -> FrontendSignal:
         """从 JSON 串反序列化并校验"""
         data = json.loads(json_str)
         return cls.from_dict(data)

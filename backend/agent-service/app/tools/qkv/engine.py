@@ -11,8 +11,8 @@ from typing import Any
 
 from shared.observability.logger import get_logger
 
-from app.tools.qkv.parser import parse_qkv_value
-from app.tools.qkv.signal import QKVQueryType, QKVSignal
+from app.tools.qkv.parser import parse_frontend_value
+from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
 
 logger = get_logger("qkv-engine")
 
@@ -55,17 +55,17 @@ class QKVResult:
         return "\n".join(lines)
 
 
-def qkv_load(signal_json: dict[str, Any] | str) -> QKVSignal:
+def qkv_load(signal_json: dict[str, Any] | str) -> FrontendSignal:
     """
-    加载并校验 QKV 信号对象
+    加载并校验前端信号对象
     """
     if isinstance(signal_json, str):
-        return QKVSignal.from_json(signal_json)
-    return QKVSignal.from_dict(signal_json)
+        return FrontendSignal.from_json(signal_json)
+    return FrontendSignal.from_dict(signal_json)
 
 
 async def qkv_exec(
-    signal: QKVSignal,
+    signal: FrontendSignal,
     *,
     conversation_id: str,
     node_ip: str | None = None,
@@ -75,7 +75,7 @@ async def qkv_exec(
     运行前端信号提取引擎，执行 acli 并过滤析出特定字段
 
     Args:
-        signal: 验证通过的 QKVSignal 实例
+        signal: 验证通过的 FrontendSignal 实例
         conversation_id: 会话标识
         node_ip: 执行目标节点 IP
         exec_id: 流水号追踪
@@ -88,15 +88,15 @@ async def qkv_exec(
         quoted_kw = shlex.quote(signal.keyword)
         limit_val = max(1, min(signal.limit, 200)) # 强制区间限制 [1, 200]
 
-        if signal.query == QKVQueryType.ALERT:
+        if signal.query == FrontendQueryType.ALERT:
             cmd = f"acli --formatter json alert get -k {quoted_kw} -l {limit_val}"
-        elif signal.query == QKVQueryType.TASK:
+        elif signal.query == FrontendQueryType.TASK:
             status_part = " -s failed" if signal.is_failed else ""
             cmd = f"acli --formatter json task get -k {quoted_kw}{status_part} -l {limit_val}"
-        elif signal.query == QKVQueryType.DIALOG:
+        elif signal.query == FrontendQueryType.DIALOG:
             cmd = f"acli log get -k {quoted_kw} -l {limit_val}"
         else:
-            raise ValueError(f"未知的 QKV 前端类型: {signal.query}")
+            raise ValueError(f"未知的前端信号类型: {signal.query}")
     except Exception as build_err:
         logger.error(event="qkv_command_build_failed", error=str(build_err))
         return QKVResult(
@@ -151,7 +151,7 @@ async def qkv_exec(
 
     # 3. 数据结构清洗与提取
     try:
-        values = parse_qkv_value(signal.query, exec_res.stdout)
+        values = parse_frontend_value(signal.query, exec_res.stdout)
     except Exception as parse_err:
         logger.error(
             event="qkv_output_parse_exception",

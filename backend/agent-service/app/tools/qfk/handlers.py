@@ -1,5 +1,5 @@
 """
-QFK 关键信号处理器（Handlers）
+QFK 后端信号处理器（Handlers）
 将结构化信号转换成 actual acli 命令执行，并对其输出结果做关键字匹配判断
 """
 
@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from typing import ClassVar
 
 from app.tools.acli.executor import ExecResult
-from app.tools.qfk.signal import KeySignal, SignalType
+from app.tools.qfk.signal import BackendSignal, BackendSignalType
 
 
 class CommandBuildError(ValueError):
@@ -24,9 +24,9 @@ class FunctionHandler(ABC):
     """
 
     @abstractmethod
-    def build_commands(self, signal: KeySignal) -> list[str]:
+    def build_commands(self, signal: BackendSignal) -> list[str]:
         """
-        根据结构化关键信号构建 1 个或多个 acli 执行命令
+        根据结构化后端信号构建 1 个或多个 acli 执行命令
         """
         pass
 
@@ -77,7 +77,7 @@ class LogKeywordHandler(FunctionHandler):
     使用 acli log get 搜索关键字
     """
 
-    def build_commands(self, signal: KeySignal) -> list[str]:
+    def build_commands(self, signal: BackendSignal) -> list[str]:
         # 日志检索必须拥有 keywords 至少一个来作为 acli log get 的检索入口参数
         if not signal.keywords:
             raise CommandBuildError("log/dialog 信号类型必须提供关键字作为 acli log get -k 的检索词")
@@ -117,7 +117,7 @@ class ServiceStatusHandler(FunctionHandler):
     使用 acli service <container> <service_name> status 检查状态
     """
 
-    def build_commands(self, signal: KeySignal) -> list[str]:
+    def build_commands(self, signal: BackendSignal) -> list[str]:
         container = signal.container or "asv"
         valid_containers = {"asv", "anet", "host"}
         if container not in valid_containers:
@@ -145,17 +145,17 @@ class GenericSubCommandHandler(FunctionHandler):
     命令格式: acli <Q_namespace> <sub_command>
     """
 
-    # 信号类型与 acli 子命名空间的映射
-    NAMESPACE_MAP: ClassVar[dict[SignalType, str]] = {
-        SignalType.VM_STATE: "vm",
-        SignalType.NETWORK_CHECK: "network",
-        SignalType.STORAGE_STATE: "storage",
-        SignalType.HARDWARE_STATE: "hardware",
-        SignalType.PLATFORM_STATE: "platform",
-        SignalType.SYSTEM_METRIC: "system",
+    # 后端信号类型与 acli 子命名空间的映射
+    NAMESPACE_MAP: ClassVar[dict[BackendSignalType, str]] = {
+        BackendSignalType.VM_STATE: "vm",
+        BackendSignalType.NETWORK_CHECK: "network",
+        BackendSignalType.STORAGE_STATE: "storage",
+        BackendSignalType.HARDWARE_STATE: "hardware",
+        BackendSignalType.PLATFORM_STATE: "platform",
+        BackendSignalType.SYSTEM_METRIC: "system",
     }
 
-    def build_commands(self, signal: KeySignal) -> list[str]:
+    def build_commands(self, signal: BackendSignal) -> list[str]:
         namespace = self.NAMESPACE_MAP.get(signal.signal_type)
         if not namespace:
             raise CommandBuildError(f"不支持的 Generic 子命令信号类型: {signal.signal_type}")
@@ -179,24 +179,24 @@ class GenericSubCommandHandler(FunctionHandler):
 
 class HandlerRegistry:
     """
-    QFK 信号 Handler 注册表
+    QFK 后端信号 Handler 注册表
     """
 
-    _registry: ClassVar[dict[SignalType, FunctionHandler]] = {
-        SignalType.LOG_KEYWORD: LogKeywordHandler(),
-        SignalType.SERVICE_STATUS: ServiceStatusHandler(),
-        SignalType.VM_STATE: GenericSubCommandHandler(),
-        SignalType.NETWORK_CHECK: GenericSubCommandHandler(),
-        SignalType.STORAGE_STATE: GenericSubCommandHandler(),
-        SignalType.HARDWARE_STATE: GenericSubCommandHandler(),
-        SignalType.PLATFORM_STATE: GenericSubCommandHandler(),
-        SignalType.SYSTEM_METRIC: GenericSubCommandHandler(),
+    _registry: ClassVar[dict[BackendSignalType, FunctionHandler]] = {
+        BackendSignalType.LOG_KEYWORD: LogKeywordHandler(),
+        BackendSignalType.SERVICE_STATUS: ServiceStatusHandler(),
+        BackendSignalType.VM_STATE: GenericSubCommandHandler(),
+        BackendSignalType.NETWORK_CHECK: GenericSubCommandHandler(),
+        BackendSignalType.STORAGE_STATE: GenericSubCommandHandler(),
+        BackendSignalType.HARDWARE_STATE: GenericSubCommandHandler(),
+        BackendSignalType.PLATFORM_STATE: GenericSubCommandHandler(),
+        BackendSignalType.SYSTEM_METRIC: GenericSubCommandHandler(),
     }
 
     @classmethod
-    def get(cls, signal_type: SignalType) -> FunctionHandler:
-        """获取指定信号类型的处理器"""
+    def get(cls, signal_type: BackendSignalType) -> FunctionHandler:
+        """获取指定后端信号类型的处理器"""
         handler = cls._registry.get(signal_type)
         if not handler:
-            raise ValueError(f"未找到信号类型 {signal_type} 对应的 Handler 注册")
+            raise ValueError(f"未找到后端信号类型 {signal_type} 对应的 Handler 注册")
         return handler
