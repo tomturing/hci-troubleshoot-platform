@@ -10,9 +10,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shared.observability.logger import get_logger
+
+if TYPE_CHECKING:
+    from app.tools.qkv.engine import QKVResult
+    from app.tools.signal.backend import BackendSignal
 
 logger = get_logger("variable-pool")
 
@@ -193,8 +197,3 @@ class VariablePool:
         """清空变量池"""
         self._variables.clear()
         logger.info("variable_pool_cleared", conversation_id=self.conversation_id)
-
-
-# 向后兼容导入
-from app.tools.qkv.engine import QKVResult
-from app.tools.signal.backend import BackendSignal

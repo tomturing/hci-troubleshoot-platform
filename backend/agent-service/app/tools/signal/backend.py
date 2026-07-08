@@ -14,11 +14,14 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from app.tools.signal.base import KeySignal, SignalCategory
+
+if TYPE_CHECKING:
+    from app.tools.qfk.engine import QFKResult
 
 
 class BackendSignalType(StrEnum):
@@ -139,9 +142,12 @@ class BackendSignal(KeySignal):
             return False, f"无效的匹配模式: {self.match_mode}，必须是 'any' 或 'all'"
 
         # 服务状态信号必须指定容器类型
-        if self.signal_type == BackendSignalType.SERVICE_STATUS and self.container:
-            if self.container not in ("asv", "anet", "host"):
-                return False, f"无效的容器类型: {self.container}"
+        if (
+            self.signal_type == BackendSignalType.SERVICE_STATUS
+            and self.container
+            and self.container not in ("asv", "anet", "host")
+        ):
+            return False, f"无效的容器类型: {self.container}"
 
         return True, None
 
@@ -150,7 +156,7 @@ class BackendSignal(KeySignal):
         conversation_id: str,
         node_ip: str | None = None,
         exec_id: str | None = None,
-    ) -> QFKResult:
+    ) -> "QFKResult":
         """
         执行后端信号判定（调用 QFK 引擎）
 
@@ -162,7 +168,8 @@ class BackendSignal(KeySignal):
         Returns:
             QFKResult: 包含布尔判定结果与证据链
         """
-        from app.tools.qfk.engine import qfk_exec, QFKResult
+        from app.tools.qfk.engine import qfk_exec
+
         return await qfk_exec(
             signal=self,
             conversation_id=conversation_id,

@@ -112,9 +112,3 @@ class FrontendSignal(KeySignal):
             node_ip=node_ip,
             exec_id=exec_id,
         )
-
-
-# 向后兼容：从 QKV 模块导入类型
-from enum import StrEnum
-from app.tools.signal.base import SignalCategory
-from app.tools.qkv.engine import QKVResult
