@@ -8,9 +8,12 @@ import sys
 from unittest.mock import AsyncMock, patch
 
 # 注入工程后端路径以兼容测试规范
-_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "agent-service"))
-if _svc not in sys.path:
-    sys.path.insert(0, _svc)
+_backend = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend"))
+_agent_service = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "agent-service"))
+if _backend not in sys.path:
+    sys.path.insert(0, _backend)
+if _agent_service not in sys.path:
+    sys.path.insert(0, _agent_service)
 
 import pytest
 from app.tools.acli.executor import ExecResult
