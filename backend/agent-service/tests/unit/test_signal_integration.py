@@ -8,8 +8,8 @@ Signal 模块集成测试
 4. 端到端 KBD 案例执行
 """
 
-import pytest
 from app.tools import SystemTools
+from app.tools.qkv.engine import QKVResult
 from app.tools.signal import (
     BackendSignal,
     BackendSignalType,
@@ -17,12 +17,7 @@ from app.tools.signal import (
     FrontendSignal,
     KeySignal,
     SignalCategory,
-    SignalExtractionError,
-    SignalExtractor,
-    VariablePool,
 )
-from app.tools.qkv.engine import QKVResult
-from app.tools.qfk.engine import QFKResult
 
 
 class TestSystemToolsIntegration:
@@ -30,9 +25,9 @@ class TestSystemToolsIntegration:
 
     def test_get_signal_extractor(self):
         """测试获取 SignalExtractor"""
-        SignalExtractor = SystemTools.get_signal_extractor()
-        assert SignalExtractor is not None
-        assert hasattr(SignalExtractor, "extract_from_text")
+        extractor_cls = SystemTools.get_signal_extractor()
+        assert extractor_cls is not None
+        assert hasattr(extractor_cls, "extract_from_text")
 
     def test_create_variable_pool(self):
         """测试创建变量池"""
@@ -42,7 +37,8 @@ class TestSystemToolsIntegration:
 
     def test_get_signal_types(self):
         """测试获取信号类型"""
-        KeySignal, FrontendSignal, BackendSignal, SignalCategory = SystemTools.get_signal_types()
+        signal_types = SystemTools.get_signal_types()
+        KeySignal, FrontendSignal, BackendSignal, SignalCategory = signal_types
 
         assert KeySignal is not None
         assert FrontendSignal is not None
@@ -134,8 +130,6 @@ class TestSignalExtractorIntegration:
 
     def test_extract_frontend_signal(self):
         """测试提取前端信号"""
-        SignalExtractor = SystemTools.get_signal_extractor()
-
         # KBD 案例文本
         kbd_text = "检查配置存储服务备节点异常告警"
 
