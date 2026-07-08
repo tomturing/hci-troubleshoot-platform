@@ -1,0 +1,177 @@
+"""
+QKV 前端信号变量提取执行引擎
+"""
+
+from __future__ import annotations
+
+import json
+import shlex
+from dataclasses import dataclass, field
+from typing import Any
+
+from shared.observability.logger import get_logger
+
+from app.tools.qkv.parser import parse_qkv_value
+from app.tools.qkv.signal import QKVQueryType, QKVSignal
+
+logger = get_logger("qkv-engine")
+
+
+@dataclass
+class QKVResult:
+    """
+    QKV 执行与元数据变量提取最终输出结果
+    """
+
+    success: bool                        # 查询是否成功执行
+    query: str                           # 查询类型 (alert/task/dialog)
+    keyword: str                         # 查询关键字
+    command: str                         # 底层实际执行指令
+    values: list[dict[str, Any]] = field(default_factory=list) # 提取提取出来的 Value 结果集
+    error: str | None = None             # 报错信息描述
+    exec_id: str | None = None           # 流水号记录
+
+    def to_observation(self) -> str:
+        """
+        转换为给 ReAct 决策 Agent 观察的标准化展示格式
+        """
+        if not self.success:
+            return f"QKV 查询异常: {self.error or '未知错误'}"
+
+        status_desc = f"成功查找到 {len(self.values)} 条记录" if self.values else "未找到符合的匹配记录"
+        lines = [
+            f"QKV 查询状态: {status_desc}",
+            f"Q(查询类型): {self.query} | K(关键字): {self.keyword}",
+            f"底层命令: {self.command}",
+        ]
+        if self.values:
+            lines.append("\n【提取出的结构化变量数据集 (Values)】")
+            # 为防止 ReAct 窗口过载，限制展示部分结果，但返回给内存的数据是完整的
+            preview_limit = 5
+            for idx, val in enumerate(self.values[:preview_limit]):
+                lines.append(f"记录 [{idx + 1}]: {json.dumps(val, ensure_ascii=False)}")
+            if len(self.values) > preview_limit:
+                lines.append(f"... 还有 {len(self.values) - preview_limit} 条记录已暂存至变量上下文")
+        return "\n".join(lines)
+
+
+def qkv_load(signal_json: dict[str, Any] | str) -> QKVSignal:
+    """
+    加载并校验 QKV 信号对象
+    """
+    if isinstance(signal_json, str):
+        return QKVSignal.from_json(signal_json)
+    return QKVSignal.from_dict(signal_json)
+
+
+async def qkv_exec(
+    signal: QKVSignal,
+    *,
+    conversation_id: str,
+    node_ip: str | None = None,
+    exec_id: str | None = None,
+) -> QKVResult:
+    """
+    运行前端信号提取引擎，执行 acli 并过滤析出特定字段
+
+    Args:
+        signal: 验证通过的 QKVSignal 实例
+        conversation_id: 会话标识
+        node_ip: 执行目标节点 IP
+        exec_id: 流水号追踪
+
+    Returns:
+        QKVResult
+    """
+    # 1. 底层命令构建逻辑
+    try:
+        quoted_kw = shlex.quote(signal.keyword)
+        limit_val = max(1, min(signal.limit, 200)) # 强制区间限制 [1, 200]
+
+        if signal.query == QKVQueryType.ALERT:
+            cmd = f"acli --formatter json alert get -k {quoted_kw} -l {limit_val}"
+        elif signal.query == QKVQueryType.TASK:
+            status_part = " -s failed" if signal.is_failed else ""
+            cmd = f"acli --formatter json task get -k {quoted_kw}{status_part} -l {limit_val}"
+        elif signal.query == QKVQueryType.DIALOG:
+            cmd = f"acli log get -k {quoted_kw} -l {limit_val}"
+        else:
+            raise ValueError(f"未知的 QKV 前端类型: {signal.query}")
+    except Exception as build_err:
+        logger.error(event="qkv_command_build_failed", error=str(build_err))
+        return QKVResult(
+            success=False,
+            query=signal.query.value,
+            keyword=signal.keyword,
+            command="",
+            error=f"QKV 命令构建异常: {build_err}",
+        )
+
+    logger.info(
+        event="qkv_engine_executing",
+        query=signal.query.value,
+        keyword=signal.keyword,
+        command=cmd,
+    )
+
+    # 2. 复用 BridgeRelayExecutor 执行命令
+    from app.tools.acli.executor import _executor
+    if _executor is None:
+        return QKVResult(
+            success=False,
+            query=signal.query.value,
+            keyword=signal.keyword,
+            command=cmd,
+            error="BridgeRelayExecutor 尚未初始化",
+        )
+
+    try:
+        exec_res = await _executor.execute(
+            tool_name="acli_exec",
+            args={"command": cmd, "reason": f"QKV前端变量抽取: {signal.query.value}"},
+            conversation_id=conversation_id,
+            node_ip=node_ip,
+            risk_level=1,  # 均属只读
+            policy="auto", # 静默跑
+            exec_id=exec_id,
+        )
+    except Exception as exec_err:
+        logger.error(
+            event="qkv_execution_failed",
+            command=cmd,
+            error=str(exec_err),
+        )
+        return QKVResult(
+            success=False,
+            query=signal.query.value,
+            keyword=signal.keyword,
+            command=cmd,
+            error=str(exec_err),
+        )
+
+    # 3. 数据结构清洗与提取
+    try:
+        values = parse_qkv_value(signal.query, exec_res.stdout)
+    except Exception as parse_err:
+        logger.error(
+            event="qkv_output_parse_exception",
+            error=str(parse_err),
+            stdout=exec_res.stdout,
+        )
+        return QKVResult(
+            success=False,
+            query=signal.query.value,
+            keyword=signal.keyword,
+            command=cmd,
+            error=f"分析提取 JSON 返回值异常: {parse_err}",
+            exec_id=exec_res.exec_id,
+        )
+
+    return QKVResult(
+        success=True,
+        query=signal.query.value,
+        keyword=signal.keyword,
+        command=cmd,
+        values=values,
+        exec_id=exec_res.exec_id,
+    )

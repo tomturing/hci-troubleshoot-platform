@@ -41,6 +41,38 @@ class SystemTools:
 
         return bash_exec
 
+    @staticmethod
+    def get_qfk():
+        """获取 QFK 关键信号谓词工具及相关类型定义
+
+        返回元组：(qfk_load, qfk_exec, KeySignal, SignalType, QFKResult)
+        """
+        from app.tools.qfk import (
+            KeySignal,
+            QFKResult,
+            SignalType,
+            qfk_exec,
+            qfk_load,
+        )
+
+        return qfk_load, qfk_exec, KeySignal, SignalType, QFKResult
+
+    @staticmethod
+    def get_qkv():
+        """获取 QKV 前端变量提取工具定义
+
+        返回元组：(qkv_load, qkv_exec, QKVSignal, QKVQueryType, QKVResult)
+        """
+        from app.tools.qkv import (
+            QKVSignal,
+            QKVQueryType,
+            QKVResult,
+            qkv_exec,
+            qkv_load,
+        )
+
+        return qkv_load, qkv_exec, QKVSignal, QKVQueryType, QKVResult
+
 
 class InteractiveTools:
     """交互类/状态流转类工具（逻辑命名空间）

@@ -1,0 +1,200 @@
+"""
+QKV 前端元数据提取工具单元测试
+验证 QKVSignal 校验、命令拼装、返回 JSON 字段过滤清洗提取与引擎执行
+"""
+
+import os
+import sys
+from unittest.mock import AsyncMock, patch
+
+# 注入工程后端路径以兼容测试规范
+_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "agent-service"))
+_backend = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend"))
+if _svc not in sys.path:
+    sys.path.insert(0, _svc)
+if _backend not in sys.path:
+    sys.path.insert(0, _backend)
+
+import pytest
+from app.tools.acli.executor import ExecResult
+from app.tools.qkv import (
+    QKVQueryType,
+    QKVResult,
+    QKVSignal,
+    qkv_exec,
+    qkv_load,
+)
+from app.tools.qkv.parser import parse_qkv_value
+from pydantic import ValidationError
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QKVSignal 校验测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestQKVSignalValidation:
+    """验证数据校验与加载"""
+
+    def test_load_valid_signal(self):
+        data = {
+            "query": "alert",
+            "keyword": "配置存储服务备节点异常",
+            "limit": 50
+        }
+        sig = qkv_load(data)
+        assert sig.query == QKVQueryType.ALERT
+        assert sig.keyword == "配置存储服务备节点异常"
+        assert sig.limit == 50
+
+    def test_invalid_query_type(self):
+        data = {
+            "query": "invalid_type",
+            "keyword": "test"
+        }
+        with pytest.raises(ValidationError):
+            qkv_load(data)
+
+    def test_load_from_json_string(self):
+        json_str = '{"query": "task", "keyword": "启动虚拟机", "is_failed": true}'
+        sig = qkv_load(json_str)
+        assert sig.query == QKVQueryType.TASK
+        assert sig.keyword == "启动虚拟机"
+        assert sig.is_failed is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QKV Engine 实际指令组装测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_qkv_command_build():
+    # 告警命令组装
+    sig_alert = QKVSignal(query=QKVQueryType.ALERT, keyword="备节点异常", limit=10)
+    mock_executor = AsyncMock()
+    mock_executor.execute.return_value = ExecResult(stdout="[]", stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1)
+
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        await qkv_exec(sig_alert, conversation_id="test")
+        mock_executor.execute.assert_called_with(
+            tool_name="acli_exec",
+            args={"command": "acli --formatter json alert get -k '备节点异常' -l 10", "reason": "QKV前端变量抽取: alert"},
+            conversation_id="test",
+            node_ip=None,
+            risk_level=1,
+            policy="auto",
+            exec_id=None
+        )
+
+    # 失败任务命令组装
+    sig_task = QKVSignal(query=QKVQueryType.TASK, keyword="启动虚拟机", is_failed=True, limit=5)
+    mock_executor.reset_mock()
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        await qkv_exec(sig_task, conversation_id="test")
+        mock_executor.execute.assert_called_with(
+            tool_name="acli_exec",
+            args={"command": "acli --formatter json task get -k '启动虚拟机' -s failed -l 5", "reason": "QKV前端变量抽取: task"},
+            conversation_id="test",
+            node_ip=None,
+            risk_level=1,
+            policy="auto",
+            exec_id=None
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QKV Parser 数据字段解析与提取器测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestQKVParser:
+    """数据结构反序列化过滤提取测试"""
+
+    def test_parse_alert_payload(self):
+        # 模拟真实 alert JSON 输出
+        alert_json = """
+        {
+          "data": [
+            {
+              "alert_type": "host_bond",
+              "description": "主机聚合口故障...",
+              "end": "2026-06-09 13:23:48",
+              "hostname": "channel1",
+              "id": 40,
+              "object_name": "聚合口(channel1)",
+              "object_type": "主机",
+              "host": "SVR_aCloud_668",
+              "vm": ""
+            }
+          ]
+        }
+        """
+        vals = parse_qkv_value(QKVQueryType.ALERT, alert_json)
+        assert len(vals) == 1
+        v = vals[0]
+        assert v["alert_type"] == "host_bond"
+        assert v["end"] == "2026-06-09 13:23:48"
+        assert v["target"] == "聚合口(channel1)"
+        assert v["host"] == "SVR_aCloud_668"
+        assert v["vm"] == ""
+
+    def test_parse_task_payload(self):
+        # 模拟真实 task JSON 输出 (失败任务)
+        task_json = """
+        {
+          "data": [
+            {
+              "alert_type": "启动虚拟机",
+              "description": "没有主机能够启动这台虚拟机...",
+              "end": "2026-07-01 14:19:06",
+              "errcode_tracing": "0x0C000005",
+              "host": "SVR_aCloud_668",
+              "hostname": "SVR_aCloud_668",
+              "process": "失败",
+              "request_id": "a44b15a25299b233ed861dab1a5f52a4",
+              "status": 3,
+              "target": "gpu-driver",
+              "type": "启动虚拟机",
+              "vm": "8329600027293"
+            }
+          ]
+        }
+        """
+        vals = parse_qkv_value(QKVQueryType.TASK, task_json)
+        assert len(vals) == 1
+        v = vals[0]
+        assert v["status"] == 3
+        assert v["type"] == "启动虚拟机"
+        assert v["end"] == "2026-07-01 14:19:06"
+        assert v["host"] == "SVR_aCloud_668"
+        assert v["vm"] == "8329600027293"
+        assert v["errcode_tracing"] == "0x0C000005"
+        assert v["request_id"] == "a44b15a25299b233ed861dab1a5f52a4"
+
+    def test_parse_dialog_raw_text(self):
+        stdout = "2026-07-08 10:00 [INFO] popup: reboot confirmed\n2026-07-08 10:01 [WARN] dismiss"
+        vals = parse_qkv_value(QKVQueryType.DIALOG, stdout)
+        assert len(vals) == 2
+        assert vals[0]["line"] == "2026-07-08 10:00 [INFO] popup: reboot confirmed"
+        assert vals[1]["description"] == "2026-07-08 10:01 [WARN] dismiss"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QKVResult 格式化测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_qkv_result_to_observation():
+    res = QKVResult(
+        success=True,
+        query="alert",
+        keyword="只读",
+        command="acli alert get -k 只读",
+        values=[
+            {"alert_type": "read-only", "host": "node-1", "vm": "vm-123"}
+        ]
+    )
+    obs = res.to_observation()
+    assert "QKV 查询状态: 成功查找到 1 条记录" in obs
+    assert "node-1" in obs
+    assert "vm-123" in obs
