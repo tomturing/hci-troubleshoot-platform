@@ -156,7 +156,7 @@ class BackendSignal(KeySignal):
         conversation_id: str,
         node_ip: str | None = None,
         exec_id: str | None = None,
-    ) -> "QFKResult":
+    ) -> QFKResult:
         """
         执行后端信号判定（调用 QFK 引擎）
 

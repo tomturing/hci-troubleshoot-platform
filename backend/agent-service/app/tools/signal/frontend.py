@@ -10,11 +10,14 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
 from app.tools.signal.base import KeySignal, SignalCategory
+
+if TYPE_CHECKING:
+    from app.tools.qkv.engine import QKVResult
 
 
 class FrontendQueryType(StrEnum):
@@ -106,6 +109,7 @@ class FrontendSignal(KeySignal):
             QKVResult: 包含提取的元数据变量列表
         """
         from app.tools.qkv.engine import qkv_exec
+
         return await qkv_exec(
             signal=self,
             conversation_id=conversation_id,

@@ -83,8 +83,8 @@ class KeySignal(BaseModel, ABC):
 
         根据signal_category自动路由到对应的派生类构造器
         """
-        from app.tools.signal.frontend import FrontendSignal
         from app.tools.signal.backend import BackendSignal
+        from app.tools.signal.frontend import FrontendSignal
 
         category = data.get("signal_category")
         if category == SignalCategory.FRONTEND:
