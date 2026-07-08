@@ -1,11 +1,11 @@
-"""
+“””
 Agent 公共工具模块
 
 提供所有 agent（htp、ops、pai）共用的工具基础设施。
 
 --------------------------------------------------------------------------------
 🎯 理想微内核演进蓝图 & 方案一（逻辑外观层软解耦）设计规范：
-本模块遵循“控制与执行解耦的微内核架构（Microkernel Architecture）”：
+本模块遵循”控制与执行解耦的微内核架构（Microkernel Architecture）”：
 1. 物理层保持工程的高稳定性：保留原有的 tools/acli/ 和 tools/sop/ 等子包。
 2. 逻辑外观层（Facade）实现 100% 理想微内核语义对齐：
    向外显式暴露出 tools.SystemTools 与 tools.InteractiveTools 逻辑命名空间，
@@ -16,18 +16,18 @@ Agent 公共工具模块
 后续迭代指导：
 - 当开发人员或 AI 智能体新增工具或执行器时，应优先在 SystemTools 或 InteractiveTools
   中注册逻辑门面，使 JIT 控制引擎单向依赖此 Facade。
-- 这有助于在未来的物理重构阶段，无缝地向“最终完美方案（Option 2 物理分拆）”平滑演化。
+- 这有助于在未来的物理重构阶段，无缝地向”最终完美方案（Option 2 物理分拆）”平滑演化。
 --------------------------------------------------------------------------------
-"""
+“””
 
 from app.tools.base_tool import ToolDefinition
 
 
 class SystemTools:
-    """系统级主动命令类工具（逻辑命名空间）
+    “””系统级主动命令类工具（逻辑命名空间）
 
     对标变量池的 `tool_call` 策略，封装无状态执行动作（ACLI/Bash 命令等）。
-    """
+    “””
 
     @staticmethod
     def get_acli_exec():
@@ -43,10 +43,10 @@ class SystemTools:
 
     @staticmethod
     def get_qfk():
-        """获取 QFK 后端信号谓词工具及相关类型定义
+        “””获取 QFK 后端信号谓词工具及相关类型定义
 
         返回元组：(qfk_load, qfk_exec, BackendSignal, BackendSignalType, QFKResult)
-        """
+        “””
         from app.tools.qfk import (
             BackendSignal,
             BackendSignalType,
@@ -59,10 +59,10 @@ class SystemTools:
 
     @staticmethod
     def get_qkv():
-        """获取 QKV 前端信号变量提取工具定义
+        “””获取 QKV 前端信号变量提取工具定义
 
         返回元组：(qkv_load, qkv_exec, FrontendSignal, FrontendQueryType, QKVResult)
-        """
+        “””
         from app.tools.qkv import (
             FrontendQueryType,
             FrontendSignal,
@@ -73,12 +73,56 @@ class SystemTools:
 
         return qkv_load, qkv_exec, FrontendSignal, FrontendQueryType, QKVResult
 
+    @staticmethod
+    def get_signal_extractor():
+        “””获取关键信号提取器
+
+        用于从 KBD/SOP 自然语言文本中提取结构化信号
+
+        返回：
+            SignalExtractor 类
+        “””
+        from app.tools.signal import SignalExtractor
+
+        return SignalExtractor
+
+    @staticmethod
+    def create_variable_pool(conversation_id: str):
+        “””创建会话级变量池
+
+        用于管理信号间的变量流转（生产者-消费者模式）
+
+        Args:
+            conversation_id: 会话标识
+
+        返回：
+            VariablePool 实例
+        “””
+        from app.tools.signal import VariablePool
+
+        return VariablePool(conversation_id=conversation_id)
+
+    @staticmethod
+    def get_signal_types():
+        “””获取信号类型定义
+
+        返回元组：(KeySignal, FrontendSignal, BackendSignal, SignalCategory)
+        “””
+        from app.tools.signal import (
+            BackendSignal,
+            FrontendSignal,
+            KeySignal,
+            SignalCategory,
+        )
+
+        return KeySignal, FrontendSignal, BackendSignal, SignalCategory
+
 
 class InteractiveTools:
-    """交互类/状态流转类工具（逻辑命名空间）
+    “””交互类/状态流转类工具（逻辑命名空间）
 
     对标变量池的 `user_confirm` 与 `user_input` 策略，提供人机交互、选项生成与 SOP 状态跳转动作。
-    """
+    “””
 
     @staticmethod
     def get_sop_client_class():
@@ -93,4 +137,4 @@ class InteractiveTools:
         return get_sop_node, sop_advance
 
 
-__all__ = ["ToolDefinition", "SystemTools", "InteractiveTools"]
+__all__ = [“ToolDefinition”, “SystemTools”, “InteractiveTools”]

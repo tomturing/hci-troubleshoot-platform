@@ -20,6 +20,7 @@ ToolDefinition：描述单个工具的元数据模型，供工具注册表（TOO
   sop     : SOP 导航工具（get_sop_node、sop_advance 等）
   qkv     : QKV 前端信号变量提取工具（通过关键字查找告警/任务/弹框并提取出元数据变量）
   qfk     : QFK 后端信号谓词工具（处理由 KBD/SOP 提炼出来的标准化后端信号并进行 True/False 布尔判定）
+  signal  : 关键信号架构（KeySignal 基类、SignalExtractor 提取器、VariablePool 变量池）
 """
 
 from pydantic import BaseModel
