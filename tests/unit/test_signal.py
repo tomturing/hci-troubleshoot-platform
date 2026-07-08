@@ -16,6 +16,7 @@ if _agent_service not in sys.path:
     sys.path.insert(0, _agent_service)
 
 import pytest
+from app.tools.qkv.engine import QKVResult
 from app.tools.signal import (
     BackendSignal,
     BackendSignalType,
@@ -25,7 +26,6 @@ from app.tools.signal import (
     SignalCategory,
     VariablePool,
 )
-from app.tools.qkv.engine import QKVResult
 
 
 # ─────────────────────────────────────────────────────────────────────────────
