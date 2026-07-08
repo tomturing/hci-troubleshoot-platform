@@ -350,3 +350,4 @@ async def test_qfk_engine_expected_false_matched_flip():
         # 匹配到了 OOM (matched=True)，但是 expected=False，故最终匹配 matched 应翻转为 False！
         assert res.matched is False
         assert res.matched_keywords == ["OOM error"]
+# 触发CI重新运行
