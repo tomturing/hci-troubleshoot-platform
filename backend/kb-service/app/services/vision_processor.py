@@ -58,6 +58,7 @@ _BACKGROUND_COLORS = ("白色", "黑色", "灰色", "彩色", "其他")
 _KBD_VISION_PROMPT_NAME = "kbd_vision_v1"
 
 # LLM 配置（从环境变量读取，与 classify.py 保持一致，统一使用 LLM_* 命名）
+# 注意：VISION_MODEL 从未在 Helm 中注入，直接使用 LLM_DEFAULT_MODEL（ConfigMap 已注入）
 _LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 _LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 # 优先读取 VISION_MODEL，若未配置，则回退到已验证可用的 qwen3.7-plus
