@@ -1,0 +1,27 @@
+{{- if and .Values.ingress.enabled .Values.adminUI.ingress.enabled }}
+# ExternalName Service 代理 Grafana（跨命名空间访问）
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-observability
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: observability-proxy
+spec:
+  type: ExternalName
+  externalName: grafana.hci-observability.svc.cluster.local
+---
+# ExternalName Service 代理 Langfuse（跨命名空间访问）
+apiVersion: v1
+kind: Service
+metadata:
+  name: langfuse-observability
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: observability-proxy
+spec:
+  type: ExternalName
+  externalName: langfuse-server.hci-observability.svc.cluster.local
+{{- end }}

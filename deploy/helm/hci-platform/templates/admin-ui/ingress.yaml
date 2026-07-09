@@ -24,20 +24,20 @@ spec:
     - host: {{ .Values.adminUI.ingress.host | quote }}
       http:
         paths:
-          # Grafana 可观测性路径（跨命名空间服务引用）
+          # Grafana 可观测性路径（通过 ExternalName Service 代理跨命名空间服务）
           - path: /grafana
             pathType: Prefix
             backend:
               service:
-                name: grafana.hci-observability.svc.cluster.local
+                name: grafana-observability
                 port:
                   number: 3000
-          # Langfuse 可观测性路径（跨命名空间服务引用）
+          # Langfuse 可观测性路径（通过 ExternalName Service 代理跨命名空间服务）
           - path: /langfuse
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           # Langfuse Next.js 需要的静态资源路径（必须在 /api 之前，避免被 api-gateway 吞掉）
@@ -45,14 +45,14 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /static
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           # Langfuse 认证和 API 路径（必须在 /api 之前，避免被 api-gateway 吞掉）
@@ -60,21 +60,21 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /api/public
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /api/trpc
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           # Langfuse 需要的精确路径资源
@@ -82,28 +82,28 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /wordart-black.svg
             pathType: Exact
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /wordart-white.svg
             pathType: Exact
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /favicon.ico
             pathType: Exact
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           # Admin UI API 路径
@@ -134,20 +134,20 @@ spec:
     # 无 host 时直接匹配所有请求（适用于端口隔离场景）
     - http:
         paths:
-          # Grafana 可观测性路径（跨命名空间服务引用）
+          # Grafana 可观测性路径（通过 ExternalName Service 代理跨命名空间服务）
           - path: /grafana
             pathType: Prefix
             backend:
               service:
-                name: grafana.hci-observability.svc.cluster.local
+                name: grafana-observability
                 port:
                   number: 3000
-          # Langfuse 可观测性路径（跨命名空间服务引用）
+          # Langfuse 可观测性路径（通过 ExternalName Service 代理跨命名空间服务）
           - path: /langfuse
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           # Langfuse Next.js 需要的静态资源路径（必须在 /api 之前，避免被 api-gateway 吞掉）
@@ -155,14 +155,14 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /static
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           # Langfuse 认证和 API 路径（必须在 /api 之前，避免被 api-gateway 吞掉）
@@ -170,21 +170,21 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /api/public
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /api/trpc
             pathType: Prefix
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           # Langfuse 需要的精确路径资源
@@ -192,28 +192,28 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /wordart-black.svg
             pathType: Exact
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /wordart-white.svg
             pathType: Exact
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           - path: /favicon.ico
             pathType: Exact
             backend:
               service:
-                name: langfuse-server.hci-observability.svc.cluster.local
+                name: langfuse-observability
                 port:
                   number: 3000
           # Admin UI API 路径
