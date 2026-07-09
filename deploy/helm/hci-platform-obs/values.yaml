@@ -133,7 +133,7 @@ langfuse:
         cpu: "1000m"
         memory: "2Gi"
   worker:
-    image: langfuse/langfuse-worker:v3.202.1
+    image: langfuse/langfuse-worker:3
     resources:
       requests:
         cpu: "100m"
