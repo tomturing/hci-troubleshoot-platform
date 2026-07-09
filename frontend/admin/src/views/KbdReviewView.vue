@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FullScreen } from '@element-plus/icons-vue'
+import { FullScreen, Refresh } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -280,7 +280,15 @@ const reclassifyLoading = ref<number | null>(null)  // 正在重分类的 entry.
 const reanalyzeLoading = ref<number | null>(null)   // 正在重识图的 entry.id
 
 async function handleReclassify(entry: KbdEntry) {
-  if (!confirm(`确认用最新 Prompt 重新分类「${entry.title.slice(0, 30)}...」？`)) return
+  try {
+    await ElMessageBox.confirm(
+      `确认用最新 Prompt 重新分类「${entry.title}」？`,
+      '重新分类',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
   reclassifyLoading.value = entry.id
   try {
     const resp = await fetch(`/api/v1/kbd/${entry.id}/reclassify`, {
@@ -297,6 +305,12 @@ async function handleReclassify(entry: KbdEntry) {
       entries.value[idx].ai_category_conf = data.confidence
       entries.value[idx].ai_category_reason = data.reason
     }
+    // 刷新详情中的该条目
+    if (detailEntry.value && detailEntry.value.id === entry.id) {
+      detailEntry.value.ai_category_id = data.category_id
+      detailEntry.value.ai_category_conf = data.confidence
+      detailEntry.value.ai_category_reason = data.reason
+    }
   } catch (err: any) {
     ElMessage.error(`重新分类失败：${err.message || '未知错误'}`)
   } finally {
@@ -305,7 +319,15 @@ async function handleReclassify(entry: KbdEntry) {
 }
 
 async function handleReanalyzeImages(entry: KbdEntry) {
-  if (!confirm(`确认用最新 Prompt 重新识图「${entry.title.slice(0, 30)}...」？\n耗时较长，请耐心等待。`)) return
+  try {
+    await ElMessageBox.confirm(
+      `确认用最新 Prompt 重新识图「${entry.title}」？\n\n注意：重新识图耗时较长，请耐心等待。`,
+      '重新识图',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
   reanalyzeLoading.value = entry.id
   try {
     const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-images`, {
@@ -330,6 +352,13 @@ async function handleReanalyzeImages(entry: KbdEntry) {
         const fresh = await detailResp.json()
         detailEntry.value = fresh
         parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
+        parsedSegments.value = parseContentMd(fresh.content_md || '')
+        // 同时更新列表里的该条目
+        const idx = entries.value.findIndex(e => e.id === entry.id)
+        if (idx !== -1) {
+          entries.value[idx].content_md = fresh.content_md
+          entries.value[idx].images_json = fresh.images_json
+        }
       }
     }
   } catch (err: any) {
@@ -1006,27 +1035,11 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 操作 -->
-        <el-table-column label="操作" width="340" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <div class="action-btn-group">
             <el-button type="info" size="small" text @click="openDetailDialog(row)">详情</el-button>
             <el-button type="primary" size="small" text @click="openEditDialog(row)">编辑</el-button>
-            <!-- 重新分类：用最新 Prompt 重算 -->
-            <el-button
-              type="primary"
-              size="small"
-              text
-              :loading="reclassifyLoading === row.id"
-              @click="handleReclassify(row)"
-            >重新分类</el-button>
-            <!-- 重新识图：用最新 Prompt 重算（耗时较长） -->
-            <el-button
-              type="warning"
-              size="small"
-              text
-              :loading="reanalyzeLoading === row.id"
-              @click="handleReanalyzeImages(row)"
-            >重新识图</el-button>
             <template v-if="row.status === 'draft'">
               <el-button type="success" size="small" text @click="handleApprove(row)">通过</el-button>
               <el-button type="danger" size="small" text @click="openRejectDialog(row)">拒绝</el-button>
@@ -1107,6 +1120,17 @@ onMounted(() => {
               v-if="detailEntry.ai_category_conf !== null"
               :style="{ marginLeft: '8px', color: confidenceColor(detailEntry.ai_category_conf) }"
             >{{ confidenceLabel(detailEntry.ai_category_conf) }}</span>
+            <el-button
+              type="primary"
+              link
+              size="small"
+              style="margin-left: 8px; padding: 0; display: inline-flex; align-items: center; vertical-align: middle;"
+              :loading="reclassifyLoading === detailEntry.id"
+              @click="handleReclassify(detailEntry)"
+              title="重新分类"
+            >
+              <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+            </el-button>
             <el-tag
               v-if="detailEntry.ai_category_conf !== null && detailEntry.ai_category_conf < 0.5"
               type="warning" size="small" style="margin-left: 4px"
@@ -1206,6 +1230,17 @@ onMounted(() => {
                   <span v-if="seg.fields.intro" class="screenshot-intro-preview">
                     {{ seg.fields.intro.slice(0, 30) }}{{ seg.fields.intro.length > 30 ? '…' : '' }}
                   </span>
+                  <el-button
+                    type="warning"
+                    link
+                    size="small"
+                    style="margin-right: 8px; padding: 0; display: inline-flex; align-items: center; vertical-align: middle;"
+                    :loading="reanalyzeLoading === detailEntry.id"
+                    @click.stop="handleReanalyzeImages(detailEntry)"
+                    title="重新识图"
+                  >
+                    <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+                  </el-button>
                   <span class="toggle-arrow">{{ seg.expanded ? '▲' : '▼' }}</span>
                 </div>
 
@@ -1267,6 +1302,17 @@ onMounted(() => {
                   <span class="screenshot-intro-preview">
                     {{ img.section }}
                   </span>
+                  <el-button
+                    type="warning"
+                    link
+                    size="small"
+                    style="margin-right: 8px; padding: 0; display: inline-flex; align-items: center; vertical-align: middle;"
+                    :loading="reanalyzeLoading === detailEntry.id"
+                    @click.stop="handleReanalyzeImages(detailEntry)"
+                    title="重新识图"
+                  >
+                    <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+                  </el-button>
                   <span class="toggle-arrow">{{ img.expanded ? '▲' : '▼' }}</span>
                 </div>
 

@@ -392,7 +392,7 @@ def _cmd_config(_args: argparse.Namespace) -> None:
     """打印当前配置（隐藏敏感信息）"""
     cfg = settings.model_dump()
     # 隐藏敏感字段
-    for key in ("SANGFOR_COOKIE", "ZAI_API_KEY", "DATABASE_URL", "INTERNAL_API_TOKEN"):
+    for key in ("SANGFOR_COOKIE", "DATABASE_URL", "INTERNAL_API_TOKEN"):
         if key in cfg and cfg[key]:
             cfg[key] = cfg[key][:8] + "****"
     print(json.dumps({k: str(v) for k, v in cfg.items()}, ensure_ascii=False, indent=2))

@@ -206,6 +206,16 @@ def get_failed_vision_ids(kbd_ids: list[str]) -> list[str]:
     return []
 
 
+from pathlib import Path
+
 def _has_failed_vision(kbd_dir: Any) -> bool:
     """兼容旧接口，新架构不再使用本地文件标记。"""
     return False
+
+
+def _find_images(kbd_dir: Path) -> list[Path]:
+    """查找目录下的所有图片文件"""
+    exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+    if not kbd_dir.exists():
+        return []
+    return [p for p in kbd_dir.iterdir() if p.is_file() and p.suffix.lower() in exts]

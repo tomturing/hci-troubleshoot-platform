@@ -72,28 +72,8 @@ class KbdSettings(BaseSettings):
     DB_POOL_MIN: int = Field(default=2)
     DB_POOL_MAX: int = Field(default=10)
 
-    # ── LLM（Vision 兜底 + 分析）───────────────────────────────────────────────
-    # 旧字段保留向后兼容（用于 Vision 兜底 OCR，模型换为 DashScope qwen3.5-plus）
-    ZAI_API_KEY: str = Field(default="", description="DashScope API Key（必填，替代旧 z.ai key）")
-    ZAI_BASE_URL: str = Field(
-        default="https://coding.dashscope.aliyuncs.com/v1",
-        description="DashScope OpenAI-compatible API Base URL",
-    )
-    # Vision 兜底模型（支持图片输入，PaddleOCR 失败时启用）
-    VISION_MODEL: str = Field(
-        default="qwen3.5-plus",
-        description="Vision 兜底 OCR 模型（需支持 image_url 输入，DashScope qwen3.5-plus）",
-    )
-    # 分类模型（保留兼容）
-    CLASSIFY_MODEL: str = Field(
-        default="qwen3.5-plus",
-        description="分类 LLM 模型名称",
-    )
-    # LLM 请求超时（秒）
-    LLM_TIMEOUT: float = Field(default=60.0)
-    # Vision 输出最大 token 数（日志截图 FULL_TEXT 较长，需要足够空间）
-    VISION_MAX_TOKENS: int = Field(default=4096, ge=128, le=8192)
-    # Vision 并发数（控制每个案例的图片并行处理数）
+    # ── 管道并发行为 ──────────────────────────────────────────────────────────
+    # 抓取时并发下载图片限制数
     VISION_CONCURRENCY: int = Field(default=3, ge=1, le=10)
 
     # ── 管道行为 ──────────────────────────────────────────────────────────────

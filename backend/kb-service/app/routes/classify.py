@@ -34,9 +34,9 @@ router = APIRouter(prefix="/api/kb", tags=["classify"])
 # 由 main.py 的 set_dependencies 注入
 _db_manager: DatabaseManager | None = None
 
-# LLM 配置（从环境变量读取）
-LLM_BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
-LLM_API_KEY = os.environ.get("API_KEY", "")
+# LLM 配置（从环境变量读取，统一使用 LLM_* 命名）
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("CLASSIFY_MODEL", "qwen3.7-plus")
 
 # 分类置信度阈值
