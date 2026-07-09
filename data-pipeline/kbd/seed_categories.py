@@ -431,7 +431,7 @@ async def main() -> None:
         database_url = os.environ.get("DATABASE_URL")
         if not database_url:
             # 尝试从 .env 文件读取
-            env_file = _PROJECT_ROOT / "scripts" / "kbd" / ".env"
+            env_file = _PROJECT_ROOT / "data-pipeline" / "kbd" / ".env"
             if env_file.exists():
                 with open(env_file, encoding="utf-8") as f:
                     for line in f:

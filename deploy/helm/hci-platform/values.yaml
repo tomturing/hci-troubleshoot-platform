@@ -252,6 +252,12 @@ kbService:
   embeddingDim: 1536
   embeddingTimeoutSec: "60.0"
   bgeModelHostPath: /home/node/models/bge-small-zh-v1.5
+  # KBD 数据管道 Job 配置（符合 Twelve-Factor App 配置规范）
+  pipelineJob:
+    enabled: false
+    image: "" # 默认为空以使用 kbService 的容器镜像，或指定自定义镜像
+    persistence:
+      existingClaim: "kbd-cache"
 
 # ======================== Customer UI =======================================
 customerUI:
