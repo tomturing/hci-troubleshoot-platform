@@ -209,3 +209,13 @@ DO $$ BEGIN
     END IF;
   END IF;
 END $$;
+
+-- ═══════════════════════════════════════════════════════════════
+-- kbd_image 表：由 desired_schema.sql 创建（Atlas 管理）
+--
+-- 背景：KBD 分类与识图 Prompt 统一管理 + 在线重算功能需要 kbd_image 表
+-- 存储 data-pipeline 抓取的原始图片二进制，供 kb-service 在线重算识图。
+--
+-- 设计：此表已在 desired_schema.sql 中定义（紧跟 kbd_entry 表），
+-- Atlas 在 Step 2b 自动创建，无需在此处重复迁移。
+-- ═══════════════════════════════════════════════════════════════

@@ -5,18 +5,10 @@ POST /api/kb/classify
   - 基于 LLM 的知识分类接口（KBD 生产流水线使用）
   - 从 kb_category 表读取 198 个分类节点
   - 构建 Prompt 让 LLM 选择最匹配的 top3
-  - 调用 ZAI API（OpenAI-compatible）
+  - 调用 LLM API（OpenAI-compatible）
   - 低置信度（< 0.5）标记 needs_review=true
   - 调用方：KBD 生产流水线 Stage 4（AI 分类建议）
   - 请求参数：title + problem_desc
-
-POST /api/kb/classify/intent
-  - 意图识别接口（conversation-service 使用）
-  - 基于 LLM 进行用户问题意图识别
-  - 返回 top_n 个分类候选（默认 3）
-  - 响应包含 category_id（数据库主键）用于后续调用 /api/kb/route
-  - 调用方：conversation-service 意图识别模块
-  - 请求参数：query + top_n
 
 """
 
@@ -29,6 +21,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
+from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import text
 
 if TYPE_CHECKING:
@@ -41,12 +34,10 @@ router = APIRouter(prefix="/api/kb", tags=["classify"])
 # 由 main.py 的 set_dependencies 注入
 _db_manager: DatabaseManager | None = None
 
-# LLM 配置（统一从 LLM_* 环境变量读取）
-_raw_base_url = os.environ.get("LLM_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1")
-# dashscope API 已包含 /v1，无需额外补充
-LLM_BASE_URL = _raw_base_url.rstrip("/")
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-LLM_MODEL = os.environ.get("GLM_MODEL", "glm-5")
+# LLM 配置（从环境变量读取）
+LLM_BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
+LLM_API_KEY = os.environ.get("API_KEY", "")
+LLM_MODEL = os.environ.get("CLASSIFY_MODEL", "qwen3.7-plus")
 
 # 分类置信度阈值
 CONFIDENCE_THRESHOLD = 0.5
@@ -58,212 +49,6 @@ def set_dependencies(db: DatabaseManager) -> None:
     _db_manager = db
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /api/kb/classify/intent — 意图识别接口（供 conversation-service 使用）
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class IntentClassifyRequest(BaseModel):
-    """意图识别请求（conversation-service 调用）"""
-
-    query: str = Field(..., min_length=1, max_length=500, description="用户问题")
-    top_n: int = Field(3, ge=1, le=10, description="返回分类数量（默认 3）")
-
-
-class IntentCategoryItem(BaseModel):
-    """意图识别分类项"""
-
-    category_id: int = Field(..., description="分类节点 ID（数据库主键）")
-    code: str | None = Field(None, description="分类编码（如 '虚拟机-001'）")
-    name: str = Field(..., description="分类名称（中文）")
-    domain: str | None = Field(None, description="一级技术域")
-    path_labels: list[str] = Field(default_factory=list, description="完整路径")
-    score: float = Field(..., ge=0.0, le=1.0, description="置信度分数")
-
-
-class IntentClassifyResponse(BaseModel):
-    """意图识别响应"""
-
-    categories: list[IntentCategoryItem] = Field(..., description="分类候选列表")
-    needs_review: bool = Field(False, description="是否需要人工确认（最高置信度 < 0.5）")
-
-
-# 意图识别 Prompt 模板（用于对话场景的用户问题分类）
-INTENT_CLASSIFY_PROMPT_TEMPLATE = """你是 HCI 超融合平台的故障分类专家。
-
-根据用户的问题描述，从以下分类列表中选择最匹配的分类。
-返回 JSON 格式，包含 top{top_n} 分类候选。
-
-## 分类列表（共 {count} 个）
-
-{categories_text}
-
-## 用户问题
-
-{query}
-
-## 输出要求
-
-返回 JSON 格式：
-```json
-{{
-  "top3": [
-    {{"category_id": "<分类编码>", "label": "<分类标签>", "score": <置信度0-1>, "reason": "<匹配理由>"}},
-    {{"category_id": "<分类编码>", "label": "<分类标签>", "score": <置信度0-1>, "reason": "<匹配理由>"}},
-    {{"category_id": "<分类编码>", "label": "<分类标签>", "score": <置信度0-1>, "reason": "<匹配理由>"}}
-  ]
-}}
-```
-
-要求：
-1. category_id 必须是上述分类列表中的合法编码
-2. score 从高到低排列，最高为推荐分类
-3. reason 简洁说明匹配依据（30字以内）
-4. 如果问题不属于任何分类，第一项 score 设为 0.1
-"""
-
-
-@router.post("/classify/intent", response_model=IntentClassifyResponse)
-async def classify_intent(request: Request, body: IntentClassifyRequest) -> IntentClassifyResponse:
-    """意图识别接口（供 conversation-service 使用）
-
-    流程：
-    1. 从 kb_category 表读取所有分类节点
-    2. 构建 Prompt 包含所有分类选项
-    3. 调用 ZAI LLM API 进行意图识别
-    4. 返回 top_n 个分类候选
-    5. 低置信度标记 needs_review=true
-
-    响应体示例：
-    ```json
-    {
-      "categories": [
-        {
-          "category_id": 123,
-          "code": "虚拟机-001",
-          "name": "虚拟机创建失败",
-          "domain": "虚拟机",
-          "path_labels": ["虚拟机", "虚拟机创建"],
-          "score": 0.85
-        }
-      ],
-      "needs_review": false
-    }
-    ```
-
-    用途：
-    - conversation-service 在对话开始时调用此接口进行意图识别
-    - 返回的 category_id 用于后续调用 GET /api/kb/route 进行知识检索
-    """
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="服务未就绪")
-
-    logger.info(
-        event="intent_classify_request",
-        query=body.query[:50],
-        top_n=body.top_n,
-    )
-
-    # 1. 读取分类列表
-    categories = await fetch_categories_for_classify(_db_manager)
-    if not categories:
-        raise HTTPException(status_code=503, detail="kb_category 表无分类数据")
-
-    valid_codes = {cat["code"] for cat in categories}
-    # 构建 code -> category info 映射（用于后续构建响应）
-    code_to_category: dict[str, dict] = {cat["code"]: cat for cat in categories}
-    categories_text = build_categories_text(categories)
-
-    # 2. 构建 Prompt（根据 top_n 调整输出要求）
-    prompt = INTENT_CLASSIFY_PROMPT_TEMPLATE.format(
-        top_n=body.top_n,
-        count=len(categories),
-        categories_text=categories_text,
-        query=body.query,
-    )
-
-    # 3. 调用 LLM
-    try:
-        llm_result = await call_llm(prompt)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(event="intent_classify_llm_error", error=str(e))
-        raise HTTPException(status_code=503, detail=f"LLM 调用失败: {e}")
-
-    # 4. 解析响应（添加 schema 验证）
-    top_results = llm_result.get("top3", [])
-    if not isinstance(top_results, list):
-        logger.warning(event="intent_classify_invalid_schema", result_type=type(top_results).__name__)
-        raise HTTPException(status_code=500, detail="LLM 返回格式异常：top3 不是列表")
-    if not top_results:
-        logger.warning(event="intent_classify_empty_result")
-        raise HTTPException(status_code=500, detail="LLM 未返回分类结果")
-
-    # 5. 批量查询所有需要的 category_id（修复 N+1 查询问题）
-    needed_codes = [item.get("category_id", "") for item in top_results[: body.top_n]]
-    needed_codes = [c for c in needed_codes if c in valid_codes]  # 过滤有效 code
-
-    code_to_db_id: dict[str, int] = {}
-    if needed_codes:
-        async with _db_manager.async_session_factory() as session:
-            result = await session.execute(
-                text("SELECT id, code FROM kb_category WHERE code = ANY(:codes)"),
-                {"codes": needed_codes},
-            )
-            for row in result.fetchall():
-                code_to_db_id[row.code] = row.id
-
-    # 6. 构建 IntentCategoryItem 列表
-    intent_items: list[IntentCategoryItem] = []
-    needs_review = True  # 默认需要审核
-
-    for item in top_results[: body.top_n]:
-        category_code = item.get("category_id", "")
-        if category_code in valid_codes:
-            cat_info = code_to_category.get(category_code, {})
-            score = min(1.0, max(0.0, item.get("score", 0.0)))
-
-            # 从预查询结果获取 category_id（主键）
-            db_id = code_to_db_id.get(category_code, 0)
-
-            intent_items.append(
-                IntentCategoryItem(
-                    category_id=db_id,
-                    code=category_code,
-                    name=cat_info.get("name", item.get("label", "")),
-                    domain=cat_info.get("domain"),
-                    path_labels=cat_info.get("path", []),
-                    score=score,
-                )
-            )
-
-            # 最高置信度 >= 0.5 则不需要审核
-            if score >= CONFIDENCE_THRESHOLD and intent_items:
-                needs_review = False
-
-    # 如果所有分类都被过滤，返回默认响应
-    if not intent_items:
-        intent_items = [
-            IntentCategoryItem(
-                category_id=0,
-                code=None,
-                name="未分类",
-                domain=None,
-                path_labels=[],
-                score=0.1,
-            )
-        ]
-        needs_review = True
-
-    logger.info(
-        event="intent_classify_result",
-        top_category=intent_items[0].code if intent_items else None,
-        top_score=intent_items[0].score if intent_items else 0.0,
-        needs_review=needs_review,
-    )
-
-    return IntentClassifyResponse(categories=intent_items, needs_review=needs_review)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -296,46 +81,8 @@ class ClassifyResponse(BaseModel):
     needs_review: bool = Field(False, description="是否需要人工审核（置信度 < 0.5）")
 
 
-# 分类 Prompt 模板
-CLASSIFY_PROMPT_TEMPLATE = """你是 HCI 超融合平台的故障分类专家。
-
-根据案例标题和问题描述，从以下分类列表中选择最匹配的分类。
-返回 JSON 格式，包含 top3 分类候选。
-
-## 分类列表（共 {count} 个）
-
-{categories_text}
-
-## 输入案例
-
-**标题**: {title}
-
-**问题描述**:
-{problem_desc}
-
-## 输出要求
-
-返回 JSON 格式：
-```json
-{{
-  "top3": [
-    {{"category_id": "<分类编码>", "label": "<分类标签>", "score": <置信度0-1>, "reason": "<匹配理由>"}},
-    {{"category_id": "<分类编码>", "label": "<分类标签>", "score": <置信度0-1>, "reason": "<匹配理由>"}},
-    {{"category_id": "<分类编码>", "label": "<分类标签>", "score": <置信度0-1>, "reason": "<匹配理由>"}}
-  ]
-}}
-```
-
-要求：
-1. category_id 必须是上述分类列表中的合法编码
-2. score 从高到低排列，最高为推荐分类
-3. reason 简洁说明匹配依据（50字以内）
-4. **关键约束：category_id 对应的 label 必须与 reason 中描述的故障现象严格匹配**
-   - 如果 reason 提到"开机失败"，category_id 必须选择 label 包含"开机失败"的分类
-   - 如果 reason 提到"创建失败"，category_id 必须选择 label 包含"创建失败"的分类
-   - 输出前请自检：确认 category_id 的 label 与 reason 中的关键词语义一致
-5. 如果案例不属于任何分类，top3 第一项 score 设为 0.1
-"""
+# 分类 Prompt 名称（从 system_prompt 表热加载，支持 admin-ui 在线管理）
+_KBD_CLASSIFY_PROMPT_NAME = "kbd_classify_v1"
 
 
 async def fetch_categories_for_classify(db_manager: DatabaseManager) -> list[dict]:
@@ -410,7 +157,7 @@ async def call_llm(prompt: str) -> dict:
                 {"role": "system", "content": "你是 HCI 超融合平台的故障分类专家，输出严格遵循 JSON 格式。"},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.3,
+            temperature=0.0,  # 确保输出确定性
             max_tokens=500,
             response_format={"type": "json_object"},
         )
@@ -512,27 +259,7 @@ async def classify(request: Request, body: ClassifyRequest) -> ClassifyResponse:
         problem_desc_len=len(body.problem_desc),
     )
 
-    # 1. 读取分类列表
-    categories = await fetch_categories_for_classify(_db_manager)
-    if not categories:
-        raise HTTPException(status_code=503, detail="kb_category 表无分类数据")
-
-    valid_codes = {cat["code"] for cat in categories}
-    categories_text = build_categories_text(categories)
-
-    # 2. 构建 Prompt
-    prompt = CLASSIFY_PROMPT_TEMPLATE.format(
-        count=len(categories),
-        categories_text=categories_text,
-        title=body.title,
-        problem_desc=body.problem_desc,
-    )
-
-    # 3. 调用 LLM
-    llm_result = await call_llm(prompt)
-
-    # 4. 解析响应
-    response = parse_llm_response(llm_result, valid_codes)
+    response = await classify_case(_db_manager, body.title, body.problem_desc)
 
     logger.info(
         event="classify_result",
@@ -542,3 +269,54 @@ async def classify(request: Request, body: ClassifyRequest) -> ClassifyResponse:
     )
 
     return response
+
+
+async def classify_case(
+    db_manager: DatabaseManager,
+    title: str,
+    problem_desc: str,
+) -> ClassifyResponse:
+    """分类核心逻辑（可复用，供 admin.py 的 reclassify API 调用）
+
+    流程：
+      1. 读取分类列表
+      2. 从数据库热加载分类 Prompt（kbd_classify_v1）
+      3. 调用 LLM
+      4. 解析响应并校验
+
+    Args:
+        db_manager: 数据库管理器
+        title: 案例标题
+        problem_desc: 问题描述
+
+    Returns:
+        ClassifyResponse
+    """
+    # 1. 读取分类列表
+    categories = await fetch_categories_for_classify(db_manager)
+    if not categories:
+        raise HTTPException(status_code=503, detail="kb_category 表无分类数据")
+
+    valid_codes = {cat["code"] for cat in categories}
+    categories_text = build_categories_text(categories)
+
+    # 2. 从数据库热加载分类 Prompt（支持 admin-ui 修改后立即生效）
+    async with db_manager.async_session_factory() as session:
+        prompt_template = await StrictPromptLoader.load_and_validate(
+            session,
+            _KBD_CLASSIFY_PROMPT_NAME,
+            ["count", "categories_text", "title", "problem_desc"],
+            consumer="kb-service.classify",
+        )
+    prompt = prompt_template.format(
+        count=len(categories),
+        categories_text=categories_text,
+        title=title,
+        problem_desc=problem_desc,
+    )
+
+    # 3. 调用 LLM
+    llm_result = await call_llm(prompt)
+
+    # 4. 解析响应
+    return parse_llm_response(llm_result, valid_codes)

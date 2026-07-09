@@ -26,7 +26,7 @@ import re
 from datetime import UTC, datetime
 
 from shared.database.postgres import Base
-from sqlalchemy import BigInteger, Column, DateTime, Float, Integer, String, Text
+from sqlalchemy import BigInteger, Column, DateTime, Float, Integer, LargeBinary, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
 
@@ -255,3 +255,34 @@ class KbdEntry(Base):
 
     def __repr__(self) -> str:
         return f"<KbdEntry(id={self.id}, support_id={self.support_id}, status={self.status})>"
+
+
+class KbdImage(Base):
+    """KBD 原始图片模型 - 存储 data-pipeline 抓取的原始图片二进制
+
+    用途：解耦 kb-service 对 data-pipeline 本地文件系统的依赖，
+    支持 admin-ui 在线触发"重新识图"按钮（POST /api/admin/kbd/{id}/reanalyze-images）
+
+    关系：
+    - kbd_entry_id -> kbd_entry.id（ON DELETE CASCADE，跟随 KBD 条目删除）
+    - seq 与 kbd_entry.images_json 中的 seq 对应
+    """
+
+    __tablename__ = "kbd_image"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kbd_entry_id = Column(BigInteger, nullable=False, comment="关联的 KBD 条目 ID")
+    seq = Column(Integer, nullable=False, comment="图片序号（与 images_json 中的 seq 对应）")
+    image_data = Column(LargeBinary, nullable=False, comment="原始图片二进制（压缩后存入）")
+    mime_type = Column(String(50), nullable=True, comment="图片 MIME 类型")
+    width = Column(Integer, nullable=True, comment="图片宽度（像素）")
+    height = Column(Integer, nullable=True, comment="图片高度（像素）")
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    def __repr__(self) -> str:
+        return f"<KbdImage(id={self.id}, kbd_entry_id={self.kbd_entry_id}, seq={self.seq})>"
+
