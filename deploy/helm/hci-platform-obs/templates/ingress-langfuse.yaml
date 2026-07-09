@@ -7,8 +7,9 @@ metadata:
   labels:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
+    # TLS 启用时同时响应 websecure（HTTPS，端口 4443/3443）和 web（HTTPS，端口 4888/3888，用于内网隔离管理口）
     {{- if .Values.ingress.tls }}
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure,web
     {{- else }}
     traefik.ingress.kubernetes.io/router.entrypoints: web
     {{- end }}

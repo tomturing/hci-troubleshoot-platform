@@ -41,9 +41,10 @@ acli.sangfor.com.cn:4443
 ┌─────────────────────────────────────────────────┐
 │  云 LB: 8443 → Traefik 4888 (web + TLS)         │
 │  IP 白名单: 仅管理员 IP                          │
-│  路由: admin-ui + /api + /ws + /grafana + /langfuse │
+│  路由: admin-ui + /api + /ws                    │
+│  可观测性路由: /grafana + /langfuse (由 hci-observability 命名空间 Ingress 响应) │
 │  (PR #487 补齐 /api 和 /ws 转发至 api-gateway)  │
-│  (PR #497 补齐 /grafana 和 /langfuse 可观测性路径转发) │
+│  (PR #502 修正 /grafana 和 /langfuse 跨命名空间多入口点绑定) │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -52,7 +53,7 @@ acli.sangfor.com.cn:4443
 | 项目 | 变更 |
 |-----|------|
 | **Traefik web entrypoint** | 启用 TLS（原为 HTTP） |
-| **admin-ui Ingress** | 独立部署，使用 web entrypoint（staging: 4888, prod: 3888）；**补齐 `/api` 和 `/ws` 路径转发至 api-gateway（PR #487）；补齐 `/grafana` 和 `/langfuse` 可观测性路径转发（PR #497）** |
+| **admin-ui Ingress** | 独立部署，使用 web entrypoint（staging: 4888, prod: 3888）；**补齐 `/api` 和 `/ws` 路径转发至 api-gateway（PR #487）；可观测性路由 `/grafana` 和 `/langfuse` 绑定到相同的 web 入口点上（PR #502）** |
 | **主 Ingress** | 移除 `/admin` 路径 |
 | **云厂商 LB** | 新增端口映射 → web entrypoint，配置管理员 IP 白名单 |
 
@@ -167,7 +168,7 @@ curl -sk https://127.0.0.1:3888/ -H 'Host: acli.sangfor.com.cn'
 
 | 文件 | 变更 |
 |-----|------|
-| `templates/admin-ui/ingress.yaml` | 新增 admin-ui 独立 Ingress 模板；**PR #487 补齐 `/api` 和 `/ws` 路径转发至 api-gateway；PR #497 补齐 `/grafana` 和 `/langfuse` 可观测性路径转发至跨命名空间服务** |
+| `templates/admin-ui/ingress.yaml` | 新增 admin-ui 独立 Ingress 模板；**PR #487 补齐 `/api` 和 `/ws` 路径转发至 api-gateway；跨命名空间可观测性路由直接在 hci-observability Ingress 中绑定 web 入口点（PR #502）** |
 | `templates/ingress.yaml` | 移除 `/admin` 路径 |
 | `values.yaml` | 新增 `adminUI.ingress` 配置节 |
 
@@ -250,8 +251,7 @@ adminUI:
 
 ## 变更历史
 
-| 版本 | 日期 | 变更内容 |
-|------|------|----------|
-| **1.2** | **2026-07-09** | **PR #497**：补齐 admin-ui-ingress `/grafana` 和 `/langfuse` 可观测性路径转发，解决通过独立端口（4888）访问 admin-ui 时可观测性页面 iframe 无法加载 Grafana 和 Langfuse 的问题 |
+| **1.3** | **2026-07-09** | **PR #502 (修复可观测性内嵌控制台)**：回滚了 PR #499/500/501 引入的无效跨命名空间转发，采用标准 Traefik 多入口点绑定方式，直接将 `hci-observability` 命名空间的 `grafana-ingress` 和 `langfuse-ingress` 绑定至 `web` 入口点，解决 "no available server" 报错 |
+| **1.2** | **2026-07-09** | **PR #499/500/501**：尝试修复可观测性页面加载失败，因语法及 ExternalName/ArgoCD Endpoints 排除规则失效而被 PR #502 替代并回滚 |
 | **1.1** | **2026-07-02** | **PR #487**：补齐 admin-ui-ingress `/api` 和 `/ws` 路径转发至 api-gateway，解决 4888 端口下 admin-ui API 请求被错误转发至静态 Nginx 容器导致的 502/DNS 报错问题 |
 | **1.0** | **2026-07-01** | **PR #485**：初始版本，Admin UI 内网隔离方案（端口分离 + IP 白名单） |
