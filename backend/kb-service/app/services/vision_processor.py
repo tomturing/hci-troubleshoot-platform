@@ -58,9 +58,10 @@ _BACKGROUND_COLORS = ("白色", "黑色", "灰色", "彩色", "其他")
 _KBD_VISION_PROMPT_NAME = "kbd_vision_v1"
 
 # LLM 配置（从环境变量读取，与 classify.py 保持一致，统一使用 LLM_* 命名）
+# 注意：VISION_MODEL 从未在 Helm 中注入，直接使用 LLM_DEFAULT_MODEL（ConfigMap 已注入）
 _LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 _LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-_LLM_VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3.7-plus")
+_LLM_VISION_MODEL = os.environ.get("LLM_DEFAULT_MODEL", "glm-5")
 _LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "60.0"))
 _VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "8192"))
 
