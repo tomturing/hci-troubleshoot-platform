@@ -252,6 +252,10 @@ kbService:
   embeddingDim: 1536
   embeddingTimeoutSec: "60.0"
   bgeModelHostPath: /home/node/models/bge-small-zh-v1.5
+  # KBD 分类与识图模型配置（注入为 CLASSIFY_MODEL / VISION_MODEL 环境变量）
+  # 两者均已在 DashScope 端点验证可用且支持多模态
+  classifyModel: "qwen3.7-plus"
+  visionModel: "qwen3.7-plus"
   # KBD 数据管道 Job 配置（符合 Twelve-Factor App 配置规范）
   pipelineJob:
     enabled: false
@@ -367,7 +371,7 @@ config:
 # 生产环境通过 helm install --set secrets.xxx=xxx 覆盖
 secrets:
   postgresPassword: "dev_password_123"
-  # LLM API Key（用于 dashscope 网关调用 GLM-5）
+  # LLM API Key（用于 dashscope 网关调用，由 kb-service/agent-service/conversation-service 共用）
   llmApiKey: ""
   # 内部服务间 API 鉴权 Token
   internalApiToken: "hci-dev-internal-token"

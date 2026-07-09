@@ -35,10 +35,10 @@ router = APIRouter(prefix="/api/kb", tags=["classify"])
 _db_manager: DatabaseManager | None = None
 
 # LLM 配置（从环境变量读取，统一使用 LLM_* 命名，与 ConfigMap hci-common-config 保持一致）
-# 注意：CLASSIFY_MODEL 从未在 Helm 中注入，直接使用 LLM_DEFAULT_MODEL（ConfigMap 已注入）
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-LLM_MODEL = os.environ.get("LLM_DEFAULT_MODEL", "glm-5")
+# 优先读取 CLASSIFY_MODEL，若未配置，则回退到已验证可用的 qwen3.7-plus
+LLM_MODEL = os.environ.get("CLASSIFY_MODEL", "qwen3.7-plus")
 
 # 分类置信度阈值
 CONFIDENCE_THRESHOLD = 0.5

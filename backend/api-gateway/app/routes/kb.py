@@ -268,9 +268,10 @@ async def _kbd_proxy(
     payload: dict | None = None,
     params: dict | None = None,
     headers: dict | None = None,
+    timeout: float = 30.0,
 ):
     """通用代理请求，透传至 kb-service KBD 路由"""
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             url = f"{KBD_SERVICE_URL}{path}"
             response = await client.request(method, url, json=payload, params=params, headers=headers)
@@ -336,7 +337,7 @@ async def kbd_republish_proxy(kbd_id: int, request: Request):
 async def kbd_reclassify_proxy(kbd_id: int, request: Request):
     """代理 KBD 重新分类请求（用最新 Prompt 重算）-> kb-service"""
     headers = _internal_auth_headers()
-    response = await _kbd_proxy("POST", f"/{kbd_id}/reclassify", headers=headers)
+    response = await _kbd_proxy("POST", f"/{kbd_id}/reclassify", headers=headers, timeout=120.0)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 

@@ -18,8 +18,10 @@ data:
   # LLM 配置（从顶级 llm.* 配置读取，assistantRegistryJson 由模板自动生成）
   LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
   LLM_DEFAULT_MODEL: {{ .Values.llm.model | quote }}
-  GLM_MODEL: {{ .Values.llm.model | quote }}
   AI_COMPLETIONS_PATH: {{ .Values.llm.apiCompletionsPath | quote }}
+  # KBD 分类与识图模型（可按环境覆盖，均已验证支持多模态）
+  CLASSIFY_MODEL: {{ .Values.kbService.classifyModel | default "qwen3.7-plus" | quote }}
+  VISION_MODEL: {{ .Values.kbService.visionModel | default "qwen3.7-plus" | quote }}
   # 可观测性
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
