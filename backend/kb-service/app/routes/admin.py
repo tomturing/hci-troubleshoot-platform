@@ -1934,6 +1934,151 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# KBD 在线重算 API（Prompt 修改后立即验证效果）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@kbd_router.post("/{kbd_id}/reclassify", summary="重新分类单个 KBD 条目")
+async def reclassify_kbd_entry(request: Request, kbd_id: int):
+    """从 DB 读取 title + problem_desc，用最新 Prompt 重新分类。
+
+    场景：admin-ui 修改 kbd_classify_v1 Prompt 后，点击"重新分类"按钮立即验证效果。
+    更新字段：ai_category_id、ai_category_conf、ai_category_reason。
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    trace_id = get_current_trace_id()
+    logger.info(event="kbd_reclassify_request", kbd_id=kbd_id, trace_id=trace_id)
+
+    # 1. 读取 KBD 条目的 title 和 problem_desc
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "SELECT id, title, problem_description FROM kbd_entry WHERE id = :id"
+            ),
+            {"id": kbd_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+
+        title = row["title"] or ""
+        problem_desc = row["problem_description"] or ""
+
+    if not title:
+        raise HTTPException(status_code=400, detail="KBD 条目缺少标题，无法分类")
+
+    # 2. 调用分类核心逻辑（复用 classify.py 的 classify_case）
+    from app.routes.classify import classify_case
+
+    try:
+        response = await classify_case(_db_manager, title, problem_desc)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(event="kbd_reclassify_failed", kbd_id=kbd_id, error=str(exc), trace_id=trace_id)
+        raise HTTPException(status_code=500, detail=f"分类失败：{exc}")
+
+    # 3. 更新 kbd_entry 的 AI 分类字段
+    async with _db_manager.async_session_factory() as session:
+        await session.execute(
+            text(
+                """
+                UPDATE kbd_entry
+                SET ai_category_id = :category_id,
+                    ai_category_conf = :confidence,
+                    ai_category_reason = :reason,
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": kbd_id,
+                "category_id": response.category_id,
+                "confidence": response.confidence,
+                "reason": response.reason,
+            },
+        )
+        await session.commit()
+
+    logger.info(
+        event="kbd_reclassified",
+        kbd_id=kbd_id,
+        category_id=response.category_id,
+        confidence=response.confidence,
+        trace_id=trace_id,
+    )
+
+    return {
+        "success": True,
+        "kbd_id": kbd_id,
+        "category_id": response.category_id,
+        "confidence": response.confidence,
+        "reason": response.reason,
+        "needs_review": response.needs_review,
+        "top3": [item.model_dump() for item in response.top3],
+    }
+
+
+@kbd_router.post("/{kbd_id}/reanalyze-images", summary="重新识图单个 KBD 条目")
+async def reanalyze_kbd_images(request: Request, kbd_id: int):
+    """从 kbd_image 表读取原始图片，用最新 Prompt 重新识图。
+
+    场景：admin-ui 修改 kbd_vision_v1 Prompt 后，点击"重新识图"按钮立即验证效果。
+    更新字段：images_json、content_md（重建）。
+
+    注意：耗时较长（每张图 5-10 秒），前端需提示用户等待。
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    trace_id = get_current_trace_id()
+    logger.info(event="kbd_reanalyze_images_request", kbd_id=kbd_id, trace_id=trace_id)
+
+    # 调用 Vision 处理服务
+    from app.services.vision_processor import reanalyze_kbd_images as do_reanalyze
+
+    try:
+        async with _db_manager.async_session_factory() as session:
+            result = await do_reanalyze(kbd_id, session)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        logger.error(
+            event="kbd_reanalyze_images_failed",
+            kbd_id=kbd_id,
+            error=str(exc),
+            trace_id=trace_id,
+        )
+        raise HTTPException(status_code=500, detail=f"识图失败：{exc}")
+
+    logger.info(
+        event="kbd_reanalyze_images_completed",
+        kbd_id=kbd_id,
+        total=result["total"],
+        done=result["done"],
+        failed=result["failed"],
+        trace_id=trace_id,
+    )
+
+    return {
+        "success": True,
+        "kbd_id": kbd_id,
+        "total": result["total"],
+        "done": result["done"],
+        "failed": result["failed"],
+        "message": result.get("message", "识图完成"),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SOP 文档上传（docx 文件直接导入）
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -272,6 +272,73 @@ async function submitReject() {
   }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// 重新分类 & 重新识图（Prompt 修改后立即验证效果）
+// ──────────────────────────────────────────────────────────────────────────────
+
+const reclassifyLoading = ref<number | null>(null)  // 正在重分类的 entry.id
+const reanalyzeLoading = ref<number | null>(null)   // 正在重识图的 entry.id
+
+async function handleReclassify(entry: KbdEntry) {
+  if (!confirm(`确认用最新 Prompt 重新分类「${entry.title.slice(0, 30)}...」？`)) return
+  reclassifyLoading.value = entry.id
+  try {
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/reclassify`, {
+      method: 'POST',
+      headers: authHeader,
+    })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    ElMessage.success(`分类完成：${data.category_id}（置信度 ${data.confidence?.toFixed(2) || 'N/A'}）`)
+    // 刷新列表中的该条目
+    const idx = entries.value.findIndex(e => e.id === entry.id)
+    if (idx !== -1) {
+      entries.value[idx].ai_category_id = data.category_id
+      entries.value[idx].ai_category_conf = data.confidence
+      entries.value[idx].ai_category_reason = data.reason
+    }
+  } catch (err: any) {
+    ElMessage.error(`重新分类失败：${err.message || '未知错误'}`)
+  } finally {
+    reclassifyLoading.value = null
+  }
+}
+
+async function handleReanalyzeImages(entry: KbdEntry) {
+  if (!confirm(`确认用最新 Prompt 重新识图「${entry.title.slice(0, 30)}...」？\n耗时较长，请耐心等待。`)) return
+  reanalyzeLoading.value = entry.id
+  try {
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-images`, {
+      method: 'POST',
+      headers: authHeader,
+    })
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}))
+      throw new Error(errData.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    if (data.total === 0) {
+      ElMessage.warning(data.message || '该 KBD 无原始图片，无法重算识图')
+    } else {
+      ElMessage.success(`识图完成：成功 ${data.done} 张，失败 ${data.failed} 张`)
+    }
+    // 刷新详情（如果打开）
+    if (detailEntry.value?.id === entry.id) {
+      // 重新获取该条目详情
+      const detailResp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
+      if (detailResp.ok) {
+        const fresh = await detailResp.json()
+        detailEntry.value = fresh
+        parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
+      }
+    }
+  } catch (err: any) {
+    ElMessage.error(`重新识图失败：${err.message || '未知错误'}`)
+  } finally {
+    reanalyzeLoading.value = null
+  }
+}
+
 function openDetailDialog(entry: KbdEntry) {
   detailEntry.value = entry
   reviewNote.value = entry.review_note || ''
@@ -939,11 +1006,27 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 操作 -->
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="340" fixed="right">
           <template #default="{ row }">
             <div class="action-btn-group">
             <el-button type="info" size="small" text @click="openDetailDialog(row)">详情</el-button>
             <el-button type="primary" size="small" text @click="openEditDialog(row)">编辑</el-button>
+            <!-- 重新分类：用最新 Prompt 重算 -->
+            <el-button
+              type="primary"
+              size="small"
+              text
+              :loading="reclassifyLoading === row.id"
+              @click="handleReclassify(row)"
+            >重新分类</el-button>
+            <!-- 重新识图：用最新 Prompt 重算（耗时较长） -->
+            <el-button
+              type="warning"
+              size="small"
+              text
+              :loading="reanalyzeLoading === row.id"
+              @click="handleReanalyzeImages(row)"
+            >重新识图</el-button>
             <template v-if="row.status === 'draft'">
               <el-button type="success" size="small" text @click="handleApprove(row)">通过</el-button>
               <el-button type="danger" size="small" text @click="openRejectDialog(row)">拒绝</el-button>

@@ -1102,6 +1102,39 @@ ALTER TABLE conversation
 --   published → archived: 归档
 
 -- ------------------------------------------------------------
+-- 表: kbd_image  [模块: kb-service]
+-- 说明: KBD 原始图片表 - 存储 data-pipeline 抓取的原始图片二进制，供 kb-service 在线重算识图
+-- 用途: 解耦 kb-service 对 data-pipeline 本地文件系统的依赖，支持 admin-ui 在线触发"重新识图"
+-- 设计: 图片压缩后存入 bytea（~200KB/张）；ON DELETE CASCADE 跟随 kbd_entry 删除
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS kbd_image (
+    id serial NOT NULL,
+    kbd_entry_id bigint NOT NULL,
+    seq int NOT NULL,
+    image_data bytea NOT NULL,
+    mime_type varchar(50),
+    width int,
+    height int,
+    created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT kbd_image_pkey PRIMARY KEY (id),
+    CONSTRAINT fk_kbd_image_kbd_entry_id FOREIGN KEY (kbd_entry_id) REFERENCES kbd_entry (id) ON DELETE CASCADE,
+    CONSTRAINT kbd_image_kbd_entry_id_seq_key UNIQUE (kbd_entry_id, seq)
+);
+
+COMMENT ON TABLE kbd_image IS 'KBD 原始图片表 - 供 kb-service 在线重算识图，data-pipeline 抓取时入库';
+COMMENT ON COLUMN kbd_image.id IS '图片主键，自增';
+COMMENT ON COLUMN kbd_image.kbd_entry_id IS '关联的 KBD 条目 ID（FK -> kbd_entry.id）';
+COMMENT ON COLUMN kbd_image.seq IS '图片序号（与 kbd_entry.images_json 中的 seq 对应）';
+COMMENT ON COLUMN kbd_image.image_data IS '原始图片二进制（压缩后存入，复用 data-pipeline 的 _compress_image_if_needed 逻辑）';
+COMMENT ON COLUMN kbd_image.mime_type IS '图片 MIME 类型（如 image/png、image/jpeg）';
+COMMENT ON COLUMN kbd_image.width IS '图片宽度（像素）';
+COMMENT ON COLUMN kbd_image.height IS '图片高度（像素）';
+COMMENT ON COLUMN kbd_image.created_at IS '创建时间';
+
+-- 索引: kbd_image
+CREATE INDEX IF NOT EXISTS idx_kbd_image_kbd_entry_id ON kbd_image (kbd_entry_id);
+
+-- ------------------------------------------------------------
 -- 表: sop_document  [模块: kb-service]
 -- 说明: SOP 文档表 — SOP 排障手册文档存储，完整 Markdown + tree_json 决策树（合并自原 sop_tree 表）
 -- 用途: 存储 SOP 排障手册文档（~20,000 字/个）；content_md 供 LLM 注入，tree_json 供 Agent 决策树遍历
