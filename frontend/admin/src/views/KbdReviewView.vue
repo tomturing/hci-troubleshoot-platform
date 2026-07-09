@@ -285,7 +285,7 @@ async function handleReclassify(entry: KbdEntry) {
   try {
     const resp = await fetch(`/api/v1/kbd/${entry.id}/reclassify`, {
       method: 'POST',
-      headers: authHeader(),
+      headers: authHeader,
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
@@ -310,7 +310,7 @@ async function handleReanalyzeImages(entry: KbdEntry) {
   try {
     const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-images`, {
       method: 'POST',
-      headers: authHeader(),
+      headers: authHeader,
     })
     if (!resp.ok) {
       const errData = await resp.json().catch(() => ({}))
@@ -325,7 +325,7 @@ async function handleReanalyzeImages(entry: KbdEntry) {
     // 刷新详情（如果打开）
     if (detailEntry.value?.id === entry.id) {
       // 重新获取该条目详情
-      const detailResp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader() })
+      const detailResp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
       if (detailResp.ok) {
         const fresh = await detailResp.json()
         detailEntry.value = fresh

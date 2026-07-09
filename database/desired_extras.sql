@@ -211,34 +211,11 @@ DO $$ BEGIN
 END $$;
 
 -- ═══════════════════════════════════════════════════════════════
--- 存量环境热修复：新增 kbd_image 表
+-- kbd_image 表：由 desired_schema.sql 创建（Atlas 管理）
 --
 -- 背景：KBD 分类与识图 Prompt 统一管理 + 在线重算功能需要 kbd_image 表
 -- 存储 data-pipeline 抓取的原始图片二进制，供 kb-service 在线重算识图。
--- 新环境由 desired_schema.sql 创建，存量环境由此块幂等补建。
 --
--- 功能：解耦 kb-service 对 data-pipeline 本地文件系统的依赖，
--- 支持 admin-ui 在线触发"重新识图"按钮。
+-- 设计：此表已在 desired_schema.sql 中定义（紧跟 kbd_entry 表），
+-- Atlas 在 Step 2b 自动创建，无需在此处重复迁移。
 -- ═══════════════════════════════════════════════════════════════
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT FROM pg_tables WHERE schemaname='public' AND tablename='kbd_image'
-  ) THEN
-    CREATE TABLE kbd_image (
-        id serial NOT NULL,
-        kbd_entry_id bigint NOT NULL,
-        seq int NOT NULL,
-        image_data bytea NOT NULL,
-        mime_type varchar(50),
-        width int,
-        height int,
-        created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT kbd_image_pkey PRIMARY KEY (id),
-        CONSTRAINT fk_kbd_image_kbd_entry_id FOREIGN KEY (kbd_entry_id) REFERENCES kbd_entry (id) ON DELETE CASCADE,
-        CONSTRAINT kbd_image_kbd_entry_id_seq_key UNIQUE (kbd_entry_id, seq)
-    );
-    CREATE INDEX idx_kbd_image_kbd_entry_id ON kbd_image (kbd_entry_id);
-    COMMENT ON TABLE kbd_image IS 'KBD 原始图片表 - 供 kb-service 在线重算识图，data-pipeline 抓取时入库';
-    COMMENT ON COLUMN kbd_image.image_data IS '原始图片二进制（压缩后存入）';
-  END IF;
-END $$;
