@@ -41,8 +41,9 @@ acli.sangfor.com.cn:4443
 ┌─────────────────────────────────────────────────┐
 │  云 LB: 8443 → Traefik 4888 (web + TLS)         │
 │  IP 白名单: 仅管理员 IP                          │
-│  路由: admin-ui + /api + /ws                    │
+│  路由: admin-ui + /api + /ws + /grafana + /langfuse │
 │  (PR #487 补齐 /api 和 /ws 转发至 api-gateway)  │
+│  (PR #497 补齐 /grafana 和 /langfuse 可观测性路径转发) │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -51,7 +52,7 @@ acli.sangfor.com.cn:4443
 | 项目 | 变更 |
 |-----|------|
 | **Traefik web entrypoint** | 启用 TLS（原为 HTTP） |
-| **admin-ui Ingress** | 独立部署，使用 web entrypoint（staging: 4888, prod: 3888）；**补齐 `/api` 和 `/ws` 路径转发至 api-gateway（PR #487）** |
+| **admin-ui Ingress** | 独立部署，使用 web entrypoint（staging: 4888, prod: 3888）；**补齐 `/api` 和 `/ws` 路径转发至 api-gateway（PR #487）；补齐 `/grafana` 和 `/langfuse` 可观测性路径转发（PR #497）** |
 | **主 Ingress** | 移除 `/admin` 路径 |
 | **云厂商 LB** | 新增端口映射 → web entrypoint，配置管理员 IP 白名单 |
 
@@ -166,7 +167,7 @@ curl -sk https://127.0.0.1:3888/ -H 'Host: acli.sangfor.com.cn'
 
 | 文件 | 变更 |
 |-----|------|
-| `templates/admin-ui/ingress.yaml` | 新增 admin-ui 独立 Ingress 模板；**PR #487 补齐 `/api` 和 `/ws` 路径转发至 api-gateway** |
+| `templates/admin-ui/ingress.yaml` | 新增 admin-ui 独立 Ingress 模板；**PR #487 补齐 `/api` 和 `/ws` 路径转发至 api-gateway；PR #497 补齐 `/grafana` 和 `/langfuse` 可观测性路径转发至跨命名空间服务** |
 | `templates/ingress.yaml` | 移除 `/admin` 路径 |
 | `values.yaml` | 新增 `adminUI.ingress` 配置节 |
 
@@ -251,5 +252,6 @@ adminUI:
 
 | 版本 | 日期 | 变更内容 |
 |------|------|----------|
+| **1.2** | **2026-07-09** | **PR #497**：补齐 admin-ui-ingress `/grafana` 和 `/langfuse` 可观测性路径转发，解决通过独立端口（4888）访问 admin-ui 时可观测性页面 iframe 无法加载 Grafana 和 Langfuse 的问题 |
 | **1.1** | **2026-07-02** | **PR #487**：补齐 admin-ui-ingress `/api` 和 `/ws` 路径转发至 api-gateway，解决 4888 端口下 admin-ui API 请求被错误转发至静态 Nginx 容器导致的 502/DNS 报错问题 |
 | **1.0** | **2026-07-01** | **PR #485**：初始版本，Admin UI 内网隔离方案（端口分离 + IP 白名单） |
