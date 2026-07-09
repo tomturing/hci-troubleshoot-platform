@@ -1,5 +1,6 @@
 {{- if and .Values.ingress.enabled .Values.adminUI.ingress.enabled }}
-# ExternalName Service 代理 Grafana（跨命名空间访问）
+# Service 代理 Grafana（跨命名空间访问）
+# 使用无 selector Service + 手动 Endpoints 方案
 apiVersion: v1
 kind: Service
 metadata:
@@ -9,10 +10,32 @@ metadata:
     {{- include "hci.labels" . | nindent 4 }}
     app.kubernetes.io/component: observability-proxy
 spec:
-  type: ExternalName
-  externalName: grafana.hci-observability.svc.cluster.local
+  type: ClusterIP
+  clusterIP: None  # Headless Service，不需要 ClusterIP
+  ports:
+  - port: 3000
+    targetPort: 3000
+    protocol: TCP
+    name: http
 ---
-# ExternalName Service 代理 Langfuse（跨命名空间访问）
+# Endpoints 手动指向 Grafana 服务
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: grafana-observability
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+subsets:
+- addresses:
+  - ip: 10.43.80.87  # grafana.hci-observability 的 ClusterIP
+    nodeName: any-node  # 可选，Traefik 可能需要
+  ports:
+  - port: 3000
+    protocol: TCP
+    name: http
+---
+# Service 代理 Langfuse（跨命名空间访问）
 apiVersion: v1
 kind: Service
 metadata:
@@ -22,6 +45,28 @@ metadata:
     {{- include "hci.labels" . | nindent 4 }}
     app.kubernetes.io/component: observability-proxy
 spec:
-  type: ExternalName
-  externalName: langfuse-server.hci-observability.svc.cluster.local
+  type: ClusterIP
+  clusterIP: None  # Headless Service
+  ports:
+  - port: 3000
+    targetPort: 3000
+    protocol: TCP
+    name: http
+---
+# Endpoints 手动指向 Langfuse 服务
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: langfuse-observability
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+subsets:
+- addresses:
+  - ip: 10.43.204.157  # langfuse-server.hci-observability 的 ClusterIP
+    nodeName: any-node
+  ports:
+  - port: 3000
+    protocol: TCP
+    name: http
 {{- end }}
