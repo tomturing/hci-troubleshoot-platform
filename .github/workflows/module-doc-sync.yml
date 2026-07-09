@@ -35,16 +35,22 @@ jobs:
         with:
           python-version: "3.12"
 
-      # 检查旁路标签 doc-update-exempt
+      # 检查旁路标签 doc-update-exempt（使用 API 动态获取，避免时机问题）
       - name: 检查旁路标签
         id: label_check
-        run: |
-          LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
-          if echo "$LABELS" | python3 -c "import sys,json; labels=json.load(sys.stdin); sys.exit(0 if 'doc-update-exempt' in labels else 1)" 2>/dev/null; then
-            echo "bypass=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "bypass=0" >> "$GITHUB_OUTPUT"
-          fi
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const hasExempt = labels.data.some(l => l.name === 'doc-update-exempt');
+            core.setOutput('bypass', hasExempt ? '1' : '0');
+            if (hasExempt) {
+              console.log('检测到 doc-update-exempt 标签，跳过模块文档同步检查');
+            }
 
       # 执行模块文档同步检查
       - name: 模块文档同步检查
