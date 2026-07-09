@@ -124,7 +124,7 @@ limitRange:
 langfuse:
   enabled: true
   server:
-    image: langfuse/langfuse:v3.202.1
+    image: langfuse/langfuse:3
     resources:
       requests:
         cpu: "100m"
