@@ -103,6 +103,8 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: 安装依赖
         run: uv sync --group dev
@@ -126,6 +128,18 @@ jobs:
         with:
           version: 9
 
+      - name: 获取 pnpm store 路径
+        id: pnpm-cache-dir
+        run: echo "dir=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      - name: 缓存 pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache-dir.outputs.dir }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
       - name: 安装前端依赖
         run: pnpm --dir frontend install --frozen-lockfile
 
@@ -147,6 +161,18 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 9
+
+      - name: 获取 pnpm store 路径
+        id: pnpm-cache-dir
+        run: echo "dir=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      - name: 缓存 pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache-dir.outputs.dir }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
 
       - name: 安装前端依赖
         run: pnpm --dir frontend install --frozen-lockfile
@@ -195,6 +221,8 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: 安装依赖
         if: steps.changes.outputs.should_run == 'true'
@@ -278,14 +306,26 @@ jobs:
           fi
 
       # E-2: helm-unittest — 覆盖关键配置渲染场景
+      - name: 缓存 Helm 插件
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/helm/plugins
+          key: helm-unittest-v0.4.4
+          restore-keys: helm-unittest-
+
       - name: 安装 helm-unittest 插件（二进制方式）
         env:
           HELM_UNITTEST_VERSION: "v0.4.4"
         run: |
           PLUGINS_DIR="$(helm env HELM_PLUGINS)"
-          mkdir -p "${PLUGINS_DIR}/helm-unittest"
-          curl -sSL "https://github.com/helm-unittest/helm-unittest/releases/download/${HELM_UNITTEST_VERSION}/helm-unittest-linux-amd64-${HELM_UNITTEST_VERSION#v}.tgz" \
-            | tar xz -C "${PLUGINS_DIR}/helm-unittest"
+          # 如果缓存命中，插件目录已存在，跳过下载
+          if [ -f "${PLUGINS_DIR}/helm-unittest/unittest" ]; then
+            echo "helm-unittest 插件已从缓存恢复，跳过下载"
+          else
+            mkdir -p "${PLUGINS_DIR}/helm-unittest"
+            curl -sSL "https://github.com/helm-unittest/helm-unittest/releases/download/${HELM_UNITTEST_VERSION}/helm-unittest-linux-amd64-${HELM_UNITTEST_VERSION#v}.tgz" \
+              | tar xz -C "${PLUGINS_DIR}/helm-unittest"
+          fi
           helm plugin list | grep unittest
 
       - name: 运行 Helm Unit Tests
@@ -356,6 +396,8 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: 安装依赖
         run: uv sync --group dev
@@ -427,6 +469,8 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: 安装依赖
         run: uv sync --group dev
@@ -454,6 +498,8 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: 安装依赖
         run: uv sync --group dev
