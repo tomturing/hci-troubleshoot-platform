@@ -20,7 +20,6 @@ jobs:
   changes:
     name: 检测变更范围
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -213,11 +212,26 @@ jobs:
             exit 0
           fi
 
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          CHANGED_FILES="$(git -c core.quotepath=false diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            BASE_SHA="${{ github.event.before }}"
+            HEAD_SHA="${{ github.event.after }}"
+            if [[ "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+              BASE_SHA="HEAD~1"
+            fi
+          else
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          fi
 
-          echo "本次 PR 改动文件:"
+          # 强制容错：若 SHA 变量为空，以 HEAD~1 兜底，防止 git diff 抛出 exit 128
+          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+            BASE_SHA="HEAD~1"
+            HEAD_SHA="HEAD"
+          fi
+
+          CHANGED_FILES="$(git -c core.quotepath=false diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || git -c core.quotepath=false diff --name-only HEAD~1 HEAD 2>/dev/null || true)"
+
+          echo "本次改动文件:"
           echo "$CHANGED_FILES"
 
           WATCHED_REGEX='^(backend/agent-service/app/adapters/agents/htp/(react_engine|investigation_agent|tool_registry)\.py|backend/agent-service/app/services/hallucination_detector\.py|backend/shared/utils/prompt_loader\.py|database/seeds/(02_system_prompts|tool_definition_v2)\.sql|evaluation/(golden_tickets\.json|replay_runner\.py))$'
