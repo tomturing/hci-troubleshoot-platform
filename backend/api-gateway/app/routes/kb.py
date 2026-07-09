@@ -325,10 +325,29 @@ async def kbd_update_proxy(kbd_id: int, request: Request):
 
 @kbd_router.post("/{kbd_id}/republish")
 async def kbd_republish_proxy(kbd_id: int, request: Request):
-    """代理 KBD 重新发布请求（rejected → published）→ kb-service"""
+    """代理 KBD 重新发布请求（rejected -> published）-> kb-service"""
     body = await request.json()
     headers = _internal_auth_headers()
     response = await _kbd_proxy("POST", f"/{kbd_id}/republish", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.post("/{kbd_id}/reclassify")
+async def kbd_reclassify_proxy(kbd_id: int, request: Request):
+    """代理 KBD 重新分类请求（用最新 Prompt 重算）-> kb-service"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/reclassify", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.post("/{kbd_id}/reanalyze-images")
+async def kbd_reanalyze_images_proxy(kbd_id: int, request: Request):
+    """代理 KBD 重新识图请求（用最新 Prompt 重算）-> kb-service
+
+    注意：识图耗时较长（每张图 5-10 秒），超时设置为 5 分钟。
+    """
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-images", headers=headers, timeout=300.0)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 

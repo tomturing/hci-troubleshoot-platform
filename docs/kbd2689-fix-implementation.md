@@ -1,0 +1,330 @@
+# KBD2689 问题修复方案实施报告
+
+## 问题总结
+
+### 问题 1：分类错误
+- **案例标题**：【HCI-VT】虚拟机开机失败，报错虚拟机启动失败
+- **错误分类**：虚拟机-001 虚拟机创建失败
+- **正确分类**：虚拟机-003 虚拟机开机失败
+
+### 问题 2：截图内容为空
+- **现象**：所有 4 张图片都被识别为"其他截图"，且 FULL_TEXT 为空
+- **原因**：Kimi k2.5 模型处理复杂终端/日志截图能力不足
+
+## 实施的优化方案
+
+### ✅ 1. 统一 API 配置
+
+**配置文件**：`/data-pipeline/kbd/.env`
+
+```bash
+# LLM API 配置
+API_KEY=sk-sp-d887dc675b9c4412a939832754c69432
+BASE_URL=https://coding.dashscope.aliyuncs.com/v1
+
+# 模型配置（统一使用 qwen3.7-plus）
+VISION_MODEL=qwen3.7-plus
+CLASSIFY_MODEL=qwen3.7-plus
+ANALYSIS_MODEL=qwen3.7-plus
+```
+
+**代码变更**：
+- `config.py`：精简为通用字段（API_KEY、BASE_URL）
+- `classify.py`：从环境变量读取配置
+- `image_proc.py`：使用统一配置
+
+### ✅ 2. 强化分类 Prompt 约束
+
+**文件**：`backend/kb-service/app/routes/classify.py`
+
+**优化内容**：
+
+1. **添加标题关键词预分析**（强制约束）：
+   ```python
+   **标题关键词预分析**（强制约束）：
+   - 标题包含"开机失败"/"启动失败"（非创建过程）→ 必须选择 label 包含"开机失败"的分类
+   - 标题包含"创建失败" → 必须选择 label 包含"创建失败"的分类
+   - 标题包含"删除失败" → 必须选择 label 包含"删除失败"的分类
+   - 若标题中明确提到某个操作动词，强制约束分类选择必须匹配
+   - 注意区分"开机失败"和"创建失败"
+   ```
+
+2. **强化输出约束**：
+   ```python
+   4. **关键约束：category_id 对应的 label 必须与标题中的关键词严格匹配**
+      - 标题提到"开机失败" → category_id 的 label 必须包含"开机失败"
+      - 输出前自检：确认 category_id 的 label 与标题关键词一致
+   ```
+
+### ✅ 3. 降低分类温度参数
+
+**文件**：`backend/kb-service/app/routes/classify.py`
+
+**变更**：
+```python
+temperature=0.0,  # 从 0.3 改为 0.0，确保输出确定性
+```
+
+### ✅ 4. 增加 Vision 输出 token 限制
+
+**文件**：`data-pipeline/kbd/config.py`
+
+**变更**：
+```python
+VISION_MAX_TOKENS: int = Field(default=8192, ge=128, le=16384)  # 从 4096 改为 8192
+```
+
+**原因**：终端/日志截图通常包含大量文字，需要更多 token 空间。
+
+### ✅ 5. 添加 Vision 空结果重试机制
+
+**文件**：`data-pipeline/kbd/image_proc.py`
+
+**变更**：
+```python
+# 检测空结果并重试一次
+if "（无文字）" in desc and "（无描述）" in desc:
+    logger.warning("Vision LLM 返回空结果，尝试重试 path=%s", img_path.name)
+    desc_retry = await _process_image(client, img_path, context)
+    if "（无文字）" not in desc_retry or "（无描述）" not in desc_retry:
+        desc = desc_retry
+        logger.info("重试成功 path=%s", img_path.name)
+```
+
+## 模型选择说明
+
+### qwen3.7-plus
+
+**选择原因**：
+1. ✅ 支持 Vision 能力（image_url 输入）
+2. ✅ 文字提取能力强，适合复杂终端/日志截图
+3. ✅ 支持长文本输出（8192 tokens）
+4. ✅ 文本理解能力强，语义匹配准确
+
+**测试结果**：
+- ✅ 模型可用：成功返回回复
+- ✅ 支持 Vision：错误提示图片尺寸太小（说明支持图片输入）
+
+## 预期效果
+
+### 问题 1（分类错误）预期改进
+
+**优化前**：
+- 标题："虚拟机开机失败"
+- 错误分类：虚拟机-001 虚拟机创建失败
+
+**优化后**：
+- Prompt 强制约束：标题包含"开机失败" → 必须选择包含"开机失败"的分类
+- 温度 0.0：输出确定性，避免随机性
+- 预期正确分类：虚拟机-003 虚拟机开机失败
+
+### 问题 2（截图内容为空）预期改进
+
+**优化前**：
+- 模型：Kimi k2.5（能力不足）
+- MAX_TOKENS：4096（可能截断）
+- 所有图片：TYPE: 其他截图，FULL_TEXT: （无文字）
+
+**优化后**：
+- 模型：qwen3.7-plus（Vision 能力强）
+- MAX_TOKENS：8192（支持长文本）
+- 重试机制：空结果自动重试一次
+- 预期：正确识别终端/日志截图，提取完整文字内容
+
+## 验证方法
+
+### 1. 验证配置
+
+```bash
+cd /mnt/d/aihci/hci-troubleshoot-platform/data-pipeline/kbd
+uv run python3 -c "
+from config import settings
+print('API_KEY:', settings.API_KEY[:20] + '...')
+print('BASE_URL:', settings.BASE_URL)
+print('VISION_MODEL:', settings.VISION_MODEL)
+print('CLASSIFY_MODEL:', settings.CLASSIFY_MODEL)
+"
+```
+
+### 2. 重新处理 KBD2689
+
+```bash
+# 删除旧的 desc.txt 文件
+rm /mnt/d/aihci/hci-troubleshoot-platform/data-pipeline/kbd/cache/26890/img_*.desc.txt
+
+# 重新处理图片
+cd /mnt/d/aihci/hci-troubleshoot-platform/data-pipeline/kbd
+uv run python -c "
+import asyncio
+from image_proc import process_images_for_kbd
+from openai import AsyncOpenAI
+from config import settings
+
+async def main():
+    client = AsyncOpenAI(
+        api_key=settings.API_KEY,
+        base_url=settings.BASE_URL,
+        timeout=settings.LLM_TIMEOUT,
+    )
+    stats = await process_images_for_kbd('26890', client)
+    print(stats)
+
+asyncio.run(main())
+"
+```
+
+### 3. 验证分类
+
+重启 kb-service 后，调用分类 API：
+```bash
+curl -X POST "http://localhost:8004/api/kb/classify" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer dev-internalapi-api-token-2026" \
+  -d '{
+    "title": "【HCI-VT】虚拟机开机失败，报错虚拟机启动失败",
+    "problem_desc": "HCI 5.8.3R4 业务虚拟机开机失败，报错虚拟机启动失败"
+  }'
+```
+
+预期返回：
+```json
+{
+  "category_id": "虚拟机-003",
+  "confidence": 0.95,
+  "reason": "标题明确提到虚拟机开机失败",
+  "top3": [
+    {"category_id": "虚拟机-003", "label": "虚拟机开机失败", "score": 0.95}
+  ]
+}
+```
+
+
+## Prompt 统一管理与在线重算（2026-07-09 新增）
+
+### 架构变更概述
+
+将 KBD 的分类和识图能力从"离线脚本"重构为"kb-service 在线 API + data-pipeline 批量入口"：
+
+**改造前**：
+- 分类 Prompt：硬编码在 `classify.py`，修改需重新部署
+- 识图 Prompt：存放在 `image_proc_vision_v4.txt` 文件，修改需重跑离线脚本
+
+**改造后**：
+- 分类和识图 Prompt 统一存入 `system_prompt` 表
+- admin-ui Prompt 管理页面可在线编辑，修改后立即热生效
+- admin-ui KBD 审核页面新增"重新分类"和"重新识图"按钮，支持单个案例秒级重跑
+
+### 新增数据库表
+
+**`kbd_image` 表**：存储 KBD 原始图片二进制数据
+
+```sql
+CREATE TABLE IF NOT EXISTS kbd_image (
+    id serial NOT NULL,
+    kbd_entry_id bigint NOT NULL,
+    seq int NOT NULL,
+    image_data bytea NOT NULL,
+    mime_type varchar(50),
+    width int,
+    height int,
+    created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT kbd_image_pkey PRIMARY KEY (id),
+    CONSTRAINT fk_kbd_image_kbd_entry_id FOREIGN KEY (kbd_entry_id) 
+        REFERENCES kbd_entry (id) ON DELETE CASCADE,
+    CONSTRAINT kbd_image_kbd_entry_id_seq_key UNIQUE (kbd_entry_id, seq)
+);
+```
+
+**作用**：kb-service 在线重算识图时直接从数据库读取原始图片，无需依赖本地文件系统。
+
+### 新增 Prompt 种子数据
+
+**`database/seeds/02_system_prompts.sql`** 新增两条记录：
+
+| name | stage | 占位符 |
+|------|-------|--------|
+| `kbd_classify_v1` | KBD | `{count}`, `{categories_text}`, `{title}`, `{problem_desc}` |
+| `kbd_vision_v1` | KBD | `{context}` |
+
+Prompt 通过 `StrictPromptLoader.load_and_validate()` 从数据库热加载，每次 API 请求都读取最新版本。
+
+### 新增 API 端点
+
+**kb-service** 新增两个管理 API：
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/admin/kbd/{kbd_id}/reclassify` | POST | 重新分类单个 KBD |
+| `/api/admin/kbd/{kbd_id}/reanalyze-images` | POST | 重新识图单个 KBD（超时 300s） |
+
+**api-gateway** 新增代理路由：
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/kbd/{kbd_id}/reclassify` | POST | 代理到 kb-service |
+| `/api/v1/kbd/{kbd_id}/reanalyze-images` | POST | 代理到 kb-service |
+
+### admin-ui 新增按钮
+
+**`frontend/admin/src/views/KbdReviewView.vue`** 在 KBD 详情操作区新增：
+
+- **"重新分类"按钮**：调用 `/api/v1/kbd/{id}/reclassify`，刷新分类结果
+- **"重新识图"按钮**：调用 `/api/v1/kbd/{id}/reanalyze-images`，刷新图片描述
+
+两个按钮均带 loading 状态，防止重复点击。识图按钮因耗时较长（每张图 5-10 秒），需提示用户等待。
+
+### data-pipeline 改造
+
+**`image_proc.py`** 重构为薄封装：
+
+- 移除本地 LLM 调用逻辑（已迁移到 `kb-service/services/vision_processor.py`）
+- 移除文件-based Prompt 加载
+- `process_images_batch()` 改为调用 kb-service API
+
+**模式与 `classifier.py` 保持一致**：离线脚本只负责批量调度，核心 LLM 逻辑集中在 kb-service。
+
+### 使用流程
+
+1. **修改 Prompt**：在 admin-ui Prompt 管理页面编辑 `kbd_classify_v1` 或 `kbd_vision_v1`
+2. **验证效果**：进入 KBD 审核页面，点击"重新分类"或"重新识图"按钮
+3. **立即生效**：无需重启服务，无需运行后台脚本
+
+### 相关文件变更
+
+| 文件 | 变更类型 |
+|------|---------|
+| `database/desired_schema.sql` | 新增 kbd_image 表 |
+| `database/desired_extras.sql` | 幂等迁移块 |
+| `database/seeds/02_system_prompts.sql` | 新增两条 Prompt 记录 |
+| `backend/kb-service/app/models/kbd_entry.py` | 新增 KbdImage ORM |
+| `backend/kb-service/app/routes/classify.py` | Prompt 改为数据库热加载 |
+| `backend/kb-service/app/services/vision_processor.py` | 新建 Vision 处理服务 |
+| `backend/kb-service/app/routes/admin.py` | 新增两个重算 API |
+| `backend/api-gateway/app/routes/kb.py` | 新增代理路由 |
+| `data-pipeline/kbd/image_proc.py` | 重构为 API 调用薄封装 |
+| `frontend/admin/src/views/KbdReviewView.vue` | 新增两个按钮 |
+
+## 后续建议
+
+### P0（已完成）
+- ✅ 统一 API 配置
+- ✅ 强化分类 Prompt 约束
+- ✅ 降低分类温度参数
+- ✅ 增加 Vision MAX_TOKENS
+- ✅ 添加空结果重试机制
+
+### P1（后续优化）
+- 优化 Vision Prompt，增加复杂截图的处理指导
+- 监控 Vision 处理成功率，建立告警机制
+- 建立"失败案例"库，持续优化 Prompt
+
+### P2（长期优化）
+- 评估更强大的 Vision 模型（如 qwen-vl-max，需确认 API 支持）
+- 建立"人工审核-自动优化"闭环机制
+- 实现分类准确率自动化测试
+
+## 相关文件
+
+- 配置文件：`/data-pipeline/kbd/.env`
+- 代码变更：`config.py`、`classify.py`、`image_proc.py`
+- 配置文档：`docs/data-pipeline-api-config-unified.md`
