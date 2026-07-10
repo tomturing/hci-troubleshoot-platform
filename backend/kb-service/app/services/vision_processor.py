@@ -62,6 +62,9 @@ _KBD_VISION_PROMPT_NAME = "kbd_vision_v1"
 # 注意：VISION_MODEL 从未在 Helm 中注入，直接使用 LLM_DEFAULT_MODEL（ConfigMap 已注入）
 _LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 _LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+# 优先读取 LLM_VISION_* 环境变量以支持专用 Vision 端点，否则回退到通用 LLM 配置
+_LLM_VISION_BASE_URL = (os.environ.get("LLM_VISION_BASE_URL") or os.environ.get("LLM_BASE_URL", "")).rstrip("/")
+_LLM_VISION_API_KEY = os.environ.get("LLM_VISION_API_KEY") or os.environ.get("LLM_API_KEY", "")
 # 优先读取 VISION_MODEL，若未配置，则回退到已验证可用的 qwen3.7-plus
 _LLM_VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3.7-plus")
 _LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "30.0"))
@@ -363,12 +366,12 @@ async def reanalyze_kbd_images(
     context_map = _build_context_map_from_html(context_source)
 
     # 3. 创建 LLM 客户端
-    if not _LLM_API_KEY:
-        raise RuntimeError("API_KEY 未配置，无法调用 Vision LLM")
+    if not _LLM_VISION_API_KEY:
+        raise RuntimeError("VISION_API_KEY 或 API_KEY 未配置，无法调用 Vision LLM")
 
     client = AsyncOpenAI(
-        api_key=_LLM_API_KEY,
-        base_url=_LLM_BASE_URL,
+        api_key=_LLM_VISION_API_KEY,
+        base_url=_LLM_VISION_BASE_URL,
         timeout=_LLM_TIMEOUT,
         max_retries=2,
     )
@@ -571,12 +574,12 @@ async def reanalyze_single_image(
     context = context_map.get(seq, "")
 
     # 创建 LLM 客户端
-    if not _LLM_API_KEY:
-        raise RuntimeError("API_KEY 未配置，无法调用 Vision LLM")
+    if not _LLM_VISION_API_KEY:
+        raise RuntimeError("VISION_API_KEY 或 API_KEY 未配置，无法调用 Vision LLM")
 
     client = AsyncOpenAI(
-        api_key=_LLM_API_KEY,
-        base_url=_LLM_BASE_URL,
+        api_key=_LLM_VISION_API_KEY,
+        base_url=_LLM_VISION_BASE_URL,
         timeout=_LLM_TIMEOUT,
         max_retries=2,
     )
