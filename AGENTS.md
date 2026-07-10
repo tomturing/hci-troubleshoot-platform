@@ -84,6 +84,11 @@
   - 添加 `parseImagesJson` 函数解析 desc.txt v3 格式（BACKGROUND/TYPE/FULL_TEXT/DESCRIPTION）
   - 图片按序号排序，accordion 卡片展示，解决部分案例多张截图只显示一张的问题
   - 后端 API 返回 `images_json` 字段，包含每张图片的完整描述信息
+- **KBD 单张图片重新识图**（PR #517）：
+  - 新增 `/api/v1/kbd/{kbd_id}/reanalyze-image/{seq}` 端点支持单张图片识图
+  - 前端图片列表刷新按钮改为单张图片识图
+  - `ElMessage` 设置 `duration: 0` 不自动关闭，用户手动关闭
+  - API Gateway 新增代理路由透传到 kb-service
 - **工单管理分类选择框与 S0 Triage 4+1 交互体验优化** (PR #370):
   - 前端工单编辑「工单分类」由输入框升级为 `el-select` 下拉检索框，实现与 SOP 分类编辑的一致样式与体验
   - 提取公共 `useCategories` composable，在工单管理、KBD 审查、SOP 管理页面中统一引用该公共分类函数加载逻辑
