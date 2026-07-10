@@ -256,6 +256,10 @@ kbService:
   # 两者均已在 DashScope 端点验证可用且支持多模态
   classifyModel: "qwen3.7-plus"
   visionModel: "qwen3.7-plus"
+  # Vision LLM 单次调用超时（秒），注入为 LLM_TIMEOUT 环境变量
+  # SDK max_retries=2，实际最大等待时间 = llmTimeoutSec × 3
+  # 建议值：30（dev） / 45（staging） / 60（prod）
+  llmTimeoutSec: "60.0"
   # KBD 数据管道 Job 配置（符合 Twelve-Factor App 配置规范）
   pipelineJob:
     enabled: false
