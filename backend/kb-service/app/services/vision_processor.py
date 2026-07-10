@@ -48,7 +48,7 @@ _MIN_CONTEXT_CHARS = 80
 _SHORT_WINDOW = 300
 _LONG_WINDOW = 800
 _MAX_VISION_IMAGE_SIZE = 1024 * 1024  # 1MB，超过需压缩
-_VISION_CONCURRENCY = 3  # 并发 LLM 调用数
+_VISION_CONCURRENCY = 1  # 并发 LLM 调用数（DashScope 限制，改为 1 避免并发超限）
 
 # 截图类型与背景颜色（LLM 输出标准）
 _SCREENSHOT_TYPES = ("终端截图", "日志截图", "告警截图", "任务截图", "配置截图", "其他截图")
@@ -432,11 +432,43 @@ async def reanalyze_kbd_images(
     # 7. 按 seq 排序
     images_json.sort(key=lambda x: x["seq"])
 
-    # 8. 更新 kbd_entry
-    kbd_entry.images_json = images_json
-    kbd_entry.content_md = kbd_entry.rebuild_content_md()
-
-    await db_session.commit()
+    # 8. 更新 kbd_entry（Vision LLM 调用耗时长，连接可能已关闭）
+    try:
+        kbd_entry.images_json = images_json
+        kbd_entry.content_md = kbd_entry.rebuild_content_md()
+        await db_session.commit()
+    except Exception as e:
+        logger.warning(
+            event="vision_commit_retry",
+            kbd_entry_id=kbd_entry_id,
+            error=str(e),
+        )
+        # 连接可能已关闭，回滚后重新查询并更新
+        await db_session.rollback()
+        try:
+            # 重新查询 kbd_entry
+            entry_result = await db_session.execute(
+                select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
+            )
+            kbd_entry = entry_result.scalar_one()
+            kbd_entry.images_json = images_json
+            kbd_entry.content_md = kbd_entry.rebuild_content_md()
+            await db_session.commit()
+        except Exception as retry_err:
+            logger.error(
+                event="vision_commit_failed",
+                kbd_entry_id=kbd_entry_id,
+                error=str(retry_err),
+            )
+            # 返回处理结果，但标记更新失败
+            return {
+                "kbd_entry_id": kbd_entry_id,
+                "total": len(kbd_images),
+                "done": stats["done"],
+                "failed": stats["failed"],
+                "images_json": images_json,
+                "error": f"数据库更新失败: {retry_err}",
+            }
 
     logger.info(
         event="reanalyze_kbd_images_completed",
