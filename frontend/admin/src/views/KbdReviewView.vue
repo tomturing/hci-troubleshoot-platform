@@ -107,6 +107,7 @@ interface ScreenshotSegment {
   errorLabel: string
   fields: ScreenshotFields
   expanded: boolean
+  seq?: number
 }
 
 type ContentSegment = NormalSegment | ScreenshotSegment
@@ -343,7 +344,11 @@ async function handleReanalyzeImages(entry: KbdEntry) {
     if (data.total === 0) {
       ElMessage.warning(data.message || '该 KBD 无原始图片，无法重算识图')
     } else {
-      ElMessage.success(`识图完成：成功 ${data.done} 张，失败 ${data.failed} 张`)
+      ElMessage.success({
+        message: `识图完成：成功 ${data.done} 张，失败 ${data.failed} 张`,
+        duration: 0,
+        showClose: true,
+      })
     }
     // 刷新详情（如果打开）
     if (detailEntry.value?.id === entry.id) {
@@ -354,6 +359,7 @@ async function handleReanalyzeImages(entry: KbdEntry) {
         detailEntry.value = fresh
         parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
         parsedSegments.value = parseContentMd(fresh.content_md || '')
+        associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
         // 同时更新列表里的该条目
         const idx = entries.value.findIndex(e => e.id === entry.id)
         if (idx !== -1) {
@@ -363,7 +369,11 @@ async function handleReanalyzeImages(entry: KbdEntry) {
       }
     }
   } catch (err: any) {
-    ElMessage.error(`重新识图失败：${err.message || '未知错误'}`)
+    ElMessage.error({
+      message: `重新识图失败：${err.message || '未知错误'}`,
+      duration: 0,
+      showClose: true,
+    })
   } finally {
     reanalyzeLoading.value = null
   }
@@ -405,6 +415,7 @@ async function handleReanalyzeSingleImage(entry: KbdEntry, seq: number) {
         detailEntry.value = fresh
         parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
         parsedSegments.value = parseContentMd(fresh.content_md || '')
+        associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
         // 同时更新列表里的该条目
         const idx = entries.value.findIndex(e => e.id === entry.id)
         if (idx !== -1) {
@@ -432,6 +443,7 @@ function openDetailDialog(entry: KbdEntry) {
   inlineContent.value = entry.content_md || ''
   parsedSegments.value = parseContentMd(entry.content_md || '')
   parsedImagesJson.value = parseImagesJson(entry.images_json || [])
+  associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
   detailFullscreen.value = false
   detailDialogVisible.value = true
 }
@@ -821,6 +833,41 @@ function parseContentMd(md: string): ContentSegment[] {
   return segments
 }
 
+/** 匹配并关联文档段落中的截图与 parsedImagesJson 中的 seq 序号 */
+function associateSegmentsWithSeq(segments: ContentSegment[], images: ParsedImageJson[]) {
+  const matchedIndices = new Set<number>()
+  segments.forEach(seg => {
+    if (seg.type === 'screenshot') {
+      // 优先匹配内容（DESCRIPTION / visibleContent）
+      let matchIdx = images.findIndex((img, idx) => {
+        if (matchedIndices.has(idx)) return false
+
+        // 比较 DESCRIPTION
+        if (seg.fields.description && img.description && img.description !== '（无描述）' && img.description !== '(无描述)') {
+          return seg.fields.description === img.description
+        }
+
+        // 比较可见内容文字
+        if (seg.fields.visibleContent && seg.fields.visibleContent.length && img.visibleContent && img.visibleContent.length) {
+          return JSON.stringify(seg.fields.visibleContent) === JSON.stringify(img.visibleContent)
+        }
+
+        return false
+      })
+
+      // 兜底：若未匹配成功，分配第一个尚未被匹配的图片
+      if (matchIdx === -1) {
+        matchIdx = images.findIndex((_, idx) => !matchedIndices.has(idx))
+      }
+
+      if (matchIdx !== -1) {
+        matchedIndices.add(matchIdx)
+        seg.seq = images[matchIdx].seq
+      }
+    }
+  })
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 内联编辑（详情弹窗内直接修改 content_md）
 // ──────────────────────────────────────────────────────────────────────────────
@@ -854,6 +901,7 @@ async function saveInlineEdit() {
     if (idx !== -1) entries.value[idx].content_md = newContent
     // 重新解析内容预览
     parsedSegments.value = parseContentMd(newContent)
+    associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
     editingContent.value = false
     ElMessage.success('内容已保存')
   } catch {
@@ -1291,9 +1339,9 @@ onMounted(() => {
                     link
                     size="small"
                     style="margin-right: 8px; padding: 0; display: inline-flex; align-items: center; vertical-align: middle;"
-                    :loading="reanalyzeLoading === detailEntry.id"
-                    @click.stop="handleReanalyzeImages(detailEntry)"
-                    title="重新识图"
+                    :loading="reanalyzeSingleLoading?.kbdId === detailEntry.id && reanalyzeSingleLoading?.seq === seg.seq"
+                    @click.stop="handleReanalyzeSingleImage(detailEntry, seg.seq !== undefined ? seg.seq : 0)"
+                    title="重新识图此张"
                   >
                     <el-icon style="font-size: 14px;"><Refresh /></el-icon>
                   </el-button>

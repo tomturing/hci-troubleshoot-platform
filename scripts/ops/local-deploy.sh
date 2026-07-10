@@ -88,10 +88,10 @@ ALL_SERVICES=(
   "conversation-service:conversationService:.:backend/conversation-service/Dockerfile"
   "scheduler-service:schedulerService:.:backend/scheduler-service/Dockerfile"
   "kb-service:kbService:.:backend/kb-service/Dockerfile"
-  "customer-ui:customerUI:frontend:customer/Dockerfile"
-  "admin-ui:adminUI:frontend:admin/Dockerfile"
-  "agent-service:agentService:backend:agent-service/Dockerfile"
-  "eval-service:evalService:backend:eval-service/Dockerfile"
+  "customer-ui:customerUI:.:frontend/customer/Dockerfile"
+  "admin-ui:adminUI:.:frontend/admin/Dockerfile"
+  "agent-service:agentService:.:backend/agent-service/Dockerfile"
+  "eval-service:evalService:.:backend/eval-service/Dockerfile"
 )
 
 # ── 解析 SERVICES 过滤器 ─────────────────────────────────────────────────────

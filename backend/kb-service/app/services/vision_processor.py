@@ -591,7 +591,8 @@ async def reanalyze_single_image(
     desc = _format_desc(screenshot_type, background, full_text, description)
 
     # 8. 更新 images_json（保留其他图片的描述，仅更新当前 seq）
-    images_json = kbd_entry.images_json or []
+    # 创建全新的 list 实例，确保 SQLAlchemy 能检测到属性变更（PIT-024）
+    images_json = [dict(item) for item in (kbd_entry.images_json or [])]
     section = "steps_text"
 
     # 查找并更新已有记录，或追加新记录
