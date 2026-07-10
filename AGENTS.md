@@ -89,6 +89,9 @@
   - 前端图片列表刷新按钮改为单张图片识图
   - `ElMessage` 设置 `duration: 0` 不自动关闭，用户手动关闭
   - API Gateway 新增代理路由透传到 kb-service
+- **Vision LLM 并发与数据库连接修复**（PR #519）：
+  - `VISION_CONCURRENCY` 从 3 降为 1，避免 DashScope 429 Rate Limit
+  - 增加数据库更新重试逻辑，处理长耗时操作导致的连接超时
 - **工单管理分类选择框与 S0 Triage 4+1 交互体验优化** (PR #370):
   - 前端工单编辑「工单分类」由输入框升级为 `el-select` 下拉检索框，实现与 SOP 分类编辑的一致样式与体验
   - 提取公共 `useCategories` composable，在工单管理、KBD 审查、SOP 管理页面中统一引用该公共分类函数加载逻辑
