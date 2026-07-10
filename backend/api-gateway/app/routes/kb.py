@@ -352,6 +352,22 @@ async def kbd_reanalyze_images_proxy(kbd_id: int, request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@kbd_router.post("/{kbd_id}/reanalyze-image/{seq}")
+async def kbd_reanalyze_single_image_proxy(kbd_id: int, seq: int, request: Request):
+    """代理 KBD 单张图片重新识图请求 -> kb-service
+
+    场景：用户在 admin-ui 图片列表中点击单张图片的刷新按钮，
+    仅重新识图该图片，不影响其他图片。
+
+    Args:
+        kbd_id: KBD 条目 ID
+        seq: 图片序号（从 0 开始）
+    """
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-image/{seq}", headers=headers, timeout=120.0)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 # ============ SOP 管理代理（前端使用 /api/v1/sop 前缀） ============
 
 SOP_ADMIN_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/sop"
