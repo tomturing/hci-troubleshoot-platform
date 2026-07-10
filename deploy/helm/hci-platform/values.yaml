@@ -240,6 +240,8 @@ kbService:
     repository: hci-kb-service
     tag: latest
   port: 8004
+  # 使用外部 AI API 时需要绕过 Clash fake-IP DNS
+  externalDns: false
   resources:
     requests:
       cpu: "100m"
