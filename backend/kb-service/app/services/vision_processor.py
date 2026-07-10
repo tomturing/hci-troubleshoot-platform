@@ -64,7 +64,7 @@ _LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 _LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 # 优先读取 VISION_MODEL，若未配置，则回退到已验证可用的 qwen3.7-plus
 _LLM_VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3.7-plus")
-_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "60.0"))
+_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "30.0"))
 _VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "8192"))
 
 
@@ -192,7 +192,7 @@ async def _vision_analyze(
             error_detail,
             exc_info=True,  # 打印完整堆栈
         )
-        return "其他截图", "其他", [], ""
+        raise
 
     screenshot_type = _parse_type(raw)
     background = _parse_background(raw)
