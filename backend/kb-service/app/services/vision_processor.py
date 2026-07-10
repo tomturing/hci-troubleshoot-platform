@@ -28,6 +28,7 @@ import base64
 import io
 import os
 import re
+from collections.abc import Callable
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -281,7 +282,7 @@ def _format_desc(screenshot_type: str, background: str, full_text: list[str], de
 
 async def reanalyze_kbd_images(
     kbd_entry_id: int,
-    db_session: AsyncSession,
+    session_factory: Callable[[], AsyncSession],
 ) -> dict[str, Any]:
     """重新识图单个 KBD 条目的所有图片。
 
@@ -296,7 +297,7 @@ async def reanalyze_kbd_images(
 
     Args:
         kbd_entry_id: KBD 条目 ID
-        db_session: SQLAlchemy AsyncSession
+        session_factory: SQLAlchemy AsyncSession 工厂函数
 
     Returns:
         {
@@ -307,52 +308,61 @@ async def reanalyze_kbd_images(
             "images_json": list,  # 新的 images_json
         }
     """
-    # 1. 加载 Vision Prompt
-    prompt_template = await StrictPromptLoader.load_and_validate(
-        db_session,
-        _KBD_VISION_PROMPT_NAME,
-        ["context"],
-        consumer="kb-service.vision_processor",
-    )
-
-    # 2. 查询 KBD 条目
-    entry_result = await db_session.execute(
-        select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
-    )
-    kbd_entry = entry_result.scalar_one_or_none()
-    if kbd_entry is None:
-        raise ValueError(f"KBD 条目 {kbd_entry_id} 不存在")
-
-    # 3. 查询所有原始图片
-    images_result = await db_session.execute(
-        select(KbdImage)
-        .where(KbdImage.kbd_entry_id == kbd_entry_id)
-        .order_by(KbdImage.seq)
-    )
-    kbd_images: list[KbdImage] = list(images_result.scalars().all())
-
-    if not kbd_images:
-        logger.warning(
-            event="reanalyze_kbd_images_no_images",
-            kbd_entry_id=kbd_entry_id,
-            message="该 KBD 无原始图片，无法重算识图（可能为存量数据）",
+    # 1. 查询阶段：使用一个 short-lived session 获取数据并加载 Prompt
+    async with session_factory() as db_session:
+        # 加载 Vision Prompt
+        prompt_template = await StrictPromptLoader.load_and_validate(
+            db_session,
+            _KBD_VISION_PROMPT_NAME,
+            ["context"],
+            consumer="kb-service.vision_processor",
         )
-        return {
-            "kbd_entry_id": kbd_entry_id,
-            "total": 0,
-            "done": 0,
-            "failed": 0,
-            "images_json": [],
-            "message": "该 KBD 无原始图片，无法重算识图",
-        }
 
-    # 4. 构建图片上下文映射（从 content_md 提取，若有 HTML 则用 HTML）
-    #    注：content_md 是 Markdown，不含原始 HTML，上下文可能有限
-    #    后续可考虑存储 raw_html 以提供更精确的上下文
-    context_source = kbd_entry.content_md or ""
+        # 查询 KBD 条目
+        entry_result = await db_session.execute(
+            select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
+        )
+        kbd_entry = entry_result.scalar_one_or_none()
+        if kbd_entry is None:
+            raise ValueError(f"KBD 条目 {kbd_entry_id} 不存在")
+
+        # 查询所有原始图片
+        images_result = await db_session.execute(
+            select(KbdImage)
+            .where(KbdImage.kbd_entry_id == kbd_entry_id)
+            .order_by(KbdImage.seq)
+        )
+        kbd_images: list[KbdImage] = list(images_result.scalars().all())
+
+        if not kbd_images:
+            logger.warning(
+                event="reanalyze_kbd_images_no_images",
+                kbd_entry_id=kbd_entry_id,
+                message="该 KBD 无原始图片，无法重算识图（可能为存量数据）",
+            )
+            return {
+                "kbd_entry_id": kbd_entry_id,
+                "total": 0,
+                "done": 0,
+                "failed": 0,
+                "images_json": [],
+                "message": "该 KBD 无原始图片，无法重算识图",
+            }
+
+        # 将图片数据和上下文来源拉入内存中，以便后续在无 DB 连接的情况下处理
+        context_source = kbd_entry.content_md or ""
+        image_items = []
+        for img in kbd_images:
+            image_items.append({
+                "seq": img.seq,
+                "mime_type": img.mime_type or "image/png",
+                "image_data": img.image_data,
+            })
+
+    # 2. 构建图片上下文映射
     context_map = _build_context_map_from_html(context_source)
 
-    # 5. 创建 LLM 客户端（限制重试次数，避免无限重试阻塞整个流程）
+    # 3. 创建 LLM 客户端
     if not _LLM_API_KEY:
         raise RuntimeError("API_KEY 未配置，无法调用 Vision LLM")
 
@@ -360,25 +370,25 @@ async def reanalyze_kbd_images(
         api_key=_LLM_API_KEY,
         base_url=_LLM_BASE_URL,
         timeout=_LLM_TIMEOUT,
-        max_retries=2,  # 限制重试次数，避免无限重试
+        max_retries=2,
     )
 
-    # 6. 并发处理所有图片
+    # 4. 并发处理所有图片（不占有任何 DB 连接）
     sem = asyncio.Semaphore(_VISION_CONCURRENCY)
     stats = {"done": 0, "failed": 0}
     images_json: list[dict[str, Any]] = []
     images_json_lock = asyncio.Lock()
 
-    async def _process_one(kbd_image: KbdImage) -> None:
-        seq = kbd_image.seq
+    async def _process_one(image_item: dict[str, Any]) -> None:
+        seq = image_item["seq"]
         context = context_map.get(seq, "")
 
         async with sem:
             try:
-                mime_type = kbd_image.mime_type or "image/png"
+                mime_type = image_item["mime_type"]
                 screenshot_type, background, full_text, description = await _vision_analyze(
                     client,
-                    kbd_image.image_data,
+                    image_item["image_data"],
                     mime_type,
                     context,
                     prompt_template,
@@ -393,7 +403,7 @@ async def reanalyze_kbd_images(
                     )
                     screenshot_type, background, full_text, description = await _vision_analyze(
                         client,
-                        kbd_image.image_data,
+                        image_item["image_data"],
                         mime_type,
                         context,
                         prompt_template,
@@ -401,7 +411,7 @@ async def reanalyze_kbd_images(
 
                 desc = _format_desc(screenshot_type, background, full_text, description)
 
-                # 推断图片所属章节（简化：默认 steps_text，后续可从 content_md 解析）
+                # 推断图片所属章节（简化：默认 steps_text）
                 section = "steps_text"
 
                 async with images_json_lock:
@@ -427,26 +437,14 @@ async def reanalyze_kbd_images(
                     error=str(exc),
                 )
 
-    await asyncio.gather(*[_process_one(img) for img in kbd_images])
+    await asyncio.gather(*[_process_one(img) for img in image_items])
 
-    # 7. 按 seq 排序
+    # 5. 按 seq 排序
     images_json.sort(key=lambda x: x["seq"])
 
-    # 8. 更新 kbd_entry（Vision LLM 调用耗时长，连接可能已关闭）
-    try:
-        kbd_entry.images_json = images_json
-        kbd_entry.content_md = kbd_entry.rebuild_content_md()
-        await db_session.commit()
-    except Exception as e:
-        logger.warning(
-            event="vision_commit_retry",
-            kbd_entry_id=kbd_entry_id,
-            error=str(e),
-        )
-        # 连接可能已关闭，回滚后重新查询并更新
-        await db_session.rollback()
+    # 6. 写入阶段：再开启一个 short-lived session 写入数据库（重新查询并更新）
+    async with session_factory() as db_session:
         try:
-            # 重新查询 kbd_entry
             entry_result = await db_session.execute(
                 select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
             )
@@ -454,33 +452,48 @@ async def reanalyze_kbd_images(
             kbd_entry.images_json = images_json
             kbd_entry.content_md = kbd_entry.rebuild_content_md()
             await db_session.commit()
-        except Exception as retry_err:
-            logger.error(
-                event="vision_commit_failed",
+        except Exception as e:
+            logger.warning(
+                event="vision_commit_retry",
                 kbd_entry_id=kbd_entry_id,
-                error=str(retry_err),
+                error=str(e),
             )
-            # 返回处理结果，但标记更新失败
-            return {
-                "kbd_entry_id": kbd_entry_id,
-                "total": len(kbd_images),
-                "done": stats["done"],
-                "failed": stats["failed"],
-                "images_json": images_json,
-                "error": f"数据库更新失败: {retry_err}",
-            }
+            # 连接可能已关闭，回滚后重新尝试一次
+            await db_session.rollback()
+            try:
+                entry_result = await db_session.execute(
+                    select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
+                )
+                kbd_entry = entry_result.scalar_one()
+                kbd_entry.images_json = images_json
+                kbd_entry.content_md = kbd_entry.rebuild_content_md()
+                await db_session.commit()
+            except Exception as retry_err:
+                logger.error(
+                    event="vision_commit_failed",
+                    kbd_entry_id=kbd_entry_id,
+                    error=str(retry_err),
+                )
+                return {
+                    "kbd_entry_id": kbd_entry_id,
+                    "total": len(image_items),
+                    "done": stats["done"],
+                    "failed": stats["failed"],
+                    "images_json": images_json,
+                    "error": f"数据库更新失败: {retry_err}",
+                }
 
     logger.info(
         event="reanalyze_kbd_images_completed",
         kbd_entry_id=kbd_entry_id,
-        total=len(kbd_images),
+        total=len(image_items),
         done=stats["done"],
         failed=stats["failed"],
     )
 
     return {
         "kbd_entry_id": kbd_entry_id,
-        "total": len(kbd_images),
+        "total": len(image_items),
         "done": stats["done"],
         "failed": stats["failed"],
         "images_json": images_json,
@@ -490,7 +503,7 @@ async def reanalyze_kbd_images(
 async def reanalyze_single_image(
     kbd_entry_id: int,
     seq: int,
-    db_session: AsyncSession,
+    session_factory: Callable[[], AsyncSession],
 ) -> dict[str, Any]:
     """重新识图单个 KBD 条目的指定图片。
 
@@ -506,7 +519,7 @@ async def reanalyze_single_image(
     Args:
         kbd_entry_id: KBD 条目 ID
         seq: 图片序号（从 0 开始）
-        db_session: SQLAlchemy AsyncSession
+        session_factory: SQLAlchemy AsyncSession 工厂函数
 
     Returns:
         {
@@ -520,38 +533,44 @@ async def reanalyze_single_image(
             "images_json": list,  # 更新后的 images_json
         }
     """
-    # 1. 加载 Vision Prompt
-    prompt_template = await StrictPromptLoader.load_and_validate(
-        db_session,
-        _KBD_VISION_PROMPT_NAME,
-        ["context"],
-        consumer="kb-service.vision_processor",
-    )
+    # 1. 查询阶段：使用一个 short-lived session 获取数据并加载 Prompt
+    async with session_factory() as db_session:
+        # 加载 Vision Prompt
+        prompt_template = await StrictPromptLoader.load_and_validate(
+            db_session,
+            _KBD_VISION_PROMPT_NAME,
+            ["context"],
+            consumer="kb-service.vision_processor",
+        )
 
-    # 2. 查询 KBD 条目
-    entry_result = await db_session.execute(
-        select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
-    )
-    kbd_entry = entry_result.scalar_one_or_none()
-    if kbd_entry is None:
-        raise ValueError(f"KBD 条目 {kbd_entry_id} 不存在")
+        # 查询 KBD 条目
+        entry_result = await db_session.execute(
+            select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
+        )
+        kbd_entry = entry_result.scalar_one_or_none()
+        if kbd_entry is None:
+            raise ValueError(f"KBD 条目 {kbd_entry_id} 不存在")
 
-    # 3. 查询指定 seq 的原始图片
-    image_result = await db_session.execute(
-        select(KbdImage)
-        .where(KbdImage.kbd_entry_id == kbd_entry_id)
-        .where(KbdImage.seq == seq)
-    )
-    kbd_image = image_result.scalar_one_or_none()
-    if kbd_image is None:
-        raise ValueError(f"KBD 条目 {kbd_entry_id} 的图片 seq={seq} 不存在")
+        # 查询指定 seq 的原始图片
+        image_result = await db_session.execute(
+            select(KbdImage)
+            .where(KbdImage.kbd_entry_id == kbd_entry_id)
+            .where(KbdImage.seq == seq)
+        )
+        kbd_image = image_result.scalar_one_or_none()
+        if kbd_image is None:
+            raise ValueError(f"KBD 条目 {kbd_entry_id} 的图片 seq={seq} 不存在")
 
-    # 4. 构建图片上下文映射
-    context_source = kbd_entry.content_md or ""
+        # 将必要的数据拉入内存
+        image_data = kbd_image.image_data
+        mime_type = kbd_image.mime_type or "image/png"
+        context_source = kbd_entry.content_md or ""
+
+    # 2. 构建图片上下文与调用 Vision LLM（不占有任何 DB 连接）
     context_map = _build_context_map_from_html(context_source)
     context = context_map.get(seq, "")
 
-    # 5. 创建 LLM 客户端
+    # 创建 LLM 客户端
     if not _LLM_API_KEY:
         raise RuntimeError("API_KEY 未配置，无法调用 Vision LLM")
 
@@ -562,11 +581,10 @@ async def reanalyze_single_image(
         max_retries=2,
     )
 
-    # 6. 调用 Vision LLM
-    mime_type = kbd_image.mime_type or "image/png"
+    # 调用 Vision LLM
     screenshot_type, background, full_text, description = await _vision_analyze(
         client,
-        kbd_image.image_data,
+        image_data,
         mime_type,
         context,
         prompt_template,
@@ -581,44 +599,89 @@ async def reanalyze_single_image(
         )
         screenshot_type, background, full_text, description = await _vision_analyze(
             client,
-            kbd_image.image_data,
+            image_data,
             mime_type,
             context,
             prompt_template,
         )
 
-    # 7. 组装 desc
+    # 3. 组装 desc
     desc = _format_desc(screenshot_type, background, full_text, description)
 
-    # 8. 更新 images_json（保留其他图片的描述，仅更新当前 seq）
-    # 创建全新的 list 实例，确保 SQLAlchemy 能检测到属性变更（PIT-024）
-    images_json = [dict(item) for item in (kbd_entry.images_json or [])]
-    section = "steps_text"
+    # 4. 写入阶段：再开启一个 short-lived session 写入数据库（重新查询并更新，防止断线）
+    async with session_factory() as db_session:
+        try:
+            entry_result = await db_session.execute(
+                select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
+            )
+            kbd_entry = entry_result.scalar_one()
 
-    # 查找并更新已有记录，或追加新记录
-    found = False
-    for item in images_json:
-        if item.get("seq") == seq:
-            item["desc"] = desc
-            item["section"] = section
-            found = True
-            break
+            # 更新 images_json（保留其他图片的描述，仅更新当前 seq）
+            images_json = [dict(item) for item in (kbd_entry.images_json or [])]
+            section = "steps_text"
 
-    if not found:
-        images_json.append({
-            "seq": seq,
-            "section": section,
-            "desc": desc,
-        })
+            found = False
+            for item in images_json:
+                if item.get("seq") == seq:
+                    item["desc"] = desc
+                    item["section"] = section
+                    found = True
+                    break
 
-    # 按 seq 排序
-    images_json.sort(key=lambda x: x["seq"])
+            if not found:
+                images_json.append({
+                    "seq": seq,
+                    "section": section,
+                    "desc": desc,
+                })
 
-    # 9. 更新 kbd_entry
-    kbd_entry.images_json = images_json
-    kbd_entry.content_md = kbd_entry.rebuild_content_md()
+            images_json.sort(key=lambda x: x["seq"])
+            kbd_entry.images_json = images_json
+            kbd_entry.content_md = kbd_entry.rebuild_content_md()
+            await db_session.commit()
+        except Exception as e:
+            logger.warning(
+                event="vision_single_commit_retry",
+                kbd_entry_id=kbd_entry_id,
+                seq=seq,
+                error=str(e),
+            )
+            await db_session.rollback()
+            try:
+                entry_result = await db_session.execute(
+                    select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
+                )
+                kbd_entry = entry_result.scalar_one()
+                images_json = [dict(item) for item in (kbd_entry.images_json or [])]
+                section = "steps_text"
 
-    await db_session.commit()
+                found = False
+                for item in images_json:
+                    if item.get("seq") == seq:
+                        item["desc"] = desc
+                        item["section"] = section
+                        found = True
+                        break
+
+                if not found:
+                    images_json.append({
+                        "seq": seq,
+                        "section": section,
+                        "desc": desc,
+                    })
+
+                images_json.sort(key=lambda x: x["seq"])
+                kbd_entry.images_json = images_json
+                kbd_entry.content_md = kbd_entry.rebuild_content_md()
+                await db_session.commit()
+            except Exception as retry_err:
+                logger.error(
+                    event="vision_single_commit_failed",
+                    kbd_entry_id=kbd_entry_id,
+                    seq=seq,
+                    error=str(retry_err),
+                )
+                raise RuntimeError(f"数据库更新失败: {retry_err}") from retry_err
 
     logger.info(
         event="reanalyze_single_image_completed",

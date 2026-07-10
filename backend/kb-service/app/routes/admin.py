@@ -2044,8 +2044,7 @@ async def reanalyze_kbd_images(request: Request, kbd_id: int):
     from app.services.vision_processor import reanalyze_kbd_images as do_reanalyze
 
     try:
-        async with _db_manager.async_session_factory() as session:
-            result = await do_reanalyze(kbd_id, session)
+        result = await do_reanalyze(kbd_id, _db_manager.async_session_factory)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
@@ -2119,8 +2118,7 @@ async def reanalyze_single_image(request: Request, kbd_id: int, seq: int):
     from app.services.vision_processor import reanalyze_single_image as do_reanalyze_single
 
     try:
-        async with _db_manager.async_session_factory() as session:
-            result = await do_reanalyze_single(kbd_id, seq, session)
+        result = await do_reanalyze_single(kbd_id, seq, _db_manager.async_session_factory)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
