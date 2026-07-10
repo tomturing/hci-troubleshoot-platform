@@ -2078,6 +2078,84 @@ async def reanalyze_kbd_images(request: Request, kbd_id: int):
     }
 
 
+@kbd_router.post("/{kbd_id}/reanalyze-image/{seq}", summary="重新识图单张图片")
+async def reanalyze_single_image(request: Request, kbd_id: int, seq: int):
+    """从 kbd_image 表读取指定 seq 的原始图片，重新识图。
+
+    场景：用户在 admin-ui 图片列表中点击单张图片的刷新按钮，
+    仅重新识图该图片，不影响其他图片。
+
+    Args:
+        kbd_id: KBD 条目 ID
+        seq: 图片序号（从 0 开始）
+
+    Returns:
+        {
+            "success": True,
+            "kbd_id": int,
+            "seq": int,
+            "screenshot_type": str,
+            "background": str,
+            "full_text": list[str],
+            "description": str,
+            "desc": str,
+            "message": "识图完成"
+        }
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    trace_id = get_current_trace_id()
+    logger.info(
+        event="kbd_reanalyze_single_image_request",
+        kbd_id=kbd_id,
+        seq=seq,
+        trace_id=trace_id,
+    )
+
+    # 调用 Vision 处理服务
+    from app.services.vision_processor import reanalyze_single_image as do_reanalyze_single
+
+    try:
+        async with _db_manager.async_session_factory() as session:
+            result = await do_reanalyze_single(kbd_id, seq, session)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        logger.error(
+            event="kbd_reanalyze_single_image_failed",
+            kbd_id=kbd_id,
+            seq=seq,
+            error=str(exc),
+            trace_id=trace_id,
+        )
+        raise HTTPException(status_code=500, detail=f"识图失败：{exc}")
+
+    logger.info(
+        event="kbd_reanalyze_single_image_completed",
+        kbd_id=kbd_id,
+        seq=seq,
+        screenshot_type=result["screenshot_type"],
+        trace_id=trace_id,
+    )
+
+    return {
+        "success": True,
+        "kbd_id": kbd_id,
+        "seq": seq,
+        "screenshot_type": result["screenshot_type"],
+        "background": result["background"],
+        "full_text": result["full_text"],
+        "description": result["description"],
+        "desc": result["desc"],
+        "message": "识图完成",
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SOP 文档上传（docx 文件直接导入）
 # ─────────────────────────────────────────────────────────────────────────────

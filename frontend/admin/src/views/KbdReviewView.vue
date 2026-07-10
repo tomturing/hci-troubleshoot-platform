@@ -278,6 +278,7 @@ async function submitReject() {
 
 const reclassifyLoading = ref<number | null>(null)  // 正在重分类的 entry.id
 const reanalyzeLoading = ref<number | null>(null)   // 正在重识图的 entry.id
+const reanalyzeSingleLoading = ref<{ kbdId: number; seq: number } | null>(null)  // 正在重识图的单张图片
 
 async function handleReclassify(entry: KbdEntry) {
   try {
@@ -365,6 +366,61 @@ async function handleReanalyzeImages(entry: KbdEntry) {
     ElMessage.error(`重新识图失败：${err.message || '未知错误'}`)
   } finally {
     reanalyzeLoading.value = null
+  }
+}
+
+// 单张图片重新识图
+async function handleReanalyzeSingleImage(entry: KbdEntry, seq: number) {
+  try {
+    await ElMessageBox.confirm(
+      `确认重新识图第 ${seq + 1} 张图片（img_${seq}）？`,
+      '单张重新识图',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  reanalyzeSingleLoading.value = { kbdId: entry.id, seq }
+  try {
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-image/${seq}`, {
+      method: 'POST',
+      headers: authHeader,
+    })
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}))
+      throw new Error(errData.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    ElMessage.success({
+      message: `识图完成：${data.screenshot_type}`,
+      duration: 0,  // 不自动关闭
+      showClose: true,
+    })
+    // 刷新详情（如果打开）
+    if (detailEntry.value?.id === entry.id) {
+      // 重新获取该条目详情
+      const detailResp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
+      if (detailResp.ok) {
+        const fresh = await detailResp.json()
+        detailEntry.value = fresh
+        parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
+        parsedSegments.value = parseContentMd(fresh.content_md || '')
+        // 同时更新列表里的该条目
+        const idx = entries.value.findIndex(e => e.id === entry.id)
+        if (idx !== -1) {
+          entries.value[idx].content_md = fresh.content_md
+          entries.value[idx].images_json = fresh.images_json
+        }
+      }
+    }
+  } catch (err: any) {
+    ElMessage.error({
+      message: `重新识图失败：${err.message || '未知错误'}`,
+      duration: 0,  // 不自动关闭
+      showClose: true,
+    })
+  } finally {
+    reanalyzeSingleLoading.value = null
   }
 }
 
@@ -1307,9 +1363,9 @@ onMounted(() => {
                     link
                     size="small"
                     style="margin-right: 8px; padding: 0; display: inline-flex; align-items: center; vertical-align: middle;"
-                    :loading="reanalyzeLoading === detailEntry.id"
-                    @click.stop="handleReanalyzeImages(detailEntry)"
-                    title="重新识图"
+                    :loading="reanalyzeSingleLoading?.kbdId === detailEntry.id && reanalyzeSingleLoading?.seq === img.seq"
+                    @click.stop="handleReanalyzeSingleImage(detailEntry, img.seq)"
+                    title="重新识图此张"
                   >
                     <el-icon style="font-size: 14px;"><Refresh /></el-icon>
                   </el-button>

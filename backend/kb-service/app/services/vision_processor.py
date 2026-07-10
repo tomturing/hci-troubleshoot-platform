@@ -179,7 +179,18 @@ async def _vision_analyze(
         tokens = response.usage.total_tokens if response.usage else 0
         logger.debug("Vision LLM 响应 tokens=%d", tokens)
     except Exception as exc:
-        logger.error("Vision LLM 失败：%s", exc)
+        # 详细打印 LLM 错误信息（包括 429 等状态码）
+        import httpx
+        error_detail = str(exc)
+        if hasattr(exc, 'response'):
+            error_detail = f"{exc} (status={getattr(exc.response, 'status_code', 'unknown')})"
+        elif isinstance(exc, httpx.HTTPStatusError):
+            error_detail = f"HTTP {exc.response.status_code}: {exc.response.text[:500]}"
+        logger.error(
+            "Vision LLM 调用失败: %s",
+            error_detail,
+            exc_info=True,  # 打印完整堆栈
+        )
         return "其他截图", "其他", [], ""
 
     screenshot_type = _parse_type(raw)
@@ -341,7 +352,7 @@ async def reanalyze_kbd_images(
     context_source = kbd_entry.content_md or ""
     context_map = _build_context_map_from_html(context_source)
 
-    # 5. 创建 LLM 客户端
+    # 5. 创建 LLM 客户端（限制重试次数，避免无限重试阻塞整个流程）
     if not _LLM_API_KEY:
         raise RuntimeError("API_KEY 未配置，无法调用 Vision LLM")
 
@@ -349,6 +360,7 @@ async def reanalyze_kbd_images(
         api_key=_LLM_API_KEY,
         base_url=_LLM_BASE_URL,
         timeout=_LLM_TIMEOUT,
+        max_retries=2,  # 限制重试次数，避免无限重试
     )
 
     # 6. 并发处理所有图片
@@ -439,5 +451,157 @@ async def reanalyze_kbd_images(
         "total": len(kbd_images),
         "done": stats["done"],
         "failed": stats["failed"],
+        "images_json": images_json,
+    }
+
+
+async def reanalyze_single_image(
+    kbd_entry_id: int,
+    seq: int,
+    db_session: AsyncSession,
+) -> dict[str, Any]:
+    """重新识图单个 KBD 条目的指定图片。
+
+    流程：
+      1. 从 system_prompt 表热加载 Vision Prompt（kbd_vision_v1）
+      2. 查询 kbd_image 表获取指定 seq 的原始图片
+      3. 查询 kbd_entry 获取 content_md（用于提取图片上下文）
+      4. 调用 Vision LLM（单次调用，无并发）
+      5. 更新 images_json 中对应 seq 的 desc 字段
+      6. 调用 kbd_entry.rebuild_content_md() 重建 content_md
+      7. 返回处理结果
+
+    Args:
+        kbd_entry_id: KBD 条目 ID
+        seq: 图片序号（从 0 开始）
+        db_session: SQLAlchemy AsyncSession
+
+    Returns:
+        {
+            "kbd_entry_id": int,
+            "seq": int,
+            "screenshot_type": str,
+            "background": str,
+            "full_text": list[str],
+            "description": str,
+            "desc": str,  # 完整 desc.txt 格式
+            "images_json": list,  # 更新后的 images_json
+        }
+    """
+    # 1. 加载 Vision Prompt
+    prompt_template = await StrictPromptLoader.load_and_validate(
+        db_session,
+        _KBD_VISION_PROMPT_NAME,
+        ["context"],
+        consumer="kb-service.vision_processor",
+    )
+
+    # 2. 查询 KBD 条目
+    entry_result = await db_session.execute(
+        select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
+    )
+    kbd_entry = entry_result.scalar_one_or_none()
+    if kbd_entry is None:
+        raise ValueError(f"KBD 条目 {kbd_entry_id} 不存在")
+
+    # 3. 查询指定 seq 的原始图片
+    image_result = await db_session.execute(
+        select(KbdImage)
+        .where(KbdImage.kbd_entry_id == kbd_entry_id)
+        .where(KbdImage.seq == seq)
+    )
+    kbd_image = image_result.scalar_one_or_none()
+    if kbd_image is None:
+        raise ValueError(f"KBD 条目 {kbd_entry_id} 的图片 seq={seq} 不存在")
+
+    # 4. 构建图片上下文映射
+    context_source = kbd_entry.content_md or ""
+    context_map = _build_context_map_from_html(context_source)
+    context = context_map.get(seq, "")
+
+    # 5. 创建 LLM 客户端
+    if not _LLM_API_KEY:
+        raise RuntimeError("API_KEY 未配置，无法调用 Vision LLM")
+
+    client = AsyncOpenAI(
+        api_key=_LLM_API_KEY,
+        base_url=_LLM_BASE_URL,
+        timeout=_LLM_TIMEOUT,
+        max_retries=2,
+    )
+
+    # 6. 调用 Vision LLM
+    mime_type = kbd_image.mime_type or "image/png"
+    screenshot_type, background, full_text, description = await _vision_analyze(
+        client,
+        kbd_image.image_data,
+        mime_type,
+        context,
+        prompt_template,
+    )
+
+    # 空结果重试一次
+    if not full_text and not description:
+        logger.warning(
+            event="vision_empty_result_retry",
+            kbd_entry_id=kbd_entry_id,
+            seq=seq,
+        )
+        screenshot_type, background, full_text, description = await _vision_analyze(
+            client,
+            kbd_image.image_data,
+            mime_type,
+            context,
+            prompt_template,
+        )
+
+    # 7. 组装 desc
+    desc = _format_desc(screenshot_type, background, full_text, description)
+
+    # 8. 更新 images_json（保留其他图片的描述，仅更新当前 seq）
+    images_json = kbd_entry.images_json or []
+    section = "steps_text"
+
+    # 查找并更新已有记录，或追加新记录
+    found = False
+    for item in images_json:
+        if item.get("seq") == seq:
+            item["desc"] = desc
+            item["section"] = section
+            found = True
+            break
+
+    if not found:
+        images_json.append({
+            "seq": seq,
+            "section": section,
+            "desc": desc,
+        })
+
+    # 按 seq 排序
+    images_json.sort(key=lambda x: x["seq"])
+
+    # 9. 更新 kbd_entry
+    kbd_entry.images_json = images_json
+    kbd_entry.content_md = kbd_entry.rebuild_content_md()
+
+    await db_session.commit()
+
+    logger.info(
+        event="reanalyze_single_image_completed",
+        kbd_entry_id=kbd_entry_id,
+        seq=seq,
+        screenshot_type=screenshot_type,
+        background=background,
+    )
+
+    return {
+        "kbd_entry_id": kbd_entry_id,
+        "seq": seq,
+        "screenshot_type": screenshot_type,
+        "background": background,
+        "full_text": full_text,
+        "description": description,
+        "desc": desc,
         "images_json": images_json,
     }
