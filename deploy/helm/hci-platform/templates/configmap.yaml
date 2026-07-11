@@ -17,6 +17,8 @@ data:
   SCHEDULER_SERVICE_URL: "http://scheduler-service:{{ .Values.schedulerService.port }}"
   # LLM 配置（从顶级 llm.* 配置读取，assistantRegistryJson 由模板自动生成）
   LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
+  # 多模态专属 Vision 独立端点，默认为空时自动回退到 llm.baseUrl
+  LLM_VISION_BASE_URL: {{ .Values.llmVision.baseUrl | default .Values.llm.baseUrl | quote }}
   LLM_DEFAULT_MODEL: {{ .Values.llm.model | quote }}
   AI_COMPLETIONS_PATH: {{ .Values.llm.apiCompletionsPath | quote }}
   # KBD 分类与识图模型（可按环境覆盖，均已验证支持多模态）

@@ -240,8 +240,6 @@ kbService:
     repository: hci-kb-service
     tag: latest
   port: 8004
-  # 使用外部 AI API 时需要绕过 Clash fake-IP DNS
-  externalDns: false
   resources:
     requests:
       cpu: "100m"
@@ -356,6 +354,10 @@ llm:
   apiCompletionsPath: "/chat/completions"
   readTimeoutSec: 120.0
 
+llmVision:
+  # 多模态专属 Vision 独立端点，默认为空时自动回退到 llm.baseUrl
+  baseUrl: ""
+
 # ======================== 应用配置（非敏感 → ConfigMap）=====================
 config:
   postgresHost: postgres
@@ -379,6 +381,8 @@ secrets:
   postgresPassword: "dev_password_123"
   # LLM API Key（用于 dashscope 网关调用，由 kb-service/agent-service/conversation-service 共用）
   llmApiKey: ""
+  # Vision 专属 API Key，默认为空时自动回退到 llmApiKey
+  llmVisionApiKey: ""
   # 内部服务间 API 鉴权 Token
   internalApiToken: "hci-dev-internal-token"
   grafanaAdminPassword: "admin"

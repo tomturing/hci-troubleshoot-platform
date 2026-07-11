@@ -24,23 +24,6 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "kb-service") | nindent 6 }}
-      {{- if .Values.kbService.externalDns }}
-      # 同时保留 K8s 内部 DNS（kube-dns）和公网 DNS，确保内部服务名可解析
-      # 且 open.bigmodel.cn 等外部域名能绕过 Clash fake-IP 正常连通
-      dnsPolicy: None
-      dnsConfig:
-        nameservers:
-          - 10.43.0.10
-          - 114.114.114.114
-          - 1.2.4.8
-        searches:
-          - {{ printf "%s.svc.cluster.local" (include "hci.namespace" .) | quote }}
-          - svc.cluster.local
-          - cluster.local
-        options:
-          - name: ndots
-            value: "5"
-      {{- end }}
       containers:
         - name: kb-service
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.kbService.image) }}
