@@ -288,6 +288,61 @@ class KbdEntry(Base):
                     parts.append(f"## {heading}\n\n{expanded}")
         return "\n\n".join(parts)
 
+    def sync_sections_from_content_md(self) -> None:
+        """从当前的 content_md 反向解析并填充 8 大章节字段，确保双轨制数据完全同步。"""
+        content_md = self.content_md or ""
+
+        # 1. 结合 images_json，将 content_md 中的图片说明块还原回 ![img:seq] 占位符
+        for item in self.images_json or []:
+            seq = item.get("seq")
+            desc = item.get("desc", "")
+            if seq is not None and desc:
+                # 构造 v2 格式引用块文本
+                lines = desc.strip().split("\n")
+                block_lines = ["> **【截图说明】**"]
+                for line in lines:
+                    block_lines.append(f"> {line}" if line.strip() else ">")
+                v2_block = "\n".join(block_lines)
+                
+                # 构造 v1 格式引用块文本
+                v1_block = f"> **【截图说明】**：{desc.strip()}"
+                
+                # 在 content_md 中正则替换掉这两种可能的旧引用块，还原回占位符
+                pattern_v2 = re.compile(r"\n*\s*" + re.escape(v2_block) + r"\s*\n*")
+                content_md, count = pattern_v2.subn(f"\n\n![img:{seq}]\n\n", content_md)
+                if count == 0:
+                    pattern_v1 = re.compile(r"\n*\s*" + re.escape(v1_block) + r"\s*\n*")
+                    content_md = pattern_v1.sub(f"\n\n![img:{seq}]\n\n", content_md)
+
+        # 2. 按 ## 标题 切分文本并填充到各个字段
+        section_map = {
+            "问题描述": "problem_description",
+            "告警信息": "alert_info",
+            "有效排查步骤": "steps_text",
+            "根因": "root_cause",
+            "解决方案": "solution",
+            "操作影响范围": "operational_impact",
+            "是否是临时解决方案": "is_temporary",
+            "建议与总结": "recommendations",
+        }
+
+        # 初始化所有章节字段为 ""
+        for field in section_map.values():
+            setattr(self, field, "")
+
+        pattern = re.compile(r"^##\s+(.*?)\s*$", re.MULTILINE)
+        matches = list(pattern.finditer(content_md))
+
+        for i, match in enumerate(matches):
+            heading = match.group(1).strip()
+            field = section_map.get(heading)
+            if not field:
+                continue
+            start = match.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(content_md)
+            text_val = content_md[start:end].strip()
+            setattr(self, field, text_val)
+
     def __repr__(self) -> str:
         return f"<KbdEntry(id={self.id}, support_id={self.support_id}, status={self.status})>"
 

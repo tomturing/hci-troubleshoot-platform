@@ -29,7 +29,7 @@ from shared.observability.otel import get_current_trace_id
 from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
-from app.models.kbd_entry import strip_markdown
+from app.models.kbd_entry import strip_markdown, KbdEntry
 from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
@@ -1573,9 +1573,36 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
     # content_md 处理：明确传入则用传入的值；有章节更改则需先读库并重建
     if body.content_md is not None:
         # 明确传入了 content_md，优先使用
-        set_clauses.append("content_md = :content_md")
+        # 为了保障 8 大章节字段与 content_md 保持 100% 一致，读取库中 images_json 并进行解析同步
+        async with _db_manager.async_session_factory() as session:
+            cur_result = await session.execute(
+                text("SELECT images_json FROM kbd_entry WHERE id = :id"),
+                {"id": kbd_id},
+            )
+            cur_row = cur_result.mappings().first()
+            if not cur_row:
+                raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+            images_json = cur_row["images_json"] or []
+
+        # 实例化临时 KbdEntry，利用已实现的 sync_sections_from_content_md 进行反向解析
+        temp_entry = KbdEntry(
+            content_md=body.content_md,
+            images_json=images_json,
+        )
+        temp_entry.sync_sections_from_content_md()
+
+        # 将解析出的 8 大章节字段也一并放入 SQL 更新中
+        for field in section_fields:
+            parsed_val = getattr(temp_entry, field)
+            if f"{field} = :{field}" not in set_clauses:
+                set_clauses.append(f"{field} = :{field}")
+            params[field] = parsed_val
+
+        if "content_md = :content_md" not in set_clauses:
+            set_clauses.append("content_md = :content_md")
         params["content_md"] = body.content_md
-        set_clauses.append("content_raw = :content_raw")
+        if "content_raw = :content_raw" not in set_clauses:
+            set_clauses.append("content_raw = :content_raw")
         params["content_raw"] = body.content_raw or strip_markdown(body.content_md)
     elif any_section_changed:
         # 章节有变更且未传入 content_md：读库 + 应用 patch + 重建
