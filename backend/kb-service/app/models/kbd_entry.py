@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from typing import Any
 
 from shared.database.postgres import Base
 from sqlalchemy import BigInteger, Column, DateTime, Float, Integer, LargeBinary, String, Text
@@ -246,13 +247,13 @@ class KbdEntry(Base):
             return re.sub(r"!\[img:(\d+)\]", _replace, text)
 
         # 检查 8 大章节字段是否全部为空
-        has_any_section = any((getattr(self, field, "") or "").strip() for field in section_map.keys())
+        has_any_section = any((getattr(self, field, "") or "").strip() for field in section_map)
 
         if not has_any_section:
             # 如果 8 大章节全空，直接使用当前的 content_md 作为模版进行局部替换
             content_md = self.content_md or ""
             target_images_json = old_images_json if old_images_json is not None else (self.images_json or [])
-            
+
             for item in target_images_json:
                 seq = item.get("seq")
                 desc = item.get("desc", "")
@@ -263,17 +264,17 @@ class KbdEntry(Base):
                     for line in lines:
                         block_lines.append(f"> {line}" if line.strip() else ">")
                     v2_block = "\n".join(block_lines)
-                    
+
                     # 构造 v1 格式引用块文本
                     v1_block = f"> **【截图说明】**：{desc.strip()}"
-                    
+
                     # 在 content_md 中正则替换掉这两种可能的旧引用块，还原回占位符
                     pattern_v2 = re.compile(r"\n*\s*" + re.escape(v2_block) + r"\s*\n*")
                     content_md, count = pattern_v2.subn(f"\n\n![img:{seq}]\n\n", content_md)
                     if count == 0:
                         pattern_v1 = re.compile(r"\n*\s*" + re.escape(v1_block) + r"\s*\n*")
                         content_md = pattern_v1.sub(f"\n\n![img:{seq}]\n\n", content_md)
-            
+
             # 使用最新的图片说明展开所有的占位符
             return _expand_placeholders(content_md).strip()
 
