@@ -193,16 +193,17 @@ class KbdEntry(Base):
                 parts.append(text)
         return "\n\n".join(parts)
 
-    def rebuild_content_md(self) -> str:
+    def rebuild_content_md(self, old_images_json: list[dict[str, Any]] | None = None) -> str:
         """从章节字段 + images_json 重建 content_md（admin 编辑后调用）。
 
         处理逻辑：
-        1. 遍历 8 大章节字段，将 ![img:N] 占位符替换为 images_json 中对应的
-           > **【截图说明】** 视觉描述块
-        2. 拼接为完整的 Markdown 文档
-
-        相比旧版 rebuild_content_md（只含文字），此版本保留了视觉描述，
-        因为视觉描述已结构化存储在 images_json 中，即使 admin 编辑章节也不会丢失。
+        1. 检查 8 大章节字段是否全部为空。
+        2. 如果全部为空：说明是旧版/单文档导入的非结构化案例，没有 8 大章节。
+           直接以当前的 self.content_md 为基础模板。
+           如果提供了 old_images_json，其将旧描述块在 content_md 中安全地替换回 ![img:seq] 占位符。
+           然后对还原了占位符的 content_md，用最新 images_json 中的视觉描述展开它。
+        3. 如果不全为空：按照常规流程，遍历 8 大章节，将 ![img:N] 占位符替换为 images_json 中对应的
+           > **【截图说明】** 视觉描述块，并拼接为完整的 Markdown 文档
         """
         # 构建 seq → desc 快速查找表
         img_desc: dict[int, str] = {}
@@ -244,6 +245,39 @@ class KbdEntry(Base):
 
             return re.sub(r"!\[img:(\d+)\]", _replace, text)
 
+        # 检查 8 大章节字段是否全部为空
+        has_any_section = any((getattr(self, field, "") or "").strip() for field in section_map.keys())
+
+        if not has_any_section:
+            # 如果 8 大章节全空，直接使用当前的 content_md 作为模版进行局部替换
+            content_md = self.content_md or ""
+            target_images_json = old_images_json if old_images_json is not None else (self.images_json or [])
+            
+            for item in target_images_json:
+                seq = item.get("seq")
+                desc = item.get("desc", "")
+                if seq is not None and desc:
+                    # 构造 v2 格式引用块文本
+                    lines = desc.strip().split("\n")
+                    block_lines = ["> **【截图说明】**"]
+                    for line in lines:
+                        block_lines.append(f"> {line}" if line.strip() else ">")
+                    v2_block = "\n".join(block_lines)
+                    
+                    # 构造 v1 格式引用块文本
+                    v1_block = f"> **【截图说明】**：{desc.strip()}"
+                    
+                    # 在 content_md 中正则替换掉这两种可能的旧引用块，还原回占位符
+                    pattern_v2 = re.compile(r"\n*\s*" + re.escape(v2_block) + r"\s*\n*")
+                    content_md, count = pattern_v2.subn(f"\n\n![img:{seq}]\n\n", content_md)
+                    if count == 0:
+                        pattern_v1 = re.compile(r"\n*\s*" + re.escape(v1_block) + r"\s*\n*")
+                        content_md = pattern_v1.sub(f"\n\n![img:{seq}]\n\n", content_md)
+            
+            # 使用最新的图片说明展开所有的占位符
+            return _expand_placeholders(content_md).strip()
+
+        # 正常章节拼接流程
         parts = []
         for field, heading in section_map.items():
             text = (getattr(self, field, "") or "").strip()

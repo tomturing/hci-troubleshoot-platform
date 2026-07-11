@@ -452,8 +452,9 @@ async def reanalyze_kbd_images(
                 select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
             )
             kbd_entry = entry_result.scalar_one()
+            old_images = list(kbd_entry.images_json or [])
             kbd_entry.images_json = images_json
-            kbd_entry.content_md = kbd_entry.rebuild_content_md()
+            kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
             await db_session.commit()
         except Exception as e:
             logger.warning(
@@ -468,8 +469,9 @@ async def reanalyze_kbd_images(
                     select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
                 )
                 kbd_entry = entry_result.scalar_one()
+                old_images = list(kbd_entry.images_json or [])
                 kbd_entry.images_json = images_json
-                kbd_entry.content_md = kbd_entry.rebuild_content_md()
+                kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
                 await db_session.commit()
             except Exception as retry_err:
                 logger.error(
@@ -619,6 +621,7 @@ async def reanalyze_single_image(
             )
             kbd_entry = entry_result.scalar_one()
 
+            old_images = list(kbd_entry.images_json or [])
             # 更新 images_json（保留其他图片的描述，仅更新当前 seq）
             images_json = [dict(item) for item in (kbd_entry.images_json or [])]
             section = "steps_text"
@@ -640,7 +643,7 @@ async def reanalyze_single_image(
 
             images_json.sort(key=lambda x: x["seq"])
             kbd_entry.images_json = images_json
-            kbd_entry.content_md = kbd_entry.rebuild_content_md()
+            kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
             await db_session.commit()
         except Exception as e:
             logger.warning(
@@ -655,6 +658,7 @@ async def reanalyze_single_image(
                     select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
                 )
                 kbd_entry = entry_result.scalar_one()
+                old_images = list(kbd_entry.images_json or [])
                 images_json = [dict(item) for item in (kbd_entry.images_json or [])]
                 section = "steps_text"
 
@@ -675,7 +679,7 @@ async def reanalyze_single_image(
 
                 images_json.sort(key=lambda x: x["seq"])
                 kbd_entry.images_json = images_json
-                kbd_entry.content_md = kbd_entry.rebuild_content_md()
+                kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
                 await db_session.commit()
             except Exception as retry_err:
                 logger.error(
