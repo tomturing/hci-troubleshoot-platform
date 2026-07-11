@@ -1,16 +1,11 @@
 """
 KB Service — 管理后台路由
 
-提供文档状态机管理接口（审核/发布/下线）和文档列表查询。
+提供 KBD/SOP 文档审核和发布接口。
 仅供管理员使用，需 INTERNAL_API_TOKEN 鉴权。
 
-GET  /api/kb/documents            — 查询文档列表（分页 + 状态过滤）
-GET  /api/kb/documents/{id}       — 查询单个文档详情
-PATCH /api/kb/documents/{id}      — 更新文档状态（审核通过/发布/归档）
-DELETE /api/kb/documents/{id}     — 删除文档（级联删除 chunks）
-
 POST /api/admin/kbd/{id}/approve  — KBD 条目审核通过（生成 embedding + tsv）
-POST /api/admin/sop/{id}/approve  — SOP 文档审核通过（遍历 chunks 生成 embedding + tsv）
+POST /api/admin/sop/{id}/approve  — SOP 文档审核通过（解析决策树）
 """
 
 from __future__ import annotations
@@ -34,7 +29,6 @@ from shared.observability.otel import get_current_trace_id
 from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
-from app.models.document import KBDocument
 from app.models.kbd_entry import strip_markdown
 from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
@@ -102,157 +96,11 @@ async def _publish_sop_revision(session, document_id: int, trace_id: str | None)
 
 
 class DocumentUpdateRequest(BaseModel):
-    """文档状态更新请求"""
+    """文档状态更新请求（已废弃，保留向后兼容）"""
 
     status: str | None = None  # draft/under_review/approved/published/rejected/archived
     review_note: str | None = None
     reviewer: str | None = None
-
-
-@router.get("/documents")
-async def list_documents(
-    request: Request,
-    status_filter: str | None = None,
-    category_l1: str | None = None,
-    page: int = 1,
-    page_size: int = 20,
-):
-    """查询文档列表（分页 + 状态过滤）"""
-    _check_auth(request)
-
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
-
-    offset = (page - 1) * page_size
-    async with _db_manager.async_session_factory() as session:
-        query = select(
-            KBDocument.id,
-            KBDocument.title,
-            KBDocument.status,
-            KBDocument.source_type,
-            KBDocument.category_l1,
-            KBDocument.category_l2,
-            KBDocument.difficulty,
-            KBDocument.created_at,
-        )
-        if status_filter:
-            query = query.where(KBDocument.status == status_filter)
-        if category_l1:
-            query = query.where(KBDocument.category_l1 == category_l1)
-        query = query.order_by(KBDocument.created_at.desc()).offset(offset).limit(page_size)
-
-        result = await session.execute(query)
-        rows = result.fetchall()
-
-    return {
-        "page": page,
-        "page_size": page_size,
-        "documents": [
-            {
-                "id": r.id,
-                "title": r.title,
-                "status": r.status,
-                "source_type": r.source_type,
-                "category_l1": r.category_l1,
-                "category_l2": r.category_l2,
-                "difficulty": r.difficulty,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-            }
-            for r in rows
-        ],
-    }
-
-
-@router.get("/documents/{doc_id}")
-async def get_document(request: Request, doc_id: int):
-    """查询单个文档详情"""
-    _check_auth(request)
-
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
-
-    async with _db_manager.async_session_factory() as session:
-        result = await session.execute(select(KBDocument).where(KBDocument.id == doc_id))
-        doc = result.scalar_one_or_none()
-
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
-
-    return {
-        "id": doc.id,
-        "title": doc.title,
-        "status": doc.status,
-        "source_id": doc.source_id,
-        "source_type": doc.source_type,
-        "category_l1": doc.category_l1,
-        "category_l2": doc.category_l2,
-        "tags": doc.tags,
-        "summary": doc.summary,
-        "judgment_logic": doc.judgment_logic,
-        "difficulty": doc.difficulty,
-        "review_note": doc.review_note,
-        "reviewer": doc.reviewer,
-        "reviewed_at": doc.reviewed_at.isoformat() if doc.reviewed_at else None,
-        "created_at": doc.created_at.isoformat(),
-    }
-
-
-@router.patch("/documents/{doc_id}")
-async def update_document(request: Request, doc_id: int, body: DocumentUpdateRequest):
-    """更新文档状态（审核/发布/归档）"""
-    _check_auth(request)
-
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
-
-    from datetime import UTC, datetime
-
-    # 验证状态合法性
-    if body.status and body.status not in KBDocument.VALID_STATUSES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"非法状态: {body.status}，合法值: {KBDocument.VALID_STATUSES}",
-        )
-
-    async with _db_manager.async_session_factory() as session:
-        result = await session.execute(select(KBDocument).where(KBDocument.id == doc_id))
-        doc = result.scalar_one_or_none()
-        if not doc:
-            raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
-
-        if body.status:
-            doc.status = body.status
-            # 记录审核信息
-            if body.status in {"approved", "published"}:
-                doc.reviewed_at = datetime.now(UTC)
-        if body.review_note is not None:
-            doc.review_note = body.review_note
-        if body.reviewer is not None:
-            doc.reviewer = body.reviewer
-
-        await session.commit()
-
-    logger.info(event="document_updated", doc_id=doc_id, new_status=body.status)
-    return {"id": doc_id, "status": body.status or doc.status, "updated": True}
-
-
-@router.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(request: Request, doc_id: int):
-    """删除文档（级联删除关联 chunks）"""
-    _check_auth(request)
-
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
-
-    async with _db_manager.async_session_factory() as session:
-        result = await session.execute(select(KBDocument).where(KBDocument.id == doc_id))
-        doc = result.scalar_one_or_none()
-        if not doc:
-            raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
-        await session.delete(doc)
-        await session.commit()
-
-    logger.info(event="document_deleted", doc_id=doc_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -753,7 +601,6 @@ class SopApproveResponse(BaseModel):
     success: bool = Field(..., description="操作是否成功")
     document_id: int = Field(..., description="SOP 文档 ID")
     status: str = Field(..., description="当前状态")
-    chunks_embedded: int = Field(0, description="已废弃字段（sop_chunk 已删除），始终为 0")
     tree_generated: bool = Field(..., description="是否成功生成 SOP 决策树")
     tree_leaf_count: int | None = Field(None, description="决策树叶节点数量")
     tree_validation_status: str | None = Field(None, description="决策树校验状态（valid/warnings/error）")
@@ -859,15 +706,12 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
       - 无事务：解析 SOP Markdown 生成决策树（无 IO 操作，但解析可能耗时）
       - 短事务2：UPDATE sop_document（状态 + tree_json）
 
-    注意：sop_chunk 表已废弃，chunks_embedded 字段始终为 0（向后兼容保留）。
-
     响应体示例：
     ```json
     {
       "success": true,
       "document_id": 1,
       "status": "published",
-      "chunks_embedded": 5,
       "published_at": "2026-04-02T10:30:00Z"
     }
     ```
@@ -902,7 +746,6 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     success=True,
                     document_id=document_id,
                     status="published",
-                    chunks_embedded=0,
                     tree_generated=sop_doc.tree_json is not None,
                     tree_leaf_count=sop_doc.tree_leaf_count if sop_doc.tree_json is not None else None,
                     tree_validation_status=sop_doc.tree_validation_status if sop_doc.tree_json is not None else None,
@@ -1182,7 +1025,6 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         success=True,
         document_id=document_id,
         status="published",
-        chunks_embedded=0,
         tree_generated=tree_generated,
         tree_leaf_count=tree_leaf_count if tree_generated else None,
         tree_validation_status=tree_validation_status,
@@ -2347,7 +2189,6 @@ async def upload_sop_document(
             return {
                 "success": True,
                 "document_id": existing_doc.id,
-                "chunks_created": 0,
                 "status": existing_doc.status,
                 "duplicate": True,
                 "message": f"文件已导入（document_id={existing_doc.id}），跳过重复入库",
@@ -2378,7 +2219,6 @@ async def upload_sop_document(
     return {
         "success": True,
         "document_id": document_id,
-        "chunks_created": 0,
         "status": "draft",
         "duplicate": False,
         "title": doc_title,

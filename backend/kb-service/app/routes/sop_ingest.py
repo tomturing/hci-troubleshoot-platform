@@ -5,13 +5,10 @@ POST /api/sop/ingest
   - 调用方：data-pipeline/kbd ETL 脚本（SOP .docx 解析后写入）
   - 鉴权：INTERNAL_API_TOKEN（简单 Bearer Token）
   - 幂等：相同 docx_hash 的文档不会重复入库
-  - 分块：按 Markdown 章节（## 或 ###）自动分块
 
 功能清单：
 1. 写入 sop_document 表
-2. 解析 content_md 按章节分块
-3. 写入 sop_chunk 表（每个章节一个 chunk）
-4. 状态默认为 draft
+2. 状态默认为 draft
 """
 
 from __future__ import annotations
@@ -72,7 +69,6 @@ class SopIngestResponse(BaseModel):
 
     success: bool = Field(..., description="操作是否成功")
     document_id: int = Field(..., description="文档 ID")
-    chunks_created: int = Field(0, description="已废弃字段（sop_chunk 已删除），始终为 0")
     status: str = Field(..., description="文档状态")
 
 
@@ -137,7 +133,7 @@ def split_by_chapters(content_md: str) -> list[tuple[str, str]]:
 async def ingest_sop_document(request: Request, body: SopIngestRequest):
     """SOP 文档入库
 
-    将 SOP Markdown 文档按章节分块，写入 sop_document 和 sop_chunk 表。
+    将 SOP Markdown 文档写入 sop_document 表。
     支持幂等（相同 docx_hash 不重复入库）。
 
     调用方：data-pipeline/kbd ETL 脚本
@@ -184,7 +180,6 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
                 return SopIngestResponse(
                     success=True,
                     document_id=existing_doc.id,
-                    chunks_created=0,
                     status=existing_doc.status,
                 )
 
@@ -202,11 +197,10 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
                         message="source_id + hash 均相同，跳过入库",
                     )
                     return SopIngestResponse(
-                        success=True,
-                        document_id=existing_by_source.id,
-                        chunks_created=0,
-                        status=existing_by_source.status,
-                    )
+                    success=True,
+                    document_id=existing_by_source.id,
+                    status=existing_by_source.status,
+                )
 
                 # hash 不同（内容已更新）：upsert 文档内容 + 重建 chunks + 重置为 draft
                 old_hash = existing_by_source.docx_hash
@@ -235,7 +229,6 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
                 return SopIngestResponse(
                     success=True,
                     document_id=existing_by_source.id,
-                    chunks_created=0,
                     status=existing_by_source.status,
                 )
 
@@ -269,7 +262,6 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
     return SopIngestResponse(
         success=True,
         document_id=document_id,
-        chunks_created=0,
         status="draft",
     )
 
