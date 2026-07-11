@@ -27,7 +27,6 @@ from app.routes import (
     ingest,
     kbd_search,
     route,
-    search,
     sop_ingest,
 )
 from app.services.embedding import EmbeddingService
@@ -72,7 +71,6 @@ async def lifespan(app: FastAPI):
 
     # 注入依赖到路由模块（兼容 Depends 模式）
     ingest.set_dependencies(database_manager, embedding_service)
-    search.set_dependencies(database_manager, embedding_service)
     kbd_search.set_dependencies(database_manager, embedding_service)  # KBD 语义检索（agent 专用）
     admin.set_dependencies(database_manager, embedding_service)  # 注入 embedding 服务
     route.set_dependencies(database_manager)
@@ -91,7 +89,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="HCI Troubleshoot - KB Service",
-    description="知识库服务（RAG 检索 + 文档入库 + SOP 匹配）",
+    description="知识库服务（KBD/SOP 管理 + 分类检索）",
     version="3.0.0",
     lifespan=lifespan,
 )
@@ -104,7 +102,6 @@ register_exception_handlers(app)
 
 # 注册路由
 app.include_router(health.router)
-app.include_router(search.router)
 app.include_router(route.router)
 app.include_router(ingest.router)
 app.include_router(kbd_search.router)  # KBD 语义检索（agent-service 专用）

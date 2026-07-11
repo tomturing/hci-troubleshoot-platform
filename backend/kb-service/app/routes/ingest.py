@@ -1,11 +1,6 @@
 """
 KB Service — 文档入库路由
 
-POST /api/kb/ingest
-  - 调用方：LearningClaw（AI 学习成果写入）、ETL 脚本（批量历史案例导入）
-  - 鉴权：INTERNAL_API_TOKEN（简单 Bearer Token）
-  - 幂等：相同 source_id + content_hash 的文档不会重复入库
-
 POST /api/kb/sop/import
   - 调用方：管理员（手动导入 SOP 技能节点）
   - 批量写入 kb_sop_node
@@ -27,7 +22,6 @@ from shared.observability.logger import get_logger
 from sqlalchemy import select
 
 from app.models.kbd_entry import KbdEntry, strip_markdown
-from app.services.ingestor import IngestorService
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -49,23 +43,6 @@ def set_dependencies(db: DatabaseManager, embedding: EmbeddingService) -> None:
 
 
 # ---- 请求/响应模型 ----
-
-
-class IngestRequest(BaseModel):
-    """文档入库请求"""
-
-    title: str = Field(..., min_length=1, max_length=500, description="文档标题")
-    content_md: str = Field(..., min_length=10, description="Markdown 全文")
-    source_id: str | None = Field(None, max_length=50, description="原始案例ID（可选，用于幂等）")
-    source_type: str = Field("kb", pattern="^(kb|sop|realtime)$", description="来源类型")
-    category_l1: str | None = Field(None, max_length=100, description="一级分类")
-    category_l2: str | None = Field(None, max_length=100, description="二级分类")
-    tags: list[str] = Field(default_factory=list, description="标签列表")
-    summary: str | None = Field(None, description="摘要（中文）")
-    judgment_logic: str | None = Field(None, description="排查逻辑（中文）")
-    yaml_meta: dict | None = Field(None, description="结构化元数据")
-    difficulty: int = Field(3, ge=1, le=5, description="难度 1-5")
-    verified_version: str | None = Field(None, max_length=50, description="已验证的产品版本")
 
 
 class SopNodeImportItem(BaseModel):
@@ -100,50 +77,6 @@ def _check_auth(request: Request) -> None:
 
 
 # ---- 路由 ----
-
-
-@router.post("/ingest", status_code=status.HTTP_201_CREATED)
-async def ingest_document(request: Request, body: IngestRequest):
-    """文档入库
-
-    将 Markdown 文档分块、embedding，写入知识库。
-    支持幂等（相同内容不重复入库）。
-
-    调用方：LearningClaw / data-pipeline/kbd ETL 脚本
-    """
-    _check_auth(request)
-
-    if _db_manager is None or _embedding_service is None:
-        raise HTTPException(status_code=503, detail="服务未就绪")
-
-    logger.info(
-        event="ingest_request",
-        title=body.title[:50],
-        source_id=body.source_id,
-        source_type=body.source_type,
-        content_length=len(body.content_md),
-    )
-
-    try:
-        service = IngestorService(_db_manager, _embedding_service)
-        result = await service.ingest(
-            title=body.title,
-            content_md=body.content_md,
-            source_id=body.source_id,
-            source_type=body.source_type,
-            category_l1=body.category_l1,
-            category_l2=body.category_l2,
-            tags=body.tags,
-            summary=body.summary,
-            judgment_logic=body.judgment_logic,
-            yaml_meta=body.yaml_meta,
-            difficulty=body.difficulty,
-            verified_version=body.verified_version,
-        )
-        return result.to_dict()
-    except Exception as exc:
-        logger.error(event="ingest_failed", error=str(exc), title=body.title[:50])
-        raise HTTPException(status_code=500, detail=f"入库失败: {exc}") from exc
 
 
 @router.post("/sop/import", status_code=status.HTTP_201_CREATED)
@@ -261,12 +194,6 @@ class KbdIngestRequest(BaseModel):
         description=("仅覆盖指定状态的记录。不传=默认['draft']；['all']=所有状态；['draft','published']=仅指定状态"),
     )
 
-    # 向后兼容（deprecated）
-    force_update: bool = Field(
-        False,
-        description="[已废弃] 请使用 override 参数。仅更新 draft 状态的记录",
-    )
-
 
 class KbdIngestResponse(BaseModel):
     """KBD 条目入库响应"""
@@ -352,9 +279,6 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
-    # 参数解析：向后兼容 force_update → override
-    override = body.override or body.force_update
-
     if body.override_status is None:
         # 不传 override_status = 默认仅 draft
         allowed_statuses = DEFAULT_OVERRIDE_STATUS
@@ -370,7 +294,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
         support_id=body.support_id,
         title=body.title[:50],
         content_length=len(body.content_md),
-        override=override,
+        override=body.override,
         override_status=body.override_status,
         allowed_statuses=allowed_statuses,
     )
@@ -384,7 +308,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
             # 已存在记录的处理逻辑
             existing_status = existing_entry.status
 
-            if override:
+            if body.override:
                 # 检查状态是否允许覆盖
                 status_allowed = (
                     allowed_statuses is None  # 无限制
