@@ -48,7 +48,7 @@ logger = get_logger("kb-service-vision-processor")
 _MIN_CONTEXT_CHARS = 80
 _SHORT_WINDOW = 300
 _LONG_WINDOW = 800
-_MAX_VISION_IMAGE_SIZE = 1024 * 1024  # 1MB，超过需压缩
+_MAX_VISION_IMAGE_SIZE = 150 * 1024  # 150KB，超过需压缩
 _VISION_CONCURRENCY = 1  # 并发 LLM 调用数（DashScope 限制，改为 1 避免并发超限）
 
 # 截图类型与背景颜色（LLM 输出标准）
@@ -68,7 +68,7 @@ _LLM_VISION_API_KEY = os.environ.get("LLM_VISION_API_KEY") or os.environ.get("LL
 # 优先读取 VISION_MODEL，若未配置，则回退到已验证可用的 qwen3.7-plus
 _LLM_VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3.7-plus")
 _LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "30.0"))
-_VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "8192"))
+_VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "1536"))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -125,11 +125,11 @@ def _compress_image_if_needed(image_data: bytes, mime_type: str) -> tuple[bytes,
         img = Image.open(io.BytesIO(image_data))
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
-        if img.width > 2000:
-            ratio = 2000 / img.width
-            img = img.resize((2000, int(img.height * ratio)), Image.Resampling.LANCZOS)
+        if img.width > 1000:
+            ratio = 1000 / img.width
+            img = img.resize((1000, int(img.height * ratio)), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=85)
+        img.save(buffer, format="JPEG", quality=70)
         compressed = buffer.getvalue()
         logger.info(
             "图片压缩 %dKB->%dKB",
@@ -373,7 +373,7 @@ async def reanalyze_kbd_images(
         api_key=_LLM_VISION_API_KEY,
         base_url=_LLM_VISION_BASE_URL,
         timeout=_LLM_TIMEOUT,
-        max_retries=2,
+        max_retries=1,
     )
 
     # 4. 并发处理所有图片（不占有任何 DB 连接）
@@ -581,7 +581,7 @@ async def reanalyze_single_image(
         api_key=_LLM_VISION_API_KEY,
         base_url=_LLM_VISION_BASE_URL,
         timeout=_LLM_TIMEOUT,
-        max_retries=2,
+        max_retries=1,
     )
 
     # 调用 Vision LLM
