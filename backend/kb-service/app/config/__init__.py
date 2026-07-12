@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # LearningClaw/ProductionClaw 调用 KB Service 时携带此 Token
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
 
+    # ---- Agent Service（关键信号抽取远程调用）----
+    AGENT_SERVICE_URL: str = "http://agent-service:8005"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

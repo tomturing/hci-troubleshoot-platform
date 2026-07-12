@@ -117,6 +117,11 @@ class KbdEntry(Base):
     # admin 编辑章节字段后，视觉描述通过此字段保留，不会丢失
     images_json = Column(JSONB, nullable=False, default=list)  # 图片视觉描述列表
 
+    # ── 关键信号（agent-service SignalExtractor 抽取，结构化落库）────────────
+    # 格式：[{"signal_category": "frontend|backend", "keyword": "...", "description": "...", ...}]
+    # 由 /api/admin/kbd/{id}/extract-signals 触发 agent-service 远程抽取后写入
+    key_signals = Column(JSONB, nullable=False, default=list)  # 关键信号列表
+
     # ── 聚合渲染（含截图视觉描述，供展示和 LLM 上下文注入）──────────────────
     # 由 pipeline 生成（含 > **【截图说明】** 等视觉信息）
     # admin 编辑章节后由 rebuild_content_md() 重建（从章节字段+images_json 生成）

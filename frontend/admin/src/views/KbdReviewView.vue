@@ -36,6 +36,7 @@ interface KbdEntry {
   created_at: string
   updated_at: string
   ai_category_label?: string | null
+  key_signals?: KeySignalItem[] | null
 }
 
 // 图片描述项（images_json 数组元素）
@@ -43,6 +44,30 @@ interface ImageJsonItem {
   seq: number           // 图片序号
   section: string       // 所属章节字段
   desc: string          // desc.txt v3 内容
+}
+
+// 关键信号项（agent-service SignalExtractor 抽取结果，与后端 key_signals 字段对齐）
+interface KeySignalTarget {
+  scope?: string | null
+  resource?: string | null
+  path?: string | null
+  time_window?: string | null
+}
+interface KeySignalItem {
+  signal_category: 'frontend' | 'backend'
+  keyword: string
+  description?: string | null
+  // 前端信号
+  query?: string
+  is_failed?: boolean
+  // 后端信号
+  signal_type?: string
+  target?: KeySignalTarget | null
+  keywords?: string[]
+  match_mode?: string
+  expected?: boolean
+  container?: string | null
+  sub_command?: string | null
 }
 
 // 生成深信服案例原始页面 URL
@@ -151,6 +176,9 @@ interface ParsedImageJson {
   expanded: boolean
 }
 const parsedImagesJson = ref<ParsedImageJson[]>([])
+
+// 关键信号抽取（loading 状态）
+const extractingSignals = ref(false)
 
 // 拒绝弹窗
 const rejectDialogVisible = ref(false)
@@ -369,6 +397,32 @@ async function handleRepublish(entry: KbdEntry) {
     if ((e as { message?: string })?.message !== 'cancel') {
       ElMessage.error('操作失败，请重试')
     }
+  }
+}
+
+// 抽取关键信号（远程调用 kb-service → agent-service SignalExtractor）
+async function extractSignals(entry: KbdEntry) {
+  if (!entry) return
+  extractingSignals.value = true
+  try {
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/extract-signals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({ mode: 'batch' }),
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    detailEntry.value!.key_signals = data.key_signals || []
+    const idx = entries.value.findIndex((e) => e.id === entry.id)
+    if (idx !== -1) entries.value[idx].key_signals = data.key_signals || []
+    ElMessage.success(`关键信号抽取完成（${detailEntry.value!.key_signals.length} 条）`)
+  } catch (e: unknown) {
+    ElMessage.error(`关键信号抽取失败：${(e as { message?: string })?.message || '请重试'}`)
+  } finally {
+    extractingSignals.value = false
   }
 }
 
@@ -1066,6 +1120,62 @@ onMounted(() => {
               </el-descriptions-item>
             </template>
           </el-descriptions>
+        </div>
+
+        <!-- 关键信号（agent-service SignalExtractor 抽取结果） -->
+        <div class="section-block">
+          <div class="section-header-row">
+            <h4 class="section-title">关键信号</h4>
+            <div class="section-actions">
+              <el-button
+                text type="primary" size="small"
+                :loading="extractingSignals"
+                @click="extractSignals(detailEntry!)"
+              >⬡ 抽取关键信号</el-button>
+            </div>
+          </div>
+
+          <div
+            v-if="!detailEntry.key_signals || detailEntry.key_signals.length === 0"
+            class="text-muted"
+            style="font-size: 13px"
+          >
+            尚未抽取关键信号，点击右上角「抽取关键信号」按钮从正文提取。
+          </div>
+          <template v-else>
+            <el-table :data="detailEntry.key_signals" border size="small" style="margin-top: 8px">
+              <el-table-column label="类别" width="90">
+                <template #default="{ row }">
+                  <el-tag
+                    :type="row.signal_category === 'frontend' ? 'warning' : 'success'"
+                    size="small"
+                  >{{ row.signal_category === 'frontend' ? '前端' : '后端' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="关键字" prop="keyword" min-width="140" />
+              <el-table-column label="说明" prop="description" min-width="200" show-overflow-tooltip />
+              <el-table-column label="类型/查询" min-width="160">
+                <template #default="{ row }">
+                  <span v-if="row.signal_category === 'frontend'">
+                    查询: {{ row.query }}<template v-if="row.is_failed">（仅失败）</template>
+                  </span>
+                  <span v-else>{{ row.signal_type }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="目标 / 关键字" min-width="220" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span v-if="row.signal_category === 'backend'">
+                    <template v-if="row.target">
+                      scope={{ row.target.scope }} · res={{ row.target.resource }}
+                    </template>
+                    kw: {{ (row.keywords || []).join('、') }}
+                    <template v-if="row.expected !== undefined">（期望{{ row.expected ? '出现' : '不出现' }}）</template>
+                  </span>
+                  <span v-else class="text-muted">—</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
         </div>
 
         <!-- content_md 渲染 -->

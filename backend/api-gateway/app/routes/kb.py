@@ -332,6 +332,15 @@ async def kbd_republish_proxy(kbd_id: int, request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@kbd_router.post("/{kbd_id}/extract-signals")
+async def kbd_extract_signals_proxy(kbd_id: int, request: Request):
+    """代理 KBD 关键信号抽取请求（远程调用 agent-service）→ kb-service"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/extract-signals", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 # ============ SOP 管理代理（前端使用 /api/v1/sop 前缀） ============
 
 SOP_ADMIN_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/sop"

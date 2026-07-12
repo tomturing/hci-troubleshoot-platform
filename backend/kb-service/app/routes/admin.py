@@ -335,7 +335,7 @@ async def list_kbd_entries(
             SELECT id, support_id, title,
                    problem_description, alert_info, steps_text, root_cause,
                    solution, operational_impact, is_temporary, recommendations,
-                   steps_json, content_md, content_raw, images_json,
+                   steps_json, content_md, content_raw, images_json, key_signals,
                    metadata, category_id, ai_category_id,
                    ai_category_conf, ai_category_reason,
                    status, reviewer_id, review_note,
@@ -366,6 +366,7 @@ async def list_kbd_entries(
             "content_md": row["content_md"] or "",
             "content_raw": row["content_raw"] or "",
             "images_json": row["images_json"] or [],
+            "key_signals": row["key_signals"] or [],
             "metadata": row["metadata"] or {},
             "category_id": row["category_id"],
             "ai_category_id": row["ai_category_id"],
@@ -419,7 +420,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
                 SELECT id, support_id, title,
                        problem_description, alert_info, steps_text, root_cause,
                        solution, operational_impact, is_temporary, recommendations,
-                       steps_json, content_md, content_raw, images_json,
+                       steps_json, content_md, content_raw, images_json, key_signals,
                        metadata, category_id, ai_category_id,
                        ai_category_conf, ai_category_reason,
                        status, reviewer_id, review_note,
@@ -451,6 +452,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "content_md": row["content_md"] or "",
         "content_raw": row["content_raw"] or "",
         "images_json": row["images_json"] or [],
+        "key_signals": row["key_signals"] or [],
         "metadata": row["metadata"] or {},
         "category_id": row["category_id"],
         "ai_category_id": row["ai_category_id"],
@@ -463,6 +465,121 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         "published_at": row["published_at"].isoformat() if row["published_at"] else None,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KBD 条目关键信号抽取接口（远程调用 agent-service）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class KbdExtractSignalsRequest(BaseModel):
+    """关键信号抽取请求（可选参数）"""
+
+    mode: str = Field("batch", description="抽取模式：single（单条）/ batch（批量，默认）")
+
+
+@kbd_router.post("/{kbd_id}/extract-signals")
+async def extract_kbd_signals(
+    request: Request,
+    kbd_id: int,
+    body: KbdExtractSignalsRequest | None = None,
+):
+    """触发关键信号抽取（远程调用 agent-service SignalExtractor），结果落库 key_signals。
+
+    抽取文本来源（按字段 → 信号类别映射）：
+      - 前端信号：title / problem_description / alert_info
+      - 后端信号：steps_text
+      - root_cause / solution：暂不参与信号抽取
+    各字段以【标题】/【问题描述】/【告警信息】/【排查步骤】标注后拼接，
+    交给 SIG Prompt 按字段来源判别前/后端信号；均为空时回退 content_raw。
+    返回的 key_signals 会写入 kbd_entry.key_signals 并在详情接口返回。
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    mode = body.mode if body and body.mode in ("single", "batch") else "batch"
+
+    # 1. 查询条目文本
+    async with _db_manager.async_session_factory() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT id, title, problem_description, alert_info, steps_text, "
+                    "root_cause, solution, content_raw FROM kbd_entry WHERE id = :id"
+                ),
+                {"id": kbd_id},
+            )
+        ).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+
+        # 按字段来源标注拼接（信号抽取的字段映射规范）：
+        #   前端信号来源：title / problem_description / alert_info
+        #   后端信号来源：steps_text
+        #   root_cause / solution 暂不参与信号抽取（不喂入）
+        # 用【】标注字段来源，供 SIG Prompt 按"字段 → 信号类别"映射判别。
+        labeled_sections = (
+            ("标题", row["title"]),
+            ("问题描述", row["problem_description"]),
+            ("告警信息", row["alert_info"]),
+            ("排查步骤", row["steps_text"]),
+        )
+        extract_text = "\n\n".join(
+            f"【{label}】\n{value.strip()}"
+            for label, value in labeled_sections
+            if value and value.strip()
+        )
+        if not extract_text.strip():
+            extract_text = row["content_raw"] or ""
+
+    if not extract_text.strip():
+        raise HTTPException(status_code=400, detail=f"KBD 条目 {kbd_id} 无可抽取的正文内容")
+
+    # 2. 远程调用 agent-service 信号抽取端点
+    import httpx
+
+    from app.config import settings
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{settings.AGENT_SERVICE_URL}/api/v1/signals/extract",
+                json={"text": extract_text, "mode": mode},
+                headers={"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"},
+            )
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"关键信号抽取服务调用失败: {resp.text[:300]}",
+            )
+        signals = resp.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("kbd_extract_signals_failed", kbd_id=kbd_id, error=str(exc))
+        raise HTTPException(status_code=502, detail=f"关键信号抽取服务调用失败: {exc}") from exc
+
+    # 3. 落库 key_signals
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text(
+                "UPDATE kbd_entry SET key_signals = :key_signals, updated_at = :updated_at "
+                "WHERE id = :id RETURNING id"
+            ),
+            {
+                "id": kbd_id,
+                "key_signals": json.dumps(signals, ensure_ascii=False),
+                "updated_at": datetime.now(UTC),
+            },
+        )
+        if not result.mappings().first():
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+        await session.commit()
+
+    logger.info(event="kbd_signals_extracted", kbd_id=kbd_id, count=len(signals))
+    return {"success": True, "kbd_id": kbd_id, "key_signals": signals}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

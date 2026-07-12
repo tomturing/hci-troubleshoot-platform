@@ -45,6 +45,8 @@ from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
 from app.config import settings
 from app.routes.agent import router as agent_router_route
 from app.routes.agent import set_agent_router, set_confirm_service
+from app.routes.signal import router as signal_router_route
+from app.routes.signal import set_signal_dependencies as set_signal_deps
 
 if TYPE_CHECKING:
     from app.adapters.clients.acli_client import AcliClient
@@ -337,6 +339,8 @@ async def lifespan(app: FastAPI):
     set_agent_router(agent_router)
     # 注入 ConfirmService（用于 ReAct 确认回路）
     set_confirm_service(confirm_service)
+    # 注入信号抽取路由依赖（数据库 + AI 注册表）
+    set_signal_deps(db_manager, ai_registry)
 
     logger.info(
         event="agent_router_initialized",
@@ -561,6 +565,7 @@ register_exception_handlers(app)
 
 # 路由挂载
 app.include_router(agent_router_route)
+app.include_router(signal_router_route)
 
 
 @app.get("/health/live")
