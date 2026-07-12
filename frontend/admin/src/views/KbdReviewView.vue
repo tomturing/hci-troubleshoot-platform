@@ -108,6 +108,7 @@ interface ScreenshotSegment {
   fields: ScreenshotFields
   expanded: boolean
   seq?: number
+  defaultSeq?: number
 }
 
 type ContentSegment = NormalSegment | ScreenshotSegment
@@ -773,6 +774,7 @@ function parseContentMd(md: string): ContentSegment[] {
   let screenshotLines: string[] = []
   let inScreenshot = false
   let inDescription = false  // v3: DESCRIPTION section 状态跟踪
+  let screenshotIndex = 0
 
   const flushNormal = () => {
     if (normalLines.length > 0) {
@@ -783,7 +785,9 @@ function parseContentMd(md: string): ContentSegment[] {
   }
   const flushScreenshot = () => {
     if (screenshotLines.length > 0) {
-      segments.push(parseScreenshotBlock(screenshotLines))
+      const seg = parseScreenshotBlock(screenshotLines)
+      seg.defaultSeq = screenshotIndex++
+      segments.push(seg)
       screenshotLines = []
     }
   }
@@ -863,6 +867,8 @@ function associateSegmentsWithSeq(segments: ContentSegment[], images: ParsedImag
       if (matchIdx !== -1) {
         matchedIndices.add(matchIdx)
         seg.seq = images[matchIdx].seq
+      } else {
+        seg.seq = seg.defaultSeq
       }
     }
   })
@@ -1340,7 +1346,7 @@ onMounted(() => {
                     size="small"
                     style="margin-right: 8px; padding: 0; display: inline-flex; align-items: center; vertical-align: middle;"
                     :loading="reanalyzeSingleLoading?.kbdId === detailEntry.id && reanalyzeSingleLoading?.seq === seg.seq"
-                    @click.stop="handleReanalyzeSingleImage(detailEntry, seg.seq !== undefined ? seg.seq : 0)"
+                    @click.stop="handleReanalyzeSingleImage(detailEntry, seg.seq !== undefined ? seg.seq : (seg.defaultSeq !== undefined ? seg.defaultSeq : 0))"
                     title="重新识图此张"
                   >
                     <el-icon style="font-size: 14px;"><Refresh /></el-icon>
