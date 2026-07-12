@@ -303,10 +303,10 @@ class KbdEntry(Base):
                 for line in lines:
                     block_lines.append(f"> {line}" if line.strip() else ">")
                 v2_block = "\n".join(block_lines)
-                
+
                 # 构造 v1 格式引用块文本
                 v1_block = f"> **【截图说明】**：{desc.strip()}"
-                
+
                 # 在 content_md 中正则替换掉这两种可能的旧引用块，还原回占位符
                 pattern_v2 = re.compile(r"\n*\s*" + re.escape(v2_block) + r"\s*\n*")
                 content_md, count = pattern_v2.subn(f"\n\n![img:{seq}]\n\n", content_md)

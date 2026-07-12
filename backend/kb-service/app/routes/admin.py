@@ -29,7 +29,7 @@ from shared.observability.otel import get_current_trace_id
 from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
-from app.models.kbd_entry import strip_markdown, KbdEntry
+from app.models.kbd_entry import KbdEntry, strip_markdown
 from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
