@@ -455,6 +455,7 @@ async def reanalyze_kbd_images(
             old_images = list(kbd_entry.images_json or [])
             kbd_entry.images_json = images_json
             kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
+            kbd_entry.sync_sections_from_content_md()
             await db_session.commit()
         except Exception as e:
             logger.warning(
@@ -472,6 +473,7 @@ async def reanalyze_kbd_images(
                 old_images = list(kbd_entry.images_json or [])
                 kbd_entry.images_json = images_json
                 kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
+                kbd_entry.sync_sections_from_content_md()
                 await db_session.commit()
             except Exception as retry_err:
                 logger.error(
@@ -644,6 +646,7 @@ async def reanalyze_single_image(
             images_json.sort(key=lambda x: x["seq"])
             kbd_entry.images_json = images_json
             kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
+            kbd_entry.sync_sections_from_content_md()
             await db_session.commit()
         except Exception as e:
             logger.warning(
@@ -680,6 +683,7 @@ async def reanalyze_single_image(
                 images_json.sort(key=lambda x: x["seq"])
                 kbd_entry.images_json = images_json
                 kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
+                kbd_entry.sync_sections_from_content_md()
                 await db_session.commit()
             except Exception as retry_err:
                 logger.error(
