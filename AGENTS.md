@@ -481,3 +481,74 @@ __schema_version__ = "2.1.0"
 - 所有服务间 HTTP 调用**必须**继承 `backend/shared/utils/internal_http.py` 的 `InternalHTTPClient`
 - 调用方**必须**调用 `response.raise_for_status()`，不允许静默忽略错误响应
 - 内部认证统一使用 `INTERNAL_API_TOKEN` 环境变量（由 Helm Secret 注入）
+
+---
+
+## 9. KBD 数据管道架构原则：内容与呈现分离（Content–Presentation Separation）
+
+> **此原则是 KBD 数据管道的最高设计约束，优先级高于任何局部实现细节。**
+
+### 9.1 核心思想
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                   KBD 数据流向                                 │
+│                                                              │
+│  Sangfor 知识库（源）                                          │
+│      │  原始 HTML（含任意厂商样式、排版、嵌套结构）              │
+│      ▼                                                       │
+│  data-pipeline（抽取层）                                       │
+│      │  只关心"语义内容"：文字 + 图片                           │
+│      │  丢弃：颜色、字体、缩进、加粗/斜体、HTML 结构             │
+│      ▼                                                       │
+│  数据库（content_md / 结构化字段）                              │
+│      │  规范化的 Markdown + 图片描述块（我们定义的 schema）      │
+│      ▼                                                       │
+│  Frontend（呈现层）                                            │
+│      │  100% 由我们控制样式：字体/颜色/缩进/展开折叠/图标        │
+│      ▼                                                       │
+│  用户界面（高一致性呈现）                                        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 9.2 强制规则
+
+| 规则 | 说明 |
+|------|------|
+| **只取语义，不取样式** | `_html_to_md` and `_parse_sections` 只提取文字语义内容和图片，原始 HTML 的 `style`、`class`、`font`、`color` 等样式属性一律丢弃 |
+| **输出格式由我们定义** | content_md 的 schema（章节结构、截图块格式、占位符格式）由本项目的 `converter.py` 定义并保持稳定，不受源 HTML 格式变化影响 |
+| **截图块统一封装** | 图片内容以 `> **【截图说明】**` 块输出，字段结构（BACKGROUND/TYPE/FULL_TEXT/KEY/TIPS/DESCRIPTION）固定；前端解析并渲染，不依赖原始图片 URL 或 alt 属性的样式 |
+| **前端是样式唯一来源** | 所有展示细节（展开/折叠、缩进、颜色、图标、字体）只在前端实现，data-pipeline 不输出任何影响呈现的 HTML/CSS |
+| **管道规范化** | data-pipeline 输出的 content_md 必须满足：截图块顶格（无前导缩进）、多余空行折叠（最多两个连续空行）、UTF-8 编码。`_normalize_screenshot_blocks` 是确保顶格的最后一道防线 |
+
+### 9.3 违规示例与正确做法
+
+```python
+# ❌ 错误：将源 HTML 的样式带入 Markdown
+def wrong():
+    return f"**{text}**"       # 保留了原始加粗
+    return f"<span style='color:red'>{text}</span>"  # 带入 HTML 样式
+
+# ✅ 正确：只提取纯文本语义内容
+def correct():
+    return soup.get_text(strip=True)   # 剥离所有标签，只取文字
+    return _desc_to_screenshot_block(desc)  # 图片内容用我们的规范块封装
+```
+
+### 9.4 扩展新字段时的检查清单
+
+当 data-pipeline 需要处理新的内容类型时，**必须**回答以下问题：
+
+- [ ] 新字段速度或语义是「内容」还是「样式」？如果是样式，丢弃它
+- [ ] 输出格式是否遵循现有 schema（Markdown 段落、截图块、占位符）？
+- [ ] 前端是否能在不修改解析逻辑的情况下渲染新内容？
+- [ ] 输出经过 `_normalize_screenshot_blocks` 和空行折叠处理了吗？
+- [ ] 新字段有对应的单元测试验证输出格式吗？
+
+### 9.5 设计背景
+
+此原则来自 2026-07 KBD 27123 案例的问题复盘：
+
+- **根因**：`markdownify` 在将嵌套列表内的截图 span 转为 blockquote 时，携带了 CommonMark 规范的列表缩进（属于样式信息），污染了 content_md，导致前端解析失败
+- **修复**：在 data-pipeline 输出层新增 `_normalize_screenshot_blocks` 去掉前导缩进，确保截图块格式始终符合我们的 schema
+- **结论**：data-pipeline 必须对输出做**格式规范化**，不能将任何来自 markdownify 或源 HTML 的"意外格式"透传给前端

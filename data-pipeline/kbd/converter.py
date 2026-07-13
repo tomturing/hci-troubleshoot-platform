@@ -266,11 +266,54 @@ def _build_image_seq_map(support_id: str, content_html: str) -> dict[str, dict]:
     return img_map
 
 
+def _normalize_screenshot_blocks(md: str) -> str:
+    """
+    规范化 content_md 中截图块的前导缩进。
+
+    问题来源：markdownify 在将嵌套列表内的 <span data-vision-desc> 转为 blockquote 时，
+    会按照 CommonMark 规范自动添加与列表层级对应的前导空格缩进，例如：
+
+        - 判断依据：...
+
+              > **【截图说明】**
+              > TYPE: 其他截图
+              > BACKGROUND: 其他
+
+    前端 parseContentMd 期望截图块始终顶格（不带前导空格），因此需要规范化。
+
+    策略：逐行扫描，发现前导缩进的截图块起始行（lstrip 后以 '> **【截图说明】**' 开头）
+    时进入截图块模式，连续将所有以 '>' 开头（strip 后）的行去掉前导缩进，
+    直到遇到不以 '>' 开头的非空行为止。
+
+    仅针对截图块行操作，不影响其他正常 blockquote 内容。
+    """
+    lines = md.split("\n")
+    result: list[str] = []
+    in_screenshot = False
+
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("> **【截图说明】**"):
+            # 截图块起始：无论有无前导缩进，统一去掉
+            in_screenshot = True
+            result.append(stripped)
+        elif in_screenshot and stripped.startswith(">"):
+            # 截图块内的后续行：去掉前导缩进
+            result.append(stripped)
+        else:
+            # 截图块结束（遇到非 '>' 行），或普通行
+            in_screenshot = False
+            result.append(line)
+
+    return "\n".join(result)
+
+
 def _html_to_md(html: str, image_map: dict[str, dict]) -> str:
     """
     将 section 内容 HTML 转为 Markdown（用于 content_md）：
     - img 标签 → 视觉描述引用块（先替换为自定义 span）
     - 过滤多余空白
+    - 规范化截图块前导缩进（确保顶格输出）
     """
     if not html or not html.strip():
         return ""
@@ -302,6 +345,8 @@ def _html_to_md(html: str, image_map: dict[str, dict]) -> str:
 
     # 规范化多余空行
     md = re.sub(r'\n{3,}', '\n\n', md)
+    # 规范化截图块前导缩进（消除 markdownify 对嵌套列表内 blockquote 的自动缩进）
+    md = _normalize_screenshot_blocks(md)
     return md.strip()
 
 

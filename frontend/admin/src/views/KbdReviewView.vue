@@ -616,8 +616,8 @@ function parseScreenshotBlockV2(lines: string[]): ScreenshotSegment {
   const descriptionLines: string[] = []
 
   for (const line of lines) {
-    // 剥离 "> " 前缀（v2 格式每行都以 "> " 开头）
-    const stripped = line.replace(/^>\s*/, '').trim()
+    // 剥离 "> " 前缀（v2 格式每行都以 "> " 开头，支持前面有缩进空格）
+    const stripped = line.replace(/^\s*>\s*/, '').trim()
     if (!stripped) continue
 
     if (/^BACKGROUND:\s*/.test(stripped)) {
@@ -676,14 +676,14 @@ function parseScreenshotBlockV2(lines: string[]): ScreenshotSegment {
 
 /** 将截图说明行组解析为 ScreenshotSegment（自动检测 v1/v2 格式） */
 function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
-  // 检测格式版本：v2 格式的行以 "> BACKGROUND:" 或 "> TYPE:" 等开头
-  const isV2 = lines.some(l => /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(l))
+  // 检测格式版本：v2 格式的行以 "> BACKGROUND:" 或 "> TYPE:" 等开头，支持前面有缩进空格
+  const isV2 = lines.some(l => /^\s*>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(l))
   if (isV2) return parseScreenshotBlockV2(lines)
 
   // ── v1 兼容解析（旧格式 0-4 字段）──────────────────────────────────────────
-  // 第一行: > **【截图说明】**：[可能直接是字段0内容]
+  // 第一行: > **【截图说明】**：[可能直接是字段0内容]，支持前面有缩进空格
   const introLine = lines[0] || ''
-  const introRaw = introLine.replace(/^>\s*\*\*【截图说明】\*\*[：:]\s*/, '').trim()
+  const introRaw = introLine.replace(/^\s*>\s*\*\*【截图说明】\*\*[：:]\s*/, '').trim()
 
   // 字段0 可能直接嵌在 intro 行（converter 将 desc.txt 首行拼在 "【截图说明】：" 后面）
   let bgColorText = ''
@@ -789,7 +789,7 @@ function parseContentMd(md: string): ContentSegment[] {
   }
 
   for (const line of lines) {
-    const isScreenshotStart = line.startsWith('> ') && line.includes('【截图说明】')
+    const isScreenshotStart = line.trim().startsWith('>') && line.includes('【截图说明】')
 
     if (isScreenshotStart) {
       flushNormal()
@@ -805,8 +805,8 @@ function parseContentMd(md: string): ContentSegment[] {
       const isBlank = trimmed === ''
 
       // 检测截图块结束：只要是一行非空且不以 '>' 开头（且不是下一个 section 的标题 ##），
-      // 那么它必然是普通排障正文，代表截图块已经结束
-      const isEndLine = !isBlank && !line.startsWith('>') && !trimmed.startsWith('##')
+      // 那么它必然是普通排障正文，代表截图块已经结束，支持前面有缩进空格
+      const isEndLine = !isBlank && !line.trim().startsWith('>') && !trimmed.startsWith('##')
 
       if (trimmed.startsWith('## ') || isEndLine && screenshotLines.length > 1) {
         flushScreenshot()

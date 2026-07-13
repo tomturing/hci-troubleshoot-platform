@@ -355,3 +355,172 @@ class TestConvertKbdWithMeta:
             result = convert_kbd_with_meta("missing")
 
         assert result is None
+
+
+# ─── _normalize_screenshot_blocks ───────────────────────────────────────────
+
+
+class TestNormalizeScreenshotBlocks:
+    """
+    测试 _normalize_screenshot_blocks：规范化截图块前导缩进。
+
+    核心场景：markdownify 对嵌套列表内的 span[data-vision-desc] 生成带缩进的
+    blockquote，本函数将其去掉，使截图块始终顶格输出。
+    """
+
+    def setup_method(self):
+        from kbd.converter import _normalize_screenshot_blocks
+
+        self.fn = _normalize_screenshot_blocks
+
+    def test_no_indentation_unchanged(self):
+        """顶格截图块不受影响"""
+        md = "> **【截图说明】**\n> TYPE: 其他截图\n> BACKGROUND: 其他\n"
+        assert self.fn(md) == md
+
+    def test_indented_block_stripped(self):
+        """带前导空格的截图块应全部去掉缩进"""
+        md = (
+            "      > **【截图说明】**\n"
+            "      > TYPE: 其他截图\n"
+            "      > BACKGROUND: 其他\n"
+        )
+        result = self.fn(md)
+        for line in result.strip().splitlines():
+            assert not line.startswith(" "), f"行仍带缩进: {repr(line)}"
+        assert "> **【截图说明】**" in result
+        assert "> TYPE: 其他截图" in result
+
+    def test_block_ends_at_non_blockquote_line(self):
+        """截图块后的普通文本不应被去掉缩进"""
+        md = (
+            "      > **【截图说明】**\n"
+            "      > TYPE: 其他截图\n"
+            "\n"
+            "    - 普通列表项（保留缩进）\n"
+        )
+        result = self.fn(md)
+        lines = result.splitlines()
+        # 截图行顶格
+        assert lines[0] == "> **【截图说明】**"
+        assert lines[1] == "> TYPE: 其他截图"
+        # 空行保留
+        assert lines[2] == ""
+        # 普通列表项保留原始缩进
+        assert lines[3] == "    - 普通列表项（保留缩进）"
+
+    def test_multiple_blocks_both_normalized(self):
+        """文档中多个截图块都被规范化"""
+        md = (
+            "      > **【截图说明】**\n"
+            "      > TYPE: 其他截图\n"
+            "\n"
+            "普通文本\n"
+            "\n"
+            "    > **【截图说明】**\n"
+            "    > TYPE: 日志截图\n"
+        )
+        result = self.fn(md)
+        lines = [line for line in result.splitlines() if line.strip()]
+        screenshot_starts = [line for line in lines if "【截图说明】" in line]
+        assert len(screenshot_starts) == 2
+        for s in screenshot_starts:
+            assert not s.startswith(" "), f"截图块起始行仍带缩进: {repr(s)}"
+
+    def test_normal_blockquote_not_affected(self):
+        """不含【截图说明】的普通 blockquote 不受影响"""
+        md = "      > 普通引用内容\n      > 继续引用\n"
+        result = self.fn(md)
+        # 不以截图说明开头，不进入截图块模式，保留原样
+        assert result == md
+
+    def test_empty_string_returns_empty(self):
+        assert self.fn("") == ""
+
+    def test_plain_text_unchanged(self):
+        """纯文本不受影响"""
+        md = "这是一段普通文字\n\n- 列表项\n"
+        assert self.fn(md) == md
+
+
+# ─── _html_to_md 嵌套列表截图规范化（端到端）────────────────────────────────
+
+
+class TestHtmlToMdNestedScreenshot:
+    """
+    端到端验证：嵌套列表内的截图块经 _html_to_md 转换后不带前导缩进。
+
+    复现路径（KBD 27123 类型案例）：
+      HTML: <ol><li><ul><li>判断依据：<img src="..."></li></ul></li></ol>
+      markdownify 原始输出会对 img 替换后的 span 引用块加上多个前导空格。
+      经 _normalize_screenshot_blocks 后，截图块必须顶格。
+    """
+
+    def setup_method(self):
+        from kbd.converter import _html_to_md
+
+        self.fn = _html_to_md
+
+    def test_nested_list_screenshot_block_at_column_zero(self):
+        """
+        嵌套列表中的截图块（v2 格式）经转换后，
+        '> **【截图说明】**' 必须出现在行首（无前导空格）。
+        """
+        html = """
+        <ol>
+          <li>
+            <p>在 HCI 控制台查看虚拟机任务详情。</p>
+            <ul>
+              <li>判断依据：任务详情原样显示报错信息。
+                <img src="/_static/img1.png" alt="截图">
+              </li>
+            </ul>
+          </li>
+        </ol>
+        """
+        desc_v2 = "TYPE: 其他截图\nBACKGROUND: 其他\nFULL_TEXT:\n- （无文字）\nDESCRIPTION:\n（无描述）"
+        image_map = {
+            "https://support.sangfor.com.cn/_static/img1.png": {"seq": 0, "desc": desc_v2}
+        }
+        with patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"):
+            md = self.fn(html, image_map)
+
+        # 核心断言：截图块起始行必须在列首，不带任何前导空格
+        lines = md.splitlines()
+        screenshot_starts = [line for line in lines if "【截图说明】" in line]
+        assert len(screenshot_starts) >= 1, "应包含至少一个截图说明块"
+        for line in screenshot_starts:
+            assert line.startswith(">"), (
+                f"截图块起始行带有前导缩进，前端解析器将无法识别: {repr(line)}"
+            )
+
+    def test_nested_list_all_screenshot_lines_at_column_zero(self):
+        """截图块内所有后续 > 行也必须顶格"""
+        html = """
+        <ul>
+          <li>步骤一
+            <ul>
+              <li>子步骤<img src="/_static/img2.png" alt="截图"></li>
+            </ul>
+          </li>
+        </ul>
+        """
+        desc_v2 = "TYPE: 日志截图\nBACKGROUND: 黑色\nFULL_TEXT:\n- error: disk full\nDESCRIPTION:\n（无描述）"
+        image_map = {
+            "https://support.sangfor.com.cn/_static/img2.png": {"seq": 0, "desc": desc_v2}
+        }
+        with patch("kbd.converter.settings.SANGFOR_API_BASE", "https://support.sangfor.com.cn"):
+            md = self.fn(html, image_map)
+
+        in_screenshot = False
+        for line in md.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("> **【截图说明】**"):
+                in_screenshot = True
+            if in_screenshot and stripped.startswith(">"):
+                assert line == stripped, (
+                    f"截图块内行带有前导空格: {repr(line)}"
+                )
+            elif in_screenshot and stripped and not stripped.startswith(">"):
+                in_screenshot = False
+
