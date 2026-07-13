@@ -27,8 +27,10 @@ _data_pipeline_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".
 if _data_pipeline_root not in sys.path:
     sys.path.insert(0, _data_pipeline_root)
 
+# 真实 27123 数据作为被跟踪的 fixtures 提交（data-pipeline/kbd/cache/ 被 .gitignore 忽略，
+# CI 干净 checkout 不存在，故不能用它作为测试数据源）。CI 与本地均从此 fixtures 目录读取。
 REAL_CACHE_27123 = os.path.abspath(
-    os.path.join(_data_pipeline_root, "kbd", "cache", "27123")
+    os.path.join(os.path.dirname(__file__), "fixtures", "27123")
 )
 
 # 27123 content 含 4 个 <img>，但首两个为同一 URL（去重后 3 张），
