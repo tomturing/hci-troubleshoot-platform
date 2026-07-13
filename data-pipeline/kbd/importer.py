@@ -197,6 +197,7 @@ async def _call_kbd_ingest_api(
     recommendations: str = "",
     steps_json: list[dict] | None = None,
     images_json: list[dict] | None = None,
+    images: list[dict] | None = None,
     ai_category_id: str | None = None,
     ai_category_conf: float | None = None,
     ai_category_reason: str | None = None,
@@ -254,6 +255,7 @@ async def _call_kbd_ingest_api(
         "recommendations": recommendations,
         "steps_json": steps_json if steps_json is not None else [],
         "images_json": images_json if images_json is not None else [],
+        "images": images if images is not None else [],
         # 聚合渲染
         "content_md": content_md,
         "metadata": metadata,
@@ -350,12 +352,9 @@ async def import_entry(
         return "error"
 
     title: str = result["title"]
-    content_md: str = result["content_md"]
+    content_md: str | None = result.get("content_md")  # None: 由后端 rebuild_content_md 统一渲染
     metadata: dict[str, Any] = result["metadata"]
-
-    if not content_md.strip():
-        logger.warning("案例 %s content_md 为空，跳过", support_id)
-        return "error"
+    # content_md 不再本地校验：新架构下章节字段含占位符，content_md 由后端统一渲染
 
     if not settings.INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
@@ -376,6 +375,7 @@ async def import_entry(
             recommendations=result.get("recommendations", ""),
             steps_json=result.get("steps_json", []),
             images_json=result.get("images_json", []),
+            images=result.get("images", []),
             client=client,
             override=override,
             override_status=override_status,

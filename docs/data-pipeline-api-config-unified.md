@@ -1,226 +1,103 @@
-# data-pipeline API 配置统一说明
+# data-pipeline/kbd 配置字段参考
 
-## 变更概述
+> **本文件替代了旧的"API 配置统一说明"（描述的是已被推翻的 #504 markdownify 方案）。**
+> **新架构（P0–P2，2026-07 重构）下，data-pipeline/kbd 只与 kb-service API 交互；**
+> **LLM 调用、知识库数据所有权、Vision 任务编排全部由 kb-service 后端负责。**
 
-将 Vision API 和分类 API 的配置统一到 `/data-pipeline/kbd/.env` 文件，使用通用字段名，不绑定特定 API 提供商。
+---
 
-## 配置文件
+## 配置文件位置
 
-### `/data-pipeline/kbd/.env`
+所有配置通过 `data-pipeline/kbd/.env` 注入（推荐用 1Password / Vault 注入敏感值）。也可通过环境变量直接传入。
 
-```bash
-# LLM API 配置（OpenAI-compatible）
-API_KEY=sk-sp-d887dc675b9c4412a939832754c69432
-BASE_URL=https://coding.dashscope.aliyuncs.com/v1
+---
 
-# 模型配置
-VISION_MODEL=qwen3.7-plus      # 图片处理
-CLASSIFY_MODEL=qwen3.7-plus    # 案例分类
-ANALYSIS_MODEL=qwen3.7-plus    # 文本分析
-```
+## 配置字段分类
 
-## 字段说明
+### 1. 数据抓取（Stage 1: FETCH）
 
-| 字段 | 说明 | 默认值 |
-|------|------|--------|
-| `API_KEY` | LLM API 密钥 | 必填 |
-| `BASE_URL` | LLM API 基础 URL | 必填 |
-| `VISION_MODEL` | 图片处理模型 | `qwen3.7-plus` |
-| `CLASSIFY_MODEL` | 案例分类模型 | `qwen3.7-plus` |
-| `ANALYSIS_MODEL` | 文本分析模型 | `qwen3.7-plus` |
+| 字段 | 必填 | 默认 | 说明 |
+|------|------|------|------|
+| `SANGFOR_API_BASE` | 否 | `https://support.sangfor.com.cn` | 深信服技术支持门户 Base URL |
+| `SANGFOR_COOKIE` | **是** | `""` | 认证 Cookie，从浏览器 DevTools 复制 |
+| `SANGFOR_REQUEST_DELAY` | 否 | `0.8` | 抓取间隔（秒），避免限流 |
+| `SANGFOR_TIMEOUT` | 否 | `30.0` | 单条 HTTP 请求超时（秒）|
+| `SANGFOR_MAX_RETRIES` | 否 | `4` | 失败重试次数（指数退避）|
 
-## 代码修改
+### 2. Excel 批量输入
 
-### 1. `config.py`（精简）
-
-```python
-# ── LLM API 配置 ─────────────────────────────────────────────────────────────
-API_KEY: str = Field(default="", description="LLM API Key")
-BASE_URL: str = Field(default="", description="LLM API Base URL")
-
-VISION_MODEL: str = Field(default="qwen3.7-plus", description="Vision 模型")
-CLASSIFY_MODEL: str = Field(default="qwen3.7-plus", description="分类模型")
-ANALYSIS_MODEL: str = Field(default="qwen3.7-plus", description="分析模型")
-```
-
-### 2. `classify.py`（kb-service）
-
-```python
-# LLM 配置（从环境变量读取）
-LLM_BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
-LLM_API_KEY = os.environ.get("API_KEY", "")
-LLM_MODEL = os.environ.get("CLASSIFY_MODEL", "qwen3.7-plus")
-```
-
-### 3. `image_proc.py`
-
-```python
-client = AsyncOpenAI(
-    api_key=settings.API_KEY,
-    base_url=settings.BASE_URL,
-    timeout=settings.LLM_TIMEOUT,
-)
-```
-
-## 模型支持情况
-
-### ✅ 支持的模型（DashScope API）
-
-| 模型 | 类型 | Vision | 文本 | 说明 |
-|------|------|--------|------|------|
-| `qwen3.7-plus` | 通用 | ✅ | ✅ | 推荐，性能最强 |
-| `qwen3.6-plus` | 通用 | ✅ | ✅ | 性能优秀 |
-| `qwen3.5-plus` | 通用 | ✅ | ✅ | 性能良好 |
-| `kimi-k2.5` | 通用 | ✅ | ✅ | Moonshot AI |
-| `glm-4.7` | 文本 | ❌ | ✅ | 智谱 AI |
-| `qwen3-coder-plus` | 编程 | ❌ | ✅ | 代码专用 |
-| `MiniMax-M2.5` | 通用 | ❌ | ✅ | MiniMax |
-
-### ❌ 不支持的模型
-
-- `glm-5.2`、`glm-5.1`、`glm-5`
-- `qwen-vl-max`、`qwen-vl-plus`
-
-## 使用建议
-
-### 1. Vision 模型（图片处理）
-
-推荐使用 `qwen3.7-plus`：
-- 支持 Vision 能力（image_url 输入）
-- 文字提取能力强，适合复杂终端/日志截图
-- 支持长文本输出（MAX_TOKENS 可设为 8192）
-
-### 2. 分类模型（案例分类）
-
-推荐使用 `qwen3.7-plus`：
-- 文本理解能力强
-- 语义匹配准确
-
-### 3. 分析模型（文本分析）
-
-推荐使用 `qwen3.7-plus`：
-- 推理能力强
-- 输出质量高
-
-## 配置变更
-
-- ✅ 统一使用 `API_KEY` 和 `BASE_URL` 通用字段
-- ✅ 移除所有提供商特定字段（如 `ZAI_*`、`DASHSCOPE_*`）
-- ✅ 移除向后兼容逻辑
-- ✅ 精简代码和注释
-- ✅ 支持轻松切换 API 提供商（只需修改 `BASE_URL`）
-
-## 验证配置
-
-```bash
-cd /mnt/d/aihci/hci-troubleshoot-platform/data-pipeline/kbd
-uv run python3 -c "
-from config import settings
-print('API_KEY:', settings.API_KEY[:20] + '...')
-print('BASE_URL:', settings.BASE_URL)
-print('VISION_MODEL:', settings.VISION_MODEL)
-print('CLASSIFY_MODEL:', settings.CLASSIFY_MODEL)
-"
-```
-
-输出：
-```
-API_KEY: sk-sp-d887dc675b9c44...
-BASE_URL: https://coding.dashscope.aliyuncs.com/v1
-VISION_MODEL: qwen3.7-plus
-CLASSIFY_MODEL: qwen3.7-plus
-```
-
-
-## Prompt 统一管理（2026-07-09 变更）
-
-### 变更概述
-
-Vision Prompt 和分类 Prompt 已从文件/硬编码迁移到数据库 `system_prompt` 表，与 TriageAgent 保持统一一致。
-
-### 新架构
-
-**改造前**：
-- 分类 Prompt：硬编码在 `backend/kb-service/app/routes/classify.py`
-- Vision Prompt：存放在 `data-pipeline/kbd/prompt/image_proc_vision_v4.txt`
-
-**改造后**：
-- 分类 Prompt：`system_prompt` 表记录 `kbd_classify_v1`
-- Vision Prompt：`system_prompt` 表记录 `kbd_vision_v1`
-- 管理入口：admin-ui Prompt 管理页面（在线编辑，热生效）
-
-### data-pipeline 改造
-
-**`image_proc.py`** 已重构为薄封装：
-
-```python
-# 原架构（已移除）
-async def _process_image(client, img_path, context):
-    prompt = _PROMPT.format(context=context)  # Prompt 从文件读取
-    response = await client.chat.completions.create(...)  # 本地调用 LLM
-    
-# 新架构
-async def process_images_batch(kbd_ids: list[str]):
-    # 调用 kb-service API，Prompt 从数据库热加载
-    url = f"{settings.KB_SERVICE_URL}/api/admin/kbd/{kbd_entry_id}/reanalyze-images"
-    response = await client.post(url, headers=headers)
-```
-
-**变更内容**：
-- 移除 `_PROMPT_PATH`、`_PROMPT` 常量和 `_vision_analyze` 函数
-- 移除本地文件加载逻辑
-- `process_images_batch()` 改为调用 kb-service API
-- 与 `classifier.py` 的 API 调用模式保持一致
-
-### 核心逻辑迁移
-
-Vision 处理核心逻辑已迁移到：
-
-**`backend/kb-service/app/services/vision_processor.py`**
-
-主要函数：
-- `reanalyze_kbd_images(kbd_entry_id, db_session)` - 入口函数
-- `_vision_analyze()` - Vision LLM 单次调用
-- `_extract_context()` - 图片上下文提取
-- `_compress_image_if_needed()` - 图片压缩
-
-Prompt 加载方式：
-
-```python
-from shared.utils.prompt_loader import StrictPromptLoader
-
-prompt_template = await StrictPromptLoader.load_and_validate(
-    db_session,
-    "kbd_vision_v1",  # 从 system_prompt 表加载
-    ["context"],
-    consumer="kb-service.vision_processor",
-)
-```
-
-### 在线重算
-
-**admin-ui KBD 审核页面**新增两个按钮：
-
-| 按钮 | API | 说明 |
+| 字段 | 默认 | 说明 |
 |------|------|------|
-| 重新分类 | `POST /api/v1/kbd/{id}/reclassify` | 用最新 Prompt 重算分类 |
-| 重新识图 | `POST /api/v1/kbd/{id}/reanalyze-images` | 用最新 Prompt 重算识图 |
+| `EXCEL_FILE` | `<项目根>/案例生产详细数据24-26.xlsx` | 第一列为案例 ID，跳过标题行 |
 
-**流程**：
-1. 在 admin-ui 修改 Prompt
-2. 进入 KBD 审核页面，点击按钮触发重算
-3. 无需重启服务，无需运行后台脚本
+### 3. 本地存储
 
-### 删除的文件
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `KBD_CACHE_DIR` | `data-pipeline/kbd/cache` | 抓取缓存（`{support_id}/raw.json` + `img_N.*`） |
+| `KBD_LOGS_DIR` | `data-pipeline/kbd/logs` | 运行日志（`kbd_{run_id}.log`） + 可观测性 progress 文件 |
+| `CATEGORY_BASELINE` | `backend/kb-service/config/category_baseline.yaml` | 分类基线（供 classifier 参考） |
 
-- `data-pipeline/kbd/prompt/image_proc_vision_v4.txt`（内容已迁入数据库）
+### 4. 数据库（连接池）
 
-### 新增依赖
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `DATABASE_URL` | `postgresql://hci_user:hci_pass@localhost:5432/hci_db` | asyncpg 连池串（dev 由 .env 覆盖）|
+| `DB_POOL_MIN` / `DB_POOL_MAX` | `2` / `10` | 连池容量 |
 
-**`backend/kb-service/pyproject.toml`**：
+### 5. 管道并发行为
 
-```toml
-pillow>=10.0.0  # 图片压缩
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `VISION_CONCURRENCY` | `3` | VISION 阶段多案例并发提交数（信号量控制，kb-service 后端 _VISION_CONCURRENCY 同步为 3） |
+
+### 6. 行为阈值
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `MIN_IMAGE_SIZE` | `2048` | 低于此字节视为无效图片（icon / 占位图） |
+| `MIN_CLASSIFY_CONFIDENCE` | `0.5` | AI 分类置信度低于此值时，draft 标记"需人工重新分类" |
+
+### 7. kb-service API（pipeline 调 API 必填）
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `KB_SERVICE_URL` | `http://localhost:8004` | kb-service 内部地址；dev K3s 环境需先 `kubectl port-forward` |
+| `INTERNAL_API_TOKEN` | `hci-dev-internal-token` | 内部 Bearer Token（与 kb-service env 一致） |
+| `API_TIMEOUT` | `30.0` | API 请求超时（秒）|
+| `API_MAX_RETRIES` | `3` | 失败重试（指数退避）|
+
+---
+
+## 完整 `.env` 模板
+
+```bash
+# === 抓取（必填）===
+SANGFOR_COOKIE=PHPSESSID=...;_pk_id.*=...;...
+
+# === kb-service API ===
+KB_SERVICE_URL=http://localhost:8004
+INTERNAL_API_TOKEN=hci-dev-internal-token
+
+# === 数据库（dev 环境通常由 .env 自动注入）===
+# DATABASE_URL=postgresql+asyncpg://hci_admin:dev_postgres_passwd_2026@postgres:5432/hci_troubleshoot
 ```
 
-运行 `uv sync` 安装新依赖。
+---
+
+## 字段变更履历
+
+- **2026-07 P0–P2 重构**：
+  - 删除 `API_KEY` / `BASE_URL` / `VISION_MODEL` / `ANALYSIS_MODEL` / `CLASSIFY_MODEL`
+    （data-pipeline 不再直接调 LLM，Vision/分类由 kb-service 后端 `LLM_*`/`VISION_MODEL` env 接管）
+  - 删除 `ZAI_*` / `DASHSCOPE_*` 等厂商特定字段（统一由 kb-service 后端处理）
+  - 新增 `VISION_CONCURRENCY` 字段（多案例异步并发数，对应后端 Semaphore）
+  - `API_TIMEOUT` 默认 30s（异步化后无需高超时，轮询 status 端点 900s 上限由 data-pipeline 侧控制）
+
+---
+
+## 相关文档
+
+- 新架构拓扑：`data-pipeline/kbd/README.md` 架构概览
+- 原则：仓库根 `CLAUDE.md` / `AGENTS.md` §9 内容–呈现分离
+- 后端配置：`backend/kb-service/.env.example`（kb-service 接管了 LLM / Vision / DB 配置）

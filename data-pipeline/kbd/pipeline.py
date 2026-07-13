@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from enum import IntEnum
 
 import asyncpg
@@ -44,16 +44,13 @@ import httpx
 
 from .classifier import classify_batch
 from .config import settings
-from .fetcher import _is_fetched, _kbd_dir, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
-from .image_proc import _find_images, _has_failed_vision, get_failed_vision_ids, process_images_batch
+from .fetcher import _is_fetched, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
+from .image_proc import get_failed_vision_ids, process_images_batch
 from .importer import import_batch
 from .progress import (
-    find_latest_progress_file,
     finish_progress,
     generate_run_id,
-    get_completed_ids_for_stage,
     init_progress,
-    load_progress,
     save_progress,
     update_stage_status,
 )
@@ -62,10 +59,54 @@ logger = logging.getLogger("kbd.pipeline")
 
 
 class Stage(IntEnum):
+    """流水线阶段枚举。
+
+    新架构 DAG（有向无环，依赖单向）：
+      FETCH → IMPORT → VISION → CLASSIFY
+    VISION 移到 IMPORT 之后（因为 VISION 需要 kbd_entry.id 和 kbd_image），
+    IMPORT 原子写入 kbd_entry + kbd_image，消除循环依赖。
+    """
     FETCH = 1
-    VISION = 2
-    IMPORT = 3
+    IMPORT = 2  # 原子写入 kbd_entry + kbd_image
+    VISION = 3  # 读 kbd_image，调 Vision LLM，更新 images_json + rebuild content_md
     CLASSIFY = 4
+
+
+# ─── DAG 依赖声明（拓扑排序 P0-② 增强）─────────────────────────────────────────
+
+# Stage DAG：每个 stage 声明其所有前置依赖（直接前置，闭包由 resolve_stages 自动展开）
+STAGE_DEPENDENCIES: dict[Stage, tuple[Stage, ...]] = {
+    Stage.FETCH: (),                                                  # 无前置
+    Stage.IMPORT: (Stage.FETCH,),                                     # 需要 raw.json + 本地图片
+    Stage.VISION: (Stage.IMPORT,),                                    # 需要 kbd_entry + kbd_image
+    Stage.CLASSIFY: (Stage.VISION,),                                  # 需要 content_md 含视觉描述（完整上下文分类更准）
+}
+
+
+def resolve_stages(requested: Iterable[Stage]) -> list[Stage]:
+    """DAG 闭包 + 拓扑序展开。
+
+    自动补齐用户请求 stage 的所有前置依赖（如只跑 VISION，自动拉取 IMPORT + FETCH）。
+    解决"只跑 VISION 但缺少前置导致 pipeline 静默失败"的边界问题。
+
+    Args:
+        requested: 用户传入的 stages（含去重）
+
+    Returns:
+        按拓扑序（FETCH → IMPORT → VISION → CLASSIFY）排列的全部 stage 列表，
+        包含用户请求 + 全部传递依赖
+    """
+    requested_set = set(requested)
+    closure = set(requested_set)
+    queue: list[Stage] = list(requested_set)
+    while queue:
+        s = queue.pop()
+        for dep in STAGE_DEPENDENCIES.get(s, ()):
+            if dep not in closure:
+                closure.add(dep)
+                queue.append(dep)
+    # 按 Stage 枚举值排序（FETCH=1 → CLASSIFY=4，天然拓扑序）
+    return sorted(closure, key=lambda x: int(x))
 
 
 async def _create_pool() -> asyncpg.Pool:
@@ -83,7 +124,7 @@ async def _create_pool() -> asyncpg.Pool:
 
 async def run_pipeline(
     kbd_ids: list[str],
-    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY),
+    stages: Sequence[Stage] = (Stage.FETCH, Stage.IMPORT, Stage.VISION, Stage.CLASSIFY),
     *,
     force_fetch: bool = False,
     override: bool = False,
@@ -94,11 +135,12 @@ async def run_pipeline(
     run_id: str | None = None,
 ) -> tuple[dict[str, dict], str]:
     """
-    执行指定 stages 的完整流水线。
+    执行指定 stages 的完整流水线（按 DAG 拓扑序自动补齐前置依赖）。
 
     Args:
         kbd_ids: 要处理的案例 ID 列表
-        stages: 要执行的阶段（默认全部）
+        stages: 要执行的阶段（默认全部）。DAG 拓扑补齐：传入 [VISION] 会自动展开为
+            [FETCH, IMPORT, VISION]（含全部传递依赖）。详见 `resolve_stages`。
         force_fetch: 强制重新抓取已完成的案例（仅影响 Stage 1）
         override: 强制覆盖已存在的记录（仅影响 Stage 3 导入阶段）
         override_status: 仅覆盖指定状态的记录。None=默认仅draft；['all']=所有状态
@@ -117,40 +159,44 @@ async def run_pipeline(
     if not settings.INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
 
-    # ── 进度追踪初始化 ──
+    # ── DAG 拓扑展开（P0-② 增强）────────────────────────────────────────────
+    # 用户传 [VISION] 自动补齐为 [FETCH, IMPORT, VISION]，避免"VSION 静默失败"。
+    resolved = resolve_stages(stages)
+    if set(resolved) != set(stages):
+        added = [s.name for s in resolved if s not in set(stages)]
+        logger.info(
+            "DAG 拓扑补齐: 用户请求 %s，自动追加前置依赖 %s -> 实际执行 %s",
+            [s.name for s in stages], added, [s.name for s in resolved],
+        )
+    stages = resolved
+
+    # ── 进度追踪（可观测性日志，不参与正确性，P1-⑥）────────────────────────────
     progress = None
 
-    # resume 模式：加载已有进度文件
+    # resume 模式：不再依赖 progress.json 文件。
+    # 每个 stage 通过 DB 状态自动跳过已完成案例（_get_import_ready_ids /
+    # _get_vision_ready_ids / _db_vision_status 等都是 DB 查询）。
+    # 这样 --stages X 单独重跑任意案例无需清理 progress 文件，并能从
+    # 任何异常中断（崩溃 / 强制终止）中恢复，DB 状态才是真相之源。
     if resume:
-        if resume_run_id is None:
-            # 自动查找最新的 progress 文件
-            resume_run_id = find_latest_progress_file()
-            if resume_run_id:
-                logger.info("Resume 模式：找到最新进度文件 run_id=%s", resume_run_id)
-            else:
-                logger.warning("Resume 模式：未找到进度文件，将从头开始")
+        logger.info(
+            "Resume 模式：依赖 DB 状态自动跳过已完成案例（不再依赖 progress.json）"
+        )
 
-        if resume_run_id:
-            progress = load_progress(resume_run_id)
-            if progress:
-                # 成功加载进度，沿用旧的 run_id
-                run_id = progress.get("run_id", resume_run_id)
-                logger.info("已加载进度文件 run_id=%s kbds=%d（沿用旧 run_id）", run_id, len(progress.get("kbds", {})))
-            else:
-                logger.warning("进度文件加载失败，将从头开始 run_id=%s", resume_run_id)
+    # 生成 run_id（若未传）。progress 仅作为可观测性日志（各 stage 写一次）。
+    if run_id is None:
+        run_id = generate_run_id()
+    stage_names = [s.name.lower() for s in stages]
+    progress = init_progress(run_id, kbd_ids, stage_names)
 
-    # 如果没有加载到进度（或非 resume 模式），生成新 run_id
-    if progress is None:
-        if run_id is None:
-            run_id = generate_run_id()
-        stage_names = [s.name.lower() for s in stages]
-        progress = init_progress(run_id, kbd_ids, stage_names)
+    # ── 提前创建连接池（failed_only 和各 stage 都需要使用）──
+    pool = await _create_pool()
 
     # ── 失败案例筛选 ──
     if failed_only:
         logger.info("Failed-only 模式：筛选失败案例")
         failed_fetch = get_failed_fetch_ids(kbd_ids)
-        failed_vision = get_failed_vision_ids(kbd_ids)
+        failed_vision = await get_failed_vision_ids(kbd_ids, pool)
         failed_ids = list(set(failed_fetch + failed_vision))
         if not failed_ids:
             logger.info("没有失败的案例需要处理")
@@ -171,22 +217,13 @@ async def run_pipeline(
         resume,
     )
 
-    pool = await _create_pool()
     http_client = httpx.AsyncClient(timeout=settings.API_TIMEOUT)
     all_stats: dict[str, dict] = {}
 
     try:
         if Stage.FETCH in stages:
             logger.info("─── Stage 1: 数据抓取 ───")
-            # Resume 模式：跳过已完成的案例
             fetch_ids = kbd_ids
-            if resume and progress:
-                completed_ids = get_completed_ids_for_stage(progress, "fetch")
-                fetch_ids = [cid for cid in kbd_ids if cid not in completed_ids]
-                skipped = len(kbd_ids) - len(fetch_ids)
-                if skipped > 0:
-                    logger.info("Resume 跳过 %d 个已完成的 fetch 案例", skipped)
-
             t0 = time.monotonic()
             stats = await fetch_batch(fetch_ids, force=force_fetch)
             all_stats["fetch"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
@@ -198,56 +235,17 @@ async def run_pipeline(
                 update_stage_status(progress, "fetch", cid, status)
             save_progress(run_id, progress)
 
-        if Stage.VISION in stages:
-            logger.info("─── Stage 2: 图片语义化 ───")
-            # 仅处理已抓取完成的案例
-            done_ids = [cid for cid in kbd_ids if _is_fetched(cid)]
-
-            # Resume 模式：跳过已完成的案例
-            vision_ids = done_ids
-            if resume and progress:
-                completed_ids = get_completed_ids_for_stage(progress, "vision")
-                vision_ids = [cid for cid in done_ids if cid not in completed_ids]
-                skipped = len(done_ids) - len(vision_ids)
-                if skipped > 0:
-                    logger.info("Resume 跳过 %d 个已完成的 vision 案例", skipped)
-
-            t0 = time.monotonic()
-            stats = await process_images_batch(vision_ids, pool)
-            all_stats["vision"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
-            logger.info("Stage 2 完成 %s", all_stats["vision"])
-
-            # 更新进度
-            for cid in vision_ids:
-                kbd_dir = _kbd_dir(cid)
-                images = _find_images(kbd_dir)
-                all_done = all(
-                    (kbd_dir / f"{img.stem}.desc.txt").exists()
-                    for img in images
-                ) if images else True
-                status = "done" if all_done and not _has_failed_vision(kbd_dir) else "failed"
-                update_stage_status(progress, "vision", cid, status)
-            save_progress(run_id, progress)
-
         if Stage.IMPORT in stages:
-            logger.info("─── Stage 3: MD 转换 + 入库 ───")
+            logger.info("─── Stage 2: 语义提取 + 原子入库 ───")
             ready_ids = await _get_import_ready_ids(kbd_ids, pool)
-
-            # Resume 模式：跳过已完成的案例
             import_ids = ready_ids
-            if resume and progress:
-                completed_ids = get_completed_ids_for_stage(progress, "import")
-                import_ids = [cid for cid in ready_ids if cid not in completed_ids]
-                skipped = len(ready_ids) - len(import_ids)
-                if skipped > 0:
-                    logger.info("Resume 跳过 %d 个已完成的 import 案例", skipped)
 
             t0 = time.monotonic()
             stats = await import_batch(
                 import_ids, pool, override=override, override_status=override_status, client=http_client
             )
             all_stats["import"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
-            logger.info("Stage 3 完成 %s", all_stats["import"])
+            logger.info("Stage 2 完成 %s", all_stats["import"])
 
             # 更新进度
             for cid in import_ids:
@@ -257,6 +255,22 @@ async def run_pipeline(
                 )
                 status = "done" if row else "failed"
                 update_stage_status(progress, "import", cid, status)
+            save_progress(run_id, progress)
+
+        if Stage.VISION in stages:
+            logger.info("─── Stage 3: 图片语义化 ───")
+            # 新架构：VISION 在 IMPORT 之后，仅处理 kbd_entry + kbd_image 已就位的案例
+            vision_ids = await _get_vision_ready_ids(kbd_ids, pool)
+
+            t0 = time.monotonic()
+            stats = await process_images_batch(vision_ids, pool)
+            all_stats["vision"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
+            logger.info("Stage 3 完成 %s", all_stats["vision"])
+
+            # 更新进度（基于 DB images_json desc 完整性判据，详见 _db_vision_status）
+            for cid in vision_ids:
+                status = await _db_vision_status(pool, cid)
+                update_stage_status(progress, "vision", cid, status)
             save_progress(run_id, progress)
 
         if Stage.CLASSIFY in stages:
@@ -269,15 +283,7 @@ async def run_pipeline(
                 kbd_ids,
             )
             classify_ids_all = [r["support_id"] for r in classify_rows]
-
-            # Resume 模式：跳过已完成的案例
             classify_kbd_ids = classify_ids_all
-            if resume and progress:
-                completed_ids = get_completed_ids_for_stage(progress, "classify")
-                classify_kbd_ids = [cid for cid in classify_ids_all if cid not in completed_ids]
-                skipped = len(classify_ids_all) - len(classify_kbd_ids)
-                if skipped > 0:
-                    logger.info("Resume 跳过 %d 个已完成的 classify 案例", skipped)
 
             t0 = time.monotonic()
             stats = await classify_batch(classify_kbd_ids, pool)
@@ -309,39 +315,73 @@ async def _get_import_ready_ids(kbd_ids: list[str], pool: asyncpg.Pool) -> list[
     """
     获取可导入的案例 ID 列表。
 
-    条件：
-    1. cache/{support_id}/raw.json 存在（已抓取）
-    2. 所有图片都有 .desc.txt 文件（Vision 完成）或无图片
+    新架构：仅检查 FETCH 完成即可入库；图片随 IMPORT 原子写入 kbd_image，
+    Vision 在 IMPORT 之后跑（读 kbd_image，写 images_json）。解除了旧架构下
+    "IMPORT 需要 .desc.txt（VISION 旧产物）" 的循环依赖。
     """
     ready_ids: list[str] = []
     for support_id in kbd_ids:
         if not _is_fetched(support_id):
             continue
-
-        kbd_dir = _kbd_dir(support_id)
-        # 检查图片是否全部处理完成
-        img_files = list(kbd_dir.glob("img_*.*"))
-        # 过滤掉 .failed 文件
-        actual_images = [f for f in img_files if f.suffix not in (".failed", ".txt")]
-
-        if not actual_images:
-            # 无图片，可直接导入
-            ready_ids.append(support_id)
-            continue
-
-        # 检查每张图片是否有对应的 .desc.txt
-        all_vision_done = all(
-            (kbd_dir / f"{f.stem}.desc.txt").exists()
-            for f in actual_images
-        )
-        if all_vision_done:
-            ready_ids.append(support_id)
-
+        ready_ids.append(support_id)
     return ready_ids
 
 
+async def _get_vision_ready_ids(kbd_ids: list[str], pool: asyncpg.Pool) -> list[str]:
+    """获取可执行 Vision 的案例 ID 列表。
+
+    新架构：VISION 在 IMPORT 之后，仅处理 kbd_entry + kbd_image 已就位的案例。
+    过滤条件：cache/{id}/raw.json 存在（FETCH 完成）且 kbd_entry 与 kbd_image 已写入。
+    """
+    if not kbd_ids:
+        return []
+    rows = await pool.fetch(
+        """
+        SELECT e.support_id
+        FROM kbd_entry e
+        WHERE e.support_id = ANY($1)
+          AND EXISTS (SELECT 1 FROM kbd_image i WHERE i.kbd_entry_id = e.id)
+        """,
+        kbd_ids,
+    )
+    return [r["support_id"] for r in rows]
+
+
+async def _db_vision_status(pool: asyncpg.Pool, support_id: str) -> str:
+    """基于 DB images_json desc 完整性判读 VISION 完成状态（P0-4：进度追踪改判数据库）。
+
+    判据：
+      - kbd_entry 不存在 → 'failed'（异常，前置 IMPORT 失败）
+      - images_json 为空 → 'failed'（无图片案例不应进入 VISION 阶段）
+      - 存在 seq 但 desc 为空 → 'failed'（VISION 未完成）
+      - 所有 seq 的 desc 都非空 → 'done'
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT
+            e.id AS kbd_id,
+            e.images_json,
+            (SELECT COUNT(*) FROM kbd_image i WHERE i.kbd_entry_id = e.id) AS img_count
+        FROM kbd_entry e
+        WHERE e.support_id = $1
+        """,
+        support_id,
+    )
+    if row is None:
+        return "failed"
+    images_json = row["images_json"] or []
+    img_count = row["img_count"]
+    # 无图片案例默认 done（与旧行为一致）
+    if img_count == 0:
+        return "done"
+    if not images_json:
+        return "failed"
+    incomplete = [item for item in images_json if not (item.get("desc") or "").strip()]
+    return "failed" if incomplete else "done"
+
+
 async def run_from_excel(
-    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY),
+    stages: Sequence[Stage] = (Stage.FETCH, Stage.IMPORT, Stage.VISION, Stage.CLASSIFY),
     *,
     force_fetch: bool = False,
     override: bool = False,

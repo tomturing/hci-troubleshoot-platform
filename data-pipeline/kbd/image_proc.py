@@ -36,7 +36,10 @@ async def _call_reanalyze_api(
     client: httpx.AsyncClient,
 ) -> dict[str, Any]:
     """
-    调用 kb-service 重新识图 API。
+    调用 kb-service 重新识图 API（P1-1：自动适配同步/异步两种响应）。
+
+    新行为：POST 返回 202 + job_id 时，自动轮询 status 端点直到完成。
+    向后兼容：POST 返回 200（同步结果）时直接返回。
 
     Args:
         kbd_entry_id: kbd_entry 表的 ID（注意：不是 support_id）
@@ -51,52 +54,98 @@ async def _call_reanalyze_api(
             "failed": int,
             "message": str
         }
-
-    Raises:
-        httpx.HTTPStatusError: API 返回非 2xx
-        httpx.TimeoutException: 请求超时
     """
-    url = f"{settings.KB_SERVICE_URL}/api/admin/kbd/{kbd_entry_id}/reanalyze-images"
+    post_url = f"{settings.KB_SERVICE_URL}/api/admin/kbd/{kbd_entry_id}/reanalyze-images"
     headers = {
         "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
         "Content-Type": "application/json",
     }
 
-    # 带重试的请求（识图耗时较长，超时设置充足）
-    timeout = max(settings.API_TIMEOUT, 300.0)  # 至少 5 分钟
+    # 提交（超时短：仅需接收 202）
+    timeout_submit = 30.0
+    response = None
     for attempt in range(settings.API_MAX_RETRIES):
         try:
-            response = await client.post(url, headers=headers, timeout=timeout)
+            response = await client.post(post_url, headers=headers, timeout=timeout_submit)
             response.raise_for_status()
-            return response.json()
-
+            break
         except httpx.TimeoutException:
             if attempt == settings.API_MAX_RETRIES - 1:
                 raise
             wait = 2.0 * (2 ** attempt)
-            logger.warning(
-                "识图 API 超时 kbd_entry_id=%d 等待 %.1fs 后重试",
-                kbd_entry_id, wait,
-            )
+            logger.warning("识图提交超时 kbd_entry_id=%d 等待 %.1fs 后重试", kbd_entry_id, wait)
             await asyncio.sleep(wait)
-
         except httpx.HTTPStatusError as exc:
             if 400 <= exc.response.status_code < 500:
-                logger.error(
-                    "识图 API 客户端错误 status=%d kbd_entry_id=%d",
-                    exc.response.status_code, kbd_entry_id,
-                )
+                logger.error("识图 API 客户端错误 status=%d kbd_entry_id=%d", exc.response.status_code, kbd_entry_id)
                 raise
             if attempt == settings.API_MAX_RETRIES - 1:
                 raise
             wait = 2.0 * (2 ** attempt)
-            logger.warning(
-                "识图 API 服务端错误 status=%d 等待 %.1fs 后重试",
-                exc.response.status_code, wait,
-            )
+            logger.warning("识图 API 服务端错误 status=%d 等待 %.1fs 后重试", exc.response.status_code, wait)
             await asyncio.sleep(wait)
 
-    raise RuntimeError("unreachable")
+    if response is None:
+        raise RuntimeError("unreachable: submit exhausted retries")
+
+    body = response.json()
+    # 异步模式（202 + job_id）→ 轮询 status
+    job_id = body.get("job_id")
+    if job_id and response.status_code == 202:
+        return await _poll_reanalyze_status(kbd_entry_id, job_id, client)
+    # 同步模式（向后兼容）
+    return body
+
+
+async def _poll_reanalyze_status(
+    kbd_entry_id: int,
+    job_id: str,
+    client: httpx.AsyncClient,
+    *,
+    poll_interval: float = 5.0,
+    timeout_total: float = 900.0,  # 15 分钟上限
+) -> dict[str, Any]:
+    """轮询 Vision Job 状态直至完成（Asynchronous Request-Reply 模式客户端）。"""
+    status_url = f"{settings.KB_SERVICE_URL}/api/admin/kbd/{kbd_entry_id}/reanalyze-images/status"
+    headers = {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
+    started_at = asyncio.get_event_loop().time()
+    poll_count = 0
+
+    while True:
+        elapsed = asyncio.get_event_loop().time() - started_at
+        if elapsed > timeout_total:
+            raise TimeoutError(f"Vision Job {job_id} 轮询超时（{timeout_total}s）")
+        await asyncio.sleep(poll_interval)
+        poll_count += 1
+        try:
+            resp = await client.get(
+                status_url, headers=headers, params={"job_id": job_id}, timeout=30.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            status = data.get("status")
+            logger.info(
+                "识图轮询 job_id=%s kbd_entry_id=%d poll=%d status=%s done=%d/%d",
+                job_id, kbd_entry_id, poll_count, status,
+                data.get("done", 0), data.get("total", 0),
+            )
+            if status == "done":
+                return {
+                    "success": True,
+                    "kbd_id": kbd_entry_id,
+                    "total": data.get("total", 0),
+                    "done": data.get("done", 0),
+                    "failed": data.get("failed", 0),
+                    "message": "异步识图完成",
+                }
+            if status == "failed":
+                err = data.get("error") or "Job 执行失败"
+                raise RuntimeError(f"Vision Job {job_id} 失败：{err}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise RuntimeError(f"Vision Job {job_id} 不存在（kb-service 可能已重启）") from exc
+            logger.warning("轮询 status 瞬态错误 %s，继续", exc)
+            continue
 
 
 # ─── 批量处理 ────────────────────────────────────────────────────────────────
@@ -126,41 +175,40 @@ async def process_images_batch(kbd_ids: list[str], _pool: Any = None) -> dict[st
     try:
         stats = {"done": 0, "failed": 0, "skipped": 0}
 
-        async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
-            for idx, support_id in enumerate(kbd_ids, 1):
-                # 查询 kbd_entry.id
-                kbd_entry_id = await pool.fetchval(
-                    "SELECT id FROM kbd_entry WHERE support_id = $1", support_id
-                )
-                if kbd_entry_id is None:
-                    logger.warning(
-                        "[%d/%d] support_id=%s 在 kbd_entry 表中不存在，跳过",
-                        idx, len(kbd_ids), support_id,
+        async def _run_one(support_id: str) -> None:
+            kbd_entry_id = await pool.fetchval(
+                "SELECT id FROM kbd_entry WHERE support_id = $1", support_id
+            )
+            if kbd_entry_id is None:
+                logger.warning("support_id=%s 在 kbd_entry 表中不存在，跳过", support_id)
+                stats["skipped"] += 1
+                return
+            logger.info("重新识图 support_id=%s kbd_entry_id=%d", support_id, kbd_entry_id)
+            try:
+                result = await _call_reanalyze_api(kbd_entry_id, client)
+                if result.get("success"):
+                    stats["done"] += result.get("done", 0)
+                    stats["failed"] += result.get("failed", 0)
+                    logger.info(
+                        "识图完成 support_id=%s done=%d failed=%d",
+                        support_id, result.get("done", 0), result.get("failed", 0),
                     )
-                    stats["skipped"] += 1
-                    continue
-
-                logger.info(
-                    "[%d/%d] 重新识图 support_id=%s kbd_entry_id=%d",
-                    idx, len(kbd_ids), support_id, kbd_entry_id,
-                )
-
-                try:
-                    result = await _call_reanalyze_api(kbd_entry_id, client)
-                    if result.get("success"):
-                        stats["done"] += result.get("done", 0)
-                        stats["failed"] += result.get("failed", 0)
-                        logger.info(
-                            "识图完成 support_id=%s done=%d failed=%d",
-                            support_id, result.get("done", 0), result.get("failed", 0),
-                        )
-                    else:
-                        stats["failed"] += 1
-                except Exception as exc:
-                    logger.error(
-                        "识图失败 support_id=%s 原因=%s", support_id, exc
-                    )
+                else:
                     stats["failed"] += 1
+            except Exception as exc:
+                logger.error("识图失败 support_id=%s 原因=%s", support_id, exc)
+                stats["failed"] += 1
+
+        # P1-1 并发提交（Semaphore 控制，避免一次提交 100 个撑爆后端）
+        max_concurrent = getattr(settings, "VISION_CONCURRENCY", 3)
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def _bounded(support_id: str) -> None:
+            async with sem:
+                await _run_one(support_id)
+
+        async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
+            await asyncio.gather(*[_bounded(sid) for sid in kbd_ids])
 
         logger.info(
             "批量识图完成 done=%d failed=%d skipped=%d",
@@ -198,24 +246,3 @@ async def process_images_for_kbd(kbd_id: str, client: Any = None) -> dict[str, i
         await pool.close()
 
 
-def get_failed_vision_ids(kbd_ids: list[str]) -> list[str]:
-    """筛选 Vision 处理失败的案例（兼容旧接口，返回空列表）。
-
-    新架构下失败统计由 kb-service 返回，此函数仅用于兼容旧调用方。
-    """
-    return []
-
-
-from pathlib import Path
-
-def _has_failed_vision(kbd_dir: Any) -> bool:
-    """兼容旧接口，新架构不再使用本地文件标记。"""
-    return False
-
-
-def _find_images(kbd_dir: Path) -> list[Path]:
-    """查找目录下的所有图片文件"""
-    exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
-    if not kbd_dir.exists():
-        return []
-    return [p for p in kbd_dir.iterdir() if p.is_file() and p.suffix.lower() in exts]

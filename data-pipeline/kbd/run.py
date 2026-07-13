@@ -117,12 +117,12 @@ def _parse_stages(stages_str: str | None) -> list[Stage]:
         return list(Stage)
     stage_map = {
         "fetch": Stage.FETCH,
-        "vision": Stage.VISION,
         "import": Stage.IMPORT,
+        "vision": Stage.VISION,
         "classify": Stage.CLASSIFY,
         "1": Stage.FETCH,
-        "2": Stage.VISION,
-        "3": Stage.IMPORT,
+        "2": Stage.IMPORT,
+        "3": Stage.VISION,
         "4": Stage.CLASSIFY,
     }
     result = []
@@ -236,7 +236,7 @@ async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
     failed_only = getattr(args, "failed_only", False)
     if failed_only:
         logger.info("--failed-only 模式：筛选 Vision 失败案例")
-        kbd_ids = get_failed_vision_ids(kbd_ids)
+        kbd_ids = await get_failed_vision_ids(kbd_ids)
         if not kbd_ids:
             print("没有 Vision 失败的案例需要处理")
             return
@@ -261,7 +261,12 @@ async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
 
 
 async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
-    """Stage 3：MD 转换 + 入库（通过 API）"""
+    """Stage 3：语义提取 + 原子入库（kbd_entry + kbd_image）
+
+    新架构：仅检查 FETCH 完成即可入库；图片随 IMPORT 原子写入 kbd_image，
+    content_md 交由后端 rebuild_content_md 统一渲染（样式高一致）。
+    解除旧架构下 "IMPORT 需要 .desc.txt" 的循环依赖。
+    """
     from .importer import import_batch
 
     kbd_ids = _get_kbd_ids(args)
@@ -271,32 +276,14 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
         print("请在环境变量或 .env 文件中设置 INTERNAL_API_TOKEN")
         sys.exit(1)
 
-    # 检查已抓取且 Vision 完成的案例
-    from .fetcher import _is_fetched, _kbd_dir
+    from .fetcher import _is_fetched
 
-    # 图片文件扩展名（用于过滤辅助文件）
-    IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
-
+    # 仅检查 FETCH 完成即可入库（图片原子写入 kbd_image，无需 .desc.txt 前置）
     ready_ids: list[str] = []
     for support_id in kbd_ids:
         if not _is_fetched(support_id):
             continue
-
-        kbd_dir = _kbd_dir(support_id)
-        img_files = list(kbd_dir.glob("img_*.*"))
-        # 过滤掉非图片文件（.failed/.txt/.html/.json 等都是辅助文件）
-        actual_images = [f for f in img_files if f.suffix.lower() in IMAGE_EXTENSIONS]
-
-        if not actual_images:
-            ready_ids.append(support_id)
-            continue
-
-        all_vision_done = all(
-            (kbd_dir / f"{f.stem}.desc.txt").exists()
-            for f in actual_images
-        )
-        if all_vision_done:
-            ready_ids.append(support_id)
+        ready_ids.append(support_id)
 
     if not ready_ids:
         print("没有已准备好可导入的案例")

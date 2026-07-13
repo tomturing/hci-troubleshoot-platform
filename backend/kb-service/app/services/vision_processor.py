@@ -49,7 +49,7 @@ _MIN_CONTEXT_CHARS = 80
 _SHORT_WINDOW = 300
 _LONG_WINDOW = 800
 _MAX_VISION_IMAGE_SIZE = 150 * 1024  # 150KB，超过需压缩
-_VISION_CONCURRENCY = 1  # 并发 LLM 调用数（DashScope 限制，改为 1 避免并发超限）
+_VISION_CONCURRENCY = 3  # 并发 LLM 调用数（P1-1 异步化后提高，配合异步 Job 批量跑；DashScope QPM 内安全）
 
 # 截图类型与背景颜色（LLM 输出标准）
 _SCREENSHOT_TYPES = ("终端截图", "日志截图", "告警截图", "任务截图", "配置截图", "其他截图")

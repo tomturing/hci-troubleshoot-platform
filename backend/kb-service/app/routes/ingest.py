@@ -14,6 +14,8 @@ POST /api/kbd/ingest
 
 from __future__ import annotations
 
+import base64
+import io
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -21,7 +23,7 @@ from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from sqlalchemy import select
 
-from app.models.kbd_entry import KbdEntry, strip_markdown
+from app.models.kbd_entry import KbdEntry, KbdImage, strip_markdown
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -172,6 +174,16 @@ class KbdIngestRequest(BaseModel):
             "section: 归属章节字段名；desc: Vision LLM 生成的描述"
         ),
     )
+    # 图片二进制（base64）：IMPORT 阶段原子写入 kbd_image 表，消灭 upload_images 孤儿脚本
+    # pipeline 零直连 DB；desc 初始空，由 VISION 阶段 reanalyze 填充
+    images: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "图片二进制列表；格式：[{seq, section, mime_type, data_base64}]；"
+            "data_base64: 原始图片 base64 编码；"
+            "与 images_json 的 seq 一一对应，原子写入 kbd_image 表"
+        ),
+    )
 
     # 聚合渲染（含视觉描述，pipeline 写入；admin 编辑章节后服务端自动重建）
     content_md: str | None = Field(None, description="聚合渲染 Markdown（含截图视觉描述）；不传时由章节字段自动组装")
@@ -211,6 +223,86 @@ class KbdIngestResponse(BaseModel):
 # KBD 入库接口常量
 DEFAULT_OVERRIDE_STATUS = ["draft"]
 ALL_STATUS_MARKER = ["all", "*"]
+
+
+def _validate_images_contract(images: list[dict], images_json: list[dict]) -> None:
+    """契约校验：images 的 seq 集合 ⊆ images_json 的 seq 集合。
+
+    约束：每个图片二进制必须对应 images_json 中的一条占位记录。
+    - images_json 中可能有 desc 为空（待 VISION 填充）的占位条目
+    - 但每个 images 元素（带 data_base64）的 seq 必须已在 images_json 中声明
+
+    一致性由 converter.py 保证：
+    - images_json 与 images 使用相同的 seq 编号
+    - desc 初始空，由 VISION 阶段（reanalyze）填充
+
+    Raises:
+        ValueError: 契约违反（防呆，提醒调用方修复）
+    """
+    if not images:
+        return
+    img_seqs = {item.get("seq") for item in images if item.get("seq") is not None}
+    json_seqs = {item.get("seq") for item in images_json if item.get("seq") is not None}
+    extra = img_seqs - json_seqs
+    if extra:
+        raise ValueError(
+            f"images/images_json 契约违反：images 包含未在 images_json 声明的 seq={extra}。"
+            f"每个图片二进制必须对应 images_json 中的一条记录（desc 可空）。"
+        )
+
+
+async def _persist_kbd_images(session, kbd_entry_id: int, images: list[dict]) -> int:
+    """将请求中的 images（base64）upsert 到 kbd_image 表（按 kbd_entry_id+seq）。
+
+    IMPORT 阶段原子写入图片二进制，消灭 upload_images_to_db 孤儿脚本。
+    存原始二进制（reanalyze 时按需压缩），与 upload_images_to_db 行为一致。
+
+    Returns:
+        成功写入的图片数
+    """
+    if not images:
+        return 0
+
+    result = await session.execute(
+        select(KbdImage).where(KbdImage.kbd_entry_id == kbd_entry_id)
+    )
+    existing_map: dict[int, KbdImage] = {img.seq: img for img in result.scalars().all()}
+
+    written = 0
+    for img in images:
+        seq = img.get("seq")
+        if seq is None:
+            continue
+        mime_type = img.get("mime_type", "image/png")
+        try:
+            image_data = base64.b64decode(img["data_base64"])
+        except Exception as exc:
+            logger.warning(
+                event="kbd_image_decode_failed",
+                kbd_entry_id=kbd_entry_id, seq=seq, error=str(exc),
+            )
+            continue
+        width = height = None
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(image_data)) as im:
+                width, height = im.size
+        except Exception:
+            pass
+        if seq in existing_map:
+            row = existing_map[seq]
+            row.image_data = image_data
+            row.mime_type = mime_type
+            row.width = width
+            row.height = height
+        else:
+            session.add(KbdImage(
+                kbd_entry_id=kbd_entry_id, seq=seq,
+                image_data=image_data, mime_type=mime_type,
+                width=width, height=height,
+            ))
+        written += 1
+    return written
 
 
 @router.post("/kbd/ingest", status_code=status.HTTP_201_CREATED)
@@ -279,6 +371,13 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
+    # P2 契约校验：images 与 images_json 的 seq 一致性
+    try:
+        _validate_images_contract(body.images, body.images_json)
+    except ValueError as exc:
+        logger.error(event="kbd_ingest_contract_violation", error=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc))
+
     if body.override_status is None:
         # 不传 override_status = 默认仅 draft
         allowed_statuses = DEFAULT_OVERRIDE_STATUS
@@ -338,6 +437,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                         existing_entry.ai_category_conf = body.ai_category_conf
                     if body.ai_category_reason:
                         existing_entry.ai_category_reason = body.ai_category_reason
+                    await _persist_kbd_images(session, existing_entry.id, body.images)
                     await session.commit()
 
                     logger.info(
@@ -429,6 +529,8 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
             status="draft",
         )
         session.add(new_entry)
+        await session.flush()  # 拿 new_entry.id，与 kbd_image 同事务原子写入
+        await _persist_kbd_images(session, new_entry.id, body.images)
         await session.commit()
 
         # 3. 刷新获取 ID

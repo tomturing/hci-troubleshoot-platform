@@ -1,10 +1,23 @@
 #!/usr/bin/env python3
 """
-将本地 cache 目录的图片导入到 kbd_image 表。
+【降级保留工具】将本地 cache 目录的图片导入到 kbd_image 表。
 
-用法：
-  python -m kbd.upload_images_to_db --ids 26890,26891
-  python -m kbd.upload_images_to_db --all
+⚠️ 自 P0-1 起，主流程已不再依赖此脚本：
+  - IMPORT 阶段通过扩展的 ingest API（KbdIngestRequest.images 字段）原子写入图片，
+    流水线自身完成 kbd_image 入库，无需单独的同步步骤。
+  - 本脚本仅保留两个用途：
+
+用途 1：补录历史缺图数据
+  当历史案例已通过旧版 ingest 流程入库（kbd_image 表为空）时，可使用本脚本
+  回填图片数据，以便 admin-ui 重新识图按钮可用。
+  用法：
+    python -m kbd.upload_images_to_db --ids 26890,26891
+    python -m kbd.upload_images_to_db --all
+
+用途 2：测试 / 调试
+  单独验证图片入库逻辑。
+
+主流程请勿使用本脚本——直接走 pipeline 的 IMPORT 阶段即可。
 """
 
 import argparse

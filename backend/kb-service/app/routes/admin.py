@@ -15,9 +15,10 @@ import io
 import json
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from shared.dynamic_resource.adapters import kbd_resource_payload, sop_resource_payload
 from shared.dynamic_resource.loader import snapshot_revision_metadata
@@ -1892,14 +1893,23 @@ async def reclassify_kbd_entry(request: Request, kbd_id: int):
     }
 
 
-@kbd_router.post("/{kbd_id}/reanalyze-images", summary="重新识图单个 KBD 条目")
+@kbd_router.post("/{kbd_id}/reanalyze-images", summary="重新识图单个 KBD 条目（异步提交）")
 async def reanalyze_kbd_images(request: Request, kbd_id: int):
-    """从 kbd_image 表读取原始图片，用最新 Prompt 重新识图。
+    """异步提交 Vision 重算任务（Asynchronous Request-Reply 模式，P1-1）。
 
-    场景：admin-ui 修改 kbd_vision_v1 Prompt 后，点击"重新识图"按钮立即验证效果。
+    场景：admin-ui 修改 kbd_vision_v1 Prompt 后，立即触发"重新识图"。
     更新字段：images_json、content_md（重建）。
 
-    注意：耗时较长（每张图 5-10 秒），前端需提示用户等待。
+    新行为：
+      - 立即返回 202 + job_id（避免 HTTP 长连接阻塞/超时）
+      - 后台 asyncio.create_task 执行实际 Vision LLM 调用
+      - 客户端通过 GET /reanalyze-images/status?job_id=xxx 轮询状态
+
+    旧同步行为（向后兼容 ?sync=true）：
+      - sync=true 时沿用旧路径，直接返回完整结果（供 admin-ui 单条快速调试）
+
+    Returns（异步）:
+        {"job_id": str, "status": "pending", "kbd_id": int, "message": "已提交..."}
     """
     _check_auth(request)
 
@@ -1907,9 +1917,42 @@ async def reanalyze_kbd_images(request: Request, kbd_id: int):
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
     trace_id = get_current_trace_id()
-    logger.info(event="kbd_reanalyze_images_request", kbd_id=kbd_id, trace_id=trace_id)
 
-    # 调用 Vision 处理服务
+    # 向后兼容：?sync=true 直接同步返回（供 debug 场景）
+    sync_mode = request.query_params.get("sync", "").lower() == "true"
+    if sync_mode:
+        return await _reanalyze_kbd_images_sync(kbd_id, trace_id)
+
+    # 异步：提交 Job
+    from app.services.vision_job_manager import get_job_manager
+    from app.services.vision_processor import reanalyze_kbd_images as do_reanalyze
+
+    async def _runner(k_id: int) -> dict[str, Any]:
+        return await do_reanalyze(k_id, _db_manager.async_session_factory)
+
+    jm = get_job_manager()
+    job_id = await jm.submit(kbd_id, _runner)
+
+    logger.info(
+        event="kbd_reanalyze_images_submitted",
+        kbd_id=kbd_id, job_id=job_id, trace_id=trace_id,
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "success": True,
+            "kbd_id": kbd_id,
+            "job_id": job_id,
+            "status": "pending",
+            "message": "Vision 任务已提交，请通过 GET /reanalyze-images/status 轮询进度",
+        },
+    )
+
+
+async def _reanalyze_kbd_images_sync(kbd_id: int, trace_id: str):
+    """旧同步路径（?sync=true 走此分支），保留兼容性。"""
+    logger.info(event="kbd_reanalyze_images_sync_request", kbd_id=kbd_id, trace_id=trace_id)
     from app.services.vision_processor import reanalyze_kbd_images as do_reanalyze
 
     try:
@@ -1919,23 +1962,13 @@ async def reanalyze_kbd_images(request: Request, kbd_id: int):
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
-        logger.error(
-            event="kbd_reanalyze_images_failed",
-            kbd_id=kbd_id,
-            error=str(exc),
-            trace_id=trace_id,
-        )
+        logger.error(event="kbd_reanalyze_images_failed", kbd_id=kbd_id, error=str(exc), trace_id=trace_id)
         raise HTTPException(status_code=500, detail=f"识图失败：{exc}")
 
     logger.info(
         event="kbd_reanalyze_images_completed",
-        kbd_id=kbd_id,
-        total=result["total"],
-        done=result["done"],
-        failed=result["failed"],
-        trace_id=trace_id,
+        kbd_id=kbd_id, total=result["total"], done=result["done"], failed=result["failed"], trace_id=trace_id,
     )
-
     return {
         "success": True,
         "kbd_id": kbd_id,
@@ -1944,6 +1977,41 @@ async def reanalyze_kbd_images(request: Request, kbd_id: int):
         "failed": result["failed"],
         "message": result.get("message", "识图完成"),
     }
+
+
+@kbd_router.get("/{kbd_id}/reanalyze-images/status", summary="查询异步识图任务状态")
+async def get_reanalyze_status(request: Request, kbd_id: int, job_id: str):
+    """查询异步 Vision Job 状态。
+
+    Args:
+        kbd_id: KBD 条目 ID（路径参数，校验一致性）
+        job_id: 任务 ID（来自 POST reanalyze-images 响应）
+
+    Returns:
+        {
+            "job_id": str,
+            "kbd_id": int,
+            "status": "pending" | "running" | "done" | "failed",
+            "total": int,
+            "done": int,
+            "failed": int,
+            "error": str | None,
+            "started_at": float | None,
+            "finished_at": float | None,
+        }
+    """
+    _check_auth(request)
+    from app.services.vision_job_manager import get_job_manager
+
+    job = await get_job_manager().get_status(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} 不存在（可能已重启丢失）")
+    if job["kbd_id"] != kbd_id:
+        raise HTTPException(status_code=400, detail="job_id 与 kbd_id 不匹配")
+    # 转为 JSON 友好的 datetime 字符串
+    if job.get("finished_at"):
+        job["elapsed_s"] = round(job["finished_at"] - (job.get("started_at") or job["created_at"]), 1)
+    return job
 
 
 @kbd_router.post("/{kbd_id}/reanalyze-image/{seq}", summary="重新识图单张图片")
