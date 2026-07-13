@@ -392,7 +392,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
         event="kbd_ingest_request",
         support_id=body.support_id,
         title=body.title[:50],
-        content_length=len(body.content_md),
+        content_length=len(body.content_md or ""),
         override=body.override,
         override_status=body.override_status,
         allowed_statuses=allowed_statuses,

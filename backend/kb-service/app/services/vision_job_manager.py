@@ -20,13 +20,14 @@ Vision 异步 Job 管理器 — Asynchronous Request-Reply 模式实现
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 import uuid
 from typing import Any
 
-logger = logging.getLogger("kb-service-vision-job-manager")
+from shared.observability.logger import get_logger
+
+logger = get_logger("kb-service-vision-job-manager")
 
 
 class VisionJobManager:
@@ -124,10 +125,9 @@ class VisionJobManager:
                     error=str(exc),
                     finished_at=time.time(),
                 )
-                logger.error(
+                logger.exception(
                     event="vision_job_failed",
-                    job_id=job_id, kbd_id=kbd_id, error=str(exc),
-                    exc_info=True,
+                    job_id=job_id, kbd_id=kbd_id, error=exc,
                 )
 
     async def _update(self, job_id: str, **fields: Any) -> None:
