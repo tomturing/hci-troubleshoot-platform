@@ -37,35 +37,61 @@ from .config import settings
 
 logger = logging.getLogger("kbd.converter")
 
-# ─── 五字段规整模板 ─────────────────────────────────────────────────────────
-# KBD 案例统一规整为五个标准字段：
+# ─── 五字段规整模板（+ 4 个辅助字段） ────────────────────────────────────────
+# KBD 案例统一规整为五个标准字段（必填三 + 可选二）：
 #   1. 问题描述（必填）
 #   2. 告警信息
 #   3. 有效排查步骤（必填）
 #   4. 根因
 #   5. 解决方案（必填）
 #
-# Input value 别名映射（原始 HTML 可能使用不同命名）：
-#   - 问题描述、*问题描述、问题描述——、*问题描述——  → 问题描述
-#   - 告警信息、告警信息——  → 告警信息
-#   - 有效排查步骤、处理过程、处理过程——  → 有效排查步骤
-#   - 根因、根因——  → 根因
-#   - 解决方案、*解决方案、解决方案——、*解决方案——  → 解决方案
+# 另保留 4 个辅助字段（非必填，供 convert_kbd_structured 写入 kbd_entry 表）：
+#   6. 操作影响范围      -> operational_impact
+#   7. 是否是临时解决方案 -> is_temporary
+#   8. 建议与总结        -> recommendations
+#   9. 排查内容          -> 并入 steps_text
 #
-# (原始 input value 前缀, Markdown 标题, 是否必填)
+# 单一数据结构：(标准字段名, 是否必填, [别名列表])
+# 别名覆盖原始 HTML input value 的常见变体：
+#   - 问题描述：*问题描述 / 问题描述
+#   - 告警信息：告警信息
+#   - 有效排查步骤：有效排查步骤 / 处理过程（旧版命名）
+#   - 根因：根因
+#   - 解决方案：*解决方案 / 解决方案
+#
+# 后缀变体（em-dash U+2014、HTML entity &mdash;）由 _DASH_SUFFIX_RE 归一化处理
+_FIELD_CONFIG: list[tuple[str, bool, list[str]]] = [
+    # 五字段规整模板（必填三 + 可选二）
+    ("问题描述",         True,  ["*问题描述", "问题描述"]),
+    ("告警信息",         False, ["告警信息"]),
+    ("有效排查步骤",     True,  ["有效排查步骤", "处理过程"]),
+    ("根因",             False, ["根因"]),
+    ("解决方案",         True,  ["*解决方案", "解决方案"]),
+    # 辅助字段（非必填，供结构化入库使用）
+    ("操作影响范围",     False, ["操作影响范围"]),
+    ("是否是临时解决方案", False, ["是否是临时解决方案"]),
+    ("建议与总结",       False, ["建议与总结"]),
+    ("排查内容",         False, ["排查内容"]),
+]
+
+# 派生视图（保持向后兼容，元组格式：(主别名, 标准字段名, 是否必填)）
 _SECTIONS: list[tuple[str, str, bool]] = [
-    # 五字段模板（必填）
-    ("*问题描述",       "问题描述",     True),
-    ("告警信息",         "告警信息",     False),
-    ("有效排查步骤",     "有效排查步骤", True),
-    ("根因",             "根因",         False),
-    ("*解决方案",        "解决方案",     True),
+    (aliases[0], field, required) for field, required, aliases in _FIELD_CONFIG
 ]
 
 # 必填五字段
 _MANDATORY_TITLES: frozenset[str] = frozenset(
     md_title for _, md_title, required in _SECTIONS if required
 )
+
+# 预编译正则：剥离末尾的 em-dash(U+2014) / en-dash(U+2013) / ASCII hyphen(U+002D)
+# BeautifulSoup 已将 &mdash;&mdash; HTML entity 自动解码为 em-dash，无需单独处理
+_DASH_SUFFIX_RE = re.compile(r'[\u2014\u2013\-]+$')
+
+# 别名 -> 标准字段 的快速映射
+_ALIAS_TO_FIELD: dict[str, str] = {
+    alias: field for field, _, aliases in _FIELD_CONFIG for alias in aliases
+}
 
 
 # ─── FULL_TEXT 截断策略 ───────────────────────────────────────────────────────
@@ -318,79 +344,82 @@ def _html_to_md_with_placeholder(html: str, image_map: dict[str, dict]) -> str:
 
 # ─── Section 解析 ────────────────────────────────────────────────────────────
 
-# Input value 别名 → 标准五字段的映射
-# 格式：(别名, 标准五字段名)
-_SECTION_ALIASES: list[tuple[str, str]] = [
-    # 问题描述
-    ("*问题描述",       "问题描述"),
-    ("问题描述",         "问题描述"),
-    # 告警信息
-    ("告警信息",         "告警信息"),
-    # 有效排查步骤（旧版叫"处理过程"）
-    ("有效排查步骤",     "有效排查步骤"),
-    ("处理过程",         "有效排查步骤"),
-    # 根因
-    ("根因",             "根因"),
-    # 解决方案
-    ("*解决方案",        "解决方案"),
-    ("解决方案",         "解决方案"),
-]
+
+def _match_field(api_val: str) -> str | None:
+    """
+    input value -> 标准五字段的三级匹配：
+
+    1. 精确匹配：直接命中别名
+    2. 归一化匹配：剥离末尾 em-dash/en-dash/hyphen 后缀后命中
+       （覆盖 "*问题描述--" 这类带装饰线的旧版命名）
+    3. 前缀匹配：兜底，覆盖未在别名表中的变体
+    """
+    # 1. 精确匹配
+    if api_val in _ALIAS_TO_FIELD:
+        return _ALIAS_TO_FIELD[api_val]
+    # 2. 归一化后匹配
+    normalized = _DASH_SUFFIX_RE.sub("", api_val).strip()
+    if normalized in _ALIAS_TO_FIELD:
+        return _ALIAS_TO_FIELD[normalized]
+    # 3. 前缀匹配
+    for alias, field in _ALIAS_TO_FIELD.items():
+        if api_val.startswith(alias):
+            return field
+    return None
 
 
 def _parse_sections(content_html: str) -> dict[str, str]:
     """
     从 rows.content HTML 解析五字段规整模板。
 
-    算法：不依赖 DOM 层级结构，直接在整个文档中搜索 mceNonEditable div。
+    兼容两种 HTML 结构：
+      - Wrapped: <body><div class="case-tinymce-wrap">[mceNonEditable...]</div></body>
+      - Flat:    <body>[mceNonEditable, <p>overflow</p>, mceNonEditable, ...]</body>
 
-    规整逻辑：
-    - 所有 input value 别名统一映射到五字段（问题描述/告警信息/有效排查步骤/根因/解决方案）
-    - "处理过程" → "有效排查步骤"
-    - 带破折号后缀（——）自动忽略
+    内容捕获分三层：
+      1. 容器内部最后一个直接子 div（标准内容）
+      2. 容器后的 overflow 兄弟节点（直到下一个 mceNonEditable），
+         覆盖 Flat 结构中游离的排障正文/截图
+      3. 未匹配别名表的 mceNonEditable 容器（如 "判断标准"/"现象确认"等
+         非标准命名）作为 overflow 归入上一个匹配的 section，
+         保留旧算法的容错行为，避免内容丢失
 
     返回 {md_title: content_html_str}（未出现的 section key 不在结果中）
     """
     soup = BeautifulSoup(content_html, "lxml")
-
-    # 建立别名 → 标准五字段的映射
-    alias_to_md: dict[str, str] = {}
-    for alias, md_title in _SECTION_ALIASES:
-        # 精确匹配
-        alias_to_md[alias] = md_title
-        # 带破折号后缀
-        alias_to_md[alias + "——"] = md_title
+    mce_divs = soup.find_all("div", class_="mceNonEditable")
 
     result: dict[str, str] = {}
+    last_matched_field: str | None = None
 
-    # 直接搜索所有 mceNonEditable div（不依赖层级结构）
-    for mce_div in soup.find_all("div", class_="mceNonEditable"):
+    for i, mce_div in enumerate(mce_divs):
         inp = mce_div.find("input")
-        if not inp:
-            continue
+        api_val = (inp.get("value") or "").strip() if inp else ""
+        md_title = _match_field(api_val) if api_val else None
 
-        api_val = (inp.get("value") or "").strip()
+        if md_title:
+            # 匹配成功：开启新 section
+            content_divs = mce_div.find_all("div", recursive=False)
+            parts: list[str] = [str(content_divs[-1])] if content_divs else []
 
-        # 1. 优先精确匹配
-        md_title = alias_to_md.get(api_val)
+            # 容器后的 overflow 兄弟节点（直到下一个 mceNonEditable）
+            stop_at = mce_divs[i + 1] if i + 1 < len(mce_divs) else None
+            sibling = mce_div.next_sibling
+            while sibling is not None and sibling is not stop_at:
+                if isinstance(sibling, Tag):
+                    parts.append(str(sibling))
+                sibling = sibling.next_sibling
 
-        # 2. 回退：去掉破折号后匹配
-        if not md_title:
-            normalized = api_val.rstrip("——").strip()
-            md_title = alias_to_md.get(normalized)
-
-        # 3. 回退：前缀匹配
-        if not md_title:
-            for alias, title in alias_to_md.items():
-                if api_val.startswith(alias):
-                    md_title = title
-                    break
-
-        if not md_title:
-            continue
-
-        # 提取容器内部的内容（直接子 div）
-        content_divs = mce_div.find_all("div", recursive=False)
-        result[md_title] = str(content_divs[-1]) if content_divs else ""
+            result[md_title] = "".join(parts)
+            last_matched_field = md_title
+        else:
+            # 未匹配：作为 overflow 归入上一个匹配 section（保留旧算法容错行为）
+            if last_matched_field is not None:
+                content_divs = mce_div.find_all("div", recursive=False)
+                if content_divs:
+                    result[last_matched_field] = (
+                        result.get(last_matched_field, "") + str(content_divs[-1])
+                    )
 
     return result
 
