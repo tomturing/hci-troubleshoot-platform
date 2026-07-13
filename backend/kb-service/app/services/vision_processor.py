@@ -75,6 +75,62 @@ _VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "1536"))
 # Step 0：文档解析与上下文提取
 # ──────────────────────────────────────────────────────────────────────────────
 
+async def ensure_images_json_complete(
+    kbd_entry: KbdEntry,
+    kbd_images: list[KbdImage],
+    db_session: AsyncSession,
+) -> bool:
+    """确保 images_json 包含 kbd_image 表中所有图片的条目。
+
+    根因修复：解决历史数据中 images_json 只有部分 seq 的问题。
+    确保 kbd_image 表中的每张图片在 images_json 中都有对应条目。
+
+    Args:
+        kbd_entry: KBD 条目对象
+        kbd_images: kbd_image 表中的所有图片
+        db_session: 数据库会话
+
+    Returns:
+        bool: 是否有新增条目（用于日志记录）
+    """
+    # 获取 kbd_image 表中的所有 seq
+    referenced_seqs = {img.seq for img in kbd_images}
+
+    if not referenced_seqs:
+        return False
+
+    # 获取 images_json 中已有的 seq
+    existing_seqs = {item.get("seq") for item in (kbd_entry.images_json or []) if item.get("seq") is not None}
+
+    # 找出缺失的 seq
+    missing_seqs = referenced_seqs - existing_seqs
+
+    if not missing_seqs:
+        return False
+
+    # 为缺失的 seq 创建占位条目
+    images_json = [dict(item) for item in (kbd_entry.images_json or [])]
+    for seq in sorted(missing_seqs):
+        images_json.append({
+            "seq": seq,
+            "section": "steps_text",  # 默认归属排障步骤
+            "desc": "",  # 占位，等待 Vision LLM 填充
+        })
+
+    # 按 seq 排序后写回
+    images_json.sort(key=lambda x: x["seq"])
+    kbd_entry.images_json = images_json
+
+    logger.info(
+        event="images_json_synced",
+        kbd_entry_id=kbd_entry.id,
+        missing_seqs=sorted(missing_seqs),
+        total_seqs=len(images_json),
+    )
+
+    return True
+
+
 def _strip_html(html: str) -> str:
     """去除 HTML 标签、&nbsp;、多余空白。"""
     text = re.sub(r"<[^>]+>", " ", html)
@@ -455,6 +511,7 @@ async def reanalyze_kbd_images(
             old_images = list(kbd_entry.images_json or [])
             kbd_entry.images_json = images_json
             kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
+            kbd_entry.sync_sections_from_content_md()
             await db_session.commit()
         except Exception as e:
             logger.warning(
@@ -472,6 +529,7 @@ async def reanalyze_kbd_images(
                 old_images = list(kbd_entry.images_json or [])
                 kbd_entry.images_json = images_json
                 kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
+                kbd_entry.sync_sections_from_content_md()
                 await db_session.commit()
             except Exception as retry_err:
                 logger.error(
@@ -566,7 +624,20 @@ async def reanalyze_single_image(
         if kbd_image is None:
             raise ValueError(f"KBD 条目 {kbd_entry_id} 的图片 seq={seq} 不存在")
 
-        # 将必要的数据拉入内存
+        # 查询所有图片，确保 images_json 同步
+        all_images_result = await db_session.execute(
+            select(KbdImage)
+            .where(KbdImage.kbd_entry_id == kbd_entry_id)
+            .order_by(KbdImage.seq)
+        )
+        all_kbd_images: list[KbdImage] = list(all_images_result.scalars().all())
+
+        # 根因修复：确保 images_json 包含所有 kbd_image 表中的图片
+        await ensure_images_json_complete(kbd_entry, all_kbd_images, db_session)
+        await db_session.commit()
+
+        # 将必要的数据拉入内存（重新查询以获取同步后的 images_json）
+        await db_session.refresh(kbd_entry)
         image_data = kbd_image.image_data
         mime_type = kbd_image.mime_type or "image/png"
         context_source = kbd_entry.content_md or ""
@@ -644,6 +715,7 @@ async def reanalyze_single_image(
             images_json.sort(key=lambda x: x["seq"])
             kbd_entry.images_json = images_json
             kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
+            kbd_entry.sync_sections_from_content_md()
             await db_session.commit()
         except Exception as e:
             logger.warning(
@@ -680,6 +752,7 @@ async def reanalyze_single_image(
                 images_json.sort(key=lambda x: x["seq"])
                 kbd_entry.images_json = images_json
                 kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
+                kbd_entry.sync_sections_from_content_md()
                 await db_session.commit()
             except Exception as retry_err:
                 logger.error(

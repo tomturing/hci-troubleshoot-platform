@@ -343,6 +343,48 @@ class KbdEntry(Base):
             text_val = content_md[start:end].strip()
             setattr(self, field, text_val)
 
+    def ensure_images_json_complete(self) -> bool:
+        """确保 images_json 包含 content_md 中引用的所有图片。
+
+        解析 content_md 中的 ![img:N] 占位符，检查 images_json 是否有对应条目。
+        对于缺失的 seq，创建占位条目（desc 为空字符串）。
+
+        Returns:
+            bool: 是否有新增条目（用于日志记录）
+        """
+        content_md = self.content_md or ""
+
+        # 1. 提取 content_md 中所有 ![img:N] 占位符的 seq
+        img_placeholders = re.findall(r"!\[img:(\d+)\]", content_md)
+        referenced_seqs = {int(seq) for seq in img_placeholders}
+
+        if not referenced_seqs:
+            return False
+
+        # 2. 获取 images_json 中已有的 seq
+        existing_seqs = {item.get("seq") for item in (self.images_json or []) if item.get("seq") is not None}
+
+        # 3. 找出缺失的 seq
+        missing_seqs = referenced_seqs - existing_seqs
+
+        if not missing_seqs:
+            return False
+
+        # 4. 为缺失的 seq 创建占位条目
+        images_json = [dict(item) for item in (self.images_json or [])]
+        for seq in sorted(missing_seqs):
+            images_json.append({
+                "seq": seq,
+                "section": "steps_text",  # 默认归属排障步骤
+                "desc": "",  # 占位，等待 Vision LLM 填充
+            })
+
+        # 5. 按 seq 排序后写回
+        images_json.sort(key=lambda x: x["seq"])
+        self.images_json = images_json
+
+        return True
+
     def __repr__(self) -> str:
         return f"<KbdEntry(id={self.id}, support_id={self.support_id}, status={self.status})>"
 
