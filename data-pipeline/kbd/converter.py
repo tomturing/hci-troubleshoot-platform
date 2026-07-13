@@ -37,22 +37,32 @@ from .config import settings
 
 logger = logging.getLogger("kbd.converter")
 
-# ─── 9 个 Section 定义 ───────────────────────────────────────────────────────
-
-# (API input.value, Markdown 标题, 是否必填)
+# ─── 五字段规整模板 ─────────────────────────────────────────────────────────
+# KBD 案例统一规整为五个标准字段：
+#   1. 问题描述（必填）
+#   2. 告警信息
+#   3. 有效排查步骤（必填）
+#   4. 根因
+#   5. 解决方案（必填）
+#
+# Input value 别名映射（原始 HTML 可能使用不同命名）：
+#   - 问题描述、*问题描述、问题描述——、*问题描述——  → 问题描述
+#   - 告警信息、告警信息——  → 告警信息
+#   - 有效排查步骤、处理过程、处理过程——  → 有效排查步骤
+#   - 根因、根因——  → 根因
+#   - 解决方案、*解决方案、解决方案——、*解决方案——  → 解决方案
+#
+# (原始 input value 前缀, Markdown 标题, 是否必填)
 _SECTIONS: list[tuple[str, str, bool]] = [
-    ("*问题描述",         "问题描述",         True),
-    ("告警信息",           "告警信息",         False),
-    ("有效排查步骤",       "有效排查步骤",     True),
-    ("根因",               "根因",             False),
-    ("*解决方案",          "解决方案",         True),
-    ("操作影响范围",       "操作影响范围",      False),
-    ("是否是临时解决方案", "是否是临时解决方案", False),
-    ("建议与总结",         "建议与总结",        False),
-    ("排查内容",           "排查内容",          False),
+    # 五字段模板（必填）
+    ("*问题描述",       "问题描述",     True),
+    ("告警信息",         "告警信息",     False),
+    ("有效排查步骤",     "有效排查步骤", True),
+    ("根因",             "根因",         False),
+    ("*解决方案",        "解决方案",     True),
 ]
 
-# 必填 section Markdown 标题的快速查找集合
+# 必填五字段
 _MANDATORY_TITLES: frozenset[str] = frozenset(
     md_title for _, md_title, required in _SECTIONS if required
 )
@@ -308,48 +318,79 @@ def _html_to_md_with_placeholder(html: str, image_map: dict[str, dict]) -> str:
 
 # ─── Section 解析 ────────────────────────────────────────────────────────────
 
+# Input value 别名 → 标准五字段的映射
+# 格式：(别名, 标准五字段名)
+_SECTION_ALIASES: list[tuple[str, str]] = [
+    # 问题描述
+    ("*问题描述",       "问题描述"),
+    ("问题描述",         "问题描述"),
+    # 告警信息
+    ("告警信息",         "告警信息"),
+    # 有效排查步骤（旧版叫"处理过程"）
+    ("有效排查步骤",     "有效排查步骤"),
+    ("处理过程",         "有效排查步骤"),
+    # 根因
+    ("根因",             "根因"),
+    # 解决方案
+    ("*解决方案",        "解决方案"),
+    ("解决方案",         "解决方案"),
+]
+
+
 def _parse_sections(content_html: str) -> dict[str, str]:
     """
-    从 rows.content HTML 解析 9 个 section 的 HTML 内容。
-    支持鲁棒的容错机制：当发现某些内容节点（如步骤 2、3 及其图片）由于 DOM 损坏溢出到 mceNonEditable 容器之外时，
-    自动将其向前归属于最近的一个合法板块，确保排障文本及截图不丢失。
+    从 rows.content HTML 解析五字段规整模板。
+
+    算法：不依赖 DOM 层级结构，直接在整个文档中搜索 mceNonEditable div。
+
+    规整逻辑：
+    - 所有 input value 别名统一映射到五字段（问题描述/告警信息/有效排查步骤/根因/解决方案）
+    - "处理过程" → "有效排查步骤"
+    - 带破折号后缀（——）自动忽略
 
     返回 {md_title: content_html_str}（未出现的 section key 不在结果中）
     """
     soup = BeautifulSoup(content_html, "lxml")
 
-    # 建立 API input.value → md_title 快速映射
-    value_to_md: dict[str, str] = {
-        api_val: md_title for api_val, md_title, _ in _SECTIONS
-    }
+    # 建立别名 → 标准五字段的映射
+    alias_to_md: dict[str, str] = {}
+    for alias, md_title in _SECTION_ALIASES:
+        # 精确匹配
+        alias_to_md[alias] = md_title
+        # 带破折号后缀
+        alias_to_md[alias + "——"] = md_title
 
     result: dict[str, str] = {}
-    current_section: str | None = None
 
-    # 用 soup.find("body") or soup 兼容 lxml 自动补充 <html><body> 容器后的子节点列表
-    root_node = soup.find("body") or soup
+    # 直接搜索所有 mceNonEditable div（不依赖层级结构）
+    for mce_div in soup.find_all("div", class_="mceNonEditable"):
+        inp = mce_div.find("input")
+        if not inp:
+            continue
 
-    for node in root_node.contents:
-        if isinstance(node, Tag):
-            # 检查是否是板块容器
-            if node.name == "div" and "mceNonEditable" in node.get("class", []):
-                inp = node.find("input")
-                if inp:
-                    api_val = (inp.get("value") or "").strip()
-                    md_title = value_to_md.get(api_val)
-                    if md_title:
-                        current_section = md_title
-                        # 提取容器内部的内容
-                        content_divs = node.find_all("div", recursive=False)
-                        if content_divs:
-                            result[current_section] = str(content_divs[-1])
-                        else:
-                            result[current_section] = ""
-                        continue
+        api_val = (inp.get("value") or "").strip()
 
-            # 如果是其他顶层游离节点，且当前已有活跃的板块，则将该节点追加到该板块中
-            if current_section is not None:
-                result[current_section] += str(node)
+        # 1. 优先精确匹配
+        md_title = alias_to_md.get(api_val)
+
+        # 2. 回退：去掉破折号后匹配
+        if not md_title:
+            normalized = api_val.rstrip("——").strip()
+            md_title = alias_to_md.get(normalized)
+
+        # 3. 回退：前缀匹配
+        if not md_title:
+            for alias, title in alias_to_md.items():
+                if api_val.startswith(alias):
+                    md_title = title
+                    break
+
+        if not md_title:
+            continue
+
+        # 提取容器内部的内容（直接子 div）
+        content_divs = mce_div.find_all("div", recursive=False)
+        result[md_title] = str(content_divs[-1]) if content_divs else ""
 
     return result
 
