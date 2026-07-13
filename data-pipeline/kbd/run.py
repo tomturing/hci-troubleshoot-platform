@@ -228,31 +228,33 @@ async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
     """Stage 2：图片语义化"""
     import asyncpg
 
-    from .image_proc import get_failed_vision_ids, process_images_batch
+    from .image_proc import process_images_batch
+    from .pipeline import _db_failed_vision_ids
 
     kbd_ids = _get_kbd_ids(args)
 
     # --failed-only 参数：仅处理失败的案例
     failed_only = getattr(args, "failed_only", False)
-    if failed_only:
-        logger.info("--failed-only 模式：筛选 Vision 失败案例")
-        kbd_ids = await get_failed_vision_ids(kbd_ids)
-        if not kbd_ids:
-            print("没有 Vision 失败的案例需要处理")
-            return
-
-    # 检查已抓取的案例
-    from .fetcher import _is_fetched
-    ready_ids = [cid for cid in kbd_ids if _is_fetched(cid)]
-
-    if not ready_ids:
-        print("没有已抓取的案例需要处理")
-        return
-
-    logger.info("Vision 处理开始 kbds=%d run_id=%s", len(ready_ids), run_id)
 
     pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
     try:
+        if failed_only:
+            logger.info("--failed-only 模式：筛选 Vision 失败案例")
+            kbd_ids = await _db_failed_vision_ids(kbd_ids, pool)
+            if not kbd_ids:
+                print("没有 Vision 失败的案例需要处理")
+                return
+
+        # 检查已抓取的案例
+        from .fetcher import _is_fetched
+        ready_ids = [cid for cid in kbd_ids if _is_fetched(cid)]
+
+        if not ready_ids:
+            print("没有已抓取的案例需要处理")
+            return
+
+        logger.info("Vision 处理开始 kbds=%d run_id=%s", len(ready_ids), run_id)
+
         stats = await process_images_batch(ready_ids, pool)
         print(f"run_id: {run_id}")
         print(json.dumps(stats, ensure_ascii=False, indent=2))
@@ -265,7 +267,7 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
 
     新架构：仅检查 FETCH 完成即可入库；图片随 IMPORT 原子写入 kbd_image，
     content_md 交由后端 rebuild_content_md 统一渲染（样式高一致）。
-    解除旧架构下 "IMPORT 需要 .desc.txt" 的循环依赖。
+    解除旧架构下 "IMPORT 需要 .desc.txt" 的循环依赖（.desc.txt 机制已彻底移除）。
     """
     from .importer import import_batch
 
@@ -278,7 +280,7 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
 
     from .fetcher import _is_fetched
 
-    # 仅检查 FETCH 完成即可入库（图片原子写入 kbd_image，无需 .desc.txt 前置）
+    # 仅检查 FETCH 完成即可入库（图片原子写入 kbd_image，无需 .desc.txt 前置；该机制已移除）
     ready_ids: list[str] = []
     for support_id in kbd_ids:
         if not _is_fetched(support_id):

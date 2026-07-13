@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import asyncpg
@@ -108,11 +109,11 @@ async def _poll_reanalyze_status(
     """轮询 Vision Job 状态直至完成（Asynchronous Request-Reply 模式客户端）。"""
     status_url = f"{settings.KB_SERVICE_URL}/api/admin/kbd/{kbd_entry_id}/reanalyze-images/status"
     headers = {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
-    started_at = asyncio.get_event_loop().time()
+    started_at = time.monotonic()
     poll_count = 0
 
     while True:
-        elapsed = asyncio.get_event_loop().time() - started_at
+        elapsed = time.monotonic() - started_at
         if elapsed > timeout_total:
             raise TimeoutError(f"Vision Job {job_id} 轮询超时（{timeout_total}s）")
         await asyncio.sleep(poll_interval)

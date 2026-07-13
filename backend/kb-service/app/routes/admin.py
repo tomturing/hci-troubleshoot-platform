@@ -2014,29 +2014,20 @@ async def get_reanalyze_status(request: Request, kbd_id: int, job_id: str):
     return job
 
 
-@kbd_router.post("/{kbd_id}/reanalyze-image/{seq}", summary="重新识图单张图片")
+@kbd_router.post("/{kbd_id}/reanalyze-image/{seq}", summary="重新识图单张图片（默认异步提交）")
 async def reanalyze_single_image(request: Request, kbd_id: int, seq: int):
     """从 kbd_image 表读取指定 seq 的原始图片，重新识图。
 
     场景：用户在 admin-ui 图片列表中点击单张图片的刷新按钮，
     仅重新识图该图片，不影响其他图片。
 
-    Args:
-        kbd_id: KBD 条目 ID
-        seq: 图片序号（从 0 开始）
+    P1-8 修复：默认异步提交（202 + job_id），与批量 reanalyze-images 一致，
+    避免单图 ~60s 的 LLM 调用长时间阻塞 HTTP 请求（网关超时风险）。
+    向后兼容：?sync=true 走同步旧路径，直接返回完整结果（供 debug）。
 
-    Returns:
-        {
-            "success": True,
-            "kbd_id": int,
-            "seq": int,
-            "screenshot_type": str,
-            "background": str,
-            "full_text": list[str],
-            "description": str,
-            "desc": str,
-            "message": "识图完成"
-        }
+    Returns（异步）:
+        {"success": True, "kbd_id": int, "seq": int, "job_id": str, "status": "pending",
+         "message": "Vision 单图任务已提交，请通过 GET /reanalyze-images/status 轮询进度"}
     """
     _check_auth(request)
 
@@ -2051,7 +2042,45 @@ async def reanalyze_single_image(request: Request, kbd_id: int, seq: int):
         trace_id=trace_id,
     )
 
-    # 调用 Vision 处理服务
+    # 向后兼容：?sync=true 直接同步返回（供 debug 场景）
+    sync_mode = request.query_params.get("sync", "").lower() == "true"
+    if sync_mode:
+        return await _reanalyze_single_image_sync(kbd_id, seq, trace_id)
+
+    # 异步：提交 Job（复用批量任务的状态机与轮询端点）
+    from app.services.vision_job_manager import get_job_manager
+    from app.services.vision_processor import reanalyze_single_image as do_reanalyze_single
+
+    async def _runner(k_id: int) -> dict[str, Any]:
+        # k_id 仅用于匹配 submit 签名；实际只处理当前 seq
+        return await do_reanalyze_single(k_id, seq, _db_manager.async_session_factory)
+
+    jm = get_job_manager()
+    job_id = await jm.submit(kbd_id, _runner)
+
+    logger.info(
+        event="kbd_reanalyze_single_image_submitted",
+        kbd_id=kbd_id,
+        seq=seq,
+        job_id=job_id,
+        trace_id=trace_id,
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "success": True,
+            "kbd_id": kbd_id,
+            "seq": seq,
+            "job_id": job_id,
+            "status": "pending",
+            "message": "Vision 单图任务已提交，请通过 GET /reanalyze-images/status 轮询进度",
+        },
+    )
+
+
+async def _reanalyze_single_image_sync(kbd_id: int, seq: int, trace_id: str):
+    """旧同步路径（?sync=true 走此分支），保留兼容性。"""
     from app.services.vision_processor import reanalyze_single_image as do_reanalyze_single
 
     try:

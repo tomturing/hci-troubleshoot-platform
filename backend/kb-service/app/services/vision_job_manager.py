@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -46,7 +47,18 @@ class VisionJobManager:
 
         Returns:
             job_id（短 uuid）
+
+        幂等去重（P1-7）：若同一 kbd_id 已有 pending/running 的 job，直接返回其
+        job_id，避免重复点击「重新识图」并发起多个 job 重复烧 LLM 且相互覆盖 images_json。
         """
+        # 1. 清理过期 job（进程内 dict 只增不减 → 内存泄漏防御，P1-14）
+        self._prune_old()
+        # 2. 去重：同一 kbd 已在跑则返回已有 job_id
+        existing = await self.get_by_kbd_id(kbd_id)
+        if existing is not None:
+            logger.info(event="vision_job_dedup", job_id=existing["job_id"], kbd_id=kbd_id)
+            return existing["job_id"]
+
         job_id = uuid.uuid4().hex[:12]
         async with self._lock:
             self._jobs[job_id] = {
@@ -57,6 +69,7 @@ class VisionJobManager:
                 "done": 0,
                 "failed": 0,
                 "error": None,
+                "result": None,
                 "created_at": time.time(),
                 "started_at": None,
                 "finished_at": None,
@@ -65,6 +78,22 @@ class VisionJobManager:
         asyncio.create_task(self._run(job_id, kbd_id, runner))
         logger.info(event="vision_job_submitted", job_id=job_id, kbd_id=kbd_id)
         return job_id
+
+    def _prune_old(self, max_age_s: float = 3600.0) -> None:
+        """清理已结束超过 max_age_s 的 job，防止内存无限增长（P1-14）。
+
+        单线程事件循环下对 dict 的增删是安全的，无需加锁。
+        """
+        now = time.time()
+        to_delete = [
+            jid for jid, j in self._jobs.items()
+            if j["status"] in ("done", "failed")
+            and (now - (j.get("finished_at") or now)) > max_age_s
+        ]
+        for jid in to_delete:
+            self._jobs.pop(jid, None)
+        if to_delete:
+            logger.info(event="vision_job_pruned", count=len(to_delete))
 
     async def _run(self, job_id: str, kbd_id: int, runner) -> None:
         """异步执行 Job（应用并发信号量，更新状态）。"""
@@ -79,6 +108,7 @@ class VisionJobManager:
                     total=result.get("total", 0),
                     done=result.get("done", 0),
                     failed=result.get("failed", 0),
+                    result=result,
                     finished_at=time.time(),
                 )
                 logger.info(
@@ -133,8 +163,18 @@ def get_job_manager() -> VisionJobManager:
     """获取 Job 管理器单例（首次调用时初始化）。"""
     global _job_manager
     if _job_manager is None:
-        # _VISION_CONCURRENCY 默认 1，提高到 3 避免同 kbd 内串行长耗时
-        # 真实并发控制在 vision_processor 内部 Semaphore
+        # max_concurrent 仅控制「同时被调度执行的 kbd job 数」；
+        # 真正的 Vision LLM 并发由 vision_processor._get_vision_semaphore() 全局收敛，
+        # 因此此处无需再叠加限流（避免 job_manager × pipeline × processor 三重信号量放大）。
         _job_manager = VisionJobManager(max_concurrent=10)
         logger.info(event="vision_job_manager_initialized", max_concurrent=10)
+        # 多副本/多 worker 部署警告（P1-10）：进程内存储会导致 /status 轮询跨进程 404。
+        workers = int(os.environ.get("WEB_CONCURRENCY", os.environ.get("KB_SERVICE_WORKERS", "1")))
+        if workers > 1:
+            logger.warning(
+                event="vision_job_manager_multi_worker",
+                workers=workers,
+                message="VisionJobManager 为进程内存储：多 worker/多副本部署下 POST 与 GET /status "
+                        "可能落到不同进程而 404。生产环境需演进到 redis/DB 持久化（dev 已有 redis-0）。",
+            )
     return _job_manager

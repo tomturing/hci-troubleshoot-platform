@@ -18,7 +18,20 @@ Vision 处理服务 - KBD 图片语义化（Vision LLM）
   - Prompt 从 system_prompt 表热加载（admin-ui 修改后立即生效）
   - 图片从 kbd_image 表读取（解耦 data-pipeline 本地文件系统）
   - 单次 LLM 调用，效率最大化
-  - 并发控制：Semaphore 限制同时调用的 Vision LLM 数量
+  - 并发控制：全局共享 Semaphore 限制同时调用的 Vision LLM 数量
+
+P0 死锁根因与修复（重要）：
+  旧实现：VISION 在「持有 DB session / 连接」的协程内，直接 await 一个长达 ~60s 的
+  Vision LLM 同步调用（阻塞事件循环），且多案例串行。后果：
+    1) 长耗时 await 占住 asyncpg 连接不释放，连接池被长期占用；
+    2) 多案例并发时连接池耗尽，后续 DB 操作排队 → 互相等待 → 死锁/超时（300s 后失败）；
+    3) 请求线程长时间挂起，网关 300s 超时。
+  本实现的三处关键修复：
+    A) Asynchronous Request-Reply：POST 立即返回 202 + job_id，识图在后台 task 执行，
+       不阻塞 HTTP 请求（见 vision_job_manager）；
+    B) 释放 DB 连接：先在一个 short-lived session 内「只读」取数据，全部拉入内存后再
+       释放连接，Vision 调用期间「不持有任何 DB 连接」；写回时再开一个 short-lived session；
+    C) 全局共享信号量收敛 LLM 并发（见 _get_vision_semaphore），避免打爆 DashScope QPM。
 """
 
 from __future__ import annotations
@@ -69,6 +82,26 @@ _LLM_VISION_API_KEY = os.environ.get("LLM_VISION_API_KEY") or os.environ.get("LL
 _LLM_VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3.7-plus")
 _LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "30.0"))
 _VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "1536"))
+
+# 全局共享信号量：收敛所有并发 KBD 任务的 Vision LLM 调用总数。
+# P0-6 修复：旧实现每个 kbd 任务各自 new 一个 Semaphore(_VISION_CONCURRENCY)，
+# 叠加 pipeline(settings.VISION_CONCURRENCY=3) × job_manager(max_concurrent=10)，
+# 峰值 LLM 并发≈3×3，会把 DashScope QPM/并发上限打爆。
+# 改为「一处全局信号量」，无论同时跑多少个 kbd / 多少个 job，总 LLM 并发恒定 ≤ 该值。
+# 延迟到事件循环内创建，规避 asyncio 3.10+ 在循环外创建 Semaphore 的 DeprecationWarning。
+_VISION_GLOBAL_SEM: Any = None
+
+
+def _vision_global_concurrency() -> int:
+    # 默认复用 _VISION_CONCURRENCY，单一真相源；可用环境变量 VISION_GLOBAL_CONCURRENCY 覆盖。
+    return int(os.environ.get("VISION_GLOBAL_CONCURRENCY", str(_VISION_CONCURRENCY)))
+
+
+async def _get_vision_semaphore() -> asyncio.Semaphore:
+    global _VISION_GLOBAL_SEM
+    if _VISION_GLOBAL_SEM is None:
+        _VISION_GLOBAL_SEM = asyncio.Semaphore(_vision_global_concurrency())
+    return _VISION_GLOBAL_SEM
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -404,6 +437,7 @@ async def reanalyze_kbd_images(
                 "total": 0,
                 "done": 0,
                 "failed": 0,
+                "success": True,
                 "images_json": [],
                 "message": "该 KBD 无原始图片，无法重算识图",
             }
@@ -421,6 +455,13 @@ async def reanalyze_kbd_images(
     # 2. 构建图片上下文映射
     context_map = _build_context_map_from_html(context_source)
 
+    # 保留 IMPORT 阶段已算出的章节归属（seq → section），避免 VISION 重建时退化统一为 steps_text。
+    section_by_seq = {
+        item.get("seq"): (item.get("section") or "steps_text")
+        for item in (kbd_entry.images_json or [])
+        if item.get("seq") is not None
+    }
+
     # 3. 创建 LLM 客户端
     if not _LLM_VISION_API_KEY:
         raise RuntimeError("VISION_API_KEY 或 API_KEY 未配置，无法调用 Vision LLM")
@@ -433,7 +474,9 @@ async def reanalyze_kbd_images(
     )
 
     # 4. 并发处理所有图片（不占有任何 DB 连接）
-    sem = asyncio.Semaphore(_VISION_CONCURRENCY)
+    # 使用全局共享信号量，统一收敛 LLM 并发（见 _get_vision_semaphore 注释），
+    # 避免「job_manager × pipeline × processor」三重信号量叠加放大打爆 DashScope QPM。
+    sem = await _get_vision_semaphore()
     stats = {"done": 0, "failed": 0}
     images_json: list[dict[str, Any]] = []
     images_json_lock = asyncio.Lock()
@@ -441,6 +484,8 @@ async def reanalyze_kbd_images(
     async def _process_one(image_item: dict[str, Any]) -> None:
         seq = image_item["seq"]
         context = context_map.get(seq, "")
+        # 沿用 IMPORT 阶段算出的章节（而非硬编码 steps_text），保证按章节检索/渲染的准确性
+        section = section_by_seq.get(seq, "steps_text")
 
         async with sem:
             try:
@@ -470,9 +515,6 @@ async def reanalyze_kbd_images(
 
                 desc = _format_desc(screenshot_type, background, full_text, description)
 
-                # 推断图片所属章节（简化：默认 steps_text）
-                section = "steps_text"
-
                 async with images_json_lock:
                     images_json.append({
                         "seq": seq,
@@ -489,6 +531,14 @@ async def reanalyze_kbd_images(
                 )
             except Exception as exc:
                 stats["failed"] += 1
+                # P2-2 修复：失败图片保留占位条目（desc 为空），既不失图、也不误报已完成；
+                # 其 desc 为空会被 _db_vision_status 判为 failed，从而进入重试而非永久丢失。
+                async with images_json_lock:
+                    images_json.append({
+                        "seq": seq,
+                        "section": section,
+                        "desc": "",
+                    })
                 logger.error(
                     event="vision_image_failed",
                     kbd_entry_id=kbd_entry_id,
@@ -542,6 +592,7 @@ async def reanalyze_kbd_images(
                     "total": len(image_items),
                     "done": stats["done"],
                     "failed": stats["failed"],
+                    "success": False,
                     "images_json": images_json,
                     "error": f"数据库更新失败: {retry_err}",
                 }
@@ -559,6 +610,7 @@ async def reanalyze_kbd_images(
         "total": len(image_items),
         "done": stats["done"],
         "failed": stats["failed"],
+        "success": stats["failed"] == 0,
         "images_json": images_json,
     }
 
@@ -642,6 +694,13 @@ async def reanalyze_single_image(
         mime_type = kbd_image.mime_type or "image/png"
         context_source = kbd_entry.content_md or ""
 
+    # 沿用 IMPORT 阶段算出的章节（而非硬编码 steps_text），保证单图刷新后章节不退化
+    old_section = "steps_text"
+    for _it in (kbd_entry.images_json or []):
+        if _it.get("seq") == seq:
+            old_section = _it.get("section") or "steps_text"
+            break
+
     # 2. 构建图片上下文与调用 Vision LLM（不占有任何 DB 连接）
     context_map = _build_context_map_from_html(context_source)
     context = context_map.get(seq, "")
@@ -695,7 +754,7 @@ async def reanalyze_single_image(
             old_images = list(kbd_entry.images_json or [])
             # 更新 images_json（保留其他图片的描述，仅更新当前 seq）
             images_json = [dict(item) for item in (kbd_entry.images_json or [])]
-            section = "steps_text"
+            section = old_section
 
             found = False
             for item in images_json:
@@ -732,7 +791,7 @@ async def reanalyze_single_image(
                 kbd_entry = entry_result.scalar_one()
                 old_images = list(kbd_entry.images_json or [])
                 images_json = [dict(item) for item in (kbd_entry.images_json or [])]
-                section = "steps_text"
+                section = old_section
 
                 found = False
                 for item in images_json:

@@ -4,7 +4,7 @@ data-pipeline/kbd/pipeline.py — KBD 知识生产管道编排（API 调用版�
 完整流水线分四个 Stage：
 
   Stage 1: fetch      抓取 API + 下载图片 → 文件存储（cache/{support_id}/）
-  Stage 2: vision     图片语义化（Vision LLM）→ img_N.desc.txt
+  Stage 2: vision     图片语义化（Vision LLM）→ 写 kbd_entry.images_json.desc
   Stage 3: import     HTML→MD 转换 + 调用 API 写入 kbd_entry（status=draft）
   Stage 4: classify   AI 分类（调用 kb-service API）→ kbd_entry.ai_category_id
 
@@ -45,7 +45,7 @@ import httpx
 from .classifier import classify_batch
 from .config import settings
 from .fetcher import _is_fetched, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
-from .image_proc import get_failed_vision_ids, process_images_batch
+from .image_proc import process_images_batch
 from .importer import import_batch
 from .progress import (
     finish_progress,
@@ -196,7 +196,7 @@ async def run_pipeline(
     if failed_only:
         logger.info("Failed-only 模式：筛选失败案例")
         failed_fetch = get_failed_fetch_ids(kbd_ids)
-        failed_vision = await get_failed_vision_ids(kbd_ids, pool)
+        failed_vision = await _db_failed_vision_ids(kbd_ids, pool)
         failed_ids = list(set(failed_fetch + failed_vision))
         if not failed_ids:
             logger.info("没有失败的案例需要处理")
@@ -316,8 +316,8 @@ async def _get_import_ready_ids(kbd_ids: list[str], pool: asyncpg.Pool) -> list[
     获取可导入的案例 ID 列表。
 
     新架构：仅检查 FETCH 完成即可入库；图片随 IMPORT 原子写入 kbd_image，
-    Vision 在 IMPORT 之后跑（读 kbd_image，写 images_json）。解除了旧架构下
-    "IMPORT 需要 .desc.txt（VISION 旧产物）" 的循环依赖。
+    Vision 在 IMPORT 之后跑（读 kbd_image，写 images_json.desc）。解除了旧架构下
+    "IMPORT 需要 .desc.txt（VISION 旧产物）" 的循环依赖（.desc.txt 机制已彻底移除）。
     """
     ready_ids: list[str] = []
     for support_id in kbd_ids:
@@ -345,6 +345,48 @@ async def _get_vision_ready_ids(kbd_ids: list[str], pool: asyncpg.Pool) -> list[
         kbd_ids,
     )
     return [r["support_id"] for r in rows]
+
+
+
+async def _db_failed_vision_ids(
+    kbd_ids: list[str],
+    pool: asyncpg.Pool | None = None,
+) -> list[str]:
+    """从 DB 筛选 VISION 失败的案例（P1-6 跟进：与 _db_vision_status 同源判据，避免回滚到 image_proc）。
+
+    判据：kbd_entry 存在且 images_json 中存在 desc 为空的 seq（与 _db_vision_status 的 'failed'
+    判据一致），且 kbd_image 表非空（有图但未识别完成）。
+
+    Args:
+        kbd_ids: support_id 列表
+        pool: asyncpg 连接池（不传则按 settings.DATABASE_URL 自建）
+    """
+    if not kbd_ids:
+        return []
+    close_pool = False
+    if pool is None:
+        pool = await asyncpg.create_pool(
+            dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        )
+        close_pool = True
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT e.support_id
+            FROM kbd_entry e
+            WHERE e.support_id = ANY($1)
+              AND EXISTS (SELECT 1 FROM kbd_image i WHERE i.kbd_entry_id = e.id)
+              AND EXISTS (
+                  SELECT 1 FROM jsonb_array_elements(e.images_json) AS img
+                  WHERE (img->>'desc') IS NULL OR length(btrim(img->>'desc')) = 0
+              )
+            """,
+            kbd_ids,
+        )
+        return [r["support_id"] for r in rows]
+    finally:
+        if close_pool:
+            await pool.close()
 
 
 async def _db_vision_status(pool: asyncpg.Pool, support_id: str) -> str:

@@ -1,25 +1,18 @@
 """
-data-pipeline/kbd/converter.py — 文件缓存 → 结构化 content_md
+data-pipeline/kbd/converter.py — 文件缓存 → 结构化字段
 
 功能：
   1. 从 cache/{support_id}/raw.json 读取原始 API 响应（rows 字段）
   2. 解析 rows.content HTML，提取全部 9 个 section 的内容
-  3. 从 cache/{support_id}/img_N.desc.txt 读取 Vision 描述
-  4. 将 img 标签替换为视觉描述块，转换为 Markdown
-  5. 组装单个 content_md 字符串
+  3. 按图片在 HTML 中的出现顺序建立全局 seq 映射（跨 section 统一编号）
+  4. 将章节内容语义化（仅取语义文本，丢弃装饰样式），图片位置以 ![img:N] 占位符标记
+  5. 组装结构化字典（8 大章节字段 + images_json + 图片二进制），交由 importer 入库
   6. 必填字段（问题描述/有效排查步骤/解决方案）缺失 → 写 abnormal.json，返回 None
 
-Markdown 格式约定：
-  ## 问题描述
-  ...
-  > **【截图说明】**：{vision_desc}
-  ...
-  （其余 section 相同格式）
-
-Vision 描述文件查找规则：
-  - 按图片在 HTML 中的出现顺序编号：img_0, img_1, ...
-  - 跨所有 section 统一编号
-  - 描述文件：cache/{support_id}/img_N.desc.txt
+设计原则（Content–Presentation Separation）：
+  - pipeline 只做语义提取，content_md 不在此生成，交由后端 rebuild_content_md 统一渲染
+  - 图片视觉描述（desc）初始留空，由 VISION 阶段（reanalyze）填充到 images_json
+  - 不再依赖本地 img_N.desc.txt 文件（该 legacy 机制已于 2026-07 彻底移除）
 """
 from __future__ import annotations
 
@@ -94,57 +87,22 @@ _ALIAS_TO_FIELD: dict[str, str] = {
 }
 
 
-# ─── FULL_TEXT 截断策略 ───────────────────────────────────────────────────────
+# ─── VISION 描述（desc）来源 ─────────────────────────────────────────────────
 # 已废弃：FULL_TEXT 截断已不需要。Vision LLM 后端直接存储完整 desc，由 frontend 按需渲染。
-# 新架构：data-pipeline 不再写 images_json.desc，留空由 VISION 阶段（reanalyze）填充。
-# 保留 _load_vision_desc / _build_image_seq_map 仅供旧路径（convert_kbd / convert_kbd_with_meta）使用。
+# 新架构：data-pipeline 不再写 images_json.desc，也不再从本地 img_N.desc.txt 读取；
+#   images_json.desc 初始留空，由 VISION 阶段（reanalyze）填充。
+# legacy 旧路径 convert_kbd / convert_kbd_with_meta / _load_vision_desc 已彻底移除（2026-07）。
 
 
 # ─── HTML → Markdown 转换器 ──────────────────────────────────────────────────
 
-def _desc_to_screenshot_block(desc: str) -> str:
+def _build_image_seq_map(content_html: str) -> dict[str, dict]:
     """
-    将 desc.txt 内容（v1 或 v2 格式）转换为 content_md 中的截图块。
-
-    v2 格式（含 BACKGROUND:/TYPE:/FULL_TEXT:/KEY:/TIPS: 行）：
-      每行独立成一个 "> {line}" 行，整体以 "> **【截图说明】**" 为首行。
-
-    v1 格式（旧版 0-4 字段）：
-      兼容旧格式，首行拼接在 "【截图说明】**：" 后，后续行直接追加。
-
-    Returns:
-        content_md 片段，头尾各有空行分隔。
-    """
-    stripped = desc.strip()
-    if not stripped:
-        return ""
-
-    lines = stripped.split("\n")
-    # 检测 v2 格式：第一行以 BACKGROUND: 开头
-    if lines[0].startswith("BACKGROUND:") or lines[0].startswith("TYPE:"):
-        # v2：每行独立 ">" 行
-        block_lines = ["> **【截图说明】**"]
-        for line in lines:
-            # 空行处理
-            block_lines.append(f"> {line}" if line.strip() else ">")
-        return "\n\n" + "\n".join(block_lines) + "\n\n"
-    else:
-        # v1 兼容：原有行内拼接格式
-        return f"\n\n> **【截图说明】**：{stripped}\n\n"
-
-
-def _load_vision_desc(support_id: str, seq: int) -> str:
-    """读取 img_{seq}.desc.txt，不存在或为空返回空字符串"""
-    desc_path = settings.KBD_CACHE_DIR / support_id / f"img_{seq}.desc.txt"
-    if desc_path.exists():
-        return desc_path.read_text(encoding="utf-8").strip()
-    return ""
-
-
-def _build_image_seq_map(support_id: str, content_html: str) -> dict[str, dict]:
-    """
-    按图片在 content HTML 中的出现顺序，建立 {绝对URL: {"seq": int, "desc": str}} 映射。
+    按图片在 content HTML 中的出现顺序，建立 {绝对URL: {"seq": int}} 映射。
     全 section 统一编号（跨 section），从 0 开始递增。
+
+    注意：仅生成 seq（图片序号），不再读取本地 .desc.txt（legacy 已移除）。
+    desc 初始留空，由 VISION 阶段（reanalyze）填充到 images_json。
     """
     soup = BeautifulSoup(content_html, "lxml")
     img_map: dict[str, dict] = {}
@@ -155,109 +113,9 @@ def _build_image_seq_map(support_id: str, content_html: str) -> dict[str, dict]:
             continue
         abs_url = urljoin(settings.SANGFOR_API_BASE, src)
         if abs_url not in img_map:
-            desc = _load_vision_desc(support_id, seq)
-            img_map[abs_url] = {"seq": seq, "desc": desc}
+            img_map[abs_url] = {"seq": seq}
             seq += 1
     return img_map
-
-
-def _normalize_screenshot_blocks(md: str) -> str:
-    """
-    规范化 content_md 中截图块的前导缩进。
-
-    问题来源：markdownify 在将嵌套列表内的 <span data-vision-desc> 转为 blockquote 时，
-    会按照 CommonMark 规范自动添加与列表层级对应的前导空格缩进，例如：
-
-        - 判断依据：...
-
-              > **【截图说明】**
-              > TYPE: 其他截图
-              > BACKGROUND: 其他
-
-    前端 parseContentMd 期望截图块始终顶格（不带前导空格），因此需要规范化。
-
-    策略：逐行扫描，发现前导缩进的截图块起始行（lstrip 后以 '> **【截图说明】**' 开头）
-    时进入截图块模式，连续将所有以 '>' 开头（strip 后）的行去掉前导缩进，
-    直到遇到不以 '>' 开头的非空行为止。
-
-    仅针对截图块行操作，不影响其他正常 blockquote 内容。
-    """
-    lines = md.split("\n")
-    result: list[str] = []
-    in_screenshot = False
-
-    for line in lines:
-        stripped = line.lstrip()
-        if stripped.startswith("> **【截图说明】**"):
-            # 截图块起始：无论有无前导缩进，统一去掉
-            in_screenshot = True
-            result.append(stripped)
-        elif in_screenshot and stripped.startswith(">"):
-            # 截图块内的后续行：去掉前导缩进
-            result.append(stripped)
-        else:
-            # 截图块结束（遇到非 '>' 行），或普通行
-            in_screenshot = False
-            result.append(line)
-
-    return "\n".join(result)
-
-
-def _html_to_md(html: str, image_map: dict[str, dict]) -> str:
-    """
-    将 section 内容 HTML 转为 Markdown（旧路径兼容入口，P0-5 收敛后）。
-
-    实现：复用 `_html_to_semantic_text`（唯一权威提取器）+ 占位符后处理。
-    不再使用 markdownify（根除云端 #537 嵌套列表缩进污染）。
-
-    行为契约（与 #537 + 原 markdownify 实现保持一致）：
-      - img 有 desc → `> **【截图说明】**\\n> ...` 截图块，顶格
-      - img 无 desc（image_map 中无对应条目）→ `[图片]` 占位
-      - 段落/列表/表格语义归一化（不再保留 markdownify 引入的样式）
-
-    Args:
-        html: section 内容 HTML
-        image_map: `{url: {"seq": int, "desc": str}}` 图片视觉描述映射
-
-    Returns:
-        Markdown 字符串（兼容旧路径 / convert_kbd 入口）
-    """
-    if not html or not html.strip():
-        return ""
-
-    # 0. 预处理：image_map 中无条目的 img → 替换为 `[图片]` 文本节点
-    #    保证语义提取器不为空 image_map 时丢弃图片（行为契约：必须有占位）
-    soup = BeautifulSoup(html, "lxml")
-    for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or ""
-        if src.startswith("data:"):
-            continue
-        abs_src = urljoin(settings.SANGFOR_API_BASE, src) if src else ""
-        if not abs_src or abs_src not in image_map:
-            img.replace_with(soup.new_string("[图片]"))
-
-    # 1. 复用新提取器（语义文本 + ![img:N] 占位符）
-    semantic_text = _html_to_semantic_text(str(soup), image_map)
-
-    # 2. 占位符后处理：img 有 desc → 截图块；无 desc → [图片] 占位（防御性兜底）
-    desc_lookup: dict[int, str] = {
-        entry["seq"]: entry.get("desc", "")
-        for entry in image_map.values()
-    }
-
-    def _expand_img(m: re.Match) -> str:
-        seq = int(m.group(1))
-        desc = desc_lookup.get(seq, "")
-        if desc:
-            return "\n\n" + _desc_to_screenshot_block(desc).strip() + "\n\n"
-        return "\n\n[图片]\n\n"
-
-    md = re.sub(r"!\[img:(\d+)\]", _expand_img, semantic_text)
-    # 3. 规范化截图块顶格（云端 #537 修复，双保险兼容旧路径）
-    md = _normalize_screenshot_blocks(md)
-    # 4. 折叠多余空行
-    md = re.sub(r"\n{3,}", "\n\n", md)
-    return md.strip()
 
 
 # ─── Section 解析 ────────────────────────────────────────────────────────────
@@ -375,98 +233,6 @@ def _is_empty_content(html: str) -> bool:
         return False
     # 有图片也不视为空（图片本身是内容）
     return not soup.find("img")
-
-
-def convert_kbd(support_id: str) -> str | None:
-    """
-    从文件缓存读取案例，转换为结构化 content_md 字符串。
-
-    Returns:
-        content_md 字符串，或 None（缺少必填 section 时）
-
-    Side-effects:
-        缺少必填 section → 写 cache/{support_id}/abnormal.json
-    """
-    raw_path = settings.KBD_CACHE_DIR / support_id / "raw.json"
-    if not raw_path.exists():
-        logger.warning("案例 %s raw.json 不存在，跳过转换", support_id)
-        return None
-
-    rows: dict[str, Any] = json.loads(raw_path.read_text(encoding="utf-8"))
-    title: str = rows.get("name") or rows.get("title") or f"案例 {support_id}"
-    content_html: str = rows.get("content") or ""
-
-    if not content_html.strip():
-        logger.warning("案例 %s content 为空，跳过转换", support_id)
-        _write_abnormal(support_id, title, ["*全部（content 为空）"])
-        return None
-
-    # 建立图片序号→Vision描述映射（跨 section 统一编号）
-    image_map = _build_image_seq_map(support_id, content_html)
-
-    # 解析 9 个 section
-    sections = _parse_sections(content_html)
-
-    # 必填验证（使用 _SECTIONS 定义，避免重复计算）
-    missing = [
-        md_title
-        for _, md_title, required in _SECTIONS
-        if required and _is_empty_content(sections.get(md_title, ""))
-    ]
-
-    if missing:
-        _write_abnormal(support_id, title, missing)
-        return None
-
-    # 组装 content_md
-    parts: list[str] = []
-    for _, md_title, _ in _SECTIONS:
-        section_html = sections.get(md_title, "")
-        if _is_empty_content(section_html):
-            continue  # 空 section 不写入
-        section_md = _html_to_md(section_html, image_map)
-        if section_md.strip():
-            parts.append(f"## {md_title}\n\n{section_md}")
-
-    if not parts:
-        logger.warning("案例 %s 所有 section 转换后均为空", support_id)
-        return None
-
-    content_md = "\n\n".join(parts)
-    return content_md
-
-
-def convert_kbd_with_meta(support_id: str) -> dict[str, Any] | None:
-    """
-    转换案例，同时返回元数据（供 importer.py 使用）。
-
-    Returns:
-        {
-          "support_id": str,
-          "title": str,
-          "content_md": str,
-          "metadata": dict,
-        }
-        或 None（缺少必填 section 时）
-    """
-    raw_path = settings.KBD_CACHE_DIR / support_id / "raw.json"
-    if not raw_path.exists():
-        return None
-
-    rows: dict[str, Any] = json.loads(raw_path.read_text(encoding="utf-8"))
-    title: str = rows.get("name") or rows.get("title") or f"案例 {support_id}"
-
-    content_md = convert_kbd(support_id)
-    if content_md is None:
-        return None
-
-    from .fetcher import _extract_metadata
-    return {
-        "support_id": support_id,
-        "title": title,
-        "content_md": content_md,
-        "metadata": _extract_metadata(rows),
-    }
 
 
 # Markdown 章节标题 → KbdIngestRequest 字段名映射
@@ -694,8 +460,8 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
         _write_abnormal(support_id, title, ["*全部（content 为空）"])
         return None
 
-    # 建立图片序号→{seq, desc}映射（跨 section 统一编号，从 0 开始）
-    image_map = _build_image_seq_map(support_id, content_html)
+    # 建立图片序号→{seq}映射（跨 section 统一编号，从 0 开始；desc 由 VISION 阶段填充）
+    image_map = _build_image_seq_map(content_html)
 
     # 解析 9 个 section 的 HTML
     sections = _parse_sections(content_html)

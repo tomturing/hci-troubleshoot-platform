@@ -515,11 +515,11 @@ __schema_version__ = "2.1.0"
 
 | 规则 | 说明 |
 |------|------|
-| **只取语义，不取样式** | `_html_to_md` and `_parse_sections` 只提取文字语义内容和图片，原始 HTML 的 `style`、`class`、`font`、`color` 等样式属性一律丢弃 |
+| **只取语义，不取样式** | `_html_to_semantic_text` 和 `_parse_sections` 只提取文字语义内容和图片占位符（`![img:N]`），原始 HTML 的 `style`、`class`、`font`、`color` 等样式属性一律丢弃 |
 | **输出格式由我们定义** | content_md 的 schema（章节结构、截图块格式、占位符格式）由本项目的 `converter.py` 定义并保持稳定，不受源 HTML 格式变化影响 |
-| **截图块统一封装** | 图片内容以 `> **【截图说明】**` 块输出，字段结构（BACKGROUND/TYPE/FULL_TEXT/KEY/TIPS/DESCRIPTION）固定；前端解析并渲染，不依赖原始图片 URL 或 alt 属性的样式 |
+| **截图块统一封装** | content_md 中图片以 `> **【截图说明】**` 块渲染（由后端 `rebuild_content_md` 展开 `![img:N]` 占位符得到），字段结构（BACKGROUND/TYPE/FULL_TEXT/KEY/TIPS/DESCRIPTION）固定；前端解析并渲染，不依赖原始图片 URL 或 alt 属性 |
 | **前端是样式唯一来源** | 所有展示细节（展开/折叠、缩进、颜色、图标、字体）只在前端实现，data-pipeline 不输出任何影响呈现的 HTML/CSS |
-| **管道规范化** | data-pipeline 输出的 content_md 必须满足：截图块顶格（无前导缩进）、多余空行折叠（最多两个连续空行）、UTF-8 编码。`_normalize_screenshot_blocks` 是确保顶格的最后一道防线 |
+| **管道规范化** | content_md 由后端 `rebuild_content_md()` 统一渲染（data-pipeline 只输出含 `![img:N]` 占位符的语义文本，不生成 content_md），保证截图块顶格、空行折叠等格式由单一权威函数控制，不受源 HTML 格式变化影响 |
 
 ### 9.3 违规示例与正确做法
 
@@ -532,7 +532,7 @@ def wrong():
 # ✅ 正确：只提取纯文本语义内容
 def correct():
     return soup.get_text(strip=True)   # 剥离所有标签，只取文字
-    return _desc_to_screenshot_block(desc)  # 图片内容用我们的规范块封装
+    return f"![img:{seq}]"  # 图片以占位符输出，视觉描述存入 images_json.desc，由后端渲染截图块
 ```
 
 ### 9.4 扩展新字段时的检查清单
@@ -542,7 +542,7 @@ def correct():
 - [ ] 新字段速度或语义是「内容」还是「样式」？如果是样式，丢弃它
 - [ ] 输出格式是否遵循现有 schema（Markdown 段落、截图块、占位符）？
 - [ ] 前端是否能在不修改解析逻辑的情况下渲染新内容？
-- [ ] 输出经过 `_normalize_screenshot_blocks` 和空行折叠处理了吗？
+- [ ] 输出是否仅含语义文本 + `![img:N]` 占位符（content_md 由后端 `rebuild_content_md` 统一渲染）？
 - [ ] 新字段有对应的单元测试验证输出格式吗？
 
 ### 9.5 设计背景
@@ -550,5 +550,5 @@ def correct():
 此原则来自 2026-07 KBD 27123 案例的问题复盘：
 
 - **根因**：`markdownify` 在将嵌套列表内的截图 span 转为 blockquote 时，携带了 CommonMark 规范的列表缩进（属于样式信息），污染了 content_md，导致前端解析失败
-- **修复**：在 data-pipeline 输出层新增 `_normalize_screenshot_blocks` 去掉前导缩进，确保截图块格式始终符合我们的 schema
-- **结论**：data-pipeline 必须对输出做**格式规范化**，不能将任何来自 markdownify 或源 HTML 的"意外格式"透传给前端
+- **修复**：data-pipeline 改为只取语义文本（新增 `_html_to_semantic_text` 作为唯一权威提取器），content_md 不再由 pipeline 生成，改由后端 `rebuild_content_md()` 统一渲染——截图块格式由单一权威函数保证，彻底根除 markdownify 缩进污染
+- **结论**：data-pipeline 必须对输出做**格式规范化**（只输出语义文本 + `![img:N]` 占位符），任何来自 markdownify 或源 HTML 的"意外格式"都不应透传到 content_md

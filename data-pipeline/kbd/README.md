@@ -216,17 +216,8 @@ uv run python -m data-pipeline.kbd.run vision --excel --failed-only
 ```
 
 **输出：**
-- `cache/{support_id}/img_N.desc.txt` - Vision LLM 输出的语义描述
-
-**desc.txt 格式（v3）：**
-```
-TYPE: 终端截图
-BACKGROUND: 黑色
-FULL_TEXT:
-- （无文字）
-DESCRIPTION:
-（无描述）
-```
+- 不再写入本地文件。Vision 描述（desc）由后端 `reanalyze-images` 异步填充到
+  `kbd_entry.images_json[].desc`；原始图片二进制已随 IMPORT 原子写入 `kbd_image` 表。
 
 ### import 子命令
 
@@ -315,8 +306,9 @@ uv run python -m data-pipeline.kbd.run config
        │ vision (Stage 2)
        ↓
 ┌─────────────┐
-│ img_N.desc  │
-│ .txt        │
+│ PostgreSQL  │
+│ images_json │
+│ .desc (DB)  │
 └──────┬──────┘
        │ import (Stage 3)
        ↓
@@ -365,7 +357,7 @@ uv run python -m data-pipeline.kbd.run config
 4. 解析输出为结构化字段
 
 **输出：**
-- `cache/{support_id}/img_N.desc.txt` - 语义描述
+- 不再写入本地文件；描述由后端 reanalyze 填充到 `kbd_entry.images_json[].desc`
 
 **字段说明：**
 
@@ -380,14 +372,14 @@ uv run python -m data-pipeline.kbd.run config
 
 **输入：**
 - `cache/{support_id}/raw.json`
-- `cache/{support_id}/img_N.desc.txt`
+- 图片二进制已随 IMPORT 原子写入 `kbd_image` 表（由 `upload-images` 或 IMPORT 阶段上传）
 
 **处理：**
 1. 解析 raw.json 提取 8 大章节
-2. 读取 desc.txt 构建 `images_json`
-3. 生成 `content_md`（Markdown 聚合）
-4. 生成 `content_raw`（去噪纯文本）
-5. 调用 kb-service API 入库
+2. 建立图片全局序号映射，`images_json` 中 desc 初始留空
+3. 生成结构化章节字段（含 `![img:N]` 占位符）
+4. `content_md` 不在此生成，交由后端 `rebuild_content_md()` 统一渲染（样式高一致）
+5. 调用 kb-service API 入库（同事务写 kbd_entry + kbd_image）
 
 **输出：**
 - `kbd_entry` 表记录
@@ -690,7 +682,6 @@ data-pipeline/kbd/
 │   ├── 26890/               # 案例 ID
 │   │   ├── raw.json         # 原始 API 响应
 │   │   ├── img_0.png        # 图片文件
-│   │   ├── img_0.desc.txt   # Vision 输出
 │   │   └── 26890.lock       # 并发锁
 │   └── ...
 ├── logs/                     # 日志目录
