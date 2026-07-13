@@ -418,8 +418,12 @@ async def _db_vision_status(pool: asyncpg.Pool, support_id: str) -> str:
         return "done"
     if not images_json:
         return "failed"
-    incomplete = [item for item in images_json if not (item.get("desc") or "").strip()]
-    return "failed" if incomplete else "done"
+    # 兼容旧格式：images_json 可能含非 dict 元素（list[str] 等遗留数据）。
+    # 非 dict 元素计为"未完成"，避免 AttributeError 并触发重新识图/入库。
+    dict_items = [item for item in images_json if isinstance(item, dict)]
+    stale_items = [item for item in images_json if not isinstance(item, dict)]
+    incomplete = [item for item in dict_items if not (item.get("desc") or "").strip()]
+    return "failed" if (incomplete or stale_items) else "done"
 
 
 async def run_from_excel(
