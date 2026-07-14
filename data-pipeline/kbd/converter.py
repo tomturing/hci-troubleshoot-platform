@@ -549,6 +549,8 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
         # 8 大章节字段（含 ![img:N] 占位符，语义归一化文本）
         **structured_fields,
         # 结构化工具步骤（空列表，需 admin 后续填充）
+        "steps_json": [],
+        # 关键信号（空列表，需 extract-signals 后续填充）
         "signals_json": [],
         # 图片视觉描述（结构化，独立存储）
         "images_json": images_json,
