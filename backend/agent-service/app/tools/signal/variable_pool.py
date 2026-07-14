@@ -29,10 +29,10 @@ class VariablePool:
     - FrontendSignal 作为生产者，执行后将变量写入变量池
     - BackendSignal 作为消费者，执行前从变量池读取变量渲染模板
 
-    示例流程：
-    1. FrontendSignal 执行 → 提取 host="node-001" → 写入变量池
-    2. BackendSignal(target.scope="{{HOST}}") → 变量池渲染 → target.scope="node-001"
-    """
+        示例流程：
+        1. FrontendSignal 执行 → 提取 HOST="node-001" → 写入变量池
+        2. BackendSignal(target.scope="{{HOST}}") → 变量池渲染 → target.scope="node-001"
+        """
 
     def __init__(self, conversation_id: str):
         """
@@ -49,7 +49,7 @@ class VariablePool:
         注册变量到变量池
 
         Args:
-            key: 变量名（如 "host", "vm", "end"）
+            key: 变量名（ADR-2：全大写，如 "HOST", "VM", "END"）
             value: 变量值
         """
         self._variables[key] = value
@@ -70,11 +70,11 @@ class VariablePool:
         流程：
         1. QKV 执行完成，返回 QKVResult
         2. 提取 values 中的 host, vm, end, target 等字段
-        3. 写入变量池
+        3. 键名归一为全大写后写入变量池（ADR-2：占位符必须 {{大写}}）
 
         示例：
-        - result.values[0]["host"] = "node-001" → 变量池["host"] = "node-001"
-        - result.values[0]["end"] = "2026-07-09 10:00:00" → 变量池["end"] = "..."
+        - result.values[0]["host"] = "node-001" → 变量池["HOST"] = "node-001"
+        - result.values[0]["end"] = "2026-07-09 10:00:00" → 变量池["END"] = "..."
         """
         if not result.success or not result.values:
             logger.warning(
@@ -87,7 +87,7 @@ class VariablePool:
         # 取第一条记录的关键字段
         first_value = result.values[0]
 
-        # 定义需要提取的变量列表
+        # 定义需要提取的变量列表（注册时统一转全大写，对齐 ADR-2 占位符 {{VAR}}）
         variable_keys = [
             "host",
             "vm",
@@ -103,7 +103,7 @@ class VariablePool:
         for key in variable_keys:
             value = first_value.get(key)
             if value and str(value).strip():
-                self.register(key, value)
+                self.register(key.upper(), value)
 
         logger.info(
             "variables_registered_from_frontend",
@@ -127,37 +127,37 @@ class VariablePool:
         """
         渲染模板字符串中的占位符
 
-        ADR-2：占位符统一为 {{VAR}}（全大写）；同时向后兼容旧式 ${VAR} 写法。
+        ADR-2（强制）：占位符统一为 {{VAR}}（全大写双花括号）。旧式 ${VAR} / {VAR}
+        不被识别，保持原样不渲染——以此强制信号模板遵循 {{大写}} 规范，避免小写/
+        单花括号占位符被静默忽略导致变量未注入。占位符命名合法性（全大写）的强制
+        校验在信号抽取期由 `validate_placeholder_case` 完成（接入点：extract_signals）。
 
         Args:
-            template_value: 包含 {{VARIABLE}} 或 ${VARIABLE} 占位符的字符串
+            template_value: 包含 {{VARIABLE}} 占位符（全大写）的字符串
 
         Returns:
             渲染后的字符串（未注册的占位符保持原样）
 
         示例：
-        - "{{HOST}}" / "${host}" → "node-001"
-        - "prefix-{{HOST}}-suffix" / "prefix-${host}-suffix" → "prefix-node-001-suffix"
+        - "{{HOST}}" → "node-001"
+        - "prefix-{{HOST}}-suffix" → "prefix-node-001-suffix"
         - "plain-text" → "plain-text"
+        - "${host}" / "{host}" → 保持原样（不被识别为占位符）
         """
         if not isinstance(template_value, str):
             return template_value
 
-        # 纯占位符（{{VARIABLE}} 或 ${VARIABLE}）
-        if len(template_value) >= 4:
-            if template_value.startswith("{{") and template_value.endswith("}}"):
-                var_name = template_value[2:-2].strip()
-                return self._variables.get(var_name, template_value)
-            if template_value.startswith("${") and template_value.endswith("}"):
-                var_name = template_value[2:-1].strip()
-                return self._variables.get(var_name, template_value)
+        # 纯占位符 {{VARIABLE}}
+        if len(template_value) >= 4 and template_value.startswith("{{") and template_value.endswith("}}"):
+            var_name = template_value[2:-2].strip()
+            return self._variables.get(var_name, template_value)
 
-        # 否则进行全局替换（同时支持 {{VAR}} 与 ${VAR}）
+        # 全局替换（仅认 {{VAR}} 全大写双花括号；${VAR} / {VAR} 旧式不渲染，强制 ADR-2）
         import re
-        pattern = r"\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}|\$\{([A-Za-z][A-Za-z0-9_.]*)\}"
+        pattern = r"\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}"
 
         def replace(match):
-            var_name = match.group(1) or match.group(2)
+            var_name = match.group(1)
             return str(self._variables.get(var_name, match.group(0)))
 
         return re.sub(pattern, replace, template_value)

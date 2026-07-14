@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Edit, Delete, FullScreen } from '@element-plus/icons-vue'
 
@@ -431,7 +432,11 @@ async function handleDelete(row: ToolDefinition) {
   }).catch(() => {})
 }
 
+const route = useRoute()
 onMounted(() => {
+  // 支持从关键信号面板带 ?q=<采集器> 跳入并预填搜索（工具管理页自定义）
+  const q = route.query.q
+  if (typeof q === 'string' && q) searchQuery.value = q
   fetchTools()
 })
 </script>

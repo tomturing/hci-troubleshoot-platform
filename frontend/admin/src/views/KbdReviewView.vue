@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { FullScreen, Refresh } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
@@ -36,6 +37,24 @@ interface KbdEntry {
   created_at: string
   updated_at: string
   ai_category_label?: string | null
+  signals_json?: KeySignal[]   // 关键信号集合（producer/consumer，占位符 {{VAR}} 大写）
+}
+
+// 关键信号（signals_json）：producer（QKV，写变量池）/ consumer（QFK，读变量池+判定）
+interface KeySignal {
+  signal_category: 'frontend' | 'backend'
+  signal_type?: string
+  query?: string               // 前端：alert / task / dialog
+  keyword?: string
+  description?: string | null
+  acquirer?: string            // qkv.alert / qkv.task / qkv.dialog / qfk.log_keyword / ...
+  acquirer_args?: Record<string, any>
+  target?: { scope?: string; resource?: string; path?: string }
+  produces?: { name: string; type?: string; path?: string }[]
+  requires?: string[]
+  expected?: boolean | null
+  matcher?: Record<string, any>
+  [key: string]: any
 }
 
 // 图片描述项（images_json 数组元素）
@@ -439,17 +458,98 @@ async function handleReanalyzeSingleImage(entry: KbdEntry, seq: number) {
   }
 }
 
-function openDetailDialog(entry: KbdEntry) {
+async function openDetailDialog(entry: KbdEntry) {
+  detailFullscreen.value = false
+  detailDialogVisible.value = true
+  editingContent.value = false
+  cancelEditSignal()
+  // 拉取完整详情（确保含 signals_json）
+  try {
+    const resp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
+    if (resp.ok) {
+      const fresh = await resp.json()
+      detailEntry.value = fresh
+      reviewNote.value = fresh.review_note || ''
+      editableCategoryId.value = fresh.category_id || fresh.ai_category_id || ''
+      inlineContent.value = fresh.content_md || ''
+      parsedSegments.value = parseContentMd(fresh.content_md || '')
+      parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
+      associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
+      return
+    }
+  } catch {
+    // 回退到列表项
+  }
   detailEntry.value = entry
   reviewNote.value = entry.review_note || ''
   editableCategoryId.value = entry.category_id || entry.ai_category_id || ''
-  editingContent.value = false
   inlineContent.value = entry.content_md || ''
   parsedSegments.value = parseContentMd(entry.content_md || '')
   parsedImagesJson.value = parseImagesJson(entry.images_json || [])
   associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
-  detailFullscreen.value = false
-  detailDialogVisible.value = true
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 关键信号面板（signals_json）：按角色分组渲染 + 内联编辑（PATCH 回写）
+// ──────────────────────────────────────────────────────────────────────────────
+const producerSignals = computed(() =>
+  (detailEntry.value?.signals_json || [])
+    .map((s, i) => ({ sig: s, origIdx: i }))
+    .filter((x) => x.sig && x.sig.signal_category === 'frontend'),
+)
+const consumerSignals = computed(() =>
+  (detailEntry.value?.signals_json || [])
+    .map((s, i) => ({ sig: s, origIdx: i }))
+    .filter((x) => x.sig && x.sig.signal_category === 'backend'),
+)
+
+const editingSignalIndex = ref<number | null>(null)
+const signalEditDraft = ref<Record<string, any>>({})
+const signalSaveLoading = ref(false)
+
+function startEditSignal(origIdx: number) {
+  const sig = (detailEntry.value?.signals_json || [])[origIdx]
+  if (!sig) return
+  editingSignalIndex.value = origIdx
+  const draft = JSON.parse(JSON.stringify(sig))
+  if (!draft.target) draft.target = {}
+  signalEditDraft.value = draft
+}
+
+function cancelEditSignal() {
+  editingSignalIndex.value = null
+  signalEditDraft.value = {}
+}
+
+async function saveSignalEdit() {
+  if (editingSignalIndex.value === null || !detailEntry.value) return
+  signalSaveLoading.value = true
+  try {
+    const list = JSON.parse(JSON.stringify(detailEntry.value.signals_json || []))
+    list[editingSignalIndex.value] = signalEditDraft.value
+    const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({ signals_json: list }),
+    })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    detailEntry.value.signals_json = list
+    const idx = entries.value.findIndex((e) => e.id === detailEntry.value!.id)
+    if (idx !== -1) entries.value[idx].signals_json = list
+    ElMessage.success('关键信号已保存')
+    cancelEditSignal()
+  } catch {
+    ElMessage.error('保存失败，请重试')
+  } finally {
+    signalSaveLoading.value = false
+  }
+}
+
+// 跳转到工具管理页（自定义 QKV/QFK 采集器），按采集器名预填搜索
+const router = useRouter()
+function goToToolManage(acquirer?: string) {
+  const q = (acquirer || '').replace(/\./g, '_')
+  router.push({ path: '/tools', query: q ? { q } : {} })
 }
 
 function handlePageChange(newPage: number) {
@@ -1283,6 +1383,82 @@ onMounted(() => {
           </el-descriptions>
         </div>
 
+        <!-- 关键信号面板（QKV / QFK 分组） -->
+        <div class="section-block">
+          <div class="section-header-row">
+            <h4 class="section-title">关键信号（QKV / QFK）</h4>
+            <span class="section-hint">占位符统一为 &#123;&#123;VAR&#125;&#125; 大写；每条可编辑后 PATCH 回写</span>
+          </div>
+
+          <!-- 生产者信号（QKV） -->
+          <div class="signal-group">
+            <div class="signal-group-title">生产者信号（QKV：前端采集，写入变量池）</div>
+            <el-empty v-if="producerSignals.length === 0" description="暂无生产者信号" :image-size="44" />
+            <div v-for="item in producerSignals" :key="'p-' + item.origIdx" class="signal-card">
+              <div class="signal-card-head">
+                <el-tag size="small" type="success">{{ item.sig.acquirer || item.sig.query || 'qkv' }}</el-tag>
+                <div class="signal-card-actions">
+                  <el-button text size="small" @click="goToToolManage(item.sig.acquirer)">工具管理</el-button>
+                  <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" @click="startEditSignal(item.origIdx)">编辑</el-button>
+                  <template v-else>
+                    <el-button text size="small" @click="cancelEditSignal">取消</el-button>
+                    <el-button text type="primary" size="small" :loading="signalSaveLoading" @click="saveSignalEdit">保存</el-button>
+                  </template>
+                </div>
+              </div>
+              <div class="signal-card-body">
+                <div v-if="editingSignalIndex !== item.origIdx">
+                  <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ item.sig.keyword || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ item.sig.description || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (item.sig.produces || []).map(p => p.name).join('、') || '—' }}</span></div>
+                </div>
+                <div v-else>
+                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.keyword" size="small" /></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.description" size="small" type="textarea" :rows="2" /></div>
+                  <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (signalEditDraft.produces || []).map(p => p.name).join('、') || '—' }}</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 消费者信号（QFK） -->
+          <div class="signal-group">
+            <div class="signal-group-title">消费者信号（QFK：后端采集+判定，读取变量池）</div>
+            <el-empty v-if="consumerSignals.length === 0" description="暂无消费者信号" :image-size="44" />
+            <div v-for="item in consumerSignals" :key="'c-' + item.origIdx" class="signal-card">
+              <div class="signal-card-head">
+                <el-tag size="small" type="warning">{{ item.sig.acquirer || item.sig.signal_type || 'qfk' }}</el-tag>
+                <div class="signal-card-actions">
+                  <el-button text size="small" @click="goToToolManage(item.sig.acquirer)">工具管理</el-button>
+                  <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" @click="startEditSignal(item.origIdx)">编辑</el-button>
+                  <template v-else>
+                    <el-button text size="small" @click="cancelEditSignal">取消</el-button>
+                    <el-button text type="primary" size="small" :loading="signalSaveLoading" @click="saveSignalEdit">保存</el-button>
+                  </template>
+                </div>
+              </div>
+              <div class="signal-card-body">
+                <div v-if="editingSignalIndex !== item.origIdx">
+                  <div class="signal-row"><span class="signal-k">目标 scope</span><span class="signal-v code">{{ item.sig.target?.scope || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">目标 resource</span><span class="signal-v">{{ item.sig.target?.resource || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">目标 path</span><span class="signal-v">{{ item.sig.target?.path || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ item.sig.keyword || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">期望</span><span class="signal-v">{{ item.sig.expected === true ? '存在' : item.sig.expected === false ? '不存在' : '—' }}</span></div>
+                </div>
+                <div v-else>
+                  <div class="signal-row"><span class="signal-k">目标 scope</span><el-input v-model="signalEditDraft.target.scope" size="small" placeholder="&#123;&#123;HOST&#125;&#125;" /></div>
+                  <div class="signal-row"><span class="signal-k">目标 resource</span><el-input v-model="signalEditDraft.target.resource" size="small" /></div>
+                  <div class="signal-row"><span class="signal-k">目标 path</span><el-input v-model="signalEditDraft.target.path" size="small" /></div>
+                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.keyword" size="small" /></div>
+                  <div class="signal-row"><span class="signal-k">期望</span>
+                    <el-switch v-model="signalEditDraft.expected" :active-value="true" :inactive-value="false" active-text="存在" inactive-text="不存在" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- content_md 渲染 -->
         <div class="section-block">
           <div class="section-header-row">
@@ -1858,5 +2034,60 @@ onMounted(() => {
   color: #909399;
   font-weight: normal;
   margin-left: 6px;
+}
+
+/* 关键信号面板（QKV / QFK） */
+.signal-group {
+  margin-bottom: 14px;
+}
+.signal-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #606266;
+  margin: 6px 0 8px;
+  padding-left: 8px;
+  border-left: 3px solid #409eff;
+}
+.signal-card {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: #fafafa;
+}
+.signal-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid #ebeef5;
+}
+.signal-card-actions {
+  display: flex;
+  gap: 4px;
+}
+.signal-card-body {
+  padding: 8px 10px;
+}
+.signal-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 13px;
+}
+.signal-k {
+  flex: 0 0 84px;
+  color: #909399;
+}
+.signal-v {
+  flex: 1;
+  color: #303133;
+  word-break: break-all;
+}
+.signal-v.code {
+  font-family: monospace;
+  background: #f0f2f5;
+  padding: 0 4px;
+  border-radius: 3px;
 }
 </style>

@@ -52,7 +52,7 @@ class BackendSignalTarget(BaseModel):
 
     scope: str | None = Field(
         default=None,
-        description="执行节点范围（可使用 ${variable} 占位符）"
+        description="执行节点范围（可使用 {{VARIABLE}} 全大写占位符）"
     )
     resource: str | None = Field(
         default=None,

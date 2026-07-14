@@ -1000,9 +1000,10 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     operational_impact text NOT NULL DEFAULT '',   -- 操作影响范围（可选）
     is_temporary text NOT NULL DEFAULT '',         -- 是否是临时解决方案（可选）
     recommendations text NOT NULL DEFAULT '',      -- 建议与总结（可选）
-    -- 结构化工具步骤（供 agent 执行，需人工编辑或 AI 生成，默认为空）
-    -- 格式：[{"tool_name": "acli_vm_config", "tool_args_template": {...}, "expected_pattern": "..."}]
-    steps_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+    -- 关键信号集合（producer/consumer 信号，agent 执行与判定；默认[]，抽取阶段/审核期填充，占位符 {{VAR}} 大写）
+    -- 格式：[{"signal_category": "frontend"|"backend", "produces": [{"name": "HOST", ...}], "requires": [...], ...}]
+    -- 注：旧 steps_json（扁平工具步骤）已彻底移除（ADR-1 / 迁移 20260714000000），signals_json 为唯一字段
+    signals_json jsonb NOT NULL DEFAULT '[]'::jsonb,
     -- 图片视觉描述（pipeline Vision LLM 生成，结构化存储，独立于 content_md）
     -- 格式：[{"seq": 0, "section": "steps_text", "desc": "TYPE: 日志截图\n..."}]
     -- 章节字段中对应位置以 ![img:N] 占位符标记；rebuild_content_md() 展开为完整 【截图说明】 块
@@ -1036,13 +1037,13 @@ COMMENT ON COLUMN kbd_entry.support_id IS '深信服案例 ID（幂等键）';
 COMMENT ON COLUMN kbd_entry.title IS '知识条目标题';
 COMMENT ON COLUMN kbd_entry.problem_description IS '问题描述（8 大章节之一，pipeline 自动提取 Markdown，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.alert_info IS '告警信息（8 大章节之一，pipeline 自动提取，admin 可编辑）';
-COMMENT ON COLUMN kbd_entry.steps_text IS '有效排查步骤（自然语言 Markdown，pipeline 自动提取，admin 可编辑）；与 steps_json 互补：steps_text 供人阅读，steps_json 供 agent 执行';
+COMMENT ON COLUMN kbd_entry.steps_text IS '有效排查步骤（自然语言 Markdown，pipeline 自动提取，admin 可编辑），供人阅读；agent 可执行/判定的结构化信息由 signals_json 承载';
 COMMENT ON COLUMN kbd_entry.root_cause IS '根因（8 大章节之一，pipeline 自动提取 Markdown，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.solution IS '解决方案（8 大章节之一，pipeline 自动提取 Markdown，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.operational_impact IS '操作影响范围（8 大章节之一，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.is_temporary IS '是否是临时解决方案（8 大章节之一，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.recommendations IS '建议与总结（8 大章节之一，admin 可编辑）';
-COMMENT ON COLUMN kbd_entry.steps_json IS '结构化工具步骤（供 agent 执行）；格式：[{tool_name, tool_args_template, expected_pattern}]；默认为空，需 admin 人工编辑或 AI 提取后填充；非空时 kbd_entry 才对 InvestigationAgent 可见';
+COMMENT ON COLUMN kbd_entry.signals_json IS '关键信号集合（producer/consumer 信号，agent 执行与判定；默认[]，抽取阶段/审核期填充，占位符 {{VAR}} 大写）；非空时 kbd_entry 才对 InvestigationAgent 可见';
 COMMENT ON COLUMN kbd_entry.images_json IS '图片视觉描述（pipeline Vision LLM 生成）；格式：[{"seq": N, "section": "field_name", "desc": "..."}]；章节字段中以 ![img:N] 标记位置，rebuild_content_md() 展开为 > **【截图说明】** 块；独立存储确保 admin 编辑章节字段后视觉信息不丢失';
 COMMENT ON COLUMN kbd_entry.content_md IS '聚合渲染 Markdown（含截图视觉描述）；由 pipeline 生成或 rebuild_content_md() 从章节字段+images_json 重建；供 LLM 上下文注入；embedding 不使用此字段（使用问题侧字段 title+problem_description+alert_info+root_cause）';
 COMMENT ON COLUMN kbd_entry.content_raw IS '纯文本内容（剔除 Markdown 格式标记和图片占位符），专供 LLM 和 RAG 检索/Embedding 使用';
@@ -1072,14 +1073,15 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_ai_category ON kbd_entry (ai_category_i
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_published ON kbd_entry (published_at DESC) WHERE status = 'published';
 -- 全文检索
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv ON kbd_entry USING GIN (tsv);
--- steps_json 结构查询（如查找使用特定 tool_name 的 KBD）
-CREATE INDEX IF NOT EXISTS idx_kbd_entry_steps_json ON kbd_entry USING GIN (steps_json);
+-- signals_json 结构查询（InvestigationAgent 检索关键信号；部分索引仅含已发布且有信号的条目）
+CREATE INDEX IF NOT EXISTS idx_kbd_entry_signals ON kbd_entry USING GIN (signals_json)
+    WHERE status = 'published' AND signals_json != '[]'::jsonb;
 -- images_json 结构查询（如查找含特定 section 图片的 KBD）
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_images_json ON kbd_entry USING GIN (images_json)
     WHERE images_json != '[]'::jsonb;
--- agent 可用条目快速过滤（steps_json 非空 + published，InvestigationAgent 专用索引）
+-- agent 可用条目快速过滤（signals_json 非空 + published，InvestigationAgent 专用索引）
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_agent_usable ON kbd_entry (category_id, published_at DESC)
-    WHERE status = 'published' AND steps_json != '[]'::jsonb;
+    WHERE status = 'published' AND signals_json != '[]'::jsonb;
 -- D-002: 向量相似度检索索引（知识库语义检索，仅已发布条目）
 -- 部分索引：只对 status='published' 的条目建索引，减少写入/存储开销，与业务查询路径吻合。
 -- ⚠️  同 kb_category：数据量不足 1000 时效果有限，建议批量导入后执行：ANALYZE kbd_entry;
@@ -1138,7 +1140,7 @@ CREATE INDEX IF NOT EXISTS idx_kbd_image_kbd_entry_id ON kbd_image (kbd_entry_id
 -- 表: sop_document  [模块: kb-service]
 -- 说明: SOP 文档表 — SOP 排障手册文档存储，完整 Markdown + tree_json 决策树（合并自原 sop_tree 表）
 -- 用途: 存储 SOP 排障手册文档（~20,000 字/个）；content_md 供 LLM 注入，tree_json 供 Agent 决策树遍历
--- 设计: sop_chunk（分块 RAG）为死代码已废弃；sop_tree 1:1 合入本表（参照 kbd_entry.steps_json 模式）
+-- 设计: sop_chunk（分块 RAG）为死代码已废弃；sop_tree 1:1 合入本表（参照 kbd_entry.signals_json 模式）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sop_document (
     id serial NOT NULL,

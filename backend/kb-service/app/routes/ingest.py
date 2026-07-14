@@ -425,7 +425,6 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                     existing_entry.operational_impact = body.operational_impact
                     existing_entry.is_temporary = body.is_temporary
                     existing_entry.recommendations = body.recommendations
-                    existing_entry.steps_json = body.steps_json
                     existing_entry.signals_json = body.signals_json
                     # P2-5 修复：先保存旧 images_json（含已识别的 desc），再覆盖。
                     # 否则「先清空 images_json 再 rebuild_content_md()」会用空 desc 重建，

@@ -433,7 +433,7 @@ CREATE TABLE kbd_entry (
     recommendations     TEXT DEFAULT '',
     
     -- 结构化字段
-    steps_json          JSONB DEFAULT '[]',              -- 结构化工具步骤
+    signals_json        JSONB DEFAULT '[]',              -- 关键信号集合（producer/consumer 信号，占位符 {{VAR}} 大写；旧 steps_json 已彻底移除，见 ADR-1 / 迁移 20260714000000）
     images_json         JSONB DEFAULT '[]',              -- 图片视觉描述列表
     
     -- 双通道数据

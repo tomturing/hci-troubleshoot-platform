@@ -44,7 +44,7 @@ KEY_SIGNAL_EXTRACTION_PROMPT = """## 任务
   "signal_category": "backend",
   "signal_type": "log_keyword",
   "target": {
-    "scope": "${host}",
+    "scope": "{{HOST}}",
     "resource": "mysql-managed.log",
     "path": "/sf/data/platform_database/"
   },
@@ -65,9 +65,10 @@ KEY_SIGNAL_EXTRACTION_PROMPT = """## 任务
    - keyword 必须是核心检索词，不要包含具体命令
    - 示例：文本"检查配置存储服务备节点异常告警" → keyword="备节点异常"
 
-3. **变量占位符**（backend 专用）：
-   - 如果文本提到"在备节点"/"故障节点"，使用 `${host}` 占位符
+3. **变量占位符**（backend 专用，ADR-2 强制 `{{全大写}}`）：
+   - 如果文本提到"在备节点"/"故障节点"，使用 `{{HOST}}` 占位符
    - 如果文本提到时间范围，使用 `{{END}}` 占位符
+   - 占位符必须全大写双花括号（如 `{{HOST}}`），小写/单花括号（`${host}`/`{host}`）一律非法，抽取期会被 `validate_placeholder_case` 拒绝
    - 这样可以在运行时自动注入前端信号提取的变量值
 
 4. **expected 字段**（backend 专用）：
@@ -88,7 +89,7 @@ KEY_SIGNAL_EXTRACTION_PROMPT = """## 任务
   // backend 时补充以下字段
   "signal_type": "log_keyword/service_status/vm_state/network_check/storage_state/hardware_state/platform_state/system_metric",
   "target": {
-    "scope": "${host}",
+    "scope": "{{HOST}}",
     "resource": "具体资源名",
     "path": "日志路径"
   },
@@ -139,7 +140,7 @@ KEY_SIGNAL_BATCH_EXTRACTION_PROMPT = """## 任务
     "signal_category": "backend",
     "signal_type": "log_keyword",
     "target": {
-      "scope": "${host}",
+      "scope": "{{HOST}}",
       "resource": "mysql-managed.log",
       "path": "/sf/data/platform_database/"
     },
