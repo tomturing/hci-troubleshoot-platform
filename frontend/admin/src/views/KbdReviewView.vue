@@ -458,6 +458,54 @@ async function handleReanalyzeSingleImage(entry: KbdEntry, seq: number) {
   }
 }
 
+// 关键信号重新提交（与"重新识图"保持一致：同步模式立等结果 + 刷新详情）
+const resubmitSignalsLoading = ref<number | null>(null)  // 正在重新提交信号的 entry.id
+
+async function handleResubmitSignals(entry: KbdEntry) {
+  try {
+    await ElMessageBox.confirm(
+      `确认用最新 Prompt 重新提交「${entry.title}」的关键信号抽取？`,
+      '重新提交关键信号',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  resubmitSignalsLoading.value = entry.id
+  try {
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/extract-signals?sync=true`, {
+      method: 'POST',
+      headers: authHeader,
+    })
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}))
+      throw new Error(errData.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    ElMessage.success({
+      message: `关键信号抽取完成：共 ${data.signals_count ?? 0} 条（拒绝 ${data.rejected_count ?? 0} 条）`,
+      duration: 0,
+      showClose: true,
+    })
+    // 刷新详情（如果打开）
+    if (detailEntry.value?.id === entry.id) {
+      const detailResp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
+      if (detailResp.ok) {
+        const fresh = await detailResp.json()
+        detailEntry.value = fresh
+      }
+    }
+  } catch (err: any) {
+    ElMessage.error({
+      message: `重新提交关键信号失败：${err.message || '未知错误'}`,
+      duration: 0,
+      showClose: true,
+    })
+  } finally {
+    resubmitSignalsLoading.value = null
+  }
+}
+
 async function openDetailDialog(entry: KbdEntry) {
   detailFullscreen.value = false
   detailDialogVisible.value = true
@@ -1329,15 +1377,15 @@ onMounted(() => {
               :style="{ marginLeft: '8px', color: confidenceColor(detailEntry.ai_category_conf) }"
             >{{ confidenceLabel(detailEntry.ai_category_conf) }}</span>
             <el-button
-              type="primary"
-              link
+              type="warning"
               size="small"
-              style="margin-left: 8px; padding: 0; display: inline-flex; align-items: center; vertical-align: middle;"
+              style="margin-left: 8px;"
               :loading="reclassifyLoading === detailEntry.id"
               @click="handleReclassify(detailEntry)"
               title="重新分类"
             >
               <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+              重新分类
             </el-button>
             <el-tag
               v-if="detailEntry.ai_category_conf !== null && detailEntry.ai_category_conf < 0.5"
@@ -1387,7 +1435,19 @@ onMounted(() => {
         <div class="section-block">
           <div class="section-header-row">
             <h4 class="section-title">关键信号（QKV / QFK）</h4>
-            <span class="section-hint">占位符统一为 &#123;&#123;VAR&#125;&#125; 大写；每条可编辑后 PATCH 回写</span>
+            <div class="section-actions">
+              <span class="section-hint">占位符统一为 &#123;&#123;VAR&#125;&#125; 大写；每条可编辑后 PATCH 回写</span>
+              <el-button
+                type="warning"
+                size="small"
+                :loading="resubmitSignalsLoading === detailEntry.id"
+                @click="handleResubmitSignals(detailEntry)"
+                title="用最新 Prompt 重新提交关键信号抽取"
+              >
+                <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+                重新提交
+              </el-button>
+            </div>
           </div>
 
           <!-- 生产者信号（QKV） -->
@@ -1938,7 +1998,8 @@ onMounted(() => {
 }
 .section-actions {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
 }
 
 /* 图片列表容器（images_json 渲染） */
