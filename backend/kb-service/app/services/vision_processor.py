@@ -44,6 +44,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 from openai import AsyncOpenAI
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
@@ -257,7 +258,6 @@ async def _vision_analyze(
     prompt = prompt_template.format(context=context or "（无上下文）")
 
     def _fmt_vision_err(exc: Exception) -> str:
-        import httpx
         if getattr(exc, "response", None) is not None:
             sc = getattr(exc.response, "status_code", "unknown")
             rt = getattr(exc.response, "text", "")

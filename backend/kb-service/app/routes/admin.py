@@ -10,6 +10,7 @@ POST /api/admin/sop/{id}/approve  — SOP 文档审核通过（解析决策树�
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
