@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import asyncpg
 import httpx
@@ -21,7 +22,11 @@ logger = logging.getLogger("kbd.extract_signals")
 
 
 async def _call_extract_api(kbd_entry_id: int, client: httpx.AsyncClient) -> dict:
-    """调用 kb-service 关键信号抽取 API（同步返回）。"""
+    """调用 kb-service 关键信号抽取 API（自动适配同步/异步两种响应）。
+
+    新行为：POST 返回 202 + job_id 时，自动轮询 status 端点直到完成（与 image_proc.py 对齐）。
+    向后兼容：POST 返回 200（同步结果）时直接返回。
+    """
     url = f"{settings.KB_SERVICE_URL}/api/admin/kbd/{kbd_entry_id}/extract-signals"
     headers = {
         "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
@@ -30,16 +35,19 @@ async def _call_extract_api(kbd_entry_id: int, client: httpx.AsyncClient) -> dic
     }
     logger.info("提交关键信号抽取 kbd_entry_id=%d trace_id=%s", kbd_entry_id, get_trace_id())
 
+    # 提交（超时短：仅需接收 202）
+    timeout_submit = 30.0
+    response = None
     for attempt in range(settings.API_MAX_RETRIES):
         try:
-            response = await client.post(url, headers=headers, timeout=settings.API_TIMEOUT)
+            response = await client.post(url, headers=headers, timeout=timeout_submit)
             response.raise_for_status()
-            return response.json()
+            break
         except httpx.TimeoutException:
             if attempt == settings.API_MAX_RETRIES - 1:
                 raise
             wait = 2.0 * (2 ** attempt)
-            logger.warning("抽取 API 超时 kbd_entry_id=%d 等待 %.1fs 后重试", kbd_entry_id, wait)
+            logger.warning("抽取 API 提交超时 kbd_entry_id=%d 等待 %.1fs 后重试", kbd_entry_id, wait)
             await asyncio.sleep(wait)
         except httpx.HTTPStatusError as exc:
             if 400 <= exc.response.status_code < 500:
@@ -53,7 +61,73 @@ async def _call_extract_api(kbd_entry_id: int, client: httpx.AsyncClient) -> dic
                            exc.response.status_code, wait)
             await asyncio.sleep(wait)
 
-    raise RuntimeError("unreachable: extract exhausted retries")
+    if response is None:
+        raise RuntimeError("unreachable: submit exhausted retries")
+
+    body = response.json()
+    # 异步模式（202 + job_id）→ 轮询 status
+    job_id = body.get("job_id")
+    if job_id and response.status_code == 202:
+        return await _poll_extract_status(kbd_entry_id, job_id, client)
+    # 同步模式（向后兼容）
+    return body
+
+
+async def _poll_extract_status(
+    kbd_entry_id: int,
+    job_id: str,
+    client: httpx.AsyncClient,
+    *,
+    poll_interval: float = 5.0,
+    timeout_total: float = 900.0,  # 15 分钟上限
+) -> dict:
+    """轮询 Signal Job 状态直至完成（Asynchronous Request-Reply 模式客户端，与 image_proc 对齐）。"""
+    status_url = f"{settings.KB_SERVICE_URL}/api/admin/kbd/{kbd_entry_id}/extract-signals/status"
+    headers = {
+        "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
+        **traceparent(),
+    }
+    logger.info(
+        "开始轮询信号抽取状态 kbd_entry_id=%d job_id=%s trace_id=%s",
+        kbd_entry_id, job_id, get_trace_id(),
+    )
+    started_at = time.monotonic()
+    poll_count = 0
+
+    while True:
+        elapsed = time.monotonic() - started_at
+        if elapsed > timeout_total:
+            raise TimeoutError(f"Signal Job {job_id} 轮询超时（{timeout_total}s）")
+        await asyncio.sleep(poll_interval)
+        poll_count += 1
+        try:
+            resp = await client.get(
+                status_url, headers=headers, params={"job_id": job_id}, timeout=30.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            job_status = data.get("status")
+            logger.info(
+                "信号抽取轮询 job_id=%s kbd_entry_id=%d poll=%d status=%s",
+                job_id, kbd_entry_id, poll_count, job_status,
+            )
+            if job_status == "done":
+                result = data.get("result") or {}
+                return {
+                    "success": True,
+                    "kbd_id": kbd_entry_id,
+                    "signals_count": result.get("signals_count", 0),
+                    "rejected_count": result.get("rejected_count", 0),
+                    "message": "异步信号抽取完成",
+                }
+            if job_status == "failed":
+                err = data.get("error") or "Job 执行失败"
+                raise RuntimeError(f"Signal Job {job_id} 失败：{err}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise RuntimeError(f"Signal Job {job_id} 不存在（kb-service 可能已重启）") from exc
+            logger.warning("轮询 status 瞬态错误 %s，继续", exc)
+            continue
 
 
 async def extract_signals_batch(kbd_ids: list[str], pool: asyncpg.Pool | None = None) -> dict[str, int]:

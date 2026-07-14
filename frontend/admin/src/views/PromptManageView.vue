@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, InfoFilled, Edit, Delete, FullScreen } from '@element-plus/icons-vue'
+import { Plus, InfoFilled, Edit, Delete, FullScreen, Refresh } from '@element-plus/icons-vue'
 
 interface SystemPrompt {
   id: number
@@ -222,7 +222,58 @@ async function handleDelete(row: SystemPrompt) {
       console.error('删除 Prompt 模板失败:', e)
       ElMessage.error('删除失败')
     }
-  }).catch(() => {})
+  }  ).catch(() => {})
+}
+
+// ─── KBD 阶段 Prompt 测试触发（重新识图 / 重新分类 / 重新提交 关键信号）─────────────
+const testDialogVisible = ref(false)
+const testTarget = ref<SystemPrompt | null>(null)
+const testKbdId = ref('')
+const testLoading = ref(false)
+
+function _triggerActionForPrompt(name: string): 'vision' | 'classify' | 'signals' {
+  if (name.includes('vision')) return 'vision'
+  if (name.includes('classify')) return 'classify'
+  return 'signals'
+}
+
+function openTestTrigger(item: SystemPrompt) {
+  testTarget.value = item
+  testKbdId.value = ''
+  testDialogVisible.value = true
+}
+
+async function submitTestTrigger() {
+  if (!testTarget.value) return
+  const id = Number(testKbdId.value)
+  if (!id || id <= 0) {
+    ElMessage.warning('请输入有效的 KBD 条目 ID')
+    return
+  }
+  const action = _triggerActionForPrompt(testTarget.value.name)
+  const url =
+    action === 'vision' ? `/api/v1/kbd/${id}/reanalyze-images?sync=true`
+    : action === 'classify' ? `/api/v1/kbd/${id}/reclassify`
+    : `/api/v1/kbd/${id}/extract-signals?sync=true`
+  testLoading.value = true
+  try {
+    const resp = await fetch(url, { method: 'POST', headers: authHeader })
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}))
+      throw new Error(errData.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    let msg = '触发完成'
+    if (action === 'vision') msg = `识图完成：成功 ${data.done ?? 0} 张，失败 ${data.failed ?? 0} 张`
+    else if (action === 'classify') msg = `分类完成：${data.category_id}（置信度 ${data.confidence?.toFixed?.(2) ?? 'N/A'}）`
+    else msg = `关键信号抽取完成：共 ${data.signals_count ?? 0} 条（拒绝 ${data.rejected_count ?? 0} 条）`
+    ElMessage.success(msg)
+    testDialogVisible.value = false
+  } catch (err: any) {
+    ElMessage.error(`触发失败：${err.message || '未知错误'}`)
+  } finally {
+    testLoading.value = false
+  }
 }
 
 // 导入 SQL 初始种子数据
@@ -346,6 +397,16 @@ onMounted(() => {
                 >
                   删除模板
                 </el-button>
+                <el-button
+                  v-if="item.stage === 'KBD'"
+                  type="warning"
+                  size="small"
+                  text
+                  :icon="Refresh"
+                  @click="openTestTrigger(item)"
+                >
+                  测试触发
+                </el-button>
               </div>
             </div>
           </div>
@@ -449,6 +510,27 @@ onMounted(() => {
           <el-button @click="dialogVisible = false">取消</el-button>
           <el-button type="primary" @click="submitForm">保存</el-button>
         </div>
+      </template>
+    </el-dialog>
+
+    <!-- 测试触发 Dialog（KBD 阶段 Prompt：重新识图 / 重新分类 / 重新提交 关键信号） -->
+    <el-dialog
+      v-model="testDialogVisible"
+      title="测试触发"
+      width="460px"
+    >
+      <p style="color: #606266; margin: 0 0 12px">
+        用当前 Prompt（<strong>{{ testTarget?.name }}</strong>）对指定 KBD 条目重新触发，
+        立即验证效果（与 KBD 管理页的「重新识图 / 重新分类 / 重新提交」完全一致）。
+      </p>
+      <el-form label-width="96px">
+        <el-form-item label="KBD 条目 ID" required>
+          <el-input v-model="testKbdId" placeholder="如 123（在 KBD 管理页复制条目 ID）" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="testDialogVisible = false">取消</el-button>
+        <el-button type="warning" :loading="testLoading" @click="submitTestTrigger">确认触发</el-button>
       </template>
     </el-dialog>
   </div>

@@ -24,10 +24,14 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
+
+from app.services.signal_job_manager import get_signal_job_manager
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -429,14 +433,65 @@ class ExtractSignalsResponse(BaseModel):
 
 
 @router.post("/kbd/{kbd_id}/extract-signals", response_model=ExtractSignalsResponse)
-async def extract_signals_kbd(request: Request, kbd_id: int) -> ExtractSignalsResponse:
-    """关键信号分级抽取（KBD）：从 kbd_entry 自然语言章节抽取结构化 signals_json 并写回。"""
+async def extract_signals_kbd(request: Request, kbd_id: int):
+    """关键信号分级抽取（KBD）：从 kbd_entry 自然语言章节抽取结构化 signals_json 并写回。
+
+    异步模式（默认，与 VISION reanalyze-images 对齐）：
+      - 立即返回 202 + job_id（避免 HTTP 长连接阻塞/超时）
+      - 后台 asyncio.create_task 执行 LLM 抽取
+      - 客户端通过 GET /kbd/{kbd_id}/extract-signals/status?job_id=xxx 轮询状态
+
+    向后兼容：?sync=true 直接同步返回完整结果（供 admin-ui 单条快速调试）
+    """
     _check_auth(request)
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="服务未就绪")
-    logger.info(event="extract_signals_kbd_request", kbd_id=kbd_id)
-    result = await extract_signals_for_kbd(_db_manager, kbd_id)
-    return ExtractSignalsResponse(**result)
+
+    trace_id = get_current_trace_id()
+    logger.info(event="extract_signals_kbd_request", kbd_id=kbd_id, trace_id=trace_id)
+
+    # 向后兼容：?sync=true 直接同步返回（供 debug / 详情页内联重新提交）
+    sync_mode = request.query_params.get("sync", "").lower() == "true"
+    if sync_mode:
+        result = await extract_signals_for_kbd(_db_manager, kbd_id)
+        return ExtractSignalsResponse(**result)
+
+    # 异步：提交 Job（复用 SignalJobManager 状态机，与 Vision 完全对齐）
+    async def _runner(k_id: int) -> dict[str, Any]:
+        return await extract_signals_for_kbd(_db_manager, k_id)
+
+    jm = get_signal_job_manager()
+    job_id = await jm.submit(kbd_id, _runner, trace_id=trace_id)
+    logger.info(event="extract_signals_kbd_submitted", kbd_id=kbd_id, job_id=job_id, trace_id=trace_id)
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "success": True,
+            "kbd_id": kbd_id,
+            "job_id": job_id,
+            "status": "pending",
+            "message": "信号抽取任务已提交，请通过 GET /extract-signals/status 轮询进度",
+        },
+    )
+
+
+@router.get("/kbd/{kbd_id}/extract-signals/status")
+async def get_extract_signals_status(request: Request, kbd_id: int, job_id: str):
+    """查询异步信号抽取 Job 状态（与 VISION reanalyze-images/status 对齐）。
+
+    Returns:
+        {job_id, kbd_id, status(pending|running|done|failed),
+         total, done, failed, error, result, started_at, finished_at}
+    """
+    _check_auth(request)
+    job = await get_signal_job_manager().get_status(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} 不存在（可能已重启丢失）")
+    if job["kbd_id"] != kbd_id:
+        raise HTTPException(status_code=400, detail="job_id 与 kbd_id 不匹配")
+    if job.get("finished_at"):
+        job["elapsed_s"] = round(job["finished_at"] - (job.get("started_at") or job["created_at"]), 1)
+    return job
 
 
 @router.post("/sop/{sop_id}/extract-signals", response_model=ExtractSignalsResponse)
