@@ -46,6 +46,8 @@ spec:
               value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
             - name: BGE_MODEL_PATH
               value: "/models/bge-small-zh-v1.5"
+            - name: GITOPS_FORCE_RESET
+              value: "2026-07-09-v2"
           volumeMounts:
             - name: bge-model
               mountPath: /models/bge-small-zh-v1.5

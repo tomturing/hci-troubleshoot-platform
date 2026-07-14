@@ -268,9 +268,10 @@ async def _kbd_proxy(
     payload: dict | None = None,
     params: dict | None = None,
     headers: dict | None = None,
+    timeout: float = 30.0,
 ):
     """通用代理请求，透传至 kb-service KBD 路由"""
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             url = f"{KBD_SERVICE_URL}{path}"
             response = await client.request(method, url, json=payload, params=params, headers=headers)
@@ -336,19 +337,48 @@ async def kbd_republish_proxy(kbd_id: int, request: Request):
 async def kbd_reclassify_proxy(kbd_id: int, request: Request):
     """代理 KBD 重新分类请求（用最新 Prompt 重算）-> kb-service"""
     headers = _internal_auth_headers()
-    response = await _kbd_proxy("POST", f"/{kbd_id}/reclassify", headers=headers)
+    response = await _kbd_proxy("POST", f"/{kbd_id}/reclassify", headers=headers, timeout=120.0)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
 @kbd_router.post("/{kbd_id}/reanalyze-images")
 async def kbd_reanalyze_images_proxy(kbd_id: int, request: Request):
-    """代理 KBD 重新识图请求（用最新 Prompt 重算）-> kb-service
+    """代理 KBD 重新识图请求（异步提交模式，P1-1）-> kb-service
 
-    注意：识图耗时较长（每张图 5-10 秒），超时设置为 5 分钟。
+    新行为：kb-service 立即返回 202 + job_id（秒级），gateway 超时设为 30s。
+    客户端通过 GET reanalyze-images/status 轮询完成状态。
     """
     headers = _internal_auth_headers()
-    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-images", headers=headers, timeout=300.0)
+    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-images", headers=headers, timeout=30.0)
     return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.get("/{kbd_id}/reanalyze-images/status")
+async def kbd_reanalyze_status_proxy(kbd_id: int, request: Request):
+    """代理 KBD 异步识图状态查询 -> kb-service"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy(
+        "GET", f"/{kbd_id}/reanalyze-images/status",
+        params=dict(request.query_params),
+        headers=headers,
+        timeout=15.0,
+    )
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.post("/{kbd_id}/reanalyze-image/{seq}")
+async def kbd_reanalyze_single_image_proxy(kbd_id: int, seq: int, request: Request):
+    """代理 KBD 单张图片重新识图请求 -> kb-service
+
+    场景：用户在 admin-ui 图片列表中点击单张图片的刷新按钮，
+    仅重新识图该图片，不影响其他图片。
+
+    Args:
+        kbd_id: KBD 条目 ID
+        seq: 图片序号（从 0 开始）
+    """
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-image/{seq}", headers=headers, timeout=240.0)
 
 
 # ============ SOP 管理代理（前端使用 /api/v1/sop 前缀） ============

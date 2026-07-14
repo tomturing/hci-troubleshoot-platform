@@ -37,6 +37,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .observability import traceparent
 
 logger = logging.getLogger("kbd.importer")
 
@@ -197,6 +198,7 @@ async def _call_kbd_ingest_api(
     recommendations: str = "",
     signals_json: list[dict] | None = None,
     images_json: list[dict] | None = None,
+    images: list[dict] | None = None,
     ai_category_id: str | None = None,
     ai_category_conf: float | None = None,
     ai_category_reason: str | None = None,
@@ -239,6 +241,9 @@ async def _call_kbd_ingest_api(
     headers = {
         "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
         "Content-Type": "application/json",
+        # 注入 W3C traceparent：kb-service 的 FastAPIInstrumentor 会自动沿用同一 trace_id，
+        # 使两端日志可凭 trace_id 串联（见 observability.py）。
+        **traceparent(),
     }
     payload = {
         "support_id": support_id,
@@ -254,6 +259,7 @@ async def _call_kbd_ingest_api(
         "recommendations": recommendations,
         "signals_json": signals_json if signals_json is not None else [],
         "images_json": images_json if images_json is not None else [],
+        "images": images if images is not None else [],
         # 聚合渲染
         "content_md": content_md,
         "metadata": metadata,
@@ -350,12 +356,9 @@ async def import_entry(
         return "error"
 
     title: str = result["title"]
-    content_md: str = result["content_md"]
+    content_md: str | None = result.get("content_md")  # None: 由后端 rebuild_content_md 统一渲染
     metadata: dict[str, Any] = result["metadata"]
-
-    if not content_md.strip():
-        logger.warning("案例 %s content_md 为空，跳过", support_id)
-        return "error"
+    # content_md 不再本地校验：新架构下章节字段含占位符，content_md 由后端统一渲染
 
     if not settings.INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
@@ -376,6 +379,7 @@ async def import_entry(
             recommendations=result.get("recommendations", ""),
             signals_json=result.get("signals_json", []),
             images_json=result.get("images_json", []),
+            images=result.get("images", []),
             client=client,
             override=override,
             override_status=override_status,

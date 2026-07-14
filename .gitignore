@@ -8,6 +8,8 @@ build/
 develop-eggs/
 dist/
 downloads/
+# 例外：frontend/customer/public/downloads/ 是 terminal_bridge 客户端分发目录，需提交
+!frontend/customer/public/downloads/
 eggs/
 .eggs/
 lib/

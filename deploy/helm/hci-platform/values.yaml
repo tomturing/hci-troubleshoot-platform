@@ -252,6 +252,24 @@ kbService:
   embeddingDim: 1536
   embeddingTimeoutSec: "60.0"
   bgeModelHostPath: /home/node/models/bge-small-zh-v1.5
+  # KBD 分类与识图模型配置（注入为 CLASSIFY_MODEL / VISION_MODEL 环境变量）
+  # 两者均已在 DashScope 端点验证可用且支持多模态
+  classifyModel: "kimi-k2.5"
+  visionModel: "kimi-k2.5"
+  # Vision LLM 单次调用超时（秒），注入为 LLM_TIMEOUT 环境变量
+  # SDK max_retries=2，实际最大等待时间 = llmTimeoutSec × 3
+  # 建议值：30（dev） / 45（staging） / 60（prod）
+  llmTimeoutSec: "60.0"
+  # Vision LLM 全局并发数（全局信号量上限，注入为 VISION_GLOBAL_CONCURRENCY）
+  visionGlobalConcurrency: "3"
+  # 是否启用 LLM 思维链（注入为 LLM_ENABLE_THINKING，默认关闭）
+  enableThinking: "false"
+  # KBD 数据管道 Job 配置（符合 Twelve-Factor App 配置规范）
+  pipelineJob:
+    enabled: false
+    image: "" # 默认为空以使用 kbService 的容器镜像，或指定自定义镜像
+    persistence:
+      existingClaim: "kbd-cache"
 
 # ======================== Customer UI =======================================
 customerUI:
@@ -340,6 +358,10 @@ llm:
   apiCompletionsPath: "/chat/completions"
   readTimeoutSec: 120.0
 
+llmVision:
+  # 多模态专属 Vision 独立端点，默认为空时自动回退到 llm.baseUrl
+  baseUrl: ""
+
 # ======================== 应用配置（非敏感 → ConfigMap）=====================
 config:
   postgresHost: postgres
@@ -361,8 +383,10 @@ config:
 # 生产环境通过 helm install --set secrets.xxx=xxx 覆盖
 secrets:
   postgresPassword: "dev_password_123"
-  # LLM API Key（用于 dashscope 网关调用 GLM-5）
+  # LLM API Key（用于 dashscope 网关调用，由 kb-service/agent-service/conversation-service 共用）
   llmApiKey: ""
+  # Vision 专属 API Key，默认为空时自动回退到 llmApiKey
+  llmVisionApiKey: ""
   # 内部服务间 API 鉴权 Token
   internalApiToken: "hci-dev-internal-token"
   grafanaAdminPassword: "admin"

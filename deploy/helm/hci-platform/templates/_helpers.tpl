@@ -183,7 +183,6 @@ ops-agent 和 pai-agent 为内部服务，base_url 固定不变。
 {
   "htp-agent": {
     "base_url": "{{ .Values.llm.baseUrl }}",
-    "provider_api_key": "{{ .Values.secrets.llmApiKey }}",
     "model": "{{ .Values.llm.model }}",
     "warm_pool_size": 0,
     "max_pool_size": 0,

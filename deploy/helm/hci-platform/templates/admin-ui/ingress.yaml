@@ -24,6 +24,7 @@ spec:
     - host: {{ .Values.adminUI.ingress.host | quote }}
       http:
         paths:
+          # Admin UI API 路径
           - path: /api
             pathType: Prefix
             backend:
@@ -31,6 +32,7 @@ spec:
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+          # WebSocket 路径
           - path: /ws
             pathType: Prefix
             backend:
@@ -38,6 +40,7 @@ spec:
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+          # Admin UI 前端
           - path: /
             pathType: Prefix
             backend:
@@ -49,6 +52,7 @@ spec:
     # 无 host 时直接匹配所有请求（适用于端口隔离场景）
     - http:
         paths:
+          # Admin UI API 路径
           - path: /api
             pathType: Prefix
             backend:
@@ -56,6 +60,7 @@ spec:
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+          # WebSocket 路径
           - path: /ws
             pathType: Prefix
             backend:
@@ -63,6 +68,7 @@ spec:
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+          # Admin UI 前端
           - path: /
             pathType: Prefix
             backend:

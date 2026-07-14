@@ -1,28 +1,25 @@
 """
 KB Service — 管理后台路由
 
-提供文档状态机管理接口（审核/发布/下线）和文档列表查询。
+提供 KBD/SOP 文档审核和发布接口。
 仅供管理员使用，需 INTERNAL_API_TOKEN 鉴权。
 
-GET  /api/kb/documents            — 查询文档列表（分页 + 状态过滤）
-GET  /api/kb/documents/{id}       — 查询单个文档详情
-PATCH /api/kb/documents/{id}      — 更新文档状态（审核通过/发布/归档）
-DELETE /api/kb/documents/{id}     — 删除文档（级联删除 chunks）
-
 POST /api/admin/kbd/{id}/approve  — KBD 条目审核通过（生成 embedding + tsv）
-POST /api/admin/sop/{id}/approve  — SOP 文档审核通过（遍历 chunks 生成 embedding + tsv）
+POST /api/admin/sop/{id}/approve  — SOP 文档审核通过（解析决策树）
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from shared.dynamic_resource.adapters import kbd_resource_payload, sop_resource_payload
 from shared.dynamic_resource.loader import snapshot_revision_metadata
@@ -34,8 +31,7 @@ from shared.observability.otel import get_current_trace_id
 from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
-from app.models.document import KBDocument
-from app.models.kbd_entry import strip_markdown
+from app.models.kbd_entry import KbdEntry, strip_markdown
 from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
@@ -102,157 +98,11 @@ async def _publish_sop_revision(session, document_id: int, trace_id: str | None)
 
 
 class DocumentUpdateRequest(BaseModel):
-    """文档状态更新请求"""
+    """文档状态更新请求（已废弃，保留向后兼容）"""
 
     status: str | None = None  # draft/under_review/approved/published/rejected/archived
     review_note: str | None = None
     reviewer: str | None = None
-
-
-@router.get("/documents")
-async def list_documents(
-    request: Request,
-    status_filter: str | None = None,
-    category_l1: str | None = None,
-    page: int = 1,
-    page_size: int = 20,
-):
-    """查询文档列表（分页 + 状态过滤）"""
-    _check_auth(request)
-
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
-
-    offset = (page - 1) * page_size
-    async with _db_manager.async_session_factory() as session:
-        query = select(
-            KBDocument.id,
-            KBDocument.title,
-            KBDocument.status,
-            KBDocument.source_type,
-            KBDocument.category_l1,
-            KBDocument.category_l2,
-            KBDocument.difficulty,
-            KBDocument.created_at,
-        )
-        if status_filter:
-            query = query.where(KBDocument.status == status_filter)
-        if category_l1:
-            query = query.where(KBDocument.category_l1 == category_l1)
-        query = query.order_by(KBDocument.created_at.desc()).offset(offset).limit(page_size)
-
-        result = await session.execute(query)
-        rows = result.fetchall()
-
-    return {
-        "page": page,
-        "page_size": page_size,
-        "documents": [
-            {
-                "id": r.id,
-                "title": r.title,
-                "status": r.status,
-                "source_type": r.source_type,
-                "category_l1": r.category_l1,
-                "category_l2": r.category_l2,
-                "difficulty": r.difficulty,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-            }
-            for r in rows
-        ],
-    }
-
-
-@router.get("/documents/{doc_id}")
-async def get_document(request: Request, doc_id: int):
-    """查询单个文档详情"""
-    _check_auth(request)
-
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
-
-    async with _db_manager.async_session_factory() as session:
-        result = await session.execute(select(KBDocument).where(KBDocument.id == doc_id))
-        doc = result.scalar_one_or_none()
-
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
-
-    return {
-        "id": doc.id,
-        "title": doc.title,
-        "status": doc.status,
-        "source_id": doc.source_id,
-        "source_type": doc.source_type,
-        "category_l1": doc.category_l1,
-        "category_l2": doc.category_l2,
-        "tags": doc.tags,
-        "summary": doc.summary,
-        "judgment_logic": doc.judgment_logic,
-        "difficulty": doc.difficulty,
-        "review_note": doc.review_note,
-        "reviewer": doc.reviewer,
-        "reviewed_at": doc.reviewed_at.isoformat() if doc.reviewed_at else None,
-        "created_at": doc.created_at.isoformat(),
-    }
-
-
-@router.patch("/documents/{doc_id}")
-async def update_document(request: Request, doc_id: int, body: DocumentUpdateRequest):
-    """更新文档状态（审核/发布/归档）"""
-    _check_auth(request)
-
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
-
-    from datetime import UTC, datetime
-
-    # 验证状态合法性
-    if body.status and body.status not in KBDocument.VALID_STATUSES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"非法状态: {body.status}，合法值: {KBDocument.VALID_STATUSES}",
-        )
-
-    async with _db_manager.async_session_factory() as session:
-        result = await session.execute(select(KBDocument).where(KBDocument.id == doc_id))
-        doc = result.scalar_one_or_none()
-        if not doc:
-            raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
-
-        if body.status:
-            doc.status = body.status
-            # 记录审核信息
-            if body.status in {"approved", "published"}:
-                doc.reviewed_at = datetime.now(UTC)
-        if body.review_note is not None:
-            doc.review_note = body.review_note
-        if body.reviewer is not None:
-            doc.reviewer = body.reviewer
-
-        await session.commit()
-
-    logger.info(event="document_updated", doc_id=doc_id, new_status=body.status)
-    return {"id": doc_id, "status": body.status or doc.status, "updated": True}
-
-
-@router.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(request: Request, doc_id: int):
-    """删除文档（级联删除关联 chunks）"""
-    _check_auth(request)
-
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
-
-    async with _db_manager.async_session_factory() as session:
-        result = await session.execute(select(KBDocument).where(KBDocument.id == doc_id))
-        doc = result.scalar_one_or_none()
-        if not doc:
-            raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
-        await session.delete(doc)
-        await session.commit()
-
-    logger.info(event="document_deleted", doc_id=doc_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -772,7 +622,6 @@ class SopApproveResponse(BaseModel):
     success: bool = Field(..., description="操作是否成功")
     document_id: int = Field(..., description="SOP 文档 ID")
     status: str = Field(..., description="当前状态")
-    chunks_embedded: int = Field(0, description="已废弃字段（sop_chunk 已删除），始终为 0")
     tree_generated: bool = Field(..., description="是否成功生成 SOP 决策树")
     tree_leaf_count: int | None = Field(None, description="决策树叶节点数量")
     tree_validation_status: str | None = Field(None, description="决策树校验状态（valid/warnings/error）")
@@ -878,15 +727,12 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
       - 无事务：解析 SOP Markdown 生成决策树（无 IO 操作，但解析可能耗时）
       - 短事务2：UPDATE sop_document（状态 + tree_json）
 
-    注意：sop_chunk 表已废弃，chunks_embedded 字段始终为 0（向后兼容保留）。
-
     响应体示例：
     ```json
     {
       "success": true,
       "document_id": 1,
       "status": "published",
-      "chunks_embedded": 5,
       "published_at": "2026-04-02T10:30:00Z"
     }
     ```
@@ -921,7 +767,6 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
                     success=True,
                     document_id=document_id,
                     status="published",
-                    chunks_embedded=0,
                     tree_generated=sop_doc.tree_json is not None,
                     tree_leaf_count=sop_doc.tree_leaf_count if sop_doc.tree_json is not None else None,
                     tree_validation_status=sop_doc.tree_validation_status if sop_doc.tree_json is not None else None,
@@ -1201,7 +1046,6 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
         success=True,
         document_id=document_id,
         status="published",
-        chunks_embedded=0,
         tree_generated=tree_generated,
         tree_leaf_count=tree_leaf_count if tree_generated else None,
         tree_validation_status=tree_validation_status,
@@ -1750,9 +1594,36 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
     # content_md 处理：明确传入则用传入的值；有章节更改则需先读库并重建
     if body.content_md is not None:
         # 明确传入了 content_md，优先使用
-        set_clauses.append("content_md = :content_md")
+        # 为了保障 8 大章节字段与 content_md 保持 100% 一致，读取库中 images_json 并进行解析同步
+        async with _db_manager.async_session_factory() as session:
+            cur_result = await session.execute(
+                text("SELECT images_json FROM kbd_entry WHERE id = :id"),
+                {"id": kbd_id},
+            )
+            cur_row = cur_result.mappings().first()
+            if not cur_row:
+                raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+            images_json = cur_row["images_json"] or []
+
+        # 实例化临时 KbdEntry，利用已实现的 sync_sections_from_content_md 进行反向解析
+        temp_entry = KbdEntry(
+            content_md=body.content_md,
+            images_json=images_json,
+        )
+        temp_entry.sync_sections_from_content_md()
+
+        # 将解析出的 8 大章节字段也一并放入 SQL 更新中
+        for field in section_fields:
+            parsed_val = getattr(temp_entry, field)
+            if f"{field} = :{field}" not in set_clauses:
+                set_clauses.append(f"{field} = :{field}")
+            params[field] = parsed_val
+
+        if "content_md = :content_md" not in set_clauses:
+            set_clauses.append("content_md = :content_md")
         params["content_md"] = body.content_md
-        set_clauses.append("content_raw = :content_raw")
+        if "content_raw = :content_raw" not in set_clauses:
+            set_clauses.append("content_raw = :content_raw")
         params["content_raw"] = body.content_raw or strip_markdown(body.content_md)
     elif any_section_changed:
         # 章节有变更且未传入 content_md：读库 + 应用 patch + 重建
@@ -2046,14 +1917,23 @@ async def reclassify_kbd_entry(request: Request, kbd_id: int):
     }
 
 
-@kbd_router.post("/{kbd_id}/reanalyze-images", summary="重新识图单个 KBD 条目")
+@kbd_router.post("/{kbd_id}/reanalyze-images", summary="重新识图单个 KBD 条目（异步提交）")
 async def reanalyze_kbd_images(request: Request, kbd_id: int):
-    """从 kbd_image 表读取原始图片，用最新 Prompt 重新识图。
+    """异步提交 Vision 重算任务（Asynchronous Request-Reply 模式，P1-1）。
 
-    场景：admin-ui 修改 kbd_vision_v1 Prompt 后，点击"重新识图"按钮立即验证效果。
+    场景：admin-ui 修改 kbd_vision_v1 Prompt 后，立即触发"重新识图"。
     更新字段：images_json、content_md（重建）。
 
-    注意：耗时较长（每张图 5-10 秒），前端需提示用户等待。
+    新行为：
+      - 立即返回 202 + job_id（避免 HTTP 长连接阻塞/超时）
+      - 后台 asyncio.create_task 执行实际 Vision LLM 调用
+      - 客户端通过 GET /reanalyze-images/status?job_id=xxx 轮询状态
+
+    旧同步行为（向后兼容 ?sync=true）：
+      - sync=true 时沿用旧路径，直接返回完整结果（供 admin-ui 单条快速调试）
+
+    Returns（异步）:
+        {"job_id": str, "status": "pending", "kbd_id": int, "message": "已提交..."}
     """
     _check_auth(request)
 
@@ -2061,43 +1941,220 @@ async def reanalyze_kbd_images(request: Request, kbd_id: int):
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
     trace_id = get_current_trace_id()
-    logger.info(event="kbd_reanalyze_images_request", kbd_id=kbd_id, trace_id=trace_id)
 
-    # 调用 Vision 处理服务
+    # 向后兼容：?sync=true 直接同步返回（供 debug 场景）
+    sync_mode = request.query_params.get("sync", "").lower() == "true"
+    if sync_mode:
+        return await _reanalyze_kbd_images_sync(kbd_id, trace_id)
+
+    # 异步：提交 Job
+    from app.services.vision_job_manager import get_job_manager
+    from app.services.vision_processor import reanalyze_kbd_images as do_reanalyze
+
+    async def _runner(k_id: int) -> dict[str, Any]:
+        # 实时回写进度：避免轮询全程看到 running + 0/0 的「黑盒」观感；
+        # 把本次请求的 trace_id 透传给 vision_processor，确保服务端日志与调用方串联。
+        def _on_progress(done: int, failed: int, total: int) -> None:
+            asyncio.create_task(
+                jm._update(job_id, total=total, done=done, failed=failed)
+            )
+
+        return await do_reanalyze(
+            k_id, _db_manager.async_session_factory,
+            on_progress=_on_progress, trace_id=trace_id,
+        )
+
+    jm = get_job_manager()
+    job_id = await jm.submit(kbd_id, _runner, trace_id=trace_id)
+
+    logger.info(
+        event="kbd_reanalyze_images_submitted",
+        kbd_id=kbd_id, job_id=job_id, trace_id=trace_id,
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "success": True,
+            "kbd_id": kbd_id,
+            "job_id": job_id,
+            "status": "pending",
+            "message": "Vision 任务已提交，请通过 GET /reanalyze-images/status 轮询进度",
+        },
+    )
+
+
+async def _reanalyze_kbd_images_sync(kbd_id: int, trace_id: str):
+    """旧同步路径（?sync=true 走此分支），保留兼容性。"""
+    logger.info(event="kbd_reanalyze_images_sync_request", kbd_id=kbd_id, trace_id=trace_id)
     from app.services.vision_processor import reanalyze_kbd_images as do_reanalyze
 
     try:
-        async with _db_manager.async_session_factory() as session:
-            result = await do_reanalyze(kbd_id, session)
+        result = await do_reanalyze(kbd_id, _db_manager.async_session_factory)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        logger.error(event="kbd_reanalyze_images_failed", kbd_id=kbd_id, error=str(exc), trace_id=trace_id)
+        raise HTTPException(status_code=500, detail=f"识图失败：{exc}")
+
+    logger.info(
+        event="kbd_reanalyze_images_completed",
+        kbd_id=kbd_id, total=result["total"], done=result["done"], failed=result["failed"], trace_id=trace_id,
+    )
+    return {
+        # 修复：同步路径不应恒为 True；部分图片失败时需如实反映 result.success
+        "success": result.get("success", True),
+        "kbd_id": kbd_id,
+        "total": result["total"],
+        "done": result["done"],
+        "failed": result["failed"],
+        "error": result.get("error"),
+        "message": result.get("message", "识图完成"),
+    }
+
+
+@kbd_router.get("/{kbd_id}/reanalyze-images/status", summary="查询异步识图任务状态")
+async def get_reanalyze_status(request: Request, kbd_id: int, job_id: str):
+    """查询异步 Vision Job 状态。
+
+    Args:
+        kbd_id: KBD 条目 ID（路径参数，校验一致性）
+        job_id: 任务 ID（来自 POST reanalyze-images 响应）
+
+    Returns:
+        {
+            "job_id": str,
+            "kbd_id": int,
+            "status": "pending" | "running" | "done" | "failed",
+            "total": int,
+            "done": int,
+            "failed": int,
+            "error": str | None,
+            "started_at": float | None,
+            "finished_at": float | None,
+        }
+    """
+    _check_auth(request)
+    from app.services.vision_job_manager import get_job_manager
+
+    job = await get_job_manager().get_status(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} 不存在（可能已重启丢失）")
+    if job["kbd_id"] != kbd_id:
+        raise HTTPException(status_code=400, detail="job_id 与 kbd_id 不匹配")
+    # 转为 JSON 友好的 datetime 字符串
+    if job.get("finished_at"):
+        job["elapsed_s"] = round(job["finished_at"] - (job.get("started_at") or job["created_at"]), 1)
+    return job
+
+
+@kbd_router.post("/{kbd_id}/reanalyze-image/{seq}", summary="重新识图单张图片（默认异步提交）")
+async def reanalyze_single_image(request: Request, kbd_id: int, seq: int):
+    """从 kbd_image 表读取指定 seq 的原始图片，重新识图。
+
+    场景：用户在 admin-ui 图片列表中点击单张图片的刷新按钮，
+    仅重新识图该图片，不影响其他图片。
+
+    P1-8 修复：默认异步提交（202 + job_id），与批量 reanalyze-images 一致，
+    避免单图 ~60s 的 LLM 调用长时间阻塞 HTTP 请求（网关超时风险）。
+    向后兼容：?sync=true 走同步旧路径，直接返回完整结果（供 debug）。
+
+    Returns（异步）:
+        {"success": True, "kbd_id": int, "seq": int, "job_id": str, "status": "pending",
+         "message": "Vision 单图任务已提交，请通过 GET /reanalyze-images/status 轮询进度"}
+    """
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    trace_id = get_current_trace_id()
+    logger.info(
+        event="kbd_reanalyze_single_image_request",
+        kbd_id=kbd_id,
+        seq=seq,
+        trace_id=trace_id,
+    )
+
+    # 向后兼容：?sync=true 直接同步返回（供 debug 场景）
+    sync_mode = request.query_params.get("sync", "").lower() == "true"
+    if sync_mode:
+        return await _reanalyze_single_image_sync(kbd_id, seq, trace_id)
+
+    # 异步：提交 Job（复用批量任务的状态机与轮询端点）
+    from app.services.vision_job_manager import get_job_manager
+    from app.services.vision_processor import reanalyze_single_image as do_reanalyze_single
+
+    async def _runner(k_id: int) -> dict[str, Any]:
+        # k_id 仅用于匹配 submit 签名；实际只处理当前 seq；透传 trace_id 串联日志
+        return await do_reanalyze_single(
+            k_id, seq, _db_manager.async_session_factory, trace_id=trace_id
+        )
+
+    jm = get_job_manager()
+    job_id = await jm.submit(kbd_id, _runner, trace_id=trace_id)
+
+    logger.info(
+        event="kbd_reanalyze_single_image_submitted",
+        kbd_id=kbd_id,
+        seq=seq,
+        job_id=job_id,
+        trace_id=trace_id,
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "success": True,
+            "kbd_id": kbd_id,
+            "seq": seq,
+            "job_id": job_id,
+            "status": "pending",
+            "message": "Vision 单图任务已提交，请通过 GET /reanalyze-images/status 轮询进度",
+        },
+    )
+
+
+async def _reanalyze_single_image_sync(kbd_id: int, seq: int, trace_id: str):
+    """旧同步路径（?sync=true 走此分支），保留兼容性。"""
+    from app.services.vision_processor import reanalyze_single_image as do_reanalyze_single
+
+    try:
+        result = await do_reanalyze_single(kbd_id, seq, _db_manager.async_session_factory)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         logger.error(
-            event="kbd_reanalyze_images_failed",
+            event="kbd_reanalyze_single_image_failed",
             kbd_id=kbd_id,
+            seq=seq,
             error=str(exc),
             trace_id=trace_id,
         )
         raise HTTPException(status_code=500, detail=f"识图失败：{exc}")
 
     logger.info(
-        event="kbd_reanalyze_images_completed",
+        event="kbd_reanalyze_single_image_completed",
         kbd_id=kbd_id,
-        total=result["total"],
-        done=result["done"],
-        failed=result["failed"],
+        seq=seq,
+        screenshot_type=result["screenshot_type"],
         trace_id=trace_id,
     )
 
     return {
         "success": True,
         "kbd_id": kbd_id,
-        "total": result["total"],
-        "done": result["done"],
-        "failed": result["failed"],
-        "message": result.get("message", "识图完成"),
+        "seq": seq,
+        "screenshot_type": result["screenshot_type"],
+        "background": result["background"],
+        "full_text": result["full_text"],
+        "description": result["description"],
+        "desc": result["desc"],
+        "message": "识图完成",
     }
 
 
@@ -2294,7 +2351,6 @@ async def upload_sop_document(
             return {
                 "success": True,
                 "document_id": existing_doc.id,
-                "chunks_created": 0,
                 "status": existing_doc.status,
                 "duplicate": True,
                 "message": f"文件已导入（document_id={existing_doc.id}），跳过重复入库",
@@ -2325,7 +2381,6 @@ async def upload_sop_document(
     return {
         "success": True,
         "document_id": document_id,
-        "chunks_created": 0,
         "status": "draft",
         "duplicate": False,
         "title": doc_title,

@@ -1,11 +1,6 @@
 """
 KB Service — 文档入库路由
 
-POST /api/kb/ingest
-  - 调用方：LearningClaw（AI 学习成果写入）、ETL 脚本（批量历史案例导入）
-  - 鉴权：INTERNAL_API_TOKEN（简单 Bearer Token）
-  - 幂等：相同 source_id + content_hash 的文档不会重复入库
-
 POST /api/kb/sop/import
   - 调用方：管理员（手动导入 SOP 技能节点）
   - 批量写入 kb_sop_node
@@ -19,6 +14,8 @@ POST /api/kbd/ingest
 
 from __future__ import annotations
 
+import base64
+import io
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -26,8 +23,7 @@ from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from sqlalchemy import select
 
-from app.models.kbd_entry import KbdEntry, strip_markdown
-from app.services.ingestor import IngestorService
+from app.models.kbd_entry import KbdEntry, KbdImage, strip_markdown
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -49,23 +45,6 @@ def set_dependencies(db: DatabaseManager, embedding: EmbeddingService) -> None:
 
 
 # ---- 请求/响应模型 ----
-
-
-class IngestRequest(BaseModel):
-    """文档入库请求"""
-
-    title: str = Field(..., min_length=1, max_length=500, description="文档标题")
-    content_md: str = Field(..., min_length=10, description="Markdown 全文")
-    source_id: str | None = Field(None, max_length=50, description="原始案例ID（可选，用于幂等）")
-    source_type: str = Field("kb", pattern="^(kb|sop|realtime)$", description="来源类型")
-    category_l1: str | None = Field(None, max_length=100, description="一级分类")
-    category_l2: str | None = Field(None, max_length=100, description="二级分类")
-    tags: list[str] = Field(default_factory=list, description="标签列表")
-    summary: str | None = Field(None, description="摘要（中文）")
-    judgment_logic: str | None = Field(None, description="排查逻辑（中文）")
-    yaml_meta: dict | None = Field(None, description="结构化元数据")
-    difficulty: int = Field(3, ge=1, le=5, description="难度 1-5")
-    verified_version: str | None = Field(None, max_length=50, description="已验证的产品版本")
 
 
 class SopNodeImportItem(BaseModel):
@@ -100,50 +79,6 @@ def _check_auth(request: Request) -> None:
 
 
 # ---- 路由 ----
-
-
-@router.post("/ingest", status_code=status.HTTP_201_CREATED)
-async def ingest_document(request: Request, body: IngestRequest):
-    """文档入库
-
-    将 Markdown 文档分块、embedding，写入知识库。
-    支持幂等（相同内容不重复入库）。
-
-    调用方：LearningClaw / data-pipeline/kbd ETL 脚本
-    """
-    _check_auth(request)
-
-    if _db_manager is None or _embedding_service is None:
-        raise HTTPException(status_code=503, detail="服务未就绪")
-
-    logger.info(
-        event="ingest_request",
-        title=body.title[:50],
-        source_id=body.source_id,
-        source_type=body.source_type,
-        content_length=len(body.content_md),
-    )
-
-    try:
-        service = IngestorService(_db_manager, _embedding_service)
-        result = await service.ingest(
-            title=body.title,
-            content_md=body.content_md,
-            source_id=body.source_id,
-            source_type=body.source_type,
-            category_l1=body.category_l1,
-            category_l2=body.category_l2,
-            tags=body.tags,
-            summary=body.summary,
-            judgment_logic=body.judgment_logic,
-            yaml_meta=body.yaml_meta,
-            difficulty=body.difficulty,
-            verified_version=body.verified_version,
-        )
-        return result.to_dict()
-    except Exception as exc:
-        logger.error(event="ingest_failed", error=str(exc), title=body.title[:50])
-        raise HTTPException(status_code=500, detail=f"入库失败: {exc}") from exc
 
 
 @router.post("/sop/import", status_code=status.HTTP_201_CREATED)
@@ -239,6 +174,16 @@ class KbdIngestRequest(BaseModel):
             "section: 归属章节字段名；desc: Vision LLM 生成的描述"
         ),
     )
+    # 图片二进制（base64）：IMPORT 阶段原子写入 kbd_image 表，消灭 upload_images 孤儿脚本
+    # pipeline 零直连 DB；desc 初始空，由 VISION 阶段 reanalyze 填充
+    images: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "图片二进制列表；格式：[{seq, section, mime_type, data_base64}]；"
+            "data_base64: 原始图片 base64 编码；"
+            "与 images_json 的 seq 一一对应，原子写入 kbd_image 表"
+        ),
+    )
 
     # 聚合渲染（含视觉描述，pipeline 写入；admin 编辑章节后服务端自动重建）
     content_md: str | None = Field(None, description="聚合渲染 Markdown（含截图视觉描述）；不传时由章节字段自动组装")
@@ -261,12 +206,6 @@ class KbdIngestRequest(BaseModel):
         description=("仅覆盖指定状态的记录。不传=默认['draft']；['all']=所有状态；['draft','published']=仅指定状态"),
     )
 
-    # 向后兼容（deprecated）
-    force_update: bool = Field(
-        False,
-        description="[已废弃] 请使用 override 参数。仅更新 draft 状态的记录",
-    )
-
 
 class KbdIngestResponse(BaseModel):
     """KBD 条目入库响应"""
@@ -284,6 +223,86 @@ class KbdIngestResponse(BaseModel):
 # KBD 入库接口常量
 DEFAULT_OVERRIDE_STATUS = ["draft"]
 ALL_STATUS_MARKER = ["all", "*"]
+
+
+def _validate_images_contract(images: list[dict], images_json: list[dict]) -> None:
+    """契约校验：images 的 seq 集合 ⊆ images_json 的 seq 集合。
+
+    约束：每个图片二进制必须对应 images_json 中的一条占位记录。
+    - images_json 中可能有 desc 为空（待 VISION 填充）的占位条目
+    - 但每个 images 元素（带 data_base64）的 seq 必须已在 images_json 中声明
+
+    一致性由 converter.py 保证：
+    - images_json 与 images 使用相同的 seq 编号
+    - desc 初始空，由 VISION 阶段（reanalyze）填充
+
+    Raises:
+        ValueError: 契约违反（防呆，提醒调用方修复）
+    """
+    if not images:
+        return
+    img_seqs = {item.get("seq") for item in images if item.get("seq") is not None}
+    json_seqs = {item.get("seq") for item in images_json if item.get("seq") is not None}
+    extra = img_seqs - json_seqs
+    if extra:
+        raise ValueError(
+            f"images/images_json 契约违反：images 包含未在 images_json 声明的 seq={extra}。"
+            f"每个图片二进制必须对应 images_json 中的一条记录（desc 可空）。"
+        )
+
+
+async def _persist_kbd_images(session, kbd_entry_id: int, images: list[dict]) -> int:
+    """将请求中的 images（base64）upsert 到 kbd_image 表（按 kbd_entry_id+seq）。
+
+    IMPORT 阶段原子写入图片二进制，消灭 upload_images_to_db 孤儿脚本。
+    存原始二进制（reanalyze 时按需压缩），与 upload_images_to_db 行为一致。
+
+    Returns:
+        成功写入的图片数
+    """
+    if not images:
+        return 0
+
+    result = await session.execute(
+        select(KbdImage).where(KbdImage.kbd_entry_id == kbd_entry_id)
+    )
+    existing_map: dict[int, KbdImage] = {img.seq: img for img in result.scalars().all()}
+
+    written = 0
+    for img in images:
+        seq = img.get("seq")
+        if seq is None:
+            continue
+        mime_type = img.get("mime_type", "image/png")
+        try:
+            image_data = base64.b64decode(img["data_base64"])
+        except Exception as exc:
+            logger.warning(
+                event="kbd_image_decode_failed",
+                kbd_entry_id=kbd_entry_id, seq=seq, error=str(exc),
+            )
+            continue
+        width = height = None
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(image_data)) as im:
+                width, height = im.size
+        except Exception:
+            pass
+        if seq in existing_map:
+            row = existing_map[seq]
+            row.image_data = image_data
+            row.mime_type = mime_type
+            row.width = width
+            row.height = height
+        else:
+            session.add(KbdImage(
+                kbd_entry_id=kbd_entry_id, seq=seq,
+                image_data=image_data, mime_type=mime_type,
+                width=width, height=height,
+            ))
+        written += 1
+    return written
 
 
 @router.post("/kbd/ingest", status_code=status.HTTP_201_CREATED)
@@ -352,8 +371,12 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
-    # 参数解析：向后兼容 force_update → override
-    override = body.override or body.force_update
+    # P2 契约校验：images 与 images_json 的 seq 一致性
+    try:
+        _validate_images_contract(body.images, body.images_json)
+    except ValueError as exc:
+        logger.error(event="kbd_ingest_contract_violation", error=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc))
 
     if body.override_status is None:
         # 不传 override_status = 默认仅 draft
@@ -369,8 +392,8 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
         event="kbd_ingest_request",
         support_id=body.support_id,
         title=body.title[:50],
-        content_length=len(body.content_md),
-        override=override,
+        content_length=len(body.content_md or ""),
+        override=body.override,
         override_status=body.override_status,
         allowed_statuses=allowed_statuses,
     )
@@ -384,7 +407,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
             # 已存在记录的处理逻辑
             existing_status = existing_entry.status
 
-            if override:
+            if body.override:
                 # 检查状态是否允许覆盖
                 status_allowed = (
                     allowed_statuses is None  # 无限制
@@ -402,10 +425,15 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                     existing_entry.operational_impact = body.operational_impact
                     existing_entry.is_temporary = body.is_temporary
                     existing_entry.recommendations = body.recommendations
+                    existing_entry.steps_json = body.steps_json
                     existing_entry.signals_json = body.signals_json
+                    # P2-5 修复：先保存旧 images_json（含已识别的 desc），再覆盖。
+                    # 否则「先清空 images_json 再 rebuild_content_md()」会用空 desc 重建，
+                    # 导致截图描述丢失且依赖 VISION 随后必跑才恢复（不幂等）。
+                    old_images_json = list(existing_entry.images_json or [])
                     existing_entry.images_json = body.images_json
-                    # content_md：优先用传入值（含视觉描述），否则从章节重建
-                    existing_entry.content_md = body.content_md or existing_entry.rebuild_content_md()
+                    # content_md：优先用传入值（含视觉描述），否则以旧 desc 回填后从章节重建
+                    existing_entry.content_md = body.content_md or existing_entry.rebuild_content_md(old_images_json=old_images_json)
                     existing_entry.content_raw = body.content_raw or strip_markdown(existing_entry.content_md)
                     existing_entry.entry_metadata = body.metadata
                     if body.ai_category_id:
@@ -414,6 +442,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                         existing_entry.ai_category_conf = body.ai_category_conf
                     if body.ai_category_reason:
                         existing_entry.ai_category_reason = body.ai_category_reason
+                    await _persist_kbd_images(session, existing_entry.id, body.images)
                     await session.commit()
 
                     logger.info(
@@ -505,6 +534,8 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
             status="draft",
         )
         session.add(new_entry)
+        await session.flush()  # 拿 new_entry.id，与 kbd_image 同事务原子写入
+        await _persist_kbd_images(session, new_entry.id, body.images)
         await session.commit()
 
         # 3. 刷新获取 ID

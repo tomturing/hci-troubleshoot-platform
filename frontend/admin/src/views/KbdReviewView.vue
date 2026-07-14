@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FullScreen } from '@element-plus/icons-vue'
+import { FullScreen, Refresh } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -107,6 +107,7 @@ interface ScreenshotSegment {
   errorLabel: string
   fields: ScreenshotFields
   expanded: boolean
+  seq?: number
 }
 
 type ContentSegment = NormalSegment | ScreenshotSegment
@@ -278,9 +279,18 @@ async function submitReject() {
 
 const reclassifyLoading = ref<number | null>(null)  // 正在重分类的 entry.id
 const reanalyzeLoading = ref<number | null>(null)   // 正在重识图的 entry.id
+const reanalyzeSingleLoading = ref<{ kbdId: number; seq: number } | null>(null)  // 正在重识图的单张图片
 
 async function handleReclassify(entry: KbdEntry) {
-  if (!confirm(`确认用最新 Prompt 重新分类「${entry.title.slice(0, 30)}...」？`)) return
+  try {
+    await ElMessageBox.confirm(
+      `确认用最新 Prompt 重新分类「${entry.title}」？`,
+      '重新分类',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
   reclassifyLoading.value = entry.id
   try {
     const resp = await fetch(`/api/v1/kbd/${entry.id}/reclassify`, {
@@ -297,6 +307,12 @@ async function handleReclassify(entry: KbdEntry) {
       entries.value[idx].ai_category_conf = data.confidence
       entries.value[idx].ai_category_reason = data.reason
     }
+    // 刷新详情中的该条目
+    if (detailEntry.value && detailEntry.value.id === entry.id) {
+      detailEntry.value.ai_category_id = data.category_id
+      detailEntry.value.ai_category_conf = data.confidence
+      detailEntry.value.ai_category_reason = data.reason
+    }
   } catch (err: any) {
     ElMessage.error(`重新分类失败：${err.message || '未知错误'}`)
   } finally {
@@ -305,10 +321,20 @@ async function handleReclassify(entry: KbdEntry) {
 }
 
 async function handleReanalyzeImages(entry: KbdEntry) {
-  if (!confirm(`确认用最新 Prompt 重新识图「${entry.title.slice(0, 30)}...」？\n耗时较长，请耐心等待。`)) return
+  try {
+    await ElMessageBox.confirm(
+      `确认用最新 Prompt 重新识图「${entry.title}」？\n\n注意：重新识图耗时较长，请耐心等待。`,
+      '重新识图',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
   reanalyzeLoading.value = entry.id
   try {
-    const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-images`, {
+    // 临时修复：使用同步模式避免异步轮询未实现导致的 undefined 问题
+    // TODO: 后续实现异步轮询机制以避免长时间HTTP连接超时
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-images?sync=true`, {
       method: 'POST',
       headers: authHeader,
     })
@@ -320,7 +346,11 @@ async function handleReanalyzeImages(entry: KbdEntry) {
     if (data.total === 0) {
       ElMessage.warning(data.message || '该 KBD 无原始图片，无法重算识图')
     } else {
-      ElMessage.success(`识图完成：成功 ${data.done} 张，失败 ${data.failed} 张`)
+      ElMessage.success({
+        message: `识图完成：成功 ${data.done} 张，失败 ${data.failed} 张`,
+        duration: 0,
+        showClose: true,
+      })
     }
     // 刷新详情（如果打开）
     if (detailEntry.value?.id === entry.id) {
@@ -330,12 +360,82 @@ async function handleReanalyzeImages(entry: KbdEntry) {
         const fresh = await detailResp.json()
         detailEntry.value = fresh
         parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
+        parsedSegments.value = parseContentMd(fresh.content_md || '')
+        associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
+        // 同时更新列表里的该条目
+        const idx = entries.value.findIndex(e => e.id === entry.id)
+        if (idx !== -1) {
+          entries.value[idx].content_md = fresh.content_md
+          entries.value[idx].images_json = fresh.images_json
+        }
       }
     }
   } catch (err: any) {
-    ElMessage.error(`重新识图失败：${err.message || '未知错误'}`)
+    ElMessage.error({
+      message: `重新识图失败：${err.message || '未知错误'}`,
+      duration: 0,
+      showClose: true,
+    })
   } finally {
     reanalyzeLoading.value = null
+  }
+}
+
+// 单张图片重新识图
+async function handleReanalyzeSingleImage(entry: KbdEntry, seq: number) {
+  try {
+    await ElMessageBox.confirm(
+      `确认重新识图第 ${seq + 1} 张图片（img_${seq}）？`,
+      '单张重新识图',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  reanalyzeSingleLoading.value = { kbdId: entry.id, seq }
+  try {
+    // 临时修复：使用同步模式避免异步轮询未实现导致的 undefined 问题
+    // TODO: 后续实现异步轮询机制以避免长时间HTTP连接超时
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-image/${seq}?sync=true`, {
+      method: 'POST',
+      headers: authHeader,
+    })
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}))
+      throw new Error(errData.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    ElMessage.success({
+      message: `识图完成：${data.screenshot_type}`,
+      duration: 0,  // 不自动关闭
+      showClose: true,
+    })
+    // 刷新详情（如果打开）
+    if (detailEntry.value?.id === entry.id) {
+      // 重新获取该条目详情
+      const detailResp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
+      if (detailResp.ok) {
+        const fresh = await detailResp.json()
+        detailEntry.value = fresh
+        parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
+        parsedSegments.value = parseContentMd(fresh.content_md || '')
+        associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
+        // 同时更新列表里的该条目
+        const idx = entries.value.findIndex(e => e.id === entry.id)
+        if (idx !== -1) {
+          entries.value[idx].content_md = fresh.content_md
+          entries.value[idx].images_json = fresh.images_json
+        }
+      }
+    }
+  } catch (err: any) {
+    ElMessage.error({
+      message: `重新识图失败：${err.message || '未知错误'}`,
+      duration: 0,  // 不自动关闭
+      showClose: true,
+    })
+  } finally {
+    reanalyzeSingleLoading.value = null
   }
 }
 
@@ -347,6 +447,7 @@ function openDetailDialog(entry: KbdEntry) {
   inlineContent.value = entry.content_md || ''
   parsedSegments.value = parseContentMd(entry.content_md || '')
   parsedImagesJson.value = parseImagesJson(entry.images_json || [])
+  associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
   detailFullscreen.value = false
   detailDialogVisible.value = true
 }
@@ -519,8 +620,8 @@ function parseScreenshotBlockV2(lines: string[]): ScreenshotSegment {
   const descriptionLines: string[] = []
 
   for (const line of lines) {
-    // 剥离 "> " 前缀（v2 格式每行都以 "> " 开头）
-    const stripped = line.replace(/^>\s*/, '').trim()
+    // 剥离 "> " 前缀（v2 格式每行都以 "> " 开头，支持前面有缩进空格）
+    const stripped = line.replace(/^\s*>\s*/, '').trim()
     if (!stripped) continue
 
     if (/^BACKGROUND:\s*/.test(stripped)) {
@@ -579,14 +680,14 @@ function parseScreenshotBlockV2(lines: string[]): ScreenshotSegment {
 
 /** 将截图说明行组解析为 ScreenshotSegment（自动检测 v1/v2 格式） */
 function parseScreenshotBlock(lines: string[]): ScreenshotSegment {
-  // 检测格式版本：v2 格式的行以 "> BACKGROUND:" 或 "> TYPE:" 等开头
-  const isV2 = lines.some(l => /^>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(l))
+  // 检测格式版本：v2 格式的行以 "> BACKGROUND:" 或 "> TYPE:" 等开头，支持前面有缩进空格
+  const isV2 = lines.some(l => /^\s*>\s*(BACKGROUND|TYPE|FULL_TEXT|KEY|TIPS|DESCRIPTION):/.test(l))
   if (isV2) return parseScreenshotBlockV2(lines)
 
   // ── v1 兼容解析（旧格式 0-4 字段）──────────────────────────────────────────
-  // 第一行: > **【截图说明】**：[可能直接是字段0内容]
+  // 第一行: > **【截图说明】**：[可能直接是字段0内容]，支持前面有缩进空格
   const introLine = lines[0] || ''
-  const introRaw = introLine.replace(/^>\s*\*\*【截图说明】\*\*[：:]\s*/, '').trim()
+  const introRaw = introLine.replace(/^\s*>\s*\*\*【截图说明】\*\*[：:]\s*/, '').trim()
 
   // 字段0 可能直接嵌在 intro 行（converter 将 desc.txt 首行拼在 "【截图说明】：" 后面）
   let bgColorText = ''
@@ -692,7 +793,7 @@ function parseContentMd(md: string): ContentSegment[] {
   }
 
   for (const line of lines) {
-    const isScreenshotStart = line.startsWith('> ') && line.includes('【截图说明】')
+    const isScreenshotStart = line.trim().startsWith('>') && line.includes('【截图说明】')
 
     if (isScreenshotStart) {
       flushNormal()
@@ -708,8 +809,8 @@ function parseContentMd(md: string): ContentSegment[] {
       const isBlank = trimmed === ''
 
       // 检测截图块结束：只要是一行非空且不以 '>' 开头（且不是下一个 section 的标题 ##），
-      // 那么它必然是普通排障正文，代表截图块已经结束
-      const isEndLine = !isBlank && !line.startsWith('>') && !trimmed.startsWith('##')
+      // 那么它必然是普通排障正文，代表截图块已经结束，支持前面有缩进空格
+      const isEndLine = !isBlank && !line.trim().startsWith('>') && !trimmed.startsWith('##')
 
       if (trimmed.startsWith('## ') || isEndLine && screenshotLines.length > 1) {
         flushScreenshot()
@@ -734,6 +835,41 @@ function parseContentMd(md: string): ContentSegment[] {
   flushNormal()
   flushScreenshot()
   return segments
+}
+
+/** 匹配并关联文档段落中的截图与 parsedImagesJson 中的 seq 序号 */
+function associateSegmentsWithSeq(segments: ContentSegment[], images: ParsedImageJson[]) {
+  const matchedIndices = new Set<number>()
+  segments.forEach(seg => {
+    if (seg.type === 'screenshot') {
+      // 优先匹配内容（DESCRIPTION / visibleContent）
+      let matchIdx = images.findIndex((img, idx) => {
+        if (matchedIndices.has(idx)) return false
+
+        // 比较 DESCRIPTION
+        if (seg.fields.description && img.description && img.description !== '（无描述）' && img.description !== '(无描述)') {
+          return seg.fields.description === img.description
+        }
+
+        // 比较可见内容文字
+        if (seg.fields.visibleContent && seg.fields.visibleContent.length && img.visibleContent && img.visibleContent.length) {
+          return JSON.stringify(seg.fields.visibleContent) === JSON.stringify(img.visibleContent)
+        }
+
+        return false
+      })
+
+      // 兜底：若未匹配成功，分配第一个尚未被匹配的图片
+      if (matchIdx === -1) {
+        matchIdx = images.findIndex((_, idx) => !matchedIndices.has(idx))
+      }
+
+      if (matchIdx !== -1) {
+        matchedIndices.add(matchIdx)
+        seg.seq = images[matchIdx].seq
+      }
+    }
+  })
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -769,6 +905,7 @@ async function saveInlineEdit() {
     if (idx !== -1) entries.value[idx].content_md = newContent
     // 重新解析内容预览
     parsedSegments.value = parseContentMd(newContent)
+    associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
     editingContent.value = false
     ElMessage.success('内容已保存')
   } catch {
@@ -1042,7 +1179,7 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 操作 -->
-        <el-table-column label="操作" width="340" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <div class="action-btn-group">
             <el-button type="info" size="small" text @click="openDetailDialog(row)">详情</el-button>
@@ -1143,6 +1280,17 @@ onMounted(() => {
               v-if="detailEntry.ai_category_conf !== null"
               :style="{ marginLeft: '8px', color: confidenceColor(detailEntry.ai_category_conf) }"
             >{{ confidenceLabel(detailEntry.ai_category_conf) }}</span>
+            <el-button
+              type="primary"
+              link
+              size="small"
+              style="margin-left: 8px; padding: 0; display: inline-flex; align-items: center; vertical-align: middle;"
+              :loading="reclassifyLoading === detailEntry.id"
+              @click="handleReclassify(detailEntry)"
+              title="重新分类"
+            >
+              <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+            </el-button>
             <el-tag
               v-if="detailEntry.ai_category_conf !== null && detailEntry.ai_category_conf < 0.5"
               type="warning" size="small" style="margin-left: 4px"
@@ -1296,6 +1444,17 @@ onMounted(() => {
                   <span v-if="seg.fields.intro" class="screenshot-intro-preview">
                     {{ seg.fields.intro.slice(0, 30) }}{{ seg.fields.intro.length > 30 ? '…' : '' }}
                   </span>
+                  <el-button
+                    type="warning"
+                    size="small"
+                    style="margin-right: 8px;"
+                    :loading="reanalyzeSingleLoading?.kbdId === detailEntry.id && reanalyzeSingleLoading?.seq === seg.seq"
+                    @click.stop="handleReanalyzeSingleImage(detailEntry, seg.seq !== undefined ? seg.seq : 0)"
+                    title="重新识图此张"
+                  >
+                    <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+                    重新识图
+                  </el-button>
                   <span class="toggle-arrow">{{ seg.expanded ? '▲' : '▼' }}</span>
                 </div>
 
@@ -1357,6 +1516,17 @@ onMounted(() => {
                   <span class="screenshot-intro-preview">
                     {{ img.section }}
                   </span>
+                  <el-button
+                    type="warning"
+                    size="small"
+                    style="margin-right: 8px;"
+                    :loading="reanalyzeSingleLoading?.kbdId === detailEntry.id && reanalyzeSingleLoading?.seq === img.seq"
+                    @click.stop="handleReanalyzeSingleImage(detailEntry, img.seq)"
+                    title="重新识图此张"
+                  >
+                    <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+                    重新识图
+                  </el-button>
                   <span class="toggle-arrow">{{ img.expanded ? '▲' : '▼' }}</span>
                 </div>
 

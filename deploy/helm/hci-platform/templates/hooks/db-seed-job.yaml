@@ -24,7 +24,8 @@ metadata:
     app.kubernetes.io/component: db-seed
   annotations:
     argocd.argoproj.io/hook: PostSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    # D-011: 必须包含 HookFailed，防止 PostSync 失败 hook 残留
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookFailed
     "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-weight": "0"
     "helm.sh/hook-delete-policy": before-hook-creation

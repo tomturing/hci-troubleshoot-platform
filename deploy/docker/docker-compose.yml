@@ -158,6 +158,8 @@ services:
     environment:
       PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://coding.dashscope.aliyuncs.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
       ZAI_BASE_URL: ${ZAI_BASE_URL:-http://host.docker.internal:18790}
       ZAI_API_KEY: ${ZAI_API_KEY:-hci-dev-openclaw-token}
       API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}

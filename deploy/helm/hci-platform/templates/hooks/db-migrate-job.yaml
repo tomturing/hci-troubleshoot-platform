@@ -23,7 +23,8 @@ metadata:
     app.kubernetes.io/component: db-migrate
   annotations:
     argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    # D-011: 必须包含 HookFailed，否则 PreSync 失败后会残留 Job 并阻塞后续 re-sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookFailed
     helm.sh/hook-weight: "-5"
 spec:
   backoffLimit: 0

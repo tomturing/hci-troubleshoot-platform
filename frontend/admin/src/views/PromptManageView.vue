@@ -32,7 +32,8 @@ const placeholdersMap: Record<string, string[]> = {
   S3: ['{hypotheses}', '{verification_steps}'],
   S4: ['{hypotheses}'],
   S5: ['{root_cause}'],
-  S6: []
+  S6: [],
+  KBD: ['{count}', '{categories_text}', '{title}', '{problem_desc}', '{context}']
 }
 
 // 诊断阶段列表及其中文名
@@ -43,7 +44,8 @@ const stages = [
   { value: 'S2', label: 'S2 根因假设生成' },
   { value: 'S3', label: 'S3 假设证据验证' },
   { value: 'S4', label: 'S4 根因确认报告' },
-  { value: 'S5', label: 'S5 解决方案输出' }
+  { value: 'S5', label: 'S5 解决方案输出' },
+  { value: 'KBD', label: 'KBD 分类与识图' }
 ]
 
 // 过滤出当前选定 Stage 的 Prompts
@@ -526,6 +528,7 @@ onMounted(() => {
 .badge-s3 { background: #e67e22; color: white; }
 .badge-s4 { background: #e74c3c; color: white; }
 .badge-s5 { background: #f1c40f; color: #34495e; }
+.badge-kbd { background: #1abc9c; color: white; }
 
 .stage-label {
   font-size: 14px;
