@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-14 | v3.12 | **关键信号 Prompt 种子补齐 + Pipeline Stage 修复（PR #549）**：① `database/seeds/02_system_prompts.sql` 新增 `kbd_extract_signals_v1` 种子（与 atlas 迁移内容一致），修复 Prompt 管理页看不到「关键信号分级抽取」的问题；② data-pipeline `EXTRACT_SIGNALS` Stage 补齐异步 job+轮询（复用 `signal_job_manager`）、DAG 依赖 `CLASSIFY`、CLI `extract/5` 暴露，并修复 resume 路径缺失的 `get_completed_ids_for_stage` 导入 | — |
 | 2026-07-14 | v3.11 | **关键信号字段级抽取后续清理（PR #547）**：① agent-service `signal/variable_pool` 注册键统一 `.upper()`、`render_template` 仅匹配大写 `{{VAR}}` 占位符（ADR-2 强制校验，小写/单括号视为非法被丢弃）；② `signal/template.py` 占位符全改为 `{{HOST}}`；③ 数据库 `desired_schema.sql` 彻底移除 `steps_json` 列与 GIN 索引、仅保留 `signals_json`（ADR-1）；④ `ToolManageView.vue` 支持从信号面板跳转预填检索 | — |
 | 2026-06-17 | v3.10 | **ReAct 工具调用历史跨轮次持久化（PR #472）**：① `message_role` ENUM 增加 `tool_call`/`tool_result` 角色；② `message` 表新增 `tool_call_id` 字段；③ agent-service `_persist_tool_turn()` 每次工具执行后持久化；④ conversation-service `/tool-turn` 接口接收写入；⑤ `history_messages` 重建逻辑重写，还原 OpenAI messages 格式 + 滑动窗口压缩（最近 10 步完整保留） | [../../solution/agent/events/2026-06-17-ReAct工具调用历史跨轮次持久化.md](../../solution/agent/events/2026-06-17-ReAct工具调用历史跨轮次持久化.md) |
 | 2026-06-08 | v1.0 | 初版：四阶段任务分解，含验收标准 |
