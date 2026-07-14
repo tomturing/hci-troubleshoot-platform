@@ -77,6 +77,88 @@ _PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}")
 # 用于检测"任何双花括号占位符"（含非法大小写）以报错
 _ANY_PLACEHOLDER_RE = re.compile(r"\{\{([^}]*)\}\}")
 
+# 字段级溯源：抽取方法标识（写入每条信号的 extraction_method）
+EXTRACTION_METHOD = "llm_field_level_v1"
+# 低置信阈值：校准后置信度低于此值标 needs_review（镜像 classify 的 low_confidence，§3）
+NEEDS_REVIEW_CONFIDENCE_THRESHOLD = 0.5
+# 合法来源章节（LLM 自报 source_section 必须落在此集合，否则回退推断）
+_VALID_SOURCE_SECTIONS = {
+    "problem_description", "alert_info", "steps_text", "root_cause", "solution",
+}
+
+
+def _signal_quality_score(signal: dict[str, Any]) -> float:
+    """结构质量分(0-1)：占位符/变量/判定契约合法性。
+
+    经过 _validate_signal 的信号已保证占位符大写、requires 在 schema 内，
+    故此处仅对"判定/产出契约完整性"打分，作为置信度校准的结构质量因子。
+    """
+    score = 0.3  # 占位符大写 + 变量合法性基础分（已校验通过）
+    if signal.get("signal_category") == "backend":
+        score += 0.3 if signal.get("requires") else 0.3  # backend 允许无 requires
+        score += 0.4 if signal.get("matcher") else 0.0
+    else:  # frontend
+        score += 0.3 if signal.get("requires") else 0.3
+        score += 0.4 if signal.get("produces") else 0.0
+    return min(1.0, score)
+
+
+def _infer_source(signal: dict[str, Any]) -> str:
+    """字段级溯源：推断信号主要来自哪个输入章节（source）。
+
+    LLM 自报 source_section 优先；否则按角色回退：
+    - 消费者(backend)：有 matcher → 多来自 root_cause/solution，回退 root_cause
+    - 生产者(frontend)：多为 steps_text 中的祈使子句
+    """
+    ss = (signal.get("source_section") or "").strip()
+    if ss in _VALID_SOURCE_SECTIONS:
+        return ss
+    if signal.get("signal_category") == "backend":
+        return "root_cause" if signal.get("matcher") else "steps_text"
+    return "steps_text"
+
+
+def _calibrate_confidence(signal: dict[str, Any], quality: float) -> float:
+    """字段级置信度校准（基于信号质量与证据充分性）。
+
+    校准 = base × (0.5·结构质量 + 0.5·证据充分性)，并钳制到 [0.05, 0.99]。
+    - base：LLM 自评估 confidence（0-1），缺失时取默认 0.7
+    - 证据充分性：backend 必须有 matcher、frontend 必须有 produces，否则降级
+    """
+    llm_conf = signal.get("confidence")
+    try:
+        llm_conf = float(llm_conf) if llm_conf is not None else None
+    except (TypeError, ValueError):
+        llm_conf = None
+    if llm_conf is None or not (0.0 <= llm_conf <= 1.0):
+        llm_conf = 0.7
+
+    if signal.get("signal_category") == "backend":
+        evidence = 1.0 if signal.get("matcher") else 0.3
+    else:
+        evidence = 1.0 if signal.get("produces") else 0.4
+
+    calibrated = llm_conf * (0.5 * quality + 0.5 * evidence)
+    return round(max(0.05, min(0.99, calibrated)), 3)
+
+
+def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
+    """为单条信号补充字段级溯源与置信度校准（不改变既有字段）。
+
+    新增字段（对齐评审清单）：
+    - source: 主要来源章节（字段级溯源）
+    - extraction_method: 抽取方法标识（固定为 llm_field_level_v1）
+    - confidence: 校准后置信度(0-1)
+    """
+    quality = _signal_quality_score(signal)
+    enriched = dict(signal)
+    enriched["extraction_method"] = EXTRACTION_METHOD
+    enriched["source"] = _infer_source(signal)
+    enriched["confidence"] = _calibrate_confidence(signal, quality)
+    # 低置信/歧义信号标 needs_review（镜像 classify 的 low_confidence，§3）
+    enriched["needs_review"] = enriched["confidence"] < NEEDS_REVIEW_CONFIDENCE_THRESHOLD
+    return enriched
+
 
 def set_dependencies(db: DatabaseManager) -> None:
     """注入数据库依赖（由 main.py lifespan 调用）"""
@@ -207,7 +289,8 @@ def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[li
     for s in raw_signals:
         ok, err = _validate_signal(s, available_vars)
         if ok:
-            validated.append(s)
+            # 字段级溯源 + 置信度校准（评审清单：source/extraction_method/confidence）
+            validated.append(_enrich_signal(s))
         else:
             rejected.append({"signal": s, "reason": err})
             logger.warning("extract_signals 信号被丢弃 source=%s reason=%s", source_id, err)

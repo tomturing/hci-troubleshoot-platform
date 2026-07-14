@@ -46,6 +46,11 @@ EARLY_STOP_THRESHOLD = 2
 # 工具执行连续失败超过此次数后停止，防止在损坏环境中无限等待
 MAX_CONSECUTIVE_FAILURES = 3
 
+# ADR-2 占位符：运行期解析统一认 {{NAME}}（NAME 大小写均可，解析时按精确 key 匹配）。
+# 注意：大写强制在抽取/校验层（KeySignal.validate + Prompt 指令）执行；运行期解析对
+# 缺失变量保留原样（如生产者尚未产出该变量），不抛异常，交由下层处理。
+_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z0-9_.]+)\}\}")
+
 
 @dataclass
 class StepResult:
@@ -96,6 +101,8 @@ class KBDDiagnostic:
         self._assistant_type = assistant_type
         self._early_stop = early_stop_threshold
         self._result: KBDDiagResult | None = None
+        # 会话级变量池（黑板）：阶段 A 生产者(QKV)写入，阶段 B 消费者(QFK)读取
+        self._variable_pool: dict[str, Any] = {}
 
     def get_result(self) -> KBDDiagResult | None:
         """获取最近一次 diagnose() 调用的结果（调用前返回 None）。"""
@@ -173,6 +180,9 @@ class KBDDiagnostic:
             },
         )
 
+        # ─── 阶段 A：生产者先跑，填充会话变量池（黑板）─────────────────
+        await self._run_producers(remaining, env_context, session_id)
+
         # ─── 贪心消除主循环 ──────────────────────────────────────────
         while len(remaining) > self._early_stop:
             executed_tools = {s.tool_name for s in steps_executed}
@@ -183,9 +193,9 @@ class KBDDiagnostic:
                 # 所有共享步骤均已执行，退出
                 break
 
-            # 2. 构建工具执行参数（替换 env_context 占位符）
+            # 2. 构建工具执行参数（替换 env_context ∪ 变量池 占位符）
             representative_step = self._get_representative_step(remaining, best_tool_name)
-            tool_args = self._resolve_args(representative_step.tool_args_template, env_context)
+            tool_args = self._resolve_args(representative_step.tool_args_template, env_context, self._variable_pool)
 
             yield AgentStageUpdate(
                 stage="kbd_diag_step",
@@ -197,12 +207,14 @@ class KBDDiagnostic:
                 },
             )
 
-            # 3. 执行工具
+            # 3. 执行工具（按 acquirer 路由：qkv→QKV / qfk→QFK / 其他→通用 tool_executor）
             raw_output: str | None = None
             error: str | None = None
+            pre_matched: bool | None = None
             try:
-                result = await self._tool_executor.execute(best_tool_name, tool_args)
-                raw_output = str(result) if result is not None else ""
+                raw_output, error, pre_matched = await self._execute_acquirer(
+                    representative_step, env_context, session_id, user_id
+                )
                 consecutive_failures = 0  # 重置连续失败计数
             except Exception as exc:
                 error = str(exc)
@@ -230,6 +242,7 @@ class KBDDiagnostic:
                     actual_output=raw_output,
                     kbds=remaining,
                     user_id=user_id,
+                    pre_matched=pre_matched,
                 )
 
             step_result = StepResult(
@@ -362,22 +375,36 @@ class KBDDiagnostic:
             if step is not None:
                 return step
         # 不应发生（_pick_best_step 保证工具来自某个 KBD）
-        return KBDStep(tool_name=tool_name, tool_args_template={}, expected_pattern="")
+        return KBDStep(tool_name=tool_name, tool_args_template={}, expected_pattern="", matcher=None)
 
     @staticmethod
-    def _resolve_args(template: dict, env_context: dict[str, str]) -> dict:
-        """将 args 模板中的 {{placeholder}} 替换为 env_context 中的实际值。
+    def _resolve_args(
+        template: dict,
+        env_context: dict[str, str] | None = None,
+        variable_pool: dict | None = None,
+    ) -> dict:
+        """将 args 模板中的 {{NAME}} 替换为 env_context ∪ variable_pool 中的实际值。
+
+        ADR-2：统一占位符为 {{VAR}}。运行期把“环境上下文”与“会话变量池（黑板）”合并后做单遍
+        正则替换（同一套渲染、同一个池）；未命中（如生产者尚未产出该变量）的占位符保留原样。
 
         示例：
-            template = {"vm_name": "{{vm_name}}"}
-            env_context = {"vm_name": "vm-001"}
-            → {"vm_name": "vm-001"}
+            template = {"scope": "{{HOST}}"}
+            variable_pool = {"HOST": "node-001"}
+            → {"scope": "node-001"}
         """
+        merged: dict[str, Any] = dict(env_context or {})
+        if variable_pool:
+            merged.update(variable_pool)
+
         resolved = {}
         for k, v in template.items():
             if isinstance(v, str):
-                for ctx_key, ctx_val in env_context.items():
-                    v = v.replace(f"{{{{{ctx_key}}}}}", ctx_val)
+                def _rep(m: "re.Match[str]") -> str:
+                    name = m.group(1)
+                    return str(merged[name]) if name in merged else m.group(0)
+
+                v = _PLACEHOLDER_RE.sub(_rep, v)
             resolved[k] = v
         return resolved
 
@@ -387,18 +414,36 @@ class KBDDiagnostic:
         actual_output: str,
         kbds: list[KBD],
         user_id: str = "",
+        pre_matched: bool | None = None,
     ) -> set[str]:
         """判断实际输出与各 KBD 期望模式的匹配度，返回匹配 KBD 的 ID 集合。
 
-        策略（优先规则判断，降低 LLM 调用次数）：
+        策略（优先规则/类型化判断，降低 LLM 调用次数）：
+          - Matcher dict（来自信号 schema）：按 type 做 5 类定型求值（§6）
           - __REGEX__: 正则匹配 → 程序判断
           - __CONTAINS__: 包含文本 → 程序判断
-          - 自然语言 → LLM 批量判断
+          - __MATCHER__:<json>：解析为 Matcher dict 后类型化求值
+          - 自然语言 / 无法定求值 → LLM 批量判断
         """
         rule_results: dict[str, bool] = {}  # kbd_id → 规则判断结果
         llm_kbds: list[KBD] = []  # 需要 LLM 判断的 KBD
 
         for kbd in kbds:
+            # 优先使用信号 schema 中的 Matcher dict 做类型化定值（§6）
+            matcher = kbd.get_matcher(tool_name)
+            if matcher is not None:
+                if pre_matched is not None and matcher.get("type") == "keyword":
+                    # qfk 引擎已对 keyword 类型完成布尔判定，直接采信
+                    rule_results[kbd.id] = pre_matched
+                    continue
+                ev = self._evaluate_matcher(matcher, actual_output)
+                if ev is not None:
+                    rule_results[kbd.id] = ev
+                    continue
+                llm_kbds.append(kbd)
+                continue
+
+            # 兼容旧 KBD 的 expected_pattern 三态
             pattern = kbd.get_expected_pattern(tool_name)
             if pattern is None:
                 # KBD 无此步骤定义 → 不应出现，保守地保留该 KBD
@@ -418,27 +463,17 @@ class KBDDiagnostic:
                 rule_results[kbd.id] = keyword.lower() in actual_output.lower()
 
             elif pattern.startswith(PATTERN_MATCHER_PREFIX):
-                # 关键信号 matcher dict：程序化处理 keyword/regex；其他类型(state/threshold/json_path/exists) 留待 LLM
+                # 旧 Matcher 序列化：解析为 dict 后类型化定值
                 try:
                     matcher = json.loads(pattern[len(PATTERN_MATCHER_PREFIX):])
                 except (json.JSONDecodeError, ValueError):
                     rule_results[kbd.id] = True
                     continue
-                mtype = matcher.get("type", "")
-                p = matcher.get("pattern", "") or ""
-                expected = matcher.get("expected", True)
-                if mtype == "regex":
-                    try:
-                        hit = bool(re.search(p, actual_output, re.IGNORECASE | re.DOTALL))
-                        rule_results[kbd.id] = (hit is expected)
-                    except re.error:
-                        rule_results[kbd.id] = True
-                elif mtype == "keyword" and isinstance(p, str):
-                    hit = p.lower() in actual_output.lower()
-                    rule_results[kbd.id] = (hit is expected)
-                else:
-                    # state/threshold/json_path/exists → LLM judge
-                    llm_kbds.append(kbd)
+                ev = self._evaluate_matcher(matcher, actual_output)
+                if ev is not None:
+                    rule_results[kbd.id] = ev
+                    continue
+                llm_kbds.append(kbd)
 
             else:
                 # 自然语言描述 → 推迟到 LLM 判断
@@ -459,6 +494,355 @@ class KBDDiagnostic:
                 matched_ids.add(kbd.id)
 
         return matched_ids
+
+    # ─── Matcher 类型化求值（§6：5 类定型 valuator）────────────────────────────
+
+    def _evaluate_matcher(self, matcher: dict[str, Any], actual_output: str) -> bool | None:
+        """对单条 Matcher 契约做确定性（非 LLM）布尔求值。
+
+        返回 True/False 表示“符合期望”；返回 None 表示无法定值（交由 LLM 兜底）。
+        支持类型：keyword / regex / state / threshold / json_path / exists。
+        """
+        if not isinstance(matcher, dict):
+            return None
+        mtype = matcher.get("type", "")
+        expected = matcher.get("expected", True)
+        out_l = (actual_output or "").lower()
+
+        if mtype == "keyword":
+            p = matcher.get("pattern", "")
+            kws = [p] if isinstance(p, str) else list(p or [])
+            if not kws:
+                return None
+            if matcher.get("mode") == "all":
+                hit = all(k.lower() in out_l for k in kws)
+            else:  # any（默认）
+                hit = any(k.lower() in out_l for k in kws)
+            return hit is expected
+
+        if mtype == "regex":
+            p = matcher.get("pattern", "")
+            if not isinstance(p, str) or not p:
+                return None
+            try:
+                hit = bool(re.search(p, actual_output or "", re.IGNORECASE | re.DOTALL))
+            except re.error:
+                return None
+            return hit is expected
+
+        if mtype == "state":
+            # 期望状态值（如 running/active/healthy）出现在输出即视为命中
+            p = matcher.get("pattern", "")
+            if not isinstance(p, str) or not p:
+                return None
+            hit = p.lower() in out_l
+            return hit is expected
+
+        if mtype == "threshold":
+            # 解析首个数值，与 operator/value 比较
+            val = self._extract_number(actual_output)
+            target = matcher.get("value")
+            op = matcher.get("operator", ">")
+            if val is None or target is None:
+                return None
+            try:
+                target = float(target)
+            except (TypeError, ValueError):
+                return None
+            if op == ">":
+                cmp = val > target
+            elif op == ">=":
+                cmp = val >= target
+            elif op == "<":
+                cmp = val < target
+            elif op == "<=":
+                cmp = val <= target
+            elif op == "==" or op == "=":
+                cmp = val == target
+            elif op == "!=":
+                cmp = val != target
+            else:
+                return None
+            return cmp is expected
+
+        if mtype == "json_path":
+            # 从探针 JSON 输出取路径值再判定
+            try:
+                data = json.loads(actual_output)
+            except (json.JSONDecodeError, ValueError):
+                return None
+            node = self._read_json_path(data, matcher.get("path", ""))
+            if "expected_value" in matcher:
+                return (node == matcher.get("expected_value")) is expected
+            # 仅判定存在性
+            return (node is not None) is expected
+
+        if mtype == "exists":
+            # 存在性：输出非空且不含“不存在/not found”等否定标记
+            present = bool(
+                actual_output
+                and actual_output.strip()
+                and "不存在" not in out_l
+                and "not found" not in out_l
+            )
+            return present is expected
+
+        # 未知类型 → 交 LLM
+        return None
+
+    @staticmethod
+    def _extract_number(text: str) -> float | None:
+        """从文本中提取首个数值（支持整数/小数/负数/百分号）。"""
+        if not text:
+            return None
+        m = re.search(r"-?\d+(?:\.\d+)?", text)
+        if not m:
+            return None
+        try:
+            return float(m.group(0))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _read_json_path(data: Any, path: str) -> Any:
+        """按点分路径读取嵌套 JSON 节点（如 "a.b.0.c"）。"""
+        if not path:
+            return data
+        node: Any = data
+        for part in path.split("."):
+            if isinstance(node, dict) and part in node:
+                node = node[part]
+            elif isinstance(node, list):
+                try:
+                    node = node[int(part)]
+                except (ValueError, IndexError):
+                    return None
+            else:
+                return None
+        return node
+
+    # ─── 阶段 A/B：生产者/消费者执行与变量池 ───────────────────────────────────
+
+    async def _run_producers(
+        self,
+        candidates: list[KBD],
+        env_context: dict[str, str],
+        session_id: str,
+    ) -> None:
+        """阶段 A：跑全部生产者信号（QKV），填充会话变量池（黑板）。
+
+        去重（acquirer + args 相同只跑一次）；执行失败仅告警，不阻断诊断。
+        """
+        producers: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for kbd in candidates:
+            for s in kbd.signals:
+                if s.get("signal_category") != "frontend":
+                    continue
+                key = (
+                    s.get("acquirer", ""),
+                    json.dumps(s.get("acquirer_args", {}), sort_keys=True, ensure_ascii=False),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                producers.append(s)
+
+        for s in producers:
+            try:
+                fsignal = self._signal_to_qkv(s, env_context)
+                if fsignal is None:
+                    logger.warning(
+                        event="kbd_diag_producer_skip",
+                        acquirer=s.get("acquirer"),
+                        session_id=session_id,
+                    )
+                    continue
+                from app.tools.qkv.engine import qkv_exec
+
+                res = await qkv_exec(
+                    signal=fsignal,
+                    conversation_id=self._conversation_id or session_id,
+                    node_ip=env_context.get("node_ip"),
+                    exec_id=None,
+                )
+                if res.success:
+                    self._fill_pool_from_qkv(s, res)
+                else:
+                    logger.warning(
+                        event="kbd_diag_producer_failed",
+                        acquirer=s.get("acquirer"),
+                        error=res.error,
+                        session_id=session_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    event="kbd_diag_producer_error",
+                    acquirer=s.get("acquirer"),
+                    error=str(exc),
+                    session_id=session_id,
+                )
+
+    def _fill_pool_from_qkv(self, signal: dict[str, Any], res: Any) -> None:
+        """将 QKV 产出(produces)写入变量池：produces=[{name, path}] → pool[name]=value。"""
+        produces = signal.get("produces") or []
+        if not res.values:
+            return
+        first = res.values[0]
+        for spec in produces:
+            name = spec.get("name") if isinstance(spec, dict) else None
+            if not name:
+                continue
+            path = spec.get("path", name) if isinstance(spec, dict) else name
+            val = first.get(path) if isinstance(first, dict) else None
+            if val is not None:
+                self._variable_pool[name] = val
+
+    async def _execute_acquirer(
+        self,
+        step: "KBDStep",
+        env_context: dict[str, str],
+        session_id: str,
+        user_id: str,
+    ) -> tuple[str | None, str | None, bool | None]:
+        """按 acquirer 路由执行：qkv→QKV 引擎 / qfk→QFK 引擎 / 其他→通用 tool_executor。
+
+        返回 (raw_output, error, pre_matched)：
+          - raw_output: 渲染给 _judge_matches 的文本（None 表示执行失败）
+          - error: 错误信息
+          - pre_matched: qfk keyword 类型已由引擎判定时直接给出布尔，否则 None
+        """
+        acquirer = step.tool_name
+
+        if acquirer.startswith("qkv."):
+            # 生产者：QKV 引擎取数并写变量池（通常已在阶段 A 跑过，此处为兜底）
+            try:
+                fsignal = self._signal_to_qkv_from_step(step, env_context)
+                if fsignal is None:
+                    return None, "无法构建前端信号", None
+                from app.tools.qkv.engine import qkv_exec
+
+                res = await qkv_exec(
+                    signal=fsignal,
+                    conversation_id=self._conversation_id or session_id,
+                    node_ip=env_context.get("node_ip"),
+                    exec_id=None,
+                )
+                if not res.success:
+                    return None, res.error, None
+                self._fill_pool_from_qkv_on_step(step, res)
+                return res.to_observation(), None, None
+            except Exception as exc:
+                return None, str(exc), None
+
+        if acquirer.startswith("qfk."):
+            # 消费者：QFK 引擎取数并判定；keyword 类型直接采信引擎布尔，其余交由 _judge_matches
+            try:
+                bsignal = self._signal_to_qfk(step)
+                if bsignal is None:
+                    return None, "无法构建后端信号", None
+                from app.tools.qfk.engine import qfk_exec
+
+                res = await qfk_exec(
+                    signal=bsignal,
+                    conversation_id=self._conversation_id or session_id,
+                    node_ip=env_context.get("node_ip"),
+                    exec_id=None,
+                )
+                if res.error:
+                    return res.to_observation(), res.error, None
+                matcher = step.matcher or {}
+                if matcher.get("type") == "keyword":
+                    return res.to_observation(), None, res.matched
+                return res.to_observation(), None, None
+            except Exception as exc:
+                return None, str(exc), None
+
+        # 遗留/通用工具（acli_* 等）：走既有 tool_executor
+        try:
+            args = self._resolve_args(step.tool_args_template, env_context, self._variable_pool)
+            result = await self._tool_executor.execute(acquirer, args)
+            return (str(result) if result is not None else "", None, None)
+        except Exception as exc:
+            return None, str(exc), None
+
+    def _signal_to_qkv(self, signal: dict[str, Any], env_context: dict[str, str]) -> Any:
+        """从生产者信号 dict 构造 qkv/signal.FrontendSignal（解析占位符后再构造）。"""
+        from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
+
+        acquirer = signal.get("acquirer", "")
+        parts = acquirer.split(".", 1)
+        if len(parts) != 2 or parts[0] != "qkv":
+            return None
+        try:
+            query = FrontendQueryType(parts[1])
+        except ValueError:
+            return None
+        args = self._resolve_args(signal.get("acquirer_args", {}) or {}, env_context, {})
+        try:
+            return FrontendSignal(
+                query=query,
+                keyword=str(args.get("keyword", "")),
+                is_failed=bool(args.get("is_failed", False)),
+                limit=int(args.get("limit", 100)),
+            )
+        except Exception:
+            return None
+
+    def _signal_to_qkv_from_step(self, step: "KBDStep", env_context: dict[str, str]) -> Any:
+        """从 KBDStep 构造前端信号（兜底路径）。"""
+        return self._signal_to_qkv(
+            {"acquirer": step.tool_name, "acquirer_args": step.tool_args_template}, env_context
+        )
+
+    def _fill_pool_from_qkv_on_step(self, step: "KBDStep", res: Any) -> None:
+        """兜底填充变量池（从 step 的 matcher/args 推断 produces 信息）。"""
+        # step 不携带 produces，仅做尽力而为：若 raw values 为单字段则按 acquirer 后缀写入
+        if not res.values:
+            return
+        first = res.values[0]
+        if isinstance(first, dict) and len(first) == 1:
+            (name, val), = first.items()
+            if val is not None:
+                self._variable_pool[name.upper()] = val
+
+    def _signal_to_qfk(self, step: "KBDStep") -> Any:
+        """从消费者 KBDStep 构造 qfk/signal.BackendSignal（仅 keyword 类型由引擎定值为布尔）。"""
+        from app.tools.qfk.signal import (
+            BackendSignal,
+            BackendSignalTarget,
+            BackendSignalType,
+        )
+
+        acquirer = step.tool_name
+        parts = acquirer.split(".", 1)
+        if len(parts) != 2 or parts[0] != "qfk":
+            return None
+        try:
+            signal_type = BackendSignalType(parts[1])
+        except ValueError:
+            return None
+        args = step.tool_args_template or {}
+        target_data = args.get("target") or {}
+        target = BackendSignalTarget(
+            **{k: v for k, v in target_data.items() if k in ("scope", "resource", "path", "time_window")}
+        )
+        matcher = step.matcher or {}
+        keywords: list[str] = []
+        if matcher.get("type") == "keyword":
+            p = matcher.get("pattern", "")
+            keywords = [p] if isinstance(p, str) else list(p or [])
+        try:
+            return BackendSignal(
+                signal_type=signal_type,
+                target=target,
+                keywords=keywords,
+                match_mode=matcher.get("mode", "any"),
+                expected=bool(matcher.get("expected", True)),
+                description=None,
+            )
+        except Exception:
+            return None
 
     async def _llm_judge_batch(
         self,

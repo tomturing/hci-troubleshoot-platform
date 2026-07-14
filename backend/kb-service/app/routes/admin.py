@@ -459,6 +459,21 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 status_code=422,
                 detail=f"KBD 条目 {kbd_id} 缺少关键信号（signals_json 为空），请先调用 /extract-signals 抽取后再审核",
             )
+        # 门 1.5：至少含 1 条消费者(backend)信号，否则 CDD 无法执行差异消除（§9）
+        _raw_signals = row["signals_json"]
+        if isinstance(_raw_signals, str):
+            try:
+                _raw_signals = json.loads(_raw_signals)
+            except (json.JSONDecodeError, ValueError):
+                _raw_signals = []
+        _has_consumer = isinstance(_raw_signals, list) and any(
+            isinstance(s, dict) and s.get("signal_category") == "backend" for s in _raw_signals
+        )
+        if not _has_consumer:
+            raise HTTPException(
+                status_code=422,
+                detail=f"KBD 条目 {kbd_id} 缺少消费者(backend)信号，CDD 无法进行差异诊断消除，请补充至少 1 条 QFK 消费者信号后再审核",
+            )
         # 门 2：category_id 与 ai_category_id 同步（根治孤儿 KBD）
         effective_category_id = row["category_id"] or row["ai_category_id"]
         if not effective_category_id:

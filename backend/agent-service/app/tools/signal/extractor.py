@@ -5,6 +5,11 @@
 - 从 KBD/SOP 自然语言文本中提取结构化信号
 - 调用 LLM 进行语义解析与类型判别
 - 根据判别结果构造对应的派生类实例
+
+@deprecated 统一抽取已迁移至 kb-service 的 extract_signals 路由（signals_json 规范模型，
+见 docs/.../关键信号字段级分别抽取.md）。本模块产出的旧 schema（query/keyword/is_failed）
+仅供遗留/测试路径使用；新运行时以 KeySignal 基类承载的 acquirer/acquirer_args/produces/
+requires/matcher 规范字段为准。
 """
 
 from __future__ import annotations

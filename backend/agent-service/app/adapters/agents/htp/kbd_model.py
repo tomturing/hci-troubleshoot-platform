@@ -37,14 +37,22 @@ def _matcher_to_expected(matcher: dict[str, Any] | None) -> str:
 
 
 def _signal_to_step(s: dict[str, Any]) -> KBDStep | None:
-    """从 signal dict 构建 KBDStep（仅 consumer/backend 信号可执行）。"""
+    """从 signal dict 构建 KBDStep（仅 consumer/backend 信号可执行）。
+
+    兼容两种契约：
+      - 新规范：matcher dict 优先（_matcher_to_expected 序列化为 expected_pattern）
+      - 旧遗留：signal dict 直接携带 expected_pattern（__REGEX__:/__CONTAINS__: 等）时回退使用
+    """
     acquirer = s.get("acquirer", "")
     if not acquirer or s.get("signal_category") != "backend":
         return None
+    matcher = s.get("matcher")
+    expected = _matcher_to_expected(matcher) if matcher else s.get("expected_pattern", "")
     return KBDStep(
         tool_name=acquirer,
         tool_args_template=s.get("acquirer_args") or {},
-        expected_pattern=_matcher_to_expected(s.get("matcher")),
+        expected_pattern=expected,
+        matcher=matcher,
     )
 
 
@@ -56,9 +64,10 @@ class KBDStep:
     其 tool_name 相同，便于 CDD 算法计算步骤覆盖频率。
     """
 
-    tool_name: str  # 工具名称（对应 tool_registry 中的 ToolDefinition.name）
-    tool_args_template: dict  # 参数模板（含 {{占位符}}，执行时由 env_context 填充）
-    expected_pattern: str  # 期望输出特征（__REGEX__:/ __CONTAINS__:/ __MATCHER__:/ 自然语言）
+    tool_name: str  # 工具名称（对应 acquirer，如 qfk.log_keyword）
+    tool_args_template: dict  # 参数模板（含 {{占位符}}，执行时由 env_context ∪ 变量池填充）
+    expected_pattern: str  # 期望输出特征（__REGEX__:/ __CONTAINS__:/ __MATCHER__:/ 自然语言，兼容旧 KBD）
+    matcher: dict | None = None  # 消费者信号的判定契约（Matcher dict），供 _judge_matches 类型化求值
 
 
 @dataclass
@@ -117,16 +126,21 @@ class KBD:
         step = self.get_step(tool_name)
         return step.expected_pattern if step else None
 
+    def get_matcher(self, tool_name: str) -> dict | None:
+        """返回指定 acquirer 对应的 Matcher dict（供 _judge_matches 类型化求值）。"""
+        for s in self.signals:
+            if s.get("acquirer") == tool_name and s.get("signal_category") == "backend":
+                return s.get("matcher")
+        return None
+
 
 def kbd_from_dict(d: dict) -> KBD:
     """从 KB API 返回的 dict 构建 KBD 对象（工厂函数）。
 
     v2: 读取 "signals" key（producer/consumer 信号数组），废弃旧 "steps" key。
     """
+    # ADR-1：仅读 signals_json，无回退、无兼容桥（旧 steps 字段已彻底移除）
     signals = d.get("signals", [])
-    if not signals:
-        # 向后兼容：无 signals 时尝试旧格式 steps
-        signals = d.get("steps", [])
 
     return KBD(
         id=d["id"],

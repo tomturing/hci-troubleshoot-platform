@@ -9,6 +9,10 @@
 变量依赖（消费者角色）：
 - target.scope 可引用 {{HOST}}（来自 FrontendSignal 提取）
 - target.time_window 可引用 {{END}}（来自 FrontendSignal 提取）
+
+@deprecated 运行时消费者统一由 signals_json 的 acquirer=qfk.* + matcher 描述，
+并由 kbd_differential._execute_acquirer 路由到 qfk 引擎（§6 五类定型 valuator）。
+本类保留仅作遗留/测试路径；qfk 引擎实际消费的模型在 app/tools/qfk/signal.py。
 """
 
 from __future__ import annotations

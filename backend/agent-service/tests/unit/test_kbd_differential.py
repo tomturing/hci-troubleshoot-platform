@@ -24,18 +24,19 @@ def make_kbd(
     root_cause: str = "测试根因",
     similarity: float = 0.8,
 ) -> KBD:
-    """快速构建 KBD 测试对象。"""
+    """快速构建 KBD 测试对象（signals 为 raw dict 列表，契合 KBD.signals 契约）。"""
     return KBD(
         id=kbd_id,
         name=f"KBD {kbd_id}",
         category_id="虚拟机-003",
         problem_description=f"{kbd_id} 的问题描述",
-        steps=[
-            KBDStep(
-                tool_name=tool_name,
-                tool_args_template={},
-                expected_pattern=expected_pattern,
-            )
+        signals=[
+            {
+                "signal_category": "backend",
+                "acquirer": tool_name,
+                "acquirer_args": {},
+                "expected_pattern": expected_pattern,
+            }
             for tool_name, expected_pattern in steps
         ],
         root_cause=root_cause,
@@ -243,6 +244,66 @@ class TestJudgeMatchesRules:
         assert "k2" in matched
 
 
+# ─── 单元测试：_evaluate_matcher（§6 5 类定型 valuator）────────────────────────
+
+
+class TestMatcherEvaluation:
+    """_evaluate_matcher：5 类定型 valuator 确定性求值，不调用 LLM。"""
+
+    def setup_method(self):
+        self.diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+
+    def test_keyword_any(self):
+        m = {"type": "keyword", "pattern": "CPU 资源不足", "mode": "any", "expected": True}
+        assert self.diag._evaluate_matcher(m, "检测到 CPU 资源不足") is True
+        assert self.diag._evaluate_matcher(m, "一切正常") is False
+
+    def test_keyword_expected_false(self):
+        m = {"type": "keyword", "pattern": "OOM", "expected": False}
+        assert self.diag._evaluate_matcher(m, "无相关报错") is True
+        assert self.diag._evaluate_matcher(m, "出现 OOM") is False
+
+    def test_keyword_mode_all(self):
+        m = {"type": "keyword", "pattern": ["a", "b"], "mode": "all", "expected": True}
+        assert self.diag._evaluate_matcher(m, "a 和 b 都存在") is True
+        assert self.diag._evaluate_matcher(m, "只有 a") is False
+
+    def test_regex(self):
+        m = {"type": "regex", "pattern": r"err=\d{3}", "expected": True}
+        assert self.diag._evaluate_matcher(m, "err=404 found") is True
+        assert self.diag._evaluate_matcher(m, "ok") is False
+
+    def test_state(self):
+        m = {"type": "state", "pattern": "running", "expected": True}
+        assert self.diag._evaluate_matcher(m, "service status: running") is True
+        assert self.diag._evaluate_matcher(m, "status: stopped") is False
+
+    def test_threshold_gt(self):
+        m = {"type": "threshold", "operator": ">", "value": 90, "expected": True}
+        assert self.diag._evaluate_matcher(m, "cpu_usage=95%") is True
+        assert self.diag._evaluate_matcher(m, "cpu_usage=80%") is False
+
+    def test_threshold_le(self):
+        m = {"type": "threshold", "operator": "<=", "value": 10, "expected": True}
+        assert self.diag._evaluate_matcher(m, "load=8") is True
+        assert self.diag._evaluate_matcher(m, "load=20") is False
+
+    def test_json_path(self):
+        import json as _json
+
+        m = {"type": "json_path", "path": "status", "expected_value": "healthy"}
+        assert self.diag._evaluate_matcher(m, _json.dumps({"status": "healthy"})) is True
+        assert self.diag._evaluate_matcher(m, _json.dumps({"status": "bad"})) is False
+
+    def test_exists(self):
+        m = {"type": "exists", "expected": True}
+        assert self.diag._evaluate_matcher(m, "id=123 found") is True
+        assert self.diag._evaluate_matcher(m, "对象不存在") is False
+
+    def test_unknown_type_falls_back_to_llm(self):
+        assert self.diag._evaluate_matcher({"type": "bogus"}, "x") is None
+
+
 # ─── 集成测试：完整诊断主循环 ────────────────────────────────────────────────
 
 
@@ -428,12 +489,13 @@ class TestDiagnoseLoop:
             name="KBD k1",
             category_id="虚拟机-003",
             problem_description="测试问题描述",
-            steps=[
-                KBDStep(
-                    tool_name="acli_vm_config",
-                    tool_args_template={"vm_name": "{{vm_name}}"},
-                    expected_pattern="__CONTAINS__:ok",
-                )
+            signals=[
+                {
+                    "signal_category": "backend",
+                    "acquirer": "acli_vm_config",
+                    "acquirer_args": {"vm_name": "{{vm_name}}"},
+                    "expected_pattern": "__CONTAINS__:ok",
+                }
             ],
             root_cause="测试",
             solution="测试",

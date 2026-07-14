@@ -45,6 +45,9 @@ VALUES (
 4. **变量合法性**：producer 的 produces[].name、consumer 的 requires[] 必须是上述可用变量集合中的名字（或新声明并加入 produces）。
 5. **matcher**：消费者信号必填 matcher，type ∈ {keyword, state, threshold, json_path, exists}；keyword 用 pattern+mode(any/all)+expected；threshold 用 pattern(数值表达式)+expected。
 6. **不确定即丢弃**：无法可靠映射为合法采集器的步骤，不要硬造信号；宁缺毋滥。
+7. **字段级溯源与自信度（必填）**：每条信号必须给出：
+   - `source_section`：本条信号主要来自哪个输入章节，取值只能是 {problem_description, alert_info, steps_text, root_cause, solution} 之一（祈使子句多来自 steps_text，陈述判定多来自 root_cause/solution）。
+   - `confidence`：你对本次抽取的把握自评，0-1 浮点数（证据清晰、采集器与变量明确→0.8+；记忆模糊、仅靠推测→0.4-0.6；不确定→更低）。
 
 ## 输出格式（严格 JSON，不要任何额外说明）
 
@@ -60,7 +63,9 @@ VALUES (
       "acquirer_args": {{"keyword": "备节点异常", "is_failed": false, "limit": 100}},
       "produces": [{{"name": "HOST", "path": "host"}}, {{"name": "VM", "path": "vm"}}],
       "requires": [],
-      "matcher": null
+      "matcher": null,
+      "source_section": "steps_text",
+      "confidence": 0.9
     }},
     {{
       "id": "s2",
@@ -71,7 +76,9 @@ VALUES (
       "acquirer_args": {{"target": {{"scope": "{{{{HOST}}}}"}}}},
       "produces": [],
       "requires": ["HOST"],
-      "matcher": {{"type": "keyword", "pattern": "CPU 资源不足", "mode": "any", "expected": true}}
+      "matcher": {{"type": "keyword", "pattern": "CPU 资源不足", "mode": "any", "expected": true}},
+      "source_section": "root_cause",
+      "confidence": 0.85
     }}
   ]
 }}

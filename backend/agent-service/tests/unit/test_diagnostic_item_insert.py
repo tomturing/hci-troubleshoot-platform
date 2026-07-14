@@ -42,7 +42,7 @@ def _make_sample_kbd(
         problem_description=problem_description,
         root_cause=root_cause,
         solution=solution,
-        steps=[],
+        signals=[],
         similarity=similarity,
     )
 

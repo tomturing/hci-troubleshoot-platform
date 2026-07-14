@@ -5,6 +5,10 @@
 - 通过 acli alert/task/log get 提取告警/任务/弹框数据
 - 清洗并提取 host, vm, time, errcode 等元数据变量
 - 将变量写入会话变量池供后端信号消费
+
+@deprecated 运行时生产者统一由 signals_json 的 acquirer=qkv.* + produces 描述，
+并由 kbd_differential._run_producers 调用 qkv 引擎执行（见 KeySignal 基类规范字段）。
+本类保留仅作遗留/测试路径；qkv 引擎实际消费的模型在 app/tools/qkv/signal.py。
 """
 
 from __future__ import annotations

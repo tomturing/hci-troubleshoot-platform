@@ -45,7 +45,7 @@ class KeySignal(BaseModel, ABC):
 
     signal_category: SignalCategory = Field(
         ...,
-        description="信号类别：frontend（前端信号）或 backend（后端信号）"
+        description="信号类别：frontend（前端信号/生产者）或 backend（后端信号/消费者）"
     )
     keyword: str = Field(
         ...,
@@ -55,6 +55,34 @@ class KeySignal(BaseModel, ABC):
         default=None,
         description="对原始排障步骤的自然语言说明"
     )
+
+    # ── 统一变量绑定契约（spec §2：信号 = 判定契约；acquirer = 获取契约）──
+    # 以下为 signals_json 规范模型的统一字段；对旧 extractor 子类可选，运行时以 signals_json 为准。
+    id: str | None = Field(default=None, description="信号唯一 ID（同 KBD 内稳定，便于编辑/去重）")
+    acquirer: str | None = Field(
+        default=None,
+        description="绑定的采集器：qkv.alert / qkv.task / qkv.dialog / qfk.log_keyword / qfk.service_status ...",
+    )
+    acquirer_args: dict | None = Field(
+        default=None, description="采集器参数模板（含 {{VAR}} 占位符）"
+    )
+    # 变量绑定契约（producer 写变量池 / consumer 读变量池）
+    produces: list[dict] | None = Field(
+        default=None, description="仅 producer：本信号向变量池写入的变量（name/type/path）"
+    )
+    requires: list[str] | None = Field(
+        default=None, description="仅 consumer：本信号渲染所需的变量名（必须 ∈ 变量池 schema）"
+    )
+    # 判定契约（consumer 用，§6 五类定型 valuator）
+    matcher: dict | None = Field(
+        default=None,
+        description="Matcher：{type: keyword|state|threshold|json_path|exists, pattern, mode: any|all, expected: bool}",
+    )
+    # 字段级溯源与置信度（抽取服务端注入，详见评审清单）
+    source: str | None = Field(default=None, description="字段级溯源：主要来源章节")
+    extraction_method: str | None = Field(default=None, description="抽取方法标识（如 llm_field_level_v1）")
+    confidence: float | None = Field(default=None, description="校准后置信度(0-1)")
+    needs_review: bool | None = Field(default=None, description="低置信/歧义信号需人工审核（镜像 classify.low_confidence）")
 
     @abstractmethod
     def extract(self) -> dict[str, Any]:

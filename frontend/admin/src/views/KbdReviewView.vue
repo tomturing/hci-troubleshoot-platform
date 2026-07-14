@@ -1384,6 +1384,20 @@ onMounted(() => {
                     </template>
                   </template>
                 </el-table-column>
+                <el-table-column label="溯源 / 置信度" min-width="200">
+                  <template #default="{ row }">
+                    <div class="signal-provenance">
+                      <el-tag size="small" effect="plain" type="warning">
+                        来源 {{ row.source || '—' }}
+                      </el-tag>
+                      <span class="signal-method">{{ row.extraction_method || '—' }}</span>
+                      <span
+                        class="signal-confidence"
+                        :style="{ color: confidenceColor(row.confidence ?? null) }"
+                      >置信度 {{ confidenceLabel(row.confidence ?? null) }}</span>
+                    </div>
+                  </template>
+                </el-table-column>
               </el-table>
             </div>
           </template>
@@ -1869,6 +1883,23 @@ onMounted(() => {
 .section-actions {
   display: flex;
   gap: 4px;
+}
+
+/* 关键信号：溯源 / 置信度 */
+.signal-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.signal-method {
+  font-size: 11px;
+  color: #909399;
+  font-family: monospace;
+}
+.signal-confidence {
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* 图片列表容器（images_json 渲染） */
