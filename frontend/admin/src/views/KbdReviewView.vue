@@ -458,20 +458,20 @@ async function handleReanalyzeSingleImage(entry: KbdEntry, seq: number) {
   }
 }
 
-// 关键信号重新提交（与"重新识图"保持一致：同步模式立等结果 + 刷新详情）
-const resubmitSignalsLoading = ref<number | null>(null)  // 正在重新提交信号的 entry.id
+// 关键信号重新抽取（与"重新识图"保持一致：同步模式立等结果 + 刷新详情）
+const reextractSignalsLoading = ref<number | null>(null)  // 正在重新抽取信号的 entry.id
 
-async function handleResubmitSignals(entry: KbdEntry) {
+async function handleReextractSignals(entry: KbdEntry) {
   try {
     await ElMessageBox.confirm(
-      `确认用最新 Prompt 重新提交「${entry.title}」的关键信号抽取？`,
-      '重新提交关键信号',
+      `确认用最新 Prompt 重新抽取「${entry.title}」的关键信号抽取？`,
+      '重新抽取关键信号',
       { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
     )
   } catch {
     return
   }
-  resubmitSignalsLoading.value = entry.id
+  reextractSignalsLoading.value = entry.id
   try {
     const resp = await fetch(`/api/v1/kbd/${entry.id}/extract-signals?sync=true`, {
       method: 'POST',
@@ -497,12 +497,12 @@ async function handleResubmitSignals(entry: KbdEntry) {
     }
   } catch (err: any) {
     ElMessage.error({
-      message: `重新提交关键信号失败：${err.message || '未知错误'}`,
+      message: `重新抽取关键信号失败：${err.message || '未知错误'}`,
       duration: 0,
       showClose: true,
     })
   } finally {
-    resubmitSignalsLoading.value = null
+    reextractSignalsLoading.value = null
   }
 }
 
@@ -1440,12 +1440,12 @@ onMounted(() => {
               <el-button
                 type="warning"
                 size="small"
-                :loading="resubmitSignalsLoading === detailEntry.id"
-                @click="handleResubmitSignals(detailEntry)"
-                title="用最新 Prompt 重新提交关键信号抽取"
+                :loading="reextractSignalsLoading === detailEntry.id"
+                @click="handleReextractSignals(detailEntry)"
+                title="用最新 Prompt 重新抽取关键信号抽取"
               >
                 <el-icon style="font-size: 14px;"><Refresh /></el-icon>
-                重新提交
+                重新抽取
               </el-button>
             </div>
           </div>
