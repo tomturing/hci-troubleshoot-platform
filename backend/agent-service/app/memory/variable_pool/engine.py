@@ -40,8 +40,9 @@ from app.memory.variable_pool.pool import VariableRequestResult
 logger = get_logger("memory.variable-pool")
 
 # ADR-2：占位符统一为 {{VAR}} 全大写（支持点分路径如 {{NODE.IP}}）
-_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}")
-_EXACT_TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}$")
+# SOP 参数模板使用单花括号 {var}，同时兼容 {{VAR}} 写法（大小写敏感查表）
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}|\{([A-Za-z][A-Za-z0-9_.]*)\}")
+_EXACT_TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}|\{([A-Za-z][A-Za-z0-9_.]*)\}$")
 
 
 def _should_fallback_to_user_input(var_def: dict[str, Any]) -> bool:
@@ -125,10 +126,10 @@ def _render_args_template(template: Any, context_variables: dict[str, Any]) -> A
 
         exact_match = _EXACT_TEMPLATE_PLACEHOLDER_RE.match(value)
         if exact_match:
-            return resolve(exact_match.group(1))
+            return resolve(exact_match.group(1) or exact_match.group(2))
 
         def replace(match: re.Match[str]) -> str:
-            return str(resolve(match.group(1)))
+            return str(resolve(match.group(1) or match.group(2)))
 
         return _TEMPLATE_PLACEHOLDER_RE.sub(replace, value)
 

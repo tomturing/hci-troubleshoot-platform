@@ -127,32 +127,37 @@ class VariablePool:
         """
         渲染模板字符串中的占位符
 
+        ADR-2：占位符统一为 {{VAR}}（全大写）；同时向后兼容旧式 ${VAR} 写法。
+
         Args:
-            template_value: 包含 {{VARIABLE}} 占位符的字符串（全大写）
+            template_value: 包含 {{VARIABLE}} 或 ${VARIABLE} 占位符的字符串
 
         Returns:
-            渲染后的字符串
+            渲染后的字符串（未注册的占位符保持原样）
 
         示例：
-        - "{{HOST}}" → "node-001"
-        - "prefix-{{HOST}}-suffix" → "prefix-node-001-suffix"
+        - "{{HOST}}" / "${host}" → "node-001"
+        - "prefix-{{HOST}}-suffix" / "prefix-${host}-suffix" → "prefix-node-001-suffix"
         - "plain-text" → "plain-text"
         """
         if not isinstance(template_value, str):
             return template_value
 
-        # ADR-2：占位符统一为 {{VAR}} 全大写
-        # 检查是否是纯占位符（{{VARIABLE}}）
-        if template_value.startswith("{{") and template_value.endswith("}}"):
-            var_name = template_value[2:-2]
-            return self._variables.get(var_name, template_value)
+        # 纯占位符（{{VARIABLE}} 或 ${VARIABLE}）
+        if len(template_value) >= 4:
+            if template_value.startswith("{{") and template_value.endswith("}}"):
+                var_name = template_value[2:-2].strip()
+                return self._variables.get(var_name, template_value)
+            if template_value.startswith("${") and template_value.endswith("}"):
+                var_name = template_value[2:-1].strip()
+                return self._variables.get(var_name, template_value)
 
-        # 否则进行全局替换（仅认全大写占位符）
+        # 否则进行全局替换（同时支持 {{VAR}} 与 ${VAR}）
         import re
-        pattern = r"\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}"
+        pattern = r"\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}|\$\{([A-Za-z][A-Za-z0-9_.]*)\}"
 
         def replace(match):
-            var_name = match.group(1)
+            var_name = match.group(1) or match.group(2)
             return str(self._variables.get(var_name, match.group(0)))
 
         return re.sub(pattern, replace, template_value)
