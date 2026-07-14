@@ -400,7 +400,7 @@ class KBDDiagnostic:
         resolved = {}
         for k, v in template.items():
             if isinstance(v, str):
-                def _rep(m: "re.Match[str]") -> str:
+                def _rep(m: re.Match[str]) -> str:
                     name = m.group(1)
                     return str(merged[name]) if name in merged else m.group(0)
 
@@ -700,7 +700,7 @@ class KBDDiagnostic:
 
     async def _execute_acquirer(
         self,
-        step: "KBDStep",
+        step: KBDStep,
         env_context: dict[str, str],
         session_id: str,
         user_id: str,
@@ -789,13 +789,13 @@ class KBDDiagnostic:
         except Exception:
             return None
 
-    def _signal_to_qkv_from_step(self, step: "KBDStep", env_context: dict[str, str]) -> Any:
+    def _signal_to_qkv_from_step(self, step: KBDStep, env_context: dict[str, str]) -> Any:
         """从 KBDStep 构造前端信号（兜底路径）。"""
         return self._signal_to_qkv(
             {"acquirer": step.tool_name, "acquirer_args": step.tool_args_template}, env_context
         )
 
-    def _fill_pool_from_qkv_on_step(self, step: "KBDStep", res: Any) -> None:
+    def _fill_pool_from_qkv_on_step(self, step: KBDStep, res: Any) -> None:
         """兜底填充变量池（从 step 的 matcher/args 推断 produces 信息）。"""
         # step 不携带 produces，仅做尽力而为：若 raw values 为单字段则按 acquirer 后缀写入
         if not res.values:
@@ -806,7 +806,7 @@ class KBDDiagnostic:
             if val is not None:
                 self._variable_pool[name.upper()] = val
 
-    def _signal_to_qfk(self, step: "KBDStep") -> Any:
+    def _signal_to_qfk(self, step: KBDStep) -> Any:
         """从消费者 KBDStep 构造 qfk/signal.BackendSignal（仅 keyword 类型由引擎定值为布尔）。"""
         from app.tools.qfk.signal import (
             BackendSignal,

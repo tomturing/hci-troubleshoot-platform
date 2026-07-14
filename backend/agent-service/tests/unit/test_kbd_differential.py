@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
-from app.adapters.agents.htp.kbd_model import KBD, KBDStep
+from app.adapters.agents.htp.kbd_model import KBD
 
 # ─── 测试数据工厂 ─────────────────────────────────────────────────────────────
 
