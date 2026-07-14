@@ -39,7 +39,7 @@ class VisionJobManager:
         self._sem = asyncio.Semaphore(max_concurrent)
         self.max_concurrent = max_concurrent
 
-    async def submit(self, kbd_id: int, runner) -> str:
+    async def submit(self, kbd_id: int, runner, trace_id: str | None = None) -> str:
         """提交 Job，返回 job_id。
 
         Args:
@@ -71,6 +71,7 @@ class VisionJobManager:
                 "failed": 0,
                 "error": None,
                 "result": None,
+                "trace_id": trace_id,
                 "created_at": time.time(),
                 "started_at": None,
                 "finished_at": None,
@@ -103,13 +104,17 @@ class VisionJobManager:
             try:
                 # 通过 runner 执行（默认 re-analyze 全部图片）
                 result = await runner(kbd_id)
+                failed_status = "done" if result.get("success", True) else "failed"
                 await self._update(
                     job_id,
-                    status="done" if result.get("success", True) else "failed",
+                    status=failed_status,
                     total=result.get("total", 0),
                     done=result.get("done", 0),
                     failed=result.get("failed", 0),
                     result=result,
+                    # 关键修复：把 runner 返回的真实错误透传到 job.error，
+                    # 否则 GET /status 只返回笼统的「Job 执行失败」（被 image_proc 兜底吃掉）。
+                    error=result.get("error") if failed_status == "failed" else None,
                     finished_at=time.time(),
                 )
                 logger.info(
@@ -117,6 +122,7 @@ class VisionJobManager:
                     job_id=job_id, kbd_id=kbd_id,
                     status=self._jobs[job_id]["status"],
                     done=result.get("done", 0), failed=result.get("failed", 0),
+                    trace_id=self._jobs[job_id].get("trace_id"),
                 )
             except Exception as exc:
                 await self._update(
@@ -128,6 +134,7 @@ class VisionJobManager:
                 logger.exception(
                     event="vision_job_failed",
                     job_id=job_id, kbd_id=kbd_id, error=exc,
+                    trace_id=self._jobs[job_id].get("trace_id"),
                 )
 
     async def _update(self, job_id: str, **fields: Any) -> None:

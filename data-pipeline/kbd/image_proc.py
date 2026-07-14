@@ -25,6 +25,7 @@ import asyncpg
 import httpx
 
 from .config import settings
+from .observability import get_trace_id, traceparent
 
 logger = logging.getLogger("kbd.image_proc")
 
@@ -60,7 +61,11 @@ async def _call_reanalyze_api(
     headers = {
         "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
         "Content-Type": "application/json",
+        # 注入 W3C traceparent，与 kb-service 日志共享同一 trace_id（见 observability.py）
+        **traceparent(),
     }
+
+    logger.info("提交重新识图 kbd_entry_id=%d trace_id=%s", kbd_entry_id, get_trace_id())
 
     # 提交（超时短：仅需接收 202）
     timeout_submit = 30.0
@@ -108,7 +113,14 @@ async def _poll_reanalyze_status(
 ) -> dict[str, Any]:
     """轮询 Vision Job 状态直至完成（Asynchronous Request-Reply 模式客户端）。"""
     status_url = f"{settings.KB_SERVICE_URL}/api/admin/kbd/{kbd_entry_id}/reanalyze-images/status"
-    headers = {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
+    headers = {
+        "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
+        **traceparent(),
+    }
+    logger.info(
+        "开始轮询识图状态 kbd_entry_id=%d job_id=%s trace_id=%s",
+        kbd_entry_id, job_id, get_trace_id(),
+    )
     started_at = time.monotonic()
     poll_count = 0
 

@@ -44,6 +44,7 @@ import httpx
 
 from .config import settings
 from .fetcher import read_ids_from_excel
+from .observability import install_trace_logging, new_trace_id, set_trace_id
 from .pipeline import Stage, run_from_excel
 
 # ─── 日志配置（终端 + 文件双输出）────────────────────────────────────────────────
@@ -78,9 +79,9 @@ def _setup_logging(run_id: str | None = None) -> str:
     # 清除已有 handlers（避免重复）
     root_logger.handlers.clear()
 
-    # 日志格式
+    # 日志格式（注入 trace_id，便于按 trace 串联 data-pipeline 与 kb-service 日志）
     formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        "%(asctime)s [%(levelname)s] %(name)s [tid=%(trace_id)s] — %(message)s",
         datefmt="%H:%M:%S",
     )
 
@@ -96,8 +97,13 @@ def _setup_logging(run_id: str | None = None) -> str:
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
 
+    # 可观测性：先安装 trace_id 注入过滤器并生成根 trace_id，确保首行日志即带 trace_id
+    install_trace_logging()
+    trace_id = new_trace_id()
+    set_trace_id(trace_id)
+
     logger = logging.getLogger("kbd.run")
-    logger.info("日志初始化完成 run_id=%s log_path=%s", run_id, log_path)
+    logger.info("日志初始化完成 run_id=%s trace_id=%s log_path=%s", run_id, trace_id, log_path)
 
     return run_id
 

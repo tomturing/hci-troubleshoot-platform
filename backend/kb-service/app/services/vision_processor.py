@@ -46,6 +46,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -241,6 +242,7 @@ async def _vision_analyze(
     mime_type: str,
     context: str,
     prompt_template: str,
+    trace_id: str | None = None,
 ) -> tuple[str, str, list[str], str]:
     """
     Vision LLM 单次调用，输出 TYPE + BACKGROUND + FULL_TEXT + DESCRIPTION。
@@ -254,37 +256,77 @@ async def _vision_analyze(
     data_uri = f"data:{mime_type};base64,{b64}"
     prompt = prompt_template.format(context=context or "（无上下文）")
 
-    try:
-        response = await client.chat.completions.create(
-            model=_LLM_VISION_MODEL,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_uri}},
-                ],
-            }],
-            max_tokens=_VISION_MAX_TOKENS,
-            temperature=0.0,
-            timeout=_LLM_TIMEOUT,
-        )
-        raw = (response.choices[0].message.content or "").strip()
-        tokens = response.usage.total_tokens if response.usage else 0
-        logger.debug("Vision LLM 响应 tokens=%d", tokens)
-    except Exception as exc:
-        # 详细打印 LLM 错误信息（包括 429 等状态码）
+    def _fmt_vision_err(exc: Exception) -> str:
         import httpx
-        error_detail = str(exc)
-        if hasattr(exc, 'response'):
-            error_detail = f"{exc} (status={getattr(exc.response, 'status_code', 'unknown')})"
-        elif isinstance(exc, httpx.HTTPStatusError):
-            error_detail = f"HTTP {exc.response.status_code}: {exc.response.text[:500]}"
-        logger.error(
-            "Vision LLM 调用失败: %s",
-            error_detail,
-            exc_info=True,  # 打印完整堆栈
-        )
-        raise
+        if getattr(exc, "response", None) is not None:
+            sc = getattr(exc.response, "status_code", "unknown")
+            rt = getattr(exc.response, "text", "")
+            return f"{exc} (status={sc}{(' body=' + rt[:300]) if rt else ''})"
+        if isinstance(exc, httpx.HTTPStatusError):
+            return f"HTTP {exc.response.status_code}: {exc.response.text[:500]}"
+        return str(exc)
+
+    # ── 带退避的重试（P-优化：解决限流/超时导致的批量必挂）──
+    # 针对 429 限流、5xx、超时进行指数退避重试，并尊重响应头 Retry-After；
+    # 鉴权/参数类错误（4xx 非 429）不重试，立即抛出以免浪费配额。
+    max_attempts = int(os.environ.get("VISION_LLM_MAX_ATTEMPTS", "4"))
+    last_exc: Exception | None = None
+    raw = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = await client.chat.completions.create(
+                model=_LLM_VISION_MODEL,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                    ],
+                }],
+                max_tokens=_VISION_MAX_TOKENS,
+                temperature=0.0,
+                timeout=_LLM_TIMEOUT,
+            )
+            raw = (response.choices[0].message.content or "").strip()
+            tokens = response.usage.total_tokens if response.usage else 0
+            logger.debug("Vision LLM 响应 tokens=%d", tokens)
+            break  # 成功，跳出重试
+        except Exception as exc:
+            last_exc = exc
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            is_rate_limit = status_code == 429
+            is_server = status_code is not None and 500 <= status_code < 600
+            is_timeout = isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError))
+            # 非限流/非服务端/非超时的错误（如 401 鉴权失败）不重试
+            if not (is_rate_limit or is_server or is_timeout):
+                logger.exception(
+                    event="vision_llm_error_unretriable",
+                    message=_fmt_vision_err(exc),
+                    trace_id=trace_id,
+                )
+                raise
+            if attempt == max_attempts:
+                logger.exception(
+                    event="vision_llm_error_gave_up",
+                    message=f"已重试 {max_attempts} 次后放弃: {_fmt_vision_err(exc)}",
+                    trace_id=trace_id,
+                )
+                raise
+            # 退避：优先 Retry-After，否则指数退避（上限 30s）
+            retry_after = None
+            if is_rate_limit and getattr(exc, "response", None) is not None:
+                ra = exc.response.headers.get("Retry-After")  # type: ignore[union-attr]
+                if ra and str(ra).isdigit():
+                    retry_after = float(ra)
+            wait = retry_after if retry_after else min(2.0 * (2 ** (attempt - 1)), 30.0)
+            logger.warning(
+                event="vision_llm_retry",
+                message=f"第 {attempt}/{max_attempts} 次调用失败（status={status_code}），{wait:.1f}s 后重试",
+                trace_id=trace_id,
+            )
+            await asyncio.sleep(wait)
+    if last_exc is not None:
+        raise last_exc  # 兜底（理论上不可达，上面已 raise）
 
     screenshot_type = _parse_type(raw)
     background = _parse_background(raw)
@@ -375,6 +417,8 @@ def _format_desc(screenshot_type: str, background: str, full_text: list[str], de
 async def reanalyze_kbd_images(
     kbd_entry_id: int,
     session_factory: Callable[[], AsyncSession],
+    on_progress: Callable[[int, int, int], None] | None = None,
+    trace_id: str | None = None,
 ) -> dict[str, Any]:
     """重新识图单个 KBD 条目的所有图片。
 
@@ -397,9 +441,13 @@ async def reanalyze_kbd_images(
             "total": int,       # 图片总数
             "done": int,        # 成功数
             "failed": int,      # 失败数
-            "images_json": list,  # 新的 images_json
-        }
+        "images_json": list,  # 新的 images_json
+    }
     """
+    # 贯穿全链路的 trace_id：优先使用调用方透传的（来自 data-pipeline 的 traceparent），
+    # 否则回退到 OTel 当前上下文（后台 task 可能脱离请求 span，故以透传为准）。
+    _tid = trace_id or get_current_trace_id()
+
     # 1. 查询阶段：使用一个 short-lived session 获取数据并加载 Prompt
     async with session_factory() as db_session:
         # 加载 Vision Prompt
@@ -478,6 +526,7 @@ async def reanalyze_kbd_images(
     # 避免「job_manager × pipeline × processor」三重信号量叠加放大打爆 DashScope QPM。
     sem = await _get_vision_semaphore()
     stats = {"done": 0, "failed": 0}
+    errors: list[str] = []  # 收集每张图片的真实失败原因（透传给调用方）
     images_json: list[dict[str, Any]] = []
     images_json_lock = asyncio.Lock()
 
@@ -496,6 +545,7 @@ async def reanalyze_kbd_images(
                     mime_type,
                     context,
                     prompt_template,
+                    trace_id=_tid,
                 )
 
                 # 空结果重试一次
@@ -511,6 +561,7 @@ async def reanalyze_kbd_images(
                         mime_type,
                         context,
                         prompt_template,
+                        trace_id=_tid,
                     )
 
                 desc = _format_desc(screenshot_type, background, full_text, description)
@@ -528,9 +579,13 @@ async def reanalyze_kbd_images(
                     kbd_entry_id=kbd_entry_id,
                     seq=seq,
                     screenshot_type=screenshot_type,
+                    trace_id=_tid,
                 )
+                if on_progress is not None:
+                    on_progress(stats["done"], stats["failed"], len(image_items))
             except Exception as exc:
                 stats["failed"] += 1
+                errors.append(f"seq={seq}: {exc}")
                 # P2-2 修复：失败图片保留占位条目（desc 为空），既不失图、也不误报已完成；
                 # 其 desc 为空会被 _db_vision_status 判为 failed，从而进入重试而非永久丢失。
                 async with images_json_lock:
@@ -544,8 +599,17 @@ async def reanalyze_kbd_images(
                     kbd_entry_id=kbd_entry_id,
                     seq=seq,
                     error=str(exc),
+                    trace_id=_tid,
                 )
+                if on_progress is not None:
+                    on_progress(stats["done"], stats["failed"], len(image_items))
 
+    logger.info(
+        event="vision_reanalyze_start",
+        kbd_id=kbd_entry_id,
+        image_count=len(image_items),
+        trace_id=_tid,
+    )
     await asyncio.gather(*[_process_one(img) for img in image_items])
 
     # 5. 按 seq 排序
@@ -568,6 +632,7 @@ async def reanalyze_kbd_images(
                 event="vision_commit_retry",
                 kbd_entry_id=kbd_entry_id,
                 error=str(e),
+                trace_id=_tid,
             )
             # 连接可能已关闭，回滚后重新尝试一次
             await db_session.rollback()
@@ -586,6 +651,7 @@ async def reanalyze_kbd_images(
                     event="vision_commit_failed",
                     kbd_entry_id=kbd_entry_id,
                     error=str(retry_err),
+                    trace_id=_tid,
                 )
                 return {
                     "kbd_entry_id": kbd_entry_id,
@@ -603,6 +669,7 @@ async def reanalyze_kbd_images(
         total=len(image_items),
         done=stats["done"],
         failed=stats["failed"],
+        trace_id=_tid,
     )
 
     return {
@@ -612,6 +679,8 @@ async def reanalyze_kbd_images(
         "failed": stats["failed"],
         "success": stats["failed"] == 0,
         "images_json": images_json,
+        # 透传真实失败原因（供 job_manager / 调用方诊断，避免只看到笼统的「Job 执行失败」）
+        "error": "; ".join(errors) if errors else None,
     }
 
 
@@ -619,6 +688,7 @@ async def reanalyze_single_image(
     kbd_entry_id: int,
     seq: int,
     session_factory: Callable[[], AsyncSession],
+    trace_id: str | None = None,
 ) -> dict[str, Any]:
     """重新识图单个 KBD 条目的指定图片。
 
@@ -648,6 +718,10 @@ async def reanalyze_single_image(
             "images_json": list,  # 更新后的 images_json
         }
     """
+    # 贯穿全链路的 trace_id（优先调用方透传，否则回退 OTel 上下文）
+    _tid = trace_id or get_current_trace_id()
+    logger.info(event="vision_single_reanalyze_start", kbd_id=kbd_entry_id, seq=seq, trace_id=_tid)
+
     # 1. 查询阶段：使用一个 short-lived session 获取数据并加载 Prompt
     async with session_factory() as db_session:
         # 加载 Vision Prompt
@@ -723,6 +797,7 @@ async def reanalyze_single_image(
         mime_type,
         context,
         prompt_template,
+        trace_id=_tid,
     )
 
     # 空结果重试一次
@@ -731,6 +806,7 @@ async def reanalyze_single_image(
             event="vision_empty_result_retry",
             kbd_entry_id=kbd_entry_id,
             seq=seq,
+            trace_id=_tid,
         )
         screenshot_type, background, full_text, description = await _vision_analyze(
             client,
@@ -738,6 +814,7 @@ async def reanalyze_single_image(
             mime_type,
             context,
             prompt_template,
+            trace_id=_tid,
         )
 
     # 3. 组装 desc

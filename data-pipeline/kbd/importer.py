@@ -37,6 +37,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .observability import traceparent
 
 logger = logging.getLogger("kbd.importer")
 
@@ -240,6 +241,9 @@ async def _call_kbd_ingest_api(
     headers = {
         "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
         "Content-Type": "application/json",
+        # 注入 W3C traceparent：kb-service 的 FastAPIInstrumentor 会自动沿用同一 trace_id，
+        # 使两端日志可凭 trace_id 串联（见 observability.py）。
+        **traceparent(),
     }
     payload = {
         "support_id": support_id,
