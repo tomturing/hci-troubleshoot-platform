@@ -37,8 +37,10 @@ _db_manager: DatabaseManager | None = None
 # LLM 配置（从环境变量读取，统一使用 LLM_* 命名，与 ConfigMap hci-common-config 保持一致）
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-# 优先读取 CLASSIFY_MODEL，若未配置，则回退到已验证可用的 qwen3.7-plus
-LLM_MODEL = os.environ.get("CLASSIFY_MODEL", "qwen3.7-plus")
+# 优先读取 CLASSIFY_MODEL，若未配置，则回退到已验证可用的 kimi-k2.5
+LLM_MODEL = os.environ.get("CLASSIFY_MODEL", "kimi-k2.5")
+# 是否启用思维链（与 vision_processor.py 统一由 LLM_ENABLE_THINKING 控制，默认关闭）
+LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
 
 # 分类置信度阈值
 CONFIDENCE_THRESHOLD = 0.5
@@ -161,6 +163,7 @@ async def call_llm(prompt: str) -> dict:
             temperature=0.0,  # 确保输出确定性
             max_tokens=500,
             response_format={"type": "json_object"},
+            extra_body={"enable_thinking": LLM_ENABLE_THINKING},
         )
 
         content = response.choices[0].message.content

@@ -74,16 +74,22 @@ _BACKGROUND_COLORS = ("白色", "黑色", "灰色", "彩色", "其他")
 _KBD_VISION_PROMPT_NAME = "kbd_vision_v1"
 
 # LLM 配置（从环境变量读取，与 classify.py 保持一致，统一使用 LLM_* 命名）
-# 注意：VISION_MODEL 从未在 Helm 中注入，直接使用 LLM_DEFAULT_MODEL（ConfigMap 已注入）
+# 模型来源：VISION_MODEL 由 Helm ConfigMap(hci-common-config) 注入，取自 kbService.visionModel，
+# 未配置时回退到 kimi-k2.5。所有 LLM 相关开关（LLM_TIMEOUT / LLM_ENABLE_THINKING /
+# VISION_GLOBAL_CONCURRENCY）均来自同一 ConfigMap，确保 data-pipeline→kb-service→LLM 链路统一。
 _LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 _LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 # 优先读取 LLM_VISION_* 环境变量以支持专用 Vision 端点，否则回退到通用 LLM 配置
 _LLM_VISION_BASE_URL = (os.environ.get("LLM_VISION_BASE_URL") or os.environ.get("LLM_BASE_URL", "")).rstrip("/")
 _LLM_VISION_API_KEY = os.environ.get("LLM_VISION_API_KEY") or os.environ.get("LLM_API_KEY", "")
-# 优先读取 VISION_MODEL，若未配置，则回退到已验证可用的 qwen3.7-plus
-_LLM_VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3.7-plus")
+# 优先读取 VISION_MODEL，若未配置，则回退到已验证可用的 kimi-k2.5（支持多模态识图）
+_LLM_VISION_MODEL = os.environ.get("VISION_MODEL", "kimi-k2.5")
 _LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "30.0"))
 _VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "1536"))
+# 是否启用 LLM 思维链（thinking）。默认关闭：kimi-k2.5 / glm-5 等模型开启 thinking 时
+# 会在正式回答前生成大量隐藏思考 token，使 Vision 调用延迟飙升并突破 LLM_TIMEOUT。
+# 统一由 LLM_ENABLE_THINKING 环境变量开关控制（与 classify.py 保持一致，单一真相源）。
+_LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
 
 # 全局共享信号量：收敛所有并发 KBD 任务的 Vision LLM 调用总数。
 # P0-6 修复：旧实现每个 kbd 任务各自 new 一个 Semaphore(_VISION_CONCURRENCY)，
@@ -283,10 +289,11 @@ async def _vision_analyze(
                         {"type": "image_url", "image_url": {"url": data_uri}},
                     ],
                 }],
-                max_tokens=_VISION_MAX_TOKENS,
-                temperature=0.0,
-                timeout=_LLM_TIMEOUT,
-            )
+            max_tokens=_VISION_MAX_TOKENS,
+            temperature=0.0,
+            timeout=_LLM_TIMEOUT,
+            extra_body={"enable_thinking": _LLM_ENABLE_THINKING},
+        )
             raw = (response.choices[0].message.content or "").strip()
             tokens = response.usage.total_tokens if response.usage else 0
             logger.debug("Vision LLM 响应 tokens=%d", tokens)
