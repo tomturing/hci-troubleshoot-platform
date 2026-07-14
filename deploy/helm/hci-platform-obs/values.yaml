@@ -145,7 +145,7 @@ langfuse:
     userPassword: ""
 
   server:
-    image: langfuse/langfuse:v3.202.1
+    image: langfuse/langfuse:3
     resources:
       requests:
         cpu: "100m"
@@ -154,7 +154,7 @@ langfuse:
         cpu: "1000m"
         memory: "2Gi"
   worker:
-    image: langfuse/langfuse-worker:v3.202.1
+    image: langfuse/langfuse-worker:3
     resources:
       requests:
         cpu: "100m"
