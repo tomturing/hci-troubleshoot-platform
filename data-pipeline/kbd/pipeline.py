@@ -46,7 +46,7 @@ from .classifier import classify_batch
 from .config import settings
 from .extract_signals import extract_signals_batch
 from .fetcher import _is_fetched, _kbd_dir, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
-from .image_proc import _find_images, _has_failed_vision, get_failed_vision_ids, process_images_batch
+from .image_proc import process_images_batch
 from .importer import import_batch
 from .progress import (
     finish_progress,
