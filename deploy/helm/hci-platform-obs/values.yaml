@@ -123,6 +123,27 @@ limitRange:
 # ======================== Langfuse v3 ========================================
 langfuse:
   enabled: true
+
+  # ---------------------------------------------------------------------------
+  # 无头初始化（Headless Initialization）
+  # 首次启动（DB 为空）时，langfuse-server 自动创建 org / project / 初始用户
+  # 及其 API Key，无需在 Web UI 手动配置。
+  # project 的 public/secret key 直接复用 .Values.langfuse.publicKey/secretKey
+  # （即 agent-service SDK 注入的同一对 key），保证 SDK 上线即可写入 trace。
+  # 各环境在环境仓库（environments/<env>/values.yaml）的 langfuse.init 中按环境覆盖。
+  # ---------------------------------------------------------------------------
+  init:
+    enabled: false
+    orgId: ""
+    orgName: "HCI"
+    orgPk: ""
+    orgSk: ""
+    projectId: ""
+    projectName: "hci"
+    userEmail: ""
+    userName: ""
+    userPassword: ""
+
   server:
     image: langfuse/langfuse:v3.202.1
     resources:
