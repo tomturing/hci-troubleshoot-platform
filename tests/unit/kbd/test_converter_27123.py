@@ -85,7 +85,7 @@ class TestConvert27123Golden:
 
         # content_md 不在此生成，交由后端渲染
         assert result["content_md"] is None
-        assert result["steps_json"] == []
+        assert result["signals_json"] == []
 
         # images_json：3 张去重图片，seq 0/1/2，desc 恒为空（VISION 阶段填充）
         images_json = result["images_json"]

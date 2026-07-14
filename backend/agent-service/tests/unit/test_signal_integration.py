@@ -75,15 +75,15 @@ class TestVariablePoolIntegration:
         pool.register_from_frontend_result(frontend_result)
 
         # 4. 验证变量已写入
-        assert pool.get("host") == "host-047bcb4bc820"
-        assert pool.get("vm") == "vm-001"
-        assert pool.get("end") == "2026-07-09 13:28:59"
+        assert pool.get("HOST") == "host-047bcb4bc820"
+        assert pool.get("VM") == "vm-001"
+        assert pool.get("END") == "2026-07-09 13:28:59"
 
         # 5. 创建后端信号（消费者）
         backend_signal = BackendSignal(
             signal_type=BackendSignalType.LOG_KEYWORD,
             keyword="log_search",
-            target={"scope": "${host}", "resource": "mysql-managed.log"},
+            target={"scope": "{{HOST}}", "resource": "mysql-managed.log"},
             keywords=["file system read-only"],
             expected=True,
         )
@@ -120,9 +120,9 @@ class TestVariablePoolIntegration:
         pool.register_from_frontend_result(task_result)
 
         # 验证变量合并
-        assert pool.get("host") == "node-001"
-        assert pool.get("vm") == "vm-002"
-        assert pool.get("request_id") == "req-123"
+        assert pool.get("HOST") == "node-001"
+        assert pool.get("VM") == "vm-002"
+        assert pool.get("REQUEST_ID") == "req-123"
 
 
 class TestSignalExtractorIntegration:
@@ -150,7 +150,7 @@ class TestSignalExtractorIntegration:
         signal = BackendSignal(
             signal_type=BackendSignalType.LOG_KEYWORD,
             keyword="log_check",
-            target={"scope": "${host}", "resource": "mysql.log"},
+            target={"scope": "{{HOST}}", "resource": "mysql.log"},
             keywords=["error"],
             expected=True,
         )
@@ -198,7 +198,7 @@ class TestEndToEndIntegration:
         backend_signal = BackendSignal(
             signal_type=BackendSignalType.LOG_KEYWORD,
             keyword="log_check",
-            target={"scope": "${host}", "resource": "mysql-managed.log"},
+            target={"scope": "{{HOST}}", "resource": "mysql-managed.log"},
             keywords=["file system read-only"],
             expected=True,
         )

@@ -165,13 +165,13 @@ class TestBackendSignal:
         signal = BackendSignal(
             signal_type=BackendSignalType.LOG_KEYWORD,
             keyword="log_search",
-            target={"scope": "${host}", "resource": "mysql.log"},
+            target={"scope": "{{HOST}}", "resource": "mysql.log"},
             keywords=["file system read-only"],
             expected=True
         )
         assert signal.signal_category == SignalCategory.BACKEND
         assert signal.signal_type == BackendSignalType.LOG_KEYWORD
-        assert signal.target.scope == "${host}"
+        assert signal.target.scope == "{{HOST}}"
         assert signal.keywords == ["file system read-only"]
 
     def test_create_service_status_signal(self):
@@ -251,15 +251,15 @@ class TestVariablePool:
     def test_render_template_placeholder(self):
         """测试模板占位符渲染"""
         pool = VariablePool(conversation_id="test-conv")
-        pool.register("host", "node-001")
-        pool.register("end", "2026-07-09 10:00:00")
+        pool.register("HOST", "node-001")
+        pool.register("END", "2026-07-09 10:00:00")
 
         # 纯占位符
-        assert pool.render_template("${host}") == "node-001"
-        assert pool.render_template("${end}") == "2026-07-09 10:00:00"
+        assert pool.render_template("{{HOST}}") == "node-001"
+        assert pool.render_template("{{END}}") == "2026-07-09 10:00:00"
 
         # 混合文本
-        assert pool.render_template("prefix-${host}-suffix") == "prefix-node-001-suffix"
+        assert pool.render_template("prefix-{{HOST}}-suffix") == "prefix-node-001-suffix"
 
         # 无占位符
         assert pool.render_template("plain-text") == "plain-text"
@@ -287,21 +287,21 @@ class TestVariablePool:
         pool.register_from_frontend_result(result)
 
         # 验证变量注册
-        assert pool.get("host") == "node-001"
-        assert pool.get("vm") == "vm-123"
-        assert pool.get("end") == "2026-07-09 10:00:00"
-        assert pool.get("alert_type") == "host_bond"
+        assert pool.get("HOST") == "node-001"
+        assert pool.get("VM") == "vm-123"
+        assert pool.get("END") == "2026-07-09 10:00:00"
+        assert pool.get("ALERT_TYPE") == "host_bond"
 
     def test_render_backend_signal(self):
         """测试渲染后端信号的模板占位符"""
         pool = VariablePool(conversation_id="test-conv")
-        pool.register("host", "node-001")
+        pool.register("HOST", "node-001")
 
         # 原始信号（包含占位符）
         signal = BackendSignal(
             signal_type=BackendSignalType.LOG_KEYWORD,
             keyword="test",
-            target={"scope": "${host}", "resource": "mysql.log"},
+            target={"scope": "{{HOST}}", "resource": "mysql.log"},
             keywords=["error"]
         )
 
@@ -348,7 +348,7 @@ class TestEndToEndFlow:
         backend_signal = BackendSignal(
             signal_type=BackendSignalType.LOG_KEYWORD,
             keyword="log_check",
-            target={"scope": "${host}", "resource": "mysql-managed.log"},
+            target={"scope": "{{HOST}}", "resource": "mysql-managed.log"},
             keywords=["file system read-only"]
         )
 
