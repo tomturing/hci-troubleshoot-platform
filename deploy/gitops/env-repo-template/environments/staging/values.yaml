@@ -1,40 +1,46 @@
 # 环境仓库模板：staging
 # 建议与生产接近，用于发布前冒烟与回归
+# 镜像标签通过人工审批后由 CI `env-repo-sync.yml` 晋级（target_env=staging）
+#
+# ⚠️ 镜像名必须与 CI 推送一致（无 hci- 前缀）：
+#   CI matrix.service = api-gateway/case-service/...，推送为
+#   ghcr.io/tomturing/hci-troubleshoot-platform/<service>:<tag>
+# 若写成 hci-<service> 会导致 ImagePullBackOff。
 
 global:
   environment: staging
 
 apiGateway:
   image:
-    repository: hci-api-gateway
+    repository: api-gateway
     tag: "latest"
 
 caseService:
   image:
-    repository: hci-case-service
+    repository: case-service
     tag: "latest"
 
 conversationService:
   image:
-    repository: hci-conversation-service
+    repository: conversation-service
     tag: "latest"
 
 schedulerService:
   image:
-    repository: hci-scheduler-service
+    repository: scheduler-service
     tag: "latest"
 
 kbService:
   image:
-    repository: hci-kb-service
+    repository: kb-service
     tag: "latest"
 
 customerUI:
   image:
-    repository: hci-customer-ui
+    repository: customer-ui
     tag: "latest"
 
 adminUI:
   image:
-    repository: hci-admin-ui
+    repository: admin-ui
     tag: "latest"

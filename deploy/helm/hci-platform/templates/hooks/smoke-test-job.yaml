@@ -19,7 +19,8 @@ metadata:
     # ArgoCD PostSync Hook：同步完成后执行
     argocd.argoproj.io/hook: PostSync
     # 再次触发前先删除上一个同名 Job，避免 AlreadyExists 错误
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    # D-011: 必须包含 HookFailed，防止 PostSync 失败 hook 残留
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookFailed
 spec:
   # 失败后不重试（重试由 shell 循环自己控制，Job 级别只运行一次）
   backoffLimit: 0
