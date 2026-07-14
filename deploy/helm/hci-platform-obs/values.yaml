@@ -136,8 +136,6 @@ langfuse:
     enabled: false
     orgId: ""
     orgName: "HCI"
-    orgPk: ""
-    orgSk: ""
     projectId: ""
     projectName: "hci"
     userEmail: ""
