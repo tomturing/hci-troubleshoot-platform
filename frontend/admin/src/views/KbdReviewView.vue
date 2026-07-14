@@ -332,7 +332,9 @@ async function handleReanalyzeImages(entry: KbdEntry) {
   }
   reanalyzeLoading.value = entry.id
   try {
-    const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-images`, {
+    // 临时修复：使用同步模式避免异步轮询未实现导致的 undefined 问题
+    // TODO: 后续实现异步轮询机制以避免长时间HTTP连接超时
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-images?sync=true`, {
       method: 'POST',
       headers: authHeader,
     })
@@ -392,7 +394,9 @@ async function handleReanalyzeSingleImage(entry: KbdEntry, seq: number) {
   }
   reanalyzeSingleLoading.value = { kbdId: entry.id, seq }
   try {
-    const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-image/${seq}`, {
+    // 临时修复：使用同步模式避免异步轮询未实现导致的 undefined 问题
+    // TODO: 后续实现异步轮询机制以避免长时间HTTP连接超时
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/reanalyze-image/${seq}?sync=true`, {
       method: 'POST',
       headers: authHeader,
     })
@@ -1336,14 +1340,14 @@ onMounted(() => {
                   </span>
                   <el-button
                     type="warning"
-                    link
                     size="small"
-                    style="margin-right: 8px; padding: 0; display: inline-flex; align-items: center; vertical-align: middle;"
+                    style="margin-right: 8px;"
                     :loading="reanalyzeSingleLoading?.kbdId === detailEntry.id && reanalyzeSingleLoading?.seq === seg.seq"
                     @click.stop="handleReanalyzeSingleImage(detailEntry, seg.seq !== undefined ? seg.seq : 0)"
                     title="重新识图此张"
                   >
                     <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+                    重新识图
                   </el-button>
                   <span class="toggle-arrow">{{ seg.expanded ? '▲' : '▼' }}</span>
                 </div>
@@ -1408,14 +1412,14 @@ onMounted(() => {
                   </span>
                   <el-button
                     type="warning"
-                    link
                     size="small"
-                    style="margin-right: 8px; padding: 0; display: inline-flex; align-items: center; vertical-align: middle;"
+                    style="margin-right: 8px;"
                     :loading="reanalyzeSingleLoading?.kbdId === detailEntry.id && reanalyzeSingleLoading?.seq === img.seq"
                     @click.stop="handleReanalyzeSingleImage(detailEntry, img.seq)"
                     title="重新识图此张"
                   >
                     <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+                    重新识图
                   </el-button>
                   <span class="toggle-arrow">{{ img.expanded ? '▲' : '▼' }}</span>
                 </div>
