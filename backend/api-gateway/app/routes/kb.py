@@ -349,7 +349,8 @@ async def kbd_reanalyze_images_proxy(kbd_id: int, request: Request):
     客户端通过 GET reanalyze-images/status 轮询完成状态。
     """
     headers = _internal_auth_headers()
-    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-images", headers=headers, timeout=30.0)
+    # 透传 query（如 ?sync=true 同步模式开关），否则 kb-service 收不到 sync 而走异步 202
+    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-images", params=dict(request.query_params), headers=headers, timeout=30.0)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
@@ -378,7 +379,8 @@ async def kbd_reanalyze_single_image_proxy(kbd_id: int, seq: int, request: Reque
         seq: 图片序号（从 0 开始）
     """
     headers = _internal_auth_headers()
-    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-image/{seq}", headers=headers, timeout=240.0)
+    # 透传 query（如 ?sync=true 同步模式开关），否则 kb-service 收不到 sync 而走异步 202
+    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-image/{seq}", params=dict(request.query_params), headers=headers, timeout=240.0)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
