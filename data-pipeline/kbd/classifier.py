@@ -26,6 +26,7 @@ import asyncpg
 import httpx
 
 from .config import settings
+from .observability import traceparent
 
 logger = logging.getLogger("kbd.classifier")
 
@@ -63,6 +64,8 @@ async def _call_classify_api(
     headers = {
         "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
         "Content-Type": "application/json",
+        # 注入 W3C traceparent：与 kb-service 日志共享 trace_id（见 observability.py）。
+        **traceparent(),
     }
     payload = {
         "title": title,

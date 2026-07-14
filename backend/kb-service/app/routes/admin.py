@@ -1928,10 +1928,20 @@ async def reanalyze_kbd_images(request: Request, kbd_id: int):
     from app.services.vision_processor import reanalyze_kbd_images as do_reanalyze
 
     async def _runner(k_id: int) -> dict[str, Any]:
-        return await do_reanalyze(k_id, _db_manager.async_session_factory)
+        # 实时回写进度：避免轮询全程看到 running + 0/0 的「黑盒」观感；
+        # 把本次请求的 trace_id 透传给 vision_processor，确保服务端日志与调用方串联。
+        def _on_progress(done: int, failed: int, total: int) -> None:
+            asyncio.create_task(
+                jm._update(job_id, total=total, done=done, failed=failed)
+            )
+
+        return await do_reanalyze(
+            k_id, _db_manager.async_session_factory,
+            on_progress=_on_progress, trace_id=trace_id,
+        )
 
     jm = get_job_manager()
-    job_id = await jm.submit(kbd_id, _runner)
+    job_id = await jm.submit(kbd_id, _runner, trace_id=trace_id)
 
     logger.info(
         event="kbd_reanalyze_images_submitted",
@@ -1970,11 +1980,13 @@ async def _reanalyze_kbd_images_sync(kbd_id: int, trace_id: str):
         kbd_id=kbd_id, total=result["total"], done=result["done"], failed=result["failed"], trace_id=trace_id,
     )
     return {
-        "success": True,
+        # 修复：同步路径不应恒为 True；部分图片失败时需如实反映 result.success
+        "success": result.get("success", True),
         "kbd_id": kbd_id,
         "total": result["total"],
         "done": result["done"],
         "failed": result["failed"],
+        "error": result.get("error"),
         "message": result.get("message", "识图完成"),
     }
 
@@ -2052,11 +2064,13 @@ async def reanalyze_single_image(request: Request, kbd_id: int, seq: int):
     from app.services.vision_processor import reanalyze_single_image as do_reanalyze_single
 
     async def _runner(k_id: int) -> dict[str, Any]:
-        # k_id 仅用于匹配 submit 签名；实际只处理当前 seq
-        return await do_reanalyze_single(k_id, seq, _db_manager.async_session_factory)
+        # k_id 仅用于匹配 submit 签名；实际只处理当前 seq；透传 trace_id 串联日志
+        return await do_reanalyze_single(
+            k_id, seq, _db_manager.async_session_factory, trace_id=trace_id
+        )
 
     jm = get_job_manager()
-    job_id = await jm.submit(kbd_id, _runner)
+    job_id = await jm.submit(kbd_id, _runner, trace_id=trace_id)
 
     logger.info(
         event="kbd_reanalyze_single_image_submitted",
