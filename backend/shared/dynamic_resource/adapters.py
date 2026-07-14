@@ -161,7 +161,7 @@ def kbd_resource_payload(kbd: Any) -> dict[str, Any]:
             "problem_description": getter("problem_description"),
             "alert_info": getter("alert_info"),
             "steps_text": getter("steps_text"),
-            "steps_json": getter("steps_json") or [],
+            "signals_json": getter("signals_json") or [],
             "content_md": getter("content_md"),
             "content_raw": getter("content_raw"),
             "images_json": getter("images_json") or [],
@@ -173,7 +173,7 @@ def kbd_resource_payload(kbd: Any) -> dict[str, Any]:
             "status": getter("status"),
         },
         "contract": {
-            "agent_usable": bool(getter("steps_json") or []),
+            "agent_usable": bool(getter("signals_json") or []),
             "metadata": getter("entry_metadata") or getter("metadata") or {},
         },
         "dependencies": [],

@@ -44,6 +44,7 @@ import httpx
 
 from .classifier import classify_batch
 from .config import settings
+from .extract_signals import extract_signals_batch
 from .fetcher import _is_fetched, _kbd_dir, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
 from .image_proc import _find_images, _has_failed_vision, get_failed_vision_ids, process_images_batch
 from .importer import import_batch
@@ -66,6 +67,7 @@ class Stage(IntEnum):
     VISION = 2
     IMPORT = 3
     CLASSIFY = 4
+    EXTRACT = 5  # 关键信号分级抽取：LLM 抽取 signals_json 并写回 kbd_entry
 
 
 async def _create_pool() -> asyncpg.Pool:
@@ -83,7 +85,7 @@ async def _create_pool() -> asyncpg.Pool:
 
 async def run_pipeline(
     kbd_ids: list[str],
-    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY),
+    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY, Stage.EXTRACT),
     *,
     force_fetch: bool = False,
     override: bool = False,
@@ -294,6 +296,42 @@ async def run_pipeline(
                 update_stage_status(progress, "classify", cid, status)
             save_progress(run_id, progress)
 
+        if Stage.EXTRACT in stages:
+            logger.info("─── Stage 5: 关键信号分级抽取 ───")
+            # 仅处理已分类且 signals_json 为空的 draft 案例
+            extract_rows = await pool.fetch(
+                """SELECT support_id FROM kbd_entry
+                   WHERE support_id = ANY($1)
+                     AND status = 'draft'
+                     AND (signals_json IS NULL OR signals_json = '[]'::jsonb)""",
+                kbd_ids,
+            )
+            extract_ids_all = [r["support_id"] for r in extract_rows]
+
+            # Resume 模式：跳过已完成的案例
+            extract_kbd_ids = extract_ids_all
+            if resume and progress:
+                completed_ids = get_completed_ids_for_stage(progress, "extract")
+                extract_kbd_ids = [cid for cid in extract_ids_all if cid not in completed_ids]
+                skipped = len(extract_ids_all) - len(extract_kbd_ids)
+                if skipped > 0:
+                    logger.info("Resume 跳过 %d 个已完成的 extract 案例", skipped)
+
+            t0 = time.monotonic()
+            stats = await extract_signals_batch(extract_kbd_ids, pool)
+            all_stats["extract"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
+            logger.info("Stage 5 完成 %s", all_stats["extract"])
+
+            # 更新进度
+            for cid in extract_kbd_ids:
+                row = await pool.fetchrow(
+                    """SELECT signals_json FROM kbd_entry WHERE support_id = $1""",
+                    cid,
+                )
+                done = row and row["signals_json"] and row["signals_json"] != "[]"
+                update_stage_status(progress, "extract", cid, "done" if done else "failed")
+            save_progress(run_id, progress)
+
         # 标记进度完成
         finish_progress(progress)
 
@@ -341,7 +379,7 @@ async def _get_import_ready_ids(kbd_ids: list[str], pool: asyncpg.Pool) -> list[
 
 
 async def run_from_excel(
-    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY),
+    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY, Stage.EXTRACT),
     *,
     force_fetch: bool = False,
     override: bool = False,

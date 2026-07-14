@@ -3,13 +3,13 @@ KB Service — KBD Cases 检索路由（供 agent-service 使用）
 
 GET /api/kb/cases/search
   - 调用方：agent-service 的 InvestigationAgent（通过 KBClient.search_cases_with_steps）
-  - 仅返回 status='published' AND steps_json != '[]' 的 KBD 条目
+  - 仅返回 status='published' AND signals_json != '[]' 的 KBD 条目
   - 混合排序：向量语义相似度（有 embedding） + 命中次数加权
   - 无需鉴权（Pod 内部调用），仅在 K8s NetworkPolicy 层做隔离
 
 返回格式与 agent-service 中 kbd_from_dict() 期望的字段一致：
   - "name" 字段映射到 KBD.name（= title）
-  - "steps" 字段来自 steps_json 列（[{tool_name, tool_args_template, expected_pattern}]）
+  - "signals" 字段来自 signals_json 列（关键信号集合，producer/consumer）
   - "similarity" 为向量余弦相似度（无 embedding 时降级为 0.0）
 """
 
@@ -56,7 +56,7 @@ def _entry_to_case_dict(entry: KbdEntry, similarity: float) -> dict[str, Any]:
 
     字段名与 agent-service kbd_from_dict() 期望保持一致：
     - "name" = entry.title（KBD.name）
-    - "steps" = entry.steps_json（[{tool_name, tool_args_template, expected_pattern}]）
+    - "signals" = entry.signals_json（关键信号集合，producer/consumer）
     - "similarity" = 向量余弦相似度（范围 [0.0, 1.0]）
     """
     return {
@@ -73,8 +73,8 @@ def _entry_to_case_dict(entry: KbdEntry, similarity: float) -> dict[str, Any]:
         "operational_impact": entry.operational_impact,
         "is_temporary": entry.is_temporary,
         "recommendations": entry.recommendations,
-        # 结构化工具步骤（供 InvestigationAgent 执行）
-        "steps": entry.steps_json,  # kbd_from_dict 期望 "steps"
+        # 关键信号集合（供 InvestigationAgent 执行与判定）
+        "signals": entry.signals_json,  # agent-side kbd_from_dict 期望 "signals"
     }
 
 
@@ -123,7 +123,7 @@ async def search_cases_with_steps(
 
     仅返回满足以下条件的 KBD 条目：
     1. status = 'published'（已审核发布）
-    2. steps_json != '[]'（有结构化工具步骤，InvestigationAgent 可执行）
+    2. signals_json != '[]'（有关键信号集合，InvestigationAgent 可执行与判定）
     3. category_id 精确匹配
 
     排序策略：
@@ -177,7 +177,7 @@ async def search_cases_with_steps(
     async with _db_manager.async_session_factory() as session:
         if query_vector is not None:
             # 向量语义排序（pgvector cosine distance，ASC = 越小越相似）
-            # 同时过滤 status + steps_json + category_id
+            # 同时过滤 status + signals_json + category_id
             vector_str = f"[{','.join(str(v) for v in query_vector)}]"
             stmt = (
                 select(
@@ -188,7 +188,7 @@ async def search_cases_with_steps(
                     and_(
                         KbdEntry.status == "published",
                         KbdEntry.category_id == category_id,
-                        text("steps_json != '[]'::jsonb"),
+                        text("signals_json != '[]'::jsonb"),
                         text("embedding IS NOT NULL"),
                     )
                 )
@@ -217,7 +217,7 @@ async def search_cases_with_steps(
                     and_(
                         KbdEntry.status == "published",
                         KbdEntry.category_id == category_id,
-                        text("steps_json != '[]'::jsonb"),
+                        text("signals_json != '[]'::jsonb"),
                     )
                 )
                 .order_by(KbdEntry.published_at.desc())

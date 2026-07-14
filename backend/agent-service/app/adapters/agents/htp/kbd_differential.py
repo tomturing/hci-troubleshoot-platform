@@ -31,6 +31,7 @@ from shared.observability.logger import get_logger
 from app.adapters.agents.htp.kbd_model import (
     KBD,
     PATTERN_CONTAINS_PREFIX,
+    PATTERN_MATCHER_PREFIX,
     PATTERN_REGEX_PREFIX,
     KBDStep,
 )
@@ -415,6 +416,29 @@ class KBDDiagnostic:
             elif pattern.startswith(PATTERN_CONTAINS_PREFIX):
                 keyword = pattern[len(PATTERN_CONTAINS_PREFIX) :]
                 rule_results[kbd.id] = keyword.lower() in actual_output.lower()
+
+            elif pattern.startswith(PATTERN_MATCHER_PREFIX):
+                # 关键信号 matcher dict：程序化处理 keyword/regex；其他类型(state/threshold/json_path/exists) 留待 LLM
+                try:
+                    matcher = json.loads(pattern[len(PATTERN_MATCHER_PREFIX):])
+                except (json.JSONDecodeError, ValueError):
+                    rule_results[kbd.id] = True
+                    continue
+                mtype = matcher.get("type", "")
+                p = matcher.get("pattern", "") or ""
+                expected = matcher.get("expected", True)
+                if mtype == "regex":
+                    try:
+                        hit = bool(re.search(p, actual_output, re.IGNORECASE | re.DOTALL))
+                        rule_results[kbd.id] = (hit is expected)
+                    except re.error:
+                        rule_results[kbd.id] = True
+                elif mtype == "keyword" and isinstance(p, str):
+                    hit = p.lower() in actual_output.lower()
+                    rule_results[kbd.id] = (hit is expected)
+                else:
+                    # state/threshold/json_path/exists → LLM judge
+                    llm_kbds.append(kbd)
 
             else:
                 # 自然语言描述 → 推迟到 LLM 判断

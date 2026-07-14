@@ -47,6 +47,9 @@ class SopDocument(Base):
     # 变量定义（T-AGT-24：approve 时自动解析生成）
     variable_schema = Column(JSONB, nullable=True, default=list)  # 变量定义列表 JSONB 数组
 
+    # 关键信号集合（跨文档通用，与 kbd_entry.signals_json 同构；抽取阶段填充）
+    signals_json = Column(JSONB, nullable=False, default=list)  # 关键信号集合
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(
         DateTime(timezone=True),

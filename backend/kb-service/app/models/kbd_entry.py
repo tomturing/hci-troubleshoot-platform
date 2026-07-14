@@ -8,7 +8,7 @@ KBD 知识条目表，用于存储深信服案例原始数据。
   - 叙述字段（8 大章节）：由 pipeline 从案例 HTML 自动提取，admin 可编辑
     章节字段中图片位置以 ![img:N] 占位符标记，视觉描述存储在 images_json
   - steps_text：自然语言步骤（人类阅读）
-  - steps_json：结构化工具步骤（agent 执行，默认为空，需人工/AI 填充）
+  - signals_json：关键信号集合（producer/consumer，agent 执行与判定，默认[]，抽取阶段填充）
   - images_json：图片视觉描述列表（pipeline Vision LLM 生成，独立存储）
     格式：[{"seq": N, "section": "field_name", "desc": "..."}]
   - content_md：由章节字段 + images_json 聚合渲染（rebuild_content_md() 生成）
@@ -79,7 +79,7 @@ class KbdEntry(Base):
       章节字段中图片位置以 ![img:N] 占位符标记
     - images_json: 图片视觉描述（[{"seq": N, "section": field, "desc": "..."}]）
       独立存储，rebuild_content_md() 展开占位符；admin 编辑章节后视觉信息不丢失
-    - steps_json: 结构化工具步骤（供 agent 执行，非空时对 InvestigationAgent 可见）
+    - signals_json: 关键信号集合（producer/consumer 信号，非空时对 InvestigationAgent 可见）
     - content_md: 聚合渲染 Markdown（供展示和 LLM 上下文注入）
     - embedding: embed(title + problem_description + alert_info + root_cause)
       问题侧语义向量，不含 solution，避免答案侧污染向量空间
@@ -104,11 +104,13 @@ class KbdEntry(Base):
     is_temporary = Column(Text, nullable=False, default="")  # 是否是临时解决方案（可选）
     recommendations = Column(Text, nullable=False, default="")  # 建议与总结（可选）
 
-    # ── 结构化工具步骤（供 agent 执行）────────────────────────────────────────
-    # 格式：[{"tool_name": "...", "tool_args_template": {...}, "expected_pattern": "..."}]
-    # 默认为空，需 admin 人工编辑或 AI 提取后填充
+    # ── 关键信号集合（供 agent 执行与判定）────────────────────────────────────
+    # 格式：[{"id","signal_category","keyword","acquirer","acquirer_args","produces","requires","matcher"}]
+    # signal_category: frontend(producer=QKV) / backend(consumer=QFK)
+    # acquirer_args / matcher 内占位符统一 {{VAR}} 大写（见 ADR-2）
+    # 默认为空，由"关键信号分级抽取"阶段（pipeline Stage.EXTRACT_SIGNALS / 审核期）填充
     # 非空时 KBD 条目对 InvestigationAgent 可见（差异诊断）
-    steps_json = Column(JSONB, nullable=False, default=list)  # 结构化工具步骤
+    signals_json = Column(JSONB, nullable=False, default=list)  # 关键信号集合
 
     # ── 图片视觉描述（pipeline Vision LLM 生成，独立存储）───────────────────
     # 格式：[{"seq": 0, "section": "steps_text", "desc": "TYPE: 日志截图\n..."}]

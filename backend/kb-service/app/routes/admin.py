@@ -335,7 +335,7 @@ async def list_kbd_entries(
             SELECT id, support_id, title,
                    problem_description, alert_info, steps_text, root_cause,
                    solution, operational_impact, is_temporary, recommendations,
-                   steps_json, content_md, content_raw, images_json,
+                   signals_json, content_md, content_raw, images_json,
                    metadata, category_id, ai_category_id,
                    ai_category_conf, ai_category_reason,
                    status, reviewer_id, review_note,
@@ -362,7 +362,7 @@ async def list_kbd_entries(
             "operational_impact": row["operational_impact"] or "",
             "is_temporary": row["is_temporary"] or "",
             "recommendations": row["recommendations"] or "",
-            "steps_json": row["steps_json"] or [],
+            "signals_json": row["signals_json"] or [],
             "content_md": row["content_md"] or "",
             "content_raw": row["content_raw"] or "",
             "images_json": row["images_json"] or [],
@@ -419,7 +419,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
                 SELECT id, support_id, title,
                        problem_description, alert_info, steps_text, root_cause,
                        solution, operational_impact, is_temporary, recommendations,
-                       steps_json, content_md, content_raw, images_json,
+                       signals_json, content_md, content_raw, images_json,
                        metadata, category_id, ai_category_id,
                        ai_category_conf, ai_category_reason,
                        status, reviewer_id, review_note,
@@ -447,7 +447,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "operational_impact": row["operational_impact"] or "",
         "is_temporary": row["is_temporary"] or "",
         "recommendations": row["recommendations"] or "",
-        "steps_json": row["steps_json"] or [],
+        "signals_json": row["signals_json"] or [],
         "content_md": row["content_md"] or "",
         "content_raw": row["content_raw"] or "",
         "images_json": row["images_json"] or [],
@@ -572,7 +572,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
             text(
-                "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status, published_at, embedding FROM kbd_entry WHERE id = :id"
+                "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status, published_at, embedding, signals_json, category_id, ai_category_id FROM kbd_entry WHERE id = :id"
             ),
             {"id": kbd_id},
         )
@@ -600,6 +600,21 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
             raise HTTPException(
                 status_code=400,
                 detail=f"KBD 条目 {kbd_id} 缺少 content_md，无法生成 embedding",
+            )
+
+        # ADR-1 + ADR-3：审核前置门
+        # 门 1：signals_json 非空（无关键信号 → CDD 不可执行）
+        if not row["signals_json"] or row["signals_json"] == []:
+            raise HTTPException(
+                status_code=422,
+                detail=f"KBD 条目 {kbd_id} 缺少关键信号（signals_json 为空），请先调用 /extract-signals 抽取后再审核",
+            )
+        # 门 2：category_id 与 ai_category_id 同步（根治孤儿 KBD）
+        effective_category_id = row["category_id"] or row["ai_category_id"]
+        if not effective_category_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"KBD 条目 {kbd_id} 缺少分类（category_id 与 ai_category_id 均为空），请先抽取分类后再审核",
             )
         # 构建 embedding 输入（问题侧字段，避免答案侧污染向量空间）
         embedding_text = "\n\n".join(
@@ -669,6 +684,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                     reviewed_at = :reviewed_at,
                     review_note = COALESCE(:review_note, review_note),
                     content_raw = :content_raw,
+                    category_id = :category_id,
                     embedding = CAST(:embedding AS vector),
                     tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
                 WHERE id = :id
@@ -682,6 +698,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 "reviewed_at": now,
                 "review_note": body.review_note,
                 "content_raw": current_content_raw,
+                "category_id": effective_category_id,
                 "embedding": vector_str,
             }
         else:
@@ -695,6 +712,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                     reviewed_at = :reviewed_at,
                     review_note = COALESCE(:review_note, review_note),
                     content_raw = :content_raw,
+                    category_id = :category_id,
                     tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
                 WHERE id = :id
                 RETURNING id, status, embedding, published_at
@@ -707,6 +725,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 "reviewed_at": now,
                 "review_note": body.review_note,
                 "content_raw": current_content_raw,
+                "category_id": effective_category_id,
             }
 
         result = await session.execute(update_sql, params)
@@ -1649,7 +1668,7 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
 class KbdUpdateRequest(BaseModel):
     """KBD 条目内容编辑请求
 
-    支持编辑标题、8 大章节字段、steps_json 和分类。
+    支持编辑标题、8 大章节字段、signals_json 和分类。
     编辑章节字段后，content_md 自动由章节重建（不含视觉描述）。
     若明确传入 content_md，则优先使用传入的值。
     """
@@ -1664,10 +1683,10 @@ class KbdUpdateRequest(BaseModel):
     operational_impact: str | None = Field(None, description="操作影响范围章节")
     is_temporary: str | None = Field(None, description="是否是临时解决方案章节")
     recommendations: str | None = Field(None, description="建议与总结章节")
-    # 结构化工具步骤（agent 可执行）
-    steps_json: list[dict] | None = Field(
+    # 关键信号集合（agent 可执行与判定）
+    signals_json: list[dict] | None = Field(
         None,
-        description="结构化工具步骤（[{tool_name, tool_args_template, expected_pattern}]）",
+        description="关键信号集合（[{id,signal_category,keyword,acquirer,acquirer_args,produces,requires,matcher}]）",
     )
     # 聚合渲染（可选，不传则自动由章节重建）
     content_md: str | None = Field(None, description="聚合 Markdown（优先用传入的值；不传则自动由章节重建）")
@@ -1677,7 +1696,7 @@ class KbdUpdateRequest(BaseModel):
 
 @kbd_router.patch("/{kbd_id}")
 async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest):
-    """编辑 KBD 条目的标题、章节字段、steps_json 或分类。
+    """编辑 KBD 条目的标题、章节字段、signals_json 或分类。
 
     处理逻辑：
     1. 章节字段任意一个被修改时，如果没有明确提供 content_md，则自动先从数据库读取当前章节状态并重建 content_md
@@ -1703,7 +1722,7 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
     has_any_field = (
         body.title is not None
         or any_section_changed
-        or body.steps_json is not None
+        or body.signals_json is not None
         or body.content_md is not None
         or body.content_raw is not None
         or body.category_id is not None
@@ -1724,9 +1743,9 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
             set_clauses.append(f"{field} = :{field}")
             params[field] = val
 
-    if body.steps_json is not None:
-        set_clauses.append("steps_json = :steps_json::jsonb")
-        params["steps_json"] = json.dumps(body.steps_json, ensure_ascii=False)
+    if body.signals_json is not None:
+        set_clauses.append("signals_json = :signals_json::jsonb")
+        params["signals_json"] = json.dumps(body.signals_json, ensure_ascii=False)
 
     # content_md 处理：明确传入则用传入的值；有章节更改则需先读库并重建
     if body.content_md is not None:
@@ -1876,6 +1895,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                     reviewed_at = :reviewed_at,
                     review_note = COALESCE(:review_note, review_note),
                     content_raw = :content_raw,
+                    category_id = :category_id,
                     embedding = CAST(:embedding AS vector),
                     tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
                 WHERE id = :id
@@ -1889,6 +1909,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                 "reviewed_at": now,
                 "review_note": body.review_note,
                 "content_raw": current_content_raw,
+                "category_id": effective_category_id,
                 "embedding": vector_str,
             }
         else:
@@ -1901,6 +1922,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                     reviewed_at = :reviewed_at,
                     review_note = COALESCE(:review_note, review_note),
                     content_raw = :content_raw,
+                    category_id = :category_id,
                     tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
                 WHERE id = :id
                 RETURNING id, status, embedding, published_at
@@ -1913,6 +1935,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                 "reviewed_at": now,
                 "review_note": body.review_note,
                 "content_raw": current_content_raw,
+                "category_id": effective_category_id,
             }
 
         result = await session.execute(update_sql, params)

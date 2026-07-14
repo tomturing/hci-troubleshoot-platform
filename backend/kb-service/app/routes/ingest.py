@@ -194,7 +194,7 @@ class KbdIngestRequest(BaseModel):
 
     字段设计（与 8 大标准章节对齐）：
     - 章节字段（叙述类）：由 pipeline 从案例 HTML 自动提取，Markdown 格式
-    - steps_json：结构化工具步骤（pipeline 写入空列表，admin 后续填充）
+    - signals_json：关键信号集合（pipeline 写入空列表，抽取阶段/审核期填充）
     - content_md：由 pipeline 传入（含截图视觉描述），admin 编辑后重建时可省略
 
     幂等控制：
@@ -220,13 +220,13 @@ class KbdIngestRequest(BaseModel):
     is_temporary: str = Field("", description="是否是临时解决方案（可选章节 Markdown）")
     recommendations: str = Field("", description="建议与总结（可选章节 Markdown）")
 
-    # 结构化工具步骤（pipeline 写入空列表，admin 人工/AI 填充后 agent 可见）
-    steps_json: list[dict] = Field(
+    # 关键信号集合（pipeline 写入空列表，抽取阶段/审核期填充后 agent 可见）
+    signals_json: list[dict] = Field(
         default_factory=list,
         description=(
-            "结构化工具步骤（供 agent 执行）；"
-            "格式：[{tool_name, tool_args_template, expected_pattern}]；"
-            "pipeline 写入空列表，需 admin 编辑后填充"
+            "关键信号集合（producer/consumer，供 agent 执行与判定）；"
+            "格式：[{id,signal_category,keyword,acquirer,acquirer_args,produces,requires,matcher}]；"
+            "pipeline 写入空列表，由关键信号分级抽取阶段填充"
         ),
     )
 
@@ -402,7 +402,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                     existing_entry.operational_impact = body.operational_impact
                     existing_entry.is_temporary = body.is_temporary
                     existing_entry.recommendations = body.recommendations
-                    existing_entry.steps_json = body.steps_json
+                    existing_entry.signals_json = body.signals_json
                     existing_entry.images_json = body.images_json
                     # content_md：优先用传入值（含视觉描述），否则从章节重建
                     existing_entry.content_md = body.content_md or existing_entry.rebuild_content_md()
@@ -421,7 +421,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
                         support_id=body.support_id,
                         kbd_id=existing_entry.id,
                         status=existing_status,
-                        has_steps_json=len(body.steps_json) > 0,
+                        has_signals_json=len(body.signals_json) > 0,
                     )
 
                     return KbdIngestResponse(
@@ -493,7 +493,7 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
             operational_impact=body.operational_impact,
             is_temporary=body.is_temporary,
             recommendations=body.recommendations,
-            steps_json=body.steps_json,
+            signals_json=body.signals_json,
             images_json=body.images_json,
             # content_md：优先用传入值（含视觉描述），否则从章节重建
             content_md=temp_content_md,

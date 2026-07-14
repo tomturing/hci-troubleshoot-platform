@@ -1,22 +1,51 @@
 """
-KBD 数据模型（知识库文档 Knowledge Base Document）
+KBD 数据模型（知识库文档 Knowledge Base Document）— 关键信号（signals_json）迭代
 
-设计约定：
-  - KBDStep.expected_pattern 支持三种格式：
-      __REGEX__:<regex>      正则匹配（全文搜索）
-      __CONTAINS__:<text>    包含文本（不区分大小写）
-      <自然语言>             留给 LLM 判断，作为 judge prompt 的参考依据
-  - tool_args_template 中的 {{vm_name}}、{{host_id}} 等占位符在执行时
-    由 env_context（S0 阶段采集的环境上下文）替换
+设计约定（v2）：
+  - signals 字段来自 kb-service 返回的 "signals" key（原 "steps" key 已废弃）
+  - 每条 signal 为 dict，包含 acquirer（采集器）、acquirer_args（参数模板）、matcher（判定契约）
+  - KBDStep 从 signal dict 按需构建，tool_name = acquirer，expected_pattern 由 matcher 序列化
+  - tool_args_template 中占位符统一 {{VAR}} 大写（ADR-2）
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from typing import Any
 
 # 期望模式前缀常量，供判断逻辑识别
 PATTERN_REGEX_PREFIX = "__REGEX__:"
 PATTERN_CONTAINS_PREFIX = "__CONTAINS__:"
+PATTERN_MATCHER_PREFIX = "__MATCHER__:"
+
+
+def _matcher_to_expected(matcher: dict[str, Any] | None) -> str:
+    """将 Matcher dict 序列化为 __REGEX__:/__CONTAINS__:/__MATCHER__: 格式，兼容原有 CDD judge。"""
+    if not matcher or not isinstance(matcher, dict):
+        return ""
+    mtype = matcher.get("type", "")
+    pattern = matcher.get("pattern", "")
+    if not pattern:
+        return ""
+    if mtype == "regex":
+        return f"{PATTERN_REGEX_PREFIX}{pattern}"
+    if mtype == "keyword" and isinstance(pattern, str):
+        return f"{PATTERN_CONTAINS_PREFIX}{pattern}"
+    # state/threshold/json_path/exists → 序列化为 JSON，由 LLM judge 处理
+    return f"{PATTERN_MATCHER_PREFIX}{json.dumps(matcher, ensure_ascii=False)}"
+
+
+def _signal_to_step(s: dict[str, Any]) -> KBDStep | None:
+    """从 signal dict 构建 KBDStep（仅 consumer/backend 信号可执行）。"""
+    acquirer = s.get("acquirer", "")
+    if not acquirer or s.get("signal_category") != "backend":
+        return None
+    return KBDStep(
+        tool_name=acquirer,
+        tool_args_template=s.get("acquirer_args") or {},
+        expected_pattern=_matcher_to_expected(s.get("matcher")),
+    )
 
 
 @dataclass
@@ -29,7 +58,7 @@ class KBDStep:
 
     tool_name: str  # 工具名称（对应 tool_registry 中的 ToolDefinition.name）
     tool_args_template: dict  # 参数模板（含 {{占位符}}，执行时由 env_context 填充）
-    expected_pattern: str  # 期望输出特征（__REGEX__:/ __CONTAINS__:/ 自然语言）
+    expected_pattern: str  # 期望输出特征（__REGEX__:/ __CONTAINS__:/ __MATCHER__:/ 自然语言）
 
 
 @dataclass
@@ -42,14 +71,9 @@ class KBD:
     字段与文档章节对应关系（8 大标准章节）：
       核心字段（4 个，诊断与呈现必需）：
         problem_description → 问题描述
-        steps               → 有效排查步骤
+        signals             → 关键信号集合（producer/consumer）
         root_cause          → 根因
         solution            → 解决方案
-      补充字段（4 个，来自 KB 文档，默认为空）：
-        alert_info          → 告警信息
-        operational_impact  → 操作影响范围
-        is_temporary        → 是否是临时解决方案
-        recommendations     → 建议与总结
     """
 
     # ── 基础标识 ──────────────────────────────────────────────
@@ -58,34 +82,38 @@ class KBD:
     category_id: str  # 所属故障分类编码，如 "虚拟机-003"
 
     # ── 核心内容（4 大章节，必填）────────────────────────────
-    problem_description: str  # 问题描述：描述该 KBD 对应的故障现象
-    steps: list[KBDStep]  # 有效排查步骤
-    root_cause: str  # 根因
-    solution: str  # 解决方案
+    problem_description: str
+    signals: list[dict]  # 关键信号集合（raw dicts，含 signal_category/acquirer/acquirer_args/matcher）
+    root_cause: str
+    solution: str
 
     # ── 补充内容（4 个章节，可选）────────────────────────────
-    alert_info: str = ""  # 告警信息（原始告警文本）
-    operational_impact: str = ""  # 操作影响范围
-    is_temporary: str = ""  # 是否是临时解决方案
-    recommendations: str = ""  # 建议与总结
+    alert_info: str = ""
+    operational_impact: str = ""
+    is_temporary: str = ""
+    recommendations: str = ""
 
     # ── 检索元数据 ────────────────────────────────────────────
-    similarity: float = 0.0  # 与用户查询的相似度评分（来自 KB 检索）
+    similarity: float = 0.0
 
     @property
     def step_tool_names(self) -> set[str]:
-        """返回本 KBD 所有步骤的 tool_name 集合（用于频率统计）。"""
-        return {s.tool_name for s in self.steps}
+        """返回本 KBD 所有 consumer（backend）信号的 acquirer 集合（用于频率统计）。"""
+        return {
+            s["acquirer"]
+            for s in self.signals
+            if s.get("acquirer") and s.get("signal_category") == "backend"
+        }
 
     def get_step(self, tool_name: str) -> KBDStep | None:
-        """按 tool_name 获取步骤定义（不存在时返回 None）。"""
-        for step in self.steps:
-            if step.tool_name == tool_name:
-                return step
+        """按 acquirer 获取 consumer 信号的步骤定义。"""
+        for s in self.signals:
+            if s.get("acquirer") == tool_name and s.get("signal_category") == "backend":
+                return _signal_to_step(s)
         return None
 
     def get_expected_pattern(self, tool_name: str) -> str | None:
-        """返回指定工具对应的期望输出模式（用于 judge 步骤）。"""
+        """返回指定 acquirer 对应的期望输出模式（用于 judge）。"""
         step = self.get_step(tool_name)
         return step.expected_pattern if step else None
 
@@ -93,41 +121,19 @@ class KBD:
 def kbd_from_dict(d: dict) -> KBD:
     """从 KB API 返回的 dict 构建 KBD 对象（工厂函数）。
 
-    KB 响应格式（对应 8 大标准章节）：
-      {
-        "id": "kbd-001",
-        "name": "...",
-        "category_id": "虚拟机-003",
-        "similarity": 0.87,
-        // 核心字段
-        "problem_description": "...",
-        "root_cause": "...",
-        "solution": "...",
-        "steps": [
-          {"tool_name": "acli_vm_config", "tool_args_template": {...}, "expected_pattern": "..."},
-          ...
-        ],
-        // 补充字段（可缺省）
-        "alert_info": "...",
-        "operational_impact": "...",
-        "is_temporary": "...",
-        "recommendations": "..."
-      }
+    v2: 读取 "signals" key（producer/consumer 信号数组），废弃旧 "steps" key。
     """
-    steps = [
-        KBDStep(
-            tool_name=s["tool_name"],
-            tool_args_template=s.get("tool_args_template", {}),
-            expected_pattern=s.get("expected_pattern", ""),
-        )
-        for s in d.get("steps", [])
-    ]
+    signals = d.get("signals", [])
+    if not signals:
+        # 向后兼容：无 signals 时尝试旧格式 steps
+        signals = d.get("steps", [])
+
     return KBD(
         id=d["id"],
         name=d.get("name", ""),
         category_id=d.get("category_id", ""),
         problem_description=d.get("problem_description", ""),
-        steps=steps,
+        signals=signals,
         root_cause=d.get("root_cause", ""),
         solution=d.get("solution", ""),
         alert_info=d.get("alert_info", ""),

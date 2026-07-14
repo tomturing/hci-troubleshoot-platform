@@ -195,7 +195,7 @@ async def _call_kbd_ingest_api(
     operational_impact: str = "",
     is_temporary: str = "",
     recommendations: str = "",
-    steps_json: list[dict] | None = None,
+    signals_json: list[dict] | None = None,
     images_json: list[dict] | None = None,
     ai_category_id: str | None = None,
     ai_category_conf: float | None = None,
@@ -220,7 +220,7 @@ async def _call_kbd_ingest_api(
         operational_impact: 操作影响范围章节
         is_temporary: 是否是临时解决方案章节
         recommendations: 建议与总结章节
-        steps_json: 结构化工具步骤（默认为空列表）
+        signals_json: 关键信号集合（默认为空列表，由抽取阶段填充）
         ai_category_id: AI 分类建议 ID（可选）
         ai_category_conf: 分类置信度（可选）
         ai_category_reason: 分类理由（可选）
@@ -252,7 +252,7 @@ async def _call_kbd_ingest_api(
         "operational_impact": operational_impact,
         "is_temporary": is_temporary,
         "recommendations": recommendations,
-        "steps_json": steps_json if steps_json is not None else [],
+        "signals_json": signals_json if signals_json is not None else [],
         "images_json": images_json if images_json is not None else [],
         # 聚合渲染
         "content_md": content_md,
@@ -374,7 +374,7 @@ async def import_entry(
             operational_impact=result.get("operational_impact", ""),
             is_temporary=result.get("is_temporary", ""),
             recommendations=result.get("recommendations", ""),
-            steps_json=result.get("steps_json", []),
+            signals_json=result.get("signals_json", []),
             images_json=result.get("images_json", []),
             client=client,
             override=override,

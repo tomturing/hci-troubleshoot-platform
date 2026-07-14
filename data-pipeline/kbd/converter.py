@@ -508,7 +508,7 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
       - operational_impact   ← 操作影响范围（含 ![img:N] 占位符）
       - is_temporary         ← 是否是临时解决方案
       - recommendations      ← 建议与总结
-      - steps_json           ← [] （空，待 admin 填充）
+      - signals_json          ← [] （空，待关键信号分级抽取阶段填充）
       - images_json          ← [{"seq": N, "section": field_name, "desc": "..."}]
       - content_md           ← 全部章节聚合 Markdown（含完整视觉描述块，供 LLM 注入）
 
@@ -635,7 +635,7 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
         # 8 大章节字段（含 ![img:N] 占位符，不含视觉描述文本）
         **structured_fields,
         # 结构化工具步骤（空列表，需 admin 后续填充）
-        "steps_json": [],
+        "signals_json": [],
         # 图片视觉描述（结构化，独立存储）
         "images_json": images_json,
         # 聚合渲染（含完整视觉描述块，供 LLM 上下文注入）

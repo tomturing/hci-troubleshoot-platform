@@ -39,8 +39,9 @@ from app.memory.variable_pool.pool import VariableRequestResult
 
 logger = get_logger("memory.variable-pool")
 
-_TEMPLATE_PLACEHOLDER_RE = re.compile(r"(?<!\{)\{([a-z][a-z0-9_]*(?:\.[a-zA-Z0-9_]+)*)\}(?!\})")
-_EXACT_TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\{([a-z][a-z0-9_]*(?:\.[a-zA-Z0-9_]+)*)\}$")
+# ADR-2：占位符统一为 {{VAR}} 全大写（支持点分路径如 {{NODE.IP}}）
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}")
+_EXACT_TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}$")
 
 
 def _should_fallback_to_user_input(var_def: dict[str, Any]) -> bool:

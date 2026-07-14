@@ -31,7 +31,7 @@ class VariablePool:
 
     示例流程：
     1. FrontendSignal 执行 → 提取 host="node-001" → 写入变量池
-    2. BackendSignal(target.scope="${host}") → 变量池渲染 → target.scope="node-001"
+    2. BackendSignal(target.scope="{{HOST}}") → 变量池渲染 → target.scope="node-001"
     """
 
     def __init__(self, conversation_id: str):
@@ -128,27 +128,28 @@ class VariablePool:
         渲染模板字符串中的占位符
 
         Args:
-            template_value: 包含 ${variable} 占位符的字符串
+            template_value: 包含 {{VARIABLE}} 占位符的字符串（全大写）
 
         Returns:
             渲染后的字符串
 
         示例：
-        - "${host}" → "node-001"
-        - "prefix-${host}-suffix" → "prefix-node-001-suffix"
+        - "{{HOST}}" → "node-001"
+        - "prefix-{{HOST}}-suffix" → "prefix-node-001-suffix"
         - "plain-text" → "plain-text"
         """
         if not isinstance(template_value, str):
             return template_value
 
-        # 检查是否是纯占位符（${variable}）
-        if template_value.startswith("${") and template_value.endswith("}"):
-            var_name = template_value[2:-1]
+        # ADR-2：占位符统一为 {{VAR}} 全大写
+        # 检查是否是纯占位符（{{VARIABLE}}）
+        if template_value.startswith("{{") and template_value.endswith("}}"):
+            var_name = template_value[2:-2]
             return self._variables.get(var_name, template_value)
 
-        # 否则进行全局替换
+        # 否则进行全局替换（仅认全大写占位符）
         import re
-        pattern = r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}"
+        pattern = r"\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}"
 
         def replace(match):
             var_name = match.group(1)
@@ -167,7 +168,7 @@ class VariablePool:
             渲染后的后端信号实例
 
         示例：
-        - BackendSignal(target.scope="${host}") → BackendSignal(target.scope="node-001")
+        - BackendSignal(target.scope="{{HOST}}") → BackendSignal(target.scope="node-001")
         """
         if not signal.target:
             return signal

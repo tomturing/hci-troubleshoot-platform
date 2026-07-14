@@ -7,8 +7,8 @@
 - 返回布尔判定结果与证据链
 
 变量依赖（消费者角色）：
-- target.scope 可引用 ${host}（来自 FrontendSignal 提取）
-- target.time_window 可引用 ${end}（来自 FrontendSignal 提取）
+- target.scope 可引用 {{HOST}}（来自 FrontendSignal 提取）
+- target.time_window 可引用 {{END}}（来自 FrontendSignal 提取）
 """
 
 from __future__ import annotations
@@ -42,8 +42,8 @@ class BackendSignalTarget(BaseModel):
     后端信号目标定位（支持模板占位符）
 
     示例：
-    - scope: "${host}" → 运行时渲染为 "node-001"
-    - time_window: "${end}" → 运行时渲染为 "2026-07-09 10:00:00"
+    - scope: "{{HOST}}" → 运行时渲染为 "node-001"
+    - time_window: "{{END}}" → 运行时渲染为 "2026-07-09 10:00:00"
     """
 
     scope: str | None = Field(
@@ -60,7 +60,7 @@ class BackendSignalTarget(BaseModel):
     )
     time_window: str | None = Field(
         default=None,
-        description="时间窗口（可使用 ${end} 占位符）"
+        description="时间窗口（可使用 {{END}} 占位符）"
     )
 
 
@@ -70,7 +70,7 @@ class BackendSignal(KeySignal):
 
     典型流程：
     1. 从 KBD/SOP 文本提取（如"在备节点检查 mysql-managed.log 是否有只读错误"）
-    2. 通过变量池渲染模板：target.scope="${host}" → "node-001"
+    2. 通过变量池渲染模板：target.scope="{{HOST}}" → "node-001"
     3. 执行 acli log get -k "file system read-only" -f mysql-managed.log
     4. 匹配关键字判定，返回 matched=True + evidence
 
