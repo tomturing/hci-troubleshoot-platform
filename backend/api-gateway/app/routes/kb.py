@@ -379,6 +379,7 @@ async def kbd_reanalyze_single_image_proxy(kbd_id: int, seq: int, request: Reque
     """
     headers = _internal_auth_headers()
     response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-image/{seq}", headers=headers, timeout=240.0)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
 # ============ SOP 管理代理（前端使用 /api/v1/sop 前缀） ============

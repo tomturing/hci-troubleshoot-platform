@@ -996,42 +996,6 @@ function parseImagesJson(images: ImageJsonItem[]): ParsedImageJson[] {
   }).sort((a, b) => a.seq - b.seq)
 }
 
-// 关键信号分组（按 signal_category 分前端/后端）
-const extractingSignals = ref(false)
-const signalGroups = computed(() => {
-  const sigs = (detailEntry.value as any)?.signals_json || []
-  if (!sigs.length) return []
-  const groups: Record<string, any[]> = { frontend: [], backend: [] }
-  for (const s of sigs) {
-    const cat = s.signal_category === 'backend' ? 'backend' : 'frontend'
-    if (!groups[cat]) groups[cat] = []
-    groups[cat].push(s)
-  }
-  return [
-    { category: 'frontend', signals: groups.frontend || [] },
-    { category: 'backend', signals: groups.backend || [] },
-  ].filter(g => g.signals.length > 0)
-})
-
-async function extractSignals() {
-  if (!detailEntry.value?.id) return
-  extractingSignals.value = true
-  try {
-    const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}/extract-signals`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeader },
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const res = await resp.json()
-    ElMessage.success(`关键信号抽取完成（已抽取 ${res.signals_count || 0} 条）`)
-    await loadDetail((detailEntry.value as any).support_id || detailEntry.value.id)
-  } catch (err: any) {
-    ElMessage.error(`关键信号抽取失败: ${err?.message || err}`)
-  } finally {
-    extractingSignals.value = false
-  }
-}
-
 const metaKeys: (keyof KbdMetadata)[] = [
   'sangfor_main_module', 'sangfor_sub_module', 'suite_version',
   'sangfor_updated_at', 'sangfor_created_at',
@@ -1184,22 +1148,6 @@ onMounted(() => {
             <div class="action-btn-group">
             <el-button type="info" size="small" text @click="openDetailDialog(row)">详情</el-button>
             <el-button type="primary" size="small" text @click="openEditDialog(row)">编辑</el-button>
-            <!-- 重新分类：用最新 Prompt 重算 -->
-            <el-button
-              type="primary"
-              size="small"
-              text
-              :loading="reclassifyLoading === row.id"
-              @click="handleReclassify(row)"
-            >重新分类</el-button>
-            <!-- 重新识图：用最新 Prompt 重算（耗时较长） -->
-            <el-button
-              type="warning"
-              size="small"
-              text
-              :loading="reanalyzeLoading === row.id"
-              @click="handleReanalyzeImages(row)"
-            >重新识图</el-button>
             <template v-if="row.status === 'draft'">
               <el-button type="success" size="small" text @click="handleApprove(row)">通过</el-button>
               <el-button type="danger" size="small" text @click="openRejectDialog(row)">拒绝</el-button>
@@ -1333,74 +1281,6 @@ onMounted(() => {
               </el-descriptions-item>
             </template>
           </el-descriptions>
-        </div>
-
-        <!-- 关键信号面板（signals_json）-->
-        <div class="section-block">
-          <div class="section-header-row">
-            <h4 class="section-title">关键信号 ({{ detailEntry.signals_json?.length || 0 }} 条)</h4>
-            <div class="section-actions">
-              <el-button text type="primary" size="small" :loading="extractingSignals"
-                         @click="extractSignals">
-                🔄 AI 抽取信号
-              </el-button>
-            </div>
-          </div>
-          <template v-if="!detailEntry.signals_json || detailEntry.signals_json.length === 0">
-            <el-empty description="暂无关键信号，请点击「AI 抽取信号」由 LLM 从 steps_text/root_cause 自动抽取" />
-          </template>
-          <template v-else>
-            <!-- 生产者信号（QKV） -->
-            <div v-for="(group, gIdx) in signalGroups" :key="gIdx" class="signal-group">
-              <h5 class="signal-group-title">
-                <el-tag :type="group.category === 'frontend' ? 'success' : 'warning'" size="small">
-                  {{ group.category === 'frontend' ? '生产者 QKV' : '消费者 QFK' }}
-                </el-tag>
-                <span class="signal-group-count">{{ group.signals.length }} 条</span>
-              </h5>
-              <el-table :data="group.signals" border size="small" :show-header="false">
-                <el-table-column prop="keyword" label="关键字" min-width="120">
-                  <template #default="{ row }">
-                    <el-tag size="small" effect="plain">{{ row.keyword }}</el-tag>
-                    <span class="signal-acquirer">{{ row.acquirer }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="description" label="说明" min-width="200">
-                  <template #default="{ row }">
-                    <span class="signal-desc">{{ row.description }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="变量/Matcher" min-width="220">
-                  <template #default="{ row }">
-                    <template v-if="row.signal_category === 'frontend' && row.produces?.length">
-                      <span class="signal-vars">产出 {{ (row.produces || []).map(p => p.name).join(', ') }}</span>
-                    </template>
-                    <template v-else-if="row.matcher">
-                      <span class="signal-matcher">
-                        <el-tag size="small" type="info">{{ row.matcher.type }}</el-tag>
-                        <code v-if="row.matcher.pattern">"{{ row.matcher.pattern }}"</code>
-                        <span class="signal-expected">{{ row.matcher.expected ? '期望' : '期望不' }}</span>
-                      </span>
-                    </template>
-                  </template>
-                </el-table-column>
-                <el-table-column label="溯源 / 置信度" min-width="200">
-                  <template #default="{ row }">
-                    <div class="signal-provenance">
-                      <el-tag size="small" effect="plain" type="warning">
-                        来源 {{ row.source || '—' }}
-                      </el-tag>
-                      <span class="signal-method">{{ row.extraction_method || '—' }}</span>
-                      <span
-                        class="signal-confidence"
-                        :style="{ color: confidenceColor(row.confidence ?? null) }"
-                      >置信度 {{ confidenceLabel(row.confidence ?? null) }}</span>
-                    </div>
-                  </template>
-                </el-table-column>
-              </el-table>
-            </div>
-          </template>
         </div>
 
         <!-- content_md 渲染 -->
@@ -1883,23 +1763,6 @@ onMounted(() => {
 .section-actions {
   display: flex;
   gap: 4px;
-}
-
-/* 关键信号：溯源 / 置信度 */
-.signal-provenance {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-.signal-method {
-  font-size: 11px;
-  color: #909399;
-  font-family: monospace;
-}
-.signal-confidence {
-  font-size: 12px;
-  font-weight: 600;
 }
 
 /* 图片列表容器（images_json 渲染） */

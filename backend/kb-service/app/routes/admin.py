@@ -1723,7 +1723,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
             text(
-                "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status FROM kbd_entry WHERE id = :id"
+                "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status, category_id, ai_category_id FROM kbd_entry WHERE id = :id"
             ),
             {"id": kbd_id},
         )
@@ -1769,6 +1769,8 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
 
     now = datetime.now(UTC)
     current_content_raw = row["content_raw"] or strip_markdown(content_md or "")
+    # 门 2（重发布同样适用）：category_id 与 ai_category_id 同步，根治孤儿 KBD
+    effective_category_id = row["category_id"] or row["ai_category_id"]
     async with _db_manager.async_session_factory() as session:
         if embedding_vector:
             vector_str = "[" + ",".join(str(v) for v in embedding_vector) + "]"
