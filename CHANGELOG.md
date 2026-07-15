@@ -1,5 +1,76 @@
 # Changelog
 
+## [2.19.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.18.0...v2.19.0) (2026-07-15)
+
+
+### ✨ 新功能
+
+* **db:** 新增版本化数据迁移框架 ([#557](https://github.com/tomturing/hci-troubleshoot-platform/issues/557)) ([5cda030](https://github.com/tomturing/hci-troubleshoot-platform/commit/5cda030b119c58310b34d887ea109cda00516682))
+* **deploy:** implement kbd data-pipeline Job template and fix env path ([#513](https://github.com/tomturing/hci-troubleshoot-platform/issues/513)) ([328c8b9](https://github.com/tomturing/hci-troubleshoot-platform/commit/328c8b9f5f89481fd06d0fe890244384aec5c39d))
+* **helm:** 为 kb-service 增加 externalDns 配置支持 ([#525](https://github.com/tomturing/hci-troubleshoot-platform/issues/525)) ([ec8b506](https://github.com/tomturing/hci-troubleshoot-platform/commit/ec8b506d6928386eb01cfe963e15b023601401ae))
+* **helm:** 在 dev 环境启用 admin-ui /admin 路径路由 ([#496](https://github.com/tomturing/hci-troubleshoot-platform/issues/496)) ([21bc6e3](https://github.com/tomturing/hci-troubleshoot-platform/commit/21bc6e3012dcab580877bce12e6c6217424f593d))
+* **kb-service:** 引入多模态专属 Vision 独立端点分流支持 ([#526](https://github.com/tomturing/hci-troubleshoot-platform/issues/526)) ([0d2c77c](https://github.com/tomturing/hci-troubleshoot-platform/commit/0d2c77cc5a23211526e02a5f401125b172498cd7))
+* KBD 分类与识图 Prompt 统一管理 + 在线重算功能 ([#504](https://github.com/tomturing/hci-troubleshoot-platform/issues/504)) ([243e9e2](https://github.com/tomturing/hci-troubleshoot-platform/commit/243e9e280cbe68c163bafcbb90484903b49f1f84))
+* KBD 单张图片重新识图与 LLM 错误详细打印 ([#517](https://github.com/tomturing/hci-troubleshoot-platform/issues/517)) ([6c607dd](https://github.com/tomturing/hci-troubleshoot-platform/commit/6c607ddb7a27864e01031d8f4a76a5f4fb84adbc))
+* **kbd:** Pipeline Stage 修复 + 信号抽取/分类/识图 三端对齐 ([#549](https://github.com/tomturing/hci-troubleshoot-platform/issues/549)) ([476da35](https://github.com/tomturing/hci-troubleshoot-platform/commit/476da35d0475b69176cd6e5d970e46abb9144524))
+* KBD分类与识图Prompt管理页面查看与编辑功能修复 ([#514](https://github.com/tomturing/hci-troubleshoot-platform/issues/514)) ([6c1f0a1](https://github.com/tomturing/hci-troubleshoot-platform/commit/6c1f0a15b606564982cc4a60a001008aa5713243))
+* KBD分类与识图功能及UI布局修复 [2026-07-09] ([#509](https://github.com/tomturing/hci-troubleshoot-platform/issues/509)) ([bf808c0](https://github.com/tomturing/hci-troubleshoot-platform/commit/bf808c070b4eae99977ecafae65353d530504013))
+* **langfuse:** 升级 langfuse 镜像到 v3.202.1 OSS ([#503](https://github.com/tomturing/hci-troubleshoot-platform/issues/503)) ([02b5884](https://github.com/tomturing/hci-troubleshoot-platform/commit/02b58847b66073e9f4857c29892d34befca2f39c))
+* **obs:** Langfuse 无头初始化自动创建 org/project/API Key ([#548](https://github.com/tomturing/hci-troubleshoot-platform/issues/548)) ([a000558](https://github.com/tomturing/hci-troubleshoot-platform/commit/a000558e9e7bad72f813950bf4a21120cd85ad65))
+* 关键信号字段级分别抽取（Key-Signal Field-level Extraction） ([#545](https://github.com/tomturing/hci-troubleshoot-platform/issues/545)) ([6e86e6e](https://github.com/tomturing/hci-troubleshoot-platform/commit/6e86e6e76f655f7de050db2ba5a58888775a4013))
+* 新增 KEY 关键信号分级抽取阶段并修复关键信号重新抽取 404 ([#551](https://github.com/tomturing/hci-troubleshoot-platform/issues/551)) ([328f375](https://github.com/tomturing/hci-troubleshoot-platform/commit/328f3756a0ff9001dfa86f5881d8b5de45d49bf4))
+
+
+### 🐛 Bug 修复
+
+* **api-gateway:** 补充单张图片重新识图 API 端点代理路由 ([#518](https://github.com/tomturing/hci-troubleshoot-platform/issues/518)) ([5b5e842](https://github.com/tomturing/hci-troubleshoot-platform/commit/5b5e842c09b5352877059c8be2d4cd1ef19acf82))
+* **api-gateway:** 透传 reanalyze 请求的 query 参数以修复 sync=true 失效 ([#546](https://github.com/tomturing/hci-troubleshoot-platform/issues/546)) ([acf8b4d](https://github.com/tomturing/hci-troubleshoot-platform/commit/acf8b4d489592e3f34bd5b27a2b222171027df91))
+* **ci:** fix changes and agent reliability jobs failing on push event ([#510](https://github.com/tomturing/hci-troubleshoot-platform/issues/510)) ([0040cfa](https://github.com/tomturing/hci-troubleshoot-platform/commit/0040cfa27011d584691ca8985eedecc0cba81889))
+* **ci:** 模块文档同步 workflow 使用 API 动态获取 labels ([#515](https://github.com/tomturing/hci-troubleshoot-platform/issues/515)) ([f716845](https://github.com/tomturing/hci-troubleshoot-platform/commit/f71684512458adaa2dedd5fd9c4ff5284cfa64c9))
+* **db:** 补齐 sop_document.signals_json 声明式 schema，修复 SOP 保存 500 ([#556](https://github.com/tomturing/hci-troubleshoot-platform/issues/556)) ([815b0f9](https://github.com/tomturing/hci-troubleshoot-platform/commit/815b0f9521a499ee0093e25cb316ab491bf7466c))
+* **deploy:** ArgoCD Hook 失败清理 + DB 密码校验修复 + GitOps 目录重组 ([#543](https://github.com/tomturing/hci-troubleshoot-platform/issues/543)) ([2c9d409](https://github.com/tomturing/hci-troubleshoot-platform/commit/2c9d409d521a7eb158e73ff3c8cd2297fecc8849))
+* **deploy:** force GitOps deployment sync to override manual API key overrides ([#511](https://github.com/tomturing/hci-troubleshoot-platform/issues/511)) ([0f680f2](https://github.com/tomturing/hci-troubleshoot-platform/commit/0f680f22fa11c5b69fbf80dbacdca5c5b2ba5692))
+* **helm:** revert invalid cross-namespace proxy services and route via multi-entrypoint Ingress ([#502](https://github.com/tomturing/hci-troubleshoot-platform/issues/502)) ([080422d](https://github.com/tomturing/hci-troubleshoot-platform/commit/080422ddce7bc6e6cad75d1557b3883c6e008d06))
+* **helm:** 使用 ExternalName Service 代理跨命名空间可观测性服务 ([#500](https://github.com/tomturing/hci-troubleshoot-platform/issues/500)) ([52f1b39](https://github.com/tomturing/hci-troubleshoot-platform/commit/52f1b39c2ff0b2fc6c2ea3983c2f03a0fbd44158))
+* **helm:** 使用无 selector Service + Endpoints 替代 ExternalName ([#501](https://github.com/tomturing/hci-troubleshoot-platform/issues/501)) ([769e627](https://github.com/tomturing/hci-troubleshoot-platform/commit/769e627c294231d1f4fcd1dbfbdfec1589b135ab))
+* **helm:** 补齐 admin-ui-ingress Grafana 和 Langfuse 可观测性路径转发 ([#499](https://github.com/tomturing/hci-troubleshoot-platform/issues/499)) ([9091c53](https://github.com/tomturing/hci-troubleshoot-platform/commit/9091c533a136de8223a217ce5483ed854e7ec6d4))
+* **kb-service:** use LLM_DEFAULT_MODEL instead of uninjected CLASSIFY_MODEL/VISION_MODEL ([#512](https://github.com/tomturing/hci-troubleshoot-platform/issues/512)) ([6d98614](https://github.com/tomturing/hci-troubleshoot-platform/commit/6d98614aa38b526d2e1e5876d72577d25fdabd45))
+* **kb-service:** 修复关键信号重新抽取 HTTP 500（Prompt 占位符转义 + signals_json 写回） [skip docs] [skip doc-sync] ([#553](https://github.com/tomturing/hci-troubleshoot-platform/issues/553)) ([f8f47f5](https://github.com/tomturing/hci-troubleshoot-platform/commit/f8f47f580d579a2ab1cc6ee7bed0e95762737c07))
+* **kb-service:** 降低 Vision LLM 并发数并处理数据库连接超时 ([#520](https://github.com/tomturing/hci-troubleshoot-platform/issues/520)) ([8e8d833](https://github.com/tomturing/hci-troubleshoot-platform/commit/8e8d833a1a9ac7eb29ac4aa5093ebd85729bd389))
+* KBD 识图注入 LLM_VISION 独立端点，调大超时时间并回滚 dnsConfig ([#529](https://github.com/tomturing/hci-troubleshoot-platform/issues/529)) ([962b38d](https://github.com/tomturing/hci-troubleshoot-platform/commit/962b38df1a306cf56a1071bf746f9275ecf2b4a8))
+* **kbd:** lower LLM_TIMEOUT and raise exceptions to fail fast on API errors ([#523](https://github.com/tomturing/hci-troubleshoot-platform/issues/523)) ([1451f38](https://github.com/tomturing/hci-troubleshoot-platform/commit/1451f38699539c42075cec291be1237bfb57b1fe))
+* **kbd:** steps_json 清理 + {{VAR}} 强制校验 + 前端关键信号面板 ([#547](https://github.com/tomturing/hci-troubleshoot-platform/issues/547)) ([edc6962](https://github.com/tomturing/hci-troubleshoot-platform/commit/edc6962a94b389421b655e2119004db6b606985e))
+* **kbd:** 修复 Vision 错误/进度黑盒 + 接入 trace_id 可观测性 ([#541](https://github.com/tomturing/hci-troubleshoot-platform/issues/541)) ([b004986](https://github.com/tomturing/hci-troubleshoot-platform/commit/b00498604f8ae0db394b047891056490030b5912))
+* **kbd:** 修复嵌套列表内截图块缩进导致无法折叠和闭合的问题 ([#537](https://github.com/tomturing/hci-troubleshoot-platform/issues/537)) ([9113f8d](https://github.com/tomturing/hci-troubleshoot-platform/commit/9113f8d54f77fc4c5e56d5482d279bb796a53194))
+* **kbd:** 修复重新识图功能undefined问题并改进UI ([#544](https://github.com/tomturing/hci-troubleshoot-platform/issues/544)) ([de52e71](https://github.com/tomturing/hci-troubleshoot-platform/commit/de52e71f5152e18e7f35b03c488fa305eeb43167))
+* **kbd:** 将 KBD 默认 LLM 模型切换为 kimi-k2.5 并统一思维链开关 ([#542](https://github.com/tomturing/hci-troubleshoot-platform/issues/542)) ([4478550](https://github.com/tomturing/hci-troubleshoot-platform/commit/447855048a443cfffe9c22fb11415779c0d25bba))
+* **kbd:** 根治 images_json 不完整导致前端 seq 映射错误 ([#536](https://github.com/tomturing/hci-troubleshoot-platform/issues/536)) ([519ad40](https://github.com/tomturing/hci-troubleshoot-platform/commit/519ad40536605c1171d5949ef86208b6a43b9cb8))
+* **kbd:** 重构 _parse_sections 实现五字段规整模板 ([#535](https://github.com/tomturing/hci-troubleshoot-platform/issues/535)) ([8ef6693](https://github.com/tomturing/hci-troubleshoot-platform/commit/8ef669313fb5ddfa8b2a02d4eb859ab1d3a63c3e))
+* **langfuse:** 修复 worker 镜像 tag 格式错误 ([#506](https://github.com/tomturing/hci-troubleshoot-platform/issues/506)) ([2772cd7](https://github.com/tomturing/hci-troubleshoot-platform/commit/2772cd78ecf305e3ae43bb9a909790c1b27c364c))
+* **langfuse:** 修复镜像 tag 格式错误 ([#505](https://github.com/tomturing/hci-troubleshoot-platform/issues/505)) ([cd29a8c](https://github.com/tomturing/hci-troubleshoot-platform/commit/cd29a8c93e598877c1041d6fcf7602d6b6ca964c))
+* **obs:** 修正 Langfuse v3 无头初始化变量名 ([#550](https://github.com/tomturing/hci-troubleshoot-platform/issues/550)) ([992bec7](https://github.com/tomturing/hci-troubleshoot-platform/commit/992bec7687bb407492bd4604ead8d5e21e37b407))
+* 信号写回 CAST 可移植性 + 提示词模板花括号转义修正 [skip docs] [skip doc-sync] ([#554](https://github.com/tomturing/hci-troubleshoot-platform/issues/554)) ([426dd80](https://github.com/tomturing/hci-troubleshoot-platform/commit/426dd80717b35283b434b722c69dc561f5a728a8))
+* 修复 terminal_bridge.exe 下载失败（.gitignore 白名单失效 + 二进制缺失） ([#534](https://github.com/tomturing/hci-troubleshoot-platform/issues/534)) ([339e09f](https://github.com/tomturing/hci-troubleshoot-platform/commit/339e09f229340d2c29de15c5a7e33fda50079473))
+* 修复无结构化章节的 KBD 案例在重新识图时整篇内容被覆盖丢失的严重 Bug ([#531](https://github.com/tomturing/hci-troubleshoot-platform/issues/531)) ([4c2d507](https://github.com/tomturing/hci-troubleshoot-platform/commit/4c2d50797055e8cc27c60b549f3445f99ea0855c))
+* 将关键信号抽取 Prompt 归属从 KBD 阶段迁移到独立的 KEY 阶段 [skip docs] [skip doc-sync] ([#555](https://github.com/tomturing/hci-troubleshoot-platform/issues/555)) ([bce2830](https://github.com/tomturing/hci-troubleshoot-platform/commit/bce2830b7d5835b734527944b9287b387f8386d0))
+
+
+### ⚡ 性能优化
+
+* **kbd:** optimize vision image sizing, tokens and prompt reasoning [skip docs] [skip doc-sync] ([#530](https://github.com/tomturing/hci-troubleshoot-platform/issues/530)) ([536184f](https://github.com/tomturing/hci-troubleshoot-platform/commit/536184f970d4b5b810df8c937f2a9093af33f357))
+
+
+### ♻️ 代码重构
+
+* **kb-service:** 彻底清理废弃代码与字段 ([#528](https://github.com/tomturing/hci-troubleshoot-platform/issues/528)) ([acfb166](https://github.com/tomturing/hci-troubleshoot-platform/commit/acfb16679854d222eadf83e534e8f8eec33d590d))
+* **kbd:** 完成 P0-P2 重构 — 彻底移除 .desc.txt 机制 + 27123 集成测试 ([#539](https://github.com/tomturing/hci-troubleshoot-platform/issues/539)) ([63d6e27](https://github.com/tomturing/hci-troubleshoot-platform/commit/63d6e2755c68df97ed1ad6178468e41c8760f7a3))
+* **kbd:** 解决 P0-P2 死锁+异步化+语义统一 ([#538](https://github.com/tomturing/hci-troubleshoot-platform/issues/538)) ([9a451ae](https://github.com/tomturing/hci-troubleshoot-platform/commit/9a451ae4c6c96740f07aadc892202b897fc7f6d8))
+
+
+### 📝 文档
+
+* **kbd:** 新增 KBD 数据生产完整使用手册 ([#516](https://github.com/tomturing/hci-troubleshoot-platform/issues/516)) ([f5a3790](https://github.com/tomturing/hci-troubleshoot-platform/commit/f5a3790711daed498ceded1ff711bfd46ca9ef41))
+
 ## [2.18.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.17.0...v2.18.0) (2026-07-03)
 
 
