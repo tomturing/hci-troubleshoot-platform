@@ -1166,6 +1166,8 @@ CREATE TABLE IF NOT EXISTS sop_document (
     tree_generator_version  varchar(50)      DEFAULT 'sop-parser-v1',
     -- 变量定义字段（T-AGT-24：approve 时自动解析生成）
     variable_schema          jsonb            DEFAULT '[]'::jsonb,
+    -- 关键信号集合（跨文档通用，与 kbd_entry.signals_json 同构；抽取阶段填充；占位符 {{VAR}} 大写）
+    signals_json             jsonb            NOT NULL DEFAULT '[]'::jsonb,
     CONSTRAINT fk_sop_document_category_id FOREIGN KEY (category_id) REFERENCES kb_category (code) ON DELETE NO ACTION,
     CONSTRAINT sop_document_pkey PRIMARY KEY (id)
 );
@@ -1191,6 +1193,7 @@ COMMENT ON COLUMN sop_document.tree_leaf_count IS '叶节点（案例节点）�
 COMMENT ON COLUMN sop_document.tree_validation_status IS 'valid=完全合规; warnings=有警告但已入库; error=解析失败; NULL=未生成';
 COMMENT ON COLUMN sop_document.tree_validation_issues IS 'ValidationIssue 列表 JSON（warnings/errors）';
 COMMENT ON COLUMN sop_document.tree_generator_version IS '解析器版本，用于判断是否需要重新解析';
+COMMENT ON COLUMN sop_document.signals_json IS '关键信号集合（跨文档通用，与 kbd_entry.signals_json 同构；默认[]，抽取阶段/审核期填充；占位符 {{VAR}} 大写）';
 
 -- 建立 conversation.sop_document_id → sop_document.id 的外键约束（conversation 先于 sop_document 创建，延后添加）
 ALTER TABLE conversation
@@ -1204,6 +1207,9 @@ ALTER TABLE conversation
 CREATE INDEX IF NOT EXISTS idx_sop_document_category_published ON sop_document (category_id) WHERE status = 'published';
 -- GIN 索引：支持 tree_json @> '{"name": "..."}' 等 JSONB 条件检索
 CREATE INDEX IF NOT EXISTS idx_sop_document_tree_json ON sop_document USING GIN (tree_json) WHERE tree_json IS NOT NULL;
+-- signals_json 结构查询（部分索引仅含已发布且有信号的条目，与 kbd_entry.idx_kbd_entry_signals 同构）
+CREATE INDEX IF NOT EXISTS idx_sop_signals ON sop_document USING GIN (signals_json)
+    WHERE status = 'published' AND signals_json != '[]'::jsonb;
 
 
 -- ------------------------------------------------------------
