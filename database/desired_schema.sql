@@ -1376,3 +1376,23 @@ COMMENT ON COLUMN claim_evidence_link.created_at IS '记录创建时间';
 CREATE INDEX IF NOT EXISTS idx_claim_evidence_link_case_id ON claim_evidence_link (case_id);
 CREATE INDEX IF NOT EXISTS idx_claim_evidence_link_claim_id ON claim_evidence_link (claim_id);
 CREATE INDEX IF NOT EXISTS idx_claim_evidence_link_fact_id ON claim_evidence_link (fact_id);
+
+-- ------------------------------------------------------------
+-- 表: migration_history  [模块: db-migrate]
+-- 说明: 数据迁移历史表 — 记录版本化数据迁移的执行历史，确保幂等性和可追溯性
+-- 用途: migration-runner.sh 在执行数据迁移前检查此表，避免重复执行
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS migration_history (
+    version VARCHAR(100) PRIMARY KEY,
+    checksum VARCHAR(64) NOT NULL,
+    description VARCHAR(255),
+    executed_at TIMESTAMPTZ DEFAULT NOW(),
+    execution_time_ms INTEGER
+);
+
+COMMENT ON TABLE migration_history IS '数据迁移历史表 — 记录版本化数据迁移的执行历史，确保幂等性和可追溯性';
+COMMENT ON COLUMN migration_history.version IS '迁移版本号（如 001、002），主键，确保每个版本只执行一次';
+COMMENT ON COLUMN migration_history.checksum IS '迁移文件内容的 SHA256 校验和，用于检测篡改';
+COMMENT ON COLUMN migration_history.description IS '迁移描述（从文件名解析）';
+COMMENT ON COLUMN migration_history.executed_at IS '执行时间戳';
+COMMENT ON COLUMN migration_history.execution_time_ms IS '执行耗时（毫秒），用于性能监控';

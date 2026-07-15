@@ -8,10 +8,13 @@ on:
       - "database/desired_schema.sql"
       # 函数/触发器变更时触发（psql 管理）
       - "database/desired_extras.sql"
+      # 数据迁移变更时触发（migration-runner 管理）
+      - "database/data-migrations/**"
       # 迁移镜像 Dockerfile 变更时触发
       - "Dockerfile.migrations"
       # 入口脚本变更时触发
       - "scripts/db-migrate.sh"
+      - "scripts/migration-runner.sh"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
