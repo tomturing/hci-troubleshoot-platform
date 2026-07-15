@@ -126,16 +126,18 @@ def _parse_stages(stages_str: str | None) -> list[Stage]:
         "import": Stage.IMPORT,
         "vision": Stage.VISION,
         "classify": Stage.CLASSIFY,
+        "extract": Stage.EXTRACT_SIGNALS,
         "1": Stage.FETCH,
         "2": Stage.IMPORT,
         "3": Stage.VISION,
         "4": Stage.CLASSIFY,
+        "5": Stage.EXTRACT_SIGNALS,
     }
     result = []
     for s in stages_str.split(","):
         s = s.strip().lower()
         if s not in stage_map:
-            print(f"未知 stage: {s}，合法值：fetch,vision,import,classify")
+            print(f"未知 stage: {s}，合法值：fetch,vision,import,classify,extract")
             sys.exit(1)
         result.append(stage_map[s])
     return result

@@ -384,6 +384,22 @@ async def kbd_reanalyze_single_image_proxy(kbd_id: int, seq: int, request: Reque
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@kbd_router.post("/{kbd_id}/extract-signals")
+async def kbd_extract_signals_proxy(kbd_id: int, request: Request):
+    """代理 KBD 关键信号分级抽取请求 -> kb-service
+
+    场景：用户在 admin-ui KBD 详情页点击「重新抽取」按钮，用最新 KEY 阶段 Prompt
+    重新抽取该条目的结构化关键信号（signals_json）。
+
+    ?sync=true 时 kb-service 同步返回完整结果（signals_count / rejected_count），
+    需透传 query，否则 kb-service 走异步 202 + job_id 模式（前端未实现轮询）。
+    """
+    headers = _internal_auth_headers()
+    # 透传 query（?sync=true 同步模式开关），否则 kb-service 收不到 sync 而走异步 202
+    response = await _kbd_proxy("POST", f"/{kbd_id}/extract-signals", params=dict(request.query_params), headers=headers, timeout=240.0)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 # ============ SOP 管理代理（前端使用 /api/v1/sop 前缀） ============
 
 SOP_ADMIN_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/sop"

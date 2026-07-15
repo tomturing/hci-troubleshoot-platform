@@ -45,12 +45,13 @@ import httpx
 from .classifier import classify_batch
 from .config import settings
 from .extract_signals import extract_signals_batch
-from .fetcher import _is_fetched, _kbd_dir, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
+from .fetcher import _is_fetched, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
 from .image_proc import process_images_batch
 from .importer import import_batch
 from .progress import (
     finish_progress,
     generate_run_id,
+    get_completed_ids_for_stage,
     init_progress,
     save_progress,
     update_stage_status,
@@ -71,7 +72,7 @@ class Stage(IntEnum):
     IMPORT = 2  # 原子写入 kbd_entry + kbd_image
     VISION = 3  # 读 kbd_image，调 Vision LLM，更新 images_json + rebuild content_md
     CLASSIFY = 4
-    EXTRACT = 5  # 关键信号分级抽取：LLM 抽取 signals_json 并写回 kbd_entry
+    EXTRACT_SIGNALS = 5  # 关键信号分级抽取：LLM 抽取 signals_json 并写回 kbd_entry
 
 
 # ─── DAG 依赖声明（拓扑排序 P0-② 增强）─────────────────────────────────────────
@@ -82,6 +83,7 @@ STAGE_DEPENDENCIES: dict[Stage, tuple[Stage, ...]] = {
     Stage.IMPORT: (Stage.FETCH,),                                     # 需要 raw.json + 本地图片
     Stage.VISION: (Stage.IMPORT,),                                    # 需要 kbd_entry + kbd_image
     Stage.CLASSIFY: (Stage.VISION,),                                  # 需要 content_md 含视觉描述（完整上下文分类更准）
+    Stage.EXTRACT_SIGNALS: (Stage.CLASSIFY,),                          # 需要 ai_category_id 作为领域上下文
 }
 
 
@@ -126,7 +128,7 @@ async def _create_pool() -> asyncpg.Pool:
 
 async def run_pipeline(
     kbd_ids: list[str],
-    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY, Stage.EXTRACT),
+    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY, Stage.EXTRACT_SIGNALS),
     *,
     force_fetch: bool = False,
     override: bool = False,
@@ -302,7 +304,7 @@ async def run_pipeline(
                 update_stage_status(progress, "classify", cid, status)
             save_progress(run_id, progress)
 
-        if Stage.EXTRACT in stages:
+        if Stage.EXTRACT_SIGNALS in stages:
             logger.info("─── Stage 5: 关键信号分级抽取 ───")
             # 仅处理已分类且 signals_json 为空的 draft 案例
             extract_rows = await pool.fetch(
@@ -465,7 +467,7 @@ async def _db_vision_status(pool: asyncpg.Pool, support_id: str) -> str:
 
 
 async def run_from_excel(
-    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY, Stage.EXTRACT),
+    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY, Stage.EXTRACT_SIGNALS),
     *,
     force_fetch: bool = False,
     override: bool = False,

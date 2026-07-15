@@ -9,7 +9,7 @@
 
 INSERT INTO system_prompt (stage, name, description, content_template, version, is_active)
 VALUES (
-    'KBD',
+    'KEY',
     'kbd_extract_signals_v1',
     '关键信号分级抽取 Prompt - 从 KBD steps_text/root_cause/solution 抽取 producer(QKV)/consumer(QFK) 结构化信号；占位符 {{VAR}} 大写强制；封闭采集器词表；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema',
     $TEMPLATE$你是 HCI 超融合平台的关键信号抽取专家。
@@ -43,10 +43,10 @@ VALUES (
 2. **acquirer 合法性**：必须取自上述采集器目录，禁止编造。
 3. **占位符强制**：acquirer_args / matcher 内引用变量时，占位符必须为 **双花括号 + 全大写** 形式，示例：{{{{HOST}}}} 、 {{{{VM.NAME}}}}；禁止小写/混合大小写。
 4. **变量合法性**：producer 的 produces[].name、consumer 的 requires[] 必须是上述可用变量集合中的名字（或新声明并加入 produces）。
-5. **matcher**：消费者信号必填 matcher，type ∈ {keyword, state, threshold, json_path, exists}；keyword 用 pattern+mode(any/all)+expected；threshold 用 pattern(数值表达式)+expected。
+5. **matcher**：消费者信号必填 matcher，type ∈ {{keyword, state, threshold, json_path, exists}}；keyword 用 pattern+mode(any/all)+expected；threshold 用 pattern(数值表达式)+expected。
 6. **不确定即丢弃**：无法可靠映射为合法采集器的步骤，不要硬造信号；宁缺毋滥。
 7. **字段级溯源与自信度（必填）**：每条信号必须给出：
-   - `source_section`：本条信号主要来自哪个输入章节，取值只能是 {problem_description, alert_info, steps_text, root_cause, solution} 之一（祈使子句多来自 steps_text，陈述判定多来自 root_cause/solution）。
+   - `source_section`：本条信号主要来自哪个输入章节，取值只能是 {{problem_description, alert_info, steps_text, root_cause, solution}} 之一（祈使子句多来自 steps_text，陈述判定多来自 root_cause/solution）。
    - `confidence`：你对本次抽取的把握自评，0-1 浮点数（证据清晰、采集器与变量明确→0.8+；记忆模糊、仅靠推测→0.4-0.6；不确定→更低）。
 
 ## 输出格式（严格 JSON，不要任何额外说明）
