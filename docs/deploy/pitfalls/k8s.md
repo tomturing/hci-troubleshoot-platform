@@ -1250,3 +1250,47 @@ kubectl delete job -n argocd <failed-hook-job-name>
 - 根因：2026-06-05 失败的 `argocd-repo-server-probe-patch` PreSync Job 残留 28 天
 - 修复：`kubectl delete job argocd-repo-server-probe-patch -n argocd` 立即清空 message
 - 改进：v1.4 manifest 增加 `HookFailed` 策略，避免未来重蹈覆辙
+
+---
+
+## D-013：desired_schema.sql 声明式 schema 与 ORM 模型不同步导致 ORM 查询 500
+
+**场景**：给 SQLAlchemy ORM 模型新增列，并写了 `database/atlas-migrations/` 版本化迁移文件，但**漏改 `database/desired_schema.sql`** 对应表定义。
+
+**症状**：
+- 读接口（用原生 SQL + 显式列名）正常返回
+- 写接口 / 审核接口（用 ORM `select(Model)` 查全列）报 HTTP 500「未知错误」
+- 现象不对称："打开编辑弹窗正常，点保存才 500"--因为 GET 详情用原生 SQL 不查新列，PATCH 保存用 ORM 查全列
+
+**根本原因**：
+`scripts/db-migrate.sh`（ArgoCD PreSync Hook 入口）只执行 `atlas schema apply --to desired_schema.sql`（声明式差量同步），**不执行** `atlas migrate apply`（版本化迁移）。因此 `desired_schema.sql` 是数据库 schema 的唯一 SSOT：
+- ORM 模型定义了列 `X`，但 `desired_schema.sql` 没声明列 `X` -> 数据库无此列
+- ORM `select(Model)` 生成 `SELECT ... X ...` -> PostgreSQL 报 `column "X" does not exist` -> 500
+- 原生 SQL（`text("SELECT a, b FROM ...")`）不包含列 `X` -> 正常
+
+**排查步骤**：
+```bash
+# 1. 对比 ORM 模型字段与数据库实际列（以 sop_document 为例）
+kubectl exec -n <ns> postgres-0 -- sh -c 'psql -U $POSTGRES_USER -d hci_troubleshoot -c "\d sop_document"' | grep -i <列名>
+
+# 2. 若数据库无该列，检查 desired_schema.sql 是否声明
+grep -n "<列名>" database/desired_schema.sql
+
+# 3. 检查 ORM 模型是否定义
+grep -rn "<列名> = Column" backend/<service>/app/models/
+
+# 4. 关键判据：ORM 模型有、desired_schema.sql 无 -> 即本坑
+```
+
+**修复方法**：
+在 `desired_schema.sql` 对应表定义补齐：①列定义 ②`COMMENT ON COLUMN` ③索引（若有）。下次 ArgoCD Sync 触发 db-migrate PreSync Job，`atlas schema apply` 自动补列，无需手动改库。
+
+**预防**：
+- 改 ORM 模型新增/删除列时，**必须三处同步**：①ORM 模型 ②`desired_schema.sql`（声明式 SSOT）③`atlas-migrations/`（版本化迁移，如需留存变更记录）
+- `desired_schema.sql` 是运行时数据库 schema 的**唯一权威**；`atlas-migrations/` 仅作为变更历史留存，不被 db-migrate.sh 应用
+- Code Review 重点：PR 同时含 `models/*.py` 与 `atlas-migrations/` 但**不含** `desired_schema.sql` 时，高度怀疑漏改
+
+**参考案例**：
+- PR545 给 `SopDocument` 模型新增 `signals_json` 列并写了迁移文件 `20260714000000_add_signals_json_drop_steps_json.sql`，但漏改 `desired_schema.sql` 的 `sop_document` 表（仅改了 `kbd_entry`）
+- staging 环境数据库 `sop_document` 表无 `signals_json` 列，导致 `PATCH /api/admin/sop/{id}`（编辑保存，ORM `select(SopDocument)`）500；`GET /api/v1/sop/{id}`（原生 SQL 显式列名）正常
+- 受影响 7 处 `select(SopDocument)` ORM 查询：编辑保存、审核通过、发布、导入查重、抽取信号等

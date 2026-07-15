@@ -311,17 +311,14 @@ spec:
               value: {{ .Values.langfuse.init.orgId | quote }}
             - name: LANGFUSE_INIT_ORG_NAME
               value: {{ .Values.langfuse.init.orgName | quote }}
-            - name: LANGFUSE_INIT_ORG_PK
-              value: {{ .Values.langfuse.init.orgPk | quote }}
-            - name: LANGFUSE_INIT_ORG_SK
-              value: {{ .Values.langfuse.init.orgSk | quote }}
             - name: LANGFUSE_INIT_PROJECT_ID
               value: {{ .Values.langfuse.init.projectId | quote }}
             - name: LANGFUSE_INIT_PROJECT_NAME
               value: {{ .Values.langfuse.init.projectName | quote }}
-            - name: LANGFUSE_INIT_PROJECT_PK
+            # v3 的 project API Key 变量名为 PUBLIC_KEY / SECRET_KEY（非 PK/SK）
+            - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
               value: {{ .Values.langfuse.publicKey | quote }}
-            - name: LANGFUSE_INIT_PROJECT_SK
+            - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
               value: {{ .Values.langfuse.secretKey | quote }}
             - name: LANGFUSE_INIT_USER_EMAIL
               value: {{ .Values.langfuse.init.userEmail | quote }}
