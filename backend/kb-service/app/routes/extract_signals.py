@@ -306,7 +306,7 @@ async def _persist_signals(db_manager: DatabaseManager, table: str, source_id: i
     """通用写回：signals_json 列。table ∈ {'kbd_entry', 'sop_document'}。"""
     async with db_manager.async_session_factory() as session:
         await session.execute(
-            text(f"UPDATE {table} SET signals_json = :sj::jsonb, updated_at = NOW() WHERE id = :id"),
+            text(f"UPDATE {table} SET signals_json = CAST(:sj AS jsonb), updated_at = NOW() WHERE id = :id"),
             {"sj": json.dumps(signals, ensure_ascii=False), "id": source_id},
         )
         await session.commit()
