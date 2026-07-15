@@ -34,7 +34,7 @@ const placeholdersMap: Record<string, string[]> = {
   S5: ['{root_cause}'],
   S6: [],
   KBD: ['{count}', '{categories_text}', '{title}', '{problem_desc}', '{context}'],
-  KEY: ['{title}', '{problem_desc}', '{context}']
+  KEY: ['{title}', '{category_id}', '{problem_description}', '{alert_info}', '{steps_text}', '{root_cause}', '{solution}', '{acquirer_catalog}', '{variable_schema}']
 }
 
 // 诊断阶段列表及其中文名
@@ -227,7 +227,7 @@ async function handleDelete(row: SystemPrompt) {
   }  ).catch(() => {})
 }
 
-// ─── KBD 阶段 Prompt 测试触发（重新识图 / 重新分类 / 重新提交 关键信号）─────────────
+// ─── KBD / KEY 阶段 Prompt 测试触发（重新识图 / 重新分类 / 重新抽取 关键信号）─────────────
 const testDialogVisible = ref(false)
 const testTarget = ref<SystemPrompt | null>(null)
 const testKbdId = ref('')
@@ -400,7 +400,7 @@ onMounted(() => {
                   删除模板
                 </el-button>
                 <el-button
-                  v-if="item.stage === 'KBD'"
+                  v-if="item.stage === 'KBD' || item.stage === 'KEY'"
                   type="warning"
                   size="small"
                   text
@@ -523,7 +523,7 @@ onMounted(() => {
     >
       <p style="color: #606266; margin: 0 0 12px">
         用当前 Prompt（<strong>{{ testTarget?.name }}</strong>）对指定 KBD 条目重新触发，
-        立即验证效果（与 KBD 管理页的「重新识图 / 重新分类 / 重新提交」完全一致）。
+        立即验证效果（与 KBD 管理页的「重新识图 / 重新分类 / 重新抽取」完全一致）。
       </p>
       <el-form label-width="96px">
         <el-form-item label="KBD 条目 ID" required>
