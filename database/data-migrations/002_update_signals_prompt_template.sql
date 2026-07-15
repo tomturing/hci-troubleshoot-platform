@@ -1,18 +1,18 @@
 -- ===========================================================================
--- 迁移: 20260714000001_seed_kbd_extract_signals_prompt.sql
--- 说明: 关键信号分级抽取 Prompt 种子（kbd_extract_signals_v1）
--- 背景: 关键信号字段级分别抽取阶段（pipeline Stage.EXTRACT_SIGNALS / 审核期）
---       由 LLM 从 KBD 自然语言章节抽取 producer(QKV)/consumer(QFK) 结构化信号。
--- 幂等: ON CONFLICT (name) DO NOTHING，不覆盖 admin-ui 自定义。
--- 参考: docs/solution/agent/02-架构设计/关键信号字段级分别抽取.md §3/§8
+-- Migration: 002_update_signals_prompt_template.sql
+-- 说明: 修复 kbd_extract_signals_v1 Prompt 模板的花括号转义错误
+-- 背景: PR #545 初版种子中，JSON 示例使用三花括号 {{ ，规则 5/7 使用单花括号 { ，
+--       导致 Python string.Formatter 将 JSON 字段名（signals/keyword 等）误解析为占位符，
+--       StrictPromptLoader 校验失败 → 重新抽取报 HTTP 500。
+--       PR #553/#554 已修正种子/迁移文件中的转义，但 atlas migration 使用
+--       ON CONFLICT (name) DO NOTHING，不覆盖已部署库中的旧记录。
+--       本迁移强制更新已部署库中的 content_template，使其与修正后的种子一致。
+-- 幂等: 仅当 content_template 仍包含三花括号 {{ （旧版特征）时才更新。
+-- 参考: docs/solution/database/数据迁移设计方案.md §4.2/§10
 -- ===========================================================================
 
-INSERT INTO system_prompt (stage, name, description, content_template, version, is_active)
-VALUES (
-    'KEY',
-    'kbd_extract_signals_v1',
-    '关键信号分级抽取 Prompt - 从 KBD steps_text/root_cause/solution 抽取 producer(QKV)/consumer(QFK) 结构化信号；占位符 {{VAR}} 大写强制；封闭采集器词表；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema',
-    $TEMPLATE$你是 HCI 超融合平台的关键信号抽取专家。
+UPDATE system_prompt
+SET content_template = $BODY$你是 HCI 超融合平台的关键信号抽取专家。
 
 任务：从 KBD 案例的自然语言章节中，按"字段级分别抽取"原则，产出结构化**关键信号集合**。
 关键信号分两类角色：
@@ -82,8 +82,25 @@ VALUES (
     }}
   ]
 }}
-```$TEMPLATE$,
-    '1.0',
-    TRUE
-)
-ON CONFLICT (name) DO NOTHING;
+```$BODY$,
+    stage = 'KEY',
+    updated_at = NOW()
+WHERE name = 'kbd_extract_signals_v1'
+  AND content_template ~ 'type ∈ \{keyword, state';  -- 旧版特征：规则5用单花括号
+
+-- 验证更新结果
+DO $$
+DECLARE
+    actual_stage VARCHAR(10);
+    has_old_brace BOOLEAN;
+BEGIN
+    SELECT stage, content_template ~ 'type ∈ \{keyword, state' INTO actual_stage, has_old_brace
+    FROM system_prompt
+    WHERE name = 'kbd_extract_signals_v1';
+
+    IF actual_stage = 'KEY' AND NOT has_old_brace THEN
+        RAISE NOTICE 'OK kbd_extract_signals_v1: stage=KEY, 模板花括号转义已修复';
+    ELSE
+        RAISE NOTICE 'WARN kbd_extract_signals_v1: stage=%, 旧版单花括号残留=%', actual_stage, has_old_brace;
+    END IF;
+END $$;
