@@ -9,7 +9,7 @@
 
 INSERT INTO system_prompt (stage, name, description, content_template, version, is_active)
 VALUES (
-    'KBD',
+    'KEY',
     'kbd_extract_signals_v1',
     '关键信号分级抽取 Prompt - 从 KBD steps_text/root_cause/solution 抽取 producer(QKV)/consumer(QFK) 结构化信号；占位符 {{VAR}} 大写强制；封闭采集器词表；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema',
     $TEMPLATE$你是 HCI 超融合平台的关键信号抽取专家。
