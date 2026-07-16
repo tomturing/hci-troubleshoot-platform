@@ -22,10 +22,9 @@ if _agent_service not in sys.path:
 if _kb_service not in sys.path:
     sys.path.insert(0, _kb_service)
 
-from app.tools.qfk.signal import BackendSignal, BackendSignalTarget
 from app.tools.qfk.handlers import HandlerRegistry
+from app.tools.qfk.signal import BackendSignal, BackendSignalTarget
 from app.tools.qkv.signal import FrontendSignal, FrontendQueryType
-from app.tools.qkv.parser import parse_frontend_value
 
 # 直接定义 ACQUIRER_CATALOG 和 VALID_MATCHER_TYPES（避免跨服务导入）
 # display_name 标准命名（与 extract_signals.py / seed 保持一致）：
