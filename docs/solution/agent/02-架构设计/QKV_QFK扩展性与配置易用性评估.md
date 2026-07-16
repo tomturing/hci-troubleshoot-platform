@@ -118,14 +118,24 @@
 | Admin-UI 配置 | ✅ ToolManageView.vue | ❌ 无专用页面 |
 | LLM 可发现 | ✅ 自动出现在工具列表 | ❌ 需差分引擎路由 |
 
-### 3.3 为什么不把 QKV/QFK 注册到 tool_definition
+### 3.3 QKV/QFK 注册到 tool_definition 的决策
 
-| 选项 | 优点 | 缺点 |
-|------|------|------|
-| 注册到 tool_definition | 复用现有 Admin-UI | QKV/QFK 不是 LLM 直接调用的工具，语义不符 |
-| 新建信号模板管理页 | 语义清晰，可定制 UI | 需要额外开发 |
+> **最终决策：将 QKV/QFK 注册到 tool_definition，复用现有 ToolManageView.vue 管理入口。**
 
-**结论**：QKV/QFK 应保持**内部引擎定位**，通过**专用信号模板管理页**配置，而非注册到 tool_definition。
+| 选项 | 优点 | 缺点 | 最终决策 |
+|------|------|------|---------|
+| 注册到 tool_definition | 复用现有 Admin-UI，降低开发成本 | 需要增强 ToolManageView.vue | ✅ **采纳** |
+| 新建信号模板管理页 | 语义清晰，可定制 UI | 需要额外开发 7 天 | ❌ 未采纳 |
+
+**决策理由**：
+1. **降低开发成本**：无需新建 `SignalTemplateManageView.vue`，节省约 7 天开发时间
+2. **语义相符**：QKV/QFK 本质是工具，与 acli/sop/scp 并列，注册到 tool_definition 符合工具定义
+3. **易用性已达标**：通过 `ProducesEditor.vue` 和 `MatcherEditor.vue` 提供可视化编辑，配置门槛已降低
+
+**实现方式**：
+- 通过 `database/seeds/03_qkv_qfk_tools.sql` 注册 11 个工具定义
+- 在 `ToolManageView.vue` 新增 QKV/QFK 分类选项和可视化编辑 Tab
+- 新增 `ProducesEditor.vue`（产出变量编辑）和 `MatcherEditor.vue`（判定器编辑）
 
 ---
 
@@ -159,11 +169,24 @@
 
 ## 五、任务计划
 
-### 5.1 第一优先级：Admin-UI 信号模板管理页
+### 5.1 第一优先级：QKV/QFK 可视化编辑支持
 
-**目标**：让运营人员能在 admin-ui 可视化编辑 QKV/QFK 的输入/输出配置。
+> **状态：✅ 已实现（方案调整）**
+>
+> 实际实现决策：将 QKV/QFK 注册到 `tool_definition` 表，复用现有 `ToolManageView.vue` 管理入口，
+> 无需新建 `SignalTemplateManageView.vue`，节省约 7 天开发时间。
 
-**任务清单**：
+**实际实现清单**：
+
+| 序号 | 任务 | 状态 | 输出 |
+|------|------|------|------|
+| 1 | QKV/QFK 注册到 tool_definition | ✅ 已完成 | `database/seeds/03_qkv_qfk_tools.sql`（11 个工具定义） |
+| 2 | HandlerRegistry 动态注册改造 | ✅ 已完成 | `handlers.py` 新增 register/unregister/get/supported_namespaces 方法 |
+| 3 | 可视化表单：ProducesEditor.vue | ✅ 已完成 | 产出变量数组编辑器 |
+| 4 | 可视化表单：MatcherEditor.vue | ✅ 已完成 | 6 种 matcher 类型选择器 |
+| 5 | ToolManageView.vue 集成 | ✅ 已完成 | QKV/QFK 分类 + 双 Tab（可视化/JSON）编辑 |
+
+**原计划（已废弃）**：
 
 | 序号 | 任务 | 预估工时 | 输出 |
 |------|------|---------|------|
@@ -175,7 +198,7 @@
 | 6 | matcher 类型选择器 + 参数表单 | 1 天 | Vue 组件 |
 | 7 | 集成测试 | 0.5 天 | 测试代码 |
 
-**总计**：约 7 天
+**总计**：约 7 天（已通过方案调整节省）
 
 ### 5.2 第二优先级：ACQUIRER_CATALOG 迁移到 DB
 
@@ -218,20 +241,21 @@
 | QKV 输出配置扩展性 | ⭐⭐⭐⭐⭐ (5/5) | produces 完全可配置，支持多路径容错 |
 | QFK 输入配置扩展性 | ⭐⭐⭐⭐ (4/5) | sub_command 灵活，namespace 固定但够用 |
 | QFK 输出配置扩展性 | ⭐⭐⭐⭐⭐ (5/5) | 6 种 matcher 覆盖全部判定场景 |
-| 配置易用性 | ⭐⭐ (2/5) | 无 admin-ui 配置页面，需手写 JSON |
+| 配置易用性 | ⭐⭐⭐⭐ (4/5) | 已有可视化编辑器（ProducesEditor + MatcherEditor），支持双 Tab 编辑 |
 
 ### 6.2 核心结论
 
-> **QKV/QFK 的扩展性已满足需求，但配置易用性存在明显短板。**
-> 
+> **QKV/QFK 的扩展性已满足需求，配置易用性已通过可视化编辑器提升。**
+>
 > - 扩展性：produces 动态提取、6 种 matcher 类型均已实现，新增场景无需改代码
-> - 易用性：无 admin-ui 配置页面，运营人员无法可视化编辑，需手写 JSON
+> - 易用性：✅ 已通过 `ToolManageView.vue` + 可视化编辑器实现，运营人员可通过表单编辑
+> - 实现决策：注册到 `tool_definition` 表，复用现有管理入口，无需新建信号模板管理页
 
-### 6.3 优先级建议
+### 6.3 后续优化建议
 
-1. **最高优先级**：新建 Admin-UI 信号模板管理页（7 天）
+1. **已完成**：QKV/QFK 可视化编辑支持（通过 ToolManageView.vue + 双 Tab 编辑）
 2. **中优先级**：ACQUIRER_CATALOG 迁移到 DB（2.5 天）
-3. **低优先级**：HandlerRegistry 改为 DB 加载（当前硬编码够用，但为未来扩展考虑）
+3. **低优先级**：HandlerRegistry 改为 DB 加载（当前动态注册已支持，但可进一步优化）
 
 ---
 
