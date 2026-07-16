@@ -129,6 +129,8 @@ class CommandSanitizer:
         # 其他高危路径
         (r"/etc/passwd", "敏感路径 /etc/passwd"),
         (r"/etc/sudoers", "敏感路径 /etc/sudoers"),
+        # 换行符：可绕过单条命令限制拼接出第二条命令（纵深防御）
+        (r"[\n\r]", "换行符（命令注入）"),
     ]
 
     @classmethod

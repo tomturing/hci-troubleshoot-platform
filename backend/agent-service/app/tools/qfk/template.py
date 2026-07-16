@@ -7,7 +7,8 @@ BACKEND_SIGNAL_JSON_SCHEMA = {
     "title": "BackendSignal",
     "description": "一个排查步骤对应的标准化后端信号，供 htp-agent 通过 QFK 执行",
     "type": "object",
-    "required": ["namespace", "target", "keywords"],
+    "required": ["namespace"],
+    "additionalProperties": False,
     "properties": {
         "namespace": {
             "type": "string",
@@ -57,9 +58,9 @@ BACKEND_SIGNAL_JSON_SCHEMA = {
         },
         "match_mode": {
             "type": "string",
-            "description": "关键字匹配模式: any(或) / all(与)",
-            "enum": ["any", "all"],
-            "default": "any",
+            "description": "关键字组合匹配模式: or(任一) / and(全部) / not(均不出现)",
+            "enum": ["or", "and", "not"],
+            "default": "or",
         },
         "expected": {
             "type": "boolean",
@@ -116,7 +117,7 @@ BACKEND_SIGNAL_PROMPT_TEMPLATE = """## 任务
       "path": "..."
     }},
     "keywords": ["..."],
-    "match_mode": "any",
+    "match_mode": "or",
     "expected": true,
     "description": "..."
   }}

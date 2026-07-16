@@ -253,18 +253,19 @@ class TestMatcherEvaluation:
     def setup_method(self):
         self.diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
 
-    def test_keyword_any(self):
-        m = {"type": "keyword", "pattern": "CPU 资源不足", "mode": "any", "expected": True}
+    def test_keyword_or(self):
+        m = {"type": "keyword", "pattern": "CPU 资源不足", "mode": "or", "expected": True}
         assert self.diag._evaluate_matcher(m, "检测到 CPU 资源不足") is True
         assert self.diag._evaluate_matcher(m, "一切正常") is False
 
-    def test_keyword_expected_false(self):
-        m = {"type": "keyword", "pattern": "OOM", "expected": False}
+    def test_keyword_not(self):
+        # not 模式：均不出现才符合期望
+        m = {"type": "keyword", "pattern": "OOM", "mode": "not"}
         assert self.diag._evaluate_matcher(m, "无相关报错") is True
         assert self.diag._evaluate_matcher(m, "出现 OOM") is False
 
-    def test_keyword_mode_all(self):
-        m = {"type": "keyword", "pattern": ["a", "b"], "mode": "all", "expected": True}
+    def test_keyword_and(self):
+        m = {"type": "keyword", "pattern": ["a", "b"], "mode": "and", "expected": True}
         assert self.diag._evaluate_matcher(m, "a 和 b 都存在") is True
         assert self.diag._evaluate_matcher(m, "只有 a") is False
 
@@ -302,6 +303,68 @@ class TestMatcherEvaluation:
 
     def test_unknown_type_falls_back_to_llm(self):
         assert self.diag._evaluate_matcher({"type": "bogus"}, "x") is None
+
+
+class TestToolDefinitionFallback:
+    """2.1 让 tool_definition 生效：signals_json 缺省时回退 admin-ui 配置默认值。"""
+
+    def setup_method(self):
+        from app.adapters.agents.htp import tool_registry
+        from types import SimpleNamespace
+
+        self._mod = tool_registry
+        self._added = ["qkv.alert", "qfk.log"]
+        # 模拟 admin-ui 在 tool_definition 中配置的默认值
+        self._mod.TOOL_REGISTRY["qkv.alert"] = SimpleNamespace(parameters={
+            "properties": {"produces": {"default": [{"name": "HOST", "path": "host"}]}}
+        })
+        self._mod.TOOL_REGISTRY["qfk.log"] = SimpleNamespace(parameters={
+            "properties": {
+                "matcher": {
+                    "default": {"type": "keyword", "pattern": ["X"], "mode": "or", "expected": True}
+                }
+            }
+        })
+
+    def teardown_method(self):
+        for k in self._added:
+            self._mod.TOOL_REGISTRY.pop(k, None)
+
+    def test_qkv_produces_fallback(self):
+        from app.tools.qkv.signal import FrontendSignal
+
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        sig = {"acquirer": "qkv.alert", "acquirer_args": {"keyword": "disk"}}
+        fsig = diag._signal_to_qkv(sig, {})
+        assert isinstance(fsig, FrontendSignal)
+        # signals_json 未配置 produces -> 应采用 tool_definition 默认值
+        assert fsig.produces == [{"name": "HOST", "path": "host"}]
+
+    def test_qkv_produces_explicit_overrides_fallback(self):
+        from app.tools.qkv.signal import FrontendSignal
+
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        sig = {
+            "acquirer": "qkv.alert",
+            "acquirer_args": {"keyword": "disk"},
+            "produces": [{"name": "VM", "path": "vm"}],
+        }
+        fsig = diag._signal_to_qkv(sig, {})
+        assert isinstance(fsig, FrontendSignal)
+        # signals_json 显式配置应优先于 tool_definition 默认值
+        assert fsig.produces == [{"name": "VM", "path": "vm"}]
+
+    def test_qfk_matcher_fallback(self):
+        from app.tools.qfk.signal import BackendSignal
+        from types import SimpleNamespace
+
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        step = SimpleNamespace(tool_name="qfk.log", tool_args_template={}, matcher=None)
+        bsig = diag._signal_to_qfk(step)
+        assert isinstance(bsig, BackendSignal)
+        # signals_json 未配置 matcher -> 应采用 tool_definition 默认值
+        assert bsig.match_mode == "or"
+        assert bsig.keywords == ["X"]
 
 
 # ─── 集成测试：完整诊断主循环 ────────────────────────────────────────────────

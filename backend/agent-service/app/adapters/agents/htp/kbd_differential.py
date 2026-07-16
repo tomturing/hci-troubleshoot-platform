@@ -498,128 +498,18 @@ class KBDDiagnostic:
     # ─── Matcher 类型化求值（§6：5 类定型 valuator）────────────────────────────
 
     def _evaluate_matcher(self, matcher: dict[str, Any], actual_output: str) -> bool | None:
-        """对单条 Matcher 契约做确定性（非 LLM）布尔求值。
+        """对单条 Matcher 契约做确定性（非 LLM）布尔求值（委托单一真相源）。
 
         返回 True/False 表示“符合期望”；返回 None 表示无法定值（交由 LLM 兜底）。
         支持类型：keyword / regex / state / threshold / json_path / exists。
+
+        实现已统一迁移至 app.tools.qfk.matcher.evaluate_matcher，此处仅作委托，
+        确保 KBD 差异诊断与 QFK 引擎使用同一套求值逻辑、证据链与 or/and/not 语义，
+        消除此前两份 keyword 实现可能漂移的隐患。
         """
-        if not isinstance(matcher, dict):
-            return None
-        mtype = matcher.get("type", "")
-        expected = matcher.get("expected", True)
-        out_l = (actual_output or "").lower()
+        from app.tools.qfk.matcher import evaluate_matcher
 
-        if mtype == "keyword":
-            p = matcher.get("pattern", "")
-            kws = [p] if isinstance(p, str) else list(p or [])
-            if not kws:
-                return None
-            if matcher.get("mode") == "all":
-                hit = all(k.lower() in out_l for k in kws)
-            else:  # any（默认）
-                hit = any(k.lower() in out_l for k in kws)
-            return hit is expected
-
-        if mtype == "regex":
-            p = matcher.get("pattern", "")
-            if not isinstance(p, str) or not p:
-                return None
-            try:
-                hit = bool(re.search(p, actual_output or "", re.IGNORECASE | re.DOTALL))
-            except re.error:
-                return None
-            return hit is expected
-
-        if mtype == "state":
-            # 期望状态值（如 running/active/healthy）出现在输出即视为命中
-            p = matcher.get("pattern", "")
-            if not isinstance(p, str) or not p:
-                return None
-            hit = p.lower() in out_l
-            return hit is expected
-
-        if mtype == "threshold":
-            # 解析首个数值，与 operator/value 比较
-            val = self._extract_number(actual_output)
-            target = matcher.get("value")
-            op = matcher.get("operator", ">")
-            if val is None or target is None:
-                return None
-            try:
-                target = float(target)
-            except (TypeError, ValueError):
-                return None
-            if op == ">":
-                cmp = val > target
-            elif op == ">=":
-                cmp = val >= target
-            elif op == "<":
-                cmp = val < target
-            elif op == "<=":
-                cmp = val <= target
-            elif op == "==" or op == "=":
-                cmp = val == target
-            elif op == "!=":
-                cmp = val != target
-            else:
-                return None
-            return cmp is expected
-
-        if mtype == "json_path":
-            # 从探针 JSON 输出取路径值再判定
-            try:
-                data = json.loads(actual_output)
-            except (json.JSONDecodeError, ValueError):
-                return None
-            node = self._read_json_path(data, matcher.get("path", ""))
-            if "expected_value" in matcher:
-                return (node == matcher.get("expected_value")) is expected
-            # 仅判定存在性
-            return (node is not None) is expected
-
-        if mtype == "exists":
-            # 存在性：输出非空且不含“不存在/not found”等否定标记
-            present = bool(
-                actual_output
-                and actual_output.strip()
-                and "不存在" not in out_l
-                and "not found" not in out_l
-            )
-            return present is expected
-
-        # 未知类型 → 交 LLM
-        return None
-
-    @staticmethod
-    def _extract_number(text: str) -> float | None:
-        """从文本中提取首个数值（支持整数/小数/负数/百分号）。"""
-        if not text:
-            return None
-        m = re.search(r"-?\d+(?:\.\d+)?", text)
-        if not m:
-            return None
-        try:
-            return float(m.group(0))
-        except ValueError:
-            return None
-
-    @staticmethod
-    def _read_json_path(data: Any, path: str) -> Any:
-        """按点分路径读取嵌套 JSON 节点（如 "a.b.0.c"）。"""
-        if not path:
-            return data
-        node: Any = data
-        for part in path.split("."):
-            if isinstance(node, dict) and part in node:
-                node = node[part]
-            elif isinstance(node, list):
-                try:
-                    node = node[int(part)]
-                except (ValueError, IndexError):
-                    return None
-            else:
-                return None
-        return node
+        return evaluate_matcher(matcher, actual_output).matched
 
     # ─── 阶段 A/B：生产者/消费者执行与变量池 ───────────────────────────────────
 
@@ -688,8 +578,13 @@ class KBDDiagnostic:
 
         注意：parse_frontend_value._extract_by_produces 返回的 dict key 是 name.lower()，
         所以这里用 name.lower() 查找，而非 path（path 是原始 JSON 字段路径，用于提取阶段）。
+
+        让 tool_definition 生效：当 signals_json 未配置 produces 时，回退到
+        admin-ui 配置的 tool_definition 默认值（与 _signal_to_qkv 保持一致）。
         """
-        produces = signal.get("produces") or []
+        produces = signal.get("produces")
+        if not produces:
+            produces = self._tool_def_default(signal.get("acquirer", ""), "produces") or []
         if not res.values:
             return
         first = res.values[0]
@@ -770,6 +665,23 @@ class KBDDiagnostic:
         except Exception as exc:
             return None, str(exc), None
 
+    def _tool_def_default(self, tool_name: str, key: str) -> Any | None:
+        """从 tool_definition 注册表读取某参数的默认值（produces / matcher 等）。
+
+        这是「让 tool_definition 生效」的关键闭环：当 SOP/signals_json 未填写
+        produces / matcher 时，回退到运营在 admin-ui 配置并写入 tool_definition
+        的默认值。运营人员无需改 signals_json 即可调整默认产出 / 判定。
+        """
+        from app.adapters.agents.htp.tool_registry import TOOL_REGISTRY
+
+        tool = TOOL_REGISTRY.get(tool_name)
+        if not tool or not isinstance(tool.parameters, dict):
+            return None
+        prop = tool.parameters.get("properties", {}).get(key)
+        if isinstance(prop, dict):
+            return prop.get("default")
+        return None
+
     def _signal_to_qkv(self, signal: dict[str, Any], env_context: dict[str, str]) -> Any:
         """从生产者信号 dict 构造 qkv/signal.FrontendSignal（解析占位符后再构造）。"""
         from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
@@ -783,7 +695,11 @@ class KBDDiagnostic:
         except ValueError:
             return None
         args = self._resolve_args(signal.get("acquirer_args", {}) or {}, env_context, {})
-        produces = signal.get("produces") or []
+        produces = signal.get("produces")
+        if not produces:
+            # 让 tool_definition 生效：signals_json 未配置 produces 时，
+            # 回退到 admin-ui 配置的 tool_definition 默认值。
+            produces = self._tool_def_default(acquirer, "produces") or []
         try:
             return FrontendSignal(
                 query=query,
@@ -826,7 +742,11 @@ class KBDDiagnostic:
         target = BackendSignalTarget(
             **{k: v for k, v in target_data.items() if k in ("scope", "resource", "path", "time_window")}
         )
-        matcher = step.matcher or {}
+        matcher = step.matcher
+        if not matcher:
+            # 让 tool_definition 生效：signals_json 未配置 matcher 时，
+            # 回退到 admin-ui 配置的 tool_definition 默认值。
+            matcher = self._tool_def_default(acquirer, "matcher") or {}
         keywords: list[str] = []
         if matcher.get("type") == "keyword":
             p = matcher.get("pattern", "")
@@ -837,7 +757,7 @@ class KBDDiagnostic:
                 signal_type=namespace,
                 target=target,
                 keywords=keywords,
-                match_mode=matcher.get("mode", "any"),
+                match_mode=matcher.get("mode", "or"),
                 expected=bool(matcher.get("expected", True)),
                 description=None,
                 container=args.get("container"),

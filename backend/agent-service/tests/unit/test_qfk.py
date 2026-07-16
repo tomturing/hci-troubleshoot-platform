@@ -52,7 +52,7 @@ class TestBackendSignalValidation:
                 "path": "/sf/log/today/",
             },
             "keywords": ["file system read-only"],
-            "match_mode": "any",
+            "match_mode": "or",
             "expected": True,
             "description": "主备传输文件系统只读"
         }
@@ -262,7 +262,7 @@ class TestEvaluator:
             risk_level=1
         )
         handler = LogKeywordHandler()
-        matched, evidence = handler.evaluate([res], ["failed", "unrelated"], "any")
+        matched, _, evidence = handler.evaluate([res], ["failed", "unrelated"], "or")
         assert matched is True
         assert "【关键字对比评估 (OR)】" in evidence
         assert "命中的关键字: ['failed']" in evidence
@@ -279,7 +279,7 @@ class TestEvaluator:
             risk_level=1
         )
         handler = LogKeywordHandler()
-        matched, evidence = handler.evaluate([res], ["failed", "read-only"], "all")
+        matched, _, evidence = handler.evaluate([res], ["failed", "read-only"], "and")
         assert matched is True
 
     def test_all_mode_failure_missing_one(self):
@@ -294,7 +294,7 @@ class TestEvaluator:
             risk_level=1
         )
         handler = LogKeywordHandler()
-        matched, _ = handler.evaluate([res], ["failed", "read-only"], "all")
+        matched, _, _ = handler.evaluate([res], ["failed", "read-only"], "and")
         assert matched is False
 
 
@@ -312,7 +312,7 @@ class TestQFKResultFormatting:
             signal_type="log",
             commands=["acli log get -k 'test'"],
             keywords=["test"],
-            match_mode="any",
+            match_mode="or",
             matched_keywords=["test"],
             evidence="Matched evidence text here"
         )
@@ -360,20 +360,21 @@ async def test_qfk_engine_expected_true_matched():
 
 
 @pytest.mark.asyncio
-async def test_qfk_engine_expected_false_matched_flip():
-    # expected=False (期望不出现报错，健康指标)，匹配到了报错词 -> final_matched = False
+async def test_qfk_engine_not_mode_matched():
+    # match_mode="not"（均不出现才符合预期）：输出中出现 OOM -> 最终 matched = False
     sig = BackendSignal(
         namespace="log",
         target={"resource": "vtpdaemon.log"},
         keywords=["OOM error"],
-        expected=False
+        match_mode="not",
+        expected=True,
     )
 
     mock_exec_res = ExecResult(
         stdout="Fatal: OOM error detected on node",
         stderr="",
         exit_code=0,
-        command="acli log get -k 'OOM error' -f vtpdaemon.log",
+        command="acli log get -k '' -f vtpdaemon.log",
         node="10.0.0.1",
         duration_ms=20,
         truncated=False,
@@ -385,6 +386,37 @@ async def test_qfk_engine_expected_false_matched_flip():
 
     with patch("app.tools.acli.executor._executor", mock_executor):
         res = await qfk_exec(sig, conversation_id="conv-123")
-        # 匹配到了 OOM (matched=True)，但是 expected=False，故最终匹配 matched 应翻转为 False！
+        # not 模式：输出出现 OOM -> 不符合（matched=False）
         assert res.matched is False
         assert res.matched_keywords == ["OOM error"]
+
+
+@pytest.mark.asyncio
+async def test_qfk_engine_not_mode_clean():
+    # match_mode="not"：输出中无任何关键字 -> 最终 matched = True（符合预期）
+    sig = BackendSignal(
+        namespace="log",
+        target={"resource": "vtpdaemon.log"},
+        keywords=["OOM error"],
+        match_mode="not",
+        expected=True,
+    )
+
+    mock_exec_res = ExecResult(
+        stdout="kernel: normal boot messages...",
+        stderr="",
+        exit_code=0,
+        command="acli log get -k '' -f vtpdaemon.log",
+        node="10.0.0.1",
+        duration_ms=20,
+        truncated=False,
+        risk_level=1
+    )
+
+    mock_executor = AsyncMock()
+    mock_executor.execute.return_value = mock_exec_res
+
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        res = await qfk_exec(sig, conversation_id="conv-123")
+        assert res.matched is True
+        assert res.matched_keywords == []

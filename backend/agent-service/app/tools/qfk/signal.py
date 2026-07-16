@@ -34,7 +34,7 @@ class BackendSignal(BaseModel):
     signal_type: str = Field(default="", description="信号类型描述（同 namespace，向后兼容 QFKResult 展示）")
     target: BackendSignalTarget | None = Field(default=None, description="定位目标参数描述")
     keywords: list[str] = Field(default_factory=list, description="K: 期望匹配对比的关键字列表")
-    match_mode: str = Field(default="any", description="关键字对比匹配模式：any(或) / all(与)")
+    match_mode: str = Field(default="or", description="关键字组合匹配模式：or(任一) / and(全部) / not(均不出现)。not 取代旧 expected=False 的取反语义")
     expected: bool = Field(default=True, description="期望结果：True=期望出现，False=期望不出现")
     description: str | None = Field(default=None, description="对此排查步骤后端信号的文字表述说明")
     container: str | None = Field(default=None, description="对于 service 专属的容器类型 (asv/anet/host)")

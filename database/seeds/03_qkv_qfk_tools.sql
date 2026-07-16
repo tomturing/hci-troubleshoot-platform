@@ -288,7 +288,7 @@ INSERT INTO tool_definition (
         },
         "required": ["keyword"]
     }',
-    '[{"keyword": "iotimeout", "target": {"resource": "sfvt_qemu_7436939093432.log", "path": "/sf/log/3/"}, "matcher": {"type": "keyword", "pattern": ["iotimeout"], "mode": "any", "expected": true}}]',
+    '[{"keyword": "iotimeout", "target": {"resource": "sfvt_qemu_7436939093432.log", "path": "/sf/log/3/"}, "matcher": {"type": "keyword", "pattern": ["iotimeout"], "mode": "or", "expected": true}}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO UPDATE SET
@@ -432,7 +432,7 @@ INSERT INTO tool_definition (
         "required": ["sub_command"]
     }',
     '[
-        {"sub_command": "lsof", "matcher": {"type": "keyword", "pattern": ["qcow2", "PID"], "mode": "all", "expected": true}},
+        {"sub_command": "lsof", "matcher": {"type": "keyword", "pattern": ["qcow2", "PID"], "mode": "and", "expected": true}},
         {"sub_command": "iostat", "matcher": {"type": "threshold", "operator": ">", "value": 1000, "expected": true}},
         {"sub_command": "smartctl -a /dev/sda", "matcher": {"type": "threshold", "operator": ">", "value": 200, "expected": true}}
     ]',
@@ -589,7 +589,7 @@ INSERT INTO tool_definition (
         },
         "required": ["sub_command"]
     }',
-    '[{"sub_command": "asan disk list", "matcher": {"type": "keyword", "pattern": ["数据同步", "数据平衡"], "mode": "any", "expected": true}}]',
+    '[{"sub_command": "asan disk list", "matcher": {"type": "keyword", "pattern": ["数据同步", "数据平衡"], "mode": "or", "expected": true}}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO UPDATE SET

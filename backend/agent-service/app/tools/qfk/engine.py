@@ -163,17 +163,19 @@ async def qfk_exec(
                 exec_ids=exec_ids,
             )
 
-    # 3. 解析结果并做关键字评估
-    matched, evidence = handler.evaluate(results, signal.keywords, signal.match_mode)
+    # 3. 解析结果并做关键字评估（evaluate 同时返回命中关键字，避免重复计算）
+    matched, matched_kws, evidence = handler.evaluate(results, signal.keywords, signal.match_mode)
 
-    # 提取实际命中的关键字，用于后续状态填充
-    combined_lower = "\n".join([f"{r.stdout}\n{r.stderr}" for r in results]).lower()
-    matched_kws = [kw for kw in signal.keywords if kw.lower() in combined_lower]
-
-    # 4. 根据 expected (预期结果) 做出最终布尔翻转
-    # 例如：如果排查项检查"无OOM报错"，expected=False (不期望匹配到关键字)
-    # 如果 matched=True (匹配到了报错词)，则最终判定 matched = False (判定异常/不符合正常预期)
-    final_matched = matched if signal.expected else not matched
+    # 4. 最终布尔判定
+    # match_mode == "not" 已在 evaluate 内部表达取反语义（均不出现才为真），无需再翻转；
+    # 其余模式（or/and）兼容旧 matcher 的 expected 翻转（expected=False 表示"不出现才符合预期"）。
+    mode_norm = {"any": "or", "all": "and"}.get(
+        (signal.match_mode or "or").lower(), (signal.match_mode or "or").lower()
+    )
+    if mode_norm == "not":
+        final_matched = matched
+    else:
+        final_matched = matched if signal.expected else not matched
 
     logger.info(
         event="qfk_engine_finished",

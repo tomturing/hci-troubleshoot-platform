@@ -38,7 +38,7 @@ const matcherType = computed({
     const newMatcher: Record<string, any> = { type, expected: true }
     if (type === 'keyword') {
       newMatcher.pattern = ''
-      newMatcher.mode = 'any'
+      newMatcher.mode = 'or'
     } else if (type === 'regex' || type === 'state') {
       newMatcher.pattern = ''
     } else if (type === 'threshold') {
@@ -101,7 +101,7 @@ const matcherTypeOptions = [
           <template #content>
             <div style="max-width: 400px; line-height: 1.6;">
               定义如何判定执行结果是否满足预期。
-              <br/><b>keyword</b> — 关键字匹配，支持多关键字（any/all 模式）。
+              <br/><b>keyword</b> — 关键字匹配，支持多关键字（or/and/not 模式）。
               <br/><b>regex</b> — 正则表达式匹配。
               <br/><b>state</b> — 匹配特定状态值（如 running、stopped）。
               <br/><b>threshold</b> — 数值阈值比较（支持 &gt; &gt;= &lt; &lt;= == !=）。
@@ -145,8 +145,9 @@ const matcherTypeOptions = [
         </el-form-item>
         <el-form-item label="匹配模式">
           <el-radio-group v-model="matcher.mode">
-            <el-radio-button value="any">任一匹配 (OR)</el-radio-button>
-            <el-radio-button value="all">全部匹配 (AND)</el-radio-button>
+            <el-radio-button value="or">任一匹配 (OR)</el-radio-button>
+            <el-radio-button value="and">全部匹配 (AND)</el-radio-button>
+            <el-radio-button value="not">均不匹配 (NOT)</el-radio-button>
           </el-radio-group>
         </el-form-item>
       </template>
