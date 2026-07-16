@@ -61,7 +61,7 @@ function addFallbackPath(item: { name: string; path: string }) {
           <template #content>
             <div style="max-width: 360px; line-height: 1.6;">
               定义要从查询结果中提取的变量，每个变量包含：
-              <br/><b>name</b> — 输出变量名（建议大写下划线格式，如 HOST、VM_ID），后续信号通过 <code>{{&#123;变量名&#125;}}</code> 引用。
+              <br/><b>name</b> — 输出变量名（建议大写下划线格式，如 HOST、VM_ID），后续信号通过 <code v-pre>{{变量名}}</code> 引用。
               <br/><b>path</b> — acli 返回值中的 JSON 字段路径，支持 <code>|</code> 分隔多路径容错（如 <code>host|hostname|hostid</code> 表示依次尝试）。
             </div>
           </template>
