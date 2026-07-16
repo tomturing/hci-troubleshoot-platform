@@ -24,7 +24,7 @@ if _kb_service not in sys.path:
 
 from app.tools.qfk.handlers import HandlerRegistry
 from app.tools.qfk.signal import BackendSignal, BackendSignalTarget
-from app.tools.qkv.signal import FrontendSignal, FrontendQueryType
+from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
 
 # 直接定义 ACQUIRER_CATALOG 和 VALID_MATCHER_TYPES（避免跨服务导入）
 # display_name 标准命名（与 extract_signals.py / seed 保持一致）：
@@ -58,19 +58,19 @@ VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "json_path", "e
 def test_case_27123():
     """
     案例 27123: 【HCI-VT】虚拟机开机失败,报错虚拟机镜像忙，正在进行其他操作
-    
+
     排查步骤：
     1. 查看虚拟机任务详情 - QKV task
     2. lsof | grep <vmid> 检查镜像占用 - QFK system (lsof)
     3. ps auxf | grep <PID> 查看进程详情 - QFK system (ps)
-    
+
     解决：kill -9 <PID> - QFK system (kill) [写操作，不在信号中]
     """
     case_id = "27123"
     print(f"\n{'='*60}")
     print(f"案例 {case_id}: 虚拟机开机失败，镜像忙")
     print(f"{'='*60}")
-    
+
     # 定义预期抽取的信号
     expected_signals = [
         # 生产者：查看任务详情
@@ -110,25 +110,25 @@ def test_case_27123():
             "matcher": {"type": "keyword", "pattern": "ClwDRDBClient", "mode": "any", "expected": True},
         },
     ]
-    
+
     return _validate_signals(case_id, expected_signals)
 
 
 def test_case_41570():
     """
     案例 41570: 因外置iSCSI存储scrub服务导致存储时延高，虚拟机IO卡顿挂起
-    
+
     排查步骤：
     1. 查看虚拟机qemu日志 - QFK log (iotimeout)
     2. 查看 iostat 日志 - QFK log (LOG_iostat.txt)
-    
+
     注意：scrub服务检查是第三方操作，不在 HCI 后台范围内
     """
     case_id = "41570"
     print(f"\n{'='*60}")
     print(f"案例 {case_id}: iSCSI存储scrub导致时延高")
     print(f"{'='*60}")
-    
+
     expected_signals = [
         # 消费者：qemu日志检查 iotimeout
         {
@@ -159,26 +159,26 @@ def test_case_41570():
             "matcher": {"type": "keyword", "pattern": "await", "mode": "any", "expected": True},
         },
     ]
-    
+
     return _validate_signals(case_id, expected_signals)
 
 
 def test_case_40652():
     """
     案例 40652: 硬盘物理坏道导致SMART 5值持续增长
-    
+
     排查步骤：
     1. diskchecker.py 检查 SMART 信息 - 容器内脚本（非标准 acli）
     2. 管理平台查看硬盘状态 - UI 操作（非后台命令）
     3. grep 定位硬盘设备文件 - QFK log (grep 配置文件)
-    
+
     注意：smartctl 是 acli system 命令的子集
     """
     case_id = "40652"
     print(f"\n{'='*60}")
     print(f"案例 {case_id}: SMART 5值增长，硬盘物理坏道")
     print(f"{'='*60}")
-    
+
     expected_signals = [
         # 消费者：smartctl 检查 SMART 信息（通过 acli system smartctl）
         {
@@ -207,14 +207,14 @@ def test_case_40652():
             "matcher": {"type": "keyword", "pattern": "/dev/", "mode": "any", "expected": True},
         },
     ]
-    
+
     return _validate_signals(case_id, expected_signals)
 
 
 def test_case_40680():
     """
     案例 40680: Dell HBA355i RAID卡部分磁盘无法识别
-    
+
     排查步骤：
     1. lsblk 检查磁盘数量 - QFK system (lsblk)
     2. lspci 检查 RAID 卡型号 - QFK system (lspci)
@@ -225,7 +225,7 @@ def test_case_40680():
     print(f"\n{'='*60}")
     print(f"案例 {case_id}: Dell RAID卡磁盘无法识别")
     print(f"{'='*60}")
-    
+
     expected_signals = [
         # 消费者：lsblk 检查磁盘数量
         {
@@ -264,14 +264,14 @@ def test_case_40680():
             "matcher": {"type": "keyword", "pattern": "version:", "mode": "any", "expected": True},
         },
     ]
-    
+
     return _validate_signals(case_id, expected_signals)
 
 
 def test_case_40750():
     """
     案例 40750: 磁盘组配比不一致导致数据同步频繁，误报磁盘被拔出
-    
+
     排查步骤：
     1. 查看告警日志 - QKV alert (磁盘被拔出)
     2. 磁盘管理界面查看状态 - UI 操作
@@ -283,7 +283,7 @@ def test_case_40750():
     print(f"\n{'='*60}")
     print(f"案例 {case_id}: 磁盘组配比不一致误报")
     print(f"{'='*60}")
-    
+
     expected_signals = [
         # 生产者：查看告警
         {
@@ -324,7 +324,7 @@ def test_case_40750():
             "matcher": None,
         },
     ]
-    
+
     return _validate_signals(case_id, expected_signals)
 
 
@@ -338,19 +338,19 @@ def _validate_signals(case_id: str, signals: list) -> dict:
         "errors": [],
         "acquirer_coverage": set(),
     }
-    
+
     for sig in signals:
         try:
             sig_id = sig.get("id", "?")
             category = sig.get("signal_category")
             acquirer = sig.get("acquirer", "")
-            
+
             # 1. 验证 acquirer 在 ACQUIRER_CATALOG 中
             if acquirer not in ACQUIRER_CATALOG:
                 raise ValueError(f"acquirer '{acquirer}' 不在 ACQUIRER_CATALOG 中")
-            
+
             results["acquirer_coverage"].add(acquirer)
-            
+
             # 2. 根据类别构造信号对象
             if category == "frontend":
                 query_type = sig["acquirer_args"].get("query", "alert")
@@ -359,8 +359,8 @@ def _validate_signals(case_id: str, signals: list) -> dict:
                 try:
                     query = FrontendQueryType(query_type)
                 except ValueError:
-                    raise ValueError(f"无效的 query 类型: {query_type}")
-                
+                    raise ValueError(f"无效的 query 类型: {query_type}") from None
+
                 fs = FrontendSignal(
                     query=query,
                     keyword=sig["acquirer_args"].get("keyword", ""),
@@ -369,22 +369,22 @@ def _validate_signals(case_id: str, signals: list) -> dict:
                     produces=sig.get("produces", []),
                 )
                 print(f"  ✅ [{sig_id}] FrontendSignal(query={query.value}, keyword='{fs.keyword}', produces={fs.produces})")
-                
+
             elif category == "backend":
                 # 从 acquirer 解析 namespace
                 namespace = acquirer.split(".")[1] if "." in acquirer else acquirer
-                
+
                 # 构造 BackendSignal
                 args = sig.get("acquirer_args", {})
                 target_data = args.get("target", {})
                 target = BackendSignalTarget(**{k: v for k, v in target_data.items() if k in ("scope", "resource", "path", "time_window")}) if target_data else None
-                
+
                 matcher = sig.get("matcher", {})
                 keywords = []
                 if matcher.get("type") == "keyword":
                     p = matcher.get("pattern", "")
                     keywords = [p] if isinstance(p, str) else list(p)
-                
+
                 bs = BackendSignal(
                     namespace=namespace,
                     target=target,
@@ -393,27 +393,27 @@ def _validate_signals(case_id: str, signals: list) -> dict:
                     expected=matcher.get("expected", True),
                     sub_command=args.get("sub_command"),
                 )
-                
+
                 # 3. 验证 HandlerRegistry 能找到 handler
                 handler = HandlerRegistry.get(bs.namespace)
                 handler_name = handler.__class__.__name__
-                
+
                 # 4. 验证 matcher 类型
                 matcher_type = matcher.get("type") if matcher else None
                 if matcher_type and matcher_type not in VALID_MATCHER_TYPES:
                     raise ValueError(f"无效的 matcher 类型: {matcher_type}")
-                
+
                 print(f"  ✅ [{sig_id}] BackendSignal(namespace='{namespace}', handler={handler_name}, sub_cmd={bs.sub_command})")
             else:
                 raise ValueError(f"未知的 signal_category: {category}")
-            
+
             results["valid"] += 1
-            
+
         except Exception as e:
             results["invalid"] += 1
             results["errors"].append(f"信号 {sig.get('id', '?')}: {e}")
             print(f"  ❌ [{sig.get('id', '?')}] 错误: {e}")
-    
+
     return results
 
 
@@ -421,17 +421,17 @@ def main():
     print("=" * 60)
     print("关键信号抽取验收 - 5个真实KBD案例")
     print("=" * 60)
-    
+
     print(f"\n支持的 acquirer 目录 ({len(ACQUIRER_CATALOG)} 个):")
     for k, v in ACQUIRER_CATALOG.items():
         print(f"  - {k}: {v[:50]}...")
-    
+
     print(f"\n支持的 matcher 类型 ({len(VALID_MATCHER_TYPES)} 种): {VALID_MATCHER_TYPES}")
-    
-    print(f"\nHandlerRegistry 支持的 namespace:")
+
+    print("\nHandlerRegistry 支持的 namespace:")
     for ns in HandlerRegistry.supported_namespaces():
         print(f"  - {ns}")
-    
+
     # 运行所有案例测试
     all_results = []
     all_results.append(test_case_27123())
@@ -439,49 +439,49 @@ def main():
     all_results.append(test_case_40652())
     all_results.append(test_case_40680())
     all_results.append(test_case_40750())
-    
+
     # 汇总
     print("\n" + "=" * 60)
     print("验收汇总")
     print("=" * 60)
-    
+
     total_signals = sum(r["total"] for r in all_results)
     total_valid = sum(r["valid"] for r in all_results)
     total_invalid = sum(r["invalid"] for r in all_results)
     all_acquirers = set().union(*[r["acquirer_coverage"] for r in all_results])
-    
+
     print(f"\n总计信号数: {total_signals}")
     print(f"有效信号: {total_valid} ({total_valid/total_signals*100:.1f}%)")
     print(f"无效信号: {total_invalid}")
-    
+
     print(f"\n覆盖的 acquirer ({len(all_acquirers)} 个):")
     for acq in sorted(all_acquirers):
         print(f"  - {acq}")
-    
+
     if total_invalid > 0:
-        print(f"\n错误详情:")
+        print("\n错误详情:")
         for r in all_results:
             for err in r["errors"]:
                 print(f"  案例 {r['case_id']}: {err}")
-    
+
     # 覆盖率分析
-    print(f"\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("ACQUIRER_CATALOG 覆盖率分析")
     print("=" * 60)
-    
+
     used_acquirers = all_acquirers
     unused_acquirers = set(ACQUIRER_CATALOG.keys()) - used_acquirers
-    
+
     print(f"\n已使用的 acquirer: {len(used_acquirers)}/{len(ACQUIRER_CATALOG)}")
     if unused_acquirers:
         print(f"未使用的 acquirer ({len(unused_acquirers)} 个):")
         for acq in sorted(unused_acquirers):
             print(f"  - {acq}")
-    
+
     print(f"\n{'='*60}")
     print(f"✅ 验收完成: {total_valid}/{total_signals} 信号有效")
     print(f"{'='*60}")
-    
+
     return total_invalid == 0
 
 
