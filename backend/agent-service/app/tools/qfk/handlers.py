@@ -116,11 +116,22 @@ class LogKeywordHandler(FunctionHandler):
         if mode == "or":
             # grep -E 等价：所有关键字以 | 连接为单一扩展正则，交由服务端过滤。
             # 彻底解决多关键字场景下"只透传首个关键字"导致的假阴性问题。
-            pattern = "|".join(signal.keywords)
+            # 关键字是「子串」语义（matcher 类型为 keyword，而非正则）：
+            #   - 先判空 + 去重，避免拼接出 `-E -k ""` 或重复模式；
+            #   - 再用 re.escape 逐字转义后连接，防止关键字含正则特殊字符
+            #     （如 "vm.100"）被当成正则误匹配 "vmx100"（与命令注入同源：
+            #      不可信数据进入正则解释器而未转义）。
+            kw_set = sorted({kw for kw in (signal.keywords or []) if kw})
+            if not kw_set:
+                raise CommandBuildError(
+                    "log/dialog 信号 or 模式至少需要一个非空关键字作为 acli log get -k 的检索词"
+                )
+            pattern = "|".join(re.escape(kw) for kw in kw_set)
             parts.extend(["-E", "-k", shlex.quote(pattern)])
         else:
             # and / not：服务端无法表达"全部/取反"语义，先拉取全量日志（-k ""），
-            # 再交由 FunctionHandler.evaluate 在客户端按对应语义过滤。
+            # 再交由 FunctionHandler.evaluate 在客户端按对应语义过滤（子串字面量，
+            # 无正则风险，故此处无需 re.escape）。
             parts.extend(["-k", shlex.quote("")])
 
         # 校验并提取文件和路径参数

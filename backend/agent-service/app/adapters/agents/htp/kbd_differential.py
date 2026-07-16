@@ -46,9 +46,13 @@ EARLY_STOP_THRESHOLD = 2
 # 工具执行连续失败超过此次数后停止，防止在损坏环境中无限等待
 MAX_CONSECUTIVE_FAILURES = 3
 
-# ADR-2 占位符：运行期解析统一认 {{NAME}}（NAME 大小写均可，解析时按精确 key 匹配）。
-# 注意：大写强制在抽取/校验层（KeySignal.validate + Prompt 指令）执行；运行期解析对
-# 缺失变量保留原样（如生产者尚未产出该变量），不抛异常，交由下层处理。
+# ADR-2 占位符：运行期解析统一认 {{NAME}}。大小写处理分两层（纵深防御，彻底消除脆弱性）：
+#   1) 抽取/校验层强制模板占位符为大写（extract_signals.validate_placeholder_case，
+#      如 {{HOST}} 合法、{{host}} 非法），保证模板书写规范；
+#   2) 运行期解析对「变量名」大小写不敏感（_resolve_args 按小写查找），且生产者写入
+#      变量池时 Key 强制小写（_set_pool_var），因此无论 {{HOST}}/{{host}}/{{Host}}
+#      均能命中池内小写 Key，无需依赖「produces 名必须大写」的全局隐式约定；
+#      未命中（如生产者尚未产出该变量）的占位符保留原样，不抛异常，交由下层处理。
 _PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z0-9_.]+)\}\}")
 
 
@@ -107,6 +111,18 @@ class KBDDiagnostic:
     def get_result(self) -> KBDDiagResult | None:
         """获取最近一次 diagnose() 调用的结果（调用前返回 None）。"""
         return self._result
+
+    def _set_pool_var(self, name: str, value: Any) -> None:
+        """写入会话变量池（黑板）的规范化入口。
+
+        生产侧静默规范化：Key 强制统一小写存储，从源头消除变量池内部大小写
+        不一致（如 HoSt / host / HOST 并存），保证 debug 打印、前端展示、
+        落库存储时 Key 永远干净统一（host、vm_id）。
+        消费侧 _resolve_args 同步做大小写不敏感解析作为纵深，二者组合彻底消除
+        大小写脆弱性。与抽取层「占位符必须大写」的校验互不冲突——模板大写仅约束
+        书写方，运行期解析兼容任意大小写。
+        """
+        self._variable_pool[name.strip().lower()] = value
 
     async def diagnose(
         self,
@@ -397,13 +413,19 @@ class KBDDiagnostic:
         if variable_pool:
             merged.update(variable_pool)
 
+        # 防御性归一：占位符解析大小写不敏感（ADR-2）。
+        # 生产者（QKV/tool_def）可能以任意大小写写入变量池（如 HOST/host/HoSt），
+        # 消费侧统一按小写查找，确保 {{HOST}}/{{host}}/{{Host}} 均可命中池内小写
+        # Key，无需依赖「produces 名必须大写」的全局隐式约定。
+        lower_merged = {k.lower(): v for k, v in merged.items()}
+
+        def _rep(m: re.Match[str]) -> str:
+            name = m.group(1).strip().lower()
+            return str(lower_merged[name]) if name in lower_merged else m.group(0)
+
         resolved = {}
         for k, v in template.items():
             if isinstance(v, str):
-                def _rep(m: re.Match[str]) -> str:
-                    name = m.group(1)
-                    return str(merged[name]) if name in merged else m.group(0)
-
                 v = _PLACEHOLDER_RE.sub(_rep, v)
             resolved[k] = v
         return resolved
@@ -595,7 +617,7 @@ class KBDDiagnostic:
             # 提取后的 dict key 是 name.lower()（见 parser._extract_by_produces line 90）
             val = first.get(name.lower()) if isinstance(first, dict) else None
             if val is not None:
-                self._variable_pool[name] = val
+                self._set_pool_var(name, val)
 
     async def _execute_acquirer(
         self,
@@ -726,7 +748,7 @@ class KBDDiagnostic:
         if isinstance(first, dict) and len(first) == 1:
             (name, val), = first.items()
             if val is not None:
-                self._variable_pool[name.upper()] = val
+                self._set_pool_var(name, val)
 
     def _signal_to_qfk(self, step: KBDStep) -> Any:
         """从消费者 KBDStep 构造 qfk/signal.BackendSignal（namespace 字符串路由，keyword 类型由引擎定值为布尔）。"""

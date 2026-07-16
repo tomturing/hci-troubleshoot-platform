@@ -111,6 +111,15 @@ class CommandSanitizer:
       3. 禁止路径穿越：../、/etc/shadow、/root/.ssh/
       4. bash_exec 禁止以 acli 开头（应使用 acli_exec）
       5. acli_exec 必须以 acli 开头
+      6. 换行符（[\n\r]）拦截——可绕过单条命令限制拼接出第二条命令（纵深防御）
+
+    关于注释符 `#`：本净化器【刻意不】将 `#` 列入禁止模式。原因——本净化器作用在
+    「已拼装完成的整条命令字符串」上，无法感知引号边界（quote-blind）：若某合法参数
+    （如关键字 "foo#bar"）被正确 shlex.quote 包裹在单引号内，其 `#` 在 shell 中本属
+    字面量、无害，但盲扫正则会误伤而拒绝一条合法命令。因此 `#`（shell 注释截断）的
+    拦截责任下沉到「数据入口」——各 Handler 的 forbidden_chars（如
+    GenericSubCommandHandler）在命令拼装前对原始、未引号化的用户输入做检查，那才是
+    正确的信任边界。参见 handlers.py。
     """
 
     # 禁止的正则表达式模式
