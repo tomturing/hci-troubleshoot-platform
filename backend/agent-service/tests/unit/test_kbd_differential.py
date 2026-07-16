@@ -350,8 +350,9 @@ class TestToolDefinitionFallback:
     """2.1 让 tool_definition 生效：signals_json 缺省时回退 admin-ui 配置默认值。"""
 
     def setup_method(self):
-        from app.adapters.agents.htp import tool_registry
         from types import SimpleNamespace
+
+        from app.adapters.agents.htp import tool_registry
 
         self._mod = tool_registry
         self._added = ["qkv.alert", "qfk.log"]
@@ -396,8 +397,9 @@ class TestToolDefinitionFallback:
         assert fsig.produces == [{"name": "VM", "path": "vm"}]
 
     def test_qfk_matcher_fallback(self):
-        from app.tools.qfk.signal import BackendSignal
         from types import SimpleNamespace
+
+        from app.tools.qfk.signal import BackendSignal
 
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
         step = SimpleNamespace(tool_name="qfk.log", tool_args_template={}, matcher=None)

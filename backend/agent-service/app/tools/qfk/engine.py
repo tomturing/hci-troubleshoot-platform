@@ -172,13 +172,14 @@ async def qfk_exec(
     mode_norm = {"any": "or", "all": "and"}.get(
         (signal.match_mode or "or").lower(), (signal.match_mode or "or").lower()
     )
-    if mode_norm == "not":
-        final_matched = matched
-    else:
-        # 显式 is True：signal.expected 为 bool（默认 True，由 pydantic 在边界拒绝
-        # None/非布尔），此处仅信任布尔真值；避免 falsy 判断在「上游误传 None」时
-        # 静默走入 not matched 分支（详见 2.3①）。
-        final_matched = matched if (signal.expected is True) else not matched
+    # 显式 is True（详见 2.3①）：signal.expected 为 bool（默认 True，由 pydantic 在
+    # 边界拒绝 None/非布尔），此处仅信任布尔真值；避免 falsy 判断在「上游误传 None」时
+    # 静默走入 not matched 分支。mode == "not" 已在 evaluate 内部表达取反语义，无需再翻转。
+    final_matched = (
+        matched
+        if mode_norm == "not"
+        else matched if (signal.expected is True) else not matched
+    )
 
     logger.info(
         event="qfk_engine_finished",

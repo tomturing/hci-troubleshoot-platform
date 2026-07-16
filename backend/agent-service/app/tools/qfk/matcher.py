@@ -191,10 +191,11 @@ def evaluate_matcher(
         except (json.JSONDecodeError, ValueError):
             return MatcherResult(matched=None)
         node = _read_json_path(data, matcher.get("path", ""))
-        if "expected_value" in matcher:
-            hit = node == matcher.get("expected_value")
-        else:
-            hit = node is not None
+        hit = (
+            node == matcher.get("expected_value")
+            if "expected_value" in matcher
+            else node is not None
+        )
         matched = hit if expected else not hit
         return MatcherResult(
             matched=matched,
