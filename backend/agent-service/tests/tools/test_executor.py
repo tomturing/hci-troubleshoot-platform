@@ -104,6 +104,28 @@ class TestCommandSanitizer:
         result = CommandSanitizer.sanitize("acli --formatter json vm list", "acli_exec")
         assert result == "acli --formatter json vm list"
 
+    # ── 测试验收标准 1（补充）：acli_exec 真实路径纵深防御（QFK 走此路径）─────
+
+    def test_acli_exec_rejects_command_substitution(self):
+        """QFK 经由 acli_exec 下发命令时，命令替换注入必须被拒（纵深防御）。"""
+        with pytest.raises(ValueError):
+            CommandSanitizer.sanitize("acli vm list $(whoami)", "acli_exec")
+
+    def test_acli_exec_rejects_newline_injection(self):
+        """换行符注入：可绕过单条命令限制拼出第二条命令，必须被拒（纵深防御）。"""
+        with pytest.raises(ValueError, match="换行符"):
+            CommandSanitizer.sanitize("acli vm list\nrm -rf /", "acli_exec")
+
+    def test_acli_exec_allows_quoted_hash(self):
+        """# 故意不列入禁止模式：合法参数内被引号包裹的 # 不应误伤。
+
+        证明 CommandSanitizer 因 quote-blind 不能正确处理 #，故 # 的拦截责任
+        下沉到 Handler 入口（见 handlers.py）。本测试锁定「合法 # 不被拒绝」的
+        行为，防止后人误将 # 加入 _FORBIDDEN_PATTERNS 导致误伤合法命令。
+        """
+        result = CommandSanitizer.sanitize("acli log get -k 'foo#bar'", "acli_exec")
+        assert result == "acli log get -k 'foo#bar'"
+
     # ── 测试允许的合法命令 ───────────────────────────────────────────────────
 
     def test_allow_pipe_operator(self):

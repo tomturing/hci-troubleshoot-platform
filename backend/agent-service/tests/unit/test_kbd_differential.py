@@ -143,6 +143,47 @@ class TestResolveArgs:
         assert result == {"key": "{{unknown}}"}
 
 
+# ─── 单元测试：变量池大小写归一化（B/2.6）────────────────────────────────────
+
+
+class TestVariablePoolCaseNormalization:
+    """变量池大小写归一化：消费侧不敏感 + 生产侧小写规范（纵深防御）。"""
+
+    def test_resolve_args_case_insensitive(self):
+        # 生产侧写入小写 Key（_set_pool_var 规范）；消费侧任意大小写占位符均可命中
+        pool = {"host": "10.0.0.1", "vm_id": "v-123"}
+        template = {
+            "a": "http://{{HOST}}",
+            "b": "http://{{host}}",
+            "c": "http://{{Host}}",
+            "d": "vm is {{VM_ID}}",
+        }
+        result = KBDDiagnostic._resolve_args(template, {}, pool)
+        assert result["a"] == "http://10.0.0.1"
+        assert result["b"] == "http://10.0.0.1"
+        assert result["c"] == "http://10.0.0.1"
+        assert result["d"] == "vm is v-123"
+
+    def test_set_pool_var_lowercases_key(self):
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        # 生产侧写入入口强制小写，无论 produces 名大小写 / 首尾空格如何，池内 Key 永远统一
+        diag._set_pool_var("HOST", "node-001")
+        diag._set_pool_var("HoSt", "x")       # 同键不同大小写 -> 归一为 host（后者覆盖）
+        diag._set_pool_var(" vm_id ", "v-9")   # 首尾空格 + 大写 -> vm_id
+        assert diag._variable_pool == {"host": "x", "vm_id": "v-9"}
+
+    def test_producer_consumer_roundtrip(self):
+        # 模拟 _fill_pool_from_qkv 经 _set_pool_var 写入任意大小写 produces 名
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        diag._set_pool_var("HOST", "node-001")  # produces name 可能大写
+        # 消费侧模板用大写占位符 {{HOST}}，应命中池内小写 host
+        result = KBDDiagnostic._resolve_args({"scope": "{{HOST}}"}, {}, diag._variable_pool)
+        assert result == {"scope": "node-001"}
+        # 即便模板误用小写 {{host}}，同样命中（纵深防御）
+        result2 = KBDDiagnostic._resolve_args({"scope": "{{host}}"}, {}, diag._variable_pool)
+        assert result2 == {"scope": "node-001"}
+
+
 # ─── 单元测试：_judge_matches（规则判断）────────────────────────────────────
 
 

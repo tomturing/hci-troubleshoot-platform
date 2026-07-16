@@ -226,7 +226,7 @@ def test_evaluator():
         risk_level=1
     )
     
-    matched, evidence = handler.evaluate([res1], ["ClwDRDBClient"], "or")
+    matched, matched_kws, evidence = handler.evaluate([res1], ["ClwDRDBClient"], "or")
     print(f"案例 27123 - 进程检查:")
     print(f"  matched: {matched}")
     assert matched is True
@@ -244,7 +244,7 @@ def test_evaluator():
         risk_level=1
     )
     
-    matched2, _ = handler.evaluate([res2], ["disk", "error"], "and")
+    matched2, _, _ = handler.evaluate([res2], ["disk", "error"], "and")
     print(f"\n案例 40750 - 内核日志（期望无错误）:")
     print(f"  matched (期望为 False): {matched2}")
     assert matched2 is False  # 只匹配到 disk，没匹配到 error

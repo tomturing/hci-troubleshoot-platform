@@ -127,7 +127,8 @@ class TestHandlerRegistryAndBuilders:
         cmds = handler.build_commands(sig)
         assert len(cmds) == 1
         assert "acli log get" in cmds[0]
-        assert "-k 'HA state change'" in cmds[0]
+        # or 模式：关键字按字面量子串处理，re.escape 转义后塞入 grep -E（2.4）
+        assert "-E -k 'HA\\ state\\ change'" in cmds[0]
         assert "-f vtpdaemon.log" in cmds[0]
         assert "-p /sf/log/today/" in cmds[0]
         assert "-t 2026-07-01" in cmds[0]
@@ -420,3 +421,106 @@ async def test_qfk_engine_not_mode_clean():
         res = await qfk_exec(sig, conversation_id="conv-123")
         assert res.matched is True
         assert res.matched_keywords == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BackendSignal expected 边界 & 引擎取反（A/2.3①）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_backend_signal_expected_none_rejected():
+    """边界校验：expected 必须为 bool，pydantic 在构造期拒绝 None（2.3①）。"""
+    with pytest.raises(ValidationError):
+        BackendSignal(namespace="log", keywords=["x"], expected=None)
+
+
+@pytest.mark.asyncio
+async def test_qfk_engine_expected_false_inverts():
+    """expected=False：命中即判定为不符合（取反语义，2.3①）。"""
+    sig = BackendSignal(
+        namespace="service",
+        target={"resource": "redis"},
+        keywords=["running"],
+        expected=False,
+    )
+    mock_exec_res = ExecResult(
+        stdout="redis status is active (running)",
+        stderr="",
+        exit_code=0,
+        command="acli service asv redis status",
+        node="10.0.0.1",
+        duration_ms=20,
+        truncated=False,
+        risk_level=1,
+    )
+    mock_executor = AsyncMock()
+    mock_executor.execute.return_value = mock_exec_res
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        res = await qfk_exec(sig, conversation_id="conv-123")
+        # 命中 running，但 expected=False -> 取反 -> matched=False
+        assert res.matched is False
+        assert res.matched_keywords == ["running"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LogKeywordHandler 多关键字正则转义 & 判空去重（C/2.4）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestLogKeywordOrEscaping:
+    """多关键字日志检索：子串语义必须按字面量转义，且判空去重（2.4）。"""
+
+    def test_or_escapes_regex_special(self):
+        # 关键字含正则特殊字符应被 re.escape 转义为字面量，避免 vm.100 误匹配 vmx100
+        sig = BackendSignal(
+            namespace="log",
+            target={"resource": "vtpdaemon.log"},
+            keywords=["vm.100", "disk (full)"],
+            match_mode="or",
+        )
+        handler = HandlerRegistry.get("log")
+        cmds = handler.build_commands(sig)
+        # 去重后按字母序排序；re.escape 转义 . 与空格/括号为字面量
+        assert r"-E -k 'disk\ \(full\)|vm\.100'" in cmds[0]
+
+    def test_or_dedup_and_skips_empty(self):
+        # 去重 + 跳过空串，避免重复模式或 `-E -k ''`
+        sig = BackendSignal(
+            namespace="log",
+            target={"resource": "vtpdaemon.log"},
+            keywords=["err", "", "err", "fail"],
+            match_mode="or",
+        )
+        handler = HandlerRegistry.get("log")
+        cmds = handler.build_commands(sig)
+        assert "-k 'err|fail'" in cmds[0]
+
+    def test_or_only_empty_keywords_raises(self):
+        # or 模式若所有关键字为空，应报错而非拼出空检索
+        sig = BackendSignal(
+            namespace="log",
+            target={"resource": "vtpdaemon.log"},
+            keywords=["", ""],
+            match_mode="or",
+        )
+        handler = HandlerRegistry.get("log")
+        with pytest.raises(CommandBuildError, match="至少需要一个非空关键字"):
+            handler.build_commands(sig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 注入纵深：# 注释符下沉到 Handler 入口（D/2.5）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSubCommandHashBlocked:
+    """# 注释符：Handler 入口拦截（CommandSanitizer 因 quote-blind 不处理 #，D/2.5）。"""
+
+    def test_generic_sub_command_hash_blocked(self):
+        sig = BackendSignal(
+            namespace="vm",
+            sub_command="list # rm -rf /",
+        )
+        handler = HandlerRegistry.get("vm")
+        with pytest.raises(CommandBuildError, match="包含非法字符"):
+            handler.build_commands(sig)
