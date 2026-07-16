@@ -361,6 +361,19 @@ function buildToolPayload(): { payload?: ToolPayload; error?: ToolValidationIssu
     }
   }
 
+  // 命名规范校验（与后端 TOOL_NAME_PATTERN、DB CHECK 约束保持一致）：snake_case，禁止点号
+  const TOOL_NAME_RE = /^[a-z][a-z0-9_]{0,63}$/
+  if (!TOOL_NAME_RE.test(toolName)) {
+    return {
+      error: {
+        level: 'error',
+        location: 'tool_name',
+        message: '工具标识名称须以小写字母开头，仅含小写字母、数字、下划线，禁止点号(.)与大写字母',
+        code: 'TOOL_NAME_INVALID_FORMAT',
+      },
+    }
+  }
+
   let parametersSchema: Record<string, any>
   try {
     parametersSchema = JSON.parse(formModel.value.parameters_schema_str)

@@ -635,7 +635,7 @@ class KBDDiagnostic:
         """
         acquirer = step.tool_name
 
-        if acquirer.startswith("qkv."):
+        if acquirer.startswith("qkv_"):
             # 生产者：QKV 引擎取数并写变量池（通常已在阶段 A 跑过，此处为兜底）
             try:
                 fsignal = self._signal_to_qkv_from_step(step, env_context)
@@ -656,7 +656,7 @@ class KBDDiagnostic:
             except Exception as exc:
                 return None, str(exc), None
 
-        if acquirer.startswith("qfk."):
+        if acquirer.startswith("qfk_"):
             # 消费者：QFK 引擎取数并判定；keyword 类型直接采信引擎布尔，其余交由 _judge_matches
             try:
                 bsignal = self._signal_to_qfk(step)
@@ -709,7 +709,7 @@ class KBDDiagnostic:
         from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
 
         acquirer = signal.get("acquirer", "")
-        parts = acquirer.split(".", 1)
+        parts = acquirer.split("_", 1)
         if len(parts) != 2 or parts[0] != "qkv":
             return None
         try:
@@ -755,7 +755,7 @@ class KBDDiagnostic:
         from app.tools.qfk.signal import BackendSignal, BackendSignalTarget
 
         acquirer = step.tool_name
-        parts = acquirer.split(".", 1)
+        parts = acquirer.split("_", 1)
         if len(parts) != 2 or parts[0] != "qfk":
             return None
         namespace = parts[1]  # 直接作为 namespace 字符串（log/service/vm/...）

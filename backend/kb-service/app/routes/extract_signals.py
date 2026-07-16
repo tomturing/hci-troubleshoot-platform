@@ -54,29 +54,29 @@ _EXTRACT_PROMPT_NAME = "kbd_extract_signals_v1"
 # ─── 封闭采集器词表（acquirer 必须取自此处）─────────────────────────────────
 # QKV（生产者，3 方法）+ QFK（消费者，8 个 namespace）
 # display_name 标准命名（勿擅自修改以免造成误解）：
-#   qkv.alert - 前端信号-告警查询
-#   qkv.task  - 前端信号-任务查询
-#   qkv.dialog - 前端信号-弹框查询
-#   qfk.log      - 后端信号-日志检查和操作
-#   qfk.service  - 后端信号-服务检查和操作
-#   qfk.system   - 后端信号-系统检查和操作
-#   qfk.vm       - 后端信号-虚拟机相关操作
-#   qfk.network  - 后端信号-网络相关操作
-#   qfk.storage  - 后端信号-存储相关操作
-#   qfk.hardware - 后端信号-硬件相关操作
-#   qfk.platform - 后端信号-平台相关操作
+#   qkv_alert - 前端信号-告警查询
+#   qkv_task  - 前端信号-任务查询
+#   qkv_dialog - 前端信号-弹框查询
+#   qfk_log      - 后端信号-日志检查和操作
+#   qfk_service  - 后端信号-服务检查和操作
+#   qfk_system   - 后端信号-系统检查和操作
+#   qfk_vm       - 后端信号-虚拟机相关操作
+#   qfk_network  - 后端信号-网络相关操作
+#   qfk_storage  - 后端信号-存储相关操作
+#   qfk_hardware - 后端信号-硬件相关操作
+#   qfk_platform - 后端信号-平台相关操作
 ACQUIRER_CATALOG: dict[str, str] = {
-    "qkv.alert": "前端信号-告警查询：acli alert get，产出 host/vm/target/alert_type/end 等",
-    "qkv.task": "前端信号-任务查询：acli task get，产出 status/host/vm/errcode_tracing/request_id 等",
-    "qkv.dialog": "前端信号-弹框查询：acli dialog/log get",
-    "qfk.log": "后端信号-日志检查和操作：acli log get -k <keyword> [-f resource] [-p path] [-t time_window]，keyword 求值",
-    "qfk.service": "后端信号-服务检查和操作：acli service {asv|anet|host} <name> status，state 求值",
-    "qfk.system": "后端信号-系统检查和操作：acli system <sub_command>（如 lsof/ps/lsblk/iostat/smartctl），threshold/keyword/json_path 求值",
-    "qfk.vm": "后端信号-虚拟机相关操作：acli vm <sub_command>，state/json_path/exists 求值",
-    "qfk.network": "后端信号-网络相关操作：acli network <sub_command>，state/json_path/exists 求值",
-    "qfk.storage": "后端信号-存储相关操作：acli storage <sub_command>（如 asan disk list），state/json_path/exists 求值",
-    "qfk.hardware": "后端信号-硬件相关操作：acli hardware <sub_command>，state/json_path/exists 求值",
-    "qfk.platform": "后端信号-平台相关操作：acli platform <sub_command>，state/json_path/exists 求值",
+    "qkv_alert": "前端信号-告警查询：acli alert get，产出 host/vm/target/alert_type/end 等",
+    "qkv_task": "前端信号-任务查询：acli task get，产出 status/host/vm/errcode_tracing/request_id 等",
+    "qkv_dialog": "前端信号-弹框查询：acli dialog/log get",
+    "qfk_log": "后端信号-日志检查和操作：acli log get -k <keyword> [-f resource] [-p path] [-t time_window]，keyword 求值",
+    "qfk_service": "后端信号-服务检查和操作：acli service {asv|anet|host} <name> status，state 求值",
+    "qfk_system": "后端信号-系统检查和操作：acli system <sub_command>（如 lsof/ps/lsblk/iostat/smartctl），threshold/keyword/json_path 求值",
+    "qfk_vm": "后端信号-虚拟机相关操作：acli vm <sub_command>，state/json_path/exists 求值",
+    "qfk_network": "后端信号-网络相关操作：acli network <sub_command>，state/json_path/exists 求值",
+    "qfk_storage": "后端信号-存储相关操作：acli storage <sub_command>（如 asan disk list），state/json_path/exists 求值",
+    "qfk_hardware": "后端信号-硬件相关操作：acli hardware <sub_command>，state/json_path/exists 求值",
+    "qfk_platform": "后端信号-平台相关操作：acli platform <sub_command>，state/json_path/exists 求值",
 }
 
 # ─── 默认变量池 schema（produces/requires 引用的变量名集合）───────────────────

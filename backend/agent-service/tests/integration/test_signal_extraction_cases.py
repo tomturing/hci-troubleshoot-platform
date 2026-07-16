@@ -28,29 +28,29 @@ from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
 
 # 直接定义 ACQUIRER_CATALOG 和 VALID_MATCHER_TYPES（避免跨服务导入）
 # display_name 标准命名（与 extract_signals.py / seed 保持一致）：
-#   qkv.alert  - 前端信号-告警查询
-#   qkv.task   - 前端信号-任务查询
-#   qkv.dialog - 前端信号-弹框查询
-#   qfk.log      - 后端信号-日志检查和操作
-#   qfk.service  - 后端信号-服务检查和操作
-#   qfk.system   - 后端信号-系统检查和操作
-#   qfk.vm       - 后端信号-虚拟机相关操作
-#   qfk.network  - 后端信号-网络相关操作
-#   qfk.storage  - 后端信号-存储相关操作
-#   qfk.hardware - 后端信号-硬件相关操作
-#   qfk.platform - 后端信号-平台相关操作
+#   qkv_alert  - 前端信号-告警查询
+#   qkv_task   - 前端信号-任务查询
+#   qkv_dialog - 前端信号-弹框查询
+#   qfk_log      - 后端信号-日志检查和操作
+#   qfk_service  - 后端信号-服务检查和操作
+#   qfk_system   - 后端信号-系统检查和操作
+#   qfk_vm       - 后端信号-虚拟机相关操作
+#   qfk_network  - 后端信号-网络相关操作
+#   qfk_storage  - 后端信号-存储相关操作
+#   qfk_hardware - 后端信号-硬件相关操作
+#   qfk_platform - 后端信号-平台相关操作
 ACQUIRER_CATALOG = {
-    "qkv.alert": "前端信号-告警查询：acli alert get，产出 host/vm/target/alert_type/end 等",
-    "qkv.task": "前端信号-任务查询：acli task get，产出 status/host/vm/errcode_tracing/request_id 等",
-    "qkv.dialog": "前端信号-弹框查询：acli dialog/log get",
-    "qfk.log": "后端信号-日志检查和操作：acli log get -k <keyword>",
-    "qfk.service": "后端信号-服务检查和操作：acli service {asv|anet|host} <name> status",
-    "qfk.system": "后端信号-系统检查和操作：acli system <sub_command>",
-    "qfk.vm": "后端信号-虚拟机相关操作：acli vm <sub_command>",
-    "qfk.network": "后端信号-网络相关操作：acli network <sub_command>",
-    "qfk.storage": "后端信号-存储相关操作：acli storage <sub_command>",
-    "qfk.hardware": "后端信号-硬件相关操作：acli hardware <sub_command>",
-    "qfk.platform": "后端信号-平台相关操作：acli platform <sub_command>",
+    "qkv_alert": "前端信号-告警查询：acli alert get，产出 host/vm/target/alert_type/end 等",
+    "qkv_task": "前端信号-任务查询：acli task get，产出 status/host/vm/errcode_tracing/request_id 等",
+    "qkv_dialog": "前端信号-弹框查询：acli dialog/log get",
+    "qfk_log": "后端信号-日志检查和操作：acli log get -k <keyword>",
+    "qfk_service": "后端信号-服务检查和操作：acli service {asv|anet|host} <name> status",
+    "qfk_system": "后端信号-系统检查和操作：acli system <sub_command>",
+    "qfk_vm": "后端信号-虚拟机相关操作：acli vm <sub_command>",
+    "qfk_network": "后端信号-网络相关操作：acli network <sub_command>",
+    "qfk_storage": "后端信号-存储相关操作：acli storage <sub_command>",
+    "qfk_hardware": "后端信号-硬件相关操作：acli hardware <sub_command>",
+    "qfk_platform": "后端信号-平台相关操作：acli platform <sub_command>",
 }
 VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "json_path", "exists"}
 
@@ -79,7 +79,7 @@ def test_case_27123():
             "signal_category": "frontend",
             "keyword": "启动虚拟机",
             "description": "查看虚拟机启动任务详情，确认失败报错",
-            "acquirer": "qkv.task",
+            "acquirer": "qkv_task",
             "acquirer_args": {"keyword": "启动虚拟机", "is_failed": True, "limit": 100},
             "produces": [{"name": "VM", "path": "vm"}, {"name": "HOST", "path": "host"}, {"name": "ERRCODE_TRACING", "path": "errcode_tracing"}],
             "requires": [],
@@ -91,7 +91,7 @@ def test_case_27123():
             "signal_category": "backend",
             "keyword": "镜像占用",
             "description": "检查虚拟机镜像文件是否被其他进程占用",
-            "acquirer": "qfk.system",
+            "acquirer": "qfk_system",
             "acquirer_args": {"sub_command": "lsof", "target": {"scope": "{{HOST}}"}},
             "produces": [],
             "requires": ["VM"],
@@ -103,7 +103,7 @@ def test_case_27123():
             "signal_category": "backend",
             "keyword": "进程详情",
             "description": "查询占用镜像文件的进程详情",
-            "acquirer": "qfk.system",
+            "acquirer": "qfk_system",
             "acquirer_args": {"sub_command": "ps auxf"},
             "produces": [],
             "requires": [],
@@ -136,7 +136,7 @@ def test_case_41570():
             "signal_category": "backend",
             "keyword": "iotimeout",
             "description": "查看虚拟机qemu日志，确认是否存在iotimeout报错",
-            "acquirer": "qfk.log",
+            "acquirer": "qfk_log",
             "acquirer_args": {
                 "target": {"path": "/sf/log/3/", "resource": "sfvt_qemu_{{VM}}.log"},
             },
@@ -150,7 +150,7 @@ def test_case_41570():
             "signal_category": "backend",
             "keyword": "时延",
             "description": "查看主机iostat日志，分析存储IO读写速率和时延",
-            "acquirer": "qfk.log",
+            "acquirer": "qfk_log",
             "acquirer_args": {
                 "target": {"path": "/sf/log/blackbox/today/", "resource": "LOG_iostat.txt"},
             },
@@ -186,7 +186,7 @@ def test_case_40652():
             "signal_category": "backend",
             "keyword": "SMART 5",
             "description": "检查磁盘SMART信息及坏道计数",
-            "acquirer": "qfk.system",
+            "acquirer": "qfk_system",
             "acquirer_args": {"sub_command": "smartctl -a /dev/sdX"},
             "produces": [],
             "requires": [],
@@ -198,7 +198,7 @@ def test_case_40652():
             "signal_category": "backend",
             "keyword": "硬盘SN",
             "description": "定位故障硬盘对应的物理设备文件",
-            "acquirer": "qfk.log",
+            "acquirer": "qfk_log",
             "acquirer_args": {
                 "target": {"path": "/sf/cfg/vs/disk/", "resource": "{{DISK_SN}}.json"},
             },
@@ -233,7 +233,7 @@ def test_case_40680():
             "signal_category": "backend",
             "keyword": "磁盘数量",
             "description": "检查操作系统已识别磁盘数量",
-            "acquirer": "qfk.system",
+            "acquirer": "qfk_system",
             "acquirer_args": {"sub_command": "lsblk"},
             "produces": [],
             "requires": [],
@@ -245,7 +245,7 @@ def test_case_40680():
             "signal_category": "backend",
             "keyword": "RAID卡型号",
             "description": "确认RAID卡型号及驱动版本",
-            "acquirer": "qfk.system",
+            "acquirer": "qfk_system",
             "acquirer_args": {"sub_command": "lspci"},
             "produces": [],
             "requires": [],
@@ -257,7 +257,7 @@ def test_case_40680():
             "signal_category": "backend",
             "keyword": "驱动版本",
             "description": "检查mpt3sas驱动版本",
-            "acquirer": "qfk.system",
+            "acquirer": "qfk_system",
             "acquirer_args": {"sub_command": "modinfo mpt3sas"},
             "produces": [],
             "requires": [],
@@ -291,7 +291,7 @@ def test_case_40750():
             "signal_category": "frontend",
             "keyword": "磁盘被拔出",
             "description": "查看告警日志，确认磁盘被拔出告警",
-            "acquirer": "qkv.alert",
+            "acquirer": "qkv_alert",
             "acquirer_args": {"keyword": "磁盘被拔出", "limit": 100},
             "produces": [{"name": "HOST", "path": "host"}, {"name": "DISK_SN", "path": "target"}],
             "requires": [],
@@ -303,7 +303,7 @@ def test_case_40750():
             "signal_category": "backend",
             "keyword": "磁盘离线",
             "description": "检查内核日志中是否有磁盘离线记录",
-            "acquirer": "qfk.log",
+            "acquirer": "qfk_log",
             "acquirer_args": {
                 "target": {"path": "/sf/log/today/", "resource": "kernel.log"},
             },
@@ -317,7 +317,7 @@ def test_case_40750():
             "signal_category": "frontend",
             "keyword": "数据同步",
             "description": "检查虚拟存储任务列表中的数据同步任务",
-            "acquirer": "qkv.task",
+            "acquirer": "qkv_task",
             "acquirer_args": {"keyword": "数据同步", "is_failed": False, "limit": 100},
             "produces": [{"name": "TASK_TYPE", "path": "type"}],
             "requires": [],
@@ -354,8 +354,9 @@ def _validate_signals(case_id: str, signals: list) -> dict:
             # 2. 根据类别构造信号对象
             if category == "frontend":
                 query_type = sig["acquirer_args"].get("query", "alert")
-                if acquirer.startswith("qkv."):
-                    query_type = acquirer.split(".")[1]
+                # acquirer 已统一为 snake_case（如 qkv_alert）：按 _ 拆分取 query 类型
+                if acquirer.startswith("qkv_"):
+                    query_type = acquirer.split("_", 1)[1]
                 try:
                     query = FrontendQueryType(query_type)
                 except ValueError:
@@ -371,8 +372,8 @@ def _validate_signals(case_id: str, signals: list) -> dict:
                 print(f"  ✅ [{sig_id}] FrontendSignal(query={query.value}, keyword='{fs.keyword}', produces={fs.produces})")
 
             elif category == "backend":
-                # 从 acquirer 解析 namespace
-                namespace = acquirer.split(".")[1] if "." in acquirer else acquirer
+                # 从 acquirer 解析 namespace（snake_case：qfk_log -> log）
+                namespace = acquirer.split("_", 1)[1] if "_" in acquirer else acquirer
 
                 # 构造 BackendSignal
                 args = sig.get("acquirer_args", {})

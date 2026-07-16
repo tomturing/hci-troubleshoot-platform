@@ -130,3 +130,40 @@ def test_save_guard_rejects_invalid_tool_payload():
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["status"] == "error"
+
+
+def test_validate_tool_name_with_dot_rejected():
+    result = validate_tool_payload(
+        {
+            "tool_name": "qfk.hardware",
+            "parameters_schema": {"type": "object", "properties": {}, "required": []},
+        }
+    )
+
+    assert result["status"] == "error"
+    codes = {issue["code"] for issue in result["validation_issues"]}
+    assert "TOOL_NAME_INVALID_FORMAT" in codes
+
+
+def test_validate_tool_name_uppercase_rejected():
+    result = validate_tool_payload(
+        {
+            "tool_name": "AcliExec",
+            "parameters_schema": {"type": "object", "properties": {}, "required": []},
+        }
+    )
+
+    assert result["status"] == "error"
+    codes = {issue["code"] for issue in result["validation_issues"]}
+    assert "TOOL_NAME_INVALID_FORMAT" in codes
+
+
+def test_validate_tool_name_valid_snake_case_ok():
+    result = validate_tool_payload(
+        {
+            "tool_name": "qfk_hardware",
+            "parameters_schema": {"type": "object", "properties": {}, "required": []},
+        }
+    )
+
+    assert result["status"] == "ok"
