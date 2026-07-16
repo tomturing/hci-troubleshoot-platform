@@ -9,6 +9,10 @@ metadata:
 spec:
   replicas: 1
   revisionHistoryLimit: 3  # 只保留最近 3 个 ReplicaSet，避免空 RS 僵尸积累
+  # 单副本 + ReadWriteOnce PVC（tempo-data）：必须用 Recreate，否则滚动更新
+  # 时新旧两个 Tempo 实例会争用同一数据目录导致启动失败
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "hci.selectorLabels" (dict "name" "tempo" "Release" .Release) | nindent 6 }}
