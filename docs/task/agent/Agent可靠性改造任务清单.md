@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-16 | v3.14 | **工具命名规范统一：acquirer 点号→下划线（PR #566）**：`kbd_differential.py` 路由由 `startswith("qkv.")`/`split(".")` 改为 `startswith("qkv_")`/`split("_", 1)`；QKV 3 + QFK 8 共 11 个 acquirer 由点号统一为下划线（如 `qkv.alert`→`qkv_alert`、`qfk.hardware`→`qfk_hardware`），与 `ACQUIRER_CATALOG`、种子、系统提示词模板及单测/集成测试保持一致 | — |
 | 2026-07-15 | v3.13 | **sop_document.signals_json 声明式 schema 补齐（PR #556）**：修复 PR #545 漏改 `database/desired_schema.sql` 的 `sop_document` 表定义（仅改了 `kbd_entry`）。`db-migrate.sh` 只应用 `desired_schema.sql`（声明式 SSOT）、不应用 `atlas-migrations/` 版本化迁移，导致数据库 `sop_document` 表缺 `signals_json` 列，ORM `select(SopDocument)` 查询 500（编辑保存/审核通过/发布/导入/抽取信号），而 GET 详情用原生 SQL 显式列名不受影响。本次补齐列+COMMENT+GIN 索引；新增避坑指南 D-013 | - |
 | 2026-07-14 | v3.12 | **关键信号 Prompt 种子补齐 + Pipeline Stage 修复（PR #549）**：① `database/seeds/02_system_prompts.sql` 新增 `kbd_extract_signals_v1` 种子（与 atlas 迁移内容一致），修复 Prompt 管理页看不到「关键信号分级抽取」的问题；② data-pipeline `EXTRACT_SIGNALS` Stage 补齐异步 job+轮询（复用 `signal_job_manager`）、DAG 依赖 `CLASSIFY`、CLI `extract/5` 暴露，并修复 resume 路径缺失的 `get_completed_ids_for_stage` 导入 | — |
 | 2026-07-14 | v3.11 | **关键信号字段级抽取后续清理（PR #547）**：① agent-service `signal/variable_pool` 注册键统一 `.upper()`、`render_template` 仅匹配大写 `{{VAR}}` 占位符（ADR-2 强制校验，小写/单括号视为非法被丢弃）；② `signal/template.py` 占位符全改为 `{{HOST}}`；③ 数据库 `desired_schema.sql` 彻底移除 `steps_json` 列与 GIN 索引、仅保留 `signals_json`（ADR-1）；④ `ToolManageView.vue` 支持从信号面板跳转预填检索 | — |
