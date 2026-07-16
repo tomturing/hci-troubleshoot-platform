@@ -30,16 +30,26 @@ const emit = defineEmits<{
 const localForm = ref({
   host: props.sshForm.host,
   port: props.sshForm.port,
-  username: props.sshForm.username,
+  username: props.sshForm.username || 'admin',
   password: props.sshForm.password,
   privateKey: props.sshForm.privateKey,
   passphrase: props.sshForm.passphrase,
 })
 const localAuthType = ref<TerminalAuthType>(props.authType)
 
+const isNotAdmin = ref(localForm.value.username !== 'admin')
+
+function updateIsNotAdminState(username: string) {
+  isNotAdmin.value = username !== 'admin'
+}
+
 // 监听 props 变化，同步到本地副本
 watch(() => props.sshForm, (val) => {
   localForm.value = { ...val }
+  if (!localForm.value.username) {
+    localForm.value.username = 'admin'
+  }
+  updateIsNotAdminState(localForm.value.username)
 }, { deep: true })
 watch(() => props.authType, (val) => {
   localAuthType.value = val
@@ -62,11 +72,23 @@ function loadSavedSshConfig() {
       // port 默认值 '22' 是 truthy，不能用 !port 判断是否需要填充
       if (config.host) localForm.value.host = config.host
       if (config.port) localForm.value.port = String(config.port)
-      if (config.username) localForm.value.username = config.username
+      if (config.username) {
+        localForm.value.username = config.username
+      } else {
+        localForm.value.username = 'admin'
+      }
+    } else {
+      localForm.value.username = 'admin'
     }
   } catch {
     // ignore
   }
+  updateIsNotAdminState(localForm.value.username)
+}
+
+function handleNotAdmin() {
+  isNotAdmin.value = true
+  localForm.value.username = ''
 }
 
 // 组件挂载时自动填充
@@ -89,7 +111,17 @@ loadSavedSshConfig()
       <!-- 用户名 -->
       <div class="form-row">
         <el-form-item label="用户名" class="form-half">
-          <el-input v-model="localForm.username" name="username" autocomplete="username" placeholder="root" />
+          <div style="display: flex; width: 100%; gap: 8px;">
+            <el-input
+              v-model="localForm.username"
+              name="username"
+              autocomplete="username"
+              placeholder="admin"
+              :disabled="!isNotAdmin"
+              style="flex: 1;"
+            />
+            <el-button v-if="!isNotAdmin" type="primary" plain @click="handleNotAdmin">不是admin</el-button>
+          </div>
         </el-form-item>
       </div>
 
