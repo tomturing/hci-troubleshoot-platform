@@ -30,7 +30,7 @@ const emit = defineEmits<{
 const localForm = ref({
   host: props.sshForm.host,
   port: props.sshForm.port,
-  username: props.sshForm.username,
+  username: props.sshForm.username || 'admin',
   password: props.sshForm.password,
   privateKey: props.sshForm.privateKey,
   passphrase: props.sshForm.passphrase,
@@ -40,6 +40,9 @@ const localAuthType = ref<TerminalAuthType>(props.authType)
 // 监听 props 变化，同步到本地副本
 watch(() => props.sshForm, (val) => {
   localForm.value = { ...val }
+  if (!localForm.value.username) {
+    localForm.value.username = 'admin'
+  }
 }, { deep: true })
 watch(() => props.authType, (val) => {
   localAuthType.value = val
@@ -62,7 +65,17 @@ function loadSavedSshConfig() {
       // port 默认值 '22' 是 truthy，不能用 !port 判断是否需要填充
       if (config.host) localForm.value.host = config.host
       if (config.port) localForm.value.port = String(config.port)
-      if (config.username) localForm.value.username = config.username
+      if (config.username) {
+        if (config.username === 'root') {
+          localForm.value.username = 'admin'
+        } else {
+          localForm.value.username = config.username
+        }
+      } else {
+        localForm.value.username = 'admin'
+      }
+    } else {
+      localForm.value.username = 'admin'
     }
   } catch {
     // ignore
@@ -89,7 +102,7 @@ loadSavedSshConfig()
       <!-- 用户名 -->
       <div class="form-row">
         <el-form-item label="用户名" class="form-half">
-          <el-input v-model="localForm.username" name="username" autocomplete="username" placeholder="root" />
+          <el-input v-model="localForm.username" name="username" autocomplete="username" placeholder="admin" />
         </el-form-item>
       </div>
 
