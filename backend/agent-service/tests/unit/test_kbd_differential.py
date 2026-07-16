@@ -355,12 +355,12 @@ class TestToolDefinitionFallback:
         from app.adapters.agents.htp import tool_registry
 
         self._mod = tool_registry
-        self._added = ["qkv.alert", "qfk.log"]
+        self._added = ["qkv_alert", "qfk_log"]
         # 模拟 admin-ui 在 tool_definition 中配置的默认值
-        self._mod.TOOL_REGISTRY["qkv.alert"] = SimpleNamespace(parameters={
+        self._mod.TOOL_REGISTRY["qkv_alert"] = SimpleNamespace(parameters={
             "properties": {"produces": {"default": [{"name": "HOST", "path": "host"}]}}
         })
-        self._mod.TOOL_REGISTRY["qfk.log"] = SimpleNamespace(parameters={
+        self._mod.TOOL_REGISTRY["qfk_log"] = SimpleNamespace(parameters={
             "properties": {
                 "matcher": {
                     "default": {"type": "keyword", "pattern": ["X"], "mode": "or", "expected": True}
@@ -376,7 +376,7 @@ class TestToolDefinitionFallback:
         from app.tools.qkv.signal import FrontendSignal
 
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
-        sig = {"acquirer": "qkv.alert", "acquirer_args": {"keyword": "disk"}}
+        sig = {"acquirer": "qkv_alert", "acquirer_args": {"keyword": "disk"}}
         fsig = diag._signal_to_qkv(sig, {})
         assert isinstance(fsig, FrontendSignal)
         # signals_json 未配置 produces -> 应采用 tool_definition 默认值
@@ -387,7 +387,7 @@ class TestToolDefinitionFallback:
 
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
         sig = {
-            "acquirer": "qkv.alert",
+            "acquirer": "qkv_alert",
             "acquirer_args": {"keyword": "disk"},
             "produces": [{"name": "VM", "path": "vm"}],
         }
@@ -402,7 +402,7 @@ class TestToolDefinitionFallback:
         from app.tools.qfk.signal import BackendSignal
 
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
-        step = SimpleNamespace(tool_name="qfk.log", tool_args_template={}, matcher=None)
+        step = SimpleNamespace(tool_name="qfk_log", tool_args_template={}, matcher=None)
         bsig = diag._signal_to_qfk(step)
         assert isinstance(bsig, BackendSignal)
         # signals_json 未配置 matcher -> 应采用 tool_definition 默认值

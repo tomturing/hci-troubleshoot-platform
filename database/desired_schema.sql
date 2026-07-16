@@ -850,12 +850,17 @@ CREATE TABLE IF NOT EXISTS tool_definition (
     updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
     -- D-006: 工具风险等级约束：1=只读安全 / 2=需用户确认 / 3=高危
     CONSTRAINT chk_tool_definition_risk_level CHECK (risk_level >= 1 AND risk_level <= 3),
+    -- D-007: 工具命名规范约束：snake_case，首字符小写字母，仅含小写字母/数字/下划线，
+    --        长度 1-64，禁止点号(.)与大写字母。依据：tool_name 首要身份是 LLM function-calling
+    --        的 name 字段，须满足 OpenAI/Anthropic/Gemini 字符集约束（与后端 TOOL_NAME_PATTERN、
+    --        前端表单校验保持一致）。
+    CONSTRAINT chk_tool_definition_tool_name_format CHECK (tool_name ~ '^[a-z][a-z0-9_]{0,63}$'),
     CONSTRAINT tool_definition_pkey PRIMARY KEY (id)
 );
 
 COMMENT ON TABLE tool_definition IS '工具定义表 — AI 工具知识库，存储 LLM 可调用工具的完整描述（acli 命令 / SCP API）。Prompt 构建时动态注入，让 LLM 知道何时调用哪个工具以及如何传参';
 COMMENT ON COLUMN tool_definition.id IS '工具定义主键，自增';
-COMMENT ON COLUMN tool_definition.tool_name IS '工具唯一标识（如 acli_exec / bash_exec / get_active_alerts），tool_result.tool_name 引用此字段；命名规则：{执行后端}_{动作}';
+COMMENT ON COLUMN tool_definition.tool_name IS '工具唯一标识（如 acli_exec / bash_exec / get_active_alerts / qkv_alert / qfk_hardware），tool_result.tool_name 引用此字段；命名规范：snake_case，正则 ^[a-z][a-z0-9_]{0,63}$（禁止点号与大写，首字符小写字母）';
 COMMENT ON COLUMN tool_definition.display_name IS '工具展示名（如''执行 acli 命令''），用于前端审计日志展示，比 tool_name 更易读';
 COMMENT ON COLUMN tool_definition.category IS '工具类别（执行路由依据）：scp（SCP 平台 REST API）/ acli（HCI 节点执行，含 acli_exec/bash_exec/插件诊断）/ sop（SOP 导航工具）';
 COMMENT ON COLUMN tool_definition.description IS '工具功能描述（直接注入 Prompt，LLM 读取后知道何时应该调用此工具）。示例：''在 HCI 节点执行 acli 命令（深圳桑福 HCI 平台专有 CLI）''';

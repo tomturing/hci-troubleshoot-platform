@@ -6,17 +6,17 @@
 -- 幂等键  : tool_name（ON CONFLICT DO UPDATE）
 --
 -- 统一定义（display_name 标准命名，勿擅自修改以免造成误解）：
---   qkv.alert    - 前端信号-告警查询
---   qkv.task     - 前端信号-任务查询
---   qkv.dialog   - 前端信号-弹框查询
---   qfk.log      - 后端信号-日志检查和操作
---   qfk.service  - 后端信号-服务检查和操作
---   qfk.system   - 后端信号-系统检查和操作
---   qfk.vm       - 后端信号-虚拟机相关操作
---   qfk.network  - 后端信号-网络相关操作
---   qfk.storage  - 后端信号-存储相关操作
---   qfk.hardware - 后端信号-硬件相关操作
---   qfk.platform - 后端信号-平台相关操作
+--   qkv_alert    - 前端信号-告警查询
+--   qkv_task     - 前端信号-任务查询
+--   qkv_dialog   - 前端信号-弹框查询
+--   qfk_log      - 后端信号-日志检查和操作
+--   qfk_service  - 后端信号-服务检查和操作
+--   qfk_system   - 后端信号-系统检查和操作
+--   qfk_vm       - 后端信号-虚拟机相关操作
+--   qfk_network  - 后端信号-网络相关操作
+--   qfk_storage  - 后端信号-存储相关操作
+--   qfk_hardware - 后端信号-硬件相关操作
+--   qfk_platform - 后端信号-平台相关操作
 -- ============================================================
 
 -- ─── QKV 前端信号（生产者）─────────────────────────────────────
@@ -26,7 +26,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qkv.alert',
+    'qkv_alert',
     '前端信号-告警查询',
     'qkv',
     '前端信号（生产者）：查询 HCI 平台当前活跃告警列表，产出变量供后续信号消费。支持 produces 自定义输出字段，通过 acli alert get 执行。',
@@ -90,7 +90,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qkv.task',
+    'qkv_task',
     '前端信号-任务查询',
     'qkv',
     '前端信号（生产者）：查询 HCI 平台操作任务，主要过滤失败任务。产出变量供后续信号消费。支持 is_failed 过滤失败任务，produces 自定义输出字段。',
@@ -159,7 +159,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qkv.dialog',
+    'qkv_dialog',
     '前端信号-弹框查询',
     'qkv',
     '前端信号（生产者）：查询弹框或对话日志，按关键字过滤。dialog 类型按行返回，produces 通常不使用（直接返回文本行）。',
@@ -219,7 +219,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qfk.log',
+    'qfk_log',
     '后端信号-日志检查和操作',
     'qfk',
     '后端信号（消费者）：在指定日志文件中搜索关键字，进行布尔判定。支持 target.resource（日志文件名）、target.path（日志路径）、target.time_window（时间范围）。matcher 支持 keyword 类型。',
@@ -307,7 +307,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qfk.service',
+    'qfk_service',
     '后端信号-服务检查和操作',
     'qfk',
     '后端信号（消费者）：检查服务状态是否正常。需要指定 container（容器类型：asv/anet/host）和服务名称。matcher 支持 state 类型判定 running/stopped。',
@@ -369,7 +369,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qfk.system',
+    'qfk_system',
     '后端信号-系统检查和操作',
     'qfk',
     '后端信号（消费者）：执行系统级子命令，封装了 37 个主机级命令（lsof/ps/lsblk/iostat/smartctl/modinfo 等）。通过 sub_command 指定具体命令。matcher 支持 threshold（数值阈值）和 keyword 类型。',
@@ -454,7 +454,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qfk.vm',
+    'qfk_vm',
     '后端信号-虚拟机相关操作',
     'qfk',
     '后端信号（消费者）：执行虚拟机相关子命令。通过 sub_command 指定具体操作，如 list、config、status 等。matcher 支持 keyword/state/json_path/exists。',
@@ -516,7 +516,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qfk.network',
+    'qfk_network',
     '后端信号-网络相关操作',
     'qfk',
     '后端信号（消费者）：执行网络相关子命令。通过 sub_command 指定具体操作，如 ping、connectivity 等。',
@@ -562,7 +562,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qfk.storage',
+    'qfk_storage',
     '后端信号-存储相关操作',
     'qfk',
     '后端信号（消费者）：执行存储相关子命令，如 asan disk list、disk status 等。',
@@ -608,7 +608,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qfk.hardware',
+    'qfk_hardware',
     '后端信号-硬件相关操作',
     'qfk',
     '后端信号（消费者）：执行硬件相关子命令，如 sensor list、disk smart 等。',
@@ -651,7 +651,7 @@ INSERT INTO tool_definition (
     tool_name, display_name, category, description,
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
-    'qfk.platform',
+    'qfk_platform',
     '后端信号-平台相关操作',
     'qfk',
     '后端信号（消费者）：执行平台相关子命令，如 cluster status、version 等。',

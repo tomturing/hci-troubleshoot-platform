@@ -2,6 +2,7 @@
 工具定义管理路由 — 提供对 tool_definition 表的增删改查接口
 """
 
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,6 +17,11 @@ from app.models.tool_definition import ToolDefinition
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
+
+# 工具命名规范（与 DB CHECK 约束 chk_tool_definition_tool_name_format、前端表单校验保持一致）：
+# 首字符小写字母，仅允许小写字母/数字/下划线，长度 1–64，禁止点号(.)与大写字母。
+# 依据：tool_name 首要身份是 LLM function-calling 的 name 字段，须满足 OpenAI/Anthropic/Gemini 字符集约束。
+TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 # 由 main.py 注入数据库管理器
 database_manager: DatabaseManager | None = None
@@ -37,6 +43,19 @@ def validate_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
     tool_name = payload.get("tool_name")
     schema = payload.get("parameters_schema") or {}
     usage_template = payload.get("usage_template") or ""
+
+    # 命名规范校验（治本：固化 snake_case 规则，禁止点号/大写，防止约定漂移）
+    if tool_name is not None and (
+        not isinstance(tool_name, str) or not TOOL_NAME_PATTERN.fullmatch(tool_name)
+    ):
+        issues.append(
+            _make_issue(
+                "error",
+                "tool_name",
+                "tool_name 必须以小写字母开头，仅含小写字母、数字、下划线，长度 1-64，且禁止点号(.)与大写字母",
+                "TOOL_NAME_INVALID_FORMAT",
+            )
+        )
 
     if not isinstance(schema, dict):
         issues.append(

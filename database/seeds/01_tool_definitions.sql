@@ -2,7 +2,7 @@
 -- Seed 数据：tool_definition 表（Agent 工具体系 v2.0）
 -- Version : 20260528
 -- Issue   : T-TOOL-10
--- 说明    : 插入 13 条工具定义记录（SCP 4个 + acli 6个 + SOP 3个）
+-- 说明    : 插入工具定义记录；2026-07-16 删除 6 个低频工具（acli_plugin_asys / acli_plugin_netdoctor / acli_plugin_vm_start / acli_plugin_vm_suspend / get_cluster_detail / get_vm_list），详见 docs/solution/agent/02-架构设计/工具命名规范统一与工具集精简决策.md
 -- 幂等键  : tool_name（ON CONFLICT DO UPDATE）
 -- ============================================================
 
@@ -81,68 +81,6 @@ INSERT INTO tool_definition (
                 "description": "指定展示记录的数目，默认值 50",
                 "default": 50
             },
-            "node_ip": {
-                "type": "string",
-                "description": "目标节点 IP（可选）"
-            }
-        },
-        "required": []
-    }',
-    1,
-    true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
-
-INSERT INTO tool_definition (
-    tool_name, display_name, category, description,
-    usage_template, parameters_schema, risk_level, is_active
-) VALUES (
-    'get_vm_list',
-    '查询虚拟机列表',
-    'acli',
-    '查询 HCI 平台上的虚拟机列表。通过 acli --formatter json vm list 执行，不需要任何参数。',
-    'acli --formatter json vm list',
-    '{
-        "type": "object",
-        "properties": {
-            "node_ip": {
-                "type": "string",
-                "description": "目标节点 IP（可选）"
-            }
-        },
-        "required": []
-    }',
-    1,
-    true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
-
-INSERT INTO tool_definition (
-    tool_name, display_name, category, description,
-    usage_template, parameters_schema, risk_level, is_active
-) VALUES (
-    'get_cluster_detail',
-    '查询集群详情',
-    'acli',
-    '查询集群的详细信息，包括系统版本、软硬件状态。通过 acli --formatter json platform info get 执行，不需要参数。',
-    'acli --formatter json platform info get',
-    '{
-        "type": "object",
-        "properties": {
             "node_ip": {
                 "type": "string",
                 "description": "目标节点 IP（可选）"
@@ -287,131 +225,15 @@ INSERT INTO tool_definition (
     is_active = EXCLUDED.is_active,
     updated_at = NOW();
 
--- acli 插件诊断工具（4个独立封装）
+-- acli 插件诊断工具（原 4 个低频工具 acli_plugin_vm_start / acli_plugin_vm_suspend / acli_plugin_netdoctor / acli_plugin_asys 已于 2026-07-16 删除，详见 docs/solution/agent/02-架构设计/工具命名规范统一与工具集精简决策.md）
 
-INSERT INTO tool_definition (
-    tool_name, display_name, category, description,
-    usage_template, parameters_schema, risk_level, is_active
-) VALUES (
-    'acli_plugin_vm_start',
-    'VM 开机失败诊断',
-    'acli',
-    'VM 开机失败全链路检测（20+ 检查项）。诊断插件，一键执行，产出结构化诊断报告。',
-    'acli plugins vm_start vm_start',
-    '{
-        "type": "object",
-        "properties": {
-            "node_ip": {
-                "type": "string",
-                "description": "目标节点 IP（可选）"
-            }
-        },
-        "required": []
-    }',
-    1,
-    true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
 
-INSERT INTO tool_definition (
-    tool_name, display_name, category, description,
-    usage_template, parameters_schema, risk_level, is_active
-) VALUES (
-    'acli_plugin_vm_suspend',
-    'VM 异常挂起诊断',
-    'acli',
-    'VM 异常挂起根因诊断。诊断插件，一键执行，产出结构化诊断报告。',
-    'acli plugins vm_suspend vm_suspend',
-    '{
-        "type": "object",
-        "properties": {
-            "node_ip": {
-                "type": "string",
-                "description": "目标节点 IP（可选）"
-            }
-        },
-        "required": []
-    }',
-    1,
-    true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
 
-INSERT INTO tool_definition (
-    tool_name, display_name, category, description,
-    usage_template, parameters_schema, risk_level, is_active
-) VALUES (
-    'acli_plugin_netdoctor',
-    '网络全面诊断',
-    'acli',
-    '节点网络全面检测（需确认，有网络负载）。诊断插件，一键执行，产出结构化诊断报告。',
-    'acli plugins netdoctor netdoctor',
-    '{
-        "type": "object",
-        "properties": {
-            "node_ip": {
-                "type": "string",
-                "description": "目标节点 IP（必填）"
-            }
-        },
-        "required": ["node_ip"]
-    }',
-    2,
-    true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
 
-INSERT INTO tool_definition (
-    tool_name, display_name, category, description,
-    usage_template, parameters_schema, risk_level, is_active
-) VALUES (
-    'acli_plugin_asys',
-    '主机系统健康检查',
-    'acli',
-    '主机系统全面健康检查。诊断插件，一键执行，产出结构化诊断报告。',
-    'acli plugins asys asys',
-    '{
-        "type": "object",
-        "properties": {
-            "node_ip": {
-                "type": "string",
-                "description": "目标节点 IP（可选）"
-            }
-        },
-        "required": []
-    }',
-    1,
-    true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+
+
+
+
 
 -- ─── SOP 导航工具（3个，本地执行，无 SSH）──────────────────────────────
 
