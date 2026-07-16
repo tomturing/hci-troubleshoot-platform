@@ -28,6 +28,10 @@ class FrontendSignal(BaseModel):
     keyword: str = Field(..., description="K: 匹配关键字")
     is_failed: bool = Field(default=False, description="是否只查失败任务 (仅在 query 为 task 时生效)")
     limit: int = Field(default=100, description="最大返回数据量限制")
+    produces: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="产出变量规格：[{name: 'HOST', path: 'host'}, ...]，为空时 parser 走硬编码兜底",
+    )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FrontendSignal:

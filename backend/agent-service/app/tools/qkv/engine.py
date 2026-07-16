@@ -151,7 +151,7 @@ async def qkv_exec(
 
     # 3. 数据结构清洗与提取
     try:
-        values = parse_frontend_value(signal.query, exec_res.stdout)
+        values = parse_frontend_value(signal.query, exec_res.stdout, signal.produces)
     except Exception as parse_err:
         logger.error(
             event="qkv_output_parse_exception",

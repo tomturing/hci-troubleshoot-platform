@@ -186,7 +186,7 @@ async def validate_existing_tool(tool_id: int, db: AsyncSession = Depends(get_db
 
 @router.get("", summary="获取工具定义列表")
 async def list_tools(
-    category: str | None = Query(None, description="按工具执行分类过滤 (scp/acli/sop)"),
+    category: str | None = Query(None, description="按工具执行分类过滤 (scp/acli/sop/qkv/qfk)"),
     is_active: bool | None = Query(None, description="按是否启用状态过滤"),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:

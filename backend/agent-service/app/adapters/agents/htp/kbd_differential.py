@@ -684,7 +684,11 @@ class KBDDiagnostic:
                 )
 
     def _fill_pool_from_qkv(self, signal: dict[str, Any], res: Any) -> None:
-        """将 QKV 产出(produces)写入变量池：produces=[{name, path}] → pool[name]=value。"""
+        """将 QKV 产出(produces)写入变量池：produces=[{name, path}] -> pool[name]=value。
+
+        注意：parse_frontend_value._extract_by_produces 返回的 dict key 是 name.lower()，
+        所以这里用 name.lower() 查找，而非 path（path 是原始 JSON 字段路径，用于提取阶段）。
+        """
         produces = signal.get("produces") or []
         if not res.values:
             return
@@ -693,8 +697,8 @@ class KBDDiagnostic:
             name = spec.get("name") if isinstance(spec, dict) else None
             if not name:
                 continue
-            path = spec.get("path", name) if isinstance(spec, dict) else name
-            val = first.get(path) if isinstance(first, dict) else None
+            # 提取后的 dict key 是 name.lower()（见 parser._extract_by_produces line 90）
+            val = first.get(name.lower()) if isinstance(first, dict) else None
             if val is not None:
                 self._variable_pool[name] = val
 
@@ -779,12 +783,14 @@ class KBDDiagnostic:
         except ValueError:
             return None
         args = self._resolve_args(signal.get("acquirer_args", {}) or {}, env_context, {})
+        produces = signal.get("produces") or []
         try:
             return FrontendSignal(
                 query=query,
                 keyword=str(args.get("keyword", "")),
                 is_failed=bool(args.get("is_failed", False)),
                 limit=int(args.get("limit", 100)),
+                produces=produces,
             )
         except Exception:
             return None
@@ -807,21 +813,14 @@ class KBDDiagnostic:
                 self._variable_pool[name.upper()] = val
 
     def _signal_to_qfk(self, step: KBDStep) -> Any:
-        """从消费者 KBDStep 构造 qfk/signal.BackendSignal（仅 keyword 类型由引擎定值为布尔）。"""
-        from app.tools.qfk.signal import (
-            BackendSignal,
-            BackendSignalTarget,
-            BackendSignalType,
-        )
+        """从消费者 KBDStep 构造 qfk/signal.BackendSignal（namespace 字符串路由，keyword 类型由引擎定值为布尔）。"""
+        from app.tools.qfk.signal import BackendSignal, BackendSignalTarget
 
         acquirer = step.tool_name
         parts = acquirer.split(".", 1)
         if len(parts) != 2 or parts[0] != "qfk":
             return None
-        try:
-            signal_type = BackendSignalType(parts[1])
-        except ValueError:
-            return None
+        namespace = parts[1]  # 直接作为 namespace 字符串（log/service/vm/...）
         args = step.tool_args_template or {}
         target_data = args.get("target") or {}
         target = BackendSignalTarget(
@@ -834,12 +833,15 @@ class KBDDiagnostic:
             keywords = [p] if isinstance(p, str) else list(p or [])
         try:
             return BackendSignal(
-                signal_type=signal_type,
+                namespace=namespace,
+                signal_type=namespace,
                 target=target,
                 keywords=keywords,
                 match_mode=matcher.get("mode", "any"),
                 expected=bool(matcher.get("expected", True)),
                 description=None,
+                container=args.get("container"),
+                sub_command=args.get("sub_command"),
             )
         except Exception:
             return None

@@ -64,7 +64,7 @@ class KBDStep:
     其 tool_name 相同，便于 CDD 算法计算步骤覆盖频率。
     """
 
-    tool_name: str  # 工具名称（对应 acquirer，如 qfk.log_keyword）
+    tool_name: str  # 工具名称（对应 acquirer，如 qfk.log）
     tool_args_template: dict  # 参数模板（含 {{占位符}}，执行时由 env_context ∪ 变量池填充）
     expected_pattern: str  # 期望输出特征（__REGEX__:/ __CONTAINS__:/ __MATCHER__:/ 自然语言，兼容旧 KBD）
     matcher: dict | None = None  # 消费者信号的判定契约（Matcher dict），供 _judge_matches 类型化求值

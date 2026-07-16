@@ -5,25 +5,9 @@ QFK 后端信号结构定义
 from __future__ import annotations
 
 import json
-from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
-
-
-class BackendSignalType(StrEnum):
-    """
-    后端信号类型：定义了 QFK 执行时调用的底层指令与匹配策略
-    """
-
-    LOG_KEYWORD = "log_keyword"          # 日志关键字匹配
-    SERVICE_STATUS = "service_status"    # 服务运行状态匹配
-    VM_STATE = "vm_state"                # 虚拟机状态匹配
-    NETWORK_CHECK = "network_check"      # 网络检查
-    STORAGE_STATE = "storage_state"      # 存储状态匹配
-    HARDWARE_STATE = "hardware_state"    # 硬件状态匹配
-    PLATFORM_STATE = "platform_state"    # 平台状态匹配
-    SYSTEM_METRIC = "system_metric"      # 系统指标匹配
 
 
 class BackendSignalTarget(BaseModel):
@@ -40,20 +24,32 @@ class BackendSignalTarget(BaseModel):
 class BackendSignal(BaseModel):
     """
     HCI 排障标准化后端信号数据模型
+
+    acquirer 采用 namespace 命名（qfk.log / qfk.service / qfk.system 等），
+    namespace 字段为 acli 子命令空间名（log / service / vm / network / storage /
+    hardware / platform / system），HandlerRegistry 据此路由到对应 Handler。
     """
 
-    signal_type: BackendSignalType = Field(..., description="信号类型，对应具体排障场景的处理方法")
+    namespace: str = Field(..., description="acli 子命令空间名：log/service/vm/network/storage/hardware/platform/system")
+    signal_type: str = Field(default="", description="信号类型描述（同 namespace，向后兼容 QFKResult 展示）")
     target: BackendSignalTarget | None = Field(default=None, description="定位目标参数描述")
     keywords: list[str] = Field(default_factory=list, description="K: 期望匹配对比的关键字列表")
     match_mode: str = Field(default="any", description="关键字对比匹配模式：any(或) / all(与)")
     expected: bool = Field(default=True, description="期望结果：True=期望出现，False=期望不出现")
     description: str | None = Field(default=None, description="对此排查步骤后端信号的文字表述说明")
-    container: str | None = Field(default=None, description="对于 service_status 专属的容器类型 (asv/anet/host)")
+    container: str | None = Field(default=None, description="对于 service 专属的容器类型 (asv/anet/host)")
     sub_command: str | None = Field(default=None, description="专属 vm/network/storage 等的 acli 子命名空间操作串")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackendSignal:
         """从字典构建并校验"""
+        # 兼容：若传入 signal_type 但未传 namespace，则用 signal_type 推导
+        if "namespace" not in data and "signal_type" in data:
+            st = data["signal_type"]
+            ns = _signal_type_to_namespace(st)
+            data = {**data, "namespace": ns, "signal_type": ns}
+        elif "namespace" in data and not data.get("signal_type"):
+            data = {**data, "signal_type": data["namespace"]}
         return cls.model_validate(data)
 
     @classmethod
@@ -61,3 +57,21 @@ class BackendSignal(BaseModel):
         """从 JSON 字符串反序列化并校验"""
         data = json.loads(json_str)
         return cls.from_dict(data)
+
+
+# 旧枚举值 -> namespace 的映射（向后兼容旧 signals_json 数据）
+_LEGACY_TYPE_MAP: dict[str, str] = {
+    "log_keyword": "log",
+    "service_status": "service",
+    "vm_state": "vm",
+    "network_check": "network",
+    "storage_state": "storage",
+    "hardware_state": "hardware",
+    "platform_state": "platform",
+    "system_metric": "system",
+}
+
+
+def _signal_type_to_namespace(signal_type: str) -> str:
+    """将旧的 signal_type 枚举值转换为 namespace 名。"""
+    return _LEGACY_TYPE_MAP.get(signal_type, signal_type)

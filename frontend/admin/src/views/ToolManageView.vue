@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Edit, Delete, FullScreen } from '@element-plus/icons-vue'
+import { ProducesEditor, MatcherEditor } from '@/components/editors'
 
 interface ToolDefinition {
   id: number
@@ -133,6 +134,122 @@ const formModel = ref({
   is_active: true,
   version: '1.0'
 })
+
+// ─── QKV/QFK 可视化编辑状态 ───
+const activeParamTab = ref<'json' | 'form'>('json')
+const producesData = ref<Array<{ name: string; path: string }>>([])
+const matcherData = ref<Record<string, any>>({ type: 'keyword', expected: true })
+
+// 判断是否为 QKV/QFK 工具（需要可视化编辑器）
+const isSignalTool = computed(() => ['qkv', 'qfk'].includes(formModel.value.category))
+
+// 从 JSON Schema 解析 produces 字段（QKV 专用）
+function parseProducesFromSchema(schemaStr: string): Array<{ name: string; path: string }> {
+  try {
+    const schema = JSON.parse(schemaStr)
+    const produces = schema?.properties?.produces?.default || schema?.produces || []
+    if (Array.isArray(produces)) {
+      return produces.map((p: any) => ({
+        name: p?.name || '',
+        path: p?.path || '',
+      }))
+    }
+  } catch {}
+  return []
+}
+
+// 从 JSON Schema 解析 matcher 字段（QFK 专用）
+function parseMatcherFromSchema(schemaStr: string): Record<string, any> {
+  try {
+    const schema = JSON.parse(schemaStr)
+    // matcher 在 examples 的第一条记录中（模板）
+    const examples = schema?.examples
+    if (Array.isArray(examples) && examples[0]?.matcher) {
+      return examples[0].matcher
+    }
+    // 或从 properties.matcher.default 中取
+    if (schema?.properties?.matcher?.default) {
+      return schema.properties.matcher.default
+    }
+  } catch {}
+  return { type: 'keyword', expected: true }
+}
+
+// 当 parameters_schema_str 变化时，解析到表单（JSON → Form）
+watch(
+  () => formModel.value.parameters_schema_str,
+  (newVal) => {
+    if (isSignalTool.value && activeParamTab.value === 'form') {
+      producesData.value = parseProducesFromSchema(newVal)
+      matcherData.value = parseMatcherFromSchema(newVal)
+    }
+  },
+  { immediate: false }
+)
+
+// 当 category 变化时，自动切换 Tab
+watch(
+  () => formModel.value.category,
+  (newCat) => {
+    if (['qkv', 'qfk'].includes(newCat)) {
+      // QKV/QFK 工具打开时，尝试解析表单数据
+      producesData.value = parseProducesFromSchema(formModel.value.parameters_schema_str)
+      matcherData.value = parseMatcherFromSchema(formModel.value.parameters_schema_str)
+    }
+  }
+)
+
+// 当表单数据变化时，同步回 JSON Schema（Form → JSON）
+function syncFormToJson() {
+  if (!isSignalTool.value) return
+  
+  try {
+    const schema = JSON.parse(formModel.value.parameters_schema_str || '{}')
+    
+    // QKV: 更新 produces.default
+    if (formModel.value.category === 'qkv' && producesData.value.length > 0) {
+      if (!schema.properties) schema.properties = {}
+      if (!schema.properties.produces) {
+        schema.properties.produces = {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: '输出变量名' },
+              path: { type: 'string', description: 'JSON 字段路径' }
+            },
+            required: ['name', 'path']
+          },
+          default: []
+        }
+      }
+      schema.properties.produces.default = producesData.value
+    }
+    
+    // QFK: 更新 matcher.default
+    if (formModel.value.category === 'qfk' && matcherData.value.type) {
+      if (!schema.properties) schema.properties = {}
+      if (!schema.properties.matcher) {
+        schema.properties.matcher = {
+          type: 'object',
+          properties: {
+            type: { type: 'string', enum: ['keyword', 'regex', 'state', 'threshold', 'json_path', 'exists'] },
+            expected: { type: 'boolean', default: true }
+          },
+          required: ['type']
+        }
+      }
+      schema.properties.matcher.default = matcherData.value
+    }
+    
+    formModel.value.parameters_schema_str = JSON.stringify(schema, null, 2)
+  } catch (e) {
+    console.warn('同步表单到 JSON 失败:', e)
+  }
+}
+
+// 监听表单数据变化，同步到 JSON
+watch([producesData, matcherData], syncFormToJson, { deep: true })
 
 const validationStatusText = computed(() => {
   if (!validationResult.value) return ''
@@ -475,6 +592,8 @@ onMounted(() => {
             <el-option label="ACLI 节点执行 (acli)" value="acli" />
             <el-option label="SCP 平台 API (scp)" value="scp" />
             <el-option label="SOP 导航引擎 (sop)" value="sop" />
+            <el-option label="QKV 前端信号 (qkv)" value="qkv" />
+            <el-option label="QFK 后端信号 (qfk)" value="qfk" />
           </el-select>
         </el-col>
         <el-col :span="10" class="total-info" style="text-align: right; color: #909399; font-size: 14px;">
@@ -502,7 +621,7 @@ onMounted(() => {
 
         <el-table-column prop="category" label="分类" width="120" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.category === 'acli' ? 'success' : row.category === 'scp' ? 'primary' : 'warning'">
+            <el-tag :type="row.category === 'acli' ? 'success' : row.category === 'scp' ? 'primary' : row.category === 'qkv' ? 'info' : row.category === 'qfk' ? 'danger' : 'warning'">
               {{ row.category }}
             </el-tag>
           </template>
@@ -584,6 +703,8 @@ onMounted(() => {
                 <el-option label="ACLI 节点执行 (acli)" value="acli" />
                 <el-option label="SCP 平台 API (scp)" value="scp" />
                 <el-option label="SOP 导航引擎 (sop)" value="sop" />
+                <el-option label="QKV 前端信号 (qkv)" value="qkv" />
+                <el-option label="QFK 后端信号 (qfk)" value="qfk" />
               </el-select>
             </el-form-item>
             <el-form-item label="风险等级">
@@ -615,18 +736,42 @@ onMounted(() => {
               />
             </el-form-item>
             <el-form-item label="参数 Schema (JSON)" required class="flex-form-item">
-              <div class="json-editor-wrapper">
-                <el-input
-                  v-model="formModel.parameters_schema_str"
-                  type="textarea"
-                  :rows="12"
-                  class="code-textarea"
-                  placeholder='{"type": "object", "properties": {}}'
-                />
-                <span class="json-validator-indicator" :class="isValidJson(formModel.parameters_schema_str) ? 'valid' : 'invalid'">
+              <!-- QKV/QFK 工具：可视化编辑器 -->
+              <template v-if="isSignalTool">
+                <el-tabs v-model="activeParamTab" class="param-tabs" @tab-change="() => {}">
+                  <el-tab-pane label="可视化编辑" name="form">
+                    <ProducesEditor v-if="formModel.category === 'qkv'" v-model="producesData" />
+                    <MatcherEditor v-if="formModel.category === 'qfk'" v-model="matcherData" />
+                  </el-tab-pane>
+                  <el-tab-pane label="JSON 编辑" name="json">
+                    <el-input
+                      v-model="formModel.parameters_schema_str"
+                      type="textarea"
+                      :rows="12"
+                      class="code-textarea"
+                      placeholder='{"type": "object", "properties": {}}'
+                    />
+                  </el-tab-pane>
+                </el-tabs>
+                <div class="json-validator-indicator" :class="isValidJson(formModel.parameters_schema_str) ? 'valid' : 'invalid'">
                   {{ isValidJson(formModel.parameters_schema_str) ? '✓ JSON 格式正确' : '✗ 格式错误：请输入合法 JSON' }}
-                </span>
-              </div>
+                </div>
+              </template>
+              <!-- 其他工具：JSON 编辑器 -->
+              <template v-else>
+                <div class="json-editor-wrapper">
+                  <el-input
+                    v-model="formModel.parameters_schema_str"
+                    type="textarea"
+                    :rows="12"
+                    class="code-textarea"
+                    placeholder='{"type": "object", "properties": {}}'
+                  />
+                  <span class="json-validator-indicator" :class="isValidJson(formModel.parameters_schema_str) ? 'valid' : 'invalid'">
+                    {{ isValidJson(formModel.parameters_schema_str) ? '✓ JSON 格式正确' : '✗ 格式错误：请输入合法 JSON' }}
+                  </span>
+                </div>
+              </template>
             </el-form-item>
             <el-form-item label="调用示例 (JSON 数组)" class="flex-form-item">
               <div class="json-editor-wrapper">
@@ -1041,5 +1186,28 @@ onMounted(() => {
 
 :global(.premium-dialog.is-fullscreen .form-meta-col) {
   overflow-y: auto;
+}
+
+/* QKV/QFK 参数可视化编辑 Tab 样式 */
+.param-tabs {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.param-tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
+}
+
+.param-tabs :deep(.el-tabs__item) {
+  font-size: 13px;
+  padding: 0 16px;
+}
+
+.param-tabs :deep(.el-tabs__content) {
+  overflow: visible;
+}
+
+.param-tabs :deep(.el-tab-pane) {
+  min-height: 120px;
 }
 </style>

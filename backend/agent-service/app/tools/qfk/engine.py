@@ -86,17 +86,17 @@ async def qfk_exec(
     """
     # 1. 寻找 handler 处理器并构建指令
     try:
-        handler = HandlerRegistry.get(signal.signal_type)
+        handler = HandlerRegistry.get(signal.namespace)
         commands = handler.build_commands(signal)
     except Exception as e:
         logger.warning(
             event="qfk_handler_setup_failed",
-            signal_type=signal.signal_type.value,
+            namespace=signal.namespace,
             error=str(e),
         )
         return QFKResult(
             matched=False,
-            signal_type=signal.signal_type.value,
+            signal_type=signal.namespace,
             commands=[],
             keywords=signal.keywords,
             match_mode=signal.match_mode,
@@ -107,7 +107,7 @@ async def qfk_exec(
 
     logger.info(
         event="qfk_engine_executing",
-        signal_type=signal.signal_type.value,
+        namespace=signal.namespace,
         commands=commands,
         keywords=signal.keywords,
         match_mode=signal.match_mode,
@@ -120,7 +120,7 @@ async def qfk_exec(
     if _executor is None:
         return QFKResult(
             matched=False,
-            signal_type=signal.signal_type.value,
+            signal_type=signal.namespace,
             commands=commands,
             keywords=signal.keywords,
             match_mode=signal.match_mode,
@@ -153,7 +153,7 @@ async def qfk_exec(
             )
             return QFKResult(
                 matched=False,
-                signal_type=signal.signal_type.value,
+                signal_type=signal.namespace,
                 commands=commands,
                 keywords=signal.keywords,
                 match_mode=signal.match_mode,
@@ -177,7 +177,7 @@ async def qfk_exec(
 
     logger.info(
         event="qfk_engine_finished",
-        signal_type=signal.signal_type.value,
+        namespace=signal.namespace,
         raw_matched=matched,
         final_matched=final_matched,
         matched_keywords=matched_kws,
@@ -185,7 +185,7 @@ async def qfk_exec(
 
     return QFKResult(
         matched=final_matched,
-        signal_type=signal.signal_type.value,
+        signal_type=signal.namespace,
         commands=commands,
         keywords=signal.keywords,
         match_mode=signal.match_mode,

@@ -179,6 +179,85 @@ class TestQKVParser:
         assert vals[1]["description"] == "2026-07-08 10:01 [WARN] dismiss"
 
 
+class TestQKVParserDynamicProduces:
+    """produces 动态字段提取测试"""
+
+    def test_extract_by_produces(self):
+        """produces 非空时按规格动态提取，不走路由硬编码"""
+        alert_json = """
+        {
+          "data": [
+            {
+              "alert_type": "host_bond",
+              "host": "SVR_aCloud_668",
+              "vm": "vm-1001",
+              "custom_field": "extra_value"
+            }
+          ]
+        }
+        """
+        produces = [
+            {"name": "HOST", "path": "host"},
+            {"name": "VM", "path": "vm"},
+            {"name": "CUSTOM", "path": "custom_field"},
+        ]
+        vals = parse_frontend_value(FrontendQueryType.ALERT, alert_json, produces)
+        assert len(vals) == 1
+        v = vals[0]
+        # produces 模式下 key 为 name.lower()
+        assert v["host"] == "SVR_aCloud_668"
+        assert v["vm"] == "vm-1001"
+        assert v["custom"] == "extra_value"
+        # 不应包含硬编码模式才有的字段
+        assert "alert_type" not in v
+        assert "description" not in v
+
+    def test_extract_by_produces_multi_path_fallback(self):
+        """path 支持 | 分隔的多路径容错"""
+        alert_json = """
+        {
+          "data": [
+            {"hostname": "node-001", "vm": "vm-1"}
+          ]
+        }
+        """
+        produces = [
+            {"name": "HOST", "path": "host|hostname|hostid"},
+        ]
+        vals = parse_frontend_value(FrontendQueryType.ALERT, alert_json, produces)
+        assert len(vals) == 1
+        assert vals[0]["host"] == "node-001"
+
+    def test_extract_empty_produces_falls_back(self):
+        """produces 为空时走硬编码兜底"""
+        alert_json = """
+        {
+          "data": [
+            {"alert_type": "host_bond", "host": "node-1", "vm": ""}
+          ]
+        }
+        """
+        vals = parse_frontend_value(FrontendQueryType.ALERT, alert_json, produces=None)
+        assert len(vals) == 1
+        assert vals[0]["alert_type"] == "host_bond"
+        assert vals[0]["host"] == "node-1"
+
+    def test_extract_by_produces_filters_empty(self):
+        """produces 提取全空的条目应被过滤"""
+        alert_json = """
+        {
+          "data": [
+            {"irrelevant": "data"},
+            {"host": "node-1"}
+          ]
+        }
+        """
+        produces = [{"name": "HOST", "path": "host"}]
+        vals = parse_frontend_value(FrontendQueryType.ALERT, alert_json, produces)
+        assert len(vals) == 1
+        assert vals[0]["host"] == "node-1"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # QKVResult 格式化测试
 # ─────────────────────────────────────────────────────────────────────────────

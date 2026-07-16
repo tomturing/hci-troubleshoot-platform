@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from typing import ClassVar
 
 from app.tools.acli.executor import ExecResult
-from app.tools.qfk.signal import BackendSignal, BackendSignalType
+from app.tools.qfk.signal import BackendSignal
 
 
 class CommandBuildError(ValueError):
@@ -141,28 +141,18 @@ class ServiceStatusHandler(FunctionHandler):
 
 class GenericSubCommandHandler(FunctionHandler):
     """
-    通用子命名空间命令构建器（vm_state/network_check/storage_state/hardware_state/platform_state/system_metric）
-    命令格式: acli <Q_namespace> <sub_command>
+    通用子命名空间命令构建器（vm/network/storage/hardware/platform/system）
+    命令格式: acli <namespace> <sub_command>
     """
 
-    # 后端信号类型与 acli 子命名空间的映射
-    NAMESPACE_MAP: ClassVar[dict[BackendSignalType, str]] = {
-        BackendSignalType.VM_STATE: "vm",
-        BackendSignalType.NETWORK_CHECK: "network",
-        BackendSignalType.STORAGE_STATE: "storage",
-        BackendSignalType.HARDWARE_STATE: "hardware",
-        BackendSignalType.PLATFORM_STATE: "platform",
-        BackendSignalType.SYSTEM_METRIC: "system",
-    }
-
     def build_commands(self, signal: BackendSignal) -> list[str]:
-        namespace = self.NAMESPACE_MAP.get(signal.signal_type)
+        namespace = signal.namespace
         if not namespace:
-            raise CommandBuildError(f"不支持的 Generic 子命令信号类型: {signal.signal_type}")
+            raise CommandBuildError(f"BackendSignal 缺少 namespace 字段")
 
         sub_cmd = signal.sub_command
         if not sub_cmd:
-            raise CommandBuildError(f"{signal.signal_type} 信号必须在 sub_command 属性中提供具体的子命令，例如: 'list' 或 'asan disk list'")
+            raise CommandBuildError(f"{namespace} 信号必须在 sub_command 属性中提供具体的子命令，例如: 'list' 或 'asan disk list'")
 
         # 简单防注入校验（过滤 shell 元字符）
         forbidden_chars = re.compile(r"[|;&$`\\()\[\]{}<>!]")
@@ -179,24 +169,137 @@ class GenericSubCommandHandler(FunctionHandler):
 
 class HandlerRegistry:
     """
-    QFK 后端信号 Handler 注册表
+    QFK 后端信号 Handler 注册表（支持动态注册）
+
+    支持运行时动态注册/注销 Handler，禁止硬编码新增 namespace。
+    使用方式：
+        # 注册新 handler
+        HandlerRegistry.register("custom_ns", CustomHandler())
+
+        # 注销 handler
+        HandlerRegistry.unregister("custom_ns")
+
+        # 获取 handler
+        handler = HandlerRegistry.get("log")
+
+    设计规范：
+        1. 新增 namespace 必须通过 register() 动态注册，禁止修改 _defaults
+        2. 默认 handler 懒加载，首次访问时初始化
+        3. 支持覆盖已注册的 handler（需 override=True）
     """
 
-    _registry: ClassVar[dict[BackendSignalType, FunctionHandler]] = {
-        BackendSignalType.LOG_KEYWORD: LogKeywordHandler(),
-        BackendSignalType.SERVICE_STATUS: ServiceStatusHandler(),
-        BackendSignalType.VM_STATE: GenericSubCommandHandler(),
-        BackendSignalType.NETWORK_CHECK: GenericSubCommandHandler(),
-        BackendSignalType.STORAGE_STATE: GenericSubCommandHandler(),
-        BackendSignalType.HARDWARE_STATE: GenericSubCommandHandler(),
-        BackendSignalType.PLATFORM_STATE: GenericSubCommandHandler(),
-        BackendSignalType.SYSTEM_METRIC: GenericSubCommandHandler(),
+    _registry: ClassVar[dict[str, FunctionHandler]] = {}
+    _initialized: ClassVar[bool] = False
+
+    # 默认 handler 定义（类级别，懒加载）
+    _defaults: ClassVar[dict[str, type[FunctionHandler]]] = {
+        "log": LogKeywordHandler,
+        "service": ServiceStatusHandler,
+        "vm": GenericSubCommandHandler,
+        "network": GenericSubCommandHandler,
+        "storage": GenericSubCommandHandler,
+        "hardware": GenericSubCommandHandler,
+        "platform": GenericSubCommandHandler,
+        "system": GenericSubCommandHandler,
     }
 
     @classmethod
-    def get(cls, signal_type: BackendSignalType) -> FunctionHandler:
-        """获取指定后端信号类型的处理器"""
-        handler = cls._registry.get(signal_type)
+    def _initialize_defaults(cls) -> None:
+        """懒加载默认 handlers（仅首次访问时执行）"""
+        if cls._initialized:
+            return
+        for ns, handler_cls in cls._defaults.items():
+            cls._registry[ns] = handler_cls()
+        cls._initialized = True
+
+    @classmethod
+    def register(
+        cls,
+        namespace: str,
+        handler: FunctionHandler,
+        override: bool = False
+    ) -> None:
+        """
+        动态注册 handler
+
+        Args:
+            namespace: 命名空间标识（如 "log", "vm", "custom_ns"）
+            handler: Handler 实例
+            override: 是否覆盖已存在的 handler（默认 False，防止误覆盖）
+
+        Raises:
+            ValueError: 如果 namespace 已注册且 override=False
+        """
+        cls._initialize_defaults()
+        if namespace in cls._registry and not override:
+            raise ValueError(
+                f"Handler '{namespace}' 已注册，使用 register(..., override=True) 覆盖"
+            )
+        cls._registry[namespace] = handler
+
+    @classmethod
+    def unregister(cls, namespace: str) -> bool:
+        """
+        注销 handler
+
+        Args:
+            namespace: 要注销的命名空间
+
+        Returns:
+            bool: True 表示成功注销，False 表示不存在
+        """
+        if namespace in cls._registry:
+            del cls._registry[namespace]
+            return True
+        return False
+
+    @classmethod
+    def get(cls, namespace: str) -> FunctionHandler:
+        """
+        获取指定 namespace 的处理器
+
+        Args:
+            namespace: 命名空间标识
+
+        Returns:
+            FunctionHandler: 对应的 Handler 实例
+
+        Raises:
+            ValueError: 未找到对应 handler
+        """
+        cls._initialize_defaults()
+        handler = cls._registry.get(namespace)
         if not handler:
-            raise ValueError(f"未找到后端信号类型 {signal_type} 对应的 Handler 注册")
+            available = ", ".join(cls.supported_namespaces())
+            raise ValueError(
+                f"未找到 namespace '{namespace}' 对应的 Handler。"
+                f"已注册: [{available}]。"
+                f"如需新增，请使用 HandlerRegistry.register('{namespace}', YourHandler())"
+            )
         return handler
+
+    @classmethod
+    def supported_namespaces(cls) -> list[str]:
+        """返回所有已注册的 namespace 列表"""
+        cls._initialize_defaults()
+        return list(cls._registry.keys())
+
+    @classmethod
+    def get_defaults_definition(cls) -> dict[str, type[FunctionHandler]]:
+        """
+        返回默认 handler 类定义（供配置文件/DB 加载参考）
+
+        Returns:
+            dict: namespace -> handler_class 的映射
+        """
+        return cls._defaults.copy()
+
+    @classmethod
+    def reset(cls) -> None:
+        """
+        重置注册表（仅用于测试）
+
+        警告：生产环境禁止调用，会清除所有动态注册的 handler
+        """
+        cls._registry.clear()
+        cls._initialized = False

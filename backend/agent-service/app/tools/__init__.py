@@ -45,17 +45,17 @@ class SystemTools:
     def get_qfk():
         """获取 QFK 后端信号谓词工具及相关类型定义
 
-        返回元组：(qfk_load, qfk_exec, BackendSignal, BackendSignalType, QFKResult)
+        返回元组：(qfk_load, qfk_exec, BackendSignal, HandlerRegistry, QFKResult)
         """
         from app.tools.qfk import (
             BackendSignal,
-            BackendSignalType,
+            HandlerRegistry,
             QFKResult,
             qfk_exec,
             qfk_load,
         )
 
-        return qfk_load, qfk_exec, BackendSignal, BackendSignalType, QFKResult
+        return qfk_load, qfk_exec, BackendSignal, HandlerRegistry, QFKResult
 
     @staticmethod
     def get_qkv():
@@ -72,50 +72,6 @@ class SystemTools:
         )
 
         return qkv_load, qkv_exec, FrontendSignal, FrontendQueryType, QKVResult
-
-    @staticmethod
-    def get_signal_extractor():
-        """获取关键信号提取器
-
-        用于从 KBD/SOP 自然语言文本中提取结构化信号
-
-        返回：
-            SignalExtractor 类
-        """
-        from app.tools.signal import SignalExtractor
-
-        return SignalExtractor
-
-    @staticmethod
-    def create_variable_pool(conversation_id: str):
-        """创建会话级变量池
-
-        用于管理信号间的变量流转（生产者-消费者模式）
-
-        Args:
-            conversation_id: 会话标识
-
-        返回：
-            VariablePool 实例
-        """
-        from app.tools.signal import VariablePool
-
-        return VariablePool(conversation_id=conversation_id)
-
-    @staticmethod
-    def get_signal_types():
-        """获取信号类型定义
-
-        返回元组：(KeySignal, FrontendSignal, BackendSignal, SignalCategory)
-        """
-        from app.tools.signal import (
-            BackendSignal,
-            FrontendSignal,
-            KeySignal,
-            SignalCategory,
-        )
-
-        return KeySignal, FrontendSignal, BackendSignal, SignalCategory
 
 
 class InteractiveTools:

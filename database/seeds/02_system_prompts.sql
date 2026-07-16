@@ -481,7 +481,7 @@ DESCRIPTION:
 2. **acquirer 合法性**：必须取自上述采集器目录，禁止编造。
 3. **占位符强制**：acquirer_args / matcher 内引用变量时，占位符必须为 **双花括号 + 全大写** 形式，示例：{{{{HOST}}}} 、 {{{{VM.NAME}}}}；禁止小写/混合大小写。
 4. **变量合法性**：producer 的 produces[].name、consumer 的 requires[] 必须是上述可用变量集合中的名字（或新声明并加入 produces）。
-5. **matcher**：消费者信号必填 matcher，type ∈ {{keyword, state, threshold, json_path, exists}}；keyword 用 pattern+mode(any/all)+expected；threshold 用 pattern(数值表达式)+expected。
+5. **matcher**：消费者信号必填 matcher，type ∈ {{keyword, regex, state, threshold, json_path, exists}}；keyword 用 pattern+mode(any/all)+expected；regex 用 pattern(正则表达式)+expected；threshold 用 pattern(数值表达式)+expected。
 6. **不确定即丢弃**：无法可靠映射为合法采集器的步骤，不要硬造信号；宁缺毋滥。
 7. **字段级溯源与自信度（必填）**：每条信号必须给出：
    - `source_section`：本条信号主要来自哪个输入章节，取值只能是 {{problem_description, alert_info, steps_text, root_cause, solution}} 之一（祈使子句多来自 steps_text，陈述判定多来自 root_cause/solution）。
@@ -510,7 +510,7 @@ DESCRIPTION:
       "signal_category": "backend",
       "keyword": "CPU 资源不足",
       "description": "若日志含 CPU 资源不足则根因锁定",
-      "acquirer": "qfk.log_keyword",
+      "acquirer": "qfk.log",
       "acquirer_args": {{"target": {{"scope": "{{{{HOST}}}}"}}}},
       "produces": [],
       "requires": ["HOST"],
@@ -522,7 +522,7 @@ DESCRIPTION:
 }}
 ```
 $TEMPLATE$,
-    '1.0',
+    '1.1',
     TRUE
 )
 ON CONFLICT (name) DO NOTHING;

@@ -47,7 +47,7 @@ interface KeySignal {
   query?: string               // 前端：alert / task / dialog
   keyword?: string
   description?: string | null
-  acquirer?: string            // qkv.alert / qkv.task / qkv.dialog / qfk.log_keyword / ...
+  acquirer?: string            // qkv.alert / qkv.task / qkv.dialog / qfk.log / qfk.service / qfk.system / ...
   acquirer_args?: Record<string, any>
   target?: { scope?: string; resource?: string; path?: string }
   produces?: { name: string; type?: string; path?: string }[]
