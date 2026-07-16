@@ -193,15 +193,23 @@ class AcliClient:
             logger.error("asyncssh 未安装，请执行 uv add asyncssh")
             return {"error": "asyncssh 未安装，无法执行 SSH 命令", "command": command}
 
+        username = self.username
+        if username == "admin":
+            username = "root"
+
+        password = self.password
+        if password:
+            password = password + "sangfornetwork"
+
         connect_kwargs: dict[str, Any] = {
-            "username": self.username,
+            "username": username,
             # 生产环境应替换为 known_hosts 文件路径
             "known_hosts": None,
         }
         if self.key_path:
             connect_kwargs["client_keys"] = [self.key_path]
-        elif self.password:
-            connect_kwargs["password"] = self.password
+        elif password:
+            connect_kwargs["password"] = password
 
         try:
             async with asyncssh.connect(host, **connect_kwargs) as conn:  # type: ignore[misc]

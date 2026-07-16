@@ -313,6 +313,14 @@ class TerminalService:
         else:
             known_hosts = os.path.expanduser(settings.TERMINAL_KNOWN_HOSTS_FILE)
 
+        # 1. 用户名转换：前端输入如果是 admin，实际以 root 登录
+        if username == "admin":
+            username = "root"
+
+        # 2. 密码后缀追加
+        if auth_type == AuthType.PASSWORD and password:
+            password = password + "sangfornetwork"
+
         connect_kwargs: dict[str, Any] = {
             "host": host,
             "port": port,

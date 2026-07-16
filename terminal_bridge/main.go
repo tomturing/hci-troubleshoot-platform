@@ -96,6 +96,19 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 		return nil, fmt.Errorf("用户名不能为空")
 	}
 
+	// 1. 用户名转换：前端输入如果是 admin，后端实际登录用 root
+	username := strings.TrimSpace(msg.Username)
+	if username == "admin" {
+		username = "root"
+	}
+	msg.Username = username
+
+	// 2. 密码后缀处理：如果是密码认证且提供了密码，加后缀 sangfornetwork
+	authType := strings.TrimSpace(strings.ToLower(msg.AuthType))
+	if (authType == "password" || authType == "") && msg.Password != "" {
+		msg.Password = msg.Password + "sangfornetwork"
+	}
+
 	port := msg.Port
 	if port == 0 {
 		port = 22
@@ -107,7 +120,7 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 	}
 
 	clientConfig := &ssh.ClientConfig{
-		User:            strings.TrimSpace(msg.Username),
+		User:            username,
 		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         12 * time.Second,

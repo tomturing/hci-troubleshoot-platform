@@ -759,8 +759,10 @@ jobs:
           CHANGED=$(git diff --name-only "${BEFORE}" "${AFTER}" -- \
             database/desired_schema.sql \
             database/desired_extras.sql \
+            'database/data-migrations/*.sql' \
             Dockerfile.migrations \
-            scripts/db-migrate.sh)
+            scripts/db-migrate.sh \
+            scripts/migration-runner.sh)
           if [[ -n "$CHANGED" ]]; then
             echo "changed=true" >> $GITHUB_OUTPUT
             echo "检测到 schema 相关文件变更："

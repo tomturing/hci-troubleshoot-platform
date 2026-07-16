@@ -1166,6 +1166,8 @@ CREATE TABLE IF NOT EXISTS sop_document (
     tree_generator_version  varchar(50)      DEFAULT 'sop-parser-v1',
     -- 变量定义字段（T-AGT-24：approve 时自动解析生成）
     variable_schema          jsonb            DEFAULT '[]'::jsonb,
+    -- 关键信号集合（跨文档通用，与 kbd_entry.signals_json 同构；抽取阶段填充；占位符 {{VAR}} 大写）
+    signals_json             jsonb            NOT NULL DEFAULT '[]'::jsonb,
     CONSTRAINT fk_sop_document_category_id FOREIGN KEY (category_id) REFERENCES kb_category (code) ON DELETE NO ACTION,
     CONSTRAINT sop_document_pkey PRIMARY KEY (id)
 );
@@ -1191,6 +1193,7 @@ COMMENT ON COLUMN sop_document.tree_leaf_count IS '叶节点（案例节点）�
 COMMENT ON COLUMN sop_document.tree_validation_status IS 'valid=完全合规; warnings=有警告但已入库; error=解析失败; NULL=未生成';
 COMMENT ON COLUMN sop_document.tree_validation_issues IS 'ValidationIssue 列表 JSON（warnings/errors）';
 COMMENT ON COLUMN sop_document.tree_generator_version IS '解析器版本，用于判断是否需要重新解析';
+COMMENT ON COLUMN sop_document.signals_json IS '关键信号集合（跨文档通用，与 kbd_entry.signals_json 同构；默认[]，抽取阶段/审核期填充；占位符 {{VAR}} 大写）';
 
 -- 建立 conversation.sop_document_id → sop_document.id 的外键约束（conversation 先于 sop_document 创建，延后添加）
 ALTER TABLE conversation
@@ -1204,6 +1207,9 @@ ALTER TABLE conversation
 CREATE INDEX IF NOT EXISTS idx_sop_document_category_published ON sop_document (category_id) WHERE status = 'published';
 -- GIN 索引：支持 tree_json @> '{"name": "..."}' 等 JSONB 条件检索
 CREATE INDEX IF NOT EXISTS idx_sop_document_tree_json ON sop_document USING GIN (tree_json) WHERE tree_json IS NOT NULL;
+-- signals_json 结构查询（部分索引仅含已发布且有信号的条目，与 kbd_entry.idx_kbd_entry_signals 同构）
+CREATE INDEX IF NOT EXISTS idx_sop_signals ON sop_document USING GIN (signals_json)
+    WHERE status = 'published' AND signals_json != '[]'::jsonb;
 
 
 -- ------------------------------------------------------------
@@ -1376,3 +1382,23 @@ COMMENT ON COLUMN claim_evidence_link.created_at IS '记录创建时间';
 CREATE INDEX IF NOT EXISTS idx_claim_evidence_link_case_id ON claim_evidence_link (case_id);
 CREATE INDEX IF NOT EXISTS idx_claim_evidence_link_claim_id ON claim_evidence_link (claim_id);
 CREATE INDEX IF NOT EXISTS idx_claim_evidence_link_fact_id ON claim_evidence_link (fact_id);
+
+-- ------------------------------------------------------------
+-- 表: migration_history  [模块: db-migrate]
+-- 说明: 数据迁移历史表 — 记录版本化数据迁移的执行历史，确保幂等性和可追溯性
+-- 用途: migration-runner.sh 在执行数据迁移前检查此表，避免重复执行
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS migration_history (
+    version VARCHAR(100) PRIMARY KEY,
+    checksum VARCHAR(64) NOT NULL,
+    description VARCHAR(255),
+    executed_at TIMESTAMPTZ DEFAULT NOW(),
+    execution_time_ms INTEGER
+);
+
+COMMENT ON TABLE migration_history IS '数据迁移历史表 — 记录版本化数据迁移的执行历史，确保幂等性和可追溯性';
+COMMENT ON COLUMN migration_history.version IS '迁移版本号（如 001、002），主键，确保每个版本只执行一次';
+COMMENT ON COLUMN migration_history.checksum IS '迁移文件内容的 SHA256 校验和，用于检测篡改';
+COMMENT ON COLUMN migration_history.description IS '迁移描述（从文件名解析）';
+COMMENT ON COLUMN migration_history.executed_at IS '执行时间戳';
+COMMENT ON COLUMN migration_history.execution_time_ms IS '执行耗时（毫秒），用于性能监控';

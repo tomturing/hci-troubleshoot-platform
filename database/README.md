@@ -16,16 +16,20 @@
 ```
 database/
   desired_schema.sql           ← 期望 Schema（唯一权威，Atlas 声明式管理）
-  atlas-migrations/            ← Atlas 迁移文件目录
-    20260408000000_baseline.sql  ← baseline（接管时快照）
-    atlas.sum                    ← 完整性校验文件（禁止手动修改）
-  seeds/                       ← 业务种子数据（与迁移工具无关）
-    01_tool_definitions.sql    ← 初始化 tool_definition 表
-    02_system_prompts.sql      ← 初始化 system_prompt 表
-  README.md
+  desired_extras.sql            ← 函数/触发器（psql 幂等执行）
+  data-migrations/              ← 版本化数据迁移（新增，详见下文）
+    001_xxx.sql
+    002_yyy.sql
+  atlas-migrations/             ← Atlas 迁移文件目录（仅 Schema）
+    20260408000000_baseline.sql ← baseline（接管时快照）
+    atlas.sum                   ← 完整性校验文件（禁止手动修改）
+  seeds/                        ← 业务种子数据（与迁移工具无关）
+    01_tool_definitions.sql     ← 初始化 tool_definition 表
+    02_system_prompts.sql       ← 初始化 system_prompt 表
+    03_skill_definitions.sql    ← 初始化 skill_definition 表
 
 docs/archive/db-migrations-history/
-  migrations/                  ← 历史 dbmate 迁移文件（只读归档，v6.3 前）
+  migrations/                   ← 历史 dbmate 迁移文件（只读归档，v6.3 前）
 ```
 
 ## Atlas 工作流
@@ -127,13 +131,92 @@ CI 流程自动执行：
    kubectl exec -i -n hci-dev postgres-0 -- psql -U hci_admin -d hci_troubleshoot < database/seeds/03_skill_definitions.sql
    ```
 
-### 3. Prompt 模板演进历史（断代说明）
+---
 
-*   **`base_core_v1` 被废弃/拆分的原因**：
-    在早期 MVP 阶段，`base_core_v1` 承载了过多的职责（定义 AI 角色、能力边界、行为准则，并静态注入 `{tool_list}`），导致模板臃肿且职责不单一。
-    在 PR #398（Prompt 数据库化收敛）重构中，`base_core_v1` 被物理删除，并解耦拆分为三个职责更为单一的 BASE 公共模板：
-    1. `base_identity_v1`：定义排障专家身份，新增“证据锚定”和“幻觉自查”等严格的行为边界约束。
-    2. `base_methodology_v1`：定义 S0-S6 的标准故障排障方法论。
-    3. `base_case_context_v1`：注入当前工单的上下文（`case_id`）。
-    此外，工具列表 `{tool_list}` 也不再通过全局 Prompt 静态拼接，而是改由 React 引擎运行时根据执行阶段动态生成与注入，从而提高了推理效率和安全性。
+## 数据迁移（Data Migration）
+
+> 设计文档：`docs/solution/database/数据迁移设计方案.md`
+
+### 背景
+
+业务演进过程中需要执行数据层面的变更，如：
+- 初始化数据补充
+- 历史数据修复
+- 字段数据回填
+- 数据格式转换
+
+这类变更属于 **Data Migration（DML）**，与 Schema Migration（DDL）分离管理。
+
+### 目录结构
+
+```
+database/data-migrations/
+  001_update_signals_prompt_stage.sql
+  002_xxx.sql
+  ...
+```
+
+### 命名规范
+
+格式：`{version}_{description}.sql`
+
+- `version`：三位数字，永远递增（001, 002, 003...）
+- `description`：简短描述，使用下划线分隔
+
+### 幂等性规范（强制）
+
+所有数据迁移脚本**必须可安全重复执行**：
+
+```sql
+-- ❌ 错误：第二次执行失败
+INSERT INTO config VALUES ('feature_x', 'true');
+
+-- ✅ 正确：幂等
+INSERT INTO config (key, value)
+VALUES ('feature_x', 'true')
+ON CONFLICT(key) DO NOTHING;
+```
+
+```sql
+-- ✅ UPDATE 必须有 WHERE 条件
+UPDATE system_prompt
+SET stage = 'KEY'
+WHERE name = 'kbd_extract_signals_v1'
+  AND stage = 'KBD';
+```
+
+### 执行机制
+
+数据迁移通过 `migration-runner.sh` 在 db-migrate Job 中执行：
+
+1. 启动时检查 `migration_history` 表
+2. 扫描 `data-migrations/` 目录
+3. 按版本号顺序执行未执行的迁移
+4. 记录执行历史（version, checksum, executed_at）
+
+### migration_history 表
+
+```sql
+CREATE TABLE IF NOT EXISTS migration_history (
+    version VARCHAR(100) PRIMARY KEY,
+    checksum VARCHAR(64),
+    description VARCHAR(255),
+    executed_at TIMESTAMP DEFAULT NOW(),
+    execution_time_ms INTEGER
+);
+```
+
+### 开发流程
+
+1. **新增数据迁移**：在 `database/data-migrations/` 下新建文件
+2. **本地测试**：`psql -f database/data-migrations/xxx.sql`
+3. **提交 PR**：CI 自动验证
+4. **合并后自动执行**：ArgoCD PreSync Hook
+
+### 注意事项
+
+- 禁止修改已执行的迁移文件
+- 新需求必须新增文件
+- 大数据量迁移需分批处理
+- 生产问题采用 Forward Fix，不回滚
 
