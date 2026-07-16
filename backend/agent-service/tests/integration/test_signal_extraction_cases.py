@@ -8,9 +8,8 @@
 4. produces/requires/matcher 是否符合约束
 """
 
-import json
-import sys
 import os
+import sys
 
 # 添加项目路径
 _backend = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend"))

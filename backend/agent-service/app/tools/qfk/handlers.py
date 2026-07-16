@@ -148,7 +148,7 @@ class GenericSubCommandHandler(FunctionHandler):
     def build_commands(self, signal: BackendSignal) -> list[str]:
         namespace = signal.namespace
         if not namespace:
-            raise CommandBuildError(f"BackendSignal 缺少 namespace 字段")
+            raise CommandBuildError("BackendSignal 缺少 namespace 字段")
 
         sub_cmd = signal.sub_command
         if not sub_cmd:
