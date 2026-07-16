@@ -170,7 +170,10 @@ langfuse:
         memory: "512Mi"
       limits:
         cpu: "1000m"
-        memory: "2Gi"
+        # ClickHouse jemalloc 缓存导致 RSS 持续增长（resident 可达 2.18GiB），
+        # 2Gi limit 下 WebUI trace 列表查询触发 MEMORY_LIMIT_EXCEEDED，
+        # 导致 Langfuse WebUI 无法显示新 trace。提升至 4Gi 保证查询余量。
+        memory: "4Gi"
   minio:
     image: minio/minio:latest
     storage: 2Gi
