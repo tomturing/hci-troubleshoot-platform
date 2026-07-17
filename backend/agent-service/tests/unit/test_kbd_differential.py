@@ -440,7 +440,7 @@ class TestDiagnoseLoop:
 
     @pytest.mark.asyncio
     async def test_single_candidate_skips_loop(self):
-        """候选 KBD ≤ early_stop_threshold 时直接生成报告（不执行任何工具）"""
+        """候选 KBD ≤ early_stop_threshold 时主循环不执行，但关键信号确认阶段必须补跑"""
         tool_executor = make_tool_executor({"tool_a": "output"})
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock('{"matches": {"k1": true}}'),
@@ -464,9 +464,46 @@ class TestDiagnoseLoop:
 
         result = diag.get_result()
         assert result is not None
-        # ≤ 2 候选时不循环，两个 KBD 均保留
+        # ≤ 2 候选时主循环虽跳过，但两个 KBD 均保留
         assert len(result.matched_kbds) == 2
-        assert len(result.steps_executed) == 0
+        # 关键信号确认阶段已补跑 tool_a，不再是 0 步（治本修复）
+        assert len(result.steps_executed) == 1
+        assert result.steps_executed[0].tool_name == "tool_a"
+
+    @pytest.mark.asyncio
+    async def test_single_candidate_confirms_its_signals(self):
+        """单候选 KBD 也必须执行其 backend 关键信号确认，不能跳过就给结论（回归测试）"""
+        # 模拟真实场景：工具采集到“第三方进程 ClwDRDBClient 持有镜像”的关键信号
+        tool_executor = make_tool_executor(
+            {"acli_vm_config": "ERROR: 虚拟机镜像忙，ClwDRDBClient 持有镜像文件"}
+        )
+        diag = KBDDiagnostic(
+            ai_registry=make_registry_mock('{"matches": {"k1": true}}'),
+            tool_executor=tool_executor,
+            early_stop_threshold=2,
+        )
+
+        candidates = [make_kbd("k1", [("acli_vm_config", "__CONTAINS__:ClwDRDBClient")])]
+
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=candidates,
+                env_context={},
+                session_id="test-002b",
+            )
+        ]
+
+        result = diag.get_result()
+        assert result is not None
+        # 单候选（候选数 ≤ early_stop）不应直接结论，必须执行关键信号确认
+        assert len(result.steps_executed) == 1
+        step = result.steps_executed[0]
+        assert step.tool_name == "acli_vm_config"
+        assert step.raw_output is not None
+        assert "ClwDRDBClient" in step.raw_output
+        # 确认语义：不剔除唯一候选
+        assert len(result.matched_kbds) == 1
 
     @pytest.mark.asyncio
     async def test_eliminates_non_matching_kbds(self):

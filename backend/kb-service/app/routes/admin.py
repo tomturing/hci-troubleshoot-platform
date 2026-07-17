@@ -372,6 +372,11 @@ class KbdApproveRequest(BaseModel):
 
     reviewer_id: int = Field(..., ge=1, description="审核人 ID")
     review_note: str | None = Field(None, max_length=500, description="审核备注（可选）")
+    category_id: int | None = Field(
+        None,
+        description="人工确认的分类 ID（可选）。来自审核详情弹窗的“确认分类”下拉框，"
+        "发布时优先于 AI 自动分类写入 category_id，用于校正分类、避免孤儿 KBD",
+    )
 
 
 class KbdApproveResponse(BaseModel):
@@ -475,7 +480,11 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 detail=f"KBD 条目 {kbd_id} 缺少消费者(backend)信号，CDD 无法进行差异诊断消除，请补充至少 1 条 QFK 消费者信号后再审核",
             )
         # 门 2：category_id 与 ai_category_id 同步（根治孤儿 KBD）
-        effective_category_id = row["category_id"] or row["ai_category_id"]
+        # 优先采用人工确认的分类（审核详情弹窗“确认分类”下拉框），
+        # fallback 到 DB 已有值；保证发布后 category_id 一定有值。
+        effective_category_id = (
+            body.category_id or row["category_id"] or row["ai_category_id"]
+        )
         if not effective_category_id:
             raise HTTPException(
                 status_code=422,
@@ -1770,7 +1779,16 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
     now = datetime.now(UTC)
     current_content_raw = row["content_raw"] or strip_markdown(content_md or "")
     # 门 2（重发布同样适用）：category_id 与 ai_category_id 同步，根治孤儿 KBD
-    effective_category_id = row["category_id"] or row["ai_category_id"]
+    # 优先采用人工确认的分类（发布请求 body.category_id），fallback 到 DB 已有值
+    effective_category_id = (
+        body.category_id or row["category_id"] or row["ai_category_id"]
+    )
+    if not effective_category_id:
+        raise HTTPException(
+            status_code=422,
+            detail=f"KBD 条目 {kbd_id} 缺少分类（category_id 与 ai_category_id 均为空），"
+            f"请先抽取分类或在发布时确认分类后再重新发布",
+        )
     async with _db_manager.async_session_factory() as session:
         if embedding_vector:
             vector_str = "[" + ",".join(str(v) for v in embedding_vector) + "]"

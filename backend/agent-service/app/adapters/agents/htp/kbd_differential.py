@@ -34,6 +34,7 @@ from app.adapters.agents.htp.kbd_model import (
     PATTERN_MATCHER_PREFIX,
     PATTERN_REGEX_PREFIX,
     KBDStep,
+    _signal_to_step,
 )
 from app.core.utils import smart_truncate
 from app.domain.agent_port import AgentEvent, AgentStageUpdate, AgentTextChunk
@@ -308,6 +309,93 @@ class KBDDiagnostic:
                     remaining=len(remaining),
                     session_id=session_id,
                 )
+
+        # ─── 关键信号确认阶段（治本：杜绝“未用关键信号确认就下结论”）─────────
+        # 背景：贪心消除主循环仅在 len(remaining) > early_stop 时进入。当候选 KBD 数量
+        # ≤ early_stop（高度同质化分类的典型场景，如“虚拟机-003 开机失败”常只有单条匹配
+        # KBD），主循环一次都不执行，backend 关键信号（如 qfk_exec 查进程、acli_* 查报错）
+        # 被整体跳过，报告直接把 KBD 文档里的 root_cause 复述成结论 —— 即用户反馈的
+        # “没有用关键信号确认就直接给了结论”。故当主循环未产出任何步骤时，强制补跑剩余
+        # 候选的 backend 关键信号，作为结论的现场证据（确认语义：记录证据，不剔除候选）。
+        if not steps_executed:
+            confirmed_tools: set[str] = set()
+            for kbd in remaining:
+                for s in kbd.signals:
+                    if s.get("signal_category") != "backend":
+                        continue
+                    tool = s.get("acquirer")
+                    if not tool or tool in confirmed_tools:
+                        continue
+                    confirmed_tools.add(tool)
+                    step = kbd.get_step(tool) or _signal_to_step(s)
+                    if step is None:
+                        continue
+
+                    tool_args = self._resolve_args(
+                        step.tool_args_template, env_context, self._variable_pool
+                    )
+                    yield AgentStageUpdate(
+                        stage="kbd_diag_confirm",
+                        metadata={
+                            "tool": tool,
+                            "args": tool_args,
+                            "remaining_candidates": len(remaining),
+                            "purpose": "关键信号确认（主循环因候选少未执行）",
+                        },
+                    )
+
+                    raw_output = None
+                    error = None
+                    pre_matched = None
+                    try:
+                        raw_output, error, pre_matched = await self._execute_acquirer(
+                            step, env_context, session_id, user_id
+                        )
+                    except Exception as exc:
+                        error = str(exc)
+                        logger.warning(
+                            event="kbd_diag_confirm_error",
+                            tool_name=tool,
+                            error=error,
+                            session_id=session_id,
+                        )
+
+                    match_ids: set[str] = set()
+                    if raw_output is not None:
+                        match_ids = await self._judge_matches(
+                            tool_name=tool,
+                            actual_output=raw_output,
+                            kbds=remaining,
+                            user_id=user_id,
+                            pre_matched=pre_matched,
+                        )
+
+                    steps_executed.append(
+                        StepResult(
+                            tool_name=tool,
+                            tool_args=tool_args,
+                            raw_output=raw_output,
+                            error=error,
+                            match_kbd_ids=match_ids,
+                        )
+                    )
+
+                    if self._diagnostic_item_client and self._conversation_id:
+                        await self._diagnostic_item_client.create_item(
+                            conversation_id=uuid.UUID(self._conversation_id),
+                            stage="S3",
+                            type="verification_step",
+                            seq=len(steps_executed),
+                            content={
+                                "tool_name": tool,
+                                "tool_args": tool_args,
+                                "raw_output": smart_truncate(raw_output or "", max_chars=500),
+                                "error": error,
+                                "match_kbd_ids": list(match_ids),
+                                "is_confirmation": True,
+                            },
+                            status="confirmed" if error is None else "rejected",
+                        )
 
         # ─── 生成最终诊断报告 ─────────────────────────────────────────
         yield AgentStageUpdate(
@@ -888,9 +976,10 @@ class KBDDiagnostic:
             f"匹配 KBD（共 {len(matched_kbds)} 个）：\n{kbds_summary}\n\n"
             "报告要求（Markdown 格式）：\n"
             "1. **故障确认**：最可能的根因（1-2句）\n"
-            "2. **诊断依据**：关键步骤发现的具体异常\n"
+            "2. **诊断依据**：必须引用上方“诊断步骤执行情况”中真实采集到的关键信号输出（如报错原文、进程名、状态值）作为证据，禁止凭空断言；若某条结论在步骤输出中找不到对应证据，必须明确标注“（未经现场信号确认，建议执行：<具体命令>）”。\n"
             "3. **处理建议**：按优先级列出 3-5 个操作步骤\n"
             "4. **参考文档**：最匹配 KBD 名称及编号\n\n"
+            "约束：诊断依据中的每条论断都必须能在“诊断步骤执行情况”找到对应的真实输出支撑；不得把 KBD 文档里的既定结论当作已发生的现场观测。\n"
             "面向 HCI 运维工程师，简洁专业，不要有多余废话。"
         )
 
