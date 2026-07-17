@@ -171,6 +171,12 @@
   - docker-compose.yml：移除暴露端口、统一网络配置
   - Helm agent-service deployment：新增 LANGFUSE_SECRET_KEY / PUBLIC_KEY / HOST 环境变量
   - kb-service admin.py：.md 文件导入同 .docx 生成 docx_hash 支持幂等去重
+- **docker-compose db-migrate 声明式数据库迁移**（PR #569）：
+  - 新增 `db-migrate` 服务，与 Helm `db-migrate` Job 使用相同镜像和脚本，本地修改 Schema 后通过 volume 挂载实时生效
+  - entrypoint 串联 atlas_dev 初始化 → 数据迁移 → 函数 → Atlas schema apply → 触发器 → 种子数据加载全流程
+  - 新增 `make db-sync` 目标：修改 `desired_schema.sql` 后一键同步，无需重启其他服务
+  - 优化 `make dev-up` 分步执行：先迁移后启动应用服务，确保 Schema 就绪后再启动后端
+  - 移除 postgres 的 `init.sql` 挂载（仅首次创建生效，已由 db-migrate 替代）；清理已废弃的 dbmate `db-sync`/`db-check` 目标
 
   - `DynamicSkillRunner` 嵌入 `observe_skill` Langfuse observation，skill 执行可独立观测
   - 诊断报告模板精简为「故障摘要 / 根因 / 修复方案」三章
@@ -380,8 +386,9 @@ AGENT=copilot gpr "feat: 新功能"
 make install              # uv sync + pnpm install
 
 # 开发环境
-make dev-up               # Docker Compose 启动
+make dev-up               # Docker Compose 启动（含自动数据库迁移）
 make dev-down             # Docker Compose 停止
+make db-sync              # 手动数据库 Schema 同步（修改 desired_schema.sql 后使用）
 
 # 测试（按服务隔离运行，避免 app/ 命名空间冲突）
 make test                 # 全部测试
