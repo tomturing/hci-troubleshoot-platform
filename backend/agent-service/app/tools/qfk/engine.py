@@ -118,6 +118,9 @@ async def qfk_exec(
     # 2. 复用底层 BridgeRelayExecutor 执行命令
     from app.tools.acli.executor import _executor
     if _executor is None:
+        # 注意：此处的 None 仅表示 agent-service 进程内部的全局执行器未注入
+        # （lifespan 未调用 set_executor），并不代表 terminal_bridge / SSH 链路异常。
+        # 切勿据此误判为"终端桥未启动"而去重启 terminal_bridge。
         return QFKResult(
             matched=False,
             signal_type=signal.namespace,
@@ -126,7 +129,11 @@ async def qfk_exec(
             match_mode=signal.match_mode,
             matched_keywords=[],
             evidence="",
-            error="BridgeRelayExecutor 未启动或尚未完成初始化，请检查服务启动流程",
+            error=(
+                "诊断服务端 BridgeRelayExecutor 全局实例未注入（agent-service 启动流程未完成 set_executor 注册），"
+                "并非终端桥未启动。请检查 agent-service 启动日志（bridge_relay_executor_registered 事件），"
+                "确认 REDIS_URL / CONVERSATION_SERVICE_URL / INTERNAL_API_TOKEN 均已就绪后重启 agent-service。"
+            ),
         )
 
     results = []

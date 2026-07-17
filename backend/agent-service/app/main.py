@@ -305,6 +305,31 @@ async def lifespan(app: FastAPI):
         message="InvestigationAgent 已初始化（S1-S4，支持 SOP ReactEngine）",
     )
 
+    # ── 注册全局 BridgeRelayExecutor（供 QFK 引擎复用）──────────────────────────────
+    # 根因修复（工单 Q2026071760774）：qfk.engine.qfk_exec 复用模块级全局 `_executor`
+    # 作为唯一执行后端，但此前 lifespan 从未调用 set_executor() 注入实例，导致 `_executor`
+    # 恒为 None，所有 QFK 信号判定（qfk_system / qfk_vm 等）在入口即短路返回
+    # "BridgeRelayExecutor 未启动或尚未完成初始化"，造成诊断误报（假阴），且错误地把
+    # agent-service 内部全局变量未初始化误述为终端桥未启动，误导现场重启 terminal_bridge。
+    # 此处将 CompositeToolExecutor 已构建好的 BridgeRelayExecutor 注册为全局实例，
+    # 与 InvestigationAgent / CompositeToolExecutor 共用同一实例，避免重复建连。
+    if investigation_tool_executor._bridge_executor is not None:
+        from app.tools.acli.executor import set_executor
+
+        set_executor(investigation_tool_executor._bridge_executor)
+        logger.info(
+            event="bridge_relay_executor_registered",
+            message="全局 BridgeRelayExecutor 已注册（供 QFK 引擎复用）",
+        )
+    else:
+        logger.warning(
+            event="bridge_relay_executor_not_registered",
+            message=(
+                "CompositeToolExecutor._bridge_executor 为 None（Redis/依赖缺失），"
+                "QFK 诊断将不可用，请检查 REDIS_URL / CONVERSATION_SERVICE_URL / INTERNAL_API_TOKEN"
+            ),
+        )
+
     # ── RemediationAgent（S5 修复执行）────────────────────────────────────────────────
     # T-AGT-12：require_all_confirm=True，所有工具调用均需用户确认
     remediation_agent: RemediationAgent | None = None
