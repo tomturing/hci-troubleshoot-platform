@@ -10,13 +10,30 @@ from shared.database.postgres import DatabaseManager
 from shared.dynamic_resource.adapters import tool_resource_payload
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.observability.logger import get_logger
-from sqlalchemy import delete, select
+from sqlalchemy import case, delete, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tool_definition import ToolDefinition
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
+
+# 工具管理页中 qkv/qfk 两类工具的展示顺序（其余分类保持 category, tool_name 不变）。
+# 顺序依据：前端信号(QKV 生产者) → 后端信号(QFK 消费者) 的业务阅读顺序。
+QKV_QFK_DISPLAY_ORDER = [
+    "qkv_alert",
+    "qkv_task",
+    "qkv_dialog",
+    "qfk_log",
+    "qfk_service",
+    "qfk_system",
+    "qfk_vm",
+    "qfk_network",
+    "qfk_storage",
+    "qfk_hardware",
+    "qfk_platform",
+]
+_QKV_QFK_RANK = {name: i for i, name in enumerate(QKV_QFK_DISPLAY_ORDER)}
 
 # 工具命名规范（与 DB CHECK 约束 chk_tool_definition_tool_name_format、前端表单校验保持一致）：
 # 首字符小写字母，仅允许小写字母/数字/下划线，长度 1–64，禁止点号(.)与大写字母。
@@ -210,7 +227,16 @@ async def list_tools(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """查询 ReAct 工具定义库列表"""
-    stmt = select(ToolDefinition).order_by(ToolDefinition.category, ToolDefinition.tool_name)
+    # 展示顺序：qkv/qfk 两类按 QKV_QFK_DISPLAY_ORDER 固定顺序置顶，其余分类保持 category, tool_name 不变。
+    _is_qkv_qfk = ToolDefinition.category.in_(["qkv", "qfk"])
+    _group_case = case((_is_qkv_qfk, 0), else_=1)
+    _rank_case = case(
+        *[(ToolDefinition.tool_name == name, rank) for name, rank in _QKV_QFK_RANK.items()],
+        else_=9999,
+    )
+    _cat_case = case((_is_qkv_qfk, literal("")), else_=ToolDefinition.category)
+    _name_case = case((_is_qkv_qfk, literal("")), else_=ToolDefinition.tool_name)
+    stmt = select(ToolDefinition).order_by(_group_case, _rank_case, _cat_case, _name_case)
     if category:
         stmt = stmt.where(ToolDefinition.category == category)
     if is_active is not None:
