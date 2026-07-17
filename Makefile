@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill db-sync db-check local-deploy local-deploy-import
+.PHONY: help install dev-up dev-down db-sync test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -33,7 +33,7 @@ help:
 	@echo "  atlas migrate diff --env local <name>  - 生成迁移文件"
 	@echo "  atlas migrate apply --env local        - 本地应用迁移"
 	@echo "  atlas migrate status --env local       - 查看迁移状态"
-	@echo "  [废弃] db-sync / db-check              - dbmate 工具已停用"
+	@echo "  make db-sync        - 手动执行数据库 Schema 迁移（修改 desired_schema.sql 后使用）"
 
 install:
 	@echo "安装Python依赖 (uv sync)..."
@@ -42,13 +42,27 @@ install:
 	cd frontend && pnpm install
 
 dev-up:
-	@echo "启动开发环境..."
+	@echo "Starting PostgreSQL & Redis..."
+	docker-compose -f deploy/docker/docker-compose.yml up -d postgres redis
+	@echo "Waiting for PostgreSQL to be ready..."
+	@until docker-compose -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
+	@echo "Running database migrations..."
+	docker-compose -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
+	@echo "Starting all services..."
 	docker-compose -f deploy/docker/docker-compose.yml up -d
+	@echo ""
 	@echo "服务已启动:"
 	@echo "  - API Gateway: http://localhost:8000"
 	@echo "  - Case Service: http://localhost:8001"
 	@echo "  - Conversation Service: http://localhost:8002"
 	@echo "  - Scheduler Service: http://localhost:8003"
+	@echo "  - Admin UI: http://localhost:3002"
+
+db-sync:
+	@echo "Running database schema migration..."
+	@until docker-compose -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
+	docker-compose -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
+	@echo "Migration complete."
 
 dev-down:
 	@echo "停止开发环境..."
@@ -125,17 +139,3 @@ rollback-drill:
 	@echo "执行回滚演练（默认不执行真实回滚）..."
 	bash scripts/ops/rollback-drill.sh
 
-## [已废弃] 原 dbmate 迁移同步，自 v6.3 起由 Atlas 接管
-## 历史迁移文件已归档至 docs/archive/db-migrations-history/
-db-sync:
-	@echo "⚠️  db-sync 已废弃（dbmate → Atlas v6.3）"
-	@echo "    Schema 变更请修改 database/desired_schema.sql 并运行 atlas migrate diff"
-	@echo "    等价命令: atlas migrate diff --env local <name>"
-	@exit 0
-
-## [已废弃] 原 dbmate 迁移检查
-db-check:
-	@echo "⚠️  db-check 已废弃（dbmate → Atlas v6.3）"
-	@echo "    迁移状态请使用: atlas migrate status --env local"
-	@atlas migrate status --env local 2>/dev/null || echo "    (atlas 未安装或无数据库连接，请手动执行)"
-	@exit 0
