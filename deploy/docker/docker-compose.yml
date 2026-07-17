@@ -1,4 +1,58 @@
 services:
+  # ============================================================
+  # db-migrate — 声明式 Schema 迁移（每次启动自动执行）
+  # 与 Helm db-migrate Job 使用相同的 Dockerfile.migrations 镜像
+  # 通过 volume 挂载本地文件，schema 变更无需重新构建镜像
+  # ============================================================
+  db-migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.migrations
+    container_name: hci-db-migrate
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot?sslmode=disable}
+      # DEV_URL：Atlas 规范化 SQL 所需的空数据库（与 Helm initContainer 一致：独立 atlas_dev 数据库）
+      DEV_URL: ${DEV_URL:-postgres://hci_admin:dev_password_123@postgres:5432/atlas_dev?sslmode=disable}
+    # 覆盖 ENTRYPOINT：与 Helm initContainer + PreSync/PostSync 逻辑一致
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        echo ">>> 初始化 Atlas dev 数据库..."
+        # 创建 atlas_dev 数据库（幂等）
+        psql "$$DATABASE_URL" -tc \
+          "SELECT 1 FROM pg_database WHERE datname='atlas_dev';" \
+          | grep -q 1 || \
+          psql "$$DATABASE_URL" -c "CREATE DATABASE atlas_dev;"
+        # 为 atlas_dev 安装必要扩展（desired_schema.sql 使用 vector/pgcrypto 类型）
+        psql "$$DEV_URL" -c "
+          CREATE EXTENSION IF NOT EXISTS vector;
+          CREATE EXTENSION IF NOT EXISTS pgcrypto;
+          CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+        "
+        echo ">>> 开始数据库迁移（PreSync 等价）..."
+        /db-migrate.sh
+        echo ">>> 加载种子数据（PostSync 等价）..."
+        for f in /seeds/*.sql; do
+          echo "  执行: $$(basename $$f)"
+          psql -v ON_ERROR_STOP=1 "$$DATABASE_URL" -f "$$f"
+        done
+        echo ">>> 数据库就绪"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # 挂载本地 schema/种子文件覆盖镜像内版本，本地修改实时生效
+      # 注意：脚本不挂载（使用镜像内已 chmod +x 的版本，脚本变更频率低）
+      - ../../database/desired_schema.sql:/desired_schema.sql:ro
+      - ../../database/desired_extras.sql:/desired_extras.sql:ro
+      - ../../database/data-migrations/:/data-migrations/:ro
+      - ../../database/seeds/:/seeds/:ro
+    restart: "no"
+    networks:
+      - hci-troubleshoot-platform_default
+
   postgres:
     image: pgvector/pgvector:pg15
     container_name: hci-postgres
@@ -8,7 +62,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password_123}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../../database/desired_schema.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hci_admin} -d ${POSTGRES_DB:-hci_troubleshoot}" ]
       interval: 10s
