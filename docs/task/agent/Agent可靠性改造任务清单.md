@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-06-24
+last_updated: 2026-07-18
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-18 | v3.17 | **修复 QFK 诊断“BridgeRelayExecutor 未启动”假阴（PR #572）**：`main.py` lifespan 此前从未调用 `set_executor()` 注入模块级全局 `_executor`，而 QFK 引擎（`qfk.engine.qfk_exec`）复用该全局作为唯一执行后端，导致 `_executor` 恒为 None，所有 `qfk_system`/`qfk_vm` 等关键信号判定在入口短路返回“未启动”误报，并错误归因为终端桥未启动（实际 terminal_bridge/SSH 链路正常，手动 SSH 可验证）。修复：lifespan 中将 `CompositeToolExecutor` 已构建的 `BridgeRelayExecutor` 注册为全局实例（与 InvestigationAgent 共用，避免重复建连）；并修正 QFK 误报文案，明确指出是 agent-service 内部未注册而非终端桥故障，避免现场误重启 terminal_bridge | — |
 | 2026-07-17 | v3.15 | **根治诊断报告“未用关键信号确认就下结论”（待合并 PR）**：① `kbd_differential.py` 新增关键信号确认阶段——当贪心消除主循环因候选数 ≤ early_stop_threshold(2) 未执行任何步骤时（单/少候选场景，如“虚拟机-003 开机失败”常仅 1 条匹配 KBD），强制补跑剩余候选的 backend 关键信号（qfk_*/acli_* 等）作为现场证据，杜绝直接把 KBD 文档 root_cause 复述成结论；② 报告生成 Prompt 强化：诊断依据必须引用实际采集到的关键信号输出，无证据须标注“（未经现场信号确认，建议执行：<命令>）”；③ 更新单候选测试并新增回归测试 `test_single_candidate_confirms_its_signals` | — |
 | 2026-07-16 | v3.14 | **工具命名规范统一：acquirer 点号→下划线（PR #566）**：`kbd_differential.py` 路由由 `startswith("qkv.")`/`split(".")` 改为 `startswith("qkv_")`/`split("_", 1)`；QKV 3 + QFK 8 共 11 个 acquirer 由点号统一为下划线（如 `qkv.alert`→`qkv_alert`、`qfk.hardware`→`qfk_hardware`），与 `ACQUIRER_CATALOG`、种子、系统提示词模板及单测/集成测试保持一致 | — |
 | 2026-07-15 | v3.13 | **sop_document.signals_json 声明式 schema 补齐（PR #556）**：修复 PR #545 漏改 `database/desired_schema.sql` 的 `sop_document` 表定义（仅改了 `kbd_entry`）。`db-migrate.sh` 只应用 `desired_schema.sql`（声明式 SSOT）、不应用 `atlas-migrations/` 版本化迁移，导致数据库 `sop_document` 表缺 `signals_json` 列，ORM `select(SopDocument)` 查询 500（编辑保存/审核通过/发布/导入/抽取信号），而 GET 详情用原生 SQL 显式列名不受影响。本次补齐列+COMMENT+GIN 索引；新增避坑指南 D-013 | - |
