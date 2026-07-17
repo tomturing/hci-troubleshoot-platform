@@ -393,6 +393,19 @@ class ReactEngine:
         self.has_write_operation = False
         self.has_verification_after_write = False
 
+    async def _load_prompt(self, name: str, placeholders: list[str]) -> str:
+        """从 prompt 管理（system_prompt 表）加载 Prompt 模板。
+
+        生产环境经 db_session_factory 走 StrictPromptLoader（DB 缺失则按设计 fail-loud）；
+        DB 会话工厂为空（如部分单测）时回退到 create_mock_session_factory 的基准模板，
+        保证逻辑路径与线上一致且单测可解析。
+        """
+        from shared.utils.prompt_loader import StrictPromptLoader, create_mock_session_factory
+
+        factory = self._db_session_factory or create_mock_session_factory()
+        async with factory() as session:
+            return await StrictPromptLoader.load_and_validate(session, name, placeholders)
+
     async def execute(
         self,
         *,
@@ -459,46 +472,15 @@ class ReactEngine:
 
         # T3-3/DC-05/DC-06: 统一输出约束（精简合并，减少 token 浪费）
         # T3-3/DC-05/DC-06/DC-08: 统一输出约束
-        system_prompt += (
-            "\n\n【输出约束 — 强制执行】\n"
-            "1. 每次回复前用 <reasoning> 简述：已收集证据 / 假设支撑与反对 / 置信度(高/中/低) / 下一步行动。\n"
-            "2. 最终诊断报告严格按此模板，章节标题不得改名或增减：\n"
-            "   ## 故障摘要\n"
-            "   （一段话概述：什么故障、什么主机/磁盘/虚拟机、关键证据数据、根本原因）\n"
-            "   ## 根因\n"
-            "   （明确的根因判定，引用工具输出中的具体数据）\n"
-            "   ## 修复方案\n"
-            "   （solution 节点原文直出，合并快速恢复和彻底恢复为一段，不可修改、不可增删步骤）\n"
-            "3. solution 节点（no_tool_execution=true）：只输出其 content 原文，**严禁调用任何工具**。\n"
-            "4. 报告输出完毕后立即终止，不得追加额外步骤或工具调用。\n"
-            "5. 【数据源铁律】诊断报告的每一项内容必须来自以下三类来源之一，禁止使用训练数据中的通用知识：\n"
-            "   a. SOP 节点的 content/solution 原文（只能引用，不能改写）\n"
-            "   b. 工具执行的实际输出（bash_exec stdout / acli_exec json，必须标注具体命令）\n"
-            "   c. SOP 变量值（通过 sop_request_variable 或 skill 获取的 {variable} 值）\n"
-            "   严禁：编造具体数值（虚拟机名、时延ms、容量TB）、添加 SOP 中没有的修复步骤、\n"
-            "   使用「通常」「一般」「建议」「可能」开头且无工具输出支撑的句子。\n"
-            "6. 【SOP决策树强制遵循】诊断必须严格按决策树节点推进，禁止自由探索：\n"
-            "   a. 到达 branch 节点后先执行该节点的 commands，再根据结果选择子节点\n"
-            "   b. 选择子节点必须通过 sop_advance 推进，严禁自行判断分支\n"
-            "   c. 叶节点(diagnosis/solution)到达后直接输出其 content\n"
-            "   d. **严禁绕过 SOP 自行调用 acli_exec/bash_exec 探索**，所有工具调用必须来自当前 SOP 节点的 commands\n"
-            "   e. sop_request_variable 获取 skill 变量后必须根据结果走对应 solution，不继续探索子节点\n"
-            "   f. sop_request_variable 只能请求 SOP 节点 required_variables 中列出的变量名，**严禁自行编造变量名**\n"
-            "      （如 alert_parsed、disk_info 等）。若返回 suggested_variables，必须用建议的变量名重试。\n"
-            "7. 【分支选择原则】到达 branch 节点后：\n"
-            "   a. 若节点有 has_solution=true：先获取依赖变量（如 check_meth），根据 skill 输出判断是否需要深入子节点\n"
-            "   b. 若节点 commands 为空且 children 非空：直接读取子节点内容，对比 evidence 选择最匹配的分支\n"
-            "   c. 选择分支**只看子节点的 prerequisites 是否满足当前收集的证据**，不凭「经验」或「通用知识」判断"
-        )
+        # 该输出约束块已数据库化（prompt 管理 → s1_react_output_constraint_v1），按阶段统一纳管
+        output_constraint = await self._load_prompt("s1_react_output_constraint_v1", [])
+        system_prompt += "\n\n" + output_constraint
 
         if response_schema:
             schema_json = json.dumps(response_schema.model_json_schema(), ensure_ascii=False)
-            system_prompt += (
-                f"\n\n【结构化输出强制要求】\n"
-                f"你必须输出符合以下 JSON Schema 的结构化 JSON：\n"
-                f"{schema_json}\n"
-                f"确保你的最终文本回复必须是合法的 JSON（位于 <reasoning> 之外），不要在 JSON 外包裹任何 markdown 或自然语言解释。"
-            )
+            # 该结构化输出要求前缀已数据库化（prompt 管理 → s1_react_structured_output_v1），占位符 schema_json 动态注入
+            structured_output = await self._load_prompt("s1_react_structured_output_v1", ["schema_json"])
+            system_prompt += "\n\n" + structured_output.format(schema_json=schema_json)
 
         # 工作消息列表（在循环中动态追加）
         # 清理对话历史中不完整的 tool_calls/tool 配对，OpenAI API 要求每个
@@ -622,11 +604,15 @@ class ReactEngine:
                             "hallucination_detected_before_report", "最终报告生成前检测到幻觉，尝试重新生成一次 (Re-run)..."
                         )
                         try:
+                            # 反幻觉自我检查指令已数据库化（prompt 管理 → s4_react_antihallucination_v1）
+                            antihallucination_prompt = await self._load_prompt(
+                                "s4_react_antihallucination_v1", []
+                            )
                             temp_messages = work_messages + [
                                 {"role": "assistant", "content": invoke_result.content},
                                 {
                                     "role": "system",
-                                    "content": "【反幻觉自我检查指令】你的上一次回答中包含未实际执行的工具引用，或者未在工具输出中找到数据来源的数值/百分比。请进行一步自我检查，修正这些幻觉，仅引用实际执行过的工具及对应的结果。请重新输出你的回答。",
+                                    "content": antihallucination_prompt,
                                 },
                             ]
                             new_invoke_result = await ai_client.invoke(

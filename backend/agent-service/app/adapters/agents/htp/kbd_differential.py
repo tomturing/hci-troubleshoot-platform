@@ -98,6 +98,7 @@ class KBDDiagnostic:
         conversation_id: str | None = None,  # 会话 ID（用于 INSERT）
         assistant_type: str = "htp-agent",
         early_stop_threshold: int = EARLY_STOP_THRESHOLD,
+        db_session_factory: Any | None = None,  # DB 会话工厂（用于从 prompt 管理加载 Prompt）
     ) -> None:
         self._ai_registry = ai_registry
         self._tool_executor = tool_executor
@@ -105,6 +106,7 @@ class KBDDiagnostic:
         self._conversation_id = conversation_id
         self._assistant_type = assistant_type
         self._early_stop = early_stop_threshold
+        self._db_session_factory = db_session_factory
         self._result: KBDDiagResult | None = None
         # 会话级变量池（黑板）：阶段 A 生产者(QKV)写入，阶段 B 消费者(QFK)读取
         self._variable_pool: dict[str, Any] = {}
@@ -112,6 +114,19 @@ class KBDDiagnostic:
     def get_result(self) -> KBDDiagResult | None:
         """获取最近一次 diagnose() 调用的结果（调用前返回 None）。"""
         return self._result
+
+    async def _load_prompt(self, name: str, placeholders: list[str]) -> str:
+        """从 prompt 管理（system_prompt 表）加载 Prompt 模板。
+
+        生产环境经 db_session_factory 走 StrictPromptLoader（DB 缺失则按设计 fail-loud）；
+        DB 会话工厂为空（如部分单测）时回退到 create_mock_session_factory 的基准模板，
+        保证逻辑路径与线上一致且单测可解析。
+        """
+        from shared.utils.prompt_loader import StrictPromptLoader, create_mock_session_factory
+
+        factory = self._db_session_factory or create_mock_session_factory()
+        async with factory() as session:
+            return await StrictPromptLoader.load_and_validate(session, name, placeholders)
 
     def _set_pool_var(self, name: str, value: Any) -> None:
         """写入会话变量池（黑板）的规范化入口。
@@ -906,21 +921,14 @@ class KBDDiagnostic:
             for kbd in kbds
         ]
 
-        judge_prompt = (
-            "你是 HCI 智能运维排障助手，正在执行 KBD 差异诊断。\n\n"
-            f"已执行诊断工具：**{tool_name}**\n\n"
-            "实际工具输出：\n"
-            "```\n"
-            f"{truncated_output}\n"
-            "```\n\n"
-            "请判断以上输出是否符合以下各 KBD 在此步骤的期望特征：\n\n"
-            f"{json.dumps(kbd_expectations, ensure_ascii=False, indent=2)}\n\n"
-            "判断规则：\n"
-            "- 若实际输出包含 KBD 期望的关键特征 → true\n"
-            "- 若实际输出明确不符合 KBD 期望 → false\n"
-            "- 若无法确定（信息不足）→ 保守地返回 true\n\n"
-            "严格返回 JSON，不要有任何额外说明：\n"
-            '{"matches": {"KBD_ID_1": true, "KBD_ID_2": false}}'
+        judge_prompt = await self._load_prompt(
+            "s3_kbd_judge_v1",
+            ["tool_name", "truncated_output", "kbd_expectations"],
+        )
+        judge_prompt = judge_prompt.format(
+            tool_name=tool_name,
+            truncated_output=truncated_output,
+            kbd_expectations=json.dumps(kbd_expectations, ensure_ascii=False, indent=2),
         )
 
         try:
@@ -970,17 +978,15 @@ class KBDDiagnostic:
             for kbd in matched_kbds[:5]
         )
 
-        prompt = (
-            "你是 HCI 智能运维排障助手，已完成 KBD 差异诊断，请生成结构化诊断报告。\n\n"
-            f"诊断步骤执行情况（共 {len(steps_executed)} 步）：\n{steps_summary}\n\n"
-            f"匹配 KBD（共 {len(matched_kbds)} 个）：\n{kbds_summary}\n\n"
-            "报告要求（Markdown 格式）：\n"
-            "1. **故障确认**：最可能的根因（1-2句）\n"
-            "2. **诊断依据**：必须引用上方“诊断步骤执行情况”中真实采集到的关键信号输出（如报错原文、进程名、状态值）作为证据，禁止凭空断言；若某条结论在步骤输出中找不到对应证据，必须明确标注“（未经现场信号确认，建议执行：<具体命令>）”。\n"
-            "3. **处理建议**：按优先级列出 3-5 个操作步骤\n"
-            "4. **参考文档**：最匹配 KBD 名称及编号\n\n"
-            "约束：诊断依据中的每条论断都必须能在“诊断步骤执行情况”找到对应的真实输出支撑；不得把 KBD 文档里的既定结论当作已发生的现场观测。\n"
-            "面向 HCI 运维工程师，简洁专业，不要有多余废话。"
+        prompt = await self._load_prompt(
+            "s4_kbd_report_v1",
+            ["steps_count", "steps_summary", "kbds_count", "kbds_summary"],
+        )
+        prompt = prompt.format(
+            steps_count=len(steps_executed),
+            steps_summary=steps_summary,
+            kbds_count=len(matched_kbds),
+            kbds_summary=kbds_summary,
         )
 
         try:

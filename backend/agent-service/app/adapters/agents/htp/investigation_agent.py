@@ -334,6 +334,7 @@ class InvestigationAgent(BaseAgent):
             diagnostic_item_client=self._diagnostic_item_client,
             conversation_id=session_id,  # T-AGT-19: 传入会话 ID 用于 INSERT
             assistant_type=assistant_type,
+            db_session_factory=self._db_session_factory,  # prompt 管理：KBD 诊断的 judge/report Prompt 走 DB
         )
 
         async for event in self._kbd_diag.diagnose(
