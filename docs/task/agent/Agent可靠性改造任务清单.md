@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-06-24
+last_updated: 2026-07-18
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-18 | v3.17 | **修复 QFK 诊断“BridgeRelayExecutor 未启动”假阴（PR #572）**：`main.py` lifespan 此前从未调用 `set_executor()` 注入模块级全局 `_executor`，而 QFK 引擎（`qfk.engine.qfk_exec`）复用该全局作为唯一执行后端，导致 `_executor` 恒为 None，所有 `qfk_system`/`qfk_vm` 等关键信号判定在入口短路返回“未启动”误报，并错误归因为终端桥未启动（实际 terminal_bridge/SSH 链路正常，手动 SSH 可验证）。修复：lifespan 中将 `CompositeToolExecutor` 已构建的 `BridgeRelayExecutor` 注册为全局实例（与 InvestigationAgent 共用，避免重复建连）；并修正 QFK 误报文案，明确指出是 agent-service 内部未注册而非终端桥故障，避免现场误重启 terminal_bridge | — |
 | 2026-07-17 | v3.15 | **根治诊断报告“未用关键信号确认就下结论”（待合并 PR）**：① `kbd_differential.py` 新增关键信号确认阶段——当贪心消除主循环因候选数 ≤ early_stop_threshold(2) 未执行任何步骤时（单/少候选场景，如“虚拟机-003 开机失败”常仅 1 条匹配 KBD），强制补跑剩余候选的 backend 关键信号（qfk_*/acli_* 等）作为现场证据，杜绝直接把 KBD 文档 root_cause 复述成结论；② 报告生成 Prompt 强化：诊断依据必须引用实际采集到的关键信号输出，无证据须标注“（未经现场信号确认，建议执行：<命令>）”；③ 更新单候选测试并新增回归测试 `test_single_candidate_confirms_its_signals` | — |
 | 2026-07-18 | v3.16 | **硬编码 Prompt 统一数据库化接入 prompt 管理（待合并 PR）**：将 htp 诊断路径中 5 处硬编码 LLM Prompt 注册进 `system_prompt` 表（prompt 管理可可视化/热更新/回滚），按阶段与顺序归位：① S1 `s1_react_output_constraint_v1`（React 通用输出约束）、`s1_react_structured_output_v1`（结构化输出强制要求，占位符 `schema_json`）；② S3 `s3_kbd_judge_v1`（KBD 差异判定 LLM 匹配，占位符 `tool_name/truncated_output/kbd_expectations`）；③ S4 `s4_kbd_report_v1`（KBD 诊断报告生成，占位符 `steps_count/steps_summary/kbds_count/kbds_summary`）、`s4_react_antihallucination_v1`（反幻觉自我检查）。`KBDDiagnostic`/`ReactEngine` 新增 `_load_prompt` 助手经 `StrictPromptLoader` 从 DB 加载（`db_session_factory` 为空时回退 `create_mock_session_factory` 基准模板，保证单测一致）；`investigation_agent.py` 向 `KBDDiagnostic` 注入 `db_session_factory`。`database/seeds/02_system_prompts.sql` 与 `shared/utils/prompt_loader.py` 的 mock 工厂同步新增 5 条模板 | — |
 | 2026-07-16 | v3.14 | **工具命名规范统一：acquirer 点号→下划线（PR #566）**：`kbd_differential.py` 路由由 `startswith("qkv.")`/`split(".")` 改为 `startswith("qkv_")`/`split("_", 1)`；QKV 3 + QFK 8 共 11 个 acquirer 由点号统一为下划线（如 `qkv.alert`→`qkv_alert`、`qfk.hardware`→`qfk_hardware`），与 `ACQUIRER_CATALOG`、种子、系统提示词模板及单测/集成测试保持一致 | — |
