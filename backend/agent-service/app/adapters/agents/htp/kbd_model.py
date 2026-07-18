@@ -121,6 +121,13 @@ class KBD:
                 return _signal_to_step(s)
         return None
 
+    def get_signal(self, tool_name: str) -> dict | None:
+        """按 acquirer 获取原始信号 dict（供执行层做写操作门禁判定）。"""
+        for s in self.signals:
+            if s.get("acquirer") == tool_name:
+                return s
+        return None
+
     def get_expected_pattern(self, tool_name: str) -> str | None:
         """返回指定 acquirer 对应的期望输出模式（用于 judge）。"""
         step = self.get_step(tool_name)

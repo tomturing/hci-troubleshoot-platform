@@ -37,7 +37,12 @@ from app.adapters.agents.htp.kbd_model import (
     _signal_to_step,
 )
 from app.core.utils import smart_truncate
-from app.domain.agent_port import AgentEvent, AgentStageUpdate, AgentTextChunk
+from app.domain.agent_port import (
+    AgentEvent,
+    AgentInteractiveRequest,
+    AgentStageUpdate,
+    AgentTextChunk,
+)
 
 logger = get_logger("kbd-differential")
 
@@ -55,6 +60,40 @@ MAX_CONSECUTIVE_FAILURES = 3
 #      均能命中池内小写 Key，无需依赖「produces 名必须大写」的全局隐式约定；
 #      未命中（如生产者尚未产出该变量）的占位符保留原样，不抛异常，交由下层处理。
 _PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z0-9_.]+)\}\}")
+
+# 写操作子命令词表（与 kb-service.extract_signals.WRITE_OP_SUB_COMMANDS 保持一致）。
+# 执行层以此做纵深防御：即便信号 schema 未带 require_human_confirm，只要 sub_command
+# 命中写动词，也绝不自动执行，必须人工授权。
+_WRITE_OP_SUB_COMMANDS: set[str] = {
+    "start", "stop", "shutdown", "restart", "suspend", "resume",
+    "migrate", "clone", "snapshot", "reset", "reboot",
+    "delete", "remove", "del", "rm", "format", "wipe", "destroy",
+    # 注：上文之外补充 qfk_system 常见包裹动作
+    "enable", "disable", "kill", "killall", "pkill",
+    "up", "down", "set", "create", "add", "modify", "update",
+}
+
+
+def _signal_requires_human(signal: dict | None) -> bool:
+    """写操作/处置动作信号判定：诊断阶段绝不自动执行，必须人工授权。
+
+    判定优先级：
+      1) 信号已显式标记 require_human_confirm / phase=solution（抽取层已标注）
+      2) 纵深防御：backend（qfk_*）信号 sub_command 命中写动词词表
+    """
+    if not signal:
+        return False
+    if signal.get("require_human_confirm"):
+        return True
+    if signal.get("phase") == "solution":
+        return True
+    acquirer = signal.get("acquirer", "")
+    if acquirer.startswith("qfk_"):
+        sub = str((signal.get("acquirer_args") or {}).get("sub_command", "") or "")
+        tokens = set(re.split(r"[\s|/]+", sub.strip()))
+        if tokens & _WRITE_OP_SUB_COMMANDS:
+            return True
+    return False
 
 
 @dataclass
@@ -173,6 +212,11 @@ class KBDDiagnostic:
             return
 
         remaining = list(candidates)
+        # 确定性排序（第一性原理：诊断结论必须可复现）。
+        # 以「相似度降序 + KBD id 升序」为稳定次序，保证：
+        #   - remaining[0] 始终是首选候选（报告/S4 根因锁定一致）
+        #   - 贪心循环与确认分支在并列时的选择可复现，消除顺序随机性
+        remaining.sort(key=lambda k: (-k.similarity, str(k.id)))
         steps_executed: list[StepResult] = []
         consecutive_failures = 0
 
@@ -238,6 +282,45 @@ class KBDDiagnostic:
                     "step_index": len(steps_executed) + 1,
                 },
             )
+
+            # 写操作/处置动作门禁（诊断只读原则）：绝不自动执行，交由人工授权。
+            # 即便贪心循环选中了某写操作信号，也只记录并请求授权，不进入 judge/eliminate。
+            rep_signal = remaining[0].get_signal(best_tool_name) if remaining else None
+            if _signal_requires_human(rep_signal):
+                logger.warning(
+                    event="kbd_diag_write_op_skipped",
+                    tool=best_tool_name,
+                    session_id=session_id,
+                )
+                steps_executed.append(
+                    StepResult(
+                        tool_name=best_tool_name,
+                        tool_args=tool_args,
+                        raw_output=None,
+                        error="写操作/处置动作：诊断阶段不自动执行，需人工授权",
+                        match_kbd_ids=set(remaining),
+                    )
+                )
+                yield AgentStageUpdate(
+                    stage="write_op_blocked",
+                    metadata={"tool": best_tool_name, "reason": "require_human_confirm"},
+                )
+                yield AgentInteractiveRequest(
+                    request_id=f"human-auth-{best_tool_name}-{session_id}",
+                    acp_session_id=session_id,
+                    kind="info_request",
+                    title=f"需人工授权的高危操作：{best_tool_name}",
+                    prompt=(
+                        f"信号 {best_tool_name} 为写操作/处置动作，诊断阶段不会自动执行。"
+                        "如需执行请人工确认授权。"
+                    ),
+                    options=[
+                        {"optionId": "approve", "name": "授权执行"},
+                        {"optionId": "deny", "name": "拒绝"},
+                    ],
+                    metadata={"tool": best_tool_name, "risk": (rep_signal or {}).get("risk", 2)},
+                )
+                continue
 
             # 3. 执行工具（按 acquirer 路由：qkv→QKV / qfk→QFK / 其他→通用 tool_executor）
             raw_output: str | None = None
@@ -328,16 +411,19 @@ class KBDDiagnostic:
         # ─── 关键信号确认阶段（治本：杜绝“未用关键信号确认就下结论”）─────────
         # 背景：贪心消除主循环仅在 len(remaining) > early_stop 时进入。当候选 KBD 数量
         # ≤ early_stop（高度同质化分类的典型场景，如“虚拟机-003 开机失败”常只有单条匹配
-        # KBD），主循环一次都不执行，backend 关键信号（如 qfk_exec 查进程、acli_* 查报错）
-        # 被整体跳过，报告直接把 KBD 文档里的 root_cause 复述成结论 —— 即用户反馈的
-        # “没有用关键信号确认就直接给了结论”。故当主循环未产出任何步骤时，强制补跑剩余
-        # 候选的 backend 关键信号，作为结论的现场证据（确认语义：记录证据，不剔除候选）。
+        # KBD），主循环一次都不执行。此前此处只重放 backend 关键信号、并 skip 前端生产者，
+        # 导致“前端信号优先级 > 后端”原则被违反，且最可能具区分度的前端关键信号
+        # （如 qkv_task 启动虚拟机失败）被排除在证据之外 —— 正是 Q2026071755113 工单
+        # “首步可见步骤是 acli vm start 而非 qkv_task”的根因之一。故当主循环未产出任何
+        # 步骤时，强制按 KBD 内容顺序补跑剩余候选的【全部】信号（前端生产者 + 后端消费者），
+        # 作为结论的现场证据（确认语义：记录证据，不剔除候选）。前端生产者已在阶段 A 静默
+        # 跑过并填充变量池，此处重放为只读、可幂等，仅用于补全证据链与顺序，使可见顺序
+        # 与 KBD 内容顺序一致。
         if not steps_executed:
             confirmed_tools: set[str] = set()
             for kbd in remaining:
                 for s in kbd.signals:
-                    if s.get("signal_category") != "backend":
-                        continue
+                    # 按 KBD 内容顺序遍历全部信号（含前端生产者），不再 skip 前端
                     tool = s.get("acquirer")
                     if not tool or tool in confirmed_tools:
                         continue
@@ -353,11 +439,44 @@ class KBDDiagnostic:
                         stage="kbd_diag_confirm",
                         metadata={
                             "tool": tool,
+                            "category": s.get("signal_category"),
                             "args": tool_args,
                             "remaining_candidates": len(remaining),
-                            "purpose": "关键信号确认（主循环因候选少未执行）",
+                            "purpose": "关键信号确认（按 KBD 内容顺序，含前端生产者）",
                         },
                     )
+
+                    # 写操作/处置动作门禁（confirm 分支同样适用）：不自动执行，请求人工授权
+                    if _signal_requires_human(kbd.get_signal(tool)):
+                        steps_executed.append(
+                            StepResult(
+                                tool_name=tool,
+                                tool_args=tool_args,
+                                raw_output=None,
+                                error="写操作/处置动作：诊断阶段不自动执行，需人工授权",
+                                match_kbd_ids=set(),
+                            )
+                        )
+                        yield AgentStageUpdate(
+                            stage="write_op_blocked",
+                            metadata={"tool": tool, "reason": "require_human_confirm"},
+                        )
+                        yield AgentInteractiveRequest(
+                            request_id=f"human-auth-{tool}-{session_id}",
+                            acp_session_id=session_id,
+                            kind="info_request",
+                            title=f"需人工授权的高危操作：{tool}",
+                            prompt=(
+                                f"信号 {tool} 为写操作/处置动作，诊断阶段不会自动执行。"
+                                "如需执行请人工确认授权。"
+                            ),
+                            options=[
+                                {"optionId": "approve", "name": "授权执行"},
+                                {"optionId": "deny", "name": "拒绝"},
+                            ],
+                            metadata={"tool": tool, "risk": (kbd.get_signal(tool) or {}).get("risk", 2)},
+                        )
+                        continue
 
                     raw_output = None
                     error = None
@@ -949,70 +1068,54 @@ class KBDDiagnostic:
             )
         return {kbd.id: True for kbd in kbds}
 
+    # KBD 详情超链接模板（前端路由，部署时可据实际路径调整）
+    KBD_DETAIL_URL_TEMPLATE = "/kbd/{id}"
+
     async def _generate_report(
         self,
         matched_kbds: list[KBD],
         steps_executed: list[StepResult],
         user_id: str = "",
     ) -> str:
-        """生成结构化诊断报告，优先用 LLM，降级使用模板。"""
-        ai_client = self._ai_registry.get_client(self._assistant_type)
-        if not ai_client or not matched_kbds:
-            return self._fallback_report(matched_kbds, steps_executed)
+        """生成诊断报告：仅返回命中 KBD 的 root_cause / solution 原始文本 + 现场证据 + 标题超链接。
 
-        steps_summary = "\n".join(
-            "- 步骤 {idx}：`{name}` {status}".format(
-                idx=i + 1,
-                name=s.tool_name,
-                status=(
-                    f"✓ 输出：{smart_truncate(s.raw_output or '', max_chars=200)}"
-                    if s.error is None
-                    else f"✗ 失败：{s.error}"
-                ),
+        设计原则（诊断只读）：agent 只做"确认是哪篇 KBD 并返回根因/方案原文"，
+        不重述、不改写，避免 LLM 二次加工引入偏差。证据即现场关键信号确认结果。
+        """
+        return self._build_diagnostic_report(matched_kbds, steps_executed)
+
+    @staticmethod
+    def _build_diagnostic_report(
+        matched_kbds: list[KBD],
+        steps_executed: list[StepResult],
+        kbd_detail_url: str = KBD_DETAIL_URL_TEMPLATE,
+    ) -> str:
+        """构建诊断报告：根因/方案原文 + 证据 + KBD 标题可点击超链接。"""
+        if not matched_kbds:
+            return "诊断未能锁定具体 KBD，请联系 HCI 技术支持并提供详细故障描述。"
+        blocks: list[str] = []
+        for kbd in matched_kbds[:5]:
+            title_link = f"[{kbd.name}]({kbd_detail_url.format(id=kbd.id)})"
+            evidence: list[str] = []
+            for s in steps_executed:
+                if s.error and "人工授权" in s.error:
+                    evidence.append("- `{s.tool_name}`：⚠️ 写操作/处置动作，需人工授权（未自动执行）")
+                elif s.error is None:
+                    evidence.append(f"- `{s.tool_name}`：✓ {smart_truncate(s.raw_output or '', max_chars=200)}")
+                else:
+                    evidence.append(f"- `{s.tool_name}`：✗ {s.error}")
+            blocks.append(
+                f"### 诊断结论：{title_link}\n\n"
+                f"**根因（原始文本）**：\n{kbd.root_cause or '（无）'}\n\n"
+                f"**解决方案（原始文本）**：\n{kbd.solution or '（无）'}\n\n"
+                f"**现场证据（关键信号确认）**：\n" + ("\n".join(evidence) if evidence else "- 无")
             )
-            for i, s in enumerate(steps_executed)
-        )
-
-        kbds_summary = "\n".join(
-            f"- **{kbd.name}**（相似度 {kbd.similarity:.0%}）\n  根因：{kbd.root_cause}\n  方案：{kbd.solution}"
-            for kbd in matched_kbds[:5]
-        )
-
-        prompt = await self._load_prompt(
-            "s4_kbd_report_v1",
-            ["steps_count", "steps_summary", "kbds_count", "kbds_summary"],
-        )
-        prompt = prompt.format(
-            steps_count=len(steps_executed),
-            steps_summary=steps_summary,
-            kbds_count=len(matched_kbds),
-            kbds_summary=kbds_summary,
-        )
-
-        try:
-            result = await ai_client.invoke(
-                messages=[{"role": "user", "content": prompt}],
-                user_id=self._conversation_id or user_id,
-                case_id=self._conversation_id or "",
-            )
-            return result.content or self._fallback_report(matched_kbds, steps_executed)
-        except Exception as exc:
-            logger.warning(event="kbd_diag_report_error", error=str(exc))
-            return self._fallback_report(matched_kbds, steps_executed)
+        return "\n\n".join(blocks)
 
     @staticmethod
     def _fallback_report(
         matched_kbds: list[KBD],
         steps_executed: list[StepResult],
     ) -> str:
-        """LLM 不可用时的降级文本报告。"""
-        if not matched_kbds:
-            return "诊断未能锁定具体 KBD，请联系 HCI 技术支持并提供详细故障描述。"
-        top = matched_kbds[0]
-        return (
-            f"**诊断结果**\n\n"
-            f"最匹配 KBD：{top.name}\n\n"
-            f"根因分析：{top.root_cause}\n\n"
-            f"处理建议：{top.solution}\n\n"
-            f"诊断共执行 {len(steps_executed)} 个步骤。"
-        )
+        """LLM 不可用时的降级文本报告（与 _generate_report 同源）。"""
+        return KBDDiagnostic._build_diagnostic_report(matched_kbds, steps_executed)

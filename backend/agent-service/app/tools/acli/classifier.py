@@ -9,11 +9,19 @@ import re
 
 # acli 风险规则（risk 从高到低匹配，第一个命中获胜）
 # acli 命令有两种格式：acli vm start abc-123 或 acli vm abc-123 start
+#
+# 重要：qfk_system / qfk_vm 等后端信号会把 sub_command 直接拼成
+#   `acli {namespace} {sub_command}`  （见 qfk/handlers.GenericSubCommandHandler）
+# 若 sub_command 本身是写操作（如 `kill -9 <PID>`、`reboot`、`rm -rf`），命令会被
+# BridgeRelayExecutor 重新用本分类器求值（executor.py:468 classify_acli）。因此必须在此
+# 显式覆盖「系统子命令中包裹的非只读动作」，否则会被默认判为 risk=1 静默自动执行（安全倒挂）。
 _ACLI_RISK_RULES: list[tuple[int, re.Pattern]] = [
     # risk=3：破坏性操作（block）
     (3, re.compile(r"acli\s+vm\s+delete\b")),
     (3, re.compile(r"acli\s+storage\s+\S+\s+\S*\s*(delete|remove|wipe|format|destroy)\b")),
     (3, re.compile(r"acli\s+network\s+\S+\s*(delete|remove)\b")),
+    # 系统子命令中包裹的破坏性非 acli 写操作（如 acli system rm -rf / mkfs / dd if=）
+    (3, re.compile(r"acli\s+system\b.*\b(rm\s+-rf|mkfs|fdisk|parted|format|wipe|dd\s+if=)\b")),
     (3, re.compile(r"acli\s+system\s+(rm|del|format)\b")),
     # risk=2：有副作用的写操作（confirm）
     # 支持两种格式：acli vm start <id> 或 acli vm <id> start
@@ -22,6 +30,11 @@ _ACLI_RISK_RULES: list[tuple[int, re.Pattern]] = [
     (2, re.compile(r"acli\s+service\s+\S+\s+\S+\s+(restart|start|stop)\b")),
     (2, re.compile(r"acli\s+network\s+nic\s+(up|down|set)\b")),
     (2, re.compile(r"acli\s+vm\s+(migrate|clone|snapshot)\b")),
+    # 系统子命令中包裹的写操作：进程终止 / 重启 / 关机
+    (2, re.compile(r"acli\s+system\b.*\b(kill|killall|pkill|reboot|shutdown|halt|poweroff)\b")),
+    # 系统子命令中包裹的写操作：服务启停 / 权限与文件变更
+    (2, re.compile(r"acli\s+system\b.*\b(systemctl\s+(start|stop|restart|reload|disable|enable))\b")),
+    (2, re.compile(r"acli\s+system\b.*\b(chmod|chown|mv|remove|delete)\b")),
     # risk=1：只读操作（auto）—— 默认，无需规则
 ]
 

@@ -3,8 +3,7 @@ KB Service - 关键信号分级抽取路由（Key-Signal Field-level Extraction�
 
 POST /api/admin/kbd/{kbd_id}/extract-signals
   - 镜像 VISION reanalyze-images 模式：kb-service 服务端做 LLM + 直接写回 kbd_entry.signals_json
-  - 从 KBD 自然语言章节（steps_text/root_cause/solution/problem_description/alert_info）
-    抽取 producer(QKV)/consumer(QFK) 结构化关键信号
+  - 从 KBD 自然语言章节（steps_text/problem_description/alert_info/title）抽取 producer(QKV)/consumer(QFK) 结构化关键信号
   - 封闭采集器词表校验 + {{VAR}} 大写占位符强制校验（ADR-2）
   - 调用方：data-pipeline Stage.EXTRACT_SIGNALS（INTERNAL_API_TOKEN）、admin-ui 手动按钮
 
@@ -97,10 +96,55 @@ _ANY_PLACEHOLDER_RE = re.compile(r"\{\{([^}]*)\}\}")
 EXTRACTION_METHOD = "llm_field_level_v1"
 # 低置信阈值：校准后置信度低于此值标 needs_review（镜像 classify 的 low_confidence，§3）
 NEEDS_REVIEW_CONFIDENCE_THRESHOLD = 0.5
-# 合法来源章节（LLM 自报 source_section 必须落在此集合，否则回退推断）
+
+# 合法信号来源章节（LLM 自报 source_section 必须落在此集合，否则回退推断）。
+# 治本约束：只有「诊断叙事字段」可作为信号来源；根因(root_cause)与解决方案(solution)
+# 是抽取 OUTPUT（确认后返回给用户），绝不作为信号抽取输入，避免把"处置动作"误抽成诊断信号。
 _VALID_SOURCE_SECTIONS = {
-    "problem_description", "alert_info", "steps_text", "root_cause", "solution",
+    "title", "problem_description", "alert_info", "steps_text",
 }
+
+# ─── 写操作子命令词表（处置/变更动作，不得自动执行）────────────────────────
+# 这是"诊断只读"原则的硬边界：凡 sub_command 命中以下动词的后端信号，一律标记为
+# phase=solution / require_human_confirm=True，执行层绝不自动运行，必须人工授权。
+WRITE_OP_SUB_COMMANDS: set[str] = {
+    "start", "stop", "shutdown", "restart", "suspend", "resume",
+    "migrate", "clone", "snapshot", "reset", "reboot",
+    "delete", "remove", "del", "rm", "format", "wipe", "destroy",
+    "enable", "disable", "kill", "killall", "pkill",
+    "up", "down", "set", "create", "add", "modify", "update",
+}
+# 破坏性（不可逆）子命令 → risk=3（block）
+_DESTRUCTIVE_SUB_COMMANDS: set[str] = {
+    "delete", "remove", "del", "rm", "format", "wipe", "destroy",
+}
+
+
+def _is_write_op_signal(signal: dict[str, Any]) -> bool:
+    """判断一条后端信号是否为写操作/处置动作（基于 acquirer + sub_command 词表）。
+
+    仅 backend（qfk_*）信号可能携带写操作；前端生产者（qkv_*）均为只读查询。
+    sub_command 形如 'kill -9 240132' / 'ps auxf' / 'start'，按空白与 | / 切词后命中词表即判写操作。
+    """
+    if signal.get("signal_category") != "backend":
+        return False
+    acquirer = signal.get("acquirer", "")
+    if not acquirer.startswith("qfk_"):
+        return False
+    args = signal.get("acquirer_args") or {}
+    sub = str(args.get("sub_command", "") or "")
+    tokens = re.split(r"[\s|/]+", sub.strip())
+    return any(tok in WRITE_OP_SUB_COMMANDS for tok in tokens)
+
+
+def _write_op_risk(signal: dict[str, Any]) -> int:
+    """写操作信号的风险等级：破坏性子命令=3(block)，其余写操作=2(confirm)。"""
+    args = signal.get("acquirer_args") or {}
+    sub = str(args.get("sub_command", "") or "").lower()
+    tokens = set(re.split(r"[\s|/]+", sub))
+    if tokens & _DESTRUCTIVE_SUB_COMMANDS:
+        return 3
+    return 2
 
 
 def _signal_quality_score(signal: dict[str, Any]) -> float:
@@ -122,15 +166,12 @@ def _signal_quality_score(signal: dict[str, Any]) -> float:
 def _infer_source(signal: dict[str, Any]) -> str:
     """字段级溯源：推断信号主要来自哪个输入章节（source）。
 
-    LLM 自报 source_section 优先；否则按角色回退：
-    - 消费者(backend)：有 matcher → 多来自 root_cause/solution，回退 root_cause
-    - 生产者(frontend)：多为 steps_text 中的祈使子句
+    治本约束：信号只能来自诊断叙事字段（标题/问题描述/告警/有效排查步骤）；
+    根因与解决方案不再作为信号来源，故一律回退到 steps_text。
     """
     ss = (signal.get("source_section") or "").strip()
     if ss in _VALID_SOURCE_SECTIONS:
         return ss
-    if signal.get("signal_category") == "backend":
-        return "root_cause" if signal.get("matcher") else "steps_text"
     return "steps_text"
 
 
@@ -165,6 +206,9 @@ def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
     - source: 主要来源章节（字段级溯源）
     - extraction_method: 抽取方法标识（固定为 llm_field_level_v1）
     - confidence: 校准后置信度(0-1)
+    - phase: diagnostic(诊断只读) / solution(处置动作)
+    - require_human_confirm: 是否必须人工授权后才可执行
+    - risk: 风险等级 1/2/3（供执行层门禁与分类器兜底）
     """
     quality = _signal_quality_score(signal)
     enriched = dict(signal)
@@ -173,6 +217,19 @@ def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
     enriched["confidence"] = _calibrate_confidence(signal, quality)
     # 低置信/歧义信号标 needs_review（镜像 classify 的 low_confidence，§3）
     enriched["needs_review"] = enriched["confidence"] < NEEDS_REVIEW_CONFIDENCE_THRESHOLD
+
+    # 写操作/处置动作信号：标记为人⼯授权，绝不自动执行（诊断只读原则）
+    if enriched.get("require_human_confirm"):
+        enriched["phase"] = enriched.get("phase", "solution")
+        enriched["risk"] = enriched.get("risk", 2)
+    elif _is_write_op_signal(enriched):
+        enriched["phase"] = "solution"
+        enriched["require_human_confirm"] = True
+        enriched["risk"] = _write_op_risk(enriched)
+    else:
+        enriched["phase"] = "diagnostic"
+        enriched["require_human_confirm"] = False
+        enriched["risk"] = 1
     return enriched
 
 
@@ -210,7 +267,12 @@ def validate_placeholder_case(template_str: str) -> list[str]:
 
 
 def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[bool, str | None]:
-    """校验单条信号：类别/acquirer/占位符/变量引用合法性。"""
+    """校验单条信号：类别/acquirer/占位符/变量引用合法性。
+
+    写操作拦截：对 backend（qfk_*）信号，若 sub_command 命中写操作词表，则就地标记
+    phase=solution / require_human_confirm=True / risk，使其被排除在自动执行之外，
+    交由人工授权（不丢弃——写操作可能是排查步骤里确实需要人确认的动作）。
+    """
     cat = signal.get("signal_category")
     if cat not in VALID_CATEGORIES:
         return False, f"signal_category 非法: {cat}"
@@ -241,6 +303,11 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
         matcher = signal.get("matcher") or {}
         if matcher.get("type") not in VALID_MATCHER_TYPES:
             return False, f"backend 信号 matcher.type 非法或缺失: {matcher.get('type')}"
+        # 写操作/处置动作拦截（全面梳理 qfk_vm/qfk_system/... 的写子命令）
+        if _is_write_op_signal(signal):
+            signal["phase"] = "solution"
+            signal["require_human_confirm"] = True
+            signal["risk"] = _write_op_risk(signal)
 
     return True, None
 
@@ -325,7 +392,12 @@ async def _persist_signals(db_manager: DatabaseManager, table: str, source_id: i
 
 
 async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> dict[str, Any]:
-    """KBD 路径：读取 kbd_entry 8 章节 → LLM 抽取 → 校验 → 写回 signals_json。"""
+    """KBD 路径：读取 kbd_entry 章节 → LLM 抽取 → 校验 → 写回 signals_json。
+
+    治本约束：抽取输入仅含「诊断叙事字段」（title/problem_description/alert_info/steps_text）。
+    root_cause 与 solution 是抽取 OUTPUT（确认后返回给用户），不再作为信号抽取来源，
+    从根上杜绝把"处置动作"（如 acli vm start / kill -9）误抽成诊断信号。
+    """
     from app.models.kbd_entry import KbdEntry
 
     async with db_manager.async_session_factory() as session:
@@ -349,8 +421,9 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         problem_description=(entry.problem_description or "")[:2000],
         alert_info=(entry.alert_info or "")[:1000],
         steps_text=(entry.steps_text or "")[:4000],
-        root_cause=(entry.root_cause or "")[:1500],
-        solution=(entry.solution or "")[:1500],
+        # 治本：根因/解决方案不参与信号抽取，置空传入（模板占位符仍存在，避免 StrictPromptLoader 校验失败）
+        root_cause="",
+        solution="",
         category_id=entry.category_id or entry.ai_category_id or "",
         acquirer_catalog=acquirer_catalog_text,
         variable_schema=variable_schema_text,
