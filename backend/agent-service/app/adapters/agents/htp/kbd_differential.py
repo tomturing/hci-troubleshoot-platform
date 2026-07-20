@@ -135,6 +135,7 @@ class KBDDiagnostic:
         tool_executor: Any,  # 实现 ToolExecutor Protocol 的对象
         diagnostic_item_client: Any | None = None,  # DiagnosticItemClient（可选）
         conversation_id: str | None = None,  # 会话 ID（用于 INSERT）
+        case_id: str | None = None,  # 工单 ID（用于 terminal_bridge 会话路由）
         assistant_type: str = "htp-agent",
         early_stop_threshold: int = EARLY_STOP_THRESHOLD,
         db_session_factory: Any | None = None,  # DB 会话工厂（用于从 prompt 管理加载 Prompt）
@@ -143,6 +144,7 @@ class KBDDiagnostic:
         self._tool_executor = tool_executor
         self._diagnostic_item_client = diagnostic_item_client
         self._conversation_id = conversation_id
+        self._case_id = case_id  # 工单 ID，用于 QFK 信号执行时路由到正确的 SSH 会话
         self._assistant_type = assistant_type
         self._early_stop = early_stop_threshold
         self._db_session_factory = db_session_factory
@@ -890,6 +892,7 @@ class KBDDiagnostic:
                     signal=bsignal,
                     conversation_id=self._conversation_id or session_id,
                     node_ip=env_context.get("node_ip"),
+                    case_id=self._case_id,  # 透传工单 ID，确保 terminal_bridge 能路由到正确的 SSH 会话
                     exec_id=None,
                 )
                 if res.error:

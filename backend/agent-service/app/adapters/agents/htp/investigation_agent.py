@@ -333,6 +333,7 @@ class InvestigationAgent(BaseAgent):
             tool_executor=self._tool_executor,
             diagnostic_item_client=self._diagnostic_item_client,
             conversation_id=session_id,  # T-AGT-19: 传入会话 ID 用于 INSERT
+            case_id=case_id,  # 透传工单 ID，用于 QFK 信号执行时路由到正确的 SSH 会话
             assistant_type=assistant_type,
             db_session_factory=self._db_session_factory,  # prompt 管理：KBD 诊断的 judge/report Prompt 走 DB
         )
