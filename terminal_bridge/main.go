@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -1290,7 +1291,9 @@ func customUIHost(origin string) string {
 }
 
 var (
-	Version = "v2.15.0-dev"
+	Version   = "v2.15.0-dev"
+	CommitID  = "unknown" // 构建时通过 -X main.CommitID 注入 git commit
+	BuildTime = "unknown" // 构建时通过 -X main.BuildTime 注入构建时间
 )
 
 func getVersion() string {
@@ -1387,6 +1390,13 @@ func truncateString(s string, maxLen int) string {
 }
 
 func main() {
+	showVersion := flag.Bool("version", false, "打印版本与 commit 信息后退出")
+	flag.Parse()
+	if *showVersion {
+		fmt.Printf("terminal_bridge %s (commit: %s, built: %s)\n", getVersion(), CommitID, BuildTime)
+		return
+	}
+
 	bridge := newBridge()
 	// 把所有标准库日志重定向为结构化日志并回采（统一可观测性）
 	log.SetOutput(bridgeLogWriter{})
@@ -1400,7 +1410,8 @@ func main() {
 	})
 
 	addr := fmt.Sprintf("localhost:%d", wsPort)
-	log.Printf("[Bridge] HCI SSH Bridge 已启动 (版本: %s), 监听 ws://%s", getVersion(), addr)
+	log.Printf("[Bridge] HCI SSH Bridge 已启动 (版本: %s, commit: %s, 构建时间: %s), 监听 ws://%s",
+		getVersion(), CommitID, BuildTime, addr)
 	log.Printf("[Bridge] CORS 已启用，支持从公网域名访问；日志结构化回采已开启")
 
 	if err := http.ListenAndServe(addr, nil); err != nil {

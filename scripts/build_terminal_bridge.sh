@@ -33,10 +33,12 @@ cd "$SRC_DIR"
 [ -f go.mod ] && go mod download >/dev/null 2>&1 || true
 
 GIT_VER="$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo v2.15.0-dev)"
+GIT_COMMIT="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-echo "[build_terminal_bridge] 构建 $GOOS/$GOARCH ..."
+echo "[build_terminal_bridge] 构建 $GOOS/$GOARCH (commit: $GIT_COMMIT) ..."
 CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-  go build -trimpath -ldflags="-s -w -buildid= -X main.Version=$GIT_VER" -o "$DST" .
+  go build -trimpath -ldflags="-s -w -buildid= -X main.Version=$GIT_VER -X main.CommitID=$GIT_COMMIT -X main.BuildTime=$BUILD_TIME" -o "$DST" .
 
 SIZE=$(stat -c%s "$DST" 2>/dev/null || wc -c < "$DST")
 echo "[build_terminal_bridge] OK -> $DST ($SIZE bytes)"
