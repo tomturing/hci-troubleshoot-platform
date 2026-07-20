@@ -167,9 +167,9 @@ export const useChatStore = defineStore('chat', () => {
       if (currentCase.value?.case_id) {
         sendResumeMessage(ws, currentCase.value.case_id)
       }
-      // 调用原始的 onopen 处理器
+      // 调用原始的 onopen 处理器（绑定正确的 this 上下文）
       if (originalOnOpen) {
-        originalOnOpen(event)
+        originalOnOpen.call(ws, event)
       }
     }
   }
