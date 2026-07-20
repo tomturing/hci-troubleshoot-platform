@@ -16,6 +16,8 @@ on:
       - "scripts/db-migrate.sh"
       - "scripts/migration-runner.sh"
 
+  workflow_dispatch:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
