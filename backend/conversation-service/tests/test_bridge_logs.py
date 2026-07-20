@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import text
 
 # 使用相对导入而非绝对导入（避免包名包含 - 的问题）
 import sys
-from pathlib import Path
 
 # 添加 app 目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent / "app"))

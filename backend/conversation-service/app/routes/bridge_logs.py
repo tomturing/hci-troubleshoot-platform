@@ -21,7 +21,6 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
-
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
