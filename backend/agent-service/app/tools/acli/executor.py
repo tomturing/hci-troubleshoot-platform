@@ -503,6 +503,18 @@ class BridgeRelayExecutor:
 
         # 5. 推送执行命令到 conversation-service
         try:
+            # 诊断日志：记录即将透传给 conversation-service / terminal_bridge 的 case_id。
+            # 若此处为 "(empty)"，说明调用方（acli_exec / bash_exec / qfk_exec）未携带工单 ID，
+            # 将由 conversation-service 的 /agent-exec 兜底从会话解析（对齐 B1 修复）。
+            logger.info(
+                event="agent_exec_push",
+                exec_id=exec_id,
+                conversation_id=conversation_id,
+                case_id=case_id or "(empty)",
+                tool_name=tool_name,
+                node_ip=node_ip,
+                trace_id=trace_id,
+            )
             resp = await self._http_client.post(
                 f"/internal/conversations/{conversation_id}/agent-exec",
                 json={
@@ -515,7 +527,7 @@ class BridgeRelayExecutor:
                     "reason": reason,
                     "risk_level": runtime_risk,
                     "node_ip": node_ip,
-                    "case_id": case_id or args.get("case_id", ""),  # 优先使用显式传入的 case_id
+                    "case_id": case_id,  # 以 Agent 运行上下文的工单 ID 为准（不再回退 LLM 参数，避免空串透传）
                     "trace_id": trace_id,  # 端到端链路透传
                 },
             )

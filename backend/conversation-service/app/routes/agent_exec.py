@@ -25,6 +25,7 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 
 from ..config import settings
+from .conversations import get_conversation_service  # 复用 B1 的「会话→工单」解析
 
 logger = get_logger("agent-exec-routes")
 router = APIRouter(tags=["agent-exec"])
@@ -93,7 +94,9 @@ class AgentExecRequest(BaseModel):
     reason: str = Field(..., min_length=1, description="执行原因")
     risk_level: int = Field(..., ge=1, le=3, description="风险等级（1-3）")
     node_ip: str | None = Field(None, description="目标节点 IP")
-    case_id: str = Field(..., description="工单 ID")
+    # B2 修订：case_id 改为可选。调用方（acli_exec / bash_exec / qfk_exec）可能未透传工单 ID，
+    # 缺失时由会话关联解析（对齐 conversations.py 的 B1 修复），避免空串透传至 terminal_bridge 触发 exec.session_missing。
+    case_id: str | None = Field(None, description="工单 ID（缺失时由会话关联解析，对齐 B1 修复）")
     trace_id: str | None = Field(None, description="端到端链路 ID（透传至 terminal_bridge）")
 
 
@@ -136,11 +139,53 @@ async def push_agent_exec_command(
         raise HTTPException(status_code=503, detail="Redis 服务未就绪")
 
     trace_id = get_current_trace_id()
+
+    # ── 工单 ID 兜底解析（对齐 conversations.py 的 B1 修复）──
+    # acli_exec / bash_exec / qfk_exec 等调用方可能未透传 case_id，
+    # 此时从会话关联的真实工单 ID 解析，避免空串透传至 terminal_bridge 触发 exec.session_missing。
+    # 这是 LLM 工具路径与 qfk 诊断路径的统一收敛点：两处缺口一次性修复。
+    effective_case_id = body.case_id
+    if not effective_case_id:
+        try:
+            _svc = None
+            async for _s in get_conversation_service(request):
+                _svc = _s
+                break
+            if _svc is not None:
+                _conv = await _svc.get_conversation(conversation_id)
+                effective_case_id = _conv.case_id if _conv else None
+        except Exception as _exc:
+            effective_case_id = None
+            logger.error(
+                event="agent_exec_case_id_resolve_error",
+                conversation_id=str(conversation_id),
+                exec_id=body.exec_id,
+                error=str(_exc),
+                trace_id=trace_id,
+            )
+        if effective_case_id:
+            logger.warning(
+                event="agent_exec_case_id_resolved",
+                conversation_id=str(conversation_id),
+                exec_id=body.exec_id,
+                resolved_case_id=effective_case_id,
+                trace_id=trace_id,
+            )
+        else:
+            logger.error(
+                event="agent_exec_case_id_unresolved",
+                conversation_id=str(conversation_id),
+                exec_id=body.exec_id,
+                message="会话未关联工单，case_id 为空，命令将无法路由到 terminal_bridge 会话",
+                trace_id=trace_id,
+            )
+
     logger.info(
         event="agent_exec_push_request",
         conversation_id=str(conversation_id),
         exec_id=body.exec_id,
         tool_name=body.tool_name,
+        case_id=effective_case_id,
         container=body.container,
         command_preview=body.command[:50],
         risk_level=body.risk_level,
@@ -167,7 +212,7 @@ async def push_agent_exec_command(
         "reason": body.reason,
         "riskLevel": body.risk_level,
         "nodeIp": body.node_ip,
-        "caseId": body.case_id,
+        "caseId": effective_case_id,
         "conversationId": str(conversation_id),
         "traceId": body.trace_id,
     }

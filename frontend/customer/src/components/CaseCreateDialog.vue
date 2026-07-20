@@ -332,6 +332,13 @@ async function runSshAndCreateCase() {
           return
         }
 
+        // C 修复：将临时会话的结构化回采日志（bridge_log）转发到 chat store，
+        // 使其以 ssh-create-temp 落库，供工单创建后迁移到真实工单
+        if (msg.type === 'bridge_log') {
+          chatStore.forwardBridgeLog(msg as unknown as Record<string, unknown>)
+          return
+        }
+
         // 处理 pendingCommand
         if (msg.type === 'ssh_output' && msg.output && pendingCommand) {
           pendingCommand.buffer += msg.output
@@ -382,6 +389,8 @@ async function runSshAndCreateCase() {
       assistant_type: caseForm.assistantType || chatStore.selectedAssistant || undefined,
     })
     createdCaseId.value = caseRes.data.case_id
+    // C 修复：将临时会话（ssh-create-temp）已采集的回采日志迁移到真实工单
+    await chatStore.importBridgeLogsToCase('ssh-create-temp', createdCaseId.value)
     addLog('success', `工单已创建: ${createdCaseId.value}`)
     // 注意：工单 confirm 由后端 SP-1（用户选择 S0 分类后）触发，前端不主动 confirm
     // 同步写入 chatStore.currentCase，使头部工单 badge 即刻生效且后续 completeCaseCreationFlow 能找到对应工单

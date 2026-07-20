@@ -70,6 +70,7 @@ async def qfk_exec(
     *,
     conversation_id: str,
     node_ip: str | None = None,
+    case_id: str | None = None,
     exec_id: str | None = None,
 ) -> QFKResult:
     """
@@ -79,6 +80,7 @@ async def qfk_exec(
         signal: 已经解析验证的 BackendSignal 对象
         conversation_id: 会话标识（上下文变量传递）
         node_ip: 执行目标节点 IP（可指定，默认在集群主控节点）
+        case_id: 工单 ID（可选；缺失时由 conversation-service 从会话解析，对齐 B1/B2 修复）
         exec_id: 流水号跟踪
 
     Returns:
@@ -157,6 +159,7 @@ async def qfk_exec(
                 args={"command": cmd, "reason": f"QFK诊断信号提取执行: {signal.description or ''}"},
                 conversation_id=conversation_id,
                 node_ip=node_ip,
+                case_id=case_id,
                 risk_level=1,  # QFK 判定均属只读行为，风险为 1
                 policy="auto", # 无需前端弹窗，静默自动跑
                 exec_id=exec_id,
@@ -171,7 +174,16 @@ async def qfk_exec(
                     event="qfk_terminal_failure",
                     namespace=signal.namespace,
                     exec_id=exec_res.exec_id,
+                    case_id=case_id or "(empty)",
+                    conversation_id=conversation_id,
+                    node_ip=node_ip,
                     exit_code=exec_res.exit_code,
+                    # 排查定位关键：区分「调用方未透传 case_id」与「会话未建立/已断开」
+                    triage=(
+                        "case_id 缺失：调用方未透传工单ID，将由 conversation-service 兜底解析"
+                        if not case_id
+                        else "case_id 已携带仍 session_missing：SSH 会话未建立或已断开"
+                    ),
                     preview=combined[:200],
                 )
                 return QFKResult(

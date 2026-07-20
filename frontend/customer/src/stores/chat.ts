@@ -83,6 +83,9 @@ export const useChatStore = defineStore('chat', () => {
   let bridgeLogRetryCount = 0
   const BRIDGE_LOG_MAX_RETRY = 5
   const BRIDGE_LOG_BASE_DELAY = 500
+  // C 修复：保留近期回采日志的环形缓冲，供工单创建后将临时会话（ssh-create-temp）日志迁移到真实工单
+  let recentBridgeLogs: Record<string, unknown>[] = []
+  const RECENT_BRIDGE_LOGS_CAP = 2000
 
   async function flushBridgeLogs() {
     bridgeLogTimer = null
@@ -114,7 +117,29 @@ export const useChatStore = defineStore('chat', () => {
     // 仅回采带工单关联的日志，保证落库后可按工单分析
     if (!entry.case_id) return
     bridgeLogBuffer.push(entry)
+    // C 修复：同步写入近期缓冲，供工单创建后将临时会话日志迁移到真实工单
+    recentBridgeLogs.push(entry)
+    if (recentBridgeLogs.length > RECENT_BRIDGE_LOGS_CAP) {
+      recentBridgeLogs.splice(0, recentBridgeLogs.length - RECENT_BRIDGE_LOGS_CAP)
+    }
     if (bridgeLogTimer === null) bridgeLogTimer = window.setTimeout(flushBridgeLogs, 500)
+  }
+
+  // C 修复：将临时会话（fromCaseId）已采集的回采日志，以真实工单（toCaseId）重新落库，
+  // 避免数据归属到 ssh-create-temp 而丢失
+  async function importBridgeLogsToCase(fromCaseId: string, toCaseId: string) {
+    if (!fromCaseId || !toCaseId || fromCaseId === toCaseId) return
+    const migrating = recentBridgeLogs.filter((e) => e.case_id === fromCaseId)
+    if (migrating.length === 0) return
+    const remapped = migrating.map((e) => ({ ...e, case_id: toCaseId }))
+    // 从近期缓冲中移除已迁移项，保证幂等（重复调用不会重复落库）
+    recentBridgeLogs = recentBridgeLogs.filter((e) => e.case_id !== fromCaseId)
+    try {
+      await apiClient.post('/bridge-logs', { logs: remapped })
+      console.log(`已将 ${remapped.length} 条临时会话日志迁移到工单 ${toCaseId}`)
+    } catch (e) {
+      console.error(`临时会话日志迁移到工单 ${toCaseId} 失败`, e)
+    }
   }
 
   // P1-5: 浏览器关闭前保存 pending 日志到 localStorage（断网保护）
@@ -2213,6 +2238,9 @@ export const useChatStore = defineStore('chat', () => {
           const caseId = res.data.case_id
           appendSshCreationLog('info', 'case', '工单创建成功', { caseId, status: res.data.status })
 
+          // C 修复：将临时会话（ssh-create-temp）已采集的回采日志迁移到真实工单
+          await importBridgeLogsToCase('ssh-create-temp', caseId)
+
           // 2. 建立 SSH 连接
           devLog('SSH-CREATE', '开始建立 WebSocket 连接到 Bridge')
           const socket = createBridgeSocket()
@@ -2809,6 +2837,8 @@ export const useChatStore = defineStore('chat', () => {
     sshCommandConsumer,
     connectSSH,
     disconnectSSH,
+    forwardBridgeLog,
+    importBridgeLogsToCase,
     sendSSHCommand,
     // Agent 模式：高风险操作确认
     pendingConfirm,

@@ -1129,9 +1129,22 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				s = b.autoConnectNode(ws, msg)
 				key = sessionKey(msg.CaseID, msg.NodeIP)
 			}
+			// 防御（A 修复）：exec 消息缺少 case_id/node_ip 时，回退到当前连接归属的会话
+			if s == nil && sub.caseID != "" {
+				if fb := b.get(sessionKey(sub.caseID, "")); fb != nil {
+					s = fb
+					key = sessionKey(sub.caseID, "")
+					log.Printf("[Bridge] EXEC 回退到连接归属会话: case=%s key=%s", sub.caseID, key)
+					// 结构化回采：记录兜底发生（原始 case_id 可能为空，已回退到连接归属工单）
+					blog("INFO", "exec.session_fallback", "EXEC 回退到连接归属会话(空 case_id 兜底)", msg.TraceID, sub.caseID, msg.NodeIP, cui, map[string]any{
+						"original_case_id": msg.CaseID, "key": key, "exec_id": msg.ExecID,
+					})
+				}
+			}
 			if s == nil {
 				blog("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"exec_id": msg.ExecID, "key": sessionKey(msg.CaseID, msg.NodeIP),
+					"sub_case_id": sub.caseID, "has_fallback_target": sub.caseID != "",
 				})
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
@@ -1214,9 +1227,24 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				s = b.autoConnectNode(ws, msg)
 				key = sessionKey(msg.CaseID, msg.NodeIP)
 			}
+			// 防御（A 修复）：exec 消息缺少 case_id/node_ip 时，回退到当前连接归属的会话。
+			// 因为一次 WebSocket 连接在 ssh_connect 后只存在一个会话，可据此兜底，
+			// 避免空 case_id 导致 exec.session_missing、回采失败且无 DB 记录。
+			if s == nil && sub.caseID != "" {
+				if fb := b.get(sessionKey(sub.caseID, "")); fb != nil {
+					s = fb
+					key = sessionKey(sub.caseID, "")
+					log.Printf("[Bridge] EXEC 回退到连接归属会话: case=%s key=%s", sub.caseID, key)
+					// 结构化回采：记录兜底发生（原始 case_id 可能为空，已回退到连接归属工单）
+					blog("INFO", "exec.session_fallback", "EXEC 回退到连接归属会话(空 case_id 兜底)", msg.TraceID, sub.caseID, msg.NodeIP, cui, map[string]any{
+						"original_case_id": msg.CaseID, "key": key, "exec_id": msg.ExecID,
+					})
+				}
+			}
 			if s == nil {
 				blog("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令(隔离通道)", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"exec_id": msg.ExecID, "key": sessionKey(msg.CaseID, msg.NodeIP),
+					"sub_case_id": sub.caseID, "has_fallback_target": sub.caseID != "",
 				})
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,

@@ -173,9 +173,18 @@ async def send_message(
         _message_metadata = {}
         try:
             # 同时监听 AI 流和外部事件队列
+            # B1 修复：消息未携带 case_id 时，回退到会话记录关联的真实工单，
+            # 避免空 case_id 一路透传至 terminal_bridge 的 exec 路由失败（exec.session_missing）。
+            _case_id = message.case_id
+            if not _case_id:
+                try:
+                    _conv = await service.get_conversation(conversation_id)
+                    _case_id = _conv.case_id if _conv else None
+                except Exception:
+                    _case_id = None
             ai_stream = service.send_message_stream_only(
                 conversation_id=conversation_id,
-                case_id=message.case_id,
+                case_id=_case_id,
                 content=message.content,
                 assistant_type=message.assistant_type,  # v2.2: 支持动态切换助手
                 metadata=message.metadata,  # 传递 metadata
