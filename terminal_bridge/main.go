@@ -14,6 +14,7 @@ import (
 	"log"
 	"sync/atomic"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
