@@ -878,6 +878,16 @@ export const useChatStore = defineStore('chat', () => {
         await nextTick()
         messages.value[idx] = { ...messages.value[idx], isStreaming: false }
       }
+      // 将「AI 报告气泡」移到消息列表末尾：流式期间诊断步骤（tool_call /
+      // interactive_request / agent_exec_command 等）被 push 到它之后，导致报告
+      // 气泡（最先创建、报告文本最后才写入）视觉上压在诊断卡片之上，呈现
+      // "先报告后诊断"。移到末尾后顺序变为：诊断步骤 → 工具执行 → 最终报告（含 KBD 链接），
+      // 符合"先诊断、匹配信号后再提示 KBD 链接"的预期。
+      const reportIdx = getAiMsgIndex()
+      if (reportIdx !== -1 && reportIdx < messages.value.length - 1) {
+        const [reportMsg] = messages.value.splice(reportIdx, 1)
+        messages.value.push(reportMsg)
+      }
       isStreaming.value = false
     }
   }

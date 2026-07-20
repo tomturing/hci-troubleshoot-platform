@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-07-18
+last_updated: 2026-07-20
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-20 | v3.19 | **修复前端「先报告后诊断」渲染顺序（工单 Q2026071923606）**：现象是 UI 先展示诊断报告（含 KBD 链接）、再展示诊断步骤卡片，与「先诊断匹配前端/后端信号、再提示 KBD 链接」的预期相反。根因经全链路排查确认在前端而非后端——`agent-service` 的 `diagnose()` 顺序正确（`kbd_diag_step`/`kbd_diag_confirm` 诊断步骤 → `text_chunk` 报告 → S4），`agent.py`/`conversation-service` 均按序透传无重排；`frontend/customer/src/stores/chat.ts` 在流式开始即 `push` 空「AI 报告气泡」，流式期间诊断步骤（`tool_call`/`interactive_request`/`agent_exec_command`）被 `push` 到其后，报告文本最后才写入最前的气泡，视觉上「报告在顶、诊断在底」。修复：流式 `finally` 收尾时将报告气泡 `splice`+`push` 移到消息列表末尾，最终顺序变为「诊断步骤 → 工具执行 → 最终报告（含 KBD 链接）」；对无工具卡片的普通对话为 no-op 无副作用。关联事件文档：[2026-07-20-前端诊断报告与步骤渲染顺序修复](../../solution/events/2026-07-20-前端诊断报告与步骤渲染顺序修复.md) |
 | 2026-07-18 | v3.18 | **KBD 诊断引擎安全与顺序修复（PR #574）**：① 抽取层剥离 `root_cause`/`solution`，杜绝把处置动作（如 `acli vm start`/`kill -9`）误抽成诊断信号；② `acli/classifier.py` 覆盖 `acli system` 子命令包裹的写操作（rm -rf/mkfs/kill/systemctl 等），消除安全倒挂；③ `kbd_differential.py` 新增 `_signal_requires_human` 写门禁（贪心主循环 + 确认分支均拦截）并修复确认分支跳过前端生产者 `qkv_task` 的设计缺口（改为按 KBD 内容顺序遍历全部 `signals`）；④ `kbd_model.py` 新增 `get_signal` 供执行层做写门禁判定。关联事件文档：[2026-07-18-KBD诊断引擎安全与顺序修复分析](../../solution/events/2026-07-18-KBD诊断引擎安全与顺序修复分析.md) |
 | 2026-07-18 | v3.17 | **修复 QFK 诊断“BridgeRelayExecutor 未启动”假阴（PR #572）**：`main.py` lifespan 此前从未调用 `set_executor()` 注入模块级全局 `_executor`，而 QFK 引擎（`qfk.engine.qfk_exec`）复用该全局作为唯一执行后端，导致 `_executor` 恒为 None，所有 `qfk_system`/`qfk_vm` 等关键信号判定在入口短路返回“未启动”误报，并错误归因为终端桥未启动（实际 terminal_bridge/SSH 链路正常，手动 SSH 可验证）。修复：lifespan 中将 `CompositeToolExecutor` 已构建的 `BridgeRelayExecutor` 注册为全局实例（与 InvestigationAgent 共用，避免重复建连）；并修正 QFK 误报文案，明确指出是 agent-service 内部未注册而非终端桥故障，避免现场误重启 terminal_bridge | — |
 | 2026-07-17 | v3.15 | **根治诊断报告“未用关键信号确认就下结论”（待合并 PR）**：① `kbd_differential.py` 新增关键信号确认阶段——当贪心消除主循环因候选数 ≤ early_stop_threshold(2) 未执行任何步骤时（单/少候选场景，如“虚拟机-003 开机失败”常仅 1 条匹配 KBD），强制补跑剩余候选的 backend 关键信号（qfk_*/acli_* 等）作为现场证据，杜绝直接把 KBD 文档 root_cause 复述成结论；② 报告生成 Prompt 强化：诊断依据必须引用实际采集到的关键信号输出，无证据须标注“（未经现场信号确认，建议执行：<命令>）”；③ 更新单候选测试并新增回归测试 `test_single_candidate_confirms_its_signals` | — |
