@@ -79,10 +79,12 @@ jobs:
           # 复用已存在的机器人 PR，避免重复
           PR=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
           if [ -z "$PR" ]; then
-            PR=$(gh pr create --head "$BRANCH" --base main \
+            # 注意：部分 runner 的 gh 版本较旧，gh pr create 不支持 --json，故此处不传 --json
+            gh pr create --head "$BRANCH" --base main \
               --title "build(terminal_bridge): 自动更新 windows exe" \
               --body "由 CI 自动生成，更新 customer-ui 下载目录的 terminal_bridge.exe。[skip docs]" \
-              --label "agent:codebuddy" --label "env:dev:windows11-gpu" --json number --jq '.number')
+              --label "agent:codebuddy" --label "env:dev:windows11-gpu"
+            PR=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
           fi
           echo "已创建/更新 PR #$PR，合并后 ci.yml 会自动重建 customer-ui 镜像以分发最新 exe"
           gh pr merge --auto --squash "$PR" 2>/dev/null || echo "（未启用自动合并，请手动合并该 PR）"
