@@ -9,6 +9,8 @@ terminal_bridge 日志回采功能单元测试
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -31,6 +33,7 @@ from routes.bridge_logs import (
     set_dependencies,
     _verify_log_signature,
 )
+
 
 
 @pytest.fixture
@@ -179,8 +182,8 @@ class TestBridgeLogsAPI:
 
     def test_verify_log_signature_with_valid_key(self):
         """测试有效 HMAC_KEY 的签名验证"""
-        import hmac
         import hashlib
+        import hmac
 
         # 构造签名
         hmac_key = "test-secret-key"
