@@ -44,15 +44,22 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const labels = await github.rest.issues.listLabelsOnIssue({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const hasExempt = labels.data.some(l => l.name === 'doc-update-exempt');
-            core.setOutput('bypass', hasExempt ? '1' : '0');
-            if (hasExempt) {
-              console.log('检测到 doc-update-exempt 标签，跳过模块文档同步检查');
+            const prNumber = context.issue && context.issue.number;
+            if (!prNumber) {
+              // 手动触发（workflow_dispatch）无 PR 上下文，跳过标签旁路检查
+              core.setOutput('bypass', '0');
+              console.log('非 PR 上下文（手动触发），跳过 doc-update-exempt 标签检查，直接执行文档同步检查');
+            } else {
+              const labels = await github.rest.issues.listLabelsOnIssue({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+              });
+              const hasExempt = labels.data.some(l => l.name === 'doc-update-exempt');
+              core.setOutput('bypass', hasExempt ? '1' : '0');
+              if (hasExempt) {
+                console.log('检测到 doc-update-exempt 标签，跳过模块文档同步检查');
+              }
             }
 
       # 执行模块文档同步检查
