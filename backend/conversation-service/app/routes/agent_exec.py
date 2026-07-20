@@ -94,6 +94,7 @@ class AgentExecRequest(BaseModel):
     risk_level: int = Field(..., ge=1, le=3, description="风险等级（1-3）")
     node_ip: str | None = Field(None, description="目标节点 IP")
     case_id: str = Field(..., description="工单 ID")
+    trace_id: str | None = Field(None, description="端到端链路 ID（透传至 terminal_bridge）")
 
 
 class AgentExecResponse(BaseModel):
@@ -168,6 +169,7 @@ async def push_agent_exec_command(
         "nodeIp": body.node_ip,
         "caseId": body.case_id,
         "conversationId": str(conversation_id),
+        "traceId": body.trace_id,
     }
 
     if sse_pusher:

@@ -77,6 +77,29 @@ export const useChatStore = defineStore('chat', () => {
   const evaluateApi = createEvaluateApi(apiClient)
   const environmentApi = createEnvironmentApi(apiClient)
 
+  // terminal_bridge 日志回采缓冲（批量上报到 /api/bridge-logs，异常重传）
+  let bridgeLogBuffer: Record<string, unknown>[] = []
+  let bridgeLogTimer: number | null = null
+  async function flushBridgeLogs() {
+    bridgeLogTimer = null
+    if (bridgeLogBuffer.length === 0) return
+    const batch = bridgeLogBuffer
+    bridgeLogBuffer = []
+    try {
+      await apiClient.post('/bridge-logs', { logs: batch })
+    } catch (e) {
+      // 发送失败：保留并重试（断网/重启重传）
+      bridgeLogBuffer = batch.concat(bridgeLogBuffer)
+      if (bridgeLogTimer === null) bridgeLogTimer = window.setTimeout(flushBridgeLogs, 2000)
+    }
+  }
+  function forwardBridgeLog(entry: Record<string, unknown>) {
+    // 仅回采带工单关联的日志，保证落库后可按工单分析
+    if (!entry.case_id) return
+    bridgeLogBuffer.push(entry)
+    if (bridgeLogTimer === null) bridgeLogTimer = window.setTimeout(flushBridgeLogs, 500)
+  }
+
   // 是否显示助手选择器（v2.1：从后端 API 响应获取）
   const showAssistantSelector = ref(false)
   const defaultAssistant = ref<string | null>(null)
@@ -765,7 +788,7 @@ export const useChatStore = defineStore('chat', () => {
               // T-TOOL-04 + T-TOOL-18: Agent 命令执行请求（SSE → WebSocket → POST 结果）
               try {
                 const event = JSON.parse(data)
-                const { execId, command, reason, riskLevel, nodeIp, container, caseId, conversationId: convId } = event
+                const { execId, command, reason, riskLevel, nodeIp, container, caseId, conversationId: convId, traceId } = event
 
                 devLog('agent_exec_command', '收到执行请求', { execId, riskLevel, commandPreview: command.substring(0, 50) })
 
@@ -798,7 +821,7 @@ export const useChatStore = defineStore('chat', () => {
                     continue
                   }
                   // 通过 terminal_bridge WebSocket 发送命令 (双通道：隔离执行)
-                  const wsMsg = buildAgentExecProcessMessage(caseId, execId, command, nodeIp, container)
+                  const wsMsg = buildAgentExecProcessMessage(caseId, execId, command, nodeIp, container, traceId)
                   sshWebSocket.value.send(wsMsg)
                   devLog('agent_exec_command', '命令已发送到 Bridge', { execId, nodeIp, container })
                   // 监听 exec_result（带超时 30s）
@@ -1659,6 +1682,9 @@ export const useChatStore = defineStore('chat', () => {
           const buf = execBuffers.get(msg.exec_id) || { stdout: '', stderr: '' }
           buf.stderr += msg.stderr
           execBuffers.set(msg.exec_id, buf)
+        } else if (msg.type === 'bridge_log') {
+          // terminal_bridge 结构化回采日志（OBS-TERMINAL-BRIDGE-001）
+          forwardBridgeLog(msg as unknown as Record<string, unknown>)
         } else if (msg.type === 'exec_result') {
           // Agent 命令执行结果回调
           const parsed = parseAgentExecResult(msg)

@@ -20,6 +20,7 @@ from shared.utils.exception_handlers import register_exception_handlers
 from app.config import settings
 from app.routes import (
     agent_exec,
+    bridge_logs,
     conversations,
     diagnostic_item,
     evaluate,
@@ -154,6 +155,7 @@ async def lifespan(app: FastAPI):
     sop_execution.set_dependencies(database_manager, kb_client, environment_client)
     diagnostic_item.set_dependencies(database_manager)
     agent_exec.set_dependencies(database_manager, redis_manager)  # T-TOOL-05, T-TOOL-06
+    bridge_logs.set_dependencies(database_manager)  # OBS-TERMINAL-BRIDGE-001 日志回采
     tool_definition.set_tool_database_manager(database_manager)
     system_prompt.set_prompt_database_manager(database_manager)
     skill_definition.set_skill_database_manager(database_manager)
@@ -191,6 +193,7 @@ app.include_router(audit_route.router)
 app.include_router(sop_execution.router)
 app.include_router(diagnostic_item.router)
 app.include_router(agent_exec.router)  # T-TOOL-05, T-TOOL-06
+app.include_router(bridge_logs.router)  # OBS-TERMINAL-BRIDGE-001 日志回采
 app.include_router(tool_definition.router)
 app.include_router(system_prompt.router)
 app.include_router(skill_definition.router)

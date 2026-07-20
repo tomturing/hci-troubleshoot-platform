@@ -136,6 +136,18 @@ async def qfk_exec(
             ),
         )
 
+    # 终端级失败哨兵：命令根本没在 HCI 主机上执行（会话缺失 / 桥未运行 / 超时）。
+    # 这类结果绝不能进入关键字判定——否则 match_mode="not" / expected=False 信号会把
+    # "无输出"误判为"关键字缺失 → 符合排查判定"，产生假阳性（见工单 Q2026071923606）。
+    _terminal_failure_sentinels = (
+        "SSH 会话不存在",
+        "需先 ssh_connect",
+        "execution timeout",
+        "执行超时",
+        "终端桥未运行",
+        "SSH 未连接",
+    )
+
     results = []
     exec_ids = []
     for cmd in commands:
@@ -149,6 +161,33 @@ async def qfk_exec(
                 policy="auto", # 无需前端弹窗，静默自动跑
                 exec_id=exec_id,
             )
+            # 让命令"在桥上跑过但未真正落到主机"的失败显式化：不进入 evaluate，直接判失败。
+            combined = f"{exec_res.stdout or ''}\n{exec_res.stderr or ''}"
+            is_terminal_failure = (exec_res.exit_code not in (0, None)) and any(
+                s in combined for s in _terminal_failure_sentinels
+            )
+            if is_terminal_failure:
+                logger.warning(
+                    event="qfk_terminal_failure",
+                    namespace=signal.namespace,
+                    exec_id=exec_res.exec_id,
+                    exit_code=exec_res.exit_code,
+                    preview=combined[:200],
+                )
+                return QFKResult(
+                    matched=False,
+                    signal_type=signal.namespace,
+                    commands=commands,
+                    keywords=signal.keywords,
+                    match_mode=signal.match_mode,
+                    matched_keywords=[],
+                    evidence=f"命令未在 HCI 主机执行（终端桥返回失败）: {combined.strip()[:500]}",
+                    error=(
+                        "命令执行失败：终端会话缺失或桥未运行，未获得真实主机输出，"
+                        "无法判定信号。请先通过 Custom-UI 建立 SSH 连接（ssh_connect）后再触发诊断。"
+                    ),
+                    exec_ids=exec_ids,
+                )
             results.append(exec_res)
             if exec_res.exec_id:
                 exec_ids.append(exec_res.exec_id)

@@ -34,6 +34,7 @@ export interface TerminalWsMessage {
   | 'exec_result'  // T-TOOL-01: Agent 命令执行结果
   | 'exec_stdout'  // 双通道：隔离通道 stdout
   | 'exec_stderr'  // 双通道：隔离通道 stderr
+  | 'bridge_log'   // terminal_bridge 结构化回采日志（OBS-TERMINAL-BRIDGE-001）
   case_id?: string
   output?: string
   message?: string
@@ -42,6 +43,16 @@ export interface TerminalWsMessage {
   exit_code?: number  // exec_result 消息的退出码
   stdout?: string   // 双通道 stdout 字段
   stderr?: string   // 双通道 stderr 字段
+  trace_id?: string // 端到端链路 ID（回显）
+  // bridge_log 消息的负载（结构化日志条目）
+  seq?: number
+  ts?: string
+  level?: string
+  event?: string
+  custom_ui?: string
+  node_ip?: string
+  user_id?: string
+  extra?: Record<string, unknown>
 }
 
 /**
@@ -233,7 +244,8 @@ export function parseJsonOutput(output: string): unknown {
 export function buildAgentExecMessage(
   caseId: string,
   execId: string,
-  rawCommand: string
+  rawCommand: string,
+  traceId?: string | null,
 ): string {
   const markerId = execId.replace(/-/g, '').substring(0, 16)
   const marker = `__EXEC_DONE_${markerId}`
@@ -243,6 +255,7 @@ export function buildAgentExecMessage(
     case_id: caseId,
     exec_id: execId,
     command,
+    trace_id: traceId || undefined,
   })
 }
 
@@ -256,6 +269,7 @@ export function buildAgentExecProcessMessage(
   rawCommand: string,
   nodeIp?: string | null,
   container?: string | null,
+  traceId?: string | null,
 ): string {
   return JSON.stringify({
     type: 'ssh_exec_process',
@@ -264,6 +278,7 @@ export function buildAgentExecProcessMessage(
     command: rawCommand,
     node_ip: nodeIp || undefined,
     container: container || undefined,
+    trace_id: traceId || undefined,
   })
 }
 

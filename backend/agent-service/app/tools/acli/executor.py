@@ -353,6 +353,10 @@ class BridgeRelayExecutor:
         trace_id = get_current_trace_id() or "unknown"
         start_time = time.time()
         exec_id = exec_id or str(uuid.uuid4())
+        # 端到端链路：以 exec_id 作为稳定关联键（OTel trace 不存在时回退），
+        # 一路透传到 conversation-service(SSE)→前端→terminal_bridge，统一分析。
+        if trace_id == "unknown":
+            trace_id = exec_id
 
         # 1. 提取命令和原因。具体工具命令必须来自 usage_template 或通用 command 参数。
         if usage_template:
@@ -512,6 +516,7 @@ class BridgeRelayExecutor:
                     "risk_level": runtime_risk,
                     "node_ip": node_ip,
                     "case_id": case_id or args.get("case_id", ""),  # 优先使用显式传入的 case_id
+                    "trace_id": trace_id,  # 端到端链路透传
                 },
             )
             resp.raise_for_status()

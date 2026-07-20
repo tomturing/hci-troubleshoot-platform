@@ -12,6 +12,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -44,6 +46,7 @@ type InMessage struct {
 	ExecID     string `json:"exec_id"`   // 用于 ssh_exec_command 和 ssh_exec_process
 	NodeIP     string `json:"node_ip"`   // 目标节点 IP（多节点路由）
 	Container  string `json:"container"` // 目标容器名（空或"host"=物理机直连）
+	TraceID    string `json:"trace_id"`  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
 }
 
 type OutMessage struct {
@@ -56,6 +59,8 @@ type OutMessage struct {
 	ExitCode int    `json:"exit_code,omitempty"` // 用于 exec_result
 	Stdout   string `json:"stdout,omitempty"`    // 双通道物理隔离输出 (Scheme B)
 	Stderr   string `json:"stderr,omitempty"`    // 双通道物理隔离输出 (Scheme B)
+	TraceID  string `json:"trace_id,omitempty"`  // 回显端到端 trace_id
+	CustomUI string `json:"custom_ui,omitempty"` // 来源 Custom-UI（自动按 Origin 关联）
 }
 
 // ── Exec Marker 监听器 ─────────────────────────────────────────────────────────
@@ -740,12 +745,16 @@ func sendMsg(ws *websocket.Conn, msg OutMessage) {
 	}
 }
 
-func (b *Bridge) handle(ws *websocket.Conn) {
-	log.Println("[Bridge] 浏览器已连接:", ws.RemoteAddr())
+func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
+	cui := customUIHost(customUI)
+	log.Printf("[Bridge] 浏览器已连接: origin=%s custom_ui=%s remote=%s", customUI, cui, ws.RemoteAddr())
+	// 注册回采订阅者（按连接归属 custom_ui）
+	sub := logHub.addSubscriber(ws, cui)
 	// ownedSessions 追踪 ssh_connect 显式创建的会话
 	ownedSessions := make(map[string]*SSHSession)
 	defer func() {
-		log.Println("[Bridge] 浏览器已断开:", ws.RemoteAddr())
+		log.Printf("[Bridge] 浏览器已断开: custom_ui=%s remote=%s", cui, ws.RemoteAddr())
+		logHub.removeSubscriber(ws)
 		for key, owned := range ownedSessions {
 			current := b.get(key)
 			if current == owned {
@@ -805,12 +814,17 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 				sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
 				continue
 			}
-			b.set(key, session)
-			ownedSessions[key] = session
-			// 保存认证信息，供后续自动连接其他节点使用
-			b.lastAuth[msg.CaseID] = msg
-			sendMsg(ws, OutMessage{Type: "ssh_connected", CaseID: msg.CaseID})
-			log.Printf("[Bridge] SSH 认证成功: %s@%s:%d (key=%s)", msg.Username, msg.Host, msg.Port, key)
+		b.set(key, session)
+		ownedSessions[key] = session
+		// 保存认证信息，供后续自动连接其他节点使用
+		b.lastAuth[msg.CaseID] = msg
+		// 归属工单并回放近期日志（异常重传）
+		logHub.setCase(sub, msg.CaseID)
+		sendMsg(ws, OutMessage{Type: "ssh_connected", CaseID: msg.CaseID, CustomUI: cui})
+		blog("INFO", "ssh.connected", "SSH 认证成功", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"user": msg.Username, "host": msg.Host, "port": msg.Port, "key": key,
+		})
+		log.Printf("[Bridge] SSH 认证成功: %s@%s:%d (key=%s)", msg.Username, msg.Host, msg.Port, key)
 
 			caseID := msg.CaseID
 			session.on_output_start(ws, stdout, caseID, func() {
@@ -858,9 +872,13 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 				key = sessionKey(msg.CaseID, msg.NodeIP)
 			}
 			if s == nil {
+				blog("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"exec_id": msg.ExecID, "key": sessionKey(msg.CaseID, msg.NodeIP),
+				})
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
 					Output: "SSH 会话不存在（需先 ssh_connect）", ExitCode: -1,
+					TraceID: msg.TraceID, CustomUI: cui,
 				})
 				continue
 			}
@@ -868,6 +886,7 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
 					Output: "缺少 exec_id 参数", ExitCode: -1,
+					TraceID: msg.TraceID, CustomUI: cui,
 				})
 				continue
 			}
@@ -875,12 +894,16 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
 					Output: "缺少 command 参数", ExitCode: -1,
+					TraceID: msg.TraceID, CustomUI: cui,
 				})
 				continue
 			}
 
 			// 包装容器命令
 			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
+			blog("INFO", "exec.start", "开始执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"exec_id": msg.ExecID, "key": key, "container": msg.Container, "cmd_len": len(wrappedCmd),
+			})
 			log.Printf("[Bridge] EXEC_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
 				key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
 			log.Printf("[Bridge] EXEC_CMD: %q", wrappedCmd)
@@ -898,11 +921,15 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 				if result.Timeout {
 					exitInfo = "exit=TIMEOUT"
 				}
+				blog("INFO", "exec.done", "命令执行完成", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"exec_id": msg.ExecID, "exit_code": exitCode, "timeout": result.Timeout, "output_len": outLen,
+				})
 				log.Printf("[Bridge] EXEC_DONE: exec_id=%s node=%s %s output_len=%d",
 					msg.ExecID, msg.NodeIP, exitInfo, outLen)
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
 					Output: output, ExitCode: exitCode,
+					TraceID: msg.TraceID, CustomUI: cui,
 				})
 			}()
 
@@ -913,24 +940,29 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 				s = b.autoConnectNode(ws, msg)
 				key = sessionKey(msg.CaseID, msg.NodeIP)
 			}
-			if s == nil {
-				sendMsg(ws, OutMessage{
-					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
-					Stderr: "SSH 会话不存在（需先 ssh_connect）", ExitCode: -1,
-				})
-				continue
-			}
-			if msg.ExecID == "" {
-				sendMsg(ws, OutMessage{
-					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
-					Stderr: "缺少 exec_id 参数", ExitCode: -1,
-				})
-				continue
-			}
-			if msg.Command == "" {
-				sendMsg(ws, OutMessage{
-					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
-					Stderr: "缺少 command 参数", ExitCode: -1,
+		if s == nil {
+			blog("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令(隔离通道)", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"exec_id": msg.ExecID, "key": sessionKey(msg.CaseID, msg.NodeIP),
+			})
+			sendMsg(ws, OutMessage{
+				Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+				Stderr: "SSH 会话不存在（需先 ssh_connect）", ExitCode: -1,
+				TraceID: msg.TraceID, CustomUI: cui,
+			})
+			continue
+		}
+		if msg.ExecID == "" {
+			sendMsg(ws, OutMessage{
+				Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+				Stderr: "缺少 exec_id 参数", ExitCode: -1,
+				TraceID: msg.TraceID, CustomUI: cui,
+			})
+			continue
+		}
+		if msg.Command == "" {
+			sendMsg(ws, OutMessage{
+				Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+				Stderr: "缺少 command 参数", ExitCode: -1,
 				})
 				continue
 			}
@@ -946,9 +978,202 @@ func (b *Bridge) handle(ws *websocket.Conn) {
 	}
 }
 
+// ── 结构化日志与回采（Observability）────────────────────────────────────────
+//
+// 设计目标（第一性原理 + 业界范式）：
+//   1. 统一可观测性：所有日志结构化为 JSON，携带 trace_id / case_id / node_ip /
+//      custom_ui 标签，接入平台整体链路（Custom-UI → Bridge → Agent 共享同一 trace）。
+//   2. 回采：日志经 WebSocket 以 `bridge_log` 消息实时推给已连接的 Custom-UI 浏览器，
+//      由前端统一 POST 到其后台「回采接口」落库（工单关联）。Bridge 为通用代理，
+//      不感知后台地址，只按连接 Origin 自动归属 custom_ui。
+//   3. 多工单并行/串行：会话本就以 caseID@nodeIP 为键；日志按 case_id 归属与回放。
+//   4. 异常重传：环形缓冲保留近期日志，浏览器（重）连接并 ssh_connect 时回放；
+//      发送失败暂存 pending，连接恢复后重传；可选落本地文件供进程重启回放。
+
+type logEntry struct {
+	Seq       uint64         `json:"seq"`
+	Timestamp string         `json:"ts"`
+	Level     string         `json:"level"`
+	Service   string         `json:"service"`
+	Event     string         `json:"event,omitempty"`
+	Message   string         `json:"message,omitempty"`
+	TraceID   string         `json:"trace_id,omitempty"`
+	CaseID    string         `json:"case_id,omitempty"`
+	NodeIP    string         `json:"node_ip,omitempty"`
+	CustomUI  string         `json:"custom_ui,omitempty"`
+	Extra     map[string]any `json:"extra,omitempty"`
+}
+
+// bridgeSubscriber 代表一个已连接的 Custom-UI 浏览器（一个回采订阅者）。
+type bridgeSubscriber struct {
+	conn     *websocket.Conn
+	customUI string
+	caseID   string
+	mu       sync.Mutex
+	pending  []logEntry // 断网/重启期间的待重传缓冲（有界）
+}
+
+// LogHub 全局日志中枢：结构化落盘 + 环形缓冲 + 多订阅者回采。
+type LogHub struct {
+	mu     sync.Mutex
+	seq    uint64
+	cap    int
+	ring   []logEntry // 全局有界环形缓冲，供晚加入/重连回放
+	subs   map[*websocket.Conn]*bridgeSubscriber
+	logFile *os.File
+}
+
+var logHub = newLogHub()
+
+func newLogHub() *LogHub {
+	h := &LogHub{
+		cap: 5000,
+		subs: make(map[*websocket.Conn]*bridgeSubscriber),
+	}
+	// 本地持久化（重启回放）：best-effort，受 HCI_BRIDGE_LOG_DIR 控制。
+	if dir := os.Getenv("HCI_BRIDGE_LOG_DIR"); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+		if f, err := os.OpenFile(filepath.Join(dir, "bridge.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+			h.logFile = f
+		}
+	}
+	return h
+}
+
+func (h *LogHub) publish(e logEntry) {
+	h.mu.Lock()
+	h.seq++
+	e.Seq = h.seq
+	e.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	if len(h.ring) >= h.cap {
+		h.ring = h.ring[1:]
+	}
+	h.ring = append(h.ring, e)
+	if h.logFile != nil {
+		if b, err := json.Marshal(e); err == nil {
+			_, _ = h.logFile.Write(append(b, '\n'))
+		}
+	}
+	for _, sub := range h.subs {
+		if e.CaseID == "" || sub.caseID == "" || sub.caseID == e.CaseID {
+			h.enqueue(sub, e)
+		}
+	}
+	h.mu.Unlock()
+}
+
+func (h *LogHub) enqueue(sub *bridgeSubscriber, e logEntry) {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if len(sub.pending) >= 2000 {
+		sub.pending = sub.pending[1:]
+	}
+	sub.pending = append(sub.pending, e)
+}
+
+// flushSubscriber 把待重传缓冲经 bridge_log 推给浏览器；连接断开则保留待下次重传。
+func (h *LogHub) flushSubscriber(sub *bridgeSubscriber) {
+	sub.mu.Lock()
+	pending := sub.pending
+	sub.pending = nil
+	sub.mu.Unlock()
+	for _, e := range pending {
+		b, err := json.Marshal(e)
+		if err != nil {
+			continue
+		}
+		if err := websocket.Message.Send(sub.conn, string(b)); err != nil {
+			sub.mu.Lock()
+			if len(sub.pending) < 2000 {
+				sub.pending = append(sub.pending, e)
+			}
+			sub.mu.Unlock()
+			break
+		}
+	}
+}
+
+func (h *LogHub) addSubscriber(conn *websocket.Conn, customUI string) *bridgeSubscriber {
+	sub := &bridgeSubscriber{conn: conn, customUI: customUI}
+	h.mu.Lock()
+	h.subs[conn] = sub
+	h.mu.Unlock()
+	return sub
+}
+
+// setCase 标记订阅者归属工单，并回放该工单近期日志（重连/晚加入可重传）。
+func (h *LogHub) setCase(sub *bridgeSubscriber, caseID string) {
+	h.mu.Lock()
+	sub.caseID = caseID
+	var replay []logEntry
+	if caseID != "" {
+		for _, e := range h.ring {
+			if e.CaseID == caseID {
+				replay = append(replay, e)
+			}
+		}
+	}
+	h.mu.Unlock()
+	for _, e := range replay {
+		h.enqueue(sub, e)
+	}
+	go h.flushSubscriber(sub)
+}
+
+func (h *LogHub) removeSubscriber(conn *websocket.Conn) {
+	h.mu.Lock()
+	delete(h.subs, conn)
+	h.mu.Unlock()
+}
+
+// bridgeLogWriter 把标准库 log 输出重定向为结构化日志并回采，从而零改造捕获全部既有 log.Printf。
+type bridgeLogWriter struct{}
+
+func (bridgeLogWriter) Write(p []byte) (int, error) {
+	line := strings.TrimRight(string(p), "\n")
+	level := "INFO"
+	upper := strings.ToUpper(line)
+	switch {
+	case strings.Contains(upper, "ERROR"):
+		level = "ERROR"
+	case strings.Contains(upper, "WARNING"), strings.Contains(upper, "WARN"):
+		level = "WARNING"
+	}
+	event := "bridge.log"
+	msg := line
+	if idx := strings.Index(line, "[Bridge] "); idx >= 0 {
+		rest := line[idx+len("[Bridge] "):]
+		if sp := strings.Index(rest, ":"); sp > 0 && sp < 48 {
+			event = "bridge." + strings.ReplaceAll(strings.TrimSpace(rest[:sp]), " ", "_")
+			msg = strings.TrimSpace(rest[sp+1:])
+		}
+	}
+	logHub.publish(logEntry{Level: level, Service: "terminal_bridge", Event: event, Message: msg})
+	return os.Stdout.Write(p) // 同时保留控制台原文，便于本地调试
+}
+
+// blog 记录带上下文（trace/case/node/custom_ui）的结构化日志并回采。
+func blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map[string]any) {
+	e := logEntry{
+		Level:    level,
+		Service:  "terminal_bridge",
+		Event:    event,
+		Message:  msg,
+		TraceID:  traceID,
+		CaseID:   caseID,
+		NodeIP:   nodeIP,
+		CustomUI: customUI,
+		Extra:    extra,
+	}
+	logHub.publish(e)
+	if b, err := json.Marshal(e); err == nil {
+		os.Stdout.Write(append(b, '\n'))
+	}
+}
+
 // ── 主入口 ────────────────────────────────────────────────────────────────────
 
-func corsWebSocketHandler(wsHandler websocket.Handler) http.Handler {
+func (b *Bridge) corsWebSocketHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin == "" {
@@ -964,10 +1189,23 @@ func corsWebSocketHandler(wsHandler websocket.Handler) http.Handler {
 			return
 		}
 		log.Printf("[Bridge] WebSocket 请求: origin=%s method=%s", origin, r.Method)
+		// 每个浏览器连接按 Origin 自动归属 custom_ui（本地 hci.local / 线上 acli.sangfor.com.cn:4443 等）
+		wsHandler := websocket.Handler(func(ws *websocket.Conn) { b.handle(ws, origin) })
 		wsHandler.ServeHTTP(w, r)
 	})
 }
 
+// customUIHost 从完整 Origin 中提取可识别的标识（去 scheme），用于日志标签与回采关联。
+func customUIHost(origin string) string {
+	if origin == "" || origin == "*" {
+		return "unknown"
+	}
+	o := origin
+	if i := strings.Index(o, "://"); i >= 0 {
+		o = o[i+3:]
+	}
+	return o
+}
 var (
 	Version = "v2.15.0-dev"
 )
@@ -1005,11 +1243,14 @@ func getVersion() string {
 
 func main() {
 	bridge := newBridge()
-	http.Handle("/", corsWebSocketHandler(websocket.Handler(bridge.handle)))
+	// 把所有标准库日志重定向为结构化日志并回采（统一可观测性）
+	log.SetOutput(bridgeLogWriter{})
+	log.SetFlags(0)
+	http.Handle("/", bridge.corsWebSocketHandler())
 
 	addr := fmt.Sprintf("localhost:%d", wsPort)
 	log.Printf("[Bridge] HCI SSH Bridge 已启动 (版本: %s), 监听 ws://%s", getVersion(), addr)
-	log.Printf("[Bridge] CORS 已启用，支持从公网域名访问")
+	log.Printf("[Bridge] CORS 已启用，支持从公网域名访问；日志结构化回采已开启")
 
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal("[Bridge] 启动失败:", err)
