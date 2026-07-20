@@ -37,7 +37,12 @@ set CGO_ENABLED=0
 set GIT_VER=v2.15.0-dev
 for /f "delims=" %%i in ('git describe --tags --always --dirty 2^>nul') do set GIT_VER=%%i
 
-go build -trimpath -ldflags="-s -w -buildid= -X main.Version=%GIT_VER%" -o terminal_bridge.exe .
+set GIT_COMMIT=unknown
+for /f "delims=" %%i in ('git rev-parse --short=12 HEAD 2^>nul') do set GIT_COMMIT=%%i
+
+for /f "delims=" %%i in ('powershell -NoProfile -Command "Get-Date -UFormat '%%Y-%%m-%%dT%%H:%%M:%%SZ' -AsUTC"') do set BUILD_TIME=%%i
+
+go build -trimpath -ldflags="-s -w -buildid= -X main.Version=%GIT_VER% -X main.CommitID=%GIT_COMMIT% -X main.BuildTime=%BUILD_TIME%" -o terminal_bridge.exe .
 
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Compilation failed.
