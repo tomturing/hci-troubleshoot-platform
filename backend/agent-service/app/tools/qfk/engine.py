@@ -139,7 +139,7 @@ async def qfk_exec(
     # 终端级失败哨兵：命令根本没在 HCI 主机上执行（会话缺失 / 桥未运行 / 超时）。
     # 这类结果绝不能进入关键字判定——否则 match_mode="not" / expected=False 信号会把
     # "无输出"误判为"关键字缺失 → 符合排查判定"，产生假阳性（见工单 Q2026071923606）。
-    _terminal_failure_sentinels = (
+    _TERMINAL_FAILURE_SENTINELS = (
         "SSH 会话不存在",
         "需先 ssh_connect",
         "execution timeout",
@@ -164,7 +164,7 @@ async def qfk_exec(
             # 让命令"在桥上跑过但未真正落到主机"的失败显式化：不进入 evaluate，直接判失败。
             combined = f"{exec_res.stdout or ''}\n{exec_res.stderr or ''}"
             is_terminal_failure = (exec_res.exit_code not in (0, None)) and any(
-                s in combined for s in _terminal_failure_sentinels
+                s in combined for s in _TERMINAL_FAILURE_SENTINELS
             )
             if is_terminal_failure:
                 logger.warning(

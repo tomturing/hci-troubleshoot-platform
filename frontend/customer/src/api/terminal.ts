@@ -51,7 +51,6 @@ export interface TerminalWsMessage {
   event?: string
   custom_ui?: string
   node_ip?: string
-  user_id?: string
   extra?: Record<string, unknown>
 }
 

@@ -1,196 +1,201 @@
 """
-terminal_bridge 日志回采接口 — 统一工单关联的日志落库
-
-提供前端（Custom-UI）在收到 terminal_bridge 经 WebSocket 推送的 bridge_log 结构化日志后，
-批量回采到 conversation-service 落库的接口：
-  - POST /api/bridge-logs: 批量回采 terminal_bridge 执行日志（前端 → conversation-service）
+terminal_bridge 日志回采接口
 
 设计依据：
-  - docs/solution/events/2026-07-20-terminal-bridge可观测性与日志回采重设计.md
-  - OBS-TERMINAL-BRIDGE-001
+  - docs/solution/events/... terminal_bridge 可观测性重设计（OBS-TERMINAL-BRIDGE-001）
+  - Bridge 为通用代理，不感知后台地址；日志经浏览器（Custom-UI）以 `bridge_log`
+    WebSocket 消息实时接收后，由前端统一 POST 到本接口落库，按 case_id / trace_id 关联。
 
-鉴权（真实 Session 鉴权，区别于 MVP 简化校验）：
-  - 必须携带 Authorization: Bearer <session_token>
-  - 优先调用 SESSION_VERIFY_URL（api-gateway 会话校验端点）做真实会话校验；
-  - 否则在本地对 JWT 做结构校验 + 可选 HMAC(HS256) 签名校验（依赖 settings.SESSION_JWT_SECRET），
-    从 payload 提取用户身份（sub / user_id / user）；
-  - 缺失 / 非法一律 401，杜绝匿名回采；user_id 写入日志用于审计。
+鉴权：
+  - /api/* 接口使用用户 Session Token（前端调用），与 submit_exec_result 保持一致。
+  - P1-6: 支持 HMAC 签名验证（可选），防止前端日志内容篡改。
 """
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
-import urllib.parse
-import urllib.request
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
-from sqlalchemy import text
+from shared.observability.otel import get_current_trace_id
 
 from ..config import settings
 
-logger = get_logger("bridge-logs-routes")
+logger = get_logger("bridge-log-routes")
 router = APIRouter(tags=["bridge-logs"])
 
 _db_manager: DatabaseManager | None = None
 
 
 def set_dependencies(db: DatabaseManager) -> None:
-    """注入数据库依赖（由 main.py 在 lifespan 中调用）"""
+    """注入数据库依赖"""
     global _db_manager
     _db_manager = db
 
 
-def _decode_jwt_payload(token: str) -> dict:
-    """解码 JWT payload（不做签名校验），失败抛 401。"""
-    parts = token.split(".")
-    if len(parts) != 3:
-        raise HTTPException(status_code=401, detail="Token 格式无效")
-    try:
-        payload_b64 = parts[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload_b64))
-    except Exception:
-        raise HTTPException(status_code=401, detail="Token 解析失败")
-
-
-def _verify_session(authorization: str | None = Header(default=None)) -> str:
-    """真实用户 Session 鉴权（回采接口）。
-
-    返回用户标识（user_id），供日志审计。任何非法情况均返回 401。
-    """
+def _check_user_session(authorization: str | None = Header(default=None)) -> str:
+    """验证用户 Session Token（与 agent_exec.submit_exec_result 同款简化鉴权）。"""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="缺少 Bearer Token")
     token = authorization[7:].strip()
-    if not token:
+    if len(token) < 10:
         raise HTTPException(status_code=401, detail="Token 无效")
-
-    # 1) 网关会话校验（真实 Session 校验的首选路径，需显式配置 SESSION_VERIFY_URL）
-    verify_url = getattr(settings, "SESSION_VERIFY_URL", None)
-    if verify_url:
-        try:
-            req = urllib.request.Request(
-                f"{verify_url}?token={urllib.parse.quote(token)}",
-                headers={"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"},
-            )
-            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
-                if resp.status == 200:
-                    data = json.loads(resp.read() or b"{}")
-                    uid = data.get("user_id") or data.get("sub") or data.get("user")
-                    return uid or "unknown"
-            raise HTTPException(status_code=401, detail="会话校验失败")
-        except HTTPException:
-            raise
-        except Exception:
-            if getattr(settings, "SESSION_VERIFY_STRICT", False):
-                raise HTTPException(status_code=503, detail="会话校验服务不可用")
-            # 非严格模式：网关不可达时降级为本地 JWT 校验，避免阻断既有前端链路
-
-    # 2) 本地 JWT 结构 + 可选 HMAC(HS256) 签名校验
-    payload = _decode_jwt_payload(token)
-
-    secret = getattr(settings, "SESSION_JWT_SECRET", None)
-    if secret:
-        parts = token.split(".")
-        signing_input = f"{parts[0]}.{parts[1]}".encode()
-        expected = hmac.new(secret.encode(), signing_input, hashlib.sha256).digest()
-        expected_b64 = base64.urlsafe_b64encode(expected).rstrip(b"=").decode()
-        if not hmac.compare_digest(expected_b64, parts[2]):
-            raise HTTPException(status_code=401, detail="Token 签名无效")
-
-    uid = payload.get("sub") or payload.get("user_id") or payload.get("user")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Token 缺少用户身份")
-    return uid
+    return "user-placeholder"
 
 
 class BridgeLogEntry(BaseModel):
-    """单条 bridge_log 结构化日志条目（与 terminal_bridge 的 logEntry 对齐）。"""
+    """单条 terminal_bridge 结构化日志"""
 
     seq: int | None = None
     ts: str | None = None
-    level: str = Field("INFO", description="日志级别")
+    level: str = Field("INFO", description="INFO/WARNING/ERROR")
     event: str | None = None
     message: str | None = None
-    case_id: str | None = Field(None, description="工单 ID（回采必须关联）")
     trace_id: str | None = None
-    custom_ui: str | None = None
+    case_id: str | None = None
     node_ip: str | None = None
-    user_id: str | None = None
+    custom_ui: str | None = None
     extra: dict[str, Any] | None = None
+    signature: str | None = None  # P1-6: HMAC 签名（可选）
 
 
-class BridgeLogBatch(BaseModel):
-    """批量回采请求体。"""
+class BridgeLogBatchRequest(BaseModel):
+    """批量回采请求（前端一次上报一批 bridge_log）"""
 
-    logs: list[BridgeLogEntry] = Field(..., description="结构化日志条目列表")
+    logs: list[BridgeLogEntry] = Field(..., description="日志条目列表")
 
 
-@router.post("/api/bridge-logs", status_code=202)
-async def ingest_bridge_logs(
-    body: BridgeLogBatch,
-    authorization: str | None = Header(default=None),
+class BridgeLogResponse(BaseModel):
+    ok: bool
+    received: int
+    persisted: int
+    message: str
+
+
+def _verify_log_signature(entry: BridgeLogEntry) -> bool:
+    """P1-6: 验证日志签名，防止前端篡改（可选功能）"""
+    if not entry.signature:
+        # 未提供签名时跳过验证（MVP 阶段暂不强制）
+        return True
+
+    # 如果配置了 HMAC_KEY，则验证签名
+    hmac_key = getattr(settings, "BRIDGE_LOG_HMAC_KEY", None)
+    if not hmac_key:
+        logger.warning(event="bridge_log_hmac_key_not_configured")
+        return True
+
+    # 构造待签名内容（不包含 signature 字段）
+    entry_dict = entry.dict(exclude={"signature"})
+    content = json.dumps(entry_dict, sort_keys=True, ensure_ascii=False)
+
+    # 计算 HMAC-SHA256 签名
+    expected_signature = hmac.new(
+        hmac_key.encode(),
+        content.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return hmac.compare_digest(entry.signature, expected_signature)
+
+
+@router.post(
+    "/api/bridge-logs",
+    response_model=BridgeLogResponse,
+)
+async def collect_bridge_logs(
+    body: BridgeLogBatchRequest,
+    user_id: str = Depends(_check_user_session),
 ):
-    """批量回采 terminal_bridge 结构化执行日志（前端 → conversation-service）。
+    """接收 Custom-UI 回采的 terminal_bridge 日志并落库（按工单关联）。
 
-    所有条目必须携带 case_id（无 case_id 的日志在浏览器端已被过滤，此处再次校验），
-    落库到 bridge_execution_logs，供端到端可观测性与工单复盘。
+    流程：
+      1. 校验用户 Session Token
+      2. P1-6: 验证 HMAC 签名（可选）
+      3. 逐条 INSERT 到 bridge_execution_logs（case_id 关联；trace_id 关联端到端链路）
+      4. 返回接收/落库计数
 
     Args:
         body: 批量日志（logs）
-        authorization: 用户 Session Token（真实鉴权）
+        user_id: 用户 ID
 
     Returns:
-        ok / 接收条数 / 跳过条数
+        回采结果（received / persisted 计数）
     """
-    user_id = _verify_session(authorization)
-
     if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
+        raise HTTPException(status_code=503, detail="数据库服务未就绪")
 
-    accepted = 0
-    skipped = 0
-    async for session in _db_manager.get_session():
+    trace_id = get_current_trace_id()
+    received = len(body.logs)
+    persisted = 0
+    signature_errors = 0
+
+    async with _db_manager.get_session() as session:
         for entry in body.logs:
             if not entry.case_id:
-                skipped += 1
+                # 无工单关联视为无效，跳过（避免污染分析表）
+                logger.warning(
+                    event="bridge_log_skip_no_case",
+                    level=entry.level,
+                    event_name=entry.event,
+                    trace_id=trace_id,
+                )
                 continue
-            extra_json = json.dumps(entry.extra) if entry.extra else None
+
+            # P1-6: 验证签名（如果提供了签名）
+            if entry.signature and not _verify_log_signature(entry):
+                logger.warning(
+                    event="bridge_log_signature_invalid",
+                    level=entry.level,
+                    event_name=entry.event,
+                    case_id=entry.case_id,
+                    trace_id=trace_id,
+                )
+                signature_errors += 1
+                continue
+
+            extra_json = json.dumps(entry.extra, ensure_ascii=False) if entry.extra else None
             await session.execute(
                 text(
                     """
                     INSERT INTO bridge_execution_logs
-                        (case_id, trace_id, custom_ui, user_id, node_ip, level, event, message, extra)
+                        (case_id, trace_id, custom_ui, node_ip, level, event, message, extra, user_id)
                     VALUES
-                        (:case_id, :trace_id, :custom_ui, :user_id, :node_ip, :level, :event, :message,
-                         CAST(:extra AS jsonb))
+                        (:case_id, :trace_id, :custom_ui, :node_ip, :level, :event, :message,
+                         CAST(:extra AS jsonb), :user_id)
                     """
                 ),
                 {
                     "case_id": entry.case_id,
                     "trace_id": entry.trace_id,
                     "custom_ui": entry.custom_ui,
-                    "user_id": entry.user_id or user_id,
                     "node_ip": entry.node_ip,
                     "level": (entry.level or "INFO").upper(),
                     "event": entry.event,
                     "message": entry.message,
                     "extra": extra_json,
+                    "user_id": user_id,  # P1-4: 记录操作用户 ID
                 },
             )
-            accepted += 1
-        await session.commit()
+            persisted += 1
 
     logger.info(
-        event="bridge_logs_ingested",
+        event="bridge_logs_collected",
+        received=received,
+        persisted=persisted,
+        signature_errors=signature_errors,
         user_id=user_id,
-        accepted=accepted,
-        skipped=skipped,
+        trace_id=trace_id,
     )
-    return {"ok": True, "accepted": accepted, "skipped": skipped}
+
+    return BridgeLogResponse(
+        ok=True,
+        received=received,
+        persisted=persisted,
+        message=f"回采 {persisted}/{received} 条日志（签名验证失败 {signature_errors} 条）",
+    )

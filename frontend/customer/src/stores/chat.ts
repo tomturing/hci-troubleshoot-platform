@@ -80,24 +80,105 @@ export const useChatStore = defineStore('chat', () => {
   // terminal_bridge 日志回采缓冲（批量上报到 /api/bridge-logs，异常重传）
   let bridgeLogBuffer: Record<string, unknown>[] = []
   let bridgeLogTimer: number | null = null
+  let bridgeLogRetryCount = 0
+  const BRIDGE_LOG_MAX_RETRY = 5
+  const BRIDGE_LOG_BASE_DELAY = 500
+
   async function flushBridgeLogs() {
     bridgeLogTimer = null
     if (bridgeLogBuffer.length === 0) return
     const batch = bridgeLogBuffer
     bridgeLogBuffer = []
+
     try {
       await apiClient.post('/bridge-logs', { logs: batch })
+      bridgeLogRetryCount = 0 // 成功后重置重试计数
     } catch (e) {
-      // 发送失败：保留并重试（断网/重启重传）
-      bridgeLogBuffer = batch.concat(bridgeLogBuffer)
-      if (bridgeLogTimer === null) bridgeLogTimer = window.setTimeout(flushBridgeLogs, 2000)
+      // P1-5: 增强异常处理 - 指数退避重试 + 最大重试次数
+      bridgeLogRetryCount++
+      if (bridgeLogRetryCount <= BRIDGE_LOG_MAX_RETRY) {
+        const delay = BRIDGE_LOG_BASE_DELAY * Math.pow(2, bridgeLogRetryCount - 1)
+        console.warn(`日志回采失败（第 ${bridgeLogRetryCount} 次），${delay}ms 后重试`, e)
+        bridgeLogBuffer = batch.concat(bridgeLogBuffer)
+        if (bridgeLogTimer === null) {
+          bridgeLogTimer = window.setTimeout(flushBridgeLogs, delay)
+        }
+      } else {
+        console.error('日志回采失败，已达最大重试次数，丢弃日志', batch.length, '条')
+        bridgeLogRetryCount = 0 // 重置计数，下次重新开始
+      }
     }
   }
+
   function forwardBridgeLog(entry: Record<string, unknown>) {
     // 仅回采带工单关联的日志，保证落库后可按工单分析
     if (!entry.case_id) return
     bridgeLogBuffer.push(entry)
     if (bridgeLogTimer === null) bridgeLogTimer = window.setTimeout(flushBridgeLogs, 500)
+  }
+
+  // P1-5: 浏览器关闭前保存 pending 日志到 localStorage（断网保护）
+  function savePendingLogs() {
+    if (bridgeLogBuffer.length > 0) {
+      try {
+        localStorage.setItem('hci_pending_bridge_logs', JSON.stringify(bridgeLogBuffer))
+        console.log('已保存 pending 日志到 localStorage:', bridgeLogBuffer.length, '条')
+      } catch (e) {
+        console.warn('保存 pending 日志失败:', e)
+      }
+    }
+  }
+
+  // P1-5: 页面加载时恢复 pending 日志
+  function restorePendingLogs() {
+    try {
+      const pending = localStorage.getItem('hci_pending_bridge_logs')
+      if (pending) {
+        const logs = JSON.parse(pending) as Record<string, unknown>[]
+        bridgeLogBuffer = logs.concat(bridgeLogBuffer)
+        localStorage.removeItem('hci_pending_bridge_logs')
+        console.log('已恢复 pending 日志:', logs.length, '条')
+        if (bridgeLogTimer === null) {
+          bridgeLogTimer = window.setTimeout(flushBridgeLogs, 1000) // 1s 后重试
+        }
+      }
+    } catch (e) {
+      console.warn('恢复 pending 日志失败:', e)
+    }
+  }
+
+  // 缺陷 6: 前端重连时发送 resume 消息（触发历史日志回放）
+  function sendResumeMessage(ws: WebSocket, caseId: string, traceId?: string) {
+    if (!caseId) return
+    const resumeMsg = JSON.stringify({
+      type: 'resume',
+      case_id: caseId,
+      trace_id: traceId || undefined,
+    })
+    ws.send(resumeMsg)
+    console.log('已发送 resume 消息:', caseId)
+  }
+
+  // 监听 WebSocket 重连事件（由 checkBridgeRunning 或其他重连逻辑触发）
+  function setupWebSocketResumeHandler(ws: WebSocket) {
+    const originalOnOpen = ws.onopen
+    ws.onopen = (event) => {
+      // 缺陷 6: 重连时自动发送 resume 消息（如果有当前工单）
+      if (currentCase.value?.case_id) {
+        sendResumeMessage(ws, currentCase.value.case_id)
+      }
+      // 调用原始的 onopen 处理器
+      if (originalOnOpen) {
+        originalOnOpen(event)
+      }
+    }
+  }
+
+  // P1-5: 注册 beforeunload 事件（浏览器关闭/刷新前保存）
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', savePendingLogs)
+    // 页面加载时恢复
+    restorePendingLogs()
   }
 
   // 是否显示助手选择器（v2.1：从后端 API 响应获取）
@@ -1609,6 +1690,7 @@ export const useChatStore = defineStore('chat', () => {
 
       // 创建 WebSocket
       socket = createBridgeSocket()
+        setupWebSocketResumeHandler(socket)  // 缺陷 6: 重连时自动发送 resume
       sshWebSocket.value = socket
 
       socket.onopen = () => {
@@ -2134,6 +2216,7 @@ export const useChatStore = defineStore('chat', () => {
           // 2. 建立 SSH 连接
           devLog('SSH-CREATE', '开始建立 WebSocket 连接到 Bridge')
           const socket = createBridgeSocket()
+          setupWebSocketResumeHandler(socket)  // 缺陷 6: 重连时自动发送 resume
           devLog('SSH-CREATE', 'WebSocket 对象已创建，等待连接')
           sshCreationSocket.value = socket
           appendSshCreationLog('info', 'bridge', '开始连接本地 SSH Bridge', { caseId })
