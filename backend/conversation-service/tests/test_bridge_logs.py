@@ -8,9 +8,6 @@ terminal_bridge 日志回采功能单元测试
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import hmac
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -33,7 +30,6 @@ from routes.bridge_logs import (
     set_dependencies,
     _verify_log_signature,
 )
-
 
 
 @pytest.fixture
@@ -175,7 +171,7 @@ class TestBridgeLogsAPI:
         )
 
         # 未配置 HMAC_KEY 时应该返回 True
-        with patch("backend.conversation-service.app.routes.bridge_logs.settings") as mock_settings:
+        with patch("routes.bridge_logs.settings") as mock_settings:
             mock_settings.BRIDGE_LOG_HMAC_KEY = None
             result = _verify_log_signature(log)
             assert result is True
@@ -206,7 +202,7 @@ class TestBridgeLogsAPI:
         )
 
         # 验证签名
-        with patch("backend.conversation-service.app.routes.bridge_logs.settings") as mock_settings:
+        with patch("routes.bridge_logs.settings") as mock_settings:
             mock_settings.BRIDGE_LOG_HMAC_KEY = hmac_key
             result = _verify_log_signature(log)
             assert result is True
@@ -221,7 +217,7 @@ class TestBridgeLogsAPI:
             signature="invalid-signature",
         )
 
-        with patch("backend.conversation-service.app.routes.bridge_logs.settings") as mock_settings:
+        with patch("routes.bridge_logs.settings") as mock_settings:
             mock_settings.BRIDGE_LOG_HMAC_KEY = "test-secret-key"
             result = _verify_log_signature(log)
             assert result is False
@@ -230,8 +226,7 @@ class TestBridgeLogsAPI:
 class TestBridgeLogsRetry:
     """测试前端日志重试逻辑"""
 
-    @pytest.mark.asyncio
-    async def test_retry_with_exponential_backoff(self):
+    def test_retry_with_exponential_backoff(self):
         """测试指数退避重试"""
         # 模拟前端重试逻辑
         retry_count = 0
@@ -246,8 +241,7 @@ class TestBridgeLogsRetry:
         # 验证指数退避：500, 1000, 2000, 4000, 8000
         assert delays == [500, 1000, 2000, 4000, 8000]
 
-    @pytest.mark.asyncio
-    async def test_max_retry_limit(self):
+    def test_max_retry_limit(self):
         """测试最大重试次数限制"""
         max_retry = 5
         attempts = 0
