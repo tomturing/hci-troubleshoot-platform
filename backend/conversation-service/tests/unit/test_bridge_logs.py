@@ -133,7 +133,7 @@ class TestIngestBridgeLogs:
             logs=[
                 BridgeLogEntry(
                     case_id="Q2026072055042",
-                    level="info",
+                    level="INFO",
                     event="ssh.connected",
                     message="SSH 连接成功",
                     trace_id="abc123",
