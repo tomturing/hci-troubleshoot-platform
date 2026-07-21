@@ -45,7 +45,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIConnectionError, APITimeoutError
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.utils.prompt_loader import StrictPromptLoader
@@ -303,7 +303,7 @@ async def _vision_analyze(
             status_code = getattr(getattr(exc, "response", None), "status_code", None)
             is_rate_limit = status_code == 429
             is_server = status_code is not None and 500 <= status_code < 600
-            is_timeout = isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError))
+            is_timeout = isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError, APITimeoutError, APIConnectionError))
             # 非限流/非服务端/非超时的错误（如 401 鉴权失败）不重试
             if not (is_rate_limit or is_server or is_timeout):
                 logger.exception(

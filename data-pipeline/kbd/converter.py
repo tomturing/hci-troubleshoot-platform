@@ -176,7 +176,8 @@ def _parse_sections(content_html: str) -> dict[str, str]:
         if md_title:
             # 匹配成功：开启新 section
             content_divs = mce_div.find_all("div", recursive=False)
-            parts: list[str] = [str(content_divs[-1])] if content_divs else []
+            # 保留所有直接子 div（修复：旧逻辑仅取最后一个 div，导致子步骤/命令/预期结果/判断依据等被丢弃）
+            parts: list[str] = [str(d) for d in content_divs]
 
             # 容器后的 overflow 兄弟节点（直到下一个 mceNonEditable）
             stop_at = mce_divs[i + 1] if i + 1 < len(mce_divs) else None
@@ -194,7 +195,7 @@ def _parse_sections(content_html: str) -> dict[str, str]:
                 content_divs = mce_div.find_all("div", recursive=False)
                 if content_divs:
                     result[last_matched_field] = (
-                        result.get(last_matched_field, "") + str(content_divs[-1])
+                        result.get(last_matched_field, "") + "".join(str(d) for d in content_divs)
                     )
 
     return result
@@ -370,7 +371,12 @@ def _html_to_semantic_text(html: str, image_map: dict[str, dict]) -> str:
                 out.append("")
                 continue
             if name == "li":
+                # 找直接子节点 ul/ol + 嵌套在单层 div 内的 ul/ol
+                # 修复：<li><p>标题</p><div><ul><li>子内容</li></ul></div></li> 中
+                # 被 div 包裹的 ul 无法被 recursive=False 找到而丢弃
                 sublists = child.find_all(["ul", "ol"], recursive=False)
+                for div in child.find_all("div", recursive=False):
+                    sublists.extend(div.find_all(["ul", "ol"], recursive=False))
                 item_text = _inline_text(child)
                 out.append(f"{prefix}- {item_text}".rstrip())
                 for sl in sublists:

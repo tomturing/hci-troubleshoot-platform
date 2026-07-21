@@ -43,13 +43,13 @@ install:
 
 dev-up:
 	@echo "Starting PostgreSQL & Redis..."
-	docker-compose -f deploy/docker/docker-compose.yml up -d postgres redis
+	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up -d postgres redis
 	@echo "Waiting for PostgreSQL to be ready..."
 	@until docker-compose -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
 	@echo "Running database migrations..."
-	docker-compose -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
+	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
 	@echo "Starting all services..."
-	docker-compose -f deploy/docker/docker-compose.yml up -d
+	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up -d
 	@echo ""
 	@echo "服务已启动:"
 	@echo "  - API Gateway: http://localhost:8000"
@@ -61,12 +61,12 @@ dev-up:
 db-sync:
 	@echo "Running database schema migration..."
 	@until docker-compose -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
-	docker-compose -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
+	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
 	@echo "Migration complete."
 
 dev-down:
 	@echo "停止开发环境..."
-	docker-compose -f deploy/docker/docker-compose.yml down
+	docker-compose --env-file .env -f deploy/docker/docker-compose.yml down
 
 test:
 	@echo "运行测试 (按服务隔离，避免 app/ 命名空间冲突)..."

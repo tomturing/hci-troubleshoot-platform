@@ -171,6 +171,15 @@
   - docker-compose.yml：移除暴露端口、统一网络配置
   - Helm agent-service deployment：新增 LANGFUSE_SECRET_KEY / PUBLIC_KEY / HOST 环境变量
   - kb-service admin.py：.md 文件导入同 .docx 生成 docx_hash 支持幂等去重
+- **KBD 审核页面 Tab 分类展示与置信度筛选**：
+  - 分类统计接口：`GET /api/admin/kbd/pending/stats` 关联 `kb_category` 返回分类名称+数量
+  - 前端用下拉框按分类过滤，每分类独立分页；支持置信度范围筛选（高/中/低）
+  - 分类筛选支持"未分类"（`ai_category_id IS NULL`）
+  - api-gateway 新增 `/pending/stats` 代理路由
+- **KBD 有效排查步骤解析修复**：
+  - `_parse_sections`：保留 mceNonEditable 容器内所有直接子 div（修复仅保留最后一个导致子步骤丢失）
+  - `_html_to_semantic_text`：修复嵌套 div 包裹的 ul/ol 被丢弃（Sangfor KB 的 `<li><div><ul>` 结构）
+- **Vision 超时重试**：openai SDK 的 `APITimeoutError` / `APIConnectionError` 纳入重试条件
 - **docker-compose db-migrate 声明式数据库迁移**（PR #569）：
   - 新增 `db-migrate` 服务，与 Helm `db-migrate` Job 使用相同镜像和脚本，本地修改 Schema 后通过 volume 挂载实时生效
   - entrypoint 串联 atlas_dev 初始化 → 数据迁移 → 函数 → Atlas schema apply → 触发器 → 种子数据加载全流程

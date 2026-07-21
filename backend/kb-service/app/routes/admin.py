@@ -110,6 +110,47 @@ class DocumentUpdateRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@kbd_router.get("/pending/stats")
+async def kbd_category_stats(
+    request: Request,
+    status: str = "draft",
+):
+    """查询各分类条目数量统计（供前端 Tab 分组展示使用）"""
+    _check_auth(request)
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        sql = text("""
+            SELECT
+                COALESCE(e.ai_category_id, '__uncategorized__') AS category_id,
+                c.name AS category_name,
+                COUNT(*) AS cnt
+            FROM kbd_entry e
+            LEFT JOIN kb_category c ON c.code = e.ai_category_id
+            WHERE e.status = :status
+            GROUP BY e.ai_category_id, c.name
+            ORDER BY cnt DESC
+        """)
+        result = await session.execute(sql, {"status": status})
+        rows = result.mappings().all()
+
+    return {
+        "stats": [
+            {
+                "category_id": row["category_id"],
+                "category_label": "未分类"
+                if row["category_id"] == "__uncategorized__"
+                else (f"{row['category_id']} {row['category_name']}" if row["category_name"] else row["category_id"]),
+                "count": row["cnt"],
+            }
+            for row in rows
+        ],
+        "total": sum(r["cnt"] for r in rows),
+    }
+
+
 @kbd_router.get("/pending")
 async def list_kbd_entries(
     request: Request,
@@ -119,8 +160,10 @@ async def list_kbd_entries(
     category_id: str | None = None,
     support_id: str | None = None,
     title_keyword: str | None = None,
+    min_confidence: float | None = None,
+    max_confidence: float | None = None,
 ):
-    """查询 KBD 条目列表（分页 + 状态/分类/案例ID/标题过滤）
+    """查询 KBD 条目列表（分页 + 状态/分类/案例ID/标题/置信度过滤）
 
     Args:
         page: 页码（从 1 开始）
@@ -129,6 +172,8 @@ async def list_kbd_entries(
         category_id: 按 AI 分类 ID 过滤（可选）
         support_id: 按案例 ID 精准匹配（可选）
         title_keyword: 按标题关键字模糊搜索（可选）
+        min_confidence: 最低置信度（可选，0-1）
+        max_confidence: 最高置信度（可选，0-1）
 
     Returns:
         { entries: [...], total, page, page_size }
@@ -159,8 +204,11 @@ async def list_kbd_entries(
         params: dict = {"status": status, "limit": page_size, "offset": offset}
 
         if category_id:
-            where_clauses.append("(ai_category_id = :category_id OR category_id = :category_id)")
-            params["category_id"] = category_id
+            if category_id == "__uncategorized__":
+                where_clauses.append("ai_category_id IS NULL")
+            else:
+                where_clauses.append("(ai_category_id = :category_id OR category_id = :category_id)")
+                params["category_id"] = category_id
 
         # 按案例 ID 精准匹配
         if support_id:
@@ -171,6 +219,14 @@ async def list_kbd_entries(
         if title_keyword:
             where_clauses.append("title ILIKE :title_keyword")
             params["title_keyword"] = f"%{title_keyword}%"
+
+        # 按置信度范围过滤
+        if min_confidence is not None:
+            where_clauses.append("ai_category_conf >= :min_confidence")
+            params["min_confidence"] = min_confidence
+        if max_confidence is not None:
+            where_clauses.append("ai_category_conf <= :max_confidence")
+            params["max_confidence"] = max_confidence
 
         where_sql = " AND ".join(where_clauses)
 

@@ -137,12 +137,51 @@ type ContentSegment = NormalSegment | ScreenshotSegment
 const loading = ref(false)
 const entries = ref<KbdEntry[]>([])
 const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
 const categoryFilter = ref('')
 const statusFilter = ref('draft')
 const supportIdFilter = ref('')
 const titleKeywordFilter = ref('')
+const confidenceFilter = ref('')
+
+// ── 按 AI 分类 Tab 分组 ──
+interface CategoryStat {
+  category_id: string
+  category_label: string
+  count: number
+}
+const categoryStats = ref<CategoryStat[]>([])
+const activeCategory = ref('__all__')      // '__all__' = 全部
+const statsLoading = ref(false)
+
+// 当前 Tab 的分页
+const catPage = ref(1)
+const catPageSize = ref(20)
+
+async function fetchCategoryStats() {
+  statsLoading.value = true
+  try {
+    const params = new URLSearchParams({ status: statusFilter.value })
+    const resp = await fetch(`/api/v1/kbd/pending/stats?${params}`, { headers: authHeader })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    categoryStats.value = data.stats || []
+  } catch {
+    categoryStats.value = []
+  } finally {
+    statsLoading.value = false
+  }
+}
+
+function onTabChange(tab: string) {
+  activeCategory.value = tab
+  catPage.value = 1
+  fetchPending()
+}
+
+function handleCatPageChange(p: number) {
+  catPage.value = p
+  fetchPending()
+}
 
 const { categoryOptions, categoriesLoading, fetchCategories } = useCategories()
 
@@ -200,10 +239,15 @@ async function fetchPending() {
   loading.value = true
   try {
     const params = new URLSearchParams({
-      page: String(page.value),
-      page_size: String(pageSize.value),
+      page: String(catPage.value),
+      page_size: String(catPageSize.value),
       status: statusFilter.value,
     })
+    // Tab 分类过滤（'__all__' = 不限制）
+    if (activeCategory.value && activeCategory.value !== '__all__') {
+      params.append('category_id', activeCategory.value)
+    }
+    // 额外的手动分类筛选（叠加到 Tab 之上）
     if (categoryFilter.value) {
       params.append('category_id', categoryFilter.value)
     }
@@ -213,6 +257,11 @@ async function fetchPending() {
     if (titleKeywordFilter.value) {
       params.append('title_keyword', titleKeywordFilter.value)
     }
+    if (confidenceFilter.value) {
+      const [minStr, maxStr] = confidenceFilter.value.split(',')
+      if (minStr) params.append('min_confidence', minStr)
+      if (maxStr) params.append('max_confidence', maxStr)
+    }
     const resp = await fetch(`/api/v1/kbd/pending?${params}`, {
       headers: authHeader,
     })
@@ -220,6 +269,8 @@ async function fetchPending() {
     const data: PendingKbdResponse = await resp.json()
     entries.value = data.entries
     total.value = data.total
+    // 刷新分类统计（切换 Tab 或过滤条件变化时）
+    fetchCategoryStats()
   } catch {
     ElMessage.error('加载 KBD 条目失败，请刷新重试')
   } finally {
@@ -247,9 +298,8 @@ async function handleApprove(entry: KbdEntry) {
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     ElMessage.success('审核通过，KBD 条目已发布')
-    entries.value = entries.value.filter((e) => e.id !== entry.id)
-    total.value -= 1
     detailDialogVisible.value = false
+    await fetchPending()
   } catch (e: unknown) {
     if ((e as { message?: string })?.message !== 'cancel') {
       ElMessage.error('操作失败，请重试')
@@ -600,17 +650,14 @@ function goToToolManage(acquirer?: string) {
   router.push({ path: '/tools', query: q ? { q } : {} })
 }
 
-function handlePageChange(newPage: number) {
-  page.value = newPage
-  fetchPending()
-}
-
 function resetFilters() {
   categoryFilter.value = ''
   statusFilter.value = 'draft'
   supportIdFilter.value = ''
   titleKeywordFilter.value = ''
-  page.value = 1
+  confidenceFilter.value = ''
+  activeCategory.value = '__all__'
+  catPage.value = 1
   fetchPending()
 }
 
@@ -650,13 +697,8 @@ async function submitEdit() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     ElMessage.success('保存成功')
     editDialogVisible.value = false
-    // 更新本地数据
-    const idx = entries.value.findIndex((e) => e.id === editingEntry.value!.id)
-    if (idx !== -1) {
-      if (payload.title) entries.value[idx].title = payload.title
-      if (payload.content_md !== undefined) entries.value[idx].content_md = payload.content_md
-      if (payload.category_id !== undefined) entries.value[idx].category_id = payload.category_id
-    }
+    // 刷新列表：分类变更时需要重新分组
+    await fetchPending()
   } catch {
     ElMessage.error('保存失败，请重试')
   } finally {
@@ -678,9 +720,8 @@ async function handleRepublish(entry: KbdEntry) {
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     ElMessage.success('重新发布成功')
-    entries.value = entries.value.filter((e) => e.id !== entry.id)
-    total.value -= 1
     detailDialogVisible.value = false
+    await fetchPending()
   } catch (e: unknown) {
     if ((e as { message?: string })?.message !== 'cancel') {
       ElMessage.error('操作失败，请重试')
@@ -1187,13 +1228,13 @@ onMounted(() => {
             @keyup.enter="fetchPending"
           />
         </el-col>
-        <el-col :span="4">
+        <el-col :span="3">
           <el-select
             v-model="categoryFilter"
             filterable
             allow-create
             clearable
-            placeholder="按 AI 分类筛选"
+            placeholder="分类筛选"
             style="width: 100%"
             :loading="categoriesLoading"
             @change="fetchPending"
@@ -1209,15 +1250,22 @@ onMounted(() => {
             </el-option>
           </el-select>
         </el-col>
-        <el-col :span="4">
-          <el-select v-model="statusFilter" @change="fetchPending" style="width: 100%">
-            <el-option label="待审核 (draft)" value="draft" />
-            <el-option label="已发布 (published)" value="published" />
-            <el-option label="已拒绝 (rejected)" value="rejected" />
-            <el-option label="已归档 (archived)" value="archived" />
+        <el-col :span="3">
+          <el-select v-model="confidenceFilter" clearable placeholder="置信度" style="width: 100%" @change="fetchPending">
+            <el-option label="高 ≥0.8" value="0.8," />
+            <el-option label="中 0.5-0.8" value="0.5,0.8" />
+            <el-option label="低 <0.5" value=",0.5" />
           </el-select>
         </el-col>
         <el-col :span="3">
+          <el-select v-model="statusFilter" @change="fetchPending" style="width: 100%">
+            <el-option label="待审核" value="draft" />
+            <el-option label="已发布" value="published" />
+            <el-option label="已拒绝" value="rejected" />
+            <el-option label="已归档" value="archived" />
+          </el-select>
+        </el-col>
+        <el-col :span="2">
           <div class="filter-btn-group">
             <el-button type="primary" @click="fetchPending">搜索</el-button>
             <el-button @click="resetFilters">重置</el-button>
@@ -1229,9 +1277,32 @@ onMounted(() => {
       </el-row>
     </el-card>
 
-    <!-- 列表 -->
+    <!-- 列表：按 AI 分类 Tab 分组 -->
     <el-card v-loading="loading" shadow="never" class="table-card">
-      <el-table :data="entries" row-key="id" style="width: 100%">
+      <div class="category-nav">
+        <el-select
+          v-model="activeCategory"
+          filterable
+          placeholder="选择分类"
+          style="width: 360px"
+          @change="onTabChange"
+        >
+          <el-option label="全部" value="__all__">
+            <span>全部</span>
+            <el-tag size="small" type="info" style="margin-left:8px">{{ categoryStats.reduce((s, c) => s + c.count, 0) }}</el-tag>
+          </el-option>
+          <el-option
+            v-for="stat in categoryStats"
+            :key="stat.category_id"
+            :label="stat.category_label"
+            :value="stat.category_id"
+          >
+            <span>{{ stat.category_label }}</span>
+            <el-tag size="small" type="info" style="margin-left:8px">{{ stat.count }}</el-tag>
+          </el-option>
+        </el-select>
+      </div>
+      <el-table :data="entries" row-key="id" style="width: 100%" size="small">
         <!-- 案例 ID -->
         <el-table-column label="案例 ID" width="100">
           <template #default="{ row }">
@@ -1242,19 +1313,9 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 标题 -->
-        <el-table-column label="标题" min-width="300">
+        <el-table-column label="标题" min-width="280">
           <template #default="{ row }">
             <span class="entry-title">{{ row.title }}</span>
-          </template>
-        </el-table-column>
-
-        <!-- AI 分类 -->
-        <el-table-column label="AI 分类" width="140">
-          <template #default="{ row }">
-            <el-tooltip v-if="row.ai_category_reason" :content="row.ai_category_reason" placement="top">
-              <span class="category-tag">{{ row.ai_category_label || row.ai_category_id || '—' }}</span>
-            </el-tooltip>
-            <span v-else class="category-tag">{{ row.ai_category_label || row.ai_category_id || '—' }}</span>
           </template>
         </el-table-column>
 
@@ -1274,7 +1335,7 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 状态 -->
-        <el-table-column label="状态" width="90" align="center">
+        <el-table-column label="状态" width="80" align="center">
           <template #default="{ row }">
             <el-tag
               :type="row.status === 'published' ? 'success' :
@@ -1286,7 +1347,7 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 导入时间 -->
-        <el-table-column label="导入时间" width="150">
+        <el-table-column label="导入时间" width="140">
           <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </el-table-column>
 
@@ -1314,9 +1375,9 @@ onMounted(() => {
           background
           layout="total, prev, pager, next"
           :total="total"
-          :page-size="pageSize"
-          :current-page="page"
-          @current-change="handlePageChange"
+          :page-size="catPageSize"
+          :current-page="catPage"
+          @current-change="handleCatPageChange"
         />
       </div>
     </el-card>
@@ -1860,9 +1921,18 @@ onMounted(() => {
   font-size: 14px;
 }
 
+.category-nav {
+  margin-bottom: 12px;
+}
+
+.category-nav :deep(.el-select-dropdown__wrap) {
+  max-height: 480px;
+}
+
 .table-card {
   min-height: 400px;
 }
+
 
 .support-link {
   color: #409eff;

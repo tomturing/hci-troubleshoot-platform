@@ -289,6 +289,14 @@ async def kbd_list_proxy(request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@kbd_router.get("/pending/stats")
+async def kbd_stats_proxy(request: Request):
+    """代理 KBD 分类统计请求 → kb-service"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("GET", "/pending/stats", params=dict(request.query_params), headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @kbd_router.get("/{kbd_id}")
 async def kbd_get_proxy(kbd_id: int, request: Request):
     """代理获取单条 KBD 详情（含 content_md）→ kb-service"""
