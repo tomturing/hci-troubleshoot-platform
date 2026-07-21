@@ -1058,7 +1058,7 @@ class KBDDiagnostic:
             "expected": bool(matcher.get("expected", True)),
 
             # 新字段
-            "instruction": args.get("instruction") or step.description,
+            "instruction": args.get("instruction") or getattr(step, "description", None),
             "host": args.get("host"),
             "vm": args.get("vm"),
             "timeout": args.get("timeout", 10),
@@ -1074,7 +1074,7 @@ class KBDDiagnostic:
             # 兼容旧字段
             "target": args.get("target"),
             "sub_command": args.get("sub_command"),
-            "description": step.description,
+            "description": getattr(step, "description", None),
         }
 
         try:

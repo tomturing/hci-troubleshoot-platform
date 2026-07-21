@@ -7,10 +7,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ─── 有效容器枚举（qfk_system 专用）────────────────────────────────────────────
 VALID_CONTAINERS = {"asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
+
+# ─── 有效服务容器（旧版语义，service handler 校验）──────────────────────────────
+VALID_SERVICE_CONTAINERS = {"asv", "vn", "vn-agent", "vs"}
 
 # ─── 有效匹配模式 ──────────────────────────────────────────────────────────────
 VALID_MATCH_MODES = {"or", "and", "not"}
@@ -36,12 +39,14 @@ class BackendSignal(BaseModel):
     - qfk_vm/network/storage/hardware/platform: command
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True)
+
     # ─── 共有字段 ─────────────────────────────────────────────────────────────
     instruction: str | None = Field(default=None, description="关键信号说明")
     host: str | None = Field(default=None, description="主机（变量池获取，特殊值 'cluster' 表示遍历集群）")
     vm: str | None = Field(default=None, description="虚拟机（变量池获取，可为空）")
     keyword: list[str] = Field(default_factory=list, description="关键字（必填）")
-    timeout: int = Field(default=10, ge=1, le=300, description="超时时间（秒），默认 10")
+    timeout: int | None = Field(default=None, ge=1, le=300, description="超时时间（秒），默认 None 表示使用全局默认")
     expected: bool = Field(default=True, description="期望结果：True=期望出现，False=期望不出现")
     match_mode: str = Field(default="or", description="匹配模式：or(任一)/and(全部)/not(均不出现)")
 
@@ -55,71 +60,151 @@ class BackendSignal(BaseModel):
 
     # qfk_system
     command: str | None = Field(default=None, description="执行命令（qfk_system/vm/network/storage/hardware/platform 必填）")
-    container: str = Field(default="asv-con", description="容器类型（qfk_system 选填，默认 asv-con）")
+    container: str | None = Field(default=None, description="容器类型（qfk_system 选填）")
 
     # qfk_service
     service: str | None = Field(default=None, description="服务名称（qfk_service 必填）")
     action: str = Field(default="status", description="动作（qfk_service 选填，默认 status）")
 
     # ─── 兼容旧字段（向后兼容）─────────────────────────────────────────────────
-    target: dict[str, Any] | None = Field(default=None, description="旧版 target 字段（兼容）")
-    keywords: list[str] | None = Field(default=None, description="旧版 keywords 字段（兼容）")
+    target: BackendSignalTarget | None = Field(default=None, description="旧版 target 字段（兼容）")
     sub_command: str | None = Field(default=None, description="旧版 sub_command 字段（兼容）")
     description: str | None = Field(default=None, description="旧版 description 字段（兼容）")
 
+    @model_validator(mode="before")
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> BackendSignal:
-        """从字典构建并校验，支持新旧字段兼容"""
-        data = data.copy()
+    def _coerce_legacy_fields(cls, data: Any) -> Any:
+        """对 dict 输入做兼容转换：target dict→BackendSignalTarget、keywords→keyword、sub_command→command、description→instruction、signal_type→namespace。"""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
 
-        # 兼容：keyword / keywords
+        # target: dict → BackendSignalTarget
+        if "target" in data and isinstance(data["target"], dict):
+            allowed = {"scope", "resource", "path", "time_window"}
+            data["target"] = BackendSignalTarget(
+                **{k: v for k, v in data["target"].items() if k in allowed}
+            )
+
+        # keywords / keyword 互转
         if "keyword" not in data and "keywords" in data:
             kw = data["keywords"]
             data["keyword"] = [kw] if isinstance(kw, str) else list(kw or [])
 
-        # 兼容：instruction / description
+        # description → instruction
         if "instruction" not in data and "description" in data:
             data["instruction"] = data["description"]
 
-        # 兼容：sub_command -> command
+        # sub_command → command
         if "command" not in data and "sub_command" in data:
             data["command"] = data["sub_command"]
 
-        # 兼容：target.host -> host
-        target = data.get("target")
-        if isinstance(target, dict):
-            if "host" not in data and target.get("host"):
-                data["host"] = target["host"]
-            if "vm" not in data and target.get("vm"):
-                data["vm"] = target["vm"]
-            if "file" not in data and target.get("resource"):
-                data["file"] = target["resource"]
-            if "end" not in data and target.get("time_window"):
-                data["end"] = target["time_window"]
-
-        # 兼容：旧版 signal_type -> namespace
+        # signal_type → namespace（同时保留 signal_type 用于旧代码访问）
         if "namespace" not in data and "signal_type" in data:
-            data["namespace"] = _signal_type_to_namespace(data["signal_type"])
+            ns = _signal_type_to_namespace(data["signal_type"])
+            data["namespace"] = ns
+            data["signal_type"] = ns
 
-        # 验证 match_mode
-        if data.get("match_mode") not in VALID_MATCH_MODES:
-            data["match_mode"] = "or"
+        return data
 
-        # 验证 container
-        if data.get("container") and data["container"] not in VALID_CONTAINERS:
-            data["container"] = "asv-con"
-
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BackendSignal:
+        """从字典构建并校验，支持新旧字段兼容"""
         return cls.model_validate(data)
 
     @classmethod
     def from_json(cls, json_str: str) -> BackendSignal:
         """从 JSON 字符串反序列化并校验"""
         data = json.loads(json_str)
-        return cls.from_dict(data)
+        return cls.model_validate(data)
 
     def is_cluster_mode(self) -> bool:
         """判断是否为集群模式"""
         return self.host == "cluster"
+
+    # 兼容旧字段访问（让 sig.keywords、sig.signal_type 等旧代码继续工作）
+    @property
+    def keywords_compat(self) -> list[str]:
+        """旧版 keywords 字段（兼容）：返回 keyword 列表"""
+        return self.keyword
+
+    @property
+    def signal_type_compat(self) -> str | None:
+        """旧版 signal_type 字段（兼容）：返回 namespace"""
+        return self.namespace
+
+    # 提供给旧测试代码使用：sig.keywords == ["X"]
+    @property
+    def keywords(self) -> list[str]:
+        """旧版 keywords 字段（兼容）：优先返回显式 keywords，其次 keyword"""
+        if self.__dict__.get("keywords"):
+            return list(self.__dict__["keywords"])
+        return list(self.keyword)
+
+    @keywords.setter
+    def keywords(self, value: list[str] | None) -> None:
+        """旧版 keywords 字段（兼容 setter）"""
+        self.__dict__["keywords"] = list(value) if value else None
+
+    @property
+    def signal_type(self) -> str | None:
+        """旧版 signal_type 字段（兼容）：返回 namespace"""
+        if self.__dict__.get("signal_type"):
+            return self.__dict__["signal_type"]
+        return self.namespace
+
+    @signal_type.setter
+    def signal_type(self, value: str | None) -> None:
+        """旧版 signal_type 字段（兼容 setter）"""
+        self.__dict__["signal_type"] = value
+
+
+class BackendSignalTarget(BaseModel):
+    """
+    QFK 信号目标（旧版 target 模型，向后兼容）
+
+    历史语义：
+    - scope: 主机/IP 范围（变量池获取）
+    - resource: 目标资源（日志文件名/服务名等）
+    - path: 路径
+    - time_window: 时间窗口（结束时间）
+
+    新版字段已平铺到 BackendSignal 顶层（host/vm/file/end/scope/resource/path/time_window），
+    保留此类用于：
+    1. 旧版 signals_json 数据反序列化（target 字段作为整体传入）
+    2. 旧版测试代码引用
+
+    新代码应直接使用 BackendSignal 的顶层字段。
+    """
+
+    scope: str | None = Field(default=None, description="主机/IP 范围（变量池获取）")
+    resource: str | None = Field(default=None, description="目标资源（日志文件名/服务名等）")
+    path: str | None = Field(default=None, description="路径")
+    time_window: str | None = Field(default=None, description="时间窗口（结束时间）")
+
+    def to_backend_signal_fields(self) -> dict[str, Any]:
+        """转换为 BackendSignal 顶层字段"""
+        out: dict[str, Any] = {}
+        if self.scope:
+            out["host"] = self.scope
+        if self.resource:
+            out["file"] = self.resource
+        if self.time_window:
+            out["end"] = self.time_window
+        return out
+
+
+def _coerce_target(value: Any) -> BackendSignalTarget | None:
+    """接受 dict 或 BackendSignalTarget，统一返回 BackendSignalTarget 实例。"""
+    if value is None:
+        return None
+    if isinstance(value, BackendSignalTarget):
+        return value
+    if isinstance(value, dict):
+        # 过滤未声明的字段
+        allowed = {"scope", "resource", "path", "time_window"}
+        return BackendSignalTarget(**{k: v for k, v in value.items() if k in allowed})
+    return None
 
 
 # ─── 旧枚举值 -> namespace 的映射（向后兼容）────────────────────────────────────
