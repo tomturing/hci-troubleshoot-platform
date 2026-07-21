@@ -45,7 +45,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
-from openai import AsyncOpenAI, APIConnectionError, APITimeoutError
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.utils.prompt_loader import StrictPromptLoader
