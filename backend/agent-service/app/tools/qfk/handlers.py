@@ -12,7 +12,7 @@ from typing import ClassVar
 
 from app.tools.acli.executor import ExecResult
 from app.tools.qfk.matcher import evaluate_matcher
-from app.tools.qfk.signal import BackendSignal, VALID_CONTAINERS
+from app.tools.qfk.signal import VALID_CONTAINERS, BackendSignal
 
 
 class CommandBuildError(ValueError):
@@ -166,7 +166,7 @@ class SystemHandler(FunctionHandler):
     """
 
     def build_commands(self, signal: BackendSignal) -> list[str]:
-        keywords = _validate_keyword(signal)
+        _validate_keyword(signal)
 
         # 基础命令
         parts = ["acli"]
@@ -190,12 +190,12 @@ class SystemHandler(FunctionHandler):
         # system <command>
         if not signal.command:
             raise CommandBuildError("qfk_system 必须提供 command 参数")
-        
+
         # 防注入校验
         forbidden_chars = re.compile(r"[|;&$`\\()\[\]{}<>!\n\r#]")
         if forbidden_chars.search(signal.command):
             raise CommandBuildError(f"command 中包含非法字符: {signal.command!r}")
-        
+
         parts.extend(["system", signal.command.strip()])
 
         return [" ".join(parts)]
@@ -208,7 +208,7 @@ class ServiceHandler(FunctionHandler):
     """
 
     def build_commands(self, signal: BackendSignal) -> list[str]:
-        keywords = _validate_keyword(signal)
+        _validate_keyword(signal)
 
         # 基础命令
         parts = _build_base_command(signal)
@@ -216,14 +216,14 @@ class ServiceHandler(FunctionHandler):
         # service 参数（必填）
         if not signal.service:
             raise CommandBuildError("qfk_service 必须提供 service 参数")
-        
+
         # 防注入校验
         if not re.match(r"^[a-zA-Z0-9_\-]+$", signal.service):
             raise CommandBuildError(f"非法服务名称: {signal.service}")
 
         # container 默认 asv-con
         container = signal.container or "asv-con"
-        
+
         # action 默认 status
         action = signal.action or "status"
 
@@ -239,7 +239,7 @@ class GenericSubCommandHandler(FunctionHandler):
     """
 
     def build_commands(self, signal: BackendSignal) -> list[str]:
-        keywords = _validate_keyword(signal)
+        _validate_keyword(signal)
 
         # 基础命令
         parts = _build_base_command(signal)

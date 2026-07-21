@@ -1038,7 +1038,7 @@ class KBDDiagnostic:
         namespace = parts[1]  # log/service/system/vm/...
 
         args = step.tool_args_template or {}
-        
+
         # 获取 matcher
         matcher = step.matcher
         if not matcher:
@@ -1056,13 +1056,13 @@ class KBDDiagnostic:
             "keyword": keywords,
             "match_mode": matcher.get("mode", "or"),
             "expected": bool(matcher.get("expected", True)),
-            
+
             # 新字段
             "instruction": args.get("instruction") or step.description,
             "host": args.get("host"),
             "vm": args.get("vm"),
             "timeout": args.get("timeout", 10),
-            
+
             # 特有字段
             "command": args.get("command") or args.get("sub_command"),
             "container": args.get("container", "asv-con"),
@@ -1070,7 +1070,7 @@ class KBDDiagnostic:
             "end": args.get("end"),
             "service": args.get("service"),
             "action": args.get("action", "status"),
-            
+
             # 兼容旧字段
             "target": args.get("target"),
             "sub_command": args.get("sub_command"),

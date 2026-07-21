@@ -9,7 +9,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ─── 有效容器枚举（qfk_system 专用）────────────────────────────────────────────
 VALID_CONTAINERS = {"asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
 
@@ -69,7 +68,7 @@ class BackendSignal(BaseModel):
     description: str | None = Field(default=None, description="旧版 description 字段（兼容）")
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "BackendSignal":
+    def from_dict(cls, data: dict[str, Any]) -> BackendSignal:
         """从字典构建并校验，支持新旧字段兼容"""
         data = data.copy()
 
@@ -113,7 +112,7 @@ class BackendSignal(BaseModel):
         return cls.model_validate(data)
 
     @classmethod
-    def from_json(cls, json_str: str) -> "BackendSignal":
+    def from_json(cls, json_str: str) -> BackendSignal:
         """从 JSON 字符串反序列化并校验"""
         data = json.loads(json_str)
         return cls.from_dict(data)
