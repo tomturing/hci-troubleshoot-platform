@@ -918,6 +918,7 @@ func blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map
 		Traceparent:  traceparent,
 	}
 	logHub.publish(e)
+	e.Type = "bridge_log" // stdout 输出也必须携带 type 字段（值传递导致 publish 内修改不影响原始 e）
 	if b, err := json.Marshal(e); err == nil {
 		os.Stdout.Write(append(b, '\n'))
 	}

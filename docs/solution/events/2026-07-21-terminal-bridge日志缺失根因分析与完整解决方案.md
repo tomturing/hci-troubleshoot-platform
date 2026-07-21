@@ -142,7 +142,91 @@ qfk_system：✗ 命令执行失败：终端会话缺失或桥未运行，未获
 
 ---
 
-## 四、完整解决方案
+## 四、PR #589 合入后发现的新根因
+
+### 4.1 问题现象
+
+PR #589 合并后，terminal_bridge 版本升级到 v2.19.0-29-gca284fa，但输出日志仍显示：
+
+```json
+{"type":"","seq":0,"ts":"","level":"INFO","service":"terminal_bridge","event":"ssh.connected",...}
+```
+
+**期望输出**：`"type":"bridge_log"`
+
+### 4.2 根因分析：Go 值传递陷阱
+
+**问题代码** (`terminal_bridge/main.go`):
+
+```go
+func blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map[string]any) {
+    e := logEntry{
+        Level:    level,
+        Service:  "terminal_bridge",
+        Event:    event,
+        // ... 其他字段
+        // ❌ 没有设置 Type 字段
+    }
+    logHub.publish(e)                    // ❌ 值传递：e 被拷贝
+    if b, err := json.Marshal(e); err == nil {  // ❌ marshal 原始的 e
+        os.Stdout.Write(append(b, '\n'))
+    }
+}
+
+func (h *LogHub) publish(e logEntry) {
+    h.mu.Lock()
+    h.seq++
+    e.Seq = h.seq
+    e.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+    e.Type = "bridge_log" // ❌ 只修改了副本
+    // ...
+    h.mu.Unlock()
+}
+```
+
+**问题链条**：
+1. `blog()` 创建 `logEntry` 结构体 `e`，**未设置 Type 字段**
+2. `logHub.publish(e)` 是**值传递**（Go 结构体传参会创建副本）
+3. `publish()` 内部修改 `e.Type = "bridge_log"` 只影响**副本**
+4. `blog()` 的 `json.Marshal(e)` 输出**原始 e**，Type 仍为空字符串
+
+### 4.3 解决方案
+
+**修复代码** (PR #590):
+
+```go
+func blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map[string]any) {
+    e := logEntry{
+        Level:    level,
+        Service:  "terminal_bridge",
+        Event:    event,
+        // ... 其他字段
+    }
+    logHub.publish(e)
+    e.Type = "bridge_log" // ✅ stdout 输出也必须携带 type 字段
+    if b, err := json.Marshal(e); err == nil {
+        os.Stdout.Write(append(b, '\n'))
+    }
+}
+```
+
+### 4.4 Go 语言陷阱总结
+
+| 问题类型 | 示例 | 影响 |
+|---------|------|------|
+| **结构体值传递** | `func publish(e logEntry)` | 函数内修改不影响原值 |
+| **切片/映射传参** | `func modify(m map[string]int)` | 传的是引用，修改会影响原值 |
+| **接口类型传参** | `func process(r io.Reader)` | 具体类型决定行为 |
+
+**最佳实践**：
+1. **值传递前完成所有赋值**：确保结构体字段在传递前已全部设置
+2. **指针传递修改原值**：`func publish(e *logEntry)` 可修改原结构体
+3. **函数返回修改后的值**：`e = publish(e)` 接收返回值
+4. **代码审查关注传参方式**：值传递 vs 指针传递的行为差异
+
+---
+
+## 五、完整解决方案
 
 ### 4.1 架构设计
 
@@ -382,7 +466,7 @@ var (
 
 ---
 
-## 五、验证方案
+## 六、验证方案
 
 ### 5.1 功能验证
 
@@ -426,7 +510,7 @@ ORDER BY created_at DESC;
 
 ---
 
-## 六、总结
+## 七、总结
 
 ### 6.1 当前问题
 
@@ -444,7 +528,7 @@ ORDER BY created_at DESC;
 
 ---
 
-## 七、关联文档
+## 八、关联文档
 
 - PR #587：修复 logEntry 缺少 type 字段
 - PR #588：完整实现 exec 日志记录
