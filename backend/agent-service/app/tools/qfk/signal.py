@@ -10,56 +10,120 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class BackendSignalTarget(BaseModel):
-    """
-    后端信号目标（Q: 查什么）的定位信息
-    """
+# ─── 有效容器枚举（qfk_system 专用）────────────────────────────────────────────
+VALID_CONTAINERS = {"asv-con", "vn-con", "vn-agent", "vs-cp-manager"}
 
-    scope: str | None = Field(default=None, description="查询范围限定，例如：主节点、备节点、所有节点或IP")
-    resource: str | None = Field(default=None, description="具体资源名称，例如：vtpdaemon.log, redis, vm-101")
-    path: str | None = Field(default=None, description="日志路径或文件所在目录，例如：/sf/log/today/")
-    time_window: str | None = Field(default=None, description="时间范围，例如：今天，最近1小时，2026-07-01 10:00:00")
+# ─── 有效匹配模式 ──────────────────────────────────────────────────────────────
+VALID_MATCH_MODES = {"or", "and", "not"}
 
 
 class BackendSignal(BaseModel):
     """
     HCI 排障标准化后端信号数据模型
 
-    acquirer 采用 namespace 命名（qfk.log / qfk.service / qfk.system 等），
-    namespace 字段为 acli 子命令空间名（log / service / vm / network / storage /
-    hardware / platform / system），HandlerRegistry 据此路由到对应 Handler。
+    共有字段：
+    - instruction: 关键信号说明
+    - host: 主机（变量池获取，特殊值 "cluster" 表示遍历集群）
+    - vm: 虚拟机（变量池获取，可为空）
+    - keyword: 关键字（必填）
+    - timeout: 超时时间（默认 10 秒）
+    - expected: 期望结果（默认 true）
+    - match_mode: 匹配模式（默认 "or"）
+
+    特有字段（按 namespace）：
+    - qfk_log: file, end
+    - qfk_system: command, container
+    - qfk_service: service, action
+    - qfk_vm/network/storage/hardware/platform: command
     """
 
-    namespace: str = Field(..., description="acli 子命令空间名：log/service/vm/network/storage/hardware/platform/system")
-    signal_type: str = Field(default="", description="信号类型描述（同 namespace，向后兼容 QFKResult 展示）")
-    target: BackendSignalTarget | None = Field(default=None, description="定位目标参数描述")
-    keywords: list[str] = Field(default_factory=list, description="K: 期望匹配对比的关键字列表")
-    match_mode: str = Field(default="or", description="关键字组合匹配模式：or(任一) / and(全部) / not(均不出现)。not 取代旧 expected=False 的取反语义")
+    # ─── 共有字段 ─────────────────────────────────────────────────────────────
+    instruction: str | None = Field(default=None, description="关键信号说明")
+    host: str | None = Field(default=None, description="主机（变量池获取，特殊值 'cluster' 表示遍历集群）")
+    vm: str | None = Field(default=None, description="虚拟机（变量池获取，可为空）")
+    keyword: list[str] = Field(default_factory=list, description="关键字（必填）")
+    timeout: int = Field(default=10, ge=1, le=300, description="超时时间（秒），默认 10")
     expected: bool = Field(default=True, description="期望结果：True=期望出现，False=期望不出现")
-    description: str | None = Field(default=None, description="对此排查步骤后端信号的文字表述说明")
-    container: str | None = Field(default=None, description="对于 service 专属的容器类型 (asv/anet/host)")
-    sub_command: str | None = Field(default=None, description="专属 vm/network/storage 等的 acli 子命名空间操作串")
+    match_mode: str = Field(default="or", description="匹配模式：or(任一)/and(全部)/not(均不出现)")
+
+    # ─── 命名空间 ─────────────────────────────────────────────────────────────
+    namespace: str = Field(..., description="acli 子命令空间名：log/service/system/vm/network/storage/hardware/platform")
+
+    # ─── 特有字段 ─────────────────────────────────────────────────────────────
+    # qfk_log
+    file: str | None = Field(default=None, description="日志文件名（qfk_log 必填）")
+    end: str | None = Field(default=None, description="结束时间（qfk_log 选填）")
+
+    # qfk_system
+    command: str | None = Field(default=None, description="执行命令（qfk_system/vm/network/storage/hardware/platform 必填）")
+    container: str = Field(default="asv-con", description="容器类型（qfk_system 选填，默认 asv-con）")
+
+    # qfk_service
+    service: str | None = Field(default=None, description="服务名称（qfk_service 必填）")
+    action: str = Field(default="status", description="动作（qfk_service 选填，默认 status）")
+
+    # ─── 兼容旧字段（向后兼容）─────────────────────────────────────────────────
+    target: dict[str, Any] | None = Field(default=None, description="旧版 target 字段（兼容）")
+    keywords: list[str] | None = Field(default=None, description="旧版 keywords 字段（兼容）")
+    sub_command: str | None = Field(default=None, description="旧版 sub_command 字段（兼容）")
+    description: str | None = Field(default=None, description="旧版 description 字段（兼容）")
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> BackendSignal:
-        """从字典构建并校验"""
-        # 兼容：若传入 signal_type 但未传 namespace，则用 signal_type 推导
+    def from_dict(cls, data: dict[str, Any]) -> "BackendSignal":
+        """从字典构建并校验，支持新旧字段兼容"""
+        data = data.copy()
+
+        # 兼容：keyword / keywords
+        if "keyword" not in data and "keywords" in data:
+            kw = data["keywords"]
+            data["keyword"] = [kw] if isinstance(kw, str) else list(kw or [])
+
+        # 兼容：instruction / description
+        if "instruction" not in data and "description" in data:
+            data["instruction"] = data["description"]
+
+        # 兼容：sub_command -> command
+        if "command" not in data and "sub_command" in data:
+            data["command"] = data["sub_command"]
+
+        # 兼容：target.host -> host
+        target = data.get("target")
+        if isinstance(target, dict):
+            if "host" not in data and target.get("host"):
+                data["host"] = target["host"]
+            if "vm" not in data and target.get("vm"):
+                data["vm"] = target["vm"]
+            if "file" not in data and target.get("resource"):
+                data["file"] = target["resource"]
+            if "end" not in data and target.get("time_window"):
+                data["end"] = target["time_window"]
+
+        # 兼容：旧版 signal_type -> namespace
         if "namespace" not in data and "signal_type" in data:
-            st = data["signal_type"]
-            ns = _signal_type_to_namespace(st)
-            data = {**data, "namespace": ns, "signal_type": ns}
-        elif "namespace" in data and not data.get("signal_type"):
-            data = {**data, "signal_type": data["namespace"]}
+            data["namespace"] = _signal_type_to_namespace(data["signal_type"])
+
+        # 验证 match_mode
+        if data.get("match_mode") not in VALID_MATCH_MODES:
+            data["match_mode"] = "or"
+
+        # 验证 container
+        if data.get("container") and data["container"] not in VALID_CONTAINERS:
+            data["container"] = "asv-con"
+
         return cls.model_validate(data)
 
     @classmethod
-    def from_json(cls, json_str: str) -> BackendSignal:
+    def from_json(cls, json_str: str) -> "BackendSignal":
         """从 JSON 字符串反序列化并校验"""
         data = json.loads(json_str)
         return cls.from_dict(data)
 
+    def is_cluster_mode(self) -> bool:
+        """判断是否为集群模式"""
+        return self.host == "cluster"
 
-# 旧枚举值 -> namespace 的映射（向后兼容旧 signals_json 数据）
+
+# ─── 旧枚举值 -> namespace 的映射（向后兼容）────────────────────────────────────
 _LEGACY_TYPE_MAP: dict[str, str] = {
     "log_keyword": "log",
     "service_status": "service",
