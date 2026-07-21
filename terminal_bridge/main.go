@@ -647,6 +647,7 @@ func wrapContainerCommand(command, container string) string {
 //      发送失败暂存 pending，连接恢复后重传；可选落本地文件供进程重启回放。
 
 type logEntry struct {
+	Type      string         `json:"type"` // bridge_log - 前端监听 type==="bridge_log" 的必备字段
 	Seq       uint64         `json:"seq"`
 	Timestamp string         `json:"ts"`
 	Level     string         `json:"level"`
@@ -726,6 +727,7 @@ func (h *LogHub) publish(e logEntry) {
 	h.seq++
 	e.Seq = h.seq
 	e.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	e.Type = "bridge_log" // 前端监听 type==="bridge_log" 的必备字段，统一在此注入
 	if len(h.ring) >= h.cap {
 		h.ring = h.ring[1:]
 	}
