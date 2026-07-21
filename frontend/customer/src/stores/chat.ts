@@ -87,6 +87,23 @@ export const useChatStore = defineStore('chat', () => {
   let recentBridgeLogs: Record<string, unknown>[] = []
   const RECENT_BRIDGE_LOGS_CAP = 2000
 
+  // 回采可观测性自检：成功/失败计数暴露到 window，供巡检（消除静默失败/成功）
+  interface BridgeLogStats {
+    successes?: number
+    ingested?: number
+    lastSuccessAt?: string
+    failures?: number
+    dropped?: number
+    lastError?: string
+    lastErrorAt?: string
+  }
+  function getBridgeLogStats(): BridgeLogStats {
+    return (window as Window & { __bridgeLogStats?: BridgeLogStats }).__bridgeLogStats || {}
+  }
+  function setBridgeLogStats(stats: BridgeLogStats): void {
+    ;(window as Window & { __bridgeLogStats?: BridgeLogStats }).__bridgeLogStats = stats
+  }
+
   async function flushBridgeLogs() {
     bridgeLogTimer = null
     if (bridgeLogBuffer.length === 0) return
@@ -96,9 +113,27 @@ export const useChatStore = defineStore('chat', () => {
     try {
       await apiClient.post('/bridge-logs', { logs: batch })
       bridgeLogRetryCount = 0 // 成功后重置重试计数
+      // 回采可观测性自检：成功计数暴露到 window，供巡检（消除静默成功）
+      const stats = getBridgeLogStats()
+      setBridgeLogStats({
+        ...stats,
+        successes: (stats.successes || 0) + 1,
+        ingested: (stats.ingested || 0) + batch.length,
+        lastSuccessAt: new Date().toISOString(),
+      })
     } catch (e) {
       // P1-5: 增强异常处理 - 指数退避重试 + 最大重试次数
       bridgeLogRetryCount++
+      // 回采可观测性自检：失败计数暴露到 window，供巡检（消除静默失败，根因见回采链路断裂分析）
+      const stats = getBridgeLogStats()
+      const dropped = bridgeLogRetryCount > BRIDGE_LOG_MAX_RETRY ? batch.length : 0
+      setBridgeLogStats({
+        ...stats,
+        failures: (stats.failures || 0) + 1,
+        dropped: (stats.dropped || 0) + dropped,
+        lastError: String(e).slice(0, 200),
+        lastErrorAt: new Date().toISOString(),
+      })
       if (bridgeLogRetryCount <= BRIDGE_LOG_MAX_RETRY) {
         const delay = BRIDGE_LOG_BASE_DELAY * Math.pow(2, bridgeLogRetryCount - 1)
         console.warn(`日志回采失败（第 ${bridgeLogRetryCount} 次），${delay}ms 后重试`, e)

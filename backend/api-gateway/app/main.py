@@ -25,6 +25,7 @@ from app.config import settings
 from app.routes import (
     assistants,
     audit,
+    bridge_logs,
     capabilities,
     cases,
     conversations,
@@ -135,6 +136,7 @@ app.include_router(terminal.router)
 app.include_router(audit.router)
 app.include_router(health.router)
 app.include_router(capabilities.router)
+app.include_router(bridge_logs.router)
 
 
 @app.get("/metrics")
