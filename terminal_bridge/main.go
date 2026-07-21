@@ -348,8 +348,23 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 
 // execCommandIsolated 独立建立 SSH Session 执行命令 (双通道 - 事务执行设计)
 func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID string) {
+	startTime := time.Now()
+
+	// P0: 记录命令开始
+	blog("INFO", "exec.start", "开始执行命令", "", s.caseID, "", "", map[string]any{
+		"exec_id":     execID,
+		"command":     command,
+		"command_len": len(command),
+	})
+
 	session, err := s.client.NewSession()
 	if err != nil {
+		// P0: 记录错误（包含详细错误信息和分类）
+		blog("ERROR", "exec.error", "创建隔离 SSH 会话失败", "", s.caseID, "", "", map[string]any{
+			"exec_id":    execID,
+			"error":      err.Error(),
+			"error_type": "session_creation_failed",
+		})
 		sendMsg(ws, OutMessage{
 			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
 			Stderr: fmt.Sprintf("创建隔离 SSH 会话失败: %v", err), ExitCode: -1,
@@ -360,6 +375,11 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 
 	stdoutPipe, err := session.StdoutPipe()
 	if err != nil {
+		blog("ERROR", "exec.error", "获取 StdoutPipe 失败", "", s.caseID, "", "", map[string]any{
+			"exec_id":    execID,
+			"error":      err.Error(),
+			"error_type": "stdout_pipe_failed",
+		})
 		sendMsg(ws, OutMessage{
 			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
 			Stderr: fmt.Sprintf("获取 StdoutPipe 失败: %v", err), ExitCode: -1,
@@ -368,6 +388,11 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 	}
 	stderrPipe, err := session.StderrPipe()
 	if err != nil {
+		blog("ERROR", "exec.error", "获取 StderrPipe 失败", "", s.caseID, "", "", map[string]any{
+			"exec_id":    execID,
+			"error":      err.Error(),
+			"error_type": "stderr_pipe_failed",
+		})
 		sendMsg(ws, OutMessage{
 			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
 			Stderr: fmt.Sprintf("获取 StderrPipe 失败: %v", err), ExitCode: -1,
@@ -376,6 +401,12 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 	}
 
 	if err := session.Start(command); err != nil {
+		blog("ERROR", "exec.error", "启动命令失败", "", s.caseID, "", "", map[string]any{
+			"exec_id":    execID,
+			"command":    command,
+			"error":      err.Error(),
+			"error_type": "command_start_failed",
+		})
 		sendMsg(ws, OutMessage{
 			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
 			Stderr: fmt.Sprintf("启动命令失败: %v", err), ExitCode: -1,
@@ -430,6 +461,25 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 			exitCode = -1
 		}
 	}
+
+	duration := time.Since(startTime)
+
+	// P0: 记录命令完成（包含所有关键信息）
+	outputPreview := stdoutBuf.String()
+	if len(outputPreview) > 500 {
+		outputPreview = outputPreview[:500] + "...(截断)"
+	}
+
+	blog("INFO", "exec.done", "命令执行完成", "", s.caseID, "", "", map[string]any{
+		"exec_id":        execID,
+		"command":        command,
+		"exit_code":      exitCode,
+		"success":        exitCode == 0,
+		"duration_ms":    duration.Milliseconds(),
+		"stdout_len":     stdoutBuf.Len(),
+		"stderr_len":     stderrBuf.Len(),
+		"output_preview": outputPreview,
+	})
 
 	sendMsg(ws, OutMessage{
 		Type: "exec_result", CaseID: s.caseID, ExecID: execID,
@@ -1273,13 +1323,21 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				continue
 			}
 
-			// 包装容器命令
-			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
-			log.Printf("[Bridge] EXEC_ISOLATED_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
-				key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
-			log.Printf("[Bridge] EXEC_ISOLATED_CMD: %q", wrappedCmd)
+// 包装容器命令
+				wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
+				log.Printf("[Bridge] EXEC_ISOLATED_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
+					key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
+				log.Printf("[Bridge] EXEC_ISOLATED_CMD: %q", wrappedCmd)
 
-			go s.execCommandIsolated(ws, wrappedCmd, msg.ExecID)
+				// P0: 记录命令发起（包含 trace_id）
+				blog("INFO", "exec.request", "收到命令执行请求", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"exec_id":   msg.ExecID,
+					"command":   wrappedCmd,
+					"container": msg.Container,
+					"trace_id":  msg.TraceID,
+				})
+
+				go s.execCommandIsolated(ws, wrappedCmd, msg.ExecID)
 		}
 	}
 }

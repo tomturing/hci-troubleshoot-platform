@@ -1324,17 +1324,26 @@ CREATE INDEX IF NOT EXISTS idx_terminal_operation_content_search ON terminal_ope
 --       关联工单与端到端 trace，供可观测性分析与工单复盘（OBS-TERMINAL-BRIDGE-001）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS bridge_execution_logs (
-    id          bigserial PRIMARY KEY,
-    case_id     varchar(32),
-    trace_id    varchar(64),
-    custom_ui   varchar(255),
-    user_id     varchar(64),
-    node_ip     varchar(64),
-    level       varchar(16) NOT NULL DEFAULT 'INFO',
-    event       varchar(64),
-    message     text,
-    extra       jsonb,
-    created_at  timestamptz DEFAULT CURRENT_TIMESTAMP
+    id             bigserial PRIMARY KEY,
+    case_id        varchar(32),
+    trace_id       varchar(64),
+    custom_ui      varchar(255),
+    user_id        varchar(64),
+    node_ip        varchar(64),
+    level          varchar(16) NOT NULL DEFAULT 'INFO',
+    event          varchar(64),
+    message        text,
+    extra          jsonb,
+    created_at     timestamptz DEFAULT CURRENT_TIMESTAMP,
+    -- Migration 007: 命令执行完整日志字段
+    command        text,
+    exit_code      integer,
+    duration_ms    bigint,
+    stdout_len     integer,
+    stderr_len     integer,
+    output_preview text,
+    success        boolean,
+    error_type     varchar(50)
 );
 
 COMMENT ON TABLE bridge_execution_logs IS 'terminal_bridge 结构化执行日志回采表 — 统一收集 SSH 会话生命周期与命令执行结果，关联工单与端到端 trace';
@@ -1346,10 +1355,22 @@ COMMENT ON COLUMN bridge_execution_logs.node_ip IS '目标节点 IP（多节点�
 COMMENT ON COLUMN bridge_execution_logs.level IS '日志级别：INFO / WARNING / ERROR';
 COMMENT ON COLUMN bridge_execution_logs.event IS '结构化事件名（如 ssh.connected / exec.start / exec.done / exec.session_missing）';
 COMMENT ON COLUMN bridge_execution_logs.extra IS '附加结构化上下文（exec_id / key / exit_code / timeout 等）';
+COMMENT ON COLUMN bridge_execution_logs.command IS '执行的命令（完整命令）';
+COMMENT ON COLUMN bridge_execution_logs.exit_code IS '命令退出码（0=成功，非0=失败，-1=异常）';
+COMMENT ON COLUMN bridge_execution_logs.duration_ms IS '命令执行耗时（毫秒）';
+COMMENT ON COLUMN bridge_execution_logs.stdout_len IS '标准输出长度（字节）';
+COMMENT ON COLUMN bridge_execution_logs.stderr_len IS '标准错误长度（字节）';
+COMMENT ON COLUMN bridge_execution_logs.output_preview IS '输出预览（截断到 500 字符）';
+COMMENT ON COLUMN bridge_execution_logs.success IS '是否成功（exit_code=0 为成功）';
+COMMENT ON COLUMN bridge_execution_logs.error_type IS '错误类型分类（session_creation_failed / command_start_failed / timeout 等）';
 
 CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_case_time ON bridge_execution_logs (case_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_trace ON bridge_execution_logs (trace_id);
 CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_custom_ui ON bridge_execution_logs (custom_ui);
+CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_exec_id ON bridge_execution_logs (exec_id);
+CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_success ON bridge_execution_logs (success) WHERE success IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_error_type ON bridge_execution_logs (error_type) WHERE error_type IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_duration ON bridge_execution_logs (duration_ms) WHERE duration_ms IS NOT NULL;
 
 -- ------------------------------------------------------------
 -- 表: fact  [模块: agent-service]
