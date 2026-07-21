@@ -16,7 +16,6 @@ from typing import Any
 
 from app.tools.qkv.signal import FrontendQueryType
 
-
 # ─── request_id 正则模式 ───────────────────────────────────────────────────────
 # 匹配格式如: request_id: ,a5ed4ad9340ce338ba1ac71d13ffcfb9
 _REQUEST_ID_PATTERN = re.compile(r"request_id[:\s]*,?([a-f0-9]{32})", re.IGNORECASE)
