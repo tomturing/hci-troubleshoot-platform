@@ -793,9 +793,17 @@ func (h *LogHub) publish(e logEntry) {
 		}
 	}
 	h.mu.Unlock()
-	
+
 	// P2-8: 更新 Prometheus 指标
 	atomic.AddUint64(&promMetrics.LogsCollectedTotal, 1)
+
+	// 实时推送：publish 后立即异步 flush，保证 bridge_log 实时送达前端
+	// （此前只在 setCase 时 flush，导致 ssh.connected 之后的日志全部滞留 pending queue）
+	for _, sub := range h.subs {
+		if e.CaseID == "" || sub.caseID == "" || sub.caseID == e.CaseID {
+			go h.flushSubscriber(sub)
+		}
+	}
 }
 
 func (h *LogHub) enqueue(sub *bridgeSubscriber, e logEntry) {
