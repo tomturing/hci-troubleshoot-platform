@@ -8,111 +8,117 @@
   - 上游错误透传
 """
 
+import os
+import sys
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
+
+# 多服务共享 app/ 命名空间隔离
+_svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_expect = os.path.normpath(os.path.join(_svc, "app"))
+_actual = os.path.normpath(getattr(sys.modules.get("app"), "__path__", [""])[0]) if "app" in sys.modules else ""
+if _expect != _actual:
+    for _k in list(sys.modules):
+        if _k == "app" or _k.startswith("app."):
+            del sys.modules[_k]
+    if _svc in sys.path:
+        sys.path.remove(_svc)
+    sys.path.insert(0, _svc)
+
+from app.main import app
 
 
 class TestBridgeLogsProxy(unittest.TestCase):
     """api-gateway /api/bridge-logs 代理路由测试"""
 
     def setUp(self):
-        """每个测试前 mock httpx.AsyncClient"""
-        self.mock_client = MagicMock()
-        self.mock_response = MagicMock()
-        self.mock_response.json.return_value = {"ok": True, "accepted": 1, "skipped": 0}
-        self.mock_response.status_code = 202
+        self.client = TestClient(app)
 
-        # Mock async context manager
-        async_cm = AsyncMock()
-        async_cm.__aenter__.return_value = self.mock_response
-        async_cm.__aexit__.return_value = None
-
-        self.mock_client.post.return_value = async_cm
-
-        # Mock async context manager for client
-        self.mock_async_client = AsyncMock()
-        self.mock_async_client.__aenter__.return_value = self.mock_client
-        self.mock_async_client.__aexit__.return_value = None
-
-    def test_proxy_bridge_logs_forwards_payload(self):
+    @patch("app.routes.bridge_logs.httpx.AsyncClient")
+    def test_proxy_bridge_logs_forwards_payload(self, mock_client_cls):
         """POST /api/bridge-logs 转发 payload 到 conversation-service"""
-        from app.main import app
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 202
+        mock_response.json.return_value = {"ok": True, "accepted": 1, "skipped": 0}
+        mock_client.post.return_value = mock_response
 
-        with patch("app.routes.bridge_logs.httpx.AsyncClient") as mock_async_client_cls:
-            mock_async_client_cls.return_value = self.mock_async_client
+        response = self.client.post(
+            "/api/bridge-logs",
+            json={"logs": [{"case_id": "Q001", "event": "ssh.connected"}]},
+        )
 
-            client = TestClient(app)
-            response = client.post(
-                "/api/bridge-logs",
-                json={"logs": [{"case_id": "Q001", "event": "ssh.connected"}]},
-            )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["ok"], True)
 
-            self.assertEqual(response.status_code, 202)
-            self.assertEqual(response.json()["ok"], True)
+        # 验证 post 被调用
+        args, kwargs = mock_client.post.call_args
+        self.assertIn("/api/bridge-logs", args[0])
+        self.assertIn("logs", kwargs["json"])
 
-            # 验证 post 被调用
-            self.mock_client.post.assert_called_once()
-            call_args = self.mock_client.post.call_args
-            self.assertIn("logs", call_args.kwargs["json"])
-
-    def test_proxy_bridge_logs_injects_placeholder_token(self):
+    @patch("app.routes.bridge_logs.httpx.AsyncClient")
+    def test_proxy_bridge_logs_injects_placeholder_token(self, mock_client_cls):
         """无 Authorization 时注入占位符 token"""
-        from app.main import app
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 202
+        mock_response.json.return_value = {"ok": True, "accepted": 1, "skipped": 0}
+        mock_client.post.return_value = mock_response
 
-        with patch("app.routes.bridge_logs.httpx.AsyncClient") as mock_async_client_cls:
-            mock_async_client_cls.return_value = self.mock_async_client
+        response = self.client.post(
+            "/api/bridge-logs",
+            json={"logs": [{"case_id": "Q001", "event": "test"}]},
+        )
 
-            client = TestClient(app)
-            response = client.post(
-                "/api/bridge-logs",
-                json={"logs": [{"case_id": "Q001", "event": "test"}]},
-            )
+        self.assertEqual(response.status_code, 202)
+        # 验证注入了占位符 token
+        args, kwargs = mock_client.post.call_args
+        headers = kwargs.get("headers", {})
+        self.assertEqual(headers.get("Authorization"), "Bearer client-session-placeholder-token")
 
-            # 验证注入了占位符 token
-            call_args = self.mock_client.post.call_args
-            headers = call_args.kwargs["headers"]
-            self.assertEqual(headers["Authorization"], "Bearer client-session-placeholder-token")
-
-    def test_proxy_bridge_logs_forwards_existing_auth(self):
+    @patch("app.routes.bridge_logs.httpx.AsyncClient")
+    def test_proxy_bridge_logs_forwards_existing_auth(self, mock_client_cls):
         """有 Authorization 时透传"""
-        from app.main import app
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 202
+        mock_response.json.return_value = {"ok": True, "accepted": 1, "skipped": 0}
+        mock_client.post.return_value = mock_response
 
-        with patch("app.routes.bridge_logs.httpx.AsyncClient") as mock_async_client_cls:
-            mock_async_client_cls.return_value = self.mock_async_client
+        response = self.client.post(
+            "/api/bridge-logs",
+            json={"logs": [{"case_id": "Q001", "event": "test"}]},
+            headers={"Authorization": "Bearer real-session-token"},
+        )
 
-            client = TestClient(app)
-            response = client.post(
-                "/api/bridge-logs",
-                json={"logs": [{"case_id": "Q001", "event": "test"}]},
-                headers={"Authorization": "Bearer real-session-token"},
-            )
+        self.assertEqual(response.status_code, 202)
+        # 验证透传了真实 token
+        args, kwargs = mock_client.post.call_args
+        headers = kwargs.get("headers", {})
+        self.assertEqual(headers.get("Authorization"), "Bearer real-session-token")
 
-            # 验证透传了真实 token
-            call_args = self.mock_client.post.call_args
-            headers = call_args.kwargs["headers"]
-            self.assertEqual(headers["Authorization"], "Bearer real-session-token")
-
-    def test_proxy_bridge_logs_upstream_error_passthrough(self):
+    @patch("app.routes.bridge_logs.httpx.AsyncClient")
+    def test_proxy_bridge_logs_upstream_error_passthrough(self, mock_client_cls):
         """上游非 200 时透传状态码"""
-        from app.main import app
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.json.return_value = {"detail": "Database error"}
+        mock_client.post.return_value = mock_response
 
-        # Mock 500 response
-        self.mock_response.status_code = 500
-        self.mock_response.json.return_value = {"detail": "Database error"}
+        response = self.client.post(
+            "/api/bridge-logs",
+            json={"logs": [{"case_id": "Q001", "event": "test"}]},
+        )
 
-        with patch("app.routes.bridge_logs.httpx.AsyncClient") as mock_async_client_cls:
-            mock_async_client_cls.return_value = self.mock_async_client
-
-            client = TestClient(app)
-            response = client.post(
-                "/api/bridge-logs",
-                json={"logs": [{"case_id": "Q001", "event": "test"}]},
-            )
-
-            self.assertEqual(response.status_code, 500)
-            self.assertIn("detail", response.json())
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("detail", response.json())
 
 
 if __name__ == "__main__":
