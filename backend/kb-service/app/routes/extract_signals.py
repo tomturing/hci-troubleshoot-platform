@@ -78,90 +78,6 @@ ACQUIRER_CATALOG: dict[str, str] = {
     "qfk_platform": "后端信号-平台相关操作：acli platform <sub_command>，state/json_path/exists 求值",
 }
 
-# ─── 采集器参数 Schema（P1 增强：LLM 抽取参数校验）───────────────────────────
-# 每个采集器的 acquirer_args 必须符合此 schema，否则拒绝并记入 rejected
-ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
-    "qkv_alert": {
-        "required": [],  # 无必填参数
-        "optional": {
-            "alert_type": {"type": "str", "desc": "告警类型过滤，如 vm_soft_shutdown"},
-            "limit": {"type": "int", "default": 100, "range": [1, 200]},
-            "host": {"type": "str", "desc": "按主机过滤"},
-            "vm": {"type": "str", "desc": "按虚拟机 ID 过滤"},
-        },
-        "forbidden": ["keyword"],  # ❌ qkv_alert 不支持 keyword 搜索
-    },
-    "qkv_task": {
-        "required": [],  # 无必填参数
-        "optional": {
-            "vm": {"type": "str", "desc": "按虚拟机 ID 过滤（推荐使用）"},
-            "status": {"type": "str", "enum": ["success", "failed", "running"], "desc": "按状态过滤"},
-            "host": {"type": "str", "desc": "按主机过滤"},
-            "limit": {"type": "int", "default": 100, "range": [1, 200]},
-            "request_id": {"type": "str", "desc": "按请求 ID 过滤"},
-        },
-        "forbidden": ["keyword"],  # ❌ qkv_task 的 -k 参数是 vm_id，不是关键词搜索
-        "notes": "若需按任务描述搜索，请在 matcher 中使用 keyword 类型判定",
-    },
-    "qkv_dialog": {
-        "required": [],
-        "optional": {
-            "limit": {"type": "int", "default": 100, "range": [1, 200]},
-        },
-        "forbidden": ["keyword"],
-    },
-    "qfk_log": {
-        "required": ["keyword"],  # 必须提供 keyword
-        "optional": {
-            "resource": {"type": "str", "desc": "日志来源资源"},
-            "path": {"type": "str", "desc": "日志路径"},
-            "time_window": {"type": "str", "desc": "时间窗口"},
-        },
-        "forbidden": [],
-    },
-    "qfk_service": {
-        "required": ["sub_command"],  # 必须指定服务类型（asv/anet/host）
-        "optional": {
-            "name": {"type": "str", "desc": "服务名称"},
-        },
-        "forbidden": [],
-    },
-    "qfk_system": {
-        "required": ["sub_command"],  # 必须指定子命令（lsof/ps/...）
-        "optional": {
-            "args": {"type": "str", "desc": "附加参数，如 '| grep {{VM}}'"},
-        },
-        "forbidden": [],
-    },
-    "qfk_vm": {
-        "required": ["sub_command"],
-        "optional": {
-            "args": {"type": "str"},
-        },
-        "forbidden": [],
-    },
-    "qfk_network": {
-        "required": ["sub_command"],
-        "optional": {"args": {"type": "str"}},
-        "forbidden": [],
-    },
-    "qfk_storage": {
-        "required": ["sub_command"],
-        "optional": {"args": {"type": "str"}},
-        "forbidden": [],
-    },
-    "qfk_hardware": {
-        "required": ["sub_command"],
-        "optional": {"args": {"type": "str"}},
-        "forbidden": [],
-    },
-    "qfk_platform": {
-        "required": ["sub_command"],
-        "optional": {"args": {"type": "str"}},
-        "forbidden": [],
-    },
-}
-
 # ─── 默认变量池 schema（produces/requires 引用的变量名集合）───────────────────
 DEFAULT_VARIABLE_SCHEMA: list[str] = [
     "HOST", "VM", "NODE_IP", "TARGET", "END", "ALERT_TYPE",
@@ -350,65 +266,6 @@ def validate_placeholder_case(template_str: str) -> list[str]:
     return valid
 
 
-def _validate_acquirer_args(signal: dict[str, Any]) -> tuple[bool, str | None]:
-    """P1 增强：校验 acquirer_args 是否符合采集器参数 Schema。
-
-    Returns:
-        (True, None) - 校验通过
-        (False, error_msg) - 校验失败，返回错误原因
-    """
-    acquirer = signal.get("acquirer", "")
-    if acquirer not in ACQUIRER_ARGS_SCHEMA:
-        # 非标准采集器，跳过严格校验（向后兼容）
-        return True, None
-
-    schema = ACQUIRER_ARGS_SCHEMA[acquirer]
-    args = signal.get("acquirer_args") or {}
-
-    # 1. 检查禁止参数（forbidden）
-    forbidden = schema.get("forbidden", [])
-    for key in forbidden:
-        if key in args and args[key]:
-            return False, f"acquirer={acquirer} 不支持参数 '{key}'，该参数在此采集器中语义错误"
-
-    # 2. 检查必填参数（required）
-    required = schema.get("required", [])
-    for key in required:
-        if key not in args or not args[key]:
-            return False, f"acquirer={acquirer} 缺少必填参数 '{key}'"
-
-    # 3. 检查参数类型和范围（optional）
-    optional = schema.get("optional", {})
-    for key, spec in optional.items():
-        if key not in args:
-            continue
-        value = args[key]
-
-        # 类型检查
-        expected_type = spec.get("type", "str")
-        if expected_type == "int":
-            if not isinstance(value, int):
-                try:
-                    value = int(value)
-                except (TypeError, ValueError):
-                    return False, f"参数 '{key}' 应为整数，实际为 {type(value).__name__}"
-            # 范围检查
-            if "range" in spec:
-                min_v, max_v = spec["range"]
-                if not (min_v <= value <= max_v):
-                    return False, f"参数 '{key}' 值 {value} 超出范围 [{min_v}, {max_v}]"
-
-        elif expected_type == "str":
-            if not isinstance(value, str):
-                return False, f"参数 '{key}' 应为字符串，实际为 {type(value).__name__}"
-
-        # 枚举检查
-        if "enum" in spec and value not in spec["enum"]:
-            return False, f"参数 '{key}' 值 '{value}' 不在允许枚举 {spec['enum']} 内"
-
-    return True, None
-
-
 def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[bool, str | None]:
     """校验单条信号：类别/acquirer/占位符/变量引用合法性。
 
@@ -423,11 +280,6 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
     acquirer = signal.get("acquirer", "")
     if acquirer not in ACQUIRER_CATALOG:
         return False, f"acquirer 不在采集器词表内: {acquirer}"
-
-    # P1 增强：校验 acquirer_args 参数合法性
-    ok, err = _validate_acquirer_args(signal)
-    if not ok:
-        return False, err
 
     for field in ("acquirer_args", "matcher"):
         val = signal.get(field)
@@ -501,68 +353,6 @@ async def _call_llm(prompt: str) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=f"LLM API 调用失败: {e}") from e
 
 
-def _validate_signal_dag(signals: list[dict[str, Any]]) -> tuple[bool, str | None]:
-    """P1 增强：校验信号依赖关系是否构成有效的 DAG（有向无环图）。
-
-    检查：
-    1. 所有 requires 变量都有对应的前置信号 produces
-    2. 不存在循环依赖
-    3. 依赖顺序合理（frontend 信号应在 backend 信号之前执行）
-
-    Returns:
-        (True, None) - DAG 有效
-        (False, error_msg) - DAG 无效，返回错误原因
-    """
-    # 1. 收集所有产出的变量
-    produced_vars: set[str] = set(DEFAULT_VARIABLE_SCHEMA)
-    signal_produces: dict[str, set[str]] = {}  # signal_id -> produces
-
-    for s in signals:
-        sig_id = s.get("id", "")
-        produces: set[str] = set()
-        for p in s.get("produces") or []:
-            name = p.get("name", "")
-            if name and re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
-                produces.add(name)
-        if sig_id:
-            signal_produces[sig_id] = produces
-        produced_vars.update(produces)
-
-    # 2. 检查每条信号的 requires 是否都能被满足
-    missing_deps: list[tuple[str, str]] = []  # (signal_id, missing_var)
-    for s in signals:
-        sig_id = s.get("id", "")
-        requires = s.get("requires") or []
-        for r in requires:
-            if r not in produced_vars:
-                missing_deps.append((sig_id, r))
-
-    if missing_deps:
-        details = ", ".join(f"'{sid}' 缺少 '{var}'" for sid, var in missing_deps[:3])
-        if len(missing_deps) > 3:
-            details += f"...共 {len(missing_deps)} 处"
-        return False, f"信号依赖链断裂: {details}。请检查 requires 变量是否有前置信号 produces"
-
-    # 3. 检查执行顺序：frontend 信号应先于 backend 执行
-    # frontend 信号不依赖 backend 产出的变量
-    frontend_produces: set[str] = set()
-    for s in signals:
-        if s.get("signal_category") == "frontend":
-            for p in s.get("produces") or []:
-                name = p.get("name", "")
-                if name:
-                    frontend_produces.add(name)
-
-    for s in signals:
-        if s.get("signal_category") == "frontend":
-            # frontend 信号不应依赖其他 frontend 以外的变量
-            for r in s.get("requires") or []:
-                if r not in DEFAULT_VARIABLE_SCHEMA and r not in frontend_produces:
-                    return False, f"frontend 信号 '{s.get('id')}' 依赖了非前端产出变量 '{r}'，请调整信号顺序"
-
-    return True, None
-
-
 def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[list, list]:
     """对 LLM 返回的信号列表做校验，返回 (validated, rejected)。
 
@@ -587,15 +377,6 @@ def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[li
         else:
             rejected.append({"signal": s, "reason": err})
             logger.warning("extract_signals 信号被丢弃 source=%s reason=%s", source_id, err)
-
-    # P1 增强：DAG 校验（对所有通过基础校验的信号）
-    if validated:
-        dag_ok, dag_err = _validate_signal_dag(validated)
-        if not dag_ok:
-            logger.error("extract_signals DAG 校验失败 source=%s reason=%s", source_id, dag_err)
-            # 将 DAG 校验失败信息附加到警告，但不拒绝（允许人工审核）
-            for s in validated:
-                s["dag_warning"] = dag_err
 
     return validated, rejected
 
