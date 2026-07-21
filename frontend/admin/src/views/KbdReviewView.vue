@@ -49,7 +49,7 @@ interface KeySignal {
   description?: string | null
   acquirer?: string            // qkv.alert / qkv.task / qkv.dialog / qfk.log / qfk.service / qfk.system / ...
   acquirer_args?: Record<string, any>
-  target?: { scope?: string; resource?: string; path?: string }
+  target?: { scope?: string; resource?: string; path?: string; time_window?: string }
   produces?: { name: string; type?: string; path?: string }[]
   requires?: string[]
   expected?: boolean | null
