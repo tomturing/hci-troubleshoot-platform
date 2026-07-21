@@ -10,9 +10,167 @@ QKV 前端数据解析与过滤器
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime
 from typing import Any
 
 from app.tools.qkv.signal import FrontendQueryType
+
+
+# ─── request_id 正则模式 ───────────────────────────────────────────────────────
+# 匹配格式如: request_id: ,a5ed4ad9340ce338ba1ac71d13ffcfb9
+_REQUEST_ID_PATTERN = re.compile(r"request_id[:\s]*,?([a-f0-9]{32})", re.IGNORECASE)
+# 匹配格式如: trace":"a5ed4ad9340ce338ba1ac71d13ffcfb9:...
+_TRACE_ID_PATTERN = re.compile(r"trace['\"]?\s*:\s*['\"]([a-f0-9]{32})", re.IGNORECASE)
+
+# ─── 日志时间正则模式 ───────────────────────────────────────────────────────
+# 格式1: [2026-07-21 22:09:43]
+_LOG_TIME_BRACKET = re.compile(r"\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\]")
+# 格式2: 2026-07-21 10:08:47.454040
+_LOG_TIME_DOT = re.compile(r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\.\d+")
+# 格式3: 2026/07/21 10:10:45
+_LOG_TIME_SLASH = re.compile(r"(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})")
+
+
+def _convert_timestamp(time_str: str | None) -> str:
+    """将时间字符串或时间戳转换为标准格式 "YYYY-MM-DD HH:MM:SS"。
+
+    Args:
+        time_str: 时间字符串或时间戳，支持格式：
+            - "2026-07-20 18:45:22" (保持原样)
+            - "2026/07/20 18:45:22" (转换为标准格式)
+            - Unix 时间戳字符串
+
+    Returns:
+        标准格式时间字符串 "YYYY-MM-DD HH:MM:SS"
+    """
+    if not time_str:
+        return ""
+
+    time_str = str(time_str).strip()
+
+    # 已经是标准格式，直接返回
+    if re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", time_str):
+        return time_str
+
+    # 尝试解析 "2026-07-20 18:45:22" 格式
+    try:
+        dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        pass
+
+    # 尝试解析 "2026/07/20 18:45:22" 格式
+    try:
+        dt = datetime.strptime(time_str, "%Y/%m/%d %H:%M:%S")
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        pass
+
+    # 尝试解析 Unix 时间戳
+    try:
+        ts = int(time_str)
+        dt = datetime.fromtimestamp(ts)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        pass
+
+    # 解析失败，返回原始字符串
+    return time_str
+
+
+def _extract_time_from_log_line(line: str) -> str:
+    """从日志行中提取时间并转换为标准格式 "YYYY-MM-DD HH:MM:SS"。
+
+    支持格式：
+    - [2026-07-21 22:09:43]
+    - 2026-07-21 10:08:47.454040
+    - 2026/07/21 10:10:45
+
+    Args:
+        line: 日志行
+
+    Returns:
+        标准格式时间字符串，如果未找到返回空字符串
+    """
+    # 尝试匹配 [YYYY-MM-DD HH:MM:SS]
+    match = _LOG_TIME_BRACKET.search(line)
+    if match:
+        return _convert_timestamp(match.group(1))
+
+    # 尝试匹配 YYYY-MM-DD HH:MM:SS.ffffff
+    match = _LOG_TIME_DOT.search(line)
+    if match:
+        return _convert_timestamp(match.group(1))
+
+    # 尝试匹配 YYYY/MM/DD HH:MM:SS
+    match = _LOG_TIME_SLASH.search(line)
+    if match:
+        return _convert_timestamp(match.group(1))
+
+    return ""
+
+
+def _extract_from_dialog_log(stdout_text: str) -> list[dict[str, Any]]:
+    """从日志文本中提取 request_id、end 等信息。
+
+    日志格式示例：
+    /sf/log/21/sfvt_vtplogd.log:... request_id: ,a5ed4ad9340ce338ba1ac71d13ffcfb9, ...
+
+    Args:
+        stdout_text: acli log get 命令的输出文本
+
+    Returns:
+        包含 request_id、end、line 的 dict 列表
+    """
+    results: list[dict[str, Any]] = []
+    seen_request_ids: set[str] = set()
+
+    for line in stdout_text.splitlines():
+        if not line.strip():
+            continue
+
+        # 提取日志时间作为 end 字段
+        end_ts = _extract_time_from_log_line(line)
+
+        # 尝试匹配 request_id
+        match = _REQUEST_ID_PATTERN.search(line)
+        if match:
+            request_id = match.group(1)
+            if request_id not in seen_request_ids:
+                seen_request_ids.add(request_id)
+                results.append({
+                    "request_id": request_id,
+                    "end": end_ts,
+                    "line": line.strip(),
+                })
+                continue
+
+        # 尝试匹配 trace id（备选）
+        match = _TRACE_ID_PATTERN.search(line)
+        if match:
+            trace_id = match.group(1)
+            if trace_id not in seen_request_ids:
+                seen_request_ids.add(trace_id)
+                results.append({
+                    "request_id": trace_id,
+                    "end": end_ts,
+                    "line": line.strip(),
+                })
+
+    # 如果没有找到 request_id，返回原始行（带时间戳）
+    if not results:
+        return [
+            {
+                "line": line.strip(),
+                "end": _extract_time_from_log_line(line),
+                "description": line.strip(),
+            }
+            for line in stdout_text.splitlines()
+            if line.strip()
+        ][:10]
+
+    return results[:10]  # 限制返回数量，避免过多数据
 
 
 def parse_frontend_value(
@@ -35,10 +193,9 @@ def parse_frontend_value(
     if not stdout_text.strip():
         return []
 
-    # 1. 弹框/日志（dialog）：直接按行拆分，提取文本
+    # 1. 弹框/日志（dialog）：从日志文本中提取 request_id
     if query_type == FrontendQueryType.DIALOG:
-        lines = stdout_text.splitlines()
-        return [{"line": line.strip(), "description": line.strip()} for line in lines if line.strip()]
+        return _extract_from_dialog_log(stdout_text)
 
     # 2. 告警（alert）与任务（task）：反序列化 JSON 进行精细抽取
     try:
@@ -105,7 +262,9 @@ def _extract_hardcoded(items: list[Any], query_type: FrontendQueryType) -> list[
             # 告警提取标准：alert_type, end, target, type, description, host, vm
             # 支持对 hostname / hostid 等容错兼容映射
             extracted["alert_type"] = item.get("alert_type") or item.get("type") or ""
-            extracted["end"] = item.get("end") or item.get("start") or ""
+            # end 字段转换为 Unix 时间戳
+            end_raw = item.get("end") or item.get("start") or ""
+            extracted["end"] = _convert_timestamp(end_raw)
             extracted["target"] = item.get("target") or item.get("object_name") or ""
             extracted["type"] = item.get("type") or ""
             extracted["description"] = item.get("description") or ""
@@ -113,16 +272,19 @@ def _extract_hardcoded(items: list[Any], query_type: FrontendQueryType) -> list[
             extracted["vm"] = item.get("vm") or item.get("object_id") if item.get("object_type") == "虚拟机" else item.get("vm", "")
 
         elif query_type == FrontendQueryType.TASK:
-            # 任务提取标准：status, type, end, host, vm, target, description, errcode_tracing, request_id
-            extracted["status"] = item.get("status") or item.get("process") or ""
+            # 任务提取标准：type, end, target, description, host, vm, errcode_tracing, request_id
             extracted["type"] = item.get("type") or item.get("alert_type") or ""
-            extracted["end"] = item.get("end") or item.get("start") or ""
-            extracted["host"] = item.get("host") or item.get("hostname") or item.get("hostid") or ""
-            extracted["vm"] = item.get("vm") or ""
+            # end 字段转换为 Unix 时间戳
+            end_raw = item.get("end") or item.get("start") or ""
+            extracted["end"] = _convert_timestamp(end_raw)
             extracted["target"] = item.get("target") or item.get("object_name") or ""
             extracted["description"] = item.get("description") or ""
+            extracted["host"] = item.get("host") or item.get("hostname") or item.get("hostid") or ""
+            extracted["vm"] = item.get("vm") or ""
             extracted["errcode_tracing"] = item.get("errcode_tracing") or ""
             extracted["request_id"] = item.get("request_id") or ""
+            # status 字段保留（额外）
+            extracted["status"] = item.get("status") or item.get("process") or ""
 
         # 过滤掉全空的结果，保留包含有效信息的元素
         if any(extracted.values()):
