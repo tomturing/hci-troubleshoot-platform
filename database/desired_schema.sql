@@ -1336,6 +1336,7 @@ CREATE TABLE IF NOT EXISTS bridge_execution_logs (
     extra          jsonb,
     created_at     timestamptz DEFAULT CURRENT_TIMESTAMP,
     -- Migration 007: 命令执行完整日志字段
+    exec_id        varchar(64),
     command        text,
     exit_code      integer,
     duration_ms    bigint,
@@ -1354,7 +1355,8 @@ COMMENT ON COLUMN bridge_execution_logs.user_id IS '触发回采的用户会话 
 COMMENT ON COLUMN bridge_execution_logs.node_ip IS '目标节点 IP（多节点路由）';
 COMMENT ON COLUMN bridge_execution_logs.level IS '日志级别：INFO / WARNING / ERROR';
 COMMENT ON COLUMN bridge_execution_logs.event IS '结构化事件名（如 ssh.connected / exec.start / exec.done / exec.session_missing）';
-COMMENT ON COLUMN bridge_execution_logs.extra IS '附加结构化上下文（exec_id / key / exit_code / timeout 等）';
+COMMENT ON COLUMN bridge_execution_logs.extra IS '附加结构化上下文（key / timeout 等）';
+COMMENT ON COLUMN bridge_execution_logs.exec_id IS '命令执行 ID（用于去重和关联 exec.start/exec.done）';
 COMMENT ON COLUMN bridge_execution_logs.command IS '执行的命令（完整命令）';
 COMMENT ON COLUMN bridge_execution_logs.exit_code IS '命令退出码（0=成功，非0=失败，-1=异常）';
 COMMENT ON COLUMN bridge_execution_logs.duration_ms IS '命令执行耗时（毫秒）';

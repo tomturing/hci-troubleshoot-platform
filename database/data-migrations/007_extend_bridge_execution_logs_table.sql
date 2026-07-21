@@ -6,12 +6,15 @@
 
 -- 说明：
 -- 1. 添加命令执行的关键字段，支持完整的执行日志记录
--- 2. 包含：command、exit_code、duration_ms、stdout_len、stderr_len、output_preview、success、error_type
+-- 2. 包含：exec_id、command、exit_code、duration_ms、stdout_len、stderr_len、output_preview、success、error_type
 -- 3. 本 migration 幂等，可安全重复执行
 
 -- ===================================================================
 -- 1. 添加字段
 -- ===================================================================
+
+-- exec_id: 命令执行 ID（用于去重和关联 exec.start/exec.done）
+ALTER TABLE bridge_execution_logs ADD COLUMN IF NOT EXISTS exec_id varchar(64);
 
 -- command: 执行的命令（完整命令）
 ALTER TABLE bridge_execution_logs ADD COLUMN IF NOT EXISTS command TEXT;
