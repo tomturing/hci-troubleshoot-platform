@@ -178,8 +178,25 @@ class KBDDiagnostic:
         消费侧 _resolve_args 同步做大小写不敏感解析作为纵深，二者组合彻底消除
         大小写脆弱性。与抽取层「占位符必须大写」的校验互不冲突——模板大写仅约束
         书写方，运行期解析兼容任意大小写。
+
+        P2 增强：记录变量池变更日志，便于追溯信号执行链路。
         """
-        self._variable_pool[name.strip().lower()] = value
+        key = name.strip().lower()
+        old_value = self._variable_pool.get(key)
+        self._variable_pool[key] = value
+
+        # P2: 变量池变更日志
+        value_preview = str(value)[:100] if value is not None else None
+        if len(str(value)) > 100:
+            value_preview = value_preview + "...(截断)"
+        logger.info(
+            event="variable_pool_update",
+            name=name,
+            key=key,
+            value_preview=value_preview,
+            is_new=key not in self._variable_pool or old_value is None,
+            session_id=self._conversation_id or "",
+        )
 
     async def diagnose(
         self,
@@ -859,11 +876,26 @@ class KBDDiagnostic:
         """
         acquirer = step.tool_name
 
+        # P2 增强：信号匹配日志 - 记录即将执行的信号
+        logger.info(
+            event="signal_executing",
+            acquirer=acquirer,
+            tool_args_template=step.tool_args_template,
+            session_id=session_id,
+            conversation_id=self._conversation_id,
+        )
+
         if acquirer.startswith("qkv_"):
             # 生产者：QKV 引擎取数并写变量池（通常已在阶段 A 跑过，此处为兜底）
             try:
                 fsignal = self._signal_to_qkv_from_step(step, env_context)
                 if fsignal is None:
+                    logger.warning(
+                        event="signal_build_failed",
+                        acquirer=acquirer,
+                        reason="无法构建前端信号",
+                        session_id=session_id,
+                    )
                     return None, "无法构建前端信号", None
                 from app.tools.qkv.engine import qkv_exec
 
@@ -874,10 +906,30 @@ class KBDDiagnostic:
                     exec_id=None,
                 )
                 if not res.success:
+                    logger.warning(
+                        event="signal_exec_failed",
+                        acquirer=acquirer,
+                        error=res.error,
+                        session_id=session_id,
+                    )
                     return None, res.error, None
                 self._fill_pool_from_qkv_on_step(step, res)
+
+                # P2: 信号执行成功日志
+                logger.info(
+                    event="signal_exec_success",
+                    acquirer=acquirer,
+                    values_count=len(res.values) if res.values else 0,
+                    session_id=session_id,
+                )
                 return res.to_observation(), None, None
             except Exception as exc:
+                logger.error(
+                    event="signal_exec_exception",
+                    acquirer=acquirer,
+                    error=str(exc),
+                    session_id=session_id,
+                )
                 return None, str(exc), None
 
         if acquirer.startswith("qfk_"):
