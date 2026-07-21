@@ -1330,7 +1330,7 @@ CREATE TABLE IF NOT EXISTS bridge_execution_logs (
     custom_ui   varchar(255),
     user_id     varchar(64),
     node_ip     varchar(64),
-    level       varchar(16) NOT NULL,
+    level       varchar(16) NOT NULL DEFAULT 'INFO',
     event       varchar(64),
     message     text,
     extra       jsonb,
