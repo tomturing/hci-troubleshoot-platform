@@ -56,6 +56,7 @@ _HANDLED_V1_TOP = {
     "needs_review",
     "require_human_confirm",
     "is_failed",
+    "description",
 }
 
 # 后端（QFK）工具：其 acquirer_args.keyword 是"资源/主题"选择器，需改名 resource_keyword
@@ -101,9 +102,16 @@ def _migrate_one_signal(sig: dict[str, Any]) -> dict[str, Any]:
         out["id"] = sig["id"]
 
     acquirer = sig.get("acquirer", "")
+    args = _migrate_args(acquirer, sig.get("acquirer_args", {}))
+    # v1 顶层 keyword / description 是 QKV 采集关键词与信号说明的权威来源，
+    # 须并入 acquire.args（而非收进 _v1_legacy），否则 v2 契约校验会因缺 keyword 而 422。
+    if "keyword" in sig:
+        args.setdefault("keyword", sig["keyword"])
+    if "description" in sig:
+        args.setdefault("description", sig["description"])
     out["acquire"] = {
         "tool": acquirer,
-        "args": _migrate_args(acquirer, sig.get("acquirer_args", {})),
+        "args": args,
     }
 
     # match 段：仅 backend 且存在 matcher 时构建

@@ -47,8 +47,16 @@ async def test_update_kbd_entry_signals_json_sql_cast():
 
     assert response.status_code == 200
 
-    # Verify the SQL executed uses CAST(:signals_json AS jsonb)
+    # 保存时统一归约为 v2 数组级对象（RFC §7），并以 ::jsonb 落库
     executed_call = mock_session.execute.call_args
     sql_text = str(executed_call[0][0])
-    assert "CAST(:signals_json AS jsonb)" in sql_text
-    assert ":signals_json::jsonb" not in sql_text
+    assert ":signals_json::jsonb" in sql_text
+    # 落库内容应为经 migrate_signal_document 归约后的 v2 文档（含 acquire 嵌套对象）
+    import json
+
+    stored = executed_call[0][1].get("signals_json")
+    stored_doc = json.loads(stored) if isinstance(stored, str) else stored
+    stored_signals = (
+        stored_doc["signals"] if isinstance(stored_doc, dict) else stored_doc
+    )
+    assert any("acquire" in s for s in stored_signals), "signals 应已归约为 v2 嵌套形态"
