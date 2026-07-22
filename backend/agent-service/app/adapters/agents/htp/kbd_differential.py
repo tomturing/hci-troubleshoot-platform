@@ -1028,40 +1028,57 @@ class KBDDiagnostic:
                 self._set_pool_var(name, val)
 
     def _signal_to_qfk(self, step: KBDStep) -> Any:
-        """从消费者 KBDStep 构造 qfk/signal.BackendSignal（namespace 字符串路由，keyword 类型由引擎定值为布尔）。"""
-        from app.tools.qfk.signal import BackendSignal, BackendSignalTarget
+        """从消费者 KBDStep 构造 qfk/signal.BackendSignal（namespace 字符串路由）。"""
+        from app.tools.qfk.signal import BackendSignal
 
         acquirer = step.tool_name
         parts = acquirer.split("_", 1)
         if len(parts) != 2 or parts[0] != "qfk":
             return None
-        namespace = parts[1]  # 直接作为 namespace 字符串（log/service/vm/...）
+        namespace = parts[1]  # log/service/system/vm/...
+
         args = step.tool_args_template or {}
-        target_data = args.get("target") or {}
-        target = BackendSignalTarget(
-            **{k: v for k, v in target_data.items() if k in ("scope", "resource", "path", "time_window")}
-        )
+
+        # 获取 matcher
         matcher = step.matcher
         if not matcher:
-            # 让 tool_definition 生效：signals_json 未配置 matcher 时，
-            # 回退到 admin-ui 配置的 tool_definition 默认值。
             matcher = self._tool_def_default(acquirer, "matcher") or {}
+
+        # 提取关键字
         keywords: list[str] = []
         if matcher.get("type") == "keyword":
             p = matcher.get("pattern", "")
             keywords = [p] if isinstance(p, str) else list(p or [])
+
+        # 构建信号数据（兼容新旧字段）
+        signal_data = {
+            "namespace": namespace,
+            "keyword": keywords,
+            "match_mode": matcher.get("mode", "or"),
+            "expected": bool(matcher.get("expected", True)),
+
+            # 新字段
+            "instruction": args.get("instruction") or getattr(step, "description", None),
+            "host": args.get("host"),
+            "vm": args.get("vm"),
+            "timeout": args.get("timeout", 10),
+
+            # 特有字段
+            "command": args.get("command") or args.get("sub_command"),
+            "container": args.get("container", "asv-con"),
+            "file": args.get("file"),
+            "end": args.get("end"),
+            "service": args.get("service"),
+            "action": args.get("action", "status"),
+
+            # 兼容旧字段
+            "target": args.get("target"),
+            "sub_command": args.get("sub_command"),
+            "description": getattr(step, "description", None),
+        }
+
         try:
-            return BackendSignal(
-                namespace=namespace,
-                signal_type=namespace,
-                target=target,
-                keywords=keywords,
-                match_mode=matcher.get("mode", "or"),
-                expected=bool(matcher.get("expected", True)),
-                description=None,
-                container=args.get("container"),
-                sub_command=args.get("sub_command"),
-            )
+            return BackendSignal.from_dict(signal_data)
         except Exception:
             return None
 
