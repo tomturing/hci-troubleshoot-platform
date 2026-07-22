@@ -157,9 +157,138 @@ LLM 抽取: keyword="启动虚拟机失败"
 
 ---
 
-## 四、QFK 判定器配置（matcher）
+## 四、QFK 后端信号字段规范
 
-### 4.1 matcher 类型说明
+### 4.1 共有字段
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `instruction` | str | 否 | - | 关键信号说明 |
+| `host` | str | 否 | 变量池 | 主机（变量池获取，特殊值 `cluster` 表示遍历集群） |
+| `vm` | str | 否 | 变量池 | 虚拟机（变量池获取，可为空） |
+| `keyword` | list[str] | **是** | - | 关键字 |
+| `timeout` | int | 否 | 10 | 超时时间（秒） |
+| `expected` | bool | 否 | true | 期望结果 |
+| `match_mode` | str | 否 | "or" | 匹配模式：or/and/not |
+
+### 4.2 特有字段
+
+#### qfk_log
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `file` | str | **是** | - | 日志文件名 |
+| `end` | str | 否 | 变量池 | 结束时间 |
+
+**命令格式**：
+```bash
+acli --host {{HOST}} --timeout 10 log get -k "keyword" -f "file" [-t "end"]
+```
+
+#### qfk_system
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `command` | str | **是** | - | 执行命令 |
+| `container` | str | 否 | "asv-con" | 容器类型 |
+
+**命令格式**：
+```bash
+acli --container asv-con --host {{HOST}} --timeout 10 system lsof
+```
+
+#### qfk_service
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `service` | str | **是** | - | 服务名称 |
+| `container` | str | 否 | "asv" | 容器类型（asv/vn/vn-agent/vs） |
+| `action` | str | 否 | "status" | 动作 |
+
+**命令格式**：
+```bash
+acli service <container> <service> <action>
+```
+
+**示例**：
+```bash
+acli service asv vtpdaemon status
+```
+
+#### qfk_vm / network / storage / hardware / platform
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `command` | str | **是** | - | 执行命令 |
+
+**命令格式**：
+```bash
+acli --host {{HOST}} --timeout 10 vm <command>
+```
+
+### 4.3 host 字段特殊处理
+
+| host 值 | 命令参数 | 说明 |
+|---------|----------|------|
+| `"cluster"` | `--cluster` | 遍历集群所有主机执行 |
+| 其他值 | `--host {{HOST}}` | 指定主机执行 |
+
+### 4.4 配置示例
+
+#### qfk_log 示例
+
+```json
+{
+  "acquirer": "qfk_log",
+  "instruction": "检查虚拟机镜像相关日志",
+  "host": "{{HOST}}",
+  "keyword": ["vm-disk", "qcow2"],
+  "timeout": 30,
+  "expected": true,
+  "match_mode": "or",
+  "file": "vtpdaemon.log",
+  "end": "2026-07-21 10:00:00"
+}
+```
+
+#### qfk_system 示例
+
+```json
+{
+  "acquirer": "qfk_system",
+  "instruction": "检查虚拟机镜像文件是否被占用",
+  "host": "{{HOST}}",
+  "vm": "{{VM}}",
+  "keyword": ["vm-disk-.*\\.qcow2", "ClwDRDBClient"],
+  "timeout": 30,
+  "expected": true,
+  "match_mode": "or",
+  "command": "lsof",
+  "container": "asv-con"
+}
+```
+
+#### qfk_service 示例
+
+```json
+{
+  "acquirer": "qfk_service",
+  "instruction": "检查 vtpdaemon 服务状态",
+  "host": "{{HOST}}",
+  "keyword": ["running", "active"],
+  "timeout": 10,
+  "expected": true,
+  "match_mode": "or",
+  "service": "vtpdaemon",
+  "action": "status"
+}
+```
+
+---
+
+## 五、QFK 判定器配置（matcher）
+
+### 5.1 matcher 类型说明
 
 QFK 支持 6 种判定类型：
 
@@ -172,63 +301,17 @@ QFK 支持 6 种判定类型：
 | `json_path` | JSON 路径取值 | `path`、`expected_value` |
 | `exists` | 存在性判定 | 无额外参数 |
 
-### 4.2 可视化编辑步骤
+### 5.2 匹配模式说明
 
-1. 在工具管理页面选择 QFK 类型工具（如 `qfk.log`）
-2. 切换到 **可视化编辑** Tab
-3. 在 **判定器 (matcher)** 区域：
-   - 选择判定类型
-   - 根据类型填写对应参数
-   - 设置期望结果（符合/不符合）
-4. 点击 **保存** 提交配置
-
-### 4.3 各类型配置示例
-
-#### 4.3.1 关键字匹配（keyword）
-
-```
-判定类型：关键字匹配
-关键字列表：["error", "failed", "exception"]
-匹配模式：任一匹配
-期望结果：符合期望（匹配到关键字视为异常）
-```
-
-#### 4.3.2 正则匹配（regex）
-
-```
-判定类型：正则表达式
-正则模式：ERROR.*timeout
-期望结果：符合期望
-```
-
-#### 4.3.3 阈值判定（threshold）
-
-```
-判定类型：阈值判定
-运算符：大于等于 (>=)
-阈值：80
-期望结果：符合期望（CPU 使用率 >= 80% 视为异常）
-```
-
-#### 4.3.4 JSON 路径取值（json_path）
-
-```
-判定类型：JSON 路径
-JSON 路径：data.status
-期望值： unhealthy
-期望结果：符合期望
-```
-
-### 4.4 期望结果说明
-
-| 期望结果 | 含义 | 典型场景 |
-|---------|------|---------|
-| 符合期望 | matcher 匹配成功 → 触发异常判定 | 检测错误关键字、异常状态 |
-| 不符合期望 | matcher 匹配失败 → 触发异常判定 | 检测健康关键字缺失 |
+| 模式 | 说明 | 判定逻辑 |
+|------|------|----------|
+| `or` | 任一匹配 | 任一关键字命中即判定为真 |
+| `and` | 全部匹配 | 全部关键字都命中才判定为真 |
+| `not` | 均不出现 | 所有关键字都不出现才判定为真 |
 
 ---
 
-## 五、注意事项
+## 六、注意事项
 
 ### 5.1 配置生效条件
 

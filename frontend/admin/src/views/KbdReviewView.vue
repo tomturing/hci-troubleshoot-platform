@@ -49,7 +49,7 @@ interface KeySignal {
   description?: string | null
   acquirer?: string            // qkv.alert / qkv.task / qkv.dialog / qfk.log / qfk.service / qfk.system / ...
   acquirer_args?: Record<string, any>
-  target?: { scope?: string; resource?: string; path?: string }
+  target?: { scope?: string; resource?: string; path?: string; time_window?: string }
   produces?: { name: string; type?: string; path?: string }[]
   requires?: string[]
   expected?: boolean | null
@@ -610,7 +610,26 @@ function startEditSignal(origIdx: number) {
   if (!sig) return
   editingSignalIndex.value = origIdx
   const draft = JSON.parse(JSON.stringify(sig))
+  
+  // 设置默认值
   if (!draft.target) draft.target = {}
+  
+  // 共有字段默认值
+  if (draft.timeout === undefined) draft.timeout = 10
+  if (draft.expected === undefined) draft.expected = true
+  if (!draft.match_mode) draft.match_mode = 'or'
+  
+  // 特有字段默认值
+  if (!draft.container) draft.container = 'asv-con'
+  if (!draft.action) draft.action = 'status'
+  
+  // 兼容旧字段
+  if (!draft.host && draft.target?.scope) draft.host = draft.target.scope
+  if (!draft.file && draft.target?.resource) draft.file = draft.target.resource
+  if (!draft.command && draft.sub_command) draft.command = draft.sub_command
+  if (!draft.instruction && draft.description) draft.instruction = draft.description
+  if (!draft.keyword && draft.keywords) draft.keyword = draft.keywords
+  
   signalEditDraft.value = draft
 }
 
@@ -1534,9 +1553,20 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (item.sig.produces || []).map(p => p.name).join('、') || '—' }}</span></div>
                 </div>
                 <div v-else>
-                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.keyword" size="small" /></div>
-                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.description" size="small" type="textarea" :rows="2" /></div>
-                  <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (signalEditDraft.produces || []).map(p => p.name).join('、') || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.keyword" size="small" placeholder="关键字" /></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.description" size="small" type="textarea" :rows="2" placeholder="信号说明" /></div>
+                  <!-- 产出变量编辑 -->
+                  <div class="signal-row">
+                    <span class="signal-k">产出变量</span>
+                    <div class="produces-editor-mini">
+                      <div v-for="(p, idx) in (signalEditDraft.produces || [])" :key="idx" class="produce-item-mini">
+                        <el-input v-model="p.name" size="small" placeholder="变量名" style="width: 120px" />
+                        <el-input v-model="p.path" size="small" placeholder="JSON路径" style="flex: 1" />
+                        <el-button text type="danger" size="small" @click="signalEditDraft.produces?.splice(idx, 1)">删除</el-button>
+                      </div>
+                      <el-button text type="primary" size="small" @click="signalEditDraft.produces = [...(signalEditDraft.produces || []), { name: '', path: '' }]">+ 添加变量</el-button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1559,21 +1589,96 @@ onMounted(() => {
                 </div>
               </div>
               <div class="signal-card-body">
+                <!-- 展示模式 -->
                 <div v-if="editingSignalIndex !== item.origIdx">
-                  <div class="signal-row"><span class="signal-k">目标 scope</span><span class="signal-v code">{{ item.sig.target?.scope || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">目标 resource</span><span class="signal-v">{{ item.sig.target?.resource || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">目标 path</span><span class="signal-v">{{ item.sig.target?.path || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ item.sig.keyword || '—' }}</span></div>
+                  <!-- 共有字段 -->
+                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ item.sig.instruction || item.sig.description || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">主机</span><span class="signal-v code">{{ item.sig.host || item.sig.target?.scope || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">虚拟机</span><span class="signal-v code">{{ item.sig.vm || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ Array.isArray(item.sig.keyword) ? item.sig.keyword.join(', ') : (item.sig.keyword || '—') }}</span></div>
+                  <div class="signal-row"><span class="signal-k">超时</span><span class="signal-v">{{ item.sig.timeout || 10 }}s</span></div>
                   <div class="signal-row"><span class="signal-k">期望</span><span class="signal-v">{{ item.sig.expected === true ? '存在' : item.sig.expected === false ? '不存在' : '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">匹配模式</span><span class="signal-v">{{ item.sig.match_mode || 'or' }}</span></div>
+                  
+                  <!-- 特有字段：qfk_log -->
+                  <template v-if="item.sig.acquirer === 'qfk_log'">
+                    <div class="signal-row"><span class="signal-k">文件</span><span class="signal-v code">{{ item.sig.file || item.sig.target?.resource || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">结束时间</span><span class="signal-v">{{ item.sig.end || item.sig.target?.time_window || '—' }}</span></div>
+                  </template>
+                  
+                  <!-- 特有字段：qfk_system -->
+                  <template v-if="item.sig.acquirer === 'qfk_system'">
+                    <div class="signal-row"><span class="signal-k">命令</span><span class="signal-v code">{{ item.sig.command || item.sig.sub_command || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ item.sig.container || 'asv-con' }}</span></div>
+                  </template>
+                  
+                  <!-- 特有字段：qfk_service -->
+                  <template v-if="item.sig.acquirer === 'qfk_service'">
+                    <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ item.sig.service || item.sig.target?.resource || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">动作</span><span class="signal-v">{{ item.sig.action || 'status' }}</span></div>
+                  </template>
+                  
+                  <!-- 特有字段：qfk_vm/network/storage/hardware/platform -->
+                  <template v-if="['qfk_vm', 'qfk_network', 'qfk_storage', 'qfk_hardware', 'qfk_platform'].includes(item.sig.acquirer)">
+                    <div class="signal-row"><span class="signal-k">命令</span><span class="signal-v code">{{ item.sig.command || item.sig.sub_command || '—' }}</span></div>
+                  </template>
                 </div>
+                
+                <!-- 编辑模式 -->
                 <div v-else>
-                  <div class="signal-row"><span class="signal-k">目标 scope</span><el-input v-model="signalEditDraft.target.scope" size="small" placeholder="&#123;&#123;HOST&#125;&#125;" /></div>
-                  <div class="signal-row"><span class="signal-k">目标 resource</span><el-input v-model="signalEditDraft.target.resource" size="small" /></div>
-                  <div class="signal-row"><span class="signal-k">目标 path</span><el-input v-model="signalEditDraft.target.path" size="small" /></div>
-                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.keyword" size="small" /></div>
+                  <!-- 共有字段 -->
+                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.instruction" size="small" placeholder="关键信号说明" /></div>
+                  <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.host" size="small" placeholder="{{HOST}} 或 cluster" /></div>
+                  <div class="signal-row"><span class="signal-k">虚拟机</span><el-input v-model="signalEditDraft.vm" size="small" placeholder="{{VM}}" /></div>
+                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.keyword" size="small" placeholder="关键字，多个用逗号分隔" /></div>
+                  <div class="signal-row"><span class="signal-k">超时</span><el-input-number v-model="signalEditDraft.timeout" :min="1" :max="300" size="small" /> 秒</div>
                   <div class="signal-row"><span class="signal-k">期望</span>
                     <el-switch v-model="signalEditDraft.expected" :active-value="true" :inactive-value="false" active-text="存在" inactive-text="不存在" />
                   </div>
+                  <div class="signal-row"><span class="signal-k">匹配模式</span>
+                    <el-select v-model="signalEditDraft.match_mode" size="small">
+                      <el-option label="or（任一匹配）" value="or" />
+                      <el-option label="and（全部匹配）" value="and" />
+                      <el-option label="not（均不出现）" value="not" />
+                    </el-select>
+                  </div>
+                  
+                  <!-- 特有字段：qfk_log -->
+                  <template v-if="signalEditDraft.acquirer === 'qfk_log'">
+                    <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.file" size="small" placeholder="日志文件名（必填）" /></div>
+                    <div class="signal-row"><span class="signal-k">结束时间</span><el-input v-model="signalEditDraft.end" size="small" placeholder="结束时间" /></div>
+                  </template>
+                  
+                  <!-- 特有字段：qfk_system -->
+                  <template v-if="signalEditDraft.acquirer === 'qfk_system'">
+                    <div class="signal-row"><span class="signal-k">命令</span><el-input v-model="signalEditDraft.command" size="small" placeholder="执行命令（必填）" /></div>
+                    <div class="signal-row"><span class="signal-k">容器</span>
+                      <el-select v-model="signalEditDraft.container" size="small">
+                        <el-option label="asv-con" value="asv-con" />
+                        <el-option label="vn-con" value="vn-con" />
+                        <el-option label="vn-agent" value="vn-agent" />
+                        <el-option label="vs-cp-manager" value="vs-cp-manager" />
+                      </el-select>
+                    </div>
+                  </template>
+                  
+                  <!-- 特有字段：qfk_service -->
+                  <template v-if="signalEditDraft.acquirer === 'qfk_service'">
+                    <div class="signal-row"><span class="signal-k">服务</span><el-input v-model="signalEditDraft.service" size="small" placeholder="服务名称（必填）" /></div>
+                    <div class="signal-row"><span class="signal-k">动作</span>
+                      <el-select v-model="signalEditDraft.action" size="small">
+                        <el-option label="status" value="status" />
+                        <el-option label="start" value="start" />
+                        <el-option label="stop" value="stop" />
+                        <el-option label="restart" value="restart" />
+                      </el-select>
+                    </div>
+                  </template>
+                  
+                  <!-- 特有字段：qfk_vm/network/storage/hardware/platform -->
+                  <template v-if="['qfk_vm', 'qfk_network', 'qfk_storage', 'qfk_hardware', 'qfk_platform'].includes(signalEditDraft.acquirer)">
+                    <div class="signal-row"><span class="signal-k">命令</span><el-input v-model="signalEditDraft.command" size="small" placeholder="执行命令（必填）" /></div>
+                  </template>
                 </div>
               </div>
             </div>
@@ -2220,5 +2325,18 @@ onMounted(() => {
   background: #f0f2f5;
   padding: 0 4px;
   border-radius: 3px;
+}
+
+/* 产出变量迷你编辑器 */
+.produces-editor-mini {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.produce-item-mini {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>
