@@ -187,8 +187,8 @@ async def list_kbd_entries(
         { entries: [...], total, page, page_size }
     """
     # 排序字段白名单（防 SQL 注入）
-    _ALLOWED_SORT_COLUMNS = {"support_id", "ai_category_id", "ai_category_conf", "status", "updated_at", "created_at"}
-    sort_column = sort_by if sort_by in _ALLOWED_SORT_COLUMNS else "updated_at"
+    valid_sort_columns = {"support_id", "ai_category_id", "ai_category_conf", "status", "updated_at", "created_at"}
+    sort_column = sort_by if sort_by in valid_sort_columns else "updated_at"
     sort_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
     _check_auth(request)
 
