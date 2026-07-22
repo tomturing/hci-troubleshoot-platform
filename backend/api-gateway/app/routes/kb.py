@@ -341,6 +341,14 @@ async def kbd_republish_proxy(kbd_id: int, request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@kbd_router.post("/{kbd_id}/revert-to-draft")
+async def kbd_revert_to_draft_proxy(kbd_id: int, request: Request):
+    """代理 KBD 退回草稿请求 → kb-service"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/revert-to-draft", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @kbd_router.post("/{kbd_id}/reclassify")
 async def kbd_reclassify_proxy(kbd_id: int, request: Request):
     """代理 KBD 重新分类请求（用最新 Prompt 重算）-> kb-service"""

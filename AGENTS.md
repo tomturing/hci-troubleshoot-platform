@@ -22,6 +22,8 @@
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
 - 当前版本：v2.16.0（以 `pyproject.toml` 为准）
+- **KBD 关键信号保存 SQL 语法错误修复**（PR #599）：
+  - 修复 `backend/kb-service/app/routes/admin.py` 中 `signals_json` PATCH 更新 SQL 的拼接，将 `:signals_json::jsonb` 替换为标准 `CAST(:signals_json AS jsonb)` 语法，解决 SQLAlchemy `text()` 冒号解析歧义导致的 500 语法错误。
 - **Admin UI 内网隔离方案**（2026-07-01）：
   - **背景**：admin-ui 和 customer-ui 通过同一公网入口暴露（`acli.sangfor.com.cn:4443`），admin-ui 仅依赖 IP 白名单保护，仍附着在公网入口上。
   - **方案**：采用端口隔离 + 云厂商 IP 白名单。admin-ui 使用独立端口（Traefik `web` entrypoint，端口 4888 + TLS），customer-ui 继续使用 `websecure` entrypoint（端口 4443）。

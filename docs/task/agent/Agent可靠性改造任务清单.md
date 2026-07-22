@@ -532,3 +532,4 @@ owner: team
   - [排障Agent可靠性整体解决方案.md](../../solution/agent/排障Agent可靠性整体解决方案.md)（方案 C）
 - **现行 Agent 设计** → [agent设计.md](../../solution/agent/agent设计.md)
 - **工具设计** → [agent工具设计.md](../../solution/agent/agent工具设计.md)
+- QFK handlers/signal/kbd_differential 更新
