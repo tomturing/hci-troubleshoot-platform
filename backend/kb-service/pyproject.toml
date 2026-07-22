@@ -26,6 +26,8 @@ dependencies = [
     "python-docx>=1.2.0",
     "pyyaml>=6.0.0",
     "pillow>=10.0.0",
+    # === 信号契约校验（RFC §6.1 JSON Schema 保存时强制）===
+    "jsonschema>=4.21.0",
 ]
 
 [tool.uv]
