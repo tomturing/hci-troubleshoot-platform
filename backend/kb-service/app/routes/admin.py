@@ -113,7 +113,7 @@ class DocumentUpdateRequest(BaseModel):
 @kbd_router.get("/pending/stats")
 async def kbd_category_stats(
     request: Request,
-    status: str = "draft",
+    status: str = "",
 ):
     """查询各分类条目数量统计（供前端 Tab 分组展示使用）"""
     _check_auth(request)
@@ -122,18 +122,22 @@ async def kbd_category_stats(
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
     async with _db_manager.async_session_factory() as session:
-        sql = text("""
+        where_clause = "WHERE e.status = :status" if status else ""
+        sql = text(f"""
             SELECT
                 COALESCE(e.ai_category_id, '__uncategorized__') AS category_id,
                 c.name AS category_name,
                 COUNT(*) AS cnt
             FROM kbd_entry e
             LEFT JOIN kb_category c ON c.code = e.ai_category_id
-            WHERE e.status = :status
+            {where_clause}
             GROUP BY e.ai_category_id, c.name
             ORDER BY cnt DESC
         """)
-        result = await session.execute(sql, {"status": status})
+        params_db: dict = {}
+        if status:
+            params_db["status"] = status
+        result = await session.execute(sql, params_db)
         rows = result.mappings().all()
 
     return {
@@ -156,14 +160,16 @@ async def list_kbd_entries(
     request: Request,
     page: int = 1,
     page_size: int = 20,
-    status: str = "draft",
+    status: str = "",
     category_id: str | None = None,
     support_id: str | None = None,
     title_keyword: str | None = None,
     min_confidence: float | None = None,
     max_confidence: float | None = None,
+    sort_by: str = "updated_at",
+    sort_order: str = "desc",
 ):
-    """查询 KBD 条目列表（分页 + 状态/分类/案例ID/标题/置信度过滤）
+    """查询 KBD 条目列表（分页 + 状态/分类/案例ID/标题/置信度过滤 + 排序）
 
     Args:
         page: 页码（从 1 开始）
@@ -174,10 +180,16 @@ async def list_kbd_entries(
         title_keyword: 按标题关键字模糊搜索（可选）
         min_confidence: 最低置信度（可选，0-1）
         max_confidence: 最高置信度（可选，0-1）
+        sort_by: 排序字段（support_id/ai_category_conf/status/updated_at/created_at）
+        sort_order: 排序方向（asc/desc）
 
     Returns:
         { entries: [...], total, page, page_size }
     """
+    # 排序字段白名单（防 SQL 注入）
+    _ALLOWED_SORT_COLUMNS = {"support_id", "ai_category_id", "ai_category_conf", "status", "updated_at", "created_at"}
+    sort_column = sort_by if sort_by in _ALLOWED_SORT_COLUMNS else "updated_at"
+    sort_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
     _check_auth(request)
 
     if _db_manager is None:
@@ -200,8 +212,11 @@ async def list_kbd_entries(
 
     async with _db_manager.async_session_factory() as session:
         # 构建 WHERE 条件
-        where_clauses = ["status = :status"]
-        params: dict = {"status": status, "limit": page_size, "offset": offset}
+        where_clauses: list[str] = []
+        params: dict = {"limit": page_size, "offset": offset}
+        if status:
+            where_clauses.append("status = :status")
+            params["status"] = status
 
         if category_id:
             if category_id == "__uncategorized__":
@@ -228,27 +243,29 @@ async def list_kbd_entries(
             where_clauses.append("ai_category_conf <= :max_confidence")
             params["max_confidence"] = max_confidence
 
-        where_sql = " AND ".join(where_clauses)
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         # 查询总数
-        count_sql = text(f"SELECT COUNT(*) FROM kbd_entry WHERE {where_sql}")  # noqa: S608
+        count_sql = text(f"SELECT COUNT(*) FROM kbd_entry {where_sql}")  # noqa: S608
         count_result = await session.execute(count_sql, params)
         total = count_result.scalar() or 0
 
         # 查询分页数据
         data_sql = text(  # noqa: S608
             f"""
-            SELECT id, support_id, title,
-                   problem_description, alert_info, steps_text, root_cause,
-                   solution, operational_impact, is_temporary, recommendations,
-                   signals_json, content_md, content_raw, images_json,
-                   metadata, category_id, ai_category_id,
-                   ai_category_conf, ai_category_reason,
-                   status, reviewer_id, review_note,
-                   hit_count, created_at, updated_at
-            FROM kbd_entry
-            WHERE {where_sql}
-            ORDER BY updated_at DESC, id DESC
+            SELECT e.id, e.support_id, e.title,
+                   e.problem_description, e.alert_info, e.steps_text, e.root_cause,
+                   e.solution, e.operational_impact, e.is_temporary, e.recommendations,
+                   e.signals_json, e.content_md, e.content_raw, e.images_json,
+                   e.metadata, e.category_id, e.ai_category_id,
+                   e.ai_category_conf, e.ai_category_reason,
+                   e.status, e.reviewer_id, e.review_note,
+                   e.hit_count, e.created_at, e.updated_at,
+                   c.name AS ai_category_name
+            FROM kbd_entry e
+            LEFT JOIN kb_category c ON c.code = e.ai_category_id
+            {where_sql}
+            ORDER BY {sort_column} {sort_dir}, e.id DESC
             LIMIT :limit OFFSET :offset
             """
         )
@@ -275,6 +292,9 @@ async def list_kbd_entries(
             "metadata": row["metadata"] or {},
             "category_id": row["category_id"],
             "ai_category_id": row["ai_category_id"],
+            "ai_category_label": f"{row['ai_category_id']} {row['ai_category_name']}"
+            if row.get("ai_category_name") and row.get("ai_category_id")
+            else (row["ai_category_id"] or ""),
             "ai_category_conf": float(row["ai_category_conf"]) if row["ai_category_conf"] is not None else None,
             "ai_category_reason": row["ai_category_reason"],
             "status": row["status"],
@@ -428,10 +448,10 @@ class KbdApproveRequest(BaseModel):
 
     reviewer_id: int = Field(..., ge=1, description="审核人 ID")
     review_note: str | None = Field(None, max_length=500, description="审核备注（可选）")
-    category_id: int | None = Field(
+    category_id: str | None = Field(
         None,
-        description="人工确认的分类 ID（可选）。来自审核详情弹窗的“确认分类”下拉框，"
-        "发布时优先于 AI 自动分类写入 category_id，用于校正分类、避免孤儿 KBD",
+        description='人工确认的分类 code（可选，如“虚拟机-017”）。来自审核详情弹窗的“确认分类”下拉框，'
+        '发布时优先于 AI 自动分类写入 category_id，用于校正分类、避免孤儿 KBD',
     )
 
 
@@ -1916,6 +1936,32 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         published_at=updated["published_at"].isoformat() if updated["published_at"] else None,
         resource_revision=resource_revision,
     )
+
+
+@kbd_router.post("/{kbd_id}/revert-to-draft")
+async def revert_kbd_to_draft(request: Request, kbd_id: int):
+    """将已发布/已拒绝的 KBD 条目退回待审核状态"""
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    logger.info(event="kbd_revert_to_draft_request", kbd_id=kbd_id)
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(text("SELECT id, status FROM kbd_entry WHERE id = :id"), {"id": kbd_id})
+        row = result.mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+        if row["status"] == "draft":
+            raise HTTPException(status_code=400, detail="当前已是待审核状态，无需操作")
+
+        await session.execute(
+            text("UPDATE kbd_entry SET status = 'draft', updated_at = NOW() WHERE id = :id"),
+            {"id": kbd_id},
+        )
+        await session.commit()
+
+    logger.info(event="kbd_reverted_to_draft", kbd_id=kbd_id)
+    return {"success": True, "kbd_id": kbd_id, "status": "draft"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

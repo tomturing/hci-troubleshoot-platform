@@ -138,10 +138,24 @@ const loading = ref(false)
 const entries = ref<KbdEntry[]>([])
 const total = ref(0)
 const categoryFilter = ref('')
-const statusFilter = ref('draft')
+const statusFilter = ref('')
+
+const STATUS_MAP: Record<string, string> = {
+  draft: '待审核', published: '已发布', rejected: '已拒绝', archived: '已归档',
+}
+function statusLabel(s: string) { return STATUS_MAP[s] || s }
 const supportIdFilter = ref('')
 const titleKeywordFilter = ref('')
 const confidenceFilter = ref('')
+const sortBy = ref('updated_at')
+const sortOrder = ref('desc')
+
+function handleSortChange({ prop, order }: { prop: string; order: string | null }) {
+  sortBy.value = prop || 'updated_at'
+  sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
+  catPage.value = 1
+  fetchPending()
+}
 
 // ── 按 AI 分类 Tab 分组 ──
 interface CategoryStat {
@@ -241,8 +255,10 @@ async function fetchPending() {
     const params = new URLSearchParams({
       page: String(catPage.value),
       page_size: String(catPageSize.value),
-      status: statusFilter.value,
     })
+    if (statusFilter.value) {
+      params.append('status', statusFilter.value)
+    }
     // Tab 分类过滤（'__all__' = 不限制）
     if (activeCategory.value && activeCategory.value !== '__all__') {
       params.append('category_id', activeCategory.value)
@@ -262,6 +278,8 @@ async function fetchPending() {
       if (minStr) params.append('min_confidence', minStr)
       if (maxStr) params.append('max_confidence', maxStr)
     }
+    params.append('sort_by', sortBy.value)
+    params.append('sort_order', sortOrder.value)
     const resp = await fetch(`/api/v1/kbd/pending?${params}`, {
       headers: authHeader,
     })
@@ -296,14 +314,21 @@ async function handleApprove(entry: KbdEntry) {
         category_id: editableCategoryId.value || entry.ai_category_id || null,
       }),
     })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`
+      try {
+        const errBody = await resp.json()
+        if (errBody.detail) detail = typeof errBody.detail === 'string' ? errBody.detail : JSON.stringify(errBody.detail)
+      } catch { /* ignore parse error */ }
+      throw new Error(detail)
+    }
     ElMessage.success('审核通过，KBD 条目已发布')
     detailDialogVisible.value = false
     await fetchPending()
   } catch (e: unknown) {
-    if ((e as { message?: string })?.message !== 'cancel') {
-      ElMessage.error('操作失败，请重试')
-    }
+    const msg = (e as { message?: string })?.message || ''
+    if (msg === 'cancel') return
+    ElMessage.error(msg || '操作失败，请重试')
   }
 }
 
@@ -652,7 +677,7 @@ function goToToolManage(acquirer?: string) {
 
 function resetFilters() {
   categoryFilter.value = ''
-  statusFilter.value = 'draft'
+  statusFilter.value = ''
   supportIdFilter.value = ''
   titleKeywordFilter.value = ''
   confidenceFilter.value = ''
@@ -706,6 +731,32 @@ async function submitEdit() {
   }
 }
 
+async function handleRevertToDraft(entry: KbdEntry) {
+  try {
+    await ElMessageBox.confirm(
+      `确认将「${entry.title}」退回待审核状态？`,
+      '退回待审核',
+      { confirmButtonText: '确认退回', cancelButtonText: '取消', type: 'warning' },
+    )
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/revert-to-draft`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+    })
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`
+      try { const errBody = await resp.json(); if (errBody.detail) detail = typeof errBody.detail === 'string' ? errBody.detail : JSON.stringify(errBody.detail) } catch { /* */ }
+      throw new Error(detail)
+    }
+    ElMessage.success('已退回待审核')
+    detailDialogVisible.value = false
+    await fetchPending()
+  } catch (e: unknown) {
+    const msg = (e as { message?: string })?.message || ''
+    if (msg === 'cancel') return
+    ElMessage.error(msg || '操作失败')
+  }
+}
+
 async function handleRepublish(entry: KbdEntry) {
   try {
     await ElMessageBox.confirm(
@@ -718,14 +769,21 @@ async function handleRepublish(entry: KbdEntry) {
       headers: { 'Content-Type': 'application/json', ...authHeader },
       body: JSON.stringify({ reviewer_id: currentUser.value }),
     })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`
+      try {
+        const errBody = await resp.json()
+        if (errBody.detail) detail = typeof errBody.detail === 'string' ? errBody.detail : JSON.stringify(errBody.detail)
+      } catch { /* ignore parse error */ }
+      throw new Error(detail)
+    }
     ElMessage.success('重新发布成功')
     detailDialogVisible.value = false
     await fetchPending()
   } catch (e: unknown) {
-    if ((e as { message?: string })?.message !== 'cancel') {
-      ElMessage.error('操作失败，请重试')
-    }
+    const msg = (e as { message?: string })?.message || ''
+    if (msg === 'cancel') return
+    ElMessage.error(msg || '操作失败，请重试')
   }
 }
 
@@ -1258,7 +1316,8 @@ onMounted(() => {
           </el-select>
         </el-col>
         <el-col :span="3">
-          <el-select v-model="statusFilter" @change="fetchPending" style="width: 100%">
+          <el-select v-model="statusFilter" @change="fetchPending" style="width: 100%" placeholder="全部">
+            <el-option label="全部" value="" />
             <el-option label="待审核" value="draft" />
             <el-option label="已发布" value="published" />
             <el-option label="已拒绝" value="rejected" />
@@ -1302,9 +1361,9 @@ onMounted(() => {
           </el-option>
         </el-select>
       </div>
-      <el-table :data="entries" row-key="id" style="width: 100%" size="small">
+      <el-table :data="entries" row-key="id" style="width: 100%" size="small" @sort-change="handleSortChange">
         <!-- 案例 ID -->
-        <el-table-column label="案例 ID" width="100">
+        <el-table-column label="案例 ID" width="100" prop="support_id" sortable="custom">
           <template #default="{ row }">
             <a :href="makeSupportUrl(row.support_id)" target="_blank" rel="noopener noreferrer" class="support-link">
               {{ row.support_id }}
@@ -1319,8 +1378,15 @@ onMounted(() => {
           </template>
         </el-table-column>
 
+        <!-- AI 分类 -->
+        <el-table-column label="AI 分类" width="200" prop="ai_category_id" sortable="custom">
+          <template #default="{ row }">
+            <span class="category-tag">{{ row.ai_category_label || row.ai_category_id || '—' }}</span>
+          </template>
+        </el-table-column>
+
         <!-- 置信度 -->
-        <el-table-column label="置信度" width="90" align="center">
+        <el-table-column label="置信度" width="90" align="center" prop="ai_category_conf" sortable="custom">
           <template #default="{ row }">
             <span
               :style="{ color: confidenceColor(row.ai_category_conf), fontWeight: 'bold' }"
@@ -1335,19 +1401,19 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 状态 -->
-        <el-table-column label="状态" width="80" align="center">
+        <el-table-column label="状态" width="80" align="center" prop="status" sortable="custom">
           <template #default="{ row }">
             <el-tag
               :type="row.status === 'published' ? 'success' :
                      row.status === 'rejected'  ? 'danger'  :
                      row.status === 'archived'  ? 'info'    : 'warning'"
               size="small"
-            >{{ row.status }}</el-tag>
+            >{{ statusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
 
         <!-- 导入时间 -->
-        <el-table-column label="导入时间" width="140">
+        <el-table-column label="导入时间" width="140" prop="updated_at" sortable="custom">
           <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </el-table-column>
 
@@ -1363,6 +1429,10 @@ onMounted(() => {
             </template>
             <template v-else-if="row.status === 'rejected'">
               <el-button type="warning" size="small" text @click="handleRepublish(row)">重新发布</el-button>
+              <el-button type="info" size="small" text @click="handleRevertToDraft(row)">退回草稿</el-button>
+            </template>
+            <template v-else>
+              <el-button type="info" size="small" text @click="handleRevertToDraft(row)">退回草稿</el-button>
             </template>
             </div>
           </template>
@@ -1373,11 +1443,13 @@ onMounted(() => {
       <div class="pagination-wrapper">
         <el-pagination
           background
-          layout="total, prev, pager, next"
+          layout="total, sizes, prev, pager, next"
           :total="total"
+          :page-sizes="[20, 30, 40, 50, 60, 70, 80, 90, 100]"
           :page-size="catPageSize"
           :current-page="catPage"
           @current-change="handleCatPageChange"
+          @size-change="(size: number) => { catPageSize = size; catPage = 1; fetchPending() }"
         />
       </div>
     </el-card>
@@ -1778,6 +1850,10 @@ onMounted(() => {
         </template>
         <template v-else-if="detailEntry && detailEntry.status === 'rejected'">
           <el-button type="warning" @click="handleRepublish(detailEntry)">重新发布</el-button>
+          <el-button type="info" @click="handleRevertToDraft(detailEntry)">退回草稿</el-button>
+        </template>
+        <template v-else-if="detailEntry">
+          <el-button type="info" @click="handleRevertToDraft(detailEntry)">退回草稿</el-button>
         </template>
       </template>
     </el-dialog>
