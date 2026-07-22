@@ -1668,7 +1668,7 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
             params[field] = val
 
     if body.signals_json is not None:
-        set_clauses.append("signals_json = :signals_json::jsonb")
+        set_clauses.append("signals_json = CAST(:signals_json AS jsonb)")
         params["signals_json"] = json.dumps(body.signals_json, ensure_ascii=False)
 
     # content_md 处理：明确传入则用传入的值；有章节更改则需先读库并重建
