@@ -18,6 +18,7 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+import jsonschema
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -28,6 +29,12 @@ from shared.models.skill_definition import SkillDefinitionORM
 from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.schemas.acquirer_args import validate_acquire_args
+from shared.schemas.signal_migration import (
+    migrate_signal_document,
+    unwrap_signals,
+)
+from shared.schemas.signal_schema import validate_signals_json
 from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
@@ -36,6 +43,18 @@ from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
 from app.services.sop_tool_contract_validator import validate_sop_tool_contract
+
+
+def _signals_for_response(raw: Any) -> dict:
+    """GET 响应直出 v2 文档（前端原生读 v2 对象化，RFC §7 演进，2026-07-22）：
+
+    不再归一为扁平 legacy 列表——直接返回标准化 v2 文档
+    ``{schema_version, signals:[...]}``，前端 ``KbdReviewView.vue`` 已原生基于 v2 结构
+    渲染/编辑（无适配层、零信息损失）。
+    无论存储态是 v2 对象还是 v1 扁平 list，均经 ``migrate_signal_document`` 归约为
+    规范 v2 文档返回，保证 GET 契约稳定为 v2。"""
+    return migrate_signal_document(raw)
+
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -268,7 +287,7 @@ async def list_kbd_entries(
             "operational_impact": row["operational_impact"] or "",
             "is_temporary": row["is_temporary"] or "",
             "recommendations": row["recommendations"] or "",
-            "signals_json": row["signals_json"] or [],
+            "signals_json": _signals_for_response(row["signals_json"]),
             "content_md": row["content_md"] or "",
             "content_raw": row["content_raw"] or "",
             "images_json": row["images_json"] or [],
@@ -353,7 +372,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "operational_impact": row["operational_impact"] or "",
         "is_temporary": row["is_temporary"] or "",
         "recommendations": row["recommendations"] or "",
-        "signals_json": row["signals_json"] or [],
+        "signals_json": _signals_for_response(row["signals_json"]),
         "content_md": row["content_md"] or "",
         "content_raw": row["content_raw"] or "",
         "images_json": row["images_json"] or [],
@@ -515,20 +534,24 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
 
         # ADR-1 + ADR-3：审核前置门
         # 门 1：signals_json 非空（无关键信号 → CDD 不可执行）
-        if not row["signals_json"] or row["signals_json"] == []:
+        # 直接切 v2 列形态（RFC §7）：signals_json 现为 {schema_version, signals} 对象，
+        # 需先解包为信号列表再判空。
+        _raw_signals = unwrap_signals(row["signals_json"])
+        if not _raw_signals:
             raise HTTPException(
                 status_code=422,
                 detail=f"KBD 条目 {kbd_id} 缺少关键信号（signals_json 为空），请先调用 /extract-signals 抽取后再审核",
             )
         # 门 1.5：至少含 1 条消费者(backend)信号，否则 CDD 无法执行差异消除（§9）
-        _raw_signals = row["signals_json"]
-        if isinstance(_raw_signals, str):
-            try:
-                _raw_signals = json.loads(_raw_signals)
-            except (json.JSONDecodeError, ValueError):
-                _raw_signals = []
-        _has_consumer = isinstance(_raw_signals, list) and any(
-            isinstance(s, dict) and s.get("signal_category") == "backend" for s in _raw_signals
+        # v2 原生判定：acquire.tool 以 qfk 开头 或 provenance.category==backend（兼容 v1 signal_category）
+        _has_consumer = any(
+            isinstance(s, dict)
+            and (
+                (s.get("acquire") or {}).get("tool", "").startswith("qfk")
+                or (s.get("provenance") or {}).get("category") == "backend"
+                or s.get("signal_category") == "backend"
+            )
+            for s in _raw_signals
         )
         if not _has_consumer:
             raise HTTPException(
@@ -538,9 +561,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
         # 门 2：category_id 与 ai_category_id 同步（根治孤儿 KBD）
         # 优先采用人工确认的分类（审核详情弹窗“确认分类”下拉框），
         # fallback 到 DB 已有值；保证发布后 category_id 一定有值。
-        effective_category_id = (
-            body.category_id or row["category_id"] or row["ai_category_id"]
-        )
+        effective_category_id = body.category_id or row["category_id"] or row["ai_category_id"]
         if not effective_category_id:
             raise HTTPException(
                 status_code=422,
@@ -1608,9 +1629,11 @@ class KbdUpdateRequest(BaseModel):
     is_temporary: str | None = Field(None, description="是否是临时解决方案章节")
     recommendations: str | None = Field(None, description="建议与总结章节")
     # 关键信号集合（agent 可执行与判定）
-    signals_json: list[dict] | None = Field(
+    # 直接切 v2 列形态（RFC §7）：接受 v2 数组级对象 {schema_version, signals}
+    # 或 v1 扁平 list；保存时统一归约为 v2（migrate_signal_document）。
+    signals_json: Any | None = Field(
         None,
-        description="关键信号集合（[{id,signal_category,keyword,acquirer,acquirer_args,produces,requires,matcher}]）",
+        description="关键信号集合：v2 对象 {schema_version,signals} 或 v1 扁平 list（保存时统一归约 v2）",
     )
     # 聚合渲染（可选，不传则自动由章节重建）
     content_md: str | None = Field(None, description="聚合 Markdown（优先用传入的值；不传则自动由章节重建）")
@@ -1668,8 +1691,25 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
             params[field] = val
 
     if body.signals_json is not None:
+        # 直接切 v2 列形态（RFC §7）：保存时统一归约为 v2 数组级对象
+        v2_doc = migrate_signal_document(body.signals_json)
+        # 轻量纯 Python 校验（字段级友好提示，语义与 JSON Schema 对齐）
+        for s in v2_doc.get("signals", []):
+            acquire = s.get("acquire") or {}
+            ok, err = validate_acquire_args(acquire.get("tool"), acquire.get("args", {}))
+            if not ok:
+                raise HTTPException(status_code=422, detail=f"signals_json 校验失败: {err}")
+        # §6.1 保存时强制：jsonschema 整段校验（含逐条 acquire.args 按 tool 选 schema、
+        # 各段结构不变量、additionalProperties:false 拒幽灵字段/顶层 keyword 回归）
+        try:
+            validate_signals_json(v2_doc)
+        except jsonschema.ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"signals_json 不符合 v2 契约：{exc.message}",
+            )
         set_clauses.append("signals_json = :signals_json::jsonb")
-        params["signals_json"] = json.dumps(body.signals_json, ensure_ascii=False)
+        params["signals_json"] = json.dumps(v2_doc, ensure_ascii=False)
 
     # content_md 处理：明确传入则用传入的值；有章节更改则需先读库并重建
     if body.content_md is not None:
@@ -1836,9 +1876,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
     current_content_raw = row["content_raw"] or strip_markdown(content_md or "")
     # 门 2（重发布同样适用）：category_id 与 ai_category_id 同步，根治孤儿 KBD
     # 优先采用人工确认的分类（发布请求 body.category_id），fallback 到 DB 已有值
-    effective_category_id = (
-        body.category_id or row["category_id"] or row["ai_category_id"]
-    )
+    effective_category_id = body.category_id or row["category_id"] or row["ai_category_id"]
     if not effective_category_id:
         raise HTTPException(
             status_code=422,
@@ -1941,9 +1979,7 @@ async def reclassify_kbd_entry(request: Request, kbd_id: int):
     # 1. 读取 KBD 条目的 title 和 problem_desc
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
-            text(
-                "SELECT id, title, problem_description FROM kbd_entry WHERE id = :id"
-            ),
+            text("SELECT id, title, problem_description FROM kbd_entry WHERE id = :id"),
             {"id": kbd_id},
         )
         row = result.mappings().first()
@@ -2046,13 +2082,13 @@ async def reanalyze_kbd_images(request: Request, kbd_id: int):
         # 实时回写进度：避免轮询全程看到 running + 0/0 的「黑盒」观感；
         # 把本次请求的 trace_id 透传给 vision_processor，确保服务端日志与调用方串联。
         def _on_progress(done: int, failed: int, total: int) -> None:
-            asyncio.create_task(
-                jm._update(job_id, total=total, done=done, failed=failed)
-            )
+            asyncio.create_task(jm._update(job_id, total=total, done=done, failed=failed))
 
         return await do_reanalyze(
-            k_id, _db_manager.async_session_factory,
-            on_progress=_on_progress, trace_id=trace_id,
+            k_id,
+            _db_manager.async_session_factory,
+            on_progress=_on_progress,
+            trace_id=trace_id,
         )
 
     jm = get_job_manager()
@@ -2060,7 +2096,9 @@ async def reanalyze_kbd_images(request: Request, kbd_id: int):
 
     logger.info(
         event="kbd_reanalyze_images_submitted",
-        kbd_id=kbd_id, job_id=job_id, trace_id=trace_id,
+        kbd_id=kbd_id,
+        job_id=job_id,
+        trace_id=trace_id,
     )
 
     return JSONResponse(
@@ -2092,7 +2130,11 @@ async def _reanalyze_kbd_images_sync(kbd_id: int, trace_id: str):
 
     logger.info(
         event="kbd_reanalyze_images_completed",
-        kbd_id=kbd_id, total=result["total"], done=result["done"], failed=result["failed"], trace_id=trace_id,
+        kbd_id=kbd_id,
+        total=result["total"],
+        done=result["done"],
+        failed=result["failed"],
+        trace_id=trace_id,
     )
     return {
         # 修复：同步路径不应恒为 True；部分图片失败时需如实反映 result.success
@@ -2180,9 +2222,7 @@ async def reanalyze_single_image(request: Request, kbd_id: int, seq: int):
 
     async def _runner(k_id: int) -> dict[str, Any]:
         # k_id 仅用于匹配 submit 签名；实际只处理当前 seq；透传 trace_id 串联日志
-        return await do_reanalyze_single(
-            k_id, seq, _db_manager.async_session_factory, trace_id=trace_id
-        )
+        return await do_reanalyze_single(k_id, seq, _db_manager.async_session_factory, trace_id=trace_id)
 
     jm = get_job_manager()
     job_id = await jm.submit(kbd_id, _runner, trace_id=trace_id)

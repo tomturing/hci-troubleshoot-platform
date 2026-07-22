@@ -1,0 +1,416 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hci-troubleshoot/schemas/signals/signal.v2.schema.json",
+  "title": "KBD signals_json (v2 nested signal model)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "signals"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "signals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/signal"
+      }
+    }
+  },
+  "definitions": {
+    "signal": {
+      "type": "object",
+      "required": [
+        "acquire"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "acquire": {
+          "$ref": "#/definitions/acquire"
+        },
+        "match": {
+          "$ref": "#/definitions/match"
+        },
+        "orchestrate": {
+          "$ref": "#/definitions/orchestrate"
+        },
+        "provenance": {
+          "$ref": "#/definitions/provenance"
+        },
+        "review": {
+          "$ref": "#/definitions/review"
+        },
+        "_v1_legacy": {
+          "type": "object"
+        }
+      }
+    },
+    "acquire": {
+      "type": "object",
+      "required": [
+        "tool",
+        "args"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "type": "string",
+          "enum": [
+            "qkv_alert",
+            "qkv_task",
+            "qkv_dialog",
+            "qfk_log",
+            "qfk_service",
+            "qfk_system",
+            "qfk_vm",
+            "qfk_network",
+            "qfk_storage",
+            "qfk_hardware",
+            "qfk_platform"
+          ]
+        },
+        "args": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qkv_alert"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_alert.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qkv_task"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_task.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qkv_dialog"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_dialog.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qfk_log"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_log.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qfk_service"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_service.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qfk_system"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_system.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qfk_vm"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_vm.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qfk_network"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_network.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qfk_storage"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_storage.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qfk_hardware"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_hardware.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qfk_platform"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_platform.schema.json"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "match": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "type",
+        "pattern",
+        "mode",
+        "expected"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "expected": {
+          "type": "boolean"
+        }
+      }
+    },
+    "orchestrate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "phase": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "container": {
+          "type": "string"
+        },
+        "produces": {
+          "type": "array",
+          "description": "该信号向变量池产出的变量（v1 produces: [{name, type?, path?}]）",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": [
+            "frontend",
+            "backend"
+          ]
+        },
+        "method": {
+          "type": "string"
+        },
+        "source_section": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": [
+            "number",
+            "integer"
+          ]
+        },
+        "risk": {
+          "type": [
+            "integer",
+            "number"
+          ]
+        },
+        "needs_review": {
+          "type": "boolean"
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "required": [
+        "require_human_confirm"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "require_human_confirm": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

@@ -149,6 +149,31 @@ jobs:
       - name: Ruff 代码检查
         run: uv run ruff check backend/ tests/
 
+  schema-contract:
+    name: Signal Schema Contract (§6.1)
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: 安装依赖
+        run: uv sync --group dev
+
+      - name: 信号 v2 JSON Schema 契约校验
+        # §6.1 防回归：schema 自身合法 + fixtures 校验 + 漂移检测
+        run: uv run python scripts/ci/check_signal_schemas.py
+
   frontend-check:
     name: 前端检查（单元测试 + 构建）
     runs-on: ubuntu-latest

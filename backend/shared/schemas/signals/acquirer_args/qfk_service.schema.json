@@ -1,0 +1,52 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "timeout": {
+      "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/common_args.schema.json#/properties/timeout"
+    },
+    "resource_keyword": {
+      "type": "string",
+      "description": "服务名选择器（acli service <group> <name>）；原 acquirer_args.keyword 改名消歧"
+    },
+    "resource": {
+      "type": "string",
+      "description": "服务所属组（asv/anet/host，qfk_service 专属）"
+    },
+    "sub_command": {
+      "type": "string",
+      "description": "操作子命令（如 status/restart）"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "采集目标定位（主机/资源/路径/时间窗），支持 {{VAR}} 变量池；对应 v1 acquirer_args.target",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "description": "主机/作用域选择器（如 {{HOST}}）"
+        },
+        "resource": {
+          "type": "string",
+          "description": "资源名（服务名/日志名/磁盘等）"
+        },
+        "path": {
+          "type": "string",
+          "description": "路径（日志目录/文件等）"
+        },
+        "time_window": {
+          "type": "string",
+          "description": "时间窗（如 now/-1h）"
+        }
+      }
+    },
+    "description": {
+      "type": "string",
+      "description": "信号语义说明（对应 v1 顶层 description，迁移后落 _v1_legacy）"
+    }
+  },
+  "required": [],
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_service.schema.json",
+  "title": "acquire.args for qfk_service"
+}

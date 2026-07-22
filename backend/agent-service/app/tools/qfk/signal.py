@@ -51,7 +51,9 @@ class BackendSignal(BaseModel):
     match_mode: str = Field(default="or", description="匹配模式：or(任一)/and(全部)/not(均不出现)")
 
     # ─── 命名空间 ─────────────────────────────────────────────────────────────
-    namespace: str = Field(..., description="acli 子命令空间名：log/service/system/vm/network/storage/hardware/platform")
+    namespace: str = Field(
+        ..., description="acli 子命令空间名：log/service/system/vm/network/storage/hardware/platform"
+    )
 
     # ─── 特有字段 ─────────────────────────────────────────────────────────────
     # qfk_log
@@ -59,7 +61,9 @@ class BackendSignal(BaseModel):
     end: str | None = Field(default=None, description="结束时间（qfk_log 选填）")
 
     # qfk_system
-    command: str | None = Field(default=None, description="执行命令（qfk_system/vm/network/storage/hardware/platform 必填）")
+    command: str | None = Field(
+        default=None, description="执行命令（qfk_system/vm/network/storage/hardware/platform 必填）"
+    )
     container: str | None = Field(default=None, description="容器类型（qfk_system 选填）")
 
     # qfk_service
@@ -74,17 +78,50 @@ class BackendSignal(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_fields(cls, data: Any) -> Any:
-        """对 dict 输入做兼容转换：target dict→BackendSignalTarget、keywords→keyword、sub_command→command、description→instruction、signal_type→namespace。"""
+        """对 dict 输入做兼容转换：target dict→BackendSignalTarget、keywords→keyword、sub_command→command、description→instruction、signal_type→namespace。
+
+        直接切 v2 列形态（RFC §4.4）：若输入为 v2 嵌套信号（含 acquire/match），
+        先展开为 BackendSignal 期望的扁平字段，再走既有兼容逻辑。
+        """
         if not isinstance(data, dict):
             return data
         data = dict(data)
 
+        # v2 嵌套信号 → 扁平字段（kbd_from_dict 边界已做还原，此处为双重保险）
+        if "acquire" in data:
+            a = data["acquire"]
+            args = a.get("args", {}) or {}
+            m = data.get("match") or {}
+            tool = a.get("tool", "")
+            ns = tool.replace("qfk_", "") if tool.startswith("qfk_") else tool
+            pattern = m.get("pattern")
+            mapped = {
+                "namespace": ns,
+                "keyword": [pattern] if pattern else (data.get("keyword") or []),
+                "timeout": args.get("timeout"),
+                "expected": m.get("expected", True),
+                "match_mode": m.get("mode", "or"),
+            }
+            if ns == "log":
+                mapped["host"] = args.get("resource")
+                mapped["file"] = args.get("file")
+                mapped["end"] = args.get("end")
+            elif ns == "system":
+                mapped["command"] = args.get("sub_command")
+                mapped["container"] = args.get("container")
+            elif ns == "service":
+                mapped["service"] = args.get("resource_keyword")
+                mapped["action"] = args.get("sub_command") or "status"
+            else:  # vm/network/storage/hardware/platform
+                mapped["command"] = args.get("sub_command")
+                mapped["host"] = args.get("resource_keyword")
+            mapped = {k: v for k, v in mapped.items() if v is not None}
+            data = {**mapped, **{k: v for k, v in data.items() if k not in mapped}}
+
         # target: dict → BackendSignalTarget
         if "target" in data and isinstance(data["target"], dict):
             allowed = {"scope", "resource", "path", "time_window"}
-            data["target"] = BackendSignalTarget(
-                **{k: v for k, v in data["target"].items() if k in allowed}
-            )
+            data["target"] = BackendSignalTarget(**{k: v for k, v in data["target"].items() if k in allowed})
 
         # keywords / keyword 互转
         if "keyword" not in data and "keywords" in data:

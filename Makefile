@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down db-sync test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import
+.PHONY: help install dev-up dev-down db-sync test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -34,6 +34,10 @@ help:
 	@echo "  atlas migrate apply --env local        - 本地应用迁移"
 	@echo "  atlas migrate status --env local       - 查看迁移状态"
 	@echo "  make db-sync        - 手动执行数据库 Schema 迁移（修改 desired_schema.sql 后使用）"
+	@echo ""
+	@echo "  信号数据模型契约（RFC §6.1）:"
+	@echo "  make gen-schemas    - 从 ACQUIRER_ARGS_SCHEMA 导出 v2 JSON Schema 契约文件"
+	@echo "  make schema-check   - CI 契约校验：schema 合法 + fixtures + 漂移检测"
 
 install:
 	@echo "安装Python依赖 (uv sync)..."
@@ -138,4 +142,16 @@ release-observe:
 rollback-drill:
 	@echo "执行回滚演练（默认不执行真实回滚）..."
 	bash scripts/ops/rollback-drill.sh
+
+# ============================================================================
+# 信号数据模型契约（RFC §6.1 JSON Schema 机器强制）
+# ============================================================================
+
+gen-schemas:
+	@echo "导出信号 v2 JSON Schema 契约..."
+	python backend/scripts/gen-schemas.py
+
+schema-check:
+	@echo "运行信号 v2 JSON Schema 契约校验..."
+	python scripts/ci/check_signal_schemas.py
 

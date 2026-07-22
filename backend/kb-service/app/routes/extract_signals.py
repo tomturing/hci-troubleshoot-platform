@@ -27,6 +27,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.schemas.acquirer_args import validate_acquire_args
+from shared.schemas.signal_migration import migrate_signal_document
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
 
@@ -80,8 +82,15 @@ ACQUIRER_CATALOG: dict[str, str] = {
 
 # ─── 默认变量池 schema（produces/requires 引用的变量名集合）───────────────────
 DEFAULT_VARIABLE_SCHEMA: list[str] = [
-    "HOST", "VM", "NODE_IP", "TARGET", "END", "ALERT_TYPE",
-    "STATUS", "ERRCODE_TRACING", "REQUEST_ID",
+    "HOST",
+    "VM",
+    "NODE_IP",
+    "TARGET",
+    "END",
+    "ALERT_TYPE",
+    "STATUS",
+    "ERRCODE_TRACING",
+    "REQUEST_ID",
 ]
 
 VALID_CATEGORIES = {"frontend", "backend"}
@@ -101,22 +110,56 @@ NEEDS_REVIEW_CONFIDENCE_THRESHOLD = 0.5
 # 治本约束：只有「诊断叙事字段」可作为信号来源；根因(root_cause)与解决方案(solution)
 # 是抽取 OUTPUT（确认后返回给用户），绝不作为信号抽取输入，避免把"处置动作"误抽成诊断信号。
 _VALID_SOURCE_SECTIONS = {
-    "title", "problem_description", "alert_info", "steps_text",
+    "title",
+    "problem_description",
+    "alert_info",
+    "steps_text",
 }
 
 # ─── 写操作子命令词表（处置/变更动作，不得自动执行）────────────────────────
 # 这是"诊断只读"原则的硬边界：凡 sub_command 命中以下动词的后端信号，一律标记为
 # phase=solution / require_human_confirm=True，执行层绝不自动运行，必须人工授权。
 WRITE_OP_SUB_COMMANDS: set[str] = {
-    "start", "stop", "shutdown", "restart", "suspend", "resume",
-    "migrate", "clone", "snapshot", "reset", "reboot",
-    "delete", "remove", "del", "rm", "format", "wipe", "destroy",
-    "enable", "disable", "kill", "killall", "pkill",
-    "up", "down", "set", "create", "add", "modify", "update",
+    "start",
+    "stop",
+    "shutdown",
+    "restart",
+    "suspend",
+    "resume",
+    "migrate",
+    "clone",
+    "snapshot",
+    "reset",
+    "reboot",
+    "delete",
+    "remove",
+    "del",
+    "rm",
+    "format",
+    "wipe",
+    "destroy",
+    "enable",
+    "disable",
+    "kill",
+    "killall",
+    "pkill",
+    "up",
+    "down",
+    "set",
+    "create",
+    "add",
+    "modify",
+    "update",
 }
 # 破坏性（不可逆）子命令 → risk=3（block）
 _DESTRUCTIVE_SUB_COMMANDS: set[str] = {
-    "delete", "remove", "del", "rm", "format", "wipe", "destroy",
+    "delete",
+    "remove",
+    "del",
+    "rm",
+    "format",
+    "wipe",
+    "destroy",
 }
 
 
@@ -281,6 +324,16 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
     if acquirer not in ACQUIRER_CATALOG:
         return False, f"acquirer 不在采集器词表内: {acquirer}"
 
+    # ── v2 契约校验（RFC §4.4 / §6.1）：仅当信号已采用 acquire 段时强制 ──
+    # 旧版扁平信号（acquirer_args/matcher）暂不校验，保证 Phase 0/1 双写期零破坏；
+    # Phase 1 抽取改为写 acquire 段后，此校验自动生效为机器强制门禁。
+    acquire = signal.get("acquire")
+    if isinstance(acquire, dict):
+        tool = acquire.get("tool")
+        ok, err = validate_acquire_args(tool, acquire.get("args", {}))
+        if not ok:
+            return False, f"acquire.args 校验失败: {err}"
+
     for field in ("acquirer_args", "matcher"):
         val = signal.get(field)
         if val is None:
@@ -381,13 +434,34 @@ def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[li
     return validated, rejected
 
 
-async def _persist_signals(db_manager: DatabaseManager, table: str, source_id: int,
-                          signals: list[dict[str, Any]]) -> None:
-    """通用写回：signals_json 列。table ∈ {'kbd_entry', 'sop_document'}。"""
+def _signals_to_v2(signals: list[dict[str, Any]]) -> dict[str, Any]:
+    """扁平 v1 list → 嵌套 v2 文档 {schema_version, signals}（直接切 v2 列形态，RFC §7）。
+
+    转换同时激活 acquire.args 契约校验（RFC §4.4 / §6.1）：逐条校验，失败仅告警
+    （不阻断落库，避免抽取流水线因个别字段瑕疵整体失败；缺陷在审计/CI 中暴露）。
+    """
+    doc = migrate_signal_document(signals)
+    for s in doc.get("signals", []):
+        acquire = s.get("acquire") or {}
+        ok, err = validate_acquire_args(acquire.get("tool"), acquire.get("args", {}))
+        if not ok:
+            logger.warning("acquire.args 契约校验未通过（仍落库 v2，待修正）: %s", err)
+    return doc
+
+
+async def _persist_signals(
+    db_manager: DatabaseManager, table: str, source_id: int, signals: list[dict[str, Any]]
+) -> None:
+    """通用写回：signals_json 列。table ∈ {'kbd_entry', 'sop_document'}。
+
+    持久化形态直接切到 v2 数组级文档（RFC §7）：扁平 list → {schema_version, signals}；
+    抽取流水线内部仍用扁平 v1 处理，仅在落库前经 `_signals_to_v2` 归约为 v2。
+    """
+    doc = _signals_to_v2(signals)
     async with db_manager.async_session_factory() as session:
         await session.execute(
             text(f"UPDATE {table} SET signals_json = CAST(:sj AS jsonb), updated_at = NOW() WHERE id = :id"),
-            {"sj": json.dumps(signals, ensure_ascii=False), "id": source_id},
+            {"sj": json.dumps(doc, ensure_ascii=False), "id": source_id},
         )
         await session.commit()
 
@@ -410,8 +484,17 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         prompt_template = await StrictPromptLoader.load_and_validate(
             session,
             _EXTRACT_PROMPT_NAME,
-            ["title", "problem_description", "alert_info", "steps_text",
-             "root_cause", "solution", "category_id", "acquirer_catalog", "variable_schema"],
+            [
+                "title",
+                "problem_description",
+                "alert_info",
+                "steps_text",
+                "root_cause",
+                "solution",
+                "category_id",
+                "acquirer_catalog",
+                "variable_schema",
+            ],
             consumer="kb-service.extract_signals.kbd",
         )
 
@@ -437,12 +520,20 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     validated, rejected = _validate_and_collect_signals(raw_signals, f"kbd:{kbd_id}")
 
     await _persist_signals(db_manager, "kbd_entry", kbd_id, validated)
-    logger.info(event="extract_signals_kbd_done", kbd_id=kbd_id,
-                total=len(raw_signals), validated=len(validated), rejected=len(rejected))
+    logger.info(
+        event="extract_signals_kbd_done",
+        kbd_id=kbd_id,
+        total=len(raw_signals),
+        validated=len(validated),
+        rejected=len(rejected),
+    )
     return {
-        "success": True, "kbd_id": kbd_id,
-        "signals_count": len(validated), "rejected_count": len(rejected),
-        "signals": validated, "rejected": rejected,
+        "success": True,
+        "kbd_id": kbd_id,
+        "signals_count": len(validated),
+        "rejected_count": len(rejected),
+        "signals": validated,
+        "rejected": rejected,
     }
 
 
@@ -461,19 +552,30 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
         tree_text = json.dumps(tree, ensure_ascii=False)[:6000]
         # 变量 schema 列表
         var_schema = doc.variable_schema or []
-        var_names = sorted({
-            (v.get("name") if isinstance(v, dict) else None) or "" for v in var_schema
-        }) if var_schema else DEFAULT_VARIABLE_SCHEMA
+        var_names = (
+            sorted({(v.get("name") if isinstance(v, dict) else None) or "" for v in var_schema})
+            if var_schema
+            else DEFAULT_VARIABLE_SCHEMA
+        )
         # 与 KBD 共用 schema（追加 SOP 已声明的变量名）
-        merged_vars = sorted(set(DEFAULT_VARIABLE_SCHEMA) | {
-            n for n in var_names if re.fullmatch(r"[A-Z][A-Z0-9_]*", n)
-        })
+        merged_vars = sorted(
+            set(DEFAULT_VARIABLE_SCHEMA) | {n for n in var_names if re.fullmatch(r"[A-Z][A-Z0-9_]*", n)}
+        )
 
         prompt_template = await StrictPromptLoader.load_and_validate(
             session,
             _EXTRACT_PROMPT_NAME,
-            ["title", "problem_description", "alert_info", "steps_text",
-             "root_cause", "solution", "category_id", "acquirer_catalog", "variable_schema"],
+            [
+                "title",
+                "problem_description",
+                "alert_info",
+                "steps_text",
+                "root_cause",
+                "solution",
+                "category_id",
+                "acquirer_catalog",
+                "variable_schema",
+            ],
             consumer="kb-service.extract_signals.sop",
         )
 
@@ -499,12 +601,20 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
     validated, rejected = _validate_and_collect_signals(raw_signals, f"sop:{sop_id}")
 
     await _persist_signals(db_manager, "sop_document", sop_id, validated)
-    logger.info(event="extract_signals_sop_done", sop_id=sop_id,
-                total=len(raw_signals), validated=len(validated), rejected=len(rejected))
+    logger.info(
+        event="extract_signals_sop_done",
+        sop_id=sop_id,
+        total=len(raw_signals),
+        validated=len(validated),
+        rejected=len(rejected),
+    )
     return {
-        "success": True, "sop_id": sop_id,
-        "signals_count": len(validated), "rejected_count": len(rejected),
-        "signals": validated, "rejected": rejected,
+        "success": True,
+        "sop_id": sop_id,
+        "signals_count": len(validated),
+        "rejected_count": len(rejected),
+        "signals": validated,
+        "rejected": rejected,
     }
 
 

@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hci-troubleshoot/schemas/signals/acquirer_args/common_args.schema.json",
+  "title": "Common acquire args (shared across all acquirers)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 10,
+      "description": "采集/执行超时（秒）；QKV/QFK 通用"
+    }
+  }
+}

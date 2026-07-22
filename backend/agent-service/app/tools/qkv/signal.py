@@ -14,8 +14,8 @@ from pydantic import BaseModel, Field
 class FrontendQueryType(StrEnum):
     """前端信号查询类型"""
 
-    ALERT = "alert"    # 告警信息
-    TASK = "task"      # 操作任务
+    ALERT = "alert"  # 告警信息
+    TASK = "task"  # 操作任务
     DIALOG = "dialog"  # 对话/弹框日志
 
 
@@ -59,7 +59,7 @@ def _clean_keyword(keyword: str, query_type: str) -> tuple[str, bool]:
 
     # 清洗类型后缀
     if suffix and cleaned.endswith(suffix):
-        cleaned = cleaned[:-len(suffix)]
+        cleaned = cleaned[: -len(suffix)]
 
     return cleaned.strip(), is_failed
 
@@ -80,7 +80,23 @@ class FrontendSignal(BaseModel):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FrontendSignal:
-        """从字典构建并校验，自动清洗关键词和检测状态。"""
+        """从字典构建并校验，自动清洗关键词和检测状态。
+
+        直接切 v2 列形态（RFC §4.4）：原生读取 acquire/args/orchestrate 段，
+        无需先经 to_legacy_signal 还原（kbd_from_dict 边界已做还原，此处为双重保险）。
+        """
+        if "acquire" in data:  # v2 嵌套信号
+            a = data["acquire"]
+            args = a.get("args", {}) or {}
+            tool = a.get("tool", "")
+            qmap = {"qkv_alert": "alert", "qkv_task": "task", "qkv_dialog": "dialog"}
+            data = {
+                "query": qmap.get(tool, "task"),
+                "keyword": args.get("keyword", ""),
+                "is_failed": bool(args.get("is_failed", False)),
+                "limit": args.get("limit", 100),
+                "produces": (data.get("orchestrate") or {}).get("produces", []),
+            }
         # 自动清洗关键词和检测状态
         keyword = data.get("keyword", "")
         query_type = data.get("query", "")

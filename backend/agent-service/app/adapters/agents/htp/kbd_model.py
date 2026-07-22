@@ -108,11 +108,7 @@ class KBD:
     @property
     def step_tool_names(self) -> set[str]:
         """返回本 KBD 所有 consumer（backend）信号的 acquirer 集合（用于频率统计）。"""
-        return {
-            s["acquirer"]
-            for s in self.signals
-            if s.get("acquirer") and s.get("signal_category") == "backend"
-        }
+        return {s["acquirer"] for s in self.signals if s.get("acquirer") and s.get("signal_category") == "backend"}
 
     def get_step(self, tool_name: str) -> KBDStep | None:
         """按 acquirer 获取 consumer 信号的步骤定义。"""
@@ -145,9 +141,14 @@ def kbd_from_dict(d: dict) -> KBD:
     """从 KB API 返回的 dict 构建 KBD 对象（工厂函数）。
 
     v2: 读取 "signals" key（producer/consumer 信号数组），废弃旧 "steps" key。
+    兼容直接切 v2 列形态（RFC §7）：signals_json 现为 {schema_version, signals} 对象，
+    此处统一解包并还原为扁平信号，使 kbd_differential 等下游零改动。
     """
     # ADR-1：仅读 signals_json，无回退、无兼容桥（旧 steps 字段已彻底移除）
-    signals = d.get("signals", [])
+    from shared.schemas.signal_migration import to_legacy_signal, unwrap_signals
+
+    raw_signals = unwrap_signals(d.get("signals", []))
+    signals = [to_legacy_signal(s) for s in raw_signals]
 
     return KBD(
         id=d["id"],
