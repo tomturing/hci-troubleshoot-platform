@@ -1553,9 +1553,20 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (item.sig.produces || []).map(p => p.name).join('、') || '—' }}</span></div>
                 </div>
                 <div v-else>
-                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.keyword" size="small" /></div>
-                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.description" size="small" type="textarea" :rows="2" /></div>
-                  <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (signalEditDraft.produces || []).map(p => p.name).join('、') || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.keyword" size="small" placeholder="关键字" /></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.description" size="small" type="textarea" :rows="2" placeholder="信号说明" /></div>
+                  <!-- 产出变量编辑 -->
+                  <div class="signal-row">
+                    <span class="signal-k">产出变量</span>
+                    <div class="produces-editor-mini">
+                      <div v-for="(p, idx) in (signalEditDraft.produces || [])" :key="idx" class="produce-item-mini">
+                        <el-input v-model="p.name" size="small" placeholder="变量名" style="width: 120px" />
+                        <el-input v-model="p.path" size="small" placeholder="JSON路径" style="flex: 1" />
+                        <el-button text type="danger" size="small" @click="signalEditDraft.produces?.splice(idx, 1)">删除</el-button>
+                      </div>
+                      <el-button text type="primary" size="small" @click="signalEditDraft.produces = [...(signalEditDraft.produces || []), { name: '', path: '' }]">+ 添加变量</el-button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2314,5 +2325,18 @@ onMounted(() => {
   background: #f0f2f5;
   padding: 0 4px;
   border-radius: 3px;
+}
+
+/* 产出变量迷你编辑器 */
+.produces-editor-mini {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.produce-item-mini {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>

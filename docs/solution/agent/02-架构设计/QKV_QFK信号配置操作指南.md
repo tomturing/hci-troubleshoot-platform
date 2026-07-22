@@ -202,11 +202,17 @@ acli --container asv-con --host {{HOST}} --timeout 10 system lsof
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `service` | str | **是** | - | 服务名称 |
+| `container` | str | 否 | "asv" | 容器类型（asv/vn/vn-agent/vs） |
 | `action` | str | 否 | "status" | 动作 |
 
 **命令格式**：
 ```bash
-acli --host {{HOST}} --timeout 10 service asv-con <service> status
+acli service <container> <service> <action>
+```
+
+**示例**：
+```bash
+acli service asv vtpdaemon status
 ```
 
 #### qfk_vm / network / storage / hardware / platform
