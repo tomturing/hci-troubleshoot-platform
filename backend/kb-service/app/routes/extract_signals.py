@@ -256,10 +256,7 @@ def _calibrate_confidence(signal: dict[str, Any], quality: float) -> float:
         llm_conf = 0.7
 
     _, _, cat, produces, requires, matcher, _ = _read_signal_fields(signal)
-    if cat == "backend":
-        evidence = 1.0 if matcher else 0.3
-    else:
-        evidence = 1.0 if produces else 0.4
+    evidence = (1.0 if matcher else 0.3) if cat == "backend" else 1.0 if produces else 0.4
 
     calibrated = llm_conf * (0.5 * quality + 0.5 * evidence)
     return round(max(0.05, min(0.99, calibrated)), 3)
