@@ -637,6 +637,36 @@ const consumerSignals = computed(() =>
   signalList.value.map((s, i) => ({ sig: s, origIdx: i })).filter((x) => isBackendSig(x.sig)),
 )
 
+// ── QKV 生产者关键字 × 分类基线 辅助（实例/注释/软校验）───────────────────────
+// 分类基线（category_baseline.yaml, 198 类）按标签语义分两性：
+//   · 任务失败型故障：标签多以 失败/卡住/异常/不达预期 结尾 → acli task/dialog get -k（qkv_task/qkv_dialog）
+//   · 告警型故障    ：标签以「告警」结尾               → acli alert get -k（qkv_alert）
+// keyword 是 acli <type> get -k 的检索词，须与本案例所属分类基线标签语义一致，否则查不到记录、信号恒为假。
+function qkvNatureLabel(tool: string): string {
+  if (tool === 'qkv_alert') return '（告警型故障 · 分类基线）'
+  if (tool === 'qkv_task' || tool === 'qkv_dialog') return '（任务失败型故障 · 分类基线）'
+  return ''
+}
+function qkvKeywordPlaceholder(tool: string): string {
+  if (tool === 'qkv_alert') return '告警型关键字，如 虚拟机CPU或内存占用过高告警、序列号过期告警'
+  if (tool === 'qkv_task') return '任务失败型关键字，如 虚拟机开机失败、虚拟机快照失败'
+  if (tool === 'qkv_dialog') return '任务失败型弹框关键字，如 虚拟机创建失败、磁盘替换失败'
+  return '关键字，取自分类基线，如 虚拟机开机失败 / …告警'
+}
+// 软校验：生产者类型 ↔ 关键字性质 是否疑似不匹配（仅报强信号，避免误报）
+function qkvKeywordMismatch(sig: SignalV2): boolean {
+  const tool = sigTool(sig)
+  const kw = String(sigArgs(sig).keyword || '')
+  if (!kw) return false
+  const hasAlert = kw.includes('告警')
+  const hasFailVerb = /(失败|卡住|不达预期)/.test(kw)
+  // 任务型工具却用了告警标签 → 应改 qkv_alert
+  if ((tool === 'qkv_task' || tool === 'qkv_dialog') && hasAlert && !hasFailVerb) return true
+  // 告警型工具却用了任务失败标签 → 应改 qkv_task/qkv_dialog
+  if (tool === 'qkv_alert' && hasFailVerb && !hasAlert) return true
+  return false
+}
+
 const editingSignalIndex = ref<number | null>(null)
 const signalEditDraft = ref<SignalV2>({
   acquire: { tool: '', args: {} },
@@ -1637,8 +1667,15 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (sigOrch(item.sig).produces || []).map((p: any) => p.name).join('、') || '—' }}</span></div>
                 </div>
                 <div v-else>
-                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" placeholder="关键字" /></div>
-                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft._v1_legacy.description" size="small" type="textarea" :rows="2" placeholder="信号说明" /></div>
+                  <div class="signal-row"><span class="signal-k">采集类型</span><span class="signal-v code">{{ sigTool(signalEditDraft) || 'qkv' }}</span><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
+                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
+                  <div v-if="sigTool(signalEditDraft) === 'qkv_alert'" class="field-hint">告警型关键字（acli alert get -k）：取自「分类基线 · 告警型故障」（标签以「告警」结尾），如 虚拟机CPU或内存占用过高告警、主机网口丢包告警、序列号过期告警。多个用逗号分隔</div>
+                  <div v-else-if="sigTool(signalEditDraft) === 'qkv_task'" class="field-hint">任务失败型关键字（acli task get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机开机失败、虚拟机快照失败、虚拟机scmt迁移失败。多个用逗号分隔</div>
+                  <div v-else-if="sigTool(signalEditDraft) === 'qkv_dialog'" class="field-hint">任务失败型弹框关键字（acli dialog get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机创建失败、磁盘替换失败、版本升级失败。多个用逗号分隔</div>
+                  <div v-else class="field-hint">前端采集匹配关键字（acli &lt;task|dialog|alert&gt; get -k）：取自「分类基线」标签。多个用逗号分隔</div>
+                  <div class="field-hint keyword-check" :class="{ 'is-warn': qkvKeywordMismatch(signalEditDraft) }">校验规则：关键字须与本案例「分类基线」标签语义一致——任务失败型（…失败/卡住/异常/不达预期）用 qkv_task/qkv_dialog；告警型（…告警）用 qkv_alert。类型选错会导致 acli 查不到记录、信号恒为假<template v-if="qkvKeywordMismatch(signalEditDraft)"> ⚠ 当前「{{ sigTool(signalEditDraft) }} + 该关键字」疑似类型不匹配，请复核</template></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft._v1_legacy.description" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
+                  <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                   <!-- 产出变量编辑（v2 orchestrate.produces） -->
                   <div class="signal-row">
                     <span class="signal-k">产出变量</span>
@@ -1651,6 +1688,7 @@ onMounted(() => {
                       <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', path: '' }]">+ 添加变量</el-button>
                     </div>
                   </div>
+                  <div class="field-hint" v-pre>抽取后写入变量池的变量名(name)与取值路径(path)，供下游消费者信号（QFK）通过 {{变量名}} 引用</div>
                 </div>
               </div>
             </div>
@@ -1711,11 +1749,16 @@ onMounted(() => {
                 <!-- 编辑模式 -->
                 <div v-else>
                   <!-- 共有字段 -->
-                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft._v1_legacy.instruction" size="small" placeholder="关键信号说明" /></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft._v1_legacy.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
+                  <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                   <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.target.scope" size="small" placeholder="{{HOST}} 或 cluster" /></div>
+                  <div class="field-hint" v-pre>采集目标主机，使用变量池占位符 {{HOST}}（由上游生产者信号产出）或固定值 cluster</div>
                   <div class="signal-row"><span class="signal-k">虚拟机</span><el-input v-model="signalEditDraft._v1_legacy.vm" size="small" placeholder="{{VM}}" /></div>
-                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="资源关键字，多个用逗号分隔" /></div>
+                  <div class="field-hint" v-pre>关联虚拟机，占位符 {{VM}}；非虚拟机场景可留空</div>
+                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="资源关键字，如 vgpu、asv-001" /></div>
+                  <div class="field-hint">资源/主题选择器：填精确的【资源名/标识符】（如 vgpu、asv-001），不是自然语言说明。信号说明请填到上方「说明」，勿填此处</div>
                   <div class="signal-row"><span class="signal-k">超时</span><el-input-number v-model="signalEditDraft.acquire.args.timeout" :min="1" :max="300" size="small" /> 秒</div>
+                  <div class="field-hint">命令/采集最大等待秒数，默认 10s</div>
                   <div class="signal-row"><span class="signal-k">期望</span>
                     <el-switch v-model="signalEditDraft.match.expected" :active-value="true" :inactive-value="false" active-text="存在" inactive-text="不存在" />
                   </div>
@@ -1726,11 +1769,14 @@ onMounted(() => {
                       <el-option label="not（均不出现）" value="not" />
                     </el-select>
                   </div>
+                  <div class="field-hint">多关键字/多模式组合逻辑：or 任一出现即命中，and 全部出现才命中，not 均不出现才命中</div>
 
                   <!-- 特有字段：qfk_log -->
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
-                    <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="日志文件名（必填）" /></div>
-                    <div class="signal-row"><span class="signal-k">结束时间</span><el-input v-model="signalEditDraft.acquire.args.end" size="small" placeholder="结束时间" /></div>
+                    <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="日志文件/来源，如 /var/log/messages、dmesg" /></div>
+                    <div class="field-hint">日志文件名或来源；支持路径，留空则按 resource 取默认日志。对应 acquire.args.file</div>
+                    <div class="signal-row"><span class="signal-k">结束时间</span><el-input v-model="signalEditDraft.acquire.args.end" size="small" placeholder="结束时间，如 now 或 2026-07-23T10:00" /></div>
+                    <div class="field-hint">采集截止时间窗（target.time_window），留空取最新</div>
                   </template>
 
                   <!-- 特有字段：qfk_system -->
@@ -1748,7 +1794,8 @@ onMounted(() => {
 
                   <!-- 特有字段：qfk_service -->
                   <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
-                    <div class="signal-row"><span class="signal-k">服务</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="服务名称（必填）" /></div>
+                    <div class="signal-row"><span class="signal-k">服务</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="服务名，如 asv、nginx、mgmt" /></div>
+                    <div class="field-hint">目标服务名/标识，填精确标识符（如 asv），不是自然语言说明</div>
                     <div class="signal-row"><span class="signal-k">动作</span>
                       <el-select v-model="signalEditDraft.acquire.args.sub_command" size="small">
                         <el-option label="status" value="status" />
@@ -1757,11 +1804,13 @@ onMounted(() => {
                         <el-option label="restart" value="restart" />
                       </el-select>
                     </div>
+                    <div class="field-hint">对服务执行的动作：status 查询；start/stop/restart 为写操作，需人工确认（review.require_human_confirm）</div>
                   </template>
 
                   <!-- 特有字段：qfk_vm/network/storage/hardware/platform -->
                   <template v-if="['qfk_vm', 'qfk_network', 'qfk_storage', 'qfk_hardware', 'qfk_platform'].includes(sigTool(signalEditDraft))">
-                    <div class="signal-row"><span class="signal-k">命令</span><el-input v-model="signalEditDraft.acquire.args.sub_command" size="small" placeholder="执行命令（必填）" /></div>
+                    <div class="signal-row"><span class="signal-k">命令</span><el-input v-model="signalEditDraft.acquire.args.sub_command" size="small" placeholder="子命令，如 list / show / get status" /></div>
+                    <div class="field-hint">acli 之后的子命令（如 list、show、get status）；命名空间由工具名（qfk_vm 等）隐含，勿含 acli 前缀</div>
                   </template>
                 </div>
               </div>
@@ -2426,5 +2475,26 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 关键信号字段注释说明（实例 + 规则），对齐 MatcherEditor 视觉 */
+.field-hint {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.4;
+  margin: 2px 0 6px 94px;
+}
+
+/* QKV 采集类型旁的「任务失败型/告警型」性质标注 */
+.signal-nature {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 8px;
+}
+
+/* 关键字 × 分类基线 软校验命中时高亮为告警色 */
+.field-hint.keyword-check.is-warn {
+  color: #e6a23c;
+  font-weight: 500;
 }
 </style>
