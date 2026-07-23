@@ -622,6 +622,12 @@ DESCRIPTION:
 8. source_section 只能取 title/problem_description/alert_info/steps_text（根因/解决方案不作为信号来源）；evidence 必须逐字引用输入中的原句，便于审计溯源。
 9. confidence 诚实自评（0-1）：证据清晰、采集器与变量明确→0.8+；记忆模糊、靠推测→0.4-0.6；不确定→更低。无法可靠映射为合法采集器的步骤，宁缺毋滥，不要硬造信号。
 10. id 顺序编号 sig_001、sig_002...；每条信号字段严格遵循上方结构，不得新增额外顶层字段（additionalProperties=false）。
+11. 说明(description) 与 关键字 的边界（高频易错点，务必遵守）：
+   - acquire.args.description＝信号语义说明：用自然语言描述"这个检查/采集是做什么的"（如「镜像文件占用检查」「第三方进程确认」），是人类可读的标题/说明，不是匹配条件。
+   - acquire.args.resource_keyword＝资源/主题选择器：精确的【资源名/标识符】（如 vgpu、asv-xxx），不是自然语言句子；若步骤只是"对镜像占用做检查"这类描述性短语，它属于 description，禁止塞进 resource_keyword。
+   - match.pattern＝匹配关键字/模式：backend 判定的精确匹配串（日志关键字、状态值等），同样不要把"检查说明"写进 match.pattern。
+   - 反例（禁止）：{{"tool":"qfk_storage","args":{{"resource_keyword":"镜像文件占用检查"}}}} ❌
+     正例（正确）：{{"tool":"qfk_storage","args":{{"sub_command":"list","resource_keyword":"<实际资源名>","description":"镜像文件占用检查"}}}}。
 
 # 输出示例（可直接套用，已对齐全 v2 契约与采集器字段）
 {{
@@ -650,6 +656,14 @@ DESCRIPTION:
       "orchestrate": {{"produces": [], "requires": ["VM"], "phase": "solution", "action": "restart"}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "重启虚拟机服务以恢复", "confidence": 0.7}},
       "review": {{"require_human_confirm": true, "notes": "写操作：重启服务，需人工授权"}}
+    }},
+    {{
+      "id": "sig_004",
+      "acquire": {{"tool": "qfk_storage", "args": {{"sub_command": "list", "description": "镜像文件占用检查"}}}},
+      "match": {{"type": "keyword", "pattern": "镜像占用", "mode": "any", "expected": true}},
+      "orchestrate": {{"produces": [], "requires": ["HOST"]}},
+      "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "检查镜像文件占用情况", "confidence": 0.8}},
+      "review": {{"require_human_confirm": false, "notes": ""}}
     }}
   ]
 }}$TEMPLATE$,

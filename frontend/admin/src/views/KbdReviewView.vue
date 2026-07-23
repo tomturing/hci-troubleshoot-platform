@@ -51,7 +51,6 @@ interface SignalV2 {
   orchestrate: Record<string, any>
   provenance?: Record<string, any>
   review?: { require_human_confirm?: boolean }
-  _v1_legacy: Record<string, any>
 }
 interface SignalsDoc {
   schema_version: number
@@ -616,11 +615,9 @@ async function openDetailDialog(entry: KbdEntry) {
 // ──────────────────────────────────────────────────────────────────────────────
 // 关键信号面板（signals_json）：基于 v2 文档直接渲染/编辑（RFC §7 前端原生读 v2 对象化）
 // ──────────────────────────────────────────────────────────────────────────────
-// v2 原生读取辅助：直接从 v2 结构各段取值，不拍平/不更名（_v1_legacy 是 v2 文档的正式段，
-// 用于无损保留 v1 未归位字段，如 description/instruction/command/service/vm）。
+// v2 原生读取辅助：直接从 v2 结构各段取值，不拍平/不更名。
 function sigTool(sig: SignalV2): string { return sig.acquire?.tool || '' }
 function sigArgs(sig: SignalV2): Record<string, any> { return sig.acquire?.args || {} }
-function sigLeg(sig: SignalV2): Record<string, any> { return sig._v1_legacy || {} }
 function sigMatch(sig: SignalV2): Record<string, any> { return sig.match || {} }
 function sigOrch(sig: SignalV2): Record<string, any> { return sig.orchestrate || {} }
 function isBackendSig(sig: SignalV2): boolean {
@@ -672,7 +669,6 @@ const signalEditDraft = ref<SignalV2>({
   acquire: { tool: '', args: {} },
   match: { type: 'keyword', pattern: '', mode: 'or', expected: true },
   orchestrate: {},
-  _v1_legacy: {},
 })
 const signalSaveLoading = ref(false)
 
@@ -687,7 +683,6 @@ function startEditSignal(origIdx: number) {
   draft.acquire.args.target = draft.acquire.args.target || {}
   draft.match = draft.match || { type: 'keyword', pattern: '', mode: 'or', expected: true }
   draft.orchestrate = draft.orchestrate || {}
-  draft._v1_legacy = draft._v1_legacy || {}
   signalEditDraft.value = draft
 }
 
@@ -697,7 +692,6 @@ function cancelEditSignal() {
     acquire: { tool: '', args: {} },
     match: { type: 'keyword', pattern: '', mode: 'or', expected: true },
     orchestrate: {},
-    _v1_legacy: {},
   }
 }
 
@@ -1663,7 +1657,7 @@ onMounted(() => {
               <div class="signal-card-body">
                 <div v-if="editingSignalIndex !== item.origIdx">
                   <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigArgs(item.sig).keyword || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigLeg(item.sig).description || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).description || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (sigOrch(item.sig).produces || []).map((p: any) => p.name).join('、') || '—' }}</span></div>
                 </div>
                 <div v-else>
@@ -1674,7 +1668,7 @@ onMounted(() => {
                   <div v-else-if="sigTool(signalEditDraft) === 'qkv_dialog'" class="field-hint">任务失败型弹框关键字（acli dialog get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机创建失败、磁盘替换失败、版本升级失败。多个用逗号分隔</div>
                   <div v-else class="field-hint">前端采集匹配关键字（acli &lt;task|dialog|alert&gt; get -k）：取自「分类基线」标签。多个用逗号分隔</div>
                   <div class="field-hint keyword-check" :class="{ 'is-warn': qkvKeywordMismatch(signalEditDraft) }">校验规则：关键字须与本案例「分类基线」标签语义一致——任务失败型（…失败/卡住/异常/不达预期）用 qkv_task/qkv_dialog；告警型（…告警）用 qkv_alert。类型选错会导致 acli 查不到记录、信号恒为假<template v-if="qkvKeywordMismatch(signalEditDraft)"> ⚠ 当前「{{ sigTool(signalEditDraft) }} + 该关键字」疑似类型不匹配，请复核</template></div>
-                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft._v1_legacy.description" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.description" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                   <!-- 产出变量编辑（v2 orchestrate.produces） -->
                   <div class="signal-row">
@@ -1714,9 +1708,9 @@ onMounted(() => {
                 <!-- 展示模式 -->
                 <div v-if="editingSignalIndex !== item.origIdx">
                   <!-- 共有字段 -->
-                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigLeg(item.sig).instruction || sigLeg(item.sig).description || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).description || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">主机</span><span class="signal-v code">{{ sigArgs(item.sig).target?.scope || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">虚拟机</span><span class="signal-v code">{{ sigLeg(item.sig).vm || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">需求变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigArgs(item.sig).resource_keyword || sigArgs(item.sig).keyword || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">超时</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 10 }}s</span></div>
                   <div class="signal-row"><span class="signal-k">期望</span><span class="signal-v">{{ sigMatch(item.sig).expected === true ? '存在' : sigMatch(item.sig).expected === false ? '不存在' : '—' }}</span></div>
@@ -1749,12 +1743,22 @@ onMounted(() => {
                 <!-- 编辑模式 -->
                 <div v-else>
                   <!-- 共有字段 -->
-                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft._v1_legacy.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.description" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                   <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.target.scope" size="small" placeholder="{{HOST}} 或 cluster" /></div>
                   <div class="field-hint" v-pre>采集目标主机，使用变量池占位符 {{HOST}}（由上游生产者信号产出）或固定值 cluster</div>
-                  <div class="signal-row"><span class="signal-k">虚拟机</span><el-input v-model="signalEditDraft._v1_legacy.vm" size="small" placeholder="{{VM}}" /></div>
-                  <div class="field-hint" v-pre>关联虚拟机，占位符 {{VM}}；非虚拟机场景可留空</div>
+                  <!-- 需求变量编辑（v2 orchestrate.requires，字符串数组） -->
+                  <div class="signal-row">
+                    <span class="signal-k">需求变量</span>
+                    <div class="produces-editor-mini">
+                      <div v-for="(r, idx) in (signalEditDraft.orchestrate.requires || [])" :key="idx" class="produce-item-mini">
+                        <el-input v-model="signalEditDraft.orchestrate.requires[idx]" size="small" placeholder="变量名，如 VM、HOST" style="flex: 1" />
+                        <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.requires?.splice(idx, 1)">删除</el-button>
+                      </div>
+                      <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.requires = [...(signalEditDraft.orchestrate.requires || []), '']">+ 添加变量</el-button>
+                    </div>
+                  </div>
+                  <div class="field-hint" v-pre>本信号执行所依赖的变量（由上游生产者信号产出），变量名须与「产出变量」的 name 对应，采集/匹配中用 {{变量名}} 引用</div>
                   <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="资源关键字，如 vgpu、asv-001" /></div>
                   <div class="field-hint">资源/主题选择器：填精确的【资源名/标识符】（如 vgpu、asv-001），不是自然语言说明。信号说明请填到上方「说明」，勿填此处</div>
                   <div class="signal-row"><span class="signal-k">超时</span><el-input-number v-model="signalEditDraft.acquire.args.timeout" :min="1" :max="300" size="small" /> 秒</div>
