@@ -169,6 +169,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "confidence": {"type": ["number", "integer"]},
                     "risk": {"type": ["integer", "number"]},
                     "needs_review": {"type": "boolean"},
+                    "evidence": {"type": "string"},
                 },
             },
             "review": {
@@ -177,6 +178,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                 "additionalProperties": False,
                 "properties": {
                     "require_human_confirm": {"type": "boolean"},
+                    "notes": {"type": "string"},
                 },
             },
         },

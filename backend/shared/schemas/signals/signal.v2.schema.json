@@ -397,6 +397,9 @@
         },
         "needs_review": {
           "type": "boolean"
+        },
+        "evidence": {
+          "type": "string"
         }
       }
     },
@@ -409,6 +412,9 @@
       "properties": {
         "require_human_confirm": {
           "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
         }
       }
     }

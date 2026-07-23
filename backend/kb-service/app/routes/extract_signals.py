@@ -28,7 +28,6 @@ from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import validate_acquire_args
-from shared.schemas.signal_migration import migrate_signal_document
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
 
@@ -50,7 +49,9 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("EXTRACT_SIGNALS_MODEL", os.environ.get("CLASSIFY_MODEL", "qwen3.7-plus"))
 
 # Prompt 名称（system_prompt 表热加载，admin-ui 可在线编辑）
-_EXTRACT_PROMPT_NAME = "kbd_extract_signals_v1"
+# 2026-07-23：升级为 kbd_extract_signals_v2 —— LLM 直接产出 v2 嵌套结构，
+# 移除「v1 扁平 → migrate → v2」的中间归约环节（链路质效提升，详见 PR 说明）。
+_EXTRACT_PROMPT_NAME = "kbd_extract_signals_v2"
 
 # ─── 封闭采集器词表（acquirer 必须取自此处）─────────────────────────────────
 # QKV（生产者，3 方法）+ QFK（消费者，8 个 namespace）
@@ -101,8 +102,8 @@ _PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}")
 # 用于检测"任何双花括号占位符"（含非法大小写）以报错
 _ANY_PLACEHOLDER_RE = re.compile(r"\{\{([^}]*)\}\}")
 
-# 字段级溯源：抽取方法标识（写入每条信号的 extraction_method）
-EXTRACTION_METHOD = "llm_field_level_v1"
+# 字段级溯源：抽取方法标识（写入每条信号的 provenance.method）
+EXTRACTION_METHOD = "llm_field_level_v2"
 # 低置信阈值：校准后置信度低于此值标 needs_review（镜像 classify 的 low_confidence，§3）
 NEEDS_REVIEW_CONFIDENCE_THRESHOLD = 0.5
 
@@ -163,18 +164,36 @@ _DESTRUCTIVE_SUB_COMMANDS: set[str] = {
 }
 
 
+def _read_signal_fields(signal: dict[str, Any]) -> tuple[str, dict, str, list, list, Any, dict]:
+    """从 v2 嵌套信号统一读取结构化字段（单一真相源）。
+
+    v1 扁平中间态（signal_category/acquirer/acquirer_args/matcher/produces/requires
+    顶层字段）已彻底下线，本函数只读取 v2 契约的 acquire/orchestrate/provenance/match 段。
+    返回 ``(tool, args, category, produces, requires, matcher, provenance)``。
+    """
+    acquire = signal.get("acquire") or {}
+    tool = acquire.get("tool", "")
+    args = acquire.get("args") or {}
+    provenance = signal.get("provenance") or {}
+    orchestrate = signal.get("orchestrate") or {}
+    cat = provenance.get("category")
+    if cat is None:
+        cat = "backend" if str(tool).startswith("qfk_") else "frontend"
+    produces = orchestrate.get("produces") or []
+    requires = orchestrate.get("requires") or []
+    matcher = signal.get("match") or None
+    return tool, args, cat, produces, requires, matcher, provenance
+
+
 def _is_write_op_signal(signal: dict[str, Any]) -> bool:
-    """判断一条后端信号是否为写操作/处置动作（基于 acquirer + sub_command 词表）。
+    """判断一条后端信号是否为写操作/处置动作（基于 acquire.tool + sub_command 词表）。
 
     仅 backend（qfk_*）信号可能携带写操作；前端生产者（qkv_*）均为只读查询。
     sub_command 形如 'kill -9 240132' / 'ps auxf' / 'start'，按空白与 | / 切词后命中词表即判写操作。
     """
-    if signal.get("signal_category") != "backend":
+    tool, args, cat, _, _, _, _ = _read_signal_fields(signal)
+    if cat != "backend" or not str(tool).startswith("qfk_"):
         return False
-    acquirer = signal.get("acquirer", "")
-    if not acquirer.startswith("qfk_"):
-        return False
-    args = signal.get("acquirer_args") or {}
     sub = str(args.get("sub_command", "") or "")
     tokens = re.split(r"[\s|/]+", sub.strip())
     return any(tok in WRITE_OP_SUB_COMMANDS for tok in tokens)
@@ -182,7 +201,7 @@ def _is_write_op_signal(signal: dict[str, Any]) -> bool:
 
 def _write_op_risk(signal: dict[str, Any]) -> int:
     """写操作信号的风险等级：破坏性子命令=3(block)，其余写操作=2(confirm)。"""
-    args = signal.get("acquirer_args") or {}
+    _, args, _, _, _, _, _ = _read_signal_fields(signal)
     sub = str(args.get("sub_command", "") or "").lower()
     tokens = set(re.split(r"[\s|/]+", sub))
     if tokens & _DESTRUCTIVE_SUB_COMMANDS:
@@ -196,23 +215,25 @@ def _signal_quality_score(signal: dict[str, Any]) -> float:
     经过 _validate_signal 的信号已保证占位符大写、requires 在 schema 内，
     故此处仅对"判定/产出契约完整性"打分，作为置信度校准的结构质量因子。
     """
+    _, _, cat, produces, requires, matcher, _ = _read_signal_fields(signal)
     score = 0.3  # 占位符大写 + 变量合法性基础分（已校验通过）
-    if signal.get("signal_category") == "backend":
-        score += 0.3 if signal.get("requires") else 0.3  # backend 允许无 requires
-        score += 0.4 if signal.get("matcher") else 0.0
+    if cat == "backend":
+        score += 0.3 if requires else 0.3  # backend 允许无 requires
+        score += 0.4 if matcher else 0.0
     else:  # frontend
-        score += 0.3 if signal.get("requires") else 0.3
-        score += 0.4 if signal.get("produces") else 0.0
+        score += 0.3 if requires else 0.3
+        score += 0.4 if produces else 0.0
     return min(1.0, score)
 
 
 def _infer_source(signal: dict[str, Any]) -> str:
-    """字段级溯源：推断信号主要来自哪个输入章节（source）。
+    """字段级溯源：推断信号主要来自哪个输入章节（provenance.source_section）。
 
     治本约束：信号只能来自诊断叙事字段（标题/问题描述/告警/有效排查步骤）；
     根因与解决方案不再作为信号来源，故一律回退到 steps_text。
     """
-    ss = (signal.get("source_section") or "").strip()
+    prov = signal.get("provenance") or {}
+    ss = (prov.get("source_section") or "").strip()
     if ss in _VALID_SOURCE_SECTIONS:
         return ss
     return "steps_text"
@@ -222,10 +243,11 @@ def _calibrate_confidence(signal: dict[str, Any], quality: float) -> float:
     """字段级置信度校准（基于信号质量与证据充分性）。
 
     校准 = base × (0.5·结构质量 + 0.5·证据充分性)，并钳制到 [0.05, 0.99]。
-    - base：LLM 自评估 confidence（0-1），缺失时取默认 0.7
-    - 证据充分性：backend 必须有 matcher、frontend 必须有 produces，否则降级
+    - base：LLM 自评估 confidence（v2 取自 provenance.confidence，遗留取顶层 confidence），缺失取 0.7
+    - 证据充分性：backend 必须有 match、frontend 必须有 produces，否则降级
     """
-    llm_conf = signal.get("confidence")
+    prov = signal.get("provenance") or {}
+    llm_conf = prov.get("confidence")
     try:
         llm_conf = float(llm_conf) if llm_conf is not None else None
     except (TypeError, ValueError):
@@ -233,47 +255,67 @@ def _calibrate_confidence(signal: dict[str, Any], quality: float) -> float:
     if llm_conf is None or not (0.0 <= llm_conf <= 1.0):
         llm_conf = 0.7
 
-    if signal.get("signal_category") == "backend":
-        evidence = 1.0 if signal.get("matcher") else 0.3
+    _, _, cat, produces, requires, matcher, _ = _read_signal_fields(signal)
+    if cat == "backend":
+        evidence = 1.0 if matcher else 0.3
     else:
-        evidence = 1.0 if signal.get("produces") else 0.4
+        evidence = 1.0 if produces else 0.4
 
     calibrated = llm_conf * (0.5 * quality + 0.5 * evidence)
     return round(max(0.05, min(0.99, calibrated)), 3)
 
 
 def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
-    """为单条信号补充字段级溯源与置信度校准（不改变既有字段）。
+    """为单条 v2 信号补充字段级溯源与置信度校准，全部写入 v2 段（不产生顶层冗余字段）。
 
-    新增字段（对齐评审清单）：
-    - source: 主要来源章节（字段级溯源）
-    - extraction_method: 抽取方法标识（固定为 llm_field_level_v1）
-    - confidence: 校准后置信度(0-1)
-    - phase: diagnostic(诊断只读) / solution(处置动作)
-    - require_human_confirm: 是否必须人工授权后才可执行
-    - risk: 风险等级 1/2/3（供执行层门禁与分类器兜底）
+    写入目标（均落于 v2 契约允许字段，保证保存时 validate_signals_json 通过）：
+    - provenance.method: 抽取方法标识（固定 llm_field_level_v2）
+    - provenance.source_section: 主要来源章节（字段级溯源）
+    - provenance.confidence: 校准后置信度(0-1)
+    - provenance.needs_review: 低置信/歧义标 needs_review
+    - provenance.category: 角色（frontend/backend，缺失时按 tool 派生）
+    - provenance.risk: 风险等级 1/2/3
+    - review.require_human_confirm: 是否必须人工授权后才可执行
+    - orchestrate.phase: diagnostic(诊断只读) / solution(处置动作)
     """
     quality = _signal_quality_score(signal)
-    enriched = dict(signal)
-    enriched["extraction_method"] = EXTRACTION_METHOD
-    enriched["source"] = _infer_source(signal)
-    enriched["confidence"] = _calibrate_confidence(signal, quality)
+    acquire = signal.setdefault("acquire", {})
+    tool = acquire.get("tool", "")
+    provenance = signal.setdefault("provenance", {})
+    orchestrate = signal.setdefault("orchestrate", {})
+    review = signal.setdefault("review", {})
+
+    # category 派生补齐（v2 契约要求枚举值）
+    cat = provenance.get("category") or ("backend" if str(tool).startswith("qfk_") else "frontend")
+    provenance["category"] = cat
+
+    # 字段级溯源
+    provenance["method"] = EXTRACTION_METHOD
+    provenance["source_section"] = _infer_source(signal)
+
+    # 置信度校准
+    provenance["confidence"] = _calibrate_confidence(signal, quality)
+
     # 低置信/歧义信号标 needs_review（镜像 classify 的 low_confidence，§3）
-    enriched["needs_review"] = enriched["confidence"] < NEEDS_REVIEW_CONFIDENCE_THRESHOLD
+    needs_review = provenance["confidence"] < NEEDS_REVIEW_CONFIDENCE_THRESHOLD
+    provenance["needs_review"] = needs_review
 
     # 写操作/处置动作信号：标记为人⼯授权，绝不自动执行（诊断只读原则）
-    if enriched.get("require_human_confirm"):
-        enriched["phase"] = enriched.get("phase", "solution")
-        enriched["risk"] = enriched.get("risk", 2)
-    elif _is_write_op_signal(enriched):
-        enriched["phase"] = "solution"
-        enriched["require_human_confirm"] = True
-        enriched["risk"] = _write_op_risk(enriched)
+    if review.get("require_human_confirm"):
+        orchestrate["phase"] = orchestrate.get("phase", "solution")
+        provenance["risk"] = provenance.get("risk", 2)
+    elif _is_write_op_signal(signal):
+        orchestrate["phase"] = "solution"
+        review["require_human_confirm"] = True
+        provenance["risk"] = _write_op_risk(signal)
     else:
-        enriched["phase"] = "diagnostic"
-        enriched["require_human_confirm"] = False
-        enriched["risk"] = 1
-    return enriched
+        orchestrate["phase"] = orchestrate.get("phase", "diagnostic")
+        review.setdefault("require_human_confirm", False)
+        provenance["risk"] = provenance.get("risk", 1)
+
+    if "id" not in signal:
+        signal["id"] = "sig_001"
+    return signal
 
 
 def set_dependencies(db: DatabaseManager) -> None:
@@ -310,58 +352,62 @@ def validate_placeholder_case(template_str: str) -> list[str]:
 
 
 def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[bool, str | None]:
-    """校验单条信号：类别/acquirer/占位符/变量引用合法性。
+    """校验单条 v2 嵌套信号。
 
-    写操作拦截：对 backend（qfk_*）信号，若 sub_command 命中写操作词表，则就地标记
-    phase=solution / require_human_confirm=True / risk，使其被排除在自动执行之外，
-    交由人工授权（不丢弃——写操作可能是排查步骤里确实需要人确认的动作）。
+    写操作拦截：对 backend（qfk_*）信号，若 acquire.args.sub_command 命中写操作词表，
+    则就地标记 review.require_human_confirm=True / orchestrate.phase=solution / provenance.risk，
+    使其被排除在自动执行之外，交由人工授权。
+    v1 扁平格式（acquirer/acquirer_args/signal_category/matcher 顶层字段）已彻底下线，
+    缺失 acquire 段的信号将被直接拒绝（不再经 migrate 兜底归一）。
     """
-    cat = signal.get("signal_category")
+    acquire = signal.get("acquire") or {}
+    tool = acquire.get("tool")
+    if not tool:
+        return False, "信号缺少 acquire.tool 段"
+    if tool not in ACQUIRER_CATALOG:
+        return False, f"acquire.tool 不在采集器词表内: {tool}"
+
+    # ── v2 契约校验（RFC §4.4 / §6.1）：acquire.args 机器强制门禁 ──
+    args = acquire.get("args") or {}
+    ok, err = validate_acquire_args(tool, args)
+    if not ok:
+        return False, f"acquire.args 校验失败: {err}"
+
+    # category
+    prov = signal.get("provenance") or {}
+    cat = prov.get("category")
+    if cat is None:
+        cat = "backend" if str(tool).startswith("qfk_") else "frontend"
     if cat not in VALID_CATEGORIES:
-        return False, f"signal_category 非法: {cat}"
+        return False, f"provenance.category 非法: {cat}"
 
-    acquirer = signal.get("acquirer", "")
-    if acquirer not in ACQUIRER_CATALOG:
-        return False, f"acquirer 不在采集器词表内: {acquirer}"
+    # 占位符大写校验（acquire.args）
+    try:
+        _validate_obj_placeholders(args)
+    except ValueError as e:
+        return False, str(e)
 
-    # ── v2 契约校验（RFC §4.4 / §6.1）：仅当信号已采用 acquire 段时强制 ──
-    # 旧版扁平信号（acquirer_args/matcher）暂不校验，保证 Phase 0/1 双写期零破坏；
-    # Phase 1 抽取改为写 acquire 段后，此校验自动生效为机器强制门禁。
-    acquire = signal.get("acquire")
-    if isinstance(acquire, dict):
-        tool = acquire.get("tool")
-        ok, err = validate_acquire_args(tool, acquire.get("args", {}))
-        if not ok:
-            return False, f"acquire.args 校验失败: {err}"
-
-    for field in ("acquirer_args", "matcher"):
-        val = signal.get(field)
-        if val is None:
-            continue
-        try:
-            _validate_obj_placeholders(val)
-        except ValueError as e:
-            return False, str(e)
-
-    for p in signal.get("produces") or []:
+    # produces/requires 变量命名与可见性（均取自 v2 orchestrate 段）
+    orchestrate = signal.get("orchestrate") or {}
+    produces = orchestrate.get("produces") or []
+    requires = orchestrate.get("requires") or []
+    for p in produces:
         name = p.get("name", "")
         if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
             return False, f"produces 变量名非全大写: {name}"
-
-    for r in signal.get("requires") or []:
+    for r in requires:
         if r not in available_vars:
             return False, f"requires 变量不在 schema 内: {r}"
 
+    # backend 必须有 match；写操作拦截
+    matcher = signal.get("match")
     if cat == "backend":
-        matcher = signal.get("matcher") or {}
-        if matcher.get("type") not in VALID_MATCHER_TYPES:
-            return False, f"backend 信号 matcher.type 非法或缺失: {matcher.get('type')}"
-        # 写操作/处置动作拦截（全面梳理 qfk_vm/qfk_system/... 的写子命令）
+        if not isinstance(matcher, dict) or matcher.get("type") not in VALID_MATCHER_TYPES:
+            return False, f"backend 信号 match.type 非法或缺失: {matcher.get('type') if isinstance(matcher, dict) else None}"
         if _is_write_op_signal(signal):
-            signal["phase"] = "solution"
-            signal["require_human_confirm"] = True
-            signal["risk"] = _write_op_risk(signal)
-
+            signal.setdefault("review", {})["require_human_confirm"] = True
+            signal.setdefault("orchestrate", {})["phase"] = "solution"
+            signal.setdefault("provenance", {})["risk"] = _write_op_risk(signal)
     return True, None
 
 
@@ -407,7 +453,11 @@ async def _call_llm(prompt: str) -> dict[str, Any]:
 
 
 def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[list, list]:
-    """对 LLM 返回的信号列表做校验，返回 (validated, rejected)。
+    """对 LLM 返回的 v2 信号列表做校验，返回 (validated, rejected)。
+
+    v2 直出：LLM 直接产出 v2 嵌套结构，链路全程以 v2 契约处理。
+    v1 扁平格式（含 signal_category 而无 acquire 段）已彻底下线，此类输入将被直接
+    拒绝（不再经 migrate_signal_document 兜底归一）。
 
     Args:
         raw_signals: LLM 返回的 signal dict 列表
@@ -415,17 +465,25 @@ def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[li
     """
     available_vars = set(DEFAULT_VARIABLE_SCHEMA)
     for s in raw_signals:
-        for p in s.get("produces") or []:
-            name = p.get("name", "")
-            if re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
-                available_vars.add(name)
+        if isinstance(s, dict):
+            orch = s.get("orchestrate") or {}
+            for p in orch.get("produces") or []:
+                name = p.get("name", "")
+                if re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+                    available_vars.add(name)
 
     validated: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     for s in raw_signals:
+        if not isinstance(s, dict):
+            rejected.append({"signal": s, "reason": "信号非对象"})
+            continue
+        if "acquire" not in s:
+            rejected.append({"signal": s, "reason": "信号缺少 acquire 段（v1 扁平格式已不再支持）"})
+            continue
         ok, err = _validate_signal(s, available_vars)
         if ok:
-            # 字段级溯源 + 置信度校准（评审清单：source/extraction_method/confidence）
+            # 字段级溯源 + 置信度校准（写入 v2 段：provenance.* / review.* / orchestrate.*）
             validated.append(_enrich_signal(s))
         else:
             rejected.append({"signal": s, "reason": err})
@@ -435,18 +493,12 @@ def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[li
 
 
 def _signals_to_v2(signals: list[dict[str, Any]]) -> dict[str, Any]:
-    """扁平 v1 list → 嵌套 v2 文档 {schema_version, signals}（直接切 v2 列形态，RFC §7）。
+    """持久化为 v2 数组级文档（RFC §7）：{schema_version, signals}。
 
-    转换同时激活 acquire.args 契约校验（RFC §4.4 / §6.1）：逐条校验，失败仅告警
-    （不阻断落库，避免抽取流水线因个别字段瑕疵整体失败；缺陷在审计/CI 中暴露）。
+    v2 直出路径下，signals 已是通过 _validate_signal 校验、并经 _enrich_signal 写入
+    v2 衍生段（provenance/review/orchestrate）的嵌套结构，无需再做 migrate 兜底归一。
     """
-    doc = migrate_signal_document(signals)
-    for s in doc.get("signals", []):
-        acquire = s.get("acquire") or {}
-        ok, err = validate_acquire_args(acquire.get("tool"), acquire.get("args", {}))
-        if not ok:
-            logger.warning("acquire.args 契约校验未通过（仍落库 v2，待修正）: %s", err)
-    return doc
+    return {"schema_version": 2, "signals": signals}
 
 
 async def _persist_signals(
@@ -454,8 +506,8 @@ async def _persist_signals(
 ) -> None:
     """通用写回：signals_json 列。table ∈ {'kbd_entry', 'sop_document'}。
 
-    持久化形态直接切到 v2 数组级文档（RFC §7）：扁平 list → {schema_version, signals}；
-    抽取流水线内部仍用扁平 v1 处理，仅在落库前经 `_signals_to_v2` 归约为 v2。
+    持久化形态为 v2 数组级文档（RFC §7）：{schema_version, signals}。
+    LLM 已直出 v2，抽取链路全程以 v2 契约处理；`_signals_to_v2` 直接包装 v2 文档。
     """
     doc = _signals_to_v2(signals)
     async with db_manager.async_session_factory() as session:
