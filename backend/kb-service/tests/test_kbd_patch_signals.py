@@ -47,10 +47,12 @@ async def test_update_kbd_entry_signals_json_sql_cast():
 
     assert response.status_code == 200
 
-    # 保存时统一归约为 v2 数组级对象（RFC §7），并以 ::jsonb 落库
+    # 保存时统一归约为 v2 数组级对象（RFC §7），并以 CAST(... AS jsonb) 落库
     executed_call = mock_session.execute.call_args
     sql_text = str(executed_call[0][0])
-    assert ":signals_json::jsonb" in sql_text
+    assert "CAST(:signals_json AS jsonb)" in sql_text
+    # 关键：落库 SQL 不得残留 ':signals_json' 字面量（否则会被 PG 报语法错误 500）
+    assert ":signals_json::jsonb" not in sql_text
     # 落库内容应为经 migrate_signal_document 归约后的 v2 文档（含 acquire 嵌套对象）
     import json
 
@@ -117,3 +119,35 @@ async def test_update_kbd_entry_qfk_keyword_alias_normalized():
     stored_args = stored_doc["signals"][0]["acquire"]["args"]
     assert stored_args.get("resource_keyword") == "镜像文件占用检查"
     assert "keyword" not in stored_args
+
+
+@pytest.mark.anyio
+async def test_update_kbd_entry_signals_json_sql_bind_compiles():
+    """回归（根因级，挡住 PR#599 修复被 PR#601 回退）：
+
+    落库 SQL 若写成 'signals_json = :signals_json::jsonb'，其中 ':signals_json'
+    紧跟 '::'，SQLAlchemy 命名绑定正则(负向预查 (?!:))不将其识别为绑定参数，
+    会把 ':signals_json' 字面量发给 Postgres → 'syntax error at or near ":"' (500)，
+    前端统一弹「保存失败，请重试」。
+
+    本用例用 PG 方言编译真实落库 SQL，断言命名绑定被正确编译为参数占位符
+    ($N / %(name)s)，而非残留 ':signals_json' 字面量。一旦有人把 CAST(...) 改回
+    '::jsonb' 写法，本测试立即失败。
+    """
+    from sqlalchemy import text
+    from sqlalchemy.dialects import postgresql
+
+    # 复刻 update_kbd_entry 的落库 SQL（含 id 绑定）
+    sql = text(
+        "UPDATE kbd_entry SET signals_json = CAST(:signals_json AS jsonb) "
+        "WHERE id = :id"
+    )
+    compiled = str(sql.compile(dialect=postgresql.dialect()))
+
+    # 关键断言：不得残留 ':signals_json' 字面量（BUG 写法会残留并被 PG 拒绝）
+    assert ":signals_json" not in compiled, (
+        f"命名绑定未被识别为参数，SQL 残留字面量 ':signals_json'（将触发 PG 语法错误 500）: {compiled}"
+    )
+    # 同时确认两个命名绑定都被编译成了参数占位符
+    assert "signals_json" in sql.compile(dialect=postgresql.dialect()).params or "%(signals_json)s" in compiled or "$1" in compiled
+    assert "id" in sql.compile(dialect=postgresql.dialect()).params or "%(id)s" in compiled or "$2" in compiled
