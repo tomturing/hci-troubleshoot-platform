@@ -161,23 +161,36 @@ async def call_llm(prompt: str) -> dict:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,  # 确保输出确定性
-            max_tokens=500,
+            max_tokens=8192,
             response_format={"type": "json_object"},
             extra_body={"enable_thinking": LLM_ENABLE_THINKING},
         )
-
-        content = response.choices[0].message.content
+        content = (response.choices[0].message.content or "").strip()
         logger.debug(f"LLM 响应: {content}")
-
-        return json.loads(content)
-
-    except json.JSONDecodeError as e:
-        logger.error(f"LLM 响应 JSON 解析失败: {e}")
-        raise HTTPException(status_code=500, detail="LLM 响应格式错误")
-
     except Exception as e:
         logger.error(f"LLM API 调用失败: {e}")
         raise HTTPException(status_code=503, detail=f"LLM API 调用失败: {e}")
+
+    # 防御：推理模型（glm-5.2 / deepseek-v4-flash）开启思维链时会先耗尽 token 预算，
+    # 导致 message.content 为空、json.loads("") 报「LLM 响应格式错误」。
+    # 该分支在 try 之外，避免被上方 except Exception 吞掉后误报 503。
+    if not content:
+        finish_reason = getattr(response.choices[0], "finish_reason", None)
+        logger.error(
+            "classify LLM 未返回 JSON 正文: finish_reason=%s model=%s",
+            finish_reason,
+            LLM_MODEL,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM 未返回有效 JSON 内容（finish_reason={finish_reason}，可能因思维链耗尽 token 预算）",
+        )
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.error(f"LLM 响应 JSON 解析失败: {e}")
+        raise HTTPException(status_code=500, detail="LLM 响应格式错误")
 
 
 def validate_category_id(category_id: str, valid_codes: set[str]) -> bool:
