@@ -9,6 +9,10 @@
       "type": "string",
       "description": "acli system <sub_command>（如 lsof/ps auxf/lsblk/iostat/smartctl）"
     },
+    "resource_keyword": {
+      "type": "string",
+      "description": "系统检查资源/主题选择器（可选，如镜像层路径 overlay2/docker）；说明性文本会被兜底迁移至 description，故与兄弟 qfk_* 工具保持字段一致，避免被 strict schema 拒绝"
+    },
     "container": {
       "type": "string",
       "default": "asv-con",

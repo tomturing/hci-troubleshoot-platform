@@ -184,6 +184,33 @@ def migrate_signal_document(raw: Any) -> dict[str, Any]:
     return {"schema_version": SIGNAL_SCHEMA_VERSION, "signals": migrated}
 
 
+def normalize_qfk_keyword_alias(sig: dict[str, Any]) -> None:
+    """写边界 / 读边界别名归一（v1 历史字段消歧，RFC §4.4.4）：
+
+    将 QFK 信号的 ``acquire.args.keyword``（v1 历史别名，资源/主题选择器）原地归并为
+    ``resource_keyword``（v2 契约字段）。QKV 信号的 ``keyword`` 是采集关键词权威字段，
+    保持不变。
+
+    幂等：无 ``keyword`` 则跳过；``resource_keyword`` 已存在（含非空）则保留旧值、丢弃
+    ``keyword``，避免覆盖。
+
+    调用点：
+    - 写边界 ``update_kbd_entry``（保存前）：无论数据来自前端回写还是存量「半残 v2」
+      （PR 修复前抽取、args 带 ``keyword``），均归一为契约字段，避免 §6.1
+      ``additionalProperties:false`` 校验 422（KBD 详情页「保存失败，请重试」根因）。
+    - 读边界 ``_signals_for_response``（GET 出口）：使前端编辑框（绑定 ``resource_keyword``）
+      正确显示历史 ``keyword`` 值，消除显示错位且不丢数据。
+    """
+    if not isinstance(sig, dict):
+        return
+    acquire = sig.get("acquire") or {}
+    if acquire.get("tool") not in _BACKEND_TOOLS:
+        return
+    args = acquire.get("args") or {}
+    if "keyword" in args:
+        args["resource_keyword"] = args.get("resource_keyword") or args.pop("keyword")
+
+
 def unwrap_signals(raw: Any) -> list[dict[str, Any]]:
     """统一解包：无论 signals_json 是 v2 对象 {schema_version, signals} 还是扁平 list，
     都返回信号 dict 列表。供所有读取方（agent/admin/前端）在边界处一次性归一。"""
