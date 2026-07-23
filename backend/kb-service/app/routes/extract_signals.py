@@ -280,20 +280,52 @@ def _looks_descriptive(text: Any) -> bool:
 
 
 def _clean_signal_description(signal: dict[str, Any]) -> None:
-    """兜底纠错（就地修改）：description 缺失且 resource_keyword 实为说明时，迁回 description。
+    """兜底纠错（就地修改）：把错填进"关键字"字段的说明性文本迁回 description。
 
-    resource_keyword 为可选字段，清空不破坏 v2 契约；match.pattern 为必填且无法凭空反推，
-    故仅对 resource_keyword 做迁移（match.pattern 错填由 Prompt 规则 11 从根上规避）。
+    覆盖两类 LLM 错填（均把动作标题/说明误当关键字）：
+    1) ``resource_keyword`` 实为说明（日志/服务类 QFK 的"资源/主题"字段）：
+       迁回 description 并清空（可选字段，清空不破坏 v2 契约）。
+    2) ``match.pattern`` 实为说明性长句（QFK 的"关键字"字段；qfk_system 无 resource_keyword
+       时 LLM 易把"镜像文件占用检查"类动作标题写进 match.pattern）：迁回 description，
+       pattern 清空并标记 ``provenance.needs_review=True``，交由人工补精确匹配串
+       （精确串无法凭空反推，故不臆造，仅兜底纠位 + 标记复核）。
+
+    说明：本函数在 ``_validate_signal`` 之后、落库之前执行；resource_keyword 此时已能通过
+    strict schema 校验，故此处仅负责纠错（含 qfk_system 因 schema 对齐后纳入的 resource_keyword）。
     """
     acquire = signal.get("acquire") or {}
     args = acquire.get("args") or {}
-    if (args.get("description") or "").strip():
-        return
-    rk = args.get("resource_keyword")
-    if _looks_descriptive(rk):
-        args["description"] = str(rk).strip()
-        args.pop("resource_keyword", None)
-        logger.warning("extract_signals 兜底纠错：resource_keyword 实为信号说明，已迁移至 description: %s", rk)
+    desc = (args.get("description") or "").strip()
+
+    # 1) resource_keyword 实为说明 → 迁回 description
+    if not desc:
+        rk = args.get("resource_keyword")
+        if _looks_descriptive(rk):
+            args["description"] = str(rk).strip()
+            args.pop("resource_keyword", None)
+            desc = args["description"]
+            logger.warning("extract_signals 兜底纠错：resource_keyword 实为信号说明，已迁移至 description: %s", rk)
+
+    # 2) match.pattern 实为说明性长句 → 迁回 description（QFK 的"关键字"字段）
+    #    仅当 description 仍缺失时处理；短匹配串（如"镜像占用"/"docker"/"overlay2"）即便含
+    #    动词也视为真实匹配串，绝不误清空；仅「含动作动词 且 长度≥6」的说明性长句才迁移，
+    #    并清空 pattern、标记 needs_review=True，交由人工补精确匹配串。
+    if not desc:
+        matcher = signal.get("match")
+        if isinstance(matcher, dict):
+            pattern = matcher.get("pattern")
+            if (
+                isinstance(pattern, str)
+                and _looks_descriptive(pattern)
+                and len(pattern.strip()) >= 6
+            ):
+                args["description"] = pattern.strip()
+                matcher["pattern"] = ""
+                signal.setdefault("provenance", {})["needs_review"] = True
+                logger.warning(
+                    "extract_signals 兜底纠错：match.pattern 实为信号说明，已迁移至 description 并标记 needs_review: %s",
+                    pattern,
+                )
 
 
 def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
@@ -330,8 +362,11 @@ def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
     # 置信度校准
     provenance["confidence"] = _calibrate_confidence(signal, quality)
 
-    # 低置信/歧义信号标 needs_review（镜像 classify 的 low_confidence，§3）
-    needs_review = provenance["confidence"] < NEEDS_REVIEW_CONFIDENCE_THRESHOLD
+    # 低置信/歧义信号标 needs_review（镜像 classify 的 low_confidence，§3）；
+    # 同时保留 _clean_signal_description 在迁移 match.pattern 时标记的 needs_review（人工补精确匹配串）
+    needs_review = bool(provenance["confidence"] < NEEDS_REVIEW_CONFIDENCE_THRESHOLD) or bool(
+        provenance.get("needs_review")
+    )
     provenance["needs_review"] = needs_review
 
     # 写操作/处置动作信号：标记为人⼯授权，绝不自动执行（诊断只读原则）

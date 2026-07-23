@@ -85,3 +85,47 @@ def test_cleaner_wired_into_enrich_signal():
     args = out["acquire"]["args"]
     assert args.get("description") == "镜像文件占用检查"
     assert "resource_keyword" not in args
+
+
+def test_match_pattern_relocated_when_descriptive_long_sentence():
+    """复现并修复：说明性长句错填进 match.pattern（QFK 的"关键字"字段）时迁回 description。"""
+    sig = {
+        "id": "sig_y",
+        "acquire": {"tool": "qfk_system", "args": {"sub_command": "lsof"}},
+        "match": {"type": "keyword", "pattern": "镜像文件占用检查", "mode": "any", "expected": True},
+        "orchestrate": {"produces": [], "requires": ["HOST"]},
+        "provenance": {
+            "category": "backend",
+            "source_section": "steps_text",
+            "evidence": "检查镜像文件占用情况",
+            "confidence": 0.8,
+        },
+        "review": {"require_human_confirm": False, "notes": ""},
+    }
+    _clean_signal_description(sig)
+    args = sig["acquire"]["args"]
+    assert args.get("description") == "镜像文件占用检查"
+    assert sig["match"]["pattern"] == ""
+    assert sig.get("provenance", {}).get("needs_review") is True
+
+
+def test_cleaner_wired_into_enrich_signal_for_pattern():
+    """集成校验：经 _enrich_signal 入口，错填进 match.pattern 的说明应迁 description 并标 needs_review。"""
+    sig = {
+        "id": "sig_z",
+        "acquire": {"tool": "qfk_system", "args": {"sub_command": "ps"}},
+        "match": {"type": "keyword", "pattern": "第三方进程确认", "mode": "any", "expected": True},
+        "orchestrate": {"produces": [], "requires": ["HOST"]},
+        "provenance": {
+            "category": "backend",
+            "source_section": "steps_text",
+            "evidence": "确认第三方进程",
+            "confidence": 0.8,
+        },
+        "review": {"require_human_confirm": False, "notes": ""},
+    }
+    out = _enrich_signal(sig)
+    args = out["acquire"]["args"]
+    assert args.get("description") == "第三方进程确认"
+    assert out["match"]["pattern"] == ""
+    assert out.get("provenance", {}).get("needs_review") is True
