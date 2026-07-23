@@ -553,9 +553,9 @@ DESCRIPTION:
 
 ═══════════════════════════════════════════════════════════════$TEMPLATE$,
     '1.0',
-    TRUE
-),
-    ,(
+        TRUE
+    ),
+    (
         'KEY',
         'kbd_extract_signals_v2',
         '关键信号分级抽取 Prompt v2 - LLM 直接产出 v2 嵌套结构（acquire/match/orchestrate/provenance/review），移除 v1 扁平中间态；占位符 {{VAR}} 大写强制；封闭采集器词表；写操作安全默认；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema',
