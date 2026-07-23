@@ -1739,7 +1739,11 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
                 status_code=422,
                 detail=f"signals_json 不符合 v2 契约：{exc.message}",
             )
-        set_clauses.append("signals_json = :signals_json::jsonb")
+        # 必须用 CAST(:signals_json AS jsonb)，不能写成 ":signals_json::jsonb"。
+        # 后者中 ':signals_json' 紧跟 '::'，SQLAlchemy 命名绑定正则(负向预查 (?!:))
+        # 不把它识别为绑定参数，会原样发给 Postgres 触发 'syntax error at or near ":"' (500)，
+        # 前端统一弹「保存失败，请重试」——即 PR#599 修过、PR#601 回退复现的坑。
+        set_clauses.append("signals_json = CAST(:signals_json AS jsonb)")
         params["signals_json"] = json.dumps(v2_doc, ensure_ascii=False)
 
     # content_md 处理：明确传入则用传入的值；有章节更改则需先读库并重建
