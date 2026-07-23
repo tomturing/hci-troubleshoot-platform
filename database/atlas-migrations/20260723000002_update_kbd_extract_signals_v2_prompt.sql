@@ -1,23 +1,17 @@
 -- ===========================================================================
--- 迁移: 20260723000000_seed_kbd_extract_signals_v2_prompt.sql
--- 说明: 关键信号分级抽取 Prompt 种子（kbd_extract_signals_v2）
--- 背景: 关键信号字段级分别抽取阶段（pipeline Stage.EXTRACT_SIGNALS / 审核期）
---       由 LLM 从 KBD 自然语言章节抽取 producer(QKV)/consumer(QFK) 结构化信号。
---       本版相对 v1 的关键升级：
---         1) LLM 直接产出 v2 嵌套结构，移除「v1 扁平 → migrate → v2」中间归约环节；
---         2) 修复 v1 示例中与 v2 契约/采集器字段不一致的幽灵字段（如 qkv_alert.is_failed、
---            qfk.log_keyword 旧点号命名、source_section 取值越界）；
---         3) 引入第一性原理约束（采集/判定/编排分离、生产者-消费者解耦、诊断只读、写操作安全默认）。
--- 幂等: ON CONFLICT (name) DO NOTHING，不覆盖 admin-ui 自定义。
--- 参考: docs/solution/agent/02-架构设计/关键信号数据模型分层重构RFC.md §4/§6
+-- 迁移: 20260723000002_update_kbd_extract_signals_v2_prompt.sql
+-- 说明: 更新已存在的 kbd_extract_signals_v2 Prompt，新增「说明(description) 与
+--       关键字 的边界」约束（规则 11）+ qfk_storage 带 description 的正确示例 sig_004。
+-- 背景: 修复历史 bug —— LLM 把检查动作的自然语言标题（如「镜像文件占用检查」）错填进
+--       resource_keyword（UI 的"关键字"字段），导致 description 留空、说明错显为关键字。
+--       上层种子迁移 20260723000000 的 ON CONFLICT DO NOTHING 不会覆盖已存在行，
+--       故本迁移显式 UPDATE 同步已有数据库中的 content_template。
+-- 幂等: 仅对 name=kbd_extract_signals_v2 的行生效，重复执行无副作用。
 -- ===========================================================================
 
-INSERT INTO system_prompt (stage, name, description, content_template, version, is_active)
-VALUES (
-    'KEY',
-    'kbd_extract_signals_v2',
-    '关键信号分级抽取 Prompt v2 - LLM 直接产出 v2 嵌套结构（acquire/match/orchestrate/provenance/review），移除 v1 扁平中间态；占位符 {{VAR}} 大写强制；封闭采集器词表；写操作安全默认；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema',
-    $TEMPLATE$你是 HCI 超融合平台的关键信号抽取专家。
+UPDATE system_prompt
+SET
+    content_template = $TEMPLATE$你是 HCI 超融合平台的关键信号抽取专家。
 
 # 角色与目标
 从 KBD 案例的自然语言章节中，按「字段级分别抽取」第一性原理，产出关键信号集合（v2 嵌套结构）。
@@ -124,8 +118,5 @@ VALUES (
       "review": {{"require_human_confirm": false, "notes": ""}}
     }}
   ]
-}}$TEMPLATE$,
-    '1.0',
-    TRUE
-)
-ON CONFLICT (name) DO NOTHING;
+}}$TEMPLATE$
+WHERE name = 'kbd_extract_signals_v2';

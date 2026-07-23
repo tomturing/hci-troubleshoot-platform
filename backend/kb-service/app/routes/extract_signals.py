@@ -265,6 +265,40 @@ def _calibrate_confidence(signal: dict[str, Any], quality: float) -> float:
     return round(max(0.05, min(0.99, calibrated)), 3)
 
 
+# ─── 说明/关键字 兜底纠错（根治历史 bug：LLM 把"信号说明"错填进 resource_keyword）────
+# v1 时期 LLM 易把检查动作的自然语言标题（如「镜像文件占用检查」）写进 resource_keyword
+# （UI 的"关键字"字段），导致 description 留空、说明错显为关键字。此处做防御性兜底：
+# 当 acquire.args.description 缺失、而 resource_keyword 读起来像说明性长句时，迁回 description。
+_DESCRIPTION_VERBS = frozenset({
+    "检查", "确认", "占用", "查看", "判断", "核对", "检测", "查询", "分析",
+    "定位", "获取", "导出", "验证", "排查", "统计", "罗列", "列举",
+})
+
+
+def _looks_descriptive(text: Any) -> bool:
+    """判断一段文本是否像自然语言说明（含检查/确认/占用等动作动词），而非资源标识符。"""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    return any(v in text for v in _DESCRIPTION_VERBS)
+
+
+def _clean_signal_description(signal: dict[str, Any]) -> None:
+    """兜底纠错（就地修改）：description 缺失且 resource_keyword 实为说明时，迁回 description。
+
+    resource_keyword 为可选字段，清空不破坏 v2 契约；match.pattern 为必填且无法凭空反推，
+    故仅对 resource_keyword 做迁移（match.pattern 错填由 Prompt 规则 11 从根上规避）。
+    """
+    acquire = signal.get("acquire") or {}
+    args = acquire.get("args") or {}
+    if (args.get("description") or "").strip():
+        return
+    rk = args.get("resource_keyword")
+    if _looks_descriptive(rk):
+        args["description"] = str(rk).strip()
+        args.pop("resource_keyword", None)
+        logger.warning("extract_signals 兜底纠错：resource_keyword 实为信号说明，已迁移至 description: %s", rk)
+
+
 def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
     """为单条 v2 信号补充字段级溯源与置信度校准，全部写入 v2 段（不产生顶层冗余字段）。
 
@@ -278,6 +312,9 @@ def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
     - review.require_human_confirm: 是否必须人工授权后才可执行
     - orchestrate.phase: diagnostic(诊断只读) / solution(处置动作)
     """
+    # 说明/关键字 兜底纠错（先于溯源/置信度注入，确保落库的 description 正确）
+    _clean_signal_description(signal)
+
     quality = _signal_quality_score(signal)
     acquire = signal.setdefault("acquire", {})
     tool = acquire.get("tool", "")
