@@ -32,6 +32,7 @@ from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import validate_acquire_args
 from shared.schemas.signal_migration import (
     migrate_signal_document,
+    normalize_qfk_keyword_alias,
     unwrap_signals,
 )
 from shared.schemas.signal_schema import validate_signals_json
@@ -53,7 +54,12 @@ def _signals_for_response(raw: Any) -> dict:
     渲染/编辑（无适配层、零信息损失）。
     无论存储态是 v2 对象还是 v1 扁平 list，均经 ``migrate_signal_document`` 归约为
     规范 v2 文档返回，保证 GET 契约稳定为 v2。"""
-    return migrate_signal_document(raw)
+    doc = migrate_signal_document(raw)
+    # 读边界别名归一：QFK keyword→resource_keyword，使前端编辑框（绑定 resource_keyword）
+    # 正确显示历史 keyword 值，消除显示错位且不丢数据。
+    for s in doc.get("signals", []):
+        normalize_qfk_keyword_alias(s)
+    return doc
 
 
 if TYPE_CHECKING:
@@ -1713,6 +1719,11 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
     if body.signals_json is not None:
         # 直接切 v2 列形态（RFC §7）：保存时统一归约为 v2 数组级对象
         v2_doc = migrate_signal_document(body.signals_json)
+        # 写边界别名归一：QFK 历史 keyword → resource_keyword（契约字段）。无论前端回写
+        # 还是存量「半残 v2」(PR 修复前抽取、args 带 keyword) 均归一，避免 §6.1
+        # additionalProperties:false 校验 422（KBD 详情页「保存失败，请重试」根因）。
+        for s in v2_doc.get("signals", []):
+            normalize_qfk_keyword_alias(s)
         # 轻量纯 Python 校验（字段级友好提示，语义与 JSON Schema 对齐）
         for s in v2_doc.get("signals", []):
             acquire = s.get("acquire") or {}
