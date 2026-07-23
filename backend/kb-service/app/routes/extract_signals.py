@@ -47,6 +47,10 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 # 抽取可用更强模型；未配置则回退到分类模型
 LLM_MODEL = os.environ.get("EXTRACT_SIGNALS_MODEL", os.environ.get("CLASSIFY_MODEL", "qwen3.7-plus"))
+# 是否启用思维链（与 classify.py / vision_processor.py 统一由 LLM_ENABLE_THINKING 控制，默认关闭。
+# 推理模型（glm-5.2 / deepseek-v4-flash）开启 thinking 时会先消耗大量 reasoning token，
+# 导致 json_object 正文被挤出 max_tokens 预算 —— 这正是「LLM 响应格式错误」的根因。）
+LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
 
 # Prompt 名称（system_prompt 表热加载，admin-ui 可在线编辑）
 # 2026-07-23：升级为 kbd_extract_signals_v2 —— LLM 直接产出 v2 嵌套结构，
@@ -458,7 +462,15 @@ def _validate_obj_placeholders(obj: Any) -> None:
 
 
 async def _call_llm(prompt: str) -> dict[str, Any]:
-    """调用 LLM API（json_object 模式），返回解析后的 dict。"""
+    """调用 LLM API（json_object 模式），返回解析后的 dict。
+
+    2026-07-23 修复：原 max_tokens=2000 对推理模型（glm-5.2 / deepseek-v4-flash）不足——
+    思维链 reasoning_content 会先耗尽 token 预算，使 message.content 为空、
+    json.loads("") 报「LLM 响应格式错误」。现统一：
+      1) 对齐 classify.py / vision_processor.py，显式关闭思维链（enable_thinking=false）；
+      2) max_tokens 提升至 8192，为长 KBD 文档 / 长输出预留余量；
+      3) 对空 content 做显式防御，避免把「被 token 截断」暴露成模糊的 JSON 解析失败。
+    """
     from openai import AsyncOpenAI
 
     if not LLM_API_KEY:
@@ -473,10 +485,23 @@ async def _call_llm(prompt: str) -> dict[str, Any]:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
-            max_tokens=2000,
+            max_tokens=8192,
             response_format={"type": "json_object"},
+            extra_body={"enable_thinking": LLM_ENABLE_THINKING},
         )
-        content = response.choices[0].message.content
+        content = (response.choices[0].message.content or "").strip()
+        if not content:
+            # 防御：模型在 max_tokens 内仅产出思维链、未给出 JSON 正文（finish_reason=length）
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            logger.error(
+                "extract_signals LLM 未返回 JSON 正文: finish_reason=%s model=%s",
+                finish_reason,
+                LLM_MODEL,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM 未返回有效 JSON 内容（finish_reason={finish_reason}，可能因思维链耗尽 token 预算）",
+            )
         return json.loads(content)
     except json.JSONDecodeError as e:
         logger.error("extract_signals LLM 响应 JSON 解析失败: %s", e)
