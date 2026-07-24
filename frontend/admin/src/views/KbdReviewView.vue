@@ -1657,7 +1657,7 @@ onMounted(() => {
               <div class="signal-card-body">
                 <div v-if="editingSignalIndex !== item.origIdx">
                   <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigArgs(item.sig).keyword || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).description || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).instruction || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (sigOrch(item.sig).produces || []).map((p: any) => p.name).join('、') || '—' }}</span></div>
                 </div>
                 <div v-else>
@@ -1708,7 +1708,7 @@ onMounted(() => {
                 <!-- 展示模式 -->
                 <div v-if="editingSignalIndex !== item.origIdx">
                   <!-- 共有字段 -->
-                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).description || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).instruction || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">主机</span><span class="signal-v code">{{ sigArgs(item.sig).host || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">需求变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigArgs(item.sig).resource_keyword || sigArgs(item.sig).keyword || '—' }}</span></div>
@@ -1718,8 +1718,8 @@ onMounted(() => {
 
                   <!-- 特有字段：qfk_log -->
                   <template v-if="sigTool(item.sig) === 'qfk_log'">
-                    <div class="signal-row"><span class="signal-k">文件</span><span class="signal-v code">{{ sigArgs(item.sig).file || sigArgs(item.sig).target?.resource || '—' }}</span></div>
-                    <div class="signal-row"><span class="signal-k">结束时间</span><span class="signal-v">{{ sigArgs(item.sig).end || sigArgs(item.sig).target?.time_window || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">文件</span><span class="signal-v code">{{ sigArgs(item.sig).file || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">结束时间</span><span class="signal-v">{{ sigArgs(item.sig).time_window || '—' }}</span></div>
                   </template>
 
                   <!-- 特有字段：qfk_system -->
@@ -1730,7 +1730,7 @@ onMounted(() => {
 
                   <!-- 特有字段：qfk_service -->
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
-                    <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword || sigArgs(item.sig).target?.resource || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword || '—' }}</span></div>
                     <div class="signal-row"><span class="signal-k">动作</span><span class="signal-v">{{ sigArgs(item.sig).command || sigOrch(item.sig).action || 'status' }}</span></div>
                   </template>
 
@@ -1801,7 +1801,7 @@ onMounted(() => {
                     <div class="signal-row"><span class="signal-k">服务</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="服务名，如 asv、nginx、mgmt" /></div>
                     <div class="field-hint">目标服务名/标识，填精确标识符（如 asv），不是自然语言说明</div>
                     <div class="signal-row"><span class="signal-k">动作</span>
-                      <el-select v-model="signalEditDraft.acquire.args.sub_command" size="small">
+                      <el-select v-model="signalEditDraft.acquire.args.command" size="small">
                         <el-option label="status" value="status" />
                         <el-option label="start" value="start" />
                         <el-option label="stop" value="stop" />

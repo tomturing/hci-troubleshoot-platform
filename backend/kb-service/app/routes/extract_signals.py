@@ -77,12 +77,12 @@ ACQUIRER_CATALOG: dict[str, str] = {
     "qkv_dialog": "前端信号-弹框查询：acli dialog/log get",
     "qfk_log": "后端信号-日志检查和操作：acli log get -k <keyword> [-f resource] [-p path] [-t time_window]，keyword 求值",
     "qfk_service": "后端信号-服务检查和操作：acli service {asv|anet|host} <name> status，state 求值",
-    "qfk_system": "后端信号-系统检查和操作：acli system <sub_command>（如 lsof/ps/lsblk/iostat/smartctl），threshold/keyword/json_path 求值",
-    "qfk_vm": "后端信号-虚拟机相关操作：acli vm <sub_command>，state/json_path/exists 求值",
-    "qfk_network": "后端信号-网络相关操作：acli network <sub_command>，state/json_path/exists 求值",
-    "qfk_storage": "后端信号-存储相关操作：acli storage <sub_command>（如 asan disk list），state/json_path/exists 求值",
-    "qfk_hardware": "后端信号-硬件相关操作：acli hardware <sub_command>，state/json_path/exists 求值",
-    "qfk_platform": "后端信号-平台相关操作：acli platform <sub_command>，state/json_path/exists 求值",
+    "qfk_system": "后端信号-系统检查和操作：acli system <command>（如 lsof/ps/lsblk/iostat/smartctl），threshold/keyword/json_path 求值",
+    "qfk_vm": "后端信号-虚拟机相关操作：acli vm <command>，state/json_path/exists 求值",
+    "qfk_network": "后端信号-网络相关操作：acli network <command>，state/json_path/exists 求值",
+    "qfk_storage": "后端信号-存储相关操作：acli storage <command>（如 asan disk list），state/json_path/exists 求值",
+    "qfk_hardware": "后端信号-硬件相关操作：acli hardware <command>，state/json_path/exists 求值",
+    "qfk_platform": "后端信号-平台相关操作：acli platform <command>，state/json_path/exists 求值",
 }
 
 # ─── 默认变量池 schema（produces/requires 引用的变量名集合）───────────────────
@@ -122,7 +122,7 @@ _VALID_SOURCE_SECTIONS = {
 }
 
 # ─── 写操作子命令词表（处置/变更动作，不得自动执行）────────────────────────
-# 这是"诊断只读"原则的硬边界：凡 sub_command 命中以下动词的后端信号，一律标记为
+# 这是"诊断只读"原则的硬边界：凡 command 命中以下动词的后端信号，一律标记为
 # phase=solution / require_human_confirm=True，执行层绝不自动运行，必须人工授权。
 WRITE_OP_SUB_COMMANDS: set[str] = {
     "start",
@@ -190,10 +190,10 @@ def _read_signal_fields(signal: dict[str, Any]) -> tuple[str, dict, str, list, l
 
 
 def _is_write_op_signal(signal: dict[str, Any]) -> bool:
-    """判断一条后端信号是否为写操作/处置动作（基于 acquire.tool + sub_command 词表）。
+    """判断一条后端信号是否为写操作/处置动作（基于 acquire.tool + command 词表）。
 
     仅 backend（qfk_*）信号可能携带写操作；前端生产者（qkv_*）均为只读查询。
-    sub_command 形如 'kill -9 240132' / 'ps auxf' / 'start'，按空白与 | / 切词后命中词表即判写操作。
+    command 形如 'kill -9 240132' / 'ps auxf' / 'start'，按空白与 | / 切词后命中词表即判写操作。
     """
     tool, args, cat, _, _, _, _ = _read_signal_fields(signal)
     if cat != "backend" or not str(tool).startswith("qfk_"):
@@ -427,7 +427,7 @@ def validate_placeholder_case(template_str: str) -> list[str]:
 def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[bool, str | None]:
     """校验单条 v2 嵌套信号。
 
-    写操作拦截：对 backend（qfk_*）信号，若 acquire.args.sub_command 命中写操作词表，
+    写操作拦截：对 backend（qfk_*）信号，若 acquire.args.command 命中写操作词表，
     则就地标记 review.require_human_confirm=True / orchestrate.phase=solution / provenance.risk，
     使其被排除在自动执行之外，交由人工授权。
     v1 扁平格式（acquirer/acquirer_args/signal_category/matcher 顶层字段）已彻底下线，
