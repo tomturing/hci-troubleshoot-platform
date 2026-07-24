@@ -1335,7 +1335,6 @@ CREATE TABLE IF NOT EXISTS bridge_execution_logs (
     message        text,
     extra          jsonb,
     created_at     timestamptz DEFAULT CURRENT_TIMESTAMP,
-    -- Migration 007: 命令执行完整日志字段
     exec_id        varchar(64),
     command        text,
     exit_code      integer,
