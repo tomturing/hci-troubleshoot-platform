@@ -46,10 +46,6 @@ _TARGET_DIMENSIONS: dict[str, dict[str, Any]] = {
         "type": "string",
         "description": "采集目标主机/作用域（如 {{HOST}}），特殊值 cluster 表示遍历集群",
     },
-    "resource": {
-        "type": "string",
-        "description": "目标资源名（服务名/磁盘等）",
-    },
     "path": {
         "type": "string",
         "description": "路径（日志目录/文件等）",
@@ -115,7 +111,6 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "path": _TARGET_DIMENSIONS["path"],
             "time_window": _TARGET_DIMENSIONS["time_window"],
         },
-        "required": ["resource_keyword"],
     },
     "qfk_service": {
         "type": "object",
@@ -132,7 +127,6 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                 "description": "操作子命令（如 status/restart）",
             },
         },
-        "required": ["resource_keyword"],
     },
     "qfk_system": {
         "type": "object",
@@ -150,7 +144,6 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             },
             "container": {"type": "string", "default": "asv-con", "description": "执行容器（qfk_system 专属）"},
         },
-        "required": ["command"],
     },
     "qfk_vm": {
         "type": "object",
@@ -161,7 +154,6 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "虚拟机名选择器（可选）"},
         },
-        "required": ["command"],
     },
     "qfk_network": {
         "type": "object",
@@ -172,7 +164,6 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "网络资源名选择器（可选）"},
         },
-        "required": ["command"],
     },
     "qfk_storage": {
         "type": "object",
@@ -183,7 +174,6 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "存储资源名选择器（可选）"},
         },
-        "required": ["command"],
     },
     "qfk_hardware": {
         "type": "object",
@@ -194,7 +184,6 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "硬件资源名选择器（可选）"},
         },
-        "required": ["command"],
     },
     "qfk_platform": {
         "type": "object",
@@ -205,7 +194,6 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "平台资源名选择器（可选）"},
         },
-        "required": ["command"],
     },
 }
 

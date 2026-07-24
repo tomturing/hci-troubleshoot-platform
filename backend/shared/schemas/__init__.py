@@ -2,7 +2,9 @@
 
 本包是 RFC《关键信号数据模型分层重构》§4.4 / §6.1 的代码落地：
 - `acquirer_args`：producer/consumer 同构的 `acquire.args` 注册表（单一事实来源）
-- `signal_migration`：扁平 v1 → 嵌套 v2（数组级 schema_version）迁移纯函数
+- `signal_schema`：加载 §6.1 JSON Schema 契约并校验 `signals_json`（保存时强制）
+
+注：v1->v2 迁移桥接（`signal_migration.py`）与存量迁移脚本已在 PR#611 随 v2 直落库下线。
 
 设计原则（第一性原理，见 RFC §4.4.1）：
 1. 公共字段全局只定义一次（COMMON_ARGS），禁止各工具另造同名。

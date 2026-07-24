@@ -228,7 +228,8 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `file` | string | **是** | 日志文件名 |
-| `end` | string | 否 | 结束时间（变量池获取，如 `2026-07-21 10:00:00`） |
+| `time_window` | string | 否 | 时间窗（如 `now` / `-1h`） |
+| `path` | string | 否 | 日志路径 |
 | `host` | string | 否 | 目标主机（变量池；`cluster`=遍历集群） |
 | `resource_keyword` | string | 否 | 资源选择器（非匹配词，见 §6） |
 
@@ -239,7 +240,6 @@
 | `resource_keyword` | string | 否 | **服务名选择器**（acli service <container> <name> 的 `<name>`；改名消歧，非匹配词） |
 | `container` | string | 否 | 服务容器，默认 `asv`（可选 asv/vn/...） |
 | `command` | string | 否 | 操作子命令，如 `status` / `restart` |
-| `host` | string | 否 | 目标主机 |
 
 **qfk_system**（acli --container <c> --host {{HOST}} system <command>）
 

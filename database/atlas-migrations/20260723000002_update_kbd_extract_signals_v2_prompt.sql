@@ -67,8 +67,8 @@ SET
    - qkv_task：必填 keyword；可选 is_failed/limit/timeout/instruction。（is_failed 仅属于 qkv_task，不属于 qkv_alert）
    - qkv_dialog：必填 keyword。
    - qfk_log：resource_keyword（资源/主题选择器，非匹配关键词）；可选 host（支持 {{{{HOST}}}}）/file/path/time_window/timeout/instruction；匹配关键词放 match.pattern。
-   - qfk_service：resource_keyword（服务名选择器）+ container（组 asv/anet/host，默认 asv）；可选 command/timeout/instruction。
-   - qfk_system/vm/network/storage/hardware/platform：command（如 lsof/ps/...，acli <namespace> <command>）；可选 host/resource_keyword/timeout/instruction。
+   - qfk_service：resource_keyword（服务名选择器）+ container（组 asv/anet/host，默认 asv）；可选 command（动作 status/restart 等）/timeout/instruction。
+   - qfk_system/vm/network/storage/hardware/platform：command（如 lsof/ps/...，acli <namespace> <command>）；可选 host（{{{{HOST}}}}）/resource_keyword/timeout/instruction。
    - host 即原 v1 的 target.scope：采集目标主机/作用域，用 {{{{HOST}}}} 占位（变量池解析）或字面 cluster；不要再用嵌套 target 对象。
 7. 写操作安全：若 acquire.tool 为 qfk_* 且 acquire.args.command 命中写/变更动词（start/stop/restart/delete/set/create/...），必须 review.require_human_confirm=true、orchestrate.phase=solution；且只在排查步骤明确描述「处置/修复动作」时才抽取此类信号，纯诊断步骤不要编造写操作。
 8. source_section 只能取 title/problem_description/alert_info/steps_text（根因/解决方案不作为信号来源）；evidence 必须逐字引用输入中的原句，便于审计溯源。
@@ -81,42 +81,51 @@ SET
    - 反例（禁止）：{{"tool":"qfk_storage","args":{{"resource_keyword":"镜像文件占用检查"}}}} ❌
      正例（正确）：{{"tool":"qfk_storage","args":{{"command":"list","resource_keyword":"<实际资源名>","instruction":"镜像文件占用检查"}}}}。
 
-# 输出示例（可直接套用，已对齐全 v2 契约与采集器字段）
+# 输出示例（对齐真实 KBD：虚拟机开机失败→镜像忙→进程占用；已对齐全 v2 契约与采集器字段）
 {{
   "schema_version": 2,
   "signals": [
     {{
       "id": "sig_001",
-      "acquire": {{"tool": "qkv_alert", "args": {{"keyword": "备节点异常", "limit": 100}}}},
+      "acquire": {{"tool": "qkv_alert", "args": {{"keyword": "启动虚拟机失败", "limit": 1, "instruction": "获取虚拟机开机失败告警信息"}}}},
       "match": null,
-      "orchestrate": {{"produces": [{{"name": "HOST", "path": "host"}}, {{"name": "VM", "path": "vm"}}], "requires": []}},
-      "provenance": {{"category": "frontend", "source_section": "steps_text", "evidence": "检查配置存储服务备节点异常告警", "confidence": 0.9}},
+      "orchestrate": {{"phase": "diagnostic", "produces": [{{"name": "STATUS", "path": "status"}}], "requires": []}},
+      "provenance": {{"category": "frontend", "source_section": "alert_info", "evidence": "启动虚拟机失败，错误信息：虚拟机镜像忙", "confidence": 0.8}},
       "review": {{"require_human_confirm": false, "notes": ""}}
     }},
     {{
       "id": "sig_002",
-      "acquire": {{"tool": "qfk_log", "args": {{"resource_keyword": "vgpu", "host": "{{{{HOST}}}}", "timeout": 10}}}},
-      "match": {{"type": "keyword", "pattern": "CPU 资源不足", "mode": "any", "expected": true}},
-      "orchestrate": {{"produces": [], "requires": ["HOST"]}},
-      "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "若日志含 CPU 资源不足则根因锁定", "confidence": 0.85}},
+      "acquire": {{"tool": "qkv_task", "args": {{"keyword": "启动虚拟机失败", "is_failed": true, "limit": 1, "instruction": "查看虚拟机任务详情确认失败报错信息"}}}},
+      "match": null,
+      "orchestrate": {{"phase": "diagnostic", "produces": [{{"name": "VM", "path": "vm"}}, {{"name": "HOST", "path": "host"}}, {{"name": "STATUS", "path": "status"}}], "requires": []}},
+      "provenance": {{"category": "frontend", "source_section": "steps_text", "evidence": "查看虚拟机任务详情，确认开机失败的报错信息", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": ""}}
     }},
     {{
       "id": "sig_003",
-      "acquire": {{"tool": "qfk_service", "args": {{"resource_keyword": "{{{{VM.NAME}}}}", "container": "asv", "command": "restart"}}}},
-      "match": {{"type": "state", "pattern": "running", "mode": "any", "expected": true}},
-      "orchestrate": {{"produces": [], "requires": ["VM"], "phase": "solution", "action": "restart"}},
-      "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "重启虚拟机服务以恢复", "confidence": 0.7}},
-      "review": {{"require_human_confirm": true, "notes": "写操作：重启服务，需人工授权"}}
+      "acquire": {{"tool": "qfk_system", "args": {{"command": "lsof", "resource_keyword": "{{{{VM}}}}", "host": "{{{{HOST}}}}", "instruction": "检查虚拟机镜像文件是否被其他进程占用"}}}},
+      "match": {{"type": "keyword", "pattern": "vm-disk", "mode": "any", "expected": true}},
+      "orchestrate": {{"phase": "diagnostic", "produces": [], "requires": ["VM", "HOST"]}},
+      "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "检查该虚拟机镜像文件是否被其他进程占用", "confidence": 0.9}},
+      "review": {{"require_human_confirm": false, "notes": ""}}
     }},
     {{
       "id": "sig_004",
-      "acquire": {{"tool": "qfk_storage", "args": {{"command": "list", "instruction": "镜像文件占用检查"}}}},
-      "match": {{"type": "keyword", "pattern": "镜像占用", "mode": "any", "expected": true}},
-      "orchestrate": {{"produces": [], "requires": ["HOST"]}},
-      "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "检查镜像文件占用情况", "confidence": 0.8}},
+      "acquire": {{"tool": "qfk_system", "args": {{"command": "ps", "host": "{{{{HOST}}}}", "instruction": "查询占用镜像文件的进程详情"}}}},
+      "match": {{"type": "keyword", "pattern": "ClwDRDBClient", "mode": "any", "expected": true}},
+      "orchestrate": {{"phase": "diagnostic", "produces": [], "requires": ["HOST"]}},
+      "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "查询占用镜像文件的进程详情，确认是否为第三方程序占用", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": ""}}
+    }},
+    {{
+      "id": "sig_005",
+      "acquire": {{"tool": "qfk_service", "args": {{"resource_keyword": "{{{{VM.NAME}}}}", "container": "asv", "command": "restart"}}}},
+      "match": {{"type": "state", "pattern": "running", "mode": "any", "expected": true}},
+      "orchestrate": {{"phase": "solution", "produces": [], "requires": ["VM"], "action": "restart"}},
+      "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "重启虚拟机服务以恢复", "confidence": 0.7}},
+      "review": {{"require_human_confirm": true, "notes": "写操作：重启服务，需人工授权"}}
     }}
   ]
-}}$TEMPLATE$
+}}
+$TEMPLATE$
 WHERE name = 'kbd_extract_signals_v2';

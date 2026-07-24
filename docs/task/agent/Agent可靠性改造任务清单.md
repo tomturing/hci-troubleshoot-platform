@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-24 | v3.26 | database/seeds/02_system_prompts.sql 中 kbd_extract_signals_v2 关键信号抽取提示词字段名对齐 v2 扁平契约（command 替代 sub_command，instruction 替代 description）（PR #613） |
 | 2026-07-23 | v3.25 | database/seeds/02_system_prompts.sql 中 kbd_extract_signals_v2 关键信号抽取提示词补充规则11（说明/关键字字段边界：禁止把检查说明塞进 resource_keyword 与 match.pattern）与 sig_004 正例（PR #609） |
 | 2026-07-21 | v3.24 | **修复 terminal_bridge blog() Go 值传递导致 type 字段为空（PR #591）**：PR #587 合并后 stdout 输出仍显示 `"type":""`。根因是 Go 值传递：`blog()` 创建 logEntry → 值传递调用 `publish(e)` → `publish()` 内部修改 `e.Type = "bridge_log"` 只影响副本 → `blog()` 的 `json.Marshal(e)` 输出原始 e（Type 仍为空）。修复：在 `blog()` 的 Marshal 前补充 `e.Type = "bridge_log"` 赋值。此问题揭示 Go 结构体传参的隐晦陷阱：副本修改不影响原值，必须在值传递前完成所有字段赋值、或改用指针传递。关联工单：Q2026072171592 |
 | 2026-07-21 | v3.23 | **terminal_bridge exec 命令日志回采完整实现（PR #589）**：① `execCommandIsolated()` 添加完整 bridge_log：`exec.start`（命令开始）、`exec.error`（错误详情+error_type分类）、`exec.done`（退出码+耗时+输出预览+success）；② `ssh_exec_process` 添加 `exec.request` 日志透传 trace_id；③ Migration 007：`bridge_execution_logs` 表新增 `exec_id`/`command`/`exit_code`/`duration_ms`/`stdout_len`/`stderr_len`/`output_preview`/`success`/`error_type` 字段+索引，支持完整的命令执行历史追踪和性能分析。关联工单：Q2026072160299，关联方案：[2026-07-21-terminal-bridge日志缺失根因分析与完整解决方案](../../solution/events/2026-07-21-terminal-bridge日志缺失根因分析与完整解决方案.md) |
