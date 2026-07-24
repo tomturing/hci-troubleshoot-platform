@@ -186,16 +186,7 @@ jobs:
           if [ -z "$DIFF" ] || echo "$DIFF" | grep -q "Schemas are synced"; then
             echo "✅ 幂等性验证通过：DB 与期望 Schema 完全一致，无待变更项"
           else
-            # Atlas 已知问题：某些 COMMENT 在 apply 后仍会被检测为差异
-            # 检查是否只有 COMMENT 差异（允许通过）
-            NON_COMMENT_DIFF=$(echo "$DIFF" | grep -v "^--" | grep -v "COMMENT ON")
-            if [ -z "$NON_COMMENT_DIFF" ]; then
-              echo "⚠️ 检测到 COMMENT 差异（Atlas 已知问题），允许通过："
-              echo "$DIFF" | head -20
-              echo "✅ 幂等性验证通过（忽略 COMMENT 差异）"
-            else
-              echo "❌ 幂等性验证失败：apply 后仍存在 diff："
-              echo "$DIFF"
-              exit 1
-            fi
+            echo "❌ 幂等性验证失败：apply 后仍存在 diff："
+            echo "$DIFF"
+            exit 1
           fi
