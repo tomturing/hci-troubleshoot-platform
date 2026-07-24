@@ -108,8 +108,6 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "orchestrate": {"$ref": "#/definitions/orchestrate"},
                     "provenance": {"$ref": "#/definitions/provenance"},
                     "review": {"$ref": "#/definitions/review"},
-                    # 迁移无损兼容：v1 未知字段收进 _v1_legacy（正常写路径不会出现）
-                    "_v1_legacy": {"type": "object"},
                 },
             },
             "acquire": {
@@ -122,15 +120,29 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                 },
                 "allOf": acquire_allof,
             },
+            # 判定段：运行时 evaluate_matcher 支持 6 类（见 agent-service matcher.py），
+            # 此处按类型允许各自字段，并保留 additionalProperties:false 拒绝幽灵字段。
+            # - keyword/regex/state: 用 pattern（+ mode 多词逻辑）
+            # - threshold:         用 value + operator
+            # - json_path:         用 path + expected_value
+            # - exists:            仅需 expected
+            # type/mode 维持自由字符串（与历史 fixture 兼容，如 mode:"any" 运行时等同 or），
+            # 不强制枚举，避免破坏既有通过的校验用例。
             "match": {
                 "type": ["object", "null"],
-                "required": ["type", "pattern", "mode", "expected"],
+                "required": ["type", "expected"],
                 "additionalProperties": False,
                 "properties": {
                     "type": {"type": "string"},
                     "pattern": {"type": "string"},
                     "mode": {"type": "string"},
                     "expected": {"type": "boolean"},
+                    "value": {"type": ["number", "integer"]},
+                    "operator": {"type": "string"},
+                    "path": {"type": "string"},
+                    "expected_value": {
+                        "type": ["string", "number", "boolean", "null"]
+                    },
                 },
             },
             "orchestrate": {
@@ -144,7 +156,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "container": {"type": "string"},
                     "produces": {
                         "type": "array",
-                        "description": "该信号向变量池产出的变量（v1 produces: [{name, type?, path?}]）",
+                        "description": "该信号向变量池产出的变量（如 [{name, type?, path?}]）",
                         "items": {
                             "type": "object",
                             "additionalProperties": False,

@@ -18,8 +18,8 @@ if _backend not in sys.path:
 if _agent_service not in sys.path:
     sys.path.insert(0, _agent_service)
 
-from app.tools.qfk.handlers import HandlerRegistry, LogKeywordHandler
-from app.tools.qfk.signal import BackendSignal, BackendSignalTarget
+from app.tools.qfk.handlers import LogKeywordHandler, SystemHandler
+from app.tools.qfk.signal import BackendSignal
 from app.tools.qkv.parser import parse_frontend_value
 from app.tools.qkv.signal import FrontendQueryType
 
@@ -31,15 +31,13 @@ def test_qfk_log_command_build():
     # 案例 41570: qemu 日志检查
     sig = BackendSignal(
         namespace="log",
-        target=BackendSignalTarget(
-            path="/sf/log/3/",
-            resource="sfvt_qemu_{{VM}}.log"
-        ),
-        keywords=["iotimeout"],
-        expected=True
+        path="/sf/log/3/",
+        file="sfvt_qemu_{{VM}}.log",
+        keyword=["iotimeout"],
+        expected=True,
     )
 
-    handler = HandlerRegistry.get("log")
+    handler = LogKeywordHandler()
     cmds = handler.build_commands(sig)
     print("案例 41570 - qemu日志检查:")
     print(f"  命令: {cmds[0]}")
@@ -52,13 +50,11 @@ def test_qfk_log_command_build():
     # 案例 40652: 内核日志检查
     sig2 = BackendSignal(
         namespace="log",
-        target=BackendSignalTarget(
-            path="/sf/log/today/",
-            resource="kernel.log"
-        ),
-        keywords=["disk", "error"],
+        path="/sf/log/today/",
+        file="kernel.log",
+        keyword=["disk", "error"],
         match_mode="and",
-        expected=False
+        expected=False,
     )
     cmds2 = handler.build_commands(sig2)
     print("\n案例 40750 - 内核日志检查:")
@@ -72,14 +68,14 @@ def test_qfk_system_command_build():
     """测试系统命令构建"""
     print("\n=== QFK system 命令构建测试 ===")
 
-    handler = HandlerRegistry.get("system")
+    handler = SystemHandler()
 
     # 案例 27123: lsof 检查镜像占用
     sig1 = BackendSignal(
         namespace="system",
-        sub_command="lsof",
-        keywords=["7436939093432"],
-        expected=True
+        command="lsof",
+        keyword=["7436939093432"],
+        expected=True,
     )
     cmds1 = handler.build_commands(sig1)
     print("案例 27123 - lsof:")
@@ -90,9 +86,9 @@ def test_qfk_system_command_build():
     # 案例 27123: ps 检查进程
     sig2 = BackendSignal(
         namespace="system",
-        sub_command="ps auxf",
-        keywords=["ClwDRDBClient"],
-        expected=True
+        command="ps auxf",
+        keyword=["ClwDRDBClient"],
+        expected=True,
     )
     cmds2 = handler.build_commands(sig2)
     print("\n案例 27123 - ps:")
@@ -103,9 +99,9 @@ def test_qfk_system_command_build():
     # 案例 40652: smartctl
     sig3 = BackendSignal(
         namespace="system",
-        sub_command="smartctl -a /dev/sda",
-        keywords=["Reallocated_Sector_Ct"],
-        expected=True
+        command="smartctl -a /dev/sda",
+        keyword=["Reallocated_Sector_Ct"],
+        expected=True,
     )
     cmds3 = handler.build_commands(sig3)
     print("\n案例 40652 - smartctl:")
@@ -116,9 +112,9 @@ def test_qfk_system_command_build():
     # 案例 40680: lsblk
     sig4 = BackendSignal(
         namespace="system",
-        sub_command="lsblk",
-        keywords=["disk"],
-        expected=True
+        command="lsblk",
+        keyword=["disk"],
+        expected=True,
     )
     cmds4 = handler.build_commands(sig4)
     print("\n案例 40680 - lsblk:")
@@ -140,7 +136,7 @@ def test_qkv_produces_extraction():
                 "vm": "",
                 "target": "DISK_SN_12345",
                 "end": "2026-07-15 10:00:00",
-                "description": "检测到硬盘被拔出"
+                "description": "检测到硬盘被拔出",
             }
         ]
     })
@@ -184,7 +180,7 @@ def test_qkv_task_extraction():
                 "vm": "vm-101",
                 "description": "虚拟机镜像忙，正在执行其他操作！",
                 "errcode_tracing": "0x0C000005",
-                "request_id": "abc123"
+                "request_id": "abc123",
             }
         ]
     })
@@ -223,7 +219,7 @@ def test_evaluator():
         node="10.0.0.1",
         duration_ms=10,
         truncated=False,
-        risk_level=1
+        risk_level=1,
     )
 
     matched, matched_kws, evidence = handler.evaluate([res1], ["ClwDRDBClient"], "or")
@@ -241,7 +237,7 @@ def test_evaluator():
         node="10.0.0.1",
         duration_ms=10,
         truncated=False,
-        risk_level=1
+        risk_level=1,
     )
 
     matched2, _, _ = handler.evaluate([res2], ["disk", "error"], "and")

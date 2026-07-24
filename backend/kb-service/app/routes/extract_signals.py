@@ -198,7 +198,7 @@ def _is_write_op_signal(signal: dict[str, Any]) -> bool:
     tool, args, cat, _, _, _, _ = _read_signal_fields(signal)
     if cat != "backend" or not str(tool).startswith("qfk_"):
         return False
-    sub = str(args.get("sub_command", "") or "")
+    sub = str(args.get("command", "") or "")
     tokens = re.split(r"[\s|/]+", sub.strip())
     return any(tok in WRITE_OP_SUB_COMMANDS for tok in tokens)
 
@@ -206,7 +206,7 @@ def _is_write_op_signal(signal: dict[str, Any]) -> bool:
 def _write_op_risk(signal: dict[str, Any]) -> int:
     """写操作信号的风险等级：破坏性子命令=3(block)，其余写操作=2(confirm)。"""
     _, args, _, _, _, _, _ = _read_signal_fields(signal)
-    sub = str(args.get("sub_command", "") or "").lower()
+    sub = str(args.get("command", "") or "").lower()
     tokens = set(re.split(r"[\s|/]+", sub))
     if tokens & _DESTRUCTIVE_SUB_COMMANDS:
         return 3
@@ -267,9 +267,9 @@ def _calibrate_confidence(signal: dict[str, Any], quality: float) -> float:
 
 
 # ─── 说明/关键字 兜底纠错（根治历史 bug：LLM 把"信号说明"错填进 resource_keyword）────
-# v1 时期 LLM 易把检查动作的自然语言标题（如「镜像文件占用检查」）写进 resource_keyword
-# （UI 的"关键字"字段），导致 description 留空、说明错显为关键字。此处做防御性兜底：
-# 当 acquire.args.description 缺失、而 resource_keyword 读起来像说明性长句时，迁回 description。
+# 历史上 LLM 易把检查动作的自然语言标题（如「镜像文件占用检查」）写进 resource_keyword
+# （UI 的"关键字"字段），导致 instruction 留空、说明错显为关键字。此处做防御性兜底：
+# 当 acquire.args.instruction 缺失、而 resource_keyword 读起来像说明性长句时，迁回 instruction。
 _DESCRIPTION_VERBS = frozenset({
     "检查", "确认", "占用", "查看", "判断", "核对", "检测", "查询", "分析",
     "定位", "获取", "导出", "验证", "排查", "统计", "罗列", "列举",
@@ -284,13 +284,13 @@ def _looks_descriptive(text: Any) -> bool:
 
 
 def _clean_signal_description(signal: dict[str, Any]) -> None:
-    """兜底纠错（就地修改）：把错填进"关键字"字段的说明性文本迁回 description。
+    """兜底纠错（就地修改）：把错填进"关键字"字段的说明性文本迁回 instruction。
 
     覆盖两类 LLM 错填（均把动作标题/说明误当关键字）：
     1) ``resource_keyword`` 实为说明（日志/服务类 QFK 的"资源/主题"字段）：
-       迁回 description 并清空（可选字段，清空不破坏 v2 契约）。
+       迁回 instruction 并清空（可选字段，清空不破坏 v2 契约）。
     2) ``match.pattern`` 实为说明性长句（QFK 的"关键字"字段；qfk_system 无 resource_keyword
-       时 LLM 易把"镜像文件占用检查"类动作标题写进 match.pattern）：迁回 description，
+       时 LLM 易把"镜像文件占用检查"类动作标题写进 match.pattern）：迁回 instruction，
        pattern 清空并标记 ``provenance.needs_review=True``，交由人工补精确匹配串
        （精确串无法凭空反推，故不臆造，仅兜底纠位 + 标记复核）。
 
@@ -299,19 +299,19 @@ def _clean_signal_description(signal: dict[str, Any]) -> None:
     """
     acquire = signal.get("acquire") or {}
     args = acquire.get("args") or {}
-    desc = (args.get("description") or "").strip()
+    desc = (args.get("instruction") or "").strip()
 
-    # 1) resource_keyword 实为说明 → 迁回 description
+    # 1) resource_keyword 实为说明 → 迁回 instruction
     if not desc:
         rk = args.get("resource_keyword")
         if _looks_descriptive(rk):
-            args["description"] = str(rk).strip()
+            args["instruction"] = str(rk).strip()
             args.pop("resource_keyword", None)
-            desc = args["description"]
-            logger.warning("extract_signals 兜底纠错：resource_keyword 实为信号说明，已迁移至 description: %s", rk)
+            desc = args["instruction"]
+            logger.warning("extract_signals 兜底纠错：resource_keyword 实为信号说明，已迁移至 instruction: %s", rk)
 
-    # 2) match.pattern 实为说明性长句 → 迁回 description（QFK 的"关键字"字段）
-    #    仅当 description 仍缺失时处理；短匹配串（如"镜像占用"/"docker"/"overlay2"）即便含
+    # 2) match.pattern 实为说明性长句 → 迁回 instruction（QFK 的"关键字"字段）
+    #    仅当 instruction 仍缺失时处理；短匹配串（如"镜像占用"/"docker"/"overlay2"）即便含
     #    动词也视为真实匹配串，绝不误清空；仅「含动作动词 且 长度≥6」的说明性长句才迁移，
     #    并清空 pattern、标记 needs_review=True，交由人工补精确匹配串。
     if not desc:
@@ -323,11 +323,11 @@ def _clean_signal_description(signal: dict[str, Any]) -> None:
                 and _looks_descriptive(pattern)
                 and len(pattern.strip()) >= 6
             ):
-                args["description"] = pattern.strip()
+                args["instruction"] = pattern.strip()
                 matcher["pattern"] = ""
                 signal.setdefault("provenance", {})["needs_review"] = True
                 logger.warning(
-                    "extract_signals 兜底纠错：match.pattern 实为信号说明，已迁移至 description 并标记 needs_review: %s",
+                    "extract_signals 兜底纠错：match.pattern 实为信号说明，已迁移至 instruction 并标记 needs_review: %s",
                     pattern,
                 )
 
@@ -345,7 +345,7 @@ def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
     - review.require_human_confirm: 是否必须人工授权后才可执行
     - orchestrate.phase: diagnostic(诊断只读) / solution(处置动作)
     """
-    # 说明/关键字 兜底纠错（先于溯源/置信度注入，确保落库的 description 正确）
+    # 说明/关键字 兜底纠错（先于溯源/置信度注入，确保落库的 instruction 正确）
     _clean_signal_description(signal)
 
     quality = _signal_quality_score(signal)
@@ -550,8 +550,8 @@ def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[li
     """对 LLM 返回的 v2 信号列表做校验，返回 (validated, rejected)。
 
     v2 直出：LLM 直接产出 v2 嵌套结构，链路全程以 v2 契约处理。
-    v1 扁平格式（含 signal_category 而无 acquire 段）已彻底下线，此类输入将被直接
-    拒绝（不再经 migrate_signal_document 兜底归一）。
+    仅接受 v2 嵌套格式（含 acquire 段）；旧 v1 扁平格式（含 signal_category 而无 acquire 段）
+    已彻底下线，此类输入将被直接拒绝。
 
     Args:
         raw_signals: LLM 返回的 signal dict 列表

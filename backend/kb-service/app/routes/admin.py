@@ -30,11 +30,6 @@ from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import validate_acquire_args
-from shared.schemas.signal_migration import (
-    migrate_signal_document,
-    normalize_qfk_keyword_alias,
-    unwrap_signals,
-)
 from shared.schemas.signal_schema import validate_signals_json
 from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
@@ -46,20 +41,26 @@ from app.services.sop_parser import extract_sop_variables, merge_variable_schema
 from app.services.sop_tool_contract_validator import validate_sop_tool_contract
 
 
+def _load_signals_json(raw: Any) -> dict:
+    """把存储态 signals_json（dict 或 JSON 字符串）解析为 v2 文档 dict。
+
+    仅做 JSON 解析，不做任何 v1 归一——运行时仅存在 v2 单一版本。
+    """
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return raw or {}
+
+
 def _signals_for_response(raw: Any) -> dict:
     """GET 响应直出 v2 文档（前端原生读 v2 对象化，RFC §7 演进，2026-07-22）：
 
-    不再归一为扁平 legacy 列表——直接返回标准化 v2 文档
-    ``{schema_version, signals:[...]}``，前端 ``KbdReviewView.vue`` 已原生基于 v2 结构
-    渲染/编辑（无适配层、零信息损失）。
-    无论存储态是 v2 对象还是 v1 扁平 list，均经 ``migrate_signal_document`` 归约为
-    规范 v2 文档返回，保证 GET 契约稳定为 v2。"""
-    doc = migrate_signal_document(raw)
-    # 读边界别名归一：QFK keyword→resource_keyword，使前端编辑框（绑定 resource_keyword）
-    # 正确显示历史 keyword 值，消除显示错位且不丢数据。
-    for s in doc.get("signals", []):
-        normalize_qfk_keyword_alias(s)
-    return doc
+    直接返回标准化 v2 文档 ``{schema_version, signals:[...]}``，前端
+    ``KbdReviewView.vue`` 已原生基于 v2 结构渲染/编辑（无适配层、零信息损失）。
+    运行时仅存在 v2 单一版本，无 v1 扁平 list 与 to_legacy_signal 反向桥接。"""
+    return _load_signals_json(raw)
 
 
 if TYPE_CHECKING:
@@ -562,20 +563,19 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
         # 门 1：signals_json 非空（无关键信号 → CDD 不可执行）
         # 直接切 v2 列形态（RFC §7）：signals_json 现为 {schema_version, signals} 对象，
         # 需先解包为信号列表再判空。
-        _raw_signals = unwrap_signals(row["signals_json"])
+        _raw_signals = (_load_signals_json(row["signals_json"]) or {}).get("signals", [])
         if not _raw_signals:
             raise HTTPException(
                 status_code=422,
                 detail=f"KBD 条目 {kbd_id} 缺少关键信号（signals_json 为空），请先调用 /extract-signals 抽取后再审核",
             )
         # 门 1.5：至少含 1 条消费者(backend)信号，否则 CDD 无法执行差异消除（§9）
-        # v2 原生判定：acquire.tool 以 qfk 开头 或 provenance.category==backend（兼容 v1 signal_category）
+        # v2 原生判定：acquire.tool 以 qfk 开头 或 provenance.category==backend
         _has_consumer = any(
             isinstance(s, dict)
             and (
                 (s.get("acquire") or {}).get("tool", "").startswith("qfk")
                 or (s.get("provenance") or {}).get("category") == "backend"
-                or s.get("signal_category") == "backend"
             )
             for s in _raw_signals
         )
@@ -1655,11 +1655,10 @@ class KbdUpdateRequest(BaseModel):
     is_temporary: str | None = Field(None, description="是否是临时解决方案章节")
     recommendations: str | None = Field(None, description="建议与总结章节")
     # 关键信号集合（agent 可执行与判定）
-    # 直接切 v2 列形态（RFC §7）：接受 v2 数组级对象 {schema_version, signals}
-    # 或 v1 扁平 list；保存时统一归约为 v2（migrate_signal_document）。
+    # v2 列形态（RFC §7）：接受 v2 数组级对象 {schema_version, signals}。
     signals_json: Any | None = Field(
         None,
-        description="关键信号集合：v2 对象 {schema_version,signals} 或 v1 扁平 list（保存时统一归约 v2）",
+        description="关键信号集合：v2 对象 {schema_version,signals}",
     )
     # 聚合渲染（可选，不传则自动由章节重建）
     content_md: str | None = Field(None, description="聚合 Markdown（优先用传入的值；不传则自动由章节重建）")
@@ -1718,12 +1717,7 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
 
     if body.signals_json is not None:
         # 直接切 v2 列形态（RFC §7）：保存时统一归约为 v2 数组级对象
-        v2_doc = migrate_signal_document(body.signals_json)
-        # 写边界别名归一：QFK 历史 keyword → resource_keyword（契约字段）。无论前端回写
-        # 还是存量「半残 v2」(PR 修复前抽取、args 带 keyword) 均归一，避免 §6.1
-        # additionalProperties:false 校验 422（KBD 详情页「保存失败，请重试」根因）。
-        for s in v2_doc.get("signals", []):
-            normalize_qfk_keyword_alias(s)
+        v2_doc = _load_signals_json(body.signals_json)
         # 轻量纯 Python 校验（字段级友好提示，语义与 JSON Schema 对齐）
         for s in v2_doc.get("signals", []):
             acquire = s.get("acquire") or {}

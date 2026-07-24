@@ -18,13 +18,42 @@ from app.adapters.agents.htp.kbd_model import KBD
 # ─── 测试数据工厂 ─────────────────────────────────────────────────────────────
 
 
+def _expected_to_matcher(expected_pattern):
+    """把 __REGEX__:/__CONTAINS__:/__MATCHER__: 序列化串还原为 v2 Matcher dict。
+
+    v2 Matcher 契约类型为 keyword/regex/state/threshold/json_path/exists：
+    - __CONTAINS__ 等价于 keyword + mode="or"（任一关键字出现即命中）
+    - __REGEX__ 等价于 regex
+    """
+    if not expected_pattern:
+        return None
+    if expected_pattern.startswith("__REGEX__:"):
+        return {
+            "type": "regex",
+            "pattern": expected_pattern[len("__REGEX__:"):],
+            "mode": "or",
+            "expected": True,
+        }
+    if expected_pattern.startswith("__CONTAINS__:"):
+        return {
+            "type": "keyword",
+            "pattern": expected_pattern[len("__CONTAINS__:"):],
+            "mode": "or",
+            "expected": True,
+        }
+    if expected_pattern.startswith("__MATCHER__:"):
+        import json as _json
+        return _json.loads(expected_pattern[len("__MATCHER__:"):])
+    return expected_pattern
+
+
 def make_kbd(
     kbd_id: str,
     steps: list[tuple[str, str]],  # [(tool_name, expected_pattern), ...]
     root_cause: str = "测试根因",
     similarity: float = 0.8,
 ) -> KBD:
-    """快速构建 KBD 测试对象（signals 为 raw dict 列表，契合 KBD.signals 契约）。"""
+    """快速构建 KBD 测试对象（signals 为 v2 嵌套 dict 列表）。"""
     return KBD(
         id=kbd_id,
         name=f"KBD {kbd_id}",
@@ -32,10 +61,9 @@ def make_kbd(
         problem_description=f"{kbd_id} 的问题描述",
         signals=[
             {
-                "signal_category": "backend",
-                "acquirer": tool_name,
-                "acquirer_args": {},
-                "expected_pattern": expected_pattern,
+                "acquire": {"tool": tool_name, "args": {}},
+                "match": _expected_to_matcher(expected_pattern),  # v2 Matcher dict
+                "provenance": {"category": "backend"},
             }
             for tool_name, expected_pattern in steps
         ],
@@ -376,7 +404,7 @@ class TestToolDefinitionFallback:
         from app.tools.qkv.signal import FrontendSignal
 
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
-        sig = {"acquirer": "qkv_alert", "acquirer_args": {"keyword": "disk"}}
+        sig = {"acquire": {"tool": "qkv_alert", "args": {"keyword": "disk"}}}
         fsig = diag._signal_to_qkv(sig, {})
         assert isinstance(fsig, FrontendSignal)
         # signals_json 未配置 produces -> 应采用 tool_definition 默认值
@@ -387,9 +415,8 @@ class TestToolDefinitionFallback:
 
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
         sig = {
-            "acquirer": "qkv_alert",
-            "acquirer_args": {"keyword": "disk"},
-            "produces": [{"name": "VM", "path": "vm"}],
+            "acquire": {"tool": "qkv_alert", "args": {"keyword": "disk"}},
+            "orchestrate": {"produces": [{"name": "VM", "path": "vm"}]},
         }
         fsig = diag._signal_to_qkv(sig, {})
         assert isinstance(fsig, FrontendSignal)
@@ -407,7 +434,7 @@ class TestToolDefinitionFallback:
         assert isinstance(bsig, BackendSignal)
         # signals_json 未配置 matcher -> 应采用 tool_definition 默认值
         assert bsig.match_mode == "or"
-        assert bsig.keywords == ["X"]
+        assert bsig.keyword == ["X"]
 
 
 # ─── 集成测试：完整诊断主循环 ────────────────────────────────────────────────
@@ -634,10 +661,9 @@ class TestDiagnoseLoop:
             problem_description="测试问题描述",
             signals=[
                 {
-                    "signal_category": "backend",
-                    "acquirer": "acli_vm_config",
-                    "acquirer_args": {"vm_name": "{{vm_name}}"},
-                    "expected_pattern": "__CONTAINS__:ok",
+                    "acquire": {"tool": "acli_vm_config", "args": {"vm_name": "{{vm_name}}"}},
+                    "match": {"type": "contains", "keyword": "ok"},
+                    "provenance": {"category": "backend"},
                 }
             ],
             root_cause="测试",

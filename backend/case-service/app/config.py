@@ -2,6 +2,7 @@
 Case Service Configuration
 """
 
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -24,10 +25,7 @@ class Settings(BaseSettings):
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
     KB_PUSH_ENABLED: bool = True  # 环境变量 KB_PUSH_ENABLED=false 可禁用
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "ignore"
+    model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 
 settings = Settings()

@@ -5,7 +5,7 @@ Scheduler Service Configuration
 import json
 from typing import Any
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 # 默认AI助手注册表配置
@@ -91,10 +91,7 @@ class Settings(BaseSettings):
             return "auto"
         return mode
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "ignore"
+    model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 
 settings = Settings()

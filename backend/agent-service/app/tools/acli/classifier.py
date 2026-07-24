@@ -10,9 +10,9 @@ import re
 # acli 风险规则（risk 从高到低匹配，第一个命中获胜）
 # acli 命令有两种格式：acli vm start abc-123 或 acli vm abc-123 start
 #
-# 重要：qfk_system / qfk_vm 等后端信号会把 sub_command 直接拼成
-#   `acli {namespace} {sub_command}`  （见 qfk/handlers.GenericSubCommandHandler）
-# 若 sub_command 本身是写操作（如 `kill -9 <PID>`、`reboot`、`rm -rf`），命令会被
+# 重要：qfk_system / qfk_vm 等后端信号会把 command 直接拼成
+#   `acli {namespace} {command}`  （见 qfk/handlers.GenericSubCommandHandler）
+# 若 command 本身是写操作（如 `kill -9 <PID>`、`reboot`、`rm -rf`），命令会被
 # BridgeRelayExecutor 重新用本分类器求值（executor.py:468 classify_acli）。因此必须在此
 # 显式覆盖「系统子命令中包裹的非只读动作」，否则会被默认判为 risk=1 静默自动执行（安全倒挂）。
 _ACLI_RISK_RULES: list[tuple[int, re.Pattern]] = [

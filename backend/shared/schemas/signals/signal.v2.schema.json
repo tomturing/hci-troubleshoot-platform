@@ -44,9 +44,6 @@
         },
         "review": {
           "$ref": "#/definitions/review"
-        },
-        "_v1_legacy": {
-          "type": "object"
         }
       }
     },
@@ -297,8 +294,6 @@
       ],
       "required": [
         "type",
-        "pattern",
-        "mode",
         "expected"
       ],
       "additionalProperties": false,
@@ -314,6 +309,26 @@
         },
         "expected": {
           "type": "boolean"
+        },
+        "value": {
+          "type": [
+            "number",
+            "integer"
+          ]
+        },
+        "operator": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "expected_value": {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
         }
       }
     },
@@ -338,7 +353,7 @@
         },
         "produces": {
           "type": "array",
-          "description": "该信号向变量池产出的变量（v1 produces: [{name, type?, path?}]）",
+          "description": "该信号向变量池产出的变量（如 [{name, type?, path?}]）",
           "items": {
             "type": "object",
             "additionalProperties": false,

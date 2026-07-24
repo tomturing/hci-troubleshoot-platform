@@ -23,7 +23,7 @@ class QFKResult:
     """
 
     matched: bool                        # 核心判定：符合排查信号预期返回 True，不符合返回 False
-    signal_type: str                     # 执行信号类型
+    namespace: str                     # 执行信号类型
     commands: list[str]                  # 实际执行的底层 acli 指令列表
     keywords: list[str]                  # K: 对比关键字列表
     match_mode: str                      # 关键字匹配规则 (any / all)
@@ -39,7 +39,7 @@ class QFKResult:
         status_tag = "✅ 符合排查判定" if self.matched else "❌ 不符合排查判定"
         lines = [
             f"QFK 排查状态: {status_tag}",
-            f"信号类型: {self.signal_type} | 预期匹配模式: {self.match_mode}",
+            f"信号类型: {self.namespace} | 预期匹配模式: {self.match_mode}",
             f"目标关键字: {self.keywords}",
             f"执行命令: {self.commands}",
         ]
@@ -98,9 +98,9 @@ async def qfk_exec(
         )
         return QFKResult(
             matched=False,
-            signal_type=signal.namespace,
+            namespace=signal.namespace,
             commands=[],
-            keywords=signal.keywords,
+            keywords=signal.keyword,
             match_mode=signal.match_mode,
             matched_keywords=[],
             evidence="",
@@ -111,7 +111,7 @@ async def qfk_exec(
         event="qfk_engine_executing",
         namespace=signal.namespace,
         commands=commands,
-        keywords=signal.keywords,
+        keywords=signal.keyword,
         match_mode=signal.match_mode,
         node_ip=node_ip,
         conversation_id=conversation_id,
@@ -125,9 +125,9 @@ async def qfk_exec(
         # 切勿据此误判为"终端桥未启动"而去重启 terminal_bridge。
         return QFKResult(
             matched=False,
-            signal_type=signal.namespace,
+            namespace=signal.namespace,
             commands=commands,
-            keywords=signal.keywords,
+            keywords=signal.keyword,
             match_mode=signal.match_mode,
             matched_keywords=[],
             evidence="",
@@ -156,7 +156,7 @@ async def qfk_exec(
         try:
             exec_res = await _executor.execute(
                 tool_name="acli_exec",
-                args={"command": cmd, "reason": f"QFK诊断信号提取执行: {signal.description or ''}"},
+                args={"command": cmd, "reason": f"QFK诊断信号提取执行: {signal.instruction or ''}"},
                 conversation_id=conversation_id,
                 node_ip=node_ip,
                 case_id=case_id,
@@ -188,9 +188,9 @@ async def qfk_exec(
                 )
                 return QFKResult(
                     matched=False,
-                    signal_type=signal.namespace,
+                    namespace=signal.namespace,
                     commands=commands,
-                    keywords=signal.keywords,
+                    keywords=signal.keyword,
                     match_mode=signal.match_mode,
                     matched_keywords=[],
                     evidence=f"命令未在 HCI 主机执行（终端桥返回失败）: {combined.strip()[:500]}",
@@ -211,9 +211,9 @@ async def qfk_exec(
             )
             return QFKResult(
                 matched=False,
-                signal_type=signal.namespace,
+                namespace=signal.namespace,
                 commands=commands,
-                keywords=signal.keywords,
+                keywords=signal.keyword,
                 match_mode=signal.match_mode,
                 matched_keywords=[],
                 evidence=f"在通过 Bridge 执行命令 [{cmd}] 时抛出底层异常: {exec_err}",
@@ -222,7 +222,7 @@ async def qfk_exec(
             )
 
     # 3. 解析结果并做关键字评估（evaluate 同时返回命中关键字，避免重复计算）
-    matched, matched_kws, evidence = handler.evaluate(results, signal.keywords, signal.match_mode)
+    matched, matched_kws, evidence = handler.evaluate(results, signal.keyword, signal.match_mode)
 
     # 4. 最终布尔判定
     # match_mode == "not" 已在 evaluate 内部表达取反语义（均不出现才为真），无需再翻转；
@@ -249,9 +249,9 @@ async def qfk_exec(
 
     return QFKResult(
         matched=final_matched,
-        signal_type=signal.namespace,
+        namespace=signal.namespace,
         commands=commands,
-        keywords=signal.keywords,
+        keywords=signal.keyword,
         match_mode=signal.match_mode,
         matched_keywords=matched_kws,
         evidence=evidence,

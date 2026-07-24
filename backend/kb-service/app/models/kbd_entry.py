@@ -106,9 +106,9 @@ class KbdEntry(Base):
     recommendations = Column(Text, nullable=False, default="")  # 建议与总结（可选）
 
     # ── 关键信号集合（供 agent 执行与判定）────────────────────────────────────
-    # 格式：[{"id","signal_category","keyword","acquirer","acquirer_args","produces","requires","matcher"}]
-    # signal_category: frontend(producer=QKV) / backend(consumer=QFK)
-    # acquirer_args / matcher 内占位符统一 {{VAR}} 大写（见 ADR-2）
+    # v2 嵌套文档格式：[{"acquire":{"tool","args"}, "match":{...}, "orchestrate":{"produces","requires"}, "provenance":{"category"}}]
+    # provenance.category: frontend(producer=QKV) / backend(consumer=QFK)
+    # acquire.args / match 内占位符统一 {{VAR}} 大写（见 ADR-2）
     # 默认为空，由"关键信号分级抽取"阶段（pipeline Stage.EXTRACT_SIGNALS / 审核期）填充
     # 非空时 KBD 条目对 InvestigationAgent 可见（差异诊断）
     signals_json = Column(JSONB, nullable=False, default=list)  # 关键信号集合

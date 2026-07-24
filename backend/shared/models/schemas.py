@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CaseStatus(StrEnum):
@@ -84,8 +84,7 @@ class CaseResponse(BaseModel):
     trace_id: str | None
     close_reason: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MessageCreate(BaseModel):
@@ -110,9 +109,7 @@ class MessageResponse(BaseModel):
     created_at: datetime
     trace_id: str | None
 
-    class Config:
-        from_attributes = True
-        populate_by_name = True
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class CaseListResponse(BaseModel):
@@ -263,8 +260,7 @@ class EnvironmentResponse(BaseModel):
     updated_at: datetime
     trace_id: str | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EnvironmentListResponse(BaseModel):

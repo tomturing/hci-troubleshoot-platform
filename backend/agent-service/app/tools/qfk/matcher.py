@@ -135,7 +135,12 @@ def evaluate_matcher(
         try:
             hit = bool(re.search(p, text or "", re.IGNORECASE | re.DOTALL))
         except re.error:
-            return MatcherResult(matched=None)
+            # 非法正则属配置错误，不可能命中，确定性判为不匹配（不降级 LLM）
+            return MatcherResult(
+                matched=False,
+                detail={"hit": False, "error": "invalid_regex"},
+                evidence=f"【Matcher 求值 (regex)】非法正则 pattern: {p}\n最终判定: False",
+            )
         matched = hit if expected else not hit
         return MatcherResult(
             matched=matched,

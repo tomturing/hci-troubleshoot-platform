@@ -34,6 +34,8 @@ from app.adapters.agents.htp.kbd_model import (
     PATTERN_MATCHER_PREFIX,
     PATTERN_REGEX_PREFIX,
     KBDStep,
+    _acquire_tool,
+    _signal_category,
     _signal_to_step,
 )
 from app.core.utils import smart_truncate
@@ -83,13 +85,15 @@ def _signal_requires_human(signal: dict | None) -> bool:
     """
     if not signal:
         return False
-    if signal.get("require_human_confirm"):
+    if (signal.get("review") or {}).get("require_human_confirm"):
         return True
-    if signal.get("phase") == "solution":
+    if (signal.get("orchestrate") or {}).get("phase") == "solution":
         return True
-    acquirer = signal.get("acquirer", "")
+    acquire = signal.get("acquire") or {}
+    acquirer = acquire.get("tool", "")
     if acquirer.startswith("qfk_"):
-        sub = str((signal.get("acquirer_args") or {}).get("sub_command", "") or "")
+        a = acquire.get("args") or {}
+        sub = str(a.get("command") or "")
         tokens = set(re.split(r"[\s|/]+", sub.strip()))
         if tokens & _WRITE_OP_SUB_COMMANDS:
             return True
@@ -443,7 +447,7 @@ class KBDDiagnostic:
             for kbd in remaining:
                 for s in kbd.signals:
                     # 按 KBD 内容顺序遍历全部信号（含前端生产者），不再 skip 前端
-                    tool = s.get("acquirer")
+                    tool = _acquire_tool(s)
                     if not tool or tool in confirmed_tools:
                         continue
                     confirmed_tools.add(tool)
@@ -458,7 +462,7 @@ class KBDDiagnostic:
                         stage="kbd_diag_confirm",
                         metadata={
                             "tool": tool,
-                            "category": s.get("signal_category"),
+                            "category": _signal_category(s),
                             "args": tool_args,
                             "remaining_candidates": len(remaining),
                             "purpose": "关键信号确认（按 KBD 内容顺序，含前端生产者）",
@@ -790,11 +794,11 @@ class KBDDiagnostic:
         seen: set[str] = set()
         for kbd in candidates:
             for s in kbd.signals:
-                if s.get("signal_category") != "frontend":
+                if _signal_category(s) != "frontend":
                     continue
                 key = (
-                    s.get("acquirer", ""),
-                    json.dumps(s.get("acquirer_args", {}), sort_keys=True, ensure_ascii=False),
+                    _acquire_tool(s),
+                    json.dumps((s.get("acquire") or {}).get("args") or {}, sort_keys=True, ensure_ascii=False),
                 )
                 if key in seen:
                     continue
@@ -807,7 +811,7 @@ class KBDDiagnostic:
                 if fsignal is None:
                     logger.warning(
                         event="kbd_diag_producer_skip",
-                        acquirer=s.get("acquirer"),
+                        acquirer=_acquire_tool(s),
                         session_id=session_id,
                     )
                     continue
@@ -824,7 +828,7 @@ class KBDDiagnostic:
                 else:
                     logger.warning(
                         event="kbd_diag_producer_failed",
-                        acquirer=s.get("acquirer"),
+                        acquirer=_acquire_tool(s),
                         error=res.error,
                         session_id=session_id,
                     )
@@ -845,9 +849,9 @@ class KBDDiagnostic:
         让 tool_definition 生效：当 signals_json 未配置 produces 时，回退到
         admin-ui 配置的 tool_definition 默认值（与 _signal_to_qkv 保持一致）。
         """
-        produces = signal.get("produces")
+        produces = (signal.get("orchestrate") or {}).get("produces")
         if not produces:
-            produces = self._tool_def_default(signal.get("acquirer", ""), "produces") or []
+            produces = self._tool_def_default(_acquire_tool(signal), "produces") or []
         if not res.values:
             return
         first = res.values[0]
@@ -985,7 +989,8 @@ class KBDDiagnostic:
         """从生产者信号 dict 构造 qkv/signal.FrontendSignal（解析占位符后再构造）。"""
         from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
 
-        acquirer = signal.get("acquirer", "")
+        acquire = signal.get("acquire") or {}
+        acquirer = acquire.get("tool", "")
         parts = acquirer.split("_", 1)
         if len(parts) != 2 or parts[0] != "qkv":
             return None
@@ -993,8 +998,8 @@ class KBDDiagnostic:
             query = FrontendQueryType(parts[1])
         except ValueError:
             return None
-        args = self._resolve_args(signal.get("acquirer_args", {}) or {}, env_context, {})
-        produces = signal.get("produces")
+        args = self._resolve_args(acquire.get("args") or {}, env_context, {})
+        produces = (signal.get("orchestrate") or {}).get("produces")
         if not produces:
             # 让 tool_definition 生效：signals_json 未配置 produces 时，
             # 回退到 admin-ui 配置的 tool_definition 默认值。
@@ -1013,7 +1018,7 @@ class KBDDiagnostic:
     def _signal_to_qkv_from_step(self, step: KBDStep, env_context: dict[str, str]) -> Any:
         """从 KBDStep 构造前端信号（兜底路径）。"""
         return self._signal_to_qkv(
-            {"acquirer": step.tool_name, "acquirer_args": step.tool_args_template}, env_context
+            {"acquire": {"tool": step.tool_name, "args": step.tool_args_template}}, env_context
         )
 
     def _fill_pool_from_qkv_on_step(self, step: KBDStep, res: Any) -> None:
@@ -1050,31 +1055,26 @@ class KBDDiagnostic:
             p = matcher.get("pattern", "")
             keywords = [p] if isinstance(p, str) else list(p or [])
 
-        # 构建信号数据（兼容新旧字段）
+        # 构建 v2 扁平信号数据
         signal_data = {
             "namespace": namespace,
             "keyword": keywords,
             "match_mode": matcher.get("mode", "or"),
             "expected": bool(matcher.get("expected", True)),
 
-            # 新字段
-            "instruction": args.get("instruction") or getattr(step, "description", None),
+            # v2 扁平字段
+            "instruction": args.get("instruction"),
             "host": args.get("host"),
             "vm": args.get("vm"),
             "timeout": args.get("timeout", 10),
 
             # 特有字段
-            "command": args.get("command") or args.get("sub_command"),
+            "command": args.get("command"),
             "container": args.get("container", "asv-con"),
             "file": args.get("file"),
-            "end": args.get("end"),
+            "time_window": args.get("time_window"),
             "service": args.get("service"),
             "action": args.get("action", "status"),
-
-            # 兼容旧字段
-            "target": args.get("target"),
-            "sub_command": args.get("sub_command"),
-            "description": getattr(step, "description", None),
         }
 
         try:

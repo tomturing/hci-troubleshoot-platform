@@ -30,7 +30,7 @@ VALUES (
 2. 生产者-消费者解耦：producer 写变量（orchestrate.produces）→ consumer 读变量（orchestrate.requires）；变量是两者唯一契约面。
 3. 溯源与门禁分离：provenance 记录来自哪、可信度多少（含 evidence 逐字证据，便于审计）；review 记录是否需人工门禁。二者都不进执行路径。
 4. 诊断只读原则：仅「诊断叙事字段」可作为信号来源；根因/解决方案是 OUTPUT，绝不作为信号抽取输入。
-5. 安全默认（写操作）：凡涉及写/变更操作（acquire.args.sub_command 命中写操作词表），必须 review.require_human_confirm=true 且 orchestrate.phase=solution，绝不自动执行；且只在排查步骤明确描述「处置/修复动作」时才抽取此类信号。
+5. 安全默认（写操作）：凡涉及写/变更操作（acquire.args.command 命中写操作词表），必须 review.require_human_confirm=true 且 orchestrate.phase=solution，绝不自动执行；且只在排查步骤明确描述「处置/修复动作」时才抽取此类信号。
 
 # 输入案例
 - 标题：{title}
@@ -69,23 +69,23 @@ VALUES (
 4. 变量合法性：producer 的 produces[].name、consumer 的 requires[] 必须是可用变量集合中的名字（新变量须先加入 produces）。
 5. match 段：仅 backend（qfk_*）信号需要；frontend（qkv_*）信号可省略 match 或置 null。type ∈ [keyword, regex, state, threshold, json_path, exists]；匹配关键词放 match.pattern（不要放 acquire.args）。
 6. acquire.args 字段对照（关键，务必对齐，多/错字段会被契约拒绝）：
-   - qkv_alert：必填 keyword；可选 limit/alert_type/timeout/target/description。注意：无 is_failed 字段。
-   - qkv_task：必填 keyword；可选 is_failed/limit/timeout/target/description。（is_failed 仅属于 qkv_task，不属于 qkv_alert）
+   - qkv_alert：必填 keyword；可选 limit/alert_type/timeout/instruction。注意：无 is_failed 字段。
+   - qkv_task：必填 keyword；可选 is_failed/limit/timeout/instruction。（is_failed 仅属于 qkv_task，不属于 qkv_alert）
    - qkv_dialog：必填 keyword。
-   - qfk_log：resource_keyword（资源/主题选择器，非匹配关键词）+ resource（目标资源，支持 {{{{HOST}}}}）；可选 file/end/timeout/target/description；匹配关键词放 match.pattern。
-   - qfk_service：resource_keyword（服务名选择器）+ resource（组 asv/anet/host）；可选 sub_command/timeout/target/description。
-   - qfk_system/vm/network/storage/hardware/platform：sub_command（acli <namespace> <sub_command>）；可选 resource_keyword/timeout/target/description。
-   - 通用 target：嵌套对象 {{"scope": "{{{{HOST}}}}"}} 或 {{"path": "...", "time_window": "now/-1h"}}，用于主机/路径/时间窗定位。
-7. 写操作安全：若 acquire.tool 为 qfk_* 且 acquire.args.sub_command 命中写/变更动词（start/stop/restart/delete/set/create/...），必须 review.require_human_confirm=true、orchestrate.phase=solution；且只在排查步骤明确描述「处置/修复动作」时才抽取此类信号，纯诊断步骤不要编造写操作。
+   - qfk_log：resource_keyword（资源/主题选择器，非匹配关键词）；可选 host（支持 {{{{HOST}}}}）/file/path/time_window/timeout/instruction；匹配关键词放 match.pattern。
+   - qfk_service：resource_keyword（服务名选择器）+ container（组 asv/anet/host，默认 asv）；可选 command/timeout/instruction。
+   - qfk_system/vm/network/storage/hardware/platform：command（如 lsof/ps/...，acli <namespace> <command>）；可选 host/resource_keyword/timeout/instruction。
+   - host 即原 v1 的 target.scope：采集目标主机/作用域，用 {{{{HOST}}}} 占位（变量池解析）或字面 cluster；不要再用嵌套 target 对象。
+7. 写操作安全：若 acquire.tool 为 qfk_* 且 acquire.args.command 命中写/变更动词（start/stop/restart/delete/set/create/...），必须 review.require_human_confirm=true、orchestrate.phase=solution；且只在排查步骤明确描述「处置/修复动作」时才抽取此类信号，纯诊断步骤不要编造写操作。
 8. source_section 只能取 title/problem_description/alert_info/steps_text（根因/解决方案不作为信号来源）；evidence 必须逐字引用输入中的原句，便于审计溯源。
 9. confidence 诚实自评（0-1）：证据清晰、采集器与变量明确→0.8+；记忆模糊、靠推测→0.4-0.6；不确定→更低。无法可靠映射为合法采集器的步骤，宁缺毋滥，不要硬造信号。
 10. id 顺序编号 sig_001、sig_002...；每条信号字段严格遵循上方结构，不得新增额外顶层字段（additionalProperties=false）。
-11. 说明(description) 与 关键字 的边界（高频易错点，务必遵守）：
-   - acquire.args.description＝信号语义说明：用自然语言描述"这个检查/采集是做什么的"（如「镜像文件占用检查」「第三方进程确认」），是人类可读的标题/说明，不是匹配条件。
-   - acquire.args.resource_keyword＝资源/主题选择器：精确的【资源名/标识符】（如 vgpu、asv-xxx），不是自然语言句子；若步骤只是"对镜像占用做检查"这类描述性短语，它属于 description，禁止塞进 resource_keyword。
+11. 说明(instruction) 与 关键字 的边界（高频易错点，务必遵守）：
+   - acquire.args.instruction＝信号语义说明：用自然语言描述"这个检查/采集是做什么的"（如「镜像文件占用检查」「第三方进程确认」），是人类可读的标题/说明，不是匹配条件。
+   - acquire.args.resource_keyword＝资源/主题选择器：精确的【资源名/标识符】（如 vgpu、asv-xxx），不是自然语言句子；若步骤只是"对镜像占用做检查"这类描述性短语，它属于 instruction，禁止塞进 resource_keyword。
    - match.pattern＝匹配关键字/模式：backend 判定的精确匹配串（日志关键字、状态值等），同样不要把"检查说明"写进 match.pattern。
    - 反例（禁止）：{{"tool":"qfk_storage","args":{{"resource_keyword":"镜像文件占用检查"}}}} ❌
-     正例（正确）：{{"tool":"qfk_storage","args":{{"sub_command":"list","resource_keyword":"<实际资源名>","description":"镜像文件占用检查"}}}}。
+     正例（正确）：{{"tool":"qfk_storage","args":{{"command":"list","resource_keyword":"<实际资源名>","instruction":"镜像文件占用检查"}}}}。
 
 # 输出示例（可直接套用，已对齐全 v2 契约与采集器字段）
 {{
@@ -101,7 +101,7 @@ VALUES (
     }},
     {{
       "id": "sig_002",
-      "acquire": {{"tool": "qfk_log", "args": {{"resource_keyword": "vgpu", "resource": "{{{{HOST}}}}", "timeout": 10}}}},
+      "acquire": {{"tool": "qfk_log", "args": {{"resource_keyword": "vgpu", "host": "{{{{HOST}}}}", "timeout": 10}}}},
       "match": {{"type": "keyword", "pattern": "CPU 资源不足", "mode": "any", "expected": true}},
       "orchestrate": {{"produces": [], "requires": ["HOST"]}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "若日志含 CPU 资源不足则根因锁定", "confidence": 0.85}},
@@ -109,7 +109,7 @@ VALUES (
     }},
     {{
       "id": "sig_003",
-      "acquire": {{"tool": "qfk_service", "args": {{"resource_keyword": "{{{{VM.NAME}}}}", "resource": "asv", "sub_command": "restart"}}}},
+      "acquire": {{"tool": "qfk_service", "args": {{"resource_keyword": "{{{{VM.NAME}}}}", "container": "asv", "command": "restart"}}}},
       "match": {{"type": "state", "pattern": "running", "mode": "any", "expected": true}},
       "orchestrate": {{"produces": [], "requires": ["VM"], "phase": "solution", "action": "restart"}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "重启虚拟机服务以恢复", "confidence": 0.7}},
@@ -117,7 +117,7 @@ VALUES (
     }},
     {{
       "id": "sig_004",
-      "acquire": {{"tool": "qfk_storage", "args": {{"sub_command": "list", "description": "镜像文件占用检查"}}}},
+      "acquire": {{"tool": "qfk_storage", "args": {{"command": "list", "instruction": "镜像文件占用检查"}}}},
       "match": {{"type": "keyword", "pattern": "镜像占用", "mode": "any", "expected": true}},
       "orchestrate": {{"produces": [], "requires": ["HOST"]}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "检查镜像文件占用情况", "confidence": 0.8}},

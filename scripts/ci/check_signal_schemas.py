@@ -76,9 +76,9 @@ def _main() -> int:
                     "tool": "qfk_log",
                     "args": {
                         "resource_keyword": "vgpu",
-                        "resource": "asv",
+                        "host": "asv",
                         "file": "/var/log/x.log",
-                        "end": "-1h",
+                        "time_window": "-1h",
                         "timeout": 10,
                     },
                 },

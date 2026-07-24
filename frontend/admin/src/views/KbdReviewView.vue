@@ -680,7 +680,7 @@ function startEditSignal(origIdx: number) {
   // 确保嵌套对象存在，便于 v-model 直接绑定 v2 字段路径
   draft.acquire = draft.acquire || { tool: '', args: {} }
   draft.acquire.args = draft.acquire.args || {}
-  draft.acquire.args.target = draft.acquire.args.target || {}
+  draft.acquire.args.host = draft.acquire.args.host || ''
   draft.match = draft.match || { type: 'keyword', pattern: '', mode: 'or', expected: true }
   draft.orchestrate = draft.orchestrate || {}
   signalEditDraft.value = draft
@@ -1668,7 +1668,7 @@ onMounted(() => {
                   <div v-else-if="sigTool(signalEditDraft) === 'qkv_dialog'" class="field-hint">任务失败型弹框关键字（acli dialog get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机创建失败、磁盘替换失败、版本升级失败。多个用逗号分隔</div>
                   <div v-else class="field-hint">前端采集匹配关键字（acli &lt;task|dialog|alert&gt; get -k）：取自「分类基线」标签。多个用逗号分隔</div>
                   <div class="field-hint keyword-check" :class="{ 'is-warn': qkvKeywordMismatch(signalEditDraft) }">校验规则：关键字须与本案例「分类基线」标签语义一致——任务失败型（…失败/卡住/异常/不达预期）用 qkv_task/qkv_dialog；告警型（…告警）用 qkv_alert。类型选错会导致 acli 查不到记录、信号恒为假<template v-if="qkvKeywordMismatch(signalEditDraft)"> ⚠ 当前「{{ sigTool(signalEditDraft) }} + 该关键字」疑似类型不匹配，请复核</template></div>
-                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.description" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                   <!-- 产出变量编辑（v2 orchestrate.produces） -->
                   <div class="signal-row">
@@ -1709,7 +1709,7 @@ onMounted(() => {
                 <div v-if="editingSignalIndex !== item.origIdx">
                   <!-- 共有字段 -->
                   <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).description || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">主机</span><span class="signal-v code">{{ sigArgs(item.sig).target?.scope || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">主机</span><span class="signal-v code">{{ sigArgs(item.sig).host || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">需求变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigArgs(item.sig).resource_keyword || sigArgs(item.sig).keyword || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">超时</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 10 }}s</span></div>
@@ -1724,28 +1724,28 @@ onMounted(() => {
 
                   <!-- 特有字段：qfk_system -->
                   <template v-if="sigTool(item.sig) === 'qfk_system'">
-                    <div class="signal-row"><span class="signal-k">命令</span><span class="signal-v code">{{ sigArgs(item.sig).sub_command || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">命令</span><span class="signal-v code">{{ sigArgs(item.sig).command || '—' }}</span></div>
                     <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'asv-con' }}</span></div>
                   </template>
 
                   <!-- 特有字段：qfk_service -->
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword || sigArgs(item.sig).target?.resource || '—' }}</span></div>
-                    <div class="signal-row"><span class="signal-k">动作</span><span class="signal-v">{{ sigArgs(item.sig).sub_command || sigOrch(item.sig).action || 'status' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">动作</span><span class="signal-v">{{ sigArgs(item.sig).command || sigOrch(item.sig).action || 'status' }}</span></div>
                   </template>
 
                   <!-- 特有字段：qfk_vm/network/storage/hardware/platform -->
                   <template v-if="['qfk_vm', 'qfk_network', 'qfk_storage', 'qfk_hardware', 'qfk_platform'].includes(sigTool(item.sig))">
-                    <div class="signal-row"><span class="signal-k">命令</span><span class="signal-v code">{{ sigArgs(item.sig).sub_command || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">命令</span><span class="signal-v code">{{ sigArgs(item.sig).command || '—' }}</span></div>
                   </template>
                 </div>
 
                 <!-- 编辑模式 -->
                 <div v-else>
                   <!-- 共有字段 -->
-                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.description" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
+                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
-                  <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.target.scope" size="small" placeholder="{{HOST}} 或 cluster" /></div>
+                  <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或 cluster" /></div>
                   <div class="field-hint" v-pre>采集目标主机，使用变量池占位符 {{HOST}}（由上游生产者信号产出）或固定值 cluster</div>
                   <!-- 需求变量编辑（v2 orchestrate.requires，字符串数组） -->
                   <div class="signal-row">
@@ -1779,13 +1779,13 @@ onMounted(() => {
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
                     <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="日志文件/来源，如 /var/log/messages、dmesg" /></div>
                     <div class="field-hint">日志文件名或来源；支持路径，留空则按 resource 取默认日志。对应 acquire.args.file</div>
-                    <div class="signal-row"><span class="signal-k">结束时间</span><el-input v-model="signalEditDraft.acquire.args.end" size="small" placeholder="结束时间，如 now 或 2026-07-23T10:00" /></div>
-                    <div class="field-hint">采集截止时间窗（target.time_window），留空取最新</div>
+                    <div class="signal-row"><span class="signal-k">结束时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="结束时间窗，如 now/-1h 或 2026-07-23T10:00" /></div>
+                    <div class="field-hint">采集截止时间窗（acquire.args.time_window），留空取最新</div>
                   </template>
 
                   <!-- 特有字段：qfk_system -->
                   <template v-if="sigTool(signalEditDraft) === 'qfk_system'">
-                    <div class="signal-row"><span class="signal-k">命令</span><el-input v-model="signalEditDraft.acquire.args.sub_command" size="small" placeholder="执行命令（必填）" /></div>
+                    <div class="signal-row"><span class="signal-k">命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="执行命令（必填）" /></div>
                     <div class="signal-row"><span class="signal-k">容器</span>
                       <el-select v-model="signalEditDraft.acquire.args.container" size="small">
                         <el-option label="asv-con" value="asv-con" />
@@ -1813,7 +1813,7 @@ onMounted(() => {
 
                   <!-- 特有字段：qfk_vm/network/storage/hardware/platform -->
                   <template v-if="['qfk_vm', 'qfk_network', 'qfk_storage', 'qfk_hardware', 'qfk_platform'].includes(sigTool(signalEditDraft))">
-                    <div class="signal-row"><span class="signal-k">命令</span><el-input v-model="signalEditDraft.acquire.args.sub_command" size="small" placeholder="子命令，如 list / show / get status" /></div>
+                    <div class="signal-row"><span class="signal-k">命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="子命令，如 list / show / get status" /></div>
                     <div class="field-hint">acli 之后的子命令（如 list、show、get status）；命名空间由工具名（qfk_vm 等）隐含，勿含 acli 前缀</div>
                   </template>
                 </div>

@@ -83,7 +83,7 @@ class FrontendSignal(BaseModel):
         """从字典构建并校验，自动清洗关键词和检测状态。
 
         直接切 v2 列形态（RFC §4.4）：原生读取 acquire/args/orchestrate 段，
-        无需先经 to_legacy_signal 还原（kbd_from_dict 边界已做还原，此处为双重保险）。
+        无需任何 v1 扁平桥接还原——v2 嵌套信号由运行时直接消费。
         """
         if "acquire" in data:  # v2 嵌套信号
             a = data["acquire"]

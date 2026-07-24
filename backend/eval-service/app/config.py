@@ -2,6 +2,7 @@
 Eval Service Configuration
 """
 
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -21,10 +22,7 @@ class Settings(BaseSettings):
     # Prometheus 查询地址（agent_stats 接口拉取实时指标）
     PROMETHEUS_URL: str = "http://prometheus:9090"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "ignore"
+    model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 
 settings = Settings()

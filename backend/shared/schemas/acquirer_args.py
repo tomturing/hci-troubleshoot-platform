@@ -14,10 +14,14 @@
 
 字段命名约定（§4.4.4 语义消歧）
 ------------------------------
-- `acquire.args.keyword`    —— 仅 QKV 采集关键词（acli -k），唯一权威。
-- `acquire.args.resource_keyword` —— QFK 的"资源/主题"选择器（原 acquirer_args.keyword），
+- `acquire.args.keyword`       —— 仅 QKV 采集关键词（acli -k），唯一权威。
+- `acquire.args.resource_keyword` —— QFK 的"资源/主题"选择器，
   显式改名消歧，**不是**匹配关键词。
-- `match.pattern`           —— QFK 匹配关键词唯一权威源（原 matcher.pattern）。
+- `acquire.args.host`         —— 采集目标主机/作用域（如 {{HOST}}），特殊值 cluster 表示
+  遍历集群；由 `orchestrate.requires` 中的 HOST 变量经变量池解析。
+- `acquire.args.command`      —— QFK 子命令。
+- `acquire.args.instruction`  —— 信号语义说明。
+- `match.pattern`             —— QFK 匹配关键词唯一权威源。
 """
 
 from __future__ import annotations
@@ -26,13 +30,33 @@ import copy
 from typing import Any
 
 # ─── 公共参数：全局只定义一次 ───────────────────────────────────────────────────
-# 任何适用于 >1 个 acquirer 的字段必须进 common_args；各工具以引用方式复用，禁止另造同名。
 COMMON_ARGS: dict[str, dict[str, Any]] = {
     "timeout": {
         "type": "integer",
         "minimum": 1,
         "default": 10,
         "description": "采集/执行超时（秒）；QKV/QFK 通用",
+    },
+}
+
+# ─── 采集目标定位的扁平维度（v2 拍平的 target 字段）────────────────────────────
+# 跨 QFK 工具复用的"目标"维度，各自按需声明子集，避免幽灵字段。
+_TARGET_DIMENSIONS: dict[str, dict[str, Any]] = {
+    "host": {
+        "type": "string",
+        "description": "采集目标主机/作用域（如 {{HOST}}），特殊值 cluster 表示遍历集群",
+    },
+    "resource": {
+        "type": "string",
+        "description": "目标资源名（服务名/磁盘等）",
+    },
+    "path": {
+        "type": "string",
+        "description": "路径（日志目录/文件等）",
+    },
+    "time_window": {
+        "type": "string",
+        "description": "时间窗（如 now/-1h）",
     },
 }
 
@@ -81,19 +105,17 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
-            # 原 acquirer_args.keyword（如 "vgpu"）—— 改名消歧，非匹配关键词
+            # QFK 资源/主题选择器（改名消歧，非匹配关键词）
             "resource_keyword": {
                 "type": "string",
-                "description": "资源/主题选择器（acli log get <topic>）；原 acquirer_args.keyword，改名消歧，非匹配关键词",
+                "description": "资源/主题选择器（acli log get <topic>）；改名消歧，非匹配关键词",
             },
-            "resource": {
-                "type": "string",
-                "description": "目标资源定位（日志/服务名），支持 {{VAR}} 变量池",
-            },
-            "file": {"type": "string", "description": "日志文件路径（qfk_log 专属）"},
-            "end": {"type": "string", "description": "时间窗上界（qfk_log 专属，如 now/-1h）"},
+            "host": _TARGET_DIMENSIONS["host"],
+            "file": {"type": "string", "description": "日志文件名（acli -f）"},
+            "path": _TARGET_DIMENSIONS["path"],
+            "time_window": _TARGET_DIMENSIONS["time_window"],
         },
-        "required": ["resource_keyword", "resource"],
+        "required": ["resource_keyword"],
     },
     "qfk_service": {
         "type": "object",
@@ -102,110 +124,103 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "timeout": COMMON_ARGS["timeout"],
             "resource_keyword": {
                 "type": "string",
-                "description": "服务名选择器（acli service <group> <name>）；原 acquirer_args.keyword 改名消歧",
+                "description": "服务名选择器（acli service <container> <name>）；改名消歧",
             },
-            "resource": {
+            "container": {"type": "string", "default": "asv", "description": "服务容器（asv/vn/...）"},
+            "command": {
                 "type": "string",
-                "description": "服务所属组（asv/anet/host，qfk_service 专属）",
+                "description": "操作子命令（如 status/restart）",
             },
-            "sub_command": {"type": "string", "description": "操作子命令（如 status/restart）"},
         },
-        "required": ["resource_keyword", "resource"],
+        "required": ["resource_keyword"],
     },
     "qfk_system": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
-            "sub_command": {
+            "command": {
                 "type": "string",
-                "description": "acli system <sub_command>（如 lsof/ps auxf/lsblk/iostat/smartctl）",
+                "description": "acli system <command>（如 lsof/ps auxf/lsblk/iostat/smartctl）",
             },
+            "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {
                 "type": "string",
-                "description": "系统检查资源/主题选择器（可选，如镜像层路径 overlay2/docker）；"
-                "说明性文本会被兜底迁移至 description，故与兄弟 qfk_* 工具保持字段一致，避免被 strict schema 拒绝",
+                "description": "系统检查资源/主题选择器（可选，如镜像层路径 overlay2/docker）",
             },
             "container": {"type": "string", "default": "asv-con", "description": "执行容器（qfk_system 专属）"},
         },
-        "required": ["sub_command"],
+        "required": ["command"],
     },
     "qfk_vm": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
-            "sub_command": {"type": "string", "description": "acli vm <sub_command>（如 list/status/console）"},
+            "command": {"type": "string", "description": "acli vm <command>（如 list/status/console）"},
+            "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "虚拟机名选择器（可选）"},
         },
-        "required": ["sub_command"],
+        "required": ["command"],
     },
     "qfk_network": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
-            "sub_command": {"type": "string", "description": "acli network <sub_command>"},
+            "command": {"type": "string", "description": "acli network <command>"},
+            "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "网络资源名选择器（可选）"},
         },
-        "required": ["sub_command"],
+        "required": ["command"],
     },
     "qfk_storage": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
-            "sub_command": {"type": "string", "description": "acli storage <sub_command>（如 asan disk list）"},
+            "command": {"type": "string", "description": "acli storage <command>（如 asan disk list）"},
+            "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "存储资源名选择器（可选）"},
         },
-        "required": ["sub_command"],
+        "required": ["command"],
     },
     "qfk_hardware": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
-            "sub_command": {"type": "string", "description": "acli hardware <sub_command>"},
+            "command": {"type": "string", "description": "acli hardware <command>"},
+            "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "硬件资源名选择器（可选）"},
         },
-        "required": ["sub_command"],
+        "required": ["command"],
     },
     "qfk_platform": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
-            "sub_command": {"type": "string", "description": "acli platform <sub_command>"},
+            "command": {"type": "string", "description": "acli platform <command>"},
+            "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "平台资源名选择器（可选）"},
         },
-        "required": ["sub_command"],
+        "required": ["command"],
     },
 }
 
-# ─── 注入公共可选字段：target / description ───────────────────────────────────
-# 真实 v1 数据里 target（主机/资源/路径/时间窗）常置于 acquirer_args，description 亦可能落入；
-# 为使 v2 的 acquire.args 能容纳真实数据（validate_acquire_args 与 JSON Schema 均
-# additionalProperties:false），在此单一来源处为所有 tool 注入这两个可选字段，杜绝幽灵字段。
-_TARGET_ARGS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "description": "采集目标定位（主机/资源/路径/时间窗），支持 {{VAR}} 变量池；对应 v1 acquirer_args.target",
-    "properties": {
-        "scope": {"type": "string", "description": "主机/作用域选择器（如 {{HOST}}）"},
-        "resource": {"type": "string", "description": "资源名（服务名/日志名/磁盘等）"},
-        "path": {"type": "string", "description": "路径（日志目录/文件等）"},
-        "time_window": {"type": "string", "description": "时间窗（如 now/-1h）"},
-    },
-}
+# ─── 注入公共可选字段：instruction（信号语义说明）──────────────────────────────
+# 真实数据里 instruction 常置于 acquire.args，为使 v2 的 acquire.args 能容纳真实数据
+# （validate_acquire_args 与 JSON Schema 均 additionalProperties:false），在此单一来源处
+# 为所有 tool 注入该可选字段，杜绝幽灵字段。
 for _name, _tool_schema in ACQUIRER_ARGS_SCHEMA.items():
     _props = _tool_schema.setdefault("properties", {})
-    _props.setdefault("target", copy.deepcopy(_TARGET_ARGS_SCHEMA))
     _props.setdefault(
-        "description",
-        {"type": "string", "description": "信号语义说明（对应 v1 顶层 description，迁移后落 _v1_legacy）"},
+        "instruction",
+        {"type": "string", "description": "信号语义说明（acli 调用的人类可读解释）"},
     )
-    # QFK 真实数据以 target（主机/资源/路径/时间窗）定位，不强约束 resource_keyword/resource，
-    # 以免合法历史信号在保存校验时被 422（RFC §7 完整方案：v2 契约容纳真实数据，
+    # QFK 真实数据以扁平 host/resource/path/time_window 定位，不强约束 resource_keyword，
+    # 以免合法历史信号在保存校验时被 422（RFC §7：v2 契约容纳真实数据，
     # additionalProperties:false 仍拒绝幽灵字段）。QKV 保留 keyword 必填。
     if _name.startswith("qfk"):
         _tool_schema["required"] = []
@@ -220,7 +235,6 @@ BACKEND_TOOLS: set[str] = set(ACQUIRER_ARGS_SCHEMA) - FRONTEND_TOOLS
 
 def get_args_schema(tool: str) -> dict[str, Any] | None:
     """返回某 acquirer 的 args schema（深拷贝，防止调用方篡改注册表）。"""
-    import copy
 
     schema = ACQUIRER_ARGS_SCHEMA.get(tool)
     return copy.deepcopy(schema) if schema else None

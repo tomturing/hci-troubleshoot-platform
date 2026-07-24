@@ -5,6 +5,7 @@ Conversation Service Configuration
 import json
 from typing import Any
 
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -108,10 +109,7 @@ class Settings(BaseSettings):
         }
         return default_registry
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "ignore"
+    model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 
 settings = Settings()

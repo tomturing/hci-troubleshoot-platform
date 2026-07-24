@@ -4,7 +4,7 @@
 
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ConversationSessionResponse(BaseModel):
@@ -21,5 +21,4 @@ class ConversationSessionResponse(BaseModel):
     category_l2: str | None = None
     category_id: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

@@ -5,40 +5,21 @@
     "timeout": {
       "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/common_args.schema.json#/properties/timeout"
     },
-    "sub_command": {
+    "command": {
       "type": "string",
-      "description": "acli vm <sub_command>（如 list/status/console）"
+      "description": "acli vm <command>（如 list/status/console）"
+    },
+    "host": {
+      "type": "string",
+      "description": "采集目标主机/作用域（如 {{HOST}}），特殊值 cluster 表示遍历集群"
     },
     "resource_keyword": {
       "type": "string",
       "description": "虚拟机名选择器（可选）"
     },
-    "target": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "采集目标定位（主机/资源/路径/时间窗），支持 {{VAR}} 变量池；对应 v1 acquirer_args.target",
-      "properties": {
-        "scope": {
-          "type": "string",
-          "description": "主机/作用域选择器（如 {{HOST}}）"
-        },
-        "resource": {
-          "type": "string",
-          "description": "资源名（服务名/日志名/磁盘等）"
-        },
-        "path": {
-          "type": "string",
-          "description": "路径（日志目录/文件等）"
-        },
-        "time_window": {
-          "type": "string",
-          "description": "时间窗（如 now/-1h）"
-        }
-      }
-    },
-    "description": {
+    "instruction": {
       "type": "string",
-      "description": "信号语义说明（对应 v1 顶层 description，迁移后落 _v1_legacy）"
+      "description": "信号语义说明（acli 调用的人类可读解释）"
     }
   },
   "required": [],

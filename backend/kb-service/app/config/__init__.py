@@ -7,6 +7,7 @@ KB Service Configuration
   - sop_template_rules.yaml 验证规则加载器（子模块）
 """
 
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -47,10 +48,7 @@ class Settings(BaseSettings):
     # LearningClaw/ProductionClaw 调用 KB Service 时携带此 Token
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "ignore"
+    model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 
 settings = Settings()

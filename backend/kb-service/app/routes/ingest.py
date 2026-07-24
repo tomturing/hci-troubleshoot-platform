@@ -160,7 +160,8 @@ class KbdIngestRequest(BaseModel):
         default_factory=list,
         description=(
             "关键信号集合（producer/consumer，供 agent 执行与判定）；"
-            "格式：[{id,signal_category,keyword,acquirer,acquirer_args,produces,requires,matcher}]；"
+            "v2 嵌套文档格式：[{acquire:{tool,args}, match:{type,pattern,mode,expected}, "
+            "orchestrate:{produces,requires}, provenance:{category}}]；"
             "pipeline 写入空列表，由关键信号分级抽取阶段填充"
         ),
     )

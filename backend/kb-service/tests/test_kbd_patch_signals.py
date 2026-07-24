@@ -27,15 +27,18 @@ async def test_update_kbd_entry_signals_json_sql_cast():
     mock_session.execute.return_value = mock_update_row
 
     client = TestClient(app)
-    test_signals = [
-        {
-            "signal_category": "frontend",
-            "acquirer": "qkv_task",
-            "keyword": "启动虚拟机",
-            "description": "在 HCI 控制台查看虚拟机任务详情",
-            "produces": [{"name": "VM", "path": "vm"}],
-        }
-    ]
+    # v2 嵌套文档（运行时仅 v2 单一版本）
+    test_signals = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "vm"}},
+                "match": {"type": "keyword", "pattern": "启动虚拟机", "mode": "any", "expected": True},
+                "orchestrate": {"produces": [{"name": "VM", "path": "vm"}]},
+                "provenance": {"category": "frontend"},
+            }
+        ],
+    }
 
     response = client.patch(
         "/api/admin/kbd/1",
@@ -47,13 +50,13 @@ async def test_update_kbd_entry_signals_json_sql_cast():
 
     assert response.status_code == 200
 
-    # 保存时统一归约为 v2 数组级对象（RFC §7），并以 CAST(... AS jsonb) 落库
+    # 保存时以 CAST(... AS jsonb) 落库 v2 文档
     executed_call = mock_session.execute.call_args
     sql_text = str(executed_call[0][0])
     assert "CAST(:signals_json AS jsonb)" in sql_text
     # 关键：落库 SQL 不得残留 ':signals_json' 字面量（否则会被 PG 报语法错误 500）
     assert ":signals_json::jsonb" not in sql_text
-    # 落库内容应为经 migrate_signal_document 归约后的 v2 文档（含 acquire 嵌套对象）
+    # 落库内容应为 v2 文档（含 acquire 嵌套对象）
     import json
 
     stored = executed_call[0][1].get("signals_json")
@@ -61,64 +64,7 @@ async def test_update_kbd_entry_signals_json_sql_cast():
     stored_signals = (
         stored_doc["signals"] if isinstance(stored_doc, dict) else stored_doc
     )
-    assert any("acquire" in s for s in stored_signals), "signals 应已归约为 v2 嵌套形态"
-
-
-@pytest.mark.anyio
-async def test_update_kbd_entry_qfk_keyword_alias_normalized():
-    """回归：保存带历史 keyword 的 qfk_system 信号（半残 v2）不再 422，落库归并为
-    resource_keyword（KBD 详情页「保存失败，请重试」根因修复）。"""
-    import json
-
-    app = FastAPI()
-    app.include_router(kbd_router)
-
-    mock_db = MagicMock()
-    mock_session = AsyncMock()
-    mock_session.__aenter__.return_value = mock_session
-    mock_db.async_session_factory.return_value = mock_session
-
-    original_check_auth = admin_route._check_auth
-    admin_route._check_auth = lambda req: None
-    set_dependencies(mock_db)
-
-    mock_update_row = MagicMock()
-    mock_update_row.mappings.return_value.first.return_value = {"id": 1, "status": "draft"}
-    mock_session.execute.return_value = mock_update_row
-
-    client = TestClient(app)
-    # 半残 v2：qfk_system 的 args 带 v1 别名 keyword（无 resource_keyword）
-    v2_doc = {
-        "schema_version": 2,
-        "signals": [
-            {
-                "id": "s1",
-                "acquire": {
-                    "tool": "qfk_system",
-                    "args": {"keyword": "镜像文件占用检查", "sub_command": "lsof"},
-                },
-                "match": {"type": "keyword", "pattern": "", "mode": "any", "expected": True},
-                "orchestrate": {"produces": [], "requires": ["HOST"]},
-                "provenance": {"category": "backend", "source_section": "steps_text", "evidence": "x", "confidence": 0.8},
-                "review": {"require_human_confirm": False, "notes": ""},
-            }
-        ],
-    }
-
-    response = client.patch(
-        "/api/admin/kbd/1",
-        json={"signals_json": v2_doc},
-        headers={"Authorization": "Bearer dev-internalapi-api-token-2026"},
-    )
-    admin_route._check_auth = original_check_auth
-
-    assert response.status_code == 200, response.text
-
-    stored = mock_session.execute.call_args[0][1].get("signals_json")
-    stored_doc = json.loads(stored) if isinstance(stored, str) else stored
-    stored_args = stored_doc["signals"][0]["acquire"]["args"]
-    assert stored_args.get("resource_keyword") == "镜像文件占用检查"
-    assert "keyword" not in stored_args
+    assert any("acquire" in s for s in stored_signals), "signals 应为 v2 嵌套形态"
 
 
 @pytest.mark.anyio
