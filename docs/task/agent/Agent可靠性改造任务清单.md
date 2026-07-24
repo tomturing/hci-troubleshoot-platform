@@ -534,3 +534,12 @@ owner: team
 - **现行 Agent 设计** → [agent设计.md](../../solution/agent/agent设计.md)
 - **工具设计** → [agent工具设计.md](../../solution/agent/agent工具设计.md)
 - QFK handlers/signal/kbd_differential 更新
+
+---
+
+## 2026-07-24 · v2 信号契约拍平与数据迁移对齐
+
+- **契约拍平**：`acquire.args` 字段对齐运行时采集器（`target.scope`/`resource`/`path` → `host`/`file`/`container`，`sub_command` → `command`，`description` → `instruction`），覆盖 11 个 `acquirer_args/*.schema.json` 与 `shared/schemas/acquirer_args.py`。
+- **Schema 修复**：`signal.v2.schema.json` 的 `match` 段扩宽为支持 6 类判定（`keyword`/`regex`/`state`/`threshold`/`json_path`/`exists`）落库，消除契约/运行时不一致坑。
+- **数据迁移**：新增 `010_flatten_v1_signal_fields.sql` 将存量 `signals_json` 的 v1 残留字段拍平为 v2 规范名；`02_system_prompts.sql` 的 KBD 抽取 prompt 同步更新字段对照。
+- **文档**：新增 `QKV_QFK信号模型v2参考.md`，改写 `QKV_QFK信号配置操作指南.md`（去 v1 扁平词汇）；`架构设计.md` / `数据库设计.md` 同步追加变更记录。
