@@ -675,7 +675,7 @@ DESCRIPTION:
     }}
   ]
 }}
-$TEMPLATE$
+$TEMPLATE$,
         '1.0',
         TRUE
     )
