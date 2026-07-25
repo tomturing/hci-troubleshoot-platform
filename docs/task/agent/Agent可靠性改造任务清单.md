@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-25 | v3.27 | **InvestigationAgent 检索 query 提炼优化（PR #616）**：`InvestigationAgent._build_retrieval_query` 过滤 S0 阶段点击控制符（`①`/`继续`等），支持提取首条真实用户主诉症状 | [2026-07-25-KBD向量搜索失效根因分析与修复](../../verify/events/2026-07-25-KBD向量搜索失效根因分析与修复.md) |
 | 2026-07-24 | v3.26 | database/seeds/02_system_prompts.sql 中 kbd_extract_signals_v2 关键信号抽取提示词字段名对齐 v2 扁平契约（command 替代 sub_command，instruction 替代 description）（PR #613） |
 | 2026-07-23 | v3.25 | database/seeds/02_system_prompts.sql 中 kbd_extract_signals_v2 关键信号抽取提示词补充规则11（说明/关键字字段边界：禁止把检查说明塞进 resource_keyword 与 match.pattern）与 sig_004 正例（PR #609） |
 | 2026-07-21 | v3.24 | **修复 terminal_bridge blog() Go 值传递导致 type 字段为空（PR #591）**：PR #587 合并后 stdout 输出仍显示 `"type":""`。根因是 Go 值传递：`blog()` 创建 logEntry → 值传递调用 `publish(e)` → `publish()` 内部修改 `e.Type = "bridge_log"` 只影响副本 → `blog()` 的 `json.Marshal(e)` 输出原始 e（Type 仍为空）。修复：在 `blog()` 的 Marshal 前补充 `e.Type = "bridge_log"` 赋值。此问题揭示 Go 结构体传参的隐晦陷阱：副本修改不影响原值，必须在值传递前完成所有字段赋值、或改用指针传递。关联工单：Q2026072171592 |
