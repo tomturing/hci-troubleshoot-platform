@@ -50,6 +50,8 @@ dependencies = [
     "jsonpath-ng>=1.8.0",
     # === 信号契约校验（RFC §6.1 JSON Schema 保存时强制）===
     "jsonschema>=4.21.0",
+    # === 中文分词（KBD 全文检索）===
+    "jieba==0.42.1",
 ]
 
 [project.optional-dependencies]
