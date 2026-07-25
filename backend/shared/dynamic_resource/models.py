@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 
@@ -35,12 +36,20 @@ class ResourceSnapshot:
     published_at: datetime | None = None
 
 
+class UsageStatus(StrEnum):
+    """动态资源使用审计的受控结果状态。"""
+
+    RETRIEVED = "retrieved"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class UsageRecord:
     """动态资源使用审计输入。"""
 
     consumer: str
-    status: str
+    status: UsageStatus
     conversation_id: str | None = None
     case_id: str | None = None
     trace_id: str | None = None
@@ -49,6 +58,10 @@ class UsageRecord:
     output_payload: Any | None = None
     error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """兼容既有字符串调用点，同时拒绝未登记状态。"""
+        object.__setattr__(self, "status", UsageStatus(self.status))
 
 
 @dataclass(frozen=True)

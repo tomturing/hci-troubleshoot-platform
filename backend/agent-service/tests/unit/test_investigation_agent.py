@@ -149,6 +149,13 @@ class TestInvestigationAgentRouting:
 
         text_events = [e for e in events if isinstance(e, AgentTextChunk)]
         assert len(text_events) >= 1
+        kb.search_cases_with_steps.assert_awaited_once_with(
+            category_id="虚拟机-003",
+            query="虚拟机无法启动",
+            top_k=15,
+            conversation_id="test-002",
+            case_id=None,
+        )
 
     @pytest.mark.asyncio
     async def test_kbd_diag_mode_yields_stage_s4(self):
@@ -374,4 +381,3 @@ class TestBuildRetrievalQuery:
     def test_returns_empty_string_if_no_user_messages(self):
         """无用户消息时返回空字符串"""
         assert InvestigationAgent._build_retrieval_query([]) == ""
-

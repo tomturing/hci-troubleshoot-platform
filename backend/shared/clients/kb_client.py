@@ -384,6 +384,8 @@ class KBClient(InternalHTTPClient):
         category_id: str,
         query: str,
         top_k: int = 15,
+        conversation_id: str | None = None,
+        case_id: str | None = None,
     ) -> list[dict]:
         """案例差异诊断（CDD）所需接口：按分类检索含结构化步骤的候选案例。
 
@@ -411,14 +413,21 @@ class KBClient(InternalHTTPClient):
             category_id: 故障分类编码，如 "虚拟机-003"
             query: 用户原始问题描述（用于语义相关性排序）
             top_k: 最多返回候选案例数量，默认 15
+            conversation_id: 对话 ID，用于检索审计关联
+            case_id: 工单 ID，用于检索审计关联
 
         Returns:
             案例列表，按相似度降序；服务不可用时返回空列表
         """
         try:
+            params = {"category_id": category_id, "query": query, "top_k": top_k}
+            if conversation_id:
+                params["conversation_id"] = conversation_id
+            if case_id:
+                params["case_id"] = case_id
             resp = await self.get(
                 f"{self._api_prefix}/kbd/search",
-                params={"category_id": category_id, "query": query, "top_k": top_k},
+                params=params,
             )
             resp.raise_for_status()
             data = resp.json()

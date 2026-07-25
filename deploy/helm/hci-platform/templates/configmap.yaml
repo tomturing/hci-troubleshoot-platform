@@ -27,6 +27,7 @@ data:
   # KBD Embedding 模型（向量召回使用，与 LLM_DEFAULT_MODEL 解耦，避免 chat 模型与 embedding 模型混用）
   # values.yaml kbService.llmEmbeddingModel 默认 "embedding-3"，按实际 LLM 网关支持的模型名覆盖
   LLM_EMBEDDING_MODEL: {{ .Values.kbService.llmEmbeddingModel | default "embedding-3" | quote }}
+  KBD_MIN_SIMILARITY: {{ .Values.kbService.minSimilarity | default 0.3 | quote }}
   # Vision LLM 单次调用超时（秒）。默认 60s；生产环境请按 LLM 服务 SLA 调整。
   # 注意：SDK max_retries=2，实际最大等待时间 = LLM_TIMEOUT × 3
   LLM_TIMEOUT: {{ .Values.kbService.llmTimeoutSec | default "60.0" | quote }}

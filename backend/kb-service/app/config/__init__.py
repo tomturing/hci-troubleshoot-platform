@@ -7,7 +7,7 @@ KB Service Configuration
   - sop_template_rules.yaml 验证规则加载器（子模块）
 """
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 
@@ -26,14 +26,12 @@ class Settings(BaseSettings):
     #   LLM_API_KEY   — 来自 secret（与 agent-service 共用同一 API Key）
     # 原 ZAI_BASE_URL / ZAI_API_KEY 从未注入到 Pod，导致 embedding 始终失败并降级 hash。
     LLM_BASE_URL: str = "http://host.docker.internal:18790"  # 开发默认值；生产由 configmap 覆盖
-    LLM_API_KEY: str = ""                                    # 生产由 secret 覆盖
-    LLM_EMBEDDING_MODEL: str = "embedding-3"                 # 由 configmap LLM_EMBEDDING_MODEL 覆盖
+    LLM_API_KEY: str = ""  # 生产由 secret 覆盖
+    LLM_EMBEDDING_MODEL: str = "embedding-3"  # 由 configmap LLM_EMBEDDING_MODEL 覆盖
 
-    # 降级：本地 bge-small-zh-v1.5（网络故障时使用）
-    BGE_MODEL_PATH: str = "/models/bge-small-zh-v1.5"  # 容器内路径
     EMBEDDING_DIM: int = 1536  # 向量维度（与 DB Vector(1536) 保持一致）
 
-    # Embedding 超时（超时后自动降级到本地模型）
+    # Embedding 超时；失败后搜索走词法检索，入库保存 NULL
     EMBEDDING_TIMEOUT_SEC: float = 5.0
 
     # ---- 分块配置 ----
@@ -45,6 +43,7 @@ class Settings(BaseSettings):
     VECTOR_TOP_K: int = 20  # 向量初始召回数
     RRF_K: int = 60  # RRF 融合参数
     RERANK_THRESHOLD: float = 0.5  # Reranker 过滤阈值（<0.5 丢弃）
+    KBD_MIN_SIMILARITY: float = Field(0.3, ge=0.0, le=1.0)  # KBD 向量候选最低余弦相似度
     DEFAULT_SEARCH_TOP_N: int = 5  # 最终返回的 chunk 数
 
     # ---- 内部鉴权 ----

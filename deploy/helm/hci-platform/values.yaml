@@ -251,7 +251,7 @@ kbService:
   llmEmbeddingModel: "embedding-3"
   embeddingDim: 1536
   embeddingTimeoutSec: "60.0"
-  bgeModelHostPath: /home/node/models/bge-small-zh-v1.5
+  minSimilarity: 0.3
   # KBD 分类与识图模型配置（注入为 CLASSIFY_MODEL / VISION_MODEL 环境变量）
   # 两者均已在 DashScope 端点验证可用且支持多模态
   classifyModel: "kimi-k2.5"

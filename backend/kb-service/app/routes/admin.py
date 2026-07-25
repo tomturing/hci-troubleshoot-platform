@@ -34,11 +34,12 @@ from shared.schemas.signal_schema import validate_signals_json
 from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
-from app.models.kbd_entry import KbdEntry, strip_markdown
+from app.models.kbd_entry import KbdEntry, build_kbd_embedding_text, strip_markdown
 from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
 from app.services.sop_tool_contract_validator import validate_sop_tool_contract
+from app.utils.jieba_hci import segment
 
 
 def _load_signals_json(raw: Any) -> dict:
@@ -499,7 +500,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
     功能清单：
     1. 更新 kbd_entry.status → published
     2. 触发 embedding 生成（调用 embedding API 对 content_md 生成向量）
-    3. 生成 tsv tsvector（BM25 索引，使用 to_tsvector('simple', content_md)）
+    3. 使用 jieba 生成中文 token，并构建 PostgreSQL tsvector
     4. 设置 published_at = NOW()
     5. 记录 reviewer_id
 
@@ -593,44 +594,24 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 status_code=422,
                 detail=f"KBD 条目 {kbd_id} 缺少分类（category_id 与 ai_category_id 均为空），请先抽取分类后再审核",
             )
-        # 构建 embedding 输入（问题侧字段，避免答案侧污染向量空间）
-        embedding_text = "\n\n".join(
-            filter(
-                None,
-                [
-                    row["title"],
-                    row["problem_description"],
-                    row["alert_info"],
-                    row["root_cause"],
-                ],
-            )
+        embedding_text = build_kbd_embedding_text(
+            title=row["title"],
+            problem_description=row["problem_description"],
+            alert_info=row["alert_info"],
+            root_cause=row["root_cause"],
+            fallback_text=row["content_raw"] or content_md,
         )
-        if not embedding_text.strip():
-            embedding_text = row["content_raw"] or content_md  # 降级：章节字段均空时用 content_md
-
-        # 过滤 Markdown 语法噪声以产生最干净的 embedding 向量表示
-        embedding_text = strip_markdown(embedding_text)
 
     # 2. 生成 embedding（事务外调用，避免长时间占用连接）
     embedding_generated = False
     embedding_vector: list[float] | None = None
+    embedding_content_hash = hashlib.sha256(embedding_text.encode("utf-8")).hexdigest()
     if _embedding_service:
         try:
             embedding_vector = await _embedding_service.embed_single(embedding_text)
             embedding_generated = True
 
-            # 检查向量维度是否与数据库一致
-            expected_dim = 1536
             actual_dim = len(embedding_vector)
-            if actual_dim != expected_dim:
-                logger.warning(
-                    event="kbd_embedding_dim_mismatch",
-                    kbd_id=kbd_id,
-                    expected_dim=expected_dim,
-                    actual_dim=actual_dim,
-                    message=f"向量维度不匹配（期望 {expected_dim}，实际 {actual_dim}）",
-                )
-
             logger.info(
                 event="kbd_embedding_generated",
                 kbd_id=kbd_id,
@@ -646,7 +627,8 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
 
     # 3. 更新 kbd_entry 状态（短事务）
     now = datetime.now(UTC)
-    current_content_raw = row["content_raw"] or strip_markdown(content_md or "")
+    current_content_raw = strip_markdown(content_md or "")
+    tsv_text = segment(f"{row['title']} {current_content_raw}")
     async with _db_manager.async_session_factory() as session:
         # 构建 UPDATE SQL（embedding 使用 pgvector 格式）
         if embedding_vector:
@@ -663,7 +645,10 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                     content_raw = :content_raw,
                     category_id = :category_id,
                     embedding = CAST(:embedding AS vector),
-                    tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
+                    embedding_model = :embedding_model,
+                    embedding_content_hash = :embedding_content_hash,
+                    embedding_updated_at = :embedding_updated_at,
+                    tsv = to_tsvector('simple', :tsv_text)
                 WHERE id = :id
                 RETURNING id, status, embedding, published_at
                 """
@@ -677,9 +662,13 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 "content_raw": current_content_raw,
                 "category_id": effective_category_id,
                 "embedding": vector_str,
+                "embedding_model": _embedding_service.model_name,
+                "embedding_content_hash": embedding_content_hash,
+                "embedding_updated_at": now,
+                "tsv_text": tsv_text,
             }
         else:
-            # 无 embedding，仅更新状态和 tsv
+            # 生成失败时必须清空向量，避免旧内容向量或伪向量继续参与召回
             update_sql = text(
                 """
                 UPDATE kbd_entry
@@ -690,7 +679,11 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                     review_note = COALESCE(:review_note, review_note),
                     content_raw = :content_raw,
                     category_id = :category_id,
-                    tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
+                    embedding = NULL,
+                    embedding_model = NULL,
+                    embedding_content_hash = NULL,
+                    embedding_updated_at = NULL,
+                    tsv = to_tsvector('simple', :tsv_text)
                 WHERE id = :id
                 RETURNING id, status, embedding, published_at
                 """
@@ -703,6 +696,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 "review_note": body.review_note,
                 "content_raw": current_content_raw,
                 "category_id": effective_category_id,
+                "tsv_text": tsv_text,
             }
 
         result = await session.execute(update_sql, params)
@@ -1872,27 +1866,18 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         content_md = row["content_md"]
         if not content_md:
             raise HTTPException(status_code=400, detail=f"KBD 条目 {kbd_id} 缺少 content_md")
-        # 构建 embedding 输入（问题侧字段，避免答案侧污染向量空间）
-        embedding_text = "\n\n".join(
-            filter(
-                None,
-                [
-                    row["title"],
-                    row["problem_description"],
-                    row["alert_info"],
-                    row["root_cause"],
-                ],
-            )
+        embedding_text = build_kbd_embedding_text(
+            title=row["title"],
+            problem_description=row["problem_description"],
+            alert_info=row["alert_info"],
+            root_cause=row["root_cause"],
+            fallback_text=row["content_raw"] or content_md,
         )
-        if not embedding_text.strip():
-            embedding_text = row["content_raw"] or content_md
-
-        # 过滤 Markdown 语法噪声以产生最干净的 embedding 向量表示
-        embedding_text = strip_markdown(embedding_text)
 
     # 生成 embedding（事务外调用）
     embedding_generated = False
     embedding_vector: list[float] | None = None
+    embedding_content_hash = hashlib.sha256(embedding_text.encode("utf-8")).hexdigest()
     if _embedding_service:
         try:
             embedding_vector = await _embedding_service.embed_single(embedding_text)
@@ -1902,7 +1887,8 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
             logger.warning(event="kbd_republish_embedding_failed", kbd_id=kbd_id, error=str(exc))
 
     now = datetime.now(UTC)
-    current_content_raw = row["content_raw"] or strip_markdown(content_md or "")
+    current_content_raw = strip_markdown(content_md or "")
+    tsv_text = segment(f"{row['title']} {current_content_raw}")
     # 门 2（重发布同样适用）：category_id 与 ai_category_id 同步，根治孤儿 KBD
     # 优先采用人工确认的分类（发布请求 body.category_id），fallback 到 DB 已有值
     effective_category_id = body.category_id or row["category_id"] or row["ai_category_id"]
@@ -1926,7 +1912,10 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                     content_raw = :content_raw,
                     category_id = :category_id,
                     embedding = CAST(:embedding AS vector),
-                    tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
+                    embedding_model = :embedding_model,
+                    embedding_content_hash = :embedding_content_hash,
+                    embedding_updated_at = :embedding_updated_at,
+                    tsv = to_tsvector('simple', :tsv_text)
                 WHERE id = :id
                 RETURNING id, status, embedding, published_at
                 """
@@ -1940,6 +1929,10 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                 "content_raw": current_content_raw,
                 "category_id": effective_category_id,
                 "embedding": vector_str,
+                "embedding_model": _embedding_service.model_name,
+                "embedding_content_hash": embedding_content_hash,
+                "embedding_updated_at": now,
+                "tsv_text": tsv_text,
             }
         else:
             update_sql = text(
@@ -1952,7 +1945,11 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                     review_note = COALESCE(:review_note, review_note),
                     content_raw = :content_raw,
                     category_id = :category_id,
-                    tsv = to_tsvector('simple', COALESCE(title, '') || ' ' || COALESCE(content_md, ''))
+                    embedding = NULL,
+                    embedding_model = NULL,
+                    embedding_content_hash = NULL,
+                    embedding_updated_at = NULL,
+                    tsv = to_tsvector('simple', :tsv_text)
                 WHERE id = :id
                 RETURNING id, status, embedding, published_at
                 """
@@ -1965,6 +1962,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                 "review_note": body.review_note,
                 "content_raw": current_content_raw,
                 "category_id": effective_category_id,
+                "tsv_text": tsv_text,
             }
 
         result = await session.execute(update_sql, params)

@@ -242,6 +242,40 @@ class TestKBRouteContract:
             assert call_args[1]["params"]["query"] == "虚拟机启动失败"
 
 
+class TestKBDCandidateSearchContract:
+    """KBD 候选检索接口契约。"""
+
+    @pytest.mark.asyncio
+    async def test_kb_client_forwards_audit_context(self):
+        """对话与工单 ID 必须透传到检索审计链路。"""
+        from shared.clients import KBClient
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"cases": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(KBClient, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_response
+            client = KBClient("http://kb-service:8004", "test-token")
+            result = await client.search_cases_with_steps(
+                category_id="虚拟机-001",
+                query="虚拟机启动失败",
+                top_k=5,
+                conversation_id="conv-1",
+                case_id="case-1",
+            )
+
+        assert result == []
+        params = mock_get.await_args.kwargs["params"]
+        assert params == {
+            "category_id": "虚拟机-001",
+            "query": "虚拟机启动失败",
+            "top_k": 5,
+            "conversation_id": "conv-1",
+            "case_id": "case-1",
+        }
+
+
 # ──────────────────────────────────────────────
 # 契约：KB Search 接口
 # 协议：POST /api/kb/search

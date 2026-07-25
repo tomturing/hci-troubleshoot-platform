@@ -17,7 +17,7 @@ KBD 知识条目表，用于存储深信服案例原始数据。
 检索索引设计：
   - embedding：embed(title + problem_description + alert_info + root_cause)
     问题侧语义向量，不含 solution 等答案侧字段
-  - tsv：to_tsvector(title + content_md)，BM25 全文关键字广召回
+  - tsv：jieba 分词后写入 PostgreSQL tsvector，负责中文词法召回
 """
 
 from __future__ import annotations
@@ -69,6 +69,20 @@ def strip_markdown(text: str) -> str:
     return text.strip()
 
 
+def build_kbd_embedding_text(
+    *,
+    title: str | None,
+    problem_description: str | None,
+    alert_info: str | None,
+    root_cause: str | None,
+    fallback_text: str | None = None,
+) -> str:
+    """从问题侧字段构建稳定的 embedding 输入。"""
+    parts = [title, problem_description, alert_info, root_cause]
+    text = "\n\n".join(part.strip() for part in parts if part and part.strip())
+    return strip_markdown(text or fallback_text or "")
+
+
 class KbdEntry(Base):
     """KBD 知识条目模型
 
@@ -84,7 +98,7 @@ class KbdEntry(Base):
     - content_md: 聚合渲染 Markdown（供展示和 LLM 上下文注入）
     - embedding: embed(title + problem_description + alert_info + root_cause)
       问题侧语义向量，不含 solution，避免答案侧污染向量空间
-    - tsv: BM25 全文检索（title + content_md，负责关键字广召回）
+    - tsv: jieba + PostgreSQL FTS（title + content_md，负责中文关键字召回）
     """
 
     __tablename__ = "kbd_entry"
@@ -140,6 +154,9 @@ class KbdEntry(Base):
     # ── 检索字段（published 时生成）──────────────────────────────────────────
     # embedding 字段使用 pgvector，需要在数据库层面定义
     # tsv 字段使用 tsvector，需要在数据库层面定义
+    embedding_model = Column(String(100), nullable=True)  # 向量模型；为空的历史向量不得参与检索
+    embedding_content_hash = Column(String(64), nullable=True)  # 生成向量时输入文本的 SHA-256
+    embedding_updated_at = Column(DateTime(timezone=True), nullable=True)  # 向量最后成功生成时间
 
     # ── 状态机字段 ────────────────────────────────────────────────────────────
     status = Column(String(20), nullable=False, default="draft")  # draft/published/archived/rejected
@@ -189,12 +206,13 @@ class KbdEntry(Base):
         仅使用问题描述侧字段，排除 solution/recommendations 等答案侧字段。
         确保向量空间反映"这是一个关于什么问题的案例"，而非"这个案例如何解决"。
         """
-        parts = []
-        for field in self.EMBEDDING_FIELDS:
-            text = (getattr(self, field, "") or "").strip()
-            if text:
-                parts.append(text)
-        return "\n\n".join(parts)
+        return build_kbd_embedding_text(
+            title=self.title,
+            problem_description=self.problem_description,
+            alert_info=self.alert_info,
+            root_cause=self.root_cause,
+            fallback_text=self.content_raw or self.content_md,
+        )
 
     def rebuild_content_md(self, old_images_json: list[dict[str, Any]] | None = None) -> str:
         """从章节字段 + images_json 重建 content_md（admin 编辑后调用）。
@@ -419,4 +437,3 @@ class KbdImage(Base):
 
     def __repr__(self) -> str:
         return f"<KbdImage(id={self.id}, kbd_entry_id={self.kbd_entry_id}, seq={self.seq})>"
-

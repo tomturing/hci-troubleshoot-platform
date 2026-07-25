@@ -31,6 +31,7 @@ from app.routes import (
     sop_ingest,
 )
 from app.services.embedding import EmbeddingService
+from app.utils.jieba_hci import init_jieba
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -63,7 +64,8 @@ async def lifespan(app: FastAPI):
     # 初始化数据库
     database_manager = DatabaseManager(settings.DATABASE_URL)
 
-    # 初始化 Embedding 服务（z.ai 主力 + bge-small 降级）
+    # 初始化中文词法分析和 Embedding 服务
+    init_jieba()
     embedding_service = EmbeddingService(settings)
 
     # 存入 app.state，供路由通过 request.app.state 访问

@@ -60,7 +60,7 @@ class DynamicResourceLoader:
                 exec_id=usage.exec_id,
                 input_hash=sha256_json(usage.input_payload) if usage.input_payload is not None else None,
                 output_hash=sha256_json(usage.output_payload) if usage.output_payload is not None else None,
-                status=usage.status,
+                status=usage.status.value,
                 error=usage.error,
                 metadata_json=usage.metadata,
             )

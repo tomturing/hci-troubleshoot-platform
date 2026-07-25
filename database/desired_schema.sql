@@ -749,7 +749,8 @@ CREATE TABLE IF NOT EXISTS dynamic_resource_usage_audit (
     error text,
     metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT dynamic_resource_usage_audit_pkey PRIMARY KEY (id)
+    CONSTRAINT dynamic_resource_usage_audit_pkey PRIMARY KEY (id),
+    CONSTRAINT dynamic_resource_usage_status_check CHECK (status IN ('retrieved', 'success', 'failed'))
 );
 
 COMMENT ON TABLE dynamic_resource_usage_audit IS '动态资源使用审计表 — 追踪 Agent 每次使用的资源 revision';
@@ -1023,6 +1024,9 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     ai_category_conf double precision,
     ai_category_reason text,
     embedding vector(1536),
+    embedding_model varchar(100),
+    embedding_content_hash varchar(64),
+    embedding_updated_at timestamptz,
     tsv tsvector,
     status varchar(20) NOT NULL DEFAULT 'draft',
     reviewer_id integer,
@@ -1058,7 +1062,10 @@ COMMENT ON COLUMN kbd_entry.ai_category_id IS 'AI 分类建议编码';
 COMMENT ON COLUMN kbd_entry.ai_category_conf IS 'AI 分类置信度（0-1）';
 COMMENT ON COLUMN kbd_entry.ai_category_reason IS 'AI 分类理由';
 COMMENT ON COLUMN kbd_entry.embedding IS '问题侧语义向量（1536 维），published 时生成；输入 = title + problem_description + alert_info + root_cause（不含 solution，避免答案侧污染向量空间）';
-COMMENT ON COLUMN kbd_entry.tsv IS 'BM25 全文检索向量，published 时生成';
+COMMENT ON COLUMN kbd_entry.embedding_model IS '生成 embedding 的模型名；为空的历史/不可信向量不得参与检索';
+COMMENT ON COLUMN kbd_entry.embedding_content_hash IS '生成 embedding 时输入文本的 SHA-256，用于检测内容与向量是否一致';
+COMMENT ON COLUMN kbd_entry.embedding_updated_at IS 'embedding 最后成功生成时间';
+COMMENT ON COLUMN kbd_entry.tsv IS 'jieba 分词后的 PostgreSQL 全文检索向量，published 时生成';
 COMMENT ON COLUMN kbd_entry.status IS '状态机：draft（草稿）/ published（已发布）/ archived（已归档）/ rejected（已拒绝）';
 COMMENT ON COLUMN kbd_entry.reviewer_id IS '审核人 ID';
 COMMENT ON COLUMN kbd_entry.reviewed_at IS '审核时间';

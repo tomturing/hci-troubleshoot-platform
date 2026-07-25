@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from sqlalchemy import text
 
+from app.utils.jieba_hci import segment
+
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
 
@@ -72,7 +74,7 @@ async def route(
 
     流程：
     1. SOP 轨：标准操作流程（sop_document 直查 category_id）
-    2. KBD 轨：知识库条目检索（BM25 全文检索）
+    2. KBD 轨：知识库条目检索（PostgreSQL 中文全文检索）
     3. 人工轨：无匹配结果时返回 human_escalation
 
     响应体：
@@ -138,8 +140,9 @@ async def route(
             ],
         )
 
-    # 第 2 轨：KBD 覆盖
+    # 第 2 轨：KBD 覆盖，查询端必须与发布端使用同一分词器
     # 使用 PostgreSQL 全文检索（tsvector + ts_rank）
+    segmented_query = segment(query)
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
             text(
@@ -152,7 +155,7 @@ async def route(
                 LIMIT :top_k
                 """
             ),
-            {"category_id": category_id, "query": query, "top_k": top_k},
+            {"category_id": category_id, "query": segmented_query, "top_k": top_k},
         )
         kbd_rows = result.fetchall()
 

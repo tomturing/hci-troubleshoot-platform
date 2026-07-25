@@ -2,7 +2,7 @@
 jieba + HCI 自定义词典初始化工具
 
 初始化说明：
-- jieba 加载 HCI 专业术语词典，提升 BM25 检索的中文分词质量
+- jieba 加载 HCI 专业术语词典，提升 PostgreSQL 全文检索的中文召回质量
 - 词典路径优先使用 backend/kb-service/config/hci_dict.txt，不存在时使用内置词条
 - 分词结果用于构建 tsvector（to_tsvector('simple', space_separated_tokens)）
 
@@ -15,6 +15,7 @@ import logging
 import os
 
 logger = logging.getLogger(__name__)
+_initialized = False
 
 # HCI 领域内置词条（当外部词典文件不存在时作为 fallback）
 _BUILTIN_HCI_TERMS = [
@@ -91,6 +92,10 @@ def init_jieba() -> None:
 
     全局调用一次，建议在 KB Service 启动时执行预热。
     """
+    global _initialized
+    if _initialized:
+        return
+
     try:
         import jieba
 
@@ -106,11 +111,12 @@ def init_jieba() -> None:
             logger.info("已加载 jieba 内置 HCI 词条 (%d 条)", len(_BUILTIN_HCI_TERMS))
 
         # 3. 预热（避免首次分词延迟影响请求响应时间）
-        jieba.cut("超融合虚拟机开机失败")
+        jieba.lcut("超融合虚拟机开机失败", cut_all=False)
+        _initialized = True
         logger.info("jieba 预热完成")
 
     except ImportError:
-        logger.warning("jieba 未安装，BM25 全文检索将降级为 simple 分词（英文效果）")
+        logger.error("jieba 未安装，中文全文检索不可用")
 
 
 def segment(text: str) -> str:
@@ -128,8 +134,7 @@ def segment(text: str) -> str:
         import jieba
 
         # 精确模式分词，过滤空白 token
-        tokens = [t.strip() for t in jieba.cut(text, cut_all=False) if t.strip()]
+        tokens = [token.strip() for token in jieba.lcut(text, cut_all=False) if token.strip()]
         return " ".join(tokens)
     except ImportError:
-        # jieba 不可用时直接返回原文（英文词句可直接用 simple 分词）
-        return text
+        raise RuntimeError("jieba 未安装，无法生成中文全文检索 token") from None

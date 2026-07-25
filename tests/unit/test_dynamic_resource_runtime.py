@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from shared.dynamic_resource.cache import DynamicResourceCache
 from shared.dynamic_resource.loader import DynamicResourceLoader, snapshot_revision_metadata
-from shared.dynamic_resource.models import ResourceKey, ResourceSnapshot, UsageRecord
+from shared.dynamic_resource.models import ResourceKey, ResourceSnapshot, UsageRecord, UsageStatus
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.dynamic_resource.serialization import resource_checksum, sha256_json
 from shared.models.dynamic_resource import (
@@ -203,6 +203,17 @@ async def test_dynamic_resource_loader_audit_usage_hashes_payloads():
     assert audit.input_hash == sha256_json({"alert_logs": [{"target": "node-1"}]})
     assert audit.output_hash == sha256_json({"node_ip": "node-1"})
     assert audit.metadata_json == {"variable_name": "node_ip"}
+
+
+def test_usage_record_normalizes_registered_status():
+    usage = UsageRecord(consumer="test", status="retrieved")
+
+    assert usage.status is UsageStatus.RETRIEVED
+
+
+def test_usage_record_rejects_ambiguous_matched_status():
+    with pytest.raises(ValueError, match="matched"):
+        UsageRecord(consumer="test", status="matched")
 
 
 @pytest.mark.asyncio
