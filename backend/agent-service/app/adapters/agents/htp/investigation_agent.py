@@ -20,6 +20,7 @@ InvestigationAgent: S1-S4 诊断调查 Agent（继承 BaseAgent）
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -54,6 +55,13 @@ MAX_SOP_CHARS = 8000
 
 # SOP 根节点 ID（默认）
 DEFAULT_ROOT_NODE_ID = "n-1"
+
+# S0 控制符模式：菜单选项编号 / 单字确认词
+_RETRIEVAL_CONTROL_RE = re.compile(
+    r"^[\u2460-\u2468\d]+$"  # ①②③④⑤⑥⑦⑧⑨ 或纯数字
+    r"|^(继续|好的|收到|确认|是|否|跳过|retry|skip|ok|yes|no)$",
+    re.IGNORECASE,
+)
 
 
 class InvestigationAgent(BaseAgent):
@@ -1170,17 +1178,11 @@ class InvestigationAgent(BaseAgent):
           而非有语义的症状描述。用它做检索 query 等同随机搜索。
         - 取正序第一条有效用户消息（初始主诉）是最接近真实症状的文本。
         """
-        import re
         # S0 控制符模式：菜单选项编号 / 单字确认词
-        _CONTROL_RE = re.compile(
-            r"^[\u2460-\u2468\d]+$"  # ①②③④⑤⑥⑦⑧⑨ 或纯数字
-            r"|^(继续|好的|收到|确认|是|否|跳过|retry|skip|ok|yes|no)$",
-            re.IGNORECASE,
-        )
         for msg in messages:  # 正序，找第一条有效 user 消息
             if msg.get("role") == "user" and isinstance(msg.get("content"), str):
                 txt = msg["content"].strip()
-                if txt and not _CONTROL_RE.fullmatch(txt):
+                if txt and not _RETRIEVAL_CONTROL_RE.fullmatch(txt):
                     return txt[:500]
         return ""
 
