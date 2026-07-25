@@ -59,6 +59,8 @@ def set_dependencies(db: DatabaseManager, embedding: EmbeddingService) -> None:
 
 def _entry_to_case_dict(entry: KbdEntry, similarity: float) -> dict[str, Any]:
     """将 KbdEntry 转换为 agent-service 消费格式。"""
+    raw_signals = entry.signals_json
+    signals_list = raw_signals.get("signals", []) if isinstance(raw_signals, dict) else raw_signals
     return {
         "id": str(entry.id),
         "name": entry.title,
@@ -72,7 +74,7 @@ def _entry_to_case_dict(entry: KbdEntry, similarity: float) -> dict[str, Any]:
         "operational_impact": entry.operational_impact,
         "is_temporary": entry.is_temporary,
         "recommendations": entry.recommendations,
-        "signals": entry.signals_json,
+        "signals": signals_list,
     }
 
 

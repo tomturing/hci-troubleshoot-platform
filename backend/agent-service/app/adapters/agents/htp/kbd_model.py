@@ -7,6 +7,7 @@ signals_json 的唯一权威格式为 v2 嵌套：
 
 KBD 运行时直接消费 v2 嵌套信号，不存在 v1 扁平桥接、过渡版本或中间表示。
 """
+
 from __future__ import annotations
 
 import json
@@ -123,11 +124,7 @@ class KBD(BaseModel):
     @property
     def step_tool_names(self) -> set[str]:
         """返回本 KBD 所有 consumer（backend）信号的 acquire.tool 集合（用于频率统计）。"""
-        return {
-            _acquire_tool(s)
-            for s in self.signals
-            if _acquire_tool(s) and _signal_category(s) == "backend"
-        }
+        return {_acquire_tool(s) for s in self.signals if _acquire_tool(s) and _signal_category(s) == "backend"}
 
     def get_step(self, tool_name: str) -> KBDStep | None:
         """按 acquire.tool 获取 consumer 信号的步骤定义。"""
@@ -160,10 +157,12 @@ def kbd_from_dict(d: dict[str, Any]) -> KBD:
     """从 KBD 文档 dict 构造 KBD。
 
     输入为 v2 数组级对象 {schema_version, signals}（或直接含 signals 的 KBD dict）。
-    v1 扁平 list 与 to_legacy_signal 反向桥接已彻底移除，运行时仅存在 v2 嵌套单一版本。
+    支持兼容 DB 原始列 dict 形态 {"schema_version": 2, "signals": [...]} 与标准 list 数组。
     """
     signals = d.get("signals", [])
-    if not isinstance(signals, list):
+    if isinstance(signals, dict):
+        signals = signals.get("signals", [])
+    elif not isinstance(signals, list):
         signals = []
     return KBD(
         id=d.get("id", ""),
