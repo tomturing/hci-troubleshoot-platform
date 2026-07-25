@@ -21,14 +21,17 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot"
 
     # ---- Embedding 配置 ----
-    # 主力：z.ai API（与其他服务使用同一 AI 服务层）
-    ZAI_BASE_URL: str = "http://host.docker.internal:18790"
-    ZAI_API_KEY: str = "default_token"
-    ZAI_EMBEDDING_MODEL: str = "embedding-3"  # z.ai embedding 模型
+    # 复用 hci-common-config 中已注入的 LLM 公共配置：
+    #   LLM_BASE_URL  — 来自 configmap（DashScope / OpenClaw 网关）
+    #   LLM_API_KEY   — 来自 secret（与 agent-service 共用同一 API Key）
+    # 原 ZAI_BASE_URL / ZAI_API_KEY 从未注入到 Pod，导致 embedding 始终失败并降级 hash。
+    LLM_BASE_URL: str = "http://host.docker.internal:18790"  # 开发默认值；生产由 configmap 覆盖
+    LLM_API_KEY: str = ""                                    # 生产由 secret 覆盖
+    LLM_EMBEDDING_MODEL: str = "embedding-3"                 # 由 configmap LLM_EMBEDDING_MODEL 覆盖
 
     # 降级：本地 bge-small-zh-v1.5（网络故障时使用）
     BGE_MODEL_PATH: str = "/models/bge-small-zh-v1.5"  # 容器内路径
-    EMBEDDING_DIM: int = 1536  # 向量维度（与 DB Vector(1536) 保持一致；z.ai embedding-3 输出 1536 维）
+    EMBEDDING_DIM: int = 1536  # 向量维度（与 DB Vector(1536) 保持一致）
 
     # Embedding 超时（超时后自动降级到本地模型）
     EMBEDDING_TIMEOUT_SEC: float = 5.0

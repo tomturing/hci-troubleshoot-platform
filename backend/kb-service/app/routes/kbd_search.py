@@ -163,15 +163,18 @@ async def search_kbds(
         top_k=top_k,
     )
 
-    # 1. 生成查询向量（失败时降级到非向量排序）
+    # 1. 生成查询向量
+    # embed_for_search() 在 LLM 不可用时直接抛异常（不降级 hash）
+    # — hash 向量与真实 embedding 无语义关联，用于搜索等同随机排序
+    # 失败时 query_vector=None → 走 BM25 全文检索降级
     query_vector: list[float] | None = None
     try:
-        query_vector = await _embedding_service.embed_single(query)
+        query_vector = await _embedding_service.embed_for_search(query)
     except Exception as e:
         logger.warning(
             event="kbd_search_embedding_failed",
             error=str(e),
-            fallback="published_at_desc",
+            fallback="bm25_tsv",
         )
 
     async with _db_manager.async_session_factory() as session:
@@ -210,21 +213,65 @@ async def search_kbds(
                 for row in rows
             ]
         else:
-            # 降级：无向量时按 published_at DESC
-            stmt_fallback = (
-                select(KbdEntry)
-                .where(
-                    and_(
-                        KbdEntry.status == "published",
-                        KbdEntry.category_id == category_id,
-                        text("signals_json != '[]'::jsonb"),
-                    )
-                )
-                .order_by(KbdEntry.published_at.desc())
-                .limit(top_k)
+            # 降级：BM25 全文检索（tsv + ts_rank）
+            # Rationale: published_at DESC 是"不知道时的随机排序"，毫无意义。
+            # tsv 列已在 publish 时构建，plainto_tsquery('simple',...) 对中文有基础分词效果。
+            # 中文场景下召回率有限，但优于纯时间排序；未来可引入 zhparser 提升。
+            bm25_sql = text(
+                """
+                SELECT id
+                FROM kbd_entry
+                WHERE category_id = :category_id
+                  AND status = 'published'
+                  AND signals_json != '[]'::jsonb
+                  AND tsv @@ plainto_tsquery('simple', :query)
+                ORDER BY ts_rank(tsv, plainto_tsquery('simple', :query)) DESC
+                LIMIT :top_k
+                """
             )
-            results_fallback = await session.execute(stmt_fallback)
-            entries = results_fallback.scalars().all()
+            bm25_result = await session.execute(
+                bm25_sql,
+                {"category_id": category_id, "query": query, "top_k": top_k},
+            )
+            bm25_ids = [row[0] for row in bm25_result.fetchall()]
+
+            if not bm25_ids:
+                # BM25 也没命中（query 可能是控制符），回退到最新发布
+                logger.warning(
+                    event="kbd_search_bm25_empty",
+                    category_id=category_id,
+                    query=query[:50],
+                    fallback="published_at_desc",
+                )
+                stmt_fallback = (
+                    select(KbdEntry)
+                    .where(
+                        and_(
+                            KbdEntry.status == "published",
+                            KbdEntry.category_id == category_id,
+                            text("signals_json != '[]'::jsonb"),
+                        )
+                    )
+                    .order_by(KbdEntry.published_at.desc())
+                    .limit(top_k)
+                )
+                bm25_entries_result = await session.execute(stmt_fallback)
+                bm25_entries = bm25_entries_result.scalars().all()
+            else:
+                # 按 BM25 排序取出完整 ORM 对象
+                from sqlalchemy import case as sql_case
+                ordering = sql_case(
+                    {id_val: idx for idx, id_val in enumerate(bm25_ids)},
+                    value=KbdEntry.id,
+                ).label("bm25_order")
+                stmt_bm25_orm = (
+                    select(KbdEntry)
+                    .where(KbdEntry.id.in_(bm25_ids))
+                    .order_by(ordering)
+                )
+                bm25_entries_result = await session.execute(stmt_bm25_orm)
+                bm25_entries = bm25_entries_result.scalars().all()
+
             cases = [
                 await _entry_to_case_with_revision(
                     session,
@@ -235,7 +282,7 @@ async def search_kbds(
                     top_k=top_k,
                     used_vector=False,
                 )
-                for entry in entries
+                for entry in bm25_entries
             ]
 
         await session.commit()
@@ -245,6 +292,7 @@ async def search_kbds(
         category_id=category_id,
         result_count=len(cases),
         used_vector=query_vector is not None,
+        search_path="vector" if query_vector is not None else "bm25",
     )
 
     return {"cases": cases}

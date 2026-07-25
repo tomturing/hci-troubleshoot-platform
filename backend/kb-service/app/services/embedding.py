@@ -1,16 +1,22 @@
 """
-Embedding 服务 — 双模式切换（z.ai API 主力 + bge-small-zh 本地降级）
+Embedding 服务 — 双模式切换（LLM 网关主力 + bge-small-zh 本地降级）
 
 设计说明：
-- 主力：z.ai API（与对话服务复用同一 AI 端点，通过 OpenAI-compatible API 调用）
+- 主力：LLM_BASE_URL（复用 hci-common-config 已注入的 LLM 公共端点，OpenAI-compatible API）
 - 降级：本地 bge-small-zh-v1.5（网络超时/故障时自动切换）
-- 连续降级计数：连续 3 次 z.ai 失败后，自动切换到本地模式，5 分钟后重试 z.ai
+- 连续降级计数：连续 3 次 LLM 失败后，自动切换到本地模式，5 分钟后重试
 - 所有 embedding 调用都通过 OTel 追踪（embedding_latency, fallback_count）
 
 注意事项：
-- z.ai API 与 OpenClaw 使用同一 base_url（18790），embedding 模型为 embedding-3
+- LLM_BASE_URL 与 OPENCLAW/DashScope 使用同一端点，embedding 模型名由 LLM_EMBEDDING_MODEL 配置
 - 本地 BGE 模型路径由环境变量 BGE_MODEL_PATH 配置，不存在时跳过降级
-- 向量维度固定为 384（bge-small-zh 与部分 z.ai embedding 模型一致）
+- 向量维度固定为 1536（与 DB vector(1536) 一致；LLM 端点返回 1536 维）
+
+搜索路径 vs 入库路径的不同降级策略：
+- embed_for_search(): 不允许 hash 降级。embedding 失败 → 直接抛异常 → 调用方使用 BM25 替代
+  （hash 向量与存储的真实向量无语义关联，做向量搜索等同随机排序，危害大于无降级）
+- embed_batch(): 允许 hash 降级，用于入库。KBD 发布时 embedding 失败不阻断流程，
+  待服务恢复后可批量重新生成。
 """
 
 from __future__ import annotations
@@ -30,7 +36,7 @@ logger = get_logger("kb-service-embedding")
 
 # 连续失败阈值：超过此次数后切换到本地模式
 _FALLBACK_THRESHOLD = 3
-# 熔断冷却时间（秒）：切换到本地模式后，等待此时间后重试 z.ai
+# 熔断冷却时间（秒）：切换到本地模式后，等待此时间后重试
 _COOLDOWN_SECS = 300
 
 
@@ -39,8 +45,10 @@ class EmbeddingService:
 
     Usage:
         service = EmbeddingService(settings)
+        # 搜索专用（不允许 hash 降级）
+        vector = await service.embed_for_search("用户症状描述")
+        # 入库专用（允许 hash 降级兜底）
         vectors = await service.embed_batch(["文本1", "文本2"])
-        vector = await service.embed_single("文本")
     """
 
     def __init__(self, settings: Settings):
@@ -50,18 +58,62 @@ class EmbeddingService:
         self._local_model = None  # 懒加载本地模型
 
     async def embed_single(self, text: str) -> list[float]:
-        """获取单条文本的 embedding 向量"""
+        """获取单条文本的 embedding 向量（入库路径，允许 hash 降级）"""
         results = await self.embed_batch([text])
         return results[0]
 
+    async def embed_for_search(self, text: str) -> list[float]:
+        """搜索专用：仅返回真实 embedding，失败时抛异常（不降级 hash）
+
+        Rationale（第一性原理）：
+        - hash 向量是 SHA-256 种子的随机向量，与存储的真实 embedding 在语义上完全无关联。
+        - 用 hash(query) 和 real_embedding(KBD) 做 cosine 相似度 = 随机排序，
+          等价于不做向量搜索。此时应由 BM25 接管，而非用"假向量"污染结果。
+        - 调用方（kbd_search.py）捕获此异常后回退到 BM25 全文检索。
+
+        Raises:
+            RuntimeError: LLM embedding 不可用（调用方应使用 BM25 替代）
+        """
+        trace_id = get_current_trace_id()
+        t_start = time.monotonic()
+
+        # 搜索路径：仅尝试 LLM 端点，不走 hash 降级
+        if not self._should_use_local():
+            try:
+                result = await self._embed_via_llm([text])
+                self._consecutive_failures = 0
+                logger.info(
+                    event="embedding_search_success",
+                    latency_ms=int((time.monotonic() - t_start) * 1000),
+                    trace_id=trace_id,
+                )
+                return result[0]
+            except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError) as exc:
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= _FALLBACK_THRESHOLD:
+                    self._local_mode_until = time.monotonic() + _COOLDOWN_SECS
+                    logger.warning(
+                        event="embedding_circuit_open",
+                        message=f"LLM embedding 连续失败 {_FALLBACK_THRESHOLD} 次，熔断 {_COOLDOWN_SECS}s",
+                        trace_id=trace_id,
+                    )
+                raise RuntimeError(
+                    f"搜索 embedding 不可用（LLM 端点失败，BM25 将接管）: {exc}"
+                ) from exc
+
+        # 熔断期间：直接抛出，不降级 hash
+        raise RuntimeError(
+            f"搜索 embedding 处于熔断期（冷却至 {self._local_mode_until:.0f}），BM25 将接管"
+        )
+
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """批量获取 embedding 向量
+        """批量获取 embedding 向量（入库路径，允许 hash 降级兜底）
 
         Args:
             texts: 待 embed 的文本列表
 
         Returns:
-            与 texts 等长的向量列表，每个向量长度为 384
+            与 texts 等长的向量列表，每个向量长度为 EMBEDDING_DIM
 
         Raises:
             RuntimeError: 两路 embedding 均失败时抛出
@@ -74,10 +126,10 @@ class EmbeddingService:
 
         if not use_local:
             try:
-                result = await self._embed_via_zai(texts)
+                result = await self._embed_via_llm(texts)
                 self._consecutive_failures = 0  # 成功后重置计数
                 logger.info(
-                    event="embedding_zai_success",
+                    event="embedding_llm_success",
                     count=len(texts),
                     latency_ms=int((time.monotonic() - t_start) * 1000),
                     trace_id=trace_id,
@@ -86,7 +138,7 @@ class EmbeddingService:
             except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError) as exc:
                 self._consecutive_failures += 1
                 logger.warning(
-                    event="embedding_zai_failed",
+                    event="embedding_llm_failed",
                     error=str(exc),
                     consecutive_failures=self._consecutive_failures,
                     threshold=_FALLBACK_THRESHOLD,
@@ -96,11 +148,11 @@ class EmbeddingService:
                     self._local_mode_until = time.monotonic() + _COOLDOWN_SECS
                     logger.warning(
                         event="embedding_circuit_open",
-                        message=f"z.ai embedding 连续失败 {_FALLBACK_THRESHOLD} 次，切换到本地模式 {_COOLDOWN_SECS}s",
+                        message=f"LLM embedding 连续失败 {_FALLBACK_THRESHOLD} 次，切换到本地模式 {_COOLDOWN_SECS}s",
                         trace_id=trace_id,
                     )
 
-        # 降级：本地 bge-small-zh
+        # 降级：本地 bge-small-zh（仅用于入库，不用于搜索）
         try:
             result = await self._embed_via_local(texts)
             logger.info(
@@ -124,20 +176,23 @@ class EmbeddingService:
             return False
         if time.monotonic() < self._local_mode_until:
             return True
-        # 冷却结束，重置状态，重新尝试 z.ai
+        # 冷却结束，重置状态，重新尝试 LLM
         self._local_mode_until = 0.0
         self._consecutive_failures = 0
-        logger.info(event="embedding_circuit_close", message="熔断冷却结束，重新尝试 z.ai embedding")
+        logger.info(event="embedding_circuit_close", message="熔断冷却结束，重新尝试 LLM embedding")
         return False
 
-    async def _embed_via_zai(self, texts: list[str]) -> list[list[float]]:
-        """通过 z.ai API 获取 embedding（OpenAI-compatible 格式）"""
+    async def _embed_via_llm(self, texts: list[str]) -> list[list[float]]:
+        """通过 LLM 网关获取 embedding（OpenAI-compatible 格式）
+
+        使用 LLM_BASE_URL / LLM_API_KEY，与 hci-common-config 中的 LLM 公共配置对齐。
+        """
         async with httpx.AsyncClient(timeout=self._settings.EMBEDDING_TIMEOUT_SEC) as client:
             response = await client.post(
-                f"{self._settings.ZAI_BASE_URL}/v1/embeddings",
-                headers={"Authorization": f"Bearer {self._settings.ZAI_API_KEY}"},
+                f"{self._settings.LLM_BASE_URL}/embeddings",
+                headers={"Authorization": f"Bearer {self._settings.LLM_API_KEY}"},
                 json={
-                    "model": self._settings.ZAI_EMBEDDING_MODEL,
+                    "model": self._settings.LLM_EMBEDDING_MODEL,
                     "input": texts,
                 },
             )
@@ -163,6 +218,9 @@ class EmbeddingService:
         优先级：
         1. sentence_transformers（需要已安装）
         2. numpy hash-based embedding（纯 Python 降级，确定性向量化）
+
+        ⚠️  numpy hash 降级仅用于入库（embed_batch），搜索路径（embed_for_search）
+            在 LLM 不可用时直接抛异常，不走到此处。
         """
         if self._local_model is None:
             import os
@@ -184,19 +242,20 @@ class EmbeddingService:
                     message="sentence_transformers 未安装，降级到 numpy hash embedding",
                 )
 
-            # 降级：numpy hash-based embedding（确定性，不依赖外部包）
-            # 使用 settings.EMBEDDING_DIM，与数据库 vector(512) 保持一致
+            # 降级：numpy hash-based embedding（仅用于入库，不用于搜索）
             self._local_model = _make_numpy_hash_embedder(self._settings.EMBEDDING_DIM)
             logger.warning(
                 event="using_hash_embedding",
-                message="使用 numpy hash embedding 降级方案，向量搜索精度有限，BM25 搜索仍有效",
+                message="使用 numpy hash embedding 降级（仅限入库路径）。此向量无语义，搜索路径已禁止使用。",
             )
 
         return self._local_model
 
 
-def _make_numpy_hash_embedder(dim: int = 384):
+def _make_numpy_hash_embedder(dim: int = 1536):
     """创建一个基于 numpy 的确定性 hash-based embedding 函数
+
+    ⚠️  仅用于 embed_batch()（入库降级）。搜索路径（embed_for_search）禁止使用此函数。
 
     原理：将文本每个字符的 Unicode codepoint 散列到 dim 维向量，并 L2 归一化。
     确定性（相同输入→相同向量），不依赖任何 ML 包，适合数据入库但搜索精度有限。

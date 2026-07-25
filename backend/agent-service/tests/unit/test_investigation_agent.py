@@ -344,3 +344,34 @@ class TestSOPPromptTruncation:
 
         # 超过上限，触发截断
         assert "[注意：SOP 文档已截断" in prompt
+
+
+class TestBuildRetrievalQuery:
+    """测试 InvestigationAgent._build_retrieval_query 查询构建逻辑"""
+
+    def test_extracts_first_meaningful_user_message(self):
+        """跳过 S0 控制符/按钮选择，提取第一条有语义的主诉"""
+        messages = [
+            {"role": "user", "content": "虚拟机镜像文件损坏异常"},
+            {"role": "assistant", "content": "请问是哪个分类？"},
+            {"role": "user", "content": "①"},
+            {"role": "assistant", "content": "好的，正在推进诊断"},
+            {"role": "user", "content": "继续"},
+        ]
+        query = InvestigationAgent._build_retrieval_query(messages)
+        assert query == "虚拟机镜像文件损坏异常"
+
+    def test_skips_control_characters_and_digits(self):
+        """确认包含 S0 点击（①, 1, 继续, 好的）时正确跳过"""
+        for control in ["①", "②", "1", "继续", "好的", "收到", "确认"]:
+            messages = [
+                {"role": "user", "content": control},
+                {"role": "user", "content": "存储卷挂载超时错误"},
+            ]
+            query = InvestigationAgent._build_retrieval_query(messages)
+            assert query == "存储卷挂载超时错误"
+
+    def test_returns_empty_string_if_no_user_messages(self):
+        """无用户消息时返回空字符串"""
+        assert InvestigationAgent._build_retrieval_query([]) == ""
+

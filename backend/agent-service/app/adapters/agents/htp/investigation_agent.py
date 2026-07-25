@@ -171,7 +171,7 @@ class InvestigationAgent(BaseAgent):
                 reason=f"未找到助手类型 '{assistant_type}'",
             )
 
-        user_query = self._extract_user_query(messages)
+        user_query = self._build_retrieval_query(messages)
 
         yield AgentStageUpdate(
             stage="investigation_start",
@@ -1161,15 +1161,38 @@ class InvestigationAgent(BaseAgent):
     # ─── 工具方法（内部）──────────────────────────────────────────────────────
 
     @staticmethod
+    def _build_retrieval_query(messages: list[dict]) -> str:
+        """构建检索用 query：取首条有效主诉消息，跳过 S0 控制符/菜单选项。
+
+        Rationale（第一性原理）：
+        - 向量搜索 / BM25 需要的是'症状描述'，不是'最近一次用户交互内容'。
+        - 多轮对话后最后一条 user 消息极大概率是菜单选项（'①'）或确认词（'继续'/'好的'），
+          而非有语义的症状描述。用它做检索 query 等同随机搜索。
+        - 取正序第一条有效用户消息（初始主诉）是最接近真实症状的文本。
+        """
+        import re
+        # S0 控制符模式：菜单选项编号 / 单字确认词
+        _CONTROL_RE = re.compile(
+            r"^[\u2460-\u2468\d]+$"  # ①②③④⑤⑥⑦⑧⑨ 或纯数字
+            r"|^(继续|好的|收到|确认|是|否|跳过|retry|skip|ok|yes|no)$",
+            re.IGNORECASE,
+        )
+        for msg in messages:  # 正序，找第一条有效 user 消息
+            if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                txt = msg["content"].strip()
+                if txt and not _CONTROL_RE.fullmatch(txt):
+                    return txt[:500]
+        return ""
+
+    @staticmethod
     def _extract_user_query(messages: list[dict]) -> str:
-        """从消息列表中提取最后一条用户消息内容。"""
+        """已废弃：取最后一条 user 消息（多轮后可能是控制符）。
+
+        请使用 _build_retrieval_query() 代替。
+        保留此方法仅为向后兼容，勿在新代码中调用。
+        """
         for msg in reversed(messages):
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 return content[:500] if isinstance(content, str) else ""
         return ""
-
-    @staticmethod
-    def _split_text_chunks(text: str, chunk_size: int = 100) -> list[str]:
-        """将长文本分割为固定大小的 chunk 列表（用于流式输出模拟）。"""
-        return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
