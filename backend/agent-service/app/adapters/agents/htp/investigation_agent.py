@@ -1196,3 +1196,9 @@ class InvestigationAgent(BaseAgent):
                 content = msg.get("content", "")
                 return content[:500] if isinstance(content, str) else ""
         return ""
+
+    @staticmethod
+    def _split_text_chunks(text: str, chunk_size: int = 100) -> list[str]:
+        """将长文本分割为固定大小的 chunk 列表（用于流式输出模拟）。"""
+        return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
+
