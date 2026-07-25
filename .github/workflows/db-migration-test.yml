@@ -95,8 +95,22 @@ jobs:
           psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/desired_extras.sql
           echo "✅ Schema 全量应用成功"
 
+          # ── Step 2d: 执行数据迁移（验证 SQL 正确性）────────────────────────────
+          echo ">>> Step 2d: 执行数据迁移"
+          for MIG_FILE in database/data-migrations/*.sql; do
+            if [ -f "$MIG_FILE" ]; then
+              echo "  执行: $MIG_FILE"
+              psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$MIG_FILE" || {
+                echo "❌ 数据迁移失败: $MIG_FILE"
+                exit 1
+              }
+            fi
+          done
+          echo "✅ 数据迁移执行成功"
+
       # ── Step 3: Schema 完整性验证 ─────────────────────────────────────────
-      # 验证 16 张业务表存在，8 张废弃表未被创建
+      # 验证核心业务表存在，废弃表未被创建
+      # 注意：仅验证核心业务表，动态资源类表（dynamic_resource_*）和辅助表（bridge_execution_logs 等）由 Atlas 自动管理
       - name: Schema 完整性检查
         run: |
           EXPECTED_TABLES=(
@@ -105,6 +119,10 @@ jobs:
             "system_prompt" "tool_definition" "kb_category"
             "kbd_entry" "sop_document"
             "environment" "assistant_evaluation"
+            # 新增核心表（PR #613 补充）
+            "kbd_image" "sop_execution" "skill_definition"
+            "migration_history" "terminal_operation" "prompt_slot"
+            "fact" "claim_evidence_link"
           )
           DEPRECATED_TABLES=(
             "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"

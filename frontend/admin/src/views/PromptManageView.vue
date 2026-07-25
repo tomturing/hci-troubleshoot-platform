@@ -73,10 +73,38 @@ async function fetchPrompts() {
 // 切换激活状态（同一个 stage 仅有一个 true 激活）
 async function handleActiveChange(row: SystemPrompt) {
   if (!row.is_active) {
-    // 强制保证每个 stage 至少有一个被激活
-    // 如果用户尝试直接把唯一的激活关掉，给予提示并恢复
-    ElMessage.warning('每个阶段必须保持至少一个激活版本！请直接启用其他版本进行切换。')
-    row.is_active = true
+    // 用户尝试把当前版本关掉：仅当它是该 stage「唯一」激活版本时才拦截。
+    // 若同 stage 还有其他激活版本，则允许关闭（避免脏数据下互斥开关被锁死）。
+    const othersActive = (prompts.value || []).some(
+      (p: SystemPrompt) => p.stage === row.stage && p.id !== row.id && p.is_active
+    )
+    if (!othersActive) {
+      ElMessage.warning('每个阶段必须保持至少一个激活版本！请直接启用其他版本进行切换。')
+      row.is_active = true
+      return
+    }
+    // 同 stage 已有其他激活版本，允许关闭当前行
+    try {
+      const res = await fetch(`/api/v1/prompts/${row.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({
+          stage: row.stage,
+          name: row.name,
+          description: row.description,
+          content_template: row.content_template,
+          version: row.version,
+          is_active: false
+        })
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      ElMessage.success(`阶段 ${row.stage} 版本 [${row.name}] 已停用`)
+      fetchPrompts()
+    } catch (e) {
+      console.error('停用 Prompt 失败:', e)
+      ElMessage.error('停用 Prompt 失败')
+      row.is_active = true
+    }
     return
   }
 

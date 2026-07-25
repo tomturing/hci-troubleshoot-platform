@@ -64,7 +64,7 @@ MAX_CONSECUTIVE_FAILURES = 3
 _PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z0-9_.]+)\}\}")
 
 # 写操作子命令词表（与 kb-service.extract_signals.WRITE_OP_SUB_COMMANDS 保持一致）。
-# 执行层以此做纵深防御：即便信号 schema 未带 require_human_confirm，只要 sub_command
+# 执行层以此做纵深防御：即便信号 schema 未带 require_human_confirm，只要 command
 # 命中写动词，也绝不自动执行，必须人工授权。
 _WRITE_OP_SUB_COMMANDS: set[str] = {
     "start", "stop", "shutdown", "restart", "suspend", "resume",
@@ -81,7 +81,7 @@ def _signal_requires_human(signal: dict | None) -> bool:
 
     判定优先级：
       1) 信号已显式标记 require_human_confirm / phase=solution（抽取层已标注）
-      2) 纵深防御：backend（qfk_*）信号 sub_command 命中写动词词表
+      2) 纵深防御：backend（qfk_*）信号 command 命中写动词词表
     """
     if not signal:
         return False
@@ -835,7 +835,7 @@ class KBDDiagnostic:
             except Exception as exc:
                 logger.warning(
                     event="kbd_diag_producer_error",
-                    acquirer=s.get("acquirer"),
+                    acquirer=_acquire_tool(s),
                     error=str(exc),
                     session_id=session_id,
                 )
@@ -1055,7 +1055,15 @@ class KBDDiagnostic:
             p = matcher.get("pattern", "")
             keywords = [p] if isinstance(p, str) else list(p or [])
 
-        # 构建 v2 扁平信号数据
+        # 容器默认值按 namespace 语义：qfk_service 为服务组(asv)，qfk_system 为执行容器(asv-con)
+        if namespace == "service":
+            _container_default = "asv"
+        elif namespace == "system":
+            _container_default = "asv-con"
+        else:
+            _container_default = None
+
+        # 构建 v2 扁平信号数据（字段名与 acquirer_args 契约一致）
         signal_data = {
             "namespace": namespace,
             "keyword": keywords,
@@ -1065,17 +1073,21 @@ class KBDDiagnostic:
             # v2 扁平字段
             "instruction": args.get("instruction"),
             "host": args.get("host"),
-            "vm": args.get("vm"),
             "timeout": args.get("timeout", 10),
 
             # 特有字段
             "command": args.get("command"),
-            "container": args.get("container", "asv-con"),
+            "container": args.get("container", _container_default),
             "file": args.get("file"),
             "time_window": args.get("time_window"),
-            "service": args.get("service"),
-            "action": args.get("action", "status"),
         }
+
+        # qfk_service 契约用 resource_keyword(服务名)/command(动作)，而运行时 BackendSignal
+        # 用 service/action 字段。PR#611 删除 _coerce_legacy_fields 后该映射遗漏，导致
+        # signal.service 恒为 None、ServiceHandler 抛 CommandBuildError。此处补回映射。
+        if namespace == "service":
+            signal_data["service"] = args.get("resource_keyword")
+            signal_data["action"] = args.get("command") or "status"
 
         try:
             return BackendSignal.from_dict(signal_data)

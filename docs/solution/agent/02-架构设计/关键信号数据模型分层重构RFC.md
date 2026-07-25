@@ -388,8 +388,8 @@ bs.container  = args.get("container")               # acquire.args.container
 §4.4 的设计已落地为可导入的共享模块（producer/consumer 同构、单一事实来源），无需等待 Phase 2 全量改造即可并入主干：
 
 - **`shared/schemas/acquirer_args.py`**：`COMMON_ARGS` + `ACQUIRER_ARGS_SCHEMA`（11 个 acquirer 全量注册，与 `ACQUIRER_CATALOG` 一一对应）+ `validate_acquire_args(tool, args)`（纯 Python 校验，无需 `jsonschema` 依赖即可运行，语义对齐 §6.1 的 JSON Schema）。
-- **`shared/schemas/signal_migration.py`**：`migrate_signal_document(raw)` / `migrate_signal_document` 纯函数，将扁平 v1 list → 嵌套 v2 `{schema_version, signals:[...]}`，**幂等**且**无损**（未识别的 v1 字段收进 `_v1_legacy`）。
-- **`scripts/migrate_signals_v1_to_v2.py`**：DB/文件双模式迁移运行器（`--dsn` 生产模式、`--input/--output` 文件模式、`--dry-run` 干跑），Phase 2 执行。
+- **~~`shared/schemas/signal_migration.py`~~**：已随 PR#611（2026-07-23）下线——v2 直落库后不再需要 v1→v2 迁移桥接。
+- **~~`scripts/migrate_signals_v1_to_v2.py`~~**：已随 PR#611（2026-07-23）下线——存量迁移由 `database/data-migrations/010_flatten_v1_signal_fields.sql` 幂等执行。
 - **producer 校验接入点**：`extract_signals.py:_validate_signal` 已挂接 `validate_acquire_args`——**仅当信号采用 v2 `acquire` 段时强制**，旧扁平格式在 Phase 0/1 双写期零破坏；Phase 1 抽取改为写 `acquire` 段后自动成为机器强制门禁（§6.1）。
 
 > 已用线上真实样本验证：qfk_log 迁移后 `acquire.args={resource_keyword, resource}` 通过校验，二次迁移幂等，`additionalProperties:false` 正确拦截幽灵字段。
@@ -411,8 +411,8 @@ bs.container  = args.get("container")               # acquire.args.container
 | 落库（producer） | `extract_signals.py` `_persist_signals` | 整块 `signals_json`（扁平 list） | **直接切 v2**：落库为 `{schema_version, signals:[...]}`，逐条校验 `acquire.args`（§7 实际策略） |
 | 落库（admin 保存） | `admin.py` `update_kbd_entry` | 整块 `signals_json` | 入参接受 v2 对象或 v1 list，保存时 `migrate_signal_document` 归约为 v2 + 校验 |
 | admin 审核门 | `admin.py` 审核接口 | `isinstance(signals_json, list)` 判 backend 信号 | 解包 v2 对象后按 `acquire.tool`/provenance 判定 backend（§2.7 修正） |
-| 前端展示 | `KbdReviewView.vue` | v2 `acquire.tool`/`acquire.args`/`match`/`orchestrate`/`_v1_legacy` | **原生 v2 对象化（2026-07-22）**：admin GET 直出 `{schema_version, signals}`，前端**直接基于 v2 结构渲染**（删除 `KeySignal`/`toLegacyFromV2` 适配层，用 `sigTool/sigArgs/sigLeg/sigMatch/sigOrch` 直接从 v2 各段取值），零适配、零信息损失 |
-| 前端编辑绑定 | `KbdReviewView.vue` `signalEditDraft` | `acquire.tool`/`acquire.args`/… | 同上：编辑草稿即 v2 单条信号，模板 v-model 直接绑定 `acquire.args.*`/`match.*`/`_v1_legacy.*`；保存回发完整 v2 文档 `{schema_version, signals}`，admin `update_kbd_entry` 幂等归约 |
+| 前端展示 | `KbdReviewView.vue` | v2 `acquire.tool`/`acquire.args`/`match`/`orchestrate` | **原生 v2 对象化（2026-07-22）**：admin GET 直出 `{schema_version, signals}`，前端**直接基于 v2 结构渲染**（删除 `KeySignal`/`toLegacyFromV2` 适配层，用 `sigTool/sigArgs/sigMatch/sigOrch` 直接从 v2 各段取值），零适配、零信息损失 |
+| 前端编辑绑定 | `KbdReviewView.vue` `signalEditDraft` | `acquire.tool`/`acquire.args`/… | 同上：编辑草稿即 v2 单条信号，模板 v-model 直接绑定 `acquire.args.*`/`match.*`/`orchestrate.*`；保存回发完整 v2 文档 `{schema_version, signals}`，admin `update_kbd_entry` 幂等归约 |
 | 编辑器组件 | `MatcherEditor.vue` `ProducesEditor.vue` | `matcher` / `produces` | 同上：直接绑定 v2 `match`/`orchestrate.produces`，无需适配层 |
 | LLM 抽取写入 | `extract_signals.py` `_persist_signals` | 写顶层 `keyword`+`acquirer_args`+`matcher` | 内部仍用扁平 v1 处理，落库前经 `_signals_to_v2` 归约 v2（统一 `acquire.args` 形态，§4.4） |
 
@@ -464,19 +464,19 @@ bs.container  = args.get("container")               # acquire.args.container
 
 ### 部署与迁移顺序（关键）
 1. **先部署新代码**（kb-service + agent-service）：producer 写 v2、边界归一生效、校验生效。
-2. **再跑存量迁移脚本** `scripts/migrate_signals_v1_to_v2.py --dsn <db>`（先 `--dry-run` 核对行数）。
+2. **存量迁移由数据迁移脚本执行**：`database/data-migrations/010_flatten_v1_signal_fields.sql` 幂等处理 v1 残留字段（`target.*`/`sub_command`/`description`/`_v1_legacy`），统一写回 v2 格式。
 3. 回采验证：对含信号的 KBD 发起诊断，断言命令含新关键词与 `-s failed`（复用事件文档验收标准）。
-4. 如 v2 异常：回滚脚本不可用（列形态已切），依赖 DB 备份恢复；因边界归一保留 v1 解析能力，亦可临时回退 producer 写 v1。
+4. 如 v2 异常：回滚依赖 DB 备份恢复；因边界归一保留 v1 解析能力，亦可临时回退 producer 写 v1。
 
-### 落地状态（截至 2026-07-22）
+### 落地状态（截至 2026-07-24）
 - ✅ `shared/schemas/acquirer_args.py`：`COMMON_ARGS` + `ACQUIRER_ARGS_SCHEMA`（11 acquirer）+ `validate_acquire_args`。
-- ✅ `shared/schemas/signal_migration.py`：`migrate_signal_document` / `to_legacy_signal` / `unwrap_signals`。
+- ~~`shared/schemas/signal_migration.py`~~：已随 PR#611（2026-07-23）下线——v2 直落库后不再需要迁移桥接。
 - ✅ producer（`extract_signals._persist_signals`）写 v2 + 校验。
 - ✅ agent 边界（`kbd_model.kbd_from_dict`）归一 v2→legacy；模型 `from_dict` v2 容错。
-- ✅ admin（`update_kbd_entry` 幂等归约+双重校验；GET 直出 v2 文档；前端原生 v2 对象化、回写 v2 文档；审核门解包 v2）。**后端契约完善**：`acquirer_args` 注册表为各 tool 增 `target`/`description` 可选字段、清空 QFK `required`；`signal.v2` JSON Schema 修正 `orchestrate.produces` 为对象数组、`match` 允许 `null`、放行 `_v1_legacy`——使历史真实数据（`acquire.args.target`/`_v1_legacy.description`/`produces` 数组等）能合法往返，不再 422。
-- ✅ 迁移脚本 `scripts/migrate_signals_v1_to_v2.py`（DB/文件双模式，dry-run）。
+- ✅ admin（`update_kbd_entry` 双重校验；GET 直出 v2 文档；前端原生 v2 对象化、回写 v2 文档）。**后端契约完善**：`acquirer_args` 注册表字段拍平（`host`/`command`/`instruction` 替代 `target.*`/`sub_command`/`description`）、清空 QFK `required`；`signal.v2` JSON Schema 修正 `orchestrate.produces` 为对象数组、`match` 允许 `null`——使历史真实数据能合法往返，不再 422。
+- ✅ 存量迁移由 `database/data-migrations/010_flatten_v1_signal_fields.sql` 幂等执行（替代已下线的 Python 迁移脚本）。
 - ✅ **§6.1 JSON Schema 契约入 CI（保存时强制）**：`gen-schemas.py` 导出契约、`signal_schema.validate_signals_json`（`jsonschema`+`referencing`）整段校验、`admin.py update_kbd_entry` 落库前 422 拒非法、CI `schema-contract` job、`Makefile` `gen-schemas`/`schema-check` 目标（详见 §6.1）。
-- ✅ **前端"原生读 v2"对象化（2026-07-22）**：删除 `KeySignal`/`toLegacyFromV2` 适配层，前端 `KbdReviewView.vue` 直接基于 v2 文档渲染（producer/consumer 分组按 `acquire.tool`/provenance）、编辑（草稿即 v2 单条信号，v-model 直绑 `acquire.args.*`/`match.*`/`orchestrate.*`/`_v1_legacy.*`）、回写（发完整 v2 文档 `{schema_version, signals}`，admin 幂等归约）。零适配层、零信息损失，数据契约彻底原生 v2。
+- ✅ **前端"原生读 v2"对象化（2026-07-22）**：删除 `KeySignal`/`toLegacyFromV2`/`sigLeg` 适配层，前端 `KbdReviewView.vue` 直接基于 v2 文档渲染（producer/consumer 分组按 `acquire.tool`/provenance）、编辑（草稿即 v2 单条信号，v-model 直绑 `acquire.args.*`/`match.*`/`orchestrate.*`）、回写（发完整 v2 文档 `{schema_version, signals}`）。零适配层、零信息损失，数据契约彻底原生 v2。
 - ⬜ 模型本地单测受运行环境 Python 版本限制未跑（运行时 3.11+ 正常），但共享层 round-trip 与契约校验已用真实样本验证。
 
 ---
@@ -519,7 +519,7 @@ bs.container  = args.get("container")               # acquire.args.container
 | M2 | Phase 0 锚点（`schema_version` + 路由桩） | M1 |
 | M3 | Phase 1 双写（抽取+前端写 v2） | M2 |
 | M4 | Phase 2 读切 v2 + 存量迁移 + 回采验证 | M3 |
-| M5 | Phase 3 删旧 + `shared/schemas/acquirer_args.py` 注册 + JSON Schema 契约入 CI（保存时校验） + `scripts/migrate_signals_v1_to_v2.py` 收尾 | M4 | ✅ 已实现（2026-07-22） |
+| M5 | Phase 3 删旧 + `shared/schemas/acquirer_args.py` 注册 + JSON Schema 契约入 CI（保存时校验） + 数据迁移 `010_flatten_v1_signal_fields.sql` | M4 | ✅ 已实现（2026-07-24） |
 
 ---
 

@@ -34,7 +34,6 @@ CREATE INDEX IF NOT EXISTS idx_bridge_logs_event      ON bridge_execution_logs (
 -- SELECT cron.schedule('cleanup_bridge_logs', '0 2 * * *',
 --   $$DELETE FROM bridge_execution_logs WHERE created_at < NOW() - INTERVAL '90 days'$$);
 
-COMMENT ON TABLE bridge_execution_logs IS 'terminal_bridge 执行日志回采表 — 按 case_id 关联工单，支持端到端 trace 分析';
-COMMENT ON COLUMN bridge_execution_logs.event IS '事件类型：exec.start（开始执行） / exec.output（输出回采） / exec.done（执行完成） / ssh.connected（SSH 连接成功）等';
-COMMENT ON COLUMN bridge_execution_logs.extra IS '结构化附加字段（JSONB）：包含 command（命令）、output_preview（输出预览）、exit_code（退出码）等';
-COMMENT ON COLUMN bridge_execution_logs.user_id IS '操作用户 ID（预留字段，当前 MVP 阶段暂未填充）';
+
+-- 说明：表与列的 COMMENT 统一由 database/desired_schema.sql（Atlas 声明式期望状态）管理，
+-- 此处不再重复声明，避免与 desired_schema.sql 文案漂移导致 Atlas 幂等性校验失败。

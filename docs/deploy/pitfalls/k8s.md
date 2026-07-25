@@ -1294,3 +1294,49 @@ grep -rn "<列名> = Column" backend/<service>/app/models/
 - PR545 给 `SopDocument` 模型新增 `signals_json` 列并写了迁移文件 `20260714000000_add_signals_json_drop_steps_json.sql`，但漏改 `desired_schema.sql` 的 `sop_document` 表（仅改了 `kbd_entry`）
 - staging 环境数据库 `sop_document` 表无 `signals_json` 列，导致 `PATCH /api/admin/sop/{id}`（编辑保存，ORM `select(SopDocument)`）500；`GET /api/v1/sop/{id}`（原生 SQL 显式列名）正常
 - 受影响 7 处 `select(SopDocument)` ORM 查询：编辑保存、审核通过、发布、导入查重、抽取信号等
+
+---
+
+## D-014：db-seed 种子 SQL dollar-quote 闭定界符后漏逗号导致 PostSync Hook 失败
+
+**触发场景**：修改 `database/seeds/*.sql` 中 `$TEMPLATE$...$TEMPLATE$` 包裹的 prompt 文案时，误删闭定界符 `$TEMPLATE$` 后的字段分隔逗号。
+
+**症状**：
+- ArgoCD `hci-platform-dev` Application `sync=Synced health=Healthy`，但 `operationState.phase=Failed`，message: `one or more synchronization tasks completed unsuccessfully (retried 5 times)`
+- resource 列表：`Job/db-seed-<chartVer> hookPhase=Failed msg=Job has reached the specified backoff limit`
+- Hook Job 已被 `hook-delete-policy: BeforeHookCreation,HookFailed` 清理，`kubectl get jobs` 看不到残留（区别于 D-011 的残留污染）
+- 手动执行 seed SQL：`psql:...: ERROR: syntax error at or near "'1.0'"`，指向 version 字段
+
+**根因**：
+`02_system_prompts.sql` 等种子文件的 INSERT 元组结构为 `(stage, name, description, $TEMPLATE$...$TEMPLATE$, '1.0', TRUE)`，`$TEMPLATE$...$TEMPLATE$` 是 content_template 字段（dollar-quote 字符串）。**闭定界符 `$TEMPLATE$` 后必须紧跟逗号**分隔 version 字段。漏逗号时，dollar-quote 字符串与下一个单引号字符串 `'1.0'` 相邻，PostgreSQL 不允许这两种字符串字面量相邻拼接（不同于两个单引号字符串间的自动拼接），报 syntax error。psql 对长 INSERT 只报一个错误位置，常指向最后一个元组的 `'1.0'`，易误判为该元组问题，实为更早元组的闭定界符漏逗号导致字段错位。
+
+**排查步骤**：
+```bash
+# 1. 确认 db-seed Hook 失败（Job 已被 HookFailed 清理，看 operationState）
+kubectl get application hci-platform-dev -n argocd -o jsonpath='{.status.operationState.phase} {.status.operationState.message}{"\n"}'
+
+# 2. 手动执行 seed SQL 复现（ON CONFLICT DO NOTHING 幂等，安全）
+kubectl cp database/seeds/02_system_prompts.sql hci-dev/postgres-0:/tmp/02.sql
+kubectl exec -n hci-dev postgres-0 -- psql -U hci_admin -d hci_troubleshoot -v ON_ERROR_STOP=1 -f /tmp/02.sql
+# 报 syntax error at or near "'1.0'" 即本坑
+
+# 3. 用正则把 $TEMPLATE$...$TEMPLATE$ 替换为 'X' 后再执行，错误转为
+#    "VALUES lists must all have the same length" 即可定位到漏逗号的元组
+
+# 4. 检查每个闭定界符后是否跟逗号
+grep -n '\$TEMPLATE\$' database/seeds/02_system_prompts.sql
+# 闭定界符行应以 $TEMPLATE$, 结尾；若 $TEMPLATE$ 后直接换行接 '1.0' 即漏逗号
+```
+
+**修复方法**：
+在漏逗号的闭定界符后补逗号：`$TEMPLATE$` -> `$TEMPLATE$,`。下次 ArgoCD Sync 触发 db-seed PostSync Job 重新执行 seed SQL 成功，`operationState.phase` 恢复 `Succeeded`。
+
+**预防**：
+- `database/seeds/*.sql` 中 `$TEMPLATE$...$TEMPLATE$` 是 content_template 字段值，**闭定界符后必须跟逗号**（分隔 version 字段）
+- 修改 prompt 文案时只改 `$TEMPLATE$` 之间的内容，勿动闭定界符后的逗号
+- Code Review 重点：PR 改 `database/seeds/*.sql` 时，检查 diff 是否误删 `$TEMPLATE$,` 的逗号
+
+**参考案例**：
+- `02_system_prompts.sql` 的 `kbd_extract_signals_v2` prompt（PR611 v2 信号模型引入），第 678 行闭定界符 `$TEMPLATE$` 漏逗号
+- PR611~PR613 期间 db-seed-010 PostSync Job 持续失败，但因 `health=Healthy` 未被及时发现；PR613 合并后排查 ArgoCD 异常时定位
+- 修复：第 678 行 `$TEMPLATE$` -> `$TEMPLATE$,`
