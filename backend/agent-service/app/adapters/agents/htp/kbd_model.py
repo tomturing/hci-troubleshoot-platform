@@ -160,10 +160,12 @@ def kbd_from_dict(d: dict[str, Any]) -> KBD:
     """从 KBD 文档 dict 构造 KBD。
 
     输入为 v2 数组级对象 {schema_version, signals}（或直接含 signals 的 KBD dict）。
-    v1 扁平 list 与 to_legacy_signal 反向桥接已彻底移除，运行时仅存在 v2 嵌套单一版本。
+    支持兼容 DB 原始列 dict 形态 {"schema_version": 2, "signals": [...]} 与标准 list 数组。
     """
     signals = d.get("signals", [])
-    if not isinstance(signals, list):
+    if isinstance(signals, dict):
+        signals = signals.get("signals", [])
+    elif not isinstance(signals, list):
         signals = []
     return KBD(
         id=d.get("id", ""),
