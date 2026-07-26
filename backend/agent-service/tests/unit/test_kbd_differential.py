@@ -347,6 +347,37 @@ class TestDiagnoseLoop:
         assert len(result.steps_executed) == 2
         assert {step.tool_name for step in result.steps_executed} == {"tool_a"}
         assert all(step.outcome.value == "PASS" for step in result.steps_executed)
+        assert len({step.exec_id for step in result.steps_executed}) == 1
+        assert len({step.evaluation_id for step in result.steps_executed}) == 2
+
+    @pytest.mark.asyncio
+    async def test_supported_plus_tool_error_is_partial_and_never_s4(self):
+        first = make_kbd("k1", [("tool_a", "__CONTAINS__:yes")])
+        second = make_kbd("k2", [("tool_b", "__CONTAINS__:yes")])
+        diag = KBDDiagnostic(ai_registry=make_registry_mock(), tool_executor=MagicMock())
+
+        async def execute(step, *_args, **_kwargs):
+            if step.tool_name == "tool_a":
+                return "yes", None, None
+            return None, "bridge timeout", None
+
+        diag._execute_acquirer = AsyncMock(side_effect=execute)
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=[first, second], env_context={}, session_id="partial"
+            )
+        ]
+
+        result = diag.get_result()
+        assert result is not None
+        assert result.conclusion_level == "PARTIAL"
+        assert not result.is_definitive
+        assert [kbd.id for kbd in result.matched_kbds] == ["k1"]
+        assert "暂不能定论" in result.diagnosis_report
+        assert "测试根因" not in result.diagnosis_report
+        complete = next(event for event in events if getattr(event, "stage", "") == "kbd_diag_complete")
+        assert complete.metadata["conclusion_level"] == "PARTIAL"
 
     @pytest.mark.asyncio
     async def test_single_candidate_confirms_its_signals(self):
@@ -540,8 +571,8 @@ class TestKBDDiagEffectiveness:
     """多篇 KBD 的全部信号均进入证据求值。"""
 
     @pytest.mark.asyncio
-    async def test_ten_candidates_evaluate_all_signals(self):
-        """10 个候选 KBD 的必需信号全部求值，只有完整 PASS 的 KBD 获得支持。"""
+    async def test_ten_candidates_use_fail_short_circuit_without_changing_result(self):
+        """required FAIL 后取消候选独占信号，但仍找到具有完整 PASS 证据的 KBD。"""
         # 构建 10 个 KBD，每个有独特的期望模式
         # 真实故障：k5（Redis 服务异常导致虚拟机开机失败）
         candidates = [
@@ -607,8 +638,8 @@ class TestKBDDiagEffectiveness:
         result = diag.get_result()
         assert result is not None
 
-        # 每个 KBD signal 都保留独立求值记录；相同 acquisition 由执行缓存去重。
-        assert len(result.steps_executed) == sum(len(kbd.signals) for kbd in candidates)
+        # 已被 required FAIL 排除的 KBD 不再执行其独占后续信号。
+        assert len(result.steps_executed) < sum(len(kbd.signals) for kbd in candidates)
 
         # 验收标准 2：真实 KBD k5 在匹配列表中
         matched_ids = {kbd.id for kbd in result.matched_kbds}
@@ -693,6 +724,7 @@ class TestEvidenceGatedCDD:
         assert result is not None and result.is_definitive
         assert [step.signal_id for step in result.steps_executed] == ["sig_001", "sig_002", "sig_003"]
         assert len({step.exec_id for step in result.steps_executed}) == 3
+        assert len({step.evaluation_id for step in result.steps_executed}) == 3
         assert all(step.outcome.value == "PASS" for step in result.steps_executed)
         assert "参考案例 27123" in result.diagnosis_report
         assert "category_id=27123" in result.diagnosis_report

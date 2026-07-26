@@ -547,3 +547,16 @@ owner: team
 - **Schema 修复**：`signal.v2.schema.json` 的 `match` 段扩宽为支持 6 类判定（`keyword`/`regex`/`state`/`threshold`/`json_path`/`exists`）落库，消除契约/运行时不一致坑。
 - **数据迁移**：新增 `010_flatten_v1_signal_fields.sql` 将存量 `signals_json` 的 v1 残留字段拍平为 v2 规范名；`02_system_prompts.sql` 的 KBD 抽取 prompt 同步更新字段对照。
 - **文档**：新增 `QKV_QFK信号模型v2参考.md`，改写 `QKV_QFK信号配置操作指南.md`（去 v1 扁平词汇）；`架构设计.md` / `数据库设计.md` 同步追加变更记录。
+
+---
+
+## 2026-07-26 · 分类驱动 KBD 主动诊断与结论门禁
+
+- [x] S1 直接消费 S0 已确认分类的完整 KnowledgeSnapshot，不再用 route、embedding、FTS 或 top-K 过滤分类内 KBD。
+- [x] 引入 SignalPlan、acquisition graph 和主动调度器，按判别力、required coverage、解锁价值、复用价值、成本、延迟和风险稳定排序。
+- [x] 工具动作只从版本化 KBD signal 编译；共享 acquisition 只有一个 `exec_id`，每条 signal 独立生成 `evaluation_id` 并确定性求值。
+- [x] 引入候选状态和四级 Conclusion Gate；required FAIL 后只取消被拒 KBD 的独占动作。
+- [x] 仅 `DEFINITIVE` 可进入 S4；工具错误、缺变量和未决候选不能输出 KBD 根因或方案。
+- [x] KBD 27123 golden case 和 agent-service 单元回归覆盖新不变量。
+
+详细设计见 [KBD 主动诊断信号调度与证据闭环算法设计](../../solution/knowledge-base/events/2026-07-26-KBD主动诊断信号调度与证据闭环算法设计.md)。

@@ -21,6 +21,7 @@ owner: team
 | 2026-03-05-PageIndex对比分析.md | 2026-03-05 | PageIndex 对比分析（方案选型，决策：不采用） |
 | 2026-03-27-知识库RAG设计v2.md | 2026-03-27 | 知识库 RAG 设计 v2（双轨三级 Fallback） |
 | 2026-07-26-Q2026072624224-S0到S1知识路由与CDD失效分析.md | 2026-07-26 | S0 分类结果被二次检索推翻、CDD 无证据结论与自由 fallback 的现场复盘 |
+| 2026-07-26-KBD主动诊断信号调度与证据闭环算法设计.md | 2026-07-26 | 分类全量 KBD 上的主动 acquisition 调度、候选状态机与 Conclusion Gate |
 
 ---
 
@@ -40,6 +41,7 @@ owner: team
 
 - `../` - knowledge-base 主干文档（知识库设计.md）
 - `../S0分类驱动的KBD证据诊断与CDD闭环设计.md` - S0 分类权威输入、KBD 证据状态机和 CDD 闭环目标架构
+- `2026-07-26-KBD主动诊断信号调度与证据闭环算法设计.md` - 分类全量 KBD 上的主动信号调度、候选状态机与 Conclusion Gate
 - `../../task/knowledge-base/events/` - 任务事件文档
 
 ---

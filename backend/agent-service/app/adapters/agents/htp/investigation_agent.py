@@ -327,6 +327,7 @@ class InvestigationAgent(BaseAgent):
             env_context=env_ctx,
             session_id=session_id,
             user_id=user_id,
+            snapshot_id=snapshot_id,
         ):
             yield event
 
@@ -351,12 +352,14 @@ class InvestigationAgent(BaseAgent):
                 )
             else:
                 yield AgentEscalation(
-                    reason="KBD 必需关键信号未形成完整 PASS 证据链",
+                    reason=f"KBD 证据结论未达到 DEFINITIVE：{kbd_result.conclusion_level}",
                     context={
                         "category_id": category_id,
                         "snapshot_id": snapshot_id,
                         "session_id": session_id,
                         "case_id": case_id,
+                        "conclusion_level": kbd_result.conclusion_level,
+                        "candidate_states": kbd_result.candidate_states,
                     },
                 )
 

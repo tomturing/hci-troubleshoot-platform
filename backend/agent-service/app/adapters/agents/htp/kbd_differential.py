@@ -12,19 +12,21 @@ import re
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
-from app.adapters.agents.htp.kbd_model import (
-    KBD,
-    KBDStep,
-    _acquire_tool,
-    _signal_category,
-    _signal_to_step,
+from app.adapters.agents.htp.cdd import (
+    ActiveDiagnosticScheduler,
+    CandidateState,
+    ConclusionLevel,
+    SignalOutcome,
+    compile_signal_plan,
+    decide_conclusion,
 )
+from app.adapters.agents.htp.cdd.candidate_reducer import initial_assessments, reduce_candidates
+from app.adapters.agents.htp.kbd_model import KBD, KBDStep, _acquire_tool, _signal_category
 from app.core.utils import smart_truncate
 from app.domain.agent_port import (
     AgentEvent,
@@ -105,17 +107,6 @@ def _signal_requires_human(signal: dict | None) -> bool:
     return False
 
 
-class SignalOutcome(StrEnum):
-    """关键信号的封闭状态集合。"""
-
-    NOT_RUN = "NOT_RUN"
-    PASS = "PASS"
-    FAIL = "FAIL"
-    UNKNOWN = "UNKNOWN"
-    ERROR = "ERROR"
-    BLOCKED = "BLOCKED"
-
-
 @dataclass
 class StepResult:
     """单步执行结果记录（用于报告生成和审计追踪）。"""
@@ -128,6 +119,8 @@ class StepResult:
     kbd_id: str = ""
     signal_id: str = ""
     exec_id: str = ""
+    evaluation_id: str = ""
+    acquisition_id: str = ""
     outcome: SignalOutcome = SignalOutcome.NOT_RUN
     required: bool = True
 
@@ -138,8 +131,10 @@ class KBDDiagResult:
 
     matched_kbds: list[KBD]  # 最终候选 KBD（按匹配度排序）
     steps_executed: list[StepResult]  # 已执行步骤序列
-    is_definitive: bool  # True = 至少一篇 KBD 的全部必需信号为 PASS
+    is_definitive: bool  # True = supported 存在且其他候选均已 supported/rejected
     diagnosis_report: str  # 确定性模板生成的结构化诊断报告
+    conclusion_level: str = ConclusionLevel.INCONCLUSIVE.value
+    candidate_states: dict[str, str] = field(default_factory=dict)
 
 
 class KBDDiagnostic:
@@ -214,8 +209,9 @@ class KBDDiagnostic:
         env_context: dict[str, str],
         session_id: str,
         user_id: str = "",
+        snapshot_id: str = "runtime",
     ) -> AsyncGenerator[AgentEvent, None]:
-        """按 KBD revision/signal_id 执行证据诊断，结论完全由必需信号门控。"""
+        """编译并调度 KBD acquisition graph，结论由封闭状态机门控。"""
         if not candidates:
             yield AgentTextChunk(content="未找到可执行 KBD，无法形成有据可查的诊断结论。")
             self._result = KBDDiagResult(
@@ -223,10 +219,14 @@ class KBDDiagnostic:
                 steps_executed=[],
                 is_definitive=False,
                 diagnosis_report="分类内没有可执行 KBD，无法形成有据可查的诊断结论。",
+                conclusion_level=ConclusionLevel.INCONCLUSIVE.value,
             )
             return
 
         ordered = sorted(candidates, key=lambda k: (k.support_id or str(k.id), str(k.id)))
+        plan = compile_signal_plan(ordered, snapshot_id=snapshot_id)
+        assessments = initial_assessments(plan)
+        scheduler = ActiveDiagnosticScheduler(plan)
         steps_executed: list[StepResult] = []
         if self._diagnostic_item_client and self._conversation_id:
             hypotheses_data = [
@@ -256,134 +256,137 @@ class KBDDiagnostic:
 
         yield AgentStageUpdate(
             stage="kbd_diag_start",
-            metadata={"candidate_count": len(ordered), "session_id": session_id},
+            metadata={
+                "candidate_count": len(ordered),
+                "session_id": session_id,
+                "snapshot_id": snapshot_id,
+                "plan_id": plan.plan_id,
+                "acquisition_count": len(plan.acquisitions),
+            },
         )
 
-        pending: list[tuple[KBD, dict[str, Any], str, bool]] = []
-        for kbd in ordered:
-            for index, signal in enumerate(kbd.signals, start=1):
-                signal_id = str(signal.get("id") or signal.get("signal_id") or f"signal_{index:03d}")
-                review = signal.get("review") or {}
-                orchestrate = signal.get("orchestrate") or {}
-                required = bool(
-                    signal.get(
-                        "required_for_confirmation",
-                        review.get("required_for_confirmation", orchestrate.get("phase", "diagnostic") == "diagnostic"),
-                    )
-                )
-                pending.append((kbd, signal, signal_id, required))
+        while True:
+            reduce_candidates(plan, assessments)
+            available = {str(key).lower() for key in env_context} | set(self._variable_pool)
+            selected = scheduler.choose(assessments, available)
+            if selected is None:
+                break
+            acquisition, score = selected
+            active_refs = [
+                ref
+                for ref in acquisition.signal_refs
+                if assessments[ref.kbd_id].state is CandidateState.CANDIDATE
+            ]
+            if not active_refs:
+                scheduler.mark_completed(acquisition)
+                continue
+            representative = sorted(active_refs, key=lambda ref: ref.ref_id)[0]
+            resolved_args = self._resolve_args(acquisition.args_template, env_context, self._variable_pool)
+            runtime_key = json.dumps(
+                {
+                    "template_key": acquisition.template_key,
+                    "resolved": self._acquisition_key(acquisition.tool_name, resolved_args, env_context),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            exec_id = self._stable_acquisition_exec_id(session_id, runtime_key)
+            unresolved = self._unresolved_placeholders(resolved_args)
+            blocked_reason = None
+            if unresolved:
+                blocked_reason = f"未解析变量: {', '.join(sorted(unresolved))}"
+            elif any(_signal_requires_human(ref.signal) for ref in active_refs):
+                blocked_reason = "诊断阶段禁止执行写操作/处置动作"
 
-        acquisition_cache: dict[str, tuple[str | None, str | None, bool | None, str]] = {}
-        while pending:
-            progressed = False
-            for item in list(pending):
-                kbd, signal, signal_id, required = item
-                requires = (signal.get("orchestrate") or {}).get("requires") or signal.get("requires") or []
-                available = {key.lower() for key in env_context} | set(self._variable_pool)
-                if any(str(name).lower() not in available for name in requires):
-                    continue
-
-                pending.remove(item)
-                progressed = True
-                tool = _acquire_tool(signal)
-                step = _signal_to_step(signal)
-                if step is None:
-                    steps_executed.append(
-                        StepResult(
-                            tool_name=tool,
-                            tool_args={},
-                            raw_output=None,
-                            error="信号缺少 acquire.tool",
-                            kbd_id=kbd.id,
-                            signal_id=signal_id,
-                            outcome=SignalOutcome.BLOCKED,
-                            required=required,
-                        )
-                    )
-                    continue
-
-                resolved_args = self._resolve_args(step.tool_args_template, env_context, self._variable_pool)
-                unresolved = self._unresolved_placeholders(resolved_args)
-                exec_id = self._stable_exec_id(session_id, kbd, signal_id)
-                if unresolved or _signal_requires_human(signal):
-                    reason = (
-                        f"未解析变量: {', '.join(sorted(unresolved))}"
-                        if unresolved
-                        else "诊断阶段禁止执行写操作/处置动作"
-                    )
-                    result = StepResult(
-                        tool_name=tool,
-                        tool_args=resolved_args,
-                        raw_output=None,
-                        error=reason,
-                        kbd_id=kbd.id,
-                        signal_id=signal_id,
-                        exec_id=exec_id,
-                        outcome=SignalOutcome.BLOCKED,
-                        required=required,
-                    )
-                    steps_executed.append(result)
-                    yield AgentStageUpdate(
-                        stage="tool_result",
-                        metadata=self._tool_result_metadata(result),
-                    )
-                    continue
-
-                resolved_step = KBDStep(
-                    tool_name=step.tool_name,
-                    tool_args_template=resolved_args,
-                    matcher=step.matcher,
-                )
-                acquisition_key = self._acquisition_key(tool, resolved_args, env_context)
-                yield AgentStageUpdate(
-                    stage="tool_call",
-                    metadata={
-                        "exec_id": exec_id,
-                        "tool_name": tool,
-                        "tool_args": resolved_args,
-                        "status": "running",
-                        "risk_level": 1,
-                        "policy": "auto",
-                        "kbd_id": kbd.id,
-                        "support_id": kbd.support_id,
-                        "signal_id": signal_id,
-                        "command_source": "KBD",
+            yield AgentStageUpdate(
+                stage="kbd_scheduler_decision",
+                metadata={
+                    "plan_id": plan.plan_id,
+                    "acquisition_id": acquisition.template_key,
+                    "runtime_acquisition_key": runtime_key,
+                    "utility": score.utility,
+                    "score": {
+                        "discrimination": score.discrimination,
+                        "required_coverage": score.required_coverage,
+                        "unlock": score.unlock,
+                        "reuse": score.reuse,
+                        "cost": score.cost,
+                        "latency": score.latency,
+                        "risk": score.risk,
                     },
+                    "linked_signal_refs": [ref.ref_id for ref in active_refs],
+                },
+            )
+            yield AgentStageUpdate(
+                stage="tool_call",
+                metadata={
+                    "exec_id": exec_id,
+                    "acquisition_id": acquisition.template_key,
+                    "tool_name": acquisition.tool_name,
+                    "tool_args": resolved_args,
+                    "status": "blocked" if blocked_reason else "running",
+                    "risk_level": acquisition.risk,
+                    "policy": "auto",
+                    "kbd_id": representative.kbd_id,
+                    "support_id": representative.support_id,
+                    "signal_id": representative.signal_id,
+                    "linked_signal_refs": [ref.ref_id for ref in active_refs],
+                    "command_source": "KBD",
+                },
+            )
+
+            raw_output: str | None = None
+            error: str | None = blocked_reason
+            pre_matched: bool | None = None
+            if not blocked_reason:
+                step = KBDStep(
+                    tool_name=acquisition.tool_name,
+                    tool_args_template=resolved_args,
+                    matcher=representative.signal.get("match"),
                 )
+                try:
+                    raw_output, error, pre_matched = await self._execute_acquirer(
+                        step,
+                        env_context,
+                        session_id,
+                        user_id,
+                        signal=representative.signal,
+                        exec_id=exec_id,
+                    )
+                except Exception as exc:
+                    error = str(exc)
 
-                cached = acquisition_cache.get(acquisition_key)
-                if cached is None:
-                    try:
-                        raw_output, error, pre_matched = await self._execute_acquirer(
-                            resolved_step,
-                            env_context,
-                            session_id,
-                            user_id,
-                            signal=signal,
-                            exec_id=exec_id,
-                        )
-                    except Exception as exc:
-                        raw_output, error, pre_matched = None, str(exc), None
-                    acquisition_cache[acquisition_key] = (raw_output, error, pre_matched, exec_id)
-                else:
-                    raw_output, error, pre_matched, _producer_exec_id = cached
-
-                outcome = self._evaluate_signal_outcome(signal, raw_output, error, pre_matched)
+            for ref in active_refs:
+                evaluation_id = self._stable_evaluation_id(exec_id, ref.ref_id)
+                outcome = (
+                    SignalOutcome.BLOCKED
+                    if blocked_reason
+                    else self._evaluate_signal_outcome(
+                        ref.signal,
+                        raw_output,
+                        error,
+                        pre_matched
+                        if ref.matcher_fingerprint == representative.matcher_fingerprint
+                        else None,
+                    )
+                )
+                assessments[ref.kbd_id].signal_outcomes[ref.ref_id] = outcome
                 result = StepResult(
-                    tool_name=tool,
+                    tool_name=acquisition.tool_name,
                     tool_args=resolved_args,
                     raw_output=raw_output,
                     error=error,
-                    match_kbd_ids={kbd.id} if outcome is SignalOutcome.PASS else set(),
-                    kbd_id=kbd.id,
-                    signal_id=signal_id,
+                    match_kbd_ids={ref.kbd_id} if outcome is SignalOutcome.PASS else set(),
+                    kbd_id=ref.kbd_id,
+                    signal_id=ref.signal_id,
                     exec_id=exec_id,
+                    evaluation_id=evaluation_id,
+                    acquisition_id=acquisition.template_key,
                     outcome=outcome,
-                    required=required,
+                    required=ref.required_for_support,
                 )
                 steps_executed.append(result)
                 yield AgentStageUpdate(stage="tool_result", metadata=self._tool_result_metadata(result))
-
                 if self._diagnostic_item_client and self._conversation_id:
                     await self._diagnostic_item_client.create_item(
                         conversation_id=uuid.UUID(self._conversation_id),
@@ -391,67 +394,102 @@ class KBDDiagnostic:
                         type="verification_step",
                         seq=len(steps_executed),
                         content={
-                            "kbd_id": kbd.id,
-                            "support_id": kbd.support_id,
-                            "signal_id": signal_id,
+                            "kbd_id": ref.kbd_id,
+                            "support_id": ref.support_id,
+                            "signal_id": ref.signal_id,
                             "exec_id": exec_id,
-                            "tool_name": tool,
+                            "evaluation_id": evaluation_id,
+                            "acquisition_id": acquisition.template_key,
+                            "tool_name": acquisition.tool_name,
                             "tool_args": resolved_args,
                             "raw_output": smart_truncate(raw_output or "", max_chars=500),
                             "error": error,
                             "outcome": outcome.value,
                         },
-                        status="confirmed" if outcome is SignalOutcome.PASS else "rejected",
+                        status=(
+                            "confirmed"
+                            if outcome is SignalOutcome.PASS
+                            else "rejected"
+                            if outcome is SignalOutcome.FAIL
+                            else "error"
+                        ),
                     )
+            scheduler.mark_completed(acquisition)
 
-            if not progressed:
-                for kbd, signal, signal_id, required in pending:
-                    resolved_args = self._resolve_args(
-                        (signal.get("acquire") or {}).get("args") or {}, env_context, self._variable_pool
-                    )
-                    missing = (signal.get("orchestrate") or {}).get("requires") or signal.get("requires") or []
-                    result = StepResult(
-                        tool_name=_acquire_tool(signal),
-                        tool_args=resolved_args,
-                        raw_output=None,
-                        error=f"依赖变量缺失: {', '.join(str(name) for name in missing)}",
-                        kbd_id=kbd.id,
-                        signal_id=signal_id,
-                        exec_id=self._stable_exec_id(session_id, kbd, signal_id),
-                        outcome=SignalOutcome.BLOCKED,
-                        required=required,
-                    )
-                    steps_executed.append(result)
-                    yield AgentStageUpdate(stage="tool_result", metadata=self._tool_result_metadata(result))
-                pending.clear()
+        # No executable acquisition remains. Preserve unresolved evidence as BLOCKED.
+        for ref in list(scheduler.remaining_signal_refs(assessments)):
+            if ref.ref_id in assessments[ref.kbd_id].signal_outcomes:
+                continue
+            args = self._resolve_args((ref.signal.get("acquire") or {}).get("args") or {}, env_context, self._variable_pool)
+            missing = sorted(set(ref.requires) - ({str(key).lower() for key in env_context} | set(self._variable_pool)))
+            runtime_key = self._acquisition_key(_acquire_tool(ref.signal), args, env_context)
+            exec_id = self._stable_acquisition_exec_id(session_id, runtime_key)
+            evaluation_id = self._stable_evaluation_id(exec_id, ref.ref_id)
+            result = StepResult(
+                tool_name=_acquire_tool(ref.signal),
+                tool_args=args,
+                raw_output=None,
+                error=f"依赖变量缺失: {', '.join(missing)}" if missing else "无可执行采集路径",
+                kbd_id=ref.kbd_id,
+                signal_id=ref.signal_id,
+                exec_id=exec_id,
+                evaluation_id=evaluation_id,
+                outcome=SignalOutcome.BLOCKED,
+                required=ref.required_for_support,
+            )
+            assessments[ref.kbd_id].signal_outcomes[ref.ref_id] = SignalOutcome.BLOCKED
+            steps_executed.append(result)
+            yield AgentStageUpdate(stage="tool_result", metadata=self._tool_result_metadata(result))
 
-        supported: list[KBD] = []
-        for kbd in ordered:
-            required_results = [step for step in steps_executed if step.kbd_id == kbd.id and step.required]
-            if required_results and all(step.outcome is SignalOutcome.PASS for step in required_results):
-                supported.append(kbd)
+        reduce_candidates(plan, assessments, finalize=True)
+        decision = decide_conclusion(assessments)
+        supported = [plan.candidates[kbd_id] for kbd_id in decision.supported_ids]
+        definitive = decision.level is ConclusionLevel.DEFINITIVE
 
         yield AgentStageUpdate(
             stage="kbd_diag_running",
-            metadata={"supported_count": len(supported), "candidate_count": len(ordered)},
+            metadata={
+                "supported_count": len(supported),
+                "candidate_count": len(ordered),
+                "conclusion_level": decision.level.value,
+                "candidate_states": {kbd_id: item.state.value for kbd_id, item in assessments.items()},
+            },
         )
         report = await self._generate_report(
-            supported,
+            supported if definitive else [],
             steps_executed,
             evaluated_kbds=ordered,
             user_id=user_id,
         )
+        if decision.level is ConclusionLevel.PARTIAL:
+            supported_refs = ", ".join(
+                plan.candidates[kbd_id].support_id or kbd_id for kbd_id in decision.supported_ids
+            )
+            report = (
+                "### 诊断结论：部分证据成立，暂不能定论\n\n"
+                f"参考案例 {supported_refs} 的必需关键信号已达到 PASS，但分类内仍有未决或不可执行 KBD；"
+                "这些候选仍可能成立，因此 Conclusion Gate 禁止输出根因、解决方案或进入 S4。\n\n"
+                + report.replace(
+                    "没有任何 KBD 的全部必需关键信号达到 PASS",
+                    "已有 KBD 达到 PASS，但候选全集尚未完成排除",
+                )
+            )
 
         self._result = KBDDiagResult(
             matched_kbds=supported,
             steps_executed=steps_executed,
-            is_definitive=bool(supported),
+            is_definitive=definitive,
             diagnosis_report=report,
+            conclusion_level=decision.level.value,
+            candidate_states={kbd_id: item.state.value for kbd_id, item in assessments.items()},
         )
 
-        if self._diagnostic_item_client and self._conversation_id:
+        if definitive and self._diagnostic_item_client and self._conversation_id:
             for seq, kbd in enumerate(supported, start=1):
-                evidence_ids = [step.exec_id for step in steps_executed if step.kbd_id == kbd.id]
+                evidence_ids = sorted({step.exec_id for step in steps_executed if step.kbd_id == kbd.id})
+                evaluation_ids = sorted(
+                    {step.evaluation_id for step in steps_executed if step.kbd_id == kbd.id}
+                )
                 await self._diagnostic_item_client.create_item(
                     conversation_id=uuid.UUID(self._conversation_id),
                     stage="S4",
@@ -464,6 +502,7 @@ class KBDDiagnostic:
                         "root_cause": kbd.root_cause,
                         "solution": kbd.solution,
                         "evidence_exec_ids": evidence_ids,
+                        "evidence_evaluation_ids": evaluation_ids,
                         "is_definitive": True,
                     },
                     status="confirmed",
@@ -475,7 +514,13 @@ class KBDDiagnostic:
                 "matched_count": len(supported),
                 "evaluated_kbds": [kbd.support_id or str(kbd.id) for kbd in ordered],
                 "steps_count": len(steps_executed),
-                "is_definitive": bool(supported),
+                "is_definitive": definitive,
+                "conclusion_level": decision.level.value,
+                "supported_kbds": list(decision.supported_ids),
+                "rejected_kbds": list(decision.rejected_ids),
+                "inconclusive_kbds": list(decision.inconclusive_ids),
+                "not_executable_kbds": list(decision.not_executable_ids),
+                "stop_reason": decision.reason,
             },
         )
 
@@ -494,11 +539,22 @@ class KBDDiagnostic:
         return str(uuid.uuid5(uuid.NAMESPACE_URL, value))
 
     @staticmethod
+    def _stable_acquisition_exec_id(session_id: str, runtime_key: str) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{session_id}:acquisition:{runtime_key}"))
+
+    @staticmethod
+    def _stable_evaluation_id(exec_id: str, signal_ref_id: str) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{exec_id}:evaluation:{signal_ref_id}"))
+
+    @staticmethod
     def _acquisition_key(tool: str, args: dict[str, Any], env_context: dict[str, str]) -> str:
         material = {
             "tool": tool,
             "args": args,
             "target": env_context.get("node_ip") or args.get("host"),
+            "scope": args.get("scope") or args.get("container"),
+            "tool_version": "runtime",
+            "policy_version": "cdd-v1",
         }
         return json.dumps(material, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
@@ -534,6 +590,8 @@ class KBDDiagnostic:
     def _tool_result_metadata(result: StepResult) -> dict[str, Any]:
         return {
             "exec_id": result.exec_id,
+            "evaluation_id": result.evaluation_id,
+            "acquisition_id": result.acquisition_id,
             "tool_name": result.tool_name,
             "tool_args": result.tool_args,
             "tool_result": smart_truncate(result.raw_output or "", max_chars=2000),
@@ -586,7 +644,7 @@ class KBDDiagnostic:
     def _evaluate_matcher(self, matcher: dict[str, Any], actual_output: str) -> bool | None:
         """对单条 Matcher 契约做确定性（非 LLM）布尔求值（委托单一真相源）。
 
-        返回 True/False 表示“符合期望”；返回 None 表示无法定值（交由 LLM 兜底）。
+        返回 True/False 表示“符合期望”；返回 None 表示无法定值并保持 UNKNOWN。
         支持类型：keyword / regex / state / threshold / json_path / exists。
 
         实现已统一迁移至 app.tools.qfk.matcher.evaluate_matcher，此处仅作委托，
@@ -794,11 +852,11 @@ class KBDDiagnostic:
                     exec_id=exec_id,
                 )
                 if res.error:
-                    return res.to_observation(), res.error, None
+                    return res.raw_output or None, res.error, None
                 matcher = step.matcher or {}
                 if matcher.get("type") == "keyword":
-                    return res.to_observation(), None, res.matched
-                return res.to_observation(), None, None
+                    return res.raw_output, None, res.matched
+                return res.raw_output, None, None
             except Exception as exc:
                 return None, str(exc), None
 
@@ -1067,7 +1125,8 @@ class KBDDiagnostic:
         args = smart_truncate(json.dumps(step.tool_args, ensure_ascii=False, sort_keys=True), max_chars=300)
         preview = smart_truncate(step.raw_output or step.error or "", max_chars=300)
         return (
-            f"- `{step.signal_id}` / `{step.tool_name}` / exec_id `{step.exec_id}`："
+            f"- `{step.signal_id}` / `{step.tool_name}` / exec_id `{step.exec_id}` / "
+            f"evaluation_id `{step.evaluation_id}`："
             f"**{step.outcome.value}**；参数 `{args}`"
             f"{f'；结果 {preview}' if preview else ''}"
         )

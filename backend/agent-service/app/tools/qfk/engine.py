@@ -31,6 +31,7 @@ class QFKResult:
     evidence: str                        # 诊断评估执行的完整证据链（由 handler 生成）
     error: str | None = None             # 异常报错信息描述
     exec_ids: list[str] = field(default_factory=list) # 追踪流流水号记录
+    raw_output: str = ""                  # 未混入 matcher 目标文本的现场原始输出
 
     def to_observation(self) -> str:
         """
@@ -256,4 +257,7 @@ async def qfk_exec(
         matched_keywords=matched_kws,
         evidence=evidence,
         exec_ids=exec_ids,
+        raw_output="\n".join(
+            f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}" for result in results
+        ),
     )
