@@ -27,8 +27,18 @@ VALID_MATCH_MODES = {"or", "and", "not"}
 
 # acli 主机作用域
 VALID_CONTAINERS = (
-    "asv", "dsv", "csv", "mpv", "drv", "fdv", "ssv", "msv", "osv",
-    "csf", "csw", "gpuv",
+    "asv",
+    "dsv",
+    "csv",
+    "mpv",
+    "drv",
+    "fdv",
+    "ssv",
+    "msv",
+    "osv",
+    "csf",
+    "csw",
+    "gpuv",
 )
 VALID_SERVICE_CONTAINERS = VALID_CONTAINERS
 
@@ -57,6 +67,7 @@ class BackendSignal(BaseModel):
     time_window: str | None = Field(default=None, description="时间窗（qfk_log 的 -t）")
     service: str | None = Field(default=None, description="服务名（qfk_service）")
     action: str | None = Field(default=None, description="服务操作（qfk_service，默认 status）")
+    resource_keyword: str | None = Field(default=None, description="命令的只读资源过滤参数")
 
     # ─── 匹配配置 ─────────────────────────────────────────────────────────────
     keyword: list[str] = Field(default_factory=list, description="匹配关键字列表")

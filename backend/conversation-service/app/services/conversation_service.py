@@ -293,9 +293,7 @@ class ConversationService:
                                 )
                             )
                             intercepted_confirmation = f"好的，确认故障分类为【{_chosen['code']} {_chosen['name']}】。\n开始故障定位分析，请稍候…"
-                            yield (
-                                intercepted_confirmation + "\n\n"
-                            )
+                            yield (intercepted_confirmation + "\n\n")
                             # 发出阶段切换事件通知前端，并继续以 S1 身份调用 AI
                             yield "\x00event:stage_change:S1\x00"
                             current_stage = "S1"
@@ -371,7 +369,9 @@ class ConversationService:
             tool_messages = [m for m in all_messages if m.role.value in ("tool_call", "tool_result")]
 
             # 第二步：文本消息按原有逻辑取最近 MAX_TEXT_MESSAGES 条
-            selected_text = text_messages[-MAX_TEXT_MESSAGES:] if len(text_messages) > MAX_TEXT_MESSAGES else text_messages
+            selected_text = (
+                text_messages[-MAX_TEXT_MESSAGES:] if len(text_messages) > MAX_TEXT_MESSAGES else text_messages
+            )
 
             # 第三步：工具消息重组为 OpenAI messages 格式
             # tool_call 消息的 content 字段存储的是 JSON 序列化的 assistant message（含 tool_calls 数组）
@@ -382,6 +382,7 @@ class ConversationService:
             cutoff_step = total_tool_steps - TOOL_TURN_FULL_WINDOW  # 超过此步骤的工具输出需要摘要化
 
             import json as _json
+
             tool_step_idx = 0  # 当前 tool_call 的步骤序号
             reconstructed_tool_messages: list[dict] = []
             for msg in tool_messages:
@@ -403,18 +404,25 @@ class ConversationService:
                     # tool_result 消息按滑动窗口策略决定是否压缩
                     result_content = msg.content
                     # 早期工具输出（步骤 <= cutoff_step）且内容过长时截断为摘要
-                    if cutoff_step > 0 and tool_step_idx <= cutoff_step and len(result_content) > TOOL_RESULT_SUMMARY_LEN:
+                    if (
+                        cutoff_step > 0
+                        and tool_step_idx <= cutoff_step
+                        and len(result_content) > TOOL_RESULT_SUMMARY_LEN
+                    ):
                         result_content = result_content[:TOOL_RESULT_SUMMARY_LEN] + "…（已截断，详情见工具执行日志）"
-                    reconstructed_tool_messages.append({
-                        "role": "tool",
-                        "tool_call_id": msg.tool_call_id or "",
-                        "content": result_content,
-                    })
+                    reconstructed_tool_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": msg.tool_call_id or "",
+                            "content": result_content,
+                        }
+                    )
 
             # 第四步：将文本消息和工具消息按时间顺序合并
             # 通过 created_at 排序合并，确保正确的 ReAct 时序
             combined_messages = sorted(
-                [(m, "text") for m in selected_text] + [(m, "tool") for m in tool_messages if m.role.value in ("tool_call", "tool_result")],
+                [(m, "text") for m in selected_text]
+                + [(m, "tool") for m in tool_messages if m.role.value in ("tool_call", "tool_result")],
                 key=lambda x: x[0].created_at,
             )
             history_messages: list[dict] = []
@@ -589,6 +597,14 @@ class ConversationService:
                                 )
                             )
                             yield f"\x00event:interactive_request:{_ir_payload}\x00"
+                        elif event_type == "escalation":
+                            _escalation_event = self._escalation_interactive_event(
+                                conversation_id,
+                                agent_event,
+                            )
+                            _payload = _json.dumps(_escalation_event, ensure_ascii=False)
+                            _message_metadata.update({"kind": "human_escalation", "event": _escalation_event})
+                            yield f"\x00event:interactive_request:{_payload}\x00"
                         elif event_type == "error":
                             _agent_had_error = True
                             yield f"\n[Agent Error: {agent_event.get('message', '未知错误')}]"
@@ -860,6 +876,20 @@ class ConversationService:
             opt_parts = [f"{o.get('optionId', i + 1)}. {o.get('name', '')}" for i, o in enumerate(options)]
             _lines.append(f"\n\n**可选项**：{'  /  '.join(opt_parts)}")
         return "\n".join(_lines)
+
+    @staticmethod
+    def _escalation_interactive_event(conversation_id: uuid.UUID | str, event: dict) -> dict:
+        """把 AgentEscalation 转成前端可见的 human_escalation 交互契约。"""
+        return {
+            "requestId": f"escalation-{conversation_id}",
+            "acpSessionId": str(conversation_id),
+            "kind": "human_escalation",
+            "title": "需要人工支持",
+            "prompt": event.get("reason") or "自动诊断证据不足，已转人工处理。",
+            "options": [{"optionId": "ack", "name": "我知道了"}],
+            "customInput": False,
+            "metadata": event.get("context") or {},
+        }
 
     @staticmethod
     def _format_interactive_response_content(outcome: dict) -> str:
@@ -2538,6 +2568,9 @@ class ConversationService:
                             },
                         )
                     )
+            elif event_type == "escalation":
+                _escalation_event = self._escalation_interactive_event(conversation_id, agent_event)
+                yield f"\x00event:interactive_request:{_json.dumps(_escalation_event, ensure_ascii=False)}\x00"
             elif event_type == "stage_update":
                 _stage = agent_event.get("stage", "")
                 _metadata = agent_event.get("metadata", {})

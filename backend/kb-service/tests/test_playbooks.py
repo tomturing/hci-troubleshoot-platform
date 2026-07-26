@@ -1,0 +1,81 @@
+"""S0 分类驱动的完整知识清单接口测试。"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from app.routes import playbooks
+
+
+class _ScalarResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _SessionContext:
+    def __init__(self, session):
+        self._session = session
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_inventory_returns_published_kbd_without_embedding_gate():
+    signal = {
+        "id": "sig_001",
+        "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机失败"}},
+        "match": None,
+    }
+    entry = SimpleNamespace(
+        id=1,
+        support_id="27123",
+        title="虚拟机开机失败",
+        category_id="虚拟机-003",
+        status="published",
+        signals_json={"schema_version": 2, "signals": [signal]},
+        root_cause="镜像被占用",
+        solution="解除占用",
+        problem_description="虚拟机镜像忙",
+        embedding=None,
+        embedding_model=None,
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(side_effect=[_ScalarResult([]), _ScalarResult([entry])]),
+        commit=AsyncMock(),
+    )
+    db = SimpleNamespace(async_session_factory=lambda: _SessionContext(session))
+    publisher = MagicMock()
+    publisher.ensure_published = AsyncMock(return_value=SimpleNamespace())
+
+    with (
+        patch.object(playbooks, "_db_manager", db),
+        patch.object(playbooks, "DynamicResourcePublisher", return_value=publisher),
+        patch.object(playbooks, "kbd_resource_payload", return_value={}),
+        patch.object(playbooks, "snapshot_revision_metadata", return_value={"revision": 4}),
+    ):
+        response = await playbooks.get_category_playbooks("虚拟机-003")
+
+    assert response["sops"] == []
+    assert response["kbds"][0]["support_id"] == "27123"
+    assert response["kbds"][0]["executable"] is True
+    assert response["kbds"][0]["signals"] == [signal]
+    statements = [str(call.args[0]) for call in session.execute.await_args_list]
+    sql = "\n".join(statements).lower()
+    assert "embedding is not null" not in sql
+    assert "embedding_model =" not in sql
+    assert "tsv @@" not in sql
+
+
+def test_backend_signal_without_matcher_is_visible_but_not_executable():
+    signals = [{"id": "sig_002", "acquire": {"tool": "qfk_system", "args": {"command": "ps"}}}]
+    assert playbooks._execution_issues(signals) == ["sig_002 缺少确定性 matcher"]

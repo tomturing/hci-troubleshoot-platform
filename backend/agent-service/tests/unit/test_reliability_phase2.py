@@ -535,13 +535,14 @@ class TestInvestigationAgentQualityCheck:
 
     @pytest.mark.asyncio
     async def test_quality_check_passes_and_continues(self):
-        """当环境上下文完整时，信息质量检查通过，不拦截并正常继续"""
+        """分类知识为空时不触发全局质量澄清，而是显式升级人工。"""
         from app.adapters.agents.htp.investigation_agent import InvestigationAgent
-        from app.domain.agent_port import AgentInteractiveRequest
+        from app.domain.agent_port import AgentEscalation, AgentInteractiveRequest
 
         kb = MagicMock()
-        kb.route_by_category = AsyncMock(return_value={"track": "kbd", "results": []})
-        kb.search_cases_with_steps = AsyncMock(return_value=[])
+        kb.get_category_playbooks = AsyncMock(
+            return_value={"snapshot_id": "snap-1", "sops": [], "kbds": []}
+        )
 
         registry = MagicMock()
         mock_client = MagicMock()
@@ -578,19 +579,19 @@ class TestInvestigationAgentQualityCheck:
         # 检查是否正常继续，没有 yield clarifying interactive request
         interactive_requests = [e for e in events if isinstance(e, AgentInteractiveRequest)]
         assert len(interactive_requests) == 0
-        assert len(events) > 0
+        assert any(isinstance(event, AgentEscalation) for event in events)
+        kb.get_category_playbooks.assert_awaited_once_with(category_id="虚拟机-003")
 
     @pytest.mark.asyncio
-    async def test_quality_check_fails_and_yields_clarification(self):
-        """当环境上下文缺失关键字段时，触发 clarification 交互拦截并提前返回"""
+    async def test_no_global_quality_gate_for_kbd(self):
+        """KBD 只按 signal.requires 门控，不被无关的全局字段拦截。"""
         from unittest.mock import AsyncMock
 
         from app.adapters.agents.htp.investigation_agent import InvestigationAgent
-        from app.domain.agent_port import AgentInteractiveRequest
+        from app.domain.agent_port import AgentEscalation, AgentInteractiveRequest
 
         kb = MagicMock()
-        # 质量检查现在在 SOP 路由之后，需要 route_by_category 返回非 SOP 结果
-        kb.route_by_category = AsyncMock(return_value={"track": "kbd", "results": []})
+        kb.get_category_playbooks = AsyncMock(return_value={"snapshot_id": "snap-1", "sops": [], "kbds": []})
         agent = InvestigationAgent(
             ai_registry=MagicMock(),
             kb_client=kb,
@@ -611,13 +612,8 @@ class TestInvestigationAgentQualityCheck:
         ):
             events.append(event)
 
-        # 非 SOP 命中时仍应触发信息质量澄清
-        interactive_requests = [e for e in events if isinstance(e, AgentInteractiveRequest)]
-        assert len(interactive_requests) == 1
-        req = interactive_requests[0]
-        assert req.kind == "information_clarification"
-        assert "clarify-" in req.request_id
-        assert len(req.options) > 0
+        assert not any(isinstance(event, AgentInteractiveRequest) for event in events)
+        assert any(isinstance(event, AgentEscalation) for event in events)
 
     @pytest.mark.asyncio
     async def test_event_stream_with_interactive_request_no_error(self, mocker):

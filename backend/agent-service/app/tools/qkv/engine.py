@@ -23,13 +23,13 @@ class QKVResult:
     QKV 执行与元数据变量提取最终输出结果
     """
 
-    success: bool                        # 查询是否成功执行
-    query: str                           # 查询类型 (alert/task/dialog)
-    keyword: str                         # 查询关键字
-    command: str                         # 底层实际执行指令
-    values: list[dict[str, Any]] = field(default_factory=list) # 提取提取出来的 Value 结果集
-    error: str | None = None             # 报错信息描述
-    exec_id: str | None = None           # 流水号记录
+    success: bool  # 查询是否成功执行
+    query: str  # 查询类型 (alert/task/dialog)
+    keyword: str  # 查询关键字
+    command: str  # 底层实际执行指令
+    values: list[dict[str, Any]] = field(default_factory=list)  # 提取提取出来的 Value 结果集
+    error: str | None = None  # 报错信息描述
+    exec_id: str | None = None  # 流水号记录
 
     def to_observation(self) -> str:
         """
@@ -86,7 +86,7 @@ async def qkv_exec(
     # 1. 底层命令构建逻辑
     try:
         quoted_kw = shlex.quote(signal.keyword)
-        limit_val = max(1, min(signal.limit, 200)) # 强制区间限制 [1, 200]
+        limit_val = max(1, min(signal.limit, 200))  # 强制区间限制 [1, 200]
 
         if signal.query == FrontendQueryType.ALERT:
             cmd = f"acli --formatter json alert get -k {quoted_kw} -l {limit_val}"
@@ -116,6 +116,7 @@ async def qkv_exec(
 
     # 2. 复用 BridgeRelayExecutor 执行命令
     from app.tools.acli.executor import _executor
+
     if _executor is None:
         return QKVResult(
             success=False,
@@ -132,7 +133,7 @@ async def qkv_exec(
             conversation_id=conversation_id,
             node_ip=node_ip,
             risk_level=1,  # 均属只读
-            policy="auto", # 静默跑
+            policy="auto",  # 静默跑
             exec_id=exec_id,
         )
     except Exception as exec_err:
@@ -147,6 +148,23 @@ async def qkv_exec(
             keyword=signal.keyword,
             command=cmd,
             error=str(exec_err),
+        )
+
+    if exec_res.exit_code not in (0, None):
+        error_text = (exec_res.stderr or exec_res.stdout or "命令执行失败").strip()
+        logger.warning(
+            event="qkv_terminal_execution_failed",
+            command=cmd,
+            exit_code=exec_res.exit_code,
+            error=error_text,
+        )
+        return QKVResult(
+            success=False,
+            query=signal.query.value,
+            keyword=signal.keyword,
+            command=cmd,
+            error=error_text,
+            exec_id=getattr(exec_res, "exec_id", None),
         )
 
     # 3. 数据结构清洗与提取

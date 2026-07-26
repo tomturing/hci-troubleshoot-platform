@@ -1,0 +1,929 @@
+---
+status: proposed
+category: architecture
+audience: developer
+last_updated: 2026-07-26
+version: v1.0
+owner: team
+---
+
+# S0 分类驱动的 KBD 证据诊断与 CDD 闭环设计
+
+## 1. 文档定位
+
+本文给出 HTP 从 S0 意图确认到 S4 根因确认的目标架构，解决以下系统性问题：
+
+- S0 输出没有被后续阶段作为权威输入，分类内知识仍被模糊文本过滤。
+- SOP、KBD、人工升级三种状态的路由语义混乱。
+- CDD 使用错误的候选消除算法，无法保证诊断结论成立。
+- Agent 可以生成 KBD 外命令、虚构执行结果和无证据根因。
+- 计划、执行、matcher、证据和结论之间缺少强制契约。
+- 真实工具执行对前端不可见，模型叙述与系统事实混在一起。
+
+关联复盘：[Q2026072624224：S0 到 S1 知识路由与 CDD 失效分析](events/2026-07-26-Q2026072624224-S0到S1知识路由与CDD失效分析.md)。
+
+本文不是在现有流程上继续增加 Prompt 或 fallback，而是重新划定模型、知识库、编排器、执行器和结论发布器的权限边界。
+
+## 2. 第一性原理
+
+### 2.1 排障系统要解决的不是“生成一个听起来合理的回答”
+
+排障的最小闭环是：
+
+```text
+故障范围
+  -> 候选原因
+  -> 可验证预测
+  -> 真实环境观测
+  -> 确定性判定
+  -> 被证据支持的结论
+```
+
+缺少任意一环，都只能称为假设或建议，不能称为诊断结论。
+
+### 2.2 分类、检索和诊断是三个不同问题
+
+| 问题 | 输入 | 输出 | 权威机制 |
+|---|---|---|---|
+| 分类 | 客户模糊描述、上下文、用户确认 | 叶子 category | S0 分类状态机 |
+| 知识清单 | confirmed category | 分类下全部已发布 SOP/KBD | 结构化数据库查询 |
+| 诊断 | 候选 KBD 信号、真实观测 | 支持/排除/不可判定 | 证据状态机 |
+
+向量相似度和 FTS 只能帮助排序文本，不能代替其中任何一个权威机制。
+
+### 2.3 候选唯一不等于根因成立
+
+如果一个分类下只有一篇 KBD，只能说明知识库当前只有一个已知候选。它不证明现场满足该 KBD 的必要条件。
+
+逻辑上必须区分：
+
+```text
+|candidate_set| = 1      候选唯一
+required_signals = PASS  证据确认
+```
+
+只有后者允许发布根因。
+
+### 2.4 工具成功不等于信号通过
+
+必须区分四个层次：
+
+1. 命令成功发送。
+2. 工具成功返回。
+3. matcher 对实际输出判定为 PASS。
+4. 一篇 KBD 的必要证据集合全部满足。
+
+当前系统将“无异常返回”显示为成功证据，是典型的层次混淆。
+
+### 2.5 模型输出不是事实来源
+
+LLM 可以承担自然语言理解、候选解释和受约束的调度建议，但不能成为以下数据的权威来源：
+
+- 实际执行的命令。
+- 工具输出和系统状态。
+- matcher 结果。
+- KBD 是否被确认。
+- 根因和解决方案原文。
+
+这些内容必须来自 KBD revision、工具执行记录和确定性程序。
+
+## 3. 采用的业界范式
+
+目标架构组合以下成熟范式：
+
+| 范式 | 在 HTP 中的应用 |
+|---|---|
+| DDD / Anti-Corruption Layer | S0、知识清单、诊断执行使用独立领域契约，禁止数据库信封或模型文本泄漏为权威状态 |
+| Finite State Machine | 阶段推进由显式状态和门禁控制，不能由一段模型文本隐式推进 |
+| Durable Workflow | 每个计划、执行、等待人工、恢复操作都有稳定 ID 和幂等状态，可断点恢复 |
+| Policy as Code | 工具、参数、风险、授权和结论发布由程序策略校验 |
+| Event Sourcing / Audit Trail | category、snapshot、plan、execution、evaluation、conclusion 事件可完整回放 |
+| Active Diagnosis | 根据信息增益、成本和风险选择下一条观测，而不是按工具出现频率选择 |
+| Zero Trust for Model Output | 模型所有结构化输出都需 schema 校验，所有事实性断言都需证据引用 |
+| OpenTelemetry | trace_id 贯穿工单、计划、exec_id、证据和结论 |
+
+这些范式的共同原则是：概率性组件可以提供建议，但确定性组件拥有状态变更和结论发布权。
+
+## 4. 目标流程
+
+```text
+客户描述“虚拟机无法开机”
+  -> S0 识别并由用户确认：虚拟机-003 / 虚拟机开机失败
+  -> 创建 CategorySnapshot（分类版本、确认来源、证据、时间）
+  -> 按 category_id 加载全部已发布 SOP/KBD revision
+  -> 结构化评估 SOP applicability
+     -> 有适用 SOP：执行 SOP 状态机
+     -> 无适用 SOP：进入 KBD CDD
+  -> 全部分类 KBD 进入知识候选集，不做 query 准入过滤
+     -> 可执行 KBD 进入自动信号规划
+     -> 不可执行 KBD 保留可见并标记为知识契约缺失
+  -> 编译候选 KBD 的关键信号和依赖
+  -> 选择信息增益最高且风险最低的可执行信号
+  -> 从 KBD revision 编译并执行，不接受模型自由命令
+  -> matcher 对真实输出生成 PASS/FAIL/UNKNOWN/ERROR
+  -> 更新每篇 KBD 的支持、排除或不可判定状态
+  -> 为剩余候选补齐全部 required confirmation signals
+  -> Conclusion Gate
+     -> 一篇或多篇证据闭合：输出 KBD 链接、原始根因和证据
+     -> 无法闭合：显示证据不足并升级人工
+```
+
+## 5. S0 输出契约
+
+### 5.1 CategoryDecision
+
+S0 不应只输出一个裸字符串。建议形成不可变快照：
+
+```json
+{
+  "decision_id": "catdec-...",
+  "conversation_id": "...",
+  "category_id": "虚拟机-003",
+  "category_l1": "虚拟机",
+  "category_l2": "虚拟机开机失败",
+  "taxonomy_version": "2026-07-01",
+  "confidence": 0.96,
+  "status": "confirmed",
+  "confirmed_by": "user",
+  "evidence_refs": ["message:...", "fact:..."],
+  "confirmed_at": "2026-07-26T11:01:54+08:00"
+}
+```
+
+### 5.2 后阶段强制使用规则
+
+一旦状态为 `confirmed`：
+
+1. S1 必须接收 `decision_id`，不能只接收可任意覆盖的字符串。
+2. 知识范围只允许从 `category_id + taxonomy_version` 生成。
+3. 原始 user query 不得再作为 SOP/KBD 成员资格条件。
+4. 所有后续事件记录 `decision_id`，便于审计分类是否漂移。
+5. 新证据若强烈矛盾，只能触发显式 `RETRIAGE_REQUIRED`，不得静默换分类。
+6. 重新分类需要生成新的 CategoryDecision，并记录替换关系和用户确认。
+
+### 5.3 S0 输出的最大化利用
+
+分类结果除了决定知识范围，还应驱动：
+
+- 该分类需要预取的 Fact schema。
+- 允许使用的只读工具集合。
+- SOP applicability 规则集合。
+- KBD signal compiler 的变量字典。
+- CDD 的候选全集和诊断指标维度。
+- 人工升级时的目标技能组。
+
+这比重复拿客户描述做 query 更充分、更稳定地利用了 S0 结果。
+
+## 6. 知识清单与路由重构
+
+### 6.1 新的分类资源接口
+
+建议新增版本化接口：
+
+```http
+GET /api/kb/v2/categories/{category_id}/playbooks?taxonomy_version=...
+```
+
+返回：
+
+```json
+{
+  "category": {
+    "id": "虚拟机-003",
+    "taxonomy_version": "2026-07-01"
+  },
+  "snapshot_id": "kbsnap-...",
+  "sops": [],
+  "kbds": [
+    {
+      "kbd_id": 1,
+      "support_id": "27123",
+      "revision": 4,
+      "status": "published",
+      "executable": true,
+      "signals": ["sig_001", "sig_002", "sig_003"]
+    }
+  ]
+}
+```
+
+接口不接收 `query`、`top_k`、相似度阈值或 FTS 条件。返回结果必须是该快照时刻分类内全部已发布资源的完整集合。`executable` 只描述自动执行能力，不能用于把 KBD 从 KnowledgeSnapshot 中删除。
+
+KnowledgeSnapshot 内的 KBD 分为：
+
+- `executable=true`：信号契约完整，可进入自动 CDD 信号规划。
+- `executable=false`：仍保留在分类候选清单和页面中，标明校验错误；不能自动确认或被静默忽略，应进入知识治理或人工诊断。
+
+### 6.2 SOP 适用性
+
+SOP 优先不等于“分类下有任意 SOP 就直接执行第一篇”。每篇 SOP 必须声明结构化 applicability：
+
+```json
+{
+  "required_facts": ["product_version", "architecture"],
+  "conditions": [
+    {"fact": "product_version", "op": "in", "value": ["HCI 6.10", "HCI 6.11"]}
+  ]
+}
+```
+
+适用性结果固定为：
+
+- `APPLICABLE`
+- `NOT_APPLICABLE`
+- `UNKNOWN`：缺少事实，需要采集或询问
+- `INVALID`：SOP 本身不可执行
+
+不能再使用客户模糊 query 的全文相关性替代 SOP applicability。
+
+### 6.3 `/api/kb/route`、embedding 和 FTS 的去向
+
+- S1 停止调用当前 `/api/kb/route`。
+- 为兼容现有调用方，旧接口先标记 deprecated，不直接删除路径。
+- embedding 和 FTS 保留给管理端搜索、跨分类探索和分类内可选排序。
+- 即使排序服务完全不可用，分类清单和诊断正确性也不受影响。
+- 排序分数只能写入 `scheduling_score`，禁止写入根因 `probability`。
+
+## 7. KBD 发布时执行契约
+
+### 7.1 不可变 revision
+
+CDD 必须执行不可变 KBD revision。KBD 编辑后生成新 revision，运行中的 DiagnosticRun 继续引用原 revision，避免执行过程中命令或 matcher 漂移。
+
+### 7.2 SignalContract
+
+每条信号至少包含：
+
+```json
+{
+  "signal_id": "sig_002",
+  "purpose": "确认虚拟机镜像是否被进程占用",
+  "phase": "diagnostic",
+  "required_for_confirmation": true,
+  "acquire": {
+    "tool": "qfk_system",
+    "args": {
+      "host": "{{HOST}}",
+      "command": "lsof",
+      "resource_keyword": "{{VM}}"
+    }
+  },
+  "requires": ["HOST", "VM"],
+  "produces": ["PID"],
+  "match": {
+    "type": "keyword",
+    "pattern": "vm-disk",
+    "mode": "any",
+    "expected": true
+  },
+  "risk": "read_only",
+  "timeout_seconds": 10,
+  "provenance": {
+    "source_section": "steps_text",
+    "evidence": "..."
+  }
+}
+```
+
+### 7.3 发布门禁
+
+KBD 只有通过以下静态校验才能标记为 `executable=true`：
+
+1. signal_id 在 revision 内唯一。
+2. acquire.tool 存在于工具注册表。
+3. 参数符合工具 JSON Schema，禁止额外字段。
+4. requires 均可由环境、Fact 或前序 produces 提供。
+5. 信号依赖无环，且存在确定的拓扑顺序。
+6. 未解析占位符在发布阶段或运行计划阶段 fail closed。
+7. 结论必需信号必须使用确定性 matcher，禁止自然语言 LLM matcher。
+8. diagnostic phase 只允许只读工具；写操作只能属于 remediation phase。
+9. command/action 必须在工具级 allowlist 内，不能是自由 shell 字符串。
+10. matcher、root cause、solution 均保留 KBD 原文来源和 revision hash。
+11. 至少定义一个能够正向支持根因的 required confirmation signal。
+12. 生产变量必须有类型、来源和提取路径，消费变量必须类型兼容。
+
+发布信号校验失败的 KBD 仍必须出现在分类 KnowledgeSnapshot 中，但标记为 `executable=false`，不能进入自动信号执行集。系统不得因为自动化能力不足而宣称该分类没有相关知识。
+
+## 8. CDD 的正确领域模型
+
+### 8.1 名称与职责
+
+CDD 在本文中定义为 Candidate Differential Diagnosis：对分类内完整 KBD 候选集进行主动观测、约束求值和证据闭合。它不是全文检索器，也不是自由推理 Agent。
+
+### 8.2 三类身份必须分开
+
+| 身份 | 示例 | 用途 |
+|---|---|---|
+| tool type | `qfk_system` | 表示执行能力类型 |
+| acquisition | `qfk_system+lsof+HOST+VM` | 表示一次可去重的实际观测 |
+| signal | `KBD27123/rev4/sig_002` | 表示某篇 KBD 对该观测的预期和判定 |
+
+当前实现按 `tool_name` 去重和选择，会把不同参数、不同 matcher 的信号错误合并。目标实现必须使用规范化 `acquisition_key`：
+
+```text
+hash(tool + resolved_args + target + scope + revisioned_policy)
+```
+
+同一次 acquisition 可以被多个 KBD signal 复用实际输出，但每个 signal 必须独立 matcher 求值。
+
+### 8.3 信号结果状态
+
+每条信号只允许以下状态：
+
+| 状态 | 语义 | 可支持结论 | 可排除候选 |
+|---|---|---:|---:|
+| `NOT_RUN` | 尚未执行 | 否 | 否 |
+| `PASS` | 执行成功且 matcher 满足 | 是 | 否 |
+| `FAIL` | 执行成功且 matcher 明确不满足 | 否 | 是，前提是该信号具排除语义 |
+| `UNKNOWN` | 输出不足、matcher 无法定值 | 否 | 否 |
+| `ERROR` | 工具、网络、权限或解析错误 | 否 | 否 |
+| `BLOCKED` | 依赖缺失、风险策略或人工拒绝 | 否 | 否 |
+
+不得把 `UNKNOWN/ERROR/BLOCKED` 转成 True，也不得把“没有异常”直接记为 PASS。
+
+### 8.4 候选状态
+
+每篇 KBD 在运行中处于：
+
+| 状态 | 条件 |
+|---|---|
+| `CANDIDATE` | 已进入分类候选全集，证据尚不足 |
+| `SUPPORTED` | 所有 required confirmation signals 为 PASS，且无有效反证 |
+| `REJECTED` | 至少一条具有排除语义的必要信号为 FAIL |
+| `INCONCLUSIVE` | 无法继续执行，且未满足 SUPPORTED/REJECTED |
+| `NOT_EXECUTABLE` | KBD 已发布且属于该分类，但信号契约未通过自动执行门禁 |
+
+允许多篇 KBD 同时 `SUPPORTED`，因为现场可能存在多根因，或多个案例共享同一根因。系统不能强制只选一篇。
+
+## 9. CDD 信号选择算法
+
+### 9.1 当前“最大覆盖”算法为什么错误
+
+选择出现在最多 KBD 中的工具，只能最大化覆盖率，不能最大化区分度。如果 10 篇 KBD 都执行相同工具、使用相同 matcher，该工具执行后候选集仍是 10，信息增益为 0。
+
+此外，向量相似度不是根因概率，不能作为 CDD 的统计先验或 S4 probability。
+
+### 9.2 推荐算法：约束求值 + 主动测试
+
+在没有经过校准的历史概率前，采用确定性的约束满足模型；调度层使用信息增益近似值，但结论层完全不依赖调度分数。
+
+每轮只从依赖已满足、风险允许、尚未执行的 acquisition 中选择。建议效用函数：
+
+```text
+utility(a)
+  = discrimination(a)
+  + required_coverage(a)
+  - normalized_cost(a)
+  - risk_penalty(a)
+  - latency_penalty(a)
+```
+
+其中：
+
+- `discrimination(a)`：执行结果可把当前候选预期划分成多少不同分组，优先近似均衡划分。
+- `required_coverage(a)`：该 acquisition 能补齐多少候选的 required signal。
+- `cost/risk/latency`：来自工具注册表，不由模型估计。
+
+若存在经过校准的先验和条件概率，未来可升级为期望信息增益：
+
+```text
+EIG(a) = H(C) - E[H(C | outcome(a))]
+```
+
+但在没有标注数据和校准报告前，禁止把检索相似度冒充先验概率。
+
+### 9.3 确定性选择流程
+
+```text
+1. 构建全部候选 KBD 的 SignalContract 图
+2. 合并相同 acquisition，保留各 KBD 独立 matcher
+3. 执行所有必要 producer/precondition acquisition
+4. 计算当前可执行 acquisition 的 utility
+5. 以 utility 降序选择；并列时按 risk、cost、acquisition_key 稳定排序
+6. 执行一次，持久化 ToolResult
+7. 对关联 signal 分别执行 matcher
+8. 更新 KBD 状态
+9. 重复直到：
+   a. 所有候选均为 SUPPORTED/REJECTED/INCONCLUSIVE/NOT_EXECUTABLE；或
+   b. 无可执行 acquisition
+10. 对仍可能 SUPPORTED 的候选补齐所有 required confirmation signals
+11. 进入 Conclusion Gate
+```
+
+### 9.4 正确停止条件
+
+禁止使用 `len(remaining) <= 2` 或 `len(remaining) == 1` 作为停止条件。合法停止条件只有：
+
+- 必要证据全部闭合。
+- 所有可执行信号耗尽。
+- 达到明确的安全、时间或授权边界，并把剩余候选标记为 INCONCLUSIVE。
+- 用户主动停止。
+
+## 10. 计划到证据的执行闭环
+
+### 10.1 核心实体
+
+```text
+DiagnosticRun
+  -> CategorySnapshot
+  -> KnowledgeSnapshot
+  -> CandidateEvaluation[]
+  -> SignalPlan[]
+       -> ExecutionAuthorization
+       -> ToolResult
+       -> SignalEvaluation
+       -> EvidenceRecord
+  -> Conclusion
+       -> ClaimEvidenceLink[]
+```
+
+### 10.2 SignalPlan
+
+编排器生成只读、不可变计划：
+
+```json
+{
+  "plan_id": "plan-...",
+  "run_id": "run-...",
+  "knowledge_snapshot_id": "kbsnap-...",
+  "kbd_id": 1,
+  "kbd_revision": 4,
+  "signal_id": "sig_002",
+  "acquisition_key": "sha256:...",
+  "resolved_target": "SVR_aCloud_668",
+  "resolved_args": {
+    "command": "lsof",
+    "resource_keyword": "Server-IMG"
+  },
+  "input_hash": "sha256:...",
+  "risk": "read_only"
+}
+```
+
+模型最多返回 `signal_id` 建议；`resolved_args`、命令、目标、hash 必须由服务端 compiler 生成。
+
+### 10.3 执行器约束
+
+执行器只接受已持久化且通过策略校验的 `plan_id`：
+
+1. 校验 KBD revision 和 signal_id 存在。
+2. 重算 input_hash，防止计划后篡改。
+3. 校验目标来自 Fact/变量池且与工单绑定。
+4. 校验工具和操作在 allowlist。
+5. 生成唯一 `exec_id` 和 idempotency key。
+6. 执行并持久化原始结果引用、stdout/stderr hash、退出码和耗时。
+7. 所有重试关联同一 plan，不伪装为新证据。
+
+未解析的 `{{VAR}}` 必须产生 `BLOCKED/MISSING_DEPENDENCY`，禁止把占位符原文发送到底层。
+
+### 10.4 Matcher 约束
+
+- matcher 输入只能来自关联 exec_id 的 ToolResult。
+- required signal 只允许 `keyword/regex/state/threshold/json_path/exists` 等确定性 matcher。
+- matcher 输出包含 matched、expected、observed、reason、evaluator_version。
+- LLM 可以帮助离线生成 matcher 草稿，但不能在线裁决 conclusion-critical signal。
+- matcher schema 不支持或求值异常时结果是 UNKNOWN，不是 True。
+
+### 10.5 EvidenceRecord
+
+每条证据至少包含：
+
+```json
+{
+  "evidence_id": "ev-...",
+  "run_id": "run-...",
+  "plan_id": "plan-...",
+  "exec_id": "exec-...",
+  "kbd_id": 1,
+  "kbd_revision": 4,
+  "signal_id": "sig_002",
+  "outcome": "PASS",
+  "raw_output_ref": "tool_result:exec-...",
+  "output_hash": "sha256:...",
+  "matcher_version": "keyword-v2",
+  "collected_at": "...",
+  "freshness": "fresh",
+  "target": "SVR_aCloud_668"
+}
+```
+
+## 11. Conclusion Gate
+
+### 11.1 根因发布条件
+
+一篇 KBD 只有同时满足以下条件才能进入 S4：
+
+1. 来自本次 KnowledgeSnapshot，revision 未漂移。
+2. 所有 `required_for_confirmation=true` 信号为 PASS。
+3. 不存在有效 FAIL 反证。
+4. 每个 PASS 都有 exec_id、ToolResult 和 EvidenceRecord。
+5. 证据目标属于当前工单，且未过 freshness 门槛。
+6. 所有事实性 claim 均已创建 ClaimEvidenceLink。
+7. 根因和解决方案来自该 KBD revision 原文。
+
+形式化表达：
+
+```text
+CONFIRMED(kbd) :=
+  all(required_signal(kbd), outcome = PASS)
+  AND no(contradictory_signal(kbd), outcome = FAIL)
+  AND all(PASS, has_valid_evidence_chain)
+```
+
+### 11.2 结论类型
+
+| 类型 | 页面语义 |
+|---|---|
+| `CONFIRMED_SINGLE` | 一篇 KBD 证据闭合 |
+| `CONFIRMED_MULTIPLE` | 多篇 KBD 均被证据支持，可能多根因或知识重叠 |
+| `INCONCLUSIVE` | 有候选但证据不足或执行受阻 |
+| `NO_KNOWLEDGE` | 分类下没有已发布 SOP/KBD |
+| `NO_EXECUTABLE_KNOWLEDGE` | 有已发布知识，但信号契约不完整，无法自动执行 |
+| `ESCALATION_REQUIRED` | 需要人工处理，已创建升级记录 |
+
+### 11.3 报告生成
+
+报告由确定性 renderer 生成，不由 LLM 自由编写：
+
+```text
+结论类型
+  + KBD 标题、support_id、revision、原始链接
+  + KBD root_cause 原文
+  + 每条 required signal 的 outcome
+  + exec_id、执行目标、实际命令来源、输出摘要、matcher 结果
+  + 未完成项和限制
+```
+
+LLM 只能基于上述结构生成非权威的通俗解释，并必须保留 evidence 引用。输出防火墙拒绝任何没有 evidence_id 的新增命令、输出和根因断言。
+
+## 12. 严格禁止 Agent 虚构
+
+### 12.1 权限模型
+
+| 能力 | LLM | 编排器 | 执行器 | Conclusion Gate |
+|---|---:|---:|---:|---:|
+| 建议下一个 signal_id | 是 | 校验/决策 | 否 | 否 |
+| 生成自由命令 | 否 | 否 | 否 | 否 |
+| 从 KBD 编译命令 | 否 | 是 | 校验 | 否 |
+| 声明工具输出 | 否 | 否 | 是 | 读取 |
+| 判定 matcher | 否 | 调用 | 确定性 evaluator | 校验 |
+| 确认 KBD | 否 | 否 | 否 | 是 |
+| 输出根因原文 | 否 | 否 | 否 | 是 |
+
+### 12.2 必须删除的自由出口
+
+HTP 正式诊断链路必须停止使用 `_process_fallback_mode()`。以下场景统一受控处理：
+
+- 无已发布 KBD：`NO_KNOWLEDGE -> ESCALATION_REQUIRED`。
+- 有 KBD 但均不可执行：`NO_EXECUTABLE_KNOWLEDGE -> ESCALATION_REQUIRED`，显示发布门禁问题并升级知识治理/人工。
+- 工具错误：信号 ERROR，重试或升级，不生成替代输出。
+- 缺少变量：信号 BLOCKED，采集变量或询问用户。
+- matcher UNKNOWN：显示不可判定，不能保守转 True。
+
+### 12.3 输出防火墙
+
+在 SSE/消息落库前校验：
+
+- 命令文本必须能映射到 plan_id/input_hash。
+- 结果文本必须能映射到 exec_id/output_hash。
+- 根因文本必须能映射到 confirmed KBD revision。
+- “已执行、确认、命中、根因”等受控词必须携带结构化引用。
+- 校验失败时拒绝消息，并生成 `unsupported_claim_blocked` 审计事件。
+
+## 13. 人工升级闭环
+
+`human_escalation` 不能再是检索返回字符串。真正升级至少包含：
+
+1. 创建 `EscalationRequest`，记录 run_id、category、候选、已执行信号和阻断原因。
+2. 工单状态转换为 `waiting_for_human`。
+3. 分配目标技能组或队列。
+4. 发出 `AgentEscalation` SSE 事件。
+5. UI 展示升级状态、原因、时间、处理队列和已收集证据。
+6. 人工接管或恢复自动诊断时有明确状态转换和审计记录。
+
+建议原因枚举：
+
+- `NO_PUBLISHED_KNOWLEDGE`
+- `NO_EXECUTABLE_KNOWLEDGE`
+- `MISSING_REQUIRED_FACT`
+- `TOOL_UNAVAILABLE`
+- `AUTHORIZATION_DENIED`
+- `EVIDENCE_INCONCLUSIVE`
+- `MULTIPLE_CONFLICTING_KBDS`
+- `RETRIAGE_REQUIRED`
+
+若未实现上述动作，只能显示“未找到知识匹配”，不能声称已经升级人工。
+
+## 14. 前端真实性设计
+
+当前 Agent API 会过滤 `tool_call/tool_result`，该行为必须取消。前端只能基于结构化事件渲染执行轨迹：
+
+```text
+KBD 27123 / revision 4 / sig_002
+状态：PASS
+命令来源：KBD revision
+执行目标：SVR_aCloud_668
+exec_id：exec-...
+实际工具：qfk_system / lsof
+输出摘要：...
+matcher：keyword(vm-disk) -> true
+证据：ev-...
+```
+
+展示规则：
+
+- 尚未收到 tool_call：显示“未计划”。
+- 已计划未执行：显示“等待执行”。
+- 收到 tool_call 未收到 ToolResult：显示“执行中”。
+- ToolResult ERROR：显示实际错误，不生成模拟输出。
+- 没有 EvidenceRecord：不能显示“已确认”。
+- 页面中的模型解释与系统证据采用不同视觉层级和数据源。
+
+## 15. 阶段语义重定义
+
+| 阶段 | 唯一职责 | 禁止行为 |
+|---|---|---|
+| S0 | 确认叶子分类，生成 CategoryDecision | 输出根因 |
+| S1 | 创建 KnowledgeSnapshot，评估 SOP applicability，建立完整候选集 | 用 query 过滤分类 KBD；输出阶段结论 |
+| S2 | 编译 KBD 假设和 SignalPlan | 把 similarity 当概率 |
+| S3 | 执行信号、matcher 求值、建立证据链 | 用模型文本代替 ToolResult |
+| S4 | Conclusion Gate，确认单篇/多篇或不可判定 | 单候选直接确认 |
+| S5 | 从 confirmed KBD 输出处置方案并执行风险授权 | 在诊断阶段执行写操作 |
+| S6 | 验证修复效果并沉淀反馈 | 无验证直接关闭 |
+
+S1 的合法输出是知识范围和候选集，不是“根因结论”。
+
+## 16. 系统级不变量
+
+实现和测试必须共同维护以下不变量：
+
+1. **分类权威性**：confirmed CategoryDecision 只能通过显式 re-triage 替换。
+2. **候选完整性**：KnowledgeSnapshot 包含分类下全部已发布 KBD；不可执行 KBD 必须显式标记，不能消失。
+3. **检索非门禁**：embedding/FTS 故障不能改变候选资格。
+4. **版本稳定性**：运行中的 KBD/SOP revision 不随后台编辑变化。
+5. **命令来源唯一**：所有自动诊断命令均可追溯到 KBD/SOP revision 和 signal_id。
+6. **计划先于执行**：没有持久化 SignalPlan 不能执行工具。
+7. **证据来自执行**：没有 ToolResult 不能创建 PASS EvidenceRecord。
+8. **未知不支持**：UNKNOWN/ERROR/BLOCKED 永不支持或排除根因。
+9. **单候选不确认**：候选数量不能替代 required signal gate。
+10. **根因有引用**：S4 每条 claim 至少关联一个有效 evidence_id。
+11. **诊断只读**：S0-S4 禁止执行 remediation/write operation。
+12. **升级真实存在**：只有持久化升级记录和状态转换后才能显示人工升级。
+13. **页面不模拟执行**：UI 只根据结构化事件显示命令和结果。
+14. **失败显式可见**：任何依赖、工具、matcher、证据异常都不能静默降级为成功。
+
+## 17. Q2026072624224 / KBD 27123 验收场景
+
+### 17.1 正常路径
+
+给定：
+
+- S0 confirmed category 为 `虚拟机-003`。
+- 分类下无 SOP。
+- 分类下有 KBD 27123，revision 包含 `sig_001..sig_003`。
+
+期望：
+
+1. S1 不调用 `/api/kb/route`、`/embeddings` 或 FTS。
+2. KnowledgeSnapshot 必须包含 KBD 27123。
+3. `sig_001` 实际查询失败任务并产生 HOST、VM 等变量。
+4. `sig_002` 只能在 HOST、VM 已解析后执行。
+5. `sig_003` 只能在 PID 已从实际输出产生后执行。
+6. 三条信号均有 plan_id、exec_id、ToolResult 和 SignalEvaluation。
+7. 在 `sig_002/sig_003` PASS 前，不得显示 `ClwDRDBClient` 为根因。
+8. 全部 required signals PASS 后，输出 KBD 27123 原始链接和逐条证据。
+
+### 17.2 故障注入
+
+| 注入故障 | 期望结果 |
+|---|---|
+| embedding provider 404 | 对主诊断链路无影响 |
+| FTS 索引为空 | 对分类候选全集无影响 |
+| sig_001 未产生 HOST | sig_002 BLOCKED，不发送含占位符命令 |
+| qfk 执行超时 | signal ERROR，结论 INCONCLUSIVE |
+| matcher 不支持 | signal UNKNOWN，不确认根因 |
+| 模型输出 KBD 外命令 | 输出防火墙拒绝并审计 |
+| 仅剩 KBD 27123 但信号未执行 | 仍为 CANDIDATE，不进入 S4 |
+| 人工拒绝必要授权 | BLOCKED，并创建真实 escalation |
+
+## 18. 测试策略
+
+### 18.1 单元测试
+
+- SignalContract 发布门禁和依赖拓扑。
+- acquisition_key 规范化与去重。
+- PASS/FAIL/UNKNOWN/ERROR/BLOCKED 状态转换。
+- 选择算法不把覆盖率当区分度。
+- 单候选缺必要证据时永不 confirmed。
+- matcher 异常 fail closed。
+- Conclusion Gate 对缺失 evidence chain 的拒绝。
+
+### 18.2 属性测试
+
+对随机候选图验证：
+
+- 增加 UNKNOWN 证据不能使候选从 CANDIDATE 变为 SUPPORTED。
+- 删除任意 required PASS 后，CONFIRMED 必须失效。
+- 改变候选输入顺序不改变计划和结论。
+- embedding/FTS 分数变化不改变候选成员集合。
+
+### 18.3 契约测试
+
+- S0 CategoryDecision -> S1 KnowledgeSnapshot。
+- kb-service playbooks API 返回完整、版本化资源。
+- SignalPlan -> executor -> ToolResult -> SignalEvaluation。
+- Agent SSE -> 前端工具卡事件完整性。
+- EscalationRequest -> 工单状态 -> UI 交互。
+
+### 18.4 Golden Case
+
+将 `Q2026072624224 + KBD 27123` 固化为端到端 golden case，至少覆盖：
+
+- 正向命中。
+- 信号 FAIL 排除。
+- 工具 ERROR 不下结论。
+- 无 SOP 自动进入完整 KBD 候选集。
+- 无证据时禁止输出 KBD 根因。
+
+## 19. 可观测性和质量指标
+
+每个事件携带 `trace_id`、`run_id`、`conversation_id`、`case_id`、`decision_id` 和适用的 `plan_id/exec_id`。
+
+关键指标：
+
+| 指标 | 目标 |
+|---|---:|
+| `category_snapshot_usage_ratio` | 100% |
+| `category_inventory_completeness` | 100% |
+| `required_signal_evidence_coverage` | confirmed 结论必须 100% |
+| `unsupported_claim_blocked_total` | 可观测；对外泄漏为 0 |
+| `conclusion_without_evidence_total` | 0 |
+| `unresolved_placeholder_execution_total` | 0 |
+| `fake_human_escalation_total` | 0 |
+| `diagnostic_fallback_free_text_total` | 0 |
+| `tool_event_ui_visibility_ratio` | 100% |
+
+审计页面应能从结论反向展开到 KBD revision、signal、matcher、exec_id 和原始输出引用。
+
+## 20. 分阶段实施
+
+### 20.0 旧链路删除/替换清单
+
+| 当前步骤或规则 | 处理决定 | 替代机制 |
+|---|---|---|
+| S1 `_build_retrieval_query(messages)` | 从知识准入路径删除 | 使用 S0 `CategoryDecision` |
+| S1 调用 query-based `/api/kb/route` | 停止调用，接口进入兼容废弃期 | category playbooks API |
+| route 内用 FTS 决定是否存在 KBD | 删除该资格门禁 | category_id + published 完整清单 |
+| KBD search 先 embedding、失败再 FTS | 退出正确性主链路 | 仅作为可插拔调度排序 |
+| `top_k` 限制分类候选 | 删除 | KnowledgeSnapshot 保存全部已发布 KBD |
+| `_process_fallback_mode()` | 从 HTP 正式诊断删除 | NO_KNOWLEDGE/NO_EXECUTABLE_KNOWLEDGE/INCONCLUSIVE + 真实 escalation |
+| 按 `tool_name` 覆盖率选步 | 删除 | acquisition 级主动测试算法 |
+| `EARLY_STOP_THRESHOLD=2` | 删除 | 证据闭合/不可继续停止条件 |
+| LLM matcher 异常默认全 True | 删除 | UNKNOWN，fail closed |
+| `len(remaining)==1` 判 definitive | 删除 | required signal Conclusion Gate |
+| 无 error 即写 confirmed evidence | 删除 | matcher PASS + 完整 evidence chain |
+| API 过滤 `tool_call/tool_result` | 删除 | 结构化事件直达证据 UI |
+
+旧 REST API 按仓库兼容规范保留至少一个 release，但 S1 新实现不得继续调用；“保留接口”不等于“保留错误控制流”。
+
+### P0：阻断错误结论
+
+1. S1 停止调用 query-based `/api/kb/route` 和 `/api/kb/kbd/search`。
+2. 新增 category inventory 查询，按分类加载全部已发布 SOP/KBD，并显式返回 executable 状态。
+3. 从 HTP 正式诊断链路移除 `_process_fallback_mode()`。
+4. 修正 `is_definitive` 和 S4 门禁：无 required PASS 不允许确认。
+5. UNKNOWN/ERROR/BLOCKED 不再保守转 True。
+6. 恢复 `tool_call/tool_result` SSE 透传和 UI 展示。
+7. 实现真实 EscalationRequest，未实现前不返回 `human_escalation`。
+
+### P1：闭合执行契约
+
+1. 引入 CategorySnapshot、KnowledgeSnapshot 和 DiagnosticRun。
+2. KBD revision 不可变执行。
+3. 引入 SignalPlan、acquisition_key、exec_id 和 EvidenceRecord。
+4. 发布时校验依赖、matcher、工具和只读策略。
+5. Conclusion Gate 强制 ClaimEvidenceLink。
+6. 使用确定性 renderer 输出 KBD 原文和证据。
+
+### P2：替换 CDD 算法
+
+1. 删除按 tool_name 覆盖频率选步。
+2. 按 acquisition + per-KBD matcher 建模。
+3. 实现约束求值和信息增益/成本/风险调度。
+4. 支持多 KBD 同时 SUPPORTED。
+5. 对历史结果做校准前，禁止输出伪概率。
+
+### P3：质量和运营闭环
+
+1. Golden Case、属性测试和故障注入进入 CI。
+2. 建立 unsupported claim、证据覆盖率和升级成功率看板。
+3. embedding/FTS 仅作为可插拔调度优化，并进行离线召回评测。
+4. 根据真实执行数据优化 KBD 信号质量和 SOP 聚类。
+
+## 21. 不建议方案
+
+### 21.1 只修 embedding 404
+
+这只能让某些 query 重新召回 KBD，无法保证分类完整性，也无法解决无证据结论和自由 fallback。
+
+### 21.2 继续增强 Prompt
+
+Prompt 无法阻止模型输出自由命令，也无法证明命令真的执行。它不是安全边界和结论门禁。
+
+### 21.3 把 top_k 调大
+
+top_k 仍然允许分类 KBD 被排除；候选全集问题不能通过扩大概率性检索窗口解决。
+
+### 21.4 单候选直接运行全部步骤后输出
+
+“运行全部”比不运行更好，但如果没有明确 required/optional、FAIL/UNKNOWN、证据链和结论门禁，仍会把工具成功误认为根因成立。
+
+### 21.5 让 LLM 判断自然语言 matcher
+
+可用于离线知识治理或非关键提示，但不能作为 conclusion-critical 在线判定器。模型异常时“保守全 True”尤其危险。
+
+## 22. 最终架构决策
+
+最终采用以下原则：
+
+1. **Category First**：S0 confirmed category 是 S1 及后阶段知识范围的权威输入。
+2. **Inventory Before Ranking**：先完整获得分类资源，排序永不改变成员资格。
+3. **Evidence Before Conclusion**：候选必须通过 KBD required signals 才能进入 S4。
+4. **Plan Before Execute**：所有执行来自版本化 KBD signal plan，Agent 无自由命令权限。
+5. **Deterministic Evaluation**：关键 matcher 和 Conclusion Gate 由确定性程序控制。
+6. **Unknown Is Unknown**：未知、错误和阻断不能伪装成支持证据。
+7. **Trace Everything**：从分类到根因的每一步都有稳定 ID、版本、hash 和 trace。
+8. **Escalate Explicitly**：无知识或证据不足时创建真实人工升级，不进行自由诊断。
+
+该方案去除了当前重复且错误的 query route、embedding/FTS 准入门禁和自由 fallback，把 CDD 从“候选数量驱动的文本生成”改造成“分类全集上的证据约束求值”。最终输出不再依赖模型是否谨慎，而依赖系统是否实际获得了足以支持结论的证据。
+
+## 23. 实施与运行态验收（2026-07-26）
+
+### 23.1 已实施代码
+
+| 约束 | 实现 |
+|---|---|
+| S0 分类是权威输入 | S1 仅调用 `GET /api/kb/v2/categories/{category_id}/playbooks` |
+| 分类完整清单 | 新接口返回全部 published SOP/KBD、revision、snapshot_id 和 executable 状态 |
+| 检索不做准入 | S1 已移除 `/api/kb/route`、embedding、FTS、top-K 和 `search_cases_with_steps` |
+| 命令只能来自 KBD | 每个工具事件携带 `kbd_id/support_id/signal_id/command_source=KBD` |
+| 稳定证据身份 | `exec_id = UUID5(session + kbd_id + revision + signal_id)` |
+| 封闭结果状态 | `NOT_RUN/PASS/FAIL/UNKNOWN/ERROR/BLOCKED` |
+| 结论门禁 | 每篇 KBD 的全部 required signal 为 PASS 才进入 supported 和 S4 |
+| 无自由 fallback | 无知识、不可执行或证据不足均发出 `AgentEscalation` |
+| 确定性报告 | 根因和方案只取已支持 KBD 原文；失败报告不输出根因 |
+| 候选可解释性 | 失败报告仍展示参考案例链接、每条 signal、参数、outcome 和 exec_id，并标记“未确认” |
+| UI 可见性 | Agent SSE 不再过滤 `tool_call/tool_result`；conversation-service 将 escalation 转成 `human_escalation` 交互 |
+
+旧的按 `tool_name` 覆盖率贪心、候选数量 early-stop、代表步骤复用和 LLM matcher 代码均已从运行实现删除。当前编排按 KBD revision 内的 signal_id 和 requires/produces 契约执行；相同 acquisition 可复用一次真实采集结果，但每篇 KBD 的 matcher 和证据记录保持独立。
+
+### 23.2 Q2026072624224 实测轨迹
+
+输入：
+
+```text
+虚拟机有异常
+```
+
+S0 在模型服务返回 429 时启用确定性分类降级，但仍要求人工确认。返回的第一候选为：
+
+```text
+虚拟机-003 虚拟机开机失败
+```
+
+确认后进入 S1，知识快照为：
+
+| 字段 | 值 |
+|---|---|
+| snapshot_id | `kbsnap-b1dc3bb2e68726ea` |
+| SOP | 0 |
+| KBD | 1 |
+| executable KBD | 1 |
+| 参考案例 | 27123 |
+
+实际信号轨迹：
+
+| signal | exec_id | 实际行为 | 结果 |
+|---|---|---|---|
+| `sig_001/qkv_task` | `489834d8-d5b0-5380-a03c-604c90b0f003` | 从任务 907 获取 VM `4359974862144`、HOST `SVR_aCloud_668` | PASS |
+| `sig_002/qfk_system` | `6e37b367-78b3-572e-8fe7-3890e6a28213` | 下发 `acli system lsof 4359974862144` | ERROR：客户端 SSH/terminal bridge 未连接 |
+| `sig_003/qfk_system` | `4199fd1f-d9b1-5a39-833b-252ff44cd3a3` | 下发 `acli system ps` | ERROR：客户端 SSH/terminal bridge 未连接 |
+
+因此集群实测的合法最终状态是：
+
+- 已评估参考案例 27123，并返回原始链接；
+- 27123 标记为“未确认”；
+- 不输出该 KBD 根因/解决方案；
+- 不进入 S4；
+- 显式发出 `human_escalation`。
+
+这不是诊断逻辑失败，而是现场证据采集前置条件未满足。只有 Custom-UI 已连接 terminal_bridge 和目标 HCI SSH，且 `sig_002` 命中 `vm-disk`、`sig_003` 命中 `ClwDRDBClient` 时，27123 才能转为 confirmed 并进入 S4。任何测试 fixture 或人工注入输出都不得冒充本次现场证据。
+
+### 23.3 验证结果
+
+- Agent 聚焦回归（含 QKV/QFK 集成）：130 passed。
+- KB 分类清单/搜索契约：6 passed。
+- QKV/QFK 信号集成：5 passed。
+- 27123 golden case 覆盖三条信号、独立 exec_id、正向确认、工具 ERROR 拒绝确认、缺变量 BLOCKED。
+- KB 运行日志仅出现分类 playbooks 接口；本次 S1 未调用 `/route`、embedding 或 FTS。
+- 当前 `hci-dev` 通过 ConfigMap 热更新部署；镜像构建受 Docker Hub 元数据网络超时和当前用户无 K3s containerd 权限限制。

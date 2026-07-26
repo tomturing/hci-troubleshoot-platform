@@ -2,11 +2,10 @@
 KBDDiagnostic 单元测试
 
 测试覆盖：
-  1. _pick_best_step：贪心最大频率选择逻辑
-  2. _resolve_args：占位符替换逻辑
-  3. _judge_matches：规则判断（__REGEX__: / __CONTAINS__:）
-  4. diagnose：完整 KBD 差异诊断主循环（端到端，全 mock）
-  5. 有效性验证：N=10 候选 KBD，≤8 步锁定正确 KBD
+  1. _resolve_args：占位符替换逻辑
+  2. matcher：确定性规则求值
+  3. diagnose：按 KBD signal_id 执行和证据门禁
+  4. 27123 golden case：QKV + 两个独立 QFK 信号
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -30,20 +29,21 @@ def _expected_to_matcher(expected_pattern):
     if expected_pattern.startswith("__REGEX__:"):
         return {
             "type": "regex",
-            "pattern": expected_pattern[len("__REGEX__:"):],
+            "pattern": expected_pattern[len("__REGEX__:") :],
             "mode": "or",
             "expected": True,
         }
     if expected_pattern.startswith("__CONTAINS__:"):
         return {
             "type": "keyword",
-            "pattern": expected_pattern[len("__CONTAINS__:"):],
+            "pattern": expected_pattern[len("__CONTAINS__:") :],
             "mode": "or",
             "expected": True,
         }
     if expected_pattern.startswith("__MATCHER__:"):
         import json as _json
-        return _json.loads(expected_pattern[len("__MATCHER__:"):])
+
+        return _json.loads(expected_pattern[len("__MATCHER__:") :])
     return expected_pattern
 
 
@@ -95,53 +95,6 @@ def make_tool_executor(results: dict[str, str]) -> MagicMock:
 
     mock.execute = execute
     return mock
-
-
-# ─── 单元测试：_pick_best_step ────────────────────────────────────────────────
-
-
-class TestPickBestStep:
-    """_pick_best_step：贪心选择逻辑测试"""
-
-    def setup_method(self):
-        self.diag = KBDDiagnostic(
-            ai_registry=MagicMock(),
-            tool_executor=MagicMock(),
-        )
-
-    def test_picks_most_frequent_tool(self):
-        """选择频率最高的工具"""
-        candidates = [
-            make_kbd("k1", [("tool_a", ""), ("tool_b", "")]),
-            make_kbd("k2", [("tool_a", ""), ("tool_c", "")]),
-            make_kbd("k3", [("tool_a", "")]),
-        ]
-        # tool_a 出现 3 次，tool_b/c 各 1 次
-        best = self.diag._pick_best_step(candidates, executed_tools=set())
-        assert best == "tool_a"
-
-    def test_excludes_already_executed_tools(self):
-        """已执行过的工具不应再被选择"""
-        candidates = [
-            make_kbd("k1", [("tool_a", ""), ("tool_b", "")]),
-            make_kbd("k2", [("tool_a", ""), ("tool_b", "")]),
-        ]
-        # tool_a 已执行，应选 tool_b
-        best = self.diag._pick_best_step(candidates, executed_tools={"tool_a"})
-        assert best == "tool_b"
-
-    def test_returns_none_when_all_executed(self):
-        """所有工具都已执行时返回 None"""
-        candidates = [
-            make_kbd("k1", [("tool_a", ""), ("tool_b", "")]),
-        ]
-        best = self.diag._pick_best_step(candidates, executed_tools={"tool_a", "tool_b"})
-        assert best is None
-
-    def test_returns_none_for_empty_candidates(self):
-        """候选 KBD 为空时返回 None"""
-        best = self.diag._pick_best_step([], executed_tools=set())
-        assert best is None
 
 
 # ─── 单元测试：_resolve_args ──────────────────────────────────────────────────
@@ -196,8 +149,8 @@ class TestVariablePoolCaseNormalization:
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
         # 生产侧写入入口强制小写，无论 produces 名大小写 / 首尾空格如何，池内 Key 永远统一
         diag._set_pool_var("HOST", "node-001")
-        diag._set_pool_var("HoSt", "x")       # 同键不同大小写 -> 归一为 host（后者覆盖）
-        diag._set_pool_var(" vm_id ", "v-9")   # 首尾空格 + 大写 -> vm_id
+        diag._set_pool_var("HoSt", "x")  # 同键不同大小写 -> 归一为 host（后者覆盖）
+        diag._set_pool_var(" vm_id ", "v-9")  # 首尾空格 + 大写 -> vm_id
         assert diag._variable_pool == {"host": "x", "vm_id": "v-9"}
 
     def test_producer_consumer_roundtrip(self):
@@ -210,107 +163,6 @@ class TestVariablePoolCaseNormalization:
         # 即便模板误用小写 {{host}}，同样命中（纵深防御）
         result2 = KBDDiagnostic._resolve_args({"scope": "{{host}}"}, {}, diag._variable_pool)
         assert result2 == {"scope": "node-001"}
-
-
-# ─── 单元测试：_judge_matches（规则判断）────────────────────────────────────
-
-
-class TestJudgeMatchesRules:
-    """_judge_matches：规则判断（不调用 LLM）"""
-
-    @pytest.mark.asyncio
-    async def test_contains_pattern_match(self):
-        """__CONTAINS__ 模式匹配测试"""
-        diag = KBDDiagnostic(
-            ai_registry=make_registry_mock(),
-            tool_executor=MagicMock(),
-        )
-        kbds = [
-            make_kbd("k1", [("tool_x", "__CONTAINS__:memory_error")]),
-            make_kbd("k2", [("tool_x", "__CONTAINS__:disk_full")]),
-        ]
-
-        matched = await diag._judge_matches(
-            tool_name="tool_x",
-            actual_output="Error: memory_error detected on node-01",
-            kbds=kbds,
-        )
-
-        assert "k1" in matched
-        assert "k2" not in matched
-
-    @pytest.mark.asyncio
-    async def test_contains_pattern_case_insensitive(self):
-        """__CONTAINS__ 模式大小写不敏感"""
-        diag = KBDDiagnostic(
-            ai_registry=make_registry_mock(),
-            tool_executor=MagicMock(),
-        )
-        kbds = [make_kbd("k1", [("tool_x", "__CONTAINS__:MEMORY_ERROR")])]
-
-        matched = await diag._judge_matches(
-            tool_name="tool_x",
-            actual_output="memory_error occurred",
-            kbds=kbds,
-        )
-        assert "k1" in matched
-
-    @pytest.mark.asyncio
-    async def test_regex_pattern_match(self):
-        """__REGEX__ 模式匹配测试"""
-        diag = KBDDiagnostic(
-            ai_registry=make_registry_mock(),
-            tool_executor=MagicMock(),
-        )
-        kbds = [
-            make_kbd("k1", [("tool_x", r"__REGEX__:error_code=0x[0-9A-F]+")]),
-            make_kbd("k2", [("tool_x", r"__REGEX__:timeout_ms=\d{4,}")]),
-        ]
-
-        matched = await diag._judge_matches(
-            tool_name="tool_x",
-            actual_output="error_code=0xCFFFFF in syslog",
-            kbds=kbds,
-        )
-        assert "k1" in matched
-        assert "k2" not in matched
-
-    @pytest.mark.asyncio
-    async def test_invalid_regex_treated_as_no_match(self):
-        """无效正则表达式不抛异常，视为不匹配"""
-        diag = KBDDiagnostic(
-            ai_registry=make_registry_mock(),
-            tool_executor=MagicMock(),
-        )
-        kbds = [make_kbd("k1", [("tool_x", "__REGEX__:[invalid(")])]
-
-        matched = await diag._judge_matches(
-            tool_name="tool_x",
-            actual_output="some output",
-            kbds=kbds,
-        )
-        assert "k1" not in matched
-
-    @pytest.mark.asyncio
-    async def test_no_pattern_conservative_match(self):
-        """KBD 无此步骤定义时保守地保留（不过滤）"""
-        diag = KBDDiagnostic(
-            ai_registry=make_registry_mock(),
-            tool_executor=MagicMock(),
-        )
-        # k1 有 tool_x，k2 没有 tool_x（get_expected_pattern 返回 None）
-        kbds = [
-            make_kbd("k1", [("tool_x", "__CONTAINS__:error")]),
-            make_kbd("k2", [("tool_y", "__CONTAINS__:error")]),  # 无 tool_x
-        ]
-
-        matched = await diag._judge_matches(
-            tool_name="tool_x",
-            actual_output="no relevant output",
-            kbds=kbds,
-        )
-        # k2 无 tool_x 步骤，保守保留
-        assert "k2" in matched
 
 
 # ─── 单元测试：_evaluate_matcher（§6 5 类定型 valuator）────────────────────────
@@ -385,16 +237,16 @@ class TestToolDefinitionFallback:
         self._mod = tool_registry
         self._added = ["qkv_alert", "qfk_log"]
         # 模拟 admin-ui 在 tool_definition 中配置的默认值
-        self._mod.TOOL_REGISTRY["qkv_alert"] = SimpleNamespace(parameters={
-            "properties": {"produces": {"default": [{"name": "HOST", "path": "host"}]}}
-        })
-        self._mod.TOOL_REGISTRY["qfk_log"] = SimpleNamespace(parameters={
-            "properties": {
-                "matcher": {
-                    "default": {"type": "keyword", "pattern": ["X"], "mode": "or", "expected": True}
+        self._mod.TOOL_REGISTRY["qkv_alert"] = SimpleNamespace(
+            parameters={"properties": {"produces": {"default": [{"name": "HOST", "path": "host"}]}}}
+        )
+        self._mod.TOOL_REGISTRY["qfk_log"] = SimpleNamespace(
+            parameters={
+                "properties": {
+                    "matcher": {"default": {"type": "keyword", "pattern": ["X"], "mode": "or", "expected": True}}
                 }
             }
-        })
+        )
 
     def teardown_method(self):
         for k in self._added:
@@ -466,13 +318,12 @@ class TestDiagnoseLoop:
         assert any("未找到" in e.content for e in text_events)
 
     @pytest.mark.asyncio
-    async def test_single_candidate_skips_loop(self):
-        """候选 KBD ≤ early_stop_threshold 时主循环不执行，但关键信号确认阶段必须补跑"""
+    async def test_shared_acquisition_still_evaluates_each_kbd_signal(self):
+        """相同采集只执行一次，但每篇 KBD 的 signal 必须独立求值。"""
         tool_executor = make_tool_executor({"tool_a": "output"})
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock('{"matches": {"k1": true}}'),
             tool_executor=tool_executor,
-            early_stop_threshold=2,
         )
 
         candidates = [
@@ -491,23 +342,20 @@ class TestDiagnoseLoop:
 
         result = diag.get_result()
         assert result is not None
-        # ≤ 2 候选时主循环虽跳过，但两个 KBD 均保留
         assert len(result.matched_kbds) == 2
-        # 关键信号确认阶段已补跑 tool_a，不再是 0 步（治本修复）
-        assert len(result.steps_executed) == 1
-        assert result.steps_executed[0].tool_name == "tool_a"
+        # 同一次 acquisition 只实际执行一次，但每篇 KBD 的 signal 必须独立求值。
+        assert len(result.steps_executed) == 2
+        assert {step.tool_name for step in result.steps_executed} == {"tool_a"}
+        assert all(step.outcome.value == "PASS" for step in result.steps_executed)
 
     @pytest.mark.asyncio
     async def test_single_candidate_confirms_its_signals(self):
         """单候选 KBD 也必须执行其 backend 关键信号确认，不能跳过就给结论（回归测试）"""
         # 模拟真实场景：工具采集到“第三方进程 ClwDRDBClient 持有镜像”的关键信号
-        tool_executor = make_tool_executor(
-            {"acli_vm_config": "ERROR: 虚拟机镜像忙，ClwDRDBClient 持有镜像文件"}
-        )
+        tool_executor = make_tool_executor({"acli_vm_config": "ERROR: 虚拟机镜像忙，ClwDRDBClient 持有镜像文件"})
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock('{"matches": {"k1": true}}'),
             tool_executor=tool_executor,
-            early_stop_threshold=2,
         )
 
         candidates = [make_kbd("k1", [("acli_vm_config", "__CONTAINS__:ClwDRDBClient")])]
@@ -523,7 +371,7 @@ class TestDiagnoseLoop:
 
         result = diag.get_result()
         assert result is not None
-        # 单候选（候选数 ≤ early_stop）不应直接结论，必须执行关键信号确认
+        # 单候选不等于已确认，仍须执行关键信号。
         assert len(result.steps_executed) == 1
         step = result.steps_executed[0]
         assert step.tool_name == "acli_vm_config"
@@ -548,7 +396,6 @@ class TestDiagnoseLoop:
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock(),
             tool_executor=tool_executor,
-            early_stop_threshold=1,
         )
 
         events = [
@@ -586,7 +433,6 @@ class TestDiagnoseLoop:
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock(),
             tool_executor=tool_executor,
-            early_stop_threshold=1,
         )
 
         events = [
@@ -625,7 +471,6 @@ class TestDiagnoseLoop:
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock(),
             tool_executor=mock_executor,
-            early_stop_threshold=1,
         )
 
         # 不应抛出异常
@@ -673,7 +518,6 @@ class TestDiagnoseLoop:
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock(),
             tool_executor=mock_executor,
-            early_stop_threshold=0,  # 强制执行所有步骤
         )
 
         events = [
@@ -689,20 +533,15 @@ class TestDiagnoseLoop:
         assert captured_args.get("vm_name") == "test-vm-001"
 
 
-# ─── 有效性验证：10 候选 KBD ≤ 8 步锁定 ──────────────────────────────────────
+# ─── 多候选证据求值验证 ───────────────────────────────────────────────────────
 
 
 class TestKBDDiagEffectiveness:
-    """KBD 差异诊断有效性验证：模拟真实场景，验证步骤数量"""
+    """多篇 KBD 的全部信号均进入证据求值。"""
 
     @pytest.mark.asyncio
-    async def test_ten_candidates_lock_in_few_steps(self):
-        """10 个候选 KBD 应在 ≤ 8 步内锁定到 ≤ 3 个匹配 KBD。
-
-        验收标准（来自 KBD 差异诊断协议）：
-          - top-K=10 → 预期 ≤ 8 步完成消除
-          - 真实 KBD（k5）应在最终匹配列表中
-        """
+    async def test_ten_candidates_evaluate_all_signals(self):
+        """10 个候选 KBD 的必需信号全部求值，只有完整 PASS 的 KBD 获得支持。"""
         # 构建 10 个 KBD，每个有独特的期望模式
         # 真实故障：k5（Redis 服务异常导致虚拟机开机失败）
         candidates = [
@@ -754,7 +593,6 @@ class TestKBDDiagEffectiveness:
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock(),
             tool_executor=tool_executor,
-            early_stop_threshold=2,
         )
 
         events = [
@@ -769,8 +607,8 @@ class TestKBDDiagEffectiveness:
         result = diag.get_result()
         assert result is not None
 
-        # 验收标准 1：步骤数 ≤ 8
-        assert len(result.steps_executed) <= 8, f"步骤数 {len(result.steps_executed)} 超过预期上限 8 步"
+        # 每个 KBD signal 都保留独立求值记录；相同 acquisition 由执行缓存去重。
+        assert len(result.steps_executed) == sum(len(kbd.signals) for kbd in candidates)
 
         # 验收标准 2：真实 KBD k5 在匹配列表中
         matched_ids = {kbd.id for kbd in result.matched_kbds}
@@ -778,3 +616,144 @@ class TestKBDDiagEffectiveness:
 
         # 验收标准 3：最终候选数量缩减（从 10 减少到 ≤ 6）
         assert len(result.matched_kbds) <= 6, f"候选 KBD 数量 {len(result.matched_kbds)} 未有效缩减"
+
+
+class TestEvidenceGatedCDD:
+    """分类全量 KBD 进入 CDD 后的证据闭环不变量。"""
+
+    @staticmethod
+    def _kbd_27123() -> KBD:
+        return KBD(
+            id="1",
+            support_id="27123",
+            name="虚拟机开机失败，报错虚拟机镜像忙",
+            category_id="虚拟机-003",
+            root_cause="第三方程序占用虚拟机镜像文件",
+            solution="按案例原文解除占用后重试",
+            resource_revision={"revision": 4},
+            signals=[
+                {
+                    "id": "sig_001",
+                    "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机失败", "is_failed": True}},
+                    "match": None,
+                    "provenance": {"category": "frontend"},
+                    "orchestrate": {
+                        "phase": "diagnostic",
+                        "requires": [],
+                        "produces": [{"name": "VM", "path": "vm"}, {"name": "HOST", "path": "host"}],
+                    },
+                },
+                {
+                    "id": "sig_002",
+                    "acquire": {
+                        "tool": "qfk_system",
+                        "args": {"host": "{{HOST}}", "command": "lsof", "resource_keyword": "{{VM}}"},
+                    },
+                    "match": {"type": "keyword", "pattern": "vm-disk", "mode": "or", "expected": True},
+                    "provenance": {"category": "backend"},
+                    "orchestrate": {"phase": "diagnostic", "requires": ["VM", "HOST"], "produces": []},
+                },
+                {
+                    "id": "sig_003",
+                    "acquire": {"tool": "qfk_system", "args": {"host": "{{HOST}}", "command": "ps"}},
+                    "match": {
+                        "type": "keyword",
+                        "pattern": "ClwDRDBClient",
+                        "mode": "or",
+                        "expected": True,
+                    },
+                    "provenance": {"category": "backend"},
+                    "orchestrate": {"phase": "diagnostic", "requires": ["HOST"], "produces": []},
+                },
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_27123_executes_both_qfk_system_signals_and_reports_reference(self):
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+
+        async def execute(step, env_context, session_id, user_id, *, signal=None, exec_id=None):
+            signal_id = signal["id"]
+            if signal_id == "sig_001":
+                diag._set_pool_var("VM", "Server-IMG")
+                diag._set_pool_var("HOST", "SVR_aCloud_668")
+                return "失败任务: 虚拟机镜像忙", None, True
+            if signal_id == "sig_002":
+                assert step.tool_args_template["resource_keyword"] == "Server-IMG"
+                return "vm-disk Server-IMG pid=9527", None, True
+            return "9527 ClwDRDBClient", None, True
+
+        diag._execute_acquirer = AsyncMock(side_effect=execute)
+        events = [
+            event
+            async for event in diag.diagnose(candidates=[self._kbd_27123()], env_context={}, session_id="golden-27123")
+        ]
+
+        result = diag.get_result()
+        assert result is not None and result.is_definitive
+        assert [step.signal_id for step in result.steps_executed] == ["sig_001", "sig_002", "sig_003"]
+        assert len({step.exec_id for step in result.steps_executed}) == 3
+        assert all(step.outcome.value == "PASS" for step in result.steps_executed)
+        assert "参考案例 27123" in result.diagnosis_report
+        assert "category_id=27123" in result.diagnosis_report
+        tool_calls = [event for event in events if getattr(event, "stage", "") == "tool_call"]
+        assert len(tool_calls) == 3
+        assert [call.metadata["signal_id"] for call in tool_calls] == ["sig_001", "sig_002", "sig_003"]
+
+    @pytest.mark.asyncio
+    async def test_unresolved_placeholder_is_blocked_and_never_executed(self):
+        kbd = self._kbd_27123()
+        kbd.signals = [kbd.signals[1]]
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        diag._execute_acquirer = AsyncMock()
+
+        _events = [event async for event in diag.diagnose(candidates=[kbd], env_context={}, session_id="blocked")]
+
+        result = diag.get_result()
+        assert result is not None and not result.is_definitive
+        assert result.steps_executed[0].outcome.value == "BLOCKED"
+        assert "依赖变量缺失" in (result.steps_executed[0].error or "")
+        diag._execute_acquirer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_tool_error_never_confirms_single_candidate(self):
+        kbd = self._kbd_27123()
+        kbd.signals = [kbd.signals[2]]
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        diag._execute_acquirer = AsyncMock(return_value=(None, "terminal bridge timeout", None))
+
+        _events = [
+            event
+            async for event in diag.diagnose(
+                candidates=[kbd], env_context={"HOST": "SVR_aCloud_668"}, session_id="error"
+            )
+        ]
+
+        result = diag.get_result()
+        assert result is not None and not result.is_definitive
+        assert result.matched_kbds == []
+        assert result.steps_executed[0].outcome.value == "ERROR"
+        assert "证据不足" in result.diagnosis_report
+        assert "参考案例 27123" in result.diagnosis_report
+        assert "（未确认）" in result.diagnosis_report
+        assert "category_id=27123" in result.diagnosis_report
+        assert result.steps_executed[0].exec_id in result.diagnosis_report
+        assert "第三方程序占用" not in result.diagnosis_report
+
+    def test_qkv_uses_prefetched_failed_task_fact(self):
+        signal = self._kbd_27123().signals[0]
+        task = {
+            "id": 907,
+            "vm": "4359974862144",
+            "host": "SVR_aCloud_668",
+            "status": 3,
+            "process": "失败",
+            "description": "启动虚拟机（Server-IMG）失败，错误信息：虚拟机镜像忙",
+        }
+
+        result = KBDDiagnostic._qkv_values_from_context(signal, {"task_logs": [task]})
+
+        assert result is not None
+        values, source = result
+        assert source == "task_logs"
+        assert values == [{"vm": "4359974862144", "host": "SVR_aCloud_668"}]

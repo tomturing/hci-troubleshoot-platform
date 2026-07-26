@@ -36,21 +36,14 @@ class TestFrontendSignalValidation:
     """验证数据校验与加载"""
 
     def test_load_valid_signal(self):
-        data = {
-            "query": "alert",
-            "keyword": "配置存储服务备节点异常",
-            "limit": 50
-        }
+        data = {"query": "alert", "keyword": "配置存储服务备节点异常", "limit": 50}
         sig = qkv_load(data)
         assert sig.query == FrontendQueryType.ALERT
         assert sig.keyword == "配置存储服务备节点异常"
         assert sig.limit == 50
 
     def test_invalid_query_type(self):
-        data = {
-            "query": "invalid_type",
-            "keyword": "test"
-        }
+        data = {"query": "invalid_type", "keyword": "test"}
         with pytest.raises(ValidationError):
             qkv_load(data)
 
@@ -72,19 +65,48 @@ async def test_qkv_command_build():
     # 告警命令组装
     sig_alert = FrontendSignal(query=FrontendQueryType.ALERT, keyword="备节点异常", limit=10)
     mock_executor = AsyncMock()
-    mock_executor.execute.return_value = ExecResult(stdout="[]", stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1)
+    mock_executor.execute.return_value = ExecResult(
+        stdout="[]", stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1
+    )
 
     with patch("app.tools.acli.executor._executor", mock_executor):
         await qkv_exec(sig_alert, conversation_id="test")
         mock_executor.execute.assert_called_with(
             tool_name="acli_exec",
-            args={"command": "acli --formatter json alert get -k '备节点异常' -l 10", "reason": "QKV前端变量抽取: alert"},
+            args={
+                "command": "acli --formatter json alert get -k '备节点异常' -l 10",
+                "reason": "QKV前端变量抽取: alert",
+            },
             conversation_id="test",
             node_ip=None,
             risk_level=1,
             policy="auto",
-            exec_id=None
+            exec_id=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_qkv_terminal_timeout_is_error_not_empty_success():
+    signal = FrontendSignal(query=FrontendQueryType.TASK, keyword="启动虚拟机失败", is_failed=True)
+    mock_executor = AsyncMock()
+    mock_executor.execute.return_value = ExecResult(
+        stdout="",
+        stderr="执行超时（30秒），前端未响应",
+        exit_code=-1,
+        command="",
+        node="unknown",
+        duration_ms=30000,
+        truncated=False,
+        risk_level=1,
+        exec_id="exec-timeout",
+    )
+
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        result = await qkv_exec(signal, conversation_id="test")
+
+    assert result.success is False
+    assert result.exec_id == "exec-timeout"
+    assert "执行超时" in (result.error or "")
 
     # 失败任务命令组装
     sig_task = FrontendSignal(query=FrontendQueryType.TASK, keyword="启动虚拟机", is_failed=True, limit=5)
@@ -93,12 +115,15 @@ async def test_qkv_command_build():
         await qkv_exec(sig_task, conversation_id="test")
         mock_executor.execute.assert_called_with(
             tool_name="acli_exec",
-            args={"command": "acli --formatter json task get -k '启动虚拟机' -s failed -l 5", "reason": "QKV前端变量抽取: task"},
+            args={
+                "command": "acli --formatter json task get -k '启动虚拟机' -s failed -l 5",
+                "reason": "QKV前端变量抽取: task",
+            },
             conversation_id="test",
             node_ip=None,
             risk_level=1,
             policy="auto",
-            exec_id=None
+            exec_id=None,
         )
 
 
@@ -269,9 +294,7 @@ def test_qkv_result_to_observation():
         query="alert",
         keyword="只读",
         command="acli alert get -k 只读",
-        values=[
-            {"alert_type": "read-only", "host": "node-1", "vm": "vm-123"}
-        ]
+        values=[{"alert_type": "read-only", "host": "node-1", "vm": "vm-123"}],
     )
     obs = res.to_observation()
     assert "QKV 查询状态: 成功查找到 1 条记录" in obs
