@@ -49,6 +49,7 @@ type InMessage struct {
 	ExecID     string `json:"exec_id"`   // 用于 ssh_exec_command 和 ssh_exec_process
 	NodeIP     string `json:"node_ip"`   // 目标节点 IP（多节点路由）
 	Container  string `json:"container"` // 目标容器名（空或"host"=物理机直连）
+	Timeout    int    `json:"timeout"`   // 命令最大执行秒数（1-300）
 	TraceID    string `json:"trace_id"`  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
 	Resume     bool   `json:"resume"`     // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
 }
@@ -347,7 +348,7 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 }
 
 // execCommandIsolated 独立建立 SSH Session 执行命令 (双通道 - 事务执行设计)
-func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID string) {
+func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID string, timeout time.Duration) {
 	startTime := time.Now()
 
 	// P0: 记录命令开始
@@ -451,11 +452,28 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 		}
 	}()
 
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- session.Wait()
+	}()
+
+	timedOut := false
+	var waitErr error
+	select {
+	case waitErr = <-waitDone:
+	case <-time.After(timeout):
+		timedOut = true
+		// 关闭独立 session 会同时停止远端命令和两个输出管道，避免超时后继续占用连接。
+		_ = session.Close()
+		waitErr = <-waitDone
+	}
 	wg.Wait()
 
 	exitCode := 0
-	if werr := session.Wait(); werr != nil {
-		if exitErr, ok := werr.(*ssh.ExitError); ok {
+	if timedOut {
+		exitCode = -1
+	} else if waitErr != nil {
+		if exitErr, ok := waitErr.(*ssh.ExitError); ok {
 			exitCode = exitErr.ExitStatus()
 		} else {
 			exitCode = -1
@@ -478,13 +496,24 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 		"duration_ms":    duration.Milliseconds(),
 		"stdout_len":     stdoutBuf.Len(),
 		"stderr_len":     stderrBuf.Len(),
+		"timeout":        timedOut,
 		"output_preview": outputPreview,
 	})
 
+	if timedOut {
+		stderrBuf.WriteString(fmt.Sprintf("execution timeout after %s", timeout))
+	}
 	sendMsg(ws, OutMessage{
 		Type: "exec_result", CaseID: s.caseID, ExecID: execID,
 		Stdout: stdoutBuf.String(), Stderr: stderrBuf.String(), ExitCode: exitCode,
 	})
+}
+
+func commandTimeout(seconds int) time.Duration {
+	if seconds < 1 || seconds > 300 {
+		seconds = 60
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func summarizeSSHDetail(output string) string {
@@ -1242,7 +1271,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
 			log.Printf("[Bridge] EXEC_CMD: %q", wrappedCmd)
 
-			resultChan := s.execCommand(wrappedCmd, msg.ExecID, 60*time.Second)
+			resultChan := s.execCommand(wrappedCmd, msg.ExecID, commandTimeout(msg.Timeout))
 			go func() {
 				result := <-resultChan
 				output := result.Output
@@ -1346,7 +1375,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 					"trace_id":  msg.TraceID,
 				})
 
-				go s.execCommandIsolated(ws, wrappedCmd, msg.ExecID)
+				go s.execCommandIsolated(ws, wrappedCmd, msg.ExecID, commandTimeout(msg.Timeout))
 		}
 	}
 }

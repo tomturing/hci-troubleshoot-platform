@@ -98,6 +98,7 @@ class AgentExecRequest(BaseModel):
     # 缺失时由会话关联解析（对齐 conversations.py 的 B1 修复），避免空串透传至 terminal_bridge 触发 exec.session_missing。
     case_id: str | None = Field(None, description="工单 ID（缺失时由会话关联解析，对齐 B1 修复）")
     trace_id: str | None = Field(None, description="端到端链路 ID（透传至 terminal_bridge）")
+    timeout: int = Field(30, ge=1, le=300, description="命令最大执行时间（秒）")
 
 
 class AgentExecResponse(BaseModel):
@@ -192,8 +193,8 @@ async def push_agent_exec_command(
         trace_id=trace_id,
     )
 
-    # 1. 写入 Redis pending 状态（120秒超时）
-    await _redis_manager.set(f"exec:{body.exec_id}", "pending", ex=120)
+    # 1. pending 生命周期必须覆盖实际命令超时及网络回传余量，不能固定 120 秒。
+    await _redis_manager.set(f"exec:{body.exec_id}", "pending", ex=body.timeout + 15)
 
     # 2. 推送 SSE 事件到前端
     # 通过 app.state 获取 SSE 推送服务
@@ -215,6 +216,7 @@ async def push_agent_exec_command(
         "caseId": effective_case_id,
         "conversationId": str(conversation_id),
         "traceId": body.trace_id,
+        "timeout": body.timeout,
     }
 
     if sse_pusher:

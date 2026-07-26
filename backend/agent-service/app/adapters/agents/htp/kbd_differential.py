@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import uuid
@@ -169,6 +170,8 @@ class KBDDiagnostic:
         self._result: KBDDiagResult | None = None
         # 会话级变量池（黑板）：阶段 A 生产者(QKV)写入，阶段 B 消费者(QFK)读取
         self._variable_pool: dict[str, Any] = {}
+        # 当前诊断会话内缓存 HCI 节点名称到 IP 的映射，避免每个 QKV 结果重复查询节点列表。
+        self._host_ip_cache: dict[str, str] = {}
 
     def get_result(self) -> KBDDiagResult | None:
         """获取最近一次 diagnose() 调用的结果（调用前返回 None）。"""
@@ -573,6 +576,9 @@ class KBDDiagnostic:
         if matcher is None:
             if _signal_category(signal) == "frontend":
                 return SignalOutcome.PASS if pre_matched is True else SignalOutcome.UNKNOWN
+            produces = (signal.get("orchestrate") or {}).get("produces") or []
+            if produces:
+                return SignalOutcome.PASS if pre_matched is True else SignalOutcome.FAIL
             return SignalOutcome.UNKNOWN
         if pre_matched is not None:
             return SignalOutcome.PASS if pre_matched else SignalOutcome.FAIL
@@ -701,7 +707,12 @@ class KBDDiagnostic:
                     exec_id=None,
                 )
                 if res.success:
-                    self._fill_pool_from_qkv(s, res)
+                    await self._fill_pool_from_qkv(
+                        s,
+                        res,
+                        node_ip=env_context.get("node_ip"),
+                        session_id=session_id,
+                    )
                 else:
                     logger.warning(
                         event="kbd_diag_producer_failed",
@@ -717,7 +728,150 @@ class KBDDiagnostic:
                     session_id=session_id,
                 )
 
-    def _fill_pool_from_qkv(self, signal: dict[str, Any], res: Any) -> None:
+    @staticmethod
+    def _is_ip_address(value: Any) -> bool:
+        """判断值是否已经是 IPv4/IPv6 地址。"""
+        if not isinstance(value, str) or not value.strip():
+            return False
+        try:
+            ipaddress.ip_address(value.strip())
+        except ValueError:
+            return False
+        return True
+
+    async def _resolve_host_ip(
+        self,
+        host: Any,
+        *,
+        node_ip: str | None,
+        session_id: str,
+    ) -> Any:
+        """将 QKV 返回的节点名称/ID解析为 HCI 节点 IP。
+
+        task/alert 接口的 ``host`` 字段是可读节点名称（如 ``SVR_aCloud_668``），
+        不能直接作为终端桥的路由地址。通过同一 HCI 会话执行只读的
+        ``acli --formatter json platform node list``，同时兼容按 name、hostname、id
+        匹配；解析失败时保留原值并记录告警，避免破坏已有事实数据。
+        """
+        if not isinstance(host, str):
+            return host
+        host = host.strip()
+        if not host or self._is_ip_address(host):
+            return host
+        if host in self._host_ip_cache:
+            return self._host_ip_cache[host]
+
+        from app.tools.acli.executor import _executor
+
+        if _executor is None:
+            logger.warning(
+                event="kbd_host_ip_resolve_skipped",
+                host=host,
+                reason="BridgeRelayExecutor 尚未初始化",
+                session_id=session_id,
+            )
+            return host
+
+        command = "acli --formatter json platform node list"
+        try:
+            result = await _executor.execute(
+                tool_name="acli_exec",
+                args={"command": command, "reason": "将 QKV 节点名称解析为节点 IP"},
+                conversation_id=self._conversation_id or session_id,
+                node_ip=node_ip,
+                case_id=self._case_id or "",
+                risk_level=1,
+                policy="auto",
+            )
+            if result.exit_code not in (0, None):
+                logger.warning(
+                    event="kbd_host_ip_resolve_failed",
+                    host=host,
+                    node_ip=node_ip,
+                    exit_code=result.exit_code,
+                    error=(result.stderr or result.stdout or "").strip()[:300],
+                    session_id=session_id,
+                )
+                return host
+            payload = json.loads(result.stdout or "")
+        except Exception as exc:
+            logger.warning(
+                event="kbd_host_ip_resolve_error",
+                host=host,
+                node_ip=node_ip,
+                error=str(exc),
+                session_id=session_id,
+            )
+            return host
+
+        rows = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            logger.warning(
+                event="kbd_host_ip_resolve_invalid_payload",
+                host=host,
+                session_id=session_id,
+                payload_type=type(payload).__name__,
+            )
+            return host
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            aliases = {
+                str(row.get(key) or "").strip()
+                for key in ("name", "hostname", "id")
+                if row.get(key)
+            }
+            address = str(row.get("ip") or "").strip()
+            if host in aliases and self._is_ip_address(address):
+                self._host_ip_cache[host] = address
+                logger.info(
+                    event="kbd_host_ip_resolved",
+                    host=host,
+                    ip=address,
+                    session_id=session_id,
+                )
+                return address
+
+        logger.warning(
+            event="kbd_host_ip_not_found",
+            host=host,
+            session_id=session_id,
+        )
+        return host
+
+    async def _normalize_qkv_values(
+        self,
+        values: list[dict[str, Any]],
+        *,
+        node_ip: str | None,
+        session_id: str,
+    ) -> list[dict[str, Any]]:
+        """归一化 QKV 结果中的 HOST，并返回用于变量池与报告的结果副本。"""
+        normalized: list[dict[str, Any]] = []
+        for item in values:
+            if not isinstance(item, dict):
+                normalized.append(item)
+                continue
+            current = dict(item)
+            for key, value in item.items():
+                if str(key).strip().lower() == "host":
+                    current[key] = await self._resolve_host_ip(
+                        value,
+                        node_ip=node_ip,
+                        session_id=session_id,
+                    )
+            normalized.append(current)
+        return normalized
+
+    async def _fill_pool_from_qkv(
+        self,
+        signal: dict[str, Any],
+        res: Any,
+        *,
+        node_ip: str | None = None,
+        session_id: str = "",
+    ) -> None:
         """将 QKV 产出(produces)写入变量池：produces=[{name, path}] -> pool[name]=value。
 
         注意：parse_frontend_value._extract_by_produces 返回的 dict key 是 name.lower()，
@@ -731,6 +885,11 @@ class KBDDiagnostic:
             produces = self._tool_def_default(_acquire_tool(signal), "produces") or []
         if not res.values:
             return
+        res.values = await self._normalize_qkv_values(
+            res.values,
+            node_ip=node_ip,
+            session_id=session_id or self._conversation_id or "",
+        )
         first = res.values[0]
         for spec in produces:
             name = spec.get("name") if isinstance(spec, dict) else None
@@ -775,6 +934,11 @@ class KBDDiagnostic:
                 context_values = self._qkv_values_from_context(signal, env_context) if signal else None
                 if context_values is not None:
                     values, source_key = context_values
+                    values = await self._normalize_qkv_values(
+                        values,
+                        node_ip=env_context.get("node_ip"),
+                        session_id=session_id,
+                    )
                     if values:
                         for name, value in values[0].items():
                             self._set_pool_var(name, value)
@@ -815,8 +979,18 @@ class KBDDiagnostic:
                     )
                     return None, res.error, None
                 if signal is not None:
-                    self._fill_pool_from_qkv(signal, res)
+                    await self._fill_pool_from_qkv(
+                        signal,
+                        res,
+                        node_ip=env_context.get("node_ip"),
+                        session_id=session_id,
+                    )
                 else:
+                    res.values = await self._normalize_qkv_values(
+                        res.values,
+                        node_ip=env_context.get("node_ip"),
+                        session_id=session_id,
+                    )
                     self._fill_pool_from_qkv_on_step(step, res)
 
                 # P2: 信号执行成功日志
@@ -847,12 +1021,25 @@ class KBDDiagnostic:
                 res = await qfk_exec(
                     signal=bsignal,
                     conversation_id=self._conversation_id or session_id,
-                    node_ip=env_context.get("node_ip"),
+                    # QKV 生产者的 HOST 已归一化为节点 IP 时，QFK 必须路由到该节点；
+                    # 非 IP（如 cluster 或解析失败的旧主机名）继续使用环境上下文地址。
+                    node_ip=(
+                        bsignal.host
+                        if self._is_ip_address(bsignal.host)
+                        else env_context.get("node_ip")
+                    ),
                     case_id=self._case_id,  # 透传工单 ID，确保 terminal_bridge 能路由到正确的 SSH 会话
                     exec_id=exec_id,
                 )
                 if res.error:
                     return res.raw_output or None, res.error, None
+                produces = ((signal or {}).get("orchestrate") or {}).get("produces") or []
+                if produces:
+                    ok, extract_error = self._fill_pool_from_qfk(produces, res.raw_output)
+                    if not ok:
+                        return res.raw_output, extract_error, None
+                    # 产出变量模式只关心命令是否成功且结果是否已写入变量池，不再进行 matcher 判定。
+                    return res.raw_output, None, True
                 matcher = step.matcher or {}
                 if matcher.get("type") == "keyword":
                     return res.raw_output, None, res.matched
@@ -867,6 +1054,55 @@ class KBDDiagnostic:
             return (str(result) if result is not None else "", None, None)
         except Exception as exc:
             return None, str(exc), None
+
+    def _fill_pool_from_qfk(self, produces: list[Any], raw_output: str) -> tuple[bool, str | None]:
+        """将 QFK 命令结果按产出变量约定写入变量池。
+
+        空 path、``stdout`` 与 ``output`` 代表完整命令输出；JSON 输出可使用点路径，
+        并支持 ``|`` 分隔的候选路径。QFK 的命令可能返回纯文本，因此 JSON 路径解析失败
+        必须显式返回错误，不能悄悄写入空值让下游信号在错误上下文中继续执行。
+        """
+        json_payload: Any | None = None
+        valid_specs = [item for item in produces if isinstance(item, dict) and str(item.get("name") or "").strip()]
+        if not valid_specs:
+            return False, "QFK 产出变量未配置有效 name"
+
+        for spec in valid_specs:
+            name = str(spec["name"]).strip()
+            path = str(spec.get("path") or "").strip()
+            if not path or path in {"stdout", "output"}:
+                self._set_pool_var(name, raw_output)
+                continue
+            if json_payload is None:
+                try:
+                    json_payload = json.loads(raw_output)
+                except json.JSONDecodeError:
+                    return False, f"QFK 产出变量 {name} 配置了 JSON 路径 {path}，但命令输出不是合法 JSON"
+            value = self._extract_qfk_json_path(json_payload, path)
+            if value is None:
+                return False, f"QFK 产出变量 {name} 未能从命令输出路径 {path} 取值"
+            self._set_pool_var(name, value)
+        return True, None
+
+    @staticmethod
+    def _extract_qfk_json_path(payload: Any, path_spec: str) -> Any | None:
+        """从 QFK JSON 输出读取点路径，``|`` 表示按顺序回退。"""
+        for candidate in (part.strip() for part in path_spec.split("|")):
+            if not candidate:
+                continue
+            value: Any = payload
+            found = True
+            for part in candidate.split("."):
+                if isinstance(value, dict) and part in value:
+                    value = value[part]
+                elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+                    value = value[int(part)]
+                else:
+                    found = False
+                    break
+            if found and value is not None:
+                return value
+        return None
 
     @staticmethod
     def _qkv_values_from_context(

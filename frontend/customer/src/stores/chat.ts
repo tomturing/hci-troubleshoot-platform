@@ -930,6 +930,7 @@ export const useChatStore = defineStore('chat', () => {
               try {
                 const event = JSON.parse(data)
                 const { execId, command, reason, riskLevel, nodeIp, container, caseId, conversationId: convId, traceId } = event
+                const timeoutSeconds = Math.min(300, Math.max(1, Number(event.timeout) || 30))
 
                 devLog('agent_exec_command', '收到执行请求', { execId, riskLevel, commandPreview: command.substring(0, 50) })
 
@@ -962,11 +963,14 @@ export const useChatStore = defineStore('chat', () => {
                     continue
                   }
                   // 通过 terminal_bridge WebSocket 发送命令 (双通道：隔离执行)
-                  const wsMsg = buildAgentExecProcessMessage(caseId, execId, command, nodeIp, container, traceId)
+                  const waitResult = waitForExecResult(execId, (timeoutSeconds + 5) * 1000)
+                  const wsMsg = buildAgentExecProcessMessage(
+                    caseId, execId, command, nodeIp, container, timeoutSeconds, traceId,
+                  )
                   sshWebSocket.value.send(wsMsg)
                   devLog('agent_exec_command', '命令已发送到 Bridge', { execId, nodeIp, container })
-                  // 监听 exec_result（带超时 30s）
-                  waitForExecResult(execId, 30_000)
+                  // 监听 exec_result：等待时间与服务端/terminal_bridge 使用同一 timeout。
+                  waitResult
                     .then((result) => {
                       devLog('agent_exec_command', '执行完成', { execId, exitCode: result.exitCode })
                       return postExecResult(convId, execId, result.output, result.exitCode, undefined, result.stdout, result.stderr)

@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft7Validator
+from jsonschema import Draft7Validator, ValidationError
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT7
 
@@ -43,3 +43,27 @@ def validate_signals_json(raw: Any) -> None:
     失败时抛 `jsonschema.ValidationError`（调用方应转为 422）。
     """
     Draft7Validator(_SIGNAL_V2_SCHEMA, registry=_REGISTRY).validate(raw)
+    _validate_qfk_match_or_produces(raw)
+
+
+def _validate_qfk_match_or_produces(raw: Any) -> None:
+    """校验 QFK 的“关键字判定 / 产出变量”二选一运行契约。"""
+    if not isinstance(raw, dict):
+        return
+    for index, signal in enumerate(raw.get("signals") or []):
+        if not isinstance(signal, dict):
+            continue
+        tool = ((signal.get("acquire") or {}).get("tool") or "")
+        if not isinstance(tool, str) or not tool.startswith("qfk_"):
+            continue
+        matcher = signal.get("match")
+        produces = ((signal.get("orchestrate") or {}).get("produces") or [])
+        has_match = isinstance(matcher, dict)
+        has_produces = any(
+            isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip()
+            for item in produces
+        )
+        if has_match == has_produces:
+            raise ValidationError(
+                f"signals[{index}] 的 {tool} 必须且只能配置“关键字判定(match)”或“产出变量(orchestrate.produces)”之一"
+            )

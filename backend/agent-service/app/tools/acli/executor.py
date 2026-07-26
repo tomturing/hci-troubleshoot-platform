@@ -286,8 +286,9 @@ class BridgeRelayExecutor:
     STDOUT_MAX_CHARS = 4000
     STDERR_MAX_CHARS = 1000
 
-    # Redis blpop 超时（秒）
+    # 默认 Redis 等待超时（秒）；实际命令可通过 execute(timeout=...) 覆盖。
     BLPOP_TIMEOUT = 30
+    MAX_EXECUTION_TIMEOUT = 300
 
     def __init__(
         self,
@@ -328,6 +329,7 @@ class BridgeRelayExecutor:
         exec_id: str | None = None,
         case_id: str = "",
         tool_def: Any | None = None,
+        timeout: int | None = None,
         **kwargs,
     ) -> ExecResult:
         """
@@ -343,6 +345,7 @@ class BridgeRelayExecutor:
             usage_template: 插件工具的命令模板（可选）
             exec_id: 统一的工具执行流水号（可选）
             case_id: 工单 ID（可选）
+            timeout: 命令最大执行时间（秒，1-300）；会透传至 terminal_bridge
 
         Returns:
             ExecResult: 执行结果
@@ -357,6 +360,15 @@ class BridgeRelayExecutor:
         # 一路透传到 conversation-service(SSE)→前端→terminal_bridge，统一分析。
         if trace_id == "unknown":
             trace_id = exec_id
+
+        # 超时由 QFK acquire.args 驱动。这里同时是通用工具的纵深防御边界，避免
+        # 非法值让 Redis 等待与终端桥执行时间失去一致性。
+        requested_timeout = timeout if timeout is not None else args.get("timeout", self.BLPOP_TIMEOUT)
+        try:
+            execution_timeout = int(requested_timeout)
+        except (TypeError, ValueError):
+            execution_timeout = self.BLPOP_TIMEOUT
+        execution_timeout = max(1, min(execution_timeout, self.MAX_EXECUTION_TIMEOUT))
 
         # 1. 提取命令和原因。具体工具命令必须来自 usage_template 或通用 command 参数。
         if usage_template:
@@ -466,6 +478,10 @@ class BridgeRelayExecutor:
                     original_command=original_command,
                 )
 
+        # acli_exec 通常不带容器；qfk_system 是例外，它把 container 原样传给
+        # terminal_bridge。container="host" 在桥端明确表示不包装、直接在宿主机执行。
+        relay_container = built.container if built else (str(args.get("container") or "") or None)
+
         # 3. 风险分类（动态工具）
         if tool_name in ("acli_exec", "bash_exec"):
             if tool_name == "acli_exec":
@@ -496,7 +512,7 @@ class BridgeRelayExecutor:
                 duration_ms=0,
                 truncated=False,
                 risk_level=runtime_risk,
-                container=built.container if built else None,
+                container=relay_container,
                 original_command=built.original_command if built else original_command,
                 built_command=built.built_command if built else cleaned_command,
             )
@@ -521,7 +537,7 @@ class BridgeRelayExecutor:
                     "exec_id": exec_id,
                     "tool_name": tool_name,
                     "command": cleaned_command,
-                    "container": built.container if built else None,
+                    "container": relay_container,
                     "original_command": built.original_command if built else original_command,
                     "built_command": built.built_command if built else cleaned_command,
                     "reason": reason,
@@ -529,6 +545,7 @@ class BridgeRelayExecutor:
                     "node_ip": node_ip,
                     "case_id": case_id,  # 以 Agent 运行上下文的工单 ID 为准（不再回退 LLM 参数，避免空串透传）
                     "trace_id": trace_id,  # 端到端链路透传
+                    "timeout": execution_timeout,
                 },
             )
             resp.raise_for_status()
@@ -551,7 +568,7 @@ class BridgeRelayExecutor:
                     duration_ms=int((time.time() - start_time) * 1000),
                     truncated=False,
                     risk_level=runtime_risk,
-                    container=built.container if built else None,
+                    container=relay_container,
                     original_command=built.original_command if built else original_command,
                     built_command=built.built_command if built else cleaned_command,
                 )
@@ -573,7 +590,7 @@ class BridgeRelayExecutor:
                 duration_ms=int((time.time() - start_time) * 1000),
                 truncated=False,
                 risk_level=runtime_risk,
-                container=built.container if built else None,
+                container=relay_container,
                 original_command=built.original_command if built else original_command,
                 built_command=built.built_command if built else cleaned_command,
             )
@@ -583,7 +600,7 @@ class BridgeRelayExecutor:
             exec_id=exec_id,
             conversation_id=conversation_id,
             command_preview=cleaned_command[:50],
-            container=built.container if built else None,
+            container=relay_container,
             original_command_preview=(built.original_command if built else original_command)[:80],
             risk_level=runtime_risk,
             policy=runtime_policy,
@@ -594,7 +611,10 @@ class BridgeRelayExecutor:
         result_key = f"exec_result:{exec_id}"
         try:
             # blpop 返回 (key, value) 元组，超时返回 None
-            raw_result = await self._redis.client.blpop(result_key, timeout=self.BLPOP_TIMEOUT)
+            # 给前端/网络回传保留 5 秒余量；真正的命令时间由 terminal_bridge 的
+            # timeout 强制控制，不能再被此前固定的 30 秒 Redis 等待提前截断。
+            result_wait_timeout = execution_timeout + 5
+            raw_result = await self._redis.client.blpop(result_key, timeout=result_wait_timeout)
 
             if raw_result is None:
                 # 超时
@@ -602,12 +622,12 @@ class BridgeRelayExecutor:
                     event="exec_result_timeout",
                     exec_id=exec_id,
                     conversation_id=conversation_id,
-                    timeout_sec=self.BLPOP_TIMEOUT,
+                    timeout_sec=result_wait_timeout,
                     trace_id=trace_id,
                 )
                 return ExecResult(
                     stdout="",
-                    stderr=f"执行超时（{self.BLPOP_TIMEOUT}秒），可能前端未响应或 terminal_bridge 未运行",
+                    stderr=f"执行超时（{execution_timeout}秒），可能前端未响应或 terminal_bridge 未运行",
                     exit_code=-1,
                     command=cleaned_command,
                     node=node_ip or "unknown",
@@ -615,7 +635,7 @@ class BridgeRelayExecutor:
                     truncated=False,
                     risk_level=runtime_risk,
                     exit_code_meaning=ExitCodeMeaning.TIMEOUT,
-                    container=built.container if built else None,
+                    container=relay_container,
                     original_command=built.original_command if built else original_command,
                     built_command=built.built_command if built else cleaned_command,
                 )
@@ -718,7 +738,7 @@ class BridgeRelayExecutor:
                 truncated=truncated,
                 risk_level=runtime_risk,
                 exit_code_meaning=meaning,
-                container=built.container if built else None,
+                container=relay_container,
                 original_command=built.original_command if built else original_command,
                 built_command=built.built_command if built else cleaned_command,
                 exec_id=exec_id,
@@ -742,7 +762,7 @@ class BridgeRelayExecutor:
                 truncated=False,
                 risk_level=runtime_risk,
                 exit_code_meaning=ExitCodeMeaning.UNKNOWN_ERROR,
-                container=built.container if built else None,
+                container=relay_container,
                 original_command=built.original_command if built else original_command,
                 built_command=built.built_command if built else cleaned_command,
                 exec_id=exec_id,

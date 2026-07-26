@@ -17,9 +17,11 @@ def test_agent_exec_request_accepts_container_audit_fields():
         risk_level=1,
         node_ip="192.168.1.10",
         case_id="Q2026061114729",
+        timeout=90,
     )
 
     assert request.tool_name == "bash_exec"
     assert request.container == "asv-con"
     assert request.original_command == "df -h"
     assert request.built_command == request.command
+    assert request.timeout == 90

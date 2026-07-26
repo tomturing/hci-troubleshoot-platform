@@ -8,7 +8,7 @@ BackendSignal — QFK 后端排查信号（v2 扁平运行时模型）
 - file/path    qfk_log 的 -f / -p
 - time_window  qfk_log 的 -t
 - service/action qfk_service 的 <container> <name> <action>
-- container    qfk_system 的 --container
+- container    qfk_system 的 terminal_bridge 执行位置（host=宿主机）
 - keyword      匹配关键字（list[str]）
 - instruction  匹配说明
 - match_mode   or/and/not
@@ -41,6 +41,8 @@ VALID_CONTAINERS = (
     "gpuv",
 )
 VALID_SERVICE_CONTAINERS = VALID_CONTAINERS
+# qfk_system 使用 terminal_bridge 的 container_exec；host 是明确的“不进入容器”语义。
+VALID_SYSTEM_CONTAINERS = ("host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager")
 
 
 class BackendSignal(BaseModel):
@@ -56,8 +58,8 @@ class BackendSignal(BaseModel):
     # ─── 主机作用域 ───────────────────────────────────────────────────────────
     host: str | None = Field(default=None, description="主机名；'cluster' 表示集群模式")
     vm: str | None = Field(default=None, description="虚拟机标识")
-    timeout: int = Field(default=30, description="执行超时（秒）")
-    container: str | None = Field(default=None, description="容器名（qfk_service/qfk_system 用）")
+    timeout: int = Field(default=30, ge=1, le=300, description="执行超时（秒，1-300）")
+    container: str | None = Field(default=None, description="容器/执行位置（qfk_service/qfk_system 用；host=宿主机）")
     cluster: bool = Field(default=False, description="是否集群模式")
 
     # ─── 特有字段 ─────────────────────────────────────────────────────────────
@@ -80,6 +82,8 @@ class BackendSignal(BaseModel):
     def _validate(self) -> BackendSignal:
         if self.match_mode not in VALID_MATCH_MODES:
             raise ValueError(f"match_mode 必须是 {VALID_MATCH_MODES} 之一，收到: {self.match_mode}")
+        if self.namespace == "system" and self.container and self.container not in VALID_SYSTEM_CONTAINERS:
+            raise ValueError(f"qfk_system 容器必须是 {VALID_SYSTEM_CONTAINERS} 之一，收到: {self.container}")
         return self
 
     # ─── 工具方法 ─────────────────────────────────────────────────────────────

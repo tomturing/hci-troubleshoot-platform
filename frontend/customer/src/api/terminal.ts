@@ -268,6 +268,7 @@ export function buildAgentExecProcessMessage(
   rawCommand: string,
   nodeIp?: string | null,
   container?: string | null,
+  timeout?: number | null,
   traceId?: string | null,
 ): string {
   return JSON.stringify({
@@ -277,6 +278,7 @@ export function buildAgentExecProcessMessage(
     command: rawCommand,
     node_ip: nodeIp || undefined,
     container: container || undefined,
+    timeout: timeout || undefined,
     trace_id: traceId || undefined,
   })
 }

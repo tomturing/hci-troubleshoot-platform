@@ -47,7 +47,7 @@ interface KbdEntry {
 interface SignalV2 {
   id?: number | string
   acquire: { tool: string; args: Record<string, any> }
-  match: { type?: string; pattern?: string; mode?: string; expected?: boolean }
+  match: { type?: string; pattern?: string; mode?: string; expected?: boolean } | null
   orchestrate: Record<string, any>
   provenance?: Record<string, any>
   review?: { require_human_confirm?: boolean }
@@ -680,10 +680,33 @@ function startEditSignal(origIdx: number) {
   // 确保嵌套对象存在，便于 v-model 直接绑定 v2 字段路径
   draft.acquire = draft.acquire || { tool: '', args: {} }
   draft.acquire.args = draft.acquire.args || {}
-  draft.acquire.args.host = draft.acquire.args.host || ''
-  draft.match = draft.match || { type: 'keyword', pattern: '', mode: 'or', expected: true }
+  // QFK 的“产出变量”模式必须保留 match=null，不能在进入编辑态时无条件补成关键字 matcher。
+  if (!isBackendSig(draft) && !draft.match) {
+    draft.match = { type: 'keyword', pattern: '', mode: 'or', expected: true }
+  }
   draft.orchestrate = draft.orchestrate || {}
   signalEditDraft.value = draft
+}
+
+function qfkOutputMode(sig: SignalV2): 'keyword' | 'produces' {
+  const produces = sigOrch(sig).produces || []
+  return produces.some((item: any) => String(item?.name || '').trim()) ? 'produces' : 'keyword'
+}
+
+function setQfkOutputMode(mode: 'keyword' | 'produces') {
+  const draft = signalEditDraft.value
+  draft.orchestrate = draft.orchestrate || {}
+  if (mode === 'produces') {
+    // 输出采集不做关键字判定，命令成功后把 stdout/JSON 路径结果写入变量池。
+    draft.match = null
+    if (!Array.isArray(draft.orchestrate.produces) || draft.orchestrate.produces.length === 0) {
+      draft.orchestrate.produces = [{ name: '', path: '' }]
+    }
+    return
+  }
+  // 关键字判定不应残留输出变量，否则服务端会拒绝二义信号。
+  draft.orchestrate.produces = []
+  draft.match = { type: 'keyword', pattern: '', mode: 'or', expected: true }
 }
 
 function cancelEditSignal() {
@@ -697,6 +720,19 @@ function cancelEditSignal() {
 
 async function saveSignalEdit() {
   if (editingSignalIndex.value === null || !detailEntry.value) return
+  if (isBackendSig(signalEditDraft.value)) {
+    const produces = signalEditDraft.value.orchestrate?.produces || []
+    const hasProduces = produces.some((item: any) => String(item?.name || '').trim())
+    const hasMatch = Boolean(signalEditDraft.value.match)
+    if (hasProduces === hasMatch) {
+      ElMessage.error('后端信号必须且只能选择“关键字判定”或“产出变量”之一')
+      return
+    }
+    if (hasMatch && !String(signalEditDraft.value.match?.pattern || '').trim()) {
+      ElMessage.error('请填写用于判定命令结果的关键字')
+      return
+    }
+  }
   signalSaveLoading.value = true
   try {
     const list: SignalV2[] = JSON.parse(JSON.stringify(signalList.value))
@@ -708,7 +744,18 @@ async function saveSignalEdit() {
       headers: { 'Content-Type': 'application/json', ...authHeader },
       body: JSON.stringify({ signals_json: payload }),
     })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`
+      try {
+        const errorBody = await resp.json()
+        if (typeof errorBody?.detail === 'string' && errorBody.detail.trim()) {
+          detail = errorBody.detail
+        }
+      } catch {
+        // 非 JSON 错误响应继续使用 HTTP 状态码提示
+      }
+      throw new Error(detail)
+    }
     const updated = (await resp.json()) as any
     const newDoc: SignalsDoc = updated?.signals_json || payload
     detailEntry.value.signals_json = newDoc
@@ -716,8 +763,9 @@ async function saveSignalEdit() {
     if (idx !== -1) entries.value[idx].signals_json = newDoc
     ElMessage.success('关键信号已保存')
     cancelEditSignal()
-  } catch {
-    ElMessage.error('保存失败，请重试')
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : ''
+    ElMessage.error(detail ? `保存失败：${detail}` : '保存失败，请重试')
   } finally {
     signalSaveLoading.value = false
   }
@@ -1711,10 +1759,17 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).instruction || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">主机</span><span class="signal-v code">{{ sigArgs(item.sig).host || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">需求变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigArgs(item.sig).resource_keyword || sigArgs(item.sig).keyword || '—' }}</span></div>
+                  <div class="signal-row"><span class="signal-k">执行模式</span><span class="signal-v">{{ qfkOutputMode(item.sig) === 'produces' ? '产出变量（采集命令结果）' : '关键字判定' }}</span></div>
+                  <template v-if="qfkOutputMode(item.sig) === 'produces'">
+                    <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v code">{{ (sigOrch(item.sig).produces || []).map((p: any) => p.name).filter(Boolean).join('、') || '—' }}</span></div>
+                  </template>
+                  <template v-else>
+                    <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigMatch(item.sig).pattern || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">期望</span><span class="signal-v">{{ sigMatch(item.sig).expected === true ? '存在' : sigMatch(item.sig).expected === false ? '不存在' : '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">匹配模式</span><span class="signal-v">{{ sigMatch(item.sig).mode || 'or' }}</span></div>
+                  </template>
+                  <div v-if="sigArgs(item.sig).resource_keyword" class="signal-row"><span class="signal-k">资源参数</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword }}</span></div>
                   <div class="signal-row"><span class="signal-k">超时</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 10 }}s</span></div>
-                  <div class="signal-row"><span class="signal-k">期望</span><span class="signal-v">{{ sigMatch(item.sig).expected === true ? '存在' : sigMatch(item.sig).expected === false ? '不存在' : '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">匹配模式</span><span class="signal-v">{{ sigMatch(item.sig).mode || 'or' }}</span></div>
 
                   <!-- 特有字段：qfk_log -->
                   <template v-if="sigTool(item.sig) === 'qfk_log'">
@@ -1759,21 +1814,46 @@ onMounted(() => {
                     </div>
                   </div>
                   <div class="field-hint" v-pre>本信号执行所依赖的变量（由上游生产者信号产出），变量名须与「产出变量」的 name 对应，采集/匹配中用 {{变量名}} 引用</div>
-                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="资源关键字，如 vgpu、asv-001" /></div>
-                  <div class="field-hint">资源/主题选择器：填精确的【资源名/标识符】（如 vgpu、asv-001），不是自然语言说明。信号说明请填到上方「说明」，勿填此处</div>
+                  <div class="signal-row">
+                    <span class="signal-k">执行模式</span>
+                    <el-radio-group :model-value="qfkOutputMode(signalEditDraft)" size="small" @change="setQfkOutputMode">
+                      <el-radio-button label="keyword">关键字判定</el-radio-button>
+                      <el-radio-button label="produces">产出变量</el-radio-button>
+                    </el-radio-group>
+                  </div>
+                  <div class="field-hint">二选一：关键字用于检查命令结果；产出变量用于把命令结果写入变量池，供后续信号用 <span v-pre>{{变量名}}</span> 引用。</div>
+                  <template v-if="qfkOutputMode(signalEditDraft) === 'keyword'">
+                    <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.match!.pattern" size="small" placeholder="检查命令结果是否包含的关键字" /></div>
+                    <div class="signal-row"><span class="signal-k">期望</span>
+                      <el-switch v-model="signalEditDraft.match!.expected" :active-value="true" :inactive-value="false" active-text="存在" inactive-text="不存在" />
+                    </div>
+                    <div class="signal-row"><span class="signal-k">匹配模式</span>
+                      <el-select v-model="signalEditDraft.match!.mode" size="small">
+                        <el-option label="or（任一匹配）" value="or" />
+                        <el-option label="and（全部匹配）" value="and" />
+                        <el-option label="not（均不出现）" value="not" />
+                      </el-select>
+                    </div>
+                    <div class="field-hint">多关键字/多模式组合逻辑：or 任一出现即命中，and 全部出现才命中，not 均不出现才命中</div>
+                  </template>
+                  <template v-else>
+                    <div class="signal-row">
+                      <span class="signal-k">产出变量</span>
+                      <div class="produces-editor-mini">
+                        <div v-for="(p, idx) in (signalEditDraft.orchestrate.produces || [])" :key="idx" class="produce-item-mini">
+                          <el-input v-model="p.name" size="small" placeholder="变量名，如 PID" style="width: 120px" />
+                          <el-input v-model="p.path" size="small" placeholder="空=完整输出；JSON路径如 data.0.pid" style="flex: 1" />
+                          <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除</el-button>
+                        </div>
+                        <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', path: '' }]">+ 添加变量</el-button>
+                      </div>
+                    </div>
+                    <div class="field-hint">空 path 将完整命令输出赋给变量；命令输出为 JSON 时，可用 <code>data.0.pid</code> 读取字段（<code>|</code> 可声明回退路径）。</div>
+                  </template>
+                  <div class="signal-row"><span class="signal-k">资源参数</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="可选资源标识，如 vgpu、asv-001" /></div>
+                  <div class="field-hint">资源/主题选择器会附加到命令；它不是关键字判定条件。</div>
                   <div class="signal-row"><span class="signal-k">超时</span><el-input-number v-model="signalEditDraft.acquire.args.timeout" :min="1" :max="300" size="small" /> 秒</div>
-                  <div class="field-hint">命令/采集最大等待秒数，默认 10s</div>
-                  <div class="signal-row"><span class="signal-k">期望</span>
-                    <el-switch v-model="signalEditDraft.match.expected" :active-value="true" :inactive-value="false" active-text="存在" inactive-text="不存在" />
-                  </div>
-                  <div class="signal-row"><span class="signal-k">匹配模式</span>
-                    <el-select v-model="signalEditDraft.match.mode" size="small">
-                      <el-option label="or（任一匹配）" value="or" />
-                      <el-option label="and（全部匹配）" value="and" />
-                      <el-option label="not（均不出现）" value="not" />
-                    </el-select>
-                  </div>
-                  <div class="field-hint">多关键字/多模式组合逻辑：or 任一出现即命中，and 全部出现才命中，not 均不出现才命中</div>
+                  <div class="field-hint">命令在 terminal bridge 上的最大实际执行时间，范围 1–300 秒；超时后桥会停止命令并返回 timeout。</div>
 
                   <!-- 特有字段：qfk_log -->
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
@@ -1788,6 +1868,7 @@ onMounted(() => {
                     <div class="signal-row"><span class="signal-k">命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="执行命令（必填）" /></div>
                     <div class="signal-row"><span class="signal-k">容器</span>
                       <el-select v-model="signalEditDraft.acquire.args.container" size="small">
+                        <el-option label="host（宿主机，不进入容器）" value="host" />
                         <el-option label="asv-con" value="asv-con" />
                         <el-option label="vn-con" value="vn-con" />
                         <el-option label="vn-agent" value="vn-agent" />

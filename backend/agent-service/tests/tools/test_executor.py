@@ -229,6 +229,33 @@ class TestBridgeRelayExecutor:
             assert payload["command"].startswith("HCI_CONTAINER=asv-con;")
 
     @pytest.mark.asyncio
+    async def test_acli_exec_forwards_host_container_and_requested_timeout(self, executor, mock_redis):
+        """QFK 的 host 执行位置与超时必须进入 SSE/terminal bridge 事件。"""
+        with patch.object(executor._http_client, "post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"ok": True, "exec_id": "test-exec-id"}
+            mock_response.raise_for_status = MagicMock()
+            mock_post.return_value = mock_response
+            mock_redis.client.blpop.return_value = (
+                "exec_result:test-exec-id",
+                json.dumps({"stdout": "ok", "stderr": "", "exit_code": 0}),
+            )
+
+            result = await executor.execute(
+                tool_name="acli_exec",
+                args={"command": "acli system ps", "container": "host", "reason": "QFK 主机检查"},
+                conversation_id="conv-123",
+                timeout=12,
+            )
+
+        assert result.exit_code == 0
+        assert result.container == "host"
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["container"] == "host"
+        assert payload["timeout"] == 12
+        assert mock_redis.client.blpop.await_args.kwargs["timeout"] == 17
+
+    @pytest.mark.asyncio
     async def test_bash_exec_uses_tool_schema_container_enum(self, executor, mock_redis):
         """bash_exec 允许容器来自工具定义 schema，不再写死在执行器里。"""
         with patch.object(executor._http_client, "post") as mock_post:

@@ -14,7 +14,7 @@ QFK 信号处理器
 - file/path    → qfk_log 的 -f / -p
 - time_window  → qfk_log 的 -t
 - service/action → qfk_service 的 <container> <name> <action>
-- container    → qfk_system 的 --container
+- container    → qfk_system 的 terminal_bridge 执行位置（host 表示宿主机）
 注：host 不参与命令行构建--目标主机路由在传输层（engine.py 经 node_ip/case_id 由 terminal_bridge 选择 SSH 会话），BackendSignal.host 仅作运行时记录。
 """
 

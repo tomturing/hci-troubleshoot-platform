@@ -157,13 +157,19 @@ async def qfk_exec(
         try:
             exec_res = await _executor.execute(
                 tool_name="acli_exec",
-                args={"command": cmd, "reason": f"QFK诊断信号提取执行: {signal.instruction or ''}"},
+                args={
+                    "command": cmd,
+                    "reason": f"QFK诊断信号提取执行: {signal.instruction or ''}",
+                    # qfk_system 的 container 由 terminal_bridge 包装；host 会原样在宿主机执行。
+                    "container": signal.container if signal.namespace == "system" else None,
+                },
                 conversation_id=conversation_id,
                 node_ip=node_ip,
                 case_id=case_id,
                 risk_level=1,  # QFK 判定均属只读行为，风险为 1
                 policy="auto", # 无需前端弹窗，静默自动跑
                 exec_id=exec_id,
+                timeout=signal.timeout,
             )
             # 让命令"在桥上跑过但未真正落到主机"的失败显式化：不进入 evaluate，直接判失败。
             combined = f"{exec_res.stdout or ''}\n{exec_res.stderr or ''}"

@@ -8,11 +8,13 @@ KBDDiagnostic 单元测试
   4. 27123 golden case：QKV + 两个独立 QFK 信号
 """
 
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
-from app.adapters.agents.htp.kbd_model import KBD
+from app.adapters.agents.htp.kbd_model import KBD, KBDStep
 
 # ─── 测试数据工厂 ─────────────────────────────────────────────────────────────
 
@@ -163,6 +165,194 @@ class TestVariablePoolCaseNormalization:
         # 即便模板误用小写 {{host}}，同样命中（纵深防御）
         result2 = KBDDiagnostic._resolve_args({"scope": "{{host}}"}, {}, diag._variable_pool)
         assert result2 == {"scope": "node-001"}
+
+
+class TestHostIPResolution:
+    """QKV 产出主机名后，按 HCI 节点列表归一化为节点 IP。"""
+
+    @pytest.mark.asyncio
+    async def test_resolves_host_name_from_platform_node_list(self, monkeypatch):
+        import app.tools.acli.executor as executor_module
+
+        bridge_executor = MagicMock()
+        bridge_executor.execute = AsyncMock(
+            return_value=SimpleNamespace(
+                exit_code=0,
+                stdout=json.dumps(
+                    {
+                        "data": [
+                            {
+                                "id": "host-047bcb4bc820",
+                                "name": "SVR_aCloud_668",
+                                "ip": "172.28.24.2",
+                            }
+                        ]
+                    }
+                ),
+                stderr="",
+            )
+        )
+        monkeypatch.setattr(executor_module, "_executor", bridge_executor)
+
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        result = await diag._resolve_host_ip(
+            "SVR_aCloud_668",
+            node_ip="172.28.24.1",
+            session_id="case-1",
+        )
+
+        assert result == "172.28.24.2"
+        # 同一诊断会话复用缓存，不重复执行 platform node list。
+        assert (
+            await diag._resolve_host_ip("SVR_aCloud_668", node_ip="172.28.24.1", session_id="case-1")
+            == "172.28.24.2"
+        )
+        bridge_executor.execute.assert_awaited_once()
+        assert bridge_executor.execute.await_args.kwargs["node_ip"] == "172.28.24.1"
+
+    @pytest.mark.asyncio
+    async def test_qkv_host_is_normalized_before_variable_pool_write(self, monkeypatch):
+        import app.tools.acli.executor as executor_module
+
+        bridge_executor = MagicMock()
+        bridge_executor.execute = AsyncMock(
+            return_value=SimpleNamespace(
+                exit_code=0,
+                stdout=json.dumps({"data": [{"id": "host-1", "name": "node-a", "ip": "10.0.0.2"}]}),
+                stderr="",
+            )
+        )
+        monkeypatch.setattr(executor_module, "_executor", bridge_executor)
+
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        await diag._fill_pool_from_qkv(
+            {
+                "acquire": {"tool": "qkv_task", "args": {}},
+                "orchestrate": {"produces": [{"name": "HOST", "path": "host"}]},
+            },
+            SimpleNamespace(values=[{"host": "node-a"}]),
+            node_ip="10.0.0.1",
+            session_id="case-1",
+        )
+
+        assert diag._variable_pool["host"] == "10.0.0.2"
+
+    @pytest.mark.asyncio
+    async def test_qfk_routes_to_resolved_host_ip(self, monkeypatch):
+        import app.tools.qfk.engine as qfk_engine
+
+        qfk_result = SimpleNamespace(error=None, raw_output="node output", matched=True)
+        qfk_exec = AsyncMock(return_value=qfk_result)
+        monkeypatch.setattr(qfk_engine, "qfk_exec", qfk_exec)
+
+        diag = KBDDiagnostic(
+            ai_registry=MagicMock(),
+            tool_executor=MagicMock(),
+            conversation_id="conversation-1",
+            case_id="case-1",
+        )
+        await diag._execute_acquirer(
+            KBDStep(
+                tool_name="qfk_system",
+                tool_args_template={
+                    "host": "172.28.24.2",
+                    "command": "lsof",
+                    "resource_keyword": "4359974862144",
+                },
+                matcher={"type": "keyword", "pattern": "node output", "mode": "or", "expected": True},
+            ),
+            {"node_ip": "172.28.24.1"},
+            "case-1",
+            "",
+        )
+
+        assert qfk_exec.await_args.kwargs["node_ip"] == "172.28.24.2"
+
+    @pytest.mark.asyncio
+    async def test_prefetched_qkv_observation_uses_resolved_host_ip(self):
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        diag._resolve_host_ip = AsyncMock(return_value="172.28.24.2")
+        signal = {
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机失败", "is_failed": True}},
+            "orchestrate": {
+                "produces": [
+                    {"name": "VM", "path": "vm"},
+                    {"name": "HOST", "path": "host"},
+                ]
+            },
+        }
+        step = KBDStep(tool_name="qkv_task", tool_args_template=signal["acquire"]["args"])
+
+        observation, error, matched = await diag._execute_acquirer(
+            step,
+            {
+                "node_ip": "172.28.24.1",
+                "task_logs": [
+                    {
+                        "vm": "4359974862144",
+                        "host": "SVR_aCloud_668",
+                        "status": 3,
+                        "description": "启动虚拟机失败",
+                    }
+                ],
+            },
+            "case-1",
+            "",
+            signal=signal,
+        )
+
+        assert error is None
+        assert matched is True
+        assert '"host": "172.28.24.2"' in observation
+        assert diag._variable_pool["host"] == "172.28.24.2"
+
+
+class TestQFKProduces:
+    """QFK 命令输出写入变量池，并作为无 matcher 信号的通过依据。"""
+
+    def test_extracts_full_output_and_json_paths(self):
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        ok, error = diag._fill_pool_from_qfk(
+            [
+                {"name": "RAW", "path": ""},
+                {"name": "PID", "path": "data.0.pid|pid"},
+            ],
+            '{"data": [{"pid": 27123}]}',
+        )
+
+        assert ok is True
+        assert error is None
+        assert diag._variable_pool["raw"] == '{"data": [{"pid": 27123}]}'
+        assert diag._variable_pool["pid"] == 27123
+
+    def test_rejects_json_path_for_non_json_output(self):
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        ok, error = diag._fill_pool_from_qfk([{"name": "PID", "path": "data.0.pid"}], "pid=27123")
+
+        assert ok is False
+        assert "不是合法 JSON" in str(error)
+
+    @pytest.mark.asyncio
+    async def test_output_signal_passes_and_populates_pool(self, monkeypatch):
+        import app.tools.qfk.engine as qfk_engine
+
+        qfk_exec = AsyncMock(return_value=SimpleNamespace(error=None, raw_output="27123", matched=False))
+        monkeypatch.setattr(qfk_engine, "qfk_exec", qfk_exec)
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock(), conversation_id="conv-1", case_id="case-1")
+        signal = {
+            "acquire": {"tool": "qfk_system", "args": {"command": "pidof test", "container": "host"}},
+            "match": None,
+            "orchestrate": {"produces": [{"name": "PID", "path": ""}]},
+        }
+        step = KBDStep(tool_name="qfk_system", tool_args_template=signal["acquire"]["args"], matcher=None)
+
+        raw_output, error, pre_matched = await diag._execute_acquirer(step, {}, "case-1", "", signal=signal)
+
+        assert raw_output == "27123"
+        assert error is None
+        assert pre_matched is True
+        assert diag._variable_pool["pid"] == "27123"
+        assert diag._evaluate_signal_outcome(signal, raw_output, error, pre_matched).value == "PASS"
 
 
 # ─── 单元测试：_evaluate_matcher（§6 5 类定型 valuator）────────────────────────
