@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-26 | v3.29 | **v2 信号契约分层解包与容错解析（PR #620）**：① `kbd_model.py` 的 `kbd_from_dict()` 增加 dict 信封解包容错，支持兼容 API 标准 list 与 DB 原始 dict 形态；② 配合 kb-service 检索接口剥离存储信封，透出规范 `List[Signal]` 数组；③ 新增架构选型文档《关键信号数据结构选型分析与分层治理方案》 |
 | 2026-07-25 | v3.28 | **KBD 向量检索正确性修复（PR #617）**：① 移除 KBD 向量检索中的 hash/BGE 伪向量兜底，embedding 生成失败时诚实降级到词法检索；② 增加 embedding 结果校验、模型与内容 hash 溯源字段、最小相似度阈值和模型一致性过滤；③ 发布与查询统一使用 jieba/HCI 分词，删除按时间兜底返回无关结果的逻辑；④ 增加 `backend/kb-service/app/cli/rebuild_kbd_search_index.py` 索引重建 CLI；⑤ 规范 `dynamic_resource_usage_audit` 状态语义；⑥ 贯通 `conversation_id` / `case_id` 到 KBD 检索链路 |
 | 2026-07-25 | v3.27 | **InvestigationAgent 检索 query 提炼优化（PR #616）**：`InvestigationAgent._build_retrieval_query` 过滤 S0 阶段点击控制符（`①`/`继续`等），支持提取首条真实用户主诉症状 | [2026-07-25-KBD向量搜索失效根因分析与修复](../../verify/events/2026-07-25-KBD向量搜索失效根因分析与修复.md) |
 | 2026-07-24 | v3.26 | database/seeds/02_system_prompts.sql 中 kbd_extract_signals_v2 关键信号抽取提示词字段名对齐 v2 扁平契约（command 替代 sub_command，instruction 替代 description）（PR #613） |
