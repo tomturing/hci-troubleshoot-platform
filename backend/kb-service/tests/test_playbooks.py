@@ -76,6 +76,34 @@ async def test_inventory_returns_published_kbd_without_embedding_gate():
     assert "tsv @@" not in sql
 
 
-def test_backend_signal_without_matcher_is_visible_but_not_executable():
+def test_backend_signal_without_matcher_or_output_is_visible_but_not_executable():
     signals = [{"id": "sig_002", "acquire": {"tool": "qfk_system", "args": {"command": "ps"}}}]
-    assert playbooks._execution_issues(signals) == ["sig_002 缺少确定性 matcher"]
+    assert playbooks._execution_issues(signals) == ["sig_002 必须且只能配置确定性 matcher 或有效产出变量"]
+
+
+def test_backend_signal_with_output_variables_is_executable_without_matcher():
+    """QFK 产出变量模式的 match=null 是 v2 合法执行契约，不能在快照阶段被过滤。"""
+    signals = [
+        {
+            "id": "sig_002",
+            "acquire": {"tool": "qfk_system", "args": {"command": "lsof"}},
+            "match": None,
+            "orchestrate": {"produces": [{"name": "PID", "type": "string", "path": ""}]},
+        }
+    ]
+
+    assert playbooks._execution_issues(signals) == []
+
+
+def test_backend_signal_with_match_and_output_is_not_executable():
+    """二义的 QFK 信号必须在执行前被拒绝，和保存 v2 契约保持一致。"""
+    signals = [
+        {
+            "id": "sig_002",
+            "acquire": {"tool": "qfk_system", "args": {"command": "lsof"}},
+            "match": {"type": "keyword", "pattern": "busy"},
+            "orchestrate": {"produces": [{"name": "PID", "type": "string", "path": ""}]},
+        }
+    ]
+
+    assert playbooks._execution_issues(signals) == ["sig_002 必须且只能配置确定性 matcher 或有效产出变量"]

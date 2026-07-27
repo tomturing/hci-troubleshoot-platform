@@ -2226,11 +2226,12 @@ class ConversationService:
         按 kind 字段分叉路由：
         - kind=tool_confirm → 调用 agent-service /v1/agent/react-confirm（ReAct 确认回路）
         - kind=variable_input/variable_confirm → 写入 SOP 变量池（HTP 排障）
-        - 其他 kind（ACP 类型）→ 调用 agent-service /v1/agent/interactive-response（ops-agent ACP）
+        - kind=human_escalation → 本地记录用户已知悉，不转发给任何 Agent
+        - 其他 ACP 类型 → 调用 agent-service /v1/agent/interactive-response（ops-agent ACP）
 
         Args:
             conversation_id: 对话 ID（用于日志追踪）。
-            kind:            交互类型（tool_confirm / sop_step / info_confirm / variable_input 等）。
+            kind:            交互类型（tool_confirm / human_escalation / sop_step / info_confirm / variable_input 等）。
             request_id:      ACP request_id（来自 AgentInteractiveRequest.request_id）。
             acp_session_id:  ops-agent ACP session_id（来自 AgentInteractiveRequest.acp_session_id）。
             outcome:         提交结果，格式 {"outcome": "selected", "optionId": "A"}
@@ -2241,7 +2242,29 @@ class ConversationService:
         Returns:
             True  = 提交成功；False = AgentClient 未注入或请求失败。
         """
-        if self._agent_client is None:
+        session_id = str(conversation_id)
+
+        # AgentEscalation 由 HTP Agent 在本地发出；其 request_id/acp_session_id
+        # 仅用于前端卡片关联，并不是 ops-agent 创建的 ACP 请求。确认“我知道了”
+        # 只需在会话历史中留痕，绝不能转发到 ops-agent。
+        if kind == "human_escalation":
+            if outcome.get("outcome") != "selected" or outcome.get("optionId") != "ack":
+                logger.warning(
+                    event="human_escalation_ack_invalid",
+                    message="人工升级确认仅接受 ack 选项",
+                    conversation_id=str(conversation_id),
+                    request_id=request_id,
+                    outcome=outcome,
+                )
+                return False
+            success = True
+            logger.info(
+                event="human_escalation_acknowledged",
+                message="用户已确认人工升级提示；不转发 ops-agent",
+                conversation_id=str(conversation_id),
+                request_id=request_id,
+            )
+        elif self._agent_client is None:
             logger.warning(
                 event="interactive_response_no_client",
                 message="submit_interactive_response: AgentClient 未注入，跳过",
@@ -2251,10 +2274,8 @@ class ConversationService:
             )
             return False
 
-        session_id = str(conversation_id)
-
         # 按 kind 分叉路由
-        if kind in ("variable_input", "variable_confirm"):
+        elif kind in ("variable_input", "variable_confirm"):
             # ── SOP 变量输入/确认路径 ──
             if not metadata or "variable_name" not in metadata:
                 logger.warning(
