@@ -270,6 +270,13 @@ export function buildAgentExecProcessMessage(
   container?: string | null,
   timeout?: number | null,
   traceId?: string | null,
+  outputFilters?: Array<{
+    source: 'stdout' | 'stderr'
+    include: string[]
+    exclude: string[]
+    include_mode: 'all' | 'any'
+    case_sensitive: boolean
+  }>,
 ): string {
   return JSON.stringify({
     type: 'ssh_exec_process',
@@ -280,6 +287,7 @@ export function buildAgentExecProcessMessage(
     container: container || undefined,
     timeout: timeout || undefined,
     trace_id: traceId || undefined,
+    output_filters: outputFilters?.length ? outputFilters : undefined,
   })
 }
 

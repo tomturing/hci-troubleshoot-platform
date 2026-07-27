@@ -548,6 +548,7 @@ class BridgeRelayExecutor:
                     "case_id": case_id,  # 以 Agent 运行上下文的工单 ID 为准（不再回退 LLM 参数，避免空串透传）
                     "trace_id": trace_id,  # 端到端链路透传
                     "timeout": execution_timeout,
+                    "output_filters": args.get("output_filters") or [],
                 },
             )
             resp.raise_for_status()

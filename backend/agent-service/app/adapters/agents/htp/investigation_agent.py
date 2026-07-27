@@ -253,7 +253,13 @@ class InvestigationAgent(BaseAgent):
         logger.info(
             event="investigation_route",
             track=track,
-            result_count=len(sop_results),
+            result_count=(
+                len(sop_results)
+                if track == "sop"
+                else len(raw_cases)
+                if track == "kbd"
+                else 0
+            ),
             category_id=category_id,
             session_id=session_id,
             snapshot_id=snapshot_id,

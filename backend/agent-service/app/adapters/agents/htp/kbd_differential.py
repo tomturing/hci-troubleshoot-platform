@@ -326,6 +326,9 @@ class KBDDiagnostic:
                     "exec_id": exec_id,
                     "acquisition_id": acquisition.template_key,
                     "tool_name": acquisition.tool_name,
+                    # args/result 是 Custom-UI 工具卡片的标准字段；tool_args/tool_result
+                    # 暂时保留为兼容别名，避免旧消费者在滚动发布期间失效。
+                    "args": resolved_args,
                     "tool_args": resolved_args,
                     "status": "blocked" if blocked_reason else "running",
                     "risk_level": acquisition.risk,
@@ -594,14 +597,18 @@ class KBDDiagnostic:
 
     @staticmethod
     def _tool_result_metadata(result: StepResult) -> dict[str, Any]:
+        status = "success" if result.outcome in (SignalOutcome.PASS, SignalOutcome.FAIL) else "failed"
+        output = smart_truncate(result.raw_output or "", max_chars=2000)
         return {
             "exec_id": result.exec_id,
             "evaluation_id": result.evaluation_id,
             "acquisition_id": result.acquisition_id,
             "tool_name": result.tool_name,
+            "args": result.tool_args,
             "tool_args": result.tool_args,
-            "tool_result": smart_truncate(result.raw_output or "", max_chars=2000),
-            "status": "completed" if result.outcome in (SignalOutcome.PASS, SignalOutcome.FAIL) else "error",
+            "result": output,
+            "tool_result": output,
+            "status": status,
             "error": result.error,
             "outcome": result.outcome.value,
             "kbd_id": result.kbd_id,
@@ -929,24 +936,10 @@ class KBDDiagnostic:
         )
 
         if acquirer.startswith("qkv_"):
-            # 生产者：QKV 引擎取数并写变量池（通常已在阶段 A 跑过，此处为兜底）
+            # KBD 确定性诊断必须执行信号声明的 QKV acquisition，不能用会话预取的
+            # task_logs/alerts 静默替代。预取上下文用于 S0 分类；KBD 证据必须具有
+            # 独立 exec_id、实际命令和现场返回值，才能审计并避免陈旧/截断数据误命中。
             try:
-                context_values = self._qkv_values_from_context(signal, env_context) if signal else None
-                if context_values is not None:
-                    values, source_key = context_values
-                    values = await self._normalize_qkv_values(
-                        values,
-                        node_ip=env_context.get("node_ip"),
-                        session_id=session_id,
-                    )
-                    if values:
-                        for name, value in values[0].items():
-                            self._set_pool_var(name, value)
-                    observation = f"QKV 上下文事实查询: source={source_key}, matched={len(values)}\n" + json.dumps(
-                        values[:5], ensure_ascii=False
-                    )
-                    return observation, None, bool(values)
-
                 signal_context = dict(env_context)
                 signal_context.update(self._variable_pool)
                 fsignal = (
@@ -1024,6 +1017,26 @@ class KBDDiagnostic:
                     for item in produces
                     if isinstance(item, dict)
                 }
+                output_filters: list[dict[str, Any]] = []
+                resolver_variables = dict(env_context)
+                resolver_variables.update(self._variable_pool)
+                for item in produces:
+                    if not isinstance(item, dict) or not isinstance(item.get("extract"), dict):
+                        continue
+                    resolved_extract = self._resolve_template_value(item["extract"], resolver_variables)
+                    # 边缘执行器只做安全的逐行筛选；列提取、基数校验和类型转换仍由
+                    # Agent 的确定性 extractor 完成。无筛选条件时不前移，后端按大小
+                    # 上限 Fail Closed，避免把“全量输出”伪装成过滤结果。
+                    if resolved_extract.get("include") or resolved_extract.get("exclude"):
+                        output_filters.append(
+                            {
+                                "source": str(resolved_extract.get("source") or "stdout"),
+                                "include": list(resolved_extract.get("include") or []),
+                                "exclude": list(resolved_extract.get("exclude") or []),
+                                "include_mode": str(resolved_extract.get("include_mode") or "all"),
+                                "case_sensitive": resolved_extract.get("case_sensitive", True),
+                            }
+                        )
 
                 res = await qfk_exec(
                     signal=bsignal,
@@ -1038,6 +1051,7 @@ class KBDDiagnostic:
                     case_id=self._case_id,  # 透传工单 ID，确保 terminal_bridge 能路由到正确的 SSH 会话
                     exec_id=exec_id,
                     required_output_sources=required_output_sources,
+                    output_filters=output_filters,
                 )
                 if res.error:
                     return res.raw_output or None, res.error, None
@@ -1265,12 +1279,16 @@ class KBDDiagnostic:
             # 回退到 admin-ui 配置的 tool_definition 默认值。
             produces = self._tool_def_default(acquirer, "produces") or []
         try:
-            return FrontendSignal(
-                query=query,
-                keyword=str(args.get("keyword", "")),
-                is_failed=bool(args.get("is_failed", False)),
-                limit=int(args.get("limit", 100)),
-                produces=produces,
+            # 统一走 FrontendSignal.from_dict，确保“启动虚拟机失败”被规范化为
+            # keyword="启动虚拟机" + is_failed=true，与 QKV 命令契约一致。
+            return FrontendSignal.from_dict(
+                {
+                    "query": query.value,
+                    "keyword": str(args.get("keyword", "")),
+                    "is_failed": bool(args.get("is_failed", False)),
+                    "limit": int(args.get("limit", 100)),
+                    "produces": produces,
+                }
             )
         except Exception:
             return None

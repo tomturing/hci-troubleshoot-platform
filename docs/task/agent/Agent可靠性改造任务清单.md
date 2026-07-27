@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-27 | v3.32 | **KBD 三信号执行闭环**：QKV 必须显式现场 acquisition；QFK 大输出字面量筛选前移到 terminal_bridge；统一工具卡片 args/result/status、exec_id 持久化和流中断终态；KBD 27123 修正为定向三步变量链。关联：[KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md)。 |
 | 2026-07-27 | v3.31 | **QFK 非 JSON 完整输出行列提取**：新增受控 text extract、stdout/stderr 完整缓存读取、稳定错误码和 Fail Closed；KB 增加 grep/awk/cut 确定性转换；requires 从占位符推导；管理端提供简化审核 UI。关联：[QFK非JSON结果行列提取方案](../../solution/events/2026-07-27-QFK非JSON结果行列提取方案.md)。 |
 | 2026-07-27 | v3.30 | **QFK 产出变量、宿主机执行与超时链路（PR #622）**：① QFK `match` 与 `orchestrate.produces` 强制二选一，产出结果写入变量池；② `qfk_system.container=host` 直接在宿主机执行；③ timeout 从 Agent 透传至 terminal bridge，并在独立 SSH session 超时后关闭会话。 |
 | 2026-07-26 | v3.29 | **v2 信号契约分层解包与容错解析（PR #620）**：① `kbd_model.py` 的 `kbd_from_dict()` 增加 dict 信封解包容错，支持兼容 API 标准 list 与 DB 原始 dict 形态；② 配合 kb-service 检索接口剥离存储信封，透出规范 `List[Signal]` 数组；③ 新增架构选型文档《关键信号数据结构选型分析与分层治理方案》 |

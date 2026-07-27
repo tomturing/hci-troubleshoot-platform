@@ -60,6 +60,23 @@ def test_qkv_text_extract_and_qfk_pipe_are_rejected():
         validate_signals_json(_doc({"name": "PID", "path": ""}, command="ps auxf | grep VM"))
 
 
+def test_qkv_requires_produces_and_null_match():
+    invalid_match = _doc({"name": "HOST", "path": "host"}, tool="qkv_task")
+    invalid_match["signals"][0]["match"] = {
+        "type": "keyword",
+        "pattern": "",
+        "mode": "or",
+        "expected": True,
+    }
+    with pytest.raises(ValidationError, match="match 必须为 null"):
+        validate_signals_json(invalid_match)
+
+    no_produces = _doc({"name": "HOST", "path": "host"}, tool="qkv_task")
+    no_produces["signals"][0]["orchestrate"]["produces"] = []
+    with pytest.raises(ValidationError, match="必须配置 orchestrate.produces"):
+        validate_signals_json(no_produces)
+
+
 def test_requires_are_derived_from_args_and_extract_conditions():
     signal = _doc(
         {

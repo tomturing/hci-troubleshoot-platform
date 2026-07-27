@@ -52,23 +52,26 @@ def _execution_issues(signals: list[dict[str, Any]]) -> list[str]:
         if not acquire.get("tool"):
             issues.append(f"{signal_id or f'signal[{index}]'} 缺少 acquire.tool")
         tool = str(acquire.get("tool") or "")
-        if tool.startswith("qfk_"):
+        matcher = signal.get("match")
+        produces = ((signal.get("orchestrate") or {}).get("produces") or [])
+        has_match = isinstance(matcher, dict)
+        has_produces = any(
+            isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip()
+            for item in produces
+        )
+        if tool.startswith("qkv_") and (has_match or not has_produces):
+            issues.append(
+                f"{signal_id or f'signal[{index}]'} 的 QKV 必须配置有效产出变量且 match 为 null"
+            )
+        if tool.startswith("qfk_") and has_match == has_produces:
             # QFK v2 有两种互斥且都可自动执行的模式：
             # 1. match：对命令结果做确定性判定；
             # 2. orchestrate.produces：命令成功并完成受控提取后写入变量池。
             # 不能再把 match=None 一律判成不可执行，否则合法的产出变量链会在
             # 分类快照阶段被提前过滤，永远无法进入实际执行器。
-            matcher = signal.get("match")
-            produces = ((signal.get("orchestrate") or {}).get("produces") or [])
-            has_match = isinstance(matcher, dict)
-            has_produces = any(
-                isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip()
-                for item in produces
+            issues.append(
+                f"{signal_id or f'signal[{index}]'} 必须且只能配置确定性 matcher 或有效产出变量"
             )
-            if has_match == has_produces:
-                issues.append(
-                    f"{signal_id or f'signal[{index}]'} 必须且只能配置确定性 matcher 或有效产出变量"
-                )
     if not signals:
         issues.append("未配置关键信号")
     return issues

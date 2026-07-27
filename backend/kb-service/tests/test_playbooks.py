@@ -35,6 +35,7 @@ async def test_inventory_returns_published_kbd_without_embedding_gate():
         "id": "sig_001",
         "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机失败"}},
         "match": None,
+        "orchestrate": {"produces": [{"name": "VM", "path": "vm"}], "requires": []},
     }
     entry = SimpleNamespace(
         id=1,
@@ -79,6 +80,18 @@ async def test_inventory_returns_published_kbd_without_embedding_gate():
 def test_backend_signal_without_matcher_or_output_is_visible_but_not_executable():
     signals = [{"id": "sig_002", "acquire": {"tool": "qfk_system", "args": {"command": "ps"}}}]
     assert playbooks._execution_issues(signals) == ["sig_002 必须且只能配置确定性 matcher 或有效产出变量"]
+
+
+def test_qkv_with_residual_match_is_visible_but_not_executable():
+    signals = [
+        {
+            "id": "sig_001",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机失败"}},
+            "match": {"type": "keyword", "pattern": ""},
+            "orchestrate": {"produces": [{"name": "VM", "path": "vm"}]},
+        }
+    ]
+    assert playbooks._execution_issues(signals) == ["sig_001 的 QKV 必须配置有效产出变量且 match 为 null"]
 
 
 def test_backend_signal_with_output_variables_is_executable_without_matcher():

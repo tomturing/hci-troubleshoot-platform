@@ -76,6 +76,7 @@ async def qfk_exec(
     case_id: str | None = None,
     exec_id: str | None = None,
     required_output_sources: set[str] | None = None,
+    output_filters: list[dict[str, Any]] | None = None,
 ) -> QFKResult:
     """
     根据给定的标准化后端信号，寻找对应 Handler 执行 acli 底层命令，并自动执行关键字逻辑评估
@@ -165,6 +166,9 @@ async def qfk_exec(
                     "reason": f"QFK诊断信号提取执行: {signal.instruction or ''}",
                     # qfk_system 的 container 由 terminal_bridge 包装；host 会原样在宿主机执行。
                     "container": signal.container if signal.namespace == "system" else None,
+                    # 非 JSON 产出变量的行筛选必须在 terminal_bridge 流式执行边界
+                    # 完成，避免几十 MB 原始输出先穿过 WebSocket/浏览器/HTTP。
+                    "output_filters": output_filters or [],
                 },
                 conversation_id=conversation_id,
                 node_ip=node_ip,

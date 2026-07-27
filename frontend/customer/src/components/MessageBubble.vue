@@ -4,6 +4,7 @@ import type { ChatMessage } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
 import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
 import { inferRiskLevel } from '@/utils/commandRisk'
+import { normalizeToolEvent } from '@/utils/toolEvent'
 import CommandBlock from './CommandBlock.vue'
 import InteractiveOptions from './InteractiveOptions.vue'
 
@@ -765,7 +766,9 @@ const toolCallSubmitting = ref(false)
 
 const toolCallEvent = computed(() => {
   if (props.message.metadata?.kind !== 'tool_call') return null
-  return props.message.metadata.event as {
+  const raw = props.message.metadata.event as Record<string, any> | undefined
+  if (!raw) return null
+  return normalizeToolEvent(raw) as {
     exec_id: string
     tool_name: string
     args: Record<string, any>

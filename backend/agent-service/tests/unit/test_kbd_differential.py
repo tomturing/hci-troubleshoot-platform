@@ -269,7 +269,17 @@ class TestHostIPResolution:
         assert qfk_exec.await_args.kwargs["node_ip"] == "172.28.24.2"
 
     @pytest.mark.asyncio
-    async def test_prefetched_qkv_observation_uses_resolved_host_ip(self):
+    async def test_kbd_qkv_executes_explicit_acquisition_even_with_prefetched_tasks(self, monkeypatch):
+        import app.tools.qkv.engine as qkv_engine
+
+        qkv_exec = AsyncMock(
+            return_value=SimpleNamespace(
+                success=True,
+                values=[{"vm": "4359974862144", "host": "SVR_aCloud_668"}],
+                to_observation=lambda: "QKV command acquisition",
+            )
+        )
+        monkeypatch.setattr(qkv_engine, "qkv_exec", qkv_exec)
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
         diag._resolve_host_ip = AsyncMock(return_value="172.28.24.2")
         signal = {
@@ -303,8 +313,11 @@ class TestHostIPResolution:
 
         assert error is None
         assert matched is True
-        assert '"host": "172.28.24.2"' in observation
+        assert observation == "QKV command acquisition"
         assert diag._variable_pool["host"] == "172.28.24.2"
+        qkv_exec.assert_awaited_once()
+        assert qkv_exec.await_args.kwargs["signal"].keyword == "启动虚拟机"
+        assert qkv_exec.await_args.kwargs["signal"].is_failed is True
 
 
 class TestQFKProduces:
@@ -353,6 +366,65 @@ class TestQFKProduces:
         assert pre_matched is True
         assert diag._variable_pool["pid"] == "27123"
         assert diag._evaluate_signal_outcome(signal, raw_output, error, pre_matched).value == "PASS"
+
+    @pytest.mark.asyncio
+    async def test_text_extract_is_forwarded_as_resolved_edge_row_filter(self, monkeypatch):
+        import app.tools.qfk.engine as qfk_engine
+
+        qfk_exec = AsyncMock(
+            return_value=SimpleNamespace(
+                error=None,
+                raw_output="qemu 9527 4359974862144",
+                matched=False,
+                complete_outputs={"stdout": "qemu 9527 4359974862144"},
+            )
+        )
+        monkeypatch.setattr(qfk_engine, "qfk_exec", qfk_exec)
+        diag = KBDDiagnostic(
+            ai_registry=MagicMock(), tool_executor=MagicMock(), conversation_id="conv-1", case_id="case-1"
+        )
+        signal = {
+            "acquire": {"tool": "qfk_system", "args": {"command": "lsof", "container": "host"}},
+            "match": None,
+            "orchestrate": {
+                "produces": [
+                    {
+                        "name": "PID",
+                        "extract": {
+                            "type": "text",
+                            "source": "stdout",
+                            "include": ["{{VM}}"],
+                            "exclude": ["grep"],
+                            "include_mode": "all",
+                            "case_sensitive": True,
+                            "column": 2,
+                        },
+                    }
+                ]
+            },
+        }
+        diag._set_pool_var("VM", "4359974862144")
+
+        raw_output, error, matched = await diag._execute_acquirer(
+            KBDStep(tool_name="qfk_system", tool_args_template=signal["acquire"]["args"], matcher=None),
+            {},
+            "case-1",
+            "",
+            signal=signal,
+        )
+
+        assert error is None
+        assert matched is True
+        assert diag._variable_pool["pid"] == "9527"
+        assert qfk_exec.await_args.kwargs["output_filters"] == [
+            {
+                "source": "stdout",
+                "include": ["4359974862144"],
+                "exclude": ["grep"],
+                "include_mode": "all",
+                "case_sensitive": True,
+            }
+        ]
 
 
 # ─── 单元测试：_evaluate_matcher（§6 5 类定型 valuator）────────────────────────
@@ -921,6 +993,157 @@ class TestEvidenceGatedCDD:
         tool_calls = [event for event in events if getattr(event, "stage", "") == "tool_call"]
         assert len(tool_calls) == 3
         assert [call.metadata["signal_id"] for call in tool_calls] == ["sig_001", "sig_002", "sig_003"]
+
+    @pytest.mark.asyncio
+    async def test_27123_production_variable_chain_executes_three_explicit_acquisitions(self, monkeypatch):
+        import app.tools.qfk.engine as qfk_engine
+        import app.tools.qkv.engine as qkv_engine
+
+        qkv_exec = AsyncMock(
+            return_value=SimpleNamespace(
+                success=True,
+                values=[
+                    {
+                        "vm": "4359974862144",
+                        "host": "SVR_aCloud_670",
+                        "end": "2026-07-27 21:19:37",
+                    }
+                ],
+                to_observation=lambda: "task get matched=1",
+            )
+        )
+
+        async def execute_qfk(*, signal, **kwargs):
+            if signal.command == "lsof":
+                assert kwargs["node_ip"] == "172.28.24.4"
+                assert kwargs["output_filters"][0]["include"] == ["4359974862144"]
+                output = "ClwDRDBClient 9527 root /images/4359974862144.vm/vm-disk-1.qcow2"
+                return SimpleNamespace(
+                    error=None,
+                    raw_output=output,
+                    matched=False,
+                    complete_outputs={"stdout": output},
+                )
+            assert signal.command == "ps -p 9527 -o pid=,args="
+            output = "9527 /opt/ClwDRDBClient/application_main"
+            return SimpleNamespace(
+                error=None,
+                raw_output=output,
+                matched=False,
+                complete_outputs={"stdout": output},
+            )
+
+        qfk_exec = AsyncMock(side_effect=execute_qfk)
+        monkeypatch.setattr(qkv_engine, "qkv_exec", qkv_exec)
+        monkeypatch.setattr(qfk_engine, "qfk_exec", qfk_exec)
+
+        kbd = KBD(
+            id="1",
+            support_id="27123",
+            name="虚拟机开机失败，报错虚拟机镜像忙",
+            category_id="虚拟机-003",
+            root_cause="第三方程序占用虚拟机镜像文件",
+            solution="解除占用后重试",
+            signals=[
+                {
+                    "id": "sig_001",
+                    "acquire": {
+                        "tool": "qkv_task",
+                        "args": {"keyword": "启动虚拟机失败", "is_failed": True, "limit": 1},
+                    },
+                    "match": None,
+                    "provenance": {"category": "frontend"},
+                    "orchestrate": {
+                        "requires": [],
+                        "produces": [
+                            {"name": "VM", "path": "vm"},
+                            {"name": "HOST", "path": "host"},
+                            {"name": "END", "path": "end"},
+                        ],
+                    },
+                },
+                {
+                    "id": "sig_002",
+                    "acquire": {
+                        "tool": "qfk_system",
+                        "args": {"host": "{{HOST}}", "command": "lsof", "container": "host", "timeout": 120},
+                    },
+                    "match": None,
+                    "provenance": {"category": "backend"},
+                    "orchestrate": {
+                        "requires": ["HOST", "VM"],
+                        "produces": [
+                            {
+                                "name": "PID",
+                                "extract": {
+                                    "type": "text",
+                                    "source": "stdout",
+                                    "include": ["{{VM}}"],
+                                    "column": 2,
+                                    "column_mode": "index",
+                                    "cardinality": "first",
+                                },
+                            }
+                        ],
+                    },
+                },
+                {
+                    "id": "sig_003",
+                    "acquire": {
+                        "tool": "qfk_system",
+                        "args": {
+                            "host": "{{HOST}}",
+                            "command": "ps -p {{PID}} -o pid=,args=",
+                            "container": "host",
+                            "timeout": 10,
+                        },
+                    },
+                    "match": None,
+                    "provenance": {"category": "backend"},
+                    "orchestrate": {
+                        "requires": ["HOST", "PID"],
+                        "produces": [
+                            {
+                                "name": "PNAME",
+                                "extract": {
+                                    "type": "text",
+                                    "source": "stdout",
+                                    "include": ["{{PID}}"],
+                                    "column_mode": "whole",
+                                    "cardinality": "exactly_one",
+                                },
+                            }
+                        ],
+                    },
+                },
+            ],
+        )
+        diag = KBDDiagnostic(
+            ai_registry=MagicMock(),
+            tool_executor=MagicMock(),
+            conversation_id="00000000-0000-0000-0000-000000000749",
+            case_id="Q2026072747493",
+        )
+        diag._resolve_host_ip = AsyncMock(return_value="172.28.24.4")
+
+        events = [event async for event in diag.diagnose(candidates=[kbd], env_context={}, session_id="golden-7493")]
+
+        result = diag.get_result()
+        assert result is not None and result.is_definitive
+        assert diag._variable_pool == {
+            "vm": "4359974862144",
+            "host": "172.28.24.4",
+            "end": "2026-07-27 21:19:37",
+            "pid": "9527",
+            "pname": "9527 /opt/ClwDRDBClient/application_main",
+        }
+        assert qkv_exec.await_count == 1
+        assert qfk_exec.await_count == 2
+        tool_calls = [event.metadata for event in events if getattr(event, "stage", "") == "tool_call"]
+        tool_results = [event.metadata for event in events if getattr(event, "stage", "") == "tool_result"]
+        assert all(call["args"] for call in tool_calls)
+        assert [event["status"] for event in tool_results] == ["success", "success", "success"]
+        assert all("result" in event for event in tool_results)
 
     @pytest.mark.asyncio
     async def test_unresolved_placeholder_is_blocked_and_never_executed(self):

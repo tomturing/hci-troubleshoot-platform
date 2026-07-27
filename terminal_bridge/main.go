@@ -13,13 +13,13 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"sync/atomic"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"runtime/debug"
@@ -29,29 +29,40 @@ import (
 )
 
 const (
-	wsPort = 9999
+	wsPort                = 9999
+	maxRelayedOutputBytes = 256 * 1024
 )
 
 // ── 消息结构 ─────────────────────────────────────────────────────────────────
 
 type InMessage struct {
-	Type       string `json:"type"`
-	CaseID     string `json:"case_id"`
-	Host       string `json:"host"`
-	Username   string `json:"username"`
-	Port       int    `json:"port"`
-	AuthType   string `json:"auth_type"`
-	Password   string `json:"password"`
-	PrivateKey string `json:"private_key"`
-	Passphrase string `json:"passphrase"`
-	Data       string `json:"data"`
-	Command    string `json:"command"`
-	ExecID     string `json:"exec_id"`   // 用于 ssh_exec_command 和 ssh_exec_process
-	NodeIP     string `json:"node_ip"`   // 目标节点 IP（多节点路由）
-	Container  string `json:"container"` // 目标容器名（空或"host"=物理机直连）
-	Timeout    int    `json:"timeout"`   // 命令最大执行秒数（1-300）
-	TraceID    string `json:"trace_id"`  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
-	Resume     bool   `json:"resume"`     // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
+	Type          string         `json:"type"`
+	CaseID        string         `json:"case_id"`
+	Host          string         `json:"host"`
+	Username      string         `json:"username"`
+	Port          int            `json:"port"`
+	AuthType      string         `json:"auth_type"`
+	Password      string         `json:"password"`
+	PrivateKey    string         `json:"private_key"`
+	Passphrase    string         `json:"passphrase"`
+	Data          string         `json:"data"`
+	Command       string         `json:"command"`
+	ExecID        string         `json:"exec_id"`        // 用于 ssh_exec_command 和 ssh_exec_process
+	NodeIP        string         `json:"node_ip"`        // 目标节点 IP（多节点路由）
+	Container     string         `json:"container"`      // 目标容器名（空或"host"=物理机直连）
+	Timeout       int            `json:"timeout"`        // 命令最大执行秒数（1-300）
+	TraceID       string         `json:"trace_id"`       // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
+	Resume        bool           `json:"resume"`         // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
+	OutputFilters []OutputFilter `json:"output_filters"` // 平台定义的安全逐行筛选；不执行 shell/正则
+}
+
+// OutputFilter 只能表达字面量行筛选，刻意不支持命令、正则、脚本和管道。
+type OutputFilter struct {
+	Source        string   `json:"source"`
+	Include       []string `json:"include"`
+	Exclude       []string `json:"exclude"`
+	IncludeMode   string   `json:"include_mode"`
+	CaseSensitive bool     `json:"case_sensitive"`
 }
 
 type OutMessage struct {
@@ -348,7 +359,12 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 }
 
 // execCommandIsolated 独立建立 SSH Session 执行命令 (双通道 - 事务执行设计)
-func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID string, timeout time.Duration) {
+func (s *SSHSession) execCommandIsolated(
+	ws *websocket.Conn,
+	command, execID string,
+	timeout time.Duration,
+	outputFilters []OutputFilter,
+) {
 	startTime := time.Now()
 
 	// P0: 记录命令开始
@@ -417,39 +433,24 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 
 	var stdoutBuf strings.Builder
 	var stderrBuf strings.Builder
+	var stdoutStats outputStreamStats
+	var stderrStats outputStreamStats
+	outputBudget := &relayOutputBudget{}
 	var wg sync.WaitGroup
 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 4096)
-		for {
-			n, rerr := stdoutPipe.Read(buf)
-			if n > 0 {
-				chunk := string(buf[:n])
-				stdoutBuf.WriteString(chunk)
-				sendMsg(ws, OutMessage{Type: "exec_stdout", CaseID: s.caseID, ExecID: execID, Stdout: chunk})
-			}
-			if rerr != nil {
-				break
-			}
-		}
+		stdoutStats = relayExecOutput(
+			ws, stdoutPipe, "stdout", s.caseID, execID, outputFilters, outputBudget, &stdoutBuf,
+		)
 	}()
 
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 4096)
-		for {
-			n, rerr := stderrPipe.Read(buf)
-			if n > 0 {
-				chunk := string(buf[:n])
-				stderrBuf.WriteString(chunk)
-				sendMsg(ws, OutMessage{Type: "exec_stderr", CaseID: s.caseID, ExecID: execID, Stderr: chunk})
-			}
-			if rerr != nil {
-				break
-			}
-		}
+		stderrStats = relayExecOutput(
+			ws, stderrPipe, "stderr", s.caseID, execID, outputFilters, outputBudget, &stderrBuf,
+		)
 	}()
 
 	waitDone := make(chan error, 1)
@@ -479,6 +480,15 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 			exitCode = -1
 		}
 	}
+	if stdoutStats.overflow || stderrStats.overflow {
+		exitCode = -1
+		limitError := fmt.Sprintf(
+			"QFK_EDGE_OUTPUT_LIMIT: 安全筛选后的回传结果超过 %d 字节，请收紧行筛选条件",
+			maxRelayedOutputBytes,
+		)
+		stderrBuf.WriteString(limitError)
+		sendMsg(ws, OutMessage{Type: "exec_stderr", CaseID: s.caseID, ExecID: execID, Stderr: limitError})
+	}
 
 	duration := time.Since(startTime)
 
@@ -489,15 +499,20 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 	}
 
 	blog("INFO", "exec.done", "命令执行完成", "", s.caseID, "", "", map[string]any{
-		"exec_id":        execID,
-		"command":        command,
-		"exit_code":      exitCode,
-		"success":        exitCode == 0,
-		"duration_ms":    duration.Milliseconds(),
-		"stdout_len":     stdoutBuf.Len(),
-		"stderr_len":     stderrBuf.Len(),
-		"timeout":        timedOut,
-		"output_preview": outputPreview,
+		"exec_id":         execID,
+		"command":         command,
+		"exit_code":       exitCode,
+		"success":         exitCode == 0,
+		"duration_ms":     duration.Milliseconds(),
+		"stdout_len":      stdoutBuf.Len(),
+		"stderr_len":      stderrBuf.Len(),
+		"stdout_raw_len":  stdoutStats.rawBytes,
+		"stderr_raw_len":  stderrStats.rawBytes,
+		"stdout_filtered": stdoutStats.filtered,
+		"stderr_filtered": stderrStats.filtered,
+		"output_overflow": stdoutStats.overflow || stderrStats.overflow,
+		"timeout":         timedOut,
+		"output_preview":  outputPreview,
 	})
 
 	if timedOut {
@@ -507,6 +522,185 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID str
 		Type: "exec_result", CaseID: s.caseID, ExecID: execID,
 		Stdout: stdoutBuf.String(), Stderr: stderrBuf.String(), ExitCode: exitCode,
 	})
+}
+
+type outputStreamStats struct {
+	rawBytes  int
+	keptBytes int
+	filtered  bool
+	overflow  bool
+}
+
+// relayOutputBudget 对 stdout/stderr 使用同一个回传预算，避免两个流各自保留
+// 256 KiB 后把总载荷放大为 512 KiB。
+type relayOutputBudget struct {
+	mu        sync.Mutex
+	keptBytes int
+	overflow  bool
+}
+
+func (budget *relayOutputBudget) reserve(size int) bool {
+	budget.mu.Lock()
+	defer budget.mu.Unlock()
+	if budget.overflow || size < 0 || budget.keptBytes+size > maxRelayedOutputBytes {
+		budget.overflow = true
+		return false
+	}
+	budget.keptBytes += size
+	return true
+}
+
+func filtersForSource(filters []OutputFilter, source string) []OutputFilter {
+	selected := make([]OutputFilter, 0, len(filters))
+	for _, filter := range filters {
+		if filter.Source == source && (len(filter.Include) > 0 || len(filter.Exclude) > 0) {
+			selected = append(selected, filter)
+		}
+	}
+	return selected
+}
+
+func lineMatchesOutputFilter(line string, filter OutputFilter) bool {
+	candidate := line
+	includes := filter.Include
+	excludes := filter.Exclude
+	if !filter.CaseSensitive {
+		candidate = strings.ToLower(candidate)
+		includes = make([]string, len(filter.Include))
+		for i, value := range filter.Include {
+			includes[i] = strings.ToLower(value)
+		}
+		excludes = make([]string, len(filter.Exclude))
+		for i, value := range filter.Exclude {
+			excludes[i] = strings.ToLower(value)
+		}
+	}
+	includeOK := len(includes) == 0
+	if len(includes) > 0 && filter.IncludeMode == "any" {
+		for _, value := range includes {
+			if strings.Contains(candidate, value) {
+				includeOK = true
+				break
+			}
+		}
+	} else if len(includes) > 0 {
+		includeOK = true
+		for _, value := range includes {
+			if !strings.Contains(candidate, value) {
+				includeOK = false
+				break
+			}
+		}
+	}
+	if !includeOK {
+		return false
+	}
+	for _, value := range excludes {
+		if strings.Contains(candidate, value) {
+			return false
+		}
+	}
+	return true
+}
+
+// relayExecOutput 在 terminal_bridge 本地逐行筛选。原始大输出不会进入 WebSocket、
+// 浏览器内存或 HTTP 回传链路；多个筛选规格按并集保留，列提取仍由 Agent 完成。
+func relayExecOutput(
+	ws *websocket.Conn,
+	reader io.Reader,
+	source, caseID, execID string,
+	filters []OutputFilter,
+	budget *relayOutputBudget,
+	destination *strings.Builder,
+) outputStreamStats {
+	stats := outputStreamStats{}
+	selected := filtersForSource(filters, source)
+	stats.filtered = len(selected) > 0
+	if !stats.filtered {
+		chunkBuffer := make([]byte, 4096)
+		for {
+			n, err := reader.Read(chunkBuffer)
+			if n > 0 {
+				stats.rawBytes += n
+				chunk := string(chunkBuffer[:n])
+				if !budget.reserve(len(chunk)) {
+					stats.overflow = true
+				} else {
+					stats.keptBytes += len(chunk)
+					destination.WriteString(chunk)
+					message := OutMessage{Type: "exec_stdout", CaseID: caseID, ExecID: execID, Stdout: chunk}
+					if source == "stderr" {
+						message = OutMessage{Type: "exec_stderr", CaseID: caseID, ExecID: execID, Stderr: chunk}
+					}
+					sendMsg(ws, message)
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+		return stats
+	}
+	buffered := bufio.NewReader(reader)
+	for {
+		line, err := buffered.ReadString('\n')
+		if line != "" {
+			stats.rawBytes += len(line)
+			keep := !stats.filtered
+			if stats.filtered {
+				for _, filter := range selected {
+					if lineMatchesOutputFilter(line, filter) {
+						keep = true
+						break
+					}
+				}
+			}
+			if keep {
+				if !budget.reserve(len(line)) {
+					stats.overflow = true
+				} else {
+					stats.keptBytes += len(line)
+					destination.WriteString(line)
+					message := OutMessage{Type: "exec_stdout", CaseID: caseID, ExecID: execID, Stdout: line}
+					if source == "stderr" {
+						message = OutMessage{Type: "exec_stderr", CaseID: caseID, ExecID: execID, Stderr: line}
+					}
+					sendMsg(ws, message)
+				}
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	return stats
+}
+
+func validateOutputFilters(filters []OutputFilter) error {
+	if len(filters) > 8 {
+		return fmt.Errorf("output_filters 最多允许 8 项")
+	}
+	for index, filter := range filters {
+		if filter.Source != "stdout" && filter.Source != "stderr" {
+			return fmt.Errorf("output_filters[%d].source 只允许 stdout/stderr", index)
+		}
+		if filter.IncludeMode != "all" && filter.IncludeMode != "any" {
+			return fmt.Errorf("output_filters[%d].include_mode 只允许 all/any", index)
+		}
+		if len(filter.Include) > 8 || len(filter.Exclude) > 8 {
+			return fmt.Errorf("output_filters[%d] 的 include/exclude 最多各 8 项", index)
+		}
+		if len(filter.Include) == 0 && len(filter.Exclude) == 0 {
+			return fmt.Errorf("output_filters[%d] 至少需要 include 或 exclude", index)
+		}
+		literals := append(append([]string{}, filter.Include...), filter.Exclude...)
+		for _, literal := range literals {
+			if len(literal) == 0 || len([]byte(literal)) > 512 {
+				return fmt.Errorf("output_filters[%d] 条件必须为 1~512 字节的非空字面量", index)
+			}
+		}
+	}
+	return nil
 }
 
 func commandTimeout(seconds int) time.Duration {
@@ -623,14 +817,14 @@ func (s *SSHSession) on_output_start(
 
 				sendMsg(ws, OutMessage{Type: "ssh_output", CaseID: caseID, Output: chunk})
 
-					// 缺陷 2: 回采 SSH 终端交互日志（用户手动输入/输出的关键信息）
-					// 只回采有意义的内容（过滤空行和控制序列）
-					if len(chunk) > 0 && chunk != "\r\n" && !strings.Contains(chunk, "\x1b[") {
-						blog("INFO", "ssh.output", "SSH 终端输出", "", caseID, "", "", map[string]any{
-							"output_len":     len(chunk),
-							"output_preview": truncateString(chunk, 200),
-						})
-					}
+				// 缺陷 2: 回采 SSH 终端交互日志（用户手动输入/输出的关键信息）
+				// 只回采有意义的内容（过滤空行和控制序列）
+				if len(chunk) > 0 && chunk != "\r\n" && !strings.Contains(chunk, "\x1b[") {
+					blog("INFO", "ssh.output", "SSH 终端输出", "", caseID, "", "", map[string]any{
+						"output_len":     len(chunk),
+						"output_preview": truncateString(chunk, 200),
+					})
+				}
 			}
 			if err != nil {
 				if err != io.EOF {
@@ -726,18 +920,18 @@ func wrapContainerCommand(command, container string) string {
 //      发送失败暂存 pending，连接恢复后重传；可选落本地文件供进程重启回放。
 
 type logEntry struct {
-	Type      string         `json:"type"` // bridge_log - 前端监听 type==="bridge_log" 的必备字段
-	Seq       uint64         `json:"seq"`
-	Timestamp string         `json:"ts"`
-	Level     string         `json:"level"`
-	Service   string         `json:"service"`
-	Event     string         `json:"event,omitempty"`
-	Message   string         `json:"message,omitempty"`
-	TraceID   string         `json:"trace_id,omitempty"`
-	CaseID    string         `json:"case_id,omitempty"`
-	NodeIP    string         `json:"node_ip,omitempty"`
-	CustomUI  string         `json:"custom_ui,omitempty"`
-	Extra        map[string]any `json:"extra,omitempty"`
+	Type        string         `json:"type"` // bridge_log - 前端监听 type==="bridge_log" 的必备字段
+	Seq         uint64         `json:"seq"`
+	Timestamp   string         `json:"ts"`
+	Level       string         `json:"level"`
+	Service     string         `json:"service"`
+	Event       string         `json:"event,omitempty"`
+	Message     string         `json:"message,omitempty"`
+	TraceID     string         `json:"trace_id,omitempty"`
+	CaseID      string         `json:"case_id,omitempty"`
+	NodeIP      string         `json:"node_ip,omitempty"`
+	CustomUI    string         `json:"custom_ui,omitempty"`
+	Extra       map[string]any `json:"extra,omitempty"`
 	Traceparent string         `json:"traceparent,omitempty"` // P2-7: W3C traceparent 标准格式
 	// 已知限制：当前只支持 Trace ID 链路追踪，未建立完整的 Span 父子关系
 	// 完整实现需要：1) 生成唯一 Span ID；2) 维护 Parent Span ID；3) 建立 Span 栈管理
@@ -778,7 +972,7 @@ func newLogHub() *LogHub {
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
 			h.logFile = f
 		}
-		
+
 		// P0-3: 进程重启时回放本地日志文件
 		if replayFile, err := os.Open(logPath); err == nil {
 			defer replayFile.Close()
@@ -799,7 +993,6 @@ func newLogHub() *LogHub {
 	}
 	return h
 }
-
 
 func (h *LogHub) publish(e logEntry) {
 	h.mu.Lock()
@@ -856,7 +1049,7 @@ func (h *LogHub) flushSubscriber(sub *bridgeSubscriber) {
 		if err != nil {
 			continue
 		}
-		if err := websocket.Message.Send(sub.conn, string(b)); err != nil {
+		if err := sendWebSocketPayload(sub.conn, string(b)); err != nil {
 			sub.mu.Lock()
 			if len(sub.pending) < 2000 {
 				sub.pending = append(sub.pending, e)
@@ -888,12 +1081,12 @@ func (h *LogHub) setCase(sub *bridgeSubscriber, caseID string) {
 		}
 	}
 	h.mu.Unlock()
-	
+
 	// P2-8: 更新回放指标
 	if len(replay) > 0 {
 		atomic.AddUint64(&promMetrics.LogsReplayedTotal, uint64(len(replay)))
 	}
-	
+
 	for _, e := range replay {
 		h.enqueue(sub, e)
 	}
@@ -943,16 +1136,16 @@ func blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map
 	}
 
 	e := logEntry{
-		Level:        level,
-		Service:      "terminal_bridge",
-		Event:        event,
-		Message:      msg,
-		TraceID:      traceID,
-		CaseID:       caseID,
-		NodeIP:       nodeIP,
-		CustomUI:     customUI,
-		Extra:        extra,
-		Traceparent:  traceparent,
+		Level:       level,
+		Service:     "terminal_bridge",
+		Event:       event,
+		Message:     msg,
+		TraceID:     traceID,
+		CaseID:      caseID,
+		NodeIP:      nodeIP,
+		CustomUI:    customUI,
+		Extra:       extra,
+		Traceparent: traceparent,
 	}
 	logHub.publish(e)
 	e.Type = "bridge_log" // stdout 输出也必须携带 type 字段（值传递导致 publish 内修改不影响原始 e）
@@ -960,7 +1153,6 @@ func blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map
 		os.Stdout.Write(append(b, '\n'))
 	}
 }
-
 
 // ── WebSocket Handler ─────────────────────────────────────────────────────────
 
@@ -1079,9 +1271,19 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage) *SSHSession 
 	return session
 }
 
+// stdout、stderr 和 bridge_log 可能来自不同 goroutine；x/net/websocket 不保证
+// 并发写安全，必须在同一序列化边界发送，避免高输出场景下帧交错或 panic。
+var websocketWriteMu sync.Mutex
+
+func sendWebSocketPayload(ws *websocket.Conn, payload string) error {
+	websocketWriteMu.Lock()
+	defer websocketWriteMu.Unlock()
+	return websocket.Message.Send(ws, payload)
+}
+
 func sendMsg(ws *websocket.Conn, msg OutMessage) {
 	data, _ := json.Marshal(msg)
-	if err := websocket.Message.Send(ws, string(data)); err != nil {
+	if err := sendWebSocketPayload(ws, string(data)); err != nil {
 		log.Printf("[Bridge] WebSocket 发送失败: type=%s case=%s err=%v", msg.Type, msg.CaseID, err)
 	}
 }
@@ -1186,14 +1388,13 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				s.injectCommand(msg.Command)
 			}
 
-
-			case "resume":
-				// P0-2: 浏览器重连时触发历史日志回放
-				if msg.CaseID != "" {
-					logHub.setCase(sub, msg.CaseID)
-					sendMsg(ws, OutMessage{Type: "resumed", CaseID: msg.CaseID, TraceID: msg.TraceID, CustomUI: cui})
-					log.Printf("[Bridge] 收到 resume 信号: case=%s 触发日志回放", msg.CaseID)
-				}
+		case "resume":
+			// P0-2: 浏览器重连时触发历史日志回放
+			if msg.CaseID != "" {
+				logHub.setCase(sub, msg.CaseID)
+				sendMsg(ws, OutMessage{Type: "resumed", CaseID: msg.CaseID, TraceID: msg.TraceID, CustomUI: cui})
+				log.Printf("[Bridge] 收到 resume 信号: case=%s 触发日志回放", msg.CaseID)
+			}
 
 		case "ssh_disconnect":
 			key := sessionKey(msg.CaseID, msg.NodeIP)
@@ -1261,6 +1462,16 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				})
 				continue
 			}
+			if err := validateOutputFilters(msg.OutputFilters); err != nil {
+				blog("ERROR", "exec.output_filter_invalid", "安全输出筛选规格非法", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"exec_id": msg.ExecID, "error": err.Error(),
+				})
+				sendMsg(ws, OutMessage{
+					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
+					Stderr: "QFK_EDGE_FILTER_INVALID: " + err.Error(), ExitCode: -1,
+				})
+				continue
+			}
 
 			// 包装容器命令
 			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
@@ -1285,20 +1496,20 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 					exitInfo = "exit=TIMEOUT"
 				}
 
-					// P0-1: 增强日志完整性 - 回采命令执行的完整输出
-					// 输出过长时截断为预览（避免日志字段过大），但完整记录长度和退出码
-					outputPreview := output
-					if len(outputPreview) > 1000 {
-						outputPreview = outputPreview[:1000] + "...(截断)"
-					}
-					blog("INFO", "exec.output", "命令执行输出", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-						"exec_id":        msg.ExecID,
-						"exit_code":      exitCode,
-						"timeout":        result.Timeout,
-						"output_len":     outLen,
-						"output_preview": outputPreview,
-						"command":        wrappedCmd,
-					})
+				// P0-1: 增强日志完整性 - 回采命令执行的完整输出
+				// 输出过长时截断为预览（避免日志字段过大），但完整记录长度和退出码
+				outputPreview := output
+				if len(outputPreview) > 1000 {
+					outputPreview = outputPreview[:1000] + "...(截断)"
+				}
+				blog("INFO", "exec.output", "命令执行输出", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"exec_id":        msg.ExecID,
+					"exit_code":      exitCode,
+					"timeout":        result.Timeout,
+					"output_len":     outLen,
+					"output_preview": outputPreview,
+					"command":        wrappedCmd,
+				})
 
 				blog("INFO", "exec.done", "命令执行完成", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"exec_id": msg.ExecID, "exit_code": exitCode, "timeout": result.Timeout, "output_len": outLen,
@@ -1361,21 +1572,23 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				continue
 			}
 
-// 包装容器命令
-				wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
-				log.Printf("[Bridge] EXEC_ISOLATED_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
-					key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
-				log.Printf("[Bridge] EXEC_ISOLATED_CMD: %q", wrappedCmd)
+			// 包装容器命令
+			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
+			log.Printf("[Bridge] EXEC_ISOLATED_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
+				key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
+			log.Printf("[Bridge] EXEC_ISOLATED_CMD: %q", wrappedCmd)
 
-				// P0: 记录命令发起（包含 trace_id）
-				blog("INFO", "exec.request", "收到命令执行请求", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-					"exec_id":   msg.ExecID,
-					"command":   wrappedCmd,
-					"container": msg.Container,
-					"trace_id":  msg.TraceID,
-				})
+			// P0: 记录命令发起（包含 trace_id）
+			blog("INFO", "exec.request", "收到命令执行请求", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"exec_id":   msg.ExecID,
+				"command":   wrappedCmd,
+				"container": msg.Container,
+				"trace_id":  msg.TraceID,
+			})
 
-				go s.execCommandIsolated(ws, wrappedCmd, msg.ExecID, commandTimeout(msg.Timeout))
+			go s.execCommandIsolated(
+				ws, wrappedCmd, msg.ExecID, commandTimeout(msg.Timeout), msg.OutputFilters,
+			)
 		}
 	}
 }
@@ -1453,17 +1666,16 @@ func getVersion() string {
 	return fmt.Sprintf("%s-g%s%s", Version, revision, dirty)
 }
 
-
 // P2-8: Prometheus 指标（简化实现 - 无外部依赖）
 var (
 	promMetrics = struct {
-		LogsCollectedTotal   uint64
-		LogsCollectErrors    uint64
-		LogsReplayedTotal    uint64
-		ExecCommandsTotal    uint64
-		ExecCommandErrors    uint64
-		SshConnectionsTotal  uint64
-		SshConnectionErrors  uint64
+		LogsCollectedTotal  uint64
+		LogsCollectErrors   uint64
+		LogsReplayedTotal   uint64
+		ExecCommandsTotal   uint64
+		ExecCommandErrors   uint64
+		SshConnectionsTotal uint64
+		SshConnectionErrors uint64
 	}{}
 )
 
@@ -1506,7 +1718,6 @@ bridge_ssh_connection_errors_total %d
 	)
 }
 
-
 // truncateString 截断字符串到指定长度
 func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
@@ -1528,7 +1739,7 @@ func main() {
 	log.SetOutput(bridgeLogWriter{})
 	log.SetFlags(0)
 	http.Handle("/", bridge.corsWebSocketHandler())
-	
+
 	// P2-8: Prometheus metrics 端点（供 Prometheus 抓取）
 	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
