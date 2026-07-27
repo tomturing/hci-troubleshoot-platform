@@ -17,6 +17,7 @@ Bridge Relay 执行器 — 所有 acli/bash 工具的唯一执行后端
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import string
@@ -28,7 +29,7 @@ from typing import Any
 
 from shared.database.redis import RedisManager
 from shared.observability.logger import get_logger
-from shared.observability.otel import get_current_trace_id
+from shared.observability.otel import get_current_trace_id, get_current_traceparent
 from shared.utils.internal_http import InternalHTTPClient
 
 from app.core.utils import smart_truncate
@@ -92,6 +93,16 @@ class ExecResult:
     original_command: str | None = None
     built_command: str | None = None
     exec_id: str | None = None
+    trace_id: str | None = None
+    traceparent: str | None = None
+    artifact_id: str | None = None
+    stdout_sha256: str | None = None
+    stderr_sha256: str | None = None
+    stdout_bytes: int | None = None
+    stderr_bytes: int | None = None
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    error_type: str | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,7 +280,7 @@ class BridgeRelayExecutor:
       3. risk=3 → 直接拒绝，返回错误
       4. risk=2 → 写 Redis pending，推送 SSE confirm 卡片，等待用户确认
       5. risk=1 → 写 Redis pending，推送 SSE exec 事件
-      6. 通过 Redis blpop 等待前端回传结果（超时 32s）
+      6. 通过 Redis blpop 等待前端回传结果（默认 150s）
       7. 写入 tool_result 表（审计）
 
     使用方法：
@@ -286,8 +297,8 @@ class BridgeRelayExecutor:
     STDOUT_MAX_CHARS = 4000
     STDERR_MAX_CHARS = 1000
 
-    # Redis blpop 超时（秒）
-    BLPOP_TIMEOUT = 30
+    # Bridge 权威执行超时默认 120 秒，浏览器最多等待 135 秒；Agent 再预留 15 秒供结果回传。
+    BLPOP_TIMEOUT = int(os.getenv("AGENT_EXEC_RESULT_TIMEOUT_SECONDS", "150"))
 
     def __init__(
         self,
@@ -308,7 +319,7 @@ class BridgeRelayExecutor:
         self._internal_token = internal_token
         self._http_client = InternalHTTPClient(
             base_url=self._conversation_service_url,
-            timeout=32.0,  # 略大于 BLPOP_TIMEOUT，确保 HTTP 不先超时
+            timeout=32.0,  # 此客户端只负责快速推送命令，不承载后续 Redis 阻塞等待。
         )
 
     async def aclose(self) -> None:
@@ -351,6 +362,7 @@ class BridgeRelayExecutor:
             ValueError: 命令净化失败
         """
         trace_id = get_current_trace_id() or "unknown"
+        traceparent = get_current_traceparent()
         start_time = time.time()
         exec_id = exec_id or str(uuid.uuid4())
         # 端到端链路：以 exec_id 作为稳定关联键（OTel trace 不存在时回退），
@@ -529,6 +541,8 @@ class BridgeRelayExecutor:
                     "node_ip": node_ip,
                     "case_id": case_id,  # 以 Agent 运行上下文的工单 ID 为准（不再回退 LLM 参数，避免空串透传）
                     "trace_id": trace_id,  # 端到端链路透传
+                    "traceparent": traceparent or None,
+                    "tool_call_id": exec_id,
                 },
             )
             resp.raise_for_status()
@@ -722,6 +736,16 @@ class BridgeRelayExecutor:
                 original_command=built.original_command if built else original_command,
                 built_command=built.built_command if built else cleaned_command,
                 exec_id=exec_id,
+                trace_id=result_data.get("trace_id") or trace_id,
+                traceparent=result_data.get("traceparent") or traceparent,
+                artifact_id=result_data.get("artifact_id"),
+                stdout_sha256=result_data.get("stdout_sha256"),
+                stderr_sha256=result_data.get("stderr_sha256"),
+                stdout_bytes=result_data.get("stdout_bytes"),
+                stderr_bytes=result_data.get("stderr_bytes"),
+                stdout_truncated=bool(result_data.get("stdout_truncated", truncated)),
+                stderr_truncated=bool(result_data.get("stderr_truncated", False)),
+                error_type=result_data.get("error_type"),
             )
 
         except Exception as e:

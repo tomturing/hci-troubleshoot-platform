@@ -200,6 +200,15 @@
   - InMessage 新增 NodeIP / Container 字段
   - sessionKey 改为 caseID@nodeIP，支持多节点自动连接
   - 前端 buildAgentExecProcessMessage 传递 nodeIp/container 到 WebSocket
+- **terminal_bridge Windows/K3s 双运行形态与端到端可观测性**：
+  - 同一套 Go 代码支持 `desktop`（Windows localhost）与 `cluster`（WSL K3s Pod）模式，生产默认保持 desktop 拓扑
+  - Helm 新增可选 terminal-bridge Deployment/Service/同源 Ingress，customer-ui 通过运行时配置自动选择 Bridge URL
+  - 新增 health/ready/status/Prometheus 端点，Pod stdout 接入 Loki，保留按工单 bridge_log 回采
+  - cluster 模式默认执行 same-origin 校验，单副本运行，禁止暴露为任意网页可调用的内网 SSH 跳板
+  - P0 使用完整 W3C `traceparent` 和 OTel Go SDK，将 Bridge WebSocket/SSH/结果回传真实 Span 导出到 Tempo，禁止固定 Span ID
+  - stdout/stderr 分流并有界捕获，记录总字节、截断、SHA-256、超时和错误分类；受控完整内容进入 `bridge_execution_artifacts`
+  - Bridge 日志使用 event_id 与 instance+seq 幂等落库；Langfuse、tool_result、Tempo、Loki、Artifact 通过 trace_id/exec_id/artifact_id 互查
+  - K3s 日志采集从已 EOL 的 Promtail 迁移到 Grafana Alloy，并按 containerd CRI 格式解析
 - **信息质量检查跳过 SOP 模式**：SOP 命中时 quality check 不再拦截
 
 - **agent-service Langfuse Helm 条件判断修复**（PR #491，v1.49）：

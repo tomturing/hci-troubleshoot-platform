@@ -1,0 +1,15 @@
+{{- if and .Values.terminalBridge.enabled .Values.terminalBridge.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: terminal-bridge-data
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.terminalBridge.persistence.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.terminalBridge.persistence.size }}
+{{- end }}

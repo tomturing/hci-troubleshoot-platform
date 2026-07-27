@@ -30,6 +30,12 @@ AGENT_TOOL_EXECUTION_DURATION = Histogram(
     "agent_tool_execution_duration_seconds", "Tool execution duration in seconds", labelnames=["tool_name", "status"]
 )
 
+AGENT_TOOL_ERROR_TOTAL = Counter(
+    "agent_tool_error_total",
+    "Total tool execution errors classified by stable error type",
+    labelnames=["tool_name", "error_type"],
+)
+
 # 工具语义校验失败计数，覆盖 bash_exec 容器契约和 aCLI catalog 校验。
 AGENT_TOOL_SEMANTIC_VALIDATION_TOTAL = Counter(
     "agent_tool_semantic_validation_total",

@@ -27,6 +27,8 @@ from pydantic import BaseModel
 from shared.clients import AIAssistantRegistry
 from shared.observability.langfuse import observe_tool, start_agent_observation
 from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
+from shared.observability.redaction import redact_observation_value
 
 from app.config import settings
 from app.domain.agent_port import (
@@ -971,8 +973,6 @@ class ReactEngine:
             try:
                 import hashlib
 
-                from shared.observability.otel import get_current_trace_id
-
                 input_str = json.dumps(tool_args, sort_keys=True, ensure_ascii=False)
                 input_hash = hashlib.sha256(input_str.encode("utf-8")).hexdigest()
 
@@ -1114,8 +1114,6 @@ class ReactEngine:
             except Exception as met_err:
                 logger.warning("metrics_record_failed", f"记录工具语义校验指标失败: {met_err}")
             try:
-                from shared.observability.otel import get_current_trace_id
-
                 trace_id = get_current_trace_id() or "unknown"
             except Exception:
                 trace_id = "unknown"
@@ -1555,6 +1553,7 @@ class ReactEngine:
                     exec_id=exec_id,
                     session_id=session_id,
                     risk_level=tool_def.risk_level,
+                    trace_id=get_current_trace_id(),
                 ) as tool_obs:
                     try:
                         # T-AGT-22: 使用 active_executor 执行工具，显式传递 conversation_id 和 exec_id
@@ -1568,8 +1567,37 @@ class ReactEngine:
                         )
 
                         if tool_obs is not None:
-                            output = str(result)[:10000] if result else ""
-                            tool_obs.update(output=output)
+                            artifact_id = getattr(result, "artifact_id", None)
+                            if artifact_id:
+                                # Bridge 原始输出只进入受控 Artifact；Langfuse 保存可关联的结果摘要。
+                                output = {
+                                    "status": "success" if getattr(result, "exit_code", -1) == 0 else "failed",
+                                    "exit_code": getattr(result, "exit_code", None),
+                                    "duration_ms": getattr(result, "duration_ms", None),
+                                    "artifact_id": artifact_id,
+                                    "stdout_bytes": getattr(result, "stdout_bytes", None),
+                                    "stderr_bytes": getattr(result, "stderr_bytes", None),
+                                    "stdout_sha256": getattr(result, "stdout_sha256", None),
+                                    "stderr_sha256": getattr(result, "stderr_sha256", None),
+                                    "stdout_truncated": getattr(result, "stdout_truncated", False),
+                                    "stderr_truncated": getattr(result, "stderr_truncated", False),
+                                    "error_type": getattr(result, "error_type", None) or "none",
+                                }
+                            else:
+                                output = str(result)[:10000] if result else ""
+                            tool_obs.update(
+                                output=output,
+                                metadata={
+                                    "exec_id": exec_id,
+                                    "session_id": session_id,
+                                    "risk_level": tool_def.risk_level,
+                                    "otel_trace_id": getattr(result, "trace_id", None) or get_current_trace_id(),
+                                    "artifact_id": artifact_id,
+                                    "stdout_sha256": getattr(result, "stdout_sha256", None),
+                                    "stderr_sha256": getattr(result, "stderr_sha256", None),
+                                    "error_type": getattr(result, "error_type", None) or "none",
+                                },
+                            )
 
                         # 检查结果是否是超时，若超时则主动抛错重试
                         exit_code_meaning = None
@@ -1611,8 +1639,11 @@ class ReactEngine:
                 result = f"工具执行失败: {error}"
                 break
 
+        result_exit_code = getattr(result, "exit_code", 0) if result is not None else 0
+        execution_failed = error is not None or result_exit_code != 0
+
         # 3. 更新熔断状态
-        if error:
+        if execution_failed:
             breaker.record_failure()
         else:
             breaker.record_success()
@@ -1623,21 +1654,28 @@ class ReactEngine:
 
         # T4-2: 统计工具调用成功率与耗时分布 metrics
         try:
-            from app.services.metrics import AGENT_TOOL_CALL_TOTAL, AGENT_TOOL_EXECUTION_DURATION
+            from app.services.metrics import (
+                AGENT_TOOL_CALL_TOTAL,
+                AGENT_TOOL_ERROR_TOTAL,
+                AGENT_TOOL_EXECUTION_DURATION,
+            )
 
-            status_str = "success" if error is None else "failed"
+            status_str = "failed" if execution_failed else "success"
             AGENT_TOOL_CALL_TOTAL.labels(tool_name=tool_name, status=status_str).inc()
             AGENT_TOOL_EXECUTION_DURATION.labels(tool_name=tool_name, status=status_str).observe(
                 (completed_at - started_at).total_seconds()
             )
+            if execution_failed:
+                error_type = getattr(result, "error_type", None) or (
+                    "execution_exception" if error is not None else "nonzero_exit"
+                )
+                AGENT_TOOL_ERROR_TOTAL.labels(tool_name=tool_name, error_type=error_type).inc()
         except Exception as met_err:
             logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
 
         # 审计记录
         if self._audit:
             try:
-                from shared.observability.otel import get_current_trace_id
-
                 await self._audit.write(
                     audit_id=audit_id,
                     session_id=session_id,
@@ -1651,8 +1689,13 @@ class ReactEngine:
                     completed_at=completed_at,
                     duration_ms=duration_ms,
                     trace_id=get_current_trace_id(),
-                    status="failed" if error else "committed",
+                    status="failed" if execution_failed else "committed",
                     retry_count=retry_count,  # T1-4：落库重试次数
+                    exec_id=exec_id,
+                    artifact_id=getattr(result, "artifact_id", None),
+                    output_sha256=getattr(result, "stdout_sha256", None),
+                    error_type=getattr(result, "error_type", None),
+                    bridge_trace_id=getattr(result, "trace_id", None),
                 )
             except Exception as audit_err:
                 logger.error(f"审计日志写入失败: {audit_err}")
@@ -1666,11 +1709,11 @@ class ReactEngine:
             session_id=session_id,
             case_id=case_id,
             exec_id=exec_id,
-            status="failed" if error else "success",
+            status="failed" if execution_failed else "success",
         )
 
         # T2-2: 工具执行结果写入 FactStore（形成 Evidence 闭环）
-        if error is None and self._fact_store:
+        if not execution_failed and self._fact_store:
             try:
                 import time
 
@@ -1803,7 +1846,19 @@ class ReactEngine:
         try:
             from shared.dynamic_resource.loader import DynamicResourceLoader
             from shared.dynamic_resource.models import UsageRecord
-            from shared.observability.otel import get_current_trace_id
+
+            artifact_id = getattr(result, "artifact_id", None)
+            if artifact_id:
+                safe_output = {
+                    "artifact_id": artifact_id,
+                    "exit_code": getattr(result, "exit_code", None),
+                    "duration_ms": getattr(result, "duration_ms", None),
+                    "stdout_sha256": getattr(result, "stdout_sha256", None),
+                    "stderr_sha256": getattr(result, "stderr_sha256", None),
+                    "error_type": getattr(result, "error_type", None),
+                }
+            else:
+                safe_output = redact_observation_value(result)
 
             async with self._db_session_factory() as session:
                 snapshot = await DynamicResourceLoader(session).get_active("tool", tool_name)
@@ -1816,12 +1871,14 @@ class ReactEngine:
                         case_id=case_id,
                         trace_id=get_current_trace_id(),
                         exec_id=exec_id,
-                        input_payload=tool_args,
-                        output_payload=result,
+                        input_payload=redact_observation_value(tool_args),
+                        output_payload=safe_output,
                         error=error,
                         metadata={
                             "risk_level": getattr(tool_def, "risk_level", None),
                             "policy": getattr(tool_def, "policy", None),
+                            "artifact_id": artifact_id,
+                            "otel_trace_id": get_current_trace_id(),
                         },
                     ),
                 )

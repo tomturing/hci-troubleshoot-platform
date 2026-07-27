@@ -51,6 +51,16 @@ spec:
     - host: "{{ .Values.global.domain }}"
       http:
         paths:
+          {{- if .Values.terminalBridge.enabled }}
+          # 本地集群调试 Bridge；同源 WebSocket，生产默认关闭。
+          - path: /terminal-bridge
+            pathType: Prefix
+            backend:
+              service:
+                name: terminal-bridge
+                port:
+                  number: {{ .Values.terminalBridge.port }}
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:
@@ -85,6 +95,16 @@ spec:
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+          {{- if .Values.terminalBridge.enabled }}
+          # 本地集群调试 Bridge；必须排在 customer-ui 的根路径回退之前。
+          - path: /terminal-bridge
+            pathType: Prefix
+            backend:
+              service:
+                name: terminal-bridge
+                port:
+                  number: {{ .Values.terminalBridge.port }}
+          {{- end }}
           # 客户端 UI（根路径）
           # 管理端 UI 已分离到独立 Ingress（admin-ui-ingress），使用 web entrypoint (端口 4888)
           # 详见: docs/deploy/admin-ui-internal-isolation.md

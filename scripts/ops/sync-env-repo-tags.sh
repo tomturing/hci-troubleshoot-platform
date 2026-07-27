@@ -16,7 +16,7 @@ set -euo pipefail
 ENV_REPO_PATH="${ENV_REPO_PATH:-}"
 TARGET_ENV="${TARGET_ENV:-dev}"
 IMAGE_TAG="${IMAGE_TAG:-}"
-SERVICES_CSV="${SERVICES_CSV:-apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI,agentService,evalService}"
+SERVICES_CSV="${SERVICES_CSV:-apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI,terminalBridge,agentService,evalService}"
 # 镜像仓库前缀（与 values.yaml 中的 global.imageRegistry 一致）
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-ghcr.io/tomturing/hci-troubleshoot-platform}"
 # 设为 true 时跳过 dbMigrate.image 更新（本次无 schema 变更）

@@ -286,6 +286,38 @@ customerUI:
       cpu: "100m"
       memory: "64Mi"
 
+# ======================== Terminal Bridge ===================================
+# 本地 K3s 端到端联调时启用；生产/云端默认关闭，继续使用 Windows 桌面客户端。
+terminalBridge:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: hci-terminal-bridge
+    tag: latest
+  port: 9999
+  # cluster 模式默认只接受同源浏览器连接，禁止作为任意网页可调用的内网 SSH 跳板。
+  allowedOrigins: "same-origin"
+  logStorageSizeLimit: "256Mi"
+  # bridge.log 达到 64 MiB 后滚动为 bridge.log.1，避免 Pod 临时盘被持续写满。
+  logFileMaxBytes: "67108864"
+  execTimeoutSeconds: 120
+  execMaxOutputBytes: 4194304
+  artifactRetentionDays: 30
+  artifactCleanupSchedule: "17 3 * * *"
+  otelEndpoint: "http://tempo.hci-observability.svc.cluster.local:4318"
+  hostKeyPolicy: "accept-new"
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 512Mi
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "16Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+
 # ======================== Admin UI ==========================================
 adminUI:
   replicaCount: 1
@@ -419,8 +451,8 @@ observability:
       limits:
         cpu: "1000m"
         memory: "2Gi"
-  promtail:
-    image: grafana/promtail:latest
+  alloy:
+    image: grafana/alloy:v1.10.2
     resources:
       requests:
         cpu: "25m"

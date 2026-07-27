@@ -1,0 +1,92 @@
+{{- if .Values.terminalBridge.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: terminal-bridge
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "terminal-bridge" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: {{ .Values.terminalBridge.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "terminal-bridge" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "terminal-bridge" "Release" .Release "Chart" .Chart) | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.terminalBridge.port | quote }}
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "terminal-bridge") | nindent 6 }}
+      volumes:
+        - name: bridge-logs
+          {{- if .Values.terminalBridge.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: terminal-bridge-data
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.terminalBridge.logStorageSizeLimit | quote }}
+          {{- end }}
+      containers:
+        - name: terminal-bridge
+          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.terminalBridge.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
+          args:
+            - "--mode=cluster"
+          env:
+            - name: HCI_BRIDGE_PORT
+              value: {{ .Values.terminalBridge.port | quote }}
+            - name: HCI_BRIDGE_ALLOWED_ORIGINS
+              value: {{ .Values.terminalBridge.allowedOrigins | quote }}
+            - name: HCI_BRIDGE_LOG_DIR
+              value: "/var/lib/terminal-bridge"
+            - name: HCI_BRIDGE_LOG_MAX_BYTES
+              value: {{ .Values.terminalBridge.logFileMaxBytes | quote }}
+            - name: HCI_BRIDGE_EXEC_TIMEOUT_SECONDS
+              value: {{ .Values.terminalBridge.execTimeoutSeconds | quote }}
+            - name: HCI_BRIDGE_EXEC_MAX_OUTPUT_BYTES
+              value: {{ .Values.terminalBridge.execMaxOutputBytes | int | quote }}
+            - name: HCI_BRIDGE_OTEL_ENDPOINT
+              value: {{ .Values.terminalBridge.otelEndpoint | quote }}
+            - name: HCI_DEPLOYMENT_ENVIRONMENT
+              value: {{ .Values.global.environment | quote }}
+            - name: HCI_BRIDGE_HOST_KEY_POLICY
+              value: {{ .Values.terminalBridge.hostKeyPolicy | quote }}
+            - name: HCI_BRIDGE_KNOWN_HOSTS_FILE
+              value: "/var/lib/terminal-bridge/known_hosts"
+          ports:
+            - name: http
+              containerPort: {{ .Values.terminalBridge.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: bridge-logs
+              mountPath: /var/lib/terminal-bridge
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.terminalBridge.resources | nindent 12 }}
+{{- end }}

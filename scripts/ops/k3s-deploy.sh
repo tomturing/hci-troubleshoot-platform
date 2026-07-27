@@ -120,6 +120,7 @@ _build_image_tag_args() {
     "--set" "kbService.image.tag=${image_tag}"
     "--set" "customerUI.image.tag=${image_tag}"
     "--set" "adminUI.image.tag=${image_tag}"
+    "--set" "terminalBridge.image.tag=${image_tag}"
     "--set" "openclaw.image.tag=${image_tag}"
     "--set" "learningclaw.image.tag=${image_tag}"
     "--set" "productionclaw.image.tag=${image_tag}"

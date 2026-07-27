@@ -19,7 +19,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-# 所有服务键（默认全部）
+# 默认发布集合。terminalBridge 是仅 dev/local 启用的可选服务，必须显式选择，避免生产默认发布改变 SSH 拓扑。
 ALL_SERVICES="apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI,openclaw"
 
 ENVIRONMENT="prod"
@@ -59,7 +59,7 @@ usage() {
 options:
   --env <prod|dev>               发布环境（默认: prod）
   --services <keys|all>          需要发布的服务（默认: all）
-                                   all = 所有服务
+                                   all = 默认核心服务（不含可选 terminalBridge）
                                    多个用逗号分隔: customerUI,apiGateway
   --tag <image_tag>              指定镜像 tag（默认: YYYY.MM.DD-HHMM-<git短sha>）
   --skip-verify                  跳过 scripts/k3s-verify.sh
@@ -68,14 +68,16 @@ options:
   -h, --help                     显示帮助
 
 服务键可选值:
-  all
+  all（默认核心服务，不含 terminalBridge）
   apiGateway, caseService, conversationService, schedulerService, kbService,
-  customerUI, adminUI, openclaw
+  customerUI, adminUI, terminalBridge, openclaw
 
 示例:
   bash scripts/k3s-release.sh                          # 全量发布
   bash scripts/k3s-release.sh --services all           # 全量发布（显式）
   bash scripts/k3s-release.sh --services customerUI    # 只发布 Customer UI
+  bash scripts/k3s-release.sh --env dev --services terminalBridge,customerUI
+                                                    # 发布集群 Bridge 与运行时前端配置
 EOF
 }
 
@@ -184,7 +186,7 @@ validate_services() {
   for svc in "${SELECTED_SERVICES[@]}"; do
     case "$svc" in
       apiGateway|caseService|conversationService|schedulerService|\
-      kbService|customerUI|adminUI|openclaw) ;;
+      kbService|customerUI|adminUI|terminalBridge|openclaw) ;;
       *) error "未知服务键: $svc，可选值请查看 --help"; exit 1 ;;
     esac
   done
@@ -355,6 +357,7 @@ service_key_to_deploy_name() {
     kbService)           echo "kb-service" ;;
     customerUI)          echo "customer-ui" ;;
     adminUI)             echo "admin-ui" ;;
+    terminalBridge)      echo "terminal-bridge" ;;
     openclaw)            echo "openclaw" ;;
     *) return 1 ;;
   esac
@@ -369,6 +372,7 @@ service_key_to_repository() {
     kbService)           echo "hci-kb-service" ;;
     customerUI)          echo "hci-customer-ui" ;;
     adminUI)             echo "hci-admin-ui" ;;
+    terminalBridge)      echo "hci-terminal-bridge" ;;
     openclaw)            echo "hci-openclaw" ;;
     *) return 1 ;;
   esac

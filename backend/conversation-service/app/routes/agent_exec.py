@@ -15,7 +15,11 @@ Agent 执行命令路由 — Agent 工具执行命令推送与结果回传
 
 from __future__ import annotations
 
+import json
+import os
+import re
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -23,12 +27,26 @@ from shared.database.postgres import DatabaseManager
 from shared.database.redis import RedisManager
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from sqlalchemy import text
 
 from ..config import settings
 from .conversations import get_conversation_service  # 复用 B1 的「会话→工单」解析
 
 logger = get_logger("agent-exec-routes")
 router = APIRouter(tags=["agent-exec"])
+
+_COMMAND_SECRET_RE = re.compile(
+    r"(?i)(password|passwd|token|secret|api[_-]?key)(\s*[=:]\s*|\s+)([^\s'\"]+|['\"][^'\"]*['\"])",
+)
+_EXEC_STATE_TTL_SECONDS = int(os.getenv("AGENT_EXEC_STATE_TTL_SECONDS", "180"))
+_ARTIFACT_RETENTION_DAYS = int(os.getenv("BRIDGE_ARTIFACT_RETENTION_DAYS", "30"))
+
+
+def _redact_command(command: str | None) -> str | None:
+    """对 Artifact 中的命令做保守脱敏，避免凭据进入长期存储。"""
+    if command is None:
+        return None
+    return _COMMAND_SECRET_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", command)[:4096]
 
 # 由 main.py 注入
 _db_manager: DatabaseManager | None = None
@@ -98,6 +116,8 @@ class AgentExecRequest(BaseModel):
     # 缺失时由会话关联解析（对齐 conversations.py 的 B1 修复），避免空串透传至 terminal_bridge 触发 exec.session_missing。
     case_id: str | None = Field(None, description="工单 ID（缺失时由会话关联解析，对齐 B1 修复）")
     trace_id: str | None = Field(None, description="端到端链路 ID（透传至 terminal_bridge）")
+    traceparent: str | None = Field(None, pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
+    tool_call_id: str | None = None
 
 
 class AgentExecResponse(BaseModel):
@@ -122,7 +142,7 @@ async def push_agent_exec_command(
 
     流程：
       1. 验证内部服务 Token
-      2. 写入 Redis：SET exec:{exec_id} "pending" EX 120（120秒超时）
+      2. 写入 Redis：SET exec:{exec_id} <context> EX 180（覆盖 Bridge 执行和结果回传窗口）
       3. 推送 SSE 事件 agent_exec_command 到前端
       4. 返回 202 Accepted
 
@@ -192,8 +212,24 @@ async def push_agent_exec_command(
         trace_id=trace_id,
     )
 
-    # 1. 写入 Redis pending 状态（120秒超时）
-    await _redis_manager.set(f"exec:{body.exec_id}", "pending", ex=120)
+    # 1. 写入 Redis pending 上下文，180 秒覆盖 Bridge 120 秒执行和上游结果回传余量。
+    pending_context = {
+        "exec_id": body.exec_id,
+        "tool_name": body.tool_name,
+        "command": body.built_command or body.command,
+        "container": body.container,
+        "node_ip": body.node_ip,
+        "case_id": effective_case_id,
+        "conversation_id": str(conversation_id),
+        "trace_id": body.trace_id or trace_id,
+        "traceparent": body.traceparent,
+        "tool_call_id": body.tool_call_id or body.exec_id,
+    }
+    await _redis_manager.set(
+        f"exec:{body.exec_id}",
+        json.dumps(pending_context, ensure_ascii=False),
+        ex=_EXEC_STATE_TTL_SECONDS,
+    )
 
     # 2. 推送 SSE 事件到前端
     # 通过 app.state 获取 SSE 推送服务
@@ -215,6 +251,8 @@ async def push_agent_exec_command(
         "caseId": effective_case_id,
         "conversationId": str(conversation_id),
         "traceId": body.trace_id,
+        "traceparent": body.traceparent,
+        "toolCallId": body.tool_call_id or body.exec_id,
     }
 
     if sse_pusher:
@@ -260,6 +298,19 @@ class ExecResultRequest(BaseModel):
     exit_code: int = Field(..., description="退出码（0=成功）")
     stdout: str | None = Field(default=None, description="标准输出")
     stderr: str | None = Field(default=None, description="标准错误")
+    trace_id: str | None = None
+    traceparent: str | None = Field(default=None, pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
+    stdout_bytes: int | None = Field(default=None, ge=0)
+    stderr_bytes: int | None = Field(default=None, ge=0)
+    stdout_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    stderr_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    duration_ms: int | None = Field(default=None, ge=0)
+    timed_out: bool = False
+    cancelled: bool = False
+    error_type: str | None = None
+    artifact_id: uuid.UUID | None = None
 
 
 class ExecResultResponse(BaseModel):
@@ -314,6 +365,15 @@ async def submit_exec_result(
     pending_value = await _redis_manager.get(pending_key)
 
     if pending_value is None:
+        if _db_manager is not None:
+            async for session in _db_manager.get_session():
+                existing = await session.execute(
+                    text("SELECT artifact_id FROM bridge_execution_artifacts WHERE exec_id = :exec_id"),
+                    {"exec_id": body.exec_id},
+                )
+                if existing.scalar_one_or_none() is not None:
+                    logger.info(event="exec_result_duplicate_accepted", exec_id=body.exec_id, trace_id=trace_id)
+                    return ExecResultResponse(ok=True, exec_id=body.exec_id, message="执行结果已幂等接收")
         logger.warning(
             event="exec_result_invalid_exec_id",
             conversation_id=str(conversation_id),
@@ -326,8 +386,81 @@ async def submit_exec_result(
             detail=f"执行 ID {body.exec_id} 不存在或已过期",
         )
 
-    # 2. 写入 Redis 队列（结果数据）
-    import json
+    try:
+        pending_context = json.loads(pending_value) if isinstance(pending_value, str) else json.loads(pending_value.decode())
+    except (TypeError, ValueError, AttributeError):
+        pending_context = {}
+
+    effective_trace_id = body.trace_id or trace_id or pending_context.get("trace_id")
+    artifact_id = str(body.artifact_id or uuid.uuid5(uuid.NAMESPACE_URL, f"hci-terminal-artifact:{body.exec_id}"))
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async for session in _db_manager.get_session():
+        await session.execute(text("DELETE FROM bridge_execution_artifacts WHERE expires_at < now()"))
+        await session.execute(
+            text(
+                """
+                INSERT INTO bridge_execution_artifacts
+                    (artifact_id, exec_id, case_id, conversation_id, tool_name, trace_id,
+                     node_ip, container, command_redacted, stdout, stderr, exit_code,
+                     stdout_bytes, stderr_bytes, stdout_sha256, stderr_sha256,
+                     stdout_truncated, stderr_truncated, duration_ms, timed_out, cancelled,
+                     status, error_type, expires_at)
+                VALUES
+                    (:artifact_id, :exec_id, :case_id, :conversation_id, :tool_name, :trace_id,
+                     :node_ip, :container, :command_redacted, :stdout, :stderr, :exit_code,
+                     :stdout_bytes, :stderr_bytes, :stdout_sha256, :stderr_sha256,
+                     :stdout_truncated, :stderr_truncated, :duration_ms, :timed_out, :cancelled,
+                     :status, :error_type, :expires_at)
+                ON CONFLICT (exec_id) DO UPDATE SET
+                    trace_id = EXCLUDED.trace_id,
+                    stdout = EXCLUDED.stdout,
+                    stderr = EXCLUDED.stderr,
+                    exit_code = EXCLUDED.exit_code,
+                    stdout_bytes = EXCLUDED.stdout_bytes,
+                    stderr_bytes = EXCLUDED.stderr_bytes,
+                    stdout_sha256 = EXCLUDED.stdout_sha256,
+                    stderr_sha256 = EXCLUDED.stderr_sha256,
+                    stdout_truncated = EXCLUDED.stdout_truncated,
+                    stderr_truncated = EXCLUDED.stderr_truncated,
+                    duration_ms = EXCLUDED.duration_ms,
+                    timed_out = EXCLUDED.timed_out,
+                    cancelled = EXCLUDED.cancelled,
+                    status = EXCLUDED.status,
+                    error_type = EXCLUDED.error_type,
+                    updated_at = now()
+                """
+            ),
+            {
+                "artifact_id": artifact_id,
+                "exec_id": body.exec_id,
+                "case_id": pending_context.get("case_id"),
+                "conversation_id": str(conversation_id),
+                "tool_name": pending_context.get("tool_name"),
+                "trace_id": effective_trace_id,
+                "node_ip": pending_context.get("node_ip"),
+                "container": pending_context.get("container"),
+                "command_redacted": _redact_command(pending_context.get("command")),
+                "stdout": body.stdout,
+                "stderr": body.stderr,
+                "exit_code": body.exit_code,
+                "stdout_bytes": body.stdout_bytes if body.stdout_bytes is not None else len((body.stdout or "").encode()),
+                "stderr_bytes": body.stderr_bytes if body.stderr_bytes is not None else len((body.stderr or "").encode()),
+                "stdout_sha256": body.stdout_sha256,
+                "stderr_sha256": body.stderr_sha256,
+                "stdout_truncated": body.stdout_truncated,
+                "stderr_truncated": body.stderr_truncated,
+                "duration_ms": body.duration_ms,
+                "timed_out": body.timed_out,
+                "cancelled": body.cancelled,
+                "status": "success" if body.exit_code == 0 else "failed",
+                "error_type": body.error_type,
+                "expires_at": datetime.now(UTC) + timedelta(days=_ARTIFACT_RETENTION_DAYS),
+            },
+        )
+        await session.commit()
 
     result_data = {
         "exec_id": body.exec_id,
@@ -337,15 +470,27 @@ async def submit_exec_result(
         "stderr": body.stderr,
         "conversation_id": str(conversation_id),
         "user_id": user_id,
-        "trace_id": trace_id,
+        "trace_id": effective_trace_id,
+        "traceparent": body.traceparent,
+        "artifact_id": artifact_id,
+        "stdout_bytes": body.stdout_bytes,
+        "stderr_bytes": body.stderr_bytes,
+        "stdout_sha256": body.stdout_sha256,
+        "stderr_sha256": body.stderr_sha256,
+        "stdout_truncated": body.stdout_truncated,
+        "stderr_truncated": body.stderr_truncated,
+        "duration_ms": body.duration_ms,
+        "timed_out": body.timed_out,
+        "cancelled": body.cancelled,
+        "error_type": body.error_type,
     }
     result_key = f"exec_result:{body.exec_id}"
 
     # 使用 Redis list 作为队列（LPUSH 写入，agent-service 端用 RPOP 读取）
     await _redis_manager.client.lpush(result_key, json.dumps(result_data, ensure_ascii=False))
 
-    # 设置队列过期时间（120秒，与 pending key 相同）
-    await _redis_manager.expire(result_key, 120)
+    # 结果保留 180 秒，覆盖 Agent 默认 150 秒等待窗口并允许短暂重试。
+    await _redis_manager.expire(result_key, _EXEC_STATE_TTL_SECONDS)
 
     # 3. 删除 pending key
     await _redis_manager.delete(pending_key)

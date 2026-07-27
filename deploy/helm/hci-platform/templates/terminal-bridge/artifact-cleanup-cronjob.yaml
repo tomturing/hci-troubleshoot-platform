@@ -1,0 +1,55 @@
+{{- if .Values.terminalBridge.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: terminal-bridge-artifact-cleanup
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "terminal-bridge-artifact-cleanup" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  schedule: {{ .Values.terminalBridge.artifactCleanupSchedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            {{- include "hci.podLabels" (dict "name" "terminal-bridge-artifact-cleanup" "Release" .Release "Chart" .Chart) | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: cleanup
+              image: postgres:15-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - sh
+                - -ec
+                - >-
+                  psql -v ON_ERROR_STOP=1
+                  -c 'DELETE FROM bridge_execution_artifacts WHERE expires_at < now()'
+              env:
+                - name: PGHOST
+                  value: {{ .Values.config.postgresHost | quote }}
+                - name: PGPORT
+                  value: "5432"
+                - name: PGUSER
+                  value: {{ .Values.config.postgresUser | quote }}
+                - name: PGDATABASE
+                  value: {{ .Values.config.postgresDb | quote }}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: hci-secrets
+                      key: POSTGRES_PASSWORD
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+{{- end }}

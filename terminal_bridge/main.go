@@ -1,71 +1,256 @@
-// terminal_bridge - HCI 排障助手本地 SSH Bridge
-// 架构: Custom UI (浏览器) → ws://localhost:9999 → terminal_bridge.exe → SSH → HCI Linux
-// 编译: 执行 build_windows.bat 即可
-// 体积: ~3-4MB 原生，upx 压缩后 ~1.5MB，支持 Win7/10/11，无任何运行时依赖
+// terminal_bridge - HCI 排障助手 SSH Bridge
+// 桌面架构: Custom UI (浏览器) → ws://localhost:9999 → terminal_bridge.exe → SSH → HCI Linux
+// 集群架构: Custom UI (浏览器) → 同源 WebSocket → terminal_bridge Pod → SSH → HCI Linux
+// 同一套代码同时构建 Windows 客户端和 Linux 容器镜像。
 
 package main
 
 import (
 	"bufio"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"hash"
 	"io"
 	"log"
-	"sync/atomic"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"runtime/debug"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"golang.org/x/net/websocket"
 )
 
 const (
-	wsPort = 9999
+	defaultWSPort = 9999
+	desktopMode   = "desktop"
+	clusterMode   = "cluster"
 )
+
+type runtimeConfig struct {
+	Mode              string
+	ListenAddress     string
+	Port              int
+	AllowedOrigins    []string
+	AllowedOriginsRaw string
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envIntOrDefault(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func normalizeRuntimeConfig(mode, listenAddress string, port int, allowedOrigins string) (runtimeConfig, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = desktopMode
+	}
+	if mode != desktopMode && mode != clusterMode {
+		return runtimeConfig{}, fmt.Errorf("不支持的运行模式 %q，仅支持 %s 或 %s", mode, desktopMode, clusterMode)
+	}
+
+	listenAddress = strings.TrimSpace(listenAddress)
+	if listenAddress == "" {
+		if mode == clusterMode {
+			listenAddress = "0.0.0.0"
+		} else {
+			listenAddress = "127.0.0.1"
+		}
+	}
+	if port < 1 || port > 65535 {
+		return runtimeConfig{}, fmt.Errorf("监听端口必须在 1-65535 范围内，当前值为 %d", port)
+	}
+
+	allowedOrigins = strings.TrimSpace(allowedOrigins)
+	if allowedOrigins == "" {
+		if mode == clusterMode {
+			allowedOrigins = "same-origin"
+		} else {
+			allowedOrigins = "*"
+		}
+	}
+	origins := make([]string, 0, 4)
+	for _, item := range strings.Split(allowedOrigins, ",") {
+		item = strings.TrimRight(strings.TrimSpace(item), "/")
+		if item != "" {
+			origins = append(origins, item)
+		}
+	}
+	if len(origins) == 0 {
+		return runtimeConfig{}, fmt.Errorf("至少需要配置一个允许的 Origin")
+	}
+
+	return runtimeConfig{
+		Mode:              mode,
+		ListenAddress:     listenAddress,
+		Port:              port,
+		AllowedOrigins:    origins,
+		AllowedOriginsRaw: allowedOrigins,
+	}, nil
+}
+
+func (c runtimeConfig) address() string {
+	return net.JoinHostPort(c.ListenAddress, strconv.Itoa(c.Port))
+}
+
+func (c runtimeConfig) originAllowed(origin, requestHost string) bool {
+	if origin == "" {
+		// 非浏览器客户端可能不发送 Origin；鉴权和访问控制由上层网络边界负责。
+		return true
+	}
+	normalizedOrigin := strings.TrimRight(strings.TrimSpace(origin), "/")
+	for _, allowed := range c.AllowedOrigins {
+		switch allowed {
+		case "*":
+			return true
+		case "same-origin":
+			parsed, err := url.Parse(normalizedOrigin)
+			if err == nil && strings.EqualFold(parsed.Host, requestHost) {
+				return true
+			}
+		default:
+			if strings.EqualFold(normalizedOrigin, allowed) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // ── 消息结构 ─────────────────────────────────────────────────────────────────
 
 type InMessage struct {
-	Type       string `json:"type"`
-	CaseID     string `json:"case_id"`
-	Host       string `json:"host"`
-	Username   string `json:"username"`
-	Port       int    `json:"port"`
-	AuthType   string `json:"auth_type"`
-	Password   string `json:"password"`
-	PrivateKey string `json:"private_key"`
-	Passphrase string `json:"passphrase"`
-	Data       string `json:"data"`
-	Command    string `json:"command"`
-	ExecID     string `json:"exec_id"`   // 用于 ssh_exec_command 和 ssh_exec_process
-	NodeIP     string `json:"node_ip"`   // 目标节点 IP（多节点路由）
-	Container  string `json:"container"` // 目标容器名（空或"host"=物理机直连）
-	TraceID    string `json:"trace_id"`  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
-	Resume     bool   `json:"resume"`     // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
+	Type           string `json:"type"`
+	CaseID         string `json:"case_id"`
+	Host           string `json:"host"`
+	Username       string `json:"username"`
+	Port           int    `json:"port"`
+	AuthType       string `json:"auth_type"`
+	Password       string `json:"password"`
+	PrivateKey     string `json:"private_key"`
+	Passphrase     string `json:"passphrase"`
+	Data           string `json:"data"`
+	Command        string `json:"command"`
+	ExecID         string `json:"exec_id"`   // 用于 ssh_exec_command 和 ssh_exec_process
+	NodeIP         string `json:"node_ip"`   // 目标节点 IP（多节点路由）
+	Container      string `json:"container"` // 目标容器名（空或"host"=物理机直连）
+	TraceID        string `json:"trace_id"`  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
+	Traceparent    string `json:"traceparent"`
+	Tracestate     string `json:"tracestate"`
+	ConversationID string `json:"conversation_id"`
+	ToolCallID     string `json:"tool_call_id"`
+	Resume         bool   `json:"resume"` // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
 }
 
 type OutMessage struct {
-	Type     string `json:"type"`
-	CaseID   string `json:"case_id"`
-	Output   string `json:"output,omitempty"`
-	Message  string `json:"message,omitempty"`
-	Detail   string `json:"detail,omitempty"`
-	ExecID   string `json:"exec_id,omitempty"`   // 用于 exec_result
-	ExitCode int    `json:"exit_code,omitempty"` // 用于 exec_result
-	Stdout   string `json:"stdout,omitempty"`    // 双通道物理隔离输出 (Scheme B)
-	Stderr   string `json:"stderr,omitempty"`    // 双通道物理隔离输出 (Scheme B)
-	TraceID  string `json:"trace_id,omitempty"`  // 回显端到端 trace_id
-	CustomUI string `json:"custom_ui,omitempty"` // 来源 Custom-UI（自动按 Origin 关联）
+	Type            string `json:"type"`
+	CaseID          string `json:"case_id"`
+	Output          string `json:"output,omitempty"`
+	Message         string `json:"message,omitempty"`
+	Detail          string `json:"detail,omitempty"`
+	ExecID          string `json:"exec_id,omitempty"`   // 用于 exec_result
+	ExitCode        int    `json:"exit_code,omitempty"` // 用于 exec_result
+	Stdout          string `json:"stdout,omitempty"`    // 双通道物理隔离输出 (Scheme B)
+	Stderr          string `json:"stderr,omitempty"`    // 双通道物理隔离输出 (Scheme B)
+	TraceID         string `json:"trace_id,omitempty"`  // 回显端到端 trace_id
+	CustomUI        string `json:"custom_ui,omitempty"` // 来源 Custom-UI（自动按 Origin 关联）
+	Traceparent     string `json:"traceparent,omitempty"`
+	ArtifactID      string `json:"artifact_id,omitempty"`
+	StdoutBytes     int64  `json:"stdout_bytes,omitempty"`
+	StderrBytes     int64  `json:"stderr_bytes,omitempty"`
+	StdoutSHA256    string `json:"stdout_sha256,omitempty"`
+	StderrSHA256    string `json:"stderr_sha256,omitempty"`
+	StdoutTruncated bool   `json:"stdout_truncated,omitempty"`
+	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
+	DurationMS      int64  `json:"duration_ms,omitempty"`
+	TimedOut        bool   `json:"timed_out,omitempty"`
+	Cancelled       bool   `json:"cancelled,omitempty"`
+	ErrorType       string `json:"error_type,omitempty"`
 }
+
+type execRequestContext struct {
+	Context         context.Context
+	CaseID          string
+	ConversationID  string
+	ExecID          string
+	ToolCallID      string
+	TraceID         string
+	Traceparent     string
+	Tracestate      string
+	NodeIP          string
+	Container       string
+	CustomUI        string
+	Command         string
+	CommandRedacted string
+	CommandSHA256   string
+}
+
+type boundedCapture struct {
+	limit     int
+	buffer    []byte
+	total     int64
+	hasher    hash.Hash
+	truncated bool
+}
+
+func newBoundedCapture(limit int) *boundedCapture {
+	return &boundedCapture{limit: limit, hasher: sha256.New()}
+}
+
+func (c *boundedCapture) write(p []byte) []byte {
+	_, _ = c.hasher.Write(p)
+	c.total += int64(len(p))
+	remaining := c.limit - len(c.buffer)
+	if remaining <= 0 {
+		c.truncated = c.truncated || len(p) > 0
+		return nil
+	}
+	if len(p) > remaining {
+		c.truncated = true
+		p = p[:remaining]
+	}
+	c.buffer = append(c.buffer, p...)
+	return p
+}
+
+func (c *boundedCapture) String() string { return string(c.buffer) }
+func (c *boundedCapture) SHA256() string { return fmt.Sprintf("%x", c.hasher.Sum(nil)) }
 
 // ── Exec Marker 监听器 ─────────────────────────────────────────────────────────
 
@@ -87,14 +272,16 @@ type ExecResult struct {
 // ── SSH 会话 ──────────────────────────────────────────────────────────────────
 
 type SSHSession struct {
-	caseID      string
-	client      *ssh.Client
-	session     *ssh.Session
-	stdin       io.WriteCloser
-	mu          sync.Mutex
-	closed      bool
-	listenersMu sync.Mutex
-	listeners   map[string]*ExecListener // key: execID
+	caseID       string
+	client       *ssh.Client
+	clientConfig *ssh.ClientConfig
+	address      string
+	session      *ssh.Session
+	stdin        io.WriteCloser
+	mu           sync.Mutex
+	closed       bool
+	listenersMu  sync.Mutex
+	listeners    map[string]*ExecListener // key: execID
 }
 
 func newSSHSession(msg InMessage) (*SSHSession, error) {
@@ -128,13 +315,17 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 		return nil, err
 	}
 
+	addr := fmt.Sprintf("%s:%d", strings.TrimSpace(msg.Host), port)
+	hostKeyCallback, err := buildHostKeyCallback(addr)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 SSH 主机指纹校验失败: %w", err)
+	}
 	clientConfig := &ssh.ClientConfig{
 		User:            username,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         12 * time.Second,
 	}
-	addr := fmt.Sprintf("%s:%d", strings.TrimSpace(msg.Host), port)
 
 	client, err := ssh.Dial("tcp", addr, clientConfig)
 	if err != nil {
@@ -147,10 +338,61 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 	}
 
 	return &SSHSession{
-		caseID:    msg.CaseID,
-		client:    client,
-		session:   session,
-		listeners: make(map[string]*ExecListener),
+		caseID:       msg.CaseID,
+		client:       client,
+		clientConfig: clientConfig,
+		address:      addr,
+		session:      session,
+		listeners:    make(map[string]*ExecListener),
+	}, nil
+}
+
+var knownHostsMu sync.Mutex
+
+func buildHostKeyCallback(addr string) (ssh.HostKeyCallback, error) {
+	policy := strings.ToLower(envOrDefault("HCI_BRIDGE_HOST_KEY_POLICY", "accept-new"))
+	if policy == "insecure" {
+		return ssh.InsecureIgnoreHostKey(), nil
+	}
+	knownHostsPath := strings.TrimSpace(os.Getenv("HCI_BRIDGE_KNOWN_HOSTS_FILE"))
+	if knownHostsPath == "" {
+		baseDir := envOrDefault("HCI_BRIDGE_LOG_DIR", ".")
+		knownHostsPath = filepath.Join(baseDir, "known_hosts")
+	}
+	if err := os.MkdirAll(filepath.Dir(knownHostsPath), 0o700); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(knownHostsPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	_ = file.Close()
+	strictCallback, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		return nil, err
+	}
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		err := strictCallback(hostname, remote, key)
+		if err == nil || policy == "strict" {
+			return err
+		}
+		var keyErr *knownhosts.KeyError
+		if !errors.As(err, &keyErr) || len(keyErr.Want) != 0 {
+			return err
+		}
+		knownHostsMu.Lock()
+		defer knownHostsMu.Unlock()
+		line := knownhosts.Line([]string{knownhosts.Normalize(addr)}, key) + "\n"
+		output, openErr := os.OpenFile(knownHostsPath, os.O_APPEND|os.O_WRONLY, 0o600)
+		if openErr != nil {
+			return openErr
+		}
+		_, writeErr := io.WriteString(output, line)
+		closeErr := output.Close()
+		if writeErr != nil {
+			return writeErr
+		}
+		return closeErr
 	}, nil
 }
 
@@ -278,7 +520,14 @@ func (s *SSHSession) appendOutput(chunk string) {
 	s.listenersMu.Lock()
 	defer s.listenersMu.Unlock()
 	for _, listener := range s.listeners {
-		listener.OutputBuf.WriteString(chunk)
+		maxBytes := envIntOrDefault("HCI_BRIDGE_EXEC_MAX_OUTPUT_BYTES", 4*1024*1024)
+		remaining := maxBytes - listener.OutputBuf.Len()
+		if remaining > 0 {
+			if len(chunk) > remaining {
+				chunk = chunk[:remaining]
+			}
+			listener.OutputBuf.WriteString(chunk)
+		}
 	}
 }
 
@@ -346,145 +595,189 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 	return resultChan
 }
 
-// execCommandIsolated 独立建立 SSH Session 执行命令 (双通道 - 事务执行设计)
-func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, command, execID string) {
+// execCommandIsolated 独立建立 SSH 连接与 Session 执行命令（双通道事务执行设计）。
+// 独立连接是硬超时的必要条件：仅关闭共享连接上的 Session 时，部分 SSH 服务端会等待
+// 远端进程自然退出，导致 deadline 已触发但调用仍被阻塞；关闭独立连接才能确定性中止。
+func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestContext) {
+	timeout := time.Duration(envIntOrDefault("HCI_BRIDGE_EXEC_TIMEOUT_SECONDS", 120)) * time.Second
+	maxOutputBytes := envIntOrDefault("HCI_BRIDGE_EXEC_MAX_OUTPUT_BYTES", 4*1024*1024)
+	ctx, cancel := context.WithTimeout(req.Context, timeout)
+	defer cancel()
+	ctx, span := otel.Tracer("terminal_bridge").Start(ctx, "terminal_bridge.ssh.exec",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("exec.id", req.ExecID),
+			attribute.String("case.id", req.CaseID),
+			attribute.String("conversation.id", req.ConversationID),
+			attribute.String("server.address", req.NodeIP),
+			attribute.String("hci.container", req.Container),
+			attribute.String("command.sha256", req.CommandSHA256),
+		),
+	)
+	defer span.End()
 	startTime := time.Now()
+	traceparent := traceparentFromContext(ctx)
+	traceID := span.SpanContext().TraceID().String()
+	artifactID := deterministicArtifactID(req.ExecID)
 
-	// P0: 记录命令开始
-	blog("INFO", "exec.start", "开始执行命令", "", s.caseID, "", "", map[string]any{
-		"exec_id":     execID,
-		"command":     command,
-		"command_len": len(command),
+	blogContext(ctx, "INFO", "exec.start", "开始执行命令", req, map[string]any{
+		"command_redacted": req.CommandRedacted,
+		"command_sha256":   req.CommandSHA256,
+		"command_len":      len(req.Command),
 	})
 
-	session, err := s.client.NewSession()
+	isolatedClient, err := ssh.Dial("tcp", s.address, s.clientConfig)
 	if err != nil {
-		// P0: 记录错误（包含详细错误信息和分类）
-		blog("ERROR", "exec.error", "创建隔离 SSH 会话失败", "", s.caseID, "", "", map[string]any{
-			"exec_id":    execID,
-			"error":      err.Error(),
-			"error_type": "session_creation_failed",
-		})
-		sendMsg(ws, OutMessage{
-			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
-			Stderr: fmt.Sprintf("创建隔离 SSH 会话失败: %v", err), ExitCode: -1,
-		})
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "session_creation_failed")
+		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		blogContext(ctx, "ERROR", "exec.error", "创建隔离 SSH 连接失败", req, map[string]any{"error": err.Error(), "error_type": "session_creation_failed"})
+		sendMsg(ws, OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "创建隔离 SSH 连接失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "session_creation_failed"})
+		return
+	}
+	defer isolatedClient.Close()
+
+	session, err := isolatedClient.NewSession()
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "session_creation_failed")
+		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		blogContext(ctx, "ERROR", "exec.error", "创建隔离 SSH 会话失败", req, map[string]any{"error": err.Error(), "error_type": "session_creation_failed"})
+		sendMsg(ws, OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "创建隔离 SSH 会话失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "session_creation_failed"})
 		return
 	}
 	defer session.Close()
 
 	stdoutPipe, err := session.StdoutPipe()
 	if err != nil {
-		blog("ERROR", "exec.error", "获取 StdoutPipe 失败", "", s.caseID, "", "", map[string]any{
-			"exec_id":    execID,
-			"error":      err.Error(),
-			"error_type": "stdout_pipe_failed",
-		})
-		sendMsg(ws, OutMessage{
-			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
-			Stderr: fmt.Sprintf("获取 StdoutPipe 失败: %v", err), ExitCode: -1,
-		})
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "stdout_pipe_failed")
+		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		blogContext(ctx, "ERROR", "exec.error", "获取 StdoutPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stdout_pipe_failed"})
+		sendMsg(ws, OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准输出失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stdout_pipe_failed"})
 		return
 	}
 	stderrPipe, err := session.StderrPipe()
 	if err != nil {
-		blog("ERROR", "exec.error", "获取 StderrPipe 失败", "", s.caseID, "", "", map[string]any{
-			"exec_id":    execID,
-			"error":      err.Error(),
-			"error_type": "stderr_pipe_failed",
-		})
-		sendMsg(ws, OutMessage{
-			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
-			Stderr: fmt.Sprintf("获取 StderrPipe 失败: %v", err), ExitCode: -1,
-		})
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "stderr_pipe_failed")
+		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		blogContext(ctx, "ERROR", "exec.error", "获取 StderrPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stderr_pipe_failed"})
+		sendMsg(ws, OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准错误失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stderr_pipe_failed"})
 		return
 	}
 
-	if err := session.Start(command); err != nil {
-		blog("ERROR", "exec.error", "启动命令失败", "", s.caseID, "", "", map[string]any{
-			"exec_id":    execID,
-			"command":    command,
-			"error":      err.Error(),
-			"error_type": "command_start_failed",
-		})
-		sendMsg(ws, OutMessage{
-			Type: "exec_result", CaseID: s.caseID, ExecID: execID,
-			Stderr: fmt.Sprintf("启动命令失败: %v", err), ExitCode: -1,
-		})
+	if err := session.Start(req.Command); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "command_start_failed")
+		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		blogContext(ctx, "ERROR", "exec.error", "启动命令失败", req, map[string]any{"error": err.Error(), "error_type": "command_start_failed"})
+		sendMsg(ws, OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "启动命令失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "command_start_failed"})
 		return
 	}
 
-	var stdoutBuf strings.Builder
-	var stderrBuf strings.Builder
-	var wg sync.WaitGroup
+	stdoutCapture := newBoundedCapture(maxOutputBytes)
+	stderrCapture := newBoundedCapture(maxOutputBytes)
+	var readers sync.WaitGroup
+	readers.Add(2)
+	go drainExecPipe(stdoutPipe, stdoutCapture, func(chunk string) {
+		sendMsg(ws, OutMessage{Type: "exec_stdout", CaseID: req.CaseID, ExecID: req.ExecID, Stdout: chunk, TraceID: traceID})
+	}, &readers)
+	go drainExecPipe(stderrPipe, stderrCapture, func(chunk string) {
+		sendMsg(ws, OutMessage{Type: "exec_stderr", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: chunk, TraceID: traceID})
+	}, &readers)
 
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 4096)
-		for {
-			n, rerr := stdoutPipe.Read(buf)
-			if n > 0 {
-				chunk := string(buf[:n])
-				stdoutBuf.WriteString(chunk)
-				sendMsg(ws, OutMessage{Type: "exec_stdout", CaseID: s.caseID, ExecID: execID, Stdout: chunk})
-			}
-			if rerr != nil {
-				break
-			}
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 4096)
-		for {
-			n, rerr := stderrPipe.Read(buf)
-			if n > 0 {
-				chunk := string(buf[:n])
-				stderrBuf.WriteString(chunk)
-				sendMsg(ws, OutMessage{Type: "exec_stderr", CaseID: s.caseID, ExecID: execID, Stderr: chunk})
-			}
-			if rerr != nil {
-				break
-			}
-		}
-	}()
-
-	wg.Wait()
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- session.Wait() }()
+	timedOut := false
+	waitErr := error(nil)
+	select {
+	case waitErr = <-waitCh:
+	case <-ctx.Done():
+		timedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
+		_ = session.Close()
+		_ = isolatedClient.Close()
+		waitErr = <-waitCh
+	}
+	readers.Wait()
 
 	exitCode := 0
-	if werr := session.Wait(); werr != nil {
-		if exitErr, ok := werr.(*ssh.ExitError); ok {
+	errorType := ""
+	if timedOut {
+		exitCode = -1
+		errorType = "timeout"
+	} else if waitErr != nil {
+		if exitErr, ok := waitErr.(*ssh.ExitError); ok {
 			exitCode = exitErr.ExitStatus()
+			errorType = "nonzero_exit"
 		} else {
 			exitCode = -1
+			errorType = "ssh_wait_failed"
 		}
+	}
+	if exitCode != 0 {
+		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		span.SetStatus(codes.Error, errorType)
 	}
 
 	duration := time.Since(startTime)
-
-	// P0: 记录命令完成（包含所有关键信息）
-	outputPreview := stdoutBuf.String()
-	if len(outputPreview) > 500 {
-		outputPreview = outputPreview[:500] + "...(截断)"
+	level := "INFO"
+	if exitCode != 0 {
+		level = "ERROR"
 	}
-
-	blog("INFO", "exec.done", "命令执行完成", "", s.caseID, "", "", map[string]any{
-		"exec_id":        execID,
-		"command":        command,
-		"exit_code":      exitCode,
-		"success":        exitCode == 0,
-		"duration_ms":    duration.Milliseconds(),
-		"stdout_len":     stdoutBuf.Len(),
-		"stderr_len":     stderrBuf.Len(),
-		"output_preview": outputPreview,
+	span.SetAttributes(
+		attribute.Int("process.exit.code", exitCode),
+		attribute.Int64("exec.duration_ms", duration.Milliseconds()),
+		attribute.Int64("stdout.bytes", stdoutCapture.total),
+		attribute.Int64("stderr.bytes", stderrCapture.total),
+		attribute.Bool("stdout.truncated", stdoutCapture.truncated),
+		attribute.Bool("stderr.truncated", stderrCapture.truncated),
+		attribute.String("artifact.id", artifactID),
+	)
+	blogContext(ctx, level, "exec.done", "命令执行完成", req, map[string]any{
+		"artifact_id":      artifactID,
+		"exit_code":        exitCode,
+		"success":          exitCode == 0,
+		"error_type":       errorType,
+		"duration_ms":      duration.Milliseconds(),
+		"stdout_len":       stdoutCapture.total,
+		"stderr_len":       stderrCapture.total,
+		"stdout_sha256":    stdoutCapture.SHA256(),
+		"stderr_sha256":    stderrCapture.SHA256(),
+		"stdout_truncated": stdoutCapture.truncated,
+		"stderr_truncated": stderrCapture.truncated,
+		"timed_out":        timedOut,
 	})
 
+	resultCtx, resultSpan := otel.Tracer("terminal_bridge").Start(ctx, "terminal_bridge.websocket.result.send",
+		trace.WithAttributes(attribute.String("exec.id", req.ExecID)),
+	)
 	sendMsg(ws, OutMessage{
-		Type: "exec_result", CaseID: s.caseID, ExecID: execID,
-		Stdout: stdoutBuf.String(), Stderr: stderrBuf.String(), ExitCode: exitCode,
+		Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID,
+		Stdout: stdoutCapture.String(), Stderr: stderrCapture.String(), ExitCode: exitCode,
+		TraceID: traceID, Traceparent: traceparentFromContext(resultCtx), ArtifactID: artifactID,
+		StdoutBytes: stdoutCapture.total, StderrBytes: stderrCapture.total,
+		StdoutSHA256: stdoutCapture.SHA256(), StderrSHA256: stderrCapture.SHA256(),
+		StdoutTruncated: stdoutCapture.truncated, StderrTruncated: stderrCapture.truncated,
+		DurationMS: duration.Milliseconds(), TimedOut: timedOut, ErrorType: errorType,
 	})
+	resultSpan.End()
+}
+
+func drainExecPipe(pipe io.Reader, capture *boundedCapture, emit func(string), wg *sync.WaitGroup) {
+	defer wg.Done()
+	buffer := make([]byte, 4096)
+	for {
+		n, err := pipe.Read(buffer)
+		if n > 0 {
+			if captured := capture.write(buffer[:n]); len(captured) > 0 {
+				emit(string(captured))
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 func summarizeSSHDetail(output string) string {
@@ -594,14 +887,14 @@ func (s *SSHSession) on_output_start(
 
 				sendMsg(ws, OutMessage{Type: "ssh_output", CaseID: caseID, Output: chunk})
 
-					// 缺陷 2: 回采 SSH 终端交互日志（用户手动输入/输出的关键信息）
-					// 只回采有意义的内容（过滤空行和控制序列）
-					if len(chunk) > 0 && chunk != "\r\n" && !strings.Contains(chunk, "\x1b[") {
-						blog("INFO", "ssh.output", "SSH 终端输出", "", caseID, "", "", map[string]any{
-							"output_len":     len(chunk),
-							"output_preview": truncateString(chunk, 200),
-						})
-					}
+				// 缺陷 2: 回采 SSH 终端交互日志（用户手动输入/输出的关键信息）
+				// 只回采有意义的内容（过滤空行和控制序列）
+				if len(chunk) > 0 && chunk != "\r\n" && !strings.Contains(chunk, "\x1b[") {
+					blog("INFO", "ssh.output", "SSH 终端输出", "", caseID, "", "", map[string]any{
+						"output_len":     len(chunk),
+						"output_preview": truncateString(chunk, 200),
+					})
+				}
 			}
 			if err != nil {
 				if err != io.EOF {
@@ -697,23 +990,29 @@ func wrapContainerCommand(command, container string) string {
 //      发送失败暂存 pending，连接恢复后重传；可选落本地文件供进程重启回放。
 
 type logEntry struct {
-	Type      string         `json:"type"` // bridge_log - 前端监听 type==="bridge_log" 的必备字段
-	Seq       uint64         `json:"seq"`
-	Timestamp string         `json:"ts"`
-	Level     string         `json:"level"`
-	Service   string         `json:"service"`
-	Event     string         `json:"event,omitempty"`
-	Message   string         `json:"message,omitempty"`
-	TraceID   string         `json:"trace_id,omitempty"`
-	CaseID    string         `json:"case_id,omitempty"`
-	NodeIP    string         `json:"node_ip,omitempty"`
-	CustomUI  string         `json:"custom_ui,omitempty"`
-	Extra        map[string]any `json:"extra,omitempty"`
-	Traceparent string         `json:"traceparent,omitempty"` // P2-7: W3C traceparent 标准格式
-	// 已知限制：当前只支持 Trace ID 链路追踪，未建立完整的 Span 父子关系
-	// 完整实现需要：1) 生成唯一 Span ID；2) 维护 Parent Span ID；3) 建立 Span 栈管理
-	// 当前方案：Traceparent 格式为 "00-{trace_id}-0000000000000001-01"，Span ID 固定为 1
-	// 未来优化：引入 OpenTelemetry SDK 或实现 Span 管理器
+	Type                  string         `json:"type"` // bridge_log - 前端监听 type==="bridge_log" 的必备字段
+	Seq                   uint64         `json:"seq"`
+	Timestamp             string         `json:"ts"`
+	Level                 string         `json:"level"`
+	Service               string         `json:"service"`
+	Event                 string         `json:"event,omitempty"`
+	Message               string         `json:"message,omitempty"`
+	TraceID               string         `json:"trace_id,omitempty"`
+	CaseID                string         `json:"case_id,omitempty"`
+	NodeIP                string         `json:"node_ip,omitempty"`
+	CustomUI              string         `json:"custom_ui,omitempty"`
+	Extra                 map[string]any `json:"extra,omitempty"`
+	Traceparent           string         `json:"traceparent,omitempty"` // P2-7: W3C traceparent 标准格式
+	EventID               string         `json:"event_id"`
+	BridgeInstanceID      string         `json:"bridge_instance_id"`
+	SpanID                string         `json:"span_id,omitempty"`
+	TraceFlags            string         `json:"trace_flags,omitempty"`
+	ConversationID        string         `json:"conversation_id,omitempty"`
+	ExecID                string         `json:"exec_id,omitempty"`
+	ToolCallID            string         `json:"tool_call_id,omitempty"`
+	ServiceName           string         `json:"service.name"`
+	ServiceVersion        string         `json:"service.version"`
+	DeploymentEnvironment string         `json:"deployment.environment"`
 }
 
 // bridgeSubscriber 代表一个已连接的 Custom-UI 浏览器（一个回采订阅者）。
@@ -723,33 +1022,61 @@ type bridgeSubscriber struct {
 	caseID   string
 	mu       sync.Mutex
 	pending  []logEntry // 断网/重启期间的待重传缓冲（有界）
+	flushing bool
 }
 
 // LogHub 全局日志中枢：结构化落盘 + 环形缓冲 + 多订阅者回采。
 type LogHub struct {
-	mu      sync.Mutex
-	seq     uint64
-	cap     int
-	ring    []logEntry // 全局有界环形缓冲，供晚加入/重连回放
-	subs    map[*websocket.Conn]*bridgeSubscriber
-	logFile *os.File
+	mu              sync.Mutex
+	seq             uint64
+	cap             int
+	ring            []logEntry // 全局有界环形缓冲，供晚加入/重连回放
+	subs            map[*websocket.Conn]*bridgeSubscriber
+	logFile         *os.File
+	logPath         string
+	logFileBytes    int64
+	maxLogFileBytes int64
+	instanceID      string
 }
 
 var logHub = newLogHub()
 
+func deterministicUUID(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	sum[6] = (sum[6] & 0x0f) | 0x50
+	sum[8] = (sum[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
+}
+
+func deterministicArtifactID(execID string) string { return deterministicUUID("artifact:" + execID) }
+func deterministicEventID(instanceID string, seq uint64) string {
+	return deterministicUUID(fmt.Sprintf("event:%s:%d", instanceID, seq))
+}
+
+func newBridgeInstanceID() string {
+	hostname, _ := os.Hostname()
+	return deterministicUUID(fmt.Sprintf("%s:%d:%d", hostname, os.Getpid(), time.Now().UnixNano()))
+}
+
 func newLogHub() *LogHub {
 	h := &LogHub{
-		cap:  5000,
-		subs: make(map[*websocket.Conn]*bridgeSubscriber),
+		cap:             5000,
+		subs:            make(map[*websocket.Conn]*bridgeSubscriber),
+		maxLogFileBytes: int64(envIntOrDefault("HCI_BRIDGE_LOG_MAX_BYTES", 64*1024*1024)),
+		instanceID:      newBridgeInstanceID(),
 	}
 	// 本地持久化（重启回放）：best-effort，受 HCI_BRIDGE_LOG_DIR 控制。
 	if dir := os.Getenv("HCI_BRIDGE_LOG_DIR"); dir != "" {
 		_ = os.MkdirAll(dir, 0o755)
 		logPath := filepath.Join(dir, "bridge.log")
-		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+		h.logPath = logPath
+		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 			h.logFile = f
+			if info, statErr := f.Stat(); statErr == nil {
+				h.logFileBytes = info.Size()
+			}
 		}
-		
+
 		// P0-3: 进程重启时回放本地日志文件
 		if replayFile, err := os.Open(logPath); err == nil {
 			defer replayFile.Close()
@@ -759,7 +1086,13 @@ func newLogHub() *LogHub {
 				line := scanner.Text()
 				var entry logEntry
 				if err := json.Unmarshal([]byte(line), &entry); err == nil {
+					if len(h.ring) >= h.cap {
+						h.ring = h.ring[1:]
+					}
 					h.ring = append(h.ring, entry)
+					if entry.Seq > h.seq {
+						h.seq = entry.Seq
+					}
 					replayCount++
 				}
 			}
@@ -771,25 +1104,62 @@ func newLogHub() *LogHub {
 	return h
 }
 
+func (h *LogHub) rotateLogFileLocked(nextEntryBytes int64) error {
+	if h.logFile == nil || h.maxLogFileBytes <= 0 || h.logFileBytes+nextEntryBytes <= h.maxLogFileBytes {
+		return nil
+	}
+	if err := h.logFile.Close(); err != nil {
+		return err
+	}
+	h.logFile = nil
+	rotatedPath := h.logPath + ".1"
+	_ = os.Remove(rotatedPath)
+	if err := os.Rename(h.logPath, rotatedPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	file, err := os.OpenFile(h.logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	h.logFile = file
+	h.logFileBytes = 0
+	return nil
+}
 
-func (h *LogHub) publish(e logEntry) {
+func (h *LogHub) publish(e logEntry) logEntry {
 	h.mu.Lock()
 	h.seq++
 	e.Seq = h.seq
 	e.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	e.Type = "bridge_log" // 前端监听 type==="bridge_log" 的必备字段，统一在此注入
+	e.BridgeInstanceID = h.instanceID
+	e.EventID = deterministicEventID(h.instanceID, h.seq)
+	e.ServiceName = "terminal-bridge"
+	e.ServiceVersion = getVersion()
+	e.DeploymentEnvironment = envOrDefault("HCI_DEPLOYMENT_ENVIRONMENT", "local")
 	if len(h.ring) >= h.cap {
 		h.ring = h.ring[1:]
 	}
 	h.ring = append(h.ring, e)
 	if h.logFile != nil {
 		if b, err := json.Marshal(e); err == nil {
-			_, _ = h.logFile.Write(append(b, '\n'))
+			line := append(b, '\n')
+			if rotateErr := h.rotateLogFileLocked(int64(len(line))); rotateErr != nil {
+				atomic.AddUint64(&promMetrics.LogsCollectErrors, 1)
+			} else if written, writeErr := h.logFile.Write(line); writeErr != nil {
+				atomic.AddUint64(&promMetrics.LogsCollectErrors, 1)
+			} else {
+				h.logFileBytes += int64(written)
+			}
+		} else {
+			atomic.AddUint64(&promMetrics.LogsCollectErrors, 1)
 		}
 	}
+	eligibleSubscribers := make([]*bridgeSubscriber, 0, len(h.subs))
 	for _, sub := range h.subs {
 		if e.CaseID == "" || sub.caseID == "" || sub.caseID == e.CaseID {
 			h.enqueue(sub, e)
+			eligibleSubscribers = append(eligibleSubscribers, sub)
 		}
 	}
 	h.mu.Unlock()
@@ -799,11 +1169,10 @@ func (h *LogHub) publish(e logEntry) {
 
 	// 实时推送：publish 后立即异步 flush，保证 bridge_log 实时送达前端
 	// （此前只在 setCase 时 flush，导致 ssh.connected 之后的日志全部滞留 pending queue）
-	for _, sub := range h.subs {
-		if e.CaseID == "" || sub.caseID == "" || sub.caseID == e.CaseID {
-			go h.flushSubscriber(sub)
-		}
+	for _, sub := range eligibleSubscribers {
+		go h.flushSubscriber(sub)
 	}
+	return e
 }
 
 func (h *LogHub) enqueue(sub *bridgeSubscriber, e logEntry) {
@@ -818,23 +1187,38 @@ func (h *LogHub) enqueue(sub *bridgeSubscriber, e logEntry) {
 // flushSubscriber 把待重传缓冲经 bridge_log 推给浏览器；连接断开则保留待下次重传。
 func (h *LogHub) flushSubscriber(sub *bridgeSubscriber) {
 	sub.mu.Lock()
-	pending := sub.pending
-	sub.pending = nil
-	sub.mu.Unlock()
-	for _, e := range pending {
+	if sub.flushing {
+		sub.mu.Unlock()
+		return
+	}
+	sub.flushing = true
+	for {
+		if len(sub.pending) == 0 {
+			sub.flushing = false
+			sub.mu.Unlock()
+			return
+		}
+		e := sub.pending[0]
+		sub.pending = sub.pending[1:]
+		sub.mu.Unlock()
+
 		e.CustomUI = sub.customUI // 按订阅者归属 custom_ui，自动回采到对应后台
 		b, err := json.Marshal(e)
 		if err != nil {
+			sub.mu.Lock()
 			continue
 		}
-		if err := websocket.Message.Send(sub.conn, string(b)); err != nil {
+		if err := sendWebSocketRaw(sub.conn, string(b)); err != nil {
 			sub.mu.Lock()
-			if len(sub.pending) < 2000 {
-				sub.pending = append(sub.pending, e)
+			if len(sub.pending) >= 2000 {
+				sub.pending = sub.pending[:1999]
 			}
+			sub.pending = append([]logEntry{e}, sub.pending...)
+			sub.flushing = false
 			sub.mu.Unlock()
-			break
+			return
 		}
+		sub.mu.Lock()
 	}
 }
 
@@ -859,12 +1243,12 @@ func (h *LogHub) setCase(sub *bridgeSubscriber, caseID string) {
 		}
 	}
 	h.mu.Unlock()
-	
+
 	// P2-8: 更新回放指标
 	if len(replay) > 0 {
 		atomic.AddUint64(&promMetrics.LogsReplayedTotal, uint64(len(replay)))
 	}
-	
+
 	for _, e := range replay {
 		h.enqueue(sub, e)
 	}
@@ -877,18 +1261,42 @@ func (h *LogHub) removeSubscriber(conn *websocket.Conn) {
 	h.mu.Unlock()
 }
 
+type logHubStatus struct {
+	BufferedLogs int   `json:"buffered_logs"`
+	Subscribers  int   `json:"subscribers"`
+	PendingLogs  int   `json:"pending_logs"`
+	LogFileBytes int64 `json:"log_file_bytes"`
+}
+
+func (h *LogHub) status() logHubStatus {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	status := logHubStatus{
+		BufferedLogs: len(h.ring),
+		Subscribers:  len(h.subs),
+		LogFileBytes: h.logFileBytes,
+	}
+	for _, sub := range h.subs {
+		sub.mu.Lock()
+		status.PendingLogs += len(sub.pending)
+		sub.mu.Unlock()
+	}
+	return status
+}
+
 // bridgeLogWriter 把标准库 log 输出重定向为结构化日志并回采，从而零改造捕获全部既有 log.Printf。
 type bridgeLogWriter struct{}
 
 func (bridgeLogWriter) Write(p []byte) (int, error) {
-	line := strings.TrimRight(string(p), "\n")
+	line := redactSensitiveText(strings.TrimRight(string(p), "\n"))
 	level := "INFO"
 	upper := strings.ToUpper(line)
 	switch {
 	case strings.Contains(upper, "ERROR"):
 		level = "ERROR"
 	case strings.Contains(upper, "WARNING"), strings.Contains(upper, "WARN"):
-		level = "WARNING"
+		level = "WARN"
 	}
 	event := "bridge.log"
 	msg := line
@@ -899,39 +1307,141 @@ func (bridgeLogWriter) Write(p []byte) (int, error) {
 			msg = strings.TrimSpace(rest[sp+1:])
 		}
 	}
-	logHub.publish(logEntry{Level: level, Service: "terminal_bridge", Event: event, Message: msg})
-	return os.Stdout.Write(p) // 同时保留控制台原文，便于本地调试
+	e := logHub.publish(logEntry{Level: level, Service: "terminal_bridge", Event: event, Message: msg})
+	b, err := json.Marshal(e)
+	if err != nil {
+		return len(p), nil
+	}
+	_, err = os.Stdout.Write(append(b, '\n'))
+	return len(p), err
 }
 
 // blog 记录带上下文（trace/case/node/custom_ui）的结构化日志并回采。
 func blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map[string]any) {
-	// P2-7: 构造 W3C traceparent 格式（如果 traceID 存在）
-	traceparent := ""
-	if traceID != "" && traceID != "unknown" {
-		// 格式：version-trace-id-parent-id-trace-flags
-		// 简化实现：使用 traceID 作为 trace-id 部分
-		traceparent = "00-" + traceID + "-" + "0000000000000001-01"
-	}
-
 	e := logEntry{
-		Level:        level,
-		Service:      "terminal_bridge",
-		Event:        event,
-		Message:      msg,
-		TraceID:      traceID,
-		CaseID:       caseID,
-		NodeIP:       nodeIP,
-		CustomUI:     customUI,
-		Extra:        extra,
-		Traceparent:  traceparent,
+		Level:    normalizeLogLevel(level),
+		Service:  "terminal_bridge",
+		Event:    event,
+		Message:  redactSensitiveText(msg),
+		TraceID:  traceID,
+		CaseID:   caseID,
+		NodeIP:   nodeIP,
+		CustomUI: customUI,
+		Extra:    sanitizeExtra(extra),
 	}
-	logHub.publish(e)
-	e.Type = "bridge_log" // stdout 输出也必须携带 type 字段（值传递导致 publish 内修改不影响原始 e）
+	e = logHub.publish(e)
 	if b, err := json.Marshal(e); err == nil {
 		os.Stdout.Write(append(b, '\n'))
 	}
 }
 
+func blogContext(ctx context.Context, level, event, message string, req execRequestContext, extra map[string]any) {
+	spanContext := trace.SpanContextFromContext(ctx)
+	e := logEntry{
+		Level: normalizeLogLevel(level), Service: "terminal_bridge", Event: event,
+		Message: message, TraceID: spanContext.TraceID().String(), SpanID: spanContext.SpanID().String(),
+		TraceFlags: fmt.Sprintf("%02x", byte(spanContext.TraceFlags())), Traceparent: traceparentFromContext(ctx),
+		CaseID: req.CaseID, NodeIP: req.NodeIP, CustomUI: req.CustomUI,
+		ConversationID: req.ConversationID, ExecID: req.ExecID, ToolCallID: req.ToolCallID,
+		Extra: sanitizeExtra(extra),
+	}
+	e = logHub.publish(e)
+	if encoded, err := json.Marshal(e); err == nil {
+		_, _ = os.Stdout.Write(append(encoded, '\n'))
+	}
+}
+
+func normalizeLogLevel(level string) string {
+	level = strings.ToUpper(strings.TrimSpace(level))
+	if level == "WARNING" {
+		return "WARN"
+	}
+	return level
+}
+
+var sensitiveTextPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(password|passwd|token|secret|api[_-]?key)(\s*[=:]\s*|\s+)([^\s'\"]+|['\"][^'\"]*['\"])`),
+	regexp.MustCompile(`(?s)"(private_key|passphrase|password)"\s*:\s*"[^"]*"`),
+}
+
+func redactSensitiveText(value string) string {
+	redacted := value
+	for _, pattern := range sensitiveTextPatterns {
+		redacted = pattern.ReplaceAllString(redacted, `$1$2[REDACTED]`)
+	}
+	return redacted
+}
+
+func sanitizeExtra(extra map[string]any) map[string]any {
+	if extra == nil {
+		return nil
+	}
+	sanitized := make(map[string]any, len(extra))
+	for key, value := range extra {
+		lowerKey := strings.ToLower(key)
+		if strings.Contains(lowerKey, "password") || strings.Contains(lowerKey, "secret") || strings.Contains(lowerKey, "private_key") || strings.Contains(lowerKey, "passphrase") || strings.Contains(lowerKey, "token") {
+			sanitized[key] = "[REDACTED]"
+			continue
+		}
+		if textValue, ok := value.(string); ok {
+			sanitized[key] = redactSensitiveText(textValue)
+		} else {
+			sanitized[key] = value
+		}
+	}
+	return sanitized
+}
+
+func redactCommand(command string) string {
+	redacted := redactSensitiveText(command)
+	if len(redacted) > 2048 {
+		return redacted[:2048] + "...(截断)"
+	}
+	return redacted
+}
+
+func commandSHA256(command string) string {
+	sum := sha256.Sum256([]byte(command))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func traceparentFromContext(ctx context.Context) string {
+	spanContext := trace.SpanContextFromContext(ctx)
+	if !spanContext.IsValid() {
+		return ""
+	}
+	return fmt.Sprintf("00-%s-%s-%02x", spanContext.TraceID(), spanContext.SpanID(), byte(spanContext.TraceFlags()))
+}
+
+func normalizeTraceparentForLegacyGo(traceparent string) string {
+	// Python OTel 会按新版 W3C Trace Context 生成 Random 标志位（0x02），因此已采样链路可能携带 0x03。
+	// 当前 Go OTel v1.24 的 version 00 解析器只接受 0x00/0x01，会把合法的 0x02/0x03 静默当成无效父上下文。
+	// Go SDK 尚不能表达 Random 标志位，这里只丢弃 Random 位并保留 Sampled 位；其他保留位继续交给官方解析器拒绝。
+	parts := strings.Split(traceparent, "-")
+	if len(parts) != 4 || parts[0] != "00" {
+		return traceparent
+	}
+	switch parts[3] {
+	case "02":
+		parts[3] = "00"
+	case "03":
+		parts[3] = "01"
+	default:
+		return traceparent
+	}
+	return strings.Join(parts, "-")
+}
+
+func contextFromMessage(msg InMessage) context.Context {
+	carrier := propagation.MapCarrier{}
+	if msg.Traceparent != "" {
+		carrier.Set("traceparent", normalizeTraceparentForLegacyGo(msg.Traceparent))
+	}
+	if msg.Tracestate != "" {
+		carrier.Set("tracestate", msg.Tracestate)
+	}
+	return otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+}
 
 // ── WebSocket Handler ─────────────────────────────────────────────────────────
 
@@ -975,6 +1485,39 @@ func (b *Bridge) remove(key string) {
 	delete(b.sessions, key)
 }
 
+func (b *Bridge) setLastAuth(caseID string, msg InMessage) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lastAuth[caseID] = msg
+}
+
+func (b *Bridge) getLastAuth(caseID string) (InMessage, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	msg, ok := b.lastAuth[caseID]
+	return msg, ok
+}
+
+func (b *Bridge) clearLastAuth(caseID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.lastAuth, caseID)
+}
+
+type bridgeStatus struct {
+	ActiveSessions  int `json:"active_sessions"`
+	CachedAuthCases int `json:"cached_auth_cases"`
+}
+
+func (b *Bridge) status() bridgeStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return bridgeStatus{
+		ActiveSessions:  len(b.sessions),
+		CachedAuthCases: len(b.lastAuth),
+	}
+}
+
 // resolveSession 根据 caseID + nodeIP 解析 SSH 会话
 // 有 nodeIP 时只精确匹配，不 fallback 到默认会话（避免命令在错误节点执行）
 func (b *Bridge) resolveSession(msg InMessage) (*SSHSession, string) {
@@ -1005,7 +1548,7 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage) *SSHSession 
 		return nil
 	}
 
-	auth, ok := b.lastAuth[msg.CaseID]
+	auth, ok := b.getLastAuth(msg.CaseID)
 	if !ok {
 		log.Printf("[Bridge] autoConnect: case=%s 缺少认证信息 (lastAuth 中无此 caseID)", msg.CaseID)
 		sendMsg(ws, OutMessage{
@@ -1024,6 +1567,7 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage) *SSHSession 
 		msg.NodeIP, msg.CaseID, auth.Username)
 	session, err := newSSHSession(connectMsg)
 	if err != nil {
+		atomic.AddUint64(&promMetrics.SshConnectionErrors, 1)
 		message, detail := buildSSHError(err)
 		sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
 		log.Printf("[Bridge] autoConnect: 连接失败 node=%s case=%s err=%v", msg.NodeIP, msg.CaseID, err)
@@ -1032,6 +1576,7 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage) *SSHSession 
 
 	stdout, err := session.start()
 	if err != nil {
+		atomic.AddUint64(&promMetrics.SshConnectionErrors, 1)
 		session.close()
 		message, detail := buildSSHError(err)
 		sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
@@ -1041,6 +1586,7 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage) *SSHSession 
 
 	key := sessionKey(msg.CaseID, msg.NodeIP)
 	b.set(key, session)
+	atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
 
 	go session.on_output_start(ws, stdout, msg.CaseID, func() {
 		b.remove(key)
@@ -1050,11 +1596,50 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage) *SSHSession 
 	return session
 }
 
+var websocketWriteLocks sync.Map
+
+func sendWebSocketRaw(ws *websocket.Conn, payload string) error {
+	lockValue, _ := websocketWriteLocks.LoadOrStore(ws, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	return websocket.Message.Send(ws, payload)
+}
+
 func sendMsg(ws *websocket.Conn, msg OutMessage) {
 	data, _ := json.Marshal(msg)
-	if err := websocket.Message.Send(ws, string(data)); err != nil {
+	if err := sendWebSocketRaw(ws, string(data)); err != nil {
 		log.Printf("[Bridge] WebSocket 发送失败: type=%s case=%s err=%v", msg.Type, msg.CaseID, err)
 	}
+}
+
+type ownedSessionTracker struct {
+	mu       sync.Mutex
+	sessions map[string]*SSHSession
+}
+
+func newOwnedSessionTracker() *ownedSessionTracker {
+	return &ownedSessionTracker{sessions: make(map[string]*SSHSession)}
+}
+
+func (t *ownedSessionTracker) set(key string, session *SSHSession) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.sessions[key] = session
+}
+
+func (t *ownedSessionTracker) remove(key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.sessions, key)
+}
+
+func (t *ownedSessionTracker) drain() map[string]*SSHSession {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sessions := t.sessions
+	t.sessions = make(map[string]*SSHSession)
+	return sessions
 }
 
 func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
@@ -1063,11 +1648,12 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 	// 注册回采订阅者（按连接归属 custom_ui）
 	sub := logHub.addSubscriber(ws, cui)
 	// ownedSessions 追踪 ssh_connect 显式创建的会话
-	ownedSessions := make(map[string]*SSHSession)
+	ownedSessions := newOwnedSessionTracker()
 	defer func() {
 		log.Printf("[Bridge] 浏览器已断开: custom_ui=%s remote=%s", cui, ws.RemoteAddr())
 		logHub.removeSubscriber(ws)
-		for key, owned := range ownedSessions {
+		websocketWriteLocks.Delete(ws)
+		for key, owned := range ownedSessions.drain() {
 			current := b.get(key)
 			if current == owned {
 				current.close()
@@ -1075,8 +1661,8 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				log.Printf("[Bridge] 连接断开后清理会话: key=%s", key)
 			}
 		}
-		// 清理该 caseID 的认证缓存
-		// (保留，供下次连接使用)
+		// 浏览器断开后立即清理凭据缓存，缩短密码/私钥在内存中的生命周期。
+		b.clearLastAuth(sub.caseID)
 	}()
 
 	for {
@@ -1088,7 +1674,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 
 		var msg InMessage
 		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
-			log.Printf("[Bridge] 消息解析失败: remote=%v err=%v raw=%q", ws.RemoteAddr(), err, raw)
+			log.Printf("[Bridge] 消息解析失败: remote=%v err=%v payload_bytes=%d", ws.RemoteAddr(), err, len(raw))
 			continue
 		}
 		log.Printf("[Bridge] 收到消息: type=%s case=%s node=%s container=%s",
@@ -1097,11 +1683,17 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 		switch msg.Type {
 
 		case "ssh_connect":
+			connectCtx, connectSpan := otel.Tracer("terminal_bridge").Start(
+				contextFromMessage(msg), "terminal_bridge.ssh.connect",
+				trace.WithSpanKind(trace.SpanKindClient),
+				trace.WithAttributes(attribute.String("case.id", msg.CaseID), attribute.String("server.address", msg.Host)),
+			)
+			_ = connectCtx
 			key := sessionKey(msg.CaseID, msg.NodeIP)
 			if old := b.get(key); old != nil {
 				old.close()
 				b.remove(key)
-				delete(ownedSessions, key)
+				ownedSessions.remove(key)
 			}
 			// 如果没指定 nodeIP，也清理默认会话
 			if msg.NodeIP == "" {
@@ -1109,27 +1701,37 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				if old := b.get(defaultKey); old != nil {
 					old.close()
 					b.remove(defaultKey)
-					delete(ownedSessions, defaultKey)
+					ownedSessions.remove(defaultKey)
 				}
 			}
 
 			session, err := newSSHSession(msg)
 			if err != nil {
+				connectSpan.RecordError(err)
+				connectSpan.SetStatus(codes.Error, "ssh_connect_failed")
+				connectSpan.End()
+				atomic.AddUint64(&promMetrics.SshConnectionErrors, 1)
 				message, detail := buildSSHError(err)
 				sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
 				continue
 			}
 			stdout, err := session.start()
 			if err != nil {
+				connectSpan.RecordError(err)
+				connectSpan.SetStatus(codes.Error, "ssh_start_failed")
+				connectSpan.End()
+				atomic.AddUint64(&promMetrics.SshConnectionErrors, 1)
 				session.close()
 				message, detail := buildSSHError(err)
 				sendMsg(ws, OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
 				continue
 			}
 			b.set(key, session)
-			ownedSessions[key] = session
+			connectSpan.End()
+			atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
+			ownedSessions.set(key, session)
 			// 保存认证信息，供后续自动连接其他节点使用
-			b.lastAuth[msg.CaseID] = msg
+			b.setLastAuth(msg.CaseID, msg)
 			// 归属工单并回放近期日志（异常重传）
 			logHub.setCase(sub, msg.CaseID)
 			sendMsg(ws, OutMessage{Type: "ssh_connected", CaseID: msg.CaseID, CustomUI: cui})
@@ -1141,7 +1743,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			caseID := msg.CaseID
 			session.on_output_start(ws, stdout, caseID, func() {
 				b.remove(key)
-				delete(ownedSessions, key)
+				ownedSessions.remove(key)
 			})
 
 		case "ssh_input":
@@ -1157,21 +1759,20 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				s.injectCommand(msg.Command)
 			}
 
-
-			case "resume":
-				// P0-2: 浏览器重连时触发历史日志回放
-				if msg.CaseID != "" {
-					logHub.setCase(sub, msg.CaseID)
-					sendMsg(ws, OutMessage{Type: "resumed", CaseID: msg.CaseID, TraceID: msg.TraceID, CustomUI: cui})
-					log.Printf("[Bridge] 收到 resume 信号: case=%s 触发日志回放", msg.CaseID)
-				}
+		case "resume":
+			// P0-2: 浏览器重连时触发历史日志回放
+			if msg.CaseID != "" {
+				logHub.setCase(sub, msg.CaseID)
+				sendMsg(ws, OutMessage{Type: "resumed", CaseID: msg.CaseID, TraceID: msg.TraceID, CustomUI: cui})
+				log.Printf("[Bridge] 收到 resume 信号: case=%s 触发日志回放", msg.CaseID)
+			}
 
 		case "ssh_disconnect":
 			key := sessionKey(msg.CaseID, msg.NodeIP)
 			if s := b.get(key); s != nil {
 				s.close()
 				b.remove(key)
-				delete(ownedSessions, key)
+				ownedSessions.remove(key)
 			}
 			// 同时清理默认会话
 			if msg.NodeIP == "" || msg.NodeIP != "" {
@@ -1179,7 +1780,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				if s := b.get(defaultKey); s != nil && s != b.get(key) {
 					s.close()
 					b.remove(defaultKey)
-					delete(ownedSessions, defaultKey)
+					ownedSessions.remove(defaultKey)
 				}
 			}
 			sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: msg.CaseID})
@@ -1240,9 +1841,10 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			})
 			log.Printf("[Bridge] EXEC_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
 				key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
-			log.Printf("[Bridge] EXEC_CMD: %q", wrappedCmd)
+			log.Printf("[Bridge] EXEC_CMD: sha256=%s redacted=%q", commandSHA256(wrappedCmd), redactCommand(wrappedCmd))
 
 			resultChan := s.execCommand(wrappedCmd, msg.ExecID, 60*time.Second)
+			atomic.AddUint64(&promMetrics.ExecCommandsTotal, 1)
 			go func() {
 				result := <-resultChan
 				output := result.Output
@@ -1250,26 +1852,26 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				if result.Timeout {
 					output = "execution timeout"
 				}
+				if result.Timeout || exitCode != 0 {
+					atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+				}
 				outLen := len(output)
 				exitInfo := fmt.Sprintf("exit=%d", exitCode)
 				if result.Timeout {
 					exitInfo = "exit=TIMEOUT"
 				}
 
-					// P0-1: 增强日志完整性 - 回采命令执行的完整输出
-					// 输出过长时截断为预览（避免日志字段过大），但完整记录长度和退出码
-					outputPreview := output
-					if len(outputPreview) > 1000 {
-						outputPreview = outputPreview[:1000] + "...(截断)"
-					}
-					blog("INFO", "exec.output", "命令执行输出", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-						"exec_id":        msg.ExecID,
-						"exit_code":      exitCode,
-						"timeout":        result.Timeout,
-						"output_len":     outLen,
-						"output_preview": outputPreview,
-						"command":        wrappedCmd,
-					})
+				// P0-1: 增强日志完整性 - 回采命令执行的完整输出
+				// 输出过长时截断为预览（避免日志字段过大），但完整记录长度和退出码
+				blog("INFO", "exec.output", "命令执行输出", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"exec_id":          msg.ExecID,
+					"exit_code":        exitCode,
+					"timeout":          result.Timeout,
+					"output_len":       outLen,
+					"output_sha256":    commandSHA256(output),
+					"command_redacted": redactCommand(wrappedCmd),
+					"command_sha256":   commandSHA256(wrappedCmd),
+				})
 
 				blog("INFO", "exec.done", "命令执行完成", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"exec_id": msg.ExecID, "exit_code": exitCode, "timeout": result.Timeout, "output_len": outLen,
@@ -1332,34 +1934,58 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				continue
 			}
 
-// 包装容器命令
-				wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
-				log.Printf("[Bridge] EXEC_ISOLATED_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
-					key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
-				log.Printf("[Bridge] EXEC_ISOLATED_CMD: %q", wrappedCmd)
+			// 包装容器命令
+			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
+			log.Printf("[Bridge] EXEC_ISOLATED_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
+				key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
+			commandHash := commandSHA256(wrappedCmd)
 
-				// P0: 记录命令发起（包含 trace_id）
-				blog("INFO", "exec.request", "收到命令执行请求", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-					"exec_id":   msg.ExecID,
-					"command":   wrappedCmd,
-					"container": msg.Container,
-					"trace_id":  msg.TraceID,
-				})
+			// P0: 记录命令发起（包含 trace_id）
+			blog("INFO", "exec.request", "收到命令执行请求", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"exec_id":          msg.ExecID,
+				"command_redacted": redactCommand(wrappedCmd),
+				"command_sha256":   commandHash,
+				"container":        msg.Container,
+				"trace_id":         msg.TraceID,
+			})
 
-				go s.execCommandIsolated(ws, wrappedCmd, msg.ExecID)
+			atomic.AddUint64(&promMetrics.ExecCommandsTotal, 1)
+			receiveCtx, receiveSpan := otel.Tracer("terminal_bridge").Start(
+				contextFromMessage(msg), "terminal_bridge.websocket.receive",
+				trace.WithAttributes(attribute.String("exec.id", msg.ExecID), attribute.String("message.type", msg.Type)),
+			)
+			receiveSpan.End()
+			req := execRequestContext{
+				Context: receiveCtx, CaseID: msg.CaseID, ConversationID: msg.ConversationID,
+				ExecID: msg.ExecID, ToolCallID: msg.ToolCallID, TraceID: msg.TraceID,
+				Traceparent: msg.Traceparent, Tracestate: msg.Tracestate, NodeIP: msg.NodeIP,
+				Container: msg.Container, CustomUI: cui, Command: wrappedCmd,
+				CommandRedacted: redactCommand(wrappedCmd), CommandSHA256: commandHash,
+			}
+			go s.execCommandIsolated(ws, req)
 		}
 	}
 }
 
 // ── 主入口 ────────────────────────────────────────────────────────────────────
 
-func (b *Bridge) corsWebSocketHandler() http.Handler {
+func (b *Bridge) corsWebSocketHandler(config runtimeConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == "" {
-			origin = "*"
+		if !config.originAllowed(origin, r.Host) {
+			blog("WARNING", "websocket.origin_rejected", "拒绝非授权 Origin 的 WebSocket 请求", "", "", "", customUIHost(origin), map[string]any{
+				"origin": origin,
+				"host":   r.Host,
+				"mode":   config.Mode,
+			})
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
 		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
+		responseOrigin := origin
+		if responseOrigin == "" {
+			responseOrigin = "*"
+		}
+		w.Header().Set("Access-Control-Allow-Origin", responseOrigin)
 		w.Header().Set("Access-Control-Allow-Private-Network", "true")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -1370,7 +1996,11 @@ func (b *Bridge) corsWebSocketHandler() http.Handler {
 		}
 		log.Printf("[Bridge] WebSocket 请求: origin=%s method=%s", origin, r.Method)
 		// 每个浏览器连接按 Origin 自动归属 custom_ui（本地 hci.local / 线上 acli.sangfor.com.cn:4443 等）
-		wsHandler := websocket.Handler(func(ws *websocket.Conn) { b.handle(ws, origin) })
+		wsHandler := websocket.Handler(func(ws *websocket.Conn) {
+			atomic.AddInt64(&activeWebSockets, 1)
+			defer atomic.AddInt64(&activeWebSockets, -1)
+			b.handle(ws, origin)
+		})
 		wsHandler.ServeHTTP(w, r)
 	})
 }
@@ -1388,7 +2018,7 @@ func customUIHost(origin string) string {
 }
 
 var (
-	Version   = "v2.15.0-dev"
+	Version   = "v2.16.0-dev"
 	CommitID  = "unknown" // 构建时通过 -X main.CommitID 注入 git commit
 	BuildTime = "unknown" // 构建时通过 -X main.BuildTime 注入构建时间
 )
@@ -1424,21 +2054,29 @@ func getVersion() string {
 	return fmt.Sprintf("%s-g%s%s", Version, revision, dirty)
 }
 
-
 // P2-8: Prometheus 指标（简化实现 - 无外部依赖）
 var (
 	promMetrics = struct {
-		LogsCollectedTotal   uint64
-		LogsCollectErrors    uint64
-		LogsReplayedTotal    uint64
-		ExecCommandsTotal    uint64
-		ExecCommandErrors    uint64
-		SshConnectionsTotal  uint64
-		SshConnectionErrors  uint64
+		LogsCollectedTotal  uint64
+		LogsCollectErrors   uint64
+		LogsReplayedTotal   uint64
+		ExecCommandsTotal   uint64
+		ExecCommandErrors   uint64
+		SshConnectionsTotal uint64
+		SshConnectionErrors uint64
 	}{}
+	activeWebSockets int64
 )
 
-func getPrometheusMetrics() string {
+func prometheusLabelValue(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	return strings.ReplaceAll(value, "\n", `\n`)
+}
+
+func getPrometheusMetrics(bridge *Bridge, config runtimeConfig) string {
+	bridgeState := bridge.status()
+	logState := logHub.status()
 	return fmt.Sprintf(`# HELP bridge_logs_collected_total Total logs collected
 # TYPE bridge_logs_collected_total counter
 bridge_logs_collected_total %d
@@ -1466,17 +2104,126 @@ bridge_ssh_connections_total %d
 # HELP bridge_ssh_connection_errors_total Total SSH connection errors
 # TYPE bridge_ssh_connection_errors_total counter
 bridge_ssh_connection_errors_total %d
+
+# HELP bridge_process_up Whether the terminal_bridge process is serving requests
+# TYPE bridge_process_up gauge
+bridge_process_up 1
+
+# HELP bridge_build_info Build and runtime information for terminal_bridge
+# TYPE bridge_build_info gauge
+bridge_build_info{version="%s",commit="%s",mode="%s"} 1
+
+# HELP bridge_websocket_connections_active Current browser WebSocket connections
+# TYPE bridge_websocket_connections_active gauge
+bridge_websocket_connections_active %d
+
+# HELP bridge_ssh_sessions_active Current active SSH sessions
+# TYPE bridge_ssh_sessions_active gauge
+bridge_ssh_sessions_active %d
+
+# HELP bridge_log_subscribers_active Current log collection subscribers
+# TYPE bridge_log_subscribers_active gauge
+bridge_log_subscribers_active %d
+
+# HELP bridge_log_buffer_entries Current entries in the in-memory log replay buffer
+# TYPE bridge_log_buffer_entries gauge
+bridge_log_buffer_entries %d
+
+# HELP bridge_log_pending_entries Current log entries waiting for collection
+# TYPE bridge_log_pending_entries gauge
+bridge_log_pending_entries %d
+
+# HELP bridge_log_file_bytes Current persisted bridge log file size in bytes
+# TYPE bridge_log_file_bytes gauge
+bridge_log_file_bytes %d
 `,
-		promMetrics.LogsCollectedTotal,
-		promMetrics.LogsCollectErrors,
-		promMetrics.LogsReplayedTotal,
-		promMetrics.ExecCommandsTotal,
-		promMetrics.ExecCommandErrors,
-		promMetrics.SshConnectionsTotal,
-		promMetrics.SshConnectionErrors,
+		atomic.LoadUint64(&promMetrics.LogsCollectedTotal),
+		atomic.LoadUint64(&promMetrics.LogsCollectErrors),
+		atomic.LoadUint64(&promMetrics.LogsReplayedTotal),
+		atomic.LoadUint64(&promMetrics.ExecCommandsTotal),
+		atomic.LoadUint64(&promMetrics.ExecCommandErrors),
+		atomic.LoadUint64(&promMetrics.SshConnectionsTotal),
+		atomic.LoadUint64(&promMetrics.SshConnectionErrors),
+		prometheusLabelValue(getVersion()),
+		prometheusLabelValue(CommitID),
+		prometheusLabelValue(config.Mode),
+		atomic.LoadInt64(&activeWebSockets),
+		bridgeState.ActiveSessions,
+		logState.Subscribers,
+		logState.BufferedLogs,
+		logState.PendingLogs,
+		logState.LogFileBytes,
 	)
 }
 
+type serviceStatus struct {
+	Status        string       `json:"status"`
+	Service       string       `json:"service"`
+	Version       string       `json:"version"`
+	Commit        string       `json:"commit"`
+	BuildTime     string       `json:"build_time"`
+	Mode          string       `json:"mode"`
+	ListenAddress string       `json:"listen_address"`
+	WebSockets    int64        `json:"websocket_connections"`
+	Bridge        bridgeStatus `json:"bridge"`
+	Logs          logHubStatus `json:"logs"`
+}
+
+func buildServiceStatus(bridge *Bridge, config runtimeConfig) serviceStatus {
+	return serviceStatus{
+		Status:        "ok",
+		Service:       "terminal_bridge",
+		Version:       getVersion(),
+		Commit:        CommitID,
+		BuildTime:     BuildTime,
+		Mode:          config.Mode,
+		ListenAddress: config.address(),
+		WebSockets:    atomic.LoadInt64(&activeWebSockets),
+		Bridge:        bridge.status(),
+		Logs:          logHub.status(),
+	}
+}
+
+func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(statusCode)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		atomic.AddUint64(&promMetrics.LogsCollectErrors, 1)
+	}
+}
+
+func newHTTPHandler(bridge *Bridge, config runtimeConfig) http.Handler {
+	mux := http.NewServeMux()
+	liveHandler := func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+	readyHandler := func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	}
+	statusHandler := func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, buildServiceStatus(bridge, config))
+	}
+	metricsHandler := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		_, _ = io.WriteString(w, getPrometheusMetrics(bridge, config))
+	}
+
+	// Service 内部路径与 Ingress 保留前缀后的外部路径同时可用。
+	for _, path := range []string{"/health/live", "/terminal-bridge/health/live"} {
+		mux.HandleFunc(path, liveHandler)
+	}
+	for _, path := range []string{"/health/ready", "/terminal-bridge/health/ready"} {
+		mux.HandleFunc(path, readyHandler)
+	}
+	for _, path := range []string{"/status", "/terminal-bridge/status"} {
+		mux.HandleFunc(path, statusHandler)
+	}
+	for _, path := range []string{"/metrics", "/terminal-bridge/metrics"} {
+		mux.HandleFunc(path, metricsHandler)
+	}
+	mux.Handle("/", bridge.corsWebSocketHandler(config))
+	return mux
+}
 
 // truncateString 截断字符串到指定长度
 func truncateString(s string, maxLen int) string {
@@ -1486,32 +2233,74 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
+func initTelemetry(ctx context.Context) (func(context.Context) error, error) {
+	endpoint := strings.TrimSpace(os.Getenv("HCI_BRIDGE_OTEL_ENDPOINT"))
+	if endpoint == "" {
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+		return func(context.Context) error { return nil }, nil
+	}
+	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))
+	if err != nil {
+		return nil, err
+	}
+	res, err := resource.New(ctx, resource.WithAttributes(
+		attribute.String("service.name", "terminal-bridge"),
+		attribute.String("service.version", getVersion()),
+		attribute.String("service.instance.id", logHub.instanceID),
+		attribute.String("deployment.environment", envOrDefault("HCI_DEPLOYMENT_ENVIRONMENT", "local")),
+	))
+	if err != nil {
+		return nil, err
+	}
+	provider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
+	otel.SetTracerProvider(provider)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	return provider.Shutdown, nil
+}
+
 func main() {
 	showVersion := flag.Bool("version", false, "打印版本与 commit 信息后退出")
+	mode := flag.String("mode", envOrDefault("HCI_BRIDGE_MODE", desktopMode), "运行模式：desktop 或 cluster")
+	listenAddress := flag.String("listen-address", strings.TrimSpace(os.Getenv("HCI_BRIDGE_LISTEN_ADDRESS")), "监听地址；默认 desktop=127.0.0.1，cluster=0.0.0.0")
+	port := flag.Int("port", envIntOrDefault("HCI_BRIDGE_PORT", defaultWSPort), "HTTP/WebSocket 监听端口")
+	allowedOrigins := flag.String("allowed-origins", strings.TrimSpace(os.Getenv("HCI_BRIDGE_ALLOWED_ORIGINS")), "允许的 Origin，逗号分隔；支持 * 和 same-origin")
 	flag.Parse()
 	if *showVersion {
 		fmt.Printf("terminal_bridge %s (commit: %s, built: %s)\n", getVersion(), CommitID, BuildTime)
 		return
+	}
+	config, err := normalizeRuntimeConfig(*mode, *listenAddress, *port, *allowedOrigins)
+	if err != nil {
+		log.Fatalf("[Bridge] 配置无效: %v", err)
 	}
 
 	bridge := newBridge()
 	// 把所有标准库日志重定向为结构化日志并回采（统一可观测性）
 	log.SetOutput(bridgeLogWriter{})
 	log.SetFlags(0)
-	http.Handle("/", bridge.corsWebSocketHandler())
-	
-	// P2-8: Prometheus metrics 端点（供 Prometheus 抓取）
-	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		w.Write([]byte(getPrometheusMetrics()))
-	})
+	shutdownTelemetry, telemetryErr := initTelemetry(context.Background())
+	if telemetryErr != nil {
+		log.Printf("[Bridge] ERROR: OpenTelemetry 初始化失败: %v", telemetryErr)
+		shutdownTelemetry = func(context.Context) error { return nil }
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(shutdownCtx); err != nil {
+			log.Printf("[Bridge] ERROR: OpenTelemetry 关闭失败: %v", err)
+		}
+	}()
 
-	addr := fmt.Sprintf("localhost:%d", wsPort)
-	log.Printf("[Bridge] HCI SSH Bridge 已启动 (版本: %s, commit: %s, 构建时间: %s), 监听 ws://%s",
-		getVersion(), CommitID, BuildTime, addr)
-	log.Printf("[Bridge] CORS 已启用，支持从公网域名访问；日志结构化回采已开启")
+	server := &http.Server{
+		Addr:              config.address(),
+		Handler:           newHTTPHandler(bridge, config),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	log.Printf("[Bridge] HCI SSH Bridge 已启动: version=%s commit=%s built=%s mode=%s listen=ws://%s",
+		getVersion(), CommitID, BuildTime, config.Mode, config.address())
+	log.Printf("[Bridge] Origin 策略已启用: allowed_origins=%s；结构化日志与状态指标已开启", config.AllowedOriginsRaw)
 
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		log.Fatal("[Bridge] 启动失败:", err)
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal("[Bridge] 启动失败: ", err)
 	}
 }

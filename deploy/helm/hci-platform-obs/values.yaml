@@ -87,8 +87,8 @@ prometheus:
       cpu: "500m"
       memory: "512Mi"
 
-promtail:
-  image: grafana/promtail:3.4.2
+alloy:
+  image: grafana/alloy:v1.10.2
   resources:
     requests:
       cpu: "25m"
@@ -185,5 +185,4 @@ langfuse:
       limits:
         cpu: "500m"
         memory: "512Mi"
-
 

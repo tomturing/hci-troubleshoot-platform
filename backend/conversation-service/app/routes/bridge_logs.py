@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
@@ -59,6 +60,28 @@ def _decode_jwt_payload(token: str) -> dict:
 
 # customer 前端经网关兜底注入的占位符 token（对齐 conversations.py exec-result 路由）
 _PLACEHOLDER_TOKEN = "client-session-placeholder-token"
+
+
+def _parse_event_time(value: str | None) -> datetime | None:
+    """把 Bridge RFC3339/RFC3339Nano 时间转换为 asyncpg 可绑定的 datetime。
+
+    Go 默认输出纳秒精度的 RFC3339 时间，而 PostgreSQL/asyncpg 的 timestamptz
+    参数要求 Python datetime。datetime.fromisoformat 会按数据库支持的微秒精度
+    安全归一化多余的小数位，避免字符串在 prepared statement 绑定阶段被拒绝。
+
+    Raises:
+        ValueError: 时间格式非法或缺少时区。
+    """
+    if value is None:
+        return None
+
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        raise ValueError("event_time 必须包含时区")
+    return parsed
 
 
 def _check_session_or_internal(authorization: str | None = Header(default=None)) -> str:
@@ -110,6 +133,20 @@ class BridgeLogEntry(BaseModel):
     event: str
     message: str
     extra: dict[str, Any] | None = None
+    event_id: str | None = None
+    bridge_instance_id: str | None = None
+    seq: int | None = Field(default=None, ge=0)
+    ts: str | None = None
+    span_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+    trace_flags: str | None = Field(default=None, pattern=r"^[0-9a-f]{2}$")
+    conversation_id: str | None = None
+    exec_id: str | None = None
+    tool_call_id: str | None = None
+    service_name: str | None = Field(default=None, alias="service.name")
+    service_version: str | None = Field(default=None, alias="service.version")
+    deployment_environment: str | None = Field(default=None, alias="deployment.environment")
+
+    model_config = {"populate_by_name": True}
 
 
 class BridgeLogBatch(BaseModel):
@@ -141,21 +178,46 @@ async def ingest_bridge_logs(
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
     accepted = 0
+    duplicates = 0
     skipped = 0
     async for session in _db_manager.get_session():
         for entry in body.logs:
             if not entry.case_id:
                 skipped += 1
                 continue
+            try:
+                event_time = _parse_event_time(entry.ts)
+            except (TypeError, ValueError):
+                skipped += 1
+                logger.warning(
+                    event="bridge_log_invalid_event_time",
+                    event_id=entry.event_id,
+                    bridge_instance_id=entry.bridge_instance_id,
+                    seq=entry.seq,
+                )
+                continue
             extra_json = json.dumps(entry.extra) if entry.extra else None
-            await session.execute(
+            extra = entry.extra or {}
+            result = await session.execute(
                 text(
                     """
                     INSERT INTO bridge_execution_logs
-                        (case_id, trace_id, custom_ui, user_id, node_ip, level, event, message, extra)
+                        (case_id, trace_id, custom_ui, user_id, node_ip, level, event, message, extra,
+                         event_id, bridge_instance_id, seq, event_time, span_id, trace_flags,
+                         conversation_id, exec_id, tool_call_id, service_name, service_version,
+                         deployment_environment, command, command_sha256, exit_code, duration_ms,
+                         stdout_len, stderr_len, output_preview, success, error_type, stdout_sha256,
+                         stderr_sha256, stdout_truncated, stderr_truncated, artifact_id)
                     VALUES
                         (:case_id, :trace_id, :custom_ui, :user_id, :node_ip, :level, :event, :message,
-                         CAST(:extra AS jsonb))
+                         CAST(:extra AS jsonb), CAST(:event_id AS uuid), :bridge_instance_id, :seq,
+                         CAST(:event_time AS timestamptz), :span_id, :trace_flags,
+                         CAST(:conversation_id AS uuid), :exec_id, :tool_call_id, :service_name,
+                         :service_version, :deployment_environment, :command, :command_sha256,
+                         :exit_code, :duration_ms, :stdout_len, :stderr_len, :output_preview,
+                         :success, :error_type, :stdout_sha256, :stderr_sha256,
+                         :stdout_truncated, :stderr_truncated, CAST(:artifact_id AS uuid))
+                    ON CONFLICT DO NOTHING
                     """
                 ),
                 {
@@ -168,9 +230,38 @@ async def ingest_bridge_logs(
                     "event": entry.event,
                     "message": entry.message,
                     "extra": extra_json,
+                    "event_id": entry.event_id,
+                    "bridge_instance_id": entry.bridge_instance_id,
+                    "seq": entry.seq,
+                    "event_time": event_time,
+                    "span_id": entry.span_id,
+                    "trace_flags": entry.trace_flags,
+                    "conversation_id": entry.conversation_id,
+                    "exec_id": entry.exec_id or extra.get("exec_id"),
+                    "tool_call_id": entry.tool_call_id,
+                    "service_name": entry.service_name or "terminal_bridge",
+                    "service_version": entry.service_version,
+                    "deployment_environment": entry.deployment_environment,
+                    "command": extra.get("command_redacted"),
+                    "command_sha256": extra.get("command_sha256"),
+                    "exit_code": extra.get("exit_code"),
+                    "duration_ms": extra.get("duration_ms"),
+                    "stdout_len": extra.get("stdout_len") or extra.get("stdout_bytes"),
+                    "stderr_len": extra.get("stderr_len") or extra.get("stderr_bytes"),
+                    "output_preview": None,
+                    "success": extra.get("success"),
+                    "error_type": extra.get("error_type"),
+                    "stdout_sha256": extra.get("stdout_sha256"),
+                    "stderr_sha256": extra.get("stderr_sha256"),
+                    "stdout_truncated": extra.get("stdout_truncated"),
+                    "stderr_truncated": extra.get("stderr_truncated"),
+                    "artifact_id": extra.get("artifact_id"),
                 },
             )
-            accepted += 1
+            if result.rowcount == 0:
+                duplicates += 1
+            else:
+                accepted += 1
         await session.commit()
 
     logger.info(
@@ -178,5 +269,6 @@ async def ingest_bridge_logs(
         user_id=user_id,
         accepted=accepted,
         skipped=skipped,
+        duplicates=duplicates,
     )
-    return {"ok": True, "accepted": accepted, "skipped": skipped}
+    return {"ok": True, "accepted": accepted, "duplicates": duplicates, "skipped": skipped}

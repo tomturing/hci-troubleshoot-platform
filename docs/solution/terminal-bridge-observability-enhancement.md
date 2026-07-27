@@ -1,4 +1,13 @@
-# terminal_bridge 可观测性增强
+---
+status: superseded
+category: solution
+audience: developer
+date: 2026-07-20
+superseded_by: docs/solution/observability/2026-07-27-terminal-bridge端到端可观测性重构设计.md
+owner: team
+---
+
+# terminal_bridge 可观测性增强（历史归档）
 
 > **版本**: v2.16.0
 > **更新日期**: 2026-07-20
@@ -100,7 +109,7 @@ scrape_configs:
 2. 维护 Parent Span ID
 3. 建立 Span 栈管理
 
-**临时方案**: Traceparent 格式中的 Span ID 固定为 1，已满足基本的端到端追踪需求。
+**纠正**：固定 Span ID 不满足 W3C 分布式追踪要求，也没有建立或导出真实 Span。本方案已由 2026-07-27 P0 重构取代，禁止再据此宣称“端到端追踪已打通”。
 
 ## 相关文档
 

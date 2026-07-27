@@ -12,6 +12,7 @@ from typing import Any
 
 from shared.models.audit import ToolResult
 from shared.observability.logger import get_logger
+from shared.observability.redaction import redact_observation_value
 
 logger = get_logger("tool-audit-service")
 
@@ -53,6 +54,11 @@ class ToolAuditService:
         idempotency_key: str | None = None,
         case_id: str | None = None,
         retry_count: int | None = None,
+        exec_id: str | None = None,
+        artifact_id: str | None = None,
+        output_sha256: str | None = None,
+        error_type: str | None = None,
+        bridge_trace_id: str | None = None,
     ) -> None:
         """异步地将工具执行审计日志写入或更新到数据库
 
@@ -96,11 +102,33 @@ class ToolAuditService:
                 message=f"已对非标准 UUID 格式会话ID派生定位: {session_id} -> {conv_uuid}",
             )
 
-        # 格式化输出数据并截断
-        output_str = str(result) if result is not None else ""
+        # Bridge 原始输出只保存在受控 Artifact；审计表保存脱敏输入、关联键、hash 和执行摘要。
+        safe_tool_args = redact_observation_value(tool_args)
+        result_artifact_id = artifact_id or getattr(result, "artifact_id", None)
+        output_str = "" if result_artifact_id else (str(result) if result is not None else "")
         if len(output_str) > RESULT_MAX_CHARS:
             output_str = output_str[:RESULT_MAX_CHARS] + "... [已截断]"
-        output_json = {"data": output_str} if result is not None else None
+        result_metadata = {
+            "artifact_id": result_artifact_id,
+            "exec_id": getattr(result, "exec_id", None),
+            "trace_id": getattr(result, "trace_id", None),
+            "exit_code": getattr(result, "exit_code", None),
+            "duration_ms": getattr(result, "duration_ms", None),
+            "stdout_bytes": getattr(result, "stdout_bytes", None),
+            "stderr_bytes": getattr(result, "stderr_bytes", None),
+            "stdout_sha256": getattr(result, "stdout_sha256", None),
+            "stderr_sha256": getattr(result, "stderr_sha256", None),
+            "stdout_truncated": getattr(result, "stdout_truncated", None),
+            "stderr_truncated": getattr(result, "stderr_truncated", None),
+            "error_type": getattr(result, "error_type", None),
+        }
+        result_metadata = {key: value for key, value in result_metadata.items() if value is not None}
+        output_json = {"data": output_str, **result_metadata} if result is not None else None
+        exec_id = exec_id or getattr(result, "exec_id", None) or audit_id
+        artifact_id = result_artifact_id
+        output_sha256 = output_sha256 or getattr(result, "stdout_sha256", None)
+        error_type = error_type or getattr(result, "error_type", None)
+        bridge_trace_id = bridge_trace_id or getattr(result, "trace_id", None)
 
         # 自动推断 tool_type
         tool_type = "scp"
@@ -130,7 +158,7 @@ class ToolAuditService:
                         risk_level=risk_level if risk_level is not None else 1,
                         policy=policy,
                         authorized_by=authorized_by,
-                        input_json=tool_args or {},
+                        input_json=safe_tool_args or {},
                         output_json=output_json,
                         error=error,
                         started_at=(started_at.astimezone(UTC) if started_at.tzinfo else started_at)
@@ -147,6 +175,11 @@ class ToolAuditService:
                         idempotency_key=idempotency_key,
                         case_id=case_id,
                         retry_count=retry_count if retry_count is not None else 0,
+                        exec_id=exec_id,
+                        artifact_id=uuid.UUID(artifact_id) if artifact_id else None,
+                        output_sha256=output_sha256,
+                        error_type=error_type,
+                        bridge_trace_id=bridge_trace_id,
                     )
                     session.add(log)
                 else:
@@ -163,7 +196,7 @@ class ToolAuditService:
                     if authorized_by:
                         log.authorized_by = authorized_by
                     if tool_args is not None:
-                        log.input_json = tool_args
+                        log.input_json = safe_tool_args
                     if output_json is not None:
                         log.output_json = output_json
                     if error is not None:
@@ -188,6 +221,16 @@ class ToolAuditService:
                         log.case_id = case_id
                     if retry_count is not None:
                         log.retry_count = retry_count
+                    if exec_id:
+                        log.exec_id = exec_id
+                    if artifact_id:
+                        log.artifact_id = uuid.UUID(artifact_id)
+                    if output_sha256:
+                        log.output_sha256 = output_sha256
+                    if error_type:
+                        log.error_type = error_type
+                    if bridge_trace_id:
+                        log.bridge_trace_id = bridge_trace_id
 
                 await session.commit()
             logger.info(
@@ -231,4 +274,9 @@ class DbAuditService:
             idempotency_key=kwargs.get("idempotency_key"),
             case_id=kwargs.get("case_id"),
             retry_count=kwargs.get("retry_count"),
+            exec_id=kwargs.get("exec_id") or audit_id,
+            artifact_id=kwargs.get("artifact_id"),
+            output_sha256=kwargs.get("output_sha256"),
+            error_type=kwargs.get("error_type"),
+            bridge_trace_id=kwargs.get("bridge_trace_id"),
         )

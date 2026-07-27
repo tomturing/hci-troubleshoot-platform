@@ -16,3 +16,19 @@ tests:
       - matchRegex:
           path: spec.rules[0].host
           pattern: "^[a-z0-9A-Z.-]+$"
+
+  - it: "启用 terminal_bridge 时应在根路径回退前渲染同源 WebSocket 路由"
+    set:
+      global.routingMode: "path"
+      ingress.enabled: true
+      terminalBridge.enabled: true
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[2].path
+          value: /terminal-bridge
+      - equal:
+          path: spec.rules[0].http.paths[2].backend.service.name
+          value: terminal-bridge
+      - equal:
+          path: spec.rules[0].http.paths[3].path
+          value: /

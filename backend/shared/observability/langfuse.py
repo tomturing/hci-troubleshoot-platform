@@ -330,6 +330,7 @@ def observe_tool(
     exec_id: str = "",
     session_id: str = "",
     risk_level: int = 1,
+    trace_id: str = "",
 ) -> Generator[Any, None, None]:
     """为 ReAct 工具执行创建 Langfuse tool observation（context manager）。
 
@@ -349,14 +350,17 @@ def observe_tool(
         return
 
     try:
+        from shared.observability.redaction import redact_observation_value
+
         with lf.start_as_current_observation(
             as_type="tool",
             name=f"tool.{tool_name}",
-            input=tool_args,
+            input=redact_observation_value(tool_args),
             metadata={
                 "exec_id": exec_id,
                 "session_id": session_id,
                 "risk_level": risk_level,
+                "otel_trace_id": trace_id,
             },
         ) as obs:
             yield obs

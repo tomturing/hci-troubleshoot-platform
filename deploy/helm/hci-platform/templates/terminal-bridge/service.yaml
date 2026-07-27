@@ -1,0 +1,18 @@
+{{- if .Values.terminalBridge.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: terminal-bridge
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "terminal-bridge" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.terminalBridge.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "terminal-bridge" "Release" .Release) | nindent 4 }}
+{{- end }}

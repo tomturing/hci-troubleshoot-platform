@@ -382,6 +382,10 @@ ok "hci-platform-infra 完成"
 # A-3: 部署前清理 scheduler 孤立 Pod
 pre_deploy_cleanup "$NAMESPACE"
 
+# 主业务 Chart 路径必须在 NodePort 预检前初始化，否则 set -u 会直接中止部署。
+APP_CHART="${PROJECT_ROOT}/deploy/helm/hci-platform"
+APP_VALUES="${APP_CHART}/values.yaml"
+
 # C-3: NodePort 冲突预检（仅当 helm 可用时检测）
 check_nodeport_conflicts "${APP_CHART}" "${APP_VALUES}" "${NAMESPACE}"
 
@@ -390,9 +394,6 @@ check_nodeport_conflicts "${APP_CHART}" "${APP_VALUES}" "${NAMESPACE}"
 # ============================================================================
 section "步骤 6：部署 hci-platform（业务服务）"
 
-APP_CHART="${PROJECT_ROOT}/deploy/helm/hci-platform"
-APP_VALUES="${APP_CHART}/values.yaml"
-
 # ---- 检测现有部署，自动决定 dataLayer.manage --------------------------------
 # 若 postgres StatefulSet 已由 hci-platform 管理，保持 manage=true 避免数据丢失
 # 若是全新环境，使用 manage=false（数据层由 hci-platform-data 独立 chart 管理）
@@ -400,16 +401,23 @@ if [[ -n "$FORCE_DATALAYER_MANAGE" ]]; then
   DATALAYER_MANAGE="$FORCE_DATALAYER_MANAGE"
   info "dataLayer.manage 强制设置为 $DATALAYER_MANAGE（--datalayer-manage 参数）"
 elif ${KUBECTL} -n "$NAMESPACE" get statefulset postgres &>/dev/null 2>&1; then
-  # 检查该 StatefulSet 是否由 hci-platform release 管理（而非 hci-platform-data）
-  MANAGING_RELEASE=$(${KUBECTL} -n "$NAMESPACE" get statefulset postgres \
-    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null || true)
-  if helm --kubeconfig "$HELM_KUBECONFIG" get values hci-platform -n "$NAMESPACE" &>/dev/null 2>&1; then
+  # 先识别 StatefulSet 自身的真实所有者，不能仅凭同名失败 release 推断数据层归属。
+  DATA_INSTANCE=$(${KUBECTL} -n "$NAMESPACE" get statefulset postgres \
+    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/instance}' 2>/dev/null || true)
+  DATA_TRACKING_ID=$(${KUBECTL} -n "$NAMESPACE" get statefulset postgres \
+    -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}' 2>/dev/null || true)
+
+  if [[ "$DATA_INSTANCE" == "hci-platform-data" || "$DATA_TRACKING_ID" == *"hci-platform-data"* ]]; then
+    DATALAYER_MANAGE="false"
+    info "检测到 postgres 由独立 hci-platform-data 管理，设置 dataLayer.manage=false"
+  elif [[ "$DATA_INSTANCE" == "hci-platform" ]] && \
+       helm --kubeconfig "$HELM_KUBECONFIG" get values hci-platform -n "$NAMESPACE" &>/dev/null 2>&1; then
     DATALAYER_MANAGE="true"
     warn "检测到 postgres 已由 hci-platform 管理，设置 dataLayer.manage=true 以保护现有数据"
     warn "如需迁移到独立 data chart，请先备份数据再运行: --datalayer-manage false"
   else
     DATALAYER_MANAGE="false"
-    info "全新部署，dataLayer.manage=false（数据层由 hci-platform-data 管理）"
+    warn "无法确认 postgres 由主 Chart 管理，保守设置 dataLayer.manage=false，避免修改不可变 StatefulSet"
   fi
 else
   DATALAYER_MANAGE="false"

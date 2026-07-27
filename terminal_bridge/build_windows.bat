@@ -2,7 +2,7 @@
 REM =============================================================================
 REM terminal_bridge build script (run on Windows)
 REM Output: terminal_bridge.exe (~3-4MB, ~1.5MB with upx)
-REM Support: Win7 / Win10 / Win11, no runtime dependency
+REM Support: Win10 / Win11, no runtime dependency
 REM =============================================================================
 REM Requirement: Go 1.21+
 REM   Download: https://go.dev/dl/  choose go1.21.x.windows-amd64.msi
@@ -34,7 +34,7 @@ set GOOS=windows
 set GOARCH=amd64
 set CGO_ENABLED=0
 
-set GIT_VER=v2.15.0-dev
+set GIT_VER=v2.16.0-dev
 for /f "delims=" %%i in ('git describe --tags --always --dirty 2^>nul') do set GIT_VER=%%i
 
 set GIT_COMMIT=unknown

@@ -122,3 +122,56 @@ async def test_db_audit_service_adapter():
     added_obj = mock_session.add.call_args[0][0]
     assert added_obj.tool_type == "sop"
     assert added_obj.output_json == {"data": "{'status': 'ok'}"}
+
+
+@pytest.mark.asyncio
+async def test_bridge_audit_does_not_duplicate_raw_output():
+    """Bridge 输出只进入 Artifact，tool_result 不得复制敏感原文。"""
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_session_factory = MagicMock(return_value=mock_session)
+    mock_execute_result = MagicMock()
+    mock_execute_result.scalar_one_or_none.return_value = None
+    mock_session.execute.return_value = mock_execute_result
+    ToolAuditService.initialize(mock_session_factory)
+
+    artifact_id = str(uuid.uuid4())
+    result = MagicMock(
+        artifact_id=artifact_id,
+        exec_id="exec-sensitive",
+        trace_id="a" * 32,
+        stdout="password=should-not-appear",
+        stderr="",
+        exit_code=0,
+        duration_ms=12,
+        stdout_bytes=26,
+        stderr_bytes=0,
+        stdout_sha256="b" * 64,
+        stderr_sha256="c" * 64,
+        stdout_truncated=False,
+        stderr_truncated=False,
+        error_type=None,
+    )
+
+    await ToolAuditService.write_tool_audit(
+        audit_id=str(uuid.uuid4()),
+        session_id=str(uuid.uuid4()),
+        tool_name="bash_exec",
+        tool_args={"command": "curl -H token=should-not-appear https://example.test", "password": "also-secret"},
+        risk_level=1,
+        policy="auto",
+        result=result,
+        error=None,
+        started_at=datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+        duration_ms=12,
+    )
+
+    added_obj = mock_session.add.call_args[0][0]
+    assert added_obj.artifact_id == uuid.UUID(artifact_id)
+    assert added_obj.output_json["data"] == ""
+    assert added_obj.output_json["artifact_id"] == artifact_id
+    assert "should-not-appear" not in str(added_obj.output_json)
+    assert "should-not-appear" not in str(added_obj.input_json)
+    assert "also-secret" not in str(added_obj.input_json)
+    assert added_obj.input_json["password"] == "[REDACTED]"

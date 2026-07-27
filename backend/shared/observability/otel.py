@@ -139,3 +139,13 @@ def get_current_span_id() -> str:
     if ctx and ctx.span_id != 0:
         return format(ctx.span_id, "016x")
     return ""
+
+
+def get_current_traceparent() -> str:
+    """返回当前 Span 的 W3C ``traceparent``，无有效上下文时返回空串。"""
+    span = trace.get_current_span()
+    ctx = span.get_span_context()
+    if not ctx or ctx.trace_id == 0 or ctx.span_id == 0:
+        return ""
+    flags = int(ctx.trace_flags) & 0xFF
+    return f"00-{ctx.trace_id:032x}-{ctx.span_id:016x}-{flags:02x}"

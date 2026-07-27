@@ -152,6 +152,10 @@ async def submit_exec_result(conversation_id: str, request: Request):
     else:
         # 兜底注入 MVP 阶段临时 Token，绕过下游会话鉴权
         headers["Authorization"] = "Bearer client-session-placeholder-token"
+    if traceparent := request.headers.get("traceparent"):
+        headers["traceparent"] = traceparent
+    if tracestate := request.headers.get("tracestate"):
+        headers["tracestate"] = tracestate
 
     response = await proxy_request("POST", f"/{conversation_id}/exec-result", payload=payload, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)

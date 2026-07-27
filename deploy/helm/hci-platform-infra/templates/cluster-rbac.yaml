@@ -46,11 +46,11 @@ subjects:
     name: prometheus
     namespace: {{ .Values.observabilityNamespace }}
 ---
-# ── Promtail：允许读取 Pod 元数据以丰富日志标签 ──────────────────────────────
+# ── Alloy：允许读取 Pod 元数据以丰富日志标签 ─────────────────────────────────
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: promtail
+  name: alloy
   labels:
     app.kubernetes.io/managed-by: hci-platform-infra
     app.kubernetes.io/component: observability
@@ -62,15 +62,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: promtail
+  name: alloy
   labels:
     app.kubernetes.io/managed-by: hci-platform-infra
     app.kubernetes.io/component: observability
 subjects:
   - kind: ServiceAccount
-    name: promtail
+    name: alloy
     namespace: {{ .Values.observabilityNamespace }}
 roleRef:
   kind: ClusterRole
-  name: promtail
+  name: alloy
   apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,44 @@
+{{- if and .Values.observability.enabled .Values.observabilityLayer.manage }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy
+  namespace: {{ .Values.observability.namespace }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "alloy" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "alloy" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "alloy" "Release" .Release "Chart" .Chart) | nindent 8 }}
+    spec:
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: {{ .Values.observability.alloy.image }}
+          args: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data", "--server.http.listen-addr=0.0.0.0:12345"]
+          resources:
+            {{- toYaml .Values.observability.alloy.resources | nindent 12 }}
+          volumeMounts:
+            - {name: alloy-config, mountPath: /etc/alloy/config.alloy, subPath: config.alloy}
+            - {name: pods-log, mountPath: /var/log/pods, readOnly: true}
+            - {name: alloy-data, mountPath: /var/lib/alloy/data}
+      tolerations:
+        - {effect: NoSchedule, operator: Exists}
+      volumes:
+        - name: alloy-config
+          configMap: {name: alloy-config}
+        - name: pods-log
+          hostPath: {path: /var/log/pods}
+        - name: alloy-data
+          hostPath: {path: /var/lib/alloy, type: DirectoryOrCreate}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: {{ .Values.observability.namespace }}
+{{- end }}

@@ -93,6 +93,58 @@
           "description": "true=为 conversation-service Pod 配置 dnsPolicy:None + 双 nameserver（kube-dns + 公共 DNS），用于直连外部 AI API 时解决域名解析问题"
         }
       }
+    },
+    "terminalBridge": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "仅在本地/dev 端到端联调时启用 terminal_bridge Pod；生产默认关闭"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1,
+          "description": "SSH 会话保存在进程内存中，当前必须保持单副本"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "allowedOrigins": {
+          "type": "string",
+          "minLength": 1,
+          "description": "浏览器 Origin 白名单；cluster 模式推荐 same-origin"
+        },
+        "execTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "execMaxOutputBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 16777216
+        },
+        "artifactRetentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650
+        },
+        "artifactCleanupSchedule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "otelEndpoint": {
+          "type": "string",
+          "pattern": "^https?://"
+        },
+        "hostKeyPolicy": {
+          "type": "string",
+          "enum": ["strict", "accept-new", "insecure"]
+        }
+      }
     }
   }
 }

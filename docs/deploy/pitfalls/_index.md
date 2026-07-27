@@ -2,7 +2,7 @@
 status: active
 category: deploy
 audience: agent
-last_updated: 2026-07-02
+last_updated: 2026-07-27
 owner: team
 update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 ---
@@ -15,7 +15,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 > 2. 再写入对应分类 file
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：D-015**（旧格式延续：PIT-050）
+> **下一个可用编号：D-020**（旧格式延续：PIT-050）
 
 ---
 
@@ -26,8 +26,8 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | 触发场景 | 读取文件 | 当前条目 |
 |---------|---------|---------|
 | 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039, PIT-046, D-008 |
-| 编写/审查 Shell/Makefile/CI 脚本 / GitHub Actions | [shell.md](shell.md) | PIT-001, PIT-002, D-012 |
-| K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移/ArgoCD | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001~D-007, D-009, D-010, D-011, D-013, D-014 |
+| 编写/审查 Shell/Makefile/CI 脚本 / GitHub Actions | [shell.md](shell.md) | PIT-001, PIT-002, D-012, D-016 |
+| K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移/ArgoCD/日志采集器迁移 | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001~D-007, D-009, D-010, D-011, D-013, D-014, D-015, D-017~D-019 |
 | ArgoCD 升级/多集群/PreSync SA/Redis EOF/PreSync Hook 镜像/失败 Hook 残留/db-seed Hook 失败 | [k8s.md](k8s.md) | D-001, D-002, D-003, D-004, D-005, D-011, D-014 |
 | Grafana 重定向/Ingress/iframe 白屏 | [grafana.md](grafana.md) | PIT-011, PIT-012, PIT-020, PIT-036 |
 
@@ -79,6 +79,11 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-012** | shell.md | GitHub Actions ci.yml 无路径过滤导致局部变更 PR（如仅改 Helm）触发全套 CI（>10min）；uv/pnpm/helm-unittest 三处缓存缺失为主要浪费点；详见 `docs/deploy/events/2026-07-09-CI检查超时分析与优化方案.md` |
 | **D-013** | k8s.md | desired_schema.sql 声明式 schema 与 ORM 模型不同步导致 ORM 查询 500（db-migrate.sh 只应用 desired_schema.sql，不应用 atlas-migrations 版本化迁移）|
 | **D-014** | k8s.md | db-seed 种子 SQL `$TEMPLATE$` dollar-quote 闭定界符后漏逗号导致 PostSync Hook Job 失败（syntax error at '1.0'）|
+| **D-015** | k8s.md | Dockerfile COPY 使用仓库根相对路径但构建脚本传入子目录 context，导致发送超大上下文后 COPY 路径不存在 |
+| **D-016** | shell.md | `set -o pipefail` 下 `producer | grep -q` 因 SIGPIPE 返回假失败，镜像导入后验证误报不存在 |
+| **D-017** | k8s.md | Alloy/Promtail 切换时首次从文件头回放过期 CRI 日志，导致 Loki 以 timestamp too old 整批拒绝 |
+| **D-018** | k8s.md | ConfigMap 通过 subPath 挂载时热 reload 仍读取旧 inode，必须滚动重启工作负载 |
+| **D-019** | k8s.md | App-of-Apps 父子 Application 双层 selfHeal 会覆盖本地联调运行态，必须逐层暂停并记录恢复条件 |
 
 ---
 

@@ -34,6 +34,13 @@ customerUI:
     repository: hci-customer-ui
     tag: "latest"
 
+# dev 环境允许将 terminal_bridge 作为 Pod 运行，便于端到端可观测联调。
+terminalBridge:
+  enabled: true
+  image:
+    repository: hci-terminal-bridge
+    tag: "latest"
+
 adminUI:
   image:
     repository: hci-admin-ui

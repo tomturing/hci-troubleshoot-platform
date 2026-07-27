@@ -1,12 +1,60 @@
 /**
  * terminal.ts
- * Bridge 模式：SSH 连接完全在 Windows 本地发起
- * 浏览器通过 ws://localhost:9999 与本地 terminal_bridge.exe 通信
- * 公网服务器不参与任何 SSH 流量
+ * Bridge 双运行模式：
+ * - desktop：浏览器通过 ws://localhost:9999 连接 Windows terminal_bridge.exe
+ * - cluster：浏览器通过同源 /terminal-bridge 连接 K3s Pod
+ * 两种模式使用相同 WebSocket 协议和同一套 Go 代码。
  */
 
-const BRIDGE_URL = 'ws://localhost:9999'
+const DEFAULT_BRIDGE_URL = 'ws://localhost:9999'
 const BRIDGE_CHECK_TIMEOUT = 1500
+const DEFAULT_BRIDGE_EXEC_TIMEOUT_SECONDS = 120
+const BRIDGE_RESULT_TRANSPORT_GRACE_SECONDS = 15
+
+declare global {
+  interface Window {
+    __HCI_RUNTIME_CONFIG__?: {
+      terminalBridgeUrl?: string
+      terminalBridgeExecTimeoutSeconds?: number | string
+    }
+  }
+}
+
+/**
+ * 获取当前 Bridge WebSocket 地址。
+ * Helm 通过 nginx 的 runtime-config.js 注入集群路径；未配置时保持 Windows localhost 行为。
+ */
+export function getBridgeUrl(): string {
+  const configured =
+    typeof window === 'undefined'
+      ? ''
+      : window.__HCI_RUNTIME_CONFIG__?.terminalBridgeUrl?.trim() || ''
+  if (!configured) return DEFAULT_BRIDGE_URL
+
+  if (configured.startsWith('/')) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${protocol}//${window.location.host}${configured}`
+  }
+  if (configured.startsWith('https://')) return `wss://${configured.slice('https://'.length)}`
+  if (configured.startsWith('http://')) return `ws://${configured.slice('http://'.length)}`
+  return configured
+}
+
+/**
+ * 返回浏览器等待 Bridge 权威执行结果的窗口。
+ * 浏览器必须晚于 Bridge 超时，预留 15 秒供 SSH 关闭、WebSocket 发送和事件循环调度。
+ */
+export function getBridgeExecWaitTimeoutMs(): number {
+  const configured =
+    typeof window === 'undefined'
+      ? Number.NaN
+      : Number(window.__HCI_RUNTIME_CONFIG__?.terminalBridgeExecTimeoutSeconds)
+  const bridgeTimeoutSeconds =
+    Number.isFinite(configured) && configured > 0
+      ? configured
+      : DEFAULT_BRIDGE_EXEC_TIMEOUT_SECONDS
+  return (bridgeTimeoutSeconds + BRIDGE_RESULT_TRANSPORT_GRACE_SECONDS) * 1000
+}
 
 export type BridgeStatus = 'checking' | 'running' | 'not_running'
 
@@ -44,6 +92,18 @@ export interface TerminalWsMessage {
   stdout?: string   // 双通道 stdout 字段
   stderr?: string   // 双通道 stderr 字段
   trace_id?: string // 端到端链路 ID（回显）
+  traceparent?: string
+  artifact_id?: string
+  stdout_bytes?: number
+  stderr_bytes?: number
+  stdout_sha256?: string
+  stderr_sha256?: string
+  stdout_truncated?: boolean
+  stderr_truncated?: boolean
+  duration_ms?: number
+  timed_out?: boolean
+  cancelled?: boolean
+  error_type?: string
   // bridge_log 消息的负载（结构化日志条目）
   seq?: number
   ts?: string
@@ -55,12 +115,12 @@ export interface TerminalWsMessage {
 }
 
 /**
- * 检测本地 Bridge 是否在运行
+ * 检测当前配置的 Bridge 是否在运行
  * 通过尝试建立 WebSocket 连接来判断
  */
 export function checkBridgeRunning(): Promise<boolean> {
   return new Promise((resolve) => {
-    const probe = new WebSocket(BRIDGE_URL)
+    const probe = new WebSocket(getBridgeUrl())
     const timer = setTimeout(() => {
       probe.close()
       resolve(false)
@@ -85,7 +145,7 @@ export function checkBridgeRunning(): Promise<boolean> {
  */
 export async function checkBridgeBeforeOpen(timeoutMs = 3000): Promise<'running' | 'not-running'> {
   return new Promise((resolve) => {
-    const probe = new WebSocket(BRIDGE_URL)
+    const probe = new WebSocket(getBridgeUrl())
     const timer = setTimeout(() => {
       probe.close()
       resolve('not-running')
@@ -108,7 +168,7 @@ export async function checkBridgeBeforeOpen(timeoutMs = 3000): Promise<'running'
  * 创建 Bridge WebSocket 连接
  */
 export function createBridgeSocket(): WebSocket {
-  return new WebSocket(BRIDGE_URL)
+  return new WebSocket(getBridgeUrl())
 }
 
 /**
@@ -269,6 +329,9 @@ export function buildAgentExecProcessMessage(
   nodeIp?: string | null,
   container?: string | null,
   traceId?: string | null,
+  traceparent?: string | null,
+  conversationId?: string | null,
+  toolCallId?: string | null,
 ): string {
   return JSON.stringify({
     type: 'ssh_exec_process',
@@ -278,6 +341,9 @@ export function buildAgentExecProcessMessage(
     node_ip: nodeIp || undefined,
     container: container || undefined,
     trace_id: traceId || undefined,
+    traceparent: traceparent || undefined,
+    conversation_id: conversationId || undefined,
+    tool_call_id: toolCallId || undefined,
   })
 }
 
@@ -290,6 +356,19 @@ export function parseAgentExecResult(message: unknown): {
   exitCode: number
   stdout?: string
   stderr?: string
+  traceId?: string
+  traceparent?: string
+  artifactId?: string
+  stdoutBytes?: number
+  stderrBytes?: number
+  stdoutSha256?: string
+  stderrSha256?: string
+  stdoutTruncated?: boolean
+  stderrTruncated?: boolean
+  durationMs?: number
+  timedOut?: boolean
+  cancelled?: boolean
+  errorType?: string
 } | null {
   if (typeof message !== 'object' || message === null) {
     return null
@@ -316,5 +395,18 @@ export function parseAgentExecResult(message: unknown): {
     exitCode,
     stdout,
     stderr,
+    traceId: typeof msg.trace_id === 'string' ? msg.trace_id : undefined,
+    traceparent: typeof msg.traceparent === 'string' ? msg.traceparent : undefined,
+    artifactId: typeof msg.artifact_id === 'string' ? msg.artifact_id : undefined,
+    stdoutBytes: typeof msg.stdout_bytes === 'number' ? msg.stdout_bytes : undefined,
+    stderrBytes: typeof msg.stderr_bytes === 'number' ? msg.stderr_bytes : undefined,
+    stdoutSha256: typeof msg.stdout_sha256 === 'string' ? msg.stdout_sha256 : undefined,
+    stderrSha256: typeof msg.stderr_sha256 === 'string' ? msg.stderr_sha256 : undefined,
+    stdoutTruncated: msg.stdout_truncated === true,
+    stderrTruncated: msg.stderr_truncated === true,
+    durationMs: typeof msg.duration_ms === 'number' ? msg.duration_ms : undefined,
+    timedOut: msg.timed_out === true,
+    cancelled: msg.cancelled === true,
+    errorType: typeof msg.error_type === 'string' ? msg.error_type : undefined,
   }
 }

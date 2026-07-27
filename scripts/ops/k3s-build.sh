@@ -110,13 +110,16 @@ should_build_image() {
 # 镜像列表: name  context  dockerfile
 # ============================================================================
 declare -a IMAGES=(
-  "hci-api-gateway            ${PROJECT_ROOT}/backend       api-gateway/Dockerfile"
-  "hci-case-service           ${PROJECT_ROOT}/backend       case-service/Dockerfile"
-  "hci-conversation-service   ${PROJECT_ROOT}/backend       conversation-service/Dockerfile"
-  "hci-scheduler-service      ${PROJECT_ROOT}/backend       scheduler-service/Dockerfile"
-  "hci-kb-service             ${PROJECT_ROOT}/backend       kb-service/Dockerfile"
-  "hci-customer-ui            ${PROJECT_ROOT}/frontend      customer/Dockerfile"
-  "hci-admin-ui               ${PROJECT_ROOT}/frontend      admin/Dockerfile"
+  # Dockerfile 的 COPY 源路径均以仓库根目录开头，构建上下文必须统一为 PROJECT_ROOT。
+  "hci-api-gateway            ${PROJECT_ROOT}               backend/api-gateway/Dockerfile"
+  "hci-case-service           ${PROJECT_ROOT}               backend/case-service/Dockerfile"
+  "hci-conversation-service   ${PROJECT_ROOT}               backend/conversation-service/Dockerfile"
+  "hci-scheduler-service      ${PROJECT_ROOT}               backend/scheduler-service/Dockerfile"
+  "hci-kb-service             ${PROJECT_ROOT}               backend/kb-service/Dockerfile"
+  "hci-agent-service          ${PROJECT_ROOT}               backend/agent-service/Dockerfile"
+  "hci-customer-ui            ${PROJECT_ROOT}               frontend/customer/Dockerfile"
+  "hci-admin-ui               ${PROJECT_ROOT}               frontend/admin/Dockerfile"
+  "hci-terminal-bridge        ${PROJECT_ROOT}               terminal_bridge/Dockerfile"
 )
 
 if [[ -f "${OPENCLAW_REPO_DIR}/Dockerfile" ]]; then
@@ -162,13 +165,25 @@ echo ""
 
 BUILT=0
 FAILED=0
+BRIDGE_VERSION="$(git -c safe.directory="$PROJECT_ROOT" -C "$PROJECT_ROOT" describe --tags --always --dirty 2>/dev/null || echo v2.16.0-dev)"
+BRIDGE_COMMIT="$(git -c safe.directory="$PROJECT_ROOT" -C "$PROJECT_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+BRIDGE_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 for entry in "${WORK_IMAGES[@]}"; do
   read -r name context dockerfile <<< "$entry"
   info "[$((BUILT+FAILED+1))/${#WORK_IMAGES[@]}] 构建 ${name}:${IMAGE_TAG} ..."
-  
+
+  build_args=()
+  if [[ "$name" == "hci-terminal-bridge" ]]; then
+    build_args+=(
+      --build-arg "VERSION=${BRIDGE_VERSION}"
+      --build-arg "COMMIT_ID=${BRIDGE_COMMIT}"
+      --build-arg "BUILD_TIME=${BRIDGE_BUILD_TIME}"
+    )
+  fi
+
   # --network host：让构建容器走宿主机网络（Clash TUN 场景必须，PIT-028）
-  if docker build --network host -t "${name}:${IMAGE_TAG}" -f "${context}/${dockerfile}" "${context}" --quiet; then
+  if docker build --network host "${build_args[@]}" -t "${name}:${IMAGE_TAG}" -f "${context}/${dockerfile}" "${context}" --quiet; then
     ok "  → ${name}:${IMAGE_TAG} 构建成功"
     BUILT=$((BUILT + 1))
   else
@@ -212,7 +227,9 @@ if [[ "$IMPORT_K3S" == true ]]; then
     info "  导入 ${name}:${IMAGE_TAG} ..."
     if docker save "${name}:${IMAGE_TAG}" | ${K3S_CTR} images import -; then
       # A-1: 导入后立即验证镜像确实存在于 containerd（防止 Silent Import Failure）
-      if ${K3S_CTR} images ls | grep -q "${name}:${IMAGE_TAG}"; then
+      # 不能在 pipefail 下直接 `images ls | grep -q`：grep 提前退出会让 ctr 收到 SIGPIPE，造成假失败。
+      containerd_image_refs="$(${K3S_CTR} images ls -q)"
+      if grep -Eq "(^|/)${name}:${IMAGE_TAG}$" <<< "$containerd_image_refs"; then
         ok "  → ${name}:${IMAGE_TAG} 已导入并验证 ✓"
         IMPORTED=$((IMPORTED + 1))
       else

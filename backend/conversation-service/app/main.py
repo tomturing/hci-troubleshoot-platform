@@ -8,7 +8,8 @@ Conversation Service - 主应用 (v2.0 多类型AI助手)
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient, create_openclaw_client
 from shared.database.postgres import DatabaseManager
 from shared.database.redis import RedisManager
@@ -197,6 +198,13 @@ app.include_router(bridge_logs.router)  # OBS-TERMINAL-BRIDGE-001 日志回采
 app.include_router(tool_definition.router)
 app.include_router(system_prompt.router)
 app.include_router(skill_definition.router)
+
+
+# Prometheus 抓取端点；与 Pod 的 prometheus.io/path=/metrics 注解保持一致。
+@app.get("/metrics")
+async def metrics():
+    """导出 Conversation Service 的 HTTP、AI 与进程指标。"""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # 健康检查端点

@@ -16,7 +16,7 @@ on:
       services_csv:
         description: "服务列表（逗号分隔）"
         required: false
-        default: "apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI"
+        default: "apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI,terminalBridge"
 
 jobs:
   sync-env-repo:

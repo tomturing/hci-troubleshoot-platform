@@ -301,6 +301,7 @@ services:
   customer-ui:
     environment:
       - DNS_RESOLVER=127.0.0.11
+      - TERMINAL_BRIDGE_URL=${TERMINAL_BRIDGE_URL:-}
     build:
       context: ../..
       dockerfile: frontend/customer/Dockerfile

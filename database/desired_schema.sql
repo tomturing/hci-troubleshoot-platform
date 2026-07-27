@@ -549,6 +549,11 @@ CREATE TABLE IF NOT EXISTS tool_result (
     idempotency_key varchar(100),
     case_id varchar(20),
     retry_count smallint NOT NULL DEFAULT 0,
+    exec_id varchar(64),
+    artifact_id uuid,
+    output_sha256 varchar(64),
+    error_type varchar(64),
+    bridge_trace_id varchar(64),
     updated_at timestamptz DEFAULT now(),
     CONSTRAINT fk_tool_result_conversation_id FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE CASCADE,
     CONSTRAINT fk_tool_result_authorization_id FOREIGN KEY (authorization_id) REFERENCES "authorization" (auth_id) ON DELETE SET NULL,
@@ -590,6 +595,8 @@ CREATE INDEX IF NOT EXISTS idx_tool_result_tool_name ON tool_result (tool_name, 
 CREATE INDEX IF NOT EXISTS idx_tool_result_risk_level ON tool_result (risk_level) WHERE risk_level >= 2;
 -- 链路追踪
 CREATE INDEX IF NOT EXISTS idx_tool_result_trace_id ON tool_result (trace_id) WHERE trace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tool_result_exec_id ON tool_result (exec_id) WHERE exec_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tool_result_artifact_id ON tool_result (artifact_id) WHERE artifact_id IS NOT NULL;
 
 -- ------------------------------------------------------------
 -- 表: audit_log  [模块: conversation-service]
@@ -1351,6 +1358,24 @@ CREATE TABLE IF NOT EXISTS bridge_execution_logs (
     output_preview text,
     success        boolean,
     error_type     varchar(50)
+    ,event_id       uuid
+    ,bridge_instance_id varchar(128)
+    ,seq            bigint
+    ,event_time     timestamptz
+    ,observed_time  timestamptz DEFAULT CURRENT_TIMESTAMP
+    ,span_id        varchar(16)
+    ,trace_flags    varchar(2)
+    ,conversation_id uuid
+    ,tool_call_id   varchar(128)
+    ,service_name   varchar(128)
+    ,service_version varchar(64)
+    ,deployment_environment varchar(32)
+    ,command_sha256 varchar(64)
+    ,stdout_sha256 varchar(64)
+    ,stderr_sha256 varchar(64)
+    ,stdout_truncated boolean
+    ,stderr_truncated boolean
+    ,artifact_id uuid
 );
 
 COMMENT ON TABLE bridge_execution_logs IS 'terminal_bridge 结构化执行日志回采表 — 统一收集 SSH 会话生命周期与命令执行结果，关联工单与端到端 trace';
@@ -1379,6 +1404,45 @@ CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_exec_id ON bridge_execution
 CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_success ON bridge_execution_logs (success) WHERE success IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_error_type ON bridge_execution_logs (error_type) WHERE error_type IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bridge_execution_logs_duration ON bridge_execution_logs (duration_ms) WHERE duration_ms IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_bridge_execution_logs_event_id ON bridge_execution_logs (event_id) WHERE event_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_bridge_execution_logs_instance_seq ON bridge_execution_logs (bridge_instance_id, seq) WHERE bridge_instance_id IS NOT NULL AND seq IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 表: bridge_execution_artifacts  [模块: conversation-service]
+-- 说明: Bridge 命令执行的受控完整输出，普通日志和 Langfuse 仅保存摘要与引用。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bridge_execution_artifacts (
+    artifact_id uuid PRIMARY KEY,
+    exec_id varchar(64) NOT NULL UNIQUE,
+    case_id varchar(32),
+    conversation_id uuid,
+    tool_name varchar(100),
+    trace_id varchar(64),
+    node_ip varchar(64),
+    container varchar(128),
+    command_redacted text,
+    stdout text,
+    stderr text,
+    exit_code integer,
+    stdout_bytes bigint NOT NULL DEFAULT 0,
+    stderr_bytes bigint NOT NULL DEFAULT 0,
+    stdout_sha256 varchar(64),
+    stderr_sha256 varchar(64),
+    stdout_truncated boolean NOT NULL DEFAULT false,
+    stderr_truncated boolean NOT NULL DEFAULT false,
+    duration_ms bigint,
+    timed_out boolean NOT NULL DEFAULT false,
+    cancelled boolean NOT NULL DEFAULT false,
+    status varchar(32) NOT NULL,
+    error_type varchar(64),
+    access_classification varchar(32) NOT NULL DEFAULT 'restricted',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_bridge_artifacts_trace_id ON bridge_execution_artifacts (trace_id) WHERE trace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_bridge_artifacts_case_created ON bridge_execution_artifacts (case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bridge_artifacts_expires_at ON bridge_execution_artifacts (expires_at) WHERE expires_at IS NOT NULL;
 
 -- ------------------------------------------------------------
 -- 表: fact  [模块: agent-service]

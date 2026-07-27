@@ -699,6 +699,9 @@ jobs:
           - service: admin-ui
             context: .
             dockerfile: frontend/admin/Dockerfile
+          - service: terminal-bridge
+            context: .
+            dockerfile: terminal_bridge/Dockerfile
           # hci-openclaw 已从本 matrix 移出，由独立 workflow build-hci-openclaw.yml 管理
           # （仅 workflow_dispatch 手动触发，固定版本 v2026.3.24，不阻断主流程）
     steps:

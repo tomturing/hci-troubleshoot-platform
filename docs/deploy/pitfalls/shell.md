@@ -65,3 +65,24 @@ helm-validate:
   needs: [changes]
   if: github.event_name != 'pull_request' || needs.changes.outputs.helm == 'true'
 ```
+
+## D-016：`pipefail` 与 `grep -q` 组合导致生产者 SIGPIPE 假失败
+
+**触发场景**：脚本启用 `set -euo pipefail`，再用 `producer | grep -q pattern` 验证长列表中是否存在目标。典型生产者包括 `k3s ctr images ls`、`kubectl get ...` 和输出量较大的 CLI。
+
+**症状**：目标明明存在，`grep -q` 单独判断也能匹配，但 `if producer | grep -q ...; then` 却进入失败分支；本次实例表现为 containerd 导入命令成功后，脚本误报“未找到该镜像”。
+
+**根因**：`grep -q` 找到首个匹配后会立即退出并关闭管道。生产者继续写入时收到 SIGPIPE，返回非零；`pipefail` 让整个 pipeline 采用该非零状态，因此条件被判为失败。列表越长，越容易复现。
+
+**正确做法**：先完整读取生产者结果，再对已读取的字符串匹配，使生产者不会被提前关闭：
+
+```bash
+image_refs="$(k3s ctr images ls -q)"
+if grep -Eq '(^|/)hci-api-gateway:dev-local$' <<< "$image_refs"; then
+  echo "镜像存在"
+fi
+```
+
+也可以使用会消费完整输入且显式管理退出码的 `awk`，但不要仅通过去掉 `pipefail` 隐藏其他真实失败。
+
+**预防检查**：审查启用 `pipefail` 的 Shell 时，搜索 `| grep -q`；如果左侧可能输出多行或持续流式输出，改成“先捕获、后匹配”。2026-07-27 dev K3s 镜像导入验收已据此修复 `scripts/ops/k3s-build.sh`。

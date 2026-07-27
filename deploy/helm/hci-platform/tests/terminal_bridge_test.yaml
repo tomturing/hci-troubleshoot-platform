@@ -1,0 +1,49 @@
+# terminal_bridge Pod 化部署回归测试
+suite: "Terminal Bridge 部署配置测试"
+templates:
+  - terminal-bridge/deployment.yaml
+tests:
+  - it: "默认关闭时不应渲染集群 Bridge"
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: "启用后必须使用 cluster 模式、三级探针和 Prometheus 注解"
+    set:
+      terminalBridge.enabled: true
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.template.spec.containers[0].args[0]
+          value: --mode=cluster
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /health/live
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /health/ready
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.path
+          value: /health/live
+      - equal:
+          path: metadata.name
+          value: terminal-bridge
+      - equal:
+          path: spec.template.metadata.annotations["prometheus.io/scrape"]
+          value: "true"
+      - equal:
+          path: spec.template.spec.containers[0].env[1].value
+          value: same-origin
+
+  - it: "必须按非 root 安全基线运行"
+    set:
+      terminalBridge.enabled: true
+      workloadDefaults.securityContext.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false

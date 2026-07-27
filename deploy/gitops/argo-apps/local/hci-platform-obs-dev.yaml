@@ -21,7 +21,7 @@ metadata:
   name: hci-platform-obs-dev
   namespace: argocd
   annotations:
-    argocd.argoproj.io/description: "dev 可观测性栈 — Prometheus + Loki + Tempo + Grafana + Promtail（namespace: hci-observability）"
+    argocd.argoproj.io/description: "dev 可观测性栈 — Prometheus + Loki + Tempo + Grafana + Alloy（namespace: hci-observability）"
 spec:
   project: default
   destination:

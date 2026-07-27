@@ -35,3 +35,7 @@ postgres:
 
 redis:
   storage: 1Gi
+
+# 本地 WSL + K3s 端到端联调：Bridge 直接在集群内连接 HCI 后台。
+terminalBridge:
+  enabled: true
