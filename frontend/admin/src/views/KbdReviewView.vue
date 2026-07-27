@@ -585,6 +585,7 @@ async function openDetailDialog(entry: KbdEntry) {
   detailFullscreen.value = false
   detailDialogVisible.value = true
   editingContent.value = false
+  clearStagedSignalEdits()
   cancelEditSignal()
   // 拉取完整详情（确保含 signals_json）
   try {
@@ -624,9 +625,34 @@ function isBackendSig(sig: SignalV2): boolean {
   return sigTool(sig).startsWith('qfk') || sig.provenance?.category === 'backend'
 }
 
-const signalList = computed<SignalV2[]>(() =>
-  (detailEntry.value?.signals_json as SignalsDoc | undefined)?.signals || [],
-)
+// 一个 KBD 的多条旧信号可能同时带有管道。各条修改在当前审核会话中暂存，仅当全部信号都通过严格 v2 校验后才会一次性持久化。
+const stagedSignalEdits = ref<Record<number, SignalV2>>({})
+
+function cloneSignal(signal: SignalV2): SignalV2 {
+  return JSON.parse(JSON.stringify(signal)) as SignalV2
+}
+
+function clearStagedSignalEdits() {
+  stagedSignalEdits.value = {}
+}
+
+function discardStagedSignalEdit(index: number) {
+  if (!Object.prototype.hasOwnProperty.call(stagedSignalEdits.value, index)) return
+  const next = { ...stagedSignalEdits.value }
+  delete next[index]
+  stagedSignalEdits.value = next
+}
+
+const stagedSignalEditCount = computed(() => Object.keys(stagedSignalEdits.value).length)
+
+function hasStagedSignalEdit(index: number): boolean {
+  return Object.prototype.hasOwnProperty.call(stagedSignalEdits.value, index)
+}
+
+const signalList = computed<SignalV2[]>(() => {
+  const source = (detailEntry.value?.signals_json as SignalsDoc | undefined)?.signals || []
+  return source.map((signal, index) => stagedSignalEdits.value[index] || signal)
+})
 const producerSignals = computed(() =>
   signalList.value.map((s, i) => ({ sig: s, origIdx: i })).filter((x) => !isBackendSig(x.sig)),
 )
@@ -672,6 +698,14 @@ const signalEditDraft = ref<SignalV2>({
 })
 const signalSaveLoading = ref(false)
 const pipelineConvertLoading = ref(false)
+
+function stageCurrentSignalEdit() {
+  if (editingSignalIndex.value === null) return
+  stagedSignalEdits.value = {
+    ...stagedSignalEdits.value,
+    [editingSignalIndex.value]: cloneSignal(signalEditDraft.value),
+  }
+}
 
 function deriveSignalRequires(sig: SignalV2): string[] {
   const found = new Set<string>()
@@ -764,10 +798,14 @@ async function convertDraftPipeline() {
 }
 
 function startEditSignal(origIdx: number) {
+  if (editingSignalIndex.value !== null && editingSignalIndex.value !== origIdx) {
+    stageCurrentSignalEdit()
+    ElMessage.info('已暂存当前信号的未保存修改，请继续修复其他信号后统一保存')
+  }
   const sig = signalList.value[origIdx]
   if (!sig) return
   editingSignalIndex.value = origIdx
-  const draft: SignalV2 = JSON.parse(JSON.stringify(sig))
+  const draft = cloneSignal(sig)
   // 确保嵌套对象存在，便于 v-model 直接绑定 v2 字段路径
   draft.acquire = draft.acquire || { tool: '', args: {} }
   draft.acquire.args = draft.acquire.args || {}
@@ -806,6 +844,7 @@ function setQfkOutputMode(mode: 'keyword' | 'produces') {
 }
 
 function cancelEditSignal() {
+  if (editingSignalIndex.value !== null) discardStagedSignalEdit(editingSignalIndex.value)
   editingSignalIndex.value = null
   signalEditDraft.value = {
     acquire: { tool: '', args: {} },
@@ -848,8 +887,21 @@ async function saveSignalEdit() {
   }
   signalSaveLoading.value = true
   try {
-    const list: SignalV2[] = JSON.parse(JSON.stringify(signalList.value))
-    list[editingSignalIndex.value] = JSON.parse(JSON.stringify(signalEditDraft.value))
+    // 暂存当前卡片，以便在同一 KBD 中逐条修复多个旧管道，不丢失已经完成的安全转换。
+    stageCurrentSignalEdit()
+    const list = signalList.value.map(cloneSignal)
+    const pipeSignals = list
+      .map((signal, index) => ({ signal, index }))
+      .filter(({ signal }) => isBackendSig(signal) && String(signal.acquire?.args?.command || '').includes('|'))
+    if (pipeSignals.length) {
+      const targets = pipeSignals.map(({ signal, index }) => {
+        const id = String(signal.id || `sig_${index + 1}`)
+        const instruction = String(signal.acquire?.args?.instruction || sigTool(signal) || '未命名信号')
+        return `第 ${index + 1} 条 ${id}（${instruction}）`
+      })
+      ElMessage.error(`已暂存本条修改；仍有含 Shell 管道的信号：${targets.join('、')}。请点击该卡片的“编辑”逐条修复，再保存。`)
+      return
+    }
     // 回写完整 v2 文档（后端 update_kbd_entry 幂等归约），不再发扁平 list
     const payload: SignalsDoc = { schema_version: 2, signals: list }
     const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}`, {
@@ -875,6 +927,7 @@ async function saveSignalEdit() {
     const idx = entries.value.findIndex((e) => e.id === detailEntry.value!.id)
     if (idx !== -1) entries.value[idx].signals_json = newDoc
     ElMessage.success('关键信号已保存')
+    clearStagedSignalEdits()
     cancelEditSignal()
   } catch (error) {
     const detail = error instanceof Error ? error.message : ''
@@ -1799,6 +1852,13 @@ onMounted(() => {
             </div>
           </div>
 
+          <el-alert v-if="stagedSignalEditCount > 0" type="warning" :closable="false" show-icon>
+            <template #title>
+              已暂存 {{ stagedSignalEditCount }} 条信号的修改。可继续编辑其他信号；仅当整份 signals_json 都通过校验时才会统一保存。
+            </template>
+            <el-button text type="primary" size="small" @click="clearStagedSignalEdits">放弃全部暂存修改</el-button>
+          </el-alert>
+
           <!-- 生产者信号（QKV） -->
           <div class="signal-group">
             <div class="signal-group-title">生产者信号（QKV：前端采集，写入变量池）</div>
@@ -1806,6 +1866,7 @@ onMounted(() => {
             <div v-for="item in producerSignals" :key="'p-' + item.origIdx" class="signal-card">
               <div class="signal-card-head">
                 <el-tag size="small" type="success">{{ sigTool(item.sig) || 'qkv' }}</el-tag>
+                <el-tag v-if="hasStagedSignalEdit(item.origIdx)" size="small" type="warning" effect="plain">已暂存</el-tag>
                 <div class="signal-card-actions">
                   <el-button text size="small" @click="goToToolManage(sigTool(item.sig))">工具管理</el-button>
                   <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" @click="startEditSignal(item.origIdx)">编辑</el-button>
@@ -1856,6 +1917,7 @@ onMounted(() => {
             <div v-for="item in consumerSignals" :key="'c-' + item.origIdx" class="signal-card">
               <div class="signal-card-head">
                 <el-tag size="small" type="warning">{{ sigTool(item.sig) || 'qfk' }}</el-tag>
+                <el-tag v-if="hasStagedSignalEdit(item.origIdx)" size="small" type="warning" effect="plain">已暂存</el-tag>
                 <div class="signal-card-actions">
                   <el-button text size="small" @click="goToToolManage(sigTool(item.sig))">工具管理</el-button>
                   <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" @click="startEditSignal(item.origIdx)">编辑</el-button>
@@ -1874,6 +1936,7 @@ onMounted(() => {
                   <template v-if="sigTool(item.sig) === 'qfk_system'">
                     <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'asv-con' }}</span></div>
                     <div class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ sigArgs(item.sig).command || '—' }}</span></div>
+                    <el-alert v-if="String(sigArgs(item.sig).command || '').includes('|')" title="历史命令含 Shell 管道，必须编辑并清理后才能统一保存" type="warning" :closable="false" show-icon />
                   </template>
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'asv' }}</span></div>

@@ -52,8 +52,9 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | agent-service/eval-service 服务拆分与测试覆盖（PR #309, #310） | ✅ 完成 | 2026-05-21 |
 | admin SOP 文档详情弹窗决策树高保真与自适应渲染优化 (PR #353, #355) | ✅ 完成 | 2026-05-29 |
 | KBD/QFK 安全非 JSON 行列提取与完整输出变量 | ✅ 完成 | 2026-07-27 |
+| KBD 多条历史 QFK 管道的分步修复与统一保存 | ✅ 完成 | 2026-07-27 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 关键信号已支持 QFK 完整 stdout/stderr 的安全行列提取；dashscope 多模型已启用（qwen3.5-plus / qwen3-max / glm-4.7 / kimi-k2.5）
+**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 关键信号已支持 QFK 完整 stdout/stderr 的安全行列提取与多条历史管道的分步修复；dashscope 多模型已启用（qwen3.5-plus / qwen3-max / glm-4.7 / kimi-k2.5）
 
 ### 冷启动阅读路径
 
