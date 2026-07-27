@@ -33,7 +33,8 @@ async def test_update_kbd_entry_signals_json_sql_cast():
         "signals": [
             {
                 "acquire": {"tool": "qkv_task", "args": {"keyword": "vm"}},
-                "match": {"type": "keyword", "pattern": "启动虚拟机", "mode": "any", "expected": True},
+                # QKV 是产出变量信号：必须以 produces 写入变量池，不能同时残留 matcher。
+                "match": None,
                 "orchestrate": {"produces": [{"name": "VM", "path": "vm"}]},
                 "provenance": {"category": "frontend"},
             }
