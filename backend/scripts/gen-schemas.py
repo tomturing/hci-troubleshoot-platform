@@ -156,20 +156,80 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "container": {"type": "string"},
                     "produces": {
                         "type": "array",
-                        "description": "该信号向变量池产出的变量（如 [{name, type?, path?}]）",
+                        "description": "该信号向变量池产出的变量；JSON 用 path，文本用 extract",
                         "items": {
                             "type": "object",
                             "additionalProperties": False,
                             "required": ["name"],
                             "properties": {
                                 "name": {"type": "string"},
-                                "type": {"type": "string"},
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["string", "integer", "number", "boolean", "array"],
+                                },
                                 "path": {"type": "string"},
+                                "extract": {"$ref": "#/definitions/textExtract"},
                             },
+                            "not": {"required": ["path", "extract"]},
                         },
                     },
                     "requires": {"type": "array", "items": {"type": "string"}},
                 },
+            },
+            "textExtract": {
+                "type": "object",
+                "description": "QFK 非 JSON 输出的受控行筛选与列提取规则；不接受 shell/grep/awk 脚本",
+                "additionalProperties": False,
+                "required": ["type"],
+                "properties": {
+                    "type": {"const": "text"},
+                    "include": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                    "exclude": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                    "include_mode": {
+                        "type": "string",
+                        "enum": ["all", "any"],
+                        "default": "all",
+                    },
+                    "case_sensitive": {"type": "boolean", "default": True},
+                    "column": {"type": "integer", "minimum": 1},
+                    "column_mode": {
+                        "type": "string",
+                        "enum": ["whole", "index", "from_index"],
+                        "default": "whole",
+                    },
+                    "delimiter": {
+                        "anyOf": [
+                            {"const": "whitespace"},
+                            {"type": "string", "minLength": 1, "maxLength": 1},
+                        ],
+                        "default": "whitespace",
+                    },
+                    "cardinality": {
+                        "type": "string",
+                        "enum": ["exactly_one", "first", "last", "all"],
+                        "default": "exactly_one",
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["stdout", "stderr"],
+                        "default": "stdout",
+                    },
+                },
+                "allOf": [
+                    {
+                        "if": {
+                            "properties": {"column_mode": {"enum": ["index", "from_index"]}},
+                            "required": ["column_mode"],
+                        },
+                        "then": {"required": ["column"]},
+                    }
+                ],
             },
             "provenance": {
                 "type": "object",

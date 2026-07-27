@@ -671,6 +671,97 @@ const signalEditDraft = ref<SignalV2>({
   orchestrate: {},
 })
 const signalSaveLoading = ref(false)
+const pipelineConvertLoading = ref(false)
+
+function deriveSignalRequires(sig: SignalV2): string[] {
+  const found = new Set<string>()
+  const collect = (value: any) => {
+    if (typeof value === 'string') {
+      for (const match of value.matchAll(/\{\{([A-Z][A-Z0-9_]*)(?:\.[A-Z0-9_]+)*\}\}/g)) found.add(match[1])
+    } else if (Array.isArray(value)) {
+      value.forEach(collect)
+    } else if (value && typeof value === 'object') {
+      Object.values(value).forEach(collect)
+    }
+  }
+  collect(sig.acquire?.args || {})
+  for (const produce of sig.orchestrate?.produces || []) collect(produce?.extract || {})
+  return [...found].sort()
+}
+
+function syncDraftRequires() {
+  signalEditDraft.value.orchestrate = signalEditDraft.value.orchestrate || {}
+  signalEditDraft.value.orchestrate.requires = deriveSignalRequires(signalEditDraft.value)
+}
+
+function produceOutputFormat(produce: any): 'json' | 'text' {
+  return produce?.extract ? 'text' : 'json'
+}
+
+function normalizeTextExtract(produce: any) {
+  if (!produce) return
+  produce.type ??= 'string'
+  if (!produce.extract) return
+  produce.extract.type = 'text'
+  produce.extract.column_mode ??= produce.extract.column ? 'index' : 'whole'
+  produce.extract.include_mode ??= 'all'
+  produce.extract.case_sensitive ??= true
+  produce.extract.cardinality ??= 'exactly_one'
+  produce.extract.source ??= 'stdout'
+  produce.extract.delimiter ??= 'whitespace'
+}
+
+function setProduceOutputFormat(produce: any, format: 'json' | 'text') {
+  if (format === 'text') {
+    delete produce.path
+    produce.extract = { type: 'text', column_mode: 'whole' }
+    normalizeTextExtract(produce)
+  } else {
+    delete produce.extract
+    produce.path = ''
+  }
+  syncDraftRequires()
+}
+
+function extractLinesText(produce: any, field: 'include' | 'exclude'): string {
+  return Array.isArray(produce?.extract?.[field]) ? produce.extract[field].join('\n') : ''
+}
+
+function setExtractLines(produce: any, field: 'include' | 'exclude', value: string) {
+  const lines = value.split('\n').map(item => item.trim()).filter(Boolean)
+  if (lines.length) produce.extract[field] = lines
+  else delete produce.extract[field]
+  syncDraftRequires()
+}
+
+async function convertDraftPipeline() {
+  const command = String(signalEditDraft.value.acquire?.args?.command || '')
+  if (!command.includes('|')) return
+  pipelineConvertLoading.value = true
+  try {
+    const resp = await fetch('/api/v1/kbd/tools/convert-safe-pipeline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({ command }),
+    })
+    const body = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(body?.detail || `HTTP ${resp.status}`)
+    setQfkOutputMode('produces')
+    const produce = signalEditDraft.value.orchestrate.produces[0]
+    delete produce.path
+    produce.extract = body.extract
+    normalizeTextExtract(produce)
+    signalEditDraft.value.acquire.args.command = body.command
+    syncDraftRequires()
+    const removed = Array.isArray(body.removed_segments) && body.removed_segments.length
+      ? `；已移除：${body.removed_segments.join('、')}` : ''
+    ElMessage.success(`已安全转换为“筛选行 + 提取值”${removed}`)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '管道转换失败，请人工复核')
+  } finally {
+    pipelineConvertLoading.value = false
+  }
+}
 
 function startEditSignal(origIdx: number) {
   const sig = signalList.value[origIdx]
@@ -685,7 +776,9 @@ function startEditSignal(origIdx: number) {
     draft.match = { type: 'keyword', pattern: '', mode: 'or', expected: true }
   }
   draft.orchestrate = draft.orchestrate || {}
+  for (const produce of draft.orchestrate.produces || []) normalizeTextExtract(produce)
   signalEditDraft.value = draft
+  if (isBackendSig(draft)) syncDraftRequires()
 }
 
 function qfkOutputMode(sig: SignalV2): 'keyword' | 'produces' {
@@ -703,7 +796,7 @@ function setQfkOutputMode(mode: 'keyword' | 'produces') {
     // 输出采集不做关键字判定，命令成功后把 stdout/JSON 路径结果写入变量池。
     draft.match = null
     if (!Array.isArray(draft.orchestrate.produces) || draft.orchestrate.produces.length === 0) {
-      draft.orchestrate.produces = [{ name: '', path: '' }]
+      draft.orchestrate.produces = [{ name: '', type: 'string', path: '' }]
     }
     return
   }
@@ -735,6 +828,23 @@ async function saveSignalEdit() {
       ElMessage.error('请填写用于判定命令结果的关键字')
       return
     }
+    if (String(signalEditDraft.value.acquire?.args?.command || '').includes('|')) {
+      ElMessage.error('执行命令不能保存 Shell 管道，请先点击“安全转换管道”')
+      return
+    }
+    if (hasProduces) {
+      for (const item of produces) {
+        if (!/^[A-Z][A-Z0-9_]*$/.test(String(item?.name || ''))) {
+          ElMessage.error('产出变量名必须为全大写字母、数字或下划线，且不能以数字开头')
+          return
+        }
+        if (item?.extract?.column_mode !== 'whole' && (!Number.isInteger(item?.extract?.column) || item.extract.column < 1)) {
+          ElMessage.error(`产出变量 ${item.name} 的列号必须从 1 开始`)
+          return
+        }
+      }
+    }
+    syncDraftRequires()
   }
   signalSaveLoading.value = true
   try {
@@ -1776,7 +1886,17 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 10 }}s</span></div>
                   <div class="signal-row"><span class="signal-k">执行模式</span><span class="signal-v">{{ qfkOutputMode(item.sig) === 'produces' ? '产出变量（采集命令结果）' : '关键字判定' }}</span></div>
                   <template v-if="qfkOutputMode(item.sig) === 'produces'">
-                    <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v code">{{ (sigOrch(item.sig).produces || []).map((p: any) => p.name).filter(Boolean).join('、') || '—' }}</span></div>
+                    <div v-for="(p, idx) in (sigOrch(item.sig).produces || [])" :key="`output-${idx}`" class="signal-row">
+                      <span class="signal-k">{{ idx === 0 ? '产出变量' : '' }}</span>
+                      <span class="signal-v code">
+                        {{ p.name || '—' }}（{{ p.type || 'string' }} / {{ p.extract ? '文本' : 'JSON' }}）
+                        <template v-if="p.extract">
+                          · 包含 {{ (p.extract.include || []).join(' + ') || '全部行' }}
+                          · {{ p.extract.column_mode === 'index' ? `第 ${p.extract.column} 列` : p.extract.column_mode === 'from_index' ? `从第 ${p.extract.column} 列到末尾` : '整行' }}
+                        </template>
+                        <template v-else>· path={{ p.path || '完整 stdout' }}</template>
+                      </span>
+                    </div>
                   </template>
                   <template v-else>
                     <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigMatch(item.sig).pattern || '—' }}</span></div>
@@ -1813,7 +1933,15 @@ onMounted(() => {
                         <el-option label="vs-cp-manager" value="vs-cp-manager" />
                       </el-select>
                     </div>
-                    <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="执行命令（必填）" /></div>
+                    <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="执行命令（必填，不含 acli system 前缀）" /></div>
+                    <div v-if="String(signalEditDraft.acquire.args.command || '').includes('|')" class="signal-row pipeline-warning">
+                      <span class="signal-k"></span>
+                      <div class="signal-v">
+                        <el-alert title="检测到 Shell 管道，不能直接保存" type="warning" :closable="false" show-icon />
+                        <el-button type="primary" size="small" :loading="pipelineConvertLoading" @click="convertDraftPipeline">安全转换管道</el-button>
+                      </div>
+                    </div>
+                    <div class="field-hint">宿主机只执行基础命令；grep/awk/cut 的安全子集由平台转换为内存中的“筛选行 + 提取值”。</div>
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">容器</span><el-input v-model="signalEditDraft.acquire.args.container" size="small" placeholder="服务容器，如 asv" /></div>
@@ -1831,18 +1959,15 @@ onMounted(() => {
                     <div class="field-hint">acli 之后的子命令（如 list、show、get status）；命名空间由工具名（qfk_vm 等）隐含，勿含 acli 前缀</div>
                   </template>
 
-                  <!-- 输入变量编辑（v2 orchestrate.requires，字符串数组） -->
+                  <!-- 输入变量由所有 {{VAR}} 占位符自动推导，避免重复维护两份契约。 -->
                   <div class="signal-row">
                     <span class="signal-k">输入变量</span>
-                    <div class="produces-editor-mini">
-                      <div v-for="(r, idx) in (signalEditDraft.orchestrate.requires || [])" :key="idx" class="produce-item-mini">
-                        <el-input v-model="signalEditDraft.orchestrate.requires[idx]" size="small" placeholder="变量名，如 VM、HOST" style="flex: 1" />
-                        <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.requires?.splice(idx, 1)">删除</el-button>
-                      </div>
-                      <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.requires = [...(signalEditDraft.orchestrate.requires || []), '']">+ 添加变量</el-button>
+                    <div class="signal-v variable-chips">
+                      <el-tag v-for="name in deriveSignalRequires(signalEditDraft)" :key="name" size="small">{{ name }}</el-tag>
+                      <span v-if="deriveSignalRequires(signalEditDraft).length === 0" class="muted">无</span>
                     </div>
                   </div>
-                  <div class="field-hint" v-pre>本信号从变量池读取的变量，名称须与上游「产出变量」对应；命令或参数中通过 {{变量名}} 引用</div>
+                  <div class="field-hint" v-pre>根据主机、命令参数、筛选条件中的 {{变量名}} 自动生成，只读展示。</div>
                   <div class="signal-row"><span class="signal-k">超时时间</span><el-input-number v-model="signalEditDraft.acquire.args.timeout" :min="1" :max="300" size="small" /> 秒</div>
                   <div class="field-hint">命令在 terminal bridge 上的最大实际执行时间，范围 1–300 秒；超时后桥会停止命令并返回 timeout。</div>
                   <div class="signal-row">
@@ -1871,15 +1996,60 @@ onMounted(() => {
                     <div class="signal-row">
                       <span class="signal-k">产出变量</span>
                       <div class="produces-editor-mini">
-                        <div v-for="(p, idx) in (signalEditDraft.orchestrate.produces || [])" :key="idx" class="produce-item-mini">
-                          <el-input v-model="p.name" size="small" placeholder="变量名，如 PID" style="width: 120px" />
-                          <el-input v-model="p.path" size="small" placeholder="空=完整输出；JSON路径如 data.0.pid" style="flex: 1" />
-                          <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除</el-button>
+                        <div v-for="(p, idx) in (signalEditDraft.orchestrate.produces || [])" :key="idx" class="produce-item-mini output-extract-card">
+                          <div class="output-extract-grid">
+                            <label>变量名</label>
+                            <el-input v-model="p.name" size="small" placeholder="如 KVM_PID（必填）" />
+                            <label>变量类型</label>
+                            <el-select v-model="p.type" size="small">
+                              <el-option label="字符串" value="string" />
+                              <el-option label="整数" value="integer" />
+                              <el-option label="数字" value="number" />
+                              <el-option label="布尔值" value="boolean" />
+                              <el-option label="数组" value="array" />
+                            </el-select>
+                            <label>输出格式</label>
+                            <el-radio-group :model-value="produceOutputFormat(p)" size="small" @change="(value: any) => setProduceOutputFormat(p, value)">
+                              <el-radio-button label="json">JSON</el-radio-button>
+                              <el-radio-button label="text">文本</el-radio-button>
+                            </el-radio-group>
+                            <template v-if="produceOutputFormat(p) === 'json'">
+                              <label>取值路径</label>
+                              <el-input v-model="p.path" size="small" placeholder="如 data.0.pid；空=完整 stdout" />
+                            </template>
+                            <template v-else>
+                              <label>筛选行（包含）</label>
+                              <el-input :model-value="extractLinesText(p, 'include')" type="textarea" :rows="2" placeholder="每行一个条件；多条件默认同时满足" @input="(value: string) => setExtractLines(p, 'include', value)" />
+                              <label>筛选行（不包含）</label>
+                              <el-input :model-value="extractLinesText(p, 'exclude')" type="textarea" :rows="2" placeholder="可选，每行一个排除条件" @input="(value: string) => setExtractLines(p, 'exclude', value)" />
+                              <label>提取值</label>
+                              <div class="inline-controls">
+                                <el-select v-model="p.extract.column_mode" size="small">
+                                  <el-option label="整行" value="whole" />
+                                  <el-option label="第 N 列" value="index" />
+                                  <el-option label="从第 N 列到末尾" value="from_index" />
+                                </el-select>
+                                <el-input-number v-if="p.extract.column_mode !== 'whole'" v-model="p.extract.column" :min="1" :max="999" size="small" />
+                              </div>
+                              <label>高级设置</label>
+                              <details class="extract-advanced">
+                                <summary>默认：空白分隔、区分大小写、唯一匹配、stdout</summary>
+                                <div class="advanced-grid">
+                                  <span>包含关系</span><el-select v-model="p.extract.include_mode" size="small"><el-option label="全部满足（AND）" value="all" /><el-option label="任一满足（OR）" value="any" /></el-select>
+                                  <span>区分大小写</span><el-switch v-model="p.extract.case_sensitive" />
+                                  <span>匹配数量</span><el-select v-model="p.extract.cardinality" size="small"><el-option label="必须唯一" value="exactly_one" /><el-option label="第一行" value="first" /><el-option label="最后一行" value="last" /><el-option label="全部行" value="all" /></el-select>
+                                  <span>输出来源</span><el-select v-model="p.extract.source" size="small"><el-option label="stdout" value="stdout" /><el-option label="stderr" value="stderr" /></el-select>
+                                  <span>分隔符</span><el-input v-model="p.extract.delimiter" size="small" placeholder="whitespace 或单字符" />
+                                </div>
+                              </details>
+                            </template>
+                          </div>
+                          <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除变量</el-button>
                         </div>
-                        <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', path: '' }]">+ 添加变量</el-button>
+                        <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', type: 'string', path: '' }]">+ 添加变量</el-button>
                       </div>
                     </div>
-                    <div class="field-hint">空 path 将完整命令输出赋给变量；JSON 输出可用 <code>data.0.pid</code> 读取字段，并用 <code>|</code> 声明回退路径。</div>
+                    <div class="field-hint">JSON 使用 path；文本使用“筛选行 + 提取值”。列号从 1 开始，等价于安全的 <code>awk '{print $N}'</code>，但不会执行 awk。</div>
                   </template>
 
                   <!-- 其他工具特有字段 -->
@@ -2559,6 +2729,55 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.output-extract-card {
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #fff;
+}
+.output-extract-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 92px minmax(220px, 1fr);
+  align-items: start;
+  gap: 8px 10px;
+}
+.output-extract-grid > label {
+  color: #606266;
+  line-height: 28px;
+}
+.inline-controls,
+.variable-chips,
+.pipeline-warning .signal-v {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pipeline-warning .signal-v {
+  align-items: flex-start;
+}
+.pipeline-warning .el-alert {
+  flex: 1;
+}
+.extract-advanced {
+  color: #606266;
+}
+.extract-advanced summary {
+  cursor: pointer;
+  line-height: 28px;
+}
+.advanced-grid {
+  display: grid;
+  grid-template-columns: 100px minmax(180px, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.muted {
+  color: #909399;
 }
 
 /* 关键信号字段注释说明（实例 + 规则），对齐 MatcherEditor 视觉 */

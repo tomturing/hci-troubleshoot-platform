@@ -122,6 +122,34 @@ class TestGateway(unittest.TestCase):
         self.assertIn("/api/admin/kbd/1/reanalyze-images", args[1])
         self.assertEqual(kwargs.get("params"), {"sync": "true"})
 
+    @patch("app.routes.kb._internal_auth_headers")
+    @patch("app.routes.kb.httpx.AsyncClient")
+    def test_convert_safe_pipeline_proxy_forwards_body_and_auth(self, mock_client_cls, mock_auth):
+        """安全管道预览必须走管理接口并使用网关内部鉴权。"""
+        mock_auth.return_value = {"Authorization": "Bearer test"}
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "command": "ps auxf",
+            "extract": {"type": "text", "include": ["VM"], "column": 2},
+            "removed_segments": [],
+        }
+        mock_client.request.return_value = mock_response
+
+        payload = {"command": "ps auxf | grep VM | awk '{print $2}'"}
+        response = self.client.post("/api/v1/kbd/tools/convert-safe-pipeline", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        mock_client.request.assert_called_once()
+        args, kwargs = mock_client.request.call_args
+        self.assertEqual(args[0], "POST")
+        self.assertIn("/api/admin/kbd/tools/convert-safe-pipeline", args[1])
+        self.assertEqual(kwargs.get("json"), payload)
+        self.assertEqual(kwargs.get("headers"), {"Authorization": "Bearer test"})
+
 
 if __name__ == "__main__":
     unittest.main()

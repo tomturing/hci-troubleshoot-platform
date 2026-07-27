@@ -1,10 +1,25 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-07-27
+owner: team
+---
+
 # QKV/QFK 信号模型 v2 参考
 
-> 版本：v2.0 ｜ 日期：2026-07-24
+> 版本：v2.1 ｜ 日期：2026-07-27
 > 权威契约：`backend/shared/schemas/signals/signal.v2.schema.json`
 > 校验入口：`backend/shared/schemas/signal_schema.py :: validate_signals_json`（保存 KBD 条目时强制校验，失败返回 HTTP 422）
 >
 > 本文与 `signal.v2.schema.json` **逐字段对齐**，供运营 / SRE 编写 `signals_json` 时直接对照。姊妹文档：[QKV_QFK信号配置操作指南.md](./QKV_QFK信号配置操作指南.md)（面向配置步骤）。
+
+## 变更历史
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-07-27 | v2.1 | QFK produces 增加与 path 互斥的 text extract；补充完整 stdout/stderr、Fail Closed、输入变量自动推导与安全管道边界 | [QFK非JSON结果行列提取方案](../../events/2026-07-27-QFK非JSON结果行列提取方案.md) |
+| 2026-07-24 | v2.0 | v2 嵌套信号模型逐字段参考初版 | — |
 
 ---
 
@@ -25,7 +40,7 @@
 |----|------|------|-----------|
 | `acquire` | **是** | 采集：用哪个工具（`tool`）+ 参数（`args`） | 全部 |
 | `match` | 否（可 `null`） | 判定：把采集文本与 `pattern` 比对 | 后端 QFK |
-| `orchestrate` | 否 | 编排：本信号产出哪些变量（`produces`）、依赖哪些变量（`requires`） | 前端 QKV |
+| `orchestrate` | 否 | 编排：本信号产出哪些变量（`produces`）、依赖哪些变量（`requires`） | QKV/QFK |
 | `provenance` | 否 | 来源：信号是前端 / 后端产生、置信度、风险 | 全部 |
 | `review` | 否（`require_human_confirm` 必填） | 复核：是否需人工确认后才生效 | 全部 |
 
@@ -148,12 +163,12 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `type` | string | **是** | 判定类型：`keyword` / `regex`（其余类型见 §5.3 限制） |
+| `type` | string | **是** | 判定类型：`keyword` / `regex` / `state` / `threshold` / `json_path` / `exists` |
 | `pattern` | string | **是** | 匹配内容（`keyword`=关键词；`regex`=正则串） |
 | `mode` | string | **是** | 多词逻辑：`or` / `and` / `not` |
 | `expected` | boolean | **是** | 期望结果：`true`=应出现；`false`=应不出现 |
 
-> ⚠️ 当前 schema 的 `match` 仅声明上述 4 个字段且 `additionalProperties: false`。`state/threshold/json_path/exists` 类型所需的 `value/operator/path/expected_value` 等额外字段**会在保存校验时被拒绝**（详见 §5.3）。
+> QFK 必须在 `match` 与非空 `orchestrate.produces` 之间严格二选一；产出变量模式的 `match` 必须为 `null`。
 
 ### 3.5 orchestrate（编排段）
 
@@ -164,8 +179,37 @@
 | `source` | string | 否 | 来源 |
 | `target` | string | 否 | 目标 |
 | `container` | string | 否 | 容器 |
-| `produces` | `array<{name, type?, path?}>` | 否 | 产出变量；每项 `name` 必填，`path` 支持 `\|` 多路径容错 |
-| `requires` | `array<string>` | 否 | 依赖的变量名列表（取自前面信号的 `produces`） |
+| `produces` | `array<{name, type?, path?或extract?}>` | 否 | 产出变量；JSON 用 `path`，非 JSON 用 `extract`，二者互斥 |
+| `requires` | `array<string>` | 否 | QFK 从 args/extract 中 `{{VAR}}` 自动推导；取自上游 `produces` |
+
+#### text extract
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `type` | const `text` | 必填 | 受控文本提取，不执行 Shell |
+| `include` / `exclude` | string[] | `[]` | 包含/不包含的字面量子串 |
+| `include_mode` | all/any | all | 多个 include 的 AND/OR 关系 |
+| `case_sensitive` | boolean | true | 是否区分大小写 |
+| `column_mode` | whole/index/from_index | whole | 整行、第 N 列、从第 N 列到末尾 |
+| `column` | integer ≥ 1 | — | index/from_index 时必填，列号从 1 开始 |
+| `delimiter` | whitespace/单字符 | whitespace | 连续空白或安全单字符分隔 |
+| `cardinality` | exactly_one/first/last/all | exactly_one | 匹配行数量策略 |
+| `source` | stdout/stderr | stdout | 物理输出来源，不混流 |
+
+```json
+{
+  "name": "KVM_PID",
+  "type": "integer",
+  "extract": {
+    "type": "text",
+    "include": ["-id {{VM}}"],
+    "column": 2,
+    "column_mode": "index"
+  }
+}
+```
+
+展示输出可以截断，变量提取不可以：截断时按 `exec_id` 读取 Redis 完整物理流；缓存缺失、超限、零/多匹配、列越界或类型转换失败均停止变量写入。
 
 ### 3.6 provenance（来源段）
 

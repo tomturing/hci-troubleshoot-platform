@@ -72,6 +72,7 @@ class ExecResult:
       node: 执行节点 IP
       duration_ms: 执行耗时（毫秒）
       truncated: stdout 是否被截断
+      stderr_truncated: stderr 是否被截断（完整值使用独立 Redis 缓存）
       risk_level: 本次执行的风险等级（RiskClassifier 判定值）
       exit_code_meaning: 退出码的语义分类
       container: bash_exec 的结构化目标容器
@@ -92,6 +93,7 @@ class ExecResult:
     original_command: str | None = None
     built_command: str | None = None
     exec_id: str | None = None
+    stderr_truncated: bool = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -648,14 +650,18 @@ class BridgeRelayExecutor:
 
             # 7. 智能截断输出并提取标准物理流 (Scheme B)
             raw_to_cache = ""
+            raw_stderr_to_cache = ""
+            stderr_truncated = False
             if "stdout" in result_data or "stderr" in result_data:
                 raw_stdout = result_data.get("stdout") or ""
                 raw_stderr = result_data.get("stderr") or ""
                 truncated = len(raw_stdout) > self.STDOUT_MAX_CHARS
+                stderr_truncated = len(raw_stderr) > self.STDERR_MAX_CHARS
                 stdout = smart_truncate(raw_stdout, self.STDOUT_MAX_CHARS) if truncated else raw_stdout
-                stderr = smart_truncate(raw_stderr, self.STDERR_MAX_CHARS)
+                stderr = smart_truncate(raw_stderr, self.STDERR_MAX_CHARS) if stderr_truncated else raw_stderr
                 check_text = f"{raw_stdout}\n{raw_stderr}".lower()
                 raw_to_cache = raw_stdout
+                raw_stderr_to_cache = raw_stderr
             else:
                 # 兼容原有单物理通道合并输出逻辑
                 output = result_data.get("output", "")
@@ -665,8 +671,10 @@ class BridgeRelayExecutor:
 
                 # 当退出码不为0时，认为输出为错误内容，填充到 stderr；stdout 留空（或当 exit_code == 0 时反之）
                 if exit_code != 0:
-                    stderr = smart_truncate(output, self.STDERR_MAX_CHARS)
+                    stderr_truncated = len(output) > self.STDERR_MAX_CHARS
+                    stderr = smart_truncate(output, self.STDERR_MAX_CHARS) if stderr_truncated else output
                     stdout = ""
+                    raw_stderr_to_cache = output
                 else:
                     stderr = ""
                     stdout = smart_truncate(output, self.STDOUT_MAX_CHARS) if truncated else output
@@ -686,6 +694,30 @@ class BridgeRelayExecutor:
                 except Exception as cache_err:
                     logger.warning(
                         event="cmd_output_cache_failed",
+                        exec_id=exec_id,
+                        error=str(cache_err),
+                    )
+
+            # stderr 与 stdout 使用不同缓存键，保持历史 cmd_cache:{exec_id} 只存 stdout
+            # 的契约不变。产出变量读取 stderr 时同样不能使用截断摘要。
+            if stderr_truncated and raw_stderr_to_cache:
+                stderr_cache_key = f"cmd_stderr_cache:{exec_id}"
+                try:
+                    await self._redis.client.setex(
+                        stderr_cache_key,
+                        1800,
+                        raw_stderr_to_cache.encode("utf-8"),
+                    )
+                    logger.info(
+                        event="cmd_stderr_cached",
+                        exec_id=exec_id,
+                        cache_key=stderr_cache_key,
+                        raw_size=len(raw_stderr_to_cache),
+                        truncated_size=self.STDERR_MAX_CHARS,
+                    )
+                except Exception as cache_err:
+                    logger.warning(
+                        event="cmd_stderr_cache_failed",
                         exec_id=exec_id,
                         error=str(cache_err),
                     )
@@ -742,6 +774,7 @@ class BridgeRelayExecutor:
                 original_command=built.original_command if built else original_command,
                 built_command=built.built_command if built else cleaned_command,
                 exec_id=exec_id,
+                stderr_truncated=stderr_truncated,
             )
 
         except Exception as e:

@@ -297,6 +297,20 @@ async def kbd_stats_proxy(request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@kbd_router.post("/tools/convert-safe-pipeline")
+async def kbd_convert_safe_pipeline_proxy(request: Request):
+    """代理 QFK 安全管道转换预览请求；下游只解析，不执行命令。"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy(
+        "POST",
+        "/tools/convert-safe-pipeline",
+        payload=body,
+        headers=headers,
+    )
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @kbd_router.get("/{kbd_id}")
 async def kbd_get_proxy(kbd_id: int, request: Request):
     """代理获取单条 KBD 详情（含 content_md）→ kb-service"""

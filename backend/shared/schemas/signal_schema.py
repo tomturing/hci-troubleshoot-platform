@@ -54,10 +54,21 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
         if not isinstance(signal, dict):
             continue
         tool = ((signal.get("acquire") or {}).get("tool") or "")
+        produces = ((signal.get("orchestrate") or {}).get("produces") or [])
+        if isinstance(tool, str) and tool.startswith("qkv_"):
+            if any(isinstance(item, dict) and item.get("extract") is not None for item in produces):
+                raise ValidationError(
+                    f"signals[{index}] 的 {tool} 只支持 JSON path，不支持文本 extract"
+                )
+            continue
         if not isinstance(tool, str) or not tool.startswith("qfk_"):
             continue
+        command = str(((signal.get("acquire") or {}).get("args") or {}).get("command") or "")
+        if "|" in command:
+            raise ValidationError(
+                f"signals[{index}] 的 command 禁止保存 shell 管道；请先转换为结构化 extract"
+            )
         matcher = signal.get("match")
-        produces = ((signal.get("orchestrate") or {}).get("produces") or [])
         has_match = isinstance(matcher, dict)
         has_produces = any(
             isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip()

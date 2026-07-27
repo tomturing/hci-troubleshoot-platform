@@ -1018,6 +1018,13 @@ class KBDDiagnostic:
                     return None, "无法构建后端信号", None
                 from app.tools.qfk.engine import qfk_exec
 
+                produces = ((signal or {}).get("orchestrate") or {}).get("produces") or []
+                required_output_sources = {
+                    str((item.get("extract") or {}).get("source") or "stdout")
+                    for item in produces
+                    if isinstance(item, dict)
+                }
+
                 res = await qfk_exec(
                     signal=bsignal,
                     conversation_id=self._conversation_id or session_id,
@@ -1030,12 +1037,21 @@ class KBDDiagnostic:
                     ),
                     case_id=self._case_id,  # 透传工单 ID，确保 terminal_bridge 能路由到正确的 SSH 会话
                     exec_id=exec_id,
+                    required_output_sources=required_output_sources,
                 )
                 if res.error:
                     return res.raw_output or None, res.error, None
-                produces = ((signal or {}).get("orchestrate") or {}).get("produces") or []
                 if produces:
-                    ok, extract_error = self._fill_pool_from_qfk(produces, res.raw_output)
+                    outputs = (
+                        res.complete_outputs
+                        if hasattr(res, "complete_outputs")
+                        else {"stdout": res.raw_output}  # 兼容测试桩/旧扩展返回对象
+                    )
+                    ok, extract_error = self._fill_pool_from_qfk(
+                        produces,
+                        outputs,
+                        context_variables=env_context,
+                    )
                     if not ok:
                         return res.raw_output, extract_error, None
                     # 产出变量模式只关心命令是否成功且结果是否已写入变量池，不再进行 matcher 判定。
@@ -1055,13 +1071,26 @@ class KBDDiagnostic:
         except Exception as exc:
             return None, str(exc), None
 
-    def _fill_pool_from_qfk(self, produces: list[Any], raw_output: str) -> tuple[bool, str | None]:
+    def _fill_pool_from_qfk(
+        self,
+        produces: list[Any],
+        complete_outputs: dict[str, str] | str,
+        context_variables: dict[str, Any] | None = None,
+    ) -> tuple[bool, str | None]:
         """将 QFK 命令结果按产出变量约定写入变量池。
 
         空 path、``stdout`` 与 ``output`` 代表完整命令输出；JSON 输出可使用点路径，
-        并支持 ``|`` 分隔的候选路径。QFK 的命令可能返回纯文本，因此 JSON 路径解析失败
-        必须显式返回错误，不能悄悄写入空值让下游信号在错误上下文中继续执行。
+        并支持 ``|`` 分隔的候选路径；文本输出通过结构化 extract 做行筛选与列提取。
+        所有产出只读取完整物理流，JSON 路径或文本提取失败都显式报错。
         """
+        from app.tools.qfk.extractor import QFKExtractionError, extract_text_value
+
+        # 兼容直接调用该私有辅助的既有测试/扩展；真实 QFK 路径始终传完整物理流字典。
+        if isinstance(complete_outputs, str):
+            complete_outputs = {"stdout": complete_outputs}
+        resolver_variables = dict(context_variables or {})
+        resolver_variables.update(self._variable_pool)
+
         json_payload: Any | None = None
         valid_specs = [item for item in produces if isinstance(item, dict) and str(item.get("name") or "").strip()]
         if not valid_specs:
@@ -1069,20 +1098,51 @@ class KBDDiagnostic:
 
         for spec in valid_specs:
             name = str(spec["name"]).strip()
+            extract_spec = spec.get("extract")
+            if isinstance(extract_spec, dict):
+                resolved_extract = self._resolve_template_value(extract_spec, resolver_variables)
+                source = str(resolved_extract.get("source") or "stdout")
+                if source not in complete_outputs:
+                    return False, f"QFK_EXTRACT_INVALID_SPEC: 未取得完整 {source} 输出"
+                try:
+                    value = extract_text_value(
+                        complete_outputs[source],
+                        resolved_extract,
+                        str(spec.get("type") or "string"),
+                    )
+                except QFKExtractionError as exc:
+                    return False, f"QFK 产出变量 {name} 提取失败：{exc}"
+                self._set_pool_var(name, value)
+                continue
+
+            raw_output = complete_outputs.get("stdout", "")
             path = str(spec.get("path") or "").strip()
             if not path or path in {"stdout", "output"}:
+                if not raw_output.strip():
+                    return False, f"QFK 产出变量 {name} 提取失败：QFK_OUTPUT_EMPTY: 命令标准输出为空"
                 self._set_pool_var(name, raw_output)
                 continue
             if json_payload is None:
                 try:
                     json_payload = json.loads(raw_output)
                 except json.JSONDecodeError:
-                    return False, f"QFK 产出变量 {name} 配置了 JSON 路径 {path}，但命令输出不是合法 JSON"
+                    return False, f"QFK_EXTRACT_INVALID_SPEC: QFK 产出变量 {name} 配置了 JSON 路径 {path}，但命令输出不是合法 JSON"
             value = self._extract_qfk_json_path(json_payload, path)
             if value is None:
-                return False, f"QFK 产出变量 {name} 未能从命令输出路径 {path} 取值"
+                return False, f"QFK_NO_MATCH: QFK 产出变量 {name} 未能从命令输出路径 {path} 取值"
             self._set_pool_var(name, value)
         return True, None
+
+    @classmethod
+    def _resolve_template_value(cls, value: Any, variable_pool: dict[str, Any]) -> Any:
+        """递归渲染 extract 中 include/exclude 等位置的 ``{{VAR}}``。"""
+        if isinstance(value, str):
+            return cls._resolve_args({"value": value}, variable_pool=variable_pool)["value"]
+        if isinstance(value, list):
+            return [cls._resolve_template_value(item, variable_pool) for item in value]
+        if isinstance(value, dict):
+            return {key: cls._resolve_template_value(item, variable_pool) for key, item in value.items()}
+        return value
 
     @staticmethod
     def _extract_qfk_json_path(payload: Any, path_spec: str) -> Any | None:

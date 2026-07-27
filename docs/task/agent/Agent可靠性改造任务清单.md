@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-27 | v3.31 | **QFK 非 JSON 完整输出行列提取**：新增受控 text extract、stdout/stderr 完整缓存读取、稳定错误码和 Fail Closed；KB 增加 grep/awk/cut 确定性转换；requires 从占位符推导；管理端提供简化审核 UI。关联：[QFK非JSON结果行列提取方案](../../solution/events/2026-07-27-QFK非JSON结果行列提取方案.md)。 |
 | 2026-07-27 | v3.30 | **QFK 产出变量、宿主机执行与超时链路（PR #622）**：① QFK `match` 与 `orchestrate.produces` 强制二选一，产出结果写入变量池；② `qfk_system.container=host` 直接在宿主机执行；③ timeout 从 Agent 透传至 terminal bridge，并在独立 SSH session 超时后关闭会话。 |
 | 2026-07-26 | v3.29 | **v2 信号契约分层解包与容错解析（PR #620）**：① `kbd_model.py` 的 `kbd_from_dict()` 增加 dict 信封解包容错，支持兼容 API 标准 list 与 DB 原始 dict 形态；② 配合 kb-service 检索接口剥离存储信封，透出规范 `List[Signal]` 数组；③ 新增架构选型文档《关键信号数据结构选型分析与分层治理方案》 |
 | 2026-07-25 | v3.28 | **KBD 向量检索正确性修复（PR #617）**：① 移除 KBD 向量检索中的 hash/BGE 伪向量兜底，embedding 生成失败时诚实降级到词法检索；② 增加 embedding 结果校验、模型与内容 hash 溯源字段、最小相似度阈值和模型一致性过滤；③ 发布与查询统一使用 jieba/HCI 分词，删除按时间兜底返回无关结果的逻辑；④ 增加 `backend/kb-service/app/cli/rebuild_kbd_search_index.py` 索引重建 CLI；⑤ 规范 `dynamic_resource_usage_audit` 状态语义；⑥ 贯通 `conversation_id` / `case_id` 到 KBD 检索链路 |
