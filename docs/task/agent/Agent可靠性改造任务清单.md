@@ -563,3 +563,12 @@ owner: team
 - [x] KBD 27123 golden case 和 agent-service 单元回归覆盖新不变量。
 
 详细设计见 [KBD 主动诊断信号调度与证据闭环算法设计](../../solution/knowledge-base/events/2026-07-26-KBD主动诊断信号调度与证据闭环算法设计.md)。
+
+## 2026-07-28 · Terminal Bridge P0 端到端可观测性与执行结果调优数据面
+
+- [x] Agent 工具调用统一透传 `trace_id`、`traceparent`、`exec_id`、`tool_call_id` 和 `artifact_id`。
+- [x] Terminal Bridge 命令结果记录退出码、错误类型、超时、耗时、输出字节数、hash 和截断标志，支持 Langfuse、Artifact、Tool Audit、Tempo 与 Prometheus 交叉核验。
+- [x] Bridge 支持命令级 timeout 和受约束的字面量逐行输出筛选，禁止通过输出筛选参数注入 shell/正则/脚本。
+- [x] WSL/K3s Pod 与 Windows 客户端复用同一套 Bridge 代码，并完成真实 HCI SSH 端到端验收。
+
+详细设计与验收证据见 [Terminal Bridge 端到端可观测性重构设计](../../solution/observability/2026-07-27-terminal-bridge端到端可观测性重构设计.md) 和 [最终验收报告](../../verify/events/2026-07-27-terminal-bridge端到端验收报告.md)。
