@@ -7,3 +7,19 @@
 
 # Observability 栈部署的 namespace（ClusterRoleBinding 需要引用）
 observabilityNamespace: hci-observability
+
+# =============================================================================
+# 运行时代码完整性防护
+# =============================================================================
+# 业务镜像内的 Python 源码（/app/app）是发布物的一部分，严禁再通过 ConfigMap、
+# Secret、emptyDir、HostPath 或 PVC 覆盖。直接覆盖会令“镜像 tag 已升级”和“实际
+# 运行代码”发生漂移，且该漂移无法由普通健康探针发现。
+#
+# hci-platform-infra 是唯一管理集群级资源的 Chart；因此将准入策略放在这里，
+# 确保各环境在资源被写入 API Server 前就拒绝此类热补丁。
+sourceCodeMountGuard:
+  enabled: true
+  protectedNamespaces:
+    - hci-dev
+    - hci-staging
+    - hci-prod

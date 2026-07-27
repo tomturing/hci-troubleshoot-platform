@@ -2,7 +2,7 @@
 status: active
 category: architecture
 audience: engineer
-last_updated: 2026-05-23
+last_updated: 2026-07-27
 owner: team
 ---
 
@@ -1354,26 +1354,47 @@ SOP `## 变量` 章节写法示例（全类型覆盖）：
 
 ##### Q6：KBD 也有变量需求，如何处理？
 
-**KBD 的变量是 SOP 变量池的下游消费者，不是独立系统。**
+**现行 v2 KBD 信号拥有独立的确定性变量池，可以通过 QKV/QFK 主动采集并逐步产出变量。**
 
 | | SOP 变量 | KBD 变量 |
 |---|---|---|
 | 主体 | Agent 执行者 | 文档阅读者 / Agent 引用内容 |
-| 是否有 `acquisition_strategy` | 有 | **无**（KBD 不主动获取值） |
-| 值从哪里来 | 运行时获取/用户提供 | 从调用方 `context_variables` 注入 |
+| 获取声明 | `acquisition_strategy` | `signal.acquire`（QKV/QFK） |
+| 值从哪里来 | 运行时获取/用户提供 | 上游变量注入 + QKV/QFK 现场采集 |
+| 持久化 | `sop_execution.context_variables` | 单次 `KBDDiagnostic` 运行时变量池 |
 
-**Layer 1：KBD 自身变量声明**
+**Layer 1：输入变量**
 
-KBD 也支持 `## 变量` 章节，只声明变量名、类型、说明，**不声明 `acquisition_strategy`**（不是 KBD 的职责）。审批时做同样的双向校验。存入 `kbd_document.variable_schema JSONB`。
+调用方已有的环境变量或上游信号产出进入 KBD 运行时变量池；`{{NAME}}` 在执行前确定性解析。缺少必需变量时信号必须 `blocked`，不得让 LLM 猜值。
 
-**Layer 2：Agent 引用 KBD 时的变量注入**
+**Layer 2：现场采集与产出变量**
 
-Agent 在 `sop_execution.context_variables` 中已有当前上下文所有变量值。引用 KBD 内容时，把 `{placeholder}` 替换为 `context_variables` 中对应的值：
-- 如果 `context_variables` 已有该变量 → 直接替换，命令可执行
-- 如果 KBD 需要一个 `context_variables` 没有的变量 → 触发 JIT 获取（走 Q5 的流程）
-- 如果 `context_variables` 里有 KBD 根本不使用的变量 → 忽略（多余无害）
+- QKV 生产者信号真实执行声明的 aCLI JSON 查询，通过 `path` 产出变量；会话预取的 `task_logs/alerts` 只用于 S0 分类，不得静默替代 KBD acquisition。
+- QFK 消费者信号执行受控命令后，只能在 `match`（关键字判定）和 `orchestrate.produces`（产出变量）中二选一。
+- 非 JSON 产出使用结构化 `extract` 完成字面量选行、列定位、基数校验和类型转换，不开放 shell 管道。
+- 每个产出立即进入变量池，后续信号可通过 `{{NAME}}` 使用。
 
-这样 KBD 和 SOP 共享同一套变量解析机制，无需单独建系统。
+保存层与运行快照层同时校验上述契约，防止存量脏数据被标为可执行。
+
+##### Q7：KBD 大输出如何保证可执行、可审计且不冻结浏览器？
+
+大输出必须先在数据产生边界缩减，再进入 WebSocket/浏览器/HTTP。Agent 根据 `extract.include/exclude` 生成只含字面量的 `output_filters`；terminal_bridge 逐行筛选，只回传命中行，并对 stdout/stderr 使用共享 256 KiB 总预算。协议不支持命令、正则、脚本、grep、awk 或 `|`。
+
+```mermaid
+flowchart LR
+    A["KBD acquire + extract"] --> B["Agent 解析变量并生成 output_filters"]
+    B --> C["conversation-service SSE"]
+    C --> D["Customer UI 兼容层"]
+    D --> E["terminal_bridge 逐行筛选"]
+    E --> F["SSH / HCI 原生命令"]
+    F --> E
+    E -->|"命中行，总计不超过 256 KiB"| D
+    D --> G["exec-result"]
+    G --> H["Agent 列提取、基数和类型校验"]
+    H --> I["KBD 变量池"]
+```
+
+工具生命周期统一使用同一个 `exec_id`：`tool_call` 的 `args/status=running` 与 `tool_result` 的 `result/status=success|failed` 在 conversation-service 串行持久化后再发给 UI。滚动发布期间兼容 `tool_args/tool_result/completed/error` 旧字段；SSE 结束仍为 running 时 UI 必须收敛为 failed，禁止永久显示“正在等待输出”。
 
 ---
 
@@ -1381,6 +1402,7 @@ Agent 在 `sop_execution.context_variables` 中已有当前上下文所有变量
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-07-27 | v6.1 | 修正 KBD “不主动获取值”的过期描述；补充 QKV/QFK 现场 acquisition、变量池、边缘字面量筛选、256 KiB Fail Closed 与统一工具生命周期设计 | [KBD27123三信号执行闭环方案](../../events/2026-07-27-KBD27123三信号执行闭环方案.md) |
 | 2026-06-01 | v6.0 | 清理僵尸组件：删除 IntentAgent（@deprecated）和 DiagnosticAgent（零调用），更新 AgentRouter v4.3 架构（S0→TriageAgent, S1-S4→InvestigationAgent, S5→RemediationAgent） | — |
 | 2026-06-01 | v5.9 | TriageAgent S0 意图识别三缺陷修复：① 废除直接确认路径，所有情况统一走 AgentInteractiveRequest（缺陷二）；② 增加解析失败兜底，提示用户重新描述（缺陷三）；③ `_format_categories()` 增加 code 格式校验过滤中间节点；④ `_parse_intent_result()` 正则修复（Unicode 转义+半角冒号兼容） | [./events/2026-06-01-S0意图识别三大缺陷根因与改进方案.md](./events/2026-06-01-S0意图识别三大缺陷根因与改进方案.md) |
 | 2026-05-29 | v5.8 | 补齐 agent-service Helm deployment.yaml 中 DATABASE_URL 环境变量配置（此前缺失导致数据库认证失败）；统一 config.py 默认值与其他服务一致 |

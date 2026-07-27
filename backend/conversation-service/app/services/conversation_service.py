@@ -293,9 +293,7 @@ class ConversationService:
                                 )
                             )
                             intercepted_confirmation = f"好的，确认故障分类为【{_chosen['code']} {_chosen['name']}】。\n开始故障定位分析，请稍候…"
-                            yield (
-                                intercepted_confirmation + "\n\n"
-                            )
+                            yield (intercepted_confirmation + "\n\n")
                             # 发出阶段切换事件通知前端，并继续以 S1 身份调用 AI
                             yield "\x00event:stage_change:S1\x00"
                             current_stage = "S1"
@@ -371,7 +369,9 @@ class ConversationService:
             tool_messages = [m for m in all_messages if m.role.value in ("tool_call", "tool_result")]
 
             # 第二步：文本消息按原有逻辑取最近 MAX_TEXT_MESSAGES 条
-            selected_text = text_messages[-MAX_TEXT_MESSAGES:] if len(text_messages) > MAX_TEXT_MESSAGES else text_messages
+            selected_text = (
+                text_messages[-MAX_TEXT_MESSAGES:] if len(text_messages) > MAX_TEXT_MESSAGES else text_messages
+            )
 
             # 第三步：工具消息重组为 OpenAI messages 格式
             # tool_call 消息的 content 字段存储的是 JSON 序列化的 assistant message（含 tool_calls 数组）
@@ -382,6 +382,7 @@ class ConversationService:
             cutoff_step = total_tool_steps - TOOL_TURN_FULL_WINDOW  # 超过此步骤的工具输出需要摘要化
 
             import json as _json
+
             tool_step_idx = 0  # 当前 tool_call 的步骤序号
             reconstructed_tool_messages: list[dict] = []
             for msg in tool_messages:
@@ -403,18 +404,25 @@ class ConversationService:
                     # tool_result 消息按滑动窗口策略决定是否压缩
                     result_content = msg.content
                     # 早期工具输出（步骤 <= cutoff_step）且内容过长时截断为摘要
-                    if cutoff_step > 0 and tool_step_idx <= cutoff_step and len(result_content) > TOOL_RESULT_SUMMARY_LEN:
+                    if (
+                        cutoff_step > 0
+                        and tool_step_idx <= cutoff_step
+                        and len(result_content) > TOOL_RESULT_SUMMARY_LEN
+                    ):
                         result_content = result_content[:TOOL_RESULT_SUMMARY_LEN] + "…（已截断，详情见工具执行日志）"
-                    reconstructed_tool_messages.append({
-                        "role": "tool",
-                        "tool_call_id": msg.tool_call_id or "",
-                        "content": result_content,
-                    })
+                    reconstructed_tool_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": msg.tool_call_id or "",
+                            "content": result_content,
+                        }
+                    )
 
             # 第四步：将文本消息和工具消息按时间顺序合并
             # 通过 created_at 排序合并，确保正确的 ReAct 时序
             combined_messages = sorted(
-                [(m, "text") for m in selected_text] + [(m, "tool") for m in tool_messages if m.role.value in ("tool_call", "tool_result")],
+                [(m, "text") for m in selected_text]
+                + [(m, "tool") for m in tool_messages if m.role.value in ("tool_call", "tool_result")],
                 key=lambda x: x[0].created_at,
             )
             history_messages: list[dict] = []
@@ -508,6 +516,14 @@ class ConversationService:
                             _metadata = agent_event.get("metadata", {})
                             yield f"\x00event:stage_change:{_stage}\x00"
                             if _stage in ("tool_call", "tool_result"):
+                                # 工具生命周期先按 exec_id 持久化，再向 SSE 发布。
+                                # 这样即使客户端随即断线或 Pod 滚动，审计状态也不会丢失。
+                                await self._record_tool_call(
+                                    conversation_id=conversation_id,
+                                    case_id=case_id,
+                                    stage=_stage,
+                                    metadata=_metadata,
+                                )
                                 _payload = _json.dumps(_metadata, ensure_ascii=False)
                                 yield f"\x00event:{_stage}:{_payload}\x00"
                             # T-AGT-07: 处理 SOP 命中统计（sop_reasoning 事件携带 sop_document_id）
@@ -521,17 +537,6 @@ class ConversationService:
                                             sop_document_id=_sop_doc_id,
                                         )
                                     )
-                            # T-AGT-14: 处理 pydantic-ai 工具调用记录（tool_call / tool_result）
-                            elif _stage in ("tool_call", "tool_result"):
-                                asyncio.create_task(
-                                    self._record_pai_tool_call(
-                                        conversation_id=conversation_id,
-                                        case_id=case_id,
-                                        stage=_stage,
-                                        metadata=_metadata,
-                                        resolved_assistant_type=resolved_assistant_type,
-                                    )
-                                )
                         elif event_type == "interactive_request":
                             # S0 意图识别的 interactive_request：将其转换为消息元数据并发送至前端渲染
                             if agent_event.get("kind") == "intent_selection":
@@ -589,6 +594,14 @@ class ConversationService:
                                 )
                             )
                             yield f"\x00event:interactive_request:{_ir_payload}\x00"
+                        elif event_type == "escalation":
+                            _escalation_event = self._escalation_interactive_event(
+                                conversation_id,
+                                agent_event,
+                            )
+                            _payload = _json.dumps(_escalation_event, ensure_ascii=False)
+                            _message_metadata.update({"kind": "human_escalation", "event": _escalation_event})
+                            yield f"\x00event:interactive_request:{_payload}\x00"
                         elif event_type == "error":
                             _agent_had_error = True
                             yield f"\n[Agent Error: {agent_event.get('message', '未知错误')}]"
@@ -860,6 +873,20 @@ class ConversationService:
             opt_parts = [f"{o.get('optionId', i + 1)}. {o.get('name', '')}" for i, o in enumerate(options)]
             _lines.append(f"\n\n**可选项**：{'  /  '.join(opt_parts)}")
         return "\n".join(_lines)
+
+    @staticmethod
+    def _escalation_interactive_event(conversation_id: uuid.UUID | str, event: dict) -> dict:
+        """把 AgentEscalation 转成前端可见的 human_escalation 交互契约。"""
+        return {
+            "requestId": f"escalation-{conversation_id}",
+            "acpSessionId": str(conversation_id),
+            "kind": "human_escalation",
+            "title": "需要人工支持",
+            "prompt": event.get("reason") or "自动诊断证据不足，已转人工处理。",
+            "options": [{"optionId": "ack", "name": "我知道了"}],
+            "customInput": False,
+            "metadata": event.get("context") or {},
+        }
 
     @staticmethod
     def _format_interactive_response_content(outcome: dict) -> str:
@@ -1477,16 +1504,15 @@ class ConversationService:
                 sop_document_id=sop_document_id,
             )
 
-    async def _record_pai_tool_call(
+    async def _record_tool_call(
         self,
         conversation_id: uuid.UUID,
         case_id: str,
         stage: str,
         metadata: dict[str, Any],
-        resolved_assistant_type: str,
     ) -> None:
         """
-        记录 pydantic-ai (pai-agent) 工具调用到 tool_result 表（T-AGT-14）。
+        以 exec_id 为稳定主键记录所有 Agent 的工具生命周期。
 
         pai-agent 工具调用事件包含：
           - stage="tool_call": 工具调用开始，记录 tool_name、args、status="pending"
@@ -1497,15 +1523,10 @@ class ConversationService:
             case_id: 工单 ID
             stage: 事件阶段（tool_call / tool_result）
             metadata: 事件元数据（tool_name, tool_args/tool_result, status 等）
-            resolved_assistant_type: 解析后的助手类型（用于区分 pai-agent）
         """
         from datetime import UTC, datetime
 
         from shared.models.audit import ToolResult
-
-        # 仅记录 pai-agent 的工具调用
-        if resolved_assistant_type != "pydantic-ai":
-            return
 
         tool_name = metadata.get("tool_name", "")
         if not tool_name:
@@ -1517,116 +1538,94 @@ class ConversationService:
             )
             return
 
+        raw_exec_id = str(metadata.get("exec_id") or "").strip()
+        if raw_exec_id:
+            try:
+                record_id = str(uuid.UUID(raw_exec_id))
+            except ValueError:
+                record_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"tool-exec:{raw_exec_id}"))
+        else:
+            # 旧事件没有 exec_id 时仍可审计，但无法提供跨事件的严格关联。
+            record_id = str(uuid.uuid4())
+
         try:
             if self.session_factory:
                 async with self.session_factory() as session:
                     # 根据阶段决定写入内容
                     if stage == "tool_call":
-                        # 工具调用开始：创建新记录
-                        record = ToolResult(
-                            conversation_id=conversation_id,
-                            tool_name=tool_name,
-                            tool_type="scp_api",  # pai-agent 工具主要为 SCP API
-                            risk_level=1,  # 只读工具
-                            policy="auto",  # 自动执行
-                            input_json=metadata.get("tool_args", {}),
-                            output_json=None,
-                            error=None,
-                            started_at=datetime.now(UTC),
-                            completed_at=None,
-                            duration_ms=None,
-                            trace_id=get_current_trace_id(),
-                        )
-                        session.add(record)
-                        await session.commit()
-                        logger.info(
-                            event="pai_tool_call_started",
-                            message=f"pai-agent 工具调用开始：{tool_name}",
-                            conversation_id=str(conversation_id),
-                            tool_name=tool_name,
-                            tool_args=metadata.get("tool_args"),
-                        )
-
-                    elif stage == "tool_result":
-                        # 工具调用完成：查找待更新记录并填充结果
-                        from sqlalchemy import select
-                        from sqlalchemy import update as sa_update
-
-                        status = metadata.get("status", "completed")
-                        tool_result = metadata.get("tool_result")
-                        error = metadata.get("error")
-
-                        # ⚠️ 已知问题：并发竞态
-                        # tool_call 和 tool_result 事件通过 asyncio.create_task() 并发提交，
-                        # tool_result 可能先于 tool_call 落库，导致找不到 pending 记录。
-                        # 修复建议：在 metadata 中携带稳定关联键（tool_call_id/run_id），
-                        # 或将写入统一队列串行处理。
-                        # 查找最近的 pending 记录
-                        result = await session.execute(
-                            select(ToolResult)
-                            .where(
-                                ToolResult.conversation_id == conversation_id,
-                                ToolResult.tool_name == tool_name,
-                                ToolResult.completed_at.is_(None),
-                            )
-                            .order_by(ToolResult.started_at.desc())
-                            .limit(1)
-                        )
-                        pending_record = result.scalar_one_or_none()
-
-                        if pending_record:
-                            # 更新现有记录
-                            now = datetime.now(UTC)
-                            duration_ms = int((now - pending_record.started_at).total_seconds() * 1000)
-                            await session.execute(
-                                sa_update(ToolResult)
-                                .where(ToolResult.id == pending_record.id)
-                                .values(
-                                    output_json=tool_result,
-                                    error=error,
-                                    completed_at=now,
-                                    duration_ms=duration_ms,
-                                )
-                            )
-                            await session.commit()
-                            logger.info(
-                                event="pai_tool_call_completed",
-                                message=f"pai-agent 工具调用完成：{tool_name}",
-                                conversation_id=str(conversation_id),
-                                tool_name=tool_name,
-                                status=status,
-                                duration_ms=duration_ms,
-                            )
-                        else:
-                            # 没有找到 pending 记录，创建新的完整记录
+                        record = await session.get(ToolResult, record_id)
+                        if record is None:
                             record = ToolResult(
+                                id=record_id,
                                 conversation_id=conversation_id,
+                                case_id=case_id,
                                 tool_name=tool_name,
-                                tool_type="scp_api",
-                                risk_level=1,
-                                policy="auto",
-                                input_json={},
-                                output_json=tool_result,
-                                error=error,
+                                tool_type="acli" if tool_name.startswith(("qkv_", "qfk_", "acli")) else "scp_api",
+                                risk_level=int(metadata.get("risk_level") or 1),
+                                policy=str(metadata.get("policy") or "auto"),
+                                input_json=metadata.get("args") or metadata.get("tool_args") or {},
+                                output_json=None,
+                                error=None,
+                                status=str(metadata.get("status") or "running"),
                                 started_at=datetime.now(UTC),
-                                completed_at=datetime.now(UTC),
-                                duration_ms=0,
+                                completed_at=None,
+                                duration_ms=None,
                                 trace_id=get_current_trace_id(),
                             )
                             session.add(record)
-                            await session.commit()
-                            logger.info(
-                                event="pai_tool_call_record_created",
-                                message=f"pai-agent 工具调用记录创建：{tool_name}",
-                                conversation_id=str(conversation_id),
+                        else:
+                            record.input_json = metadata.get("args") or metadata.get("tool_args") or {}
+                            record.status = str(metadata.get("status") or "running")
+                        await session.commit()
+                        logger.info(
+                            event="tool_call_started",
+                            message=f"工具调用开始：{tool_name}",
+                            conversation_id=str(conversation_id),
+                            tool_name=tool_name,
+                            exec_id=record_id,
+                            tool_args=record.input_json,
+                        )
+
+                    elif stage == "tool_result":
+                        status = str(metadata.get("status") or "failed")
+                        tool_result = metadata.get("result", metadata.get("tool_result"))
+                        error = metadata.get("error")
+                        record = await session.get(ToolResult, record_id)
+                        now = datetime.now(UTC)
+                        if record is None:
+                            record = ToolResult(
+                                id=record_id,
+                                conversation_id=conversation_id,
+                                case_id=case_id,
                                 tool_name=tool_name,
-                                status=status,
+                                tool_type="acli" if tool_name.startswith(("qkv_", "qfk_", "acli")) else "scp_api",
+                                risk_level=int(metadata.get("risk_level") or 1),
+                                policy=str(metadata.get("policy") or "auto"),
+                                input_json=metadata.get("args") or metadata.get("tool_args") or {},
+                                started_at=now,
+                                trace_id=get_current_trace_id(),
                             )
+                            session.add(record)
+                        record.output_json = tool_result
+                        record.error = error
+                        record.completed_at = now
+                        record.duration_ms = int((now - record.started_at).total_seconds() * 1000)
+                        record.status = status
+                        await session.commit()
+                        logger.info(
+                            event="tool_call_completed",
+                            message=f"工具调用完成：{tool_name}",
+                            conversation_id=str(conversation_id),
+                            tool_name=tool_name,
+                            exec_id=record_id,
+                            status=status,
+                            duration_ms=record.duration_ms,
+                        )
 
         except Exception as e:
             logger.warning(
-                event="pai_tool_call_record_error",
-                message=f"pai-agent 工具调用记录失败：{e}",
+                event="tool_call_record_error",
+                message=f"工具调用记录失败：{e}",
                 conversation_id=str(conversation_id),
                 tool_name=tool_name,
                 stage=stage,
@@ -2196,11 +2195,12 @@ class ConversationService:
         按 kind 字段分叉路由：
         - kind=tool_confirm → 调用 agent-service /v1/agent/react-confirm（ReAct 确认回路）
         - kind=variable_input/variable_confirm → 写入 SOP 变量池（HTP 排障）
-        - 其他 kind（ACP 类型）→ 调用 agent-service /v1/agent/interactive-response（ops-agent ACP）
+        - kind=human_escalation → 本地记录用户已知悉，不转发给任何 Agent
+        - 其他 ACP 类型 → 调用 agent-service /v1/agent/interactive-response（ops-agent ACP）
 
         Args:
             conversation_id: 对话 ID（用于日志追踪）。
-            kind:            交互类型（tool_confirm / sop_step / info_confirm / variable_input 等）。
+            kind:            交互类型（tool_confirm / human_escalation / sop_step / info_confirm / variable_input 等）。
             request_id:      ACP request_id（来自 AgentInteractiveRequest.request_id）。
             acp_session_id:  ops-agent ACP session_id（来自 AgentInteractiveRequest.acp_session_id）。
             outcome:         提交结果，格式 {"outcome": "selected", "optionId": "A"}
@@ -2211,7 +2211,29 @@ class ConversationService:
         Returns:
             True  = 提交成功；False = AgentClient 未注入或请求失败。
         """
-        if self._agent_client is None:
+        session_id = str(conversation_id)
+
+        # AgentEscalation 由 HTP Agent 在本地发出；其 request_id/acp_session_id
+        # 仅用于前端卡片关联，并不是 ops-agent 创建的 ACP 请求。确认“我知道了”
+        # 只需在会话历史中留痕，绝不能转发到 ops-agent。
+        if kind == "human_escalation":
+            if outcome.get("outcome") != "selected" or outcome.get("optionId") != "ack":
+                logger.warning(
+                    event="human_escalation_ack_invalid",
+                    message="人工升级确认仅接受 ack 选项",
+                    conversation_id=str(conversation_id),
+                    request_id=request_id,
+                    outcome=outcome,
+                )
+                return False
+            success = True
+            logger.info(
+                event="human_escalation_acknowledged",
+                message="用户已确认人工升级提示；不转发 ops-agent",
+                conversation_id=str(conversation_id),
+                request_id=request_id,
+            )
+        elif self._agent_client is None:
             logger.warning(
                 event="interactive_response_no_client",
                 message="submit_interactive_response: AgentClient 未注入，跳过",
@@ -2221,10 +2243,8 @@ class ConversationService:
             )
             return False
 
-        session_id = str(conversation_id)
-
         # 按 kind 分叉路由
-        if kind in ("variable_input", "variable_confirm"):
+        elif kind in ("variable_input", "variable_confirm"):
             # ── SOP 变量输入/确认路径 ──
             if not metadata or "variable_name" not in metadata:
                 logger.warning(
@@ -2538,11 +2558,21 @@ class ConversationService:
                             },
                         )
                     )
+            elif event_type == "escalation":
+                _escalation_event = self._escalation_interactive_event(conversation_id, agent_event)
+                yield f"\x00event:interactive_request:{_json.dumps(_escalation_event, ensure_ascii=False)}\x00"
             elif event_type == "stage_update":
                 _stage = agent_event.get("stage", "")
                 _metadata = agent_event.get("metadata", {})
                 yield f"\x00event:stage_change:{_stage}\x00"
                 if _stage in ("tool_call", "tool_result"):
+                    if _case_id is not None:
+                        await self._record_tool_call(
+                            conversation_id=conversation_id,
+                            case_id=_case_id,
+                            stage=_stage,
+                            metadata=_metadata,
+                        )
                     _payload = _json.dumps(_metadata, ensure_ascii=False)
                     yield f"\x00event:{_stage}:{_payload}\x00"
             elif event_type == "done":

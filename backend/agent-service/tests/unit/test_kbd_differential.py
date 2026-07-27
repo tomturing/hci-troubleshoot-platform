@@ -2,18 +2,19 @@
 KBDDiagnostic 单元测试
 
 测试覆盖：
-  1. _pick_best_step：贪心最大频率选择逻辑
-  2. _resolve_args：占位符替换逻辑
-  3. _judge_matches：规则判断（__REGEX__: / __CONTAINS__:）
-  4. diagnose：完整 KBD 差异诊断主循环（端到端，全 mock）
-  5. 有效性验证：N=10 候选 KBD，≤8 步锁定正确 KBD
+  1. _resolve_args：占位符替换逻辑
+  2. matcher：确定性规则求值
+  3. diagnose：按 KBD signal_id 执行和证据门禁
+  4. 27123 golden case：QKV + 两个独立 QFK 信号
 """
 
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
-from app.adapters.agents.htp.kbd_model import KBD
+from app.adapters.agents.htp.kbd_model import KBD, KBDStep
 
 # ─── 测试数据工厂 ─────────────────────────────────────────────────────────────
 
@@ -30,20 +31,21 @@ def _expected_to_matcher(expected_pattern):
     if expected_pattern.startswith("__REGEX__:"):
         return {
             "type": "regex",
-            "pattern": expected_pattern[len("__REGEX__:"):],
+            "pattern": expected_pattern[len("__REGEX__:") :],
             "mode": "or",
             "expected": True,
         }
     if expected_pattern.startswith("__CONTAINS__:"):
         return {
             "type": "keyword",
-            "pattern": expected_pattern[len("__CONTAINS__:"):],
+            "pattern": expected_pattern[len("__CONTAINS__:") :],
             "mode": "or",
             "expected": True,
         }
     if expected_pattern.startswith("__MATCHER__:"):
         import json as _json
-        return _json.loads(expected_pattern[len("__MATCHER__:"):])
+
+        return _json.loads(expected_pattern[len("__MATCHER__:") :])
     return expected_pattern
 
 
@@ -95,53 +97,6 @@ def make_tool_executor(results: dict[str, str]) -> MagicMock:
 
     mock.execute = execute
     return mock
-
-
-# ─── 单元测试：_pick_best_step ────────────────────────────────────────────────
-
-
-class TestPickBestStep:
-    """_pick_best_step：贪心选择逻辑测试"""
-
-    def setup_method(self):
-        self.diag = KBDDiagnostic(
-            ai_registry=MagicMock(),
-            tool_executor=MagicMock(),
-        )
-
-    def test_picks_most_frequent_tool(self):
-        """选择频率最高的工具"""
-        candidates = [
-            make_kbd("k1", [("tool_a", ""), ("tool_b", "")]),
-            make_kbd("k2", [("tool_a", ""), ("tool_c", "")]),
-            make_kbd("k3", [("tool_a", "")]),
-        ]
-        # tool_a 出现 3 次，tool_b/c 各 1 次
-        best = self.diag._pick_best_step(candidates, executed_tools=set())
-        assert best == "tool_a"
-
-    def test_excludes_already_executed_tools(self):
-        """已执行过的工具不应再被选择"""
-        candidates = [
-            make_kbd("k1", [("tool_a", ""), ("tool_b", "")]),
-            make_kbd("k2", [("tool_a", ""), ("tool_b", "")]),
-        ]
-        # tool_a 已执行，应选 tool_b
-        best = self.diag._pick_best_step(candidates, executed_tools={"tool_a"})
-        assert best == "tool_b"
-
-    def test_returns_none_when_all_executed(self):
-        """所有工具都已执行时返回 None"""
-        candidates = [
-            make_kbd("k1", [("tool_a", ""), ("tool_b", "")]),
-        ]
-        best = self.diag._pick_best_step(candidates, executed_tools={"tool_a", "tool_b"})
-        assert best is None
-
-    def test_returns_none_for_empty_candidates(self):
-        """候选 KBD 为空时返回 None"""
-        best = self.diag._pick_best_step([], executed_tools=set())
-        assert best is None
 
 
 # ─── 单元测试：_resolve_args ──────────────────────────────────────────────────
@@ -196,8 +151,8 @@ class TestVariablePoolCaseNormalization:
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
         # 生产侧写入入口强制小写，无论 produces 名大小写 / 首尾空格如何，池内 Key 永远统一
         diag._set_pool_var("HOST", "node-001")
-        diag._set_pool_var("HoSt", "x")       # 同键不同大小写 -> 归一为 host（后者覆盖）
-        diag._set_pool_var(" vm_id ", "v-9")   # 首尾空格 + 大写 -> vm_id
+        diag._set_pool_var("HoSt", "x")  # 同键不同大小写 -> 归一为 host（后者覆盖）
+        diag._set_pool_var(" vm_id ", "v-9")  # 首尾空格 + 大写 -> vm_id
         assert diag._variable_pool == {"host": "x", "vm_id": "v-9"}
 
     def test_producer_consumer_roundtrip(self):
@@ -212,105 +167,264 @@ class TestVariablePoolCaseNormalization:
         assert result2 == {"scope": "node-001"}
 
 
-# ─── 单元测试：_judge_matches（规则判断）────────────────────────────────────
-
-
-class TestJudgeMatchesRules:
-    """_judge_matches：规则判断（不调用 LLM）"""
+class TestHostIPResolution:
+    """QKV 产出主机名后，按 HCI 节点列表归一化为节点 IP。"""
 
     @pytest.mark.asyncio
-    async def test_contains_pattern_match(self):
-        """__CONTAINS__ 模式匹配测试"""
-        diag = KBDDiagnostic(
-            ai_registry=make_registry_mock(),
-            tool_executor=MagicMock(),
+    async def test_resolves_host_name_from_platform_node_list(self, monkeypatch):
+        import app.tools.acli.executor as executor_module
+
+        bridge_executor = MagicMock()
+        bridge_executor.execute = AsyncMock(
+            return_value=SimpleNamespace(
+                exit_code=0,
+                stdout=json.dumps(
+                    {
+                        "data": [
+                            {
+                                "id": "host-047bcb4bc820",
+                                "name": "SVR_aCloud_668",
+                                "ip": "172.28.24.2",
+                            }
+                        ]
+                    }
+                ),
+                stderr="",
+            )
         )
-        kbds = [
-            make_kbd("k1", [("tool_x", "__CONTAINS__:memory_error")]),
-            make_kbd("k2", [("tool_x", "__CONTAINS__:disk_full")]),
+        monkeypatch.setattr(executor_module, "_executor", bridge_executor)
+
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        result = await diag._resolve_host_ip(
+            "SVR_aCloud_668",
+            node_ip="172.28.24.1",
+            session_id="case-1",
+        )
+
+        assert result == "172.28.24.2"
+        # 同一诊断会话复用缓存，不重复执行 platform node list。
+        assert (
+            await diag._resolve_host_ip("SVR_aCloud_668", node_ip="172.28.24.1", session_id="case-1")
+            == "172.28.24.2"
+        )
+        bridge_executor.execute.assert_awaited_once()
+        assert bridge_executor.execute.await_args.kwargs["node_ip"] == "172.28.24.1"
+
+    @pytest.mark.asyncio
+    async def test_qkv_host_is_normalized_before_variable_pool_write(self, monkeypatch):
+        import app.tools.acli.executor as executor_module
+
+        bridge_executor = MagicMock()
+        bridge_executor.execute = AsyncMock(
+            return_value=SimpleNamespace(
+                exit_code=0,
+                stdout=json.dumps({"data": [{"id": "host-1", "name": "node-a", "ip": "10.0.0.2"}]}),
+                stderr="",
+            )
+        )
+        monkeypatch.setattr(executor_module, "_executor", bridge_executor)
+
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        await diag._fill_pool_from_qkv(
+            {
+                "acquire": {"tool": "qkv_task", "args": {}},
+                "orchestrate": {"produces": [{"name": "HOST", "path": "host"}]},
+            },
+            SimpleNamespace(values=[{"host": "node-a"}]),
+            node_ip="10.0.0.1",
+            session_id="case-1",
+        )
+
+        assert diag._variable_pool["host"] == "10.0.0.2"
+
+    @pytest.mark.asyncio
+    async def test_qfk_routes_to_resolved_host_ip(self, monkeypatch):
+        import app.tools.qfk.engine as qfk_engine
+
+        qfk_result = SimpleNamespace(error=None, raw_output="node output", matched=True)
+        qfk_exec = AsyncMock(return_value=qfk_result)
+        monkeypatch.setattr(qfk_engine, "qfk_exec", qfk_exec)
+
+        diag = KBDDiagnostic(
+            ai_registry=MagicMock(),
+            tool_executor=MagicMock(),
+            conversation_id="conversation-1",
+            case_id="case-1",
+        )
+        await diag._execute_acquirer(
+            KBDStep(
+                tool_name="qfk_system",
+                tool_args_template={
+                    "host": "172.28.24.2",
+                    "command": "lsof",
+                    "resource_keyword": "4359974862144",
+                },
+                matcher={"type": "keyword", "pattern": "node output", "mode": "or", "expected": True},
+            ),
+            {"node_ip": "172.28.24.1"},
+            "case-1",
+            "",
+        )
+
+        assert qfk_exec.await_args.kwargs["node_ip"] == "172.28.24.2"
+
+    @pytest.mark.asyncio
+    async def test_kbd_qkv_executes_explicit_acquisition_even_with_prefetched_tasks(self, monkeypatch):
+        import app.tools.qkv.engine as qkv_engine
+
+        qkv_exec = AsyncMock(
+            return_value=SimpleNamespace(
+                success=True,
+                values=[{"vm": "4359974862144", "host": "SVR_aCloud_668"}],
+                to_observation=lambda: "QKV command acquisition",
+            )
+        )
+        monkeypatch.setattr(qkv_engine, "qkv_exec", qkv_exec)
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        diag._resolve_host_ip = AsyncMock(return_value="172.28.24.2")
+        signal = {
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机失败", "is_failed": True}},
+            "orchestrate": {
+                "produces": [
+                    {"name": "VM", "path": "vm"},
+                    {"name": "HOST", "path": "host"},
+                ]
+            },
+        }
+        step = KBDStep(tool_name="qkv_task", tool_args_template=signal["acquire"]["args"])
+
+        observation, error, matched = await diag._execute_acquirer(
+            step,
+            {
+                "node_ip": "172.28.24.1",
+                "task_logs": [
+                    {
+                        "vm": "4359974862144",
+                        "host": "SVR_aCloud_668",
+                        "status": 3,
+                        "description": "启动虚拟机失败",
+                    }
+                ],
+            },
+            "case-1",
+            "",
+            signal=signal,
+        )
+
+        assert error is None
+        assert matched is True
+        assert observation == "QKV command acquisition"
+        assert diag._variable_pool["host"] == "172.28.24.2"
+        qkv_exec.assert_awaited_once()
+        assert qkv_exec.await_args.kwargs["signal"].keyword == "启动虚拟机"
+        assert qkv_exec.await_args.kwargs["signal"].is_failed is True
+
+
+class TestQFKProduces:
+    """QFK 命令输出写入变量池，并作为无 matcher 信号的通过依据。"""
+
+    def test_extracts_full_output_and_json_paths(self):
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        ok, error = diag._fill_pool_from_qfk(
+            [
+                {"name": "RAW", "path": ""},
+                {"name": "PID", "path": "data.0.pid|pid"},
+            ],
+            '{"data": [{"pid": 27123}]}',
+        )
+
+        assert ok is True
+        assert error is None
+        assert diag._variable_pool["raw"] == '{"data": [{"pid": 27123}]}'
+        assert diag._variable_pool["pid"] == 27123
+
+    def test_rejects_json_path_for_non_json_output(self):
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        ok, error = diag._fill_pool_from_qfk([{"name": "PID", "path": "data.0.pid"}], "pid=27123")
+
+        assert ok is False
+        assert "不是合法 JSON" in str(error)
+
+    @pytest.mark.asyncio
+    async def test_output_signal_passes_and_populates_pool(self, monkeypatch):
+        import app.tools.qfk.engine as qfk_engine
+
+        qfk_exec = AsyncMock(return_value=SimpleNamespace(error=None, raw_output="27123", matched=False))
+        monkeypatch.setattr(qfk_engine, "qfk_exec", qfk_exec)
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock(), conversation_id="conv-1", case_id="case-1")
+        signal = {
+            "acquire": {"tool": "qfk_system", "args": {"command": "pidof test", "container": "host"}},
+            "match": None,
+            "orchestrate": {"produces": [{"name": "PID", "path": ""}]},
+        }
+        step = KBDStep(tool_name="qfk_system", tool_args_template=signal["acquire"]["args"], matcher=None)
+
+        raw_output, error, pre_matched = await diag._execute_acquirer(step, {}, "case-1", "", signal=signal)
+
+        assert raw_output == "27123"
+        assert error is None
+        assert pre_matched is True
+        assert diag._variable_pool["pid"] == "27123"
+        assert diag._evaluate_signal_outcome(signal, raw_output, error, pre_matched).value == "PASS"
+
+    @pytest.mark.asyncio
+    async def test_text_extract_is_forwarded_as_resolved_edge_row_filter(self, monkeypatch):
+        import app.tools.qfk.engine as qfk_engine
+
+        qfk_exec = AsyncMock(
+            return_value=SimpleNamespace(
+                error=None,
+                raw_output="qemu 9527 4359974862144",
+                matched=False,
+                complete_outputs={"stdout": "qemu 9527 4359974862144"},
+            )
+        )
+        monkeypatch.setattr(qfk_engine, "qfk_exec", qfk_exec)
+        diag = KBDDiagnostic(
+            ai_registry=MagicMock(), tool_executor=MagicMock(), conversation_id="conv-1", case_id="case-1"
+        )
+        signal = {
+            "acquire": {"tool": "qfk_system", "args": {"command": "lsof", "container": "host"}},
+            "match": None,
+            "orchestrate": {
+                "produces": [
+                    {
+                        "name": "PID",
+                        "extract": {
+                            "type": "text",
+                            "source": "stdout",
+                            "include": ["{{VM}}"],
+                            "exclude": ["grep"],
+                            "include_mode": "all",
+                            "case_sensitive": True,
+                            "column": 2,
+                        },
+                    }
+                ]
+            },
+        }
+        diag._set_pool_var("VM", "4359974862144")
+
+        raw_output, error, matched = await diag._execute_acquirer(
+            KBDStep(tool_name="qfk_system", tool_args_template=signal["acquire"]["args"], matcher=None),
+            {},
+            "case-1",
+            "",
+            signal=signal,
+        )
+
+        assert error is None
+        assert matched is True
+        assert diag._variable_pool["pid"] == "9527"
+        assert qfk_exec.await_args.kwargs["output_filters"] == [
+            {
+                "source": "stdout",
+                "include": ["4359974862144"],
+                "exclude": ["grep"],
+                "include_mode": "all",
+                "case_sensitive": True,
+            }
         ]
-
-        matched = await diag._judge_matches(
-            tool_name="tool_x",
-            actual_output="Error: memory_error detected on node-01",
-            kbds=kbds,
-        )
-
-        assert "k1" in matched
-        assert "k2" not in matched
-
-    @pytest.mark.asyncio
-    async def test_contains_pattern_case_insensitive(self):
-        """__CONTAINS__ 模式大小写不敏感"""
-        diag = KBDDiagnostic(
-            ai_registry=make_registry_mock(),
-            tool_executor=MagicMock(),
-        )
-        kbds = [make_kbd("k1", [("tool_x", "__CONTAINS__:MEMORY_ERROR")])]
-
-        matched = await diag._judge_matches(
-            tool_name="tool_x",
-            actual_output="memory_error occurred",
-            kbds=kbds,
-        )
-        assert "k1" in matched
-
-    @pytest.mark.asyncio
-    async def test_regex_pattern_match(self):
-        """__REGEX__ 模式匹配测试"""
-        diag = KBDDiagnostic(
-            ai_registry=make_registry_mock(),
-            tool_executor=MagicMock(),
-        )
-        kbds = [
-            make_kbd("k1", [("tool_x", r"__REGEX__:error_code=0x[0-9A-F]+")]),
-            make_kbd("k2", [("tool_x", r"__REGEX__:timeout_ms=\d{4,}")]),
-        ]
-
-        matched = await diag._judge_matches(
-            tool_name="tool_x",
-            actual_output="error_code=0xCFFFFF in syslog",
-            kbds=kbds,
-        )
-        assert "k1" in matched
-        assert "k2" not in matched
-
-    @pytest.mark.asyncio
-    async def test_invalid_regex_treated_as_no_match(self):
-        """无效正则表达式不抛异常，视为不匹配"""
-        diag = KBDDiagnostic(
-            ai_registry=make_registry_mock(),
-            tool_executor=MagicMock(),
-        )
-        kbds = [make_kbd("k1", [("tool_x", "__REGEX__:[invalid(")])]
-
-        matched = await diag._judge_matches(
-            tool_name="tool_x",
-            actual_output="some output",
-            kbds=kbds,
-        )
-        assert "k1" not in matched
-
-    @pytest.mark.asyncio
-    async def test_no_pattern_conservative_match(self):
-        """KBD 无此步骤定义时保守地保留（不过滤）"""
-        diag = KBDDiagnostic(
-            ai_registry=make_registry_mock(),
-            tool_executor=MagicMock(),
-        )
-        # k1 有 tool_x，k2 没有 tool_x（get_expected_pattern 返回 None）
-        kbds = [
-            make_kbd("k1", [("tool_x", "__CONTAINS__:error")]),
-            make_kbd("k2", [("tool_y", "__CONTAINS__:error")]),  # 无 tool_x
-        ]
-
-        matched = await diag._judge_matches(
-            tool_name="tool_x",
-            actual_output="no relevant output",
-            kbds=kbds,
-        )
-        # k2 无 tool_x 步骤，保守保留
-        assert "k2" in matched
 
 
 # ─── 单元测试：_evaluate_matcher（§6 5 类定型 valuator）────────────────────────
@@ -385,16 +499,16 @@ class TestToolDefinitionFallback:
         self._mod = tool_registry
         self._added = ["qkv_alert", "qfk_log"]
         # 模拟 admin-ui 在 tool_definition 中配置的默认值
-        self._mod.TOOL_REGISTRY["qkv_alert"] = SimpleNamespace(parameters={
-            "properties": {"produces": {"default": [{"name": "HOST", "path": "host"}]}}
-        })
-        self._mod.TOOL_REGISTRY["qfk_log"] = SimpleNamespace(parameters={
-            "properties": {
-                "matcher": {
-                    "default": {"type": "keyword", "pattern": ["X"], "mode": "or", "expected": True}
+        self._mod.TOOL_REGISTRY["qkv_alert"] = SimpleNamespace(
+            parameters={"properties": {"produces": {"default": [{"name": "HOST", "path": "host"}]}}}
+        )
+        self._mod.TOOL_REGISTRY["qfk_log"] = SimpleNamespace(
+            parameters={
+                "properties": {
+                    "matcher": {"default": {"type": "keyword", "pattern": ["X"], "mode": "or", "expected": True}}
                 }
             }
-        })
+        )
 
     def teardown_method(self):
         for k in self._added:
@@ -466,13 +580,12 @@ class TestDiagnoseLoop:
         assert any("未找到" in e.content for e in text_events)
 
     @pytest.mark.asyncio
-    async def test_single_candidate_skips_loop(self):
-        """候选 KBD ≤ early_stop_threshold 时主循环不执行，但关键信号确认阶段必须补跑"""
+    async def test_shared_acquisition_still_evaluates_each_kbd_signal(self):
+        """相同采集只执行一次，但每篇 KBD 的 signal 必须独立求值。"""
         tool_executor = make_tool_executor({"tool_a": "output"})
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock('{"matches": {"k1": true}}'),
             tool_executor=tool_executor,
-            early_stop_threshold=2,
         )
 
         candidates = [
@@ -491,23 +604,51 @@ class TestDiagnoseLoop:
 
         result = diag.get_result()
         assert result is not None
-        # ≤ 2 候选时主循环虽跳过，但两个 KBD 均保留
         assert len(result.matched_kbds) == 2
-        # 关键信号确认阶段已补跑 tool_a，不再是 0 步（治本修复）
-        assert len(result.steps_executed) == 1
-        assert result.steps_executed[0].tool_name == "tool_a"
+        # 同一次 acquisition 只实际执行一次，但每篇 KBD 的 signal 必须独立求值。
+        assert len(result.steps_executed) == 2
+        assert {step.tool_name for step in result.steps_executed} == {"tool_a"}
+        assert all(step.outcome.value == "PASS" for step in result.steps_executed)
+        assert len({step.exec_id for step in result.steps_executed}) == 1
+        assert len({step.evaluation_id for step in result.steps_executed}) == 2
+
+    @pytest.mark.asyncio
+    async def test_supported_plus_tool_error_is_partial_and_never_s4(self):
+        first = make_kbd("k1", [("tool_a", "__CONTAINS__:yes")])
+        second = make_kbd("k2", [("tool_b", "__CONTAINS__:yes")])
+        diag = KBDDiagnostic(ai_registry=make_registry_mock(), tool_executor=MagicMock())
+
+        async def execute(step, *_args, **_kwargs):
+            if step.tool_name == "tool_a":
+                return "yes", None, None
+            return None, "bridge timeout", None
+
+        diag._execute_acquirer = AsyncMock(side_effect=execute)
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=[first, second], env_context={}, session_id="partial"
+            )
+        ]
+
+        result = diag.get_result()
+        assert result is not None
+        assert result.conclusion_level == "PARTIAL"
+        assert not result.is_definitive
+        assert [kbd.id for kbd in result.matched_kbds] == ["k1"]
+        assert "暂不能定论" in result.diagnosis_report
+        assert "测试根因" not in result.diagnosis_report
+        complete = next(event for event in events if getattr(event, "stage", "") == "kbd_diag_complete")
+        assert complete.metadata["conclusion_level"] == "PARTIAL"
 
     @pytest.mark.asyncio
     async def test_single_candidate_confirms_its_signals(self):
         """单候选 KBD 也必须执行其 backend 关键信号确认，不能跳过就给结论（回归测试）"""
         # 模拟真实场景：工具采集到“第三方进程 ClwDRDBClient 持有镜像”的关键信号
-        tool_executor = make_tool_executor(
-            {"acli_vm_config": "ERROR: 虚拟机镜像忙，ClwDRDBClient 持有镜像文件"}
-        )
+        tool_executor = make_tool_executor({"acli_vm_config": "ERROR: 虚拟机镜像忙，ClwDRDBClient 持有镜像文件"})
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock('{"matches": {"k1": true}}'),
             tool_executor=tool_executor,
-            early_stop_threshold=2,
         )
 
         candidates = [make_kbd("k1", [("acli_vm_config", "__CONTAINS__:ClwDRDBClient")])]
@@ -523,7 +664,7 @@ class TestDiagnoseLoop:
 
         result = diag.get_result()
         assert result is not None
-        # 单候选（候选数 ≤ early_stop）不应直接结论，必须执行关键信号确认
+        # 单候选不等于已确认，仍须执行关键信号。
         assert len(result.steps_executed) == 1
         step = result.steps_executed[0]
         assert step.tool_name == "acli_vm_config"
@@ -548,7 +689,6 @@ class TestDiagnoseLoop:
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock(),
             tool_executor=tool_executor,
-            early_stop_threshold=1,
         )
 
         events = [
@@ -586,7 +726,6 @@ class TestDiagnoseLoop:
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock(),
             tool_executor=tool_executor,
-            early_stop_threshold=1,
         )
 
         events = [
@@ -625,7 +764,6 @@ class TestDiagnoseLoop:
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock(),
             tool_executor=mock_executor,
-            early_stop_threshold=1,
         )
 
         # 不应抛出异常
@@ -673,7 +811,6 @@ class TestDiagnoseLoop:
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock(),
             tool_executor=mock_executor,
-            early_stop_threshold=0,  # 强制执行所有步骤
         )
 
         events = [
@@ -689,20 +826,15 @@ class TestDiagnoseLoop:
         assert captured_args.get("vm_name") == "test-vm-001"
 
 
-# ─── 有效性验证：10 候选 KBD ≤ 8 步锁定 ──────────────────────────────────────
+# ─── 多候选证据求值验证 ───────────────────────────────────────────────────────
 
 
 class TestKBDDiagEffectiveness:
-    """KBD 差异诊断有效性验证：模拟真实场景，验证步骤数量"""
+    """多篇 KBD 的全部信号均进入证据求值。"""
 
     @pytest.mark.asyncio
-    async def test_ten_candidates_lock_in_few_steps(self):
-        """10 个候选 KBD 应在 ≤ 8 步内锁定到 ≤ 3 个匹配 KBD。
-
-        验收标准（来自 KBD 差异诊断协议）：
-          - top-K=10 → 预期 ≤ 8 步完成消除
-          - 真实 KBD（k5）应在最终匹配列表中
-        """
+    async def test_ten_candidates_use_fail_short_circuit_without_changing_result(self):
+        """required FAIL 后取消候选独占信号，但仍找到具有完整 PASS 证据的 KBD。"""
         # 构建 10 个 KBD，每个有独特的期望模式
         # 真实故障：k5（Redis 服务异常导致虚拟机开机失败）
         candidates = [
@@ -754,7 +886,6 @@ class TestKBDDiagEffectiveness:
         diag = KBDDiagnostic(
             ai_registry=make_registry_mock(),
             tool_executor=tool_executor,
-            early_stop_threshold=2,
         )
 
         events = [
@@ -769,8 +900,8 @@ class TestKBDDiagEffectiveness:
         result = diag.get_result()
         assert result is not None
 
-        # 验收标准 1：步骤数 ≤ 8
-        assert len(result.steps_executed) <= 8, f"步骤数 {len(result.steps_executed)} 超过预期上限 8 步"
+        # 已被 required FAIL 排除的 KBD 不再执行其独占后续信号。
+        assert len(result.steps_executed) < sum(len(kbd.signals) for kbd in candidates)
 
         # 验收标准 2：真实 KBD k5 在匹配列表中
         matched_ids = {kbd.id for kbd in result.matched_kbds}
@@ -778,3 +909,296 @@ class TestKBDDiagEffectiveness:
 
         # 验收标准 3：最终候选数量缩减（从 10 减少到 ≤ 6）
         assert len(result.matched_kbds) <= 6, f"候选 KBD 数量 {len(result.matched_kbds)} 未有效缩减"
+
+
+class TestEvidenceGatedCDD:
+    """分类全量 KBD 进入 CDD 后的证据闭环不变量。"""
+
+    @staticmethod
+    def _kbd_27123() -> KBD:
+        return KBD(
+            id="1",
+            support_id="27123",
+            name="虚拟机开机失败，报错虚拟机镜像忙",
+            category_id="虚拟机-003",
+            root_cause="第三方程序占用虚拟机镜像文件",
+            solution="按案例原文解除占用后重试",
+            resource_revision={"revision": 4},
+            signals=[
+                {
+                    "id": "sig_001",
+                    "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机失败", "is_failed": True}},
+                    "match": None,
+                    "provenance": {"category": "frontend"},
+                    "orchestrate": {
+                        "phase": "diagnostic",
+                        "requires": [],
+                        "produces": [{"name": "VM", "path": "vm"}, {"name": "HOST", "path": "host"}],
+                    },
+                },
+                {
+                    "id": "sig_002",
+                    "acquire": {
+                        "tool": "qfk_system",
+                        "args": {"host": "{{HOST}}", "command": "lsof", "resource_keyword": "{{VM}}"},
+                    },
+                    "match": {"type": "keyword", "pattern": "vm-disk", "mode": "or", "expected": True},
+                    "provenance": {"category": "backend"},
+                    "orchestrate": {"phase": "diagnostic", "requires": ["VM", "HOST"], "produces": []},
+                },
+                {
+                    "id": "sig_003",
+                    "acquire": {"tool": "qfk_system", "args": {"host": "{{HOST}}", "command": "ps"}},
+                    "match": {
+                        "type": "keyword",
+                        "pattern": "ClwDRDBClient",
+                        "mode": "or",
+                        "expected": True,
+                    },
+                    "provenance": {"category": "backend"},
+                    "orchestrate": {"phase": "diagnostic", "requires": ["HOST"], "produces": []},
+                },
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_27123_executes_both_qfk_system_signals_and_reports_reference(self):
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+
+        async def execute(step, env_context, session_id, user_id, *, signal=None, exec_id=None):
+            signal_id = signal["id"]
+            if signal_id == "sig_001":
+                diag._set_pool_var("VM", "Server-IMG")
+                diag._set_pool_var("HOST", "SVR_aCloud_668")
+                return "失败任务: 虚拟机镜像忙", None, True
+            if signal_id == "sig_002":
+                assert step.tool_args_template["resource_keyword"] == "Server-IMG"
+                return "vm-disk Server-IMG pid=9527", None, True
+            return "9527 ClwDRDBClient", None, True
+
+        diag._execute_acquirer = AsyncMock(side_effect=execute)
+        events = [
+            event
+            async for event in diag.diagnose(candidates=[self._kbd_27123()], env_context={}, session_id="golden-27123")
+        ]
+
+        result = diag.get_result()
+        assert result is not None and result.is_definitive
+        assert [step.signal_id for step in result.steps_executed] == ["sig_001", "sig_002", "sig_003"]
+        assert len({step.exec_id for step in result.steps_executed}) == 3
+        assert len({step.evaluation_id for step in result.steps_executed}) == 3
+        assert all(step.outcome.value == "PASS" for step in result.steps_executed)
+        assert "参考案例 27123" in result.diagnosis_report
+        assert "category_id=27123" in result.diagnosis_report
+        tool_calls = [event for event in events if getattr(event, "stage", "") == "tool_call"]
+        assert len(tool_calls) == 3
+        assert [call.metadata["signal_id"] for call in tool_calls] == ["sig_001", "sig_002", "sig_003"]
+
+    @pytest.mark.asyncio
+    async def test_27123_production_variable_chain_executes_three_explicit_acquisitions(self, monkeypatch):
+        import app.tools.qfk.engine as qfk_engine
+        import app.tools.qkv.engine as qkv_engine
+
+        qkv_exec = AsyncMock(
+            return_value=SimpleNamespace(
+                success=True,
+                values=[
+                    {
+                        "vm": "4359974862144",
+                        "host": "SVR_aCloud_670",
+                        "end": "2026-07-27 21:19:37",
+                    }
+                ],
+                to_observation=lambda: "task get matched=1",
+            )
+        )
+
+        async def execute_qfk(*, signal, **kwargs):
+            if signal.command == "lsof":
+                assert kwargs["node_ip"] == "172.28.24.4"
+                assert kwargs["output_filters"][0]["include"] == ["4359974862144"]
+                output = "ClwDRDBClient 9527 root /images/4359974862144.vm/vm-disk-1.qcow2"
+                return SimpleNamespace(
+                    error=None,
+                    raw_output=output,
+                    matched=False,
+                    complete_outputs={"stdout": output},
+                )
+            assert signal.command == "ps -p 9527 -o pid=,args="
+            output = "9527 /opt/ClwDRDBClient/application_main"
+            return SimpleNamespace(
+                error=None,
+                raw_output=output,
+                matched=False,
+                complete_outputs={"stdout": output},
+            )
+
+        qfk_exec = AsyncMock(side_effect=execute_qfk)
+        monkeypatch.setattr(qkv_engine, "qkv_exec", qkv_exec)
+        monkeypatch.setattr(qfk_engine, "qfk_exec", qfk_exec)
+
+        kbd = KBD(
+            id="1",
+            support_id="27123",
+            name="虚拟机开机失败，报错虚拟机镜像忙",
+            category_id="虚拟机-003",
+            root_cause="第三方程序占用虚拟机镜像文件",
+            solution="解除占用后重试",
+            signals=[
+                {
+                    "id": "sig_001",
+                    "acquire": {
+                        "tool": "qkv_task",
+                        "args": {"keyword": "启动虚拟机失败", "is_failed": True, "limit": 1},
+                    },
+                    "match": None,
+                    "provenance": {"category": "frontend"},
+                    "orchestrate": {
+                        "requires": [],
+                        "produces": [
+                            {"name": "VM", "path": "vm"},
+                            {"name": "HOST", "path": "host"},
+                            {"name": "END", "path": "end"},
+                        ],
+                    },
+                },
+                {
+                    "id": "sig_002",
+                    "acquire": {
+                        "tool": "qfk_system",
+                        "args": {"host": "{{HOST}}", "command": "lsof", "container": "host", "timeout": 120},
+                    },
+                    "match": None,
+                    "provenance": {"category": "backend"},
+                    "orchestrate": {
+                        "requires": ["HOST", "VM"],
+                        "produces": [
+                            {
+                                "name": "PID",
+                                "extract": {
+                                    "type": "text",
+                                    "source": "stdout",
+                                    "include": ["{{VM}}"],
+                                    "column": 2,
+                                    "column_mode": "index",
+                                    "cardinality": "first",
+                                },
+                            }
+                        ],
+                    },
+                },
+                {
+                    "id": "sig_003",
+                    "acquire": {
+                        "tool": "qfk_system",
+                        "args": {
+                            "host": "{{HOST}}",
+                            "command": "ps -p {{PID}} -o pid=,args=",
+                            "container": "host",
+                            "timeout": 10,
+                        },
+                    },
+                    "match": None,
+                    "provenance": {"category": "backend"},
+                    "orchestrate": {
+                        "requires": ["HOST", "PID"],
+                        "produces": [
+                            {
+                                "name": "PNAME",
+                                "extract": {
+                                    "type": "text",
+                                    "source": "stdout",
+                                    "include": ["{{PID}}"],
+                                    "column_mode": "whole",
+                                    "cardinality": "exactly_one",
+                                },
+                            }
+                        ],
+                    },
+                },
+            ],
+        )
+        diag = KBDDiagnostic(
+            ai_registry=MagicMock(),
+            tool_executor=MagicMock(),
+            conversation_id="00000000-0000-0000-0000-000000000749",
+            case_id="Q2026072747493",
+        )
+        diag._resolve_host_ip = AsyncMock(return_value="172.28.24.4")
+
+        events = [event async for event in diag.diagnose(candidates=[kbd], env_context={}, session_id="golden-7493")]
+
+        result = diag.get_result()
+        assert result is not None and result.is_definitive
+        assert diag._variable_pool == {
+            "vm": "4359974862144",
+            "host": "172.28.24.4",
+            "end": "2026-07-27 21:19:37",
+            "pid": "9527",
+            "pname": "9527 /opt/ClwDRDBClient/application_main",
+        }
+        assert qkv_exec.await_count == 1
+        assert qfk_exec.await_count == 2
+        tool_calls = [event.metadata for event in events if getattr(event, "stage", "") == "tool_call"]
+        tool_results = [event.metadata for event in events if getattr(event, "stage", "") == "tool_result"]
+        assert all(call["args"] for call in tool_calls)
+        assert [event["status"] for event in tool_results] == ["success", "success", "success"]
+        assert all("result" in event for event in tool_results)
+
+    @pytest.mark.asyncio
+    async def test_unresolved_placeholder_is_blocked_and_never_executed(self):
+        kbd = self._kbd_27123()
+        kbd.signals = [kbd.signals[1]]
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        diag._execute_acquirer = AsyncMock()
+
+        _events = [event async for event in diag.diagnose(candidates=[kbd], env_context={}, session_id="blocked")]
+
+        result = diag.get_result()
+        assert result is not None and not result.is_definitive
+        assert result.steps_executed[0].outcome.value == "BLOCKED"
+        assert "依赖变量缺失" in (result.steps_executed[0].error or "")
+        diag._execute_acquirer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_tool_error_never_confirms_single_candidate(self):
+        kbd = self._kbd_27123()
+        kbd.signals = [kbd.signals[2]]
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        diag._execute_acquirer = AsyncMock(return_value=(None, "terminal bridge timeout", None))
+
+        _events = [
+            event
+            async for event in diag.diagnose(
+                candidates=[kbd], env_context={"HOST": "SVR_aCloud_668"}, session_id="error"
+            )
+        ]
+
+        result = diag.get_result()
+        assert result is not None and not result.is_definitive
+        assert result.matched_kbds == []
+        assert result.steps_executed[0].outcome.value == "ERROR"
+        assert "证据不足" in result.diagnosis_report
+        assert "参考案例 27123" in result.diagnosis_report
+        assert "（未确认）" in result.diagnosis_report
+        assert "category_id=27123" in result.diagnosis_report
+        assert result.steps_executed[0].exec_id in result.diagnosis_report
+        assert "第三方程序占用" not in result.diagnosis_report
+
+    def test_qkv_uses_prefetched_failed_task_fact(self):
+        signal = self._kbd_27123().signals[0]
+        task = {
+            "id": 907,
+            "vm": "4359974862144",
+            "host": "SVR_aCloud_668",
+            "status": 3,
+            "process": "失败",
+            "description": "启动虚拟机（Server-IMG）失败，错误信息：虚拟机镜像忙",
+        }
+
+        result = KBDDiagnostic._qkv_values_from_context(signal, {"task_logs": [task]})
+
+        assert result is not None
+        values, source = result
+        assert source == "task_logs"
+        assert values == [{"vm": "4359974862144", "host": "SVR_aCloud_668"}]

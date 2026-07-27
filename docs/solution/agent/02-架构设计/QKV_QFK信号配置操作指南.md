@@ -1,7 +1,15 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-07-27
+owner: team
+---
+
 # QKV/QFK 信号配置操作指南
 
-> 版本：v2.0
-> 日期：2026-07-24
+> 版本：v2.1
+> 日期：2026-07-27
 > 适用对象：运营人员、SRE 工程师
 > 信号模型：v2 嵌套文档（`schema_version: 2`，契约见 `backend/shared/schemas/signals/signal.v2.schema.json`）
 > 关联文档：[QKV_QFK信号模型v2参考.md](./QKV_QFK信号模型v2参考.md)（逐字段对齐的权威参考）、[QKV_QFK扩展性与配置易用性评估.md](./QKV_QFK扩展性与配置易用性评估.md)
@@ -185,9 +193,9 @@ QKV 的 `acquire.args.keyword` 是 `acli <task|dialog|alert> get -k` 的**检索
 
 ---
 
-## 四、QFK 后端信号字段规范（acquire + match）
+## 四、QFK 后端信号字段规范（acquire + match/produces）
 
-> v2 中后端信号 = `acquire`（采集）+ `match`（判定）。`acquire.tool` 枚举：`qfk_log` / `qfk_service` / `qfk_system` / `qfk_vm` / `qfk_network` / `qfk_storage` / `qfk_hardware` / `qfk_platform`。全部 `args` 字段见《v2 参考》§4.2。
+> v2 中后端信号必须选择一种执行模式：`acquire + match` 做判定，或 `acquire + orchestrate.produces` 采集变量。两者严格互斥。`acquire.tool` 枚举：`qfk_log` / `qfk_service` / `qfk_system` / `qfk_vm` / `qfk_network` / `qfk_storage` / `qfk_hardware` / `qfk_platform`。
 
 ### 4.1 共有字段
 
@@ -195,9 +203,9 @@ QKV 的 `acquire.args.keyword` 是 `acli <task|dialog|alert> get -k` 的**检索
 |------|------|------|--------|------|
 | `instruction` | str | 否 | - | 关键信号说明（acquire.args.instruction） |
 | `host` | str | 否 | 变量池 | 主机（变量池获取，特殊值 `cluster` 表示遍历集群） |
-| `resource_keyword` | str | 否 | - | **资源/主题选择器**（如服务名、虚拟机名）；非匹配词，见 §6 消歧 |
+| `resource_keyword` | str | 否 | - | 资源/主题选择器；qfk_system 管理端显示“命令参数”，只作为一个安全位置参数追加，不参与匹配 |
 | `command` | str | 部分必填 | - | acli 子命令（qfk_system/vm/network/storage/hardware/platform 必填；qfk_service 可选） |
-| `timeout` | int | 否 | 10 | 超时时间（秒） |
+| `timeout` | int | 否 | 10 | 真实执行超时（1–300 秒），透传至 terminal bridge；超时关闭独立 SSH session |
 | `match.type` | str | 否 | - | 判定类型：`keyword` / `regex` |
 | `match.pattern` | str | 否 | - | 匹配内容（**判定唯一权威**，见 §6） |
 | `match.mode` | str | 否 | "or" | 匹配模式：or/and/not |
@@ -222,7 +230,7 @@ acli --host {{HOST}} --timeout 10 log get -k "<resource_keyword>" -f "file" [-t 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `command` | str | **是** | - | 执行命令（lsof/ps auxf/lsblk/iostat/smartctl） |
-| `container` | str | 否 | "asv-con" | 容器类型 |
+| `container` | str | 否 | "asv-con" | `host` 表示宿主机直执行；其余为允许的目标容器 |
 
 **命令格式**：
 ```bash
@@ -337,6 +345,64 @@ acli --host {{HOST}} --timeout 10 vm <command>
 }
 ```
 
+### 4.5 产出变量与非 JSON 行列提取
+
+管理台的“执行模式”选择“产出变量”后，`match` 自动置为 `null`。JSON 输出用 path；`ps auxf` 等文本输出用“筛选行 + 提取值”。
+
+原命令：
+
+```bash
+acli system ps auxf | grep -e '-id 8243094091404' | grep -v grep | awk '{print $2}'
+```
+
+管理台填写：
+
+| 字段 | 值 |
+|------|----|
+| 说明 | 获取指定虚拟机的 KVM 进程 PID |
+| 主机 | `{{HOST}}` |
+| 容器 | `host` |
+| 执行命令 | `ps auxf` |
+| 超时时间 | `10` |
+| 执行模式 | 产出变量 |
+| 变量名 / 类型 | `KVM_PID` / 整数 |
+| 输出格式 | 文本 |
+| 筛选行（包含） | `-id {{VM}}` |
+| 提取值 | 第 2 列 |
+
+保存结构：
+
+```json
+{
+  "acquire": {
+    "tool": "qfk_system",
+    "args": {
+      "instruction": "获取指定虚拟机的 KVM 进程 PID",
+      "host": "{{HOST}}",
+      "container": "host",
+      "command": "ps auxf",
+      "timeout": 10
+    }
+  },
+  "match": null,
+  "orchestrate": {
+    "requires": ["HOST", "VM"],
+    "produces": [{
+      "name": "KVM_PID",
+      "type": "integer",
+      "extract": {
+        "type": "text",
+        "include": ["-id {{VM}}"],
+        "column": 2,
+        "column_mode": "index"
+      }
+    }]
+  }
+}
+```
+
+`requires` 由主机、命令参数和筛选条件里的占位符自动推导。不要填写管道；若粘贴了 grep/awk/cut 安全子集，点击“安全转换管道”。复杂 awk、sed、排序、聚合应改用专用采集器。
+
 ---
 
 ## 五、QFK 判定器配置（match）
@@ -425,6 +491,7 @@ acli --host {{HOST}} --timeout 10 vm <command>
 
 | 版本 | 日期 | 变更内容 |
 |------|------|----------|
+| v2.1 | 2026-07-27 | 增加 QFK match/produces 二选一、host/timeout 真实语义、非 JSON 行列提取填写示例、安全管道转换和 requires 自动推导；关联 [QFK非JSON结果行列提取方案](../../events/2026-07-27-QFK非JSON结果行列提取方案.md) |
 | v2.0 | 2026-07-24 | 全文档迁移到 v2 嵌套信号模型（acquire/match/orchestrate/provenance/review）；§三/§四/§五 去除 v1 扁平词汇（acquirer/acquirer_args/keyword/match_mode/matcher）；新增关键字语义消歧与 422 常见错误；附录工具名统一为 `acquire.tool` 下划线枚举 |
 | v1.2 | 2026-07-23 | 新增 §2.3 关键字须对齐分类基线、§2.4 校验与容忍原则；§6.2 补"分类基线不对齐"常见错误 |
 | v1.1 | 2026-07-21 | 新增关键词清洗规则、时间格式转换说明、默认产出变量表 |

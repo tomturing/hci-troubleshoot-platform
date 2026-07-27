@@ -1,26 +1,16 @@
-"""
-KBD 差异诊断引擎（KBD Differential Diagnostic）
+"""KBD 证据诊断引擎。
 
-实现贪心最大消除算法（Greedy Maximum Elimination）：
-  1. 统计各步骤工具在候选 KBD 中的覆盖频率
-  2. 选择覆盖频率最高的步骤（最具区分度）
-  3. 执行步骤，判断实际输出与各 KBD 期望的匹配度
-  4. 过滤不匹配的 KBD
-  5. 重复直到候选集 ≤ early_stop_threshold 或所有步骤已耗尽
-  6. 生成最终诊断报告
-
-期望模式判断优先级：
-  1. __REGEX__:<pattern>       正则匹配（程序判断，最快）
-  2. __CONTAINS__:<text>       包含文本（程序判断，不区分大小写）
-  3. <自然语言描述>              LLM 批量判断（最慢，仅在无法规则判断时使用）
+按不可变 KBD revision 中的 signal_id 执行关键信号。命令来自 KBD acquire
+契约，matcher 由程序确定性求值；只有全部 required signal 为 PASS 才支持
+对应 KBD。UNKNOWN、ERROR、BLOCKED 和单候选均不能产生根因结论。
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import uuid
-from collections import Counter
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,31 +18,24 @@ from typing import Any
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
-from app.adapters.agents.htp.kbd_model import (
-    KBD,
-    PATTERN_CONTAINS_PREFIX,
-    PATTERN_MATCHER_PREFIX,
-    PATTERN_REGEX_PREFIX,
-    KBDStep,
-    _acquire_tool,
-    _signal_category,
-    _signal_to_step,
+from app.adapters.agents.htp.cdd import (
+    ActiveDiagnosticScheduler,
+    CandidateState,
+    ConclusionLevel,
+    SignalOutcome,
+    compile_signal_plan,
+    decide_conclusion,
 )
+from app.adapters.agents.htp.cdd.candidate_reducer import initial_assessments, reduce_candidates
+from app.adapters.agents.htp.kbd_model import KBD, KBDStep, _acquire_tool, _signal_category
 from app.core.utils import smart_truncate
 from app.domain.agent_port import (
     AgentEvent,
-    AgentInteractiveRequest,
     AgentStageUpdate,
     AgentTextChunk,
 )
 
 logger = get_logger("kbd-differential")
-
-# 候选 KBD 数 ≤ 此值时停止贪心消除，直接进入报告生成
-EARLY_STOP_THRESHOLD = 2
-
-# 工具执行连续失败超过此次数后停止，防止在损坏环境中无限等待
-MAX_CONSECUTIVE_FAILURES = 3
 
 # ADR-2 占位符：运行期解析统一认 {{NAME}}。大小写处理分两层（纵深防御，彻底消除脆弱性）：
 #   1) 抽取/校验层强制模板占位符为大写（extract_signals.validate_placeholder_case，
@@ -67,12 +50,37 @@ _PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z0-9_.]+)\}\}")
 # 执行层以此做纵深防御：即便信号 schema 未带 require_human_confirm，只要 command
 # 命中写动词，也绝不自动执行，必须人工授权。
 _WRITE_OP_SUB_COMMANDS: set[str] = {
-    "start", "stop", "shutdown", "restart", "suspend", "resume",
-    "migrate", "clone", "snapshot", "reset", "reboot",
-    "delete", "remove", "del", "rm", "format", "wipe", "destroy",
+    "start",
+    "stop",
+    "shutdown",
+    "restart",
+    "suspend",
+    "resume",
+    "migrate",
+    "clone",
+    "snapshot",
+    "reset",
+    "reboot",
+    "delete",
+    "remove",
+    "del",
+    "rm",
+    "format",
+    "wipe",
+    "destroy",
     # 注：上文之外补充 qfk_system 常见包裹动作
-    "enable", "disable", "kill", "killall", "pkill",
-    "up", "down", "set", "create", "add", "modify", "update",
+    "enable",
+    "disable",
+    "kill",
+    "killall",
+    "pkill",
+    "up",
+    "down",
+    "set",
+    "create",
+    "add",
+    "modify",
+    "update",
 }
 
 
@@ -109,6 +117,13 @@ class StepResult:
     raw_output: str | None  # 工具执行的原始输出字符串
     error: str | None  # 执行错误（非 None 时此步骤无法判断）
     match_kbd_ids: set[str] = field(default_factory=set)  # 判断后匹配的 KBD ID 集合
+    kbd_id: str = ""
+    signal_id: str = ""
+    exec_id: str = ""
+    evaluation_id: str = ""
+    acquisition_id: str = ""
+    outcome: SignalOutcome = SignalOutcome.NOT_RUN
+    required: bool = True
 
 
 @dataclass
@@ -117,8 +132,10 @@ class KBDDiagResult:
 
     matched_kbds: list[KBD]  # 最终候选 KBD（按匹配度排序）
     steps_executed: list[StepResult]  # 已执行步骤序列
-    is_definitive: bool  # True = 恰好锁定 1 个 KBD
-    diagnosis_report: str  # LLM 生成的结构化诊断报告
+    is_definitive: bool  # True = supported 存在且其他候选均已 supported/rejected
+    diagnosis_report: str  # 确定性模板生成的结构化诊断报告
+    conclusion_level: str = ConclusionLevel.INCONCLUSIVE.value
+    candidate_states: dict[str, str] = field(default_factory=dict)
 
 
 class KBDDiagnostic:
@@ -141,7 +158,6 @@ class KBDDiagnostic:
         conversation_id: str | None = None,  # 会话 ID（用于 INSERT）
         case_id: str | None = None,  # 工单 ID（用于 terminal_bridge 会话路由）
         assistant_type: str = "htp-agent",
-        early_stop_threshold: int = EARLY_STOP_THRESHOLD,
         db_session_factory: Any | None = None,  # DB 会话工厂（用于从 prompt 管理加载 Prompt）
     ) -> None:
         self._ai_registry = ai_registry
@@ -150,28 +166,16 @@ class KBDDiagnostic:
         self._conversation_id = conversation_id
         self._case_id = case_id  # 工单 ID，用于 QFK 信号执行时路由到正确的 SSH 会话
         self._assistant_type = assistant_type
-        self._early_stop = early_stop_threshold
         self._db_session_factory = db_session_factory
         self._result: KBDDiagResult | None = None
         # 会话级变量池（黑板）：阶段 A 生产者(QKV)写入，阶段 B 消费者(QFK)读取
         self._variable_pool: dict[str, Any] = {}
+        # 当前诊断会话内缓存 HCI 节点名称到 IP 的映射，避免每个 QKV 结果重复查询节点列表。
+        self._host_ip_cache: dict[str, str] = {}
 
     def get_result(self) -> KBDDiagResult | None:
         """获取最近一次 diagnose() 调用的结果（调用前返回 None）。"""
         return self._result
-
-    async def _load_prompt(self, name: str, placeholders: list[str]) -> str:
-        """从 prompt 管理（system_prompt 表）加载 Prompt 模板。
-
-        生产环境经 db_session_factory 走 StrictPromptLoader（DB 缺失则按设计 fail-loud）；
-        DB 会话工厂为空（如部分单测）时回退到 create_mock_session_factory 的基准模板，
-        保证逻辑路径与线上一致且单测可解析。
-        """
-        from shared.utils.prompt_loader import StrictPromptLoader, create_mock_session_factory
-
-        factory = self._db_session_factory or create_mock_session_factory()
-        async with factory() as session:
-            return await StrictPromptLoader.load_and_validate(session, name, placeholders)
 
     def _set_pool_var(self, name: str, value: Any) -> None:
         """写入会话变量池（黑板）的规范化入口。
@@ -208,55 +212,37 @@ class KBDDiagnostic:
         env_context: dict[str, str],
         session_id: str,
         user_id: str = "",
+        snapshot_id: str = "runtime",
     ) -> AsyncGenerator[AgentEvent, None]:
-        """执行 KBD 差异诊断主循环，流式输出推理阶段事件。
-
-        Args:
-            candidates: 候选 KBD 列表（来自 kb_client.search_cases_with_steps()）
-            env_context: 环境上下文，用于填充工具参数占位符
-                         如 {"vm_name": "vm-001", "host_id": "CVM-1", "cluster_id": "cluster-01"}
-            session_id: 当前对话会话 ID（用于日志追踪）
-            user_id: 用户 ID（传给 LLM 判断请求）
-
-        Yields:
-            AgentStageUpdate(stage="kbd_diag_start")    — 开始诊断
-            AgentStageUpdate(stage="kbd_diag_step")     — 每步执行前
-            AgentStageUpdate(stage="kbd_diag_running")  — 进入报告生成
-            AgentStageUpdate(stage="kbd_diag_complete") — 诊断完成
-        """
+        """编译并调度 KBD acquisition graph，结论由封闭状态机门控。"""
         if not candidates:
-            yield AgentTextChunk(content="⚠️ 未找到匹配 KBD，建议联系 HCI 技术支持。")
+            yield AgentTextChunk(content="未找到可执行 KBD，无法形成有据可查的诊断结论。")
             self._result = KBDDiagResult(
                 matched_kbds=[],
                 steps_executed=[],
                 is_definitive=False,
-                diagnosis_report="未找到匹配 KBD",
+                diagnosis_report="分类内没有可执行 KBD，无法形成有据可查的诊断结论。",
+                conclusion_level=ConclusionLevel.INCONCLUSIVE.value,
             )
             return
 
-        remaining = list(candidates)
-        # 确定性排序（第一性原理：诊断结论必须可复现）。
-        # 以「相似度降序 + KBD id 升序」为稳定次序，保证：
-        #   - remaining[0] 始终是首选候选（报告/S4 根因锁定一致）
-        #   - 贪心循环与确认分支在并列时的选择可复现，消除顺序随机性
-        remaining.sort(key=lambda k: (-k.similarity, str(k.id)))
+        ordered = sorted(candidates, key=lambda k: (k.support_id or str(k.id), str(k.id)))
+        plan = compile_signal_plan(ordered, snapshot_id=snapshot_id)
+        assessments = initial_assessments(plan)
+        scheduler = ActiveDiagnosticScheduler(plan)
         steps_executed: list[StepResult] = []
-        consecutive_failures = 0
-
-        # ─── S2：批量插入假设条目 ──────────────────────────────────────────
         if self._diagnostic_item_client and self._conversation_id:
             hypotheses_data = [
                 {
                     "content": {
                         "kbd_id": kbd.id,
+                        "support_id": kbd.support_id,
                         "kbd_name": kbd.name,
                         "root_cause": kbd.root_cause,
-                        "similarity": kbd.similarity,
                     },
-                    "probability": kbd.similarity,  # 用相似度作为初始概率
                     "status": "pending",
                 }
-                for kbd in candidates
+                for kbd in ordered
             ]
             await self._diagnostic_item_client.batch_create_items(
                 conversation_id=uuid.UUID(self._conversation_id),
@@ -274,369 +260,360 @@ class KBDDiagnostic:
         yield AgentStageUpdate(
             stage="kbd_diag_start",
             metadata={
-                "candidate_count": len(remaining),
+                "candidate_count": len(ordered),
                 "session_id": session_id,
+                "snapshot_id": snapshot_id,
+                "plan_id": plan.plan_id,
+                "acquisition_count": len(plan.acquisitions),
             },
         )
 
-        # ─── 阶段 A：生产者先跑，填充会话变量池（黑板）─────────────────
-        await self._run_producers(remaining, env_context, session_id)
-
-        # ─── 贪心消除主循环 ──────────────────────────────────────────
-        while len(remaining) > self._early_stop:
-            executed_tools = {s.tool_name for s in steps_executed}
-
-            # 1. 选择本轮最具区分度的工具
-            best_tool_name = self._pick_best_step(remaining, executed_tools)
-            if best_tool_name is None:
-                # 所有共享步骤均已执行，退出
+        while True:
+            reduce_candidates(plan, assessments)
+            available = {str(key).lower() for key in env_context} | set(self._variable_pool)
+            selected = scheduler.choose(assessments, available)
+            if selected is None:
                 break
-
-            # 2. 构建工具执行参数（替换 env_context ∪ 变量池 占位符）
-            representative_step = self._get_representative_step(remaining, best_tool_name)
-            tool_args = self._resolve_args(representative_step.tool_args_template, env_context, self._variable_pool)
+            acquisition, score = selected
+            active_refs = [
+                ref
+                for ref in acquisition.signal_refs
+                if assessments[ref.kbd_id].state is CandidateState.CANDIDATE
+            ]
+            if not active_refs:
+                scheduler.mark_completed(acquisition)
+                continue
+            representative = sorted(active_refs, key=lambda ref: ref.ref_id)[0]
+            resolved_args = self._resolve_args(acquisition.args_template, env_context, self._variable_pool)
+            runtime_key = json.dumps(
+                {
+                    "template_key": acquisition.template_key,
+                    "resolved": self._acquisition_key(acquisition.tool_name, resolved_args, env_context),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            exec_id = self._stable_acquisition_exec_id(session_id, runtime_key)
+            unresolved = self._unresolved_placeholders(resolved_args)
+            blocked_reason = None
+            if unresolved:
+                blocked_reason = f"未解析变量: {', '.join(sorted(unresolved))}"
+            elif any(_signal_requires_human(ref.signal) for ref in active_refs):
+                blocked_reason = "诊断阶段禁止执行写操作/处置动作"
 
             yield AgentStageUpdate(
-                stage="kbd_diag_step",
+                stage="kbd_scheduler_decision",
                 metadata={
-                    "tool": best_tool_name,
-                    "args": tool_args,
-                    "remaining_candidates": len(remaining),
-                    "step_index": len(steps_executed) + 1,
+                    "plan_id": plan.plan_id,
+                    "acquisition_id": acquisition.template_key,
+                    "runtime_acquisition_key": runtime_key,
+                    "utility": score.utility,
+                    "score": {
+                        "discrimination": score.discrimination,
+                        "required_coverage": score.required_coverage,
+                        "unlock": score.unlock,
+                        "reuse": score.reuse,
+                        "cost": score.cost,
+                        "latency": score.latency,
+                        "risk": score.risk,
+                    },
+                    "linked_signal_refs": [ref.ref_id for ref in active_refs],
+                },
+            )
+            yield AgentStageUpdate(
+                stage="tool_call",
+                metadata={
+                    "exec_id": exec_id,
+                    "acquisition_id": acquisition.template_key,
+                    "tool_name": acquisition.tool_name,
+                    # args/result 是 Custom-UI 工具卡片的标准字段；tool_args/tool_result
+                    # 暂时保留为兼容别名，避免旧消费者在滚动发布期间失效。
+                    "args": resolved_args,
+                    "tool_args": resolved_args,
+                    "status": "blocked" if blocked_reason else "running",
+                    "risk_level": acquisition.risk,
+                    "policy": "auto",
+                    "kbd_id": representative.kbd_id,
+                    "support_id": representative.support_id,
+                    "signal_id": representative.signal_id,
+                    "linked_signal_refs": [ref.ref_id for ref in active_refs],
+                    "command_source": "KBD",
                 },
             )
 
-            # 写操作/处置动作门禁（诊断只读原则）：绝不自动执行，交由人工授权。
-            # 即便贪心循环选中了某写操作信号，也只记录并请求授权，不进入 judge/eliminate。
-            rep_signal = remaining[0].get_signal(best_tool_name) if remaining else None
-            if _signal_requires_human(rep_signal):
-                logger.warning(
-                    event="kbd_diag_write_op_skipped",
-                    tool=best_tool_name,
-                    session_id=session_id,
-                )
-                steps_executed.append(
-                    StepResult(
-                        tool_name=best_tool_name,
-                        tool_args=tool_args,
-                        raw_output=None,
-                        error="写操作/处置动作：诊断阶段不自动执行，需人工授权",
-                        match_kbd_ids=set(remaining),
-                    )
-                )
-                yield AgentStageUpdate(
-                    stage="write_op_blocked",
-                    metadata={"tool": best_tool_name, "reason": "require_human_confirm"},
-                )
-                yield AgentInteractiveRequest(
-                    request_id=f"human-auth-{best_tool_name}-{session_id}",
-                    acp_session_id=session_id,
-                    kind="info_request",
-                    title=f"需人工授权的高危操作：{best_tool_name}",
-                    prompt=(
-                        f"信号 {best_tool_name} 为写操作/处置动作，诊断阶段不会自动执行。"
-                        "如需执行请人工确认授权。"
-                    ),
-                    options=[
-                        {"optionId": "approve", "name": "授权执行"},
-                        {"optionId": "deny", "name": "拒绝"},
-                    ],
-                    metadata={"tool": best_tool_name, "risk": (rep_signal or {}).get("risk", 2)},
-                )
-                continue
-
-            # 3. 执行工具（按 acquirer 路由：qkv→QKV / qfk→QFK / 其他→通用 tool_executor）
             raw_output: str | None = None
-            error: str | None = None
+            error: str | None = blocked_reason
             pre_matched: bool | None = None
-            try:
-                raw_output, error, pre_matched = await self._execute_acquirer(
-                    representative_step, env_context, session_id, user_id
+            if not blocked_reason:
+                step = KBDStep(
+                    tool_name=acquisition.tool_name,
+                    tool_args_template=resolved_args,
+                    matcher=representative.signal.get("match"),
                 )
-                consecutive_failures = 0  # 重置连续失败计数
-            except Exception as exc:
-                error = str(exc)
-                consecutive_failures += 1
-                logger.warning(
-                    event="kbd_diag_step_error",
-                    tool_name=best_tool_name,
+                try:
+                    raw_output, error, pre_matched = await self._execute_acquirer(
+                        step,
+                        env_context,
+                        session_id,
+                        user_id,
+                        signal=representative.signal,
+                        exec_id=exec_id,
+                    )
+                except Exception as exc:
+                    error = str(exc)
+
+            for ref in active_refs:
+                evaluation_id = self._stable_evaluation_id(exec_id, ref.ref_id)
+                outcome = (
+                    SignalOutcome.BLOCKED
+                    if blocked_reason
+                    else self._evaluate_signal_outcome(
+                        ref.signal,
+                        raw_output,
+                        error,
+                        pre_matched
+                        if ref.matcher_fingerprint == representative.matcher_fingerprint
+                        else None,
+                    )
+                )
+                assessments[ref.kbd_id].signal_outcomes[ref.ref_id] = outcome
+                result = StepResult(
+                    tool_name=acquisition.tool_name,
+                    tool_args=resolved_args,
+                    raw_output=raw_output,
                     error=error,
-                    session_id=session_id,
-                    consecutive_failures=consecutive_failures,
+                    match_kbd_ids={ref.kbd_id} if outcome is SignalOutcome.PASS else set(),
+                    kbd_id=ref.kbd_id,
+                    signal_id=ref.signal_id,
+                    exec_id=exec_id,
+                    evaluation_id=evaluation_id,
+                    acquisition_id=acquisition.template_key,
+                    outcome=outcome,
+                    required=ref.required_for_support,
                 )
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    logger.error(
-                        event="kbd_diag_too_many_failures",
-                        message="工具执行连续失败超限，中止诊断循环",
-                        session_id=session_id,
-                    )
-                    break
-
-            # 4. 判断各 KBD 匹配度（执行成功时）
-            match_ids: set[str] = set()
-            if raw_output is not None:
-                match_ids = await self._judge_matches(
-                    tool_name=best_tool_name,
-                    actual_output=raw_output,
-                    kbds=remaining,
-                    user_id=user_id,
-                    pre_matched=pre_matched,
-                )
-
-            step_result = StepResult(
-                tool_name=best_tool_name,
-                tool_args=tool_args,
-                raw_output=raw_output,
-                error=error,
-                match_kbd_ids=match_ids,
-            )
-            steps_executed.append(step_result)
-
-            # ─── S3：插入验证步骤条目 ──────────────────────────────────────
-            if self._diagnostic_item_client and self._conversation_id:
-                await self._diagnostic_item_client.create_item(
-                    conversation_id=uuid.UUID(self._conversation_id),
-                    stage="S3",
-                    type="verification_step",
-                    seq=len(steps_executed),
-                    content={
-                        "tool_name": best_tool_name,
-                        "tool_args": tool_args,
-                        # T0-2：替换固定截断为 smart_truncate，优先保留错误关键字行
-                        "raw_output": smart_truncate(raw_output or "", max_chars=500),
-                        "error": error,
-                        "match_kbd_ids": list(match_ids) if match_ids else [],
-                        "eliminated_count": 0,  # 下一步过滤后计算
-                    },
-                    status="confirmed" if error is None else "rejected",
-                )
-                logger.info(
-                    event="s3_verification_step_inserted",
-                    conversation_id=self._conversation_id,
-                    seq=len(steps_executed),
-                    tool_name=best_tool_name,
-                    session_id=session_id,
-                )
-
-            # 5. 过滤：只保留匹配 KBD（执行失败时不过滤，继续下一步）
-            if match_ids:
-                before_count = len(remaining)
-                remaining = [kbd for kbd in remaining if kbd.id in match_ids]
-                eliminated = before_count - len(remaining)
-                logger.info(
-                    event="kbd_diag_elimination",
-                    tool_name=best_tool_name,
-                    eliminated=eliminated,
-                    remaining=len(remaining),
-                    session_id=session_id,
-                )
-
-        # ─── 关键信号确认阶段（治本：杜绝“未用关键信号确认就下结论”）─────────
-        # 背景：贪心消除主循环仅在 len(remaining) > early_stop 时进入。当候选 KBD 数量
-        # ≤ early_stop（高度同质化分类的典型场景，如“虚拟机-003 开机失败”常只有单条匹配
-        # KBD），主循环一次都不执行。此前此处只重放 backend 关键信号、并 skip 前端生产者，
-        # 导致“前端信号优先级 > 后端”原则被违反，且最可能具区分度的前端关键信号
-        # （如 qkv_task 启动虚拟机失败）被排除在证据之外 —— 正是 Q2026071755113 工单
-        # “首步可见步骤是 acli vm start 而非 qkv_task”的根因之一。故当主循环未产出任何
-        # 步骤时，强制按 KBD 内容顺序补跑剩余候选的【全部】信号（前端生产者 + 后端消费者），
-        # 作为结论的现场证据（确认语义：记录证据，不剔除候选）。前端生产者已在阶段 A 静默
-        # 跑过并填充变量池，此处重放为只读、可幂等，仅用于补全证据链与顺序，使可见顺序
-        # 与 KBD 内容顺序一致。
-        if not steps_executed:
-            confirmed_tools: set[str] = set()
-            for kbd in remaining:
-                for s in kbd.signals:
-                    # 按 KBD 内容顺序遍历全部信号（含前端生产者），不再 skip 前端
-                    tool = _acquire_tool(s)
-                    if not tool or tool in confirmed_tools:
-                        continue
-                    confirmed_tools.add(tool)
-                    step = kbd.get_step(tool) or _signal_to_step(s)
-                    if step is None:
-                        continue
-
-                    tool_args = self._resolve_args(
-                        step.tool_args_template, env_context, self._variable_pool
-                    )
-                    yield AgentStageUpdate(
-                        stage="kbd_diag_confirm",
-                        metadata={
-                            "tool": tool,
-                            "category": _signal_category(s),
-                            "args": tool_args,
-                            "remaining_candidates": len(remaining),
-                            "purpose": "关键信号确认（按 KBD 内容顺序，含前端生产者）",
+                steps_executed.append(result)
+                yield AgentStageUpdate(stage="tool_result", metadata=self._tool_result_metadata(result))
+                if self._diagnostic_item_client and self._conversation_id:
+                    await self._diagnostic_item_client.create_item(
+                        conversation_id=uuid.UUID(self._conversation_id),
+                        stage="S3",
+                        type="verification_step",
+                        seq=len(steps_executed),
+                        content={
+                            "kbd_id": ref.kbd_id,
+                            "support_id": ref.support_id,
+                            "signal_id": ref.signal_id,
+                            "exec_id": exec_id,
+                            "evaluation_id": evaluation_id,
+                            "acquisition_id": acquisition.template_key,
+                            "tool_name": acquisition.tool_name,
+                            "tool_args": resolved_args,
+                            "raw_output": smart_truncate(raw_output or "", max_chars=500),
+                            "error": error,
+                            "outcome": outcome.value,
                         },
+                        status=(
+                            "confirmed"
+                            if outcome is SignalOutcome.PASS
+                            else "rejected"
+                            if outcome is SignalOutcome.FAIL
+                            else "error"
+                        ),
                     )
+            scheduler.mark_completed(acquisition)
 
-                    # 写操作/处置动作门禁（confirm 分支同样适用）：不自动执行，请求人工授权
-                    if _signal_requires_human(kbd.get_signal(tool)):
-                        steps_executed.append(
-                            StepResult(
-                                tool_name=tool,
-                                tool_args=tool_args,
-                                raw_output=None,
-                                error="写操作/处置动作：诊断阶段不自动执行，需人工授权",
-                                match_kbd_ids=set(),
-                            )
-                        )
-                        yield AgentStageUpdate(
-                            stage="write_op_blocked",
-                            metadata={"tool": tool, "reason": "require_human_confirm"},
-                        )
-                        yield AgentInteractiveRequest(
-                            request_id=f"human-auth-{tool}-{session_id}",
-                            acp_session_id=session_id,
-                            kind="info_request",
-                            title=f"需人工授权的高危操作：{tool}",
-                            prompt=(
-                                f"信号 {tool} 为写操作/处置动作，诊断阶段不会自动执行。"
-                                "如需执行请人工确认授权。"
-                            ),
-                            options=[
-                                {"optionId": "approve", "name": "授权执行"},
-                                {"optionId": "deny", "name": "拒绝"},
-                            ],
-                            metadata={"tool": tool, "risk": (kbd.get_signal(tool) or {}).get("risk", 2)},
-                        )
-                        continue
+        # No executable acquisition remains. Preserve unresolved evidence as BLOCKED.
+        for ref in list(scheduler.remaining_signal_refs(assessments)):
+            if ref.ref_id in assessments[ref.kbd_id].signal_outcomes:
+                continue
+            args = self._resolve_args((ref.signal.get("acquire") or {}).get("args") or {}, env_context, self._variable_pool)
+            missing = sorted(set(ref.requires) - ({str(key).lower() for key in env_context} | set(self._variable_pool)))
+            runtime_key = self._acquisition_key(_acquire_tool(ref.signal), args, env_context)
+            exec_id = self._stable_acquisition_exec_id(session_id, runtime_key)
+            evaluation_id = self._stable_evaluation_id(exec_id, ref.ref_id)
+            result = StepResult(
+                tool_name=_acquire_tool(ref.signal),
+                tool_args=args,
+                raw_output=None,
+                error=f"依赖变量缺失: {', '.join(missing)}" if missing else "无可执行采集路径",
+                kbd_id=ref.kbd_id,
+                signal_id=ref.signal_id,
+                exec_id=exec_id,
+                evaluation_id=evaluation_id,
+                outcome=SignalOutcome.BLOCKED,
+                required=ref.required_for_support,
+            )
+            assessments[ref.kbd_id].signal_outcomes[ref.ref_id] = SignalOutcome.BLOCKED
+            steps_executed.append(result)
+            yield AgentStageUpdate(stage="tool_result", metadata=self._tool_result_metadata(result))
 
-                    raw_output = None
-                    error = None
-                    pre_matched = None
-                    try:
-                        raw_output, error, pre_matched = await self._execute_acquirer(
-                            step, env_context, session_id, user_id
-                        )
-                    except Exception as exc:
-                        error = str(exc)
-                        logger.warning(
-                            event="kbd_diag_confirm_error",
-                            tool_name=tool,
-                            error=error,
-                            session_id=session_id,
-                        )
+        reduce_candidates(plan, assessments, finalize=True)
+        decision = decide_conclusion(assessments)
+        supported = [plan.candidates[kbd_id] for kbd_id in decision.supported_ids]
+        definitive = decision.level is ConclusionLevel.DEFINITIVE
 
-                    match_ids: set[str] = set()
-                    if raw_output is not None:
-                        match_ids = await self._judge_matches(
-                            tool_name=tool,
-                            actual_output=raw_output,
-                            kbds=remaining,
-                            user_id=user_id,
-                            pre_matched=pre_matched,
-                        )
-
-                    steps_executed.append(
-                        StepResult(
-                            tool_name=tool,
-                            tool_args=tool_args,
-                            raw_output=raw_output,
-                            error=error,
-                            match_kbd_ids=match_ids,
-                        )
-                    )
-
-                    if self._diagnostic_item_client and self._conversation_id:
-                        await self._diagnostic_item_client.create_item(
-                            conversation_id=uuid.UUID(self._conversation_id),
-                            stage="S3",
-                            type="verification_step",
-                            seq=len(steps_executed),
-                            content={
-                                "tool_name": tool,
-                                "tool_args": tool_args,
-                                "raw_output": smart_truncate(raw_output or "", max_chars=500),
-                                "error": error,
-                                "match_kbd_ids": list(match_ids),
-                                "is_confirmation": True,
-                            },
-                            status="confirmed" if error is None else "rejected",
-                        )
-
-        # ─── 生成最终诊断报告 ─────────────────────────────────────────
         yield AgentStageUpdate(
             stage="kbd_diag_running",
-            metadata={"final_candidates": len(remaining)},
+            metadata={
+                "supported_count": len(supported),
+                "candidate_count": len(ordered),
+                "conclusion_level": decision.level.value,
+                "candidate_states": {kbd_id: item.state.value for kbd_id, item in assessments.items()},
+            },
         )
-
-        report = await self._generate_report(remaining, steps_executed, user_id=user_id)
+        report = await self._generate_report(
+            supported if definitive else [],
+            steps_executed,
+            evaluated_kbds=ordered,
+            user_id=user_id,
+        )
+        if decision.level is ConclusionLevel.PARTIAL:
+            supported_refs = ", ".join(
+                plan.candidates[kbd_id].support_id or kbd_id for kbd_id in decision.supported_ids
+            )
+            report = (
+                "### 诊断结论：部分证据成立，暂不能定论\n\n"
+                f"参考案例 {supported_refs} 的必需关键信号已达到 PASS，但分类内仍有未决或不可执行 KBD；"
+                "这些候选仍可能成立，因此 Conclusion Gate 禁止输出根因、解决方案或进入 S4。\n\n"
+                + report.replace(
+                    "没有任何 KBD 的全部必需关键信号达到 PASS",
+                    "已有 KBD 达到 PASS，但候选全集尚未完成排除",
+                )
+            )
 
         self._result = KBDDiagResult(
-            matched_kbds=remaining,
+            matched_kbds=supported,
             steps_executed=steps_executed,
-            is_definitive=(len(remaining) == 1),
+            is_definitive=definitive,
             diagnosis_report=report,
+            conclusion_level=decision.level.value,
+            candidate_states={kbd_id: item.state.value for kbd_id, item in assessments.items()},
         )
 
-        # ─── S4：插入根因确认条目 ─────────────────────────────────────────
-        if self._diagnostic_item_client and self._conversation_id and remaining:
-            top_kbd = remaining[0]
-            await self._diagnostic_item_client.create_item(
-                conversation_id=uuid.UUID(self._conversation_id),
-                stage="S4",
-                type="root_cause",
-                seq=1,
-                content={
-                    "kbd_id": top_kbd.id,
-                    "kbd_name": top_kbd.name,
-                    "root_cause": top_kbd.root_cause,
-                    "solution": top_kbd.solution,
-                    "is_definitive": len(remaining) == 1,
-                    "matched_kbds_count": len(remaining),
-                    "steps_executed_count": len(steps_executed),
-                },
-                probability=top_kbd.similarity,
-                status="confirmed",
-            )
-            logger.info(
-                event="s4_root_cause_inserted",
-                conversation_id=self._conversation_id,
-                kbd_id=top_kbd.id,
-                is_definitive=len(remaining) == 1,
-                session_id=session_id,
-            )
+        if definitive and self._diagnostic_item_client and self._conversation_id:
+            for seq, kbd in enumerate(supported, start=1):
+                evidence_ids = sorted({step.exec_id for step in steps_executed if step.kbd_id == kbd.id})
+                evaluation_ids = sorted(
+                    {step.evaluation_id for step in steps_executed if step.kbd_id == kbd.id}
+                )
+                await self._diagnostic_item_client.create_item(
+                    conversation_id=uuid.UUID(self._conversation_id),
+                    stage="S4",
+                    type="root_cause",
+                    seq=seq,
+                    content={
+                        "kbd_id": kbd.id,
+                        "support_id": kbd.support_id,
+                        "kbd_name": kbd.name,
+                        "root_cause": kbd.root_cause,
+                        "solution": kbd.solution,
+                        "evidence_exec_ids": evidence_ids,
+                        "evidence_evaluation_ids": evaluation_ids,
+                        "is_definitive": True,
+                    },
+                    status="confirmed",
+                )
 
         yield AgentStageUpdate(
             stage="kbd_diag_complete",
             metadata={
-                "matched_count": len(remaining),
+                "matched_count": len(supported),
+                "evaluated_kbds": [kbd.support_id or str(kbd.id) for kbd in ordered],
                 "steps_count": len(steps_executed),
-                "is_definitive": len(remaining) == 1,
+                "is_definitive": definitive,
+                "conclusion_level": decision.level.value,
+                "supported_kbds": list(decision.supported_ids),
+                "rejected_kbds": list(decision.rejected_ids),
+                "inconclusive_kbds": list(decision.inconclusive_ids),
+                "not_executable_kbds": list(decision.not_executable_ids),
+                "stop_reason": decision.reason,
             },
         )
 
-    # ─── 算法内部方法 ─────────────────────────────────────────────────
+    @staticmethod
+    def _unresolved_placeholders(args: dict[str, Any]) -> set[str]:
+        unresolved: set[str] = set()
+        for value in args.values():
+            if isinstance(value, str):
+                unresolved.update(match.group(1) for match in _PLACEHOLDER_RE.finditer(value))
+        return unresolved
 
-    def _pick_best_step(
+    @staticmethod
+    def _stable_exec_id(session_id: str, kbd: KBD, signal_id: str) -> str:
+        revision = str((kbd.resource_revision or {}).get("revision") or "0")
+        value = f"{session_id}:{kbd.id}:{revision}:{signal_id}"
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, value))
+
+    @staticmethod
+    def _stable_acquisition_exec_id(session_id: str, runtime_key: str) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{session_id}:acquisition:{runtime_key}"))
+
+    @staticmethod
+    def _stable_evaluation_id(exec_id: str, signal_ref_id: str) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{exec_id}:evaluation:{signal_ref_id}"))
+
+    @staticmethod
+    def _acquisition_key(tool: str, args: dict[str, Any], env_context: dict[str, str]) -> str:
+        material = {
+            "tool": tool,
+            "args": args,
+            "target": env_context.get("node_ip") or args.get("host"),
+            "scope": args.get("scope") or args.get("container"),
+            "tool_version": "runtime",
+            "policy_version": "cdd-v1",
+        }
+        return json.dumps(material, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+    def _evaluate_signal_outcome(
         self,
-        candidates: list[KBD],
-        executed_tools: set[str],
-    ) -> str | None:
-        """贪心选择：返回覆盖最多候选 KBD 且尚未执行的工具名称。
+        signal: dict[str, Any],
+        raw_output: str | None,
+        error: str | None,
+        pre_matched: bool | None,
+    ) -> SignalOutcome:
+        if error:
+            return SignalOutcome.ERROR
+        if raw_output is None:
+            return SignalOutcome.UNKNOWN
+        matcher = signal.get("match")
+        if matcher is None:
+            if _signal_category(signal) == "frontend":
+                return SignalOutcome.PASS if pre_matched is True else SignalOutcome.UNKNOWN
+            produces = (signal.get("orchestrate") or {}).get("produces") or []
+            if produces:
+                return SignalOutcome.PASS if pre_matched is True else SignalOutcome.FAIL
+            return SignalOutcome.UNKNOWN
+        if pre_matched is not None:
+            return SignalOutcome.PASS if pre_matched else SignalOutcome.FAIL
+        if not isinstance(matcher, dict):
+            return SignalOutcome.UNKNOWN
+        try:
+            evaluated = self._evaluate_matcher(matcher, raw_output)
+        except Exception:
+            return SignalOutcome.UNKNOWN
+        if evaluated is None:
+            return SignalOutcome.UNKNOWN
+        return SignalOutcome.PASS if evaluated else SignalOutcome.FAIL
 
-        覆盖频率相同时，Counter.most_common 返回第一个（即字母序较小者）。
-        """
-        counter: Counter[str] = Counter()
-        for kbd in candidates:
-            for tool_name in kbd.step_tool_names:
-                if tool_name not in executed_tools:
-                    counter[tool_name] += 1
-
-        if not counter:
-            return None
-
-        best, _freq = counter.most_common(1)[0]
-        return best
-
-    def _get_representative_step(self, candidates: list[KBD], tool_name: str) -> KBDStep:
-        """从候选 KBD 中取第一个含指定 tool_name 的步骤定义（用于构建 args 模板）。"""
-        for kbd in candidates:
-            step = kbd.get_step(tool_name)
-            if step is not None:
-                return step
-        # 不应发生（_pick_best_step 保证工具来自某个 KBD）
-        return KBDStep(tool_name=tool_name, tool_args_template={}, expected_pattern="", matcher=None)
+    @staticmethod
+    def _tool_result_metadata(result: StepResult) -> dict[str, Any]:
+        status = "success" if result.outcome in (SignalOutcome.PASS, SignalOutcome.FAIL) else "failed"
+        output = smart_truncate(result.raw_output or "", max_chars=2000)
+        return {
+            "exec_id": result.exec_id,
+            "evaluation_id": result.evaluation_id,
+            "acquisition_id": result.acquisition_id,
+            "tool_name": result.tool_name,
+            "args": result.tool_args,
+            "tool_args": result.tool_args,
+            "result": output,
+            "tool_result": output,
+            "status": status,
+            "error": result.error,
+            "outcome": result.outcome.value,
+            "kbd_id": result.kbd_id,
+            "signal_id": result.signal_id,
+        }
 
     @staticmethod
     def _resolve_args(
@@ -675,99 +652,12 @@ class KBDDiagnostic:
             resolved[k] = v
         return resolved
 
-    async def _judge_matches(
-        self,
-        tool_name: str,
-        actual_output: str,
-        kbds: list[KBD],
-        user_id: str = "",
-        pre_matched: bool | None = None,
-    ) -> set[str]:
-        """判断实际输出与各 KBD 期望模式的匹配度，返回匹配 KBD 的 ID 集合。
-
-        策略（优先规则/类型化判断，降低 LLM 调用次数）：
-          - Matcher dict（来自信号 schema）：按 type 做 5 类定型求值（§6）
-          - __REGEX__: 正则匹配 → 程序判断
-          - __CONTAINS__: 包含文本 → 程序判断
-          - __MATCHER__:<json>：解析为 Matcher dict 后类型化求值
-          - 自然语言 / 无法定求值 → LLM 批量判断
-        """
-        rule_results: dict[str, bool] = {}  # kbd_id → 规则判断结果
-        llm_kbds: list[KBD] = []  # 需要 LLM 判断的 KBD
-
-        for kbd in kbds:
-            # 优先使用信号 schema 中的 Matcher dict 做类型化定值（§6）
-            matcher = kbd.get_matcher(tool_name)
-            if matcher is not None:
-                if pre_matched is not None and matcher.get("type") == "keyword":
-                    # qfk 引擎已对 keyword 类型完成布尔判定，直接采信
-                    rule_results[kbd.id] = pre_matched
-                    continue
-                ev = self._evaluate_matcher(matcher, actual_output)
-                if ev is not None:
-                    rule_results[kbd.id] = ev
-                    continue
-                llm_kbds.append(kbd)
-                continue
-
-            # 兼容旧 KBD 的 expected_pattern 三态
-            pattern = kbd.get_expected_pattern(tool_name)
-            if pattern is None:
-                # KBD 无此步骤定义 → 不应出现，保守地保留该 KBD
-                rule_results[kbd.id] = True
-                continue
-
-            if pattern.startswith(PATTERN_REGEX_PREFIX):
-                regex_str = pattern[len(PATTERN_REGEX_PREFIX) :]
-                try:
-                    matched = bool(re.search(regex_str, actual_output, re.IGNORECASE | re.DOTALL))
-                except re.error:
-                    matched = False
-                rule_results[kbd.id] = matched
-
-            elif pattern.startswith(PATTERN_CONTAINS_PREFIX):
-                keyword = pattern[len(PATTERN_CONTAINS_PREFIX) :]
-                rule_results[kbd.id] = keyword.lower() in actual_output.lower()
-
-            elif pattern.startswith(PATTERN_MATCHER_PREFIX):
-                # 旧 Matcher 序列化：解析为 dict 后类型化定值
-                try:
-                    matcher = json.loads(pattern[len(PATTERN_MATCHER_PREFIX):])
-                except (json.JSONDecodeError, ValueError):
-                    rule_results[kbd.id] = True
-                    continue
-                ev = self._evaluate_matcher(matcher, actual_output)
-                if ev is not None:
-                    rule_results[kbd.id] = ev
-                    continue
-                llm_kbds.append(kbd)
-
-            else:
-                # 自然语言描述 → 推迟到 LLM 判断
-                llm_kbds.append(kbd)
-
-        # LLM 批量判断（若有）
-        llm_results: dict[str, bool] = {}
-        if llm_kbds:
-            llm_results = await self._llm_judge_batch(tool_name, actual_output, llm_kbds, user_id)
-
-        # 合并判断结果
-        matched_ids: set[str] = set()
-        for kbd in kbds:
-            if kbd.id in rule_results:
-                if rule_results[kbd.id]:
-                    matched_ids.add(kbd.id)
-            elif llm_results.get(kbd.id, True):  # LLM 无法判断时保守保留
-                matched_ids.add(kbd.id)
-
-        return matched_ids
-
     # ─── Matcher 类型化求值（§6：5 类定型 valuator）────────────────────────────
 
     def _evaluate_matcher(self, matcher: dict[str, Any], actual_output: str) -> bool | None:
         """对单条 Matcher 契约做确定性（非 LLM）布尔求值（委托单一真相源）。
 
-        返回 True/False 表示“符合期望”；返回 None 表示无法定值（交由 LLM 兜底）。
+        返回 True/False 表示“符合期望”；返回 None 表示无法定值并保持 UNKNOWN。
         支持类型：keyword / regex / state / threshold / json_path / exists。
 
         实现已统一迁移至 app.tools.qfk.matcher.evaluate_matcher，此处仅作委托，
@@ -824,7 +714,12 @@ class KBDDiagnostic:
                     exec_id=None,
                 )
                 if res.success:
-                    self._fill_pool_from_qkv(s, res)
+                    await self._fill_pool_from_qkv(
+                        s,
+                        res,
+                        node_ip=env_context.get("node_ip"),
+                        session_id=session_id,
+                    )
                 else:
                     logger.warning(
                         event="kbd_diag_producer_failed",
@@ -840,7 +735,150 @@ class KBDDiagnostic:
                     session_id=session_id,
                 )
 
-    def _fill_pool_from_qkv(self, signal: dict[str, Any], res: Any) -> None:
+    @staticmethod
+    def _is_ip_address(value: Any) -> bool:
+        """判断值是否已经是 IPv4/IPv6 地址。"""
+        if not isinstance(value, str) or not value.strip():
+            return False
+        try:
+            ipaddress.ip_address(value.strip())
+        except ValueError:
+            return False
+        return True
+
+    async def _resolve_host_ip(
+        self,
+        host: Any,
+        *,
+        node_ip: str | None,
+        session_id: str,
+    ) -> Any:
+        """将 QKV 返回的节点名称/ID解析为 HCI 节点 IP。
+
+        task/alert 接口的 ``host`` 字段是可读节点名称（如 ``SVR_aCloud_668``），
+        不能直接作为终端桥的路由地址。通过同一 HCI 会话执行只读的
+        ``acli --formatter json platform node list``，同时兼容按 name、hostname、id
+        匹配；解析失败时保留原值并记录告警，避免破坏已有事实数据。
+        """
+        if not isinstance(host, str):
+            return host
+        host = host.strip()
+        if not host or self._is_ip_address(host):
+            return host
+        if host in self._host_ip_cache:
+            return self._host_ip_cache[host]
+
+        from app.tools.acli.executor import _executor
+
+        if _executor is None:
+            logger.warning(
+                event="kbd_host_ip_resolve_skipped",
+                host=host,
+                reason="BridgeRelayExecutor 尚未初始化",
+                session_id=session_id,
+            )
+            return host
+
+        command = "acli --formatter json platform node list"
+        try:
+            result = await _executor.execute(
+                tool_name="acli_exec",
+                args={"command": command, "reason": "将 QKV 节点名称解析为节点 IP"},
+                conversation_id=self._conversation_id or session_id,
+                node_ip=node_ip,
+                case_id=self._case_id or "",
+                risk_level=1,
+                policy="auto",
+            )
+            if result.exit_code not in (0, None):
+                logger.warning(
+                    event="kbd_host_ip_resolve_failed",
+                    host=host,
+                    node_ip=node_ip,
+                    exit_code=result.exit_code,
+                    error=(result.stderr or result.stdout or "").strip()[:300],
+                    session_id=session_id,
+                )
+                return host
+            payload = json.loads(result.stdout or "")
+        except Exception as exc:
+            logger.warning(
+                event="kbd_host_ip_resolve_error",
+                host=host,
+                node_ip=node_ip,
+                error=str(exc),
+                session_id=session_id,
+            )
+            return host
+
+        rows = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            logger.warning(
+                event="kbd_host_ip_resolve_invalid_payload",
+                host=host,
+                session_id=session_id,
+                payload_type=type(payload).__name__,
+            )
+            return host
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            aliases = {
+                str(row.get(key) or "").strip()
+                for key in ("name", "hostname", "id")
+                if row.get(key)
+            }
+            address = str(row.get("ip") or "").strip()
+            if host in aliases and self._is_ip_address(address):
+                self._host_ip_cache[host] = address
+                logger.info(
+                    event="kbd_host_ip_resolved",
+                    host=host,
+                    ip=address,
+                    session_id=session_id,
+                )
+                return address
+
+        logger.warning(
+            event="kbd_host_ip_not_found",
+            host=host,
+            session_id=session_id,
+        )
+        return host
+
+    async def _normalize_qkv_values(
+        self,
+        values: list[dict[str, Any]],
+        *,
+        node_ip: str | None,
+        session_id: str,
+    ) -> list[dict[str, Any]]:
+        """归一化 QKV 结果中的 HOST，并返回用于变量池与报告的结果副本。"""
+        normalized: list[dict[str, Any]] = []
+        for item in values:
+            if not isinstance(item, dict):
+                normalized.append(item)
+                continue
+            current = dict(item)
+            for key, value in item.items():
+                if str(key).strip().lower() == "host":
+                    current[key] = await self._resolve_host_ip(
+                        value,
+                        node_ip=node_ip,
+                        session_id=session_id,
+                    )
+            normalized.append(current)
+        return normalized
+
+    async def _fill_pool_from_qkv(
+        self,
+        signal: dict[str, Any],
+        res: Any,
+        *,
+        node_ip: str | None = None,
+        session_id: str = "",
+    ) -> None:
         """将 QKV 产出(produces)写入变量池：produces=[{name, path}] -> pool[name]=value。
 
         注意：parse_frontend_value._extract_by_produces 返回的 dict key 是 name.lower()，
@@ -854,6 +892,11 @@ class KBDDiagnostic:
             produces = self._tool_def_default(_acquire_tool(signal), "produces") or []
         if not res.values:
             return
+        res.values = await self._normalize_qkv_values(
+            res.values,
+            node_ip=node_ip,
+            session_id=session_id or self._conversation_id or "",
+        )
         first = res.values[0]
         for spec in produces:
             name = spec.get("name") if isinstance(spec, dict) else None
@@ -870,11 +913,14 @@ class KBDDiagnostic:
         env_context: dict[str, str],
         session_id: str,
         user_id: str,
+        *,
+        signal: dict[str, Any] | None = None,
+        exec_id: str | None = None,
     ) -> tuple[str | None, str | None, bool | None]:
         """按 acquirer 路由执行：qkv→QKV 引擎 / qfk→QFK 引擎 / 其他→通用 tool_executor。
 
         返回 (raw_output, error, pre_matched)：
-          - raw_output: 渲染给 _judge_matches 的文本（None 表示执行失败）
+          - raw_output: 供确定性 matcher 求值的文本（None 表示执行失败）
           - error: 错误信息
           - pre_matched: qfk keyword 类型已由引擎判定时直接给出布尔，否则 None
         """
@@ -890,9 +936,17 @@ class KBDDiagnostic:
         )
 
         if acquirer.startswith("qkv_"):
-            # 生产者：QKV 引擎取数并写变量池（通常已在阶段 A 跑过，此处为兜底）
+            # KBD 确定性诊断必须执行信号声明的 QKV acquisition，不能用会话预取的
+            # task_logs/alerts 静默替代。预取上下文用于 S0 分类；KBD 证据必须具有
+            # 独立 exec_id、实际命令和现场返回值，才能审计并避免陈旧/截断数据误命中。
             try:
-                fsignal = self._signal_to_qkv_from_step(step, env_context)
+                signal_context = dict(env_context)
+                signal_context.update(self._variable_pool)
+                fsignal = (
+                    self._signal_to_qkv(signal, signal_context)
+                    if signal is not None
+                    else self._signal_to_qkv_from_step(step, signal_context)
+                )
                 if fsignal is None:
                     logger.warning(
                         event="signal_build_failed",
@@ -907,7 +961,7 @@ class KBDDiagnostic:
                     signal=fsignal,
                     conversation_id=self._conversation_id or session_id,
                     node_ip=env_context.get("node_ip"),
-                    exec_id=None,
+                    exec_id=exec_id,
                 )
                 if not res.success:
                     logger.warning(
@@ -917,7 +971,20 @@ class KBDDiagnostic:
                         session_id=session_id,
                     )
                     return None, res.error, None
-                self._fill_pool_from_qkv_on_step(step, res)
+                if signal is not None:
+                    await self._fill_pool_from_qkv(
+                        signal,
+                        res,
+                        node_ip=env_context.get("node_ip"),
+                        session_id=session_id,
+                    )
+                else:
+                    res.values = await self._normalize_qkv_values(
+                        res.values,
+                        node_ip=env_context.get("node_ip"),
+                        session_id=session_id,
+                    )
+                    self._fill_pool_from_qkv_on_step(step, res)
 
                 # P2: 信号执行成功日志
                 logger.info(
@@ -926,7 +993,7 @@ class KBDDiagnostic:
                     values_count=len(res.values) if res.values else 0,
                     session_id=session_id,
                 )
-                return res.to_observation(), None, None
+                return res.to_observation(), None, bool(res.values)
             except Exception as exc:
                 logger.error(
                     event="signal_exec_exception",
@@ -937,26 +1004,76 @@ class KBDDiagnostic:
                 return None, str(exc), None
 
         if acquirer.startswith("qfk_"):
-            # 消费者：QFK 引擎取数并判定；keyword 类型直接采信引擎布尔，其余交由 _judge_matches
+            # 消费者：QFK 引擎取数并判定；keyword 类型直接采信引擎布尔。
             try:
                 bsignal = self._signal_to_qfk(step)
                 if bsignal is None:
                     return None, "无法构建后端信号", None
                 from app.tools.qfk.engine import qfk_exec
 
+                produces = ((signal or {}).get("orchestrate") or {}).get("produces") or []
+                required_output_sources = {
+                    str((item.get("extract") or {}).get("source") or "stdout")
+                    for item in produces
+                    if isinstance(item, dict)
+                }
+                output_filters: list[dict[str, Any]] = []
+                resolver_variables = dict(env_context)
+                resolver_variables.update(self._variable_pool)
+                for item in produces:
+                    if not isinstance(item, dict) or not isinstance(item.get("extract"), dict):
+                        continue
+                    resolved_extract = self._resolve_template_value(item["extract"], resolver_variables)
+                    # 边缘执行器只做安全的逐行筛选；列提取、基数校验和类型转换仍由
+                    # Agent 的确定性 extractor 完成。无筛选条件时不前移，后端按大小
+                    # 上限 Fail Closed，避免把“全量输出”伪装成过滤结果。
+                    if resolved_extract.get("include") or resolved_extract.get("exclude"):
+                        output_filters.append(
+                            {
+                                "source": str(resolved_extract.get("source") or "stdout"),
+                                "include": list(resolved_extract.get("include") or []),
+                                "exclude": list(resolved_extract.get("exclude") or []),
+                                "include_mode": str(resolved_extract.get("include_mode") or "all"),
+                                "case_sensitive": resolved_extract.get("case_sensitive", True),
+                            }
+                        )
+
                 res = await qfk_exec(
                     signal=bsignal,
                     conversation_id=self._conversation_id or session_id,
-                    node_ip=env_context.get("node_ip"),
+                    # QKV 生产者的 HOST 已归一化为节点 IP 时，QFK 必须路由到该节点；
+                    # 非 IP（如 cluster 或解析失败的旧主机名）继续使用环境上下文地址。
+                    node_ip=(
+                        bsignal.host
+                        if self._is_ip_address(bsignal.host)
+                        else env_context.get("node_ip")
+                    ),
                     case_id=self._case_id,  # 透传工单 ID，确保 terminal_bridge 能路由到正确的 SSH 会话
-                    exec_id=None,
+                    exec_id=exec_id,
+                    required_output_sources=required_output_sources,
+                    output_filters=output_filters,
                 )
                 if res.error:
-                    return res.to_observation(), res.error, None
+                    return res.raw_output or None, res.error, None
+                if produces:
+                    outputs = (
+                        res.complete_outputs
+                        if hasattr(res, "complete_outputs")
+                        else {"stdout": res.raw_output}  # 兼容测试桩/旧扩展返回对象
+                    )
+                    ok, extract_error = self._fill_pool_from_qfk(
+                        produces,
+                        outputs,
+                        context_variables=env_context,
+                    )
+                    if not ok:
+                        return res.raw_output, extract_error, None
+                    # 产出变量模式只关心命令是否成功且结果是否已写入变量池，不再进行 matcher 判定。
+                    return res.raw_output, None, True
                 matcher = step.matcher or {}
                 if matcher.get("type") == "keyword":
-                    return res.to_observation(), None, res.matched
-                return res.to_observation(), None, None
+                    return res.raw_output, None, res.matched
+                return res.raw_output, None, None
             except Exception as exc:
                 return None, str(exc), None
 
@@ -967,6 +1084,163 @@ class KBDDiagnostic:
             return (str(result) if result is not None else "", None, None)
         except Exception as exc:
             return None, str(exc), None
+
+    def _fill_pool_from_qfk(
+        self,
+        produces: list[Any],
+        complete_outputs: dict[str, str] | str,
+        context_variables: dict[str, Any] | None = None,
+    ) -> tuple[bool, str | None]:
+        """将 QFK 命令结果按产出变量约定写入变量池。
+
+        空 path、``stdout`` 与 ``output`` 代表完整命令输出；JSON 输出可使用点路径，
+        并支持 ``|`` 分隔的候选路径；文本输出通过结构化 extract 做行筛选与列提取。
+        所有产出只读取完整物理流，JSON 路径或文本提取失败都显式报错。
+        """
+        from app.tools.qfk.extractor import QFKExtractionError, extract_text_value
+
+        # 兼容直接调用该私有辅助的既有测试/扩展；真实 QFK 路径始终传完整物理流字典。
+        if isinstance(complete_outputs, str):
+            complete_outputs = {"stdout": complete_outputs}
+        resolver_variables = dict(context_variables or {})
+        resolver_variables.update(self._variable_pool)
+
+        json_payload: Any | None = None
+        valid_specs = [item for item in produces if isinstance(item, dict) and str(item.get("name") or "").strip()]
+        if not valid_specs:
+            return False, "QFK 产出变量未配置有效 name"
+
+        for spec in valid_specs:
+            name = str(spec["name"]).strip()
+            extract_spec = spec.get("extract")
+            if isinstance(extract_spec, dict):
+                resolved_extract = self._resolve_template_value(extract_spec, resolver_variables)
+                source = str(resolved_extract.get("source") or "stdout")
+                if source not in complete_outputs:
+                    return False, f"QFK_EXTRACT_INVALID_SPEC: 未取得完整 {source} 输出"
+                try:
+                    value = extract_text_value(
+                        complete_outputs[source],
+                        resolved_extract,
+                        str(spec.get("type") or "string"),
+                    )
+                except QFKExtractionError as exc:
+                    return False, f"QFK 产出变量 {name} 提取失败：{exc}"
+                self._set_pool_var(name, value)
+                continue
+
+            raw_output = complete_outputs.get("stdout", "")
+            path = str(spec.get("path") or "").strip()
+            if not path or path in {"stdout", "output"}:
+                if not raw_output.strip():
+                    return False, f"QFK 产出变量 {name} 提取失败：QFK_OUTPUT_EMPTY: 命令标准输出为空"
+                self._set_pool_var(name, raw_output)
+                continue
+            if json_payload is None:
+                try:
+                    json_payload = json.loads(raw_output)
+                except json.JSONDecodeError:
+                    return False, f"QFK_EXTRACT_INVALID_SPEC: QFK 产出变量 {name} 配置了 JSON 路径 {path}，但命令输出不是合法 JSON"
+            value = self._extract_qfk_json_path(json_payload, path)
+            if value is None:
+                return False, f"QFK_NO_MATCH: QFK 产出变量 {name} 未能从命令输出路径 {path} 取值"
+            self._set_pool_var(name, value)
+        return True, None
+
+    @classmethod
+    def _resolve_template_value(cls, value: Any, variable_pool: dict[str, Any]) -> Any:
+        """递归渲染 extract 中 include/exclude 等位置的 ``{{VAR}}``。"""
+        if isinstance(value, str):
+            return cls._resolve_args({"value": value}, variable_pool=variable_pool)["value"]
+        if isinstance(value, list):
+            return [cls._resolve_template_value(item, variable_pool) for item in value]
+        if isinstance(value, dict):
+            return {key: cls._resolve_template_value(item, variable_pool) for key, item in value.items()}
+        return value
+
+    @staticmethod
+    def _extract_qfk_json_path(payload: Any, path_spec: str) -> Any | None:
+        """从 QFK JSON 输出读取点路径，``|`` 表示按顺序回退。"""
+        for candidate in (part.strip() for part in path_spec.split("|")):
+            if not candidate:
+                continue
+            value: Any = payload
+            found = True
+            for part in candidate.split("."):
+                if isinstance(value, dict) and part in value:
+                    value = value[part]
+                elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+                    value = value[int(part)]
+                else:
+                    found = False
+                    break
+            if found and value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _qkv_values_from_context(
+        signal: dict[str, Any] | None,
+        env_context: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], str] | None:
+        """从 conversation 已预取的结构化事实执行 QKV，不伪造不存在的数据。"""
+        if not signal:
+            return None
+        acquire = signal.get("acquire") or {}
+        tool = str(acquire.get("tool") or "")
+        query_type = tool.split("_", 1)[1] if "_" in tool else ""
+        source_key = f"{query_type}_logs"
+        raw_items = env_context.get(source_key)
+        if raw_items is None:
+            return None
+        if isinstance(raw_items, str):
+            try:
+                raw_items = json.loads(raw_items)
+            except json.JSONDecodeError:
+                return ([], source_key)
+        if isinstance(raw_items, dict):
+            raw_items = raw_items.get("data") or raw_items.get("items") or [raw_items]
+        if not isinstance(raw_items, list):
+            return ([], source_key)
+
+        args = acquire.get("args") or {}
+        keyword = str(args.get("keyword") or "").strip()
+        keyword_base = keyword.replace("失败", "").strip()
+        require_failed = bool(args.get("is_failed"))
+        limit = max(1, min(int(args.get("limit") or 100), 200))
+        produces = (signal.get("orchestrate") or {}).get("produces") or []
+
+        def _is_failed(item: dict[str, Any]) -> bool:
+            text = json.dumps(item, ensure_ascii=False).lower()
+            return (
+                item.get("status") in (3, "3", "failed", "失败")
+                or str(item.get("process") or "").lower() in ("failed", "失败")
+                or "失败" in text
+            )
+
+        matched: list[dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            text = json.dumps(item, ensure_ascii=False)
+            keyword_match = not keyword or keyword in text or (keyword_base and keyword_base in text)
+            if not keyword_match or (require_failed and not _is_failed(item)):
+                continue
+            values: dict[str, Any] = {}
+            for spec in produces:
+                if not isinstance(spec, dict) or not spec.get("name"):
+                    continue
+                current: Any = item
+                for part in str(spec.get("path") or "").split("."):
+                    current = current.get(part) if isinstance(current, dict) else None
+                    if current is None:
+                        break
+                if current is not None:
+                    values[str(spec["name"]).lower()] = current
+            matched.append(values or item)
+            if len(matched) >= limit:
+                break
+        return matched, source_key
 
     def _tool_def_default(self, tool_name: str, key: str) -> Any | None:
         """从 tool_definition 注册表读取某参数的默认值（produces / matcher 等）。
@@ -1005,21 +1279,23 @@ class KBDDiagnostic:
             # 回退到 admin-ui 配置的 tool_definition 默认值。
             produces = self._tool_def_default(acquirer, "produces") or []
         try:
-            return FrontendSignal(
-                query=query,
-                keyword=str(args.get("keyword", "")),
-                is_failed=bool(args.get("is_failed", False)),
-                limit=int(args.get("limit", 100)),
-                produces=produces,
+            # 统一走 FrontendSignal.from_dict，确保“启动虚拟机失败”被规范化为
+            # keyword="启动虚拟机" + is_failed=true，与 QKV 命令契约一致。
+            return FrontendSignal.from_dict(
+                {
+                    "query": query.value,
+                    "keyword": str(args.get("keyword", "")),
+                    "is_failed": bool(args.get("is_failed", False)),
+                    "limit": int(args.get("limit", 100)),
+                    "produces": produces,
+                }
             )
         except Exception:
             return None
 
     def _signal_to_qkv_from_step(self, step: KBDStep, env_context: dict[str, str]) -> Any:
         """从 KBDStep 构造前端信号（兜底路径）。"""
-        return self._signal_to_qkv(
-            {"acquire": {"tool": step.tool_name, "args": step.tool_args_template}}, env_context
-        )
+        return self._signal_to_qkv({"acquire": {"tool": step.tool_name, "args": step.tool_args_template}}, env_context)
 
     def _fill_pool_from_qkv_on_step(self, step: KBDStep, res: Any) -> None:
         """兜底填充变量池（从 step 的 matcher/args 推断 produces 信息）。"""
@@ -1028,7 +1304,7 @@ class KBDDiagnostic:
             return
         first = res.values[0]
         if isinstance(first, dict) and len(first) == 1:
-            (name, val), = first.items()
+            ((name, val),) = first.items()
             if val is not None:
                 self._set_pool_var(name, val)
 
@@ -1067,17 +1343,18 @@ class KBDDiagnostic:
         signal_data = {
             "namespace": namespace,
             "keyword": keywords,
-            "match_mode": matcher.get("mode", "or"),
+            "match_mode": {"any": "or", "all": "and"}.get(
+                str(matcher.get("mode", "or")).lower(), str(matcher.get("mode", "or")).lower()
+            ),
             "expected": bool(matcher.get("expected", True)),
-
             # v2 扁平字段
             "instruction": args.get("instruction"),
             "host": args.get("host"),
             "timeout": args.get("timeout", 10),
-
             # 特有字段
             "command": args.get("command"),
             "container": args.get("container", _container_default),
+            "resource_keyword": args.get("resource_keyword"),
             "file": args.get("file"),
             "time_window": args.get("time_window"),
         }
@@ -1094,71 +1371,16 @@ class KBDDiagnostic:
         except Exception:
             return None
 
-    async def _llm_judge_batch(
-        self,
-        tool_name: str,
-        actual_output: str,
-        kbds: list[KBD],
-        user_id: str = "",
-    ) -> dict[str, bool]:
-        """批量 LLM 判断，返回 {kbd_id: bool}。
-
-        出错时保守地返回全 True（保留所有候选 KBD，避免误删）。
-        """
-        ai_client = self._ai_registry.get_client(self._assistant_type)
-        if not ai_client:
-            logger.warning(
-                event="kbd_diag_judge_no_client",
-                message="LLM 客户端不可用，保守地保留所有候选 KBD",
-            )
-            return {kbd.id: True for kbd in kbds}
-        # 智能截取输出防止 prompt 过长（2000 字符以智能保留关键特征）
-        truncated_output = smart_truncate(actual_output, 2000)
-
-        kbd_expectations = [
-            {
-                "id": kbd.id,
-                "name": kbd.name,
-                "expected": kbd.get_expected_pattern(tool_name) or "无明确期望",
-            }
-            for kbd in kbds
-        ]
-
-        judge_prompt = await self._load_prompt(
-            "s3_kbd_judge_v1",
-            ["tool_name", "truncated_output", "kbd_expectations"],
-        )
-        judge_prompt = judge_prompt.format(
-            tool_name=tool_name,
-            truncated_output=truncated_output,
-            kbd_expectations=json.dumps(kbd_expectations, ensure_ascii=False, indent=2),
-        )
-
-        try:
-            result = await ai_client.invoke(
-                messages=[{"role": "user", "content": judge_prompt}],
-                response_format={"type": "json_object"},
-                user_id=self._conversation_id or user_id,
-                case_id=self._conversation_id or "",
-            )
-            if result.content:
-                data = json.loads(result.content)
-                return {k: bool(v) for k, v in data.get("matches", {}).items()}
-        except Exception as exc:
-            logger.warning(
-                event="kbd_diag_judge_error",
-                message=f"LLM 判断异常（{exc}），保守地保留所有候选 KBD",
-                tool_name=tool_name,
-            )
-        return {kbd.id: True for kbd in kbds}
-
     # KBD 详情超链接模板（前端路由，部署时可据实际路径调整）
-    KBD_DETAIL_URL_TEMPLATE = "/kbd/{id}"
+    KBD_DETAIL_URL_TEMPLATE = (
+        "https://support.sangfor.com.cn/cases/list?product_id=33&type=1&category_id={support_id}&isOpen=true"
+    )
 
     async def _generate_report(
         self,
         matched_kbds: list[KBD],
         steps_executed: list[StepResult],
+        evaluated_kbds: list[KBD] | None = None,
         user_id: str = "",
     ) -> str:
         """生成诊断报告：仅返回命中 KBD 的 root_cause / solution 原始文本 + 现场证据 + 标题超链接。
@@ -1166,30 +1388,46 @@ class KBDDiagnostic:
         设计原则（诊断只读）：agent 只做"确认是哪篇 KBD 并返回根因/方案原文"，
         不重述、不改写，避免 LLM 二次加工引入偏差。证据即现场关键信号确认结果。
         """
-        return self._build_diagnostic_report(matched_kbds, steps_executed)
+        return self._build_diagnostic_report(
+            matched_kbds,
+            steps_executed,
+            evaluated_kbds=evaluated_kbds,
+        )
 
     @staticmethod
     def _build_diagnostic_report(
         matched_kbds: list[KBD],
         steps_executed: list[StepResult],
+        evaluated_kbds: list[KBD] | None = None,
         kbd_detail_url: str = KBD_DETAIL_URL_TEMPLATE,
     ) -> str:
         """构建诊断报告：根因/方案原文 + 证据 + KBD 标题可点击超链接。"""
         if not matched_kbds:
-            return "诊断未能锁定具体 KBD，请联系 HCI 技术支持并提供详细故障描述。"
+            candidate_links = []
+            for kbd in evaluated_kbds or []:
+                support_id = kbd.support_id or kbd.id
+                url = kbd_detail_url.format(id=kbd.id, support_id=support_id)
+                candidate_links.append(f"- [参考案例 {support_id} - {kbd.name}]({url})（未确认）")
+            evidence = [KBDDiagnostic._format_step_evidence(step) for step in steps_executed]
+            return (
+                "### 诊断结论：证据不足\n\n"
+                "没有任何 KBD 的全部必需关键信号达到 PASS，因此系统不会输出 KBD 根因或解决方案。\n\n"
+                "**已评估参考案例（未确认）**：\n"
+                + ("\n".join(candidate_links) if candidate_links else "- 无")
+                + "\n\n"
+                "**关键信号执行结果**：\n" + ("\n".join(evidence) if evidence else "- 无可执行证据")
+            )
         blocks: list[str] = []
         for kbd in matched_kbds[:5]:
-            title_link = f"[{kbd.name}]({kbd_detail_url.format(id=kbd.id)})"
+            support_id = kbd.support_id or kbd.id
+            title_link = f"[{kbd.name}]({kbd_detail_url.format(id=kbd.id, support_id=support_id)})"
             evidence: list[str] = []
             for s in steps_executed:
-                if s.error and "人工授权" in s.error:
-                    evidence.append("- `{s.tool_name}`：⚠️ 写操作/处置动作，需人工授权（未自动执行）")
-                elif s.error is None:
-                    evidence.append(f"- `{s.tool_name}`：✓ {smart_truncate(s.raw_output or '', max_chars=200)}")
-                else:
-                    evidence.append(f"- `{s.tool_name}`：✗ {s.error}")
+                if s.kbd_id != kbd.id:
+                    continue
+                evidence.append(KBDDiagnostic._format_step_evidence(s))
             blocks.append(
-                f"### 诊断结论：{title_link}\n\n"
+                f"### 诊断结论：参考案例 {support_id} - {title_link}\n\n"
                 f"**根因（原始文本）**：\n{kbd.root_cause or '（无）'}\n\n"
                 f"**解决方案（原始文本）**：\n{kbd.solution or '（无）'}\n\n"
                 f"**现场证据（关键信号确认）**：\n" + ("\n".join(evidence) if evidence else "- 无")
@@ -1197,9 +1435,25 @@ class KBDDiagnostic:
         return "\n\n".join(blocks)
 
     @staticmethod
+    def _format_step_evidence(step: StepResult) -> str:
+        args = smart_truncate(json.dumps(step.tool_args, ensure_ascii=False, sort_keys=True), max_chars=300)
+        preview = smart_truncate(step.raw_output or step.error or "", max_chars=300)
+        return (
+            f"- `{step.signal_id}` / `{step.tool_name}` / exec_id `{step.exec_id}` / "
+            f"evaluation_id `{step.evaluation_id}`："
+            f"**{step.outcome.value}**；参数 `{args}`"
+            f"{f'；结果 {preview}' if preview else ''}"
+        )
+
+    @staticmethod
     def _fallback_report(
         matched_kbds: list[KBD],
         steps_executed: list[StepResult],
+        evaluated_kbds: list[KBD] | None = None,
     ) -> str:
         """LLM 不可用时的降级文本报告（与 _generate_report 同源）。"""
-        return KBDDiagnostic._build_diagnostic_report(matched_kbds, steps_executed)
+        return KBDDiagnostic._build_diagnostic_report(
+            matched_kbds,
+            steps_executed,
+            evaluated_kbds=evaluated_kbds,
+        )

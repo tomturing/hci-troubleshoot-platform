@@ -8,7 +8,7 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
-import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, getBridgeExecWaitTimeoutMs, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
+import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec } from '@/api/terminal'
 
 // 开发环境专用日志（生产环境自动禁用）
 const isDev = import.meta.env.DEV
@@ -950,7 +950,8 @@ export const useChatStore = defineStore('chat', () => {
               // T-TOOL-04 + T-TOOL-18: Agent 命令执行请求（SSE → WebSocket → POST 结果）
               try {
                 const event = JSON.parse(data)
-                const { execId, command, reason, riskLevel, nodeIp, container, caseId, conversationId: convId, traceId, traceparent, toolCallId } = event
+                const { execId, command, reason, riskLevel, nodeIp, container, caseId, conversationId: convId, traceId, traceparent, toolCallId, outputFilters } = event
+                const timeoutSeconds = Math.min(300, Math.max(1, Number(event.timeout) || 120))
 
                 devLog('agent_exec_command', '收到执行请求', { execId, riskLevel, commandPreview: command.substring(0, 50) })
 
@@ -983,11 +984,14 @@ export const useChatStore = defineStore('chat', () => {
                     continue
                   }
                   // 通过 terminal_bridge WebSocket 发送命令 (双通道：隔离执行)
-                  const wsMsg = buildAgentExecProcessMessage(caseId, execId, command, nodeIp, container, traceId, traceparent, convId, toolCallId)
+                  const wsMsg = buildAgentExecProcessMessage(
+                    caseId, execId, command, nodeIp, container, traceId, traceparent, convId, toolCallId,
+                    timeoutSeconds, Array.isArray(outputFilters) ? outputFilters as OutputFilterSpec[] : undefined,
+                  )
                   sshWebSocket.value.send(wsMsg)
                   devLog('agent_exec_command', '命令已发送到 Bridge', { execId, nodeIp, container })
-                  // Bridge 是权威超时源；浏览器按运行时配置额外预留 15 秒供结果传输与调度。
-                  waitForExecResult(execId, getBridgeExecWaitTimeoutMs())
+                  // Bridge 是权威超时源；浏览器额外预留 5 秒供结果传输与调度。
+                  waitForExecResult(execId, (timeoutSeconds + 5) * 1000)
                     .then((result) => {
                       devLog('agent_exec_command', '执行完成', { execId, exitCode: result.exitCode })
                       return postExecResult(convId, execId, result.output, result.exitCode, undefined, result.stdout, result.stderr, result)

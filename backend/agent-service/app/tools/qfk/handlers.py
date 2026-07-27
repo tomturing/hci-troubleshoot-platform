@@ -14,7 +14,7 @@ QFK 信号处理器
 - file/path    → qfk_log 的 -f / -p
 - time_window  → qfk_log 的 -t
 - service/action → qfk_service 的 <container> <name> <action>
-- container    → qfk_system 的 --container
+- container    → qfk_system 的 terminal_bridge 执行位置（host 表示宿主机）
 注：host 不参与命令行构建--目标主机路由在传输层（engine.py 经 node_ip/case_id 由 terminal_bridge 选择 SSH 会话），BackendSignal.host 仅作运行时记录。
 """
 
@@ -38,6 +38,7 @@ __all__ = [
     "GenericSubCommandHandler",
     "build_acli_command",
 ]
+
 
 # ─── 异常 ──────────────────────────────────────────────────────────────────────
 class HandlerError(Exception):
@@ -153,17 +154,13 @@ class LogKeywordHandler(BackendSignalHandler):
         if signal.path:
             allowed_prefixes = ("/sf/log/", "/sf/logs/", "/sf/data/", "/sf/datanew/")
             if not signal.path.startswith(allowed_prefixes):
-                raise CommandBuildError(
-                    f"日志路径只允许以以下前缀开头: {allowed_prefixes}"
-                )
+                raise CommandBuildError(f"日志路径只允许以以下前缀开头: {allowed_prefixes}")
             parts.extend(["-p", shlex.quote(signal.path)])
 
         # 日志文件名（file 字段）
         file = signal.file
         if not file:
-            raise CommandBuildError(
-                "qfk_log 必须提供日志文件名（通过 file 字段）"
-            )
+            raise CommandBuildError("qfk_log 必须提供日志文件名（通过 file 字段）")
         if "/" in file:
             raise CommandBuildError(f"日志文件名非法：不能包含路径分隔符 (/)：{file}")
         if not file.endswith(".log"):
@@ -181,17 +178,13 @@ class ServiceHandler(BackendSignalHandler):
     def build_commands(self, signal: BackendSignal) -> list[str]:
         service = signal.service
         if not service:
-            raise CommandBuildError(
-                "服务名称必须通过 service 字段提供（qfk_service）"
-            )
+            raise CommandBuildError("服务名称必须通过 service 字段提供（qfk_service）")
         if _has_illegal_chars(service):
             raise CommandBuildError(f"非法服务名称（含注入字符）: {service}")
 
         container = signal.container or "asv"
         if container not in VALID_SERVICE_CONTAINERS:
-            raise CommandBuildError(
-                f"非法服务容器: {container}（允许: {sorted(VALID_SERVICE_CONTAINERS)}）"
-            )
+            raise CommandBuildError(f"非法服务容器: {container}（允许: {sorted(VALID_SERVICE_CONTAINERS)}）")
 
         action = (signal.action or "status").strip()
         return [f"acli service {container} {shlex.quote(service)} {action}"]
@@ -204,6 +197,11 @@ class SystemHandler(BackendSignalHandler):
             raise CommandBuildError("qfk_system 必须在 command 中提供执行命令")
         if _has_illegal_chars(command):
             raise CommandBuildError(f"系统命令包含非法字符: {command}")
+        resource = (signal.resource_keyword or "").strip()
+        if resource:
+            if _has_illegal_chars(resource):
+                raise CommandBuildError(f"系统命令资源参数包含非法字符: {resource}")
+            command = f"{command} {shlex.quote(resource)}"
         return [f"acli system {command}"]
 
 
@@ -229,7 +227,7 @@ class HandlerRegistry:
     _REGISTRY: dict[str, type[BackendSignalHandler]] = {
         "log": LogKeywordHandler,
         "service": ServiceHandler,
-        "system": GenericSubCommandHandler,
+        "system": SystemHandler,
         "vm": GenericSubCommandHandler,
         "network": GenericSubCommandHandler,
         "storage": GenericSubCommandHandler,

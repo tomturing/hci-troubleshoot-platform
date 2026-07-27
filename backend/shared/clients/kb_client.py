@@ -131,6 +131,39 @@ class KBClient(InternalHTTPClient):
             )
             return None
 
+    async def get_category_playbooks(
+        self,
+        category_id: str,
+        taxonomy_version: str | None = None,
+    ) -> dict | None:
+        """按 S0 已确认分类获取完整的已发布 SOP/KBD 清单。
+
+        该接口不传用户 query、top_k、embedding 或 FTS 条件；分类成员资格只由
+        category_id 决定，确保检索服务异常不会改变诊断候选集合。
+        """
+        try:
+            params = {"taxonomy_version": taxonomy_version} if taxonomy_version else None
+            resp = await self.get(
+                f"{self._api_prefix}/v2/categories/{category_id}/playbooks",
+                params=params,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                event="kb_category_playbooks_http_error",
+                category_id=category_id,
+                status_code=exc.response.status_code,
+            )
+            return None
+        except httpx.RequestError as exc:
+            logger.warning(
+                event="kb_category_playbooks_unavailable",
+                category_id=category_id,
+                error=str(exc),
+            )
+            return None
+
     async def search(self, query: str, top_n: int = 5) -> list[dict]:
         """
         混合检索（BM25 + 向量 RRF 融合）

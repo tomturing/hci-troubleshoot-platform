@@ -609,7 +609,7 @@ DESCRIPTION:
 2. acquire.tool 必须取自采集器目录，禁止编造；acquire.args 严格按该 tool 契约填写，禁止多余字段（additionalProperties=false 会拒绝幽灵字段）。
 3. 占位符强制：acquire.args / match / orchestrate 中引用变量时，必须为双花括号+全大写：{{{{HOST}}}}、{{{{VM.NAME}}}}；禁止小写/混合。
 4. 变量合法性：producer 的 produces[].name、consumer 的 requires[] 必须是可用变量集合中的名字（新变量须先加入 produces）。
-5. match 段：仅 backend（qfk_*）信号需要；frontend（qkv_*）信号可省略 match 或置 null。type ∈ [keyword, regex, state, threshold, json_path, exists]；匹配关键词放 match.pattern（不要放 acquire.args）。
+5. backend（qfk_*）执行模式严格二选一：判定模式配置 match 且 produces=[]；产出变量模式配置 match=null 且 produces 非空。frontend（qkv_*）信号可省略 match 或置 null。match.type ∈ [keyword, regex, state, threshold, json_path, exists]；匹配关键词放 match.pattern（不要放 acquire.args）。
 6. acquire.args 字段对照（关键，务必对齐，多/错字段会被契约拒绝）：
    - qkv_alert：必填 keyword；可选 limit/alert_type/timeout/instruction。注意：无 is_failed 字段。
    - qkv_task：必填 keyword；可选 is_failed/limit/timeout/instruction。（is_failed 仅属于 qkv_task，不属于 qkv_alert）
@@ -628,6 +628,12 @@ DESCRIPTION:
    - match.pattern＝匹配关键字/模式：backend 判定的精确匹配串（日志关键字、状态值等），同样不要把"检查说明"写进 match.pattern。
    - 反例（禁止）：{{"tool":"qfk_storage","args":{{"resource_keyword":"镜像文件占用检查"}}}} ❌
      正例（正确）：{{"tool":"qfk_storage","args":{{"command":"list","resource_keyword":"<实际资源名>","instruction":"镜像文件占用检查"}}}}。
+12. 非 JSON 行列提取与 Shell 管道安全边界：
+   - command 只能保存基础命令，禁止包含管道符。若原步骤为 grep/awk/cut 管道，必须转换为 produces[].extract，不得原样写入 command。
+   - grep PATTERN / grep -e PATTERN / grep -F PATTERN → extract.include；grep -v PATTERN → extract.exclude；grep -i → case_sensitive=false；awk '{{print $N}}' → column=N,column_mode=index；cut -dX -fN → delimiter=X,column=N。
+   - grep -v grep 直接删除：平台只在内存筛选基础命令 stdout，不会启动 grep 进程。
+   - 复杂 awk、sed、sort、聚合、正则歧义或未知管道不得猜测；保留 evidence，标 provenance.needs_review=true。
+   - 文本产出示例：{{"name":"KVM_PID","type":"integer","extract":{{"type":"text","include":["-id {{{{VM}}}}"],"column":2,"column_mode":"index"}}}}。requires 由 {{{{HOST}}}}/{{{{VM}}}} 占位符自动推导。
 
 # 输出示例（对齐真实 KBD：虚拟机开机失败→镜像忙→进程占用；已对齐全 v2 契约与采集器字段）
 {{

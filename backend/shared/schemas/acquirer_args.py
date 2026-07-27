@@ -34,8 +34,9 @@ COMMON_ARGS: dict[str, dict[str, Any]] = {
     "timeout": {
         "type": "integer",
         "minimum": 1,
+        "maximum": 300,
         "default": 10,
-        "description": "采集/执行超时（秒）；QKV/QFK 通用",
+        "description": "采集/执行超时（秒，1-300）；QKV/QFK 通用",
     },
 }
 
@@ -142,7 +143,12 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                 "type": "string",
                 "description": "系统检查资源/主题选择器（可选，如镜像层路径 overlay2/docker）",
             },
-            "container": {"type": "string", "default": "asv-con", "description": "执行容器（qfk_system 专属）"},
+            "container": {
+                "type": "string",
+                "enum": ["host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"],
+                "default": "asv-con",
+                "description": "执行位置；host 表示直接在宿主机执行",
+            },
         },
     },
     "qfk_vm": {

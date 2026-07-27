@@ -20,9 +20,10 @@ import os
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from shared.database.postgres import DatabaseManager
 from shared.database.redis import RedisManager
 from shared.observability.logger import get_logger
@@ -100,6 +101,25 @@ def _check_user_session(authorization: str | None = Header(default=None)) -> str
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class OutputFilterRequest(BaseModel):
+    """只允许字面量行筛选；该协议不能表达命令、正则或脚本。"""
+
+    source: Literal["stdout", "stderr"] = "stdout"
+    include: list[str] = Field(default_factory=list, max_length=8)
+    exclude: list[str] = Field(default_factory=list, max_length=8)
+    include_mode: Literal["all", "any"] = "all"
+    case_sensitive: bool = True
+
+    @model_validator(mode="after")
+    def validate_literals(self) -> OutputFilterRequest:
+        values = [*self.include, *self.exclude]
+        if not values:
+            raise ValueError("output_filter 至少需要 include 或 exclude")
+        if any(not value or len(value.encode("utf-8")) > 512 for value in values):
+            raise ValueError("output_filter 条件必须为 1~512 字节的非空字面量")
+        return self
+
+
 class AgentExecRequest(BaseModel):
     """Agent 执行命令推送请求"""
 
@@ -118,6 +138,12 @@ class AgentExecRequest(BaseModel):
     trace_id: str | None = Field(None, description="端到端链路 ID（透传至 terminal_bridge）")
     traceparent: str | None = Field(None, pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
     tool_call_id: str | None = None
+    timeout: int = Field(120, ge=1, le=300, description="命令最大执行时间（秒）")
+    output_filters: list[OutputFilterRequest] = Field(
+        default_factory=list,
+        max_length=8,
+        description="terminal_bridge 逐行安全筛选规格；不解释 shell，也不执行 grep/awk",
+    )
 
 
 class AgentExecResponse(BaseModel):
@@ -212,7 +238,7 @@ async def push_agent_exec_command(
         trace_id=trace_id,
     )
 
-    # 1. 写入 Redis pending 上下文，180 秒覆盖 Bridge 120 秒执行和上游结果回传余量。
+    # 1. 写入 Redis pending 上下文，覆盖 Bridge 执行超时和上游结果回传余量。
     pending_context = {
         "exec_id": body.exec_id,
         "tool_name": body.tool_name,
@@ -224,11 +250,13 @@ async def push_agent_exec_command(
         "trace_id": body.trace_id or trace_id,
         "traceparent": body.traceparent,
         "tool_call_id": body.tool_call_id or body.exec_id,
+        "timeout": body.timeout,
+        "output_filters": [item.model_dump() for item in body.output_filters],
     }
     await _redis_manager.set(
         f"exec:{body.exec_id}",
         json.dumps(pending_context, ensure_ascii=False),
-        ex=_EXEC_STATE_TTL_SECONDS,
+        ex=max(_EXEC_STATE_TTL_SECONDS, body.timeout + 15),
     )
 
     # 2. 推送 SSE 事件到前端
@@ -253,6 +281,8 @@ async def push_agent_exec_command(
         "traceId": body.trace_id,
         "traceparent": body.traceparent,
         "toolCallId": body.tool_call_id or body.exec_id,
+        "timeout": body.timeout,
+        "outputFilters": [item.model_dump() for item in body.output_filters],
     }
 
     if sse_pusher:

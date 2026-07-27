@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.adapters.agents.htp.investigation_agent import MAX_SOP_CHARS, InvestigationAgent
-from app.domain.agent_port import AgentStageUpdate, AgentTextChunk
+from app.domain.agent_port import AgentEscalation, AgentStageUpdate, AgentTextChunk
 
 
 def _make_kb_client(
@@ -22,6 +22,14 @@ def _make_kb_client(
     mock = MagicMock()
     mock.route_by_category = AsyncMock(return_value=route_result)
     mock.search_cases_with_steps = AsyncMock(return_value=cases or [])
+    sop_results = (route_result or {}).get("results", []) if (route_result or {}).get("track") == "sop" else []
+    mock.get_category_playbooks = AsyncMock(
+        return_value={
+            "snapshot_id": "kbsnap-test",
+            "sops": sop_results,
+            "kbds": [dict(case, executable=True) for case in (cases or [])],
+        }
+    )
     return mock
 
 
@@ -116,7 +124,7 @@ class TestInvestigationAgentRouting:
 
     @pytest.mark.asyncio
     async def test_routes_to_fallback_when_no_cases(self):
-        """search_cases_with_steps 返回空列表时走降级模式"""
+        """分类清单无 KBD 时显式升级人工，不进入自由推理"""
         kb = _make_kb_client(
             route_result={"track": "kbd"},
             cases=[],
@@ -147,15 +155,9 @@ class TestInvestigationAgentRouting:
             )
         ]
 
-        text_events = [e for e in events if isinstance(e, AgentTextChunk)]
-        assert len(text_events) >= 1
-        kb.search_cases_with_steps.assert_awaited_once_with(
-            category_id="虚拟机-003",
-            query="虚拟机无法启动",
-            top_k=15,
-            conversation_id="test-002",
-            case_id=None,
-        )
+        assert any(isinstance(event, AgentEscalation) for event in events)
+        kb.route_by_category.assert_not_called()
+        kb.search_cases_with_steps.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_kbd_diag_mode_yields_stage_s4(self):
@@ -167,11 +169,15 @@ class TestInvestigationAgentRouting:
                     "id": "c1",
                     "name": "案例c1",
                     "category_id": "虚拟机-003",
-                    "steps": [
+                    "support_id": "27123",
+                    "executable": True,
+                    "signals": [
                         {
-                            "tool_name": "get_failed_tasks",
-                            "tool_args_template": {},
-                            "expected_pattern": "__CONTAINS__:redis",
+                            "id": "sig_001",
+                            "acquire": {"tool": "get_failed_tasks", "args": {}},
+                            "match": {"type": "keyword", "pattern": "redis", "expected": True},
+                            "provenance": {"category": "backend"},
+                            "orchestrate": {"phase": "diagnostic", "requires": [], "produces": []},
                         }
                     ],
                     "root_cause": "redis 异常",

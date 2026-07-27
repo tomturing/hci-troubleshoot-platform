@@ -137,9 +137,6 @@ async def _event_stream(
                 _has_text_chunk = True
                 yield _sse({"type": "text_chunk", "content": event.content})
             elif isinstance(event, AgentStageUpdate):
-                # 聊天界面不展示工具调用/结果卡片，仅透传 thinking/executing 等进度状态
-                if event.stage in ("tool_call", "tool_result"):
-                    continue
                 yield _sse(
                     {
                         "type": "stage_update",

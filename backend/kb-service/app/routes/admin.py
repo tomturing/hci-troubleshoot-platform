@@ -30,6 +30,7 @@ from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import validate_acquire_args
+from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import validate_signals_json
 from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
@@ -1712,6 +1713,9 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
     if body.signals_json is not None:
         # 直接切 v2 列形态（RFC §7）：保存时统一归约为 v2 数组级对象
         v2_doc = _load_signals_json(body.signals_json)
+        for signal in v2_doc.get("signals", []):
+            if isinstance(signal, dict):
+                sync_signal_requires(signal)
         # 轻量纯 Python 校验（字段级友好提示，语义与 JSON Schema 对齐）
         for s in v2_doc.get("signals", []):
             acquire = s.get("acquire") or {}

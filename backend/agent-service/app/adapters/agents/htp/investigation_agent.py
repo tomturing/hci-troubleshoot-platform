@@ -2,14 +2,15 @@
 InvestigationAgent: S1-S4 诊断调查 Agent（继承 BaseAgent）
 
 职责：
-  - 从知识库检索含结构化步骤的候选案例（top-K=15）
-  - 执行案例差异诊断（CDD）贪心消除算法
+  - 使用 S0 已确认分类加载完整、版本固定的 SOP/KBD 清单
+  - 执行 KBD 关键信号并按证据门禁判定候选案例
   - 流式输出诊断进展（步骤执行、阶段更新）
   - 生成结构化诊断报告
 
 执行模式（T-AGT-22 统一后）：
   sop    → ReactEngine + SOP 导航工具注入（动态获取节点内容）
-  kbd/无 → CDD 模式：案例差异诊断，结构化匹配
+  kbd    → CDD 模式：结构化关键信号采集与证据匹配
+  无知识 → 显式升级人工，不生成知识库外命令或根因
 
 设计：
   - think()：根据当前 CDD 状态决定下一步工具调用（ToolCall），
@@ -37,8 +38,8 @@ from app.adapters.agents.htp.sop_tools import (
     get_sop_node,
 )
 from app.domain.agent_port import (
+    AgentEscalation,
     AgentEvent,
-    AgentInteractiveRequest,
     AgentStageUpdate,
     AgentTextChunk,
     AgentUnavailableError,
@@ -47,7 +48,7 @@ from app.domain.base_agent import BaseAgent, Message, Observation, Step, ToolCal
 
 logger = get_logger("investigation-agent")
 
-# CDD 候选案例检索数量
+# 保留构造参数兼容；分类清单接口不做 top-K 截断。
 DEFAULT_TOP_K = 15
 
 # SOP 内容截断上限（防止超出 LLM 上下文窗口）
@@ -68,10 +69,10 @@ class InvestigationAgent(BaseAgent):
     """S1-S4 诊断调查 Agent（CDD 驱动）。
 
     核心流程：
-      1. 检索 top-K 候选案例（含结构化步骤）
+      1. 按 S0 已确认分类加载完整 SOP/KBD 清单
       2. 若找到 SOP → ReactEngine + SOP 导航工具注入（T-AGT-22）
-      3. 若找到案例 → CDD 贪心消除 → 生成报告
-      4. 若无知识 → 机制推理模式（LLM 自由推理）
+      3. 无 SOP 时执行全部可执行 KBD 的关键信号并生成证据报告
+      4. 若无知识或证据链不完整 → 显式升级人工
     """
 
     def __init__(
@@ -179,8 +180,6 @@ class InvestigationAgent(BaseAgent):
                 reason=f"未找到助手类型 '{assistant_type}'",
             )
 
-        user_query = self._build_retrieval_query(messages)
-
         yield AgentStageUpdate(
             stage="investigation_start",
             metadata={
@@ -190,9 +189,12 @@ class InvestigationAgent(BaseAgent):
             },
         )
 
-        # 1. 尝试三轨路由（优先 SOP）
+        # 1. S0 已确认分类是 S1 的权威知识边界。正常路径只加载分类完整清单，
+        # 不再把客户模糊描述用于 /route、embedding 或 FTS 准入门禁。
         track = ""
         sop_results = []
+        raw_cases: list[dict[str, Any]] = []
+        snapshot_id = ""
 
         # T-AGT-23: 如果存在活跃的 SOP 恢复上下文，直接使用已有的 SOP 路由，不再重新计算路由，防止输入内容变化导致路由漂移
         if sop_resume_context and sop_resume_context.get("sop_document_id"):
@@ -223,63 +225,45 @@ class InvestigationAgent(BaseAgent):
                 )
 
         if not track:
-            route_result = await self._kb_client.route_by_category(
-                category_code=category_id,
-                query=user_query,
-                top_k=3,
+            inventory = await self._kb_client.get_category_playbooks(category_id=category_id)
+            if inventory is None:
+                reason = f"无法加载已确认分类 {category_id} 的知识快照"
+                yield AgentTextChunk(content=f"诊断暂时无法继续：{reason}。已请求人工支持。")
+                yield AgentEscalation(
+                    reason=reason,
+                    context={"category_id": category_id, "session_id": session_id, "case_id": case_id},
+                )
+                return
+            snapshot_id = str(inventory.get("snapshot_id") or "")
+            sop_results = list(inventory.get("sops") or [])
+            all_kbds = list(inventory.get("kbds") or [])
+            raw_cases = [kbd for kbd in all_kbds if kbd.get("executable") is True]
+            track = "sop" if sop_results else "kbd" if all_kbds else "human_escalation"
+            yield AgentStageUpdate(
+                stage="knowledge_snapshot",
+                metadata={
+                    "category_id": category_id,
+                    "snapshot_id": snapshot_id,
+                    "sop_count": len(sop_results),
+                    "kbd_count": len(all_kbds),
+                    "executable_kbd_count": len(raw_cases),
+                },
             )
-            track = (route_result or {}).get("track", "")
-            sop_results = (route_result or {}).get("results", [])
 
         logger.info(
             event="investigation_route",
             track=track,
-            result_count=len(sop_results),
+            result_count=(
+                len(sop_results)
+                if track == "sop"
+                else len(raw_cases)
+                if track == "kbd"
+                else 0
+            ),
             category_id=category_id,
             session_id=session_id,
+            snapshot_id=snapshot_id,
         )
-
-        # T2-4: 信息质量检查（SOP 命中时跳过 — 变量管道自动收集数据）
-        if not sop_resume_context:
-            quality_report = await self._evidence_builder.check_information_quality(
-                session_id=session_id,
-                env_context=env_context,
-            )
-            has_sop = track == "sop" and sop_results
-            if quality_report.needs_clarification and not has_sop:
-                logger.warning(
-                    event="information_quality_low",
-                    message="环境数据质量不足，发起用户澄清",
-                    session_id=session_id,
-                    score=quality_report.quality_score,
-                    missing=quality_report.missing_keys,
-                )
-                yield AgentInteractiveRequest(
-                    request_id=f"clarify-{session_id}",
-                    acp_session_id=session_id,
-                    kind="information_clarification",
-                    title="需要补充环境信息",
-                    prompt=quality_report.to_clarification_prompt(),
-                    options=[
-                        {"optionId": "retry", "name": "已补充，重新检查"},
-                        {"optionId": "skip", "name": "忽略，继续诊断"},
-                    ],
-                    custom_input=True,
-                    metadata={
-                        "missing_keys": quality_report.missing_keys,
-                        "stale_keys": quality_report.stale_keys,
-                        "low_confidence_keys": quality_report.low_confidence_keys,
-                    },
-                )
-                return
-            if quality_report.needs_clarification and has_sop:
-                logger.info(
-                    event="information_quality_skip_for_sop",
-                    message="SOP 命中，跳过澄清拦截",
-                    session_id=session_id,
-                    sop_document_id=sop_results[0].get("id") if sop_results else None,
-                    missing=quality_report.missing_keys,
-                )
 
         # 2. SOP 轨道 → ReactEngine + SOP 导航工具（T-AGT-22）
         if track == "sop" and sop_results:
@@ -303,27 +287,23 @@ class InvestigationAgent(BaseAgent):
                 yield event
             return
 
-        # 3. KBD/无 → CDD 模式：检索含步骤的候选案例
-        raw_cases = await self._kb_client.search_cases_with_steps(
-            category_id=category_id,
-            query=user_query,
-            top_k=self._top_k,
-            conversation_id=session_id,
-            case_id=case_id,
-        )
-
+        # 3. 无 SOP 时直接对分类内完整的可执行 KBD 集合进行证据诊断。
         if not raw_cases:
-            # 无案例 → 机制推理降级
-            async for event in self._process_fallback_mode(
-                session_id=session_id,
-                messages=messages,
-                category_id=category_id,
-                diagnostic_stage=diagnostic_stage,
-                ai_client=ai_client,
-                case_id=case_id,
-                user_id=user_id,
-            ):
-                yield event
+            reason = (
+                f"分类 {category_id} 下没有已发布 KBD"
+                if track == "human_escalation"
+                else f"分类 {category_id} 下的 KBD 均未通过自动执行契约"
+            )
+            yield AgentTextChunk(content=f"{reason}，系统不会生成知识库外的命令或根因。已请求人工支持。")
+            yield AgentEscalation(
+                reason=reason,
+                context={
+                    "category_id": category_id,
+                    "snapshot_id": snapshot_id,
+                    "session_id": session_id,
+                    "case_id": case_id,
+                },
+            )
             return
 
         candidates: list[KBD] = [kbd_from_dict(d) for d in raw_cases]
@@ -335,9 +315,9 @@ class InvestigationAgent(BaseAgent):
         )
 
         # 4. 执行 KBD 差异诊断
-        env_ctx: dict[str, str] = {
-            k: str(v) for k, v in (env_context or {}).items() if isinstance(v, (str, int, float))
-        }
+        # 保留预取事实的结构化值（task_logs/alert_logs 等）；QKV 可直接消费已有现场事实，
+        # 避免为了重复获取同一份数据再次依赖浏览器终端桥。
+        env_ctx: dict[str, Any] = dict(env_context or {})
         self._kbd_diag = KBDDiagnostic(
             ai_registry=self._ai_registry,
             tool_executor=self._tool_executor,
@@ -353,6 +333,7 @@ class InvestigationAgent(BaseAgent):
             env_context=env_ctx,
             session_id=session_id,
             user_id=user_id,
+            snapshot_id=snapshot_id,
         ):
             yield event
 
@@ -363,17 +344,30 @@ class InvestigationAgent(BaseAgent):
             for chunk in self._split_text_chunks(kbd_result.diagnosis_report, chunk_size=100):
                 yield AgentTextChunk(content=chunk)
 
-            # 推进到 S4（根因确认）
-            matched_ids = [kbd.id for kbd in kbd_result.matched_kbds[:3]]
-            yield AgentStageUpdate(
-                stage="S4",
-                metadata={
-                    "category_id": category_id,
-                    "matched_kbds": matched_ids,
-                    "is_definitive": kbd_result.is_definitive,
-                    "steps_count": len(kbd_result.steps_executed),
-                },
-            )
+            if kbd_result.is_definitive:
+                matched_ids = [kbd.id for kbd in kbd_result.matched_kbds]
+                yield AgentStageUpdate(
+                    stage="S4",
+                    metadata={
+                        "category_id": category_id,
+                        "snapshot_id": snapshot_id,
+                        "matched_kbds": matched_ids,
+                        "is_definitive": True,
+                        "steps_count": len(kbd_result.steps_executed),
+                    },
+                )
+            else:
+                yield AgentEscalation(
+                    reason=f"KBD 证据结论未达到 DEFINITIVE：{kbd_result.conclusion_level}",
+                    context={
+                        "category_id": category_id,
+                        "snapshot_id": snapshot_id,
+                        "session_id": session_id,
+                        "case_id": case_id,
+                        "conclusion_level": kbd_result.conclusion_level,
+                        "candidate_states": kbd_result.candidate_states,
+                    },
+                )
 
     # ─── 执行模式（内部）──────────────────────────────────────────────────────
 

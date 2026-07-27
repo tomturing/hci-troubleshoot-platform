@@ -22,6 +22,7 @@ TriageAgent: S0 意图识别 Agent（继承 BaseAgent）
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections.abc import AsyncGenerator
@@ -105,9 +106,7 @@ class TriageAgent(BaseAgent):
         # 将 Message 列表转换为 OpenAI 格式
         messages = [{"role": m.role, "content": m.content} for m in context]
 
-        result = await ai_client.invoke(
-            messages=messages, user_id="triage", temperature=settings.LLM_TEMPERATURE_S0
-        )
+        result = await ai_client.invoke(messages=messages, user_id="triage", temperature=settings.LLM_TEMPERATURE_S0)
         if result.content:
             parsed = self._parse_intent_result(result.content)
             if parsed.category_id:
@@ -168,21 +167,32 @@ class TriageAgent(BaseAgent):
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         full_reply: list[str] = []
 
-        async for chunk in ai_client.chat_completion_stream(
-            messages=full_messages,
-            user_id=session_id,
-            case_id=case_id,
-            temperature=settings.LLM_TEMPERATURE_S0,
-        ):
-            if chunk:
-                full_reply.append(chunk)
-                yield AgentTextChunk(content=chunk)
+        deterministic_result: IntentResult | None = None
+        try:
+            async for chunk in ai_client.chat_completion_stream(
+                messages=full_messages,
+                user_id=session_id,
+                case_id=case_id,
+                temperature=settings.LLM_TEMPERATURE_S0,
+            ):
+                if chunk:
+                    full_reply.append(chunk)
+                    yield AgentTextChunk(content=chunk)
+        except Exception as exc:
+            logger.warning(
+                event="triage_llm_fallback",
+                message="S0 模型不可用，使用分类树确定性候选并要求人工确认",
+                session_id=session_id,
+                error=str(exc),
+            )
+            deterministic_result = self._deterministic_candidates(messages, env_context)
+            yield AgentTextChunk(content="分类模型暂时不可用，已根据故障描述和现场事实生成候选，请人工确认。")
 
         # 5. 解析意图识别结果
         reply_text = "".join(full_reply)
 
         # 空响应兜底：LLM 未返回任何内容时给出友好提示
-        if not reply_text.strip():
+        if not reply_text.strip() and deterministic_result is None:
             logger.warning(
                 event="triage_empty_response",
                 message="TriageAgent LLM 返回空响应",
@@ -195,7 +205,7 @@ class TriageAgent(BaseAgent):
             )
             return
 
-        result = self._parse_intent_result(reply_text)
+        result = deterministic_result or self._parse_intent_result(reply_text)
 
         logger.info(
             event="intent_parsed",
@@ -255,6 +265,57 @@ class TriageAgent(BaseAgent):
                 session_id=session_id,
                 reply_preview=reply_text[:200],
             )
+
+    @classmethod
+    def _deterministic_candidates(
+        cls,
+        messages: list[dict[str, Any]],
+        env_context: dict[str, Any] | None,
+    ) -> IntentResult:
+        """模型不可用时按分类树和现场事实生成候选，不自动确认分类。"""
+        user_text = " ".join(str(message.get("content") or "") for message in messages if message.get("role") == "user")
+        context_text = json.dumps(env_context or {}, ensure_ascii=False)
+        combined = f"{user_text} {context_text}".lower()
+        action_aliases = {
+            "开机": ("开机", "启动虚拟机", "无法启动", "不能启动"),
+            "关机": ("关机", "关闭虚拟机", "无法关闭"),
+            "重启": ("重启", "重新启动"),
+            "创建": ("创建", "新建"),
+            "删除": ("删除",),
+            "迁移": ("迁移",),
+            "快照": ("快照",),
+            "备份": ("备份",),
+            "网络": ("网络", "丢包", "不通", "延时"),
+        }
+        scored: list[tuple[int, str, str]] = []
+        for domain, items in (cls._categories_cache or {}).items():
+            domain_score = 2 if domain and domain.lower() in combined else 0
+            for item in items:
+                code = str(item.get("code") or "")
+                name = str(item.get("name") or "")
+                if not code or not name or not cls._LEAF_CODE_RE.match(code):
+                    continue
+                score = domain_score
+                if name.lower() in combined:
+                    score += 20
+                for action, aliases in action_aliases.items():
+                    if action in name and any(alias.lower() in combined for alias in aliases):
+                        score += 10
+                distinctive = re.sub(r"虚拟机|失败|异常|告警|或|不", " ", name.lower())
+                for token in re.findall(r"[a-z0-9]+|[一-鿿]{2,}", distinctive):
+                    if token in combined:
+                        score += min(len(token), 6)
+                if score > 0:
+                    scored.append((score, code, name))
+
+        scored.sort(key=lambda row: (-row[0], row[1]))
+        candidates = [{"code": code, "name": name} for _score, code, name in scored[:4]]
+        return IntentResult(
+            category_id=None,
+            category_name=None,
+            candidates=candidates,
+            needs_confirmation=bool(candidates),
+        )
 
     async def resolve_candidate_selection(
         self,

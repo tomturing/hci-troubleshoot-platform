@@ -344,6 +344,31 @@ async def test_qfk_engine_expected_true_matched():
 
 
 @pytest.mark.asyncio
+async def test_qfk_system_host_and_timeout_are_forwarded_to_bridge():
+    """qfk_system 的 host 语义和超时必须透传到实际执行通道。"""
+    sig = BackendSignal(namespace="system", command="ps", container="host", timeout=12)
+    mock_exec_res = ExecResult(
+        stdout="process list",
+        stderr="",
+        exit_code=0,
+        command="acli system ps",
+        node="10.0.0.1",
+        duration_ms=20,
+        truncated=False,
+        risk_level=1,
+    )
+    mock_executor = AsyncMock()
+    mock_executor.execute.return_value = mock_exec_res
+
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        result = await qfk_exec(sig, conversation_id="conv-123")
+
+    assert result.error is None
+    assert mock_executor.execute.await_args.kwargs["timeout"] == 12
+    assert mock_executor.execute.await_args.kwargs["args"]["container"] == "host"
+
+
+@pytest.mark.asyncio
 async def test_qfk_engine_not_mode_matched():
     # match_mode="not"（均不出现才符合预期）：输出中出现 OOM -> 最终 matched = False
     sig = BackendSignal(

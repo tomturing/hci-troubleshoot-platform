@@ -24,13 +24,21 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
+from jsonschema import ValidationError
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import validate_acquire_args
+from shared.schemas.signal_output import sync_signal_requires
+from shared.schemas.signal_schema import validate_signals_json
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
 
+from app.services.safe_pipeline_converter import (
+    SafePipelineConversionError,
+    apply_safe_pipeline_to_signal,
+    convert_safe_pipeline,
+)
 from app.services.signal_job_manager import get_signal_job_manager
 
 if TYPE_CHECKING:
@@ -223,7 +231,7 @@ def _signal_quality_score(signal: dict[str, Any]) -> float:
     score = 0.3  # 占位符大写 + 变量合法性基础分（已校验通过）
     if cat == "backend":
         score += 0.3 if requires else 0.3  # backend 允许无 requires
-        score += 0.4 if matcher else 0.0
+        score += 0.4 if (matcher or produces) else 0.0
     else:  # frontend
         score += 0.3 if requires else 0.3
         score += 0.4 if produces else 0.0
@@ -260,7 +268,7 @@ def _calibrate_confidence(signal: dict[str, Any], quality: float) -> float:
         llm_conf = 0.7
 
     _, _, cat, produces, requires, matcher, _ = _read_signal_fields(signal)
-    evidence = (1.0 if matcher else 0.3) if cat == "backend" else 1.0 if produces else 0.4
+    evidence = (1.0 if (matcher or produces) else 0.3) if cat == "backend" else 1.0 if produces else 0.4
 
     calibrated = llm_conf * (0.5 * quality + 0.5 * evidence)
     return round(max(0.05, min(0.99, calibrated)), 3)
@@ -454,16 +462,18 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
     if cat not in VALID_CATEGORIES:
         return False, f"provenance.category 非法: {cat}"
 
-    # 占位符大写校验（acquire.args）
-    try:
-        _validate_obj_placeholders(args)
-    except ValueError as e:
-        return False, str(e)
-
     # produces/requires 变量命名与可见性（均取自 v2 orchestrate 段）
     orchestrate = signal.get("orchestrate") or {}
     produces = orchestrate.get("produces") or []
     requires = orchestrate.get("requires") or []
+
+    # 占位符大写校验（acquire.args + 文本提取条件）
+    try:
+        _validate_obj_placeholders(args)
+        _validate_obj_placeholders(produces)
+    except ValueError as e:
+        return False, str(e)
+
     for p in produces:
         name = p.get("name", "")
         if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
@@ -472,11 +482,15 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
         if r not in available_vars:
             return False, f"requires 变量不在 schema 内: {r}"
 
-    # backend 必须有 match；写操作拦截
+    # backend 的判定与产出变量严格二选一；写操作拦截
     matcher = signal.get("match")
     if cat == "backend":
-        if not isinstance(matcher, dict) or matcher.get("type") not in VALID_MATCHER_TYPES:
-            return False, f"backend 信号 match.type 非法或缺失: {matcher.get('type') if isinstance(matcher, dict) else None}"
+        has_match = isinstance(matcher, dict)
+        has_produces = any(isinstance(item, dict) and item.get("name") for item in produces)
+        if has_match == has_produces:
+            return False, "backend 信号必须且只能配置 match 或 orchestrate.produces 之一"
+        if has_match and matcher.get("type") not in VALID_MATCHER_TYPES:
+            return False, f"backend 信号 match.type 非法: {matcher.get('type')}"
         if _is_write_op_signal(signal):
             signal.setdefault("review", {})["require_human_confirm"] = True
             signal.setdefault("orchestrate", {})["phase"] = "solution"
@@ -575,10 +589,26 @@ def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[li
         if "acquire" not in s:
             rejected.append({"signal": s, "reason": "信号缺少 acquire 段（v1 扁平格式已不再支持）"})
             continue
+        try:
+            apply_safe_pipeline_to_signal(s)
+            sync_signal_requires(s)
+        except SafePipelineConversionError as exc:
+            s.setdefault("provenance", {})["needs_review"] = True
+            s.setdefault("review", {})["notes"] = str(exc)
+            rejected.append({"signal": s, "reason": str(exc)})
+            logger.warning("extract_signals 安全管道转换失败 source=%s reason=%s", source_id, exc)
+            continue
         ok, err = _validate_signal(s, available_vars)
         if ok:
             # 字段级溯源 + 置信度校准（写入 v2 段：provenance.* / review.* / orchestrate.*）
-            validated.append(_enrich_signal(s))
+            enriched = _enrich_signal(s)
+            try:
+                validate_signals_json({"schema_version": 2, "signals": [enriched]})
+            except ValidationError as exc:
+                rejected.append({"signal": enriched, "reason": f"v2 契约校验失败: {exc.message}"})
+                logger.warning("extract_signals 信号被契约拒绝 source=%s reason=%s", source_id, exc.message)
+                continue
+            validated.append(enriched)
         else:
             rejected.append({"signal": s, "reason": err})
             logger.warning("extract_signals 信号被丢弃 source=%s reason=%s", source_id, err)
@@ -772,6 +802,31 @@ class ExtractSignalsResponse(BaseModel):
     rejected_count: int = 0
     signals: list[dict[str, Any]] = Field(default_factory=list)
     rejected: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SafePipelineRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=4000)
+
+
+class SafePipelineResponse(BaseModel):
+    command: str
+    extract: dict[str, Any]
+    removed_segments: list[str] = Field(default_factory=list)
+
+
+@router.post("/kbd/tools/convert-safe-pipeline", response_model=SafePipelineResponse)
+async def convert_safe_pipeline_api(request: Request, body: SafePipelineRequest) -> SafePipelineResponse:
+    """预览 grep/awk/cut 安全子集到结构化文本提取规则的转换，不执行命令。"""
+    _check_auth(request)
+    try:
+        result = convert_safe_pipeline(body.command)
+    except SafePipelineConversionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return SafePipelineResponse(
+        command=result.command,
+        extract=result.extract,
+        removed_segments=result.removed_segments,
+    )
 
 
 @router.post("/kbd/{kbd_id}/extract-signals", response_model=ExtractSignalsResponse)

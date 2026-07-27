@@ -114,6 +114,14 @@ export interface TerminalWsMessage {
   extra?: Record<string, unknown>
 }
 
+export interface OutputFilterSpec {
+  source: 'stdout' | 'stderr'
+  include: string[]
+  exclude: string[]
+  include_mode: 'all' | 'any'
+  case_sensitive: boolean
+}
+
 /**
  * 检测当前配置的 Bridge 是否在运行
  * 通过尝试建立 WebSocket 连接来判断
@@ -332,6 +340,8 @@ export function buildAgentExecProcessMessage(
   traceparent?: string | null,
   conversationId?: string | null,
   toolCallId?: string | null,
+  timeout?: number | null,
+  outputFilters?: OutputFilterSpec[],
 ): string {
   return JSON.stringify({
     type: 'ssh_exec_process',
@@ -344,6 +354,8 @@ export function buildAgentExecProcessMessage(
     traceparent: traceparent || undefined,
     conversation_id: conversationId || undefined,
     tool_call_id: toolCallId || undefined,
+    timeout: timeout || undefined,
+    output_filters: outputFilters?.length ? outputFilters : undefined,
   })
 }
 

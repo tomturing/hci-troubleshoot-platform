@@ -19,8 +19,15 @@
     },
     "container": {
       "type": "string",
+      "enum": [
+        "host",
+        "asv-con",
+        "vn-con",
+        "vn-agent",
+        "vs-cp-manager"
+      ],
       "default": "asv-con",
-      "description": "执行容器（qfk_system 专属）"
+      "description": "执行位置；host 表示直接在宿主机执行"
     },
     "instruction": {
       "type": "string",

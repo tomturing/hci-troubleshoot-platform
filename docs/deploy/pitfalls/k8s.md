@@ -1455,3 +1455,20 @@ Pod 镜像、Prometheus namespace 或观测组件在测试途中漂移。
 
 **参考案例**：Terminal Bridge P0 本地验收同时暂停 `argocd-root`、`hci-platform-dev` 和
 `hci-platform-obs-dev`，待业务代码与环境仓值进入远端后才能恢复。
+
+---
+
+## D-020：临时 ConfigMap subPath 覆盖镜像源码，造成“新镜像、旧运行代码”
+
+**触发场景**：为紧急排障直接创建 ConfigMap 并通过 `subPath` 将 Python 源码挂载到容器的
+`/app/app/` 或 `/app/shared/` 路径，随后正式镜像虽然升级，运行时仍读取被覆盖的旧文件。
+
+**排查与修复**：先检查 Deployment/StatefulSet/DaemonSet 的 `volumeMounts` 和 managed fields，确认是否存在
+`kubectl-patch` 或临时 ConfigMap；删除对应挂载和 ConfigMap，滚动重启并在 Pod 内核验源码版本。禁止继续修改旧
+ConfigMap 作为发布方式，正式修复必须构建不可变镜像，经 PR 和 GitOps 发布。
+
+**预防**：通过 `ValidatingAdmissionPolicy` 阻止卷挂载到 `/app/app/`、`/app/shared/` 或 `*.py`，避免运行时源码
+覆盖镜像内容。
+
+**参考案例**：2026-07-27 dev 环境运行时代码完整性修复。该类问题会使镜像 tag、探针和 ArgoCD Healthy 状态
+与实际执行源码不一致，必须纳入部署验收。

@@ -55,4 +55,29 @@ describe('getBridgeUrl', () => {
     expect(message.trace_id).toBe(traceId)
     expect(message.traceparent).toBe(traceparent)
   })
+
+  it('把超时、宿主机容器和安全行筛选规格传给 terminal_bridge', () => {
+    const message = JSON.parse(buildAgentExecProcessMessage(
+      'Q2026072747493',
+      'exec-lsof-1',
+      'acli system lsof',
+      '172.28.24.4',
+      'host',
+      'trace-1',
+      undefined,
+      undefined,
+      undefined,
+      120,
+      [{
+        source: 'stdout',
+        include: ['4359974862144'],
+        exclude: [],
+        include_mode: 'all',
+        case_sensitive: true,
+      }],
+    ))
+
+    expect(message.timeout).toBe(120)
+    expect(message.output_filters[0].include).toEqual(['4359974862144'])
+  })
 })

@@ -27,6 +27,7 @@ from app.routes import (
     hits,
     ingest,
     kbd_search,
+    playbooks,
     route,
     sop_ingest,
 )
@@ -75,6 +76,7 @@ async def lifespan(app: FastAPI):
     # 注入依赖到路由模块（兼容 Depends 模式）
     ingest.set_dependencies(database_manager, embedding_service)
     kbd_search.set_dependencies(database_manager, embedding_service)  # KBD 语义检索（agent 专用）
+    playbooks.set_dependencies(database_manager)  # S0 分类驱动的完整知识清单
     admin.set_dependencies(database_manager, embedding_service)  # 注入 embedding 服务
     route.set_dependencies(database_manager)
     classify.set_dependencies(database_manager)
@@ -109,6 +111,7 @@ app.include_router(health.router)
 app.include_router(route.router)
 app.include_router(ingest.router)
 app.include_router(kbd_search.router)  # KBD 语义检索（agent-service 专用）
+app.include_router(playbooks.router)  # 分类完整知识清单（S1 权威入口）
 app.include_router(admin.router)
 app.include_router(admin.kbd_router)  # KBD 审核路由
 app.include_router(admin.sop_router)  # SOP 审核路由

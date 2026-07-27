@@ -10,6 +10,7 @@ from typing import Any
 
 from shared.observability.logger import get_logger
 
+from app.tools.qfk.extractor import QFKExtractionError, get_complete_output
 from app.tools.qfk.handlers import HandlerRegistry
 from app.tools.qfk.signal import BackendSignal
 
@@ -31,6 +32,8 @@ class QFKResult:
     evidence: str                        # 诊断评估执行的完整证据链（由 handler 生成）
     error: str | None = None             # 异常报错信息描述
     exec_ids: list[str] = field(default_factory=list) # 追踪流流水号记录
+    raw_output: str = ""                  # 未混入 matcher 目标文本的现场原始输出
+    complete_outputs: dict[str, str] = field(default_factory=dict)  # 产出变量使用的完整物理流
 
     def to_observation(self) -> str:
         """
@@ -72,6 +75,8 @@ async def qfk_exec(
     node_ip: str | None = None,
     case_id: str | None = None,
     exec_id: str | None = None,
+    required_output_sources: set[str] | None = None,
+    output_filters: list[dict[str, Any]] | None = None,
 ) -> QFKResult:
     """
     根据给定的标准化后端信号，寻找对应 Handler 执行 acli 底层命令，并自动执行关键字逻辑评估
@@ -156,13 +161,22 @@ async def qfk_exec(
         try:
             exec_res = await _executor.execute(
                 tool_name="acli_exec",
-                args={"command": cmd, "reason": f"QFK诊断信号提取执行: {signal.instruction or ''}"},
+                args={
+                    "command": cmd,
+                    "reason": f"QFK诊断信号提取执行: {signal.instruction or ''}",
+                    # qfk_system 的 container 由 terminal_bridge 包装；host 会原样在宿主机执行。
+                    "container": signal.container if signal.namespace == "system" else None,
+                    # 非 JSON 产出变量的行筛选必须在 terminal_bridge 流式执行边界
+                    # 完成，避免几十 MB 原始输出先穿过 WebSocket/浏览器/HTTP。
+                    "output_filters": output_filters or [],
+                },
                 conversation_id=conversation_id,
                 node_ip=node_ip,
                 case_id=case_id,
                 risk_level=1,  # QFK 判定均属只读行为，风险为 1
                 policy="auto", # 无需前端弹窗，静默自动跑
                 exec_id=exec_id,
+                timeout=signal.timeout,
             )
             # 让命令"在桥上跑过但未真正落到主机"的失败显式化：不进入 evaluate，直接判失败。
             combined = f"{exec_res.stdout or ''}\n{exec_res.stderr or ''}"
@@ -221,10 +235,50 @@ async def qfk_exec(
                 exec_ids=exec_ids,
             )
 
-    # 3. 解析结果并做关键字评估（evaluate 同时返回命中关键字，避免重复计算）
+    # 3. 产出变量必须使用完整物理流。展示摘要仍可截断；缓存缺失/超限时 Fail Closed。
+    complete_outputs: dict[str, str] = {}
+    requested_sources = required_output_sources or set()
+    if requested_sources:
+        failed = next((result for result in results if result.exit_code not in (0, None)), None)
+        if failed is not None:
+            combined = f"{failed.stdout or ''}\n{failed.stderr or ''}".strip()
+            return QFKResult(
+                matched=False,
+                namespace=signal.namespace,
+                commands=commands,
+                keywords=signal.keyword,
+                match_mode=signal.match_mode,
+                matched_keywords=[],
+                evidence=combined[:800],
+                error=f"QFK_COMMAND_FAILED: 命令退出码为 {failed.exit_code}，不写入产出变量",
+                exec_ids=exec_ids,
+                raw_output=combined,
+            )
+        try:
+            for source in requested_sources:
+                if source not in {"stdout", "stderr"}:
+                    raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", f"不支持的输出来源: {source}")
+                complete_outputs[source] = "\n".join(
+                    [await get_complete_output(result, _executor._redis, source=source) for result in results]
+                )
+        except QFKExtractionError as exc:
+            return QFKResult(
+                matched=False,
+                namespace=signal.namespace,
+                commands=commands,
+                keywords=signal.keyword,
+                match_mode=signal.match_mode,
+                matched_keywords=[],
+                evidence="",
+                error=str(exc),
+                exec_ids=exec_ids,
+                raw_output="\n".join(result.stdout or "" for result in results),
+            )
+
+    # 4. 解析结果并做关键字评估（evaluate 同时返回命中关键字，避免重复计算）
     matched, matched_kws, evidence = handler.evaluate(results, signal.keyword, signal.match_mode)
 
-    # 4. 最终布尔判定
+    # 5. 最终布尔判定
     # match_mode == "not" 已在 evaluate 内部表达取反语义（均不出现才为真），无需再翻转；
     # 其余模式（or/and）兼容旧 matcher 的 expected 翻转（expected=False 表示"不出现才符合预期"）。
     mode_norm = {"any": "or", "all": "and"}.get(
@@ -256,4 +310,8 @@ async def qfk_exec(
         matched_keywords=matched_kws,
         evidence=evidence,
         exec_ids=exec_ids,
+        raw_output="\n".join(
+            f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}" for result in results
+        ),
+        complete_outputs=complete_outputs,
     )

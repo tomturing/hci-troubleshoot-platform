@@ -19,6 +19,9 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-27 | v3.32 | **KBD 三信号执行闭环**：QKV 必须显式现场 acquisition；QFK 大输出字面量筛选前移到 terminal_bridge；统一工具卡片 args/result/status、exec_id 持久化和流中断终态；KBD 27123 修正为定向三步变量链。关联：[KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md)。 |
+| 2026-07-27 | v3.31 | **QFK 非 JSON 完整输出行列提取**：新增受控 text extract、stdout/stderr 完整缓存读取、稳定错误码和 Fail Closed；KB 增加 grep/awk/cut 确定性转换；requires 从占位符推导；管理端提供简化审核 UI。关联：[QFK非JSON结果行列提取方案](../../solution/events/2026-07-27-QFK非JSON结果行列提取方案.md)。 |
+| 2026-07-27 | v3.30 | **QFK 产出变量、宿主机执行与超时链路（PR #622）**：① QFK `match` 与 `orchestrate.produces` 强制二选一，产出结果写入变量池；② `qfk_system.container=host` 直接在宿主机执行；③ timeout 从 Agent 透传至 terminal bridge，并在独立 SSH session 超时后关闭会话。 |
 | 2026-07-26 | v3.29 | **v2 信号契约分层解包与容错解析（PR #620）**：① `kbd_model.py` 的 `kbd_from_dict()` 增加 dict 信封解包容错，支持兼容 API 标准 list 与 DB 原始 dict 形态；② 配合 kb-service 检索接口剥离存储信封，透出规范 `List[Signal]` 数组；③ 新增架构选型文档《关键信号数据结构选型分析与分层治理方案》 |
 | 2026-07-25 | v3.28 | **KBD 向量检索正确性修复（PR #617）**：① 移除 KBD 向量检索中的 hash/BGE 伪向量兜底，embedding 生成失败时诚实降级到词法检索；② 增加 embedding 结果校验、模型与内容 hash 溯源字段、最小相似度阈值和模型一致性过滤；③ 发布与查询统一使用 jieba/HCI 分词，删除按时间兜底返回无关结果的逻辑；④ 增加 `backend/kb-service/app/cli/rebuild_kbd_search_index.py` 索引重建 CLI；⑤ 规范 `dynamic_resource_usage_audit` 状态语义；⑥ 贯通 `conversation_id` / `case_id` 到 KBD 检索链路 |
 | 2026-07-25 | v3.27 | **InvestigationAgent 检索 query 提炼优化（PR #616）**：`InvestigationAgent._build_retrieval_query` 过滤 S0 阶段点击控制符（`①`/`继续`等），支持提取首条真实用户主诉症状 | [2026-07-25-KBD向量搜索失效根因分析与修复](../../verify/events/2026-07-25-KBD向量搜索失效根因分析与修复.md) |
@@ -547,3 +550,16 @@ owner: team
 - **Schema 修复**：`signal.v2.schema.json` 的 `match` 段扩宽为支持 6 类判定（`keyword`/`regex`/`state`/`threshold`/`json_path`/`exists`）落库，消除契约/运行时不一致坑。
 - **数据迁移**：新增 `010_flatten_v1_signal_fields.sql` 将存量 `signals_json` 的 v1 残留字段拍平为 v2 规范名；`02_system_prompts.sql` 的 KBD 抽取 prompt 同步更新字段对照。
 - **文档**：新增 `QKV_QFK信号模型v2参考.md`，改写 `QKV_QFK信号配置操作指南.md`（去 v1 扁平词汇）；`架构设计.md` / `数据库设计.md` 同步追加变更记录。
+
+---
+
+## 2026-07-26 · 分类驱动 KBD 主动诊断与结论门禁
+
+- [x] S1 直接消费 S0 已确认分类的完整 KnowledgeSnapshot，不再用 route、embedding、FTS 或 top-K 过滤分类内 KBD。
+- [x] 引入 SignalPlan、acquisition graph 和主动调度器，按判别力、required coverage、解锁价值、复用价值、成本、延迟和风险稳定排序。
+- [x] 工具动作只从版本化 KBD signal 编译；共享 acquisition 只有一个 `exec_id`，每条 signal 独立生成 `evaluation_id` 并确定性求值。
+- [x] 引入候选状态和四级 Conclusion Gate；required FAIL 后只取消被拒 KBD 的独占动作。
+- [x] 仅 `DEFINITIVE` 可进入 S4；工具错误、缺变量和未决候选不能输出 KBD 根因或方案。
+- [x] KBD 27123 golden case 和 agent-service 单元回归覆盖新不变量。
+
+详细设计见 [KBD 主动诊断信号调度与证据闭环算法设计](../../solution/knowledge-base/events/2026-07-26-KBD主动诊断信号调度与证据闭环算法设计.md)。

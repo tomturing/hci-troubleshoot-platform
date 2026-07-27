@@ -1,0 +1,64 @@
+{{- /*
+运行时代码完整性：禁止用任何 Volume 覆盖应用源码目录。
+
+这是集群级 ValidatingAdmissionPolicy，而不是发布后的巡检：Deployment、
+StatefulSet、DaemonSet 的 CREATE/UPDATE 会在 API Server 写入前被拒绝。
+sourceCodeMountGuard.enabled 可用于极少数迁移场景临时关闭；正常环境必须保持开启。
+*/ -}}
+{{- if .Values.sourceCodeMountGuard.enabled }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: hci-platform-deny-runtime-source-overrides
+  labels:
+    app.kubernetes.io/managed-by: hci-platform-infra
+    app.kubernetes.io/component: runtime-integrity
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["deployments", "statefulsets", "daemonsets"]
+  validations:
+    - expression: >-
+        !object.spec.template.spec.containers.exists(container,
+          has(container.volumeMounts) && container.volumeMounts.exists(mount,
+            mount.mountPath.startsWith("/app/app/") ||
+            mount.mountPath.startsWith("/app/shared/") ||
+            mount.mountPath.endsWith(".py")
+          )
+        ) && (
+          !has(object.spec.template.spec.initContainers) ||
+          !object.spec.template.spec.initContainers.exists(container,
+            has(container.volumeMounts) && container.volumeMounts.exists(mount,
+              mount.mountPath.startsWith("/app/app/") ||
+              mount.mountPath.startsWith("/app/shared/") ||
+              mount.mountPath.endsWith(".py")
+            )
+          )
+        )
+      message: >-
+        禁止通过 volumeMount 覆盖 Python 运行时源码（/app/app、/app/shared 或 *.py）；请将修复构建为不可变镜像并经 GitOps 发布。
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: hci-platform-deny-runtime-source-overrides
+  labels:
+    app.kubernetes.io/managed-by: hci-platform-infra
+    app.kubernetes.io/component: runtime-integrity
+spec:
+  policyName: hci-platform-deny-runtime-source-overrides
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values:
+            {{- toYaml .Values.sourceCodeMountGuard.protectedNamespaces | nindent 12 }}
+{{- end }}

@@ -170,12 +170,23 @@ type InMessage struct {
 	ExecID         string `json:"exec_id"`   // 用于 ssh_exec_command 和 ssh_exec_process
 	NodeIP         string `json:"node_ip"`   // 目标节点 IP（多节点路由）
 	Container      string `json:"container"` // 目标容器名（空或"host"=物理机直连）
+	Timeout        int    `json:"timeout"` // 命令最大执行秒数（1-300）
 	TraceID        string `json:"trace_id"`  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
 	Traceparent    string `json:"traceparent"`
 	Tracestate     string `json:"tracestate"`
 	ConversationID string `json:"conversation_id"`
 	ToolCallID     string `json:"tool_call_id"`
 	Resume         bool   `json:"resume"` // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
+	OutputFilters  []OutputFilter `json:"output_filters"` // 平台定义的安全逐行筛选，不执行 shell/正则
+}
+
+// OutputFilter 只能表达字面量行筛选，刻意不支持命令、正则、脚本和管道。
+type OutputFilter struct {
+	Source        string   `json:"source"`
+	Include       []string `json:"include"`
+	Exclude       []string `json:"exclude"`
+	IncludeMode   string   `json:"include_mode"`
+	CaseSensitive bool     `json:"case_sensitive"`
 }
 
 type OutMessage struct {
@@ -598,8 +609,23 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 // execCommandIsolated 独立建立 SSH 连接与 Session 执行命令（双通道事务执行设计）。
 // 独立连接是硬超时的必要条件：仅关闭共享连接上的 Session 时，部分 SSH 服务端会等待
 // 远端进程自然退出，导致 deadline 已触发但调用仍被阻塞；关闭独立连接才能确定性中止。
-func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestContext) {
-	timeout := time.Duration(envIntOrDefault("HCI_BRIDGE_EXEC_TIMEOUT_SECONDS", 120)) * time.Second
+func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestContext, requestedTimeout time.Duration, outputFilters []OutputFilter) {
+	timeout := requestedTimeout
+	if timeout <= 0 {
+		timeout = commandTimeout(envIntOrDefault("HCI_BRIDGE_EXEC_TIMEOUT_SECONDS", 120))
+	}
+	if err := validateOutputFilters(outputFilters); err != nil {
+		errType := "invalid_output_filter"
+		blogContext(req.Context, "ERROR", "exec.error", "输出筛选参数无效", req, map[string]any{
+			"error": err.Error(), "error_type": errType,
+		})
+		sendMsg(ws, OutMessage{
+			Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID,
+			Stderr: err.Error(), ExitCode: -1, TraceID: req.TraceID,
+			ErrorType: errType,
+		})
+		return
+	}
 	maxOutputBytes := envIntOrDefault("HCI_BRIDGE_EXEC_MAX_OUTPUT_BYTES", 4*1024*1024)
 	ctx, cancel := context.WithTimeout(req.Context, timeout)
 	defer cancel()
@@ -680,12 +706,22 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 	stderrCapture := newBoundedCapture(maxOutputBytes)
 	var readers sync.WaitGroup
 	readers.Add(2)
-	go drainExecPipe(stdoutPipe, stdoutCapture, func(chunk string) {
+	stdoutEmit := func(chunk string) {
 		sendMsg(ws, OutMessage{Type: "exec_stdout", CaseID: req.CaseID, ExecID: req.ExecID, Stdout: chunk, TraceID: traceID})
-	}, &readers)
-	go drainExecPipe(stderrPipe, stderrCapture, func(chunk string) {
+	}
+	stderrEmit := func(chunk string) {
 		sendMsg(ws, OutMessage{Type: "exec_stderr", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: chunk, TraceID: traceID})
-	}, &readers)
+	}
+	if len(filtersForSource(outputFilters, "stdout")) > 0 {
+		go drainExecPipeFiltered(stdoutPipe, stdoutCapture, stdoutEmit, &readers, "stdout", outputFilters)
+	} else {
+		go drainExecPipe(stdoutPipe, stdoutCapture, stdoutEmit, &readers)
+	}
+	if len(filtersForSource(outputFilters, "stderr")) > 0 {
+		go drainExecPipeFiltered(stderrPipe, stderrCapture, stderrEmit, &readers, "stderr", outputFilters)
+	} else {
+		go drainExecPipe(stderrPipe, stderrCapture, stderrEmit, &readers)
+	}
 
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- session.Wait() }()
@@ -778,6 +814,119 @@ func drainExecPipe(pipe io.Reader, capture *boundedCapture, emit func(string), w
 			return
 		}
 	}
+}
+
+func filtersForSource(filters []OutputFilter, source string) []OutputFilter {
+	selected := make([]OutputFilter, 0, len(filters))
+	for _, filter := range filters {
+		if filter.Source == source && (len(filter.Include) > 0 || len(filter.Exclude) > 0) {
+			selected = append(selected, filter)
+		}
+	}
+	return selected
+}
+
+func lineMatchesOutputFilter(line string, filter OutputFilter) bool {
+	candidate := line
+	includes := filter.Include
+	excludes := filter.Exclude
+	if !filter.CaseSensitive {
+		candidate = strings.ToLower(candidate)
+		includes = make([]string, len(filter.Include))
+		for i, value := range filter.Include {
+			includes[i] = strings.ToLower(value)
+		}
+		excludes = make([]string, len(filter.Exclude))
+		for i, value := range filter.Exclude {
+			excludes[i] = strings.ToLower(value)
+		}
+	}
+	includeOK := len(includes) == 0
+	if len(includes) > 0 && filter.IncludeMode == "any" {
+		for _, value := range includes {
+			if strings.Contains(candidate, value) {
+				includeOK = true
+				break
+			}
+		}
+	} else if len(includes) > 0 {
+		includeOK = true
+		for _, value := range includes {
+			if !strings.Contains(candidate, value) {
+				includeOK = false
+				break
+			}
+		}
+	}
+	if !includeOK {
+		return false
+	}
+	for _, value := range excludes {
+		if strings.Contains(candidate, value) {
+			return false
+		}
+	}
+	return true
+}
+
+// drainExecPipeFiltered 在 Bridge 本地逐行筛选，原始大输出不会进入 WebSocket 和浏览器。
+func drainExecPipeFiltered(pipe io.Reader, capture *boundedCapture, emit func(string), wg *sync.WaitGroup, source string, filters []OutputFilter) {
+	defer wg.Done()
+	selected := filtersForSource(filters, source)
+	reader := bufio.NewReader(pipe)
+	for {
+		line, err := reader.ReadString('\n')
+		if line != "" {
+			keep := false
+			for _, filter := range selected {
+				if lineMatchesOutputFilter(line, filter) {
+					keep = true
+					break
+				}
+			}
+			if keep {
+				if captured := capture.write([]byte(line)); len(captured) > 0 {
+					emit(string(captured))
+				}
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func validateOutputFilters(filters []OutputFilter) error {
+	if len(filters) > 8 {
+		return fmt.Errorf("output_filters 最多允许 8 项")
+	}
+	for index, filter := range filters {
+		if filter.Source != "stdout" && filter.Source != "stderr" {
+			return fmt.Errorf("output_filters[%d].source 只允许 stdout/stderr", index)
+		}
+		if filter.IncludeMode != "all" && filter.IncludeMode != "any" {
+			return fmt.Errorf("output_filters[%d].include_mode 只允许 all/any", index)
+		}
+		if len(filter.Include) > 8 || len(filter.Exclude) > 8 {
+			return fmt.Errorf("output_filters[%d] 的 include/exclude 最多各 8 项", index)
+		}
+		if len(filter.Include) == 0 && len(filter.Exclude) == 0 {
+			return fmt.Errorf("output_filters[%d] 至少需要 include 或 exclude", index)
+		}
+		for _, literal := range append(append([]string{}, filter.Include...), filter.Exclude...) {
+			if len(literal) == 0 || len([]byte(literal)) > 512 {
+				return fmt.Errorf("output_filters[%d] 条件必须为 1~512 字节的非空字面量", index)
+			}
+		}
+	}
+	return nil
+}
+
+func commandTimeout(seconds int) time.Duration {
+	if seconds < 1 || seconds > 300 {
+		seconds = 60
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func summarizeSSHDetail(output string) string {
@@ -1962,7 +2111,11 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				Container: msg.Container, CustomUI: cui, Command: wrappedCmd,
 				CommandRedacted: redactCommand(wrappedCmd), CommandSHA256: commandHash,
 			}
-			go s.execCommandIsolated(ws, req)
+			var requestedTimeout time.Duration
+			if msg.Timeout > 0 {
+				requestedTimeout = commandTimeout(msg.Timeout)
+			}
+			go s.execCommandIsolated(ws, req, requestedTimeout, msg.OutputFilters)
 		}
 	}
 }

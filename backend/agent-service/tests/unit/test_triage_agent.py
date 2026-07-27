@@ -160,6 +160,29 @@ class TestResolveCandidateSelection:
         assert result.category_id is None
 
 
+def test_deterministic_fallback_ranks_vm_power_on_from_prefetched_task():
+    TriageAgent._categories_cache = {
+        "虚拟机": [
+            {"code": "虚拟机-001", "name": "虚拟机创建失败"},
+            {"code": "虚拟机-003", "name": "虚拟机开机失败"},
+            {"code": "虚拟机-009", "name": "虚拟机异常挂起"},
+        ]
+    }
+    task = {
+        "status": 3,
+        "description": "启动虚拟机（Server-IMG）失败，错误信息：虚拟机镜像忙",
+    }
+
+    result = TriageAgent._deterministic_candidates(
+        [{"role": "user", "content": "虚拟机有异常"}],
+        {"task_logs": [task]},
+    )
+
+    assert result.category_id is None
+    assert result.needs_confirmation is True
+    assert result.candidates[0] == {"code": "虚拟机-003", "name": "虚拟机开机失败"}
+
+
 # ─── process() 流程测试 ──────────────────────────────────────────────────────
 
 
