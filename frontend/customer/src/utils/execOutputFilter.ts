@@ -25,6 +25,14 @@ export interface AgentExecResult {
   stderr?: string
 }
 
+export interface ExecResultRelayPayload {
+  exec_id: string
+  output: string
+  exit_code: number
+  stdout?: string
+  stderr?: string
+}
+
 export function createExecOutputBuffer(): ExecOutputBuffer {
   return {
     stdout: [],
@@ -33,6 +41,49 @@ export function createExecOutputBuffer(): ExecOutputBuffer {
     stderrRemainder: '',
     keptChars: 0,
     overflow: false,
+  }
+}
+
+/** 由两个物理流重建兼容字段 output，禁止沿用 bridge 最终帧中的原始聚合输出。 */
+export function combineExecOutput(stdout = '', stderr = ''): string {
+  if (!stdout) return stderr
+  if (!stderr) return stdout
+  return stdout.endsWith('\n') ? `${stdout}${stderr}` : `${stdout}\n${stderr}`
+}
+
+/**
+ * 构造发往 Gateway 的最小安全结果。
+ *
+ * output 是历史兼容字段，stdout/stderr 是真实物理流；只要物理流存在，output
+ * 必须由物理流重建。否则旧 bridge 最终帧中的数十 MB 原文会作为第三份副本进入
+ * HTTP，即使 stdout/stderr 已完成筛选，也仍可能使 Gateway OOM。
+ */
+export function buildSafeExecResultPayload(
+  execId: string,
+  output: string,
+  exitCode: number,
+  status?: string,
+  stdout?: string,
+  stderr?: string,
+): ExecResultRelayPayload {
+  const hasPhysicalStreams = stdout !== undefined || stderr !== undefined
+  const canonicalOutput = hasPhysicalStreams ? combineExecOutput(stdout, stderr) : output
+  const relayedOutput = status ? `${status}: ${canonicalOutput}` : canonicalOutput
+  if (relayedOutput.length > MAX_RELAYED_OUTPUT_CHARS) {
+    const error = 'QFK_EDGE_OUTPUT_LIMIT: 回传结果超过 256 KiB，已在浏览器边界拒绝'
+    return {
+      exec_id: execId,
+      output: error,
+      exit_code: -1,
+      stderr: error,
+    }
+  }
+  return {
+    exec_id: execId,
+    output: relayedOutput,
+    exit_code: exitCode,
+    stdout: stdout || undefined,
+    stderr: stderr || undefined,
   }
 }
 
@@ -118,5 +169,8 @@ export function finalizeExecOutput(
     result.exitCode = -1
     result.stderr = `${result.stderr || ''}\nQFK_EDGE_OUTPUT_LIMIT: 安全筛选后的结果仍超过 256 KiB，请收紧行筛选条件`.trim()
   }
+  // output 是旧协议的聚合兼容字段，也必须同步覆盖。只覆盖 stdout/stderr 会让
+  // 旧 bridge 的完整原始输出作为第三份副本进入 POST /exec-result。
+  result.output = combineExecOutput(result.stdout, result.stderr)
   return result
 }

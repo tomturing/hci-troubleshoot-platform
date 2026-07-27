@@ -2,8 +2,12 @@
 Agent 执行命令事件契约测试。
 """
 
+import uuid
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from app.routes.agent_exec import AgentExecRequest
+from app.routes import agent_exec
+from app.routes.agent_exec import AgentExecRequest, ExecResultRequest
 from pydantic import ValidationError
 
 
@@ -58,3 +62,44 @@ def test_agent_exec_request_rejects_unsafe_or_empty_output_filter(output_filter)
             risk_level=1,
             output_filters=[output_filter],
         )
+
+
+def test_exec_result_request_rejects_oversized_compatibility_output():
+    with pytest.raises(ValidationError):
+        ExecResultRequest(
+            exec_id="exec-large",
+            output="x" * (256 * 1024 + 1),
+            exit_code=0,
+        )
+
+
+def test_exec_result_request_rejects_oversized_combined_streams():
+    with pytest.raises(ValidationError):
+        ExecResultRequest(
+            exec_id="exec-large-streams",
+            output="",
+            exit_code=0,
+            stdout="x" * (128 * 1024 + 1),
+            stderr="y" * (128 * 1024),
+        )
+
+
+@pytest.mark.asyncio
+async def test_case_id_resolution_keeps_session_alive_until_query_finishes(monkeypatch):
+    conversation_id = "00000000-0000-0000-0000-000000008529"
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = "Q2026072785259"
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=False)
+    db = MagicMock()
+    db.async_session_factory.return_value = context
+    monkeypatch.setattr(agent_exec, "_db_manager", db)
+
+    resolved = await agent_exec._resolve_conversation_case_id(uuid.UUID(conversation_id))
+
+    assert resolved == "Q2026072785259"
+    session.execute.assert_awaited_once()
+    context.__aexit__.assert_awaited_once()

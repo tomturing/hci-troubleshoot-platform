@@ -122,13 +122,15 @@ RUN pnpm config set onlyBuiltDependencies[0] esbuild \
 
 **现象：** 远端命令已经 exit 0，但页面长期显示“正在等待输出”；terminal_bridge 有 `exec.done`，API Gateway / conversation-service 却没有对应 `/exec-result`。浏览器内存、CPU 或主线程占用异常。
 
-**根因：** 后端截断发生在浏览器提交 `/exec-result` 之后，无法保护前置 WebSocket、JSON 解析和 HTTP。若前端按 4 KiB 分块使用 `buffer += chunk` 拼接几十 MB 输出，还会产生 O(n²) 字符串复制；bridge 最后再发送一份完整结果会进一步放大峰值。
+**根因：** 后端截断发生在浏览器提交 `/exec-result` 之后，无法保护前置 WebSocket、JSON 解析和 HTTP。若前端按 4 KiB 分块使用 `buffer += chunk` 拼接几十 MB 输出，还会产生 O(n²) 字符串复制；bridge 最后再发送一份完整结果会进一步放大峰值。尤其要注意旧协议的聚合字段 `output`：即使 stdout/stderr 已筛选，若 `output` 仍保留原文，它会作为第三份副本进入 HTTP 并使 Gateway OOM。
 
-**修复：** 优先用原生命令参数在数据源缩小结果集；仍需选行时，把平台定义的字面量 `output_filters` 前移到 terminal_bridge，在本机逐行筛选。只回传命中行，stdout/stderr 共用 256 KiB 总预算，超限返回稳定错误并 Fail Closed。Customer UI 使用分块数组和 remainder 处理跨 chunk 行边界，并为无法原子升级的旧 bridge 保留相同规则的兼容筛选。
+**修复：** 优先用原生命令参数在数据源缩小结果集；仍需选行时，把平台定义的字面量 `output_filters` 前移到 terminal_bridge，在本机逐行筛选。只回传命中行，stdout/stderr 共用 256 KiB 总预算，超限返回稳定错误并 Fail Closed。Customer UI 使用分块数组和 remainder 处理跨 chunk 行边界，并为无法原子升级的旧 bridge 保留相同规则的兼容筛选。只要存在物理流，HTTP 兼容字段 `output` 必须由筛选后的 stdout/stderr 重建，禁止沿用 bridge 聚合值。
 
 **预防：**
 
 - 禁止以“后端最终会截断”为理由放行无界原始输出。
+- 审查最终 payload 的全部输出字段；stdout/stderr/output 任一字段都不能残留未筛选副本。
+- Gateway 必须在 JSON 解析前执行请求体硬限制；业务模型的字段长度校验不能替代传输层限制。
 - 新筛选协议只能表达 source/include/exclude/all|any/case_sensitive，不能表达 shell、正则、grep、awk 或管道。
 - 自动测试必须覆盖跨 chunk 关键字、无换行最后一行、stdout/stderr 共享上限、筛选后仍超限以及 SSE 中断后 running 卡片收敛。
 - 现场验证同时检查 bridge 的 raw/filtered 字节数和 `/exec-result` 到达情况，不能只看命令退出码。

@@ -11,6 +11,7 @@ import { createEvaluateApi } from '@/api/evaluate'
 import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage } from '@/api/terminal'
 import {
   appendExecOutput as appendFilteredExecOutput,
+  buildSafeExecResultPayload,
   createExecOutputBuffer,
   finalizeExecOutput,
   type ExecOutputBuffer,
@@ -1988,11 +1989,7 @@ export const useChatStore = defineStore('chat', () => {
           'X-Client-ID': clientId,
         },
         body: JSON.stringify({
-          exec_id: execId,
-          output: status ? `${status}: ${output}` : output,
-          exit_code: exitCode,
-          stdout: stdout || undefined,
-          stderr: stderr || undefined,
+          ...buildSafeExecResultPayload(execId, output, exitCode, status, stdout, stderr),
         }),
       })
 
