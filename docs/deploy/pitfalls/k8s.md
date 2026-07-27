@@ -1340,3 +1340,31 @@ grep -n '\$TEMPLATE\$' database/seeds/02_system_prompts.sql
 - `02_system_prompts.sql` 的 `kbd_extract_signals_v2` prompt（PR611 v2 信号模型引入），第 678 行闭定界符 `$TEMPLATE$` 漏逗号
 - PR611~PR613 期间 db-seed-010 PostSync Job 持续失败，但因 `health=Healthy` 未被及时发现；PR613 合并后排查 ArgoCD 异常时定位
 - 修复：第 678 行 `$TEMPLATE$` -> `$TEMPLATE$,`
+
+---
+
+## D-015：临时 ConfigMap `subPath` 覆盖镜像源码，导致“新镜像、旧运行代码”
+
+**触发场景**：为紧急排障直接执行 `kubectl create configmap` 和 `kubectl patch deployment`，将 Python 文件以 `subPath` 挂载到镜像的 `/app/app/*.py` 或 `/app/shared/*.py`。随后正式 PR 已合并、镜像 tag 已升级、Pod 也已重建，但业务行为仍与旧版本一致。
+
+**症状**：ArgoCD 显示 `Synced / Healthy`，Pod image 已是最新 commit 对应 tag；但 Deployment 的 `volumeMounts` 中出现 `/app/app/...py` 或 `/app/shared/...py`，并指向临时 `cdd-*-code-*` ConfigMap。其 `managedFields.manager` 是 `kubectl-create` / `kubectl-patch`，而非 Helm/ArgoCD。
+
+**根因**：镜像文件系统先提供新源码；Kubernetes 再把 `subPath` 挂载到同一路径，后者覆盖前者。镜像 tag、健康探针和普通 HTTP 冒烟都无法证明运行时文件未被覆盖；资源级 prune 也不能替代对外部 patch 字段的治理。
+
+**排查步骤**：
+
+```bash
+# 先看运行态挂载，而不是只看 image tag
+kubectl -n <ns> get deploy <service> -o json \
+  | jq '.spec.template.spec.containers[].volumeMounts'
+
+# kubectl-patch 表明存在绕过 GitOps 的热补丁
+kubectl -n <ns> get deploy <service> -o json --show-managed-fields \
+  | jq '.metadata.managedFields[] | select(.manager == "kubectl-patch")'
+```
+
+**修复方法**：先准确核实 ConfigMap 仅被目标工作负载引用，再删除 Deployment 的对应 `volumeMount` 和 `volume`，等待滚动更新并在 Pod 内验证源码，最后删除废弃 ConfigMap。不要把新文件继续写回旧 ConfigMap——那只会延续双重发布源。
+
+**预防**：`hci-platform-infra` 的 `ValidatingAdmissionPolicy` `hci-platform-deny-runtime-source-overrides` 已在 `hci-dev` / `hci-staging` / `hci-prod` 生效。它以 `Deny` 阻止 Deployment、StatefulSet、DaemonSet 将任何卷挂载到 `/app/app/`、`/app/shared/` 或 `*.py`。修复只能构建不可变镜像，经 PR + GitOps 发布。
+
+**参考案例**：2026-07-27 工单 `Q2026072748256`。PR #628 的新镜像已部署，但 2026-07-26 的 `cdd-conversation-code-*`、`cdd-kb-code-*`、`cdd-agent-code-*` 覆盖了三个服务源码，造成 KBD 门禁仍要求 `matcher`、人工升级确认仍错误回传 ops-agent。详见 [部署事件](../events/2026-07-27-运行时代码完整性修复与防护.md)。

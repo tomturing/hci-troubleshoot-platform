@@ -15,7 +15,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 > 2. 再写入对应分类 file
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：D-015**（旧格式延续：PIT-050）
+> **下一个可用编号：D-016**（旧格式延续：PIT-050）
 
 ---
 
@@ -79,6 +79,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-012** | shell.md | GitHub Actions ci.yml 无路径过滤导致局部变更 PR（如仅改 Helm）触发全套 CI（>10min）；uv/pnpm/helm-unittest 三处缓存缺失为主要浪费点；详见 `docs/deploy/events/2026-07-09-CI检查超时分析与优化方案.md` |
 | **D-013** | k8s.md | desired_schema.sql 声明式 schema 与 ORM 模型不同步导致 ORM 查询 500（db-migrate.sh 只应用 desired_schema.sql，不应用 atlas-migrations 版本化迁移）|
 | **D-014** | k8s.md | db-seed 种子 SQL `$TEMPLATE$` dollar-quote 闭定界符后漏逗号导致 PostSync Hook Job 失败（syntax error at '1.0'）|
+| **D-015** | k8s.md | `kubectl patch` 遗留 ConfigMap `subPath` 覆盖镜像 Python 源码，造成镜像已升级但运行代码陈旧 |
 
 ---
 
