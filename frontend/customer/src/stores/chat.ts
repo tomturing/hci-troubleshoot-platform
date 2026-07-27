@@ -81,6 +81,7 @@ export const useChatStore = defineStore('chat', () => {
   let bridgeLogBuffer: Record<string, unknown>[] = []
   let bridgeLogTimer: number | null = null
   let bridgeLogRetryCount = 0
+  const BRIDGE_LOG_MAX_RETRY = 5
   const BRIDGE_LOG_BASE_DELAY = 500
   const BRIDGE_LOG_MAX_DELAY = 30_000
   const BRIDGE_LOG_OUTBOX_KEY = `hci_bridge_log_outbox_${clientId}`
@@ -143,19 +144,25 @@ export const useChatStore = defineStore('chat', () => {
       bridgeLogRetryCount++
       // 回采可观测性自检：失败计数暴露到 window，供巡检（消除静默失败，根因见回采链路断裂分析）
       const stats = getBridgeLogStats()
+      const dropped = bridgeLogRetryCount > BRIDGE_LOG_MAX_RETRY ? batch.length : 0
       setBridgeLogStats({
         ...stats,
         failures: (stats.failures || 0) + 1,
-        dropped: stats.dropped || 0,
+        dropped: (stats.dropped || 0) + dropped,
         lastError: String(e).slice(0, 200),
         lastErrorAt: new Date().toISOString(),
       })
-      const delay = Math.min(BRIDGE_LOG_BASE_DELAY * Math.pow(2, bridgeLogRetryCount - 1), BRIDGE_LOG_MAX_DELAY)
-      console.warn(`日志回采失败（第 ${bridgeLogRetryCount} 次），${delay}ms 后重试`, e)
-      bridgeLogBuffer = batch.concat(bridgeLogBuffer)
-      persistBridgeLogOutbox()
-      if (bridgeLogTimer === null) {
-        bridgeLogTimer = window.setTimeout(flushBridgeLogs, delay)
+      if (bridgeLogRetryCount <= BRIDGE_LOG_MAX_RETRY) {
+        const delay = Math.min(BRIDGE_LOG_BASE_DELAY * Math.pow(2, bridgeLogRetryCount - 1), BRIDGE_LOG_MAX_DELAY)
+        console.warn(`日志回采失败（第 ${bridgeLogRetryCount} 次），${delay}ms 后重试`, e)
+        bridgeLogBuffer = batch.concat(bridgeLogBuffer)
+        persistBridgeLogOutbox()
+        if (bridgeLogTimer === null) {
+          bridgeLogTimer = window.setTimeout(flushBridgeLogs, delay)
+        }
+      } else {
+        console.error('日志回采失败，已达最大重试次数，丢弃日志', batch.length, '条')
+        bridgeLogRetryCount = 0
       }
     }
   }
