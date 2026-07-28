@@ -267,6 +267,65 @@ class TestExtractS0Candidates:
         assert result[1]["code"] == "存储-017"
         assert result[1]["name"] == "磁盘异常"
 
+    @pytest.mark.asyncio
+    async def test_legacy_invalid_option_does_not_shift_original_ids(self, mock_service, conversation_id):
+        """工单 Q2026072855923：过滤幻觉项后仍保留原 optionId。"""
+        metadata = {
+            "kind": "choice_options",
+            "options": [
+                {"optionId": "1", "name": "ubu-sus-25 "},
+                {"optionId": "2", "name": "虚拟机-038 虚拟机IO读写慢"},
+                {"optionId": "3", "name": "虚拟机-003 虚拟机开机失败"},
+                {"optionId": "4", "name": "存储-020 虚拟存储性能告警"},
+                {"optionId": "5", "name": "以上都不是（请补充症状描述）"},
+            ],
+        }
+        with patch.object(
+            mock_service,
+            "_get_last_assistant_message",
+            new_callable=AsyncMock,
+            return_value=("AI 消息内容", metadata),
+        ):
+            result = await mock_service._extract_s0_candidates(conversation_id)
+
+        assert [candidate["option_id"] for candidate in result] == ["2", "3", "4"]
+        assert result[1] == {
+            "option_id": "3",
+            "code": "虚拟机-003",
+            "name": "虚拟机开机失败",
+        }
+
+    @pytest.mark.asyncio
+    async def test_extract_v2_stable_category_options(self, mock_service, conversation_id):
+        metadata = {
+            "kind": "choice_options",
+            "schemaVersion": 2,
+            "options": [
+                {
+                    "optionId": "虚拟机-003",
+                    "code": "虚拟机-003",
+                    "categoryName": "虚拟机开机失败",
+                    "name": "虚拟机-003 虚拟机开机失败",
+                },
+                {"optionId": "__none__", "name": "以上都不是（请补充症状描述）"},
+            ],
+        }
+        with patch.object(
+            mock_service,
+            "_get_last_assistant_message",
+            new_callable=AsyncMock,
+            return_value=("AI 消息内容", metadata),
+        ):
+            result = await mock_service._extract_s0_candidates(conversation_id)
+
+        assert result == [
+            {
+                "option_id": "虚拟机-003",
+                "code": "虚拟机-003",
+                "name": "虚拟机开机失败",
+            }
+        ]
+
 
 class TestGetLastAssistantMessage:
     """_get_last_assistant_message 方法测试"""
@@ -462,3 +521,31 @@ class TestConversationManagerResolveCandidate:
         result = manager.resolve_candidate_category(1, [])
 
         assert result is None
+
+    def test_resolve_legacy_choice_by_original_option_id(self, manager):
+        candidates = [
+            {"option_id": "2", "code": "虚拟机-038", "name": "虚拟机IO读写慢"},
+            {"option_id": "3", "code": "虚拟机-003", "name": "虚拟机开机失败"},
+            {"option_id": "4", "code": "存储-020", "name": "虚拟存储性能告警"},
+        ]
+
+        assert manager.resolve_candidate_category(3, candidates) == {
+            "code": "虚拟机-003",
+            "name": "虚拟机开机失败",
+        }
+
+    def test_resolve_v2_choice_by_stable_category_code(self, manager):
+        candidates = [
+            {
+                "option_id": "虚拟机-003",
+                "code": "虚拟机-003",
+                "name": "虚拟机开机失败",
+            }
+        ]
+
+        assert manager.resolve_candidate_option("虚拟机-003", candidates) == {
+            "code": "虚拟机-003",
+            "name": "虚拟机开机失败",
+        }
+        assert manager.resolve_candidate_option("__none__", candidates) is None
+        assert manager.resolve_candidate_option("存储-020", candidates) is None

@@ -258,22 +258,32 @@ function renderTextSegment(content: string): string {
 const CIRCLED_DIGITS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨']
 
 interface ChoiceItem {
-  label: string   // 圆圈数字，如 "①"
-  title: string   // 候选项首行简短标题
+  label: string
+  title: string
+  optionId: string
+  categoryCode?: string
+  categoryName?: string
 }
 
 const choiceOptions = computed<ChoiceItem[]>(() => {
   const metadata = props.message.metadata as any
   if (metadata?.kind === 'choice_options') {
-    return (metadata.options || []).map((opt: any) => {
-      const id = String(opt.optionId)
-      const labelMap: Record<string, string> = {
-        '1': '①', '2': '②', '3': '③', '4': '④', '5': '⑤',
-        '6': '⑥', '7': '⑦', '8': '⑧', '9': '⑨'
-      }
+    return (metadata.options || []).map((opt: any, index: number) => {
+      const optionId = String(opt.optionId || '')
+      const title = String(opt.name || '')
+      const titleMatch = title.trim().match(/^([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+(.+)$/)
+      const stableOptionCode = optionId !== '__none__' && !/^\d+$/.test(optionId)
+        ? optionId
+        : undefined
+      const categoryCode = String(opt.code || stableOptionCode || titleMatch?.[1] || '').trim() || undefined
+      const categoryName = String(opt.categoryName || titleMatch?.[2] || '').trim() || undefined
       return {
-        label: labelMap[id] || id,
-        title: opt.name,
+        // 圆圈数字只是当前卡片的展示位置，不是业务身份。
+        label: CIRCLED_DIGITS[index] || String(index + 1),
+        title,
+        optionId,
+        categoryCode,
+        categoryName,
       }
     })
   }
@@ -285,16 +295,21 @@ const selectedChoice = ref<string | null>(null)
 
 /**
  * 判断该消息的选项是否已经被交互过（页面刷新后仍有效）。
- * 判断逻辑：在 chatStore.messages 中找到当前消息之后是否存在用户的圆圈数字回复消息。
+ * v2 优先按 sourceMessageId 和稳定 optionId 识别；旧消息兼容圆圈数字。
  */
 const hasBeenInteracted = computed(() => {
   if (!choiceOptions.value.length) return false
   const msgIndex = chatStore.messages.findIndex(m => m.id === props.message.id)
   if (msgIndex === -1) return false
   const laterMessages = chatStore.messages.slice(msgIndex + 1)
-  return laterMessages.some(
-    m => m.role === 'user' && CIRCLED_DIGITS.some(d => m.content.startsWith(d))
-  )
+  return laterMessages.some(m => {
+    if (m.role !== 'user') return false
+    if (m.metadata?.kind === 'intent_selection_response') {
+      const sourceMessageId = String(m.metadata.sourceMessageId || '')
+      return !sourceMessageId || sourceMessageId === props.message.id
+    }
+    return CIRCLED_DIGITS.some(d => m.content.startsWith(d))
+  })
 })
 
 /** 历史交互中已选中的选项左签（用于刷新后继续高亮展示） */
@@ -303,10 +318,23 @@ const interactedChoice = computed(() => {
   const msgIndex = chatStore.messages.findIndex(m => m.id === props.message.id)
   if (msgIndex === -1) return null
   const laterMessages = chatStore.messages.slice(msgIndex + 1)
-  const found = laterMessages.find(
-    m => m.role === 'user' && CIRCLED_DIGITS.some(d => m.content.startsWith(d))
-  )
+  const found = laterMessages.find(m => {
+    if (m.role !== 'user') return false
+    if (m.metadata?.kind === 'intent_selection_response') {
+      const sourceMessageId = String(m.metadata.sourceMessageId || '')
+      return !sourceMessageId || sourceMessageId === props.message.id
+    }
+    return CIRCLED_DIGITS.some(d => m.content.startsWith(d))
+  })
   if (!found) return null
+  if (found.metadata?.kind === 'intent_selection_response') {
+    const selectedId = String(
+      found.metadata.selectedCategoryCode || found.metadata.selectedOptionId || ''
+    )
+    return choiceOptions.value.find(
+      choice => selectedId === choice.categoryCode || selectedId === choice.optionId
+    )?.label ?? null
+  }
   return CIRCLED_DIGITS.find(d => found.content.startsWith(d)) ?? null
 })
 
@@ -331,7 +359,15 @@ async function handleChoiceSelect(choice: ChoiceItem) {
   }
 
   selectedChoice.value = choice.label
-  await chatStore.sendMessage(choice.label)
+  await chatStore.sendMessage(choice.label, {
+    kind: 'intent_selection_response',
+    selectedOptionId: choice.optionId,
+    selectedCategoryCode: choice.categoryCode,
+    selectedCategoryName: choice.categoryName,
+    isNoneOfAbove: false,
+    sourceMessageId: props.message.id,
+    sourceRequestId: (props.message.metadata as any)?.requestId,
+  })
 }
 
 /** 提交“以上都不是”的补充描述 */
@@ -342,7 +378,14 @@ async function handleFreeInputSubmit() {
   selectedChoice.value = choice.label
   freeInputText.value = ''
   pendingInputChoice.value = null
-  await chatStore.sendMessage(`${choice.label} ${text}`)
+  await chatStore.sendMessage(`${choice.label} ${text}`, {
+    kind: 'intent_selection_response',
+    selectedOptionId: choice.optionId || '__none__',
+    isNoneOfAbove: true,
+    freeText: text,
+    sourceMessageId: props.message.id,
+    sourceRequestId: (props.message.metadata as any)?.requestId,
+  })
 }
 
 /** 取消补充输入 */
@@ -405,14 +448,21 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
 
   // ── 如果是 triage-agent 意图分类卡片（S0） ─────────────────────────
   if (ev.kind === 'intent_selection') {
-    // 映射为圆圈数字：1 -> ①, 2 -> ②, 3 -> ③ 等
-    const idx = parseInt(optionId)
-    const label = CIRCLED_DIGITS[idx - 1] || optionId
-    
-    // 直接发送圆圈数字，并带上 interactive_response 类型的 metadata，满足卡片已选高亮逻辑
+    const optionIndex = ev.options.findIndex(option => option.optionId === optionId)
+    const label = CIRCLED_DIGITS[optionIndex] || optionId
+    const categoryMatch = optionName.match(/^([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+(.+)$/)
+    const categoryCode = optionId !== '__none__' && !/^\d+$/.test(optionId)
+      ? optionId
+      : categoryMatch?.[1]
+
     await chatStore.sendMessage(label, {
-      kind: 'interactive_response',
+      kind: 'intent_selection_response',
       selectedOptionId: optionId,
+      selectedCategoryCode: categoryCode,
+      selectedCategoryName: categoryMatch?.[2],
+      isNoneOfAbove: optionId === '__none__',
+      sourceMessageId: props.message.id,
+      sourceRequestId: ev.requestId,
     })
     return
   }

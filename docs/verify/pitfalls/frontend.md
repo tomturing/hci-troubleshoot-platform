@@ -134,3 +134,18 @@ RUN pnpm config set onlyBuiltDependencies[0] esbuild \
 - 新筛选协议只能表达 source/include/exclude/all|any/case_sensitive，不能表达 shell、正则、grep、awk 或管道。
 - 自动测试必须覆盖跨 chunk 关键字、无换行最后一行、stdout/stderr 共享上限、筛选后仍超限以及 SSE 中断后 running 卡片收敛。
 - 现场验证同时检查 bridge 的 raw/filtered 字节数和 `/exec-result` 到达情况，不能只看命令退出码。
+
+## V-003：展示序号不能作为跨层业务身份
+
+**现象：** 用户点击页面③项，后端却处理了另一个对象；过滤一个非法项后错位更容易出现。
+
+**根因：** `①②③` / 数组下标是渲染位置，会随过滤、排序、分页和版本改变。将它当作跨 UI、API、数据库和 Agent 的业务键，必然产生 TOCTOU/错位问题。
+
+**修复：**
+
+- 选项必须携带稳定领域键，如 `category_code`、UUID 或不可变记录 ID。
+- 前端可按当前数组位置显示①②③，但回传 metadata 必须使用稳定键。
+- 兼容历史序号时，必须保留并匹配原 optionId，过滤后不得重排。
+- 消费端必须再校验稳定键属于当前候选和权威目录，未命中时 Fail Closed。
+
+**预防测试：** 回归数据必须包含“前置非法项被过滤”和“排序改变”，不能只测试全部合法、连续编号的 happy path。
