@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   appendExecOutput,
+  buildSafeExecResultPayload,
   createExecOutputBuffer,
   finalizeExecOutput,
   lineMatchesExecFilter,
@@ -69,6 +70,8 @@ describe('execOutputFilter', () => {
     })
 
     expect(result.stdout).toBe('qemu /4359974862144/disk.qcow2\n')
+    expect(result.output).toBe('qemu /4359974862144/disk.qcow2\n')
+    expect(result.output).not.toContain('unfiltered')
     expect(result.exitCode).toBe(0)
   })
 
@@ -82,6 +85,45 @@ describe('execOutputFilter', () => {
     })
 
     expect(result.stdout).toBe('')
+    expect(result.output).toBe('')
     expect(result.exitCode).toBe(0)
+  })
+
+  it('回传 payload 以筛选后的物理流覆盖旧 bridge 的 40 MB 聚合输出', () => {
+    const payload = buildSafeExecResultPayload(
+      'exec-lsof-40mb',
+      'unfiltered'.repeat(4 * 1024 * 1024),
+      0,
+      undefined,
+      'qemu 9527 /images/4359974862144/disk.qcow2\n',
+      '',
+    )
+
+    expect(payload.output).toBe('qemu 9527 /images/4359974862144/disk.qcow2\n')
+    expect(JSON.stringify(payload).length).toBeLessThan(1024)
+  })
+
+  it('无物理流的超大兼容输出在 HTTP 边界 Fail Closed', () => {
+    const payload = buildSafeExecResultPayload(
+      'exec-unfiltered',
+      'x'.repeat(256 * 1024 + 1),
+      0,
+    )
+
+    expect(payload.exit_code).toBe(-1)
+    expect(payload.output).toContain('QFK_EDGE_OUTPUT_LIMIT')
+    expect(payload.output.length).toBeLessThan(256)
+  })
+
+  it('状态前缀也计入 256 KiB 回传预算', () => {
+    const payload = buildSafeExecResultPayload(
+      'exec-status-overflow',
+      'x'.repeat(256 * 1024),
+      0,
+      'success',
+    )
+
+    expect(payload.exit_code).toBe(-1)
+    expect(payload.output).toContain('QFK_EDGE_OUTPUT_LIMIT')
   })
 })

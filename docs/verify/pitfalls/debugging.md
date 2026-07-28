@@ -81,3 +81,15 @@ PY
 ```
 
 **预防：** 每次发布后校验 `case.close_reason` 字段是否存在；将数据库迁移纳入发布门禁。
+
+---
+
+## V-004：命令输出形态变化后不能复用旧行筛选条件
+
+**症状：** 命令在 terminal_bridge 日志中 `exit_code=0` 且 `stdout_raw_len>0`，Agent 却报告 `QFK_OUTPUT_EMPTY` 或 `QFK_NO_MATCH`。把命令从 `ps -p PID -o pid=,args=` 改为 `ps -p PID -o cmd=` 后尤其容易出现。
+
+**根因：** 只修改了命令，没有同步审查 `extract.include/exclude/column/cardinality`。`cmd=` 输出只含命令行，不含 PID；旧的 `include=[PID]` 会在边缘安全筛选阶段丢弃唯一一行。错误中的“stdout 为空”指筛选后逻辑流为空，不代表远端物理 stdout 为空。
+
+**修复：** 逐层核对 remote exit code、raw stdout、filtered stdout 和 extractor 结果。对于 `ps -p {{PID}} -o cmd=`，由命令参数完成 PID 定向，extract 使用空 include/exclude、`exactly_one + whole` 取得 CMD。
+
+**预防：** 命令参数或输出列发生变化时，把整套 extract 视为同一个契约重新评审；golden test 除 PASS 状态外必须断言实际产出值，并保留旧筛选条件的失败反例。禁止运行时静默忽略人工配置的 include。

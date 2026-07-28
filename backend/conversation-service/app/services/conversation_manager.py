@@ -92,6 +92,7 @@ _CANDIDATE_SELECT_PATTERN = re.compile(r"^[\s\u3000]*([①②③④⑤]|[1-5](?:
 
 # S0 候选确认轮数上限（超过后触发兜底）
 S0_MAX_CANDIDATE_ROUNDS: int = 2
+S0_NONE_OPTION_ID: str = "__none__"
 
 
 class ConversationManager:
@@ -307,6 +308,19 @@ class ConversationManager:
             dict {"code": ..., "name": ...} 或 None
         """
         candidates_slice = candidates[:4]
+        selected_option_id = str(selection)
+        # 新提取结果保留原 optionId。即使前置非法项被过滤，也不能把后续选项
+        # 重新编号；否则页面③可能被解析成压缩数组的第③项。
+        for candidate in candidates_slice:
+            if candidate.get("option_id") == selected_option_id:
+                return {"code": candidate.get("code", ""), "name": candidate.get("name", "")}
+
+        has_stable_option_ids = any(candidate.get("option_id") for candidate in candidates_slice)
+        if has_stable_option_ids:
+            logger.info(event="s0_candidate_none", message=f"用户选 {selection}：未命中原始 optionId")
+            return None
+
+        # 历史消息可能没有 optionId，仅在此兼容按连续数组位置解析。
         none_selection = len(candidates_slice) + 1
         if selection == none_selection or selection > len(candidates_slice):
             logger.info(event="s0_candidate_none", message=f"用户选 {selection}：以上都不是")
@@ -321,6 +335,20 @@ class ConversationManager:
                 name=chosen.get("name"),
             )
             return {"code": chosen.get("code", ""), "name": chosen.get("name", "")}
+        return None
+
+    def resolve_candidate_option(
+        self,
+        option_id: str,
+        candidates: list[dict[str, str]],
+    ) -> dict[str, str] | None:
+        """按稳定 optionId/category code 解析 S0 选择，不依赖展示顺序。"""
+        normalized = option_id.strip()
+        if not normalized or normalized == S0_NONE_OPTION_ID:
+            return None
+        for candidate in candidates[:4]:
+            if normalized in {candidate.get("option_id", ""), candidate.get("code", "")}:
+                return {"code": candidate.get("code", ""), "name": candidate.get("name", "")}
         return None
 
     @staticmethod

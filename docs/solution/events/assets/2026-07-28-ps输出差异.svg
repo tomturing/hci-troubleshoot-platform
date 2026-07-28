@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="168" viewBox="0 0 1320 168" role="img" aria-labelledby="title desc">
+  <title id="title">acli system ps 的 pid,args 与 cmd 输出差异</title>
+  <desc id="desc">pid,args 只返回异常表头和 PID；cmd 返回完整进程命令行。</desc>
+  <rect width="1320" height="168" fill="#050505"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18">
+    <text x="12" y="28" fill="#ff5666">Sangfor:aSV/host-80615f1e883a(HOST-OS)</text>
+    <text x="490" y="28" fill="#36df49">/sf #</text>
+    <text x="555" y="28" fill="#e8e8e8">acli system ps -p 33336 -o pid=,args=</text>
+    <text x="12" y="52" fill="#e8e8e8">,args=</text>
+    <text x="12" y="76" fill="#e8e8e8">33336</text>
+    <text x="12" y="112" fill="#ff5666">Sangfor:aSV/host-80615f1e883a(HOST-OS)</text>
+    <text x="490" y="112" fill="#36df49">/sf #</text>
+    <text x="555" y="112" fill="#e8e8e8">acli system ps -p 33336 -o cmd=</text>
+    <text x="12" y="140" fill="#e8e8e8">flock -x /sf/data/.../18864231143.vm/vm-disk-2.qcow2 sleep 999999</text>
+  </g>
+</svg>

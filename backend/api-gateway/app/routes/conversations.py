@@ -18,6 +18,31 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 logger = get_logger("gateway-conversations")
 
 CONVERSATION_SERVICE_URL = f"{settings.CONVERSATION_SERVICE_URL}/api/conversations"
+MAX_EXEC_RESULT_BODY_BYTES = 2 * 1024 * 1024
+
+
+async def _read_json_body_limited(request: Request, max_bytes: int) -> dict:
+    """流式读取 JSON 并在解析前限制大小，避免大结果在 Gateway 内存中多次展开。"""
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(status_code=413, detail="执行结果回传超过 2 MiB 安全上限")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Content-Length 非法") from None
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > max_bytes:
+            raise HTTPException(status_code=413, detail="执行结果回传超过 2 MiB 安全上限")
+        body.extend(chunk)
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="请求 JSON 非法") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="请求 JSON 必须为对象")
+    return payload
 
 
 async def proxy_request_stream(method: str, path: str, payload: dict | None, headers: dict):
@@ -144,7 +169,7 @@ async def submit_interactive_response(conversation_id: str, request: Request):
 @router.post("/{conversation_id}/exec-result")
 async def submit_exec_result(conversation_id: str, request: Request):
     """回传命令执行结果"""
-    payload = await request.json()
+    payload = await _read_json_body_limited(request, MAX_EXEC_RESULT_BODY_BYTES)
     headers = {}
     auth = request.headers.get("Authorization")
     if auth:

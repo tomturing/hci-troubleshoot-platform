@@ -21,6 +21,22 @@ class TestParseIntentResult:
 
     def setup_method(self):
         self.triage = TriageAgent(ai_registry=MagicMock(), kb_client=MagicMock())
+        TriageAgent._categories_cache = {
+            "虚拟机": [
+                {"code": "虚拟机-001", "name": "虚拟机网络异常"},
+                {"code": "虚拟机-003", "name": "虚拟机开机失败"},
+                {"code": "虚拟机-L2-001", "name": "虚拟机高级故障"},
+            ],
+            "存储": [
+                {"code": "存储-007", "name": "存储卷IO异常"},
+                {"code": "存储-L3-002", "name": "存储三级故障"},
+                {"code": "存储-020", "name": "虚拟存储性能告警"},
+            ],
+            "硬件": [
+                {"code": "硬件-024", "name": "硬盘寿命到期"},
+                {"code": "硬件-L2-001", "name": "硬件高级故障"},
+            ],
+        }
 
     def test_confirmed_pattern(self):
         """能识别'已确认故障分类'格式"""
@@ -116,6 +132,46 @@ class TestParseIntentResult:
         assert result.category_name == "硬盘寿命到期"
         assert result.needs_confirmation is True
         assert len(result.candidates) == 0
+
+    def test_resource_name_in_reasoning_is_not_a_category(self):
+        """工单 Q2026072855923：判断依据中的 VM 名不能混入候选分类。"""
+        reply = (
+            "判断依据：虚拟机 ubu-sus-25.2 开机失败。\n"
+            "① 虚拟机-038 虚拟机IO读写慢\n"
+            "② 虚拟机-003 虚拟机开机失败\n"
+            "③ 存储-020 虚拟存储性能告警\n"
+            "④ 虚拟机-036 虚拟机整体卡慢\n"
+        )
+        TriageAgent._categories_cache["虚拟机"].extend(
+            [
+                {"code": "虚拟机-038", "name": "虚拟机IO读写慢"},
+                {"code": "虚拟机-036", "name": "虚拟机整体卡慢"},
+            ]
+        )
+
+        result = self.triage._parse_intent_result(reply)
+
+        assert [candidate["code"] for candidate in result.candidates] == [
+            "虚拟机-038",
+            "虚拟机-003",
+            "存储-020",
+            "虚拟机-036",
+        ]
+        assert all(candidate["code"] != "ubu-sus-25" for candidate in result.candidates)
+
+    def test_unknown_category_is_rejected(self):
+        result = self.triage._parse_intent_result("① 不存在-999 幻觉分类")
+
+        assert result.category_id is None
+        assert result.candidates == []
+
+    def test_empty_authority_registry_fails_closed(self):
+        TriageAgent._categories_cache = {}
+
+        result = self.triage._parse_intent_result("① 虚拟机-003 虚拟机开机失败")
+
+        assert result.category_id is None
+        assert result.candidates == []
 
 
 # ─── resolve_candidate_selection 测试 ───────────────────────────────────────
@@ -217,7 +273,9 @@ class TestTriageAgentProcess:
 
         triage = TriageAgent(ai_registry=mock_registry, kb_client=mock_kb)
         # 直接注入分类缓存，跳过异步加载
-        triage._categories_cache = {"虚拟机": [{"code": "虚拟机-003", "name": "虚拟机开机失败"}]}
+        TriageAgent._categories_cache = {
+            "虚拟机": [{"code": "虚拟机-003", "name": "虚拟机开机失败"}]
+        }
         import time
 
         triage._categories_cache_time = time.time()
@@ -240,6 +298,8 @@ class TestTriageAgentProcess:
         assert interactive_events[0].kind == "intent_selection"
         assert interactive_events[0].metadata.get("category_id") == "虚拟机-003"
         assert interactive_events[0].metadata.get("single_candidate") is True
+        assert interactive_events[0].options[0]["optionId"] == "虚拟机-003"
+        assert interactive_events[0].options[1]["optionId"] == "__none__"
 
     @pytest.mark.asyncio
     async def test_process_candidates_yields_interactive_request(self):
@@ -263,7 +323,7 @@ class TestTriageAgentProcess:
 
         triage = TriageAgent(ai_registry=mock_registry, kb_client=mock_kb)
         # 直接注入分类缓存
-        triage._categories_cache = {
+        TriageAgent._categories_cache = {
             "虚拟机": [
                 {"code": "虚拟机-001", "name": "虚拟机网络异常"},
                 {"code": "虚拟机-003", "name": "虚拟机开机失败"},
@@ -289,3 +349,8 @@ class TestTriageAgentProcess:
         assert len(interactive_events) == 1
         assert interactive_events[0].kind == "intent_selection"
         assert len(interactive_events[0].metadata.get("candidates", [])) == 2
+        assert [option["optionId"] for option in interactive_events[0].options] == [
+            "虚拟机-001",
+            "虚拟机-003",
+            "__none__",
+        ]

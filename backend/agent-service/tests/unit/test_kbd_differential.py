@@ -13,7 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
+from app.adapters.agents.htp.cdd import SignalOutcome
+from app.adapters.agents.htp.kbd_differential import KBDDiagnostic, StepResult
 from app.adapters.agents.htp.kbd_model import KBD, KBDStep
 
 # ─── 测试数据工厂 ─────────────────────────────────────────────────────────────
@@ -1024,8 +1025,9 @@ class TestEvidenceGatedCDD:
                     matched=False,
                     complete_outputs={"stdout": output},
                 )
-            assert signal.command == "ps -p 9527 -o pid=,args="
-            output = "9527 /opt/ClwDRDBClient/application_main"
+            assert signal.command == "ps -p 9527 -o cmd="
+            assert kwargs["output_filters"][0]["include"] == ["4359974862144"]
+            output = "flock -x /sf/data/4359974862144.vm/vm-disk-2.qcow2 sleep 999999"
             return SimpleNamespace(
                 error=None,
                 raw_output=output,
@@ -1049,7 +1051,12 @@ class TestEvidenceGatedCDD:
                     "id": "sig_001",
                     "acquire": {
                         "tool": "qkv_task",
-                        "args": {"keyword": "启动虚拟机失败", "is_failed": True, "limit": 1},
+                        "args": {
+                            "instruction": "查看虚拟机任务详情，确认开机失败信息",
+                            "keyword": "启动虚拟机失败",
+                            "is_failed": True,
+                            "limit": 1,
+                        },
                     },
                     "match": None,
                     "provenance": {"category": "frontend"},
@@ -1066,7 +1073,13 @@ class TestEvidenceGatedCDD:
                     "id": "sig_002",
                     "acquire": {
                         "tool": "qfk_system",
-                        "args": {"host": "{{HOST}}", "command": "lsof", "container": "host", "timeout": 120},
+                        "args": {
+                            "instruction": "检查虚拟机镜像文件是否被进程占用",
+                            "host": "{{HOST}}",
+                            "command": "lsof",
+                            "container": "host",
+                            "timeout": 120,
+                        },
                     },
                     "match": None,
                     "provenance": {"category": "backend"},
@@ -1092,8 +1105,9 @@ class TestEvidenceGatedCDD:
                     "acquire": {
                         "tool": "qfk_system",
                         "args": {
+                            "instruction": "查询占用镜像文件的进程详情，确认进程仍然关联目标虚拟机镜像",
                             "host": "{{HOST}}",
-                            "command": "ps -p {{PID}} -o pid=,args=",
+                            "command": "ps -p {{PID}} -o cmd=",
                             "container": "host",
                             "timeout": 10,
                         },
@@ -1101,14 +1115,15 @@ class TestEvidenceGatedCDD:
                     "match": None,
                     "provenance": {"category": "backend"},
                     "orchestrate": {
-                        "requires": ["HOST", "PID"],
+                        "requires": ["HOST", "PID", "VM"],
                         "produces": [
                             {
-                                "name": "PNAME",
+                                "name": "CMD",
                                 "extract": {
                                     "type": "text",
                                     "source": "stdout",
-                                    "include": ["{{PID}}"],
+                                    "include": ["{{VM}}"],
+                                    "exclude": [],
                                     "column_mode": "whole",
                                     "cardinality": "exactly_one",
                                 },
@@ -1135,7 +1150,7 @@ class TestEvidenceGatedCDD:
             "host": "172.28.24.4",
             "end": "2026-07-27 21:19:37",
             "pid": "9527",
-            "pname": "9527 /opt/ClwDRDBClient/application_main",
+            "cmd": "flock -x /sf/data/4359974862144.vm/vm-disk-2.qcow2 sleep 999999",
         }
         assert qkv_exec.await_count == 1
         assert qfk_exec.await_count == 2
@@ -1144,6 +1159,18 @@ class TestEvidenceGatedCDD:
         assert all(call["args"] for call in tool_calls)
         assert [event["status"] for event in tool_results] == ["success", "success", "success"]
         assert all("result" in event for event in tool_results)
+        assert "查看虚拟机任务详情，确认开机失败信息" in result.diagnosis_report
+        assert "虚拟机 ID（VM）" in result.diagnosis_report
+        assert "目标主机（HOST）" in result.diagnosis_report
+        assert "发生时间（END）" in result.diagnosis_report
+        assert "进程 PID（PID）" in result.diagnosis_report
+        assert "进程命令（CMD）" in result.diagnosis_report
+        assert "flock -x /sf/data/4359974862144.vm/vm-disk-2.qcow2 sleep 999999" in result.diagnosis_report
+        assert result.diagnosis_report.index("虚拟机 ID（VM）") < result.diagnosis_report.index("目标主机（HOST）")
+        assert result.diagnosis_report.index("目标主机（HOST）") < result.diagnosis_report.index("发生时间（END）")
+        assert "exec_id" not in result.diagnosis_report
+        assert "evaluation_id" not in result.diagnosis_report
+        assert '"instruction"' not in result.diagnosis_report
 
     @pytest.mark.asyncio
     async def test_unresolved_placeholder_is_blocked_and_never_executed(self):
@@ -1182,8 +1209,43 @@ class TestEvidenceGatedCDD:
         assert "参考案例 27123" in result.diagnosis_report
         assert "（未确认）" in result.diagnosis_report
         assert "category_id=27123" in result.diagnosis_report
-        assert result.steps_executed[0].exec_id in result.diagnosis_report
+        assert result.steps_executed[0].exec_id not in result.diagnosis_report
+        assert "执行失败" in result.diagnosis_report
         assert "第三方程序占用" not in result.diagnosis_report
+
+    def test_user_report_hides_raw_output_and_translates_error_and_blocked(self):
+        error_step = StepResult(
+            tool_name="qfk_system",
+            tool_args={"instruction": "查询进程详情", "command": "ps -p 10134 -o cmd="},
+            raw_output="lsof: no pwd entry for UID 65535\n" * 100,
+            error="QFK 产出变量 CMD 提取失败：QFK_OUTPUT_EMPTY: 命令标准输出为空",
+            signal_id="sig_003",
+            exec_id="internal-exec-id",
+            evaluation_id="internal-evaluation-id",
+            outcome=SignalOutcome.ERROR,
+        )
+        blocked_step = StepResult(
+            tool_name="qfk_system",
+            tool_args={"instruction": "检查镜像占用"},
+            raw_output=None,
+            error="依赖变量缺失: host, pid",
+            signal_id="sig_004",
+            outcome=SignalOutcome.BLOCKED,
+        )
+
+        report = "\n".join(
+            [
+                KBDDiagnostic._format_step_evidence(error_step, 1),
+                KBDDiagnostic._format_step_evidence(blocked_step, 2),
+            ]
+        )
+
+        assert "命令没有返回可用于提取变量的内容" in report
+        assert "缺少前置步骤产出的变量" in report
+        assert "`HOST`" in report and "`PID`" in report
+        assert "no pwd entry" not in report
+        assert "internal-exec-id" not in report
+        assert "internal-evaluation-id" not in report
 
     def test_qkv_uses_prefetched_failed_task_fact(self):
         signal = self._kbd_27123().signals[0]

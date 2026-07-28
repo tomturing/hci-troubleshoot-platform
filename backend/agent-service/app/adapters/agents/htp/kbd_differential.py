@@ -124,6 +124,7 @@ class StepResult:
     acquisition_id: str = ""
     outcome: SignalOutcome = SignalOutcome.NOT_RUN
     required: bool = True
+    produced_variables: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -377,6 +378,18 @@ class KBDDiagnostic:
                     )
                 )
                 assessments[ref.kbd_id].signal_outcomes[ref.ref_id] = outcome
+                declared_produces = (
+                    (ref.signal.get("orchestrate") or {}).get("produces")
+                    or ref.signal.get("produces")
+                    or ref.produces
+                )
+                produced_variables: dict[str, Any] = {}
+                if not error:
+                    for item in declared_produces:
+                        name = item.get("name") if isinstance(item, dict) else item
+                        key = str(name or "").strip().lower()
+                        if key and key in self._variable_pool and key not in produced_variables:
+                            produced_variables[key] = self._variable_pool[key]
                 result = StepResult(
                     tool_name=acquisition.tool_name,
                     tool_args=resolved_args,
@@ -390,6 +403,7 @@ class KBDDiagnostic:
                     acquisition_id=acquisition.template_key,
                     outcome=outcome,
                     required=ref.required_for_support,
+                    produced_variables=produced_variables,
                 )
                 steps_executed.append(result)
                 yield AgentStageUpdate(stage="tool_result", metadata=self._tool_result_metadata(result))
@@ -411,6 +425,7 @@ class KBDDiagnostic:
                             "raw_output": smart_truncate(raw_output or "", max_chars=500),
                             "error": error,
                             "outcome": outcome.value,
+                            "produced_variables": result.produced_variables,
                         },
                         status=(
                             "confirmed"
@@ -613,6 +628,7 @@ class KBDDiagnostic:
             "outcome": result.outcome.value,
             "kbd_id": result.kbd_id,
             "signal_id": result.signal_id,
+            "produced_variables": result.produced_variables,
         }
 
     @staticmethod
@@ -1408,7 +1424,9 @@ class KBDDiagnostic:
                 support_id = kbd.support_id or kbd.id
                 url = kbd_detail_url.format(id=kbd.id, support_id=support_id)
                 candidate_links.append(f"- [参考案例 {support_id} - {kbd.name}]({url})（未确认）")
-            evidence = [KBDDiagnostic._format_step_evidence(step) for step in steps_executed]
+            evidence = [
+                KBDDiagnostic._format_step_evidence(step, index) for index, step in enumerate(steps_executed, start=1)
+            ]
             return (
                 "### 诊断结论：证据不足\n\n"
                 "没有任何 KBD 的全部必需关键信号达到 PASS，因此系统不会输出 KBD 根因或解决方案。\n\n"
@@ -1425,7 +1443,7 @@ class KBDDiagnostic:
             for s in steps_executed:
                 if s.kbd_id != kbd.id:
                     continue
-                evidence.append(KBDDiagnostic._format_step_evidence(s))
+                evidence.append(KBDDiagnostic._format_step_evidence(s, len(evidence) + 1))
             blocks.append(
                 f"### 诊断结论：参考案例 {support_id} - {title_link}\n\n"
                 f"**根因（原始文本）**：\n{kbd.root_cause or '（无）'}\n\n"
@@ -1435,15 +1453,115 @@ class KBDDiagnostic:
         return "\n\n".join(blocks)
 
     @staticmethod
-    def _format_step_evidence(step: StepResult) -> str:
-        args = smart_truncate(json.dumps(step.tool_args, ensure_ascii=False, sort_keys=True), max_chars=300)
-        preview = smart_truncate(step.raw_output or step.error or "", max_chars=300)
-        return (
-            f"- `{step.signal_id}` / `{step.tool_name}` / exec_id `{step.exec_id}` / "
-            f"evaluation_id `{step.evaluation_id}`："
-            f"**{step.outcome.value}**；参数 `{args}`"
-            f"{f'；结果 {preview}' if preview else ''}"
-        )
+    def _format_step_evidence(step: StepResult, index: int = 1) -> str:
+        """把内部执行记录转换为面向用户的关键信号结果。
+
+        exec_id、evaluation_id、完整参数和原始 stdout/stderr 属于审计数据，继续保留在
+        tool_result 与 diagnostic_item 中；主报告只展示用户能据此行动的检查说明、状态、
+        结论和结构化产出，避免把大输出及执行器噪音直接倾倒到对话页面。
+        """
+        status_labels = {
+            SignalOutcome.PASS: ("✅", "已完成"),
+            SignalOutcome.FAIL: ("❌", "未满足预期"),
+            SignalOutcome.ERROR: ("⚠️", "执行失败"),
+            SignalOutcome.BLOCKED: ("⏸️", "未执行"),
+            SignalOutcome.UNKNOWN: ("⚠️", "无法判断"),
+            SignalOutcome.NOT_RUN: ("⏸️", "未执行"),
+        }
+        icon, status = status_labels[step.outcome]
+        instruction = KBDDiagnostic._single_line_report_text(step.tool_args.get("instruction"), max_chars=160)
+        title = instruction or f"关键信号检查 {index}"
+
+        if step.outcome is SignalOutcome.PASS:
+            check_result = "已成功取得并提取所需信息。" if step.produced_variables else "命令输出符合该信号的判定条件。"
+        elif step.outcome is SignalOutcome.FAIL:
+            check_result = "命令已执行，但结果不符合该信号的预期条件。"
+        elif step.outcome is SignalOutcome.ERROR:
+            check_result = KBDDiagnostic._friendly_step_error(step.error)
+        elif step.outcome is SignalOutcome.BLOCKED:
+            check_result = "缺少前置步骤产出的变量，本项未执行。"
+        elif step.outcome is SignalOutcome.UNKNOWN:
+            check_result = "已取得执行结果，但现有规则无法形成明确判断。"
+        else:
+            check_result = "本项未执行。"
+
+        lines = [
+            f"#### {index}. {icon} {title}",
+            "",
+            f"- **状态**：{status}",
+            f"- **检查结果**：{check_result}",
+        ]
+        if step.produced_variables:
+            lines.append("- **提取信息**：")
+            for name, value in step.produced_variables.items():
+                label = KBDDiagnostic._variable_display_label(name)
+                rendered = KBDDiagnostic._format_inline_code(value, max_chars=500)
+                lines.append(f"  - **{label}（{str(name).upper()}）**：{rendered}")
+        elif step.outcome is SignalOutcome.BLOCKED:
+            missing = KBDDiagnostic._missing_variable_names(step.error)
+            if missing:
+                lines.append(
+                    "- **缺失信息**："
+                    + "、".join(KBDDiagnostic._format_inline_code(name.upper(), max_chars=80) for name in missing)
+                )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _single_line_report_text(value: Any, *, max_chars: int) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        return smart_truncate(text, max_chars=max_chars) if text else ""
+
+    @staticmethod
+    def _format_inline_code(value: Any, *, max_chars: int) -> str:
+        if isinstance(value, (dict, list)):
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        elif value is None:
+            text = "（空）"
+        else:
+            text = str(value)
+        text = KBDDiagnostic._single_line_report_text(text, max_chars=max_chars)
+        longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+        fence = "`" * (longest_run + 1)
+        return f"{fence} {text} {fence}" if text.startswith("`") or text.endswith("`") else f"{fence}{text}{fence}"
+
+    @staticmethod
+    def _variable_display_label(name: str) -> str:
+        labels = {
+            "vm": "虚拟机 ID",
+            "host": "目标主机",
+            "end": "发生时间",
+            "pid": "进程 PID",
+            "cmd": "进程命令",
+            "pname": "进程信息",
+        }
+        normalized = str(name).strip().lower()
+        return labels.get(normalized, "产出变量")
+
+    @staticmethod
+    def _friendly_step_error(error: str | None) -> str:
+        text = KBDDiagnostic._single_line_report_text(error, max_chars=240)
+        if "QFK_OUTPUT_EMPTY" in text:
+            return "命令没有返回可用于提取变量的内容。"
+        if "QFK_NO_MATCH" in text:
+            return "命令输出中没有内容满足已配置的筛选条件。"
+        if "QFK_MULTIPLE_MATCHES" in text:
+            return "命令输出命中多条内容，无法按当前配置唯一确定结果。"
+        if "QFK_COLUMN_OUT_OF_RANGE" in text:
+            return "命令输出的列结构与产出变量配置不一致。"
+        if "QFK_OUTPUT_TOO_LARGE" in text:
+            return "命令输出超过当前安全处理上限，未使用不完整数据进行判断。"
+        if "QFK_OUTPUT_TRUNCATED_SOURCE_UNAVAILABLE" in text:
+            return "命令输出不完整且未能取得完整结果，未使用截断数据进行判断。"
+        if text.startswith("依赖变量缺失:"):
+            return "缺少前置步骤产出的变量，本项未执行。"
+        return text or "执行过程中发生错误，未取得可用于判断的结果。"
+
+    @staticmethod
+    def _missing_variable_names(error: str | None) -> list[str]:
+        text = str(error or "")
+        if not text.startswith("依赖变量缺失:"):
+            return []
+        return [name.strip() for name in text.split(":", 1)[1].split(",") if name.strip()]
 
     @staticmethod
     def _fallback_report(

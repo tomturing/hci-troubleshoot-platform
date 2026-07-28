@@ -45,6 +45,8 @@ from app.services.evidence_builder import EvidenceBuilder
 
 logger = get_logger("triage-agent")
 
+S0_NONE_OPTION_ID = "__none__"
+
 
 @dataclass
 class IntentResult:
@@ -226,8 +228,13 @@ class TriageAgent(BaseAgent):
                 title="请确认故障分类",
                 prompt="根据您的描述，AI 判断故障分类如下，请确认：",
                 options=[
-                    {"optionId": "1", "name": f"{result.category_id} {result.category_name}"},
-                    {"optionId": "2", "name": "以上不是，重新描述"},
+                    {
+                        "optionId": result.category_id,
+                        "code": result.category_id,
+                        "categoryName": result.category_name,
+                        "name": f"{result.category_id} {result.category_name}",
+                    },
+                    {"optionId": S0_NONE_OPTION_ID, "name": "以上不是，重新描述"},
                 ],
                 custom_input=False,
                 metadata={
@@ -237,12 +244,17 @@ class TriageAgent(BaseAgent):
                 },
             )
         elif result.candidates:
-            # 多候选：让用户从列表选择
+            # 多候选：category code 是稳定业务身份；序号只由 UI 按展示位置生成。
             options = [
-                {"optionId": str(i + 1), "name": f"{c['code']} {c['name']}"}
-                for i, c in enumerate(result.candidates[:4])
+                {
+                    "optionId": c["code"],
+                    "code": c["code"],
+                    "categoryName": c["name"],
+                    "name": f"{c['code']} {c['name']}",
+                }
+                for c in result.candidates[:4]
             ]
-            options.append({"optionId": str(len(options) + 1), "name": "以上都不是（请补充症状描述）"})
+            options.append({"optionId": S0_NONE_OPTION_ID, "name": "以上都不是（请补充症状描述）"})
             yield AgentInteractiveRequest(
                 request_id=f"triage-{session_id}",
                 acp_session_id=session_id,
@@ -488,18 +500,17 @@ class TriageAgent(BaseAgent):
                     cat_map[code] = name
         return cat_map
 
-    @staticmethod
-    def _parse_intent_result(reply: str) -> IntentResult:
-        """从 LLM 输出中解析意图识别结果（宽松正则 + 字典验证混合模式）。
+    @classmethod
+    def _parse_intent_result(cls, reply: str) -> IntentResult:
+        """把模型提出的分类收敛到权威分类字典。
 
-        支持任何自定义 Prompt，只要回复中包含合法的叶子节点编码即可进行场景确认或候选提供。
+        模型回复是不可信文本：只解析明确的“确认分类”标记或独立候选行，禁止
+        扫描判断依据全文。任何不在当前启用分类字典中的编码一律拒绝，避免把
+        ``ubu-sus-25.2`` 一类资源名称误识别为故障分类。
         """
-        # 1. 提取所有形如 [中文/字母/数字]-[数字] 的场景编码及其后随的名称描述
-        # 匹配规则：匹配分类编码，并且捕获该行中编码之后的所有非换行、非编号字符
-        pattern = re.compile(r"([一-鿿A-Za-z0-9-]+-\d+)(?:\s+([^\n①②③④⑤]+))?")
-
-        matches = pattern.findall(reply)
-        if not matches:
+        cat_map = cls._get_active_categories_map()
+        if not cat_map:
+            logger.warning(event="triage_category_registry_empty", message="权威分类字典为空，拒绝解析模型分类")
             return IntentResult(
                 category_id=None,
                 category_name=None,
@@ -507,37 +518,33 @@ class TriageAgent(BaseAgent):
                 needs_confirmation=False,
             )
 
-        # 获取缓存的 active categories 映射（若有）
-        cat_map = TriageAgent._get_active_categories_map()
+        candidate_pattern = re.compile(
+            r"^[\t ]*[①②③④][\t ]*([一-鿿A-Za-z0-9-]+-\d+)(?:[\t ]+[^\r\n]+)?[\t ]*$",
+            re.MULTILINE,
+        )
+        confirmed_pattern = re.compile(
+            r"(?:已确认故障分类|故障分类)[：:][\t ]*([一-鿿A-Za-z0-9-]+-\d+)(?:[\t ]+[^\r\n]+)?"
+        )
 
-        # 提取并过滤有效匹配
-        parsed_items = []
-        seen_codes = set()
+        candidate_codes = candidate_pattern.findall(reply)
+        confirmed_match = confirmed_pattern.search(reply)
+        proposed_codes = candidate_codes or ([confirmed_match.group(1)] if confirmed_match else [])
 
-        for code, raw_name in matches:
-            code = code.strip()
+        parsed_items: list[dict[str, str]] = []
+        seen_codes: set[str] = set()
+        for raw_code in proposed_codes:
+            code = raw_code.strip()
             if code in seen_codes:
                 continue
-
-            # 校验是否是系统支持的合法叶子节点编码
-            if not TriageAgent._LEAF_CODE_RE.match(code):
+            if code not in cat_map:
+                logger.warning(
+                    event="triage_unknown_category_rejected",
+                    message=f"模型提出未注册分类 {code}，已拒绝",
+                    category_id=code,
+                )
                 continue
-
-            # 优先从分类字典获取准确名称，避免 LLM 输出中的噪音干扰；如果不存在，则从文本中解析并清洗
-            if cat_map and code in cat_map:
-                name = cat_map[code]
-            else:
-                # 清洗提取出来的名称
-                name = raw_name.strip() if raw_name else ""
-                # 去除类似于 "95，高置信度" / "，高置信度" / " 95" 等后缀噪音
-                name = re.sub(r"\s*\d+\s*(，|,)\s*高置信度.*$", "", name)
-                name = re.sub(r"\s*(，|,)?\s*高置信度.*$", "", name)
-                # 剔除可能存在的逗号及之后的内容
-                name = re.sub(r"\s*，\s*.*$", "", name)
-                name = name.strip()
-
             seen_codes.add(code)
-            parsed_items.append({"code": code, "name": name})
+            parsed_items.append({"code": code, "name": cat_map[code]})
 
         if not parsed_items:
             return IntentResult(

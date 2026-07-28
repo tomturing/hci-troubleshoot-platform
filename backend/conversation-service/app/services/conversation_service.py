@@ -22,7 +22,7 @@ from ..models.message import Message, MessageRole
 from ..repositories.conversation_repo import ConversationRepository
 from ..repositories.sop_execution_repository import SopExecutionRepository
 from .agent_client import AgentClient
-from .conversation_manager import ConversationManager
+from .conversation_manager import S0_NONE_OPTION_ID, ConversationManager
 from .environment_client import EnvironmentClient
 from .sse_queue import LogAuditService
 
@@ -267,40 +267,69 @@ class ConversationService:
                     _confirmed_category_code = _conv.category_id
 
             # 2.5 S0 候选预处理（T3-c）：在调用 AI 之前拦截用户的 ①②③ 选择
-            # 若用户回复的是序号，直接写库 + 推进/兜底，不走 AI 本轮
+            # v2 优先使用稳定 category code；圆圈序号仅兼容历史消息。
             if current_stage == "S0":
-                _selection = self._conversation_manager.parse_candidate_selection(content)
-                if _selection is not None:
-                    # 用户输入了 ①②③ 序号
+                _selection_meta = metadata or {}
+                _stable_option_id = str(
+                    _selection_meta.get("selectedCategoryCode")
+                    or _selection_meta.get("selectedOptionId")
+                    or ""
+                ).strip()
+                _legacy_selection = self._conversation_manager.parse_candidate_selection(content)
+                if _stable_option_id or _legacy_selection is not None:
                     _candidates = await self._extract_s0_candidates(conversation_id)
                     if _candidates:
-                        _chosen = self._conversation_manager.resolve_candidate_category(_selection, _candidates)
+                        _none_selected = bool(_selection_meta.get("isNoneOfAbove")) or (
+                            _stable_option_id == S0_NONE_OPTION_ID
+                        )
+                        if _stable_option_id and not _none_selected:
+                            _chosen = self._conversation_manager.resolve_candidate_option(
+                                _stable_option_id,
+                                _candidates,
+                            )
+                            if not _chosen:
+                                logger.warning(
+                                    event="s0_stable_option_invalid",
+                                    message="S0 结构化选项不属于最近候选，拒绝推进",
+                                    conversation_id=str(conversation_id),
+                                    selected_option_id=_stable_option_id,
+                                )
+                                yield "所选故障分类已失效，请重新描述故障并重新选择。"
+                                return
+                        elif _legacy_selection is not None and not _none_selected:
+                            _chosen = self._conversation_manager.resolve_candidate_category(
+                                _legacy_selection,
+                                _candidates,
+                            )
+                            _none_selected = _chosen is None
+                        else:
+                            _chosen = None
+
                         if _chosen:
-                            # 用户确认有效分类 → 写库、强制推进 S1，继续调用 AI 开始 S1 分析
-                            asyncio.create_task(
-                                self._update_conversation_category(
-                                    conversation_id=conversation_id,
-                                    case_id=case_id,
-                                    category_info=_chosen,
-                                    trigger_confirm=True,
-                                )
+                            # 权威分类校验与 category/stage 同事务提交完成后，才能启动 S1。
+                            _canonical = await self._validate_s0_category(_chosen)
+                            if not _canonical:
+                                yield "故障分类目录暂不可用或所选分类已失效，请稍后重新选择。"
+                                return
+                            _committed = await self._commit_s0_confirmation(
+                                conversation_id=conversation_id,
+                                case_id=case_id,
+                                category_info=_canonical,
                             )
-                            asyncio.create_task(
-                                self._update_diagnostic_stage(
-                                    conversation_id=conversation_id,
-                                    new_stage="S1",
-                                    old_stage="S0",
-                                )
+                            if not _committed:
+                                yield "故障分类确认保存失败，尚未进入故障定位，请重试。"
+                                return
+                            intercepted_confirmation = (
+                                f"好的，确认故障分类为【{_canonical['code']} {_canonical['name']}】。\n"
+                                "开始故障定位分析，请稍候…"
                             )
-                            intercepted_confirmation = f"好的，确认故障分类为【{_chosen['code']} {_chosen['name']}】。\n开始故障定位分析，请稍候…"
                             yield (intercepted_confirmation + "\n\n")
                             # 发出阶段切换事件通知前端，并继续以 S1 身份调用 AI
                             yield "\x00event:stage_change:S1\x00"
                             current_stage = "S1"
-                            # N-2 修复：同步更新本次请求的确认分类，使 retrieve() 跳过 classify_intent
-                            _confirmed_category_code = _chosen["code"]
-                        else:
-                            # 用户选 ③"以上都不是"
+                            _confirmed_category_code = _canonical["code"]
+                        elif _none_selected:
+                            # 用户选择“以上都不是”
                             _s0_rounds = await self._get_s0_candidate_rounds(conversation_id)
                             if ConversationManager.should_trigger_s0_failure(_s0_rounds):
                                 _failure_msg = await self.handle_s0_failure(conversation_id, case_id)
@@ -308,7 +337,16 @@ class ConversationService:
                                 return
                             asyncio.create_task(self._increment_s0_candidate_rounds(conversation_id))
                             # 轮次未满：继续调用 AI，让其基于"以上都不是"重新给出候选
-                    # 若提取不到历史候选（AI 尚未给出 ① ② 时直接回了序号），交 AI 处理
+                    elif _stable_option_id:
+                        logger.warning(
+                            event="s0_stable_option_without_candidates",
+                            message="收到结构化 S0 选择，但找不到对应候选消息",
+                            conversation_id=str(conversation_id),
+                            selected_option_id=_stable_option_id,
+                        )
+                        yield "找不到对应的故障分类候选，请重新描述故障并重新选择。"
+                        return
+                    # 只有旧消息直接回复序号且没有历史候选时，继续交给 S0 模型兼容处理。
 
             # 2.6 【修复】获取环境上下文信息（Segment 4 数据）
             context_info: dict | None = None
@@ -545,7 +583,12 @@ class ConversationService:
                                     message="S0 意图识别转换为消息的 metadata，通过 SSE 发送给前端并传导至后台落库",
                                     conversation_id=str(conversation_id),
                                 )
-                                _intent_metadata = {"kind": "choice_options", "options": agent_event.get("options")}
+                                _intent_metadata = {
+                                    "kind": "choice_options",
+                                    "schemaVersion": 2,
+                                    "requestId": agent_event.get("request_id"),
+                                    "options": agent_event.get("options"),
+                                }
                                 _message_metadata.update(_intent_metadata)
 
                                 _payload = _json.dumps(_intent_metadata, ensure_ascii=False)
@@ -663,7 +706,7 @@ class ConversationService:
 
                 # 流式完成后，检测诊断阶段转换并持久化（fire-and-forget）
                 full_reply = "".join(_full_reply_buffer)
-                if full_reply and not _used_ops_agent_path:
+                if full_reply and not _used_ops_agent_path and current_stage != "S0":
                     # N-4 修复：ops-agent 路径由其自身状态机管理阶段，跳过 htp 后验正则检测
                     # 使用增强的阶段转换检测方法，同时提取分类信息
                     new_stage, category_info = self._conversation_manager.detect_stage_transition_with_category(
@@ -689,15 +732,14 @@ class ConversationService:
                                     kbd_entry_id=kbd_entry_id,
                                 )
                             )
-                    # S0 阶段 category 写入与阶段转换解耦：只要 AI 输出了分类信息就写入
-                    if current_stage == "S0" and category_info:
-                        asyncio.create_task(
-                            self._update_conversation_category(
-                                conversation_id=conversation_id,
-                                case_id=case_id,
-                                category_info=category_info,
-                            )
-                        )
+                elif full_reply and current_stage == "S0":
+                    # S0 模型只能提出候选。分类和 S1 阶段只能由用户的结构化确认
+                    # 触发 _commit_s0_confirmation，禁止根据模型原文后验自动写库。
+                    logger.debug(
+                        event="s0_model_stage_detection_skipped",
+                        message="S0 候选已返回，等待用户结构化确认",
+                        conversation_id=str(conversation_id),
+                    )
                 elif full_reply and _used_ops_agent_path:
                     logger.debug(
                         event="ops_agent_stage_detection_skipped",
@@ -1231,6 +1273,173 @@ class ConversationService:
                 message=str(e),
                 conversation_id=str(conversation_id),
             )
+
+    async def _validate_s0_category(self, category_info: dict[str, str]) -> dict[str, str] | None:
+        """用 KB 权威分类目录校验并规范化用户选中的分类。"""
+        code = str(category_info.get("code") or "").strip()
+        if not code or self.kb_client is None:
+            logger.error(
+                event="s0_category_authority_unavailable",
+                message="S0 分类确认缺少 KB 权威分类客户端，拒绝 Fail Open",
+                category_id=code,
+            )
+            return None
+
+        try:
+            grouped = await self.kb_client.get_categories_grouped(leaf_only=True)
+        except Exception as exc:
+            logger.error(
+                event="s0_category_authority_error",
+                message=f"S0 权威分类目录请求失败，拒绝推进：{exc}",
+                category_id=code,
+                error=str(exc),
+            )
+            return None
+        if not grouped:
+            logger.error(
+                event="s0_category_authority_empty",
+                message="S0 权威分类目录为空，拒绝推进 S1",
+                category_id=code,
+            )
+            return None
+
+        for items in grouped.values():
+            for item in items:
+                registered_code = str(item.get("code") or item.get("id") or "").strip()
+                if registered_code != code:
+                    continue
+                registered_name = str(item.get("name") or item.get("label") or "").strip()
+                if not registered_name:
+                    return None
+                return {"code": registered_code, "name": registered_name}
+
+        logger.warning(
+            event="s0_unknown_category_rejected",
+            message=f"用户选择的分类 {code} 不在当前启用目录中，拒绝推进",
+            category_id=code,
+        )
+        return None
+
+    async def _commit_s0_confirmation(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        category_info: dict[str, str],
+    ) -> bool:
+        """原子提交 S0 分类与 S1 阶段，再执行幂等外部副作用。"""
+        from shared.models.conversation import Conversation as ConversationModel
+        from sqlalchemy import select
+        from sqlalchemy import update as sa_update
+
+        code = category_info["code"]
+        name = category_info["name"]
+        category_l1 = code.split("-", 1)[0]
+        already_hit = False
+        try:
+            if self.session_factory:
+                async with self.session_factory() as session:
+                    duplicate = await session.execute(
+                        select(ConversationModel.conversation_id)
+                        .where(
+                            ConversationModel.case_id == case_id,
+                            ConversationModel.category_id == code,
+                            ConversationModel.conversation_id != conversation_id,
+                        )
+                        .limit(1)
+                    )
+                    already_hit = duplicate.scalar_one_or_none() is not None
+                    result = await session.execute(
+                        sa_update(ConversationModel)
+                        .where(
+                            ConversationModel.conversation_id == conversation_id,
+                            ConversationModel.diagnostic_stage == "S0",
+                        )
+                        .values(
+                            category_id=code,
+                            category_l1=category_l1,
+                            category_l2=name,
+                            diagnostic_stage="S1",
+                        )
+                    )
+                    if result.rowcount != 1:
+                        await session.rollback()
+                        logger.warning(
+                            event="s0_confirmation_state_conflict",
+                            message="S0 分类确认时会话阶段已变化，拒绝重复推进",
+                            conversation_id=str(conversation_id),
+                            category_id=code,
+                        )
+                        return False
+                    await session.commit()
+            else:
+                conv = await self.repository.get_conversation(conversation_id)
+                if not conv or conv.diagnostic_stage != "S0":
+                    return False
+                conv.category_id = code
+                conv.category_l1 = category_l1
+                conv.category_l2 = name
+                conv.diagnostic_stage = "S1"
+                await self.repository.session.flush()
+
+            logger.info(
+                event="s0_confirmation_committed",
+                message=f"S0 分类与阶段已原子提交：{code} {name}",
+                conversation_id=str(conversation_id),
+                case_id=case_id,
+                category_id=code,
+                old_stage="S0",
+                new_stage="S1",
+            )
+
+            if self.kb_client and not already_hit:
+                try:
+                    hit_count = await self.kb_client.increment_category_hit(code)
+                    logger.info(
+                        event="category_hit_count_updated",
+                        message=f"分类命中计数已更新：{code} -> {hit_count}",
+                        code=code,
+                        hit_count=hit_count,
+                    )
+                except Exception as exc:
+                    # category/stage 已提交，统计副作用失败不得伪报主事务失败。
+                    logger.warning(
+                        event="category_hit_count_update_failed",
+                        message=f"分类命中计数更新失败：{exc}",
+                        code=code,
+                        error=str(exc),
+                    )
+
+            if case_id and settings.CASE_SERVICE_URL:
+                import httpx  # noqa: PLC0415
+
+                try:
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        response = await client.put(f"{settings.CASE_SERVICE_URL}/api/cases/{case_id}/confirm")
+                    if response.status_code not in (200, 404):
+                        logger.warning(
+                            event="case_confirm_failed",
+                            case_id=case_id,
+                            status_code=response.status_code,
+                        )
+                    else:
+                        logger.info(
+                            event="case_confirmed_by_s0",
+                            message=f"工单 {case_id} 已由 S0 分类写库触发 confirm",
+                            case_id=case_id,
+                        )
+                except Exception as exc:
+                    logger.warning(event="case_confirm_error", case_id=case_id, error=str(exc))
+            return True
+        except Exception as exc:
+            logger.error(
+                event="s0_confirmation_commit_error",
+                message=f"S0 分类与阶段提交失败：{exc}",
+                conversation_id=str(conversation_id),
+                case_id=case_id,
+                category_id=code,
+                error=str(exc),
+            )
+            return False
 
     async def _update_diagnostic_stage(
         self,
@@ -1785,11 +1994,13 @@ class ConversationService:
             conversation_id: 对话 ID
 
         Returns:
-            list[dict]，每项格式 {"code": "...", "name": "..."}；
+            list[dict]，每项格式 {"option_id": "...", "code": "...", "name": "..."}；
             无匹配时返回 []
         """
         # 正则：支持多级分类前缀和包含括号等特殊字符的名称
-        _candidate_item_pattern = re.compile(r"[①②③④⑤]\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+?)(?:\r?\n|$)")
+        _candidate_item_pattern = re.compile(
+            r"([①②③④⑤])\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+?)(?:\r?\n|$)"
+        )
 
         # 统一入口：获取最后一条 assistant 消息
         last_ai_content, last_ai_metadata = await self._get_last_assistant_message(conversation_id)
@@ -1804,12 +2015,29 @@ class ConversationService:
             if options and isinstance(options, list):
                 extracted = []
                 for opt in options:
+                    if not isinstance(opt, dict):
+                        continue
                     name_str = opt.get("name", "")
                     if "以上不是" in name_str or "以上都不是" in name_str:
                         continue
-                    m = re.match(r"^([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+(.+)$", name_str.strip())
-                    if m:
-                        extracted.append({"code": m.group(1).strip(), "name": m.group(2).strip()})
+                    option_id = str(opt.get("optionId") or "").strip()
+                    code = str(opt.get("code") or "").strip()
+                    category_name = str(opt.get("categoryName") or "").strip()
+                    if not code:
+                        m = re.match(r"^([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+(.+)$", name_str.strip())
+                        if not m:
+                            continue
+                        code = m.group(1).strip()
+                        category_name = m.group(2).strip()
+                    if not category_name:
+                        category_name = name_str.removeprefix(code).strip()
+                    extracted.append(
+                        {
+                            "option_id": option_id or code,
+                            "code": code,
+                            "name": category_name,
+                        }
+                    )
                 if extracted:
                     logger.info(
                         event="extract_s0_candidates_metadata_success",
@@ -1826,7 +2054,11 @@ class ConversationService:
             )
             if candidates_from_meta and isinstance(candidates_from_meta, list):
                 extracted = [
-                    {"code": c.get("code", ""), "name": c.get("name", "")}
+                    {
+                        "option_id": str(c.get("optionId") or c.get("code") or ""),
+                        "code": c.get("code", ""),
+                        "name": c.get("name", ""),
+                    }
                     for c in candidates_from_meta
                     if c and c.get("code") and c.get("name")
                 ]
@@ -1856,7 +2088,15 @@ class ConversationService:
 
         candidates: list[dict[str, str]] = []
         for m in _candidate_item_pattern.finditer(last_ai_content):
-            candidates.append({"code": m.group(1).strip(), "name": m.group(2).strip()})
+            circle = m.group(1)
+            option_id = str("①②③④⑤".index(circle) + 1)
+            candidates.append(
+                {
+                    "option_id": option_id,
+                    "code": m.group(2).strip(),
+                    "name": m.group(3).strip(),
+                }
+            )
 
         if candidates:
             logger.info(

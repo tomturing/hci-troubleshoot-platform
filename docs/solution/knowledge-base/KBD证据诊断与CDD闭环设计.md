@@ -1,13 +1,20 @@
 ---
-status: proposed
-category: architecture
+status: active
+category: solution
 audience: developer
-last_updated: 2026-07-26
-version: v1.0
+last_updated: 2026-07-28
+version: v1.1
 owner: team
 ---
 
 # S0 分类驱动的 KBD 证据诊断与 CDD 闭环设计
+
+## 变更历史
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|---|---|---|---|
+| 2026-07-28 | v1.1 | 关键信号主报告改为用户态状态与结构化产出；27123 第三步以定向 `cmd=` 非空唯一结果确认进程存在，不依赖特定进程名 | [KBD关键信号结果展示与ps输出提取方案](../events/2026-07-28-KBD关键信号结果展示与ps输出提取方案.md) |
+| 2026-07-26 | v1.0 | S0 分类权威输入、分类全量 KBD、CDD 证据闭环初版 | — |
 
 > 主动信号选择、采集复用、候选状态机和四级结论门禁的详细算法见
 > [KBD 主动诊断信号调度与证据闭环算法设计](2026-07-26-KBD主动诊断信号调度与证据闭环算法设计.md)。
@@ -696,7 +703,7 @@ S1 的合法输出是知识范围和候选集，不是“根因结论”。
 4. `sig_002` 只能在 HOST、VM 已解析后执行。
 5. `sig_003` 只能在 PID 已从实际输出产生后执行。
 6. 三条信号均有 plan_id、exec_id、ToolResult 和 SignalEvaluation。
-7. 在 `sig_002/sig_003` PASS 前，不得显示 `ClwDRDBClient` 为根因。
+7. `sig_002` 必须使用 VM 筛选并产出 PID；`sig_003` 必须以 `ps -p {{PID}} -o cmd=` 取得唯一 CMD，且输出命令行包含同一 `{{VM}}`。业务不维护特定进程名关键字。
 8. 全部 required signals PASS 后，输出 KBD 27123 原始链接和逐条证据。
 
 ### 17.2 故障注入
@@ -878,7 +885,7 @@ top_k 仍然允许分类 KBD 被排除；候选全集问题不能通过扩大概
 | 结论门禁 | 每篇 KBD 的全部 required signal 为 PASS 才进入 supported 和 S4 |
 | 无自由 fallback | 无知识、不可执行或证据不足均发出 `AgentEscalation` |
 | 确定性报告 | 根因和方案只取已支持 KBD 原文；失败报告不输出根因 |
-| 候选可解释性 | 失败报告仍展示参考案例链接、每条 signal、参数、outcome 和 exec_id，并标记“未确认” |
+| 候选可解释性 | 失败报告仍展示参考案例链接；每条 signal 在主视图展示检查说明、用户态状态、检查结果和结构化产出，并标记“未确认”。参数、outcome、exec_id 与原始输出保留在审计层 |
 | UI 可见性 | Agent SSE 不再过滤 `tool_call/tool_result`；conversation-service 将 escalation 转成 `human_escalation` 交互 |
 
 旧的按 `tool_name` 覆盖率贪心、候选数量 early-stop、代表步骤复用和 LLM matcher 代码均已从运行实现删除。当前编排按 KBD revision 内的 signal_id 和 requires/produces 契约执行；相同 acquisition 可复用一次真实采集结果，但每篇 KBD 的 matcher 和证据记录保持独立。
@@ -923,7 +930,7 @@ S0 在模型服务返回 429 时启用确定性分类降级，但仍要求人工
 - 不进入 S4；
 - 显式发出 `human_escalation`。
 
-这不是诊断逻辑失败，而是现场证据采集前置条件未满足。只有 Custom-UI 已连接 terminal_bridge 和目标 HCI SSH，且 `sig_002` 命中 `vm-disk`、`sig_003` 命中 `ClwDRDBClient` 时，27123 才能转为 confirmed 并进入 S4。任何测试 fixture 或人工注入输出都不得冒充本次现场证据。
+这不是诊断逻辑失败，而是现场证据采集前置条件未满足。只有 Custom-UI 已连接 terminal_bridge 和目标 HCI SSH，且 `sig_002` 成功产出 PID、`sig_003` 对该 PID 取得非空唯一命令行时，27123 才能转为 confirmed 并进入 S4。任何测试 fixture 或人工注入输出都不得冒充本次现场证据。
 
 ### 23.3 验证结果
 
@@ -933,3 +940,27 @@ S0 在模型服务返回 429 时启用确定性分类降级，但仍要求人工
 - 27123 golden case 覆盖三条信号、独立 exec_id、正向确认、工具 ERROR 拒绝确认、缺变量 BLOCKED。
 - KB 运行日志仅出现分类 playbooks 接口；本次 S1 未调用 `/route`、embedding 或 FTS。
 - 当前 `hci-dev` 通过 ConfigMap 热更新部署；镜像构建受 Docker Hub 元数据网络超时和当前用户无 K3s containerd 权限限制。
+
+## 24. 关键信号用户态报告与 KBD 27123 进程确认（2026-07-28）
+
+### 24.1 报告分层
+
+KBD 结论门禁仍由 `SignalOutcome` 和 required signal 集合确定，报告格式不能改变诊断状态。每个 `StepResult` 同时服务两类消费者：
+
+- 审计层：`exec_id/evaluation_id/acquisition_id`、tool args、raw output、稳定错误码和 outcome；
+- 用户层：检查说明、用户态状态、检查结果和本 signal 的结构化产出变量。
+
+主报告禁止直接拼接 raw stdout/stderr，避免 QKV Observation 和 lsof stderr 噪音破坏 Markdown。产出值单行化并限制展示长度；完整技术证据从工具卡片、diagnostic_item、日志和 trace 查询。
+
+### 24.2 KBD 27123 第三步当前契约
+
+```text
+requires: HOST, PID, VM
+command:  ps -p {{PID}} -o cmd=
+produces: CMD
+extract:  stdout + include={{VM}} + exactly_one + whole
+```
+
+`ps -p` 已在数据源限定 PID，`cmd=` 只返回命令行；再用 `include=["{{VM}}"]` 确认命令行仍关联目标镜像。第二步 lsof 是打开文件的直接证据，第三步用于确认 PID/VM 身份仍一致。禁止复用旧的 `include=["{{PID}}"]`，因为 cmd 输出不包含 PID；也禁止增加 `ClwDRDBClient` 等进程名白名单。
+
+完整现场分析、两工单证据和 UI 模板见 [KBD关键信号结果展示与ps输出提取方案](../events/2026-07-28-KBD关键信号结果展示与ps输出提取方案.md)。

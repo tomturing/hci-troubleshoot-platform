@@ -2,7 +2,7 @@
 status: active
 category: meta
 audience: all
-last_updated: 2026-07-27
+last_updated: 2026-07-28
 owner: team
 update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑达成）必须更新第一屏
 ---
@@ -56,8 +56,9 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD 自动执行门禁与 HTP 人工升级确认修复 | ✅ 完成 | 2026-07-27 |
 | 运行时代码完整性防护（禁止源码热补丁覆盖镜像） | ✅ 完成 | 2026-07-27 |
 | KBD QKV/QFK 三信号执行闭环与 39 MB 大输出边缘筛选 | ✅ 代码与自动验证完成，待 PR 部署后现场复测 | 2026-07-27 |
+| KBD 关键信号结果用户化与 `ps -p PID -o cmd=` 提取契约 | ✅ 代码与 59 项自动验证完成，待修正 KBD revision 后现场复测 | 2026-07-28 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 确定性诊断已要求显式 QKV/QFK acquisition，非 JSON 大输出在 terminal_bridge 边缘按字面量逐行筛选并以 256 KiB Fail Closed，工具事件统一为 `args/result/status`；KBD 27123 已发布 revision 17，待本 PR 部署后用新工单补齐现场证据；业务镜像源码由集群级准入策略保护，禁止通过卷热补丁覆盖。
+**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 确定性诊断已要求显式 QKV/QFK acquisition，非 JSON 大输出在 terminal_bridge 边缘按字面量逐行筛选并以 256 KiB Fail Closed；最终报告按“检查说明—状态—结果—结构化产出”展示，内部 ID 与原始输出留在审计层。KBD 27123 第三步应使用 `ps -p {{PID}} -o cmd=`，通过 `include={{VM}}` 确认命令行仍关联目标镜像并产出 `CMD`，待人工发布新 revision 后用新工单现场复测。
 
 ### 冷启动阅读路径
 

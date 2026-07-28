@@ -31,7 +31,6 @@ from shared.observability.otel import get_current_trace_id
 from sqlalchemy import text
 
 from ..config import settings
-from .conversations import get_conversation_service  # 复用 B1 的「会话→工单」解析
 
 logger = get_logger("agent-exec-routes")
 router = APIRouter(tags=["agent-exec"])
@@ -52,6 +51,7 @@ def _redact_command(command: str | None) -> str | None:
 # 由 main.py 注入
 _db_manager: DatabaseManager | None = None
 _redis_manager: RedisManager | None = None
+MAX_EXEC_RESULT_CHARS = 256 * 1024
 
 
 def set_dependencies(db: DatabaseManager, redis: RedisManager) -> None:
@@ -59,6 +59,18 @@ def set_dependencies(db: DatabaseManager, redis: RedisManager) -> None:
     global _db_manager, _redis_manager
     _db_manager = db
     _redis_manager = redis
+
+
+async def _resolve_conversation_case_id(conversation_id: uuid.UUID) -> str | None:
+    """使用独立、完整生命周期的 Session 查询会话工单，禁止手动拆用 yield 依赖。"""
+    if _db_manager is None:
+        return None
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text("SELECT case_id FROM conversation WHERE conversation_id = :conversation_id"),
+            {"conversation_id": conversation_id},
+        )
+        return result.scalar_one_or_none()
 
 
 def _check_internal_auth(request: Request) -> None:
@@ -193,13 +205,7 @@ async def push_agent_exec_command(
     effective_case_id = body.case_id
     if not effective_case_id:
         try:
-            _svc = None
-            async for _s in get_conversation_service(request):
-                _svc = _s
-                break
-            if _svc is not None:
-                _conv = await _svc.get_conversation(conversation_id)
-                effective_case_id = _conv.case_id if _conv else None
+            effective_case_id = await _resolve_conversation_case_id(conversation_id)
         except Exception as _exc:
             effective_case_id = None
             logger.error(
@@ -324,10 +330,10 @@ class ExecResultRequest(BaseModel):
     """执行结果回传请求"""
 
     exec_id: str = Field(..., description="执行 ID（UUID）")
-    output: str = Field(..., description="命令输出")
+    output: str = Field(..., max_length=MAX_EXEC_RESULT_CHARS, description="命令输出")
     exit_code: int = Field(..., description="退出码（0=成功）")
-    stdout: str | None = Field(default=None, description="标准输出")
-    stderr: str | None = Field(default=None, description="标准错误")
+    stdout: str | None = Field(default=None, max_length=MAX_EXEC_RESULT_CHARS, description="标准输出")
+    stderr: str | None = Field(default=None, max_length=MAX_EXEC_RESULT_CHARS, description="标准错误")
     trace_id: str | None = None
     traceparent: str | None = Field(default=None, pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
     stdout_bytes: int | None = Field(default=None, ge=0)
@@ -341,6 +347,12 @@ class ExecResultRequest(BaseModel):
     cancelled: bool = False
     error_type: str | None = None
     artifact_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_physical_stream_budget(self) -> ExecResultRequest:
+        if len(self.stdout or "") + len(self.stderr or "") > MAX_EXEC_RESULT_CHARS:
+            raise ValueError("stdout/stderr 合计超过 256 KiB 安全上限")
+        return self
 
 
 class ExecResultResponse(BaseModel):

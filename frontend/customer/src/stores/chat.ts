@@ -9,6 +9,15 @@ import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, 
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
 import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec } from '@/api/terminal'
+import {
+  appendExecOutput as appendFilteredExecOutput,
+  buildSafeExecResultPayload,
+  createExecOutputBuffer,
+  finalizeExecOutput,
+  type ExecOutputBuffer,
+  type ExecOutputFilter,
+} from '@/utils/execOutputFilter'
+import { normalizeToolEvent } from '@/utils/toolEvent'
 
 // 开发环境专用日志（生产环境自动禁用）
 const isDev = import.meta.env.DEV
@@ -280,6 +289,27 @@ export const useChatStore = defineStore('chat', () => {
   const existingCases = ref<CaseResponse[]>([])
   const initialized = ref(false)
 
+  function upsertToolEvent(raw: Record<string, any>): ReturnType<typeof normalizeToolEvent> {
+    const event = normalizeToolEvent(raw)
+    const existingIdx = messages.value.findIndex(message => {
+      const metadata = message.metadata as any
+      return metadata?.kind === 'tool_call' && metadata?.event?.exec_id === event.exec_id
+    })
+    if (existingIdx !== -1) {
+      const metadata = messages.value[existingIdx].metadata as any
+      metadata.event = { ...metadata.event, ...event }
+    } else {
+      messages.value.push({
+        id: `tool-${event.exec_id || Date.now()}`,
+        role: 'assistant',
+        content: '',
+        timestamp: new Date(),
+        metadata: { kind: 'tool_call', event },
+      })
+    }
+    return event
+  }
+
   // AI 助手列表
   const assistants = ref<AssistantInfo[]>([])
   const selectedAssistant = ref<string>('')
@@ -337,9 +367,15 @@ export const useChatStore = defineStore('chat', () => {
     timeoutId: number
   }>()
 
-  // 双通道流式缓冲 (Scheme B)
-  const EXEC_BUFFER_MAX_CHARS = 4 * 1024 * 1024
-  const execBuffers = new Map<string, { stdout: string; stderr: string }>()
+  // 双通道流式缓冲 (Scheme B)，使用分块数组和统一预算避免大输出导致 O(n²) 复制。
+  const execBuffers = new Map<string, ExecOutputBuffer>()
+  const execOutputFilters = new Map<string, ExecOutputFilter[]>()
+
+  function appendExecOutput(execId: string, source: 'stdout' | 'stderr', chunk: string, flush = false): void {
+    const buffer = execBuffers.get(execId) || createExecOutputBuffer()
+    appendFilteredExecOutput(buffer, execOutputFilters.get(execId) || [], source, chunk, flush)
+    execBuffers.set(execId, buffer)
+  }
 
   // Agent 模式：待确认的高风险操作（confirm_request SSE 事件）
   // T1-2：必须包含 exec_id 与 input_hash，提交确认时回传给后端进行幂等与防篡改校验
@@ -887,31 +923,7 @@ export const useChatStore = defineStore('chat', () => {
               }
             } else if (pendingEventType === 'tool_call') {
               try {
-                const event = JSON.parse(data)
-                const existingIdx = messages.value.findIndex(m => {
-                  const meta = m.metadata as any
-                  return meta?.kind === 'tool_call' && meta?.event?.exec_id === event.exec_id
-                })
-                if (existingIdx !== -1) {
-                  const meta = messages.value[existingIdx].metadata as any
-                  if (meta) {
-                    meta.event = {
-                      ...meta.event,
-                      ...event
-                    }
-                  }
-                } else {
-                  messages.value.push({
-                    id: `tc-${event.exec_id || Date.now()}`,
-                    role: 'assistant',
-                    content: '',
-                    timestamp: new Date(),
-                    metadata: {
-                      kind: 'tool_call',
-                      event: event
-                    }
-                  })
-                }
+                const event = upsertToolEvent(JSON.parse(data))
 
                 if (event.status === 'pending') {
                   devLog('tool_call', '服务端要求人工确认，等待用户操作', {
@@ -925,31 +937,7 @@ export const useChatStore = defineStore('chat', () => {
               }
             } else if (pendingEventType === 'tool_result') {
               try {
-                const event = JSON.parse(data)
-                const existingIdx = messages.value.findIndex(m => {
-                  const meta = m.metadata as any
-                  return meta?.kind === 'tool_call' && meta?.event?.exec_id === event.exec_id
-                })
-                if (existingIdx !== -1) {
-                  const meta = messages.value[existingIdx].metadata as any
-                  if (meta) {
-                    meta.event = {
-                      ...meta.event,
-                      ...event
-                    }
-                  }
-                } else {
-                  messages.value.push({
-                    id: `tr-${event.exec_id || Date.now()}`,
-                    role: 'assistant',
-                    content: '',
-                    timestamp: new Date(),
-                    metadata: {
-                      kind: 'tool_call',
-                      event: event
-                    }
-                  })
-                }
+                upsertToolEvent(JSON.parse(data))
               } catch (e) {
                 console.warn('[tool_result] 解析/处理失败:', e)
               }
@@ -991,6 +979,10 @@ export const useChatStore = defineStore('chat', () => {
                     continue
                   }
                   // 通过 terminal_bridge WebSocket 发送命令 (双通道：隔离执行)
+                  execOutputFilters.set(execId, Array.isArray(outputFilters) ? outputFilters as ExecOutputFilter[] : [])
+                  // 在发送前创建缓冲区，确保旧版 Bridge 只发送最终帧时也经过统一筛选和预算。
+                  execBuffers.set(execId, createExecOutputBuffer())
+                  const waitResult = waitForExecResult(execId, (timeoutSeconds + 5) * 1000)
                   const wsMsg = buildAgentExecProcessMessage(
                     caseId, execId, command, nodeIp, container, traceId, traceparent, convId, toolCallId,
                     timeoutSeconds, Array.isArray(outputFilters) ? outputFilters as OutputFilterSpec[] : undefined,
@@ -998,7 +990,7 @@ export const useChatStore = defineStore('chat', () => {
                   sshWebSocket.value.send(wsMsg)
                   devLog('agent_exec_command', '命令已发送到 Bridge', { execId, nodeIp, container })
                   // Bridge 是权威超时源；浏览器额外预留 5 秒供结果传输与调度。
-                  waitForExecResult(execId, (timeoutSeconds + 5) * 1000)
+                  waitResult
                     .then((result) => {
                       devLog('agent_exec_command', '执行完成', { execId, exitCode: result.exitCode })
                       return postExecResult(convId, execId, result.output, result.exitCode, undefined, result.stdout, result.stderr, result)
@@ -1066,6 +1058,18 @@ export const useChatStore = defineStore('chat', () => {
         messages.value[idx].content = `[AI 响应失败: ${e.message}]`
       }
     } finally {
+      // SSE 中断或上游异常时，未收到终态的工具卡片必须显式收敛，避免永久显示运行中。
+      for (const message of messages.value) {
+        const metadata = message.metadata as any
+        const event = metadata?.kind === 'tool_call' ? metadata.event : null
+        if (event?.status === 'running') {
+          metadata.event = {
+            ...event,
+            status: 'failed',
+            error: event.error || '执行流已结束，但未收到对应的执行结果；请重新发起诊断。',
+          }
+        }
+      }
       const idx = getAiMsgIndex()
       if (idx !== -1) {
         // 【方案A修复】先等 Vue 刷完流式阶段最后一帧 DOM（含 content 更新），
@@ -1173,6 +1177,12 @@ export const useChatStore = defineStore('chat', () => {
               } catch (e) {
                 console.warn('[resumeOpsAgentStream] interactive_request 解析失败:', e)
               }
+            } else if (pendingEventType === 'tool_call' || pendingEventType === 'tool_result') {
+              try {
+                upsertToolEvent(JSON.parse(data))
+              } catch (e) {
+                console.warn(`[resumeOpsAgentStream] ${pendingEventType} 解析失败:`, e)
+              }
             } else if (pendingEventType === 'stage_change') {
               try {
                 const event = JSON.parse(data)
@@ -1196,6 +1206,17 @@ export const useChatStore = defineStore('chat', () => {
     } catch (e: any) {
       console.warn('[resumeOpsAgentStream] 连接失败:', e)
     } finally {
+      for (const message of messages.value) {
+        const metadata = message.metadata as any
+        const event = metadata?.kind === 'tool_call' ? metadata.event : null
+        if (event?.status === 'running') {
+          metadata.event = {
+            ...event,
+            status: 'failed',
+            error: event.error || '执行流已结束，但未收到对应的执行结果；请重新发起诊断。',
+          }
+        }
+      }
       const idx = getAiMsgIndex()
       if (idx !== -1) {
         await nextTick()
@@ -1859,13 +1880,9 @@ export const useChatStore = defineStore('chat', () => {
             cleanupSshWebSocket()
           }
         } else if (msg.type === 'exec_stdout' && msg.exec_id && msg.stdout) {
-          const buf = execBuffers.get(msg.exec_id) || { stdout: '', stderr: '' }
-          buf.stdout = (buf.stdout + msg.stdout).slice(-EXEC_BUFFER_MAX_CHARS)
-          execBuffers.set(msg.exec_id, buf)
+          appendExecOutput(msg.exec_id, 'stdout', msg.stdout)
         } else if (msg.type === 'exec_stderr' && msg.exec_id && msg.stderr) {
-          const buf = execBuffers.get(msg.exec_id) || { stdout: '', stderr: '' }
-          buf.stderr = (buf.stderr + msg.stderr).slice(-EXEC_BUFFER_MAX_CHARS)
-          execBuffers.set(msg.exec_id, buf)
+          appendExecOutput(msg.exec_id, 'stderr', msg.stderr)
         } else if (msg.type === 'bridge_log') {
           // terminal_bridge 结构化回采日志（OBS-TERMINAL-BRIDGE-001）
           forwardBridgeLog(msg as unknown as Record<string, unknown>)
@@ -1875,10 +1892,14 @@ export const useChatStore = defineStore('chat', () => {
           if (parsed) {
             const accumulated = execBuffers.get(parsed.execId)
             if (accumulated) {
-              if (parsed.stdout === undefined) parsed.stdout = accumulated.stdout
-              if (parsed.stderr === undefined) parsed.stderr = accumulated.stderr
+              appendExecOutput(parsed.execId, 'stdout', '', true)
+              appendExecOutput(parsed.execId, 'stderr', '', true)
+              const completed = execBuffers.get(parsed.execId) || accumulated
+              const filters = execOutputFilters.get(parsed.execId) || []
+              finalizeExecOutput(completed, filters, parsed)
               execBuffers.delete(parsed.execId)
             }
+            execOutputFilters.delete(parsed.execId)
             devLog('SSH', '收到 exec_result', { execId: parsed.execId, exitCode: parsed.exitCode })
             const callback = pendingExecCallbacks.get(parsed.execId)
             if (callback) {
@@ -1928,6 +1949,8 @@ export const useChatStore = defineStore('chat', () => {
       callback.reject(new Error('SSH 连接已断开'))
     })
     pendingExecCallbacks.clear()
+    execBuffers.clear()
+    execOutputFilters.clear()
   }
 
   /**
@@ -1991,11 +2014,7 @@ export const useChatStore = defineStore('chat', () => {
           ...(telemetry?.traceparent ? { traceparent: telemetry.traceparent } : {}),
         },
         body: JSON.stringify({
-          exec_id: execId,
-          output: status ? `${status}: ${output}` : output,
-          exit_code: exitCode,
-          stdout: stdout || undefined,
-          stderr: stderr || undefined,
+          ...buildSafeExecResultPayload(execId, output, exitCode, status, stdout, stderr),
           trace_id: telemetry?.traceId,
           traceparent: telemetry?.traceparent,
           stdout_bytes: telemetry?.stdoutBytes,
