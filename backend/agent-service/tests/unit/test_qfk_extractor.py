@@ -70,6 +70,28 @@ def test_whole_line_and_from_index():
     ) == "qemu command with spaces"
 
 
+def test_ps_cmd_output_extracts_process_with_vm_filter():
+    output = "flock -x /sf/data/18864231143.vm/vm-disk-2.qcow2 sleep 999999\n"
+    spec = {
+        "type": "text",
+        "source": "stdout",
+        "include": [],
+        "exclude": [],
+        "cardinality": "exactly_one",
+        "column_mode": "whole",
+    }
+
+    assert extract_text_value(output, {**spec, "include": ["18864231143"]}) == output.strip()
+
+    with pytest.raises(QFKExtractionError) as exc:
+        extract_text_value(output, {**spec, "include": ["10134"]})
+    assert exc.value.code == "QFK_NO_MATCH"
+
+    with pytest.raises(QFKExtractionError) as exc:
+        extract_text_value(output, {**spec, "include": ["another-vm"]})
+    assert exc.value.code == "QFK_NO_MATCH"
+
+
 def test_custom_delimiter_and_scalar_casts():
     assert extract_text_value("name:3.5:true", {"type": "text", "delimiter": ":", "column": 2}, "number") == 3.5
     assert extract_text_value("name:3.5:true", {"type": "text", "delimiter": ":", "column": 3}, "boolean") is True

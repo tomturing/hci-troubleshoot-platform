@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-28 | v3.35 | **KBD 关键信号结果用户化与 ps 输出契约修正**：主报告改为检查说明/状态/结果/结构化产出，技术 ID 与原始输出留在审计层；golden chain 使用 `ps -p PID -o cmd=` 产出 CMD，并固定旧 PID include 会过滤 cmd 输出的反例。关联：[KBD关键信号结果展示与ps输出提取方案](../../solution/events/2026-07-28-KBD关键信号结果展示与ps输出提取方案.md) |
 | 2026-07-28 | v3.34 | **S0 分类稳定身份与原子推进**：修复工单 `Q2026072855923` 中 VM 名被当成分类、点击③却进入存储-020 的复合错误；Agent 候选与 active 分类交集，UI 回传 category code，Conversation 保留原 optionId 并原子提交 category/S1。关联：[S0 分类稳定身份协议与候选治理方案](../../solution/events/2026-07-28-S0分类稳定身份协议与候选治理方案.md) |
 | 2026-07-28 | v3.33 | **KBD 大输出聚合副本与 exec-result 纵深防御**：修复旧 terminal_bridge 的 40 MB `output` 绕过 stdout/stderr 筛选并导致 Gateway OOM；UI 统一重建兼容 output，Gateway 增加 JSON 解析前 2 MiB 门禁，Conversation 增加 256 KiB 契约并修复 yield Session 被提前关闭。关联工单 `Q2026072785259`；关联：[KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md)。 |
 | 2026-07-27 | v3.32 | **KBD 三信号执行闭环**：QKV 必须显式现场 acquisition；QFK 大输出字面量筛选前移到 terminal_bridge；统一工具卡片 args/result/status、exec_id 持久化和流中断终态；KBD 27123 修正为定向三步变量链。关联：[KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md)。 |
