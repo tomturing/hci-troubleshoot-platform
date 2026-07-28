@@ -2,7 +2,7 @@
 status: active
 category: deploy
 audience: agent
-last_updated: 2026-07-27
+last_updated: 2026-07-29
 owner: team
 update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 ---
@@ -15,7 +15,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 > 2. 再写入对应分类 file
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：D-020**（旧格式延续：PIT-050）
+> **下一个可用编号：D-022**（旧格式延续：PIT-050）
 
 ---
 
@@ -27,7 +27,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 |---------|---------|---------|
 | 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039, PIT-046, D-008 |
 | 编写/审查 Shell/Makefile/CI 脚本 / GitHub Actions | [shell.md](shell.md) | PIT-001, PIT-002, D-012, D-016 |
-| K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移/ArgoCD/日志采集器迁移 | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001~D-020 |
+| K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移/ArgoCD/日志采集器迁移 | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001~D-021 |
 | ArgoCD 升级/多集群/PreSync SA/Redis EOF/PreSync Hook 镜像/失败 Hook 残留/db-seed Hook 失败 | [k8s.md](k8s.md) | D-001, D-002, D-003, D-004, D-005, D-011, D-014 |
 | Grafana 重定向/Ingress/iframe 白屏 | [grafana.md](grafana.md) | PIT-011, PIT-012, PIT-020, PIT-036 |
 
@@ -85,6 +85,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-018** | k8s.md | ConfigMap 通过 subPath 挂载时热 reload 仍读取旧 inode，必须滚动重启工作负载 |
 | **D-019** | k8s.md | App-of-Apps 父子 Application 双层 selfHeal 会覆盖本地联调运行态，必须逐层暂停并记录恢复条件 |
 | **D-020** | k8s.md | 临时 ConfigMap subPath 覆盖镜像源码，造成新镜像、旧运行代码，必须通过不可变镜像和准入策略治理 |
+| **D-021** | k8s.md | Alloy Pod Ready 不等于日志采集和 Loki 写入健康，必须以指标、告警和唯一日志查询验收 |
 
 ---
 

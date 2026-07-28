@@ -74,11 +74,8 @@ interface ContentSegment {
   type: 'text' | 'command'
   content: string
   language?: string
-  commandIndex?: number
   /** 命令风险等级（由 inferRiskLevel 计算） */
   riskLevel?: 'none' | 'readonly' | 'caution' | 'danger'
-  /** 是否为消息中第一个命令块 */
-  isFirstBlock?: boolean
 }
 
 import { marked } from 'marked'
@@ -124,8 +121,6 @@ const contentSegments = computed<ContentSegment[]>(() => {
   const segments: ContentSegment[] = []
   
   let textBuffer = ''
-  let commandIndex = 0
-
   function flushText() {
     if (textBuffer) {
       segments.push({
@@ -150,11 +145,8 @@ const contentSegments = computed<ContentSegment[]>(() => {
           type: 'command',
           content: cmd,
           language: token.lang,
-          commandIndex,
           riskLevel: inferRiskLevel(cmd),
-          isFirstBlock: commandIndex === 0,
         })
-        commandIndex += 1
       }
     } else {
       // 不是命令块，把 raw 内容累积起来，后面统一交给 renderMarkdown 渲染
@@ -1031,9 +1023,6 @@ async function handleToolCallReject() {
                   :language="segment.language || 'bash'"
                   :description="generateDescription(segment.content)"
                   :risk-level="segment.riskLevel || 'none'"
-                  :index="segment.commandIndex || 0"
-                  :is-first-block="segment.isFirstBlock || false"
-                  :block-id="segment.id"
                 />
               </template>
 

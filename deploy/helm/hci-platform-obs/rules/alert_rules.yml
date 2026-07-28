@@ -5,6 +5,49 @@
 # =============================================================================
 
 groups:
+  # ────────────────────────── 日志采集流水线 ──────────────────────────
+  - name: alloy_log_pipeline
+    rules:
+      - alert: AlloyTargetDown
+        expr: absent(up{app="alloy"}) or up{app="alloy"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Alloy 指标端点不可达"
+          description: "Alloy 已连续 2 分钟无法被 Prometheus 抓取，Pod Ready 状态不足以证明日志链路健康。"
+
+      - alert: AlloyLokiEntriesDropped
+        expr: increase(loki_write_dropped_entries_total{component_id="loki.write.default"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Alloy 正在丢弃日志"
+          description: "Alloy 在最近 5 分钟发生 Loki 写入丢弃，请按 reason 标签定位限流、行过长或 ingester 错误。"
+
+      - alert: AlloyLokiWriteRetriesHigh
+        expr: increase(loki_write_batch_retries_total{component_id="loki.write.default"}[10m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Alloy 写入 Loki 持续重试"
+          description: "Alloy 在最近 10 分钟重试 Loki 写入超过 5 次，日志可见性存在延迟或中断风险。"
+
+      - alert: AlloyLogPipelineStalled
+        expr: sum(increase(loki_source_file_read_lines_total{component_id="loki.source.file.pod_logs"}[10m])) > 0 and sum(increase(loki_write_sent_entries_total{component_id="loki.write.default"}[10m])) == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Alloy 日志读取与写入链路停滞"
+          description: "Alloy 仍在读取容器日志，但最近 10 分钟没有任何日志成功写入 Loki。"
+
   # ────────────────────────── 可用性告警 ──────────────────────────
   - name: hci_availability
     rules:
