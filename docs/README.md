@@ -2,7 +2,7 @@
 status: active
 category: meta
 audience: all
-last_updated: 2026-07-28
+last_updated: 2026-07-29
 owner: team
 update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑达成）必须更新第一屏
 ---
@@ -57,9 +57,10 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | 运行时代码完整性防护（禁止源码热补丁覆盖镜像） | ✅ 完成 | 2026-07-27 |
 | KBD QKV/QFK 三信号执行闭环与 39 MB 大输出边缘筛选 | ✅ 代码与自动验证完成，待 PR 部署后现场复测 | 2026-07-27 |
 | KBD 关键信号结果用户化与 `ps -p PID -o cmd=` 提取契约 | ✅ 代码与 59 项自动验证完成，待修正 KBD revision 后现场复测 | 2026-07-28 |
-| KBD 截图证据与可执行诊断契约 | 🟡 核心闭环已实施并通过全量回归；4/39 真实来源工程 Gold 完成，35/39 因员工权限数据缺失而阻断 | 2026-07-29 |
+| KBD 截图证据与可执行诊断契约 | 🟡 126/126 来源完整；122 条自动 Proposal；4 条工程 Contract fixture 仅完成 Handler Build/Decision Replay；0/126 专家 Gold | 2026-07-29 |
+| KBD 专家复核、不可变版本与 Capability 闭环 | 📝 完整方案与实施任务已归档，待产品/架构确认，业务实现未开始 | 2026-07-29 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 确定性诊断已要求显式 QKV/QFK acquisition，非 JSON 大输出在 terminal_bridge 边缘按字面量逐行筛选并以 256 KiB Fail Closed；KBD 截图、信号抽取和案例自动验证的下一阶段采用 [Evidence → Signal Compiler → Replay → Case Verification Contract](solution/agent/events/2026-07-28-KBD截图证据与可执行诊断契约方案.md)，关键信号保留为原子观察层，不再将单次 LLM 直出的扁平信号列表视为完整案例验证契约。126 条扩展语料的来源、Vision、Proposal、Gold 与专家审批结果见 [KBD 126 条分层验证报告](verify/events/2026-07-29-KBD126扩展语料实施验证.md)。KBD 27123 第三步仍待人工发布新 revision 后使用新工单现场复测。
+**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 已形成 Evidence → Signal/Contract → CDD 的第一阶段工程闭环，但 QFK Handler Build 不等于真实执行语义门，现有 4 条工程 fixture 只完成 outcome-level Decision Replay，完整 Evidence/Execution Replay 尚未完成。下一阶段采用 [不可变 Source/Proposal → Candidate Bundle → Validation → Approval/Expert Gold → Release/Activation](solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md)，并以 Capability Request/Registry 打通 data-pipeline、admin-ui 和 agent-service。126 条分层事实与更正口径见 [KBD 126 条分层验证报告](verify/events/2026-07-29-KBD126扩展语料实施验证.md)。
 
 ### 冷启动阅读路径
 
@@ -85,7 +86,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 
 | 分支文档 | 说明 | 对应架构组件 |
 |---------|------|----------|
-| [solution/agent/AI助手设计.md](solution/agent/AI助手设计.md) | AI 助手架构、Pod 池调度、AI协议设计 |
+| [solution/agent/02-架构设计/agent设计.md](solution/agent/02-架构设计/agent设计.md) | AI 助手架构、Pod 池调度、AI协议设计 |
 | [solution/knowledge-base/知识库设计.md](solution/knowledge-base/知识库设计.md) | RAG 摄入 + 检索流水线、KBD + SOP 两轨 |
 | [solution/custom-ui/客户端设计.md](solution/custom-ui/客户端设计.md) | WebSocket 生命周期、UI 状态机、aClient 采集 |
 | [solution/case/工单设计.md](solution/case/工单设计.md) | 工单生命周期、Case 状态机、评分触发 |
