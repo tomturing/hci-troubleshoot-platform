@@ -7,11 +7,11 @@ TriageAgent 单元测试
   3. process()：流程测试（mock LLM，验证 yield 事件）
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.adapters.agents.htp.triage_agent import TriageAgent
-from app.domain.agent_port import AgentInteractiveRequest
+from app.domain.agent_port import AgentInteractiveRequest, AgentTextChunk
 
 # ─── _parse_intent_result 测试 ────────────────────────────────────────────────
 
@@ -255,6 +255,86 @@ class TestTriageAgentProcess:
     """process()：mock LLM 后的流程验证"""
 
     @pytest.mark.asyncio
+    async def test_direct_command_request_is_blocked_before_llm(self):
+        """S0 收到显式执行命令请求时，必须在调用 LLM 前拒绝且不输出可执行代码块。"""
+        mock_registry = MagicMock()
+        mock_client = MagicMock()
+        mock_client.chat_completion_stream = MagicMock()
+        mock_registry.get_client.return_value = mock_client
+
+        triage = TriageAgent(ai_registry=mock_registry, kb_client=MagicMock())
+        events = [
+            event
+            async for event in triage.process(
+                session_id="test-command-blocked",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "请通过 SSH 工具执行以下安全只读命令，并返回执行结果：\nprintf 'PR632_E2E_OK\\n' && uname -s",
+                    }
+                ],
+                env_context={},
+                assistant_type="htp-agent",
+                case_id="Q2026072884353",
+                user_id="user-001",
+            )
+        ]
+
+        text = "".join(event.content for event in events if isinstance(event, AgentTextChunk))
+        assert "本次未执行任何命令" in text
+        assert "```bash" not in text
+        assert not any(isinstance(event, AgentInteractiveRequest) for event in events)
+        mock_registry.get_client.assert_not_called()
+        mock_client.chat_completion_stream.assert_not_called()
+
+    def test_failure_description_is_not_misclassified_as_execution_request(self):
+        """描述历史故障现象不等于请求 S0 立即执行命令。"""
+        assert not TriageAgent._is_direct_command_execution_request("虚拟机中执行命令失败，提示 command not found")
+
+    @pytest.mark.asyncio
+    async def test_ungrounded_execution_evidence_is_not_forwarded(self):
+        """S0 模型伪造执行输出时，原始内容必须被完整阻断。"""
+        mock_registry = MagicMock()
+        mock_client = MagicMock()
+
+        async def fake_stream(messages, system=None, **kwargs):
+            yield "执行命令：`printf ...`\n```bash\nPR632_E2E_OK\nLinux\n```"
+
+        mock_client.chat_completion_stream = fake_stream
+        mock_registry.get_client.return_value = mock_client
+        mock_kb = MagicMock()
+        mock_kb.get_categories = AsyncMock(return_value=[{"code": "虚拟机-003", "name": "虚拟机开机失败"}])
+        triage = TriageAgent(ai_registry=mock_registry, kb_client=mock_kb)
+        TriageAgent._categories_cache = {"虚拟机": [{"code": "虚拟机-003", "name": "虚拟机开机失败"}]}
+        import time
+
+        triage._categories_cache_time = time.time()
+
+        with patch("app.adapters.agents.htp.triage_agent.logger") as mock_logger:
+            events = [
+                event
+                async for event in triage.process(
+                    session_id="test-fabricated-output",
+                    messages=[{"role": "user", "content": "虚拟机启动失败，请判断故障分类"}],
+                    env_context={},
+                    assistant_type="htp-agent",
+                    case_id="Q-test",
+                    user_id="user-001",
+                )
+            ]
+
+        text = "".join(event.content for event in events if isinstance(event, AgentTextChunk))
+        assert "系统没有执行任何命令" in text
+        assert "PR632_E2E_OK" not in text
+        assert "```bash" not in text
+        log_calls = [call.kwargs for call in mock_logger.warning.call_args_list + mock_logger.error.call_args_list]
+        assert all("PR632_E2E_OK" not in str(fields) for fields in log_calls)
+        parse_failure = next(fields for fields in log_calls if fields.get("event") == "intent_parse_failed")
+        assert parse_failure["reply_blocked"] is True
+        assert len(parse_failure["reply_sha256"]) == 64
+        assert "reply_preview" not in parse_failure
+
+    @pytest.mark.asyncio
     async def test_process_confirmed_intent_yields_interactive_request(self):
         """LLM 直接确认意图时，应 yield AgentInteractiveRequest（v3 改为全部需用户确认）"""
         mock_registry = MagicMock()
@@ -273,9 +353,7 @@ class TestTriageAgentProcess:
 
         triage = TriageAgent(ai_registry=mock_registry, kb_client=mock_kb)
         # 直接注入分类缓存，跳过异步加载
-        TriageAgent._categories_cache = {
-            "虚拟机": [{"code": "虚拟机-003", "name": "虚拟机开机失败"}]
-        }
+        TriageAgent._categories_cache = {"虚拟机": [{"code": "虚拟机-003", "name": "虚拟机开机失败"}]}
         import time
 
         triage._categories_cache_time = time.time()

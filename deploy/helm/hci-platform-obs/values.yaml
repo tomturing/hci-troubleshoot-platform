@@ -91,11 +91,11 @@ alloy:
   image: grafana/alloy:v1.10.2
   resources:
     requests:
-      cpu: "25m"
-      memory: "32Mi"
-    limits:
-      cpu: "200m"
+      cpu: "100m"
       memory: "128Mi"
+    limits:
+      cpu: "1"
+      memory: "512Mi"
 
 grafana:
   image: grafana/grafana:11.5.2
@@ -185,4 +185,3 @@ langfuse:
       limits:
         cpu: "500m"
         memory: "512Mi"
-

@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-07-28
+last_updated: 2026-07-29
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-29 | v3.36 | **Terminal Bridge 真实入口 P0 修复**：删除普通 Markdown `CommandBlock → ssh_input` 自动执行旁路；S0 在 LLM 前拒绝显式命令执行请求并阻断无工具证据的伪造输出；Alloy 固化资源、探针、指标抓取与流水线告警。状态：自动化回归已启动，真实 S1/ReAct 正向与 S0/Markdown 负向验收通过前不得宣称完整可观测，也不得进入 hci-sim。 |
 | 2026-07-28 | v3.35 | **KBD 关键信号结果用户化与 ps 输出契约修正**：主报告改为检查说明/状态/结果/结构化产出，技术 ID 与原始输出留在审计层；golden chain 使用 `ps -p PID -o cmd=` 产出 CMD，并固定旧 PID include 会过滤 cmd 输出的反例。关联：[KBD关键信号结果展示与ps输出提取方案](../../solution/events/2026-07-28-KBD关键信号结果展示与ps输出提取方案.md) |
 | 2026-07-28 | v3.34 | **S0 分类稳定身份与原子推进**：修复工单 `Q2026072855923` 中 VM 名被当成分类、点击③却进入存储-020 的复合错误；Agent 候选与 active 分类交集，UI 回传 category code，Conversation 保留原 optionId 并原子提交 category/S1。关联：[S0 分类稳定身份协议与候选治理方案](../../solution/events/2026-07-28-S0分类稳定身份协议与候选治理方案.md) |
 | 2026-07-28 | v3.33 | **KBD 大输出聚合副本与 exec-result 纵深防御**：修复旧 terminal_bridge 的 40 MB `output` 绕过 stdout/stderr 筛选并导致 Gateway OOM；UI 统一重建兼容 output，Gateway 增加 JSON 解析前 2 MiB 门禁，Conversation 增加 256 KiB 契约并修复 yield Session 被提前关闭。关联工单 `Q2026072785259`；关联：[KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md)。 |
@@ -575,3 +576,14 @@ owner: team
 - [x] WSL/K3s Pod 与 Windows 客户端复用同一套 Bridge 代码，并完成真实 HCI SSH 端到端验收。
 
 详细设计与验收证据见 [Terminal Bridge 端到端可观测性重构设计](../../solution/observability/2026-07-27-terminal-bridge端到端可观测性重构设计.md) 和 [最终验收报告](../../verify/events/2026-07-27-terminal-bridge端到端验收报告.md)。
+
+## 2026-07-29 · PR #632 真实入口重验追加门禁
+
+- [x] 普通 Markdown 自动执行旁路已删除，S0 伪命令输出双门禁和 Alloy 数据面健康门禁已通过负向真实验收。
+- [x] 真实 KBD 路径已经通过 `agent_exec_command → ssh_exec_process → Bridge → HCI → /exec-result` 执行 3 条命令，并在 Tempo/Loki/Artifact/Prometheus 形成证据。
+- [x] 修复 conversation trace parent 构造、KBD QKV/QFK Langfuse TOOL、DiagnosticItemClient 注入、Tool Audit Artifact 关联和 Bridge raw/filtered 统计缺口；定向自动化回归通过。
+- [x] K3s 部署修复镜像并完成三信号全部 PASS 的真实 HCI 正向验收（`Q2026072939295` / KBD `27123`）。
+- [x] 确认同一 trace 下 Langfuse、Diagnostic Item、Tool Audit、Artifact、Tempo、Loki、Prometheus 全量互查一致；修复后真实 TOOL 的零值/null 字段 12/12 完整。
+- [x] 正向与负向门禁全部通过，恢复“端到端完整可观测”结论；hci-sim 技术 Spike 可在用户明确决定投入后启动。
+
+当前状态以 [2026-07-29 真实入口重验事件](../../verify/events/2026-07-29-terminal-bridge真实入口P0修复与端到端重验.md) 为准；2026-07-27 报告是 PR #632 合并时的历史验收，不覆盖本次真实业务案例追加门禁。

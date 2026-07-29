@@ -19,6 +19,15 @@ async def test_kbd_tool_call_and_result_upsert_by_exec_id():
     session.get = AsyncMock(side_effect=get_record)
     session.add = MagicMock(side_effect=add_record)
     session.commit = AsyncMock()
+    artifact_result = MagicMock()
+    artifact_result.mappings.return_value.first.return_value = {
+        "artifact_id": uuid.UUID("11111111-1111-4111-8111-111111111111"),
+        "trace_id": "a" * 32,
+        "stdout_sha256": "b" * 64,
+        "error_type": None,
+        "duration_ms": 321,
+    }
+    session.execute = AsyncMock(return_value=artifact_result)
     context = MagicMock()
     context.__aenter__ = AsyncMock(return_value=session)
     context.__aexit__ = AsyncMock(return_value=False)
@@ -65,8 +74,55 @@ async def test_kbd_tool_call_and_result_upsert_by_exec_id():
     assert record.input_json["limit"] == 1
     assert record.output_json == "matched=1"
     assert record.status == "success"
+    assert record.exec_id == exec_id
+    assert record.artifact_id == uuid.UUID("11111111-1111-4111-8111-111111111111")
+    assert record.output_sha256 == "b" * 64
+    assert record.bridge_trace_id == "a" * 32
+    assert record.duration_ms == 321
     assert record.completed_at is not None
     assert session.commit.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_kbd_blocked_result_has_stable_audit_status_without_artifact():
+    stored = {}
+    session = AsyncMock()
+    session.get = AsyncMock(side_effect=lambda _model, record_id: stored.get(record_id))
+    session.add = MagicMock(side_effect=lambda record: stored.__setitem__(record.id, record))
+    session.commit = AsyncMock()
+    artifact_result = MagicMock()
+    artifact_result.mappings.return_value.first.return_value = None
+    session.execute = AsyncMock(return_value=artifact_result)
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=False)
+    service = ConversationService(
+        repository=MagicMock(),
+        ai_registry=MagicMock(),
+        kb_client=AsyncMock(),
+        session_factory=MagicMock(return_value=context),
+        agent_client=MagicMock(),
+    )
+    conversation_id = uuid.UUID("00000000-0000-0000-0000-000000000751")
+    exec_id = "7e4efb36-b713-5b72-bc6b-80e541a8ab7d"
+
+    await service._record_tool_call(
+        conversation_id=conversation_id,
+        case_id="Q2026072816487",
+        stage="tool_result",
+        metadata={
+            "exec_id": exec_id,
+            "tool_name": "qfk_system",
+            "status": "failed",
+            "outcome": "blocked",
+            "error": "依赖变量缺失: pid",
+        },
+    )
+
+    record = stored[exec_id]
+    assert record.status == "blocked"
+    assert record.error_type == "blocked_dependency"
+    assert record.artifact_id is None
 
 
 @pytest.mark.asyncio

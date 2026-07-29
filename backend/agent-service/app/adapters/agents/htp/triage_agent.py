@@ -22,6 +22,7 @@ TriageAgent: S0 意图识别 Agent（继承 BaseAgent）
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -73,6 +74,26 @@ class TriageAgent(BaseAgent):
     _categories_cache: dict[str, list[dict]] | None = None
     _categories_cache_time: float = 0.0
     _CACHE_TTL = 300.0
+    # S0 只做故障分类。显式命令执行请求必须在调用 LLM 前被确定性拦截，
+    # 防止模型把预期输出伪装成真实结果，再被展示层误当成控制指令。
+    _DIRECT_COMMAND_REQUEST_PATTERNS = (
+        re.compile(
+            r"(?:^|[\n。！？])\s*(?:请|请你|请帮我|麻烦|帮我|现在|立即|直接)"
+            r"[^\n。！？]{0,60}?(?:执行|运行)[^\n。！？]{0,30}?(?:命令|脚本)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:^|[\n。！？])\s*(?:执行|运行)(?:以下|下列|这个|该|一条)[^\n。！？]{0,20}?(?:命令|脚本)", re.IGNORECASE
+        ),
+        re.compile(r"\b(?:please\s+)?(?:run|execute)\b[^\n.!?]{0,50}\b(?:command|script|ssh|shell)\b", re.IGNORECASE),
+    )
+    _UNGROUNDED_EXECUTION_EVIDENCE_PATTERNS = (
+        re.compile(r"```\s*(?:bash|sh|shell|console)\b", re.IGNORECASE),
+        re.compile(r"(?:命令)?执行结果\s*[:：]", re.IGNORECASE),
+        re.compile(r"退出码\s*[:：=]?\s*-?\d+", re.IGNORECASE),
+        re.compile(r"\bexit(?:\s+code)?\s*[:=]\s*-?\d+\b", re.IGNORECASE),
+        re.compile(r"(?:已执行|执行成功)[^\n。！？]{0,30}(?:命令|SSH|Shell)", re.IGNORECASE),
+    )
 
     def __init__(
         self,
@@ -146,6 +167,22 @@ class TriageAgent(BaseAgent):
             AgentInteractiveRequest: 候选确认（AI 给出 ①② 时）
             AgentStageUpdate(stage="S1"): 分类确认后推进到下一阶段
         """
+        # 0. S0 命令执行硬门禁：不依赖 Prompt，命中后不调用 LLM，也不产生可执行代码块。
+        latest_user_text = self._latest_user_text(messages)
+        if self._is_direct_command_execution_request(latest_user_text):
+            logger.warning(
+                event="triage_command_execution_blocked",
+                message="S0 阶段拦截显式命令执行请求",
+                session_id=session_id,
+                case_id=case_id,
+                request_sha256=hashlib.sha256(latest_user_text.encode("utf-8")).hexdigest(),
+            )
+            yield AgentTextChunk(
+                content="当前会话仍处于故障分类阶段，本次未执行任何命令。"
+                "请先确认故障分类；进入诊断阶段后，Agent 会通过可审计的结构化工具通道执行必要的只读检查。"
+            )
+            return
+
         # 1. 加载分类列表（带缓存）
         await self._ensure_categories_loaded()
 
@@ -165,7 +202,8 @@ class TriageAgent(BaseAgent):
                 reason=f"未找到助手类型 '{assistant_type}'",
             )
 
-        # 4. 流式调用 LLM（用户可以看到推理过程）
+        # 4. 调用 LLM。先缓冲完整结果并执行证据门禁，再向用户输出；
+        # 否则流式分块一旦发出，后置校验无法撤回伪造的执行证据。
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         full_reply: list[str] = []
 
@@ -179,7 +217,6 @@ class TriageAgent(BaseAgent):
             ):
                 if chunk:
                     full_reply.append(chunk)
-                    yield AgentTextChunk(content=chunk)
         except Exception as exc:
             logger.warning(
                 event="triage_llm_fallback",
@@ -188,10 +225,11 @@ class TriageAgent(BaseAgent):
                 error=str(exc),
             )
             deterministic_result = self._deterministic_candidates(messages, env_context)
-            yield AgentTextChunk(content="分类模型暂时不可用，已根据故障描述和现场事实生成候选，请人工确认。")
 
         # 5. 解析意图识别结果
         reply_text = "".join(full_reply)
+        reply_sha256 = hashlib.sha256(reply_text.encode("utf-8")).hexdigest()
+        ungrounded_evidence_blocked = self._contains_ungrounded_execution_evidence(reply_text)
 
         # 空响应兜底：LLM 未返回任何内容时给出友好提示
         if not reply_text.strip() and deterministic_result is None:
@@ -206,6 +244,24 @@ class TriageAgent(BaseAgent):
                 "请稍后重试，或联系管理员检查 AI 服务状态。\n"
             )
             return
+
+        if deterministic_result is not None:
+            yield AgentTextChunk(content="分类模型暂时不可用，已根据故障描述和现场事实生成候选，请人工确认。")
+        elif ungrounded_evidence_blocked:
+            logger.error(
+                event="triage_ungrounded_execution_evidence_blocked",
+                message="S0 模型输出包含无工具证据的命令执行内容，已阻止透传",
+                session_id=session_id,
+                case_id=case_id,
+                reply_sha256=reply_sha256,
+            )
+            yield AgentTextChunk(
+                content="当前仍处于故障分类阶段，系统没有执行任何命令。"
+                "检测到回复中包含未经工具结果证明的执行内容，已安全阻止；请根据下方提示继续确认故障分类。"
+            )
+        else:
+            for chunk in full_reply:
+                yield AgentTextChunk(content=chunk)
 
         result = deterministic_result or self._parse_intent_result(reply_text)
 
@@ -271,12 +327,39 @@ class TriageAgent(BaseAgent):
                 content="\n\n抱歉，暂时无法识别您的故障类型。"
                 "请尝试更具体地描述问题现象，例如：'虚拟机无法开机，界面显示XXX错误'。"
             )
+            parse_failure_context = (
+                {"reply_sha256": reply_sha256, "reply_blocked": True}
+                if ungrounded_evidence_blocked
+                else {"reply_preview": reply_text[:200]}
+            )
             logger.warning(
                 event="intent_parse_failed",
                 message="S0 意图识别解析失败，无候选也无确认",
                 session_id=session_id,
-                reply_preview=reply_text[:200],
+                **parse_failure_context,
             )
+
+    @staticmethod
+    def _latest_user_text(messages: list[dict[str, Any]]) -> str:
+        """返回最近一条用户消息，避免历史描述触发当前轮次门禁。"""
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                return str(message.get("content") or "").strip()
+        return ""
+
+    @classmethod
+    def _is_direct_command_execution_request(cls, text: str) -> bool:
+        """识别明确的命令执行祈使句；故障描述中的“执行失败”不应误判。"""
+        if not text:
+            return False
+        return any(pattern.search(text) for pattern in cls._DIRECT_COMMAND_REQUEST_PATTERNS)
+
+    @classmethod
+    def _contains_ungrounded_execution_evidence(cls, text: str) -> bool:
+        """S0 没有工具能力，因此任何命令结果形态都属于无依据执行证据。"""
+        if not text:
+            return False
+        return any(pattern.search(text) for pattern in cls._UNGROUNDED_EXECUTION_EVIDENCE_PATTERNS)
 
     @classmethod
     def _deterministic_candidates(

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -54,6 +55,62 @@ func TestValidateOutputFilters(t *testing.T) {
 	invalid := []OutputFilter{{Source: "invalid", Include: []string{"VM"}, IncludeMode: "all"}}
 	if err := validateOutputFilters(invalid); err == nil {
 		t.Fatal("invalid source must be rejected")
+	}
+}
+
+func TestDrainExecPipeFilteredTracksRawAndFilteredStats(t *testing.T) {
+	input := "unrelated process\nqemu 9527 /images/18864231143.vm/disk.qcow2\n"
+	filter := OutputFilter{
+		Source: "stdout", Include: []string{"18864231143"}, IncludeMode: "all", CaseSensitive: true,
+	}
+	capture := newBoundedCapture(4096)
+	stats := newStreamStats(true)
+	emitted := strings.Builder{}
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+
+	go drainExecPipeFiltered(
+		strings.NewReader(input), capture, stats, func(chunk string) { emitted.WriteString(chunk) }, &wg, "stdout", []OutputFilter{filter},
+	)
+	wg.Wait()
+	stats.finish()
+
+	if stats.rawBytes != int64(len(input)) {
+		t.Fatalf("rawBytes = %d, want %d", stats.rawBytes, len(input))
+	}
+	if stats.scannedLines != 2 || stats.keptLines != 1 {
+		t.Fatalf("lines scanned=%d kept=%d, want 2/1", stats.scannedLines, stats.keptLines)
+	}
+	if capture.total >= stats.rawBytes {
+		t.Fatalf("filtered bytes = %d, raw bytes = %d; filtering did not reduce output", capture.total, stats.rawBytes)
+	}
+	if capture.String() != "qemu 9527 /images/18864231143.vm/disk.qcow2\n" {
+		t.Fatalf("unexpected filtered capture: %q", capture.String())
+	}
+	if emitted.String() != capture.String() {
+		t.Fatalf("emitted output differs from safe capture: %q", emitted.String())
+	}
+	if stats.rawSHA256() == capture.SHA256() {
+		t.Fatal("raw and filtered SHA-256 should differ when a line is removed")
+	}
+}
+
+func TestDrainExecPipeTracksUnfilteredStats(t *testing.T) {
+	input := "line one\nline two"
+	capture := newBoundedCapture(4096)
+	stats := newStreamStats(false)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+
+	go drainExecPipe(strings.NewReader(input), capture, stats, func(string) {}, &wg)
+	wg.Wait()
+	stats.finish()
+
+	if stats.rawBytes != capture.total || stats.rawSHA256() != capture.SHA256() {
+		t.Fatal("unfiltered raw and returned stream statistics must be identical")
+	}
+	if stats.scannedLines != 2 || stats.keptLines != 2 {
+		t.Fatalf("lines scanned=%d kept=%d, want 2/2", stats.scannedLines, stats.keptLines)
 	}
 }
 

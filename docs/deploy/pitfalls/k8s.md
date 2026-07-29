@@ -1472,3 +1472,22 @@ ConfigMap 作为发布方式，正式修复必须构建不可变镜像，经 PR 
 
 **参考案例**：2026-07-27 dev 环境运行时代码完整性修复。该类问题会使镜像 tag、探针和 ArgoCD Healthy 状态
 与实际执行源码不一致，必须纳入部署验收。
+
+---
+
+## D-021：Alloy Pod Ready 不等于日志采集与 Loki 写入健康
+
+**现象**：Alloy Pod 长期显示 `1/1 Ready`，但 CPU 持续打满 limit、`/metrics` 超时，Terminal Bridge 新日志无法在 Loki 查询到；仅重启后短暂恢复。
+
+**根因**：未配置 HTTP 探针时，Kubernetes 只知道容器进程仍存在，不知道 Alloy 控制面是否响应，更不知道 `source → process → loki.write` 数据面是否成功。过低的 CPU/内存 limit 会使 Go runtime 和采集流水线饥饿，但进程不退出，因此形成假健康。
+
+**修复**：
+
+1. 以实测稳定值设置 request `100m/128Mi`、limit `1 CPU/512Mi`；
+2. 使用 `/-/ready` 配置 startup/readiness/liveness probe；
+3. 为 Pod 添加 `/metrics:12345` 抓取注解，并让 Prometheus同时发现观测命名空间；
+4. 告警 `up` 缺失、`loki_write_dropped_entries_total`、持续 batch retry，以及“读取行数增长但成功写入数为零”。
+
+**验收**：Pod Ready、Alloy target `up=1`、丢弃增量为 0、发送计数增长、唯一日志可在 Loki 查询到，五项必须同时满足。部署时还要核对 Chart 声明值已接管现场临时 patch；否则下一次 GitOps 收敛会恢复到错误规格。
+
+**参考案例**：2026-07-29 PR #632 真实端到端复验中，默认 `200m/128Mi` limit 下 Alloy CPU 顶满、指标 10 秒无响应且 Bridge 日志停止入 Loki；临时扩容至上述规格后控制面、指标和 Loki 写入恢复。

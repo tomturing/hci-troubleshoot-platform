@@ -2,7 +2,7 @@
 status: active
 category: meta
 audience: all
-last_updated: 2026-07-28
+last_updated: 2026-07-29
 owner: team
 update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑达成）必须更新第一屏
 ---
@@ -54,6 +54,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD/QFK 安全非 JSON 行列提取与完整输出变量 | ✅ 完成 | 2026-07-27 |
 | KBD 多条历史 QFK 管道的分步修复与统一保存 | ✅ 完成 | 2026-07-27 |
 | KBD 自动执行门禁与 HTP 人工升级确认修复 | ✅ 完成 | 2026-07-27 |
+| Terminal Bridge 真实 UI 入口信任边界与 Alloy 采集健康 P0 修复 | 🔄 真实案例重验中 | 2026-07-29 |
 | 运行时代码完整性防护（禁止源码热补丁覆盖镜像） | ✅ 完成 | 2026-07-27 |
 | KBD QKV/QFK 三信号执行闭环与 39 MB 大输出边缘筛选 | ✅ 代码与自动验证完成，待 PR 部署后现场复测 | 2026-07-27 |
 | KBD 关键信号结果用户化与 `ps -p PID -o cmd=` 提取契约 | ✅ 代码与 59 项自动验证完成，待修正 KBD revision 后现场复测 | 2026-07-28 |
