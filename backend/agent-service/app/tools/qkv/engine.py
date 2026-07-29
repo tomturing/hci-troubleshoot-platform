@@ -9,8 +9,11 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
+from shared.observability.langfuse import observe_tool
 from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 
+from app.tools.acli.executor import exec_result_observation
 from app.tools.qkv.parser import parse_frontend_value
 from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
 
@@ -127,15 +130,26 @@ async def qkv_exec(
         )
 
     try:
-        exec_res = await _executor.execute(
-            tool_name="acli_exec",
-            args={"command": cmd, "reason": f"QKV前端变量抽取: {signal.query.value}"},
-            conversation_id=conversation_id,
-            node_ip=node_ip,
-            risk_level=1,  # 均属只读
-            policy="auto",  # 静默跑
-            exec_id=exec_id,
-        )
+        tool_args = {"command": cmd, "reason": f"QKV前端变量抽取: {signal.query.value}"}
+        with observe_tool(
+            tool_name=f"qkv_{signal.query.value}",
+            tool_args=tool_args,
+            exec_id=exec_id or "",
+            session_id=conversation_id,
+            risk_level=1,
+            trace_id=get_current_trace_id(),
+        ) as observation:
+            exec_res = await _executor.execute(
+                tool_name="acli_exec",
+                args=tool_args,
+                conversation_id=conversation_id,
+                node_ip=node_ip,
+                risk_level=1,  # 均属只读
+                policy="auto",  # 静默跑
+                exec_id=exec_id,
+            )
+            if observation:
+                observation.update(output=exec_result_observation(exec_res))
     except Exception as exec_err:
         logger.error(
             event="qkv_execution_failed",

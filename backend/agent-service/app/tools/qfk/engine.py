@@ -8,8 +8,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from shared.observability.langfuse import observe_tool
 from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 
+from app.tools.acli.executor import exec_result_observation
 from app.tools.qfk.extractor import QFKExtractionError, get_complete_output
 from app.tools.qfk.handlers import HandlerRegistry
 from app.tools.qfk.signal import BackendSignal
@@ -23,16 +26,16 @@ class QFKResult:
     QFK 关键信号执行与布尔评判最终输出结果
     """
 
-    matched: bool                        # 核心判定：符合排查信号预期返回 True，不符合返回 False
-    namespace: str                     # 执行信号类型
-    commands: list[str]                  # 实际执行的底层 acli 指令列表
-    keywords: list[str]                  # K: 对比关键字列表
-    match_mode: str                      # 关键字匹配规则 (any / all)
-    matched_keywords: list[str]          # 实际检测到匹配命中的关键字
-    evidence: str                        # 诊断评估执行的完整证据链（由 handler 生成）
-    error: str | None = None             # 异常报错信息描述
-    exec_ids: list[str] = field(default_factory=list) # 追踪流流水号记录
-    raw_output: str = ""                  # 未混入 matcher 目标文本的现场原始输出
+    matched: bool  # 核心判定：符合排查信号预期返回 True，不符合返回 False
+    namespace: str  # 执行信号类型
+    commands: list[str]  # 实际执行的底层 acli 指令列表
+    keywords: list[str]  # K: 对比关键字列表
+    match_mode: str  # 关键字匹配规则 (any / all)
+    matched_keywords: list[str]  # 实际检测到匹配命中的关键字
+    evidence: str  # 诊断评估执行的完整证据链（由 handler 生成）
+    error: str | None = None  # 异常报错信息描述
+    exec_ids: list[str] = field(default_factory=list)  # 追踪流流水号记录
+    raw_output: str = ""  # 未混入 matcher 目标文本的现场原始输出
     complete_outputs: dict[str, str] = field(default_factory=dict)  # 产出变量使用的完整物理流
 
     def to_observation(self) -> str:
@@ -124,6 +127,7 @@ async def qfk_exec(
 
     # 2. 复用底层 BridgeRelayExecutor 执行命令
     from app.tools.acli.executor import _executor
+
     if _executor is None:
         # 注意：此处的 None 仅表示 agent-service 进程内部的全局执行器未注入
         # （lifespan 未调用 set_executor），并不代表 terminal_bridge / SSH 链路异常。
@@ -159,25 +163,36 @@ async def qfk_exec(
     exec_ids = []
     for cmd in commands:
         try:
-            exec_res = await _executor.execute(
-                tool_name="acli_exec",
-                args={
-                    "command": cmd,
-                    "reason": f"QFK诊断信号提取执行: {signal.instruction or ''}",
-                    # qfk_system 的 container 由 terminal_bridge 包装；host 会原样在宿主机执行。
-                    "container": signal.container if signal.namespace == "system" else None,
-                    # 非 JSON 产出变量的行筛选必须在 terminal_bridge 流式执行边界
-                    # 完成，避免几十 MB 原始输出先穿过 WebSocket/浏览器/HTTP。
-                    "output_filters": output_filters or [],
-                },
-                conversation_id=conversation_id,
-                node_ip=node_ip,
-                case_id=case_id,
-                risk_level=1,  # QFK 判定均属只读行为，风险为 1
-                policy="auto", # 无需前端弹窗，静默自动跑
-                exec_id=exec_id,
-                timeout=signal.timeout,
-            )
+            tool_args = {
+                "command": cmd,
+                "reason": f"QFK诊断信号提取执行: {signal.instruction or ''}",
+                # qfk_system 的 container 由 terminal_bridge 包装；host 会原样在宿主机执行。
+                "container": signal.container if signal.namespace == "system" else None,
+                # 非 JSON 产出变量的行筛选必须在 terminal_bridge 流式执行边界
+                # 完成，避免几十 MB 原始输出先穿过 WebSocket/浏览器/HTTP。
+                "output_filters": output_filters or [],
+            }
+            with observe_tool(
+                tool_name=f"qfk_{signal.namespace}",
+                tool_args=tool_args,
+                exec_id=exec_id or "",
+                session_id=conversation_id,
+                risk_level=1,
+                trace_id=get_current_trace_id(),
+            ) as observation:
+                exec_res = await _executor.execute(
+                    tool_name="acli_exec",
+                    args=tool_args,
+                    conversation_id=conversation_id,
+                    node_ip=node_ip,
+                    case_id=case_id,
+                    risk_level=1,  # QFK 判定均属只读行为，风险为 1
+                    policy="auto",  # 无需前端弹窗，静默自动跑
+                    exec_id=exec_id,
+                    timeout=signal.timeout,
+                )
+                if observation:
+                    observation.update(output=exec_result_observation(exec_res))
             # 让命令"在桥上跑过但未真正落到主机"的失败显式化：不进入 evaluate，直接判失败。
             combined = f"{exec_res.stdout or ''}\n{exec_res.stderr or ''}"
             is_terminal_failure = (exec_res.exit_code not in (0, None)) and any(
@@ -287,11 +302,7 @@ async def qfk_exec(
     # 显式 is True（详见 2.3①）：signal.expected 为 bool（默认 True，由 pydantic 在
     # 边界拒绝 None/非布尔），此处仅信任布尔真值；避免 falsy 判断在「上游误传 None」时
     # 静默走入 not matched 分支。mode == "not" 已在 evaluate 内部表达取反语义，无需再翻转。
-    final_matched = (
-        matched
-        if mode_norm == "not"
-        else matched if (signal.expected is True) else not matched
-    )
+    final_matched = matched if mode_norm == "not" else matched if (signal.expected is True) else not matched
 
     logger.info(
         event="qfk_engine_finished",

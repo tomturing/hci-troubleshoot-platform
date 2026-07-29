@@ -48,6 +48,7 @@ def _redact_command(command: str | None) -> str | None:
         return None
     return _COMMAND_SECRET_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", command)[:4096]
 
+
 # 由 main.py 注入
 _db_manager: DatabaseManager | None = None
 _redis_manager: RedisManager | None = None
@@ -363,6 +364,11 @@ class ExecResultResponse(BaseModel):
     message: str = Field(..., description="回传结果消息")
 
 
+def _effective_stream_bytes(reported_bytes: int | None, content: str | None) -> int:
+    """保留 Bridge 上报的零值；字段被旧客户端省略时按实际 UTF-8 内容兜底。"""
+    return reported_bytes if reported_bytes is not None else len((content or "").encode())
+
+
 @router.post(
     "/api/conversations/{conversation_id}/exec-result",
     response_model=ExecResultResponse,
@@ -429,12 +435,16 @@ async def submit_exec_result(
         )
 
     try:
-        pending_context = json.loads(pending_value) if isinstance(pending_value, str) else json.loads(pending_value.decode())
+        pending_context = (
+            json.loads(pending_value) if isinstance(pending_value, str) else json.loads(pending_value.decode())
+        )
     except (TypeError, ValueError, AttributeError):
         pending_context = {}
 
     effective_trace_id = body.trace_id or trace_id or pending_context.get("trace_id")
     artifact_id = str(body.artifact_id or uuid.uuid5(uuid.NAMESPACE_URL, f"hci-terminal-artifact:{body.exec_id}"))
+    effective_stdout_bytes = _effective_stream_bytes(body.stdout_bytes, body.stdout)
+    effective_stderr_bytes = _effective_stream_bytes(body.stderr_bytes, body.stderr)
 
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
@@ -488,8 +498,8 @@ async def submit_exec_result(
                 "stdout": body.stdout,
                 "stderr": body.stderr,
                 "exit_code": body.exit_code,
-                "stdout_bytes": body.stdout_bytes if body.stdout_bytes is not None else len((body.stdout or "").encode()),
-                "stderr_bytes": body.stderr_bytes if body.stderr_bytes is not None else len((body.stderr or "").encode()),
+                "stdout_bytes": effective_stdout_bytes,
+                "stderr_bytes": effective_stderr_bytes,
                 "stdout_sha256": body.stdout_sha256,
                 "stderr_sha256": body.stderr_sha256,
                 "stdout_truncated": body.stdout_truncated,
@@ -515,8 +525,8 @@ async def submit_exec_result(
         "trace_id": effective_trace_id,
         "traceparent": body.traceparent,
         "artifact_id": artifact_id,
-        "stdout_bytes": body.stdout_bytes,
-        "stderr_bytes": body.stderr_bytes,
+        "stdout_bytes": effective_stdout_bytes,
+        "stderr_bytes": effective_stderr_bytes,
         "stdout_sha256": body.stdout_sha256,
         "stderr_sha256": body.stderr_sha256,
         "stdout_truncated": body.stdout_truncated,

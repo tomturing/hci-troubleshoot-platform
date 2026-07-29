@@ -88,7 +88,12 @@ FROM bridge_execution_artifacts
 WHERE exec_id = '<exec-id>';
 
 SELECT event_id, bridge_instance_id, seq, event_time, trace_id, span_id,
-       exec_id, event, level, success, error_type, artifact_id
+       exec_id, event, level, success, error_type, artifact_id,
+       extra->>'stdout_raw_bytes' AS stdout_raw_bytes,
+       extra->>'stdout_filtered_bytes' AS stdout_filtered_bytes,
+       extra->>'stdout_scanned_lines' AS stdout_scanned_lines,
+       extra->>'stdout_kept_lines' AS stdout_kept_lines,
+       extra->>'stdout_filter_applied' AS stdout_filter_applied
 FROM bridge_execution_logs
 WHERE exec_id = '<exec-id>'
 ORDER BY event_time;
@@ -100,6 +105,8 @@ WHERE exec_id = '<exec-id>';
 ```
 
 Artifact 默认保留 30 天，访问分类为 `restricted`。普通日志、`tool_result`、动态资源审计和 Langfuse 只保存脱敏输入、执行摘要、hash、截断标志及 Artifact ID，不复制原始命令输出。`terminal-bridge-artifact-cleanup` CronJob 每日删除 `expires_at < now()` 的过期 Artifact；结果写入路径也会机会性清理。验收时需确认 CronJob 已创建，并手工触发一次 Job 验证数据库连接。
+
+启用逐行筛选时必须同时核对 raw 与 filtered 两组统计。`raw_bytes/scanned_lines` 表示 Bridge 从 SSH pipe 实际读取到的物理流，`filtered_bytes/kept_lines` 表示允许返回浏览器和 Artifact 的安全流。raw 侧只记录字节数和 SHA-256，不保存或传输正文。若 raw 大于 0 且 kept_lines 为 0，需检查现场故障信号或 include/exclude 契约；不得把它表述为“远端没有任何输出”。
 
 Tempo 必须在同一 Trace 中看到 `terminal_bridge.websocket.receive`、`terminal_bridge.ssh.exec`、`terminal_bridge.websocket.result.send` 和结果回传 HTTP Span。
 
@@ -118,7 +125,11 @@ Loki 查询示例：
 
 ### 4.5 Langfuse 和指标
 
-Langfuse tool observation metadata 必须包含 `exec_id`、`otel_trace_id`、`artifact_id` 和输出 hash。
+Langfuse tool observation metadata/output 必须包含 `exec_id`、`otel_trace_id`、`artifact_id`、stdout/stderr hash 与字节数、截断标志、退出码、错误类型和耗时。ReAct 与确定性 KBD QKV/QFK 两条工具轨都必须产生 TOOL observation；即使本轮没有 LLM 调用，也不能缺少确定性工具观测。
+
+字段集合必须稳定：空输出使用 `bytes=0`，未截断使用 `truncated=false`，成功执行使用 `error_type=null`；不得用字段缺失替代这些明确状态。兼容仍带 `omitempty` 的旧 Bridge/浏览器时，conversation-service 必须按收到的 UTF-8 stdout/stderr 正文补齐字节数，并把同一有效值写入 Artifact 与返回 Agent 的 Redis result。
+
+KBD 验收还必须查询 `diagnostic_item`，确认 S2 假设、S3 验证步骤和最终 S4 结论与 Tool Audit 的 exec_id 对齐。仅有对话最终文本不构成 Agent 效果调优数据面完整。
 
 Prometheus 查询：
 

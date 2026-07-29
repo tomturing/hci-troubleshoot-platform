@@ -5,7 +5,7 @@ QKV 前端信号变量提取工具单元测试
 
 import os
 import sys
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # 注入工程后端路径以兼容测试规范
 _svc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "agent-service"))
@@ -300,3 +300,48 @@ def test_qkv_result_to_observation():
     assert "QKV 查询状态: 成功查找到 1 条记录" in obs
     assert "node-1" in obs
     assert "vm-123" in obs
+
+
+@pytest.mark.asyncio
+async def test_qkv_records_langfuse_tool_observation_without_output_body():
+    signal = FrontendSignal(query=FrontendQueryType.ALERT, keyword="只读", limit=1)
+    exec_result = ExecResult(
+        stdout='{"data": []}',
+        stderr="",
+        exit_code=0,
+        command="acli --formatter json alert get",
+        node="10.0.0.1",
+        duration_ms=42,
+        truncated=False,
+        risk_level=1,
+        exec_id="exec-qkv-observe",
+        trace_id="a" * 32,
+        artifact_id="11111111-1111-4111-8111-111111111111",
+        stdout_sha256="b" * 64,
+        stderr_sha256="c" * 64,
+        stdout_bytes=12,
+        stderr_bytes=0,
+    )
+    executor = AsyncMock()
+    executor.execute.return_value = exec_result
+    observation = MagicMock()
+    observation_context = MagicMock()
+    observation_context.__enter__.return_value = observation
+    observation_context.__exit__.return_value = False
+
+    with (
+        patch("app.tools.acli.executor._executor", executor),
+        patch("app.tools.qkv.engine.observe_tool", return_value=observation_context) as observe,
+    ):
+        result = await qkv_exec(signal, conversation_id="conversation-1", exec_id="exec-qkv-observe")
+
+    assert result.success is True
+    assert observe.call_args.kwargs["tool_name"] == "qkv_alert"
+    output = observation.update.call_args.kwargs["output"]
+    assert output["exec_id"] == "exec-qkv-observe"
+    assert output["artifact_id"] == "11111111-1111-4111-8111-111111111111"
+    assert output["stdout_sha256"] == "b" * 64
+    assert output["stderr_bytes"] == 0
+    assert "error_type" in output
+    assert output["error_type"] is None
+    assert "stdout" not in output

@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -156,27 +157,27 @@ func (c runtimeConfig) originAllowed(origin, requestHost string) bool {
 // ── 消息结构 ─────────────────────────────────────────────────────────────────
 
 type InMessage struct {
-	Type           string `json:"type"`
-	CaseID         string `json:"case_id"`
-	Host           string `json:"host"`
-	Username       string `json:"username"`
-	Port           int    `json:"port"`
-	AuthType       string `json:"auth_type"`
-	Password       string `json:"password"`
-	PrivateKey     string `json:"private_key"`
-	Passphrase     string `json:"passphrase"`
-	Data           string `json:"data"`
-	Command        string `json:"command"`
-	ExecID         string `json:"exec_id"`   // 用于 ssh_exec_command 和 ssh_exec_process
-	NodeIP         string `json:"node_ip"`   // 目标节点 IP（多节点路由）
-	Container      string `json:"container"` // 目标容器名（空或"host"=物理机直连）
-	Timeout        int    `json:"timeout"` // 命令最大执行秒数（1-300）
-	TraceID        string `json:"trace_id"`  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
-	Traceparent    string `json:"traceparent"`
-	Tracestate     string `json:"tracestate"`
-	ConversationID string `json:"conversation_id"`
-	ToolCallID     string `json:"tool_call_id"`
-	Resume         bool   `json:"resume"` // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
+	Type           string         `json:"type"`
+	CaseID         string         `json:"case_id"`
+	Host           string         `json:"host"`
+	Username       string         `json:"username"`
+	Port           int            `json:"port"`
+	AuthType       string         `json:"auth_type"`
+	Password       string         `json:"password"`
+	PrivateKey     string         `json:"private_key"`
+	Passphrase     string         `json:"passphrase"`
+	Data           string         `json:"data"`
+	Command        string         `json:"command"`
+	ExecID         string         `json:"exec_id"`   // 用于 ssh_exec_command 和 ssh_exec_process
+	NodeIP         string         `json:"node_ip"`   // 目标节点 IP（多节点路由）
+	Container      string         `json:"container"` // 目标容器名（空或"host"=物理机直连）
+	Timeout        int            `json:"timeout"`   // 命令最大执行秒数（1-300）
+	TraceID        string         `json:"trace_id"`  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
+	Traceparent    string         `json:"traceparent"`
+	Tracestate     string         `json:"tracestate"`
+	ConversationID string         `json:"conversation_id"`
+	ToolCallID     string         `json:"tool_call_id"`
+	Resume         bool           `json:"resume"`         // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
 	OutputFilters  []OutputFilter `json:"output_filters"` // 平台定义的安全逐行筛选，不执行 shell/正则
 }
 
@@ -262,6 +263,40 @@ func (c *boundedCapture) write(p []byte) []byte {
 
 func (c *boundedCapture) String() string { return string(c.buffer) }
 func (c *boundedCapture) SHA256() string { return fmt.Sprintf("%x", c.hasher.Sum(nil)) }
+
+type streamStats struct {
+	filtered     bool
+	rawBytes     int64
+	rawHasher    hash.Hash
+	scannedLines int64
+	keptLines    int64
+	lastByte     byte
+}
+
+func newStreamStats(filtered bool) *streamStats {
+	return &streamStats{filtered: filtered, rawHasher: sha256.New()}
+}
+
+func (s *streamStats) recordRaw(p []byte) {
+	if len(p) == 0 {
+		return
+	}
+	_, _ = s.rawHasher.Write(p)
+	s.rawBytes += int64(len(p))
+	s.scannedLines += int64(bytes.Count(p, []byte{'\n'}))
+	s.lastByte = p[len(p)-1]
+}
+
+func (s *streamStats) finish() {
+	if s.rawBytes > 0 && s.lastByte != '\n' {
+		s.scannedLines++
+	}
+	if !s.filtered {
+		s.keptLines = s.scannedLines
+	}
+}
+
+func (s *streamStats) rawSHA256() string { return fmt.Sprintf("%x", s.rawHasher.Sum(nil)) }
 
 // ── Exec Marker 监听器 ─────────────────────────────────────────────────────────
 
@@ -704,6 +739,10 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 
 	stdoutCapture := newBoundedCapture(maxOutputBytes)
 	stderrCapture := newBoundedCapture(maxOutputBytes)
+	stdoutFiltered := len(filtersForSource(outputFilters, "stdout")) > 0
+	stderrFiltered := len(filtersForSource(outputFilters, "stderr")) > 0
+	stdoutStats := newStreamStats(stdoutFiltered)
+	stderrStats := newStreamStats(stderrFiltered)
 	var readers sync.WaitGroup
 	readers.Add(2)
 	stdoutEmit := func(chunk string) {
@@ -712,15 +751,15 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 	stderrEmit := func(chunk string) {
 		sendMsg(ws, OutMessage{Type: "exec_stderr", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: chunk, TraceID: traceID})
 	}
-	if len(filtersForSource(outputFilters, "stdout")) > 0 {
-		go drainExecPipeFiltered(stdoutPipe, stdoutCapture, stdoutEmit, &readers, "stdout", outputFilters)
+	if stdoutFiltered {
+		go drainExecPipeFiltered(stdoutPipe, stdoutCapture, stdoutStats, stdoutEmit, &readers, "stdout", outputFilters)
 	} else {
-		go drainExecPipe(stdoutPipe, stdoutCapture, stdoutEmit, &readers)
+		go drainExecPipe(stdoutPipe, stdoutCapture, stdoutStats, stdoutEmit, &readers)
 	}
-	if len(filtersForSource(outputFilters, "stderr")) > 0 {
-		go drainExecPipeFiltered(stderrPipe, stderrCapture, stderrEmit, &readers, "stderr", outputFilters)
+	if stderrFiltered {
+		go drainExecPipeFiltered(stderrPipe, stderrCapture, stderrStats, stderrEmit, &readers, "stderr", outputFilters)
 	} else {
-		go drainExecPipe(stderrPipe, stderrCapture, stderrEmit, &readers)
+		go drainExecPipe(stderrPipe, stderrCapture, stderrStats, stderrEmit, &readers)
 	}
 
 	waitCh := make(chan error, 1)
@@ -736,6 +775,8 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 		waitErr = <-waitCh
 	}
 	readers.Wait()
+	stdoutStats.finish()
+	stderrStats.finish()
 
 	exitCode := 0
 	errorType := ""
@@ -766,23 +807,45 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 		attribute.Int64("exec.duration_ms", duration.Milliseconds()),
 		attribute.Int64("stdout.bytes", stdoutCapture.total),
 		attribute.Int64("stderr.bytes", stderrCapture.total),
+		attribute.Int64("stdout.raw_bytes", stdoutStats.rawBytes),
+		attribute.Int64("stderr.raw_bytes", stderrStats.rawBytes),
+		attribute.Int64("stdout.scanned_lines", stdoutStats.scannedLines),
+		attribute.Int64("stderr.scanned_lines", stderrStats.scannedLines),
+		attribute.Int64("stdout.kept_lines", stdoutStats.keptLines),
+		attribute.Int64("stderr.kept_lines", stderrStats.keptLines),
+		attribute.Bool("stdout.filter_applied", stdoutStats.filtered),
+		attribute.Bool("stderr.filter_applied", stderrStats.filtered),
 		attribute.Bool("stdout.truncated", stdoutCapture.truncated),
 		attribute.Bool("stderr.truncated", stderrCapture.truncated),
 		attribute.String("artifact.id", artifactID),
 	)
 	blogContext(ctx, level, "exec.done", "命令执行完成", req, map[string]any{
-		"artifact_id":      artifactID,
-		"exit_code":        exitCode,
-		"success":          exitCode == 0,
-		"error_type":       errorType,
-		"duration_ms":      duration.Milliseconds(),
-		"stdout_len":       stdoutCapture.total,
-		"stderr_len":       stderrCapture.total,
-		"stdout_sha256":    stdoutCapture.SHA256(),
-		"stderr_sha256":    stderrCapture.SHA256(),
-		"stdout_truncated": stdoutCapture.truncated,
-		"stderr_truncated": stderrCapture.truncated,
-		"timed_out":        timedOut,
+		"artifact_id":            artifactID,
+		"exit_code":              exitCode,
+		"success":                exitCode == 0,
+		"error_type":             errorType,
+		"duration_ms":            duration.Milliseconds(),
+		"stdout_len":             stdoutCapture.total,
+		"stderr_len":             stderrCapture.total,
+		"stdout_sha256":          stdoutCapture.SHA256(),
+		"stderr_sha256":          stderrCapture.SHA256(),
+		"stdout_raw_bytes":       stdoutStats.rawBytes,
+		"stderr_raw_bytes":       stderrStats.rawBytes,
+		"stdout_raw_sha256":      stdoutStats.rawSHA256(),
+		"stderr_raw_sha256":      stderrStats.rawSHA256(),
+		"stdout_scanned_lines":   stdoutStats.scannedLines,
+		"stderr_scanned_lines":   stderrStats.scannedLines,
+		"stdout_kept_lines":      stdoutStats.keptLines,
+		"stderr_kept_lines":      stderrStats.keptLines,
+		"stdout_filter_applied":  stdoutStats.filtered,
+		"stderr_filter_applied":  stderrStats.filtered,
+		"stdout_filtered_bytes":  stdoutCapture.total,
+		"stderr_filtered_bytes":  stderrCapture.total,
+		"stdout_filtered_sha256": stdoutCapture.SHA256(),
+		"stderr_filtered_sha256": stderrCapture.SHA256(),
+		"stdout_truncated":       stdoutCapture.truncated,
+		"stderr_truncated":       stderrCapture.truncated,
+		"timed_out":              timedOut,
 	})
 
 	resultCtx, resultSpan := otel.Tracer("terminal_bridge").Start(ctx, "terminal_bridge.websocket.result.send",
@@ -800,12 +863,13 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 	resultSpan.End()
 }
 
-func drainExecPipe(pipe io.Reader, capture *boundedCapture, emit func(string), wg *sync.WaitGroup) {
+func drainExecPipe(pipe io.Reader, capture *boundedCapture, stats *streamStats, emit func(string), wg *sync.WaitGroup) {
 	defer wg.Done()
 	buffer := make([]byte, 4096)
 	for {
 		n, err := pipe.Read(buffer)
 		if n > 0 {
+			stats.recordRaw(buffer[:n])
 			if captured := capture.write(buffer[:n]); len(captured) > 0 {
 				emit(string(captured))
 			}
@@ -870,13 +934,14 @@ func lineMatchesOutputFilter(line string, filter OutputFilter) bool {
 }
 
 // drainExecPipeFiltered 在 Bridge 本地逐行筛选，原始大输出不会进入 WebSocket 和浏览器。
-func drainExecPipeFiltered(pipe io.Reader, capture *boundedCapture, emit func(string), wg *sync.WaitGroup, source string, filters []OutputFilter) {
+func drainExecPipeFiltered(pipe io.Reader, capture *boundedCapture, stats *streamStats, emit func(string), wg *sync.WaitGroup, source string, filters []OutputFilter) {
 	defer wg.Done()
 	selected := filtersForSource(filters, source)
 	reader := bufio.NewReader(pipe)
 	for {
 		line, err := reader.ReadString('\n')
 		if line != "" {
+			stats.recordRaw([]byte(line))
 			keep := false
 			for _, filter := range selected {
 				if lineMatchesOutputFilter(line, filter) {
@@ -885,6 +950,7 @@ func drainExecPipeFiltered(pipe io.Reader, capture *boundedCapture, emit func(st
 				}
 			}
 			if keep {
+				stats.keptLines++
 				if captured := capture.write([]byte(line)); len(captured) > 0 {
 					emit(string(captured))
 				}

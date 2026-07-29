@@ -1,5 +1,80 @@
 # Changelog
 
+## [2.20.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.19.0...v2.20.0) (2026-07-29)
+
+
+### ✨ 新功能
+
+* **admin:** QKV 关键字×分类基线软校验与决策文档归档 ([#606](https://github.com/tomturing/hci-troubleshoot-platform/issues/606)) ([aa77293](https://github.com/tomturing/hci-troubleshoot-platform/commit/aa7729366485f21e6beec6c84c8ac56267d65879))
+* **docker:** docker-compose 新增 db-migrate 服务实现声明式数据库迁移自动化 ([#569](https://github.com/tomturing/hci-troubleshoot-platform/issues/569)) ([dcc997d](https://github.com/tomturing/hci-troubleshoot-platform/commit/dcc997df1338db2e630c8ce59c117c968b28c28d))
+* **kbd:** Tab 分类展示、置信度筛选、排查步骤解析修复、Vision 超时重试 ([#596](https://github.com/tomturing/hci-troubleshoot-platform/issues/596)) ([db12c91](https://github.com/tomturing/hci-troubleshoot-platform/commit/db12c918ccfb82f1f9a0d91d4db7d6c3f48001d5))
+* **kbd:** 关键信号抽取链路升级 v2 并彻底下线 v1 [skip docs] ([#603](https://github.com/tomturing/hci-troubleshoot-platform/issues/603)) ([2136b1b](https://github.com/tomturing/hci-troubleshoot-platform/commit/2136b1b6ddaf01dc08143087cd1025d1a5b4cf30))
+* **kbd:** 表格排序、状态筛选、分类显示、退回草稿功能 ([#600](https://github.com/tomturing/hci-troubleshoot-platform/issues/600)) ([76b6460](https://github.com/tomturing/hci-troubleshoot-platform/commit/76b646065aac520a545ae89d58fcfc0b1a3e15b9))
+* **qfk:** 重构后端信号字段规范，统一共有字段和特有字段 ([#598](https://github.com/tomturing/hci-troubleshoot-platform/issues/598)) ([35d17ad](https://github.com/tomturing/hci-troubleshoot-platform/commit/35d17ad87a3714bd85578d0cbf9a811ac53b9e02))
+* **signal:** 关键信号数据模型 v2 契约完善 + 前端原生对象化 ([#601](https://github.com/tomturing/hci-troubleshoot-platform/issues/601)) ([1bc77f2](https://github.com/tomturing/hci-troubleshoot-platform/commit/1bc77f24aa857725e96bb240a1bf9096bd5bd162))
+* **ssh:** optimize ssh login username default and append password suffix ([#560](https://github.com/tomturing/hci-troubleshoot-platform/issues/560)) ([b05924f](https://github.com/tomturing/hci-troubleshoot-platform/commit/b05924f13795b72c91ca0e2357856d3434c51198))
+* **terminal_bridge:** 完整实现 exec 命令日志回采能力 ([#589](https://github.com/tomturing/hci-troubleshoot-platform/issues/589)) ([9dfd669](https://github.com/tomturing/hci-troubleshoot-platform/commit/9dfd6690de4c790bc66b3e3faaabeb67eea60f2a))
+* **terminal_bridge:** 完整实现可观测性与日志回采增强 ([#577](https://github.com/tomturing/hci-troubleshoot-platform/issues/577)) ([37ce561](https://github.com/tomturing/hci-troubleshoot-platform/commit/37ce5619e5fe1c59565abc29d2395475d31840b7))
+* **terminal_bridge:** 结构化日志回采 + 端到端 trace_id + QFK 终端失败哨兵 ([#576](https://github.com/tomturing/hci-troubleshoot-platform/issues/576)) ([1bad2b1](https://github.com/tomturing/hci-troubleshoot-platform/commit/1bad2b106d78a790cc94bde8ad6d54c85fd9ba0a))
+* **tools:** QKV/QFK 工具注册与可视化编辑器 ([#563](https://github.com/tomturing/hci-troubleshoot-platform/issues/563)) ([e3b2dd5](https://github.com/tomturing/hci-troubleshoot-platform/commit/e3b2dd545c71e2c23ebd5ca5690ced68dbb84160))
+* **tools:** 统一工具命名为 snake_case 并精简低频工具集 ([#566](https://github.com/tomturing/hci-troubleshoot-platform/issues/566)) ([b3da3e4](https://github.com/tomturing/hci-troubleshoot-platform/commit/b3da3e47c2441810d99cbfd5aa41cd436dd328db))
+* 完成 Terminal Bridge P0 端到端可观测性改造 ([#632](https://github.com/tomturing/hci-troubleshoot-platform/issues/632)) ([818959d](https://github.com/tomturing/hci-troubleshoot-platform/commit/818959d04f38ea45f5322de733ad5b433c52328b))
+
+
+### 🐛 Bug 修复
+
+* **admin-ui:** 修复 QFK 产出变量切换灰屏并优化字段布局 ([#625](https://github.com/tomturing/hci-troubleshoot-platform/issues/625)) ([f9d96ee](https://github.com/tomturing/hci-troubleshoot-platform/commit/f9d96eeace2652c7f11c1f04e010ccec5b3b0615))
+* **admin-ui:** 支持多信号历史管道分步修复 [env:dev:sf][agent:codex] ([#627](https://github.com/tomturing/hci-troubleshoot-platform/issues/627)) ([4c10946](https://github.com/tomturing/hci-troubleshoot-platform/commit/4c10946e6d090ddb7ec8e0db39dbbdd346c681f6))
+* **agent:** KBD 诊断引擎安全与顺序修复（写操作门禁 + 确认分支遍历全部信号） ([#574](https://github.com/tomturing/hci-troubleshoot-platform/issues/574)) ([aae9a6e](https://github.com/tomturing/hci-troubleshoot-platform/commit/aae9a6ea1e7f2e6161ecd1ddf13f34c700379c22))
+* **agent:** KBD 诊断引擎透传 case_id 到 QFK 执行链路（补齐 PR [#583](https://github.com/tomturing/hci-troubleshoot-platform/issues/583) 遗漏） ([#585](https://github.com/tomturing/hci-troubleshoot-platform/issues/585)) ([40fa3b6](https://github.com/tomturing/hci-troubleshoot-platform/commit/40fa3b634f75710ff9464a1034f239fefa34159c))
+* **agent:** S0 分类驱动 KBD 证据诊断闭环 ([#621](https://github.com/tomturing/hci-troubleshoot-platform/issues/621)) ([4e1d247](https://github.com/tomturing/hci-troubleshoot-platform/commit/4e1d24746112f8ec82c5f3cb7e285f043cfbff98))
+* **agent:** 将 htp 诊断路径 5 处硬编码 Prompt 统一数据库化接入 prompt 管理 ([#571](https://github.com/tomturing/hci-troubleshoot-platform/issues/571)) ([8450f23](https://github.com/tomturing/hci-troubleshoot-platform/commit/8450f2381a105b79ef7bc08014eb23f618d3dd49))
+* **agent:** 注册全局 BridgeRelayExecutor 修复 QFK 诊断误报 ([#572](https://github.com/tomturing/hci-troubleshoot-platform/issues/572)) ([5d7acaa](https://github.com/tomturing/hci-troubleshoot-platform/commit/5d7acaaa22279bd09e4d8214ef54b26c30bee174))
+* **agent:** 诊断报告强制使用关键信号确认，杜绝直接下结论 ([#570](https://github.com/tomturing/hci-troubleshoot-platform/issues/570)) ([e1fb01e](https://github.com/tomturing/hci-troubleshoot-platform/commit/e1fb01ed8ebabcc2e90fa4caaecee98063ff119e))
+* **argocd:** remove redundant directory.recurse=false from argocd-rbac app ([#565](https://github.com/tomturing/hci-troubleshoot-platform/issues/565)) ([8d5c4e0](https://github.com/tomturing/hci-troubleshoot-platform/commit/8d5c4e082bf88a9c843165db4713d66c7e7d14bc))
+* **ci:** gh pr create 兼容旧版 gh，去掉不支持的 --json 参数 ([#580](https://github.com/tomturing/hci-troubleshoot-platform/issues/580)) ([ace1cae](https://github.com/tomturing/hci-troubleshoot-platform/commit/ace1cae1a029f99f710627ba662ec27d825aa980))
+* **ci:** 改用 PR 方式回写 terminal_bridge.exe（遵守 main 分支保护） ([#579](https://github.com/tomturing/hci-troubleshoot-platform/issues/579)) ([94ec3f3](https://github.com/tomturing/hci-troubleshoot-platform/commit/94ec3f3a6d678a3c5ae552c7773b32946cc0281c))
+* **custom-ui:** 修复诊断「先报告后诊断」渲染顺序（工单 Q2026071923606） ([#575](https://github.com/tomturing/hci-troubleshoot-platform/issues/575)) ([7ccb941](https://github.com/tomturing/hci-troubleshoot-platform/commit/7ccb9419de985fb42aa477bf30e1dad3ef5b8bb9))
+* **db:** 修复 db-seed 种子 SQL dollar-quote 闭定界符漏逗号导致 ArgoCD Hook 失败 ([#614](https://github.com/tomturing/hci-troubleshoot-platform/issues/614)) ([44c41fa](https://github.com/tomturing/hci-troubleshoot-platform/commit/44c41faade3c60a9f18201b1f8cc5e501dcb8bab))
+* **db:** 修复 kbd_extract_signals_v1 Prompt 模板花括号转义错误 ([#558](https://github.com/tomturing/hci-troubleshoot-platform/issues/558)) ([eecab48](https://github.com/tomturing/hci-troubleshoot-platform/commit/eecab487da2dfa04bda37577723cf3cd804867e6))
+* **docs:** 扩展知识库目录命名白名单并移动设计文档 ([#624](https://github.com/tomturing/hci-troubleshoot-platform/issues/624)) ([f9dd2a6](https://github.com/tomturing/hci-troubleshoot-platform/commit/f9dd2a643a032a213fb95e3e00cab4a7b9ad1096))
+* **kb-service:** 修复 KBD 关键信号保存 signals_json 落库 SQL CAST 语法错误导致 500 ([#610](https://github.com/tomturing/hci-troubleshoot-platform/issues/610)) ([fe4b743](https://github.com/tomturing/hci-troubleshoot-platform/commit/fe4b743b56872aa2e9e62a7f8199780ea3c7132b))
+* **kb-service:** 修复 KBD 向量搜索配置缺失与查询提炼缺陷 (工单 Q2026072402782) ([#616](https://github.com/tomturing/hci-troubleshoot-platform/issues/616)) ([fa937c4](https://github.com/tomturing/hci-troubleshoot-platform/commit/fa937c4025252867f770f321cf3c2253a8359960))
+* **kb-service:** 修复 KBD 条目详情更新 signals_json 时的 SQL CAST 语法错误 ([#599](https://github.com/tomturing/hci-troubleshoot-platform/issues/599)) ([15be1c3](https://github.com/tomturing/hci-troubleshoot-platform/commit/15be1c3072254c5a3ffa01691b90fe0ae848c24b))
+* **kb-service:** 修复 KBD 重新分类因思维链耗尽 token 预算导致 HTTP 500 ([#612](https://github.com/tomturing/hci-troubleshoot-platform/issues/612)) ([32ccf00](https://github.com/tomturing/hci-troubleshoot-platform/commit/32ccf00d0e3e87a4365aa157452e49bbf4afb676))
+* **kb-service:** 修复关键信号抽取 LLM 响应格式错误（思维链耗尽 token 预算） ([#608](https://github.com/tomturing/hci-troubleshoot-platform/issues/608)) ([bc6fc67](https://github.com/tomturing/hci-troubleshoot-platform/commit/bc6fc67d18c01cae53d37857c9249c70e952bdd7))
+* **kb-service:** 回滚 PR [#595](https://github.com/tomturing/hci-troubleshoot-platform/issues/595) 错误的参数校验代码 ([#597](https://github.com/tomturing/hci-troubleshoot-platform/issues/597)) ([01f71af](https://github.com/tomturing/hci-troubleshoot-platform/commit/01f71afadc7de72ad3ea4178572616963393ad91))
+* **kb-service:** 增强关键信号抽取参数校验与日志完整性 ([#595](https://github.com/tomturing/hci-troubleshoot-platform/issues/595)) ([5282592](https://github.com/tomturing/hci-troubleshoot-platform/commit/528259217e03dbb8b837ada3731b715938f53201))
+* **kb-service:** 补充缺失的 jsonschema 依赖以修复 Pod 启动崩溃 [skip docs] ([#602](https://github.com/tomturing/hci-troubleshoot-platform/issues/602)) ([ca45590](https://github.com/tomturing/hci-troubleshoot-platform/commit/ca4559079e599253b802b8f2d9525d3353f5b3ad))
+* **kbd:** v2 信号模型契约拍平与 Schema 落库修复（字段对齐采集器） ([#611](https://github.com/tomturing/hci-troubleshoot-platform/issues/611)) ([cc7fc1a](https://github.com/tomturing/hci-troubleshoot-platform/commit/cc7fc1a10782c61ede56186e24c2c018c73f73c2))
+* **kbd:** 修复 PR[#611](https://github.com/tomturing/hci-troubleshoot-platform/issues/611) v2 信号拍平重构遗留问题 ([#613](https://github.com/tomturing/hci-troubleshoot-platform/issues/613)) ([db87533](https://github.com/tomturing/hci-troubleshoot-platform/commit/db87533f2afa99350070f8f104b974610c6ef3d9))
+* **kbd:** 修复 v2 信号契约分层解包与容错解析 (工单 Q2026072576263) ([#620](https://github.com/tomturing/hci-troubleshoot-platform/issues/620)) ([81acec5](https://github.com/tomturing/hci-troubleshoot-platform/commit/81acec59ad81d0a29cacaba31c5b5e36945ae015))
+* **kbd:** 修复检索正确性残留风险 ([#617](https://github.com/tomturing/hci-troubleshoot-platform/issues/617)) ([b7b4885](https://github.com/tomturing/hci-troubleshoot-platform/commit/b7b488597dd50a60f9a8af4b69d616344ebb40f6))
+* **KBD:** 修正进程镜像关联筛选并优化信号结果展示 ([#635](https://github.com/tomturing/hci-troubleshoot-platform/issues/635)) ([53778ea](https://github.com/tomturing/hci-troubleshoot-platform/commit/53778eaf0e895d14d11af296dbbe4f0e3693f765))
+* **kbd:** 清理 v1 抽取 prompt 残留并修复前端互斥开关锁死 ([#615](https://github.com/tomturing/hci-troubleshoot-platform/issues/615)) ([96baf97](https://github.com/tomturing/hci-troubleshoot-platform/commit/96baf97e7eb7ad8f424ad8ea003ecf7b02c0de89))
+* **kbd:** 统一关键信号说明到 v2 并彻底移除 v1 残留 ([#609](https://github.com/tomturing/hci-troubleshoot-platform/issues/609)) ([f155266](https://github.com/tomturing/hci-troubleshoot-platform/commit/f1552668f3c5e826a07ad994b53b97485c687907))
+* **KBD:** 防止聚合输出回传导致网关OOM ([#633](https://github.com/tomturing/hci-troubleshoot-platform/issues/633)) ([81f0508](https://github.com/tomturing/hci-troubleshoot-platform/commit/81f050803c0cd74becb9b2e584bb2ea279edcf20))
+* **kb:** 修复 KBD 详情页保存关键信号 422（QFK keyword 别名归一） ([#607](https://github.com/tomturing/hci-troubleshoot-platform/issues/607)) ([9d63be4](https://github.com/tomturing/hci-troubleshoot-platform/commit/9d63be41182a820c7b73271052a671e5e0e67b54))
+* **kb:** 修复 V2 信号抽取丢失 qfk_system 及说明错填关键字 ([#605](https://github.com/tomturing/hci-troubleshoot-platform/issues/605)) ([c250ba0](https://github.com/tomturing/hci-troubleshoot-platform/commit/c250ba0d9a80447bff337b02596c7950dc2362a3))
+* **kb:** 让审核/重发布的确认分类生效并根治孤儿 KBD ([#568](https://github.com/tomturing/hci-troubleshoot-platform/issues/568)) ([60f86f6](https://github.com/tomturing/hci-troubleshoot-platform/commit/60f86f6ac41c4bc23bfe8d44dffea55974991636))
+* **obs:** 单副本+RWO PVC 的 Deployment 统一使用 Recreate 更新策略 ([#567](https://github.com/tomturing/hci-troubleshoot-platform/issues/567)) ([ac8c5cc](https://github.com/tomturing/hci-troubleshoot-platform/commit/ac8c5cca92d561b943bd9c978a7d7e2c3c03af22))
+* **obs:** 提升 ClickHouse memory limit 2Gi -&gt; 4Gi，修复 Langfuse WebUI 无法查询新 trace ([#564](https://github.com/tomturing/hci-troubleshoot-platform/issues/564)) ([fe35b46](https://github.com/tomturing/hci-troubleshoot-platform/commit/fe35b465e3d08bbdc03c2bc1d90b30a78b97b41e))
+* **S0:** 使用稳定分类身份修复候选错位 ([#634](https://github.com/tomturing/hci-troubleshoot-platform/issues/634)) ([607022e](https://github.com/tomturing/hci-troubleshoot-platform/commit/607022e175e01bfea6219983e5e6670eac78528a))
+* **seed:** 修复 02_system_prompts.sql 多余逗号导致 db-seed 失败 ([#604](https://github.com/tomturing/hci-troubleshoot-platform/issues/604)) ([5b72623](https://github.com/tomturing/hci-troubleshoot-platform/commit/5b72623f2f520eaf5e0bc9475895e5722ff40783))
+* **ssh:** change default username root to admin and map legacy saved username ([#561](https://github.com/tomturing/hci-troubleshoot-platform/issues/561)) ([73fc452](https://github.com/tomturing/hci-troubleshoot-platform/commit/73fc452274b972d97f932c987de3bcafebc51443))
+* **terminal_bridge:** logEntry 添加 type 字段以匹配前端期望的消息格式 ([#587](https://github.com/tomturing/hci-troubleshoot-platform/issues/587)) ([ca284fa](https://github.com/tomturing/hci-troubleshoot-platform/commit/ca284fae731c6c4a728f2c28e8b645d1aaa82f57))
+* **terminal-bridge:** 修复回采链路断裂（404+401双关卡）并消除静默失败 ([#586](https://github.com/tomturing/hci-troubleshoot-platform/issues/586)) ([f29ab40](https://github.com/tomturing/hci-troubleshoot-platform/commit/f29ab40230a070cac68a46e2e85b0b086ebbef60))
+* **terminal-bridge:** 统一修复空 case_id 透传导致的回采/exec 失败并增强诊断日志 ([#583](https://github.com/tomturing/hci-troubleshoot-platform/issues/583)) ([9e0c806](https://github.com/tomturing/hci-troubleshoot-platform/commit/9e0c806975adba8e933d3eee38e715fe5b0de1ff))
+* **tools:** 工具管理页 qkv/qfk 按指定顺序展示 ([#573](https://github.com/tomturing/hci-troubleshoot-platform/issues/573)) ([2b36a14](https://github.com/tomturing/hci-troubleshoot-platform/commit/2b36a14bde2eb17023e7eac2dbec43de1c281068))
+* 收敛 Terminal Bridge 真实入口与 Alloy 健康门禁 ([#638](https://github.com/tomturing/hci-troubleshoot-platform/issues/638)) ([cb34b16](https://github.com/tomturing/hci-troubleshoot-platform/commit/cb34b16a6e2eb9bdc4c2c881993a09180fcb1c7d))
+* **诊断:** 对齐KBD执行门禁并修复人工升级确认 [env:dev:sf][agent:codex] ([#628](https://github.com/tomturing/hci-troubleshoot-platform/issues/628)) ([8f7a79a](https://github.com/tomturing/hci-troubleshoot-platform/commit/8f7a79af44d7dd576b6a436ab889d77ee352c2bf))
+* **部署:** 防止运行时代码被热补丁覆盖 [env:dev:sf][agent:codex] ([#629](https://github.com/tomturing/hci-troubleshoot-platform/issues/629)) ([7015092](https://github.com/tomturing/hci-troubleshoot-platform/commit/701509298eb2b424b4bb65018cff42e134d4a5da))
+
+
+### 📝 文档
+
+* 归档 Agent 并发测试与 KBD 仿真环境方案 ([#637](https://github.com/tomturing/hci-troubleshoot-platform/issues/637)) ([39c6944](https://github.com/tomturing/hci-troubleshoot-platform/commit/39c694486c94dc69268bc43b24532724e581e6ba))
+
 ## [2.19.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.18.0...v2.19.0) (2026-07-15)
 
 

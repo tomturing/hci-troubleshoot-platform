@@ -149,3 +149,17 @@ RUN pnpm config set onlyBuiltDependencies[0] esbuild \
 - 消费端必须再校验稳定键属于当前候选和权威目录，未命中时 Fail Closed。
 
 **预防测试：** 回归数据必须包含“前置非法项被过滤”和“排序改变”，不能只测试全部合法、连续编号的 happy path。
+
+## V-005：普通 Markdown 代码块不能取得 Agent 自动执行权限
+
+**现象**：S0 或普通 Assistant 消息返回一个 `bash` fenced code block 后，Customer UI 将其渲染成 `CommandBlock`；当用户偏好为 Aggressive 且 SSH 已连接时，倒计时结束后通过 `ssh_input` 把展示文本当作真实命令执行。页面看到的“输出”可能来自模型伪造，实际 HCI 执行的是伪造输出文本本身。
+
+**根因**：把不可信自然语言展示层与受信控制面混为一体。Markdown 没有服务端签名、`exec_id`、工具定义、风险判定、授权事务和 trace 上下文，风险关键词推断无法把它升级为可信执行指令。
+
+**修复**：普通 Markdown 命令块仅允许复制和用户显式发送到人工终端。Agent 自动执行只消费服务端产生的 `agent_exec_command` 结构化事件，并沿 `ssh_exec_process` 通道执行；禁止 Markdown 使用 `ssh_input` 自动执行，禁止把执行结果伪装为新的 `role=user` 消息回灌。
+
+**预防**：
+
+- 前端负向测试必须在 Aggressive、SSH connected、推进虚拟时钟的条件下断言 WebSocket/旧执行器调用次数为 0；
+- S0 没有工具能力，必须在调用 LLM 前拒绝明确执行请求，并在输出前阻断 fenced shell、退出码和“执行结果”等无工具证据；
+- 端到端验收同时检查 SSE 类型、WebSocket 消息类型、Bridge counter、Artifact 和 Trace；出现 `ssh_input` 不能算 Agent 工具链成功。
