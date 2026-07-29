@@ -28,7 +28,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from redis.asyncio import Redis
-from shared.clients import AIAssistantRegistry, KBClient, create_openclaw_client
+from shared.clients import AIAssistantRegistry, DiagnosticItemClient, KBClient, create_openclaw_client
 from shared.database.postgres import DatabaseManager
 from shared.database.redis import RedisManager
 from shared.observability.logger import get_logger
@@ -141,6 +141,17 @@ async def lifespan(app: FastAPI):
             message="KB 客户端已初始化",
             kb_service_url=settings.KB_SERVICE_URL,
         )
+
+    # ── 诊断条目客户端（KBD S2/S3/S4 证据结构化落库）────────────────────────────
+    diagnostic_item_client = DiagnosticItemClient(
+        conversation_service_url=settings.CONVERSATION_SERVICE_URL,
+        internal_token=settings.INTERNAL_API_TOKEN,
+    )
+    logger.info(
+        event="diagnostic_item_client_initialized",
+        message="DiagnosticItemClient 已初始化并注入 InvestigationAgent",
+        conversation_service_url=settings.CONVERSATION_SERVICE_URL,
+    )
 
     # ── Redis（confirm_service + BridgeRelayExecutor 使用）───────────────────────
     redis_client: Redis | None = None
@@ -298,6 +309,7 @@ async def lifespan(app: FastAPI):
         db_session_factory=db_manager.async_session_factory,
         fact_store=fact_store,
         skill_runner=skill_runner,
+        diagnostic_item_client=diagnostic_item_client,
     )
     logger.info(
         event="investigation_agent_initialized",
@@ -400,6 +412,7 @@ async def lifespan(app: FastAPI):
         await redis_client.aclose()
     if redis_manager:
         await redis_manager.close()
+    await diagnostic_item_client.aclose()
     await db_manager.close()
     logger.info(event="service_stopped", message=f"{settings.SERVICE_NAME} 已停止")
 

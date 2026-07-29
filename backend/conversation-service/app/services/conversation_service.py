@@ -4,11 +4,14 @@ Conversation Service - 对话业务逻辑层 (v2.0 多类型 AI 助手)
 
 import asyncio
 import re
+import secrets
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from opentelemetry import context as otel_context
 from opentelemetry import trace
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient
 from shared.models.audit import AuditLog
 from shared.models.conversation import Conversation
@@ -33,6 +36,29 @@ tracer = trace.get_tracer(__name__)
 JACCARD_THRESHOLD = 0.6
 # 历史消息采样数量
 HISTORY_LIMIT = 10
+
+
+def _build_remote_trace_context(trace_id_hex: str):
+    """根据会话 trace_id 构造合法的远端父上下文。
+
+    OpenTelemetry Python API 不提供 ``trace.generate_span_id``；Span ID 必须由调用方
+    生成一个非零 64-bit 值。这里仅恢复父上下文，不伪造可导出的 Span。
+    """
+    if len(trace_id_hex) != 32:
+        raise ValueError("trace_id 必须是 32 位十六进制字符串")
+    trace_id = int(trace_id_hex, 16)
+    if trace_id == 0:
+        raise ValueError("trace_id 不能为全零")
+    span_id = 0
+    while span_id == 0:
+        span_id = secrets.randbits(64)
+    span_context = SpanContext(
+        trace_id=trace_id,
+        span_id=span_id,
+        is_remote=True,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+    )
+    return trace.set_span_in_context(NonRecordingSpan(span_context))
 
 
 def _bigram_tokens(s: str) -> set[str]:
@@ -182,26 +208,16 @@ class ConversationService:
             )
 
         # 构造并激活 OTEL Context
-        from opentelemetry import trace
-        from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
-
         ctx = None
         if target_trace_id and len(target_trace_id) == 32:
             try:
-                span_context = SpanContext(
-                    trace_id=int(target_trace_id, 16),
-                    span_id=trace.generate_span_id(),
-                    is_remote=True,
-                    trace_flags=TraceFlags(0x01),
-                )
-                parent_span = NonRecordingSpan(span_context)
-                ctx = trace.set_span_in_context(parent_span)
+                ctx = _build_remote_trace_context(target_trace_id)
             except Exception as e:
                 logger.warning(event="failed_to_build_otel_span_context", target_trace_id=target_trace_id, error=str(e))
 
         token = None
         if ctx:
-            token = trace.attach(ctx)
+            token = otel_context.attach(ctx)
 
         try:
             trace_id = get_current_trace_id()
@@ -271,9 +287,7 @@ class ConversationService:
             if current_stage == "S0":
                 _selection_meta = metadata or {}
                 _stable_option_id = str(
-                    _selection_meta.get("selectedCategoryCode")
-                    or _selection_meta.get("selectedOptionId")
-                    or ""
+                    _selection_meta.get("selectedCategoryCode") or _selection_meta.get("selectedOptionId") or ""
                 ).strip()
                 _legacy_selection = self._conversation_manager.parse_candidate_selection(content)
                 if _stable_option_id or _legacy_selection is not None:
@@ -762,8 +776,8 @@ class ConversationService:
                 raise
 
         finally:
-            if token:
-                trace.detach(token)
+            if token is not None:
+                otel_context.detach(token)
 
     async def save_assistant_message(
         self,
@@ -1736,6 +1750,7 @@ class ConversationService:
         from datetime import UTC, datetime
 
         from shared.models.audit import ToolResult
+        from sqlalchemy import text
 
         tool_name = metadata.get("tool_name", "")
         if not tool_name:
@@ -1780,11 +1795,13 @@ class ConversationService:
                                 completed_at=None,
                                 duration_ms=None,
                                 trace_id=get_current_trace_id(),
+                                exec_id=raw_exec_id or record_id,
                             )
                             session.add(record)
                         else:
                             record.input_json = metadata.get("args") or metadata.get("tool_args") or {}
                             record.status = str(metadata.get("status") or "running")
+                            record.exec_id = raw_exec_id or record_id
                         await session.commit()
                         logger.info(
                             event="tool_call_started",
@@ -1797,8 +1814,23 @@ class ConversationService:
 
                     elif stage == "tool_result":
                         status = str(metadata.get("status") or "failed")
+                        if str(metadata.get("outcome") or "").lower() == "blocked" or status == "blocked":
+                            status = "blocked"
                         tool_result = metadata.get("result", metadata.get("tool_result"))
                         error = metadata.get("error")
+                        artifact = None
+                        if raw_exec_id:
+                            artifact_result = await session.execute(
+                                text(
+                                    """
+                                    SELECT artifact_id, trace_id, stdout_sha256, error_type, duration_ms
+                                    FROM bridge_execution_artifacts
+                                    WHERE exec_id = :exec_id
+                                    """
+                                ),
+                                {"exec_id": raw_exec_id},
+                            )
+                            artifact = artifact_result.mappings().first()
                         record = await session.get(ToolResult, record_id)
                         now = datetime.now(UTC)
                         if record is None:
@@ -1813,13 +1845,26 @@ class ConversationService:
                                 input_json=metadata.get("args") or metadata.get("tool_args") or {},
                                 started_at=now,
                                 trace_id=get_current_trace_id(),
+                                exec_id=raw_exec_id or record_id,
                             )
                             session.add(record)
                         record.output_json = tool_result
                         record.error = error
                         record.completed_at = now
-                        record.duration_ms = int((now - record.started_at).total_seconds() * 1000)
+                        record.duration_ms = (
+                            int(artifact["duration_ms"])
+                            if artifact and artifact.get("duration_ms") is not None
+                            else int((now - record.started_at).total_seconds() * 1000)
+                        )
                         record.status = status
+                        record.exec_id = raw_exec_id or record_id
+                        if artifact:
+                            record.artifact_id = artifact.get("artifact_id")
+                            record.output_sha256 = artifact.get("stdout_sha256")
+                            record.error_type = artifact.get("error_type")
+                            record.bridge_trace_id = artifact.get("trace_id")
+                        elif status == "blocked":
+                            record.error_type = str(metadata.get("error_type") or "blocked_dependency")
                         await session.commit()
                         logger.info(
                             event="tool_call_completed",
@@ -1998,9 +2043,7 @@ class ConversationService:
             无匹配时返回 []
         """
         # 正则：支持多级分类前缀和包含括号等特殊字符的名称
-        _candidate_item_pattern = re.compile(
-            r"([①②③④⑤])\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+?)(?:\r?\n|$)"
-        )
+        _candidate_item_pattern = re.compile(r"([①②③④⑤])\s*([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+([^\n]+?)(?:\r?\n|$)")
 
         # 统一入口：获取最后一条 assistant 消息
         last_ai_content, last_ai_metadata = await self._get_last_assistant_message(conversation_id)

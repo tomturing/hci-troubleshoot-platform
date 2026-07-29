@@ -7,7 +7,7 @@ QFK 后端信号工具单元测试
 
 import os
 import sys
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # 注入工程后端路径以兼容测试规范
 _backend = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend"))
@@ -49,7 +49,7 @@ class TestBackendSignalValidation:
             "keyword": ["file system read-only"],
             "match_mode": "or",
             "expected": True,
-            "instruction": "主备传输文件系统只读"
+            "instruction": "主备传输文件系统只读",
         }
         sig = qfk_load(data)
         assert sig.namespace == "log"
@@ -58,10 +58,7 @@ class TestBackendSignalValidation:
         assert sig.expected is True
 
     def test_load_invalid_namespace(self):
-        data = {
-            "namespace": "invalid_namespace",
-            "keyword": ["test"]
-        }
+        data = {"namespace": "invalid_namespace", "keyword": ["test"]}
         # namespace 是 str，不会触发 ValidationError，但 HandlerRegistry.get 会报错
         sig = qfk_load(data)
         assert sig.namespace == "invalid_namespace"
@@ -105,7 +102,7 @@ class TestHandlerRegistryAndBuilders:
             file="vtpdaemon.log",
             path="/sf/log/today/",
             time_window="2026-07-01",
-            keyword=["HA state change"]
+            keyword=["HA state change"],
         )
         handler = HandlerRegistry.get("log")
         cmds = handler.build_commands(sig)
@@ -118,40 +115,25 @@ class TestHandlerRegistryAndBuilders:
         assert "-t 2026-07-01" in cmds[0]
 
     def test_log_keyword_missing_keywords(self):
-        sig = BackendSignal(
-            namespace="log",
-            file="vtpdaemon.log"
-        )
+        sig = BackendSignal(namespace="log", file="vtpdaemon.log")
         handler = HandlerRegistry.get("log")
         with pytest.raises(CommandBuildError, match="必须提供关键字"):
             handler.build_commands(sig)
 
     def test_log_keyword_path_traversal_defense(self):
         # 校验文件名不能有 /
-        sig1 = BackendSignal(
-            namespace="log",
-            file="../etc/shadow",
-            keyword=["test"]
-        )
+        sig1 = BackendSignal(namespace="log", file="../etc/shadow", keyword=["test"])
         handler = HandlerRegistry.get("log")
         with pytest.raises(CommandBuildError, match="不能包含路径"):
             handler.build_commands(sig1)
 
         # 校验路径前缀合法性
-        sig2 = BackendSignal(
-            namespace="log",
-            path="/var/log/nginx/",
-            keyword=["test"]
-        )
+        sig2 = BackendSignal(namespace="log", path="/var/log/nginx/", keyword=["test"])
         with pytest.raises(CommandBuildError, match="只允许以"):
             handler.build_commands(sig2)
 
     def test_service_status_builder(self):
-        sig = BackendSignal(
-            namespace="service",
-            service="redis",
-            container="asv"
-        )
+        sig = BackendSignal(namespace="service", service="redis", container="asv")
         handler = HandlerRegistry.get("service")
         cmds = handler.build_commands(sig)
         assert cmds == ["acli service asv redis status"]
@@ -164,47 +146,31 @@ class TestHandlerRegistryAndBuilders:
 
     def test_service_status_injection_blocked(self):
         # 服务名非法字符拦截
-        sig = BackendSignal(
-            namespace="service",
-            service="redis; rm -rf /"
-        )
+        sig = BackendSignal(namespace="service", service="redis; rm -rf /")
         handler = HandlerRegistry.get("service")
         with pytest.raises(CommandBuildError, match="非法服务名称"):
             handler.build_commands(sig)
 
     def test_service_status_invalid_container(self):
-        sig = BackendSignal(
-            namespace="service",
-            service="redis",
-            container="invalid_cont"
-        )
+        sig = BackendSignal(namespace="service", service="redis", container="invalid_cont")
         handler = HandlerRegistry.get("service")
         with pytest.raises(CommandBuildError, match="非法服务容器"):
             handler.build_commands(sig)
 
     def test_generic_command_builder(self):
-        sig = BackendSignal(
-            namespace="vm",
-            command="list"
-        )
+        sig = BackendSignal(namespace="vm", command="list")
         handler = HandlerRegistry.get("vm")
         cmds = handler.build_commands(sig)
         assert cmds == ["acli vm list"]
 
     def test_generic_command_storage(self):
-        sig = BackendSignal(
-            namespace="storage",
-            command="asan disk list"
-        )
+        sig = BackendSignal(namespace="storage", command="asan disk list")
         handler = HandlerRegistry.get("storage")
         cmds = handler.build_commands(sig)
         assert cmds == ["acli storage asan disk list"]
 
     def test_generic_command_system(self):
-        sig = BackendSignal(
-            namespace="system",
-            command="lsblk"
-        )
+        sig = BackendSignal(namespace="system", command="lsblk")
         handler = HandlerRegistry.get("system")
         cmds = handler.build_commands(sig)
         assert cmds == ["acli system lsblk"]
@@ -217,10 +183,7 @@ class TestHandlerRegistryAndBuilders:
 
     def test_generic_command_injection_blocked(self):
         # 拦截管道等非法字符
-        sig = BackendSignal(
-            namespace="vm",
-            command="list | cat /etc/shadow"
-        )
+        sig = BackendSignal(namespace="vm", command="list | cat /etc/shadow")
         handler = HandlerRegistry.get("vm")
         with pytest.raises(CommandBuildError, match="包含非法字符"):
             handler.build_commands(sig)
@@ -243,7 +206,7 @@ class TestEvaluator:
             node="127.0.0.1",
             duration_ms=10,
             truncated=False,
-            risk_level=1
+            risk_level=1,
         )
         handler = LogKeywordHandler()
         matched, _, evidence = handler.evaluate([res], ["failed", "unrelated"], "or")
@@ -260,7 +223,7 @@ class TestEvaluator:
             node="127.0.0.1",
             duration_ms=10,
             truncated=False,
-            risk_level=1
+            risk_level=1,
         )
         handler = LogKeywordHandler()
         matched, _, evidence = handler.evaluate([res], ["failed", "read-only"], "and")
@@ -275,7 +238,7 @@ class TestEvaluator:
             node="127.0.0.1",
             duration_ms=10,
             truncated=False,
-            risk_level=1
+            risk_level=1,
         )
         handler = LogKeywordHandler()
         matched, _, _ = handler.evaluate([res], ["failed", "read-only"], "and")
@@ -298,7 +261,7 @@ class TestQFKResultFormatting:
             keywords=["test"],
             match_mode="or",
             matched_keywords=["test"],
-            evidence="Matched evidence text here"
+            evidence="Matched evidence text here",
         )
         obs = res.to_observation()
         assert "QFK 排查状态: ✅ 符合排查判定" in obs
@@ -314,12 +277,7 @@ class TestQFKResultFormatting:
 @pytest.mark.asyncio
 async def test_qfk_engine_expected_true_matched():
     # 期望出现，且匹配到了 -> final_matched = True
-    sig = BackendSignal(
-        namespace="service",
-        service="redis",
-        keyword=["running"],
-        expected=True
-    )
+    sig = BackendSignal(namespace="service", service="redis", keyword=["running"], expected=True)
 
     mock_exec_res = ExecResult(
         stdout="redis status is active (running)",
@@ -329,7 +287,7 @@ async def test_qfk_engine_expected_true_matched():
         node="10.0.0.1",
         duration_ms=20,
         truncated=False,
-        risk_level=1
+        risk_level=1,
     )
 
     mock_executor = AsyncMock()
@@ -387,7 +345,7 @@ async def test_qfk_engine_not_mode_matched():
         node="10.0.0.1",
         duration_ms=20,
         truncated=False,
-        risk_level=1
+        risk_level=1,
     )
 
     mock_executor = AsyncMock()
@@ -419,7 +377,7 @@ async def test_qfk_engine_not_mode_clean():
         node="10.0.0.1",
         duration_ms=20,
         truncated=False,
-        risk_level=1
+        risk_level=1,
     )
 
     mock_executor = AsyncMock()
@@ -459,7 +417,7 @@ async def test_qfk_engine_expected_false_inverts():
         node="10.0.0.1",
         duration_ms=20,
         truncated=False,
-        risk_level=1
+        risk_level=1,
     )
     mock_executor = AsyncMock()
     mock_executor.execute.return_value = mock_exec_res
@@ -532,3 +490,48 @@ class TestCommandHashBlocked:
         handler = HandlerRegistry.get("vm")
         with pytest.raises(CommandBuildError, match="包含非法字符"):
             handler.build_commands(sig)
+
+
+@pytest.mark.asyncio
+async def test_qfk_records_langfuse_tool_observation_with_artifact_reference():
+    signal = BackendSignal(namespace="system", command="ps")
+    exec_result = ExecResult(
+        stdout="process list",
+        stderr="",
+        exit_code=0,
+        command="acli system ps",
+        node="10.0.0.1",
+        duration_ms=84,
+        truncated=False,
+        risk_level=1,
+        exec_id="exec-qfk-observe",
+        trace_id="d" * 32,
+        artifact_id="22222222-2222-4222-8222-222222222222",
+        stdout_sha256="e" * 64,
+        stderr_sha256="f" * 64,
+        stdout_bytes=12,
+        stderr_bytes=0,
+    )
+    executor = AsyncMock()
+    executor.execute.return_value = exec_result
+    observation = MagicMock()
+    observation_context = MagicMock()
+    observation_context.__enter__.return_value = observation
+    observation_context.__exit__.return_value = False
+
+    with (
+        patch("app.tools.acli.executor._executor", executor),
+        patch("app.tools.qfk.engine.observe_tool", return_value=observation_context) as observe,
+    ):
+        result = await qfk_exec(signal, conversation_id="conversation-2", exec_id="exec-qfk-observe")
+
+    assert result.error is None
+    assert observe.call_args.kwargs["tool_name"] == "qfk_system"
+    output = observation.update.call_args.kwargs["output"]
+    assert output["exec_id"] == "exec-qfk-observe"
+    assert output["artifact_id"] == "22222222-2222-4222-8222-222222222222"
+    assert output["duration_ms"] == 84
+    assert output["stderr_bytes"] == 0
+    assert "error_type" in output
+    assert output["error_type"] is None
+    assert "stdout" not in output

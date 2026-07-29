@@ -277,9 +277,7 @@ class KBDDiagnostic:
                 break
             acquisition, score = selected
             active_refs = [
-                ref
-                for ref in acquisition.signal_refs
-                if assessments[ref.kbd_id].state is CandidateState.CANDIDATE
+                ref for ref in acquisition.signal_refs if assessments[ref.kbd_id].state is CandidateState.CANDIDATE
             ]
             if not active_refs:
                 scheduler.mark_completed(acquisition)
@@ -372,16 +370,12 @@ class KBDDiagnostic:
                         ref.signal,
                         raw_output,
                         error,
-                        pre_matched
-                        if ref.matcher_fingerprint == representative.matcher_fingerprint
-                        else None,
+                        pre_matched if ref.matcher_fingerprint == representative.matcher_fingerprint else None,
                     )
                 )
                 assessments[ref.kbd_id].signal_outcomes[ref.ref_id] = outcome
                 declared_produces = (
-                    (ref.signal.get("orchestrate") or {}).get("produces")
-                    or ref.signal.get("produces")
-                    or ref.produces
+                    (ref.signal.get("orchestrate") or {}).get("produces") or ref.signal.get("produces") or ref.produces
                 )
                 produced_variables: dict[str, Any] = {}
                 if not error:
@@ -441,7 +435,9 @@ class KBDDiagnostic:
         for ref in list(scheduler.remaining_signal_refs(assessments)):
             if ref.ref_id in assessments[ref.kbd_id].signal_outcomes:
                 continue
-            args = self._resolve_args((ref.signal.get("acquire") or {}).get("args") or {}, env_context, self._variable_pool)
+            args = self._resolve_args(
+                (ref.signal.get("acquire") or {}).get("args") or {}, env_context, self._variable_pool
+            )
             missing = sorted(set(ref.requires) - ({str(key).lower() for key in env_context} | set(self._variable_pool)))
             runtime_key = self._acquisition_key(_acquire_tool(ref.signal), args, env_context)
             exec_id = self._stable_acquisition_exec_id(session_id, runtime_key)
@@ -508,9 +504,7 @@ class KBDDiagnostic:
         if definitive and self._diagnostic_item_client and self._conversation_id:
             for seq, kbd in enumerate(supported, start=1):
                 evidence_ids = sorted({step.exec_id for step in steps_executed if step.kbd_id == kbd.id})
-                evaluation_ids = sorted(
-                    {step.evaluation_id for step in steps_executed if step.kbd_id == kbd.id}
-                )
+                evaluation_ids = sorted({step.evaluation_id for step in steps_executed if step.kbd_id == kbd.id})
                 await self._diagnostic_item_client.create_item(
                     conversation_id=uuid.UUID(self._conversation_id),
                     stage="S4",
@@ -612,7 +606,12 @@ class KBDDiagnostic:
 
     @staticmethod
     def _tool_result_metadata(result: StepResult) -> dict[str, Any]:
-        status = "success" if result.outcome in (SignalOutcome.PASS, SignalOutcome.FAIL) else "failed"
+        if result.outcome in (SignalOutcome.PASS, SignalOutcome.FAIL):
+            status = "success"
+        elif result.outcome is SignalOutcome.BLOCKED:
+            status = "blocked"
+        else:
+            status = "failed"
         output = smart_truncate(result.raw_output or "", max_chars=2000)
         return {
             "exec_id": result.exec_id,
@@ -625,6 +624,7 @@ class KBDDiagnostic:
             "tool_result": output,
             "status": status,
             "error": result.error,
+            "error_type": "blocked_dependency" if result.outcome is SignalOutcome.BLOCKED else None,
             "outcome": result.outcome.value,
             "kbd_id": result.kbd_id,
             "signal_id": result.signal_id,
@@ -840,11 +840,7 @@ class KBDDiagnostic:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            aliases = {
-                str(row.get(key) or "").strip()
-                for key in ("name", "hostname", "id")
-                if row.get(key)
-            }
+            aliases = {str(row.get(key) or "").strip() for key in ("name", "hostname", "id") if row.get(key)}
             address = str(row.get("ip") or "").strip()
             if host in aliases and self._is_ip_address(address):
                 self._host_ip_cache[host] = address
@@ -1059,11 +1055,7 @@ class KBDDiagnostic:
                     conversation_id=self._conversation_id or session_id,
                     # QKV 生产者的 HOST 已归一化为节点 IP 时，QFK 必须路由到该节点；
                     # 非 IP（如 cluster 或解析失败的旧主机名）继续使用环境上下文地址。
-                    node_ip=(
-                        bsignal.host
-                        if self._is_ip_address(bsignal.host)
-                        else env_context.get("node_ip")
-                    ),
+                    node_ip=(bsignal.host if self._is_ip_address(bsignal.host) else env_context.get("node_ip")),
                     case_id=self._case_id,  # 透传工单 ID，确保 terminal_bridge 能路由到正确的 SSH 会话
                     exec_id=exec_id,
                     required_output_sources=required_output_sources,
@@ -1156,7 +1148,10 @@ class KBDDiagnostic:
                 try:
                     json_payload = json.loads(raw_output)
                 except json.JSONDecodeError:
-                    return False, f"QFK_EXTRACT_INVALID_SPEC: QFK 产出变量 {name} 配置了 JSON 路径 {path}，但命令输出不是合法 JSON"
+                    return (
+                        False,
+                        f"QFK_EXTRACT_INVALID_SPEC: QFK 产出变量 {name} 配置了 JSON 路径 {path}，但命令输出不是合法 JSON",
+                    )
             value = self._extract_qfk_json_path(json_payload, path)
             if value is None:
                 return False, f"QFK_NO_MATCH: QFK 产出变量 {name} 未能从命令输出路径 {path} 取值"

@@ -105,6 +105,26 @@ class ExecResult:
     error_type: str | None = None
 
 
+def exec_result_observation(result: ExecResult) -> dict[str, Any]:
+    """生成不含命令原文与输出正文的 Langfuse 工具观测摘要。"""
+    # 可观测性契约要求字段集合稳定：成功时 error_type=null、空流时 bytes=0
+    # 与字段缺失具有不同语义，不能为了缩短 JSON 而过滤 None/零值。
+    return {
+        "exec_id": result.exec_id,
+        "otel_trace_id": result.trace_id,
+        "artifact_id": result.artifact_id,
+        "stdout_sha256": result.stdout_sha256,
+        "stderr_sha256": result.stderr_sha256,
+        "stdout_bytes": result.stdout_bytes,
+        "stderr_bytes": result.stderr_bytes,
+        "stdout_truncated": result.stdout_truncated or result.truncated,
+        "stderr_truncated": result.stderr_truncated,
+        "error_type": result.error_type,
+        "exit_code": result.exit_code,
+        "duration_ms": result.duration_ms,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CommandSanitizer：命令净化器
 # ─────────────────────────────────────────────────────────────────────────────

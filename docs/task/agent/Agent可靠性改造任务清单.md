@@ -576,3 +576,14 @@ owner: team
 - [x] WSL/K3s Pod 与 Windows 客户端复用同一套 Bridge 代码，并完成真实 HCI SSH 端到端验收。
 
 详细设计与验收证据见 [Terminal Bridge 端到端可观测性重构设计](../../solution/observability/2026-07-27-terminal-bridge端到端可观测性重构设计.md) 和 [最终验收报告](../../verify/events/2026-07-27-terminal-bridge端到端验收报告.md)。
+
+## 2026-07-29 · PR #632 真实入口重验追加门禁
+
+- [x] 普通 Markdown 自动执行旁路已删除，S0 伪命令输出双门禁和 Alloy 数据面健康门禁已通过负向真实验收。
+- [x] 真实 KBD 路径已经通过 `agent_exec_command → ssh_exec_process → Bridge → HCI → /exec-result` 执行 3 条命令，并在 Tempo/Loki/Artifact/Prometheus 形成证据。
+- [x] 修复 conversation trace parent 构造、KBD QKV/QFK Langfuse TOOL、DiagnosticItemClient 注入、Tool Audit Artifact 关联和 Bridge raw/filtered 统计缺口；定向自动化回归通过。
+- [x] K3s 部署修复镜像并完成三信号全部 PASS 的真实 HCI 正向验收（`Q2026072939295` / KBD `27123`）。
+- [x] 确认同一 trace 下 Langfuse、Diagnostic Item、Tool Audit、Artifact、Tempo、Loki、Prometheus 全量互查一致；修复后真实 TOOL 的零值/null 字段 12/12 完整。
+- [x] 正向与负向门禁全部通过，恢复“端到端完整可观测”结论；hci-sim 技术 Spike 可在用户明确决定投入后启动。
+
+当前状态以 [2026-07-29 真实入口重验事件](../../verify/events/2026-07-29-terminal-bridge真实入口P0修复与端到端重验.md) 为准；2026-07-27 报告是 PR #632 合并时的历史验收，不覆盖本次真实业务案例追加门禁。
