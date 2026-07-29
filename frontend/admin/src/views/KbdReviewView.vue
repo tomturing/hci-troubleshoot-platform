@@ -39,6 +39,44 @@ interface KbdEntry {
   ai_category_label?: string | null
   // 关键信号集合：后端 GET 直出标准化 v2 文档 {schema_version, signals}（前端原生读 v2，RFC §7）
   signals_json?: SignalsDoc | null
+  latest_proposal_revision_id?: number | null
+  working_revision_id?: number | null
+  lock_version?: number
+}
+
+interface RevisionMetadata {
+  id: number
+  revision_no: number
+  revision_type: 'proposal' | 'expert'
+  checksum: string
+  created_at?: string | null
+  diff_from_parent?: Array<{ operation: string; path: string }>
+}
+
+interface KbdRevisionState {
+  latest_proposal_revision_id: number | null
+  working_revision_id: number | null
+  lock_version: number
+  history: RevisionMetadata[]
+  active_resource: { revision: number; checksum: string; version: string } | null
+}
+
+interface CapabilityDescriptor {
+  capability_id: string
+  kind: 'producer' | 'consumer'
+  contract_status: string
+  runtime_status: string
+  verification_status: string
+  args_schema: Record<string, any>
+}
+
+interface CandidateValidation {
+  status: 'ok' | 'warning' | 'error'
+  publishable: boolean
+  runtime_verified: boolean
+  error_count: number
+  warning_count: number
+  issues: Array<{ level: string; code: string; location: string; message: string }>
 }
 
 // ============ 关键信号 v2 数据模型（RFC §7 前端原生读 v2 对象化，2026-07-22） ============
@@ -241,6 +279,11 @@ interface ParsedImageJson {
   expanded: boolean
 }
 const parsedImagesJson = ref<ParsedImageJson[]>([])
+const revisionState = ref<KbdRevisionState | null>(null)
+const revisionLoading = ref(false)
+const capabilityMap = ref<Record<string, CapabilityDescriptor>>({})
+const candidateValidation = ref<CandidateValidation | null>(null)
+const candidateValidationLoading = ref(false)
 
 // 拒绝弹窗
 const rejectDialogVisible = ref(false)
@@ -327,8 +370,9 @@ async function handleApprove(entry: KbdEntry) {
       headers: { 'Content-Type': 'application/json', ...authHeader },
       body: JSON.stringify({
         reviewer_id: currentUser.value,
-        review_note: entry.review_note || '',
+        review_note: reviewNote.value || '',
         category_id: editableCategoryId.value || entry.ai_category_id || null,
+        lock_version: entry.lock_version,
       }),
     })
     if (!resp.ok) {
@@ -347,6 +391,60 @@ async function handleApprove(entry: KbdEntry) {
     if (msg === 'cancel') return
     ElMessage.error(msg || '操作失败，请重试')
   }
+}
+
+async function fetchCapabilities() {
+  try {
+    const resp = await fetch('/api/v1/kbd/capabilities', { headers: authHeader })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const document = await resp.json()
+    capabilityMap.value = Object.fromEntries(
+      (document.capabilities || []).map((item: CapabilityDescriptor) => [item.capability_id, item]),
+    )
+  } catch {
+    capabilityMap.value = {}
+  }
+}
+
+async function fetchRevisionState(kbdId: number) {
+  revisionLoading.value = true
+  try {
+    const resp = await fetch(`/api/v1/kbd/${kbdId}/revisions`, { headers: authHeader })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    revisionState.value = await resp.json()
+  } catch {
+    revisionState.value = null
+  } finally {
+    revisionLoading.value = false
+  }
+}
+
+async function validateCurrentCandidate(options: { silent?: boolean } = {}) {
+  if (!detailEntry.value) return
+  candidateValidationLoading.value = true
+  try {
+    const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}/validate`, {
+      method: 'POST',
+      headers: authHeader,
+    })
+    const body = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : `HTTP ${resp.status}`)
+    candidateValidation.value = body
+    if (!options.silent) {
+      if (body.status === 'ok') ElMessage.success('当前专家稿校验通过')
+      else if (body.status === 'warning') ElMessage.warning(`无阻断错误，但有 ${body.warning_count} 条运行能力提示`)
+      else ElMessage.error(`发现 ${body.error_count} 个阻断问题，请按提示修复`)
+    }
+  } catch (error) {
+    candidateValidation.value = null
+    if (!options.silent) ElMessage.error(error instanceof Error ? error.message : '校验失败')
+  } finally {
+    candidateValidationLoading.value = false
+  }
+}
+
+function capabilityStatus(tool: string): 'declared' | 'missing' {
+  return capabilityMap.value[tool] ? 'declared' : 'missing'
 }
 
 function openRejectDialog(entry: KbdEntry) {
@@ -604,6 +702,9 @@ async function openDetailDialog(entry: KbdEntry) {
   editingContent.value = false
   clearStagedSignalEdits()
   cancelEditSignal()
+  revisionState.value = null
+  candidateValidation.value = null
+  void fetchRevisionState(entry.id)
   // 拉取完整详情（确保含 signals_json）
   try {
     const resp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
@@ -616,6 +717,7 @@ async function openDetailDialog(entry: KbdEntry) {
       parsedSegments.value = parseContentMd(fresh.content_md || '')
       parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
       associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
+      void validateCurrentCandidate({ silent: true })
       return
     }
   } catch {
@@ -628,6 +730,7 @@ async function openDetailDialog(entry: KbdEntry) {
   parsedSegments.value = parseContentMd(entry.content_md || '')
   parsedImagesJson.value = parseImagesJson(entry.images_json || [])
   associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
+  void validateCurrentCandidate({ silent: true })
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -947,7 +1050,7 @@ async function saveSignalEdit() {
     const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeader },
-      body: JSON.stringify({ signals_json: payload }),
+      body: JSON.stringify({ signals_json: payload, lock_version: detailEntry.value.lock_version }),
     })
     if (!resp.ok) {
       let detail = `HTTP ${resp.status}`
@@ -964,6 +1067,9 @@ async function saveSignalEdit() {
     const updated = (await resp.json()) as any
     const newDoc: SignalsDoc = updated?.signals_json || payload
     detailEntry.value.signals_json = newDoc
+    detailEntry.value.lock_version = updated?.lock_version ?? detailEntry.value.lock_version
+    void fetchRevisionState(detailEntry.value.id)
+    void validateCurrentCandidate({ silent: true })
     const idx = entries.value.findIndex((e) => e.id === detailEntry.value!.id)
     if (idx !== -1) entries.value[idx].signals_json = newDoc
     ElMessage.success('关键信号已保存')
@@ -1008,7 +1114,7 @@ async function submitEdit() {
   if (!editingEntry.value) return
   editLoading.value = true
   try {
-    const payload: Record<string, string> = {}
+    const payload: Record<string, unknown> = {}
     if (editTitle.value.trim() && editTitle.value !== editingEntry.value.title) {
       payload.title = editTitle.value.trim()
     }
@@ -1022,6 +1128,9 @@ async function submitEdit() {
       ElMessage.info('内容未变更')
       editDialogVisible.value = false
       return
+    }
+    if (typeof editingEntry.value.lock_version === 'number') {
+      payload.lock_version = editingEntry.value.lock_version
     }
     const resp = await fetch(`/api/v1/kbd/${editingEntry.value.id}`, {
       method: 'PATCH',
@@ -1456,11 +1565,15 @@ async function saveInlineEdit() {
     const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeader },
-      body: JSON.stringify({ content_md: newContent }),
+      body: JSON.stringify({ content_md: newContent, lock_version: detailEntry.value.lock_version }),
     })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const responseBody = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(typeof responseBody?.detail === 'string' ? responseBody.detail : `HTTP ${resp.status}`)
     // 同步更新本地状态
     detailEntry.value.content_md = newContent
+    detailEntry.value.lock_version = responseBody?.lock_version ?? detailEntry.value.lock_version
+    void fetchRevisionState(detailEntry.value.id)
+    void validateCurrentCandidate({ silent: true })
     const idx = entries.value.findIndex((e) => e.id === detailEntry.value!.id)
     if (idx !== -1) entries.value[idx].content_md = newContent
     // 重新解析内容预览
@@ -1586,6 +1699,7 @@ const metaKeys: (keyof KbdMetadata)[] = [
 onMounted(() => {
   fetchPending()
   fetchCategories()
+  fetchCapabilities()
 })
 </script>
 
@@ -1813,6 +1927,14 @@ onMounted(() => {
         </div>
       </template>
       <template v-if="detailEntry">
+        <el-alert
+          v-if="detailEntry.status === 'published'"
+          type="info"
+          :closable="false"
+          show-icon
+          title="当前生效版继续由 Agent 使用；已发布维护将通过独立工作稿完成，普通保存不会再静默热发布。"
+          style="margin-bottom: 12px"
+        />
         <!-- 基本信息 -->
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="案例 ID">
@@ -1886,6 +2008,57 @@ onMounted(() => {
           </el-descriptions-item>
         </el-descriptions>
 
+        <div class="section-block" v-loading="revisionLoading">
+          <div class="section-header-row">
+            <h4 class="section-title">版本、生效与即时校验</h4>
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :loading="candidateValidationLoading"
+              @click="validateCurrentCandidate()"
+            >验证当前内容</el-button>
+          </div>
+          <el-descriptions :column="3" border size="small">
+            <el-descriptions-item label="模型 Proposal">
+              <span v-if="revisionState?.latest_proposal_revision_id">#{{ revisionState.latest_proposal_revision_id }}</span>
+              <span v-else class="text-muted">首次编辑/发布时自动固化</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="专家工作稿">
+              <span v-if="revisionState?.working_revision_id">#{{ revisionState.working_revision_id }}</span>
+              <span v-else class="text-muted">尚未修改</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="Agent 当前生效">
+              <span v-if="revisionState?.active_resource">
+                runtime r{{ revisionState.active_resource.revision }} · {{ revisionState.active_resource.checksum.slice(0, 10) }}
+              </span>
+              <span v-else class="text-muted">未生效</span>
+            </el-descriptions-item>
+          </el-descriptions>
+          <div class="section-hint" style="margin-top: 8px">
+            保存只形成专家工作版本；只有“审核通过并发布”才切换 Agent 生效 revision。
+            <template v-if="revisionState?.history?.[0]?.diff_from_parent?.length">
+              当前专家稿相对基线修改 {{ revisionState.history[0].diff_from_parent.length }} 项。
+            </template>
+          </div>
+          <el-alert
+            v-if="candidateValidation"
+            :type="candidateValidation.status === 'error' ? 'error' : candidateValidation.status === 'warning' ? 'warning' : 'success'"
+            :closable="false"
+            show-icon
+            style="margin-top: 10px"
+            :title="candidateValidation.status === 'ok'
+              ? '当前内容静态校验通过'
+              : `发现 ${candidateValidation.error_count} 个错误、${candidateValidation.warning_count} 个运行能力提示`"
+          >
+            <ul v-if="candidateValidation.issues.length" class="validation-issue-list">
+              <li v-for="issue in candidateValidation.issues" :key="`${issue.code}-${issue.location}`">
+                <code>{{ issue.location }}</code>：{{ issue.message }}
+              </li>
+            </ul>
+          </el-alert>
+        </div>
+
         <!-- 元数据面板 -->
         <div class="section-block">
           <h4 class="section-title">来源元数据</h4>
@@ -1958,6 +2131,11 @@ onMounted(() => {
             <div v-for="item in producerSignals" :key="'p-' + item.origIdx" class="signal-card">
               <div class="signal-card-head">
                 <el-tag size="small" type="success">{{ sigTool(item.sig) || 'qkv' }}</el-tag>
+                <el-tag
+                  size="small"
+                  :type="capabilityStatus(sigTool(item.sig)) === 'declared' ? 'info' : 'danger'"
+                  effect="plain"
+                >{{ capabilityStatus(sigTool(item.sig)) === 'declared' ? '契约已声明·运行待探测' : '能力未声明' }}</el-tag>
                 <el-tag size="small" effect="plain">{{ sigRoleLabel(item.sig) }}</el-tag>
                 <el-tag v-if="sigProvenance(item.sig).needs_review" size="small" type="warning">需人工复核</el-tag>
                 <el-tag v-if="hasStagedSignalEdit(item.origIdx)" size="small" type="warning" effect="plain">已暂存</el-tag>
@@ -2013,6 +2191,11 @@ onMounted(() => {
             <div v-for="item in consumerSignals" :key="'c-' + item.origIdx" class="signal-card">
               <div class="signal-card-head">
                 <el-tag size="small" type="warning">{{ sigTool(item.sig) || 'qfk' }}</el-tag>
+                <el-tag
+                  size="small"
+                  :type="capabilityStatus(sigTool(item.sig)) === 'declared' ? 'info' : 'danger'"
+                  effect="plain"
+                >{{ capabilityStatus(sigTool(item.sig)) === 'declared' ? '契约已声明·运行待探测' : '能力未声明' }}</el-tag>
                 <el-tag size="small" effect="plain">{{ sigRoleLabel(item.sig) }}</el-tag>
                 <el-tag v-if="sigProvenance(item.sig).needs_review" size="small" type="warning">需人工复核</el-tag>
                 <el-tag v-if="hasStagedSignalEdit(item.origIdx)" size="small" type="warning" effect="plain">已暂存</el-tag>

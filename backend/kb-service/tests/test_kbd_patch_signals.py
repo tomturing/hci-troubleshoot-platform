@@ -64,7 +64,11 @@ async def test_update_kbd_entry_signals_json_sql_cast():
     assert response.status_code == 200
 
     # 保存时以 CAST(... AS jsonb) 落库 v2 文档
-    executed_call = mock_session.execute.call_args
+    executed_call = next(
+        call
+        for call in reversed(mock_session.execute.call_args_list)
+        if "UPDATE kbd_entry SET" in str(call[0][0])
+    )
     sql_text = str(executed_call[0][0])
     assert "CAST(:signals_json AS jsonb)" in sql_text
     # 关键：落库 SQL 不得残留 ':signals_json' 字面量（否则会被 PG 报语法错误 500）

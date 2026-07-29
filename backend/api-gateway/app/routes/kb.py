@@ -311,6 +311,30 @@ async def kbd_convert_safe_pipeline_proxy(request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@kbd_router.get("/capabilities")
+async def kbd_capabilities_proxy(request: Request):
+    """代理代码生成的 KBD Capability Descriptor；不读取可热编辑 Registry。"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("GET", "/capabilities", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.get("/{kbd_id}/revisions")
+async def kbd_revisions_proxy(kbd_id: int, request: Request):
+    """代理 KBD Proposal/Expert 历史与当前 runtime active 元数据。"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("GET", f"/{kbd_id}/revisions", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.post("/{kbd_id}/validate")
+async def kbd_validate_proxy(kbd_id: int, request: Request):
+    """代理无副作用的 KBD working candidate Validation。"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/validate", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @kbd_router.get("/{kbd_id}")
 async def kbd_get_proxy(kbd_id: int, request: Request):
     """代理获取单条 KBD 详情（含 content_md）→ kb-service"""

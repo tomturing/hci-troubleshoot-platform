@@ -1043,6 +1043,10 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     hit_count integer NOT NULL DEFAULT 0,
+    -- 轻治理版本指针：历史 payload 存在 kbd_revision；本表继续作为主记录和兼容查询入口
+    latest_proposal_revision_id bigint,
+    working_revision_id bigint,
+    lock_version integer NOT NULL DEFAULT 0,
     CONSTRAINT fk_kbd_entry_category_id FOREIGN KEY (category_id) REFERENCES kb_category (code) ON DELETE NO ACTION,
     CONSTRAINT kbd_entry_pkey PRIMARY KEY (id)
 );
@@ -1080,6 +1084,9 @@ COMMENT ON COLUMN kbd_entry.review_note IS '审核备注';
 COMMENT ON COLUMN kbd_entry.published_at IS '发布时间';
 COMMENT ON COLUMN kbd_entry.created_at IS '创建时间';
 COMMENT ON COLUMN kbd_entry.updated_at IS '最后更新时间';
+COMMENT ON COLUMN kbd_entry.latest_proposal_revision_id IS '最新 LLM Proposal 的 kbd_revision.id；只作显式 head 指针，不代表已发布';
+COMMENT ON COLUMN kbd_entry.working_revision_id IS '当前专家工作稿的 kbd_revision.id；保存工作稿不得切换 runtime active';
+COMMENT ON COLUMN kbd_entry.lock_version IS '专家工作稿乐观锁版本；每次成功保存递增，避免并发覆盖';
 
 -- 索引: kbd_entry
 -- 状态过滤
@@ -1111,6 +1118,60 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_embedding ON kbd_entry
 -- P2-2: 补全 updated_at 触发器（schema 注释中要求由触发器维护，但原先缺失）
 
 COMMENT ON COLUMN kbd_entry.hit_count IS '命中计数：有多少个唯一 case_id 的 conversation.resolved_kbd_entry_id = 此条目。物化列，写入 conversation.resolved_kbd_entry_id 时原子 +1（case 级去重）。校验 SQL：SELECT COUNT(DISTINCT case_id) FROM conversation WHERE resolved_kbd_entry_id = id';
+
+-- ------------------------------------------------------------
+-- 表: kbd_revision  [模块: kb-service]
+-- 说明: KBD Proposal/Expert 的最小不可变版本表
+-- 用途: 保留多轮 LLM Proposal 与专家修改历史；运行时发布继续复用 dynamic_resource_revision/active
+-- 设计: append-only；不承载审批流、Active 指针或 Capability Registry
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS kbd_revision (
+    id bigserial NOT NULL,
+    kbd_entry_id bigint NOT NULL,
+    revision_no integer NOT NULL,
+    revision_type varchar(16) NOT NULL,
+    parent_revision_id bigint,
+    payload_json jsonb NOT NULL,
+    checksum varchar(64) NOT NULL,
+    generation_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    validation_summary jsonb NOT NULL DEFAULT '{}'::jsonb,
+    actor_id varchar(128),
+    actor_type varchar(16) NOT NULL,
+    trace_id varchar(64),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT kbd_revision_pkey PRIMARY KEY (id),
+    CONSTRAINT fk_kbd_revision_kbd_entry_id FOREIGN KEY (kbd_entry_id) REFERENCES kbd_entry (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_kbd_revision_parent_revision_id FOREIGN KEY (parent_revision_id) REFERENCES kbd_revision (id) ON DELETE RESTRICT,
+    CONSTRAINT chk_kbd_revision_revision_no CHECK (revision_no > 0),
+    CONSTRAINT chk_kbd_revision_type CHECK (revision_type IN ('proposal', 'expert')),
+    CONSTRAINT chk_kbd_revision_actor_type CHECK (actor_type IN ('llm', 'expert', 'migration', 'system')),
+    CONSTRAINT uq_kbd_revision_no UNIQUE (kbd_entry_id, revision_no)
+);
+
+COMMENT ON TABLE kbd_revision IS 'KBD Proposal/Expert append-only 版本；保存工作稿不影响 Agent active，发布继续使用 dynamic_resource_revision';
+COMMENT ON COLUMN kbd_revision.kbd_entry_id IS '所属 KBD 主记录 ID';
+COMMENT ON COLUMN kbd_revision.revision_no IS '同一 KBD 内单调递增版本号';
+COMMENT ON COLUMN kbd_revision.revision_type IS 'proposal=LLM/迁移模型稿；expert=专家工作稿或确认稿';
+COMMENT ON COLUMN kbd_revision.parent_revision_id IS '本版本直接基于的 Proposal/Expert revision';
+COMMENT ON COLUMN kbd_revision.payload_json IS '与 KBD 可审核字段同构的完整规范化快照';
+COMMENT ON COLUMN kbd_revision.checksum IS 'payload_json 的稳定 SHA-256，用于幂等和差异定位';
+COMMENT ON COLUMN kbd_revision.generation_metadata IS '模型、Prompt、配置、来源或迁移元数据；专家版本保留其基线生成信息';
+COMMENT ON COLUMN kbd_revision.validation_summary IS '该 revision 最近一次确定性静态校验摘要，不代表业务 Expert Gold';
+COMMENT ON COLUMN kbd_revision.actor_id IS '创建者身份；服务认证未提供用户身份时允许为空但必须诚实记录 actor_type';
+COMMENT ON COLUMN kbd_revision.actor_type IS 'llm/expert/migration/system；不得用 engineering fixture 冒充 expert';
+COMMENT ON COLUMN kbd_revision.trace_id IS '创建 revision 的 W3C trace 链路标识';
+
+CREATE INDEX IF NOT EXISTS idx_kbd_revision_entry_created ON kbd_revision (kbd_entry_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kbd_revision_parent ON kbd_revision (parent_revision_id) WHERE parent_revision_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_kbd_revision_trace_id ON kbd_revision (trace_id) WHERE trace_id IS NOT NULL;
+
+-- head 指针外键延后声明，避免 kbd_entry 与 kbd_revision 建表顺序形成循环依赖。
+ALTER TABLE kbd_entry
+    ADD CONSTRAINT fk_kbd_entry_latest_proposal_revision_id
+    FOREIGN KEY (latest_proposal_revision_id) REFERENCES kbd_revision (id) ON DELETE SET NULL;
+ALTER TABLE kbd_entry
+    ADD CONSTRAINT fk_kbd_entry_working_revision_id
+    FOREIGN KEY (working_revision_id) REFERENCES kbd_revision (id) ON DELETE SET NULL;
 
 -- 建立 conversation.resolved_kbd_entry_id → kbd_entry.id 的外键约束（conversation 先于 kbd_entry 创建，延后添加）
 ALTER TABLE conversation

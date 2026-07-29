@@ -207,6 +207,12 @@ class KbdEntry(Base):
     # ── 命中统计（case 级去重，物化列）────────────────────────────────────────
     hit_count = Column(Integer, nullable=False, default=0)  # 有多少个唯一 case 命中此条目（S4 根因确认时 +1）
 
+    # ── 轻治理版本 head ───────────────────────────────────────────────────────
+    # 历史 payload 存入 append-only kbd_revision；本表继续是 Admin/检索兼容主记录。
+    latest_proposal_revision_id = Column(BigInteger, nullable=True)
+    working_revision_id = Column(BigInteger, nullable=True)
+    lock_version = Column(Integer, nullable=False, default=0)
+
     # ── 时间戳 ───────────────────────────────────────────────────────────────
     created_at = Column(
         DateTime(timezone=True),

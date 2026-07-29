@@ -1,4 +1,5 @@
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.models.kbd_entry import KbdEntry
@@ -94,17 +95,36 @@ async def test_update_kbd_entry_api_sync_sections():
 
     set_dependencies(mock_db)
 
+    status_row = MagicMock()
+    status_row.scalar_one_or_none.return_value = "draft"
+
     # Mock SELECT for update route to return images_json
-    mock_row = MagicMock()
-    mock_row.mappings.return_value.first.return_value = {
+    image_row = MagicMock()
+    image_row.mappings.return_value.first.return_value = {
         "images_json": [{"seq": 0, "desc": "TYPE: ERR\nBG: BLU\nTest image."}]
     }
 
+    kbd = SimpleNamespace(
+        id=123,
+        latest_proposal_revision_id=None,
+        working_revision_id=None,
+        lock_version=0,
+        status="draft",
+        signals_json={},
+        content_md="",
+    )
+    kbd_row = MagicMock()
+    kbd_row.scalar_one_or_none.return_value = kbd
+
     # Mock UPDATE to return id, status
     mock_update_row = MagicMock()
-    mock_update_row.mappings.return_value.first.return_value = {"id": 123, "status": "draft"}
+    mock_update_row.mappings.return_value.first.return_value = {
+        "id": 123,
+        "status": "draft",
+        "lock_version": 1,
+    }
 
-    mock_session.execute.side_effect = [mock_row, mock_update_row]
+    mock_session.execute.side_effect = [status_row, image_row, kbd_row, mock_update_row]
 
     client = TestClient(app)
 
@@ -119,11 +139,23 @@ async def test_update_kbd_entry_api_sync_sections():
 > Test image.
 """
 
-    response = client.patch(
-        "/api/admin/kbd/123",
-        json={"content_md": new_content_md},
-        headers={"Authorization": "Bearer any_token"}
+    revision = SimpleNamespace(
+        id=1,
+        revision_no=1,
+        revision_type="proposal",
+        parent_revision_id=None,
+        checksum="a" * 64,
+        actor_id=None,
+        actor_type="migration",
+        validation_summary={},
+        created_at=None,
     )
+    with patch.object(admin_route, "ensure_kbd_revision", AsyncMock(return_value=revision)):
+        response = client.patch(
+            "/api/admin/kbd/123",
+            json={"content_md": new_content_md},
+            headers={"Authorization": "Bearer any_token"}
+        )
 
     assert response.status_code == 200
 
@@ -131,8 +163,8 @@ async def test_update_kbd_entry_api_sync_sections():
     admin_route._check_auth = original_check_auth
 
     # Let's inspect the call to UPDATE to verify it contains the parsed fields
-    assert mock_session.execute.call_count == 2
-    update_call = mock_session.execute.call_args_list[1]
+    assert mock_session.execute.call_count == 4
+    update_call = mock_session.execute.call_args_list[3]
     sql_text = str(update_call[0][0])
     params = update_call[0][1]
 

@@ -46,10 +46,19 @@ interface ToolValidationResult {
   validation_issues: ToolValidationIssue[]
 }
 
+interface CapabilityDescriptor {
+  capability_id: string
+  contract_status: string
+  runtime_status: string
+  verification_status: string
+  source: string
+}
+
 const tools = ref<ToolDefinition[]>([])
 const loading = ref(false)
 const searchQuery = ref('')
 const categoryFilter = ref('')
+const capabilityMap = ref<Record<string, CapabilityDescriptor>>({})
 
 // 获取 internalToken
 const internalToken = import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
@@ -81,6 +90,28 @@ async function fetchTools() {
   } finally {
     loading.value = false
   }
+}
+
+async function fetchCapabilities() {
+  try {
+    const res = await fetch('/api/v1/kbd/capabilities', { headers: authHeader })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const document = await res.json()
+    capabilityMap.value = Object.fromEntries(
+      (document.capabilities || []).map((item: CapabilityDescriptor) => [item.capability_id, item]),
+    )
+  } catch (e) {
+    console.error('加载可执行能力状态失败:', e)
+    capabilityMap.value = {}
+  }
+}
+
+function isKbdCapability(row: ToolDefinition) {
+  return row.category === 'qkv' || row.category === 'qfk'
+}
+
+function capabilityFor(toolName: string) {
+  return capabilityMap.value[toolName]
 }
 
 // 快速切换启用状态
@@ -568,6 +599,7 @@ onMounted(() => {
   const q = route.query.q
   if (typeof q === 'string' && q) searchQuery.value = q
   fetchTools()
+  fetchCapabilities()
 })
 </script>
 
@@ -585,6 +617,14 @@ onMounted(() => {
         </el-button>
       </div>
     </div>
+
+    <el-alert
+      type="info"
+      :closable="false"
+      show-icon
+      title="工具记录用于说明和配置；KBD 可执行能力还必须由代码契约、Agent Handler 和 Validator 共同证明。仅在此新建记录不会自动获得执行能力。"
+      style="margin-bottom: 16px"
+    />
 
     <!-- 过滤栏 -->
     <el-card class="filter-card" shadow="never" style="margin-bottom: 16px;">
@@ -665,6 +705,19 @@ onMounted(() => {
           </template>
         </el-table-column>
 
+        <el-table-column label="KBD 可执行能力" min-width="190" align="center">
+          <template #default="{ row }">
+            <template v-if="isKbdCapability(row)">
+              <div v-if="capabilityFor(row.tool_name)" class="capability-state">
+                <el-tag size="small" type="success" effect="plain">参数契约已声明</el-tag>
+                <el-tag size="small" type="warning" effect="plain">运行待探测</el-tag>
+              </div>
+              <el-tag v-else size="small" type="danger" effect="plain">仅有配置·能力未声明</el-tag>
+            </template>
+            <span v-else class="text-secondary">非 KBD Signal 能力</span>
+          </template>
+        </el-table-column>
+
         <el-table-column label="说明" min-width="220" prop="description" show-overflow-tooltip />
 
         <el-table-column label="操作" width="180" fixed="right" align="center">
@@ -740,6 +793,16 @@ onMounted(() => {
 
           <!-- 右栏：代码/JSON 大编辑器 -->
           <el-col :span="16" style="padding-left: 20px;">
+            <el-alert
+              v-if="isSignalTool"
+              :type="capabilityFor(formModel.tool_name) ? 'warning' : 'error'"
+              :closable="false"
+              show-icon
+              style="margin-bottom: 16px"
+              :title="capabilityFor(formModel.tool_name)
+                ? '该 Signal 已有代码参数契约，但 Agent Handler/Validator 部署状态尚未探测；此处编辑说明或配置不会修改可执行语义。'
+                : '该 Signal 当前只有数据库配置或尚未保存，代码能力未声明；保存后仍不能直接被 KBD 当作可执行能力。'"
+            />
             <el-form-item label="功能描述" required>
               <el-input
                 v-model="formModel.description"
@@ -934,6 +997,13 @@ onMounted(() => {
 .text-secondary {
   color: #95a5a6;
   font-size: 13px;
+}
+
+.capability-state {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 
 .json-editor-wrapper {

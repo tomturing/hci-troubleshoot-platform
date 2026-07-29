@@ -1,4 +1,4 @@
-h1:Q1UOIebQdgjMPT7fC+KqQolSmjz9T4UplJ+q+DAd3sI=
+h1:JM92DCpMPP7aLCyptlOuLqcxlpFAVXxYIAiaj2L6Gl8=
 20260525000000_kbd_structured_sections.sql h1:HK5p3/VudQhI6ZupzyZ3PEt00fqqLt5ExEovpDym/jc=
 20260526000000_create_sop_execution.sql h1:qAmFaHEbjh9R4eRIjcMM4QLx6wPw/LCDwvPoxBRXHlQ=
 20260526100000_add_variable_schema_to_sop_document.sql h1:tJjimwpXh/VwAAP1zWChXMgkuzjiK8WV+W55JO7BY/w=
@@ -20,3 +20,4 @@ h1:Q1UOIebQdgjMPT7fC+KqQolSmjz9T4UplJ+q+DAd3sI=
 20260727000000_add_qfk_text_extract_prompt_rules.sql h1:4jBxbqxDhfYiPfBZOeRfi1TuIdgNb3GRXlgTsyjiMbY=
 20260727000000_terminal_bridge_observability_p0.sql h1:2nRkaNvkpbrDXwPw3JQNrwyzwwhzfESvP0Pii6McFGo=
 20260729010000_add_image_evidence_and_vision_quality_contract.sql h1:u/w8sqMVZYcyqLPJzHovcqdsgQUSfrWpJGWxf8GBQoE=
+20260729020000_add_kbd_revision_lightweight_governance.sql h1:VdzTsGNei+l8QjvWt/95hvNlGpnTBAY9glD5a3d735E=

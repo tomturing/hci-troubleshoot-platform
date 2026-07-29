@@ -30,6 +30,7 @@ from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import validate_acquire_args
+from shared.schemas.capability_descriptor import capability_descriptor_document, get_capability_descriptor
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import (
     validate_publishable_signals_json,
@@ -39,8 +40,10 @@ from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
 from app.models.kbd_entry import KbdEntry, build_kbd_embedding_text, strip_markdown
+from app.models.kbd_revision import KbdRevision
 from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
+from app.services.kbd_revision_service import diff_revision_payloads, ensure_kbd_revision, revision_metadata
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
 from app.services.sop_tool_contract_validator import validate_sop_tool_contract
 from app.utils.jieba_hci import segment
@@ -94,6 +97,18 @@ def set_dependencies(db: DatabaseManager, embedding: EmbeddingService | None = N
     _embedding_service = embedding
 
 
+@kbd_router.get("/capabilities")
+async def get_kbd_capabilities(request: Request) -> dict[str, Any]:
+    """返回由代码契约生成的只读 Capability Descriptor。
+
+    当前只证明 shared 参数契约已声明；不会把 Admin 数据库配置冒充为 Agent Handler
+    已部署。后续可在相同信封中合并 agent-service 的运行时探测结果。
+    """
+
+    _check_auth(request)
+    return capability_descriptor_document()
+
+
 def _check_auth(request: Request) -> None:
     """验证内部服务 Token"""
     from app.config import settings
@@ -116,6 +131,53 @@ async def _publish_kbd_revision(session, kbd_id: int, trace_id: str | None) -> d
         return None
     snapshot = await DynamicResourcePublisher(session).ensure_published(**kbd_resource_payload(kbd), trace_id=trace_id)
     return snapshot_revision_metadata(snapshot)
+
+
+async def _freeze_approved_expert_revision(
+    session,
+    *,
+    kbd_id: int,
+    reviewer_id: int,
+    review_note: str | None,
+    trace_id: str | None,
+) -> KbdRevision:
+    """在发布事务内冻结通过门禁的 Expert Revision。"""
+
+    kbd_result = await session.execute(select(KbdEntry).where(KbdEntry.id == kbd_id).with_for_update())
+    kbd = kbd_result.scalar_one()
+    if kbd.latest_proposal_revision_id is None:
+        proposal_revision = await ensure_kbd_revision(
+            session,
+            kbd=kbd,
+            revision_type="proposal",
+            actor_type="migration",
+            generation_metadata={"origin": "pre_review_baseline", "identity_status": "not_applicable"},
+            trace_id=trace_id,
+        )
+    else:
+        proposal_revision = await session.get(KbdRevision, kbd.latest_proposal_revision_id)
+    parent_revision_id = kbd.working_revision_id or (
+        proposal_revision.id if proposal_revision is not None else None
+    )
+    return await ensure_kbd_revision(
+        session,
+        kbd=kbd,
+        revision_type="expert",
+        actor_type="expert",
+        actor_id=None,
+        parent_revision_id=parent_revision_id,
+        generation_metadata={
+            "origin": "admin_review",
+            "identity_status": "unverified_body_reviewer_id",
+            "legacy_reviewer_id": reviewer_id,
+            "review_note": review_note or "",
+        },
+        validation_summary={"status": "passed", "gate": "publishable_signals_json"},
+        trace_id=trace_id,
+        # 即使知识 payload 未变化，也必须单独冻结“专家已批准”这一事实；工作稿 revision
+        # 保持不可变，批准备注和 validation 不能被幂等复用吞掉。
+        reuse_existing=False,
+    )
 
 
 async def _publish_sop_revision(session, document_id: int, trace_id: str | None) -> dict | None:
@@ -380,6 +442,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
                        metadata, category_id, ai_category_id,
                        ai_category_conf, ai_category_reason,
                        status, reviewer_id, review_note,
+                       latest_proposal_revision_id, working_revision_id, lock_version,
                        created_at, updated_at, published_at
                 FROM kbd_entry
                 WHERE id = :id
@@ -419,6 +482,190 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         "published_at": row["published_at"].isoformat() if row["published_at"] else None,
+        "latest_proposal_revision_id": row["latest_proposal_revision_id"],
+        "working_revision_id": row["working_revision_id"],
+        "lock_version": row["lock_version"],
+    }
+
+
+@kbd_router.get("/{kbd_id}/revisions")
+async def get_kbd_revisions(request: Request, kbd_id: int) -> dict[str, Any]:
+    """获取 Proposal/Expert 历史和当前 runtime active 元数据。"""
+
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        entry = await session.get(KbdEntry, kbd_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+
+        history_result = await session.execute(
+            select(KbdRevision)
+            .where(KbdRevision.kbd_entry_id == kbd_id)
+            .order_by(KbdRevision.revision_no.desc())
+        )
+        history = list(history_result.scalars().all())
+        revision_by_id = {item.id: item for item in history}
+        active_result = await session.execute(
+            text(
+                """
+                SELECT r.revision, r.checksum, r.version, r.published_at
+                FROM dynamic_resource_active a
+                JOIN dynamic_resource_revision r
+                  ON r.resource_type = a.resource_type
+                 AND r.resource_name = a.resource_name
+                 AND r.revision = a.active_revision
+                WHERE a.resource_type = 'kbd' AND a.resource_name = :resource_name
+                """
+            ),
+            {"resource_name": str(kbd_id)},
+        )
+        active = active_result.mappings().first()
+
+    return {
+        "kbd_id": kbd_id,
+        "latest_proposal_revision_id": entry.latest_proposal_revision_id,
+        "working_revision_id": entry.working_revision_id,
+        "lock_version": entry.lock_version,
+        "history": [
+            {
+                **(revision_metadata(item) or {}),
+                "payload": item.payload_json,
+                "generation_metadata": item.generation_metadata or {},
+                "diff_from_parent": (
+                    diff_revision_payloads(
+                        revision_by_id[item.parent_revision_id].payload_json,
+                        item.payload_json,
+                    )
+                    if item.parent_revision_id in revision_by_id
+                    else []
+                ),
+            }
+            for item in history
+        ],
+        "active_resource": (
+            {
+                "revision": active["revision"],
+                "checksum": active["checksum"],
+                "version": active["version"],
+                "published_at": active["published_at"].isoformat() if active["published_at"] else None,
+            }
+            if active
+            else None
+        ),
+    }
+
+
+@kbd_router.post("/{kbd_id}/validate")
+async def validate_kbd_candidate(request: Request, kbd_id: int) -> dict[str, Any]:
+    """对当前专家工作内容执行无副作用静态 Validation。
+
+    该接口不创建 runtime revision、不切 active；Capability 运行状态尚未从 Agent 探测时
+    明确返回 warning，不能把 shared Schema 通过冒充现场可执行。
+    """
+
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        kbd = await session.get(KbdEntry, kbd_id)
+        if kbd is None:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+
+    issues: list[dict[str, Any]] = []
+    for field, label in (
+        ("title", "标题"),
+        ("problem_description", "问题描述"),
+        ("root_cause", "根因"),
+        ("solution", "解决方案"),
+    ):
+        if not str(getattr(kbd, field) or "").strip():
+            issues.append(
+                {
+                    "level": "error",
+                    "code": "KBD_REQUIRED_FIELD_MISSING",
+                    "location": field,
+                    "message": f"{label}不能为空",
+                }
+            )
+
+    signals_doc = _load_signals_json(kbd.signals_json)
+    signals = signals_doc.get("signals") if isinstance(signals_doc, dict) else []
+    if not signals:
+        issues.append(
+            {
+                "level": "error",
+                "code": "KBD_SIGNALS_MISSING",
+                "location": "signals_json",
+                "message": "缺少关键信号，请先抽取或人工新增",
+            }
+        )
+    else:
+        try:
+            validate_publishable_signals_json(signals_doc)
+        except jsonschema.ValidationError as exc:
+            issues.append(
+                {
+                    "level": "error",
+                    "code": "KBD_SIGNALS_INVALID",
+                    "location": "/".join(str(part) for part in exc.absolute_path) or "signals_json",
+                    "message": exc.message,
+                }
+            )
+
+        used_tools: set[str] = set()
+        for index, signal in enumerate(signals):
+            if not isinstance(signal, dict):
+                continue
+            tool = str((signal.get("acquire") or {}).get("tool") or "")
+            if not tool or tool in used_tools:
+                continue
+            used_tools.add(tool)
+            descriptor = get_capability_descriptor(tool)
+            if descriptor is None:
+                issues.append(
+                    {
+                        "level": "error",
+                        "code": "CAPABILITY_MISSING",
+                        "location": f"signals[{index}].acquire.tool",
+                        "message": f"平台代码契约未声明能力 {tool}",
+                    }
+                )
+            elif descriptor["runtime_status"] != "available":
+                issues.append(
+                    {
+                        "level": "warning",
+                        "code": "CAPABILITY_RUNTIME_UNVERIFIED",
+                        "location": f"capabilities.{tool}",
+                        "message": f"{tool} 参数契约已声明，但尚未从 Agent 探测 Handler/Validator 部署状态",
+                    }
+                )
+
+    if not kbd.category_id and not kbd.ai_category_id:
+        issues.append(
+            {
+                "level": "error",
+                "code": "KBD_CATEGORY_MISSING",
+                "location": "category_id",
+                "message": "缺少人工分类和 AI 建议分类",
+            }
+        )
+
+    error_count = sum(issue["level"] == "error" for issue in issues)
+    warning_count = sum(issue["level"] == "warning" for issue in issues)
+    return {
+        "kbd_id": kbd_id,
+        "working_revision_id": kbd.working_revision_id,
+        "lock_version": kbd.lock_version,
+        "status": "error" if error_count else "warning" if warning_count else "ok",
+        "publishable": error_count == 0,
+        "runtime_verified": warning_count == 0,
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "issues": issues,
     }
 
 
@@ -484,6 +731,7 @@ class KbdApproveRequest(BaseModel):
         description='人工确认的分类 code（可选，如“虚拟机-017”）。来自审核详情弹窗的“确认分类”下拉框，'
         '发布时优先于 AI 自动分类写入 category_id，用于校正分类、避免孤儿 KBD',
     )
+    lock_version: int | None = Field(None, ge=0, description="可选专家工作稿版本；不匹配时返回 409")
 
 
 class KbdApproveResponse(BaseModel):
@@ -495,6 +743,7 @@ class KbdApproveResponse(BaseModel):
     embedding_generated: bool = Field(..., description="是否成功生成 embedding")
     published_at: str | None = Field(None, description="发布时间")
     resource_revision: dict | None = Field(default=None, description="动态资源 revision 元数据")
+    knowledge_revision: dict | None = Field(default=None, description="本次确认的 Expert revision 元数据")
 
 
 @kbd_router.post("/{kbd_id}/approve", response_model=KbdApproveResponse)
@@ -534,7 +783,9 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
             text(
-                "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status, published_at, embedding, signals_json, category_id, ai_category_id FROM kbd_entry WHERE id = :id"
+                "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, "
+                "status, published_at, embedding, signals_json, category_id, ai_category_id, lock_version "
+                "FROM kbd_entry WHERE id = :id"
             ),
             {"id": kbd_id},
         )
@@ -555,6 +806,19 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 embedding_generated=row["embedding"] is not None,
                 published_at=row["published_at"].isoformat() if row["published_at"] else None,
                 resource_revision=resource_revision,
+                knowledge_revision=None,
+            )
+
+        source_lock_version = int(row.get("lock_version") or 0)
+        if body.lock_version is not None and body.lock_version != source_lock_version:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "KBD_EDIT_CONFLICT",
+                    "message": "该 KBD 已被其他编辑更新，请刷新后重新审核",
+                    "expected_lock_version": body.lock_version,
+                    "current_lock_version": source_lock_version,
+                },
             )
 
         content_md = row["content_md"]
@@ -661,12 +925,13 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                     embedding_content_hash = :embedding_content_hash,
                     embedding_updated_at = :embedding_updated_at,
                     tsv = to_tsvector('simple', :tsv_text)
-                WHERE id = :id
+                WHERE id = :id AND lock_version = :expected_lock_version AND status <> 'published'
                 RETURNING id, status, embedding, published_at
                 """
             )
             params = {
                 "id": kbd_id,
+                "expected_lock_version": source_lock_version,
                 "published_at": now,
                 "reviewer_id": body.reviewer_id,
                 "reviewed_at": now,
@@ -696,12 +961,13 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                     embedding_content_hash = NULL,
                     embedding_updated_at = NULL,
                     tsv = to_tsvector('simple', :tsv_text)
-                WHERE id = :id
+                WHERE id = :id AND lock_version = :expected_lock_version AND status <> 'published'
                 RETURNING id, status, embedding, published_at
                 """
             )
             params = {
                 "id": kbd_id,
+                "expected_lock_version": source_lock_version,
                 "published_at": now,
                 "reviewer_id": body.reviewer_id,
                 "reviewed_at": now,
@@ -715,8 +981,24 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
         updated = result.mappings().first()
 
         if not updated:
-            raise HTTPException(status_code=500, detail=f"KBD 条目 {kbd_id} 更新失败")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "KBD_EDIT_CONFLICT",
+                    "message": "生成发布数据期间 KBD 已发生变化，未发布旧版本；请刷新后重新审核",
+                    "expected_lock_version": source_lock_version,
+                },
+            )
 
+        # 通过门禁后才冻结 Expert Revision；现有 body reviewer_id 尚不是可信认证身份，
+        # helper 会诚实记录 identity_status，避免伪造 Gold actor。
+        expert_revision = await _freeze_approved_expert_revision(
+            session,
+            kbd_id=kbd_id,
+            reviewer_id=body.reviewer_id,
+            review_note=body.review_note,
+            trace_id=get_current_trace_id(),
+        )
         resource_revision = await _publish_kbd_revision(session, kbd_id, get_current_trace_id())
         await session.commit()
 
@@ -734,6 +1016,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
         embedding_generated=updated["embedding"] is not None,
         published_at=updated["published_at"].isoformat() if updated["published_at"] else None,
         resource_revision=resource_revision,
+        knowledge_revision=revision_metadata(expert_revision),
     )
 
 
@@ -1670,6 +1953,7 @@ class KbdUpdateRequest(BaseModel):
     content_md: str | None = Field(None, description="聚合 Markdown（优先用传入的值；不传则自动由章节重建）")
     content_raw: str | None = Field(None, description="新纯文本去噪内容（可选）")
     category_id: str | None = Field(None, description="新分类 ID（可选）")
+    lock_version: int | None = Field(None, ge=0, description="可选乐观锁版本；不匹配时返回 409")
 
 
 @kbd_router.patch("/{kbd_id}")
@@ -1684,6 +1968,19 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
 
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    # 止血：当前 kbd_entry 仍是兼容主记录。完整的 published→working 独立读模型接通前，
+    # 禁止普通 PATCH 把未审核内容写入已发布检索行并隐式切 active。
+    async with _db_manager.async_session_factory() as session:
+        current_result = await session.execute(select(KbdEntry.status).where(KbdEntry.id == kbd_id))
+        current_status = current_result.scalar_one_or_none()
+        if current_status is None:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+        if current_status == "published":
+            raise HTTPException(
+                status_code=409,
+                detail="已发布 KBD 不能直接覆盖编辑；请等待 working revision 维护入口，当前 active 保持不变",
+            )
 
     # 所有可更新字段
     section_fields = (
@@ -1849,23 +2146,74 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
         set_clauses.append("category_id = :category_id")
         params["category_id"] = body.category_id
 
-    set_sql = ", ".join(set_clauses)
-
     async with _db_manager.async_session_factory() as session:
+        kbd_result = await session.execute(select(KbdEntry).where(KbdEntry.id == kbd_id).with_for_update())
+        kbd = kbd_result.scalar_one_or_none()
+        if kbd is None:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+        if kbd.status == "published":
+            raise HTTPException(
+                status_code=409,
+                detail="已发布 KBD 不能直接覆盖编辑；请等待 working revision 维护入口，当前 active 保持不变",
+            )
+        if body.lock_version is not None and body.lock_version != kbd.lock_version:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "KBD_EDIT_CONFLICT",
+                    "message": "该 KBD 已被其他编辑更新，请刷新后重试",
+                    "expected_lock_version": body.lock_version,
+                    "current_lock_version": kbd.lock_version,
+                },
+            )
+
+        if kbd.latest_proposal_revision_id is None:
+            signal_metadata = _load_signals_json(kbd.signals_json).get("generation_metadata") or {}
+            proposal_revision = await ensure_kbd_revision(
+                session,
+                kbd=kbd,
+                revision_type="proposal",
+                actor_type="llm" if signal_metadata.get("model_id") else "migration",
+                generation_metadata={"origin": "pre_expert_edit_baseline", **signal_metadata},
+                trace_id=get_current_trace_id(),
+            )
+        else:
+            proposal_revision = await session.get(KbdRevision, kbd.latest_proposal_revision_id)
+        parent_revision_id = kbd.working_revision_id or (
+            proposal_revision.id if proposal_revision is not None else None
+        )
+
+        set_clauses.append("lock_version = lock_version + 1")
         result = await session.execute(
-            text(f"UPDATE kbd_entry SET {set_sql} WHERE id = :id RETURNING id, status"),  # noqa: S608
+            text(f"UPDATE kbd_entry SET {', '.join(set_clauses)} WHERE id = :id RETURNING id, status, lock_version"),  # noqa: S608
             params,
         )
         updated = result.mappings().first()
         if not updated:
             raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
-        resource_revision = None
-        if updated["status"] == "published":
-            resource_revision = await _publish_kbd_revision(session, kbd_id, get_current_trace_id())
+        await session.refresh(kbd)
+        expert_revision = await ensure_kbd_revision(
+            session,
+            kbd=kbd,
+            revision_type="expert",
+            actor_type="expert",
+            actor_id=None,
+            parent_revision_id=parent_revision_id,
+            generation_metadata={"origin": "admin_working_edit", "identity_status": "unavailable"},
+            validation_summary={"status": "saved", "publish_validation": "not_run"},
+            trace_id=get_current_trace_id(),
+        )
         await session.commit()
 
     logger.info(event="kbd_updated", kbd_id=kbd_id, fields=list(params.keys()))
-    return {"success": True, "kbd_id": kbd_id, "resource_revision": resource_revision}
+    return {
+        "success": True,
+        "kbd_id": kbd_id,
+        "signals_json": _signals_for_response(kbd.signals_json),
+        "lock_version": updated.get("lock_version", getattr(kbd, "lock_version", 0)),
+        "knowledge_revision": revision_metadata(expert_revision),
+        "resource_revision": None,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1888,7 +2236,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         result = await session.execute(
             text(
                 "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status, "
-                "category_id, ai_category_id, signals_json FROM kbd_entry WHERE id = :id"
+                "category_id, ai_category_id, signals_json, lock_version FROM kbd_entry WHERE id = :id"
             ),
             {"id": kbd_id},
         )
@@ -1899,6 +2247,17 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
             raise HTTPException(
                 status_code=400,
                 detail=f"KBD 条目当前状态为 {row['status']}，只有 draft/rejected 状态可重新发布",
+            )
+        source_lock_version = int(row.get("lock_version") or 0)
+        if body.lock_version is not None and body.lock_version != source_lock_version:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "KBD_EDIT_CONFLICT",
+                    "message": "该 KBD 已被其他编辑更新，请刷新后重新审核",
+                    "expected_lock_version": body.lock_version,
+                    "current_lock_version": source_lock_version,
+                },
             )
         content_md = row["content_md"]
         if not content_md:
@@ -1967,12 +2326,13 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                     embedding_content_hash = :embedding_content_hash,
                     embedding_updated_at = :embedding_updated_at,
                     tsv = to_tsvector('simple', :tsv_text)
-                WHERE id = :id
+                WHERE id = :id AND lock_version = :expected_lock_version AND status IN ('draft', 'rejected')
                 RETURNING id, status, embedding, published_at
                 """
             )
             params = {
                 "id": kbd_id,
+                "expected_lock_version": source_lock_version,
                 "published_at": now,
                 "reviewer_id": body.reviewer_id,
                 "reviewed_at": now,
@@ -2001,12 +2361,13 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                     embedding_content_hash = NULL,
                     embedding_updated_at = NULL,
                     tsv = to_tsvector('simple', :tsv_text)
-                WHERE id = :id
+                WHERE id = :id AND lock_version = :expected_lock_version AND status IN ('draft', 'rejected')
                 RETURNING id, status, embedding, published_at
                 """
             )
             params = {
                 "id": kbd_id,
+                "expected_lock_version": source_lock_version,
                 "published_at": now,
                 "reviewer_id": body.reviewer_id,
                 "reviewed_at": now,
@@ -2019,7 +2380,21 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         result = await session.execute(update_sql, params)
         updated = result.mappings().first()
         if not updated:
-            raise HTTPException(status_code=500, detail=f"KBD 条目 {kbd_id} 更新失败")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "KBD_EDIT_CONFLICT",
+                    "message": "生成发布数据期间 KBD 已发生变化，未发布旧版本；请刷新后重新审核",
+                    "expected_lock_version": source_lock_version,
+                },
+            )
+        expert_revision = await _freeze_approved_expert_revision(
+            session,
+            kbd_id=kbd_id,
+            reviewer_id=body.reviewer_id,
+            review_note=body.review_note,
+            trace_id=get_current_trace_id(),
+        )
         resource_revision = await _publish_kbd_revision(session, kbd_id, get_current_trace_id())
         await session.commit()
 
@@ -2031,6 +2406,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         embedding_generated=embedding_generated,
         published_at=updated["published_at"].isoformat() if updated["published_at"] else None,
         resource_revision=resource_revision,
+        knowledge_revision=revision_metadata(expert_revision),
     )
 
 
@@ -2054,10 +2430,22 @@ async def revert_kbd_to_draft(request: Request, kbd_id: int):
             text("UPDATE kbd_entry SET status = 'draft', updated_at = NOW() WHERE id = :id"),
             {"id": kbd_id},
         )
+        deactivated = await session.execute(
+            text(
+                "DELETE FROM dynamic_resource_active "
+                "WHERE resource_type = 'kbd' AND resource_name = :resource_name"
+            ),
+            {"resource_name": str(kbd_id)},
+        )
         await session.commit()
 
     logger.info(event="kbd_reverted_to_draft", kbd_id=kbd_id)
-    return {"success": True, "kbd_id": kbd_id, "status": "draft"}
+    return {
+        "success": True,
+        "kbd_id": kbd_id,
+        "status": "draft",
+        "active_deactivated": bool(deactivated.rowcount),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

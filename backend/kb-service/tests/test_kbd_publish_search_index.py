@@ -56,6 +56,7 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
         },
         "category_id": "vm-001",
         "ai_category_id": None,
+        "lock_version": 4,
     }
     published_at = datetime.now(UTC)
     updated_row = {"id": 7, "status": "published", "embedding": None, "published_at": published_at}
@@ -74,12 +75,27 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
         patch.object(admin, "_db_manager", db),
         patch.object(admin, "_embedding_service", embedding),
         patch.object(admin, "segment", return_value="虚拟机 镜像 异常"),
+        patch.object(
+            admin,
+            "_freeze_approved_expert_revision",
+            AsyncMock(return_value=SimpleNamespace(
+                id=2,
+                revision_no=2,
+                revision_type="expert",
+                parent_revision_id=1,
+                checksum="a" * 64,
+                actor_id=None,
+                actor_type="expert",
+                validation_summary={"status": "passed"},
+                created_at=published_at,
+            )),
+        ),
         patch.object(admin, "_publish_kbd_revision", AsyncMock(return_value={"revision": 1})),
     ):
         response = await admin.approve_kbd_entry(
             request=MagicMock(),
             kbd_id=7,
-            body=admin.KbdApproveRequest(reviewer_id=1),
+            body=admin.KbdApproveRequest(reviewer_id=1, lock_version=4),
         )
 
     statement, params = write_session.execute.await_args.args
@@ -89,6 +105,8 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
     assert "embedding_content_hash = NULL" in sql
     assert "embedding_updated_at = NULL" in sql
     assert "to_tsvector('simple', :tsv_text)" in sql
+    assert "lock_version = :expected_lock_version" in sql
+    assert params["expected_lock_version"] == 4
     assert params["tsv_text"] == "虚拟机 镜像 异常"
     assert response.embedding_generated is False
     write_session.commit.assert_awaited_once()
