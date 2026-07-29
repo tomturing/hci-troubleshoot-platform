@@ -41,6 +41,7 @@ def _load_registry():
 
 def _main() -> int:
     import importlib.util
+
     import jsonschema
 
     # gen-schemas.py 文件名含连字符，无法直接 import，用 importlib 动态加载
@@ -77,8 +78,8 @@ def _main() -> int:
                     "args": {
                         "resource_keyword": "vgpu",
                         "host": "asv",
-                        "file": "/var/log/x.log",
-                        "time_window": "-1h",
+                        "file": "sfvt_vtpdaemon.log",
+                        "path": "/sf/log/today/",
                         "timeout": 10,
                     },
                 },
@@ -109,6 +110,21 @@ def _main() -> int:
         "acquire.args 幽灵字段 bogus": {
             "schema_version": 2,
             "signals": [{"acquire": {"tool": "qkv_task", "args": {"keyword": "k", "bogus": 1}}}],
+        },
+        "qfk_log file 混入目录路径": {
+            "schema_version": 2,
+            "signals": [
+                {
+                    "acquire": {
+                        "tool": "qfk_log",
+                        "args": {
+                            "resource_keyword": "vgpu",
+                            "file": "/sf/log/today/sfvt_vtpdaemon.log",
+                            "path": "/sf/log/today/",
+                        },
+                    }
+                }
+            ],
         },
     }
     for name, doc in invalid_cases.items():

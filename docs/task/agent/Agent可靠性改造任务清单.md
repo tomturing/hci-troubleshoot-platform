@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-29 | v3.37 | **HCI/aCLI 实机契约审计与 PR #641 CI 收敛**：完成 HCI 6.11.1_R1 + aCLI 1.0.0 的只读知识采集；修复 Signal Schema 合法 fixture 的 `file/path` 旧写法并增加完整路径反例；形成日志、blackbox、配置、数据、补丁、容器、设备 manifest、自观测污染与能力漂移基线。运行语义改造在用户确认后分 P0-P4 实施。关联：[HCI底层目录日志容器与aCLI知识基线](../../solution/agent/02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
 | 2026-07-29 | v3.36 | **Terminal Bridge 真实入口 P0 修复**：删除普通 Markdown `CommandBlock → ssh_input` 自动执行旁路；S0 在 LLM 前拒绝显式命令执行请求并阻断无工具证据的伪造输出；Alloy 固化资源、探针、指标抓取与流水线告警。状态：自动化回归已启动，真实 S1/ReAct 正向与 S0/Markdown 负向验收通过前不得宣称完整可观测，也不得进入 hci-sim。 |
 | 2026-07-28 | v3.35 | **KBD 关键信号结果用户化与 ps 输出契约修正**：主报告改为检查说明/状态/结果/结构化产出，技术 ID 与原始输出留在审计层；golden chain 使用 `ps -p PID -o cmd=` 产出 CMD，并固定旧 PID include 会过滤 cmd 输出的反例。关联：[KBD关键信号结果展示与ps输出提取方案](../../solution/events/2026-07-28-KBD关键信号结果展示与ps输出提取方案.md) |
 | 2026-07-28 | v3.34 | **S0 分类稳定身份与原子推进**：修复工单 `Q2026072855923` 中 VM 名被当成分类、点击③却进入存储-020 的复合错误；Agent 候选与 active 分类交集，UI 回传 category code，Conversation 保留原 optionId 并原子提交 category/S1。关联：[S0 分类稳定身份协议与候选治理方案](../../solution/events/2026-07-28-S0分类稳定身份协议与候选治理方案.md) |
@@ -517,6 +518,28 @@ owner: team
 - [x] Grafana 看板展示实时工具成功率、幻觉检测趋势
 - [x] CI 回归评测可拦截明显降低可靠性的变更
 - [x] 每次 Agent 核心改动能看到幻觉率、工具成功率、路径偏差率变化
+
+---
+
+## HCI/aCLI 实机契约收敛任务（2026-07-29）
+
+权威事实与决策边界见 [HCI 底层目录、日志、容器与 aCLI 知识基线](../../solution/agent/02-架构设计/HCI底层目录日志容器与aCLI知识基线.md)。本任务坚持轻治理：先修确定错误，再用设备探测和确定性验证提高自动化，不增加双审或复杂审批状态机。
+
+| 阶段 | 任务 | 状态 | 验收标准 |
+|---|---|---|---|
+| CI | 将 qfk_log 合法 fixture 改为 basename `file` + 独立 `path` | 已完成 | `check_signal_schemas.py` 通过 |
+| CI | 增加 `file` 混入完整路径的非法反例 | 已完成 | 反例必须被 JSON Schema 拒绝 |
+| 文档 | 建立 `/sf/log`、blackbox、`/cfs`、`/sf/cfg`、`/sf/data`、补丁、容器和 aCLI 基线 | 已完成 | 事实、推论、建议与跨版本假设分层 |
+| P0 | qfk_log 路径规范化并按目标 aCLI 收紧允许根 | 待确认 | `..`、控制字符与越界根目录 Fail Closed |
+| P0 | 将相对事故时间转换为 aCLI 接受的绝对日期 | 待确认 | 不再向 `-t` 传 `-1h`/`now` |
+| P0 | 将无运行时数据源的 `qkv_dialog` 降级为 unsupported | 待确认 | UI、Prompt、Descriptor 与执行器状态一致 |
+| P0 | 风险分类纳入具体参数、设备 manifest 和历史解压副作用 | 待确认 | 未知命令不再默认 risk=1/auto |
+| P1 | 生成产品版本、aCLI 版本、manifest hash 的设备探测快照 | 待实施 | 可对比代码、数据库、设备与政策四层状态 |
+| P2 | 在现有工具/KBD 页面增加“探测、对比、只读验证” | 待实施 | 专家一屏修改并立即回放，无新增复杂工作流 |
+| P3 | 增加 blackbox、计数、阈值、范围、趋势 predicate | 待实施 | 不再用关键字搜索模拟数值/时间序列判断 |
+| P4 | 将专家字段级 diff 转为 validator、Prompt 与模型评测数据 | 待实施 | 只有执行回放通过的数据可升级为 Expert Gold |
+
+当前质量口径保持不变：126/126 真实来源完整；122 条为自动 LLM Proposal；4 条为 engineering Contract fixture；0/126 Expert Gold；0/126 正式业务专家批准；完整 Evidence/Execution Replay 尚未完成。
 
 ---
 
