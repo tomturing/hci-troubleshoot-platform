@@ -324,6 +324,29 @@ class TestHostIPResolution:
 class TestQFKProduces:
     """QFK 命令输出写入变量池，并作为无 matcher 信号的通过依据。"""
 
+    def test_signal_to_qfk_resolves_runtime_variables_before_handler_execution(self):
+        """QFK Handler 只能接收现场值，不能收到未解析的 ``{{VAR}}`` 模板。"""
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        step = KBDStep(
+            tool_name="qfk_system",
+            tool_args_template={
+                "host": "{{HOST}}",
+                "command": "ls -1 /proc/{{PID}}/fd",
+                "resource_keyword": "{{VM}}",
+            },
+            matcher={"type": "exists", "expected": True},
+        )
+
+        signal = diag._signal_to_qfk(
+            step,
+            {"HOST": "10.0.0.1", "PID": 4046749, "VM": "vm-01"},
+        )
+
+        assert signal is not None
+        assert signal.host == "10.0.0.1"
+        assert signal.command == "ls -1 /proc/4046749/fd"
+        assert signal.resource_keyword == "vm-01"
+
     def test_extracts_full_output_and_json_paths(self):
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
         ok, error = diag._fill_pool_from_qfk(
@@ -366,7 +389,7 @@ class TestQFKProduces:
         assert error is None
         assert pre_matched is True
         assert diag._variable_pool["pid"] == "27123"
-        assert diag._evaluate_signal_outcome(signal, raw_output, error, pre_matched).value == "PASS"
+        assert diag._evaluate_signal_outcome(signal, raw_output, error, pre_matched).value == "SATISFIED"
 
     @pytest.mark.asyncio
     async def test_text_extract_is_forwarded_as_resolved_edge_row_filter(self, monkeypatch):
@@ -581,6 +604,34 @@ class TestDiagnoseLoop:
         assert any("未找到" in e.content for e in text_events)
 
     @pytest.mark.asyncio
+    async def test_unknown_contract_scope_stops_execution_and_remains_inconclusive(self):
+        candidate = make_kbd("scoped", [("tool_a", "__CONTAINS__:yes")])
+        candidate.verification_contract = {
+            "scope": {"products": ["HCI"]},
+            "evidence_policy": {"must": ["signal_001"]},
+        }
+        diag = KBDDiagnostic(ai_registry=make_registry_mock(), tool_executor=MagicMock())
+        diag._execute_acquirer = AsyncMock(return_value=("yes", None, None))
+
+        events = [
+            event
+            async for event in diag.diagnose(
+                candidates=[candidate],
+                env_context={},
+                session_id="scope-unknown",
+            )
+        ]
+
+        result = diag.get_result()
+        assert result is not None
+        assert result.conclusion_level == "INCONCLUSIVE"
+        assert result.candidate_states == {"scoped": "INCONCLUSIVE"}
+        assert result.steps_executed == []
+        diag._execute_acquirer.assert_not_awaited()
+        start = next(event for event in events if getattr(event, "stage", "") == "kbd_diag_start")
+        assert start.metadata["scope_states"] == {"scoped": "UNKNOWN"}
+
+    @pytest.mark.asyncio
     async def test_shared_acquisition_still_evaluates_each_kbd_signal(self):
         """相同采集只执行一次，但每篇 KBD 的 signal 必须独立求值。"""
         tool_executor = make_tool_executor({"tool_a": "output"})
@@ -609,7 +660,7 @@ class TestDiagnoseLoop:
         # 同一次 acquisition 只实际执行一次，但每篇 KBD 的 signal 必须独立求值。
         assert len(result.steps_executed) == 2
         assert {step.tool_name for step in result.steps_executed} == {"tool_a"}
-        assert all(step.outcome.value == "PASS" for step in result.steps_executed)
+        assert all(step.outcome.value == "SATISFIED" for step in result.steps_executed)
         assert len({step.exec_id for step in result.steps_executed}) == 1
         assert len({step.evaluation_id for step in result.steps_executed}) == 2
 
@@ -988,7 +1039,7 @@ class TestEvidenceGatedCDD:
         assert [step.signal_id for step in result.steps_executed] == ["sig_001", "sig_002", "sig_003"]
         assert len({step.exec_id for step in result.steps_executed}) == 3
         assert len({step.evaluation_id for step in result.steps_executed}) == 3
-        assert all(step.outcome.value == "PASS" for step in result.steps_executed)
+        assert all(step.outcome.value == "SATISFIED" for step in result.steps_executed)
         assert "参考案例 27123" in result.diagnosis_report
         assert "category_id=27123" in result.diagnosis_report
         tool_calls = [event for event in events if getattr(event, "stage", "") == "tool_call"]
@@ -1232,16 +1283,26 @@ class TestEvidenceGatedCDD:
             signal_id="sig_004",
             outcome=SignalOutcome.BLOCKED,
         )
+        not_applicable_step = StepResult(
+            tool_name="qfk_hardware",
+            tool_args={"instruction": "检查物理 GPU"},
+            raw_output=None,
+            error=None,
+            signal_id="sig_005",
+            outcome=SignalOutcome.NOT_APPLICABLE,
+        )
 
         report = "\n".join(
             [
                 KBDDiagnostic._format_step_evidence(error_step, 1),
                 KBDDiagnostic._format_step_evidence(blocked_step, 2),
+                KBDDiagnostic._format_step_evidence(not_applicable_step, 3),
             ]
         )
 
         assert "命令没有返回可用于提取变量的内容" in report
         assert "缺少前置步骤产出的变量" in report
+        assert "不适用于当前产品、版本、组件或拓扑" in report
         assert "`HOST`" in report and "`PID`" in report
         assert "no pwd entry" not in report
         assert "internal-exec-id" not in report

@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft7Validator, ValidationError
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT7
+from shared.schemas.acquirer_args import validate_acquire_args
 
 _SIGNALS_DIR = Path(__file__).resolve().parent / "signals"
 
@@ -44,6 +46,63 @@ def validate_signals_json(raw: Any) -> None:
     """
     Draft7Validator(_SIGNAL_V2_SCHEMA, registry=_REGISTRY).validate(raw)
     _validate_qfk_match_or_produces(raw)
+    _validate_runtime_acquire_args(raw)
+    _validate_verification_contract(raw)
+
+
+def _validate_runtime_acquire_args(raw: Any) -> None:
+    """Close the save-time/runtime gap for semantic QKV/QFK arguments."""
+
+    if not isinstance(raw, dict):
+        return
+    for index, signal in enumerate(raw.get("signals") or []):
+        if not isinstance(signal, dict):
+            continue
+        acquire = signal.get("acquire") or {}
+        tool = str(acquire.get("tool") or "")
+        ok, error = validate_acquire_args(tool, acquire.get("args") or {})
+        if not ok:
+            raise ValidationError(f"signals[{index}] 运行时参数不可编译: {error}")
+
+
+def validate_publishable_signals_json(raw: Any) -> None:
+    """发布门禁：在结构契约之上强制稳定、非空且唯一的 signal id。"""
+    validate_signals_json(raw)
+    signals = raw.get("signals") if isinstance(raw, dict) else None
+    seen: set[str] = set()
+    for index, signal in enumerate(signals or []):
+        signal_id = str(signal.get("id") or "").strip() if isinstance(signal, dict) else ""
+        if not signal_id:
+            raise ValidationError(f"signals[{index}] 缺少稳定 id，禁止发布")
+        if signal_id in seen:
+            raise ValidationError(f"signal id 重复，禁止发布: {signal_id}")
+        seen.add(signal_id)
+
+
+def _validate_verification_contract(raw: Any) -> None:
+    if not isinstance(raw, dict) or not isinstance(raw.get("verification_contract"), dict):
+        return
+    signals = raw.get("signals") or []
+    known_ids = {
+        str(signal.get("id"))
+        for signal in signals
+        if isinstance(signal, dict) and signal.get("id")
+    }
+    policy = raw["verification_contract"].get("evidence_policy") or {}
+    assigned: dict[str, str] = {}
+    for role in ("must", "should", "exclude", "context"):
+        for signal_id in policy.get(role) or []:
+            if signal_id not in known_ids:
+                raise ValidationError(f"verification_contract.{role} 引用了不存在的 signal_id: {signal_id}")
+            if signal_id in assigned:
+                raise ValidationError(
+                    f"verification_contract 中 signal_id={signal_id} 同时属于 {assigned[signal_id]} 和 {role}"
+                )
+            assigned[signal_id] = role
+    if signals and not (policy.get("must") or []):
+        raise ValidationError("verification_contract.evidence_policy.must 至少需要 1 条必要信号")
+    if int(policy.get("minimum_should", 0)) > len(policy.get("should") or []):
+        raise ValidationError("verification_contract.minimum_should 超过 should 信号数量")
 
 
 def _validate_qfk_match_or_produces(raw: Any) -> None:
@@ -82,3 +141,15 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
             raise ValidationError(
                 f"signals[{index}] 的 {tool} 必须且只能配置“关键字判定(match)”或“产出变量(orchestrate.produces)”之一"
             )
+        if tool == "qfk_log" and (not has_match or matcher.get("type") != "keyword"):
+            raise ValidationError(
+                f"signals[{index}] 的 qfk_log 必须使用 keyword matcher；运行时以 match.pattern 构建日志检索关键字"
+            )
+        if isinstance(matcher, dict) and matcher.get("type") == "regex":
+            pattern = matcher.get("pattern")
+            try:
+                re.compile(pattern)
+            except (re.error, TypeError) as exc:
+                raise ValidationError(
+                    f"signals[{index}] 的 regex pattern 非法: {exc}"
+                ) from exc

@@ -5,6 +5,7 @@ tests/unit/kbd/test_converter.py — kbd/converter.py 单元测试
   - _parse_sections：从 HTML 解析 9 个 section（真实 DOM 结构）
   - _is_empty_content：空内容检测（空格/空标签/None）
   - _build_image_seq_map：按全局顺序建立 img URL → {"seq": int} 映射（不再读取 .desc.txt）
+  - _extract_image_context：在原始章节语义文本中稳定提取截图前后文
 
 说明：
   legacy 旧路径（convert_kbd / convert_kbd_with_meta / _html_to_md /
@@ -147,3 +148,30 @@ class TestBuildImageSeqMap:
             from kbd.converter import _build_image_seq_map
 
             assert _build_image_seq_map(html) == {}
+
+
+class TestExtractImageContext:
+    """测试截图上下文在 IMPORT 阶段确定性提取。"""
+
+    def setup_method(self):
+        from kbd.converter import _extract_image_context
+
+        self.fn = _extract_image_context
+
+    def test_extracts_context_on_both_sides(self):
+        before, after = self.fn(
+            "步骤一：编辑显卡核心。\n![img:3]\n弹框提示设置显卡切分方式失败。",
+            3,
+        )
+
+        assert before == "步骤一：编辑显卡核心。"
+        assert after == "弹框提示设置显卡切分方式失败。"
+
+    def test_removes_other_image_placeholders(self):
+        before, after = self.fn("前文 ![img:1] 中间 ![img:2] 后文", 2)
+
+        assert before == "前文 中间"
+        assert after == "后文"
+
+    def test_missing_placeholder_has_empty_context(self):
+        assert self.fn("没有目标截图", 9) == ("", "")

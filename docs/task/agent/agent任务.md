@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-07-27
+last_updated: 2026-07-29
 owner: team
 update_trigger: Agent 层功能新增/重构/问题修复任务
 ---
@@ -15,6 +15,9 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-07-29 | v2.0 | 完成 222/222 Vision Evidence 终审与 Agent 推断硬隔离；Signal Prompt 升级 v1.3/revision 8，补齐 rejected candidates、零信号 needs_review、保存时运行语义门禁、安全日志 basename 和诊断/处置 Contract 归一；新增 126 条分层验证报告 | [KBD截图证据与可执行诊断契约实施任务](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
+| 2026-07-29 | v1.9 | 原 39 条扩展为 126 条真实语料；126/126 来源、222 张图片与 52 条零图完整性通过；修复抓取失败标记、数据库 DSN 方言和 Vision Prompt 漂移，新增事实/推断分层质量门禁；当前 4/126 工程 Gold，专家审批仍未完成 | [KBD截图证据与可执行诊断契约实施任务](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
+| 2026-07-28 | v1.7 | 完成 KBD 截图证据、信号抽取与案例自动验证的现状审计，确认关键信号为必要原子层，并规划 Evidence/Compiler/Replay/Case Verification Contract 分阶段实施 | [KBD截图证据与可执行诊断契约实施任务](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
 | 2026-07-27 | v1.6 | 完成 KBD 三信号执行闭环：显式 QKV acquisition、QFK 边缘筛选、工具事件协议与持久化、保存/运行双门禁、KBD 27123 revision 17 | [KBD27123三信号执行闭环任务](../events/2026-07-27-KBD27123三信号执行闭环任务.md) |
 | 2026-07-25 | v1.5 | **检索 query 提炼优化（PR #616）**：`InvestigationAgent._build_retrieval_query` 过滤 S0 控制符（`①`/`继续`等），支持提取首条真实用户主诉症状 | [2026-07-25-KBD向量搜索失效根因分析与修复](../../verify/events/2026-07-25-KBD向量搜索失效根因分析与修复.md) |
 | 2026-06-21 | v1.4 | Skill 调用失效修复（PR #475）：实施分层改进方案 — P0（preferred_next_steps 嵌入 sop_advance/get_sop_node 返回体）+ P1（软推荐门禁层 skill_call/tool_call）+ P2（S0/S1 系统提示词变量采集规范） | [skill调用失效根因分析与改进方案](../../solution/agent/skill调用失效根因分析与改进方案.md) |
@@ -29,6 +32,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 状态 | 任务 | 创建日期 | 关联方案 |
 |------|------|---------|---------|
+| 进行中（核心闭环与 126/126 来源完成；4/126 工程 Gold；专家审批待完成） | [KBD 截图证据与可执行诊断契约](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) | 2026-07-28 | [系统级方案](../../solution/agent/events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
 | ✅ 已完成 | KBD 27123 三信号执行闭环与 39 MB 大输出边缘筛选 | 2026-07-27 | [KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md) |
 | 进行中 | [Agent 可靠性改造（4 阶段）](./Agent可靠性改造任务清单.md) | 2026-06-08 | [Agent 可靠性三方案对比分析](../../solution/agent/Agent可靠性三方案对比分析.md) |
 | ✅ 已完成 | Skill 调用失效修复（PR #475）：变量门禁盲区 + preferred_next_steps 引导 + 系统提示词规范 | 2026-06-20 | [skill调用失效根因分析与改进方案](../../solution/agent/skill调用失效根因分析与改进方案.md) |

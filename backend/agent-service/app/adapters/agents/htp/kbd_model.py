@@ -82,6 +82,8 @@ class KBD(BaseModel):
     type: str = ""
     signals: list[dict] = Field(default_factory=list)  # v2 嵌套信号集合
     resource_revision: dict = Field(default_factory=dict)
+    verification_contract: dict = Field(default_factory=dict)
+    generation_metadata: dict = Field(default_factory=dict)
 
 
 def kbd_from_dict(d: dict[str, Any]) -> KBD:
@@ -91,10 +93,20 @@ def kbd_from_dict(d: dict[str, Any]) -> KBD:
     支持兼容 DB 原始列 dict 形态 {"schema_version": 2, "signals": [...]} 与标准 list 数组。
     """
     signals = d.get("signals", [])
+    verification_contract = (
+        d.get("verification_contract")
+        or d.get("case_verification_contract")
+        or {}
+    )
     if isinstance(signals, dict):
+        verification_contract = signals.get("verification_contract") or verification_contract
+        generation_metadata = signals.get("generation_metadata") or d.get("generation_metadata") or {}
         signals = signals.get("signals", [])
     elif not isinstance(signals, list):
         signals = []
+        generation_metadata = d.get("generation_metadata") or {}
+    else:
+        generation_metadata = d.get("generation_metadata") or {}
     return KBD(
         id=d.get("id", ""),
         support_id=str(d.get("support_id", "") or ""),
@@ -106,4 +118,6 @@ def kbd_from_dict(d: dict[str, Any]) -> KBD:
         type=d.get("type", ""),
         signals=signals,
         resource_revision=d.get("resource_revision") or {},
+        verification_contract=verification_contract,
+        generation_metadata=generation_metadata,
     )

@@ -215,6 +215,10 @@ uv run python -m data-pipeline.kbd.run vision --ids 26890
 uv run python -m data-pipeline.kbd.run vision --excel --failed-only
 ```
 
+`--failed-only` 只重试缺 Evidence、空描述或 `partial/low_quality/failed/needs_review`
+状态的可重试抽取。`status=success` 且仅 `needs_review=true` 的图片已经完成可观察事实
+抽取，会留在人工审核队列而不会无限重跑；典型例子是无法可靠归入 UI 类型的物理设备照片。
+
 **输出：**
 - 不再写入本地文件。Vision 描述（desc）由后端 `reanalyze-images` 异步填充到
   `kbd_entry.images_json[].desc`；原始图片二进制已随 IMPORT 原子写入 `kbd_image` 表。
@@ -348,13 +352,15 @@ uv run python -m data-pipeline.kbd.run config
 #### Stage 2: vision（图片语义化）
 
 **输入：**
-- `cache/{support_id}/img_N.png`
+- IMPORT 原子写入的 `kbd_image.image_data`
+- `images_json[].context_before/context_after/section`
 
 **处理：**
-1. 读取本地图片文件
-2. 压缩（>500KB 自动压缩）
-3. 调用 Vision LLM（qwen3.5-plus）
-4. 解析输出为结构化字段
+1. 从数据库读取原图，不依赖 Pipeline 本地文件系统
+2. 2 MB 以下保持原字节；超限时 PNG 无损优先、JPEG 质量 90；超长文字图重叠 Tile
+3. 调用 `VISION_MODEL` 指定的 Vision LLM
+4. 解析输出并构建区分 Observed Facts/Inferences 的 Evidence IR
+5. 可观察事实与自由语义推断分别标质量；因果/根因断言进入风险复核
 
 **输出：**
 - 不再写入本地文件；描述由后端 reanalyze 填充到 `kbd_entry.images_json[].desc`
@@ -363,10 +369,10 @@ uv run python -m data-pipeline.kbd.run config
 
 | 字段 | 说明 |
 |------|------|
-| `TYPE` | 截图类型：终端截图/日志截图/告警截图/任务截图/其他截图 |
+| `TYPE` | 截图类型：终端/日志/告警/任务/弹框/配置/其他截图 |
 | `BACKGROUND` | 背景颜色：黑色/白色/其他 |
 | `FULL_TEXT` | OCR 文本（如有） |
-| `DESCRIPTION` | 语义描述（供 RAG 检索） |
+| `DESCRIPTION` | 单模型语义 Proposal，仅供管理端审核；默认 unverified，不得作为事实或运行参数 |
 
 #### Stage 3: import（数据入库）
 
@@ -437,7 +443,7 @@ CREATE TABLE kbd_entry (
     images_json         JSONB DEFAULT '[]',              -- 图片视觉描述列表
     
     -- 双通道数据
-    content_md          TEXT,                            -- Markdown（含视觉描述）
+    content_md          TEXT,                            -- Agent Markdown；未验证 DESCRIPTION 隔离，只展开可观察截图文字
     content_raw         TEXT,                            -- 纯文本（去噪）
     
     -- 分类字段
@@ -489,10 +495,23 @@ CREATE TABLE kbd_image (
   {
     "seq": 0,
     "section": "steps_text",
-    "desc": "TYPE: 终端截图\nBACKGROUND: 黑色\nFULL_TEXT:\n- （无文字）\nDESCRIPTION:\n（无描述）"
+    "context_before": "执行以下命令确认进程占用",
+    "context_after": "根据输出中的 PID 继续排查",
+    "desc": "TYPE: 终端截图\nBACKGROUND: 黑色\nFULL_TEXT:\n- lsof ...\nDESCRIPTION:\n截图展示命令输出",
+    "evidence": {
+      "schema_version": 1,
+      "regions": [],
+      "quality": {"status": "success", "needs_review": false},
+      "provenance": {"image_sha256": "...", "vision_model": "..."}
+    }
   }
 ]
 ```
+
+`context_before/context_after` 在 IMPORT 阶段从章节语义文本中确定性提取；
+`evidence` 在 VISION 阶段写入，区分 OCR 可见事实与模型推断。`desc` 仅为展示兼容与管理端审核字段，
+不得作为新信号的唯一事实来源。`content_md` 对 unverified/needs_review/legacy 推断会剔除 DESCRIPTION，
+仅保留 TYPE/BACKGROUND/FULL_TEXT 和推断隔离提示；完整推断仍保留在 `images_json` 供专家审核。
 
 ---
 

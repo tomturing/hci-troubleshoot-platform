@@ -214,6 +214,21 @@ class TestFileWrite:
             parsed = json.loads(content)
             assert isinstance(parsed, dict)
 
+    def test_write_raw_clears_stale_fetch_failed(self, tmp_path, minimal_rows):
+        """权限或网络恢复后，成功抓取必须清除旧失败标记。"""
+        case_dir = tmp_path / "36156"
+        case_dir.mkdir()
+        failed_path = case_dir / "fetch.failed"
+        failed_path.write_text('{"error":"旧错误"}', encoding="utf-8")
+
+        with patch("kbd.fetcher.settings.KBD_CACHE_DIR", tmp_path):
+            from kbd.fetcher import _write_raw
+
+            _write_raw("36156", minimal_rows)
+
+        assert not failed_path.exists()
+        assert (case_dir / "raw.json").exists()
+
     def test_write_fetch_failed(self, tmp_path):
         with patch("kbd.fetcher.settings.KBD_CACHE_DIR", tmp_path):
             from kbd.fetcher import _write_fetch_failed

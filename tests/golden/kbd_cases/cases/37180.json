@@ -1,0 +1,24 @@
+{
+  "support_id": "37180",
+  "title_contains": "集群内同步基镜像失败",
+  "required_source_tokens": ["volume_worker-server.log", "Mkdir FileMkdir err", "activtiy error", "不支持ats"],
+  "minimum_images": 6,
+  "required_external_variables": ["STORAGE_PATH", "DEVICE"],
+  "replay_environment": {"product": "HCI", "components": ["迁移", "外置存储"], "topology": ["external_storage"]},
+  "signals_document": {
+    "schema_version": 2,
+    "signals": [
+      {"id": "migration_task", "role": "must", "acquire": {"tool": "qkv_task", "args": {"keyword": "同步基镜像", "is_failed": true, "limit": 1}}, "match": null, "orchestrate": {"phase": "diagnostic", "produces": [{"name": "HOST", "path": "host"}, {"name": "VM", "path": "vm"}], "requires": []}, "provenance": {"category": "frontend", "source_section": "alert_info", "source_refs": ["img:0", "img:1"]}},
+      {"id": "mkdir_activity_error", "role": "must", "acquire": {"tool": "qfk_log", "args": {"file": "volume_worker-server.log", "host": "{{HOST}}"}}, "match": {"type": "keyword", "pattern": "activity error", "mode": "or", "expected": true}, "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["HOST"]}, "provenance": {"category": "backend", "source_section": "steps_text", "source_refs": ["img:2"]}},
+      {"id": "storage_latency", "role": "should", "acquire": {"tool": "qfk_system", "args": {"command": "time ls {{STORAGE_PATH}}", "host": "{{HOST}}"}}, "match": {"type": "threshold", "aggregation": "duration_seconds", "operator": ">", "value": 5, "expected": true}, "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["HOST", "STORAGE_PATH"]}, "provenance": {"category": "backend", "source_section": "steps_text", "source_refs": ["img:3", "img:4"]}},
+      {"id": "ats_unsupported", "role": "must", "acquire": {"tool": "qfk_system", "args": {"command": "sg_raw -s 1024 -i /dev/zero {{DEVICE}} 89 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00", "host": "{{HOST}}"}}, "match": {"type": "keyword", "pattern": "Invalid command operation code", "mode": "or", "expected": true}, "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["DEVICE", "HOST"]}, "provenance": {"category": "backend", "source_section": "steps_text", "source_refs": ["img:5"]}}
+    ],
+    "verification_contract": {"schema_version": 1, "case_id": "37180", "scope": {"products": ["HCI"], "versions": [], "components": ["迁移", "外置存储"], "topology_constraints": ["external_storage"]}, "variables": {"STORAGE_PATH": {"type": "string"}, "DEVICE": {"type": "string"}}, "evidence_policy": {"must": ["migration_task", "mkdir_activity_error", "ats_unsupported"], "should": ["storage_latency"], "exclude": [], "context": [], "minimum_should": 1, "on_missing_must": "inconclusive"}}
+  },
+  "replay_scenarios": [
+    {"id": "positive", "expected_verdict": "confirmed", "outcomes": {"migration_task": "SATISFIED", "mkdir_activity_error": "SATISFIED", "storage_latency": "SATISFIED", "ats_unsupported": "SATISFIED"}},
+    {"id": "strong_negative", "expected_verdict": "rejected", "outcomes": {"migration_task": "SATISFIED", "mkdir_activity_error": "SATISFIED", "storage_latency": "SATISFIED", "ats_unsupported": "CONTRADICTED"}},
+    {"id": "unknown", "expected_verdict": "inconclusive", "outcomes": {"migration_task": "SATISFIED", "mkdir_activity_error": "UNKNOWN", "storage_latency": "SATISFIED", "ats_unsupported": "SATISFIED"}},
+    {"id": "error", "expected_verdict": "inconclusive", "outcomes": {"migration_task": "SATISFIED", "mkdir_activity_error": "SATISFIED", "storage_latency": "SATISFIED", "ats_unsupported": "ERROR"}}
+  ]
+}

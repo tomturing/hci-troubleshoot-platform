@@ -31,6 +31,45 @@ from sqlalchemy import BigInteger, Column, DateTime, Float, Integer, LargeBinary
 from sqlalchemy.dialects.postgresql import JSONB
 
 
+def _agent_safe_image_desc(item: dict[str, Any]) -> str:
+    """生成供 Agent/content_md 使用的截图文本，隔离未验证语义推断。
+
+    ``images_json`` 继续保留完整 DESCRIPTION 供管理端审核；content_md 只展开可观察
+    文字。旧数据没有 Evidence 质量契约，也按未验证处理，避免历史自由文本被当成事实。
+    """
+
+    desc = str(item.get("desc") or "").strip()
+    description_marker = "\nDESCRIPTION:\n"
+    if not desc or description_marker not in desc:
+        return desc
+    evidence = item.get("evidence")
+    quality = evidence.get("quality") if isinstance(evidence, dict) else {}
+    quality = quality if isinstance(quality, dict) else {}
+    inference_status = str(quality.get("inference_status") or "legacy_unverified")
+    inference_needs_review = bool(quality.get("inference_needs_review")) or inference_status in {
+        "unverified",
+        "needs_review",
+        "legacy_unverified",
+    }
+    if not inference_needs_review:
+        return desc
+
+    observed_part = desc.split(description_marker, 1)[0].rstrip()
+    return (
+        f"{observed_part}\n"
+        f"INFERENCE_STATUS: {inference_status}\n"
+        "INFERENCE_NOTICE: 模型语义描述未进入 Agent 文档；请仅使用 FULL_TEXT/Observed Facts。"
+    )
+
+
+def _image_desc_variants(item: dict[str, Any]) -> list[str]:
+    """返回可能出现在 content_md 中的新旧描述，供反向同步兼容。"""
+
+    raw = str(item.get("desc") or "").strip()
+    safe = _agent_safe_image_desc(item)
+    return list(dict.fromkeys(desc for desc in (raw, safe) if desc))
+
+
 def strip_markdown(text: str) -> str:
     """去除 Markdown 语法标记和图片占位符，返回干净纯净的纯文本内容。
 
@@ -226,11 +265,11 @@ class KbdEntry(Base):
         3. 如果不全为空：按照常规流程，遍历 8 大章节，将 ![img:N] 占位符替换为 images_json 中对应的
            > **【截图说明】** 视觉描述块，并拼接为完整的 Markdown 文档
         """
-        # 构建 seq → desc 快速查找表
+        # 构建 seq → Agent 安全 desc 快速查找表；完整推断仍保留在 images_json。
         img_desc: dict[int, str] = {}
         for item in self.images_json or []:
             seq = item.get("seq")
-            desc = item.get("desc", "")
+            desc = _agent_safe_image_desc(item)
             if seq is not None and desc:
                 img_desc[int(seq)] = desc
 
@@ -276,24 +315,24 @@ class KbdEntry(Base):
 
             for item in target_images_json:
                 seq = item.get("seq")
-                desc = item.get("desc", "")
-                if seq is not None and desc:
+                if seq is not None:
+                    for desc in _image_desc_variants(item):
                     # 构造 v2 格式引用块文本
-                    lines = desc.strip().split("\n")
-                    block_lines = ["> **【截图说明】**"]
-                    for line in lines:
-                        block_lines.append(f"> {line}" if line.strip() else ">")
-                    v2_block = "\n".join(block_lines)
+                        lines = desc.strip().split("\n")
+                        block_lines = ["> **【截图说明】**"]
+                        for line in lines:
+                            block_lines.append(f"> {line}" if line.strip() else ">")
+                        v2_block = "\n".join(block_lines)
 
-                    # 构造 v1 格式引用块文本
-                    v1_block = f"> **【截图说明】**：{desc.strip()}"
+                        # 构造 v1 格式引用块文本
+                        v1_block = f"> **【截图说明】**：{desc.strip()}"
 
-                    # 在 content_md 中正则替换掉这两种可能的旧引用块，还原回占位符
-                    pattern_v2 = re.compile(r"\n*\s*" + re.escape(v2_block) + r"\s*\n*")
-                    content_md, count = pattern_v2.subn(f"\n\n![img:{seq}]\n\n", content_md)
-                    if count == 0:
-                        pattern_v1 = re.compile(r"\n*\s*" + re.escape(v1_block) + r"\s*\n*")
-                        content_md = pattern_v1.sub(f"\n\n![img:{seq}]\n\n", content_md)
+                        # 同时兼容历史原始 DESCRIPTION 和新版 Agent 安全块。
+                        pattern_v2 = re.compile(r"\n*\s*" + re.escape(v2_block) + r"\s*\n*")
+                        content_md, count = pattern_v2.subn(f"\n\n![img:{seq}]\n\n", content_md)
+                        if count == 0:
+                            pattern_v1 = re.compile(r"\n*\s*" + re.escape(v1_block) + r"\s*\n*")
+                            content_md = pattern_v1.sub(f"\n\n![img:{seq}]\n\n", content_md)
 
             # 使用最新的图片说明展开所有的占位符
             return _expand_placeholders(content_md).strip()
@@ -315,24 +354,24 @@ class KbdEntry(Base):
         # 1. 结合 images_json，将 content_md 中的图片说明块还原回 ![img:seq] 占位符
         for item in self.images_json or []:
             seq = item.get("seq")
-            desc = item.get("desc", "")
-            if seq is not None and desc:
+            if seq is not None:
+                for desc in _image_desc_variants(item):
                 # 构造 v2 格式引用块文本
-                lines = desc.strip().split("\n")
-                block_lines = ["> **【截图说明】**"]
-                for line in lines:
-                    block_lines.append(f"> {line}" if line.strip() else ">")
-                v2_block = "\n".join(block_lines)
+                    lines = desc.strip().split("\n")
+                    block_lines = ["> **【截图说明】**"]
+                    for line in lines:
+                        block_lines.append(f"> {line}" if line.strip() else ">")
+                    v2_block = "\n".join(block_lines)
 
-                # 构造 v1 格式引用块文本
-                v1_block = f"> **【截图说明】**：{desc.strip()}"
+                    # 构造 v1 格式引用块文本
+                    v1_block = f"> **【截图说明】**：{desc.strip()}"
 
-                # 在 content_md 中正则替换掉这两种可能的旧引用块，还原回占位符
-                pattern_v2 = re.compile(r"\n*\s*" + re.escape(v2_block) + r"\s*\n*")
-                content_md, count = pattern_v2.subn(f"\n\n![img:{seq}]\n\n", content_md)
-                if count == 0:
-                    pattern_v1 = re.compile(r"\n*\s*" + re.escape(v1_block) + r"\s*\n*")
-                    content_md = pattern_v1.sub(f"\n\n![img:{seq}]\n\n", content_md)
+                    # 在 content_md 中正则替换掉这两种可能的旧引用块，还原回占位符
+                    pattern_v2 = re.compile(r"\n*\s*" + re.escape(v2_block) + r"\s*\n*")
+                    content_md, count = pattern_v2.subn(f"\n\n![img:{seq}]\n\n", content_md)
+                    if count == 0:
+                        pattern_v1 = re.compile(r"\n*\s*" + re.escape(v1_block) + r"\s*\n*")
+                        content_md = pattern_v1.sub(f"\n\n![img:{seq}]\n\n", content_md)
 
         # 2. 按 ## 标题 切分文本并填充到各个字段
         section_map = {
@@ -396,6 +435,8 @@ class KbdEntry(Base):
             images_json.append({
                 "seq": seq,
                 "section": "steps_text",  # 默认归属排障步骤
+                "context_before": "",
+                "context_after": "",
                 "desc": "",  # 占位，等待 Vision LLM 填充
             })
 

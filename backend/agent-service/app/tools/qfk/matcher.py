@@ -168,7 +168,13 @@ def evaluate_matcher(
         )
 
     if mtype == "threshold":
-        val = _extract_number(text)
+        aggregation = str(matcher.get("aggregation") or "first_number")
+        if aggregation == "line_count":
+            val = float(sum(1 for line in (text or "").splitlines() if line.strip()))
+        elif aggregation == "duration_seconds":
+            val = _extract_duration_seconds(text)
+        else:
+            val = _extract_number(text)
         target = matcher.get("value")
         op = matcher.get("operator", ">")
         if val is None or target is None:
@@ -183,9 +189,15 @@ def evaluate_matcher(
         matched = cmp if expected else not cmp
         return MatcherResult(
             matched=matched,
-            detail={"hit": cmp, "value": val, "target": target, "operator": op},
+            detail={
+                "hit": cmp,
+                "value": val,
+                "target": target,
+                "operator": op,
+                "aggregation": aggregation,
+            },
             evidence=(
-                f"【Matcher 求值 (threshold)】\n提取数值: {val} {op} {target}\n"
+                f"【Matcher 求值 (threshold/{aggregation})】\n提取数值: {val} {op} {target}\n"
                 f"比较结果: {cmp}\n期望 expected: {expected}\n最终判定: {matched}"
             ),
         )
@@ -243,13 +255,23 @@ def _extract_number(text: str) -> float | None:
     """从文本中提取首个数值（支持整数/小数/负数/百分号）。"""
     if not text:
         return None
-    m = re.search(r"-?\d+(?:\.\d+)?", text)
-    if not m:
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not match:
         return None
     try:
-        return float(m.group(0))
+        return float(match.group(0))
     except ValueError:
         return None
+
+
+def _extract_duration_seconds(text: str) -> float | None:
+    """解析 POSIX ``time`` 的 ``real 0m21.615s``，不受路径中数字干扰。"""
+
+    match = re.search(r"(?m)^real\s+(?:(\d+)m)?(\d+(?:\.\d+)?)s\s*$", text or "")
+    if not match:
+        return None
+    minutes = float(match.group(1) or 0)
+    return minutes * 60 + float(match.group(2))
 
 
 def _compare_threshold(val: float, target: float, op: str) -> bool | None:

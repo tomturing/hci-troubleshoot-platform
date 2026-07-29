@@ -27,7 +27,28 @@
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
+
+# ``acli log get -f`` 的安全边界是 basename 字符集，而不是扩展名。真实 HCI
+# 证据包含 messages、*.ini、BMC_Event_Log 及带 {{VAR}} 的动态 basename。
+SAFE_LOG_FILE_PATTERN = (
+    r"^(?:[A-Za-z0-9_.-]|\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\})+$"
+)
+ALLOWED_LOG_PATH_PREFIXES = ("/sf/log/", "/sf/logs/", "/sf/data/", "/sf/datanew/")
+ILLEGAL_COMMAND_CHARS = frozenset("|#;&`$<>{}\n\r")
+VALID_SERVICE_CONTAINERS = frozenset({
+    "asv", "dsv", "csv", "mpv", "drv", "fdv", "ssv", "msv", "osv",
+    "csf", "csw", "gpuv",
+})
+_PLACEHOLDER_RE = re.compile(r"\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\}")
+
+
+def _contains_illegal_command_chars(value: str) -> bool:
+    """Reject shell control syntax while allowing canonical ``{{VAR}}`` placeholders."""
+
+    without_placeholders = _PLACEHOLDER_RE.sub("VALUE", value)
+    return any(char in ILLEGAL_COMMAND_CHARS for char in without_placeholders)
 
 # ─── 公共参数：全局只定义一次 ───────────────────────────────────────────────────
 COMMON_ARGS: dict[str, dict[str, Any]] = {
@@ -108,10 +129,16 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                 "description": "资源/主题选择器（acli log get <topic>）；改名消歧，非匹配关键词",
             },
             "host": _TARGET_DIMENSIONS["host"],
-            "file": {"type": "string", "description": "日志文件名（acli -f）"},
+            "file": {
+                "type": "string",
+                "pattern": SAFE_LOG_FILE_PATTERN,
+                "description": "安全日志文件 basename（acli -f；禁止目录与控制字符，扩展名不限）",
+            },
             "path": _TARGET_DIMENSIONS["path"],
             "time_window": _TARGET_DIMENSIONS["time_window"],
         },
+        # LogKeywordHandler 无 file 无法构建 acli log get；关键字来自 match.pattern。
+        "required": ["file"],
     },
     "qfk_service": {
         "type": "object",
@@ -128,6 +155,8 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                 "description": "操作子命令（如 status/restart）",
             },
         },
+        # 运行时会确定性映射为 BackendSignal.service。
+        "required": ["resource_keyword"],
     },
     "qfk_system": {
         "type": "object",
@@ -150,6 +179,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                 "description": "执行位置；host 表示直接在宿主机执行",
             },
         },
+        "required": ["command"],
     },
     "qfk_vm": {
         "type": "object",
@@ -160,6 +190,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "虚拟机名选择器（可选）"},
         },
+        "required": ["command"],
     },
     "qfk_network": {
         "type": "object",
@@ -170,6 +201,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "网络资源名选择器（可选）"},
         },
+        "required": ["command"],
     },
     "qfk_storage": {
         "type": "object",
@@ -180,6 +212,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "存储资源名选择器（可选）"},
         },
+        "required": ["command"],
     },
     "qfk_hardware": {
         "type": "object",
@@ -190,6 +223,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "硬件资源名选择器（可选）"},
         },
+        "required": ["command"],
     },
     "qfk_platform": {
         "type": "object",
@@ -200,6 +234,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "平台资源名选择器（可选）"},
         },
+        "required": ["command"],
     },
 }
 
@@ -213,11 +248,6 @@ for _name, _tool_schema in ACQUIRER_ARGS_SCHEMA.items():
         "instruction",
         {"type": "string", "description": "信号语义说明（acli 调用的人类可读解释）"},
     )
-    # QFK 真实数据以扁平 host/resource/path/time_window 定位，不强约束 resource_keyword，
-    # 以免合法历史信号在保存校验时被 422（RFC §7：v2 契约容纳真实数据，
-    # additionalProperties:false 仍拒绝幽灵字段）。QKV 保留 keyword 必填。
-    if _name.startswith("qfk"):
-        _tool_schema["required"] = []
 
 # 工具词表（与 ACQUIRER_CATALOG 同源；供校验/前端下拉复用）
 SUPPORTED_TOOLS: list[str] = list(ACQUIRER_ARGS_SCHEMA.keys())
@@ -288,5 +318,26 @@ def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
             expected = props[k].get("type")
             if expected and not _check_type(v, expected):
                 return False, f"acquire.args.{k} 类型错误：期望 {expected}，实际 {type(v).__name__}"
+
+    # 与 Agent QFK Handler 同源的运行时语义门禁。结构合法并不代表命令一定可构建；
+    # 这些约束必须在保存 Proposal 前执行，不能等到现场调度才暴露。
+    if tool == "qfk_log":
+        file_name = str(args.get("file") or "")
+        if file_name in {"", ".", ".."} or not re.fullmatch(SAFE_LOG_FILE_PATTERN, file_name):
+            return False, f"acquire.args.file 必须是无目录、无控制字符的安全 basename：{file_name}"
+        path = str(args.get("path") or "")
+        if path and not path.startswith(ALLOWED_LOG_PATH_PREFIXES):
+            return False, f"acquire.args.path 只允许以下前缀: {ALLOWED_LOG_PATH_PREFIXES}"
+
+    if tool == "qfk_service":
+        container = str(args.get("container") or "asv")
+        if container not in VALID_SERVICE_CONTAINERS:
+            return False, f"acquire.args.container 非法: {container}"
+
+    if tool.startswith("qfk_"):
+        for field in ("command", "resource_keyword"):
+            value = args.get(field)
+            if isinstance(value, str) and _contains_illegal_command_chars(value):
+                return False, f"acquire.args.{field} 包含命令注入类非法字符"
 
     return True, None

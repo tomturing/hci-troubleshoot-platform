@@ -40,6 +40,21 @@ class TestPipelineImportable:
         assert hasattr(mod, "run_pipeline")
 
 
+class TestSignalDocumentStatus:
+    def test_requires_nonempty_signals_and_verification_contract(self):
+        from kbd.pipeline import _signal_document_status
+
+        assert _signal_document_status(None) == "failed"
+        assert _signal_document_status("not-json") == "failed"
+        assert _signal_document_status({"schema_version": 2, "signals": []}) == "needs_review"
+        assert _signal_document_status({"schema_version": 2, "signals": [{}]}) == "needs_review"
+        assert _signal_document_status({
+            "schema_version": 2,
+            "signals": [{"id": "s1"}],
+            "verification_contract": {"schema_version": 1},
+        }) == "done"
+
+
 # ─── #12 语义统一核心 _html_to_semantic_text ───────────────────────────────
 
 class TestHtmlToSemanticText:
@@ -132,11 +147,13 @@ class TestConvertKbdStructured:
             "recommendations",
         ):
             assert field in result
-        # images_json：seq/section/desc 三元组，desc 初始为空（VISION 阶段填充）
+        # images_json：章节、上下文与 desc；desc 初始为空（VISION 阶段填充）
         assert len(result["images_json"]) == 1
         img0 = result["images_json"][0]
         assert img0["seq"] == 0
         assert img0["section"] == "alert_info"  # 该图位于「告警信息」章节
+        assert "context_before" in img0
+        assert "context_after" in img0
         assert img0["desc"] == ""
         # 图片二进制随结构化数据返回（IMPORT 原子写入 kbd_image）
         assert len(result["images"]) == 1

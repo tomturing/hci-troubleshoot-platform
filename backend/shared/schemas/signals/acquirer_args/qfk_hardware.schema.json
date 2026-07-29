@@ -22,7 +22,9 @@
       "description": "信号语义说明（acli 调用的人类可读解释）"
     }
   },
-  "required": [],
+  "required": [
+    "command"
+  ],
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_hardware.schema.json",
   "title": "acquire.args for qfk_hardware"

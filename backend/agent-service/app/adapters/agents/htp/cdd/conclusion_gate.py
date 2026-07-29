@@ -26,7 +26,7 @@ def decide_conclusion(assessments: dict[str, CandidateAssessment]) -> Conclusion
         reason = "no supported candidate and required evidence remains unresolved"
     else:
         level = ConclusionLevel.NO_MATCH
-        reason = "all executable candidates were rejected by required FAIL evidence"
+        reason = "all executable candidates were rejected by CONTRADICTED must evidence"
     return ConclusionDecision(
         level=level,
         supported_ids=supported,

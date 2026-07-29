@@ -1,0 +1,1156 @@
+{
+  "schema_version": 2,
+  "suite": "kbd-executable-diagnosis",
+  "required_case_count": 126,
+  "source_cache_root": "data-pipeline/kbd/cache",
+  "cohorts": [
+    {
+      "name": "initial-hard-cases",
+      "case_count": 39
+    },
+    {
+      "name": "2026-07-29-expansion",
+      "case_count": 87
+    }
+  ],
+  "cases": [
+    {
+      "support_id": "27079",
+      "source_status": "available",
+      "raw_sha256": "cf989795a0624ed1756f0064df368412819d6ef915b3d62696302166661a828a",
+      "image_count": 3,
+      "image_set_sha256": "660df35ce7ccf6242d33b50975c200db1eeb82c7ac0aea8877e2bf75a8e8e76d",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "27123",
+      "source_status": "available",
+      "raw_sha256": "a643170c1888391869dfcfd8c50c8f64320327b78e28f45eb095868457f8ccda",
+      "image_count": 3,
+      "image_set_sha256": "7509e29d15c1299d8682afdf4df8da3f078673d849115f29eeb35045e64d8b64",
+      "annotation_status": "gold",
+      "review_status": "pending_expert",
+      "gold": "cases/27123.json"
+    },
+    {
+      "support_id": "27173",
+      "source_status": "available",
+      "raw_sha256": "b18f6f257e25401269951171026db98c9798457a46bb2bf4a00e44f3ce83b870",
+      "image_count": 3,
+      "image_set_sha256": "7c8a5b8e200db39a1e44d78b3d64754e067c69c379933aa5564f893ecf5acd23",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "27222",
+      "source_status": "available",
+      "raw_sha256": "389dea4341ea26d7799247a3bdd40b3dfe98929ead90c9213549fc78d84b449f",
+      "image_count": 7,
+      "image_set_sha256": "7d4d154a5f1dcfab5d86f1e83ad07fa6051c06c3305ce031d8d158719d7da32b",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "27653",
+      "source_status": "available",
+      "raw_sha256": "be62a4b6da8c013aaab3bafd346ab7be99ed0bc8f7a8304652e6791c96241393",
+      "image_count": 4,
+      "image_set_sha256": "dc61ae9ded41f24286c71b312023f2c46f9dffc4680ad1bb51208c65fe64748c",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "27736",
+      "source_status": "available",
+      "raw_sha256": "4e50e9ecb8d0c7c52655bd57d6cd4bf8e20431b338de35b31e13c52553c20f1f",
+      "image_count": 4,
+      "image_set_sha256": "7cd778334328f8100c7ad3e9ffe57220cecca63ba56078fb2d6034041c3bc932",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "28094",
+      "source_status": "available",
+      "raw_sha256": "b150d4afaaf1a6b913671afa2e140d066315346893976eac34bbb9e064389899",
+      "image_count": 3,
+      "image_set_sha256": "c31a570ca22cebe597d7af30a42a5d17bfbd8fc003fc1094d34f12cb9e65c6d9",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "28156",
+      "source_status": "available",
+      "raw_sha256": "ccf906b1d174e2057f8a06a6c01ec815b5f27daaa397d3e006a8af252f7bc3de",
+      "image_count": 5,
+      "image_set_sha256": "f684044b6c949c771f112e64ac66a577bdd5bef3498ee6b26503c598b6e7ceae",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "28177",
+      "source_status": "available",
+      "raw_sha256": "39db33756a859a5767e2034558a9c947b47349198a57f0709be5c898a898ff42",
+      "image_count": 4,
+      "image_set_sha256": "9625c28ad529f2f6ca06188f28aeb5b5315fcbaf16319ab783686b901e4f879d",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "28900",
+      "source_status": "available",
+      "raw_sha256": "d0f04453da609fdd81084b9b9096fd143a497e9ba2075b009fc801fe78ac2c40",
+      "image_count": 3,
+      "image_set_sha256": "66f73738a50a15bca8c1ac2292d65dfded8276e367d037c8d25e41ecf130e0a3",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "29294",
+      "source_status": "available",
+      "raw_sha256": "bc1d2102cb493bd8deefb669f5425f6d5bd6a136c5810901487d48e68e55038e",
+      "image_count": 1,
+      "image_set_sha256": "dbad2e67182df8e5e67fba86c223bbfab9ffc0644554ceaaef1f089766fe2416",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "29713",
+      "source_status": "available",
+      "raw_sha256": "6784a4d9d213868799b3c4473320c57ec6f9cc7ccbdd0d42d58bba4f0f3ecf87",
+      "image_count": 3,
+      "image_set_sha256": "ee14036b1ecee170969ff4a519116f61b52f4984d2c8dfdcdc77203942169849",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "30396",
+      "source_status": "available",
+      "raw_sha256": "4c6ed5c86655c180a9a85a13caa38535adb4474aaaeef2c9ff8f22ac9702ac2f",
+      "image_count": 2,
+      "image_set_sha256": "d8d211dc3bdab33cfc68e490f47a2f5024be7e00b181cb665950180aeaf94d34",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "30838",
+      "source_status": "available",
+      "raw_sha256": "f694a77af5ab49f5084b3131f65aa2b879f8179e6d522029699f1b24c7f0fbcd",
+      "image_count": 4,
+      "image_set_sha256": "b900a2b4d875d4e1967e917c086d140ca3ee3a94fd660215dd2462172c8f774e",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "30880",
+      "source_status": "available",
+      "raw_sha256": "6bbf781ee9872c04b360982a03587926543a59721c4e5f0ed6e5b30202802b85",
+      "image_count": 2,
+      "image_set_sha256": "7ba433eab2f792de070493647dbed2a2d42ce058ea4272fa748414ad725a9581",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "30884",
+      "source_status": "available",
+      "raw_sha256": "73535ee6d711f0d9ffd00ff00bd2620e6d19559246a18bd2395be347e7c61e8c",
+      "image_count": 6,
+      "image_set_sha256": "b2b43b5c03261281fbf09bb7018c633be984729c23eca6dcd213928566538ca7",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "32010",
+      "source_status": "available",
+      "raw_sha256": "cc026ab03961d425eaefb7aac7a05868f99c3754c13205fdc7a3af7d55710350",
+      "image_count": 8,
+      "image_set_sha256": "88f120f2297d7bc1c2b748800739ffdffd4bd07d1ec3b6a800f41b6d3fbd64a7",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "32300",
+      "source_status": "available",
+      "raw_sha256": "690287e5f5f94e740bc13958ee3c68722c427324c59adaf9489d357ca21110a3",
+      "image_count": 2,
+      "image_set_sha256": "0a37e6500d10f91eafdcf549d36715781c65e9a93af7a21dd886216b71b33e6c",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "33510",
+      "source_status": "available",
+      "raw_sha256": "2fed264b1097d06e58a94db54670f2a3f48164a14d753b6ae64e6fe7139a1c62",
+      "image_count": 4,
+      "image_set_sha256": "a07796db3d9410c352fecabc85c60ec8aaad688b5846e10db7a0fe8c6157ecaf",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "33882",
+      "source_status": "available",
+      "raw_sha256": "7df4a67541e32c7238f38cc02408d567545bba2fe613470346d80ca91f7a9a43",
+      "image_count": 2,
+      "image_set_sha256": "ad3566f622b9a0fcbce78564a2ebfcd4b37eaa6f1883ff4e547b202b8940d8cc",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "34094",
+      "source_status": "available",
+      "raw_sha256": "86eecc8e2b96ea5887bbd34a42d6c7a6e771d31b0569f3a5345ec90b8af9aaaa",
+      "image_count": 4,
+      "image_set_sha256": "9fb416922f0888fcc92b22df017002bad331b3f2049a7480907d402dd8820300",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "34164",
+      "source_status": "available",
+      "raw_sha256": "d330ccdc1b3ae5e3c77edcbaa5754a6117243626340ed501b42fa17e3bc89775",
+      "image_count": 5,
+      "image_set_sha256": "ecfce48e449e91161152fc362e6b5f92180486a7b4007b6fd10c11b400041b23",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "34198",
+      "source_status": "available",
+      "raw_sha256": "e1fe2c2f25fd139ed8ce924d0013b716edcd70ad423926f26b0f6f68249c0b5f",
+      "image_count": 5,
+      "image_set_sha256": "b336c7ec5f5a63e46ffd5935db88c7ebb1452e8c8b1098ae86eef79714f83b6b",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "34220",
+      "source_status": "available",
+      "raw_sha256": "a006b1e40a092505dd16d3a16666aa681be9d18019dfdf04e448dacd07c0b7a3",
+      "image_count": 6,
+      "image_set_sha256": "9b1b7b52a9a6e5889b226300ad54d9860b7c46754eb93f23964a6f3adcdb97e0",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "34278",
+      "source_status": "available",
+      "raw_sha256": "38fec34285d16b5d83b91fcd966c772ffa8f0251c97e61c1e23914f8694d17c6",
+      "image_count": 5,
+      "image_set_sha256": "b6e87add24837597bbd1f836ad80eba70f92a1bb2bc8b479ed9db2b8175c25ec",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "34366",
+      "source_status": "available",
+      "raw_sha256": "0a6b1be2e0791ad96a075e3b5001074fa0617a8c1a33a5325d1904ebe3b48286",
+      "image_count": 2,
+      "image_set_sha256": "8dc5748e53292101ac6489d14de1fcd1119e7d1de4b8227868e8d5805ca076bb",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "34798",
+      "source_status": "available",
+      "raw_sha256": "ac085f4a53fbef76c741464de13a2b7cadde24ed6baf6695d4fb914a005b32a8",
+      "image_count": 3,
+      "image_set_sha256": "dd199afbd0d512537883a205f5985b756c433f4d64a227246f03e3835ae4024d",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "34825",
+      "source_status": "available",
+      "raw_sha256": "bccbbc10b669f5d682be51b65cfb917cade4defa16fa6d6505e5daefa3049ad7",
+      "image_count": 4,
+      "image_set_sha256": "968fcb94a8711d423e32725cdcb67571b117b58eced81ca17c0007d7c444b2e4",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "35986",
+      "source_status": "available",
+      "raw_sha256": "a22cebdece4a10b526a86016e5ba349077fdf214cad6e7440549c9cb41f997ce",
+      "image_count": 4,
+      "image_set_sha256": "709090c0809a95727fe373801fa7415e98a6d96f5d0ad3f132784aae5e9befc5",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "35988",
+      "source_status": "available",
+      "raw_sha256": "add075d3680fa510e0682249cdf19bf45bd47fea95ead6de4994ca763f942653",
+      "image_count": 2,
+      "image_set_sha256": "b2aeb0606bc38dbdb001bc1a28aa20f5a39ce3b0042a94334e8449b59d68e310",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "36130",
+      "source_status": "available",
+      "raw_sha256": "ff141d00f0e4c43b6eb0c3c90d222271c4e9407a411216d80ee4c18c132ad9af",
+      "image_count": 5,
+      "image_set_sha256": "798c67b5b75d0b9e0333713b63ee4219a666511d28f1a742caf87af0c5d25325",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "36154",
+      "source_status": "available",
+      "raw_sha256": "e2509f923017a557c7a4e0fb675dbcd42ea20758a4c6a386114abe3758de07ee",
+      "image_count": 2,
+      "image_set_sha256": "9f43c78251a51e37490753e2478fdb7bae2bee419becb95e5ede66b405956568",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "36348",
+      "source_status": "available",
+      "raw_sha256": "590dde06cc656b146cee0b27cc60271fcd8a04c17d4316932349ef589f416164",
+      "image_count": 7,
+      "image_set_sha256": "1ca69160432697ed8ad2db289fc092ab7a9106bec94f5ab380e33625f2ac1d6c",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "36599",
+      "source_status": "available",
+      "raw_sha256": "e8474864d8958602b9be2fc110c735181f43a0b10d166489ddad9e304285ae5a",
+      "image_count": 13,
+      "image_set_sha256": "01c0594148cadf599d59dbbd30037bd8581d8d8044732c347c334cf814584c92",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "36600",
+      "source_status": "available",
+      "raw_sha256": "ec0771660a1286f315bc12fb36373b920c0918033a5260c962e33cc339c59489",
+      "image_count": 9,
+      "image_set_sha256": "1138d0cf6241757b7c68d421319b75262bc2ad63fb167ed1f80bfa43f08b9cba",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "36646",
+      "source_status": "available",
+      "raw_sha256": "3d636b73a5eea12a95c5410daf6a20cc11bb67b32137b610d83f900353f61978",
+      "image_count": 4,
+      "image_set_sha256": "208aa5731c7073b23e6bfa27135772238aff4bba34ada02e3931326ff58cc3fe",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "37150",
+      "source_status": "available",
+      "raw_sha256": "b2cd67719c69752880a3953a6854a8f8a440c1fb47bf4f7f3b9fbfbf31ecfc83",
+      "image_count": 3,
+      "image_set_sha256": "142bb82494219fdc55e4db6e9cb25d95a24e30dd179200a4843ee04dcac4692e",
+      "annotation_status": "gold",
+      "review_status": "pending_expert",
+      "gold": "cases/37150.json"
+    },
+    {
+      "support_id": "37180",
+      "source_status": "available",
+      "raw_sha256": "8abf847b2e237cb51601499ea28603135ff90fd57c1944814353c02868192818",
+      "image_count": 6,
+      "image_set_sha256": "d40f4b87cc807af31bf4fc33b2ec90eb6075444477f54bf52a01e1eccbdb7b08",
+      "annotation_status": "gold",
+      "review_status": "pending_expert",
+      "gold": "cases/37180.json"
+    },
+    {
+      "support_id": "39436",
+      "source_status": "available",
+      "raw_sha256": "c25e78a4bfe46a17967cf685e2f13253062691514bcf4ee043f7f1578a67fdba",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39439",
+      "source_status": "available",
+      "raw_sha256": "c0db93f75640af3a7558753a6f63ad6648f0c5892bfe386e824eaa0b61b90879",
+      "image_count": 4,
+      "image_set_sha256": "660c1f0e25e08cf552a17d058f2eca2a681d2e0be0d3f9826097a22ae6273a44",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39441",
+      "source_status": "available",
+      "raw_sha256": "a9dc20baf0cc345c50e598fc8286fd19340772bb5d2cd658286b5010d7152484",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39443",
+      "source_status": "available",
+      "raw_sha256": "d53623c5e2f15143a8b0835d9e013134d706d3af9297cb0296f2ff71c17308eb",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39449",
+      "source_status": "available",
+      "raw_sha256": "4ac2e013ff1736edf9244c08819e0c768e1e79c428570aaf493520ce96db7d38",
+      "image_count": 1,
+      "image_set_sha256": "13fa191ca5a745fdd7303a5aee1ab5dc7d87455041aef1cdb48a8bf0a96f386e",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39454",
+      "source_status": "available",
+      "raw_sha256": "242ac6175ac360e07d73b2eb67e65281da16ae8fd0fc04e83858b5b056a85ec0",
+      "image_count": 1,
+      "image_set_sha256": "9cfbaeb228a78a8d8d6db211301ff9648984f75444c4b3245d0fa20b7729bfb1",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39460",
+      "source_status": "available",
+      "raw_sha256": "6b504a2738fb0892f124c1c612e8885122bb9f694ebb3e0ca768a30b86dffe81",
+      "image_count": 1,
+      "image_set_sha256": "9cfbaeb228a78a8d8d6db211301ff9648984f75444c4b3245d0fa20b7729bfb1",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39469",
+      "source_status": "available",
+      "raw_sha256": "8fa5685c46510f21ce24f8bd773f40d4fbda8942e3288fb215009f8b6b61ac6c",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39471",
+      "source_status": "available",
+      "raw_sha256": "6960da4349539b649c8137bb45d690f53769ded9a863e3d3d74bb10724d46048",
+      "image_count": 1,
+      "image_set_sha256": "905d518e69270b2552d01522c4009e741e761af03852d24e3063ed100ff6a62d",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39472",
+      "source_status": "available",
+      "raw_sha256": "c03d4f232d0995e650b2361a1b7eea5289f58568727ee75d6b76f78fdcdf789e",
+      "image_count": 1,
+      "image_set_sha256": "0e0fae1dc3e1205ebb5e742f462a311eba46fbef00af52cc55f9f4b68cb7f44e",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39475",
+      "source_status": "available",
+      "raw_sha256": "2ad165eb3c8e3032d85143e49612542824b49262de4f5bf446c5e1ed5d6f1dcd",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39476",
+      "source_status": "available",
+      "raw_sha256": "bc0a5bd043758c45725ba3bd22a673d3220e30b6df0ab82b27c40767b7beee4c",
+      "image_count": 2,
+      "image_set_sha256": "12251be39517e0d768bca9ee8d67d12c6539eb21595b3a2eda98cd7b90e20d5a",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39477",
+      "source_status": "available",
+      "raw_sha256": "6e4495c5e36ce673031f3a64cd6387937a514219a4566a257f65bd3e06173c40",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39478",
+      "source_status": "available",
+      "raw_sha256": "9f6ba5a12159e9140b70706e6b0ba463852d61d24b866f40b22bcdfbe37a7a0a",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39481",
+      "source_status": "available",
+      "raw_sha256": "6b64b0b749a82d1f11980d402e37fc9e3c56f4937e319f424ea1f9da3b1597cd",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39485",
+      "source_status": "available",
+      "raw_sha256": "7ae56002596d8a750b55adb2d9db43b666601fb00de2fb3f61118cde42a79d5d",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39489",
+      "source_status": "available",
+      "raw_sha256": "9b965b0c9c87e865b3450b02f79147c82ad7ac7aea666a5f28a4ae297eee07b9",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39491",
+      "source_status": "available",
+      "raw_sha256": "792ae9d1c4e3285f6a9675cd4626b9ee90651eb93e123f05f0db3a214fce8a20",
+      "image_count": 1,
+      "image_set_sha256": "1044a4363a6ad561384098f8f3657b1bafe2686e7af805ba5566bd90ed7f6a92",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39492",
+      "source_status": "available",
+      "raw_sha256": "a6c59d72537cc47111d3808dec59f36417abdf6551e23d15b313a6bfe77620a9",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39496",
+      "source_status": "available",
+      "raw_sha256": "42fbb07bf0af7c49fb7b271b50521ec57f9de4e9bf1b9a512314c00943b14a18",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39499",
+      "source_status": "available",
+      "raw_sha256": "877064a21595e06e0c5584e9701df7aff74788b11e64d23faf74684d3c02f3af",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39506",
+      "source_status": "available",
+      "raw_sha256": "fb1faa520bf1b75bb79afe7760d7882a4ced46252082000a69da7789537984f7",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39509",
+      "source_status": "available",
+      "raw_sha256": "adba4983bc3d8cc006fc004d700c741bf1a4ac990ffd4d81cd77f9a653cc796b",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39512",
+      "source_status": "available",
+      "raw_sha256": "516f966f0255df75ac2a1c2a07dbbe335de401ebff2d1675709513f5f50edea4",
+      "image_count": 2,
+      "image_set_sha256": "b6780b1a4cf3a69877200264c6decacb7652228ea85deb1457e9ec0885930cd2",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39516",
+      "source_status": "available",
+      "raw_sha256": "8308f94be507d639b5cb1f31629b8a3771c2d30e8b5845d3353c3965f3211c0b",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39517",
+      "source_status": "available",
+      "raw_sha256": "37754c9e01ac2661f53a960a896a0b44f16a3d34358963161c1945af0d19f8d0",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39519",
+      "source_status": "available",
+      "raw_sha256": "7a97877f081526b2ee090980b75ac4e9c83b20061e8d4a6a96dd2012458a7b8f",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39520",
+      "source_status": "available",
+      "raw_sha256": "a3bbaf27e284c465a4da6a8bf0f62388c119672110e4e807e4f017deac8be9ca",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39532",
+      "source_status": "available",
+      "raw_sha256": "43009cfa3968c412a65f2fa8dd4c2d3e834324c9204289f9682fa94db2c7b2ed",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39535",
+      "source_status": "available",
+      "raw_sha256": "d84569d124181b9abfeb6ef224aefcdab14ce1471e6b956caea7e0915c76714d",
+      "image_count": 1,
+      "image_set_sha256": "9cfbaeb228a78a8d8d6db211301ff9648984f75444c4b3245d0fa20b7729bfb1",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39537",
+      "source_status": "available",
+      "raw_sha256": "6a734caab244234b624b9416b15d610fa8c7cca7b7712ec5b4dec4bbe802ed4a",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39538",
+      "source_status": "available",
+      "raw_sha256": "31c3da145d7f23ab42a0f6c92bdf7783dc08c16c23ff51aab641d636d232e0bb",
+      "image_count": 2,
+      "image_set_sha256": "bb2dd25096c42c12ced1e6d14db1d6227f2a3765153e5dc06fce9bc6f0cefad4",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39542",
+      "source_status": "available",
+      "raw_sha256": "f81fec3e99ef352ca28cbdc2b1731c0f91cbccd06fb4487e23703d8124380ac9",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39547",
+      "source_status": "available",
+      "raw_sha256": "46a3eb8794a2a86a0909b8175f1d16acbbf5ab456c72d4fd3b41498ee45e8106",
+      "image_count": 1,
+      "image_set_sha256": "b0ab5cc44ef1c8a4eb2ce3df50a0d67f0581642ccfce9773a96ea5156dc54c7e",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39548",
+      "source_status": "available",
+      "raw_sha256": "6b2e4a1616528cef5a4925e51ea7e71042bb99690d7f97144cea224c1488bebc",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39552",
+      "source_status": "available",
+      "raw_sha256": "efc5d5298c5fda4daeff39a67f404912d0ee08d73a5b46da4281fbe805b31f47",
+      "image_count": 2,
+      "image_set_sha256": "6af19826d34c9579fc9d843c1a43d5c2442a36f1184426ccab81ef8b4bc1eb0d",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39553",
+      "source_status": "available",
+      "raw_sha256": "c0e33fc32ac10961cb38cef2b28ed2b6e16183764331747f5be1f0514b0a69e8",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39554",
+      "source_status": "available",
+      "raw_sha256": "30700d691e98292d66d33dcc722ebd2db6963dab9afd3df5a43bb6b96dfed2db",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39559",
+      "source_status": "available",
+      "raw_sha256": "168503228c235e86c7c7d28c17b19f56ac4ccd25f6d366d93361b6a0f75eeae8",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39564",
+      "source_status": "available",
+      "raw_sha256": "97473d97146b618ed1f72ca71a47be256fe2b39a3c0c4bfa35238bb64f3ea8aa",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39566",
+      "source_status": "available",
+      "raw_sha256": "a343fa7a49a22cd38b2478cb261e2300b9a12c9ff0a317aa50d8b92778128ead",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39567",
+      "source_status": "available",
+      "raw_sha256": "3c3f9f97f5a165e8f31952a6a94c05aab683fd64e1e784d87f5fbda0a57976f2",
+      "image_count": 1,
+      "image_set_sha256": "e9617f89a8bbaee124b036e910e183595317c2b3f92a448fbc67003b7bbdf653",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39570",
+      "source_status": "available",
+      "raw_sha256": "b31e97d291a0683359fc07aaa68434c445189a77bb241fec925b5f55f7188362",
+      "image_count": 1,
+      "image_set_sha256": "0dc5c2c2f4d86e4e31a06902119a9b1380d5b6d0b1b35904fb260f16e86f526b",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39574",
+      "source_status": "available",
+      "raw_sha256": "ee7f862c3da3e20030d7a23cb15cd9c2d8d92cc535a8dbe99b515e9bedf05bce",
+      "image_count": 1,
+      "image_set_sha256": "9cfbaeb228a78a8d8d6db211301ff9648984f75444c4b3245d0fa20b7729bfb1",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39577",
+      "source_status": "available",
+      "raw_sha256": "1fc5e5904457df164e3cd268fab65b424261c7d3cc11a39f7246469a4787c2d1",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39579",
+      "source_status": "available",
+      "raw_sha256": "d2a379d65dec98a2e857f2d0fa5de619e2818432a82d31595cb298638f92eb70",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39580",
+      "source_status": "available",
+      "raw_sha256": "526dd60f84f39cfae8e2b8393bd0c86d418244581f8197cea5288e85515c7189",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39581",
+      "source_status": "available",
+      "raw_sha256": "371ee796203d1329cfb56c5366b2e68f83ebc159349e02e1b67187243f1670a2",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39589",
+      "source_status": "available",
+      "raw_sha256": "1455b188065e441a11a9735e34725d7836774d5e03c65e0ee3f0616284f563b5",
+      "image_count": 1,
+      "image_set_sha256": "9cfbaeb228a78a8d8d6db211301ff9648984f75444c4b3245d0fa20b7729bfb1",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39591",
+      "source_status": "available",
+      "raw_sha256": "8d197a6f09334e9c20ce2ba3ca814c1eab1bf46417a20015aa3f307ad2bd6d37",
+      "image_count": 3,
+      "image_set_sha256": "be5b0c54363cb5665fc2249d5c3f01bb00de583760ed0fc470838bde3bc58ac6",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39593",
+      "source_status": "available",
+      "raw_sha256": "e362a15c5b21ea4eb54f11db9cccfcf08f3692ed5f48481e16643d3c0fe31692",
+      "image_count": 1,
+      "image_set_sha256": "c03bc7e3dffcde067c8a41e01725eeff4b309f2a1d7f0e1600f7ce9259aa9279",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39597",
+      "source_status": "available",
+      "raw_sha256": "15658db019dd3dc5d7e5745a5f58434b82133975a2dc9f1c919de24037ac4254",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39598",
+      "source_status": "available",
+      "raw_sha256": "03a9a56e5a4b90003dfc7a112cc97362922776174f45a5023ba7227031155180",
+      "image_count": 1,
+      "image_set_sha256": "541b1b892ae82a11bc7c7e157b1dad2d2f26d0bb315d80e3f47eb6da5f3d83ec",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39599",
+      "source_status": "available",
+      "raw_sha256": "33b9a8ad23a75ba03ebdd3fae550761d885435d0e05050904b863ab6cceef68e",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39615",
+      "source_status": "available",
+      "raw_sha256": "c7086839c432bdd99bc4ace341aa1688dd4f5445d1b6a1aa8a82b18c9342b110",
+      "image_count": 1,
+      "image_set_sha256": "f046f3192726a04e46307ef925b3589c4bbf60a6813429dba74b1a0f6869d2e0",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39623",
+      "source_status": "available",
+      "raw_sha256": "86e80b797a3917ecf618a78ccf39ff9623ae7f66ee5801c45acf528ca12f3618",
+      "image_count": 1,
+      "image_set_sha256": "ea1be26eb80481e94c4532f287812cc82c1568bafff84a0f756b4d24fc370550",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39627",
+      "source_status": "available",
+      "raw_sha256": "4816369e1575facd8c17775c506b0ae9ab87234d685b1124d08d6135c11b1dfd",
+      "image_count": 1,
+      "image_set_sha256": "9cfbaeb228a78a8d8d6db211301ff9648984f75444c4b3245d0fa20b7729bfb1",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39630",
+      "source_status": "available",
+      "raw_sha256": "fc8f96fdfd4e77babaf1ec52fd38f33497131340a673eba463b1880586d036dd",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39635",
+      "source_status": "available",
+      "raw_sha256": "c78445ae7fd3f2807316b1376bf9094117067a5b7f1fe673adf033419f32776d",
+      "image_count": 2,
+      "image_set_sha256": "58cefda2904cf7d84c3d5514c3b74821132948a66f44df062e85dfe8fb656344",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39637",
+      "source_status": "available",
+      "raw_sha256": "818f0a31937b982d23d1ad1155a70dd47f33cf3bbb628631c27cd5fa9ed4f37a",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39641",
+      "source_status": "available",
+      "raw_sha256": "b4a9cf112a7797bec8a843e0d59b1df544c98696be8ac856990d62a210036338",
+      "image_count": 3,
+      "image_set_sha256": "ec0bf84fb35eb744179f0c11d4b07bc899640205766d1837ebfe3615c251113f",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39643",
+      "source_status": "available",
+      "raw_sha256": "d82eb7efd092c0cb070aa81f6fc697cf20c20f1921d93a125018b69bc8f7ccd9",
+      "image_count": 1,
+      "image_set_sha256": "513ea603660861e217d36698d3e11fba02cb1dde9cd7280015009a7918d8fad3",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39651",
+      "source_status": "available",
+      "raw_sha256": "e45a139759a986e7402d7a65db5510b68230d8a285fc7e1030f1bca5270fa6fc",
+      "image_count": 1,
+      "image_set_sha256": "05b3292e1d3ebcd48cb1f9fde45b0f351d935211aff11445021542a3c7892b15",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39658",
+      "source_status": "available",
+      "raw_sha256": "0f3894733a1823ba46ead2aba571d14f2fe0e5df83c84101427f545d1e956736",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39662",
+      "source_status": "available",
+      "raw_sha256": "2c4cdb5186c1b9a9785a89d0e5760f7f0bcce94e8aeaae47499888f7c2e2ae21",
+      "image_count": 1,
+      "image_set_sha256": "9cfbaeb228a78a8d8d6db211301ff9648984f75444c4b3245d0fa20b7729bfb1",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39664",
+      "source_status": "available",
+      "raw_sha256": "8b888ba894e893a8e0714451f618fcfc5af46bfbf4a31e9c04722610b82c739e",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39666",
+      "source_status": "available",
+      "raw_sha256": "814d40ed6e65d75013cf9a6aad0cb699bc743025b81f3c8aa899d73d0fd29884",
+      "image_count": 2,
+      "image_set_sha256": "9e22f2b61bd7af22f6790a0a75b2b47c506da3cfa7f751d91c3122858f705b65",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39668",
+      "source_status": "available",
+      "raw_sha256": "1d49b9ee3b2f9ec2156b096f0023ce0c503753ffb1f39d0d56494b309172bbda",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39669",
+      "source_status": "available",
+      "raw_sha256": "d2a13386835e90683ad6e8e0da02a6cfc57473e36f84cbe43dc21af25c72cb29",
+      "image_count": 2,
+      "image_set_sha256": "7acd5108b37bcf1e6eec8ab316014089fa2e433b8394f7f9facc2600c46819b1",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39672",
+      "source_status": "available",
+      "raw_sha256": "0783ddc193c7614063efbb3e4598842f6078895b449933585005fa493816710e",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39681",
+      "source_status": "available",
+      "raw_sha256": "d160d8be8d59e0bb8c17367cb9e3f19fe61b529e714e4a5053693e3ecd76d95a",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39683",
+      "source_status": "available",
+      "raw_sha256": "94be5e232df5ee6fc9c451a655e2fda19ce10813d9515f83d74fff2ca7db4fca",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39690",
+      "source_status": "available",
+      "raw_sha256": "46d8ce1af704e2933df02f72a23ade218e3975d1f76d4ab7511bbf5695a48417",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39721",
+      "source_status": "available",
+      "raw_sha256": "1dc9b47df1a2906fcc99108214106692e49b34af5d7cc50e30dba3453da1334e",
+      "image_count": 2,
+      "image_set_sha256": "0b4e01820a05544a8980258011bc20dfa27f33fa06242409d369591373b78ea6",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39723",
+      "source_status": "available",
+      "raw_sha256": "967d3899f8d44c2f02087f0c917f569f458db6182cc7063fbe5fbc24e4f344e4",
+      "image_count": 1,
+      "image_set_sha256": "bc6d084392e5ee4a5aa08d2da5221b015e451a2c42b0b8ba9d8eca1b63891790",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39725",
+      "source_status": "available",
+      "raw_sha256": "6f96bcfaaae6ca09c641c654dce309c085173f9f3d5a89b16d3342233e317b68",
+      "image_count": 5,
+      "image_set_sha256": "6cf251739fd71dc8695349307d3eba1031dbf5b30c1e955ae104e1f70b9f7f8d",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39726",
+      "source_status": "available",
+      "raw_sha256": "d9474e0c6dfd120b608e856d377ee1e4ea3a0bdaad0072c7ea4a87d3cb6a831e",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39739",
+      "source_status": "available",
+      "raw_sha256": "b25b5125b973b7364613566bd7603847ba54509bb994bb9048dc1957f4facfff",
+      "image_count": 2,
+      "image_set_sha256": "85757b512da248cf39bacd0ee3867986ab00ac7dd2b14375adb7a9feb4ec0b33",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39740",
+      "source_status": "available",
+      "raw_sha256": "06d5ff5a9d4b2ef02cabcf5f658c00f00e03dafca967d9142f9fdd213ef57020",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39741",
+      "source_status": "available",
+      "raw_sha256": "e9ea8cbfe51e2f15a6f7c7d61a7a836a2a3fdaacfbe4a556bdb9b764319e1a2b",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39742",
+      "source_status": "available",
+      "raw_sha256": "cbf7e157b34ac5b56a95cb03e357cbbc6a2ee9d5afb20302ec401a60d2ed174d",
+      "image_count": 3,
+      "image_set_sha256": "d5182543048cecede7402010acff932feaf4b22b1a87e2457ef2fe172911ba64",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39745",
+      "source_status": "available",
+      "raw_sha256": "37c6e58acceb317d166c105dae542841e3e0af9b8dff58eb3581dbc702130e2a",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39749",
+      "source_status": "available",
+      "raw_sha256": "5ab9e2cc2accdb656fc046da77ba9960ef5edfcb82ca7e7df0d993556a9a6df6",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "39751",
+      "source_status": "available",
+      "raw_sha256": "2d53c30ef24690d72a084e82c6df3090a6c966d5b80ee10bf618fe30392aab47",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "40057",
+      "source_status": "available",
+      "raw_sha256": "c18af771d316554055e69501ba6c3f62ef940315dc6b36c2392f2a54b3cc0cdc",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "40061",
+      "source_status": "available",
+      "raw_sha256": "6dc421cd72579d57a067c4ea97d1dd0ec55571ec58008264b71663360974e179",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "40872",
+      "source_status": "available",
+      "raw_sha256": "0ac9ac6c54aa95c20a17f64212a65dcb428921c8917dd691413ac21d095d11d0",
+      "image_count": 0,
+      "image_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "annotation_status": "pending_gold",
+      "review_status": "not_reviewed"
+    },
+    {
+      "support_id": "41818",
+      "source_status": "available",
+      "raw_sha256": "fb8f772769553002ad6fa166969c4400e2143eb5ba39c2bbf85d8a72b2c1994e",
+      "image_count": 3,
+      "image_set_sha256": "5af38339897e65636b4106007b25f6bae02122d45da09863927798133e1d7bf8",
+      "annotation_status": "gold",
+      "review_status": "pending_expert",
+      "gold": "cases/41818.json"
+    }
+  ]
+}

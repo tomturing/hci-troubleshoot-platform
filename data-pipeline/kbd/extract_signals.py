@@ -93,6 +93,7 @@ async def _poll_extract_status(
     )
     started_at = time.monotonic()
     poll_count = 0
+    consecutive_transport_errors = 0
 
     while True:
         elapsed = time.monotonic() - started_at
@@ -106,6 +107,7 @@ async def _poll_extract_status(
             )
             resp.raise_for_status()
             data = resp.json()
+            consecutive_transport_errors = 0
             job_status = data.get("status")
             logger.info(
                 "信号抽取轮询 job_id=%s kbd_entry_id=%d poll=%d status=%s",
@@ -128,6 +130,23 @@ async def _poll_extract_status(
                 raise RuntimeError(f"Signal Job {job_id} 不存在（kb-service 可能已重启）") from exc
             logger.warning("轮询 status 瞬态错误 %s，继续", exc)
             continue
+        except httpx.TransportError as exc:
+            # Signal Job 已提交后复用同一 job_id 恢复轮询，禁止因瞬时断连重复提交 LLM。
+            consecutive_transport_errors += 1
+            if consecutive_transport_errors > settings.API_MAX_RETRIES:
+                raise RuntimeError(
+                    f"Signal Job {job_id} 状态轮询连续 {consecutive_transport_errors} 次传输失败"
+                ) from exc
+            retry_wait = min(poll_interval, 2.0 ** (consecutive_transport_errors - 1))
+            logger.warning(
+                "轮询 Signal status 传输错误 job_id=%s attempt=%d/%d，%.1fs 后继续：%s",
+                job_id,
+                consecutive_transport_errors,
+                settings.API_MAX_RETRIES,
+                retry_wait,
+                exc,
+            )
+            await asyncio.sleep(retry_wait)
 
 
 async def extract_signals_batch(kbd_ids: list[str], pool: asyncpg.Pool | None = None) -> dict[str, int]:
@@ -138,7 +157,7 @@ async def extract_signals_batch(kbd_ids: list[str], pool: asyncpg.Pool | None = 
         pool: asyncpg 连接池（用于查 kbd_entry.id）
 
     Returns:
-        {"done": N, "failed": N, "skipped": N}
+        {"done": N, "failed": N, "skipped": N, "needs_review": N}
     """
     if not settings.INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
@@ -146,10 +165,10 @@ async def extract_signals_batch(kbd_ids: list[str], pool: asyncpg.Pool | None = 
     owns_pool = pool is None
     if pool is None:
         pool = await asyncpg.create_pool(
-            dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1)
+            dsn=settings.asyncpg_database_url
         )
 
-    stats = {"done": 0, "failed": 0, "skipped": 0}
+    stats = {"done": 0, "failed": 0, "skipped": 0, "needs_review": 0}
 
     async def _run_one(support_id: str) -> None:
         kbd_entry_id = await pool.fetchval(
@@ -161,11 +180,20 @@ async def extract_signals_batch(kbd_ids: list[str], pool: asyncpg.Pool | None = 
             return
         try:
             result = await _call_extract_api(kbd_entry_id, client)
-            if result.get("success"):
+            if result.get("success") and int(result.get("signals_count", 0)) > 0:
                 stats["done"] += 1
                 logger.info("关键信号抽取完成 support_id=%s signals=%d rejected=%d",
                             support_id, result.get("signals_count", 0),
                             result.get("rejected_count", 0))
+            elif result.get("success"):
+                # HTTP/Job 成功只说明 LLM 流程结束；0 条信号意味着没有可执行 Proposal，
+                # 必须进入人工审核，不能用一个非空 signals_json 外壳冒充工程完成。
+                stats["needs_review"] += 1
+                logger.warning(
+                    "关键信号抽取无可执行 Proposal support_id=%s rejected=%d，转人工复核",
+                    support_id,
+                    result.get("rejected_count", 0),
+                )
             else:
                 stats["failed"] += 1
         except Exception as exc:
@@ -182,8 +210,13 @@ async def extract_signals_batch(kbd_ids: list[str], pool: asyncpg.Pool | None = 
     try:
         async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
             await asyncio.gather(*[_bounded(sid) for sid in kbd_ids])
-        logger.info("批量关键信号抽取完成 done=%d failed=%d skipped=%d",
-                    stats["done"], stats["failed"], stats["skipped"])
+        logger.info(
+            "批量关键信号抽取完成 done=%d failed=%d skipped=%d needs_review=%d",
+            stats["done"],
+            stats["failed"],
+            stats["skipped"],
+            stats["needs_review"],
+        )
         return stats
     finally:
         if owns_pool and pool:

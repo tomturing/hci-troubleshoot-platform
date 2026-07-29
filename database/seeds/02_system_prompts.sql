@@ -414,10 +414,10 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 (
     'KBD',
     'kbd_vision_v1',
-    'KBD 图片识图 Prompt - Vision LLM 单次调用输出 TYPE+BACKGROUND+FULL_TEXT+DESCRIPTION；支持终端/日志/告警/任务/配置/其他 6 种截图类型；占位符：context',
+    'KBD 图片识图 Prompt - Vision LLM 单次调用输出 TYPE+BACKGROUND+FULL_TEXT+DESCRIPTION；事实与推断严格分离，禁止根据上下文生成截图不支持的因果/根因结论；支持终端/日志/告警/任务/弹框/配置/其他 7 种截图类型；占位符：context',
     $TEMPLATE$你是HCI超融合平台故障排查文档助手。
 
-这张截图出现在一篇故障排查案例文档中，截图前的文档内容如下：
+这张截图出现在一篇故障排查案例文档中，截图前后的文档内容如下：
 
 【文档上下文】
 {context}
@@ -429,18 +429,21 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 【任务一】判断截图类型 TYPE
 ═══════════════════════════════════════════════════════════════
 
-根据截图内容，从以下 6 种类型中选择最匹配的一个：
+根据截图内容，从以下 7 种类型中选择最匹配的一个。页面背景与故障证据类型必须分开判断：
+配置页面上叠加错误弹框时应判为“弹框截图”，不能因为底层页面是配置页而判为“配置截图”。
 
 1. **终端截图** — 黑色背景的命令行界面，显示 shell 命令或终端输出
 2. **日志截图** — 黑色/深色背景的日志文件内容，包含时间戳、级别（info/warn/err）、进程名
 3. **告警截图** — 平台告警列表界面（白色背景），表格形式，含"级别|时间|告警对象|描述"等列
 4. **任务截图** — 平台任务中心界面（白色背景），表格形式，含"状态|任务名|对象|时间"等列
-5. **配置截图** — 平台配置/管理界面（白色背景），虚拟机列表、存储配置、网络配置等
-6. **其他截图** — 以上都不匹配的截图类型
+5. **弹框截图** — 模态框、对话框、Toast、气泡提示等覆盖层，承载成功/失败/警告信息
+6. **配置截图** — 平台配置/管理界面（白色背景），虚拟机列表、存储配置、网络配置等
+7. **其他截图** — 以上都不匹配的截图类型
 
 判断依据：
-- 先看背景颜色：黑色背景 → 终端或日志；白色背景 → 告警/任务/配置
-- 再看内容结构：有命令提示符($) → 终端；有时间戳+级别+进程名 → 日志；表格有"告警"列 → 告警；表格有"任务名"列 → 任务；虚拟机/存储列表 → 配置
+- 先定位真正承载故障语义的区域，再判断类型；背景颜色只能作为辅助证据
+- 有命令提示符($) → 终端；有时间戳+级别+进程名 → 日志；表格有"告警"列 → 告警；表格有"任务名"列 → 任务
+- 页面上出现失败 Toast、模态框或错误对话框 → 弹框，即使底层是配置页或任务页
 
 输出格式：`TYPE: <类型>`
 
@@ -464,9 +467,9 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 根据截图类型，按以下规则提取文字：
 
 **规则1 - 终端/日志截图（黑色背景）**
-- 提取 **err/warning/error/info** 级别日志（完整输出，后续入库时会自动截断）
-- 每行保留：时间戳 + 级别 + 关键错误信息
-- 格式：`时间戳 级别 [进程名] 错误信息`
+- 按视觉阅读顺序完整提取可见命令、参数、路径、文件名、PID、计数值、表头和输出行
+- 日志必须保留时间戳、级别、进程名和完整错误信息；不得只提取 err/warning/error/info 行而漏掉命令主体或关联上下文
+- 对后续可执行诊断有意义的原始 Token（host、vm、file、path、command、threshold）禁止改写或概括
 
 **规则2 - 表格/告警截图（白色背景，含行列结构）**
 - 跳过纯表头行（列名行如"级别|时间|描述"）
@@ -492,11 +495,15 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 - 每行任务合并为一条"- "条目
 - 格式：状态 | 任务名 | 对象名 | 时间戳（若有）
 
-**规则4 - 配置截图**
+**规则4 - 弹框截图**
+- 按视觉层级完整提取弹框标题、正文、错误码、对象名、按钮文字及其所在页面的必要定位信息
+- Toast/气泡提示也按弹框处理，禁止只描述底层配置页面
+
+**规则5 - 配置截图**
 - 每行配置项合并为一条"- "条目
 - 格式：状态 | 名称 | 配置值 | 其他信息
 
-**规则5 - 其他截图（图表/拓扑图/流程图）**
+**规则6 - 其他截图（图表/拓扑图/流程图）**
 - 对于图表类截图（拓扑图、流程图、架构图等）：
   - 描述图表类型和主要结构（如"网络拓扑图，包含3个节点"）
   - 列出关键元素名称或标签（如节点名、IP地址、端口名）
@@ -524,14 +531,17 @@ FULL_TEXT:
 【任务四】语义描述 DESCRIPTION
 ═══════════════════════════════════════════════════════════════
 
-结合上方文档上下文，用2-4句技术语言描述：
+用1-3句技术语言对截图可见内容做中性概括：
 ① 这张截图展示了什么内容（是什么）
-② 它与上下文中描述的故障现象有何关联（说明什么）
-③ 截图揭示了什么问题、状态或结论（得出什么）
+② 截图中哪些原始文字与上下文描述相互印证
+③ 只陈述画面本身支持的含义；无法从画面直接确认的内容不要写入 DESCRIPTION
 
 要求：
-- 不要复述上下文原文
-- 用截图信息来解释和印证上下文
+- 上下文只用于消歧截图所属对象、字段和场景，不能作为截图可见事实
+- 不要复述或补写截图中不可见的上下文内容
+- 严禁建立截图事件与上下文中其他事件之间的因果链，严禁使用“根因、根本原因、导致、引发、造成、因此、从而、可确认”等确定性归因表达
+- 截图只能证明“画面显示了什么”，不能单独证明“为什么发生”或“它导致了什么”
+- 若只能通过上下文才能得出某个解释，省略该解释，不要用“可能/疑似”补写
 - 输出为连续段落，不要用列表格式
 
 输出格式：`DESCRIPTION: <描述内容>`
@@ -552,13 +562,13 @@ DESCRIPTION:
 该截图展示了HCI平台后台服务日志，记录了集群恢复上传操作失败的错误信息。关键错误指向"存储空间不足"，导致上传文件失败，表明目标存储域空间已满，需要清理冗余文件后才能继续恢复操作。
 
 ═══════════════════════════════════════════════════════════════$TEMPLATE$,
-    '1.0',
+    '1.1',
         TRUE
     ),
     (
         'KEY',
         'kbd_extract_signals_v2',
-        '关键信号分级抽取 Prompt v2 - LLM 直接产出 v2 嵌套结构（acquire/match/orchestrate/provenance/review），移除 v1 扁平中间态；占位符 {{VAR}} 大写强制；封闭采集器词表；写操作安全默认；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema',
+        '关键信号分级抽取 Prompt v2 - 同时消费文档章节与结构化截图 Evidence IR；LLM 直出 v2 嵌套结构；占位符 {{VAR}} 大写强制；封闭采集器词表；写操作安全默认；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema,image_evidence',
         $TEMPLATE$你是 HCI 超融合平台的关键信号抽取专家。
 
 # 角色与目标
@@ -583,6 +593,14 @@ DESCRIPTION:
 - 根因：{root_cause}
 - 解决方案：{solution}
 
+# 截图 Evidence IR（JSON）
+{image_evidence}
+
+只允许依据 regions[].observed_facts、text_lines、fields 生成事实型参数。
+输入层已经剔除模型 DESCRIPTION、regions[].inferences 和 legacy desc；不得根据
+inference_status/inference_issues 反推、补写或猜测运行参数。
+quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能生成 needs_review 候选。
+
 # 采集器目录（封闭词表，acquire.tool 必须取自此处）
 {acquirer_catalog}
 
@@ -595,13 +613,20 @@ DESCRIPTION:
   "signals": [
     {{
       "id": "sig_001",
+      "role": "<must|should|exclude|context>",
       "acquire": {{"tool": "<acquire.tool，取自采集器目录>", "args": {{"...": "依据该 tool 的契约，见下方规则 6"}}}},
       "match": {{"type": "<keyword|regex|state|threshold|json_path|exists>", "pattern": "<匹配式>", "mode": "any|all", "expected": true}},
       "orchestrate": {{"phase": "<diagnostic|solution>", "action": "<可选>", "produces": [{{"name": "<VAR>", "path": "<取值路径>"}}], "requires": ["<VAR>"]}},
-      "provenance": {{"category": "frontend|backend", "source_section": "title|problem_description|alert_info|steps_text", "evidence": "<逐字引用输入中的证据句>", "confidence": 0.9}},
+      "provenance": {{"category": "frontend|backend", "source_section": "title|problem_description|alert_info|steps_text", "source_refs": ["img:0/region:img_0:r_0"], "evidence": "<逐字引用输入中的证据句或截图可见文字>", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": "<可选说明>"}}
     }}
-  ]
+  ],
+  "verification_contract": {{
+    "schema_version": 1,
+    "scope": {{"products": [], "versions": [], "components": [], "topology_constraints": []}},
+    "variables": {{}},
+    "evidence_policy": {{"must": ["sig_001"], "should": [], "exclude": [], "context": [], "minimum_should": 0, "on_missing_must": "inconclusive"}}
+  }}
 }}
 
 # 抽取规则（强制）
@@ -614,12 +639,12 @@ DESCRIPTION:
    - qkv_alert：必填 keyword；可选 limit/alert_type/timeout/instruction。注意：无 is_failed 字段。
    - qkv_task：必填 keyword；可选 is_failed/limit/timeout/instruction。（is_failed 仅属于 qkv_task，不属于 qkv_alert）
    - qkv_dialog：必填 keyword。
-   - qfk_log：resource_keyword（资源/主题选择器，非匹配关键词）；可选 host（支持 {{{{HOST}}}}）/file/path/time_window/timeout/instruction；匹配关键词放 match.pattern。
+   - qfk_log：必填 file（来自原文证据的安全 basename，禁止目录分隔符和控制字符，允许 messages、.ini、BMC_Event_Log 及 {{{{VAR}}}} 占位符，扩展名不限）；resource_keyword 为可选资源/主题选择器；可选 host（支持 {{{{HOST}}}}）/path/time_window/timeout/instruction；只能使用 keyword matcher，匹配关键词放 match.pattern。无法从正文或截图可见文字确定 file 时不得生成 qfk_log。
    - qfk_service：resource_keyword（服务名选择器）+ container（组 asv/anet/host，默认 asv）；可选 command（动作 status/restart 等）/timeout/instruction。
    - qfk_system/vm/network/storage/hardware/platform：command（如 lsof/ps/...，acli <namespace> <command>）；可选 host（{{{{HOST}}}}）/resource_keyword/timeout/instruction。
    - host 即原 v1 的 target.scope：采集目标主机/作用域，用 {{{{HOST}}}} 占位（变量池解析）或字面 cluster；不要再用嵌套 target 对象。
 7. 写操作安全：若 acquire.tool 为 qfk_* 且 acquire.args.command 命中写/变更动词（start/stop/restart/delete/set/create/...），必须 review.require_human_confirm=true、orchestrate.phase=solution；且只在排查步骤明确描述「处置/修复动作」时才抽取此类信号，纯诊断步骤不要编造写操作。
-8. source_section 只能取 title/problem_description/alert_info/steps_text（根因/解决方案不作为信号来源）；evidence 必须逐字引用输入中的原句，便于审计溯源。
+8. source_section 只能取 title/problem_description/alert_info/steps_text（根因/解决方案不作为信号来源）；evidence 必须逐字引用正文原句或截图 observed_facts/text_lines。来自截图时必须填写 source_refs（如 img:0/region:img_0:r_0），便于审计和重识图 stale 传播。
 9. confidence 诚实自评（0-1）：证据清晰、采集器与变量明确→0.8+；记忆模糊、靠推测→0.4-0.6；不确定→更低。无法可靠映射为合法采集器的步骤，宁缺毋滥，不要硬造信号。
 10. id 顺序编号 sig_001、sig_002...；每条信号字段严格遵循上方结构，不得新增额外顶层字段（additionalProperties=false）。
 11. 说明(instruction) 与 关键字 的边界（高频易错点，务必遵守）：
@@ -634,6 +659,12 @@ DESCRIPTION:
    - grep -v grep 直接删除：平台只在内存筛选基础命令 stdout，不会启动 grep 进程。
    - 复杂 awk、sed、sort、聚合、正则歧义或未知管道不得猜测；保留 evidence，标 provenance.needs_review=true。
    - 文本产出示例：{{"name":"KVM_PID","type":"integer","extract":{{"type":"text","include":["-id {{{{VM}}}}"],"column":2,"column_mode":"index"}}}}。requires 由 {{{{HOST}}}}/{{{{VM}}}} 占位符自动推导。
+13. 案例验证契约：每条诊断信号标 role。直接决定案例成立的必要事实→must；增强置信但非必要→should；成立即排除本案例→exclude；背景/处置→context。verification_contract 必须引用现有 signal id，must 至少一条；证据不足一律 inconclusive，禁止把 UNKNOWN/ERROR 当反证。
+14. 计数阈值：原文使用 `... | wc -l` 时，command 只保留基础列举命令，match 使用 `{{"type":"threshold","aggregation":"line_count","operator":">","value":100,"expected":true}}`；禁止把管道写进 command，也禁止把输出第一个数字误当行数。
+15. 外部变量：若 requires 引用了本案例内没有任何 signal.produces 的自定义变量（如 STORAGE_PATH、DEVICE），必须在 verification_contract.variables 中显式声明封闭类型 string/integer/number/boolean/array；变量未声明、类型不合法或现场未提供时不得假定值，裁决必须 inconclusive。
+16. 结构字段封闭约束：frontend（qkv_*）必须 match=null 且 produces 至少一项；backend 的 match 与 produces 严格二选一，不得同时配置。produces 每项只能使用 JSON path，或使用 text extract；text extract 的 column_mode 只能是 whole/index/from_index，禁止输出 full_line/full/key_value/last_field 等别名或自造字段。没有可靠取值路径时不要生成变量。
+17. Matcher 封闭约束：keyword/regex/state 必须有非空 pattern；threshold 必须有数值 value 和 operator，aggregation 只能是 first_number/line_count/duration_seconds；json_path 必须有 path。禁止把 value/max_value/count/latency_ms 等业务名写进 aggregation。
+18. 诊断与处置边界：只有真实写操作才设 phase=solution，且 solution 的 role 必须是 context；只读 list/get/status/show/check 即使需要人工确认仍是 diagnostic。command/resource_keyword 禁止包含 |、;、&、反引号、$、重定向符或换行；不要把多条命令拼成一个 command。
 
 # 输出示例（对齐真实 KBD：虚拟机开机失败→镜像忙→进程占用；已对齐全 v2 契约与采集器字段）
 {{
@@ -641,48 +672,40 @@ DESCRIPTION:
   "signals": [
     {{
       "id": "sig_001",
-      "acquire": {{"tool": "qkv_alert", "args": {{"keyword": "启动虚拟机失败", "limit": 1, "instruction": "获取虚拟机开机失败告警信息"}}}},
+      "role": "must",
+      "acquire": {{"tool": "qkv_task", "args": {{"keyword": "启动虚拟机", "is_failed": true, "limit": 1, "instruction": "获取虚拟机开机失败任务详情"}}}},
       "match": null,
-      "orchestrate": {{"phase": "diagnostic", "produces": [{{"name": "STATUS", "path": "status"}}], "requires": []}},
-      "provenance": {{"category": "frontend", "source_section": "alert_info", "evidence": "启动虚拟机失败，错误信息：虚拟机镜像忙", "confidence": 0.8}},
+      "orchestrate": {{"phase": "diagnostic", "produces": [{{"name": "VM", "path": "vm"}}, {{"name": "HOST", "path": "host"}}, {{"name": "END", "path": "end"}}], "requires": []}},
+      "provenance": {{"category": "frontend", "source_section": "steps_text", "source_refs": ["img:0/region:img_0:r_0"], "evidence": "启动虚拟机失败，错误信息：虚拟机镜像忙", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": ""}}
     }},
     {{
       "id": "sig_002",
-      "acquire": {{"tool": "qkv_task", "args": {{"keyword": "启动虚拟机失败", "is_failed": true, "limit": 1, "instruction": "查看虚拟机任务详情确认失败报错信息"}}}},
-      "match": null,
-      "orchestrate": {{"phase": "diagnostic", "produces": [{{"name": "VM", "path": "vm"}}, {{"name": "HOST", "path": "host"}}, {{"name": "STATUS", "path": "status"}}], "requires": []}},
-      "provenance": {{"category": "frontend", "source_section": "steps_text", "evidence": "查看虚拟机任务详情，确认开机失败的报错信息", "confidence": 0.9}},
-      "review": {{"require_human_confirm": false, "notes": ""}}
-    }},
-    {{
-      "id": "sig_003",
+      "role": "must",
       "acquire": {{"tool": "qfk_system", "args": {{"command": "lsof", "resource_keyword": "{{{{VM}}}}", "host": "{{{{HOST}}}}", "instruction": "检查虚拟机镜像文件是否被其他进程占用"}}}},
-      "match": {{"type": "keyword", "pattern": "vm-disk", "mode": "any", "expected": true}},
-      "orchestrate": {{"phase": "diagnostic", "produces": [], "requires": ["VM", "HOST"]}},
+      "match": null,
+      "orchestrate": {{"phase": "diagnostic", "produces": [{{"name": "PID", "type": "integer", "extract": {{"type": "text", "include": ["{{{{VM}}}}"], "column": 2, "column_mode": "index", "cardinality": "first"}}}}], "requires": ["VM", "HOST"]}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "检查该虚拟机镜像文件是否被其他进程占用", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": ""}}
     }},
     {{
-      "id": "sig_004",
-      "acquire": {{"tool": "qfk_system", "args": {{"command": "ps", "host": "{{{{HOST}}}}", "instruction": "查询占用镜像文件的进程详情"}}}},
+      "id": "sig_003",
+      "role": "should",
+      "acquire": {{"tool": "qfk_system", "args": {{"command": "ps -p {{{{PID}}}} -o cmd=", "host": "{{{{HOST}}}}", "instruction": "查询占用镜像文件的进程详情"}}}},
       "match": {{"type": "keyword", "pattern": "ClwDRDBClient", "mode": "any", "expected": true}},
-      "orchestrate": {{"phase": "diagnostic", "produces": [], "requires": ["HOST"]}},
+      "orchestrate": {{"phase": "diagnostic", "produces": [], "requires": ["PID", "HOST"]}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "查询占用镜像文件的进程详情，确认是否为第三方程序占用", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": ""}}
-    }},
-    {{
-      "id": "sig_005",
-      "acquire": {{"tool": "qfk_service", "args": {{"resource_keyword": "{{{{VM.NAME}}}}", "container": "asv", "command": "restart"}}}},
-      "match": {{"type": "state", "pattern": "running", "mode": "any", "expected": true}},
-      "orchestrate": {{"phase": "solution", "produces": [], "requires": ["VM"], "action": "restart"}},
-      "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "重启虚拟机服务以恢复", "confidence": 0.7}},
-      "review": {{"require_human_confirm": true, "notes": "写操作：重启服务，需人工授权"}}
     }}
-  ]
+  ],
+  "verification_contract": {{
+    "schema_version": 1,
+    "scope": {{"products": ["HCI"], "versions": [], "components": ["虚拟机"]}},
+    "evidence_policy": {{"must": ["sig_001", "sig_002"], "should": ["sig_003"], "exclude": [], "context": [], "minimum_should": 1, "on_missing_must": "inconclusive"}}
+  }}
 }}
 $TEMPLATE$,
-        '1.0',
+        '1.3',
         TRUE
     )
 ON CONFLICT (name) DO NOTHING;

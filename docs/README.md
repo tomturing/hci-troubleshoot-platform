@@ -57,8 +57,9 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | 运行时代码完整性防护（禁止源码热补丁覆盖镜像） | ✅ 完成 | 2026-07-27 |
 | KBD QKV/QFK 三信号执行闭环与 39 MB 大输出边缘筛选 | ✅ 代码与自动验证完成，待 PR 部署后现场复测 | 2026-07-27 |
 | KBD 关键信号结果用户化与 `ps -p PID -o cmd=` 提取契约 | ✅ 代码与 59 项自动验证完成，待修正 KBD revision 后现场复测 | 2026-07-28 |
+| KBD 截图证据与可执行诊断契约 | 🟡 核心闭环已实施并通过全量回归；4/39 真实来源工程 Gold 完成，35/39 因员工权限数据缺失而阻断 | 2026-07-29 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 确定性诊断已要求显式 QKV/QFK acquisition，非 JSON 大输出在 terminal_bridge 边缘按字面量逐行筛选并以 256 KiB Fail Closed；最终报告按“检查说明—状态—结果—结构化产出”展示，内部 ID 与原始输出留在审计层。KBD 27123 第三步应使用 `ps -p {{PID}} -o cmd=`，通过 `include={{VM}}` 确认命令行仍关联目标镜像并产出 `CMD`，待人工发布新 revision 后用新工单现场复测。
+**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 确定性诊断已要求显式 QKV/QFK acquisition，非 JSON 大输出在 terminal_bridge 边缘按字面量逐行筛选并以 256 KiB Fail Closed；KBD 截图、信号抽取和案例自动验证的下一阶段采用 [Evidence → Signal Compiler → Replay → Case Verification Contract](solution/agent/events/2026-07-28-KBD截图证据与可执行诊断契约方案.md)，关键信号保留为原子观察层，不再将单次 LLM 直出的扁平信号列表视为完整案例验证契约。126 条扩展语料的来源、Vision、Proposal、Gold 与专家审批结果见 [KBD 126 条分层验证报告](verify/events/2026-07-29-KBD126扩展语料实施验证.md)。KBD 27123 第三步仍待人工发布新 revision 后使用新工单现场复测。
 
 ### 冷启动阅读路径
 

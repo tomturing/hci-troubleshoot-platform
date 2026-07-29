@@ -1,0 +1,22 @@
+{
+  "support_id": "27123",
+  "title_contains": "虚拟机开机失败",
+  "required_source_tokens": ["虚拟机镜像忙", "lsof", "vm-disk-1.qcow2", "ClwDRDBClient"],
+  "minimum_images": 3,
+  "replay_environment": {"product": "HCI", "components": ["虚拟机"], "topology": []},
+  "signals_document": {
+    "schema_version": 2,
+    "signals": [
+      {"id": "task_failure", "role": "must", "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机", "is_failed": true, "limit": 1}}, "match": null, "orchestrate": {"phase": "diagnostic", "produces": [{"name": "VM", "path": "vm"}, {"name": "HOST", "path": "host"}, {"name": "END", "path": "end"}], "requires": []}},
+      {"id": "image_owner", "role": "must", "acquire": {"tool": "qfk_system", "args": {"command": "lsof", "resource_keyword": "{{VM}}", "host": "{{HOST}}"}}, "match": null, "orchestrate": {"phase": "diagnostic", "produces": [{"name": "PID", "type": "integer", "extract": {"type": "text", "include": ["{{VM}}"], "column": 2, "column_mode": "index", "cardinality": "first"}}], "requires": ["HOST", "VM"]}},
+      {"id": "third_party_process", "role": "should", "acquire": {"tool": "qfk_system", "args": {"command": "ps -p {{PID}} -o cmd=", "host": "{{HOST}}"}}, "match": {"type": "keyword", "pattern": "ClwDRDBClient", "mode": "or", "expected": true}, "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["HOST", "PID"]}}
+    ],
+    "verification_contract": {"schema_version": 1, "case_id": "27123", "scope": {"products": ["HCI"], "versions": [], "components": ["虚拟机"], "topology_constraints": []}, "evidence_policy": {"must": ["task_failure", "image_owner"], "should": ["third_party_process"], "exclude": [], "context": [], "minimum_should": 1, "on_missing_must": "inconclusive"}}
+  },
+  "replay_scenarios": [
+    {"id": "positive", "expected_verdict": "confirmed", "outcomes": {"task_failure": "SATISFIED", "image_owner": "SATISFIED", "third_party_process": "SATISFIED"}},
+    {"id": "strong_negative", "expected_verdict": "rejected", "outcomes": {"task_failure": "CONTRADICTED", "image_owner": "SATISFIED", "third_party_process": "SATISFIED"}},
+    {"id": "unknown", "expected_verdict": "inconclusive", "outcomes": {"task_failure": "UNKNOWN", "image_owner": "SATISFIED", "third_party_process": "SATISFIED"}},
+    {"id": "error", "expected_verdict": "inconclusive", "outcomes": {"task_failure": "SATISFIED", "image_owner": "ERROR", "third_party_process": "SATISFIED"}}
+  ]
+}

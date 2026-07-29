@@ -93,10 +93,16 @@ class TestConvert27123Golden:
         assert [e["seq"] for e in images_json] == [0, 1, 2]
         for entry in images_json:
             assert entry["desc"] == "", "desc 初始必须为空，不能来自本地 .desc.txt"
+            assert "context_before" in entry
+            assert "context_after" in entry
             assert entry["section"] in (
                 "problem_description", "alert_info", "steps_text", "root_cause",
                 "solution", "operational_impact", "is_temporary", "recommendations",
             )
+        assert any(
+            entry["context_before"] or entry["context_after"]
+            for entry in images_json
+        ), "真实截图至少应有一侧章节上下文"
 
         # images（二进制）随 IMPORT 原子写入 kbd_image：3 张 png base64
         images = result["images"]

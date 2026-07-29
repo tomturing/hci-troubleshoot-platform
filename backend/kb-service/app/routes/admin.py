@@ -31,7 +31,10 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import validate_acquire_args
 from shared.schemas.signal_output import sync_signal_requires
-from shared.schemas.signal_schema import validate_signals_json
+from shared.schemas.signal_schema import (
+    validate_publishable_signals_json,
+    validate_signals_json,
+)
 from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
@@ -565,12 +568,20 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
         # 门 1：signals_json 非空（无关键信号 → CDD 不可执行）
         # 直接切 v2 列形态（RFC §7）：signals_json 现为 {schema_version, signals} 对象，
         # 需先解包为信号列表再判空。
-        _raw_signals = (_load_signals_json(row["signals_json"]) or {}).get("signals", [])
+        _signals_doc = _load_signals_json(row["signals_json"]) or {}
+        _raw_signals = _signals_doc.get("signals", [])
         if not _raw_signals:
             raise HTTPException(
                 status_code=422,
                 detail=f"KBD 条目 {kbd_id} 缺少关键信号（signals_json 为空），请先调用 /extract-signals 抽取后再审核",
             )
+        try:
+            validate_publishable_signals_json(_signals_doc)
+        except jsonschema.ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"KBD 条目 {kbd_id} 的关键信号不可执行，禁止发布：{exc.message}",
+            ) from exc
         # 门 1.5：至少含 1 条消费者(backend)信号，否则 CDD 无法执行差异消除（§9）
         # v2 原生判定：acquire.tool 以 qfk 开头 或 provenance.category==backend
         _has_consumer = any(
@@ -1686,6 +1697,13 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
         "recommendations",
     )
     any_section_changed = any(getattr(body, f) is not None for f in section_fields)
+    signal_source_changed = (
+        body.title is not None
+        or body.problem_description is not None
+        or body.alert_info is not None
+        or body.steps_text is not None
+        or body.category_id is not None
+    )
     has_any_field = (
         body.title is not None
         or any_section_changed
@@ -1713,6 +1731,11 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
     if body.signals_json is not None:
         # 直接切 v2 列形态（RFC §7）：保存时统一归约为 v2 数组级对象
         v2_doc = _load_signals_json(body.signals_json)
+        # 自动生成物经管理端手工修改后不再冒充“模型原样 current”。保留全部生成
+        # 指纹用于审计，并显式标记为人工复核版本；来源随后变化时仍会进入 stale。
+        generation_metadata = v2_doc.get("generation_metadata")
+        if isinstance(generation_metadata, dict):
+            generation_metadata["status"] = "manual_reviewed"
         for signal in v2_doc.get("signals", []):
             if isinstance(signal, dict):
                 sync_signal_requires(signal)
@@ -1737,6 +1760,15 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
         # 前端统一弹「保存失败，请重试」——即 PR#599 修过、PR#601 回退复现的坑。
         set_clauses.append("signals_json = CAST(:signals_json AS jsonb)")
         params["signals_json"] = json.dumps(v2_doc, ensure_ascii=False)
+    elif signal_source_changed:
+        # 章节/分类一旦变化，旧 Signal/Contract 的来源指纹立即失效；保留原数据供
+        # 审核 diff，但运行时 Compiler 会 fail closed，直到重新抽取或人工审核。
+        set_clauses.append(
+            "signals_json = CASE "
+            "WHEN signals_json ? 'generation_metadata' "
+            "THEN jsonb_set(signals_json, '{generation_metadata,status}', '\"stale\"'::jsonb, true) "
+            "ELSE signals_json END"
+        )
 
     # content_md 处理：明确传入则用传入的值；有章节更改则需先读库并重建
     if body.content_md is not None:
@@ -1855,7 +1887,8 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
     async with _db_manager.async_session_factory() as session:
         result = await session.execute(
             text(
-                "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status, category_id, ai_category_id FROM kbd_entry WHERE id = :id"
+                "SELECT id, title, content_md, content_raw, problem_description, alert_info, root_cause, status, "
+                "category_id, ai_category_id, signals_json FROM kbd_entry WHERE id = :id"
             ),
             {"id": kbd_id},
         )
@@ -1870,6 +1903,20 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         content_md = row["content_md"]
         if not content_md:
             raise HTTPException(status_code=400, detail=f"KBD 条目 {kbd_id} 缺少 content_md")
+        _republish_doc = _load_signals_json(row["signals_json"]) or {}
+        _republish_signals = _republish_doc.get("signals", [])
+        if not _republish_signals:
+            raise HTTPException(
+                status_code=422,
+                detail=f"KBD 条目 {kbd_id} 缺少关键信号，禁止重新发布",
+            )
+        try:
+            validate_publishable_signals_json(_republish_doc)
+        except jsonschema.ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"KBD 条目 {kbd_id} 的关键信号不可执行，禁止重新发布：{exc.message}",
+            ) from exc
         embedding_text = build_kbd_embedding_text(
             title=row["title"],
             problem_description=row["problem_description"],

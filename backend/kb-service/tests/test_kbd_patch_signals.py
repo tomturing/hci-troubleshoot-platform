@@ -30,6 +30,18 @@ async def test_update_kbd_entry_signals_json_sql_cast():
     # v2 嵌套文档（运行时仅 v2 单一版本）
     test_signals = {
         "schema_version": 2,
+        "generation_metadata": {
+            "schema_version": 1,
+            "status": "current",
+            "source_fingerprint": "0" * 64,
+            "prompt_revision": "1" * 64,
+            "model_id": "test-model",
+            "tool_contract_revision": "2" * 64,
+            "generation_fingerprint": "3" * 64,
+        },
+        "rejected_candidates": [
+            {"candidate": {"id": "bad"}, "reason": "缺少 acquire"}
+        ],
         "signals": [
             {
                 "acquire": {"tool": "qkv_task", "args": {"keyword": "vm"}},
@@ -66,6 +78,8 @@ async def test_update_kbd_entry_signals_json_sql_cast():
         stored_doc["signals"] if isinstance(stored_doc, dict) else stored_doc
     )
     assert any("acquire" in s for s in stored_signals), "signals 应为 v2 嵌套形态"
+    assert stored_doc["generation_metadata"]["status"] == "manual_reviewed"
+    assert stored_doc["rejected_candidates"] == test_signals["rejected_candidates"]
 
 
 @pytest.mark.anyio

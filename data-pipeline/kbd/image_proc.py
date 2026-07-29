@@ -123,6 +123,7 @@ async def _poll_reanalyze_status(
     )
     started_at = time.monotonic()
     poll_count = 0
+    consecutive_transport_errors = 0
 
     while True:
         elapsed = time.monotonic() - started_at
@@ -136,6 +137,7 @@ async def _poll_reanalyze_status(
             )
             resp.raise_for_status()
             data = resp.json()
+            consecutive_transport_errors = 0
             status = data.get("status")
             logger.info(
                 "识图轮询 job_id=%s kbd_entry_id=%d poll=%d status=%s done=%d/%d",
@@ -159,6 +161,24 @@ async def _poll_reanalyze_status(
                 raise RuntimeError(f"Vision Job {job_id} 不存在（kb-service 可能已重启）") from exc
             logger.warning("轮询 status 瞬态错误 %s，继续", exc)
             continue
+        except httpx.TransportError as exc:
+            # POST 已经成功返回 job_id 后，轮询连接断开不代表后台 Vision Job 失败。
+            # 必须复用同一 job_id 有限重试，避免重复提交任务和重复消耗模型配额。
+            consecutive_transport_errors += 1
+            if consecutive_transport_errors > settings.API_MAX_RETRIES:
+                raise RuntimeError(
+                    f"Vision Job {job_id} 状态轮询连续 {consecutive_transport_errors} 次传输失败"
+                ) from exc
+            retry_wait = min(poll_interval, 2.0 ** (consecutive_transport_errors - 1))
+            logger.warning(
+                "轮询 status 传输错误 job_id=%s attempt=%d/%d，%.1fs 后继续：%s",
+                job_id,
+                consecutive_transport_errors,
+                settings.API_MAX_RETRIES,
+                retry_wait,
+                exc,
+            )
+            await asyncio.sleep(retry_wait)
 
 
 # ─── 批量处理 ────────────────────────────────────────────────────────────────
@@ -182,7 +202,7 @@ async def process_images_batch(kbd_ids: list[str], _pool: Any = None) -> dict[st
     pool: asyncpg.Pool | None = _pool
     if pool is None:
         pool = await asyncpg.create_pool(
-            dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1)
+            dsn=settings.asyncpg_database_url
         )
 
     try:
@@ -251,11 +271,9 @@ async def process_images_for_kbd(kbd_id: str, client: Any = None) -> dict[str, i
         {"done": N, "failed": N, "skipped": N}
     """
     pool = await asyncpg.create_pool(
-        dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        dsn=settings.asyncpg_database_url
     )
     try:
         return await process_images_batch([kbd_id], pool)
     finally:
         await pool.close()
-
-

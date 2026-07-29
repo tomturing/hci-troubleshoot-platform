@@ -95,14 +95,32 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
         "properties": {
             "schema_version": {"const": 2},
             "signals": {"type": "array", "items": {"$ref": "#/definitions/signal"}},
+            "rejected_candidates": {
+                "type": "array",
+                "items": {"$ref": "#/definitions/rejectedCandidate"},
+            },
+            "verification_contract": {"$ref": "#/definitions/verificationContract"},
+            "generation_metadata": {"$ref": "#/definitions/generationMetadata"},
         },
         "definitions": {
+            "rejectedCandidate": {
+                "type": "object",
+                "required": ["candidate", "reason"],
+                "additionalProperties": False,
+                "properties": {
+                    # 保留模型原始候选供审核；候选之所以在这里，正是因为它不一定
+                    # 符合 signal definition，因此不能用 signal schema 约束。
+                    "candidate": {},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+            },
             "signal": {
                 "type": "object",
                 "required": ["acquire"],
                 "additionalProperties": False,
                 "properties": {
                     "id": {"type": "string"},
+                    "role": {"type": "string", "enum": ["must", "should", "exclude", "context"]},
                     "acquire": {"$ref": "#/definitions/acquire"},
                     "match": {"$ref": "#/definitions/match"},
                     "orchestrate": {"$ref": "#/definitions/orchestrate"},
@@ -126,24 +144,44 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
             # - threshold:         用 value + operator
             # - json_path:         用 path + expected_value
             # - exists:            仅需 expected
-            # type/mode 维持自由字符串（与历史 fixture 兼容，如 mode:"any" 运行时等同 or），
-            # 不强制枚举，避免破坏既有通过的校验用例。
             "match": {
                 "type": ["object", "null"],
                 "required": ["type", "expected"],
                 "additionalProperties": False,
                 "properties": {
-                    "type": {"type": "string"},
+                    "type": {
+                        "type": "string",
+                        "enum": ["keyword", "regex", "state", "threshold", "json_path", "exists"],
+                    },
                     "pattern": {"type": "string"},
-                    "mode": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["or", "and", "not", "any", "all"]},
                     "expected": {"type": "boolean"},
                     "value": {"type": ["number", "integer"]},
-                    "operator": {"type": "string"},
+                    "operator": {"type": "string", "enum": [">", ">=", "<", "<=", "==", "=", "!="]},
+                    "aggregation": {
+                        "type": "string",
+                        "enum": ["first_number", "line_count", "duration_seconds"],
+                        "default": "first_number",
+                    },
                     "path": {"type": "string"},
                     "expected_value": {
                         "type": ["string", "number", "boolean", "null"]
                     },
                 },
+                "allOf": [
+                    {
+                        "if": {"properties": {"type": {"enum": ["keyword", "regex", "state"]}}},
+                        "then": {"required": ["pattern"]},
+                    },
+                    {
+                        "if": {"properties": {"type": {"const": "threshold"}}},
+                        "then": {"required": ["value", "operator"]},
+                    },
+                    {
+                        "if": {"properties": {"type": {"const": "json_path"}}},
+                        "then": {"required": ["path"]},
+                    },
+                ],
             },
             "orchestrate": {
                 "type": "object",
@@ -242,6 +280,10 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "risk": {"type": ["integer", "number"]},
                     "needs_review": {"type": "boolean"},
                     "evidence": {"type": "string"},
+                    "source_refs": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
                 },
             },
             "review": {
@@ -251,6 +293,74 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                 "properties": {
                     "require_human_confirm": {"type": "boolean"},
                     "notes": {"type": "string"},
+                },
+            },
+            "verificationContract": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "schema_version": {"type": "integer", "const": 1},
+                    "case_id": {"type": "string"},
+                    "scope": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "products": {"type": "array", "items": {"type": "string"}},
+                            "versions": {"type": "array", "items": {"type": "string"}},
+                            "components": {"type": "array", "items": {"type": "string"}},
+                            "topology_constraints": {"type": "array", "items": {"type": "string"}},
+                        },
+                    },
+                    "variables": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "required": ["type"],
+                            "additionalProperties": False,
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["string", "integer", "number", "boolean", "array"],
+                                },
+                                "description": {"type": "string"},
+                            },
+                        },
+                    },
+                    "evidence_policy": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["must"],
+                        "properties": {
+                            "must": {"type": "array", "items": {"type": "string"}},
+                            "should": {"type": "array", "items": {"type": "string"}},
+                            "exclude": {"type": "array", "items": {"type": "string"}},
+                            "context": {"type": "array", "items": {"type": "string"}},
+                            "minimum_should": {"type": "integer", "minimum": 0},
+                            "on_missing_must": {"type": "string", "const": "inconclusive"},
+                        },
+                    },
+                },
+            },
+            "generationMetadata": {
+                "type": "object",
+                "required": [
+                    "schema_version",
+                    "status",
+                    "source_fingerprint",
+                    "prompt_revision",
+                    "model_id",
+                    "tool_contract_revision",
+                    "generation_fingerprint",
+                ],
+                "additionalProperties": False,
+                "properties": {
+                    "schema_version": {"type": "integer", "const": 1},
+                    "status": {"type": "string", "enum": ["current", "stale", "manual_reviewed"]},
+                    "source_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "prompt_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "model_id": {"type": "string", "minLength": 1},
+                    "tool_contract_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "generation_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                 },
             },
         },

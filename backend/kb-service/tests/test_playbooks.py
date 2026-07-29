@@ -87,7 +87,7 @@ def test_qkv_with_residual_match_is_visible_but_not_executable():
         {
             "id": "sig_001",
             "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机失败"}},
-            "match": {"type": "keyword", "pattern": ""},
+            "match": {"type": "keyword", "pattern": "", "expected": True},
             "orchestrate": {"produces": [{"name": "VM", "path": "vm"}]},
         }
     ]
@@ -114,9 +114,39 @@ def test_backend_signal_with_match_and_output_is_not_executable():
         {
             "id": "sig_002",
             "acquire": {"tool": "qfk_system", "args": {"command": "lsof"}},
-            "match": {"type": "keyword", "pattern": "busy"},
+            "match": {"type": "keyword", "pattern": "busy", "expected": True},
             "orchestrate": {"produces": [{"name": "PID", "type": "string", "path": ""}]},
         }
     ]
 
     assert playbooks._execution_issues(signals) == ["sig_002 必须且只能配置确定性 matcher 或有效产出变量"]
+
+
+def test_stale_generation_metadata_is_visible_but_not_executable():
+    signals = [
+        {
+            "id": "sig_002",
+            "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
+            "match": {"type": "exists", "expected": True},
+        }
+    ]
+    metadata = {
+        "schema_version": 1,
+        "status": "stale",
+        "source_fingerprint": "0" * 64,
+        "prompt_revision": "1" * 64,
+        "model_id": "model-v1",
+        "tool_contract_revision": playbooks.current_tool_contract_revision(),
+        "generation_fingerprint": "2" * 64,
+    }
+
+    issues = playbooks._execution_issues(
+        signals,
+        {
+            "schema_version": 2,
+            "signals": signals,
+            "generation_metadata": metadata,
+        },
+    )
+
+    assert issues == ["Signal/Contract 生成输入已变化，必须重新抽取或完成人工复核"]

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import os
 import re
@@ -63,11 +64,11 @@ logger = get_logger("kb-service-vision-processor")
 _MIN_CONTEXT_CHARS = 80
 _SHORT_WINDOW = 300
 _LONG_WINDOW = 800
-_MAX_VISION_IMAGE_SIZE = 150 * 1024  # 150KB，超过需压缩
+_MAX_VISION_IMAGE_SIZE = 2 * 1024 * 1024  # 文字截图优先保真；仅超 2MB 才缩放/压缩
 _VISION_CONCURRENCY = 3  # 并发 LLM 调用数（P1-1 异步化后提高，配合异步 Job 批量跑；DashScope QPM 内安全）
 
 # 截图类型与背景颜色（LLM 输出标准）
-_SCREENSHOT_TYPES = ("终端截图", "日志截图", "告警截图", "任务截图", "配置截图", "其他截图")
+_SCREENSHOT_TYPES = ("终端截图", "日志截图", "告警截图", "任务截图", "弹框截图", "配置截图", "其他截图")
 _BACKGROUND_COLORS = ("白色", "黑色", "灰色", "彩色", "其他")
 
 # Vision Prompt 名称（从 system_prompt 表热加载）
@@ -155,12 +156,15 @@ async def ensure_images_json_complete(
         images_json.append({
             "seq": seq,
             "section": "steps_text",  # 默认归属排障步骤
+            "context_before": "",
+            "context_after": "",
             "desc": "",  # 占位，等待 Vision LLM 填充
         })
 
     # 按 seq 排序后写回
     images_json.sort(key=lambda x: x["seq"])
     kbd_entry.images_json = images_json
+    _mark_signal_generation_stale(kbd_entry)
 
     logger.info(
         event="images_json_synced",
@@ -203,12 +207,181 @@ def _build_context_map_from_html(html: str) -> dict[int, str]:
     return context_map
 
 
+def _build_context_map_from_images_json(images_json: list[dict[str, Any]] | None) -> dict[int, str]:
+    """从 IMPORT 阶段持久化的截图前后文构建 Vision 上下文。
+
+    ``content_md`` 是渲染视图，图片以 ``![img:N]`` 表示，不能再用 HTML ``<img>``
+    正则可靠恢复上下文。``images_json`` 才是 seq、章节和上下文的单一事实来源。
+    """
+
+    result: dict[int, str] = {}
+    for item in images_json or []:
+        if not isinstance(item, dict) or item.get("seq") is None:
+            continue
+        before = str(item.get("context_before") or "").strip()
+        after = str(item.get("context_after") or "").strip()
+        parts = []
+        if before:
+            parts.append(f"【截图前文】{before}")
+        if after:
+            parts.append(f"【截图后文】{after}")
+        if parts:
+            result[int(item["seq"])] = "\n".join(parts)
+    return result
+
+
+_TYPE_TO_EVIDENCE = {
+    "终端截图": ("terminal", "terminal"),
+    "日志截图": ("log", "log"),
+    "告警截图": ("alert", "alert"),
+    "任务截图": ("task", "task"),
+    # 弹框承载故障语义，但通常叠加在配置/任务页面上；surface 不能据此臆测。
+    "弹框截图": ("unknown", "dialog"),
+    "配置截图": ("config", "config"),
+    "其他截图": ("unknown", "other"),
+}
+
+# DESCRIPTION 是单模型结合文档上下文生成的语义 Proposal，不是截图中可直接观察到的事实。
+# 其中因果、根因、归责类表述风险最高：即使 OCR 完全正确，模型仍可能把上下游关系倒置。
+# 这里不尝试用关键词“纠正”业务结论，只做可审计的风险标记；运行时信号仍只能消费
+# observed_facts/text_lines/fields，不能消费 inferences。
+_HIGH_RISK_INFERENCE_TERMS = (
+    "根本原因",
+    "根因",
+    "导致",
+    "引发",
+    "造成",
+    "因此",
+    "从而",
+    "直接原因",
+    "必然",
+    "确认是",
+    "可确认",
+)
+
+
+def _assess_inference(description: str) -> tuple[str, bool, list[str]]:
+    """评估自由文本语义推断的可用边界，不伪造模型置信度。
+
+    返回 ``(status, needs_review, issues)``：
+    - 没有 DESCRIPTION：not_present；
+    - 普通语义概括：unverified，仍需与正文/其他证据交叉验证；
+    - 含因果/根因断言：needs_review，并给出稳定问题码。
+
+    无论返回哪种状态，DESCRIPTION 都不会晋升为 observed fact。
+    """
+
+    normalized = description.strip()
+    if not normalized:
+        return "not_present", False, []
+    if any(term in normalized for term in _HIGH_RISK_INFERENCE_TERMS):
+        return "needs_review", True, ["unsupported_causal_claim"]
+    return "unverified", True, ["single_model_semantic_inference"]
+
+
+def _mark_signal_generation_stale(kbd_entry: Any) -> None:
+    """Vision Evidence 变化后保留旧契约供 diff，但禁止继续当作 current 执行。"""
+    document = kbd_entry.signals_json
+    if not isinstance(document, dict) or not isinstance(document.get("generation_metadata"), dict):
+        return
+    document = dict(document)
+    metadata = dict(document["generation_metadata"])
+    metadata["status"] = "stale"
+    document["generation_metadata"] = metadata
+    kbd_entry.signals_json = document
+
+
+def _build_evidence_ir(
+    *,
+    seq: int,
+    section: str,
+    context_before: str,
+    context_after: str,
+    screenshot_type: str,
+    full_text: list[str],
+    description: str,
+    image_data: bytes,
+    prompt_template: str,
+    status: str | None = None,
+) -> dict[str, Any]:
+    """把 Vision Proposal 封装成可追溯 Evidence IR，保留事实/推断边界。"""
+
+    surface, evidence_type = _TYPE_TO_EVIDENCE.get(screenshot_type, ("unknown", "other"))
+    if status is None:
+        if full_text:
+            status = "success"
+        elif description:
+            status = "partial"
+        else:
+            status = "low_quality"
+    # needs_review 只描述“可观察证据抽取”是否可进入后续 Proposal。语义描述有独立的
+    # inference_* 质量维度，避免把 OCR 成功与语义推断正确混成一个布尔值。
+    needs_review = status in {"partial", "low_quality", "failed"} or evidence_type == "other"
+    inference_status, inference_needs_review, inference_issues = _assess_inference(description)
+
+    text_lines = [
+        {"text": line, "confidence": None, "bbox": None}
+        for line in full_text
+        if line.strip()
+    ]
+    observed_facts = [f"截图可见文字：{line}" for line in full_text if line.strip()]
+    # DESCRIPTION 是模型语义概括而非 OCR 原文，必须进入 inferences，不能伪装成可见事实。
+    inferences = [description] if description else []
+
+    inferred_mime = "image/png" if image_data.startswith(b"\x89PNG") else "image/jpeg"
+    transforms = [
+        {
+            "tile_id": f"tile_{index}",
+            "bbox_source": list(bbox) if bbox is not None else None,
+        }
+        for index, (_, _, bbox) in enumerate(
+            _prepare_vision_images(image_data, inferred_mime)
+        )
+    ]
+
+    return {
+        "schema_version": 1,
+        "seq": seq,
+        "section": section,
+        "context_before": context_before,
+        "context_after": context_after,
+        "regions": [{
+            "region_id": f"img_{seq}:r_0",
+            "surface": surface,
+            "evidence_type": evidence_type,
+            "bbox": None,
+            "text_lines": text_lines,
+            "fields": {"text": "\n".join(full_text)},
+            "observed_facts": observed_facts,
+            "inferences": inferences,
+        }],
+        "quality": {
+            # 当前模型不返回可信的标定置信度；None 明确表示未知，禁止伪造数值。
+            "ocr_coverage": None,
+            "type_confidence": None,
+            "status": status,
+            "needs_review": needs_review,
+            "inference_status": inference_status,
+            "inference_needs_review": inference_needs_review,
+            "inference_issues": inference_issues,
+        },
+        "provenance": {
+            "image_sha256": hashlib.sha256(image_data).hexdigest(),
+            "ocr_model": None,
+            "vision_model": _LLM_VISION_MODEL,
+            "prompt_revision": hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()[:16],
+            "transform": "tiled" if len(transforms) > 1 else "original-or-lossless-resize",
+            "transforms": transforms,
+        },
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 图片压缩（避免大图超时）
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _compress_image_if_needed(image_data: bytes, mime_type: str) -> tuple[bytes, str]:
-    """超过 1MB 时压缩图片。返回 (bytes, mime_type)。"""
+    """超限时保真优先缩放；文字 PNG 不再默认转成 quality=70 的 JPEG。"""
     if len(image_data) <= _MAX_VISION_IMAGE_SIZE:
         return image_data, mime_type
 
@@ -220,23 +393,87 @@ def _compress_image_if_needed(image_data: bytes, mime_type: str) -> tuple[bytes,
 
     try:
         img = Image.open(io.BytesIO(image_data))
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        if img.width > 1000:
-            ratio = 1000 / img.width
-            img = img.resize((1000, int(img.height * ratio)), Image.Resampling.LANCZOS)
+        max_dimension = 2400
+        if max(img.width, img.height) > max_dimension:
+            ratio = max_dimension / max(img.width, img.height)
+            img = img.resize(
+                (max(1, int(img.width * ratio)), max(1, int(img.height * ratio))),
+                Image.Resampling.LANCZOS,
+            )
         buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=70)
+        if mime_type.lower() == "image/png":
+            # UI/终端/日志文字边缘对有损压缩非常敏感，优先使用无损 PNG。
+            img.save(buffer, format="PNG", optimize=True)
+            output_mime = "image/png"
+        else:
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.save(buffer, format="JPEG", quality=90, optimize=True)
+            output_mime = "image/jpeg"
         compressed = buffer.getvalue()
         logger.info(
             "图片压缩 %dKB->%dKB",
             len(image_data) // 1024,
             len(compressed) // 1024,
         )
-        return compressed, "image/jpeg"
+        return compressed, output_mime
     except Exception as exc:
         logger.warning("压缩失败：%s，使用原图", exc)
         return image_data, mime_type
+
+
+def _prepare_vision_images(
+    image_data: bytes,
+    mime_type: str,
+) -> list[tuple[bytes, str, tuple[int, int, int, int] | None]]:
+    """为超长文字截图生成有重叠的多尺度切片，并保留源图坐标。"""
+    try:
+        from PIL import Image
+    except ImportError:
+        compressed, output_mime = _compress_image_if_needed(image_data, mime_type)
+        return [(compressed, output_mime, None)]
+
+    try:
+        image = Image.open(io.BytesIO(image_data))
+        width, height = image.size
+        long_side = max(width, height)
+        short_side = max(1, min(width, height))
+        if long_side <= 2400 or long_side / short_side < 2.2:
+            compressed, output_mime = _compress_image_if_needed(image_data, mime_type)
+            return [(compressed, output_mime, (0, 0, width, height))]
+
+        vertical = height >= width
+        tile_extent = 1800
+        overlap = 180
+        step = tile_extent - overlap
+        axis_length = height if vertical else width
+        starts = [0]
+        while starts[-1] + tile_extent < axis_length and len(starts) < 8:
+            next_start = min(starts[-1] + step, axis_length - tile_extent)
+            if next_start <= starts[-1]:
+                break
+            starts.append(next_start)
+
+        tiles: list[tuple[bytes, str, tuple[int, int, int, int] | None]] = []
+        for start in sorted(set(starts)):
+            end = min(axis_length, start + tile_extent)
+            bbox = (0, start, width, end) if vertical else (start, 0, end, height)
+            crop = image.crop(bbox)
+            buffer = io.BytesIO()
+            if mime_type.lower() == "image/png":
+                crop.save(buffer, format="PNG", optimize=True)
+                output_mime = "image/png"
+            else:
+                if crop.mode not in ("RGB", "L"):
+                    crop = crop.convert("RGB")
+                crop.save(buffer, format="JPEG", quality=90, optimize=True)
+                output_mime = "image/jpeg"
+            tiles.append((buffer.getvalue(), output_mime, bbox))
+        return tiles or [(image_data, mime_type, (0, 0, width, height))]
+    except Exception as exc:
+        logger.warning("图片切片失败：%s，回退单图保真压缩", exc)
+        compressed, output_mime = _compress_image_if_needed(image_data, mime_type)
+        return [(compressed, output_mime, None)]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -258,10 +495,22 @@ async def _vision_analyze(
         (type, background, full_text_lines, description)
         失败时返回 ("其他截图", "其他", [], "")
     """
-    image_data, mime_type = _compress_image_if_needed(image_data, mime_type)
-    b64 = base64.b64encode(image_data).decode("utf-8")
-    data_uri = f"data:{mime_type};base64,{b64}"
+    prepared_images = _prepare_vision_images(image_data, mime_type)
+    image_parts = [
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{prepared_mime};base64,{base64.b64encode(prepared_data).decode('utf-8')}"
+            },
+        }
+        for prepared_data, prepared_mime, _ in prepared_images
+    ]
     prompt = prompt_template.format(context=context or "（无上下文）")
+    if len(prepared_images) > 1:
+        prompt += (
+            f"\n\n【多尺度切片说明】原图按视觉顺序拆为 {len(prepared_images)} 张有重叠切片；"
+            "请跨切片去重，仍按原图从上到下、从左到右输出完整文字。"
+        )
 
     def _fmt_vision_err(exc: Exception) -> str:
         if getattr(exc, "response", None) is not None:
@@ -286,7 +535,7 @@ async def _vision_analyze(
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": data_uri}},
+                        *image_parts,
                     ],
                 }],
             max_tokens=_VISION_MAX_TOKENS,
@@ -348,7 +597,7 @@ async def _vision_analyze(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _parse_type(raw: str) -> str:
-    m = re.search(r"TYPE[:\s]+(终端截图|日志截图|告警截图|任务截图|配置截图|其他截图)", raw)
+    m = re.search(r"TYPE[:\s]+(终端截图|日志截图|告警截图|任务截图|弹框截图|配置截图|其他截图)", raw)
     return m.group(1) if m else "其他截图"
 
 
@@ -432,7 +681,7 @@ async def reanalyze_kbd_images(
     流程：
       1. 从 system_prompt 表热加载 Vision Prompt（kbd_vision_v1）
       2. 查询 kbd_image 表获取该 KBD 的所有原始图片
-      3. 查询 kbd_entry 获取 content_md（用于提取图片上下文）
+      3. 查询 kbd_entry.images_json 获取 IMPORT 阶段持久化的截图上下文
       4. 并发调用 Vision LLM（Semaphore 控制）
       5. 组装 images_json，更新 kbd_entry.images_json
       6. 调用 kbd_entry.rebuild_content_md() 重建 content_md
@@ -497,8 +746,11 @@ async def reanalyze_kbd_images(
                 "message": "该 KBD 无原始图片，无法重算识图",
             }
 
-        # 将图片数据和上下文来源拉入内存中，以便后续在无 DB 连接的情况下处理
+        # 将图片数据和 Evidence 元数据拉入内存，避免 DB session 关闭后的 ORM 懒加载。
         context_source = kbd_entry.content_md or ""
+        existing_images_json = [
+            dict(item) for item in (kbd_entry.images_json or []) if isinstance(item, dict)
+        ]
         image_items = []
         for img in kbd_images:
             image_items.append({
@@ -507,13 +759,21 @@ async def reanalyze_kbd_images(
                 "image_data": img.image_data,
             })
 
-    # 2. 构建图片上下文映射
-    context_map = _build_context_map_from_html(context_source)
+    # 2. 新数据直接使用 IMPORT 阶段持久化上下文；HTML 解析仅为存量数据兼容兜底。
+    context_map = _build_context_map_from_images_json(existing_images_json)
+    if not context_map:
+        context_map = _build_context_map_from_html(context_source)
+
+    existing_by_seq = {
+        int(item["seq"]): item
+        for item in existing_images_json
+        if item.get("seq") is not None
+    }
 
     # 保留 IMPORT 阶段已算出的章节归属（seq → section），避免 VISION 重建时退化统一为 steps_text。
     section_by_seq = {
         item.get("seq"): (item.get("section") or "steps_text")
-        for item in (kbd_entry.images_json or [])
+        for item in existing_images_json
         if item.get("seq") is not None
     }
 
@@ -542,6 +802,9 @@ async def reanalyze_kbd_images(
         context = context_map.get(seq, "")
         # 沿用 IMPORT 阶段算出的章节（而非硬编码 steps_text），保证按章节检索/渲染的准确性
         section = section_by_seq.get(seq, "steps_text")
+        old_item = existing_by_seq.get(seq, {})
+        context_before = str(old_item.get("context_before") or "")
+        context_after = str(old_item.get("context_after") or "")
 
         async with sem:
             try:
@@ -572,12 +835,26 @@ async def reanalyze_kbd_images(
                     )
 
                 desc = _format_desc(screenshot_type, background, full_text, description)
+                evidence = _build_evidence_ir(
+                    seq=seq,
+                    section=section,
+                    context_before=context_before,
+                    context_after=context_after,
+                    screenshot_type=screenshot_type,
+                    full_text=full_text,
+                    description=description,
+                    image_data=image_item["image_data"],
+                    prompt_template=prompt_template,
+                )
 
                 async with images_json_lock:
                     images_json.append({
                         "seq": seq,
                         "section": section,
+                        "context_before": context_before,
+                        "context_after": context_after,
                         "desc": desc,
+                        "evidence": evidence,
                     })
 
                 stats["done"] += 1
@@ -599,7 +876,21 @@ async def reanalyze_kbd_images(
                     images_json.append({
                         "seq": seq,
                         "section": section,
+                        "context_before": context_before,
+                        "context_after": context_after,
                         "desc": "",
+                        "evidence": _build_evidence_ir(
+                            seq=seq,
+                            section=section,
+                            context_before=context_before,
+                            context_after=context_after,
+                            screenshot_type="其他截图",
+                            full_text=[],
+                            description="",
+                            image_data=image_item["image_data"],
+                            prompt_template=prompt_template,
+                            status="failed",
+                        ),
                     })
                 logger.error(
                     event="vision_image_failed",
@@ -631,6 +922,7 @@ async def reanalyze_kbd_images(
             kbd_entry = entry_result.scalar_one()
             old_images = list(kbd_entry.images_json or [])
             kbd_entry.images_json = images_json
+            _mark_signal_generation_stale(kbd_entry)
             kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
             kbd_entry.sync_sections_from_content_md()
             await db_session.commit()
@@ -650,6 +942,7 @@ async def reanalyze_kbd_images(
                 kbd_entry = entry_result.scalar_one()
                 old_images = list(kbd_entry.images_json or [])
                 kbd_entry.images_json = images_json
+                _mark_signal_generation_stale(kbd_entry)
                 kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
                 kbd_entry.sync_sections_from_content_md()
                 await db_session.commit()
@@ -702,7 +995,7 @@ async def reanalyze_single_image(
     流程：
       1. 从 system_prompt 表热加载 Vision Prompt（kbd_vision_v1）
       2. 查询 kbd_image 表获取指定 seq 的原始图片
-      3. 查询 kbd_entry 获取 content_md（用于提取图片上下文）
+      3. 查询 kbd_entry.images_json 获取 IMPORT 阶段持久化的截图上下文
       4. 调用 Vision LLM（单次调用，无并发）
       5. 更新 images_json 中对应 seq 的 desc 字段
       6. 调用 kbd_entry.rebuild_content_md() 重建 content_md
@@ -774,16 +1067,23 @@ async def reanalyze_single_image(
         image_data = kbd_image.image_data
         mime_type = kbd_image.mime_type or "image/png"
         context_source = kbd_entry.content_md or ""
+        existing_images_json = [
+            dict(item) for item in (kbd_entry.images_json or []) if isinstance(item, dict)
+        ]
 
     # 沿用 IMPORT 阶段算出的章节（而非硬编码 steps_text），保证单图刷新后章节不退化
     old_section = "steps_text"
-    for _it in (kbd_entry.images_json or []):
+    old_item: dict[str, Any] = {}
+    for _it in existing_images_json:
         if _it.get("seq") == seq:
             old_section = _it.get("section") or "steps_text"
+            old_item = _it
             break
 
     # 2. 构建图片上下文与调用 Vision LLM（不占有任何 DB 连接）
-    context_map = _build_context_map_from_html(context_source)
+    context_map = _build_context_map_from_images_json(existing_images_json)
+    if seq not in context_map:
+        context_map.update(_build_context_map_from_html(context_source))
     context = context_map.get(seq, "")
 
     # 创建 LLM 客户端
@@ -826,6 +1126,17 @@ async def reanalyze_single_image(
 
     # 3. 组装 desc
     desc = _format_desc(screenshot_type, background, full_text, description)
+    evidence = _build_evidence_ir(
+        seq=seq,
+        section=old_section,
+        context_before=str(old_item.get("context_before") or ""),
+        context_after=str(old_item.get("context_after") or ""),
+        screenshot_type=screenshot_type,
+        full_text=full_text,
+        description=description,
+        image_data=image_data,
+        prompt_template=prompt_template,
+    )
 
     # 4. 写入阶段：再开启一个 short-lived session 写入数据库（重新查询并更新，防止断线）
     async with session_factory() as db_session:
@@ -845,6 +1156,7 @@ async def reanalyze_single_image(
                 if item.get("seq") == seq:
                     item["desc"] = desc
                     item["section"] = section
+                    item["evidence"] = evidence
                     found = True
                     break
 
@@ -852,11 +1164,15 @@ async def reanalyze_single_image(
                 images_json.append({
                     "seq": seq,
                     "section": section,
+                    "context_before": str(old_item.get("context_before") or ""),
+                    "context_after": str(old_item.get("context_after") or ""),
                     "desc": desc,
+                    "evidence": evidence,
                 })
 
             images_json.sort(key=lambda x: x["seq"])
             kbd_entry.images_json = images_json
+            _mark_signal_generation_stale(kbd_entry)
             kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
             kbd_entry.sync_sections_from_content_md()
             await db_session.commit()
@@ -882,6 +1198,7 @@ async def reanalyze_single_image(
                     if item.get("seq") == seq:
                         item["desc"] = desc
                         item["section"] = section
+                        item["evidence"] = evidence
                         found = True
                         break
 
@@ -889,11 +1206,15 @@ async def reanalyze_single_image(
                     images_json.append({
                         "seq": seq,
                         "section": section,
+                        "context_before": str(old_item.get("context_before") or ""),
+                        "context_after": str(old_item.get("context_after") or ""),
                         "desc": desc,
+                        "evidence": evidence,
                     })
 
                 images_json.sort(key=lambda x: x["seq"])
                 kbd_entry.images_json = images_json
+                _mark_signal_generation_stale(kbd_entry)
                 kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
                 kbd_entry.sync_sections_from_content_md()
                 await db_session.commit()

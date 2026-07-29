@@ -244,7 +244,7 @@ async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
     # --failed-only 参数：仅处理失败的案例
     failed_only = getattr(args, "failed_only", False)
 
-    pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
+    pool = await asyncpg.create_pool(dsn=settings.asyncpg_database_url)
     try:
         if failed_only:
             logger.info("--failed-only 模式：筛选 Vision 失败案例")
@@ -330,7 +330,7 @@ async def _cmd_classify(args: argparse.Namespace, run_id: str) -> None:
         print("请在环境变量或 .env 文件中设置 INTERNAL_API_TOKEN")
         sys.exit(1)
 
-    pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1))
+    pool = await asyncpg.create_pool(dsn=settings.asyncpg_database_url)
     try:
         # 只处理已入库且未分类的
         classify_ids = await pool.fetch(

@@ -164,6 +164,9 @@ def _write_raw(support_id: str, rows: dict[str, Any]) -> None:
                 json.dumps(rows, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            # 详情已经成功持久化，旧的请求失败标记必须同步清除；否则
+            # --failed-only 会把已恢复案例永久误判为失败并反复重跑。
+            (kbd_dir / "fetch.failed").unlink(missing_ok=True)
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 

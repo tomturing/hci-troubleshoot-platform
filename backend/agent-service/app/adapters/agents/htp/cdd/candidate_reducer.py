@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .models import CandidateAssessment, CandidateState, SignalOutcome, SignalPlan
+from .models import CandidateAssessment, CandidateState, EvidenceRole, SignalOutcome, SignalPlan
 
 
 def initial_assessments(plan: SignalPlan) -> dict[str, CandidateAssessment]:
@@ -28,27 +28,68 @@ def reduce_candidates(
     for kbd_id, assessment in assessments.items():
         if assessment.state in (CandidateState.NOT_EXECUTABLE, CandidateState.REJECTED):
             continue
-        refs = [ref for ref in plan.signals.values() if ref.kbd_id == kbd_id and ref.required_for_support]
-        outcomes = [assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN) for ref in refs]
-        rejecting = [
+        if assessment.scope_state == "UNKNOWN":
+            # 即使所有现场信号都成立，适用范围未知也不能确认案例。
+            assessment.state = CandidateState.INCONCLUSIVE
+            continue
+        refs = [ref for ref in plan.signals.values() if ref.kbd_id == kbd_id]
+        must_refs = [ref for ref in refs if ref.evidence_role is EvidenceRole.MUST]
+        should_refs = [ref for ref in refs if ref.evidence_role is EvidenceRole.SHOULD]
+        exclude_refs = [ref for ref in refs if ref.evidence_role is EvidenceRole.EXCLUDE]
+        must_outcomes = [assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN) for ref in must_refs]
+        contradicted_must = [
             ref
-            for ref in refs
-            if ref.failure_effect == "reject"
-            and assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN) is SignalOutcome.FAIL
+            for ref in must_refs
+            if assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN)
+            is SignalOutcome.CONTRADICTED
         ]
-        if rejecting:
+        satisfied_excludes = [
+            ref
+            for ref in exclude_refs
+            if assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN)
+            is SignalOutcome.SATISFIED
+        ]
+        if contradicted_must or satisfied_excludes:
             assessment.state = CandidateState.REJECTED
-            assessment.reasons = [f"required signal FAIL: {ref.signal_id}" for ref in rejecting]
-        elif refs and all(outcome is SignalOutcome.PASS for outcome in outcomes):
+            assessment.reasons = (
+                [f"must signal CONTRADICTED: {ref.signal_id}" for ref in contradicted_must]
+                + [f"exclude signal SATISFIED: {ref.signal_id}" for ref in satisfied_excludes]
+            )
+            continue
+
+        minimum_should = plan.verification_policies.get(kbd_id).minimum_should if kbd_id in plan.verification_policies else 0
+        satisfied_should = sum(
+            assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN)
+            is SignalOutcome.SATISFIED
+            for ref in should_refs
+        )
+        excludes_cleared = all(
+            assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN)
+            is SignalOutcome.CONTRADICTED
+            for ref in exclude_refs
+        )
+        if (
+            must_refs
+            and all(outcome is SignalOutcome.SATISFIED for outcome in must_outcomes)
+            and satisfied_should >= minimum_should
+            and excludes_cleared
+        ):
             assessment.state = CandidateState.SUPPORTED
-            assessment.reasons = ["all required signals PASS"]
+            assessment.reasons = [
+                "all must signals SATISFIED, exclude signals cleared, and minimum_should reached"
+            ]
         elif finalize:
             assessment.state = CandidateState.INCONCLUSIVE
             unresolved = [
                 f"{ref.signal_id}={assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN).value}"
-                for ref in refs
-                if assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN) is not SignalOutcome.PASS
+                for ref in must_refs + exclude_refs
+                if assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN)
+                not in (
+                    SignalOutcome.SATISFIED if ref.evidence_role is EvidenceRole.MUST else SignalOutcome.CONTRADICTED,
+                )
             ]
+            if satisfied_should < minimum_should:
+                unresolved.append(f"should={satisfied_should}/{minimum_should}")
             assessment.reasons = unresolved or ["required evidence incomplete"]
         else:
             assessment.state = CandidateState.CANDIDATE

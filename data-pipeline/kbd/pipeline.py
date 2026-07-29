@@ -34,6 +34,7 @@ data-pipeline/kbd/pipeline.py — KBD 知识生产管道编排（API 调用版�
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Iterable, Sequence
@@ -115,12 +116,8 @@ def resolve_stages(requested: Iterable[Stage]) -> list[Stage]:
 
 async def _create_pool() -> asyncpg.Pool:
     """创建 asyncpg 连接池（用于读取状态，写入通过 API）"""
-    db_url = settings.DATABASE_URL
-    # asyncpg 使用 postgresql:// 而非 postgres://
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
     return await asyncpg.create_pool(
-        dsn=db_url,
+        dsn=settings.asyncpg_database_url,
         min_size=settings.DB_POOL_MIN,
         max_size=settings.DB_POOL_MAX,
     )
@@ -336,8 +333,8 @@ async def run_pipeline(
                     """SELECT signals_json FROM kbd_entry WHERE support_id = $1""",
                     cid,
                 )
-                done = row and row["signals_json"] and row["signals_json"] != "[]"
-                update_stage_status(progress, "extract", cid, "done" if done else "failed")
+                status = _signal_document_status(row["signals_json"] if row else None)
+                update_stage_status(progress, "extract", cid, status)
             save_progress(run_id, progress)
 
         # 标记进度完成
@@ -367,6 +364,24 @@ async def _get_import_ready_ids(kbd_ids: list[str], pool: asyncpg.Pool) -> list[
     return ready_ids
 
 
+def _signal_document_status(raw: object) -> str:
+    """Signal 阶段完成判据：非空信号与案例验证契约必须同时存在。"""
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return "failed"
+    if not isinstance(raw, dict):
+        return "failed"
+    signals = raw.get("signals")
+    if not isinstance(signals, list) or not signals:
+        return "needs_review"
+    if not isinstance(raw.get("verification_contract"), dict):
+        return "needs_review"
+    return "done"
+
+
 async def _get_vision_ready_ids(kbd_ids: list[str], pool: asyncpg.Pool) -> list[str]:
     """获取可执行 Vision 的案例 ID 列表。
 
@@ -394,8 +409,11 @@ async def _db_failed_vision_ids(
 ) -> list[str]:
     """从 DB 筛选 VISION 失败的案例（P1-6 跟进：与 _db_vision_status 同源判据，避免回滚到 image_proc）。
 
-    判据：kbd_entry 存在且 images_json 中存在 desc 为空的 seq（与 _db_vision_status 的 'failed'
-    判据一致），且 kbd_image 表非空（有图但未识别完成）。
+    判据：kbd_entry 存在，且图片缺少 Evidence，或抽取状态属于可重试失败；kbd_image 表非空。
+
+    ``quality.needs_review=true`` 但 ``status=success``（例如物理设备照片被诚实归为
+    other）属于人工审核队列，不是自动重试队列。把两者混在一起会造成 failed-only
+    永久重跑同一张图，既浪费模型调用，也无法消除真正需要人的语义歧义。
 
     Args:
         kbd_ids: support_id 列表
@@ -406,7 +424,7 @@ async def _db_failed_vision_ids(
     close_pool = False
     if pool is None:
         pool = await asyncpg.create_pool(
-            dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1)
+            dsn=settings.asyncpg_database_url
         )
         close_pool = True
     try:
@@ -419,6 +437,9 @@ async def _db_failed_vision_ids(
               AND EXISTS (
                   SELECT 1 FROM jsonb_array_elements(e.images_json) AS img
                   WHERE (img->>'desc') IS NULL OR length(btrim(img->>'desc')) = 0
+                     OR NOT (img ? 'evidence')
+                     OR COALESCE(img->'evidence'->'quality'->>'status', 'success')
+                        IN ('partial', 'low_quality', 'failed', 'needs_review')
               )
             """,
             kbd_ids,
@@ -429,14 +450,32 @@ async def _db_failed_vision_ids(
             await pool.close()
 
 
+def _vision_item_status(item: dict) -> str:
+    """单图完成判据：兼容 legacy desc，新 Evidence 则以结构化质量为准。"""
+
+    if not (item.get("desc") or "").strip():
+        return "failed"
+    evidence = item.get("evidence")
+    if not isinstance(evidence, dict):
+        return "done"
+    quality = evidence.get("quality") or {}
+    status = str(quality.get("status") or "").lower()
+    if status == "failed":
+        return "failed"
+    if quality.get("needs_review") or status in {"partial", "low_quality", "needs_review"}:
+        return "needs_review"
+    return "done"
+
+
 async def _db_vision_status(pool: asyncpg.Pool, support_id: str) -> str:
-    """基于 DB images_json desc 完整性判读 VISION 完成状态（P0-4：进度追踪改判数据库）。
+    """基于 DB images_json Evidence 质量判读 VISION 完成状态。
 
     判据：
       - kbd_entry 不存在 → 'failed'（异常，前置 IMPORT 失败）
       - images_json 为空 → 'failed'（无图片案例不应进入 VISION 阶段）
-      - 存在 seq 但 desc 为空 → 'failed'（VISION 未完成）
-      - 所有 seq 的 desc 都非空 → 'done'
+      - 存在 seq 但 desc 为空或 Evidence.status=failed → 'failed'
+      - Evidence 标记 partial/low_quality/needs_review → 'needs_review'
+      - 所有 seq 的结构化质量通过（legacy 数据则 desc 非空）→ 'done'
     """
     row = await pool.fetchrow(
         """
@@ -462,8 +501,12 @@ async def _db_vision_status(pool: asyncpg.Pool, support_id: str) -> str:
     # 非 dict 元素计为"未完成"，避免 AttributeError 并触发重新识图/入库。
     dict_items = [item for item in images_json if isinstance(item, dict)]
     stale_items = [item for item in images_json if not isinstance(item, dict)]
-    incomplete = [item for item in dict_items if not (item.get("desc") or "").strip()]
-    return "failed" if (incomplete or stale_items) else "done"
+    statuses = [_vision_item_status(item) for item in dict_items]
+    if stale_items or "failed" in statuses:
+        return "failed"
+    if "needs_review" in statuses:
+        return "needs_review"
+    return "done"
 
 
 async def run_from_excel(

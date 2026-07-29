@@ -1,0 +1,24 @@
+{
+  "support_id": "37150",
+  "title_contains": "Too many open files",
+  "required_source_tokens": ["sfvt_numa-server.log", "Too many open files", "10000", "不会超过100", "pidof numa-server"],
+  "minimum_images": 3,
+  "replay_environment": {"product": "HCI", "components": ["NUMA"], "topology": []},
+  "signals_document": {
+    "schema_version": 2,
+    "signals": [
+      {"id": "cpu_limit_task", "role": "must", "acquire": {"tool": "qkv_task", "args": {"keyword": "设置CPU限速", "is_failed": true, "limit": 1}}, "match": null, "orchestrate": {"phase": "diagnostic", "produces": [{"name": "HOST", "path": "host"}, {"name": "VM", "path": "vm"}], "requires": []}, "provenance": {"category": "frontend", "source_section": "alert_info", "source_refs": ["img:0"]}},
+      {"id": "open_files_log", "role": "must", "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_numa-server.log", "host": "{{HOST}}"}}, "match": {"type": "keyword", "pattern": "Too many open files", "mode": "or", "expected": true}, "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["HOST"]}},
+      {"id": "numa_pid", "role": "context", "acquire": {"tool": "qfk_system", "args": {"command": "pidof numa-server", "host": "{{HOST}}"}}, "match": null, "orchestrate": {"phase": "diagnostic", "produces": [{"name": "PID", "type": "integer", "extract": {"type": "text", "column_mode": "whole", "cardinality": "first"}}], "requires": ["HOST"]}},
+      {"id": "fd_count", "role": "must", "acquire": {"tool": "qfk_system", "args": {"command": "ls -1 /proc/{{PID}}/fd", "host": "{{HOST}}"}}, "match": {"type": "threshold", "aggregation": "line_count", "operator": ">", "value": 100, "expected": true}, "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["HOST", "PID"]}},
+      {"id": "maps_fd_pattern", "role": "should", "acquire": {"tool": "qfk_system", "args": {"command": "ls -l /proc/{{PID}}/fd", "host": "{{HOST}}"}}, "match": {"type": "regex", "pattern": "->\\s+/proc/\\d+/maps", "expected": true}, "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["HOST", "PID"]}, "provenance": {"category": "backend", "source_section": "steps_text", "source_refs": ["img:2"]}}
+    ],
+    "verification_contract": {"schema_version": 1, "case_id": "37150", "scope": {"products": ["HCI"], "versions": [], "components": ["NUMA"], "topology_constraints": []}, "evidence_policy": {"must": ["cpu_limit_task", "open_files_log", "fd_count"], "should": ["maps_fd_pattern"], "exclude": [], "context": ["numa_pid"], "minimum_should": 1, "on_missing_must": "inconclusive"}}
+  },
+  "replay_scenarios": [
+    {"id": "positive", "expected_verdict": "confirmed", "outcomes": {"cpu_limit_task": "SATISFIED", "open_files_log": "SATISFIED", "numa_pid": "SATISFIED", "fd_count": "SATISFIED", "maps_fd_pattern": "SATISFIED"}},
+    {"id": "strong_negative", "expected_verdict": "rejected", "outcomes": {"cpu_limit_task": "SATISFIED", "open_files_log": "CONTRADICTED", "numa_pid": "SATISFIED", "fd_count": "SATISFIED", "maps_fd_pattern": "SATISFIED"}},
+    {"id": "unknown", "expected_verdict": "inconclusive", "outcomes": {"cpu_limit_task": "SATISFIED", "open_files_log": "SATISFIED", "numa_pid": "SATISFIED", "fd_count": "UNKNOWN", "maps_fd_pattern": "SATISFIED"}},
+    {"id": "error", "expected_verdict": "inconclusive", "outcomes": {"cpu_limit_task": "SATISFIED", "open_files_log": "SATISFIED", "numa_pid": "SATISFIED", "fd_count": "ERROR", "maps_fd_pattern": "SATISFIED"}}
+  ]
+}

@@ -21,6 +21,8 @@ QFK 信号处理器
 import re
 import shlex
 
+from shared.schemas.acquirer_args import ALLOWED_LOG_PATH_PREFIXES, SAFE_LOG_FILE_PATTERN
+
 from app.tools.qfk.signal import (
     VALID_SERVICE_CONTAINERS,
     BackendSignal,
@@ -152,19 +154,18 @@ class LogKeywordHandler(BackendSignalHandler):
 
         # 日志路径（仅允许以 /sf/... 前缀开头，先于文件名校验触发以暴露越权）
         if signal.path:
-            allowed_prefixes = ("/sf/log/", "/sf/logs/", "/sf/data/", "/sf/datanew/")
-            if not signal.path.startswith(allowed_prefixes):
-                raise CommandBuildError(f"日志路径只允许以以下前缀开头: {allowed_prefixes}")
+            if not signal.path.startswith(ALLOWED_LOG_PATH_PREFIXES):
+                raise CommandBuildError(f"日志路径只允许以以下前缀开头: {ALLOWED_LOG_PATH_PREFIXES}")
             parts.extend(["-p", shlex.quote(signal.path)])
 
         # 日志文件名（file 字段）
         file = signal.file
         if not file:
             raise CommandBuildError("qfk_log 必须提供日志文件名（通过 file 字段）")
-        if "/" in file:
-            raise CommandBuildError(f"日志文件名非法：不能包含路径分隔符 (/)：{file}")
-        if not file.endswith(".log"):
-            raise CommandBuildError(f"日志文件名必须以 .log 结尾：{file}")
+        if "/" in file or "\\" in file:
+            raise CommandBuildError(f"日志文件名非法：不能包含路径分隔符：{file}")
+        if file in {".", ".."} or not re.fullmatch(SAFE_LOG_FILE_PATTERN, file):
+            raise CommandBuildError(f"日志文件名必须是无目录、无控制字符的安全 basename：{file}")
         parts.extend(["-f", shlex.quote(file)])
 
         # 时间窗

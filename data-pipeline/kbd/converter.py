@@ -6,11 +6,12 @@ data-pipeline/kbd/converter.py — 文件缓存 → 结构化字段
   2. 解析 rows.content HTML，提取全部 9 个 section 的内容
   3. 按图片在 HTML 中的出现顺序建立全局 seq 映射（跨 section 统一编号）
   4. 将章节内容语义化（仅取语义文本，丢弃装饰样式），图片位置以 ![img:N] 占位符标记
-  5. 组装结构化字典（8 大章节字段 + images_json + 图片二进制），交由 importer 入库
+  5. 组装结构化字典（8 大章节字段 + Evidence 上下文 + 图片二进制），交由 importer 入库
   6. 必填字段（问题描述/有效排查步骤/解决方案）缺失 → 写 abnormal.json，返回 None
 
 设计原则（Content–Presentation Separation）：
   - pipeline 只做语义提取，content_md 不在此生成，交由后端 rebuild_content_md 统一渲染
+  - 图片前后文在 IMPORT 阶段从章节语义文本中确定性提取并持久化，VISION 不再反向解析 content_md
   - 图片视觉描述（desc）初始留空，由 VISION 阶段（reanalyze）填充到 images_json
   - 不再依赖本地 img_N.desc.txt 文件（该 legacy 机制已于 2026-07 彻底移除）
 """
@@ -86,12 +87,42 @@ _ALIAS_TO_FIELD: dict[str, str] = {
     alias: field for field, _, aliases in _FIELD_CONFIG for alias in aliases
 }
 
+_IMAGE_PLACEHOLDER_RE = re.compile(r"!\[img:(\d+)\]")
+_IMAGE_CONTEXT_BEFORE_CHARS = 800
+_IMAGE_CONTEXT_AFTER_CHARS = 300
+
 
 # ─── VISION 描述（desc）来源 ─────────────────────────────────────────────────
 # 已废弃：FULL_TEXT 截断已不需要。Vision LLM 后端直接存储完整 desc，由 frontend 按需渲染。
 # 新架构：data-pipeline 不再写 images_json.desc，也不再从本地 img_N.desc.txt 读取；
 #   images_json.desc 初始留空，由 VISION 阶段（reanalyze）填充。
 # legacy 旧路径 convert_kbd / convert_kbd_with_meta / _load_vision_desc 已彻底移除（2026-07）。
+
+
+def _normalize_image_context(text: str) -> str:
+    """清理截图上下文中的其他图片占位符和展示性空白。"""
+
+    without_placeholders = _IMAGE_PLACEHOLDER_RE.sub(" ", text)
+    return re.sub(r"\s+", " ", without_placeholders).strip()
+
+
+def _extract_image_context(section_text: str, seq: int) -> tuple[str, str]:
+    """从章节语义文本中提取指定截图的前后文。
+
+    截图序号在 IMPORT 阶段仍与章节文本中的 ``![img:N]`` 同源，此时提取不会受到
+    后续 ``rebuild_content_md/sync_sections_from_content_md`` 往返渲染的影响。相同图片
+    在同一章节重复出现时采用首次出现位置，保证结果确定且可复现。
+    """
+
+    marker = f"![img:{seq}]"
+    pos = section_text.find(marker)
+    if pos < 0:
+        return "", ""
+
+    before = section_text[max(0, pos - _IMAGE_CONTEXT_BEFORE_CHARS):pos]
+    after_start = pos + len(marker)
+    after = section_text[after_start:after_start + _IMAGE_CONTEXT_AFTER_CHARS]
+    return _normalize_image_context(before), _normalize_image_context(after)
 
 
 # ─── HTML → Markdown 转换器 ──────────────────────────────────────────────────
@@ -438,7 +469,9 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
       - is_temporary         ← 是否是临时解决方案
       - recommendations      ← 建议与总结
       - signals_json          ← [] （空，待关键信号分级抽取阶段填充）
-      - images_json          ← [{"seq": N, "section": field_name, "desc": "..."}]
+      - images_json          ← [{"seq": N, "section": field_name,
+                                  "context_before": "...", "context_after": "...",
+                                  "desc": "..."}]
       - content_md           ← 全部章节聚合 Markdown（含完整视觉描述块，供 LLM 注入）
 
     图片处理策略（方案 B）：
@@ -515,20 +548,34 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
     # ── 构建 images_json + images（图片封装） ──────────────────────────────
     # 通过扫描章节语义文本中的占位符确定每张图的归属章节字段
     seq_to_section: dict[int, str] = {}
+    seq_to_context: dict[int, tuple[str, str]] = {}
     for md_title, field_name in _MD_TITLE_TO_FIELD.items():
-        for m in re.finditer(r'!\[img:(\d+)\]', section_texts.get(md_title, "")):
-            seq_to_section[int(m.group(1))] = field_name
+        section_text = section_texts.get(md_title, "")
+        for m in _IMAGE_PLACEHOLDER_RE.finditer(section_text):
+            seq = int(m.group(1))
+            seq_to_section.setdefault(seq, field_name)
+            seq_to_context.setdefault(seq, _extract_image_context(section_text, seq))
     # 排查内容归属到 steps_text
-    for m in re.finditer(r'!\[img:(\d+)\]', section_texts.get("排查内容", "")):
-        seq_to_section[int(m.group(1))] = "steps_text"
+    troubleshooting_text = section_texts.get("排查内容", "")
+    for m in _IMAGE_PLACEHOLDER_RE.finditer(troubleshooting_text):
+        seq = int(m.group(1))
+        seq_to_section.setdefault(seq, "steps_text")
+        seq_to_context.setdefault(seq, _extract_image_context(troubleshooting_text, seq))
 
     images_json: list[dict[str, Any]] = []
     images: list[dict[str, Any]] = []  # 图片二进制（base64），随 ingest 原子写入 kbd_image
     for entry in image_map.values():
         seq = entry["seq"]
         section = seq_to_section.get(seq, "steps_text")
+        context_before, context_after = seq_to_context.get(seq, ("", ""))
         # desc 初始为空，由 VISION 阶段（reanalyze）填充
-        images_json.append({"seq": seq, "section": section, "desc": ""})
+        images_json.append({
+            "seq": seq,
+            "section": section,
+            "context_before": context_before,
+            "context_after": context_after,
+            "desc": "",
+        })
         img_b64 = _load_image_base64(support_id, seq)
         if img_b64 is None:
             logger.warning("案例 %s 图片 img_%d 文件缺失，跳过该图入库", support_id, seq)

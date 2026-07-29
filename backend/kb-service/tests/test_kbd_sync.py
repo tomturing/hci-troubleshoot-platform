@@ -41,6 +41,40 @@ async def test_kbd_entry_sync_sections_from_content_md():
     assert kbd.root_cause == ""
     assert kbd.recommendations == ""
 
+
+def test_rebuild_content_md_excludes_unverified_image_inference_from_agent_view():
+    kbd = KbdEntry()
+    kbd.problem_description = "故障现象如下：![img:0]"
+    kbd.images_json = [{
+        "seq": 0,
+        "section": "problem_description",
+        "desc": (
+            "TYPE: 告警截图\nBACKGROUND: 白色\nFULL_TEXT:\n"
+            "- 数据通信口(vxlan)告警\nDESCRIPTION:\n"
+            "网口掉线是导致后续内存错误的根本原因。"
+        ),
+        "evidence": {
+            "quality": {
+                "status": "success",
+                "needs_review": False,
+                "inference_status": "needs_review",
+                "inference_needs_review": True,
+                "inference_issues": ["unsupported_causal_claim"],
+            }
+        },
+    }]
+
+    content_md = kbd.rebuild_content_md()
+
+    assert "数据通信口(vxlan)告警" in content_md
+    assert "INFERENCE_STATUS: needs_review" in content_md
+    assert "模型语义描述未进入 Agent 文档" in content_md
+    assert "根本原因" not in content_md
+
+    kbd.content_md = content_md
+    kbd.sync_sections_from_content_md()
+    assert kbd.problem_description.replace("\n", "") == "故障现象如下：![img:0]"
+
 @pytest.mark.anyio
 async def test_update_kbd_entry_api_sync_sections():
     # Test patch api route

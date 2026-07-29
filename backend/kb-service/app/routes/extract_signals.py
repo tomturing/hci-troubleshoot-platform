@@ -17,6 +17,7 @@ POST /api/admin/sop/{sop_id}/extract-signals
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -28,7 +29,8 @@ from jsonschema import ValidationError
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
-from shared.schemas.acquirer_args import validate_acquire_args
+from shared.schemas.acquirer_args import SAFE_LOG_FILE_PATTERN, validate_acquire_args
+from shared.schemas.signal_generation import build_signal_generation_metadata
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import validate_signals_json
 from shared.utils.prompt_loader import StrictPromptLoader
@@ -108,6 +110,7 @@ DEFAULT_VARIABLE_SCHEMA: list[str] = [
 
 VALID_CATEGORIES = {"frontend", "backend"}
 VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "json_path", "exists"}
+VALID_VARIABLE_TYPES = {"string", "integer", "number", "boolean", "array"}
 
 # ADR-2：{{VAR}} 大写占位符正则（单一真相源；运行期校验用）
 _PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}")
@@ -129,6 +132,61 @@ _VALID_SOURCE_SECTIONS = {
     "steps_text",
 }
 
+
+def _format_image_evidence(images_json: Any, *, max_chars: int = 12000) -> str:
+    """将截图 Evidence IR 规整为 Signal Proposal 的只读输入。
+
+    新链路只把 observed_facts/fields/OCR 原文作为可生成信号的事实。模型 DESCRIPTION、
+    regions[].inferences 与 legacy desc 在结构上不进入 Signal LLM，只保留质量状态供门禁；
+    完整推断仍在 images_json 和管理端可见。这样“推断不得进入运行参数”不是 Prompt 约定，
+    而是输入数据最小化形成的硬边界。
+    """
+
+    formatted: list[dict[str, Any]] = []
+    for item in images_json or []:
+        if not isinstance(item, dict) or item.get("seq") is None:
+            continue
+        seq = int(item["seq"])
+        evidence = item.get("evidence")
+        if isinstance(evidence, dict):
+            regions: list[dict[str, Any]] = []
+            for region in evidence.get("regions") or []:
+                if not isinstance(region, dict):
+                    continue
+                region_id = str(region.get("region_id") or f"img_{seq}:r_0")
+                regions.append({
+                    "source_ref": f"img:{seq}/region:{region_id}",
+                    "surface": region.get("surface"),
+                    "evidence_type": region.get("evidence_type"),
+                    "text_lines": region.get("text_lines") or [],
+                    "fields": region.get("fields") or {},
+                    "observed_facts": region.get("observed_facts") or [],
+                })
+            quality = evidence.get("quality") or {}
+            formatted.append({
+                "source_ref": f"img:{seq}",
+                "section": item.get("section") or evidence.get("section") or "steps_text",
+                "context_before": item.get("context_before") or evidence.get("context_before") or "",
+                "context_after": item.get("context_after") or evidence.get("context_after") or "",
+                "regions": regions,
+                "quality": {
+                    "status": quality.get("status"),
+                    "needs_review": quality.get("needs_review", False),
+                    "inference_status": quality.get("inference_status"),
+                    "inference_needs_review": quality.get("inference_needs_review", False),
+                    "inference_issues": quality.get("inference_issues") or [],
+                },
+            })
+        elif (item.get("desc") or "").strip():
+            formatted.append({
+                "source_ref": f"img:{seq}",
+                "section": item.get("section") or "steps_text",
+                "legacy_evidence_unavailable": True,
+                "quality": {"status": "needs_review", "needs_review": True},
+            })
+    payload = json.dumps(formatted, ensure_ascii=False, separators=(",", ":"))
+    return payload[:max_chars] if payload else "[]"
+
 # ─── 写操作子命令词表（处置/变更动作，不得自动执行）────────────────────────
 # 这是"诊断只读"原则的硬边界：凡 command 命中以下动词的后端信号，一律标记为
 # phase=solution / require_human_confirm=True，执行层绝不自动运行，必须人工授权。
@@ -141,7 +199,6 @@ WRITE_OP_SUB_COMMANDS: set[str] = {
     "resume",
     "migrate",
     "clone",
-    "snapshot",
     "reset",
     "reboot",
     "delete",
@@ -382,17 +439,18 @@ def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
     provenance["needs_review"] = needs_review
 
     # 写操作/处置动作信号：标记为人⼯授权，绝不自动执行（诊断只读原则）
-    if review.get("require_human_confirm"):
-        orchestrate["phase"] = orchestrate.get("phase", "solution")
-        provenance["risk"] = provenance.get("risk", 2)
-    elif _is_write_op_signal(signal):
+    if _is_write_op_signal(signal):
         orchestrate["phase"] = "solution"
         review["require_human_confirm"] = True
         provenance["risk"] = _write_op_risk(signal)
     else:
+        # 人工确认是执行授权策略，不等价于处置动作。只读诊断即使需要确认，
+        # 仍必须保留在诊断证据图中；只有确定性写操作词表可以把 phase 升为 solution。
         orchestrate["phase"] = orchestrate.get("phase", "diagnostic")
         review.setdefault("require_human_confirm", False)
-        provenance["risk"] = provenance.get("risk", 1)
+        provenance["risk"] = provenance.get(
+            "risk", 2 if review.get("require_human_confirm") else 1
+        )
 
     if "id" not in signal:
         signal["id"] = "sig_001"
@@ -560,7 +618,138 @@ async def _call_llm(prompt: str) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=f"LLM API 调用失败: {e}") from e
 
 
-def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[list, list]:
+def _normalize_contract_variables(proposed: Any) -> dict[str, dict[str, str]]:
+    """只接受显式大写变量名和封闭类型，拒绝 LLM 自造变量元数据。"""
+    if not isinstance(proposed, dict) or not isinstance(proposed.get("variables"), dict):
+        return {}
+    normalized: dict[str, dict[str, str]] = {}
+    for name, spec in proposed["variables"].items():
+        variable_name = str(name).strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", variable_name) or not isinstance(spec, dict):
+            continue
+        variable_type = str(spec.get("type") or "")
+        if variable_type not in VALID_VARIABLE_TYPES:
+            continue
+        normalized[variable_name] = {"type": variable_type}
+        if isinstance(spec.get("description"), str) and spec["description"].strip():
+            normalized[variable_name]["description"] = spec["description"].strip()
+    return normalized
+
+
+def _normalize_config_file_read(signal: dict[str, Any]) -> bool:
+    """把误路由到 ``qfk_log`` 的只读 ``/sf/cfg`` 文件采集转为 system cat。
+
+    ``qfk_log`` 的最小权限边界只能覆盖日志目录，不能为了读取配置文件而放宽
+    ``ALLOWED_LOG_PATH_PREFIXES``。但 HCI 案例经常把 ``cat /sf/cfg/*.ini`` 描述成
+    “查看文件”，模型因文件后缀而误选日志工具。这里仅规范化满足以下全部条件的
+    明确只读意图：
+
+    - 工具是 ``qfk_log``；
+    - path 位于 ``/sf/cfg`` 内，且没有 ``.``/``..`` 或非法路径段；
+    - file 是安全 basename；
+    - 没有日志专属的 time_window/resource_keyword 语义。
+
+    其他越界路径继续由共享参数契约拒绝，不能借此把任意文件读取伪装成日志采集。
+    返回值用于测试和审计，调用方仍原地消费规范化后的 signal。
+    """
+
+    acquire = signal.get("acquire")
+    if not isinstance(acquire, dict) or acquire.get("tool") != "qfk_log":
+        return False
+    args = acquire.get("args")
+    if not isinstance(args, dict) or args.get("time_window") or args.get("resource_keyword"):
+        return False
+
+    path = str(args.get("path") or "").rstrip("/")
+    file_name = str(args.get("file") or "")
+    if path != "/sf/cfg" and not path.startswith("/sf/cfg/"):
+        return False
+    path_parts = path.split("/")[3:]
+    if any(
+        part in {"", ".", ".."} or not re.fullmatch(r"[A-Za-z0-9_.-]+", part)
+        for part in path_parts
+    ):
+        return False
+    if file_name in {"", ".", ".."} or not re.fullmatch(SAFE_LOG_FILE_PATTERN, file_name):
+        return False
+
+    system_args = {
+        key: args[key]
+        for key in ("host", "timeout", "instruction")
+        if key in args
+    }
+    system_args.update({"command": "cat", "resource_keyword": f"{path}/{file_name}"})
+    acquire["tool"] = "qfk_system"
+    acquire["args"] = system_args
+    review = signal.setdefault("review", {})
+    if isinstance(review, dict):
+        note = "确定性工具路由：/sf/cfg 安全配置文件只读采集由 qfk_log 归一为 qfk_system cat"
+        previous = str(review.get("notes") or "").strip()
+        review["notes"] = f"{previous}；{note}" if previous else note
+    return True
+
+
+def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
+    """让 matcher 复用产出文件内容的只读 acquisition，而不是 ``cat`` 内容变量。
+
+    LLM 有时先用 ``cat /safe/file`` 产出 ``CONFIG_TEXT``，随后又生成
+    ``cat {{CONFIG_TEXT}}`` 来做关键字判定。后者在结构和变量 DAG 上都合法，但把
+    “文件内容”误当成“文件路径”，现场必然不可执行。对于同一候选集合内可证明来源
+    唯一的 ``qfk_system cat`` 产出，本函数把下游 matcher 的 acquisition 参数替换为
+    上游只读参数。Compiler 随后会把它们合并成一次采集，并分别运行 matcher。
+
+    只处理 resource_keyword 为单一 ``{{VAR}}``、上游是明确 ``cat`` 且下游有 matcher
+    的封闭形态；其他变量语义不做猜测。返回规范化数量供测试和审计。
+    """
+
+    producers: dict[str, dict[str, Any]] = {}
+    ambiguous: set[str] = set()
+    for signal in raw_signals:
+        if not isinstance(signal, dict):
+            continue
+        acquire = signal.get("acquire") or {}
+        args = acquire.get("args") or {}
+        if acquire.get("tool") != "qfk_system" or str(args.get("command") or "").strip() != "cat":
+            continue
+        resource = str(args.get("resource_keyword") or "")
+        if not resource or _PLACEHOLDER_RE.fullmatch(resource):
+            continue
+        for produced in (signal.get("orchestrate") or {}).get("produces") or []:
+            name = str(produced.get("name") or "") if isinstance(produced, dict) else ""
+            if not name:
+                continue
+            if name in producers:
+                ambiguous.add(name)
+            else:
+                producers[name] = copy.deepcopy(args)
+
+    normalized = 0
+    for signal in raw_signals:
+        if not isinstance(signal, dict) or not isinstance(signal.get("match"), dict):
+            continue
+        acquire = signal.get("acquire") or {}
+        args = acquire.get("args") or {}
+        if acquire.get("tool") != "qfk_system" or str(args.get("command") or "").strip() != "cat":
+            continue
+        match = _PLACEHOLDER_RE.fullmatch(str(args.get("resource_keyword") or ""))
+        variable = match.group(1) if match else ""
+        if not variable or variable in ambiguous or variable not in producers:
+            continue
+        acquire["args"] = copy.deepcopy(producers[variable])
+        review = signal.setdefault("review", {})
+        if isinstance(review, dict):
+            note = f"确定性采集复用：matcher 直接复用 {variable} 的安全 cat acquisition"
+            previous = str(review.get("notes") or "").strip()
+            review["notes"] = f"{previous}；{note}" if previous else note
+        normalized += 1
+    return normalized
+
+
+def _validate_and_collect_signals(
+    raw_signals: list,
+    source_id: Any,
+    external_variables: set[str] | None = None,
+) -> tuple[list, list]:
     """对 LLM 返回的 v2 信号列表做校验，返回 (validated, rejected)。
 
     v2 直出：LLM 直接产出 v2 嵌套结构，链路全程以 v2 契约处理。
@@ -571,7 +760,14 @@ def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[li
         raw_signals: LLM 返回的 signal dict 列表
         source_id: 来源标识（用于日志：kbd_id / sop_id）
     """
-    available_vars = set(DEFAULT_VARIABLE_SCHEMA)
+    # 先在整个 Candidate 集合上做跨信号规范化，再逐条校验。这使下游
+    # matcher 可以复用上游安全采集，也避免放宽 qfk_log 的 path 边界。
+    for signal in raw_signals:
+        if isinstance(signal, dict):
+            _normalize_config_file_read(signal)
+    _normalize_derived_file_assertions(raw_signals)
+
+    available_vars = set(DEFAULT_VARIABLE_SCHEMA) | set(external_variables or set())
     for s in raw_signals:
         if isinstance(s, dict):
             orch = s.get("orchestrate") or {}
@@ -616,24 +812,158 @@ def _validate_and_collect_signals(raw_signals: list, source_id: Any) -> tuple[li
     return validated, rejected
 
 
-def _signals_to_v2(signals: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_verification_contract(
+    signals: list[dict[str, Any]],
+    proposed: Any,
+    *,
+    case_id: str,
+) -> dict[str, Any] | None:
+    """把 LLM 的证据策略 Proposal 收敛为封闭、可编译的最小案例契约。"""
+
+    if not signals:
+        return None
+    known_ids = {str(signal.get("id")) for signal in signals if signal.get("id")}
+    by_role: dict[str, list[str]] = {role: [] for role in ("must", "should", "exclude", "context")}
+    for signal in signals:
+        signal_id = str(signal.get("id") or "")
+        role = str(signal.get("role") or "").lower()
+        phase = str((signal.get("orchestrate") or {}).get("phase") or "diagnostic")
+        # 处置信号永远只是案例上下文，不能成为确认根因所需的 must/should/exclude。
+        if phase == "solution":
+            role = "context"
+        elif role not in by_role:
+            role = "must"
+        if signal_id:
+            by_role[role].append(signal_id)
+
+    proposed = proposed if isinstance(proposed, dict) else {}
+    policy = proposed.get("evidence_policy") if isinstance(proposed.get("evidence_policy"), dict) else {}
+    assigned: set[str] = set()
+    normalized: dict[str, list[str]] = {}
+    for role in ("must", "should", "exclude", "context"):
+        requested = policy.get(role)
+        source = requested if isinstance(requested, list) else by_role[role]
+        values = []
+        for item in source:
+            signal_id = str(item)
+            if signal_id in known_ids and signal_id not in assigned:
+                values.append(signal_id)
+                assigned.add(signal_id)
+        normalized[role] = values
+    # 未被 Proposal 覆盖的诊断信号按信号自身 role/保守 must 归入契约，禁止静默丢证据。
+    for role in ("must", "should", "exclude", "context"):
+        for signal_id in by_role[role]:
+            if signal_id not in assigned:
+                normalized[role].append(signal_id)
+                assigned.add(signal_id)
+    if not normalized["must"]:
+        # 自动诊断没有必要证据就不能确认；选择首个非 solution 信号作为保守 must。
+        fallback = next(
+            (
+                str(signal.get("id"))
+                for signal in signals
+                if signal.get("id") and str(signal.get("id")) not in normalized["context"]
+            ),
+            None,
+        )
+        if fallback:
+            for role in ("should", "exclude"):
+                if fallback in normalized[role]:
+                    normalized[role].remove(fallback)
+            normalized["must"].append(fallback)
+
+    try:
+        minimum_should = max(0, int(policy.get("minimum_should", 0)))
+    except (TypeError, ValueError):
+        minimum_should = 0
+    minimum_should = min(minimum_should, len(normalized["should"]))
+    scope = proposed.get("scope") if isinstance(proposed.get("scope"), dict) else {}
+    allowed_scope = {
+        key: list(value)
+        for key, value in scope.items()
+        if key in {"products", "versions", "components", "topology_constraints"}
+        and isinstance(value, list)
+    }
+    variables = _normalize_contract_variables(proposed)
+    produced = {
+        str(item.get("name"))
+        for signal in signals
+        if str((signal.get("orchestrate") or {}).get("phase") or "diagnostic") != "solution"
+        for item in ((signal.get("orchestrate") or {}).get("produces") or [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    required = {
+        str(name)
+        for signal in signals
+        for name in ((signal.get("orchestrate") or {}).get("requires") or [])
+        if str(name).strip()
+    }
+    # 平台内建 env_context 变量仅在确实被引用且没有 Producer 时进入 Contract；
+    # 自定义变量必须由 Proposal 显式声明类型，否则前面的 Signal 校验会拒绝。
+    for name in sorted(required - produced):
+        if name in DEFAULT_VARIABLE_SCHEMA:
+            variables.setdefault(name, {"type": "string"})
+    return {
+        "schema_version": 1,
+        "case_id": case_id,
+        "scope": allowed_scope,
+        "variables": variables,
+        "evidence_policy": {
+            **normalized,
+            "minimum_should": minimum_should,
+            "on_missing_must": "inconclusive",
+        },
+    }
+
+
+def _signals_to_v2(
+    signals: list[dict[str, Any]],
+    verification_contract: dict[str, Any] | None = None,
+    generation_metadata: dict[str, Any] | None = None,
+    rejected_candidates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """持久化为 v2 数组级文档（RFC §7）：{schema_version, signals}。
 
     v2 直出路径下，signals 已是通过 _validate_signal 校验、并经 _enrich_signal 写入
     v2 衍生段（provenance/review/orchestrate）的嵌套结构，无需再做 migrate 兜底归一。
     """
-    return {"schema_version": 2, "signals": signals}
+    doc: dict[str, Any] = {"schema_version": 2, "signals": signals}
+    if rejected_candidates:
+        doc["rejected_candidates"] = [
+            {
+                "candidate": item.get("signal"),
+                "reason": str(item.get("reason") or "未提供拒绝原因"),
+            }
+            for item in rejected_candidates
+        ]
+    if verification_contract is not None:
+        doc["verification_contract"] = verification_contract
+    if generation_metadata is not None:
+        doc["generation_metadata"] = generation_metadata
+    return doc
 
 
 async def _persist_signals(
-    db_manager: DatabaseManager, table: str, source_id: int, signals: list[dict[str, Any]]
+    db_manager: DatabaseManager,
+    table: str,
+    source_id: int,
+    signals: list[dict[str, Any]],
+    verification_contract: dict[str, Any] | None = None,
+    generation_metadata: dict[str, Any] | None = None,
+    rejected_candidates: list[dict[str, Any]] | None = None,
 ) -> None:
     """通用写回：signals_json 列。table ∈ {'kbd_entry', 'sop_document'}。
 
     持久化形态为 v2 数组级文档（RFC §7）：{schema_version, signals}。
     LLM 已直出 v2，抽取链路全程以 v2 契约处理；`_signals_to_v2` 直接包装 v2 文档。
     """
-    doc = _signals_to_v2(signals)
+    doc = _signals_to_v2(
+        signals,
+        verification_contract,
+        generation_metadata,
+        rejected_candidates,
+    )
+    validate_signals_json(doc)
     async with db_manager.async_session_factory() as session:
         await session.execute(
             text(f"UPDATE {table} SET signals_json = CAST(:sj AS jsonb), updated_at = NOW() WHERE id = :id"),
@@ -657,6 +987,19 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         if entry is None:
             raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
 
+        # StrictPromptLoader 会审计并 commit；在此之前复制所有字段，避免 session 关闭后
+        # 访问 expired ORM 属性触发 async lazy-load / MissingGreenlet。
+        entry_data = {
+            "title": entry.title or "",
+            "problem_description": entry.problem_description or "",
+            "alert_info": entry.alert_info or "",
+            "steps_text": entry.steps_text or "",
+            "category_id": entry.category_id or entry.ai_category_id or "",
+            "images_json": [
+                dict(item) for item in (entry.images_json or []) if isinstance(item, dict)
+            ],
+        }
+
         prompt_template = await StrictPromptLoader.load_and_validate(
             session,
             _EXTRACT_PROMPT_NAME,
@@ -670,32 +1013,59 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
                 "category_id",
                 "acquirer_catalog",
                 "variable_schema",
+                "image_evidence",
             ],
             consumer="kb-service.extract_signals.kbd",
         )
 
     acquirer_catalog_text = "\n".join(f"- {k}: {v}" for k, v in ACQUIRER_CATALOG.items())
     variable_schema_text = ", ".join(DEFAULT_VARIABLE_SCHEMA)
+    image_evidence_text = _format_image_evidence(entry_data["images_json"])
     prompt = prompt_template.format(
-        title=entry.title or "",
-        problem_description=(entry.problem_description or "")[:2000],
-        alert_info=(entry.alert_info or "")[:1000],
-        steps_text=(entry.steps_text or "")[:4000],
+        title=entry_data["title"],
+        problem_description=entry_data["problem_description"][:2000],
+        alert_info=entry_data["alert_info"][:1000],
+        steps_text=entry_data["steps_text"][:4000],
         # 治本：根因/解决方案不参与信号抽取，置空传入（模板占位符仍存在，避免 StrictPromptLoader 校验失败）
         root_cause="",
         solution="",
-        category_id=entry.category_id or entry.ai_category_id or "",
+        category_id=entry_data["category_id"],
         acquirer_catalog=acquirer_catalog_text,
         variable_schema=variable_schema_text,
+        image_evidence=image_evidence_text,
     )
 
     llm_result = await _call_llm(prompt)
     raw_signals = llm_result.get("signals", [])
     if not isinstance(raw_signals, list):
         raise HTTPException(status_code=500, detail="LLM 未返回 signals 数组")
-    validated, rejected = _validate_and_collect_signals(raw_signals, f"kbd:{kbd_id}")
+    proposed_contract = llm_result.get("verification_contract")
+    external_variables = set(_normalize_contract_variables(proposed_contract))
+    validated, rejected = _validate_and_collect_signals(
+        raw_signals,
+        f"kbd:{kbd_id}",
+        external_variables,
+    )
+    verification_contract = _build_verification_contract(
+        validated,
+        proposed_contract,
+        case_id=str(kbd_id),
+    )
+    generation_metadata = build_signal_generation_metadata(
+        source=entry_data,
+        prompt_template=prompt_template,
+        model_id=LLM_MODEL,
+    )
 
-    await _persist_signals(db_manager, "kbd_entry", kbd_id, validated)
+    await _persist_signals(
+        db_manager,
+        "kbd_entry",
+        kbd_id,
+        validated,
+        verification_contract,
+        generation_metadata,
+        rejected,
+    )
     logger.info(
         event="extract_signals_kbd_done",
         kbd_id=kbd_id,
@@ -710,6 +1080,8 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         "rejected_count": len(rejected),
         "signals": validated,
         "rejected": rejected,
+        "verification_contract": verification_contract,
+        "generation_metadata": generation_metadata,
     }
 
 
@@ -751,6 +1123,7 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
                 "category_id",
                 "acquirer_catalog",
                 "variable_schema",
+                "image_evidence",
             ],
             consumer="kb-service.extract_signals.sop",
         )
@@ -768,6 +1141,7 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
         category_id=doc.category_id or "",
         acquirer_catalog=acquirer_catalog_text,
         variable_schema=variable_schema_text,
+        image_evidence="[]",
     )
 
     llm_result = await _call_llm(prompt)
@@ -776,7 +1150,14 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
         raise HTTPException(status_code=500, detail="LLM 未返回 signals 数组")
     validated, rejected = _validate_and_collect_signals(raw_signals, f"sop:{sop_id}")
 
-    await _persist_signals(db_manager, "sop_document", sop_id, validated)
+    # SOP 执行由 tree_json 决策树拥有裁决契约，不生成 KBD Case Verification Contract。
+    await _persist_signals(
+        db_manager,
+        "sop_document",
+        sop_id,
+        validated,
+        rejected_candidates=rejected,
+    )
     logger.info(
         event="extract_signals_sop_done",
         sop_id=sop_id,
@@ -802,6 +1183,7 @@ class ExtractSignalsResponse(BaseModel):
     rejected_count: int = 0
     signals: list[dict[str, Any]] = Field(default_factory=list)
     rejected: list[dict[str, Any]] = Field(default_factory=list)
+    verification_contract: dict[str, Any] | None = None
 
 
 class SafePipelineRequest(BaseModel):

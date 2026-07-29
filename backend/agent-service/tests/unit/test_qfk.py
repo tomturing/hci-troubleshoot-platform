@@ -282,6 +282,43 @@ class TestEvaluator:
         assert matched is False
 
 
+def test_threshold_line_count_avoids_shell_wc_pipeline():
+    from app.tools.qfk.matcher import evaluate_matcher
+
+    result = evaluate_matcher(
+        {
+            "type": "threshold",
+            "aggregation": "line_count",
+            "operator": ">",
+            "value": 3,
+            "expected": True,
+        },
+        "fd-1\nfd-2\n\nfd-3\nfd-4\n",
+    )
+
+    assert result.matched is True
+    assert result.detail["value"] == 4.0
+    assert result.detail["aggregation"] == "line_count"
+
+
+def test_threshold_duration_ignores_numbers_in_storage_path():
+    from app.tools.qfk.matcher import evaluate_matcher
+
+    result = evaluate_matcher(
+        {
+            "type": "threshold",
+            "aggregation": "duration_seconds",
+            "operator": ">",
+            "value": 5,
+            "expected": True,
+        },
+        "ls: /sf/data/360080e500023660600001c176a0ef02: No such file\nreal 0m21.615s\nuser 0m0.003s\n",
+    )
+
+    assert result.matched is True
+    assert result.detail["value"] == 21.615
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # QFKResult 与 ReAct Observation 文本格式化测试
 # ─────────────────────────────────────────────────────────────────────────────

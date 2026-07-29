@@ -44,8 +44,15 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
         "published_at": None,
         "embedding": "[0.1,0.2]",
         "signals_json": {
-            "schema_version": "2.0",
-            "signals": [{"acquire": {"tool": "qfk_task"}, "provenance": {"category": "backend"}}],
+            "schema_version": 2,
+            "signals": [
+                {
+                    "id": "sig_001",
+                    "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
+                    "match": {"type": "exists", "expected": True},
+                    "provenance": {"category": "backend"},
+                }
+            ],
         },
         "category_id": "vm-001",
         "ai_category_id": None,

@@ -1,7 +1,7 @@
 """KBD 证据诊断引擎。
 
 按不可变 KBD revision 中的 signal_id 执行关键信号。命令来自 KBD acquire
-契约，matcher 由程序确定性求值；只有全部 required signal 为 PASS 才支持
+契约，matcher 由程序确定性求值；只有全部 required signal 为 SATISFIED 才支持
 对应 KBD。UNKNOWN、ERROR、BLOCKED 和单候选均不能产生根因结论。
 """
 
@@ -23,6 +23,7 @@ from app.adapters.agents.htp.cdd import (
     CandidateState,
     ConclusionLevel,
     SignalOutcome,
+    apply_scope_results,
     compile_signal_plan,
     decide_conclusion,
 )
@@ -230,6 +231,7 @@ class KBDDiagnostic:
         ordered = sorted(candidates, key=lambda k: (k.support_id or str(k.id), str(k.id)))
         plan = compile_signal_plan(ordered, snapshot_id=snapshot_id)
         assessments = initial_assessments(plan)
+        scope_results = apply_scope_results(plan, assessments, env_context)
         scheduler = ActiveDiagnosticScheduler(plan)
         steps_executed: list[StepResult] = []
         if self._diagnostic_item_client and self._conversation_id:
@@ -266,6 +268,10 @@ class KBDDiagnostic:
                 "snapshot_id": snapshot_id,
                 "plan_id": plan.plan_id,
                 "acquisition_count": len(plan.acquisitions),
+                "scope_states": {
+                    kbd_id: result.state.value
+                    for kbd_id, result in scope_results.items()
+                },
             },
         )
 
@@ -395,7 +401,7 @@ class KBDDiagnostic:
                     tool_args=resolved_args,
                     raw_output=raw_output,
                     error=error,
-                    match_kbd_ids={ref.kbd_id} if outcome is SignalOutcome.PASS else set(),
+                    match_kbd_ids={ref.kbd_id} if outcome is SignalOutcome.SATISFIED else set(),
                     kbd_id=ref.kbd_id,
                     signal_id=ref.signal_id,
                     exec_id=exec_id,
@@ -429,9 +435,9 @@ class KBDDiagnostic:
                         },
                         status=(
                             "confirmed"
-                            if outcome is SignalOutcome.PASS
+                            if outcome is SignalOutcome.SATISFIED
                             else "rejected"
-                            if outcome is SignalOutcome.FAIL
+                            if outcome is SignalOutcome.CONTRADICTED
                             else "error"
                         ),
                     )
@@ -488,11 +494,11 @@ class KBDDiagnostic:
             )
             report = (
                 "### 诊断结论：部分证据成立，暂不能定论\n\n"
-                f"参考案例 {supported_refs} 的必需关键信号已达到 PASS，但分类内仍有未决或不可执行 KBD；"
+                f"参考案例 {supported_refs} 的必需关键信号均已满足，但分类内仍有未决或不可执行 KBD；"
                 "这些候选仍可能成立，因此 Conclusion Gate 禁止输出根因、解决方案或进入 S4。\n\n"
                 + report.replace(
-                    "没有任何 KBD 的全部必需关键信号达到 PASS",
-                    "已有 KBD 达到 PASS，但候选全集尚未完成排除",
+                    "没有任何 KBD 的全部必需关键信号均已满足",
+                    "已有 KBD 的必要证据均已满足，但候选全集尚未完成排除",
                 )
             )
 
@@ -593,13 +599,13 @@ class KBDDiagnostic:
         matcher = signal.get("match")
         if matcher is None:
             if _signal_category(signal) == "frontend":
-                return SignalOutcome.PASS if pre_matched is True else SignalOutcome.UNKNOWN
+                return SignalOutcome.SATISFIED if pre_matched is True else SignalOutcome.UNKNOWN
             produces = (signal.get("orchestrate") or {}).get("produces") or []
             if produces:
-                return SignalOutcome.PASS if pre_matched is True else SignalOutcome.FAIL
+                return SignalOutcome.SATISFIED if pre_matched is True else SignalOutcome.CONTRADICTED
             return SignalOutcome.UNKNOWN
         if pre_matched is not None:
-            return SignalOutcome.PASS if pre_matched else SignalOutcome.FAIL
+            return SignalOutcome.SATISFIED if pre_matched else SignalOutcome.CONTRADICTED
         if not isinstance(matcher, dict):
             return SignalOutcome.UNKNOWN
         try:
@@ -608,11 +614,16 @@ class KBDDiagnostic:
             return SignalOutcome.UNKNOWN
         if evaluated is None:
             return SignalOutcome.UNKNOWN
-        return SignalOutcome.PASS if evaluated else SignalOutcome.FAIL
+        return SignalOutcome.SATISFIED if evaluated else SignalOutcome.CONTRADICTED
 
     @staticmethod
     def _tool_result_metadata(result: StepResult) -> dict[str, Any]:
-        status = "success" if result.outcome in (SignalOutcome.PASS, SignalOutcome.FAIL) else "failed"
+        status = (
+            "success"
+            if result.outcome
+            in (SignalOutcome.SATISFIED, SignalOutcome.CONTRADICTED)
+            else "failed"
+        )
         output = smart_truncate(result.raw_output or "", max_chars=2000)
         return {
             "exec_id": result.exec_id,
@@ -1022,7 +1033,9 @@ class KBDDiagnostic:
         if acquirer.startswith("qfk_"):
             # 消费者：QFK 引擎取数并判定；keyword 类型直接采信引擎布尔。
             try:
-                bsignal = self._signal_to_qfk(step)
+                resolver_variables = dict(env_context)
+                resolver_variables.update(self._variable_pool)
+                bsignal = self._signal_to_qfk(step, resolver_variables)
                 if bsignal is None:
                     return None, "无法构建后端信号", None
                 from app.tools.qfk.engine import qfk_exec
@@ -1034,8 +1047,6 @@ class KBDDiagnostic:
                     if isinstance(item, dict)
                 }
                 output_filters: list[dict[str, Any]] = []
-                resolver_variables = dict(env_context)
-                resolver_variables.update(self._variable_pool)
                 for item in produces:
                     if not isinstance(item, dict) or not isinstance(item.get("extract"), dict):
                         continue
@@ -1324,7 +1335,11 @@ class KBDDiagnostic:
             if val is not None:
                 self._set_pool_var(name, val)
 
-    def _signal_to_qfk(self, step: KBDStep) -> Any:
+    def _signal_to_qfk(
+        self,
+        step: KBDStep,
+        variables: dict[str, Any] | None = None,
+    ) -> Any:
         """从消费者 KBDStep 构造 qfk/signal.BackendSignal（namespace 字符串路由）。"""
         from app.tools.qfk.signal import BackendSignal
 
@@ -1335,6 +1350,8 @@ class KBDDiagnostic:
         namespace = parts[1]  # log/service/system/vm/...
 
         args = step.tool_args_template or {}
+        if variables is not None:
+            args = self._resolve_template_value(args, variables)
 
         # 获取 matcher
         matcher = step.matcher
@@ -1372,6 +1389,7 @@ class KBDDiagnostic:
             "container": args.get("container", _container_default),
             "resource_keyword": args.get("resource_keyword"),
             "file": args.get("file"),
+            "path": args.get("path"),
             "time_window": args.get("time_window"),
         }
 
@@ -1429,7 +1447,7 @@ class KBDDiagnostic:
             ]
             return (
                 "### 诊断结论：证据不足\n\n"
-                "没有任何 KBD 的全部必需关键信号达到 PASS，因此系统不会输出 KBD 根因或解决方案。\n\n"
+                "没有任何 KBD 的全部必需关键信号均已满足，因此系统不会输出 KBD 根因或解决方案。\n\n"
                 "**已评估参考案例（未确认）**：\n"
                 + ("\n".join(candidate_links) if candidate_links else "- 无")
                 + "\n\n"
@@ -1461,20 +1479,21 @@ class KBDDiagnostic:
         结论和结构化产出，避免把大输出及执行器噪音直接倾倒到对话页面。
         """
         status_labels = {
-            SignalOutcome.PASS: ("✅", "已完成"),
-            SignalOutcome.FAIL: ("❌", "未满足预期"),
+            SignalOutcome.SATISFIED: ("✅", "已满足"),
+            SignalOutcome.CONTRADICTED: ("❌", "与预期矛盾"),
             SignalOutcome.ERROR: ("⚠️", "执行失败"),
             SignalOutcome.BLOCKED: ("⏸️", "未执行"),
             SignalOutcome.UNKNOWN: ("⚠️", "无法判断"),
+            SignalOutcome.NOT_APPLICABLE: ("ℹ️", "不适用"),
             SignalOutcome.NOT_RUN: ("⏸️", "未执行"),
         }
         icon, status = status_labels[step.outcome]
         instruction = KBDDiagnostic._single_line_report_text(step.tool_args.get("instruction"), max_chars=160)
         title = instruction or f"关键信号检查 {index}"
 
-        if step.outcome is SignalOutcome.PASS:
+        if step.outcome is SignalOutcome.SATISFIED:
             check_result = "已成功取得并提取所需信息。" if step.produced_variables else "命令输出符合该信号的判定条件。"
-        elif step.outcome is SignalOutcome.FAIL:
+        elif step.outcome is SignalOutcome.CONTRADICTED:
             check_result = "命令已执行，但结果不符合该信号的预期条件。"
         elif step.outcome is SignalOutcome.ERROR:
             check_result = KBDDiagnostic._friendly_step_error(step.error)
@@ -1482,6 +1501,8 @@ class KBDDiagnostic:
             check_result = "缺少前置步骤产出的变量，本项未执行。"
         elif step.outcome is SignalOutcome.UNKNOWN:
             check_result = "已取得执行结果，但现有规则无法形成明确判断。"
+        elif step.outcome is SignalOutcome.NOT_APPLICABLE:
+            check_result = "该信号不适用于当前产品、版本、组件或拓扑。"
         else:
             check_result = "本项未执行。"
 

@@ -47,6 +47,8 @@ _STATUS_TO_STATS_KEY = {
     "failed": "failed_ids",
     "skipped": "skipped_ids",
     "pending": None,  # pending 不计入统计
+    # 人工复核前不能进入“完成”统计；复用 failed_ids 保持 resume/failed-only 行为兼容。
+    "needs_review": "failed_ids",
 }
 
 
@@ -154,7 +156,7 @@ def update_stage_status(
     progress: dict[str, Any],
     stage: str,
     support_id: str,
-    status: str,  # "done" | "failed" | "skipped" | "pending"
+    status: str,  # "done" | "failed" | "needs_review" | "skipped" | "pending"
 ) -> None:
     """
     更新单个案例在特定 stage 的状态。
@@ -178,9 +180,12 @@ def update_stage_status(
             id_list.append(support_id)
             # 从其他统计列表中移除（保持一致性）
             for other_key in ["completed_ids", "failed_ids", "skipped_ids"]:
-                if other_key != stats_key and other_key in stages_stats:
-                    if support_id in stages_stats[other_key]:
-                        stages_stats[other_key].remove(support_id)
+                if (
+                    other_key != stats_key
+                    and other_key in stages_stats
+                    and support_id in stages_stats[other_key]
+                ):
+                    stages_stats[other_key].remove(support_id)
 
     logger.debug("状态更新 kbd=%s stage=%s status=%s", support_id, stage, status)
 

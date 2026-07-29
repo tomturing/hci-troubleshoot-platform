@@ -23,7 +23,6 @@
 import argparse
 import asyncio
 import logging
-from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -96,8 +95,7 @@ async def upload_images_for_kbd(
     uploaded = 0
     errors = []
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
+    async with pool.acquire() as conn, conn.transaction():
             for img_file in img_files:
                 try:
                     # 提取 seq (img_N.ext -> N)
@@ -156,7 +154,7 @@ async def upload_images_batch(kbd_ids: list[str]) -> dict[str, int]:
         {"done": N, "failed": N, "skipped": N}
     """
     pool = await asyncpg.create_pool(
-        dsn=settings.DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        dsn=settings.asyncpg_database_url
     )
 
     try:

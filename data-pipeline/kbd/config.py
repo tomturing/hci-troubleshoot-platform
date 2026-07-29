@@ -106,6 +106,16 @@ class KbdSettings(BaseSettings):
         return f"{self.SANGFOR_API_BASE}/spt/openapi/case/es/getDetailById"
 
     @property
+    def asyncpg_database_url(self) -> str:
+        """将 SQLAlchemy/Postgres 常见方言统一为 asyncpg 可接受的 DSN。"""
+        database_url = self.DATABASE_URL
+        if database_url.startswith("postgresql+asyncpg://"):
+            return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        if database_url.startswith("postgres://"):
+            return database_url.replace("postgres://", "postgresql://", 1)
+        return database_url
+
+    @property
     def sangfor_headers(self) -> dict[str, str]:
         """抓取时所需的 HTTP 请求头"""
         return {

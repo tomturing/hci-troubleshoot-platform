@@ -15,7 +15,8 @@
     },
     "file": {
       "type": "string",
-      "description": "日志文件名（acli -f）"
+      "pattern": "^(?:[A-Za-z0-9_.-]|\\{\\{[A-Z][A-Z0-9_]*(?:\\.[A-Z0-9_]+)*\\}\\})+$",
+      "description": "安全日志文件 basename（acli -f；禁止目录与控制字符，扩展名不限）"
     },
     "path": {
       "type": "string",
@@ -30,7 +31,9 @@
       "description": "信号语义说明（acli 调用的人类可读解释）"
     }
   },
-  "required": [],
+  "required": [
+    "file"
+  ],
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_log.schema.json",
   "title": "acquire.args for qfk_log"
