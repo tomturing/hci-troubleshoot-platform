@@ -60,10 +60,12 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
     }
     published_at = datetime.now(UTC)
     updated_row = {"id": 7, "status": "published", "embedding": None, "published_at": published_at}
+    published_entry = SimpleNamespace(working_revision_id=2)
 
     read_session = SimpleNamespace(execute=AsyncMock(return_value=_MappingResult(source_row)))
     write_session = SimpleNamespace(
         execute=AsyncMock(return_value=_MappingResult(updated_row)),
+        get=AsyncMock(return_value=published_entry),
         commit=AsyncMock(),
     )
     sessions = iter([read_session, write_session])
@@ -109,4 +111,5 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
     assert params["expected_lock_version"] == 4
     assert params["tsv_text"] == "虚拟机 镜像 异常"
     assert response.embedding_generated is False
+    assert published_entry.working_revision_id is None
     write_session.commit.assert_awaited_once()
