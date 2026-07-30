@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Terminal Bridge 真实浏览器端到端验收脚本。
-// 使用 Windows Edge 加载 Customer UI；SSH 私钥只在进程内读取，不输出、不落盘。
+// 使用 Windows Edge 加载 Customer UI；SSH 私钥或 Lease 只在进程内读取，不输出、不落盘。
 
 const fs = require("fs");
 
@@ -125,13 +125,21 @@ async function main() {
   }
 
   if (process.env.HCI_E2E_CREATE_CASE === "true") {
-    const privateKeyPath = process.env.HCI_E2E_PRIVATE_KEY_PATH;
     const sshHost = process.env.HCI_E2E_SSH_HOST;
     const sshUser = process.env.HCI_E2E_SSH_USER;
-    if (!privateKeyPath || !sshHost || !sshUser) {
-      throw new Error("真实连接缺少 SSH 主机、用户或私钥路径");
+    const sshAuthType = process.env.HCI_E2E_SSH_AUTH_TYPE || "key";
+    const privateKeyPath = process.env.HCI_E2E_PRIVATE_KEY_PATH;
+    const sshPassword = process.env.HCI_E2E_SSH_PASSWORD;
+    if (!sshHost || !sshUser) {
+      throw new Error("连接缺少 SSH 主机或用户");
     }
-    const privateKey = fs.readFileSync(privateKeyPath, "utf8");
+    if (sshAuthType === "key" && !privateKeyPath) {
+      throw new Error("密钥认证缺少 SSH 私钥路径");
+    }
+    if (sshAuthType === "password" && !sshPassword) {
+      throw new Error("密码或 Lease 认证缺少进程内凭据");
+    }
+    const privateKey = sshAuthType === "key" ? fs.readFileSync(privateKeyPath, "utf8") : "";
 
     const fillFormItem = async (label, value) => {
       const item = page.locator(".el-form-item").filter({ hasText: label }).first();
@@ -147,8 +155,13 @@ async function main() {
     await fillFormItem("主机地址", sshHost);
     await fillFormItem("端口", process.env.HCI_E2E_SSH_PORT || "22");
     await fillFormItem("用户名", sshUser);
-    await page.getByText("密钥认证", { exact: true }).click();
-    await fillFormItem("私钥", privateKey);
+    if (sshAuthType === "key") {
+      await page.getByText("密钥认证", { exact: true }).click();
+      await fillFormItem("私钥", privateKey);
+    } else {
+      await page.getByText("密码认证", { exact: true }).click();
+      await fillFormItem("密码", sshPassword);
+    }
 
     const connectButton = page.getByRole("button", { name: /连接 SSH 并创建工单/ }).first();
     await connectButton.click();
@@ -243,7 +256,7 @@ async function main() {
 
   // 只验证凭据文件格式，确保不会把私钥注入命令行参数或验收结果。
   const verificationKeyPath = process.env.HCI_E2E_PRIVATE_KEY_PATH;
-  if (verificationKeyPath) {
+  if ((process.env.HCI_E2E_SSH_AUTH_TYPE || "key") === "key" && verificationKeyPath) {
     const verificationKey = fs.readFileSync(verificationKeyPath, "utf8");
     if (!verificationKey.includes("PRIVATE KEY")) {
       throw new Error("SSH 私钥文件格式无效");

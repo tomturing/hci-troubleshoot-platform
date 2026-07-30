@@ -19,6 +19,25 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+func TestOwnedSessionTrackerDrainCaseIncludesNodeSessions(t *testing.T) {
+	tracker := newOwnedSessionTracker()
+	defaultSession := &SSHSession{}
+	nodeSession := &SSHSession{}
+	otherSession := &SSHSession{}
+	tracker.set("CASE-1", defaultSession)
+	tracker.set("CASE-1@node-a", nodeSession)
+	tracker.set("CASE-10@node-b", otherSession)
+
+	drained := tracker.drainCase("CASE-1")
+	if len(drained) != 2 || drained["CASE-1"] != defaultSession || drained["CASE-1@node-a"] != nodeSession {
+		t.Fatalf("drainCase 未返回工单全部会话: %#v", drained)
+	}
+	remaining := tracker.drain()
+	if len(remaining) != 1 || remaining["CASE-10@node-b"] != otherSession {
+		t.Fatalf("drainCase 错误清理了其他工单会话: %#v", remaining)
+	}
+}
+
 func TestLineMatchesOutputFilterAllAndExclude(t *testing.T) {
 	filter := OutputFilter{Source: "stdout", Include: []string{"4359974862144", "qcow2"}, Exclude: []string{"grep"}, IncludeMode: "all", CaseSensitive: true}
 	if !lineMatchesOutputFilter("qemu 123 /images/4359974862144.vm/disk.qcow2\n", filter) {
@@ -256,6 +275,36 @@ func TestNormalizeTraceparentOnlyDropsW3CRandomFlag(t *testing.T) {
 				t.Fatalf("normalizeTraceparentForLegacyGo() = %q, want %q", actual, expected)
 			}
 		})
+	}
+}
+
+func TestSimulationLeaseCredentialDetection(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  InMessage
+		want bool
+	}{
+		{name: "signed token prefix", msg: InMessage{AuthType: "password", Password: "htp1.payload.signature"}, want: true},
+		{name: "explicit lease auth", msg: InMessage{AuthType: "lease", Password: "opaque"}, want: true},
+		{name: "explicit execution mode", msg: InMessage{ExecutionMode: "sim-ssh", Password: "opaque"}, want: true},
+		{name: "real HCI password", msg: InMessage{AuthType: "password", Password: "ordinary"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isSimulationLeaseCredential(tt.msg); got != tt.want {
+				t.Fatalf("isSimulationLeaseCredential()=%v want=%v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildAuthMethodsAcceptsLease(t *testing.T) {
+	methods, err := buildAuthMethods(InMessage{AuthType: "lease", Password: "htp1.payload.signature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(methods) != 2 {
+		t.Fatalf("lease 应复用 password + keyboard-interactive，实际方法数=%d", len(methods))
 	}
 }
 

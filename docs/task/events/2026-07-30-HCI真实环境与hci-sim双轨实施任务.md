@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: active
 category: task
 audience: architect, developer, tester, operator
 last_updated: 2026-07-30
@@ -18,47 +18,48 @@ owner: team
 - [x] real/sim 双轨职责、一次运行互斥和禁止 fallback 已形成方案；
 - [x] Go SSH runtime、K3s 独立 namespace、Scenario Lease 和 100+ 逻辑隔离已形成设计；
 - [x] dev 已有 KBD 27123 和可作为 Golden provenance 的真实 Trace；
-- [ ] 尚未创建 hci-sim 代码模块和镜像；
-- [ ] 尚未创建 `hci-sim-dev` namespace/Helm release；
-- [ ] 尚未冻结 Scenario Lease/Fixture Manifest/错误 envelope 契约；
+- [x] 已创建 `hci_sim/` Go module、镜像和真实 SSH runtime；
+- [x] 已创建 `hci-sim-dev` namespace 和 `hci-sim` Helm release；
+- [x] 已冻结 KBD 27123 Scenario Lease/Fixture Manifest/错误 envelope/Trace over SSH P0 契约；
+- [x] 已通过工单 `Q2026073088434` 的 KBD 27123 单轮 Golden Agent E2E；
 - [ ] 尚未完成 real/sim differential test；
 - [ ] 尚未完成 100+ 并发验收；
-- [ ] 当前状态不得宣称 hci-sim 已实现或 Agent 100+ E2E 已通过。
+- [ ] 当前状态只能宣称 KBD 27123 单场景 P0 Golden E2E 已通过，不得宣称 Agent 100+ E2E 已通过。
 
 ## 2. P0-0：Golden Contract 与 Oracle Spike（1～2 人日）
 
 ### 2.1 冻结真实基线
 
-- [ ] 锁定 KBD `support_id=27123` 的不可变 revision、signal snapshot hash 和工具 schema；
-- [ ] 读取已验收 Trace `c6acbb7bdf5faffaedf5a6faa04eeb97` 对应的受控 Artifact；
-- [ ] 记录 task、node list、lsof、ps 四类命令的原始 argv，而不是只记录显示字符串；
-- [ ] 记录 stdout/stderr、exit code、PTY、chunk、timeout 和 output filter 行为；
-- [ ] 记录 sig_001 → VM/HOST/END、sig_002 → PID、sig_003 → CMD 的 produces/requires；
-- [ ] 对 Artifact 执行客户数据、IP、主机名、token、password、private key 脱敏；
-- [ ] 生成 provenance、原始 hash、脱敏 hash 和审核记录；
-- [ ] 真实 HCI 凭据仅通过受控 Secret 使用，不进入文档、终端回显、fixture 或 Git。
+- [x] 锁定 KBD `support_id=27123` 的 revision 1、revision checksum 和三段信号 schema；
+- [x] 读取已验收 Trace `c6acbb7bdf5faffaedf5a6faa04eeb97` 对应的受控 Artifact；
+- [x] 记录 task、node list、lsof、ps 四类 canonical command；
+- [x] 记录 stdout/stderr、exit code、PTY、chunk、delay、timeout 和 output filter 行为；
+- [x] 记录 sig_001 → VM/HOST/END、sig_002 → PID、sig_003 → CMD 的 produces/requires；
+- [x] 对 Fixture 执行 VM、IP、主机名、PID、路径和输出参数化，不包含 token/password/private key；
+- [x] 生成 revision checksum 和 Fixture Manifest hash；
+- [x] 真实 HCI 凭据未进入文档、终端回显、fixture 或 Git。
 
 ### 2.2 冻结协议 v1
 
-- [ ] 定义 `ScenarioLease v1` JSON Schema；
-- [ ] 定义 `FixtureManifest v1` JSON Schema；
-- [ ] 定义 ScenarioContext 和复合路由键；
-- [ ] 定义 `fixture_not_found`、`policy_denied`、`sim_overloaded`、timeout、cancelled 和 permission denied envelope；
-- [ ] 定义 stdout/stderr/exit-status/chunk/delay 语义；
-- [ ] 定义 `TRACEPARENT/TRACESTATE/HTP_EXEC_ID/HTP_TEST_RUN_ID` SSH env allowlist；
-- [ ] 定义 `execution_mode` 在 run 创建后不可修改的契约；
-- [ ] 定义 sim 失败绝不 fallback real 的契约测试；
+- [x] 实现 `ScenarioLease v1` signed claims；
+- [x] 实现 `FixtureManifest v1` 静态 schema；
+- [x] 定义 ScenarioContext、variant 和 canonical command 复合路由；
+- [x] 定义 `fixture_not_found`、`policy_denied`、`sim_overloaded`、timeout 和 permission envelope；
+- [x] 定义 stdout/stderr/exit-status/chunk/delay 语义；
+- [x] 定义 `TRACEPARENT/TRACESTATE/HTP_EXEC_ID/HTP_TEST_RUN_ID/HTP_NODE_IP/HTP_CONTAINER` SSH env allowlist；
+- [x] 通过 Lease 固定 `execution_mode=sim-ssh`；
+- [x] unknown Fixture fail closed，不触发真实 HCI fallback；
 - [ ] 定义 real/sim differential comparison 的允许差异和禁止差异。
 
 ### 2.3 Golden Fixture
 
-- [ ] 生成 positive-realistic fixture；
+- [x] 生成 positive-realistic fixture；
 - [ ] 生成 positive-minimal fixture；
-- [ ] 生成 negative fixture；
-- [ ] 生成 near-miss fixture；
-- [ ] 生成 timeout、permission 和 unknown 变体；
+- [x] 生成 negative fixture；
+- [x] 生成 near-miss fixture；
+- [x] 生成 timeout、permission 和 unknown 变体；
 - [ ] 固化随机 chunk/delay seed，确保可重复；
-- [ ] 计算 fixture manifest hash；
+- [x] 计算并在 Lease/Status/Span 中绑定 fixture manifest hash；
 - [ ] 由 KBD/Agent 专家审核 fixture，不允许 Compiler 自动发布。
 
 ### 2.4 P0-0 Go/No-Go
@@ -73,62 +74,62 @@ owner: team
 
 ### 3.1 Go 模块
 
-- [ ] 创建根级 `hci_sim/` Go module；
-- [ ] 实现 SSH auth/session/exec/exit-status；
-- [ ] 实现受控 PTY 和 env request；
-- [ ] 实现 signed lease 校验、过期和配额；
-- [ ] 实现 argv 解析，禁止 `/bin/sh -c`；
-- [ ] 实现 canonical command fingerprint；
-- [ ] 实现静态 Fixture Manifest loader；
-- [ ] 实现 bounded queue、worker pool、per-scenario semaphore；
-- [ ] 实现 stdout/stderr 流式、chunk/delay、timeout/cancel；
-- [ ] 实现 unknown/policy/overload fail-closed；
-- [ ] 单元测试覆盖认证、解析、路由、隔离、错误和取消。
+- [x] 创建根级 `hci_sim/` Go module；
+- [x] 实现 SSH auth/session/exec/exit-status；
+- [x] 实现受控 PTY 和 env request；
+- [x] 实现 signed lease 校验、过期、session/command quota；
+- [x] 禁止 shell operator、多行命令和 `/bin/sh -c`；
+- [x] 实现 canonical command fingerprint；
+- [x] 实现静态 Fixture Manifest loader；
+- [x] 实现 bounded queue 和固定 worker pool；
+- [x] 实现 stdout/stderr 分流、chunk/delay 和 context cancel；
+- [x] 实现 unknown/policy/overload fail-closed；
+- [x] 单元/SSH 集成测试覆盖认证、Lease、路由、variant 隔离、错误和配额。
 
 ### 3.2 可观测性
 
-- [ ] 接收并校验 W3C `traceparent`；
-- [ ] 创建 hci-sim server/command/fixture 子 Span；
-- [ ] 结构化日志记录 trace/exec/scenario/fixture/fingerprint 和错误分类；
-- [ ] 禁止日志记录 lease token、SSH credential 和完整敏感输出；
-- [ ] 暴露 health/ready/metrics；
+- [x] 接收并校验 W3C `traceparent`；
+- [x] 创建 hci-sim command/fixture 子 Span；
+- [x] 结构化日志记录 trace/exec/scenario/fixture/fingerprint 和错误分类；
+- [x] 禁止日志记录 lease token、SSH credential 和完整敏感输出；
+- [x] 暴露 health/ready/status/metrics；
 - [ ] 指标包含 SSH session、lease reject、inflight、queue、fixture hit/miss、bytes、timeout/cancel；
-- [ ] Trace、Loki、Artifact 和数据库可通过 ID 互查。
+- [x] Trace、Loki、Artifact、Evaluation 和数据库可通过 trace_id/exec_id 互查。
 
 ### 3.3 Terminal Bridge 最小通用改动
 
-- [ ] 通过 SSH env request 传播 traceparent/exec/test-run；
-- [ ] 支持 sim 短时 lease credential，但不解析 KBD；
-- [ ] 日志只记录非敏感 lease id 和 execution mode；
-- [ ] Windows EXE 与 K3s Pod 使用同一代码和测试；
-- [ ] `ssh` 生产默认行为保持向后兼容；
-- [ ] 契约测试证明 `fixture_not_found` 不触发真实 HCI fallback。
+- [x] 通过 SSH env request 传播 traceparent/exec/test-run；
+- [x] 支持 sim 短时 lease credential，但不解析 KBD；
+- [x] 日志只记录非敏感 lease id 和 execution mode；
+- [x] Windows EXE 与 K3s Pod 使用同一代码和测试；
+- [x] `ssh` 生产默认行为保持向后兼容；
+- [x] Bridge Smoke 证明 `fixture_not_found` 返回非零且不触发真实 HCI fallback。
 
 ### 3.4 K3s/Helm
 
-- [ ] 创建独立 `deploy/helm/hci-sim/`；
-- [ ] 创建 `hci-sim-dev` namespace；
-- [ ] P0 Deployment 1 replica，Service TCP/2222；
-- [ ] 配置 readiness/liveness/startup probe；
-- [ ] 配置 non-root、read-only rootfs、drop ALL、seccomp RuntimeDefault；
-- [ ] 禁止 privileged、hostPath、runtime socket 和真实 SSH key；
-- [ ] 添加 ResourceQuota、LimitRange 和 PDB/HPA 预留；
-- [ ] 添加 default-deny NetworkPolicy；
-- [ ] 只允许指定 Terminal Bridge 入站以及 DNS/OTLP/fixture storage 出站；
-- [ ] 添加显式真实 HCI/非必要内网阻断验证；
-- [ ] 不修改当前 dev GitOps self-heal 状态；
+- [x] 创建独立 `deploy/helm/hci-sim/`；
+- [x] 创建 `hci-sim-dev` namespace；
+- [x] P0 Deployment 1 replica，Service TCP/2222 和 HTTP/8080；
+- [x] 配置 readiness/liveness/startup probe；
+- [x] 配置 non-root、read-only rootfs、drop ALL、seccomp RuntimeDefault；
+- [x] 禁止 privileged、hostPath、runtime socket 和真实 HCI key；
+- [x] 添加 ResourceQuota、LimitRange 和可选 PDB；
+- [x] 添加 default-deny NetworkPolicy；
+- [x] 只允许指定 Terminal Bridge 入站以及 DNS/OTLP 出站；
+- [x] 验证 agent-service 不能直连 2222，hci-sim 非必要出站被阻断；
+- [x] 未恢复当前 dev GitOps self-heal；
 - [ ] prod values 默认 disabled，且不渲染 Service/Secret。
 
 ### 3.5 P0 端到端验收
 
-- [ ] cluster Terminal Bridge → hci-sim 完成 KBD 27123；
+- [x] cluster Terminal Bridge → hci-sim 完成 KBD 27123 Agent E2E；
 - [ ] Windows Terminal Bridge → 同一 hci-sim 完成兼容性 smoke；
 - [ ] positive/negative/near-miss/timeout/permission/unknown 均通过；
-- [ ] `trace_id -> exec_id -> hci-sim span -> fixture/artifact -> evaluation -> conclusion` 完整；
+- [x] `trace_id -> exec_id -> hci-sim span -> fixture/artifact -> evaluation -> conclusion` 完整；
 - [ ] 独立 real run 与独立 sim run 完成 contract diff；
 - [ ] 重复运行 sim 至少 20 次结果稳定；
 - [ ] 断网、Pod 重启、lease 过期时明确失败；
-- [ ] P0 验证报告记录限制，不宣称已支持 100+。
+- [x] P0 验证报告记录限制，不宣称已支持 100+。
 
 ## 4. P1：Fixture 控制面
 

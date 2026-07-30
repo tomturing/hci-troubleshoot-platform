@@ -175,6 +175,8 @@ type InMessage struct {
 	TraceID        string         `json:"trace_id"`  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
 	Traceparent    string         `json:"traceparent"`
 	Tracestate     string         `json:"tracestate"`
+	ExecutionMode  string         `json:"execution_mode,omitempty"`
+	TestRunID      string         `json:"test_run_id,omitempty"`
 	ConversationID string         `json:"conversation_id"`
 	ToolCallID     string         `json:"tool_call_id"`
 	Resume         bool           `json:"resume"`         // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
@@ -225,6 +227,7 @@ type execRequestContext struct {
 	TraceID         string
 	Traceparent     string
 	Tracestate      string
+	TestRunID       string
 	NodeIP          string
 	Container       string
 	CustomUI        string
@@ -328,6 +331,13 @@ type SSHSession struct {
 	closed       bool
 	listenersMu  sync.Mutex
 	listeners    map[string]*ExecListener // key: execID
+	simulation   bool                     // signed htp1 lease 或显式 sim-ssh 模式
+}
+
+func isSimulationLeaseCredential(msg InMessage) bool {
+	authType := strings.ToLower(strings.TrimSpace(msg.AuthType))
+	return strings.EqualFold(strings.TrimSpace(msg.ExecutionMode), "sim-ssh") ||
+		authType == "lease" || strings.HasPrefix(strings.TrimSpace(msg.Password), "htp1.")
 }
 
 func newSSHSession(msg InMessage) (*SSHSession, error) {
@@ -345,9 +355,11 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 	}
 	msg.Username = username
 
-	// 2. 密码后缀处理：如果是密码认证且提供了密码，加后缀 sangfornetwork
+	// 2. 真实 HCI 保持历史密码后缀行为；signed Scenario Lease 必须原样传输。
+	// lease 由 hci-sim 校验签名、时效、mode、manifest hash 和配额，Bridge 不解析载荷。
 	authType := strings.TrimSpace(strings.ToLower(msg.AuthType))
-	if (authType == "password" || authType == "") && msg.Password != "" {
+	simulation := isSimulationLeaseCredential(msg)
+	if (authType == "password" || authType == "") && msg.Password != "" && !simulation {
 		msg.Password = msg.Password + "sangfornetwork"
 	}
 
@@ -390,6 +402,7 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 		address:      addr,
 		session:      session,
 		listeners:    make(map[string]*ExecListener),
+		simulation:   simulation,
 	}, nil
 }
 
@@ -446,7 +459,7 @@ func buildAuthMethods(msg InMessage) ([]ssh.AuthMethod, error) {
 	authType := strings.TrimSpace(strings.ToLower(msg.AuthType))
 	methods := make([]ssh.AuthMethod, 0, 2)
 
-	if authType == "password" || authType == "" {
+	if authType == "password" || authType == "" || authType == "lease" {
 		if strings.TrimSpace(msg.Password) == "" {
 			return nil, fmt.Errorf("密码不能为空")
 		}
@@ -708,6 +721,28 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 		return
 	}
 	defer session.Close()
+	if s.simulation {
+		for name, value := range map[string]string{
+			"TRACEPARENT":     traceparent,
+			"TRACESTATE":      req.Tracestate,
+			"HTP_EXEC_ID":     req.ExecID,
+			"HTP_TEST_RUN_ID": req.TestRunID,
+			"HTP_NODE_IP":     req.NodeIP,
+			"HTP_CONTAINER":   req.Container,
+		} {
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			if err := session.Setenv(name, value); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "simulation_env_rejected")
+				atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+				blogContext(ctx, "ERROR", "exec.error", "hci-sim 拒绝执行上下文", req, map[string]any{"error": err.Error(), "error_type": "simulation_env_rejected", "env_name": name})
+				sendMsg(ws, OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "hci-sim 拒绝执行上下文", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "simulation_env_rejected"})
+				return
+			}
+		}
+	}
 
 	stdoutPipe, err := session.StdoutPipe()
 	if err != nil {
@@ -1757,7 +1792,7 @@ func (b *Bridge) resolveSession(msg InMessage) (*SSHSession, string) {
 }
 
 // autoConnectNode 使用已保存的认证信息自动连接新节点
-func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage) *SSHSession {
+func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage, ownedSessions *ownedSessionTracker) *SSHSession {
 	if msg.NodeIP == "" {
 		log.Printf("[Bridge] autoConnect: nodeIP 为空，跳过")
 		return nil
@@ -1801,10 +1836,12 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage) *SSHSession 
 
 	key := sessionKey(msg.CaseID, msg.NodeIP)
 	b.set(key, session)
+	ownedSessions.set(key, session)
 	atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
 
 	go session.on_output_start(ws, stdout, msg.CaseID, func() {
 		b.remove(key)
+		ownedSessions.remove(key)
 	})
 
 	log.Printf("[Bridge] autoConnect: 连接成功 node=%s key=%s", msg.NodeIP, key)
@@ -1847,6 +1884,20 @@ func (t *ownedSessionTracker) remove(key string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.sessions, key)
+}
+
+// drainCase 取出当前 WebSocket 所拥有的指定工单全部会话，包括自动建立的节点会话。
+func (t *ownedSessionTracker) drainCase(caseID string) map[string]*SSHSession {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sessions := make(map[string]*SSHSession)
+	for key, session := range t.sessions {
+		if key == caseID || strings.HasPrefix(key, caseID+"@") {
+			sessions[key] = session
+			delete(t.sessions, key)
+		}
+	}
+	return sessions
 }
 
 func (t *ownedSessionTracker) drain() map[string]*SSHSession {
@@ -1983,19 +2034,11 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			}
 
 		case "ssh_disconnect":
-			key := sessionKey(msg.CaseID, msg.NodeIP)
-			if s := b.get(key); s != nil {
-				s.close()
-				b.remove(key)
-				ownedSessions.remove(key)
-			}
-			// 同时清理默认会话
-			if msg.NodeIP == "" || msg.NodeIP != "" {
-				defaultKey := sessionKey(msg.CaseID, "")
-				if s := b.get(defaultKey); s != nil && s != b.get(key) {
-					s.close()
-					b.remove(defaultKey)
-					ownedSessions.remove(defaultKey)
+			// 关闭当前 WebSocket 所拥有的该工单全部会话，防止自动节点会话泄漏。
+			for key, owned := range ownedSessions.drainCase(msg.CaseID) {
+				if current := b.get(key); current == owned {
+					current.close()
+					b.remove(key)
 				}
 			}
 			sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: msg.CaseID})
@@ -2005,7 +2048,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			s, key := b.resolveSession(msg)
 			if s == nil && msg.NodeIP != "" {
 				// 自动连接新节点
-				s = b.autoConnectNode(ws, msg)
+				s = b.autoConnectNode(ws, msg, ownedSessions)
 				key = sessionKey(msg.CaseID, msg.NodeIP)
 			}
 			// 防御（A 修复）：exec 消息缺少 case_id/node_ip 时，回退到当前连接归属的会话
@@ -2104,7 +2147,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			// 根据 nodeIP 路由到正确的 SSH 会话
 			s, key := b.resolveSession(msg)
 			if s == nil && msg.NodeIP != "" {
-				s = b.autoConnectNode(ws, msg)
+				s = b.autoConnectNode(ws, msg, ownedSessions)
 				key = sessionKey(msg.CaseID, msg.NodeIP)
 			}
 			// 防御（A 修复）：exec 消息缺少 case_id/node_ip 时，回退到当前连接归属的会话。
@@ -2173,7 +2216,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			req := execRequestContext{
 				Context: receiveCtx, CaseID: msg.CaseID, ConversationID: msg.ConversationID,
 				ExecID: msg.ExecID, ToolCallID: msg.ToolCallID, TraceID: msg.TraceID,
-				Traceparent: msg.Traceparent, Tracestate: msg.Tracestate, NodeIP: msg.NodeIP,
+				Traceparent: msg.Traceparent, Tracestate: msg.Tracestate, TestRunID: msg.TestRunID, NodeIP: msg.NodeIP,
 				Container: msg.Container, CustomUI: cui, Command: wrappedCmd,
 				CommandRedacted: redactCommand(wrappedCmd), CommandSHA256: commandHash,
 			}

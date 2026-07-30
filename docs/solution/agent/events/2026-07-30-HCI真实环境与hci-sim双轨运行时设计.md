@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: active
 category: solution
 audience: product, architect, developer, tester, operator
 last_updated: 2026-07-30
@@ -15,6 +15,21 @@ Terminal Bridge P0 已把 Custom UI、WebSocket、Bridge、SSH、HCI、结果回
 此前已经提出 KBD Fixture Compiler、Scenario Scheduler、共享 hci-sim 和逻辑隔离。本次决策进一步回答：到底使用真实 HCI 还是 hci-sim、模拟器用什么技术、部署在哪里、如何同时承载 100+ KBD、怎样防止模拟器自洽假通过，以及如何控制投入产出。
 
 完整需求见 [HCI 真实环境与仿真环境双轨测试需求](../../../requirement/events/2026-07-30-HCI真实环境与仿真环境双轨测试需求.md)。
+
+## P0 实施状态（2026-07-30）
+
+本设计的 KBD 27123 单场景 Golden slice 已实施并部署到 dev：
+
+- `hci_sim/` Go SSH runtime、signed Lease、Fixture Router、worker/queue、OTel/metrics 已实现；
+- `deploy/helm/hci-sim/` 已部署为 `hci-sim-dev/hci-sim`；
+- Terminal Bridge 共用代码已支持 Lease 和 Trace over SSH；
+- 工单 `Q2026073088434` 已通过 Customer UI Headless Browser → Agent/CDD → Bridge → SSH → hci-sim → Artifact/Evaluation/Conclusion 完整验收；
+- trace `956f403dbf67fc597fd3a372e175ca61` 覆盖 7 个服务，三个 Signal Evaluation 均 PASS，S4 为 definitive；
+- Prometheus、Loki、Tempo 已能观测 hci-sim。
+
+详细证据见 [KBD 27123 hci-sim P0 端到端验证](../../../verify/events/2026-07-30-KBD27123-hci-sim-P0端到端验证.md)。
+
+该状态不代表 Windows desktop Bridge、real/sim differential、20 次稳定性和 100+ 并发已经通过；后续仍按本文 P1 门禁推进。
 
 ## 方案（WHAT）
 
@@ -229,7 +244,7 @@ P0-0 契约/Oracle 1～2 人日，P0 Runtime 3～5 人日，P1 MVP 30～45 人�
 - [Agent 方案文档索引](../README.md)：增加 hci-sim 导航；
 - [系统架构任务](../../../task/架构任务.md)：登记 P0-0/P0 Spike；
 - [docs 冷启动入口](../../../README.md)：登记当前里程碑和事实状态；
-- 实施后还需更新部署设计、部署指南、可观测性设计、接口设计和测试指南；本次仅做设计归档，不宣称代码或部署已完成。
+- P0 实施已同步任务、验证事件和冷启动入口；部署设计、接口设计和 100+ 测试指南将在 P1 控制面/容量阶段继续补齐。
 
 ## 验收标准
 

@@ -209,6 +209,11 @@
   - stdout/stderr 分流并有界捕获，记录总字节、截断、SHA-256、超时和错误分类；受控完整内容进入 `bridge_execution_artifacts`
   - Bridge 日志使用 event_id 与 instance+seq 幂等落库；Langfuse、tool_result、Tempo、Loki、Artifact 通过 trace_id/exec_id/artifact_id 互查
   - K3s 日志采集从已 EOL 的 Promtail 迁移到 Grafana Alloy，并按 containerd CRI 格式解析
+- **hci-sim KBD 27123 P0 Golden Agent E2E**（2026-07-30）：
+  - 新增 `hci_sim/` Go 自定义 SSH runtime 与独立 `deploy/helm/hci-sim/`，通过 signed Scenario Lease、不可变 Fixture Manifest、bounded worker queue 和 fail-closed 命令路由隔离模拟环境。
+  - Terminal Bridge 共用代码支持 `sim-ssh`、Lease 认证和 Trace over SSH；自动节点会话纳入 WebSocket ownership tracker，断开后 active SSH 归零。
+  - dev 工单 `Q2026073088434` 已完成 Customer UI Headless Runner → Agent/CDD → Bridge → hci-sim → Artifact/Evaluation/Conclusion；三段信号 PASS，S4 definitive，同一 Trace 覆盖 7 个服务。
+  - 当前仅代表 KBD 27123 单场景 Golden E2E；Windows desktop Bridge、real/sim differential、20 次稳定性和 100+ 并发仍未验收。
 - **信息质量检查跳过 SOP 模式**：SOP 命中时 quality check 不再拦截
 
 - **agent-service Langfuse Helm 条件判断修复**（PR #491，v1.49）：

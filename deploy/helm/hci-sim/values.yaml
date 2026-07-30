@@ -1,0 +1,47 @@
+replicaCount: 1
+
+image:
+  repository: hci-sim
+  tag: dev-local
+  pullPolicy: IfNotPresent
+
+service:
+  sshPort: 2222
+  httpPort: 8080
+
+runtime:
+  environment: dev
+  workers: 8
+  queueSize: 128
+  fixtureVariant: positive-realistic
+  existingSecret: hci-sim-credentials
+  leaseKeySecretKey: lease-hmac-key
+  hostKeySecretKey: ssh_host_key
+  otlpEndpoint: http://tempo.hci-observability.svc:4318
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+networkPolicy:
+  enabled: true
+  terminalBridgeNamespace: hci-dev
+  observabilityNamespace: hci-observability
+
+resourceQuota:
+  requestsCpu: "2"
+  requestsMemory: 2Gi
+  limitsCpu: "4"
+  limitsMemory: 4Gi
+  pods: "20"
+
+podDisruptionBudget:
+  enabled: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

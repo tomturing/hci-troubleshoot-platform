@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hci-sim
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hci-sim.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "hci-sim.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci-sim.labels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: {{ .Values.service.httpPort | quote }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hci-sim
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: HCI_SIM_ENVIRONMENT
+              value: {{ .Values.runtime.environment | quote }}
+            - name: HCI_SIM_SSH_LISTEN
+              value: ":{{ .Values.service.sshPort }}"
+            - name: HCI_SIM_HTTP_LISTEN
+              value: ":{{ .Values.service.httpPort }}"
+            - name: HCI_SIM_FIXTURE_MANIFEST
+              value: /etc/hci-sim/fixture-manifest.json
+            - name: HCI_SIM_HOST_KEY_FILE
+              value: /etc/hci-sim-secrets/ssh_host_key
+            - name: HCI_SIM_WORKERS
+              value: {{ .Values.runtime.workers | quote }}
+            - name: HCI_SIM_QUEUE_SIZE
+              value: {{ .Values.runtime.queueSize | quote }}
+            - name: HCI_SIM_LEASE_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtime.existingSecret }}
+                  key: {{ .Values.runtime.leaseKeySecretKey }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.runtime.otlpEndpoint | quote }}
+          ports:
+            - name: ssh
+              containerPort: {{ .Values.service.sshPort }}
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: fixture
+              mountPath: /etc/hci-sim
+              readOnly: true
+            - name: credentials
+              mountPath: /etc/hci-sim-secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: fixture
+          configMap:
+            name: hci-sim-fixture-kbd-27123
+        - name: credentials
+          secret:
+            secretName: {{ .Values.runtime.existingSecret }}
+            items:
+              - key: {{ .Values.runtime.hostKeySecretKey }}
+                path: ssh_host_key
+                mode: 0440
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

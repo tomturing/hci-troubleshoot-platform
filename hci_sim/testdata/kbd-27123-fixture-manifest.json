@@ -1,0 +1,117 @@
+{
+  "schema_version": "1.0",
+  "kbd": {
+    "support_id": "27123",
+    "revision": 1,
+    "checksum": "fa2fd873affea6d22292ed88f9373a375782eff00d3ce03618118d81d8423e67"
+  },
+  "variables": {
+    "VM": "271230001",
+    "HOST": "SIM-HCI-NODE-01",
+    "NODE_ENDPOINT": "hci-sim.hci-sim-dev.svc",
+    "PID": "9527",
+    "END": "2026-07-30 10:00:12"
+  },
+  "routes": [
+    {
+      "id": "env-platform-info",
+      "variant": "*",
+      "command_pattern": "acli platform info get",
+      "exit_code": 0,
+      "stdout": "{\"data\":{\"name\":\"HCI-SIM-27123\",\"version\":\"6.11.1_R1\",\"node_count\":1}}\n",
+      "chunk_bytes": 64
+    },
+    {
+      "id": "env-alert-list",
+      "variant": "*",
+      "command_pattern": "acli --formatter json alert list",
+      "exit_code": 0,
+      "stdout": "{\"data\":[]}\n"
+    },
+    {
+      "id": "env-task-list",
+      "variant": "*",
+      "command_pattern": "acli --formatter json task (?:get -s failed -l 10|list)",
+      "exit_code": 0,
+      "stdout": "{\"data\":[{\"type\":\"启动虚拟机\",\"process\":\"失败\",\"status\":3,\"target\":\"SIM-VM-27123\",\"vm\":\"{{VM}}\",\"host\":\"{{HOST}}\",\"end\":\"{{END}}\"}]}\n",
+      "chunk_bytes": 80
+    },
+    {
+      "id": "sig-001-task-positive",
+      "signal_id": "sig_001",
+      "variant": "positive-realistic",
+      "command_pattern": "acli --formatter json task get -k '启动虚拟机' -s failed -l 1",
+      "exit_code": 0,
+      "stdout": "{\n  \"data\": [\n    {\n      \"alert_type\": \"启动虚拟机\",\n      \"description\": \"启动虚拟机（SIM-VM-27123）失败，错误信息：虚拟机镜像忙，正在执行其他操作！\\n\",\n      \"end\": \"{{END}}\",\n      \"host\": \"{{HOST}}\",\n      \"hostname\": \"{{HOST}}\",\n      \"object_name\": \"SIM-VM-27123\",\n      \"process\": \"失败\",\n      \"status\": 3,\n      \"target\": \"SIM-VM-27123\",\n      \"type\": \"启动虚拟机\",\n      \"vm\": \"{{VM}}\"\n    }\n  ]\n}\n",
+      "chunk_bytes": 96
+    },
+    {
+      "id": "resolve-platform-node-positive",
+      "variant": "positive-realistic",
+      "command_pattern": "acli --formatter json platform node list",
+      "exit_code": 0,
+      "stdout": "{\n  \"data\": [\n    {\n      \"alert\": \"0\",\n      \"controller\": 1,\n      \"id\": \"sim-node-27123\",\n      \"ip\": \"{{NODE_ENDPOINT}}\",\n      \"master\": 1,\n      \"name\": \"{{HOST}}\",\n      \"status\": 1\n    }\n  ]\n}\n",
+      "chunk_bytes": 64
+    },
+    {
+      "id": "sig-002-lsof-positive",
+      "signal_id": "sig_002",
+      "variant": "positive-realistic",
+      "command_pattern": "acli system lsof",
+      "exit_code": 0,
+      "stdout": "flock       {{PID}}           root    3uW     REG               8,96  128886833152               770051 /sf/data/sim-cluster/images/sim-node/{{VM}}.vm/vm-disk-2.qcow2\nsleep       9528           root    3u      REG               8,96  128886833152               770051 /sf/data/sim-cluster/images/sim-node/{{VM}}.vm/vm-disk-2.qcow2\n",
+      "stderr": "lsof: no pwd entry for UID 65535\nlsof: no pwd entry for UID 65535\n",
+      "chunk_bytes": 128
+    },
+    {
+      "id": "sig-003-ps-positive",
+      "signal_id": "sig_003",
+      "variant": "positive-realistic",
+      "command_pattern": "acli system ps -p [0-9]+ -o cmd=",
+      "exit_code": 0,
+      "stdout": "flock -x /sf/data/sim-cluster/images/sim-node/{{VM}}.vm/vm-disk-2.qcow2 sleep 9999999\n",
+      "chunk_bytes": 48
+    },
+    {
+      "id": "sig-001-task-negative",
+      "signal_id": "sig_001",
+      "variant": "negative",
+      "command_pattern": "acli --formatter json task get -k '启动虚拟机' -s failed -l 1",
+      "exit_code": 0,
+      "stdout": "{\"data\":[]}\n"
+    },
+    {
+      "id": "sig-002-lsof-negative",
+      "signal_id": "sig_002",
+      "variant": "negative",
+      "command_pattern": "acli system lsof",
+      "exit_code": 0,
+      "stdout": "systemd 100 root cwd DIR 8,1 4096 /\n"
+    },
+    {
+      "id": "sig-002-lsof-near-miss",
+      "signal_id": "sig_002",
+      "variant": "near-miss",
+      "command_pattern": "acli system lsof",
+      "exit_code": 0,
+      "stdout": "flock 9527 root 3uW REG 8,96 128886833152 770051 /sf/data/sim-cluster/images/sim-node/OTHER-VM.vm/vm-disk-2.qcow2\n"
+    },
+    {
+      "id": "sig-002-lsof-permission",
+      "signal_id": "sig_002",
+      "variant": "permission",
+      "command_pattern": "acli system lsof",
+      "exit_code": 13,
+      "stderr": "permission denied: acli system lsof\n"
+    },
+    {
+      "id": "sig-002-lsof-timeout",
+      "signal_id": "sig_002",
+      "variant": "timeout",
+      "command_pattern": "acli system lsof",
+      "exit_code": 0,
+      "stdout": "",
+      "delay_ms": 180000
+    }
+  ]
+}

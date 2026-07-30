@@ -1,0 +1,6 @@
+apiVersion: v2
+name: hci-sim
+description: KBD 驱动的 HCI SSH 仿真运行时（仅 dev/test）
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
