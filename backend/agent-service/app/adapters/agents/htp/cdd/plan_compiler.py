@@ -93,9 +93,9 @@ def _verification_policy(kbd: KBD) -> CaseVerificationPolicy:
 
 
 def _evidence_role(signal_id: str, signal: dict[str, Any], policy: CaseVerificationPolicy) -> EvidenceRole:
-    # 案例级 Verification Contract 是运行时证据角色的唯一裁决源。Signal.role 是
-    # LLM Candidate 的局部 Proposal；Contract 归一可能基于“至少一个 must”等全局不变量
-    # 调整角色，因此不能再让旧的局部字段反向覆盖根契约。
+    # 运行时消费持久化的 Verification Contract。专家保存/LLM 抽取时，该 Contract
+    # 已由 signals[].role 单向投影生成；执行器不在现场反向改写知识。对于绕过新写入
+    # 路径遗留的历史不一致文档，仍以已发布 Contract 为兼容性边界，避免运行时漂移。
     for role, ids in (
         (EvidenceRole.MUST, policy.must),
         (EvidenceRole.SHOULD, policy.should),

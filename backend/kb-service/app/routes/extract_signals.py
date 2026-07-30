@@ -33,6 +33,7 @@ from shared.schemas.acquirer_args import SAFE_LOG_FILE_PATTERN, validate_acquire
 from shared.schemas.signal_generation import build_signal_generation_metadata
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import validate_signals_json
+from shared.schemas.verification_contract import reconcile_verification_contract
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
 
@@ -838,6 +839,9 @@ def _build_verification_contract(
             role = "context"
         elif role not in by_role:
             role = "must"
+        # Signal 角色是唯一事实来源；后续 Contract 只从这里投影，避免 LLM 的
+        # evidence_policy Proposal 与实际可执行 Signal 发生漂移。
+        signal["role"] = role
         if signal_id:
             by_role[role].append(signal_id)
 
@@ -908,7 +912,7 @@ def _build_verification_contract(
     for name in sorted(required - produced):
         if name in DEFAULT_VARIABLE_SCHEMA:
             variables.setdefault(name, {"type": "string"})
-    return {
+    contract = {
         "schema_version": 1,
         "case_id": case_id,
         "scope": allowed_scope,
@@ -919,6 +923,12 @@ def _build_verification_contract(
             "on_missing_must": "inconclusive",
         },
     }
+    # 生成路径与专家编辑路径必须使用相同归一化规则。上面的 Proposal 收敛仅负责
+    # scope/variables 等非角色元数据；证据分组最终只由 signals[].role 决定。
+    canonical, _ = reconcile_verification_contract(
+        {"schema_version": 2, "signals": signals, "verification_contract": contract}
+    )
+    return canonical["verification_contract"]
 
 
 def _signals_to_v2(

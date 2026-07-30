@@ -515,7 +515,13 @@ async function validateCurrentCandidate(options: { silent?: boolean } = {}) {
 
 function handleValidationAction(issue: CandidateValidation['issues'][number]) {
   const signalId = issue.action?.signal_id
-  if (!signalId) return
+  if (!signalId) {
+    if (issue.action?.type === 'edit_signal_role' && signalList.value.length) {
+      startEditSignal(0)
+      ElMessage.info('请在“证据作用”中将至少一条可执行信号设为“必要证据”后保存')
+    }
+    return
+  }
   const index = signalList.value.findIndex((signal) => String(signal.id) === String(signalId))
   if (index < 0) return
   startEditSignal(index)
@@ -914,7 +920,7 @@ function sigSourceRefs(sig: SignalV2): string[] {
   return Array.isArray(refs) ? refs.map((item) => String(item)) : []
 }
 function sigRoleLabel(sig: SignalV2): string {
-  return ({ must: '必要证据', should: '增强证据', exclude: '排除证据', context: '上下文' } as Record<string, string>)[sig.role || ''] || '未分配'
+  return ({ must: '必要证据', should: '增强证据', exclude: '排除证据', context: '上下文证据（仍执行）' } as Record<string, string>)[sig.role || ''] || '未分配'
 }
 function qualityTagType(status: string): 'success' | 'warning' | 'danger' | 'info' {
   if (status === 'success') return 'success'
@@ -933,6 +939,43 @@ const newSignalId = ref<string | null>(null)
 
 function cloneSignal(signal: SignalV2): SignalV2 {
   return JSON.parse(JSON.stringify(signal)) as SignalV2
+}
+
+const evidenceRoles = ['must', 'should', 'exclude', 'context'] as const
+
+/**
+ * 专家只编辑每条 Signal 的“证据作用”。执行 Contract 是这份角色清单的派生
+ * 投影，不能让删除/排序后的旧 signal_id 残留在 payload。后端会再次执行同一
+ * 归一化，前端这一步仅用于即时预览和降低无意义的保存失败。
+ */
+function reconcileSignalContract(currentDoc: SignalsDoc, list: SignalV2[]): SignalsDoc {
+  const payload = JSON.parse(JSON.stringify(currentDoc)) as SignalsDoc
+  const previousPolicy = payload.verification_contract?.evidence_policy || {}
+  const legacyRoles = Object.fromEntries(
+    evidenceRoles.flatMap((role) => (previousPolicy[role] || []).map((id: unknown) => [String(id), role])),
+  ) as Record<string, SignalV2['role']>
+  const policy: Record<string, string[]> = Object.fromEntries(evidenceRoles.map((role) => [role, []]))
+  payload.signals = list.map((raw) => {
+    const signal = cloneSignal(raw)
+    const id = String(signal.id || '')
+    const role = evidenceRoles.includes(signal.role as typeof evidenceRoles[number])
+      ? signal.role!
+      : legacyRoles[id] || 'must'
+    signal.role = role
+    if (id) policy[role].push(id)
+    return signal
+  })
+  const previousMinimum = Number(previousPolicy.minimum_should || 0)
+  payload.verification_contract = {
+    ...(payload.verification_contract || {}),
+    schema_version: payload.verification_contract?.schema_version || 1,
+    evidence_policy: {
+      ...policy,
+      minimum_should: Math.min(Math.max(0, Number.isFinite(previousMinimum) ? previousMinimum : 0), policy.should.length),
+      on_missing_must: 'inconclusive',
+    },
+  }
+  return payload
 }
 
 function signalStableId(signal: SignalV2, index: number): string {
@@ -1276,7 +1319,7 @@ function cancelEditSignal() {
 async function persistSignalList(list: SignalV2[], successMessage: string): Promise<boolean> {
   if (!detailEntry.value) return false
   const currentDoc = (detailEntry.value.signals_json || {}) as SignalsDoc
-  const payload: SignalsDoc = { ...currentDoc, schema_version: 2, signals: list.map(cloneSignal) }
+  const payload = reconcileSignalContract({ ...currentDoc, schema_version: 2 }, list)
   const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', ...authHeader },
@@ -1298,7 +1341,7 @@ async function persistSignalList(list: SignalV2[], successMessage: string): Prom
   clearStagedSignalEdits()
   newSignalId.value = null
   void fetchRevisionState(detailEntry.value.id)
-  void validateCurrentCandidate({ silent: true })
+  await validateCurrentCandidate({ silent: true })
   ElMessage.success(successMessage)
   return true
 }
@@ -1317,9 +1360,20 @@ function addSignal(tool: string) {
 async function deleteSignal(index: number) {
   if (!detailEntry.value) return
   const signal = signalList.value[index]
+  const role = sigRoleLabel(signal)
+  const policy = ((detailEntry.value.signals_json as SignalsDoc | undefined)?.verification_contract?.evidence_policy || {})
+  const isLastMust = signal.role === 'must' && (policy.must || []).length <= 1
+  const thresholdWillChange = signal.role === 'should'
+    && Number(policy.minimum_should || 0) > Math.max(0, (policy.should || []).length - 1)
+  const impact = [
+    `“${role}”将从 Agent 的验证规则中同步移除。`,
+    isLastMust ? '删除后可以先保存工作稿，但发布前必须把至少一条可执行信号设为“必要证据”。' : '',
+    thresholdWillChange ? '增强证据门槛会自动收敛，避免要求已删除的信号。' : '',
+    '原始 KBD 正文和截图证据不会删除。',
+  ].filter(Boolean).join('\n\n')
   try {
     await ElMessageBox.confirm(
-      `确认删除“${sigArgs(signal).instruction || sigTool(signal) || signalStableId(signal, index)}”？`,
+      `确认删除“${sigArgs(signal).instruction || sigTool(signal) || signalStableId(signal, index)}”？\n\n${impact}`,
       '删除关键信号',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
@@ -2671,7 +2725,7 @@ onMounted(() => {
                 <div v-else>
                   <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
-                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据" value="must" /><el-option label="增强证据" value="should" /><el-option label="排除证据" value="exclude" /><el-option label="上下文" value="context" /></el-select></div>
+                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据" value="must" /><el-option label="增强证据" value="should" /><el-option label="排除证据" value="exclude" /><el-option label="上下文证据（仍执行）" value="context" /></el-select></div>
                   <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="纯弹框 qkv_dialog" value="qkv_dialog" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
                   <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
                   <div v-if="sigTool(signalEditDraft) === 'qkv_alert'" class="field-hint">告警型关键字（acli alert get -k）：取自「分类基线 · 告警型故障」（标签以「告警」结尾），如 虚拟机CPU或内存占用过高告警、主机网口丢包告警、序列号过期告警。多个用逗号分隔</div>
@@ -2789,7 +2843,7 @@ onMounted(() => {
                   <!-- 共有字段 -->
                   <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
-                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据" value="must" /><el-option label="增强证据" value="should" /><el-option label="排除证据" value="exclude" /><el-option label="上下文" value="context" /></el-select></div>
+                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据" value="must" /><el-option label="增强证据" value="should" /><el-option label="排除证据" value="exclude" /><el-option label="上下文证据（仍执行）" value="context" /></el-select></div>
                   <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
                   <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或 cluster" /></div>
                   <div class="field-hint" v-pre>采集目标主机，使用变量池占位符 {{HOST}}（由上游生产者信号产出）或固定值 cluster</div>

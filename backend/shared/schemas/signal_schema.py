@@ -53,7 +53,21 @@ def validate_signals_json(raw: Any) -> None:
     Draft7Validator(_SIGNAL_V2_SCHEMA, registry=_REGISTRY).validate(raw)
     _validate_qfk_match_or_produces(raw)
     _validate_runtime_acquire_args(raw)
-    _validate_verification_contract(raw)
+    _validate_verification_contract(raw, require_must=True)
+
+
+def validate_draft_signals_json(raw: Any) -> None:
+    """工作稿保存校验。
+
+    工作稿必须始终是结构正确、工具参数可编译且 Contract 不含悬空引用的文档；但
+    专家可以暂时移除最后一条必要证据，待补充后再发布。最终发布仍只能调用
+    :func:`validate_publishable_signals_json`。
+    """
+
+    Draft7Validator(_SIGNAL_V2_SCHEMA, registry=_REGISTRY).validate(raw)
+    _validate_qfk_match_or_produces(raw)
+    _validate_runtime_acquire_args(raw)
+    _validate_verification_contract(raw, require_must=False)
 
 
 def _validate_runtime_acquire_args(raw: Any) -> None:
@@ -85,7 +99,7 @@ def validate_publishable_signals_json(raw: Any) -> None:
         seen.add(signal_id)
 
 
-def _validate_verification_contract(raw: Any) -> None:
+def _validate_verification_contract(raw: Any, *, require_must: bool) -> None:
     if not isinstance(raw, dict) or not isinstance(raw.get("verification_contract"), dict):
         return
     signals = raw.get("signals") or []
@@ -105,7 +119,7 @@ def _validate_verification_contract(raw: Any) -> None:
                     f"verification_contract 中 signal_id={signal_id} 同时属于 {assigned[signal_id]} 和 {role}"
                 )
             assigned[signal_id] = role
-    if signals and not (policy.get("must") or []):
+    if require_must and signals and not (policy.get("must") or []):
         raise ValidationError("verification_contract.evidence_policy.must 至少需要 1 条必要信号")
     if int(policy.get("minimum_should", 0)) > len(policy.get("should") or []):
         raise ValidationError("verification_contract.minimum_should 超过 should 信号数量")

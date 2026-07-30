@@ -7,6 +7,7 @@ from app.models.kbd_revision import KbdRevision
 from app.routes import admin
 from app.routes.admin import KbdApproveRequest, KbdUpdateRequest, _patch_maintenance_payload
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
+from shared.schemas.verification_contract import expert_editor_issues, reconcile_verification_contract
 
 
 class _SessionContext:
@@ -139,6 +140,96 @@ def test_maintenance_signal_edit_is_validated_and_marked_manual_reviewed():
 
     assert patched["signals_json"]["generation_metadata"]["status"] == "manual_reviewed"
     assert patched["signals_json"]["signals"][0]["orchestrate"]["requires"] == []
+
+
+def test_expert_delete_context_signal_removes_its_agent_contract_reference():
+    """KBD30880：正常 GPU 主机示例不应留下可执行的幽灵 Signal。"""
+
+    original = _payload()
+    reference_signal = {
+        "id": "sig_004",
+        "role": "context",
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {
+                "instruction": "参照正常 GPU 主机的配置文件格式",
+                "host": "{{HOST}}",
+                "container": "host",
+                "command": "cat /sf/cfg/gpu_info.ini",
+            },
+        },
+        "match": {"type": "exists", "expected": True},
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["HOST"]},
+        "provenance": {"category": "backend"},
+    }
+    original["signals_json"]["signals"].append(reference_signal)
+    original["signals_json"]["verification_contract"] = {
+        "schema_version": 1,
+        "evidence_policy": {
+            "must": ["task_failure", "log_failure"],
+            "should": [],
+            "exclude": [],
+            "context": ["sig_004"],
+            "minimum_should": 0,
+            "on_missing_must": "inconclusive",
+        },
+    }
+
+    edited = original["signals_json"] | {
+        "signals": [signal for signal in original["signals_json"]["signals"] if signal["id"] != "sig_004"]
+    }
+    patched = _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=edited))
+    policy = patched["signals_json"]["verification_contract"]["evidence_policy"]
+
+    assert [signal["id"] for signal in patched["signals_json"]["signals"]] == ["task_failure", "log_failure"]
+    assert policy["context"] == []
+    assert policy["must"] == ["task_failure", "log_failure"]
+    assert "sig_004" not in {item for values in policy.values() if isinstance(values, list) for item in values}
+
+
+def test_expert_can_save_working_draft_without_must_and_gets_actionable_issue():
+    """工作稿允许逐步编辑；只有发布门禁要求必要证据。"""
+
+    original = _payload()
+    edited = original["signals_json"] | {
+        "signals": [signal | {"role": "should"} for signal in original["signals_json"]["signals"]]
+    }
+    patched = _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=edited))
+
+    policy = patched["signals_json"]["verification_contract"]["evidence_policy"]
+    assert policy["must"] == []
+    assert policy["should"] == ["task_failure", "log_failure"]
+    assert expert_editor_issues(patched["signals_json"]) == [
+        {
+            "code": "NO_MUST_SIGNAL",
+            "severity": "error",
+            "message": "发布前请至少保留一条“必要证据”。",
+            "action": "将一条可执行关键信号的“证据作用”改为“必要证据”，或新增一条必要证据。",
+        }
+    ]
+
+
+def test_reconcile_contract_moves_signal_when_expert_changes_role():
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {"id": "task", "role": "must", "acquire": {"tool": "qkv_task", "args": {}}},
+            {"id": "check", "role": "context", "acquire": {"tool": "qfk_system", "args": {}}},
+        ],
+        "verification_contract": {
+            "schema_version": 1,
+            "scope": {"products": ["HCI"]},
+            "evidence_policy": {"must": ["task"], "context": ["check"], "minimum_should": 0},
+        },
+    }
+    document["signals"][1]["role"] = "must"
+    canonical, impact = reconcile_verification_contract(document)
+
+    policy = canonical["verification_contract"]["evidence_policy"]
+    assert policy["must"] == ["task", "check"]
+    assert policy["context"] == []
+    assert canonical["verification_contract"]["scope"] == {"products": ["HCI"]}
+    assert impact["after"] == {"must": 2, "should": 0, "exclude": 0, "context": 0}
 
 
 @pytest.mark.asyncio
