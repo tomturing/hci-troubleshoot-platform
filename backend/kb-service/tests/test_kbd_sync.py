@@ -111,6 +111,7 @@ async def test_update_kbd_entry_api_sync_sections():
         lock_version=0,
         status="draft",
         signals_json={},
+        images_json=[{"seq": 0, "desc": "TYPE: ERR\nBG: BLU\nTest image."}],
         content_md="",
     )
     kbd_row = MagicMock()
