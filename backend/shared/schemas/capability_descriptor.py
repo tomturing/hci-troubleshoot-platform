@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from shared.schemas.acquirer_args import ACQUIRER_ARGS_SCHEMA, FRONTEND_TOOLS
+from shared.schemas.acquirer_args import ACQUIRER_ARGS_SCHEMA, FRONTEND_TOOLS, SERVICE_DOMAIN_CATALOG
+from shared.schemas.log_source_catalog import LOG_MATCHER_TYPES, log_source_catalog_document
 
 DESCRIPTOR_SCHEMA_VERSION = 1
 
@@ -20,13 +21,20 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
     descriptors: list[dict[str, Any]] = []
     for capability_id, args_schema in sorted(ACQUIRER_ARGS_SCHEMA.items()):
         is_frontend = capability_id in FRONTEND_TOOLS
+        supported_matchers = (
+            []
+            if is_frontend
+            else list(LOG_MATCHER_TYPES)
+            if capability_id == "qfk_log"
+            else ["keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"]
+        )
         descriptors.append(
             {
                 "capability_id": capability_id,
                 "version": "1",
                 "kind": "producer" if is_frontend else "consumer",
                 "args_schema": args_schema,
-                "supported_matchers": [] if is_frontend else ["keyword", "regex", "state", "exists"],
+                "supported_matchers": supported_matchers,
                 "contract_status": "available",
                 # shared/kb-service 不能冒充 agent-service 的实际部署探测结果。
                 "runtime_status": "unknown",
@@ -37,6 +45,18 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
                     "read_only_intent": True,
                 },
                 "source": "shared.schemas.acquirer_args",
+                "limitations": (
+                    ["复合取值能力：在当前主控 /sf/log/today 与 /sf/log/today/vt 检索弹框文本并提取 END/REQUEST_ID"]
+                    if capability_id == "qkv_dialog"
+                    else []
+                ),
+                "catalog": (
+                    log_source_catalog_document()
+                    if capability_id == "qfk_log"
+                    else {"service_domains": SERVICE_DOMAIN_CATALOG}
+                    if capability_id == "qfk_service"
+                    else None
+                ),
             }
         )
     return descriptors

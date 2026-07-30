@@ -33,6 +33,11 @@ HERE = Path(__file__).resolve().parent                 # backend/scripts
 SCHEMA_MODULE = HERE.parent / "shared" / "schemas" / "acquirer_args.py"
 DEFAULT_OUT = HERE.parent / "shared" / "schemas" / "signals"
 
+# acquirer_args 会导入同属 backend/shared 的日志源 Catalog；动态加载前确保 backend
+# 位于模块搜索路径，避免生成器与服务运行时出现不同的导入行为。
+if str(HERE.parent) not in sys.path:
+    sys.path.insert(0, str(HERE.parent))
+
 DRAFT = "http://json-schema.org/draft-07/schema#"
 BASE = "https://hci-troubleshoot/schemas/signals"
 
@@ -138,10 +143,11 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                 },
                 "allOf": acquire_allof,
             },
-            # 判定段：运行时 evaluate_matcher 支持 6 类（见 agent-service matcher.py），
+            # 判定段：运行时 evaluate_matcher 支持 8 类（见 agent-service matcher.py），
             # 此处按类型允许各自字段，并保留 additionalProperties:false 拒绝幽灵字段。
             # - keyword/regex/state: 用 pattern（+ mode 多词逻辑）
-            # - threshold:         用 value + operator
+            # - threshold/delta:   用 value + operator，可按 metric 提取日志数值
+            # - trend:             用 direction/value/minimum_samples
             # - json_path:         用 path + expected_value
             # - exists:            仅需 expected
             "match": {
@@ -151,18 +157,30 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": ["keyword", "regex", "state", "threshold", "json_path", "exists"],
+                        "enum": [
+                            "keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"
+                        ],
                     },
-                    "pattern": {"type": "string"},
+                    "pattern": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+                        ]
+                    },
                     "mode": {"type": "string", "enum": ["or", "and", "not", "any", "all"]},
                     "expected": {"type": "boolean"},
                     "value": {"type": ["number", "integer"]},
                     "operator": {"type": "string", "enum": [">", ">=", "<", "<=", "==", "=", "!="]},
                     "aggregation": {
                         "type": "string",
-                        "enum": ["first_number", "line_count", "duration_seconds"],
+                        "enum": [
+                            "first_number", "last_number", "line_count", "duration_seconds", "max", "min", "sum"
+                        ],
                         "default": "first_number",
                     },
+                    "metric": {"type": "string", "minLength": 1},
+                    "minimum_samples": {"type": "integer", "minimum": 2, "maximum": 10000},
+                    "direction": {"type": "string", "enum": ["increasing", "decreasing", "stable"]},
                     "path": {"type": "string"},
                     "expected_value": {
                         "type": ["string", "number", "boolean", "null"]
@@ -176,6 +194,14 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     {
                         "if": {"properties": {"type": {"const": "threshold"}}},
                         "then": {"required": ["value", "operator"]},
+                    },
+                    {
+                        "if": {"properties": {"type": {"const": "delta"}}},
+                        "then": {"required": ["metric", "value", "operator"]},
+                    },
+                    {
+                        "if": {"properties": {"type": {"const": "trend"}}},
+                        "then": {"required": ["metric", "direction"]},
                     },
                     {
                         "if": {"properties": {"type": {"const": "json_path"}}},

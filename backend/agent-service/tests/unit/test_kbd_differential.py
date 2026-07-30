@@ -270,6 +270,43 @@ class TestHostIPResolution:
         assert qfk_exec.await_args.kwargs["node_ip"] == "172.28.24.2"
 
     @pytest.mark.asyncio
+    async def test_qfk_resolves_named_host_and_never_silently_falls_back_to_current_node(self, monkeypatch):
+        import app.tools.qfk.engine as qfk_engine
+
+        qfk_exec = AsyncMock(return_value=SimpleNamespace(error=None, raw_output="node output", matched=True))
+        monkeypatch.setattr(qfk_engine, "qfk_exec", qfk_exec)
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+        diag._resolve_host_ip = AsyncMock(return_value="172.28.24.3")
+
+        await diag._execute_acquirer(
+            KBDStep(
+                tool_name="qfk_log",
+                tool_args_template={"host": "SVR_aCloud_668", "file": "kernel.log"},
+                matcher={"type": "keyword", "pattern": "I/O error", "expected": True},
+            ),
+            {"node_ip": "172.28.24.1"},
+            "case-1",
+            "",
+        )
+
+        diag._resolve_host_ip.assert_awaited_once()
+        assert qfk_exec.await_args.kwargs["node_ip"] == "172.28.24.3"
+
+        diag._resolve_host_ip = AsyncMock(return_value="unknown-host")
+        _raw, error, _matched = await diag._execute_acquirer(
+            KBDStep(
+                tool_name="qfk_log",
+                tool_args_template={"host": "unknown-host", "file": "kernel.log"},
+                matcher={"type": "keyword", "pattern": "I/O error", "expected": True},
+            ),
+            {"node_ip": "172.28.24.1"},
+            "case-1",
+            "",
+        )
+        assert "QFK_TARGET_HOST_UNRESOLVED" in (error or "")
+        assert qfk_exec.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_kbd_qkv_executes_explicit_acquisition_even_with_prefetched_tasks(self, monkeypatch):
         import app.tools.qkv.engine as qkv_engine
 
@@ -567,7 +604,13 @@ class TestToolDefinitionFallback:
         from app.tools.qfk.signal import BackendSignal
 
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
-        step = SimpleNamespace(tool_name="qfk_log", tool_args_template={}, matcher=None)
+        # matcher 可以回退到工具定义，但日志文件是运行时定位数据源的必要参数，
+        # 不能用一个本身不可执行的空参数信号验证默认值行为。
+        step = SimpleNamespace(
+            tool_name="qfk_log",
+            tool_args_template={"file": "kernel.log"},
+            matcher=None,
+        )
         bsig = diag._signal_to_qfk(step)
         assert isinstance(bsig, BackendSignal)
         # signals_json 未配置 matcher -> 应采用 tool_definition 默认值

@@ -126,7 +126,7 @@ INSERT INTO tool_definition (
   service   服务：<subsystem> <service> start/stop/restart/status
   alert     告警：get / list
   task      任务：get / list
-  log       日志：get（--lines N）
+  log       日志：get（-k/-i/-t/-f/-c/-E/-p/-g；-t 仅绝对时间，路径仅 /sf/log 或 /sf/data/local）
   platform  平台：node list / version get / info get
   hardware  硬件：cpu info / gpu config list
   plugins   诊断插件：vm_start / vm_suspend / netdoctor / asys / performance_tools
@@ -137,7 +137,7 @@ INSERT INTO tool_definition (
   3. 优先在 acli 后面紧跟全局参数 --formatter json 获得结构化输出。格式：acli --formatter json <命名空间> <命令>
      注意：全局参数（如 --formatter json）绝对不能放在子命令的末尾（例如：acli vm list --formatter json 是错误的，会报无效参数错误；正确为 acli --formatter json vm list）。
   4. 纠错技巧：若执行 acli 命令报错 “未知的命令或者命名空间”（例如 acli storage disk list），这说明缺少了某个层级的命名空间或命令拼写错误。此时，可以通过减少末尾的一个参数/子命令（例如缩短为 acli storage）去执行，即可获取上一级命名空间的帮助信息以及该级别下所有可用的子命名空间与命令列表。
-  5. 兜底方案：通过执行 acli acli command list 命令可以获取当前 acli 支持的全部可用命令列表。不在该列表中的命令即代表不支持。
+  5. 兜底方案：通过执行 acli acli command list 获取当前 acli 支持的命令。命令不在平台 Catalog 时，开发/验证环境必须人工确认，生产环境可配置直接拒绝；不能把未知命令默认当作只读。
   6. 集群级操作使用 --cluster 参数。
   7. 根据执行结果（成功/错误）判断下一步（ReAct 自探索）
 

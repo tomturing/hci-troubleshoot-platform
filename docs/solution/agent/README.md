@@ -51,6 +51,7 @@ docs/solution/agent/
 │   ├── agent设计.md                    整体设计
 │   ├── agent工具设计.md                工具系统设计
 │   ├── HCI底层目录日志容器与aCLI知识基线.md HCI 实机事实、aCLI 契约与能力演进
+│   ├── qfk_log统一日志采集解析与判定设计.md 126 KBD 日志、Catalog、parser/predicate 与安全契约
 │   ├── agent技能设计.md                技能系统设计
 │   ├── agent记忆设计.md                记忆与变量池设计
 │   ├── agent基类设计.md                Agent 基类设计
@@ -89,6 +90,7 @@ docs/solution/agent/
 | 理解 Agent 整体架构 | [agent设计.md](02-架构设计/agent设计.md) |
 | 理解工具系统怎么工作 | [agent工具设计.md](02-架构设计/agent工具设计.md) |
 | 核对 HCI 日志/配置/数据/容器与 aCLI 的真实契约 | [HCI底层目录日志容器与aCLI知识基线.md](02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
+| 设计或审核 qfk_log、blackbox、日志 parser/predicate | [qfk_log统一日志采集解析与判定设计.md](02-架构设计/qfk_log统一日志采集解析与判定设计.md) |
 | 理解技能系统怎么工作 | [agent技能设计.md](02-架构设计/agent技能设计.md) |
 | 理解记忆与变量池怎么工作 | [agent记忆设计.md](02-架构设计/agent记忆设计.md) |
 | 理解可靠性方案 | [排障Agent可靠性整体解决方案.md](02-架构设计/排障Agent可靠性整体解决方案.md) |

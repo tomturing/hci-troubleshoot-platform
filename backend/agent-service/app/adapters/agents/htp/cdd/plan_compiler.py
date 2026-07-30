@@ -129,6 +129,8 @@ def _compile_tool_contract(tool: str, signal: dict[str, Any]) -> str | None:
         "VM": "golden-vm",
         "DEVICE": "/dev/sda",
         "STORAGE_PATH": "/sf/data/golden",
+        "END": "2026-07-30 10:00:00",
+        "REQUEST_ID": "a5ed4ad9340ce338ba1ac71d13ffcfb9",
     }
 
     def resolve_sample(value: Any, field_name: str = "") -> Any:
@@ -149,7 +151,7 @@ def _compile_tool_contract(tool: str, signal: dict[str, Any]) -> str | None:
     compiled_args = resolve_sample(args)
     matcher = signal.get("match") or {}
     pattern = matcher.get("pattern") if matcher.get("type") == "keyword" else None
-    keywords = [pattern] if isinstance(pattern, str) and pattern else []
+    keywords = [pattern] if isinstance(pattern, str) and pattern else list(pattern or []) if isinstance(pattern, list) else []
     data: dict[str, Any] = {
         "namespace": namespace,
         "host": compiled_args.get("host"),
@@ -160,6 +162,13 @@ def _compile_tool_contract(tool: str, signal: dict[str, Any]) -> str | None:
         "file": compiled_args.get("file"),
         "path": compiled_args.get("path"),
         "time_window": compiled_args.get("time_window"),
+        "source_family": compiled_args.get("source_family", "auto"),
+        "parser": compiled_args.get("parser"),
+        "request_id": compiled_args.get("request_id"),
+        "context_lines": compiled_args.get("context_lines", 0),
+        "include_archives": compiled_args.get("include_archives", False),
+        "archive_precheck": compiled_args.get("archive_precheck"),
+        "matcher": matcher or None,
         "keyword": keywords,
         "match_mode": {"any": "or", "all": "and"}.get(
             str(matcher.get("mode") or "or"), str(matcher.get("mode") or "or")

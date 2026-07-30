@@ -15,9 +15,24 @@ from shared.observability.otel import get_current_trace_id
 from app.tools.acli.executor import exec_result_observation
 from app.tools.qfk.extractor import QFKExtractionError, get_complete_output
 from app.tools.qfk.handlers import HandlerRegistry
+from app.tools.qfk.matcher import evaluate_matcher
 from app.tools.qfk.signal import BackendSignal
 
 logger = get_logger("qfk-engine")
+
+
+def _exclude_probe_self_observation(text: str, commands: list[str]) -> tuple[str, int]:
+    """删除包含本次完整探针命令的日志行，避免 qfk_log 检索自身形成假阳性。"""
+
+    command_tokens = [command.strip() for command in commands if command.strip()]
+    kept: list[str] = []
+    removed = 0
+    for line in (text or "").splitlines():
+        if any(command in line for command in command_tokens):
+            removed += 1
+            continue
+        kept.append(line)
+    return "\n".join(kept), removed
 
 
 @dataclass
@@ -290,20 +305,54 @@ async def qfk_exec(
                 raw_output="\n".join(result.stdout or "" for result in results),
             )
 
-    # 4. 解析结果并做关键字评估（evaluate 同时返回命中关键字，避免重复计算）
-    matched, matched_kws, evidence = handler.evaluate(results, signal.keyword, signal.match_mode)
+    # 4. 解析结果并做结构化 Matcher 求值。KBD v2 携带完整 matcher；旧的直接 QFK
+    # 调用继续使用 keyword/match_mode/expected 兼容路径。
+    combined_output = "\n".join(
+        f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}" for result in results
+    )
+    evaluated_output, excluded_probe_lines = _exclude_probe_self_observation(combined_output, commands)
+    if signal.matcher:
+        matcher_result = evaluate_matcher(
+            signal.matcher,
+            evaluated_output,
+            server_pre_filtered=(signal.namespace == "log" and signal.matcher.get("type") == "keyword"),
+        )
+        if matcher_result.matched is None:
+            return QFKResult(
+                matched=False,
+                namespace=signal.namespace,
+                commands=commands,
+                keywords=signal.keyword,
+                match_mode=signal.match_mode,
+                matched_keywords=[],
+                evidence=matcher_result.evidence,
+                error="QFK_MATCHER_INCONCLUSIVE: 现场输出不足以完成确定性判定",
+                exec_ids=exec_ids,
+                raw_output=combined_output,
+                complete_outputs=complete_outputs,
+            )
+        final_matched = bool(matcher_result.matched)
+        matched_kws = list(matcher_result.detail.get("matched_keywords") or [])
+        evidence = matcher_result.evidence
+        if signal.namespace == "log":
+            evidence = (
+                f"【qfk_log 解释契约】family={signal.source_family}, parser={signal.parser}, "
+                f"path={signal.path or '(acli default)'}, self_observation_excluded={excluded_probe_lines}\n"
+                f"{evidence}"
+            )
+        matched = bool(matcher_result.detail.get("hit", final_matched))
+    else:
+        matched, matched_kws, evidence = handler.evaluate(results, signal.keyword, signal.match_mode)
+
+        # 5. 旧兼容路径最终布尔判定
+        mode_norm = {"any": "or", "all": "and"}.get(
+            (signal.match_mode or "or").lower(), (signal.match_mode or "or").lower()
+        )
+        final_matched = matched if mode_norm == "not" else matched if (signal.expected is True) else not matched
 
     # 5. 最终布尔判定
     # match_mode == "not" 已在 evaluate 内部表达取反语义（均不出现才为真），无需再翻转；
     # 其余模式（or/and）兼容旧 matcher 的 expected 翻转（expected=False 表示"不出现才符合预期"）。
-    mode_norm = {"any": "or", "all": "and"}.get(
-        (signal.match_mode or "or").lower(), (signal.match_mode or "or").lower()
-    )
-    # 显式 is True（详见 2.3①）：signal.expected 为 bool（默认 True，由 pydantic 在
-    # 边界拒绝 None/非布尔），此处仅信任布尔真值；避免 falsy 判断在「上游误传 None」时
-    # 静默走入 not matched 分支。mode == "not" 已在 evaluate 内部表达取反语义，无需再翻转。
-    final_matched = matched if mode_norm == "not" else matched if (signal.expected is True) else not matched
-
     logger.info(
         event="qfk_engine_finished",
         namespace=signal.namespace,
@@ -321,8 +370,6 @@ async def qfk_exec(
         matched_keywords=matched_kws,
         evidence=evidence,
         exec_ids=exec_ids,
-        raw_output="\n".join(
-            f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}" for result in results
-        ),
+        raw_output=combined_output,
         complete_outputs=complete_outputs,
     )

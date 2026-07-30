@@ -20,20 +20,66 @@
     },
     "path": {
       "type": "string",
-      "description": "路径（日志目录/文件等）"
+      "description": "aCLI 搜索路径；常规日志仅限 /sf/log。/sf/data/local 不是日志目录，仅允许与 request_id 同时使用以关联诊断产物"
     },
     "time_window": {
       "type": "string",
-      "description": "时间窗（如 now/-1h）"
+      "pattern": "^(?:\\{\\{[A-Z][A-Z0-9_]*(?:\\.[A-Z0-9_]+)*\\}\\}|\\d{4}-\\d{2}-\\d{2}(?:[ T]\\d{2}(?::\\d{2}:\\d{2})?)?)$",
+      "description": "绝对日志时间：YYYY-MM-DD、YYYY-MM-DD HH、YYYY-MM-DD HH:MM:SS 或 {{ABSOLUTE_TIME}}；now/-1h 等相对表达式须由 Agent 先解析"
+    },
+    "source_family": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "whitebox",
+        "blackbox",
+        "vn_blackbox",
+        "pod"
+      ],
+      "default": "auto",
+      "description": "日志族；auto 时根据显式 path 和日志源 Catalog 推断"
+    },
+    "parser": {
+      "type": "string",
+      "enum": [
+        "plain_text",
+        "timestamped_lines",
+        "timestamped_blocks",
+        "ifconfig_snapshot",
+        "kv_counter_snapshot",
+        "process_snapshot"
+      ],
+      "description": "结构解析器；省略时由日志源 Catalog 按文件类型选择"
+    },
+    "request_id": {
+      "type": "string",
+      "description": "调用链 request_id（acli log get -i），可使用 {{REQUEST_ID}}"
+    },
+    "context_lines": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 50,
+      "default": 0,
+      "description": "命中行上下文行数（acli -c，0-50）"
+    },
+    "include_archives": {
+      "type": "boolean",
+      "default": false,
+      "description": "是否以 -g 搜索 .gz 历史归档；必须同时声明 archive_precheck=verified"
+    },
+    "archive_precheck": {
+      "type": "string",
+      "enum": [
+        "verified"
+      ],
+      "description": "归档搜索前置检查已确认磁盘空间、目标日期和路径范围"
     },
     "instruction": {
       "type": "string",
       "description": "信号语义说明（acli 调用的人类可读解释）"
     }
   },
-  "required": [
-    "file"
-  ],
+  "required": [],
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_log.schema.json",
   "title": "acquire.args for qfk_log"

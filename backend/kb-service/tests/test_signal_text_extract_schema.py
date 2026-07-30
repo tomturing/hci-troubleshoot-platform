@@ -204,21 +204,28 @@ def test_invalid_regex_is_rejected_before_publish_or_execution():
         validate_signals_json(_matcher_doc("qfk_system", {"command": "ps auxf"}, matcher))
 
 
-def test_qfk_log_contract_requires_keyword_matcher_and_file():
+def test_qfk_log_contract_requires_executable_matcher_and_absolute_time():
     valid = _matcher_doc(
         "qfk_log",
-        {"file": "sfvt_numa-server.log", "time_window": "-1h"},
+        {"file": "sfvt_numa-server.log", "time_window": "2026-07-30 00:10:00"},
         {"type": "keyword", "pattern": "failed to set numa", "mode": "or", "expected": True},
     )
     validate_signals_json(valid)
 
-    invalid = _matcher_doc(
+    regex_signal = _matcher_doc(
         "qfk_log",
         {"file": "sfvt_numa-server.log"},
         {"type": "regex", "pattern": "failed.*numa", "expected": True},
     )
-    with pytest.raises(ValidationError, match="必须使用 keyword matcher"):
-        validate_signals_json(invalid)
+    validate_signals_json(regex_signal)
+
+    relative_time = _matcher_doc(
+        "qfk_log",
+        {"file": "sfvt_numa-server.log", "time_window": "-1h"},
+        {"type": "keyword", "pattern": "failed", "expected": True},
+    )
+    with pytest.raises(ValidationError, match="does not match"):
+        validate_signals_json(relative_time)
 
 
 def test_qfk_log_accepts_real_safe_basenames_but_rejects_unsafe_names():
@@ -226,7 +233,6 @@ def test_qfk_log_accepts_real_safe_basenames_but_rejects_unsafe_names():
         "LOG_ethtool_statistic.txt",
         "messages",
         "nic_list.ini",
-        "BMC_Event_Log",
         "sfvt_qemu_{{VM}}.log",
     ):
         log = _matcher_doc(
@@ -235,6 +241,14 @@ def test_qfk_log_accepts_real_safe_basenames_but_rejects_unsafe_names():
             {"type": "keyword", "pattern": "dropped", "expected": True},
         )
         validate_signals_json(log)
+
+    bmc = _matcher_doc(
+        "qfk_log",
+        {"file": "BMC_Event_Log"},
+        {"type": "keyword", "pattern": "restarted", "expected": True},
+    )
+    with pytest.raises(ValidationError, match="不能由本机 qfk_log 获取"):
+        validate_signals_json(bmc)
 
     for file_name in ("../kernel.log", "..\\kernel.log", ".", "..", "kernel.log;reboot"):
         invalid = _matcher_doc(

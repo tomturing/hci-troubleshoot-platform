@@ -88,6 +88,8 @@ spec:
               value: {{ .Values.agentService.pydanticAiEnabled | default "false" | quote }}
             - name: CONFIRM_TIMEOUT_SEC
               value: {{ .Values.agentService.confirmTimeoutSec | default "120" | quote }}
+            - name: ACLI_UNKNOWN_COMMAND_POLICY
+              value: {{ .Values.agentService.acliUnknownCommandPolicy | default "confirm" | quote }}
             - name: AGENT_EXEC_RESULT_TIMEOUT_SECONDS
               value: {{ add .Values.terminalBridge.execTimeoutSeconds 30 | quote }}
             # Langfuse 可观测性（v3 SDK）

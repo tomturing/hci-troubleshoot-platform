@@ -18,7 +18,6 @@ from __future__ import annotations
 import contextvars
 import logging
 import uuid
-from typing import Any
 
 # 一次 pipeline run 一个根 trace_id，贯穿全程。
 # asyncio 单事件循环下 await 不切换 context，所有协程共享此 contextvar，

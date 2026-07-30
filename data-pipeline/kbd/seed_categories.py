@@ -245,10 +245,11 @@ async def build_parent_mapping(pool: asyncpg.Pool) -> dict[str, int]:
         path_labels_raw = row["path_labels"]
         if path_labels_raw:
             # asyncpg 返回 JSONB 为字符串，需解析为 Python list
-            if isinstance(path_labels_raw, str):
-                path_labels = json.loads(path_labels_raw)
-            else:
-                path_labels = path_labels_raw
+            path_labels = (
+                json.loads(path_labels_raw)
+                if isinstance(path_labels_raw, str)
+                else path_labels_raw
+            )
             # 序列化为 JSON 字符串作为 key
             path_str = json.dumps(path_labels, ensure_ascii=False)
             mapping[path_str] = row["id"]

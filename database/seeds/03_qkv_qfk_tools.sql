@@ -1,6 +1,6 @@
 -- ============================================================
 -- Seed 数据：QKV/QFK 关键信号工具定义
--- Version : 20260716
+-- Version : 20260730
 -- Issue   : T-TOOL-QKV-QFK-001
 -- 说明    : 插入 11 条工具定义记录（QKV 3个 + QFK 8个）
 -- 幂等键  : tool_name（ON CONFLICT DO UPDATE）
@@ -45,10 +45,12 @@ INSERT INTO tool_definition (
                 "minimum": 1,
                 "maximum": 200
             },
-            "node_ip": {
+            "alert_type": {
                 "type": "string",
-                "description": "目标节点 IP（可选），用于指定查询的节点"
+                "description": "告警类型过滤（可选）"
             },
+            "timeout": {"type": "integer", "minimum": 1, "maximum": 300, "default": 10},
+            "instruction": {"type": "string", "description": "信号语义说明"},
             "produces": {
                 "type": "array",
                 "description": "产出变量规格列表。定义要从告警结果中提取的字段，每个元素包含 name（输出变量名）和 path（JSON字段路径）。路径支持 | 分隔的多路径容错，如 host|hostname|hostid 表示依次尝试这三个字段。产出变量以大写命名（如 HOST），后续信号通过 {{HOST}} 引用。",
@@ -69,7 +71,8 @@ INSERT INTO tool_definition (
                 "default": []
             }
         },
-        "required": ["keyword"]
+        "required": ["keyword"],
+        "additionalProperties": false
     }',
     '[{"keyword": "磁盘被拔出", "limit": 50, "produces": [{"name": "HOST", "path": "host|hostname"}, {"name": "DISK_SN", "path": "target|object_name"}]}]',
     1,
@@ -114,10 +117,8 @@ INSERT INTO tool_definition (
                 "minimum": 1,
                 "maximum": 200
             },
-            "node_ip": {
-                "type": "string",
-                "description": "目标节点 IP（可选）"
-            },
+            "timeout": {"type": "integer", "minimum": 1, "maximum": 300, "default": 10},
+            "instruction": {"type": "string", "description": "信号语义说明"},
             "produces": {
                 "type": "array",
                 "description": "产出变量规格列表。定义要从任务结果中提取的字段，每个元素包含 name（输出变量名）和 path（JSON字段路径）。常用字段：vm（虚拟机ID）、host（主机名）、errcode_tracing（错误码）、request_id（请求ID）。",
@@ -138,7 +139,8 @@ INSERT INTO tool_definition (
                 "default": []
             }
         },
-        "required": ["keyword"]
+        "required": ["keyword"],
+        "additionalProperties": false
     }',
     '[{"keyword": "虚拟机镜像忙", "is_failed": true, "limit": 20, "produces": [{"name": "VM_ID", "path": "vm|object_id"}, {"name": "HOST", "path": "host|hostname"}]}]',
     1,
@@ -160,45 +162,46 @@ INSERT INTO tool_definition (
     usage_template, parameters_schema, examples, risk_level, is_active
 ) VALUES (
     'qkv_dialog',
-    '前端信号-弹框查询',
+    '前端信号-弹框日志定位',
     'qkv',
-    '前端信号（生产者）：查询弹框或对话日志，按关键字过滤。dialog 类型按行返回，produces 通常不使用（直接返回文本行）。',
-    'acli log get -k {{keyword}} -l {{limit}}',
+    '无任务/告警承载的页面弹框复合取值能力：在当前主控 /sf/log/today 与 /sf/log/today/vt 检索弹框原文，过滤探针自身后从命中日志提取 END、REQUEST_ID、HOST。存在对应失败任务时优先使用 qkv_task。',
+    NULL,
     '{
         "type": "object",
         "properties": {
             "keyword": {
                 "type": "string",
-                "description": "日志关键字过滤。例如：iotimeout、error、failed"
+                "description": "页面弹框原文或可唯一定位的稳定片段"
             },
             "limit": {
                 "type": "integer",
-                "description": "最大返回日志行数",
+                "description": "结构化候选结果上限",
                 "default": 100,
                 "minimum": 1,
                 "maximum": 200
             },
-            "node_ip": {
-                "type": "string",
-                "description": "目标节点 IP（可选）"
+            "paths": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["/sf/log/today", "/sf/log/today/vt"]},
+                "default": ["/sf/log/today", "/sf/log/today/vt"],
+                "description": "固定弹框日志搜索域"
             },
+            "context_lines": {"type": "integer", "minimum": 0, "maximum": 10, "default": 2},
             "produces": {
                 "type": "array",
-                "description": "产出变量规格（dialog 类型通常不使用，按行返回文本）",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "输出变量名"},
-                        "path": {"type": "string", "description": "JSON 字段路径"}
-                    },
-                    "required": ["name", "path"]
-                },
-                "default": []
-            }
+                "default": [
+                    {"name": "END", "path": "end"},
+                    {"name": "REQUEST_ID", "path": "request_id"},
+                    {"name": "HOST", "path": "host"}
+                ]
+            },
+            "timeout": {"type": "integer", "minimum": 1, "maximum": 300, "default": 10},
+            "instruction": {"type": "string", "description": "历史信号语义说明"}
         },
-        "required": ["keyword"]
+        "required": ["keyword"],
+        "additionalProperties": false
     }',
-    '[{"keyword": "iotimeout", "limit": 50}]',
+    '[{"keyword":"编辑显卡核心失败","paths":["/sf/log/today","/sf/log/today/vt"],"context_lines":2,"produces":[{"name":"END","path":"end"},{"name":"REQUEST_ID","path":"request_id"},{"name":"HOST","path":"host"}]}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO UPDATE SET
@@ -222,46 +225,47 @@ INSERT INTO tool_definition (
     'qfk_log',
     '后端信号-日志检查和操作',
     'qfk',
-    '后端信号（消费者）：在指定日志文件中搜索关键字，进行布尔判定。支持 target.resource（日志文件名）、target.path（日志路径）、target.time_window（时间范围）。matcher 支持 keyword 类型。',
-    'acli log get -k {{keyword}} {{#if target.resource}}-f {{target.resource}}{{/if}} {{#if target.path}}-p {{target.path}}{{/if}}',
+    '统一日志消费者：常规日志根只有 /sf/log，whitebox、blackbox、vn-blackbox 与 pods 统一通过 qfk_log + acli log get 获取。/sf/data/local 不是日志族，只允许携带 request_id 做辅助关联搜索。文件名只填 basename；path/parser 默认由代码 Catalog 推断。',
+    NULL,
     '{
         "type": "object",
         "properties": {
-            "keyword": {
+            "file": {
                 "type": "string",
-                "description": "搜索关键字（取自 matcher.pattern 的第一个元素）"
+                "description": "安全日志 basename，如 sfvt_vtpdaemon.log、LOG_ifconfig.txt、messages"
             },
-            "target": {
-                "type": "object",
-                "description": "检查目标定位参数",
-                "properties": {
-                    "resource": {
-                        "type": "string",
-                        "description": "日志文件名，如 vtpdaemon.log、mysql-managed.log"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "日志路径，如 /sf/log/today/"
-                    },
-                    "time_window": {
-                        "type": "string",
-                        "description": "时间范围，如 最近1小时、今天"
-                    }
-                }
+            "path": {
+                "type": "string",
+                "description": "常规日志仅限 /sf/log；/sf/data/local 仅可与 request_id 同时使用"
             },
-            "keywords": {
-                "type": "array",
-                "description": "匹配关键字列表（用于判定）",
-                "items": {"type": "string"}
+            "source_family": {
+                "type": "string",
+                "enum": ["auto", "whitebox", "blackbox", "vn_blackbox", "pod"],
+                "default": "auto"
+            },
+            "parser": {
+                "type": "string",
+                "enum": ["plain_text", "timestamped_lines", "timestamped_blocks", "ifconfig_snapshot", "kv_counter_snapshot", "process_snapshot"]
+            },
+            "time_window": {
+                "type": "string",
+                "description": "YYYY-MM-DD、YYYY-MM-DD HH、YYYY-MM-DD HH:MM:SS 或 {{ABSOLUTE_TIME}}"
+            },
+            "request_id": {"type": "string", "description": "调用链 request_id（acli -i）"},
+            "context_lines": {"type": "integer", "minimum": 0, "maximum": 50, "default": 0},
+            "include_archives": {"type": "boolean", "default": false},
+            "archive_precheck": {"type": "string", "enum": ["verified"]},
+            "resource_keyword": {
+                "type": "string",
+                "description": "无 matcher 的变量产出模式所需受控行选择器"
             },
             "matcher": {
                 "type": "object",
-                "description": "判定器配置。根据 type 字段决定其他参数：keyword（关键字匹配）、regex（正则）、state（状态）、threshold（阈值）、json_path（JSON路径）、exists（存在性）",
+                "description": "日志判定器；计数器使用 threshold/delta/trend + metric",
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": ["keyword", "regex", "state", "threshold", "json_path", "exists"],
-                        "description": "判定类型：keyword=关键字匹配，regex=正则表达式，state=状态值，threshold=数值阈值，json_path=JSON路径取值，exists=存在性"
+                        "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "exists"]
                     },
                     "pattern": {
                         "type": ["string", "array"],
@@ -269,10 +273,15 @@ INSERT INTO tool_definition (
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["any", "all"],
-                        "default": "any",
-                        "description": "(keyword专用) 多关键字匹配模式：any=任一匹配，all=全部匹配"
+                        "enum": ["or", "and", "not"],
+                        "default": "or"
                     },
+                    "metric": {"type": "string"},
+                    "operator": {"type": "string", "enum": [">", ">=", "<", "<=", "==", "!="]},
+                    "value": {"type": "number"},
+                    "aggregation": {"type": "string", "enum": ["first_number", "last_number", "line_count", "max", "min", "sum"]},
+                    "minimum_samples": {"type": "integer", "minimum": 2},
+                    "direction": {"type": "string", "enum": ["increasing", "decreasing", "stable"]},
                     "expected": {
                         "type": "boolean",
                         "default": true,
@@ -280,15 +289,12 @@ INSERT INTO tool_definition (
                     }
                 },
                 "required": ["type"]
-            },
-            "node_ip": {
-                "type": "string",
-                "description": "目标节点 IP（可选）"
             }
         },
-        "required": ["keyword"]
+        "required": [],
+        "additionalProperties": false
     }',
-    '[{"keyword": "iotimeout", "target": {"resource": "sfvt_qemu_7436939093432.log", "path": "/sf/log/3/"}, "matcher": {"type": "keyword", "pattern": ["iotimeout"], "mode": "or", "expected": true}}]',
+    '[{"file":"sfvt_vtpdaemon.log","source_family":"auto","matcher":{"type":"keyword","pattern":"Connection reset by peer","mode":"or","expected":true}},{"file":"LOG_ethtool_statistic.txt","source_family":"vn_blackbox","matcher":{"type":"delta","metric":"rx_missed_errors","operator":">","value":0,"minimum_samples":2,"expected":true}}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO UPDATE SET
@@ -310,27 +316,38 @@ INSERT INTO tool_definition (
     'qfk_service',
     '后端信号-服务检查和操作',
     'qfk',
-    '后端信号（消费者）：检查服务状态是否正常。需要指定 container（容器类型：asv/anet/host）和服务名称。matcher 支持 state 类型判定 running/stopped。',
-    'acli service {{container}} {{service_name}} status',
+    '后端信号（消费者）：领域服务域为 asv(vt/虚拟平台)、anet(vn/虚拟网络)、asan(vs/虚拟存储)、host(宿主机/容器管理)。当前版本实机只暴露 asv/anet/host，执行前必须以 aCLI capability probe 为准，不能把领域知识冒充为已部署能力。',
+    NULL,
     '{
         "type": "object",
         "properties": {
             "container": {
                 "type": "string",
                 "enum": ["asv", "anet", "host"],
-                "description": "容器类型：asv=应用服务容器，anet=网络容器，host=主机进程"
+                "default": "asv",
+                "description": "当前实机可执行：asv(vt)、anet(vn)、host；asan(vs) 属领域 Catalog，但当前版本未暴露 service namespace"
             },
-            "service_name": {
+            "resource_keyword": {
                 "type": "string",
                 "description": "服务名称，如 redis、mysql、vtpdaemon"
             },
+            "command": {
+                "type": "string",
+                "description": "服务动作，如 status/start/stop/restart；省略时运行时默认 status"
+            },
+            "host": {
+                "type": "string",
+                "description": "目标 HCI 主机，由传输层选择 SSH 会话，不拼入 aCLI 命令"
+            },
+            "timeout": {"type": "integer", "minimum": 1, "maximum": 300, "default": 10},
+            "instruction": {"type": "string", "description": "信号语义说明"},
             "matcher": {
                 "type": "object",
                 "description": "判定器配置，通常使用 state 类型检查 running 状态",
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": ["keyword", "regex", "state", "threshold", "json_path", "exists"]
+                        "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"]
                     },
                     "pattern": {
                         "type": "string",
@@ -342,15 +359,12 @@ INSERT INTO tool_definition (
                     }
                 },
                 "required": ["type"]
-            },
-            "node_ip": {
-                "type": "string",
-                "description": "目标节点 IP（可选）"
             }
         },
-        "required": ["container", "service_name"]
+        "required": ["resource_keyword"],
+        "additionalProperties": false
     }',
-    '[{"container": "asv", "service_name": "redis", "matcher": {"type": "state", "pattern": "running", "expected": true}}]',
+    '[{"container": "asv", "resource_keyword": "redis", "command": "status", "matcher": {"type": "state", "pattern": "running", "expected": true}}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO UPDATE SET
@@ -372,12 +386,12 @@ INSERT INTO tool_definition (
     'qfk_system',
     '后端信号-系统检查和操作',
     'qfk',
-    '后端信号（消费者）：执行系统级子命令，封装了 37 个主机级命令（lsof/ps/lsblk/iostat/smartctl/modinfo 等）。通过 sub_command 指定具体命令。matcher 支持 threshold（数值阈值）和 keyword 类型。',
-    'acli system {{sub_command}}',
+    '后端信号（消费者）：执行 acli system 子命令（lsof/ps/lsblk/iostat/smartctl/modinfo 等）。通过 command 指定动作，host 选择目标节点，container 选择受控执行位置。',
+    'acli system {{command}}',
     '{
         "type": "object",
         "properties": {
-            "sub_command": {
+            "command": {
                 "type": "string",
                 "description": "acli system 子命令，如 lsof、ps auxf、lsblk、iostat、smartctl -a /dev/sda、modinfo mpt3sas 等"
             },
@@ -387,7 +401,7 @@ INSERT INTO tool_definition (
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": ["keyword", "regex", "state", "threshold", "json_path", "exists"],
+                        "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"],
                         "description": "判定类型"
                     },
                     "pattern": {
@@ -396,8 +410,8 @@ INSERT INTO tool_definition (
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["any", "all"],
-                        "default": "any",
+                        "enum": ["or", "and", "not"],
+                        "default": "or",
                         "description": "(keyword专用) 多关键字匹配模式"
                     },
                     "operator": {
@@ -424,17 +438,17 @@ INSERT INTO tool_definition (
                 },
                 "required": ["type"]
             },
-            "node_ip": {
+            "host": {
                 "type": "string",
-                "description": "目标节点 IP（可选）"
+                "description": "目标 HCI 主机/作用域（可选，如 {{HOST}}）"
             }
         },
-        "required": ["sub_command"]
+        "required": ["command"]
     }',
     '[
-        {"sub_command": "lsof", "matcher": {"type": "keyword", "pattern": ["qcow2", "PID"], "mode": "and", "expected": true}},
-        {"sub_command": "iostat", "matcher": {"type": "threshold", "operator": ">", "value": 1000, "expected": true}},
-        {"sub_command": "smartctl -a /dev/sda", "matcher": {"type": "threshold", "operator": ">", "value": 200, "expected": true}}
+        {"command": "lsof", "matcher": {"type": "keyword", "pattern": ["qcow2", "PID"], "mode": "and", "expected": true}},
+        {"command": "iostat", "matcher": {"type": "threshold", "operator": ">", "value": 1000, "expected": true}},
+        {"command": "smartctl -a /dev/sda", "matcher": {"type": "threshold", "operator": ">", "value": 200, "expected": true}}
     ]',
     1,
     true
@@ -457,12 +471,12 @@ INSERT INTO tool_definition (
     'qfk_vm',
     '后端信号-虚拟机相关操作',
     'qfk',
-    '后端信号（消费者）：执行虚拟机相关子命令。通过 sub_command 指定具体操作，如 list、config、status 等。matcher 支持 keyword/state/json_path/exists。',
-    'acli vm {{sub_command}}',
+    '后端信号（消费者）：执行虚拟机相关子命令。通过 command 指定具体操作，如 list、config、status 等；host 选择目标节点。',
+    'acli vm {{command}}',
     '{
         "type": "object",
         "properties": {
-            "sub_command": {
+            "command": {
                 "type": "string",
                 "description": "acli vm 子命令，如 list、status <vmid>、config <vmid>"
             },
@@ -472,7 +486,7 @@ INSERT INTO tool_definition (
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": ["keyword", "regex", "state", "threshold", "json_path", "exists"]
+                        "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"]
                     },
                     "pattern": {
                         "type": ["string", "array"],
@@ -480,8 +494,8 @@ INSERT INTO tool_definition (
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["any", "all"],
-                        "default": "any"
+                        "enum": ["or", "and", "not"],
+                        "default": "or"
                     },
                     "expected": {
                         "type": "boolean",
@@ -490,14 +504,14 @@ INSERT INTO tool_definition (
                 },
                 "required": ["type"]
             },
-            "node_ip": {
+            "host": {
                 "type": "string",
-                "description": "目标节点 IP（可选）"
+                "description": "目标 HCI 主机/作用域（可选，如 {{HOST}}）"
             }
         },
-        "required": ["sub_command"]
+        "required": ["command"]
     }',
-    '[{"sub_command": "list", "matcher": {"type": "exists", "expected": true}}]',
+    '[{"command": "list", "matcher": {"type": "exists", "expected": true}}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO UPDATE SET
@@ -519,12 +533,12 @@ INSERT INTO tool_definition (
     'qfk_network',
     '后端信号-网络相关操作',
     'qfk',
-    '后端信号（消费者）：执行网络相关子命令。通过 sub_command 指定具体操作，如 ping、connectivity 等。',
-    'acli network {{sub_command}}',
+    '后端信号（消费者）：执行网络相关子命令。通过 command 指定具体操作；host 选择目标节点。',
+    'acli network {{command}}',
     '{
         "type": "object",
         "properties": {
-            "sub_command": {
+            "command": {
                 "type": "string",
                 "description": "acli network 子命令"
             },
@@ -532,18 +546,18 @@ INSERT INTO tool_definition (
                 "type": "object",
                 "description": "判定器配置",
                 "properties": {
-                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "threshold", "json_path", "exists"]},
+                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"]},
                     "pattern": {"type": ["string", "array"]},
-                    "mode": {"type": "string", "enum": ["any", "all"], "default": "any"},
+                    "mode": {"type": "string", "enum": ["or", "and", "not"], "default": "or"},
                     "expected": {"type": "boolean", "default": true}
                 },
                 "required": ["type"]
             },
-            "node_ip": {"type": "string", "description": "目标节点 IP（可选）"}
+            "host": {"type": "string", "description": "目标 HCI 主机/作用域（可选，如 {{HOST}}）"}
         },
-        "required": ["sub_command"]
+        "required": ["command"]
     }',
-    '[{"sub_command": "ping 192.168.1.1", "matcher": {"type": "keyword", "pattern": "bytes from", "expected": true}}]',
+    '[{"command": "ping 192.168.1.1", "matcher": {"type": "keyword", "pattern": "bytes from", "expected": true}}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO UPDATE SET
@@ -566,11 +580,11 @@ INSERT INTO tool_definition (
     '后端信号-存储相关操作',
     'qfk',
     '后端信号（消费者）：执行存储相关子命令，如 asan disk list、disk status 等。',
-    'acli storage {{sub_command}}',
+    'acli storage {{command}}',
     '{
         "type": "object",
         "properties": {
-            "sub_command": {
+            "command": {
                 "type": "string",
                 "description": "acli storage 子命令，如 asan disk list"
             },
@@ -578,18 +592,18 @@ INSERT INTO tool_definition (
                 "type": "object",
                 "description": "判定器配置",
                 "properties": {
-                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "threshold", "json_path", "exists"]},
+                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"]},
                     "pattern": {"type": ["string", "array"]},
-                    "mode": {"type": "string", "enum": ["any", "all"], "default": "any"},
+                    "mode": {"type": "string", "enum": ["or", "and", "not"], "default": "or"},
                     "expected": {"type": "boolean", "default": true}
                 },
                 "required": ["type"]
             },
-            "node_ip": {"type": "string", "description": "目标节点 IP（可选）"}
+            "host": {"type": "string", "description": "目标 HCI 主机/作用域（可选，如 {{HOST}}）"}
         },
-        "required": ["sub_command"]
+        "required": ["command"]
     }',
-    '[{"sub_command": "asan disk list", "matcher": {"type": "keyword", "pattern": ["数据同步", "数据平衡"], "mode": "or", "expected": true}}]',
+    '[{"command": "asan disk list", "matcher": {"type": "keyword", "pattern": ["数据同步", "数据平衡"], "mode": "or", "expected": true}}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO UPDATE SET
@@ -612,27 +626,27 @@ INSERT INTO tool_definition (
     '后端信号-硬件相关操作',
     'qfk',
     '后端信号（消费者）：执行硬件相关子命令，如 sensor list、disk smart 等。',
-    'acli hardware {{sub_command}}',
+    'acli hardware {{command}}',
     '{
         "type": "object",
         "properties": {
-            "sub_command": {"type": "string", "description": "acli hardware 子命令"},
+            "command": {"type": "string", "description": "acli hardware 子命令"},
             "matcher": {
                 "type": "object",
                 "description": "判定器配置",
                 "properties": {
-                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "threshold", "json_path", "exists"]},
+                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"]},
                     "pattern": {"type": ["string", "array"]},
-                    "mode": {"type": "string", "enum": ["any", "all"], "default": "any"},
+                    "mode": {"type": "string", "enum": ["or", "and", "not"], "default": "or"},
                     "expected": {"type": "boolean", "default": true}
                 },
                 "required": ["type"]
             },
-            "node_ip": {"type": "string", "description": "目标节点 IP（可选）"}
+            "host": {"type": "string", "description": "目标 HCI 主机/作用域（可选，如 {{HOST}}）"}
         },
-        "required": ["sub_command"]
+        "required": ["command"]
     }',
-    '[{"sub_command": "sensor list", "matcher": {"type": "exists", "expected": true}}]',
+    '[{"command": "sensor list", "matcher": {"type": "exists", "expected": true}}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO UPDATE SET
@@ -655,27 +669,27 @@ INSERT INTO tool_definition (
     '后端信号-平台相关操作',
     'qfk',
     '后端信号（消费者）：执行平台相关子命令，如 cluster status、version 等。',
-    'acli platform {{sub_command}}',
+    'acli platform {{command}}',
     '{
         "type": "object",
         "properties": {
-            "sub_command": {"type": "string", "description": "acli platform 子命令"},
+            "command": {"type": "string", "description": "acli platform 子命令"},
             "matcher": {
                 "type": "object",
                 "description": "判定器配置",
                 "properties": {
-                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "threshold", "json_path", "exists"]},
+                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"]},
                     "pattern": {"type": ["string", "array"]},
-                    "mode": {"type": "string", "enum": ["any", "all"], "default": "any"},
+                    "mode": {"type": "string", "enum": ["or", "and", "not"], "default": "or"},
                     "expected": {"type": "boolean", "default": true}
                 },
                 "required": ["type"]
             },
-            "node_ip": {"type": "string", "description": "目标节点 IP（可选）"}
+            "host": {"type": "string", "description": "目标 HCI 主机/作用域（可选，如 {{HOST}}）"}
         },
-        "required": ["sub_command"]
+        "required": ["command"]
     }',
-    '[{"sub_command": "cluster status", "matcher": {"type": "state", "pattern": "healthy", "expected": true}}]',
+    '[{"command": "cluster status", "matcher": {"type": "state", "pattern": "healthy", "expected": true}}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO UPDATE SET

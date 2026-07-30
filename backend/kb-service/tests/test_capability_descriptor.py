@@ -12,7 +12,12 @@ def test_descriptor_is_code_generated_and_does_not_claim_runtime_deployment():
         "qkv_dialog",
         "qfk_system",
     }
+    assert get_capability_descriptor("qkv_dialog")["runtime_status"] == "unknown"
     assert all(item["runtime_status"] == "unknown" for item in document["capabilities"])
+    service_domains = get_capability_descriptor("qfk_service")["catalog"]["service_domains"]
+    assert service_domains["asan"] == {
+        "plane": "vs", "name": "虚拟存储", "runtime_exposed": False,
+    }
 
 
 def test_descriptor_exposes_schema_and_fails_closed_for_unknown_capability():

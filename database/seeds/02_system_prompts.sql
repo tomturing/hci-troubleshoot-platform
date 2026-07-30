@@ -615,7 +615,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
       "id": "sig_001",
       "role": "<must|should|exclude|context>",
       "acquire": {{"tool": "<acquire.tool，取自采集器目录>", "args": {{"...": "依据该 tool 的契约，见下方规则 6"}}}},
-      "match": {{"type": "<keyword|regex|state|threshold|json_path|exists>", "pattern": "<匹配式>", "mode": "any|all", "expected": true}},
+      "match": {{"type": "<keyword|regex|state|threshold|delta|trend|json_path|exists>", "pattern": "<匹配式>", "mode": "or|and|not", "expected": true}},
       "orchestrate": {{"phase": "<diagnostic|solution>", "action": "<可选>", "produces": [{{"name": "<VAR>", "path": "<取值路径>"}}], "requires": ["<VAR>"]}},
       "provenance": {{"category": "frontend|backend", "source_section": "title|problem_description|alert_info|steps_text", "source_refs": ["img:0/region:img_0:r_0"], "evidence": "<逐字引用输入中的证据句或截图可见文字>", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": "<可选说明>"}}
@@ -634,13 +634,13 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
 2. acquire.tool 必须取自采集器目录，禁止编造；acquire.args 严格按该 tool 契约填写，禁止多余字段（additionalProperties=false 会拒绝幽灵字段）。
 3. 占位符强制：acquire.args / match / orchestrate 中引用变量时，必须为双花括号+全大写：{{{{HOST}}}}、{{{{VM.NAME}}}}；禁止小写/混合。
 4. 变量合法性：producer 的 produces[].name、consumer 的 requires[] 必须是可用变量集合中的名字（新变量须先加入 produces）。
-5. backend（qfk_*）执行模式严格二选一：判定模式配置 match 且 produces=[]；产出变量模式配置 match=null 且 produces 非空。frontend（qkv_*）信号可省略 match 或置 null。match.type ∈ [keyword, regex, state, threshold, json_path, exists]；匹配关键词放 match.pattern（不要放 acquire.args）。
+5. backend（qfk_*）执行模式严格二选一：判定模式配置 match 且 produces=[]；产出变量模式配置 match=null 且 produces 非空。frontend（qkv_*）信号可省略 match 或置 null。match.type ∈ [keyword, regex, state, threshold, delta, trend, json_path, exists]；匹配关键词放 match.pattern（不要放 acquire.args）。
 6. acquire.args 字段对照（关键，务必对齐，多/错字段会被契约拒绝）：
    - qkv_alert：必填 keyword；可选 limit/alert_type/timeout/instruction。注意：无 is_failed 字段。
    - qkv_task：必填 keyword；可选 is_failed/limit/timeout/instruction。（is_failed 仅属于 qkv_task，不属于 qkv_alert）
-   - qkv_dialog：必填 keyword。
-   - qfk_log：必填 file（来自原文证据的安全 basename，禁止目录分隔符和控制字符，允许 messages、.ini、BMC_Event_Log 及 {{{{VAR}}}} 占位符，扩展名不限）；resource_keyword 为可选资源/主题选择器；可选 host（支持 {{{{HOST}}}}）/path/time_window/timeout/instruction；只能使用 keyword matcher，匹配关键词放 match.pattern。无法从正文或截图可见文字确定 file 时不得生成 qfk_log。
-   - qfk_service：resource_keyword（服务名选择器）+ container（组 asv/anet/host，默认 asv）；可选 command（动作 status/restart 等）/timeout/instruction。
+   - qkv_dialog：有对应任务/告警时优先 qkv_task/qkv_alert；仅有页面弹框时生成 qkv_dialog，keyword 必须取弹框原文或稳定片段，默认在当前主控 /sf/log/today 与 /sf/log/today/vt 检索，并在 orchestrate.produces 声明 END(end)、REQUEST_ID(request_id)、HOST(host)。禁止生成虚构的 acli dialog get；弹框文本不稳定或无法关联日志时标 needs_review。
+   - qfk_log：统一覆盖 /sf/log 下 whitebox、blackbox、vn-blackbox 与 pods；禁止生成 qfk_blackbox。常规日志必填 file（安全 basename，禁止目录分隔符和控制字符，扩展名不限；BMC_Event_Log 不是本机日志，应使用 qfk_hardware）。可选 source_family=auto|whitebox|blackbox|vn_blackbox|pod、path、parser、request_id、context_lines、time_window、include_archives/archive_precheck、host/timeout/instruction。/sf/data/local 不是日志族，仅允许携带 request_id 做辅助关联搜索。time_window 只能是 HCI 时区绝对时间或 {{{{ABSOLUTE_TIME}}}}，now/-1h 必须先解析。普通报错用 keyword/regex/state/exists；数值计数用 threshold；周期快照变化用 delta/trend 且必须提供 metric。产出变量模式必须用 resource_keyword 或 request_id 限制输出。无法从正文/截图确定 file 或现场来源属于 UI/BMC/NBU/外部存储时，不得伪造成 qfk_log。
+   - qfk_service：领域服务域为 asv(vt)/anet(vn)/asan(vs)/host；当前版本 `acli service --help` 已验证可执行组为 asv/anet/host，生成命令必须取运行时能力交集。resource_keyword 为服务名，container 为已探测组（默认 asv）；可选 command（status/restart 等）/timeout/instruction。不要把 `acli storage asan ...` 与 `acli service asan ...` 混同。
    - qfk_system/vm/network/storage/hardware/platform：command（如 lsof/ps/...，acli <namespace> <command>）；可选 host（{{{{HOST}}}}）/resource_keyword/timeout/instruction。
    - host 即原 v1 的 target.scope：采集目标主机/作用域，用 {{{{HOST}}}} 占位（变量池解析）或字面 cluster；不要再用嵌套 target 对象。
 7. 写操作安全：若 acquire.tool 为 qfk_* 且 acquire.args.command 命中写/变更动词（start/stop/restart/delete/set/create/...），必须 review.require_human_confirm=true、orchestrate.phase=solution；且只在排查步骤明确描述「处置/修复动作」时才抽取此类信号，纯诊断步骤不要编造写操作。
@@ -663,7 +663,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
 14. 计数阈值：原文使用 `... | wc -l` 时，command 只保留基础列举命令，match 使用 `{{"type":"threshold","aggregation":"line_count","operator":">","value":100,"expected":true}}`；禁止把管道写进 command，也禁止把输出第一个数字误当行数。
 15. 外部变量：若 requires 引用了本案例内没有任何 signal.produces 的自定义变量（如 STORAGE_PATH、DEVICE），必须在 verification_contract.variables 中显式声明封闭类型 string/integer/number/boolean/array；变量未声明、类型不合法或现场未提供时不得假定值，裁决必须 inconclusive。
 16. 结构字段封闭约束：frontend（qkv_*）必须 match=null 且 produces 至少一项；backend 的 match 与 produces 严格二选一，不得同时配置。produces 每项只能使用 JSON path，或使用 text extract；text extract 的 column_mode 只能是 whole/index/from_index，禁止输出 full_line/full/key_value/last_field 等别名或自造字段。没有可靠取值路径时不要生成变量。
-17. Matcher 封闭约束：keyword/regex/state 必须有非空 pattern；threshold 必须有数值 value 和 operator，aggregation 只能是 first_number/line_count/duration_seconds；json_path 必须有 path。禁止把 value/max_value/count/latency_ms 等业务名写进 aggregation。
+17. Matcher 封闭约束：keyword/regex/state 必须有非空 pattern；threshold 必须有数值 value 和 operator，aggregation 只能是 first_number/last_number/line_count/duration_seconds/max/min/sum；delta 必须有 metric/value/operator；trend 必须有 metric/direction，可选 value 表示最小步长；json_path 必须有 path。blackbox 行通常以时间戳开头，阈值/差值/趋势必须用 metric 定位字段，禁止把日期数字误当计数器。
 18. 诊断与处置边界：只有真实写操作才设 phase=solution，且 solution 的 role 必须是 context；只读 list/get/status/show/check 即使需要人工确认仍是 diagnostic。command/resource_keyword 禁止包含 |、;、&、反引号、$、重定向符或换行；不要把多条命令拼成一个 command。
 
 # 输出示例（对齐真实 KBD：虚拟机开机失败→镜像忙→进程占用；已对齐全 v2 契约与采集器字段）

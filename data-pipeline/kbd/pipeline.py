@@ -1,15 +1,17 @@
 """
 data-pipeline/kbd/pipeline.py — KBD 知识生产管道编排（API 调用版）
 
-完整流水线分四个 Stage：
+完整流水线分六个 Stage：
 
   Stage 1: fetch      抓取 API + 下载图片 → 文件存储（cache/{support_id}/）
-  Stage 2: vision     图片语义化（Vision LLM）→ 写 kbd_entry.images_json.desc
-  Stage 3: import     HTML→MD 转换 + 调用 API 写入 kbd_entry（status=draft）
+  Stage 2: import     语义转换 + 原子写入 kbd_entry/kbd_image（status=draft）
+  Stage 3: vision     图片语义化（Vision LLM）→ 写 kbd_entry.images_json
   Stage 4: classify   AI 分类（调用 kb-service API）→ kbd_entry.ai_category_id
+  Stage 5: extract    关键信号抽取（调用 kb-service API）→ kbd_entry.signals_json
+  Stage 6: audit      只读审计 qfk_log Proposal 与运行时契约
 
 变更（T2-02, T2-03）：
-  - Stage 3: 不再直接写数据库，改为调用 `/api/kbd/ingest`
+  - Stage 2: 不再直接写数据库，改为调用 `/api/kbd/ingest`
   - Stage 4: 不再本地调用 LLM，改为调用 `/api/kb/classify`
 
 变更（进度追踪 v1）：
@@ -18,9 +20,9 @@ data-pipeline/kbd/pipeline.py — KBD 知识生产管道编排（API 调用版�
   - 支持 failed_only 模式（仅处理失败案例）
   - 每个 Stage 完成后更新 progress.json
 
-每个 Stage 独立可重跑：
+每个 Stage 可重跑：
   - 已完成的记录自动跳过
-  - 失败记录可通过 --stage=N --retry-failed 重试
+  - Fetch/Vision 失败记录可通过 --failed-only 重试
 
 用法：
   python -m kbd.run pipeline --excel          # 从 Excel 全量跑
@@ -31,6 +33,8 @@ data-pipeline/kbd/pipeline.py — KBD 知识生产管道编排（API 调用版�
   python -m kbd.run vision --excel
   python -m kbd.run import --excel
   python -m kbd.run classify --excel
+  python -m kbd.run extract-signals --excel
+  python -m kbd.run audit-log-signals --all
 """
 from __future__ import annotations
 
@@ -65,7 +69,7 @@ class Stage(IntEnum):
     """流水线阶段枚举。
 
     新架构 DAG（有向无环，依赖单向）：
-      FETCH → IMPORT → VISION → CLASSIFY
+      FETCH → IMPORT → VISION → CLASSIFY → EXTRACT_SIGNALS → AUDIT_LOG_SIGNALS
     VISION 移到 IMPORT 之后（因为 VISION 需要 kbd_entry.id 和 kbd_image），
     IMPORT 原子写入 kbd_entry + kbd_image，消除循环依赖。
     """
@@ -74,6 +78,7 @@ class Stage(IntEnum):
     VISION = 3  # 读 kbd_image，调 Vision LLM，更新 images_json + rebuild content_md
     CLASSIFY = 4
     EXTRACT_SIGNALS = 5  # 关键信号分级抽取：LLM 抽取 signals_json 并写回 kbd_entry
+    AUDIT_LOG_SIGNALS = 6  # 只读审计：qfk_log Proposal 是否符合共享运行时契约
 
 
 # ─── DAG 依赖声明（拓扑排序 P0-② 增强）─────────────────────────────────────────
@@ -85,6 +90,7 @@ STAGE_DEPENDENCIES: dict[Stage, tuple[Stage, ...]] = {
     Stage.VISION: (Stage.IMPORT,),                                    # 需要 kbd_entry + kbd_image
     Stage.CLASSIFY: (Stage.VISION,),                                  # 需要 content_md 含视觉描述（完整上下文分类更准）
     Stage.EXTRACT_SIGNALS: (Stage.CLASSIFY,),                          # 需要 ai_category_id 作为领域上下文
+    Stage.AUDIT_LOG_SIGNALS: (Stage.EXTRACT_SIGNALS,),                 # 审计生产后的 signals_json
 }
 
 
@@ -98,7 +104,7 @@ def resolve_stages(requested: Iterable[Stage]) -> list[Stage]:
         requested: 用户传入的 stages（含去重）
 
     Returns:
-        按拓扑序（FETCH → IMPORT → VISION → CLASSIFY）排列的全部 stage 列表，
+        按拓扑序（FETCH → IMPORT → VISION → CLASSIFY → EXTRACT → AUDIT）排列的全部 stage 列表，
         包含用户请求 + 全部传递依赖
     """
     requested_set = set(requested)
@@ -110,7 +116,7 @@ def resolve_stages(requested: Iterable[Stage]) -> list[Stage]:
             if dep not in closure:
                 closure.add(dep)
                 queue.append(dep)
-    # 按 Stage 枚举值排序（FETCH=1 → CLASSIFY=4，天然拓扑序）
+    # 按 Stage 枚举值排序（FETCH=1 → AUDIT_LOG_SIGNALS=6，天然拓扑序）
     return sorted(closure, key=lambda x: int(x))
 
 
@@ -125,7 +131,14 @@ async def _create_pool() -> asyncpg.Pool:
 
 async def run_pipeline(
     kbd_ids: list[str],
-    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY, Stage.EXTRACT_SIGNALS),
+    stages: Sequence[Stage] = (
+        Stage.FETCH,
+        Stage.IMPORT,
+        Stage.VISION,
+        Stage.CLASSIFY,
+        Stage.EXTRACT_SIGNALS,
+        Stage.AUDIT_LOG_SIGNALS,
+    ),
     *,
     force_fetch: bool = False,
     override: bool = False,
@@ -143,7 +156,7 @@ async def run_pipeline(
         stages: 要执行的阶段（默认全部）。DAG 拓扑补齐：传入 [VISION] 会自动展开为
             [FETCH, IMPORT, VISION]（含全部传递依赖）。详见 `resolve_stages`。
         force_fetch: 强制重新抓取已完成的案例（仅影响 Stage 1）
-        override: 强制覆盖已存在的记录（仅影响 Stage 3 导入阶段）
+        override: 强制覆盖已存在的记录（仅影响 Stage 2 导入阶段）
         override_status: 仅覆盖指定状态的记录。None=默认仅draft；['all']=所有状态
         resume: 从上次中断处继续（加载 progress.json，跳过已完成案例）
         resume_run_id: 指定要恢复的 run_id（不传则自动查找最新的 progress 文件）
@@ -308,6 +321,7 @@ async def run_pipeline(
                 """SELECT support_id FROM kbd_entry
                    WHERE support_id = ANY($1)
                      AND status = 'draft'
+                     AND (COALESCE(category_id, '') <> '' OR COALESCE(ai_category_id, '') <> '')
                      AND (signals_json IS NULL OR signals_json = '[]'::jsonb)""",
                 kbd_ids,
             )
@@ -316,7 +330,7 @@ async def run_pipeline(
             # Resume 模式：跳过已完成的案例
             extract_kbd_ids = extract_ids_all
             if resume and progress:
-                completed_ids = get_completed_ids_for_stage(progress, "extract")
+                completed_ids = get_completed_ids_for_stage(progress, "extract_signals")
                 extract_kbd_ids = [cid for cid in extract_ids_all if cid not in completed_ids]
                 skipped = len(extract_ids_all) - len(extract_kbd_ids)
                 if skipped > 0:
@@ -334,7 +348,42 @@ async def run_pipeline(
                     cid,
                 )
                 status = _signal_document_status(row["signals_json"] if row else None)
-                update_stage_status(progress, "extract", cid, status)
+                update_stage_status(progress, "extract_signals", cid, status)
+            save_progress(run_id, progress)
+
+        if Stage.AUDIT_LOG_SIGNALS in stages:
+            logger.info("─── Stage 6: qfk_log Proposal 只读契约审计 ───")
+            # 延迟导入，避免只运行 fetch/import 等阶段时强制依赖 backend/shared。
+            from .log_signal_audit import audit_rows, load_rows_from_db
+
+            t0 = time.monotonic()
+            rows = await load_rows_from_db(pool, kbd_ids)
+            report = audit_rows(rows)
+            all_stats["audit_log_signals"] = {
+                **report,
+                "elapsed_s": round(time.monotonic() - t0, 1),
+            }
+            logger.info(
+                "Stage 6 完成 cases=%d status=%s issues=%s",
+                report["case_count"],
+                report["case_status_counts"],
+                report["issue_counts"],
+            )
+
+            case_status = {
+                support_id: status
+                for status, support_ids in report["case_status_ids"].items()
+                for support_id in support_ids
+            }
+            for support_id in [str(row["support_id"]) for row in rows]:
+                audit_status = case_status.get(support_id)
+                if audit_status == "BLOCKED_ACTIVE_SIGNAL":
+                    progress_status = "failed"
+                elif audit_status == "NEEDS_EXPERT_REVIEW":
+                    progress_status = "needs_review"
+                else:
+                    progress_status = "done"
+                update_stage_status(progress, "audit_log_signals", support_id, progress_status)
             save_progress(run_id, progress)
 
         # 标记进度完成
@@ -510,7 +559,14 @@ async def _db_vision_status(pool: asyncpg.Pool, support_id: str) -> str:
 
 
 async def run_from_excel(
-    stages: Sequence[Stage] = (Stage.FETCH, Stage.VISION, Stage.IMPORT, Stage.CLASSIFY, Stage.EXTRACT_SIGNALS),
+    stages: Sequence[Stage] = (
+        Stage.FETCH,
+        Stage.IMPORT,
+        Stage.VISION,
+        Stage.CLASSIFY,
+        Stage.EXTRACT_SIGNALS,
+        Stage.AUDIT_LOG_SIGNALS,
+    ),
     *,
     force_fetch: bool = False,
     override: bool = False,
