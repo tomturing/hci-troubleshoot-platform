@@ -2,7 +2,7 @@
 status: active
 category: meta
 audience: all
-last_updated: 2026-07-29
+last_updated: 2026-07-30
 owner: team
 update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑达成）必须更新第一屏
 ---
@@ -54,14 +54,15 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD/QFK 安全非 JSON 行列提取与完整输出变量 | ✅ 完成 | 2026-07-27 |
 | KBD 多条历史 QFK 管道的分步修复与统一保存 | ✅ 完成 | 2026-07-27 |
 | KBD 自动执行门禁与 HTP 人工升级确认修复 | ✅ 完成 | 2026-07-27 |
-| Terminal Bridge 真实 UI 入口信任边界与 Alloy 采集健康 P0 修复 | 🔄 真实案例重验中 | 2026-07-29 |
+| Terminal Bridge 真实 UI 入口信任边界、Alloy 与端到端可观测性 P0 | ✅ 真实案例重验与全链路关联完成 | 2026-07-30 |
 | 运行时代码完整性防护（禁止源码热补丁覆盖镜像） | ✅ 完成 | 2026-07-27 |
 | KBD QKV/QFK 三信号执行闭环与 39 MB 大输出边缘筛选 | ✅ 代码与自动验证完成，待 PR 部署后现场复测 | 2026-07-27 |
 | KBD 关键信号结果用户化与 `ps -p PID -o cmd=` 提取契约 | ✅ 代码与 59 项自动验证完成，待修正 KBD revision 后现场复测 | 2026-07-28 |
 | KBD 截图证据与可执行诊断契约 | 🟡 126/126 来源完整；122 条自动 Proposal；4 条工程 Contract fixture 仅完成 Handler Build/Decision Replay；0/126 专家 Gold | 2026-07-29 |
 | KBD 专家复核、不可变版本与 Capability 闭环 | 📝 完整方案与实施任务已归档，待产品/架构确认，业务实现未开始 | 2026-07-29 |
+| hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 📝 运行时方案和任务已归档，待确认；代码、部署和并发验收均未开始 | 2026-07-30 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 已形成 Evidence → Signal/Contract → CDD 的第一阶段工程闭环，但 QFK Handler Build 不等于真实执行语义门，现有 4 条工程 fixture 只完成 outcome-level Decision Replay，完整 Evidence/Execution Replay 尚未完成。下一阶段采用 [不可变 Source/Proposal → Candidate Bundle → Validation → Approval/Expert Gold → Release/Activation](solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md)，并以 Capability Request/Registry 打通 data-pipeline、admin-ui 和 agent-service。126 条分层事实与更正口径见 [KBD 126 条分层验证报告](verify/events/2026-07-29-KBD126扩展语料实施验证.md)。
+**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 已形成 Evidence → Signal/Contract → CDD 的第一阶段工程闭环，但 QFK Handler Build 不等于真实执行语义门，现有 4 条工程 fixture 只完成 outcome-level Decision Replay，完整 Evidence/Execution Replay 尚未完成。下一阶段一方面采用 [不可变 Source/Proposal → Candidate Bundle → Validation → Approval/Expert Gold → Release/Activation](solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md)，以 Capability Request/Registry 打通 data-pipeline、admin-ui 和 agent-service；另一方面待架构确认后，从 [hci-sim P0-0 Golden Contract](task/events/2026-07-30-HCI真实环境与hci-sim双轨实施任务.md) 开始，将日常 100+ Agent 回归放在 sim 轨道、真实 HCI 保留为低频 Oracle。两条轨道单次运行严格互斥，禁止 sim 失败 fallback real。126 条分层事实与更正口径见 [KBD 126 条分层验证报告](verify/events/2026-07-29-KBD126扩展语料实施验证.md)。
 
 ### 冷启动阅读路径
 

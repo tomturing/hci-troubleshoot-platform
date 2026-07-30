@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: all
-last_updated: 2026-07-29
+last_updated: 2026-07-30
 owner: team
 update_trigger: Agent 方案新增、重构或状态变更
 ---
@@ -15,6 +15,7 @@ update_trigger: Agent 方案新增、重构或状态变更
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |---|---|---|---|
+| 2026-07-30 | v1.3 | 补齐 hci-real/hci-sim 双轨、Go SSH 容器运行时、K3s 独立部署与 100+ Scenario 并发设计导航 | [HCI 真实环境与 hci-sim 双轨运行时设计](events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md) |
 | 2026-07-29 | v1.2 | 新增 HCI 6.11.1_R1 + aCLI 1.0.0 实机知识基线，明确日志、配置、数据、补丁、容器、aCLI 与 QKV/QFK 的事实边界和待确认演进 | [HCI 底层目录、日志、容器与 aCLI 知识基线](02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
 | 2026-07-29 | v1.1 | 新增 KBD 专家复核、不可变版本、Capability Registry 与全生命周期闭环方案导航 | [KBD 专家复核与全生命周期闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 
@@ -95,6 +96,7 @@ docs/solution/agent/
 | 理解 S0 意图识别怎么路由 | [S0意图识别与Prompt解耦设计方案.md](02-架构设计/S0意图识别与Prompt解耦设计方案.md) |
 | 排查 Skill 调用失败问题 | [skill调用失效根因分析与改进方案.md](02-架构设计/skill调用失效根因分析与改进方案.md) |
 | 理解变量是怎么获取的 | [变量池获取策略架构深度分析.md](02-架构设计/变量池获取策略架构深度分析.md) |
+| 设计 KBD 驱动 hci-sim、real/sim 双轨校准和 100+ Agent 并发回归 | [Agent 并发测试与 KBD 驱动 HCI 仿真环境方案](Agent并发测试与KBD驱动HCI仿真环境方案.md) |
 | 理解 KBD 截图、关键信号与案例验证的目标架构 | [KBD 截图证据、关键信号与可执行诊断契约方案](events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
 | 设计 KBD 专家复核、模型/专家双轨版本、发布生命周期与 Capability 闭环 | [KBD 专家复核、版本治理与生产消费闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 | 理解 SOP 决策树与滑动窗口 | [sop决策树与滑动窗口机制实效分析.md](02-架构设计/sop决策树与滑动窗口机制实效分析.md) |
