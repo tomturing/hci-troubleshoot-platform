@@ -120,6 +120,7 @@ declare -a IMAGES=(
   "hci-customer-ui            ${PROJECT_ROOT}               frontend/customer/Dockerfile"
   "hci-admin-ui               ${PROJECT_ROOT}               frontend/admin/Dockerfile"
   "hci-terminal-bridge        ${PROJECT_ROOT}               terminal_bridge/Dockerfile"
+  "hci-sim                    ${PROJECT_ROOT}               hci_sim/Dockerfile"
 )
 
 if [[ -f "${OPENCLAW_REPO_DIR}/Dockerfile" ]]; then

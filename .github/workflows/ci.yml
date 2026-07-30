@@ -348,7 +348,9 @@ jobs:
         uses: azure/setup-helm@v4
 
       - name: Helm lint
-        run: helm lint deploy/helm/hci-platform
+        run: |
+          helm lint deploy/helm/hci-platform
+          helm lint deploy/helm/hci-sim
 
       - name: Helm template 渲染检查
         run: |
@@ -356,7 +358,11 @@ jobs:
             -f deploy/helm/hci-platform/values.yaml \
             >/tmp/hci-platform-rendered.yaml
 
-          if [ ! -s /tmp/hci-platform-rendered.yaml ]; then
+          helm template hci-sim deploy/helm/hci-sim \
+            --namespace hci-sim-dev \
+            >/tmp/hci-sim-rendered.yaml
+
+          if [ ! -s /tmp/hci-platform-rendered.yaml ] || [ ! -s /tmp/hci-sim-rendered.yaml ]; then
             echo "Helm 渲染结果为空"
             exit 1
           fi
@@ -393,7 +399,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: helm-rendered
-          path: /tmp/hci-platform-rendered.yaml
+          path: |
+            /tmp/hci-platform-rendered.yaml
+            /tmp/hci-sim-rendered.yaml
           retention-days: 1
   # check-claw-configs job 已删除（claw-configs 目录已移除）
   # check-db-migrations-sync job 已删除（Atlas 改造后不再需要 ConfigMap 同步检查）
@@ -702,6 +710,9 @@ jobs:
           - service: terminal-bridge
             context: .
             dockerfile: terminal_bridge/Dockerfile
+          - service: hci-sim
+            context: .
+            dockerfile: hci_sim/Dockerfile
           # hci-openclaw 已从本 matrix 移出，由独立 workflow build-hci-openclaw.yml 管理
           # （仅 workflow_dispatch 手动触发，固定版本 v2026.3.24，不阻断主流程）
     steps:
