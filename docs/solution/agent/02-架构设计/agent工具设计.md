@@ -1,8 +1,37 @@
 # Agent 工具设计
 
-> 权威来源：本文件（v3.2，核心执行契约、工具管理 UI 校验、SOP 发布联动、容器执行适配器、SOP Markdown 命令归一化、运行时变量来源门禁、工具注册表热刷新与工具定义数据驱动边界、ReAct 工具调用历史跨轮次持久化、preferred_next_steps 推荐机制、软推荐门禁层均已落地）。
+> 权威来源：本文件（v3.3，核心执行契约、工具管理 UI 校验、QKV/QFK Capability Descriptor、统一 qfk_log Catalog、SOP 发布联动、容器执行适配器、运行时变量来源门禁与工具注册表热刷新均已落地）。
 > 关联文档：[agent设计.md](./agent设计.md) §十（目录结构）、[agent记忆设计.md](./agent记忆设计.md)
 > 最新事件方案：[ReAct 工具调用历史跨轮次持久化设计](events/2026-06-17-ReAct工具调用历史跨轮次持久化.md)
+
+---
+
+## 2026-07-30 权威修订：声明、执行与 KBD Signal 分层
+
+本文早期章节中的“`tool_definition` 是所有工具唯一 SSOT”只适用于 LLM 可读接口声明，
+不能再解释为“数据库记录自动获得执行能力”。当前权威分层为：
+
+| 层 | 权威来源 | 作用 |
+|---|---|---|
+| LLM 可读说明/示例 | `tool_definition` | Prompt 注入、Admin 编辑、版本投影 |
+| KBD 参数契约 | `shared.schemas.acquirer_args` | producer/consumer 保存契约 |
+| 可执行能力 | Capability Descriptor + Agent Handler + Validator | 证明实际能构建、校验和执行 |
+| 现场支持状态 | Capability Probe/运行证据 | 区分 contract-only、available、unsupported |
+
+仅在 Admin 新建一条 QKV/QFK 记录不会产生 Handler。数据库 Schema 可编辑也不能热改
+executable semantics；否则稳定 KBD 会被易变配置静默破坏。工具管理页必须同时展示可编辑
+投影和只读代码契约。
+
+QKV/QFK 当前边界：
+
+- `qkv_alert`、`qkv_task` 是变量生产者；
+- `qkv_dialog` 是复合变量生产者：在当前主控 today/today-vt 日志定位弹框，产出 END/REQUEST_ID/HOST；
+- QFK 是确定性消费者，`match` 与变量产出二选一；
+- `/sf/log` 下 whitebox、blackbox、vn-blackbox 与 pods 日志统一使用 `qfk_log`；
+  `/sf/data/local` 不是日志族，仅允许 request_id 辅助关联；不新增 `qfk_blackbox`；
+- 未知 aCLI 命令开发/验证默认提升为 risk=2 人工确认，生产可配置 deny。
+
+详细设计见 [qfk_log统一日志采集解析与判定设计](qfk_log统一日志采集解析与判定设计.md)。
 
 ---
 
@@ -396,7 +425,7 @@ acli_vm_disk_check       acli_exec("acli vm disk check {vm_id}")
 acli_platform_node_list  acli_exec("acli --formatter json platform node list")
 acli_storage_disk_list   acli_exec("acli --formatter json storage asan disk list")
 acli_network_nic_list    acli_exec("acli --formatter json network nic list")
-acli_log_get             acli_exec("acli log get --lines 100")
+acli_log_get             已废弃；不得使用实机不支持的 --lines，日志统一改用 qfk_log(file + matcher)
 acli_service_restart     acli_exec("acli service asv {name} restart")  ← RiskClassifier 识别 risk=2
 acli_network_nic_up      acli_exec("acli network nic up {nic}")         ← RiskClassifier 识别 risk=2
 acli_run                 由 acli_exec 完全替代
@@ -404,11 +433,11 @@ acli_run                 由 acli_exec 完全替代
 
 ---
 
-## 五、tool_definition 表：LLM 接口的唯一来源（SSOT）
+## 五、tool_definition 表：LLM 可读接口声明的 SSOT
 
 ### 5.1 设计原则
 
-`tool_definition` 数据库表是所有工具的 LLM 接口定义的**唯一真相来源（SSOT）**。  
+`tool_definition` 数据库表是工具名称、说明、示例和 LLM 接口投影的**唯一真相来源（SSOT）**；QKV/QFK 的 executable semantics 还必须由共享 Schema、Handler 和 Validator 证明。
 **代码不再硬编码任何 ToolDefinition 对象**（废弃 `tool_registry.py` 中的约 430 行硬编码）。
 
 ```

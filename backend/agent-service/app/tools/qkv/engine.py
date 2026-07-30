@@ -20,6 +20,23 @@ from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
 logger = get_logger("qkv-engine")
 
 
+def _dialog_output_without_self_observation(text: str, commands: list[str]) -> str:
+    """剔除本次 ``acli log get`` 被 audit_log 记录后反查到的探针自身，并去重。"""
+
+    command_tokens = [command.strip() for command in commands if command.strip()]
+    kept: list[str] = []
+    seen: set[str] = set()
+    for line in (text or "").splitlines():
+        normalized = line.strip()
+        if not normalized or any(command in normalized for command in command_tokens):
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        kept.append(line)
+    return "\n".join(kept)
+
+
 @dataclass
 class QKVResult:
     """
@@ -92,12 +109,17 @@ async def qkv_exec(
         limit_val = max(1, min(signal.limit, 200))  # 强制区间限制 [1, 200]
 
         if signal.query == FrontendQueryType.ALERT:
-            cmd = f"acli --formatter json alert get -k {quoted_kw} -l {limit_val}"
+            commands = [f"acli --formatter json alert get -k {quoted_kw} -l {limit_val}"]
         elif signal.query == FrontendQueryType.TASK:
             status_part = " -s failed" if signal.is_failed else ""
-            cmd = f"acli --formatter json task get -k {quoted_kw}{status_part} -l {limit_val}"
+            commands = [f"acli --formatter json task get -k {quoted_kw}{status_part} -l {limit_val}"]
         elif signal.query == FrontendQueryType.DIALOG:
-            cmd = f"acli log get -k {quoted_kw} -l {limit_val}"
+            # HCI 没有 dialog CRUD API。弹框的可执行事实源是当前主控的当日日志；
+            # /sf/log/today 与 vt 分开查询，兼容 aCLI 对目录递归深度的版本差异。
+            commands = [
+                f"acli log get -k {quoted_kw} -p {shlex.quote(path)} -c {signal.context_lines}"
+                for path in signal.paths
+            ]
         else:
             raise ValueError(f"未知的前端信号类型: {signal.query}")
     except Exception as build_err:
@@ -114,7 +136,7 @@ async def qkv_exec(
         event="qkv_engine_executing",
         query=signal.query.value,
         keyword=signal.keyword,
-        command=cmd,
+        command=" && ".join(commands),
     )
 
     # 2. 复用 BridgeRelayExecutor 执行命令
@@ -125,85 +147,96 @@ async def qkv_exec(
             success=False,
             query=signal.query.value,
             keyword=signal.keyword,
-            command=cmd,
+            command=" && ".join(commands),
             error="BridgeRelayExecutor 尚未初始化",
         )
 
+    exec_results = []
     try:
-        tool_args = {"command": cmd, "reason": f"QKV前端变量抽取: {signal.query.value}"}
-        with observe_tool(
-            tool_name=f"qkv_{signal.query.value}",
-            tool_args=tool_args,
-            exec_id=exec_id or "",
-            session_id=conversation_id,
-            risk_level=1,
-            trace_id=get_current_trace_id(),
-        ) as observation:
-            exec_res = await _executor.execute(
-                tool_name="acli_exec",
-                args=tool_args,
-                conversation_id=conversation_id,
-                node_ip=node_ip,
-                risk_level=1,  # 均属只读
-                policy="auto",  # 静默跑
-                exec_id=exec_id,
-            )
-            if observation:
-                observation.update(output=exec_result_observation(exec_res))
+        for cmd in commands:
+            tool_args = {"command": cmd, "reason": f"QKV前端变量抽取: {signal.query.value}"}
+            with observe_tool(
+                tool_name=f"qkv_{signal.query.value}",
+                tool_args=tool_args,
+                exec_id=exec_id or "",
+                session_id=conversation_id,
+                risk_level=1,
+                trace_id=get_current_trace_id(),
+            ) as observation:
+                exec_res = await _executor.execute(
+                    tool_name="acli_exec",
+                    args=tool_args,
+                    conversation_id=conversation_id,
+                    node_ip=node_ip,
+                    risk_level=1,  # 均属只读
+                    policy="auto",  # 静默跑
+                    exec_id=exec_id,
+                )
+                if observation:
+                    observation.update(output=exec_result_observation(exec_res))
+            exec_results.append(exec_res)
     except Exception as exec_err:
         logger.error(
             event="qkv_execution_failed",
-            command=cmd,
+            command=" && ".join(commands),
             error=str(exec_err),
         )
         return QKVResult(
             success=False,
             query=signal.query.value,
             keyword=signal.keyword,
-            command=cmd,
+            command=" && ".join(commands),
             error=str(exec_err),
         )
 
-    if exec_res.exit_code not in (0, None):
-        error_text = (exec_res.stderr or exec_res.stdout or "命令执行失败").strip()
+    failed = next((item for item in exec_results if item.exit_code not in (0, None)), None)
+    if failed is not None:
+        error_text = (failed.stderr or failed.stdout or "命令执行失败").strip()
         logger.warning(
             event="qkv_terminal_execution_failed",
-            command=cmd,
-            exit_code=exec_res.exit_code,
+            command=" && ".join(commands),
+            exit_code=failed.exit_code,
             error=error_text,
         )
         return QKVResult(
             success=False,
             query=signal.query.value,
             keyword=signal.keyword,
-            command=cmd,
+            command=" && ".join(commands),
             error=error_text,
-            exec_id=getattr(exec_res, "exec_id", None),
+            exec_id=getattr(failed, "exec_id", None),
         )
 
     # 3. 数据结构清洗与提取
     try:
-        values = parse_frontend_value(signal.query, exec_res.stdout, signal.produces)
+        stdout = "\n".join(item.stdout or "" for item in exec_results)
+        if signal.query == FrontendQueryType.DIALOG:
+            stdout = _dialog_output_without_self_observation(stdout, commands)
+        values = parse_frontend_value(signal.query, stdout, signal.produces)
+        if signal.query == FrontendQueryType.DIALOG and node_ip:
+            for value in values:
+                value.setdefault("host", node_ip)
+        values = values[:limit_val]
     except Exception as parse_err:
         logger.error(
             event="qkv_output_parse_exception",
             error=str(parse_err),
-            stdout=exec_res.stdout,
+            stdout=stdout,
         )
         return QKVResult(
             success=False,
             query=signal.query.value,
             keyword=signal.keyword,
-            command=cmd,
+            command=" && ".join(commands),
             error=f"分析提取 JSON 返回值异常: {parse_err}",
-            exec_id=exec_res.exec_id,
+            exec_id=getattr(exec_results[0], "exec_id", None) if exec_results else None,
         )
 
     return QKVResult(
         success=True,
         query=signal.query.value,
         keyword=signal.keyword,
-        command=cmd,
+        command=" && ".join(commands),
         values=values,
-        exec_id=exec_res.exec_id,
+        exec_id=getattr(exec_results[0], "exec_id", None) if exec_results else None,
     )

@@ -839,8 +839,8 @@ CREATE INDEX IF NOT EXISTS idx_session_user_id ON session (user_id);
 -- 用途: Prompt 版本化管理：每个阶段可维护多个版本，is_active=true 的版本被激活；audit_log 记录每次使用的 system_prompt.id，用于效果追踪和快速回滚
 -- ------------------------------------------------------------
 -- 表: tool_definition  [模块: conversation-service]
--- 说明: 工具定义表 — AI 工具知识库，存储 LLM 可调用工具的完整描述（acli 命令 / SCP API）。Prompt 构建时动态注入，让 LLM 知道何时调用哪个工具以及如何传参
--- 用途: 解决'AI 不知道如何调用工具'的根本问题：Prompt 构建时 SELECT * FROM tool_definition WHERE is_active=true AND (category='{当前故障域}' OR category IS NULL)，格式化后追加到 System Instructions。新增工具时只需插入记录，无需改代码
+-- 说明: 工具定义表 — 保存 LLM 可读说明、示例和参数投影；QKV/QFK 的可执行语义以共享 Schema、Handler 和 Validator 为准
+-- 用途: 通用 acli/SCP 工具可动态注入 Prompt；QKV/QFK 通过数据库投影改善可读性和专家维护体验，但不能仅靠热编辑数据库声明新增运行时能力
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tool_definition (
     id serial NOT NULL,
@@ -866,14 +866,14 @@ CREATE TABLE IF NOT EXISTS tool_definition (
     CONSTRAINT tool_definition_pkey PRIMARY KEY (id)
 );
 
-COMMENT ON TABLE tool_definition IS '工具定义表 — AI 工具知识库，存储 LLM 可调用工具的完整描述（acli 命令 / SCP API）。Prompt 构建时动态注入，让 LLM 知道何时调用哪个工具以及如何传参';
+COMMENT ON TABLE tool_definition IS '工具定义表 — LLM 可读说明、示例和参数投影。acli/SCP 通用工具可直接注入 Prompt；QKV/QFK 的可执行语义必须同时存在于代码 Capability Descriptor、Agent Handler 和 Validator，数据库记录不能单独证明能力已部署';
 COMMENT ON COLUMN tool_definition.id IS '工具定义主键，自增';
 COMMENT ON COLUMN tool_definition.tool_name IS '工具唯一标识（如 acli_exec / bash_exec / get_active_alerts / qkv_alert / qfk_hardware），tool_result.tool_name 引用此字段；命名规范：snake_case，正则 ^[a-z][a-z0-9_]{0,63}$（禁止点号与大写，首字符小写字母）';
 COMMENT ON COLUMN tool_definition.display_name IS '工具展示名（如''执行 acli 命令''），用于前端审计日志展示，比 tool_name 更易读';
-COMMENT ON COLUMN tool_definition.category IS '工具类别（执行路由依据）：scp（SCP 平台 REST API）/ acli（HCI 节点执行，含 acli_exec/bash_exec/插件诊断）/ sop（SOP 导航工具）';
-COMMENT ON COLUMN tool_definition.description IS '工具功能描述（直接注入 Prompt，LLM 读取后知道何时应该调用此工具）。示例：''在 HCI 节点执行 acli 命令（深圳桑福 HCI 平台专有 CLI）''';
+COMMENT ON COLUMN tool_definition.category IS '工具类别：scp（SCP REST API）/ acli（HCI 节点执行）/ sop（SOP 导航）/ qkv（前端变量生产）/ qfk（后端确定性消费）';
+COMMENT ON COLUMN tool_definition.description IS '可人工维护的工具功能描述，供 Prompt 和 Admin 展示；不得覆盖代码 Capability Descriptor 中的可执行边界';
 COMMENT ON COLUMN tool_definition.usage_template IS '调用模板。acli 插件工具示例：''acli plugins vm_start vm_start''；通用工具为 NULL';
-COMMENT ON COLUMN tool_definition.parameters_schema IS '参数 JSON Schema（OpenAI function calling 格式），AI 按此 Schema 输出结构化参数对象，后端按此 Schema 校验后生成实际命令/请求';
+COMMENT ON COLUMN tool_definition.parameters_schema IS '参数 JSON Schema。通用工具用于 function calling；QKV/QFK 为代码共享 Schema 的可读投影，发布门禁和运行时始终以 shared schema + Handler/Validator 为准，防止热编辑造成契约漂移';
 COMMENT ON COLUMN tool_definition.examples IS '调用示例数组。示例：[{"args": {"command": "acli --formatter json vm list", "reason": "检查虚拟机状态"}, "desc": "列出虚拟机"}]';
 COMMENT ON COLUMN tool_definition.risk_level IS '风险等级静态默认值：1=只读查询（auto）/ 2=写操作需确认（confirm）/ 3=高危拦截（block）。注意：对 acli_exec/bash_exec 通用工具，运行时 RiskClassifier 根据命令内容动态判定并覆盖此值；对插件诊断/SCP/SOP 工具，此值为固定值（不动态覆盖）';
 COMMENT ON COLUMN tool_definition.is_active IS '是否启用；is_active=false 的工具不会注入 Prompt 也不会被 AI 调用，用于临时下线某工具';

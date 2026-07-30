@@ -260,22 +260,36 @@ owner: team
 | `limit` | int | 否 | 翻页上限，默认 100 |
 | `is_failed` | boolean | 否 | 仅取失败任务（默认 false，等价于 -s failed） |
 
-**qkv_dialog**（acli dialog get -k）
+**qkv_dialog**（弹框日志定位型变量生产者）
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `keyword` | string | **是** | 采集关键词（acli dialog get -k） |
-| `limit` | int | 否 | 翻页上限，默认 100 |
+| `keyword` | string | **是** | 页面弹框原文或稳定片段 |
+| `limit` | int | 否 | 结构化候选结果上限 |
+| `paths` | string[] | 否 | 固定为 `/sf/log/today`、`/sf/log/today/vt` 的一个或两个 |
+| `context_lines` | int | 否 | 上下文行数，0–10，默认 2 |
 
-**qfk_log**（acli --host {{HOST}} log get -k）
+目标 HCI/aCLI 没有独立 dialog API。运行时在当前主控两个固定目录执行 `acli log get -k`，
+过滤 audit 自观测后提取 END、REQUEST_ID/trace_id、HOST；对应失败任务存在时优先用 qkv_task。
+
+**qfk_log**（统一 `acli log get`）
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `file` | string | **是** | 日志文件名 |
-| `time_window` | string | 否 | 时间窗（如 `now` / `-1h`） |
-| `path` | string | 否 | 日志路径 |
+| `file` | string | 条件必填 | 常规 `/sf/log` 检索必填安全 basename；request_id 辅助域可省略 |
+| `time_window` | string | 否 | HCI 时区绝对时间或 `{{ABSOLUTE_TIME}}`；禁止 `now/-1h` |
+| `path` | string | 否 | 常规日志仅 `/sf/log`；`/sf/data/local` 仅可与 request_id 同时使用 |
+| `source_family` | string | 否 | `auto/whitebox/blackbox/vn_blackbox/pod` |
+| `parser` | string | 否 | 留空由 Catalog 选择 |
+| `request_id` | string | 否 | 调用链 ID（`-i`） |
+| `context_lines` | int | 否 | 上下文行，0–50 |
+| `include_archives` | bool | 否 | 搜索 `.gz`；需要 `archive_precheck=verified` |
 | `host` | string | 否 | 目标主机（变量池；`cluster`=遍历集群） |
 | `resource_keyword` | string | 否 | 资源选择器（非匹配词，见 §6） |
+
+blackbox 不拆成 `qfk_blackbox`。普通文本支持 keyword/regex/state/exists，数值支持
+threshold，周期快照支持 delta/trend + metric。完整设计见
+[qfk_log统一日志采集解析与判定设计](qfk_log统一日志采集解析与判定设计.md)。
 
 **qfk_service**（acli service <container> <name> <command>）
 

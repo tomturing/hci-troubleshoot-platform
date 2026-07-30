@@ -5,14 +5,23 @@
     "timeout": {
       "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/common_args.schema.json#/properties/timeout"
     },
+    "host": {
+      "type": "string",
+      "description": "采集目标主机/作用域（如 {{HOST}}），特殊值 cluster 表示遍历集群"
+    },
     "resource_keyword": {
       "type": "string",
       "description": "服务名选择器（acli service <container> <name>）；改名消歧"
     },
     "container": {
       "type": "string",
+      "enum": [
+        "anet",
+        "asv",
+        "host"
+      ],
       "default": "asv",
-      "description": "服务容器（asv/vn/...）"
+      "description": "当前版本 aCLI 已探测服务组：asv(vt)/anet(vn)/host；领域 Catalog 另含 asan(vs)，当前节点未暴露，禁止假定可执行"
     },
     "command": {
       "type": "string",

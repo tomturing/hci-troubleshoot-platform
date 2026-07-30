@@ -5,7 +5,7 @@ Matcher 求值单一真相源（Single Source of Truth）
 消除 `handlers.FunctionHandler.evaluate` 与 `kbd_differential._evaluate_matcher`
 中重复且可能漂移的 keyword 实现，并统一证据链结构。
 
-支持类型：keyword / regex / state / threshold / json_path / exists
+支持类型：keyword / regex / state / threshold / delta / trend / json_path / exists
 
 求值契约
 --------
@@ -169,12 +169,21 @@ def evaluate_matcher(
 
     if mtype == "threshold":
         aggregation = str(matcher.get("aggregation") or "first_number")
+        values = _extract_metric_numbers(text, matcher.get("metric"))
         if aggregation == "line_count":
             val = float(sum(1 for line in (text or "").splitlines() if line.strip()))
         elif aggregation == "duration_seconds":
             val = _extract_duration_seconds(text)
+        elif aggregation == "last_number":
+            val = values[-1] if values else None
+        elif aggregation == "max":
+            val = max(values) if values else None
+        elif aggregation == "min":
+            val = min(values) if values else None
+        elif aggregation == "sum":
+            val = sum(values) if values else None
         else:
-            val = _extract_number(text)
+            val = values[0] if values else None
         target = matcher.get("value")
         op = matcher.get("operator", ">")
         if val is None or target is None:
@@ -195,10 +204,86 @@ def evaluate_matcher(
                 "target": target,
                 "operator": op,
                 "aggregation": aggregation,
+                "metric": matcher.get("metric"),
             },
             evidence=(
                 f"【Matcher 求值 (threshold/{aggregation})】\n提取数值: {val} {op} {target}\n"
                 f"比较结果: {cmp}\n期望 expected: {expected}\n最终判定: {matched}"
+            ),
+        )
+
+    if mtype == "delta":
+        values = _extract_metric_numbers(text, matcher.get("metric"))
+        if len(values) < int(matcher.get("minimum_samples") or 2):
+            return MatcherResult(
+                matched=None,
+                detail={"sample_count": len(values), "error": "insufficient_samples"},
+                evidence=f"【Matcher 求值 (delta)】样本不足: {len(values)}",
+            )
+        delta = values[-1] - values[0]
+        target = matcher.get("value", 0)
+        try:
+            target = float(target)
+        except (TypeError, ValueError):
+            return MatcherResult(matched=None)
+        op = str(matcher.get("operator") or ">")
+        hit = _compare_threshold(delta, target, op)
+        if hit is None:
+            return MatcherResult(matched=None)
+        matched = hit if expected else not hit
+        return MatcherResult(
+            matched=matched,
+            detail={
+                "hit": hit,
+                "first": values[0],
+                "last": values[-1],
+                "delta": delta,
+                "sample_count": len(values),
+                "operator": op,
+                "target": target,
+                "metric": matcher.get("metric"),
+            },
+            evidence=(
+                f"【Matcher 求值 (delta)】\nmetric: {matcher.get('metric') or '(all)'}\n"
+                f"首值/末值/差值: {values[0]} / {values[-1]} / {delta}\n"
+                f"比较: {delta} {op} {target} => {hit}\n最终判定: {matched}"
+            ),
+        )
+
+    if mtype == "trend":
+        values = _extract_metric_numbers(text, matcher.get("metric"))
+        minimum_samples = int(matcher.get("minimum_samples") or 3)
+        if len(values) < minimum_samples:
+            return MatcherResult(
+                matched=None,
+                detail={"sample_count": len(values), "error": "insufficient_samples"},
+                evidence=f"【Matcher 求值 (trend)】样本不足: {len(values)} < {minimum_samples}",
+            )
+        direction = str(matcher.get("direction") or "increasing")
+        min_step = float(matcher.get("value") or 0)
+        deltas = [right - left for left, right in zip(values, values[1:], strict=False)]
+        if direction == "decreasing":
+            hit = all(delta <= -min_step for delta in deltas)
+        elif direction == "stable":
+            hit = all(abs(delta) <= min_step for delta in deltas)
+        else:
+            hit = all(delta >= min_step for delta in deltas)
+        matched = hit if expected else not hit
+        return MatcherResult(
+            matched=matched,
+            detail={
+                "hit": hit,
+                "values": values,
+                "deltas": deltas,
+                "direction": direction,
+                "minimum_step": min_step,
+                "sample_count": len(values),
+                "metric": matcher.get("metric"),
+            },
+            evidence=(
+                f"【Matcher 求值 (trend)】\nmetric: {matcher.get('metric') or '(all)'}\n"
+                f"样本: {values}\n相邻差值: {deltas}\n"
+                f"方向/最小步长: {direction}/{min_step}\n趋势命中: {hit}\n最终判定: {matched}"
             ),
         )
 
@@ -262,6 +347,27 @@ def _extract_number(text: str) -> float | None:
         return float(match.group(0))
     except ValueError:
         return None
+
+
+def _extract_metric_numbers(text: str, metric: Any = None) -> list[float]:
+    """提取数值样本；指定 metric 时只解析包含该字段的行并取该行末值。
+
+    blackbox 行通常以时间戳开头，使用“首个数字”会把日期误当成计数器。因此日志阈值、
+    差值和趋势统一按 metric 过滤后取行末数值；未指定 metric 时保留全局数字序列以兼容
+    既有非日志 matcher。
+    """
+
+    source = text or ""
+    if isinstance(metric, str) and metric:
+        values: list[float] = []
+        for line in source.splitlines():
+            if metric.lower() not in line.lower():
+                continue
+            numbers = re.findall(r"-?\d+(?:\.\d+)?", line)
+            if numbers:
+                values.append(float(numbers[-1]))
+        return values
+    return [float(item) for item in re.findall(r"-?\d+(?:\.\d+)?", source)]
 
 
 def _extract_duration_seconds(text: str) -> float | None:

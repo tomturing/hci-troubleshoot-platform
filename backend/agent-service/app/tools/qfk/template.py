@@ -38,15 +38,38 @@ BACKEND_SIGNAL_JSON_SCHEMA = {
         },
         "file": {
             "type": "string",
-            "description": "（log 专用）日志文件名（acli -f，须 .log 结尾）",
+            "description": "（log 专用）安全日志 basename（acli -f，扩展名不限，禁止目录分隔符）",
         },
         "path": {
             "type": "string",
-            "description": "（log 专用）日志文件所在目录（acli -p，须 /sf/log/ 前缀）",
+            "description": "（log 专用）常规日志位于 /sf/log；/sf/data/local 仅可与 request_id 用于辅助关联",
         },
         "time_window": {
             "type": "string",
-            "description": "（log 专用）限制时间范围，如 now/-1h",
+            "description": "（log 专用）绝对时间；相对时间须先解析为 YYYY-MM-DD[ HH[:MM:SS]]",
+        },
+        "source_family": {
+            "type": "string",
+            "enum": ["auto", "whitebox", "blackbox", "vn_blackbox", "pod"],
+            "description": "（log 专用）统一日志族，通常使用 auto",
+        },
+        "parser": {
+            "type": "string",
+            "enum": [
+                "plain_text", "timestamped_lines", "timestamped_blocks", "ifconfig_snapshot",
+                "kv_counter_snapshot", "process_snapshot",
+            ],
+            "description": "（log 专用）结构 parser；通常省略并由 Catalog 选择",
+        },
+        "request_id": {
+            "type": "string",
+            "description": "（log 专用）调用链 request_id（acli -i）",
+        },
+        "context_lines": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50,
+            "description": "（log 专用）命中上下文行数（acli -c）",
         },
         "container": {
             "type": "string",
@@ -89,7 +112,8 @@ BACKEND_SIGNAL_PROMPT_TEMPLATE = """## 任务
 </investigation_step>
 
 ## 后端信号类型说明（namespace）
-- log      : 日志文件内容检索（如在 mysql-managed.log 中搜特定错误）
+- log      : 统一日志检索与判定（/sf/log 下 whitebox/blackbox/vn-blackbox/pod 均走 qfk_log；
+             /sf/data/local 不是日志族，只能携带 request_id 做辅助关联搜索）
 - service  : 服务运行状态检查（如 asv/redis 服务是否 running）
 - vm       : 检查虚拟机（acli vm ...）
 - network  : 检查网络状态（acli network ...）
@@ -103,6 +127,10 @@ BACKEND_SIGNAL_PROMPT_TEMPLATE = """## 任务
 2. 对于 expected，如果步骤中表述"排查是否有报错/出现异常"，说明发现报错代表排查符合预期，expected 应设为 true；如果是"确认该服务是正常的/无报错"，则 expected 设为 false（说明检测不到关键字才说明符合健康预期）；
 3. 对于 vm/network/storage 等类型，必须将 command 提取出来（如 "asan disk list"），QFK 会自动将其与 "acli storage" 拼接成完整命令；
 4. 严格按照 JSON schema 输出，不要多余输出，并作为一个 JSON 数组包起来（因为一个步骤有时包含多个小排查子项）。
+5. log 的 file 只能是 basename；不要生成 qfk_blackbox。省略 path 时由 Catalog 推断；若原文明确
+   blackbox/vn-blackbox，可设置 source_family。时间只能使用绝对时间或 {{ABSOLUTE_TIME}}，不得传 now/-1h。
+6. LOG_ifconfig.txt、LOG_ethtool_statistic.txt 等周期快照需要计数器判定时，使用
+   threshold/delta/trend matcher，并提供 metric；普通报错使用 keyword/regex。
 
 ## 输出 JSON 格式：
 ```json

@@ -19,3 +19,9 @@ def test_asyncpg_database_url_preserves_native_scheme():
     settings = KbdSettings(DATABASE_URL="postgresql://user:pass@postgres:5432/kbd")
 
     assert settings.asyncpg_database_url == "postgresql://user:pass@postgres:5432/kbd"
+
+
+def test_extract_concurrency_is_configurable_and_bounded():
+    settings = KbdSettings(EXTRACT_CONCURRENCY=5)
+
+    assert settings.EXTRACT_CONCURRENCY == 5

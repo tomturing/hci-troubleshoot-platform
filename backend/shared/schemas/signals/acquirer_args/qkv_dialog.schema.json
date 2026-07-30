@@ -7,12 +7,37 @@
     },
     "keyword": {
       "type": "string",
-      "description": "采集关键词（acli dialog get -k）"
+      "description": "页面弹框原文/稳定关键片段"
     },
     "limit": {
       "type": "integer",
       "default": 100,
-      "description": "翻页数上限"
+      "description": "结构化候选结果上限"
+    },
+    "paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "/sf/log/today",
+          "/sf/log/today/vt"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "default": [
+        "/sf/log/today",
+        "/sf/log/today/vt"
+      ],
+      "description": "在当前主控搜索的固定弹框日志域；不是自由路径"
+    },
+    "context_lines": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "default": 2,
+      "description": "命中行上下文，用于提取 END/REQUEST_ID"
     },
     "instruction": {
       "type": "string",

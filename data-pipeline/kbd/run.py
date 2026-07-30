@@ -4,31 +4,33 @@ data-pipeline/kbd/run.py — KBD 知识生产管道 CLI 入口（API 调用版�
 使用方式（在项目根目录下）：
 
   # 完整流水线（从 Excel 读取所有 ID）
-  python -m kbd.run pipeline --excel
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline --excel
 
   # 完整流水线（指定 ID 列表）
-  python -m kbd.run pipeline --ids 34977,36179,36166
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline --ids 34977,36179,36166
 
   # 只跑特定 Stage
-  python -m kbd.run fetch --excel --limit 100
-  python -m kbd.run vision --ids 34977,36179
-  python -m kbd.run import --excel
-  python -m kbd.run classify --excel
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run fetch --excel --limit 100
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run import --excel
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run vision --ids 34977,36179
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run classify --excel
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run extract-signals --excel
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals --all
 
   # 从上次中断处继续（断点续传）
-  python -m kbd.run pipeline --excel --resume
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline --excel --resume
 
   # 仅处理失败的案例
-  python -m kbd.run vision --excel --failed-only
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run vision --excel --failed-only
 
   # 强制重新处理（覆盖已完成的记录）
-  python -m kbd.run pipeline --excel --force
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline --excel --force-fetch --override
 
   # SOP 文档导入
-  python -m kbd.import_sop --file /path/to/sop.docx --category-id "虚拟机-001"
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.import_sop --file /path/to/sop.docx --category-id "虚拟机-001"
 
   # 查看配置
-  python -m kbd.run config
+  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run config
 """
 from __future__ import annotations
 
@@ -127,17 +129,25 @@ def _parse_stages(stages_str: str | None) -> list[Stage]:
         "vision": Stage.VISION,
         "classify": Stage.CLASSIFY,
         "extract": Stage.EXTRACT_SIGNALS,
+        "extract-signals": Stage.EXTRACT_SIGNALS,
+        "audit": Stage.AUDIT_LOG_SIGNALS,
+        "audit-signals": Stage.AUDIT_LOG_SIGNALS,
+        "audit-log-signals": Stage.AUDIT_LOG_SIGNALS,
         "1": Stage.FETCH,
         "2": Stage.IMPORT,
         "3": Stage.VISION,
         "4": Stage.CLASSIFY,
         "5": Stage.EXTRACT_SIGNALS,
+        "6": Stage.AUDIT_LOG_SIGNALS,
     }
     result = []
     for s in stages_str.split(","):
         s = s.strip().lower()
         if s not in stage_map:
-            print(f"未知 stage: {s}，合法值：fetch,vision,import,classify,extract")
+            print(
+                f"未知 stage: {s}，合法值："
+                "fetch,import,vision,classify,extract-signals,audit-log-signals"
+            )
             sys.exit(1)
         result.append(stage_map[s])
     return result
@@ -233,7 +243,7 @@ async def _cmd_fetch(args: argparse.Namespace, run_id: str) -> None:
 
 
 async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
-    """Stage 2：图片语义化"""
+    """Stage 3：图片语义化"""
     import asyncpg
 
     from .image_proc import process_images_batch
@@ -271,7 +281,7 @@ async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
 
 
 async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
-    """Stage 3：语义提取 + 原子入库（kbd_entry + kbd_image）
+    """Stage 2：语义提取 + 原子入库（kbd_entry + kbd_image）
 
     新架构：仅检查 FETCH 完成即可入库；图片随 IMPORT 原子写入 kbd_image，
     content_md 交由后端 rebuild_content_md 统一渲染（样式高一致）。
@@ -354,6 +364,115 @@ async def _cmd_classify(args: argparse.Namespace, run_id: str) -> None:
         await pool.close()
 
 
+async def _cmd_extract_signals(args: argparse.Namespace, run_id: str) -> None:
+    """Stage 5：对已分类、尚无 Proposal 的 draft KBD 抽取关键信号。"""
+
+    import asyncpg
+
+    from .extract_signals import extract_signals_batch
+
+    if not settings.INTERNAL_API_TOKEN:
+        print("错误：INTERNAL_API_TOKEN 未配置")
+        sys.exit(1)
+
+    kbd_ids = _get_kbd_ids(args)
+    pool = await asyncpg.create_pool(dsn=settings.asyncpg_database_url)
+    try:
+        rows = await pool.fetch(
+            """SELECT support_id
+               FROM kbd_entry
+               WHERE support_id = ANY($1)
+                 AND status = 'draft'
+                 AND (COALESCE(category_id, '') <> '' OR COALESCE(ai_category_id, '') <> '')
+                 AND (signals_json IS NULL OR signals_json = '[]'::jsonb)
+               ORDER BY support_id""",
+            kbd_ids,
+        )
+        extract_ids = [str(row["support_id"]) for row in rows]
+        skipped = len(kbd_ids) - len(extract_ids)
+        if not extract_ids:
+            print("没有可抽取的案例：仅处理已分类、signals_json 为空的 draft KBD")
+            return
+
+        logger.info(
+            "Extract-signals 处理开始 kbds=%d skipped=%d run_id=%s",
+            len(extract_ids),
+            skipped,
+            run_id,
+        )
+        stats = await extract_signals_batch(extract_ids, pool)
+        stats["skipped_by_precondition"] = skipped
+        print(f"run_id: {run_id}")
+        print(json.dumps(stats, ensure_ascii=False, indent=2))
+    finally:
+        await pool.close()
+
+
+async def _cmd_audit_log_signals(args: argparse.Namespace, run_id: str) -> int:
+    """Stage 6：从文件、stdin 或数据库只读审计 qfk_log Proposal。"""
+
+    from .log_signal_audit import (
+        audit_rows,
+        dump_report,
+        load_rows,
+        load_rows_file,
+        load_rows_from_db,
+    )
+
+    if args.stdin:
+        rows = load_rows(sys.stdin)
+        source = "stdin"
+    elif args.file:
+        source_path = Path(args.file)
+        rows = load_rows_file(source_path)
+        source = str(source_path)
+    else:
+        import asyncpg
+
+        support_ids = None if args.all else _get_kbd_ids(args)
+        pool = await asyncpg.create_pool(dsn=settings.asyncpg_database_url)
+        try:
+            rows = await load_rows_from_db(pool, support_ids)
+        finally:
+            await pool.close()
+        source = "database:all" if args.all else "database:selected"
+
+    report = audit_rows(rows)
+    logger.info(
+        "Audit-log-signals 完成 source=%s cases=%d status=%s issues=%s run_id=%s",
+        source,
+        report["case_count"],
+        report["case_status_counts"],
+        report["issue_counts"],
+        run_id,
+    )
+
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as output:
+            dump_report(report, output)
+        print(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "source": source,
+                    "report": str(output_path),
+                    "case_count": report["case_count"],
+                    "case_status_counts": report["case_status_counts"],
+                    "issue_counts": report["issue_counts"],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        dump_report(report, sys.stdout)
+
+    blocked = int(report["case_status_counts"].get("BLOCKED_ACTIVE_SIGNAL", 0))
+    return 1 if args.fail_on_blocked and blocked else 0
+
+
 async def _cmd_review_list(args: argparse.Namespace, run_id: str) -> None:
     """列出待审核案例（调用 admin-service API）"""
     if not settings.INTERNAL_API_TOKEN:
@@ -417,7 +536,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p_pipeline)
     p_pipeline.add_argument(
         "--stages",
-        help="指定要运行的 stages（逗号分隔）：fetch,vision,import,classify",
+        help=(
+            "指定 stages（逗号分隔）：fetch,import,vision,classify,"
+            "extract-signals,audit-log-signals"
+        ),
     )
     # 抓取阶段参数
     p_pipeline.add_argument(
@@ -429,7 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_pipeline.add_argument(
         "--override",
         action="store_true",
-        help="强制覆盖已存在的记录（仅影响 Stage 3 导入阶段）",
+        help="强制覆盖已存在的记录（仅影响 Stage 2 导入阶段）",
     )
     p_pipeline.add_argument(
         "--override-status",
@@ -461,8 +583,8 @@ def build_parser() -> argparse.ArgumentParser:
     # 单独 stage 子命令
     for name, help_text in [
         ("fetch",    "Stage 1：抓取 API + 下载图片"),
-        ("vision",   "Stage 2：图片语义化（Vision LLM）"),
-        ("import",   "Stage 3：HTML→MD 转换 + 调用 API 入库"),
+        ("import",   "Stage 2：语义转换 + 原子入库"),
+        ("vision",   "Stage 3：图片语义化（Vision LLM）"),
         ("classify", "Stage 4：AI 分类（调用 kb-service API）"),
     ]:
         p_sub = sub.add_parser(name, help=help_text)
@@ -514,6 +636,35 @@ def build_parser() -> argparse.ArgumentParser:
                 ),
             )
 
+    # Stage 5：独立关键信号抽取。别名 extract 兼容既有 stage 口径。
+    p_extract = sub.add_parser(
+        "extract-signals",
+        aliases=["extract"],
+        help="Stage 5：抽取关键信号 Proposal",
+    )
+    _add_common(p_extract)
+
+    # Stage 6：日志 Proposal 契约审计。输入源互斥，默认不因 Proposal 问题返回非零。
+    p_audit = sub.add_parser(
+        "audit-log-signals",
+        aliases=["audit-signals", "audit"],
+        help="Stage 6：只读审计 qfk_log Proposal 与运行时契约",
+    )
+    audit_source = p_audit.add_mutually_exclusive_group(required=True)
+    audit_source.add_argument("--stdin", action="store_true", help="从标准输入读取 JSON 数组")
+    audit_source.add_argument("--file", help="从 UTF-8 JSON 文件读取数组")
+    audit_source.add_argument("--all", action="store_true", help="只读审计数据库全部 KBD")
+    audit_source.add_argument("--excel", action="store_true", help="按 Excel 中的案例 ID 查询数据库")
+    audit_source.add_argument("--ids", help="按逗号分隔的 support_id 查询数据库")
+    audit_source.add_argument("--id-file", help="按每行一个 support_id 的文件查询数据库")
+    p_audit.add_argument("--limit", type=int, default=None, help="限制 Excel/ID 文件输入数量")
+    p_audit.add_argument("--output", help="将完整 JSON 报告写入文件；终端仅打印摘要")
+    p_audit.add_argument(
+        "--fail-on-blocked",
+        action="store_true",
+        help="存在 BLOCKED_ACTIVE_SIGNAL 时返回 1，供 CI 门禁使用",
+    )
+
     # review-list 子命令
     p_review = sub.add_parser("review-list", help="列出待审核案例")
     p_review.add_argument("--limit", type=int, default=50)
@@ -534,6 +685,11 @@ def main() -> None:
         "vision":      _cmd_vision,
         "import":      _cmd_import,
         "classify":    _cmd_classify,
+        "extract-signals": _cmd_extract_signals,
+        "extract":     _cmd_extract_signals,
+        "audit-log-signals": _cmd_audit_log_signals,
+        "audit-signals": _cmd_audit_log_signals,
+        "audit":       _cmd_audit_log_signals,
         "review-list": _cmd_review_list,
         "config":      lambda a: (_cmd_config(a), None)[1],
     }
@@ -554,7 +710,9 @@ def main() -> None:
     run_id = _setup_logging(resume_run_id)
 
     # 执行异步命令，传递 run_id
-    asyncio.run(cmd(args, run_id))
+    exit_code = asyncio.run(cmd(args, run_id))
+    if isinstance(exit_code, int) and exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

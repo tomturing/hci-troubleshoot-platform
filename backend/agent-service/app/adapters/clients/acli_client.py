@@ -140,10 +140,11 @@ class AcliClient:
                 return "acli network nic list", node_ip
 
             case "acli_log_get":
-                lines = int(args.get("lines", 100))
-                # 限制日志行数在合理范围内
-                lines = max(1, min(lines, 500))
-                return f"acli log get --lines {lines}", node_ip
+                # 历史工具曾构造实机不支持的 ``acli log get --lines N``。日志读取必须
+                # 经过 qfk_log 的 file/path/time/parser/predicate 与输出有界契约。
+                raise ValueError(
+                    "acli_log_get 已废弃：当前 aCLI 不支持 --lines；请使用 qfk_log 并提供 file 与 matcher"
+                )
 
             case "acli_service_restart":
                 svc = _validate_safe_id(args["service_name"], "服务名")

@@ -40,6 +40,13 @@ class TestPipelineImportable:
         assert hasattr(mod, "run_pipeline")
 
 
+class TestPipelineStageDag:
+    def test_audit_stage_expands_complete_production_chain(self):
+        from kbd.pipeline import Stage, resolve_stages
+
+        assert resolve_stages([Stage.AUDIT_LOG_SIGNALS]) == list(Stage)
+
+
 class TestSignalDocumentStatus:
     def test_requires_nonempty_signals_and_verification_contract(self):
         from kbd.pipeline import _signal_document_status

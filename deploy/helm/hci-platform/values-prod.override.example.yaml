@@ -42,6 +42,8 @@ adminUI:
 agentService:
   image:
     tag: "2026.03.02-1"
+  # 生产环境对本地 Catalog 未知的 aCLI 命令 fail closed；验证环境可使用 confirm。
+  acliUnknownCommandPolicy: "deny"
 kbService:
   image:
     tag: "2026.03.02-1"

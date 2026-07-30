@@ -341,12 +341,26 @@
             "regex",
             "state",
             "threshold",
+            "delta",
+            "trend",
             "json_path",
             "exists"
           ]
         },
         "pattern": {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ]
         },
         "mode": {
           "type": "string",
@@ -383,10 +397,31 @@
           "type": "string",
           "enum": [
             "first_number",
+            "last_number",
             "line_count",
-            "duration_seconds"
+            "duration_seconds",
+            "max",
+            "min",
+            "sum"
           ],
           "default": "first_number"
+        },
+        "metric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minimum_samples": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 10000
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "increasing",
+            "decreasing",
+            "stable"
+          ]
         },
         "path": {
           "type": "string"
@@ -431,6 +466,37 @@
             "required": [
               "value",
               "operator"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "delta"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "metric",
+              "value",
+              "operator"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "trend"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "metric",
+              "direction"
             ]
           }
         },

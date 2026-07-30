@@ -18,6 +18,7 @@ if _agent_service not in sys.path:
     sys.path.insert(0, _agent_service)
 
 import pytest
+from app.adapters.clients.acli_client import AcliClient
 from app.tools.acli.executor import ExecResult
 from app.tools.qfk import (
     BackendSignal,
@@ -30,6 +31,7 @@ from app.tools.qfk.handlers import (
     HandlerRegistry,
     LogKeywordHandler,
 )
+from app.tools.qfk.matcher import evaluate_matcher
 from pydantic import ValidationError
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,6 +98,11 @@ class TestHandlerRegistryAndBuilders:
         with pytest.raises(ValueError, match="未找到 namespace"):
             HandlerRegistry.get("nonexistent")
 
+    def test_legacy_acli_log_get_fails_closed_instead_of_using_fake_lines_option(self):
+        client = AcliClient(username="test")
+        with pytest.raises(ValueError, match="acli_log_get 已废弃"):
+            client._build_command("acli_log_get", {"lines": 100})
+
     def test_log_keyword_builder(self):
         sig = BackendSignal(
             namespace="log",
@@ -111,7 +118,7 @@ class TestHandlerRegistryAndBuilders:
         # or 模式：关键字按字面量子串处理，re.escape 转义后塞入 grep -E
         assert "-E -k 'HA\\ state\\ change'" in cmds[0]
         assert "-f vtpdaemon.log" in cmds[0]
-        assert "-p /sf/log/today/" in cmds[0]
+        assert "-p /sf/log/today" in cmds[0]
         assert "-t 2026-07-01" in cmds[0]
 
     def test_log_keyword_missing_keywords(self):
@@ -120,23 +127,61 @@ class TestHandlerRegistryAndBuilders:
         with pytest.raises(CommandBuildError, match="必须提供关键字"):
             handler.build_commands(sig)
 
+    def test_inferred_whitebox_path_defers_date_and_decompression_to_acli(self):
+        sig = BackendSignal(
+            namespace="log",
+            file="sfvt_vtpdaemon.log",
+            time_window="2026-07-01 10:00:00",
+            keyword=["failed"],
+        )
+        command = HandlerRegistry.get("log").build_commands(sig)[0]
+        assert "-t '2026-07-01 10:00:00'" in command
+        assert " -p " not in command
+
+    def test_inferred_blackbox_path_uses_end_date_directory(self):
+        sig = BackendSignal(
+            namespace="log",
+            file="LOG_ifconfig.txt",
+            time_window="2026-07-01 10:00:00",
+            keyword=["dropped"],
+        )
+        command = HandlerRegistry.get("log").build_commands(sig)[0]
+        assert "-p /sf/log/blackbox/20260701" in command
+
+    def test_data_local_is_request_id_only_auxiliary_scope(self):
+        sig = BackendSignal(namespace="log", path="/sf/data/local", request_id="abc")
+        command = HandlerRegistry.get("log").build_commands(sig)[0]
+        assert command == "acli log get -i abc -p /sf/data/local"
+
+        with pytest.raises(ValidationError, match="不是日志目录"):
+            BackendSignal(namespace="log", path="/sf/data/local", file="task", keyword=["failed"])
+
     def test_log_keyword_path_traversal_defense(self):
         # 校验文件名不能有 /
-        sig1 = BackendSignal(namespace="log", file="../etc/shadow", keyword=["test"])
-        handler = HandlerRegistry.get("log")
-        with pytest.raises(CommandBuildError, match="不能包含路径"):
-            handler.build_commands(sig1)
+        with pytest.raises(ValidationError, match="日志源不可解析"):
+            BackendSignal(namespace="log", file="../etc/shadow", keyword=["test"])
 
         # 校验路径前缀合法性
-        sig2 = BackendSignal(namespace="log", path="/var/log/nginx/", keyword=["test"])
-        with pytest.raises(CommandBuildError, match="只允许以"):
-            handler.build_commands(sig2)
+        with pytest.raises(ValidationError, match="日志路径只允许位于"):
+            BackendSignal(namespace="log", file="kernel.log", path="/var/log/nginx/", keyword=["test"])
 
     def test_service_status_builder(self):
         sig = BackendSignal(namespace="service", service="redis", container="asv")
         handler = HandlerRegistry.get("service")
         cmds = handler.build_commands(sig)
         assert cmds == ["acli service asv redis status"]
+
+    @pytest.mark.parametrize("container", ["asv", "anet", "host"])
+    def test_service_builder_accepts_real_acli_service_groups(self, container):
+        sig = BackendSignal(namespace="service", service="example-service", container=container)
+        assert HandlerRegistry.get("service").build_commands(sig) == [
+            f"acli service {container} example-service status"
+        ]
+
+    def test_service_builder_rejects_terminal_container_as_service_group(self):
+        sig = BackendSignal(namespace="service", service="redis", container="dsv")
+        with pytest.raises(CommandBuildError, match="非法服务容器"):
+            HandlerRegistry.get("service").build_commands(sig)
 
     def test_service_status_missing_name(self):
         sig = BackendSignal(namespace="service")
@@ -509,6 +554,65 @@ class TestLogKeywordOrEscaping:
         handler = HandlerRegistry.get("log")
         with pytest.raises(CommandBuildError, match="至少需要一个非空关键字"):
             handler.build_commands(sig)
+
+
+class TestUnifiedLogPredicates:
+    """blackbox 数值判定不能把时间戳误当指标值。"""
+
+    def test_blackbox_delta_uses_metric_line_last_value(self):
+        text = """
+[26-07-30 00:00:56]***********************************
+rx_missed_errors: 12
+[26-07-30 00:05:56]***********************************
+rx_missed_errors: 18
+"""
+        result = evaluate_matcher(
+            {
+                "type": "delta",
+                "metric": "rx_missed_errors",
+                "operator": ">",
+                "value": 0,
+                "minimum_samples": 2,
+                "expected": True,
+            },
+            text,
+        )
+        assert result.matched is True
+        assert result.detail["first"] == 12
+        assert result.detail["last"] == 18
+        assert result.detail["delta"] == 6
+
+    def test_blackbox_trend_sample_shortage_is_inconclusive(self):
+        result = evaluate_matcher(
+            {
+                "type": "trend",
+                "metric": "rx_fifo_errors",
+                "direction": "increasing",
+                "minimum_samples": 3,
+                "expected": True,
+            },
+            "rx_fifo_errors: 1\nrx_fifo_errors: 2",
+        )
+        assert result.matched is None
+        assert result.detail["error"] == "insufficient_samples"
+
+    def test_vn_blackbox_command_uses_catalog_and_metric_selector(self):
+        signal = BackendSignal(
+            namespace="log",
+            file="LOG_ethtool_statistic.txt",
+            matcher={
+                "type": "delta",
+                "metric": "rx_missed_errors",
+                "operator": ">",
+                "value": 0,
+                "minimum_samples": 2,
+                "expected": True,
+            },
+        )
+        command = HandlerRegistry.get("log").build_commands(signal)[0]
+        assert "-k rx_missed_errors" in command
+        assert "-p /sf/log/vn-blackbox/today" in command
+        assert "-f LOG_ethtool_statistic.txt" in command
 
 
 # ─────────────────────────────────────────────────────────────────────────────

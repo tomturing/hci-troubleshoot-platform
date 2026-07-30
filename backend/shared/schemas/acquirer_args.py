@@ -30,17 +30,38 @@ import copy
 import re
 from typing import Any
 
-# ``acli log get -f`` 的安全边界是 basename 字符集，而不是扩展名。真实 HCI
-# 证据包含 messages、*.ini、BMC_Event_Log 及带 {{VAR}} 的动态 basename。
+from shared.schemas.log_source_catalog import (
+    ABSOLUTE_LOG_TIME_PATTERN,
+    ALLOWED_LOG_ROOTS,
+    LOG_PARSERS,
+    LOG_SOURCE_FAMILIES,
+    REQUEST_ARTIFACT_ROOT,
+    normalize_log_path,
+    resolve_log_source,
+    validate_absolute_log_time,
+)
+
+# ``acli log get -f`` 的安全边界是 basename 字符集，而不是扩展名。真实 HCI 日志
+# 包含 messages、无扩展名文件及带 {{VAR}} 的动态 basename；配置文件和 BMC SEL 即使
+# 字符形状合法，也会由日志源 Catalog 的 acquisition/runtime_supported 语义门拒绝。
 SAFE_LOG_FILE_PATTERN = (
     r"^(?:[A-Za-z0-9_.-]|\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\})+$"
 )
-ALLOWED_LOG_PATH_PREFIXES = ("/sf/log/", "/sf/logs/", "/sf/data/", "/sf/datanew/")
+# 向后兼容旧调用方导入名；值已按实机 aCLI 契约收紧为根目录，而非宽泛前缀。
+ALLOWED_LOG_PATH_PREFIXES = ALLOWED_LOG_ROOTS
 ILLEGAL_COMMAND_CHARS = frozenset("|#;&`$<>{}\n\r")
-VALID_SERVICE_CONTAINERS = frozenset({
-    "asv", "dsv", "csv", "mpv", "drv", "fdv", "ssv", "msv", "osv",
-    "csf", "csw", "gpuv",
-})
+# HCI 领域服务组是稳定知识；runtime_exposed 表示 2026-07-30 当前实机版本的探测结果，
+# 不能把“领域存在”误写成“当前 aCLI 一定可执行”。
+SERVICE_DOMAIN_CATALOG: dict[str, dict[str, Any]] = {
+    "asv": {"plane": "vt", "name": "虚拟平台", "runtime_exposed": True},
+    "anet": {"plane": "vn", "name": "虚拟网络", "runtime_exposed": True},
+    "asan": {"plane": "vs", "name": "虚拟存储", "runtime_exposed": False},
+    "host": {"plane": "host", "name": "宿主机/容器管理", "runtime_exposed": True},
+}
+# 当前版本 ``acli service --help`` 实际可执行的服务组。
+VALID_SERVICE_CONTAINERS = frozenset({"asv", "anet", "host"})
+# qfk_system 使用 terminal bridge 的受控执行位置；host 表示不进入容器。
+VALID_SYSTEM_CONTAINERS = frozenset({"host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"})
 _PLACEHOLDER_RE = re.compile(r"\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\}")
 
 
@@ -70,11 +91,18 @@ _TARGET_DIMENSIONS: dict[str, dict[str, Any]] = {
     },
     "path": {
         "type": "string",
-        "description": "路径（日志目录/文件等）",
+        "description": (
+            "aCLI 搜索路径；常规日志仅限 /sf/log。/sf/data/local 不是日志目录，"
+            "仅允许与 request_id 同时使用以关联诊断产物"
+        ),
     },
     "time_window": {
         "type": "string",
-        "description": "时间窗（如 now/-1h）",
+        "pattern": ABSOLUTE_LOG_TIME_PATTERN,
+        "description": (
+            "绝对日志时间：YYYY-MM-DD、YYYY-MM-DD HH、YYYY-MM-DD HH:MM:SS 或 {{ABSOLUTE_TIME}}；"
+            "now/-1h 等相对表达式须由 Agent 先解析"
+        ),
     },
 }
 
@@ -112,8 +140,21 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
-            "keyword": {"type": "string", "description": "采集关键词（acli dialog get -k）"},
-            "limit": {"type": "integer", "default": 100, "description": "翻页数上限"},
+            "keyword": {"type": "string", "description": "页面弹框原文/稳定关键片段"},
+            "limit": {"type": "integer", "default": 100, "description": "结构化候选结果上限"},
+            "paths": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["/sf/log/today", "/sf/log/today/vt"]},
+                "minItems": 1,
+                "maxItems": 2,
+                "uniqueItems": True,
+                "default": ["/sf/log/today", "/sf/log/today/vt"],
+                "description": "在当前主控搜索的固定弹框日志域；不是自由路径",
+            },
+            "context_lines": {
+                "type": "integer", "minimum": 0, "maximum": 10, "default": 2,
+                "description": "命中行上下文，用于提取 END/REQUEST_ID",
+            },
         },
         "required": ["keyword"],
     },
@@ -136,20 +177,62 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             },
             "path": _TARGET_DIMENSIONS["path"],
             "time_window": _TARGET_DIMENSIONS["time_window"],
+            "source_family": {
+                "type": "string",
+                "enum": list(LOG_SOURCE_FAMILIES),
+                "default": "auto",
+                "description": "日志族；auto 时根据显式 path 和日志源 Catalog 推断",
+            },
+            "parser": {
+                "type": "string",
+                "enum": list(LOG_PARSERS),
+                "description": "结构解析器；省略时由日志源 Catalog 按文件类型选择",
+            },
+            "request_id": {
+                "type": "string",
+                "description": "调用链 request_id（acli log get -i），可使用 {{REQUEST_ID}}",
+            },
+            "context_lines": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50,
+                "default": 0,
+                "description": "命中行上下文行数（acli -c，0-50）",
+            },
+            "include_archives": {
+                "type": "boolean",
+                "default": False,
+                "description": "是否以 -g 搜索 .gz 历史归档；必须同时声明 archive_precheck=verified",
+            },
+            "archive_precheck": {
+                "type": "string",
+                "enum": ["verified"],
+                "description": "归档搜索前置检查已确认磁盘空间、目标日期和路径范围",
+            },
         },
-        # LogKeywordHandler 无 file 无法构建 acli log get；关键字来自 match.pattern。
-        "required": ["file"],
+        # 常规日志必须有 file；/sf/data/local request_id 辅助域可不指定 file，
+        # 两者互斥语义由 validate_acquire_args/运行时 Handler 做确定性校验。
+        "required": [],
     },
     "qfk_service": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
+            "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {
                 "type": "string",
                 "description": "服务名选择器（acli service <container> <name>）；改名消歧",
             },
-            "container": {"type": "string", "default": "asv", "description": "服务容器（asv/vn/...）"},
+            "container": {
+                "type": "string",
+                "enum": sorted(VALID_SERVICE_CONTAINERS),
+                "default": "asv",
+                "description": (
+                    "当前版本 aCLI 已探测服务组：asv(vt)/anet(vn)/host；"
+                    "领域 Catalog 另含 asan(vs)，当前节点未暴露，禁止假定可执行"
+                ),
+            },
             "command": {
                 "type": "string",
                 "description": "操作子命令（如 status/restart）",
@@ -174,7 +257,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             },
             "container": {
                 "type": "string",
-                "enum": ["host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"],
+                "enum": sorted(VALID_SYSTEM_CONTAINERS),
                 "default": "asv-con",
                 "description": "执行位置；host 表示直接在宿主机执行",
             },
@@ -321,13 +404,59 @@ def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
 
     # 与 Agent QFK Handler 同源的运行时语义门禁。结构合法并不代表命令一定可构建；
     # 这些约束必须在保存 Proposal 前执行，不能等到现场调度才暴露。
+    if tool == "qkv_dialog":
+        paths = args.get("paths", ["/sf/log/today", "/sf/log/today/vt"])
+        allowed_dialog_paths = {"/sf/log/today", "/sf/log/today/vt"}
+        if not paths or len(paths) > 2 or any(path not in allowed_dialog_paths for path in paths):
+            return False, "qkv_dialog.paths 只允许 /sf/log/today 与 /sf/log/today/vt，且至少选择一个"
+        context_lines = args.get("context_lines", 2)
+        if isinstance(context_lines, int) and not 0 <= context_lines <= 10:
+            return False, "qkv_dialog.context_lines 必须在 0-10"
+
     if tool == "qfk_log":
         file_name = str(args.get("file") or "")
-        if file_name in {"", ".", ".."} or not re.fullmatch(SAFE_LOG_FILE_PATTERN, file_name):
-            return False, f"acquire.args.file 必须是无目录、无控制字符的安全 basename：{file_name}"
         path = str(args.get("path") or "")
-        if path and not path.startswith(ALLOWED_LOG_PATH_PREFIXES):
-            return False, f"acquire.args.path 只允许以下前缀: {ALLOWED_LOG_PATH_PREFIXES}"
+        try:
+            normalized_path = normalize_log_path(path or None)
+        except ValueError as exc:
+            return False, f"acquire.args 日志路径不可解析: {exc}"
+        is_request_artifact = bool(
+            normalized_path
+            and (
+                normalized_path == REQUEST_ARTIFACT_ROOT
+                or normalized_path.startswith(f"{REQUEST_ARTIFACT_ROOT}/")
+            )
+        )
+        if is_request_artifact:
+            if not str(args.get("request_id") or "").strip():
+                return False, "/sf/data/local 不是日志目录；只有携带 request_id 时才能作为辅助关联搜索域"
+            if str(args.get("source_family") or "auto") != "auto":
+                return False, "/sf/data/local 辅助搜索不得声明日志 source_family"
+            source = {"runtime_supported": True, "source_id": "request_artifact_scope"}
+        else:
+            if file_name in {"", ".", ".."} or not re.fullmatch(SAFE_LOG_FILE_PATTERN, file_name):
+                return False, f"acquire.args.file 必须是无目录、无控制字符的安全 basename：{file_name}"
+            try:
+                source = resolve_log_source(
+                    file_name,
+                    source_family=str(args.get("source_family") or "auto"),
+                    path=normalized_path,
+                    parser=str(args.get("parser")) if args.get("parser") else None,
+                )
+            except ValueError as exc:
+                return False, f"acquire.args 日志源不可解析: {exc}"
+        ok, error = validate_absolute_log_time(str(args.get("time_window") or "") or None)
+        if not ok:
+            return False, f"acquire.args.time_window 非法: {error}"
+        if args.get("include_archives") is True and args.get("archive_precheck") != "verified":
+            return False, "include_archives=true 时必须设置 archive_precheck=verified"
+        if args.get("archive_precheck") and args.get("include_archives") is not True:
+            return False, "archive_precheck 只能与 include_archives=true 同时使用"
+        context_lines = args.get("context_lines", 0)
+        if isinstance(context_lines, int) and not 0 <= context_lines <= 50:
+            return False, "acquire.args.context_lines 必须在 0-50"
+        if not source.get("runtime_supported", True):
+            return False, f"日志源 {source.get('source_id')} 不能由本机 qfk_log 获取"
 
     if tool == "qfk_service":
         container = str(args.get("container") or "asv")

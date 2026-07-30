@@ -170,9 +170,10 @@ product_version + product_build + acli_version + manifest_hash + policy_version
 ```json
 {
   "file": "sfvt_vtpdaemon.log",
-  "path": "/sf/log/today/",
-  "keyword": "由 match.pattern 表达",
-  "date_semantics": "current_alias_or_day_of_month"
+  "source_family": "auto",
+  "path": "/sf/log/today/vt",
+  "parser": "timestamped_lines",
+  "time_window": "{{ABSOLUTE_TIME}}"
 }
 ```
 
@@ -183,6 +184,7 @@ product_version + product_build + acli_version + manifest_hash + policy_version
 - 匹配模式属于 `match`，不应再次塞入资源选择器；
 - 日期必须最终解析成设备接受的绝对日期；
 - 历史归档缺失或未解压时，安全策略需要感知其副作用。
+- blackbox、vn-blackbox 和其他 `/sf/log` 日志不拆工具，由 Catalog 选择默认目录、parser 和 predicate。
 
 ---
 
@@ -213,7 +215,7 @@ sar 设备统计
 
 白盒日志回答“哪个组件在何时记录了什么事件”；blackbox 回答“系统各项指标和状态随时间如何变化”。两者的文件选择、时间定位、解析器、证据语义和阈值判断均不同。
 
-### 4.2 为什么不应强塞进现有 qfk_log
+### 4.2 为什么不能停留在旧的 keyword-only qfk_log
 
 现有 `qfk_log(file, keyword)` 适合文本存在性或关键字匹配，但 blackbox 常见判断是：
 
@@ -222,11 +224,11 @@ sar 设备统计
 - 故障前后挂载、进程、网络连接是否发生状态变化；
 - 多个快照文件是否在同一时间窗相互印证。
 
-这些判断需要结构化时间序列、数值比较、变化率、连续次数和多源关联。仅用 grep 容易产生“命中即成立”的伪结论。
+这些判断需要结构化时间序列、数值比较、变化率、连续次数和多源关联。仅用 grep 容易产生“命中即成立”的伪结论。问题在旧能力只有 keyword，而不是统一 `qfk_log` 这个工具边界本身。实机已确认 blackbox path 可以由 `acli log get -p` 获取，因此应增强统一工具的 parser/predicate。
 
-### 4.3 建议能力
+### 4.3 已确认能力
 
-优先把 blackbox 建模为独立逻辑能力 `qfk_blackbox`；若短期仍复用 `qfk_log`，至少必须显式携带：
+不新增 `qfk_blackbox`。blackbox 作为 `qfk_log` 的日志族，显式或由 Catalog 携带：
 
 ```text
 log_family = blackbox
@@ -240,25 +242,28 @@ predicate = compare/range/trend/change
 ```json
 {
   "acquire": {
-    "tool": "qfk_blackbox",
+    "tool": "qfk_log",
     "args": {
-      "snapshot": "vmstat",
-      "date": "{{INCIDENT_DATE}}",
-      "start": "{{INCIDENT_START}}",
-      "end": "{{INCIDENT_END}}"
+      "file": "LOG_vmstat.txt",
+      "source_family": "blackbox",
+      "path": "/sf/log/blackbox/{{INCIDENT_DATE}}",
+      "parser": "timestamped_blocks",
+      "time_window": "{{INCIDENT_START}}"
     }
   },
   "match": {
-    "type": "threshold",
-    "field": "wa",
-    "operator": ">=",
-    "value": 20,
-    "consecutive": 3
+    "type": "trend",
+    "metric": "wa",
+    "direction": "increasing",
+    "value": 0,
+    "minimum_samples": 3,
+    "expected": true
   }
 }
 ```
 
-这只是目标模型，尚未进入当前 Signal v2 契约。
+该模型已进入 Signal v2 与 Agent Handler。完整审计和安全契约见
+[qfk_log统一日志采集解析与判定设计](qfk_log统一日志采集解析与判定设计.md)。
 
 ---
 
@@ -372,13 +377,13 @@ key / pem / pub 等密钥和证书材料
 
 | 路径 | 主要内容 | 默认策略 |
 |---|---|---|
-| `/sf/data/local/` | 本地主机数据、安装/升级/补丁、诊断、备份、ISO、部分本地虚拟机数据 | 仅开放明确登记的诊断子路径 |
+| `/sf/data/local/` | 本地主机数据、镜像、备份、DRS、Prometheus TSDB、升级包、sys_backup、info_collect 产物、aCLI 包与 task 文件；少量产物可能以 `.log` 结尾 | 不作为常规日志目录；仅开放明确的 request_id 辅助关联 |
 | `/sf/data/platform_database/` | MySQL、Redis、Kafka、Zookeeper、MongoDB 等平台数据 | 禁止通用文件扫描；使用专用只读能力 |
 | `/sf/data/datareport_database/` | RRD/报表数据 | 使用专用时序查询能力 |
 | `/sf/data/vs/local/` | 本地存储卷、LVM 和 metadata | 高风险，只允许结构化存储状态查询 |
 | `/sf/data/<storage-id>/` | 集群存储、ISO、volume、snapshot、backup | 高风险，不允许无界递归 |
 
-设备端 `acli log get` 的实现仅允许 `/sf/data/local`，而不是整个 `/sf/data`。即使位于 `/sf/data/local`，也必须限制目录深度、文件数、文件大小、超时和输出量。
+设备端 `acli log get --help` 允许 `/sf/data/local`，但“aCLI 可搜索”不等于“这里是日志根”。常规日志仍全部位于 `/sf/log`。HTP 只允许 `request_id + path=/sf/data/local` 关联诊断产物，禁止 `filename + keyword` 的普通扫描，并限制目录、文件、超时和输出量。
 
 ### 7.3 当前 HTP 差距
 
@@ -504,6 +509,17 @@ is_support_global_container_arg
 
 这是比网页抓取更接近目标设备真相的能力源。但 `is_change_cmd` 也不能机械当作最终风险：部分命令可读可写，部分名称含 `status` 的命令仍被标成 change。最终风险应由“manifest + 具体参数 + 平台覆盖策略”共同决定。
 
+服务领域知识与当前命令能力必须分开记录：
+
+| 领域服务组 | 平面 | 业务语义 | 当前节点 `acli service` |
+|---|---|---|---|
+| `asv` | `vt` | 虚拟平台，虚拟机、集群等相关服务 | 已暴露 |
+| `anet` | `vn` | 虚拟网络相关服务 | 已暴露 |
+| `asan` | `vs` | 虚拟存储相关服务 | 当前 6.11.1_R1 未暴露；`acli service asan` 为未知 namespace |
+| `host` | host | 宿主机与容器管理相关服务 | 已暴露 |
+
+因此 Domain Catalog 保留四域，Runtime Capability Probe 决定当前可执行集合。`service asan` 与 `storage asan ...` 也不能混同：本节点虽然没有前者，静态/设备 Catalog 仍有 `acli storage asan disk list` 等存储 namespace 命令。
+
 ### 10.3 静态目录漂移
 
 | 来源 | 观察时间/版本 | 命令数 | 结论 |
@@ -550,6 +566,8 @@ is_support_global_container_arg
 /sf/data/local/...
 ```
 
+语义必须再收紧一层：`/sf/log` 是常规日志根；`/sf/data/local` 是 aCLI 特许的 request artifact 辅助搜索域，不进入 whitebox/blackbox/pod 等日志 family。
+
 未确认允许整个 `/sf/data`，也未确认 `/sf/logs`、`/sf/datanew`。当前 HTP 白名单比实机更宽。
 
 仅使用字符串前缀校验不安全。例如 `/sf/log/../cfg` 仍以 `/sf/log/` 开头。正确校验顺序是：
@@ -578,7 +596,7 @@ YYYY-MM-DD HH:MM:SS
 
 - 指定目录时可能递归搜索；
 - `-g` 需与 path 组合；
-- 指定历史日期时可能定位并解压日归档；
+- 指定历史日期时，`-t` 会定位并自动解压 whitebox 日归档；qfk_log 自身不实现解压；
 - `-t` 同时参与日目录选择和文本过滤；
 - `-E` 启用扩展正则；
 - `request_id` 是独立检索维度；
@@ -596,14 +614,17 @@ YYYY-MM-DD HH:MM:SS
 
 ### 10.6 `qkv_dialog` 的实机结论
 
-观察节点不存在 `dialog` 命名空间。当前 HTP 一处实现尝试使用 `acli log get ... -l`，但 `log get` 又不支持 `-l`。因此在该目标环境：
+观察节点不存在独立 `dialog` 命名空间，但这不等于弹框信号不可执行。弹框的现场事实源是当前主控当日日志。历史实现使用 `acli log get ... -l`，历史 `acli_log_get` 使用 `--lines`，两者都不是有效参数；现实现改为复合 QKV：
 
 ```text
-qkv_dialog.runtime_status = unsupported
-reason_code = namespace_absent
+弹框原文/稳定片段
+  -> acli log get -k ... -p /sf/log/today -c 2
+  -> acli log get -k ... -p /sf/log/today/vt -c 2
+  -> 过滤本次命令写入 audit_log 的自观测行
+  -> 提取 END、REQUEST_ID(trace_id)、HOST
 ```
 
-“KBD 截图被分类为弹框”只说明案例证据中存在弹框，不等于客户现场存在 `acli dialog get`。若要支持弹框信号，必须先确认真实运行时数据源，例如浏览器遥测、操作日志 API 或 task/alert 的确定性映射。截图 OCR/视觉描述只能作为知识生产 Evidence，不能冒充现场可查询信号。
+当前实机输出确认 request ID 至少存在 `request_id:` 与 `request_id=` 两种形态，parser 同时兼容 trace JSON 形态；日志时间兼容方括号、微秒、斜杠和分钟精度。若弹框对应失败任务，优先由 `qkv_task` 获取更稳定的结构化记录；仅有弹框时使用 `qkv_dialog`。截图 OCR/视觉描述仍只是生产 Evidence，最终现场值必须来自上述日志查询，不能把截图内容直接当成客户现场事实。
 
 ---
 
@@ -644,10 +665,10 @@ filter_rule
 | 主题 | 实机/设备契约 | HTP 当前实现 | 风险 | 优先级 |
 |---|---|---|---|---|
 | qfk_log file | 只能是 basename | Schema 正则正确，但 CI 合法 fixture 曾写完整路径 | CI 失败、示例误导 | P0，本 PR 修复 fixture |
-| qfk_log path | `/sf/log`、`/sf/data/local` 受限范围 | 允许 `/sf/logs`、整个 `/sf/data`、`/sf/datanew`，且仅 `startswith` | 设备拒绝与路径逃逸 | P0，待确认后改运行语义 |
+| qfk_log path | 常规日志仅 `/sf/log`；`/sf/data/local` 仅 request_id 辅助搜索 | 已按段规范化并实施两种 scope 的语义门禁 | 普通数据目录被误扫 | 已修复 |
 | log time | 绝对日期前缀 | `time_window=-1h` 直接映射 `-t` | 命令确定失败 | P0 |
 | 历史日志 | 可能解压归档并占空间 | QFK 一律声明 risk=1/auto | 风险记录失真 | P0/P1 |
-| qkv_dialog | 目标设备无 namespace | Schema、Prompt、UI、Descriptor 均宣称存在 | 信号永远不可执行 | P0 |
+| qkv_dialog | 无独立 namespace，但 today/today-vt 有弹框关联日志 | 已实现复合查询、探针过滤与 END/REQUEST_ID/HOST 提取 | 关键字歧义或日志无 request_id | 已实现；歧义保持 Inconclusive |
 | QFK 风险 | 171 个 manifest 命令标读，155 个标 change；还需参数级判断 | 上层统一 risk=1/auto，底层 regex 仅覆盖部分命令 | 未知变更命令可能默认放行 | P0/P1 |
 | Capability | Handler ∩ Device ∩ Policy | 11 个 Schema 均 `available`、`read_only_intent=true` | 把声明当能力 | P1 |
 | aCLI Catalog | 目标设备 326 条 | 静态 Catalog 336 条 | 版本漂移 | P1 |
@@ -812,7 +833,7 @@ P0：
 
 - 路径规范化并收紧允许根；
 - 时间字段从模糊 `time_window` 迁移为明确的绝对时间语义；
-- `qkv_dialog` 标记 unsupported 或从可执行集合移出；
+- `qkv_dialog` Schema 固定 today/today-vt 路径，并声明 END/REQUEST_ID/HOST produces；
 - 安全 profile 不再把所有 QFK 都写成只读。
 
 P1/P2：
@@ -864,7 +885,7 @@ KBD 审核页复用这些能力，不新建复杂工作台。保存专家修改�
 - 修复 Signal Schema CI 的合法 fixture，并增加完整路径反例；
 - 收紧路径规范化与目标版本允许根；
 - 停止把 `-1h` 直接传给 `acli log get -t`；
-- 将目标环境的 `qkv_dialog` 标为 unsupported；
+- 移除无效 `acli dialog get`/`acli log get -l`，恢复 qkv_dialog 复合日志取值；
 - 未知/变更命令不再静默自动执行；
 - 修正所有 Capability `read_only_intent=true` 的错误声明。
 
@@ -926,19 +947,19 @@ product_version / acli_version / capability_version
 
 ---
 
-## 18. 用户确认项
+## 18. 已确认决策
 
-在进入运行语义改造前，需要确认以下决策：
+2026-07-30 已确认：
 
-1. 是否按 P0 立即将 `qkv_dialog` 从“可执行”降为“目标环境不支持”，保留截图 `dialog` 分类作为生产 Evidence；
-2. 是否将 qfk_log 时间契约改为绝对日期/时间，并由 Agent 解析相对事故窗口；
-3. 是否将 qfk_log 路径收紧到目标设备确认的 `/sf/log` 与 `/sf/data/local`，其他路径通过专用能力读取；
-4. 历史归档未解压时，是默认要求确认，还是只在磁盘前置条件满足时自动执行；
-5. Capability Probe 快照第一阶段存现有 JSONB，还是因多节点历史审计需求直接建独立表；
-6. blackbox 第一阶段独立建 `qfk_blackbox`，还是先以逻辑适配层复用现有执行器；
-7. 未知 aCLI 命令默认策略采用 `require_confirm` 还是严格 `deny`。
+1. `qkv_dialog` 定义为当前主控日志复合取值能力，不虚构 `acli dialog get`；默认产出 END、REQUEST_ID、HOST；
+2. qfk_log 使用绝对日期/时间，Agent 负责解析相对事故窗口；
+3. qfk_log 常规日志路径收紧到 `/sf/log`；`/sf/data/local` 只允许 request_id 辅助关联，其他路径通过专用能力或 capability gap；
+4. 历史归档仅在磁盘、日期、路径前置条件满足后执行；
+5. Capability Probe 第一阶段复用现有 JSONB/revision，不新增复杂表；
+6. blackbox、vn-blackbox、whitebox 和其他 `/sf/log` 日志统一纳入 `qfk_log`，通过 Catalog/parser/predicate 表达差异；
+7. 未知 aCLI 命令开发/验证默认 require_confirm，生产可配置 deny。
 
-推荐答案分别为：**降级、改绝对时间、收紧、条件确认、先 JSONB、独立逻辑能力、默认确认且生产环境可配置 deny**。这些选择保持架构简单，同时不牺牲可执行真实性与安全边界。
+这些选择保持架构简单，同时不牺牲可执行真实性与安全边界。
 
 ---
 

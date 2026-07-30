@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ __all__ = [
     "build_container_command",
     "get_allowed_bash_containers",
     "get_acli_catalog_commands",
+    "is_acli_command_in_catalog",
 ]
 
 CATALOG_PATH = Path(__file__).with_name("catalog") / "acli_command_catalog.json"
@@ -142,6 +144,20 @@ def _catalog_matches(path_tokens: list[str], catalog_commands: frozenset[str]) -
     return False
 
 
+def is_acli_command_in_catalog(command: str) -> bool:
+    """判断完整 aCLI 命令路径是否存在于代码快照 Catalog。"""
+
+    tokens = _tokenize(command)
+    if not tokens or tokens[0] != "acli":
+        return False
+    if "--help" in tokens or "-?" in tokens or "-h" in tokens:
+        return True
+    path_tokens = _strip_global_options(tokens)
+    if _normalize_spaces(" ".join(path_tokens)) == "acli acli command list":
+        return True
+    return _catalog_matches(path_tokens, get_acli_catalog_commands())
+
+
 def get_allowed_bash_containers(tool_def: Any | None) -> set[str]:
     """从数据库工具定义的 JSON Schema 中读取 bash_exec 允许容器。"""
     if tool_def is None:
@@ -234,14 +250,26 @@ class ToolSemanticValidator:
 
         path_tokens = _strip_global_options(tokens)
         normalized_path = _normalize_spaces(" ".join(path_tokens))
-        if normalized_path == "acli acli command list":
-            return ValidationResult.ok_result()
-
-        catalog = get_acli_catalog_commands()
-        if not _catalog_matches(path_tokens, catalog):
+        if not is_acli_command_in_catalog(command):
+            unknown_policy = os.getenv("ACLI_UNKNOWN_COMMAND_POLICY", "confirm").strip().lower()
+            if unknown_policy not in {"confirm", "deny"}:
+                unknown_policy = "confirm"
+            if unknown_policy == "confirm":
+                return ValidationResult(
+                    ok=True,
+                    issues=[
+                        ValidationIssue(
+                            code="ACLI_COMMAND_NOT_IN_CATALOG_CONFIRM",
+                            message=f"命令路径不在本地 aCLI catalog，运行时必须人工确认：{normalized_path}",
+                            field="command",
+                            level="warning",
+                            suggested_fix="先用只读 --help/command list 核对当前 HCI 版本；确认后执行或补充 Catalog",
+                        )
+                    ],
+                )
             return ValidationResult.error(
                 "ACLI_COMMAND_NOT_IN_CATALOG",
-                f"命令路径不在 aCLI catalog 中：{normalized_path}",
+                f"命令路径不在 aCLI catalog 且当前环境策略为 deny：{normalized_path}",
                 field="command",
                 suggested_fix="先执行 acli ... --help 或改用 catalog 中支持的命令",
             )

@@ -2,7 +2,7 @@
 status: active
 category: verify
 audience: developer, tester
-last_updated: 2026-07-29
+last_updated: 2026-07-30
 owner: team
 ---
 
@@ -16,6 +16,7 @@ owner: team
 
 | 文件 | 日期 | 说明 |
 |------|------|------|
+| [2026-07-30-qfk_log统一契约与KBD126日志回归.md](2026-07-30-qfk_log统一契约与KBD126日志回归.md) | 2026-07-30 | 统一 qfk_log、真实 HCI/aCLI 边界、126 条日志 Proposal 分类与跨层验证 |
 | [2026-07-29-KBD126扩展语料实施验证.md](2026-07-29-KBD126扩展语料实施验证.md) | 2026-07-29 | 126 条真实来源、222 张截图、分类、Signal/Contract Proposal、Compiler/Replay 与专家门禁分层验证 |
 | 2026-07-27-运行时代码完整性修复验证.md | 2026-07-27 | 新镜像实际加载、遗留源码挂载清理与 API Server 准入阻断验证 |
 | 2026-07-25-KBD检索正确性残留风险修复.md | 2026-07-25 | KBD 伪向量、中文 FTS、相关性门禁与审计语义修复验证 |
@@ -36,4 +37,4 @@ owner: team
 
 ---
 
-*更新日期: 2026-07-29*
+*更新日期: 2026-07-30*

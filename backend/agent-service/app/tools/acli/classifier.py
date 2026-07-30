@@ -75,12 +75,28 @@ def classify_acli(command: str | None) -> int:
     """
     if not command:
         return 1  # None 或空命令视为只读
+    stripped = command.strip()
+    # 本函数只负责 aCLI 风险；前缀合法性由语义校验器处理。保持非 aCLI/空白输入的
+    # 既有返回值，避免把分类器误用为通用命令校验器。
+    if not stripped.startswith("acli ") and stripped != "acli":
+        return 1
 
     for risk, pattern in _ACLI_RISK_RULES:
         if pattern.search(command):
             return risk
 
-    return 1  # 未命中任何规则，默认只读
+    # Catalog 未知不等于只读。开发/验证默认提升为 risk=2 走人工确认；生产可通过
+    # ACLI_UNKNOWN_COMMAND_POLICY=deny 在语义校验阶段直接拒绝。局部导入避免模块初始化环。
+    try:
+        from app.tools.acli.semantic_validator import is_acli_command_in_catalog
+
+        if not is_acli_command_in_catalog(stripped):
+            return 2
+    except Exception:
+        # Catalog 不可读时 fail closed 到确认，不把未知命令静默当作 risk=1。
+        return 2
+
+    return 1
 
 
 def classify_bash(command: str | None) -> int:
