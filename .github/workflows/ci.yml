@@ -857,7 +857,8 @@ jobs:
       needs.prepare.result == 'success' &&
       needs.build-and-push.result == 'success' &&
       (needs.build-db-migrate.result == 'success' || needs.build-db-migrate.outputs.built != 'true') &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
     steps:
       - name: Checkout 应用仓库（获取 sync-env-repo-tags.sh）
         uses: actions/checkout@v4
